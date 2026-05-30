@@ -5,6 +5,7 @@
 #include "pic.h"
 #include "pit.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "sched.h"
 #include "syscall.h"
 
@@ -50,6 +51,8 @@ void interrupt_handler(struct registers *r)
     }
     if (irq == 1)
         keyboard_handle();  /* PS/2 keyboard */
+    else if (irq == 12)
+        mouse_handle();     /* PS/2 mouse */
 
     pic_eoi(irq);
 }

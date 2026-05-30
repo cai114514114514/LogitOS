@@ -25,10 +25,14 @@ This is not a simulation. It is an actual kernel that boots and runs.
   drawing primitives with alpha blending, and a from-scratch **macOS-style
   desktop** — gradient wallpaper, frosted menu bar, a window with traffic-light
   controls, and a frosted Dock.
+- **M8 Window system:** an 8×16 bitmap font + text, a double-buffered
+  compositor, a PS/2 mouse with an arrow cursor, and **focusable, draggable
+  windows** — a genuinely interactive desktop.
 
-Next: **M8** (bitmap font + text, PS/2 mouse cursor, draggable windows, a live
-compositor). See the
+The full roadmap (M1–M8) is complete. See the
 [design spec](docs/superpowers/specs/2026-05-30-aqua-os-m1-design.md).
+
+Run `make run` and use your mouse to drag the windows around.
 
 ## Build & run
 

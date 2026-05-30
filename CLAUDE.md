@@ -34,7 +34,8 @@ make debug  # QEMU frozen with gdb stub on :1234
 M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) ✅ ·
 M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AquaFS + VFS) ✅ ·
 M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
-(framebuffer + VMM + Aqua desktop) ✅ · M8 window system + live desktop (next).
+(framebuffer + VMM + Aqua desktop) ✅ · M8 window system (font + double-buffer +
+PS/2 mouse + draggable windows) ✅ — full roadmap complete.
 
 Key notes:
 - `vmm_map_page` does a real 4-level walk; maps the high-MMIO framebuffer and
@@ -45,6 +46,12 @@ Key notes:
   `$(DISK)` target packs `fsroot/*` + `build/user.elf` as `hello.elf`).
 - Userland: `kernel/gdt.c` (TSS rsp0), `boot/enter_user.asm`, syscalls via
   int 0x80 in `kernel/syscall.c`; `user/` builds the ring-3 ELF.
-- Next M8: bitmap font + text rendering, PS/2 mouse + cursor, draggable
-  windows, double-buffered compositor (so the desktop becomes interactive).
+- M8 window system: `tools/genfont.py` rasterizes DejaVu Sans Mono to
+  `include/font8x16.h` (committed — building needs no PIL). `kernel/fb.c` has a
+  RAM back buffer + `fb_present()`; `kernel/wm.c` is the compositor (cached
+  background, z-ordered focusable windows, arrow cursor); `drivers/mouse.c` is
+  the PS/2 mouse (IRQ12). The userland SYS_EXIT retargets its iret frame at
+  `wm_run` so boot flows into the live desktop.
+- `tools/qmp_drag.py` scripts a mouse drag over QEMU QMP (for screenshots/CI of
+  interaction); real use is `make run` + your mouse.
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.

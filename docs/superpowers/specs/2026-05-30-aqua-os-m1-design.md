@@ -1,7 +1,7 @@
 # Aqua OS — Design Spec
 
 **Date:** 2026-05-30
-**Status:** M1–M7 implemented & verified
+**Status:** M1–M8 implemented & verified — the full roadmap is complete
 
 ## Vision
 
@@ -32,7 +32,7 @@ that boots on bare-metal-equivalent hardware (QEMU full emulation).
 | **M5** | Storage & FS | ATA PIO driver, AquaFS (custom on-disk FS), VFS layer, host mkfs tool ✅ |
 | **M6** | Userland | GDT/TSS, ring 3, int 0x80 syscalls, ELF64 loader, user paging ✅ |
 | **M7** | Graphics | Multiboot2 linear framebuffer, VMM page-mapper, drawing primitives, Aqua desktop scene ✅ |
-| M8 | Window system + desktop | Bitmap font + text, PS/2 mouse cursor, draggable windows, live compositor |
+| **M8** | Window system | Bitmap font + text, double-buffered compositor, PS/2 mouse + cursor, draggable/focusable windows ✅ |
 
 ## Milestone 1 — "Boot & Hello"
 
@@ -272,3 +272,42 @@ ring 3 runs → `int 0x80` SYS_WRITE (kernel prints the message) → SYS_EXIT.
 1. ELF loads from disk and runs in ring 3 (CPL 3). ✅
 2. Its `int 0x80` SYS_WRITE output appears; SYS_EXIT reports code 0. ✅
 3. `make test` marker gated on `fs_ok && user wrote via syscall`. ✅
+
+## Milestone 8 — "Window system" (interactive desktop)
+
+### Goal
+Make the desktop live: real text, a moving cursor, and windows you can focus
+and drag.
+
+### Design
+- **Font (`tools/genfont.py` → `include/font8x16.h`):** DejaVu Sans Mono
+  (permissive) rasterized to an 8×16 1-bpp bitmap font on the host; the header
+  is committed so building needs no Python. `fb_char`/`fb_text` render it.
+- **Double buffering (`kernel/fb.c`):** drawing targets a RAM back buffer;
+  `fb_present()` blits it to the visible framebuffer — no flicker, clean redraw.
+- **PS/2 mouse (`drivers/mouse.c`):** enables the aux device + IRQ12, parses
+  3-byte packets (with a resync filter that drops stray ACK/overflow bytes —
+  the bug that first broke dragging), tracks an absolute clamped cursor.
+- **Compositor / WM (`kernel/wm.c`):** caches the static background (wallpaper +
+  menu-bar text + Dock) once, then each frame restores it, draws the clock,
+  draws windows in z-order (focused on top, colored traffic lights; others
+  greyed), and the arrow cursor, then presents. Mouse events raise/focus the
+  window under the cursor and drag it by its title bar.
+- **Handoff:** the userland `SYS_EXIT` retargets its trap frame at `wm_run`, so
+  the system flows boot → userland demo → live desktop without halting.
+
+### Success criteria — all met
+1. Menu-bar text + a ticking clock render from the bitmap font. ✅
+2. Cursor tracks injected PS/2 motion; redraw is flicker-free. ✅
+3. Clicking a window raises/focuses it; dragging its title bar moves it
+   (verified by scripting a drag over QMP — Finder raised and relocated). ✅
+4. `make test` still passes end to end. ✅
+
+## Result
+
+All eight milestones are implemented and verified in QEMU: a from-scratch
+x86_64 OS that boots via GRUB/Multiboot2, handles interrupts, manages physical
+and virtual memory, preemptively multitasks, reads a real disk through its own
+filesystem, runs unprivileged ELF programs in ring 3 via system calls, and
+presents an interactive macOS-style ("Aqua") graphical desktop — no third-party
+code, every layer written here.

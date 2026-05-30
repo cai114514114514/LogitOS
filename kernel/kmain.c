@@ -8,7 +8,8 @@
 #include "vmm.h"
 #include "kheap.h"
 #include "fb.h"
-#include "desktop.h"
+#include "wm.h"
+#include "mouse.h"
 #include "vfs.h"
 #include "aquafs.h"
 #include "elf.h"
@@ -22,22 +23,19 @@ int aqua_fs_ok = 0;
 
 extern void enter_user(uint64_t entry, uint64_t user_rsp);
 
-/* Mount the disk, list it, read a file, and verify its contents. */
 static int test_filesystem(void)
 {
     vfs_register(&aquafs);
     if (vfs_mount()) {
-        serial_puts("[fs] mount failed (no AquaFS volume?)\n");
+        serial_puts("[fs] mount failed\n");
         return 0;
     }
     vfs_list();
 
     static uint8_t buf[2048];
     int n = vfs_read("readme.txt", buf, sizeof buf);
-    if (n <= 0) {
-        serial_puts("[fs] read of readme.txt failed\n");
+    if (n <= 0)
         return 0;
-    }
     buf[n] = '\0';
     serial_puts("[fs] readme.txt:\n");
     serial_puts((const char *)buf);
@@ -49,28 +47,24 @@ static int test_filesystem(void)
     return 1;
 }
 
-/* Load hello.elf from the disk and run it in ring 3. Does not return on
- * success — the user program's SYS_EXIT takes over from the syscall handler. */
+/* Load hello.elf and run it in ring 3. On SYS_EXIT the syscall handler hands
+ * control to wm_run (the live desktop), so this does not return on success. */
 static void run_user_program(void)
 {
     int sz = vfs_size("hello.elf");
     if (sz <= 0) {
-        serial_puts("[user] hello.elf not found on disk\n");
+        serial_puts("[user] hello.elf not found\n");
         return;
     }
 
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
-    if (!img || vfs_read("hello.elf", img, bytes) <= 0) {
-        serial_puts("[user] failed to read hello.elf\n");
+    if (!img || vfs_read("hello.elf", img, bytes) <= 0)
         return;
-    }
 
     uint64_t entry = elf_load(img);
-    if (!entry) {
-        serial_puts("[user] not a valid ELF64 image\n");
+    if (!entry)
         return;
-    }
 
     for (int i = 1; i <= USER_STACK_PAGES; i++)
         vmm_map_page(USER_STACK_TOP - (uint64_t)i * 0x1000, pmm_alloc(),
@@ -86,21 +80,27 @@ void kernel_main(uint64_t mb_info)
     serial_puts("\n[aqua] long mode, C kernel running\n");
 
     idt_init();
-    gdt_init();                 /* kernel/user segments + TSS for ring 3 */
+    gdt_init();
     pic_remap();
     pit_init(TIMER_HZ);
     pmm_init(mb_info);
     serial_puts("[aqua] interrupts + memory + gdt/tss online\n");
 
-    if (fb_init(mb_info)) {
-        desktop_draw();
-        serial_puts("[aqua] desktop composited\n");
+    if (!fb_init(mb_info)) {
+        serial_puts("\nAQUA_FB_FAIL\n");
+        for (;;)
+            __asm__ volatile ("hlt");
     }
+
+    wm_init();
+    wm_render();                 /* first frame -> desktop visible */
+    mouse_init();
+    serial_puts("[aqua] desktop composited; mouse armed\n");
 
     aqua_fs_ok = test_filesystem();
     serial_puts(aqua_fs_ok ? "[fs] verified OK\n" : "[fs] FAILED\n");
 
-    run_user_program();         /* normally never returns */
+    run_user_program();          /* ring 3 -> SYS_EXIT -> wm_run (live) */
 
     serial_puts("\nAQUA_USER_FAIL: userland did not start\n");
     __asm__ volatile ("sti");

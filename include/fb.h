@@ -10,8 +10,21 @@ int fb_init(uint64_t mb_info_addr);
 uint32_t fb_width(void);
 uint32_t fb_height(void);
 
+#define AQUA_FONT_W 8
+#define AQUA_FONT_H 16
+
 /* Pack 8-bit channels into the framebuffer's native pixel format. */
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
+
+/* Double buffering: route drawing to `buf` (a width*height*4 RAM buffer),
+ * then blit to the visible framebuffer with fb_present(). */
+void fb_set_backbuffer(uint32_t *buf);
+void fb_present(void);
+
+/* Text (8x16 bitmap font). */
+void fb_char(int x, int y, char c, uint32_t color);
+void fb_text(int x, int y, const char *s, uint32_t color);
+int  fb_text_width(const char *s);
 
 void fb_clear(uint32_t color);
 void fb_put(int x, int y, uint32_t color);

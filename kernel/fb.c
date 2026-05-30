@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "fb.h"
 #include "vmm.h"
+#include "font8x16.h"
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
 struct mb2_tag { uint32_t type, size; };
@@ -22,6 +23,7 @@ struct mb2_fb_tag {
 static volatile uint8_t *fb_mem;
 static uint32_t fb_pitch, fb_w, fb_h;
 static uint8_t rpos, gpos, bpos;
+static uint32_t *back;            /* optional back buffer, packed width*height */
 
 uint32_t fb_width(void)  { return fb_w; }
 uint32_t fb_height(void) { return fb_h; }
@@ -77,14 +79,69 @@ void fb_put(int x, int y, uint32_t color)
 {
     if (x < 0 || y < 0 || (uint32_t)x >= fb_w || (uint32_t)y >= fb_h)
         return;
-    *(volatile uint32_t *)(fb_mem + (uint32_t)y * fb_pitch + (uint32_t)x * 4) = color;
+    if (back)
+        back[(uint32_t)y * fb_w + (uint32_t)x] = color;
+    else
+        *(volatile uint32_t *)(fb_mem + (uint32_t)y * fb_pitch + (uint32_t)x * 4) = color;
 }
 
 static uint32_t fb_get(int x, int y)
 {
     if (x < 0 || y < 0 || (uint32_t)x >= fb_w || (uint32_t)y >= fb_h)
         return 0;
+    if (back)
+        return back[(uint32_t)y * fb_w + (uint32_t)x];
     return *(volatile uint32_t *)(fb_mem + (uint32_t)y * fb_pitch + (uint32_t)x * 4);
+}
+
+void fb_set_backbuffer(uint32_t *buf)
+{
+    back = buf;
+}
+
+void fb_present(void)
+{
+    if (!back)
+        return;
+    for (uint32_t y = 0; y < fb_h; y++) {
+        volatile uint32_t *dst = (volatile uint32_t *)(fb_mem + y * fb_pitch);
+        const uint32_t *src = back + y * fb_w;
+        for (uint32_t x = 0; x < fb_w; x++)
+            dst[x] = src[x];
+    }
+}
+
+void fb_char(int x, int y, char ch, uint32_t color)
+{
+    const uint8_t *glyph = font8x16[(uint8_t)ch & 0x7F];
+    for (int row = 0; row < FONT_H; row++) {
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < FONT_W; col++)
+            if (bits & (0x80 >> col))
+                fb_put(x + col, y + row, color);
+    }
+}
+
+void fb_text(int x, int y, const char *s, uint32_t color)
+{
+    int x0 = x;
+    for (; *s; s++) {
+        if (*s == '\n') {
+            x = x0;
+            y += FONT_H;
+        } else {
+            fb_char(x, y, *s, color);
+            x += FONT_W;
+        }
+    }
+}
+
+int fb_text_width(const char *s)
+{
+    int n = 0;
+    while (s[n])
+        n++;
+    return n * FONT_W;
 }
 
 void fb_clear(uint32_t color)
