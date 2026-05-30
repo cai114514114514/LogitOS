@@ -14,7 +14,6 @@ ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/aqua.iso
 DISK        := $(BUILD)/disk.img
-USER_ELF    := $(BUILD)/user.elf
 FS_FILES    := $(wildcard fsroot/*)
 
 CC          := clang
@@ -34,7 +33,7 @@ LDFLAGS := -n -nostdlib -T linker.ld
 UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
            -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
-           -std=c11 -Wall -Wextra -O2
+           -std=c11 -Wall -Wextra -O2 -Iinclude
 
 C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c)
 ASM_SRC := $(wildcard boot/*.asm)
@@ -62,21 +61,26 @@ $(ISO): $(KERNEL) grub.cfg
 	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
 	$(GRUB_RESCUE) -o $@ $(ISO_DIR)
 
-# --- userland program (ring 3) ---
-$(BUILD)/user/%.o: user/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+# --- userland applications (.aex), each a ring-3 process ---
+# APP_RULE: name, link base, display name, file-extension handled
+define APP_RULE
+$(BUILD)/$(1).elf: user/$(1).c user/crt0.asm user/aqua.h
+	@mkdir -p $(BUILD)/user
+	$(ASM) -f elf64 user/crt0.asm -o $(BUILD)/user/$(1).crt0.o
+	$(CC) $(UCFLAGS) -c user/$(1).c -o $(BUILD)/user/$(1).o
+	$(LD) -nostdlib -e _start -Ttext=$(2) -o $$@ $(BUILD)/user/$(1).crt0.o $(BUILD)/user/$(1).o
+$(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4)
+endef
 
-$(BUILD)/user/%.o: user/%.asm
-	@mkdir -p $(dir $@)
-	$(ASM) -f elf64 $< -o $@
+$(eval $(call APP_RULE,clock,0x40000000,Clock,))
 
-$(USER_ELF): $(BUILD)/user/ustart.o $(BUILD)/user/user.o user/user.ld
-	$(LD) -nostdlib -T user/user.ld -o $@ $(BUILD)/user/ustart.o $(BUILD)/user/user.o
+APPS := clock
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)
 
-$(DISK): $(FS_FILES) $(USER_ELF) tools/mkfs.py
+$(DISK): $(FS_FILES) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
-	python3 tools/mkfs.py $(DISK) $(FS_FILES) $(USER_ELF):hello.elf
+	python3 tools/mkfs.py $(DISK) $(FS_FILES) $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
 

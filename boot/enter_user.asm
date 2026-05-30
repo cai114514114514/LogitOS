@@ -8,9 +8,19 @@
 ; ============================================================================
 
 global enter_user
+global ring3_bootstrap
 
 section .text
 bits 64
+
+; First entry of a ring-3 thread: the scheduler's context_switch "returns" here
+; with r15 = entry point and r14 = user stack (set up by thread_create_user).
+ring3_bootstrap:
+    mov rdi, r15
+    mov rsi, r14
+    call enter_user
+.hang:
+    jmp .hang
 
 enter_user:
     mov ax, 0x23        ; user data selector (RPL 3)

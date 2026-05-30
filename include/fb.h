@@ -21,6 +21,18 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 void fb_set_backbuffer(uint32_t *buf);
 void fb_present(void);
 
+/* An off-screen drawing target (e.g. an application window's canvas). */
+struct surface {
+    uint32_t *px;
+    int w, h;
+};
+
+/* Route subsequent drawing to `s`, or NULL for the screen back buffer. */
+void fb_target(struct surface *s);
+
+/* Copy `src` into the current target at (dx,dy), clipped. */
+void fb_blit_surface(int dx, int dy, const struct surface *src);
+
 /* Text (8x16 bitmap font). */
 void fb_char(int x, int y, char c, uint32_t color);
 void fb_text(int x, int y, const char *s, uint32_t color);

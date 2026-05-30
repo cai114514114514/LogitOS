@@ -3,221 +3,283 @@
 #include "wm.h"
 #include "fb.h"
 #include "pmm.h"
+#include "vmm.h"
+#include "kheap.h"
 #include "pit.h"
 #include "serial.h"
 #include "sched.h"
 #include "vfs.h"
-#include "syscall.h"
 #include "rtc.h"
+#include "aex.h"
+#include "aqua_abi.h"
 
-#define NWIN       4
+#define MAXWIN     8
 #define MENUBAR_H  24
 #define TITLEBAR_H 30
 #define FW         AQUA_FONT_W
 #define FH         AQUA_FONT_H
 
-enum wkind { W_FINDER, W_TERMINAL, W_VIEWER, W_ACTIVITY };
+void *memcpy(void *, const void *, size_t);
 
-struct window {
-    int x, y, w, h;
-    const char *title;
-    enum wkind kind;
+/* ---------- windows + apps ---------- */
+enum wkind { WK_FINDER, WK_APP };
+
+struct app {
+    int  used, alive, id;
+    char name[32];
+    char arg[64];
+    uint64_t base;
+    int  win;                 /* window index, -1 until the app creates one */
 };
 
-static struct window win[NWIN];
-static int order[NWIN];          /* order[NWIN-1] is topmost / focused */
+struct win {
+    int  used;
+    int  x, y, w, h;          /* outer rectangle */
+    char title[40];
+    enum wkind kind;
+    struct app *app;          /* owner (NULL for builtin) */
+    struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
+    struct aqua_event evq[16];
+    int  evhead, evtail;
+    int  wants_close;
+};
+
+static struct app apps[MAXWIN];
+static struct win wins[MAXWIN];
+static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
+
 static int mx, my, mleft;
 static int dragging = -1, drag_dx, drag_dy;
 static volatile int dirty = 1;
 
 static uint32_t *back, *bg;
 static int W, H;
+static int next_app_id = 1;
+static int cascade;
 
-/* M4: three worker threads bump these; the Activity window shows them live. */
-static volatile uint64_t work[3];
+/* app registry built by scanning the disk for *.aex */
+struct regent { char file[48], name[32], ext[8]; };
+static struct regent reg[MAXWIN];
+static int nreg;
 
 static uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) { return fb_rgb(r, g, b); }
 static int lerp(int a, int b, int n, int d) { return a + (b - a) * n / d; }
+static void blit(uint32_t *d, const uint32_t *s, int n) { for (int i = 0; i < n; i++) d[i] = s[i]; }
 
-static void blit(uint32_t *dst, const uint32_t *src, int count)
-{
-    for (int i = 0; i < count; i++)
-        dst[i] = src[i];
+static int streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static void scopy(char *d, const char *s, int max) { int i = 0; for (; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
+static int ends_aex(const char *s) {
+    int n = 0; while (s[n]) n++;
+    return n >= 4 && s[n-4]=='.' && s[n-3]=='a' && s[n-2]=='e' && s[n-1]=='x';
 }
-
-/* ---- small string helpers (no libc) ---- */
-static int streq(const char *a, const char *b)
-{
-    while (*a && *a == *b) { a++; b++; }
-    return *a == *b;
-}
-static int starts(const char *s, const char *p)
-{
-    while (*p) { if (*s++ != *p++) return 0; }
-    return 1;
-}
-static char *ustr(uint32_t v, char *b)
-{
-    char t[12];
-    int i = 0;
-    if (!v) { b[0] = '0'; b[1] = 0; return b; }
-    while (v) { t[i++] = '0' + v % 10; v /= 10; }
-    int j = 0;
-    while (i) b[j++] = t[--i];
-    b[j] = 0;
-    return b;
+static const char *ext_of(const char *s) {
+    const char *dot = 0;
+    for (const char *p = s; *p; p++) if (*p == '.') dot = p;
+    return dot ? dot + 1 : "";
 }
 
-static void wrapped(int x, int y, int maxw, const char *s, uint32_t color,
-                    int *ex, int *ey)
+/* ---------- z-order helpers ---------- */
+static void raise_win(int wi)
 {
-    int cx = x, cy = y, cols = maxw / FW, col = 0;
-    for (; *s; s++) {
-        if (*s == '\n' || col >= cols) {
-            cx = x; cy += FH; col = 0;
-            if (*s == '\n') continue;
+    int at = -1;
+    for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
+    if (at < 0) { order[norder++] = wi; return; }
+    for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
+    order[norder - 1] = wi;
+}
+static void remove_win(int wi)
+{
+    int at = -1;
+    for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
+    if (at < 0) return;
+    for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
+    norder--;
+}
+
+/* ---------- launching apps ---------- */
+static struct app *find_live_app(const char *name)
+{
+    for (int i = 0; i < MAXWIN; i++)
+        if (apps[i].used && apps[i].alive && streq(apps[i].name, name))
+            return &apps[i];
+    return NULL;
+}
+
+void wm_launch(const char *aex_file, const char *arg)
+{
+    int sz = vfs_size(aex_file);
+    if (sz <= 0) { serial_puts("[wm] launch: not found\n"); return; }
+
+    int bytes = ((sz + 511) / 512) * 512;
+    void *img = kmalloc((unsigned)bytes);
+    if (!img || vfs_read(aex_file, img, bytes) <= 0) return;
+
+    char name[32], ext[8];
+    if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); return; }
+
+    struct app *exist = find_live_app(name);
+    if (exist) {                            /* single instance: just focus it */
+        if (exist->win >= 0) raise_win(exist->win);
+        dirty = 1;
+        return;
+    }
+
+    uint64_t entry = aex_load(img, name, ext);
+    if (!entry) { serial_puts("[wm] launch: load failed\n"); return; }
+
+    int ai = -1;
+    for (int i = 0; i < MAXWIN; i++) if (!apps[i].used) { ai = i; break; }
+    if (ai < 0) return;
+    struct app *ap = &apps[ai];
+    ap->used = ap->alive = 1;
+    ap->id = next_app_id++;
+    ap->base = entry;
+    ap->win = -1;
+    scopy(ap->name, name, sizeof ap->name);
+    scopy(ap->arg, arg ? arg : "", sizeof ap->arg);
+
+    /* user stack high inside the app's slot */
+    uint64_t ustack_top = entry + 0x800000;
+    for (int i = 1; i <= 4; i++)
+        vmm_map_page(ustack_top - (uint64_t)i * 0x1000, pmm_alloc(), VMM_WRITABLE | VMM_USER);
+
+    thread_create_user(ap->name, entry, ustack_top, ap);
+    serial_puts("[wm] launched ");
+    serial_puts(ap->name);
+    serial_puts("\n");
+}
+
+static void launch_for_ext(const char *ext, const char *file)
+{
+    for (int i = 0; i < nreg; i++)
+        if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
+    serial_puts("[wm] no app handles that file type\n");
+}
+
+/* ---------- GUI syscalls (called from syscall.c in the app's context) ---------- */
+static struct win *app_window(struct app *ap)
+{
+    return (ap && ap->win >= 0) ? &wins[ap->win] : NULL;
+}
+
+long wm_gui_syscall(long num, long a, long b, long c)
+{
+    struct app *ap = sched_current_data();
+    if (!ap) return -1;
+
+    switch (num) {
+    case SYS_GUI_CREATE: {
+        if (ap->win >= 0) return 0;
+        int wi = -1;
+        for (int i = 0; i < MAXWIN; i++) if (!wins[i].used) { wi = i; break; }
+        if (wi < 0) return -1;
+        int cw = (int)((b >> 16) & 0xFFFF), ch = (int)(b & 0xFFFF);
+        struct win *w = &wins[wi];
+        w->used = 1; w->kind = WK_APP; w->app = ap;
+        w->w = cw; w->h = TITLEBAR_H + ch;
+        w->x = 110 + cascade * 28; w->y = 70 + cascade * 28;
+        cascade = (cascade + 1) % 6;
+        scopy(w->title, (const char *)a, sizeof w->title);
+        w->surf.w = cw; w->surf.h = ch;
+        w->surf.px = kmalloc((unsigned)(cw * ch * 4));
+        for (int i = 0; i < cw * ch; i++) w->surf.px[i] = rgb(250, 250, 252);
+        w->evhead = w->evtail = 0; w->wants_close = 0;
+        ap->win = wi;
+        raise_win(wi);
+        dirty = 1;
+        return 0;
+    }
+    case SYS_GUI_CLEAR: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        fb_target(&w->surf); fb_clear((uint32_t)a); fb_target(NULL);
+        return 0;
+    }
+    case SYS_GUI_RECT: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int rw = (int)((b >> 16) & 0xFFFF), rh = (int)(b & 0xFFFF);
+        fb_target(&w->surf); fb_fill_rect(x, y, rw, rh, (uint32_t)c); fb_target(NULL);
+        return 0;
+    }
+    case SYS_GUI_TEXT: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        fb_target(&w->surf); fb_text(x, y, (const char *)c, (uint32_t)b); fb_target(NULL);
+        return 0;
+    }
+    case SYS_GUI_FLUSH:
+        dirty = 1;
+        return 0;
+    case SYS_POLL_EVENT: {
+        struct win *w = app_window(ap); if (!w) return 0;
+        struct aqua_event *ev = (struct aqua_event *)a;
+        if (w->evhead == w->evtail) return 0;
+        *ev = w->evq[w->evhead];
+        w->evhead = (w->evhead + 1) % 16;
+        return 1;
+    }
+    case SYS_GET_ARG: {
+        char *buf = (char *)a; int max = (int)b, i = 0;
+        for (; i < max - 1 && ap->arg[i]; i++) buf[i] = ap->arg[i];
+        buf[i] = 0;
+        return i;
+    }
+    case SYS_GET_TIME: {
+        struct rtc_time t; rtc_now(&t);
+        memcpy((void *)a, &t, sizeof t);
+        return 0;
+    }
+    case SYS_READ_FILE:
+        return vfs_read((const char *)a, (void *)b, (int)c);
+    case SYS_YIELD:
+        schedule();
+        return 0;
+    }
+    return -1;
+}
+
+/* Called from SYS_EXIT: mark the app dead; the WM reaps its window. */
+void wm_app_exit(void)
+{
+    struct app *ap = sched_current_data();
+    if (ap) ap->alive = 0;
+    dirty = 1;
+}
+
+static void enqueue(struct win *w, int type, int a, int b)
+{
+    int nt = (w->evtail + 1) % 16;
+    if (nt == w->evhead) return;       /* full, drop */
+    w->evq[w->evtail].type = type;
+    w->evq[w->evtail].a = a;
+    w->evq[w->evtail].b = b;
+    w->evtail = nt;
+}
+
+/* ---------- reaping dead apps ---------- */
+static void reap(void)
+{
+    for (int i = 0; i < MAXWIN; i++) {
+        if (apps[i].used && !apps[i].alive) {
+            int wi = apps[i].win;
+            if (wi >= 0 && wins[wi].used) {
+                if (wins[wi].surf.px) kfree(wins[wi].surf.px);
+                wins[wi].used = 0;
+                remove_win(wi);
+            }
+            apps[i].used = 0;
         }
-        fb_char(cx, cy, *s, color);
-        cx += FW; col++;
-    }
-    if (ex) *ex = cx;
-    if (ey) *ey = cy;
-}
-
-/* ============================ terminal / shell ============================ */
-#define TROWS 18
-#define TCOLS 58
-
-static char tbuf[TROWS][TCOLS];
-static int  trow, tcol;
-static char tin[TCOLS];          /* current input line */
-static int  tin_len;
-
-static void term_newline(void)
-{
-    if (trow < TROWS - 1) {
-        trow++;
-    } else {
-        for (int r = 0; r < TROWS - 1; r++)
-            for (int c = 0; c < TCOLS; c++)
-                tbuf[r][c] = tbuf[r + 1][c];
-        for (int c = 0; c < TCOLS; c++)
-            tbuf[TROWS - 1][c] = 0;
-    }
-    tcol = 0;
-}
-
-static void term_putc(char c)
-{
-    if (c == '\n') { term_newline(); return; }
-    if (tcol >= TCOLS - 1)
-        term_newline();
-    tbuf[trow][tcol++] = c;
-    tbuf[trow][tcol] = 0;
-}
-
-static void term_print(const char *s) { while (*s) term_putc(*s++); }
-static void term_num(uint32_t v) { char b[12]; term_print(ustr(v, b)); }
-
-/* Read a file off the disk into buf; classify text vs binary. */
-static char filebuf[8192];
-static int load_file(const char *name, char *dst, int cap, int *is_text)
-{
-    int n = vfs_read(name, filebuf, sizeof filebuf);
-    if (n <= 0)
-        return -1;
-    int text = 1;
-    int look = n < 64 ? n : 64;
-    for (int i = 0; i < look; i++) {
-        unsigned char ch = (unsigned char)filebuf[i];
-        if (ch < 9 || (ch > 13 && ch < 32) || ch >= 127) { text = 0; break; }
-    }
-    if (is_text) *is_text = text;
-    if (n > cap - 1) n = cap - 1;
-    for (int i = 0; i < n; i++)
-        dst[i] = filebuf[i];
-    dst[n] = 0;
-    return n;
-}
-
-static void shell_exec(const char *line)
-{
-    term_print("$ ");
-    term_print(line);
-    term_print("\n");
-
-    if (line[0] == '\0') {
-        /* nothing */
-    } else if (streq(line, "help")) {
-        term_print("commands: help ls cat <f> mem ps clear echo <t> uname\n");
-    } else if (streq(line, "ls")) {
-        int n = vfs_count();
-        for (int i = 0; i < n; i++) {
-            term_print(vfs_ent_name(i));
-            term_print("  ");
-            term_num((uint32_t)vfs_ent_size(i));
-            term_print(" B\n");
-        }
-    } else if (starts(line, "cat ")) {
-        const char *nm = line + 4;
-        while (*nm == ' ') nm++;
-        static char txt[2048];
-        int istext;
-        int n = load_file(nm, txt, sizeof txt, &istext);
-        if (n < 0)       term_print("cat: no such file\n");
-        else if (!istext) { term_print("cat: binary file ("); term_num((uint32_t)n);
-                            term_print(" bytes)\n"); }
-        else { term_print(txt); if (n && txt[n - 1] != '\n') term_print("\n"); }
-    } else if (streq(line, "mem")) {
-        term_print("total ");  term_num((uint32_t)(pmm_total_bytes() >> 20));
-        term_print(" MB  free "); term_num((uint32_t)(pmm_free_bytes() >> 20));
-        term_print(" MB\n");
-    } else if (streq(line, "ps")) {
-        term_print("PID NAME STATE\n");
-        term_print("  0 wm   run\n  1 w0   run\n  2 w1   run\n  3 w2   run\n");
-        term_print("ctx switches: "); term_num((uint32_t)sched_switches()); term_print("\n");
-    } else if (streq(line, "clear")) {
-        for (int r = 0; r < TROWS; r++) tbuf[r][0] = 0;
-        trow = tcol = 0;
-    } else if (starts(line, "echo ")) {
-        term_print(line + 5);
-        term_print("\n");
-    } else if (streq(line, "uname")) {
-        term_print("Aqua OS x86_64 -- from scratch (M1-M8)\n");
-    } else {
-        term_print("command not found: ");
-        term_print(line);
-        term_print("\n");
     }
 }
 
-/* ============================ viewer ============================ */
-static char view_buf[2048];
-static char view_name[48];
-static int  view_is_text;
-
-static void open_file_in_viewer(const char *name)
-{
-    int i = 0;
-    while (name[i] && i < (int)sizeof(view_name) - 1) { view_name[i] = name[i]; i++; }
-    view_name[i] = 0;
-    int n = load_file(name, view_buf, sizeof view_buf, &view_is_text);
-    if (n < 0) {
-        view_name[0] = 0;
-    }
-}
-
-/* ============================ background ============================ */
+/* ---------- desktop chrome ---------- */
 static void draw_background(void)
 {
     for (int y = 0; y < H; y++) {
-        uint32_t c = rgb((uint8_t)lerp(22, 96, y, H),
-                         (uint8_t)lerp(44, 165, y, H),
+        uint32_t c = rgb((uint8_t)lerp(22, 96, y, H), (uint8_t)lerp(44, 165, y, H),
                          (uint8_t)lerp(120, 230, y, H));
-        for (int x = 0; x < W; x++)
-            fb_put(x, y, c);
+        for (int x = 0; x < W; x++) fb_put(x, y, c);
     }
-
     fb_blend_rect(0, 0, W, MENUBAR_H, 245, 246, 250, 185);
     uint32_t ink = rgb(40, 40, 46);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
@@ -225,188 +287,181 @@ static void draw_background(void)
     fb_text(112, 4, "File", ink);
     fb_text(156, 4, "Edit", ink);
     fb_text(200, 4, "View", ink);
+}
 
-    int dn = 7, isz = 50, gap = 14;
-    int dw = gap + dn * (isz + gap), dh = isz + 20;
-    int dx = (W - dw) / 2, dy = H - dh - 12;
-    fb_blend_round_rect(dx, dy, dw, dh, 22, 255, 255, 255, 95);
-    uint32_t icons[7] = {
-        rgb(80, 140, 255),  rgb(55, 200, 120),  rgb(255, 92, 92),
-        rgb(255, 170, 40),  rgb(170, 110, 255), rgb(40, 200, 220),
-        rgb(255, 120, 170),
-    };
-    for (int i = 0; i < dn; i++) {
-        int ix = dx + gap + i * (isz + gap), iy = dy + 10;
-        fb_round_rect(ix, iy, isz, isz, 12, icons[i]);
-        fb_blend_round_rect(ix, iy, isz, isz / 2, 12, 255, 255, 255, 40);
+static int dock_x0, dock_y0, dock_isz = 50, dock_gap = 14;
+static void draw_dock(void)
+{
+    int n = nreg < 1 ? 1 : nreg;
+    int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
+    dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
+    fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 22, 255, 255, 255, 95);
+    uint32_t col[7] = { rgb(80,140,255), rgb(55,200,120), rgb(255,92,92),
+                        rgb(255,170,40), rgb(170,110,255), rgb(40,200,220), rgb(255,120,170) };
+    for (int i = 0; i < nreg; i++) {
+        int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
+        fb_round_rect(ix, iy, dock_isz, dock_isz, 12, col[i % 7]);
+        fb_blend_round_rect(ix, iy, dock_isz, dock_isz / 2, 12, 255, 255, 255, 40);
+        char ch[2] = { reg[i].name[0], 0 };
+        fb_text(ix + dock_isz / 2 - FW / 2, iy + dock_isz / 2 - FH / 2, ch, rgb(255, 255, 255));
     }
 }
 
 static int fmt2(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; return 2; }
-
 static void draw_clock(void)
 {
-    static const char *wd[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-    struct rtc_time t;
-    rtc_now(&t);
-
-    char buf[32];
-    int p = 0;
+    static const char *wd[7] = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
+    struct rtc_time t; rtc_now(&t);
+    char b[32]; int p = 0;
     const char *w = wd[t.weekday % 7];
-    buf[p++] = w[0]; buf[p++] = w[1]; buf[p++] = w[2]; buf[p++] = ' ';
-    buf[p++] = '0' + (t.year / 1000) % 10; buf[p++] = '0' + (t.year / 100) % 10;
-    buf[p++] = '0' + (t.year / 10) % 10;   buf[p++] = '0' + t.year % 10;
-    buf[p++] = '-'; p += fmt2(buf + p, t.month);
-    buf[p++] = '-'; p += fmt2(buf + p, t.day);
-    buf[p++] = ' '; buf[p++] = ' ';
-    p += fmt2(buf + p, t.hour);   buf[p++] = ':';
-    p += fmt2(buf + p, t.minute); buf[p++] = ':';
-    p += fmt2(buf + p, t.second);
-    buf[p] = 0;
-
-    fb_text(W - fb_text_width(buf) - 12, 4, buf, rgb(40, 40, 46));
+    b[p++]=w[0]; b[p++]=w[1]; b[p++]=w[2]; b[p++]=' ';
+    b[p++]='0'+(t.year/1000)%10; b[p++]='0'+(t.year/100)%10; b[p++]='0'+(t.year/10)%10; b[p++]='0'+t.year%10;
+    b[p++]='-'; p+=fmt2(b+p,t.month); b[p++]='-'; p+=fmt2(b+p,t.day);
+    b[p++]=' '; b[p++]=' ';
+    p+=fmt2(b+p,t.hour); b[p++]=':'; p+=fmt2(b+p,t.minute); b[p++]=':'; p+=fmt2(b+p,t.second);
+    b[p]=0;
+    fb_text(W - fb_text_width(b) - 12, 4, b, rgb(40, 40, 46));
 }
 
-/* ============================ window content ============================ */
-#define FINDER_ROW_H   26
-static int finder_list_top(struct window *w) { return w->y + TITLEBAR_H + 36; }
-
-static void content_finder(struct window *w)
+/* ---------- Finder (builtin) ---------- */
+#define FROW 26
+static int finder_top(struct win *w) { return w->y + TITLEBAR_H + 36; }
+static void draw_finder(struct win *w)
 {
     int x = w->x;
     fb_text(x + 16, w->y + TITLEBAR_H + 10, "AquaFS  /", rgb(120, 120, 128));
     int n = vfs_count();
     for (int i = 0; i < n; i++) {
-        int yy = finder_list_top(w) + i * FINDER_ROW_H;
+        int yy = finder_top(w) + i * FROW;
         fb_round_rect(x + 16, yy, 13, 16, 3, rgb(90, 150, 240));
-        fb_fill_rect(x + 20, yy + 4, 9, 2, rgb(255, 255, 255));
-        fb_fill_rect(x + 20, yy + 8, 9, 2, rgb(255, 255, 255));
         fb_text(x + 38, yy, vfs_ent_name(i), rgb(60, 60, 68));
-        char sz[16];
-        ustr((uint32_t)vfs_ent_size(i), sz);
-        fb_text(x + w->w - 16 - fb_text_width(sz) - 16, yy, sz, rgb(150, 150, 158));
     }
-    fb_text(x + 16, w->y + w->h - 22, "click a file to open it", rgb(170, 170, 178));
+    fb_text(x + 16, w->y + w->h - 22, "double-click to open", rgb(170, 170, 178));
 }
 
-static void content_terminal(struct window *w, int focused)
-{
-    int x = w->x + 12, y = w->y + TITLEBAR_H + 8;
-    for (int r = 0; r < TROWS; r++)
-        if (tbuf[r][0])
-            fb_text(x, y + r * FH, tbuf[r], rgb(55, 58, 66));
-    int iy = y + TROWS * FH;
-    fb_text(x, iy, "$ ", rgb(90, 150, 240));
-    fb_text(x + 2 * FW, iy, tin, rgb(40, 40, 48));
-    if (focused)
-        fb_fill_rect(x + (2 + tin_len) * FW, iy, 8, FH, rgb(90, 150, 240));
-}
-
-static void content_viewer(struct window *w)
-{
-    int x = w->x + 14, y = w->y + TITLEBAR_H + 10;
-    if (!view_name[0]) {
-        fb_text(x, y, "(click a file in Finder to open it)", rgb(150, 150, 158));
-        return;
-    }
-    char hdr[64];
-    int p = 0; const char *o = "open: ";
-    while (*o) hdr[p++] = *o++;
-    for (int i = 0; view_name[i]; i++) hdr[p++] = view_name[i];
-    hdr[p] = 0;
-    fb_text(x, y, hdr, rgb(120, 120, 128));
-    if (view_is_text)
-        wrapped(x, y + 24, w->w - 28, view_buf, rgb(50, 50, 58), NULL, NULL);
-    else
-        fb_text(x, y + 24, "(binary file -- not shown as text)", rgb(150, 150, 158));
-}
-
-static void bar(int x, int y, int wdt, int frac256, uint32_t fill)
-{
-    fb_round_rect(x, y, wdt, 9, 4, rgb(225, 226, 231));
-    int fw = wdt * frac256 / 256;
-    if (fw < 8) fw = 8;
-    fb_round_rect(x, y, fw, 9, 4, fill);
-}
-
-static void content_activity(struct window *w)
-{
-    int x = w->x + 16, y = w->y + TITLEBAR_H + 12;
-    char buf[16];
-
-    fb_text(x, y, "Uptime", rgb(120, 120, 128));
-    ustr((uint32_t)(timer_ticks() / 100), buf);
-    fb_text(x + w->w - 48, y, buf, rgb(60, 60, 68));
-    fb_text(x + w->w - 48 + fb_text_width(buf), y, "s", rgb(120, 120, 128));
-
-    uint32_t total = (uint32_t)(pmm_total_bytes() >> 20);
-    uint32_t freeb = (uint32_t)(pmm_free_bytes() >> 20);
-    uint32_t used = total - freeb;
-    fb_text(x, y + 26, "Memory", rgb(120, 120, 128));
-    bar(x, y + 44, w->w - 32, total ? (int)(used * 256 / total) : 0, rgb(90, 150, 240));
-
-    fb_text(x, y + 66, "Threads (scheduler)", rgb(120, 120, 128));
-    uint32_t accent[3] = { rgb(255, 120, 120), rgb(120, 200, 120), rgb(120, 150, 255) };
-    const char *nm[3] = { "w0", "w1", "w2" };
-    for (int k = 0; k < 3; k++) {
-        int yy = y + 88 + k * 24;
-        fb_text(x, yy, nm[k], rgb(80, 80, 88));
-        /* smooth triangle-wave activity meter from the worker's progress */
-        uint32_t ph = (uint32_t)(work[k] % 120);
-        uint32_t lvl = ph < 60 ? ph : 120 - ph;          /* 0..60 */
-        bar(x + 28, yy + 2, w->w - 60, (int)(lvl * 256 / 60), accent[k]);
-    }
-    fb_text(x, y + 164, "ctx switches", rgb(120, 120, 128));
-    ustr((uint32_t)sched_switches(), buf);
-    fb_text(x + w->w - 32 - fb_text_width(buf), y + 164, buf, rgb(60, 60, 68));
-}
-
-static void draw_window(struct window *w, int focused)
+/* ---------- window frame + compositing ---------- */
+static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
-
-    fb_blend_round_rect(x - 5, y + 8, ww + 10, wh + 10, 18, 0, 0, 0,
-                        focused ? 60 : 35);
-    fb_round_rect(x, y, ww, wh, 10, rgb(252, 252, 253));
-
+    fb_blend_round_rect(x - 5, y + 8, ww + 10, wh + 10, 18, 0, 0, 0, focused ? 60 : 35);
+    fb_round_rect(x, y, ww, wh, 10, rgb(250, 250, 252));
     uint32_t tb = focused ? rgb(235, 235, 240) : rgb(245, 245, 248);
     fb_round_rect(x, y, ww, TITLEBAR_H, 10, tb);
     fb_fill_rect(x, y + 20, ww, TITLEBAR_H - 20, tb);
     fb_fill_rect(x, y + TITLEBAR_H, ww, 1, rgb(214, 214, 220));
-
     uint32_t off = rgb(205, 205, 210);
-    fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);
+    fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
     fb_fill_circle(x + 34, y + 15, 6, focused ? rgb(254, 188, 46) : off);
     fb_fill_circle(x + 52, y + 15, 6, focused ? rgb(40, 200, 64) : off);
-
     int tw = fb_text_width(w->title);
     fb_text(x + (ww - tw) / 2, y + 7, w->title, rgb(70, 70, 78));
-
-    switch (w->kind) {
-    case W_FINDER:   content_finder(w);          break;
-    case W_TERMINAL: content_terminal(w, focused); break;
-    case W_VIEWER:   content_viewer(w);          break;
-    case W_ACTIVITY: content_activity(w);        break;
-    }
 }
 
 static const char *cursor_bmp[] = {
-    "#",        "##",       "#.#",      "#..#",     "#...#",
-    "#....#",   "#.....#",  "#......#", "#.......#","#........#",
-    "#.....####","#..#..#", "#.# #..#", "##  #..#", "#    #..#",
-    "     #..#", "      ##",
+    "#","##","#.#","#..#","#...#","#....#","#.....#","#......#","#.......#",
+    "#........#","#.....####","#..#..#","#.# #..#","##  #..#","#    #..#","     #..#","      ##",
 };
-
 static void draw_cursor(int x, int y)
 {
-    uint32_t outline = rgb(20, 20, 26), fill = rgb(255, 255, 255);
+    uint32_t o = rgb(20, 20, 26), f = rgb(255, 255, 255);
     int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
     for (int r = 0; r < rows; r++)
         for (int c = 0; cursor_bmp[r][c]; c++) {
             char p = cursor_bmp[r][c];
-            if (p == '#')      fb_put(x + c, y + r, outline);
-            else if (p == '.') fb_put(x + c, y + r, fill);
+            if (p == '#') fb_put(x + c, y + r, o);
+            else if (p == '.') fb_put(x + c, y + r, f);
         }
+}
+
+void wm_render(void)
+{
+    reap();
+    blit(back, bg, W * H);                 /* restore wallpaper + menu + dock */
+    fb_target(NULL);
+    draw_clock();
+    for (int i = 0; i < norder; i++) {
+        struct win *w = &wins[order[i]];
+        if (!w->used) continue;
+        int focused = (i == norder - 1);
+        draw_frame(w, focused);
+        if (w->kind == WK_FINDER)
+            draw_finder(w);
+        else if (w->surf.px)
+            fb_blit_surface(w->x, w->y + TITLEBAR_H, &w->surf);
+    }
+    draw_cursor(mx, my);
+    fb_present();
+}
+
+/* ---------- input ---------- */
+static int in_rect(int px, int py, int x, int y, int w, int h)
+{ return px >= x && px < x + w && py >= y && py < y + h; }
+
+void wm_key(char c)
+{
+    if (norder == 0) return;
+    struct win *w = &wins[order[norder - 1]];
+    if (w->kind == WK_APP) { enqueue(w, EV_KEY, (int)c, 0); dirty = 1; }
+}
+
+void wm_mouse_event(int x, int y, int left)
+{
+    mx = x; my = y;
+
+    if (left && !mleft) {
+        int hitorder = -1;
+        for (int i = norder - 1; i >= 0; i--) {
+            struct win *w = &wins[order[i]];
+            if (w->used && in_rect(x, y, w->x, w->y, w->w, w->h)) { hitorder = i; break; }
+        }
+        if (hitorder >= 0) {
+            int wi = order[hitorder];
+            struct win *w = &wins[wi];
+            raise_win(wi);
+            int cx = x - w->x, cy = y - w->y;
+            if (cy < TITLEBAR_H) {
+                if ((cx - 16) * (cx - 16) + (cy - 15) * (cy - 15) <= 64) {
+                    if (w->kind == WK_APP) enqueue(w, EV_CLOSE, 0, 0);  /* close button */
+                } else {
+                    dragging = wi; drag_dx = cx; drag_dy = cy;
+                }
+            } else if (w->kind == WK_FINDER) {
+                int row = (y - finder_top(w)) / FROW;
+                if (row >= 0 && row < vfs_count())
+                    launch_for_ext(ext_of(vfs_ent_name(row)), vfs_ent_name(row));
+            } else if (w->kind == WK_APP) {
+                enqueue(w, EV_MOUSE, cx, cy - TITLEBAR_H);
+            }
+        } else {
+            /* dock? */
+            for (int i = 0; i < nreg; i++) {
+                int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
+                if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) { wm_launch(reg[i].file, ""); break; }
+            }
+        }
+    }
+    if (!left) dragging = -1;
+    if (dragging >= 0 && left) { wins[dragging].x = x - drag_dx; wins[dragging].y = y - drag_dy; }
+    mleft = left;
+    dirty = 1;
+}
+
+/* ---------- registry + init ---------- */
+static void scan_apps(void)
+{
+    int n = vfs_count();
+    static char buf[8192];
+    for (int i = 0; i < n && nreg < MAXWIN; i++) {
+        const char *nm = vfs_ent_name(i);
+        if (!ends_aex(nm)) continue;
+        if (vfs_read(nm, buf, sizeof buf) <= 0) continue;
+        char name[32], ext[8];
+        if (aex_info(buf, name, ext) != 0) continue;
+        scopy(reg[nreg].file, nm, sizeof reg[nreg].file);
+        scopy(reg[nreg].name, name, sizeof reg[nreg].name);
+        scopy(reg[nreg].ext, ext, sizeof reg[nreg].ext);
+        nreg++;
+    }
 }
 
 void wm_init(void)
@@ -415,150 +470,41 @@ void wm_init(void)
     H = (int)fb_height();
     int count = W * H;
     uint64_t pages = ((uint64_t)count * 4 + 4095) / 4096;
-
     back = (uint32_t *)pmm_alloc_contig(pages);
     bg   = (uint32_t *)pmm_alloc_contig(pages);
     fb_set_backbuffer(back);
+    mx = W / 2; my = H / 2;
 
-    mx = W / 2;
-    my = H / 2;
+    scan_apps();
 
-    win[0] = (struct window){ 30,  56,  290, 388, "Finder",           W_FINDER };
-    win[1] = (struct window){ 340, 56,  480, 400, "Terminal",         W_TERMINAL };
-    win[2] = (struct window){ 30,  460, 500, 224, "Viewer",           W_VIEWER };
-    win[3] = (struct window){ 548, 476, 300, 208, "Activity Monitor", W_ACTIVITY };
-    /* Terminal (index 1) focused on top so you can type immediately. */
-    order[0] = 0; order[1] = 3; order[2] = 2; order[3] = 1;
+    /* builtin Finder window */
+    wins[0].used = 1; wins[0].kind = WK_FINDER;
+    wins[0].x = 30; wins[0].y = 60; wins[0].w = 280; wins[0].h = 380;
+    scopy(wins[0].title, "Finder", sizeof wins[0].title);
+    order[norder++] = 0;
 
     draw_background();
+    draw_dock();
     blit(bg, back, count);
 }
 
-void wm_render(void)
-{
-    blit(back, bg, W * H);
-    draw_clock();
-    for (int i = 0; i < NWIN; i++)
-        draw_window(&win[order[i]], i == NWIN - 1);
-    draw_cursor(mx, my);
-    fb_present();
-}
-
-static int hit(struct window *w, int x, int y)
-{
-    return x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h;
-}
-
-static void raise_to_top(int idx_in_order)
-{
-    int id = order[idx_in_order];
-    for (int j = idx_in_order; j < NWIN - 1; j++)
-        order[j] = order[j + 1];
-    order[NWIN - 1] = id;
-}
-
-void wm_mouse_event(int x, int y, int left)
-{
-    mx = x;
-    my = y;
-
-    if (left && !mleft) {
-        for (int i = NWIN - 1; i >= 0; i--) {
-            struct window *w = &win[order[i]];
-            if (!hit(w, x, y))
-                continue;
-            int id = order[i];
-            raise_to_top(i);
-            if (y < w->y + TITLEBAR_H) {
-                dragging = id;
-                drag_dx = x - w->x;
-                drag_dy = y - w->y;
-            } else if (w->kind == W_FINDER) {
-                int row = (y - finder_list_top(w)) / FINDER_ROW_H;
-                if (row >= 0 && row < vfs_count()) {
-                    open_file_in_viewer(vfs_ent_name(row));
-                    /* bring the Viewer to the front so the file is visible */
-                    for (int k = 0; k < NWIN; k++)
-                        if (win[order[k]].kind == W_VIEWER) { raise_to_top(k); break; }
-                }
-            }
-            break;
-        }
-    }
-    if (!left)
-        dragging = -1;
-    if (dragging >= 0 && left) {
-        win[dragging].x = x - drag_dx;
-        win[dragging].y = y - drag_dy;
-    }
-
-    mleft = left;
-    dirty = 1;
-}
-
-void wm_key(char c)
-{
-    /* Focus-aware: input only reaches the focused window, and only the
-     * terminal accepts typing. */
-    struct window *f = &win[order[NWIN - 1]];
-    if (f->kind != W_TERMINAL)
-        return;
-
-    if (c == '\n') {
-        tin[tin_len] = 0;
-        shell_exec(tin);
-        tin_len = 0;
-        tin[0] = 0;
-    } else if (c == '\b') {
-        if (tin_len > 0)
-            tin[--tin_len] = 0;
-    } else if (tin_len < TCOLS - 3) {
-        tin[tin_len++] = c;
-        tin[tin_len] = 0;
-    }
-    dirty = 1;
-}
-
-/* M4: background worker threads, scheduled cooperatively + preemptively. */
-static void worker(int k)
-{
-    for (;;) {
-        work[k]++;
-        for (volatile int i = 0; i < 500000; i++)
-            ;
-        schedule();
-    }
-}
-static void worker0(void) { worker(0); }
-static void worker1(void) { worker(1); }
-static void worker2(void) { worker(2); }
+void wm_render_first(void) { wm_render(); }
 
 void wm_run(void)
 {
-    __asm__ volatile ("mov $0x10, %%ax\n\t"
-                      "mov %%ax, %%ds\n\tmov %%ax, %%es\n\t"
-                      "mov %%ax, %%fs\n\tmov %%ax, %%gs" ::: "ax");
-
-    serial_puts("\n[wm] desktop live; shell + finder + viewer + activity\n");
-
-    /* Seed the terminal with the userland boot output + a prompt. */
-    term_print("Aqua OS -- userland said:\n");
-    term_print(syscall_console());
-    term_print("\ntype 'help' for commands.\n");
+    __asm__ volatile ("mov $0x10, %%ax\n\tmov %%ax,%%ds\n\tmov %%ax,%%es\n\t"
+                      "mov %%ax,%%fs\n\tmov %%ax,%%gs" ::: "ax");
+    serial_puts("\n[wm] desktop live; launching apps as ring-3 processes\n");
 
     sched_init();
-    thread_create(worker0, "w0");
-    thread_create(worker1, "w1");
-    thread_create(worker2, "w2");
+
+    /* auto-launch the clock so something is alive on screen at boot */
+    wm_launch("clock.aex", "");
 
     uint64_t last = 0;
     for (;;) {
         uint64_t now = timer_ticks();
-        if (dirty || now - last >= 20) {
-            dirty = 0;
-            last = now;
-            wm_render();
-        }
-        schedule();              /* yield to the worker threads */
+        if (dirty || now - last >= 12) { dirty = 0; last = now; wm_render(); }
+        schedule();
     }
 }

@@ -2,33 +2,43 @@
 #include <stddef.h>
 #include "sched.h"
 #include "kheap.h"
+#include "gdt.h"
 
-#define STACK_SIZE 16384
+#define STACK_SIZE  16384
+#define KSTACK_SIZE 16384
 
 struct thread {
     uint64_t rsp;            /* saved stack pointer (must be first field) */
     struct thread *next;     /* circular ready ring */
     void *stack;
+    uint64_t kstack_top;     /* ring-0 stack top (TSS rsp0) for ring-3 threads */
+    void *data;              /* opaque per-thread payload (the app) */
     const char *name;
     int id;
+    int alive;
 };
 
 extern void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
+extern void ring3_bootstrap(void);     /* boot/enter_user.asm */
 
 static struct thread *current = NULL;
 static int next_id = 0;
 static volatile unsigned long switches = 0;
 
 unsigned long sched_switches(void) { return switches; }
+void *sched_current_data(void) { return current ? current->data : NULL; }
 
 void sched_init(void)
 {
     struct thread *main = kmalloc(sizeof *main);
-    main->rsp   = 0;             /* filled in on the first switch away */
+    main->rsp = 0;
     main->stack = NULL;
-    main->name  = "main";
-    main->id    = next_id++;
-    main->next  = main;          /* a ring of one */
+    main->kstack_top = 0;        /* the WM thread runs in ring 0; rsp0 unused */
+    main->data = NULL;
+    main->name = "wm";
+    main->id = next_id++;
+    main->alive = 1;
+    main->next = main;
     current = main;
 }
 
@@ -36,36 +46,87 @@ void thread_create(void (*entry)(void), const char *name)
 {
     struct thread *t = kmalloc(sizeof *t);
     t->stack = kmalloc(STACK_SIZE);
-    t->name  = name;
-    t->id    = next_id++;
+    t->kstack_top = 0;
+    t->data = NULL;
+    t->name = name;
+    t->id = next_id++;
+    t->alive = 1;
 
-    /* Hand-build a stack frame that context_switch will "return" into:
-     * [rflags][r15][r14][r13][r12][rbx][rbp][entry]  (low -> high). */
     uint64_t top = ((uint64_t)t->stack + STACK_SIZE) & ~(uint64_t)0xF;
     uint64_t *sp = (uint64_t *)top;
-    *--sp = (uint64_t)entry;     /* ret target */
-    *--sp = 0;                   /* rbp */
-    *--sp = 0;                   /* rbx */
-    *--sp = 0;                   /* r12 */
-    *--sp = 0;                   /* r13 */
-    *--sp = 0;                   /* r14 */
-    *--sp = 0;                   /* r15 */
-    *--sp = 0x202;               /* rflags: IF set + reserved bit */
+    *--sp = (uint64_t)entry;
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
+    *--sp = 0x202;
     t->rsp = (uint64_t)sp;
 
-    /* Splice into the ring just after the current thread. */
     t->next = current->next;
     current->next = t;
+}
+
+/* Create a ring-3 process thread: first switch drops to `entry` in user mode
+ * on `ustack`, with its own kernel stack for traps. */
+int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data)
+{
+    struct thread *t = kmalloc(sizeof *t);
+    uint8_t *ks = kmalloc(KSTACK_SIZE);
+    t->stack = ks;
+    t->name = name;
+    t->id = next_id++;
+    t->data = data;
+    t->alive = 1;
+    t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
+
+    /* Hand-built kernel frame: context_switch "returns" into ring3_bootstrap
+     * with entry in r15 and the user stack in r14. */
+    uint64_t *sp = (uint64_t *)t->kstack_top;
+    *--sp = (uint64_t)ring3_bootstrap;   /* ret target */
+    *--sp = 0;                           /* rbp */
+    *--sp = 0;                           /* rbx */
+    *--sp = 0;                           /* r12 */
+    *--sp = 0;                           /* r13 */
+    *--sp = ustack;                      /* r14 */
+    *--sp = entry;                       /* r15 */
+    *--sp = 0x202;                       /* rflags */
+    t->rsp = (uint64_t)sp;
+
+    t->next = current->next;
+    current->next = t;
+    return t->id;
 }
 
 void schedule(void)
 {
     if (!current || current->next == current)
-        return;                  /* nothing else runnable */
+        return;
 
     struct thread *prev = current;
     struct thread *next = current->next;
     current = next;
     switches++;
+    if (next->kstack_top)
+        tss_set_rsp0(next->kstack_top);
     context_switch(&prev->rsp, next->rsp);
+}
+
+/* Remove the current thread from the ring and never return. */
+void thread_exit(void)
+{
+    static uint64_t discard;
+    struct thread *dead = current;
+    struct thread *next = current->next;
+
+    if (next == dead)            /* nothing else to run; just stop */
+        for (;;) __asm__ volatile ("hlt");
+
+    struct thread *prev = dead;
+    while (prev->next != dead)
+        prev = prev->next;
+    prev->next = next;
+
+    current = next;
+    switches++;
+    dead->alive = 0;
+    if (next->kstack_top)
+        tss_set_rsp0(next->kstack_top);
+    context_switch(&discard, next->rsp);
 }

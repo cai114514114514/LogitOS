@@ -23,7 +23,9 @@ struct mb2_fb_tag {
 static volatile uint8_t *fb_mem;
 static uint32_t fb_pitch, fb_w, fb_h;
 static uint8_t rpos, gpos, bpos;
-static uint32_t *back;            /* optional back buffer, packed width*height */
+
+static struct surface screen;     /* wraps the back buffer (the visible screen) */
+static struct surface *T;         /* current draw target (defaults to screen) */
 
 uint32_t fb_width(void)  { return fb_w; }
 uint32_t fb_height(void) { return fb_h; }
@@ -77,35 +79,47 @@ int fb_init(uint64_t mb_info_addr)
 
 void fb_put(int x, int y, uint32_t color)
 {
-    if (x < 0 || y < 0 || (uint32_t)x >= fb_w || (uint32_t)y >= fb_h)
+    struct surface *s = T ? T : &screen;
+    if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return;
-    if (back)
-        back[(uint32_t)y * fb_w + (uint32_t)x] = color;
-    else
-        *(volatile uint32_t *)(fb_mem + (uint32_t)y * fb_pitch + (uint32_t)x * 4) = color;
+    s->px[y * s->w + x] = color;
 }
 
 static uint32_t fb_get(int x, int y)
 {
-    if (x < 0 || y < 0 || (uint32_t)x >= fb_w || (uint32_t)y >= fb_h)
+    struct surface *s = T ? T : &screen;
+    if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return 0;
-    if (back)
-        return back[(uint32_t)y * fb_w + (uint32_t)x];
-    return *(volatile uint32_t *)(fb_mem + (uint32_t)y * fb_pitch + (uint32_t)x * 4);
+    return s->px[y * s->w + x];
 }
 
 void fb_set_backbuffer(uint32_t *buf)
 {
-    back = buf;
+    screen.px = buf;
+    screen.w  = (int)fb_w;
+    screen.h  = (int)fb_h;
+    T = &screen;
+}
+
+void fb_target(struct surface *s)
+{
+    T = s ? s : &screen;
+}
+
+void fb_blit_surface(int dx, int dy, const struct surface *src)
+{
+    for (int y = 0; y < src->h; y++)
+        for (int x = 0; x < src->w; x++)
+            fb_put(dx + x, dy + y, src->px[y * src->w + x]);
 }
 
 void fb_present(void)
 {
-    if (!back)
+    if (!screen.px)
         return;
     for (uint32_t y = 0; y < fb_h; y++) {
         volatile uint32_t *dst = (volatile uint32_t *)(fb_mem + y * fb_pitch);
-        const uint32_t *src = back + y * fb_w;
+        const uint32_t *src = screen.px + y * fb_w;
         for (uint32_t x = 0; x < fb_w; x++)
             dst[x] = src[x];
     }
@@ -146,9 +160,10 @@ int fb_text_width(const char *s)
 
 void fb_clear(uint32_t color)
 {
-    for (uint32_t y = 0; y < fb_h; y++)
-        for (uint32_t x = 0; x < fb_w; x++)
-            fb_put((int)x, (int)y, color);
+    struct surface *s = T ? T : &screen;
+    for (int y = 0; y < s->h; y++)
+        for (int x = 0; x < s->w; x++)
+            fb_put(x, y, color);
 }
 
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color)
