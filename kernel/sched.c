@@ -17,6 +17,9 @@ extern void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
 
 static struct thread *current = NULL;
 static int next_id = 0;
+static volatile unsigned long switches = 0;
+
+unsigned long sched_switches(void) { return switches; }
 
 void sched_init(void)
 {
@@ -63,5 +66,6 @@ void schedule(void)
     struct thread *prev = current;
     struct thread *next = current->next;
     current = next;
+    switches++;
     context_switch(&prev->rsp, next->rsp);
 }
