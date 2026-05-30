@@ -54,4 +54,10 @@ Key notes:
   `wm_run` so boot flows into the live desktop.
 - `tools/qmp_drag.py` scripts a mouse drag over QEMU QMP (for screenshots/CI of
   interaction); real use is `make run` + your mouse.
+- Subsystem integration: each WM window is backed by a real subsystem — Finder
+  reads the AquaFS dir (vfs_count/ent_name/ent_size), Console shows captured
+  ring-3 output (syscall_console()), Activity Monitor shows PIT uptime + PMM
+  memory + three M4 worker-thread counters, Notes receives keyboard via wm_key.
+  wm_run runs as the scheduler "main" thread; workers + WM round-robin via
+  schedule() (plus timer preemption). Keyboard IRQ -> keyboard_handle -> wm_key.
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.

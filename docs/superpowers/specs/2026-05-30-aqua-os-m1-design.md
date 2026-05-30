@@ -303,6 +303,24 @@ and drag.
    (verified by scripting a drag over QMP — Finder raised and relocated). ✅
 4. `make test` still passes end to end. ✅
 
+### Subsystem integration — every window is backed by a real subsystem
+The desktop is not a mock-up: each window surfaces a lower milestone live.
+- **Finder** → M5: enumerates the AquaFS directory (`vfs_count/ent_name/ent_size`)
+  and lists the real files on disk (`readme.txt`, `hello.elf`).
+- **Console** → M6: the ring-3 program's `SYS_WRITE` bytes are captured
+  (`syscall_console()`) and displayed.
+- **Activity Monitor** → M2/M3/M4: uptime from the PIT, used/total RAM from the
+  PMM, and three live counters/bars driven by three worker threads scheduled by
+  the M4 scheduler (the WM thread and workers round-robin via `schedule()` plus
+  timer preemption).
+- **Notes** → M2: the PS/2 keyboard IRQ routes characters to `wm_key`, which
+  appends to the window's text buffer (with a caret).
+- **Menu bar clock** → M2 timer.
+
+So the compositor (M8) ties M1–M6 together into one running system: verified by
+a screenshot showing the file list, captured ring-3 output, rising thread
+counters + uptime, and typed text ("hello aqua os") all updating concurrently.
+
 ## Result
 
 All eight milestones are implemented and verified in QEMU: a from-scratch

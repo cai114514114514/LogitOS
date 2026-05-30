@@ -29,10 +29,16 @@ This is not a simulation. It is an actual kernel that boots and runs.
   compositor, a PS/2 mouse with an arrow cursor, and **focusable, draggable
   windows** — a genuinely interactive desktop.
 
-The full roadmap (M1–M8) is complete. See the
-[design spec](docs/superpowers/specs/2026-05-30-aqua-os-m1-design.md).
+The full roadmap (M1–M8) is complete, and **every desktop window is backed by a
+real subsystem**:
+- **Finder** lists the actual AquaFS files on disk (M5)
+- **Console** shows the ring-3 program's `int 0x80` output (M6)
+- **Activity Monitor** shows uptime (M2 timer), RAM usage (M3), and three live
+  counters driven by M4 scheduler threads
+- **Notes** receives typed characters from the keyboard (M2)
 
-Run `make run` and use your mouse to drag the windows around.
+See the [design spec](docs/superpowers/specs/2026-05-30-aqua-os-m1-design.md).
+Run `make run`, drag the windows with your mouse, and type into Notes.
 
 ## Build & run
 

@@ -25,3 +25,18 @@ int vfs_read(const char *path, void *buf, int max)
 {
     return (root && root->read) ? root->read(path, buf, max) : -1;
 }
+
+int vfs_count(void)
+{
+    return (root && root->count) ? root->count() : 0;
+}
+
+const char *vfs_ent_name(int i)
+{
+    return (root && root->ent_name) ? root->ent_name(i) : "";
+}
+
+int vfs_ent_size(int i)
+{
+    return (root && root->ent_size) ? root->ent_size(i) : 0;
+}

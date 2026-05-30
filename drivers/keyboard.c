@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include "keyboard.h"
-#include "kprintf.h"
 #include "io.h"
+#include "wm.h"
 
 #define KBD_DATA 0x60
 
@@ -30,5 +30,5 @@ void keyboard_handle(void)
 
     char c = scancode_map[scancode & 0x7F];
     if (c)
-        kprintf("%c", c);
+        wm_key(c);          /* route typed character to the focused UI */
 }

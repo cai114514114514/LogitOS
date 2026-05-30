@@ -7,6 +7,9 @@ void wm_init(void);
 /* Fed by the mouse driver (absolute cursor position + left button state). */
 void wm_mouse_event(int x, int y, int left);
 
+/* Fed by the keyboard driver: a typed character (routed to the Notes window). */
+void wm_key(char c);
+
 /* Composite one frame (background + windows + cursor) and present it. */
 void wm_render(void);
 

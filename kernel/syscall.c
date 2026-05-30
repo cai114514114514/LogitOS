@@ -10,14 +10,26 @@ extern int aqua_fs_ok;
 
 static int user_wrote = 0;
 
+static char console[2048];
+static int  console_len;
+
+const char *syscall_console(void)
+{
+    return console;
+}
+
 void syscall_dispatch(struct registers *r)
 {
     switch (r->rax) {
     case SYS_WRITE: {
         const char *buf = (const char *)r->rsi;     /* user pointer, mapped */
         long len = (long)r->rdx;
-        for (long i = 0; i < len; i++)
+        for (long i = 0; i < len; i++) {
             serial_putc(buf[i]);
+            if (console_len < (int)sizeof(console) - 1)
+                console[console_len++] = buf[i];     /* capture for the GUI */
+        }
+        console[console_len] = '\0';
         user_wrote = 1;
         r->rax = (uint64_t)len;
         break;

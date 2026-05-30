@@ -109,10 +109,28 @@ static int aquafs_read(const char *name, void *buf, int max)
     return (int)size;
 }
 
+static int aquafs_count(void)
+{
+    return (int)entry_count;
+}
+
+static const char *aquafs_ent_name(int i)
+{
+    return (i >= 0 && i < (int)entry_count) ? entries[i].name : "";
+}
+
+static int aquafs_ent_size(int i)
+{
+    return (i >= 0 && i < (int)entry_count) ? (int)entries[i].size : 0;
+}
+
 struct filesystem aquafs = {
-    .name  = "aquafs",
-    .mount = aquafs_mount,
-    .list  = aquafs_list,
-    .size  = aquafs_size,
-    .read  = aquafs_read,
+    .name     = "aquafs",
+    .mount    = aquafs_mount,
+    .list     = aquafs_list,
+    .size     = aquafs_size,
+    .read     = aquafs_read,
+    .count    = aquafs_count,
+    .ent_name = aquafs_ent_name,
+    .ent_size = aquafs_ent_size,
 };
