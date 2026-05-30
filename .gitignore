@@ -1,0 +1,7 @@
+build/
+*.o
+*.elf
+*.iso
+*.ppm
+*.png
+.DS_Store

@@ -1,0 +1,13 @@
+# Make clangd analyze the kernel the way the Makefile builds it:
+# x86_64-elf freestanding target with the project include dir on the path.
+# (Without this, the IDE checks against the host arm64/Mach-O target and
+#  reports spurious errors for the inline asm constraints and headers.)
+CompileFlags:
+  Add:
+    - --target=x86_64-elf
+    - -ffreestanding
+    - -nostdlib
+    - -mno-red-zone
+    - -mno-sse
+    - -Iinclude
+  Compiler: clang
