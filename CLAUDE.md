@@ -32,13 +32,19 @@ make debug  # QEMU frozen with gdb stub on :1234
 ## Roadmap
 
 M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) ✅ ·
-M4 multitasking (preemptive scheduler) ✅ · M7 graphics (framebuffer + VMM +
-Aqua desktop) ✅ · M5 fs (deferred) · M6 userland (deferred) ·
-M8 window system + live desktop.
+M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AquaFS + VFS) ✅ ·
+M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
+(framebuffer + VMM + Aqua desktop) ✅ · M8 window system + live desktop (next).
 
-Graphics notes: `vmm_map_page` does a real 4-level walk and maps the high-MMIO
-framebuffer (GRUB sets 1024x768x32 via the multiboot2 framebuffer tag). Drawing
-primitives + alpha blending in `kernel/fb.c`; the scene is in `kernel/desktop.c`.
-Next up M8: a bitmap font + text rendering, PS/2 mouse + cursor, draggable
-windows, double-buffered compositor.
+Key notes:
+- `vmm_map_page` does a real 4-level walk; maps the high-MMIO framebuffer and
+  user pages. Intermediate table entries carry USER; leaf PTE flags protect
+  kernel pages. User images link at 1 GiB (above the identity huge-page region).
+- Disk: QEMU `-drive ...,if=ide` primary master; `drivers/ata.c` (PIO) +
+  `fs/aquafs.c` + `fs/vfs.c`. Build the image with `tools/mkfs.py` (Makefile
+  `$(DISK)` target packs `fsroot/*` + `build/user.elf` as `hello.elf`).
+- Userland: `kernel/gdt.c` (TSS rsp0), `boot/enter_user.asm`, syscalls via
+  int 0x80 in `kernel/syscall.c`; `user/` builds the ring-3 ELF.
+- Next M8: bitmap font + text rendering, PS/2 mouse + cursor, draggable
+  windows, double-buffered compositor (so the desktop becomes interactive).
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.

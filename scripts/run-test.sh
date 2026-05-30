@@ -5,10 +5,14 @@
 
 set -u
 
-ISO="${1:?usage: run-test.sh <iso>}"
+ISO="${1:?usage: run-test.sh <iso> [disk.img]}"
+DISK="${2:-}"
 MARKER="AQUA_BOOT_OK"
 LOG="$(mktemp)"
 QEMU="${QEMU:-qemu-system-x86_64}"
+
+DISK_ARGS=""
+[ -n "$DISK" ] && DISK_ARGS="-drive file=$DISK,format=raw,if=ide,index=0,media=disk -boot d"
 
 cleanup() {
     [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null
@@ -17,7 +21,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$QEMU" -cdrom "$ISO" -serial "file:$LOG" -display none -no-reboot &
+"$QEMU" -cdrom "$ISO" $DISK_ARGS -serial "file:$LOG" -display none -no-reboot &
 QPID=$!
 
 # Poll the serial log for up to ~15s.

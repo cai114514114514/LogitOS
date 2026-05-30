@@ -1,9 +1,11 @@
 #include <stdint.h>
 #include "idt.h"
 
-#define IDT_ENTRIES 48
+#define IDT_ENTRIES 256
 #define KERNEL_CS   0x08          /* 64-bit code selector from the boot GDT */
 #define GATE_INT64  0x8E          /* present, DPL0, 64-bit interrupt gate */
+#define GATE_USER   0xEE          /* present, DPL3, 64-bit interrupt gate (syscall) */
+#define SYSCALL_VEC 128
 
 struct idt_entry {
     uint16_t offset_low;
@@ -23,16 +25,17 @@ struct idt_ptr {
 static struct idt_entry idt[IDT_ENTRIES];
 static struct idt_ptr idtp;
 
-/* Filled in by boot/isr.asm: address of each vector's stub. */
+/* Filled in by boot/isr.asm. */
 extern void *isr_stub_table[];
+extern void isr128(void);
 
-static void idt_set(int vec, void *handler)
+static void idt_set(int vec, void *handler, uint8_t type)
 {
     uint64_t addr = (uint64_t)handler;
     idt[vec].offset_low  = addr & 0xFFFF;
     idt[vec].selector    = KERNEL_CS;
     idt[vec].ist         = 0;
-    idt[vec].type_attr   = GATE_INT64;
+    idt[vec].type_attr   = type;
     idt[vec].offset_mid  = (addr >> 16) & 0xFFFF;
     idt[vec].offset_high = (addr >> 32) & 0xFFFFFFFF;
     idt[vec].zero        = 0;
@@ -40,8 +43,11 @@ static void idt_set(int vec, void *handler)
 
 void idt_init(void)
 {
-    for (int i = 0; i < IDT_ENTRIES; i++)
-        idt_set(i, isr_stub_table[i]);
+    for (int i = 0; i < 48; i++)
+        idt_set(i, isr_stub_table[i], GATE_INT64);
+
+    /* int 0x80 must be reachable from ring 3, so DPL 3. */
+    idt_set(SYSCALL_VEC, (void *)isr128, GATE_USER);
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base  = (uint64_t)&idt;

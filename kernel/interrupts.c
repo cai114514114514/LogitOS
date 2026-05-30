@@ -6,6 +6,7 @@
 #include "pit.h"
 #include "keyboard.h"
 #include "sched.h"
+#include "syscall.h"
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -30,6 +31,10 @@ static void panic_exception(struct registers *r)
 
 void interrupt_handler(struct registers *r)
 {
+    if (r->vector == 128) {        /* int 0x80 system call */
+        syscall_dispatch(r);
+        return;
+    }
     if (r->vector < 32) {
         panic_exception(r);
         return;

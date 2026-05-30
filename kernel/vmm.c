@@ -5,6 +5,7 @@
 
 #define PRESENT  0x1
 #define WRITABLE 0x2
+#define USER     0x4
 
 void *memset(void *, int, size_t);     /* lib/string.c */
 
@@ -21,7 +22,11 @@ static uint64_t *next_table(uint64_t *table, int idx)
     if (!(table[idx] & PRESENT)) {
         uint64_t frame = pmm_alloc();
         memset((void *)frame, 0, 4096);
-        table[idx] = frame | PRESENT | WRITABLE;
+        table[idx] = frame | PRESENT | WRITABLE | USER;
+    } else {
+        /* Keep the path user-reachable; leaf PTE flags still gate access, so
+         * kernel-only pages (no USER on their final entry) stay protected. */
+        table[idx] |= USER;
     }
     return (uint64_t *)(table[idx] & ~(uint64_t)0xFFF);
 }

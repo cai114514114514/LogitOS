@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define VMM_WRITABLE 0x2
+#define VMM_USER     0x4
 #define VMM_NOCACHE  (0x8 | 0x10)   /* PWT | PCD */
 
 /* Map one 4 KiB page (`virt` -> `phys`) into the active address space,

@@ -1,7 +1,7 @@
 # Aqua OS — Design Spec
 
 **Date:** 2026-05-30
-**Status:** M1–M4 + M7 implemented & verified (M5/M6 deferred — jumped to graphics)
+**Status:** M1–M7 implemented & verified
 
 ## Vision
 
@@ -29,8 +29,8 @@ that boots on bare-metal-equivalent hardware (QEMU full emulation).
 | **M2** | Interrupts & input | IDT, ISR/IRQ stubs, PIC remap, exceptions, PIT timer, PS/2 keyboard ✅ |
 | **M3** | Memory management | Multiboot2 map parse, bitmap frame allocator, kernel heap ✅ |
 | **M4** | Multitasking | Kernel threads, asm context switch, preemptive round-robin scheduler ✅ |
-| M5 | Storage & FS | ATA/AHCI driver, VFS layer, a filesystem (FAT or custom) — *deferred* |
-| M6 | Userland | ELF loader, user processes, syscall ABI, mini libc — *deferred* |
+| **M5** | Storage & FS | ATA PIO driver, AquaFS (custom on-disk FS), VFS layer, host mkfs tool ✅ |
+| **M6** | Userland | GDT/TSS, ring 3, int 0x80 syscalls, ELF64 loader, user paging ✅ |
 | **M7** | Graphics | Multiboot2 linear framebuffer, VMM page-mapper, drawing primitives, Aqua desktop scene ✅ |
 | M8 | Window system + desktop | Bitmap font + text, PS/2 mouse cursor, draggable windows, live compositor |
 
@@ -220,3 +220,55 @@ Leave VGA text mode for a true linear framebuffer and render a macOS-style
 1. GRUB supplies a 32-bpp linear framebuffer; `fb_init` maps it with no fault. ✅
 2. `make test` marker prints after the desktop is composited. ✅
 3. Screenshot shows a recognizable macOS-style desktop. ✅
+
+## Milestone 5 — "Storage & filesystem"
+
+### Goal
+Read files from a real (emulated) disk through a layered storage stack.
+
+### Design
+- **`drivers/ata.c`:** polled ATA PIO (primary bus, master, LBA28). `ata_read`
+  selects the drive, issues READ SECTORS, and PIO-reads each sector.
+- **AquaFS (`fs/aquafs.c`):** a tiny custom on-disk format — superblock (magic
+  "AQUA", version, file count), a 16-entry directory (sectors 1–2), then file
+  data laid out contiguously from sector 3. Read-only in the kernel.
+- **VFS (`fs/vfs.c`):** a one-backend abstraction (`mount/list/size/read`) so
+  callers (the ELF loader, demos) don't bind to AquaFS directly.
+- **`tools/mkfs.py`:** host tool that packs a set of files into a disk image,
+  invoked by the Makefile; QEMU attaches it as the primary IDE disk.
+
+### Success criteria — all met
+1. Kernel mounts the volume and lists files with sizes and LBAs. ✅
+2. `readme.txt` reads back byte-for-byte and its prefix is verified. ✅
+
+## Milestone 6 — "Userland"
+
+### Goal
+Run an unprivileged (ring 3) program loaded from disk, talking to the kernel
+only through system calls.
+
+### Design
+- **GDT + TSS (`kernel/gdt.c`, `boot/gdt_flush.asm`):** a real GDT with kernel
+  code/data, user code/data (DPL 3), and a 64-bit TSS whose `rsp0` is the
+  kernel stack the CPU switches to on a ring 3 → ring 0 trap.
+- **User paging:** `vmm` gained `VMM_USER`; intermediate table entries are made
+  user-reachable (leaf PTE flags still protect kernel pages). User images link
+  at 1 GiB — above the identity-mapped huge-page region — so 4 KiB user pages
+  map cleanly.
+- **Syscalls:** IDT vector 0x80 is a DPL-3 gate (`boot/isr.asm` stub →
+  `kernel/syscall.c`). ABI: `rax`=number, `rdi/rsi/rdx`=args. `SYS_WRITE`
+  (1) and `SYS_EXIT` (2).
+- **ELF loader (`kernel/elf.c`):** parses an ELF64 image, maps each PT_LOAD as
+  user pages (zeroed for .bss), copies file bytes, returns the entry point.
+- **Entry (`boot/enter_user.asm`):** builds a ring-3 iret frame and `iretq`s in.
+- **User program (`user/`):** `ustart.asm` + `user.c`, linked with `user.ld`
+  at 0x40000000, stored on the AquaFS disk as `hello.elf`.
+
+### Flow
+disk → `vfs_read("hello.elf")` → `elf_load` → map user stack → `enter_user` →
+ring 3 runs → `int 0x80` SYS_WRITE (kernel prints the message) → SYS_EXIT.
+
+### Success criteria — all met
+1. ELF loads from disk and runs in ring 3 (CPL 3). ✅
+2. Its `int 0x80` SYS_WRITE output appears; SYS_EXIT reports code 0. ✅
+3. `make test` marker gated on `fs_ok && user wrote via syscall`. ✅
