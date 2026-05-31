@@ -86,12 +86,13 @@ $(DISK): $(FS_FILES) $(AEX) tools/mkfs.py
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
+QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) -serial stdio -no-reboot
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) -serial stdio -no-reboot
 
 debug: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) -serial stdio -no-reboot -s -S
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) -serial stdio -no-reboot -s -S
 
 test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)

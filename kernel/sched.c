@@ -96,21 +96,31 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
 
 void schedule(void)
 {
-    if (!current || current->next == current)
-        return;
+    /* schedule() runs both cooperatively (IF=1) and from the timer IRQ (IF=0).
+     * It MUST be atomic: if a timer tick re-entered it mid-switch it would save
+     * the wrong stack into the wrong thread and corrupt the scheduler. Disable
+     * interrupts across the critical section, then restore the caller's IF. */
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
 
-    struct thread *prev = current;
-    struct thread *next = current->next;
-    current = next;
-    switches++;
-    if (next->kstack_top)
-        tss_set_rsp0(next->kstack_top);
-    context_switch(&prev->rsp, next->rsp);
+    if (current && current->next != current) {
+        struct thread *prev = current;
+        struct thread *next = current->next;
+        current = next;
+        switches++;
+        if (next->kstack_top)
+            tss_set_rsp0(next->kstack_top);
+        context_switch(&prev->rsp, next->rsp);
+    }
+
+    if (flags & 0x200)          /* restore IF only if the caller had it set */
+        __asm__ volatile ("sti");
 }
 
 /* Remove the current thread from the ring and never return. */
 void thread_exit(void)
 {
+    __asm__ volatile ("cli");      /* atomic: never reschedule a half-removed ring */
     static uint64_t discard;
     struct thread *dead = current;
     struct thread *next = current->next;
