@@ -15,6 +15,7 @@ struct filesystem {
     int  (*ent_size)(int i);                         /* size of file i, bytes */
     int  (*write)(const char *path, const void *buf, int size);  /* create/overwrite */
     int  (*del)(const char *path);                  /* delete */
+    int  (*mkdir)(const char *path);                /* create a directory */
 };
 
 void vfs_register(struct filesystem *fs);
@@ -31,5 +32,6 @@ int         vfs_ent_size(int i);
 /* Mutating ops. */
 int         vfs_write(const char *path, const void *buf, int size);
 int         vfs_delete(const char *path);
+int         vfs_mkdir(const char *path);
 
 #endif /* AQUA_VFS_H */

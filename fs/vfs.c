@@ -50,3 +50,8 @@ int vfs_delete(const char *path)
 {
     return (root && root->del) ? root->del(path) : -1;
 }
+
+int vfs_mkdir(const char *path)
+{
+    return (root && root->mkdir) ? root->mkdir(path) : -1;
+}
