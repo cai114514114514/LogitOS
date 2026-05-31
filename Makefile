@@ -68,9 +68,9 @@ $(BUILD)/$(1).elf: user/$(1).c user/crt0.asm user/aqua.h
 	@mkdir -p $(BUILD)/user
 	$(ASM) -f elf64 user/crt0.asm -o $(BUILD)/user/$(1).crt0.o
 	$(CC) $(UCFLAGS) -c user/$(1).c -o $(BUILD)/user/$(1).o
-	$(LD) -nostdlib -e _start -Ttext=$(2) -o $$@ $(BUILD)/user/$(1).crt0.o $(BUILD)/user/$(1).o
+	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/user/$(1).crt0.o $(BUILD)/user/$(1).o
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4) $(5) $(6) $(7) $(8)
+	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4) '$(5)' $(6) $(7) $(8)
 endef
 
 #                     name      base       display  ext icon r   g   b   ('-' ext = none)
