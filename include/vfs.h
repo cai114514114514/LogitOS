@@ -13,6 +13,8 @@ struct filesystem {
     int  (*count)(void);                            /* number of files */
     const char *(*ent_name)(int i);                 /* name of file i */
     int  (*ent_size)(int i);                         /* size of file i, bytes */
+    int  (*write)(const char *path, const void *buf, int size);  /* create/overwrite */
+    int  (*del)(const char *path);                  /* delete */
 };
 
 void vfs_register(struct filesystem *fs);
@@ -25,5 +27,9 @@ int  vfs_read(const char *path, void *buf, int max);
 int         vfs_count(void);
 const char *vfs_ent_name(int i);
 int         vfs_ent_size(int i);
+
+/* Mutating ops. */
+int         vfs_write(const char *path, const void *buf, int size);
+int         vfs_delete(const char *path);
 
 #endif /* AQUA_VFS_H */

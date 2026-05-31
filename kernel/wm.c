@@ -273,6 +273,10 @@ long wm_gui_syscall(long num, long a, long b, long c)
         scopy((char *)b, vfs_ent_name(i), (int)c);
         return vfs_ent_size(i);
     }
+    case SYS_WRITE_FILE:
+        return vfs_write((const char *)a, (const void *)b, (int)c);
+    case SYS_DELETE_FILE:
+        return vfs_delete((const char *)a);
     }
     return -1;
 }

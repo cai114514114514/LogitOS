@@ -231,9 +231,10 @@ Read files from a real (emulated) disk through a layered storage stack.
   selects the drive, issues READ SECTORS, and PIO-reads each sector.
 - **AquaFS (`fs/aquafs.c`):** a tiny custom on-disk format — superblock (magic
   "AQUA", version, file count), a 16-entry directory (sectors 1–2), then file
-  data laid out contiguously from sector 3. Read-only in the kernel.
-- **VFS (`fs/vfs.c`):** a one-backend abstraction (`mount/list/size/read`) so
-  callers (the ELF loader, demos) don't bind to AquaFS directly.
+  data from sector 3. Originally read-only; later made read-write (see
+  "Writable AquaFS" below).
+- **VFS (`fs/vfs.c`):** a one-backend abstraction (`mount/list/size/read`, plus
+  `write/delete`) so callers (the ELF loader, apps) don't bind to AquaFS directly.
 - **`tools/mkfs.py`:** host tool that packs a set of files into a disk image,
   invoked by the Makefile; QEMU attaches it as the primary IDE disk.
 
@@ -354,3 +355,25 @@ panels.
   each a ring-3 program in `user/`.
 - **Wall clock:** `drivers/rtc.c` reads the CMOS real-time clock; the menu bar
   and Clock show the actual date/time.
+
+## Writable AquaFS (post-M8)
+
+The filesystem became read-write so apps can persist files.
+
+- **On-disk format v2:** the superblock version is bumped to 2 and the directory
+  is the source of truth. Data is no longer packed contiguously — each of the 16
+  slots owns a fixed region (`DATA_LBA + i*SLOT_SECTORS`, 64 KiB per file) so a
+  file can be rewritten or grown in place without relocating others. `mkfs.py`
+  emits this layout; a slot is free when its name is empty.
+- **`ata_write`:** PIO `WRITE SECTORS` (0x30) followed by `FLUSH CACHE` (0xE7) so
+  writes commit to the media.
+- **`aquafs_write`/`aquafs_delete`** (→ `vfs_write`/`vfs_delete`): create or
+  overwrite a file into its slot via a sector-aligned bounce buffer, then persist
+  the directory + superblock file count (`flush_dir`); delete clears the slot.
+  Enumeration compacts over used slots so deletes leave no gaps.
+- **Syscalls:** `SYS_WRITE_FILE` (16) and `SYS_DELETE_FILE` (17), routed through
+  `wm_gui_syscall`; userland helpers `write_file`/`delete_file` in `user/aqua.h`.
+- **Apps:** TextEdit saves with **Ctrl+S** (status line shows "saved"); Terminal
+  gains `touch`, `rm`, and `echo TEXT > FILE`.
+- **Input:** the PS/2 keyboard driver gained Ctrl (→ control codes, e.g. Ctrl+S)
+  and Shift (capitals + shifted symbols, so `>` and friends are typeable).

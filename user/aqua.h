@@ -37,5 +37,7 @@ static inline void app_exit(int c) { _sys(SYS_EXIT, c, 0, 0); }
 static inline int  sysinfo(char *b, int m) { return (int)_sys(SYS_SYSINFO, (long)b, m, 0); }
 static inline int  file_count(void) { return (int)_sys(SYS_FILE_COUNT, 0, 0, 0); }
 static inline int  file_name(int i, char *b, int m) { return (int)_sys(SYS_FILE_NAME, i, (long)b, m); }
+static inline int  write_file(const char *n, const void *b, int size) { return (int)_sys(SYS_WRITE_FILE, (long)n, (long)b, size); }
+static inline int  delete_file(const char *n) { return (int)_sys(SYS_DELETE_FILE, (long)n, 0, 0); }
 
 #endif /* AQUA_USERLIB_H */

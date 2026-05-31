@@ -19,6 +19,8 @@
 #define SYS_SYSINFO    13   /* (buf, max) -> kernel writes uptime/mem/process text */
 #define SYS_FILE_COUNT 14   /* () -> number of files on the volume */
 #define SYS_FILE_NAME  15   /* (i, buf, max) -> file size; fills name */
+#define SYS_WRITE_FILE 16   /* (name, buf, size) -> bytes written, or -1 (create/overwrite) */
+#define SYS_DELETE_FILE 17  /* (name) -> 0, or -1 */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

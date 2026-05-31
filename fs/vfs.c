@@ -40,3 +40,13 @@ int vfs_ent_size(int i)
 {
     return (root && root->ent_size) ? root->ent_size(i) : 0;
 }
+
+int vfs_write(const char *path, const void *buf, int size)
+{
+    return (root && root->write) ? root->write(path, buf, size) : -1;
+}
+
+int vfs_delete(const char *path)
+{
+    return (root && root->del) ? root->del(path) : -1;
+}

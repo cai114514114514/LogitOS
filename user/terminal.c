@@ -36,7 +36,8 @@ static void run(const char *line)
     if (!line[0]) return;
 
     if (seq(line, "help")) {
-        pr("help ls cat <f> mem ps clear echo <t> uname\n");
+        pr("help ls cat <f> mem ps clear uname\n");
+        pr("touch <f>  rm <f>  echo <t> [> <f>]\n");
     } else if (seq(line, "ls")) {
         int n = file_count();
         for (int i = 0; i < n; i++) {
@@ -59,7 +60,30 @@ static void run(const char *line)
         for (int r = 0; r < ROWS; r++) scr[r][0] = 0;
         crow = ccol = 0;
     } else if (starts(line, "echo ")) {
-        pr(line + 5); pr("\n");
+        const char *arg = line + 5;
+        const char *redir = 0;
+        for (const char *p = arg; *p; p++)
+            if (*p == '>') { redir = p; break; }
+        if (redir) {                              /* echo TEXT > FILE */
+            const char *fn = redir + 1;
+            while (*fn == ' ') fn++;
+            char body[256];
+            int n = 0;
+            for (const char *t = arg; t < redir && n < 254; t++)
+                body[n++] = *t;
+            while (n > 0 && body[n - 1] == ' ') n--;   /* trim before '>' */
+            body[n++] = '\n';
+            body[n] = 0;
+            if (write_file(fn, body, n) < 0) pr("echo: write failed\n");
+        } else {
+            pr(arg); pr("\n");
+        }
+    } else if (starts(line, "touch ")) {
+        const char *fn = line + 6; while (*fn == ' ') fn++;
+        if (write_file(fn, "", 0) < 0) pr("touch: failed\n");
+    } else if (starts(line, "rm ")) {
+        const char *fn = line + 3; while (*fn == ' ') fn++;
+        if (delete_file(fn) < 0) pr("rm: no such file\n");
     } else if (seq(line, "uname")) {
         pr("Aqua OS x86_64 -- from scratch (M1-M8)\n");
     } else {
