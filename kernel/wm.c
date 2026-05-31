@@ -156,6 +156,36 @@ static void launch_for_ext(const char *ext, const char *file)
     serial_puts("[wm] no app handles that file type\n");
 }
 
+/* ---------- system info text (for the Activity Monitor app) ---------- */
+static char *ap_num(char *p, uint64_t v)
+{
+    char t[20]; int i = 0;
+    if (!v) { *p++ = '0'; return p; }
+    while (v) { t[i++] = '0' + v % 10; v /= 10; }
+    while (i) *p++ = t[--i];
+    return p;
+}
+static char *ap_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+
+static int sysinfo_text(char *buf, int max)
+{
+    char *p = buf;
+    p = ap_str(p, "Uptime  "); p = ap_num(p, timer_ticks() / 100); p = ap_str(p, " s\n");
+    p = ap_str(p, "Memory  "); p = ap_num(p, (pmm_total_bytes() - pmm_free_bytes()) >> 20);
+    p = ap_str(p, " / "); p = ap_num(p, pmm_total_bytes() >> 20); p = ap_str(p, " MB used\n");
+    p = ap_str(p, "Switches "); p = ap_num(p, sched_switches()); p = ap_str(p, "\n\n");
+    p = ap_str(p, "PID  NAME\n");
+    p = ap_str(p, "  0  wm (compositor)\n");
+    for (int i = 0; i < MAXWIN; i++)
+        if (apps[i].used && apps[i].alive) {
+            p = ap_str(p, "  "); p = ap_num(p, apps[i].id); p = ap_str(p, "  ");
+            p = ap_str(p, apps[i].name); p = ap_str(p, "\n");
+        }
+    *p = 0;
+    (void)max;
+    return (int)(p - buf);
+}
+
 /* ---------- GUI syscalls (called from syscall.c in the app's context) ---------- */
 static struct win *app_window(struct app *ap)
 {
@@ -234,6 +264,15 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_YIELD:
         schedule();
         return 0;
+    case SYS_SYSINFO:
+        return sysinfo_text((char *)a, (int)b);
+    case SYS_FILE_COUNT:
+        return vfs_count();
+    case SYS_FILE_NAME: {
+        int i = (int)a;
+        scopy((char *)b, vfs_ent_name(i), (int)c);
+        return vfs_ent_size(i);
+    }
     }
     return -1;
 }
@@ -336,7 +375,7 @@ static void draw_finder(struct win *w)
         fb_round_rect(x + 16, yy, 13, 16, 3, rgb(90, 150, 240));
         fb_text(x + 38, yy, vfs_ent_name(i), rgb(60, 60, 68));
     }
-    fb_text(x + 16, w->y + w->h - 22, "double-click to open", rgb(170, 170, 178));
+    fb_text(x + 16, w->y + w->h - 22, "click a file to open", rgb(170, 170, 178));
 }
 
 /* ---------- window frame + compositing ---------- */
@@ -450,7 +489,7 @@ void wm_mouse_event(int x, int y, int left)
 static void scan_apps(void)
 {
     int n = vfs_count();
-    static char buf[8192];
+    static char buf[32768];
     for (int i = 0; i < n && nreg < MAXWIN; i++) {
         const char *nm = vfs_ent_name(i);
         if (!ends_aex(nm)) continue;

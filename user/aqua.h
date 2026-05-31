@@ -34,5 +34,8 @@ static inline void get_time(struct aqua_time *t) { _sys(SYS_GET_TIME, (long)t, 0
 static inline int  read_file(const char *n, void *b, int m) { return (int)_sys(SYS_READ_FILE, (long)n, (long)b, m); }
 static inline void sys_yield(void) { _sys(SYS_YIELD, 0, 0, 0); }
 static inline void app_exit(int c) { _sys(SYS_EXIT, c, 0, 0); }
+static inline int  sysinfo(char *b, int m) { return (int)_sys(SYS_SYSINFO, (long)b, m, 0); }
+static inline int  file_count(void) { return (int)_sys(SYS_FILE_COUNT, 0, 0, 0); }
+static inline int  file_name(int i, char *b, int m) { return (int)_sys(SYS_FILE_NAME, i, (long)b, m); }
 
 #endif /* AQUA_USERLIB_H */

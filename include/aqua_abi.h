@@ -16,6 +16,9 @@
 #define SYS_GET_TIME   10   /* (rtc_time*) fill wall-clock time */
 #define SYS_READ_FILE  11   /* (name, buf, max) -> bytes read, or -1 */
 #define SYS_YIELD      12   /* () yield the CPU */
+#define SYS_SYSINFO    13   /* (buf, max) -> kernel writes uptime/mem/process text */
+#define SYS_FILE_COUNT 14   /* () -> number of files on the volume */
+#define SYS_FILE_NAME  15   /* (i, buf, max) -> file size; fills name */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

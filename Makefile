@@ -74,8 +74,11 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 $(eval $(call APP_RULE,clock,0x40000000,Clock,))
+$(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt))
+$(eval $(call APP_RULE,monitor,0x42000000,Monitor,))
+$(eval $(call APP_RULE,terminal,0x43000000,Terminal,))
 
-APPS := clock
+APPS := clock textedit monitor terminal
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)
 
 $(DISK): $(FS_FILES) $(AEX) tools/mkfs.py
