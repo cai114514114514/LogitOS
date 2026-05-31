@@ -62,7 +62,7 @@ $(ISO): $(KERNEL) grub.cfg
 	$(GRUB_RESCUE) -o $@ $(ISO_DIR)
 
 # --- userland applications (.aex), each a ring-3 process ---
-# APP_RULE: name, link base, display name, file-extension handled
+# APP_RULE: name, link base, display name, ext, icon-glyph, "r g b" color
 define APP_RULE
 $(BUILD)/$(1).elf: user/$(1).c user/crt0.asm user/aqua.h
 	@mkdir -p $(BUILD)/user
@@ -70,13 +70,14 @@ $(BUILD)/$(1).elf: user/$(1).c user/crt0.asm user/aqua.h
 	$(CC) $(UCFLAGS) -c user/$(1).c -o $(BUILD)/user/$(1).o
 	$(LD) -nostdlib -e _start -Ttext=$(2) -o $$@ $(BUILD)/user/$(1).crt0.o $(BUILD)/user/$(1).o
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4)
+	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4) $(5) $(6) $(7) $(8)
 endef
 
-$(eval $(call APP_RULE,clock,0x40000000,Clock,))
-$(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt))
-$(eval $(call APP_RULE,monitor,0x42000000,Monitor,))
-$(eval $(call APP_RULE,terminal,0x43000000,Terminal,))
+#                     name      base       display  ext icon r   g   b   ('-' ext = none)
+$(eval $(call APP_RULE,clock,   0x40000000,Clock,-,C,100,160,255))
+$(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
+$(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
+$(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 
 APPS := clock textedit monitor terminal
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)

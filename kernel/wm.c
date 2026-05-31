@@ -58,7 +58,7 @@ static int next_app_id = 1;
 static int cascade;
 
 /* app registry built by scanning the disk for *.aex */
-struct regent { char file[48], name[32], ext[8]; };
+struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; };
 static struct regent reg[MAXWIN];
 static int nreg;
 
@@ -335,13 +335,11 @@ static void draw_dock(void)
     int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
     dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
     fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 22, 255, 255, 255, 95);
-    uint32_t col[7] = { rgb(80,140,255), rgb(55,200,120), rgb(255,92,92),
-                        rgb(255,170,40), rgb(170,110,255), rgb(40,200,220), rgb(255,120,170) };
     for (int i = 0; i < nreg; i++) {
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
-        fb_round_rect(ix, iy, dock_isz, dock_isz, 12, col[i % 7]);
+        fb_round_rect(ix, iy, dock_isz, dock_isz, 12, reg[i].color);
         fb_blend_round_rect(ix, iy, dock_isz, dock_isz / 2, 12, 255, 255, 255, 40);
-        char ch[2] = { reg[i].name[0], 0 };
+        char ch[2] = { reg[i].icon, 0 };
         fb_text(ix + dock_isz / 2 - FW / 2, iy + dock_isz / 2 - FH / 2, ch, rgb(255, 255, 255));
     }
 }
@@ -466,8 +464,13 @@ void wm_mouse_event(int x, int y, int left)
                 }
             } else if (w->kind == WK_FINDER) {
                 int row = (y - finder_top(w)) / FROW;
-                if (row >= 0 && row < vfs_count())
-                    launch_for_ext(ext_of(vfs_ent_name(row)), vfs_ent_name(row));
+                if (row >= 0 && row < vfs_count()) {
+                    const char *nm = vfs_ent_name(row);
+                    if (ends_aex(nm))
+                        wm_launch(nm, "");                     /* run the executable */
+                    else
+                        launch_for_ext(ext_of(nm), nm);        /* open with its app */
+                }
             } else if (w->kind == WK_APP) {
                 enqueue(w, EV_MOUSE, cx, cy - TITLEBAR_H);
             }
@@ -496,9 +499,17 @@ static void scan_apps(void)
         if (vfs_read(nm, buf, sizeof buf) <= 0) continue;
         char name[32], ext[8];
         if (aex_info(buf, name, ext) != 0) continue;
+        struct aex_header *h = (struct aex_header *)buf;
         scopy(reg[nreg].file, nm, sizeof reg[nreg].file);
         scopy(reg[nreg].name, name, sizeof reg[nreg].name);
         scopy(reg[nreg].ext, ext, sizeof reg[nreg].ext);
+        reg[nreg].icon = h->icon ? (char)h->icon : reg[nreg].name[0];
+        static const uint8_t pal[7][3] = {
+            {80,140,255},{55,200,120},{255,92,92},{255,170,40},
+            {170,110,255},{40,200,220},{255,120,170} };
+        reg[nreg].color = (h->icon_r || h->icon_g || h->icon_b)
+            ? rgb(h->icon_r, h->icon_g, h->icon_b)
+            : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
         nreg++;
     }
 }
@@ -536,6 +547,11 @@ void wm_run(void)
     serial_puts("\n[wm] desktop live; launching apps as ring-3 processes\n");
 
     sched_init();
+
+    /* The WM runs as a ring-0 thread; it MUST keep interrupts enabled so the
+     * timer/mouse/keyboard keep firing even when no app is running (otherwise
+     * closing the last app would leave nothing with IF=1 and freeze input). */
+    __asm__ volatile ("sti");
 
     /* auto-launch the clock so something is alive on screen at boot */
     wm_launch("clock.aex", "");

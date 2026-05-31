@@ -5,7 +5,8 @@
 static int magic_ok(const struct aex_header *h)
 {
     return h->magic[0] == 'A' && h->magic[1] == 'E' &&
-           h->magic[2] == 'X' && h->magic[3] == '1';
+           h->magic[2] == 'X' && h->magic[3] == '1' &&
+           h->version == AEX_VERSION;
 }
 
 static void copy_field(char *dst, const char *src, int n)
