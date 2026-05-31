@@ -329,3 +329,28 @@ and virtual memory, preemptively multitasks, reads a real disk through its own
 filesystem, runs unprivileged ELF programs in ring 3 via system calls, and
 presents an interactive macOS-style ("Aqua") graphical desktop — no third-party
 code, every layer written here.
+
+## Application platform (post-M8)
+
+The desktop became a real application platform rather than a set of built-in
+panels.
+
+- **Executable format (AEX):** a 64-byte header (magic, app name, the file
+  extension it handles) wrapping an ELF64; built by `tools/mkaex.py`, loaded by
+  `kernel/aex.c` (reusing the ELF loader). Apps link at distinct bases and are
+  single-instance.
+- **Processes:** launching an `.aex` creates a ring-3 process — a scheduler
+  thread (`thread_create_user`) with its own kernel stack; `schedule()` sets the
+  TSS `rsp0` per process and `thread_exit()` reaps finished ones. The Activity
+  Monitor lists these real processes (the old animated counters are gone).
+- **GUI via syscalls (`include/aqua_abi.h`):** create window, clear/rect/text,
+  flush, poll_event (key/mouse/close), get_arg, get_time (RTC), read_file,
+  sysinfo, file enumeration, yield, exit. `kernel/fb.c` draws into per-window
+  *surfaces*; the WM composites them. Apps issue these via `user/aqua.h`.
+- **Shell, open & close:** the Dock launches apps; Finder opens a file with the
+  app registered for its extension (e.g. `readme.txt` → TextEdit); the red
+  title-bar button sends a close event and the process exits.
+- **Apps shipped:** Clock, TextEdit, Terminal (a real shell), Activity Monitor —
+  each a ring-3 program in `user/`.
+- **Wall clock:** `drivers/rtc.c` reads the CMOS real-time clock; the menu bar
+  and Clock show the actual date/time.

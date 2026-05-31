@@ -29,16 +29,22 @@ This is not a simulation. It is an actual kernel that boots and runs.
   compositor, a PS/2 mouse with an arrow cursor, and **focusable, draggable
   windows** — a genuinely interactive desktop.
 
-The full roadmap (M1–M8) is complete, and **every desktop window is backed by a
-real subsystem**:
-- **Finder** lists the actual AquaFS files on disk (M5)
-- **Console** shows the ring-3 program's `int 0x80` output (M6)
-- **Activity Monitor** shows uptime (M2 timer), RAM usage (M3), and three live
-  counters driven by M4 scheduler threads
-- **Notes** receives typed characters from the keyboard (M2)
+The full roadmap (M1–M8) is complete. On top of it sits a **real application
+platform**: programs are `.aex` executables on disk, each launched as a genuine
+**ring-3 process** scheduled by M4, drawing its window through GUI system calls.
+
+- **AEX format** — a native executable (header + ELF) built by `tools/mkaex.py`.
+- **Apps** (in `user/`): **Clock** (live RTC time), **TextEdit** (opens `.txt`),
+  **Terminal** (a shell: `ls`/`cat`/`mem`/`ps`/…), **Activity Monitor** (the
+  real process list).
+- **Open/close** — the Dock launches apps; the Finder opens a file with the app
+  registered for its extension (click `readme.txt` → TextEdit); the red title-bar
+  button closes an app and its process is reaped.
+- **Wall clock** — the menu bar and Clock read the real date/time from the CMOS
+  RTC.
 
 See the [design spec](docs/superpowers/specs/2026-05-30-aqua-os-m1-design.md).
-Run `make run`, drag the windows with your mouse, and type into Notes.
+Run `make run`: drag windows, click Dock icons, open a `.txt`, type in the Terminal.
 
 ## Build & run
 
@@ -57,14 +63,15 @@ make clean
 
 ```
 boot/     boot path, Multiboot2 header, ISR stubs, context switch, ring-3 entry (nasm)
-kernel/   kernel_main + core services: idt, gdt, pmm, vmm, kheap, sched, fb, desktop, elf, syscall
-drivers/  VGA text, COM1 serial, PIC, PIT, PS/2 keyboard, ATA disk
+kernel/   kernel_main + core services: idt, gdt, pmm, vmm, kheap, sched, fb,
+          wm (window manager + GUI syscalls), elf, aex (loader), syscall
+drivers/  VGA text, COM1 serial, PIC, PIT, PS/2 keyboard + mouse, ATA disk, RTC
 fs/        VFS layer + AquaFS filesystem
 lib/      freestanding helpers (memset/memcpy/…)
-user/      ring-3 userland program (linked at 1 GiB) + its link script
-tools/     mkfs.py — builds the AquaFS disk image on the host
+user/      ring-3 apps (clock, textedit, terminal, monitor) + aqua.h + crt0
+tools/     mkfs.py (disk image), mkaex.py (executables), genfont.py (font)
 fsroot/    files packed into the disk image
-include/  public headers
+include/  public headers (incl. aqua_abi.h — the app/syscall ABI)
 linker.ld kernel link script (loads at 1 MiB)
 grub.cfg  GRUB Multiboot2 menu entry
 scripts/  build/test helpers
