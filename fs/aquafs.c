@@ -100,13 +100,18 @@ static uint32_t imap(struct dinode *in, uint32_t i)
     return ind_buf[i];
 }
 
-static int flush_meta(void)             /* persist bitmap + inode table */
+static int flush_bitmap(void)           /* persist the free-block bitmap */
 {
     for (uint32_t i = 0; i < sb.bitmap_blocks; i++)
         if (bwrite(sb.bitmap_start + i, bitmap + i * BS)) return -1;
-    for (uint32_t i = 0; i < sb.inode_blocks; i++)
-        if (bwrite(sb.inode_start + i, (uint8_t *)inodes + i * BS)) return -1;
     return 0;
+}
+
+/* persist only the inode-table block that holds inode `ino` */
+static int flush_inode(uint32_t ino)
+{
+    uint32_t blk = ino / (BS / INODE_SIZE);
+    return bwrite(sb.inode_start + blk, (uint8_t *)inodes + blk * BS);
 }
 
 /* --- whole-file I/O --- */
@@ -384,7 +389,8 @@ static int aquafs_write(const char *path, const void *buf, int size)
         struct dinode *in = iget(ino);
         if (!in || in->type != T_FILE) return -1;
         if (inode_write(in, buf, size) < 0) return -1;
-        return flush_meta() ? -1 : size;
+        if (flush_inode(ino) || flush_bitmap()) return -1;
+        return size;
     }
     char leaf[NAME_MAX];                          /* else create */
     uint32_t parent = resolve_parent(path, leaf);
@@ -396,7 +402,8 @@ static int aquafs_write(const char *path, const void *buf, int size)
     struct dinode *in = iget((uint32_t)ni);
     if (inode_write(in, buf, size) < 0) { in->type = T_FREE; return -1; }
     if (dir_add(parent, leaf, (uint32_t)ni) < 0) { inode_trunc(in); in->type = T_FREE; return -1; }
-    return flush_meta() ? -1 : size;
+    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) return -1;
+    return size;
 }
 
 static int aquafs_mkdir(const char *path)
@@ -410,7 +417,8 @@ static int aquafs_mkdir(const char *path)
     int ni = ialloc(T_DIR);
     if (ni < 0) return -1;
     if (dir_add(parent, leaf, (uint32_t)ni) < 0) { inodes[ni].type = T_FREE; return -1; }
-    return flush_meta() ? -1 : 0;
+    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) return -1;
+    return 0;
 }
 
 static int aquafs_delete(const char *path)
@@ -426,7 +434,8 @@ static int aquafs_delete(const char *path)
     if (dir_remove(parent, leaf) < 0) return -1;
     inode_trunc(in);
     in->type = T_FREE;
-    return flush_meta() ? -1 : 0;
+    if (flush_inode(ino) || flush_inode(parent) || flush_bitmap()) return -1;
+    return 0;
 }
 
 /* Directory-scoped enumeration. */
