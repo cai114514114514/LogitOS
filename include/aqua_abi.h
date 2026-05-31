@@ -19,8 +19,11 @@
 #define SYS_SYSINFO    13   /* (buf, max) -> kernel writes uptime/mem/process text */
 #define SYS_FILE_COUNT 14   /* () -> number of files on the volume */
 #define SYS_FILE_NAME  15   /* (i, buf, max) -> file size; fills name */
-#define SYS_WRITE_FILE 16   /* (name, buf, size) -> bytes written, or -1 (create/overwrite) */
-#define SYS_DELETE_FILE 17  /* (name) -> 0, or -1 */
+#define SYS_WRITE_FILE 16   /* (path, buf, size) -> bytes written, or -1 (create/overwrite) */
+#define SYS_DELETE_FILE 17  /* (path) -> 0, or -1 (file or empty dir) */
+#define SYS_MKDIR      18   /* (path) -> 0, or -1 */
+#define SYS_DIR_COUNT  19   /* (dir) -> entries in dir, or -1 if not a directory */
+#define SYS_DIR_NAME   20   /* (dir, i, buf<=64) -> file size, -2 if dir, -1 if no entry */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

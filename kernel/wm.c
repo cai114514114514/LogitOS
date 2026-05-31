@@ -294,6 +294,17 @@ long wm_gui_syscall(long num, long a, long b, long c)
         return vfs_write((const char *)a, (const void *)b, (int)c);
     case SYS_DELETE_FILE:
         return vfs_delete((const char *)a);
+    case SYS_MKDIR:
+        return vfs_mkdir((const char *)a);
+    case SYS_DIR_COUNT:
+        return vfs_count((const char *)a);
+    case SYS_DIR_NAME: {
+        const char *dir = (const char *)a;
+        int i = (int)b;
+        if (i < 0 || i >= vfs_count(dir)) return -1;
+        scopy((char *)c, vfs_ent_name(dir, i), 64);
+        return vfs_ent_is_dir(dir, i) ? -2 : vfs_ent_size(dir, i);
+    }
     }
     return -1;
 }

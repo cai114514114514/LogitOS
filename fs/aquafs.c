@@ -441,7 +441,7 @@ static uint32_t resolve_dir(const char *dir)
 static int aquafs_count(const char *dir)
 {
     uint32_t ino = resolve_dir(dir);
-    return ino == NOINO ? 0 : dir_count_live(ino);
+    return ino == NOINO ? -1 : dir_count_live(ino);   /* -1: not a directory */
 }
 
 static const char *aquafs_ent_name(const char *dir, int i)
