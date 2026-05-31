@@ -26,19 +26,24 @@ int vfs_read(const char *path, void *buf, int max)
     return (root && root->read) ? root->read(path, buf, max) : -1;
 }
 
-int vfs_count(void)
+int vfs_count(const char *dir)
 {
-    return (root && root->count) ? root->count() : 0;
+    return (root && root->count) ? root->count(dir) : 0;
 }
 
-const char *vfs_ent_name(int i)
+const char *vfs_ent_name(const char *dir, int i)
 {
-    return (root && root->ent_name) ? root->ent_name(i) : "";
+    return (root && root->ent_name) ? root->ent_name(dir, i) : "";
 }
 
-int vfs_ent_size(int i)
+int vfs_ent_size(const char *dir, int i)
 {
-    return (root && root->ent_size) ? root->ent_size(i) : 0;
+    return (root && root->ent_size) ? root->ent_size(dir, i) : 0;
+}
+
+int vfs_ent_is_dir(const char *dir, int i)
+{
+    return (root && root->ent_is_dir) ? root->ent_is_dir(dir, i) : 0;
 }
 
 int vfs_write(const char *path, const void *buf, int size)

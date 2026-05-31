@@ -10,9 +10,10 @@ struct filesystem {
     void (*list)(void);
     int  (*size)(const char *path);                 /* bytes, or -1 */
     int  (*read)(const char *path, void *buf, int max);  /* bytes read, or -1 */
-    int  (*count)(void);                            /* number of files */
-    const char *(*ent_name)(int i);                 /* name of file i */
-    int  (*ent_size)(int i);                         /* size of file i, bytes */
+    int  (*count)(const char *dir);                 /* entries in directory `dir` */
+    const char *(*ent_name)(const char *dir, int i);/* name of entry i in `dir` */
+    int  (*ent_size)(const char *dir, int i);        /* size of entry i, bytes */
+    int  (*ent_is_dir)(const char *dir, int i);      /* 1 if entry i is a directory */
     int  (*write)(const char *path, const void *buf, int size);  /* create/overwrite */
     int  (*del)(const char *path);                  /* delete */
     int  (*mkdir)(const char *path);                /* create a directory */
@@ -24,10 +25,11 @@ void vfs_list(void);
 int  vfs_size(const char *path);
 int  vfs_read(const char *path, void *buf, int max);
 
-/* Directory enumeration. */
-int         vfs_count(void);
-const char *vfs_ent_name(int i);
-int         vfs_ent_size(int i);
+/* Directory enumeration (scoped to a directory path, e.g. "/" or "/docs"). */
+int         vfs_count(const char *dir);
+const char *vfs_ent_name(const char *dir, int i);
+int         vfs_ent_size(const char *dir, int i);
+int         vfs_ent_is_dir(const char *dir, int i);
 
 /* Mutating ops. */
 int         vfs_write(const char *path, const void *buf, int size);

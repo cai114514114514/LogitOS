@@ -429,20 +429,50 @@ static int aquafs_delete(const char *path)
     return flush_meta() ? -1 : 0;
 }
 
-/* Layer-1 flat enumeration: lists the ROOT directory (dir-scoped API lands in
- * Layer 2). */
-static int         aquafs_count(void)        { return dir_count_live(sb.root_ino); }
-static const char *aquafs_ent_name(int i)    { namebuf[0] = 0; dir_nth(sb.root_ino, i, namebuf); return namebuf; }
-static int         aquafs_ent_size(int i)
+/* Directory-scoped enumeration. */
+static uint32_t resolve_dir(const char *dir)
 {
-    uint32_t ino = dir_nth(sb.root_ino, i, NULL);
+    uint32_t ino = resolve(dir);
+    if (ino == NOINO) return NOINO;
+    struct dinode *d = iget(ino);
+    return (d && d->type == T_DIR) ? ino : NOINO;
+}
+
+static int aquafs_count(const char *dir)
+{
+    uint32_t ino = resolve_dir(dir);
+    return ino == NOINO ? 0 : dir_count_live(ino);
+}
+
+static const char *aquafs_ent_name(const char *dir, int i)
+{
+    namebuf[0] = 0;
+    uint32_t ino = resolve_dir(dir);
+    if (ino != NOINO) dir_nth(ino, i, namebuf);
+    return namebuf;
+}
+
+static int aquafs_ent_size(const char *dir, int i)
+{
+    uint32_t dino = resolve_dir(dir);
+    if (dino == NOINO) return 0;
+    uint32_t ino = dir_nth(dino, i, NULL);
     struct dinode *in = ino ? iget(ino) : NULL;
     return in ? (int)in->size : 0;
 }
 
+static int aquafs_ent_is_dir(const char *dir, int i)
+{
+    uint32_t dino = resolve_dir(dir);
+    if (dino == NOINO) return 0;
+    uint32_t ino = dir_nth(dino, i, NULL);
+    struct dinode *in = ino ? iget(ino) : NULL;
+    return in && in->type == T_DIR;
+}
+
 static void aquafs_list(void)
 {
-    int n = aquafs_count();
+    int n = dir_count_live(sb.root_ino);
     kprintf("[fs] AquaFS v3: %d entr(ies) in /:\n", n);
     for (int i = 0; i < n; i++) {
         char nm[NAME_MAX]; nm[0] = 0;
@@ -460,9 +490,10 @@ struct filesystem aquafs = {
     .list     = aquafs_list,
     .size     = aquafs_size,
     .read     = aquafs_read,
-    .count    = aquafs_count,
-    .ent_name = aquafs_ent_name,
-    .ent_size = aquafs_ent_size,
+    .count      = aquafs_count,
+    .ent_name   = aquafs_ent_name,
+    .ent_size   = aquafs_ent_size,
+    .ent_is_dir = aquafs_ent_is_dir,
     .write    = aquafs_write,
     .del      = aquafs_delete,
     .mkdir    = aquafs_mkdir,

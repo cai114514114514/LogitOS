@@ -42,6 +42,7 @@ struct win {
     struct aqua_event evq[16];
     int  evhead, evtail;
     int  wants_close;
+    char cwd[128];            /* Finder: current directory path */
 };
 
 static struct app apps[MAXWIN];
@@ -68,6 +69,22 @@ static void blit(uint32_t *d, const uint32_t *s, int n) { for (int i = 0; i < n;
 
 static int streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void scopy(char *d, const char *s, int max) { int i = 0; for (; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
+/* out = dir + "/" + name (collapsing the slash); truncates at max-1. */
+static void path_join(char *out, const char *dir, const char *name, int max) {
+    int n = 0;
+    for (const char *p = dir; *p && n < max - 1; p++) out[n++] = *p;
+    if ((n == 0 || out[n - 1] != '/') && n < max - 1) out[n++] = '/';
+    for (const char *p = name; *p && n < max - 1; p++) out[n++] = *p;
+    out[n] = 0;
+}
+/* strip the last path component in place ("/a/b" -> "/a", "/a" -> "/"). */
+static void path_up(char *p) {
+    int n = 0; while (p[n]) n++;
+    if (n <= 1) return;
+    if (p[n - 1] == '/') n--;
+    while (n > 0 && p[n - 1] != '/') n--;
+    if (n <= 1) { p[0] = '/'; p[1] = 0; } else p[n - 1] = 0;
+}
 static int ends_aex(const char *s) {
     int n = 0; while (s[n]) n++;
     return n >= 4 && s[n-4]=='.' && s[n-3]=='a' && s[n-2]=='e' && s[n-1]=='x';
@@ -267,11 +284,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_SYSINFO:
         return sysinfo_text((char *)a, (int)b);
     case SYS_FILE_COUNT:
-        return vfs_count();
+        return vfs_count("/");
     case SYS_FILE_NAME: {
         int i = (int)a;
-        scopy((char *)b, vfs_ent_name(i), (int)c);
-        return vfs_ent_size(i);
+        scopy((char *)b, vfs_ent_name("/", i), (int)c);
+        return vfs_ent_size("/", i);
     }
     case SYS_WRITE_FILE:
         return vfs_write((const char *)a, (const void *)b, (int)c);
@@ -367,17 +384,27 @@ static void draw_clock(void)
 /* ---------- Finder (builtin) ---------- */
 #define FROW 26
 static int finder_top(struct win *w) { return w->y + TITLEBAR_H + 36; }
+static int finder_at_root(struct win *w) { return w->cwd[0] == '/' && w->cwd[1] == 0; }
+
 static void draw_finder(struct win *w)
 {
     int x = w->x;
-    fb_text(x + 16, w->y + TITLEBAR_H + 10, "AquaFS  /", rgb(120, 120, 128));
-    int n = vfs_count();
-    for (int i = 0; i < n; i++) {
-        int yy = finder_top(w) + i * FROW;
-        fb_round_rect(x + 16, yy, 13, 16, 3, rgb(90, 150, 240));
-        fb_text(x + 38, yy, vfs_ent_name(i), rgb(60, 60, 68));
+    fb_text(x + 16, w->y + TITLEBAR_H + 10, w->cwd, rgb(120, 120, 128));
+    int row = 0;
+    if (!finder_at_root(w)) {                       /* ".." to go up */
+        int yy = finder_top(w) + row * FROW;
+        fb_round_rect(x + 16, yy, 13, 16, 3, rgb(230, 185, 90));
+        fb_text(x + 38, yy, "..", rgb(60, 60, 68));
+        row++;
     }
-    fb_text(x + 16, w->y + w->h - 22, "click a file to open", rgb(170, 170, 178));
+    int n = vfs_count(w->cwd);
+    for (int i = 0; i < n; i++, row++) {
+        int yy = finder_top(w) + row * FROW;
+        int isdir = vfs_ent_is_dir(w->cwd, i);
+        fb_round_rect(x + 16, yy, 13, 16, 3, isdir ? rgb(230, 185, 90) : rgb(90, 150, 240));
+        fb_text(x + 38, yy, vfs_ent_name(w->cwd, i), rgb(60, 60, 68));
+    }
+    fb_text(x + 16, w->y + w->h - 22, "click a folder or file", rgb(170, 170, 178));
 }
 
 /* ---------- window frame + compositing ---------- */
@@ -468,12 +495,26 @@ void wm_mouse_event(int x, int y, int left)
                 }
             } else if (w->kind == WK_FINDER) {
                 int row = (y - finder_top(w)) / FROW;
-                if (row >= 0 && row < vfs_count()) {
-                    const char *nm = vfs_ent_name(row);
-                    if (ends_aex(nm))
-                        wm_launch(nm, "");                     /* run the executable */
-                    else
-                        launch_for_ext(ext_of(nm), nm);        /* open with its app */
+                int atroot = finder_at_root(w);
+                if (row < 0) {
+                    /* nothing */
+                } else if (!atroot && row == 0) {
+                    path_up(w->cwd);                           /* go to parent */
+                } else {
+                    int idx = atroot ? row : row - 1;
+                    if (idx >= 0 && idx < vfs_count(w->cwd)) {
+                        int isdir = vfs_ent_is_dir(w->cwd, idx);
+                        char nm[64];
+                        scopy(nm, vfs_ent_name(w->cwd, idx), sizeof nm);
+                        if (isdir) {
+                            path_join(w->cwd, w->cwd, nm, sizeof w->cwd);  /* enter */
+                        } else {
+                            char full[160];
+                            path_join(full, w->cwd, nm, sizeof full);
+                            if (ends_aex(nm)) wm_launch(full, "");
+                            else launch_for_ext(ext_of(nm), full);
+                        }
+                    }
                 }
             } else if (w->kind == WK_APP) {
                 enqueue(w, EV_MOUSE, cx, cy - TITLEBAR_H);
@@ -495,10 +536,11 @@ void wm_mouse_event(int x, int y, int left)
 /* ---------- registry + init ---------- */
 static void scan_apps(void)
 {
-    int n = vfs_count();
+    int n = vfs_count("/");
     static char buf[32768];
     for (int i = 0; i < n && nreg < MAXWIN; i++) {
-        const char *nm = vfs_ent_name(i);
+        char nm[64];
+        scopy(nm, vfs_ent_name("/", i), sizeof nm);
         if (!ends_aex(nm)) continue;
         if (vfs_read(nm, buf, sizeof buf) <= 0) continue;
         char name[32], ext[8];
@@ -535,6 +577,7 @@ void wm_init(void)
     wins[0].used = 1; wins[0].kind = WK_FINDER;
     wins[0].x = 30; wins[0].y = 60; wins[0].w = 280; wins[0].h = 380;
     scopy(wins[0].title, "Finder", sizeof wins[0].title);
+    scopy(wins[0].cwd, "/", sizeof wins[0].cwd);
     order[norder++] = 0;
 
     draw_background();

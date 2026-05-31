@@ -84,7 +84,7 @@ AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)
 
 $(DISK): $(FS_FILES) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
-	python3 tools/mkfs.py $(DISK) $(FS_FILES) $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
+	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
