@@ -37,7 +37,13 @@ void interrupt_handler(struct registers *r)
         return;
     }
     if (r->vector < 32) {
-        panic_exception(r);
+        if (r->cs & 3) {            /* fault came from ring 3: kill the app, keep the kernel alive */
+            kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x -- terminating app\n",
+                    exception_names[r->vector & 31], (int)r->vector,
+                    (void *)r->rip, (unsigned)r->error_code);
+            thread_exit();          /* marks thread+app dead, frees its stack, switches away */
+        }
+        panic_exception(r);         /* kernel-mode fault is still fatal */
         return;
     }
 
