@@ -42,10 +42,12 @@ Key notes:
   user pages. Intermediate table entries carry USER; leaf PTE flags protect
   kernel pages. User images link at 1 GiB (above the identity huge-page region).
 - Disk: QEMU `-drive ...,if=ide` primary master; `drivers/ata.c` (PIO
-  read+write) + `fs/aquafs.c` + `fs/vfs.c`. AquaFS is **read-write** (on-disk v2:
-  16 fixed 64 KiB slots; `vfs_write`/`vfs_delete`, `ata_write` + flush). Build the
-  image with `tools/mkfs.py` (Makefile `$(DISK)` target packs `fsroot/*` + each
-  app's `.aex`).
+  read+write) + `fs/aquafs.c` + `fs/vfs.c`. AquaFS is a **hierarchical,
+  read-write inode FS** (on-disk v3, 4 KiB blocks: superblock, free-block
+  bitmap, inode table with direct[12]+single-indirect, directories = inodes of
+  dirents). Subdirectories + files up to ~4 MiB; `vfs_*` are path-based. Build
+  the image with `tools/mkfs.py` (Makefile `$(DISK)` packs `fsroot/*`, a seeded
+  `/docs/`, and each app's `.aex` at the root).
 - Userland: `kernel/gdt.c` (TSS rsp0), `boot/enter_user.asm`, syscalls via
   int 0x80 in `kernel/syscall.c`; `user/` builds the ring-3 ELF.
 - M8 window system: `tools/genfont.py` -> `include/font8x16.h` (committed, no PIL
@@ -65,10 +67,12 @@ Key notes:
   `sched_current_data()` maps the running thread to its `struct app`.
 - ABI: `include/aqua_abi.h` (shared with userland `user/aqua.h`). Syscalls via
   int 0x80: GUI create/clear/rect/text/flush, poll_event (key/mouse/close),
-  get_arg, get_time, read_file, write_file/delete_file, yield, sysinfo,
-  file_count/file_name, exit. `syscall.c` routes GUI calls to `wm_gui_syscall()`
-  in the app's context. TextEdit saves with Ctrl+S; Terminal has touch/rm/echo>.
-  PS/2 keyboard supports Ctrl (control codes) + Shift (capitals/symbols).
+  get_arg, get_time, read_file, write_file/delete_file, mkdir,
+  dir_count/dir_name (path-scoped listing), yield, sysinfo, file_count/file_name
+  (root), exit. read/write/delete/mkdir take paths. `syscall.c` routes GUI calls
+  to `wm_gui_syscall()` in the app's context. Finder is a directory browser
+  (cwd, folders, `..`); Terminal has cd/pwd/mkdir/ls + cat/touch/rm/echo>;
+  TextEdit saves with Ctrl+S. PS/2 keyboard supports Ctrl + Shift.
 - WM: dynamic windows + per-window surfaces composited each frame; app registry
   scanned from *.aex; Dock launches apps; Finder opens a file with the app whose
   `ext` matches (file association); red close button -> EV_CLOSE -> app exits.

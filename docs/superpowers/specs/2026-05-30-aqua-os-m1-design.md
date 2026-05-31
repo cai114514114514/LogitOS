@@ -377,3 +377,34 @@ The filesystem became read-write so apps can persist files.
   gains `touch`, `rm`, and `echo TEXT > FILE`.
 - **Input:** the PS/2 keyboard driver gained Ctrl (→ control codes, e.g. Ctrl+S)
   and Shift (capitals + shifted symbols, so `>` and friends are typeable).
+
+## AquaFS v3 — hierarchical inode filesystem (post-M8)
+
+The fixed-slot v2 format (16 files, 64 KiB each, flat) was replaced with a real
+Unix-style filesystem so the desktop can hold many files, large files, and
+folders.
+
+- **On-disk (v3, 4 KiB blocks):** superblock → free-block **bitmap** → **inode
+  table** (128 B inodes: `type`, `size`, `direct[12]`, `indirect`) → data.
+  Directories are ordinary inodes whose data is an array of dirents
+  `{ u32 ino; char name[60] }`. 12 direct + one single-indirect block (1024
+  pointers) ⇒ files up to ~4 MiB; default image 16 MiB. Built by `tools/mkfs.py`,
+  which accepts nested paths (`host:/docs/notes.txt`) and auto-creates dirs.
+- **Kernel (`fs/aquafs.c`):** mount loads the bitmap + inode table into RAM;
+  `resolve()` walks dirents from root splitting on `/` (handles `.`/`..`); block
+  + inode allocation via the bitmap; whole-file inode read/write over
+  direct+indirect; `mkdir`, file create/overwrite, unlink + rmdir-when-empty;
+  metadata is flushed back on every mutation. The whole-file `vfs_read/vfs_write`
+  contract is unchanged, so the ELF/AEX loader is untouched.
+- **VFS + WM:** enumeration is **directory-scoped** (`count/ent_name/ent_size/
+  ent_is_dir(dir, …)`). The Finder is now a file browser — each window tracks a
+  cwd, shows folder vs file glyphs and a `..` row, navigates in/out, and opens
+  files by full path.
+- **ABI + apps:** `SYS_MKDIR`/`SYS_DIR_COUNT`/`SYS_DIR_NAME` (18–20);
+  `read/write/delete_file` take paths. Terminal tracks a cwd and adds
+  `cd`/`pwd`/`mkdir` with directory-scoped `ls`. `SYS_FILE_COUNT/NAME` stay
+  pinned to root for backward compatibility.
+- **Verified:** kernel self-test (mkdir + nested create + read-back + rmdir);
+  Finder navigation into `/docs` opening + saving a file; Terminal
+  `mkdir/cd/echo>` creating `/proj/note.txt` — all persisted to the raw image
+  and read back.
