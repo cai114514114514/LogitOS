@@ -29,6 +29,10 @@
 #define SYS_NET_PING_RTT 23 /* () -> RTT in ms (>=0), or -1 if no reply yet */
 #define SYS_NET_DNS    24   /* (name) start a DNS A-query; -> 0 ok, -1 no NIC */
 #define SYS_NET_DNS_RESULT 25 /* () -> resolved IP (host order), 0 pending, 0xFFFFFFFF failed */
+#define SYS_HTTP_GET    26  /* (url) fetch+render an http:// page; -> 0 ok start, <0 bad url */
+#define SYS_HTTP_STATUS 27  /* () -> 1 busy, 2 done, <0 error code */
+#define SYS_HTTP_READ   28  /* (off, buf, max) -> bytes of rendered text copied (0 at end) */
+#define SYS_HTTP_LINK   29  /* (i, buf, max) -> 0 + abs URL of link i, or -1 */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

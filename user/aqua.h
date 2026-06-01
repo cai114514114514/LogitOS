@@ -51,4 +51,10 @@ static inline int      net_ping_rtt(void) { return (int)_sys(SYS_NET_PING_RTT, 0
 static inline int      net_dns(const char *name) { return (int)_sys(SYS_NET_DNS, (long)name, 0, 0); }
 static inline unsigned net_dns_result(void) { return (unsigned)_sys(SYS_NET_DNS_RESULT, 0, 0, 0); }
 
+/* --- HTTP (browser) --- */
+static inline int http_get(const char *url) { return (int)_sys(SYS_HTTP_GET, (long)url, 0, 0); }
+static inline int http_status(void) { return (int)_sys(SYS_HTTP_STATUS, 0, 0, 0); }
+static inline int http_read(int off, char *buf, int max) { return (int)_sys(SYS_HTTP_READ, off, (long)buf, max); }
+static inline int http_link(int i, char *buf, int max) { return (int)_sys(SYS_HTTP_LINK, i, (long)buf, max); }
+
 #endif /* AQUA_USERLIB_H */

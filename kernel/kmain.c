@@ -36,7 +36,7 @@ void kernel_main(uint64_t mb_info)
     int fs_ok = (vfs_mount() == 0);
     serial_puts(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
 
-    net_init();   /* NIC + stack (incl. TCP); apps drive it at runtime */
+    net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
 
     wm_init();
     wm_render();                 /* first frame -> desktop visible */

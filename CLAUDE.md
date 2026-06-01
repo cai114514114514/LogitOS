@@ -38,6 +38,10 @@ M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
 PS/2 mouse + draggable windows) ✅ · M9 networking (PCI + e1000 + ARP/IPv4/
 ICMP/UDP + DNS + Network app) ✅.
 
+Browser arc: M10 TCP ✅ (`net/tcp.c`, client byte stream) · M11 HTTP + Browser
+app ✅ (`net/http.c` fetch + `net/html.c` de-tag render + `user/browser.c`) ·
+M12 TLS 1.3 (planned, for https) · M13 HTML/CSS layout (planned).
+
 Post-roadmap: per-process address spaces (each app its own PML4; `vmm_new_space`,
 `schedule()` switches CR3) and ring-3 fault containment (an app fault kills only
 that app; the kernel/desktop survive — `kernel/interrupts.c`).
@@ -66,6 +70,16 @@ Key notes:
   `net_cfg` (DHCP hook later). Run/test attach `-netdev user -device e1000`
   (+ `filter-dump` pcap for `make run`). e1000 gotcha: QEMU's `set_rx_control`
   defers the RX-queue flush ~1s, so RX needs a real time base to observe.
+- M10 TCP (`net/tcp.c`): client byte stream over IP proto 6 (IP_PROTO_TCP via
+  ip_input's weak hook); tcp_connect/send/recv/close; single outstanding seg +
+  timeout retransmit; no out-of-order/window-scaling/congestion (enough for GET).
+- M11 HTTP (`net/http.c` + `net/url.c` + `net/html.c`): http_get(url) does
+  DNS+TCP+GET synchronously and html_render strips tags/decodes entities/extracts
+  `<a>` links; `user/browser.c` is the GUI. **Gotcha:** blocking net calls
+  (http_get, dns_resolve) pump net_poll and need IF=1, but int 0x80 is an
+  interrupt gate (clears IF) — so SYS_HTTP_GET re-enables interrupts around the
+  fetch (see `wm_gui_syscall`), else the PIT-based timeout loop spins forever.
+  Only http:// (TLS is M12).
 
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the AquaFS disk = real **ring-3 processes** scheduled
@@ -81,12 +95,14 @@ Key notes:
   int 0x80: GUI create/clear/rect/text/flush, poll_event (key/mouse/close),
   get_arg, get_time, read_file, write_file/delete_file, mkdir,
   dir_count/dir_name (path-scoped listing), net_info/net_ping/net_dns (+ result
-  pollers), yield, sysinfo, file_count/file_name (root), exit.
-  read/write/delete/mkdir take paths. `syscall.c` routes GUI calls to
-  `wm_gui_syscall()` in the app's context. Finder is a directory browser (cwd,
-  folders, `..`); Terminal has cd/pwd/mkdir/ls + cat/touch/rm/echo>; TextEdit
-  saves with Ctrl+S; Network app pings the gateway + resolves a host (DNS). PS/2
-  keyboard supports Ctrl + Shift.
+  pollers), http_get/http_status/http_read/http_link, yield, sysinfo,
+  file_count/file_name (root), exit. read/write/delete/mkdir take paths.
+  `syscall.c` routes GUI calls to `wm_gui_syscall()` in the app's context.
+  Finder is a directory browser (cwd, folders, `..`); Terminal has
+  cd/pwd/mkdir/ls + cat/touch/rm/echo>; TextEdit saves with Ctrl+S; Network app
+  pings the gateway + resolves a host (DNS); Browser loads http:// pages
+  (address bar, de-tagged text, clickable links). PS/2 keyboard supports
+  Ctrl + Shift.
 - WM: dynamic windows + per-window surfaces composited each frame; app registry
   scanned from *.aex; Dock launches apps; Finder opens a file with the app whose
   `ext` matches (file association); red close button -> EV_CLOSE -> app exits.

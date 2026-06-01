@@ -84,3 +84,30 @@ advances in `http_poll()` on the WM loop, the app polls status.
 - HTTP/1.0 + `Connection: close` avoids chunked transfer-encoding; if a server
   sends chunked anyway, de-chunk is out of scope for M11 (example.com doesn't).
 - Out of scope: HTTPS (M12), real CSS/box layout (M13), forms/JS, images.
+
+## Result — implemented & verified
+
+All three layers shipped:
+- **L1 fetch:** `url_parse`/`url_resolve` (`net/url.c`) + `http_get` (`net/http.c`)
+  resolve DNS, TCP-connect, send `GET / HTTP/1.0`, receive to a buffer. Kernel
+  self-test printed the real body (`<!doctype html>...Example Domain...`) ->
+  `AQUA_HTTP_FETCH_OK`.
+- **L2 render:** `html_render` (`net/html.c`) stripped tags (incl. script/style
+  bodies), decoded entities, collapsed whitespace, and extracted the `<a>` link
+  resolved to absolute -> rendered "Example Domain" + 1 link
+  `https://iana.org/domains/example` -> `AQUA_HTTP_RENDER_OK`.
+- **L3 app:** `SYS_HTTP_GET/STATUS/READ/LINK` + `user/browser.c` (address bar,
+  scrolled text, blue clickable link lines). Verified over QMP: the Browser
+  loads `http://example.com` and renders "Example Domain / This domain is for
+  use in documentation examples... / Learn more" with status "loaded".
+
+**Root cause found during L3** (systematic debugging via serial trace + pcap):
+`SYS_HTTP_GET` ran with IF=0 because int 0x80 is an interrupt gate, so
+`http_get`'s blocking loop (which pumps `net_poll` and times out on the PIT)
+spun forever with a frozen `timer_ticks()` and emitted zero packets. Fix: the
+syscall re-enables interrupts around the blocking fetch (the calling app is
+parked; only the WM thread runs), then restores IF for the `iretq`. This is the
+general rule for any blocking net op invoked from a syscall.
+
+Next: **M12 TLS 1.3** (X25519 + ChaCha20-Poly1305 + SHA-256/HKDF) so `https://`
+links — like the one example.com points at — actually open.

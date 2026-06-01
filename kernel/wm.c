@@ -15,6 +15,7 @@
 #include "net.h"
 #include "icmp.h"
 #include "dns.h"
+#include "http.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
@@ -346,6 +347,23 @@ long wm_gui_syscall(long num, long a, long b, long c)
         return 0;
     case SYS_NET_DNS_RESULT:
         return (long)(int)dns_result();
+    case SYS_HTTP_GET: {
+        /* http_get blocks while pumping net_poll, which needs a live PIT time
+         * base. The int 0x80 gate cleared IF, so re-enable interrupts across the
+         * fetch (the calling app is parked; only this WM thread runs), then
+         * restore IF for the iretq back to ring 3. */
+        int grc;
+        __asm__ volatile ("sti");
+        grc = http_get((const char *)a);
+        __asm__ volatile ("cli");
+        return grc;
+    }
+    case SYS_HTTP_STATUS:
+        return http_status();
+    case SYS_HTTP_READ:
+        return http_read((int)a, (char *)b, (int)c);
+    case SYS_HTTP_LINK:
+        return http_link_url((int)a, (char *)b, (int)c);
     }
     return -1;
 }
