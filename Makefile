@@ -78,8 +78,9 @@ $(eval $(call APP_RULE,clock,   0x40000000,Clock,-,C,100,160,255))
 $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
+$(eval $(call APP_RULE,netapp,  0x44000000,Network,-,N,80,170,220))
 
-APPS := clock textedit monitor terminal
+APPS := clock textedit monitor terminal netapp
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)
 
 $(DISK): $(FS_FILES) $(AEX) tools/mkfs.py

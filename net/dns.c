@@ -42,34 +42,26 @@ static int skip_name(const uint8_t *msg, int off, int len)
     return off;
 }
 
-uint32_t dns_resolve(const char *name)
+static uint8_t resp[512];
+static uint64_t dns_started;
+
+/* Build an A-query for `name` into q; returns its length, or -1. */
+static int build_query(uint8_t *q, const char *name)
 {
-    uint8_t q[512];
-    /* Header: id=0x1234, RD=1, 1 question. */
     q[0] = 0x12; q[1] = 0x34; q[2] = 0x01; q[3] = 0x00;
     q[4] = 0; q[5] = 1; q[6] = 0; q[7] = 0; q[8] = 0; q[9] = 0; q[10] = 0; q[11] = 0;
     int o = 12;
     int n = encode_qname(q + o, name);
-    if (n < 0) return 0;
+    if (n < 0) return -1;
     o += n;
     q[o++] = 0; q[o++] = 1;     /* QTYPE A */
     q[o++] = 0; q[o++] = 1;     /* QCLASS IN */
+    return o;
+}
 
-    static uint8_t resp[512];
-    udp_recv_bind(0x4444, resp, sizeof resp);
-
-    uint64_t start = timer_ticks(), last = 0;
-    while (timer_ticks() - start < 300) {           /* ~3 s */
-        net_poll();
-        if (udp_recv_len() >= 0) break;
-        if (last == 0 || timer_ticks() - last >= 50) {
-            last = timer_ticks();
-            udp_send(DNS_SERVER, DNS_PORT, 0x4444, q, (uint16_t)o);
-        }
-        for (volatile int d = 0; d < 300000; d++) ;
-    }
-
-    int rlen = udp_recv_len();
+/* Parse the first A answer out of resp[0..rlen); 0 if none. */
+static uint32_t parse_answer(int rlen)
+{
     if (rlen < 12) return 0;
     int ancount = (resp[6] << 8) | resp[7];
     if (ancount < 1) return 0;
@@ -85,6 +77,48 @@ uint32_t dns_resolve(const char *name)
         if (type == 1 && rdlen == 4 && rdata + 4 <= rlen)      /* A record */
             return IPV4(resp[rdata], resp[rdata + 1], resp[rdata + 2], resp[rdata + 3]);
         off = rdata + rdlen;
+    }
+    return 0;
+}
+
+/* Non-blocking: send the query, arm the receive slot, record the start time. */
+void dns_start(const char *name)
+{
+    uint8_t q[512];
+    int o = build_query(q, name);
+    if (o < 0) return;
+    udp_recv_bind(0x4444, resp, sizeof resp);
+    dns_started = timer_ticks();
+    udp_send(DNS_SERVER, DNS_PORT, 0x4444, q, (uint16_t)o);
+}
+
+/* 0 = pending, 0xFFFFFFFF = timeout, else the resolved IP (host order). */
+uint32_t dns_result(void)
+{
+    int rlen = udp_recv_len();
+    if (rlen >= 0) {
+        uint32_t ip = parse_answer(rlen);
+        return ip ? ip : 0xFFFFFFFFu;
+    }
+    if (timer_ticks() - dns_started > 300)      /* ~3 s */
+        return 0xFFFFFFFFu;
+    return 0;
+}
+
+uint32_t dns_resolve(const char *name)
+{
+    dns_start(name);
+    uint64_t start = timer_ticks(), last = start;
+    while (timer_ticks() - start < 300) {
+        net_poll();
+        uint32_t r = dns_result();
+        if (r == 0xFFFFFFFFu) return 0;
+        if (r) return r;
+        if (timer_ticks() - last >= 50) {       /* retransmit */
+            last = timer_ticks();
+            dns_start(name);
+        }
+        for (volatile int d = 0; d < 300000; d++) ;
     }
     return 0;
 }

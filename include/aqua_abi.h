@@ -24,6 +24,11 @@
 #define SYS_MKDIR      18   /* (path) -> 0, or -1 */
 #define SYS_DIR_COUNT  19   /* (dir) -> entries in dir, or -1 if not a directory */
 #define SYS_DIR_NAME   20   /* (dir, i, buf<=64) -> file size, -2 if dir, -1 if no entry */
+#define SYS_NET_INFO   21   /* (struct aqua_netinfo*) -> 1 if a NIC is up, else 0 */
+#define SYS_NET_PING   22   /* (ip) start a ping; -> 0 ok, -1 no NIC. ip = a<<24|b<<16|c<<8|d */
+#define SYS_NET_PING_RTT 23 /* () -> RTT in ms (>=0), or -1 if no reply yet */
+#define SYS_NET_DNS    24   /* (name) start a DNS A-query; -> 0 ok, -1 no NIC */
+#define SYS_NET_DNS_RESULT 25 /* () -> resolved IP (host order), 0 pending, 0xFFFFFFFF failed */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0
@@ -42,6 +47,12 @@ struct aqua_time {
     int year, month, day;
     int hour, minute, second;
     int weekday;
+};
+
+/* Network info filled by SYS_NET_INFO. IPs are host order (a.b.c.d packed). */
+struct aqua_netinfo {
+    unsigned ip, mask, gw;
+    unsigned char mac[6];
 };
 
 #endif /* AQUA_ABI_H */

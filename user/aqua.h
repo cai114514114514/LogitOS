@@ -44,4 +44,11 @@ static inline int  dir_count(const char *p) { return (int)_sys(SYS_DIR_COUNT, (l
 /* fills buf (must be >= 64 bytes) with entry name; returns file size, -2 dir, -1 none */
 static inline int  dir_name(const char *p, int i, char *buf) { return (int)_sys(SYS_DIR_NAME, (long)p, i, (long)buf); }
 
+/* --- networking --- */
+static inline int      net_info(struct aqua_netinfo *ni) { return (int)_sys(SYS_NET_INFO, (long)ni, 0, 0); }
+static inline int      net_ping(unsigned ip) { return (int)_sys(SYS_NET_PING, (long)ip, 0, 0); }
+static inline int      net_ping_rtt(void) { return (int)_sys(SYS_NET_PING_RTT, 0, 0, 0); }
+static inline int      net_dns(const char *name) { return (int)_sys(SYS_NET_DNS, (long)name, 0, 0); }
+static inline unsigned net_dns_result(void) { return (unsigned)_sys(SYS_NET_DNS_RESULT, 0, 0, 0); }
+
 #endif /* AQUA_USERLIB_H */

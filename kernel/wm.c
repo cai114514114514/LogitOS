@@ -13,6 +13,8 @@
 #include "aex.h"
 #include "aqua_abi.h"
 #include "net.h"
+#include "icmp.h"
+#include "dns.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
@@ -325,6 +327,25 @@ long wm_gui_syscall(long num, long a, long b, long c)
         scopy((char *)c, vfs_ent_name(dir, i), 64);
         return vfs_ent_is_dir(dir, i) ? -2 : vfs_ent_size(dir, i);
     }
+    case SYS_NET_INFO: {
+        if (!net_up()) return 0;
+        struct aqua_netinfo *ni = (struct aqua_netinfo *)a;
+        ni->ip = net_cfg.ip; ni->mask = net_cfg.mask; ni->gw = net_cfg.gw;
+        for (int i = 0; i < 6; i++) ni->mac[i] = net_cfg.mac[i];
+        return 1;
+    }
+    case SYS_NET_PING:
+        return net_up() ? icmp_ping((uint32_t)a) : -1;
+    case SYS_NET_PING_RTT: {
+        int t = icmp_last_rtt();
+        return t < 0 ? -1 : t * 10;        /* ticks (10 ms) -> ms */
+    }
+    case SYS_NET_DNS:
+        if (!net_up()) return -1;
+        dns_start((const char *)a);
+        return 0;
+    case SYS_NET_DNS_RESULT:
+        return (long)(int)dns_result();
     }
     return -1;
 }

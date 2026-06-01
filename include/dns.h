@@ -8,4 +8,10 @@
  * the address, or 0 on failure/timeout. Must run with interrupts enabled. */
 uint32_t dns_resolve(const char *name);
 
+/* Non-blocking variant for apps (the WM loop pumps net_poll). dns_start() sends
+ * the query; dns_result() returns the resolved IP, 0 while pending, or
+ * 0xFFFFFFFF on timeout. */
+void     dns_start(const char *name);
+uint32_t dns_result(void);
+
 #endif /* AQUA_DNS_H */

@@ -35,7 +35,12 @@ M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) �
 M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AquaFS + VFS) ✅ ·
 M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
 (framebuffer + VMM + Aqua desktop) ✅ · M8 window system (font + double-buffer +
-PS/2 mouse + draggable windows) ✅ — full roadmap complete.
+PS/2 mouse + draggable windows) ✅ · M9 networking (PCI + e1000 + ARP/IPv4/
+ICMP/UDP + DNS + Network app) ✅.
+
+Post-roadmap: per-process address spaces (each app its own PML4; `vmm_new_space`,
+`schedule()` switches CR3) and ring-3 fault containment (an app fault kills only
+that app; the kernel/desktop survive — `kernel/interrupts.c`).
 
 Key notes:
 - `vmm_map_page` does a real 4-level walk; maps the high-MMIO framebuffer and
@@ -54,6 +59,13 @@ Key notes:
   at build). `kernel/fb.c` draws into surfaces (`fb_target`/`fb_blit_surface`)
   with a screen back buffer + `fb_present()`. `drivers/mouse.c` = PS/2 mouse
   (IRQ12); `drivers/rtc.c` = CMOS wall clock (menu bar + Clock app).
+- M9 networking: `kernel/pci.c` (0xCF8/0xCFC config) + `drivers/e1000.c` (QEMU
+  e1000 8086:100E, MMIO BAR, RX/TX descriptor rings, **polled** — no NIC IRQ).
+  `net/` = eth/arp/ip/icmp/udp/dns; `net_poll()` is pumped from the WM loop.
+  Static IP (QEMU SLIRP: 10.0.2.15/24, gw 10.0.2.2, DNS 10.0.2.3) in
+  `net_cfg` (DHCP hook later). Run/test attach `-netdev user -device e1000`
+  (+ `filter-dump` pcap for `make run`). e1000 gotcha: QEMU's `set_rx_control`
+  defers the RX-queue flush ~1s, so RX needs a real time base to observe.
 
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the AquaFS disk = real **ring-3 processes** scheduled
@@ -68,11 +80,13 @@ Key notes:
 - ABI: `include/aqua_abi.h` (shared with userland `user/aqua.h`). Syscalls via
   int 0x80: GUI create/clear/rect/text/flush, poll_event (key/mouse/close),
   get_arg, get_time, read_file, write_file/delete_file, mkdir,
-  dir_count/dir_name (path-scoped listing), yield, sysinfo, file_count/file_name
-  (root), exit. read/write/delete/mkdir take paths. `syscall.c` routes GUI calls
-  to `wm_gui_syscall()` in the app's context. Finder is a directory browser
-  (cwd, folders, `..`); Terminal has cd/pwd/mkdir/ls + cat/touch/rm/echo>;
-  TextEdit saves with Ctrl+S. PS/2 keyboard supports Ctrl + Shift.
+  dir_count/dir_name (path-scoped listing), net_info/net_ping/net_dns (+ result
+  pollers), yield, sysinfo, file_count/file_name (root), exit.
+  read/write/delete/mkdir take paths. `syscall.c` routes GUI calls to
+  `wm_gui_syscall()` in the app's context. Finder is a directory browser (cwd,
+  folders, `..`); Terminal has cd/pwd/mkdir/ls + cat/touch/rm/echo>; TextEdit
+  saves with Ctrl+S; Network app pings the gateway + resolves a host (DNS). PS/2
+  keyboard supports Ctrl + Shift.
 - WM: dynamic windows + per-window surfaces composited each frame; app registry
   scanned from *.aex; Dock launches apps; Finder opens a file with the app whose
   `ext` matches (file association); red close button -> EV_CLOSE -> app exits.

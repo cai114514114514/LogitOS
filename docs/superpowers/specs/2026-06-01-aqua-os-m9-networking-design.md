@@ -137,3 +137,26 @@ is a DNS server, guest is 10.0.2.15.
   it first (framebuffer already proves this works).
 - Descriptor rings must be physically contiguous + identity-mapped → `pmm_alloc_contig`.
 - e1000 register/bit details are fiddly; bring-up is staged and pcap-verified.
+
+## Result — all five layers implemented & verified
+
+A from-scratch network stack works end to end in QEMU:
+- **L1 PCI + e1000 + TX:** NIC found (MAC 52:54:00:12:34:56, MMIO 0xfebc0000); a
+  probe frame appears in the pcap byte-for-byte.
+- **L2 RX + ARP:** the gateway MAC resolves (52:55:0a:00:02:02). RX bring-up
+  surfaced two non-driver bugs (caught via QEMU's `e1000x_rx_can_recv_disabled`
+  trace + reading QEMU source): QEMU's `set_rx_control` defers its RX-queue
+  flush by ~1s, and the original self-test ran with interrupts disabled (no time
+  base) — both test harness issues, not driver bugs.
+- **L3 IPv4 + ICMP:** ping the gateway → reply; pcap shows ICMP type 8/0.
+- **L4 UDP + DNS:** `example.com` resolves via 10.0.2.3; pcap shows 2 UDP/53
+  frames.
+- **L5 syscalls + app:** the ring-3 **Network** app shows IP/MAC/gw, pings the
+  gateway ("reply 10 ms"), and resolves a host (example.com → an A record) — all
+  over `SYS_NET_*` syscalls, the net stack pumped by the WM loop. A cold-ARP
+  first-send drops, so the app re-issues until a reply arrives.
+
+Decisions that held up: **polling** (driven by the WM loop) avoided PCI IRQ
+routing entirely; **static SLIRP config** needed no host setup; **DNS** gave a
+zero-setup real UDP round-trip (SLIRP has no echo server). TCP remains out of
+scope (possible future M10).
