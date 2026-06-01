@@ -3,6 +3,7 @@
 #include "sched.h"
 #include "kheap.h"
 #include "gdt.h"
+#include "vmm.h"
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 16384
@@ -12,6 +13,7 @@ struct thread {
     struct thread *next;     /* circular ready ring */
     void *stack;
     uint64_t kstack_top;     /* ring-0 stack top (TSS rsp0) for ring-3 threads */
+    uint64_t cr3;            /* address space (PML4 phys); kernel space if 0 set at init */
     void *data;              /* opaque per-thread payload (the app) */
     const char *name;
     int id;
@@ -34,6 +36,7 @@ void sched_init(void)
     main->rsp = 0;
     main->stack = NULL;
     main->kstack_top = 0;        /* the WM thread runs in ring 0; rsp0 unused */
+    main->cr3 = vmm_kernel_cr3();/* the kernel/shared address space */
     main->data = NULL;
     main->name = "wm";
     main->id = next_id++;
@@ -47,6 +50,7 @@ void thread_create(void (*entry)(void), const char *name)
     struct thread *t = kmalloc(sizeof *t);
     t->stack = kmalloc(STACK_SIZE);
     t->kstack_top = 0;
+    t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
     t->name = name;
     t->id = next_id++;
@@ -65,7 +69,7 @@ void thread_create(void (*entry)(void), const char *name)
 
 /* Create a ring-3 process thread: first switch drops to `entry` in user mode
  * on `ustack`, with its own kernel stack for traps. */
-int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data)
+int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3)
 {
     struct thread *t = kmalloc(sizeof *t);
     uint8_t *ks = kmalloc(KSTACK_SIZE);
@@ -74,6 +78,7 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     t->id = next_id++;
     t->data = data;
     t->alive = 1;
+    t->cr3 = cr3 ? cr3 : vmm_kernel_cr3();
     t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
 
     /* Hand-built kernel frame: context_switch "returns" into ring3_bootstrap
@@ -110,6 +115,8 @@ void schedule(void)
         switches++;
         if (next->kstack_top)
             tss_set_rsp0(next->kstack_top);
+        if (next->cr3 && next->cr3 != prev->cr3)
+            vmm_switch(next->cr3);          /* enter the next thread's address space */
         context_switch(&prev->rsp, next->rsp);
     }
 
@@ -138,5 +145,7 @@ void thread_exit(void)
     dead->alive = 0;
     if (next->kstack_top)
         tss_set_rsp0(next->kstack_top);
+    if (next->cr3 && next->cr3 != dead->cr3)
+        vmm_switch(next->cr3);          /* leave the dying app's space */
     context_switch(&discard, next->rsp);
 }

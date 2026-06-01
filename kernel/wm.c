@@ -141,7 +141,31 @@ void wm_launch(const char *aex_file, const char *arg)
         return;
     }
 
-    uint64_t entry = aex_load(img, name, ext);
+    /* Each app gets its own address space so apps can't touch each other's
+     * memory. The new PML4 shares the kernel + framebuffer mappings but has a
+     * private user region. elf_load + the stack mapping both target the *active*
+     * space, so switch CR3 into it (interrupts off, so the scheduler can't run
+     * and reset CR3 mid-load), load, then restore the kernel space. */
+    uint64_t space = vmm_new_space();
+    if (!space) { serial_puts("[wm] launch: no address space\n"); return; }
+
+    /* wm_launch may run from the WM thread (kernel CR3) OR from the mouse IRQ
+     * while a ring-3 app is current (that app's CR3). Save and restore the CR3
+     * that was actually active, not the kernel's -- otherwise returning from the
+     * IRQ into the interrupted app would run it with the wrong address space. */
+    uint64_t prev_cr3;
+    __asm__ volatile ("cli");
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
+    vmm_switch(space);
+    uint64_t entry = aex_load(img, name, ext);   /* maps + copies into `space` */
+    uint64_t ustack_top = 0;
+    if (entry) {
+        ustack_top = entry + 0x800000;           /* user stack high in the slot */
+        for (int i = 1; i <= 4; i++)
+            vmm_map_page(ustack_top - (uint64_t)i * 0x1000, pmm_alloc(), VMM_WRITABLE | VMM_USER);
+    }
+    vmm_switch(prev_cr3);
+    __asm__ volatile ("sti");
     if (!entry) { serial_puts("[wm] launch: load failed\n"); return; }
 
     int ai = -1;
@@ -155,12 +179,7 @@ void wm_launch(const char *aex_file, const char *arg)
     scopy(ap->name, name, sizeof ap->name);
     scopy(ap->arg, arg ? arg : "", sizeof ap->arg);
 
-    /* user stack high inside the app's slot */
-    uint64_t ustack_top = entry + 0x800000;
-    for (int i = 1; i <= 4; i++)
-        vmm_map_page(ustack_top - (uint64_t)i * 0x1000, pmm_alloc(), VMM_WRITABLE | VMM_USER);
-
-    thread_create_user(ap->name, entry, ustack_top, ap);
+    thread_create_user(ap->name, entry, ustack_top, ap, space);
     serial_puts("[wm] launched ");
     serial_puts(ap->name);
     serial_puts("\n");

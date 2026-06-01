@@ -7,7 +7,7 @@
 
 void sched_init(void);                                  /* adopt the boot context as "main" */
 void thread_create(void (*entry)(void), const char *name);
-int  thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data);
+int  thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3);
 void thread_exit(void);                                 /* end the current thread */
 void schedule(void);                                    /* switch to the next ready thread */
 

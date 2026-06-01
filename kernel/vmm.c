@@ -8,6 +8,7 @@
 #define USER     0x4
 
 void *memset(void *, int, size_t);     /* lib/string.c */
+void *memcpy(void *, const void *, size_t);
 
 static inline void invlpg(uint64_t addr)
 {
@@ -52,4 +53,59 @@ void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags)
     phys &= ~(uint64_t)0xFFF;
     for (; virt < end; virt += 4096, phys += 4096)
         vmm_map_page(virt, phys, flags);
+}
+
+/* --- per-process address spaces --- */
+
+/* The user region (where every app's image + stack lives, 0x40000000..) sits
+ * under PML4[0], PDPT[1]. A per-process space keeps the kernel's PML4[0] but
+ * swaps in a *private* PDPT so each app's PDPT[1] sub-tree is isolated, while
+ * still sharing the kernel's other PDPT entries (identity low mem, framebuffer). */
+#define USER_PML4_IDX 0
+#define USER_PDPT_IDX 1
+
+static uint64_t g_kernel_cr3;
+
+uint64_t vmm_kernel_cr3(void)
+{
+    if (!g_kernel_cr3)
+        __asm__ volatile ("mov %%cr3, %0" : "=r"(g_kernel_cr3));
+    return g_kernel_cr3 & ~(uint64_t)0xFFF;
+}
+
+void vmm_switch(uint64_t cr3)
+{
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+uint64_t vmm_new_space(void)
+{
+    uint64_t kcr3 = vmm_kernel_cr3();
+    uint64_t *kpml4 = (uint64_t *)kcr3;
+    uint64_t *kpdpt = (uint64_t *)(kpml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+
+    uint64_t pml4 = pmm_alloc();
+    uint64_t pdpt = pmm_alloc();
+    if (!pml4 || !pdpt) return 0;
+
+    /* Copy the kernel PML4 wholesale: every region stays mapped by default. */
+    memcpy((void *)pml4, (void *)kcr3, 4096);
+    /* Copy the kernel's low PDPT, then give this space its own PDPT so its
+     * user sub-tree (PDPT[1]) can diverge without touching the kernel's. */
+    memcpy((void *)pdpt, (void *)kpdpt, 4096);
+    ((uint64_t *)pdpt)[USER_PDPT_IDX] = 0;          /* private, populated lazily */
+    ((uint64_t *)pml4)[USER_PML4_IDX] = pdpt | PRESENT | WRITABLE | USER;
+    return pml4;
+}
+
+/* Like next_table() but walks the table tree rooted at an explicit PML4. */
+void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
+{
+    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);
+    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);
+    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);
+
+    pt[(virt >> 12) & 0x1FF] = (phys & ~(uint64_t)0xFFF) | flags | PRESENT;
+    /* No invlpg: this space is not active while being populated. */
 }

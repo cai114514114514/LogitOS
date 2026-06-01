@@ -9,6 +9,8 @@
 #include "sched.h"
 #include "syscall.h"
 
+void wm_app_exit(void);   /* wm.c: mark the current app dead (window reaped) */
+
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
     "overflow", "bound range", "invalid opcode", "device not available",
@@ -41,6 +43,7 @@ void interrupt_handler(struct registers *r)
             kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x -- terminating app\n",
                     exception_names[r->vector & 31], (int)r->vector,
                     (void *)r->rip, (unsigned)r->error_code);
+            wm_app_exit();          /* mark the app dead so the WM reaps its window + frees the slot */
             thread_exit();          /* marks thread+app dead, frees its stack, switches away */
         }
         panic_exception(r);         /* kernel-mode fault is still fatal */
