@@ -14,6 +14,9 @@
 #include "crypto.h"
 #include "x509.h"
 #include "test_chain.h"
+#include "tcp.h"
+#include "dns.h"
+#include "tls.h"
 #include "kprintf.h"
 
 #define TIMER_HZ 100
@@ -141,6 +144,21 @@ static void crypto_l1_selftest(void)
     kprintf((cr == 0 && cr_bad != 0) ? "[x509] AQUA_X509_OK\n" : "[x509] X509_FAIL\n");
     kprintf("[x509] chain rc=%d (0=trusted)\n", cr);
 }
+
+/* TEMP M12 L5 self-test: full TLS 1.3 handshake to example.com:443. */
+static void tls_l5_selftest(void)
+{
+    __asm__ volatile ("sti");
+    uint32_t ip = dns_resolve("example.com");
+    if (!ip) { serial_puts("[tls] dns failed\n"); __asm__ volatile("cli"); return; }
+    int tcp = tcp_connect(ip, 443);
+    if (tcp < 0) { serial_puts("[tls] tcp connect failed\n"); __asm__ volatile("cli"); return; }
+    int64_t now = ((int64_t)20650*24)*3600;     /* ~2026-06, within validity */
+    int sess = tls_connect(tcp, "example.com", now);
+    if (sess >= 0) serial_puts("[tls] AQUA_TLS_OK\n");
+    else kprintf("[tls] handshake failed rc=%d\n", sess);
+    __asm__ volatile ("cli");
+}
 #define BOOT_OK_MARKER "AQUA_BOOT_OK"
 
 void kernel_main(uint64_t mb_info)
@@ -166,7 +184,8 @@ void kernel_main(uint64_t mb_info)
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
 
-    crypto_l1_selftest();   /* TEMP: M12 L1 crypto vectors */
+    crypto_l1_selftest();   /* TEMP: M12 L1-L4 crypto + x509 vectors */
+    if (net_up()) tls_l5_selftest();   /* TEMP: M12 L5 TLS handshake */
 
     wm_init();
     wm_render();                 /* first frame -> desktop visible */
