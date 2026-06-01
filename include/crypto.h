@@ -51,4 +51,16 @@ int  aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
 
+/* --- X25519 (RFC 7748) --- scalar*point on Curve25519; 32-byte little-endian. */
+void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]);
+/* base point u=9 (key generation): out = scalar * basepoint. */
+void x25519_base(uint8_t out[32], const uint8_t scalar[32]);
+
+/* --- ECDSA verify on NIST P-256 (curve=256) / P-384 (curve=384) ---
+ * pub is the uncompressed point X||Y (2*flen bytes, big-endian); sig is r||s
+ * (2*flen bytes, big-endian); hash is the message digest (hlen bytes). Returns
+ * 1 if valid, 0 otherwise. flen = curve/8. */
+int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
+                 const uint8_t *hash, int hlen);
+
 #endif /* AQUA_CRYPTO_H */
