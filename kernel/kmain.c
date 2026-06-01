@@ -14,6 +14,7 @@
 #include "eth.h"
 #include "arp.h"
 #include "icmp.h"
+#include "dns.h"
 #include "kprintf.h"
 
 #define TIMER_HZ 100
@@ -58,11 +59,19 @@ void kernel_main(uint64_t mb_info)
             }
             for (volatile int d = 0; d < 300000; d++) ;
         }
-        __asm__ volatile ("cli");
         if (got)
             kprintf("[net] L3 ping gw: %d ticks RTT\n[net] AQUA_NET_OK\n", icmp_last_rtt());
         else
             serial_puts("[net] L3 PING_FAIL\n");
+
+        /* L4: resolve a name via the SLIRP DNS server (UDP round-trip). */
+        uint32_t ip = dns_resolve("example.com");
+        if (ip)
+            kprintf("[net] L4 DNS example.com -> %u.%u.%u.%u  AQUA_DNS_OK\n",
+                    (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+        else
+            serial_puts("[net] L4 DNS_FAIL\n");
+        __asm__ volatile ("cli");
     }
 
     wm_init();
