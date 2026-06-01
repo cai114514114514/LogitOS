@@ -119,3 +119,26 @@ All blocking + interrupt-on (M11 lesson: SYS_HTTP_GET already re-enables IF).
 - Out of scope: TLS 1.2, session resumption / 0-RTT, client certs,
   renegotiation, OCSP/CRL revocation, RSA key-exchange (none needed here).
 - M13 (HTML/CSS layout) remains the final browser milestone after this.
+
+## Result — implemented & verified
+
+All six layers shipped; **the Browser opens `https://example.com`**.
+- **L1-L3 primitives** (`crypto/`): SHA-256/384, HMAC/HKDF, ChaCha20-Poly1305,
+  AES-128-GCM, X25519, ECDSA P-256/P-384 — each checked in-kernel against
+  published vectors (RFC 8439/7748, NIST, RFC 4231) and a real openssl-made
+  ECDSA signature. ECDSA needed Jacobian coordinates (affine was ~800x too slow).
+- **L4 X.509** (`net/x509.c` + `crypto/roots.c`): DER parse + strict chain
+  verification (per-link ECDSA, root-in-trust-store, SAN/CN + validity), proven
+  on the live example.com 4-cert chain; tampered signatures rejected.
+- **L5 TLS** (`net/tls.c`): a TLS 1.3 client — ClientHello..Finished, HKDF key
+  schedule over the SHA-256 transcript, AEAD records, cert + CertificateVerify +
+  Finished verification — handshakes to the live example.com:443.
+- **L6**: `http_get` layers `tls_connect` over TCP for https; the Browser app
+  renders `https://example.com` ("Example Domain / ... / Learn more", status
+  "loaded").
+
+Key debugging finds (systematic, evidence-led): ECDSA performance (affine→
+Jacobian); and reconfirming the M11 rule that blocking net ops from a syscall
+need interrupts enabled (the int 0x80 gate clears IF).
+
+Next: **M13 HTML/CSS layout** — the final browser milestone.

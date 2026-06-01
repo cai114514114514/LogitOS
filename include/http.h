@@ -11,6 +11,7 @@
 #define HTTP_ERR_URL -2
 #define HTTP_ERR_DNS -3
 #define HTTP_ERR_CONN -4
+#define HTTP_ERR_TLS  -5
 
 /* Start fetching `url` (absolute http://...). Non-blocking: the work advances in
  * http_poll() (pumped from net_poll). Returns 0 if accepted, <0 on a bad URL. */

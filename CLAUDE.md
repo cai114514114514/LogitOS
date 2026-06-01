@@ -40,7 +40,8 @@ ICMP/UDP + DNS + Network app) ✅.
 
 Browser arc: M10 TCP ✅ (`net/tcp.c`, client byte stream) · M11 HTTP + Browser
 app ✅ (`net/http.c` fetch + `net/html.c` de-tag render + `user/browser.c`) ·
-M12 TLS 1.3 (planned, for https) · M13 HTML/CSS layout (planned).
+M12 TLS 1.3 ✅ (`crypto/*` + `net/tls.c` + `net/x509.c`; https with strict cert
+verification) · M13 HTML/CSS layout (planned).
 
 Post-roadmap: per-process address spaces (each app its own PML4; `vmm_new_space`,
 `schedule()` switches CR3) and ring-3 fault containment (an app fault kills only
@@ -79,7 +80,16 @@ Key notes:
   (http_get, dns_resolve) pump net_poll and need IF=1, but int 0x80 is an
   interrupt gate (clears IF) — so SYS_HTTP_GET re-enables interrupts around the
   fetch (see `wm_gui_syscall`), else the PIT-based timeout loop spins forever.
-  Only http:// (TLS is M12).
+  http_get now branches on https (see M12).
+- M12 TLS 1.3 (`crypto/*` + `net/tls.c` + `net/x509.c`): from-scratch crypto --
+  SHA-256/384, HMAC/HKDF (`hmac_hkdf.c`), ChaCha20-Poly1305 + AES-128-GCM,
+  X25519, EC P-256/P-384 + ECDSA-verify (`ecdsa.c`, Jacobian coords). `net/tls.c`
+  is a TLS 1.3 client (X25519 KX, both AEADs, SHA-256 transcript, HKDF schedule);
+  `net/x509.c` does DER/X.509 parse + **strict** chain verification to built-in
+  roots (`crypto/roots.c`). http_get's https branch layers tls_connect over the
+  TCP socket. Each primitive is verified against published/openssl vectors. Only
+  TLS 1.3 + the two suites above; no resumption/0-RTT/client-certs. Like all
+  blocking net ops, tls_connect needs IF=1 (SYS_HTTP_GET re-enables it).
 
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the AquaFS disk = real **ring-3 processes** scheduled

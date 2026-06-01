@@ -3,6 +3,7 @@
 #include "http.h"
 #include "url.h"
 #include "tcp.h"
+#include "tls.h"
 #include "dns.h"
 #include "net.h"
 #include "pit.h"
@@ -64,23 +65,32 @@ int http_get(const char *url)
     raw_len = text_len = 0;
 
     if (url_parse(url, &cur) != 0) { status = HTTP_ERR_URL; return HTTP_ERR_URL; }
-    if (cur.https) { status = HTTP_ERR_URL; return HTTP_ERR_URL; }   /* TLS is M12 */
 
     uint32_t ip = dns_resolve(cur.host);
     if (!ip) { status = HTTP_ERR_DNS; return HTTP_ERR_DNS; }
 
-    int id = tcp_connect(ip, cur.port);
-    if (id < 0) { status = HTTP_ERR_CONN; return HTTP_ERR_CONN; }
+    int tcp = tcp_connect(ip, cur.port);
+    if (tcp < 0) { status = HTTP_ERR_CONN; return HTTP_ERR_CONN; }
+
+    /* For https, layer TLS over the TCP connection; otherwise use raw TCP.
+     * `tls` >= 0 selects the encrypted transport. */
+    int tls = -1;
+    if (cur.https) {
+        int64_t now = ((int64_t)20650 * 24) * 3600;        /* ~2026-06 validity base */
+        tls = tls_connect(tcp, cur.host, now);
+        if (tls < 0) { tcp_close(tcp); status = HTTP_ERR_TLS; return HTTP_ERR_TLS; }
+    }
 
     char req[URL_PATH_MAX + URL_HOST_MAX + 64];
     int rl = build_request(&cur, req, (int)sizeof req);
-    tcp_send(id, req, rl);
+    if (tls >= 0) tls_send(tls, req, rl); else tcp_send(tcp, req, rl);
 
     /* Receive until the peer closes (Connection: close) or we time out. */
     uint64_t start = timer_ticks();
     while (timer_ticks() - start < 800) {       /* ~8 s */
         net_poll();
-        int n = tcp_recv(id, raw + raw_len, RAW_MAX - raw_len);
+        int n = (tls >= 0) ? tls_recv(tls, raw + raw_len, RAW_MAX - raw_len)
+                           : tcp_recv(tcp, raw + raw_len, RAW_MAX - raw_len);
         if (n > 0) {
             raw_len += n;
             start = timer_ticks();              /* reset idle timer on progress */
@@ -90,7 +100,8 @@ int http_get(const char *url)
         }
         for (volatile int d = 0; d < 150000; d++) ;
     }
-    tcp_close(id);
+    if (tls >= 0) tls_close(tls);
+    tcp_close(tcp);
 
     if (raw_len == 0) { status = HTTP_ERR_CONN; return HTTP_ERR_CONN; }
 
