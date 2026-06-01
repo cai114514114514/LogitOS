@@ -23,6 +23,7 @@ struct ip_hdr {
 /* Upper-layer hooks are optional until their layers are linked in. */
 void icmp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
 void udp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
+void tcp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
 
 uint16_t ip_checksum(const void *data, int len)
 {
@@ -87,4 +88,6 @@ void ip_input(const uint8_t *frame, uint16_t len)
         icmp_input(src, l4, l4len);
     else if (h->proto == IP_PROTO_UDP && udp_input)
         udp_input(src, l4, l4len);
+    else if (h->proto == IP_PROTO_TCP && tcp_input)
+        tcp_input(src, l4, l4len);
 }

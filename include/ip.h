@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define IP_PROTO_ICMP 1
+#define IP_PROTO_TCP  6
 #define IP_PROTO_UDP  17
 
 /* Internet checksum (ones-complement sum) over `len` bytes. */
@@ -22,5 +23,6 @@ int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len);
  * source IP (host order). */
 void icmp_input(uint32_t src, const uint8_t *data, uint16_t len);
 void udp_input(uint32_t src, const uint8_t *data, uint16_t len);
+void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);
 
 #endif /* AQUA_IP_H */

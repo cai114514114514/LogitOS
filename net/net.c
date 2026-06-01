@@ -29,8 +29,12 @@ int net_init(void)
     return 0;
 }
 
+void tcp_poll(void) __attribute__((weak));
+
 void net_poll(void)
 {
-    if (up)
+    if (up) {
         e1000_rx_poll(eth_input);
+        if (tcp_poll) tcp_poll();
+    }
 }
