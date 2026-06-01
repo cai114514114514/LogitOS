@@ -63,4 +63,14 @@ void x25519_base(uint8_t out[32], const uint8_t scalar[32]);
 int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
                  const uint8_t *hash, int hlen);
 
+/* --- RSASSA-PKCS1-v1_5 verify --- n,e big-endian; sig big-endian (<= nlen);
+ * hash is the digest (hlen 32 -> SHA-256, 48 -> SHA-384). 1 valid / 0 not. */
+int rsa_pkcs1_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
+                     const uint8_t *sig, int siglen, const uint8_t *hash, int hlen);
+
+/* RSASSA-PSS verify (TLS 1.3 rsa_pss_rsae_*, salt len = hash len, MGF1 same
+ * hash). mhash is the message digest (hlen 32 -> SHA-256, 48 -> SHA-384). */
+int rsa_pss_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
+                   const uint8_t *sig, int siglen, const uint8_t *mhash, int hlen);
+
 #endif /* AQUA_CRYPTO_H */

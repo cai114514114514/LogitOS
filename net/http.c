@@ -7,6 +7,7 @@
 #include "dns.h"
 #include "net.h"
 #include "pit.h"
+#include "rtc.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -50,6 +51,24 @@ static int build_request(const struct url *u, char *req, int max)
     return o;
 }
 
+/* Current wall-clock time as unix-ish seconds, on the same proleptic-Gregorian,
+ * no-leap-second scale that x509.c's parse_time uses, so cert validity windows
+ * compare correctly. Sourced from the CMOS RTC (QEMU tracks the host clock). */
+static int64_t now_unix(void)
+{
+    struct rtc_time t; rtc_now(&t);
+    int64_t days = 0;
+    for (int y = 1970; y < t.year; y++)
+        days += (y%4==0 && (y%100!=0 || y%400==0)) ? 366 : 365;
+    static const int md[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    for (int m = 1; m < t.month; m++) {
+        days += md[m-1];
+        if (m==2 && (t.year%4==0 && (t.year%100!=0 || t.year%400==0))) days++;
+    }
+    days += t.day - 1;
+    return ((days*24 + t.hour)*60 + t.minute)*60 + t.second;
+}
+
 /* Find the body (after the first CRLFCRLF), return offset or -1. */
 static int find_body(const char *buf, int len)
 {
@@ -76,8 +95,7 @@ int http_get(const char *url)
      * `tls` >= 0 selects the encrypted transport. */
     int tls = -1;
     if (cur.https) {
-        int64_t now = ((int64_t)20650 * 24) * 3600;        /* ~2026-06 validity base */
-        tls = tls_connect(tcp, cur.host, now);
+        tls = tls_connect(tcp, cur.host, now_unix());
         if (tls < 0) { tcp_close(tcp); status = HTTP_ERR_TLS; return HTTP_ERR_TLS; }
     }
 

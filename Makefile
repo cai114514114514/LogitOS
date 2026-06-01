@@ -48,6 +48,9 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# roots.c #includes the generated bundle; rebuild it when the bundle changes.
+$(BUILD)/crypto/roots.o: include/roots_bundle.inc include/roots.h
+
 $(BUILD)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) $(ASFLAGS) $< -o $@

@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "x509.h"
 #include "crypto.h"
+#include "roots.h"
 
 int memcmp(const void *, const void *, size_t);
 
@@ -40,7 +41,10 @@ static int der_enter(struct der *d, int want_tag, struct der *sub)
 /* OIDs we care about (raw DER content bytes, without tag/len). */
 static const uint8_t OID_ECDSA_SHA256[] = {0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x02};
 static const uint8_t OID_ECDSA_SHA384[] = {0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x03};
+static const uint8_t OID_RSA_SHA256[]   = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b};
+static const uint8_t OID_RSA_SHA384[]   = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0c};
 static const uint8_t OID_EC_PUBKEY[]    = {0x2a,0x86,0x48,0xce,0x3d,0x02,0x01};
+static const uint8_t OID_RSA_ENC[]      = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01};
 static const uint8_t OID_P256[]         = {0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07};
 static const uint8_t OID_P384[]         = {0x2b,0x81,0x04,0x00,0x22};
 static const uint8_t OID_CN[]           = {0x55,0x04,0x03};
@@ -112,17 +116,32 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
           int g2; const uint8_t *vc; int vl; if (der_tlv(&atv,&g2,&vc,&vl)) continue;
           if (oid_eq(oc,ol,OID_CN,sizeof OID_CN)) { out->cn=(const char*)vc; out->cnlen=vl; }
       } }
-    /* SubjectPublicKeyInfo: SEQ { SEQ{alg, curve}, BITSTRING pubkey } */
+    /* SubjectPublicKeyInfo: SEQ { AlgorithmIdentifier, BITSTRING pubkey } */
+    out->key_type = 0; out->key_curve = 0;
+    out->pub = 0; out->publen = 0; out->rsa_n = 0; out->rsa_nlen = 0; out->rsa_e = 0; out->rsa_elen = 0;
     { struct der spki; if (der_enter(&tbs,0x30,&spki)) return X509_E_PARSE;
       struct der alg; if (der_enter(&spki,0x30,&alg)) return X509_E_PARSE;
       int g; const uint8_t *oc; int ol; if (der_tlv(&alg,&g,&oc,&ol)) return X509_E_PARSE;
-      if (!oid_eq(oc,ol,OID_EC_PUBKEY,sizeof OID_EC_PUBKEY)) return X509_E_PARSE;
-      const uint8_t *cc; int cl; if (der_tlv(&alg,&g,&cc,&cl)) return X509_E_PARSE;   /* curve OID */
-      out->key_curve = oid_eq(cc,cl,OID_P256,sizeof OID_P256) ? 256 :
-                       oid_eq(cc,cl,OID_P384,sizeof OID_P384) ? 384 : 0;
-      const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE;  /* BIT STRING */
-      if (bl < 2 || bs[0] != 0) return X509_E_PARSE;             /* 0 unused bits */
-      out->pub = bs + 1; out->publen = bl - 1;                   /* 04||X||Y */
+      if (oid_eq(oc,ol,OID_EC_PUBKEY,sizeof OID_EC_PUBKEY)) {
+          const uint8_t *cc; int cl; if (der_tlv(&alg,&g,&cc,&cl)) return X509_E_PARSE;   /* curve OID */
+          out->key_type = KEY_EC;
+          out->key_curve = oid_eq(cc,cl,OID_P256,sizeof OID_P256) ? 256 :
+                           oid_eq(cc,cl,OID_P384,sizeof OID_P384) ? 384 : 0;
+          const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE; /* BIT STRING */
+          if (bl < 2 || bs[0] != 0) return X509_E_PARSE;         /* 0 unused bits */
+          out->pub = bs + 1; out->publen = bl - 1;               /* 04||X||Y */
+      } else if (oid_eq(oc,ol,OID_RSA_ENC,sizeof OID_RSA_ENC)) {
+          out->key_type = KEY_RSA;
+          const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE; /* BIT STRING */
+          if (bl < 2 || bs[0] != 0) return X509_E_PARSE;         /* 0 unused bits */
+          struct der pk; pk.p = bs + 1; pk.end = bs + bl;        /* RSAPublicKey */
+          struct der rsa; if (der_enter(&pk,0x30,&rsa)) return X509_E_PARSE;
+          const uint8_t *nc; int nl; if (der_tlv(&rsa,&g,&nc,&nl)) return X509_E_PARSE;  /* modulus */
+          while (nl > 0 && nc[0] == 0) { nc++; nl--; }
+          const uint8_t *ec; int el; if (der_tlv(&rsa,&g,&ec,&el)) return X509_E_PARSE;  /* exponent */
+          while (el > 0 && ec[0] == 0) { ec++; el--; }
+          out->rsa_n = nc; out->rsa_nlen = nl; out->rsa_e = ec; out->rsa_elen = el;
+      } else return X509_E_PARSE;
       /* optional extensions: scan for SAN */
       if (tbs.p < tbs.end && tbs.p[0] == 0xA3) {
           struct der exts3; if (!der_enter(&tbs,0xA3,&exts3)) {
@@ -145,7 +164,9 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
     { struct der sa; if (der_enter(&cert,0x30,&sa)) return X509_E_PARSE;
       int g; const uint8_t *oc; int ol; if (der_tlv(&sa,&g,&oc,&ol)) return X509_E_PARSE;
       out->sig_alg = oid_eq(oc,ol,OID_ECDSA_SHA256,sizeof OID_ECDSA_SHA256) ? SIG_ECDSA_SHA256 :
-                     oid_eq(oc,ol,OID_ECDSA_SHA384,sizeof OID_ECDSA_SHA384) ? SIG_ECDSA_SHA384 : 0; }
+                     oid_eq(oc,ol,OID_ECDSA_SHA384,sizeof OID_ECDSA_SHA384) ? SIG_ECDSA_SHA384 :
+                     oid_eq(oc,ol,OID_RSA_SHA256,  sizeof OID_RSA_SHA256)   ? SIG_RSA_SHA256   :
+                     oid_eq(oc,ol,OID_RSA_SHA384,  sizeof OID_RSA_SHA384)   ? SIG_RSA_SHA384   : 0; }
     { int g; const uint8_t *bs; int bl; if (der_tlv(&cert,&g,&bs,&bl)) return X509_E_PARSE;  /* BIT STRING sig */
       if (bl < 1) return X509_E_PARSE;
       out->sig = bs + 1; out->siglen = bl - 1; }                 /* DER SEQ{r,s} */
@@ -169,37 +190,79 @@ static int sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
     return 0;
 }
 
-int x509_verify_signed_by(const struct cert *child, const struct cert *issuer)
+/* Hash `child`'s tbs per its signature algorithm. Returns hlen (32/48) or 0. */
+static int hash_tbs(const struct cert *child, uint8_t hash[48])
 {
-    int curve = issuer->key_curve;
-    if (curve != 256 && curve != 384) return X509_E_SIG;
-    int flen = curve / 8;
-
-    uint8_t hash[48]; int hlen;
-    if (child->sig_alg == SIG_ECDSA_SHA256) { sha256(child->tbs, child->tbslen, hash); hlen = 32; }
-    else if (child->sig_alg == SIG_ECDSA_SHA384) { sha384(child->tbs, child->tbslen, hash); hlen = 48; }
-    else return X509_E_SIG;
-
-    uint8_t rs[96];
-    if (sig_to_rs(child->sig, child->siglen, rs, flen)) return X509_E_SIG;
-    if (issuer->publen < 1 + 2*flen || issuer->pub[0] != 0x04) return X509_E_SIG;
-    if (!ecdsa_verify(curve, issuer->pub + 1, rs, hash, hlen)) return X509_E_SIG;
-    return X509_OK;
+    switch (child->sig_alg) {
+    case SIG_ECDSA_SHA256: case SIG_RSA_SHA256: sha256(child->tbs, child->tbslen, hash); return 32;
+    case SIG_ECDSA_SHA384: case SIG_RSA_SHA384: sha384(child->tbs, child->tbslen, hash); return 48;
+    default: return 0;
+    }
 }
 
-/* --- trusted roots (crypto/roots.c) --- */
-struct root_ca { int curve; const uint8_t *pub; int publen; };  /* pub = X||Y */
-extern const struct root_ca aqua_roots[];
-extern const int aqua_nroots;
+/* Verify `child`'s signature with `issuer`'s key (EC point or RSA n,e). */
+static int verify_with_key(const struct cert *child, int issuer_type, int issuer_curve,
+                           const uint8_t *ec, int eclen,
+                           const uint8_t *n, int nlen, const uint8_t *e, int elen)
+{
+    uint8_t hash[48]; int hlen = hash_tbs(child, hash);
+    if (!hlen) return 0;
+    int rsa = (child->sig_alg == SIG_RSA_SHA256 || child->sig_alg == SIG_RSA_SHA384);
+    if (rsa) {
+        if (issuer_type != KEY_RSA) return 0;
+        return rsa_pkcs1_verify(n, nlen, e, elen, child->sig, child->siglen, hash, hlen);
+    }
+    if (issuer_type != KEY_EC || (issuer_curve != 256 && issuer_curve != 384)) return 0;
+    int flen = issuer_curve / 8;
+    uint8_t rs[96];
+    if (sig_to_rs(child->sig, child->siglen, rs, flen)) return 0;
+    if (eclen < 2*flen) return 0;
+    return ecdsa_verify(issuer_curve, ec, rs, hash, hlen);
+}
 
-/* Does `issuer` match a trusted root by public key? */
-static int issuer_is_trusted(const struct cert *issuer)
+int x509_verify_signed_by(const struct cert *child, const struct cert *issuer)
+{
+    const uint8_t *ec = (issuer->publen >= 1 && issuer->pub && issuer->pub[0] == 0x04)
+                        ? issuer->pub + 1 : issuer->pub;
+    int eclen = issuer->publen > 0 ? issuer->publen - 1 : 0;
+    return verify_with_key(child, issuer->key_type, issuer->key_curve, ec, eclen,
+                           issuer->rsa_n, issuer->rsa_nlen, issuer->rsa_e, issuer->rsa_elen)
+           ? X509_OK : X509_E_SIG;
+}
+
+/* --- trusted roots (crypto/roots.c, generated by tools/genroots.py) --- */
+
+/* `c`'s own public key is byte-identical to a held root (server sent the root
+ * in-band; trust it directly without re-checking its self-signature). */
+static int is_pinned_root(const struct cert *c)
 {
     for (int i = 0; i < aqua_nroots; i++) {
-        if (aqua_roots[i].curve != issuer->key_curve) continue;
-        if (issuer->publen == 1 + aqua_roots[i].publen && issuer->pub[0] == 0x04 &&
-            memcmp(issuer->pub + 1, aqua_roots[i].pub, aqua_roots[i].publen) == 0)
-            return 1;
+        const struct root_ca *r = &aqua_roots[i];
+        if (r->type == ROOT_EC && c->key_type == KEY_EC && r->curve == c->key_curve) {
+            if (c->publen == 1 + r->eclen && c->pub[0] == 0x04 &&
+                memcmp(c->pub + 1, r->ec, r->eclen) == 0) return 1;
+        } else if (r->type == ROOT_RSA && c->key_type == KEY_RSA) {
+            if (c->rsa_nlen == r->nlen && memcmp(c->rsa_n, r->n, r->nlen) == 0 &&
+                c->rsa_elen == r->elen && memcmp(c->rsa_e, r->e, r->elen) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+/* `top`'s issuer is one of our roots: its signature verifies under a held root
+ * key (the common case -- servers send leaf+intermediates, not the root). */
+static int signed_by_root(const struct cert *top)
+{
+    int rsa = (top->sig_alg == SIG_RSA_SHA256 || top->sig_alg == SIG_RSA_SHA384);
+    for (int i = 0; i < aqua_nroots; i++) {
+        const struct root_ca *r = &aqua_roots[i];
+        if (rsa) {
+            if (r->type != ROOT_RSA) continue;
+            if (verify_with_key(top, KEY_RSA, 0, 0, 0, r->n, r->nlen, r->e, r->elen)) return 1;
+        } else {
+            if (r->type != ROOT_EC) continue;
+            if (verify_with_key(top, KEY_EC, r->curve, r->ec, r->eclen, 0, 0, 0, 0)) return 1;
+        }
     }
     return 0;
 }
@@ -260,11 +323,10 @@ int x509_verify_chain(const struct cert *certs, int n, const char *host, int64_t
     for (int i = 0; i + 1 < n; i++)
         if (x509_verify_signed_by(&certs[i], &certs[i+1]) != X509_OK) return X509_E_SIG;
 
-    /* top of chain: trusted if it IS a root we hold, or is signed by one */
+    /* top of chain: trusted if it IS a root we hold (sent in-band), or if its
+     * issuer is one of our roots (i.e. a held root key signed it). */
     const struct cert *top = &certs[n-1];
-    if (issuer_is_trusted(top)) return X509_OK;                /* top is the trusted root */
-    /* otherwise the top's issuer must be a known root that signed it: we accept
-     * the chain if the top is self-consistent and its key is trusted above; if
-     * not trusted, reject. */
+    if (is_pinned_root(top)) return X509_OK;
+    if (signed_by_root(top)) return X509_OK;
     return X509_E_UNTRUSTED;
 }

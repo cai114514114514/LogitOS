@@ -5,3 +5,6 @@ build/
 *.ppm
 *.png
 .DS_Store
+
+# Python bytecode cache
+tools/__pycache__/

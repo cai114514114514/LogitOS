@@ -90,6 +90,24 @@ Key notes:
   TCP socket. Each primitive is verified against published/openssl vectors. Only
   TLS 1.3 + the two suites above; no resumption/0-RTT/client-certs. Like all
   blocking net ops, tls_connect needs IF=1 (SYS_HTTP_GET re-enables it).
+- M12.5 RSA + real CA bundle (the "open most of the web" follow-up): `crypto/rsa.c`
+  adds from-scratch RSA verify -- bignum modexp (double-and-add modmul, no wide
+  product; 4096-bit modulus, e=65537) + **PKCS#1 v1.5** (cert-chain sigs) and
+  **RSA-PSS** (TLS 1.3 CertificateVerify for RSA leaves; MGF1 + EMSA-PSS).
+  `net/x509.c` now parses RSA SPKI + rsaWithSHA256/384 and dispatches EC/RSA in
+  both `x509_verify_signed_by` and the new `signed_by_root` (top cert trusted if
+  its issuer is a held root, not only if the root is sent in-band). Trust store
+  is a **14-root bundle** (`tools/roots/*.pem` -> `tools/genroots.py` ->
+  `include/roots_bundle.inc`; ISRG X1/X2, DigiCert ×3, Google GTS R1/R4,
+  GlobalSign R1/R3, USERTrust RSA/ECC, Amazon 1/3, SSL.com). `now` for validity
+  comes from the **RTC** (`net/http.c now_unix`), not a hardcoded constant.
+  Verified on host against 5 real chains (example/google/github/wikipedia/kernel.org,
+  EC+RSA, in-band & signed-by-root, tamper/wrong-host rejected) and end-to-end in
+  QEMU (Browser opens https://google.com). **Gotcha:** roots.c #includes the
+  generated bundle, so the Makefile gives roots.o an explicit dep on
+  roots_bundle.inc -- regenerating the bundle without that dep silently keeps the
+  old roots in the kernel. No RSA-PSS for *cert* sigs and no RSA *key exchange*
+  (TLS 1.3 has none); RSA leaves use ECDHE so only their CertVerify is PSS.
 
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the AquaFS disk = real **ring-3 processes** scheduled

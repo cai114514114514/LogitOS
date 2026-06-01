@@ -8,10 +8,13 @@
 struct cert {
     const uint8_t *der; int derlen;
     const uint8_t *tbs; int tbslen;             /* signed region */
-    int   sig_alg;                              /* SIG_ECDSA_SHA256 / _384 */
-    const uint8_t *sig; int siglen;             /* ECDSA sig (DER SEQ of r,s) */
-    int   key_curve;                            /* 256 or 384 (EC public key) */
+    int   sig_alg;                              /* SIG_ECDSA_* / SIG_RSA_* */
+    const uint8_t *sig; int siglen;             /* ECDSA: DER SEQ{r,s}; RSA: raw */
+    int   key_type;                             /* KEY_EC / KEY_RSA (this cert's key) */
+    int   key_curve;                            /* EC: 256 or 384 */
     const uint8_t *pub; int publen;             /* EC point 04||X||Y */
+    const uint8_t *rsa_n; int rsa_nlen;         /* RSA modulus (big-endian, minimal) */
+    const uint8_t *rsa_e; int rsa_elen;         /* RSA exponent (big-endian, minimal) */
     const uint8_t *subject; int subjectlen;     /* raw DER of Subject Name */
     const uint8_t *issuer; int issuerlen;       /* raw DER of Issuer Name */
     const char *cn; int cnlen;                  /* leaf CN (for name check) */
@@ -21,6 +24,11 @@ struct cert {
 
 #define SIG_ECDSA_SHA256 1
 #define SIG_ECDSA_SHA384 2
+#define SIG_RSA_SHA256   3
+#define SIG_RSA_SHA384   4
+
+#define KEY_EC  1
+#define KEY_RSA 2
 
 /* Parse one DER certificate. Returns 0 on success. */
 int x509_parse(const uint8_t *der, int len, struct cert *out);

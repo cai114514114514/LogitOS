@@ -312,17 +312,25 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
              * ecdsa_secp384r1_sha384(0x0503) */
             int okv = 0;
             if (ncert > 0 && (sigalg == 0x0403 || sigalg == 0x0503)) {
+                /* ECDSA: ecdsa_secp256r1_sha256(0x0403) / secp384r1_sha384(0x0503) */
                 int curve = (sigalg == 0x0403) ? 256 : 384;
                 int flen2 = curve / 8;
                 uint8_t hash[48]; int hh;
                 if (curve == 256) { sha256(signed_data, sd, hash); hh = 32; }
                 else { sha384(signed_data, sd, hash); hh = 48; }
-                /* DER sig -> r||s (reuse the conversion via a tiny inline) */
                 extern int tls_der_sig_to_rs(const uint8_t*, int, uint8_t*, int);
                 uint8_t rs[96];
-                if (tls_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
+                if (chain[0].key_type == KEY_EC && tls_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
                     chain[0].pub[0] == 0x04 &&
                     ecdsa_verify(curve, chain[0].pub + 1, rs, hash, hh)) okv = 1;
+            } else if (ncert > 0 && (sigalg == 0x0804 || sigalg == 0x0805) &&
+                       chain[0].key_type == KEY_RSA) {
+                /* RSA-PSS: rsa_pss_rsae_sha256(0x0804) / rsa_pss_rsae_sha384(0x0805) */
+                int hh = (sigalg == 0x0804) ? 32 : 48;
+                uint8_t hash[48];
+                if (hh == 32) sha256(signed_data, sd, hash); else sha384(signed_data, sd, hash);
+                if (rsa_pss_verify(chain[0].rsa_n, chain[0].rsa_nlen, chain[0].rsa_e, chain[0].rsa_elen,
+                                   sig, siglen, hash, hh)) okv = 1;
             }
             if (!okv) { s->used=0; return TLS_E_CERT; }
             sha256_update(&th, flight + q, 4 + ml);
