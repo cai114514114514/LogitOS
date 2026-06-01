@@ -142,9 +142,13 @@ int e1000_init(void)
     vmm_map_range(dev.bar0, dev.bar0, 0x20000, VMM_WRITABLE | VMM_NOCACHE);
     mmio = (volatile uint8_t *)(uint64_t)dev.bar0;
 
-    /* Reset, then bring the link up. */
+    /* Reset, then bring the link up. CTRL.RST self-clears when reset completes;
+     * poll for it instead of a blind delay. */
     reg_write(REG_CTRL, reg_read(REG_CTRL) | CTRL_RST);
-    delay();
+    for (int i = 0; i < 1000; i++) {
+        if (!(reg_read(REG_CTRL) & CTRL_RST)) break;
+        for (volatile int d = 0; d < 10000; d++) ;
+    }
     reg_write(REG_CTRL, (reg_read(REG_CTRL) | CTRL_SLU | CTRL_ASDE));
     reg_write(REG_IMC, 0xFFFFFFFF);              /* mask all NIC interrupts (we poll) */
     reg_read(REG_ICR);                           /* clear pending causes */
@@ -154,8 +158,19 @@ int e1000_init(void)
     mac[2] = (ral >> 16) & 0xFF; mac[3] = (ral >> 24) & 0xFF;
     mac[4] = rah & 0xFF; mac[5] = (rah >> 8) & 0xFF;
 
+    /* Program receive-address filter 0 with our MAC and the Address-Valid bit
+     * (RAH bit 31). Without AV the NIC drops unicast frames (only BAM broadcasts
+     * pass), so ARP/ICMP replies addressed to us would never be received. */
+    reg_write(REG_RAL0, (uint32_t)mac[0] | ((uint32_t)mac[1] << 8) |
+              ((uint32_t)mac[2] << 16) | ((uint32_t)mac[3] << 24));
+    reg_write(REG_RAH0, (uint32_t)mac[4] | ((uint32_t)mac[5] << 8) | (1u << 31));
+
     rx_init();
     tx_init();
+
+    /* QEMU only re-offers a packet that arrived while RX was disabled when the
+     * guest pokes the NIC; re-write RDT so any queued frame is flushed to us. */
+    reg_write(REG_RDT, RX_DESC - 1);
 
     kprintf("[net] e1000 up: MAC %x:%x:%x:%x:%x:%x  mmio=%p\n",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (void *)(uint64_t)dev.bar0);
