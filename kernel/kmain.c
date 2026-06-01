@@ -13,6 +13,7 @@
 #include "net.h"
 #include "eth.h"
 #include "arp.h"
+#include "icmp.h"
 #include "kprintf.h"
 
 #define TIMER_HZ 100
@@ -41,26 +42,27 @@ void kernel_main(uint64_t mb_info)
 
     net_init();
 
-    /* TEMP L2 self-test: ARP-resolve the gateway (10.0.2.2). Pump net_poll()
-     * here since the WM loop isn't running yet. Use real PIT ticks (100 Hz):
-     * QEMU's e1000 defers its RX flush by up to 1s, so poll for a few seconds
-     * and re-send the request periodically. */
+    /* TEMP L3 self-test: ping the gateway (10.0.2.2). Pump net_poll() here with
+     * interrupts on (PIT time base); QEMU defers its e1000 RX flush up to 1s, so
+     * poll for a few seconds and re-issue the ping periodically. */
     if (net_up()) {
-        __asm__ volatile ("sti");                    /* let the PIT advance (time base) */
-        uint8_t gw_mac[6];
-        int resolved = 0;
-        uint64_t start = timer_ticks();
+        __asm__ volatile ("sti");
+        int got = 0;
+        uint64_t start = timer_ticks(), last_ping = 0;
         while (timer_ticks() - start < 500) {        /* ~5 s at 100 Hz */
             net_poll();
-            if (arp_resolve(net_cfg.gw, gw_mac) == 0) { resolved = 1; break; }
-            for (volatile int d = 0; d < 500000; d++) ;
+            if (icmp_last_rtt() >= 0) { got = 1; break; }
+            if (timer_ticks() - last_ping >= 50 || last_ping == 0) {
+                last_ping = timer_ticks();
+                icmp_ping(net_cfg.gw);               /* (re)send; ARP resolves first try */
+            }
+            for (volatile int d = 0; d < 300000; d++) ;
         }
-        __asm__ volatile ("cli");                    /* restore (wm_run re-enables) */
-        if (resolved)
-            kprintf("[net] L2 ARP_OK gw mac %x:%x:%x:%x:%x:%x\n",
-                    gw_mac[0], gw_mac[1], gw_mac[2], gw_mac[3], gw_mac[4], gw_mac[5]);
+        __asm__ volatile ("cli");
+        if (got)
+            kprintf("[net] L3 ping gw: %d ticks RTT\n[net] AQUA_NET_OK\n", icmp_last_rtt());
         else
-            serial_puts("[net] L2 ARP_FAIL\n");
+            serial_puts("[net] L3 PING_FAIL\n");
     }
 
     wm_init();

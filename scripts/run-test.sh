@@ -21,7 +21,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$QEMU" -cdrom "$ISO" $DISK_ARGS -serial "file:$LOG" -display none -no-reboot &
+# An e1000 on SLIRP user networking lets the boot-time net self-test run
+# (prints AQUA_NET_OK); the pass marker stays AQUA_BOOT_OK so the test still
+# passes on hosts where outbound networking is unavailable.
+NET_ARGS="-netdev user,id=n0 -device e1000,netdev=n0"
+"$QEMU" -cdrom "$ISO" $DISK_ARGS $NET_ARGS -serial "file:$LOG" -display none -no-reboot &
 QPID=$!
 
 # Poll the serial log for up to ~15s.
