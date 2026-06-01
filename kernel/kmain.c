@@ -12,6 +12,8 @@
 #include "aquafs.h"
 #include "net.h"
 #include "crypto.h"
+#include "x509.h"
+#include "test_chain.h"
 #include "kprintf.h"
 
 #define TIMER_HZ 100
@@ -117,6 +119,27 @@ static void crypto_l1_selftest(void)
     uint8_t bad[32]; for (int i=0;i<32;i++) bad[i]=ec_hash[i]; bad[0]^=1;
     int vbad = ecdsa_verify(256, ec_pub, ec_sig, bad, 32);
     kprintf((v == 1 && vbad == 0) ? "[crypto] AQUA_ECDSA_OK\n" : "[crypto] CRYPTO_ECDSA_FAIL\n");
+
+    /* --- L4: parse + verify the real example.com chain to the built-in root --- */
+    struct cert ch[4];
+    int pe = 0;
+    pe |= x509_parse(test_cert0, sizeof test_cert0, &ch[0]);
+    pe |= x509_parse(test_cert1, sizeof test_cert1, &ch[1]);
+    pe |= x509_parse(test_cert2, sizeof test_cert2, &ch[2]);
+    pe |= x509_parse(test_cert3, sizeof test_cert3, &ch[3]);
+    if (pe) { kprintf("[x509] parse failed\n"); return; }
+    /* now = midpoint of the leaf's validity window (parse_time's own base) */
+    kprintf("[x509] leaf valid [%d .. %d] days\n",
+            (int)(ch[0].not_before/86400), (int)(ch[0].not_after/86400));
+    int64_t now = (ch[0].not_before + ch[0].not_after) / 2;
+    int cr = x509_verify_chain(ch, 4, "example.com", now);
+    /* negative: tamper the leaf TBS signature -> must fail */
+    struct cert bad0 = ch[0]; static uint8_t sigcopy[128];
+    for (int i=0;i<bad0.siglen && i<128;i++) sigcopy[i]=bad0.sig[i]; sigcopy[10]^=1;
+    bad0.sig = sigcopy;
+    int cr_bad = x509_verify_signed_by(&bad0, &ch[1]);
+    kprintf((cr == 0 && cr_bad != 0) ? "[x509] AQUA_X509_OK\n" : "[x509] X509_FAIL\n");
+    kprintf("[x509] chain rc=%d (0=trusted)\n", cr);
 }
 #define BOOT_OK_MARKER "AQUA_BOOT_OK"
 
