@@ -35,7 +35,7 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
            -std=c11 -Wall -Wextra -O2 -Iinclude
 
-C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c)
+C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c net/*.c)
 ASM_SRC := $(wildcard boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -88,12 +88,16 @@ $(DISK): $(FS_FILES) $(AEX) tools/mkfs.py
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
+# e1000 NIC on QEMU user (SLIRP) networking: gw 10.0.2.2, DNS 10.0.2.3, guest
+# 10.0.2.15. filter-dump writes every frame to a pcap for forensic verification.
+QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
+             -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) -serial stdio -no-reboot
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot
 
 debug: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) -serial stdio -no-reboot -s -S
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot -s -S
 
 test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)

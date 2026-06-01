@@ -1,0 +1,36 @@
+#ifndef AQUA_NET_H
+#define AQUA_NET_H
+
+#include <stdint.h>
+
+/* Host byte order helpers (x86 is little-endian; network is big-endian). */
+static inline uint16_t htons(uint16_t x) { return (uint16_t)((x << 8) | (x >> 8)); }
+static inline uint16_t ntohs(uint16_t x) { return htons(x); }
+static inline uint32_t htonl(uint32_t x)
+{
+    return ((x & 0xFF) << 24) | ((x & 0xFF00) << 8) |
+           ((x >> 8) & 0xFF00) | ((x >> 24) & 0xFF);
+}
+static inline uint32_t ntohl(uint32_t x) { return htonl(x); }
+
+/* Build an IPv4 address (a.b.c.d) in host order. */
+#define IPV4(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | \
+                          ((uint32_t)(c) << 8) | (uint32_t)(d))
+
+struct net_config {
+    uint8_t  mac[6];
+    uint32_t ip;        /* host order */
+    uint32_t mask;
+    uint32_t gw;
+};
+
+extern struct net_config net_cfg;
+
+/* Bring up the NIC + stack (called from kmain). Returns 0 on success. */
+int  net_init(void);
+int  net_up(void);                  /* 1 if a NIC initialised successfully */
+
+/* Pump the receive path (called from the WM main loop). */
+void net_poll(void);
+
+#endif /* AQUA_NET_H */

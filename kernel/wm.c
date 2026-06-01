@@ -12,6 +12,7 @@
 #include "rtc.h"
 #include "aex.h"
 #include "aqua_abi.h"
+#include "net.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
@@ -635,6 +636,7 @@ void wm_run(void)
 
     uint64_t last = 0;
     for (;;) {
+        net_poll();                  /* drive the (polled) network RX path */
         uint64_t now = timer_ticks();
         if (dirty || now - last >= 12) { dirty = 0; last = now; wm_render(); }
         schedule();

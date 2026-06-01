@@ -10,6 +10,8 @@
 #include "mouse.h"
 #include "vfs.h"
 #include "aquafs.h"
+#include "net.h"
+#include "eth.h"
 
 #define TIMER_HZ 100
 #define BOOT_OK_MARKER "AQUA_BOOT_OK"
@@ -34,6 +36,17 @@ void kernel_main(uint64_t mb_info)
     vfs_register(&aquafs);
     int fs_ok = (vfs_mount() == 0);
     serial_puts(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
+
+    net_init();
+
+    /* TEMP L1 TX self-test: send one broadcast frame to prove the e1000 TX path
+     * (verify it appears in build/net.pcap). Full ARP/IP arrive in later layers. */
+    if (net_up()) {
+        uint8_t probe[46];
+        for (int i = 0; i < 46; i++) probe[i] = 0xA5;
+        eth_send(eth_broadcast, 0x88B5 /* experimental ethertype */, probe, sizeof probe);
+        serial_puts("[net] L1 TX probe sent\n");
+    }
 
     wm_init();
     wm_render();                 /* first frame -> desktop visible */
