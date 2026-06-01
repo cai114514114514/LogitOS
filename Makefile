@@ -35,7 +35,7 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
            -std=c11 -Wall -Wextra -O2 -Iinclude
 
-C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c net/*.c)
+C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c net/*.c crypto/*.c)
 ASM_SRC := $(wildcard boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
