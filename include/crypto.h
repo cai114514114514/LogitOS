@@ -33,4 +33,22 @@ void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
 void hkdf_expand_label(int hlen, const uint8_t *secret, const char *label,
                        const uint8_t *ctx, int ctxlen, uint8_t *out, int outlen);
 
+/* --- AEAD: ChaCha20-Poly1305 (RFC 8439) ---
+ * key=32, nonce=12. seal writes ciphertext (len bytes) + tag[16]; open verifies
+ * the tag and writes plaintext. open returns 0 on success, -1 on tag mismatch. */
+void chacha20_poly1305_seal(const uint8_t key[32], const uint8_t nonce[12],
+                            const uint8_t *aad, int aadlen,
+                            const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  chacha20_poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
+                            const uint8_t *aad, int aadlen,
+                            const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+
+/* --- AEAD: AES-128-GCM --- key=16, nonce=12. Same seal/open contract. */
+void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+
 #endif /* AQUA_CRYPTO_H */
