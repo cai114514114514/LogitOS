@@ -11,6 +11,7 @@
 #include "vfs.h"
 #include "aquafs.h"
 #include "net.h"
+#include "text.h"
 
 #define TIMER_HZ 100
 
@@ -38,6 +39,8 @@ void kernel_main(uint64_t mb_info)
     serial_puts(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
+
+    text_init();  /* load /fonts/*.ttf for the anti-aliased Unicode text engine */
 
     wm_init();
     wm_render();                 /* first frame -> desktop visible */

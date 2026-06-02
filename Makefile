@@ -14,7 +14,8 @@ ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/aqua.iso
 DISK        := $(BUILD)/disk.img
-FS_FILES    := $(wildcard fsroot/*)
+FS_FILES    := $(filter-out fsroot/fonts,$(wildcard fsroot/*))
+FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
 CC          := clang
 LD          := ld.lld
@@ -87,11 +88,19 @@ $(eval $(call APP_RULE,browser, 0x45000000,Browser,-,B,120,130,240))
 APPS := clock textedit monitor terminal netapp browser
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)
 
-$(DISK): $(FS_FILES) $(AEX) tools/mkfs.py
+# Font subsets (proprietary source; regenerated, .gitignored). See tools/mkfont.py.
+$(FONTS): tools/mkfont.py
+	@mkdir -p fsroot/fonts
+	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+
+$(DISK): $(FS_FILES) $(FONTS) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
-	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
+	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
+	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
+	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
+QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
 # e1000 NIC on QEMU user (SLIRP) networking: gw 10.0.2.2, DNS 10.0.2.3, guest
 # 10.0.2.15. filter-dump writes every frame to a pcap for forensic verification.
@@ -99,10 +108,10 @@ QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot
 
 debug: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot -s -S
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot -s -S
 
 test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)

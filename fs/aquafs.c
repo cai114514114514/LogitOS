@@ -31,7 +31,8 @@ struct dinode {                         /* 128 bytes on disk */
     uint32_t size;
     uint32_t direct[NDIRECT];
     uint32_t indirect;
-    uint8_t  reserved[INODE_SIZE - 8 - NDIRECT * 4 - 4];
+    uint32_t double_indirect;
+    uint8_t  reserved[INODE_SIZE - 8 - NDIRECT * 4 - 8];
 } __attribute__((packed));
 
 struct dirent {                         /* 64 bytes on disk */
@@ -95,9 +96,20 @@ static uint32_t imap(struct dinode *in, uint32_t i)
 {
     if (i < NDIRECT) return in->direct[i];
     i -= NDIRECT;
-    if (!in->indirect || i >= PPB) return 0;
-    if (bread(in->indirect, ind_buf)) return 0;
-    return ind_buf[i];
+    if (i < PPB) {                                  /* single indirect */
+        if (!in->indirect) return 0;
+        if (bread(in->indirect, ind_buf)) return 0;
+        return ind_buf[i];
+    }
+    i -= PPB;
+    if (i < PPB * PPB) {                             /* double indirect */
+        if (!in->double_indirect) return 0;
+        if (bread(in->double_indirect, ind_buf)) return 0;
+        uint32_t ib = ind_buf[i / PPB];
+        if (!ib || bread(ib, ind_buf)) return 0;
+        return ind_buf[i % PPB];
+    }
+    return 0;
 }
 
 static int flush_bitmap(void)           /* persist the free-block bitmap */
@@ -121,14 +133,9 @@ static int inode_read(struct dinode *in, void *buf, int max)
     if ((int)size > max) return -1;
     uint8_t  *out  = buf;
     uint32_t  nblk = (size + BS - 1) / BS;
-    int       have_ind = 0;
     for (uint32_t i = 0; i < nblk; i++) {
-        uint32_t blk;
-        if (i < NDIRECT) blk = in->direct[i];
-        else {
-            if (!have_ind) { if (bread(in->indirect, ind_buf)) return -1; have_ind = 1; }
-            blk = ind_buf[i - NDIRECT];
-        }
+        uint32_t blk = imap(in, i);                  /* direct / single / double indirect */
+        if (!blk) return -1;
         uint32_t off = i * BS;
         uint32_t n   = size - off < BS ? size - off : BS;
         if (n == BS) { if (bread(blk, out + off)) return -1; }
