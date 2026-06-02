@@ -33,6 +33,7 @@
 #define SYS_HTTP_STATUS 27  /* () -> 1 busy, 2 done, <0 error code */
 #define SYS_HTTP_READ   28  /* (off, buf, max) -> bytes of rendered text copied (0 at end) */
 #define SYS_HTTP_LINK   29  /* (i, buf, max) -> 0 + abs URL of link i, or -1 */
+#define SYS_GUI_TEXT_MONO 30 /* ((x<<16)|y, (cell<<24)|color, str): monospace text */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

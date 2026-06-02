@@ -27,6 +27,11 @@ static inline void gui_rect(int x, int y, int w, int h, unsigned color)
 static inline void gui_text(int x, int y, unsigned color, const char *s)
 { _sys(SYS_GUI_TEXT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF), color, (long)s); }
 
+/* Monospace text: each glyph occupies a `cell`-pixel column (CJK = 2 cells). */
+static inline void gui_text_mono(int x, int y, unsigned color, int cell, const char *s)
+{ _sys(SYS_GUI_TEXT_MONO, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
+       ((long)(cell & 0xFF) << 24) | (color & 0xFFFFFF), (long)s); }
+
 static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
 static inline int  poll_event(struct aqua_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
 static inline int  get_arg(char *b, int m) { return (int)_sys(SYS_GET_ARG, (long)b, m, 0); }

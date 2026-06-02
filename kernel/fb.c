@@ -2,7 +2,6 @@
 #include <stddef.h>
 #include "fb.h"
 #include "vmm.h"
-#include "font8x16.h"
 #include "text.h"
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
