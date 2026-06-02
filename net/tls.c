@@ -109,7 +109,7 @@ static void make_nonce(const struct aead *a, uint8_t nonce[12])
 static int aead_seal(struct aead *a, uint8_t inner_type, const uint8_t *content, int clen,
                      uint8_t *out)
 {
-    uint8_t plain[16384];
+    static uint8_t plain[16384];   /* static: keep this 16 KiB off the kernel stack */
     memcpy(plain, content, clen); plain[clen] = inner_type;
     int plen = clen + 1;
     int rlen = plen + 16;

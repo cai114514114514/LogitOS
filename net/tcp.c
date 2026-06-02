@@ -17,7 +17,7 @@ void *memset(void *, int, size_t);
 
 enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSING, TIME_WAIT };
 
-#define NCONN    4
+#define NCONN    8
 #define RXBUF    16384
 #define TXBUF    2048
 
@@ -165,7 +165,9 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
             c->rcv_nxt += 1;
             c->peer_fin = 1;
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
-            if (c->state == FIN_WAIT) { c->state = TIME_WAIT; }
+            /* If we already closed (client done), the slot can be released now;
+             * skipping TIME_WAIT is fine for an outbound-only client. */
+            if (c->state == FIN_WAIT) { c->state = CLOSED; c->used = 0; }
         }
     }
 }
@@ -181,6 +183,10 @@ void tcp_poll(void)
             send_seg(c, c->tx_flags, c->tx_seq, c->tx_len ? c->tx : NULL, c->tx_len);
             c->tx_tick = now;
         }
+        /* Backstop: our FIN was acked but the peer's FIN never came -- don't leak
+         * the slot (NCONN is small and a browser opens many connections). */
+        if (c->state == FIN_WAIT && c->tx_flags == 0 && now - c->tx_tick > 200)
+            { c->state = CLOSED; c->used = 0; }
     }
 }
 

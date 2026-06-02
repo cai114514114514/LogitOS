@@ -74,13 +74,22 @@ Key notes:
 - M10 TCP (`net/tcp.c`): client byte stream over IP proto 6 (IP_PROTO_TCP via
   ip_input's weak hook); tcp_connect/send/recv/close; single outstanding seg +
   timeout retransmit; no out-of-order/window-scaling/congestion (enough for GET).
+  NCONN=8; a closed connection's slot is freed promptly (FIN_WAIT -> CLOSED on
+  the peer's FIN, plus a `tcp_poll` backstop) -- the old code leaked slots in
+  FIN_WAIT/TIME_WAIT, which a multi-connection page (e.g. a redirect) exhausted.
 - M11 HTTP (`net/http.c` + `net/url.c` + `net/html.c`): http_get(url) does
   DNS+TCP+GET synchronously and html_render strips tags/decodes entities/extracts
   `<a>` links; `user/browser.c` is the GUI. **Gotcha:** blocking net calls
   (http_get, dns_resolve) pump net_poll and need IF=1, but int 0x80 is an
   interrupt gate (clears IF) — so SYS_HTTP_GET re-enables interrupts around the
   fetch (see `wm_gui_syscall`), else the PIT-based timeout loop spins forever.
-  http_get now branches on https (see M12).
+  http_get now branches on https (see M12), and **follows 3xx redirects** (up to
+  5 hops, `Location:` via `url_resolve`) -- so https://google.com lands on
+  https://www.google.com like a real browser. **Stack note:** the TLS path is
+  stack-heavy (handshake + cert/RSA verify + `aead_seal`); that 16 KiB plain
+  buffer is now `static`, and the boot stack + thread kstack are 32 KiB. With the
+  old 16 KiB stack the deeper redirect path overflowed *into the page tables*
+  (`stack_bottom` sits just above `pd_table` in boot.asm) -> silent hang.
 - M12 TLS 1.3 (`crypto/*` + `net/tls.c` + `net/x509.c`): from-scratch crypto --
   SHA-256/384, HMAC/HKDF (`hmac_hkdf.c`), ChaCha20-Poly1305 + AES-128-GCM,
   X25519, EC P-256/P-384 + ECDSA-verify (`ecdsa.c`, Jacobian coords). `net/tls.c`

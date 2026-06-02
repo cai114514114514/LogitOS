@@ -153,5 +153,5 @@ pml4_table:  resb 4096
 pdpt_table:  resb 4096
 pd_table:    resb 4096
 stack_bottom:
-    resb 16384                  ; 16 KiB kernel stack
+    resb 32768                  ; 32 KiB boot stack (TLS/RSA path is stack-heavy)
 stack_top:

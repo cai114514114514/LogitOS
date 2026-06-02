@@ -6,7 +6,7 @@
 #include "vmm.h"
 
 #define STACK_SIZE  16384
-#define KSTACK_SIZE 16384
+#define KSTACK_SIZE 32768
 
 struct thread {
     uint64_t rsp;            /* saved stack pointer (must be first field) */

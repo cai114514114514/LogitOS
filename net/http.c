@@ -78,6 +78,78 @@ static int find_body(const char *buf, int len)
     return -1;
 }
 
+/* Status code from the "HTTP/1.x NNN ..." response line, or 0. */
+static int status_code(const char *buf, int len)
+{
+    int i = 0;
+    while (i < len && buf[i] != ' ') i++;        /* skip "HTTP/1.x" */
+    i++;
+    if (i + 3 > len) return 0;
+    if (buf[i] < '0' || buf[i] > '9') return 0;
+    return (buf[i]-'0')*100 + (buf[i+1]-'0')*10 + (buf[i+2]-'0');
+}
+
+/* Extract a header value (case-insensitive name) into out. 0 ok, -1 not found. */
+static int header_value(const char *buf, int len, const char *name, char *out, int max)
+{
+    int nl = 0; while (name[nl]) nl++;
+    for (int i = 0; i + nl + 1 < len; i++) {
+        if (i != 0 && buf[i-1] != '\n') continue;            /* at line start */
+        int j = 0;
+        for (; j < nl; j++) {
+            char a = buf[i+j], b = name[j];
+            if (a>='A'&&a<='Z') a+=32; if (b>='A'&&b<='Z') b+=32;
+            if (a != b) break;
+        }
+        if (j != nl || buf[i+nl] != ':') continue;
+        int p = i + nl + 1;
+        while (p < len && (buf[p]==' '||buf[p]=='\t')) p++;
+        int o = 0;
+        while (p < len && buf[p] != '\r' && buf[p] != '\n' && o < max-1) out[o++] = buf[p++];
+        out[o] = 0;
+        return 0;
+    }
+    return -1;
+}
+
+/* One request/response into raw[]/raw_len for URL `u`. 0 ok, else HTTP_ERR_*. */
+static int fetch_once(const struct url *u)
+{
+    raw_len = 0;
+    uint32_t ip = dns_resolve(u->host);
+    if (!ip) return HTTP_ERR_DNS;
+    int tcp = tcp_connect(ip, u->port);
+    if (tcp < 0) return HTTP_ERR_CONN;
+
+    int tls = -1;
+    if (u->https) {
+        tls = tls_connect(tcp, u->host, now_unix());
+        if (tls < 0) { tcp_close(tcp); return HTTP_ERR_TLS; }
+    }
+
+    char req[URL_PATH_MAX + URL_HOST_MAX + 64];
+    int rl = build_request(u, req, (int)sizeof req);
+    if (tls >= 0) tls_send(tls, req, rl); else tcp_send(tcp, req, rl);
+
+    uint64_t start = timer_ticks();
+    while (timer_ticks() - start < 800) {       /* ~8 s idle budget */
+        net_poll();
+        int n = (tls >= 0) ? tls_recv(tls, raw + raw_len, RAW_MAX - raw_len)
+                           : tcp_recv(tcp, raw + raw_len, RAW_MAX - raw_len);
+        if (n > 0) {
+            raw_len += n;
+            start = timer_ticks();
+            if (raw_len >= RAW_MAX) break;
+        } else if (n < 0) {
+            break;
+        }
+        for (volatile int d = 0; d < 150000; d++) ;
+    }
+    if (tls >= 0) tls_close(tls);
+    tcp_close(tcp);
+    return raw_len == 0 ? HTTP_ERR_CONN : 0;
+}
+
 int http_get(const char *url)
 {
     status = HTTP_BUSY;
@@ -85,43 +157,28 @@ int http_get(const char *url)
 
     if (url_parse(url, &cur) != 0) { status = HTTP_ERR_URL; return HTTP_ERR_URL; }
 
-    uint32_t ip = dns_resolve(cur.host);
-    if (!ip) { status = HTTP_ERR_DNS; return HTTP_ERR_DNS; }
+    /* Follow up to 5 redirects (301/302/303/307/308 with a Location header), so
+     * e.g. https://google.com lands on https://www.google.com like a real browser. */
+    for (int hop = 0; hop < 5; hop++) {
+        int rc = fetch_once(&cur);
+        if (rc != 0) { status = rc; return rc; }
 
-    int tcp = tcp_connect(ip, cur.port);
-    if (tcp < 0) { status = HTTP_ERR_CONN; return HTTP_ERR_CONN; }
-
-    /* For https, layer TLS over the TCP connection; otherwise use raw TCP.
-     * `tls` >= 0 selects the encrypted transport. */
-    int tls = -1;
-    if (cur.https) {
-        tls = tls_connect(tcp, cur.host, now_unix());
-        if (tls < 0) { tcp_close(tcp); status = HTTP_ERR_TLS; return HTTP_ERR_TLS; }
-    }
-
-    char req[URL_PATH_MAX + URL_HOST_MAX + 64];
-    int rl = build_request(&cur, req, (int)sizeof req);
-    if (tls >= 0) tls_send(tls, req, rl); else tcp_send(tcp, req, rl);
-
-    /* Receive until the peer closes (Connection: close) or we time out. */
-    uint64_t start = timer_ticks();
-    while (timer_ticks() - start < 800) {       /* ~8 s */
-        net_poll();
-        int n = (tls >= 0) ? tls_recv(tls, raw + raw_len, RAW_MAX - raw_len)
-                           : tcp_recv(tcp, raw + raw_len, RAW_MAX - raw_len);
-        if (n > 0) {
-            raw_len += n;
-            start = timer_ticks();              /* reset idle timer on progress */
-            if (raw_len >= RAW_MAX) break;
-        } else if (n < 0) {
-            break;                              /* closed + drained */
+        int code = status_code(raw, raw_len);
+        if (code >= 300 && code < 400) {
+            int hdr = find_body(raw, raw_len);
+            int hlen = hdr < 0 ? raw_len : hdr;
+            char loc[URL_HOST_MAX + URL_PATH_MAX + 16];
+            char abs[URL_HOST_MAX + URL_PATH_MAX + 16];
+            struct url nu;
+            if (header_value(raw, hlen, "location", loc, sizeof loc) == 0 &&
+                url_resolve(&cur, loc, abs, sizeof abs) == 0 &&
+                url_parse(abs, &nu) == 0) {
+                cur = nu;                            /* hop to the new location */
+                continue;
+            }
         }
-        for (volatile int d = 0; d < 150000; d++) ;
+        break;                                       /* final (non-redirect) response */
     }
-    if (tls >= 0) tls_close(tls);
-    tcp_close(tcp);
-
-    if (raw_len == 0) { status = HTTP_ERR_CONN; return HTTP_ERR_CONN; }
 
     int body = find_body(raw, raw_len);
     if (body < 0) body = 0;
