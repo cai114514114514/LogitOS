@@ -98,3 +98,35 @@ void sha384(const void *data, size_t len, uint8_t out[48])
 {
     struct sha512 c; sha384_init(&c); sha512_update(&c, data, len); sha384_final(&c, out);
 }
+
+/* Full SHA-512: same core, different IV, all 8 output words. */
+void sha512_init(struct sha512 *c)
+{
+    c->h[0]=0x6a09e667f3bcc908ULL; c->h[1]=0xbb67ae8584caa73bULL;
+    c->h[2]=0x3c6ef372fe94f82bULL; c->h[3]=0xa54ff53a5f1d36f1ULL;
+    c->h[4]=0x510e527fade682d1ULL; c->h[5]=0x9b05688c2b3e6c1fULL;
+    c->h[6]=0x1f83d9abfb41bd6bULL; c->h[7]=0x5be0cd19137e2179ULL;
+    c->len_hi = c->len_lo = 0; c->n = 0;
+}
+
+void sha512_final(struct sha512 *c, uint8_t out[64])
+{
+    uint64_t bits_lo = c->len_lo * 8;
+    uint64_t bits_hi = (c->len_hi << 3) | (c->len_lo >> 61);
+    uint8_t pad = 0x80;
+    sha512_update(c, &pad, 1);
+    uint8_t z = 0;
+    while (c->n != 112) sha512_update(c, &z, 1);
+    uint8_t L[16];
+    for (int i = 0; i < 8; i++) L[i]   = (uint8_t)(bits_hi >> (56 - 8*i));
+    for (int i = 0; i < 8; i++) L[8+i] = (uint8_t)(bits_lo >> (56 - 8*i));
+    sha512_update(c, L, 16);
+    for (int i = 0; i < 8; i++)
+        for (int j = 0; j < 8; j++)
+            out[i*8+j] = (uint8_t)(c->h[i] >> (56 - 8*j));
+}
+
+void sha512(const void *data, size_t len, uint8_t out[64])
+{
+    struct sha512 c; sha512_init(&c); sha512_update(&c, data, len); sha512_final(&c, out);
+}

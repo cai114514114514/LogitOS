@@ -199,9 +199,10 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     /* supported_groups = x25519 (0x001d) */
     n += put_u16(ch + n, 10); n += put_u16(ch + n, 4); n += put_u16(ch + n, 2); n += put_u16(ch + n, 0x001d);
     /* signature_algorithms */
-    n += put_u16(ch + n, 13); n += put_u16(ch + n, 12); n += put_u16(ch + n, 10);
+    n += put_u16(ch + n, 13); n += put_u16(ch + n, 16); n += put_u16(ch + n, 14);
     n += put_u16(ch + n, 0x0403); n += put_u16(ch + n, 0x0503);
-    n += put_u16(ch + n, 0x0804); n += put_u16(ch + n, 0x0805); n += put_u16(ch + n, 0x0401);
+    n += put_u16(ch + n, 0x0804); n += put_u16(ch + n, 0x0805); n += put_u16(ch + n, 0x0806);
+    n += put_u16(ch + n, 0x0401); n += put_u16(ch + n, 0x0501);
     /* key_share: x25519 + our pubkey */
     n += put_u16(ch + n, 51); n += put_u16(ch + n, 38); n += put_u16(ch + n, 36);
     n += put_u16(ch + n, 0x001d); n += put_u16(ch + n, 32); memcpy(ch + n, pub, 32); n += 32;
@@ -323,12 +324,14 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
                 if (chain[0].key_type == KEY_EC && tls_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
                     chain[0].pub[0] == 0x04 &&
                     ecdsa_verify(curve, chain[0].pub + 1, rs, hash, hh)) okv = 1;
-            } else if (ncert > 0 && (sigalg == 0x0804 || sigalg == 0x0805) &&
+            } else if (ncert > 0 && (sigalg == 0x0804 || sigalg == 0x0805 || sigalg == 0x0806) &&
                        chain[0].key_type == KEY_RSA) {
-                /* RSA-PSS: rsa_pss_rsae_sha256(0x0804) / rsa_pss_rsae_sha384(0x0805) */
-                int hh = (sigalg == 0x0804) ? 32 : 48;
-                uint8_t hash[48];
-                if (hh == 32) sha256(signed_data, sd, hash); else sha384(signed_data, sd, hash);
+                /* RSA-PSS: rsa_pss_rsae_sha256/384/512 (0x0804/0x0805/0x0806) */
+                int hh = (sigalg == 0x0804) ? 32 : (sigalg == 0x0805) ? 48 : 64;
+                uint8_t hash[64];
+                if (hh == 32) sha256(signed_data, sd, hash);
+                else if (hh == 48) sha384(signed_data, sd, hash);
+                else sha512(signed_data, sd, hash);
                 if (rsa_pss_verify(chain[0].rsa_n, chain[0].rsa_nlen, chain[0].rsa_e, chain[0].rsa_elen,
                                    sig, siglen, hash, hh)) okv = 1;
             }

@@ -21,6 +21,10 @@ void sha384_init(struct sha512 *c);
 void sha512_update(struct sha512 *c, const void *data, size_t len);
 void sha384_final(struct sha512 *c, uint8_t out[48]);
 void sha384(const void *data, size_t len, uint8_t out[48]);
+/* Full SHA-512 (same core as SHA-384). */
+void sha512_init(struct sha512 *c);
+void sha512_final(struct sha512 *c, uint8_t out[64]);
+void sha512(const void *data, size_t len, uint8_t out[64]);
 
 /* --- HMAC / HKDF (parameterised by hash length: 32 = SHA-256, 48 = SHA-384) --- */
 void hmac(int hlen, const uint8_t *key, int keylen,

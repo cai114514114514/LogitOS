@@ -31,6 +31,7 @@ LABELS = {
     "usertrust_ecc":      "USERTrust ECC Certification Authority (EC P-384)",
     "amazon_root_1":      "Amazon Root CA 1 (RSA-2048)",
     "amazon_root_3":      "Amazon Root CA 3 (EC P-256)",
+    "dtrust_root3_2009":  "D-TRUST Root Class 3 CA 2 2009 (RSA-2048; SHA-512 chains)",
     "sslcom_ecc_2022":    "SSL.com TLS ECC Root CA 2022 (EC P-384, example.com)",
 }
 

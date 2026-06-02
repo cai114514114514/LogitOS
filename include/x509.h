@@ -26,6 +26,11 @@ struct cert {
 #define SIG_ECDSA_SHA384 2
 #define SIG_RSA_SHA256   3
 #define SIG_RSA_SHA384   4
+#define SIG_RSA_SHA512   5
+#define SIG_ECDSA_SHA512 6
+#define SIG_RSA_PSS_SHA256 7
+#define SIG_RSA_PSS_SHA384 8
+#define SIG_RSA_PSS_SHA512 9
 
 #define KEY_EC  1
 #define KEY_RSA 2

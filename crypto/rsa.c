@@ -69,6 +69,8 @@ static const uint8_t DI_SHA256[] =
     {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
 static const uint8_t DI_SHA384[] =
     {0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x02,0x05,0x00,0x04,0x30};
+static const uint8_t DI_SHA512[] =
+    {0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40};
 
 /* RSA primitive: out = sig^e mod n, serialized big-endian to nlen bytes (the
  * encoded message EM). Returns 0 on success, -1 if sizes are out of range. */
@@ -86,15 +88,22 @@ static int rsa_public(const uint8_t *n, int nlen, const uint8_t *e, int elen,
     return 0;
 }
 
-/* MGF1 (RFC 8017 B.2.1) with SHA-256 or SHA-384 (selected by hlen). */
+static void hash_sel(int hlen, const uint8_t *in, int il, uint8_t *out)
+{
+    if (hlen == 32) sha256(in, il, out);
+    else if (hlen == 48) sha384(in, il, out);
+    else sha512(in, il, out);
+}
+
+/* MGF1 (RFC 8017 B.2.1) with SHA-256/384/512 (selected by hlen). */
 static void mgf1(const uint8_t *seed, int seedlen, int hlen, uint8_t *mask, int masklen)
 {
-    uint8_t blk[48]; int done = 0;
+    uint8_t blk[64]; int done = 0;
     for (uint32_t c = 0; done < masklen; c++) {
-        uint8_t in[512 + 4]; int il = 0;
+        uint8_t in[64 + 4]; int il = 0;
         for (int i=0;i<seedlen;i++) in[il++] = seed[i];
         in[il++]=(uint8_t)(c>>24); in[il++]=(uint8_t)(c>>16); in[il++]=(uint8_t)(c>>8); in[il++]=(uint8_t)c;
-        if (hlen == 32) sha256(in, il, blk); else sha384(in, il, blk);
+        hash_sel(hlen, in, il, blk);
         for (int i=0;i<hlen && done<masklen;i++) mask[done++] = blk[i];
     }
 }
@@ -105,12 +114,11 @@ static void mgf1(const uint8_t *seed, int seedlen, int hlen, uint8_t *mask, int 
 int rsa_pss_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
                    const uint8_t *sig, int siglen, const uint8_t *mhash, int hlen)
 {
-    if (hlen != 32 && hlen != 48) return 0;
+    if (hlen != 32 && hlen != 48 && hlen != 64) return 0;
     uint8_t em[RL*4];
     if (rsa_public(n, nlen, e, elen, sig, siglen, em) != 0) return 0;
     int emLen = nlen;                                  /* modBits multiple of 8 => emLen == nlen */
-    int sLen = hlen;
-    if (emLen < hlen + sLen + 2) return 0;
+    if (emLen < hlen + 2) return 0;
     if (em[emLen-1] != 0xbc) return 0;
     if (em[0] & 0x80) return 0;                        /* top bit (8*emLen-emBits=1) must be 0 */
     const uint8_t *maskedDB = em;
@@ -120,17 +128,20 @@ int rsa_pss_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
     uint8_t db[RL*4];
     for (int i=0;i<dblen;i++) db[i] = maskedDB[i] ^ dbmask[i];
     db[0] &= 0x7f;                                     /* clear the same leftmost bit */
+    /* DB = PS(zeros) || 0x01 || salt; recover salt length (TLS uses sLen=hLen,
+     * but certificates may use any -- so find the 0x01 separator). */
     int i = 0;
-    while (i < dblen - sLen - 1 && db[i] == 0) i++;
-    if (i != dblen - sLen - 1 || db[i] != 0x01) return 0;
-    const uint8_t *salt = db + dblen - sLen;
+    while (i < dblen && db[i] == 0) i++;
+    if (i >= dblen || db[i] != 0x01) return 0;
+    i++;
+    const uint8_t *salt = db + i; int sLen = dblen - i;
     /* H' = Hash(8*0x00 || mHash || salt) */
-    uint8_t mp[8 + 48 + 48]; int mpl = 0;
+    uint8_t mp[8 + 64 + RL*4]; int mpl = 0;
     for (int k=0;k<8;k++) mp[mpl++] = 0;
     for (int k=0;k<hlen;k++) mp[mpl++] = mhash[k];
     for (int k=0;k<sLen;k++) mp[mpl++] = salt[k];
-    uint8_t hp[48];
-    if (hlen == 32) sha256(mp, mpl, hp); else sha384(mp, mpl, hp);
+    uint8_t hp[64];
+    hash_sel(hlen, mp, mpl, hp);
     return memcmp(hp, H, hlen) == 0;
 }
 
@@ -143,6 +154,7 @@ int rsa_pkcs1_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
     const uint8_t *di; int dilen;
     if      (hlen == 32) { di = DI_SHA256; dilen = (int)sizeof DI_SHA256; }
     else if (hlen == 48) { di = DI_SHA384; dilen = (int)sizeof DI_SHA384; }
+    else if (hlen == 64) { di = DI_SHA512; dilen = (int)sizeof DI_SHA512; }
     else return 0;
 
     uint8_t em[RL*4];

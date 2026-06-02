@@ -106,8 +106,21 @@ Key notes:
   QEMU (Browser opens https://google.com). **Gotcha:** roots.c #includes the
   generated bundle, so the Makefile gives roots.o an explicit dep on
   roots_bundle.inc -- regenerating the bundle without that dep silently keeps the
-  old roots in the kernel. No RSA-PSS for *cert* sigs and no RSA *key exchange*
-  (TLS 1.3 has none); RSA leaves use ECDHE so only their CertVerify is PSS.
+  old roots in the kernel. No RSA *key exchange* (TLS 1.3 has none); RSA leaves
+  use ECDHE so only their CertVerify is PSS.
+- Algorithm coverage completed: `crypto/rsa.c` `rsa_pss_verify` recovers the salt
+  length from the structure (works for any salt, not just =hLen), and full
+  **SHA-512** (`crypto/sha384.c sha512*`) is wired through. `net/x509.c` now also
+  parses **rsassaPss** cert signatures (hash read from the params) and
+  **sha512/ecdsa-with-SHA512**, with SIG_RSA_PSS_SHA256/384/512, SIG_RSA_SHA512,
+  SIG_ECDSA_SHA512. ClientHello advertises rsa_pss_rsae_sha256/384/512. 15th root
+  = D-TRUST Root Class 3 CA 2 2009 (a SHA-512 chain anchor). Verified host-side
+  against 8 real chains (incl. bsi.bund.de SHA-512, sectigo SHA-384) + synthetic
+  PSS/SHA-512 certs vs openssl; in QEMU bsi.bund.de (SHA-512 + RSA-PSS
+  CertVerify) opens. **Known separate limitation:** sites with large multi-cert
+  RSA flights (e.g. sectigo, 4 certs incl. a 4096-bit CA) fail with TLS_E_PROTO
+  -- the M10 TCP (single outstanding segment, no reorder) can't reliably receive
+  the bigger handshake flight. That's a TCP robustness gap, not a crypto one.
 
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the AquaFS disk = real **ring-3 processes** scheduled

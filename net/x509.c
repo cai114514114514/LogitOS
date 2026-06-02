@@ -43,6 +43,12 @@ static const uint8_t OID_ECDSA_SHA256[] = {0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x
 static const uint8_t OID_ECDSA_SHA384[] = {0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x03};
 static const uint8_t OID_RSA_SHA256[]   = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b};
 static const uint8_t OID_RSA_SHA384[]   = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0c};
+static const uint8_t OID_RSA_SHA512[]   = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0d};
+static const uint8_t OID_RSA_PSS[]      = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0a};
+static const uint8_t OID_ECDSA_SHA512[] = {0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x04};
+static const uint8_t OID_SHA256[]       = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01};
+static const uint8_t OID_SHA384[]       = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x02};
+static const uint8_t OID_SHA512[]       = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x03};
 static const uint8_t OID_EC_PUBKEY[]    = {0x2a,0x86,0x48,0xce,0x3d,0x02,0x01};
 static const uint8_t OID_RSA_ENC[]      = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01};
 static const uint8_t OID_P256[]         = {0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07};
@@ -72,6 +78,27 @@ static int64_t parse_time(int tag, const uint8_t *p, int len)
     for (int m = 1; m < mon; m++) { days += mdays[m-1]; if (m==2 && (year%4==0 && (year%100!=0||year%400==0))) days++; }
     days += day - 1;
     return ((days*24 + hh)*60 + mm)*60 + ss;
+}
+
+/* Map an RSASSA-PSS AlgorithmIdentifier's parameters (reader positioned right
+ * after the rsassaPss OID) to a SIG_RSA_PSS_* value via its hashAlgorithm. The
+ * default hash when [0] is absent is SHA-1, which we don't support (-> 0). */
+static int pss_sigalg(struct der *sa)
+{
+    struct der params; if (der_enter(sa, 0x30, &params)) return 0;     /* RSASSA-PSS-params */
+    while (params.p < params.end) {
+        int t, l; const uint8_t *c;
+        if (der_tlv(&params, &t, &c, &l)) break;
+        if (t == 0xA0) {                                              /* [0] hashAlgorithm */
+            struct der h; h.p = c; h.end = c + l;
+            struct der alg; if (der_enter(&h, 0x30, &alg)) return 0;
+            int g; const uint8_t *oc; int ol; if (der_tlv(&alg, &g, &oc, &ol)) return 0;
+            return oid_eq(oc,ol,OID_SHA256,sizeof OID_SHA256) ? SIG_RSA_PSS_SHA256 :
+                   oid_eq(oc,ol,OID_SHA384,sizeof OID_SHA384) ? SIG_RSA_PSS_SHA384 :
+                   oid_eq(oc,ol,OID_SHA512,sizeof OID_SHA512) ? SIG_RSA_PSS_SHA512 : 0;
+        }
+    }
+    return 0;
 }
 
 int x509_parse(const uint8_t *der, int len, struct cert *out)
@@ -165,8 +192,11 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
       int g; const uint8_t *oc; int ol; if (der_tlv(&sa,&g,&oc,&ol)) return X509_E_PARSE;
       out->sig_alg = oid_eq(oc,ol,OID_ECDSA_SHA256,sizeof OID_ECDSA_SHA256) ? SIG_ECDSA_SHA256 :
                      oid_eq(oc,ol,OID_ECDSA_SHA384,sizeof OID_ECDSA_SHA384) ? SIG_ECDSA_SHA384 :
+                     oid_eq(oc,ol,OID_ECDSA_SHA512,sizeof OID_ECDSA_SHA512) ? SIG_ECDSA_SHA512 :
                      oid_eq(oc,ol,OID_RSA_SHA256,  sizeof OID_RSA_SHA256)   ? SIG_RSA_SHA256   :
-                     oid_eq(oc,ol,OID_RSA_SHA384,  sizeof OID_RSA_SHA384)   ? SIG_RSA_SHA384   : 0; }
+                     oid_eq(oc,ol,OID_RSA_SHA384,  sizeof OID_RSA_SHA384)   ? SIG_RSA_SHA384   :
+                     oid_eq(oc,ol,OID_RSA_SHA512,  sizeof OID_RSA_SHA512)   ? SIG_RSA_SHA512   :
+                     oid_eq(oc,ol,OID_RSA_PSS,     sizeof OID_RSA_PSS)      ? pss_sigalg(&sa)  : 0; }
     { int g; const uint8_t *bs; int bl; if (der_tlv(&cert,&g,&bs,&bl)) return X509_E_PARSE;  /* BIT STRING sig */
       if (bl < 1) return X509_E_PARSE;
       out->sig = bs + 1; out->siglen = bl - 1; }                 /* DER SEQ{r,s} */
@@ -190,27 +220,35 @@ static int sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
     return 0;
 }
 
-/* Hash `child`'s tbs per its signature algorithm. Returns hlen (32/48) or 0. */
-static int hash_tbs(const struct cert *child, uint8_t hash[48])
+/* Hash `child`'s tbs per its signature algorithm. Returns hlen (32/48/64) or 0. */
+static int hash_tbs(const struct cert *child, uint8_t hash[64])
 {
     switch (child->sig_alg) {
-    case SIG_ECDSA_SHA256: case SIG_RSA_SHA256: sha256(child->tbs, child->tbslen, hash); return 32;
-    case SIG_ECDSA_SHA384: case SIG_RSA_SHA384: sha384(child->tbs, child->tbslen, hash); return 48;
+    case SIG_ECDSA_SHA256: case SIG_RSA_SHA256: case SIG_RSA_PSS_SHA256:
+        sha256(child->tbs, child->tbslen, hash); return 32;
+    case SIG_ECDSA_SHA384: case SIG_RSA_SHA384: case SIG_RSA_PSS_SHA384:
+        sha384(child->tbs, child->tbslen, hash); return 48;
+    case SIG_ECDSA_SHA512: case SIG_RSA_SHA512: case SIG_RSA_PSS_SHA512:
+        sha512(child->tbs, child->tbslen, hash); return 64;
     default: return 0;
     }
 }
 
-/* Verify `child`'s signature with `issuer`'s key (EC point or RSA n,e). */
+/* Verify `child`'s signature with `issuer`'s key (EC point or RSA n,e). Handles
+ * ECDSA, RSA PKCS#1 v1.5, and RSA-PSS per child->sig_alg. */
 static int verify_with_key(const struct cert *child, int issuer_type, int issuer_curve,
                            const uint8_t *ec, int eclen,
                            const uint8_t *n, int nlen, const uint8_t *e, int elen)
 {
-    uint8_t hash[48]; int hlen = hash_tbs(child, hash);
+    uint8_t hash[64]; int hlen = hash_tbs(child, hash);
     if (!hlen) return 0;
-    int rsa = (child->sig_alg == SIG_RSA_SHA256 || child->sig_alg == SIG_RSA_SHA384);
-    if (rsa) {
+    int sa = child->sig_alg;
+    int pss   = (sa == SIG_RSA_PSS_SHA256 || sa == SIG_RSA_PSS_SHA384 || sa == SIG_RSA_PSS_SHA512);
+    int pkcs1 = (sa == SIG_RSA_SHA256 || sa == SIG_RSA_SHA384 || sa == SIG_RSA_SHA512);
+    if (pss || pkcs1) {
         if (issuer_type != KEY_RSA) return 0;
-        return rsa_pkcs1_verify(n, nlen, e, elen, child->sig, child->siglen, hash, hlen);
+        return pss ? rsa_pss_verify  (n, nlen, e, elen, child->sig, child->siglen, hash, hlen)
+                   : rsa_pkcs1_verify(n, nlen, e, elen, child->sig, child->siglen, hash, hlen);
     }
     if (issuer_type != KEY_EC || (issuer_curve != 256 && issuer_curve != 384)) return 0;
     int flen = issuer_curve / 8;
@@ -253,7 +291,9 @@ static int is_pinned_root(const struct cert *c)
  * key (the common case -- servers send leaf+intermediates, not the root). */
 static int signed_by_root(const struct cert *top)
 {
-    int rsa = (top->sig_alg == SIG_RSA_SHA256 || top->sig_alg == SIG_RSA_SHA384);
+    int sa = top->sig_alg;
+    int rsa = (sa == SIG_RSA_SHA256 || sa == SIG_RSA_SHA384 || sa == SIG_RSA_SHA512 ||
+               sa == SIG_RSA_PSS_SHA256 || sa == SIG_RSA_PSS_SHA384 || sa == SIG_RSA_PSS_SHA512);
     for (int i = 0; i < aqua_nroots; i++) {
         const struct root_ca *r = &aqua_roots[i];
         if (rsa) {
