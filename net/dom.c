@@ -5,6 +5,7 @@ void  kfree(void *);
 void *memcpy(void *, const void *, unsigned long);
 void *memset(void *, int, unsigned long);
 
+static int nmatch(const char *a, const char *b, int n) { for (int i = 0; i < n; i++) if (a[i] != b[i]) return 0; return 1; }
 static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static int sp(int c) { return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static int ieq(const char *a, const char *b) { while (*a && lc(*a)==lc(*b)) {a++;b++;} return lc(*a)==lc(*b); }
@@ -49,12 +50,12 @@ static int decode_text(const char *s, const char *e, char *out, int cap)
                 else if (c>='0'&&c<='9') v=v*10+c-'0'; }
         } else {
             int l = semi - p;
-            if (l==3&&!__builtin_strncmp(p,"amp",3)) v='&';
-            else if (l==2&&!__builtin_strncmp(p,"lt",2)) v='<';
-            else if (l==2&&!__builtin_strncmp(p,"gt",2)) v='>';
-            else if (l==4&&!__builtin_strncmp(p,"quot",4)) v='"';
-            else if (l==4&&!__builtin_strncmp(p,"apos",4)) v='\'';
-            else if (l==4&&!__builtin_strncmp(p,"nbsp",4)) v=' ';
+            if (l==3&&nmatch(p,"amp",3)) v='&';
+            else if (l==2&&nmatch(p,"lt",2)) v='<';
+            else if (l==2&&nmatch(p,"gt",2)) v='>';
+            else if (l==4&&nmatch(p,"quot",4)) v='"';
+            else if (l==4&&nmatch(p,"apos",4)) v='\'';
+            else if (l==4&&nmatch(p,"nbsp",4)) v=' ';
         }
         if (v < 0) { out[o++] = *s++; continue; }
         if (v < 0x80) out[o++]=(char)v;
