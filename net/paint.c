@@ -43,6 +43,7 @@ void paint_viewport(int vx, int vy, int vw, int vh, int scroll)
 
 int paint_hittest(int x, int y, int scroll, char *buf, int max)
 {
+    if (max <= 0) return 0;
     const struct item *it = layout_items();
     int n = layout_count();
     int dy = y + scroll;                          /* into doc coordinates */

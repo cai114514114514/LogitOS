@@ -80,6 +80,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
 {
     struct cstyle *st = c->style;
     if (st && st->display == DISP_NONE) return;
+    if (c->parent && c->parent->style && ((struct cstyle *)c->parent->style)->display == DISP_NONE) return;
 
     if (c->type == N_TEXT) {
         struct cstyle *ps = c->parent && c->parent->style ? c->parent->style : st;
@@ -93,28 +94,20 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
     if (tag_eq(c->tag, "br")) { newline(f); return; }
 
     if (tag_eq(c->tag, "img")) {
+        /* Reserve the box from CSS/HTML width&height; the actual pixels are
+         * fetched later by layout_load_images() so layout never blocks. */
         int iw = 0, ih = 0;
         if (st && st->has_w && !st->w_pct) iw = st->width;
         if (st && st->has_h && !st->h_pct) ih = st->height;
         if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
         if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
-        struct image *im = 0;
-        const char *src = dom_attr(c, "src");
-        uint8_t *buf; int blen;
-        if (src && res_fetch(src, &buf, &blen) == 0) {
-            struct image *holder = kmalloc(sizeof *holder);
-            struct image tmp;
-            if (holder && img_decode(buf, blen, &tmp) == 0) {
-                *holder = tmp; im = holder;
-                if (!iw) iw = tmp.w; if (!ih) ih = tmp.h;
-            } else if (holder) kfree(holder);
-            kfree(buf);
-        }
-        if (iw <= 0) iw = 20; if (ih <= 0) ih = 20;
+        if (iw <= 0) iw = ih > 0 ? ih : 24;
+        if (ih <= 0) ih = iw;
         if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih*s2/iw; iw = s2; }
         if (f->line_started && f->x + iw > f->x1) newline(f);
         struct item *it = additem(IT_IMAGE);
-        if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih; it->img = im; it->href = h2; }
+        if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
+                  it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2; }
         f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
         return;
     }
@@ -209,7 +202,38 @@ void layout_page(struct node *root, int canvas_w)
     doc_h = layout_block(start, mx, bst&&bst->mt>0?bst->mt:8, canvas_w - 2*mx);
 }
 
+/* Fetch + decode up to `max` of the reserved <img> boxes (bounded, blocking).
+ * Called after layout_page so layout itself never touches the network. */
+int layout_load_images(int max)
+{
+    int loaded = 0;
+    for (int i = 0; i < nitem && loaded < max; i++) {
+        struct item *it = &items[i];
+        if (it->type != IT_IMAGE || it->img || !it->imgsrc) continue;
+        uint8_t *buf; int blen;
+        if (res_fetch(it->imgsrc, &buf, &blen) != 0) continue;
+        struct image *holder = kmalloc(sizeof *holder);
+        struct image tmp;
+        if (holder && img_decode(buf, blen, &tmp) == 0) { *holder = tmp; it->img = holder; loaded++; }
+        else if (holder) kfree(holder);
+        kfree(buf);
+    }
+    return loaded;
+}
+
 int layout_height(void) { return doc_h; }
 int layout_count(void) { return nitem; }
 const struct item *layout_items(void) { return items; }
-void layout_free(void) { if (items) { kfree(items); items = 0; } nitem = 0; doc_h = 0; }
+void layout_free(void) {
+    if (items) {
+        for (int i = 0; i < nitem; i++) {
+            if (items[i].img) {
+                img_free(items[i].img);
+                kfree(items[i].img);
+            }
+        }
+        kfree(items);
+        items = 0;
+    }
+    nitem = 0; doc_h = 0;
+}

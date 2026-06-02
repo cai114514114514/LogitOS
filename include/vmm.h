@@ -31,6 +31,9 @@ uint64_t vmm_new_space(void);
  * PDPT so kernel/framebuffer stay mapped. */
 void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 
+/* Validate that a user buffer is mapped in `cr3` for read/write access. */
+int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write);
+
 /* Load CR3 (switch the active address space). */
 void vmm_switch(uint64_t cr3);
 

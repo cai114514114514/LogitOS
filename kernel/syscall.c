@@ -4,6 +4,7 @@
 #include "serial.h"
 #include "wm.h"
 #include "sched.h"
+#include "usercopy.h"
 
 void syscall_dispatch(struct registers *r)
 {
@@ -11,6 +12,10 @@ void syscall_dispatch(struct registers *r)
     case SYS_WRITE: {
         const char *buf = (const char *)r->rsi;     /* user pointer, mapped */
         long len = (long)r->rdx;
+        if (len < 0 || !user_range_ok(buf, (uint64_t)len, 0)) {
+            r->rax = (uint64_t)-1;
+            return;
+        }
         for (long i = 0; i < len; i++)
             serial_putc(buf[i]);
         r->rax = (uint64_t)len;

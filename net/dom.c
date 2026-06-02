@@ -147,6 +147,11 @@ struct node *dom_parse(const char *html, int len)
         int selfclose = (p<end && *p=='/');
         while (p < end && *p != '>') p++; if (p<end) p++;
         if (na) { el->attrs = kmalloc(na*sizeof(struct attr)); if (el->attrs) { memcpy(el->attrs, tmp, na*sizeof(struct attr)); el->nattr=na; } }
+        if (sd >= MAXDEPTH) {
+            if (el->attrs) { kfree(el->attrs); el->attrs = 0; }
+            kfree(el);
+            continue;
+        }
         add_child(TOP, el);
         if (is_void(name) || selfclose) continue;
         if (is_rawtext(name)) {                           /* consume raw text to </name> */
@@ -163,7 +168,7 @@ struct node *dom_parse(const char *html, int len)
             while (p<end && *p!='>') p++; if(p<end)p++;
             continue;
         }
-        if (sd < MAXDEPTH) stack[sd++] = el;
+        stack[sd++] = el;
     }
     #undef TOP
     return root;

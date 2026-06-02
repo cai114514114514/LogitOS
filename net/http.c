@@ -18,6 +18,7 @@ static char raw[RAW_MAX];
 static int  raw_len;
 static int  body_off;                       /* offset of the body within raw[] */
 static int  status = HTTP_IDLE;
+static int  http_busy = 0;
 static struct url cur;                      /* the page currently loaded (link base) */
 
 int  http_status(void)     { return status; }
@@ -145,16 +146,18 @@ static int fetch_once(const struct url *u)
 
 int http_get(const char *url)
 {
+    if (http_busy) return HTTP_ERR_CONN;
+    http_busy = 1;
     status = HTTP_BUSY;
     raw_len = 0; body_off = -1;
 
-    if (url_parse(url, &cur) != 0) { status = HTTP_ERR_URL; return HTTP_ERR_URL; }
+    if (url_parse(url, &cur) != 0) { status = HTTP_ERR_URL; http_busy = 0; return HTTP_ERR_URL; }
 
     /* Follow up to 5 redirects (301/302/303/307/308 with a Location header), so
      * e.g. https://google.com lands on https://www.google.com like a real browser. */
     for (int hop = 0; hop < 5; hop++) {
         int rc = fetch_once(&cur);
-        if (rc != 0) { status = rc; return rc; }
+        if (rc != 0) { status = rc; http_busy = 0; return rc; }
 
         int code = status_code(raw, raw_len);
         if (code >= 300 && code < 400) {
@@ -176,6 +179,7 @@ int http_get(const char *url)
     int body = find_body(raw, raw_len);
     body_off = body < 0 ? 0 : body;
     status = HTTP_DONE;
+    http_busy = 0;
     return 0;
 }
 

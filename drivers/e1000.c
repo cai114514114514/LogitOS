@@ -184,8 +184,10 @@ int e1000_tx(const void *frame, uint16_t len)
     if (!mmio || len > BUF_SIZE) return -1;
     int i = tx_cur;
     /* Wait for this descriptor to be free (its previous send done). */
-    while (!(tx_ring[i].status & TXD_STA_DD))
-        ;
+    int spins = 0;
+    while (!(tx_ring[i].status & TXD_STA_DD)) {
+        if (++spins > 1000000) return -1;
+    }
     memcpy(tx_buf[i], frame, len);
     tx_ring[i].length = len;
     tx_ring[i].cmd = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;

@@ -168,19 +168,28 @@ static int inode_write(struct dinode *in, const void *buf, int size)
     uint32_t ind = 0;
     if (nblk > NDIRECT) { ind = balloc(); if (!ind) return -1; memset(ind_buf, 0, BS); }
 
+    uint32_t allocated[NDIRECT + PPB];
+    int nalloc = 0;
+
     for (uint32_t i = 0; i < nblk; i++) {
         uint32_t blk = balloc();
-        if (!blk) return -1;
+        if (!blk) goto fail;
+        allocated[nalloc++] = blk;
         uint32_t off = i * BS;
         uint32_t n   = (uint32_t)size - off < BS ? (uint32_t)size - off : BS;
-        if (n == BS) { if (bwrite(blk, src + off)) return -1; }
-        else { memset(blk_buf, 0, BS); memcpy(blk_buf, src + off, n); if (bwrite(blk, blk_buf)) return -1; }
+        if (n == BS) { if (bwrite(blk, src + off)) goto fail; }
+        else { memset(blk_buf, 0, BS); memcpy(blk_buf, src + off, n); if (bwrite(blk, blk_buf)) goto fail; }
         if (i < NDIRECT) in->direct[i] = blk;
         else ind_buf[i - NDIRECT] = blk;
     }
-    if (nblk > NDIRECT) { in->indirect = ind; if (bwrite(ind, ind_buf)) return -1; }
+    if (nblk > NDIRECT) { in->indirect = ind; if (bwrite(ind, ind_buf)) goto fail; }
     in->size = (uint32_t)size;
     return size;
+fail:
+    for (int j = 0; j < nalloc; j++) bfree(allocated[j]);
+    if (ind) bfree(ind);
+    inode_trunc(in);
+    return -1;
 }
 
 /* --- directory ops --- */
@@ -423,7 +432,22 @@ static int aquafs_mkdir(const char *path)
     if (!pd || pd->type != T_DIR) return -1;
     int ni = ialloc(T_DIR);
     if (ni < 0) return -1;
-    if (dir_add(parent, leaf, (uint32_t)ni) < 0) { inodes[ni].type = T_FREE; return -1; }
+    struct dinode *nd = iget((uint32_t)ni);
+    uint32_t blk = balloc();
+    if (!blk) { nd->type = T_FREE; return -1; }
+    memset(blk_buf, 0, BS);
+    struct dirent *de = (struct dirent *)blk_buf;
+    de[0].ino = (uint32_t)ni; de[0].name[0] = '.'; de[0].name[1] = 0;
+    de[1].ino = parent;       de[1].name[0] = '.'; de[1].name[1] = '.'; de[1].name[2] = 0;
+    if (bwrite(blk, blk_buf)) { bfree(blk); nd->type = T_FREE; return -1; }
+    nd->direct[0] = blk;
+    nd->size = 2 * DIRENT_SZ;
+    if (flush_inode((uint32_t)ni)) return -1;
+    if (dir_add(parent, leaf, (uint32_t)ni) < 0) {
+        inode_trunc(nd); nd->type = T_FREE;
+        flush_inode((uint32_t)ni); flush_bitmap();
+        return -1;
+    }
     if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) return -1;
     return 0;
 }

@@ -98,6 +98,8 @@ static uint32_t fb_get(int x, int y)
     struct surface *s = T ? T : &screen;
     if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return 0;
+    if (clip_on && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
+        return 0;
     return s->px[y * s->w + x];
 }
 

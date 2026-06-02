@@ -21,6 +21,13 @@ static size_t   brk_left = 0;
 
 static int grow(size_t need)
 {
+    if (brk && brk_left >= sizeof(struct header) + 16) {
+        struct header *h = (struct header *)brk;
+        h->size = brk_left - sizeof(struct header);
+        h->next = free_list;
+        free_list = h;
+    }
+
     size_t frames = ARENA_FRAMES;
     while (frames * FRAME_SIZE < need)
         frames *= 2;

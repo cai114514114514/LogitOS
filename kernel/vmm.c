@@ -109,3 +109,36 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
     pt[(virt >> 12) & 0x1FF] = (phys & ~(uint64_t)0xFFF) | flags | PRESENT;
     /* No invlpg: this space is not active while being populated. */
 }
+
+static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
+{
+    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t e = pml4[(virt >> 39) & 0x1FF];
+    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    uint64_t *pdpt = (uint64_t *)(e & ~(uint64_t)0xFFF);
+    e = pdpt[(virt >> 30) & 0x1FF];
+    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    uint64_t *pd = (uint64_t *)(e & ~(uint64_t)0xFFF);
+    e = pd[(virt >> 21) & 0x1FF];
+    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    uint64_t *pt = (uint64_t *)(e & ~(uint64_t)0xFFF);
+    e = pt[(virt >> 12) & 0x1FF];
+    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    if (write && !(e & WRITABLE)) return 0;
+    return 1;
+}
+
+int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write)
+{
+    if (!ptr || !cr3) return 0;
+    if (len == 0) return 1;
+    uint64_t start = (uint64_t)ptr;
+    uint64_t end = start + len - 1;
+    if (end < start) return 0;
+    if ((start >> 47) != 0 || (end >> 47) != 0) return 0;
+    for (uint64_t p = start & ~(uint64_t)0xFFF;; p += 0x1000) {
+        if (!user_page_ok(cr3, p, write)) return 0;
+        if (p >= (end & ~(uint64_t)0xFFF)) break;
+    }
+    return 1;
+}

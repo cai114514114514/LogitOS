@@ -33,11 +33,13 @@ static int encode_qname(uint8_t *out, const char *name)
 /* Skip a (possibly compressed) DNS name starting at off; return new offset. */
 static int skip_name(const uint8_t *msg, int off, int len)
 {
-    while (off < len) {
+    int depth = 0;
+    while (off < len && depth < 64) {
         uint8_t l = msg[off];
         if (l == 0) return off + 1;
         if ((l & 0xC0) == 0xC0) return off + 2;     /* compression pointer */
         off += 1 + l;
+        depth++;
     }
     return off;
 }

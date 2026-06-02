@@ -45,7 +45,7 @@ static int parse_len(const char *s, int font_px, int *pct)
     while(sp(*s))s++;
     if(pct)*pct=0;
     int neg=0; if(*s=='-'){neg=1;s++;}
-    int n=0,any=0; while(*s>='0'&&*s<='9'){n=n*10+(*s++-'0');any=1;}
+    int n=0,any=0; while(*s>='0'&&*s<='9'){n=n*10+(*s++-'0');any=1; if(n>1000000)n=1000000;}
     int frac=0,fd=1; if(*s=='.'){s++; while(*s>='0'&&*s<='9'){frac=frac*10+(*s++-'0');fd*=10;}}
     if(!any && !frac) return 0;
     if(*s=='%'){ if(pct)*pct=1; return neg?-n:n; }
@@ -160,7 +160,8 @@ static const char UA_CSS[] =
     "i{font-style:italic}em{font-style:italic}"
     "ul{display:block;margin:8px 0;padding-left:28px}ol{display:block;margin:8px 0;padding-left:28px}"
     "li{display:list-item}"
-    "pre{font-family:monospace;margin:8px 0}code{font-family:monospace}";
+    "pre{font-family:monospace;margin:8px 0}code{font-family:monospace}"
+    "script,style{display:none}";  
 
 void css_init(void)
 {

@@ -26,9 +26,11 @@ extern void ring3_bootstrap(void);     /* boot/enter_user.asm */
 static struct thread *current = NULL;
 static int next_id = 0;
 static volatile unsigned long switches = 0;
+static struct thread *dead_threads = NULL;
 
 unsigned long sched_switches(void) { return switches; }
 void *sched_current_data(void) { return current ? current->data : NULL; }
+uint64_t sched_current_cr3(void) { return current ? current->cr3 : vmm_kernel_cr3(); }
 
 void sched_init(void)
 {
@@ -108,6 +110,13 @@ void schedule(void)
     uint64_t flags;
     __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
 
+    while (dead_threads) {
+        struct thread *t = dead_threads;
+        dead_threads = t->next;
+        if (t->stack) kfree(t->stack);
+        kfree(t);
+    }
+
     if (current && current->next != current) {
         struct thread *prev = current;
         struct thread *next = current->next;
@@ -143,6 +152,8 @@ void thread_exit(void)
     current = next;
     switches++;
     dead->alive = 0;
+    dead->next = dead_threads;
+    dead_threads = dead;
     if (next->kstack_top)
         tss_set_rsp0(next->kstack_top);
     if (next->cr3 && next->cr3 != dead->cr3)

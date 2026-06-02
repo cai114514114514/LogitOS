@@ -52,14 +52,30 @@ struct tls_sess {
 
 static struct tls_sess sessions[2];
 
-/* --- weak randomness (client nonce / ephemeral key; not a CSPRNG) --- */
-static uint64_t rng_state = 0x123456789abcdefULL;
+/* --- hash-based RNG (replaces the weak LCG) --- */
+static uint8_t rng_state[32] = {
+    0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
+    0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10,
+    0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
+    0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88
+};
 static void rand_bytes(uint8_t *b, int n)
 {
-    rng_state ^= timer_ticks() * 0x9e3779b97f4a7c15ULL + 1;
-    for (int i = 0; i < n; i++) {
-        rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
-        b[i] = (uint8_t)(rng_state >> 33);
+    extern uint64_t timer_ticks(void);
+    while (n > 0) {
+        uint8_t block[40];
+        memcpy(block, rng_state, 32);
+        uint64_t tsc;
+        __asm__ volatile ("rdtsc" : "=A"(tsc));
+        uint64_t ticks = timer_ticks();
+        memcpy(block + 32, &tsc, 8);
+        /* re-mix tsc+ticks into the last 8 bytes via XOR for extra entropy */
+        for (int i = 0; i < 8; i++) block[32 + i] ^= ((uint8_t *)&ticks)[i];
+        sha256(block, 40, rng_state);
+        int chunk = n > 32 ? 32 : n;
+        memcpy(b, rng_state, chunk);
+        b += chunk;
+        n -= chunk;
     }
 }
 

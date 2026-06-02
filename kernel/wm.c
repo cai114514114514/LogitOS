@@ -22,12 +22,17 @@
 #include "layout.h"
 #include "paint.h"
 #include "img.h"
+#include "kprintf.h"
+#include "usercopy.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
 #define TITLEBAR_H 30
 #define FW         AQUA_FONT_W
 #define FH         AQUA_FONT_H
+#define USER_PATH_MAX 128
+#define USER_URL_MAX  384
+#define USER_TEXT_MAX 1024
 
 void *memcpy(void *, const void *, size_t);
 
@@ -170,7 +175,7 @@ void wm_launch(const char *aex_file, const char *arg)
     if (!img || vfs_read(aex_file, img, bytes) <= 0) return;
 
     char name[32], ext[8];
-    if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); return; }
+    if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); kfree(img); return; }
 
     struct app *exist = find_live_app(name);
     if (exist) {                            /* single instance: just focus it */
@@ -204,11 +209,11 @@ void wm_launch(const char *aex_file, const char *arg)
     }
     vmm_switch(prev_cr3);
     __asm__ volatile ("sti");
-    if (!entry) { serial_puts("[wm] launch: load failed\n"); return; }
+    if (!entry) { serial_puts("[wm] launch: load failed\n"); kfree(img); return; }
 
     int ai = -1;
     for (int i = 0; i < MAXWIN; i++) if (!apps[i].used) { ai = i; break; }
-    if (ai < 0) return;
+    if (ai < 0) { kfree(img); return; }
     struct app *ap = &apps[ai];
     ap->used = ap->alive = 1;
     ap->id = next_app_id++;
@@ -274,18 +279,22 @@ long wm_gui_syscall(long num, long a, long b, long c)
     switch (num) {
     case SYS_GUI_CREATE: {
         if (ap->win >= 0) return 0;
+        char title[64];
+        if (user_copy_string(title, sizeof title, (const char *)a) < 0) return -1;
         int wi = -1;
         for (int i = 0; i < MAXWIN; i++) if (!wins[i].used) { wi = i; break; }
         if (wi < 0) return -1;
         int cw = (int)((b >> 16) & 0xFFFF), ch = (int)(b & 0xFFFF);
+        if (cw <= 0 || ch <= 0) return -1;
         struct win *w = &wins[wi];
         w->used = 1; w->kind = WK_APP; w->app = ap;
         w->w = cw; w->h = TITLEBAR_H + ch;
         w->x = 110 + cascade * 28; w->y = 70 + cascade * 28;
         cascade = (cascade + 1) % 6;
-        scopy(w->title, (const char *)a, sizeof w->title);
+        scopy(w->title, title, sizeof w->title);
         w->surf.w = cw; w->surf.h = ch;
         w->surf.px = kmalloc((unsigned)(cw * ch * 4));
+        if (!w->surf.px) { w->used = 0; return -1; }
         for (int i = 0; i < cw * ch; i++) w->surf.px[i] = rgb(250, 250, 252);
         w->evhead = w->evtail = 0; w->wants_close = 0;
         ap->win = wi;
@@ -308,14 +317,18 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_GUI_TEXT: {
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        fb_target(&w->surf); fb_text(x, y, (const char *)c, (uint32_t)b); fb_target(NULL);
+        char text[USER_TEXT_MAX];
+        if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
+        fb_target(&w->surf); fb_text(x, y, text, (uint32_t)b); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_TEXT_MONO: {
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
         int cell = (int)((b >> 24) & 0xFF); uint32_t color = (uint32_t)(b & 0xFFFFFF);
-        fb_target(&w->surf); text_draw_mono(x, y, (const char *)c, cell, color); fb_target(NULL);
+        char text[USER_TEXT_MAX];
+        if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
+        fb_target(&w->surf); text_draw_mono(x, y, text, cell, color); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_FLUSH:
@@ -324,6 +337,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_POLL_EVENT: {
         struct win *w = app_window(ap); if (!w) return 0;
         struct aqua_event *ev = (struct aqua_event *)a;
+        if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
         if (w->evhead == w->evtail) return 0;
         *ev = w->evq[w->evhead];
         w->evhead = (w->evhead + 1) % 16;
@@ -331,40 +345,65 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GET_ARG: {
         char *buf = (char *)a; int max = (int)b, i = 0;
+        if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
         for (; i < max - 1 && ap->arg[i]; i++) buf[i] = ap->arg[i];
         buf[i] = 0;
         return i;
     }
     case SYS_GET_TIME: {
         struct rtc_time t; rtc_now(&t);
+        if (!user_range_ok((void *)a, sizeof t, 1)) return -1;
         memcpy((void *)a, &t, sizeof t);
         return 0;
     }
-    case SYS_READ_FILE:
-        return vfs_read((const char *)a, (void *)b, (int)c);
+    case SYS_READ_FILE: {
+        char path[USER_PATH_MAX];
+        int max = (int)c;
+        if (max < 0 || user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        if (max > 0 && !user_range_ok((void *)b, (uint64_t)max, 1)) return -1;
+        return vfs_read(path, (void *)b, max);
+    }
     case SYS_YIELD:
         schedule();
         return 0;
     case SYS_SYSINFO:
+        if ((int)b <= 0 || !user_range_ok((void *)a, (uint64_t)(int)b, 1)) return -1;
         return sysinfo_text((char *)a, (int)b);
     case SYS_FILE_COUNT:
         return vfs_count("/");
     case SYS_FILE_NAME: {
         int i = (int)a;
+        if ((int)c <= 0 || !user_range_ok((void *)b, (uint64_t)(int)c, 1)) return -1;
         scopy((char *)b, vfs_ent_name("/", i), (int)c);
         return vfs_ent_size("/", i);
     }
-    case SYS_WRITE_FILE:
-        return vfs_write((const char *)a, (const void *)b, (int)c);
-    case SYS_DELETE_FILE:
-        return vfs_delete((const char *)a);
-    case SYS_MKDIR:
-        return vfs_mkdir((const char *)a);
-    case SYS_DIR_COUNT:
-        return vfs_count((const char *)a);
+    case SYS_WRITE_FILE: {
+        char path[USER_PATH_MAX];
+        int size = (int)c;
+        if (size < 0 || user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        if (size > 0 && !user_range_ok((const void *)b, (uint64_t)size, 0)) return -1;
+        return vfs_write(path, (const void *)b, size);
+    }
+    case SYS_DELETE_FILE: {
+        char path[USER_PATH_MAX];
+        if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        return vfs_delete(path);
+    }
+    case SYS_MKDIR: {
+        char path[USER_PATH_MAX];
+        if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        return vfs_mkdir(path);
+    }
+    case SYS_DIR_COUNT: {
+        char path[USER_PATH_MAX];
+        if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        return vfs_count(path);
+    }
     case SYS_DIR_NAME: {
-        const char *dir = (const char *)a;
+        char dir[USER_PATH_MAX];
         int i = (int)b;
+        if (user_copy_string(dir, sizeof dir, (const char *)a) < 0) return -1;
+        if (!user_range_ok((void *)c, 64, 1)) return -1;
         if (i < 0 || i >= vfs_count(dir)) return -1;
         scopy((char *)c, vfs_ent_name(dir, i), 64);
         return vfs_ent_is_dir(dir, i) ? -2 : vfs_ent_size(dir, i);
@@ -372,6 +411,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_NET_INFO: {
         if (!net_up()) return 0;
         struct aqua_netinfo *ni = (struct aqua_netinfo *)a;
+        if (!user_range_ok(ni, sizeof *ni, 1)) return -1;
         ni->ip = net_cfg.ip; ni->mask = net_cfg.mask; ni->gw = net_cfg.gw;
         for (int i = 0; i < 6; i++) ni->mac[i] = net_cfg.mac[i];
         return 1;
@@ -384,7 +424,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_NET_DNS:
         if (!net_up()) return -1;
-        dns_start((const char *)a);
+        {
+            char name[USER_PATH_MAX];
+            if (user_copy_string(name, sizeof name, (const char *)a) < 0) return -1;
+            dns_start(name);
+        }
         return 0;
     case SYS_NET_DNS_RESULT:
         return (long)(int)dns_result();
@@ -396,18 +440,32 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap);
         int cw = w ? w->surf.w : 600;
         int grc;
+        char url[USER_URL_MAX];
+        if (user_copy_string(url, sizeof url, (const char *)a) < 0) return -1;
         __asm__ volatile ("sti");
         page_reset();
-        grc = http_get((const char *)a);
+        uint64_t t0 = timer_ticks();
+        grc = http_get(url);
+        kprintf("[page] http_get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
         if (grc == 0 && http_status() == HTTP_DONE) {
             int blen; const char *body = http_body(&blen);
+            kprintf("[page] body=%d bytes\n", blen);
+            uint64_t t1 = timer_ticks();
             page_root = dom_parse(body, blen);
+            kprintf("[page] dom_parse t=%dms\n", (int)(timer_ticks()-t1)*10);
             if (page_root) {
                 static char author_css[16384];
                 int css_len = collect_style(page_root, author_css, 0, (int)sizeof author_css);
+                uint64_t t2 = timer_ticks();
                 css_apply(page_root, author_css, css_len);
+                kprintf("[page] css_apply (%d css) t=%dms\n", css_len, (int)(timer_ticks()-t2)*10);
+                uint64_t t3 = timer_ticks();
                 layout_page(page_root, cw);
+                kprintf("[page] layout items=%d h=%d t=%dms\n", layout_count(), layout_height(), (int)(timer_ticks()-t3)*10);
                 page_built = 1;
+                uint64_t t4 = timer_ticks();
+                int nimg = layout_load_images(8);
+                kprintf("[page] images loaded=%d t=%dms\n", nimg, (int)(timer_ticks()-t4)*10);
             } else grc = HTTP_ERR;
         }
         __asm__ volatile ("cli");
@@ -431,6 +489,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_PAGE_HITTEST: {
         if (!page_built) return 0;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        if (!user_range_ok((char *)c, 256, 1)) return -1;
         return paint_hittest(x, y, (int)b, (char *)c, 256);
     }
     }

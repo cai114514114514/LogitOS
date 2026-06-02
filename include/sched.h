@@ -13,5 +13,6 @@ void schedule(void);                                    /* switch to the next re
 
 unsigned long sched_switches(void);                     /* total context switches so far */
 void *sched_current_data(void);                         /* current thread's payload */
+uint64_t sched_current_cr3(void);                        /* active thread address space */
 
 #endif /* AQUA_SCHED_H */

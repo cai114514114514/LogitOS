@@ -31,6 +31,7 @@ struct tcp_conn {
 
     uint8_t  rx[RXBUF];
     int      rx_head, rx_tail;  /* consumed .. filled */
+    int      rx_len;
 
     /* single outstanding (data/SYN/FIN) segment for retransmit */
     uint8_t  tx[TXBUF];
@@ -74,7 +75,7 @@ static uint16_t tcp_checksum(uint32_t src, uint32_t dst, const uint8_t *seg, int
     return (uint16_t)~sum;
 }
 
-static int rx_free(struct tcp_conn *c) { return RXBUF - (c->rx_tail - c->rx_head); }
+static int rx_free(struct tcp_conn *c) { return RXBUF - c->rx_len; }
 
 /* Build and transmit one segment. `data`/`dlen` is the payload (may be 0). */
 static void send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq,
@@ -89,7 +90,8 @@ static void send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     h->ack = htonl(c->rcv_nxt);
     h->off = (uint8_t)((sizeof(struct tcp_hdr) / 4) << 4);
     h->flags = flags;
-    h->window = htons((uint16_t)(rx_free(c) > 65535 ? 65535 : rx_free(c)));
+    int win = rx_free(c);
+    h->window = htons((uint16_t)(win > 65535 ? 65535 : win));
     if (dlen > 0)
         memcpy(seg + sizeof *h, data, (size_t)dlen);
     h->checksum = 0;
@@ -155,7 +157,11 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
     }
     if (dlen > 0 && c->state == ESTABLISHED) {
         if (seg_seq == c->rcv_nxt && rx_free(c) >= dlen) {
-            for (int i = 0; i < dlen; i++) c->rx[(c->rx_tail++) % RXBUF] = payload[i];
+            for (int i = 0; i < dlen; i++) {
+                c->rx[c->rx_tail] = payload[i];
+                c->rx_tail = (c->rx_tail + 1) % RXBUF;
+                c->rx_len++;
+            }
             c->rcv_nxt += dlen;
         }
         send_seg(c, ACK, c->snd_nxt, NULL, 0);  /* ack in-order, or dup-ack to nudge */
@@ -234,15 +240,20 @@ int tcp_send(int id, const void *buf, int len)
 
 int tcp_recv(int id, void *buf, int max)
 {
+    if (max <= 0) return 0;
     if (id < 0 || id >= NCONN) return -1;
     struct tcp_conn *c = &conns[id];
     if (!c->used) return -1;
-    int avail = c->rx_tail - c->rx_head;
+    int avail = c->rx_len;
     if (avail <= 0)
         return (c->peer_fin || c->state == CLOSED) ? -1 : 0;
     int n = avail > max ? max : avail;
     uint8_t *out = buf;
-    for (int i = 0; i < n; i++) out[i] = c->rx[(c->rx_head++) % RXBUF];
+    for (int i = 0; i < n; i++) {
+        out[i] = c->rx[c->rx_head];
+        c->rx_head = (c->rx_head + 1) % RXBUF;
+        c->rx_len--;
+    }
     return n;
 }
 
