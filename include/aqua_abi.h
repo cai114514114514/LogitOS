@@ -31,9 +31,10 @@
 #define SYS_NET_DNS_RESULT 25 /* () -> resolved IP (host order), 0 pending, 0xFFFFFFFF failed */
 #define SYS_HTTP_GET    26  /* (url) fetch+render an http:// page; -> 0 ok start, <0 bad url */
 #define SYS_HTTP_STATUS 27  /* () -> 1 busy, 2 done, <0 error code */
-#define SYS_HTTP_READ   28  /* (off, buf, max) -> bytes of rendered text copied (0 at end) */
-#define SYS_HTTP_LINK   29  /* (i, buf, max) -> 0 + abs URL of link i, or -1 */
 #define SYS_GUI_TEXT_MONO 30 /* ((x<<16)|y, (cell<<24)|color, str): monospace text */
+#define SYS_PAGE_RENDER 31  /* (scroll, (vx<<16)|vy, (vw<<16)|vh): paint the page into the viewport */
+#define SYS_PAGE_HEIGHT 32  /* () -> laid-out document height in px */
+#define SYS_PAGE_HITTEST 33 /* ((x<<16)|y viewport-local, scroll, buf<=256) -> 1 + href, or 0 */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

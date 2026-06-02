@@ -23,13 +23,13 @@ void http_poll(void);
 /* Current status: HTTP_BUSY / HTTP_DONE / HTTP_ERR* . */
 int  http_status(void);
 
-/* After HTTP_DONE: copy up to max bytes of the rendered page text starting at
- * byte offset `off`; returns bytes copied (0 at end). */
-int  http_read(int off, char *buf, int max);
+/* After HTTP_DONE: the response body (HTML source) and its length. The pointer
+ * is valid until the next http_get/res_fetch. */
+const char *http_body(int *len);
 
-/* After HTTP_DONE: number of links found, and the absolute URL of link i
- * (returns 0 on success into buf, -1 if i is out of range). */
-int  http_link_count(void);
-int  http_link_url(int i, char *buf, int max);
+/* Fetch a sub-resource (image) relative to the page loaded by the last
+ * http_get; handles data: URIs. On success returns 0 with a kmalloc'd buffer the
+ * caller must kfree. Used by the layout engine for <img>. */
+int  res_fetch(const char *src, uint8_t **buf, int *len);
 
 #endif /* AQUA_HTTP_H */

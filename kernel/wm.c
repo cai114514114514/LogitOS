@@ -17,6 +17,11 @@
 #include "icmp.h"
 #include "dns.h"
 #include "http.h"
+#include "dom.h"
+#include "css.h"
+#include "layout.h"
+#include "paint.h"
+#include "img.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
@@ -25,6 +30,34 @@
 #define FH         AQUA_FONT_H
 
 void *memcpy(void *, const void *, size_t);
+
+/* The browser page currently laid out (one at a time, kernel-side). The DOM
+ * tree owns the strings the display list points into, so it must outlive paint;
+ * freed (with the layout list) on the next load. */
+static struct node *page_root;
+static int page_built;
+
+static void page_reset(void)
+{
+    layout_free();
+    if (page_root) { dom_free(page_root); page_root = 0; }
+    page_built = 0;
+}
+
+/* Concatenate the text of every <style> element into out (author stylesheet). */
+static int tag_is(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
+static int collect_style(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && tag_is(n->tag, "style")) {
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text)
+                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_style(c, out, o, max);
+    return o;
+}
 
 /* ---------- windows + apps ---------- */
 enum wkind { WK_FINDER, WK_APP };
@@ -356,22 +389,50 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_NET_DNS_RESULT:
         return (long)(int)dns_result();
     case SYS_HTTP_GET: {
-        /* http_get blocks while pumping net_poll, which needs a live PIT time
-         * base. The int 0x80 gate cleared IF, so re-enable interrupts across the
-         * fetch (the calling app is parked; only this WM thread runs), then
-         * restore IF for the iretq back to ring 3. */
+        /* Fetch + build the page (DOM -> computed style -> layout). http_get and
+         * res_fetch (sub-resources/images) block while pumping net_poll, which
+         * needs a live PIT base; the int 0x80 gate cleared IF, so re-enable
+         * interrupts across the whole pipeline, then restore for the iretq. */
+        struct win *w = app_window(ap);
+        int cw = w ? w->surf.w : 600;
         int grc;
         __asm__ volatile ("sti");
+        page_reset();
         grc = http_get((const char *)a);
+        if (grc == 0 && http_status() == HTTP_DONE) {
+            int blen; const char *body = http_body(&blen);
+            page_root = dom_parse(body, blen);
+            if (page_root) {
+                static char author_css[16384];
+                int css_len = collect_style(page_root, author_css, 0, (int)sizeof author_css);
+                css_apply(page_root, author_css, css_len);
+                layout_page(page_root, cw);
+                page_built = 1;
+            } else grc = HTTP_ERR;
+        }
         __asm__ volatile ("cli");
         return grc;
     }
     case SYS_HTTP_STATUS:
         return http_status();
-    case SYS_HTTP_READ:
-        return http_read((int)a, (char *)b, (int)c);
-    case SYS_HTTP_LINK:
-        return http_link_url((int)a, (char *)b, (int)c);
+    case SYS_PAGE_RENDER: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        if (!page_built) return 0;
+        int scroll = (int)a;
+        int vx = (int)((b >> 16) & 0xFFFF), vy = (int)(b & 0xFFFF);
+        int vw = (int)((c >> 16) & 0xFFFF), vh = (int)(c & 0xFFFF);
+        fb_target(&w->surf);
+        paint_viewport(vx, vy, vw, vh, scroll);
+        fb_target(NULL);
+        return 0;
+    }
+    case SYS_PAGE_HEIGHT:
+        return page_built ? layout_height() : 0;
+    case SYS_PAGE_HITTEST: {
+        if (!page_built) return 0;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        return paint_hittest(x, y, (int)b, (char *)c, 256);
+    }
     }
     return -1;
 }

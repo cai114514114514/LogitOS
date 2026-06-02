@@ -112,6 +112,38 @@ int text_draw(int x, int y, const char *utf8, uint32_t color){ return draw(x,y,u
 int text_draw_mono(int x, int y, const char *utf8, int cell_w, uint32_t color){ return draw(x,y,utf8,F_MONO,TEXT_UI_PX,cell_w,color); }
 int text_width_sz(const char *utf8, int px){ return measure(utf8,F_UI,px,0); }
 int text_width(const char *utf8){ return measure(utf8,F_UI,TEXT_UI_PX,0); }
+
+/* Measure a length-delimited UTF-8 run at `px`, in the mono or UI font (for the
+ * layout engine's word-wrap). */
+int text_measure(const char *s, int len, int px, int mono)
+{
+    int prefer = mono ? F_MONO : F_UI;
+    uint32_t cp; int x = 0; const char *e = s + len;
+    for (const char *p = s; p < e; ) {
+        p = utf8_next(p, &cp); if (!cp) break;
+        int fi, g = resolve(cp, prefer, &fi);
+        x += glyph_get(fi, g, px)->adv;
+    }
+    return x;
+}
+/* Draw a length-delimited UTF-8 run at (x, y=top) in the UI or mono font at
+ * `px`, returning the end x. For the layout engine's display list. */
+int text_draw_run(int x, int y, const char *s, int len, int px, int mono, uint32_t color)
+{
+    int prefer = mono ? F_MONO : F_UI;
+    if (!font_ok[F_UI] && !font_ok[F_MONO]) return x;
+    int base = y + ascent_px(font_ok[prefer] ? prefer : F_UI, px);
+    uint32_t cp; const char *e = s + len;
+    for (const char *p = s; p < e; ) {
+        p = utf8_next(p, &cp); if (!cp) break;
+        int fi, gid = resolve(cp, prefer, &fi);
+        struct gentry *g = glyph_get(fi, gid, px);
+        if (g->cov) fb_blit_glyph(x + g->ox, base - g->oy, g->cov, g->w, g->h, color);
+        x += g->adv;
+    }
+    return x;
+}
+
 int text_line_height(int px)
 {
     int f = font_ok[F_UI] ? F_UI : F_MONO;

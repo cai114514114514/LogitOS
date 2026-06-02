@@ -30,6 +30,10 @@ struct surface {
 /* Route subsequent drawing to `s`, or NULL for the screen back buffer. */
 void fb_target(struct surface *s);
 
+/* Restrict drawing to a rectangle on the current target (half-open). */
+void fb_set_clip(int x, int y, int w, int h);
+void fb_clear_clip(void);
+
 /* Copy `src` into the current target at (dx,dy), clipped. */
 void fb_blit_surface(int dx, int dy, const struct surface *src);
 
@@ -46,6 +50,10 @@ void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color);
 
 /* Blit an 8-bit coverage bitmap (w*h) as anti-aliased text in `color`. */
 void fb_blit_glyph(int x, int y, const uint8_t *cov, int w, int h, uint32_t color);
+
+/* Blit a straight-RGBA image (sw*sh) into dest rect (dx,dy,dw,dh), scaled
+ * (nearest) with per-pixel alpha. */
+void fb_blit_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh);
 
 /* Alpha-blended (0 = transparent, 255 = opaque) — for frosted-glass surfaces. */
 void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a);

@@ -10,30 +10,23 @@
 #include "rtc.h"
 
 void *memcpy(void *, const void *, size_t);
-
-/* net/html.c (L2); weak so L1 builds before it exists. */
-int html_render(const char *body, int blen, const struct url *base,
-                char *out, int outmax) __attribute__((weak));
+void *kmalloc(unsigned long);
 
 #define RAW_MAX  65536
-#define TXT_MAX  32768
 
 static char raw[RAW_MAX];
-static char text[TXT_MAX];
-static int  raw_len, text_len;
+static int  raw_len;
+static int  body_off;                       /* offset of the body within raw[] */
 static int  status = HTTP_IDLE;
 static struct url cur;                      /* the page currently loaded (link base) */
 
 int  http_status(void)     { return status; }
-/* http_link_count / http_link_url are provided by net/html.c (the renderer). */
 
-int http_read(int off, char *buf, int max)
+/* After HTTP_DONE: the response body (HTML source) and its length. */
+const char *http_body(int *len)
 {
-    if (status != HTTP_DONE || off >= text_len) return 0;
-    int n = text_len - off;
-    if (n > max) n = max;
-    memcpy(buf, text + off, (size_t)n);
-    return n;
+    if (len) *len = (status == HTTP_DONE && body_off >= 0) ? raw_len - body_off : 0;
+    return raw + (body_off >= 0 ? body_off : 0);
 }
 
 /* Build "GET <path> HTTP/1.0\r\nHost: <host>\r\nConnection: close\r\n\r\n". */
@@ -153,7 +146,7 @@ static int fetch_once(const struct url *u)
 int http_get(const char *url)
 {
     status = HTTP_BUSY;
-    raw_len = text_len = 0;
+    raw_len = 0; body_off = -1;
 
     if (url_parse(url, &cur) != 0) { status = HTTP_ERR_URL; return HTTP_ERR_URL; }
 
@@ -181,17 +174,85 @@ int http_get(const char *url)
     }
 
     int body = find_body(raw, raw_len);
-    if (body < 0) body = 0;
-    int blen = raw_len - body;
-
-    if (html_render)
-        text_len = html_render(raw + body, blen, &cur, text, TXT_MAX);
-    else {                                       /* L1: no renderer yet -- raw body */
-        text_len = blen > TXT_MAX ? TXT_MAX : blen;
-        memcpy(text, raw + body, (size_t)text_len);
-    }
+    body_off = body < 0 ? 0 : body;
     status = HTTP_DONE;
     return 0;
 }
 
 void http_poll(void) { }                         /* fetch is synchronous in http_get */
+
+/* The base URL of the page currently loaded (for resolving sub-resources). */
+const struct url *http_page_url(void) { return &cur; }
+
+/* ---- sub-resource fetch (images via the layout engine) ---- */
+static int b64v(int c)
+{
+    if (c>='A'&&c<='Z') return c-'A';
+    if (c>='a'&&c<='z') return c-'a'+26;
+    if (c>='0'&&c<='9') return c-'0'+52;
+    if (c=='+') return 62; if (c=='/') return 63;
+    return -1;
+}
+
+/* Decode a "data:[<mime>][;base64],<data>" URI into a fresh kmalloc buffer. */
+static int decode_data_uri(const char *u, uint8_t **buf, int *len)
+{
+    const char *comma = u; while (*comma && *comma != ',') comma++;
+    if (*comma != ',') return -1;
+    int is_b64 = 0;
+    for (const char *p = u + 5; p < comma; p++)
+        if ((p[0]=='b'||p[0]=='B') && p+6<=comma &&
+            p[1]=='a'&&p[2]=='s'&&p[3]=='e'&&p[4]=='6'&&p[5]=='4') { is_b64 = 1; break; }
+    const char *d = comma + 1;
+    int dn = 0; while (d[dn]) dn++;
+    if (!is_b64) {                               /* treat as raw bytes (URL-ish) */
+        uint8_t *b = kmalloc(dn ? dn : 1); if (!b) return -1;
+        for (int i = 0; i < dn; i++) b[i] = (uint8_t)d[i];
+        *buf = b; *len = dn; return 0;
+    }
+    uint8_t *b = kmalloc((dn/4)*3 + 4); if (!b) return -1;
+    int o = 0, acc = 0, nb = 0;
+    for (int i = 0; i < dn; i++) {
+        int v = b64v(d[i]); if (v < 0) continue;
+        acc = (acc << 6) | v; nb += 6;
+        if (nb >= 8) { nb -= 8; b[o++] = (uint8_t)((acc >> nb) & 0xFF); }
+    }
+    *buf = b; *len = o; return 0;
+}
+
+/* Fetch a sub-resource (image) relative to the current page. Returns 0 with a
+ * kmalloc'd body the caller frees, or -1. Reuses raw[] (the DOM was already
+ * built from the page body, which copied its strings). */
+int res_fetch(const char *src, uint8_t **buf, int *len)
+{
+    if (!src || !*src) return -1;
+    if (src[0]=='d'&&src[1]=='a'&&src[2]=='t'&&src[3]=='a'&&src[4]==':')
+        return decode_data_uri(src, buf, len);
+
+    char abs[URL_HOST_MAX + URL_PATH_MAX + 16];
+    struct url u;
+    if (url_resolve(&cur, src, abs, sizeof abs) != 0) return -1;
+    if (url_parse(abs, &u) != 0) return -1;
+
+    for (int hop = 0; hop < 4; hop++) {
+        if (fetch_once(&u) != 0) return -1;
+        int code = status_code(raw, raw_len);
+        if (code >= 300 && code < 400) {
+            int hdr = find_body(raw, raw_len); int hlen = hdr < 0 ? raw_len : hdr;
+            char loc[URL_HOST_MAX + URL_PATH_MAX + 16], a2[sizeof loc]; struct url nu;
+            if (header_value(raw, hlen, "location", loc, sizeof loc) == 0 &&
+                url_resolve(&u, loc, a2, sizeof a2) == 0 && url_parse(a2, &nu) == 0) {
+                u = nu; continue;
+            }
+            return -1;
+        }
+        if (code && code != 200) return -1;
+        break;
+    }
+    int body = find_body(raw, raw_len); if (body < 0) return -1;
+    int blen = raw_len - body;
+    if (blen <= 0) return -1;
+    uint8_t *b = kmalloc(blen); if (!b) return -1;
+    memcpy(b, raw + body, (size_t)blen);
+    *buf = b; *len = blen; return 0;
+}

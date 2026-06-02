@@ -24,6 +24,7 @@ static struct item *additem(int type)
 
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
+static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9') n=n*10+(*s++-'0'); return n; }
 
 /* ---- inline flow ---- */
 /* current pen for inline content within a block */
@@ -54,7 +55,7 @@ static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st
         if (f->line_started) f->x += spacew;
         struct item *it = additem(IT_TEXT);
         if (!it) return;
-        it->x = f->x; it->text = s + ws; it->len = wlen;
+        it->x = f->x; it->w = ww; it->text = s + ws; it->len = wlen;
         it->font_px = px; it->bold = st->bold; it->italic = st->italic; it->mono = mono;
         it->underline = st->underline; it->color = st->color; it->href = href;
         f->x += ww;
@@ -93,8 +94,10 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
 
     if (tag_eq(c->tag, "img")) {
         int iw = 0, ih = 0;
-        if (st && st->has_w) iw = st->width;
-        if (st && st->has_h) ih = st->height;
+        if (st && st->has_w && !st->w_pct) iw = st->width;
+        if (st && st->has_h && !st->h_pct) ih = st->height;
+        if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
+        if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
         struct image *im = 0;
         const char *src = dom_attr(c, "src");
         uint8_t *buf; int blen;

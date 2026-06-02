@@ -27,6 +27,12 @@ static uint8_t rpos, gpos, bpos;
 static struct surface screen;     /* wraps the back buffer (the visible screen) */
 static struct surface *T;         /* current draw target (defaults to screen) */
 
+/* Optional clip rectangle on the current target (clx0..clx1, cly0..cly1),
+ * half-open; disabled when clip_on == 0. */
+static int clip_on, clx0, cly0, clx1, cly1;
+void fb_set_clip(int x, int y, int w, int h) { clip_on = 1; clx0 = x; cly0 = y; clx1 = x + w; cly1 = y + h; }
+void fb_clear_clip(void) { clip_on = 0; }
+
 uint32_t fb_width(void)  { return fb_w; }
 uint32_t fb_height(void) { return fb_h; }
 
@@ -81,6 +87,8 @@ void fb_put(int x, int y, uint32_t color)
 {
     struct surface *s = T ? T : &screen;
     if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
+        return;
+    if (clip_on && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
         return;
     s->px[y * s->w + x] = color;
 }
@@ -236,6 +244,28 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
             int ng = (g * a + bg * (255 - a)) / 255;
             int nb = (b * a + bb * (255 - a)) / 255;
             fb_put(x + i, y + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+        }
+    }
+}
+
+/* Blit a straight-RGBA source (sw x sh) into the dest rect (dx,dy,dw,dh) of the
+ * current target with nearest-neighbour scaling and per-pixel alpha. */
+void fb_blit_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh)
+{
+    if (!rgba || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+    for (int j = 0; j < dh; j++) {
+        int sy = j * sh / dh;
+        for (int i = 0; i < dw; i++) {
+            int sx = i * sw / dw;
+            const uint8_t *p = rgba + ((sy * sw + sx) * 4);
+            int a = p[3];
+            if (!a) continue;
+            if (a >= 255) { fb_put(dx + i, dy + j, fb_rgb(p[0], p[1], p[2])); continue; }
+            int br, bg, bb; unpack(fb_get(dx + i, dy + j), &br, &bg, &bb);
+            int nr = (p[0] * a + br * (255 - a)) / 255;
+            int ng = (p[1] * a + bg * (255 - a)) / 255;
+            int nb = (p[2] * a + bb * (255 - a)) / 255;
+            fb_put(dx + i, dy + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
         }
     }
 }

@@ -12,6 +12,7 @@
 #include "aquafs.h"
 #include "net.h"
 #include "text.h"
+#include "img.h"
 
 #define TIMER_HZ 100
 
@@ -40,7 +41,8 @@ void kernel_main(uint64_t mb_info)
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
 
-    text_init();  /* load /fonts/*.ttf for the anti-aliased Unicode text engine */
+    text_init();  /* load the TTF fonts for the anti-aliased Unicode text engine */
+    img_init();   /* register the PNG + GIF image codecs (browser <img>) */
 
     wm_init();
     wm_render();                 /* first frame -> desktop visible */
