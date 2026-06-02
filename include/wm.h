@@ -8,7 +8,7 @@ void wm_run(void);                 /* scheduler "main" thread; does not return *
 
 /* Input (from the mouse / keyboard drivers). */
 void wm_mouse_event(int x, int y, int left);
-void wm_key(char c);
+void wm_key(int c);
 
 /* Launch a .aex application (optionally with a file argument). */
 void wm_launch(const char *aex_file, const char *arg);

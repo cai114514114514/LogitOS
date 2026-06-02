@@ -543,7 +543,7 @@ void wm_render(void)
 static int in_rect(int px, int py, int x, int y, int w, int h)
 { return px >= x && px < x + w && py >= y && py < y + h; }
 
-void wm_key(char c)
+void wm_key(int c)
 {
     if (norder == 0) return;
     struct win *w = &wins[order[norder - 1]];

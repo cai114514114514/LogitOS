@@ -126,10 +126,18 @@ void app_main(void)
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);
             if (e.type == EV_KEY) {
-                char c = (char)e.a;
-                if (c == '\n') { editing = 0; load(url); editing = 1; }
-                else if (c == '\b') { if (ulen > 0) url[--ulen] = 0; }
-                else if (c >= ' ' && ulen < (int)sizeof url - 1) { url[ulen++] = c; url[ulen] = 0; }
+                int k = e.a;
+                int maxs = nlines - ROWS; if (maxs < 0) maxs = 0;
+                if (k == KEY_DOWN)      scroll += 3;
+                else if (k == KEY_UP)   scroll -= 3;
+                else if (k == KEY_PGDN) scroll += ROWS - 1;
+                else if (k == KEY_PGUP) scroll -= ROWS - 1;
+                else if (k == KEY_HOME) scroll = 0;
+                else if (k == KEY_END)  scroll = maxs;
+                else if (k == '\n') { editing = 0; load(url); editing = 1; }
+                else if (k == '\b') { if (ulen > 0) url[--ulen] = 0; }
+                else if (k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
+                if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
                 redraw(editing);
             } else if (e.type == EV_MOUSE) {
                 int my = e.b;                       /* window-local y */

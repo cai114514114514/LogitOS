@@ -37,7 +37,17 @@
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0
-#define EV_KEY    1   /* a = character */
+#define EV_KEY    1   /* a = character, or a KEY_* code below for non-printable keys */
+
+/* Non-printable key codes (delivered via EV_KEY, a = code; all > 0xFF so they
+ * never collide with a character). */
+#define KEY_UP    0x101
+#define KEY_DOWN  0x102
+#define KEY_PGUP  0x103
+#define KEY_PGDN  0x104
+#define KEY_HOME  0x105
+#define KEY_END   0x106
+
 #define EV_MOUSE  2   /* a = x, b = y (window-local), mouse-button down */
 #define EV_CLOSE  3   /* the window's close button was pressed */
 

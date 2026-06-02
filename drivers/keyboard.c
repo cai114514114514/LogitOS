@@ -2,6 +2,7 @@
 #include "keyboard.h"
 #include "io.h"
 #include "wm.h"
+#include "aqua_abi.h"   /* KEY_* codes for arrows / page keys */
 
 #define KBD_DATA 0x60
 
@@ -43,8 +44,22 @@ static const char scancode_map_shift[128] = {
 
 void keyboard_handle(void)
 {
-    static int ctrl, shift;
+    static int ctrl, shift, ext;
     uint8_t sc = inb(KBD_DATA);
+
+    if (sc == 0xE0) { ext = 1; return; }            /* extended-key prefix */
+    if (ext) {                                       /* arrows / page / home / end */
+        ext = 0;
+        if (sc & 0x80) return;                       /* release */
+        int k = 0;
+        switch (sc) {
+            case 0x48: k = KEY_UP;   break;  case 0x50: k = KEY_DOWN; break;
+            case 0x49: k = KEY_PGUP; break;  case 0x51: k = KEY_PGDN; break;
+            case 0x47: k = KEY_HOME; break;  case 0x4F: k = KEY_END;  break;
+        }
+        if (k) wm_key(k);
+        return;
+    }
 
     switch (sc) {
     case SC_LCTRL:                                  ctrl  = 1; return;
