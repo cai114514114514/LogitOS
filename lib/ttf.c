@@ -132,3 +132,127 @@ int ttf_glyph_id(const struct ttf_font *f, uint32_t codepoint)
     if (fmt == 12) return cmap12(t, codepoint);
     return 0;
 }
+
+/* --- glyph outlines --- */
+
+/* loca: byte offset + length of glyph `gid` within the glyf table. */
+static int glyf_loc(const struct ttf_font *f, int gid, uint32_t *off, uint32_t *nextoff)
+{
+    if (gid < 0 || gid >= f->num_glyphs) return -1;
+    const uint8_t *l = f->data + f->off_loca;
+    if (f->loca_long) { *off = rd32(l + gid * 4); *nextoff = rd32(l + gid * 4 + 4); }
+    else { *off = rd16(l + gid * 2) * 2u; *nextoff = rd16(l + gid * 2 + 2) * 2u; }
+    return 0;
+}
+
+/* Fixed-point 2.14 (F2Dot14) transform of one point, accumulating into shorts. */
+static short xf(int a, int c, int x, int y, int d) { return (short)(((a * x + c * y) >> 14) + d); }
+
+/* Emit glyph `gid` into the outline arrays, applying the 2.14 transform
+ * [a b / c d] + (dx,dy). Recurses for composites. Returns 0 ok, -1 on overflow. */
+static int emit(const struct ttf_font *f, int gid, int depth,
+                int a, int b, int c, int d, int dx, int dy,
+                short *X, short *Y, uint8_t *ON, int *CE, int capPts, int capC,
+                int *npts, int *nc)
+{
+    if (depth > 5) return -1;
+    uint32_t off, nextoff;
+    if (glyf_loc(f, gid, &off, &nextoff)) return -1;
+    if (nextoff <= off) return 0;                       /* blank glyph */
+    const uint8_t *g = f->data + f->off_glyf + off;
+    int ncont = rs16(g);
+    const uint8_t *p = g + 10;
+
+    if (ncont >= 0) {                                   /* --- simple glyph --- */
+        const uint8_t *endpts = p;
+        int base = *npts;
+        int gpts = (ncont == 0) ? 0 : rd16(endpts + (ncont - 1) * 2) + 1;
+        p = endpts + ncont * 2;
+        int insLen = rd16(p); p += 2 + insLen;
+        if (*npts + gpts > capPts || *nc + ncont > capC) return -1;
+
+        uint8_t flags[gpts > 0 ? gpts : 1];
+        for (int i = 0; i < gpts; ) {
+            uint8_t fl = *p++; flags[i++] = fl;
+            if (fl & 0x08) { int r = *p++; while (r-- && i < gpts) flags[i++] = fl; }
+        }
+        int xv = 0;
+        for (int i = 0; i < gpts; i++) {
+            uint8_t fl = flags[i];
+            if (fl & 0x02) { int dxv = *p++; xv += (fl & 0x10) ? dxv : -dxv; }
+            else if (!(fl & 0x10)) { xv += rs16(p); p += 2; }
+            X[base + i] = (short)xv;                    /* raw; transform below */
+        }
+        int yv = 0;
+        for (int i = 0; i < gpts; i++) {
+            uint8_t fl = flags[i];
+            if (fl & 0x04) { int dyv = *p++; yv += (fl & 0x20) ? dyv : -dyv; }
+            else if (!(fl & 0x20)) { yv += rs16(p); p += 2; }
+            Y[base + i] = (short)yv;
+            ON[base + i] = (uint8_t)(fl & 0x01);
+        }
+        for (int i = 0; i < gpts; i++) {                /* apply transform */
+            int rx = X[base + i], ry = Y[base + i];
+            X[base + i] = xf(a, c, rx, ry, dx);
+            Y[base + i] = xf(b, d, rx, ry, dy);
+        }
+        for (int i = 0; i < ncont; i++)
+            CE[(*nc) + i] = base + rd16(endpts + i * 2);
+        *npts += gpts; *nc += ncont;
+        return 0;
+    }
+
+    /* --- composite glyph --- */
+    for (;;) {
+        int flags = rd16(p); int cgid = rd16(p + 2); p += 4;
+        int arg1, arg2;
+        if (flags & 0x0001) { arg1 = rs16(p); arg2 = rs16(p + 2); p += 4; }
+        else { arg1 = (signed char)p[0]; arg2 = (signed char)p[1]; p += 2; }
+        int ca = 0x4000, cb = 0, cc = 0, cd = 0x4000;   /* 1.0 in 2.14 */
+        if (flags & 0x0008) { ca = cd = rs16(p); p += 2; }
+        else if (flags & 0x0040) { ca = rs16(p); cd = rs16(p + 2); p += 4; }
+        else if (flags & 0x0080) { ca = rs16(p); cb = rs16(p + 2); cc = rs16(p + 4); cd = rs16(p + 6); p += 8; }
+        int cdx = (flags & 0x0002) ? arg1 : 0;          /* XY offset (point-match unsupported) */
+        int cdy = (flags & 0x0002) ? arg2 : 0;
+        /* compose parent [a b c d] with child [ca cb cc cd] (2.14) */
+        int na = (a * ca + c * cb) >> 14, nb = (b * ca + d * cb) >> 14;
+        int nc2 = (a * cc + c * cd) >> 14, nd = (b * cc + d * cd) >> 14;
+        int ndx = ((a * cdx + c * cdy) >> 14) + dx, ndy = ((b * cdx + d * cdy) >> 14) + dy;
+        if (emit(f, cgid, depth + 1, na, nb, nc2, nd, ndx, ndy, X, Y, ON, CE, capPts, capC, npts, nc))
+            return -1;
+        if (!(flags & 0x0020)) break;                   /* MORE_COMPONENTS */
+    }
+    return 0;
+}
+
+int ttf_glyph_outline(const struct ttf_font *f, int gid,
+                      struct ttf_outline *out, void *scratch, int scratchlen)
+{
+    /* Carve scratch: CE[capC] (int) then X,Y (short) then ON (byte). */
+    int capC = 64;
+    uint8_t *base = (uint8_t *)scratch;
+    int *CE = (int *)base;
+    uint8_t *rest = base + capC * (int)sizeof(int);
+    int restlen = scratchlen - capC * (int)sizeof(int);
+    if (restlen < 16) return -1;
+    int capPts = restlen / 6;                            /* 2(x)+2(y)+1(on)+slack */
+    capPts &= ~1;
+    short *X = (short *)rest;
+    short *Y = (short *)(rest + capPts * 2);
+    uint8_t *ON = rest + capPts * 4;
+
+    out->x = X; out->y = Y; out->on = ON; out->contour_end = CE;
+    out->npts = 0; out->ncontours = 0;
+    if (emit(f, gid, 0, 0x4000, 0, 0, 0x4000, 0, 0, X, Y, ON, CE, capPts, capC,
+             &out->npts, &out->ncontours))
+        return -1;
+
+    /* bbox from header (font units) */
+    uint32_t off, nextoff; glyf_loc(f, gid, &off, &nextoff);
+    if (nextoff > off) {
+        const uint8_t *g = f->data + f->off_glyf + off;
+        out->xmin = rs16(g + 2); out->ymin = rs16(g + 4);
+        out->xmax = rs16(g + 6); out->ymax = rs16(g + 8);
+    } else { out->xmin = out->ymin = out->xmax = out->ymax = 0; }
+    return 0;
+}

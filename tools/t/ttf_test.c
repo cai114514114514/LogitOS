@@ -22,6 +22,22 @@ int main(int argc, char **argv){
     eq("adv('A')", ttf_advance(&f, ttf_glyph_id(&f, 0x41)), 740);
     eq("adv('你')", ttf_advance(&f, ttf_glyph_id(&f, 0x4F60)), 1000);
     eq("gid(missing)", ttf_glyph_id(&f, 0x1FBFF), 0);
+
+    /* outlines */
+    static uint8_t scratch[1 << 16];
+    struct ttf_outline o;
+    eq("outline('A') rc", ttf_glyph_outline(&f, ttf_glyph_id(&f,0x41), &o, scratch, sizeof scratch), 0);
+    eq("A contours", o.ncontours, 2);
+    eq("A bbox xmin", o.xmin, 13); eq("A bbox ymax", o.ymax, 821);
+    if (o.npts <= 0) { printf("FAIL A npts=%d\n", o.npts); fail = 1; }
+    for (int i = 0; i < o.npts; i++)
+        if (o.x[i] < o.xmin - 1 || o.x[i] > o.xmax + 1 || o.y[i] < o.ymin - 1 || o.y[i] > o.ymax + 1)
+            { printf("FAIL A pt %d (%d,%d) out of bbox\n", i, o.x[i], o.y[i]); fail = 1; break; }
+
+    eq("outline('你') rc", ttf_glyph_outline(&f, ttf_glyph_id(&f,0x4F60), &o, scratch, sizeof scratch), 0);
+    eq("你 contours", o.ncontours, 5);
+    eq("你 bbox ymin", o.ymin, -110); eq("你 bbox xmax", o.xmax, 951);
+
     printf(fail ? "SOME FAILED\n" : "ALL PASS\n");
     return fail;
 }
