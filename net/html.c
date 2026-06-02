@@ -145,9 +145,22 @@ int html_render(const char *body, int blen, const struct url *base,
             if (semi > 0) {
                 int el = semi - j;
                 const char *en = body + j;
-                if (body[j] == '#') {            /* numeric &#NN; */
-                    int v = 0; for (int k = j + 1; k < semi; k++) if (body[k]>='0'&&body[k]<='9') v = v*10+(body[k]-'0');
-                    dec = (char)(v & 0x7F); handled = 1;
+                if (body[j] == '#') {            /* numeric &#NN; or &#xHH; -> UTF-8 */
+                    int v = 0, k = j + 1, hex = 0;
+                    if (k < semi && (body[k]=='x' || body[k]=='X')) { hex = 1; k++; }
+                    for (; k < semi; k++) {
+                        char d = body[k];
+                        if (hex) { if (d>='0'&&d<='9') v=v*16+(d-'0');
+                                   else if (d>='a'&&d<='f') v=v*16+(d-'a'+10);
+                                   else if (d>='A'&&d<='F') v=v*16+(d-'A'+10); }
+                        else if (d>='0'&&d<='9') v = v*10 + (d-'0');
+                    }
+                    /* encode v as UTF-8 */
+                    if (v < 0x80) put(&e, (char)v);
+                    else if (v < 0x800) { put(&e,(char)(0xC0|(v>>6))); put(&e,(char)(0x80|(v&0x3F))); }
+                    else if (v < 0x10000) { put(&e,(char)(0xE0|(v>>12))); put(&e,(char)(0x80|((v>>6)&0x3F))); put(&e,(char)(0x80|(v&0x3F))); }
+                    else { put(&e,(char)(0xF0|(v>>18))); put(&e,(char)(0x80|((v>>12)&0x3F))); put(&e,(char)(0x80|((v>>6)&0x3F))); put(&e,(char)(0x80|(v&0x3F))); }
+                    last_space = 0; i = semi + 1; continue;
                 } else if (el == 3 && ci_eq(en, "amp", 3)) { dec = '&'; handled = 1; }
                 else if (el == 2 && ci_eq(en, "lt", 2))    { dec = '<'; handled = 1; }
                 else if (el == 2 && ci_eq(en, "gt", 2))    { dec = '>'; handled = 1; }
