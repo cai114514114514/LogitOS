@@ -4,6 +4,12 @@
  * The kernel does DNS+TCP+HTTP+render (SYS_HTTP_*); this app just drives the
  * URL, paints the text line-by-line with scroll, and navigates on link click. */
 
+/* http_get error codes (mirror include/http.h) */
+#define HTTP_ERR_URL  -2
+#define HTTP_ERR_DNS  -3
+#define HTTP_ERR_CONN -4
+#define HTTP_ERR_TLS  -5
+
 #define WINW 600
 #define WINH 440
 #define BARH 30
@@ -52,7 +58,11 @@ static void load(const char *u)
 
     int rc = http_get(u);
     if (rc < 0) {
-        const char *e = "load failed (bad url / not http://)";
+        const char *e = rc == HTTP_ERR_URL  ? "load failed: bad URL (need http:// or https://)" :
+                        rc == HTTP_ERR_DNS  ? "load failed: DNS lookup failed" :
+                        rc == HTTP_ERR_CONN ? "load failed: could not connect (timed out)" :
+                        rc == HTTP_ERR_TLS  ? "load failed: TLS/certificate error" :
+                                              "load failed";
         int i = 0; while (e[i]) { status[i] = e[i]; i++; } status[i] = 0;
         plen = 0; nlines = 0; scroll = 0; return;
     }
