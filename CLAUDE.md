@@ -43,6 +43,20 @@ app ✅ (`net/http.c` fetch + `net/html.c` de-tag render + `user/browser.c`) ·
 M12 TLS 1.3 ✅ (`crypto/*` + `net/tls.c` + `net/x509.c`; https with strict cert
 verification) · M13 HTML/CSS layout (planned).
 
+M14 Unicode + from-scratch TrueType anti-aliased text ✅ (`lib/utf8.c` +
+`lib/ttf.c` + `kernel/raster.c` + `kernel/text.c`): UTF-8 decode, a from-scratch
+TTF parser (cmap fmt4/12, glyf simple+composite, hmtx) and an integer-only AA
+rasterizer (4× vertical oversample + fractional horizontal coverage → 0–255
+alpha), with a glyph cache + font fallback. `fb_text` routes through it, so the
+whole UI is anti-aliased; the Terminal uses `text_draw_mono` (SYS_GUI_TEXT_MONO).
+Fonts live on the AquaFS disk (`/fonts/{ui,mono}.ttf`, subset by
+`tools/mkfont.py`: Heiti SC GB2312 + Menlo, glyf), loaded by `text_init()` after
+fs mount; QEMU `-m 512M`. The CJK font is 6 MB, so AquaFS gained **double-
+indirect** inodes (`fs/aquafs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
+bitmap font (`font8x16.h`, `genfont.py`) was removed. Chinese web pages render
+(`zh.wikipedia.org`). Notes: no hinting (macOS-style), grayscale (no subpixel),
+no bidi/shaping; the rasterizer is integer-only because the kernel is `-mno-sse`.
+
 Post-roadmap: per-process address spaces (each app its own PML4; `vmm_new_space`,
 `schedule()` switches CR3) and ring-3 fault containment (an app fault kills only
 that app; the kernel/desktop survive — `kernel/interrupts.c`).

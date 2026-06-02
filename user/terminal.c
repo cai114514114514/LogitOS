@@ -5,9 +5,10 @@
  * keyboard event by event. */
 
 #define ROWS 18
-#define COLS 56
+#define COLS 44
 #define WINW 472
 #define WINH 340
+#define CELL 10          /* monospace cell width (px) for the AA mono font */
 
 static char scr[ROWS][COLS];
 static int  crow, ccol;
@@ -167,11 +168,11 @@ void app_main(void)
             redraw = 0;
             gui_clear(rgb(250, 250, 252));
             for (int r = 0; r < ROWS; r++)
-                if (scr[r][0]) gui_text(8, 6 + r * 16, rgb(55, 58, 66), scr[r]);
+                if (scr[r][0]) gui_text_mono(8, 6 + r * 16, rgb(55, 58, 66), CELL, scr[r]);
             int iy = 6 + ROWS * 16;
-            gui_text(8, iy, rgb(90, 150, 240), "$ ");
-            gui_text(8 + 16, iy, rgb(40, 40, 48), in);
-            gui_rect(8 + 16 + inlen * 8, iy, 8, 16, rgb(90, 150, 240));
+            gui_text_mono(8, iy, rgb(90, 150, 240), CELL, "$ ");
+            gui_text_mono(8 + 2 * CELL, iy, rgb(40, 40, 48), CELL, in);
+            gui_rect(8 + 2 * CELL + inlen * CELL, iy, CELL, 16, rgb(90, 150, 240));
             gui_flush();
         }
         sys_yield();

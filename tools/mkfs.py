@@ -122,9 +122,10 @@ class Builder:
             nextb += 1
             return b
 
-        # 3) lay out every inode's content into data blocks (+ indirect)
+        # 3) lay out every inode's content into data blocks (+ single/double indirect)
         direct = [[0] * NDIRECT for _ in range(INODE_COUNT)]
         indirect = [0] * INODE_COUNT
+        dindirect = [0] * INODE_COUNT
         size = [0] * INODE_COUNT
         for ino in range(self.next_ino):
             if self.itype[ino] == T_FREE:
@@ -139,12 +140,24 @@ class Builder:
             for i in range(min(nblk, NDIRECT)):
                 direct[ino][i] = blks[i]
             if nblk > NDIRECT:
-                if nblk - NDIRECT > PPB:
-                    sys.exit(f"mkfs: inode {ino} too large for single indirect")
-                ib = alloc_block()
-                indirect[ino] = ib
-                for j in range(NDIRECT, nblk):
-                    struct.pack_into("<I", img, ib * BS + (j - NDIRECT) * 4, blks[j])
+                ib = alloc_block(); indirect[ino] = ib          # single indirect
+                n_si = min(nblk - NDIRECT, PPB)
+                for j in range(n_si):
+                    struct.pack_into("<I", img, ib * BS + j * 4, blks[NDIRECT + j])
+            if nblk > NDIRECT + PPB:                            # double indirect
+                if nblk - NDIRECT - PPB > PPB * PPB:
+                    sys.exit(f"mkfs: inode {ino} too large for double indirect")
+                dib = alloc_block(); dindirect[ino] = dib
+                base = NDIRECT + PPB
+                nptr = (nblk - base + PPB - 1) // PPB
+                for k in range(nptr):
+                    sib = alloc_block()
+                    struct.pack_into("<I", img, dib * BS + k * 4, sib)
+                    for m in range(PPB):
+                        bi = base + k * PPB + m
+                        if bi >= nblk:
+                            break
+                        struct.pack_into("<I", img, sib * BS + m * 4, blks[bi])
 
         # 4) superblock
         struct.pack_into("<11I", img, 0,
@@ -163,6 +176,7 @@ class Builder:
             for i in range(NDIRECT):
                 struct.pack_into("<I", img, off + 8 + i * 4, direct[ino][i])
             struct.pack_into("<I", img, off + 8 + NDIRECT * 4, indirect[ino])
+            struct.pack_into("<I", img, off + 8 + NDIRECT * 4 + 4, dindirect[ino])  # double indirect
 
         return img, nextb
 

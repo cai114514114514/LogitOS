@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "wm.h"
 #include "fb.h"
+#include "text.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "kheap.h"
@@ -275,6 +276,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
         fb_target(&w->surf); fb_text(x, y, (const char *)c, (uint32_t)b); fb_target(NULL);
+        return 0;
+    }
+    case SYS_GUI_TEXT_MONO: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int cell = (int)((b >> 24) & 0xFF); uint32_t color = (uint32_t)(b & 0xFFFFFF);
+        fb_target(&w->surf); text_draw_mono(x, y, (const char *)c, cell, color); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_FLUSH:

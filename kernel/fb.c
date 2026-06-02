@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include "fb.h"
 #include "vmm.h"
-#include "font8x16.h"
+#include "text.h"
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
 struct mb2_tag { uint32_t type, size; };
@@ -125,38 +125,28 @@ void fb_present(void)
     }
 }
 
+/* Text now goes through the anti-aliased Unicode engine (kernel/text.c). These
+ * stay as thin wrappers so existing callers keep working; `y` is the cell top. */
 void fb_char(int x, int y, char ch, uint32_t color)
 {
-    const uint8_t *glyph = font8x16[(uint8_t)ch & 0x7F];
-    for (int row = 0; row < FONT_H; row++) {
-        uint8_t bits = glyph[row];
-        for (int col = 0; col < FONT_W; col++)
-            if (bits & (0x80 >> col))
-                fb_put(x + col, y + row, color);
-    }
+    char s[2] = { ch, 0 };
+    text_draw(x, y, s, color);
 }
 
 void fb_text(int x, int y, const char *s, uint32_t color)
 {
-    int x0 = x;
-    for (; *s; s++) {
-        if (*s == '\n') {
-            x = x0;
-            y += FONT_H;
-        } else {
-            fb_char(x, y, *s, color);
-            x += FONT_W;
-        }
+    int x0 = x, lh = text_line_height(TEXT_UI_PX);
+    char line[512]; int li = 0;
+    for (;;) {
+        if (*s == '\n' || *s == 0) {
+            line[li] = 0; text_draw(x0, y, line, color); li = 0;
+            if (*s == 0) break;
+            y += lh; s++;
+        } else { if (li < 511) line[li++] = *s; s++; }
     }
 }
 
-int fb_text_width(const char *s)
-{
-    int n = 0;
-    while (s[n])
-        n++;
-    return n * FONT_W;
-}
+int fb_text_width(const char *s) { return text_width(s); }
 
 void fb_clear(uint32_t color)
 {
@@ -198,6 +188,25 @@ void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color)
         for (int i = 0; i < w; i++)
             if (inside_round(i, j, w, h, radius))
                 fb_put(x + i, y + j, color);
+}
+
+/* Blit an 8-bit coverage bitmap as anti-aliased text: each cov[i] is the alpha
+ * of `color` over the existing pixel. */
+void fb_blit_glyph(int x, int y, const uint8_t *cov, int w, int h, uint32_t color)
+{
+    int cr, cg, cb; unpack(color, &cr, &cg, &cb);
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            int a = cov[j * w + i];
+            if (!a) continue;
+            if (a >= 255) { fb_put(x + i, y + j, color); continue; }
+            int br, bg, bb; unpack(fb_get(x + i, y + j), &br, &bg, &bb);
+            int nr = (cr * a + br * (255 - a)) / 255;
+            int ng = (cg * a + bg * (255 - a)) / 255;
+            int nb = (cb * a + bb * (255 - a)) / 255;
+            fb_put(x + i, y + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+        }
+    }
 }
 
 void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
