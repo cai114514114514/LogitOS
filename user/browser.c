@@ -3,6 +3,7 @@
 #include "css.h"
 #include "layout.h"
 #include "browser_paint.h"
+#include "js_dom.h"
 
 /* A web browser. The whole render pipeline now runs in this ring-3 app: the
  * kernel does DNS+TCP+TLS+HTTP (SYS_HTTP_GET) and hands us the raw body
@@ -56,16 +57,17 @@ static JSValue js_log(JSContext *ctx, JSValueConst t, int argc, JSValueConst *ar
     return JS_UNDEFINED;
 }
 
-static void run_js(const char *src)
+static int run_js(const char *src)        /* returns 1 if the script mutated the DOM */
 {
-    JSRuntime *rt = JS_NewRuntime(); if (!rt) return;
-    JSContext *ctx = JS_NewContext(rt); if (!ctx) { JS_FreeRuntime(rt); return; }
+    JSRuntime *rt = JS_NewRuntime(); if (!rt) return 0;
+    JSContext *ctx = JS_NewContext(rt); if (!ctx) { JS_FreeRuntime(rt); return 0; }
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue con = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, con, "log", JS_NewCFunction(ctx, js_log, "log", 1));
     JS_SetPropertyStr(ctx, g, "console", con);
     JS_SetPropertyStr(ctx, g, "print", JS_NewCFunction(ctx, js_log, "print", 1));
     JS_FreeValue(ctx, g);
+    js_dom_init(ctx, g_root);             /* document + Element bound to the live DOM */
     JSValue v = JS_Eval(ctx, src, strlen(src), "<page>", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(v)) {
         JSValue e = JS_GetException(ctx);
@@ -76,7 +78,9 @@ static void run_js(const char *src)
         JS_FreeValue(ctx, e);
     }
     JS_FreeValue(ctx, v);
+    int mutated = js_dom_dirty();
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
+    return mutated;
 }
 
 /* ---- DOM helpers: collect <style>/<script> text (moved from the kernel) ---- */
@@ -147,13 +151,18 @@ static void load(const char *u)
     static char scr[16384];
     int sn = collect_scripts(g_root, scr, 0, sizeof scr);
     if (sn > 1) {
-        run_js(scr);
+        int mutated = run_js(scr);
+        if (mutated) {                   /* JS changed the DOM -> re-style + re-layout */
+            css_apply(g_root, author_css, css_len);
+            layout_page(g_root, WINW);
+            ph = layout_height();
+        }
         if (jslen > 0) {
             char st[96]; int p = 0; const char *pre = "JS: ";
             while (*pre) st[p++] = *pre++;
             for (int i = 0; jsout[i] && jsout[i] != '\n' && p < 92; i++) st[p++] = jsout[i];
             st[p] = 0; set_status(st);
-        } else set_status("loaded (ran script, no output)");
+        } else set_status(mutated ? "loaded (script updated the page)" : "loaded (ran script, no output)");
         redraw(0);
     }
 }

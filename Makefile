@@ -136,8 +136,8 @@ $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -Iuser/libc/include -Iuser -c $< -o $@
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ) $(CSS_OBJ) $(BUILD)/js.crt0.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/js.crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ) $(CSS_OBJ)
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BUILD)/jsobj/user/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(BUILD)/js.crt0.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/js.crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BUILD)/jsobj/user/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ)
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
