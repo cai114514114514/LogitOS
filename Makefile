@@ -86,7 +86,30 @@ $(eval $(call APP_RULE,netapp,  0x44000000,Network,-,N,80,170,220))
 $(eval $(call APP_RULE,browser, 0x45000000,Browser,-,B,120,130,240))
 
 APPS := clock textedit monitor terminal netapp browser
-AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex)
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/js.aex
+
+# --- JavaScript app: QuickJS engine + musl libm + mini-libc (multi-file) ---
+QJS_SRC  := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
+            third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c \
+            third_party/quickjs/libbf.c
+JS_SRCS  := $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard user/libc/src/*.c) user/js.c
+JS_INC   := -Iuser/libc/include -Ithird_party/libm -Ithird_party/quickjs
+JS_CF    := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aqua-2024"' -DAQUA_OS $(JS_INC)
+JS_OBJ   := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(JS_SRCS))
+
+$(BUILD)/jsobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(JS_CF) -c $< -o $@
+
+$(BUILD)/js.crt0.o: user/crt0.asm
+	@mkdir -p $(BUILD)
+	$(ASM) -f elf64 user/crt0.asm -o $@
+
+$(BUILD)/js.elf: $(JS_OBJ) $(BUILD)/js.crt0.o
+	$(LD) -nostdlib -e _start -Ttext=0x46000000 -o $@ $(BUILD)/js.crt0.o $(JS_OBJ)
+
+$(BUILD)/js.aex: $(BUILD)/js.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/js.elf $@ JavaScript - 'J' 230 200 60
 
 # Font subsets (proprietary source; regenerated, .gitignored). See tools/mkfont.py.
 $(FONTS): tools/mkfont.py
@@ -97,7 +120,7 @@ $(DISK): $(FS_FILES) $(FONTS) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
-	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex)
+	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/js.aex:js.aex
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache

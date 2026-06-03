@@ -184,8 +184,23 @@ with `-msse -msse2` (kept `-mno-red-zone`), and `boot/isr.asm`'s `isr_common`
 does FXSAVE/FXRSTOR around every C handler so FP survives preemption + syscalls
 (context_switch needs nothing: SysV XMM are all caller-saved). No lazy-FP
 (CR0.TS). Verified: kernel + ring-3 double math exact under heavy timer
-preemption (0 corruptions). Next: M16 = QuickJS in `user/browser.c` (needs a
-userland libm + malloc/heap; SSE2 only gives `sqrtsd` directly).
+preemption (0 corruptions).
+
+M16 JavaScript (QuickJS) ✅: ported QuickJS 2024-01-13 as a **ring-3 app**
+(`user/js.c`). Needed a from-scratch freestanding userland C runtime:
+**mini-libc** (`user/libc/`: 24 MiB-arena malloc, string/mem, a from-scratch
+`vsnprintf` incl. correct `%e/%f/%g`, stdlib `qsort`/`strtod`/`strtoll`,
+`fenv`→MXCSR rounding, `time`→RTC syscall, 128-bit `__udivti3` compiler-rt) +
+**musl libm** (`third_party/libm/`, double-only subset, 83 files) + the engine
+(`third_party/quickjs/`: quickjs+cutils+libregexp+libunicode+libbf). Atomics are
+off (`-DAQUA_OS` guards `CONFIG_ATOMICS`; single-threaded). Builds via the
+Makefile `js` rule into a ~1 MiB `.aex`; JS output goes to a window + serial
+through `SYS_WRITE`. Runs fib, Array.map/arrow fns, JSON, Math.* (libm), etc.
+**Gotchas:** QuickJS returns `double` so M15's SSE is mandatory (`-msse2`);
+`js_dtoa` formats numbers via `snprintf("%+.*e")` so a correct `%e` is required;
+`scan_apps` read each `.aex` into a 32 KiB buffer — fixed to size-to-file so the
+1 MiB app registers in the Dock. Next: call into the engine from `user/browser.c`
+to run page `<script>`.
 
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 

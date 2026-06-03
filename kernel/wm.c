@@ -744,26 +744,34 @@ void wm_mouse_event(int x, int y, int left)
 static void scan_apps(void)
 {
     int n = vfs_count("/");
-    static char buf[32768];
     for (int i = 0; i < n && nreg < MAXWIN; i++) {
         char nm[64];
         scopy(nm, vfs_ent_name("/", i), sizeof nm);
         if (!ends_aex(nm)) continue;
-        if (vfs_read(nm, buf, sizeof buf) <= 0) continue;
+        /* aquafs reads whole-file (errors if the buffer is smaller), so size the
+         * buffer to the file -- the JS app's .aex is ~1 MiB, far over any header
+         * scratch. We only need the header, but read it all then free. */
+        int sz = vfs_size(nm);
+        if (sz <= 0) continue;
+        char *buf = kmalloc(sz);
+        if (!buf) continue;
+        if (vfs_read(nm, buf, sz) <= 0) { kfree(buf); continue; }
         char name[32], ext[8];
-        if (aex_info(buf, name, ext) != 0) continue;
-        struct aex_header *h = (struct aex_header *)buf;
-        scopy(reg[nreg].file, nm, sizeof reg[nreg].file);
-        scopy(reg[nreg].name, name, sizeof reg[nreg].name);
-        scopy(reg[nreg].ext, ext, sizeof reg[nreg].ext);
-        reg[nreg].icon = h->icon ? (char)h->icon : reg[nreg].name[0];
-        static const uint8_t pal[7][3] = {
-            {80,140,255},{55,200,120},{255,92,92},{255,170,40},
-            {170,110,255},{40,200,220},{255,120,170} };
-        reg[nreg].color = (h->icon_r || h->icon_g || h->icon_b)
-            ? rgb(h->icon_r, h->icon_g, h->icon_b)
-            : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
-        nreg++;
+        if (aex_info(buf, name, ext) == 0) {
+            struct aex_header *h = (struct aex_header *)buf;
+            scopy(reg[nreg].file, nm, sizeof reg[nreg].file);
+            scopy(reg[nreg].name, name, sizeof reg[nreg].name);
+            scopy(reg[nreg].ext, ext, sizeof reg[nreg].ext);
+            reg[nreg].icon = h->icon ? (char)h->icon : reg[nreg].name[0];
+            static const uint8_t pal[7][3] = {
+                {80,140,255},{55,200,120},{255,92,92},{255,170,40},
+                {170,110,255},{40,200,220},{255,120,170} };
+            reg[nreg].color = (h->icon_r || h->icon_g || h->icon_b)
+                ? rgb(h->icon_r, h->icon_g, h->icon_b)
+                : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
+            nreg++;
+        }
+        kfree(buf);
     }
 }
 
