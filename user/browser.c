@@ -27,6 +27,52 @@ static void set_status(const char *s)
 
 static void redraw(int editing);
 
+/* ---- page JavaScript via QuickJS (console.log only; no DOM bindings yet) ---- */
+#include "quickjs.h"
+int printf(const char *, ...);
+unsigned long strlen(const char *);
+
+static char jsout[1024]; static int jslen;
+static void jsput(const char *s)
+{ for (const char *p = s; *p && jslen < (int)sizeof jsout - 1; p++) jsout[jslen++] = *p; jsout[jslen] = 0; }
+
+static JSValue js_log(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    for (int i = 0; i < argc; i++) {
+        const char *s = JS_ToCString(ctx, argv[i]);
+        if (!s) continue;
+        if (i) jsput(" ");
+        jsput(s); printf("%s ", s);
+        JS_FreeCString(ctx, s);
+    }
+    jsput("\n"); printf("\n");
+    return JS_UNDEFINED;
+}
+
+static void run_js(const char *src)
+{
+    JSRuntime *rt = JS_NewRuntime(); if (!rt) return;
+    JSContext *ctx = JS_NewContext(rt); if (!ctx) { JS_FreeRuntime(rt); return; }
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue con = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, con, "log", JS_NewCFunction(ctx, js_log, "log", 1));
+    JS_SetPropertyStr(ctx, g, "console", con);
+    JS_SetPropertyStr(ctx, g, "print", JS_NewCFunction(ctx, js_log, "print", 1));
+    JS_FreeValue(ctx, g);
+    JSValue v = JS_Eval(ctx, src, strlen(src), "<page>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(v)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        printf("[browser] JS exception: %s\n", m ? m : "?");
+        jsput("[exception] "); if (m) jsput(m);
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, v);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+}
+
 static void load(const char *u)
 {
     set_status("loading...");
@@ -46,6 +92,20 @@ static void load(const char *u)
     redraw(0);                      /* paint the text immediately ... */
     if (page_load_images(3) > 0) {  /* ... then fetch a few images and repaint */
         ph = page_height();
+        redraw(0);
+    }
+    /* run the page's inline <script> through QuickJS */
+    jslen = 0; jsout[0] = 0;
+    static char scr[16384];
+    int sn = page_scripts(scr, sizeof scr);
+    if (sn > 1) {
+        run_js(scr);
+        if (jslen > 0) {
+            char st[96]; int p = 0; const char *pre = "JS: ";
+            while (*pre) st[p++] = *pre++;
+            for (int i = 0; jsout[i] && jsout[i] != '\n' && p < 92; i++) st[p++] = jsout[i];
+            st[p] = 0; set_status(st);
+        } else set_status("loaded (ran script, no output)");
         redraw(0);
     }
 }

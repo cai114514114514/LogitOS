@@ -71,5 +71,7 @@ static inline int  page_hittest(int x, int y, int scroll, char *buf)
 { return (int)_sys(SYS_PAGE_HITTEST, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF), scroll, (long)buf); }
 /* Fetch+decode up to `max` of the page's images; returns how many loaded. */
 static inline int  page_load_images(int max) { return (int)_sys(SYS_PAGE_LOAD_IMAGES, max, 0, 0); }
+/* Concatenate the loaded page's inline <script> source into buf; returns length. */
+static inline int  page_scripts(char *buf, int max) { return (int)_sys(SYS_PAGE_SCRIPTS, (long)buf, max, 0); }
 
 #endif /* AQUA_USERLIB_H */

@@ -36,6 +36,7 @@
 #define SYS_PAGE_HEIGHT 32  /* () -> laid-out document height in px */
 #define SYS_PAGE_HITTEST 33 /* ((x<<16)|y viewport-local, scroll, buf<=256) -> 1 + href, or 0 */
 #define SYS_PAGE_LOAD_IMAGES 34 /* (max) fetch+decode up to `max` <img> boxes -> count loaded */
+#define SYS_PAGE_SCRIPTS 35  /* (buf, max) concat inline <script> text of the loaded page -> length */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0

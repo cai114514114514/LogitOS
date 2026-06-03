@@ -64,6 +64,23 @@ static int collect_style(struct node *n, char *out, int o, int max)
     return o;
 }
 
+/* Concatenate the source of every inline <script> (skip external src=) into out,
+ * separating scripts with a newline+';' so they evaluate independently. */
+static int collect_scripts(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && tag_is(n->tag, "script") && !dom_attr(n, "src")) {
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text)
+                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+        if (o < max - 1) out[o++] = '\n';
+        if (o < max - 1) out[o++] = ';';
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_scripts(c, out, o, max);
+    return o;
+}
+
 /* ---------- windows + apps ---------- */
 enum wkind { WK_FINDER, WK_APP };
 
@@ -500,6 +517,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
         int n = layout_load_images(max);
         __asm__ volatile ("cli");
         return n;
+    }
+    case SYS_PAGE_SCRIPTS: {
+        if (!page_built || !page_root) return 0;
+        char *ubuf = (char *)a; int max = (int)b;
+        if (max <= 0 || !user_range_ok(ubuf, (uint64_t)max, 1)) return -1;
+        int o = collect_scripts(page_root, ubuf, 0, max);
+        ubuf[o < max ? o : max - 1] = 0;
+        return o;
     }
     }
     return -1;

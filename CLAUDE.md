@@ -199,8 +199,15 @@ through `SYS_WRITE`. Runs fib, Array.map/arrow fns, JSON, Math.* (libm), etc.
 **Gotchas:** QuickJS returns `double` so M15's SSE is mandatory (`-msse2`);
 `js_dtoa` formats numbers via `snprintf("%+.*e")` so a correct `%e` is required;
 `scan_apps` read each `.aex` into a 32 KiB buffer — fixed to size-to-file so the
-1 MiB app registers in the Dock. Next: call into the engine from `user/browser.c`
-to run page `<script>`.
+1 MiB app registers in the Dock. **`user/browser.c` now links the engine too**
+(Makefile shares `ENGINE_OBJ` between js.aex and browser.aex) and runs a page's
+inline `<script>`: the kernel `collect_scripts` walks the DOM, `SYS_PAGE_SCRIPTS`
+hands the concatenated source to the app, which `JS_Eval`s it; `console.log`
+output shows in the status bar + serial. **No DOM bindings yet** (DOM lives in the
+kernel, JS in ring-3 -- different address spaces). `dns_resolve` now accepts IP
+literals ("10.0.2.2") so a `http://<ip>:port/` page works (tested via a host
+http.server over SLIRP). Next: DOM bindings; CSS (`net/css.c`) may eventually move
+to a third-party engine (HTML stays hand-rolled).
 
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 

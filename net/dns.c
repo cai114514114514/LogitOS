@@ -107,8 +107,24 @@ uint32_t dns_result(void)
     return 0;
 }
 
+/* Dotted-decimal IP literal "a.b.c.d" -> host-order IP, or 0 if not a literal. */
+static uint32_t parse_ip_literal(const char *s)
+{
+    uint32_t ip = 0;
+    for (int part = 0; part < 4; part++) {
+        if (*s < '0' || *s > '9') return 0;
+        int v = 0, ndig = 0;
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); if (++ndig > 3 || v > 255) return 0; }
+        ip = (ip << 8) | (uint32_t)v;
+        if (part < 3) { if (*s != '.') return 0; s++; }
+    }
+    return *s == 0 ? ip : 0;
+}
+
 uint32_t dns_resolve(const char *name)
 {
+    uint32_t lit = parse_ip_literal(name);   /* skip DNS for "10.0.2.2" etc. */
+    if (lit) return lit;
     dns_start(name);
     uint64_t start = timer_ticks(), last = start;
     while (timer_ticks() - start < 300) {
