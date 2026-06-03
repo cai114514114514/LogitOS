@@ -16,6 +16,7 @@ void  kfree(void *p){ free(p); }
 /* fake proportional metrics: each glyph ~ px/2 px wide (ASCII-only test) */
 int text_measure(const char *s, int len, int px, int mono){ (void)s;(void)mono; return len * (px/2); }
 int res_fetch(const char *url, uint8_t **buf, int *len){ (void)url;(void)buf;(void)len; return -1; }
+void img_free(struct image *o){ (void)o; }
 int img_decode(const uint8_t *p, int n, struct image *out){ (void)p;(void)n;(void)out; return -1; }
 
 static int fail;

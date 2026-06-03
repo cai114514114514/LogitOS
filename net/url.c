@@ -70,6 +70,16 @@ int url_resolve(const struct url *base, const char *ref, char *out, int max)
         return 0;
     }
 
+    /* Protocol-relative "//host/path": inherit the base scheme. */
+    if (ref[0] == '/' && ref[1] == '/') {
+        const char *sch = base->https ? "https:" : "http:";
+        int o = 0;
+        for (const char *p = sch; *p && o < max - 1; p++) out[o++] = *p;
+        for (const char *p = ref; *p && o < max - 1; p++) out[o++] = *p;
+        out[o] = 0;
+        return 0;
+    }
+
     struct url u = *base;
     if (ref[0] == '/') {                    /* root-relative: replace whole path */
         scopy(u.path, ref, URL_PATH_MAX);

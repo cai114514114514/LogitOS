@@ -7,6 +7,7 @@
 #include "crypto.h"
 #include "x509.h"
 #include "kprintf.h"
+#include "rng.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -46,38 +47,16 @@ struct tls_sess {
     int established;
     /* partial record reassembly from TCP */
     uint8_t rxrec[20000]; int rxlen;
-    /* decrypted application data not yet consumed */
-    uint8_t app[16384]; int applen, appoff;
+    /* decrypted application data not yet consumed (room for a full 2^14 record's
+     * TLSInnerPlaintext: content + content-type byte + any padding). */
+    uint8_t app[16640]; int applen, appoff;
 };
 
 static struct tls_sess sessions[2];
 
-/* --- hash-based RNG (replaces the weak LCG) --- */
-static uint8_t rng_state[32] = {
-    0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
-    0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10,
-    0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
-    0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88
-};
-static void rand_bytes(uint8_t *b, int n)
-{
-    extern uint64_t timer_ticks(void);
-    while (n > 0) {
-        uint8_t block[40];
-        memcpy(block, rng_state, 32);
-        uint64_t tsc;
-        __asm__ volatile ("rdtsc" : "=A"(tsc));
-        uint64_t ticks = timer_ticks();
-        memcpy(block + 32, &tsc, 8);
-        /* re-mix tsc+ticks into the last 8 bytes via XOR for extra entropy */
-        for (int i = 0; i < 8; i++) block[32 + i] ^= ((uint8_t *)&ticks)[i];
-        sha256(block, 40, rng_state);
-        int chunk = n > 32 ? 32 : n;
-        memcpy(b, rng_state, chunk);
-        b += chunk;
-        n -= chunk;
-    }
-}
+/* Client nonce / ephemeral X25519 key come from the kernel CSPRNG (kernel/rng.c:
+ * SHA-256 DRBG seeded from RDSEED/RDRAND + RDTSC), not a TLS-local PRNG. */
+static void rand_bytes(uint8_t *b, int n) { kernel_random_bytes(b, n); }
 
 /* --- TCP record I/O (blocking with timeout; pumps net_poll) --- */
 /* Read exactly one TLS record: hdr[5] + body. Returns body length or -1. */
@@ -235,6 +214,18 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     if (blen < 0 || rtype != REC_HANDSHAKE || body[0] != HS_SERVER_HELLO) { s->used=0; return TLS_E_PROTO; }
     int shlen = (body[1]<<16)|(body[2]<<8)|body[3];
     sha256_update(&th, body, 4 + shlen);
+    /* Downgrade protection (RFC 8446 4.1.3): a genuine TLS 1.3 server sets the
+     * last 8 bytes of ServerHello.random to a fixed sentinel iff it negotiated a
+     * *lower* version. We only speak 1.3, so seeing either sentinel means a
+     * MITM forced a downgrade -- abort. (1.2 -> "DOWNGRD\x01", 1.1- -> ...\x00) */
+    {
+        const uint8_t *sr = body + 6;                    /* ServerHello.random */
+        static const uint8_t d12[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x01};
+        static const uint8_t d11[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x00};
+        if (memcmp(sr + 24, d12, 8) == 0 || memcmp(sr + 24, d11, 8) == 0) {
+            s->used = 0; return TLS_E_PROTO;
+        }
+    }
     /* parse SH: cipher suite + server key share */
     int p = 4 + 2 + 32;                                  /* skip ver+random */
     int sidlen = body[p++]; p += sidlen;                 /* session id echo */

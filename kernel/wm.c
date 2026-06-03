@@ -463,9 +463,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
                 layout_page(page_root, cw);
                 kprintf("[page] layout items=%d h=%d t=%dms\n", layout_count(), layout_height(), (int)(timer_ticks()-t3)*10);
                 page_built = 1;
-                uint64_t t4 = timer_ticks();
-                int nimg = layout_load_images(8);
-                kprintf("[page] images loaded=%d t=%dms\n", nimg, (int)(timer_ticks()-t4)*10);
+                /* NB: images are NOT fetched here -- the browser paints the text
+                 * first, then calls SYS_PAGE_LOAD_IMAGES so a text page never
+                 * stalls on its (often large, cross-origin) decorations. */
             } else grc = HTTP_ERR;
         }
         __asm__ volatile ("cli");
@@ -491,6 +491,15 @@ long wm_gui_syscall(long num, long a, long b, long c)
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
         if (!user_range_ok((char *)c, 256, 1)) return -1;
         return paint_hittest(x, y, (int)b, (char *)c, 256);
+    }
+    case SYS_PAGE_LOAD_IMAGES: {
+        /* Blocking sub-resource fetch; same IF=1 requirement as SYS_HTTP_GET. */
+        if (!page_built) return 0;
+        int max = (int)a; if (max < 0) max = 0; if (max > 16) max = 16;
+        __asm__ volatile ("sti");
+        int n = layout_load_images(max);
+        __asm__ volatile ("cli");
+        return n;
     }
     }
     return -1;

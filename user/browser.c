@@ -25,6 +25,8 @@ static char status[96] = "ready -- edit URL, Enter to load";
 static void set_status(const char *s)
 { int i = 0; while (s[i] && i < (int)sizeof status - 1) { status[i] = s[i]; i++; } status[i] = 0; }
 
+static void redraw(int editing);
+
 static void load(const char *u)
 {
     set_status("loading...");
@@ -41,6 +43,11 @@ static void load(const char *u)
     scroll = 0;
     ph = page_height();
     set_status("loaded");
+    redraw(0);                      /* paint the text immediately ... */
+    if (page_load_images(3) > 0) {  /* ... then fetch a few images and repaint */
+        ph = page_height();
+        redraw(0);
+    }
 }
 
 static void redraw(int editing)

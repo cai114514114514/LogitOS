@@ -69,5 +69,7 @@ static inline int  page_height(void) { return (int)_sys(SYS_PAGE_HEIGHT, 0, 0, 0
 /* viewport-local (x,y); on a link, fills buf and returns 1, else 0. */
 static inline int  page_hittest(int x, int y, int scroll, char *buf)
 { return (int)_sys(SYS_PAGE_HITTEST, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF), scroll, (long)buf); }
+/* Fetch+decode up to `max` of the page's images; returns how many loaded. */
+static inline int  page_load_images(int max) { return (int)_sys(SYS_PAGE_LOAD_IMAGES, max, 0, 0); }
 
 #endif /* AQUA_USERLIB_H */

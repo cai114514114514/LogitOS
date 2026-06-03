@@ -13,6 +13,7 @@ void *kmalloc(unsigned long n){ return malloc(n); }
 void  kfree(void *p){ free(p); }
 int text_measure(const char *s, int len, int px, int mono){ (void)s;(void)mono; return len*(px/2); }
 int res_fetch(const char *u, uint8_t **b, int *l){ (void)u;(void)b;(void)l; return -1; }
+void img_free(struct image *o){ (void)o; }
 int img_decode(const uint8_t *p, int n, struct image *o){ (void)p;(void)n;(void)o; return -1; }
 
 /* same as wm.c collect_style */
