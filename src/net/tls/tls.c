@@ -79,9 +79,9 @@ static int rec_read(struct tls_sess *s, uint8_t *type, uint8_t *body, int maxbod
         if (timer_ticks() - start > 800) return -1;      /* ~8s */
         net_poll();
         int n = tcp_recv(s->tcp, s->rxrec + s->rxlen, (int)sizeof s->rxrec - s->rxlen);
-        if (n > 0) { s->rxlen += n; start = timer_ticks(); }
-        else if (n < 0) return -1;
-        else for (volatile int d = 0; d < 100000; d++) ;
+        if (n > 0) { s->rxlen += n; start = timer_ticks(); continue; }  /* data: loop tight */
+        if (n < 0) return -1;
+        for (volatile int d = 0; d < 20000; d++) ;   /* idle: brief pause, don't hammer */
     }
 }
 
