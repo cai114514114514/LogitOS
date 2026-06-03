@@ -209,6 +209,33 @@ literals ("10.0.2.2") so a `http://<ip>:port/` page works (tested via a host
 http.server over SLIRP). Next: DOM bindings; CSS (`net/css.c`) may eventually move
 to a third-party engine (HTML stays hand-rolled).
 
+M17 LibCSS + render pipeline moved to ring-3 ✅: the whole HTML→DOM→CSS→layout→
+paint pipeline now runs inside `browser.aex`; the kernel is just a primitive
+provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
+- **L1** pipeline下放: new syscalls `SYS_HTTP_BODY` / `SYS_TEXT_MEASURE` /
+  `SYS_GUI_TEXT_RUN` / `SYS_RES_FETCH` / `SYS_GUI_BLIT` / `SYS_GUI_CLIP` (36–41);
+  `net/{dom,css,layout}.c` + image codecs compiled into the app, paint rewritten
+  over `gui_*` (`user/browser_paint.c`), `<style>`/`<script>` collection + hit-test
+  moved into the app. `SYS_HTTP_GET` is fetch-only; `SYS_PAGE_*` retired.
+- **L2** NetSurf **LibCSS** replaces `net/css.c`: `third_party/css` (libwapcaplet +
+  libparserutils + libcss, 319 .c) compiled into the browser; `user/css_engine.c`
+  drives LibCSS off our DOM via a ~40-callback `css_select_handler` +
+  `css_computed_style_compose`, reads `css_computed_*` into `struct cstyle` (so
+  `net/layout.c` is unchanged). mini-libc gained `ctype.h`/`strings.h`; built with
+  `-DWITHOUT_ICONV_FILTER -D_ALIGNED= -fcommon`. LibCSS codegen is **vendored**
+  (autogen property parsers + `aliases.inc`; regenerate via `tools/gen_libcss.sh`).
+- **L3** deeper HTML in `net/dom.c`: ~60 named entities, implied `<tbody>`, HTML5
+  optional-end-tag auto-closing (li/td/th/tr/dd/dt/option/p).
+- **L4** JS↔DOM bindings (`user/js_dom.c`): `document.getElementById`/`querySelector`/
+  `body`, `Element.textContent`(get/set)/`innerHTML`/`tagName`/`id`/`getAttribute`/
+  `setAttribute`; a mutation dirty-flag triggers re-style + re-layout + repaint.
+  Works because L1 put the DOM and QuickJS in the same ring-3 address space.
+  Verified host (`css_engine`/`dom`/`js_dom`/`layout`/`page` tests) + QEMU
+  (example.com via LibCSS; a page's `<script>` rewriting textContent end-to-end).
+  Gotchas: `<html>`'s synthetic `#document` parent must be reported as NULL to the
+  select handler (else LibCSS won't treat `<html>` as root → font-size unresolved);
+  host LibCSS unit tests need `-DCONFIG_BIGNUM` for libbf's decimal symbols.
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
