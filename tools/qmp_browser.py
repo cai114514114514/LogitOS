@@ -55,8 +55,8 @@ def typ(t):
 json.loads(f.readline())
 cmd({"execute":"qmp_capabilities"})
 
-# Launch Browser from the Dock (6th of 7 icons C T M > N B J; ~x=639 y=721 @1024x768)
-goto(639, 721); click()
+# Launch Browser from the Dock (6th of 6 icons C T M > N B; ~x=671 y=721 @1024x768)
+goto(671, 721); click()
 time.sleep(1.2)
 
 if url:

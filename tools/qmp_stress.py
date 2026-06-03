@@ -54,7 +54,7 @@ def typ(t):
 json.loads(f.readline())
 cmd({"execute":"qmp_capabilities"})
 
-goto(639, 721); click(); time.sleep(1.2)          # launch Browser from the Dock
+goto(671, 721); click(); time.sleep(1.2)          # launch Browser from the Dock
 goto(300, 112); click(); time.sleep(0.2)          # focus address bar
 for _ in range(60): key("backspace")
 typ(url)
