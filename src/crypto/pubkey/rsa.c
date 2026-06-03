@@ -50,18 +50,71 @@ static void rb_modmul(rbn r, const rbn a, const rbn b, const rbn n)
     rb_copy(r,t);
 }
 
-/* out = base^e mod n. */
+/* ---- Montgomery multiplication (the fast path for modexp) ----
+ * The bit-by-bit rb_modmul above is O(bits) modular shifts per multiply, so a
+ * single RSA verify (~17 squarings + a few mults of a 2048-bit modulus) was
+ * ~0.7 s on the emulator -- a 4-cert chain took ~3 s, which dominated every
+ * HTTPS load and starved net_poll. CIOS Montgomery multiply is O(words^2) word
+ * multiplies instead, ~100x fewer operations. n must be odd (true for RSA). */
+static int rb_nwords(const rbn n){ for (int i=RL-1;i>=0;i--) if (n[i]) return i+1; return 1; }
+
+static uint32_t mont_n0inv(uint32_t n0){      /* -n0^{-1} mod 2^32 (n0 odd) */
+    uint32_t x = 1;                            /* Newton doubles correct bits each step */
+    for (int i = 0; i < 5; i++) x *= 2u - n0 * x;
+    return (uint32_t)(0u - x);
+}
+
+/* r = a*b*R^{-1} mod n, R = 2^(32s), s = words(n), a,b < n.  (Koc CIOS) */
+static void mont_mul(rbn r, const rbn a, const rbn b, const rbn n, uint32_t n0inv, int s)
+{
+    uint32_t t[RL + 2];
+    for (int i = 0; i <= s + 1; i++) t[i] = 0;
+    for (int i = 0; i < s; i++) {
+        uint64_t C = 0;
+        for (int j = 0; j < s; j++) { uint64_t p = (uint64_t)a[j]*b[i] + t[j] + C; t[j] = (uint32_t)p; C = p >> 32; }
+        uint64_t sum = (uint64_t)t[s] + C; t[s] = (uint32_t)sum; t[s+1] = (uint32_t)(sum >> 32);
+        uint32_t m = (uint32_t)((uint64_t)t[0] * n0inv);
+        C = ((uint64_t)m*n[0] + t[0]) >> 32;                     /* low word becomes 0 */
+        for (int j = 1; j < s; j++) { uint64_t p = (uint64_t)m*n[j] + t[j] + C; t[j-1] = (uint32_t)p; C = p >> 32; }
+        sum = (uint64_t)t[s] + C; t[s-1] = (uint32_t)sum; t[s] = t[s+1] + (uint32_t)(sum >> 32);
+    }
+    rbn tt; rb_zero(tt); for (int i = 0; i <= s; i++) tt[i] = t[i];   /* result is t[0..s], < 2n */
+    if (rb_cmp(tt, n) >= 0) rb_sub(tt, tt, n);
+    rb_copy(r, tt);
+}
+
+/* out = base^e mod n (Montgomery square-and-multiply). */
 static void rb_modexp(rbn out, const rbn base, const rbn e, const rbn n)
 {
-    rbn b, res, tmp;
-    rb_copy(b, base);
-    while (rb_cmp(b,n) >= 0) rb_sub(b,b,n);              /* ensure base < n */
-    rb_zero(res); res[0] = 1;
+    int s = rb_nwords(n);
+    uint32_t n0inv = mont_n0inv(n[0]);
+    rbn b; rb_copy(b, base); while (rb_cmp(b,n) >= 0) rb_sub(b,b,n);   /* base < n */
+    /* R = 2^(32s) mod n: start at 2^(32(s-1)) (<= n), double 32 times */
+    rbn R; rb_zero(R); R[s-1] = 1; while (rb_cmp(R,n) >= 0) rb_sub(R,R,n);
+    for (int k = 0; k < 32; k++) { rb_shl1(R); if (rb_cmp(R,n) >= 0) rb_sub(R,R,n); }
+    rbn aR; rb_modmul(aR, b, R, n);                  /* base -> Montgomery form (one slow modmul) */
+    rbn res; rb_copy(res, R);                        /* 1 -> Montgomery form (= R mod n) */
+    rbn tmp;
     for (int i = rb_topbit(e); i >= 0; i--) {
-        rb_modmul(tmp, res, res, n); rb_copy(res, tmp);
-        if (rb_bit(e,i)) { rb_modmul(tmp, res, b, n); rb_copy(res, tmp); }
+        mont_mul(tmp, res, res, n, n0inv, s); rb_copy(res, tmp);
+        if (rb_bit(e,i)) { mont_mul(tmp, res, aR, n, n0inv, s); rb_copy(res, tmp); }
     }
-    rb_copy(out, res);
+    rbn one; rb_zero(one); one[0] = 1;
+    mont_mul(out, res, one, n, n0inv, s);            /* Montgomery form -> normal */
+}
+
+/* Test hook (used by tools/t/rsa_test.c): out = base^e mod n, big-endian. */
+int rsa_modexp_be(const uint8_t *base, int bl, const uint8_t *e, int el,
+                  const uint8_t *n, int nl, uint8_t *out)
+{
+    rbn B, E, N, M;
+    if (nl < 1 || nl > RL*4) return -1;
+    rb_from_be(B, base, bl); rb_from_be(E, e, el); rb_from_be(N, n, nl);
+    if (!(N[0] & 1)) return -2;
+    if (rb_cmp(B, N) >= 0) return -3;
+    rb_modexp(M, B, E, N);
+    for (int i = 0; i < nl; i++) { int bit = (nl-1-i)*8; out[i] = (uint8_t)(M[bit/32] >> (bit%32)); }
+    return 0;
 }
 
 /* DigestInfo DER prefixes for RSASSA-PKCS1-v1_5 (RFC 8017 §9.2). */

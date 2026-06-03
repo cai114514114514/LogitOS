@@ -57,6 +57,7 @@ struct curve {
 };
 static struct curve P256, P384;
 static int curves_ready;
+static void barrett_make(const uint32_t *m);    /* fwd: Barrett reciprocal setup */
 
 static void set_bn(bn o, const char *hex)      /* hex big-endian */
 {
@@ -91,6 +92,8 @@ static void curves_init(void)
     set_bn(P384.b,"b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef");
     set_bn(P384.gx,"aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7");
     set_bn(P384.gy,"3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f");
+    barrett_make(P256.p); barrett_make(P256.n);     /* precompute Barrett reciprocals */
+    barrett_make(P384.p); barrett_make(P384.n);
     curves_ready=1;
 }
 
@@ -106,9 +109,64 @@ static void mod_sub(bn o, const bn a, const bn b, const bn m)
     if (br) { bn t2; bn_add(t2, t, m); bn_copy(o, t2); } else bn_copy(o, t);
 }
 
-/* schoolbook multiply then Barrett-free reduction by repeated subtraction of
- * shifted modulus. Inputs < m; product < m^2. Slow but correct (verification
- * only, a handful of ops per signature). */
+/* ---- Barrett reduction (the fast path for mod_mul) ----
+ * The old reduction was bit-by-bit shift-subtract (~2*field-bits iterations per
+ * multiply), and mod_mul runs ~8000x per ECDSA verify (two scalar mults + the
+ * Fermat inverse), so a P-256 verify was ~0.7 s and dominated EC HTTPS loads
+ * (and starved net_poll). Barrett reduces in O(words^2) using a precomputed
+ * reciprocal mu = floor(2^(64k) / m); transparent (still exact a*b mod m), so
+ * every caller -- mod p and mod n -- speeds up with no other change. */
+#define BW (2*NL + 4)
+struct barrett { uint32_t m[NL]; uint32_t mu[NL+2]; int k; };
+static struct barrett btab[4]; static int nbar;
+
+static void w_shl1(uint32_t *a){ uint32_t c=0; for(int i=0;i<BW;i++){ uint32_t nc=a[i]>>31; a[i]=(a[i]<<1)|c; c=nc; } }
+static int  w_cmp(const uint32_t *a,const uint32_t *b){ for(int i=BW-1;i>=0;i--){ if(a[i]<b[i])return -1; if(a[i]>b[i])return 1; } return 0; }
+static void w_subeq(uint32_t *a,const uint32_t *b){ uint64_t br=0; for(int i=0;i<BW;i++){ uint64_t d=(uint64_t)a[i]-b[i]-br; a[i]=(uint32_t)d; br=(d>>63)&1; } }
+static void w_mul(uint32_t *o,const uint32_t *a,int al,const uint32_t *b,int bl){
+    for(int i=0;i<BW;i++) o[i]=0;
+    for(int i=0;i<al && i<BW;i++){ uint64_t c=0; int j;
+        for(j=0;j<bl && i+j<BW;j++){ uint64_t s=(uint64_t)a[i]*b[j]+o[i+j]+c; o[i+j]=(uint32_t)s; c=s>>32; }
+        int t=i+j; while(c && t<BW){ uint64_t s=(uint64_t)o[t]+c; o[t]=(uint32_t)s; c=s>>32; t++; }
+    }
+}
+/* register modulus m with mu = floor(2^(64k)/m) (one-time long division). */
+static void barrett_make(const uint32_t *m){
+    if(nbar>=4) return;
+    struct barrett *B=&btab[nbar++];
+    int k=NL; while(k>0 && m[k-1]==0) k--; B->k=k;
+    for(int i=0;i<NL;i++) B->m[i]=m[i];
+    uint32_t rem[BW],q[BW],mw[BW];
+    for(int i=0;i<BW;i++){ rem[i]=0; q[i]=0; mw[i]=0; }
+    for(int i=0;i<k;i++) mw[i]=m[i];
+    for(int bit=64*k; bit>=0; bit--){
+        w_shl1(rem); if(bit==64*k) rem[0]|=1u;
+        w_shl1(q);
+        if(w_cmp(rem,mw)>=0){ w_subeq(rem,mw); q[0]|=1u; }
+    }
+    for(int i=0;i<NL+2;i++) B->mu[i]=q[i];
+}
+/* o = prod mod m, prod = 2*NL limbs (< m^2). 1 if m is registered, else 0. */
+static int barrett_reduce(bn o, const uint32_t *prod, const uint32_t *m){
+    int bi=-1;
+    for(int i=0;i<nbar;i++){ int eq=1; for(int j=0;j<NL;j++) if(btab[i].m[j]!=m[j]){eq=0;break;} if(eq){bi=i;break;} }
+    if(bi<0) return 0;
+    struct barrett *B=&btab[bi]; int k=B->k;
+    uint32_t q1[BW],q2[BW],q3[BW],qm[BW],r[BW],mw[BW];
+    for(int i=0;i<BW;i++){ q1[i]=0; q3[i]=0; r[i]=0; mw[i]=0; }
+    for(int i=0;i<k;i++) mw[i]=m[i];
+    for(int i=0; i+(k-1) < 2*NL && i<BW; i++) q1[i]=prod[i+k-1];      /* q1 = prod >> 32*(k-1) */
+    w_mul(q2,q1,k+2,B->mu,k+1);                                      /* q2 = q1 * mu */
+    for(int i=0; i+(k+1)<BW; i++) q3[i]=q2[i+k+1];                   /* q3 = q2 >> 32*(k+1) */
+    w_mul(qm,q3,k+2,m,k);                                            /* qm = q3 * m */
+    uint64_t br=0;                                                   /* r = (prod - qm) mod 2^(32(k+1)) */
+    for(int i=0;i<=k;i++){ uint32_t pv=(i<2*NL)?prod[i]:0; uint64_t d=(uint64_t)pv-qm[i]-br; r[i]=(uint32_t)d; br=(d>>63)&1; }
+    for(int t=0;t<3 && w_cmp(r,mw)>=0;t++) w_subeq(r,mw);            /* <=2 final corrections */
+    bn_zero(o); for(int i=0;i<NL;i++) o[i]=r[i];
+    return 1;
+}
+
+/* o = a*b mod m. */
 static void mod_mul(bn o, const bn a, const bn b, const bn m)
 {
     uint32_t prod[2*NL]; for (int i=0;i<2*NL;i++) prod[i]=0;
@@ -120,13 +178,12 @@ static void mod_mul(bn o, const bn a, const bn b, const bn m)
         }
         prod[i+NL]+=(uint32_t)c;
     }
-    /* reduce prod mod m via bit-by-bit shift-subtract, from the top set bit
-     * (bounding work to the actual product size, ~2*field bits). */
+    if (barrett_reduce(o, prod, m)) return;
+    /* fallback: bit-by-bit shift-subtract for an unregistered modulus */
     bn r; bn_zero(r);
     int top = (2*NL*32) - 1;
     while (top >= 0 && !((prod[top/32] >> (top%32)) & 1)) top--;
     for (int bit = top; bit >= 0; bit--) {
-        /* r = (r<<1) | bit */
         uint32_t carry = 0;
         for (int i=0;i<NL;i++){ uint32_t nc=r[i]>>31; r[i]=(r[i]<<1)|carry; carry=nc; }
         r[0] |= (prod[bit/32] >> (bit%32)) & 1;
@@ -284,4 +341,18 @@ int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
     mod_inv(zi, R.Z, c->p); mod_mul(z2, zi, zi, c->p); mod_mul(rx, R.X, z2, c->p);
     if (bn_cmp(rx, c->n) >= 0) { bn t; bn_sub(t, rx, c->n); bn_copy(rx, t); }
     return bn_cmp(rx, r) == 0;
+}
+
+/* Test hook (tools/t/ecdsa_test.c): out = a*b mod (curveid?P384:P256 . useorder?n:p),
+ * big-endian, nbytes each. Exercises mod_mul's Barrett path. */
+int ecdsa_modmul_test(int curveid, int useorder, const uint8_t *a, const uint8_t *b, uint8_t *out)
+{
+    curves_init();
+    struct curve *c = curveid ? &P384 : &P256;
+    const uint32_t *m = useorder ? c->n : c->p;
+    bn A, B, O;
+    bn_from_be(A, a, c->nbytes); bn_from_be(B, b, c->nbytes);
+    mod_mul(O, A, B, m);
+    bn_to_be(out, O, c->nbytes);
+    return 0;
 }
