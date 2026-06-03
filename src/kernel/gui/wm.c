@@ -174,8 +174,13 @@ void wm_launch(const char *aex_file, const char *arg)
     uint64_t entry = aex_load(img, name, ext);   /* maps + copies into `space` */
     uint64_t ustack_top = 0;
     if (entry) {
-        ustack_top = entry + 0x800000;           /* user stack high in the slot */
-        for (int i = 1; i <= 4; i++)
+        /* The stack must sit ABOVE the whole app image. browser/js link a 24 MiB
+         * mini-libc arena in BSS (image reaches ~entry+25.7 MiB), and entry+8 MiB
+         * used to land *inside* that arena -- once >~7 MiB was malloc'd, stack
+         * writes corrupted the allocator's block headers and malloc faulted.
+         * 32 MiB clears the arena; 256 KiB is enough for QuickJS + CSS/layout. */
+        ustack_top = entry + 0x2000000;          /* 32 MiB above the link base */
+        for (int i = 1; i <= 64; i++)            /* 256 KiB stack */
             vmm_map_page(ustack_top - (uint64_t)i * 0x1000, pmm_alloc(), VMM_WRITABLE | VMM_USER);
     }
     vmm_switch(prev_cr3);

@@ -30,12 +30,20 @@ void *malloc(size_t n)
     if (!inited) heap_init();
     if (n == 0) n = 1;
     size_t need = align16(n);
+    unsigned char *aend = arena + ARENA_SIZE;
 
     for (struct hdr *h = (struct hdr *)arena; h->size; ) {
-        struct hdr *next = (struct hdr *)((unsigned char *)h + HDR + h->size);
+        /* Defensive: a sane block's `next` stays inside the arena. If a header
+         * was corrupted (e.g. clobbered), bail to NULL rather than walking off
+         * into an unmapped page and faulting -- an allocator must never fault. */
+        unsigned char *np = (unsigned char *)h + HDR + h->size;
+        if (np <= (unsigned char *)h || np > aend) return NULL;
+        struct hdr *next = (struct hdr *)np;
         if (!h->used) {
             /* coalesce following free blocks */
-            while (next->size && !next->used) {
+            while ((unsigned char *)next < aend && next->size && !next->used) {
+                unsigned char *nn = (unsigned char *)next + HDR + next->size;
+                if (nn <= (unsigned char *)next || nn > aend) break;
                 h->size += HDR + next->size;
                 next = (struct hdr *)((unsigned char *)h + HDR + h->size);
             }
