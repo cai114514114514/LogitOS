@@ -44,7 +44,8 @@ void *memcpy(void *, const void *, size_t);
 #define TCTL_CT_SHIFT  4        /* collision threshold = 0x10 */
 #define TCTL_COLD_SHIFT 12      /* collision distance = 0x40 (full duplex) */
 
-#define RX_DESC 32
+#define RX_DESC 64      /* deeper RX ring: absorb a full receive-window burst
+                        * (~45 frames for 64 KiB) before the guest drains it */
 #define TX_DESC 8
 #define BUF_SIZE 2048
 

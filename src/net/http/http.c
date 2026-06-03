@@ -134,10 +134,10 @@ static int fetch_once(const struct url *u)
             raw_len += n;
             start = timer_ticks();
             if (raw_len >= RAW_MAX) break;
-        } else if (n < 0) {
-            break;
+            continue;                            /* data flowing: drain tightly, no delay */
         }
-        for (volatile int d = 0; d < 150000; d++) ;
+        if (n < 0) break;
+        for (volatile int d = 0; d < 20000; d++) ;   /* idle: brief pause, don't hammer the NIC */
     }
     if (tls >= 0) tls_close(tls);
     tcp_close(tcp);

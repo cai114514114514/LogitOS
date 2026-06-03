@@ -18,7 +18,9 @@ void *memset(void *, int, size_t);
 enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSING, TIME_WAIT };
 
 #define NCONN    8
-#define RXBUF    16384
+#define RXBUF    65536      /* 64 KiB receive window: a full HTTP body fits in one
+                            * window, so the sender streams it without zero-window
+                            * stalls (the old 16 KiB throttled downloads badly). */
 #define TXBUF    2048
 
 struct tcp_conn {
