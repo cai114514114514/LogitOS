@@ -67,10 +67,14 @@ static int two(const uint8_t *p) { return (p[0]-'0')*10 + (p[1]-'0'); }
 static int64_t parse_time(int tag, const uint8_t *p, int len)
 {
     int year, i = 0;
+    int need = (tag == 0x17) ? 12 : 14;   /* YYMMDDHHMMSSZ / YYYYMMDDHHMMSSZ */
+    if (len < need) return 0;             /* malformed/truncated time field */
     if (tag == 0x17) { year = 2000 + two(p); i = 2; }   /* UTCTime YY */
     else { year = two(p)*100 + two(p+2); i = 4; }       /* GeneralizedTime YYYY */
     int mon = two(p+i), day = two(p+i+2), hh = two(p+i+4), mm = two(p+i+6), ss = two(p+i+8);
-    (void)len;
+    /* clamp: non-digit/garbage bytes must not index mdays[] out of bounds */
+    if (mon < 1) mon = 1; else if (mon > 12) mon = 12;
+    if (day < 1) day = 1; else if (day > 31) day = 31;
     /* days since 1970 (proleptic Gregorian, no leap-second fuss) */
     int64_t days = 0;
     for (int y = 1970; y < year; y++) days += (y%4==0 && (y%100!=0 || y%400==0)) ? 366 : 365;
