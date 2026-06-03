@@ -267,6 +267,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->w = cw; w->h = TITLEBAR_H + ch;
         w->x = 110 + cascade * 28; w->y = 70 + cascade * 28;
         cascade = (cascade + 1) % 6;
+        { int SW = (int)fb_width(), SH = (int)fb_height();   /* keep big windows on-screen */
+          if (w->x + w->w > SW) w->x = SW - w->w; if (w->x < 0) w->x = 0;
+          if (w->y + w->h > SH - 4) w->y = SH - 4 - w->h; if (w->y < 24) w->y = 24; }
         scopy(w->title, title, sizeof w->title);
         w->surf.w = cw; w->surf.h = ch;
         w->surf.px = kmalloc((unsigned)(cw * ch * 4));

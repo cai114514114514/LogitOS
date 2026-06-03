@@ -17,13 +17,13 @@ header_start:
     dd header_end - header_start                                   ; header length
     dd 0x100000000 - (MB2_MAGIC + MB2_ARCH + (header_end - header_start)) ; checksum
 
-    ; --- framebuffer request tag: ask GRUB for a 1024x768x32 linear mode ---
+    ; --- framebuffer request tag: ask GRUB for a 1280x800x32 linear mode ---
     align 8
     dw 5        ; type = framebuffer
     dw 0        ; flags
     dd 20       ; size
-    dd 1024     ; width
-    dd 768      ; height
+    dd 1280     ; width
+    dd 800      ; height
     dd 32       ; depth (bits per pixel)
 
     ; --- required end tag ---

@@ -17,8 +17,8 @@
 #define HTTP_ERR_CONN -4
 #define HTTP_ERR_TLS  -5
 
-#define WINW 760
-#define WINH 560
+#define WINW 1180
+#define WINH 620
 #define BARH 30
 #define VIEW_H (WINH - BARH - 18)        /* viewport height (below bar, above status) */
 

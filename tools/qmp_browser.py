@@ -22,7 +22,7 @@ def recv():
         if "return" in m or "error" in m: return m
 def cmd(d): f.write(json.dumps(d) + "\n"); f.flush(); return recv()
 
-cur = [512, 384]
+cur = [640, 400]   # WM centers the cursor at screen center (1280x800)
 def goto(tx, ty):
     cmd({"execute":"input-send-event","arguments":{"events":[
         {"type":"rel","data":{"axis":"x","value":tx-cur[0]}},
@@ -56,13 +56,13 @@ def typ(t):
 json.loads(f.readline())
 cmd({"execute":"qmp_capabilities"})
 
-# Launch Browser from the Dock (6th of 6 icons C T M > N B; ~x=671 y=721 @1024x768)
-goto(671, 721); click()
+# Launch Browser from the Dock (6th of 6 icons C T M > N B; ~x=799 y=752 @1280x800)
+goto(799, 752); click()
 time.sleep(1.2)
 
 if url:
     # focus the address bar, clear it, type the new URL
-    goto(300, 112); click(); time.sleep(0.2)
+    goto(300, 142); click(); time.sleep(0.2)
     for _ in range(60): key("backspace")
     typ(url)
 
