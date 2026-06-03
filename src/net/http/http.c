@@ -137,7 +137,7 @@ static int fetch_once(const struct url *u)
             continue;                            /* data flowing: drain tightly, no delay */
         }
         if (n < 0) break;
-        for (volatile int d = 0; d < 20000; d++) ;   /* idle: brief pause, don't hammer the NIC */
+        for (volatile int d = 0; d < 2000; d++) ;    /* idle: brief pace, don't hammer the NIC */
     }
     if (tls >= 0) tls_close(tls);
     tcp_close(tcp);
