@@ -114,7 +114,8 @@ $(BUILD)/js.aex: $(BUILD)/js.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/js.elf $@ JavaScript - 'J' 230 200 60
 
 # M17 L1: render pipeline + image codecs compiled into the ring-3 browser.
-BROWSER_PIPE := net/dom.c net/css.c net/layout.c \
+# (net/css.c retired in L2 -> replaced by LibCSS via user/css_engine.c below.)
+BROWSER_PIPE := net/dom.c net/layout.c \
                 user/browser_rt.c user/browser_paint.c \
                 lib/inflate.c lib/png.c lib/gif.c lib/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
@@ -123,8 +124,20 @@ $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -Iuser -c $< -o $@
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ) $(BUILD)/js.crt0.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/js.crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ)
+# M17 L2: NetSurf LibCSS (+ libparserutils + libwapcaplet) + our css_engine.c
+# adapter (produces struct cstyle), all compiled into the ring-3 browser.
+CSS_DIR := third_party/css
+CSS_INC := -I$(CSS_DIR)/libwapcaplet/include -I$(CSS_DIR)/libparserutils/include \
+           -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src -I$(CSS_DIR)/libparserutils/src
+CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c)
+CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/user/css_engine.o
+
+$(BUILD)/cssobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -Iuser/libc/include -Iuser -c $< -o $@
+
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ) $(CSS_OBJ) $(BUILD)/js.crt0.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/js.crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ) $(CSS_OBJ)
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
