@@ -26,8 +26,34 @@ make debug  # QEMU frozen with gdb stub on :1234
 - Boot path: `boot/boot.asm` (32-bit: checks → identity page tables → long mode) → `boot/long.asm` (64-bit) → `kernel_main`.
 - `kprintf` fans output to **both** VGA and serial; serial is also the test channel.
 - IDE diagnostics about inline-asm constraints / missing headers are false
-  positives unless `.clangd` is being honored — the real build uses `-Iinclude`
-  and the x86_64 target.
+  positives unless `.clangd` is being honored — the real build passes `-I` for
+  every source dir (`INCDIRS` in the Makefile) and the x86_64 target.
+
+## Source layout
+
+All source lives under `src/`, headers **colocated** with their `.c`. Header
+names are unique, so the Makefile's `INCDIRS := $(shell find src include -type d)`
+makes every `#include "foo.h"` resolve without path qualifiers. `include/` keeps
+only the cross-cutting kernel↔user ABI (`include/abi/aqua_abi.h`).
+
+```
+src/boot/                                        multiboot + long-mode entry (asm)
+src/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
+src/drivers/{char,timer,block,net}/              device drivers
+src/fs/                                          vfs + aquafs
+src/net/{link,ip,transport,core,dns,http,tls}/   network stack
+src/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
+src/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
+src/apps/                                        clock monitor terminal textedit netapp
+src/apps/browser/                                browser + render engine (dom, layout,
+                                                 css_engine, browser_paint, js_dom)
+src/apps/js/                                     QuickJS app
+src/apps/libc/                                   mini-libc; src/apps/crt0.asm shared
+```
+
+**File paths quoted in the Notes below are pre-reorg names** (e.g. `net/tcp.c` is
+now `src/net/transport/tcp.c`, `kernel/wm.c` → `src/kernel/gui/wm.c`); basename +
+subsystem are unchanged, so they're easy to find under `src/`.
 
 ## Roadmap
 
