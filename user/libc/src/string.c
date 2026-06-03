@@ -1,5 +1,12 @@
 #include <stddef.h>
 
+static int lc_(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+int strcasecmp(const char *a, const char *b)
+{ while (*a && lc_((unsigned char)*a) == lc_((unsigned char)*b)) { a++; b++; }
+  return lc_((unsigned char)*a) - lc_((unsigned char)*b); }
+int strncasecmp(const char *a, const char *b, size_t n)
+{ for (; n; n--, a++, b++) { int d = lc_((unsigned char)*a) - lc_((unsigned char)*b); if (d || !*a) return d; } return 0; }
+
 void *memcpy(void *d, const void *s, size_t n)
 {
     unsigned char *dd = d; const unsigned char *ss = s;

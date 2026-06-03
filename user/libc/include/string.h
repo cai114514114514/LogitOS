@@ -24,5 +24,7 @@ size_t strcspn(const char *, const char *);
 char  *strdup(const char *);
 char  *strndup(const char *, size_t);
 char  *strerror(int);
+int    strcasecmp(const char *, const char *);
+int    strncasecmp(const char *, const char *, size_t);
 
 #endif
