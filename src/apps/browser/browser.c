@@ -113,8 +113,43 @@ static int collect_scripts(struct node *n, char *out, int o, int max)
     return o;
 }
 
+static unsigned char css_tmp[65536];     /* scratch for one external stylesheet */
+
+/* case-insensitive substring test (rel may be "stylesheet", "preload stylesheet", ...) */
+static int has_ci(const char *h, const char *n)
+{
+    if (!h) return 0;
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*a && *b) { int ca=(*a>='A'&&*a<='Z')?*a+32:*a, cb=(*b>='A'&&*b<='Z')?*b+32:*b; if(ca!=cb)break; a++; b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
+/* Fetch each <link rel="stylesheet" href> over HTTP(S) and append its CSS to out
+ * (relative hrefs resolve against the page; this is why github/wikipedia were bare).
+ * Budgeted: each fetch is a full HTTPS handshake to a CDN, so cap the count. */
+static int g_css_budget;
+static int fetch_css_links(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (g_css_budget > 0 && o < max - 64 && n->type == N_ELEM && tag_is(n->tag, "link")) {
+        const char *rel = dom_attr(n, "rel"), *href = dom_attr(n, "href");
+        if (href && has_ci(rel, "stylesheet")) {
+            g_css_budget--;
+            int got = res_fetch_raw(href, css_tmp, (int)sizeof css_tmp);
+            for (int i = 0; i < got && o < max - 1; i++) out[o++] = (char)css_tmp[i];
+            if (got > 0 && o < max - 1) out[o++] = '\n';
+        }
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = fetch_css_links(c, out, o, max);
+    return o;
+}
+
 static char bodybuf[65536];
-static char author_css[16384];
+static char author_css[262144];          /* inline <style> + fetched external <link> CSS */
 
 static void load(const char *u)
 {
@@ -140,8 +175,19 @@ static void load(const char *u)
     css_apply(g_root, author_css, css_len);
     layout_page(g_root, WINW);
     ph = layout_height();
+    set_status("loaded -- fetching stylesheets...");
+    redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
+
+    g_css_budget = 4;                /* fetch external <link> stylesheets, then re-style */
+    int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
+    if (css2 > css_len) {
+        css_len = css2;
+        css_apply(g_root, author_css, css_len);
+        layout_page(g_root, WINW);
+        ph = layout_height();
+        redraw(0);                   /* re-paint with the page's real stylesheets */
+    }
     set_status("loaded");
-    redraw(0);                       /* paint the text immediately ... */
     if (layout_load_images(3) > 0) { /* ... then fetch a few images and repaint */
         ph = layout_height();
         redraw(0);

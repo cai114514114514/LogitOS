@@ -6,6 +6,7 @@ import socket, json, sys, time
 
 sock_path, out = sys.argv[1], sys.argv[2]
 url = sys.argv[3] if len(sys.argv) > 3 else None
+wait = float(sys.argv[4]) if len(sys.argv) > 4 else 11   # post-Enter wait before screendump
 
 s = socket.socket(socket.AF_UNIX)
 for _ in range(120):
@@ -66,7 +67,7 @@ if url:
     typ(url)
 
 key("ret")                          # load
-time.sleep(11)                      # DNS + TCP (+TLS) + parse + layout
+time.sleep(wait)                    # DNS + TCP (+TLS) + parse + external CSS + layout
 cmd({"execute":"screendump","arguments":{"filename":out}})
 time.sleep(0.5)
 print("done")
