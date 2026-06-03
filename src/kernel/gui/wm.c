@@ -810,7 +810,14 @@ void wm_run(void)
     for (;;) {
         net_poll();                  /* drive the (polled) network RX path */
         uint64_t now = timer_ticks();
-        if (dirty || now - last >= 12) { dirty = 0; last = now; wm_render(); }
-        schedule();
+        /* Repaint on change (dirty), else only ~2 Hz to refresh the menu-bar clock
+         * -- not every frame; full-screen composites are costly under TCG. */
+        if (dirty || now - last >= 50) { dirty = 0; last = now; wm_render(); }
+        /* Idle until the next interrupt instead of spinning schedule(): the timer
+         * IRQ (100 Hz) preempts + round-robins the app threads, and mouse/keyboard
+         * IRQs wake us immediately. This stops the whole system busy-spinning --
+         * critical under QEMU's TCG, where every emulated spin-iteration costs host
+         * CPU. `sti; hlt` is the race-free idle idiom. */
+        __asm__ volatile ("sti\n\thlt");
     }
 }
