@@ -22,6 +22,8 @@ void  layout_page(struct node *root, int canvas_w);
  * call after layout_page. Returns the number of images successfully loaded. */
 int   layout_load_images(int max);
 int   layout_height(void);
+/* Page (canvas) background propagated from <html>/<body>; 1 if set, fills *out. */
+int   layout_page_bg(uint32_t *out);
 int   layout_count(void);
 const struct item *layout_items(void);
 void  layout_free(void);

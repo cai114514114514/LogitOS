@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "dom.h"
 
-enum { DISP_INLINE, DISP_BLOCK, DISP_INLINE_BLOCK, DISP_NONE };
+enum { DISP_INLINE, DISP_BLOCK, DISP_INLINE_BLOCK, DISP_FLEX, DISP_NONE };
 enum { ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT };
 
 /* Computed style for one node. Lengths are px unless a *_pct flag says percent. */

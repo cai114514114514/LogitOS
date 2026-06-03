@@ -451,7 +451,9 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     case CSS_DISPLAY_INLINE:       o->display = DISP_INLINE; break;
     case CSS_DISPLAY_INLINE_BLOCK: o->display = DISP_INLINE_BLOCK; break;
     case CSS_DISPLAY_LIST_ITEM:    o->display = DISP_BLOCK; o->list_item = 1; break;
-    default:                       o->display = DISP_BLOCK; break;  /* block + table-ish */
+    case CSS_DISPLAY_FLEX:         o->display = DISP_FLEX; break;
+    case CSS_DISPLAY_INLINE_FLEX:  o->display = DISP_FLEX; break;
+    default:                       o->display = DISP_BLOCK; break;  /* block + grid + table-ish */
     }
 
     if (css_computed_color(cs, &col) == CSS_COLOR_COLOR) o->color = to_rgb(col);

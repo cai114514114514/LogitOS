@@ -9,6 +9,8 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
     const struct item *it = layout_items();
     int n = layout_count();
     gui_clip(vx, vy, vw, vh);
+    uint32_t pbg;
+    if (layout_page_bg(&pbg)) gui_rect(vx, vy, vw, vh, pbg);  /* themed background */
     for (int i = 0; i < n; i++) {
         const struct item *e = &it[i];
         int top = e->y - scroll;                  /* viewport-local top */

@@ -12,6 +12,7 @@ static struct item *items;
 static int nitem;
 static int doc_h;
 static int canvas;
+static uint32_t page_bg; static int page_has_bg;   /* html/body bg -> viewport fill */
 
 static struct item *additem(int type)
 {
@@ -27,13 +28,24 @@ static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(
 static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9') n=n*10+(*s++-'0'); return n; }
 
 /* ---- inline flow ---- */
-/* current pen for inline content within a block */
-struct iflow { int x0, x1, x, y, lineh, line_started; };
+/* current pen for inline content within a block. `align` is the block's
+ * text-align; `line_start` is the display-list index of the first item on the
+ * current line, so newline() can shift the whole line for center/right. */
+struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start; };
 
 static void newline(struct iflow *f)
 {
-    if (f->line_started) f->y += f->lineh;
+    if (f->line_started) {
+        if (f->align != ALIGN_LEFT && nitem > f->line_start) {
+            int used = f->x - f->x0, avail = f->x1 - f->x0;
+            int off = (f->align == ALIGN_CENTER) ? (avail - used) / 2 : (avail - used);
+            if (off > 0)
+                for (int i = f->line_start; i < nitem; i++) items[i].x += off;
+        }
+        f->y += f->lineh;
+    }
     f->x = f->x0; f->lineh = 0; f->line_started = 0;
+    f->line_start = nitem;
 }
 
 /* place a text run (one element's text) into the flow, wrapping on words */
@@ -119,8 +131,10 @@ static int is_block(struct node *n)
 {
     if (!n || n->type != N_ELEM) return 0;
     struct cstyle *st = n->style;
-    return st && (st->display == DISP_BLOCK);
+    return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX);
 }
+
+static int layout_flex(struct node *n, int x, int y, int w);   /* fwd: flex row */
 static int has_block_child(struct node *n)
 {
     for (struct node *c = n->first_child; c; c = c->next) if (is_block(c)) return 1;
@@ -131,12 +145,16 @@ static int has_block_child(struct node *n)
  * returns the bottom y. */
 static int layout_block(struct node *n, int x, int y, int w)
 {
+    struct cstyle *nst = n->style;
+    if (nst && nst->display == DISP_FLEX) return layout_flex(n, x, y, w);
+    int al = nst ? nst->text_align : ALIGN_LEFT;
     int cy = y;
     /* if this block has no block children, the whole content is one inline
      * context. */
     if (!has_block_child(n)) {
-        struct iflow f = { x, x + w, x, cy, 0, 0 };
-        flow_children(&f, n, 0);
+        const char *href = (n->type == N_ELEM && tag_eq(n->tag, "a")) ? dom_attr(n, "href") : 0;
+        struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
+        flow_children(&f, n, href);
         newline(&f);
         return f.y;
     }
@@ -170,7 +188,7 @@ static int layout_block(struct node *n, int x, int y, int w)
             cy = top + ch + (st->mb > 0 ? st->mb : 0);
         } else {
             /* run of inline siblings: gather until next block */
-            struct iflow f = { x, x + w, x, cy, 0, 0 };
+            struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
             while (c && !is_block(c)) {
                 struct cstyle *cs = c->style;
                 if (!(cs && cs->display == DISP_NONE)) flow_node(&f, c, 0);
@@ -183,6 +201,54 @@ static int layout_block(struct node *n, int x, int y, int w)
         }
     }
     return cy;
+}
+
+/* Lay out a flex container's element children in a single row (a pragmatic
+ * subset: row direction, no wrap; items with a CSS width keep it, the rest
+ * split the remaining space; cross-axis tops align). Enough to put nav bars and
+ * button rows side-by-side instead of stacking them vertically. */
+static int layout_flex(struct node *n, int x, int y, int w)
+{
+    int fixed = 0, nauto = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (c->type != N_ELEM) continue;
+        struct cstyle *st = c->style;
+        if (st && st->display == DISP_NONE) continue;
+        int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
+        if (st && st->has_w) fixed += (st->w_pct ? w*st->width/100 : st->width) + ml + mr;
+        else { nauto++; fixed += ml + mr; }
+    }
+    int avail = w - fixed; if (avail < 0) avail = 0;
+    int autow = nauto > 0 ? avail / nauto : 0;
+    int cx = x, maxb = y;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (c->type != N_ELEM) continue;
+        struct cstyle *st = c->style;
+        if (st && st->display == DISP_NONE) continue;
+        int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
+        int iw = (st && st->has_w) ? (st->w_pct ? w*st->width/100 : st->width) : autow;
+        if (iw < 0) iw = 0;
+        cx += ml;
+        int top = y + (st && st->mt > 0 ? st->mt : 0);
+        int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
+        int bgidx = -1;
+        if (st && (st->has_bg || st->border_w)) {
+            struct item *bg = additem(IT_RECT);
+            if (bg) { bgidx = (int)(bg - items);
+                bg->x = cx; bg->y = top; bg->w = iw;
+                bg->bg = st->background; bg->has_bg = st->has_bg;
+                bg->border_w = st->border_w; bg->border_color = st->border_color;
+                bg->radius = st->radius; }
+        }
+        int inner = layout_block(c, cx + pl, top + pt, iw - pl - pr);
+        int ch = (inner - top) + pb;
+        if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+        if (st && ch < st->font_px) ch = st->font_px;
+        if (bgidx >= 0) items[bgidx].h = ch;
+        if (top + ch > maxb) maxb = top + ch;
+        cx += iw + mr;
+    }
+    return maxb;
 }
 
 void layout_page(struct node *root, int canvas_w)
@@ -199,8 +265,21 @@ void layout_page(struct node *root, int canvas_w)
     struct node *start = body ? body : root;
     struct cstyle *bst = start->style;
     int mx = bst ? (bst->ml>0?bst->ml:0) : 8;
+
+    /* canvas background: html (else body) background propagates to the viewport */
+    page_has_bg = 0;
+    struct node *htmlel = 0;
+    for (struct node *h = root->first_child; h; h = h->next)
+        if (h->type==N_ELEM && tag_eq(h->tag, "html")) { htmlel = h; break; }
+    struct cstyle *hst = htmlel ? htmlel->style : 0;
+    if (hst && hst->has_bg)      { page_has_bg = 1; page_bg = hst->background; }
+    else if (bst && bst->has_bg) { page_has_bg = 1; page_bg = bst->background; }
+
     doc_h = layout_block(start, mx, bst&&bst->mt>0?bst->mt:8, canvas_w - 2*mx);
 }
+
+/* Page (canvas) background, propagated from <html>/<body>. 1 if set. */
+int layout_page_bg(uint32_t *out) { if (page_has_bg && out) *out = page_bg; return page_has_bg; }
 
 /* Fetch + decode up to `max` of the reserved <img> boxes (bounded, blocking).
  * Called after layout_page so layout itself never touches the network. */
