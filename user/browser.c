@@ -1,9 +1,14 @@
 #include "aqua.h"
+#include "dom.h"
+#include "css.h"
+#include "layout.h"
+#include "browser_paint.h"
 
-/* A web browser: address bar + a real rendered page (the kernel does
- * DNS+TCP+TLS+HTTP, parses HTML->DOM, applies CSS, lays out a display list, and
- * paints it via SYS_PAGE_*). This app drives the URL, scrolls the viewport, and
- * navigates on link clicks. */
+/* A web browser. The whole render pipeline now runs in this ring-3 app: the
+ * kernel does DNS+TCP+TLS+HTTP (SYS_HTTP_GET) and hands us the raw body
+ * (SYS_HTTP_BODY); we parse HTML->DOM (net/dom.c), apply CSS (net/css.c), lay
+ * out a display list (net/layout.c) and paint it via the GUI render syscalls
+ * (browser_paint.c). Inline <script> runs through QuickJS. */
 
 /* http_get error codes (mirror include/http.h) */
 #define HTTP_ERR_URL  -2
@@ -21,6 +26,7 @@ static int  ulen = 19;
 static int  scroll;                      /* pixel scroll offset */
 static int  ph;                          /* laid-out page height */
 static char status[96] = "ready -- edit URL, Enter to load";
+static struct node *g_root;              /* current page DOM (owns display-list strings) */
 
 static void set_status(const char *s)
 { int i = 0; while (s[i] && i < (int)sizeof status - 1) { status[i] = s[i]; i++; } status[i] = 0; }
@@ -73,9 +79,45 @@ static void run_js(const char *src)
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
 }
 
+/* ---- DOM helpers: collect <style>/<script> text (moved from the kernel) ---- */
+static int tag_is(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
+
+static int collect_style(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && tag_is(n->tag, "style"))
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text)
+                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_style(c, out, o, max);
+    return o;
+}
+
+static int collect_scripts(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && tag_is(n->tag, "script") && !dom_attr(n, "src")) {
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text)
+                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+        if (o < max - 1) out[o++] = '\n';
+        if (o < max - 1) out[o++] = ';';
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_scripts(c, out, o, max);
+    return o;
+}
+
+static char bodybuf[65536];
+static char author_css[16384];
+
 static void load(const char *u)
 {
     set_status("loading...");
+    if (g_root) { dom_free(g_root); g_root = 0; }
+    layout_free();
+    ph = 0; scroll = 0;
     int rc = http_get(u);
     if (rc < 0) {
         set_status(rc == HTTP_ERR_URL  ? "load failed: bad URL (need http:// or https://)" :
@@ -83,21 +125,27 @@ static void load(const char *u)
                    rc == HTTP_ERR_CONN ? "load failed: could not connect (timed out)" :
                    rc == HTTP_ERR_TLS  ? "load failed: TLS/certificate error" :
                                          "load failed");
-        ph = 0; scroll = 0; return;
+        return;
     }
-    if (http_status() != 2) { set_status("error: could not load"); ph = 0; scroll = 0; return; }
-    scroll = 0;
-    ph = page_height();
+    if (http_status() != 2) { set_status("error: could not load"); return; }
+    int blen = http_body(bodybuf, sizeof bodybuf);
+    if (blen <= 0) { set_status("error: empty response"); return; }
+    g_root = dom_parse(bodybuf, blen);
+    if (!g_root) { set_status("error: parse failed"); return; }
+    int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
+    css_apply(g_root, author_css, css_len);
+    layout_page(g_root, WINW);
+    ph = layout_height();
     set_status("loaded");
-    redraw(0);                      /* paint the text immediately ... */
-    if (page_load_images(3) > 0) {  /* ... then fetch a few images and repaint */
-        ph = page_height();
+    redraw(0);                       /* paint the text immediately ... */
+    if (layout_load_images(3) > 0) { /* ... then fetch a few images and repaint */
+        ph = layout_height();
         redraw(0);
     }
     /* run the page's inline <script> through QuickJS */
     jslen = 0; jsout[0] = 0;
     static char scr[16384];
-    int sn = page_scripts(scr, sizeof scr);
+    int sn = collect_scripts(g_root, scr, 0, sizeof scr);
     if (sn > 1) {
         run_js(scr);
         if (jslen > 0) {
@@ -119,7 +167,7 @@ static void redraw(int editing)
     gui_text(14, 7, rgb(40, 40, 48), url);
     if (editing) gui_rect(14 + ulen * 8, 7, 8, 16, rgb(90, 150, 240));
     /* the page */
-    page_render(scroll, 0, BARH, WINW, VIEW_H);
+    browser_paint(0, BARH, WINW, VIEW_H, scroll);
     /* status line */
     gui_rect(0, WINH - 18, WINW, 18, rgb(238, 240, 244));
     gui_text(10, WINH - 16, rgb(110, 110, 120), status);
@@ -128,6 +176,8 @@ static void redraw(int editing)
 
 void app_main(void)
 {
+    css_init();             /* build the UA default stylesheet */
+    img_init();             /* register PNG + GIF decoders */
     gui_create("Browser", WINW, WINH);
     redraw(1);
     int editing = 1;
@@ -154,7 +204,7 @@ void app_main(void)
                 int mx = e.a, my = e.b;              /* window-local */
                 if (my >= BARH && my < BARH + VIEW_H) {
                     char nu[256];
-                    if (page_hittest(mx, my - BARH, scroll, nu)) {
+                    if (browser_hittest(mx, my - BARH, scroll, nu, sizeof nu)) {
                         int i = 0; while (nu[i] && i < (int)sizeof url - 1) { url[i] = nu[i]; i++; }
                         url[i] = 0; ulen = i;
                         load(url);

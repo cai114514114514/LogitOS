@@ -36,7 +36,9 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 -Iinclude
 
-C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c net/*.c crypto/*.c)
+# net/{dom,css,layout,paint}.c are compiled into the ring-3 browser (M17 L1), not the kernel.
+C_SRC   := $(filter-out net/dom.c net/css.c net/layout.c net/paint.c,\
+           $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c net/*.c crypto/*.c))
 ASM_SRC := $(wildcard boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -111,8 +113,18 @@ $(BUILD)/js.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/js.o $(BUILD)/js.crt0.o
 $(BUILD)/js.aex: $(BUILD)/js.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/js.elf $@ JavaScript - 'J' 230 200 60
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BUILD)/js.crt0.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/js.crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o
+# M17 L1: render pipeline + image codecs compiled into the ring-3 browser.
+BROWSER_PIPE := net/dom.c net/css.c net/layout.c \
+                user/browser_rt.c user/browser_paint.c \
+                lib/inflate.c lib/png.c lib/gif.c lib/img.c
+BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
+
+$(BUILD)/browserobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -Iuser -c $< -o $@
+
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ) $(BUILD)/js.crt0.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/js.crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/user/browser.o $(BROWSER_OBJ)
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240

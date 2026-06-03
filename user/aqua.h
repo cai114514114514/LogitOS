@@ -56,22 +56,24 @@ static inline int      net_ping_rtt(void) { return (int)_sys(SYS_NET_PING_RTT, 0
 static inline int      net_dns(const char *name) { return (int)_sys(SYS_NET_DNS, (long)name, 0, 0); }
 static inline unsigned net_dns_result(void) { return (unsigned)_sys(SYS_NET_DNS_RESULT, 0, 0, 0); }
 
-/* --- HTTP + page rendering (browser) --- */
+/* --- HTTP + ring-3 render pipeline (browser) --- */
 static inline int http_get(const char *url) { return (int)_sys(SYS_HTTP_GET, (long)url, 0, 0); }
 static inline int http_status(void) { return (int)_sys(SYS_HTTP_STATUS, 0, 0, 0); }
+/* Copy the last http_get response body into buf (<= max); returns length. */
+static inline int http_body(char *buf, int max) { return (int)_sys(SYS_HTTP_BODY, (long)buf, max, 0); }
 
-/* Paint the laid-out page into the window viewport (vx,vy,vw,vh) at `scroll`. */
-static inline void page_render(int scroll, int vx, int vy, int vw, int vh)
-{ _sys(SYS_PAGE_RENDER, scroll,
-       ((long)(vx & 0xFFFF) << 16) | (vy & 0xFFFF),
-       ((long)(vw & 0xFFFF) << 16) | (vh & 0xFFFF)); }
-static inline int  page_height(void) { return (int)_sys(SYS_PAGE_HEIGHT, 0, 0, 0); }
-/* viewport-local (x,y); on a link, fills buf and returns 1, else 0. */
-static inline int  page_hittest(int x, int y, int scroll, char *buf)
-{ return (int)_sys(SYS_PAGE_HITTEST, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF), scroll, (long)buf); }
-/* Fetch+decode up to `max` of the page's images; returns how many loaded. */
-static inline int  page_load_images(int max) { return (int)_sys(SYS_PAGE_LOAD_IMAGES, max, 0, 0); }
-/* Concatenate the loaded page's inline <script> source into buf; returns length. */
-static inline int  page_scripts(char *buf, int max) { return (int)_sys(SYS_PAGE_SCRIPTS, (long)buf, max, 0); }
+/* Render primitives used by the app-side paint (kernel owns fonts + framebuffer). */
+static inline int text_measure_px(const char *s, int len, int px, int mono)
+{ return (int)_sys(SYS_TEXT_MEASURE, (long)s, len, ((long)px << 1) | (mono & 1)); }
+static inline void gui_text_run(int x, int y, int px, int mono, unsigned color, const char *s, int len)
+{ struct aqua_run r = { x, y, px, mono, color, s, len }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
+static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
+{ struct aqua_blit b = { x, y, w, h, rgba, sw, sh }; _sys(SYS_GUI_BLIT, (long)&b, 0, 0); }
+static inline void gui_clip(int x, int y, int w, int h)
+{ _sys(SYS_GUI_CLIP, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
+       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
+/* Fetch a sub-resource's raw bytes (e.g. an image) into buf (<= max); length or <0. */
+static inline int res_fetch_raw(const char *src, unsigned char *buf, int max)
+{ return (int)_sys(SYS_RES_FETCH, (long)src, (long)buf, max); }
 
 #endif /* AQUA_USERLIB_H */

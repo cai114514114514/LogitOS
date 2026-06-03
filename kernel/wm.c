@@ -17,11 +17,6 @@
 #include "icmp.h"
 #include "dns.h"
 #include "http.h"
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
-#include "paint.h"
-#include "img.h"
 #include "kprintf.h"
 #include "usercopy.h"
 
@@ -36,50 +31,9 @@
 
 void *memcpy(void *, const void *, size_t);
 
-/* The browser page currently laid out (one at a time, kernel-side). The DOM
- * tree owns the strings the display list points into, so it must outlive paint;
- * freed (with the layout list) on the next load. */
-static struct node *page_root;
-static int page_built;
-
-static void page_reset(void)
-{
-    layout_free();
-    if (page_root) { dom_free(page_root); page_root = 0; }
-    page_built = 0;
-}
-
-/* Concatenate the text of every <style> element into out (author stylesheet). */
-static int tag_is(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
-static int collect_style(struct node *n, char *out, int o, int max)
-{
-    if (!n) return o;
-    if (n->type == N_ELEM && tag_is(n->tag, "style")) {
-        for (struct node *c = n->first_child; c; c = c->next)
-            if (c->type == N_TEXT && c->text)
-                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
-    }
-    for (struct node *c = n->first_child; c; c = c->next)
-        o = collect_style(c, out, o, max);
-    return o;
-}
-
-/* Concatenate the source of every inline <script> (skip external src=) into out,
- * separating scripts with a newline+';' so they evaluate independently. */
-static int collect_scripts(struct node *n, char *out, int o, int max)
-{
-    if (!n) return o;
-    if (n->type == N_ELEM && tag_is(n->tag, "script") && !dom_attr(n, "src")) {
-        for (struct node *c = n->first_child; c; c = c->next)
-            if (c->type == N_TEXT && c->text)
-                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
-        if (o < max - 1) out[o++] = '\n';
-        if (o < max - 1) out[o++] = ';';
-    }
-    for (struct node *c = n->first_child; c; c = c->next)
-        o = collect_scripts(c, out, o, max);
-    return o;
-}
+/* The render pipeline (DOM/CSS/layout/paint) and <style>/<script> collection now
+ * live in the ring-3 browser app; the kernel only provides fetch + draw + font
+ * primitives. See net/{dom,css,layout}.c (compiled into browser.aex) and L1 plan. */
 
 /* ---------- windows + apps ---------- */
 enum wkind { WK_FINDER, WK_APP };
@@ -450,81 +404,85 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_NET_DNS_RESULT:
         return (long)(int)dns_result();
     case SYS_HTTP_GET: {
-        /* Fetch + build the page (DOM -> computed style -> layout). http_get and
-         * res_fetch (sub-resources/images) block while pumping net_poll, which
-         * needs a live PIT base; the int 0x80 gate cleared IF, so re-enable
-         * interrupts across the whole pipeline, then restore for the iretq. */
-        struct win *w = app_window(ap);
-        int cw = w ? w->surf.w : 600;
-        int grc;
+        /* Fetch only (DNS+TCP+TLS+HTTP, follows redirects). The DOM/CSS/layout
+         * pipeline now lives in the ring-3 browser. http_get blocks while pumping
+         * net_poll, which needs IF=1, but the int 0x80 gate cleared IF -- so
+         * re-enable interrupts across the fetch, then restore for the iretq. */
         char url[USER_URL_MAX];
         if (user_copy_string(url, sizeof url, (const char *)a) < 0) return -1;
         __asm__ volatile ("sti");
-        page_reset();
         uint64_t t0 = timer_ticks();
-        grc = http_get(url);
-        kprintf("[page] http_get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
-        if (grc == 0 && http_status() == HTTP_DONE) {
-            int blen; const char *body = http_body(&blen);
-            kprintf("[page] body=%d bytes\n", blen);
-            uint64_t t1 = timer_ticks();
-            page_root = dom_parse(body, blen);
-            kprintf("[page] dom_parse t=%dms\n", (int)(timer_ticks()-t1)*10);
-            if (page_root) {
-                static char author_css[16384];
-                int css_len = collect_style(page_root, author_css, 0, (int)sizeof author_css);
-                uint64_t t2 = timer_ticks();
-                css_apply(page_root, author_css, css_len);
-                kprintf("[page] css_apply (%d css) t=%dms\n", css_len, (int)(timer_ticks()-t2)*10);
-                uint64_t t3 = timer_ticks();
-                layout_page(page_root, cw);
-                kprintf("[page] layout items=%d h=%d t=%dms\n", layout_count(), layout_height(), (int)(timer_ticks()-t3)*10);
-                page_built = 1;
-                /* NB: images are NOT fetched here -- the browser paints the text
-                 * first, then calls SYS_PAGE_LOAD_IMAGES so a text page never
-                 * stalls on its (often large, cross-origin) decorations. */
-            } else grc = HTTP_ERR;
-        }
+        int grc = http_get(url);
+        kprintf("[http] get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
         __asm__ volatile ("cli");
         return grc;
     }
     case SYS_HTTP_STATUS:
         return http_status();
-    case SYS_PAGE_RENDER: {
+    case SYS_HTTP_BODY: {
+        char *buf = (char *)a; int max = (int)b;
+        if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
+        int blen; const char *body = http_body(&blen);
+        if (!body || blen <= 0) return 0;
+        int n = blen < max ? blen : max;
+        memcpy(buf, body, (size_t)n);
+        return n;
+    }
+    case SYS_TEXT_MEASURE: {
+        const char *s = (const char *)a; int len = (int)b;
+        int px = (int)((c >> 1) & 0x7FFFFFFF), mono = (int)(c & 1);
+        if (len < 0 || len > USER_TEXT_MAX) return 0;
+        char tmp[USER_TEXT_MAX];
+        if (len > 0) { if (!user_range_ok(s, (uint64_t)len, 0)) return -1; memcpy(tmp, s, (size_t)len); }
+        return text_measure(tmp, len, px, mono);
+    }
+    case SYS_GUI_TEXT_RUN: {
         struct win *w = app_window(ap); if (!w) return -1;
-        if (!page_built) return 0;
-        int scroll = (int)a;
-        int vx = (int)((b >> 16) & 0xFFFF), vy = (int)(b & 0xFFFF);
-        int vw = (int)((c >> 16) & 0xFFFF), vh = (int)(c & 0xFFFF);
+        struct aqua_run r;
+        if (!user_range_ok((const void *)a, sizeof r, 0)) return -1;
+        memcpy(&r, (const void *)a, sizeof r);
+        int len = r.len; if (len < 0) len = 0; if (len > USER_TEXT_MAX - 1) len = USER_TEXT_MAX - 1;
+        char tmp[USER_TEXT_MAX];
+        if (len > 0) { if (!user_range_ok(r.s, (uint64_t)len, 0)) return -1; memcpy(tmp, r.s, (size_t)len); }
+        tmp[len] = 0;
         fb_target(&w->surf);
-        paint_viewport(vx, vy, vw, vh, scroll);
+        text_draw_run(r.x, r.y, tmp, len, r.px, r.mono, r.color);
         fb_target(NULL);
         return 0;
     }
-    case SYS_PAGE_HEIGHT:
-        return page_built ? layout_height() : 0;
-    case SYS_PAGE_HITTEST: {
-        if (!page_built) return 0;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        if (!user_range_ok((char *)c, 256, 1)) return -1;
-        return paint_hittest(x, y, (int)b, (char *)c, 256);
-    }
-    case SYS_PAGE_LOAD_IMAGES: {
-        /* Blocking sub-resource fetch; same IF=1 requirement as SYS_HTTP_GET. */
-        if (!page_built) return 0;
-        int max = (int)a; if (max < 0) max = 0; if (max > 16) max = 16;
+    case SYS_RES_FETCH: {
+        char src[USER_URL_MAX];
+        if (user_copy_string(src, sizeof src, (const char *)a) < 0) return -1;
+        char *buf = (char *)b; int max = (int)c;
+        if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
         __asm__ volatile ("sti");
-        int n = layout_load_images(max);
+        uint8_t *rb = 0; int rl = 0; int rc = res_fetch(src, &rb, &rl);
         __asm__ volatile ("cli");
+        if (rc != 0 || !rb) return -1;
+        int n = rl < max ? rl : max;
+        memcpy(buf, rb, (size_t)n);
+        kfree(rb);
         return n;
     }
-    case SYS_PAGE_SCRIPTS: {
-        if (!page_built || !page_root) return 0;
-        char *ubuf = (char *)a; int max = (int)b;
-        if (max <= 0 || !user_range_ok(ubuf, (uint64_t)max, 1)) return -1;
-        int o = collect_scripts(page_root, ubuf, 0, max);
-        ubuf[o < max ? o : max - 1] = 0;
-        return o;
+    case SYS_GUI_BLIT: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        struct aqua_blit bl;
+        if (!user_range_ok((const void *)a, sizeof bl, 0)) return -1;
+        memcpy(&bl, (const void *)a, sizeof bl);
+        if (bl.sw <= 0 || bl.sh <= 0 || bl.sw > 4096 || bl.sh > 4096) return -1;
+        if (!user_range_ok(bl.rgba, (uint64_t)bl.sw * (uint64_t)bl.sh * 4, 0)) return -1;
+        fb_target(&w->surf);
+        fb_blit_rgba(bl.x, bl.y, bl.w, bl.h, bl.rgba, bl.sw, bl.sh);
+        fb_target(NULL);
+        return 0;
+    }
+    case SYS_GUI_CLIP: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int cw2 = (int)((b >> 16) & 0xFFFF), ch2 = (int)(b & 0xFFFF);
+        if (cw2 == 0 && ch2 == 0) fb_clear_clip();
+        else fb_set_clip(x, y, cw2, ch2);
+        return 0;
     }
     }
     return -1;

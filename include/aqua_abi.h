@@ -32,11 +32,13 @@
 #define SYS_HTTP_GET    26  /* (url) fetch+render an http:// page; -> 0 ok start, <0 bad url */
 #define SYS_HTTP_STATUS 27  /* () -> 1 busy, 2 done, <0 error code */
 #define SYS_GUI_TEXT_MONO 30 /* ((x<<16)|y, (cell<<24)|color, str): monospace text */
-#define SYS_PAGE_RENDER 31  /* (scroll, (vx<<16)|vy, (vw<<16)|vh): paint the page into the viewport */
-#define SYS_PAGE_HEIGHT 32  /* () -> laid-out document height in px */
-#define SYS_PAGE_HITTEST 33 /* ((x<<16)|y viewport-local, scroll, buf<=256) -> 1 + href, or 0 */
-#define SYS_PAGE_LOAD_IMAGES 34 /* (max) fetch+decode up to `max` <img> boxes -> count loaded */
-#define SYS_PAGE_SCRIPTS 35  /* (buf, max) concat inline <script> text of the loaded page -> length */
+/* M17 L1: ring-3 render-pipeline primitives (DOM/CSS/layout/paint live in the app). */
+#define SYS_HTTP_BODY    36 /* (buf, max) -> copy the last http_get response body to the app; length */
+#define SYS_TEXT_MEASURE 37 /* (s, len, (px<<1)|mono) -> pixel width of a length-delimited run */
+#define SYS_GUI_TEXT_RUN 38 /* (struct aqua_run*) draw a length-delimited text run (px/mono/color) */
+#define SYS_RES_FETCH    39 /* (src, buf, max) -> fetch a sub-resource's raw bytes; length, or <0 */
+#define SYS_GUI_BLIT     40 /* (struct aqua_blit*) blit an RGBA bitmap into the window surface */
+#define SYS_GUI_CLIP     41 /* ((x<<16)|y, (w<<16)|h) set window clip rect; (0,0,0,0) clears it */
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0
@@ -72,5 +74,9 @@ struct aqua_netinfo {
     unsigned ip, mask, gw;
     unsigned char mac[6];
 };
+
+/* M17 L1: payloads for the ring-3 render syscalls. */
+struct aqua_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
+struct aqua_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 
 #endif /* AQUA_ABI_H */
