@@ -33,6 +33,24 @@ static void add_child(struct node *p, struct node *c)
     p->last_child = c;
 }
 
+/* Named HTML entities (common subset). Codepoint is UTF-8 encoded below. */
+static int slen(const char *s){ int n=0; while(s[n]) n++; return n; }
+static const struct { const char *name; int cp; } ENTITIES[] = {
+    {"amp",38},{"lt",60},{"gt",62},{"quot",34},{"apos",39},{"nbsp",32},
+    {"copy",169},{"reg",174},{"trade",8482},{"mdash",8212},{"ndash",8211},
+    {"hellip",8230},{"times",215},{"divide",247},{"laquo",171},{"raquo",187},
+    {"ldquo",8220},{"rdquo",8221},{"lsquo",8216},{"rsquo",8217},{"middot",183},
+    {"bull",8226},{"deg",176},{"plusmn",177},{"sect",167},{"para",182},
+    {"dagger",8224},{"euro",8364},{"pound",163},{"cent",162},{"yen",165},
+    {"frac12",189},{"frac14",188},{"frac34",190},{"sup2",178},{"sup3",179},
+    {"larr",8592},{"rarr",8594},{"uarr",8593},{"darr",8595},{"harr",8596},
+    {"emsp",32},{"ensp",32},{"thinsp",32},{"iexcl",161},{"iquest",191},
+    {"szlig",223},{"aacute",225},{"eacute",233},{"egrave",232},{"agrave",224},
+    {"ccedil",231},{"ntilde",241},{"ouml",246},{"uuml",252},{"auml",228},
+    {"ograve",242},{"oacute",243},{"uacute",250},{"iacute",237},
+    {0,0}
+};
+
 /* Decode HTML entities in [s,e) into out (capacity cap); returns out length. */
 static int decode_text(const char *s, const char *e, char *out, int cap)
 {
@@ -50,12 +68,8 @@ static int decode_text(const char *s, const char *e, char *out, int cap)
                 else if (c>='0'&&c<='9') v=v*10+c-'0'; }
         } else {
             int l = semi - p;
-            if (l==3&&nmatch(p,"amp",3)) v='&';
-            else if (l==2&&nmatch(p,"lt",2)) v='<';
-            else if (l==2&&nmatch(p,"gt",2)) v='>';
-            else if (l==4&&nmatch(p,"quot",4)) v='"';
-            else if (l==4&&nmatch(p,"apos",4)) v='\'';
-            else if (l==4&&nmatch(p,"nbsp",4)) v=' ';
+            for (int e2 = 0; ENTITIES[e2].name; e2++)
+                if (slen(ENTITIES[e2].name) == l && nmatch(p, ENTITIES[e2].name, l)) { v = ENTITIES[e2].cp; break; }
         }
         if (v < 0) { out[o++] = *s++; continue; }
         if (v < 0x80) out[o++]=(char)v;
@@ -121,6 +135,18 @@ struct node *dom_parse(const char *html, int len)
         while (p < end && *p != '>' && *p != '/' && !sp(*p)) p++;
         char name[16]; int nl = 0; for (const char *k=t; k<p && nl<15; k++) name[nl++]=lc(*k); name[nl]=0;
         if (!nl) { while (p<end && *p!='>') p++; if(p<end)p++; continue; }
+        /* HTML5 optional end tags: a new peer auto-closes the still-open one */
+        if (ieq(name,"tr")) { while (sd>1 && (ieq(TOP->tag,"td")||ieq(TOP->tag,"th")||ieq(TOP->tag,"tr"))) sd--; }
+        else if (ieq(name,"td")||ieq(name,"th")) { while (sd>1 && (ieq(TOP->tag,"td")||ieq(TOP->tag,"th"))) sd--; }
+        else if (ieq(name,"li")) { while (sd>1 && ieq(TOP->tag,"li")) sd--; }
+        else if (ieq(name,"dd")||ieq(name,"dt")) { while (sd>1 && (ieq(TOP->tag,"dd")||ieq(TOP->tag,"dt"))) sd--; }
+        else if (ieq(name,"option")) { while (sd>1 && ieq(TOP->tag,"option")) sd--; }
+        else if (ieq(name,"p")) { while (sd>1 && ieq(TOP->tag,"p")) sd--; }
+        /* implied <tbody>: a <tr> placed directly inside <table> (HTML5) */
+        if (ieq(name,"tr") && sd >= 1 && ieq(TOP->tag,"table") && sd < MAXDEPTH) {
+            struct node *tb = newnode(N_ELEM);
+            if (tb) { memcpy(tb->tag, "tbody", 6); add_child(TOP, tb); stack[sd++] = tb; }
+        }
         struct node *el = newnode(N_ELEM);
         memcpy(el->tag, name, nl+1);
         /* attributes */
