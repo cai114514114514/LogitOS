@@ -41,7 +41,10 @@ ICMP/UDP + DNS + Network app) ✅.
 Browser arc: M10 TCP ✅ (`net/tcp.c`, client byte stream) · M11 HTTP + Browser
 app ✅ (`net/http.c` fetch + `net/html.c` de-tag render + `user/browser.c`) ·
 M12 TLS 1.3 ✅ (`crypto/*` + `net/tls.c` + `net/x509.c`; https with strict cert
-verification) · M13 HTML/CSS layout (planned).
+verification) · M13 HTML/CSS layout ✅ (`net/dom.c` + `net/css.c` + `net/layout.c`
++ `net/paint.c` + `lib/{inflate,png,gif,img}.c`: DOM + CSS cascade → flat display
+list → painted viewport with clickable links + images; `user/browser.c` renders
+real pages incl. https://en.wikipedia.org).
 
 M14 Unicode + from-scratch TrueType anti-aliased text ✅ (`lib/utf8.c` +
 `lib/ttf.c` + `kernel/raster.c` + `kernel/text.c`): UTF-8 decode, a from-scratch
@@ -173,4 +176,17 @@ Key notes:
 - Adding an app: write `user/<name>.c` (include "aqua.h", define `app_main`),
   add an `APP_RULE` line + the name to `APPS` in the Makefile.
 - `tools/qmp_*.py` drive mouse/keyboard over QEMU QMP for screenshots/CI.
+M15 SSE2/FPU ✅ (JS-engine prerequisite): the kernel was integer-only because
+x86-64 SysV passes `double` in XMM, so `-mno-sse` made FP unusable. Now
+`boot/long.asm` enables SSE at boot (clear CR0.EM, set CR0.MP/NE + CR4.OSFXSR/
+OSXMMEXCPT, `fninit` + default MXCSR), the Makefile builds kernel **and** userland
+with `-msse -msse2` (kept `-mno-red-zone`), and `boot/isr.asm`'s `isr_common`
+does FXSAVE/FXRSTOR around every C handler so FP survives preemption + syscalls
+(context_switch needs nothing: SysV XMM are all caller-saved). No lazy-FP
+(CR0.TS). Verified: kernel + ring-3 double math exact under heavy timer
+preemption (0 corruptions). Next: M16 = QuickJS in `user/browser.c` (needs a
+userland libm + malloc/heap; SSE2 only gives `sqrtsd` directly).
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
+
+language=chinese

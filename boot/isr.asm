@@ -98,9 +98,24 @@ isr_common:
     push r14
     push r15
 
-    mov rdi, rsp        ; struct registers* -> first argument
+    mov rdi, rsp        ; rdi = struct registers* (GPR frame base) -> 1st arg
+
+    ; --- save the interrupted thread's FP/SSE state (M15) ------------------
+    ; The kernel is built with SSE, so interrupt_handler may clobber XMM/MXCSR
+    ; of whatever we interrupted. FXSAVE it on this thread's kernel stack and
+    ; FXRSTOR before iretq, so FP survives both same-thread returns and any
+    ; preemptive context switch (the state rides this interrupt frame).
+    ; Layout below the GPR frame: [aligned] -> regs* slot (8B) @ rsp,
+    ;                             FXSAVE area (512B) @ rsp+16 (16B aligned).
+    sub rsp, 528               ; 512 FXSAVE + 16 (regs* slot, keeps 16-multiple)
+    and rsp, -16               ; FXSAVE needs a 16-byte aligned target
+    mov [rsp], rdi             ; stash regs* so we can restore rsp after the call
+    fxsave [rsp + 16]
     cld
-    call interrupt_handler
+    call interrupt_handler     ; rdi already = regs*; rsp stays put across call/ret
+    fxrstor [rsp + 16]
+    mov rsp, [rsp]             ; rsp <- regs* (back to the GPR frame)
+    ; ----------------------------------------------------------------------
 
     pop r15
     pop r14

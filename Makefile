@@ -25,7 +25,7 @@ QEMU        := qemu-system-x86_64
 
 CFLAGS  := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
-           -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+           -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 -g -Iinclude
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
@@ -33,7 +33,7 @@ LDFLAGS := -n -nostdlib -T linker.ld
 # Userland (ring 3) build flags
 UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
-           -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+           -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 -Iinclude
 
 C_SRC   := $(wildcard kernel/*.c drivers/*.c lib/*.c fs/*.c net/*.c crypto/*.c)
