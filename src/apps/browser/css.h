@@ -30,4 +30,9 @@ void css_init(void);                            /* build the UA default styleshe
  * cascading UA defaults + `page_css` (page_len bytes from <style>) + inline style=. */
 void css_apply(struct node *root, const char *page_css, int page_len);
 
+/* Resolve CSS custom properties: substitute var(--x[,fallback]) in `in` using
+ * its --name:value declarations, writing the expanded sheet to `out`. Returns
+ * the expanded length. (Our LibCSS predates native var() support.) */
+int  css_expand_vars(const char *in, int inlen, char *out, int outmax);
+
 #endif /* AQUA_CSS_H */

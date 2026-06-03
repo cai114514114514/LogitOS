@@ -149,7 +149,9 @@ static int fetch_css_links(struct node *n, char *out, int o, int max)
 }
 
 static char bodybuf[65536];
-static char author_css[262144];          /* inline <style> + fetched external <link> CSS */
+static char author_css[262144];          /* inline <style> + fetched external <link> CSS (raw, with var()) */
+static char css_expanded[393216];        /* author_css after var() expansion -> LibCSS */
+static int  css_exlen;
 
 static void load(const char *u)
 {
@@ -172,7 +174,8 @@ static void load(const char *u)
     g_root = dom_parse(bodybuf, blen);
     if (!g_root) { set_status("error: parse failed"); return; }
     int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
-    css_apply(g_root, author_css, css_len);
+    css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
+    css_apply(g_root, css_expanded, css_exlen);
     layout_page(g_root, WINW);
     ph = layout_height();
     set_status("loaded -- fetching stylesheets...");
@@ -182,7 +185,8 @@ static void load(const char *u)
     int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
     if (css2 > css_len) {
         css_len = css2;
-        css_apply(g_root, author_css, css_len);
+        css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
+        css_apply(g_root, css_expanded, css_exlen);
         layout_page(g_root, WINW);
         ph = layout_height();
         redraw(0);                   /* re-paint with the page's real stylesheets */
@@ -199,7 +203,7 @@ static void load(const char *u)
     if (sn > 1) {
         int mutated = run_js(scr);
         if (mutated) {                   /* JS changed the DOM -> re-style + re-layout */
-            css_apply(g_root, author_css, css_len);
+            css_apply(g_root, css_expanded, css_exlen);
             layout_page(g_root, WINW);
             ph = layout_height();
         }

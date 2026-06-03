@@ -118,6 +118,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 # --- browser: render pipeline + image codecs + LibCSS, all into one ring-3 app ---
 BROWSER_PIPE := src/apps/browser/dom.c src/apps/browser/layout.c \
                 src/apps/browser/browser_rt.c src/apps/browser/browser_paint.c \
+                src/apps/browser/css_vars.c \
                 src/lib/image/inflate.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
