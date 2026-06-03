@@ -32,5 +32,6 @@ int  net_up(void);                  /* 1 if a NIC initialised successfully */
 
 /* Pump the receive path (called from the WM main loop). */
 void net_poll(void);
+extern volatile int g_net_busy;     /* 1 while a blocking fetch owns the network */
 
 #endif /* AQUA_NET_H */

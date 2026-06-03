@@ -104,7 +104,7 @@ QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
               third_party/quickjs/libbf.c
 ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard src/apps/libc/src/*.c)
 JS_INC     := -Ithird_party/libm -Ithird_party/quickjs    # mini-libc covered by INCDIRS
-JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aqua-2024"' -DAQUA_OS $(JS_INC)
+JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aqua-2024"' -DAQUA_OS -DCONFIG_STACK_CHECK $(JS_INC)
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(ENGINE_SRCS))
 
 $(BUILD)/jsobj/%.o: %.c

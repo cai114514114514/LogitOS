@@ -40,9 +40,10 @@ void interrupt_handler(struct registers *r)
     }
     if (r->vector < 32) {
         if (r->cs & 3) {            /* fault came from ring 3: kill the app, keep the kernel alive */
-            kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x -- terminating app\n",
+            uint64_t cr2 = 0; __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+            kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x cr2=%p rsp=%p -- terminating app\n",
                     exception_names[r->vector & 31], (int)r->vector,
-                    (void *)r->rip, (unsigned)r->error_code);
+                    (void *)r->rip, (unsigned)r->error_code, (void *)cr2, (void *)r->rsp);
             wm_app_exit();          /* mark the app dead so the WM reaps its window + frees the slot */
             thread_exit();          /* marks thread+app dead, frees its stack, switches away */
         }

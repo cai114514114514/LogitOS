@@ -24305,7 +24305,10 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
     FuncCallType call_type;
     int optional_chaining_label;
     BOOL accept_lparen = (parse_flags & PF_POSTFIX_CALL) != 0;
-    
+
+    if (js_check_stack_overflow(s->ctx->rt, 0))     /* bound parser recursion (Aqua OS) */
+        return js_parse_error(s, "stack overflow");
+
     call_type = FUNC_CALL_NORMAL;
     switch(s->token.val) {
     case TOK_NUMBER:
@@ -25509,6 +25512,12 @@ static __exception int js_parse_assign_expr2(JSParseState *s, int parse_flags)
     int opcode, op, scope;
     JSAtom name0 = JS_ATOM_NULL;
     JSAtom name;
+
+    /* The recursive-descent parser is otherwise unguarded; a deeply-nested
+     * expression (real pages' minified scripts) overflows the C stack and
+     * faults. Bound it like the interpreter does. (Aqua OS) */
+    if (js_check_stack_overflow(s->ctx->rt, 0))
+        return js_parse_error(s, "stack overflow");
 
     if (s->token.val == TOK_YIELD) {
         BOOL is_star = FALSE, is_async;

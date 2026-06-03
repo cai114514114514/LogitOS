@@ -65,7 +65,7 @@ static int run_js(const char *src)        /* returns 1 if the script mutated the
      * JS) overflows the real stack before the guard fires -> page fault in
      * JS_ThrowError2. Bound it well under the real stack so QuickJS throws a
      * catchable "stack overflow" instead of crashing. */
-    JS_SetMaxStackSize(rt, 128 * 1024);
+    JS_SetMaxStackSize(rt, 2 * 1024 * 1024);   /* our user stack is 4 MiB; leave 2 MiB headroom */
     JSContext *ctx = JS_NewContext(rt); if (!ctx) { JS_FreeRuntime(rt); return 0; }
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue con = JS_NewObject(ctx);
@@ -119,7 +119,7 @@ static int collect_scripts(struct node *n, char *out, int o, int max)
     return o;
 }
 
-static unsigned char css_tmp[65536];     /* scratch for one external stylesheet */
+static unsigned char css_tmp[393216];    /* scratch for one external stylesheet (384 KiB) */
 
 /* case-insensitive substring test (rel may be "stylesheet", "preload stylesheet", ...) */
 static int has_ci(const char *h, const char *n)
@@ -154,9 +154,9 @@ static int fetch_css_links(struct node *n, char *out, int o, int max)
     return o;
 }
 
-static char bodybuf[65536];
-static char author_css[262144];          /* inline <style> + fetched external <link> CSS (raw, with var()) */
-static char css_expanded[393216];        /* author_css after var() expansion -> LibCSS */
+static char bodybuf[393216];             /* page HTML (384 KiB) */
+static char author_css[1310720];         /* inline <style> + fetched external <link> CSS (1.25 MiB, raw with var()) */
+static char css_expanded[1572864];       /* author_css after var() expansion -> LibCSS (1.5 MiB) */
 static int  css_exlen;
 
 static void load(const char *u)
@@ -187,7 +187,7 @@ static void load(const char *u)
     set_status("loaded -- fetching stylesheets...");
     redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
 
-    g_css_budget = 4;                /* fetch external <link> stylesheets, then re-style */
+    g_css_budget = 8;                /* fetch external <link> stylesheets, then re-style */
     int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
     if (css2 > css_len) {
         css_len = css2;
@@ -202,11 +202,15 @@ static void load(const char *u)
         ph = layout_height();
         redraw(0);
     }
-    /* run the page's inline <script> through QuickJS */
+    /* Run the page's inline <script> through QuickJS -- but only small scripts.
+     * Real sites ship huge minified bundles that assume a full browser env; with
+     * no real DOM they just throw, and some (github) drive QuickJS into a
+     * recursion our build can't bound, faulting the app. We have no JS sandbox,
+     * so cap at a size only hand-written demo scripts stay under. */
     jslen = 0; jsout[0] = 0;
     static char scr[16384];
     int sn = collect_scripts(g_root, scr, 0, sizeof scr);
-    if (sn > 1) {
+    if (sn > 1 && sn < 2048) {
         int mutated = run_js(scr);
         if (mutated) {                   /* JS changed the DOM -> re-style + re-layout */
             css_apply(g_root, css_expanded, css_exlen);
@@ -249,6 +253,7 @@ void app_main(void)
 
     for (;;) {
         struct aqua_event e;
+        int need = 0;                 /* coalesce: drain the whole event burst, repaint once */
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);
             if (e.type == EV_KEY) {
@@ -264,7 +269,7 @@ void app_main(void)
                 else if (k == '\b') { if (ulen > 0) url[--ulen] = 0; }
                 else if (k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
-                redraw(editing);
+                need = 1;
             } else if (e.type == EV_MOUSE) {
                 int mx = e.a, my = e.b;              /* window-local */
                 if (my >= BARH && my < BARH + VIEW_H) {
@@ -274,10 +279,11 @@ void app_main(void)
                         url[i] = 0; ulen = i;
                         load(url);
                     }
-                    redraw(editing);
+                    need = 1;
                 }
             }
         }
+        if (need) redraw(editing);    /* one repaint after the burst, not per keystroke */
         sys_yield();
     }
 }

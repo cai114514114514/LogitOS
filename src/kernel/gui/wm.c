@@ -28,6 +28,8 @@
 #define USER_PATH_MAX 128
 #define USER_URL_MAX  384
 #define USER_TEXT_MAX 1024
+#define EVQ_N         256        /* per-window event ring: deep enough that a burst of
+                                  * keystrokes isn't dropped while the app repaints */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -53,7 +55,7 @@ struct win {
     enum wkind kind;
     struct app *app;          /* owner (NULL for builtin) */
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
-    struct aqua_event evq[16];
+    struct aqua_event evq[EVQ_N];
     int  evhead, evtail;
     int  wants_close;
     char cwd[128];            /* Finder: current directory path */
@@ -175,12 +177,13 @@ void wm_launch(const char *aex_file, const char *arg)
     uint64_t ustack_top = 0;
     if (entry) {
         /* The stack must sit ABOVE the whole app image. browser/js link a 24 MiB
-         * mini-libc arena in BSS (image reaches ~entry+25.7 MiB), and entry+8 MiB
-         * used to land *inside* that arena -- once >~7 MiB was malloc'd, stack
-         * writes corrupted the allocator's block headers and malloc faulted.
-         * 32 MiB clears the arena; 256 KiB is enough for QuickJS + CSS/layout. */
-        ustack_top = entry + 0x2000000;          /* 32 MiB above the link base */
-        for (int i = 1; i <= 64; i++)            /* 256 KiB stack */
+         * mini-libc arena in BSS plus several large CSS/page buffers (image
+         * reaches ~entry+30 MiB), and a stack landing *inside* that BSS would
+         * corrupt the allocator. Top at 40 MiB clears the image; the stack is
+         * 4 MiB because QuickJS recurses deeply throwing errors on real pages'
+         * scripts (github overran a 256 KiB stack inside JS_ThrowError2). */
+        ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
+        for (int i = 1; i <= 1024; i++)          /* 4 MiB stack */
             vmm_map_page(ustack_top - (uint64_t)i * 0x1000, pmm_alloc(), VMM_WRITABLE | VMM_USER);
     }
     vmm_switch(prev_cr3);
@@ -319,7 +322,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
         if (w->evhead == w->evtail) return 0;
         *ev = w->evq[w->evhead];
-        w->evhead = (w->evhead + 1) % 16;
+        w->evhead = (w->evhead + 1) % EVQ_N;
         return 1;
     }
     case SYS_GET_ARG: {
@@ -419,8 +422,12 @@ long wm_gui_syscall(long num, long a, long b, long c)
         char url[USER_URL_MAX];
         if (user_copy_string(url, sizeof url, (const char *)a) < 0) return -1;
         __asm__ volatile ("sti");
+        g_net_busy = 1;                          /* we own the net; WM thread must not poll */
         uint64_t t0 = timer_ticks();
         int grc = http_get(url);
+        for (int retry = 0; grc < 0 && retry < 3; retry++)   /* transient DNS/conn/TLS loss */
+            grc = http_get(url);
+        g_net_busy = 0;
         kprintf("[http] get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
         __asm__ volatile ("cli");
         return grc;
@@ -464,7 +471,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
         char *buf = (char *)b; int max = (int)c;
         if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
         __asm__ volatile ("sti");
+        g_net_busy = 1;
         uint8_t *rb = 0; int rl = 0; int rc = res_fetch(src, &rb, &rl);
+        g_net_busy = 0;
         __asm__ volatile ("cli");
         if (rc != 0 || !rb) return -1;
         int n = rl < max ? rl : max;
@@ -506,7 +515,7 @@ void wm_app_exit(void)
 
 static void enqueue(struct win *w, int type, int a, int b)
 {
-    int nt = (w->evtail + 1) % 16;
+    int nt = (w->evtail + 1) % EVQ_N;
     if (nt == w->evhead) return;       /* full, drop */
     w->evq[w->evtail].type = type;
     w->evq[w->evtail].a = a;
@@ -811,7 +820,7 @@ void wm_run(void)
 
     uint64_t last = 0;
     for (;;) {
-        net_poll();                  /* drive the (polled) network RX path */
+        if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
         uint64_t now = timer_ticks();
         /* Repaint on change (dirty), else only ~2 Hz to refresh the menu-bar clock
          * -- not every frame; full-screen composites are costly under TCG. */

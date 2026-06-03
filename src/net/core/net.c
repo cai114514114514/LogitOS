@@ -31,6 +31,13 @@ int net_init(void)
 
 void tcp_poll(void) __attribute__((weak));
 
+/* Set while a blocking fetch (http_get/res_fetch, on the app thread) owns the
+ * network. The WM render thread is preempted into ~100x/s and also calls
+ * net_poll; without this, two threads would drive e1000 RX + mutate conns[]/the
+ * DNS recv slot concurrently, corrupting in-flight handshakes (intermittent
+ * rc=-3/-5). The fetch polls itself; the WM skips polling while we're busy. */
+volatile int g_net_busy = 0;
+
 void net_poll(void)
 {
     if (up) {

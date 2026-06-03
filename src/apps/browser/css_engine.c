@@ -277,9 +277,11 @@ static css_error h_node_count_siblings(void *pw, void *node,
         bool same_name, bool after, int32_t *count)
 {
     (void)pw; (void)after; struct node *n = node; int cnt = 0;
-    if (n->parent)
+    /* same_name (:nth-of-type) counts only same-tag siblings. (The old
+     * tag_is_ci(c, NULL) here passed a NULL lwc_string -> NULL deref crash.) */
+    if (n && n->parent)
         for (struct node *c = n->parent->first_child; c && c != n; c = c->next)
-            if (c->type == N_ELEM && (!same_name || tag_is_ci(c, NULL) || strcmp(c->tag, n->tag) == 0))
+            if (c->type == N_ELEM && (!same_name || strcmp(c->tag, n->tag) == 0))
                 cnt++;
     *count = cnt;
     return CSS_OK;

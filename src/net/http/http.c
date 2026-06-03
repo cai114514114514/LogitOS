@@ -12,7 +12,9 @@
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
 
-#define RAW_MAX  65536
+#define RAW_MAX  (512*1024)   /* big enough for large pages + stylesheets (github's
+                              * primer CSS is hundreds of KB); the TCP 64 KiB window
+                              * slides as fetch_once drains raw[] continuously. */
 
 static char raw[RAW_MAX];
 static int  raw_len;

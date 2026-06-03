@@ -34,6 +34,7 @@ struct tcp_conn {
     uint8_t  rx[RXBUF];
     int      rx_head, rx_tail;  /* consumed .. filled */
     int      rx_len;
+    int      adv_wnd;           /* window we last advertised (for drain updates) */
 
     /* single outstanding (data/SYN/FIN) segment for retransmit */
     uint8_t  tx[TXBUF];
@@ -93,7 +94,9 @@ static void send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     h->off = (uint8_t)((sizeof(struct tcp_hdr) / 4) << 4);
     h->flags = flags;
     int win = rx_free(c);
-    h->window = htons((uint16_t)(win > 65535 ? 65535 : win));
+    if (win > 65535) win = 65535;
+    h->window = htons((uint16_t)win);
+    c->adv_wnd = win;                       /* remember what the peer now believes */
     if (dlen > 0)
         memcpy(seg + sizeof *h, data, (size_t)dlen);
     h->checksum = 0;
@@ -256,6 +259,13 @@ int tcp_recv(int id, void *buf, int max)
         c->rx_head = (c->rx_head + 1) % RXBUF;
         c->rx_len--;
     }
+    /* Window update: the sender only learns our window from ACKs, which we send
+     * on inbound data. If a burst filled the ring and we then drained it, the
+     * sender still believes the old (small) window and stalls until its persist
+     * probe -- the classic zero/small-window stall that throttled large GETs.
+     * Proactively ACK once draining has reopened the window by a quarter. */
+    if (c->state == ESTABLISHED && rx_free(c) - c->adv_wnd >= RXBUF / 4)
+        send_seg(c, ACK, c->snd_nxt, NULL, 0);
     return n;
 }
 
