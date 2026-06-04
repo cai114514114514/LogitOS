@@ -10,6 +10,7 @@
 #include "syscall.h"
 #include "lapic.h"
 #include "smp.h"
+#include "e1000.h"
 
 void wm_app_exit(void);   /* wm.c: mark the current app dead (window reaped) */
 
@@ -42,6 +43,11 @@ void interrupt_handler(struct registers *r)
     }
     if (r->vector == 240) {        /* SMP work IPI: do this CPU's framebuffer band */
         smp_ipi_work();
+        lapic_eoi();
+        return;
+    }
+    if (r->vector == 65) {         /* e1000 NIC: drain RX into the stack */
+        e1000_irq();
         lapic_eoi();
         return;
     }

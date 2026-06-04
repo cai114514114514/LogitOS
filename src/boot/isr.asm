@@ -80,6 +80,8 @@ ISR_NOERR 46
 ISR_NOERR 47
 ; syscall vector
 ISR_NOERR 128
+; e1000 NIC (I/O APIC routed)
+ISR_NOERR 65
 ; SMP work IPI (parallel framebuffer present)
 ISR_NOERR 240
 ; LAPIC spurious vector

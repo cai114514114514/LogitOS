@@ -185,6 +185,7 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
 
 void tcp_poll(void)
 {
+    uint64_t f = net_lock();            /* exclude the RX IRQ while we walk conns[] */
     uint64_t now = timer_ticks();
     for (int i = 0; i < NCONN; i++) {
         struct tcp_conn *c = &conns[i];
@@ -199,6 +200,7 @@ void tcp_poll(void)
         if (c->state == FIN_WAIT && c->tx_flags == 0 && now - c->tx_tick > 200)
             { c->state = CLOSED; c->used = 0; }
     }
+    net_unlock(f);
 }
 
 int tcp_connect(uint32_t dst, uint16_t port)
@@ -207,6 +209,7 @@ int tcp_connect(uint32_t dst, uint16_t port)
     for (int i = 0; i < NCONN; i++) if (!conns[i].used) { id = i; break; }
     if (id < 0) return -1;
     struct tcp_conn *c = &conns[id];
+    uint64_t f = net_lock();                    /* build the conn atomically vs the RX IRQ */
     memset(c, 0, sizeof *c);
     c->used = 1;
     c->state = SYN_SENT;
@@ -218,6 +221,7 @@ int tcp_connect(uint32_t dst, uint16_t port)
 
     send_seg(c, SYN, iss, NULL, 0);
     arm_retransmit(c, SYN, iss, NULL, 0);
+    net_unlock(f);
 
     uint64_t start = timer_ticks();
     while (timer_ticks() - start < 500) {        /* ~5 s */
@@ -234,13 +238,20 @@ int tcp_send(int id, const void *buf, int len)
 {
     if (id < 0 || id >= NCONN) return -1;
     struct tcp_conn *c = &conns[id];
-    if (!c->used || c->state != ESTABLISHED) return -1;
-    if (len > TXBUF) len = TXBUF;
-    uint32_t seq = c->snd_nxt;
-    send_seg(c, PSH | ACK, seq, buf, len);
-    arm_retransmit(c, PSH | ACK, seq, buf, len);
-    c->snd_nxt += len;
-    return len;
+    uint64_t f = net_lock();
+    int rc;
+    if (!c->used || c->state != ESTABLISHED) {
+        rc = -1;
+    } else {
+        if (len > TXBUF) len = TXBUF;
+        uint32_t seq = c->snd_nxt;
+        send_seg(c, PSH | ACK, seq, buf, len);
+        arm_retransmit(c, PSH | ACK, seq, buf, len);
+        c->snd_nxt += len;
+        rc = len;
+    }
+    net_unlock(f);
+    return rc;
 }
 
 int tcp_recv(int id, void *buf, int max)
@@ -248,37 +259,49 @@ int tcp_recv(int id, void *buf, int max)
     if (max <= 0) return 0;
     if (id < 0 || id >= NCONN) return -1;
     struct tcp_conn *c = &conns[id];
-    if (!c->used) return -1;
-    int avail = c->rx_len;
-    if (avail <= 0)
-        return (c->peer_fin || c->state == CLOSED) ? -1 : 0;
-    int n = avail > max ? max : avail;
-    uint8_t *out = buf;
-    for (int i = 0; i < n; i++) {
-        out[i] = c->rx[c->rx_head];
-        c->rx_head = (c->rx_head + 1) % RXBUF;
-        c->rx_len--;
+    uint64_t f = net_lock();            /* exclude the RX IRQ's tcp_input */
+    int rc;
+    if (!c->used) {
+        rc = -1;
+    } else {
+        int avail = c->rx_len;
+        if (avail <= 0) {
+            rc = (c->peer_fin || c->state == CLOSED) ? -1 : 0;
+        } else {
+            int n = avail > max ? max : avail;
+            uint8_t *out = buf;
+            for (int i = 0; i < n; i++) {
+                out[i] = c->rx[c->rx_head];
+                c->rx_head = (c->rx_head + 1) % RXBUF;
+                c->rx_len--;
+            }
+            /* Window update: the sender learns our window only from ACKs (sent on
+             * inbound data). After draining a burst, proactively ACK so it doesn't
+             * stall on a stale small window. */
+            if (c->state == ESTABLISHED && rx_free(c) - c->adv_wnd >= RXBUF / 4)
+                send_seg(c, ACK, c->snd_nxt, NULL, 0);
+            rc = n;
+        }
     }
-    /* Window update: the sender only learns our window from ACKs, which we send
-     * on inbound data. If a burst filled the ring and we then drained it, the
-     * sender still believes the old (small) window and stalls until its persist
-     * probe -- the classic zero/small-window stall that throttled large GETs.
-     * Proactively ACK once draining has reopened the window by a quarter. */
-    if (c->state == ESTABLISHED && rx_free(c) - c->adv_wnd >= RXBUF / 4)
-        send_seg(c, ACK, c->snd_nxt, NULL, 0);
-    return n;
+    net_unlock(f);
+    return rc;
 }
 
 void tcp_close(int id)
 {
     if (id < 0 || id >= NCONN) return;
     struct tcp_conn *c = &conns[id];
-    if (!c->used || c->state != ESTABLISHED) { if (c->used) { c->used = 0; } return; }
-    uint32_t seq = c->snd_nxt;
-    send_seg(c, FIN | ACK, seq, NULL, 0);
-    arm_retransmit(c, FIN | ACK, seq, NULL, 0);
-    c->snd_nxt += 1;
-    c->state = FIN_WAIT;
+    uint64_t f = net_lock();
+    if (!c->used || c->state != ESTABLISHED) {
+        if (c->used) c->used = 0;
+    } else {
+        uint32_t seq = c->snd_nxt;
+        send_seg(c, FIN | ACK, seq, NULL, 0);
+        arm_retransmit(c, FIN | ACK, seq, NULL, 0);
+        c->snd_nxt += 1;
+        c->state = FIN_WAIT;
+    }
+    net_unlock(f);
 }
 
 int tcp_alive(int id)

@@ -22,4 +22,10 @@ int e1000_tx(const void *frame, uint16_t len);
  * number of frames delivered this call. */
 int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len));
 
+/* Interrupt-driven RX: register the handler + unmask RX causes; query the PCI
+ * IRQ line; service an interrupt (ack + drain). Polling stays as a backstop. */
+void e1000_irq_enable(void (*cb)(const uint8_t *frame, uint16_t len));
+int  e1000_irq_line(void);
+void e1000_irq(void);
+
 #endif /* AQUA_E1000_H */

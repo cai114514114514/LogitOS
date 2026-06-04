@@ -25,6 +25,7 @@ int net_init(void)
         return -1;
     memcpy(net_cfg.mac, e1000_mac(), 6);
     up = 1;
+    e1000_irq_enable(eth_input);    /* IRQ-driven RX (smp_init routes the line; net_poll still backstops) */
     kprintf("[net] ip 10.0.2.15/24 gw 10.0.2.2\n");
     return 0;
 }

@@ -4,6 +4,7 @@
 #include "pci.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "net.h"
 #include "kprintf.h"
 
 void *memset(void *, int, size_t);
@@ -13,7 +14,9 @@ void *memcpy(void *, const void *, size_t);
 #define REG_CTRL    0x0000
 #define REG_STATUS  0x0008
 #define REG_ICR     0x00C0      /* interrupt cause read */
+#define REG_IMS     0x00D0      /* interrupt mask set */
 #define REG_IMC     0x00D8      /* interrupt mask clear */
+#define ICR_RX      0xD0        /* RXT0 | RXO | RXDMT0 (receive causes) */
 #define REG_RCTL    0x0100
 #define REG_TCTL    0x0400
 #define REG_TIPG    0x0410
@@ -80,6 +83,8 @@ struct tx_desc {
 
 static volatile uint8_t *mmio;
 static uint8_t mac[6];
+static int g_irq = -1;                                  /* PCI IRQ line (GSI) */
+static void (*g_rxcb)(const uint8_t *frame, uint16_t len);   /* RX handler for IRQ mode */
 
 static struct rx_desc *rx_ring;
 static struct tx_desc *tx_ring;
@@ -142,6 +147,7 @@ int e1000_init(void)
     /* Map the NIC's MMIO BAR (128 KiB) uncached, identity. */
     vmm_map_range(dev.bar0, dev.bar0, 0x20000, VMM_WRITABLE | VMM_NOCACHE);
     mmio = (volatile uint8_t *)(uint64_t)dev.bar0;
+    g_irq = dev.irq_line;                        /* PCI IRQ line -> GSI for the I/O APIC */
 
     /* Reset, then bring the link up. CTRL.RST self-clears when reset completes;
      * poll for it instead of a blind delay. */
@@ -201,6 +207,7 @@ int e1000_tx(const void *frame, uint16_t len)
 int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len))
 {
     if (!mmio) return 0;
+    uint64_t f = net_lock();                     /* exclude the RX IRQ + mainline tcp_recv */
     int n = 0;
     while (rx_ring[rx_cur].status & RXD_STA_DD) {
         uint16_t len = rx_ring[rx_cur].length;
@@ -210,5 +217,26 @@ int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len))
         rx_cur = (rx_cur + 1) % RX_DESC;
         n++;
     }
+    net_unlock(f);
     return n;
+}
+
+/* IRQ-driven RX: register the receive handler and unmask the NIC's RX causes.
+ * Polling (net_poll) stays as a backstop, so this only adds lower latency. */
+void e1000_irq_enable(void (*cb)(const uint8_t *frame, uint16_t len))
+{
+    if (!mmio) return;
+    g_rxcb = cb;
+    reg_read(REG_ICR);                           /* clear stale causes */
+    reg_write(REG_IMS, ICR_RX);                  /* unmask receive interrupts */
+}
+
+int e1000_irq_line(void) { return g_irq; }
+
+/* Called from the NIC IRQ handler: ack causes + drain RX into the stack. */
+void e1000_irq(void)
+{
+    if (!mmio) return;
+    reg_read(REG_ICR);                           /* read-to-clear the causes */
+    if (g_rxcb) e1000_rx_poll(g_rxcb);
 }

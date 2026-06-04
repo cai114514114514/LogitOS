@@ -18,6 +18,7 @@
 #include "pic.h"
 #include "vmm.h"
 #include "fb.h"
+#include "e1000.h"
 #include "kprintf.h"
 
 void *memcpy(void *, const void *, size_t);
@@ -112,9 +113,11 @@ void smp_init(void)
         ioapic_route_isa(0,  32, bspid);     /* PIT timer  -> vec 32 */
         ioapic_route_isa(1,  33, bspid);     /* keyboard   -> vec 33 */
         ioapic_route_isa(12, 44, bspid);     /* PS/2 mouse -> vec 44 */
+        int nicg = e1000_irq_line();         /* e1000 NIC -> vec 65 (PCI: level, active-low) */
+        if (nicg > 0 && nicg < 24) ioapic_route((uint32_t)nicg, 65, bspid, 1, 1);
         pic_disable();
         g_via_apic = 1;
-        kprintf("[ioapic] device IRQs routed via I/O APIC\n");
+        kprintf("[ioapic] device IRQs routed via I/O APIC (NIC gsi=%d)\n", nicg);
     }
 
     memcpy((void *)TRAMP_PHYS, ap_tramp_start, (size_t)(ap_tramp_end - ap_tramp_start));
