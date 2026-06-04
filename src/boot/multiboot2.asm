@@ -18,9 +18,12 @@ header_start:
     dd 0x100000000 - (MB2_MAGIC + MB2_ARCH + (header_end - header_start)) ; checksum
 
     ; --- framebuffer request tag: ask GRUB for a 1280x800x32 linear mode ---
+    ; flags bit 0 = optional: with -vga none (virtio-gpu is the display) GRUB has
+    ; no VGA framebuffer to set, and we must still boot -- the kernel then drives
+    ; virtio-gpu itself. (When -vga std is present, GRUB does provide the LFB.)
     align 8
     dw 5        ; type = framebuffer
-    dw 0        ; flags
+    dw 1        ; flags = optional
     dd 20       ; size
     dd 1280     ; width
     dd 800      ; height

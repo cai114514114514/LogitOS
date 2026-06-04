@@ -3,6 +3,7 @@
 #include "fb.h"
 #include "vmm.h"
 #include "text.h"
+#include "virtio_gpu.h"
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
 struct mb2_tag { uint32_t type, size; };
@@ -23,6 +24,7 @@ struct mb2_fb_tag {
 static volatile uint8_t *fb_mem;
 static uint32_t fb_pitch, fb_w, fb_h;
 static uint8_t rpos, gpos, bpos;
+static int using_gpu;             /* fb_mem is a virtio-gpu RAM resource, not VGA MMIO */
 
 static struct surface screen;     /* wraps the back buffer (the visible screen) */
 static struct surface *T;         /* current draw target (defaults to screen) */
@@ -50,6 +52,17 @@ static void unpack(uint32_t c, int *r, int *g, int *b)
 
 int fb_init(uint64_t mb_info_addr)
 {
+    /* Prefer virtio-gpu: a normal-RAM framebuffer (fast CPU writes) presented by
+     * DMA (TRANSFER+FLUSH) instead of byte-copying into uncached VGA MMIO. */
+    if (virtio_gpu_init() == 0) {
+        fb_w = virtio_gpu_width(); fb_h = virtio_gpu_height();
+        fb_pitch = fb_w * 4;
+        rpos = 16; gpos = 8; bpos = 0;          /* B8G8R8X8 backing == 0x00RRGGBB */
+        fb_mem = (volatile uint8_t *)virtio_gpu_fb();
+        using_gpu = 1;
+        return 1;
+    }
+
     uint32_t total = *(volatile uint32_t *)mb_info_addr;
     uint8_t *p = (uint8_t *)(mb_info_addr + 8);
     uint8_t *end = (uint8_t *)(mb_info_addr + total);
@@ -165,8 +178,16 @@ void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
  * across CPUs; small ones (cursor, clock strip) copy locally (no IPI overhead). */
 void fb_present_rect(int x, int y, int w, int h)
 {
-    if (g_par_present && h >= 128) { g_par_present(x, y, w, h); return; }
-    fb_copy_rect(x, y, w, h);
+    if (g_par_present && h >= 128) g_par_present(x, y, w, h);   /* RAM-to-RAM now (fast) */
+    else fb_copy_rect(x, y, w, h);
+    if (using_gpu) virtio_gpu_flush(x, y, w, h);               /* DMA the rect to the host */
+}
+
+/* Flush a rect that was drawn straight into fb_mem (e.g. the cursor overlay):
+ * for virtio-gpu it must be DMA'd to the host; for VGA MMIO it's already live. */
+void fb_flush_rect(int x, int y, int w, int h)
+{
+    if (using_gpu) virtio_gpu_flush(x, y, w, h);
 }
 
 /* Write one pixel straight to the framebuffer (not the back buffer): for the

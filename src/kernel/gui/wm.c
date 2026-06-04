@@ -714,6 +714,7 @@ static void cursor_overlay(int x, int y)
 {
     if (cpx >= 0) fb_present_rect(cpx, cpy, CURSOR_W, CURSOR_H);
     draw_cursor_fb(x, y);
+    fb_flush_rect(x, y, CURSOR_W, CURSOR_H);   /* display the freshly-drawn cursor (virtio-gpu) */
     cpx = x; cpy = y;
 }
 

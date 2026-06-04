@@ -24,6 +24,7 @@ void fb_present_rect(int x, int y, int w, int h);   /* push one rect back->frame
 void fb_copy_rect(int x, int y, int w, int h);      /* raw band copy (parallel workers) */
 void fb_set_present_par(void (*fn)(int, int, int, int));  /* register SMP parallel present */
 void fb_fb_put(int x, int y, uint32_t color);       /* write straight to the framebuffer */
+void fb_flush_rect(int x, int y, int w, int h);     /* display a rect drawn straight into fb_mem */
 
 /* An off-screen drawing target (e.g. an application window's canvas). */
 struct surface {

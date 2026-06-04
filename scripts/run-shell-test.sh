@@ -17,7 +17,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # -snapshot: ephemeral disk writes, so the test is deterministic across runs.
 { sleep 4; printf 'uname\necho hello-aqua-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nexit\n'; sleep 5; } | \
   "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
-    -m 512M -smp 4 -accel tcg,thread=multi $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
+    -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 
 # Poll for the markers for up to ~20s.
