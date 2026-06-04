@@ -8,6 +8,8 @@
 #include "mouse.h"
 #include "sched.h"
 #include "syscall.h"
+#include "lapic.h"
+#include "smp.h"
 
 void wm_app_exit(void);   /* wm.c: mark the current app dead (window reaped) */
 
@@ -38,6 +40,13 @@ void interrupt_handler(struct registers *r)
         syscall_dispatch(r);
         return;
     }
+    if (r->vector == 240) {        /* SMP work IPI: do this CPU's framebuffer band */
+        smp_ipi_work();
+        lapic_eoi();
+        return;
+    }
+    if (r->vector == 255)          /* LAPIC spurious: no EOI, just return */
+        return;
     if (r->vector < 32) {
         if (r->cs & 3) {            /* fault came from ring 3: kill the app, keep the kernel alive */
             uint64_t cr2 = 0; __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));

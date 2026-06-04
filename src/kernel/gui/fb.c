@@ -136,22 +136,10 @@ void fb_blit_surface(int dx, int dy, const struct surface *src)
     }
 }
 
-void fb_present(void)
-{
-    if (!screen.px)
-        return;
-    for (uint32_t y = 0; y < fb_h; y++) {
-        volatile uint32_t *dst = (volatile uint32_t *)(fb_mem + y * fb_pitch);
-        const uint32_t *src = screen.px + y * fb_w;
-        for (uint32_t x = 0; x < fb_w; x++)
-            dst[x] = src[x];
-    }
-}
-
-/* Push only one rectangle of the back buffer to the framebuffer (clamped). Lets
- * the WM avoid a full 4 MiB copy when only a small region changed (e.g. erasing
- * the cursor by restoring the composite underneath it). */
-void fb_present_rect(int x, int y, int w, int h)
+/* Raw back->framebuffer copy of a clamped rect. The parallel present workers
+ * (one per CPU) each call this on a disjoint band of rows -- disjoint writes,
+ * read-only shared source, so no locking is needed. */
+void fb_copy_rect(int x, int y, int w, int h)
 {
     if (!screen.px) return;
     if (x < 0) { w += x; x = 0; }
@@ -164,6 +152,21 @@ void fb_present_rect(int x, int y, int w, int h)
         const uint32_t *src = screen.px + (uint32_t)(y + yy) * fb_w;
         for (int xx = 0; xx < w; xx++) dst[x + xx] = src[x + xx];
     }
+}
+
+/* When SMP is up, smp.c registers a parallel implementation that splits a tall
+ * rect's rows across all CPUs via work IPIs. */
+static void (*g_par_present)(int, int, int, int);
+void fb_set_present_par(void (*fn)(int, int, int, int)) { g_par_present = fn; }
+
+void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
+
+/* Push one rectangle of the back buffer to the framebuffer. Big rects are split
+ * across CPUs; small ones (cursor, clock strip) copy locally (no IPI overhead). */
+void fb_present_rect(int x, int y, int w, int h)
+{
+    if (g_par_present && h >= 128) { g_par_present(x, y, w, h); return; }
+    fb_copy_rect(x, y, w, h);
 }
 
 /* Write one pixel straight to the framebuffer (not the back buffer): for the

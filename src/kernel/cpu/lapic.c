@@ -55,6 +55,14 @@ void lapic_start_ap(uint8_t apic_id, uint8_t vec)
     }
 }
 
+/* Fixed IPI to one CPU (e.g. wake an AP to run a work item). */
+void lapic_send_ipi(uint8_t apic_id, uint8_t vec)
+{
+    wr(LAPIC_ICRHI, (uint32_t)apic_id << 24);
+    wr(LAPIC_ICRLO, 0x00004000 | vec);     /* fixed delivery, physical, assert */
+    ipi_wait();
+}
+
 /* Periodic LAPIC timer -> `vec` every ~`hz` Hz (rough; not calibrated). */
 void lapic_timer_init(uint8_t vec, uint32_t count)
 {
