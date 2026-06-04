@@ -634,25 +634,36 @@ static void draw_clock(void)
 static int finder_top(struct win *w) { return w->y + TITLEBAR_H + 36; }
 static int finder_at_root(struct win *w) { return w->cwd[0] == '/' && w->cwd[1] == 0; }
 
+/* Rows that fit between finder_top() and the footer. Directories with more
+ * entries are clipped here (and the click hit-test below uses the same bound)
+ * so the listing never spills out of the window onto the desktop. */
+static int finder_visible_rows(struct win *w)
+{
+    return (w->y + w->h - 30 - finder_top(w)) / FROW;
+}
+
 static void draw_finder(struct win *w)
 {
     int x = w->x;
     fb_text(x + 16, w->y + TITLEBAR_H + 10, w->cwd, rgb(120, 120, 128));
-    int row = 0;
+    int row = 0, vis = finder_visible_rows(w), shown = 0;
     if (!finder_at_root(w)) {                       /* ".." to go up */
         int yy = finder_top(w) + row * FROW;
         fb_round_rect(x + 16, yy, 13, 16, 3, rgb(230, 185, 90));
         fb_text(x + 38, yy, "..", rgb(60, 60, 68));
-        row++;
+        row++; shown++;
     }
-    int n = vfs_count(w->cwd);
+    int n = vfs_count(w->cwd), clipped = 0;
     for (int i = 0; i < n; i++, row++) {
+        if (shown >= vis) { clipped = n - i; break; }   /* don't draw past the window */
         int yy = finder_top(w) + row * FROW;
         int isdir = vfs_ent_is_dir(w->cwd, i);
         fb_round_rect(x + 16, yy, 13, 16, 3, isdir ? rgb(230, 185, 90) : rgb(90, 150, 240));
         fb_text(x + 38, yy, vfs_ent_name(w->cwd, i), rgb(60, 60, 68));
+        shown++;
     }
-    fb_text(x + 16, w->y + w->h - 22, "click a folder or file", rgb(170, 170, 178));
+    if (clipped > 0) fb_text(x + 16, w->y + w->h - 22, "...more (resize window)", rgb(170, 170, 178));
+    else fb_text(x + 16, w->y + w->h - 22, "click a folder or file", rgb(170, 170, 178));
 }
 
 /* ---------- window frame + compositing ---------- */
@@ -780,8 +791,8 @@ void wm_mouse_event(int x, int y, int left)
             } else if (w->kind == WK_FINDER) {
                 int row = (y - finder_top(w)) / FROW;
                 int atroot = finder_at_root(w);
-                if (row < 0) {
-                    /* nothing */
+                if (row < 0 || row >= finder_visible_rows(w)) {
+                    /* outside the (clipped) listing -- ignore */
                 } else if (!atroot && row == 0) {
                     path_up(w->cwd);                           /* go to parent */
                 } else {
@@ -870,7 +881,7 @@ void wm_init(void)
 
     /* builtin Finder window */
     wins[0].used = 1; wins[0].kind = WK_FINDER;
-    wins[0].x = 30; wins[0].y = 60; wins[0].w = 280; wins[0].h = 380;
+    wins[0].x = 30; wins[0].y = 60; wins[0].w = 280; wins[0].h = 560;
     scopy(wins[0].title, "Finder", sizeof wins[0].title);
     scopy(wins[0].cwd, "/", sizeof wins[0].cwd);
     order[norder++] = 0;
