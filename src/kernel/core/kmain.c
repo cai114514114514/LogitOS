@@ -14,6 +14,8 @@
 #include "text.h"
 #include "img.h"
 #include "smp.h"
+#include "proc.h"
+#include "file.h"
 
 #define TIMER_HZ 100
 
@@ -35,6 +37,9 @@ void kernel_main(uint64_t mb_info)
         serial_puts("\nAQUA_FB_FAIL\n");
         for (;;) __asm__ volatile ("hlt");
     }
+
+    proc_init();   /* process table */
+    file_init();   /* open-file-description pool */
 
     vfs_register(&aquafs);
     int fs_ok = (vfs_mount() == 0);

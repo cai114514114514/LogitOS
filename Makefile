@@ -93,9 +93,10 @@ $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 $(eval $(call APP_RULE,netapp,  0x44000000,Network,-,N,80,170,220))
+$(eval $(call APP_RULE,forktest,0x46000000,ForkTest,-,F,200,120,200))
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
-APPS := clock textedit monitor terminal netapp
+APPS := clock textedit monitor terminal netapp forktest
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex
 
 # --- QuickJS engine + musl libm + mini-libc, shared by the JS app and Browser ---

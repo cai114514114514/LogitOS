@@ -19,6 +19,7 @@
 #include "http.h"
 #include "kprintf.h"
 #include "usercopy.h"
+#include "proc.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
@@ -219,7 +220,12 @@ void wm_launch(const char *aex_file, const char *arg)
     scopy(ap->name, name, sizeof ap->name);
     scopy(ap->arg, arg ? arg : "", sizeof ap->arg);
 
-    thread_create_user(ap->name, entry, ustack_top, ap, space);
+    /* Every app is a process now. The proc (not the struct app) is the thread's
+     * payload; it carries the address space + fd table, and points back at the
+     * window owner via ->gui. GUI apps are launched by the WM (ppid 0). */
+    struct proc *p = proc_create(space, ap, ap->name, 0);
+    if (!p) { ap->used = ap->alive = 0; vmm_free_space(space); kfree(img); return; }
+    p->tid = thread_create_user(ap->name, entry, ustack_top, p, space);
     serial_puts("[wm] launched ");
     serial_puts(ap->name);
     serial_puts("\n");
@@ -268,9 +274,17 @@ static struct win *app_window(struct app *ap)
     return (ap && ap->win >= 0) ? &wins[ap->win] : NULL;
 }
 
+/* The running thread's window-owning app, via its process. A CLI/forked process
+ * has gui == NULL, so GUI syscalls from it simply fail (it has no window). */
+static struct app *cur_app(void)
+{
+    struct proc *p = proc_current();
+    return p ? (struct app *)p->gui : NULL;
+}
+
 long wm_gui_syscall(long num, long a, long b, long c)
 {
-    struct app *ap = sched_current_data();
+    struct app *ap = cur_app();
     if (!ap) return -1;
 
     switch (num) {
@@ -525,10 +539,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
     return -1;
 }
 
-/* Called from SYS_EXIT: mark the app dead; the WM reaps its window. */
+/* Called from proc_exit(): mark the current proc's window dead; the WM reaps it.
+ * A CLI/forked process has no window (cur_app() == NULL) -- harmless no-op. */
 void wm_app_exit(void)
 {
-    struct app *ap = sched_current_data();
+    struct app *ap = cur_app();
     if (ap) ap->alive = 0;
     dirty_full();
 }
@@ -879,6 +894,7 @@ void wm_run(void)
 
     uint64_t last = 0;
     for (;;) {
+        proc_reap();                  /* free zombie processes (GUI apps + orphans) */
         if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
         uint64_t now = timer_ticks();
         /* Composite on change: a full frame only when geometry changed; an app's

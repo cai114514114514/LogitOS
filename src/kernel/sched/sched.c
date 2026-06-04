@@ -4,6 +4,7 @@
 #include "kheap.h"
 #include "gdt.h"
 #include "vmm.h"
+#include "interrupts.h"   /* struct registers (fork) */
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -22,6 +23,7 @@ struct thread {
 
 extern void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
 extern void ring3_bootstrap(void);     /* boot/enter_user.asm */
+extern void fork_ret(void);            /* boot/enter_user.asm: pop a saved registers frame + iretq */
 
 static struct thread *current = NULL;
 static int next_id = 0;
@@ -94,6 +96,46 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     *--sp = ustack;                      /* r14 */
     *--sp = entry;                       /* r15 */
     *--sp = 0x202;                       /* rflags */
+    t->rsp = (uint64_t)sp;
+
+    t->next = current->next;
+    current->next = t;
+    return t->id;
+}
+
+/* fork(): build a child thread that, when first scheduled, resumes in ring 3
+ * exactly where the parent took the int 0x80 -- but returning 0. We copy the
+ * parent's interrupt-return frame to the top of the child's kernel stack and
+ * lay a context_switch frame below it whose `ret` lands in fork_ret, which pops
+ * that registers frame and iretq's into user mode. */
+int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3)
+{
+    struct thread *t = kmalloc(sizeof *t);
+    uint8_t *ks = kmalloc(KSTACK_SIZE);
+    t->stack = ks;
+    t->name = name;
+    t->id = next_id++;
+    t->data = data;
+    t->alive = 1;
+    t->cr3 = cr3 ? cr3 : vmm_kernel_cr3();
+    t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
+
+    /* Copy of the parent's full register frame at the top of the child kstack,
+     * with rax = 0 (the value fork returns in the child). */
+    struct registers *cr = (struct registers *)(t->kstack_top - sizeof(struct registers));
+    *cr = *pr;
+    cr->rax = 0;
+
+    /* context_switch restore frame just below it: popfq; pop r15..rbp; ret. */
+    uint64_t *sp = (uint64_t *)cr;
+    *--sp = (uint64_t)fork_ret;          /* ret target */
+    *--sp = 0;                           /* rbp */
+    *--sp = 0;                           /* rbx */
+    *--sp = 0;                           /* r12 */
+    *--sp = 0;                           /* r13 */
+    *--sp = 0;                           /* r14 */
+    *--sp = 0;                           /* r15 */
+    *--sp = 0x002;                       /* rflags (IF restored by iretq from cr->rflags) */
     t->rsp = (uint64_t)sp;
 
     t->next = current->next;

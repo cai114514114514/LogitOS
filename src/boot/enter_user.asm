@@ -9,6 +9,7 @@
 
 global enter_user
 global ring3_bootstrap
+global fork_ret
 
 section .text
 bits 64
@@ -21,6 +22,30 @@ ring3_bootstrap:
     call enter_user
 .hang:
     jmp .hang
+
+; First entry of a forked child: context_switch "returns" here with rsp pointing
+; at a copy of the parent's `struct registers` frame (rax already 0). Restore the
+; GPRs and iretq into ring 3 -- mirrors the tail of isr_common in boot/isr.asm.
+; FP/SSE state is not restored here: SysV XMM regs are caller-saved, so the
+; compiler assumes nothing survives across the fork() call in the child.
+fork_ret:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16         ; discard vector + error_code
+    iretq
 
 enter_user:
     mov ax, 0x23        ; user data selector (RPL 3)

@@ -40,6 +40,35 @@
 #define SYS_GUI_BLIT     40 /* (struct aqua_blit*) blit an RGBA bitmap into the window surface */
 #define SYS_GUI_CLIP     41 /* ((x<<16)|y, (w<<16)|h) set window clip rect; (0,0,0,0) clears it */
 
+/* M18: real processes -- fork/exec/wait, file descriptors, pipes. */
+#define SYS_FORK        50 /* () -> child pid in parent, 0 in child, <0 on error */
+#define SYS_EXECVE      51 /* (path, argv[], envp[]) -> <0 on error; never returns on success */
+#define SYS_WAITPID     52 /* (pid, int *status, opts) -> reaped pid, or <0. pid=-1: any child */
+#define SYS_GETPID      53 /* () -> current pid */
+#define SYS_OPEN        54 /* (path, flags) -> fd, or <0 */
+#define SYS_CLOSE       55 /* (fd) -> 0, or <0 */
+#define SYS_READ        56 /* (fd, buf, len) -> bytes read (0 = EOF), or <0 */
+#define SYS_LSEEK       57 /* (fd, off, whence) -> new offset, or <0 */
+#define SYS_DUP2        58 /* (oldfd, newfd) -> newfd, or <0 */
+#define SYS_PIPE        59 /* (int fds[2]) -> 0 (fds[0]=read end, fds[1]=write end), or <0 */
+#define SYS_GETCWD      60 /* (buf, max) -> length, or <0 */
+#define SYS_CHDIR       61 /* (path) -> 0, or <0 */
+#define SYS_DUP         62 /* (fd) -> new fd, or <0 */
+#define SYS_SPAWN       63 /* (path, argv[]) -> child pid, or <0 (fork+execve convenience) */
+
+/* open() flags */
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR   2
+#define O_CREAT  0x100
+#define O_TRUNC  0x200
+#define O_APPEND 0x400
+
+/* lseek() whence */
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0
 #define EV_KEY    1   /* a = character, or a KEY_* code below for non-printable keys */

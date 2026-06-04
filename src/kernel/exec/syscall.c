@@ -5,6 +5,7 @@
 #include "wm.h"
 #include "sched.h"
 #include "usercopy.h"
+#include "proc.h"
 
 void syscall_dispatch(struct registers *r)
 {
@@ -16,15 +17,29 @@ void syscall_dispatch(struct registers *r)
             r->rax = (uint64_t)-1;
             return;
         }
-        for (long i = 0; i < len; i++)
+        for (long i = 0; i < len; i++)               /* fd routing added in P2; fd 1/2 -> serial */
             serial_putc(buf[i]);
         r->rax = (uint64_t)len;
         return;
     }
     case SYS_EXIT:
-        wm_app_exit();          /* mark the app dead so the WM reaps its window */
-        thread_exit();          /* remove this thread; does not return */
+        proc_exit((int)r->rdi);  /* zombie + close fds + mark window dead; never returns */
         return;
+    case SYS_FORK:
+        r->rax = (uint64_t)proc_fork(r);
+        return;
+    case SYS_GETPID: {
+        struct proc *p = proc_current();
+        r->rax = p ? (uint64_t)p->pid : (uint64_t)-1;
+        return;
+    }
+    case SYS_WAITPID: {
+        int status = 0;
+        long rc = proc_waitpid((int)r->rdi, &status);
+        if (rc >= 0 && r->rsi) user_copy_to((void *)r->rsi, &status, sizeof(int));
+        r->rax = (uint64_t)rc;
+        return;
+    }
     default:
         /* GUI + misc system calls are handled by the window manager, which
          * resolves the calling app via the scheduler's current thread. */

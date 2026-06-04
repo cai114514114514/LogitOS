@@ -11,8 +11,7 @@
 #include "lapic.h"
 #include "smp.h"
 #include "e1000.h"
-
-void wm_app_exit(void);   /* wm.c: mark the current app dead (window reaped) */
+#include "proc.h"
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -59,8 +58,7 @@ void interrupt_handler(struct registers *r)
             kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x cr2=%p rsp=%p -- terminating app\n",
                     exception_names[r->vector & 31], (int)r->vector,
                     (void *)r->rip, (unsigned)r->error_code, (void *)cr2, (void *)r->rsp);
-            wm_app_exit();          /* mark the app dead so the WM reaps its window + frees the slot */
-            thread_exit();          /* marks thread+app dead, frees its stack, switches away */
+            proc_exit(139);         /* zombie + close fds + window dead; frees stack, switches away */
         }
         panic_exception(r);         /* kernel-mode fault is still fatal */
         return;

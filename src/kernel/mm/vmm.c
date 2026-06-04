@@ -110,6 +110,70 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
     /* No invlpg: this space is not active while being populated. */
 }
 
+/* fork(): eager-copy the private user subtree (PML4[0]/PDPT[1]) of `src_cr3`
+ * into `dst_cr3` -- every mapped user page gets a fresh frame with identical
+ * contents at the same virtual address. The kernel + framebuffer mappings are
+ * shared via the PML4 copy done in vmm_new_space, so we only walk PDPT[1]. */
+void vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
+{
+    uint64_t *spml4 = (uint64_t *)(src_cr3 & ~(uint64_t)0xFFF);
+    if (!(spml4[USER_PML4_IDX] & PRESENT)) return;
+    uint64_t *spdpt = (uint64_t *)(spml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t pde = spdpt[USER_PDPT_IDX];
+    if (!(pde & PRESENT)) return;
+    uint64_t *spd = (uint64_t *)(pde & ~(uint64_t)0xFFF);
+    for (int i = 0; i < 512; i++) {
+        if (!(spd[i] & PRESENT)) continue;
+        uint64_t *spt = (uint64_t *)(spd[i] & ~(uint64_t)0xFFF);
+        for (int j = 0; j < 512; j++) {
+            uint64_t e = spt[j];
+            if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
+            uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
+                          ((uint64_t)i << 21) | ((uint64_t)j << 12);
+            uint64_t frame = pmm_alloc();
+            if (!frame) return;          /* OOM: child gets a partial space; caller aborts */
+            memcpy((void *)frame, (void *)(e & ~(uint64_t)0xFFF), 4096);
+            vmm_map_page_in(dst_cr3, va, frame, VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0));
+        }
+    }
+}
+
+/* Free every frame + page-table page under the private user subtree (PDPT[1]).
+ * Leaves the (now-empty) PDPT[1] slot zeroed so the space can be repopulated
+ * (execve). Does NOT touch the shared kernel PDPT entries. */
+void vmm_free_user(uint64_t cr3)
+{
+    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    if (!(pml4[USER_PML4_IDX] & PRESENT)) return;
+    uint64_t *pdpt = (uint64_t *)(pml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t pde = pdpt[USER_PDPT_IDX];
+    if (!(pde & PRESENT)) return;
+    uint64_t *pd = (uint64_t *)(pde & ~(uint64_t)0xFFF);
+    for (int i = 0; i < 512; i++) {
+        if (!(pd[i] & PRESENT)) continue;
+        uint64_t *pt = (uint64_t *)(pd[i] & ~(uint64_t)0xFFF);
+        for (int j = 0; j < 512; j++)
+            if ((pt[j] & (PRESENT | USER)) == (PRESENT | USER))
+                pmm_free(pt[j] & ~(uint64_t)0xFFF);
+        pmm_free(pd[i] & ~(uint64_t)0xFFF);     /* the PT frame */
+    }
+    pmm_free(pde & ~(uint64_t)0xFFF);           /* the PD frame */
+    pdpt[USER_PDPT_IDX] = 0;
+}
+
+/* Tear down an entire address space created by vmm_new_space: the user subtree,
+ * the private PDPT frame, and the PML4 frame. The shared kernel tables (other
+ * PDPT/PML4 entries) are left untouched. Must not be called on the active CR3. */
+void vmm_free_space(uint64_t cr3)
+{
+    if (!cr3) return;
+    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t pdpt_e = pml4[USER_PML4_IDX];
+    vmm_free_user(cr3);
+    if (pdpt_e & PRESENT) pmm_free(pdpt_e & ~(uint64_t)0xFFF);   /* private PDPT frame */
+    pmm_free(cr3 & ~(uint64_t)0xFFF);                            /* PML4 frame */
+}
+
 static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
 {
     uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
