@@ -173,7 +173,7 @@ $(DISK): $(FS_FILES) $(FONTS) $(AEX) tools/mkfs.py
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c))
 
-QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
+QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
 QEMU_SMP  := -smp 4 -accel tcg,thread=multi   # 4 cores, parallel TCG threads
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time

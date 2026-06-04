@@ -16,6 +16,7 @@
 #include "smp.h"
 #include "proc.h"
 #include "file.h"
+#include "virtio_blk.h"
 
 #define TIMER_HZ 100
 
@@ -40,6 +41,8 @@ void kernel_main(uint64_t mb_info)
 
     proc_init();   /* process table */
     file_init();   /* open-file-description pool */
+
+    virtio_blk_init();   /* prefer virtio-blk for the disk; aquafs falls back to ATA */
 
     vfs_register(&aquafs);
     int fs_ok = (vfs_mount() == 0);

@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "aquafs.h"
-#include "ata.h"
+#include "blkdev.h"
 #include "kheap.h"
 #include "kprintf.h"
 
@@ -61,8 +61,8 @@ static int streq(const char *a, const char *b)
     return *a == *b;
 }
 
-static int bread(uint32_t blk, void *buf)        { return ata_read(blk * SPB, SPB, buf); }
-static int bwrite(uint32_t blk, const void *buf) { return ata_write(blk * SPB, SPB, buf); }
+static int bread(uint32_t blk, void *buf)        { return blk_read(blk * SPB, SPB, buf); }
+static int bwrite(uint32_t blk, const void *buf) { return blk_write(blk * SPB, SPB, buf); }
 
 static int  bit_test(uint32_t b)  { return bitmap[b >> 3] & (1 << (b & 7)); }
 static void bit_set(uint32_t b)   { bitmap[b >> 3] |=  (1 << (b & 7)); }
@@ -374,7 +374,7 @@ static uint32_t resolve_parent(const char *path, char *leaf)
 static int aquafs_mount(void)
 {
     uint8_t b0[SECTOR];
-    if (ata_read(0, 1, b0)) return -1;
+    if (blk_read(0, 1, b0)) return -1;
     uint32_t *w = (uint32_t *)b0;
     if (w[0] != MAGIC || w[1] != VERSION || w[2] != BS) return -1;
     sb.magic = w[0]; sb.version = w[1]; sb.block_size = w[2];

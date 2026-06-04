@@ -12,7 +12,7 @@ LOG="$(mktemp)"
 QEMU="${QEMU:-qemu-system-x86_64}"
 
 DISK_ARGS=""
-[ -n "$DISK" ] && DISK_ARGS="-drive file=$DISK,format=raw,if=ide,index=0,media=disk -boot d"
+[ -n "$DISK" ] && DISK_ARGS="-drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d"
 
 cleanup() {
     [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null

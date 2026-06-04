@@ -13,6 +13,7 @@
 #include "e1000.h"
 #include "proc.h"
 #include "ata.h"
+#include "virtio.h"
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -71,7 +72,7 @@ void interrupt_handler(struct registers *r)
     if (irq == 0) {
         timer_tick();
         if (apic) lapic_eoi(); else pic_eoi(0);   /* EOI before we possibly switch stacks */
-        if (!ata_busy())   /* don't preempt mid-PIO-transfer (would abandon the controller) */
+        if (!ata_busy() && !virtio_busy())  /* don't preempt mid block-I/O transfer */
             schedule();    /* preempt: round-robin to the next thread */
         return;
     }
