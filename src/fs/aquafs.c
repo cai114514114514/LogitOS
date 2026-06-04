@@ -430,21 +430,16 @@ static int aquafs_mkdir(const char *path)
     if (parent == NOINO) return -1;
     struct dinode *pd = iget(parent);
     if (!pd || pd->type != T_DIR) return -1;
-    int ni = ialloc(T_DIR);
+    int ni = ialloc(T_DIR);          /* ialloc zeroes the inode (size 0, no blocks) */
     if (ni < 0) return -1;
     struct dinode *nd = iget((uint32_t)ni);
-    uint32_t blk = balloc();
-    if (!blk) { nd->type = T_FREE; return -1; }
-    memset(blk_buf, 0, BS);
-    struct dirent *de = (struct dirent *)blk_buf;
-    de[0].ino = (uint32_t)ni; de[0].name[0] = '.'; de[0].name[1] = 0;
-    de[1].ino = parent;       de[1].name[0] = '.'; de[1].name[1] = '.'; de[1].name[2] = 0;
-    if (bwrite(blk, blk_buf)) { bfree(blk); nd->type = T_FREE; return -1; }
-    nd->direct[0] = blk;
-    nd->size = 2 * DIRENT_SZ;
+    /* Create an EMPTY directory: "." and ".." are NOT stored on disk -- path
+     * resolution (resolve()/proc_resolve) handles . and .. itself, and the Finder
+     * draws ".." on its own. Storing them made `ls` list them, made an empty dir
+     * look non-empty (couldn't rmdir), and was inconsistent with mkfs-built dirs. */
     if (flush_inode((uint32_t)ni)) return -1;
     if (dir_add(parent, leaf, (uint32_t)ni) < 0) {
-        inode_trunc(nd); nd->type = T_FREE;
+        nd->type = T_FREE;
         flush_inode((uint32_t)ni); flush_bitmap();
         return -1;
     }
