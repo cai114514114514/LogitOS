@@ -109,6 +109,23 @@ void syscall_dispatch(struct registers *r)
     case SYS_FORK:
         r->rax = (uint64_t)proc_fork(r);
         return;
+    case SYS_EXECVE:
+        r->rax = (uint64_t)proc_execve(r);   /* on success, rewrites r and "returns" into the new program */
+        return;
+    case SYS_PIPE: {
+        struct proc *p = proc_current();
+        int *ufds = (int *)r->rdi;
+        if (!p || !user_range_ok(ufds, sizeof(int) * 2, 1)) { r->rax = (uint64_t)-1; return; }
+        struct file *rf = 0, *wf = 0;
+        if (file_pipe(&rf, &wf) < 0) { r->rax = (uint64_t)-1; return; }
+        int rfd = proc_fd_alloc(p, rf);
+        int wfd = proc_fd_alloc(p, wf);
+        if (rfd < 0 || wfd < 0) { file_close(rf); file_close(wf); r->rax = (uint64_t)-1; return; }
+        int fds[2] = { rfd, wfd };
+        user_copy_to(ufds, fds, sizeof fds);
+        r->rax = 0;
+        return;
+    }
     case SYS_GETPID: {
         struct proc *p = proc_current();
         r->rax = p ? (uint64_t)p->pid : (uint64_t)-1;

@@ -39,6 +39,7 @@ struct proc  *proc_by_pid(int pid);
 long          proc_fork(struct registers *r);
 
 void          proc_exit(int code);                  /* never returns */
+long          proc_execve(struct registers *r);     /* replace the user address space (exec.c) */
 long          proc_waitpid(int pid, int *status);   /* reap a zombie child */
 void          proc_reap(void);                      /* free orphan/GUI zombies (WM loop) */
 

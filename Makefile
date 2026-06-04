@@ -97,7 +97,25 @@ $(eval $(call APP_RULE,forktest,0x46000000,ForkTest,-,F,200,120,200))
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 APPS := clock textedit monitor terminal netapp forktest
-AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex
+
+# --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
+# common base inside the private user region (0x40000000..0x7FFFFFFF). They are
+# packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
+define CLI_RULE
+$(BUILD)/$(1).elf: $(APPDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/aqua.h
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
+	$(CC) $(UCFLAGS) -c $(APPDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(BUILD)/apps/$(1).cli.o
+$(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
+endef
+
+CLI := echo
+$(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
+CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
+
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX)
 
 # --- QuickJS engine + musl libm + mini-libc, shared by the JS app and Browser ---
 QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
@@ -153,7 +171,8 @@ $(DISK): $(FS_FILES) $(FONTS) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
-	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex
+	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
+	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c))
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache

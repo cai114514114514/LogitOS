@@ -48,10 +48,45 @@ static void test_fork(void)
     } else sp("  fork FAILED\n");
 }
 
+static void test_pipe(void)
+{
+    sp("SYSTEST: pipe\n");
+    int fds[2];
+    if (sys_pipe(fds) < 0) { sp("  pipe FAILED\n"); return; }
+    int pid = sys_fork();
+    if (pid == 0) {                       /* child: writer */
+        sys_close(fds[0]);
+        sys_write(fds[1], "pipe-msg", 8);
+        sys_close(fds[1]);
+        app_exit(0);
+    }
+    sys_close(fds[1]);                     /* parent: reader */
+    char buf[32]; int n = sys_read(fds[0], buf, sizeof buf);
+    sp("  read("); sn(n); sp(")="); if (n > 0) sys_write(1, buf, n); sp("\n");
+    sys_close(fds[0]);
+    sys_waitpid(pid, 0);
+}
+
+static void test_exec(void)
+{
+    sp("SYSTEST: exec /bin/echo\n");
+    int pid = sys_fork();
+    if (pid == 0) {                        /* child: become echo */
+        char *av[] = { "echo", "hello", "from", "exec", 0 };
+        sys_execve("/bin/echo", av, 0);
+        sp("  EXEC FAILED\n");
+        app_exit(1);
+    }
+    int st = 0; int r = sys_waitpid(pid, &st);
+    sp("  child="); sn(r); sp(" status="); sn(st); sp("\n");
+}
+
 void app_main(void)
 {
     test_fd();
     test_fork();
+    test_pipe();
+    test_exec();
     sp("SYSTEST: done\n");
     app_exit(0);
 }
