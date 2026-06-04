@@ -116,11 +116,24 @@ void fb_target(struct surface *s)
     T = s ? s : &screen;
 }
 
+/* Composite a window surface onto the current target with a direct row copy
+ * (bounds-clamped once), not per-pixel fb_put. The browser's 1180x620 surface
+ * is ~700K pixels; per-pixel fb_put (call + bounds check each) cost ~60-100 ms
+ * under TCG and dominated every frame -- this is several times faster. */
 void fb_blit_surface(int dx, int dy, const struct surface *src)
 {
-    for (int y = 0; y < src->h; y++)
-        for (int x = 0; x < src->w; x++)
-            fb_put(dx + x, dy + y, src->px[y * src->w + x]);
+    struct surface *t = T;
+    if (!t || !t->px || !src->px) return;
+    for (int y = 0; y < src->h; y++) {
+        int ty = dy + y;
+        if (ty < 0 || ty >= t->h) continue;
+        int x0 = 0, x1 = src->w;
+        if (dx + x0 < 0) x0 = -dx;
+        if (dx + x1 > t->w) x1 = t->w - dx;
+        const uint32_t *srow = src->px + (uint32_t)y * src->w;
+        uint32_t *drow = t->px + (uint32_t)ty * t->w + dx;
+        for (int x = x0; x < x1; x++) drow[x] = srow[x];
+    }
 }
 
 void fb_present(void)
@@ -133,6 +146,33 @@ void fb_present(void)
         for (uint32_t x = 0; x < fb_w; x++)
             dst[x] = src[x];
     }
+}
+
+/* Push only one rectangle of the back buffer to the framebuffer (clamped). Lets
+ * the WM avoid a full 4 MiB copy when only a small region changed (e.g. erasing
+ * the cursor by restoring the composite underneath it). */
+void fb_present_rect(int x, int y, int w, int h)
+{
+    if (!screen.px) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)fb_w) w = (int)fb_w - x;
+    if (y + h > (int)fb_h) h = (int)fb_h - y;
+    if (w <= 0 || h <= 0) return;
+    for (int yy = 0; yy < h; yy++) {
+        volatile uint32_t *dst = (volatile uint32_t *)(fb_mem + (uint32_t)(y + yy) * fb_pitch);
+        const uint32_t *src = screen.px + (uint32_t)(y + yy) * fb_w;
+        for (int xx = 0; xx < w; xx++) dst[x + xx] = src[x + xx];
+    }
+}
+
+/* Write one pixel straight to the framebuffer (not the back buffer): for the
+ * cursor overlay, which must not contaminate the cursor-free composite. */
+void fb_fb_put(int x, int y, uint32_t color)
+{
+    if (x < 0 || y < 0 || x >= (int)fb_w || y >= (int)fb_h) return;
+    volatile uint32_t *dst = (volatile uint32_t *)(fb_mem + (uint32_t)y * fb_pitch);
+    dst[x] = color;
 }
 
 /* Text now goes through the anti-aliased Unicode engine (kernel/text.c). These

@@ -68,9 +68,27 @@ static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
 static int mx, my, mleft;
 static int dragging = -1, drag_dx, drag_dy;
 static volatile int dirty = 1;
+static int dr_full = 1;                  /* whole screen needs recompositing */
+static int drx0, dry0, drx1, dry1;       /* else: accumulated dirty rect (half-open) */
 
 static uint32_t *back, *bg;
 static int W, H;
+
+static void dirty_full(void) { dr_full = 1; dirty = 1; }
+/* Union a window-sized region into the dirty rect (app flushes only repaint
+ * their own window -> browser scroll / clock ticks skip the full recomposite). */
+static void dirty_rect(int x, int y, int w, int h)
+{
+    int x1 = x + w, y1 = y + h;
+    if (x < 0) x = 0; if (y < 0) y = 0; if (x1 > W) x1 = W; if (y1 > H) y1 = H;
+    if (x1 <= x || y1 <= y) return;
+    if (!dirty) { drx0 = x; dry0 = y; drx1 = x1; dry1 = y1; }   /* first rect this frame */
+    else if (!dr_full) {                                        /* union (unless already full) */
+        if (x < drx0) drx0 = x; if (y < dry0) dry0 = y;
+        if (x1 > drx1) drx1 = x1; if (y1 > dry1) dry1 = y1;
+    }
+    dirty = 1;
+}
 static int next_app_id = 1;
 static int cascade;
 
@@ -153,7 +171,7 @@ void wm_launch(const char *aex_file, const char *arg)
     struct app *exist = find_live_app(name);
     if (exist) {                            /* single instance: just focus it */
         if (exist->win >= 0) raise_win(exist->win);
-        dirty = 1;
+        dirty_full();
         return;
     }
 
@@ -281,7 +299,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->evhead = w->evtail = 0; w->wants_close = 0;
         ap->win = wi;
         raise_win(wi);
-        dirty = 1;
+        dirty_full();
         return 0;
     }
     case SYS_GUI_CLEAR: {
@@ -313,9 +331,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
         fb_target(&w->surf); text_draw_mono(x, y, text, cell, color); fb_target(NULL);
         return 0;
     }
-    case SYS_GUI_FLUSH:
-        dirty = 1;
+    case SYS_GUI_FLUSH: {
+        struct win *w = app_window(ap);          /* repaint just this app's window */
+        if (w) dirty_rect(w->x, w->y, w->w, w->h); else dirty_full();
         return 0;
+    }
     case SYS_POLL_EVENT: {
         struct win *w = app_window(ap); if (!w) return 0;
         struct aqua_event *ev = (struct aqua_event *)a;
@@ -510,7 +530,7 @@ void wm_app_exit(void)
 {
     struct app *ap = sched_current_data();
     if (ap) ap->alive = 0;
-    dirty = 1;
+    dirty_full();
 }
 
 static void enqueue(struct win *w, int type, int a, int b)
@@ -636,27 +656,55 @@ static const char *cursor_bmp[] = {
     "#","##","#.#","#..#","#...#","#....#","#.....#","#......#","#.......#",
     "#........#","#.....####","#..#..#","#.# #..#","##  #..#","#    #..#","     #..#","      ##",
 };
-static void draw_cursor(int x, int y)
+/* The cursor is an overlay drawn straight onto the framebuffer, on top of the
+ * cursor-free composite in `back`. Moving the mouse then costs two tiny rect
+ * copies instead of a full ~25 ms screen recomposite + present. */
+#define CURSOR_W 16
+#define CURSOR_H 20
+static int cpx = -1, cpy = -1;          /* where the cursor was last drawn */
+static volatile int cursor_moved;       /* mouse moved with no content change */
+
+static void draw_cursor_fb(int x, int y)
 {
     uint32_t o = rgb(20, 20, 26), f = rgb(255, 255, 255);
     int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
     for (int r = 0; r < rows; r++)
         for (int c = 0; cursor_bmp[r][c]; c++) {
             char p = cursor_bmp[r][c];
-            if (p == '#') fb_put(x + c, y + r, o);
-            else if (p == '.') fb_put(x + c, y + r, f);
+            if (p == '#') fb_fb_put(x + c, y + r, o);
+            else if (p == '.') fb_fb_put(x + c, y + r, f);
         }
 }
 
-void wm_render(void)
+/* Erase the cursor at its previous spot (restore the composite from `back`),
+ * then draw it at (x,y). Both touch only ~CURSOR_W x CURSOR_H pixels. */
+static void cursor_overlay(int x, int y)
 {
-    reap();
-    blit(back, bg, W * H);                 /* restore wallpaper + menu + dock */
+    if (cpx >= 0) fb_present_rect(cpx, cpy, CURSOR_W, CURSOR_H);
+    draw_cursor_fb(x, y);
+    cpx = x; cpy = y;
+}
+
+/* Recomposite only region [rx0,ry0)..(rx1,ry1) and push just that rect to the
+ * framebuffer. A full frame is the whole-screen case; an app's flush only dirties
+ * its own window rect, so browser scroll / clock ticks no longer pay the ~25 ms
+ * full-screen recomposite + present. fb's clip confines every draw to the rect. */
+static void wm_render_region(int rx0, int ry0, int rx1, int ry1)
+{
+    if (rx0 < 0) rx0 = 0; if (ry0 < 0) ry0 = 0;
+    if (rx1 > W) rx1 = W; if (ry1 > H) ry1 = H;
+    if (rx1 <= rx0 || ry1 <= ry0) return;
+    for (int y = ry0; y < ry1; y++)        /* restore wallpaper+menu+dock in the rect */
+        blit(back + y * W + rx0, bg + y * W + rx0, rx1 - rx0);
     fb_target(NULL);
-    draw_clock();
+    if (ry0 < MENUBAR_H) draw_clock();     /* menu-bar clock only if the rect touches it */
+    /* Redraw windows that intersect the rect, fully (no per-pixel clip -- that
+     * was ~3x slower under TCG). Drawing into `back` outside the rect is wasted
+     * but harmless; only the rect is pushed to the framebuffer. */
     for (int i = 0; i < norder; i++) {
         struct win *w = &wins[order[i]];
         if (!w->used) continue;
+        if (w->x >= rx1 || w->y >= ry1 || w->x + w->w <= rx0 || w->y + w->h <= ry0) continue;
         int focused = (i == norder - 1);
         draw_frame(w, focused);
         if (w->kind == WK_FINDER)
@@ -664,8 +712,13 @@ void wm_render(void)
         else if (w->surf.px)
             fb_blit_surface(w->x, w->y + TITLEBAR_H, &w->surf);
     }
-    draw_cursor(mx, my);
-    fb_present();
+    fb_present_rect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+}
+
+void wm_render(void)
+{
+    reap();
+    wm_render_region(0, 0, W, H);          /* full frame; cursor drawn as overlay after */
 }
 
 /* ---------- input ---------- */
@@ -676,14 +729,17 @@ void wm_key(int c)
 {
     if (norder == 0) return;
     struct win *w = &wins[order[norder - 1]];
-    if (w->kind == WK_APP) { enqueue(w, EV_KEY, (int)c, 0); dirty = 1; }
+    if (w->kind == WK_APP) { enqueue(w, EV_KEY, (int)c, 0); dirty_rect(w->x, w->y, w->w, w->h); }
 }
 
 void wm_mouse_event(int x, int y, int left)
 {
+    int moved = (x != mx || y != my);
+    int content = 0;                       /* did anything other than the cursor change? */
     mx = x; my = y;
 
     if (left && !mleft) {
+        content = 1;
         int hitorder = -1;
         for (int i = norder - 1; i >= 0; i--) {
             struct win *w = &wins[order[i]];
@@ -735,9 +791,12 @@ void wm_mouse_event(int x, int y, int left)
         }
     }
     if (!left) dragging = -1;
-    if (dragging >= 0 && left) { wins[dragging].x = x - drag_dx; wins[dragging].y = y - drag_dy; }
+    if (dragging >= 0 && left) { wins[dragging].x = x - drag_dx; wins[dragging].y = y - drag_dy; content = 1; }
     mleft = left;
-    dirty = 1;
+    /* Pure cursor motion just moves the overlay (cheap); only recomposite the
+     * whole screen when content actually changed (click, window drag). */
+    if (content) dirty_full();
+    else if (moved) cursor_moved = 1;
 }
 
 /* ---------- registry + init ---------- */
@@ -822,9 +881,22 @@ void wm_run(void)
     for (;;) {
         if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
         uint64_t now = timer_ticks();
-        /* Repaint on change (dirty), else only ~2 Hz to refresh the menu-bar clock
-         * -- not every frame; full-screen composites are costly under TCG. */
-        if (dirty || now - last >= 50) { dirty = 0; last = now; wm_render(); }
+        /* Composite on change: a full frame only when geometry changed; an app's
+         * flush repaints just its window rect. Else ~2 Hz refresh of the menu-bar
+         * clock (a small strip). Pure cursor motion is a cheap overlay. */
+        if (dirty) {
+            dirty = 0; last = now;
+            if (dr_full) { dr_full = 0; wm_render(); }
+            else wm_render_region(drx0, dry0, drx1, dry1);
+            cursor_overlay(mx, my); cursor_moved = 0;
+        } else if (now - last >= 50) {
+            last = now;
+            wm_render_region(W - 260, 0, W, MENUBAR_H);   /* just the menu-bar clock */
+            cursor_overlay(mx, my); cursor_moved = 0;
+        } else if (cursor_moved) {
+            cursor_moved = 0;
+            cursor_overlay(mx, my);                       /* cheap: just move the overlay */
+        }
         /* Idle until the next interrupt instead of spinning schedule(): the timer
          * IRQ (100 Hz) preempts + round-robins the app threads, and mouse/keyboard
          * IRQs wake us immediately. This stops the whole system busy-spinning --

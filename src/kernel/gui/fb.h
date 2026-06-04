@@ -20,6 +20,8 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
  * then blit to the visible framebuffer with fb_present(). */
 void fb_set_backbuffer(uint32_t *buf);
 void fb_present(void);
+void fb_present_rect(int x, int y, int w, int h);   /* push one rect back->framebuffer */
+void fb_fb_put(int x, int y, uint32_t color);       /* write straight to the framebuffer */
 
 /* An off-screen drawing target (e.g. an application window's canvas). */
 struct surface {
