@@ -76,6 +76,14 @@ void syscall_dispatch(struct registers *r)
         r->rax = (uint64_t)fd;
         return;
     }
+    case SYS_SETNB: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)-1; return; }
+        f->flags |= O_NONBLOCK;
+        r->rax = 0;
+        return;
+    }
     case SYS_DUP2: {
         struct proc *p = proc_current(); int old = (int)r->rdi, nw = (int)r->rsi;
         struct file *f = p ? proc_fd_get(p, old) : NULL;

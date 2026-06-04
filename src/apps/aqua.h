@@ -57,6 +57,7 @@ static inline int  sys_dup2(int o, int n) { return (int)_sys(SYS_DUP2, o, n, 0);
 static inline int  sys_pipe(int fds[2]) { return (int)_sys(SYS_PIPE, (long)fds, 0, 0); }
 static inline int  sys_getcwd(char *b, int n) { return (int)_sys(SYS_GETCWD, (long)b, n, 0); }
 static inline int  sys_chdir(const char *p) { return (int)_sys(SYS_CHDIR, (long)p, 0, 0); }
+static inline int  sys_set_nonblock(int fd) { return (int)_sys(SYS_SETNB, fd, 0, 0); }
 static inline int  sysinfo(char *b, int m) { return (int)_sys(SYS_SYSINFO, (long)b, m, 0); }
 static inline int  file_count(void) { return (int)_sys(SYS_FILE_COUNT, 0, 0, 0); }
 static inline int  file_name(int i, char *b, int m) { return (int)_sys(SYS_FILE_NAME, i, (long)b, m); }

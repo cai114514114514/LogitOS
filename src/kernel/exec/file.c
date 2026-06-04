@@ -57,6 +57,7 @@ static long pipe_read(struct file *f, void *vbuf, long len)
     char *out = (char *)vbuf;
     while (p->count == 0) {
         if (p->writers == 0) return 0;     /* EOF: all write ends closed */
+        if (f->flags & O_NONBLOCK) return EAGAIN_RC;   /* would block */
         schedule();                        /* wait for a writer */
     }
     long n = 0;

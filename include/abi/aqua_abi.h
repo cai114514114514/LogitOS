@@ -55,14 +55,17 @@
 #define SYS_CHDIR       61 /* (path) -> 0, or <0 */
 #define SYS_DUP         62 /* (fd) -> new fd, or <0 */
 #define SYS_SPAWN       63 /* (path, argv[]) -> child pid, or <0 (fork+execve convenience) */
+#define SYS_SETNB       64 /* (fd) -> 0; mark the fd non-blocking (reads return -2/EAGAIN) */
 
 /* open() flags */
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_RDWR   2
-#define O_CREAT  0x100
-#define O_TRUNC  0x200
-#define O_APPEND 0x400
+#define O_CREAT    0x100
+#define O_TRUNC    0x200
+#define O_APPEND   0x400
+#define O_NONBLOCK 0x800
+#define EAGAIN_RC  (-2)    /* a non-blocking read with no data yet (vs 0 = EOF) */
 
 /* lseek() whence */
 #define SEEK_SET 0

@@ -20,6 +20,7 @@
 #include "kprintf.h"
 #include "usercopy.h"
 #include "proc.h"
+#include "file.h"
 
 #define MAXWIN     8
 #define MENUBAR_H  24
@@ -225,6 +226,11 @@ void wm_launch(const char *aex_file, const char *arg)
      * window owner via ->gui. GUI apps are launched by the WM (ppid 0). */
     struct proc *p = proc_create(space, ap, ap->name, 0);
     if (!p) { ap->used = ap->alive = 0; vmm_free_space(space); kfree(img); return; }
+    /* Give every app real stdio (fd 0/1/2 = the serial console). Apps that only
+     * draw never touch them, but it means pipe()/dup2() in an app (e.g. the
+     * Terminal spawning a shell) get fds >= 3 and don't collide with 0/1/2. */
+    { struct file *tty = file_open_tty();
+      if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; } }
     p->tid = thread_create_user(ap->name, entry, ustack_top, p, space);
     serial_puts("[wm] launched ");
     serial_puts(ap->name);
