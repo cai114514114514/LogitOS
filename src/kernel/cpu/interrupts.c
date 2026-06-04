@@ -61,10 +61,11 @@ void interrupt_handler(struct registers *r)
     }
 
     int irq = (int)r->vector - 32;
+    int apic = smp_irq_via_apic();      /* EOI to the LAPIC once IRQs go via I/O APIC */
 
     if (irq == 0) {
         timer_tick();
-        pic_eoi(0);        /* EOI before we possibly switch stacks */
+        if (apic) lapic_eoi(); else pic_eoi(0);   /* EOI before we possibly switch stacks */
         schedule();        /* preempt: round-robin to the next thread */
         return;
     }
@@ -73,5 +74,5 @@ void interrupt_handler(struct registers *r)
     else if (irq == 12)
         mouse_handle();     /* PS/2 mouse */
 
-    pic_eoi(irq);
+    if (apic) lapic_eoi(); else pic_eoi(irq);
 }

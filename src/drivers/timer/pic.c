@@ -35,3 +35,10 @@ void pic_eoi(int irq)
         outb(PIC2_CMD, PIC_EOI);
     outb(PIC1_CMD, PIC_EOI);
 }
+
+/* Mask every PIC line. Used once we route IRQs through the I/O APIC instead. */
+void pic_disable(void)
+{
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+}

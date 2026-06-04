@@ -8,4 +8,7 @@ void pic_remap(void);
 /* Signal end-of-interrupt for the given IRQ line (0..15). */
 void pic_eoi(int irq);
 
+/* Mask all PIC lines (when IRQs are routed through the I/O APIC instead). */
+void pic_disable(void);
+
 #endif /* AQUA_PIC_H */

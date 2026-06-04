@@ -33,9 +33,18 @@ static uint32_t g_lapic_base = 0xFEE00000;   /* default; MADT may override */
 static uint8_t  g_apic_ids[ACPI_MAX_CPUS];
 static int      g_ncpu;
 
+static uint32_t g_ioapic_addr;               /* IOAPIC MMIO base (0 if none) */
+static uint32_t g_ioapic_gsibase;
+static uint32_t g_irq_gsi[16];               /* ISA IRQ -> GSI (identity unless overridden) */
+static uint16_t g_irq_flags[16];             /* override polarity/trigger flags */
+
 uint32_t acpi_lapic_base(void) { return g_lapic_base; }
 int      acpi_cpu_count(void)  { return g_ncpu; }
 uint8_t  acpi_cpu_apic_id(int i){ return (i >= 0 && i < g_ncpu) ? g_apic_ids[i] : 0; }
+uint32_t acpi_ioapic_addr(void){ return g_ioapic_addr; }
+uint32_t acpi_ioapic_gsibase(void){ return g_ioapic_gsibase; }
+uint32_t acpi_gsi_for_irq(int irq){ return (irq >= 0 && irq < 16) ? g_irq_gsi[irq] : (uint32_t)irq; }
+uint16_t acpi_gsi_flags(int irq){ return (irq >= 0 && irq < 16) ? g_irq_flags[irq] : 0; }
 
 static int sum_ok(const void *p, int len)
 {
@@ -59,6 +68,7 @@ static void parse_madt(const struct sdt_header *madt)
 {
     const uint8_t *p = (const uint8_t *)madt;
     g_lapic_base = *(const uint32_t *)(p + 36);          /* MADT local APIC address */
+    for (int i = 0; i < 16; i++) { g_irq_gsi[i] = (uint32_t)i; g_irq_flags[i] = 0; }
     const uint8_t *e = p + madt->length;
     p += 44;                                             /* skip MADT fixed header */
     while (p + 2 <= e) {
@@ -69,6 +79,17 @@ static void parse_madt(const struct sdt_header *madt)
             uint32_t flags = *(const uint32_t *)(p + 4);
             if ((flags & 1) && g_ncpu < ACPI_MAX_CPUS)   /* enabled */
                 g_apic_ids[g_ncpu++] = apic_id;
+        } else if (type == 1 && len >= 12) {             /* I/O APIC */
+            if (!g_ioapic_addr) {
+                g_ioapic_addr    = *(const uint32_t *)(p + 4);
+                g_ioapic_gsibase = *(const uint32_t *)(p + 8);
+            }
+        } else if (type == 2 && len >= 10) {             /* Interrupt Source Override */
+            uint8_t src = p[3];
+            if (src < 16) {
+                g_irq_gsi[src]   = *(const uint32_t *)(p + 4);
+                g_irq_flags[src] = *(const uint16_t *)(p + 8);
+            }
         } else if (type == 5 && len >= 12) {             /* LAPIC address override (64-bit) */
             g_lapic_base = (uint32_t)*(const uint64_t *)(p + 4);
         }

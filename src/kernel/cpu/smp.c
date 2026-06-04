@@ -13,7 +13,9 @@
 #include "smp.h"
 #include "acpi.h"
 #include "lapic.h"
+#include "ioapic.h"
 #include "idt.h"
+#include "pic.h"
 #include "vmm.h"
 #include "fb.h"
 #include "kprintf.h"
@@ -32,6 +34,9 @@ extern uint8_t ap_tramp_start[], ap_tramp_end[];
 static uint8_t  cpu_apicid[MAXCPU];     /* index -> APIC id; index 0 = BSP */
 static volatile int g_online = 1;       /* CPUs online (incl. BSP) */
 static volatile int ap_ack;             /* bringup handshake */
+static volatile int g_via_apic;         /* device IRQs go through the I/O APIC */
+
+int smp_irq_via_apic(void) { return g_via_apic; }
 
 struct band { volatile int done; int x, y, w, h; };
 static struct band g_band[MAXCPU];
@@ -97,6 +102,20 @@ void smp_init(void)
     lapic_init();
     if (n < 1) { kprintf("[smp] no CPUs via ACPI; uniprocessor\n"); return; }
     kprintf("[smp] %d CPU(s) detected, BSP apic_id=%d\n", n, (int)lapic_id());
+
+    /* Switch device IRQs from the legacy PIC to the I/O APIC: route the ISA
+     * lines (timer/keyboard/mouse) to the BSP and mask the PIC. EOI then goes
+     * to the LAPIC (see interrupts.c). */
+    ioapic_init();
+    if (ioapic_present()) {
+        uint8_t bspid = (uint8_t)lapic_id();
+        ioapic_route_isa(0,  32, bspid);     /* PIT timer  -> vec 32 */
+        ioapic_route_isa(1,  33, bspid);     /* keyboard   -> vec 33 */
+        ioapic_route_isa(12, 44, bspid);     /* PS/2 mouse -> vec 44 */
+        pic_disable();
+        g_via_apic = 1;
+        kprintf("[ioapic] device IRQs routed via I/O APIC\n");
+    }
 
     memcpy((void *)TRAMP_PHYS, ap_tramp_start, (size_t)(ap_tramp_end - ap_tramp_start));
     AP_ARGS[0] = vmm_kernel_cr3();
