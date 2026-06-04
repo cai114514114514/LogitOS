@@ -111,7 +111,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := echo
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -189,6 +189,9 @@ debug: $(ISO) $(DISK)
 
 test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)
+
+test-shell: $(ISO) $(DISK)
+	@sh scripts/run-shell-test.sh $(ISO) $(DISK)
 
 clean:
 	rm -rf $(BUILD)

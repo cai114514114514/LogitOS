@@ -9,6 +9,7 @@
 #include "proc.h"
 #include "file.h"
 #include "vfs.h"
+#include "rtc.h"
 
 void syscall_dispatch(struct registers *r)
 {
@@ -100,6 +101,76 @@ void syscall_dispatch(struct registers *r)
         char abs[128]; proc_resolve(p, path, abs, sizeof abs);
         if (vfs_count(abs) < 0) { r->rax = (uint64_t)-1; return; }   /* not a directory */
         int i = 0; for (; i < (int)sizeof(p->cwd) - 1 && abs[i]; i++) p->cwd[i] = abs[i]; p->cwd[i] = 0;
+        r->rax = 0;
+        return;
+    }
+    /* --- filesystem + info syscalls: proc-level (work for CLI processes too,
+     *     which have no window). Paths resolve against the process cwd. --- */
+    case SYS_READ_FILE: {
+        char name[128], abs[128]; int max = (int)r->rdx;
+        struct proc *p = proc_current();
+        if (!p || max < 0 || user_copy_string(name, sizeof name, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        if (max > 0 && !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, name, abs, sizeof abs);
+        r->rax = (uint64_t)vfs_read(abs, (void *)r->rsi, max);
+        return;
+    }
+    case SYS_WRITE_FILE: {
+        char path[128], abs[128]; int size = (int)r->rdx;
+        struct proc *p = proc_current();
+        if (!p || size < 0 || user_copy_string(path, sizeof path, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        if (size > 0 && !user_range_ok((const void *)r->rsi, (uint64_t)size, 0)) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, path, abs, sizeof abs);
+        r->rax = (uint64_t)vfs_write(abs, (const void *)r->rsi, size);
+        return;
+    }
+    case SYS_DELETE_FILE: {
+        char path[128], abs[128]; struct proc *p = proc_current();
+        if (!p || user_copy_string(path, sizeof path, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, path, abs, sizeof abs);
+        r->rax = (uint64_t)vfs_delete(abs);
+        return;
+    }
+    case SYS_MKDIR: {
+        char path[128], abs[128]; struct proc *p = proc_current();
+        if (!p || user_copy_string(path, sizeof path, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, path, abs, sizeof abs);
+        r->rax = (uint64_t)vfs_mkdir(abs);
+        return;
+    }
+    case SYS_DIR_COUNT: {
+        char path[128], abs[128]; struct proc *p = proc_current();
+        if (!p || user_copy_string(path, sizeof path, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, path, abs, sizeof abs);
+        r->rax = (uint64_t)vfs_count(abs);
+        return;
+    }
+    case SYS_DIR_NAME: {
+        char dir[128], abs[128]; int i = (int)r->rsi; struct proc *p = proc_current();
+        if (!p || user_copy_string(dir, sizeof dir, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        if (!user_range_ok((void *)r->rdx, 64, 1)) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, dir, abs, sizeof abs);
+        if (i < 0 || i >= vfs_count(abs)) { r->rax = (uint64_t)-1; return; }
+        { const char *nm = vfs_ent_name(abs, i); char *out = (char *)r->rdx;
+          int j = 0; for (; j < 63 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0; }
+        r->rax = (uint64_t)(vfs_ent_is_dir(abs, i) ? -2 : vfs_ent_size(abs, i));
+        return;
+    }
+    case SYS_FILE_COUNT:
+        r->rax = (uint64_t)vfs_count("/");
+        return;
+    case SYS_FILE_NAME: {
+        int i = (int)r->rdi; int max = (int)r->rdx;
+        if (max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
+        { const char *nm = vfs_ent_name("/", i); char *out = (char *)r->rsi;
+          int j = 0; for (; j < max - 1 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0; }
+        r->rax = (uint64_t)vfs_ent_size("/", i);
+        return;
+    }
+    case SYS_GET_TIME: {
+        if (!user_range_ok((void *)r->rdi, sizeof(struct rtc_time), 1)) { r->rax = (uint64_t)-1; return; }
+        struct rtc_time t; rtc_now(&t);
+        user_copy_to((void *)r->rdi, &t, sizeof t);
         r->rax = 0;
         return;
     }

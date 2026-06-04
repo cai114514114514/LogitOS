@@ -4,9 +4,42 @@
 #include "kheap.h"
 #include "vfs.h"
 #include "sched.h"      /* schedule() -- block by yielding */
+#include "serial.h"     /* F_TTY console */
 #include "aqua_abi.h"   /* O_*, SEEK_* */
 
 void *memcpy(void *, const void *, size_t);
+
+/* --- F_TTY backend: the serial console. Single shared device; fd 0/1/2 of the
+ *     shell point at one F_TTY file (dup'd). Reads block (yield) for one key,
+ *     echo it, translate CR->LF; writes expand LF->CRLF for serial terminals. */
+static long tty_read(struct file *f, void *vbuf, long len)
+{
+    (void)f;
+    if (len <= 0) return 0;
+    char *out = (char *)vbuf;
+    int c;
+    while ((c = serial_getc()) < 0) schedule();     /* block until a key */
+    if (c == '\r') c = '\n';
+    if (c == '\n')      { serial_putc('\r'); serial_putc('\n'); out[0] = '\n'; }
+    else if (c == 127 || c == 8) { serial_putc(8); serial_putc(' '); serial_putc(8); out[0] = 8; }
+    else                { serial_putc((char)c); out[0] = (char)c; }
+    return 1;
+}
+
+static long tty_write(struct file *f, const void *vbuf, long len)
+{
+    (void)f;
+    const char *p = (const char *)vbuf;
+    for (long i = 0; i < len; i++) { if (p[i] == '\n') serial_putc('\r'); serial_putc(p[i]); }
+    return len;
+}
+
+struct file *file_open_tty(void)
+{
+    struct file *f = file_alloc();
+    if (f) f->type = F_TTY;
+    return f;
+}
 
 /* A pipe: an in-kernel ring buffer with a read end and a write end. Each end is
  * a separate struct file sharing this buffer; readers/writers are 1 while that
@@ -138,7 +171,8 @@ long file_read(struct file *f, void *buf, long len)
         return n;
     }
     if (f->type == F_PIPE) return pipe_read(f, buf, len);
-    return -1;       /* F_TTY (P5) dispatch added later */
+    if (f->type == F_TTY)  return tty_read(f, buf, len);
+    return -1;
 }
 
 long file_write(struct file *f, const void *buf, long len)
@@ -154,7 +188,8 @@ long file_write(struct file *f, const void *buf, long len)
         return len;
     }
     if (f->type == F_PIPE) return pipe_write(f, buf, len);
-    return -1;       /* F_TTY (P5) dispatch added later */
+    if (f->type == F_TTY)  return tty_write(f, buf, len);
+    return -1;
 }
 
 long file_lseek(struct file *f, long off, int whence)

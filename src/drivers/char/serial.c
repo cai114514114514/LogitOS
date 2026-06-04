@@ -32,3 +32,12 @@ void serial_puts(const char *s)
     while (*s)
         serial_putc(*s++);
 }
+
+/* Non-blocking receive: return the next byte from COM1, or -1 if none waiting.
+ * The serial console (F_TTY) polls this; there is no serial RX IRQ. */
+int serial_getc(void)
+{
+    if (inb(COM1 + 5) & 0x01)        /* line status: data ready */
+        return inb(COM1);
+    return -1;
+}

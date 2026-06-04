@@ -892,6 +892,9 @@ void wm_run(void)
     /* auto-launch the clock so something is alive on screen at boot */
     wm_launch("clock.aex", "");
 
+    /* init: launch the shell on the serial console (stdin/stdout/stderr = tty) */
+    { char *sh_argv[] = { "sh", 0 }; proc_spawn("/bin/sh", sh_argv); }
+
     uint64_t last = 0;
     for (;;) {
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */

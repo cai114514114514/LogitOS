@@ -33,6 +33,7 @@ void          file_close(struct file *f);  /* refcount--; release backend at 0 *
 
 /* Backends (P2/P3/P5). */
 struct file  *file_open_vfs(const char *path, int flags);   /* P2 */
+struct file  *file_open_tty(void);                          /* P5: serial console */
 long          file_read(struct file *f, void *buf, long len);
 long          file_write(struct file *f, const void *buf, long len);
 long          file_lseek(struct file *f, long off, int whence);

@@ -1,16 +1,9 @@
-#include "aqua.h"
+#include "clib.h"
 
-/* echo [args...] -- write the arguments separated by spaces, then a newline,
- * to stdout (fd 1). A real exec'able CLI program: crt0_cli passes argc/argv. */
-
-static int slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
-
+/* echo [args...] -- arguments separated by spaces, then a newline. */
 int main(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++) {
-        sys_write(1, argv[i], slen(argv[i]));
-        sys_write(1, i + 1 < argc ? " " : "", i + 1 < argc ? 1 : 0);
-    }
-    sys_write(1, "\n", 1);
+    for (int i = 1; i < argc; i++) { outs(argv[i]); if (i + 1 < argc) outc(' '); }
+    outc('\n');
     return 0;
 }

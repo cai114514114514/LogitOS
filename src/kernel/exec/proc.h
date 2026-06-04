@@ -40,6 +40,7 @@ long          proc_fork(struct registers *r);
 
 void          proc_exit(int code);                  /* never returns */
 long          proc_execve(struct registers *r);     /* replace the user address space (exec.c) */
+int           proc_spawn(const char *path, char **argv);  /* init: launch a CLI proc on the tty (exec.c) */
 long          proc_waitpid(int pid, int *status);   /* reap a zombie child */
 void          proc_reap(void);                      /* free orphan/GUI zombies (WM loop) */
 
