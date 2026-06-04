@@ -262,6 +262,35 @@ provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
   select handler (else LibCSS won't treat `<html>` as root → font-size unresolved);
   host LibCSS unit tests need `-DCONFIG_BIGNUM` for libbf's decimal symbols.
 
+M18 Real processes ✅ (the "toward a real OS" step: run software not written for
+Aqua). A POSIX-ish process model independent of the window manager:
+`src/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
+cr3/fd[]/cwd); `thread->data` is a `struct proc*` (a GUI app is a proc whose
+`->gui` owns a window). **fork** = `vmm_clone_user` (eager copy of the private
+user subtree) + `thread_fork` building a child kstack that returns through
+`fork_ret` (enter_user.asm) into ring 3 with rax=0; exit→zombie, waitpid/proc_reap
+free the space (`vmm_free_space` -- also fixes a latent app-space leak). **fds**
+(`file.c`): F_VFS (whole file in a kmalloc buffer + offset, flush on last close),
+F_PIPE (ring buffer, EOF/EAGAIN via reader/writer refcounts, `O_NONBLOCK`), F_TTY
+(serial console). **execve** (`exec.c`) replaces the user space in place + builds
+a SysV argc/argv/envp stack. Userland: `crt0_cli.asm` (argc/argv→main), `clib.h`,
+`/bin/sh` (pipes `|`, `< >` redirect, `&`, builtins, /bin PATH) + coreutils
+(ls cat echo pwd wc head true false sleep mkdir rm touch clear uname). init:
+`wm_run` proc_spawns `/bin/sh` on the serial console (fd 0/1/2 = tty); the GUI
+**Terminal is now a terminal emulator** that fork+execve's the same `/bin/sh` over
+two pipes. CI: `make test-shell` (`scripts/run-shell-test.sh`). **Gotchas:** CLI
+programs link at a *common* base **0x50000000** -- it must be inside the private
+user region PML4[0]/PDPT[1] (0x40000000-0x7FFFFFFF); 0x10000000 would be shared
+kernel low memory. `wm_launch` gives every GUI app fd 0/1/2 = tty so an app's
+`pipe()`s get fds >=3 (else they collide with dup2 targets 0/1/2). **ATA made
+robust**: under `-smp` TCG the AP framebuffer-present contends the device lock and
+intermittently delayed IDE PIO past the old bounded poll -> nondeterministic
+"file not found"; `drivers/block/ata.c` now retries the command 8x. Known-open
+aquafs issues (separate): cross-boot write durability (corrupts after repeated
+non-snapshot boots; use `-snapshot`) and under-enumeration of runtime-`mkdir`'d
+dirs. `tools/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
+(PS/2 1-byte buffer).
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
