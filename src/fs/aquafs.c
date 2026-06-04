@@ -51,6 +51,7 @@ static struct dinode *inodes;           /* inode_blocks  * BS, in RAM */
 
 static uint8_t  blk_buf[BS];            /* general block staging */
 static uint32_t ind_buf[PPB];           /* indirect-block staging */
+static uint32_t dind_buf[PPB];          /* double-indirect L1 staging (inode_trunc) */
 static char     namebuf[NAME_MAX];      /* ent_name return storage */
 
 /* --- helpers --- */
@@ -150,9 +151,20 @@ static void inode_trunc(struct dinode *in)
     for (uint32_t i = 0; i < nblk && i < NDIRECT; i++) { bfree(in->direct[i]); in->direct[i] = 0; }
     if (in->indirect) {
         if (!bread(in->indirect, ind_buf))
-            for (uint32_t i = NDIRECT; i < nblk; i++) bfree(ind_buf[i - NDIRECT]);
+            for (uint32_t i = NDIRECT; i < nblk && i < NDIRECT + PPB; i++) bfree(ind_buf[i - NDIRECT]);
         bfree(in->indirect);
         in->indirect = 0;
+    }
+    if (in->double_indirect) {                 /* free the whole 2-level tree (files > ~4 MiB) */
+        if (!bread(in->double_indirect, dind_buf))
+            for (uint32_t x = 0; x < PPB; x++)
+                if (dind_buf[x]) {
+                    if (!bread(dind_buf[x], ind_buf))
+                        for (uint32_t y = 0; y < PPB; y++) if (ind_buf[y]) bfree(ind_buf[y]);
+                    bfree(dind_buf[x]);
+                }
+        bfree(in->double_indirect);
+        in->double_indirect = 0;
     }
     in->size = 0;
 }
