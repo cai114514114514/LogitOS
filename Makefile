@@ -156,15 +156,16 @@ $(DISK): $(FS_FILES) $(FONTS) $(AEX) tools/mkfs.py
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
+QEMU_SMP  := -smp 4 -accel tcg,thread=multi   # 4 cores, parallel TCG threads
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot
 
 debug: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot -s -S
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_NET) -serial stdio -no-reboot -s -S
 
 test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)

@@ -13,6 +13,7 @@
 #include "net.h"
 #include "text.h"
 #include "img.h"
+#include "smp.h"
 
 #define TIMER_HZ 100
 
@@ -48,6 +49,8 @@ void kernel_main(uint64_t mb_info)
     wm_render();                 /* first frame -> desktop visible */
     mouse_init();
     serial_puts("[aqua] desktop up; mouse + keyboard armed\n");
+
+    smp_init();   /* detect + bring up the other CPUs */
 
     if (fs_ok)
         serial_puts("\n" BOOT_OK_MARKER "\n");
