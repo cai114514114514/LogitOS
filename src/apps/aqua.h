@@ -44,7 +44,19 @@ static inline void app_exit(int c) { _sys(SYS_EXIT, c, 0, 0); }
 static inline int  sys_fork(void) { return (int)_sys(SYS_FORK, 0, 0, 0); }
 static inline int  sys_getpid(void) { return (int)_sys(SYS_GETPID, 0, 0, 0); }
 static inline int  sys_waitpid(int pid, int *status) { return (int)_sys(SYS_WAITPID, pid, (long)status, 0); }
+static inline int  sys_execve(const char *p, char *const argv[], char *const envp[]) { return (int)_sys(SYS_EXECVE, (long)p, (long)argv, (long)envp); }
+
+/* --- M18: file descriptors --- */
 static inline int  sys_write(int fd, const void *buf, int len) { return (int)_sys(SYS_WRITE, fd, (long)buf, len); }
+static inline int  sys_read(int fd, void *buf, int len) { return (int)_sys(SYS_READ, fd, (long)buf, len); }
+static inline int  sys_open(const char *p, int flags) { return (int)_sys(SYS_OPEN, (long)p, flags, 0); }
+static inline int  sys_close(int fd) { return (int)_sys(SYS_CLOSE, fd, 0, 0); }
+static inline long sys_lseek(int fd, long off, int whence) { return _sys(SYS_LSEEK, fd, off, whence); }
+static inline int  sys_dup(int fd) { return (int)_sys(SYS_DUP, fd, 0, 0); }
+static inline int  sys_dup2(int o, int n) { return (int)_sys(SYS_DUP2, o, n, 0); }
+static inline int  sys_pipe(int fds[2]) { return (int)_sys(SYS_PIPE, (long)fds, 0, 0); }
+static inline int  sys_getcwd(char *b, int n) { return (int)_sys(SYS_GETCWD, (long)b, n, 0); }
+static inline int  sys_chdir(const char *p) { return (int)_sys(SYS_CHDIR, (long)p, 0, 0); }
 static inline int  sysinfo(char *b, int m) { return (int)_sys(SYS_SYSINFO, (long)b, m, 0); }
 static inline int  file_count(void) { return (int)_sys(SYS_FILE_COUNT, 0, 0, 0); }
 static inline int  file_name(int i, char *b, int m) { return (int)_sys(SYS_FILE_NAME, i, (long)b, m); }

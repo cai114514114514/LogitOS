@@ -42,4 +42,10 @@ void          proc_exit(int code);                  /* never returns */
 long          proc_waitpid(int pid, int *status);   /* reap a zombie child */
 void          proc_reap(void);                      /* free orphan/GUI zombies (WM loop) */
 
+/* fd table (P2). */
+int           proc_fd_alloc(struct proc *p, struct file *f);  /* lowest free fd, or -1 */
+struct file  *proc_fd_get(struct proc *p, int fd);
+/* Resolve `in` to an absolute canonical path against p->cwd (collapses . and ..). */
+void          proc_resolve(struct proc *p, const char *in, char *out, int max);
+
 #endif /* AQUA_PROC_H */

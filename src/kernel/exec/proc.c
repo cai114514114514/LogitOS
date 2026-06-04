@@ -52,6 +52,51 @@ struct proc *proc_create(uint64_t cr3, void *gui, const char *name, int ppid)
     return p;
 }
 
+int proc_fd_alloc(struct proc *p, struct file *f)
+{
+    if (!p || !f) return -1;
+    for (int i = 0; i < NFD; i++)
+        if (!p->fd[i]) { p->fd[i] = f; return i; }
+    return -1;
+}
+
+struct file *proc_fd_get(struct proc *p, int fd)
+{
+    if (!p || fd < 0 || fd >= NFD) return NULL;
+    return p->fd[fd];
+}
+
+/* Resolve `in` to an absolute canonical path against p->cwd, collapsing "."/"..".
+ * Output is "/a/b/c" (root is "/"). Bounded by `max`. */
+void proc_resolve(struct proc *p, const char *in, char *out, int max)
+{
+    char src[256]; int n = 0;
+    if (in[0] != '/') {
+        for (const char *d = p->cwd; *d && n < 255; d++) src[n++] = *d;
+        if (n == 0 || src[n - 1] != '/') { if (n < 255) src[n++] = '/'; }
+    }
+    for (const char *s = in; *s && n < 255; s++) src[n++] = *s;
+    src[n] = 0;
+
+    const char *comp[64]; int clen[64], top = 0, i = 0;
+    while (src[i]) {
+        while (src[i] == '/') i++;
+        if (!src[i]) break;
+        const char *start = &src[i]; int len = 0;
+        while (src[i] && src[i] != '/') { i++; len++; }
+        if (len == 1 && start[0] == '.') continue;
+        if (len == 2 && start[0] == '.' && start[1] == '.') { if (top > 0) top--; continue; }
+        if (top < 64) { comp[top] = start; clen[top] = len; top++; }
+    }
+    int oi = 0;
+    if (top == 0) { if (max > 1) { out[0] = '/'; out[1] = 0; } else if (max > 0) out[0] = 0; return; }
+    for (int t = 0; t < top; t++) {
+        if (oi < max - 1) out[oi++] = '/';
+        for (int k = 0; k < clen[t] && oi < max - 1; k++) out[oi++] = comp[t][k];
+    }
+    out[oi] = 0;
+}
+
 long proc_fork(struct registers *r)
 {
     struct proc *parent = proc_current();
