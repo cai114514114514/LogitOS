@@ -12,6 +12,7 @@
 #include "smp.h"
 #include "e1000.h"
 #include "proc.h"
+#include "ata.h"
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -70,7 +71,8 @@ void interrupt_handler(struct registers *r)
     if (irq == 0) {
         timer_tick();
         if (apic) lapic_eoi(); else pic_eoi(0);   /* EOI before we possibly switch stacks */
-        schedule();        /* preempt: round-robin to the next thread */
+        if (!ata_busy())   /* don't preempt mid-PIO-transfer (would abandon the controller) */
+            schedule();    /* preempt: round-robin to the next thread */
         return;
     }
     if (irq == 1)

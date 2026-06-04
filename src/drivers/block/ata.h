@@ -13,4 +13,8 @@ int ata_read(uint32_t lba, uint8_t count, void *buf);
  * `buf` must hold count*512 bytes. Returns 0 on success, -1 on error. */
 int ata_write(uint32_t lba, uint8_t count, const void *buf);
 
+/* Non-zero while a PIO transfer is in flight: the timer IRQ must not preempt
+ * (schedule()) mid-transfer, or the half-read controller state is abandoned. */
+int ata_busy(void);
+
 #endif /* AQUA_ATA_H */

@@ -72,12 +72,36 @@ static int ata_read_once(uint32_t lba, uint8_t count, uint16_t *out)
 /* Retry transient failures: a timed-out PIO transfer under SMP contention must
  * not be reported as a read error (callers like dir_lookup would treat it as
  * "block missing" and silently corrupt a lookup). Re-issue the whole command. */
+/* PIO transfers must run with interrupts ENABLED so the timer tick keeps giving
+ * QEMU's main loop a window to complete the (async) IDE read -- a tight IF=0
+ * busy-poll starves the completion and the transfer times out. But the timer
+ * must NOT preempt us mid-transfer (a context switch would abandon the half-read
+ * controller). g_ata_busy tells the timer handler to skip schedule() while a
+ * transfer is in flight; the NIC/keyboard/mouse IRQs still run harmlessly. */
+volatile int g_ata_busy = 0;
+int ata_busy(void) { return g_ata_busy; }
+
+static int ata_write_once(uint32_t lba, uint8_t count, const uint16_t *in);
+
+static int ata_guarded(int write, uint32_t lba, uint8_t count, void *buf)
+{
+    uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    g_ata_busy++;
+    __asm__ volatile ("sti");
+    int rc = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int r = write ? ata_write_once(lba, count, (const uint16_t *)buf)
+                      : ata_read_once(lba, count, (uint16_t *)buf);
+        if (r == 0) { rc = 0; break; }
+    }
+    if (!(fl & 0x200)) __asm__ volatile ("cli");   /* restore the caller's IF */
+    g_ata_busy--;
+    return rc;
+}
+
 int ata_read(uint32_t lba, uint8_t count, void *buf)
 {
-    for (int attempt = 0; attempt < 8; attempt++)
-        if (ata_read_once(lba, count, (uint16_t *)buf) == 0)
-            return 0;
-    return -1;
+    return ata_guarded(0, lba, count, buf);
 }
 
 static int ata_write_once(uint32_t lba, uint8_t count, const uint16_t *in)
@@ -103,8 +127,5 @@ static int ata_write_once(uint32_t lba, uint8_t count, const uint16_t *in)
 
 int ata_write(uint32_t lba, uint8_t count, const void *buf)
 {
-    for (int attempt = 0; attempt < 8; attempt++)
-        if (ata_write_once(lba, count, (const uint16_t *)buf) == 0)
-            return 0;
-    return -1;
+    return ata_guarded(1, lba, count, (void *)buf);
 }
