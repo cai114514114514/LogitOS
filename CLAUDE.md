@@ -291,6 +291,23 @@ non-snapshot boots; use `-snapshot`) and under-enumeration of runtime-`mkdir`'d
 dirs. `tools/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
 (PS/2 1-byte buffer).
 
+M19 virtio ✅ (the "VGA is too primitive" follow-up): a modern (virtio 1.0)
+paravirtual device stack in `src/drivers/virtio/` replacing the legacy devices.
+`virtio.c` is the virtio-pci transport (parses the vendor-0x09 PCI caps to find
+the modern cfg structures in BAR4, negotiates VIRTIO_F_VERSION_1, sets up split
+virtqueues, synchronous request/poll). **virtio-blk** (`virtio_blk.c` +
+`drivers/block/blkdev.c`) replaces ATA PIO as the disk (aquafs bread/bwrite go
+through blkdev; ATA is the fallback). **virtio-gpu** (`virtio_gpu.c`) replaces the
+uncached-VGA-MMIO framebuffer: a RAM-backed 2D scanout resource, present =
+TRANSFER_TO_HOST_2D + RESOURCE_FLUSH (a DMA, not a per-pixel CPU copy -- the old
+lag root); `fb.c` prefers it, falls back to the multiboot LFB. Both poll with
+interrupts ON but non-preemptible (`g_virtio_busy`/`ata_busy`, see interrupts.c)
+since completions run on QEMU's IO thread. The multiboot2 framebuffer tag is now
+optional so GRUB boots with `-vga none`; QEMU uses `-vga none -device
+virtio-gpu-pci` + `virtio-blk-pci`. (Post-M18 fixes also landed: Finder list
+clipping, runtime-mkdir clean dirs, the ATA IF-on/non-preempt fix, inode_trunc
+double-indirect free.)
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
