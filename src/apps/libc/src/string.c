@@ -71,6 +71,30 @@ size_t strcspn(const char *s, const char *set)
 char *strpbrk(const char *s, const char *set)
 { s += strcspn(s, set); return *s ? (char *)s : NULL; }
 
+char *strtok_r(char *s, const char *delim, char **save)
+{
+    if (!s) s = *save;
+    s += strspn(s, delim);            /* skip leading delimiters */
+    if (!*s) { *save = s; return NULL; }
+    char *tok = s;
+    s += strcspn(s, delim);           /* run to next delimiter */
+    if (*s) { *s = 0; *save = s + 1; }
+    else      *save = s;
+    return tok;
+}
+char *strtok(char *s, const char *delim)
+{ static char *save; return strtok_r(s, delim, &save); }
+
+void *memmem(const void *hay, size_t hn, const void *ndl, size_t nn)
+{
+    const unsigned char *h = hay, *n = ndl;
+    if (nn == 0) return (void *)hay;
+    if (nn > hn) return NULL;
+    for (size_t i = 0; i + nn <= hn; i++)
+        if (h[i] == n[0] && memcmp(h + i, n, nn) == 0) return (void *)(h + i);
+    return NULL;
+}
+
 void *malloc(size_t);
 char *strdup(const char *s)
 { size_t n = strlen(s) + 1; char *p = malloc(n); if (p) memcpy(p, s, n); return p; }

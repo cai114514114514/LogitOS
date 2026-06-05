@@ -15,4 +15,14 @@ extern int errno;
 #define ERANGE  34
 #define EDOM    33
 #define EOVERFLOW 75
+#define ENXIO   6
+#define ECHILD  10
+#define EEXIST  17
+#define ENOTDIR 20
+#define EISDIR  21
+#define EMFILE  24
+#define ENOTTY  25
+#define ENOSPC  28
+#define ESPIPE  29
+#define EPIPE   32
 #endif

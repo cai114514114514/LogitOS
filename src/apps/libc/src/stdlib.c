@@ -1,6 +1,6 @@
 #include <stddef.h>
 
-int errno;
+/* errno is defined in io.c (the single syscall TU); declared via <errno.h>. */
 
 #define SYS_EXIT 2
 static long sys(long n, long a, long b, long c)

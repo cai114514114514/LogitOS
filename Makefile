@@ -125,9 +125,17 @@ JS_INC     := -Ithird_party/libm -Ithird_party/quickjs    # mini-libc covered by
 JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aqua-2024"' -DAQUA_OS -DCONFIG_STACK_CHECK $(JS_INC)
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(ENGINE_SRCS))
 
+# mini-libc asm helpers (setjmp/longjmp) join the engine bundle.
+LIBC_ASM    := $(wildcard src/apps/libc/src/*.asm)
+ENGINE_OBJ  += $(patsubst %.asm,$(BUILD)/jsobj/%.o,$(LIBC_ASM))
+
 $(BUILD)/jsobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(JS_CF) -c $< -o $@
+
+$(BUILD)/jsobj/%.o: %.asm
+	@mkdir -p $(dir $@)
+	$(ASM) -f elf64 $< -o $@
 
 $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 	@mkdir -p $(BUILD)/apps
