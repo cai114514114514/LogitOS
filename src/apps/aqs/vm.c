@@ -127,7 +127,8 @@ static Value native_len(int argc, Value *args)
     if (argc != 1) return aqs_native_fail("len() takes exactly 1 argument");
     if (IS_LIST(args[0])) return INT_VAL(AS_LIST(args[0])->count);
     if (IS_STR(args[0]))  return INT_VAL(AS_STR(args[0])->len);
-    return aqs_native_fail("len() needs a list or string");
+    if (IS_DICT(args[0])) return INT_VAL(AS_DICT(args[0])->live);
+    return aqs_native_fail("len() needs a list, string, or dict");
 }
 static Value native_range(int argc, Value *args)
 {
@@ -337,6 +338,18 @@ static int run_until(int floor)
             push(OBJ_VAL(l));
             break;
         }
+        case OP_MAKE_DICT: {
+            int n = READ_BYTE();
+            ObjDict *d = aqs_dict_new();
+            for (int i = 0; i < n; i++) {
+                Value key = sp[-2 * n + 2 * i];
+                Value val = sp[-2 * n + 2 * i + 1];
+                if (!aqs_dict_set(d, key, val)) { runtime_error("dict key must be a string or int"); goto err; }
+            }
+            sp -= 2 * n;
+            push(OBJ_VAL(d));
+            break;
+        }
         case OP_INDEX_GET: {
             Value idx = pop(), obj = pop();
             if (IS_PTR(obj)) {
@@ -359,7 +372,12 @@ static int run_until(int floor)
                 ObjStr *s = AS_STR(obj); int64_t i = AS_INT(idx); if (i < 0) i += s->len;
                 if (i < 0 || i >= s->len) { runtime_error("string index out of range"); goto err; }
                 push(OBJ_VAL(aqs_str_copy(s->chars + i, 1)));
-            } else { runtime_error("only lists and strings can be indexed"); goto err; }
+            } else if (IS_DICT(obj)) {
+                if (!IS_STR(idx) && !IS_INT(idx)) { runtime_error("dict key must be a string or int"); goto err; }
+                Value out;
+                if (!aqs_dict_get(AS_DICT(obj), idx, &out)) { runtime_error("key not found"); goto err; }
+                push(out);
+            } else { runtime_error("only lists, strings, and dicts can be indexed"); goto err; }
             break;
         }
         case OP_INDEX_SET: {
@@ -379,8 +397,9 @@ static int run_until(int floor)
         }
         case OP_LEN: {
             Value v = pop();
-            if (IS_LIST(v))     push(INT_VAL(AS_LIST(v)->count));
-            else if (IS_STR(v)) push(INT_VAL(AS_STR(v)->len));
+            if (IS_LIST(v))      push(INT_VAL(AS_LIST(v)->count));
+            else if (IS_STR(v))  push(INT_VAL(AS_STR(v)->len));
+            else if (IS_DICT(v)) push(INT_VAL(AS_DICT(v)->live));
             else { runtime_error("object has no length"); goto err; }
             break;
         }

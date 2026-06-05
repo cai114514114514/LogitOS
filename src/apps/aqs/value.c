@@ -55,6 +55,22 @@ void aqs_print_value(Value v)
             for (int i = 0; i < l->count; i++) { if (i) aqs_emit(", ", 2); print_repr(l->items[i]); }
             aqs_emit("]", 1);
         }
+        else if (IS_DICT(v)) {
+            ObjDict *d = AS_DICT(v);
+            aqs_emit("{", 1);
+            int first = 1;
+            for (int i = 0; i < d->cap; i++) {
+                DictEntry *e = &d->entries[i];
+                if (e->kind != AQS_DK_STR && e->kind != AQS_DK_INT) continue;
+                if (!first) aqs_emit(", ", 2);
+                first = 0;
+                if (e->kind == AQS_DK_STR) print_repr(OBJ_VAL(e->kstr));
+                else { n = snprintf(buf, sizeof buf, "%lld", (long long)e->kint); aqs_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); }
+                aqs_emit(": ", 2);
+                print_repr(e->val);
+            }
+            aqs_emit("}", 1);
+        }
         else if (IS_PTR(v)) {
             ObjPtr *p = AS_PTR(v);
             n = snprintf(buf, sizeof buf, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);

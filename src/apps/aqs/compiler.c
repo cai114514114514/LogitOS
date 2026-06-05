@@ -169,6 +169,22 @@ static void list_literal(void)   /* prefix for '[' : a list display */
     emit2(OP_MAKE_LIST, (uint8_t)n);
 }
 
+static void dict_literal(void)   /* prefix for '{' : a dict display */
+{
+    int n = 0;
+    if (!check(T_RBRACE)) {
+        do {
+            expression();                                  /* key */
+            consume(T_COLON, "expected ':' between dict key and value");
+            expression();                                  /* value */
+            n++;
+        } while (match(T_COMMA));
+    }
+    consume(T_RBRACE, "expected '}' after dict entries");
+    if (n > 255) { error("dict literal too large"); return; }
+    emit2(OP_MAKE_DICT, (uint8_t)n);
+}
+
 static void index_(void)   /* infix for '[' : subscript read */
 {
     expression();
@@ -267,6 +283,7 @@ static void init_rules(void)
     rules[T_FALSE]   = (ParseRule){ literal, 0, PREC_NONE };
     rules[T_LPAREN]  = (ParseRule){ grouping, call, PREC_CALL };
     rules[T_LBRACKET]= (ParseRule){ list_literal, index_, PREC_CALL };
+    rules[T_LBRACE]  = (ParseRule){ dict_literal, 0, PREC_NONE };
     rules[T_DOT]     = (ParseRule){ 0, dot, PREC_CALL };
     rules[T_MINUS]   = (ParseRule){ unary, binary, PREC_TERM };
     rules[T_PLUS]    = (ParseRule){ 0, binary, PREC_TERM };

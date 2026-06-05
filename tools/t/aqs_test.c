@@ -210,6 +210,16 @@ int main(void)
     err("badimport", "import does_not_exist\n");
     err("badattr",   "import mathx\nprint(mathx.nope)\n");
 
+    /* ---- M21: dict ---- */
+    ok("dictget",  "d = {\"a\": 1, \"b\": 2}\nprint(d[\"a\"], d[\"b\"])\n", "1 2\n");
+    ok("dictlit1", "print({\"x\": 42})\n", "{'x': 42}\n");     /* single entry -> deterministic order */
+    ok("dictempty","print(len({}))\n", "0\n");
+    ok("dictlen",  "print(len({\"a\": 1, \"b\": 2, \"c\": 3}))\n", "3\n");
+    ok("dictint",  "d = {1: \"one\", 2: \"two\"}\nprint(d[1], d[2])\n", "one two\n");
+    ok("dictnest", "d = {\"xs\": [1, 2]}\nprint(d[\"xs\"][1])\n", "2\n");
+    err("dictmiss","d = {\"a\": 1}\nprint(d[\"z\"])\n");
+    err("dictbadkey", "d = {}\nprint(d[true])\n");
+
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");
     err("badindent", "x = 1\n  y = 2\n");
