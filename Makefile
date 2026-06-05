@@ -81,12 +81,17 @@ APPDIR := src/apps
 # GUIDIR = windowed apps (link aqua.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
 GUIDIR := src/apps/gui
 CLIDIR := src/apps/coreutils
+# the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
+$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/aqua.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
+
 define APP_RULE
-$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aqua.h
+$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aqua.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
-	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o
+	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4) '$(5)' $(6) $(7) $(8)
 endef
@@ -97,9 +102,10 @@ $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 $(eval $(call APP_RULE,netapp,  0x44000000,Network,-,N,80,170,220))
+$(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
-APPS := clock textedit monitor terminal netapp
+APPS := clock textedit monitor terminal netapp widgets
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
