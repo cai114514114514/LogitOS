@@ -44,11 +44,13 @@ src/fs/                                          vfs + aquafs
 src/net/{link,ip,transport,core,dns,http,tls}/   network stack
 src/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
 src/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
-src/apps/                                        clock monitor terminal textedit netapp
+src/apps/                                        shared: aqua.h clib.h crt0.asm crt0_cli.asm
+src/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp
+src/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
+src/apps/aqs/                                     AquaScript language (M20): /bin/aqs
 src/apps/browser/                                browser + render engine (dom, layout,
-                                                 css_engine, browser_paint, js_dom)
-src/apps/js/                                     QuickJS app
-src/apps/libc/                                   mini-libc; src/apps/crt0.asm shared
+                                                 css_engine, browser_paint, js_dom) — also links QuickJS
+src/apps/libc/                                   mini-libc (string/stdio/malloc/setjmp…)
 ```
 
 **File paths quoted in the Notes below are pre-reorg names** (e.g. `net/tcp.c` is

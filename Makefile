@@ -78,11 +78,14 @@ $(ISO): $(KERNEL) grub.cfg
 # --- userland applications (.aex), each a ring-3 process ---
 # APP_RULE: name, link base, display name, ext, icon-glyph, "r g b" color
 APPDIR := src/apps
+# GUIDIR = windowed apps (link aqua.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
+GUIDIR := src/apps/gui
+CLIDIR := src/apps/coreutils
 define APP_RULE
-$(BUILD)/$(1).elf: $(APPDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aqua.h
+$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aqua.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
-	$(CC) $(UCFLAGS) -c $(APPDIR)/$(1).c -o $(BUILD)/apps/$(1).o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
 	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4) '$(5)' $(6) $(7) $(8)
@@ -102,10 +105,10 @@ APPS := clock textedit monitor terminal netapp
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
 define CLI_RULE
-$(BUILD)/$(1).elf: $(APPDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/aqua.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
-	$(CC) $(UCFLAGS) -c $(APPDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
+	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(BUILD)/apps/$(1).cli.o
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
