@@ -216,6 +216,7 @@ int main(void)
     ok("dictempty","print(len({}))\n", "0\n");
     ok("dictlen",  "print(len({\"a\": 1, \"b\": 2, \"c\": 3}))\n", "3\n");
     ok("dictint",  "d = {1: \"one\", 2: \"two\"}\nprint(d[1], d[2])\n", "one two\n");
+    ok("dictintlit","print({1: \"x\"})\n", "{1: 'x'}\n");       /* int-key print path */
     ok("dictnest", "d = {\"xs\": [1, 2]}\nprint(d[\"xs\"][1])\n", "2\n");
     err("dictmiss","d = {\"a\": 1}\nprint(d[\"z\"])\n");
     err("dictbadkey", "d = {}\nprint(d[true])\n");
