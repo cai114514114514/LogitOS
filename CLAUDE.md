@@ -45,7 +45,8 @@ src/net/{link,ip,transport,core,dns,http,tls}/   network stack
 src/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
 src/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
 src/apps/                                        shared: aqua.h clib.h crt0.asm crt0_cli.asm
-src/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp
+src/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp widgets
+                                                 + aui.{h,c} = immediate-mode widget toolkit (linked into each)
 src/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
 src/apps/aqs/                                     AquaScript language (M20): /bin/aqs
 src/apps/browser/                                browser + render engine (dom, layout,
