@@ -19,7 +19,8 @@ ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/aqua.iso
 DISK        := $(BUILD)/disk.img
-FS_FILES    := $(filter-out fsroot/fonts,$(wildcard fsroot/*))
+FS_FILES    := $(filter-out fsroot/fonts fsroot/aqs,$(wildcard fsroot/*))
+AQS_EXAMPLES := $(wildcard fsroot/aqs/*.aqs)
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
 CC          := clang
@@ -114,7 +115,7 @@ CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
-AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX)
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $(BUILD)/aqs.aex
 
 # --- QuickJS engine + musl libm + mini-libc, shared by the JS app and Browser ---
 QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
@@ -169,17 +170,42 @@ $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/src/apps/browser/browser.o $(
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
 
+# --- AquaScript: /bin/aqs -- a ring-3 CLI program. Links the aqs core + mini-libc
+# (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
+# can't be reused: those programs use aqua.h inline syscalls, not mini-libc.) ---
+AQS_C    := $(wildcard src/apps/aqs/*.c)
+AQS_LIBC := $(wildcard src/apps/libc/src/*.c)
+AQS_LASM := $(wildcard src/apps/libc/src/*.asm)
+AQS_OBJ  := $(patsubst %.c,$(BUILD)/aqsobj/%.o,$(AQS_C)) \
+            $(patsubst %.c,$(BUILD)/aqsobj/%.o,$(AQS_LIBC)) \
+            $(patsubst %.asm,$(BUILD)/aqsobj/%.o,$(AQS_LASM))
+
+$(BUILD)/aqsobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+$(BUILD)/aqsobj/%.o: %.asm
+	@mkdir -p $(dir $@)
+	$(ASM) -f elf64 $< -o $@
+
+$(BUILD)/aqs.elf: $(AQS_OBJ) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/aqs.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/aqs.crt0c.o $(AQS_OBJ)
+$(BUILD)/aqs.aex: $(BUILD)/aqs.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/aqs.elf $@ aqs - '*' 150 150 150
+
 # Font subsets (proprietary source; regenerated, .gitignored). See tools/mkfont.py.
 $(FONTS): tools/mkfont.py
 	@mkdir -p fsroot/fonts
 	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
-$(DISK): $(FS_FILES) $(FONTS) $(AEX) tools/mkfs.py
+$(DISK): $(FS_FILES) $(AQS_EXAMPLES) $(FONTS) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
-	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c))
+	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/aqs.aex:/bin/aqs \
+	    $(foreach e,$(AQS_EXAMPLES),$(e):/usr/aqs/$(notdir $(e)))
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
@@ -201,14 +227,19 @@ test: $(ISO) $(DISK)
 test-shell: $(ISO) $(DISK)
 	@sh scripts/run-shell-test.sh $(ISO) $(DISK)
 
+# On-Aqua AquaScript test: boots and runs /bin/aqs on the /usr/aqs examples.
+test-aqs-os: $(ISO) $(DISK)
+	@sh scripts/run-aqs-test.sh $(ISO) $(DISK)
+
 # AquaScript host unit test: the language core (lexer/compiler/vm/value/object)
 # is portable C, so it builds and runs natively -- no QEMU. Asserts print output
 # for arithmetic/control-flow/recursion incl. fib(20).
 AQS_CORE := src/apps/aqs/value.c src/apps/aqs/aqs_io.c src/apps/aqs/lexer.c \
-            src/apps/aqs/compiler.c src/apps/aqs/vm.c src/apps/aqs/object.c
+            src/apps/aqs/compiler.c src/apps/aqs/vm.c src/apps/aqs/object.c \
+            src/apps/aqs/aqs_native.c src/apps/aqs/aqs_ll.c
 test-aqs:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
 	@$(BUILD)/aqs_test
 
 clean:

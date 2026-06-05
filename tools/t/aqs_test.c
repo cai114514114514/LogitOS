@@ -110,12 +110,86 @@ int main(void)
        "print(x)\n",
        "3\n");
 
+    /* ---- A2: strings, lists, for/range, builtins ---- */
+    ok("listlit", "print([1, 2, 3])\n", "[1, 2, 3]\n");
+    ok("listget", "xs = [10, 20, 30]\nprint(xs[1])\n", "20\n");
+    ok("negidx",  "print([1, 2, 3][-1])\n", "3\n");
+    ok("listset", "xs = [1, 2, 3]\nxs[0] = 99\nprint(xs)\n", "[99, 2, 3]\n");
+    ok("append",  "xs = []\nxs.append(5)\nxs.append(6)\nprint(len(xs), xs)\n", "2 [5, 6]\n");
+    ok("range1",  "print(range(3))\n", "[0, 1, 2]\n");
+    ok("range2",  "print(range(2, 5))\n", "[2, 3, 4]\n");
+    ok("range3",  "print(range(0, 10, 3))\n", "[0, 3, 6, 9]\n");
+    ok("strcat",  "print(\"a\" + \"b\" + \"c\")\n", "abc\n");
+    ok("stridx",  "print(\"hello\"[1])\n", "e\n");
+    ok("strlen",  "print(len(\"hello\"))\n", "5\n");
+    ok("reprlist","print([1, \"a\", true])\n", "[1, 'a', true]\n");
+
+    ok("forrange",
+       "total = 0\n"
+       "for i in range(5):\n"
+       "    total = total + i\n"
+       "print(total)\n",
+       "10\n");
+
+    ok("forlist",
+       "def f(xs):\n"
+       "    s = 0\n"
+       "    for x in xs:\n"
+       "        s = s + x\n"
+       "    return s\n"
+       "print(f([1, 2, 3, 4]))\n",
+       "10\n");
+
+    ok("squares",
+       "def squares(n):\n"
+       "    out = []\n"
+       "    for i in range(n):\n"
+       "        out.append(i * i)\n"
+       "    return out\n"
+       "print(squares(5))\n",
+       "[0, 1, 4, 9, 16]\n");
+
+    ok("nestfor",
+       "xs = []\n"
+       "for i in range(3):\n"
+       "    for j in range(3):\n"
+       "        xs.append(i * 10 + j)\n"
+       "print(xs)\n",
+       "[0, 1, 2, 10, 11, 12, 20, 21, 22]\n");
+
+    /* ---- A3: indirection (raw memory, addr, typed pointers) ---- */
+    ok("peekpoke",
+       "s = \"ABCD\"\n"
+       "a = addr(s)\n"
+       "print(peek8(a))\n"        /* 'A' */
+       "poke8(a, 90)\n"          /* -> 'Z' */
+       "print(peek8(a), s)\n",
+       "65\n90 ZBCD\n");
+    ok("i8ptr",
+       "s = \"AAAA\"\n"
+       "p = i8ptr(addr(s))\n"
+       "p[0] = 66\n"             /* 'B' */
+       "p[3] = 68\n"             /* 'D' */
+       "print(p[0], s)\n",
+       "66 BAAD\n");
+    ok("i32ptr",
+       "s = \"\\0\\0\\0\\0\\0\\0\\0\\0\"\n"
+       "p = i32ptr(addr(s))\n"
+       "p[0] = 305419896\n"      /* 0x12345678 */
+       "p[1] = -1\n"             /* reads back as signed i32 -1 */
+       "print(p[0], p[1])\n",
+       "305419896 -1\n");
+    ok("sysconst", "print(SYS_WRITE)\n", "1\n");
+    ok("syscall_stub", "print(syscall(SYS_GETPID))\n", "-1\n");   /* host stub returns -1 */
+
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");
     err("badindent", "x = 1\n  y = 2\n");
     err("arity",   "def g(a):\n    return a\nprint(g(1, 2))\n");
+    err("oob",     "print([1, 2][5])\n");
+    err("nomethod","xs = []\nxs.frobnicate()\n");
 
-    printf(fails ? "\n%d/%d AquaScript A1 checks FAILED\n" : "\nall %d AquaScript A1 checks passed\n",
+    printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);
     return fails ? 1 : 0;
 }

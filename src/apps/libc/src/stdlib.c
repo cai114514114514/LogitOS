@@ -45,7 +45,14 @@ int  atoi(const char *s)  { return (int)strtoll(s, NULL, 10); }
 long atol(const char *s)  { return (long)strtoll(s, NULL, 10); }
 long long atoll(const char *s) { return strtoll(s, NULL, 10); }
 
-double pow(double, double);
+/* 10^e by exponentiation-by-squaring -- keeps mini-libc free of a libm dependency. */
+static double pow10i(int e)
+{
+    int neg = e < 0; if (neg) e = -e;
+    double r = 1.0, b = 10.0;
+    while (e) { if (e & 1) r *= b; b *= b; e >>= 1; }
+    return neg ? 1.0 / r : r;
+}
 double strtod(const char *s, char **end)
 {
     while (isspace_(*s)) s++;
@@ -56,7 +63,7 @@ double strtod(const char *s, char **end)
     if (any && (*s == 'e' || *s == 'E')) {
         s++; int eneg = 0; if (*s == '+' || *s == '-') eneg = (*s++ == '-');
         int e = 0; while (*s >= '0' && *s <= '9') e = e * 10 + (*s++ - '0');
-        v *= pow(10.0, eneg ? -e : e);
+        v *= pow10i(eneg ? -e : e);
     }
     if (end) *end = (char *)s;
     return neg ? -v : v;

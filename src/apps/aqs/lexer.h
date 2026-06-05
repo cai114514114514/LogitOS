@@ -9,10 +9,10 @@ typedef enum {
     T_NEWLINE, T_INDENT, T_DEDENT,          /* layout */
     T_INT, T_FLOAT, T_STR, T_IDENT,          /* literals */
     T_DEF, T_RETURN, T_IF, T_ELIF, T_ELSE,   /* keywords */
-    T_WHILE, T_AND, T_OR, T_NOT,
+    T_WHILE, T_FOR, T_IN, T_AND, T_OR, T_NOT,
     T_TRUE, T_FALSE, T_NIL,
     T_LPAREN, T_RPAREN, T_LBRACKET, T_RBRACKET,
-    T_COMMA, T_COLON,
+    T_COMMA, T_COLON, T_DOT,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
     T_ASSIGN, T_EQ, T_NE, T_LT, T_LE, T_GT, T_GE,
     T_EOF, T_ERROR

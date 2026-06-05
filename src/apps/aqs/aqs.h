@@ -57,12 +57,21 @@ typedef struct {           /* a compiled function (also the top-level "script") 
 typedef Value (*NativeFn)(int argc, Value *args);
 typedef struct { Obj obj; NativeFn fn; const char *name; } ObjNative;
 
+typedef struct { Obj obj; Value *items; int count, cap; } ObjList;   /* A2: dynamic array */
+
+/* A3 indirection: a typed pointer into raw memory. p[i] reads/writes `width`
+ * bytes at addr + i*width (sign-extended on read when is_signed). */
+typedef struct { Obj obj; uint64_t addr; int width; int is_signed; } ObjPtr;
+
 #define IS_STR(v)    (IS_OBJ(v) && AS_OBJ(v)->type == O_STR)
 #define IS_FN(v)     (IS_OBJ(v) && AS_OBJ(v)->type == O_FN)
 #define IS_NATIVE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_NATIVE)
 #define IS_LIST(v)   (IS_OBJ(v) && AS_OBJ(v)->type == O_LIST)
+#define IS_PTR(v)    (IS_OBJ(v) && AS_OBJ(v)->type == O_PTR)
 #define AS_STR(v)    ((ObjStr *)AS_OBJ(v))
 #define AS_FN(v)     ((ObjFn *)AS_OBJ(v))
+#define AS_LIST(v)   ((ObjList *)AS_OBJ(v))
+#define AS_PTR(v)    ((ObjPtr *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -72,7 +81,7 @@ typedef enum {
     OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE, OP_NOT,
     OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP,
     OP_CALL, OP_RET,
-    OP_MAKE_LIST, OP_INDEX_GET, OP_INDEX_SET,   /* A2 */
+    OP_MAKE_LIST, OP_INDEX_GET, OP_INDEX_SET, OP_LEN, OP_INVOKE,   /* A2 */
 } OpCode;
 
 /* --- compile + run --- */
@@ -85,6 +94,9 @@ ObjStr   *aqs_str_copy(const char *chars, int len);
 ObjStr   *aqs_str_take(char *chars, int len);
 ObjFn    *aqs_fn_new(void);
 ObjNative*aqs_native_new(NativeFn fn, const char *name);
+ObjList  *aqs_list_new(void);
+void      aqs_list_push(ObjList *l, Value v);
+ObjPtr   *aqs_ptr_new(uint64_t addr, int width, int is_signed);
 void      aqs_chunk_write(ObjFn *fn, uint8_t b);
 int       aqs_chunk_const(ObjFn *fn, Value v);
 int       aqs_value_eq(Value a, Value b);
@@ -96,6 +108,17 @@ void      aqs_free_objects(void);      /* free all heap objects (end of run) */
 void      aqs_emit(const char *s, int n);
 void      aqs_emit_cstr(const char *s);
 void      aqs_capture(char *buf, int cap);   /* redirect aqs_emit to a buffer (tests); NULL = stdout */
+
+/* native registration (vm.c) + A3 indirection builtins (aqs_native.c) */
+void      aqs_define_native(const char *name, NativeFn fn);
+void      aqs_define_int(const char *name, int64_t v);
+Value     aqs_native_fail(const char *msg);  /* a native aborts the run with this message */
+void      aqs_install_indirection(void);     /* registers peek/poke/addr/iNptr/syscall + SYS_* */
+
+/* low-level bridge (aqs_ll.c): raw memory + the int 0x80 syscall (asm on Aqua). */
+uint64_t  aqs_ll_peek(uint64_t addr, int width);
+void      aqs_ll_poke(uint64_t addr, int width, uint64_t val);
+long      aqs_ll_syscall(long n, long a, long b, long c);
 
 /* error reporting (set by compiler/vm; aqs_main prints) */
 extern char aqs_err[256];

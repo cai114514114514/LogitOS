@@ -24,10 +24,12 @@ static TokType keyword(const char *s, int n)
 {
     switch (n) {
     case 2: if (!memcmp(s, "if", 2)) return T_IF;
-            if (!memcmp(s, "or", 2)) return T_OR; break;
+            if (!memcmp(s, "or", 2)) return T_OR;
+            if (!memcmp(s, "in", 2)) return T_IN; break;
     case 3: if (!memcmp(s, "def", 3)) return T_DEF;
             if (!memcmp(s, "and", 3)) return T_AND;
             if (!memcmp(s, "not", 3)) return T_NOT;
+            if (!memcmp(s, "for", 3)) return T_FOR;
             if (!memcmp(s, "nil", 3)) return T_NIL; break;
     case 4: if (!memcmp(s, "elif", 4)) return T_ELIF;
             if (!memcmp(s, "else", 4)) return T_ELSE;
@@ -105,6 +107,7 @@ Token *aqs_lex(const char *src, int *count)
                 case ']': push(&b, T_RBRACKET, s, 1, line); if (bracket > 0) bracket--; break;
                 case ',': push(&b, T_COMMA, s, 1, line); break;
                 case ':': push(&b, T_COLON, s, 1, line); break;
+                case '.': push(&b, T_DOT, s, 1, line); break;
                 case '+': push(&b, T_PLUS, s, 1, line); break;
                 case '-': push(&b, T_MINUS, s, 1, line); break;
                 case '*': push(&b, T_STAR, s, 1, line); break;

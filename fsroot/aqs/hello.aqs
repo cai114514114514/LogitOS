@@ -1,0 +1,4 @@
+# AquaScript: hello + a loop
+print("Hello from AquaScript!")
+for i in range(5):
+    print("count", i)

@@ -308,6 +308,32 @@ virtio-gpu-pci` + `virtio-blk-pci`. (Post-M18 fixes also landed: Finder list
 clipping, runtime-mkdir clean dirs, the ATA IF-on/non-preempt fix, inode_trunc
 double-indirect free.)
 
+Pre-M20 prerequisite — **mini-libc 大补**: `src/apps/libc` grew into a real
+freestanding C lib. `io.c` is the single errno/syscall TU (POSIX wrappers over
+int 0x80); `stdio.c` is now **fd-backed buffered FILE I/O** (fopen/fread/fgets/
+fseek/…); added `fcntl.h`/`unistd.h`/`setjmp.h` (+`setjmp.asm`), `strtok`/`memmem`.
+Also fixed stdio bugs (short-write loss, `%g` trailing zeros, `%*`/`.*` neg width,
+round-half-to-even). Only browser/JS + `/bin/aqs` link mini-libc; CLI coreutils use
+`aqua.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
+`.clangd` (full INCDIRS) kill the host-SDK false-positive squiggles.
+
+M20 AquaScript ✅: a **from-scratch language**, `aqs`/`.aqs`, in `src/apps/aqs/`
+(clox-lineage: single-pass compiler → flat bytecode → stack VM; Python-ish
+indentation). **A1** lexer (INDENT/DEDENT) + Pratt compiler + VM: nil/bool/int(i64)/
+float(double), arithmetic/cmp/logic (short-circuit), if/elif/else, while, def/
+return/recursion, globals + lexically-scoped locals. **A2** strings (concat/index/
+len), lists (`[...]`, index get/set, `.append()` via OP_INVOKE, len), `for x in
+range()/list`, builtins (print/len/range); real block scoping. **A3 indirection**
+(the point — systems programming, not a sandbox): `aqs_ll.c` raw mem peek/poke +
+inline-asm `int 0x80` syscall (portable: real on x86_64-elf, stubbed on the arm64
+host) + `aqs_native.c` addr/peek8-64/poke8-64/i8-64ptr/syscall + `SYS_*` globals;
+typed pointer `ObjPtr{addr,width,signed}` via `p[i]`. Shipped as **`/bin/aqs`** (own
+Makefile rule: aqs core + mini-libc + crt0_cli @0x50000000; reads scripts via
+mini-libc `fopen`) + `/usr/aqs/*.aqs`. Tests: `make test-aqs` (host, 50 checks incl.
+fib) + `make test-aqs-os` (boots Aqua, runs the examples over serial). Perf: fib(32)
+~126ms host (≈CPython). Deferred: `import` (after the user revisits), dict, closures,
+GC, computed-goto dispatch.
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese

@@ -3,22 +3,22 @@
 #include <stdio.h>      /* snprintf for errors */
 
 /* Single-pass compiler: a Pratt expression parser + statement parser that emits
- * bytecode directly into an ObjFn (clox-style). Top-level assignments are
- * globals; assignments inside a function body are function-scoped locals that
- * live on the value stack (slot 0 = the callee, then params, then locals). */
+ * bytecode directly into an ObjFn (clox-style). Top-level names are globals;
+ * inside a function, names are lexically-scoped locals living on the value stack
+ * (slot 0 = the callee, then params, then block-scoped locals popped at scope end). */
 
 static Token *T;          /* token array from the lexer */
 static int    P;          /* current index */
 static int    had_error;
 
-typedef struct { const char *name; int len; } Local;
+typedef struct { const char *name; int len; int depth; } Local;
 
 typedef struct Compiler {
     struct Compiler *enclosing;
     ObjFn *fn;
     Local locals[256];
     int local_count;
-    int block_depth;       /* nesting of {} blocks within this function (body == 1) */
+    int scope_depth;
 } Compiler;
 
 static Compiler *current;
@@ -26,7 +26,6 @@ static Compiler *current;
 /* ---- token cursor ---- */
 static Token tk_cur(void)  { return T[P]; }
 static Token tk_prev(void) { return T[P - 1]; }
-static Token tk_next(void) { return T[P + 1]; }
 static void advance(void)  { if (T[P].type != T_EOF) P++; }
 static int  check(TokType t){ return T[P].type == t; }
 static int  match(TokType t){ if (check(t)) { advance(); return 1; } return 0; }
@@ -68,19 +67,31 @@ static void emitLoop(int loop_start)
     emit((uint8_t)((off >> 8) & 0xff)); emit((uint8_t)(off & 0xff));
 }
 
-/* ---- locals ---- */
+/* ---- locals / scopes ---- */
 static int resolve_local(Compiler *c, const char *name, int len)
 {
     for (int i = c->local_count - 1; i >= 0; i--)
-        if (c->locals[i].len == len && memcmp(c->locals[i].name, name, len) == 0) return i;
+        if (c->locals[i].len == len && len > 0 && memcmp(c->locals[i].name, name, len) == 0) return i;
     return -1;
 }
-static void add_local(const char *name, int len)
+static int add_local(const char *name, int len)   /* returns the slot, or -1 on overflow */
 {
-    if (current->local_count >= 256) { error("too many locals in one function"); return; }
-    current->locals[current->local_count].name = name;
-    current->locals[current->local_count].len = len;
+    if (current->local_count >= 256) { error("too many locals in one function"); return -1; }
+    int slot = current->local_count;
+    current->locals[slot].name = name;
+    current->locals[slot].len = len;
+    current->locals[slot].depth = current->scope_depth;
     current->local_count++;
+    return slot;
+}
+static void begin_scope(void) { current->scope_depth++; }
+static void end_scope(void)
+{
+    current->scope_depth--;
+    while (current->local_count > 0 && current->locals[current->local_count - 1].depth > current->scope_depth) {
+        emit(OP_POP);
+        current->local_count--;
+    }
 }
 
 /* ---- Pratt parser ---- */
@@ -146,6 +157,48 @@ static void string(void)
 
 static void grouping(void) { expression(); consume(T_RPAREN, "expected ')' after expression"); }
 
+static void list_literal(void)   /* prefix for '[' : a list display */
+{
+    int n = 0;
+    if (!check(T_RBRACKET)) {
+        do { expression(); n++; } while (match(T_COMMA));
+    }
+    consume(T_RBRACKET, "expected ']' after list elements");
+    if (n > 255) { error("list literal too large"); return; }
+    emit2(OP_MAKE_LIST, (uint8_t)n);
+}
+
+static void index_(void)   /* infix for '[' : subscript read */
+{
+    expression();
+    consume(T_RBRACKET, "expected ']' after index");
+    emit(OP_INDEX_GET);
+}
+
+static uint8_t arg_list(void)
+{
+    uint8_t argc = 0;
+    if (!check(T_RPAREN)) {
+        do {
+            expression();
+            if (argc == 255) error("too many arguments");
+            argc++;
+        } while (match(T_COMMA));
+    }
+    consume(T_RPAREN, "expected ')' after arguments");
+    return argc;
+}
+
+static void dot(void)   /* infix for '.' : method call  receiver.name(args) */
+{
+    consume(T_IDENT, "expected a method name after '.'");
+    Token method = tk_prev();
+    int name = identConst(method.start, method.len);
+    consume(T_LPAREN, "expected '(' after the method name");
+    uint8_t argc = arg_list();
+    emit(OP_INVOKE); emit((uint8_t)name); emit(argc);
+}
+
 static void unary(void)
 {
     TokType op = tk_prev().type;
@@ -182,14 +235,14 @@ static void binary(void)
     }
 }
 
-static void and_(void)   /* short-circuit: if left is falsey, keep it and skip */
+static void and_(void)
 {
     int end = emitJump(OP_JUMP_IF_FALSE);
     emit(OP_POP);
     parse_precedence(PREC_AND);
     patchJump(end);
 }
-static void or_(void)    /* short-circuit: if left is truthy, keep it and skip */
+static void or_(void)
 {
     int else_j = emitJump(OP_JUMP_IF_FALSE);
     int end = emitJump(OP_JUMP);
@@ -198,20 +251,6 @@ static void or_(void)    /* short-circuit: if left is truthy, keep it and skip *
     parse_precedence(PREC_OR);
     patchJump(end);
 }
-
-static uint8_t arg_list(void)
-{
-    uint8_t argc = 0;
-    if (!check(T_RPAREN)) {
-        do {
-            expression();
-            if (argc == 255) error("too many arguments");
-            argc++;
-        } while (match(T_COMMA));
-    }
-    consume(T_RPAREN, "expected ')' after arguments");
-    return argc;
-}
 static void call(void) { uint8_t argc = arg_list(); emit2(OP_CALL, argc); }
 
 static ParseRule rules[T_ERROR + 1];
@@ -219,28 +258,30 @@ static int rules_ready;
 static void init_rules(void)
 {
     for (int i = 0; i <= T_ERROR; i++) { rules[i].prefix = 0; rules[i].infix = 0; rules[i].prec = PREC_NONE; }
-    rules[T_INT]    = (ParseRule){ number, 0, PREC_NONE };
-    rules[T_FLOAT]  = (ParseRule){ number, 0, PREC_NONE };
-    rules[T_STR]    = (ParseRule){ string, 0, PREC_NONE };
-    rules[T_IDENT]  = (ParseRule){ variable, 0, PREC_NONE };
-    rules[T_NIL]    = (ParseRule){ literal, 0, PREC_NONE };
-    rules[T_TRUE]   = (ParseRule){ literal, 0, PREC_NONE };
-    rules[T_FALSE]  = (ParseRule){ literal, 0, PREC_NONE };
-    rules[T_LPAREN] = (ParseRule){ grouping, call, PREC_CALL };
-    rules[T_MINUS]  = (ParseRule){ unary, binary, PREC_TERM };
-    rules[T_PLUS]   = (ParseRule){ 0, binary, PREC_TERM };
-    rules[T_STAR]   = (ParseRule){ 0, binary, PREC_FACTOR };
-    rules[T_SLASH]  = (ParseRule){ 0, binary, PREC_FACTOR };
-    rules[T_PERCENT]= (ParseRule){ 0, binary, PREC_FACTOR };
-    rules[T_NOT]    = (ParseRule){ unary, 0, PREC_NONE };
-    rules[T_EQ]     = (ParseRule){ 0, binary, PREC_EQ };
-    rules[T_NE]     = (ParseRule){ 0, binary, PREC_EQ };
-    rules[T_LT]     = (ParseRule){ 0, binary, PREC_CMP };
-    rules[T_LE]     = (ParseRule){ 0, binary, PREC_CMP };
-    rules[T_GT]     = (ParseRule){ 0, binary, PREC_CMP };
-    rules[T_GE]     = (ParseRule){ 0, binary, PREC_CMP };
-    rules[T_AND]    = (ParseRule){ 0, and_, PREC_AND };
-    rules[T_OR]     = (ParseRule){ 0, or_, PREC_OR };
+    rules[T_INT]     = (ParseRule){ number, 0, PREC_NONE };
+    rules[T_FLOAT]   = (ParseRule){ number, 0, PREC_NONE };
+    rules[T_STR]     = (ParseRule){ string, 0, PREC_NONE };
+    rules[T_IDENT]   = (ParseRule){ variable, 0, PREC_NONE };
+    rules[T_NIL]     = (ParseRule){ literal, 0, PREC_NONE };
+    rules[T_TRUE]    = (ParseRule){ literal, 0, PREC_NONE };
+    rules[T_FALSE]   = (ParseRule){ literal, 0, PREC_NONE };
+    rules[T_LPAREN]  = (ParseRule){ grouping, call, PREC_CALL };
+    rules[T_LBRACKET]= (ParseRule){ list_literal, index_, PREC_CALL };
+    rules[T_DOT]     = (ParseRule){ 0, dot, PREC_CALL };
+    rules[T_MINUS]   = (ParseRule){ unary, binary, PREC_TERM };
+    rules[T_PLUS]    = (ParseRule){ 0, binary, PREC_TERM };
+    rules[T_STAR]    = (ParseRule){ 0, binary, PREC_FACTOR };
+    rules[T_SLASH]   = (ParseRule){ 0, binary, PREC_FACTOR };
+    rules[T_PERCENT] = (ParseRule){ 0, binary, PREC_FACTOR };
+    rules[T_NOT]     = (ParseRule){ unary, 0, PREC_NONE };
+    rules[T_EQ]      = (ParseRule){ 0, binary, PREC_EQ };
+    rules[T_NE]      = (ParseRule){ 0, binary, PREC_EQ };
+    rules[T_LT]      = (ParseRule){ 0, binary, PREC_CMP };
+    rules[T_LE]      = (ParseRule){ 0, binary, PREC_CMP };
+    rules[T_GT]      = (ParseRule){ 0, binary, PREC_CMP };
+    rules[T_GE]      = (ParseRule){ 0, binary, PREC_CMP };
+    rules[T_AND]     = (ParseRule){ 0, and_, PREC_AND };
+    rules[T_OR]      = (ParseRule){ 0, or_, PREC_OR };
     rules_ready = 1;
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
@@ -259,28 +300,52 @@ static void parse_precedence(Prec prec)
 static void expression(void) { parse_precedence(PREC_OR); }
 
 /* ---- statements ---- */
-static void simple_statement(void)
+
+/* store the value currently on top of the stack into `name` (consumes it) */
+static void store_name(Token name)
 {
-    if (check(T_IDENT) && tk_next().type == T_ASSIGN) {
-        Token name = tk_cur();
-        advance(); advance();             /* IDENT '=' */
-        expression();
-        if (current->enclosing == NULL) {            /* top level -> global */
-            emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
-        } else {
-            int slot = resolve_local(current, name.start, name.len);
-            if (slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)slot); emit(OP_POP); }
-            else {
-                if (current->block_depth > 1)        /* would allocate a slot conditionally */
-                    error("a new variable must be first assigned at the function's top level (A1)");
-                add_local(name.start, name.len);     /* the expr value is its home slot */
-            }
-        }
-    } else {
-        expression();
-        emit(OP_POP);
+    int slot = resolve_local(current, name.start, name.len);
+    if (slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)slot); emit(OP_POP); }
+    else if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
+    else add_local(name.start, name.len);    /* new local: the value becomes its home slot */
+}
+
+/* is the upcoming statement `target = ...`? (NAME, then a top-level '=' before NEWLINE) */
+static int assign_ahead(void)
+{
+    if (T[P].type != T_IDENT) return 0;
+    int depth = 0;
+    for (int k = P; T[k].type != T_NEWLINE && T[k].type != T_EOF; k++) {
+        TokType t = T[k].type;
+        if (t == T_LPAREN || t == T_LBRACKET) depth++;
+        else if (t == T_RPAREN || t == T_RBRACKET) depth--;
+        else if (t == T_ASSIGN && depth == 0) return 1;
     }
-    consume(T_NEWLINE, "expected a newline after the statement");
+    return 0;
+}
+
+static void assignment(void)
+{
+    consume(T_IDENT, "expected a name");
+    Token name = tk_prev();
+    if (match(T_LBRACKET)) {                       /* indexed target: name[i]...[k] = v */
+        int slot = resolve_local(current, name.start, name.len);
+        if (slot >= 0) emit2(OP_GET_LOCAL, (uint8_t)slot);
+        else emit2(OP_GET_GLOBAL, (uint8_t)identConst(name.start, name.len));
+        for (;;) {
+            expression();
+            consume(T_RBRACKET, "expected ']'");
+            if (match(T_LBRACKET)) { emit(OP_INDEX_GET); continue; }   /* intermediate index */
+            break;
+        }
+        consume(T_ASSIGN, "expected '=' in indexed assignment");
+        expression();
+        emit(OP_INDEX_SET);                        /* (obj, idx, val) -> set, leaves nothing */
+    } else {
+        consume(T_ASSIGN, "expected '='");
+        expression();
+        store_name(name);
+    }
 }
 
 static void if_statement(void)   /* entered after `if` or `elif` */
@@ -311,6 +376,45 @@ static void while_statement(void)
     emit(OP_POP);
 }
 
+/* for VAR in SEQ: BODY  -- desugars to an index walk over the sequence/list. */
+static void for_statement(void)
+{
+    begin_scope();
+    consume(T_IDENT, "expected a loop variable");
+    Token var = tk_prev();
+    consume(T_IN, "expected 'in' after the loop variable");
+    expression();                                  /* the sequence -> stack */
+    int seq_slot = add_local("", 0);
+    emitConst(INT_VAL(0));                          /* idx = 0 */
+    int idx_slot = add_local("", 0);
+    int var_slot = -1;
+    if (current->enclosing != NULL) { emit(OP_NIL); var_slot = add_local(var.start, var.len); }
+    consume(T_COLON, "expected ':' after the sequence");
+
+    int loop_start = current->fn->count;
+    emit2(OP_GET_LOCAL, (uint8_t)idx_slot);
+    emit2(OP_GET_LOCAL, (uint8_t)seq_slot);
+    emit(OP_LEN);
+    emit(OP_LT);
+    int exit_j = emitJump(OP_JUMP_IF_FALSE);
+    emit(OP_POP);                                   /* drop the condition (true path) */
+    emit2(OP_GET_LOCAL, (uint8_t)seq_slot);
+    emit2(OP_GET_LOCAL, (uint8_t)idx_slot);
+    emit(OP_INDEX_GET);                             /* seq[idx] */
+    if (var_slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)var_slot); emit(OP_POP); }
+    else emit2(OP_DEF_GLOBAL, (uint8_t)identConst(var.start, var.len));
+    block();
+    emit2(OP_GET_LOCAL, (uint8_t)idx_slot);         /* idx = idx + 1 */
+    emitConst(INT_VAL(1));
+    emit(OP_ADD);
+    emit2(OP_SET_LOCAL, (uint8_t)idx_slot);
+    emit(OP_POP);
+    emitLoop(loop_start);
+    patchJump(exit_j);
+    emit(OP_POP);                                   /* drop the condition (false path) */
+    end_scope();
+}
+
 static void return_statement(void)
 {
     if (current->enclosing == NULL) { error("'return' outside a function"); return; }
@@ -330,8 +434,9 @@ static void fun_declaration(void)
     comp.fn = aqs_fn_new();
     comp.fn->name = aqs_str_copy(name.start, name.len);
     comp.local_count = 0;
-    comp.block_depth = 0;
-    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.local_count++; /* slot 0 = callee */
+    comp.scope_depth = 0;
+    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0;
+    comp.local_count++;                            /* slot 0 = callee */
     current = &comp;
 
     consume(T_LPAREN, "expected '(' after the function name");
@@ -345,26 +450,22 @@ static void fun_declaration(void)
     consume(T_RPAREN, "expected ')' after parameters");
     consume(T_COLON, "expected ':' after the parameter list");
     block();
-    emit(OP_NIL); emit(OP_RET);          /* implicit `return nil` */
+    emit(OP_NIL); emit(OP_RET);                    /* implicit `return nil` */
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
     emitConst(OBJ_VAL(fn));
-    if (current->enclosing == NULL) {
-        emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
-    } else {
-        if (current->block_depth > 1) error("nested functions must be defined at the function's top level (A1)");
-        add_local(name.start, name.len);
-    }
+    if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
+    else store_name(name);
 }
 
 static void block(void)   /* NEWLINE INDENT declaration+ DEDENT */
 {
     consume(T_NEWLINE, "expected a newline before the block");
     consume(T_INDENT, "expected an indented block");
-    current->block_depth++;
+    begin_scope();
     while (!check(T_DEDENT) && !check(T_EOF) && !had_error) declaration();
-    current->block_depth--;
+    end_scope();
     consume(T_DEDENT, "expected the block to end (dedent)");
 }
 
@@ -372,8 +473,10 @@ static void statement(void)
 {
     if (match(T_IF)) if_statement();
     else if (match(T_WHILE)) while_statement();
+    else if (match(T_FOR)) for_statement();
     else if (match(T_RETURN)) return_statement();
-    else simple_statement();
+    else if (assign_ahead()) { assignment(); consume(T_NEWLINE, "expected a newline after the statement"); }
+    else { expression(); emit(OP_POP); consume(T_NEWLINE, "expected a newline after the statement"); }
 }
 
 static void declaration(void)
@@ -395,8 +498,9 @@ ObjFn *aqs_compile(const char *src)
     comp.fn = aqs_fn_new();
     comp.fn->name = NULL;                    /* the top-level script */
     comp.local_count = 0;
-    comp.block_depth = 0;
-    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.local_count++;
+    comp.scope_depth = 0;
+    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0;
+    comp.local_count++;
     current = &comp;
 
     while (!check(T_EOF) && !had_error) {

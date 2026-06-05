@@ -35,6 +35,8 @@ int aqs_value_eq(Value a, Value b)
     return 0;
 }
 
+static void print_repr(Value v);   /* like print, but strings are quoted (for list elements) */
+
 void aqs_print_value(Value v)
 {
     char buf[40]; int n;
@@ -47,9 +49,26 @@ void aqs_print_value(Value v)
                   aqs_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); break;
     case V_OBJ:
         if (IS_STR(v))         { ObjStr *s = AS_STR(v); aqs_emit(s->chars, s->len); }
+        else if (IS_LIST(v)) {
+            ObjList *l = AS_LIST(v);
+            aqs_emit("[", 1);
+            for (int i = 0; i < l->count; i++) { if (i) aqs_emit(", ", 2); print_repr(l->items[i]); }
+            aqs_emit("]", 1);
+        }
+        else if (IS_PTR(v)) {
+            ObjPtr *p = AS_PTR(v);
+            n = snprintf(buf, sizeof buf, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);
+            aqs_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1);
+        }
         else if (IS_FN(v))      aqs_emit_cstr("<fn>");
         else if (IS_NATIVE(v))  aqs_emit_cstr("<native fn>");
         else                    aqs_emit_cstr("<obj>");
         break;
     }
+}
+
+static void print_repr(Value v)
+{
+    if (IS_STR(v)) { ObjStr *s = AS_STR(v); aqs_emit("'", 1); aqs_emit(s->chars, s->len); aqs_emit("'", 1); }
+    else aqs_print_value(v);
 }

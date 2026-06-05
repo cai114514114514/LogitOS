@@ -50,6 +50,29 @@ ObjNative *aqs_native_new(NativeFn fn, const char *name)
     return n;
 }
 
+ObjList *aqs_list_new(void)
+{
+    ObjList *l = (ObjList *)alloc_obj(sizeof(ObjList), O_LIST);
+    l->items = NULL; l->count = l->cap = 0;
+    return l;
+}
+
+void aqs_list_push(ObjList *l, Value v)
+{
+    if (l->count + 1 > l->cap) {
+        l->cap = l->cap < 8 ? 8 : l->cap * 2;
+        l->items = (Value *)realloc(l->items, l->cap * sizeof(Value));
+    }
+    l->items[l->count++] = v;
+}
+
+ObjPtr *aqs_ptr_new(uint64_t addr, int width, int is_signed)
+{
+    ObjPtr *p = (ObjPtr *)alloc_obj(sizeof(ObjPtr), O_PTR);
+    p->addr = addr; p->width = width; p->is_signed = is_signed;
+    return p;
+}
+
 void aqs_chunk_write(ObjFn *fn, uint8_t b)
 {
     if (fn->count + 1 > fn->cap) {
@@ -78,8 +101,9 @@ void aqs_free_objects(void)
     while (o) {
         Obj *next = o->next;
         switch (o->type) {
-        case O_STR: free(((ObjStr *)o)->chars); break;
-        case O_FN:  free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
+        case O_STR:  free(((ObjStr *)o)->chars); break;
+        case O_FN:   free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
+        case O_LIST: free(((ObjList *)o)->items); break;
         default: break;
         }
         free(o);
