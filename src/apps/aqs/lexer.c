@@ -107,6 +107,8 @@ Token *aqs_lex(const char *src, int *count)
                 case ')': push(&b, T_RPAREN, s, 1, line); if (bracket > 0) bracket--; break;
                 case '[': push(&b, T_LBRACKET, s, 1, line); bracket++; break;
                 case ']': push(&b, T_RBRACKET, s, 1, line); if (bracket > 0) bracket--; break;
+                case '{': push(&b, T_LBRACE, s, 1, line); bracket++; break;
+                case '}': push(&b, T_RBRACE, s, 1, line); if (bracket > 0) bracket--; break;
                 case ',': push(&b, T_COMMA, s, 1, line); break;
                 case ':': push(&b, T_COLON, s, 1, line); break;
                 case '.': push(&b, T_DOT, s, 1, line); break;
