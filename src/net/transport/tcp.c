@@ -140,7 +140,6 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
     uint8_t  flags = h->flags;
     int hlen = (h->off >> 4) * 4;
     if (hlen < (int)sizeof *h || hlen > len) return;
-    if (tcp_checksum(src, net_cfg.ip, data, len) != 0) return;
     const uint8_t *payload = data + hlen;
     int dlen = len - hlen;
 

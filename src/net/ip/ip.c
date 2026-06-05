@@ -76,13 +76,9 @@ void ip_input(const uint8_t *frame, uint16_t len)
     if ((h->ver_ihl >> 4) != 4)
         return;
     int ihl = (h->ver_ihl & 0xF) * 4;
-    if (ihl < (int)sizeof(struct ip_hdr))
-        return;
     uint32_t src = ntohl(h->src);
     uint16_t tot = ntohs(h->total_len);
     if (tot < ihl || (uint16_t)(sizeof(struct eth_hdr) + tot) > len)
-        return;
-    if (ip_checksum(h, ihl) != 0)
         return;
 
     const uint8_t *l4 = (const uint8_t *)h + ihl;

@@ -162,7 +162,7 @@ static struct app *find_live_app(const char *name)
 void wm_launch(const char *aex_file, const char *arg)
 {
     int sz = vfs_size(aex_file);
-    if (sz <= AEX_HDR_SIZE) { serial_puts("[wm] launch: not found\n"); return; }
+    if (sz <= 0) { serial_puts("[wm] launch: not found\n"); return; }
 
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
@@ -194,7 +194,7 @@ void wm_launch(const char *aex_file, const char *arg)
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, sz, name, ext);   /* maps + copies into `space` */
+    uint64_t entry = aex_load(img, name, ext);   /* maps + copies into `space` */
     uint64_t ustack_top = 0;
     if (entry) {
         /* The stack must sit ABOVE the whole app image. browser/js link a 24 MiB

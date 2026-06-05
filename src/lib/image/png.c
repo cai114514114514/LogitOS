@@ -104,14 +104,13 @@ static int png_decode(const uint8_t *p, int n, struct image *out)
     uint8_t trns[6]; int ntrns = 0;
     uint8_t *idat = 0; int idat_len = 0, idat_cap = 0;
     int ok = 0;
-    memset(pal, 0, sizeof pal);
     memset(pala, 255, sizeof pala);
 
     while (i + 8 <= n) {
         uint32_t clen = be32(p + i);
         const uint8_t *type = p + i + 4;
         const uint8_t *data = p + i + 8;
-        if (clen > (uint32_t)(n - i - 12)) break;
+        if (i + 12 + (int)clen > n) break;
         if (type[0]=='I'&&type[1]=='H'&&type[2]=='D'&&type[3]=='R') {
             W=(int)be32(data); H=(int)be32(data+4); depth=data[8]; ctype=data[9]; interlace=data[12];
         } else if (type[0]=='P'&&type[1]=='L'&&type[2]=='T'&&type[3]=='E') {
@@ -133,7 +132,6 @@ static int png_decode(const uint8_t *p, int n, struct image *out)
         i += 12 + clen;
     }
     if (!ok || W<=0 || H<=0 || !depth_ok(ctype, depth)) goto fail;
-    if (ctype == 3 && npal <= 0) goto fail;
     if (W > 8192 || H > 8192 || W*H > 8192*8192) goto fail;
 
     int ch = (ctype==0||ctype==3)?1 : (ctype==2)?3 : (ctype==4)?2 : 4;
@@ -141,7 +139,7 @@ static int png_decode(const uint8_t *p, int n, struct image *out)
 
     /* colour-key transparency for gray (2 bytes) / RGB (6 bytes) */
     int key=0, kr=0, kg=0, kb=0;
-    if (ntrns >= 2 && ctype==0) { key=1; kr = (trns[0]<<8)|trns[1]; }
+    if (ntrns && ctype==0) { key=1; kr = (trns[0]<<8)|trns[1]; }
     else if (ntrns>=6 && ctype==2) { key=1; kr=(trns[0]<<8)|trns[1]; kg=(trns[2]<<8)|trns[3]; kb=(trns[4]<<8)|trns[5]; }
 
     /* Adam7 pass geometry (pass 0 = whole image when not interlaced). */

@@ -98,7 +98,7 @@ long proc_execve(struct registers *r)
     /* 2. Load + validate the program image (kernel buffer) before destroying the
      *    old space, so a bad path/exec leaves the caller intact and returns -1. */
     int sz = vfs_size(abs);
-    if (sz <= AEX_HDR_SIZE) return -1;
+    if (sz <= 0) return -1;
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
     if (!img) return -1;
@@ -109,7 +109,7 @@ long proc_execve(struct registers *r)
     /* 3. Point of no return: swap the user address space. */
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
-    uint64_t entry = aex_load(img, sz, nm, ext); /* maps into the active (p->cr3) space */
+    uint64_t entry = aex_load(img, nm, ext);     /* maps into the active (p->cr3) space */
     kfree(img);
     if (!entry) proc_exit(127);                  /* image gone, can't recover */
 
@@ -130,7 +130,7 @@ long proc_execve(struct registers *r)
 int proc_spawn(const char *path, char **argv)
 {
     int sz = vfs_size(path);
-    if (sz <= AEX_HDR_SIZE) return -1;
+    if (sz <= 0) return -1;
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
     if (!img) return -1;
@@ -148,7 +148,7 @@ int proc_spawn(const char *path, char **argv)
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, sz, nm, ext);
+    uint64_t entry = aex_load(img, nm, ext);
     uint64_t sp = entry ? setup_cli_stack(entry, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
