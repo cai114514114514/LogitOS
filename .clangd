@@ -1,13 +1,19 @@
-# Make clangd analyze the kernel the way the Makefile builds it:
-# x86_64-elf freestanding target with the project include dir on the path.
-# (Without this, the IDE checks against the host arm64/Mach-O target and
-#  reports spurious errors for the inline asm constraints and headers.)
+# Make clangd analyze the tree the way the Makefile builds it: x86_64-elf
+# freestanding target. The authoritative per-file flags (all include dirs +
+# engine defines) live in compile_commands.json -- regenerate it with
+#   python3 tools/gen_compile_commands.py
+# These Add: flags are the fallback for files not in that database.
+# (Without this the IDE checks against the host arm64/macOS-SDK target and
+#  reports spurious 'header not found' / inline-asm-constraint errors.)
 CompileFlags:
   Add:
     - --target=x86_64-elf
     - -ffreestanding
     - -nostdlib
+    - -nostdlibinc        # keep clang's builtin headers, block the macOS SDK
     - -mno-red-zone
-    - -mno-sse
+    - -mno-mmx
+    - -msse
+    - -msse2              # M15+: kernel & userland build with SSE2
     - -Iinclude
   Compiler: clang
