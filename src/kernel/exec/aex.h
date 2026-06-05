@@ -27,7 +27,7 @@ struct aex_header {
 
 /* Load an in-memory .aex into the current address space (user pages) and
  * return the entry point (0 on failure). Fills name/ext if non-NULL. */
-uint64_t aex_load(const void *file, char *out_name, char *out_ext);
+uint64_t aex_load(const void *file, int file_len, char *out_name, char *out_ext);
 
 /* Validate + read metadata without loading. Returns 0 on success. */
 int aex_info(const void *file, char *out_name, char *out_ext);

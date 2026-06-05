@@ -20,6 +20,9 @@ struct cert {
     const char *cn; int cnlen;                  /* leaf CN (for name check) */
     const uint8_t *san; int sanlen;             /* SubjectAltName extension value */
     int64_t not_before, not_after;              /* unix-ish seconds */
+    int is_ca;                                  /* BasicConstraints cA */
+    int key_usage_present, key_cert_sign, digital_signature;
+    int eku_present, eku_server_auth;
 };
 
 #define SIG_ECDSA_SHA256 1

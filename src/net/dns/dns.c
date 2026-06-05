@@ -37,7 +37,9 @@ static int skip_name(const uint8_t *msg, int off, int len)
     while (off < len && depth < 64) {
         uint8_t l = msg[off];
         if (l == 0) return off + 1;
-        if ((l & 0xC0) == 0xC0) return off + 2;     /* compression pointer */
+        if ((l & 0xC0) == 0xC0) return (off + 2 <= len) ? off + 2 : len + 1;
+        if (l & 0xC0) return len + 1;               /* reserved label forms */
+        if (off + 1 + l > len) return len + 1;
         off += 1 + l;
         depth++;
     }
@@ -46,11 +48,16 @@ static int skip_name(const uint8_t *msg, int off, int len)
 
 static uint8_t resp[512];
 static uint64_t dns_started;
+static uint16_t dns_id;
+static uint16_t dns_sport = 0x4444;
 
 /* Build an A-query for `name` into q; returns its length, or -1. */
 static int build_query(uint8_t *q, const char *name)
 {
-    q[0] = 0x12; q[1] = 0x34; q[2] = 0x01; q[3] = 0x00;
+    dns_id = (uint16_t)(timer_ticks() * 1103u + dns_id + 0x9e37u);
+    if (!dns_id) dns_id = 1;
+    q[0] = (uint8_t)(dns_id >> 8); q[1] = (uint8_t)dns_id;
+    q[2] = 0x01; q[3] = 0x00;
     q[4] = 0; q[5] = 1; q[6] = 0; q[7] = 0; q[8] = 0; q[9] = 0; q[10] = 0; q[11] = 0;
     int o = 12;
     int n = encode_qname(q + o, name);
@@ -65,11 +72,17 @@ static int build_query(uint8_t *q, const char *name)
 static uint32_t parse_answer(int rlen)
 {
     if (rlen < 12) return 0;
+    int id = (resp[0] << 8) | resp[1];
+    int flags = (resp[2] << 8) | resp[3];
+    int qdcount = (resp[4] << 8) | resp[5];
     int ancount = (resp[6] << 8) | resp[7];
+    if (id != dns_id || qdcount != 1) return 0;
+    if ((flags & 0x8000) == 0 || (flags & 0x000f) != 0) return 0;
     if (ancount < 1) return 0;
 
     /* Skip the question section (one QNAME + QTYPE + QCLASS). */
     int off = skip_name(resp, 12, rlen) + 4;
+    if (off > rlen) return 0;
     for (int a = 0; a < ancount && off + 12 <= rlen; a++) {
         off = skip_name(resp, off, rlen);
         if (off + 10 > rlen) break;
@@ -89,9 +102,11 @@ void dns_start(const char *name)
     uint8_t q[512];
     int o = build_query(q, name);
     if (o < 0) return;
-    udp_recv_bind(0x4444, resp, sizeof resp);
+    dns_sport = (uint16_t)(0x4444u ^ dns_id);
+    if (dns_sport < 1024) dns_sport += 1024;
+    udp_recv_bind(dns_sport, resp, sizeof resp);
     dns_started = timer_ticks();
-    udp_send(DNS_SERVER, DNS_PORT, 0x4444, q, (uint16_t)o);
+    udp_send(DNS_SERVER, DNS_PORT, dns_sport, q, (uint16_t)o);
 }
 
 /* 0 = pending, 0xFFFFFFFF = timeout, else the resolved IP (host order). */
@@ -99,6 +114,7 @@ uint32_t dns_result(void)
 {
     int rlen = udp_recv_len();
     if (rlen >= 0) {
+        if (udp_recv_src() != DNS_SERVER) return 0xFFFFFFFFu;
         uint32_t ip = parse_answer(rlen);
         return ip ? ip : 0xFFFFFFFFu;
     }

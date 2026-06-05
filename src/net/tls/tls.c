@@ -104,7 +104,8 @@ static void make_nonce(const struct aead *a, uint8_t nonce[12])
 static int aead_seal(struct aead *a, uint8_t inner_type, const uint8_t *content, int clen,
                      uint8_t *out)
 {
-    static uint8_t plain[16384];   /* static: keep this 16 KiB off the kernel stack */
+    if (clen < 0 || clen > 16384) return -1;
+    static uint8_t plain[16385];   /* content plus TLSInnerPlaintext type byte */
     memcpy(plain, content, clen); plain[clen] = inner_type;
     int plen = clen + 1;
     int rlen = plen + 16;
@@ -123,6 +124,7 @@ static int aead_open(struct aead *a, const uint8_t *body, int blen,
                      uint8_t *out, uint8_t *inner_type)
 {
     if (blen < 17) return -1;
+    if (blen > 16640) return -1;       /* TLS 1.3 ciphertext limit */
     int plen = blen - 16;
     uint8_t aad[5] = { REC_APPDATA, 0x03, 0x03, (uint8_t)(blen >> 8), (uint8_t)blen };
     uint8_t nonce[12]; make_nonce(a, nonce);
@@ -212,7 +214,9 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     static uint8_t body[20000]; uint8_t rtype;
     int blen = rec_read(s, &rtype, body, sizeof body);
     if (blen < 0 || rtype != REC_HANDSHAKE || body[0] != HS_SERVER_HELLO) { s->used=0; return TLS_E_PROTO; }
+    if (blen < 42) { s->used=0; return TLS_E_PROTO; }
     int shlen = (body[1]<<16)|(body[2]<<8)|body[3];
+    if (shlen < 38 || 4 + shlen > blen) { s->used=0; return TLS_E_PROTO; }
     sha256_update(&th, body, 4 + shlen);
     /* Downgrade protection (RFC 8446 4.1.3): a genuine TLS 1.3 server sets the
      * last 8 bytes of ServerHello.random to a fixed sentinel iff it negotiated a
@@ -228,16 +232,20 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     }
     /* parse SH: cipher suite + server key share */
     int p = 4 + 2 + 32;                                  /* skip ver+random */
+    if (p >= 4 + shlen) { s->used=0; return TLS_E_PROTO; }
     int sidlen = body[p++]; p += sidlen;                 /* session id echo */
+    if (p + 4 > 4 + shlen) { s->used=0; return TLS_E_PROTO; }
     int suite = (body[p]<<8)|body[p+1]; p += 2;
     p += 1;                                              /* compression */
     int elen = (body[p]<<8)|body[p+1]; p += 2;
     int eend = p + elen; const uint8_t *spub = 0;
+    if (eend > 4 + shlen || eend < p) { s->used=0; return TLS_E_PROTO; }
     while (p + 4 <= eend) {
         int et = (body[p]<<8)|body[p+1], el = (body[p+2]<<8)|body[p+3]; p += 4;
+        if (el > eend - p) { s->used=0; return TLS_E_PROTO; }
         if (et == 51 && el >= 4) {                       /* key_share */
             int grp = (body[p]<<8)|body[p+1]; int kl = (body[p+2]<<8)|body[p+3];
-            if (grp == 0x001d && kl == 32) spub = body + p + 4;
+            if (grp == 0x001d && kl == 32 && el >= 36) spub = body + p + 4;
         }
         p += el;
     }
@@ -289,26 +297,35 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     int q = 0;
     while (q + 4 <= flen) {
         int mt = flight[q]; int ml = (flight[q+1]<<16)|(flight[q+2]<<8)|flight[q+3];
+        if (ml < 0 || q + 4 + ml > flen) { s->used=0; return TLS_E_PROTO; }
         const uint8_t *mb = flight + q + 4;
         if (mt == HS_ENCRYPTED_EXT) {
             sha256_update(&th, flight + q, 4 + ml);
         } else if (mt == HS_CERTIFICATE) {
             sha256_update(&th, flight + q, 4 + ml);
             /* parse: cert_request_ctx(1) + cert_list(3) of {cert(3) + exts(2)} */
+            if (ml < 4) { s->used=0; return TLS_E_PROTO; }
             int cp = 0; cp += 1 + mb[0];                 /* skip request context */
+            if (cp + 3 > ml) { s->used=0; return TLS_E_PROTO; }
             int listlen = (mb[cp]<<16)|(mb[cp+1]<<8)|mb[cp+2]; cp += 3;
             int cend = cp + listlen;
+            if (cend > ml || cend < cp) { s->used=0; return TLS_E_PROTO; }
             while (cp + 3 <= cend && ncert < 8) {
                 int clen = (mb[cp]<<16)|(mb[cp+1]<<8)|mb[cp+2]; cp += 3;
+                if (clen > cend - cp) { s->used=0; return TLS_E_PROTO; }
                 if (x509_parse(mb + cp, clen, &chain[ncert]) == 0) ncert++;
                 cp += clen;
+                if (cp + 2 > cend) { s->used=0; return TLS_E_PROTO; }
                 int extl = (mb[cp]<<8)|mb[cp+1]; cp += 2 + extl;
+                if (cp > cend) { s->used=0; return TLS_E_PROTO; }
             }
             transcript_hash(&th, th_cert);
         } else if (mt == HS_CERT_VERIFY) {
             /* signature over: 64*0x20 || "TLS 1.3, server CertificateVerify" || 0 || th_cert */
+            if (ml < 4) { s->used=0; return TLS_E_PROTO; }
             int sigalg = (mb[0]<<8)|mb[1];
             int siglen = (mb[2]<<8)|mb[3];
+            if (siglen > ml - 4) { s->used=0; return TLS_E_PROTO; }
             const uint8_t *sig = mb + 4;
             uint8_t signed_data[64 + 33 + 1 + 32]; int sd = 0;
             for (int i = 0; i < 64; i++) signed_data[sd++] = 0x20;
@@ -388,8 +405,9 @@ int tls_send(int id, const void *buf, int len)
 {
     if (id < 0 || id >= 2 || !sessions[id].used) return -1;
     struct tls_sess *s = &sessions[id];
-    static uint8_t rec[16400];
+    static uint8_t rec[16401];
     int rl = aead_seal(&s->cw, REC_APPDATA, buf, len, rec);
+    if (rl < 0) return -1;
     return rec_write(s, REC_APPDATA, rec, rl) ? -1 : len;
 }
 
@@ -430,10 +448,19 @@ int tls_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
 {
     const uint8_t *p = sig, *end = sig + len;
     if (p >= end || *p++ != 0x30) return -1;
-    int sl = *p++; if (sl & 0x80) { int nb = sl & 0x7f; sl = 0; while (nb--) sl = (sl<<8)|*p++; }
+    if (p >= end) return -1;
+    int sl = *p++;
+    if (sl & 0x80) {
+        int nb = sl & 0x7f;
+        if (nb == 0 || nb > 3 || p + nb > end) return -1;
+        sl = 0; while (nb--) sl = (sl<<8)|*p++;
+    }
+    if (sl < 0 || p + sl > end) return -1;
     for (int half = 0; half < 2; half++) {
         if (p >= end || *p++ != 0x02) return -1;
+        if (p >= end) return -1;
         int il = *p++;
+        if (p + il > end) return -1;
         const uint8_t *ic = p; p += il;
         while (il > 0 && ic[0] == 0) { ic++; il--; }
         if (il > flen) return -1;

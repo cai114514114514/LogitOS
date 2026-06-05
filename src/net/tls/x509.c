@@ -9,7 +9,7 @@ int memcmp(const void *, const void *, size_t);
 /* --- minimal DER reader --- */
 struct der { const uint8_t *p, *end; };
 
-/* Read one TLV; *tag/*content/*clen set; advance past it. 0 ok, -1 error. */
+/* Read one TLV; outputs tag/content/clen and advances past it. 0 ok, -1 error. */
 static int der_tlv(struct der *d, int *tag, const uint8_t **content, int *clen)
 {
     if (d->p >= d->end) return -1;
@@ -55,9 +55,55 @@ static const uint8_t OID_P256[]         = {0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x
 static const uint8_t OID_P384[]         = {0x2b,0x81,0x04,0x00,0x22};
 static const uint8_t OID_CN[]           = {0x55,0x04,0x03};
 static const uint8_t OID_SAN[]          = {0x55,0x1d,0x11};
+static const uint8_t OID_BASIC_CONS[]   = {0x55,0x1d,0x13};
+static const uint8_t OID_KEY_USAGE[]    = {0x55,0x1d,0x0f};
+static const uint8_t OID_EKU[]          = {0x55,0x1d,0x25};
+static const uint8_t OID_EKU_SERVER[]   = {0x2b,0x06,0x01,0x05,0x05,0x07,0x03,0x01};
 
 static int oid_eq(const uint8_t *o, int olen, const uint8_t *want, int wlen)
 { return olen == wlen && memcmp(o, want, wlen) == 0; }
+
+static int bitstr_has(const uint8_t *bs, int bl, int bit)
+{
+    if (bl < 2) return 0;
+    int byte = 1 + bit / 8;
+    if (byte >= bl) return 0;
+    return (bs[byte] & (0x80 >> (bit & 7))) != 0;
+}
+
+static void parse_basic_constraints(struct cert *out, const uint8_t *v, int vl)
+{
+    struct der d; d.p = v; d.end = v + vl;
+    struct der seq; if (der_enter(&d, 0x30, &seq)) return;
+    if (seq.p < seq.end && seq.p[0] == 0x01) {
+        int t, l; const uint8_t *c;
+        if (!der_tlv(&seq, &t, &c, &l) && l > 0 && c[0] != 0)
+            out->is_ca = 1;
+    }
+}
+
+static void parse_key_usage(struct cert *out, const uint8_t *v, int vl)
+{
+    struct der d; d.p = v; d.end = v + vl;
+    int t, l; const uint8_t *c;
+    if (der_tlv(&d, &t, &c, &l) || t != 0x03 || l < 1) return;
+    out->key_usage_present = 1;
+    out->digital_signature = bitstr_has(c, l, 0);
+    out->key_cert_sign = bitstr_has(c, l, 5);
+}
+
+static void parse_eku(struct cert *out, const uint8_t *v, int vl)
+{
+    struct der d; d.p = v; d.end = v + vl;
+    struct der seq; if (der_enter(&d, 0x30, &seq)) return;
+    out->eku_present = 1;
+    while (seq.p < seq.end) {
+        int t, l; const uint8_t *c;
+        if (der_tlv(&seq, &t, &c, &l)) return;
+        if (t == 0x06 && oid_eq(c, l, OID_EKU_SERVER, sizeof OID_EKU_SERVER))
+            out->eku_server_auth = 1;
+    }
+}
 
 /* Parse a 2-digit field from ASN.1 time. */
 static int two(const uint8_t *p) { return (p[0]-'0')*10 + (p[1]-'0'); }
@@ -109,6 +155,9 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
 {
     out->der = der; out->derlen = len;
     out->cn = 0; out->cnlen = 0; out->san = 0; out->sanlen = 0;
+    out->is_ca = 0;
+    out->key_usage_present = out->key_cert_sign = out->digital_signature = 0;
+    out->eku_present = out->eku_server_auth = 0;
 
     struct der top, cert;
     top.p = der; top.end = der + len;
@@ -185,6 +234,9 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
                       if (ex.p < ex.end && ex.p[0]==0x01) { if (der_tlv(&ex,&vg,&vo,&vl)) break; }
                       if (der_tlv(&ex,&vg,&vo,&vl)) break;        /* OCTET STRING value */
                       if (oid_eq(eo,eol,OID_SAN,sizeof OID_SAN)) { out->san=vo; out->sanlen=vl; }
+                      else if (oid_eq(eo,eol,OID_BASIC_CONS,sizeof OID_BASIC_CONS)) parse_basic_constraints(out, vo, vl);
+                      else if (oid_eq(eo,eol,OID_KEY_USAGE,sizeof OID_KEY_USAGE)) parse_key_usage(out, vo, vl);
+                      else if (oid_eq(eo,eol,OID_EKU,sizeof OID_EKU)) parse_eku(out, vo, vl);
                   }
               }
           }
@@ -360,8 +412,15 @@ int x509_verify_chain(const struct cert *certs, int n, const char *host, int64_t
     if (n < 1) return X509_E_PARSE;
     /* name + validity on the leaf */
     if (!name_ok(&certs[0], host)) return X509_E_NAME;
+    if (certs[0].key_usage_present && !certs[0].digital_signature) return X509_E_SIG;
+    if (certs[0].eku_present && !certs[0].eku_server_auth) return X509_E_SIG;
     for (int i = 0; i < n; i++)
         if (now < certs[i].not_before || now > certs[i].not_after) return X509_E_EXPIRED;
+
+    for (int i = 1; i < n; i++) {
+        if (!certs[i].is_ca) return X509_E_SIG;
+        if (certs[i].key_usage_present && !certs[i].key_cert_sign) return X509_E_SIG;
+    }
 
     /* each cert signed by the next; the highest must chain to a trusted root */
     for (int i = 0; i + 1 < n; i++)

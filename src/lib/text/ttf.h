@@ -9,6 +9,7 @@ struct ttf_font {
     int units_per_em;
     int ascent, descent, line_gap;          /* font units */
     uint32_t off_cmap, off_glyf, off_loca, off_hmtx, off_hhea, off_maxp, off_head;
+    uint32_t len_cmap, len_glyf, len_loca, len_hmtx, len_hhea, len_maxp, len_head;
     uint32_t cmap_sub;                       /* offset of the chosen cmap subtable */
     int loca_long;                           /* 1 = 32-bit loca entries, 0 = 16-bit */
     int num_glyphs, num_hmetrics;
