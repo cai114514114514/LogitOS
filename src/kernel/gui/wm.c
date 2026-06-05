@@ -581,15 +581,27 @@ static void reap(void)
 }
 
 /* ---------- desktop chrome ---------- */
+/* Desktop wallpaper: a diagonal violet -> blue -> teal gradient (top-left to
+ * bottom-right). Cached into `bg` once, so the per-pixel cost is paid only at init. */
+static uint32_t bg_color(int x, int y)
+{
+    int t = (x * 1000 / W + y * 1000 / H) / 2;          /* 0..1000 along the diagonal */
+    uint8_t r, g, b;
+    if (t < 500) {
+        r = (uint8_t)lerp(74, 38, t, 500); g = (uint8_t)lerp(34, 80, t, 500); b = (uint8_t)lerp(122, 170, t, 500);
+    } else {
+        int u = t - 500;
+        r = (uint8_t)lerp(38, 22, u, 500); g = (uint8_t)lerp(80, 152, u, 500); b = (uint8_t)lerp(170, 166, u, 500);
+    }
+    return rgb(r, g, b);
+}
 static void draw_background(void)
 {
-    for (int y = 0; y < H; y++) {
-        uint32_t c = rgb((uint8_t)lerp(22, 96, y, H), (uint8_t)lerp(44, 165, y, H),
-                         (uint8_t)lerp(120, 230, y, H));
-        for (int x = 0; x < W; x++) fb_put(x, y, c);
-    }
-    fb_blend_rect(0, 0, W, MENUBAR_H, 245, 246, 250, 185);
-    uint32_t ink = rgb(40, 40, 46);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) fb_put(x, y, bg_color(x, y));
+    fb_blend_rect(0, 0, W, MENUBAR_H, 248, 249, 252, 165);   /* glassy menu bar */
+    fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 30);       /* hairline separator */
+    uint32_t ink = rgb(38, 38, 44);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
     fb_text(32, 4, "Aqua OS", ink);
     fb_text(112, 4, "File", ink);
@@ -603,7 +615,9 @@ static void draw_dock(void)
     int n = nreg < 1 ? 1 : nreg;
     int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
     dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
-    fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 22, 255, 255, 255, 95);
+    fb_blend_round_rect(dock_x0 - 1, dock_y0 + 6, dw + 2, dh, 26, 0, 0, 0, 45);    /* soft drop shadow */
+    fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 26, 255, 255, 255, 72);          /* frosted glass panel */
+    fb_blend_rect(dock_x0 + 14, dock_y0 + 1, dw - 28, 1, 255, 255, 255, 70);       /* top edge highlight */
     for (int i = 0; i < nreg; i++) {
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
         fb_round_rect(ix, iy, dock_isz, dock_isz, 12, reg[i].color);
@@ -670,7 +684,8 @@ static void draw_finder(struct win *w)
 static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    fb_blend_round_rect(x - 5, y + 8, ww + 10, wh + 10, 18, 0, 0, 0, focused ? 60 : 35);
+    fb_blend_round_rect(x - 11, y + 15, ww + 22, wh + 16, 22, 0, 0, 0, focused ? 28 : 16);  /* wide soft shadow */
+    fb_blend_round_rect(x - 4,  y + 7,  ww + 8,  wh + 11, 16, 0, 0, 0, focused ? 55 : 32);  /* tight shadow */
     fb_round_rect(x, y, ww, wh, 10, rgb(250, 250, 252));
     uint32_t tb = focused ? rgb(235, 235, 240) : rgb(245, 245, 248);
     fb_round_rect(x, y, ww, TITLEBAR_H, 10, tb);
