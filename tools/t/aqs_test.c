@@ -251,6 +251,8 @@ int main(void)
        "    n = n + 1\n"
        "print(n)\n",
        "2\n");
+    ok("dicttomb",  "d = {\"a\": 1}\nd.remove(\"a\")\nd[\"a\"] = 2\nprint(d[\"a\"], len(d))\n", "2 1\n");   /* tombstone reuse */
+    ok("dictkeyty", "d = {1: \"i\"}\nd[\"1\"] = \"s\"\nprint(len(d), d[1], d[\"1\"])\n", "2 i s\n");        /* int 1 != str "1" */
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");

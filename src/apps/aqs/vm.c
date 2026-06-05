@@ -390,7 +390,7 @@ static int run_until(int floor)
             }
             if (IS_DICT(obj)) {
                 if (!IS_STR(idx) && !IS_INT(idx)) { runtime_error("dict key must be a string or int"); goto err; }
-                aqs_dict_set(AS_DICT(obj), idx, val);
+                aqs_dict_set(AS_DICT(obj), idx, val);   /* key type checked above, so it can't fail */
                 break;
             }
             if (!IS_LIST(obj)) { runtime_error("only lists support item assignment"); goto err; }
