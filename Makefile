@@ -201,5 +201,15 @@ test: $(ISO) $(DISK)
 test-shell: $(ISO) $(DISK)
 	@sh scripts/run-shell-test.sh $(ISO) $(DISK)
 
+# AquaScript host unit test: the language core (lexer/compiler/vm/value/object)
+# is portable C, so it builds and runs natively -- no QEMU. Asserts print output
+# for arithmetic/control-flow/recursion incl. fib(20).
+AQS_CORE := src/apps/aqs/value.c src/apps/aqs/aqs_io.c src/apps/aqs/lexer.c \
+            src/apps/aqs/compiler.c src/apps/aqs/vm.c src/apps/aqs/object.c
+test-aqs:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs
+	@$(BUILD)/aqs_test
+
 clean:
 	rm -rf $(BUILD)
