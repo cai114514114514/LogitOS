@@ -113,8 +113,13 @@ void smp_init(void)
         ioapic_route_isa(0,  32, bspid);     /* PIT timer  -> vec 32 */
         ioapic_route_isa(1,  33, bspid);     /* keyboard   -> vec 33 */
         ioapic_route_isa(12, 44, bspid);     /* PS/2 mouse -> vec 44 */
-        int nicg = e1000_irq_line();         /* e1000 NIC -> vec 65 (PCI: level, active-low) */
-        if (nicg > 0 && nicg < 24) ioapic_route((uint32_t)nicg, 65, bspid, 1, 1);
+        int nicg = e1000_irq_line();         /* e1000 NIC -> vec 65 */
+        /* EDGE-triggered (not level): QEMU's TCG IOAPIC doesn't clear a level
+         * RTE's remote-IRR on EOI (LAPIC broadcast or directed 0x40 both fail),
+         * so a level PCI line re-fires forever after its first IRQ (~2M/s, 88%
+         * CPU). Edge has no remote-IRR: each packet is one falling edge; e1000_irq
+         * drains the whole ring per call and net_poll backstops any coalesced miss. */
+        if (nicg > 0 && nicg < 24) ioapic_route((uint32_t)nicg, 65, bspid, 0, 1);
         pic_disable();
         g_via_apic = 1;
         kprintf("[ioapic] device IRQs routed via I/O APIC (NIC gsi=%d)\n", nicg);

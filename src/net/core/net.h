@@ -32,6 +32,7 @@ int  net_up(void);                  /* 1 if a NIC initialised successfully */
 
 /* Pump the receive path (called from the WM main loop). */
 void net_poll(void);
+void net_idle(void);                /* sti;hlt -- yield the host CPU while a blocking fetch waits */
 extern volatile int g_net_busy;     /* 1 while a blocking fetch owns the network */
 
 /* Mutual exclusion between the RX interrupt (which runs eth/ip/tcp_input) and

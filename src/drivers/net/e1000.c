@@ -16,7 +16,8 @@ void *memcpy(void *, const void *, size_t);
 #define REG_ICR     0x00C0      /* interrupt cause read */
 #define REG_IMS     0x00D0      /* interrupt mask set */
 #define REG_IMC     0x00D8      /* interrupt mask clear */
-#define ICR_RX      0xD0        /* RXT0 | RXO | RXDMT0 (receive causes) */
+#define ICR_RX      0xD0        /* RXT0 | RXO | RXDMT0 (all receive causes) */
+#define ICR_RXT0    0x80        /* receive timer: one IRQ per received packet */
 #define REG_RCTL    0x0100
 #define REG_TCTL    0x0400
 #define REG_TIPG    0x0410
@@ -228,7 +229,13 @@ void e1000_irq_enable(void (*cb)(const uint8_t *frame, uint16_t len))
     if (!mmio) return;
     g_rxcb = cb;
     reg_read(REG_ICR);                           /* clear stale causes */
-    reg_write(REG_IMS, ICR_RX);                  /* unmask receive interrupts */
+    /* Unmask ONLY RXT0 (one IRQ per received packet). NOT RXDMT0 (RX-ring-low):
+     * with RDLEN's default min-threshold the ring sits below it after any RX
+     * burst, so RXDMT0 re-asserts the instant e1000_irq() reads ICR -> ~2M IRQ/s
+     * at the NIC vector, ~88% CPU forever, defeating every hlt. RXT0 self-clears
+     * on the ICR read and only re-fires on the next real packet, so it never
+     * storms when idle. (NOT RXO either, for the same re-assert reason.) */
+    reg_write(REG_IMS, ICR_RXT0);                /* unmask receive interrupts */
 }
 
 int e1000_irq_line(void) { return g_irq; }

@@ -25,7 +25,7 @@ int net_init(void)
         return -1;
     memcpy(net_cfg.mac, e1000_mac(), 6);
     up = 1;
-    e1000_irq_enable(eth_input);    /* IRQ-driven RX (smp_init routes the line; net_poll still backstops) */
+    e1000_irq_enable(eth_input);    /* IRQ-driven RX (RXT0 only -- see e1000.c; net_poll still backstops) */
     kprintf("[net] ip 10.0.2.15/24 gw 10.0.2.2\n");
     return 0;
 }
@@ -45,4 +45,15 @@ void net_poll(void)
         e1000_rx_poll(eth_input);
         if (tcp_poll) tcp_poll();
     }
+}
+
+/* Idle the CPU until the next interrupt, between net_poll()s in the blocking
+ * fetch loops (dns/tcp/tls). They used to busy-spin, which under QEMU TCG pegs
+ * the *host* CPU and makes the whole desktop crawl during a page load. `sti;hlt`
+ * halts until an interrupt wakes us -- the e1000 RX IRQ (or, failing that, the
+ * 100 Hz timer) -- so the loop re-polls promptly without burning host cycles.
+ * (SYS_HTTP_GET already runs with IF=1, so the hlt can actually wake.) */
+void net_idle(void)
+{
+    __asm__ volatile ("sti\n\thlt");
 }

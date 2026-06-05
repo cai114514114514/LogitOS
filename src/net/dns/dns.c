@@ -136,7 +136,7 @@ uint32_t dns_resolve(const char *name)
             last = timer_ticks();
             dns_start(name);
         }
-        for (volatile int d = 0; d < 2000; d++) ;    /* brief pace between polls (was 300000) */
+        net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
     }
     return 0;
 }

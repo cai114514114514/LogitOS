@@ -228,7 +228,7 @@ int tcp_connect(uint32_t dst, uint16_t port)
         net_poll();
         if (c->state == ESTABLISHED) return id;
         if (!c->used) return -1;
-        for (volatile int d = 0; d < 2000; d++) ;    /* brief pace between polls (was 200000) */
+        net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
     }
     c->used = 0;
     return -1;
