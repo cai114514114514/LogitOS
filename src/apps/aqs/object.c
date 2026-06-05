@@ -147,7 +147,9 @@ static void dict_grow(ObjDict *d)
 int aqs_dict_set(ObjDict *d, Value key, Value val)
 {
     if (!IS_STR(key) && !IS_INT(key)) return 0;
-    if ((d->used + 1) * 4 >= d->cap * 3) dict_grow(d);        /* keep load < 0.75 (cap 0 -> grow to 8) */
+    /* grow at 0.75 load; cap is a power of two so cap>>2 == cap/4 exactly, and the
+     * subtraction form can't overflow int the way (used+1)*4 >= cap*3 would. cap 0 -> grow to 8. */
+    if (d->used + 1 >= d->cap - (d->cap >> 2)) dict_grow(d);
     DictEntry *e = find_entry(d->entries, d->cap, key);
     int existing = (e->kind == AQS_DK_STR || e->kind == AQS_DK_INT);
     if (!existing) {
