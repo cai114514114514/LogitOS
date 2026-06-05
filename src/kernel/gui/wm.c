@@ -750,11 +750,25 @@ static void draw_finder(struct win *w)
 }
 
 /* ---------- window frame + compositing ---------- */
+/* A soft drop shadow drawn as thin translucent bands hugging the window edges.
+ * The window is opaque and overdraws its interior, so blending the *whole*
+ * window-sized rounded rect (as fb_blend_round_rect does) was almost all wasted
+ * work -- and it ran on every repaint, so a big window like the browser lagged
+ * badly on each flush. Bands touch only ~perimeter*thickness pixels (~30x less). */
+static void shadow_band(int x, int y, int w, int h, int t, int a)
+{
+    fb_blend_rect(x - t, y - t, w + 2*t, t, 0, 0, 0, a);   /* top    */
+    fb_blend_rect(x - t, y + h, w + 2*t, t, 0, 0, 0, a);   /* bottom */
+    fb_blend_rect(x - t, y, t, h, 0, 0, 0, a);             /* left   */
+    fb_blend_rect(x + w, y, t, h, 0, 0, 0, a);             /* right  */
+}
+
 static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    fb_blend_round_rect(x - 11, y + 15, ww + 22, wh + 16, 22, 0, 0, 0, focused ? 28 : 16);  /* wide soft shadow */
-    fb_blend_round_rect(x - 4,  y + 7,  ww + 8,  wh + 11, 16, 0, 0, 0, focused ? 55 : 32);  /* tight shadow */
+    shadow_band(x, y, ww, wh, 8, focused ? 11 : 7);        /* faint outer fringe */
+    shadow_band(x, y, ww, wh, 4, focused ? 22 : 13);       /* mid */
+    shadow_band(x, y, ww, wh, 2, focused ? 40 : 24);       /* dark edge */
     fb_round_rect(x, y, ww, wh, 10, rgb(250, 250, 252));
     uint32_t tb = focused ? rgb(235, 235, 240) : rgb(245, 245, 248);
     fb_round_rect(x, y, ww, TITLEBAR_H, 10, tb);
