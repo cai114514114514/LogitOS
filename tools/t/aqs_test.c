@@ -232,6 +232,12 @@ int main(void)
     ok("dictvals", "d = {\"a\": 5}\nprint(d.values())\n", "[5]\n");
     err("dictnomethod", "d = {}\nd.frobnicate()\n");
 
+    ok("indict", "d = {\"a\": 1}\nprint(\"a\" in d, \"z\" in d)\n", "true false\n");
+    ok("inlist", "print(2 in [1, 2, 3], 9 in [1, 2, 3])\n", "true false\n");
+    ok("instr",  "print(\"ell\" in \"hello\", \"xyz\" in \"hello\")\n", "true false\n");
+    ok("inif",   "d = {\"k\": 1}\nif \"k\" in d:\n    print(\"yes\")\n", "yes\n");
+    ok("inprec", "print(1 + 1 in [2, 3])\n", "true\n");
+
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");
     err("badindent", "x = 1\n  y = 2\n");

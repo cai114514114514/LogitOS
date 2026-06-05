@@ -475,6 +475,30 @@ static int run_until(int floor)
             break;
         }
 
+        case OP_IN: {
+            Value cont = pop(), item = pop();
+            int found = 0;
+            if (IS_DICT(cont)) {
+                if (!IS_STR(item) && !IS_INT(item)) { runtime_error("dict key must be a string or int"); goto err; }
+                found = aqs_dict_has(AS_DICT(cont), item);
+            } else if (IS_LIST(cont)) {
+                ObjList *l = AS_LIST(cont);
+                for (int i = 0; i < l->count; i++) {
+                    Value e = l->items[i];
+                    int eq = (IS_NUM(item) && IS_NUM(e)) ? (AS_NUM(item) == AS_NUM(e)) : aqs_value_eq(item, e);
+                    if (eq) { found = 1; break; }
+                }
+            } else if (IS_STR(cont)) {
+                if (!IS_STR(item)) { runtime_error("substring test needs a string on the left of 'in'"); goto err; }
+                ObjStr *hay = AS_STR(cont), *needle = AS_STR(item);
+                if (needle->len == 0) found = 1;
+                else for (int i = 0; i + needle->len <= hay->len; i++)
+                    if (memcmp(hay->chars + i, needle->chars, (size_t)needle->len) == 0) { found = 1; break; }
+            } else { runtime_error("'in' needs a dict, list, or string"); goto err; }
+            push(BOOL_VAL(found));
+            break;
+        }
+
         default: runtime_error("bad opcode %d", op); goto err;
         }
     }

@@ -267,6 +267,11 @@ static void or_(void)
     parse_precedence(PREC_OR);
     patchJump(end);
 }
+static void in_(void)   /* infix for 'in' : membership test */
+{
+    parse_precedence((Prec)(get_rule(T_IN)->prec + 1));
+    emit(OP_IN);
+}
 static void call(void) { uint8_t argc = arg_list(); emit2(OP_CALL, argc); }
 
 static ParseRule rules[T_ERROR + 1];
@@ -299,6 +304,7 @@ static void init_rules(void)
     rules[T_GE]      = (ParseRule){ 0, binary, PREC_CMP };
     rules[T_AND]     = (ParseRule){ 0, and_, PREC_AND };
     rules[T_OR]      = (ParseRule){ 0, or_, PREC_OR };
+    rules[T_IN]      = (ParseRule){ 0, in_, PREC_CMP };
     rules_ready = 1;
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
