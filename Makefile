@@ -251,5 +251,15 @@ test-aqs:
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
 	@$(BUILD)/aqs_test
 
+# PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
+# Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
+test-png:
+	@mkdir -p $(BUILD)/pngtest
+	@python3 tools/t/png_gen.py $(BUILD)/pngtest
+	@$(CC) -O2 -o $(BUILD)/png_test tools/t/png_test.c \
+	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/inflate.c \
+	    -Isrc/lib/image -Isrc/kernel/mm
+	@$(BUILD)/png_test $(BUILD)/pngtest
+
 clean:
 	rm -rf $(BUILD)
