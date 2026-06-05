@@ -12,6 +12,7 @@
 #include "vfs.h"
 #include "rtc.h"
 #include "aex.h"
+#include "img.h"
 #include "aqua_abi.h"
 #include "net.h"
 #include "icmp.h"
@@ -641,10 +642,30 @@ static uint32_t bg_color(int x, int y)
     return rgb(r, g, b);
 }
 
+/* Load /wallpaper.png (Apple Desktop Picture, packed at build), decode via the
+ * kernel image codec, and scale-blit it to fill the screen. 0 if absent/bad so
+ * the caller falls back to the gradient. */
+static int draw_wallpaper(void)
+{
+    int sz = vfs_size("/wallpaper.png");
+    if (sz <= 0) return 0;
+    uint8_t *file = (uint8_t *)kmalloc((unsigned)sz);
+    if (!file) return 0;
+    int n = vfs_read("/wallpaper.png", file, sz);
+    struct image im;
+    int ok = (n > 0 && img_decode(file, n, &im) == 0);
+    kfree(file);
+    if (!ok) return 0;
+    fb_blit_rgba(0, 0, W, H, im.rgba, im.w, im.h);          /* scale to fill */
+    img_free(&im);
+    return 1;
+}
+
 static void draw_background(void)
 {
-    for (int y = 0; y < H; y++)
-        for (int x = 0; x < W; x++) fb_put(x, y, bg_color(x, y));
+    if (!draw_wallpaper())
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) fb_put(x, y, bg_color(x, y));
     glass_blur(0, 0, W, MENUBAR_H, 0, 5);                    /* liquid-glass menu bar */
     fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120);
     fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 28);      /* hairline separator */
