@@ -220,6 +220,10 @@ int main(void)
     ok("dictnest", "d = {\"xs\": [1, 2]}\nprint(d[\"xs\"][1])\n", "2\n");
     err("dictmiss","d = {\"a\": 1}\nprint(d[\"z\"])\n");
     err("dictbadkey", "d = {}\nprint(d[true])\n");
+    ok("dictset",   "d = {}\nd[\"a\"] = 1\nd[\"b\"] = 2\nprint(d[\"a\"], d[\"b\"], len(d))\n", "1 2 2\n");
+    ok("dictover",  "d = {\"a\": 1}\nd[\"a\"] = 9\nprint(d[\"a\"], len(d))\n", "9 1\n");
+    ok("dictintset","d = {}\nd[7] = 70\nprint(d[7])\n", "70\n");
+    ok("dictgrow",  "d = {}\ni = 0\nwhile i < 50:\n    d[i] = i * i\n    i = i + 1\nprint(len(d), d[7], d[49])\n", "50 49 2401\n");
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");

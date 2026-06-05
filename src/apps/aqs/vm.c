@@ -388,6 +388,11 @@ static int run_until(int floor)
                 aqs_ll_poke(p->addr + (uint64_t)(AS_INT(idx) * p->width), p->width, (uint64_t)AS_INT(val));
                 break;
             }
+            if (IS_DICT(obj)) {
+                if (!IS_STR(idx) && !IS_INT(idx)) { runtime_error("dict key must be a string or int"); goto err; }
+                aqs_dict_set(AS_DICT(obj), idx, val);
+                break;
+            }
             if (!IS_LIST(obj)) { runtime_error("only lists support item assignment"); goto err; }
             if (!IS_INT(idx)) { runtime_error("list index must be an integer"); goto err; }
             ObjList *l = AS_LIST(obj); int64_t i = AS_INT(idx); if (i < 0) i += l->count;
