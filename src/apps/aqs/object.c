@@ -90,6 +90,111 @@ void aqs_list_push(ObjList *l, Value v)
     l->items[l->count++] = v;
 }
 
+/* ---- dict: open-addressing hash table, string|int keys (M21) ---- */
+static uint32_t hash_int(int64_t v)
+{
+    uint64_t x = (uint64_t)v;                 /* splitmix64 finalizer */
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    x =  x ^ (x >> 31);
+    return (uint32_t)x;
+}
+static uint32_t key_hash(Value k) { return IS_STR(k) ? AS_STR(k)->hash : hash_int(AS_INT(k)); }
+static int key_match(DictEntry *e, Value k)
+{
+    if (IS_STR(k)) return e->kind == AQS_DK_STR && e->kstr->hash == AS_STR(k)->hash
+                          && e->kstr->len == AS_STR(k)->len
+                          && memcmp(e->kstr->chars, AS_STR(k)->chars, (size_t)e->kstr->len) == 0;
+    return e->kind == AQS_DK_INT && e->kint == AS_INT(k);
+}
+/* Return the slot holding `k`, or the slot to insert into (first tombstone, else
+ * the terminating empty slot). cap must be > 0 and a power of two. */
+static DictEntry *find_entry(DictEntry *es, int cap, Value k)
+{
+    uint32_t mask = (uint32_t)(cap - 1);
+    uint32_t i = key_hash(k) & mask;
+    DictEntry *tomb = NULL;
+    for (;;) {
+        DictEntry *e = &es[i];
+        if (e->kind == AQS_DK_EMPTY) return tomb ? tomb : e;
+        if (e->kind == AQS_DK_TOMB) { if (!tomb) tomb = e; }
+        else if (key_match(e, k)) return e;
+        i = (i + 1) & mask;
+    }
+}
+ObjDict *aqs_dict_new(void)
+{
+    ObjDict *d = (ObjDict *)alloc_obj(sizeof(ObjDict), O_DICT);
+    d->entries = NULL; d->live = d->used = d->cap = 0;
+    return d;
+}
+static void dict_grow(ObjDict *d)
+{
+    int newcap = d->cap < 8 ? 8 : d->cap * 2;
+    DictEntry *ne = (DictEntry *)malloc((size_t)newcap * sizeof(DictEntry));
+    memset(ne, 0, (size_t)newcap * sizeof(DictEntry));        /* AQS_DK_EMPTY == 0 */
+    int live = 0;
+    for (int i = 0; i < d->cap; i++) {
+        DictEntry *e = &d->entries[i];
+        if (e->kind != AQS_DK_STR && e->kind != AQS_DK_INT) continue;   /* drop tombstones */
+        Value k = e->kind == AQS_DK_STR ? OBJ_VAL(e->kstr) : INT_VAL(e->kint);
+        *find_entry(ne, newcap, k) = *e;
+        live++;
+    }
+    free(d->entries);
+    d->entries = ne; d->cap = newcap; d->used = live; d->live = live;
+}
+int aqs_dict_set(ObjDict *d, Value key, Value val)
+{
+    if (!IS_STR(key) && !IS_INT(key)) return 0;
+    if ((d->used + 1) * 4 >= d->cap * 3) dict_grow(d);        /* keep load < 0.75 (cap 0 -> grow to 8) */
+    DictEntry *e = find_entry(d->entries, d->cap, key);
+    int existing = (e->kind == AQS_DK_STR || e->kind == AQS_DK_INT);
+    if (!existing) {
+        if (e->kind == AQS_DK_EMPTY) d->used++;               /* tombstone reuse doesn't add to load */
+        d->live++;
+        if (IS_STR(key)) { e->kind = AQS_DK_STR; e->kstr = AS_STR(key); }
+        else             { e->kind = AQS_DK_INT; e->kint = AS_INT(key); }
+    }
+    e->val = val;
+    return 1;
+}
+int aqs_dict_get(ObjDict *d, Value key, Value *out)
+{
+    if (d->cap == 0 || (!IS_STR(key) && !IS_INT(key))) return 0;
+    DictEntry *e = find_entry(d->entries, d->cap, key);
+    if (e->kind != AQS_DK_STR && e->kind != AQS_DK_INT) return 0;
+    *out = e->val; return 1;
+}
+int aqs_dict_has(ObjDict *d, Value key) { Value tmp; return aqs_dict_get(d, key, &tmp); }
+int aqs_dict_remove(ObjDict *d, Value key)
+{
+    if (d->cap == 0 || (!IS_STR(key) && !IS_INT(key))) return 0;
+    DictEntry *e = find_entry(d->entries, d->cap, key);
+    if (e->kind != AQS_DK_STR && e->kind != AQS_DK_INT) return 0;
+    e->kind = AQS_DK_TOMB; d->live--;                         /* used unchanged: slot still probed-through */
+    return 1;
+}
+ObjList *aqs_dict_keys(ObjDict *d)
+{
+    ObjList *l = aqs_list_new();
+    for (int i = 0; i < d->cap; i++) {
+        DictEntry *e = &d->entries[i];
+        if (e->kind == AQS_DK_STR)      aqs_list_push(l, OBJ_VAL(e->kstr));
+        else if (e->kind == AQS_DK_INT) aqs_list_push(l, INT_VAL(e->kint));
+    }
+    return l;
+}
+ObjList *aqs_dict_values(ObjDict *d)
+{
+    ObjList *l = aqs_list_new();
+    for (int i = 0; i < d->cap; i++) {
+        DictEntry *e = &d->entries[i];
+        if (e->kind == AQS_DK_STR || e->kind == AQS_DK_INT) aqs_list_push(l, e->val);
+    }
+    return l;
+}
+
 ObjPtr *aqs_ptr_new(uint64_t addr, int width, int is_signed)
 {
     ObjPtr *p = (ObjPtr *)alloc_obj(sizeof(ObjPtr), O_PTR);
@@ -128,6 +233,7 @@ void aqs_free_objects(void)
         case O_STR:  free(((ObjStr *)o)->chars); break;
         case O_FN:   free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
         case O_LIST:   free(((ObjList *)o)->items); break;
+        case O_DICT:   free(((ObjDict *)o)->entries); break;
         case O_MODULE: free(((ObjModule *)o)->vars); break;
         default: break;
         }

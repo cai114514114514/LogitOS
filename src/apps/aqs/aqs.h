@@ -41,7 +41,7 @@ typedef struct {
 #define AS_NUM(v)   (IS_FLOAT(v) ? AS_FLOAT(v) : (double)AS_INT(v))
 
 /* --- objects --- */
-typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE } ObjType;
+typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT } ObjType;
 struct Obj { ObjType type; Obj *next; };   /* next: allocation list (for cleanup) */
 
 typedef struct { Obj obj; int len; uint32_t hash; char *chars; } ObjStr;
@@ -59,6 +59,12 @@ typedef Value (*NativeFn)(int argc, Value *args);
 typedef struct { Obj obj; NativeFn fn; const char *name; } ObjNative;
 
 typedef struct { Obj obj; Value *items; int count, cap; } ObjList;   /* A2: dynamic array */
+
+/* M21 dict: open-addressing hash table; keys are strings or 64-bit ints.
+ * `kind` tags each slot; iteration/print are in hash order, not insertion order. */
+enum { AQS_DK_EMPTY = 0, AQS_DK_STR = 1, AQS_DK_INT = 2, AQS_DK_TOMB = 3 };
+typedef struct { uint8_t kind; ObjStr *kstr; int64_t kint; Value val; } DictEntry;
+typedef struct { Obj obj; DictEntry *entries; int live, used, cap; } ObjDict;
 
 /* A3 indirection: a typed pointer into raw memory. p[i] reads/writes `width`
  * bytes at addr + i*width (sign-extended on read when is_signed). */
@@ -83,6 +89,8 @@ typedef struct ObjModule {
 #define AS_LIST(v)   ((ObjList *)AS_OBJ(v))
 #define AS_PTR(v)    ((ObjPtr *)AS_OBJ(v))
 #define AS_MODULE(v) ((ObjModule *)AS_OBJ(v))
+#define IS_DICT(v)   (IS_OBJ(v) && AS_OBJ(v)->type == O_DICT)
+#define AS_DICT(v)   ((ObjDict *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -94,6 +102,7 @@ typedef enum {
     OP_CALL, OP_RET,
     OP_MAKE_LIST, OP_INDEX_GET, OP_INDEX_SET, OP_LEN, OP_INVOKE,   /* A2 */
     OP_GET_ATTR, OP_IMPORT,                                        /* modules */
+    OP_MAKE_DICT, OP_IN, OP_ITER,                                  /* M21 dict */
 } OpCode;
 
 /* --- compile + run --- */
@@ -114,6 +123,13 @@ ObjFn    *aqs_fn_new(void);
 ObjNative*aqs_native_new(NativeFn fn, const char *name);
 ObjList  *aqs_list_new(void);
 void      aqs_list_push(ObjList *l, Value v);
+ObjDict  *aqs_dict_new(void);
+int       aqs_dict_set(ObjDict *d, Value key, Value val);   /* 1 ok; 0 = key not str/int */
+int       aqs_dict_get(ObjDict *d, Value key, Value *out);  /* 1 found (out set), 0 missing */
+int       aqs_dict_has(ObjDict *d, Value key);
+int       aqs_dict_remove(ObjDict *d, Value key);           /* 1 removed, 0 absent */
+ObjList  *aqs_dict_keys(ObjDict *d);
+ObjList  *aqs_dict_values(ObjDict *d);
 ObjPtr   *aqs_ptr_new(uint64_t addr, int width, int is_signed);
 void      aqs_chunk_write(ObjFn *fn, uint8_t b);
 int       aqs_chunk_const(ObjFn *fn, Value v);
