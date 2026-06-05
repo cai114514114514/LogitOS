@@ -224,6 +224,13 @@ int main(void)
     ok("dictover",  "d = {\"a\": 1}\nd[\"a\"] = 9\nprint(d[\"a\"], len(d))\n", "9 1\n");
     ok("dictintset","d = {}\nd[7] = 70\nprint(d[7])\n", "70\n");
     ok("dictgrow",  "d = {}\ni = 0\nwhile i < 50:\n    d[i] = i * i\n    i = i + 1\nprint(len(d), d[7], d[49])\n", "50 49 2401\n");
+    ok("dicthas",  "d = {\"a\": 1}\nprint(d.has(\"a\"), d.has(\"z\"))\n", "true false\n");
+    ok("dictgetm", "d = {\"a\": 1}\nprint(d.get(\"a\"), d.get(\"z\"))\n", "1 nil\n");
+    ok("dictgetd", "d = {\"a\": 1}\nprint(d.get(\"z\", 99))\n", "99\n");
+    ok("dictrm",   "d = {\"a\": 1, \"b\": 2}\nprint(d.remove(\"a\"), d.has(\"a\"), len(d))\n", "true false 1\n");
+    ok("dictkeys", "d = {\"a\": 1}\nprint(d.keys())\n", "['a']\n");
+    ok("dictvals", "d = {\"a\": 5}\nprint(d.values())\n", "[5]\n");
+    err("dictnomethod", "d = {}\nd.frobnicate()\n");
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");

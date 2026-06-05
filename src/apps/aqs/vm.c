@@ -424,6 +424,36 @@ static int run_until(int floor)
                     aqs_list_push(AS_LIST(recv), peek(0));
                     sp -= argc + 1; push(NIL_VAL);
                 } else { runtime_error("list has no method '%.*s'", name->len, name->chars); goto err; }
+            } else if (IS_DICT(recv)) {
+                ObjDict *d = AS_DICT(recv);
+                if (name_eq(name, "has")) {
+                    if (argc != 1) { runtime_error("has() takes 1 argument"); goto err; }
+                    Value k = peek(0);
+                    if (!IS_STR(k) && !IS_INT(k)) { runtime_error("dict key must be a string or int"); goto err; }
+                    int h = aqs_dict_has(d, k);
+                    sp -= argc + 1; push(BOOL_VAL(h));
+                } else if (name_eq(name, "get")) {
+                    if (argc != 1 && argc != 2) { runtime_error("get() takes 1 or 2 arguments"); goto err; }
+                    Value k = peek(argc - 1);
+                    if (!IS_STR(k) && !IS_INT(k)) { runtime_error("dict key must be a string or int"); goto err; }
+                    Value out;
+                    if (!aqs_dict_get(d, k, &out)) out = (argc == 2) ? peek(0) : NIL_VAL;
+                    sp -= argc + 1; push(out);
+                } else if (name_eq(name, "remove")) {
+                    if (argc != 1) { runtime_error("remove() takes 1 argument"); goto err; }
+                    Value k = peek(0);
+                    if (!IS_STR(k) && !IS_INT(k)) { runtime_error("dict key must be a string or int"); goto err; }
+                    int r = aqs_dict_remove(d, k);
+                    sp -= argc + 1; push(BOOL_VAL(r));
+                } else if (name_eq(name, "keys")) {
+                    if (argc != 0) { runtime_error("keys() takes no arguments"); goto err; }
+                    ObjList *l = aqs_dict_keys(d);
+                    sp -= argc + 1; push(OBJ_VAL(l));
+                } else if (name_eq(name, "values")) {
+                    if (argc != 0) { runtime_error("values() takes no arguments"); goto err; }
+                    ObjList *l = aqs_dict_values(d);
+                    sp -= argc + 1; push(OBJ_VAL(l));
+                } else { runtime_error("dict has no method '%.*s'", name->len, name->chars); goto err; }
             } else { runtime_error("'%.*s' is not a method of this type", name->len, name->chars); goto err; }
             break;
         }
