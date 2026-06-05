@@ -329,10 +329,13 @@ inline-asm `int 0x80` syscall (portable: real on x86_64-elf, stubbed on the arm6
 host) + `aqs_native.c` addr/peek8-64/poke8-64/i8-64ptr/syscall + `SYS_*` globals;
 typed pointer `ObjPtr{addr,width,signed}` via `p[i]`. Shipped as **`/bin/aqs`** (own
 Makefile rule: aqs core + mini-libc + crt0_cli @0x50000000; reads scripts via
-mini-libc `fopen`) + `/usr/aqs/*.aqs`. Tests: `make test-aqs` (host, 50 checks incl.
-fib) + `make test-aqs-os` (boots Aqua, runs the examples over serial). Perf: fib(32)
-~126ms host (≈CPython). Deferred: `import` (after the user revisits), dict, closures,
-GC, computed-goto dispatch.
+mini-libc `fopen`) + `/usr/aqs/*.aqs`. **Modules/import**: `import NAME` / `from NAME import …`,
+`mod.attr` + `mod.fn()` via the `.` operator; each ObjFn carries `->module` so
+globals resolve per-module with a shared builtins fallback; loader caches +
+`fopen`s `/usr/aqs/NAME.aqs` (or an in-memory registry for tests). Tests: `make
+test-aqs` (host, 55 checks incl. fib + import) + `make test-aqs-os` (boots Aqua,
+runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
+(≈CPython). Deferred: dict, closures, GC, computed-goto dispatch.
 
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 

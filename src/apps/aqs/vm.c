@@ -16,9 +16,26 @@ static Value *sp;
 static Frame  frames[FRAMES_MAX];
 static int    frame_count;
 
-typedef struct { ObjStr *name; Value val; } Global;
-static Global globals[512];
-static int    nglobals;
+/* Builtins (print/len/range/peek/.../SYS_*) are visible from every module; each
+ * module has its own namespace (ObjModule.vars). GET_GLOBAL tries the running
+ * function's module first, then falls back to builtins. */
+static NameVal builtins[128];
+static int     nbuiltins;
+
+static ObjModule *modules[64];      /* loaded-module cache (by name) */
+static int        nmodules;
+static struct { const char *name; const char *src; } msrc[32];   /* in-memory module sources (tests) */
+static int        nmsrc;
+
+static Value *builtin_slot(ObjStr *name, int create)
+{
+    for (int i = 0; i < nbuiltins; i++)
+        if (builtins[i].name->hash == name->hash && builtins[i].name->len == name->len
+            && memcmp(builtins[i].name->chars, name->chars, name->len) == 0) return &builtins[i].val;
+    if (!create || nbuiltins >= 128) return NULL;
+    builtins[nbuiltins].name = name; builtins[nbuiltins].val = NIL_VAL;
+    return &builtins[nbuiltins++].val;
+}
 
 static void push(Value v) { *sp++ = v; }
 static Value pop(void)    { return *--sp; }
@@ -49,18 +66,53 @@ static ObjStr *str_concat(ObjStr *a, ObjStr *b)
     return aqs_str_take(buf, n);
 }
 
-static int find_global(ObjStr *name)
+/* Resolve a global read: the running function's module, then builtins. */
+static Value *resolve_global(ObjFn *fn, ObjStr *name)
 {
-    for (int i = 0; i < nglobals; i++)
-        if (globals[i].name->hash == name->hash && globals[i].name->len == name->len
-            && memcmp(globals[i].name->chars, name->chars, name->len) == 0) return i;
-    return -1;
+    Value *s = fn->module ? aqs_module_slot(fn->module, name, 0) : NULL;
+    return s ? s : builtin_slot(name, 0);
 }
-static void set_global(ObjStr *name, Value v)
+
+/* ---- module loader / cache ---- */
+static ObjModule *module_find(ObjStr *name)
 {
-    int i = find_global(name);
-    if (i >= 0) { globals[i].val = v; return; }
-    if (nglobals < 512) { globals[nglobals].name = name; globals[nglobals].val = v; nglobals++; }
+    for (int i = 0; i < nmodules; i++)
+        if (modules[i]->name->len == name->len && memcmp(modules[i]->name->chars, name->chars, name->len) == 0)
+            return modules[i];
+    return NULL;
+}
+
+/* Return malloc'd source for module `name` (caller frees), or NULL. Checks the
+ * in-memory registry first (tests), then NAME.aqs and /usr/aqs/NAME.aqs on disk. */
+static char *module_source(ObjStr *name)
+{
+    for (int i = 0; i < nmsrc; i++)
+        if ((int)strlen(msrc[i].name) == name->len && memcmp(msrc[i].name, name->chars, name->len) == 0) {
+            int n = (int)strlen(msrc[i].src);
+            char *buf = (char *)malloc((size_t)n + 1);
+            if (buf) memcpy(buf, msrc[i].src, (size_t)n + 1);
+            return buf;
+        }
+    char path[160];
+    const char *dirs[] = { "", "/usr/aqs/" };
+    for (int d = 0; d < 2; d++) {
+        int p = 0;
+        for (const char *pre = dirs[d]; *pre && p < 120; pre++) path[p++] = *pre;
+        for (int i = 0; i < name->len && p < 150; i++) path[p++] = name->chars[i];
+        const char *ext = ".aqs"; for (int i = 0; i < 4 && p < 156; i++) path[p++] = ext[i];
+        path[p] = 0;
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        size_t cap = 4096, len = 0; char *buf = (char *)malloc(cap);
+        for (;;) {
+            if (len + 4096 + 1 > cap) { cap *= 2; buf = (char *)realloc(buf, cap); }
+            size_t r = fread(buf + len, 1, 4096, f);
+            len += r; if (r < 4096) break;
+        }
+        buf[len] = 0; fclose(f);
+        return buf;
+    }
+    return NULL;
 }
 
 /* ---- natives ---- */
@@ -94,11 +146,15 @@ static Value native_range(int argc, Value *args)
 void aqs_define_native(const char *name, NativeFn fn)
 {
     int len = (int)strlen(name);
-    set_global(aqs_str_copy(name, len), OBJ_VAL(aqs_native_new(fn, name)));
+    *builtin_slot(aqs_str_copy(name, len), 1) = OBJ_VAL(aqs_native_new(fn, name));
 }
 void aqs_define_int(const char *name, int64_t v)
 {
-    set_global(aqs_str_copy(name, (int)strlen(name)), INT_VAL(v));
+    *builtin_slot(aqs_str_copy(name, (int)strlen(name)), 1) = INT_VAL(v);
+}
+void aqs_add_module_source(const char *name, const char *src)
+{
+    if (nmsrc < 32) { msrc[nmsrc].name = name; msrc[nmsrc].src = src; nmsrc++; }
 }
 
 /* ---- calls ---- */
@@ -131,7 +187,38 @@ static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
 
 #define IS_NUM(v) (IS_INT(v) || IS_FLOAT(v))
 
-static int run(void)
+static int run_until(int floor);
+static ObjModule *aqs_import(ObjStr *name);
+
+/* Run `script` to completion on the shared stack (used for the main program and
+ * for each imported module); returns when its frame returns. */
+static int run_module(ObjFn *script)
+{
+    int floor = frame_count;
+    push(OBJ_VAL(script));
+    if (call_fn(script, 0)) return 1;
+    return run_until(floor);
+}
+
+/* Load (compile + run) a module by name, with caching; returns its namespace. */
+static ObjModule *aqs_import(ObjStr *name)
+{
+    ObjModule *m = module_find(name);
+    if (m) return m;                              /* cached (loaded, or mid-load == partial) */
+    if (nmodules >= 64) { runtime_error("too many modules"); return NULL; }
+    m = aqs_module_new(name->chars, name->len);
+    modules[nmodules++] = m;                       /* register before running -> circular-safe */
+    char *src = module_source(name);
+    if (!src) { runtime_error("cannot import module '%.*s'", name->len, name->chars); return NULL; }
+    ObjFn *script = aqs_compile_module(src, m);
+    free(src);
+    if (!script) return NULL;                      /* compiler set aqs_err */
+    if (run_module(script)) return NULL;
+    m->state = 1;
+    return m;
+}
+
+static int run_until(int floor)
 {
     Frame *frame = &frames[frame_count - 1];
 #define READ_BYTE()  (*frame->ip++)
@@ -151,16 +238,17 @@ static int run(void)
         case OP_SET_LOCAL: { uint8_t s = READ_BYTE(); frame->slots[s] = peek(0); break; }
         case OP_GET_GLOBAL: {
             ObjStr *n = AS_STR(READ_CONST());
-            int i = find_global(n);
-            if (i < 0) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
-            push(globals[i].val); break;
+            Value *s = resolve_global(frame->fn, n);
+            if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
+            push(*s); break;
         }
-        case OP_DEF_GLOBAL: { ObjStr *n = AS_STR(READ_CONST()); set_global(n, peek(0)); pop(); break; }
+        case OP_DEF_GLOBAL: { ObjStr *n = AS_STR(READ_CONST()); *aqs_module_slot(frame->fn->module, n, 1) = peek(0); pop(); break; }
         case OP_SET_GLOBAL: {
             ObjStr *n = AS_STR(READ_CONST());
-            int i = find_global(n);
-            if (i < 0) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
-            globals[i].val = peek(0); break;
+            Value *s = frame->fn->module ? aqs_module_slot(frame->fn->module, n, 0) : NULL;
+            if (!s) s = builtin_slot(n, 0);
+            if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
+            *s = peek(0); break;
         }
 
         case OP_ADD: {
@@ -234,8 +322,8 @@ static int run(void)
         case OP_RET: {
             Value result = pop();
             frame_count--;
-            if (frame_count == 0) { pop(); return 0; }   /* finished the script */
-            sp = frame->slots;                            /* discard callee + args + locals */
+            if (frame_count == floor) { pop(); return 0; }   /* this script/module is done */
+            sp = frame->slots;                                /* discard callee + args + locals */
             push(result);
             frame = &frames[frame_count - 1];
             break;
@@ -300,13 +388,36 @@ static int run(void)
             ObjStr *name = AS_STR(READ_CONST());
             uint8_t argc = READ_BYTE();
             Value recv = peek(argc);
-            if (IS_LIST(recv)) {
+            if (IS_MODULE(recv)) {                          /* mod.fn(args) */
+                Value *s = aqs_module_slot(AS_MODULE(recv), name, 0);
+                if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, name->len, name->chars); goto err; }
+                sp[-argc - 1] = *s;                         /* replace receiver with the callable */
+                if (call_value(*s, argc)) goto err;
+                frame = &frames[frame_count - 1];
+            } else if (IS_LIST(recv)) {
                 if (name_eq(name, "append")) {
                     if (argc != 1) { runtime_error("append() takes 1 argument"); goto err; }
                     aqs_list_push(AS_LIST(recv), peek(0));
                     sp -= argc + 1; push(NIL_VAL);
                 } else { runtime_error("list has no method '%.*s'", name->len, name->chars); goto err; }
             } else { runtime_error("'%.*s' is not a method of this type", name->len, name->chars); goto err; }
+            break;
+        }
+        case OP_GET_ATTR: {
+            ObjStr *n = AS_STR(READ_CONST());
+            Value recv = pop();
+            if (!IS_MODULE(recv)) { runtime_error("only modules have attributes"); goto err; }
+            Value *s = aqs_module_slot(AS_MODULE(recv), n, 0);
+            if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, n->len, n->chars); goto err; }
+            push(*s);
+            break;
+        }
+        case OP_IMPORT: {
+            ObjStr *n = AS_STR(READ_CONST());
+            ObjModule *m = aqs_import(n);
+            if (!m) goto err;                  /* aqs_err set */
+            frame = &frames[frame_count - 1];  /* importing may have run nested module frames */
+            push(OBJ_VAL(m));
             break;
         }
 
@@ -323,14 +434,13 @@ err:
 int aqs_run(ObjFn *script)
 {
     reset_stack();
-    nglobals = 0;
+    nbuiltins = 0; nmodules = 0;        /* fresh builtins + module cache (objects freed between runs) */
     aqs_define_native("print", native_print);
     aqs_define_native("len", native_len);
     aqs_define_native("range", native_range);
     aqs_install_indirection();          /* addr/peek/poke/iNptr/syscall + SYS_* */
-    push(OBJ_VAL(script));
-    if (call_fn(script, 0)) return 1;
-    return run();
+    if (script->module) { modules[nmodules++] = script->module; script->module->state = 1; }
+    return run_module(script);
 }
 
 int aqs_interpret(const char *src)

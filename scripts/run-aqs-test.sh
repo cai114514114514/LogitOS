@@ -15,17 +15,18 @@ cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] &
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 4; printf 'aqs /usr/aqs/hello.aqs\naqs /usr/aqs/fib.aqs\naqs /usr/aqs/ptr.aqs\naqs /usr/aqs/sys.aqs\nexit\n'; sleep 6; } | \
+{ sleep 4; printf 'aqs /usr/aqs/hello.aqs\naqs /usr/aqs/fib.aqs\naqs /usr/aqs/ptr.aqs\naqs /usr/aqs/sys.aqs\naqs /usr/aqs/use_mod.aqs\nexit\n'; sleep 7; } | \
   "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 
 # Markers: A2 for/range (count 4), recursion (fib), A3 typed pointer (1337),
-# A3 direct syscall write (hello via syscall).
+# A3 direct syscall write, and modules (import: quad(2)=16 via a module-mate call).
 for _ in $(seq 1 300); do
     if grep -aq "count 4" "$LOG" && grep -aq "fib(20) = 6765" "$LOG" \
-       && grep -aq "p\[0\] + p\[1\] = 1337" "$LOG" && grep -aq "hello via syscall" "$LOG"; then
-        echo "PASS: /bin/aqs ran A1+A2+A3 scripts on Aqua (for/range, recursion, typed ptr, syscall)"
+       && grep -aq "p\[0\] + p\[1\] = 1337" "$LOG" && grep -aq "hello via syscall" "$LOG" \
+       && grep -aq "quad(2) = 16" "$LOG" && grep -aq "from-import square(9) = 81" "$LOG"; then
+        echo "PASS: /bin/aqs ran A1+A2+A3+import scripts on Aqua (for/range, recursion, typed ptr, syscall, modules)"
         exit 0
     fi
     kill -0 "$QPID" 2>/dev/null || break

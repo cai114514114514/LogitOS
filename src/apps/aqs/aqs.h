@@ -41,7 +41,7 @@ typedef struct {
 #define AS_NUM(v)   (IS_FLOAT(v) ? AS_FLOAT(v) : (double)AS_INT(v))
 
 /* --- objects --- */
-typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR } ObjType;
+typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE } ObjType;
 struct Obj { ObjType type; Obj *next; };   /* next: allocation list (for cleanup) */
 
 typedef struct { Obj obj; int len; uint32_t hash; char *chars; } ObjStr;
@@ -52,6 +52,7 @@ typedef struct {           /* a compiled function (also the top-level "script") 
     uint8_t *code; int count, cap;        /* bytecode */
     Value *consts; int kcount, kcap;      /* constant pool */
     ObjStr *name;
+    struct ObjModule *module;             /* the module this fn's globals resolve in */
 } ObjFn;
 
 typedef Value (*NativeFn)(int argc, Value *args);
@@ -63,15 +64,25 @@ typedef struct { Obj obj; Value *items; int count, cap; } ObjList;   /* A2: dyna
  * bytes at addr + i*width (sign-extended on read when is_signed). */
 typedef struct { Obj obj; uint64_t addr; int width; int is_signed; } ObjPtr;
 
+/* A module: a name -> value namespace populated by running a .aqs file's top
+ * level. `mod.x` reads `vars`; functions defined in it resolve globals here. */
+typedef struct { ObjStr *name; Value val; } NameVal;
+typedef struct ObjModule {
+    Obj obj; ObjStr *name; NameVal *vars; int count, cap;
+    int state;             /* 0 = loading, 1 = loaded (guards circular imports) */
+} ObjModule;
+
 #define IS_STR(v)    (IS_OBJ(v) && AS_OBJ(v)->type == O_STR)
 #define IS_FN(v)     (IS_OBJ(v) && AS_OBJ(v)->type == O_FN)
 #define IS_NATIVE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_NATIVE)
 #define IS_LIST(v)   (IS_OBJ(v) && AS_OBJ(v)->type == O_LIST)
 #define IS_PTR(v)    (IS_OBJ(v) && AS_OBJ(v)->type == O_PTR)
+#define IS_MODULE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_MODULE)
 #define AS_STR(v)    ((ObjStr *)AS_OBJ(v))
 #define AS_FN(v)     ((ObjFn *)AS_OBJ(v))
 #define AS_LIST(v)   ((ObjList *)AS_OBJ(v))
 #define AS_PTR(v)    ((ObjPtr *)AS_OBJ(v))
+#define AS_MODULE(v) ((ObjModule *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -82,12 +93,19 @@ typedef enum {
     OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP,
     OP_CALL, OP_RET,
     OP_MAKE_LIST, OP_INDEX_GET, OP_INDEX_SET, OP_LEN, OP_INVOKE,   /* A2 */
+    OP_GET_ATTR, OP_IMPORT,                                        /* modules */
 } OpCode;
 
 /* --- compile + run --- */
-ObjFn *aqs_compile(const char *src);   /* source -> top-level function, or NULL on error */
+ObjFn *aqs_compile(const char *src);                       /* compile into a throwaway module */
+ObjFn *aqs_compile_module(const char *src, ObjModule *m);  /* compile, stamping fns with module m */
 int    aqs_run(ObjFn *script);         /* execute; 0 ok, 1 runtime error */
 int    aqs_interpret(const char *src); /* compile + run; returns 0 ok */
+
+/* modules (vm.c): the loader/cache + namespace access used by import. */
+ObjModule *aqs_module_new(const char *name, int len);
+Value     *aqs_module_slot(ObjModule *m, ObjStr *name, int create);  /* find/insert; NULL if absent */
+void       aqs_add_module_source(const char *name, const char *src); /* in-memory module (tests) */
 
 /* object/value helpers (object.c, value.c) */
 ObjStr   *aqs_str_copy(const char *chars, int len);

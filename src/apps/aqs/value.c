@@ -60,6 +60,7 @@ void aqs_print_value(Value v)
             n = snprintf(buf, sizeof buf, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);
             aqs_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1);
         }
+        else if (IS_MODULE(v)) { aqs_emit_cstr("<module "); ObjStr *nm = AS_MODULE(v)->name; aqs_emit(nm->chars, nm->len); aqs_emit_cstr(">"); }
         else if (IS_FN(v))      aqs_emit_cstr("<fn>");
         else if (IS_NATIVE(v))  aqs_emit_cstr("<native fn>");
         else                    aqs_emit_cstr("<obj>");

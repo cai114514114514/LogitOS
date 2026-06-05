@@ -40,7 +40,31 @@ ObjFn *aqs_fn_new(void)
     fn->arity = 0; fn->name = NULL;
     fn->code = NULL; fn->count = fn->cap = 0;
     fn->consts = NULL; fn->kcount = fn->kcap = 0;
+    fn->module = NULL;
     return fn;
+}
+
+ObjModule *aqs_module_new(const char *name, int len)
+{
+    ObjModule *m = (ObjModule *)alloc_obj(sizeof(ObjModule), O_MODULE);
+    m->name = aqs_str_copy(name, len);
+    m->vars = NULL; m->count = m->cap = 0; m->state = 0;
+    return m;
+}
+
+Value *aqs_module_slot(ObjModule *m, ObjStr *name, int create)
+{
+    for (int i = 0; i < m->count; i++)
+        if (m->vars[i].name->hash == name->hash && m->vars[i].name->len == name->len
+            && memcmp(m->vars[i].name->chars, name->chars, name->len) == 0) return &m->vars[i].val;
+    if (!create) return NULL;
+    if (m->count + 1 > m->cap) {
+        m->cap = m->cap < 8 ? 8 : m->cap * 2;
+        m->vars = (NameVal *)realloc(m->vars, m->cap * sizeof(NameVal));
+    }
+    m->vars[m->count].name = name;
+    m->vars[m->count].val = NIL_VAL;
+    return &m->vars[m->count++].val;
 }
 
 ObjNative *aqs_native_new(NativeFn fn, const char *name)
@@ -103,7 +127,8 @@ void aqs_free_objects(void)
         switch (o->type) {
         case O_STR:  free(((ObjStr *)o)->chars); break;
         case O_FN:   free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
-        case O_LIST: free(((ObjList *)o)->items); break;
+        case O_LIST:   free(((ObjList *)o)->items); break;
+        case O_MODULE: free(((ObjModule *)o)->vars); break;
         default: break;
         }
         free(o);

@@ -10,6 +10,7 @@
 static Token *T;          /* token array from the lexer */
 static int    P;          /* current index */
 static int    had_error;
+static ObjModule *g_module;   /* module being compiled; stamped onto every ObjFn */
 
 typedef struct { const char *name; int len; int depth; } Local;
 
@@ -189,14 +190,13 @@ static uint8_t arg_list(void)
     return argc;
 }
 
-static void dot(void)   /* infix for '.' : method call  receiver.name(args) */
+static void dot(void)   /* infix for '.' : attribute access, or a method/module call */
 {
-    consume(T_IDENT, "expected a method name after '.'");
-    Token method = tk_prev();
-    int name = identConst(method.start, method.len);
-    consume(T_LPAREN, "expected '(' after the method name");
-    uint8_t argc = arg_list();
-    emit(OP_INVOKE); emit((uint8_t)name); emit(argc);
+    consume(T_IDENT, "expected a name after '.'");
+    Token attr = tk_prev();
+    int name = identConst(attr.start, attr.len);
+    if (match(T_LPAREN)) { uint8_t argc = arg_list(); emit(OP_INVOKE); emit((uint8_t)name); emit(argc); }
+    else emit2(OP_GET_ATTR, (uint8_t)name);
 }
 
 static void unary(void)
@@ -415,6 +415,31 @@ static void for_statement(void)
     end_scope();
 }
 
+static void import_statement(void)   /* import NAME */
+{
+    consume(T_IDENT, "expected a module name after 'import'");
+    Token name = tk_prev();
+    emit2(OP_IMPORT, (uint8_t)identConst(name.start, name.len));   /* -> module obj on stack */
+    store_name(name);                                              /* bind NAME = module */
+    consume(T_NEWLINE, "expected a newline after import");
+}
+
+static void from_statement(void)     /* from NAME import a, b, ... */
+{
+    consume(T_IDENT, "expected a module name after 'from'");
+    Token mod = tk_prev();
+    int modk = identConst(mod.start, mod.len);
+    consume(T_IMPORT, "expected 'import' after the module name");
+    do {
+        consume(T_IDENT, "expected a name to import");
+        Token nm = tk_prev();
+        emit2(OP_IMPORT, (uint8_t)modk);                          /* push module (cached) */
+        emit2(OP_GET_ATTR, (uint8_t)identConst(nm.start, nm.len)); /* -> module.nm */
+        store_name(nm);                                           /* bind nm */
+    } while (match(T_COMMA));
+    consume(T_NEWLINE, "expected a newline after import");
+}
+
 static void return_statement(void)
 {
     if (current->enclosing == NULL) { error("'return' outside a function"); return; }
@@ -433,6 +458,7 @@ static void fun_declaration(void)
     comp.enclosing = current;
     comp.fn = aqs_fn_new();
     comp.fn->name = aqs_str_copy(name.start, name.len);
+    comp.fn->module = g_module;
     comp.local_count = 0;
     comp.scope_depth = 0;
     comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0;
@@ -475,6 +501,8 @@ static void statement(void)
     else if (match(T_WHILE)) while_statement();
     else if (match(T_FOR)) for_statement();
     else if (match(T_RETURN)) return_statement();
+    else if (match(T_IMPORT)) import_statement();
+    else if (match(T_FROM)) from_statement();
     else if (assign_ahead()) { assignment(); consume(T_NEWLINE, "expected a newline after the statement"); }
     else { expression(); emit(OP_POP); consume(T_NEWLINE, "expected a newline after the statement"); }
 }
@@ -485,18 +513,20 @@ static void declaration(void)
     else statement();
 }
 
-ObjFn *aqs_compile(const char *src)
+ObjFn *aqs_compile_module(const char *src, ObjModule *module)
 {
     int count;
     Token *toks = aqs_lex(src, &count);
     if (!toks) return NULL;                 /* aqs_err set by the lexer */
     if (!rules_ready) init_rules();
 
+    g_module = module;
     T = toks; P = 0; had_error = 0;
     Compiler comp;
     comp.enclosing = NULL;
     comp.fn = aqs_fn_new();
     comp.fn->name = NULL;                    /* the top-level script */
+    comp.fn->module = module;
     comp.local_count = 0;
     comp.scope_depth = 0;
     comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0;
@@ -512,4 +542,9 @@ ObjFn *aqs_compile(const char *src)
     ObjFn *script = comp.fn;
     free(toks);
     return had_error ? NULL : script;
+}
+
+ObjFn *aqs_compile(const char *src)   /* standalone: compile into a fresh __main__ module */
+{
+    return aqs_compile_module(src, aqs_module_new("__main__", 8));
 }

@@ -33,10 +33,12 @@ static TokType keyword(const char *s, int n)
             if (!memcmp(s, "nil", 3)) return T_NIL; break;
     case 4: if (!memcmp(s, "elif", 4)) return T_ELIF;
             if (!memcmp(s, "else", 4)) return T_ELSE;
+            if (!memcmp(s, "from", 4)) return T_FROM;
             if (!memcmp(s, "true", 4)) return T_TRUE; break;
     case 5: if (!memcmp(s, "while", 5)) return T_WHILE;
             if (!memcmp(s, "false", 5)) return T_FALSE; break;
-    case 6: if (!memcmp(s, "return", 6)) return T_RETURN; break;
+    case 6: if (!memcmp(s, "return", 6)) return T_RETURN;
+            if (!memcmp(s, "import", 6)) return T_IMPORT; break;
     }
     return T_IDENT;
 }

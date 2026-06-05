@@ -34,8 +34,19 @@ static void err(const char *name, const char *src)   /* expect a compile/runtime
     aqs_free_objects();
 }
 
+/* an in-memory module for the import tests. `quad` calls its module-mate `square`
+ * -> proves a module function resolves globals in its own namespace. */
+static const char *MATHX =
+    "PI = 3\n"
+    "def square(x):\n"
+    "    return x * x\n"
+    "def quad(x):\n"
+    "    return square(square(x))\n";
+
 int main(void)
 {
+    aqs_add_module_source("mathx", MATHX);
+
     /* arithmetic + precedence */
     ok("prec",   "print(1 + 2 * 3)\n", "7\n");
     ok("paren",  "print((1 + 2) * 3)\n", "9\n");
@@ -181,6 +192,23 @@ int main(void)
        "305419896 -1\n");
     ok("sysconst", "print(SYS_WRITE)\n", "1\n");
     ok("syscall_stub", "print(syscall(SYS_GETPID))\n", "-1\n");   /* host stub returns -1 */
+
+    /* ---- modules: import / from-import / attribute access ---- */
+    ok("import",
+       "import mathx\n"
+       "print(mathx.PI, mathx.square(5), mathx.quad(2))\n",   /* quad uses module-mate square */
+       "3 25 16\n");
+    ok("fromimport",
+       "from mathx import square, PI\n"
+       "print(square(7), PI)\n",
+       "49 3\n");
+    ok("modnamespace",
+       "import mathx\n"
+       "square = 99\n"                 /* local 'square' must not clash with mathx.square */
+       "print(square, mathx.square(3))\n",
+       "99 9\n");
+    err("badimport", "import does_not_exist\n");
+    err("badattr",   "import mathx\nprint(mathx.nope)\n");
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");
