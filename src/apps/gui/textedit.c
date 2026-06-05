@@ -1,8 +1,9 @@
-#include "aqua.h"
+#include "aui.h"
 
-/* A tiny text editor. Launched by clicking a .txt in Finder (file association)
- * or from the Dock; reads the file via a syscall, lets you type, and saves
- * back to disk with Ctrl+S. */
+/* A tiny text editor (aui theme). Launched by clicking a .txt in Finder (file
+ * association) or from the Dock; reads the file via a syscall, lets you type, and
+ * saves back to disk with Ctrl+S. The text area is a custom monospace canvas; the
+ * background + status bar use the aui palette so it matches the rest of the desk. */
 
 #define MAXT 4000
 #define WINW 460
@@ -16,7 +17,7 @@ static int  saved;          /* 1 just after a successful save, 0 once edited */
 
 static void redraw(void)
 {
-    gui_clear(rgb(252, 252, 253));
+    gui_clear(AUI_BG);
     int cols = (WINW - 20) / 8;
     char line[128];
     int ll = 0, cy = 8, col = 0;
@@ -25,23 +26,24 @@ static void redraw(void)
         char c = text[i];
         if (c == '\n' || col >= cols) {
             line[ll] = 0;
-            if (ll) gui_text(10, cy, rgb(40, 40, 48), line);
+            if (ll) gui_text(10, cy, AUI_TEXT, line);
             ll = 0; col = 0; cy += 16;
             if (c == '\n') continue;
         }
         line[ll++] = c; col++;
     }
     line[ll] = 0;
-    if (ll) gui_text(10, cy, rgb(40, 40, 48), line);
-    gui_rect(10 + col * 8, cy, 8, 16, rgb(90, 150, 240));   /* caret */
+    if (ll) gui_text(10, cy, AUI_TEXT, line);
+    gui_rect(10 + col * 8, cy, 8, 16, AUI_ACCENT);   /* caret */
 
-    /* status line */
-    gui_rect(0, WINH - 20, WINW, 20, rgb(244, 244, 247));
+    /* status bar */
+    gui_rect(0, WINH - 22, WINW, 22, rgb(236, 238, 242));
+    gui_rect(0, WINH - 22, WINW, 1, rgb(214, 216, 222));
     if (saved)
-        gui_text(10, WINH - 18, rgb(40, 160, 80), "saved");
+        aui_label(10, WINH - 19, "saved", rgb(40, 160, 80));
     else {
-        gui_text(10, WINH - 18, rgb(150, 150, 158), "Ctrl+S to save:");
-        gui_text(10 + 16 * 8, WINH - 18, rgb(110, 110, 120), fname);
+        aui_label(10, WINH - 19, "Ctrl+S to save:", AUI_MUTED);
+        aui_label(132, WINH - 19, fname, AUI_TEXT);
     }
     gui_flush();
 }

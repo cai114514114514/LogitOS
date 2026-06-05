@@ -581,27 +581,74 @@ static void reap(void)
 }
 
 /* ---------- desktop chrome ---------- */
-/* Desktop wallpaper: a diagonal violet -> blue -> teal gradient (top-left to
- * bottom-right). Cached into `bg` once, so the per-pixel cost is paid only at init. */
+/* Rounded-rect coverage (corners cut) -- confines the glass blur to the panel. */
+static int in_round(int i, int j, int w, int h, int r)
+{
+    int cx, cy;
+    if (i < r && j < r) { cx = r; cy = r; }
+    else if (i >= w - r && j < r) { cx = w - r - 1; cy = r; }
+    else if (i < r && j >= h - r) { cx = r; cy = h - r - 1; }
+    else if (i >= w - r && j >= h - r) { cx = w - r - 1; cy = h - r - 1; }
+    else return 1;
+    int dx = i - cx, dy = j - cy;
+    return dx * dx + dy * dy <= r * r;
+}
+
+/* "Liquid glass": box-blur the wallpaper already sitting in `back` so a
+ * translucent panel laid on top reads as frosted glass. One-time, baked into
+ * `bg` at init, so there is no per-frame cost. `corner` rounds the blurred area. */
+static void glass_blur(int x0, int y0, int w, int h, int corner, int rad)
+{
+    if (x0 < 0) { w += x0; x0 = 0; }
+    if (y0 < 0) { h += y0; y0 = 0; }
+    if (x0 + w > W) w = W - x0;
+    if (y0 + h > H) h = H - y0;
+    if (w <= 0 || h <= 0) return;
+    uint32_t *tmp = (uint32_t *)kmalloc((unsigned)(w * h * 4));
+    if (!tmp) return;
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) tmp[j * w + i] = back[(y0 + j) * W + (x0 + i)];
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            if (corner > 0 && !in_round(i, j, w, h, corner)) continue;
+            unsigned a0 = 0, a1 = 0, a2 = 0, a3 = 0, cnt = 0;
+            for (int dy = -rad; dy <= rad; dy++) {
+                int yy = j + dy; if (yy < 0 || yy >= h) continue;
+                for (int dx = -rad; dx <= rad; dx++) {
+                    int xx = i + dx; if (xx < 0 || xx >= w) continue;
+                    uint32_t p = tmp[yy * w + xx];
+                    a0 += p & 0xff; a1 += (p >> 8) & 0xff; a2 += (p >> 16) & 0xff; a3 += (p >> 24) & 0xff; cnt++;
+                }
+            }
+            back[(y0 + j) * W + (x0 + i)] = (a0 / cnt) | ((a1 / cnt) << 8) | ((a2 / cnt) << 16) | ((a3 / cnt) << 24);
+        }
+    kfree(tmp);
+}
+
+/* Dusk wallpaper: a soft lavender -> mauve -> warm-sand vertical gradient
+ * (a macOS-Tahoe-ish dusk sky). Cached once into `bg`. */
 static uint32_t bg_color(int x, int y)
 {
-    int t = (x * 1000 / W + y * 1000 / H) / 2;          /* 0..1000 along the diagonal */
+    (void)x;
+    int t = y * 1000 / H;
     uint8_t r, g, b;
-    if (t < 500) {
-        r = (uint8_t)lerp(74, 38, t, 500); g = (uint8_t)lerp(34, 80, t, 500); b = (uint8_t)lerp(122, 170, t, 500);
+    if (t < 550) {
+        r = (uint8_t)lerp(140, 198, t, 550); g = (uint8_t)lerp(150, 168, t, 550); b = (uint8_t)lerp(198, 184, t, 550);
     } else {
-        int u = t - 500;
-        r = (uint8_t)lerp(38, 22, u, 500); g = (uint8_t)lerp(80, 152, u, 500); b = (uint8_t)lerp(170, 166, u, 500);
+        int u = t - 550;
+        r = (uint8_t)lerp(198, 228, u, 450); g = (uint8_t)lerp(168, 192, u, 450); b = (uint8_t)lerp(184, 162, u, 450);
     }
     return rgb(r, g, b);
 }
+
 static void draw_background(void)
 {
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) fb_put(x, y, bg_color(x, y));
-    fb_blend_rect(0, 0, W, MENUBAR_H, 248, 249, 252, 165);   /* glassy menu bar */
-    fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 30);       /* hairline separator */
-    uint32_t ink = rgb(38, 38, 44);
+    glass_blur(0, 0, W, MENUBAR_H, 0, 5);                    /* liquid-glass menu bar */
+    fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120);
+    fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 28);      /* hairline separator */
+    uint32_t ink = rgb(40, 40, 48);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
     fb_text(32, 4, "Aqua OS", ink);
     fb_text(112, 4, "File", ink);
@@ -615,9 +662,10 @@ static void draw_dock(void)
     int n = nreg < 1 ? 1 : nreg;
     int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
     dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
-    fb_blend_round_rect(dock_x0 - 1, dock_y0 + 6, dw + 2, dh, 26, 0, 0, 0, 45);    /* soft drop shadow */
-    fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 26, 255, 255, 255, 72);          /* frosted glass panel */
-    fb_blend_rect(dock_x0 + 14, dock_y0 + 1, dw - 28, 1, 255, 255, 255, 70);       /* top edge highlight */
+    fb_blend_round_rect(dock_x0 - 1, dock_y0 + 7, dw + 2, dh, 28, 0, 0, 0, 50);    /* soft drop shadow */
+    glass_blur(dock_x0, dock_y0, dw, dh, 28, 6);                                    /* frost the wallpaper behind */
+    fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 58);           /* translucent glass tint */
+    fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, 115);       /* bright top sheen */
     for (int i = 0; i < nreg; i++) {
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
         fb_round_rect(ix, iy, dock_isz, dock_isz, 12, reg[i].color);

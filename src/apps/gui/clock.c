@@ -1,43 +1,40 @@
-#include "aqua.h"
+#include "aui.h"
 
-/* A live digital clock -- a real ring-3 process redrawing on each tick. */
+/* A live digital clock, rendered with the aui theme. */
 
 static void two(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; }
 
 void app_main(void)
 {
-    gui_create("Clock", 220, 96);
+    gui_create("Clock", 240, 132);
 
     int last = -1;
     for (;;) {
         struct aqua_event e;
         while (poll_event(&e))
-            if (e.type == EV_CLOSE)
-                app_exit(0);
+            if (e.type == EV_CLOSE) app_exit(0);
 
         struct aqua_time t;
         get_time(&t);
         if (t.second != last) {
             last = t.second;
+            aui_begin(AUI_BG);
 
-            gui_clear(rgb(26, 28, 38));
             char hms[9];
             two(hms + 0, t.hour);   hms[2] = ':';
             two(hms + 3, t.minute); hms[5] = ':';
             two(hms + 6, t.second); hms[8] = 0;
-            /* draw the time a few times offset to fake a bolder, bigger look */
-            for (int dx = 0; dx < 2; dx++)
-                for (int dy = 0; dy < 2; dy++)
-                    gui_text(54 + dx, 30 + dy, rgb(120, 220, 255), hms);
+            int tw = text_measure_px(hms, 8, 34, 0);
+            gui_text_run((240 - tw) / 2, 34, 34, 0, AUI_TEXT, hms, 8);   /* big time */
 
-            char date[11];
-            date[0] = '0' + (t.year / 1000) % 10; date[1] = '0' + (t.year / 100) % 10;
-            date[2] = '0' + (t.year / 10) % 10;   date[3] = '0' + t.year % 10;
-            date[4] = '-'; two(date + 5, t.month); date[7] = '-'; two(date + 8, t.day);
-            date[10] = 0;
-            gui_text(66, 60, rgb(150, 160, 180), date);
+            char d[11];
+            d[0] = '0' + (t.year / 1000) % 10; d[1] = '0' + (t.year / 100) % 10;
+            d[2] = '0' + (t.year / 10) % 10;   d[3] = '0' + t.year % 10;
+            d[4] = '-'; two(d + 5, t.month); d[7] = '-'; two(d + 8, t.day); d[10] = 0;
+            int dw = text_measure_px(d, 10, 15, 0);
+            aui_label((240 - dw) / 2, 92, d, AUI_MUTED);
 
-            gui_flush();
+            aui_end();
         }
         sys_yield();
     }
