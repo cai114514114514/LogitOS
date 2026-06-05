@@ -407,6 +407,7 @@ static void for_statement(void)
     Token var = tk_prev();
     consume(T_IN, "expected 'in' after the loop variable");
     expression();                                  /* the sequence -> stack */
+    emit(OP_ITER);                                 /* dict -> its keys list; others unchanged */
     int seq_slot = add_local("", 0);
     emitConst(INT_VAL(0));                          /* idx = 0 */
     int idx_slot = add_local("", 0);

@@ -237,6 +237,20 @@ int main(void)
     ok("instr",  "print(\"ell\" in \"hello\", \"xyz\" in \"hello\")\n", "true false\n");
     ok("inif",   "d = {\"k\": 1}\nif \"k\" in d:\n    print(\"yes\")\n", "yes\n");
     ok("inprec", "print(1 + 1 in [2, 3])\n", "true\n");
+    ok("fordict",
+       "d = {\"a\": 1, \"b\": 2, \"c\": 3}\n"
+       "s = 0\n"
+       "for k in d:\n"
+       "    s = s + d[k]\n"
+       "print(s)\n",
+       "6\n");
+    ok("fordictcount",
+       "d = {1: 10, 2: 20}\n"
+       "n = 0\n"
+       "for k in d:\n"
+       "    n = n + 1\n"
+       "print(n)\n",
+       "2\n");
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");

@@ -499,6 +499,11 @@ static int run_until(int floor)
             break;
         }
 
+        case OP_ITER: {
+            if (IS_DICT(peek(0))) { ObjList *ks = aqs_dict_keys(AS_DICT(peek(0))); sp[-1] = OBJ_VAL(ks); }
+            break;   /* list/range/string: iterate as-is */
+        }
+
         default: runtime_error("bad opcode %d", op); goto err;
         }
     }
