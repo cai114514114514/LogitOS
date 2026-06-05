@@ -1,19 +1,71 @@
 # Make clangd analyze the tree the way the Makefile builds it: x86_64-elf
-# freestanding target. The authoritative per-file flags (all include dirs +
-# engine defines) live in compile_commands.json -- regenerate it with
-#   python3 tools/gen_compile_commands.py
-# These Add: flags are the fallback for files not in that database.
-# (Without this the IDE checks against the host arm64/macOS-SDK target and
-#  reports spurious 'header not found' / inline-asm-constraint errors.)
+# freestanding target with every project include dir on the path, so our own
+# freestanding headers (<stdio.h>, <unistd.h>, ...) resolve to src/apps/libc
+# instead of the host macOS SDK. Per-file specifics (engine -D defines) live in
+# compile_commands.json -- regenerate it with:  python3 tools/gen_compile_commands.py
+# (clangd merges these Add: flags on top of that database; this list is also a
+#  complete standalone fallback for files not in the database.)
 CompileFlags:
+  Compiler: clang
   Add:
     - --target=x86_64-elf
     - -ffreestanding
     - -nostdlib
-    - -nostdlibinc        # keep clang's builtin headers, block the macOS SDK
+    - -fno-pic
+    - -fno-pie
     - -mno-red-zone
     - -mno-mmx
     - -msse
     - -msse2              # M15+: kernel & userland build with SSE2
+    - -std=c11
+    # --- project include dirs (mirror the Makefile's INCDIRS) ---
     - -Iinclude
-  Compiler: clang
+    - -Iinclude/abi
+    - -Isrc
+    - -Isrc/apps
+    - -Isrc/apps/aqs
+    - -Isrc/apps/browser
+    - -Isrc/apps/libc
+    - -Isrc/apps/libc/include
+    - -Isrc/apps/libc/include/sys
+    - -Isrc/apps/libc/src
+    - -Isrc/boot
+    - -Isrc/crypto
+    - -Isrc/crypto/aead
+    - -Isrc/crypto/hash
+    - -Isrc/crypto/pubkey
+    - -Isrc/crypto/trust
+    - -Isrc/drivers
+    - -Isrc/drivers/block
+    - -Isrc/drivers/char
+    - -Isrc/drivers/net
+    - -Isrc/drivers/timer
+    - -Isrc/drivers/virtio
+    - -Isrc/fs
+    - -Isrc/kernel
+    - -Isrc/kernel/core
+    - -Isrc/kernel/cpu
+    - -Isrc/kernel/exec
+    - -Isrc/kernel/gui
+    - -Isrc/kernel/mm
+    - -Isrc/kernel/pci
+    - -Isrc/kernel/sched
+    - -Isrc/lib
+    - -Isrc/lib/image
+    - -Isrc/lib/text
+    - -Isrc/net
+    - -Isrc/net/core
+    - -Isrc/net/dns
+    - -Isrc/net/http
+    - -Isrc/net/ip
+    - -Isrc/net/link
+    - -Isrc/net/tls
+    - -Isrc/net/transport
+    # --- third-party (engine + LibCSS) ---
+    - -Ithird_party/quickjs
+    - -Ithird_party/libm
+    - -Ithird_party/css/libwapcaplet/include
+    - -Ithird_party/css/libparserutils/include
+    - -Ithird_party/css/libcss/include
+    - -Ithird_party/css/libcss/src
+    - -Ithird_party/css/libparserutils/src
