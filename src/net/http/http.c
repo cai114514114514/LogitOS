@@ -6,6 +6,7 @@
 #include "tls.h"
 #include "dns.h"
 #include "net.h"
+#include "arp.h"
 #include "pit.h"
 #include "rtc.h"
 
@@ -114,6 +115,10 @@ static int fetch_once(const struct url *u)
     raw_len = 0;
     uint32_t ip = dns_resolve(u->host);
     if (!ip) return HTTP_ERR_DNS;
+    /* Warm the next-hop's ARP (gateway for off-subnet, else the host itself) so
+     * the SYN isn't dropped on a cold cache -> no 0.5 s retransmit stall. */
+    uint32_t nexthop = ((ip & net_cfg.mask) == (net_cfg.ip & net_cfg.mask)) ? ip : net_cfg.gw;
+    arp_warm(nexthop, 30);
     int tcp = tcp_connect(ip, u->port);
     if (tcp < 0) return HTTP_ERR_CONN;
 
@@ -127,6 +132,8 @@ static int fetch_once(const struct url *u)
     int rl = build_request(u, req, (int)sizeof req);
     if (tls >= 0) tls_send(tls, req, rl); else tcp_send(tcp, req, rl);
 
+    int hdr_end = -1;        /* offset past the response headers, once seen */
+    int clen = -1;           /* Content-Length, if the server sent one */
     uint64_t start = timer_ticks();
     while (timer_ticks() - start < 800) {       /* ~8 s idle budget */
         net_poll();
@@ -135,6 +142,17 @@ static int fetch_once(const struct url *u)
         if (n > 0) {
             raw_len += n;
             start = timer_ticks();
+            /* Once we have the full body per Content-Length, stop -- don't sit idle
+             * waiting for the server's FIN (often ~1 s later), which made every
+             * page feel sluggish even though the bytes had all arrived. */
+            if (hdr_end < 0 && (hdr_end = find_body(raw, raw_len)) >= 0) {
+                char cl[16];
+                if (header_value(raw, hdr_end, "content-length", cl, sizeof cl) == 0) {
+                    clen = 0;
+                    for (const char *p = cl; *p >= '0' && *p <= '9'; p++) clen = clen*10 + (*p-'0');
+                }
+            }
+            if (clen >= 0 && hdr_end >= 0 && raw_len - hdr_end >= clen) break;
             if (raw_len >= RAW_MAX) break;
             continue;                            /* data flowing: drain tightly, no delay */
         }

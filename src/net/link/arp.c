@@ -3,6 +3,7 @@
 #include "arp.h"
 #include "eth.h"
 #include "net.h"
+#include "pit.h"
 
 void *memcpy(void *, const void *, size_t);
 int   memcmp(const void *, const void *, size_t);
@@ -76,4 +77,22 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
         return 0;
     send_arp(ARP_OP_REQUEST, eth_broadcast, ip);         /* who has `ip`? */
     return -1;
+}
+
+/* Block (polling) until `ip` is in the ARP cache, or `timeout` ticks elapse.
+ * Warms the cache so the first real packet to a next-hop isn't silently dropped
+ * on an ARP miss -- ip_send returns -1 there and the caller only re-sends on a
+ * 250-500 ms protocol retransmit, which was adding ~0.5 s to every cold fetch.
+ * The reply arrives in <1 ms, so this returns in a tick or two. Safe only from
+ * the blocking fetch context (it pumps net_poll), NOT from the RX IRQ. */
+int arp_warm(uint32_t ip, int timeout)
+{
+    uint8_t mac[ETH_ALEN];
+    uint64_t start = timer_ticks();
+    while (arp_resolve(ip, mac) != 0) {
+        if ((int)(timer_ticks() - start) > timeout) return -1;
+        net_poll();
+        net_idle();
+    }
+    return 0;
 }

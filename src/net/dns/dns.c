@@ -3,6 +3,7 @@
 #include "dns.h"
 #include "udp.h"
 #include "net.h"
+#include "arp.h"
 #include "pit.h"
 
 /* A tiny DNS client: one A-query to the SLIRP resolver (10.0.2.3:53), parse the
@@ -125,7 +126,8 @@ uint32_t dns_resolve(const char *name)
 {
     uint32_t lit = parse_ip_literal(name);   /* skip DNS for "10.0.2.2" etc. */
     if (lit) return lit;
-    dns_start(name);
+    arp_warm(DNS_SERVER, 30);                 /* resolve the resolver's MAC first, so the */
+    dns_start(name);                          /* query isn't dropped on a cold ARP cache */
     uint64_t start = timer_ticks(), last = start;
     while (timer_ticks() - start < 300) {
         net_poll();
