@@ -22,6 +22,7 @@ static uint64_t *next_table(uint64_t *table, int idx)
 {
     if (!(table[idx] & PRESENT)) {
         uint64_t frame = pmm_alloc();
+        if (!frame) return NULL;                 /* OOM: frame 0 is reserved; never install it */
         memset((void *)frame, 0, 4096);
         table[idx] = frame | PRESENT | WRITABLE | USER;
     } else {
@@ -38,9 +39,9 @@ void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
 
     uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
-    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);
-    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);
-    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);
+    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
+    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
+    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
 
     pt[(virt >> 12) & 0x1FF] = (phys & ~(uint64_t)0xFFF) | flags | PRESENT;
     invlpg(virt);
@@ -86,7 +87,7 @@ uint64_t vmm_new_space(void)
 
     uint64_t pml4 = pmm_alloc();
     uint64_t pdpt = pmm_alloc();
-    if (!pml4 || !pdpt) return 0;
+    if (!pml4 || !pdpt) { if (pml4) pmm_free(pml4); if (pdpt) pmm_free(pdpt); return 0; }
 
     /* Copy the kernel PML4 wholesale: every region stays mapped by default. */
     memcpy((void *)pml4, (void *)kcr3, 4096);
@@ -102,9 +103,9 @@ uint64_t vmm_new_space(void)
 void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
 {
     uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
-    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);
-    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);
-    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);
+    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
+    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
+    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
 
     pt[(virt >> 12) & 0x1FF] = (phys & ~(uint64_t)0xFFF) | flags | PRESENT;
     /* No invlpg: this space is not active while being populated. */

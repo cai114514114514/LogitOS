@@ -194,7 +194,7 @@ void wm_launch(const char *aex_file, const char *arg)
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, name, ext);   /* maps + copies into `space` */
+    uint64_t entry = aex_load(img, (uint64_t)bytes, name, ext);   /* maps + copies into `space` */
     uint64_t ustack_top = 0;
     if (entry) {
         /* The stack must sit ABOVE the whole app image. browser/js link a 24 MiB
@@ -204,8 +204,11 @@ void wm_launch(const char *aex_file, const char *arg)
          * 4 MiB because QuickJS recurses deeply throwing errors on real pages'
          * scripts (github overran a 256 KiB stack inside JS_ThrowError2). */
         ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
-        for (int i = 1; i <= 1024; i++)          /* 4 MiB stack */
-            vmm_map_page(ustack_top - (uint64_t)i * 0x1000, pmm_alloc(), VMM_WRITABLE | VMM_USER);
+        for (int i = 1; i <= 1024; i++) {        /* 4 MiB stack */
+            uint64_t frame = pmm_alloc();
+            if (!frame) { entry = 0; break; }    /* OOM: fail the launch, don't run on a partial stack */
+            vmm_map_page(ustack_top - (uint64_t)i * 0x1000, frame, VMM_WRITABLE | VMM_USER);
+        }
     }
     vmm_switch(prev_cr3);
     __asm__ volatile ("sti");

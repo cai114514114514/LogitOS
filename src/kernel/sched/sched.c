@@ -76,7 +76,9 @@ void thread_create(void (*entry)(void), const char *name)
 int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3)
 {
     struct thread *t = kmalloc(sizeof *t);
+    if (!t) return -1;
     uint8_t *ks = kmalloc(KSTACK_SIZE);
+    if (!ks) { kfree(t); return -1; }
     t->stack = ks;
     t->name = name;
     t->id = next_id++;
@@ -111,7 +113,9 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
 int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3)
 {
     struct thread *t = kmalloc(sizeof *t);
+    if (!t) return -1;
     uint8_t *ks = kmalloc(KSTACK_SIZE);
+    if (!ks) { kfree(t); return -1; }
     t->stack = ks;
     t->name = name;
     t->id = next_id++;

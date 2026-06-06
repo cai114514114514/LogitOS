@@ -109,7 +109,7 @@ long proc_execve(struct registers *r)
     /* 3. Point of no return: swap the user address space. */
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
-    uint64_t entry = aex_load(img, nm, ext);     /* maps into the active (p->cr3) space */
+    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext);  /* maps into the active (p->cr3) space */
     kfree(img);
     if (!entry) proc_exit(127);                  /* image gone, can't recover */
 
@@ -148,7 +148,7 @@ int proc_spawn(const char *path, char **argv)
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, nm, ext);
+    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext);
     uint64_t sp = entry ? setup_cli_stack(entry, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
