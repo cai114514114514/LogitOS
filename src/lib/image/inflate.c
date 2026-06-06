@@ -5,6 +5,17 @@
 
 struct bitr { const uint8_t *p; int len, pos; uint32_t bits; int nbits; };
 
+/* Word-at-a-time refill: top up the LSB-first bit register so it holds at least
+ * `need` bits, loading whole bytes (up to filling 24..31 bits). The DEFLATE
+ * stream is LSB-first, so each byte is appended above the current bits and a
+ * mask-and-shift extracts fields with no per-bit loop. (libdeflate/zlib pattern.) */
+static void refill(struct bitr *b, int need)
+{
+    while (b->nbits < need && b->pos < b->len) {
+        b->bits |= (uint32_t)b->p[b->pos++] << b->nbits;
+        b->nbits += 8;
+    }
+}
 static int getbit(struct bitr *b)
 {
     if (b->nbits == 0) {
@@ -17,8 +28,10 @@ static int getbit(struct bitr *b)
 }
 static int getbits(struct bitr *b, int n)
 {
-    int v = 0;
-    for (int i = 0; i < n; i++) { int bit = getbit(b); if (bit < 0) return -1; v |= bit << i; }
+    if (b->nbits < n) refill(b, n);
+    if (b->nbits < n) return -1;
+    int v = (int)(b->bits & (((uint32_t)1 << n) - 1));
+    b->bits >>= n; b->nbits -= n;
     return v;
 }
 
@@ -41,12 +54,21 @@ static void huff_build(struct huff *h, const uint8_t *lengths, int n)
 
 static int huff_decode(struct bitr *b, const struct huff *h)
 {
+    /* A canonical code is at most 15 bits; pre-fill once so the length loop reads
+     * bits straight from the register with no per-iteration end-of-input branch
+     * or byte fetch. The stream is LSB-first, so each consumed bit is the low bit. */
+    refill(b, MAXLEN - 1);
+    uint32_t reg = b->bits;
+    int avail = b->nbits;
     int code = 0, first = 0, index = 0;
     for (int len = 1; len < MAXLEN; len++) {
-        int bit = getbit(b); if (bit < 0) return -1;
-        code |= bit;
+        if (avail-- <= 0) return -1;
+        code |= (int)(reg & 1); reg >>= 1;
         int cnt = h->count[len];
-        if (code - first < cnt) return h->sym[index + (code - first)];
+        if (code - first < cnt) {
+            b->bits = reg; b->nbits = avail;   /* commit only the bits consumed */
+            return h->sym[index + (code - first)];
+        }
         index += cnt; first += cnt; first <<= 1; code <<= 1;
     }
     return -1;
@@ -86,7 +108,7 @@ int inflate_raw(const uint8_t *in, int inlen, uint8_t *out, int outcap, int *out
         int final = getbit(&b); if (final < 0) return -1;
         int type = getbits(&b, 2); if (type < 0) return -1;
         if (type == 0) {                                 /* stored */
-            b.nbits = 0;                                 /* align to byte */
+            b.nbits = 0; b.bits = 0;                     /* align to byte, drop partial */
             if (b.pos + 4 > b.len) return -1;
             int len = b.p[b.pos] | (b.p[b.pos+1] << 8); b.pos += 4;  /* skip LEN + NLEN */
             if (b.pos + len > b.len || op + len > outcap) return -1;
