@@ -65,10 +65,38 @@ static int spawn_shell(void)
     return 0;
 }
 
+/* Echo a string into the grid and send it to the shell's stdin (used to auto-run
+ * a command when the Terminal is opened on a file). */
+static void send_line(const char *s)
+{
+    for (const char *p = s; *p; p++) { feed(*p); sys_write(in_w, p, 1); }
+}
+
+static int ends_with(const char *s, const char *suf)
+{
+    int ls = 0; while (s[ls]) ls++;
+    int lf = 0; while (suf[lf]) lf++;
+    if (lf > ls) return 0;
+    for (int i = 0; i < lf; i++) if (s[ls - lf + i] != suf[i]) return 0;
+    return 1;
+}
+
 void app_main(void)
 {
     gui_create("Terminal", WINW, WINH);
     if (spawn_shell() < 0) { feed('s'); feed('h'); feed('?'); }
+
+    /* Opened on a file (the WM's file-type fallback launches the Terminal with the
+     * path as its arg): run it. .aqs scripts run through the interpreter; any other
+     * file is shown with cat. */
+    {
+        char arg[160];
+        if (get_arg(arg, sizeof arg) > 0 && in_w >= 0) {
+            send_line(ends_with(arg, ".aqs") ? "aqs " : "cat ");
+            send_line(arg);
+            send_line("\n");
+        }
+    }
 
     int redraw = 1, alive = 1;
     for (;;) {

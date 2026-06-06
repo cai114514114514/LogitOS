@@ -101,11 +101,11 @@ $(eval $(call APP_RULE,clock,   0x40000000,Clock,-,C,100,160,255))
 $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
-$(eval $(call APP_RULE,netapp,  0x44000000,Network,-,N,80,170,220))
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
-APPS := clock textedit monitor terminal netapp widgets
+# (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
+APPS := clock textedit monitor terminal widgets
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
@@ -120,7 +120,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 

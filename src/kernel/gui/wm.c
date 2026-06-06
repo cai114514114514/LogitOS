@@ -15,8 +15,6 @@
 #include "img.h"
 #include "aqua_abi.h"
 #include "net.h"
-#include "icmp.h"
-#include "dns.h"
 #include "http.h"
 #include "kprintf.h"
 #include "usercopy.h"
@@ -245,7 +243,9 @@ static void launch_for_ext(const char *ext, const char *file)
 {
     for (int i = 0; i < nreg; i++)
         if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
-    serial_puts("[wm] no app handles that file type\n");
+    /* No registered handler -> open it in the Terminal (it runs `aqs <file>` for
+     * .aqs scripts, else `cat`). Beats the old "no app handles that file type". */
+    wm_launch("terminal.aex", file);
 }
 
 /* ---------- system info text (for the Activity Monitor app) ---------- */
@@ -434,30 +434,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         scopy((char *)c, vfs_ent_name(dir, i), 64);
         return vfs_ent_is_dir(dir, i) ? -2 : vfs_ent_size(dir, i);
     }
-    case SYS_NET_INFO: {
-        if (!net_up()) return 0;
-        struct aqua_netinfo *ni = (struct aqua_netinfo *)a;
-        if (!user_range_ok(ni, sizeof *ni, 1)) return -1;
-        ni->ip = net_cfg.ip; ni->mask = net_cfg.mask; ni->gw = net_cfg.gw;
-        for (int i = 0; i < 6; i++) ni->mac[i] = net_cfg.mac[i];
-        return 1;
-    }
-    case SYS_NET_PING:
-        return net_up() ? icmp_ping((uint32_t)a) : -1;
-    case SYS_NET_PING_RTT: {
-        int t = icmp_last_rtt();
-        return t < 0 ? -1 : t * 10;        /* ticks (10 ms) -> ms */
-    }
-    case SYS_NET_DNS:
-        if (!net_up()) return -1;
-        {
-            char name[USER_PATH_MAX];
-            if (user_copy_string(name, sizeof name, (const char *)a) < 0) return -1;
-            dns_start(name);
-        }
-        return 0;
-    case SYS_NET_DNS_RESULT:
-        return (long)(int)dns_result();
+    /* SYS_NET_* moved to syscall.c so CLI processes (no GUI window) can use them. */
     case SYS_HTTP_GET: {
         /* Fetch only (DNS+TCP+TLS+HTTP, follows redirects). The DOM/CSS/layout
          * pipeline now lives in the ring-3 browser. http_get blocks while pumping

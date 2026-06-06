@@ -10,6 +10,9 @@
 #include "file.h"
 #include "vfs.h"
 #include "rtc.h"
+#include "net.h"
+#include "icmp.h"
+#include "dns.h"
 
 void syscall_dispatch(struct registers *r)
 {
@@ -217,6 +220,37 @@ void syscall_dispatch(struct registers *r)
         r->rax = (uint64_t)rc;
         return;
     }
+    /* Networking: handled here (not in wm_gui_syscall) so CLI processes -- e.g.
+     * the `net` coreutil run from the Terminal's shell, which has no GUI window --
+     * can use them too. All non-blocking (start + poll); net_poll is pumped by the
+     * WM loop while the caller yields. */
+    case SYS_NET_INFO: {
+        if (!net_up()) { r->rax = 0; return; }
+        struct aqua_netinfo *ni = (struct aqua_netinfo *)r->rdi;
+        if (!user_range_ok(ni, sizeof *ni, 1)) { r->rax = (uint64_t)-1; return; }
+        ni->ip = net_cfg.ip; ni->mask = net_cfg.mask; ni->gw = net_cfg.gw;
+        for (int i = 0; i < 6; i++) ni->mac[i] = net_cfg.mac[i];
+        r->rax = 1; return;
+    }
+    case SYS_NET_PING:
+        r->rax = (uint64_t)(long)(net_up() ? icmp_ping((uint32_t)r->rdi) : -1);
+        return;
+    case SYS_NET_PING_RTT: {
+        int t = icmp_last_rtt();                    /* ticks (10 ms) -> ms */
+        r->rax = (uint64_t)(long)(t < 0 ? -1 : t * 10);
+        return;
+    }
+    case SYS_NET_DNS: {
+        if (!net_up()) { r->rax = (uint64_t)-1; return; }
+        char name[256];                             /* DNS names are <= 253 bytes */
+        if (user_copy_string(name, sizeof name, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        dns_start(name);
+        r->rax = 0; return;
+    }
+    case SYS_NET_DNS_RESULT:
+        r->rax = (uint64_t)(long)(int)dns_result();
+        return;
+
     default:
         /* GUI + misc system calls are handled by the window manager, which
          * resolves the calling app via the scheduler's current thread. */
