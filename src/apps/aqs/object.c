@@ -309,6 +309,7 @@ static void blacken(Obj *o)
 
 void gc_collect(void)
 {
+    if (gc_disabled) return;     /* no-op during compile / VM setup (objects not yet rooted) */
     gray_count = 0;
     aqs_vm_mark_roots();                                  /* mark + gray the roots (vm.c) */
     while (gray_count > 0) blacken(gray[--gray_count]);   /* trace to fixpoint */
