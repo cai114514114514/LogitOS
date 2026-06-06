@@ -157,6 +157,44 @@ static char *module_source(ObjStr *name)
     return NULL;
 }
 
+/* Try NAME.la then /usr/aqs/NAME.la; on success aqs_load and return the ObjFn.
+ * aqs_load keeps GC disabled across the whole load (mirrors aqs_compile_module).
+ * Returns NULL if the file is absent or fails magic/version (-> .aqs fallback). */
+static ObjFn *module_try_la(ObjStr *name)
+{
+    char path[160];
+    const char *dirs[] = { "", "/usr/aqs/" };
+    for (int d = 0; d < 2; d++) {
+        int p = 0;
+        for (const char *pre = dirs[d]; *pre && p < 120; pre++) path[p++] = *pre;
+        for (int i = 0; i < name->len && p < 150; i++) path[p++] = name->chars[i];
+        const char *ext = ".la"; for (int i = 0; i < 3 && p < 156; i++) path[p++] = ext[i];
+        path[p] = 0;
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        size_t cap = 4096, len = 0; uint8_t *buf = (uint8_t *)malloc(cap);
+        if (!buf) { fclose(f); return NULL; }
+        for (;;) {
+            if (len + 4096 + 1 > cap) { cap *= 2; buf = (uint8_t *)realloc(buf, cap); if (!buf) { fclose(f); return NULL; } }
+            size_t r = fread(buf + len, 1, 4096, f);
+            len += r; if (r < 4096) break;
+        }
+        fclose(f);
+        ObjFn *fn = aqs_load(buf, (int)len);   /* aqs_load does its own push/pop_disable */
+        free(buf);
+        if (fn) return fn;                      /* bad magic/version -> NULL -> fall through to .aqs */
+    }
+    return NULL;
+}
+/* Recursively stamp ->module on fn and every O_FN constant (mirrors the compiler's
+ * g_module). Pointer writes only -- allocates nothing, so GC-safe with no rooting. */
+static void stamp_module(ObjFn *fn, ObjModule *m)
+{
+    fn->module = m;
+    for (int i = 0; i < fn->kcount; i++)
+        if (IS_FN(fn->consts[i])) stamp_module(AS_FN(fn->consts[i]), m);
+}
+
 /* ---- natives ---- */
 static Value native_print(int argc, Value *args)
 {
@@ -334,12 +372,17 @@ static ObjModule *aqs_import(ObjStr *name)
     m = aqs_module_new(name->chars, name->len);
     modules[nmodules++] = m;                       /* register before running -> circular-safe */
     aqs_gc_pop_disable();                          /* m is now a GC root via modules[] */
-    char *src = module_source(name);
-    if (!src) { runtime_error("cannot import module '%.*s'", name->len, name->chars); return NULL; }
-    ObjFn *script = aqs_compile_module(src, m);
-    free(src);
-    if (!script) return NULL;                      /* compiler set aqs_err */
-    if (run_module(script)) return NULL;
+    ObjFn *script = module_try_la(name);           /* prefer a precompiled NAME.la */
+    if (script) {
+        stamp_module(script, m);                    /* pointer writes only -- GC-safe; must precede run_module (OP_DEF_GLOBAL needs ->module) */
+    } else {
+        char *src = module_source(name);            /* .aqs fallback (+ in-memory registry) */
+        if (!src) { runtime_error("cannot import module '%.*s'", name->len, name->chars); return NULL; }
+        script = aqs_compile_module(src, m);         /* stamps ->module via the compiler's g_module */
+        free(src);
+        if (!script) return NULL;                   /* compiler set aqs_err */
+    }
+    if (run_module(script)) return NULL;            /* run_module push()es script -> rooted before any alloc */
     m->state = 1;
     return m;
 }

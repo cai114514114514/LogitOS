@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>      /* FILE (aqs_dump) */
 #include <stdlib.h>     /* malloc/free/realloc/strtoll/strtod (host libc or mini-libc) */
 #include <string.h>     /* memcpy/memset/strlen/strcmp */
 
@@ -156,11 +157,22 @@ typedef enum {
     OP_SETUP_TRY, OP_POP_TRY, OP_RAISE,                         /* M22.4 exceptions */
 } OpCode;
 
+/* .la compiled-bytecode format version. Bump on ANY opcode add/reorder or any
+ * change to the .la byte layout -- aqs_load rejects a mismatching version. */
+#define AQS_BC_VERSION 1u
+
 /* --- compile + run --- */
 ObjFn *aqs_compile(const char *src);                       /* compile into a throwaway module */
 ObjFn *aqs_compile_module(const char *src, ObjModule *m);  /* compile, stamping fns with module m */
 int    aqs_run(ObjFn *script);         /* execute; 0 ok, 1 runtime error */
 int    aqs_interpret(const char *src); /* compile + run; returns 0 ok */
+
+/* .la serialize/deserialize (aqs_bc.c). aqs_dump writes the LAQ1 header + the
+ * recursive ObjFn tree to `out` (0 ok, nonzero on a write/unserializable error);
+ * aqs_load deserializes a buffer into a runnable ObjFn (->module left NULL for the
+ * caller to stamp), returning NULL on bad magic/version/EOF. */
+int    aqs_dump(ObjFn *fn, FILE *out);
+ObjFn *aqs_load(const uint8_t *buf, int len);
 
 /* modules (vm.c): the loader/cache + namespace access used by import. */
 ObjModule *aqs_module_new(const char *name, int len);

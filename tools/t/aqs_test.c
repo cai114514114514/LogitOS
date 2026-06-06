@@ -3,6 +3,7 @@
  *           src/apps/aqs/{value,aqs_io,lexer,compiler,vm,object}.c -Isrc/apps/aqs
  * Runs inline .aqs snippets and asserts their `print` output. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "aqs.h"
 
@@ -32,6 +33,161 @@ static void err(const char *name, const char *src)   /* expect a compile/runtime
     total++;
     if (r == 0) { fails++; printf("FAIL %-10s expected an error, got none (out=[%s])\n", name, buf); }
     aqs_free_objects();
+}
+
+/* --- .la bytecode round-trip / fixpoint test ---
+ * For a source: (A) compile + run, capturing output; (B) compile + aqs_dump to a
+ * tmpfile, FREE all compile objects (proves the load is independent of them), read
+ * the file back, aqs_load, stamp a fresh module, run, capturing output; assert
+ * A == B. This exercises the whole serialize->deserialize->run path. */
+
+/* Recursively stamp ->module on fn and every nested O_FN const (the loader/import
+ * side does this; aqs_dump never serializes ->module). */
+static void stamp_module(ObjFn *fn, ObjModule *m)
+{
+    fn->module = m;
+    for (int i = 0; i < fn->kcount; i++)
+        if (IS_FN(fn->consts[i])) stamp_module(AS_FN(fn->consts[i]), m);
+}
+
+static void roundtrip(const char *name, const char *src)
+{
+    char bufA[8192], bufB[8192];
+    total++;
+
+    /* (A) run the source directly */
+    aqs_capture(bufA, sizeof bufA);
+    int rA = aqs_interpret(src);
+    aqs_capture(NULL, 0);
+    if (rA != 0) { fails++; printf("FAIL %-12s (A) interpret error: %s\n", name, aqs_err); aqs_free_objects(); return; }
+    aqs_free_objects();
+
+    /* (B) compile -> dump -> [free] -> read back -> load -> run */
+    ObjFn *fn = aqs_compile(src);
+    if (!fn) { fails++; printf("FAIL %-12s compile error: %s\n", name, aqs_err); aqs_free_objects(); return; }
+    FILE *t = tmpfile();
+    if (!t) { fails++; printf("FAIL %-12s tmpfile() failed\n", name); aqs_free_objects(); return; }
+    int dr = aqs_dump(fn, t);
+    aqs_free_objects();                 /* drop all compile-side objects */
+    if (dr != 0) { fails++; printf("FAIL %-12s aqs_dump error: %s\n", name, aqs_err); fclose(t); return; }
+
+    fseek(t, 0, SEEK_END);
+    long flen = ftell(t);
+    rewind(t);
+    if (flen < 8) { fails++; printf("FAIL %-12s dumped file too small (%ld)\n", name, flen); fclose(t); return; }
+    uint8_t *blob = (uint8_t *)malloc((size_t)flen);
+    size_t got = fread(blob, 1, (size_t)flen, t);
+    fclose(t);
+    if (got != (size_t)flen) { fails++; printf("FAIL %-12s short fread\n", name); free(blob); return; }
+
+    if (memcmp(blob, "LAQ1", 4) != 0) { fails++; printf("FAIL %-12s missing LAQ1 magic\n", name); free(blob); return; }
+
+    ObjFn *fn2 = aqs_load(blob, (int)flen);
+    free(blob);
+    if (!fn2) { fails++; printf("FAIL %-12s aqs_load returned NULL\n", name); aqs_free_objects(); return; }
+
+    /* loader/import side stamps the module; mirror that here */
+    aqs_gc_push_disable();
+    ObjModule *m = aqs_module_new("__main__", 8);
+    stamp_module(fn2, m);
+    aqs_gc_pop_disable();
+
+    aqs_capture(bufB, sizeof bufB);
+    int rB = aqs_run(fn2);
+    aqs_capture(NULL, 0);
+    if (rB != 0) { fails++; printf("FAIL %-12s (B) run error: %s\n", name, aqs_err); aqs_free_objects(); return; }
+    aqs_free_objects();
+
+    if (strcmp(bufA, bufB) != 0) {
+        fails++;
+        printf("FAIL %-12s round-trip mismatch\n  src-run  [%s]\n  la-run   [%s]\n", name, bufA, bufB);
+    }
+}
+
+static void bc_tests(void)
+{
+    roundtrip("bc_arith",   "print(1 + 2 * 3 - 4)\n");
+    roundtrip("bc_floats",  "print(0.1 + 0.2)\nprint(2.5 * 4.0)\n");
+    roundtrip("bc_strings", "print(\"a\" + \"b\" + \"c\", len(\"hello\"))\n");
+    roundtrip("bc_list",    "xs = [10, 20, 30]\nxs.append(40)\nprint(xs, xs[2], len(xs))\n");
+    roundtrip("bc_dict",    "d = {\"a\": 1, \"b\": 2}\nd[\"c\"] = 3\nprint(d[\"a\"], d[\"c\"], len(d))\n");
+    roundtrip("bc_fib",
+        "def fib(n):\n"
+        "    if n < 2:\n"
+        "        return n\n"
+        "    return fib(n - 1) + fib(n - 2)\n"
+        "print(fib(20))\n");
+    roundtrip("bc_nestdef",            /* nested def -> FN const recursion */
+        "def outer():\n"
+        "    def inner(x):\n"
+        "        return x * x\n"
+        "    return inner(7)\n"
+        "print(outer())\n");
+    roundtrip("bc_closure",            /* closure: upvalue pairs ride in code stream */
+        "def counter():\n"
+        "    c = 0\n"
+        "    def inc():\n"
+        "        c = c + 1\n"
+        "        return c\n"
+        "    return inc\n"
+        "f = counter()\n"
+        "print(f(), f(), f())\n");
+    roundtrip("bc_lambda",  "f = lambda x: x * 2\nprint(f(5), (lambda y: y + 1)(9))\n");
+    roundtrip("bc_forloop",
+        "total = 0\n"
+        "for i in range(5):\n"
+        "    total = total + i\n"
+        "print(total)\n");
+    roundtrip("bc_class",
+        "class Box:\n"
+        "    def init(self, v):\n"
+        "        self.v = v\n"
+        "    def get(self):\n"
+        "        return self.v\n"
+        "b = Box(42)\n"
+        "print(b.get())\n");
+    roundtrip("bc_mixed",
+        "def squares(n):\n"
+        "    out = []\n"
+        "    for i in range(n):\n"
+        "        out.append(i * i)\n"
+        "    return out\n"
+        "print(squares(5))\n");
+
+    /* negatives: aqs_load must reject a bad magic and a bumped version */
+    total++;
+    {
+        ObjFn *fn = aqs_compile("print(1)\n");
+        FILE *t = tmpfile();
+        aqs_dump(fn, t);
+        aqs_free_objects();
+        fseek(t, 0, SEEK_END);
+        long flen = ftell(t);
+        rewind(t);
+        uint8_t *blob = (uint8_t *)malloc((size_t)flen);
+        size_t got = fread(blob, 1, (size_t)flen, t);
+        fclose(t);
+        int bad = 0;
+        if (got != (size_t)flen) bad = 1;
+        if (!bad) {
+            /* truncated buffer -> NULL */
+            if (aqs_load(blob, 4) != NULL) bad = 1;
+            /* corrupt magic -> NULL */
+            uint8_t save = blob[0]; blob[0] = 'X';
+            if (aqs_load(blob, (int)flen) != NULL) bad = 1;
+            blob[0] = save;
+            /* tamper the version byte -> NULL */
+            uint8_t sv = blob[4]; blob[4] = (uint8_t)(blob[4] + 1);
+            if (aqs_load(blob, (int)flen) != NULL) bad = 1;
+            blob[4] = sv;
+            /* sanity: the untouched blob still loads */
+            ObjFn *good = aqs_load(blob, (int)flen);
+            if (!good) bad = 1;
+        }
+        free(blob);
+        aqs_free_objects();
+        if (bad) { fails++; printf("FAIL %-12s negative-case check\n", "bc_reject"); }
+    }
 }
 
 /* an in-memory module for the import tests. `quad` calls its module-mate `square`
@@ -549,6 +705,9 @@ int main(void)
     err("uncaught_raise", "raise \"boom\"\n");
     err("uncaught_in_try_body_no_match",   /* throw inside except handler is not re-caught */
         "try:\n    raise \"a\"\nexcept e:\n    raise \"b\"\n");
+
+    /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
+    bc_tests();
 
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);

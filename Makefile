@@ -21,6 +21,10 @@ ISO         := $(BUILD)/aqua.iso
 DISK        := $(BUILD)/disk.img
 FS_FILES    := $(filter-out fsroot/fonts fsroot/aqs,$(wildcard fsroot/*))
 AQS_EXAMPLES := $(wildcard fsroot/aqs/*.aqs)
+# LibAqua stdlib precompiled to .la (built by the host aqsc, packed to /usr/aqs).
+AQS_LA_SRCS := fsroot/aqs/math.aqs fsroot/aqs/seq.aqs \
+               fsroot/aqs/dicts.aqs fsroot/aqs/test.aqs
+AQS_LA      := $(patsubst fsroot/aqs/%.aqs,$(BUILD)/%.la,$(AQS_LA_SRCS))
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
 CC          := clang
@@ -210,13 +214,14 @@ $(FONTS): tools/mkfont.py
 	@mkdir -p fsroot/fonts
 	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
-$(DISK): $(FS_FILES) $(AQS_EXAMPLES) $(FONTS) $(AEX) tools/mkfs.py
+$(DISK): $(FS_FILES) $(AQS_EXAMPLES) $(AQS_LA) $(FONTS) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/aqs.aex:/bin/aqs \
-	    $(foreach e,$(AQS_EXAMPLES),$(e):/usr/aqs/$(notdir $(e)))
+	    $(foreach e,$(AQS_EXAMPLES),$(e):/usr/aqs/$(notdir $(e))) \
+	    $(foreach l,$(AQS_LA),$(l):/usr/aqs/$(notdir $(l)))
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
@@ -247,7 +252,7 @@ test-aqs-os: $(ISO) $(DISK)
 # for arithmetic/control-flow/recursion incl. fib(20).
 AQS_CORE := src/apps/aqs/value.c src/apps/aqs/aqs_io.c src/apps/aqs/lexer.c \
             src/apps/aqs/compiler.c src/apps/aqs/vm.c src/apps/aqs/object.c \
-            src/apps/aqs/aqs_native.c src/apps/aqs/aqs_ll.c
+            src/apps/aqs/aqs_native.c src/apps/aqs/aqs_ll.c src/apps/aqs/aqs_bc.c
 test-aqs:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
@@ -259,6 +264,22 @@ test-aqs-gcstress:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DAQS_GC_STRESS -o $(BUILD)/aqs_test_gcstress tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
 	@$(BUILD)/aqs_test_gcstress
+
+# Host `aqsc`: the aqs core + the aqs.c entry built natively (no --target -> arm64
+# host binary), used at `make` time to precompile the stdlib .aqs to .la. `-c`
+# mode never invokes the syscall path, so the arm64 aqs_ll.c stub is fine. Host
+# and target share AQS_CORE/aqs.h, so AQS_BC_VERSION + the opcode enum match and a
+# host-produced .la loads on Aqua.
+AQSC := $(BUILD)/aqsc
+$(AQSC): $(AQS_CORE) src/apps/aqs/aqs.c
+	@mkdir -p $(BUILD)
+	$(CC) -O2 -o $@ src/apps/aqs/aqs.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
+
+# Precompile the LibAqua stdlib modules to .la (compiled bytecode). None of these
+# four `import` anything (AQS_LA/AQS_LA_SRCS defined near the top, before $(DISK)),
+# so -c compile-only has no circular-import issue.
+$(BUILD)/%.la: fsroot/aqs/%.aqs $(AQSC)
+	$(AQSC) -c $< -o $@
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
