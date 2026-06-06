@@ -395,6 +395,52 @@ int main(void)
        "        return 0\n"
        "print(Point)\n",
        "<class Point>\n");
+    ok("class_init",
+       "class Box:\n"
+       "    def init(self, v):\n"
+       "        self.v = v\n"
+       "b = Box(42)\n"
+       "print(b.v)\n",
+       "42\n");
+    ok("class_method",
+       "class Counter:\n"
+       "    def init(self):\n"
+       "        self.n = 0\n"
+       "    def bump(self):\n"
+       "        self.n = self.n + 1\n"
+       "        return self.n\n"
+       "c = Counter()\n"
+       "print(c.bump(), c.bump(), c.bump())\n",
+       "1 2 3\n");
+    ok("class_field_set",
+       "class P:\n"
+       "    def init(self):\n"
+       "        self.x = 1\n"
+       "p = P()\n"
+       "p.x = 99\n"
+       "p.y = 7\n"
+       "print(p.x, p.y)\n",
+       "99 7\n");
+    ok("class_bound",
+       "class Greeter:\n"
+       "    def init(self, who):\n"
+       "        self.who = who\n"
+       "    def hi(self):\n"
+       "        return \"hi \" + self.who\n"
+       "g = Greeter(\"sam\")\n"
+       "f = g.hi\n"
+       "print(f())\n",
+       "hi sam\n");
+    ok("class_noinit",
+       "class Empty:\n"
+       "    def tag(self):\n"
+       "        return \"e\"\n"
+       "e = Empty()\n"
+       "print(e.tag())\n",
+       "e\n");
+    err("class_init_arity", "class C:\n    def init(self, a):\n        self.a = a\nc = C()\n");
+    err("class_no_field",   "class C:\n    def m(self):\n        return 1\nc = C()\nprint(c.missing)\n");
+    err("class_set_nonobj", "x = 5\nx.f = 1\n");
 
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);

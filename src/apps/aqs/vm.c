@@ -9,7 +9,7 @@
 #define STACK_MAX  (4096)
 #define FRAMES_MAX (256)
 
-typedef struct { ObjFn *fn; ObjClosure *closure; uint8_t *ip; Value *slots; } Frame;
+typedef struct { ObjFn *fn; ObjClosure *closure; uint8_t *ip; Value *slots; int is_init; } Frame;
 
 static Value  stack[STACK_MAX];
 static Value *sp;
@@ -191,7 +191,7 @@ static int call_fn(ObjFn *fn, int argc)
                                                  fn->name ? fn->name->chars : "script", fn->arity, argc);
     if (frame_count == FRAMES_MAX) return runtime_error("call depth exceeded");
     Frame *f = &frames[frame_count++];
-    f->fn = fn; f->closure = NULL; f->ip = fn->code; f->slots = sp - argc - 1;   /* slot 0 = the callee */
+    f->fn = fn; f->closure = NULL; f->ip = fn->code; f->slots = sp - argc - 1; f->is_init = 0;  /* slot 0 = the callee */
     return 0;
 }
 static int call_closure(ObjClosure *cl, int argc)
@@ -201,7 +201,7 @@ static int call_closure(ObjClosure *cl, int argc)
                                                  fn->name ? fn->name->chars : "fn", fn->arity, argc);
     if (frame_count == FRAMES_MAX) return runtime_error("call depth exceeded");
     Frame *f = &frames[frame_count++];
-    f->fn = fn; f->closure = cl; f->ip = fn->code; f->slots = sp - argc - 1;
+    f->fn = fn; f->closure = cl; f->ip = fn->code; f->slots = sp - argc - 1; f->is_init = 0;
     return 0;
 }
 static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
@@ -210,6 +210,26 @@ static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
         switch (AS_OBJ(callee)->type) {
         case O_FN: return call_fn((ObjFn *)AS_OBJ(callee), argc);
         case O_CLOSURE: return call_closure((ObjClosure *)AS_OBJ(callee), argc);
+        case O_CLASS: {
+            ObjClass *k = (ObjClass *)AS_OBJ(callee);
+            ObjInstance *in = aqs_instance_new(k);     /* self-roots its 2 allocs */
+            sp[-argc - 1] = OBJ_VAL(in);               /* replace the class at the callee slot (=slot0=self) with the instance */
+            Value init;
+            if (aqs_dict_get(k->methods, OBJ_VAL(aqs_str_copy("init", 4)), &init)) {
+                /* self is slot0 (the instance, just placed); user args at slots[1..]; init's
+                 * arity excludes self, so call with argc. Mark is_init so OP_RET returns self. */
+                if (call_closure(AS_CLOSURE(init), argc)) return 1;
+                frames[frame_count - 1].is_init = 1;   /* OP_RET will return slots[0] (self) */
+                return 0;
+            }
+            if (argc != 0) return runtime_error("%.*s() takes no arguments (no init)", k->name->len, k->name->chars);
+            return 0;                                  /* instance already on the stack as the result */
+        }
+        case O_BOUND_METHOD: {
+            ObjBoundMethod *bm = (ObjBoundMethod *)AS_OBJ(callee);
+            sp[-argc - 1] = bm->receiver;              /* receiver at the callee slot -> slot0 = self */
+            return call_closure(bm->method, argc);     /* arity excludes self */
+        }
         case O_NATIVE: {
             g_native_err = 0;
             Value r = ((ObjNative *)AS_OBJ(callee))->fn(argc, sp - argc);
@@ -247,6 +267,20 @@ static void close_upvalues(Value *last)
         uv->location = &uv->closed;
         open_upvalues = uv->next;
     }
+}
+
+/* Look up `name` in `klass`'s (copy-down) method table; if found, push a bound
+ * method (receiver bound) onto the stack as the result.
+ * Returns 1 if bound (caller should break), 0 if no such method. Allocates a
+ * bound method: its inputs (recv, the found closure) are already rooted before the
+ * single alloc, so no rooting gap. */
+static int bind_method(ObjClass *klass, ObjStr *name, Value receiver)
+{
+    Value m;
+    if (!aqs_dict_get(klass->methods, OBJ_VAL(name), &m)) return 0;
+    ObjBoundMethod *bm = aqs_bound_method_new(receiver, AS_CLOSURE(m));
+    push(OBJ_VAL(bm));
+    return 1;
 }
 
 static int run_until(int floor);
@@ -385,6 +419,9 @@ static int run_until(int floor)
         }
         case OP_RET: {
             Value result = pop();
+            /* Constructor (init) returns self (slots[0]) rather than init's computed value,
+             * so that `Name(args)` evaluates to the new instance. */
+            if (frame->is_init) result = frame->slots[0];
             close_upvalues(frame->slots);     /* close this fn's captured locals before unwinding */
             frame_count--;
             if (frame_count == floor) { pop(); return 0; }   /* this script/module is done */
@@ -518,16 +555,51 @@ static int run_until(int floor)
                     ObjList *l = aqs_dict_values(d);
                     sp -= argc + 1; push(OBJ_VAL(l));
                 } else { runtime_error("dict has no method '%.*s'", name->len, name->chars); goto err; }
+            } else if (IS_INSTANCE(recv)) {
+                ObjInstance *in = AS_INSTANCE(recv);
+                Value field;
+                if (aqs_dict_get(in->fields, OBJ_VAL(name), &field)) {   /* a callable field shadows a method */
+                    sp[-argc - 1] = field;                              /* replace receiver with the callable */
+                    if (call_value(field, argc)) goto err;
+                    frame = &frames[frame_count - 1];
+                } else {
+                    Value m;
+                    if (!aqs_dict_get(in->klass->methods, OBJ_VAL(name), &m)) {
+                        runtime_error("'%.*s instance' has no method '%.*s'", in->klass->name->len, in->klass->name->chars, name->len, name->chars); goto err;
+                    }
+                    /* recv is already at the callee slot (peek(argc)) -> slot0 = self; arity excludes self */
+                    if (call_closure(AS_CLOSURE(m), argc)) goto err;
+                    frame = &frames[frame_count - 1];
+                }
             } else { runtime_error("'%.*s' is not a method of this type", name->len, name->chars); goto err; }
             break;
         }
-        case OP_GET_ATTR: {
+        case OP_GET_PROPERTY: {
             ObjStr *n = AS_STR(READ_CONST());
-            Value recv = pop();
-            if (!IS_MODULE(recv)) { runtime_error("only modules have attributes"); goto err; }
-            Value *s = aqs_module_slot(AS_MODULE(recv), n, 0);
-            if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, n->len, n->chars); goto err; }
-            push(*s);
+            Value recv = peek(0);                 /* keep recv rooted across bind_method's alloc */
+            if (IS_INSTANCE(recv)) {
+                ObjInstance *in = AS_INSTANCE(recv);
+                Value field;
+                if (aqs_dict_get(in->fields, OBJ_VAL(n), &field)) { pop(); push(field); break; }
+                if (bind_method(in->klass, n, recv)) {            /* pushes the bound method */
+                    Value bm = pop(); pop(); push(bm);            /* drop the receiver, keep bound method */
+                    break;
+                }
+                runtime_error("'%.*s instance' has no property '%.*s'", in->klass->name->len, in->klass->name->chars, n->len, n->chars); goto err;
+            }
+            if (IS_MODULE(recv)) {
+                Value *s = aqs_module_slot(AS_MODULE(recv), n, 0);
+                if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, n->len, n->chars); goto err; }
+                pop(); push(*s); break;
+            }
+            runtime_error("only instances and modules have properties"); goto err;
+        }
+        case OP_SET_PROPERTY: {
+            ObjStr *n = AS_STR(READ_CONST());
+            Value val = peek(0), recv = peek(1);
+            if (!IS_INSTANCE(recv)) { runtime_error("only instances have settable fields"); goto err; }
+            aqs_dict_set(AS_INSTANCE(recv)->fields, OBJ_VAL(n), val);
+            sp -= 2; push(val);                   /* leave the assigned value as the expression result */
             break;
         }
         case OP_IMPORT: {

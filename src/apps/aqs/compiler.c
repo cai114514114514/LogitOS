@@ -244,13 +244,13 @@ static uint8_t arg_list(void)
     return argc;
 }
 
-static void dot(void)   /* infix for '.' : attribute access, or a method/module call */
+static void dot(void)   /* infix for '.' : field/method/module-attr access, or an invoke */
 {
     consume(T_IDENT, "expected a name after '.'");
     Token attr = tk_prev();
     int name = identConst(attr.start, attr.len);
     if (match(T_LPAREN)) { uint8_t argc = arg_list(); emit(OP_INVOKE); emit((uint8_t)name); emit(argc); }
-    else emit2(OP_GET_ATTR, (uint8_t)name);
+    else emit2(OP_GET_PROPERTY, (uint8_t)name);
 }
 
 static void unary(void)
@@ -394,6 +394,17 @@ static void assignment(void)
 {
     consume(T_IDENT, "expected a name");
     Token name = tk_prev();
+    if (match(T_DOT)) {                            /* property target: name.field = v */
+        named_variable(name);                      /* push the receiver */
+        consume(T_IDENT, "expected a field name after '.'");
+        Token field = tk_prev();
+        int fk = identConst(field.start, field.len);
+        consume(T_ASSIGN, "expected '=' in property assignment");
+        expression();                              /* the value */
+        emit2(OP_SET_PROPERTY, (uint8_t)fk);       /* [.. recv val] -> leaves val */
+        emit(OP_POP);                              /* statement: discard the result */
+        return;
+    }
     if (match(T_LBRACKET)) {                       /* indexed target: name[i]...[k] = v */
         int slot = resolve_local(current, name.start, name.len);
         if (slot >= 0) emit2(OP_GET_LOCAL, (uint8_t)slot);
@@ -505,7 +516,7 @@ static void from_statement(void)     /* from NAME import a, b, ... */
         consume(T_IDENT, "expected a name to import");
         Token nm = tk_prev();
         emit2(OP_IMPORT, (uint8_t)modk);                          /* push module (cached) */
-        emit2(OP_GET_ATTR, (uint8_t)identConst(nm.start, nm.len)); /* -> module.nm */
+        emit2(OP_GET_PROPERTY, (uint8_t)identConst(nm.start, nm.len)); /* -> module.nm */
         store_name(nm);                                           /* bind nm */
     } while (match(T_COMMA));
     consume(T_NEWLINE, "expected a newline after import");
@@ -524,7 +535,14 @@ static void return_statement(void)
  * operand bytes) into the enclosing fn, leaving the closure on the stack. For a
  * `def` (is_lambda=0) params are in (...) and the body is a block; for a lambda
  * (is_lambda=1) params run to ':' and the body is one expression. */
-static void compile_function(const char *name, int namelen, int is_lambda)
+/* Compile a function/method body.
+ * is_lambda: body is a single expression instead of an indented block.
+ * is_method: the function is a class method — `self` (the first declared param)
+ *   is placed in local slot 0 (the callee slot) instead of the normal "" placeholder,
+ *   and is NOT counted in arity (arity = number of params AFTER self).
+ *   This lets call_closure(method, argc) where argc = user-supplied args, with
+ *   the receiver already at the callee slot (sp[-argc-1]), work cleanly. */
+static void compile_function(const char *name, int namelen, int is_lambda, int is_method)
 {
     Compiler comp;
     comp.enclosing = current;
@@ -533,9 +551,33 @@ static void compile_function(const char *name, int namelen, int is_lambda)
     comp.fn->module = g_module;
     comp.local_count = 0;
     comp.scope_depth = 0;
-    comp.locals[0].name = ""; comp.locals[0].len = 0; comp.locals[0].depth = 0; comp.locals[0].is_captured = 0;
-    comp.local_count = 1;                          /* slot 0 = callee */
-    current = &comp;
+    /* slot 0: for regular/lambda functions = callee placeholder (""); for methods = `self`. */
+    if (is_method) {
+        /* `self` is the FIRST param, bound to slot 0 -- the receiver, which the caller
+         * leaves at the callee position (sp[-argc-1] becomes slot 0). self is NOT counted
+         * in arity; arity = the params AFTER self, so call_closure(method, argc) matches
+         * with argc = user args. (current=&comp BEFORE add_local so post-self params land
+         * in this method's compiler, not the enclosing one.) */
+        consume(T_LPAREN, "expected '(' after the method name");
+        consume(T_IDENT, "expected 'self' as the first method parameter");
+        Token s = tk_prev();
+        comp.locals[0].name = s.start; comp.locals[0].len = s.len;
+        comp.locals[0].depth = 0; comp.locals[0].is_captured = 0;
+        comp.local_count = 1;                          /* self = slot 0 */
+        current = &comp;
+        while (match(T_COMMA)) {
+            consume(T_IDENT, "expected a parameter name");
+            comp.fn->arity++;
+            add_local(tk_prev().start, tk_prev().len);
+        }
+        consume(T_RPAREN, "expected ')' after method parameters");
+        consume(T_COLON, "expected ':' after the parameter list");
+        block();
+        emit(OP_NIL); emit(OP_RET);                /* implicit `return nil` */
+    } else {
+        comp.locals[0].name = ""; comp.locals[0].len = 0; comp.locals[0].depth = 0; comp.locals[0].is_captured = 0;
+        comp.local_count = 1;                      /* slot 0 = callee */
+        current = &comp;
 
     if (is_lambda) {
         if (!check(T_COLON)) {
@@ -562,6 +604,7 @@ static void compile_function(const char *name, int namelen, int is_lambda)
         block();
         emit(OP_NIL); emit(OP_RET);                /* implicit `return nil` */
     }
+    }
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
@@ -578,13 +621,13 @@ static void fun_declaration(void)
      * The OP_CLOSURE that compile_function emits pushes the closure into exactly this
      * reserved local slot, so no separate store is needed. Top-level defs stay globals. */
     if (current->enclosing != NULL) add_local(name.start, name.len);
-    compile_function(name.start, name.len, 0);     /* leaves the closure on the stack (= the reserved slot) */
+    compile_function(name.start, name.len, 0, 0);  /* not a lambda, not a method */
     if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
 }
 
 static void lambda_(void)   /* prefix for 'lambda' : an anonymous closure expression */
 {
-    compile_function("<lambda>", 8, 1);
+    compile_function("<lambda>", 8, 1, 0);  /* lambda, not a method */
 }
 
 /* class NAME [ '(' SUPER ')' ] ':' NEWLINE INDENT (def method)+ DEDENT
@@ -631,7 +674,7 @@ static void class_declaration(void)
         consume(T_IDENT, "expected a method name");
         Token m = tk_prev();
         int mk = identConst(m.start, m.len);
-        compile_function(m.start, m.len, 0);         /* leaves the method closure on the stack */
+        compile_function(m.start, m.len, 0, 1);      /* a class method: bind `self` to slot 0 */
         emit2(OP_METHOD, (uint8_t)mk);               /* [.. class closure] -> [.. class] */
     }
     consume(T_DEDENT, "expected the class body to end (dedent)");
