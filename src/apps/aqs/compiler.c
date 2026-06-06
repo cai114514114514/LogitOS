@@ -26,6 +26,13 @@ typedef struct Compiler {
 
 static Compiler *current;
 
+/* The class being compiled (for `super` resolution); NULL outside a class body.
+ * `name`/`namelen` is the class name token (an OP_GET_GLOBAL can re-read the class
+ * by name inside a method); `has_super` gates `super`. Single-depth: AquaScript
+ * has no nested class declarations. */
+typedef struct { const char *name; int namelen; int has_super; int active; } ClassCtx;
+static ClassCtx current_class;
+
 /* ---- token cursor ---- */
 static Token tk_cur(void)  { return T[P]; }
 static Token tk_prev(void) { return T[P - 1]; }
@@ -138,6 +145,7 @@ static void declaration(void);
 static void statement(void);
 static void block(void);
 static void lambda_(void);
+static void class_declaration(void);
 
 static void number(void)
 {
@@ -253,15 +261,15 @@ static void unary(void)
     else if (op == T_NOT) emit(OP_NOT);
 }
 
-static void variable(void)
+static void named_variable(Token t)
 {
-    Token t = tk_prev();
     int slot = resolve_local(current, t.start, t.len);
     if (slot >= 0) { emit2(OP_GET_LOCAL, (uint8_t)slot); return; }
     int up = resolve_upvalue(current, t.start, t.len);
     if (up >= 0) { emit2(OP_GET_UPVALUE, (uint8_t)up); return; }
     emit2(OP_GET_GLOBAL, (uint8_t)identConst(t.start, t.len));
 }
+static void variable(void) { named_variable(tk_prev()); }
 
 static void binary(void)
 {
@@ -579,6 +587,59 @@ static void lambda_(void)   /* prefix for 'lambda' : an anonymous closure expres
     compile_function("<lambda>", 8, 1);
 }
 
+/* class NAME [ '(' SUPER ')' ] ':' NEWLINE INDENT (def method)+ DEDENT
+ * Emits OP_CLASS (build empty class) -> bind the name -> optional OP_INHERIT
+ * (copy-down super's methods) -> per-method: push class, compile the method body
+ * as a closure, OP_METHOD to register it, pop the leftover class copy. */
+static void class_declaration(void)
+{
+    consume(T_IDENT, "expected a class name");
+    Token name = tk_prev();
+    int namek = identConst(name.start, name.len);
+
+    emit2(OP_CLASS, (uint8_t)namek);                 /* -> new empty class on the stack */
+    /* Bind the name immediately so methods can reference the class (and so `super`'s
+     * OP_GET_GLOBAL <classname> resolves at method-run time). */
+    if (current->enclosing == NULL) { emit2(OP_DEF_GLOBAL, (uint8_t)namek); }
+    else { add_local(name.start, name.len); }        /* nested: the class lives in this local slot */
+
+    ClassCtx saved = current_class;
+    current_class.name = name.start; current_class.namelen = name.len;
+    current_class.has_super = 0; current_class.active = 1;
+
+    int has_super = 0;
+    if (match(T_LPAREN)) {
+        consume(T_IDENT, "expected a superclass name");
+        Token sup = tk_prev();
+        if (sup.len == name.len && memcmp(sup.start, name.start, name.len) == 0)
+            error("a class cannot inherit from itself");
+        /* push superclass, then the class, then OP_INHERIT (copy-down) leaving the class. */
+        named_variable(sup);                         /* read the superclass value */
+        named_variable(name);                        /* read the class we just bound */
+        emit(OP_INHERIT);                            /* [.. super class] -> [.. class] */
+        consume(T_RPAREN, "expected ')' after the superclass name");
+        has_super = 1; current_class.has_super = 1;
+    } else {
+        named_variable(name);                        /* leave the class on the stack for methods */
+    }
+
+    consume(T_COLON, "expected ':' after the class header");
+    consume(T_NEWLINE, "expected a newline before the class body");
+    consume(T_INDENT, "expected an indented class body");
+    while (!check(T_DEDENT) && !check(T_EOF) && !had_error) {
+        consume(T_DEF, "class body may only contain method definitions");
+        consume(T_IDENT, "expected a method name");
+        Token m = tk_prev();
+        int mk = identConst(m.start, m.len);
+        compile_function(m.start, m.len, 0);         /* leaves the method closure on the stack */
+        emit2(OP_METHOD, (uint8_t)mk);               /* [.. class closure] -> [.. class] */
+    }
+    consume(T_DEDENT, "expected the class body to end (dedent)");
+    emit(OP_POP);                                    /* pop the working copy of the class */
+    (void)has_super;
+    current_class = saved;
+}
+
 static void block(void)   /* NEWLINE INDENT declaration+ DEDENT */
 {
     consume(T_NEWLINE, "expected a newline before the block");
@@ -604,6 +665,7 @@ static void statement(void)
 static void declaration(void)
 {
     if (match(T_DEF)) fun_declaration();
+    else if (match(T_CLASS)) class_declaration();
     else statement();
 }
 

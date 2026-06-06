@@ -586,6 +586,20 @@ static int run_until(int floor)
         case OP_GET_UPVALUE: { uint8_t s = READ_BYTE(); push(*frame->closure->upvalues[s]->location); break; }
         case OP_SET_UPVALUE: { uint8_t s = READ_BYTE(); *frame->closure->upvalues[s]->location = peek(0); break; }
         case OP_CLOSE_UPVALUE: { close_upvalues(sp - 1); pop(); break; }
+        case OP_CLASS: {
+            ObjStr *n = AS_STR(READ_CONST());
+            ObjClass *k = aqs_class_new(n);   /* self-roots its 2 allocs (push-disable) */
+            push(OBJ_VAL(k));                 /* root it as this op's result */
+            break;
+        }
+        case OP_METHOD: {
+            ObjStr *n = AS_STR(READ_CONST());
+            Value method = peek(0);           /* the closure */
+            ObjClass *k = AS_CLASS(peek(1));  /* the class, kept underneath */
+            aqs_dict_set(k->methods, OBJ_VAL(n), method);
+            pop();                            /* drop the closure; class stays */
+            break;
+        }
         default: runtime_error("bad opcode %d", op); goto err;
         }
     }

@@ -388,6 +388,14 @@ int main(void)
        "print(churn() < 10000)\n",
        "true\n");
 
+    /* ---- M22.3: classes ---- */
+    ok("class_decl",
+       "class Point:\n"
+       "    def dist(self):\n"
+       "        return 0\n"
+       "print(Point)\n",
+       "<class Point>\n");
+
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);
     return fails ? 1 : 0;

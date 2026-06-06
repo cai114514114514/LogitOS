@@ -79,6 +79,9 @@ void aqs_print_value(Value v)
         else if (IS_MODULE(v)) { aqs_emit_cstr("<module "); ObjStr *nm = AS_MODULE(v)->name; aqs_emit(nm->chars, nm->len); aqs_emit_cstr(">"); }
         else if (IS_FN(v) || IS_CLOSURE(v)) aqs_emit_cstr("<fn>");
         else if (IS_NATIVE(v))  aqs_emit_cstr("<native fn>");
+        else if (IS_CLASS(v))   { aqs_emit_cstr("<class "); ObjStr *nm = AS_CLASS(v)->name; aqs_emit(nm->chars, nm->len); aqs_emit_cstr(">"); }
+        else if (IS_INSTANCE(v)){ aqs_emit_cstr("<"); ObjStr *nm = AS_INSTANCE(v)->klass->name; aqs_emit(nm->chars, nm->len); aqs_emit_cstr(" instance>"); }
+        else if (IS_BOUND_METHOD(v)) aqs_emit_cstr("<bound method>");
         else                    aqs_emit_cstr("<obj>");
         break;
     }
