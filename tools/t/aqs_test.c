@@ -299,6 +299,20 @@ int main(void)
        "    return b\n"
        "print(a()()())\n",
        "7\n");
+    ok("lambda_basic",  "f = lambda x: x * 2\nprint(f(5))\n", "10\n");
+    ok("lambda_noargs", "f = lambda: 42\nprint(f())\n", "42\n");
+    ok("lambda_inline", "print((lambda x: x * x)(6))\n", "36\n");
+    ok("lambda_capture",
+       "def adder(n):\n"
+       "    return lambda x: x + n\n"
+       "a = adder(3)\n"
+       "print(a(4))\n",
+       "7\n");
+    ok("lambda_hof",
+       "def apply(fn, v):\n"
+       "    return fn(v)\n"
+       "print(apply(lambda x: x + 100, 5))\n",
+       "105\n");
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");

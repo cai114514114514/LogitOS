@@ -38,7 +38,8 @@ static TokType keyword(const char *s, int n)
     case 5: if (!memcmp(s, "while", 5)) return T_WHILE;
             if (!memcmp(s, "false", 5)) return T_FALSE; break;
     case 6: if (!memcmp(s, "return", 6)) return T_RETURN;
-            if (!memcmp(s, "import", 6)) return T_IMPORT; break;
+            if (!memcmp(s, "import", 6)) return T_IMPORT;
+            if (!memcmp(s, "lambda", 6)) return T_LAMBDA; break;
     }
     return T_IDENT;
 }

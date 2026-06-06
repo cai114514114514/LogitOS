@@ -137,6 +137,7 @@ static void expression(void);
 static void declaration(void);
 static void statement(void);
 static void block(void);
+static void lambda_(void);
 
 static void number(void)
 {
@@ -336,6 +337,7 @@ static void init_rules(void)
     rules[T_AND]     = (ParseRule){ 0, and_, PREC_AND };
     rules[T_OR]      = (ParseRule){ 0, or_, PREC_OR };
     rules[T_IN]      = (ParseRule){ 0, in_, PREC_CMP };
+    rules[T_LAMBDA]  = (ParseRule){ lambda_, 0, PREC_NONE };
     rules_ready = 1;
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
@@ -510,41 +512,67 @@ static void return_statement(void)
     consume(T_NEWLINE, "expected a newline after return");
 }
 
-static void fun_declaration(void)
+/* Compile a function body into a nested ObjFn and emit OP_CLOSURE (+ upvalue
+ * operand bytes) into the enclosing fn, leaving the closure on the stack. For a
+ * `def` (is_lambda=0) params are in (...) and the body is a block; for a lambda
+ * (is_lambda=1) params run to ':' and the body is one expression. */
+static void compile_function(const char *name, int namelen, int is_lambda)
 {
-    consume(T_IDENT, "expected a function name");
-    Token name = tk_prev();
-
     Compiler comp;
     comp.enclosing = current;
     comp.fn = aqs_fn_new();
-    comp.fn->name = aqs_str_copy(name.start, name.len);
+    comp.fn->name = aqs_str_copy(name, namelen);
     comp.fn->module = g_module;
     comp.local_count = 0;
     comp.scope_depth = 0;
-    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0; comp.locals[comp.local_count].is_captured = 0;
-    comp.local_count++;                            /* slot 0 = callee */
+    comp.locals[0].name = ""; comp.locals[0].len = 0; comp.locals[0].depth = 0; comp.locals[0].is_captured = 0;
+    comp.local_count = 1;                          /* slot 0 = callee */
     current = &comp;
 
-    consume(T_LPAREN, "expected '(' after the function name");
-    if (!check(T_RPAREN)) {
-        do {
-            consume(T_IDENT, "expected a parameter name");
-            comp.fn->arity++;
-            add_local(tk_prev().start, tk_prev().len);
-        } while (match(T_COMMA));
+    if (is_lambda) {
+        if (!check(T_COLON)) {
+            do {
+                consume(T_IDENT, "expected a parameter name");
+                comp.fn->arity++;
+                add_local(tk_prev().start, tk_prev().len);
+            } while (match(T_COMMA));
+        }
+        consume(T_COLON, "expected ':' after lambda parameters");
+        expression();                              /* single-expression body */
+        emit(OP_RET);
+    } else {
+        consume(T_LPAREN, "expected '(' after the function name");
+        if (!check(T_RPAREN)) {
+            do {
+                consume(T_IDENT, "expected a parameter name");
+                comp.fn->arity++;
+                add_local(tk_prev().start, tk_prev().len);
+            } while (match(T_COMMA));
+        }
+        consume(T_RPAREN, "expected ')' after parameters");
+        consume(T_COLON, "expected ':' after the parameter list");
+        block();
+        emit(OP_NIL); emit(OP_RET);                /* implicit `return nil` */
     }
-    consume(T_RPAREN, "expected ')' after parameters");
-    consume(T_COLON, "expected ':' after the parameter list");
-    block();
-    emit(OP_NIL); emit(OP_RET);                    /* implicit `return nil` */
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
     emit2(OP_CLOSURE, (uint8_t)makeConst(OBJ_VAL(fn)));
     for (int i = 0; i < fn->upvalue_count; i++) { emit(comp.upvalues[i].is_local); emit(comp.upvalues[i].index); }
+}
+
+static void fun_declaration(void)
+{
+    consume(T_IDENT, "expected a function name");
+    Token name = tk_prev();
+    compile_function(name.start, name.len, 0);     /* leaves the closure on the stack */
     if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
     else store_name(name);
+}
+
+static void lambda_(void)   /* prefix for 'lambda' : an anonymous closure expression */
+{
+    compile_function("<lambda>", 8, 1);
 }
 
 static void block(void)   /* NEWLINE INDENT declaration+ DEDENT */
