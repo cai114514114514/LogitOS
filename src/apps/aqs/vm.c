@@ -17,6 +17,22 @@ static Frame  frames[FRAMES_MAX];
 static int    frame_count;
 static ObjUpvalue *open_upvalues;   /* live captured locals, sorted by stack addr desc */
 
+/* M22.4 exceptions: a handler stack + a pending-exception slot.
+ * Each handler entry is captured when OP_SETUP_TRY runs; it records where to
+ * resume (handler_ip), the value-stack level to restore (sp), and which frame
+ * owned the try (frame_index = frame_count at setup time). The entries hold no
+ * Obj pointers, so the GC never traces them. */
+typedef struct { uint8_t *handler_ip; Value *sp; int frame_index; } Handler;
+static Handler handler_stack[FRAMES_MAX];
+static int     handler_count;
+static Value   g_exc;       /* the pending thrown value (valid iff g_has_exc) */
+static int     g_has_exc;   /* 1 while an exception is propagating */
+
+/* Natives report failure by setting this flag (+ aqs_err) and returning nil;
+ * call_value aborts the run when it's set. (Declared here so reset_stack can
+ * clear it; assigned by aqs_native_fail below.) */
+static int g_native_err;
+
 /* Builtins (print/len/range/peek/.../SYS_*) are visible from every module; each
  * module has its own namespace (ObjModule.vars). GET_GLOBAL tries the running
  * function's module first, then falls back to builtins. */
@@ -41,7 +57,8 @@ static Value *builtin_slot(ObjStr *name, int create)
 static void push(Value v) { *sp++ = v; }
 static Value pop(void)    { return *--sp; }
 static Value peek(int d)  { return sp[-1 - d]; }
-static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL; }
+static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL;
+                                handler_count = 0; g_has_exc = 0; g_exc = NIL_VAL; g_native_err = 0; }
 
 /* GC roots: everything the running program can still reach. */
 void aqs_vm_mark_roots(void)
@@ -54,6 +71,20 @@ void aqs_vm_mark_roots(void)
     for (ObjUpvalue *u = open_upvalues; u; u = u->next) gc_mark_obj((Obj *)u);
     for (int i = 0; i < nbuiltins; i++) { gc_mark_obj((Obj *)builtins[i].name); gc_mark_value(builtins[i].val); }
     for (int i = 0; i < nmodules; i++) gc_mark_obj((Obj *)modules[i]);
+    if (g_has_exc) gc_mark_value(g_exc);
+}
+
+/* Set the pending exception. Returns 1 (the uniform error signal) so callers can
+ * `return throw_value(v)` or fall into `goto err`. */
+static int throw_value(Value v) { g_exc = v; g_has_exc = 1; return 1; }
+
+/* At the error label: if a C-level error (built-in or native) left a message in
+ * aqs_err but no exception value was set, wrap aqs_err into a catchable string
+ * exception. Keyed on g_has_exc (NOT g_native_err) so a native failure reaching
+ * `err:` via call_value's return value is converted here. */
+static void ensure_exc(void)
+{
+    if (!g_has_exc) g_exc = OBJ_VAL(aqs_str_copy(aqs_err, (int)strlen(aqs_err))), g_has_exc = 1;
 }
 
 static int runtime_error(const char *fmt, ...)
@@ -61,12 +92,9 @@ static int runtime_error(const char *fmt, ...)
     va_list ap; va_start(ap, fmt);
     vsnprintf(aqs_err, sizeof aqs_err, fmt, ap);
     va_end(ap);
-    return 1;
+    return throw_value(OBJ_VAL(aqs_str_copy(aqs_err, (int)strlen(aqs_err))));
 }
 
-/* Natives report failure by setting this flag (+ aqs_err) and returning nil;
- * call_value aborts the run when it's set. */
-static int g_native_err;
 Value aqs_native_fail(const char *msg) { snprintf(aqs_err, sizeof aqs_err, "%s", msg); g_native_err = 1; return NIL_VAL; }
 
 static int name_eq(ObjStr *s, const char *lit)
@@ -423,12 +451,37 @@ static int run_until(int floor)
              * so that `Name(args)` evaluates to the new instance. */
             if (frame->is_init) result = frame->slots[0];
             close_upvalues(frame->slots);     /* close this fn's captured locals before unwinding */
+            /* return-from-inside-try: discard handlers registered in this frame,
+             * else a dead frame's handler would dangle and mis-catch later. */
+            while (handler_count > 0 && handler_stack[handler_count - 1].frame_index >= frame_count)
+                handler_count--;
             frame_count--;
             if (frame_count == floor) { pop(); return 0; }   /* this script/module is done */
             sp = frame->slots;                                /* discard callee + args + locals */
             push(result);
             frame = &frames[frame_count - 1];
             break;
+        }
+
+        case OP_SETUP_TRY: {
+            uint16_t off = READ_SHORT();                 /* forward offset to the except block */
+            if (handler_count >= FRAMES_MAX) { runtime_error("too many nested try blocks"); goto err; }
+            handler_stack[handler_count].handler_ip = frame->ip + off;
+            handler_stack[handler_count].sp = sp;
+            handler_stack[handler_count].frame_index = frame_count;
+            handler_count++;
+            break;
+        }
+        case OP_POP_TRY: {
+            uint16_t off = READ_SHORT();                 /* forward offset past the except block */
+            if (handler_count > 0) handler_count--;      /* try body finished normally: drop handler */
+            frame->ip += off;                            /* skip the except block */
+            break;
+        }
+        case OP_RAISE: {
+            Value v = pop();
+            throw_value(v);
+            goto err;
         }
 
         case OP_MAKE_LIST: {
@@ -704,8 +757,37 @@ static int run_until(int floor)
         }
         default: runtime_error("bad opcode %d", op); goto err;
         }
+        continue;                  /* normal completion of an opcode -> next op */
+    err:
+        ensure_exc();              /* fold native/built-in errors into g_exc */
+        /* find the nearest live handler: the topmost entry whose frame is still on
+         * the stack (frame_index <= frame_count) and belongs to THIS run_until
+         * invocation (frame_index > floor, so an outer module's handlers are not
+         * grabbed). Discard handlers above it. */
+        while (handler_count > 0 && handler_stack[handler_count - 1].frame_index > frame_count)
+            handler_count--;
+        if (handler_count > 0 && handler_stack[handler_count - 1].frame_index > floor) {
+            Handler *h = &handler_stack[--handler_count];   /* pop the handler we'll use */
+            close_upvalues(h->sp);                          /* close captives above the try's sp */
+            frame_count = h->frame_index;
+            frame = &frames[frame_count - 1];
+            frame->ip = h->handler_ip;                      /* resume at the except block */
+            sp = h->sp;
+            push(g_exc);                                    /* hand the value to the except block */
+            g_has_exc = 0;
+            continue;                                       /* RESUME dispatch */
+        }
+        /* uncaught: finalize aqs_err for the caller, then abort. */
+        if (IS_STR(g_exc)) {
+            ObjStr *s = AS_STR(g_exc);
+            int n = s->len < (int)sizeof(aqs_err) - 1 ? s->len : (int)sizeof(aqs_err) - 1;
+            memcpy(aqs_err, s->chars, (size_t)n); aqs_err[n] = 0;
+        } else if (aqs_err[0] == 0) {
+            snprintf(aqs_err, sizeof aqs_err, "uncaught exception");
+        }
+        g_has_exc = 0;
+        break;                                              /* leave the for loop -> return 1 */
     }
-err:
 #undef READ_BYTE
 #undef READ_SHORT
 #undef READ_CONST

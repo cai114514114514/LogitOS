@@ -30,7 +30,8 @@ static TokType keyword(const char *s, int n)
             if (!memcmp(s, "and", 3)) return T_AND;
             if (!memcmp(s, "not", 3)) return T_NOT;
             if (!memcmp(s, "for", 3)) return T_FOR;
-            if (!memcmp(s, "nil", 3)) return T_NIL; break;
+            if (!memcmp(s, "nil", 3)) return T_NIL;
+            if (!memcmp(s, "try", 3)) return T_TRY; break;
     case 4: if (!memcmp(s, "elif", 4)) return T_ELIF;
             if (!memcmp(s, "else", 4)) return T_ELSE;
             if (!memcmp(s, "from", 4)) return T_FROM;
@@ -38,10 +39,12 @@ static TokType keyword(const char *s, int n)
     case 5: if (!memcmp(s, "while", 5)) return T_WHILE;
             if (!memcmp(s, "false", 5)) return T_FALSE;
             if (!memcmp(s, "class", 5)) return T_CLASS;
-            if (!memcmp(s, "super", 5)) return T_SUPER; break;
+            if (!memcmp(s, "super", 5)) return T_SUPER;
+            if (!memcmp(s, "raise", 5)) return T_RAISE; break;
     case 6: if (!memcmp(s, "return", 6)) return T_RETURN;
             if (!memcmp(s, "import", 6)) return T_IMPORT;
-            if (!memcmp(s, "lambda", 6)) return T_LAMBDA; break;
+            if (!memcmp(s, "lambda", 6)) return T_LAMBDA;
+            if (!memcmp(s, "except", 6)) return T_EXCEPT; break;
     }
     return T_IDENT;
 }

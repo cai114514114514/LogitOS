@@ -153,6 +153,7 @@ typedef enum {
     OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE, OP_CLOSE_UPVALUE,  /* M22 closures */
     OP_CLASS, OP_INHERIT, OP_METHOD,                               /* M22.3 classes */
     OP_GET_PROPERTY, OP_SET_PROPERTY, OP_GET_SUPER,
+    OP_SETUP_TRY, OP_POP_TRY, OP_RAISE,                         /* M22.4 exceptions */
 } OpCode;
 
 /* --- compile + run --- */

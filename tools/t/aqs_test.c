@@ -502,6 +502,45 @@ int main(void)
        "PC\n");
     err("super_no_base", "class C:\n    def m(self):\n        return super.m()\nC().m()\n");
 
+    /* M22.4 exceptions */
+    ok("raise_catch_str",
+       "try:\n    raise \"x\"\nexcept e:\n    print(e)\n", "x\n");
+    ok("catch_runtime",
+       "try:\n    print(1 / 0)\nexcept e:\n    print(\"caught\")\n", "caught\n");
+    ok("raise_across_call",
+       "def boom():\n    raise \"kaboom\"\n"
+       "try:\n    boom()\nexcept e:\n    print(\"caught:\", e)\n",
+       "caught: kaboom\n");
+    ok("nested_try_inner",
+       "try:\n    try:\n        raise \"a\"\n    except i:\n        print(\"inner\", i)\n"
+       "except o:\n    print(\"outer\", o)\n",
+       "inner a\n");
+    ok("nested_try_outer",                 /* inner try, no error there; outer catches */
+       "try:\n    try:\n        print(\"ok\")\n    except i:\n        print(\"inner\")\n"
+       "    raise \"b\"\n"
+       "except o:\n    print(\"outer\", o)\n",
+       "ok\nouter b\n");
+    ok("except_binding_int",
+       "try:\n    raise 42\nexcept e:\n    print(e + 1)\n", "43\n");
+    ok("except_no_binding",
+       "try:\n    raise \"z\"\nexcept:\n    print(\"handled\")\n", "handled\n");
+    ok("try_no_error",
+       "try:\n    print(\"body\")\nexcept e:\n    print(\"skip\")\nprint(\"end\")\n",
+       "body\nend\n");
+    ok("control_after",
+       "try:\n    raise \"q\"\nexcept e:\n    print(\"h\")\nprint(\"after\")\n",
+       "h\nafter\n");
+    ok("raise_instance_field",
+       "class Err:\n    def init(self, m):\n        self.msg = m\n"
+       "try:\n    raise Err(\"bad\")\nexcept e:\n    print(e.msg)\n",
+       "bad\n");
+    ok("return_from_try",                  /* return inside try cleans its handler */
+       "def f():\n    try:\n        return 1\n    except e:\n        return 2\n"
+       "print(f())\n", "1\n");
+    err("uncaught_raise", "raise \"boom\"\n");
+    err("uncaught_in_try_body_no_match",   /* throw inside except handler is not re-caught */
+        "try:\n    raise \"a\"\nexcept e:\n    raise \"b\"\n");
+
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);
     return fails ? 1 : 0;

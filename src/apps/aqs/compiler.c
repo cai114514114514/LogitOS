@@ -718,6 +718,39 @@ static void block(void)   /* NEWLINE INDENT declaration+ DEDENT */
     consume(T_DEDENT, "expected the block to end (dedent)");
 }
 
+static void raise_statement(void)   /* entered after `raise` */
+{
+    expression();                                   /* the value to throw */
+    emit(OP_RAISE);
+    consume(T_NEWLINE, "expected a newline after 'raise'");
+}
+
+static void try_statement(void)   /* entered after `try` */
+{
+    consume(T_COLON, "expected ':' after 'try'");
+    int setup = emitJump(OP_SETUP_TRY);   /* operand = forward offset to the except block */
+    block();                              /* try body in its own scope (locals popped at block end) */
+    int done = emitJump(OP_POP_TRY);      /* body ok: pop handler, jump past the except block */
+    patchJump(setup);                     /* SETUP_TRY -> here = start of the except block */
+
+    consume(T_EXCEPT, "expected 'except' after the 'try' block");
+    /* At runtime the thrown value sits on the stack at handler->sp (i.e. the top). */
+    int bound = 0;
+    if (check(T_IDENT)) {                 /* except NAME:  -> bind the value to a local */
+        Token name = tk_cur(); advance();
+        begin_scope();
+        add_local(name.start, name.len);  /* the value already occupies this new slot */
+        bound = 1;
+    } else {
+        emit(OP_POP);                     /* except:  -> discard the value */
+    }
+    consume(T_COLON, "expected ':' after 'except'");
+    block();                              /* the handler body */
+    if (bound) end_scope();              /* pop the bound exception local (OP_POP/OP_CLOSE_UPVALUE) */
+
+    patchJump(done);                      /* POP_TRY -> here = past the whole try/except */
+}
+
 static void statement(void)
 {
     if (match(T_IF)) if_statement();
@@ -726,6 +759,8 @@ static void statement(void)
     else if (match(T_RETURN)) return_statement();
     else if (match(T_IMPORT)) import_statement();
     else if (match(T_FROM)) from_statement();
+    else if (match(T_TRY)) try_statement();
+    else if (match(T_RAISE)) raise_statement();
     else if (assign_ahead()) { assignment(); consume(T_NEWLINE, "expected a newline after the statement"); }
     else { expression(); emit(OP_POP); consume(T_NEWLINE, "expected a newline after the statement"); }
 }
