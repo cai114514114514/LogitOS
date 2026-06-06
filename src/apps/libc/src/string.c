@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <stdint.h>
 
 static int lc_(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 int strcasecmp(const char *a, const char *b)
@@ -10,19 +11,47 @@ int strncasecmp(const char *a, const char *b, size_t n)
 void *memcpy(void *d, const void *s, size_t n)
 {
     unsigned char *dd = d; const unsigned char *ss = s;
+    /* Word-at-a-time bulk copy only when both ends share alignment. */
+    if (n >= sizeof(uint64_t) &&
+        (((uintptr_t)dd ^ (uintptr_t)ss) & (sizeof(uint64_t) - 1)) == 0) {
+        while (((uintptr_t)dd & (sizeof(uint64_t) - 1)) && n) { *dd++ = *ss++; n--; }
+        while (n >= sizeof(uint64_t)) {
+            *(uint64_t *)dd = *(const uint64_t *)ss;
+            dd += sizeof(uint64_t); ss += sizeof(uint64_t); n -= sizeof(uint64_t);
+        }
+    }
     while (n--) *dd++ = *ss++;
     return d;
 }
 void *memmove(void *d, const void *s, size_t n)
 {
     unsigned char *dd = d; const unsigned char *ss = s;
-    if (dd < ss) { while (n--) *dd++ = *ss++; }
+    if (dd < ss) {
+        /* Forward copy: word-at-a-time when alignment matches. */
+        if (n >= sizeof(uint64_t) &&
+            (((uintptr_t)dd ^ (uintptr_t)ss) & (sizeof(uint64_t) - 1)) == 0) {
+            while (((uintptr_t)dd & (sizeof(uint64_t) - 1)) && n) { *dd++ = *ss++; n--; }
+            while (n >= sizeof(uint64_t)) {
+                *(uint64_t *)dd = *(const uint64_t *)ss;
+                dd += sizeof(uint64_t); ss += sizeof(uint64_t); n -= sizeof(uint64_t);
+            }
+        }
+        while (n--) *dd++ = *ss++;
+    }
     else { dd += n; ss += n; while (n--) *--dd = *--ss; }
     return d;
 }
 void *memset(void *d, int c, size_t n)
 {
     unsigned char *dd = d;
+    if (n >= sizeof(uint64_t)) {
+        uint64_t w = (uint64_t)(unsigned char)c * 0x0101010101010101ULL;
+        while (((uintptr_t)dd & (sizeof(uint64_t) - 1)) && n) { *dd++ = (unsigned char)c; n--; }
+        while (n >= sizeof(uint64_t)) {
+            *(uint64_t *)dd = w;
+            dd += sizeof(uint64_t); n -= sizeof(uint64_t);
+        }
+    }
     while (n--) *dd++ = (unsigned char)c;
     return d;
 }
