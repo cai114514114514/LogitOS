@@ -3,13 +3,19 @@
 /* All heap objects are chained so aqs_free_objects() can release them after a run
  * (AquaScript MVP has no GC; a script's objects live until the program exits). */
 static Obj *g_objs = NULL;
+static long   live_objects = 0;    /* number of live heap objects (for gc_stats + trigger) */
+static long   next_gc = 1024;      /* collect when live_objects reaches this (count threshold) */
+static int    gc_disabled = 0;     /* >0 disables collection (during compile / VM setup) */
+static void free_object(Obj *o);   /* fwd: free one object + its owned sub-allocations */
 
 static Obj *alloc_obj(size_t size, ObjType type)
 {
     Obj *o = (Obj *)malloc(size);
     o->type = type;
+    o->marked = 0;
     o->next = g_objs;
     g_objs = o;
+    live_objects++;
     return o;
 }
 
@@ -245,22 +251,34 @@ int aqs_chunk_const(ObjFn *fn, Value v)
     return fn->kcount++;
 }
 
+/* Free one object's owned sub-allocations + the object itself. Used by both the
+ * GC sweep and the end-of-run teardown. Does NOT touch other objects it references
+ * (those are separate entries on the g_objs chain). */
+static void free_object(Obj *o)
+{
+    switch (o->type) {
+    case O_STR:  free(((ObjStr *)o)->chars); break;
+    case O_FN:   free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
+    case O_LIST:   free(((ObjList *)o)->items); break;
+    case O_DICT:   free(((ObjDict *)o)->entries); break;
+    case O_MODULE: free(((ObjModule *)o)->vars); break;
+    case O_CLOSURE: free(((ObjClosure *)o)->upvalues); break;
+    default: break;
+    }
+    live_objects--;
+    free(o);
+}
+
 void aqs_free_objects(void)
 {
     Obj *o = g_objs;
-    while (o) {
-        Obj *next = o->next;
-        switch (o->type) {
-        case O_STR:  free(((ObjStr *)o)->chars); break;
-        case O_FN:   free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
-        case O_LIST:   free(((ObjList *)o)->items); break;
-        case O_DICT:   free(((ObjDict *)o)->entries); break;
-        case O_MODULE: free(((ObjModule *)o)->vars); break;
-        case O_CLOSURE: free(((ObjClosure *)o)->upvalues); break;
-        default: break;
-        }
-        free(o);
-        o = next;
-    }
+    while (o) { Obj *next = o->next; free_object(o); o = next; }
     g_objs = NULL;
+    live_objects = 0;          /* defensive: fresh state for the next run */
+    next_gc = 1024;
+    gc_disabled = 0;
 }
+
+long aqs_gc_live(void) { return live_objects; }
+void aqs_gc_push_disable(void) { gc_disabled++; }
+void aqs_gc_pop_disable(void) { if (gc_disabled > 0) gc_disabled--; }

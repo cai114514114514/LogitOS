@@ -131,6 +131,11 @@ static Value native_len(int argc, Value *args)
     if (IS_DICT(args[0])) return INT_VAL(AS_DICT(args[0])->live);
     return aqs_native_fail("len() needs a list, string, or dict");
 }
+static Value native_gc_stats(int argc, Value *args)
+{
+    (void)argc; (void)args;
+    return INT_VAL(aqs_gc_live());
+}
 static Value native_range(int argc, Value *args)
 {
     int64_t start = 0, stop, step = 1;
@@ -576,6 +581,7 @@ int aqs_run(ObjFn *script)
     aqs_define_native("print", native_print);
     aqs_define_native("len", native_len);
     aqs_define_native("range", native_range);
+    aqs_define_native("gc_stats", native_gc_stats);
     aqs_install_indirection();          /* addr/peek/poke/iNptr/syscall + SYS_* */
     if (script->module) { modules[nmodules++] = script->module; script->module->state = 1; }
     return run_module(script);

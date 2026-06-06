@@ -42,7 +42,7 @@ typedef struct {
 
 /* --- objects --- */
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE } ObjType;
-struct Obj { ObjType type; Obj *next; };   /* next: allocation list (for cleanup) */
+struct Obj { ObjType type; uint8_t marked; Obj *next; };   /* next: alloc list; marked: GC */
 
 typedef struct { Obj obj; int len; uint32_t hash; char *chars; } ObjStr;
 
@@ -158,6 +158,15 @@ int       aqs_value_eq(Value a, Value b);
 int       aqs_truthy(Value v);
 void      aqs_print_value(Value v);    /* for `print` + REPL echo */
 void      aqs_free_objects(void);      /* free all heap objects (end of run) */
+
+/* mark-sweep GC (object.c + vm.c) */
+void gc_collect(void);
+void gc_mark_obj(Obj *o);          /* mark + push to the gray worklist */
+void gc_mark_value(Value v);
+void aqs_vm_mark_roots(void);      /* mark the VM roots (implemented in vm.c) */
+long aqs_gc_live(void);            /* current live object count */
+void aqs_gc_push_disable(void);    /* disable GC (re-entrant counter) -- use around compile/setup */
+void aqs_gc_pop_disable(void);
 
 /* platform output (aqs_io.c): write raw bytes to stdout (fd 1). */
 void      aqs_emit(const char *s, int n);

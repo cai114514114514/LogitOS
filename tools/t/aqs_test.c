@@ -345,6 +345,9 @@ int main(void)
     err("oob",     "print([1, 2][5])\n");
     err("nomethod","xs = []\nxs.frobnicate()\n");
 
+    /* ---- M22.2: GC ---- */
+    ok("gc_stats_live", "x = [1, 2, 3]\nprint(gc_stats() > 0)\n", "true\n");
+
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);
     return fails ? 1 : 0;
