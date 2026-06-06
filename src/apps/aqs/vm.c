@@ -136,8 +136,8 @@ static char *module_source(ObjStr *name)
             return buf;
         }
     char path[160];
-    const char *dirs[] = { "", "/usr/aqs/" };
-    for (int d = 0; d < 2; d++) {
+    const char *dirs[] = { "", "/usr/aqs/lib/", "/usr/aqs/" };
+    for (int d = 0; d < 3; d++) {
         int p = 0;
         for (const char *pre = dirs[d]; *pre && p < 120; pre++) path[p++] = *pre;
         for (int i = 0; i < name->len && p < 150; i++) path[p++] = name->chars[i];
@@ -163,8 +163,8 @@ static char *module_source(ObjStr *name)
 static ObjFn *module_try_la(ObjStr *name)
 {
     char path[160];
-    const char *dirs[] = { "", "/usr/aqs/" };
-    for (int d = 0; d < 2; d++) {
+    const char *dirs[] = { "", "/usr/aqs/lib/", "/usr/aqs/" };
+    for (int d = 0; d < 3; d++) {
         int p = 0;
         for (const char *pre = dirs[d]; *pre && p < 120; pre++) path[p++] = *pre;
         for (int i = 0; i < name->len && p < 150; i++) path[p++] = name->chars[i];

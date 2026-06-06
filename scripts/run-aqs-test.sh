@@ -15,7 +15,7 @@ cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] &
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 4; printf 'aqs /usr/aqs/hello.aqs\naqs /usr/aqs/fib.aqs\naqs /usr/aqs/ptr.aqs\naqs /usr/aqs/sys.aqs\naqs /usr/aqs/use_mod.aqs\naqs /usr/aqs/dict.aqs\naqs /usr/aqs/closure.aqs\naqs /usr/aqs/gc.aqs\naqs /usr/aqs/classes.aqs\naqs /usr/aqs/exc.aqs\naqs /usr/aqs/stdlib.aqs\nexit\n'; sleep 7; } | \
+{ sleep 4; printf 'aqs /usr/aqs/examples/hello.aqs\naqs /usr/aqs/examples/fib.aqs\naqs /usr/aqs/examples/ptr.aqs\naqs /usr/aqs/examples/sys.aqs\naqs /usr/aqs/examples/use_mod.aqs\naqs /usr/aqs/examples/dict.aqs\naqs /usr/aqs/examples/closure.aqs\naqs /usr/aqs/examples/gc.aqs\naqs /usr/aqs/examples/classes.aqs\naqs /usr/aqs/examples/exc.aqs\naqs /usr/aqs/examples/stdlib.aqs\nexit\n'; sleep 7; } | \
   "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!

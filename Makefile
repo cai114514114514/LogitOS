@@ -20,11 +20,11 @@ KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/aqua.iso
 DISK        := $(BUILD)/disk.img
 FS_FILES    := $(filter-out fsroot/fonts fsroot/aqs,$(wildcard fsroot/*))
-AQS_EXAMPLES := $(wildcard fsroot/aqs/*.aqs)
-# LibAqua stdlib precompiled to .la (built by the host aqsc, packed to /usr/aqs).
-AQS_LA_SRCS := fsroot/aqs/math.aqs fsroot/aqs/seq.aqs \
-               fsroot/aqs/dicts.aqs fsroot/aqs/test.aqs
-AQS_LA      := $(patsubst fsroot/aqs/%.aqs,$(BUILD)/%.la,$(AQS_LA_SRCS))
+# AquaScript layout: example scripts (source, run directly) vs library modules
+# (precompiled to .la). Packed to /usr/aqs/examples/ and /usr/aqs/lib/ respectively.
+AQS_EXAMPLES := $(wildcard fsroot/aqs/examples/*.aqs)
+AQS_LIB_SRCS := $(wildcard fsroot/aqs/lib/*.aqs)
+AQS_LA       := $(patsubst fsroot/aqs/lib/%.aqs,$(BUILD)/%.la,$(AQS_LIB_SRCS))
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
 CC          := clang
@@ -220,8 +220,8 @@ $(DISK): $(FS_FILES) $(AQS_EXAMPLES) $(AQS_LA) $(FONTS) $(AEX) tools/mkfs.py
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/aqs.aex:/bin/aqs \
-	    $(foreach e,$(AQS_EXAMPLES),$(e):/usr/aqs/$(notdir $(e))) \
-	    $(foreach l,$(AQS_LA),$(l):/usr/aqs/$(notdir $(l)))
+	    $(foreach e,$(AQS_EXAMPLES),$(e):/usr/aqs/examples/$(notdir $(e))) \
+	    $(foreach l,$(AQS_LA),$(l):/usr/aqs/lib/$(notdir $(l)))
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
@@ -275,10 +275,10 @@ $(AQSC): $(AQS_CORE) src/apps/aqs/aqs.c
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -o $@ src/apps/aqs/aqs.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
 
-# Precompile the LibAqua stdlib modules to .la (compiled bytecode). None of these
-# four `import` anything (AQS_LA/AQS_LA_SRCS defined near the top, before $(DISK)),
-# so -c compile-only has no circular-import issue.
-$(BUILD)/%.la: fsroot/aqs/%.aqs $(AQSC)
+# Precompile the LibAqua library modules (fsroot/aqs/lib/*.aqs) to .la (compiled
+# bytecode). -c is compile-only (no run), so even a lib with module-mate calls
+# (mathx) is fine; packed to /usr/aqs/lib/.
+$(BUILD)/%.la: fsroot/aqs/lib/%.aqs $(AQSC)
 	$(AQSC) -c $< -o $@
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
