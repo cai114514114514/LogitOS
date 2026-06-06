@@ -90,6 +90,14 @@ static inline void gui_text_run(int x, int y, int px, int mono, unsigned color, 
 { struct aqua_run r = { x, y, px, mono, color, s, len }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
 static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
 { struct aqua_blit b = { x, y, w, h, rgba, sw, sh }; _sys(SYS_GUI_BLIT, (long)&b, 0, 0); }
+/* Decode an image file into `rgba` (>= w*h*4 bytes); returns 0 + sets *w,*h, or -1. */
+static inline int img_open(const char *path, unsigned char *rgba, int max, int *w, int *h)
+{
+    struct aqua_imgreq q = { path, rgba, max, 0, 0 };
+    int rc = (int)_sys(SYS_IMG_DECODE, (long)&q, 0, 0);
+    if (rc == 0) { *w = q.w; *h = q.h; }
+    return rc;
+}
 static inline void gui_clip(int x, int y, int w, int h)
 { _sys(SYS_GUI_CLIP, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
        ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }

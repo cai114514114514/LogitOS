@@ -13,6 +13,8 @@
 #include "net.h"
 #include "icmp.h"
 #include "dns.h"
+#include "img.h"
+#include "kheap.h"
 
 void syscall_dispatch(struct registers *r)
 {
@@ -250,6 +252,34 @@ void syscall_dispatch(struct registers *r)
     case SYS_NET_DNS_RESULT:
         r->rax = (uint64_t)(long)(int)dns_result();
         return;
+
+    case SYS_IMG_DECODE: {
+        /* Decode an image file (PNG/GIF) in-kernel and hand the RGBA back to the
+         * caller's buffer -- so the Preview app needs no codec/libc of its own. */
+        struct aqua_imgreq req;
+        struct proc *p = proc_current();
+        if (!p || user_copy_from(&req, (const void *)r->rdi, sizeof req) < 0) { r->rax = (uint64_t)-1; return; }
+        char path[128], abs[128];
+        if (user_copy_string(path, sizeof path, req.path) < 0) { r->rax = (uint64_t)-1; return; }
+        if (req.max <= 0 || !user_range_ok(req.rgba, (uint64_t)req.max, 1)) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, path, abs, sizeof abs);
+        int sz = vfs_size(abs);
+        if (sz <= 0) { r->rax = (uint64_t)-1; return; }
+        uint8_t *file = (uint8_t *)kmalloc((unsigned)sz);
+        if (!file) { r->rax = (uint64_t)-1; return; }
+        int n = vfs_read(abs, file, sz);
+        struct image im;
+        if (n <= 0 || img_decode(file, n, &im) != 0) { kfree(file); r->rax = (uint64_t)-1; return; }
+        kfree(file);
+        long need = (long)im.w * im.h * 4;
+        if (need <= 0 || need > req.max) { img_free(&im); r->rax = (uint64_t)-1; return; }
+        user_copy_to(req.rgba, im.rgba, (uint64_t)need);
+        req.w = im.w; req.h = im.h;
+        user_copy_to((void *)r->rdi, &req, sizeof req);     /* return dimensions */
+        img_free(&im);
+        r->rax = 0;
+        return;
+    }
     case SYS_RENAME: {
         char o[128], n[128], ao[128], an[128];
         struct proc *p = proc_current();

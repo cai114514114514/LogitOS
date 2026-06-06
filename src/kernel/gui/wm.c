@@ -21,7 +21,7 @@
 #include "proc.h"
 #include "file.h"
 
-#define MAXWIN     8
+#define MAXWIN     16
 #define MENUBAR_H  24
 #define TITLEBAR_H 30
 #define FW         AQUA_FONT_W
@@ -227,6 +227,8 @@ static void launch_for_ext(const char *ext, const char *file)
 {
     for (int i = 0; i < nreg; i++)
         if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
+    /* Images open in the Preview viewer (the kernel decodes PNG/GIF). */
+    if (streq(ext, "png") || streq(ext, "gif")) { wm_launch("preview.aex", file); return; }
     /* No registered handler -> open it in the Terminal (it runs `aqs <file>` for
      * .aqs scripts, else `cat`). Beats the old "no app handles that file type". */
     wm_launch("terminal.aex", file);

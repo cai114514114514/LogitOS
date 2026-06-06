@@ -58,6 +58,7 @@
 #define SYS_SETNB       64 /* (fd) -> 0; mark the fd non-blocking (reads return -2/EAGAIN) */
 #define SYS_RENAME      65 /* (old_path, new_path) -> 0, or -1 (re-link a dir entry) */
 #define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
+#define SYS_IMG_DECODE  67 /* (struct aqua_imgreq*) decode an image file -> RGBA in app buffer */
 
 /* open() flags */
 #define O_RDONLY 0
@@ -113,5 +114,9 @@ struct aqua_netinfo {
 /* M17 L1: payloads for the ring-3 render syscalls. */
 struct aqua_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
 struct aqua_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
+
+/* SYS_IMG_DECODE: the app provides `path` + an `rgba` buffer of `max` bytes; the
+ * kernel decodes the image (PNG/GIF) and fills rgba + w/h (w*h*4 must be <= max). */
+struct aqua_imgreq { const char *path; unsigned char *rgba; int max; int w, h; };
 
 #endif /* AQUA_ABI_H */
