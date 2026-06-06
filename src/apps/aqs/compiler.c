@@ -504,7 +504,7 @@ static void fun_declaration(void)
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
-    emitConst(OBJ_VAL(fn));
+    emit2(OP_CLOSURE, (uint8_t)makeConst(OBJ_VAL(fn)));   /* upvalue operands added in the capture pass */
     if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
     else store_name(name);
 }

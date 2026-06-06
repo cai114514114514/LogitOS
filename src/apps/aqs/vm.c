@@ -9,12 +9,13 @@
 #define STACK_MAX  (4096)
 #define FRAMES_MAX (256)
 
-typedef struct { ObjFn *fn; uint8_t *ip; Value *slots; } Frame;
+typedef struct { ObjFn *fn; ObjClosure *closure; uint8_t *ip; Value *slots; } Frame;
 
 static Value  stack[STACK_MAX];
 static Value *sp;
 static Frame  frames[FRAMES_MAX];
 static int    frame_count;
+static ObjUpvalue *open_upvalues;   /* live captured locals, sorted by stack addr desc */
 
 /* Builtins (print/len/range/peek/.../SYS_*) are visible from every module; each
  * module has its own namespace (ObjModule.vars). GET_GLOBAL tries the running
@@ -40,7 +41,7 @@ static Value *builtin_slot(ObjStr *name, int create)
 static void push(Value v) { *sp++ = v; }
 static Value pop(void)    { return *--sp; }
 static Value peek(int d)  { return sp[-1 - d]; }
-static void reset_stack(void) { sp = stack; frame_count = 0; }
+static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL; }
 
 static int runtime_error(const char *fmt, ...)
 {
@@ -165,7 +166,17 @@ static int call_fn(ObjFn *fn, int argc)
                                                  fn->name ? fn->name->chars : "script", fn->arity, argc);
     if (frame_count == FRAMES_MAX) return runtime_error("call depth exceeded");
     Frame *f = &frames[frame_count++];
-    f->fn = fn; f->ip = fn->code; f->slots = sp - argc - 1;   /* slot 0 = the callee */
+    f->fn = fn; f->closure = NULL; f->ip = fn->code; f->slots = sp - argc - 1;   /* slot 0 = the callee */
+    return 0;
+}
+static int call_closure(ObjClosure *cl, int argc)
+{
+    ObjFn *fn = cl->fn;
+    if (argc != fn->arity) return runtime_error("%s expected %d argument(s) but got %d",
+                                                 fn->name ? fn->name->chars : "fn", fn->arity, argc);
+    if (frame_count == FRAMES_MAX) return runtime_error("call depth exceeded");
+    Frame *f = &frames[frame_count++];
+    f->fn = fn; f->closure = cl; f->ip = fn->code; f->slots = sp - argc - 1;
     return 0;
 }
 static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
@@ -173,6 +184,7 @@ static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
     if (IS_OBJ(callee)) {
         switch (AS_OBJ(callee)->type) {
         case O_FN: return call_fn((ObjFn *)AS_OBJ(callee), argc);
+        case O_CLOSURE: return call_closure((ObjClosure *)AS_OBJ(callee), argc);
         case O_NATIVE: {
             g_native_err = 0;
             Value r = ((ObjNative *)AS_OBJ(callee))->fn(argc, sp - argc);
@@ -187,6 +199,30 @@ static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
 }
 
 #define IS_NUM(v) (IS_INT(v) || IS_FLOAT(v))
+
+/* Find or create the upvalue capturing stack slot `slot`; shared so two closures
+ * over the same variable see each other's writes. List sorted by address descending. */
+static ObjUpvalue *capture_upvalue(Value *slot)
+{
+    ObjUpvalue *prev = NULL, *cur = open_upvalues;
+    while (cur && cur->location > slot) { prev = cur; cur = cur->next; }
+    if (cur && cur->location == slot) return cur;
+    ObjUpvalue *uv = aqs_upvalue_new(slot);
+    uv->next = cur;
+    if (prev) prev->next = uv; else open_upvalues = uv;
+    return uv;
+}
+/* Close every open upvalue at or above `last` (move it off the stack into its own
+ * storage). Called when captured locals die and on function return. */
+static void close_upvalues(Value *last)
+{
+    while (open_upvalues && open_upvalues->location >= last) {
+        ObjUpvalue *uv = open_upvalues;
+        uv->closed = *uv->location;
+        uv->location = &uv->closed;
+        open_upvalues = uv->next;
+    }
+}
 
 static int run_until(int floor);
 static ObjModule *aqs_import(ObjStr *name);
@@ -322,6 +358,7 @@ static int run_until(int floor)
         }
         case OP_RET: {
             Value result = pop();
+            close_upvalues(frame->slots);     /* close this fn's captured locals before unwinding */
             frame_count--;
             if (frame_count == floor) { pop(); return 0; }   /* this script/module is done */
             sp = frame->slots;                                /* discard callee + args + locals */
@@ -504,6 +541,21 @@ static int run_until(int floor)
             break;   /* list/range/string: iterate as-is */
         }
 
+        case OP_CLOSURE: {
+            ObjFn *fn = AS_FN(READ_CONST());
+            ObjClosure *cl = aqs_closure_new(fn);
+            for (int i = 0; i < cl->upvalue_count; i++) {
+                uint8_t is_local = READ_BYTE();
+                uint8_t index = READ_BYTE();
+                cl->upvalues[i] = is_local ? capture_upvalue(frame->slots + index)
+                                           : frame->closure->upvalues[index];
+            }
+            push(OBJ_VAL(cl));
+            break;
+        }
+        case OP_GET_UPVALUE: { uint8_t s = READ_BYTE(); push(*frame->closure->upvalues[s]->location); break; }
+        case OP_SET_UPVALUE: { uint8_t s = READ_BYTE(); *frame->closure->upvalues[s]->location = peek(0); break; }
+        case OP_CLOSE_UPVALUE: { close_upvalues(sp - 1); pop(); break; }
         default: runtime_error("bad opcode %d", op); goto err;
         }
     }
