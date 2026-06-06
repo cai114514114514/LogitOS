@@ -41,7 +41,26 @@ ObjFn *aqs_fn_new(void)
     fn->code = NULL; fn->count = fn->cap = 0;
     fn->consts = NULL; fn->kcount = fn->kcap = 0;
     fn->module = NULL;
+    fn->upvalue_count = 0;
     return fn;
+}
+
+ObjClosure *aqs_closure_new(ObjFn *fn)
+{
+    ObjUpvalue **ups = NULL;
+    if (fn->upvalue_count > 0) {
+        ups = (ObjUpvalue **)malloc(sizeof(ObjUpvalue *) * (size_t)fn->upvalue_count);
+        for (int i = 0; i < fn->upvalue_count; i++) ups[i] = NULL;
+    }
+    ObjClosure *c = (ObjClosure *)alloc_obj(sizeof(ObjClosure), O_CLOSURE);
+    c->fn = fn; c->upvalues = ups; c->upvalue_count = fn->upvalue_count;
+    return c;
+}
+ObjUpvalue *aqs_upvalue_new(Value *slot)
+{
+    ObjUpvalue *u = (ObjUpvalue *)alloc_obj(sizeof(ObjUpvalue), O_UPVALUE);
+    u->location = slot; u->closed = NIL_VAL; u->next = NULL;
+    return u;
 }
 
 ObjModule *aqs_module_new(const char *name, int len)
@@ -237,6 +256,7 @@ void aqs_free_objects(void)
         case O_LIST:   free(((ObjList *)o)->items); break;
         case O_DICT:   free(((ObjDict *)o)->entries); break;
         case O_MODULE: free(((ObjModule *)o)->vars); break;
+        case O_CLOSURE: free(((ObjClosure *)o)->upvalues); break;
         default: break;
         }
         free(o);

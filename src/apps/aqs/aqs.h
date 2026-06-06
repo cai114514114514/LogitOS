@@ -41,7 +41,7 @@ typedef struct {
 #define AS_NUM(v)   (IS_FLOAT(v) ? AS_FLOAT(v) : (double)AS_INT(v))
 
 /* --- objects --- */
-typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT } ObjType;
+typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE } ObjType;
 struct Obj { ObjType type; Obj *next; };   /* next: allocation list (for cleanup) */
 
 typedef struct { Obj obj; int len; uint32_t hash; char *chars; } ObjStr;
@@ -53,7 +53,23 @@ typedef struct {           /* a compiled function (also the top-level "script") 
     Value *consts; int kcount, kcap;      /* constant pool */
     ObjStr *name;
     struct ObjModule *module;             /* the module this fn's globals resolve in */
+    int upvalue_count;                    /* how many enclosing vars this fn captures */
 } ObjFn;
+
+/* M22 closures: an upvalue points at a captured variable — a live stack slot
+ * while "open", or its own `closed` copy once the slot leaves the stack. */
+typedef struct ObjUpvalue {
+    Obj obj;
+    Value *location;
+    Value closed;
+    struct ObjUpvalue *next;   /* VM open-upvalue list, sorted by stack addr descending */
+} ObjUpvalue;
+typedef struct {               /* a function paired with its captured upvalues */
+    Obj obj;
+    ObjFn *fn;
+    ObjUpvalue **upvalues;
+    int upvalue_count;
+} ObjClosure;
 
 typedef Value (*NativeFn)(int argc, Value *args);
 typedef struct { Obj obj; NativeFn fn; const char *name; } ObjNative;
@@ -91,6 +107,8 @@ typedef struct ObjModule {
 #define AS_MODULE(v) ((ObjModule *)AS_OBJ(v))
 #define IS_DICT(v)   (IS_OBJ(v) && AS_OBJ(v)->type == O_DICT)
 #define AS_DICT(v)   ((ObjDict *)AS_OBJ(v))
+#define IS_CLOSURE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_CLOSURE)
+#define AS_CLOSURE(v) ((ObjClosure *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -103,6 +121,7 @@ typedef enum {
     OP_MAKE_LIST, OP_INDEX_GET, OP_INDEX_SET, OP_LEN, OP_INVOKE,   /* A2 */
     OP_GET_ATTR, OP_IMPORT,                                        /* modules */
     OP_MAKE_DICT, OP_IN, OP_ITER,                                  /* M21 dict */
+    OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE, OP_CLOSE_UPVALUE,  /* M22 closures */
 } OpCode;
 
 /* --- compile + run --- */
@@ -120,6 +139,8 @@ void       aqs_add_module_source(const char *name, const char *src); /* in-memor
 ObjStr   *aqs_str_copy(const char *chars, int len);
 ObjStr   *aqs_str_take(char *chars, int len);
 ObjFn    *aqs_fn_new(void);
+ObjClosure *aqs_closure_new(ObjFn *fn);
+ObjUpvalue *aqs_upvalue_new(Value *slot);
 ObjNative*aqs_native_new(NativeFn fn, const char *name);
 ObjList  *aqs_list_new(void);
 void      aqs_list_push(ObjList *l, Value v);
