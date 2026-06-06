@@ -646,8 +646,16 @@ static void super_(void)
     consume(T_DOT, "expected '.' after 'super'");
     consume(T_IDENT, "expected a superclass method name after 'super.'");
     int name = identConst(tk_prev().start, tk_prev().len);
-    Token cls; cls.type = T_IDENT; cls.start = current_class.name; cls.len = current_class.namelen; cls.line = 0;
-    named_variable(cls);                          /* push the enclosing class (by name) */
+    /* Push the enclosing class. Resolve via upvalue-or-global, NOT named_variable:
+     * the class is never a local of the *method* itself (it's bound in the scope that
+     * contains the class declaration -> a global at top level, an upvalue when nested),
+     * so we must skip resolve_local on the current frame. Otherwise a method parameter
+     * or local named the same as the class would shadow it and OP_GET_SUPER would read
+     * a non-class value. resolve_upvalue starts at current->enclosing, so it does exactly
+     * that skip; -1 (top-level class) falls through to the global table. */
+    int up = resolve_upvalue(current, current_class.name, current_class.namelen);
+    if (up >= 0) emit2(OP_GET_UPVALUE, (uint8_t)up);
+    else emit2(OP_GET_GLOBAL, (uint8_t)identConst(current_class.name, current_class.namelen));
     emit2(OP_GET_SUPER, (uint8_t)name);           /* -> the parent method bound to self */
 }
 

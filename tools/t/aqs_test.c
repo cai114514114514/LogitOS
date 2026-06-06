@@ -476,6 +476,30 @@ int main(void)
        "        return super.greet() + \"B\"\n"
        "print(B().greet())\n",
        "AB\n");
+    /* super must resolve the enclosing class even when a method parameter shadows the
+     * class name (regression: named_variable would pick the local param, not the class). */
+    ok("class_super_shadow",
+       "class A:\n"
+       "    def f(self):\n"
+       "        return \"A\"\n"
+       "class B(A):\n"
+       "    def f(self, B):\n"
+       "        return super.f() + B\n"
+       "print(B().f(\"x\"))\n",
+       "Ax\n");
+    /* super inside a nested (local) class -> the class is reached as an upvalue. */
+    ok("class_super_nested",
+       "def make():\n"
+       "    class P:\n"
+       "        def who(self):\n"
+       "            return \"P\"\n"
+       "    class C(P):\n"
+       "        def who(self):\n"
+       "            return super.who() + \"C\"\n"
+       "    return C\n"
+       "k = make()\n"
+       "print(k().who())\n",
+       "PC\n");
     err("super_no_base", "class C:\n    def m(self):\n        return super.m()\nC().m()\n");
 
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
