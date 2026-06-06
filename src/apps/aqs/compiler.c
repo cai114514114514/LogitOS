@@ -12,7 +12,8 @@ static int    P;          /* current index */
 static int    had_error;
 static ObjModule *g_module;   /* module being compiled; stamped onto every ObjFn */
 
-typedef struct { const char *name; int len; int depth; } Local;
+typedef struct { const char *name; int len; int depth; int is_captured; } Local;
+typedef struct { uint8_t is_local; uint8_t index; } Upvalue;
 
 typedef struct Compiler {
     struct Compiler *enclosing;
@@ -20,6 +21,7 @@ typedef struct Compiler {
     Local locals[256];
     int local_count;
     int scope_depth;
+    Upvalue upvalues[256];          /* count lives in fn->upvalue_count */
 } Compiler;
 
 static Compiler *current;
@@ -82,15 +84,42 @@ static int add_local(const char *name, int len)   /* returns the slot, or -1 on 
     current->locals[slot].name = name;
     current->locals[slot].len = len;
     current->locals[slot].depth = current->scope_depth;
+    current->locals[slot].is_captured = 0;
     current->local_count++;
     return slot;
+}
+static int add_upvalue(Compiler *c, uint8_t index, uint8_t is_local)
+{
+    int n = c->fn->upvalue_count;
+    for (int i = 0; i < n; i++)
+        if (c->upvalues[i].index == index && c->upvalues[i].is_local == is_local) return i;
+    if (n == 256) { error("too many captured variables in one function"); return 0; }
+    c->upvalues[n].is_local = is_local;
+    c->upvalues[n].index = index;
+    return c->fn->upvalue_count++;
+}
+/* Resolve `name` as an upvalue of compiler `c`: an enclosing local (is_local=1)
+ * or, recursively, an enclosing upvalue (is_local=0). Returns the upvalue index
+ * in `c`, or -1 if not found in any enclosing function. */
+static int resolve_upvalue(Compiler *c, const char *name, int len)
+{
+    if (c->enclosing == NULL) return -1;
+    int local = resolve_local(c->enclosing, name, len);
+    if (local >= 0) {
+        c->enclosing->locals[local].is_captured = 1;
+        return add_upvalue(c, (uint8_t)local, 1);
+    }
+    int up = resolve_upvalue(c->enclosing, name, len);
+    if (up >= 0) return add_upvalue(c, (uint8_t)up, 0);
+    return -1;
 }
 static void begin_scope(void) { current->scope_depth++; }
 static void end_scope(void)
 {
     current->scope_depth--;
     while (current->local_count > 0 && current->locals[current->local_count - 1].depth > current->scope_depth) {
-        emit(OP_POP);
+        if (current->locals[current->local_count - 1].is_captured) emit(OP_CLOSE_UPVALUE);
+        else emit(OP_POP);
         current->local_count--;
     }
 }
@@ -227,8 +256,10 @@ static void variable(void)
 {
     Token t = tk_prev();
     int slot = resolve_local(current, t.start, t.len);
-    if (slot >= 0) emit2(OP_GET_LOCAL, (uint8_t)slot);
-    else emit2(OP_GET_GLOBAL, (uint8_t)identConst(t.start, t.len));
+    if (slot >= 0) { emit2(OP_GET_LOCAL, (uint8_t)slot); return; }
+    int up = resolve_upvalue(current, t.start, t.len);
+    if (up >= 0) { emit2(OP_GET_UPVALUE, (uint8_t)up); return; }
+    emit2(OP_GET_GLOBAL, (uint8_t)identConst(t.start, t.len));
 }
 
 static void binary(void)
@@ -328,8 +359,10 @@ static void expression(void) { parse_precedence(PREC_OR); }
 static void store_name(Token name)
 {
     int slot = resolve_local(current, name.start, name.len);
-    if (slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)slot); emit(OP_POP); }
-    else if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
+    if (slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)slot); emit(OP_POP); return; }
+    int up = resolve_upvalue(current, name.start, name.len);
+    if (up >= 0) { emit2(OP_SET_UPVALUE, (uint8_t)up); emit(OP_POP); return; }
+    if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
     else add_local(name.start, name.len);    /* new local: the value becomes its home slot */
 }
 
@@ -354,7 +387,11 @@ static void assignment(void)
     if (match(T_LBRACKET)) {                       /* indexed target: name[i]...[k] = v */
         int slot = resolve_local(current, name.start, name.len);
         if (slot >= 0) emit2(OP_GET_LOCAL, (uint8_t)slot);
-        else emit2(OP_GET_GLOBAL, (uint8_t)identConst(name.start, name.len));
+        else {
+            int up = resolve_upvalue(current, name.start, name.len);
+            if (up >= 0) emit2(OP_GET_UPVALUE, (uint8_t)up);
+            else emit2(OP_GET_GLOBAL, (uint8_t)identConst(name.start, name.len));
+        }
         for (;;) {
             expression();
             consume(T_RBRACKET, "expected ']'");
@@ -485,7 +522,7 @@ static void fun_declaration(void)
     comp.fn->module = g_module;
     comp.local_count = 0;
     comp.scope_depth = 0;
-    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0;
+    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0; comp.locals[comp.local_count].is_captured = 0;
     comp.local_count++;                            /* slot 0 = callee */
     current = &comp;
 
@@ -504,7 +541,8 @@ static void fun_declaration(void)
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
-    emit2(OP_CLOSURE, (uint8_t)makeConst(OBJ_VAL(fn)));   /* upvalue operands added in the capture pass */
+    emit2(OP_CLOSURE, (uint8_t)makeConst(OBJ_VAL(fn)));
+    for (int i = 0; i < fn->upvalue_count; i++) { emit(comp.upvalues[i].is_local); emit(comp.upvalues[i].index); }
     if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
     else store_name(name);
 }
@@ -553,7 +591,7 @@ ObjFn *aqs_compile_module(const char *src, ObjModule *module)
     comp.fn->module = module;
     comp.local_count = 0;
     comp.scope_depth = 0;
-    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0;
+    comp.locals[comp.local_count].name = ""; comp.locals[comp.local_count].len = 0; comp.locals[comp.local_count].depth = 0; comp.locals[comp.local_count].is_captured = 0;
     comp.local_count++;
     current = &comp;
 

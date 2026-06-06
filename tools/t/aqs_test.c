@@ -254,6 +254,52 @@ int main(void)
     ok("dicttomb",  "d = {\"a\": 1}\nd.remove(\"a\")\nd[\"a\"] = 2\nprint(d[\"a\"], len(d))\n", "2 1\n");   /* tombstone reuse */
     ok("dictkeyty", "d = {1: \"i\"}\nd[\"1\"] = \"s\"\nprint(len(d), d[1], d[\"1\"])\n", "2 i s\n");        /* int 1 != str "1" */
 
+    /* ---- M22.1: closures ---- */
+    ok("clo_counter",
+       "def counter():\n"
+       "    c = 0\n"
+       "    def inc():\n"
+       "        c = c + 1\n"
+       "        return c\n"
+       "    return inc\n"
+       "f = counter()\n"
+       "print(f(), f(), f())\n",
+       "1 2 3\n");
+    ok("clo_adder",
+       "def adder(n):\n"
+       "    def add(x):\n"
+       "        return x + n\n"
+       "    return add\n"
+       "a = adder(10)\n"
+       "print(a(5), a(100))\n",
+       "15 110\n");
+    ok("clo_shared",
+       "def make():\n"
+       "    c = 0\n"
+       "    def get():\n"
+       "        return c\n"
+       "    def inc():\n"
+       "        c = c + 1\n"
+       "        return c\n"
+       "    return [get, inc]\n"
+       "p = make()\n"
+       "g = p[0]\n"
+       "i = p[1]\n"
+       "i()\n"
+       "i()\n"
+       "print(g())\n",
+       "2\n");
+    ok("clo_multi",
+       "def a():\n"
+       "    x = 7\n"
+       "    def b():\n"
+       "        def c():\n"
+       "            return x\n"
+       "        return c\n"
+       "    return b\n"
+       "print(a()()())\n",
+       "7\n");
+
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");
     err("badindent", "x = 1\n  y = 2\n");
