@@ -12,6 +12,7 @@
 struct thread {
     uint64_t rsp;            /* saved stack pointer (must be first field) */
     struct thread *next;     /* circular ready ring */
+    struct thread *prev;     /* circular ready ring (back-link, for O(1) removal) */
     void *stack;
     uint64_t kstack_top;     /* ring-0 stack top (TSS rsp0) for ring-3 threads */
     uint64_t cr3;            /* address space (PML4 phys); kernel space if 0 set at init */
@@ -46,6 +47,7 @@ void sched_init(void)
     main->id = next_id++;
     main->alive = 1;
     main->next = main;
+    main->prev = main;
     current = main;
 }
 
@@ -68,6 +70,8 @@ void thread_create(void (*entry)(void), const char *name)
     t->rsp = (uint64_t)sp;
 
     t->next = current->next;
+    t->prev = current;
+    t->next->prev = t;
     current->next = t;
 }
 
@@ -101,6 +105,8 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     t->rsp = (uint64_t)sp;
 
     t->next = current->next;
+    t->prev = current;
+    t->next->prev = t;
     current->next = t;
     return t->id;
 }
@@ -143,6 +149,8 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     t->rsp = (uint64_t)sp;
 
     t->next = current->next;
+    t->prev = current;
+    t->next->prev = t;
     current->next = t;
     return t->id;
 }
@@ -190,10 +198,9 @@ void thread_exit(void)
     if (next == dead)            /* nothing else to run; just stop */
         for (;;) __asm__ volatile ("hlt");
 
-    struct thread *prev = dead;
-    while (prev->next != dead)
-        prev = prev->next;
-    prev->next = next;
+    /* O(1) unlink from the doubly-linked circular ring. */
+    dead->prev->next = next;
+    next->prev = dead->prev;
 
     current = next;
     switches++;
