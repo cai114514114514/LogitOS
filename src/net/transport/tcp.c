@@ -162,11 +162,16 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
     }
     if (dlen > 0 && c->state == ESTABLISHED) {
         if (seg_seq == c->rcv_nxt && rx_free(c) >= dlen) {
-            for (int i = 0; i < dlen; i++) {
-                c->rx[c->rx_tail] = payload[i];
-                c->rx_tail = (c->rx_tail + 1) % RXBUF;
-                c->rx_len++;
+            /* Two-part ring copy (RXBUF is 2^16, so & (RXBUF-1) == % RXBUF). */
+            int space = RXBUF - c->rx_tail;          /* bytes before wrap */
+            if (dlen <= space) {
+                memcpy(c->rx + c->rx_tail, payload, dlen);
+            } else {
+                memcpy(c->rx + c->rx_tail, payload, space);
+                memcpy(c->rx, payload + space, dlen - space);
             }
+            c->rx_tail = (c->rx_tail + dlen) & (RXBUF - 1);
+            c->rx_len += dlen;
             c->rcv_nxt += dlen;
         }
         send_seg(c, ACK, c->snd_nxt, NULL, 0);  /* ack in-order, or dup-ack to nudge */
@@ -270,11 +275,16 @@ int tcp_recv(int id, void *buf, int max)
         } else {
             int n = avail > max ? max : avail;
             uint8_t *out = buf;
-            for (int i = 0; i < n; i++) {
-                out[i] = c->rx[c->rx_head];
-                c->rx_head = (c->rx_head + 1) % RXBUF;
-                c->rx_len--;
+            /* Two-part ring drain (RXBUF is 2^16, so & (RXBUF-1) == % RXBUF). */
+            int space = RXBUF - c->rx_head;          /* bytes before wrap */
+            if (n <= space) {
+                memcpy(out, c->rx + c->rx_head, n);
+            } else {
+                memcpy(out, c->rx + c->rx_head, space);
+                memcpy(out + space, c->rx, n - space);
             }
+            c->rx_head = (c->rx_head + n) & (RXBUF - 1);
+            c->rx_len -= n;
             /* Window update: the sender learns our window only from ACKs (sent on
              * inbound data). After draining a burst, proactively ACK so it doesn't
              * stall on a stale small window. */
