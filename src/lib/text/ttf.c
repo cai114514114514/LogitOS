@@ -79,25 +79,39 @@ int ttf_parse(const uint8_t *data, int len, struct ttf_font *f)
     f->num_glyphs   = rd16(data + f->off_maxp + 4);
     f->cmap_sub = pick_cmap(data, len, f->off_cmap);
     if (!f->cmap_sub || !f->units_per_em) return -1;
+    /* glyf/loca offsets and num_hmetrics feed pointer math in the outline +
+     * advance paths; reject a font where they are already out of range. */
+    if (f->off_glyf > (uint32_t)len || f->off_loca > (uint32_t)len) return -1;
+    if (f->num_hmetrics <= 0) return -1;            /* the spec requires >= 1 */
     return 0;
 }
 
 int ttf_advance(const struct ttf_font *f, int gid)
 {
-    int i = gid < f->num_hmetrics ? gid : f->num_hmetrics - 1;
-    return rd16(f->data + f->off_hmtx + i * 4);
+    if (f->num_hmetrics <= 0) return 0;             /* malformed: avoid i = -1 OOB */
+    int i = (gid >= 0 && gid < f->num_hmetrics) ? gid : f->num_hmetrics - 1;
+    uint32_t o = f->off_hmtx + (uint32_t)i * 4;
+    if (o + 2 > (uint32_t)f->len) return 0;
+    return rd16(f->data + o);
 }
 
-/* cmap format 4 lookup (segment mapping). */
-static int cmap4(const uint8_t *t, uint32_t cp)
+/* cmap format 4 lookup (segment mapping). All reads are bounded to the subtable
+ * (its `length` field) and the font buffer, so a crafted idRangeOffset/segCount
+ * cannot read out of bounds. */
+static int cmap4(const struct ttf_font *f, const uint8_t *t, uint32_t cp)
 {
     if (cp > 0xFFFF) return 0;
+    const uint8_t *f_end = f->data + f->len;
+    if (t + 14 > f_end) return 0;                       /* header through segCountX2 + reserved */
+    const uint8_t *t_end = t + rd16(t + 2);             /* subtable length */
+    if (t_end > f_end) t_end = f_end;
     int segX2 = rd16(t + 6);
     int seg = segX2 / 2;
     const uint8_t *endC = t + 14;
     const uint8_t *startC = endC + segX2 + 2;
     const uint8_t *idDelta = startC + segX2;
     const uint8_t *idRange = idDelta + segX2;
+    if (idRange + segX2 > t_end) return 0;              /* the four parallel arrays must fit */
     for (int i = 0; i < seg; i++) {
         if (cp <= rd16(endC + i * 2)) {
             int start = rd16(startC + i * 2);
@@ -105,6 +119,7 @@ static int cmap4(const uint8_t *t, uint32_t cp)
             int ro = rd16(idRange + i * 2);
             if (ro == 0) return (uint16_t)(cp + rs16(idDelta + i * 2));
             const uint8_t *gp = idRange + i * 2 + ro + (cp - start) * 2;
+            if (gp < t || gp + 2 > t_end) return 0;     /* font-controlled ro/cp -> guard the read */
             int g = rd16(gp);
             return g ? (uint16_t)(g + rs16(idDelta + i * 2)) : 0;
         }
@@ -112,11 +127,16 @@ static int cmap4(const uint8_t *t, uint32_t cp)
     return 0;
 }
 
-/* cmap format 12 lookup (segmented coverage, full Unicode). */
-static int cmap12(const uint8_t *t, uint32_t cp)
+/* cmap format 12 lookup (segmented coverage, full Unicode). ngroups is clamped
+ * to what fits the font so a crafted count cannot loop off the end. */
+static int cmap12(const struct ttf_font *f, const uint8_t *t, uint32_t cp)
 {
+    const uint8_t *f_end = f->data + f->len;
+    if (t + 16 > f_end) return 0;
     uint32_t ngroups = rd32(t + 12);
     const uint8_t *g = t + 16;
+    uint32_t rem = (uint32_t)((f_end - g) / 12);
+    if (ngroups > rem) ngroups = rem;
     for (uint32_t i = 0; i < ngroups; i++, g += 12) {
         uint32_t s = rd32(g), e = rd32(g + 4);
         if (cp >= s && cp <= e) return rd32(g + 8) + (cp - s);
@@ -128,8 +148,8 @@ int ttf_glyph_id(const struct ttf_font *f, uint32_t codepoint)
 {
     const uint8_t *t = f->data + f->cmap_sub;
     int fmt = rd16(t);
-    if (fmt == 4)  return cmap4(t, codepoint);
-    if (fmt == 12) return cmap12(t, codepoint);
+    if (fmt == 4)  return cmap4(f, t, codepoint);
+    if (fmt == 12) return cmap12(f, t, codepoint);
     return 0;
 }
 
@@ -140,6 +160,10 @@ static int glyf_loc(const struct ttf_font *f, int gid, uint32_t *off, uint32_t *
 {
     if (gid < 0 || gid >= f->num_glyphs) return -1;
     const uint8_t *l = f->data + f->off_loca;
+    /* bound the two loca entries we read against the file (off_loca <= len was
+     * checked in ttf_parse, so the subtraction can't underflow). */
+    uint32_t need = f->loca_long ? (uint32_t)gid * 4 + 8 : (uint32_t)gid * 2 + 4;
+    if (need > (uint32_t)f->len - f->off_loca) return -1;
     if (f->loca_long) { *off = rd32(l + gid * 4); *nextoff = rd32(l + gid * 4 + 4); }
     else { *off = rd16(l + gid * 2) * 2u; *nextoff = rd16(l + gid * 2 + 2) * 2u; }
     return 0;
@@ -160,34 +184,44 @@ static int emit(const struct ttf_font *f, int gid, int depth,
     if (glyf_loc(f, gid, &off, &nextoff)) return -1;
     if (nextoff <= off) return 0;                       /* blank glyph */
     const uint8_t *g = f->data + f->off_glyf + off;
+    /* This glyph spans [off, nextoff) within glyf; bound every read to it and to
+     * the file. off_glyf <= len was checked in ttf_parse. */
+    const uint8_t *gend = f->data + f->off_glyf + nextoff;
+    if (gend > f->data + f->len) gend = f->data + f->len;
+    if (g + 10 > gend) return -1;                       /* need the 10-byte glyph header */
     int ncont = rs16(g);
     const uint8_t *p = g + 10;
 
     if (ncont >= 0) {                                   /* --- simple glyph --- */
         const uint8_t *endpts = p;
         int base = *npts;
+        if (ncont > capC) return -1;
+        if (endpts + (uint32_t)ncont * 2 > gend) return -1;
         int gpts = (ncont == 0) ? 0 : rd16(endpts + (ncont - 1) * 2) + 1;
         p = endpts + ncont * 2;
+        if (p + 2 > gend) return -1;
         int insLen = rd16(p); p += 2 + insLen;
+        if (p > gend) return -1;
         if (*npts + gpts > capPts || *nc + ncont > capC) return -1;
 
         uint8_t flags[gpts > 0 ? gpts : 1];
         for (int i = 0; i < gpts; ) {
+            if (p >= gend) return -1;
             uint8_t fl = *p++; flags[i++] = fl;
-            if (fl & 0x08) { int r = *p++; while (r-- && i < gpts) flags[i++] = fl; }
+            if (fl & 0x08) { if (p >= gend) return -1; int r = *p++; while (r-- && i < gpts) flags[i++] = fl; }
         }
         int xv = 0;
         for (int i = 0; i < gpts; i++) {
             uint8_t fl = flags[i];
-            if (fl & 0x02) { int dxv = *p++; xv += (fl & 0x10) ? dxv : -dxv; }
-            else if (!(fl & 0x10)) { xv += rs16(p); p += 2; }
+            if (fl & 0x02) { if (p >= gend) return -1; int dxv = *p++; xv += (fl & 0x10) ? dxv : -dxv; }
+            else if (!(fl & 0x10)) { if (p + 2 > gend) return -1; xv += rs16(p); p += 2; }
             X[base + i] = (short)xv;                    /* raw; transform below */
         }
         int yv = 0;
         for (int i = 0; i < gpts; i++) {
             uint8_t fl = flags[i];
-            if (fl & 0x04) { int dyv = *p++; yv += (fl & 0x20) ? dyv : -dyv; }
-            else if (!(fl & 0x20)) { yv += rs16(p); p += 2; }
+            if (fl & 0x04) { if (p >= gend) return -1; int dyv = *p++; yv += (fl & 0x20) ? dyv : -dyv; }
+            else if (!(fl & 0x20)) { if (p + 2 > gend) return -1; yv += rs16(p); p += 2; }
             Y[base + i] = (short)yv;
             ON[base + i] = (uint8_t)(fl & 0x01);
         }
@@ -204,14 +238,15 @@ static int emit(const struct ttf_font *f, int gid, int depth,
 
     /* --- composite glyph --- */
     for (;;) {
+        if (p + 4 > gend) return -1;
         int flags = rd16(p); int cgid = rd16(p + 2); p += 4;
         int arg1, arg2;
-        if (flags & 0x0001) { arg1 = rs16(p); arg2 = rs16(p + 2); p += 4; }
-        else { arg1 = (signed char)p[0]; arg2 = (signed char)p[1]; p += 2; }
+        if (flags & 0x0001) { if (p + 4 > gend) return -1; arg1 = rs16(p); arg2 = rs16(p + 2); p += 4; }
+        else { if (p + 2 > gend) return -1; arg1 = (signed char)p[0]; arg2 = (signed char)p[1]; p += 2; }
         int ca = 0x4000, cb = 0, cc = 0, cd = 0x4000;   /* 1.0 in 2.14 */
-        if (flags & 0x0008) { ca = cd = rs16(p); p += 2; }
-        else if (flags & 0x0040) { ca = rs16(p); cd = rs16(p + 2); p += 4; }
-        else if (flags & 0x0080) { ca = rs16(p); cb = rs16(p + 2); cc = rs16(p + 4); cd = rs16(p + 6); p += 8; }
+        if (flags & 0x0008) { if (p + 2 > gend) return -1; ca = cd = rs16(p); p += 2; }
+        else if (flags & 0x0040) { if (p + 4 > gend) return -1; ca = rs16(p); cd = rs16(p + 2); p += 4; }
+        else if (flags & 0x0080) { if (p + 8 > gend) return -1; ca = rs16(p); cb = rs16(p + 2); cc = rs16(p + 4); cd = rs16(p + 6); p += 8; }
         int cdx = (flags & 0x0002) ? arg1 : 0;          /* XY offset (point-match unsupported) */
         int cdy = (flags & 0x0002) ? arg2 : 0;
         /* compose parent [a b c d] with child [ca cb cc cd] (2.14) */
@@ -248,8 +283,9 @@ int ttf_glyph_outline(const struct ttf_font *f, int gid,
         return -1;
 
     /* bbox from header (font units) */
-    uint32_t off, nextoff; glyf_loc(f, gid, &off, &nextoff);
-    if (nextoff > off) {
+    uint32_t off, nextoff;
+    if (glyf_loc(f, gid, &off, &nextoff) == 0 && nextoff > off &&
+        f->off_glyf + off + 10 <= (uint32_t)f->len) {
         const uint8_t *g = f->data + f->off_glyf + off;
         out->xmin = rs16(g + 2); out->ymin = rs16(g + 4);
         out->xmax = rs16(g + 6); out->ymax = rs16(g + 8);

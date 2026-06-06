@@ -14,6 +14,7 @@ static int gif_lzw(const uint8_t *data, int dlen, uint8_t *idx, int cap)
 {
     if (dlen < 1) return -1;
     int mincode = data[0];
+    if (mincode < 2 || mincode > 11) return -1;   /* legal min code size is 2-8; 12+ overflows the 4096-entry dict, >=31 is UB shift */
     int clear = 1 << mincode, eoi = clear + 1;
     int codesize = mincode + 1, next = eoi + 1;
     /* dictionary: prefix[] + suffix[]; entries up to 4096 */
@@ -23,6 +24,7 @@ static int gif_lzw(const uint8_t *data, int dlen, uint8_t *idx, int cap)
     int pos = 1, blkrem = 0; uint32_t bits = 0; int nbits = 0;
     #define NEEDBYTE() do { \
         if (blkrem == 0) { if (pos >= dlen) { goto done; } blkrem = data[pos++]; if (blkrem == 0) goto done; } \
+        if (pos >= dlen) goto done; /* malformed sub-block length must not over-read the stream */ \
         bits |= (uint32_t)data[pos++] << nbits; nbits += 8; blkrem--; } while (0)
     int prev = -1;
     for (;;) {
@@ -56,12 +58,14 @@ static int gif_decode(const uint8_t *p, int n, struct image *out)
     int gct = (packed & 0x80) ? (2 << (packed & 7)) : 0;
     pos += 7;
     const uint8_t *gctab = p + pos; pos += gct*3;
+    if (pos > n) return -1;                               /* global color table must fit the file */
     int transparent = -1;
 
     while (pos < n) {
         int b = p[pos++];
         if (b == 0x3B) break;                             /* trailer */
         if (b == 0x21) {                                  /* extension */
+            if (pos >= n) break;
             int label = p[pos++];
             if (label == 0xF9 && pos+5 <= n) {            /* graphic control */
                 int gpacked = p[pos+1];
@@ -71,11 +75,12 @@ static int gif_decode(const uint8_t *p, int n, struct image *out)
             continue;
         }
         if (b == 0x2C) {                                  /* image descriptor */
+            if (pos + 9 > n) return -1;                    /* need the 9-byte image descriptor */
             int iw = p[pos+4] | (p[pos+5]<<8), ih = p[pos+6] | (p[pos+7]<<8);
             int ipacked = p[pos+8];
             pos += 9;
             const uint8_t *ctab = gctab; int nct = gct;
-            if (ipacked & 0x80) { nct = 2 << (ipacked & 7); ctab = p + pos; pos += nct*3; }
+            if (ipacked & 0x80) { nct = 2 << (ipacked & 7); if (pos + nct*3 > n) return -1; ctab = p + pos; pos += nct*3; }
             if (iw <= 0 || ih <= 0 || iw > 8192 || ih > 8192) return -1;
             uint8_t *idx = kmalloc(iw*ih); if (!idx) return -1;
             int got = gif_lzw(p + pos, n - pos, idx, iw*ih);

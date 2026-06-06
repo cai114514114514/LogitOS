@@ -110,7 +110,11 @@ static int png_decode(const uint8_t *p, int n, struct image *out)
         uint32_t clen = be32(p + i);
         const uint8_t *type = p + i + 4;
         const uint8_t *data = p + i + 8;
-        if (i + 12 + (int)clen > n) break;
+        /* clen is attacker-controlled: a value >= 0x80000000 makes (int)clen
+         * negative so `i + 12 + (int)clen` wrapped under n, bypassing the check
+         * and letting the IDAT memcpy overflow the heap. Reject absurd lengths,
+         * then compare in the subtraction form (no signed overflow). */
+        if (clen > 0x7fffffffu || (int)clen > n - i - 12) break;
         if (type[0]=='I'&&type[1]=='H'&&type[2]=='D'&&type[3]=='R') {
             W=(int)be32(data); H=(int)be32(data+4); depth=data[8]; ctype=data[9]; interlace=data[12];
         } else if (type[0]=='P'&&type[1]=='L'&&type[2]=='T'&&type[3]=='E') {
