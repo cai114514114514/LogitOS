@@ -38,6 +38,7 @@ static uint8_t *bitmap;
 static uint64_t total_frames;
 static uint64_t used_frames;
 static uint64_t usable_bytes;
+static uint64_t alloc_hint;      /* frame to resume scanning from */
 
 static inline void bm_set(uint64_t f)   { bitmap[f >> 3] |=  (uint8_t)(1u << (f & 7)); }
 static inline void bm_clear(uint64_t f) { bitmap[f >> 3] &= (uint8_t)~(1u << (f & 7)); }
@@ -88,9 +89,12 @@ void pmm_init(uint64_t mb_info_addr)
 
     total_frames = highest / FRAME_SIZE;
 
-    /* Park the bitmap immediately after the kernel image. */
+    /* Park the bitmap immediately after the kernel image.  Round the byte
+     * count up to an 8-byte multiple so pmm_alloc's word-at-a-time scan can
+     * always read a full uint64_t without running past the bitmap; the extra
+     * padding bits cover frames beyond total_frames and stay marked used. */
     bitmap = (uint8_t *)(((uint64_t)_kernel_end + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1));
-    uint64_t bitmap_bytes = (total_frames + 7) / 8;
+    uint64_t bitmap_bytes = (((total_frames + 7) / 8) + 7) & ~(uint64_t)7;
 
     memset(bitmap, 0xFF, bitmap_bytes);              /* everything used... */
     used_frames = total_frames;
@@ -113,15 +117,63 @@ void pmm_init(uint64_t mb_info_addr)
     reserve(mb_info_addr, total_size);
 }
 
+/* Scan the bitmap a 64-bit word at a time (Linux find_next_zero_bit style):
+ * a fully-used word (all ones) is skipped with one branch, and the first free
+ * bit inside a partial word is located with __builtin_ctzll(~word).  Resumes
+ * from alloc_hint so successive allocs don't rescan exhausted low frames, and
+ * wraps back to frame 0 once before giving up so no free frame is missed. */
 uint64_t pmm_alloc(void)
 {
-    for (uint64_t f = 0; f < total_frames; f++) {
-        if (!bm_test(f)) {
-            bm_set(f);
+    if (total_frames == 0)
+        return 0;
+
+    uint64_t start = alloc_hint;
+    if (start >= total_frames)
+        start = 0;
+
+    for (int pass = 0; pass < 2; pass++) {
+        uint64_t from = (pass == 0) ? start : 0;
+        uint64_t to   = (pass == 0) ? total_frames : start;
+
+        /* Walk word-aligned 64-frame blocks within [from, to). */
+        for (uint64_t f = from; f < to; ) {
+            uint64_t byte_idx = f >> 3;
+            uint64_t word = *(uint64_t *)(bitmap + (byte_idx & ~(uint64_t)7));
+            uint64_t base = (byte_idx & ~(uint64_t)7) << 3;   /* first frame in word */
+
+            if (word == 0xFFFFFFFFFFFFFFFFull) {
+                /* All 64 frames used: jump to the next aligned word. */
+                f = base + 64;
+                continue;
+            }
+
+            /* At least one free bit; find the first free frame >= f. */
+            uint64_t bit = (uint64_t)__builtin_ctzll(~word);
+            uint64_t cand = base + bit;
+            while (cand < f) {
+                /* First free bit is before our scan start: mask it out. */
+                word |= (1ull << (cand - base));
+                if (word == 0xFFFFFFFFFFFFFFFFull)
+                    break;
+                bit = (uint64_t)__builtin_ctzll(~word);
+                cand = base + bit;
+            }
+            if (word == 0xFFFFFFFFFFFFFFFFull) {
+                f = base + 64;
+                continue;
+            }
+            if (cand >= to) {
+                f = base + 64;
+                continue;
+            }
+            bm_set(cand);
             used_frames++;
-            return f * FRAME_SIZE;
+            alloc_hint = cand;
+            return cand * FRAME_SIZE;
         }
     }
+
+    alloc_hint = 0;     /* wrap-around for the next attempt */
     return 0;
 }
 
