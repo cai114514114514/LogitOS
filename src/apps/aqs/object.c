@@ -8,6 +8,9 @@ static long   next_gc = 1024;      /* collect when live_objects reaches this (co
 static int    gc_disabled = 0;     /* >0 disables collection (during compile / VM setup) */
 static void free_object(Obj *o);   /* fwd: free one object + its owned sub-allocations */
 
+static Obj  **gray = NULL;          /* GC mark worklist (raw realloc'd buffer, NOT a GC object) */
+static int    gray_count = 0, gray_cap = 0;
+
 static Obj *alloc_obj(size_t size, ObjType type)
 {
     Obj *o = (Obj *)malloc(size);
@@ -251,6 +254,74 @@ int aqs_chunk_const(ObjFn *fn, Value v)
     return fn->kcount++;
 }
 
+void gc_mark_obj(Obj *o)
+{
+    if (o == NULL || o->marked) return;
+    o->marked = 1;
+    if (gray_count + 1 > gray_cap) {
+        gray_cap = gray_cap < 16 ? 16 : gray_cap * 2;
+        gray = (Obj **)realloc(gray, (size_t)gray_cap * sizeof(Obj *));
+    }
+    gray[gray_count++] = o;
+}
+void gc_mark_value(Value v) { if (IS_OBJ(v)) gc_mark_obj(AS_OBJ(v)); }
+
+/* Mark everything an already-gray object references. */
+static void blacken(Obj *o)
+{
+    switch (o->type) {
+    case O_STR: case O_NATIVE: case O_PTR: break;   /* no object references */
+    case O_UPVALUE: gc_mark_value(((ObjUpvalue *)o)->closed); break;
+    case O_FN: {
+        ObjFn *fn = (ObjFn *)o;
+        if (fn->name) gc_mark_obj((Obj *)fn->name);
+        for (int i = 0; i < fn->kcount; i++) gc_mark_value(fn->consts[i]);
+        break;
+    }
+    case O_CLOSURE: {
+        ObjClosure *c = (ObjClosure *)o;
+        gc_mark_obj((Obj *)c->fn);
+        for (int i = 0; i < c->upvalue_count; i++) gc_mark_obj((Obj *)c->upvalues[i]);
+        break;
+    }
+    case O_LIST: {
+        ObjList *l = (ObjList *)o;
+        for (int i = 0; i < l->count; i++) gc_mark_value(l->items[i]);
+        break;
+    }
+    case O_DICT: {
+        ObjDict *d = (ObjDict *)o;
+        for (int i = 0; i < d->cap; i++) {
+            DictEntry *e = &d->entries[i];
+            if (e->kind == AQS_DK_STR) gc_mark_obj((Obj *)e->kstr);
+            if (e->kind == AQS_DK_STR || e->kind == AQS_DK_INT) gc_mark_value(e->val);
+        }
+        break;
+    }
+    case O_MODULE: {
+        ObjModule *m = (ObjModule *)o;
+        gc_mark_obj((Obj *)m->name);
+        for (int i = 0; i < m->count; i++) { gc_mark_obj((Obj *)m->vars[i].name); gc_mark_value(m->vars[i].val); }
+        break;
+    }
+    }
+}
+
+void gc_collect(void)
+{
+    gray_count = 0;
+    aqs_vm_mark_roots();                                  /* mark + gray the roots (vm.c) */
+    while (gray_count > 0) blacken(gray[--gray_count]);   /* trace to fixpoint */
+    Obj **link = &g_objs;                                 /* sweep */
+    while (*link) {
+        Obj *o = *link;
+        if (o->marked) { o->marked = 0; link = &o->next; }
+        else { *link = o->next; free_object(o); }
+    }
+    next_gc = live_objects * 2;
+    if (next_gc < 1024) next_gc = 1024;
+}
+
 /* Free one object's owned sub-allocations + the object itself. Used by both the
  * GC sweep and the end-of-run teardown. Does NOT touch other objects it references
  * (those are separate entries on the g_objs chain). */
@@ -274,6 +345,7 @@ void aqs_free_objects(void)
     Obj *o = g_objs;
     while (o) { Obj *next = o->next; free_object(o); o = next; }
     g_objs = NULL;
+    free(gray); gray = NULL; gray_count = gray_cap = 0;
     live_objects = 0;          /* defensive: fresh state for the next run */
     next_gc = 1024;
     gc_disabled = 0;

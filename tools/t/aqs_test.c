@@ -347,6 +347,37 @@ int main(void)
 
     /* ---- M22.2: GC ---- */
     ok("gc_stats_live", "x = [1, 2, 3]\nprint(gc_stats() > 0)\n", "true\n");
+    ok("gc_frees",
+       "def garbage():\n"
+       "    i = 0\n"
+       "    while i < 500:\n"
+       "        x = [i, i, i]\n"
+       "        i = i + 1\n"
+       "    return 0\n"
+       "garbage()\n"
+       "n1 = gc_stats()\n"
+       "freed = gc()\n"
+       "n2 = gc_stats()\n"
+       "print(freed > 0, n2 < n1)\n",
+       "true true\n");
+    ok("gc_keeps_reachable",
+       "keep = [1, 2, 3]\n"
+       "def mk():\n"
+       "    c = 0\n"
+       "    def inc():\n"
+       "        c = c + 1\n"
+       "        return c\n"
+       "    return inc\n"
+       "f = mk()\n"
+       "f()\n"
+       "gc()\n"
+       "print(keep, f())\n",
+       "[1, 2, 3] 2\n");
+    ok("gc_dict_survives",
+       "d = {\"a\": [1, 2], \"b\": 3}\n"
+       "gc()\n"
+       "print(d[\"a\"][1], d[\"b\"])\n",
+       "2 3\n");
 
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);

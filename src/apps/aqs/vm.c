@@ -43,6 +43,19 @@ static Value pop(void)    { return *--sp; }
 static Value peek(int d)  { return sp[-1 - d]; }
 static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL; }
 
+/* GC roots: everything the running program can still reach. */
+void aqs_vm_mark_roots(void)
+{
+    for (Value *v = stack; v < sp; v++) gc_mark_value(*v);
+    for (int i = 0; i < frame_count; i++) {
+        gc_mark_obj((Obj *)frames[i].fn);
+        if (frames[i].closure) gc_mark_obj((Obj *)frames[i].closure);
+    }
+    for (ObjUpvalue *u = open_upvalues; u; u = u->next) gc_mark_obj((Obj *)u);
+    for (int i = 0; i < nbuiltins; i++) { gc_mark_obj((Obj *)builtins[i].name); gc_mark_value(builtins[i].val); }
+    for (int i = 0; i < nmodules; i++) gc_mark_obj((Obj *)modules[i]);
+}
+
 static int runtime_error(const char *fmt, ...)
 {
     va_list ap; va_start(ap, fmt);
@@ -135,6 +148,13 @@ static Value native_gc_stats(int argc, Value *args)
 {
     (void)argc; (void)args;
     return INT_VAL(aqs_gc_live());
+}
+static Value native_gc(int argc, Value *args)
+{
+    (void)argc; (void)args;
+    long before = aqs_gc_live();
+    gc_collect();
+    return INT_VAL(before - aqs_gc_live());   /* objects freed this collection */
 }
 static Value native_range(int argc, Value *args)
 {
@@ -549,6 +569,7 @@ static int run_until(int floor)
         case OP_CLOSURE: {
             ObjFn *fn = AS_FN(READ_CONST());
             ObjClosure *cl = aqs_closure_new(fn);
+            push(OBJ_VAL(cl));   /* root cl NOW: capture_upvalue allocates and may trigger GC */
             for (int i = 0; i < cl->upvalue_count; i++) {
                 uint8_t is_local = READ_BYTE();
                 uint8_t index = READ_BYTE();
@@ -558,8 +579,7 @@ static int run_until(int floor)
                 cl->upvalues[i] = is_local ? capture_upvalue(frame->slots + index)
                                            : frame->closure->upvalues[index];
             }
-            push(OBJ_VAL(cl));
-            break;
+            break;   /* cl is already on the stack as the result */
         }
         case OP_GET_UPVALUE: { uint8_t s = READ_BYTE(); push(*frame->closure->upvalues[s]->location); break; }
         case OP_SET_UPVALUE: { uint8_t s = READ_BYTE(); *frame->closure->upvalues[s]->location = peek(0); break; }
@@ -578,12 +598,15 @@ int aqs_run(ObjFn *script)
 {
     reset_stack();
     nbuiltins = 0; nmodules = 0;        /* fresh builtins + module cache (objects freed between runs) */
+    aqs_gc_push_disable();              /* setup allocates natives while `script` isn't yet rooted */
     aqs_define_native("print", native_print);
     aqs_define_native("len", native_len);
     aqs_define_native("range", native_range);
     aqs_define_native("gc_stats", native_gc_stats);
+    aqs_define_native("gc", native_gc);
     aqs_install_indirection();          /* addr/peek/poke/iNptr/syscall + SYS_* */
     if (script->module) { modules[nmodules++] = script->module; script->module->state = 1; }
+    aqs_gc_pop_disable();               /* run_module pushes `script` first -> rooted before any GC */
     return run_module(script);
 }
 

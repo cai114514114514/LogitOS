@@ -610,8 +610,9 @@ static void declaration(void)
 ObjFn *aqs_compile_module(const char *src, ObjModule *module)
 {
     int count;
-    Token *toks = aqs_lex(src, &count);
+    Token *toks = aqs_lex(src, &count);     /* lexer allocates only the raw token array, no GC objects */
     if (!toks) return NULL;                 /* aqs_err set by the lexer */
+    aqs_gc_push_disable();                  /* compiler-built objects aren't VM-rooted until run/stored */
     if (!rules_ready) init_rules();
 
     g_module = module;
@@ -635,6 +636,7 @@ ObjFn *aqs_compile_module(const char *src, ObjModule *module)
 
     ObjFn *script = comp.fn;
     free(toks);
+    aqs_gc_pop_disable();
     return had_error ? NULL : script;
 }
 
