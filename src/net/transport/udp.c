@@ -50,7 +50,12 @@ void udp_input(uint32_t src, const uint8_t *data, uint16_t len)
         return;
     const struct udp_hdr *h = (const struct udp_hdr *)data;
     uint16_t dport = ntohs(h->dport);
-    uint16_t dlen  = (uint16_t)(ntohs(h->length) - sizeof *h);
+    /* Validate the wire length field against the IP-validated payload length
+     * before deriving dlen: reject < header (underflow) and > received bytes. */
+    uint16_t udp_len = ntohs(h->length);
+    if (udp_len < sizeof *h || udp_len > len)
+        return;
+    uint16_t dlen  = (uint16_t)(udp_len - sizeof *h);
     const uint8_t *payload = data + sizeof *h;
 
     if (slot.len < 0 && slot.buf && dport == slot.port) {

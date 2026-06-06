@@ -383,8 +383,14 @@ static int aquafs_mount(void)
     sb.inode_start = w[7]; sb.inode_blocks = w[8];
     sb.data_start = w[9]; sb.root_ino = w[10];
 
-    bitmap = kmalloc(sb.bitmap_blocks * BS);
-    inodes = kmalloc(sb.inode_blocks * BS);
+    /* Bound the untrusted on-disk counts before sizing: bitmap_blocks*BS is
+     * uint32*int and would wrap to a tiny (or zero) allocation for a crafted
+     * superblock, then the bread loops below write BS bytes/block past it.
+     * Legit images use bitmap_blocks=1, inode_blocks=8. */
+    if (sb.bitmap_blocks == 0 || sb.bitmap_blocks > 1024) return -1;   /* >32 MiB bitmap = absurd */
+    if (sb.inode_blocks  == 0 || sb.inode_blocks  > 4096) return -1;   /* >16 MiB inodes = absurd */
+    bitmap = kmalloc((size_t)((uint64_t)sb.bitmap_blocks * BS));
+    inodes = kmalloc((size_t)((uint64_t)sb.inode_blocks  * BS));
     if (!bitmap || !inodes) return -1;
     for (uint32_t i = 0; i < sb.bitmap_blocks; i++)
         if (bread(sb.bitmap_start + i, bitmap + i * BS)) return -1;

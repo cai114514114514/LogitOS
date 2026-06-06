@@ -78,7 +78,11 @@ void ip_input(const uint8_t *frame, uint16_t len)
     int ihl = (h->ver_ihl & 0xF) * 4;
     uint32_t src = ntohl(h->src);
     uint16_t tot = ntohs(h->total_len);
-    if (tot < ihl || (uint16_t)(sizeof(struct eth_hdr) + tot) > len)
+    /* ihl must cover the fixed IP header (else l4 points inside it), and the
+     * total length must fit the frame. Use 32-bit math: a uint16 cast of
+     * (14 + tot) truncates and could wrap a huge tot under `len`. */
+    if (ihl < (int)sizeof(struct ip_hdr) || tot < ihl ||
+        (uint32_t)sizeof(struct eth_hdr) + tot > len)
         return;
 
     const uint8_t *l4 = (const uint8_t *)h + ihl;
