@@ -104,7 +104,7 @@ struct file *file_alloc(void)
     for (int i = 0; i < NFILE; i++) {
         if (files[i].refcount == 0) {
             struct file *f = &files[i];
-            f->type = F_NONE; f->refcount = 1; f->flags = 0;
+            f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;
             f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
             f->backing = 0; f->path[0] = 0;
             return f;
@@ -205,8 +205,8 @@ long file_lseek(struct file *f, long off, int whence)
     return no;
 }
 
-/* Create a pipe: two struct files (read end flags=0, write end flags=1) sharing
- * one ring buffer. */
+/* Create a pipe: two struct files (read end is_write=0, write end is_write=1)
+ * sharing one ring buffer. */
 int file_pipe(struct file **rd, struct file **wr)
 {
     struct pipe *p = (struct pipe *)kmalloc(sizeof *p);
@@ -220,8 +220,8 @@ int file_pipe(struct file **rd, struct file **wr)
         kfree(p);
         return -1;
     }
-    r->type = F_PIPE; r->flags = 0; r->backing = p;   /* read end */
-    w->type = F_PIPE; w->flags = 1; w->backing = p;   /* write end */
+    r->type = F_PIPE; r->flags = 0; r->is_write = 0; r->backing = p;   /* read end */
+    w->type = F_PIPE; w->flags = 0; w->is_write = 1; w->backing = p;   /* write end */
     *rd = r; *wr = w;
     return 0;
 }
@@ -239,7 +239,7 @@ void file_close(struct file *f)
     } else if (f->type == F_PIPE) {
         struct pipe *p = (struct pipe *)f->backing;
         if (p) {
-            if (f->flags) p->writers--; else p->readers--;
+            if (f->is_write) p->writers--; else p->readers--;
             if (p->readers == 0 && p->writers == 0) kfree(p);
         }
     }

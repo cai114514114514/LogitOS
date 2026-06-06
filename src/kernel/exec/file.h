@@ -17,7 +17,9 @@
 struct file {
     int   type;
     int   refcount;
-    int   flags;        /* O_* (read/write end for pipes encoded here too) */
+    int   flags;        /* O_* (O_NONBLOCK / O_APPEND / ...) */
+    int   is_write;     /* F_PIPE: 1 = write end, 0 = read end (kept out of `flags`
+                         * so a SYS_SETNB O_NONBLOCK can't flip the close accounting) */
     long  off;          /* F_VFS cursor */
     long  size;         /* F_VFS current length */
     long  cap;          /* F_VFS buffer capacity */
