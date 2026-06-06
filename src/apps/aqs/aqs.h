@@ -192,6 +192,7 @@ int       aqs_chunk_const(ObjFn *fn, Value v);
 int       aqs_value_eq(Value a, Value b);
 int       aqs_truthy(Value v);
 void      aqs_print_value(Value v);    /* for `print` + REPL echo */
+int       aqs_fmt_float(double d, char *buf, int cap);  /* shortest round-trip; ".0" for whole floats */
 void      aqs_free_objects(void);      /* free all heap objects (end of run) */
 
 /* mark-sweep GC (object.c + vm.c) */

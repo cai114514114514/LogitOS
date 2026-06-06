@@ -57,6 +57,15 @@ int main(void)
     ok("mod",    "print(17 % 5)\n", "2\n");
     ok("mixed",  "print(2 + 3.5)\n", "5.5\n");
 
+    /* float formatting: shortest round-trip + ".0" for whole floats (Python/JS-like) */
+    ok("fwhole", "print(2.5 * 4.0)\n", "10.0\n");                 /* not "10" (looks like int) */
+    ok("fzero",  "print(0.0)\n", "0.0\n");
+    ok("fprec",  "print(0.1 + 0.2)\n", "0.30000000000000004\n"); /* not %g's "0.3" */
+    ok("fthird", "print(1.0 / 3.0)\n", "0.3333333333333333\n");  /* not "0.333333" */
+    ok("fpi",    "print(3.141592653589793)\n", "3.141592653589793\n");
+    ok("fbig",   "print(1000000000000.0)\n", "1000000000000.0\n");
+    ok("fsci",   "print(1.0e-8)\n", "1e-08\n");                   /* scientific only for extremes */
+
     /* comparisons, booleans, logic */
     ok("cmp",    "print(3 < 5)\n", "true\n");
     ok("eqmix",  "print(3 == 3.0)\n", "true\n");

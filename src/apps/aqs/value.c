@@ -1,5 +1,7 @@
 #include "aqs.h"
 #include <stdio.h>      /* snprintf (host libc or mini-libc; %g/%lld verified) */
+#include <stdlib.h>     /* strtod / atoi -- shortest round-trip float formatting */
+#include <string.h>     /* strchr */
 
 char aqs_err[256];
 
@@ -37,6 +39,36 @@ int aqs_value_eq(Value a, Value b)
 
 static void print_repr(Value v);   /* like print, but strings are quoted (for list elements) */
 
+/* Format a double like Python/JS repr: the SHORTEST decimal that round-trips
+ * (fewest significant digits whose strtod() gives `d` back), in fixed notation
+ * for normal magnitudes and scientific only for very large/small. `%g`'s fixed
+ * 6 digits silently lost precision (3.14159..., 0.333333); plain shortest-%g
+ * printed 10.0 as "1e+01". A whole-valued float keeps ".0" (10.0 not "10"). */
+int aqs_fmt_float(double d, char *buf, int cap)
+{
+    char tmp[40];
+    /* Count the significant digits needed, notation-independent, via %e. */
+    int P = 17;
+    for (int p = 1; p <= 17; p++) {
+        snprintf(tmp, sizeof tmp, "%.*e", p - 1, d);
+        if (strtod(tmp, (char **)0) == d) { P = p; break; }
+    }
+    char *epos = strchr(tmp, 'e');                  /* decimal exponent of d */
+    int E = epos ? atoi(epos + 1) : 0;
+    int n;
+    if (E >= -4 && E < 16) {                         /* fixed notation (Python's range) */
+        int dec = P - 1 - E;
+        if (dec < 0) dec = 0;
+        n = snprintf(buf, (size_t)cap, "%.*f", dec, d);
+        if (n >= cap) n = cap - 1;
+        if (dec == 0 && n + 2 < cap) { buf[n++] = '.'; buf[n++] = '0'; buf[n] = 0; }  /* 10 -> 10.0 */
+    } else {                                         /* scientific for very large / small */
+        n = snprintf(buf, (size_t)cap, "%.*e", P - 1, d);
+        if (n >= cap) n = cap - 1;
+    }
+    return n;
+}
+
 void aqs_print_value(Value v)
 {
     char buf[40]; int n;
@@ -45,8 +77,8 @@ void aqs_print_value(Value v)
     case V_BOOL:  aqs_emit_cstr(AS_BOOL(v) ? "true" : "false"); break;
     case V_INT:   n = snprintf(buf, sizeof buf, "%lld", (long long)AS_INT(v));
                   aqs_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); break;
-    case V_FLOAT: n = snprintf(buf, sizeof buf, "%g", AS_FLOAT(v));
-                  aqs_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); break;
+    case V_FLOAT: n = aqs_fmt_float(AS_FLOAT(v), buf, sizeof buf);
+                  aqs_emit(buf, n); break;
     case V_OBJ:
         if (IS_STR(v))         { ObjStr *s = AS_STR(v); aqs_emit(s->chars, s->len); }
         else if (IS_LIST(v)) {
