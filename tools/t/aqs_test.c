@@ -442,6 +442,42 @@ int main(void)
     err("class_no_field",   "class C:\n    def m(self):\n        return 1\nc = C()\nprint(c.missing)\n");
     err("class_set_nonobj", "x = 5\nx.f = 1\n");
 
+    /* ---- M22.3: inheritance + super ---- */
+    ok("class_inherit",
+       "class Animal:\n"
+       "    def init(self, name):\n"
+       "        self.name = name\n"
+       "    def speak(self):\n"
+       "        return self.name + \" makes a sound\"\n"
+       "class Dog(Animal):\n"
+       "    def speak(self):\n"
+       "        return self.name + \" barks\"\n"
+       "d = Dog(\"Rex\")\n"
+       "print(d.speak(), d.name)\n",
+       "Rex barks Rex\n");
+    ok("class_inherit_method",
+       "class Animal:\n"
+       "    def init(self, n):\n"
+       "        self.n = n\n"
+       "    def kind(self):\n"
+       "        return \"animal\"\n"
+       "class Cat(Animal):\n"
+       "    def meow(self):\n"
+       "        return self.n + \" meows\"\n"
+       "c = Cat(\"Tom\")\n"
+       "print(c.kind(), c.meow())\n",
+       "animal Tom meows\n");
+    ok("class_super",
+       "class A:\n"
+       "    def greet(self):\n"
+       "        return \"A\"\n"
+       "class B(A):\n"
+       "    def greet(self):\n"
+       "        return super.greet() + \"B\"\n"
+       "print(B().greet())\n",
+       "AB\n");
+    err("super_no_base", "class C:\n    def m(self):\n        return super.m()\nC().m()\n");
+
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);
     return fails ? 1 : 0;

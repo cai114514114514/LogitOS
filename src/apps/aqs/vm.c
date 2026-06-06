@@ -672,6 +672,36 @@ static int run_until(int floor)
             pop();                            /* drop the closure; class stays */
             break;
         }
+        case OP_INHERIT: {
+            Value superv = peek(1), subv = peek(0);   /* stack: [.. super class] */
+            if (!IS_CLASS(superv)) { runtime_error("superclass must be a class"); goto err; }
+            ObjClass *sup = AS_CLASS(superv), *sub = AS_CLASS(subv);
+            sub->super = sup;
+            /* copy-down: inherit the parent's methods before the subclass defines its
+             * own (so a subclass override later overwrites the inherited entry). dict
+             * ops use realloc (no alloc_obj) so no GC fires while super/sub are live. */
+            for (int i = 0; i < sup->methods->cap; i++) {
+                DictEntry *e = &sup->methods->entries[i];
+                if (e->kind == AQS_DK_STR) aqs_dict_set(sub->methods, OBJ_VAL(e->kstr), e->val);
+            }
+            sp[-2] = sp[-1];                   /* drop super (below class), keep class on top */
+            sp--;
+            break;
+        }
+        case OP_GET_SUPER: {
+            ObjStr *name = AS_STR(READ_CONST());
+            Value klassv = peek(0);           /* the enclosing class (kept rooted across the alloc) */
+            ObjClass *sup = IS_CLASS(klassv) ? AS_CLASS(klassv)->super : NULL;
+            if (!sup) { runtime_error("'super' used in a class with no superclass"); goto err; }
+            /* Bind the superclass method to the *current* self (slot 0 of this method
+             * frame), so `super.m(args)` calls it with self implicit -- same convention
+             * as `obj.m(args)`. */
+            if (!bind_method(sup, name, frame->slots[0])) {
+                runtime_error("superclass has no method '%.*s'", name->len, name->chars); goto err;
+            }
+            sp[-2] = sp[-1]; sp--;            /* drop the class beneath the new bound method */
+            break;
+        }
         default: runtime_error("bad opcode %d", op); goto err;
         }
     }

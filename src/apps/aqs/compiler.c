@@ -146,6 +146,7 @@ static void statement(void);
 static void block(void);
 static void lambda_(void);
 static void class_declaration(void);
+static void super_(void);
 
 static void number(void)
 {
@@ -346,6 +347,7 @@ static void init_rules(void)
     rules[T_OR]      = (ParseRule){ 0, or_, PREC_OR };
     rules[T_IN]      = (ParseRule){ 0, in_, PREC_CMP };
     rules[T_LAMBDA]  = (ParseRule){ lambda_, 0, PREC_NONE };
+    rules[T_SUPER]   = (ParseRule){ super_, 0, PREC_NONE };
     rules_ready = 1;
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
@@ -634,6 +636,21 @@ static void lambda_(void)   /* prefix for 'lambda' : an anonymous closure expres
  * Emits OP_CLASS (build empty class) -> bind the name -> optional OP_INHERIT
  * (copy-down super's methods) -> per-method: push class, compile the method body
  * as a closure, OP_METHOD to register it, pop the leftover class copy. */
+/* `super` . NAME  ->  the superclass's method, bound to the current self (implicit,
+ * same as `obj.m()`), so `super.greet()` dispatches to the parent's greet. Resolves
+ * at run time by loading the enclosing class (by its bound name) and reading ->super. */
+static void super_(void)
+{
+    if (!current_class.active) { error("'super' used outside a class"); return; }
+    if (!current_class.has_super) { error("'super' used in a class with no superclass"); return; }
+    consume(T_DOT, "expected '.' after 'super'");
+    consume(T_IDENT, "expected a superclass method name after 'super.'");
+    int name = identConst(tk_prev().start, tk_prev().len);
+    Token cls; cls.type = T_IDENT; cls.start = current_class.name; cls.len = current_class.namelen; cls.line = 0;
+    named_variable(cls);                          /* push the enclosing class (by name) */
+    emit2(OP_GET_SUPER, (uint8_t)name);           /* -> the parent method bound to self */
+}
+
 static void class_declaration(void)
 {
     consume(T_IDENT, "expected a class name");
