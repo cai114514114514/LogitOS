@@ -56,6 +56,8 @@
 #define SYS_DUP         62 /* (fd) -> new fd, or <0 */
 #define SYS_SPAWN       63 /* (path, argv[]) -> child pid, or <0 (fork+execve convenience) */
 #define SYS_SETNB       64 /* (fd) -> 0; mark the fd non-blocking (reads return -2/EAGAIN) */
+#define SYS_RENAME      65 /* (old_path, new_path) -> 0, or -1 (re-link a dir entry) */
+#define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
 
 /* open() flags */
 #define O_RDONLY 0
@@ -87,6 +89,7 @@
 
 #define EV_MOUSE  2   /* a = x, b = y (window-local), mouse-button down */
 #define EV_CLOSE  3   /* the window's close button was pressed */
+#define EV_MOUSE_R 4  /* a = x, b = y (window-local), right-button down */
 
 struct aqua_event {
     int type;

@@ -544,6 +544,46 @@ static void aquafs_list(void)
     }
 }
 
+/* 1 iff normalized absolute path `b` equals `a` or is nested under it (a/...).
+ * Both are kernel-resolved absolute paths; we ignore a single trailing '/'. */
+static int path_under(const char *a, const char *b)
+{
+    int la = 0; while (a[la]) la++;
+    while (la > 1 && a[la - 1] == '/') la--;     /* drop trailing slash(es) */
+    int lb = 0; while (b[lb]) lb++;
+    while (lb > 1 && b[lb - 1] == '/') lb--;
+    if (lb < la) return 0;
+    for (int i = 0; i < la; i++) if (a[i] != b[i]) return 0;
+    return lb == la || b[la] == '/';
+}
+
+/* Move/rename: re-link a directory entry. Resolve everything first (the shared
+ * static blk_buf/ind_buf make interleaving resolution with dir_add/dir_remove
+ * unsafe), then mutate add-then-remove with rollback. */
+static int aquafs_rename(const char *old_path, const char *new_path)
+{
+    uint32_t src = resolve(old_path);
+    if (src == NOINO || src == sb.root_ino) return -1;
+    if (resolve(new_path) != NOINO) return -1;            /* no clobber */
+
+    char old_leaf[NAME_MAX], new_leaf[NAME_MAX];
+    uint32_t op = resolve_parent(old_path, old_leaf);
+    if (op == NOINO) return -1;
+    uint32_t np = resolve_parent(new_path, new_leaf);
+    if (np == NOINO) return -1;
+    struct dinode *npd = iget(np);
+    if (!npd || npd->type != T_DIR) return -1;
+
+    /* Cycle guard: can't move a directory into itself or a descendant. */
+    struct dinode *si = iget(src);
+    if (si && si->type == T_DIR && path_under(old_path, new_path)) return -1;
+
+    if (dir_add(np, new_leaf, src) < 0) return -1;
+    if (dir_remove(op, old_leaf) < 0) { dir_remove(np, new_leaf); return -1; }
+    if (flush_inode(op) || flush_inode(np) || flush_bitmap()) return -1;
+    return 0;
+}
+
 struct filesystem aquafs = {
     .name     = "aquafs",
     .mount    = aquafs_mount,
@@ -557,4 +597,5 @@ struct filesystem aquafs = {
     .write    = aquafs_write,
     .del      = aquafs_delete,
     .mkdir    = aquafs_mkdir,
+    .rename   = aquafs_rename,
 };

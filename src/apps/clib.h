@@ -17,6 +17,16 @@ static inline void  c_strcpy(char *d, const char *s, int max)
 static inline int   c_atoi(const char *s)
 { int v = 0, sign = 1; if (*s == '-') { sign = -1; s++; } while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0'); return v * sign; }
 
+/* Join dir + name into dst (max bytes), inserting a single '/' as needed. */
+static inline void  path_join(char *dst, const char *dir, const char *name, int max)
+{
+    int i = 0;
+    for (; i < max - 2 && dir[i]; i++) dst[i] = dir[i];
+    if (i > 0 && dst[i - 1] != '/') dst[i++] = '/';
+    for (int j = 0; i < max - 1 && name[j]; i++, j++) dst[i] = name[j];
+    dst[i] = 0;
+}
+
 /* output to a given fd */
 static inline void  fputs_fd(int fd, const char *s) { sys_write(fd, s, c_strlen(s)); }
 static inline void  outs(const char *s) { fputs_fd(1, s); }

@@ -85,6 +85,7 @@ void mouse_handle(void)
     int dx = (int)packet[1] - ((packet[0] << 4) & 0x100);
     int dy = (int)packet[2] - ((packet[0] << 3) & 0x100);
     int left = packet[0] & 0x01;
+    int right = packet[0] & 0x02;
 
     if (!initialized) {
         mx = (int)fb_width() / 2;
@@ -101,5 +102,5 @@ void mouse_handle(void)
     if (mx > w - 1) mx = w - 1;
     if (my > h - 1) my = h - 1;
 
-    wm_mouse_event(mx, my, left);
+    wm_mouse_event(mx, my, left, right);
 }

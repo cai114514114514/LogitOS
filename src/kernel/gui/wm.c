@@ -66,7 +66,7 @@ static struct app apps[MAXWIN];
 static struct win wins[MAXWIN];
 static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
 
-static int mx, my, mleft;
+static int mx, my, mleft, mright;
 static int dragging = -1, drag_dx, drag_dy;
 static volatile int dirty = 1;
 static int dr_full = 1;                  /* whole screen needs recompositing */
@@ -522,6 +522,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         else fb_set_clip(x, y, cw2, ch2);
         return 0;
     }
+    case SYS_OPEN_PATH: {
+        char path[USER_PATH_MAX];
+        if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        if (ends_aex(path)) wm_launch(path, "");
+        else launch_for_ext(ext_of(path), path);
+        return 0;
+    }
     }
     return -1;
 }
@@ -843,7 +850,7 @@ void wm_key(int c)
     if (w->kind == WK_APP) { enqueue(w, EV_KEY, (int)c, 0); dirty_rect(w->x, w->y, w->w, w->h); }
 }
 
-void wm_mouse_event(int x, int y, int left)
+void wm_mouse_event(int x, int y, int left, int right)
 {
     int moved = (x != mx || y != my);
     int content = 0;                       /* did anything other than the cursor change? */
@@ -901,9 +908,20 @@ void wm_mouse_event(int x, int y, int left)
             }
         }
     }
+    if (right && !mright) {
+        for (int i = norder - 1; i >= 0; i--) {
+            struct win *w = &wins[order[i]];
+            if (!w->used || !in_rect(x, y, w->x, w->y, w->w, w->h)) continue;
+            int cx = x - w->x, cy = y - w->y;
+            if (cy >= TITLEBAR_H && w->kind == WK_APP) enqueue(w, EV_MOUSE_R, cx, cy - TITLEBAR_H);
+            content = 1;
+            break;
+        }
+    }
     if (!left) dragging = -1;
     if (dragging >= 0 && left) { wins[dragging].x = x - drag_dx; wins[dragging].y = y - drag_dy; content = 1; }
     mleft = left;
+    mright = right;
     /* Pure cursor motion just moves the overlay (cheap); only recomposite the
      * whole screen when content actually changed (click, window drag). */
     if (content) dirty_full();

@@ -60,3 +60,8 @@ int vfs_mkdir(const char *path)
 {
     return (root && root->mkdir) ? root->mkdir(path) : -1;
 }
+
+int vfs_rename(const char *old_path, const char *new_path)
+{
+    return (root && root->rename) ? root->rename(old_path, new_path) : -1;
+}

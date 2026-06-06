@@ -250,6 +250,16 @@ void syscall_dispatch(struct registers *r)
     case SYS_NET_DNS_RESULT:
         r->rax = (uint64_t)(long)(int)dns_result();
         return;
+    case SYS_RENAME: {
+        char o[128], n[128], ao[128], an[128];
+        struct proc *p = proc_current();
+        if (!p || user_copy_string(o, sizeof o, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
+        if (user_copy_string(n, sizeof n, (const char *)r->rsi) < 0) { r->rax = (uint64_t)-1; return; }
+        proc_resolve(p, o, ao, sizeof ao);
+        proc_resolve(p, n, an, sizeof an);
+        r->rax = (uint64_t)vfs_rename(ao, an);
+        return;
+    }
 
     default:
         /* GUI + misc system calls are handled by the window manager, which

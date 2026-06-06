@@ -17,6 +17,7 @@ struct filesystem {
     int  (*write)(const char *path, const void *buf, int size);  /* create/overwrite */
     int  (*del)(const char *path);                  /* delete */
     int  (*mkdir)(const char *path);                /* create a directory */
+    int  (*rename)(const char *old, const char *new_path); /* re-link a dir entry (move/rename) */
 };
 
 void vfs_register(struct filesystem *fs);
@@ -35,5 +36,6 @@ int         vfs_ent_is_dir(const char *dir, int i);
 int         vfs_write(const char *path, const void *buf, int size);
 int         vfs_delete(const char *path);
 int         vfs_mkdir(const char *path);
+int         vfs_rename(const char *old_path, const char *new_path);
 
 #endif /* AQUA_VFS_H */
