@@ -565,9 +565,13 @@ static void fun_declaration(void)
 {
     consume(T_IDENT, "expected a function name");
     Token name = tk_prev();
-    compile_function(name.start, name.len, 0);     /* leaves the closure on the stack */
+    /* For a nested def, declare the name in the enclosing scope BEFORE compiling the
+     * body, so the function can recurse (the body captures its own name as an upvalue).
+     * The OP_CLOSURE that compile_function emits pushes the closure into exactly this
+     * reserved local slot, so no separate store is needed. Top-level defs stay globals. */
+    if (current->enclosing != NULL) add_local(name.start, name.len);
+    compile_function(name.start, name.len, 0);     /* leaves the closure on the stack (= the reserved slot) */
     if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
-    else store_name(name);
 }
 
 static void lambda_(void)   /* prefix for 'lambda' : an anonymous closure expression */

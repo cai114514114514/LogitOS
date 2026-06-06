@@ -313,6 +313,30 @@ int main(void)
        "    return fn(v)\n"
        "print(apply(lambda x: x + 100, 5))\n",
        "105\n");
+    ok("clo_recur",
+       "def outer():\n"
+       "    def fact(n):\n"
+       "        if n <= 1:\n"
+       "            return 1\n"
+       "        return n * fact(n - 1)\n"
+       "    return fact\n"
+       "f = outer()\n"
+       "print(f(5))\n",
+       "120\n");
+    ok("clo_iter",
+       "def make():\n"
+       "    fns = []\n"
+       "    i = 0\n"
+       "    while i < 3:\n"
+       "        x = i\n"
+       "        def get():\n"
+       "            return x\n"
+       "        fns.append(get)\n"
+       "        i = i + 1\n"
+       "    return fns\n"
+       "g = make()\n"
+       "print(g[0](), g[1](), g[2]())\n",
+       "0 1 2\n");
 
     /* errors are reported, not crashed */
     err("undef",   "print(nope)\n");
