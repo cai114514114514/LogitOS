@@ -1,7 +1,7 @@
 #include "aqs.h"
 
-/* All heap objects are chained so aqs_free_objects() can release them after a run
- * (AquaScript MVP has no GC; a script's objects live until the program exits). */
+/* All heap objects are chained on g_objs: the mark-sweep GC sweeps this list
+ * (gc_collect), and aqs_free_objects walks it to release everything at run end. */
 static Obj *g_objs = NULL;
 static long   live_objects = 0;    /* number of live heap objects (for gc_stats + trigger) */
 static long   next_gc = 1024;      /* collect when live_objects reaches this (count threshold) */
@@ -283,6 +283,8 @@ static void blacken(Obj *o)
         ObjFn *fn = (ObjFn *)o;
         if (fn->name) gc_mark_obj((Obj *)fn->name);
         for (int i = 0; i < fn->kcount; i++) gc_mark_value(fn->consts[i]);
+        /* fn->module is NOT traced here: modules are permanently rooted via modules[]
+         * (never collected during a run). Revisit if modules ever become collectable. */
         break;
     }
     case O_CLOSURE: {
