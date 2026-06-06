@@ -104,22 +104,6 @@ static void blit(uint32_t *d, const uint32_t *s, int n) { for (int i = 0; i < n;
 
 static int streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void scopy(char *d, const char *s, int max) { int i = 0; for (; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
-/* out = dir + "/" + name (collapsing the slash); truncates at max-1. */
-static void path_join(char *out, const char *dir, const char *name, int max) {
-    int n = 0;
-    for (const char *p = dir; *p && n < max - 1; p++) out[n++] = *p;
-    if ((n == 0 || out[n - 1] != '/') && n < max - 1) out[n++] = '/';
-    for (const char *p = name; *p && n < max - 1; p++) out[n++] = *p;
-    out[n] = 0;
-}
-/* strip the last path component in place ("/a/b" -> "/a", "/a" -> "/"). */
-static void path_up(char *p) {
-    int n = 0; while (p[n]) n++;
-    if (n <= 1) return;
-    if (p[n - 1] == '/') n--;
-    while (n > 0 && p[n - 1] != '/') n--;
-    if (n <= 1) { p[0] = '/'; p[1] = 0; } else p[n - 1] = 0;
-}
 static int ends_aex(const char *s) {
     int n = 0; while (s[n]) n++;
     return n >= 4 && s[n-4]=='.' && s[n-3]=='a' && s[n-2]=='e' && s[n-1]=='x';
@@ -699,42 +683,8 @@ static void draw_clock(void)
     fb_text(W - fb_text_width(b) - 12, 4, b, rgb(40, 40, 46));
 }
 
-/* ---------- Finder (builtin) ---------- */
-#define FROW 26
-static int finder_top(struct win *w) { return w->y + TITLEBAR_H + 36; }
-static int finder_at_root(struct win *w) { return w->cwd[0] == '/' && w->cwd[1] == 0; }
-
-/* Rows that fit between finder_top() and the footer. Directories with more
- * entries are clipped here (and the click hit-test below uses the same bound)
- * so the listing never spills out of the window onto the desktop. */
-static int finder_visible_rows(struct win *w)
-{
-    return (w->y + w->h - 30 - finder_top(w)) / FROW;
-}
-
-static void draw_finder(struct win *w)
-{
-    int x = w->x;
-    fb_text(x + 16, w->y + TITLEBAR_H + 10, w->cwd, rgb(120, 120, 128));
-    int row = 0, vis = finder_visible_rows(w), shown = 0;
-    if (!finder_at_root(w)) {                       /* ".." to go up */
-        int yy = finder_top(w) + row * FROW;
-        fb_round_rect(x + 16, yy, 13, 16, 3, rgb(230, 185, 90));
-        fb_text(x + 38, yy, "..", rgb(60, 60, 68));
-        row++; shown++;
-    }
-    int n = vfs_count(w->cwd), clipped = 0;
-    for (int i = 0; i < n; i++, row++) {
-        if (shown >= vis) { clipped = n - i; break; }   /* don't draw past the window */
-        int yy = finder_top(w) + row * FROW;
-        int isdir = vfs_ent_is_dir(w->cwd, i);
-        fb_round_rect(x + 16, yy, 13, 16, 3, isdir ? rgb(230, 185, 90) : rgb(90, 150, 240));
-        fb_text(x + 38, yy, vfs_ent_name(w->cwd, i), rgb(60, 60, 68));
-        shown++;
-    }
-    if (clipped > 0) fb_text(x + 16, w->y + w->h - 22, "...more (resize window)", rgb(170, 170, 178));
-    else fb_text(x + 16, w->y + w->h - 22, "click a folder or file", rgb(170, 170, 178));
-}
+/* The file browser is now the ring-3 Finder app (src/apps/gui/files.c), launched
+ * at boot below; the old in-kernel WK_FINDER window was folded into it. */
 
 /* ---------- window frame + compositing ---------- */
 /* A soft drop shadow drawn as thin translucent bands hugging the window edges.
@@ -825,9 +775,7 @@ static void wm_render_region(int rx0, int ry0, int rx1, int ry1)
         if (w->x >= rx1 || w->y >= ry1 || w->x + w->w <= rx0 || w->y + w->h <= ry0) continue;
         int focused = (i == norder - 1);
         draw_frame(w, focused);
-        if (w->kind == WK_FINDER)
-            draw_finder(w);
-        else if (w->surf.px)
+        if (w->surf.px)
             fb_blit_surface(w->x, w->y + TITLEBAR_H, &w->surf);
     }
     fb_present_rect(rx0, ry0, rx1 - rx0, ry1 - ry0);
@@ -874,29 +822,6 @@ void wm_mouse_event(int x, int y, int left, int right)
                 } else {
                     dragging = wi; drag_dx = cx; drag_dy = cy;
                 }
-            } else if (w->kind == WK_FINDER) {
-                int row = (y - finder_top(w)) / FROW;
-                int atroot = finder_at_root(w);
-                if (row < 0 || row >= finder_visible_rows(w)) {
-                    /* outside the (clipped) listing -- ignore */
-                } else if (!atroot && row == 0) {
-                    path_up(w->cwd);                           /* go to parent */
-                } else {
-                    int idx = atroot ? row : row - 1;
-                    if (idx >= 0 && idx < vfs_count(w->cwd)) {
-                        int isdir = vfs_ent_is_dir(w->cwd, idx);
-                        char nm[64];
-                        scopy(nm, vfs_ent_name(w->cwd, idx), sizeof nm);
-                        if (isdir) {
-                            path_join(w->cwd, w->cwd, nm, sizeof w->cwd);  /* enter */
-                        } else {
-                            char full[160];
-                            path_join(full, w->cwd, nm, sizeof full);
-                            if (ends_aex(nm)) wm_launch(full, "");
-                            else launch_for_ext(ext_of(nm), full);
-                        }
-                    }
-                }
             } else if (w->kind == WK_APP) {
                 enqueue(w, EV_MOUSE, cx, cy - TITLEBAR_H);
             }
@@ -913,8 +838,11 @@ void wm_mouse_event(int x, int y, int left, int right)
             struct win *w = &wins[order[i]];
             if (!w->used || !in_rect(x, y, w->x, w->y, w->w, w->h)) continue;
             int cx = x - w->x, cy = y - w->y;
-            if (cy >= TITLEBAR_H && w->kind == WK_APP) enqueue(w, EV_MOUSE_R, cx, cy - TITLEBAR_H);
-            content = 1;
+            if (cy >= TITLEBAR_H && w->kind == WK_APP) {
+                raise_win(order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
+                enqueue(w, EV_MOUSE_R, cx, cy - TITLEBAR_H);
+                content = 1;
+            }
             break;
         }
     }
@@ -976,13 +904,7 @@ void wm_init(void)
 
     scan_apps();
 
-    /* builtin Finder window */
-    wins[0].used = 1; wins[0].kind = WK_FINDER;
-    wins[0].x = 30; wins[0].y = 60; wins[0].w = 280; wins[0].h = 560;
-    scopy(wins[0].title, "Finder", sizeof wins[0].title);
-    scopy(wins[0].cwd, "/", sizeof wins[0].cwd);
-    order[norder++] = 0;
-
+    /* The Finder is now the ring-3 file-manager app, launched in wm_run(). */
     draw_background();
     draw_dock();
     blit(bg, back, count);
@@ -1004,6 +926,7 @@ void wm_run(void)
     __asm__ volatile ("sti");
 
     /* auto-launch the clock so something is alive on screen at boot */
+    wm_launch("files.aex", "");      /* the Finder (unified file manager) -- desktop's always-open browser */
     wm_launch("clock.aex", "");
 
     /* init: launch the shell on the serial console (stdin/stdout/stderr = tty) */

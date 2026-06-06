@@ -63,6 +63,19 @@ static void pjoin(char *dst, const char *dir, const char *name, int max)
 
 static int is_dir(const char *path) { return dir_count(path) >= 0; }
 
+/* 1 iff absolute path `b` equals `a` or is nested under it (a is an ancestor).
+ * Used to refuse copy/move of a folder into itself or a descendant. */
+static int path_under(const char *a, const char *b)
+{
+    int la = 0; while (a[la]) la++;
+    while (la > 1 && a[la - 1] == '/') la--;
+    int lb = 0; while (b[lb]) lb++;
+    while (lb > 1 && b[lb - 1] == '/') lb--;
+    if (lb < la) return 0;
+    for (int i = 0; i < la; i++) if (a[i] != b[i]) return 0;
+    return lb == la || b[la] == '/';
+}
+
 /* --- recursive copy / delete (userland, via the fd + dir API) --- */
 
 static int copy_file(const char *src, const char *dst)
@@ -85,12 +98,12 @@ static int copy_file(const char *src, const char *dst)
 static int copy_tree(const char *src, const char *dst)
 {
     if (!is_dir(src)) return copy_file(src, dst);
+    int n = dir_count(src);             /* capture BEFORE make_dir: if dst were under src,
+                                         * creating dst would inflate src's listing -> runaway */
     if (make_dir(dst) < 0) { /* may already exist; continue regardless */ }
-    int n = dir_count(src);
     for (int i = 0; i < n; i++) {
         char nm[64];
-        dir_name(src, i, nm);
-        if (!nm[0] || streq(nm, ".") || streq(nm, "..")) continue;
+        if (dir_name(src, i, nm) < 0 || !nm[0] || streq(nm, ".") || streq(nm, "..")) continue;
         char cs[PMAX], cd[PMAX];
         pjoin(cs, src, nm, PMAX);
         pjoin(cd, dst, nm, PMAX);
@@ -99,15 +112,21 @@ static int copy_tree(const char *src, const char *dst)
     return 0;
 }
 
+/* Delete a tree leaf-first. Deleting a dirent tombstones it, which shifts the
+ * LIVE index of every later entry down by one -- so a captured-once `for i<n`
+ * loop skips ~half the children. Instead always delete the FIRST live entry
+ * until the directory is empty; `prev` breaks the loop if a child won't delete
+ * (no progress), so a stuck entry can't spin forever. */
 static int delete_tree(const char *path)
 {
     if (!is_dir(path)) return delete_file(path);
-    int n = dir_count(path);
-    for (int i = 0; i < n; i++) {
-        char nm[64];
-        dir_name(path, i, nm);
-        if (!nm[0] || streq(nm, ".") || streq(nm, "..")) continue;
-        char child[PMAX];
+    char nm[64], child[PMAX];
+    int prev = -1;
+    for (;;) {
+        int n = dir_count(path);
+        if (n <= 0 || n == prev) break;
+        prev = n;
+        if (dir_name(path, 0, nm) < 0) break;
         pjoin(child, path, nm, PMAX);
         delete_tree(child);
     }
@@ -223,7 +242,9 @@ static void do_paste(void)
         if (!leaf[0]) continue;
         char dst[PMAX];
         pjoin(dst, cwd, leaf, PMAX);
-        if (streq(clip[i], dst)) continue;          /* same place, skip */
+        /* skip if the destination is the source itself or nested under it --
+         * otherwise copy_tree would recurse into the copy it just made. */
+        if (path_under(clip[i], dst)) continue;
         if (clip_cut) sys_rename(clip[i], dst);
         else          copy_tree(clip[i], dst);
     }
@@ -500,7 +521,7 @@ static void handle_click(int x, int y)
 
 void app_main(void)
 {
-    gui_create("Files", WINW, WINH);
+    gui_create("Finder", WINW, WINH);
     frame();
 
     struct aqua_event e;

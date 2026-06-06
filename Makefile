@@ -102,7 +102,7 @@ $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
-$(eval $(call APP_RULE,files,   0x47000000,Files,-,F,120,190,140))
+$(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 # (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
