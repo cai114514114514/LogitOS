@@ -15,7 +15,7 @@ cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] &
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 4; printf 'aqs /usr/aqs/hello.aqs\naqs /usr/aqs/fib.aqs\naqs /usr/aqs/ptr.aqs\naqs /usr/aqs/sys.aqs\naqs /usr/aqs/use_mod.aqs\naqs /usr/aqs/dict.aqs\naqs /usr/aqs/closure.aqs\naqs /usr/aqs/gc.aqs\naqs /usr/aqs/classes.aqs\naqs /usr/aqs/exc.aqs\nexit\n'; sleep 7; } | \
+{ sleep 4; printf 'aqs /usr/aqs/hello.aqs\naqs /usr/aqs/fib.aqs\naqs /usr/aqs/ptr.aqs\naqs /usr/aqs/sys.aqs\naqs /usr/aqs/use_mod.aqs\naqs /usr/aqs/dict.aqs\naqs /usr/aqs/closure.aqs\naqs /usr/aqs/gc.aqs\naqs /usr/aqs/classes.aqs\naqs /usr/aqs/exc.aqs\naqs /usr/aqs/stdlib.aqs\nexit\n'; sleep 7; } | \
   "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
@@ -32,8 +32,9 @@ for _ in $(seq 1 300); do
        && grep -aq "dog: Rex makes a sound (woof) name: Rex" "$LOG" \
        && grep -aq "counter: 1 2 3" "$LOG" \
        && grep -aq "exc ok" "$LOG" && grep -aq "caught: boom" "$LOG" \
-       && grep -aq "runtime caught" "$LOG"; then
-        echo "PASS: /bin/aqs ran A1+A2+A3+import+dict+closures+gc+classes+exceptions scripts on Aqua"
+       && grep -aq "runtime caught" "$LOG" \
+       && grep -aq "stdlib ok" "$LOG"; then
+        echo "PASS: /bin/aqs ran A1+A2+A3+import+dict+closures+gc+classes+exceptions+stdlib scripts on Aqua"
         exit 0
     fi
     kill -0 "$QPID" 2>/dev/null || break
