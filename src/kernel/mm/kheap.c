@@ -4,28 +4,49 @@
 #include "pmm.h"
 
 /* A small allocator: bump-allocate within a contiguous arena of physical
- * frames, and keep a first-fit free list of returned blocks for reuse. No
- * coalescing — adequate for kernel bookkeeping and easy to reason about. */
+ * frames, and keep freed blocks for reuse, segregated into power-of-2 size
+ * classes (the classic slab/size-class technique). Each bin holds a singly-
+ * linked free list of equal-or-similar-sized blocks, so a fitting block is
+ * found in O(1) instead of scanning one global list. No coalescing — adequate
+ * for kernel bookkeeping and easy to reason about. */
 
 #define ALIGN16(x)    (((x) + 15) & ~((size_t)15))
 #define ARENA_FRAMES  1024                 /* 4 MiB per arena */
 
+/* Size classes: bin i covers payloads up to (16 << i) bytes, for i in
+ * [0, NUM_BINS-2]; the last bin is the catch-all for oversized blocks.
+ *   bin[0]=16  bin[1]=32 ... bin[7]=2048  bin[8]=oversized                 */
+#define NUM_BINS      9
+
 struct header {
     size_t size;            /* payload size */
-    struct header *next;    /* only meaningful while on the free list */
+    struct header *next;    /* only meaningful while on a bin's free list */
 };
 
-static struct header *free_list = NULL;
+static struct header *bins[NUM_BINS] = { NULL };
 static uint8_t *brk = NULL;
 static size_t   brk_left = 0;
+
+/* Map a (16-aligned) size to its bin: min(ceil_log2(size/16), NUM_BINS-1),
+ * computed in O(1). size is always >= 16 here, so size/16 >= 1. */
+static int bin_index(size_t size)
+{
+    size_t units = size >> 4;              /* size / 16, >= 1 */
+    /* ceil_log2(units): 0 for units==1, else 64 - clz(units-1). */
+    int idx = (units <= 1) ? 0 : (64 - __builtin_clzll(units - 1));
+    if (idx >= NUM_BINS)
+        idx = NUM_BINS - 1;
+    return idx;
+}
 
 static int grow(size_t need)
 {
     if (brk && brk_left >= sizeof(struct header) + 16) {
         struct header *h = (struct header *)brk;
         h->size = brk_left - sizeof(struct header);
-        h->next = free_list;
-        free_list = h;
+        int b = bin_index(h->size);
+        h->next = bins[b];
+        bins[b] = h;
     }
 
     size_t frames = ARENA_FRAMES;
@@ -47,12 +68,17 @@ void *kmalloc(size_t size)
         return NULL;
     size = ALIGN16(size);
 
-    /* Reuse a freed block if one is big enough. */
-    for (struct header **pp = &free_list; *pp; pp = &(*pp)->next) {
-        if ((*pp)->size >= size) {
-            struct header *b = *pp;
-            *pp = b->next;
-            return (void *)(b + 1);
+    /* Reuse a freed block from the matching size class. A block lands in bin
+     * bin_index(block->size); since bin_index is monotonic, any block from a
+     * higher bin also fits, so we search this bin and up. Within a bin sizes
+     * vary, so still confirm block->size >= size before handing it out. */
+    for (int i = bin_index(size); i < NUM_BINS; i++) {
+        for (struct header **pp = &bins[i]; *pp; pp = &(*pp)->next) {
+            if ((*pp)->size >= size) {
+                struct header *b = *pp;
+                *pp = b->next;
+                return (void *)(b + 1);
+            }
         }
     }
 
@@ -74,6 +100,7 @@ void kfree(void *ptr)
     if (!ptr)
         return;
     struct header *h = (struct header *)ptr - 1;
-    h->next = free_list;
-    free_list = h;
+    int b = bin_index(h->size);
+    h->next = bins[b];
+    bins[b] = h;
 }
