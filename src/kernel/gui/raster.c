@@ -126,11 +126,29 @@ int text_raster(const struct ttf_font *f, int gid, int px,
                           (Y - y0)) / (y1 - y0));
                 cross[nc++] = (x << 1) | (y1 > y0 ? 1 : 0);   /* pack dir in bit 0 */
             }
-            /* insertion sort by x (small nc) */
-            for (int a = 1; a < nc; a++) {
-                int v = cross[a], b = a - 1;
-                while (b >= 0 && (cross[b] >> 1) > (v >> 1)) { cross[b+1] = cross[b]; b--; }
-                cross[b+1] = v;
+            /* heapsort by x (cross[i]>>1); O(nc log nc), in-place, no scratch */
+            for (int hs = nc / 2 - 1; hs >= 0; hs--) {   /* heapify (max-heap) */
+                int root = hs, v = cross[root];
+                for (;;) {                               /* sift v down */
+                    int child = 2 * root + 1;
+                    if (child >= nc) break;
+                    if (child + 1 < nc && (cross[child+1] >> 1) > (cross[child] >> 1)) child++;
+                    if ((cross[child] >> 1) <= (v >> 1)) break;
+                    cross[root] = cross[child]; root = child;
+                }
+                cross[root] = v;
+            }
+            for (int end = nc - 1; end > 0; end--) {     /* pop max -> end */
+                int v = cross[end]; cross[end] = cross[0];
+                int root = 0;
+                for (;;) {                               /* sift v down in [0,end) */
+                    int child = 2 * root + 1;
+                    if (child >= end) break;
+                    if (child + 1 < end && (cross[child+1] >> 1) > (cross[child] >> 1)) child++;
+                    if ((cross[child] >> 1) <= (v >> 1)) break;
+                    cross[root] = cross[child]; root = child;
+                }
+                cross[root] = v;
             }
             int wind = 0;
             for (int a = 0; a + 1 < nc; a++) {
