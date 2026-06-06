@@ -547,6 +547,9 @@ static int run_until(int floor)
             for (int i = 0; i < cl->upvalue_count; i++) {
                 uint8_t is_local = READ_BYTE();
                 uint8_t index = READ_BYTE();
+                /* non-local: inherit from the enclosing closure. frame->closure is
+                 * non-NULL here because any fn with upvalue_count>0 is nested in a
+                 * function, which is always invoked via call_closure (never call_fn). */
                 cl->upvalues[i] = is_local ? capture_upvalue(frame->slots + index)
                                            : frame->closure->upvalues[index];
             }
