@@ -351,101 +351,127 @@ static int run_until(int floor)
 #define READ_SHORT() (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
 #define READ_CONST() (frame->fn->consts[READ_BYTE()])
 
-    for (;;) {
-        uint8_t op = READ_BYTE();
-        switch (op) {
-        case OP_CONST: push(READ_CONST()); break;
-        case OP_NIL:   push(NIL_VAL); break;
-        case OP_TRUE:  push(BOOL_VAL(1)); break;
-        case OP_FALSE: push(BOOL_VAL(0)); break;
-        case OP_POP:   pop(); break;
+    /* Computed-goto threaded dispatch: one label per OpCode (in enum order), so
+     * the central indirect branch becomes ~51 monomorphic jumps the CPU branch
+     * predictor can specialize -- the canonical bytecode-VM speedup (CPython,
+     * LuaJIT). Clang (host + x86_64-elf) supports &&label / goto *ptr. Behavior
+     * is identical to the old switch: each arm's body is unchanged, DISPATCH()
+     * replaces break, and out-of-range / handler-less opcodes (e.g. OP_GET_ATTR)
+     * land on op_BAD == the old `default: bad opcode`. */
+    static void *const dispatch[] = {
+        &&op_CONST, &&op_NIL, &&op_TRUE, &&op_FALSE, &&op_POP,
+        &&op_GET_LOCAL, &&op_SET_LOCAL, &&op_GET_GLOBAL, &&op_SET_GLOBAL, &&op_DEF_GLOBAL,
+        &&op_ADD, &&op_SUB, &&op_MUL, &&op_DIV, &&op_MOD, &&op_NEG,
+        &&op_EQ, &&op_NE, &&op_LT, &&op_LE, &&op_GT, &&op_GE, &&op_NOT,
+        &&op_JUMP, &&op_JUMP_IF_FALSE, &&op_LOOP,
+        &&op_CALL, &&op_RET,
+        &&op_MAKE_LIST, &&op_INDEX_GET, &&op_INDEX_SET, &&op_LEN, &&op_INVOKE,
+        &&op_BAD /* OP_GET_ATTR: no handler in the switch -> default */, &&op_IMPORT,
+        &&op_MAKE_DICT, &&op_IN, &&op_ITER,
+        &&op_CLOSURE, &&op_GET_UPVALUE, &&op_SET_UPVALUE, &&op_CLOSE_UPVALUE,
+        &&op_CLASS, &&op_INHERIT, &&op_METHOD,
+        &&op_GET_PROPERTY, &&op_SET_PROPERTY, &&op_GET_SUPER,
+        &&op_SETUP_TRY, &&op_POP_TRY, &&op_RAISE,
+    };
+    uint8_t op;
+#define DISPATCH() do { op = READ_BYTE(); \
+        if (op >= (uint8_t)(sizeof(dispatch) / sizeof(dispatch[0]))) goto op_BAD; \
+        goto *dispatch[op]; } while (0)
 
-        case OP_GET_LOCAL: { uint8_t s = READ_BYTE(); push(frame->slots[s]); break; }
-        case OP_SET_LOCAL: { uint8_t s = READ_BYTE(); frame->slots[s] = peek(0); break; }
-        case OP_GET_GLOBAL: {
+    DISPATCH();
+    {
+        op_CONST: push(READ_CONST()); DISPATCH();
+        op_NIL:   push(NIL_VAL); DISPATCH();
+        op_TRUE:  push(BOOL_VAL(1)); DISPATCH();
+        op_FALSE: push(BOOL_VAL(0)); DISPATCH();
+        op_POP:   pop(); DISPATCH();
+
+        op_GET_LOCAL: { uint8_t s = READ_BYTE(); push(frame->slots[s]); DISPATCH(); }
+        op_SET_LOCAL: { uint8_t s = READ_BYTE(); frame->slots[s] = peek(0); DISPATCH(); }
+        op_GET_GLOBAL: {
             ObjStr *n = AS_STR(READ_CONST());
             Value *s = resolve_global(frame->fn, n);
             if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
-            push(*s); break;
+            push(*s); DISPATCH();
         }
-        case OP_DEF_GLOBAL: { ObjStr *n = AS_STR(READ_CONST()); *aqs_module_slot(frame->fn->module, n, 1) = peek(0); pop(); break; }
-        case OP_SET_GLOBAL: {
+        op_DEF_GLOBAL: { ObjStr *n = AS_STR(READ_CONST()); *aqs_module_slot(frame->fn->module, n, 1) = peek(0); pop(); DISPATCH(); }
+        op_SET_GLOBAL: {
             ObjStr *n = AS_STR(READ_CONST());
             Value *s = frame->fn->module ? aqs_module_slot(frame->fn->module, n, 0) : NULL;
             if (!s) s = builtin_slot(n, 0);
             if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
-            *s = peek(0); break;
+            *s = peek(0); DISPATCH();
         }
 
-        case OP_ADD: {
+        op_ADD: {
             Value b = peek(0), a = peek(1);
             if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) + AS_INT(b))); }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) + AS_NUM(b))); }
             else if (IS_STR(a) && IS_STR(b)) { ObjStr *s = str_concat(AS_STR(a), AS_STR(b)); sp -= 2; push(OBJ_VAL(s)); }
             else { runtime_error("operands of '+' must be numbers or strings"); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_SUB: {
+        op_SUB: {
             Value b = peek(0), a = peek(1);
             if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) - AS_INT(b))); }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) - AS_NUM(b))); }
             else { runtime_error("operands of '-' must be numbers"); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_MUL: {
+        op_MUL: {
             Value b = peek(0), a = peek(1);
             if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) * AS_INT(b))); }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) * AS_NUM(b))); }
             else { runtime_error("operands of '*' must be numbers"); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_DIV: {
+        op_DIV: {
             Value b = peek(0), a = peek(1);
             if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("operands of '/' must be numbers"); goto err; }
             if (IS_INT(a) && IS_INT(b)) {
                 if (AS_INT(b) == 0) { runtime_error("integer division by zero"); goto err; }
                 sp -= 2; push(INT_VAL(AS_INT(a) / AS_INT(b)));
             } else { sp -= 2; push(FLOAT_VAL(AS_NUM(a) / AS_NUM(b))); }
-            break;
+            DISPATCH();
         }
-        case OP_MOD: {
+        op_MOD: {
             Value b = peek(0), a = peek(1);
             if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '%%' must be integers"); goto err; }
             if (AS_INT(b) == 0) { runtime_error("modulo by zero"); goto err; }
             sp -= 2; push(INT_VAL(AS_INT(a) % AS_INT(b)));
-            break;
+            DISPATCH();
         }
-        case OP_NEG: {
+        op_NEG: {
             Value a = peek(0);
             if (IS_INT(a))        { sp--; push(INT_VAL(-AS_INT(a))); }
             else if (IS_FLOAT(a)) { sp--; push(FLOAT_VAL(-AS_FLOAT(a))); }
             else { runtime_error("operand of unary '-' must be a number"); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_NOT: { Value a = pop(); push(BOOL_VAL(!aqs_truthy(a))); break; }
+        op_NOT: { Value a = pop(); push(BOOL_VAL(!aqs_truthy(a))); DISPATCH(); }
 
-        case OP_EQ: { Value b = pop(), a = pop();
+        op_EQ: { Value b = pop(), a = pop();
             int eq = (IS_NUM(a) && IS_NUM(b)) ? (AS_NUM(a) == AS_NUM(b)) : aqs_value_eq(a, b);
-            push(BOOL_VAL(eq)); break; }
-        case OP_NE: { Value b = pop(), a = pop();
+            push(BOOL_VAL(eq)); DISPATCH(); }
+        op_NE: { Value b = pop(), a = pop();
             int eq = (IS_NUM(a) && IS_NUM(b)) ? (AS_NUM(a) == AS_NUM(b)) : aqs_value_eq(a, b);
-            push(BOOL_VAL(!eq)); break; }
-        case OP_LT: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'<' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) <  AS_NUM(b))); break; }
-        case OP_LE: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'<=' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) <= AS_NUM(b))); break; }
-        case OP_GT: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'>' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) >  AS_NUM(b))); break; }
-        case OP_GE: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'>=' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) >= AS_NUM(b))); break; }
+            push(BOOL_VAL(!eq)); DISPATCH(); }
+        op_LT: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'<' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) <  AS_NUM(b))); DISPATCH(); }
+        op_LE: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'<=' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) <= AS_NUM(b))); DISPATCH(); }
+        op_GT: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'>' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) >  AS_NUM(b))); DISPATCH(); }
+        op_GE: { Value b = pop(), a = pop(); if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("'>=' needs numbers"); goto err; } push(BOOL_VAL(AS_NUM(a) >= AS_NUM(b))); DISPATCH(); }
 
-        case OP_JUMP:          { uint16_t o = READ_SHORT(); frame->ip += o; break; }
-        case OP_JUMP_IF_FALSE: { uint16_t o = READ_SHORT(); if (!aqs_truthy(peek(0))) frame->ip += o; break; }
-        case OP_LOOP:          { uint16_t o = READ_SHORT(); frame->ip -= o; break; }
+        op_JUMP:          { uint16_t o = READ_SHORT(); frame->ip += o; DISPATCH(); }
+        op_JUMP_IF_FALSE: { uint16_t o = READ_SHORT(); if (!aqs_truthy(peek(0))) frame->ip += o; DISPATCH(); }
+        op_LOOP:          { uint16_t o = READ_SHORT(); frame->ip -= o; DISPATCH(); }
 
-        case OP_CALL: {
+        op_CALL: {
             int argc = READ_BYTE();
             if (call_value(peek(argc), argc)) goto err;
             frame = &frames[frame_count - 1];   /* native: same frame; fn: the new one */
-            break;
+            DISPATCH();
         }
-        case OP_RET: {
+        op_RET: {
             Value result = pop();
             /* Constructor (init) returns self (slots[0]) rather than init's computed value,
              * so that `Name(args)` evaluates to the new instance. */
@@ -460,39 +486,39 @@ static int run_until(int floor)
             sp = frame->slots;                                /* discard callee + args + locals */
             push(result);
             frame = &frames[frame_count - 1];
-            break;
+            DISPATCH();
         }
 
-        case OP_SETUP_TRY: {
+        op_SETUP_TRY: {
             uint16_t off = READ_SHORT();                 /* forward offset to the except block */
             if (handler_count >= FRAMES_MAX) { runtime_error("too many nested try blocks"); goto err; }
             handler_stack[handler_count].handler_ip = frame->ip + off;
             handler_stack[handler_count].sp = sp;
             handler_stack[handler_count].frame_index = frame_count;
             handler_count++;
-            break;
+            DISPATCH();
         }
-        case OP_POP_TRY: {
+        op_POP_TRY: {
             uint16_t off = READ_SHORT();                 /* forward offset past the except block */
             if (handler_count > 0) handler_count--;      /* try body finished normally: drop handler */
             frame->ip += off;                            /* skip the except block */
-            break;
+            DISPATCH();
         }
-        case OP_RAISE: {
+        op_RAISE: {
             Value v = pop();
             throw_value(v);
             goto err;
         }
 
-        case OP_MAKE_LIST: {
+        op_MAKE_LIST: {
             int n = READ_BYTE();
             ObjList *l = aqs_list_new();
             for (int i = 0; i < n; i++) aqs_list_push(l, sp[-n + i]);
             sp -= n;
             push(OBJ_VAL(l));
-            break;
+            DISPATCH();
         }
-        case OP_MAKE_DICT: {
+        op_MAKE_DICT: {
             int n = READ_BYTE();
             ObjDict *d = aqs_dict_new();
             for (int i = 0; i < n; i++) {
@@ -502,9 +528,9 @@ static int run_until(int floor)
             }
             sp -= 2 * n;
             push(OBJ_VAL(d));
-            break;
+            DISPATCH();
         }
-        case OP_INDEX_GET: {
+        op_INDEX_GET: {
             Value idx = pop(), obj = pop();
             if (IS_PTR(obj)) {
                 if (!IS_INT(idx)) { runtime_error("pointer index must be an integer"); goto err; }
@@ -532,37 +558,37 @@ static int run_until(int floor)
                 if (!aqs_dict_get(AS_DICT(obj), idx, &out)) { runtime_error("key not found"); goto err; }
                 push(out);
             } else { runtime_error("only lists, strings, and dicts can be indexed"); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_INDEX_SET: {
+        op_INDEX_SET: {
             Value val = pop(), idx = pop(), obj = pop();
             if (IS_PTR(obj)) {
                 if (!IS_INT(idx) || !IS_INT(val)) { runtime_error("pointer index/value must be integers"); goto err; }
                 ObjPtr *p = AS_PTR(obj);
                 aqs_ll_poke(p->addr + (uint64_t)(AS_INT(idx) * p->width), p->width, (uint64_t)AS_INT(val));
-                break;
+                DISPATCH();
             }
             if (IS_DICT(obj)) {
                 if (!IS_STR(idx) && !IS_INT(idx)) { runtime_error("dict key must be a string or int"); goto err; }
                 aqs_dict_set(AS_DICT(obj), idx, val);   /* key type checked above, so it can't fail */
-                break;
+                DISPATCH();
             }
             if (!IS_LIST(obj)) { runtime_error("only lists support item assignment"); goto err; }
             if (!IS_INT(idx)) { runtime_error("list index must be an integer"); goto err; }
             ObjList *l = AS_LIST(obj); int64_t i = AS_INT(idx); if (i < 0) i += l->count;
             if (i < 0 || i >= l->count) { runtime_error("list assignment index out of range"); goto err; }
             l->items[i] = val;
-            break;
+            DISPATCH();
         }
-        case OP_LEN: {
+        op_LEN: {
             Value v = pop();
             if (IS_LIST(v))      push(INT_VAL(AS_LIST(v)->count));
             else if (IS_STR(v))  push(INT_VAL(AS_STR(v)->len));
             else if (IS_DICT(v)) push(INT_VAL(AS_DICT(v)->live));
             else { runtime_error("object has no length"); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_INVOKE: {
+        op_INVOKE: {
             ObjStr *name = AS_STR(READ_CONST());
             uint8_t argc = READ_BYTE();
             Value recv = peek(argc);
@@ -625,46 +651,46 @@ static int run_until(int floor)
                     frame = &frames[frame_count - 1];
                 }
             } else { runtime_error("'%.*s' is not a method of this type", name->len, name->chars); goto err; }
-            break;
+            DISPATCH();
         }
-        case OP_GET_PROPERTY: {
+        op_GET_PROPERTY: {
             ObjStr *n = AS_STR(READ_CONST());
             Value recv = peek(0);                 /* keep recv rooted across bind_method's alloc */
             if (IS_INSTANCE(recv)) {
                 ObjInstance *in = AS_INSTANCE(recv);
                 Value field;
-                if (aqs_dict_get(in->fields, OBJ_VAL(n), &field)) { pop(); push(field); break; }
+                if (aqs_dict_get(in->fields, OBJ_VAL(n), &field)) { pop(); push(field); DISPATCH(); }
                 if (bind_method(in->klass, n, recv)) {            /* pushes the bound method */
                     Value bm = pop(); pop(); push(bm);            /* drop the receiver, keep bound method */
-                    break;
+                    DISPATCH();
                 }
                 runtime_error("'%.*s instance' has no property '%.*s'", in->klass->name->len, in->klass->name->chars, n->len, n->chars); goto err;
             }
             if (IS_MODULE(recv)) {
                 Value *s = aqs_module_slot(AS_MODULE(recv), n, 0);
                 if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, n->len, n->chars); goto err; }
-                pop(); push(*s); break;
+                pop(); push(*s); DISPATCH();
             }
             runtime_error("only instances and modules have properties"); goto err;
         }
-        case OP_SET_PROPERTY: {
+        op_SET_PROPERTY: {
             ObjStr *n = AS_STR(READ_CONST());
             Value val = peek(0), recv = peek(1);
             if (!IS_INSTANCE(recv)) { runtime_error("only instances have settable fields"); goto err; }
             aqs_dict_set(AS_INSTANCE(recv)->fields, OBJ_VAL(n), val);
             sp -= 2; push(val);                   /* leave the assigned value as the expression result */
-            break;
+            DISPATCH();
         }
-        case OP_IMPORT: {
+        op_IMPORT: {
             ObjStr *n = AS_STR(READ_CONST());
             ObjModule *m = aqs_import(n);
             if (!m) goto err;                  /* aqs_err set */
             frame = &frames[frame_count - 1];  /* importing may have run nested module frames */
             push(OBJ_VAL(m));
-            break;
+            DISPATCH();
         }
 
-        case OP_IN: {
+        op_IN: {
             Value cont = pop(), item = pop();
             int found = 0;
             if (IS_DICT(cont)) {
@@ -685,15 +711,15 @@ static int run_until(int floor)
                     if (memcmp(hay->chars + i, needle->chars, (size_t)needle->len) == 0) { found = 1; break; }
             } else { runtime_error("'in' needs a dict, list, or string"); goto err; }
             push(BOOL_VAL(found));
-            break;
+            DISPATCH();
         }
 
-        case OP_ITER: {
+        op_ITER: {
             if (IS_DICT(peek(0))) { ObjList *ks = aqs_dict_keys(AS_DICT(peek(0))); sp[-1] = OBJ_VAL(ks); }
-            break;   /* list/range/string: iterate as-is */
+            DISPATCH();   /* list/range/string: iterate as-is */
         }
 
-        case OP_CLOSURE: {
+        op_CLOSURE: {
             ObjFn *fn = AS_FN(READ_CONST());
             ObjClosure *cl = aqs_closure_new(fn);
             push(OBJ_VAL(cl));   /* root cl NOW: capture_upvalue allocates and may trigger GC */
@@ -706,26 +732,26 @@ static int run_until(int floor)
                 cl->upvalues[i] = is_local ? capture_upvalue(frame->slots + index)
                                            : frame->closure->upvalues[index];
             }
-            break;   /* cl is already on the stack as the result */
+            DISPATCH();   /* cl is already on the stack as the result */
         }
-        case OP_GET_UPVALUE: { uint8_t s = READ_BYTE(); push(*frame->closure->upvalues[s]->location); break; }
-        case OP_SET_UPVALUE: { uint8_t s = READ_BYTE(); *frame->closure->upvalues[s]->location = peek(0); break; }
-        case OP_CLOSE_UPVALUE: { close_upvalues(sp - 1); pop(); break; }
-        case OP_CLASS: {
+        op_GET_UPVALUE: { uint8_t s = READ_BYTE(); push(*frame->closure->upvalues[s]->location); DISPATCH(); }
+        op_SET_UPVALUE: { uint8_t s = READ_BYTE(); *frame->closure->upvalues[s]->location = peek(0); DISPATCH(); }
+        op_CLOSE_UPVALUE: { close_upvalues(sp - 1); pop(); DISPATCH(); }
+        op_CLASS: {
             ObjStr *n = AS_STR(READ_CONST());
             ObjClass *k = aqs_class_new(n);   /* self-roots its 2 allocs (push-disable) */
             push(OBJ_VAL(k));                 /* root it as this op's result */
-            break;
+            DISPATCH();
         }
-        case OP_METHOD: {
+        op_METHOD: {
             ObjStr *n = AS_STR(READ_CONST());
             Value method = peek(0);           /* the closure */
             ObjClass *k = AS_CLASS(peek(1));  /* the class, kept underneath */
             aqs_dict_set(k->methods, OBJ_VAL(n), method);
             pop();                            /* drop the closure; class stays */
-            break;
+            DISPATCH();
         }
-        case OP_INHERIT: {
+        op_INHERIT: {
             Value superv = peek(1), subv = peek(0);   /* stack: [.. super class] */
             if (!IS_CLASS(superv)) { runtime_error("superclass must be a class"); goto err; }
             ObjClass *sup = AS_CLASS(superv), *sub = AS_CLASS(subv);
@@ -739,9 +765,9 @@ static int run_until(int floor)
             }
             sp[-2] = sp[-1];                   /* drop super (below class), keep class on top */
             sp--;
-            break;
+            DISPATCH();
         }
-        case OP_GET_SUPER: {
+        op_GET_SUPER: {
             ObjStr *name = AS_STR(READ_CONST());
             Value klassv = peek(0);           /* the enclosing class (kept rooted across the alloc) */
             ObjClass *sup = IS_CLASS(klassv) ? AS_CLASS(klassv)->super : NULL;
@@ -753,11 +779,11 @@ static int run_until(int floor)
                 runtime_error("superclass has no method '%.*s'", name->len, name->chars); goto err;
             }
             sp[-2] = sp[-1]; sp--;            /* drop the class beneath the new bound method */
-            break;
+            DISPATCH();
         }
-        default: runtime_error("bad opcode %d", op); goto err;
-        }
-        continue;                  /* normal completion of an opcode -> next op */
+        op_BAD: runtime_error("bad opcode %d", op); goto err;
+    }
+    {
     err:
         ensure_exc();              /* fold native/built-in errors into g_exc */
         /* find the nearest live handler: the topmost entry whose frame is still on
@@ -775,7 +801,7 @@ static int run_until(int floor)
             sp = h->sp;
             push(g_exc);                                    /* hand the value to the except block */
             g_has_exc = 0;
-            continue;                                       /* RESUME dispatch */
+            DISPATCH();                                      /* RESUME dispatch at the handler */
         }
         /* uncaught: finalize aqs_err for the caller, then abort. */
         if (IS_STR(g_exc)) {
@@ -786,11 +812,12 @@ static int run_until(int floor)
             snprintf(aqs_err, sizeof aqs_err, "uncaught exception");
         }
         g_has_exc = 0;
-        break;                                              /* leave the for loop -> return 1 */
+        /* uncaught: fall through to the return below (was: break out of the loop) */
     }
 #undef READ_BYTE
 #undef READ_SHORT
 #undef READ_CONST
+#undef DISPATCH
     return 1;
 }
 
