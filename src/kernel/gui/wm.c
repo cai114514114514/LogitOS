@@ -212,7 +212,7 @@ void wm_launch(const char *aex_file, const char *arg)
     }
     vmm_switch(prev_cr3);
     __asm__ volatile ("sti");
-    if (!entry) { serial_puts("[wm] launch: load failed\n"); kfree(img); return; }
+    if (!entry) { serial_puts("[wm] launch: load failed\n"); vmm_free_space(space); kfree(img); return; }
 
     int ai = -1;
     for (int i = 0; i < MAXWIN; i++) if (!apps[i].used) { ai = i; break; }

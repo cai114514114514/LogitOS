@@ -70,6 +70,13 @@ int ttf_parse(const uint8_t *data, int len, struct ttf_font *f)
     if (!f->off_head || !f->off_hhea || !f->off_maxp || !f->off_hmtx ||
         !f->off_loca || !f->off_glyf || !f->off_cmap) return -1;
 
+    /* find_table only validates the directory record fits, not that the table
+     * offset is in range. Bound the head/hhea/maxp reads below (highest read:
+     * head+50, hhea+34, maxp+4, each 2 bytes) before dereferencing. */
+    if ((uint64_t)f->off_head + 52 > (uint32_t)len ||
+        (uint64_t)f->off_hhea + 36 > (uint32_t)len ||
+        (uint64_t)f->off_maxp + 6  > (uint32_t)len) return -1;
+
     f->units_per_em = rd16(data + f->off_head + 18);
     f->loca_long    = rs16(data + f->off_head + 50);
     f->ascent   = rs16(data + f->off_hhea + 4);

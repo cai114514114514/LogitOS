@@ -389,6 +389,13 @@ static int aquafs_mount(void)
      * Legit images use bitmap_blocks=1, inode_blocks=8. */
     if (sb.bitmap_blocks == 0 || sb.bitmap_blocks > 1024) return -1;   /* >32 MiB bitmap = absurd */
     if (sb.inode_blocks  == 0 || sb.inode_blocks  > 4096) return -1;   /* >16 MiB inodes = absurd */
+    /* inode_count bounds iget()/ialloc() indexing, but the inodes[] buffer is
+     * sized by inode_blocks -- tie them together or a crafted count walks past
+     * the allocation. */
+    if (sb.inode_count == 0 || sb.inode_count > (uint32_t)sb.inode_blocks * (BS / INODE_SIZE)) return -1;
+    /* total_blocks indexes the free bitmap via balloc()/bit_set(); a crafted
+     * value past the bitmap's bit coverage is an OOB heap write on any alloc. */
+    if (sb.total_blocks > (uint32_t)sb.bitmap_blocks * BS * 8) return -1;
     bitmap = kmalloc((size_t)((uint64_t)sb.bitmap_blocks * BS));
     inodes = kmalloc((size_t)((uint64_t)sb.inode_blocks  * BS));
     if (!bitmap || !inodes) return -1;
