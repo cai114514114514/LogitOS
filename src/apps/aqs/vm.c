@@ -268,8 +268,10 @@ static ObjModule *aqs_import(ObjStr *name)
     ObjModule *m = module_find(name);
     if (m) return m;                              /* cached (loaded, or mid-load == partial) */
     if (nmodules >= 64) { runtime_error("too many modules"); return NULL; }
+    aqs_gc_push_disable();                         /* guard aqs_module_new: two allocs before m is rooted */
     m = aqs_module_new(name->chars, name->len);
     modules[nmodules++] = m;                       /* register before running -> circular-safe */
+    aqs_gc_pop_disable();                          /* m is now a GC root via modules[] */
     char *src = module_source(name);
     if (!src) { runtime_error("cannot import module '%.*s'", name->len, name->chars); return NULL; }
     ObjFn *script = aqs_compile_module(src, m);

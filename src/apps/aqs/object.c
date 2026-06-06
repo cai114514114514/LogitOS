@@ -13,6 +13,13 @@ static int    gray_count = 0, gray_cap = 0;
 
 static Obj *alloc_obj(size_t size, ObjType type)
 {
+    if (!gc_disabled) {            /* collect BEFORE the new object exists, so it can't be swept */
+#ifdef AQS_GC_STRESS
+        gc_collect();
+#else
+        if (live_objects >= next_gc) gc_collect();
+#endif
+    }
     Obj *o = (Obj *)malloc(size);
     o->type = type;
     o->marked = 0;

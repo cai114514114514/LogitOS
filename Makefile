@@ -51,7 +51,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test clean
+.PHONY: all run debug test clean test-aqs test-aqs-gcstress
 
 all: $(ISO)
 
@@ -250,6 +250,13 @@ test-aqs:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
 	@$(BUILD)/aqs_test
+
+# GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
+# or wrong output. Runs the same host unit suite under -DAQS_GC_STRESS.
+test-aqs-gcstress:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DAQS_GC_STRESS -o $(BUILD)/aqs_test_gcstress tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
+	@$(BUILD)/aqs_test_gcstress
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

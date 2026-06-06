@@ -642,5 +642,11 @@ ObjFn *aqs_compile_module(const char *src, ObjModule *module)
 
 ObjFn *aqs_compile(const char *src)   /* standalone: compile into a fresh __main__ module */
 {
-    return aqs_compile_module(src, aqs_module_new("__main__", 8));
+    /* Disable GC before allocating the module: aqs_compile_module enables it
+     * at the top of its own body. Without this guard, a stress-mode GC fires
+     * during aqs_module_new with a stale (freed) value stack and crashes. */
+    aqs_gc_push_disable();
+    ObjModule *m = aqs_module_new("__main__", 8);
+    aqs_gc_pop_disable();
+    return aqs_compile_module(src, m);
 }

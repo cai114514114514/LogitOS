@@ -378,6 +378,15 @@ int main(void)
        "gc()\n"
        "print(d[\"a\"][1], d[\"b\"])\n",
        "2 3\n");
+    ok("gc_auto_bounded",
+       "def churn():\n"
+       "    i = 0\n"
+       "    while i < 20000:\n"
+       "        x = [i]\n"
+       "        i = i + 1\n"
+       "    return gc_stats()\n"
+       "print(churn() < 10000)\n",
+       "true\n");
 
     printf(fails ? "\n%d/%d AquaScript checks FAILED\n" : "\nall %d AquaScript checks passed\n",
            fails ? fails : total, total);
