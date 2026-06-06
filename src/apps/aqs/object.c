@@ -79,6 +79,31 @@ ObjUpvalue *aqs_upvalue_new(Value *slot)
     return u;
 }
 
+ObjClass *aqs_class_new(ObjStr *name)
+{
+    aqs_gc_push_disable();      /* two allocs (class + methods dict) before either is rooted */
+    ObjClass *c = (ObjClass *)alloc_obj(sizeof(ObjClass), O_CLASS);
+    c->name = name; c->super = NULL;
+    c->methods = aqs_dict_new();
+    aqs_gc_pop_disable();
+    return c;
+}
+ObjInstance *aqs_instance_new(ObjClass *klass)
+{
+    aqs_gc_push_disable();      /* two allocs (instance + fields dict) before either is rooted */
+    ObjInstance *in = (ObjInstance *)alloc_obj(sizeof(ObjInstance), O_INSTANCE);
+    in->klass = klass;
+    in->fields = aqs_dict_new();
+    aqs_gc_pop_disable();
+    return in;
+}
+ObjBoundMethod *aqs_bound_method_new(Value receiver, ObjClosure *method)
+{
+    ObjBoundMethod *bm = (ObjBoundMethod *)alloc_obj(sizeof(ObjBoundMethod), O_BOUND_METHOD);
+    bm->receiver = receiver; bm->method = method;
+    return bm;
+}
+
 ObjModule *aqs_module_new(const char *name, int len)
 {
     ObjModule *m = (ObjModule *)alloc_obj(sizeof(ObjModule), O_MODULE);
@@ -311,6 +336,25 @@ static void blacken(Obj *o)
         ObjModule *m = (ObjModule *)o;
         gc_mark_obj((Obj *)m->name);
         for (int i = 0; i < m->count; i++) { gc_mark_obj((Obj *)m->vars[i].name); gc_mark_value(m->vars[i].val); }
+        break;
+    }
+    case O_CLASS: {
+        ObjClass *k = (ObjClass *)o;
+        gc_mark_obj((Obj *)k->name);
+        gc_mark_obj((Obj *)k->super);     /* gc_mark_obj is NULL-safe */
+        gc_mark_obj((Obj *)k->methods);
+        break;
+    }
+    case O_INSTANCE: {
+        ObjInstance *in = (ObjInstance *)o;
+        gc_mark_obj((Obj *)in->klass);
+        gc_mark_obj((Obj *)in->fields);
+        break;
+    }
+    case O_BOUND_METHOD: {
+        ObjBoundMethod *bm = (ObjBoundMethod *)o;
+        gc_mark_value(bm->receiver);
+        gc_mark_obj((Obj *)bm->method);
         break;
     }
     }

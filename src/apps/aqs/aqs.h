@@ -41,7 +41,8 @@ typedef struct {
 #define AS_NUM(v)   (IS_FLOAT(v) ? AS_FLOAT(v) : (double)AS_INT(v))
 
 /* --- objects --- */
-typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE } ObjType;
+typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
+               O_CLASS, O_INSTANCE, O_BOUND_METHOD } ObjType;
 struct Obj { ObjType type; uint8_t marked; Obj *next; };   /* next: alloc list; marked: GC */
 
 typedef struct { Obj obj; int len; uint32_t hash; char *chars; } ObjStr;
@@ -82,6 +83,28 @@ enum { AQS_DK_EMPTY = 0, AQS_DK_STR = 1, AQS_DK_INT = 2, AQS_DK_TOMB = 3 };
 typedef struct { uint8_t kind; ObjStr *kstr; int64_t kint; Value val; } DictEntry;
 typedef struct { Obj obj; DictEntry *entries; int live, used, cap; } ObjDict;
 
+/* M22.3 classes. A class's method table is an ObjDict (name(str) -> ObjClosure);
+ * an instance's fields are an ObjDict (name(str) -> Value) -- reusing ObjDict keeps
+ * GC tracing DRY. `super` is kept only for super.method; method LOOKUP is copy-down
+ * (OP_INHERIT copies the parent's methods into the child), so normal lookup is one
+ * dict. Methods are ordinary closures taking an explicit `self` first parameter. */
+typedef struct ObjClass {
+    Obj obj;
+    ObjStr *name;
+    struct ObjClass *super;     /* parent class, or NULL */
+    ObjDict *methods;           /* name(str) -> ObjClosure */
+} ObjClass;
+typedef struct {
+    Obj obj;
+    ObjClass *klass;
+    ObjDict *fields;            /* name(str) -> Value */
+} ObjInstance;
+typedef struct {
+    Obj obj;
+    Value receiver;             /* the bound self (an instance) */
+    ObjClosure *method;
+} ObjBoundMethod;
+
 /* A3 indirection: a typed pointer into raw memory. p[i] reads/writes `width`
  * bytes at addr + i*width (sign-extended on read when is_signed). */
 typedef struct { Obj obj; uint64_t addr; int width; int is_signed; } ObjPtr;
@@ -109,6 +132,12 @@ typedef struct ObjModule {
 #define AS_DICT(v)   ((ObjDict *)AS_OBJ(v))
 #define IS_CLOSURE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_CLOSURE)
 #define AS_CLOSURE(v) ((ObjClosure *)AS_OBJ(v))
+#define IS_CLASS(v)        (IS_OBJ(v) && AS_OBJ(v)->type == O_CLASS)
+#define AS_CLASS(v)        ((ObjClass *)AS_OBJ(v))
+#define IS_INSTANCE(v)     (IS_OBJ(v) && AS_OBJ(v)->type == O_INSTANCE)
+#define AS_INSTANCE(v)     ((ObjInstance *)AS_OBJ(v))
+#define IS_BOUND_METHOD(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_BOUND_METHOD)
+#define AS_BOUND_METHOD(v) ((ObjBoundMethod *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -122,6 +151,8 @@ typedef enum {
     OP_GET_ATTR, OP_IMPORT,                                        /* modules */
     OP_MAKE_DICT, OP_IN, OP_ITER,                                  /* M21 dict */
     OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE, OP_CLOSE_UPVALUE,  /* M22 closures */
+    OP_CLASS, OP_INHERIT, OP_METHOD,                               /* M22.3 classes */
+    OP_GET_PROPERTY, OP_SET_PROPERTY, OP_GET_SUPER,
 } OpCode;
 
 /* --- compile + run --- */
@@ -141,6 +172,9 @@ ObjStr   *aqs_str_take(char *chars, int len);
 ObjFn    *aqs_fn_new(void);
 ObjClosure *aqs_closure_new(ObjFn *fn);
 ObjUpvalue *aqs_upvalue_new(Value *slot);
+ObjClass       *aqs_class_new(ObjStr *name);
+ObjInstance    *aqs_instance_new(ObjClass *klass);
+ObjBoundMethod *aqs_bound_method_new(Value receiver, ObjClosure *method);
 ObjNative*aqs_native_new(NativeFn fn, const char *name);
 ObjList  *aqs_list_new(void);
 void      aqs_list_push(ObjList *l, Value v);
