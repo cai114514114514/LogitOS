@@ -161,7 +161,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 BROWSER_PIPE := src/apps/browser/dom.c src/apps/browser/layout.c \
                 src/apps/browser/browser_rt.c src/apps/browser/browser_paint.c \
                 src/apps/browser/css_vars.c \
-                src/lib/image/inflate.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/img.c
+                src/lib/image/inflate.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
 $(BUILD)/browserobj/%.o: %.c
@@ -295,9 +295,24 @@ test-png:
 	@mkdir -p $(BUILD)/pngtest
 	@python3 tools/t/png_gen.py $(BUILD)/pngtest
 	@$(CC) -O2 -o $(BUILD)/png_test tools/t/png_test.c \
-	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/inflate.c \
+	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/inflate.c \
 	    -Isrc/lib/image -Isrc/kernel/mm
 	@$(BUILD)/png_test $(BUILD)/pngtest
+
+# JPEG baseline decoder host test: PIL encodes baseline JPEGs (grayscale + colour,
+# 4:4:4 / 4:2:2 / 4:2:0), and we decode the IDENTICAL bytes with libjpeg djpeg
+# (-nosmooth = box chroma upsample, matching ours) as the reference. JPEG is lossy,
+# so we compare two decoders of the same bytes within a tight per-channel tolerance,
+# never against the original pixels. Also asserts progressive/CMYK fail gracefully.
+# Needs PIL + djpeg. (Ad-hoc tests tools/t/img_test.c, tools/t/img_fuzz.c have no
+# target; if run by hand, add src/lib/image/jpeg.c to their source list.)
+test-jpeg:
+	@mkdir -p $(BUILD)/jpegtest
+	@python3 tools/t/jpeg_gen.py $(BUILD)/jpegtest
+	@$(CC) -O2 -o $(BUILD)/jpeg_test tools/t/jpeg_test.c \
+	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/inflate.c \
+	    -Isrc/lib/image -Isrc/kernel/mm
+	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
 
 clean:
 	rm -rf $(BUILD)

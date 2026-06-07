@@ -20,6 +20,7 @@ void img_init(void)
     inited = 1;
     png_register();
     gif_register();
+    jpeg_register();
 }
 
 int img_decode(const uint8_t *p, int n, struct image *out)

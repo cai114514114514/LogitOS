@@ -1,7 +1,7 @@
 #include "aqua.h"
 
-/* Preview: a minimal image viewer. The kernel decodes the file (PNG/GIF) into our
- * RGBA buffer via SYS_IMG_DECODE; we aspect-fit it into the window with gui_blit
+/* Preview: a minimal image viewer. The kernel decodes the file (PNG/GIF/JPEG) into
+ * our RGBA buffer via SYS_IMG_DECODE; we aspect-fit it into the window with gui_blit
  * (which scales). Opened by the Finder for image files (see launch_for_ext). */
 
 #define WINW 760

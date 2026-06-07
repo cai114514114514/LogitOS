@@ -10,11 +10,12 @@ typedef int (*img_detect_fn)(const uint8_t *p, int n);            /* 1 if mine *
 typedef int (*img_decode_fn)(const uint8_t *p, int n, struct image *out); /* 0 ok */
 
 void img_register(img_detect_fn detect, img_decode_fn decode);
-void img_init(void);                                  /* registers PNG + GIF */
+void img_init(void);                                  /* registers PNG + GIF + JPEG */
 int  img_decode(const uint8_t *p, int n, struct image *out);  /* 0 ok, -1 unsupported/error */
 void img_free(struct image *im);
 
 void png_register(void);
 void gif_register(void);
+void jpeg_register(void);
 
 #endif /* AQUA_IMG_H */
