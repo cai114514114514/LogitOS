@@ -115,13 +115,16 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
  * into `dst_cr3` -- every mapped user page gets a fresh frame with identical
  * contents at the same virtual address. The kernel + framebuffer mappings are
  * shared via the PML4 copy done in vmm_new_space, so we only walk PDPT[1]. */
-void vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
+/* Returns 0 on success, -1 on OOM (mid-clone). On -1 the partially-built dst
+ * subtree is left for the caller to reclaim via vmm_free_space (which it must, to
+ * both abort the fork and free the frames cloned so far). */
+int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
 {
     uint64_t *spml4 = (uint64_t *)(src_cr3 & ~(uint64_t)0xFFF);
-    if (!(spml4[USER_PML4_IDX] & PRESENT)) return;
+    if (!(spml4[USER_PML4_IDX] & PRESENT)) return 0;
     uint64_t *spdpt = (uint64_t *)(spml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
     uint64_t pde = spdpt[USER_PDPT_IDX];
-    if (!(pde & PRESENT)) return;
+    if (!(pde & PRESENT)) return 0;
     uint64_t *spd = (uint64_t *)(pde & ~(uint64_t)0xFFF);
     for (int i = 0; i < 512; i++) {
         if (!(spd[i] & PRESENT)) continue;
@@ -132,11 +135,12 @@ void vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
             uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
                           ((uint64_t)i << 21) | ((uint64_t)j << 12);
             uint64_t frame = pmm_alloc();
-            if (!frame) return;          /* OOM: child gets a partial space; caller aborts */
+            if (!frame) return -1;       /* OOM: caller must vmm_free_space(dst) + fail the fork */
             memcpy((void *)frame, (void *)(e & ~(uint64_t)0xFFF), 4096);
             vmm_map_page_in(dst_cr3, va, frame, VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0));
         }
     }
+    return 0;
 }
 
 /* Free every frame + page-table page under the private user subtree (PDPT[1]).

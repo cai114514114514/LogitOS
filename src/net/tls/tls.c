@@ -213,7 +213,12 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     int blen = rec_read(s, &rtype, body, sizeof body);
     if (blen < 0 || rtype != REC_HANDSHAKE || body[0] != HS_SERVER_HELLO) { s->used=0; return TLS_E_PROTO; }
     int shlen = (body[1]<<16)|(body[2]<<8)|body[3];
-    sha256_update(&th, body, 4 + shlen);
+    int shend = 4 + shlen;
+    /* Bound the ServerHello to what was actually received AND to the minimum fixed
+     * layout (4 hdr + 2 ver + 32 random + 1 sid-len + 2 suite + 1 comp + 2 ext-len)
+     * before touching any field -- a short/malicious SH otherwise reads past blen. */
+    if (blen < 44 || shlen < 40 || shend > blen) { s->used=0; return TLS_E_PROTO; }
+    sha256_update(&th, body, shend);
     /* Downgrade protection (RFC 8446 4.1.3): a genuine TLS 1.3 server sets the
      * last 8 bytes of ServerHello.random to a fixed sentinel iff it negotiated a
      * *lower* version. We only speak 1.3, so seeing either sentinel means a
@@ -226,18 +231,22 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
             s->used = 0; return TLS_E_PROTO;
         }
     }
-    /* parse SH: cipher suite + server key share */
+    /* parse SH: cipher suite + server key share. Every access is bounded by shend
+     * (= 4 + shlen <= blen), so a crafted SH can't read past the received bytes. */
     int p = 4 + 2 + 32;                                  /* skip ver+random */
     int sidlen = body[p++]; p += sidlen;                 /* session id echo */
+    if (p + 5 > shend) { s->used=0; return TLS_E_PROTO; } /* suite(2)+comp(1)+extlen(2) */
     int suite = (body[p]<<8)|body[p+1]; p += 2;
     p += 1;                                              /* compression */
     int elen = (body[p]<<8)|body[p+1]; p += 2;
     int eend = p + elen; const uint8_t *spub = 0;
+    if (eend > shend) { s->used=0; return TLS_E_PROTO; }  /* extensions must fit */
     while (p + 4 <= eend) {
         int et = (body[p]<<8)|body[p+1], el = (body[p+2]<<8)|body[p+3]; p += 4;
+        if (p + el > eend) break;                         /* extension body must fit */
         if (et == 51 && el >= 4) {                       /* key_share */
             int grp = (body[p]<<8)|body[p+1]; int kl = (body[p+2]<<8)|body[p+3];
-            if (grp == 0x001d && kl == 32) spub = body + p + 4;
+            if (grp == 0x001d && kl == 32 && el >= 4 + 32) spub = body + p + 4;
         }
         p += el;
     }

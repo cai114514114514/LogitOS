@@ -66,6 +66,10 @@ static int build_query(uint8_t *q, const char *name)
 static uint32_t parse_answer(int rlen)
 {
     if (rlen < 12) return 0;
+    /* Reject a response whose transaction ID doesn't match our query (the fixed
+     * 0x1234 set by build_query) -- a basic guard against off-path spoofed
+     * answers landing in our one-shot receive slot. */
+    if (resp[0] != 0x12 || resp[1] != 0x34) return 0;
     int ancount = (resp[6] << 8) | resp[7];
     if (ancount < 1) return 0;
 

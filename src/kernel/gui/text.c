@@ -20,8 +20,10 @@ static int load_font(const char *path, int idx)
     int sz = vfs_size(path);
     if (sz <= 0) { kprintf("[text] %s: not found\n", path); return -1; }
     uint8_t *buf = kmalloc(sz);
-    if (!buf || vfs_read(path, buf, sz) != sz) { kprintf("[text] %s: read fail\n", path); return -1; }
-    if (ttf_parse(buf, sz, &fonts[idx]) != 0) { kprintf("[text] %s: parse fail\n", path); return -1; }
+    if (!buf) { kprintf("[text] %s: oom\n", path); return -1; }
+    if (vfs_read(path, buf, sz) != sz) { kprintf("[text] %s: read fail\n", path); kfree(buf); return -1; }
+    if (ttf_parse(buf, sz, &fonts[idx]) != 0) { kprintf("[text] %s: parse fail\n", path); kfree(buf); return -1; }
+    /* success: fonts[idx] points into buf, so buf is intentionally NOT freed. */
     font_ok[idx] = 1;
     kprintf("[text] %s: %d glyphs, upem=%d\n", path, fonts[idx].num_glyphs, fonts[idx].units_per_em);
     return 0;

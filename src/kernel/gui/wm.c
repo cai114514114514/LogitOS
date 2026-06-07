@@ -148,7 +148,8 @@ void wm_launch(const char *aex_file, const char *arg)
 
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
-    if (!img || vfs_read(aex_file, img, bytes) <= 0) return;
+    if (!img) return;
+    if (vfs_read(aex_file, img, bytes) <= 0) { kfree(img); return; }
 
     char name[32], ext[8];
     if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); kfree(img); return; }
@@ -235,32 +236,33 @@ static void launch_for_ext(const char *ext, const char *file)
 }
 
 /* ---------- system info text (for the Activity Monitor app) ---------- */
-static char *ap_num(char *p, uint64_t v)
+/* Bounded appenders: never write at or past `end` (caller reserves end for NUL). */
+static char *ap_num(char *p, char *end, uint64_t v)
 {
     char t[20]; int i = 0;
-    if (!v) { *p++ = '0'; return p; }
+    if (!v) { if (p < end) *p++ = '0'; return p; }
     while (v) { t[i++] = '0' + v % 10; v /= 10; }
-    while (i) *p++ = t[--i];
+    while (i && p < end) *p++ = t[--i];
     return p;
 }
-static char *ap_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *ap_str(char *p, char *end, const char *s) { while (*s && p < end) *p++ = *s++; return p; }
 
 static int sysinfo_text(char *buf, int max)
 {
-    char *p = buf;
-    p = ap_str(p, "Uptime  "); p = ap_num(p, timer_ticks() / 100); p = ap_str(p, " s\n");
-    p = ap_str(p, "Memory  "); p = ap_num(p, (pmm_total_bytes() - pmm_free_bytes()) >> 20);
-    p = ap_str(p, " / "); p = ap_num(p, pmm_total_bytes() >> 20); p = ap_str(p, " MB used\n");
-    p = ap_str(p, "Switches "); p = ap_num(p, sched_switches()); p = ap_str(p, "\n\n");
-    p = ap_str(p, "PID  NAME\n");
-    p = ap_str(p, "  0  wm (compositor)\n");
+    if (max <= 0) return 0;
+    char *p = buf, *end = buf + max - 1;            /* reserve 1 byte for NUL */
+    p = ap_str(p, end, "Uptime  "); p = ap_num(p, end, timer_ticks() / 100); p = ap_str(p, end, " s\n");
+    p = ap_str(p, end, "Memory  "); p = ap_num(p, end, (pmm_total_bytes() - pmm_free_bytes()) >> 20);
+    p = ap_str(p, end, " / "); p = ap_num(p, end, pmm_total_bytes() >> 20); p = ap_str(p, end, " MB used\n");
+    p = ap_str(p, end, "Switches "); p = ap_num(p, end, sched_switches()); p = ap_str(p, end, "\n\n");
+    p = ap_str(p, end, "PID  NAME\n");
+    p = ap_str(p, end, "  0  wm (compositor)\n");
     for (int i = 0; i < MAXWIN; i++)
         if (apps[i].used && apps[i].alive) {
-            p = ap_str(p, "  "); p = ap_num(p, apps[i].id); p = ap_str(p, "  ");
-            p = ap_str(p, apps[i].name); p = ap_str(p, "\n");
+            p = ap_str(p, end, "  "); p = ap_num(p, end, apps[i].id); p = ap_str(p, end, "  ");
+            p = ap_str(p, end, apps[i].name); p = ap_str(p, end, "\n");
         }
     *p = 0;
-    (void)max;
     return (int)(p - buf);
 }
 
@@ -293,6 +295,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (wi < 0) return -1;
         int cw = (int)((b >> 16) & 0xFFFF), ch = (int)(b & 0xFFFF);
         if (cw <= 0 || ch <= 0) return -1;
+        /* cw,ch are each up to 65535 -- cw*ch*4 overflows int. A window larger
+         * than the screen is meaningless, so cap to the framebuffer; do the size
+         * math in 64-bit. */
+        if (cw > (int)fb_width() || ch > (int)fb_height()) return -1;
+        uint64_t pxcount = (uint64_t)cw * (uint64_t)ch;
         struct win *w = &wins[wi];
         w->used = 1; w->kind = WK_APP; w->app = ap;
         w->w = cw; w->h = TITLEBAR_H + ch;
@@ -303,9 +310,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
           if (w->y + w->h > SH - 4) w->y = SH - 4 - w->h; if (w->y < 24) w->y = 24; }
         scopy(w->title, title, sizeof w->title);
         w->surf.w = cw; w->surf.h = ch;
-        w->surf.px = kmalloc((unsigned)(cw * ch * 4));
+        w->surf.px = kmalloc((size_t)(pxcount * 4));
         if (!w->surf.px) { w->used = 0; return -1; }
-        for (int i = 0; i < cw * ch; i++) w->surf.px[i] = rgb(250, 250, 252);
+        for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
         w->evhead = w->evtail = 0; w->wants_close = 0;
         ap->win = wi;
         raise_win(wi);

@@ -34,8 +34,9 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
 /* Validate that a user buffer is mapped in `cr3` for read/write access. */
 int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write);
 
-/* fork(): eager-copy the private user subtree of `src_cr3` into `dst_cr3`. */
-void vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3);
+/* fork(): eager-copy the private user subtree of `src_cr3` into `dst_cr3`.
+ * Returns 0 on success, -1 on OOM (caller must vmm_free_space(dst) + fail). */
+int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3);
 
 /* execve(): free the user subtree but keep the (empty) address space alive. */
 void vmm_free_user(uint64_t cr3);

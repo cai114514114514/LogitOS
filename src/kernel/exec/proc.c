@@ -104,7 +104,10 @@ long proc_fork(struct registers *r)
 
     uint64_t space = vmm_new_space();
     if (!space) return -1;
-    vmm_clone_user(space, parent->cr3);     /* eager copy of the user subtree */
+    if (vmm_clone_user(space, parent->cr3) < 0) {   /* OOM mid-clone: don't run a partial child */
+        vmm_free_space(space);
+        return -1;
+    }
 
     struct proc *child = alloc_proc();
     if (!child) { vmm_free_space(space); return -1; }

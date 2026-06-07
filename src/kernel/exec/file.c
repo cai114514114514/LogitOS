@@ -199,6 +199,9 @@ long file_lseek(struct file *f, long off, int whence)
     long base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? f->off
               : whence == SEEK_END ? f->size : -1;
     if (base < 0) return -1;
+    /* base+off can overflow signed long (UB). base >= 0 here, so a positive off
+     * overflows iff off > LONG_MAX - base; a negative off can't overflow. */
+    if (off > 0 && off > (long)0x7fffffffffffffffL - base) return -1;
     long no = base + off;
     if (no < 0) return -1;
     f->off = no;

@@ -21,7 +21,9 @@ enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSING, TIME_WAIT };
 #define RXBUF    65536      /* 64 KiB receive window: a full HTTP body fits in one
                             * window, so the sender streams it without zero-window
                             * stalls (the old 16 KiB throttled downloads badly). */
-#define TXBUF    2048
+#define TXBUF    1460     /* MSS: 1500 MTU - 20 IP - 20 TCP. Caps a segment so it
+                          * fits ip_send's 1500-byte pkt[] (was 2048 -> >1480-byte
+                          * payloads were silently dropped by ip_send). */
 
 struct tcp_conn {
     int      state;
