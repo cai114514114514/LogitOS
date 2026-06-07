@@ -1,5 +1,24 @@
 #include "aqs.h"
 
+/* OOM wrappers. On a NULL allocation they stamp aqs_err + raise g_oom (cleared in
+ * reset_stack / aqs_compile_module). The VM dispatch loop polls g_oom and unwinds
+ * to a catchable "out of memory"; compile-/lex-time callers poll it directly.
+ * Allocation sites that grow-then-store guard the store with `if (g_oom) return`
+ * so no NULL is dereferenced before the unwind. */
+int g_oom = 0;
+void *aqs_malloc(size_t n)
+{
+    void *p = malloc(n);
+    if (!p) { snprintf(aqs_err, sizeof aqs_err, "out of memory"); g_oom = 1; }
+    return p;
+}
+void *aqs_realloc(void *p, size_t n)
+{
+    void *q = realloc(p, n);
+    if (!q) { snprintf(aqs_err, sizeof aqs_err, "out of memory"); g_oom = 1; }
+    return q;
+}
+
 /* All heap objects are chained on g_objs: the mark-sweep GC sweeps this list
  * (gc_collect), and aqs_free_objects walks it to release everything at run end. */
 static Obj *g_objs = NULL;
@@ -20,7 +39,8 @@ static Obj *alloc_obj(size_t size, ObjType type)
         if (live_objects >= next_gc) gc_collect();
 #endif
     }
-    Obj *o = (Obj *)malloc(size);
+    Obj *o = (Obj *)aqs_malloc(size);
+    if (!o) return NULL;          /* g_oom set; caller propagates, DISPATCH unwinds */
     o->type = type;
     o->marked = 0;
     o->next = g_objs;
@@ -39,13 +59,15 @@ static uint32_t hash_str(const char *s, int len)
 ObjStr *aqs_str_take(char *chars, int len)   /* takes ownership of `chars` */
 {
     ObjStr *s = (ObjStr *)alloc_obj(sizeof(ObjStr), O_STR);
+    if (!s) { free(chars); return NULL; }     /* OOM: release the buffer we took */
     s->len = len; s->chars = chars; s->hash = hash_str(chars, len);
     return s;
 }
 
 ObjStr *aqs_str_copy(const char *chars, int len)
 {
-    char *buf = (char *)malloc(len + 1);
+    char *buf = (char *)aqs_malloc(len + 1);
+    if (!buf) return NULL;
     memcpy(buf, chars, len); buf[len] = 0;
     return aqs_str_take(buf, len);
 }
@@ -65,7 +87,8 @@ ObjClosure *aqs_closure_new(ObjFn *fn)
 {
     ObjUpvalue **ups = NULL;
     if (fn->upvalue_count > 0) {
-        ups = (ObjUpvalue **)malloc(sizeof(ObjUpvalue *) * (size_t)fn->upvalue_count);
+        ups = (ObjUpvalue **)aqs_malloc(sizeof(ObjUpvalue *) * (size_t)fn->upvalue_count);
+        if (!ups) return NULL;
         for (int i = 0; i < fn->upvalue_count; i++) ups[i] = NULL;
     }
     ObjClosure *c = (ObjClosure *)alloc_obj(sizeof(ObjClosure), O_CLOSURE);
@@ -120,7 +143,8 @@ Value *aqs_module_slot(ObjModule *m, ObjStr *name, int create)
     if (!create) return NULL;
     if (m->count + 1 > m->cap) {
         m->cap = m->cap < 8 ? 8 : m->cap * 2;
-        m->vars = (NameVal *)realloc(m->vars, m->cap * sizeof(NameVal));
+        m->vars = (NameVal *)aqs_realloc(m->vars, m->cap * sizeof(NameVal));
+        if (g_oom) return NULL;
     }
     m->vars[m->count].name = name;
     m->vars[m->count].val = NIL_VAL;
@@ -145,7 +169,8 @@ void aqs_list_push(ObjList *l, Value v)
 {
     if (l->count + 1 > l->cap) {
         l->cap = l->cap < 8 ? 8 : l->cap * 2;
-        l->items = (Value *)realloc(l->items, l->cap * sizeof(Value));
+        l->items = (Value *)aqs_realloc(l->items, l->cap * sizeof(Value));
+        if (g_oom) return;
     }
     l->items[l->count++] = v;
 }
@@ -191,7 +216,8 @@ ObjDict *aqs_dict_new(void)
 static void dict_grow(ObjDict *d)
 {
     int newcap = d->cap < 8 ? 8 : d->cap * 2;
-    DictEntry *ne = (DictEntry *)malloc((size_t)newcap * sizeof(DictEntry));
+    DictEntry *ne = (DictEntry *)aqs_malloc((size_t)newcap * sizeof(DictEntry));
+    if (!ne) return;                                          /* g_oom set; old table untouched */
     memset(ne, 0, (size_t)newcap * sizeof(DictEntry));        /* AQS_DK_EMPTY == 0 */
     int live = 0;
     for (int i = 0; i < d->cap; i++) {
@@ -209,7 +235,7 @@ int aqs_dict_set(ObjDict *d, Value key, Value val)
     if (!IS_STR(key) && !IS_INT(key)) return 0;
     /* grow at 0.75 load; cap is a power of two so cap>>2 == cap/4 exactly, and the
      * subtraction form can't overflow int the way (used+1)*4 >= cap*3 would. cap 0 -> grow to 8. */
-    if (d->used + 1 >= d->cap - (d->cap >> 2)) dict_grow(d);
+    if (d->used + 1 >= d->cap - (d->cap >> 2)) { dict_grow(d); if (g_oom) return 0; }
     DictEntry *e = find_entry(d->entries, d->cap, key);
     int existing = (e->kind == AQS_DK_STR || e->kind == AQS_DK_INT);
     if (!existing) {
@@ -268,7 +294,8 @@ void aqs_chunk_write(ObjFn *fn, uint8_t b)
 {
     if (fn->count + 1 > fn->cap) {
         fn->cap = fn->cap < 8 ? 8 : fn->cap * 2;
-        fn->code = (uint8_t *)realloc(fn->code, fn->cap);
+        fn->code = (uint8_t *)aqs_realloc(fn->code, fn->cap);
+        if (g_oom) return;                       /* compiler polls g_oom -> aborts the compile */
     }
     fn->code[fn->count++] = b;
 }
@@ -280,7 +307,8 @@ int aqs_chunk_const(ObjFn *fn, Value v)
         if (aqs_value_eq(fn->consts[i], v)) return i;
     if (fn->kcount + 1 > fn->kcap) {
         fn->kcap = fn->kcap < 8 ? 8 : fn->kcap * 2;
-        fn->consts = (Value *)realloc(fn->consts, fn->kcap * sizeof(Value));
+        fn->consts = (Value *)aqs_realloc(fn->consts, fn->kcap * sizeof(Value));
+        if (g_oom) return fn->kcount;            /* compiler polls g_oom -> aborts the compile */
     }
     fn->consts[fn->kcount] = v;
     return fn->kcount++;
@@ -291,8 +319,15 @@ void gc_mark_obj(Obj *o)
     if (o == NULL || o->marked) return;
     o->marked = 1;
     if (gray_count + 1 > gray_cap) {
-        gray_cap = gray_cap < 16 ? 16 : gray_cap * 2;
-        gray = (Obj **)realloc(gray, (size_t)gray_cap * sizeof(Obj *));
+        int nc = gray_cap < 16 ? 16 : gray_cap * 2;
+        Obj **ng = (Obj **)aqs_realloc(gray, (size_t)nc * sizeof(Obj *));
+        /* OOM during mark: un-mark o so sweep keeps it conservatively LIVE (a leak
+         * is recoverable next GC; freeing a live object would be a UAF), set g_oom,
+         * and return without enqueuing. Collection finishes with a possibly-
+         * incomplete worklist but NO freed-live objects + NO NULL deref; control
+         * returns up to alloc_obj -> opcode -> DISPATCH, which unwinds on g_oom. */
+        if (!ng) { o->marked = 0; return; }   /* g_oom already set by aqs_realloc */
+        gray = ng; gray_cap = nc;
     }
     gray[gray_count++] = o;
 }

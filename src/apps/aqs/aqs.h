@@ -159,7 +159,7 @@ typedef enum {
 
 /* .la compiled-bytecode format version. Bump on ANY opcode add/reorder or any
  * change to the .la byte layout -- aqs_load rejects a mismatching version. */
-#define AQS_BC_VERSION 1u
+#define AQS_BC_VERSION 2u
 
 /* --- compile + run --- */
 ObjFn *aqs_compile(const char *src);                       /* compile into a throwaway module */
@@ -234,5 +234,14 @@ long      aqs_ll_syscall(long n, long a, long b, long c);
 
 /* error reporting (set by compiler/vm; aqs_main prints) */
 extern char aqs_err[256];
+
+/* OOM plumbing (object.c): on a NULL malloc/realloc the wrappers set aqs_err to
+ * "out of memory" + raise g_oom; the dispatch loop polls g_oom (like
+ * g_stack_overflow) and unwinds to a catchable runtime error. compile-/lex-time
+ * sites poll g_oom directly. Exposed (non-static) so str_concat/module_source
+ * (vm.c), string() (compiler.c) and push() (lexer.c) can use them too. */
+extern int g_oom;
+void *aqs_malloc(size_t n);
+void *aqs_realloc(void *p, size_t n);
 
 #endif /* AQUASCRIPT_H */

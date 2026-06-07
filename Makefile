@@ -194,8 +194,12 @@ AQS_LASM := $(wildcard src/apps/libc/src/*.asm)
 AQS_OBJ  := $(patsubst %.c,$(BUILD)/aqsobj/%.o,$(AQS_C)) \
             $(patsubst %.c,$(BUILD)/aqsobj/%.o,$(AQS_LIBC)) \
             $(patsubst %.asm,$(BUILD)/aqsobj/%.o,$(AQS_LASM))
+# aqs.h carries AQS_BC_VERSION + the opcode enum; depend on it so a version bump
+# rebuilds EVERY aqsobj (esp. aqs_bc.o, whose .c rarely changes) -- otherwise a
+# stale aqs_bc.o in /bin/aqs rejects the freshly-bumped .la files on Aqua.
+AQS_HDRS := $(wildcard src/apps/aqs/*.h)
 
-$(BUILD)/aqsobj/%.o: %.c
+$(BUILD)/aqsobj/%.o: %.c $(AQS_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/aqsobj/%.o: %.asm
@@ -271,7 +275,11 @@ test-aqs-gcstress:
 # and target share AQS_CORE/aqs.h, so AQS_BC_VERSION + the opcode enum match and a
 # host-produced .la loads on Aqua.
 AQSC := $(BUILD)/aqsc
-$(AQSC): $(AQS_CORE) src/apps/aqs/aqs.c
+# aqs.h carries AQS_BC_VERSION + the opcode enum; list it so a version bump or
+# opcode change forces aqsc (and therefore every .la) to rebuild. Without this
+# dep a bumped AQS_BC_VERSION silently keeps stale .la files that the kernel's
+# aqs_load then rejects (cf. the roots_bundle.inc dep gotcha).
+$(AQSC): $(AQS_CORE) src/apps/aqs/aqs.c src/apps/aqs/aqs.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -o $@ src/apps/aqs/aqs.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
 

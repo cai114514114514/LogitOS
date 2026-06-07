@@ -52,13 +52,15 @@ static void consume(TokType t, const char *msg) { if (check(t)) advance(); else 
 /* ---- bytecode emit (into current->fn) ---- */
 static void emit(uint8_t b)            { aqs_chunk_write(current->fn, b); }
 static void emit2(uint8_t a, uint8_t b){ emit(a); emit(b); }
+/* Emit a 16-bit const-pool index, big-endian (hi then lo) -- matches READ_SHORT
+ * in the VM and the emitJump/patchJump byte order. Const-pool operands are now a
+ * uniform 2 bytes, so up to 65535 distinct constants per function are addressable. */
+static void emit16(int k)              { emit((uint8_t)((k >> 8) & 0xff)); emit((uint8_t)(k & 0xff)); }
 static int  makeConst(Value v)
 {
-    int k = aqs_chunk_const(current->fn, v);
-    if (k > 255) { error("too many constants in one function"); return 0; }
-    return k;
+    return aqs_chunk_const(current->fn, v);
 }
-static void emitConst(Value v) { emit2(OP_CONST, (uint8_t)makeConst(v)); }
+static void emitConst(Value v) { emit(OP_CONST); emit16(makeConst(v)); }
 static int  identConst(const char *name, int len) { return makeConst(OBJ_VAL(aqs_str_copy(name, len))); }
 
 static int emitJump(uint8_t op) { emit(op); emit(0xff); emit(0xff); return current->fn->count - 2; }
@@ -176,7 +178,8 @@ static void literal(void)
 static void string(void)
 {
     Token t = tk_prev();
-    char *buf = (char *)malloc((size_t)t.len + 1);
+    char *buf = (char *)aqs_malloc((size_t)t.len + 1);
+    if (!buf) { error("out of memory"); return; }
     int n = 0;
     for (int i = 0; i < t.len; i++) {
         char c = t.start[i];
@@ -250,8 +253,8 @@ static void dot(void)   /* infix for '.' : field/method/module-attr access, or a
     consume(T_IDENT, "expected a name after '.'");
     Token attr = tk_prev();
     int name = identConst(attr.start, attr.len);
-    if (match(T_LPAREN)) { uint8_t argc = arg_list(); emit(OP_INVOKE); emit((uint8_t)name); emit(argc); }
-    else emit2(OP_GET_PROPERTY, (uint8_t)name);
+    if (match(T_LPAREN)) { uint8_t argc = arg_list(); emit(OP_INVOKE); emit16(name); emit(argc); }
+    else { emit(OP_GET_PROPERTY); emit16(name); }
 }
 
 static void unary(void)
@@ -268,7 +271,7 @@ static void named_variable(Token t)
     if (slot >= 0) { emit2(OP_GET_LOCAL, (uint8_t)slot); return; }
     int up = resolve_upvalue(current, t.start, t.len);
     if (up >= 0) { emit2(OP_GET_UPVALUE, (uint8_t)up); return; }
-    emit2(OP_GET_GLOBAL, (uint8_t)identConst(t.start, t.len));
+    emit(OP_GET_GLOBAL); emit16(identConst(t.start, t.len));
 }
 static void variable(void) { named_variable(tk_prev()); }
 
@@ -374,7 +377,7 @@ static void store_name(Token name)
     if (slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)slot); emit(OP_POP); return; }
     int up = resolve_upvalue(current, name.start, name.len);
     if (up >= 0) { emit2(OP_SET_UPVALUE, (uint8_t)up); emit(OP_POP); return; }
-    if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
+    if (current->enclosing == NULL) { emit(OP_DEF_GLOBAL); emit16(identConst(name.start, name.len)); }
     else add_local(name.start, name.len);    /* new local: the value becomes its home slot */
 }
 
@@ -403,7 +406,7 @@ static void assignment(void)
         int fk = identConst(field.start, field.len);
         consume(T_ASSIGN, "expected '=' in property assignment");
         expression();                              /* the value */
-        emit2(OP_SET_PROPERTY, (uint8_t)fk);       /* [.. recv val] -> leaves val */
+        emit(OP_SET_PROPERTY); emit16(fk);         /* [.. recv val] -> leaves val */
         emit(OP_POP);                              /* statement: discard the result */
         return;
     }
@@ -413,7 +416,7 @@ static void assignment(void)
         else {
             int up = resolve_upvalue(current, name.start, name.len);
             if (up >= 0) emit2(OP_GET_UPVALUE, (uint8_t)up);
-            else emit2(OP_GET_GLOBAL, (uint8_t)identConst(name.start, name.len));
+            else { emit(OP_GET_GLOBAL); emit16(identConst(name.start, name.len)); }
         }
         for (;;) {
             expression();
@@ -486,7 +489,7 @@ static void for_statement(void)
     emit2(OP_GET_LOCAL, (uint8_t)idx_slot);
     emit(OP_INDEX_GET);                             /* seq[idx] */
     if (var_slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)var_slot); emit(OP_POP); }
-    else emit2(OP_DEF_GLOBAL, (uint8_t)identConst(var.start, var.len));
+    else { emit(OP_DEF_GLOBAL); emit16(identConst(var.start, var.len)); }
     block();
     emit2(OP_GET_LOCAL, (uint8_t)idx_slot);         /* idx = idx + 1 */
     emitConst(INT_VAL(1));
@@ -503,7 +506,7 @@ static void import_statement(void)   /* import NAME */
 {
     consume(T_IDENT, "expected a module name after 'import'");
     Token name = tk_prev();
-    emit2(OP_IMPORT, (uint8_t)identConst(name.start, name.len));   /* -> module obj on stack */
+    emit(OP_IMPORT); emit16(identConst(name.start, name.len));     /* -> module obj on stack */
     store_name(name);                                              /* bind NAME = module */
     consume(T_NEWLINE, "expected a newline after import");
 }
@@ -517,8 +520,8 @@ static void from_statement(void)     /* from NAME import a, b, ... */
     do {
         consume(T_IDENT, "expected a name to import");
         Token nm = tk_prev();
-        emit2(OP_IMPORT, (uint8_t)modk);                          /* push module (cached) */
-        emit2(OP_GET_PROPERTY, (uint8_t)identConst(nm.start, nm.len)); /* -> module.nm */
+        emit(OP_IMPORT); emit16(modk);                            /* push module (cached) */
+        emit(OP_GET_PROPERTY); emit16(identConst(nm.start, nm.len)); /* -> module.nm */
         store_name(nm);                                           /* bind nm */
     } while (match(T_COMMA));
     consume(T_NEWLINE, "expected a newline after import");
@@ -610,7 +613,8 @@ static void compile_function(const char *name, int namelen, int is_lambda, int i
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
-    emit2(OP_CLOSURE, (uint8_t)makeConst(OBJ_VAL(fn)));
+    emit(OP_CLOSURE); emit16(makeConst(OBJ_VAL(fn)));
+    /* upvalue {is_local,index} pairs stay 1-byte each -- they are slot indices, not const indices. */
     for (int i = 0; i < fn->upvalue_count; i++) { emit(comp.upvalues[i].is_local); emit(comp.upvalues[i].index); }
 }
 
@@ -624,7 +628,7 @@ static void fun_declaration(void)
      * reserved local slot, so no separate store is needed. Top-level defs stay globals. */
     if (current->enclosing != NULL) add_local(name.start, name.len);
     compile_function(name.start, name.len, 0, 0);  /* not a lambda, not a method */
-    if (current->enclosing == NULL) emit2(OP_DEF_GLOBAL, (uint8_t)identConst(name.start, name.len));
+    if (current->enclosing == NULL) { emit(OP_DEF_GLOBAL); emit16(identConst(name.start, name.len)); }
 }
 
 static void lambda_(void)   /* prefix for 'lambda' : an anonymous closure expression */
@@ -654,9 +658,9 @@ static void super_(void)
      * a non-class value. resolve_upvalue starts at current->enclosing, so it does exactly
      * that skip; -1 (top-level class) falls through to the global table. */
     int up = resolve_upvalue(current, current_class.name, current_class.namelen);
-    if (up >= 0) emit2(OP_GET_UPVALUE, (uint8_t)up);
-    else emit2(OP_GET_GLOBAL, (uint8_t)identConst(current_class.name, current_class.namelen));
-    emit2(OP_GET_SUPER, (uint8_t)name);           /* -> the parent method bound to self */
+    if (up >= 0) emit2(OP_GET_UPVALUE, (uint8_t)up);   /* upvalue index: slot, stays 1-byte */
+    else { emit(OP_GET_GLOBAL); emit16(identConst(current_class.name, current_class.namelen)); }
+    emit(OP_GET_SUPER); emit16(name);             /* -> the parent method bound to self */
 }
 
 static void class_declaration(void)
@@ -665,10 +669,10 @@ static void class_declaration(void)
     Token name = tk_prev();
     int namek = identConst(name.start, name.len);
 
-    emit2(OP_CLASS, (uint8_t)namek);                 /* -> new empty class on the stack */
+    emit(OP_CLASS); emit16(namek);                   /* -> new empty class on the stack */
     /* Bind the name immediately so methods can reference the class (and so `super`'s
      * OP_GET_GLOBAL <classname> resolves at method-run time). */
-    if (current->enclosing == NULL) { emit2(OP_DEF_GLOBAL, (uint8_t)namek); }
+    if (current->enclosing == NULL) { emit(OP_DEF_GLOBAL); emit16(namek); }
     else { add_local(name.start, name.len); }        /* nested: the class lives in this local slot */
 
     ClassCtx saved = current_class;
@@ -700,7 +704,7 @@ static void class_declaration(void)
         Token m = tk_prev();
         int mk = identConst(m.start, m.len);
         compile_function(m.start, m.len, 0, 1);      /* a class method: bind `self` to slot 0 */
-        emit2(OP_METHOD, (uint8_t)mk);               /* [.. class closure] -> [.. class] */
+        emit(OP_METHOD); emit16(mk);                 /* [.. class closure] -> [.. class] */
     }
     consume(T_DEDENT, "expected the class body to end (dedent)");
     emit(OP_POP);                                    /* pop the working copy of the class */
@@ -781,7 +785,7 @@ ObjFn *aqs_compile_module(const char *src, ObjModule *module)
     if (!rules_ready) init_rules();
 
     g_module = module;
-    T = toks; P = 0; had_error = 0;
+    T = toks; P = 0; had_error = 0; g_oom = 0;
     Compiler comp;
     comp.enclosing = NULL;
     comp.fn = aqs_fn_new();
@@ -802,7 +806,9 @@ ObjFn *aqs_compile_module(const char *src, ObjModule *module)
     ObjFn *script = comp.fn;
     free(toks);
     aqs_gc_pop_disable();
-    return had_error ? NULL : script;
+    /* g_oom: a realloc failed mid-emit -> the bytecode is incomplete; reject the
+     * compile (the partial ObjFn is reclaimed by aqs_free_objects at run end). */
+    return (had_error || g_oom) ? NULL : script;
 }
 
 ObjFn *aqs_compile(const char *src)   /* standalone: compile into a fresh __main__ module */

@@ -14,7 +14,8 @@ static void push(TokBuf *b, TokType ty, const char *start, int len, int line)
 {
     if (b->n + 1 > b->cap) {
         b->cap = b->cap < 64 ? 64 : b->cap * 2;
-        b->t = (Token *)realloc(b->t, b->cap * sizeof(Token));
+        b->t = (Token *)aqs_realloc(b->t, b->cap * sizeof(Token));
+        if (g_oom) return;                  /* aqs_lex polls g_oom -> bails to its err exit */
     }
     b->t[b->n].type = ty; b->t[b->n].start = start; b->t[b->n].len = len; b->t[b->n].line = line;
     b->n++;
@@ -57,6 +58,7 @@ Token *aqs_lex(const char *src, int *count)
     int bracket = 0;                                  /* () [] depth -> line continuation */
     const char *p = src;
     int err = 0;
+    g_oom = 0;          /* poll after each push(): an OOM realloc -> bail like a lex error */
 
     while (*p) {
         /* ---- logical-line start: indentation (only outside brackets) ---- */
@@ -131,19 +133,20 @@ Token *aqs_lex(const char *src, int *count)
                 default:  snprintf(aqs_err, sizeof aqs_err, "unexpected character '%c' (line %d)", c, line); err = 1; break;
                 }
             }
-            if (err) break;
+            if (err || g_oom) break;
         }
-        if (err) break;
+        if (err || g_oom) break;
 
         if (bracket == 0 && *p == '\n') { push(&b, T_NEWLINE, p, 0, line); p++; line++; }
         else if (*p == 0) break;
     }
 
-    if (err) { free(b.t); return NULL; }
+    if (err || g_oom) { free(b.t); return NULL; }   /* g_oom: aqs_err already "out of memory" */
 
     if (b.n > 0 && b.t[b.n - 1].type != T_NEWLINE) push(&b, T_NEWLINE, p, 0, line);
     while (ni > 1) { ni--; push(&b, T_DEDENT, p, 0, line); }
     push(&b, T_EOF, p, 0, line);
+    if (g_oom) { free(b.t); return NULL; }          /* OOM in the trailing pushes */
     *count = b.n;
     return b.t;
 }

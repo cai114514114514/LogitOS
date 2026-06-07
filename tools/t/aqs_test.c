@@ -154,6 +154,14 @@ static void bc_tests(void)
         "    return out\n"
         "print(squares(5))\n");
 
+    {   /* >255-const function round-trips through dump/load under AQS_BC_VERSION 2
+         * (proves the wider 16-bit operand survives the .la format). */
+        char s[12000]; int p = 0;
+        for (int i = 0; i < 300; i++) p += snprintf(s + p, sizeof s - p, "x%d = %d\n", i, i);
+        snprintf(s + p, sizeof s - p, "print(x299)\n");
+        roundtrip("bc_wide_const", s);
+    }
+
     /* negatives: aqs_load must reject a bad magic and a bumped version */
     total++;
     {
@@ -202,6 +210,8 @@ static const char *MATHX =
 int main(void)
 {
     aqs_add_module_source("mathx", MATHX);
+    aqs_add_module_source("badmod", "x = 1 / 0\n");   /* item D: raises on import */
+    aqs_add_module_source("goodmod", "v = 42\n");
 
     /* arithmetic + precedence */
     ok("prec",   "print(1 + 2 * 3)\n", "7\n");
@@ -374,6 +384,21 @@ int main(void)
        "99 9\n");
     err("badimport", "import does_not_exist\n");
     err("badattr",   "import mathx\nprint(mathx.nope)\n");
+    /* item D: a failed import drops its partial module entry, so it does not
+       poison the table -> a subsequent good import still succeeds. */
+    err("import_fails", "import badmod\n");
+    ok("import_after_fail", "import goodmod\nprint(goodmod.v)\n", "42\n");
+    /* same run: catch a failed import, then a different good import works. */
+    ok("import_recover_same_run",
+       "try:\n    import badmod\nexcept e:\n    print(\"caught\")\nimport goodmod\nprint(goodmod.v)\n",
+       "caught\n42\n");
+    /* same-name retry (the precise nmodules-- assertion): after the first
+       import raises, the partial module must be dropped so a re-import of the
+       SAME name re-attempts (and re-raises) instead of returning the dud. */
+    ok("import_same_name_retry",
+       "try:\n    import badmod\nexcept e:\n    print(\"first\")\n"
+       "try:\n    import badmod\nexcept e:\n    print(\"second\")\n",
+       "first\nsecond\n");
 
     /* ---- M21: dict ---- */
     ok("dictget",  "d = {\"a\": 1, \"b\": 2}\nprint(d[\"a\"], d[\"b\"])\n", "1 2\n");
@@ -705,6 +730,42 @@ int main(void)
     err("uncaught_raise", "raise \"boom\"\n");
     err("uncaught_in_try_body_no_match",   /* throw inside except handler is not re-caught */
         "try:\n    raise \"a\"\nexcept e:\n    raise \"b\"\n");
+
+    /* ---- robustness Item A: value-stack overflow is a CATCHABLE error, not a crash ---- */
+    /* Simple unbounded recursion: hits the call-depth cap (FRAMES_MAX) before the
+     * value stack -- still a clean, catchable runtime error rather than a crash. */
+    err("stack_overflow_recurse", "def f(n):\n    return f(n + 1)\nf(0)\n");
+    ok("overflow_caught",
+       "def f(n):\n    return f(n + 1)\ntry:\n    f(0)\nexcept e:\n    print(\"caught\")\n",
+       "caught\n");
+    /* Recursion with many live locals per frame overruns the VALUE stack
+     * (STACK_MAX) BEFORE the frame cap -> exercises checked_push directly. Before
+     * the guard this overran stack[] into adjacent statics (memory corruption). */
+    {
+        char s[16000]; int p = 0;
+        p += snprintf(s + p, sizeof s - p, "def f(n):\n");
+        for (int i = 0; i < 40; i++) p += snprintf(s + p, sizeof s - p, "    a%d = n\n", i);
+        p += snprintf(s + p, sizeof s - p, "    return f(n + 1)\n");
+        snprintf(s + p, sizeof s - p, "f(0)\n");
+        err("value_stack_overflow", s);
+    }
+    {
+        char s[16000]; int p = 0;
+        p += snprintf(s + p, sizeof s - p, "def f(n):\n");
+        for (int i = 0; i < 40; i++) p += snprintf(s + p, sizeof s - p, "    a%d = n\n", i);
+        p += snprintf(s + p, sizeof s - p, "    return f(n + 1)\n");
+        snprintf(s + p, sizeof s - p, "try:\n    f(0)\nexcept e:\n    print(\"caught\")\n");
+        ok("value_stack_overflow_caught", s, "caught\n");
+    }
+
+    /* ---- robustness B: wide (16-bit) constant index ---- */
+    {   /* >255 distinct constants in one (top-level) function now COMPILES + runs;
+         * was previously "too many constants in one function". */
+        char s[12000]; int p = 0;
+        for (int i = 0; i < 300; i++) p += snprintf(s + p, sizeof s - p, "x%d = %d\n", i, i);
+        snprintf(s + p, sizeof s - p, "print(x299)\n");
+        ok("wide_const_300", s, "299\n");
+    }
 
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();

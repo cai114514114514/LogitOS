@@ -33,6 +33,13 @@ static int     g_has_exc;   /* 1 while an exception is propagating */
  * clear it; assigned by aqs_native_fail below.) */
 static int g_native_err;
 
+/* Value-stack overflow guard. push() is unbounded; the call DEPTH is capped
+ * (FRAMES_MAX) but the VALUE stack (STACK_MAX) is not, so deep recursion with
+ * locals, or many net-increasing pushes, can overrun stack[]. checked_push sets
+ * this flag (+ a catchable "stack overflow" via runtime_error) instead of
+ * advancing sp past the end; the dispatch loop polls it and unwinds to err. */
+static int g_stack_overflow;
+
 /* Builtins (print/len/range/peek/.../SYS_*) are visible from every module; each
  * module has its own namespace (ObjModule.vars). GET_GLOBAL tries the running
  * function's module first, then falls back to builtins. */
@@ -57,8 +64,21 @@ static Value *builtin_slot(ObjStr *name, int create)
 static void push(Value v) { *sp++ = v; }
 static Value pop(void)    { return *--sp; }
 static Value peek(int d)  { return sp[-1 - d]; }
+
+static int runtime_error(const char *fmt, ...);
+
+/* Bounded push: on overflow raise a catchable "stack overflow" and set the flag
+ * WITHOUT advancing sp (so the stack stays valid for unwinding). The dispatch
+ * loop checks g_stack_overflow at the top of DISPATCH() and goes to err. */
+static void checked_push(Value v)
+{
+    if (sp >= stack + STACK_MAX) { runtime_error("stack overflow"); g_stack_overflow = 1; return; }
+    *sp++ = v;
+}
+
 static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL;
-                                handler_count = 0; g_has_exc = 0; g_exc = NIL_VAL; g_native_err = 0; }
+                                handler_count = 0; g_has_exc = 0; g_exc = NIL_VAL; g_native_err = 0;
+                                g_stack_overflow = 0; g_oom = 0; }
 
 /* GC roots: everything the running program can still reach. */
 void aqs_vm_mark_roots(void)
@@ -84,7 +104,11 @@ static int throw_value(Value v) { g_exc = v; g_has_exc = 1; return 1; }
  * `err:` via call_value's return value is converted here. */
 static void ensure_exc(void)
 {
-    if (!g_has_exc) g_exc = OBJ_VAL(aqs_str_copy(aqs_err, (int)strlen(aqs_err))), g_has_exc = 1;
+    if (!g_has_exc) {
+        ObjStr *s = aqs_str_copy(aqs_err, (int)strlen(aqs_err));  /* may OOM -> NULL */
+        g_exc = s ? OBJ_VAL(s) : NIL_VAL;                          /* never OBJ_VAL(NULL) */
+        g_has_exc = 1;
+    }
 }
 
 static int runtime_error(const char *fmt, ...)
@@ -92,7 +116,8 @@ static int runtime_error(const char *fmt, ...)
     va_list ap; va_start(ap, fmt);
     vsnprintf(aqs_err, sizeof aqs_err, fmt, ap);
     va_end(ap);
-    return throw_value(OBJ_VAL(aqs_str_copy(aqs_err, (int)strlen(aqs_err))));
+    ObjStr *s = aqs_str_copy(aqs_err, (int)strlen(aqs_err));      /* may OOM -> NULL */
+    return throw_value(s ? OBJ_VAL(s) : NIL_VAL);                  /* a catcher must not deref NULL */
 }
 
 Value aqs_native_fail(const char *msg) { snprintf(aqs_err, sizeof aqs_err, "%s", msg); g_native_err = 1; return NIL_VAL; }
@@ -103,9 +128,10 @@ static int name_eq(ObjStr *s, const char *lit)
 static ObjStr *str_concat(ObjStr *a, ObjStr *b)
 {
     int n = a->len + b->len;
-    char *buf = (char *)malloc((size_t)n + 1);
+    char *buf = (char *)aqs_malloc((size_t)n + 1);
+    if (!buf) return NULL;                       /* g_oom set; op_ADD goes to err */
     memcpy(buf, a->chars, a->len); memcpy(buf + a->len, b->chars, b->len); buf[n] = 0;
-    return aqs_str_take(buf, n);
+    return aqs_str_take(buf, n);                 /* NULL on alloc_obj OOM (buf freed) */
 }
 
 /* Resolve a global read: the running function's module, then builtins. */
@@ -131,8 +157,8 @@ static char *module_source(ObjStr *name)
     for (int i = 0; i < nmsrc; i++)
         if ((int)strlen(msrc[i].name) == name->len && memcmp(msrc[i].name, name->chars, name->len) == 0) {
             int n = (int)strlen(msrc[i].src);
-            char *buf = (char *)malloc((size_t)n + 1);
-            if (buf) memcpy(buf, msrc[i].src, (size_t)n + 1);
+            char *buf = (char *)aqs_malloc((size_t)n + 1);
+            if (buf) memcpy(buf, msrc[i].src, (size_t)n + 1);  /* NULL -> g_oom; aqs_import checks !src */
             return buf;
         }
     char path[160];
@@ -145,9 +171,10 @@ static char *module_source(ObjStr *name)
         path[p] = 0;
         FILE *f = fopen(path, "r");
         if (!f) continue;
-        size_t cap = 4096, len = 0; char *buf = (char *)malloc(cap);
+        size_t cap = 4096, len = 0; char *buf = (char *)aqs_malloc(cap);
+        if (!buf) { fclose(f); return NULL; }
         for (;;) {
-            if (len + 4096 + 1 > cap) { cap *= 2; buf = (char *)realloc(buf, cap); }
+            if (len + 4096 + 1 > cap) { cap *= 2; buf = (char *)aqs_realloc(buf, cap); if (!buf) { fclose(f); return NULL; } }
             size_t r = fread(buf + len, 1, 4096, f);
             len += r; if (r < 4096) break;
         }
@@ -300,6 +327,7 @@ static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
             g_native_err = 0;
             Value r = ((ObjNative *)AS_OBJ(callee))->fn(argc, sp - argc);
             sp -= argc + 1;            /* drop args + callee */
+            if (sp >= stack + STACK_MAX) { runtime_error("stack overflow"); g_stack_overflow = 1; return 1; }
             push(r);
             return g_native_err;       /* native set aqs_err -> abort */
         }
@@ -337,14 +365,15 @@ static void close_upvalues(Value *last)
 
 /* Look up `name` in `klass`'s (copy-down) method table; if found, push a bound
  * method (receiver bound) onto the stack as the result.
- * Returns 1 if bound (caller should break), 0 if no such method. Allocates a
- * bound method: its inputs (recv, the found closure) are already rooted before the
- * single alloc, so no rooting gap. */
+ * Returns 1 if bound (caller should break), 0 if no such method, -1 on stack
+ * overflow (caller goes to err). Allocates a bound method: its inputs (recv, the
+ * found closure) are already rooted before the single alloc, so no rooting gap. */
 static int bind_method(ObjClass *klass, ObjStr *name, Value receiver)
 {
     Value m;
     if (!aqs_dict_get(klass->methods, OBJ_VAL(name), &m)) return 0;
     ObjBoundMethod *bm = aqs_bound_method_new(receiver, AS_CLOSURE(m));
+    if (sp >= stack + STACK_MAX) { runtime_error("stack overflow"); g_stack_overflow = 1; return -1; }
     push(OBJ_VAL(bm));
     return 1;
 }
@@ -357,6 +386,7 @@ static ObjModule *aqs_import(ObjStr *name);
 static int run_module(ObjFn *script)
 {
     int floor = frame_count;
+    if (sp >= stack + STACK_MAX) { runtime_error("stack overflow"); return 1; }
     push(OBJ_VAL(script));
     if (call_fn(script, 0)) return 1;
     return run_until(floor);
@@ -377,12 +407,22 @@ static ObjModule *aqs_import(ObjStr *name)
         stamp_module(script, m);                    /* pointer writes only -- GC-safe; must precede run_module (OP_DEF_GLOBAL needs ->module) */
     } else {
         char *src = module_source(name);            /* .aqs fallback (+ in-memory registry) */
-        if (!src) { runtime_error("cannot import module '%.*s'", name->len, name->chars); return NULL; }
+        if (!src) {
+            if (nmodules > 0 && modules[nmodules - 1] == m) nmodules--;  /* drop partial -> retry re-attempts */
+            runtime_error("cannot import module '%.*s'", name->len, name->chars);
+            return NULL;
+        }
         script = aqs_compile_module(src, m);         /* stamps ->module via the compiler's g_module */
         free(src);
-        if (!script) return NULL;                   /* compiler set aqs_err */
+        if (!script) {                              /* compiler set aqs_err */
+            if (nmodules > 0 && modules[nmodules - 1] == m) nmodules--;  /* drop partial -> retry re-attempts */
+            return NULL;
+        }
     }
-    if (run_module(script)) return NULL;            /* run_module push()es script -> rooted before any alloc */
+    if (run_module(script)) {                        /* run_module push()es script -> rooted before any alloc */
+        if (nmodules > 0 && modules[nmodules - 1] == m) nmodules--;      /* drop partial -> retry re-attempts */
+        return NULL;
+    }
     m->state = 1;
     return m;
 }
@@ -392,7 +432,7 @@ static int run_until(int floor)
     Frame *frame = &frames[frame_count - 1];
 #define READ_BYTE()  (*frame->ip++)
 #define READ_SHORT() (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
-#define READ_CONST() (frame->fn->consts[READ_BYTE()])
+#define READ_CONST() (frame->fn->consts[READ_SHORT()])
 
     /* Computed-goto threaded dispatch: one label per OpCode (in enum order), so
      * the central indirect branch becomes ~51 monomorphic jumps the CPU branch
@@ -417,25 +457,28 @@ static int run_until(int floor)
         &&op_SETUP_TRY, &&op_POP_TRY, &&op_RAISE,
     };
     uint8_t op;
-#define DISPATCH() do { op = READ_BYTE(); \
+#define DISPATCH() do { \
+        if (g_stack_overflow) { g_stack_overflow = 0; goto err; } \
+        if (g_oom) { g_oom = 0; runtime_error("out of memory"); goto err; } \
+        op = READ_BYTE(); \
         if (op >= (uint8_t)(sizeof(dispatch) / sizeof(dispatch[0]))) goto op_BAD; \
         goto *dispatch[op]; } while (0)
 
     DISPATCH();
     {
-        op_CONST: push(READ_CONST()); DISPATCH();
-        op_NIL:   push(NIL_VAL); DISPATCH();
-        op_TRUE:  push(BOOL_VAL(1)); DISPATCH();
-        op_FALSE: push(BOOL_VAL(0)); DISPATCH();
+        op_CONST: checked_push(READ_CONST()); DISPATCH();
+        op_NIL:   checked_push(NIL_VAL); DISPATCH();
+        op_TRUE:  checked_push(BOOL_VAL(1)); DISPATCH();
+        op_FALSE: checked_push(BOOL_VAL(0)); DISPATCH();
         op_POP:   pop(); DISPATCH();
 
-        op_GET_LOCAL: { uint8_t s = READ_BYTE(); push(frame->slots[s]); DISPATCH(); }
+        op_GET_LOCAL: { uint8_t s = READ_BYTE(); checked_push(frame->slots[s]); DISPATCH(); }
         op_SET_LOCAL: { uint8_t s = READ_BYTE(); frame->slots[s] = peek(0); DISPATCH(); }
         op_GET_GLOBAL: {
             ObjStr *n = AS_STR(READ_CONST());
             Value *s = resolve_global(frame->fn, n);
             if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
-            push(*s); DISPATCH();
+            checked_push(*s); DISPATCH();
         }
         op_DEF_GLOBAL: { ObjStr *n = AS_STR(READ_CONST()); *aqs_module_slot(frame->fn->module, n, 1) = peek(0); pop(); DISPATCH(); }
         op_SET_GLOBAL: {
@@ -450,7 +493,7 @@ static int run_until(int floor)
             Value b = peek(0), a = peek(1);
             if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) + AS_INT(b))); }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) + AS_NUM(b))); }
-            else if (IS_STR(a) && IS_STR(b)) { ObjStr *s = str_concat(AS_STR(a), AS_STR(b)); sp -= 2; push(OBJ_VAL(s)); }
+            else if (IS_STR(a) && IS_STR(b)) { ObjStr *s = str_concat(AS_STR(a), AS_STR(b)); if (!s) goto err; sp -= 2; push(OBJ_VAL(s)); }
             else { runtime_error("operands of '+' must be numbers or strings"); goto err; }
             DISPATCH();
         }
@@ -703,7 +746,9 @@ static int run_until(int floor)
                 ObjInstance *in = AS_INSTANCE(recv);
                 Value field;
                 if (aqs_dict_get(in->fields, OBJ_VAL(n), &field)) { pop(); push(field); DISPATCH(); }
-                if (bind_method(in->klass, n, recv)) {            /* pushes the bound method */
+                int b = bind_method(in->klass, n, recv);          /* pushes the bound method */
+                if (b < 0) goto err;                              /* stack overflow */
+                if (b) {
                     Value bm = pop(); pop(); push(bm);            /* drop the receiver, keep bound method */
                     DISPATCH();
                 }
@@ -765,7 +810,7 @@ static int run_until(int floor)
         op_CLOSURE: {
             ObjFn *fn = AS_FN(READ_CONST());
             ObjClosure *cl = aqs_closure_new(fn);
-            push(OBJ_VAL(cl));   /* root cl NOW: capture_upvalue allocates and may trigger GC */
+            checked_push(OBJ_VAL(cl));   /* root cl NOW: capture_upvalue allocates and may trigger GC */
             for (int i = 0; i < cl->upvalue_count; i++) {
                 uint8_t is_local = READ_BYTE();
                 uint8_t index = READ_BYTE();
@@ -777,13 +822,13 @@ static int run_until(int floor)
             }
             DISPATCH();   /* cl is already on the stack as the result */
         }
-        op_GET_UPVALUE: { uint8_t s = READ_BYTE(); push(*frame->closure->upvalues[s]->location); DISPATCH(); }
+        op_GET_UPVALUE: { uint8_t s = READ_BYTE(); checked_push(*frame->closure->upvalues[s]->location); DISPATCH(); }
         op_SET_UPVALUE: { uint8_t s = READ_BYTE(); *frame->closure->upvalues[s]->location = peek(0); DISPATCH(); }
         op_CLOSE_UPVALUE: { close_upvalues(sp - 1); pop(); DISPATCH(); }
         op_CLASS: {
             ObjStr *n = AS_STR(READ_CONST());
             ObjClass *k = aqs_class_new(n);   /* self-roots its 2 allocs (push-disable) */
-            push(OBJ_VAL(k));                 /* root it as this op's result */
+            checked_push(OBJ_VAL(k));         /* root it as this op's result */
             DISPATCH();
         }
         op_METHOD: {
@@ -818,7 +863,9 @@ static int run_until(int floor)
             /* Bind the superclass method to the *current* self (slot 0 of this method
              * frame), so `super.m(args)` calls it with self implicit -- same convention
              * as `obj.m(args)`. */
-            if (!bind_method(sup, name, frame->slots[0])) {
+            int b = bind_method(sup, name, frame->slots[0]);
+            if (b < 0) goto err;                              /* stack overflow */
+            if (!b) {
                 runtime_error("superclass has no method '%.*s'", name->len, name->chars); goto err;
             }
             sp[-2] = sp[-1]; sp--;            /* drop the class beneath the new bound method */
@@ -842,6 +889,10 @@ static int run_until(int floor)
             frame = &frames[frame_count - 1];
             frame->ip = h->handler_ip;                      /* resume at the except block */
             sp = h->sp;
+            /* RAW bounds check (not checked_push, which would re-arm g_stack_overflow
+             * -> infinite err: loop). On a second overflow no handler above floor is
+             * found and we fall to the uncaught path. */
+            if (sp >= stack + STACK_MAX) { runtime_error("stack overflow"); goto err; }
             push(g_exc);                                    /* hand the value to the except block */
             g_has_exc = 0;
             DISPATCH();                                      /* RESUME dispatch at the handler */
