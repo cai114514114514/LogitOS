@@ -14,6 +14,8 @@
 #include "proc.h"
 #include "ata.h"
 #include "virtio.h"
+#include "percpu.h"
+#include "spinlock.h"
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -38,48 +40,87 @@ static void panic_exception(struct registers *r)
 
 void interrupt_handler(struct registers *r)
 {
+    if (r->vector == 255)          /* LAPIC spurious: no BKL, no EOI, just return */
+        return;
+
+    /* BKL: acquire on every kernel entry (P0: at most one core in the kernel at a
+     * time; ring 3 runs in parallel). `in_kernel` makes the deliberate `sti`
+     * windows (execve, SYS_HTTP_GET) safe: a nested IRQ on a core that already
+     * holds the BKL must NOT re-acquire (self-deadlock) and must NOT re-enter the
+     * scheduler. */
+    struct cpu *me = this_cpu();
+    /* "Nested" = this core already holds the BKL. Key off the lock's true owner,
+     * NOT a separate in_kernel flag: in_kernel has wide windows (it is set/cleared
+     * a few instructions away from the actual lock op), and a timer IRQ landing in
+     * one of those gaps used to read in_kernel=0 and re-acquire the BKL this core
+     * already holds -> the ticket lock self-deadlocks (every core then spins on a
+     * `serving` that never advances). g_bkl_owner is updated inside the lock under
+     * IF=0, so it has no such gap. */
+    int nested = (g_bkl_owner == me->index);
+    uint64_t bf = 0;
+    if (!nested) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
+
     if (r->vector == 128) {        /* int 0x80 system call */
         syscall_dispatch(r);
-        return;
+        goto done;
     }
-    if (r->vector == 240) {        /* SMP work IPI: do this CPU's framebuffer band */
+    if (r->vector == 240) {        /* P0: present IPI retired -> no-op + EOI */
         smp_ipi_work();
         lapic_eoi();
-        return;
+        goto done;
     }
     if (r->vector == 65) {         /* e1000 NIC: drain RX into the stack */
         e1000_irq();
         lapic_eoi();
-        return;
+        goto done;
     }
-    if (r->vector == 255)          /* LAPIC spurious: no EOI, just return */
-        return;
     if (r->vector < 32) {
         if (r->cs & 3) {            /* fault came from ring 3: kill the app, keep the kernel alive */
             uint64_t cr2 = 0; __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
             kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x cr2=%p rsp=%p -- terminating app\n",
                     exception_names[r->vector & 31], (int)r->vector,
                     (void *)r->rip, (unsigned)r->error_code, (void *)cr2, (void *)r->rsp);
-            proc_exit(139);         /* zombie + close fds + window dead; frees stack, switches away */
+            proc_exit(139);         /* -> thread_exit -> context_switch; DOES NOT RETURN.
+                                     * The BKL is handed to the incoming thread; do NOT
+                                     * fall through to done: (no double release). */
         }
-        panic_exception(r);         /* kernel-mode fault is still fatal */
-        return;
+        panic_exception(r);         /* kernel-mode fault is still fatal (loops, no return) */
     }
 
-    int irq = (int)r->vector - 32;
-    int apic = smp_irq_via_apic();      /* EOI to the LAPIC once IRQs go via I/O APIC */
+    {
+        int irq = (int)r->vector - 32;
+        int apic = smp_irq_via_apic();      /* EOI to the LAPIC once IRQs go via I/O APIC */
 
-    if (irq == 0) {
-        timer_tick();
-        if (apic) lapic_eoi(); else pic_eoi(0);   /* EOI before we possibly switch stacks */
-        if (!ata_busy() && !virtio_busy())  /* don't preempt mid block-I/O transfer */
-            schedule();    /* preempt: round-robin to the next thread */
-        return;
+        if (irq == 0) {
+            if (me->index == 0) timer_tick();   /* BSP owns the wall-clock tick */
+            if (apic) lapic_eoi(); else pic_eoi(0);
+            /* Don't preempt mid block-I/O, and never re-enter schedule() from a
+             * NESTED IRQ (the sti window inside an in-progress kernel op). */
+            if (!nested && !ata_busy() && !virtio_busy())
+                schedule();    /* preempt: round-robin to the next thread */
+            goto done;
+        }
+        if (irq == 1)
+            keyboard_handle();  /* PS/2 keyboard */
+        else if (irq == 12)
+            mouse_handle();     /* PS/2 mouse */
+
+        if (apic) lapic_eoi(); else pic_eoi(irq);
     }
-    if (irq == 1)
-        keyboard_handle();  /* PS/2 keyboard */
-    else if (irq == 12)
-        mouse_handle();     /* PS/2 mouse */
 
-    if (apic) lapic_eoi(); else pic_eoi(irq);
+done:
+    /* schedule() (called above for timer preemption, or inside a blocking syscall)
+     * may have switched this thread out and later RESUMED it on a DIFFERENT core,
+     * so `me` (captured at entry) is now stale. Clear in_kernel on the core we
+     * actually resumed on -- using the stale `me` would clobber another core's
+     * in_kernel and leave THIS core's stuck at 1, so its next entry would read
+     * nested=1 and skip the BKL acquire (two cores in the kernel at once). The BKL
+     * itself is global, so releasing it here (on whatever core) is correct. */
+    /* cli before the in_kernel=0 .. BKL-release window: a syscall body may have
+     * left IF=1 (tty_read's sti;hlt, SYS_HTTP_GET, the virtio present poll), and a
+     * nested IRQ landing in that gap would read nested=0 and re-acquire the BKL we
+     * still hold -> self-deadlock. bf carries IF=0 (entry was via an int gate) so
+     * irqrestore won't re-enable it here; the final iretq restores the caller's IF. */
+    __asm__ volatile ("cli");
+    if (!nested) { this_cpu()->in_kernel = 0; spin_unlock_irqrestore(&g_bkl, bf); }
 }

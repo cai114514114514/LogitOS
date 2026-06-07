@@ -15,6 +15,7 @@
 #include "dns.h"
 #include "img.h"
 #include "kheap.h"
+#include "percpu.h"
 
 void syscall_dispatch(struct registers *r)
 {
@@ -174,7 +175,7 @@ void syscall_dispatch(struct registers *r)
         return;
     case SYS_FILE_NAME: {
         int i = (int)r->rdi; int max = (int)r->rdx;
-        if (max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
+        if (i < 0 || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
         { const char *nm = vfs_ent_name("/", i); char *out = (char *)r->rsi;
           int j = 0; for (; j < max - 1 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0; }
         r->rax = (uint64_t)vfs_ent_size("/", i);
@@ -215,6 +216,11 @@ void syscall_dispatch(struct registers *r)
         r->rax = p ? (uint64_t)p->pid : (uint64_t)-1;
         return;
     }
+    case SYS_CPU_INDEX:
+        /* index of the core running this syscall (under the BKL). SMP proof: a
+         * child that observes a different index than another ran on another core. */
+        r->rax = (uint64_t)(long)this_cpu()->index;
+        return;
     case SYS_WAITPID: {
         int status = 0;
         long rc = proc_waitpid((int)r->rdi, &status);

@@ -20,6 +20,9 @@
 #include "usercopy.h"
 #include "proc.h"
 #include "file.h"
+#include "smp.h"
+#include "percpu.h"
+#include "spinlock.h"
 
 #define MAXWIN     16
 #define MENUBAR_H  24
@@ -928,10 +931,20 @@ void wm_run(void)
     serial_puts("\n[wm] desktop live; launching apps as ring-3 processes\n");
 
     sched_init();
+    smp_mark_sched_ready();   /* release parked APs into the scheduler now the ring exists */
+
+    /* SMP BKL discipline: the WM is a ring-0 thread that does kernel work (the
+     * compositor) directly, so it must hold the BKL while doing it (vs APs that
+     * touch fb via syscalls). Enter the kernel-held state. */
+    spin_lock(&g_bkl);
+    this_cpu()->in_kernel = 1;
 
     /* The WM runs as a ring-0 thread; it MUST keep interrupts enabled so the
      * timer/mouse/keyboard keep firing even when no app is running (otherwise
-     * closing the last app would leave nothing with IF=1 and freeze input). */
+     * closing the last app would leave nothing with IF=1 and freeze input).
+     * A timer IRQ that fires here hits in_kernel=1 -> nested -> EOI+return only
+     * (no re-acquire, no re-schedule); the BKL is dropped around the idle hlt
+     * below so a non-nested timer IRQ can schedule app threads. */
     __asm__ volatile ("sti");
 
     /* auto-launch the clock so something is alive on screen at boot */
@@ -966,7 +979,22 @@ void wm_run(void)
          * IRQ (100 Hz) preempts + round-robins the app threads, and mouse/keyboard
          * IRQs wake us immediately. This stops the whole system busy-spinning --
          * critical under QEMU's TCG, where every emulated spin-iteration costs host
-         * CPU. `sti; hlt` is the race-free idle idiom. */
-        __asm__ volatile ("sti\n\thlt");
+         * CPU. `sti; hlt` is the race-free idle idiom.
+         * SMP: DROP the BKL around the idle hlt so a timer IRQ on the BSP arrives
+         * NON-nested -> acquires the BKL -> schedule()s an app thread (which runs,
+         * eventually preempted back here). The compositor work above runs holding
+         * the BKL (safe vs APs touching fb via syscalls). */
+        /* BOTH the release window (in_kernel=0 .. spin_unlock) and the re-acquire
+         * window (spin_lock .. in_kernel=1) must run with IF=0, or a timer IRQ in
+         * either gap reads nested=0 and re-acquires the BKL this core holds ->
+         * self-deadlock (the flaky whole-system freeze). `hlt` returns via iretq
+         * with IF=1, so cli AFTER hlt too; re-enable IF for the loop body at the end. */
+        __asm__ volatile ("cli");
+        this_cpu()->in_kernel = 0;
+        spin_unlock(&g_bkl);
+        __asm__ volatile ("sti\n\thlt\n\tcli");
+        spin_lock(&g_bkl);
+        this_cpu()->in_kernel = 1;
+        __asm__ volatile ("sti");
     }
 }

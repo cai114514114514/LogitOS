@@ -55,7 +55,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test clean test-aqs test-aqs-gcstress
+.PHONY: all run debug test clean test-aqs test-aqs-gcstress test-shell test-aqs-os test-smp
 
 all: $(ISO)
 
@@ -126,7 +126,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -250,6 +250,11 @@ test-shell: $(ISO) $(DISK)
 # On-Aqua AquaScript test: boots and runs /bin/aqs on the /usr/aqs examples.
 test-aqs-os: $(ISO) $(DISK)
 	@sh scripts/run-aqs-test.sh $(ISO) $(DISK)
+
+# M25 SMP concurrency proof: boots -smp 4, runs /bin/smptest, asserts SMP_TEST_OK
+# (no cross-core corruption + genuine parallelism across >=2 cores).
+test-smp: $(ISO) $(DISK)
+	@sh scripts/run-smp-test.sh $(ISO) $(DISK)
 
 # AquaScript host unit test: the language core (lexer/compiler/vm/value/object)
 # is portable C, so it builds and runs natively -- no QEMU. Asserts print output

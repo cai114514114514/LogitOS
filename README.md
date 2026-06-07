@@ -83,3 +83,7 @@ docs/     design specs
 The host is Apple Silicon (arm64); the target is x86_64. `clang` cross-compiles
 natively, but Apple's linker only emits Mach-O, so linking uses `ld.lld`
 (`brew install lld`). QEMU fully emulates x86_64 on the arm64 host.
+
+## Aqua Script
+
+we use 2300 lines to build the script

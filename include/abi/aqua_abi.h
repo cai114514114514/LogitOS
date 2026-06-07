@@ -59,6 +59,7 @@
 #define SYS_RENAME      65 /* (old_path, new_path) -> 0, or -1 (re-link a dir entry) */
 #define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
 #define SYS_IMG_DECODE  67 /* (struct aqua_imgreq*) decode an image file -> RGBA in app buffer */
+#define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
 
 /* open() flags */
 #define O_RDONLY 0

@@ -10,13 +10,18 @@
 global enter_user
 global ring3_bootstrap
 global fork_ret
+extern sched_unlock_new_thread     ; sched.c: drops g_sched_lock + the BKL on first run
 
 section .text
 bits 64
 
 ; First entry of a ring-3 thread: the scheduler's context_switch "returns" here
 ; with r15 = entry point and r14 = user stack (set up by thread_create_user).
+; The thread arrives holding g_sched_lock + the BKL (handed off through the
+; context switch); release BOTH before iretq. r15/r14 are callee-saved across the
+; SysV call so they survive; IF is set by enter_user's iretq frame (RFLAGS=0x202).
 ring3_bootstrap:
+    call sched_unlock_new_thread
     mov rdi, r15
     mov rsi, r14
     call enter_user
@@ -28,7 +33,12 @@ ring3_bootstrap:
 ; GPRs and iretq into ring 3 -- mirrors the tail of isr_common in boot/isr.asm.
 ; FP/SSE state is not restored here: SysV XMM regs are caller-saved, so the
 ; compiler assumes nothing survives across the fork() call in the child.
+; The child arrives holding g_sched_lock + the BKL; release both first. A `call`
+; is rsp-net-zero (push+pop a return addr), so the regs frame below is intact and
+; the subsequent `pop r15` is still correct; the child's IF comes from cr->rflags
+; via iretq. sched_unlock_new_thread clobbers no callee-saved regs the frame needs.
 fork_ret:
+    call sched_unlock_new_thread
     pop r15
     pop r14
     pop r13

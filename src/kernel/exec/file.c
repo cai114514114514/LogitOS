@@ -6,6 +6,8 @@
 #include "sched.h"      /* schedule() -- block by yielding */
 #include "serial.h"     /* F_TTY console */
 #include "aqua_abi.h"   /* O_*, SEEK_* */
+#include "percpu.h"     /* this_cpu (SMP: drop BKL while blocked on input) */
+#include "spinlock.h"   /* g_bkl */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -18,7 +20,25 @@ static long tty_read(struct file *f, void *vbuf, long len)
     if (len <= 0) return 0;
     char *out = (char *)vbuf;
     int c;
-    while ((c = serial_getc()) < 0) schedule();     /* block until a key */
+    /* Block until a key WITHOUT hogging the BKL. The old `schedule()` here did
+     * nothing when no other thread was runnable (next==prev), so this loop
+     * busy-polled serial_getc while holding the global BKL with IF=0 -- under SMP
+     * that froze every other core (the WM compositor, other apps) whenever the
+     * shell sat at its prompt. Instead drop the BKL and idle until the next
+     * interrupt (timer 100Hz / serial), exactly like the WM idle loop, so the
+     * other cores keep running while we wait. */
+    while ((c = serial_getc()) < 0) {
+        /* BOTH the release window (in_kernel=0 .. spin_unlock) and the re-acquire
+         * window (spin_lock .. in_kernel=1) must run with IF=0: a nested IRQ in
+         * either gap reads nested=0 and re-acquires the BKL this core holds ->
+         * self-deadlock. `hlt` returns via iretq with IF=1, so cli AFTER hlt too. */
+        __asm__ volatile ("cli");
+        this_cpu()->in_kernel = 0;
+        spin_unlock(&g_bkl);
+        __asm__ volatile ("sti\n\thlt\n\tcli");
+        spin_lock(&g_bkl);
+        this_cpu()->in_kernel = 1;
+    }
     if (c == '\r') c = '\n';
     if (c == '\n')      { serial_putc('\r'); serial_putc('\n'); out[0] = '\n'; }
     else if (c == 127 || c == 8) { serial_putc(8); serial_putc(' '); serial_putc(8); out[0] = 8; }

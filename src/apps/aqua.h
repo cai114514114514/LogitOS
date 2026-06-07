@@ -43,6 +43,7 @@ static inline void app_exit(int c) { _sys(SYS_EXIT, c, 0, 0); }
 /* --- M18: processes --- */
 static inline int  sys_fork(void) { return (int)_sys(SYS_FORK, 0, 0, 0); }
 static inline int  sys_getpid(void) { return (int)_sys(SYS_GETPID, 0, 0, 0); }
+static inline int  sys_cpu_index(void) { return (int)_sys(SYS_CPU_INDEX, 0, 0, 0); }   /* SMP: running core's index */
 static inline int  sys_waitpid(int pid, int *status) { return (int)_sys(SYS_WAITPID, pid, (long)status, 0); }
 static inline int  sys_execve(const char *p, char *const argv[], char *const envp[]) { return (int)_sys(SYS_EXECVE, (long)p, (long)argv, (long)envp); }
 

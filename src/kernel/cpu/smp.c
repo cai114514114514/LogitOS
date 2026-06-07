@@ -20,6 +20,9 @@
 #include "fb.h"
 #include "e1000.h"
 #include "kprintf.h"
+#include "percpu.h"
+#include "sched.h"
+#include "spinlock.h"
 
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
@@ -30,7 +33,19 @@ extern uint8_t ap_tramp_start[], ap_tramp_end[];
 #define AP_ARGS    ((volatile uint64_t *)0x8F00)   /* cr3 @0, stack @1, entry @2 */
 #define AP_STACK   (64 * 1024)
 #define MAXCPU     ACPI_MAX_CPUS
-#define IPI_WORK   240
+
+/* LAPIC periodic-timer reload for AP preemption. Uncalibrated (div-by-16); tuned
+ * empirically under -smp 4 TCG so preemption is visible without thrashing. */
+/* Periodic LAPIC-timer reload for AP preemption (div-by-16). Uncalibrated; tuned
+ * empirically under -smp 4 TCG: ~100k gives a visible preemption tick (~tens of
+ * Hz per AP) that spreads runnable threads across cores without thrashing. The
+ * timer also wakes a parked AP from hlt to re-check g_sched_ready. */
+#define LAPIC_AP_TIMER_COUNT 100000
+
+/* APs park here until the BSP's sched_init() has built the global run queue
+ * (wm_run runs after smp_init returns). */
+static volatile int g_sched_ready = 0;
+void smp_mark_sched_ready(void) { __atomic_store_n(&g_sched_ready, 1, __ATOMIC_SEQ_CST); }
 
 static uint8_t  cpu_apicid[MAXCPU];     /* index -> APIC id; index 0 = BSP */
 static volatile int g_online = 1;       /* CPUs online (incl. BSP) */
@@ -39,68 +54,59 @@ static volatile int g_via_apic;         /* device IRQs go through the I/O APIC *
 
 int smp_irq_via_apic(void) { return g_via_apic; }
 
-struct band { volatile int done; int x, y, w, h; };
-static struct band g_band[MAXCPU];
-
 int smp_cpu_count(void) { return g_online; }
 
-static int this_index(void)
-{
-    uint32_t id = lapic_id();
-    for (int i = 0; i < g_online; i++) if (cpu_apicid[i] == id) return i;
-    return 0;
-}
+/* P0: the vector-240 present-IPI is retired (APs now run the scheduler, not a
+ * present band). Kept as a no-op so the interrupts.c vector-240 path stays valid;
+ * no IPI-240 is sent anymore. (P4 restores a scheduler-aware parallel present.) */
+void smp_ipi_work(void) { }
 
-/* Called from the vector-240 IPI handler: copy this CPU's assigned band. */
-void smp_ipi_work(void)
-{
-    int i = this_index();
-    fb_copy_rect(g_band[i].x, g_band[i].y, g_band[i].w, g_band[i].h);
-    __atomic_store_n(&g_band[i].done, 1, __ATOMIC_SEQ_CST);
-}
-
-/* Parallel back->framebuffer present: split [y,y+h) rows across all CPUs. */
-static void smp_present(int x, int y, int w, int h)
-{
-    int n = g_online;
-    if (n <= 1) { fb_copy_rect(x, y, w, h); return; }
-    int rh = h / n;
-    for (int i = 1; i < n; i++) {
-        g_band[i].x = x; g_band[i].w = w;
-        g_band[i].y = y + i * rh;
-        g_band[i].h = (i == n - 1) ? (h - i * rh) : rh;
-        __atomic_store_n(&g_band[i].done, 0, __ATOMIC_SEQ_CST);
-        lapic_send_ipi(cpu_apicid[i], IPI_WORK);
-    }
-    fb_copy_rect(x, y, w, rh);                         /* BSP does band 0 */
-    for (int i = 1; i < n; i++) {
-        long spins = 0;
-        while (!__atomic_load_n(&g_band[i].done, __ATOMIC_SEQ_CST)) {
-            __asm__ volatile ("pause");
-            if (++spins > 50000000L) {                 /* AP stalled -> BSP finishes its band */
-                fb_copy_rect(g_band[i].x, g_band[i].y, g_band[i].w, g_band[i].h);
-                break;
-            }
-        }
-    }
-}
-
-/* First C code each AP runs: enable LAPIC, load the shared IDT, then idle
- * waiting for work IPIs. */
+/* First C code each AP runs: enable LAPIC, load the shared IDT + its own GDT/TSS,
+ * arm a periodic preemption timer, then become a full scheduling core. */
 static void ap_entry(void)
 {
-    lapic_init();
+    lapic_init();                              /* maps MMIO if needed; lapic_id() now valid */
     idt_load();
+    /* Resolve this AP's percpu slot by lapic_id. smp_init's SIPI loop already
+     * registered g_cpus[slot].lapic_id (percpu_register_id) BEFORE starting us, so
+     * this is correct and independent of g_online (which we haven't incremented).
+     * (this_index() is unusable here: it bounds its scan by g_online.) */
+    uint32_t my_id = lapic_id();
+    int idx = -1;
+    for (int i = 1; i < PERCPU_MAXCPU; i++)
+        if (g_cpus[i].lapic_id == my_id) { idx = i; break; }
+    if (idx <= 0 || idx >= PERCPU_MAXCPU) {    /* slot 0 = BSP; not found -> park idle */
+        __atomic_add_fetch(&g_online, 1, __ATOMIC_SEQ_CST);
+        ap_ack = 1;
+        for (;;) __asm__ volatile ("sti; hlt");
+    }
+    percpu_ap_init(idx, lapic_id());           /* build + load this core's GDT/TSS */
+    /* Arm the periodic LAPIC timer NOW (before parking). It both (a) wakes this AP
+     * from its park `hlt` so it can re-check g_sched_ready -- nothing else sends
+     * the AP an interrupt -- and (b) becomes the preemption tick once scheduling
+     * starts. While parked, me->current is NULL: schedule() short-circuits on a
+     * NULL current (guarded), so a timer tick during the park is a harmless no-op. */
+    lapic_timer_init(32, LAPIC_AP_TIMER_COUNT);
     __atomic_add_fetch(&g_online, 1, __ATOMIC_SEQ_CST);
-    kprintf("[smp] CPU apic_id=%d online\n", (int)lapic_id());
+    kprintf("[smp] CPU %d apic_id=%d online\n", idx, (int)lapic_id());
     ap_ack = 1;
-    for (;;) __asm__ volatile ("sti; hlt");            /* woken by vector-240 IPIs */
+
+    /* Park until the BSP's sched_init() has built the global ring. The timer above
+     * periodically wakes the hlt so this loop re-tests g_sched_ready. */
+    while (!__atomic_load_n(&g_sched_ready, __ATOMIC_SEQ_CST))
+        __asm__ volatile ("sti; hlt");
+
+    thread_create_idle(idx);                   /* sets g_cpus[idx].idle + .current = this stack */
+    spin_lock(&g_bkl);                         /* enter the kernel before first schedule() */
+    this_cpu()->in_kernel = 1;
+    sched_become_idle();                       /* this AP stack BECOMES the idle thread; never returns */
 }
 
 void smp_init(void)
 {
     int n = acpi_init();
     lapic_init();
+    percpu_register_id(0, lapic_id());     /* BSP's real lapic_id now available */
     if (n < 1) { kprintf("[smp] no CPUs via ACPI; uniprocessor\n"); return; }
     kprintf("[smp] %d CPU(s) detected, BSP apic_id=%d\n", n, (int)lapic_id());
 
@@ -136,6 +142,8 @@ void smp_init(void)
         uint8_t *stk = kmalloc(AP_STACK);
         if (!stk) continue;
         cpu_apicid[g_online] = aid;        /* claim the next CPU index */
+        if (g_online < PERCPU_MAXCPU)      /* register before SIPI so ap_entry finds its slot */
+            percpu_register_id(g_online, aid);
         AP_ARGS[1] = (uint64_t)(stk + AP_STACK) & ~(uint64_t)0xF;
         AP_ARGS[2] = (uint64_t)ap_entry;
         ap_ack = 0;
@@ -144,21 +152,7 @@ void smp_init(void)
         if (!ap_ack) { cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }
     }
     kprintf("[smp] %d/%d CPUs online\n", g_online, n);
-
-    if (g_online > 1) {
-        /* quick benchmark: serial vs parallel full-screen present (rdtsc cycles) */
-        extern uint32_t fb_width(void), fb_height(void);
-        int W = (int)fb_width(), H = (int)fb_height();
-        uint64_t a0, a1, b0, b1, lo, hi;
-        __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi)); a0 = lo | (hi << 32);
-        for (int k = 0; k < 16; k++) fb_copy_rect(0, 0, W, H);
-        __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi)); a1 = lo | (hi << 32);
-        __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi)); b0 = lo | (hi << 32);
-        for (int k = 0; k < 16; k++) smp_present(0, 0, W, H);
-        __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi)); b1 = lo | (hi << 32);
-        uint64_t ser = (a1 - a0) / 16, par = (b1 - b0) / 16;
-        kprintf("[smp] present: serial=%d kcyc  parallel=%d kcyc  (%dx on %d cores)\n",
-                (int)(ser / 1000), (int)(par / 1000), (int)(par ? ser / par : 0), g_online);
-        fb_set_present_par(smp_present);   /* full-screen present now runs on all cores */
-    }
+    /* P0: present reverted to BSP-only (fb keeps g_par_present NULL). The APs are
+     * now scheduling cores, not idle present-helpers. Parallel present returns in
+     * P4 as a scheduler-aware job. */
 }

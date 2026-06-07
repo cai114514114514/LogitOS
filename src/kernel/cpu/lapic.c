@@ -37,6 +37,7 @@ void lapic_init(void)
 
 uint32_t lapic_id(void) { return rd(LAPIC_ID) >> 24; }
 void     lapic_eoi(void) { wr(LAPIC_EOI, 0); }
+int      lapic_ready(void) { return lapic != 0; }   /* MMIO mapped? (percpu this_cpu guard) */
 
 static void ipi_wait(void) { while (rd(LAPIC_ICRLO) & (1 << 12)) ; }   /* delivery status */
 
