@@ -78,7 +78,9 @@ void proc_resolve(struct proc *p, const char *in, char *out, int max)
     for (const char *s = in; *s && n < 255; s++) src[n++] = *s;
     src[n] = 0;
 
-    const char *comp[64]; int clen[64], top = 0, i = 0;
+    /* 128 covers the most components a 255-char path can hold ("/x" each = >=2
+     * chars), so a valid path is never silently truncated to a wrong shorter one. */
+    const char *comp[128]; int clen[128], top = 0, i = 0;
     while (src[i]) {
         while (src[i] == '/') i++;
         if (!src[i]) break;
@@ -86,7 +88,7 @@ void proc_resolve(struct proc *p, const char *in, char *out, int max)
         while (src[i] && src[i] != '/') { i++; len++; }
         if (len == 1 && start[0] == '.') continue;
         if (len == 2 && start[0] == '.' && start[1] == '.') { if (top > 0) top--; continue; }
-        if (top < 64) { comp[top] = start; clen[top] = len; top++; }
+        if (top < 128) { comp[top] = start; clen[top] = len; top++; }
     }
     int oi = 0;
     if (top == 0) { if (max > 1) { out[0] = '/'; out[1] = 0; } else if (max > 0) out[0] = 0; return; }
@@ -122,6 +124,15 @@ long proc_fork(struct registers *r)
     }
 
     child->tid = thread_fork(child->name, r, child, space);
+    if (child->tid < 0) {                    /* OOM building the child kstack/thread */
+        /* Undo the fork instead of leaking the PCB slot + dup'd fds + address space
+         * (and falsely returning a pid for a child that will never run). */
+        for (int i = 0; i < NFD; i++)
+            if (child->fd[i]) { file_close(child->fd[i]); child->fd[i] = NULL; }
+        vmm_free_space(space);
+        child->state = PROC_FREE; child->pid = 0; child->cr3 = 0;
+        return -1;
+    }
     return child->pid;                       /* parent sees the child's pid */
 }
 

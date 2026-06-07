@@ -49,6 +49,7 @@ void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 
 void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags)
 {
+    if (size == 0 || virt > UINT64_MAX - size - 0xFFF) return;   /* overflow -> no-op, not a silent wrap */
     uint64_t end = (virt + size + 0xFFF) & ~(uint64_t)0xFFF;
     virt &= ~(uint64_t)0xFFF;
     phys &= ~(uint64_t)0xFFF;
