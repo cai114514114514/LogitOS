@@ -767,6 +767,24 @@ int main(void)
         ok("wide_const_300", s, "299\n");
     }
 
+    /* ---- M23: bitwise / shift / power operators ---- */
+    ok("bit_and",   "print(0xFF & 0x0F)\n", "15\n");
+    ok("bit_or",    "print(5 | 2)\n", "7\n");
+    ok("bit_xor",   "print(6 ^ 3)\n", "5\n");
+    ok("bit_not",   "print(~0, ~5)\n", "-1 -6\n");
+    ok("shl",       "print(1 << 8)\n", "256\n");
+    ok("shr",       "print(1024 >> 3)\n", "128\n");
+    ok("shr_signed","print(-8 >> 1)\n", "-4\n");
+    ok("pow_int",   "print(2 ** 10)\n", "1024\n");
+    ok("pow_rassoc","print(2 ** 2 ** 3)\n", "256\n");        /* right-assoc: 2**(2**3)=2**8 */
+    ok("bit_prec",  "print(1 | 2 & 3)\n", "3\n");            /* & binds tighter than | -> 1|(2&3)=1|2=3 */
+    ok("shift_prec","print(1 + 1 << 4)\n", "32\n");          /* +/- bind tighter than << -> (2)<<4 */
+    ok("pow_prec",  "print(-2 ** 2)\n", "-4\n");             /* ** tighter than unary - -> -(2**2) */
+    ok("mask_idiom","x = 0xABCD\nprint(x & 0xFF, (x >> 8) & 0xFF)\n", "205 171\n");
+    err("band_float", "print(1.5 & 2)\n");                   /* bitwise needs ints */
+    err("hex_empty",  "x = 0x\n");                           /* 0x with no digits -> lex error */
+    roundtrip("bc_bitwise", "print(5 & 3, 5 | 2, 6 ^ 3, ~0, 1 << 4, 256 >> 2, 2 ** 8)\n");
+
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();
 

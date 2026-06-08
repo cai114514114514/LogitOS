@@ -155,11 +155,12 @@ typedef enum {
     OP_CLASS, OP_INHERIT, OP_METHOD,                               /* M22.3 classes */
     OP_GET_PROPERTY, OP_SET_PROPERTY, OP_GET_SUPER,
     OP_SETUP_TRY, OP_POP_TRY, OP_RAISE,                         /* M22.4 exceptions */
+    OP_BAND, OP_BOR, OP_BXOR, OP_BNOT, OP_SHL, OP_SHR, OP_POW,  /* M23: bitwise / shift / power */
 } OpCode;
 
 /* .la compiled-bytecode format version. Bump on ANY opcode add/reorder or any
  * change to the .la byte layout -- as_load rejects a mismatching version. */
-#define AS_BC_VERSION 2u
+#define AS_BC_VERSION 3u
 
 /* --- compile + run --- */
 ObjFn *as_compile(const char *src);                       /* compile into a throwaway module */

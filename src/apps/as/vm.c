@@ -455,6 +455,7 @@ static int run_until(int floor)
         &&op_CLASS, &&op_INHERIT, &&op_METHOD,
         &&op_GET_PROPERTY, &&op_SET_PROPERTY, &&op_GET_SUPER,
         &&op_SETUP_TRY, &&op_POP_TRY, &&op_RAISE,
+        &&op_BAND, &&op_BOR, &&op_BXOR, &&op_BNOT, &&op_SHL, &&op_SHR, &&op_POW,
     };
     uint8_t op;
 #define DISPATCH() do { \
@@ -525,6 +526,56 @@ static int run_until(int floor)
             if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '%%' must be integers"); goto err; }
             if (AS_INT(b) == 0) { runtime_error("modulo by zero"); goto err; }
             sp -= 2; push(INT_VAL(AS_INT(a) % AS_INT(b)));
+            DISPATCH();
+        }
+        op_BAND: {
+            Value b = peek(0), a = peek(1);
+            if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '&' must be integers"); goto err; }
+            sp -= 2; push(INT_VAL(AS_INT(a) & AS_INT(b))); DISPATCH();
+        }
+        op_BOR: {
+            Value b = peek(0), a = peek(1);
+            if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '|' must be integers"); goto err; }
+            sp -= 2; push(INT_VAL(AS_INT(a) | AS_INT(b))); DISPATCH();
+        }
+        op_BXOR: {
+            Value b = peek(0), a = peek(1);
+            if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '^' must be integers"); goto err; }
+            sp -= 2; push(INT_VAL(AS_INT(a) ^ AS_INT(b))); DISPATCH();
+        }
+        op_BNOT: {
+            Value a = peek(0);
+            if (!IS_INT(a)) { runtime_error("operand of '~' must be an integer"); goto err; }
+            sp--; push(INT_VAL(~AS_INT(a))); DISPATCH();
+        }
+        op_SHL: {
+            Value b = peek(0), a = peek(1);
+            if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '<<' must be integers"); goto err; }
+            int64_t sh = AS_INT(b);
+            if (sh < 0 || sh > 63) { runtime_error("shift amount out of range (0..63)"); goto err; }
+            sp -= 2; push(INT_VAL((int64_t)((uint64_t)AS_INT(a) << sh))); DISPATCH();
+        }
+        op_SHR: {
+            Value b = peek(0), a = peek(1);
+            if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '>>' must be integers"); goto err; }
+            int64_t sh = AS_INT(b);
+            if (sh < 0 || sh > 63) { runtime_error("shift amount out of range (0..63)"); goto err; }
+            sp -= 2; push(INT_VAL(AS_INT(a) >> sh)); DISPATCH();   /* arithmetic (sign-preserving) */
+        }
+        op_POW: {
+            Value b = peek(0), a = peek(1);
+            if (IS_INT(a) && IS_INT(b)) {
+                int64_t base = AS_INT(a), e = AS_INT(b);
+                if (e < 0) { runtime_error("** with a negative int exponent (no float pow in /bin/as)"); goto err; }
+                int64_t r = 1; while (e > 0) { if (e & 1) r *= base; base *= base; e >>= 1; }
+                sp -= 2; push(INT_VAL(r));
+            } else if (IS_NUM(a) && IS_NUM(b)) {
+                if (!IS_INT(b)) { runtime_error("** float exponent unsupported (no libm in /bin/as)"); goto err; }
+                double base = AS_NUM(a); int64_t e = AS_INT(b); int neg = e < 0; if (neg) e = -e;
+                double r = 1.0; while (e > 0) { if (e & 1) r *= base; base *= base; e >>= 1; }
+                if (neg) r = 1.0 / r;
+                sp -= 2; push(FLOAT_VAL(r));
+            } else { runtime_error("operands of '**' must be numbers"); goto err; }
             DISPATCH();
         }
         op_NEG: {

@@ -41,11 +41,13 @@ static TokType keyword(const char *s, int n)
             if (!memcmp(s, "false", 5)) return T_FALSE;
             if (!memcmp(s, "class", 5)) return T_CLASS;
             if (!memcmp(s, "super", 5)) return T_SUPER;
+            if (!memcmp(s, "break", 5)) return T_BREAK;
             if (!memcmp(s, "raise", 5)) return T_RAISE; break;
     case 6: if (!memcmp(s, "return", 6)) return T_RETURN;
             if (!memcmp(s, "import", 6)) return T_IMPORT;
             if (!memcmp(s, "lambda", 6)) return T_LAMBDA;
             if (!memcmp(s, "except", 6)) return T_EXCEPT; break;
+    case 8: if (!memcmp(s, "continue", 8)) return T_CONTINUE; break;
     }
     return T_IDENT;
 }
@@ -89,8 +91,9 @@ Token *as_lex(const char *src, int *count)
             char c = *p;
             if (is_digit(c) || (c == '.' && is_digit(p[1]))) {
                 if (c == '0' && (p[1] == 'x' || p[1] == 'X')) {
-                    p += 2; while (is_hex(*p)) p++;
-                    push(&b, T_INT, s, (int)(p - s), line);
+                    p += 2; const char *hx = p; while (is_hex(*p)) p++;
+                    if (p == hx) { snprintf(as_err, sizeof as_err, "'0x' needs hex digits (line %d)", line); err = 1; }
+                    else push(&b, T_INT, s, (int)(p - s), line);
                 } else {
                     int isf = 0;
                     while (is_digit(*p)) p++;
@@ -104,7 +107,13 @@ Token *as_lex(const char *src, int *count)
                 push(&b, keyword(s, len), s, len, line);
             } else if (c == '"' || c == '\'') {
                 char q = c; p++; const char *cs = p;
-                while (*p && *p != q) { if (*p == '\\' && p[1]) p += 2; else p++; }
+                /* track embedded newlines so line numbers stay correct past a
+                 * multi-line string literal (the old code didn't, skewing every
+                 * later error/line by the number of newlines inside the string). */
+                while (*p && *p != q) {
+                    if (*p == '\\' && p[1]) { if (p[1] == '\n') line++; p += 2; }
+                    else { if (*p == '\n') line++; p++; }
+                }
                 if (*p != q) { snprintf(as_err, sizeof as_err, "unterminated string (line %d)", line); err = 1; break; }
                 push(&b, T_STR, cs, (int)(p - cs), line);
                 p++;   /* closing quote */
@@ -119,17 +128,25 @@ Token *as_lex(const char *src, int *count)
                 case '}': push(&b, T_RBRACE, s, 1, line); if (bracket > 0) bracket--; break;
                 case ',': push(&b, T_COMMA, s, 1, line); break;
                 case ':': push(&b, T_COLON, s, 1, line); break;
+                case ';': push(&b, T_SEMI, s, 1, line); break;
                 case '.': push(&b, T_DOT, s, 1, line); break;
-                case '+': push(&b, T_PLUS, s, 1, line); break;
-                case '-': push(&b, T_MINUS, s, 1, line); break;
-                case '*': push(&b, T_STAR, s, 1, line); break;
-                case '/': push(&b, T_SLASH, s, 1, line); break;
-                case '%': push(&b, T_PERCENT, s, 1, line); break;
+                case '+': if (*p == '=') { p++; push(&b, T_PLUSEQ, s, 2, line); } else push(&b, T_PLUS, s, 1, line); break;
+                case '-': if (*p == '=') { p++; push(&b, T_MINUSEQ, s, 2, line); } else push(&b, T_MINUS, s, 1, line); break;
+                case '*': if (*p == '*') { p++; push(&b, T_POW, s, 2, line); }
+                          else if (*p == '=') { p++; push(&b, T_STAREQ, s, 2, line); } else push(&b, T_STAR, s, 1, line); break;
+                case '/': if (*p == '=') { p++; push(&b, T_SLASHEQ, s, 2, line); } else push(&b, T_SLASH, s, 1, line); break;
+                case '%': if (*p == '=') { p++; push(&b, T_PERCENTEQ, s, 2, line); } else push(&b, T_PERCENT, s, 1, line); break;
+                case '&': push(&b, T_AMP, s, 1, line); break;
+                case '|': push(&b, T_PIPE, s, 1, line); break;
+                case '^': push(&b, T_CARET, s, 1, line); break;
+                case '~': push(&b, T_TILDE, s, 1, line); break;
                 case '=': if (*p == '=') { p++; push(&b, T_EQ, s, 2, line); } else push(&b, T_ASSIGN, s, 1, line); break;
                 case '!': if (*p == '=') { p++; push(&b, T_NE, s, 2, line); }
                           else { snprintf(as_err, sizeof as_err, "unexpected '!' (line %d)", line); err = 1; } break;
-                case '<': if (*p == '=') { p++; push(&b, T_LE, s, 2, line); } else push(&b, T_LT, s, 1, line); break;
-                case '>': if (*p == '=') { p++; push(&b, T_GE, s, 2, line); } else push(&b, T_GT, s, 1, line); break;
+                case '<': if (*p == '=') { p++; push(&b, T_LE, s, 2, line); }
+                          else if (*p == '<') { p++; push(&b, T_SHL, s, 2, line); } else push(&b, T_LT, s, 1, line); break;
+                case '>': if (*p == '=') { p++; push(&b, T_GE, s, 2, line); }
+                          else if (*p == '>') { p++; push(&b, T_SHR, s, 2, line); } else push(&b, T_GT, s, 1, line); break;
                 default:  snprintf(as_err, sizeof as_err, "unexpected character '%c' (line %d)", c, line); err = 1; break;
                 }
             }

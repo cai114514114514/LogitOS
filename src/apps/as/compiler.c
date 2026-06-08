@@ -136,7 +136,10 @@ static void end_scope(void)
 /* ---- Pratt parser ---- */
 typedef enum {
     PREC_NONE, PREC_OR, PREC_AND, PREC_EQ, PREC_CMP,
-    PREC_TERM, PREC_FACTOR, PREC_UNARY, PREC_CALL, PREC_PRIMARY
+    PREC_BOR, PREC_BXOR, PREC_BAND, PREC_SHIFT,   /* | ^ & <<>> (Python order, below +/-) */
+    PREC_TERM, PREC_FACTOR, PREC_UNARY,
+    PREC_POW,                                     /* ** : right-assoc, binds tighter than unary */
+    PREC_CALL, PREC_PRIMARY
 } Prec;
 typedef void (*ParseFn)(void);
 typedef struct { ParseFn prefix, infix; Prec prec; } ParseRule;
@@ -263,6 +266,7 @@ static void unary(void)
     parse_precedence(PREC_UNARY);
     if (op == T_MINUS) emit(OP_NEG);
     else if (op == T_NOT) emit(OP_NOT);
+    else if (op == T_TILDE) emit(OP_BNOT);
 }
 
 static void named_variable(Token t)
@@ -278,7 +282,8 @@ static void variable(void) { named_variable(tk_prev()); }
 static void binary(void)
 {
     TokType op = tk_prev().type;
-    parse_precedence((Prec)(get_rule(op)->prec + 1));   /* left-associative */
+    Prec rp = get_rule(op)->prec;
+    parse_precedence((Prec)(op == T_POW ? rp : rp + 1));   /* ** right-assoc; rest left-assoc */
     switch (op) {
     case T_PLUS:    emit(OP_ADD); break;
     case T_MINUS:   emit(OP_SUB); break;
@@ -291,6 +296,12 @@ static void binary(void)
     case T_LE:      emit(OP_LE); break;
     case T_GT:      emit(OP_GT); break;
     case T_GE:      emit(OP_GE); break;
+    case T_AMP:     emit(OP_BAND); break;
+    case T_PIPE:    emit(OP_BOR); break;
+    case T_CARET:   emit(OP_BXOR); break;
+    case T_SHL:     emit(OP_SHL); break;
+    case T_SHR:     emit(OP_SHR); break;
+    case T_POW:     emit(OP_POW); break;
     default: break;
     }
 }
@@ -349,6 +360,13 @@ static void init_rules(void)
     rules[T_AND]     = (ParseRule){ 0, and_, PREC_AND };
     rules[T_OR]      = (ParseRule){ 0, or_, PREC_OR };
     rules[T_IN]      = (ParseRule){ 0, in_, PREC_CMP };
+    rules[T_PIPE]    = (ParseRule){ 0, binary, PREC_BOR };    /* | */
+    rules[T_CARET]   = (ParseRule){ 0, binary, PREC_BXOR };   /* ^ */
+    rules[T_AMP]     = (ParseRule){ 0, binary, PREC_BAND };   /* & */
+    rules[T_SHL]     = (ParseRule){ 0, binary, PREC_SHIFT };  /* << */
+    rules[T_SHR]     = (ParseRule){ 0, binary, PREC_SHIFT };  /* >> */
+    rules[T_POW]     = (ParseRule){ 0, binary, PREC_POW };    /* ** (right-assoc, see binary) */
+    rules[T_TILDE]   = (ParseRule){ unary, 0, PREC_NONE };    /* ~ */
     rules[T_LAMBDA]  = (ParseRule){ lambda_, 0, PREC_NONE };
     rules[T_SUPER]   = (ParseRule){ super_, 0, PREC_NONE };
     rules_ready = 1;

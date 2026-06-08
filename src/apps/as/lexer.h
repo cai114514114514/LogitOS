@@ -17,6 +17,10 @@ typedef enum {
     T_COMMA, T_COLON, T_DOT,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
     T_ASSIGN, T_EQ, T_NE, T_LT, T_LE, T_GT, T_GE,
+    T_BREAK, T_CONTINUE,                                   /* loop control */
+    T_AMP, T_PIPE, T_CARET, T_TILDE, T_SHL, T_SHR, T_POW,  /* bitwise / shift / power */
+    T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ, /* compound assignment */
+    T_SEMI,                                                /* ';' statement separator */
     T_EOF, T_ERROR
 } TokType;
 
