@@ -17,6 +17,38 @@
 #include "kheap.h"
 #include "percpu.h"
 
+/* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
+ * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
+ * for now -- the proof that concurrent, BKL-free kmalloc works. */
+int syscall_is_bkl_free(int n) { return n == SYS_KHEAP_STRESS; }
+
+/* BKL-FREE concurrent kmalloc/kfree stress (the P1 gate). Runs on N cores at once,
+ * hammering g_kheap_lock under real contention. Each call stamps a per-call tag
+ * (from `seed`, stable across thread migration) into every byte of a batch of
+ * blocks, reads it back, then frees -- a freelist race that hands one block to two
+ * callers makes their tags clash, caught as `bad`. VOLATILE byte access keeps the
+ * fill/verify out of XMM, so the QEMU MTTCG-on-ARM FP artifact cannot false-flag. */
+static long kheap_stress(long iters, int size, unsigned long seed)
+{
+    long bad = 0;
+    for (long it = 0; it < iters; it++) {
+        unsigned char *blk[8];
+        unsigned char tag = (unsigned char)(seed * 131u + (unsigned long)it * 7u + 1u);
+        for (int k = 0; k < 8; k++) {
+            blk[k] = kmalloc((size_t)size);
+            volatile unsigned char *v = blk[k];
+            if (v) for (int j = 0; j < size; j++) v[j] = tag;
+        }
+        for (int k = 0; k < 8; k++) {
+            volatile unsigned char *v = blk[k];
+            if (!v) { bad++; continue; }
+            for (int j = 0; j < size; j++) if (v[j] != tag) { bad++; break; }
+        }
+        for (int k = 0; k < 8; k++) if (blk[k]) kfree(blk[k]);
+    }
+    return bad;
+}
+
 void syscall_dispatch(struct registers *r)
 {
     switch (r->rax) {
@@ -221,6 +253,12 @@ void syscall_dispatch(struct registers *r)
          * child that observes a different index than another ran on another core. */
         r->rax = (uint64_t)(long)this_cpu()->index;
         return;
+    case SYS_KHEAP_STRESS: {   /* BKL-FREE (see syscall_is_bkl_free): concurrent kmalloc stress */
+        long iters = (long)r->rdi; int size = (int)r->rsi; unsigned long seed = (unsigned long)r->rdx;
+        if (size < 8 || size > 1024 || iters < 0) { r->rax = (uint64_t)-1; return; }
+        r->rax = (uint64_t)kheap_stress(iters, size, seed);
+        return;
+    }
     case SYS_WAITPID: {
         int status = 0;
         long rc = proc_waitpid((int)r->rdi, &status);

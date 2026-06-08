@@ -1,6 +1,15 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "pmm.h"
+#include "spinlock.h"
+
+/* M25 P1/P2: the physical frame allocator is peeled out from under the BKL --
+ * pmm_alloc/free/alloc_contig take their own lock so BKL-free paths on other
+ * cores can allocate concurrently. irqsave: pmm is reachable from fault/IRQ
+ * context (page-table fills) and must not be preempted mid-bitmap-scan. Lock
+ * order: kheap_lock -> pmm_lock (grow() calls pmm_alloc_contig under kheap_lock);
+ * pmm never takes kheap_lock, so the order never reverses. */
+static spinlock_t pmm_lock = SPINLOCK_INIT;
 
 /* A bitmap physical frame allocator (1 bit per 4 KiB frame, 1 = used).
  * All usable RAM in our QEMU config sits below the identity-mapped first
@@ -127,6 +136,9 @@ uint64_t pmm_alloc(void)
     if (total_frames == 0)
         return 0;
 
+    uint64_t ret = 0;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+
     uint64_t start = alloc_hint;
     if (start >= total_frames)
         start = 0;
@@ -169,18 +181,23 @@ uint64_t pmm_alloc(void)
             bm_set(cand);
             used_frames++;
             alloc_hint = cand;
-            return cand * FRAME_SIZE;
+            ret = cand * FRAME_SIZE;
+            goto out;
         }
     }
 
     alloc_hint = 0;     /* wrap-around for the next attempt */
-    return 0;
+out:
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return ret;
 }
 
 uint64_t pmm_alloc_contig(size_t n)
 {
     if (n == 0)
         return 0;
+    uint64_t ret = 0;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
     uint64_t run = 0, start = 0;
     for (uint64_t f = 0; f < total_frames; f++) {
         if (!bm_test(f)) {
@@ -191,22 +208,27 @@ uint64_t pmm_alloc_contig(size_t n)
                     bm_set(i);
                     used_frames++;
                 }
-                return start * FRAME_SIZE;
+                ret = start * FRAME_SIZE;
+                goto out;
             }
         } else {
             run = 0;
         }
     }
-    return 0;
+out:
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return ret;
 }
 
 void pmm_free(uint64_t phys_addr)
 {
     uint64_t f = phys_addr / FRAME_SIZE;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
     if (f < total_frames && bm_test(f)) {
         bm_clear(f);
         used_frames--;
     }
+    spin_unlock_irqrestore(&pmm_lock, fl);
 }
 
 uint64_t pmm_total_bytes(void) { return usable_bytes; }

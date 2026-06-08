@@ -60,6 +60,7 @@
 #define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
 #define SYS_IMG_DECODE  67 /* (struct aqua_imgreq*) decode an image file -> RGBA in app buffer */
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
+#define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 
 /* open() flags */
 #define O_RDONLY 0

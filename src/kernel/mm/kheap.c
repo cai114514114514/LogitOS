@@ -2,6 +2,15 @@
 #include <stddef.h>
 #include "kheap.h"
 #include "pmm.h"
+#include "spinlock.h"
+
+/* M25 P1: kheap is peeled out from under the BKL -- kmalloc/kfree take their own
+ * lock so they are safe to call from BKL-free kernel paths running concurrently
+ * on other cores. irqsave: kmalloc may be reached from IRQ context, and a core
+ * must not be preempted while holding this lock (yield-while-holding-spinlock).
+ * Lock order is BKL -> kheap_lock -> pmm_lock (grow() calls pmm under kheap_lock);
+ * nothing takes them in the reverse order, so no deadlock. */
+static spinlock_t kheap_lock = SPINLOCK_INIT;
 
 /* A small allocator: bump-allocate within a contiguous arena of physical
  * frames, and keep freed blocks for reuse, segregated into power-of-2 size
@@ -68,6 +77,9 @@ void *kmalloc(size_t size)
         return NULL;
     size = ALIGN16(size);
 
+    void *ret = NULL;
+    uint64_t f = spin_lock_irqsave(&kheap_lock);
+
     /* Reuse a freed block from the matching size class. A block lands in bin
      * bin_index(block->size); since bin_index is monotonic, any block from a
      * higher bin also fits, so we search this bin and up. Within a bin sizes
@@ -77,22 +89,29 @@ void *kmalloc(size_t size)
             if ((*pp)->size >= size) {
                 struct header *b = *pp;
                 *pp = b->next;
-                return (void *)(b + 1);
+                ret = (void *)(b + 1);
+                goto out;
             }
         }
     }
 
-    /* Otherwise bump-allocate, growing the arena if needed. */
-    size_t total = sizeof(struct header) + size;
-    if (brk_left < total && !grow(total))
-        return NULL;
+    /* Otherwise bump-allocate, growing the arena if needed (grow() runs under
+     * kheap_lock and may take pmm_lock -- order kheap -> pmm). */
+    {
+        size_t total = sizeof(struct header) + size;
+        if (brk_left < total && !grow(total)) { ret = NULL; goto out; }
 
-    struct header *h = (struct header *)brk;
-    h->size = size;
-    h->next = NULL;
-    brk += total;
-    brk_left -= total;
-    return (void *)(h + 1);
+        struct header *h = (struct header *)brk;
+        h->size = size;
+        h->next = NULL;
+        brk += total;
+        brk_left -= total;
+        ret = (void *)(h + 1);
+    }
+
+out:
+    spin_unlock_irqrestore(&kheap_lock, f);
+    return ret;
 }
 
 void kfree(void *ptr)
@@ -100,7 +119,9 @@ void kfree(void *ptr)
     if (!ptr)
         return;
     struct header *h = (struct header *)ptr - 1;
-    int b = bin_index(h->size);
+    int b = bin_index(h->size);            /* reads this block's own header, not shared */
+    uint64_t f = spin_lock_irqsave(&kheap_lock);
     h->next = bins[b];
     bins[b] = h;
+    spin_unlock_irqrestore(&kheap_lock, f);
 }

@@ -57,8 +57,15 @@ void interrupt_handler(struct registers *r)
      * `serving` that never advances). g_bkl_owner is updated inside the lock under
      * IF=0, so it has no such gap. */
     int nested = (g_bkl_owner == me->index);
+    /* M25 P1: BKL-free syscalls run WITHOUT the BKL (self-locked via fine-grained
+     * locks), so multiple cores execute them in parallel. They are still safely
+     * preemptible: while holding a fine-grained lock IF=0 (irqsave) blocks the
+     * timer; between locks they hold nothing, so a timer preempt is as safe as
+     * preempting ring 3. Only the syscall vector can be bkl-free; IRQs/faults
+     * always take the BKL. */
+    int bkl_free = (r->vector == 128) && syscall_is_bkl_free((int)r->rax);
     uint64_t bf = 0;
-    if (!nested) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
+    if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
     if (r->vector == 128) {        /* int 0x80 system call */
         syscall_dispatch(r);
@@ -122,5 +129,5 @@ done:
      * still hold -> self-deadlock. bf carries IF=0 (entry was via an int gate) so
      * irqrestore won't re-enable it here; the final iretq restores the caller's IF. */
     __asm__ volatile ("cli");
-    if (!nested) { this_cpu()->in_kernel = 0; spin_unlock_irqrestore(&g_bkl, bf); }
+    if (!nested && !bkl_free) { this_cpu()->in_kernel = 0; spin_unlock_irqrestore(&g_bkl, bf); }
 }

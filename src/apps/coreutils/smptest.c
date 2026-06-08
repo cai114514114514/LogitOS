@@ -1,52 +1,38 @@
-/* smptest -- M25 P0 SMP concurrency + no-corruption proof.
+/* smptest -- M25 SMP concurrency proof (P0 scheduler + P1 BKL-free kheap).
  *
- * Each worker child runs a long, deterministic integer-checksum compute over a
- * PRIVATE array, interleaved with on-stack scribble passes. The checksum is
- * reproducible, so the parent knows it must be identical across all children: any
- * mismatch means another core corrupted this child's memory (a mutual-exclusion
- * bug). Each child also samples SYS_CPU_INDEX during the loop and reports the set
- * of cores it ran on.
- *
- * The parent runs TWO batches and compares wall-clock:
- *   - batch of 1 child  -> T1 (single-core baseline)
- *   - batch of N children -> TN
- * If the N children ran truly in PARALLEL, TN ~= T1 (they share the wall window);
- * if they ran sequentially on one core, TN ~= N*T1. We require TN < 1.6*T1, a
- * speedup only achievable if >=2 cores ran ring-3 simultaneously.
- *
- * Asserts: (a) every checksum == reference (no corruption), (b) the N-batch ran
- * on >=2 distinct cores AND TN < 1.6*T1 (genuine concurrency). Prints SMP_TEST_OK.
+ * Each worker child hammers the kernel heap via SYS_KHEAP_STRESS, a BKL-FREE
+ * syscall (M25 P1): it runs WITHOUT the Big Kernel Lock, so N children alloc/free
+ * on N cores AT THE SAME TIME, exercising kheap's own lock (g_kheap_lock) under
+ * real contention. The syscall stamps a per-call tag (from a per-child seed) into
+ * every byte of each block and verifies it before freeing -- a freelist race that
+ * hands one block to two cores makes the tags clash, returned as a nonzero
+ * corruption count. So:
+ *   - every child's count == 0  => concurrent kmalloc/kfree did not corrupt.
+ *   - the N-batch ran on >=2 cores AND TN < 1.6*T1  => genuine BKL-free parallelism
+ *     (if the syscall still took the BKL, the N children would serialize: TN~=N*T1).
+ * The stress uses volatile byte access (no XMM) so the QEMU MTTCG-on-Apple-Silicon
+ * FP artifact cannot false-flag it. Prints SMP_TEST_OK on success.
  */
 #include "clib.h"
 
 #define NCHILD_MAX 8
-#define ARRN       512          /* private compute array (per child address space) */
-#define ITERS      480000000L /* ~4 s of pure ring-3 compute per child (TCG): the timing
-                                * baseline uses second-resolution RTC, so T1 must clear 2 s */
-#define SAMPLE     10000000L    /* sample the running core index every SAMPLE iters */
+#define KS_SIZE    512          /* bytes per block (the per-byte fill/verify is the
+                                 * concurrent, un-locked work that yields the speedup) */
+#define KS_ITERS   8000L         /* alloc-batches per chunk */
+#define KS_CHUNKS  16           /* chunks per child; cpu index sampled between chunks
+                                 * so a migrating child observes every core it ran on */
 
-/* Deterministic checksum: identical inputs -> identical output every run, so the
- * parent can compare children against each other. Pure integer in the hot loop
- * (only the rare SYS_CPU_INDEX sample touches the BKL) -> real parallel compute.
- * `seen_mask` collects the distinct core indices this child observed. A countdown
- * (not a modulo) gates the sample so the hot loop stays cheap under TCG. */
-static unsigned long compute(unsigned *seen_mask)
+/* Run the BKL-free heap stress, returning the total corruption count (want 0) and
+ * OR-ing every core this child observed into *seen_mask. */
+static long compute(unsigned long seed, unsigned *seen_mask)
 {
-    static unsigned long a[ARRN];          /* private to this forked address space */
-    for (int i = 0; i < ARRN; i++) a[i] = (unsigned long)(i * 2654435761u + 1u);
-    unsigned long sum = 0;
-    long next_sample = 0;
-    for (long it = 0; it < ITERS; it++) {
-        int i = (int)(it & (ARRN - 1));
-        a[i] = a[i] * 1099511628211UL + (unsigned long)it;   /* scribble (alloc-ish churn) */
-        sum ^= a[i] + (sum << 7) + (sum >> 3);
-        if (it == next_sample) {
-            next_sample += SAMPLE;
-            int c = sys_cpu_index();
-            if (c >= 0 && c < 16) *seen_mask |= (1u << c);
-        }
+    long bad = 0;
+    for (int chunk = 0; chunk < KS_CHUNKS; chunk++) {
+        bad += sys_kheap_stress(KS_ITERS, KS_SIZE, seed);
+        int c = sys_cpu_index();
+        if (c >= 0 && c < 16) *seen_mask |= (1u << c);
     }
-    return sum;
+    return bad;
 }
 
 /* Crude wall-clock seconds from the RTC fields (monotonic enough over the test's
@@ -58,9 +44,9 @@ static long now_secs(void)
 }
 
 /* Run a batch of `n` worker children. Returns the batch wall time (seconds);
- * sets *cks_ref to the common checksum, *ok (1 = all checksums matched),
- * *seen_all (OR of the cores all children observed), *got (children reaped). */
-static long run_batch(int n, unsigned long *cks_ref, int *ok, unsigned *seen_all, int *got)
+ * sets *ok (1 = every child reported 0 corruption), *seen_all (OR of cores the
+ * children observed), *got (children reaped). */
+static long run_batch(int n, int *ok, unsigned *seen_all, int *got)
 {
     int fds[2];
     if (sys_pipe(fds) < 0) { outs("smptest: pipe failed\n"); *ok = 0; *got = 0; return 0; }
@@ -73,14 +59,18 @@ static long run_batch(int n, unsigned long *cks_ref, int *ok, unsigned *seen_all
         if (pid == 0) {
             sys_close(fds[0]);
             unsigned seen = 0;
-            unsigned long cks = compute(&seen);
-            /* line: "R <seen_hex> <cksum_hex>\n" */
-            char line[64]; int k = 0;
-            line[k++] = 'R'; line[k++] = ' ';
-            for (int s = 12; s >= 0; s -= 4) { int d=(int)((seen>>s)&0xF); line[k++]=(char)(d<10?'0'+d:'a'+d-10); }
-            line[k++] = ' ';
-            for (int s = 60; s >= 0; s -= 4) { int d=(int)((cks>>s)&0xF); line[k++]=(char)(d<10?'0'+d:'a'+d-10); }
-            line[k++] = '\n';
+            long bad = compute((unsigned long)(i + 1), &seen);   /* unique per-child seed */
+            /* Report "R <seen_hex> <bad_hex>\n". Encode through a VOLATILE pointer:
+             * clang -msse2 would otherwise auto-vectorize the 16-digit loop into XMM,
+             * and QEMU's SSE emulation on an Arm host miscompiles that shuffle (it
+             * wrote 0x00 instead of the ascii digits). Volatile = plain byte stores. */
+            static const char HEX[16] = "0123456789abcdef";
+            char line[64]; volatile char *lp = line; int k = 0;
+            lp[k++] = 'R'; lp[k++] = ' ';
+            for (int s = 12; s >= 0; s -= 4) lp[k++] = HEX[(seen >> s) & 0xF];
+            lp[k++] = ' ';
+            for (int s = 60; s >= 0; s -= 4) lp[k++] = HEX[((unsigned long)bad >> s) & 0xF];
+            lp[k++] = '\n';
             sys_write(fds[1], line, k);
             sys_close(fds[1]);
             app_exit(0);
@@ -99,7 +89,7 @@ static long run_batch(int n, unsigned long *cks_ref, int *ok, unsigned *seen_all
     long t1 = now_secs();
     long wall = t1 - t0; if (wall < 0) wall += 86400;
 
-    int g = 0, set = 0, okc = 1; unsigned long ref = 0; unsigned smask = 0;
+    int g = 0, okc = 1; unsigned smask = 0;
     const char *p = buf;
     while (*p) {
         if (p[0] == 'R' && p[1] == ' ') {
@@ -108,17 +98,17 @@ static long run_batch(int n, unsigned long *cks_ref, int *ok, unsigned *seen_all
                 int d = (*q>='a') ? (*q-'a'+10) : (*q-'0'); seen = (seen<<4) | (unsigned)d; q++;
             }
             q++;
-            unsigned long cks = 0; for (int kk = 0; kk < 16 && *q && *q != '\n'; kk++, q++) {
-                int d = (*q>='a') ? (*q-'a'+10) : (*q-'0'); cks = (cks<<4) | (unsigned)d;
+            unsigned long bad = 0; for (int kk = 0; kk < 16 && *q && *q != '\n'; kk++, q++) {
+                int d = (*q>='a') ? (*q-'a'+10) : (*q-'0'); bad = (bad<<4) | (unsigned)d;
             }
-            if (!set) { ref = cks; set = 1; } else if (cks != ref) okc = 0;
+            if (bad != 0) okc = 0;
             smask |= seen;
             g++;
         }
         while (*p && *p != '\n') p++;
         if (*p == '\n') p++;
     }
-    *cks_ref = ref; *ok = okc; *seen_all = smask; *got = g;
+    *ok = okc; *seen_all = smask; *got = g;
     return wall;
 }
 
@@ -127,28 +117,27 @@ int main(void)
     int ncpu = 4;   /* matches the -smp 4 test rig */
 
     /* Baseline: one child alone -> T1. */
-    unsigned long cks1; int ok1, got1; unsigned seen1;
-    long T1 = run_batch(1, &cks1, &ok1, &seen1, &got1);
+    int ok1, got1; unsigned seen1;
+    long T1 = run_batch(1, &ok1, &seen1, &got1);
 
     /* Parallel batch: N children -> TN. */
-    unsigned long cksN; int okN, gotN; unsigned seenN;
-    long TN = run_batch(ncpu, &cksN, &okN, &seenN, &gotN);
+    int okN, gotN; unsigned seenN;
+    long TN = run_batch(ncpu, &okN, &seenN, &gotN);
 
     int distinct = 0; for (int i = 0; i < 16; i++) if (seenN & (1u << i)) distinct++;
 
     outs("smptest: T1="); outn(T1); outs("s TN="); outn(TN);
     outs("s children="); outn(gotN); outs(" distinct_cpus="); outn(distinct);
-    outs(" cksum="); { char h[17]; int n=0; for (int s=60;s>=0;s-=4){int d=(int)((cksN>>s)&0xF);h[n++]=(char)(d<10?'0'+d:'a'+d-10);} h[n]=0; outs(h); }
+    outs(" corruption="); outn(okN ? 0 : 1);
     outs("\n");
 
     if (got1 != 1 || gotN != ncpu) { outs("SMP_TEST_FAIL: missing children\n"); return 1; }
-    if (!ok1 || !okN)              { outs("SMP_TEST_FAIL: checksum mismatch (corruption)\n"); return 1; }
-    if (cks1 != cksN)              { outs("SMP_TEST_FAIL: checksum differs across batches (corruption)\n"); return 1; }
+    if (!ok1 || !okN)              { outs("SMP_TEST_FAIL: concurrent kmalloc corruption\n"); return 1; }
     if (distinct < 2)              { outs("SMP_TEST_FAIL: children ran on <2 cores (no parallelism)\n"); return 1; }
-    /* Genuine concurrency: N children finished in well under N*T1. Require
+    /* Genuine BKL-free concurrency: N children finished in well under N*T1. Require
      * TN < 1.6*T1 (i.e. 5*TN < 8*T1). Need a meaningful baseline (>=2s). */
     if (T1 < 2)                    { outs("SMP_TEST_FAIL: baseline too short to time\n"); return 1; }
-    if (!(TN * 5 < T1 * 8))        { outs("SMP_TEST_FAIL: no wall-clock speedup (ran sequentially?)\n"); return 1; }
+    if (!(TN * 5 < T1 * 8))        { outs("SMP_TEST_FAIL: no wall-clock speedup (kmalloc still serialized by the BKL?)\n"); return 1; }
 
     outs("SMP_TEST_OK\n");
     return 0;
