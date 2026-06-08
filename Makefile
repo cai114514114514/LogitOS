@@ -55,7 +55,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host
+.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete
 
 all: $(ISO)
 
@@ -286,6 +286,13 @@ test-as:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tools/t/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
 	@$(BUILD)/as_test
+
+# libcomplete host unit tests: the completion engine is self-contained C, so it
+# builds and runs natively -- no QEMU.
+test-complete:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tools/t/complete_test.c src/apps/as/complete.c -Isrc/apps/as
+	@$(BUILD)/complete_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
 # or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
