@@ -1,4 +1,5 @@
 #include "aui.h"
+#include "complete.h"
 
 /* Code Studio -- a small IDE for AetherScript (.as). Edit with monospace + line
  * numbers + syntax highlighting, hit Run (Ctrl+R) to fork+exec /bin/as on the
@@ -35,6 +36,10 @@
 #define C_TOOL    rgb(40, 43, 53)
 #define C_OUTBG   rgb(22, 24, 30)
 #define C_OUTTXT  rgb(180, 186, 198)
+#define C_CMPBG   rgb(44, 47, 58)
+#define C_CMPSEL  rgb(58, 96, 140)
+#define C_CMPTXT  rgb(220, 223, 230)
+#define C_CMPKIND rgb(120, 128, 142)
 
 static char text[MAXT + 1];
 static int  tlen;
@@ -48,6 +53,14 @@ static int  run_fd = -1, run_pid = -1, running;
 static char out[OUTBUF + 1];
 static int  outlen;
 static int  err_line = -1;   /* 1-based line from an error message, else -1 */
+
+/* completion popup state */
+#define CMP_MAX  64
+#define CMP_ROWS 8
+static Completion cmp[CMP_MAX];
+static int  cmp_n;           /* candidate count (0 = hidden) */
+static int  cmp_sel, cmp_top;
+static int  cmp_wstart;      /* byte index where the partial word starts */
 
 /* ---- small helpers ---- */
 static int u2s(char *b, int v) { int n = 0; char t[12]; if (!v) { b[0] = '0'; return 1; }
@@ -156,6 +169,77 @@ static int poll_run(void)
     return got;
 }
 
+/* ---- completion providers: enumerate + read LibAether modules off the disk ---- */
+static int sd_list_modules(char names[][48], int max)
+{
+    int cnt = dir_count("/usr/as/lib"); if (cnt < 0) return 0;
+    int out = 0; char nm[64];
+    for (int i = 0; i < cnt && out < max; i++) {
+        int sz = dir_name("/usr/as/lib", i, nm);   /* buf is <= 64 per the ABI */
+        if (sz < 0) continue;
+        int L = 0; while (nm[L]) L++;
+        if (!(L > 3 && nm[L-3] == '.' && nm[L-2] == 'a' && nm[L-1] == 's')) continue;  /* only .as */
+        L -= 3;
+        int j = 0; for (; j < L && j < 47; j++) names[out][j] = nm[j];
+        names[out][j] = 0; out++;
+    }
+    return out;
+}
+static int sd_read_module(const char *name, char *buf, int max)
+{
+    char path[96]; int p = 0; const char *pre = "/usr/as/lib/";
+    while (pre[p]) { path[p] = pre[p]; p++; }
+    int i = 0; while (name[i] && p < 88) path[p++] = name[i++];
+    path[p++] = '.'; path[p++] = 'a'; path[p++] = 's'; path[p] = 0;
+    return read_file(path, buf, max);
+}
+
+/* ---- completion popup ---- */
+static void cmp_hide(void) { cmp_n = 0; }
+static void cmp_refresh(void)
+{
+    cmp_n = as_complete(text, tlen, caret, cmp, CMP_MAX);
+    cmp_sel = 0; cmp_top = 0;
+    int p = caret;
+    while (p > 0) { char c = text[p-1];
+        if ((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_') p--; else break; }
+    cmp_wstart = p;
+}
+static const char *cmp_kind_name(int k)
+{
+    switch (k) {
+        case CMP_KEYWORD: return "keyword"; case CMP_BUILTIN: return "builtin";
+        case CMP_MODULE:  return "module";  case CMP_FUNC:    return "func";
+        case CMP_CLASS:   return "class";   case CMP_METHOD:  return "method";
+        case CMP_FIELD:   return "field";   case CMP_PARAM:   return "param";
+        case CMP_IMPORT:  return "import";  case CMP_GLOBAL:  return "global";
+        default:          return "local";
+    }
+}
+/* draw the popup under the caret (crow/ccol = caret row/col) */
+static void draw_cmp(int crow, int ccol)
+{
+    if (cmp_n <= 0) return;
+    if (crow < top_line || crow >= top_line + VIS) return;
+    int wcol = ccol - (caret - cmp_wstart); if (wcol < 0) wcol = 0;
+    int px = GUTTER + 2 + wcol * CELL;
+    int rows = cmp_n < CMP_ROWS ? cmp_n : CMP_ROWS;
+    int w = 230, h = rows * ROWH + 4;
+    int py = EDIT_Y + (crow - top_line) * ROWH + ROWH + 1;
+    if (py + h > WINH - OUTH) py = EDIT_Y + (crow - top_line) * ROWH - h;   /* flip above */
+    if (px + w > WINW) px = WINW - w - 4;
+    if (px < 0) px = 0;
+    gui_rect(px, py, w, h, C_CMPBG);
+    gui_rect(px, py, w, 1, rgb(18, 19, 24));
+    for (int r = 0; r < rows; r++) {
+        int it = cmp_top + r;
+        int ry = py + 2 + r * ROWH;
+        if (it == cmp_sel) gui_rect(px, ry - 1, w, ROWH, C_CMPSEL);
+        gui_text_mono(px + 6, ry, C_CMPTXT, CELL, cmp[it].label);
+        gui_text_mono(px + w - 74, ry, C_CMPKIND, CELL, cmp_kind_name(cmp[it].kind));
+    }
+}
+
 /* ---- render ---- */
 static int run_btn_hit(int x, int y) { return y >= 3 && y < TOOLH - 3 && x >= WINW - 70 && x < WINW - 10; }
 
@@ -201,6 +285,8 @@ static void redraw(void)
         int s = starts[li]; int e = s; while (e < outlen && out[e] != '\n') e++;
         if (e > s) gui_text_run(8, oy + 22 + (li - first) * ROWH, 16, 1, C_OUTTXT, out + s, e - s);
     }
+
+    draw_cmp(crow, ccol);
     gui_flush();
 }
 
@@ -209,6 +295,7 @@ void app_main(void)
     int n = get_arg(fname, sizeof fname);
     if (n <= 0) { const char *d = "untitled.as"; int i = 0; while (d[i]) { fname[i] = d[i]; i++; } fname[i] = 0; }
     gui_create("Code Studio", WINW, WINH);
+    as_complete_set_providers(sd_list_modules, sd_read_module);
 
     int r = read_file(fname, text, MAXT);
     if (r > 0) { tlen = r > MAXT ? MAXT : r; text[tlen] = 0; }
@@ -232,6 +319,23 @@ void app_main(void)
             }
             if (e.type == EV_KEY) {
                 int k = (int)e.a;
+                if (cmp_n > 0) {                       /* popup open: intercept nav/accept/dismiss */
+                    if (k == KEY_UP)   { if (cmp_sel > 0) cmp_sel--; if (cmp_sel < cmp_top) cmp_top = cmp_sel; changed = 1; continue; }
+                    if (k == KEY_DOWN) { if (cmp_sel < cmp_n - 1) cmp_sel++; if (cmp_sel >= cmp_top + CMP_ROWS) cmp_top = cmp_sel - CMP_ROWS + 1; changed = 1; continue; }
+                    if (k == 27)       { cmp_hide(); changed = 1; continue; }                 /* Esc */
+                    if (k == '\t' || k == '\r' || k == '\n') {                                /* accept */
+                        const char *ins = cmp[cmp_sel].insert;
+                        int wlen = caret - cmp_wstart, ilen = 0; while (ins[ilen]) ilen++;
+                        int delta = ilen - wlen;
+                        if (tlen + delta < MAXT && tlen + delta >= 0) {
+                            if (delta > 0) { for (int i = tlen; i >= caret; i--) text[i + delta] = text[i]; }
+                            else if (delta < 0) { for (int i = caret; i <= tlen; i++) text[i + delta] = text[i]; }
+                            for (int i = 0; i < ilen; i++) text[cmp_wstart + i] = ins[i];
+                            tlen += delta; caret = cmp_wstart + ilen; text[tlen] = 0; modified = 1;
+                        }
+                        cmp_hide(); scroll_to_caret(); changed = 1; continue;
+                    }
+                }
                 if (k == CTRL_S) { if (write_file(fname, text, tlen) >= 0) modified = 0; changed = 1; }
                 else if (k == CTRL_R) { run_file(); changed = 1; }
                 else if (k == KEY_LEFT)  { if (caret > 0) caret--; scroll_to_caret(); changed = 1; }
@@ -242,10 +346,11 @@ void app_main(void)
                 else if (k == KEY_END)  { caret = line_end(line_start(caret_row())); changed = 1; }
                 else if (k == KEY_PGDN) { top_line += VIS; int m = line_count() - 1; if (top_line > m) top_line = m; changed = 1; }
                 else if (k == KEY_PGUP) { top_line -= VIS; if (top_line < 0) top_line = 0; changed = 1; }
-                else if (k == '\b') { if (caret > 0) { for (int i = caret - 1; i < tlen - 1; i++) text[i] = text[i + 1]; tlen--; caret--; text[tlen] = 0; modified = 1; scroll_to_caret(); } changed = 1; }
+                else if (k == '\b') { if (caret > 0) { for (int i = caret - 1; i < tlen - 1; i++) text[i] = text[i + 1]; tlen--; caret--; text[tlen] = 0; modified = 1; scroll_to_caret(); } if (cmp_n > 0) cmp_refresh(); changed = 1; }
                 else if (k == '\r' || k == '\n' || k == '\t' || (k >= 32 && k < 127)) {
                     char c = (k == '\r') ? '\n' : (char)k;
                     if (tlen < MAXT) { for (int i = tlen; i > caret; i--) text[i] = text[i - 1]; text[caret++] = c; tlen++; text[tlen] = 0; modified = 1; scroll_to_caret(); }
+                    if ((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='.') cmp_refresh(); else cmp_hide();
                     changed = 1;
                 }
             }

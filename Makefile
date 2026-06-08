@@ -108,7 +108,17 @@ $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 $(eval $(call APP_RULE,preview, 0x48000000,Preview,-,P,200,150,110))
-$(eval $(call APP_RULE,studio,  0x49000000,Code Studio,as,{,200,160,250))
+# Code Studio links the AetherScript completion engine (complete.o) for IntelliSense.
+$(BUILD)/apps/complete.o: src/apps/as/complete.c src/apps/as/complete.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c src/apps/as/complete.c -o $@
+$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o src/apps/as/complete.h
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Isrc/apps/as
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o
+$(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 # (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
@@ -226,7 +236,8 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(AEX) tools/mkfs.py
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
-	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l)))
+	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
+	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
