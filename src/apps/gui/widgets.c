@@ -65,20 +65,16 @@ static void frame(void)
 void app_main(void)
 {
     gui_create("Widgets", 340, 290);
+    dark = sys_ui_dark(-1) > 0;               /* reflect the current system theme */
     frame();                                  /* initial paint */
-    int applied = 0;                          /* theme currently shown (0 light) */
     struct aether_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         if (e.type == EV_CLOSE) app_exit(0);
+        dark = sys_ui_dark(-1) > 0;           /* follow the menu-bar switch too */
         aui_feed(&e);
-        frame();                              /* may toggle `dark` via the checkbox */
-        if (dark != applied) {                /* theme changed -> repaint with it, */
-            applied = dark; aui_set_dark(dark);  /* no event so nothing re-toggles  */
-            aui_feed_done();
-            frame();
-        } else {
-            aui_feed_done();
-        }
+        frame();                              /* the Dark checkbox may flip `dark` */
+        aui_feed_done();
+        if (dark != (sys_ui_dark(-1) > 0)) sys_ui_dark(dark);   /* checkbox -> drive the system */
     }
 }

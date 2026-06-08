@@ -86,6 +86,11 @@ static int W, H;
 static void dirty_full(void) { dirty = 1; }
 static void dirty_rect(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; dirty = 1; }
 static int next_app_id = 1;
+
+/* System light/dark theme. The kernel-drawn chrome (menu bar, dock, window
+ * frames) reads this directly; ring-3 apps query it via SYS_UI_DARK and follow. */
+static int g_ui_dark;
+static void wm_set_dark(int on);
 static int cascade;
 
 /* app registry built by scanning the disk for *.aex */
@@ -395,6 +400,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_SYSINFO:
         if ((int)b <= 0 || !user_range_ok((void *)a, (uint64_t)(int)b, 1)) return -1;
         return sysinfo_text((char *)a, (int)b);
+    case SYS_UI_DARK:                       /* a<0 query; else set system dark mode */
+        if ((int)a >= 0) wm_set_dark((int)a);
+        return g_ui_dark;
     case SYS_FILE_COUNT:
         return vfs_count("/");
     case SYS_FILE_NAME: {
@@ -552,6 +560,18 @@ static void enqueue(struct win *w, int type, int a, int b)
     w->evtail = nt;
 }
 
+/* Flip the system theme: kernel chrome follows immediately (redrawn each frame);
+ * apps are nudged with EV_THEME so they re-query SYS_UI_DARK and repaint. */
+static void wm_set_dark(int on)
+{
+    on = on ? 1 : 0;
+    if (on == g_ui_dark) return;
+    g_ui_dark = on;
+    for (int i = 0; i < MAXWIN; i++)
+        if (wins[i].used && wins[i].kind == WK_APP) enqueue(&wins[i], EV_THEME, 0, 0);
+    dirty = 1;
+}
+
 /* ---------- reaping dead apps ---------- */
 static void reap(void)
 {
@@ -667,17 +687,26 @@ static void draw_background(void)
 /* Frosted menu bar, composited per-frame on top of the windows: real-time blur
  * of whatever is behind it (wallpaper or a window slid up under it). */
 static void draw_clock(void);
+static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
 static void draw_menubar(void)
 {
     fb_blur_rect(0, 0, W, MENUBAR_H, 6, 0);                  /* frost live backdrop */
-    fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120);   /* translucent white tint */
-    fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 28);      /* hairline separator */
-    uint32_t ink = rgb(40, 40, 48);
+    if (g_ui_dark) fb_blend_rect(0, 0, W, MENUBAR_H, 28, 28, 34, 165);   /* dark glass */
+    else           fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120); /* light glass */
+    fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
+    uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
     fb_text(32, 4, "Aether OS", ink);
     fb_text(112, 4, "File", ink);
     fb_text(156, 4, "Edit", ink);
     fb_text(200, 4, "View", ink);
+    /* dark-mode toggle switch: track + knob (knob right = dark) */
+    menu_tog_x = W - 210; menu_tog_y = (MENUBAR_H - menu_tog_h) / 2;
+    if (g_ui_dark) fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(94, 150, 255));
+    else           fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(198, 200, 208));
+    int kr = menu_tog_h / 2 - 2;
+    int kx = g_ui_dark ? menu_tog_x + menu_tog_w - kr - 3 : menu_tog_x + kr + 3;
+    fb_fill_circle(kx, menu_tog_y + menu_tog_h / 2, kr, rgb(255, 255, 255));
     draw_clock();
 }
 
@@ -716,8 +745,9 @@ static void draw_dock(void)
     dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
     fb_blend_round_rect(dock_x0 - 1, dock_y0 + 7, dw + 2, dh, 28, 0, 0, 0, 50);    /* soft drop shadow */
     fb_blur_rect(dock_x0, dock_y0, dw, dh, 6, 28);                                  /* frost the live backdrop */
-    fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 58);           /* translucent glass tint */
-    fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, 115);       /* bright top sheen */
+    if (g_ui_dark) fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 36, 36, 44, 120);   /* dark glass */
+    else           fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 58); /* light glass */
+    fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, g_ui_dark ? 60 : 115); /* top sheen */
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
@@ -760,7 +790,7 @@ static void draw_clock(void)
     b[p++]=' '; b[p++]=' ';
     p+=fmt2(b+p,t.hour); b[p++]=':'; p+=fmt2(b+p,t.minute); b[p++]=':'; p+=fmt2(b+p,t.second);
     b[p]=0;
-    fb_text(W - fb_text_width(b) - 12, 4, b, rgb(40, 40, 46));
+    fb_text(W - fb_text_width(b) - 12, 4, b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
 }
 
 /* The file browser is now the ring-3 Finder app (src/apps/gui/files.c), launched
@@ -785,17 +815,18 @@ static void shadow_band(int x, int y, int w, int h, int t, int a)
  * for the open-pop scale animation as well as straight into `back`. */
 static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int focused)
 {
-    fb_round_rect(x, y, ww, wh, 10, rgb(250, 250, 252));
-    uint32_t tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252);
-    uint32_t tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244);
+    fb_round_rect(x, y, ww, wh, 10, g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252));
+    uint32_t tbtop, tbbot;
+    if (g_ui_dark) { tbtop = focused ? rgb(60, 60, 70) : rgb(40, 40, 48); tbbot = focused ? rgb(44, 44, 52) : rgb(34, 34, 40); }
+    else           { tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252); tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244); }
     fb_round_rect_vgrad(x, y, ww, TITLEBAR_H, 10, tbtop, tbbot);
-    fb_fill_rect(x, y + TITLEBAR_H, ww, 1, rgb(214, 214, 220));
-    uint32_t off = rgb(205, 205, 210);
+    fb_fill_rect(x, y + TITLEBAR_H, ww, 1, g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+    uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
     fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
     fb_fill_circle(x + 34, y + 15, 6, focused ? rgb(254, 188, 46) : off);
     fb_fill_circle(x + 52, y + 15, 6, focused ? rgb(40, 200, 64) : off);
     int tw = fb_text_width(title);
-    fb_text(x + (ww - tw) / 2, y + 7, title, rgb(70, 70, 78));
+    fb_text(x + (ww - tw) / 2, y + 7, title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
 }
 
 static void draw_frame(struct win *w, int focused)
@@ -902,6 +933,11 @@ static void wm_process_mouse(int x, int y, int left, int right)
     int content = 0;                       /* did anything other than the cursor change? */
     mx = x; my = y;
 
+    if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
+        wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
+        mleft = left; mright = right; dirty = 1;
+        return;
+    }
     if (left && !mleft) {
         content = 1;
         int hitorder = -1;

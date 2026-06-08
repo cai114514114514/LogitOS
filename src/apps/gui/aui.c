@@ -38,7 +38,12 @@ static void load_dark(void)
     aui_t.error       = rgb(255, 92, 82);
     aui_t.focus       = rgb(94, 150, 255);
 }
-void aui_ensure(void) { if (!theme_inited) { load_light(); theme_inited = 1; } }
+/* First use: adopt the current SYSTEM theme (SYS_UI_DARK) so even the first token
+ * read / window clear matches a desktop that is already dark. */
+void aui_ensure(void)
+{
+    if (!theme_inited) { theme_dark = sys_ui_dark(-1) > 0; theme_dark ? load_dark() : load_light(); theme_inited = 1; }
+}
 
 void aui_set_dark(int on)
 {
@@ -109,7 +114,12 @@ static int clicked_in(int x, int y, int w, int h)
 void aui_feed(const struct aether_event *e) { ev_type = e->type; ev_a = e->a; ev_b = e->b; }
 void aui_feed_done(void) { ev_type = 0; }
 
-void aui_begin(unsigned bg) { aui_ensure(); id_ctr = 0; gui_clear(bg); }
+void aui_begin(unsigned bg)
+{
+    int s = sys_ui_dark(-1) > 0;            /* live-follow the system theme each frame */
+    if (!theme_inited || s != theme_dark) { aui_set_dark(s); bg = aui_t.bg; }  /* fresh bg on change */
+    id_ctr = 0; gui_clear(bg);
+}
 void aui_end(void) { gui_flush(); }
 
 void aui_panel(int x, int y, int w, int h, unsigned color) { gui_rect(x, y, w, h, color); }

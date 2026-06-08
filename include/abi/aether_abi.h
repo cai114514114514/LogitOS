@@ -61,6 +61,7 @@
 #define SYS_IMG_DECODE  67 /* (struct aether_imgreq*) decode an image file -> RGBA in app buffer */
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
+#define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
 
 /* open() flags */
 #define O_RDONLY 0
@@ -95,6 +96,7 @@
 #define EV_MOUSE  2   /* a = x, b = y (window-local), mouse-button down */
 #define EV_CLOSE  3   /* the window's close button was pressed */
 #define EV_MOUSE_R 4  /* a = x, b = y (window-local), right-button down */
+#define EV_THEME  5   /* the system light/dark theme changed -- repaint to follow */
 
 struct aether_event {
     int type;
