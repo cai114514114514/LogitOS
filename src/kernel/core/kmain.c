@@ -17,6 +17,7 @@
 #include "proc.h"
 #include "file.h"
 #include "virtio_blk.h"
+#include "nvme.h"
 
 #define TIMER_HZ 100
 
@@ -42,7 +43,8 @@ void kernel_main(uint64_t mb_info)
     proc_init();   /* process table */
     file_init();   /* open-file-description pool */
 
-    virtio_blk_init();   /* prefer virtio-blk for the disk; aquafs falls back to ATA */
+    nvme_init();         /* prefer NVMe (M24 bare-metal target) when present */
+    virtio_blk_init();   /* else virtio-blk; aquafs falls back to ATA */
 
     vfs_register(&aquafs);
     int fs_ok = (vfs_mount() == 0);

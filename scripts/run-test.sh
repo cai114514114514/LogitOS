@@ -11,8 +11,17 @@ MARKER="AQUA_BOOT_OK"
 LOG="$(mktemp)"
 QEMU="${QEMU:-qemu-system-x86_64}"
 
+# BLK selects the disk controller the image is attached to: virtio (default) or
+# nvme (exercises the from-scratch NVMe driver -- aquafs must mount + read off it).
+BLK="${BLK:-virtio}"
+case "$BLK" in
+    nvme)   BLK_DEV="-device nvme,drive=hd0,serial=aqua0" ;;
+    virtio) BLK_DEV="-device virtio-blk-pci,drive=hd0" ;;
+    *)      echo "unknown BLK='$BLK' (want virtio|nvme)" >&2; exit 2 ;;
+esac
+
 DISK_ARGS=""
-[ -n "$DISK" ] && DISK_ARGS="-drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d"
+[ -n "$DISK" ] && DISK_ARGS="-drive file=$DISK,format=raw,if=none,id=hd0 $BLK_DEV -boot d"
 
 cleanup() {
     [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null

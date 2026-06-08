@@ -55,7 +55,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test clean test-aqs test-aqs-gcstress test-shell test-aqs-os test-smp
+.PHONY: all run debug test test-nvme clean test-aqs test-aqs-gcstress test-shell test-aqs-os test-smp
 
 all: $(ISO)
 
@@ -243,6 +243,11 @@ debug: $(ISO) $(DISK)
 
 test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)
+
+# Same smoke test, but attach the disk via NVMe -- proves the from-scratch NVMe
+# driver brings up a controller and aquafs mounts + reads off it (M24 bare-metal).
+test-nvme: $(ISO) $(DISK)
+	@BLK=nvme sh scripts/run-test.sh $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
 	@sh scripts/run-shell-test.sh $(ISO) $(DISK)

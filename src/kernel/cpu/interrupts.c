@@ -14,6 +14,7 @@
 #include "proc.h"
 #include "ata.h"
 #include "virtio.h"
+#include "nvme.h"
 #include "percpu.h"
 #include "spinlock.h"
 
@@ -103,7 +104,7 @@ void interrupt_handler(struct registers *r)
             if (apic) lapic_eoi(); else pic_eoi(0);
             /* Don't preempt mid block-I/O, and never re-enter schedule() from a
              * NESTED IRQ (the sti window inside an in-progress kernel op). */
-            if (!nested && !ata_busy() && !virtio_busy())
+            if (!nested && !ata_busy() && !virtio_busy() && !nvme_busy())
                 schedule();    /* preempt: round-robin to the next thread */
             goto done;
         }
