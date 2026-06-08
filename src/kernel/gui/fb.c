@@ -152,6 +152,26 @@ void fb_blit_surface(int dx, int dy, const struct surface *src)
     }
 }
 
+/* Nearest-neighbour scaled, opaque blit of a surface into dest rect (dx,dy,dw,dh)
+ * of the current target. Used for the window open "pop" (scale 0.85->1.0). */
+void fb_blit_surface_scaled(int dx, int dy, int dw, int dh, const struct surface *src)
+{
+    struct surface *t = T ? T : &screen;
+    if (!t->px || !src->px || dw <= 0 || dh <= 0) return;
+    for (int j = 0; j < dh; j++) {
+        int ty = dy + j;
+        if (ty < 0 || ty >= t->h) continue;
+        int sy = j * src->h / dh;
+        const uint32_t *srow = src->px + (uint32_t)sy * src->w;
+        uint32_t *drow = t->px + (uint32_t)ty * t->w;
+        for (int i = 0; i < dw; i++) {
+            int tx = dx + i;
+            if (tx < 0 || tx >= t->w) continue;
+            drow[tx] = srow[i * src->w / dw];
+        }
+    }
+}
+
 /* Raw back->framebuffer copy of a clamped rect. The parallel present workers
  * (one per CPU) each call this on a disjoint band of rows -- disjoint writes,
  * read-only shared source, so no locking is needed. */

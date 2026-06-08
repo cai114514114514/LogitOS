@@ -42,6 +42,9 @@ void fb_clear_clip(void);
 /* Copy `src` into the current target at (dx,dy), clipped. */
 void fb_blit_surface(int dx, int dy, const struct surface *src);
 
+/* Nearest-neighbour scaled, opaque blit of `src` into dest rect (dx,dy,dw,dh). */
+void fb_blit_surface_scaled(int dx, int dy, int dw, int dh, const struct surface *src);
+
 /* Text (8x16 bitmap font). */
 void fb_char(int x, int y, char c, uint32_t color);
 void fb_text(int x, int y, const char *s, uint32_t color);

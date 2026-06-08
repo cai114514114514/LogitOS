@@ -64,6 +64,7 @@ struct win {
     int  evhead, evtail;
     int  wants_close;
     char cwd[128];            /* Finder: current directory path */
+    uint64_t open_t0;         /* tick the open "pop" animation began (0 = settled) */
 };
 
 static struct app apps[MAXWIN];
@@ -319,6 +320,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (!w->surf.px) { w->used = 0; return -1; }
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
         w->evhead = w->evtail = 0; w->wants_close = 0;
+        { uint64_t t = timer_ticks(); w->open_t0 = t ? t : 1; }   /* trigger open pop */
         ap->win = wi;
         raise_win(wi);
         dirty_full();
@@ -778,14 +780,12 @@ static void shadow_band(int x, int y, int w, int h, int t, int a)
     fb_blend_rect(x + w, y, t, h, 0, 0, 0, a);             /* right  */
 }
 
-static void draw_frame(struct win *w, int focused)
+/* The window body (rounded bg + gradient titlebar + traffic lights + title) drawn
+ * at an explicit rect, so it can be rendered into an off-screen surface at origin
+ * for the open-pop scale animation as well as straight into `back`. */
+static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int focused)
 {
-    int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    shadow_band(x, y, ww, wh, 8, focused ? 11 : 7);        /* faint outer fringe */
-    shadow_band(x, y, ww, wh, 4, focused ? 22 : 13);       /* mid */
-    shadow_band(x, y, ww, wh, 2, focused ? 40 : 24);       /* dark edge */
     fb_round_rect(x, y, ww, wh, 10, rgb(250, 250, 252));
-    /* titlebar: a subtle top->bottom gradient (rounded top corners) */
     uint32_t tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252);
     uint32_t tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244);
     fb_round_rect_vgrad(x, y, ww, TITLEBAR_H, 10, tbtop, tbbot);
@@ -794,8 +794,17 @@ static void draw_frame(struct win *w, int focused)
     fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
     fb_fill_circle(x + 34, y + 15, 6, focused ? rgb(254, 188, 46) : off);
     fb_fill_circle(x + 52, y + 15, 6, focused ? rgb(40, 200, 64) : off);
-    int tw = fb_text_width(w->title);
-    fb_text(x + (ww - tw) / 2, y + 7, w->title, rgb(70, 70, 78));
+    int tw = fb_text_width(title);
+    fb_text(x + (ww - tw) / 2, y + 7, title, rgb(70, 70, 78));
+}
+
+static void draw_frame(struct win *w, int focused)
+{
+    int x = w->x, y = w->y, ww = w->w, wh = w->h;
+    shadow_band(x, y, ww, wh, 8, focused ? 11 : 7);        /* faint outer fringe */
+    shadow_band(x, y, ww, wh, 4, focused ? 22 : 13);       /* mid */
+    shadow_band(x, y, ww, wh, 2, focused ? 40 : 24);       /* dark edge */
+    draw_frame_body(x, y, ww, wh, w->title, focused);
 }
 
 static const char *cursor_bmp[] = {
@@ -820,12 +829,27 @@ static void draw_cursor_back(int x, int y)
         }
 }
 
+/* Open "pop" animation: 0.85 -> 1.0 scale over ~0.14s (easeOutCubic). Returns the
+ * scale in /256 (256 = full), or 0 when settled / not animating. */
+static uint32_t *anim_buf;
+static int anim_buf_n;
+static int win_open_scale(struct win *w)
+{
+    if (!w->open_t0) return 0;
+    uint64_t e = timer_ticks() - w->open_t0, DUR = 16;
+    if (e >= DUR) { w->open_t0 = 0; return 0; }
+    int t = (int)(e * 256 / DUR), inv = 256 - t;
+    int eased = 256 - inv * inv * inv / (256 * 256);   /* easeOutCubic */
+    return 216 + (256 - 216) * eased / 256;            /* 0.84x -> 1.0x over ~0.16s */
+}
+
 /* Composite the whole screen -- background + menu-bar clock + every window + the
  * cursor -- into `back`, then present it in one shot. No dirty-rect / partial
  * path: the virtio-gpu present is a cheap DMA, and a single full composite each
  * frame keeps `back` always-valid. */
 void wm_render(void)
 {
+    int animating = 0;
     reap();
     fb_target(NULL);
     for (int y = 0; y < H; y++)            /* wallpaper (baked in bg) */
@@ -834,6 +858,22 @@ void wm_render(void)
         struct win *w = &wins[order[i]];
         if (!w->used) continue;
         int focused = (i == norder - 1);
+        int s = win_open_scale(w);         /* open pop in progress? */
+        if (s) {
+            int need = w->w * w->h;
+            if (need > anim_buf_n) { if (anim_buf) kfree(anim_buf); anim_buf = kmalloc((unsigned)need * 4); anim_buf_n = anim_buf ? need : 0; }
+            if (anim_buf) {
+                animating = 1;
+                struct surface tmp = { anim_buf, w->w, w->h };
+                fb_target(&tmp);           /* render the whole window into scratch... */
+                draw_frame_body(0, 0, w->w, w->h, w->title, focused);
+                if (w->surf.px) fb_blit_surface(0, TITLEBAR_H, &w->surf);
+                fb_target(NULL);
+                int dw = w->w * s / 256, dh = w->h * s / 256;     /* ...scale to back */
+                fb_blit_surface_scaled(w->x + (w->w - dw) / 2, w->y + (w->h - dh) / 2, dw, dh, &tmp);
+                continue;
+            }
+        }
         draw_frame(w, focused);
         if (w->surf.px)
             fb_blit_surface(w->x, w->y + TITLEBAR_H, &w->surf);
@@ -842,6 +882,7 @@ void wm_render(void)
     draw_dock();                           /* vibrancy frosts the live windows  */
     draw_cursor_back(mx, my);              /* cursor on top, into the composite */
     fb_present();                          /* full back -> framebuffer + virtio flush */
+    if (animating) dirty = 1;              /* keep compositing until the pop settles */
 }
 
 /* ---------- input ---------- */
