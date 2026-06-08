@@ -79,7 +79,7 @@ unsigned aui_hsl(int h, int s, int l)
 void aui_set_accent(unsigned color) { aui_t.accent = color; aui_t.focus = color; }
 
 /* Text is drawn + measured through the same px path so labels center exactly. */
-#define PX 15
+#define PX AUI_FS_BODY
 
 static int ev_type, ev_a, ev_b;     /* the event being handled this frame */
 static int id_ctr, focus_id;        /* widget ids (call order); textfield focus */
@@ -87,6 +87,21 @@ static int id_ctr, focus_id;        /* widget ids (call order); textfield focus 
 static int slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 static int tw(const char *s)   { return text_measure_px(s, slen(s), PX, 0); }
 static void txt(int x, int y, unsigned c, const char *s) { gui_text_run(x, y, PX, 0, c, s, slen(s)); }
+
+int  aui_text_w(const char *s, int px) { return text_measure_px(s, slen(s), px, 0); }
+void aui_text_sz(int x, int y, const char *s, unsigned color, int px) { gui_text_run(x, y, px, 0, color, s, slen(s)); }
+void aui_heading(int x, int y, const char *s, unsigned color) { aui_text_sz(x, y, s, color, AUI_FS_TITLE); }
+
+/* ---------- linear stack layout ---------- */
+static int ly_x, ly_y, ly_gap, ly_horiz;
+void aui_vstack(int x, int y, int gap) { ly_x = x; ly_y = y; ly_gap = gap; ly_horiz = 0; }
+void aui_hstack(int x, int y, int gap) { ly_x = x; ly_y = y; ly_gap = gap; ly_horiz = 1; }
+void aui_next(int w, int h, int *x, int *y)
+{
+    *x = ly_x; *y = ly_y;
+    if (ly_horiz) ly_x += w + ly_gap;
+    else          ly_y += h + ly_gap;
+}
 
 static int clicked_in(int x, int y, int w, int h)
 { return ev_type == EV_MOUSE && ev_a >= x && ev_a < x + w && ev_b >= y && ev_b < y + h; }

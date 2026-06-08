@@ -65,16 +65,42 @@ void     aui_set_accent(unsigned color); /* recolor the accent + focus tokens   
 #define AUI_ERROR       (aui_ensure(), aui_t.error)
 #define AUI_FOCUS       (aui_ensure(), aui_t.focus)
 
+/* ---------- spacing scale (4px base, 8px rhythm) ---------- */
+#define AUI_SP(n)   ((n) * 4)        /* AUI_SP(1)=4 AUI_SP(2)=8 AUI_SP(4)=16 ... */
+#define AUI_GAP     AUI_SP(2)        /* default gap between stacked items (8)    */
+#define AUI_PAD     AUI_SP(4)        /* default content inset from a window edge */
+
+/* ---------- type scale (px cap heights) ---------- */
+#define AUI_FS_CAPTION  12
+#define AUI_FS_LABEL    13
+#define AUI_FS_BODY     15
+#define AUI_FS_TITLE    20
+#define AUI_FS_HEADING  26
+
 void aui_feed(const struct aether_event *e);   /* stash the event for the coming frame */
 void aui_feed_done(void);                    /* clear it after the frame */
 
 void aui_begin(unsigned bg);                 /* reset widget ids + clear the window */
 void aui_end(void);                          /* present */
 
+/* text: aui_label is body size; aui_heading is title size; aui_text_sz is any. */
 void aui_label(int x, int y, const char *s, unsigned color);
+void aui_heading(int x, int y, const char *s, unsigned color);
+void aui_text_sz(int x, int y, const char *s, unsigned color, int px);
+int  aui_text_w(const char *s, int px);      /* measured width at size px        */
+
 void aui_panel(int x, int y, int w, int h, unsigned color);
 int  aui_button(int x, int y, int w, int h, const char *label);   /* 1 on click */
 int  aui_checkbox(int x, int y, const char *label, int *state);   /* 1 when toggled */
 int  aui_textfield(int x, int y, int w, char *buf, int cap);      /* 1 on Enter */
+
+/* ---------- linear stack layout ----------
+ * Begin a vertical/horizontal stack at (x,y) with a per-item gap, then call
+ * aui_next() per widget to get its top-left and advance the cursor by the item's
+ * size + gap -- so a column/row lays out without hand-counting coordinates.
+ * One stack is active at a time (no nesting). */
+void aui_vstack(int x, int y, int gap);
+void aui_hstack(int x, int y, int gap);
+void aui_next(int w, int h, int *x, int *y);
 
 #endif /* AUI_H */

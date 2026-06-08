@@ -29,8 +29,8 @@ static void swatch(int x, int y, unsigned c, const char *s)
 static void frame(void)
 {
     aui_begin(AUI_BG);
-    aui_label(20, 16, "Widget Toolkit", AUI_TEXT);
-    aui_label(20, 38, "immediate-mode UI over gui_*", AUI_MUTED);
+    aui_heading(AUI_PAD, 12, "Widget Toolkit", AUI_TEXT);     /* title-size type */
+    aui_label(AUI_PAD, 40, "immediate-mode UI over gui_*", AUI_MUTED);
 
     char nb[12]; itoa_(count, nb);
     aui_label(20, 78, "Count:", AUI_MUTED);
@@ -53,9 +53,12 @@ static void frame(void)
     }
     aui_label(130, 203, greet, AUI_ACCENT);
 
-    swatch(20,  250, AUI_SUCCESS, "Success");
-    swatch(130, 250, AUI_WARNING, "Warning");
-    swatch(240, 250, AUI_ERROR,   "Error");
+    /* semantic swatches laid out with the horizontal stack helper */
+    int sx, sy;
+    aui_hstack(AUI_PAD, 250, AUI_SP(7));
+    aui_next(90, 18, &sx, &sy); swatch(sx, sy, AUI_SUCCESS, "Success");
+    aui_next(90, 18, &sx, &sy); swatch(sx, sy, AUI_WARNING, "Warning");
+    aui_next(90, 18, &sx, &sy); swatch(sx, sy, AUI_ERROR,   "Error");
     aui_end();
 }
 
