@@ -785,6 +785,22 @@ int main(void)
     err("hex_empty",  "x = 0x\n");                           /* 0x with no digits -> lex error */
     roundtrip("bc_bitwise", "print(5 & 3, 5 | 2, 6 ^ 3, ~0, 1 << 4, 256 >> 2, 2 ** 8)\n");
 
+    /* ---- M23: break / continue ---- */
+    ok("for_break",   "s = 0\nfor i in range(10):\n    if i == 5:\n        break\n    s = s + i\nprint(s)\n", "10\n");
+    ok("for_continue","s = 0\nfor i in range(6):\n    if i % 2 == 1:\n        continue\n    s = s + i\nprint(s)\n", "6\n");
+    ok("while_break", "i = 0\nwhile true:\n    i = i + 1\n    if i >= 3:\n        break\nprint(i)\n", "3\n");
+    ok("nested_break","c = 0\nfor i in range(3):\n    for j in range(3):\n        if j == 1:\n            break\n        c = c + 1\nprint(c)\n", "3\n");
+    ok("cont_local",  "def f():\n    s = 0\n    for i in range(5):\n        x = i * 2\n        if i == 2:\n            continue\n        s = s + x\n    return s\nprint(f())\n", "16\n");
+    ok("break_local", "def f():\n    s = 0\n    for i in range(9):\n        y = i\n        if i == 4:\n            break\n        s = s + y\n    return s\nprint(f())\n", "6\n");
+    err("break_outside", "break\n");
+    err("cont_outside",  "x = 1\ncontinue\n");
+
+    /* ---- M23: compound assignment (name targets) + ';' separator ---- */
+    ok("compound",    "x = 10\nx += 5\nx *= 2\nx -= 3\nx %= 7\nprint(x)\n", "6\n");   /* ((10+5)*2-3)%7 = 27%7 = 6 */
+    ok("compound_loc","def f():\n    n = 1\n    for i in range(5):\n        n *= 2\n    return n\nprint(f())\n", "32\n");
+    ok("semicolon",   "a = 1; b = 2; print(a + b)\n", "3\n");
+    roundtrip("bc_loopctl", "s = 0\nfor i in range(8):\n    if i == 3:\n        continue\n    if i == 6:\n        break\n    s += i\nprint(s)\n");
+
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();
 

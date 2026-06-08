@@ -133,6 +133,37 @@ static void end_scope(void)
     }
 }
 
+/* ---- loop context (break / continue) ----
+ * break jumps forward to the loop end; continue jumps forward to the "step" point
+ * (while: re-check condition; for: the index increment). Both must first pop the
+ * loop-body locals they skip over -- break pops down to break_base (everything the
+ * loop added, since it lands AFTER the loop's end_scope), continue pops to
+ * cont_base (only body locals; for's iteration locals stay for the increment). The
+ * stack is balanced at the patch targets so it matches the normal-exit path. */
+typedef struct {
+    int break_base, cont_base;
+    int breaks[64], nbreak;     /* forward OP_JUMP offsets -> loop end  */
+    int conts[64], ncont;       /* forward OP_JUMP offsets -> step point */
+} LoopCtx;
+static LoopCtx loop_stack[16];
+static int loop_depth = 0;      /* active loops in the CURRENT function */
+
+static void pop_locals_to(int base)   /* emit runtime pops down to `base`; does NOT change local_count */
+{
+    for (int i = current->local_count - 1; i >= base; i--)
+        emit(current->locals[i].is_captured ? OP_CLOSE_UPVALUE : OP_POP);
+}
+static LoopCtx *loop_begin(int break_base, int cont_base)
+{
+    if (loop_depth >= 16) { error("loops nested too deep"); return &loop_stack[15]; }
+    LoopCtx *L = &loop_stack[loop_depth++];
+    L->break_base = break_base; L->cont_base = cont_base; L->nbreak = 0; L->ncont = 0;
+    return L;
+}
+static void loop_patch_conts(LoopCtx *L)  { for (int i = 0; i < L->ncont; i++)  patchJump(L->conts[i]); }
+static void loop_patch_breaks(LoopCtx *L) { for (int i = 0; i < L->nbreak; i++) patchJump(L->breaks[i]); }
+static void loop_finish(void) { if (loop_depth > 0) loop_depth--; }
+
 /* ---- Pratt parser ---- */
 typedef enum {
     PREC_NONE, PREC_OR, PREC_AND, PREC_EQ, PREC_CMP,
@@ -399,16 +430,37 @@ static void store_name(Token name)
     else add_local(name.start, name.len);    /* new local: the value becomes its home slot */
 }
 
-/* is the upcoming statement `target = ...`? (NAME, then a top-level '=' before NEWLINE) */
+/* a statement ends at a newline OR ';' (so `a = 1; b = 2` works on one line). */
+static void consume_stmt_end(void)
+{
+    if (match(T_SEMI)) { match(T_NEWLINE); return; }   /* ';' may be the last thing on the line */
+    consume(T_NEWLINE, "expected a newline or ';' after the statement");
+}
+
+/* compound-assignment token (+= -= *= /= %=) -> the binary opcode, or -1 */
+static int compound_op(TokType t)
+{
+    switch (t) {
+    case T_PLUSEQ:    return OP_ADD;
+    case T_MINUSEQ:   return OP_SUB;
+    case T_STAREQ:    return OP_MUL;
+    case T_SLASHEQ:   return OP_DIV;
+    case T_PERCENTEQ: return OP_MOD;
+    default:          return -1;
+    }
+}
+
+/* is the upcoming statement `target = ...` or `target OP= ...`? (NAME, then a
+ * top-level '=' or compound-assign op before the statement end) */
 static int assign_ahead(void)
 {
     if (T[P].type != T_IDENT) return 0;
     int depth = 0;
-    for (int k = P; T[k].type != T_NEWLINE && T[k].type != T_EOF; k++) {
+    for (int k = P; T[k].type != T_NEWLINE && T[k].type != T_SEMI && T[k].type != T_EOF; k++) {
         TokType t = T[k].type;
         if (t == T_LPAREN || t == T_LBRACKET) depth++;
         else if (t == T_RPAREN || t == T_RBRACKET) depth--;
-        else if (t == T_ASSIGN && depth == 0) return 1;
+        else if (depth == 0 && (t == T_ASSIGN || compound_op(t) >= 0)) return 1;
     }
     return 0;
 }
@@ -446,9 +498,18 @@ static void assignment(void)
         expression();
         emit(OP_INDEX_SET);                        /* (obj, idx, val) -> set, leaves nothing */
     } else {
-        consume(T_ASSIGN, "expected '='");
-        expression();
-        store_name(name);
+        int cop = compound_op(tk_cur().type);
+        if (cop >= 0) {                            /* name += / -= / *= / /= / %= rhs */
+            advance();                             /* consume the compound operator */
+            named_variable(name);                  /* push name's current value */
+            expression();                          /* rhs */
+            emit((uint8_t)cop);                    /* (name) OP (rhs) */
+            store_name(name);                      /* store back into name (consumes top) */
+        } else {
+            consume(T_ASSIGN, "expected '='");
+            expression();
+            store_name(name);
+        }
     }
 }
 
@@ -469,20 +530,25 @@ static void if_statement(void)   /* entered after `if` or `elif` */
 
 static void while_statement(void)
 {
+    LoopCtx *L = loop_begin(current->local_count, current->local_count);
     int loop_start = current->fn->count;
     expression();
     consume(T_COLON, "expected ':' after the condition");
     int exit_j = emitJump(OP_JUMP_IF_FALSE);
     emit(OP_POP);
     block();
+    loop_patch_conts(L);                  /* continue -> re-check the condition */
     emitLoop(loop_start);
     patchJump(exit_j);
     emit(OP_POP);
+    loop_patch_breaks(L);                 /* break -> here */
+    loop_finish();
 }
 
 /* for VAR in SEQ: BODY  -- desugars to an index walk over the sequence/list. */
 static void for_statement(void)
 {
+    int break_base = current->local_count;         /* before the iteration locals */
     begin_scope();
     consume(T_IDENT, "expected a loop variable");
     Token var = tk_prev();
@@ -495,6 +561,8 @@ static void for_statement(void)
     int var_slot = -1;
     if (current->enclosing != NULL) { emit(OP_NIL); var_slot = add_local(var.start, var.len); }
     consume(T_COLON, "expected ':' after the sequence");
+    int cont_base = current->local_count;          /* after iteration locals, before body */
+    LoopCtx *L = loop_begin(break_base, cont_base);
 
     int loop_start = current->fn->count;
     emit2(OP_GET_LOCAL, (uint8_t)idx_slot);
@@ -509,6 +577,7 @@ static void for_statement(void)
     if (var_slot >= 0) { emit2(OP_SET_LOCAL, (uint8_t)var_slot); emit(OP_POP); }
     else { emit(OP_DEF_GLOBAL); emit16(identConst(var.start, var.len)); }
     block();
+    loop_patch_conts(L);                            /* continue -> the index increment */
     emit2(OP_GET_LOCAL, (uint8_t)idx_slot);         /* idx = idx + 1 */
     emitConst(INT_VAL(1));
     emit(OP_ADD);
@@ -518,6 +587,8 @@ static void for_statement(void)
     patchJump(exit_j);
     emit(OP_POP);                                   /* drop the condition (false path) */
     end_scope();
+    loop_patch_breaks(L);                           /* break -> here (iteration locals already popped) */
+    loop_finish();
 }
 
 static void import_statement(void)   /* import NAME */
@@ -567,6 +638,8 @@ static void return_statement(void)
  *   the receiver already at the callee slot (sp[-argc-1]), work cleanly. */
 static void compile_function(const char *name, int namelen, int is_lambda, int is_method)
 {
+    int saved_loop_depth = loop_depth;   /* a nested function body has its own loops; */
+    loop_depth = 0;                       /* break/continue here can't target an outer loop */
     Compiler comp;
     comp.enclosing = current;
     comp.fn = as_fn_new();
@@ -631,6 +704,7 @@ static void compile_function(const char *name, int namelen, int is_lambda, int i
 
     ObjFn *fn = comp.fn;
     current = comp.enclosing;
+    loop_depth = saved_loop_depth;       /* restore the enclosing function's loop context */
     emit(OP_CLOSURE); emit16(makeConst(OBJ_VAL(fn)));
     /* upvalue {is_local,index} pairs stay 1-byte each -- they are slot indices, not const indices. */
     for (int i = 0; i < fn->upvalue_count; i++) { emit(comp.upvalues[i].is_local); emit(comp.upvalues[i].index); }
@@ -773,18 +847,37 @@ static void try_statement(void)   /* entered after `try` */
     patchJump(done);                      /* POP_TRY -> here = past the whole try/except */
 }
 
+static void break_statement(void)
+{
+    if (loop_depth == 0) { error("'break' outside a loop"); consume(T_NEWLINE, "newline"); return; }
+    LoopCtx *L = &loop_stack[loop_depth - 1];
+    pop_locals_to(L->break_base);
+    if (L->nbreak < 64) L->breaks[L->nbreak++] = emitJump(OP_JUMP);
+    consume_stmt_end();
+}
+static void continue_statement(void)
+{
+    if (loop_depth == 0) { error("'continue' outside a loop"); consume(T_NEWLINE, "newline"); return; }
+    LoopCtx *L = &loop_stack[loop_depth - 1];
+    pop_locals_to(L->cont_base);
+    if (L->ncont < 64) L->conts[L->ncont++] = emitJump(OP_JUMP);
+    consume_stmt_end();
+}
+
 static void statement(void)
 {
     if (match(T_IF)) if_statement();
     else if (match(T_WHILE)) while_statement();
     else if (match(T_FOR)) for_statement();
+    else if (match(T_BREAK)) break_statement();
+    else if (match(T_CONTINUE)) continue_statement();
     else if (match(T_RETURN)) return_statement();
     else if (match(T_IMPORT)) import_statement();
     else if (match(T_FROM)) from_statement();
     else if (match(T_TRY)) try_statement();
     else if (match(T_RAISE)) raise_statement();
-    else if (assign_ahead()) { assignment(); consume(T_NEWLINE, "expected a newline after the statement"); }
-    else { expression(); emit(OP_POP); consume(T_NEWLINE, "expected a newline after the statement"); }
+    else if (assign_ahead()) { assignment(); consume_stmt_end(); }
+    else { expression(); emit(OP_POP); consume_stmt_end(); }
 }
 
 static void declaration(void)
