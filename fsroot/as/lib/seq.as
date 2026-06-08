@@ -1,6 +1,25 @@
 # seq -- functional helpers over lists (pure AetherScript stdlib)
 #   from seq import map, filter, reduce, sorted, zip, enumerate
 
+def copy(xs):
+    out = []
+    for x in xs:
+        out.append(x)
+    return out
+
+def is_empty(xs):
+    return len(xs) == 0
+
+def first(xs):
+    if len(xs) == 0:
+        raise "first() needs a non-empty list"
+    return xs[0]
+
+def last(xs):
+    if len(xs) == 0:
+        raise "last() needs a non-empty list"
+    return xs[len(xs) - 1]
+
 def map(f, xs):
     out = []
     for x in xs:
@@ -14,6 +33,23 @@ def filter(f, xs):
             out.append(x)
     return out
 
+def reject(f, xs):
+    out = []
+    for x in xs:
+        if not f(x):
+            out.append(x)
+    return out
+
+def partition(f, xs):               # [matches, misses]
+    yes = []
+    no = []
+    for x in xs:
+        if f(x):
+            yes.append(x)
+        else:
+            no.append(x)
+    return [yes, no]
+
 def reduce(f, xs, init):
     acc = init
     for x in xs:
@@ -24,6 +60,19 @@ def foreach(f, xs):
     for x in xs:
         f(x)
     return
+
+def concat(a, b):
+    out = copy(a)
+    for x in b:
+        out.append(x)
+    return out
+
+def flatten1(xss):
+    out = []
+    for xs in xss:
+        for x in xs:
+            out.append(x)
+    return out
 
 def sum(xs):
     s = 0
@@ -72,8 +121,45 @@ def find(f, xs):                    # index of the first match, or -1
         i = i + 1
     return res
 
+def index_of(xs, v):
+    i = 0
+    while i < len(xs):
+        if xs[i] == v:
+            return i
+        i = i + 1
+    return -1
+
+def last_index_of(xs, v):
+    i = len(xs) - 1
+    while i >= 0:
+        if xs[i] == v:
+            return i
+        i = i - 1
+    return -1
+
+def count(xs, v):
+    n = 0
+    for x in xs:
+        if x == v:
+            n = n + 1
+    return n
+
+def count_if(f, xs):
+    n = 0
+    for x in xs:
+        if f(x):
+            n = n + 1
+    return n
+
 def contains(xs, v):
     return v in xs
+
+def unique(xs):
+    out = []
+    for x in xs:
+        if not (x in out):
+            out.append(x)
+    return out
 
 def reverse(xs):
     out = []
@@ -134,7 +220,43 @@ def take(xs, n):
 def drop(xs, n):
     out = []
     i = n
+    if i < 0:                           # negative n drops nothing (mirrors take + slice clamping)
+        i = 0
     while i < len(xs):
         out.append(xs[i])
         i = i + 1
+    return out
+
+def slice(xs, start, stop):
+    out = []
+    i = start
+    if i < 0:
+        i = len(xs) + i
+    if stop < 0:
+        stop = len(xs) + stop
+    if i < 0:
+        i = 0
+    if stop > len(xs):
+        stop = len(xs)
+    while i < stop:
+        out.append(xs[i])
+        i = i + 1
+    return out
+
+def repeat(v, n):
+    out = []
+    i = 0
+    while i < n:
+        out.append(v)
+        i = i + 1
+    return out
+
+def chunk(xs, n):
+    if n <= 0:
+        raise "chunk() needs a positive size"
+    out = []
+    i = 0
+    while i < len(xs):
+        out.append(slice(xs, i, i + n))
+        i = i + n
     return out
