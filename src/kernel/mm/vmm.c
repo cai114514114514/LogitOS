@@ -178,6 +178,13 @@ void vmm_free_space(uint64_t cr3)
     vmm_free_user(cr3);
     if (pdpt_e & PRESENT) pmm_free(pdpt_e & ~(uint64_t)0xFFF);   /* private PDPT frame */
     pmm_free(cr3 & ~(uint64_t)0xFFF);                            /* PML4 frame */
+    /* NB: NO tlb_flush_all() here. vmm_free_space runs under the BKL, and a core
+     * spinning to acquire the BKL does so with IF=0 (spin_lock_irqsave) -- it
+     * cannot service the shootdown IPI, so it never acks and the initiator (which
+     * holds the BKL) deadlocks. It's also not needed under the current BKL: a
+     * user space's frames are only cached by its own threads, which have left
+     * (CR3-switched away) before reap. Active shootdown is wired in once a
+     * bkl-free unmap path exists (see tlb.h). */
 }
 
 static int user_page_ok(uint64_t cr3, uint64_t virt, int write)

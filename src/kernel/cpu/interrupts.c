@@ -8,6 +8,7 @@
 #include "mouse.h"
 #include "sched.h"
 #include "syscall.h"
+#include "tlb.h"
 #include "lapic.h"
 #include "smp.h"
 #include "e1000.h"
@@ -64,7 +65,10 @@ void interrupt_handler(struct registers *r)
      * timer; between locks they hold nothing, so a timer preempt is as safe as
      * preempting ring 3. Only the syscall vector can be bkl-free; IRQs/faults
      * always take the BKL. */
-    int bkl_free = (r->vector == 128) && syscall_is_bkl_free((int)r->rax);
+    /* vector 240 = TLB-shootdown IPI: MUST be BKL-free -- the initiator may hold
+     * the BKL while waiting for this core to ack, so taking the BKL here would
+     * deadlock. The handler only reloads CR3 + acks (no shared state). */
+    int bkl_free = ((r->vector == 128) && syscall_is_bkl_free((int)r->rax)) || r->vector == 240;
     uint64_t bf = 0;
     if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
@@ -72,8 +76,8 @@ void interrupt_handler(struct registers *r)
         syscall_dispatch(r);
         goto done;
     }
-    if (r->vector == 240) {        /* P0: present IPI retired -> no-op + EOI */
-        smp_ipi_work();
+    if (r->vector == 240) {        /* M25 P2: TLB-shootdown IPI (BKL-free) */
+        tlb_ipi();
         lapic_eoi();
         goto done;
     }
