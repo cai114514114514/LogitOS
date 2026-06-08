@@ -52,15 +52,44 @@ already repaints on every mouse move, so it animates with no animation timer —
 delicate BKL/idle render loop is untouched. Launch hit-test stays on the base grid
 (the magnified icon stays centred on its cell).
 
+## Beyond the six phases (same session, all QEMU-verified)
+
+**Dock launch bounce** (`b746a26`). On launch the app's dock icon bounces (two
+decaying parabolic hops ~0.55s); `wm_launch` stamps `reg_bounce[i]`, `draw_dock`
+lifts the icon and keeps `dirty=1` while it runs (~100fps off the existing 100Hz
+timer wake -- no new timer).
+
+**Window open "pop"** (`6ba69a6`). New windows scale 0.84->1.0 over ~0.16s
+(easeOutCubic): `wm_render` renders the whole window into a scratch surface and
+`fb_blit_surface_scaled`-blits it while the pop runs (`draw_frame` split into
+`draw_frame_body` at an explicit rect). Verified via a forced-50% build (half-size
+render) + a serial trace of the per-frame elapsed (e=1,2,3,5,... ticks).
+
+**System-wide light/dark mode** (`d55560a`). The flagship: P3's per-app palette
+becomes a real system setting. `SYS_UI_DARK` (70) get/set + a menu-bar toggle
+switch; `wm_set_dark` flips `g_ui_dark`, broadcasts `EV_THEME` (#5) to all windows,
+marks dirty. The kernel chrome (menu bar, dock glass, every window frame) reads
+`g_ui_dark` and switches instantly; aui apps follow (each `aui_begin` queries
+SYS_UI_DARK and reloads on change, clearing with the fresh bg so the EV_THEME
+repaint is consistent). The whole desktop -- chrome + the aui apps (Finder /
+Monitor / Clock / Widgets) -- flips together.
+
 ## New kernel fb primitives (reusable)
-`fb_blur_rect`, `fb_fill_vgrad`, `fb_round_rect_vgrad`, `fb_shade`, plus
-`vg_render_path` (raster.c) + `icon_draw`/`icon_for_app` (icons.c).
+`fb_blur_rect`, `fb_fill_vgrad`, `fb_round_rect_vgrad`, `fb_shade`,
+`fb_blit_surface_scaled`, plus `vg_render_path` (raster.c) +
+`icon_draw`/`icon_for_app` (icons.c). New ABI: `SYS_UI_DARK`, `EV_THEME`.
 
 ## Deferred / not done
 - **Path stroking** (offset geometry, joins/caps) — icons use filled silhouettes.
-- **Time-based easing** (launch bounce, focus glow) — would need an animation
-  timer driving the WM render loop; skipped to avoid touching the BKL/idle path.
+  The one explicitly-user-named capability ("SVG等") still open; needs a clean
+  consumer before it's worth adding.
 - **aui gradient buttons** — no `gui_*` gradient syscall yet (gradients are
   kernel-side WM chrome only).
-- **WM window-frame theming for dark mode** — the kernel-drawn titlebar stays
-  light even when an app is dark (aui themes only the app's own canvas).
+- **Dark mode for the non-aui apps** — textedit / terminal / preview / studio /
+  browser draw with custom code, so only their WM frame darkens, not their content.
+
+## Resolved since the first pass
+- ~~Time-based easing~~ → DONE (launch bounce + window open pop), no animation
+  timer: the WM keeps `dirty=1` during an animation and steps off the 100Hz wake,
+  so the delicate BKL/idle loop is untouched.
+- ~~WM frame dark theming~~ → DONE (system-wide dark mode darkens all chrome).
