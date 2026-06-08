@@ -492,7 +492,9 @@ static int run_until(int floor)
 
         op_ADD: {
             Value b = peek(0), a = peek(1);
-            if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) + AS_INT(b))); }
+            /* int+int promotes to float on i64 overflow (no silent two's-complement
+             * wrap to a negative -- the "big number went negative" surprise). */
+            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (__builtin_add_overflow(AS_INT(a), AS_INT(b), &r)) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) + (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) + AS_NUM(b))); }
             else if (IS_STR(a) && IS_STR(b)) { ObjStr *s = str_concat(AS_STR(a), AS_STR(b)); if (!s) goto err; sp -= 2; push(OBJ_VAL(s)); }
             else { runtime_error("operands of '+' must be numbers or strings"); goto err; }
@@ -500,14 +502,14 @@ static int run_until(int floor)
         }
         op_SUB: {
             Value b = peek(0), a = peek(1);
-            if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) - AS_INT(b))); }
+            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (__builtin_sub_overflow(AS_INT(a), AS_INT(b), &r)) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) - (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) - AS_NUM(b))); }
             else { runtime_error("operands of '-' must be numbers"); goto err; }
             DISPATCH();
         }
         op_MUL: {
             Value b = peek(0), a = peek(1);
-            if (IS_INT(a) && IS_INT(b))      { sp -= 2; push(INT_VAL(AS_INT(a) * AS_INT(b))); }
+            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (__builtin_mul_overflow(AS_INT(a), AS_INT(b), &r)) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) * (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) * AS_NUM(b))); }
             else { runtime_error("operands of '*' must be numbers"); goto err; }
             DISPATCH();
@@ -567,8 +569,14 @@ static int run_until(int floor)
             if (IS_INT(a) && IS_INT(b)) {
                 int64_t base = AS_INT(a), e = AS_INT(b);
                 if (e < 0) { runtime_error("** with a negative int exponent (no float pow in /bin/as)"); goto err; }
-                int64_t r = 1; while (e > 0) { if (e & 1) r *= base; base *= base; e >>= 1; }
-                sp -= 2; push(INT_VAL(r));
+                int64_t r = 1, bb = base, ee = e; int ovf = 0;     /* promote to float on i64 overflow */
+                while (ee > 0 && !ovf) {
+                    if (ee & 1) { if (__builtin_mul_overflow(r, bb, &r)) ovf = 1; }
+                    ee >>= 1;
+                    if (ee > 0 && __builtin_mul_overflow(bb, bb, &bb)) ovf = 1;
+                }
+                if (ovf) { double fr = 1.0, fb = (double)base; int64_t fe = e; while (fe > 0) { if (fe & 1) fr *= fb; fb *= fb; fe >>= 1; } sp -= 2; push(FLOAT_VAL(fr)); }
+                else { sp -= 2; push(INT_VAL(r)); }
             } else if (IS_NUM(a) && IS_NUM(b)) {
                 if (!IS_INT(b)) { runtime_error("** float exponent unsupported (no libm in /bin/as)"); goto err; }
                 double base = AS_NUM(a); int64_t e = AS_INT(b); int neg = e < 0; if (neg) e = -e;
