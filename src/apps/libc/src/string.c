@@ -130,3 +130,32 @@ char *strdup(const char *s)
 char *strndup(const char *s, size_t m)
 { size_t n = strnlen(s, m); char *p = malloc(n + 1); if (p) { memcpy(p, s, n); p[n] = 0; } return p; }
 char *strerror(int e) { (void)e; return "error"; }
+
+/* BSD strlcpy/strlcat: size is the FULL dst buffer; always NUL-terminate when
+ * size>0; return the length they tried to build (>= size means truncation). */
+size_t strlcpy(char *dst, const char *src, size_t size)
+{
+    size_t sl = strlen(src);
+    if (size) { size_t n = sl < size - 1 ? sl : size - 1; memcpy(dst, src, n); dst[n] = 0; }
+    return sl;
+}
+size_t strlcat(char *dst, const char *src, size_t size)
+{
+    size_t dl = strnlen(dst, size), sl = strlen(src);
+    if (dl == size) return size + sl;                 /* dst already full / unterminated */
+    size_t n = sl < size - dl - 1 ? sl : size - dl - 1;
+    memcpy(dst + dl, src, n); dst[dl + n] = 0;
+    return dl + sl;
+}
+/* strsep: return the token before the next delimiter; advance *sp past it (NUL
+ * the delimiter). Unlike strtok it returns empty tokens and is reentrant. */
+char *strsep(char **sp, const char *delim)
+{
+    char *s = *sp;
+    if (!s) return 0;
+    for (char *p = s; *p; p++)
+        for (const char *d = delim; *d; d++)
+            if (*p == *d) { *p = 0; *sp = p + 1; return s; }
+    *sp = 0;
+    return s;
+}

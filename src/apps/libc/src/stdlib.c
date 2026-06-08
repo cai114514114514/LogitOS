@@ -19,6 +19,13 @@ int  abs(int x)        { return x < 0 ? -x : x; }
 long labs(long x)      { return x < 0 ? -x : x; }
 long long llabs(long long x) { return x < 0 ? -x : x; }
 
+typedef struct { int quot, rem; }       div_t;
+typedef struct { long quot, rem; }      ldiv_t;
+typedef struct { long long quot, rem; } lldiv_t;
+div_t   div(int n, int d)               { div_t r;   r.quot = n / d; r.rem = n % d; return r; }
+ldiv_t  ldiv(long n, long d)            { ldiv_t r;  r.quot = n / d; r.rem = n % d; return r; }
+lldiv_t lldiv(long long n, long long d) { lldiv_t r; r.quot = n / d; r.rem = n % d; return r; }
+
 char *getenv(const char *n) { (void)n; return NULL; }
 
 static unsigned long rng = 0x2545F4914F6CDD1DUL;

@@ -45,6 +45,18 @@ static void t_string(void)
     char tk[] = "a,b,,c"; char *sp=0; char *p = strtok_r(tk, ",", &sp);
     CHK_STR(p, "a", "strtok_r 1"); p=strtok_r(0,",",&sp); CHK_STR(p,"b","strtok_r 2");
     char *d = strdup("dup"); CHK(d && strcmp(d,"dup")==0, "strdup"); free(d);
+    /* strlcpy/strlcat: return intended length (>= size = truncated) */
+    size_t r;
+    r = strlcpy(b, "hello", sizeof b); CHK(r==5 && strcmp(b,"hello")==0, "strlcpy");
+    r = strlcpy(b, "toolong", 4); CHK(r==7 && strcmp(b,"too")==0, "strlcpy trunc");
+    strcpy(b,"ab"); r = strlcat(b, "cd", sizeof b); CHK(r==4 && strcmp(b,"abcd")==0, "strlcat");
+    strcpy(b,"ab"); r = strlcat(b, "cdef", 5); CHK(r==6 && strcmp(b,"abcd")==0, "strlcat trunc");
+    /* strsep keeps empty tokens (unlike strtok) and is reentrant */
+    char ss[] = "a,,b"; char *q = ss, *tk2;
+    tk2 = strsep(&q, ","); CHK_STR(tk2, "a", "strsep 1");
+    tk2 = strsep(&q, ","); CHK_STR(tk2, "", "strsep empty");
+    tk2 = strsep(&q, ","); CHK_STR(tk2, "b", "strsep 3");
+    tk2 = strsep(&q, ","); CHK(tk2 == 0, "strsep end");
     CHK(isspace(' ') && !isspace('x'), "isspace"); /* sanity for ctype too */
 }
 
@@ -83,6 +95,11 @@ static void t_stdlib(void)
     int key = 7, *found = bsearch(&key, arr, 6, sizeof(int), cmp_int);
     CHK(found && *found==7, "bsearch hit");
     key = 8; CHK(bsearch(&key, arr, 6, sizeof(int), cmp_int) == 0, "bsearch miss");
+    /* strtoull full unsigned range (> LLONG_MAX) + div family */
+    CHK(strtoull("18446744073709551615", &end, 10) == ~0ULL, "strtoull UMAX");
+    div_t dv = div(17, 5); CHK(dv.quot==3 && dv.rem==2, "div");
+    ldiv_t lv = ldiv(-17, 5); CHK(lv.quot==-3 && lv.rem==-2, "ldiv neg (trunc toward 0)");
+    lldiv_t qv = lldiv(100LL, 7LL); CHK(qv.quot==14 && qv.rem==2, "lldiv");
 }
 
 static void t_stdio(void)

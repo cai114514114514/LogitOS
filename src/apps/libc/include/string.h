@@ -29,5 +29,8 @@ char  *strndup(const char *, size_t);
 char  *strerror(int);
 int    strcasecmp(const char *, const char *);
 int    strncasecmp(const char *, const char *, size_t);
+size_t strlcpy(char *, const char *, size_t);   /* BSD: bounded copy, always NUL-term, returns src len */
+size_t strlcat(char *, const char *, size_t);   /* BSD: bounded concat, returns intended total len */
+char  *strsep(char **, const char *);           /* tokenize: split *sp at any delim char */
 
 #endif
