@@ -1,5 +1,14 @@
 # libcomplete — semantic autocomplete for Code Studio (AetherScript)
 
+> **Status: SHIPPED (2026-06-08).** Engine in `src/apps/as/complete.{c,h}` (44/44
+> host tests via `make test-complete`); popup wired into Code Studio. Verified in
+> QEMU: `im`→`import`, `import ma`→`math`/`mathx`, `math.`→`sq`/`abs`/`gcd`/…
+> **Realized deviation:** the engine uses its own dependency-free tolerant
+> tokenizer (not `lexer.c`) — `lexer.c` uses `snprintf` (no libc in the GUI app)
+> and aborts on mid-edit input; a self-contained scanner removes both problems
+> while keeping real token-level syntax awareness. Plan:
+> `docs/superpowers/plans/2026-06-08-libcomplete-autocomplete.md`.
+
 ## Why
 
 "Why VS Code is VS Code" is syntax-aware completion: type `im` → `import`, type
