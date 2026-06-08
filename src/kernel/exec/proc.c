@@ -5,8 +5,19 @@
 #include "sched.h"
 #include "vmm.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
+
+/* M25 P2: the process table is peeled out from under the BKL so SYS_FORK can run
+ * BKL-free (concurrent worker spawn). g_proc_lock guards the procs[] table + the
+ * next_pid counter -- the slot scan/claim/free and the state transitions. Held for
+ * tiny critical sections only: vmm_free_space, file_close and schedule() are kept
+ * OUTSIDE it (lock order BKL -> g_proc_lock -> g_file_lock -> g_sched_lock ->
+ * g_kheap_lock -> g_pmm_lock; nothing under g_proc_lock calls vmm/kheap, so the
+ * order never reverses). irqsave: reachable from fault-context proc_exit and held
+ * with the timer live on a BKL-free path. */
+static spinlock_t g_proc_lock = SPINLOCK_INIT;
 
 static struct proc procs[NPROC];
 static int next_pid = 1;
@@ -20,24 +31,31 @@ struct proc *proc_current(void) { return (struct proc *)sched_current_data(); }
 
 struct proc *proc_by_pid(int pid)
 {
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    struct proc *ret = NULL;
     for (int i = 0; i < NPROC; i++)
-        if (procs[i].state != PROC_FREE && procs[i].pid == pid) return &procs[i];
-    return NULL;
+        if (procs[i].state != PROC_FREE && procs[i].pid == pid) { ret = &procs[i]; break; }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return ret;
 }
 
 static struct proc *alloc_proc(void)
 {
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    struct proc *ret = NULL;
     for (int i = 0; i < NPROC; i++)
         if (procs[i].state == PROC_FREE) {
             struct proc *p = &procs[i];
             for (int f = 0; f < NFD; f++) p->fd[f] = NULL;
-            p->state = PROC_RUNNING;
+            p->state = PROC_RUNNING;           /* claim the slot atomically under the lock */
             p->pid = next_pid++;
             p->ppid = 0; p->exit_code = 0; p->tid = -1; p->cr3 = 0; p->gui = NULL;
             p->cwd[0] = '/'; p->cwd[1] = 0; p->name[0] = 0;
-            return p;
+            ret = p;
+            break;
         }
-    return NULL;
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return ret;
 }
 
 static void scopy(char *d, const char *s, int max)
@@ -140,10 +158,15 @@ void proc_exit(int code)
 {
     struct proc *p = proc_current();
     if (p) {
-        p->exit_code = code;
+        /* Close fds BEFORE marking zombie (file_close takes g_file_lock/kheap, which
+         * must not nest under g_proc_lock). While still RUNNING with no fds, a waiter
+         * sees RUNNING and keeps waiting -- no premature reap. */
         for (int i = 0; i < NFD; i++)
             if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
+        uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+        p->exit_code = code;
         p->state = PROC_ZOMBIE;
+        spin_unlock_irqrestore(&g_proc_lock, fl);
     }
     wm_app_exit();        /* if this proc owns a window, mark it dead (no-op otherwise) */
     thread_exit();        /* leaves the ring; never returns. Address space freed by
@@ -158,22 +181,27 @@ long proc_waitpid(int pid, int *status)
     if (!self) return -1;
 
     for (;;) {
-        int have_child = 0;
+        int have_child = 0, rpid = -1, code = 0; uint64_t freed_cr3 = 0;
+        uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         for (int i = 0; i < NPROC; i++) {
             struct proc *c = &procs[i];
             if (c->state == PROC_FREE || c->ppid != self->pid) continue;
             if (pid != -1 && c->pid != pid) continue;
             have_child = 1;
-            if (c->state == PROC_ZOMBIE) {
-                int rpid = c->pid, code = c->exit_code;
-                if (c->cr3) vmm_free_space(c->cr3);
+            if (c->state == PROC_ZOMBIE) {       /* claim it under the lock */
+                rpid = c->pid; code = c->exit_code; freed_cr3 = c->cr3;
                 c->state = PROC_FREE; c->pid = 0; c->cr3 = 0;
-                if (status) *status = code;
-                return rpid;
+                break;
             }
         }
+        spin_unlock_irqrestore(&g_proc_lock, fl);
+        if (rpid != -1) {                         /* freed the address space OUTSIDE the lock */
+            if (freed_cr3) vmm_free_space(freed_cr3);
+            if (status) *status = code;
+            return rpid;
+        }
         if (!have_child) return -1;
-        schedule();        /* let the child run, then re-check */
+        schedule();        /* let the child run, then re-check (outside the lock) */
     }
 }
 
@@ -182,12 +210,23 @@ long proc_waitpid(int pid, int *status)
 void proc_reap(void)
 {
     for (int i = 0; i < NPROC; i++) {
+        uint64_t freed_cr3 = 0;
+        uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         struct proc *p = &procs[i];
-        if (p->state != PROC_ZOMBIE) continue;
-        struct proc *par = p->ppid ? proc_by_pid(p->ppid) : NULL;
-        if (p->ppid == 0 || !par) {            /* no live waiter -> free it */
-            if (p->cr3) vmm_free_space(p->cr3);
-            p->state = PROC_FREE; p->pid = 0; p->cr3 = 0;
+        if (p->state == PROC_ZOMBIE) {
+            int orphan = (p->ppid == 0);
+            if (!orphan) {                      /* parent-alive check inline (avoid re-locking proc_by_pid) */
+                int found = 0;
+                for (int j = 0; j < NPROC; j++)
+                    if (procs[j].state != PROC_FREE && procs[j].pid == p->ppid) { found = 1; break; }
+                orphan = !found;
+            }
+            if (orphan) {                        /* no live waiter -> claim + free outside the lock */
+                freed_cr3 = p->cr3;
+                p->state = PROC_FREE; p->pid = 0; p->cr3 = 0;
+            }
         }
+        spin_unlock_irqrestore(&g_proc_lock, fl);
+        if (freed_cr3) vmm_free_space(freed_cr3);
     }
 }

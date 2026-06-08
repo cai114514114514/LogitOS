@@ -114,6 +114,14 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
 #define NFILE 64
 static struct file files[NFILE];
 
+/* M25 P2: file lifecycle counters are peeled out from under the BKL so SYS_FORK
+ * (which file_dup's the inherited fds) can run BKL-free concurrently. g_file_lock
+ * guards the refcount RMW (dup/close), the files[] slot claim (alloc), and the
+ * pipe readers/writers decrement. Held for tiny critical sections only: the actual
+ * cleanup on the last close (vfs flush, kfree backing/pipe) runs OUTSIDE it, so
+ * the lock never nests above kheap/vfs (order ... g_file_lock -> g_kheap_lock). */
+static spinlock_t g_file_lock = SPINLOCK_INIT;
+
 void file_init(void)
 {
     for (int i = 0; i < NFILE; i++) { files[i].type = F_NONE; files[i].refcount = 0; }
@@ -121,19 +129,28 @@ void file_init(void)
 
 struct file *file_alloc(void)
 {
+    uint64_t fl = spin_lock_irqsave(&g_file_lock);
+    struct file *f = 0;
     for (int i = 0; i < NFILE; i++) {
         if (files[i].refcount == 0) {
-            struct file *f = &files[i];
-            f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;
+            f = &files[i];
+            f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;  /* claim under lock */
             f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
             f->backing = 0; f->path[0] = 0;
-            return f;
+            break;
         }
     }
-    return 0;
+    spin_unlock_irqrestore(&g_file_lock, fl);
+    return f;
 }
 
-void file_dup(struct file *f) { if (f) f->refcount++; }
+void file_dup(struct file *f)
+{
+    if (!f) return;
+    uint64_t fl = spin_lock_irqsave(&g_file_lock);
+    f->refcount++;
+    spin_unlock_irqrestore(&g_file_lock, fl);
+}
 
 static void scopy(char *d, const char *s, int max)
 { int i = 0; for (; s && i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
@@ -253,8 +270,15 @@ int file_pipe(struct file **rd, struct file **wr)
  * drop a pipe end (freeing the buffer when both ends are gone). */
 void file_close(struct file *f)
 {
-    if (!f || f->refcount <= 0) return;
-    if (--f->refcount > 0) return;
+    if (!f) return;
+    /* Drop the reference under the lock; only the caller that takes it to 0 owns the
+     * teardown (which then runs OUTSIDE the lock -- vfs flush / kfree are kheap). */
+    uint64_t fl = spin_lock_irqsave(&g_file_lock);
+    if (f->refcount <= 0) { spin_unlock_irqrestore(&g_file_lock, fl); return; }
+    int last = (--f->refcount == 0);
+    spin_unlock_irqrestore(&g_file_lock, fl);
+    if (!last) return;
+
     if (f->type == F_VFS) {
         if (f->dirty && f->path[0])
             vfs_write(f->path, f->backing ? f->backing : "", (int)f->size);
@@ -262,8 +286,13 @@ void file_close(struct file *f)
     } else if (f->type == F_PIPE) {
         struct pipe *p = (struct pipe *)f->backing;
         if (p) {
+            /* readers/writers are shared with the other pipe end -> decrement under
+             * the lock; the side that drops the last count frees the pipe (outside). */
+            uint64_t fl2 = spin_lock_irqsave(&g_file_lock);
             if (f->is_write) p->writers--; else p->readers--;
-            if (p->readers == 0 && p->writers == 0) kfree(p);
+            int free_pipe = (p->readers == 0 && p->writers == 0);
+            spin_unlock_irqrestore(&g_file_lock, fl2);
+            if (free_pipe) kfree(p);
         }
     }
     f->backing = 0;
