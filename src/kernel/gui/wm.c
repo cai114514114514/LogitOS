@@ -91,6 +91,7 @@ static int cascade;
 struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; };
 static struct regent reg[MAXWIN];
 static int nreg;
+static uint64_t reg_bounce[MAXWIN];    /* tick a dock icon's launch bounce started (0 = none) */
 
 static uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) { return fb_rgb(r, g, b); }
 static int lerp(int a, int b, int n, int d) { return a + (b - a) * n / d; }
@@ -154,6 +155,10 @@ void wm_launch(const char *aex_file, const char *arg)
         dirty_full();
         return;
     }
+
+    /* kick off the dock launch bounce for this app's icon */
+    for (int i = 0; i < nreg; i++)
+        if (streq(reg[i].file, aex_file)) { uint64_t t = timer_ticks(); reg_bounce[i] = t ? t : 1; break; }
 
     /* Each app gets its own address space so apps can't touch each other's
      * memory. The new PML4 shares the kernel + framebuffer mappings but has a
@@ -689,6 +694,19 @@ static void dock_tile(int i, int cx, int cy, int sz)
     else { char ch[2] = { reg[i].icon, 0 }; fb_text(cx - FW / 2, cy - FH / 2, ch, rgb(255, 255, 255)); }
 }
 
+/* Upward pixel offset of dock icon `i`'s launch bounce (two decaying parabolic
+ * hops over ~0.55s). Clears the timer when finished. Integer-only. */
+static int dock_bounce_off(int i)
+{
+    uint64_t t0 = reg_bounce[i];
+    if (!t0) return 0;
+    uint64_t e = timer_ticks() - t0, DUR = 55, half = DUR / 2;
+    if (e >= DUR) { reg_bounce[i] = 0; return 0; }
+    int hop = (e < half) ? 0 : 1, H = hop ? 7 : 14;
+    int u = (int)(e - (uint64_t)hop * half), d = (int)half;   /* 0..d within the arc */
+    return H * 4 * u * (d - u) / (d * d);                      /* parabola, peak mid-arc */
+}
+
 static void draw_dock(void)
 {
     int n = nreg < 1 ? 1 : nreg;
@@ -703,7 +721,7 @@ static void draw_dock(void)
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
      * as a tooltip. Re-evaluated every frame, and the WM repaints on each mouse
      * move, so it animates as the cursor sweeps the dock. */
-    int ccy = dock_y0 + 10 + dock_isz / 2, hov = -1;
+    int ccy = dock_y0 + 10 + dock_isz / 2, hov = -1, animating = 0;
     if (my >= dock_y0 && my < dock_y0 + dh)
         for (int i = 0; i < nreg; i++) {
             int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
@@ -711,17 +729,20 @@ static void draw_dock(void)
         }
     for (int i = 0; i < nreg; i++) {
         if (i == hov) continue;                            /* hovered tile drawn last, on top */
+        int b = dock_bounce_off(i); if (b) animating = 1;  /* launch bounce lifts the icon */
         int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
-        dock_tile(i, ccx, ccy, dock_isz);
+        dock_tile(i, ccx, ccy - b, dock_isz);
     }
     if (hov >= 0) {
+        int b = dock_bounce_off(hov); if (b) animating = 1;
         int ccx = dock_x0 + dock_gap + hov * (dock_isz + dock_gap) + dock_isz / 2;
-        dock_tile(hov, ccx, ccy, dock_isz * 130 / 100);    /* 1.3x pop */
+        dock_tile(hov, ccx, ccy - b, dock_isz * 130 / 100);  /* 1.3x pop */
         const char *nm = reg[hov].name;                    /* tooltip above the dock */
         int tw = fb_text_width(nm), tx = ccx - tw / 2;
         fb_blend_round_rect(tx - 9, dock_y0 - 28, tw + 18, 23, 7, 28, 28, 34, 225);
         fb_text(tx, dock_y0 - 25, nm, rgb(244, 244, 248));
     }
+    if (animating) dirty = 1;                              /* keep compositing while a bounce runs */
 }
 
 static int fmt2(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; return 2; }
