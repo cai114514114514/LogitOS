@@ -180,7 +180,13 @@ void wm_launch(const char *aex_file, const char *arg)
          * 4 MiB because QuickJS recurses deeply throwing errors on real pages'
          * scripts (github overran a 256 KiB stack inside JS_ThrowError2). */
         ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
-        for (int i = 1; i <= 1024; i++) {        /* 4 MiB stack */
+        /* The browser links QuickJS, which recurses deeply on real pages' scripts
+         * (and deeper still when THROWING a stack-overflow error in JS_ThrowError2);
+         * 4 MiB wasn't enough headroom for the throw to complete, so it overran the
+         * stack into a page fault. Give it 8 MiB. (Stack bottom 0x47000000 still
+         * clears the ~30 MiB browser image.) Other apps keep 4 MiB. */
+        int stk_pages = streq(name, "browser.aex") ? 2048 : 1024;
+        for (int i = 1; i <= stk_pages; i++) {
             uint64_t frame = pmm_alloc();
             if (!frame) { entry = 0; break; }    /* OOM: fail the launch, don't run on a partial stack */
             vmm_map_page(ustack_top - (uint64_t)i * 0x1000, frame, VMM_WRITABLE | VMM_USER);

@@ -60,12 +60,13 @@ static JSValue js_log(JSContext *ctx, JSValueConst t, int argc, JSValueConst *ar
 static int run_js(const char *src)        /* returns 1 if the script mutated the DOM */
 {
     JSRuntime *rt = JS_NewRuntime(); if (!rt) return 0;
-    /* Our ring-3 user stack is 256 KiB; QuickJS defaults its overflow guard to
-     * 256 KiB too, so a deeply-nested script (e.g. bilibili's minified inline
-     * JS) overflows the real stack before the guard fires -> page fault in
-     * JS_ThrowError2. Bound it well under the real stack so QuickJS throws a
-     * catchable "stack overflow" instead of crashing. */
-    JS_SetMaxStackSize(rt, 2 * 1024 * 1024);   /* our user stack is 4 MiB; leave 2 MiB headroom */
+    /* The browser's ring-3 user stack is 8 MiB (wm.c gives it double the normal
+     * app stack). Bound QuickJS's overflow guard well under that so a deeply
+     * recursive script throws a catchable "stack overflow" RangeError instead of
+     * overrunning the real stack -- and, critically, so the THROW itself
+     * (JS_ThrowError2 builds an Error + backtrace, ~2 MiB) has ample room below
+     * the guard. 2 MiB limit -> the guard fires with ~6 MiB still free. */
+    JS_SetMaxStackSize(rt, 2 * 1024 * 1024);
     JSContext *ctx = JS_NewContext(rt); if (!ctx) { JS_FreeRuntime(rt); return 0; }
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue con = JS_NewObject(ctx);
