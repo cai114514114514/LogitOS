@@ -3,6 +3,7 @@
 #include "wm.h"
 #include "fb.h"
 #include "text.h"
+#include "icons.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "kheap.h"
@@ -715,8 +716,14 @@ static void draw_dock(void)
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
         fb_round_rect(ix, iy, dock_isz, dock_isz, 12, reg[i].color);
         fb_blend_round_rect(ix, iy, dock_isz, dock_isz / 2, 12, 255, 255, 255, 40);
-        char ch[2] = { reg[i].icon, 0 };
-        fb_text(ix + dock_isz / 2 - FW / 2, iy + dock_isz / 2 - FH / 2, ch, rgb(255, 255, 255));
+        int ic = icon_for_app(reg[i].file, reg[i].ext);
+        if (ic >= 0) {
+            int isz = dock_isz * 62 / 100;     /* ~31px vector icon centered in the tile */
+            icon_draw(ic, ix + (dock_isz - isz) / 2, iy + (dock_isz - isz) / 2, isz, rgb(255, 255, 255));
+        } else {
+            char ch[2] = { reg[i].icon, 0 };
+            fb_text(ix + dock_isz / 2 - FW / 2, iy + dock_isz / 2 - FH / 2, ch, rgb(255, 255, 255));
+        }
     }
 }
 
