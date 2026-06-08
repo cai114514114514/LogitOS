@@ -564,6 +564,51 @@ static void reap(void)
     }
 }
 
+/* ---------- input deferral (keyboard/mouse IRQ -> WM thread) ----------
+ * THE root-cause fix for the long-standing "opening/using an app sometimes
+ * hard-freezes the whole system" bug. Keyboard (IRQ1) and PS/2 mouse (IRQ12)
+ * fire in interrupt context and used to call wm_mouse_event/wm_key DIRECTLY,
+ * which (a) mutate shared WM state -- order[]/wins[]/apps[]/drag -- that the WM
+ * thread is simultaneously reading while it composites (wm_render), so a torn
+ * read yields a garbage window rect and fb_round_rect/fb_put runs away in a
+ * near-infinite pixel loop; and (b) on a dock click run wm_launch, which does
+ * disk I/O + kmalloc/pmm/proc/thread creation -- lock-taking, non-reentrant work
+ * that deadlocks/corrupts the allocator if the IRQ preempted a thread mid-alloc.
+ * Fix: the IRQ now only ENQUEUES the raw input event (no shared-state writes, no
+ * locks); the WM thread drains the queue and does ALL processing in thread
+ * context (wm_drain_input -> wm_process_mouse/wm_process_key), serialized with
+ * its own compositing. This removes the entire IRQ-vs-render race class. */
+struct inev { int type; int x, y, l, r; };   /* type 0 = mouse (x,y,l,r); 1 = key (x = code) */
+#define INQ_N 512
+static struct inev inq[INQ_N];
+static volatile int inq_head, inq_tail;
+static void inq_push(int type, int x, int y, int l, int r)   /* IRQ-safe: no locks, no shared-state */
+{
+    int nt = (inq_tail + 1) % INQ_N;
+    if (nt == inq_head) return;            /* full: drop (cosmetic under flooding) */
+    inq[inq_tail].type = type; inq[inq_tail].x = x; inq[inq_tail].y = y;
+    inq[inq_tail].l = l; inq[inq_tail].r = r;
+    inq_tail = nt;
+}
+static void wm_process_mouse(int x, int y, int left, int right);   /* fwd: bodies below */
+static void wm_process_key(int c);
+/* The IRQ entry points (called from mouse.c / keyboard.c) now ONLY enqueue. */
+void wm_mouse_event(int x, int y, int left, int right) { inq_push(0, x, y, left, right); }
+void wm_key(int c)                                      { inq_push(1, c, 0, 0, 0); }
+static void wm_drain_input(void)           /* WM thread: process all input here, NOT in the IRQ */
+{
+    for (;;) {
+        struct inev e;
+        __asm__ volatile ("cli");          /* brief: atomic dequeue vs the producing IRQs */
+        int empty = (inq_head == inq_tail);
+        if (!empty) { e = inq[inq_head]; inq_head = (inq_head + 1) % INQ_N; }
+        __asm__ volatile ("sti");
+        if (empty) break;
+        if (e.type == 0) wm_process_mouse(e.x, e.y, e.l, e.r);
+        else             wm_process_key(e.x);
+    }
+}
+
 /* ---------- desktop chrome ---------- */
 /* Rounded-rect coverage (corners cut) -- confines the glass blur to the panel. */
 static int in_round(int i, int j, int w, int h, int r)
@@ -803,14 +848,14 @@ void wm_render(void)
 static int in_rect(int px, int py, int x, int y, int w, int h)
 { return px >= x && px < x + w && py >= y && py < y + h; }
 
-void wm_key(int c)
+static void wm_process_key(int c)
 {
     if (norder == 0) return;
     struct win *w = &wins[order[norder - 1]];
     if (w->kind == WK_APP) { enqueue(w, EV_KEY, (int)c, 0); dirty_rect(w->x, w->y, w->w, w->h); }
 }
 
-void wm_mouse_event(int x, int y, int left, int right)
+static void wm_process_mouse(int x, int y, int left, int right)
 {
     int moved = (x != mx || y != my);
     int content = 0;                       /* did anything other than the cursor change? */
@@ -956,6 +1001,7 @@ void wm_run(void)
 
     uint64_t last = 0;
     for (;;) {
+        wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */
         if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
         uint64_t now = timer_ticks();
