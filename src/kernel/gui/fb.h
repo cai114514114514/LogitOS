@@ -70,4 +70,11 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
  * rounds the written region so a rounded panel leaves no blurred corner nubs. */
 void fb_blur_rect(int x, int y, int w, int h, int radius, int corner);
 
+/* Vertical gradient fills (top color at the first row -> bottom color). */
+void fb_fill_vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
+void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom);
+
+/* Lighten (delta>0) / darken (delta<0) a packed color by delta per channel. */
+uint32_t fb_shade(uint32_t c, int delta);
+
 #endif /* AETHER_FB_H */

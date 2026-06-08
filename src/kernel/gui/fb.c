@@ -317,6 +317,51 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
     }
 }
 
+/* Linear interpolate two packed colors: a*(den-num)/den + b*num/den. */
+static uint32_t color_lerp(uint32_t a, uint32_t b, int num, int den)
+{
+    int ar, ag, ab, br, bg, bb;
+    unpack(a, &ar, &ag, &ab);
+    unpack(b, &br, &bg, &bb);
+    int r = ar + (br - ar) * num / den;
+    int g = ag + (bg - ag) * num / den;
+    int bl = ab + (bb - ab) * num / den;
+    return fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)bl);
+}
+
+/* Lighten (delta>0) or darken (delta<0) a packed color by delta per channel. */
+uint32_t fb_shade(uint32_t c, int delta)
+{
+    int r, g, b;
+    unpack(c, &r, &g, &b);
+    r += delta; g += delta; b += delta;
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    return fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
+}
+
+/* Vertical gradient fill: row j gets lerp(top..bottom). Integer, one lerp/row. */
+void fb_fill_vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bottom)
+{
+    if (h <= 0) return;
+    for (int j = 0; j < h; j++) {
+        uint32_t c = color_lerp(top, bottom, j, h > 1 ? h - 1 : 1);
+        for (int i = 0; i < w; i++) fb_put(x + i, y + j, c);
+    }
+}
+
+/* Rounded-rect vertical gradient (corners cut by inside_round). */
+void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom)
+{
+    if (h <= 0) return;
+    for (int j = 0; j < h; j++) {
+        uint32_t c = color_lerp(top, bottom, j, h > 1 ? h - 1 : 1);
+        for (int i = 0; i < w; i++)
+            if (inside_round(i, j, w, h, radius)) fb_put(x + i, y + j, c);
+    }
+}
+
 /* Real-time backdrop blur of a rect on the current target -- the basis for
  * "vibrancy" (frost the live content behind a translucent panel). A separable
  * box blur: a horizontal moving-sum pass into a scratch buffer, then a vertical

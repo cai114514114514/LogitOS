@@ -686,8 +686,10 @@ static void draw_dock(void)
     fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, 115);       /* bright top sheen */
     for (int i = 0; i < nreg; i++) {
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
-        fb_round_rect(ix, iy, dock_isz, dock_isz, 12, reg[i].color);
-        fb_blend_round_rect(ix, iy, dock_isz, dock_isz / 2, 12, 255, 255, 255, 40);
+        /* glossy tile: a vertical gradient (lighter top -> base -> darker foot) */
+        fb_round_rect_vgrad(ix, iy, dock_isz, dock_isz, 12,
+                            fb_shade(reg[i].color, 38), fb_shade(reg[i].color, -26));
+        fb_blend_round_rect(ix, iy, dock_isz, dock_isz / 2, 12, 255, 255, 255, 32);
         int ic = icon_for_app(reg[i].file, reg[i].ext);
         if (ic >= 0) {
             int isz = dock_isz * 62 / 100;     /* ~31px vector icon centered in the tile */
@@ -739,9 +741,10 @@ static void draw_frame(struct win *w, int focused)
     shadow_band(x, y, ww, wh, 4, focused ? 22 : 13);       /* mid */
     shadow_band(x, y, ww, wh, 2, focused ? 40 : 24);       /* dark edge */
     fb_round_rect(x, y, ww, wh, 10, rgb(250, 250, 252));
-    uint32_t tb = focused ? rgb(235, 235, 240) : rgb(245, 245, 248);
-    fb_round_rect(x, y, ww, TITLEBAR_H, 10, tb);
-    fb_fill_rect(x, y + 20, ww, TITLEBAR_H - 20, tb);
+    /* titlebar: a subtle top->bottom gradient (rounded top corners) */
+    uint32_t tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252);
+    uint32_t tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244);
+    fb_round_rect_vgrad(x, y, ww, TITLEBAR_H, 10, tbtop, tbbot);
     fb_fill_rect(x, y + TITLEBAR_H, ww, 1, rgb(214, 214, 220));
     uint32_t off = rgb(205, 205, 210);
     fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
