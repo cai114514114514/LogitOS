@@ -607,49 +607,9 @@ static void wm_drain_input(void)           /* WM thread: process all input here,
 }
 
 /* ---------- desktop chrome ---------- */
-/* Rounded-rect coverage (corners cut) -- confines the glass blur to the panel. */
-static int in_round(int i, int j, int w, int h, int r)
-{
-    int cx, cy;
-    if (i < r && j < r) { cx = r; cy = r; }
-    else if (i >= w - r && j < r) { cx = w - r - 1; cy = r; }
-    else if (i < r && j >= h - r) { cx = r; cy = h - r - 1; }
-    else if (i >= w - r && j >= h - r) { cx = w - r - 1; cy = h - r - 1; }
-    else return 1;
-    int dx = i - cx, dy = j - cy;
-    return dx * dx + dy * dy <= r * r;
-}
-
-/* "Liquid glass": box-blur the wallpaper already sitting in `back` so a
- * translucent panel laid on top reads as frosted glass. One-time, baked into
- * `bg` at init, so there is no per-frame cost. `corner` rounds the blurred area. */
-static void glass_blur(int x0, int y0, int w, int h, int corner, int rad)
-{
-    if (x0 < 0) { w += x0; x0 = 0; }
-    if (y0 < 0) { h += y0; y0 = 0; }
-    if (x0 + w > W) w = W - x0;
-    if (y0 + h > H) h = H - y0;
-    if (w <= 0 || h <= 0) return;
-    uint32_t *tmp = (uint32_t *)kmalloc((unsigned)(w * h * 4));
-    if (!tmp) return;
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++) tmp[j * w + i] = back[(y0 + j) * W + (x0 + i)];
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++) {
-            if (corner > 0 && !in_round(i, j, w, h, corner)) continue;
-            unsigned a0 = 0, a1 = 0, a2 = 0, a3 = 0, cnt = 0;
-            for (int dy = -rad; dy <= rad; dy++) {
-                int yy = j + dy; if (yy < 0 || yy >= h) continue;
-                for (int dx = -rad; dx <= rad; dx++) {
-                    int xx = i + dx; if (xx < 0 || xx >= w) continue;
-                    uint32_t p = tmp[yy * w + xx];
-                    a0 += p & 0xff; a1 += (p >> 8) & 0xff; a2 += (p >> 16) & 0xff; a3 += (p >> 24) & 0xff; cnt++;
-                }
-            }
-            back[(y0 + j) * W + (x0 + i)] = (a0 / cnt) | ((a1 / cnt) << 8) | ((a2 / cnt) << 16) | ((a3 / cnt) << 24);
-        }
-    kfree(tmp);
-}
+/* The frosted menu bar + dock now blur the live backdrop per-frame via
+ * fb_blur_rect (a fast separable box blur, see fb.c) instead of a baked-once
+ * O(r^2) box blur -- so windows slid under them read as true frosted glass. */
 
 /* Dusk wallpaper: a soft lavender -> mauve -> warm-sand vertical gradient
  * (a macOS-Tahoe-ish dusk sky). Cached once into `bg`. */
@@ -686,13 +646,24 @@ static int draw_wallpaper(void)
     return 1;
 }
 
+/* The wallpaper only -- baked once into `bg`. The menu bar and dock are now
+ * composited per-frame on TOP of the windows (draw_menubar/draw_dock) so their
+ * real-time blur frosts the live content behind them (true vibrancy), and a
+ * window can slide *under* the dock instead of covering it. */
 static void draw_background(void)
 {
     if (!draw_wallpaper())
         for (int y = 0; y < H; y++)
             for (int x = 0; x < W; x++) fb_put(x, y, bg_color(x, y));
-    glass_blur(0, 0, W, MENUBAR_H, 0, 5);                    /* liquid-glass menu bar */
-    fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120);
+}
+
+/* Frosted menu bar, composited per-frame on top of the windows: real-time blur
+ * of whatever is behind it (wallpaper or a window slid up under it). */
+static void draw_clock(void);
+static void draw_menubar(void)
+{
+    fb_blur_rect(0, 0, W, MENUBAR_H, 6, 0);                  /* frost live backdrop */
+    fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120);   /* translucent white tint */
     fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 28);      /* hairline separator */
     uint32_t ink = rgb(40, 40, 48);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
@@ -700,6 +671,7 @@ static void draw_background(void)
     fb_text(112, 4, "File", ink);
     fb_text(156, 4, "Edit", ink);
     fb_text(200, 4, "View", ink);
+    draw_clock();
 }
 
 static int dock_x0, dock_y0, dock_isz = 50, dock_gap = 14;
@@ -709,7 +681,7 @@ static void draw_dock(void)
     int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
     dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
     fb_blend_round_rect(dock_x0 - 1, dock_y0 + 7, dw + 2, dh, 28, 0, 0, 0, 50);    /* soft drop shadow */
-    glass_blur(dock_x0, dock_y0, dw, dh, 28, 6);                                    /* frost the wallpaper behind */
+    fb_blur_rect(dock_x0, dock_y0, dw, dh, 6, 28);                                  /* frost the live backdrop */
     fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 58);           /* translucent glass tint */
     fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, 115);       /* bright top sheen */
     for (int i = 0; i < nreg; i++) {
@@ -809,9 +781,8 @@ void wm_render(void)
 {
     reap();
     fb_target(NULL);
-    for (int y = 0; y < H; y++)            /* wallpaper + menu bar + dock */
+    for (int y = 0; y < H; y++)            /* wallpaper (baked in bg) */
         blit(back + y * W, bg + y * W, W);
-    draw_clock();
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
         struct win *w = &wins[order[i]];
         if (!w->used) continue;
@@ -820,6 +791,8 @@ void wm_render(void)
         if (w->surf.px)
             fb_blit_surface(w->x, w->y + TITLEBAR_H, &w->surf);
     }
+    draw_menubar();                        /* frosted chrome ON TOP: real-time */
+    draw_dock();                           /* vibrancy frosts the live windows  */
     draw_cursor_back(mx, my);              /* cursor on top, into the composite */
     fb_present();                          /* full back -> framebuffer + virtio flush */
 }
@@ -941,8 +914,7 @@ void wm_init(void)
     scan_apps();
 
     /* The Finder is now the ring-3 file-manager app, launched in wm_run(). */
-    draw_background();
-    draw_dock();
+    draw_background();          /* wallpaper -> bg; menu bar + dock are per-frame now */
     blit(bg, back, count);
 }
 

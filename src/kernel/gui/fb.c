@@ -21,6 +21,9 @@ struct mb2_fb_tag {
 
 #define MB2_FB_TYPE_RGB 1
 
+void *kmalloc(unsigned long);
+void  kfree(void *);
+
 static volatile uint8_t *fb_mem;
 static uint32_t fb_pitch, fb_w, fb_h;
 static uint8_t rpos, gpos, bpos;
@@ -310,6 +313,55 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
             int ng = (g * a + bg * (255 - a)) / 255;
             int nb = (b * a + bb * (255 - a)) / 255;
             fb_put(x + i, y + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+        }
+    }
+}
+
+/* Real-time backdrop blur of a rect on the current target -- the basis for
+ * "vibrancy" (frost the live content behind a translucent panel). A separable
+ * box blur: a horizontal moving-sum pass into a scratch buffer, then a vertical
+ * moving-sum pass back into the target. Both passes are O(1) per pixel (the
+ * window sum slides), so cost is O(w*h), radius-independent. `corner` > 0 rounds
+ * the written region (corner pixels keep their pre-blur value), so a rounded
+ * panel doesn't leave blurred nubs outside its corners. Integer-only. */
+static uint32_t *blur_scratch;
+static int blur_scratch_n;
+void fb_blur_rect(int x, int y, int w, int h, int radius, int corner)
+{
+    struct surface *s = T ? T : &screen;
+    if (!s->px) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > s->w) w = s->w - x;
+    if (y + h > s->h) h = s->h - y;
+    if (w <= 0 || h <= 0 || radius < 1) return;
+    if (w * h > blur_scratch_n) {
+        if (blur_scratch) kfree(blur_scratch);
+        blur_scratch = (uint32_t *)kmalloc((unsigned long)w * h * 4);
+        blur_scratch_n = blur_scratch ? w * h : 0;
+    }
+    if (!blur_scratch) return;
+    uint32_t *tmp = blur_scratch;
+
+    for (int j = 0; j < h; j++) {                 /* horizontal: target row -> tmp */
+        const uint32_t *srow = s->px + (long)(y + j) * s->w + x;
+        uint32_t *trow = tmp + (long)j * w;
+        int sr = 0, sg = 0, sb = 0, cnt = 0, r, g, b;
+        for (int k = 0; k <= radius && k < w; k++) { unpack(srow[k], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
+        for (int i = 0; i < w; i++) {
+            trow[i] = fb_rgb((uint8_t)(sr / cnt), (uint8_t)(sg / cnt), (uint8_t)(sb / cnt));
+            int a = i + radius + 1; if (a < w)  { unpack(srow[a],  &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
+            int d = i - radius;     if (d >= 0) { unpack(srow[d],  &r, &g, &b); sr -= r; sg -= g; sb -= b; cnt--; }
+        }
+    }
+    for (int i = 0; i < w; i++) {                  /* vertical: tmp column -> target */
+        int sr = 0, sg = 0, sb = 0, cnt = 0, r, g, b;
+        for (int k = 0; k <= radius && k < h; k++) { unpack(tmp[(long)k * w + i], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
+        for (int j = 0; j < h; j++) {
+            if (corner <= 0 || inside_round(i, j, w, h, corner))
+                s->px[(long)(y + j) * s->w + (x + i)] = fb_rgb((uint8_t)(sr / cnt), (uint8_t)(sg / cnt), (uint8_t)(sb / cnt));
+            int a = j + radius + 1; if (a < h)  { unpack(tmp[(long)a * w + i], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
+            int d = j - radius;     if (d >= 0) { unpack(tmp[(long)d * w + i], &r, &g, &b); sr -= r; sg -= g; sb -= b; cnt--; }
         }
     }
 }

@@ -65,4 +65,9 @@ void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, 
 void fb_blend_round_rect(int x, int y, int w, int h, int radius,
                          uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 
+/* Real-time separable box blur of a rect on the current target (frost the live
+ * backdrop behind a translucent panel). O(w*h), radius-independent. corner > 0
+ * rounds the written region so a rounded panel leaves no blurred corner nubs. */
+void fb_blur_rect(int x, int y, int w, int h, int radius, int corner);
+
 #endif /* AETHER_FB_H */
