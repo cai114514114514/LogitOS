@@ -7,7 +7,7 @@
 import base64, glob, os, sys
 
 ROOTS = os.path.join(os.path.dirname(__file__), "roots")
-OUT   = os.path.join(os.path.dirname(__file__), "..", "include", "roots_bundle.inc")
+OUT   = os.path.join(os.path.dirname(__file__), "..", "src", "crypto", "trust", "roots_bundle.inc")
 
 # OIDs (DER content, no tag/len)
 OID_RSA = bytes([0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01])
@@ -125,10 +125,19 @@ def main():
                    key=lambda p: list(LABELS).index(os.path.splitext(os.path.basename(p))[0])
                                  if os.path.splitext(os.path.basename(p))[0] in LABELS else 999)
     arrays, rows = [], []
+    skipped = []
     for idx, p in enumerate(paths):
         slug = os.path.splitext(os.path.basename(p))[0]
         label = LABELS.get(slug, slug)
-        kind = parse_root(pem_to_der(p))
+        try:
+            kind = parse_root(pem_to_der(p))
+        except Exception as ex:
+            # Unsupported key (P-521 / Ed25519 / etc.) or malformed -- skip it
+            # rather than abort the whole bundle. The kernel only does RSA + EC
+            # P-256/P-384, so such a root could never verify a chain anyway.
+            print(f"  SKIP {slug}: {ex}", file=sys.stderr)
+            skipped.append(slug)
+            continue
         if kind[0] == "EC":
             _, curve, pt = kind
             arrays.append(carr(f"r{idx}_ec", pt))
@@ -148,7 +157,7 @@ def main():
         f.write("\n\nconst struct root_ca aether_roots[] = {\n")
         f.write("\n".join(rows))
         f.write("\n};\nconst int aether_nroots = (int)(sizeof aether_roots / sizeof aether_roots[0]);\n")
-    print(f"wrote {OUT} ({len(paths)} roots)", file=sys.stderr)
+    print(f"wrote {OUT} ({len(rows)} roots; {len(skipped)} skipped: {', '.join(skipped) if skipped else 'none'})", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

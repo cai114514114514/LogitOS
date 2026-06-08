@@ -152,9 +152,15 @@ Key notes:
   `net/x509.c` now parses RSA SPKI + rsaWithSHA256/384 and dispatches EC/RSA in
   both `x509_verify_signed_by` and the new `signed_by_root` (top cert trusted if
   its issuer is a held root, not only if the root is sent in-band). Trust store
-  is a **14-root bundle** (`tools/roots/*.pem` -> `tools/genroots.py` ->
-  `include/roots_bundle.inc`; ISRG X1/X2, DigiCert ×3, Google GTS R1/R4,
-  GlobalSign R1/R3, USERTrust RSA/ECC, Amazon 1/3, SSL.com). `now` for validity
+  is a **130-root bundle** (`tools/roots/*.pem` -> `tools/genroots.py` ->
+  `src/crypto/trust/roots_bundle.inc`) -- a near-full mirror of the host
+  Mozilla/NSS store (`/etc/ssl/cert.pem`), so the browser trusts essentially the
+  whole public web. `genroots.py` globs `tools/roots/*.pem`, extracts just each
+  root's SPKI (RSA n,e or EC P-256/P-384 point), and **skips** any key type the
+  kernel can't verify (P-521/Ed25519); `rsa.c` modexp is exponent-generic so
+  roots with e=3 / e=43147 (old GoDaddy/Starfield/NetLock) verify too. To add
+  roots: drop authentic PEMs in `tools/roots/` and re-run `genroots.py`. (Each
+  added pubkey is cross-checked vs `openssl` modulus / SPKI point.) `now` for validity
   comes from the **RTC** (`net/http.c now_unix`), not a hardcoded constant.
   Verified on host against 5 real chains (example/google/github/wikipedia/kernel.org,
   EC+RSA, in-band & signed-by-root, tamper/wrong-host rejected) and end-to-end in
@@ -168,8 +174,8 @@ Key notes:
   **SHA-512** (`crypto/sha384.c sha512*`) is wired through. `net/x509.c` now also
   parses **rsassaPss** cert signatures (hash read from the params) and
   **sha512/ecdsa-with-SHA512**, with SIG_RSA_PSS_SHA256/384/512, SIG_RSA_SHA512,
-  SIG_ECDSA_SHA512. ClientHello advertises rsa_pss_rsae_sha256/384/512. 15th root
-  = D-TRUST Root Class 3 CA 2 2009 (a SHA-512 chain anchor). Verified host-side
+  SIG_ECDSA_SHA512. ClientHello advertises rsa_pss_rsae_sha256/384/512. D-TRUST
+  Root Class 3 CA 2 2009 (a SHA-512 chain anchor) is one of the 130 roots. Verified host-side
   against 8 real chains (incl. bsi.bund.de SHA-512, sectigo SHA-384) + synthetic
   PSS/SHA-512 certs vs openssl; in QEMU bsi.bund.de (SHA-512 + RSA-PSS
   CertVerify) opens. **Known separate limitation:** sites with large multi-cert
