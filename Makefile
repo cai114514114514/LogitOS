@@ -97,7 +97,7 @@ $(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUID
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
 	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(3) $(4) '$(5)' $(6) $(7) $(8)
+	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ '$(3)' $(4) '$(5)' $(6) $(7) $(8)
 endef
 
 #                     name      base       display  ext icon r   g   b   ('-' ext = none)
@@ -108,10 +108,11 @@ $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 $(eval $(call APP_RULE,preview, 0x48000000,Preview,-,P,200,150,110))
+$(eval $(call APP_RULE,studio,  0x49000000,Code Studio,as,{,200,160,250))
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 # (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
-APPS := clock textedit monitor terminal widgets files preview
+APPS := clock textedit monitor terminal widgets files preview studio
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are

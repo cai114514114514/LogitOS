@@ -53,9 +53,10 @@ void keyboard_handle(void)
         if (sc & 0x80) return;                       /* release */
         int k = 0;
         switch (sc) {
-            case 0x48: k = KEY_UP;   break;  case 0x50: k = KEY_DOWN; break;
-            case 0x49: k = KEY_PGUP; break;  case 0x51: k = KEY_PGDN; break;
-            case 0x47: k = KEY_HOME; break;  case 0x4F: k = KEY_END;  break;
+            case 0x48: k = KEY_UP;   break;  case 0x50: k = KEY_DOWN;  break;
+            case 0x49: k = KEY_PGUP; break;  case 0x51: k = KEY_PGDN;  break;
+            case 0x47: k = KEY_HOME; break;  case 0x4F: k = KEY_END;   break;
+            case 0x4B: k = KEY_LEFT; break;  case 0x4D: k = KEY_RIGHT; break;
         }
         if (k) wm_key(k);
         return;

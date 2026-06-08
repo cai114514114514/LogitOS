@@ -89,6 +89,8 @@
 #define KEY_PGDN  0x104
 #define KEY_HOME  0x105
 #define KEY_END   0x106
+#define KEY_LEFT  0x107
+#define KEY_RIGHT 0x108
 
 #define EV_MOUSE  2   /* a = x, b = y (window-local), mouse-button down */
 #define EV_CLOSE  3   /* the window's close button was pressed */
