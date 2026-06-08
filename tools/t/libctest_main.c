@@ -118,12 +118,31 @@ static void t_stdio(void)
     snprintf(b, sizeof b, "%g", 100000.0); CHK_STR(b, "100000", "snprintf %g");
 }
 
+static void t_scanf(void)
+{
+    int a, b, n; unsigned u; long long ll; float f; double d; char s1[32], s2[32], c1, c2;
+    CHK_INT(sscanf("42 -7", "%d %d", &a, &b), 2, "sscanf 2 ints ret"); CHK(a==42 && b==-7, "sscanf 2 ints val");
+    CHK_INT(sscanf("ff", "%x", &u), 1, "sscanf %x ret"); CHK_INT(u, 255, "sscanf %x val");
+    CHK(sscanf("3.14", "%f", &f)==1 && f>3.139f && f<3.141f, "sscanf %f");
+    CHK(sscanf("2.5e3", "%lf", &d)==1 && d==2500.0, "sscanf %lf exp");
+    CHK(sscanf("hello world", "%s", s1)==1 && strcmp(s1,"hello")==0, "sscanf %s");
+    CHK(sscanf("  12,34", " %d,%d", &a, &b)==2 && a==12 && b==34, "sscanf ws+literal");
+    CHK(sscanf("100", "%d%n", &a, &n)==1 && a==100 && n==3, "sscanf %n");
+    CHK(sscanf("12 34", "%*d %d", &b)==1 && b==34, "sscanf suppress");
+    CHK(sscanf("123456", "%3d", &a)==1 && a==123, "sscanf width");
+    CHK(sscanf("9999999999", "%lld", &ll)==1 && ll==9999999999LL, "sscanf %lld");
+    CHK(sscanf("ab", "%c%c", &c1, &c2)==2 && c1=='a' && c2=='b', "sscanf %c%c");
+    CHK_INT(sscanf("12 x", "%d %d", &a, &b), 1, "sscanf partial ret");  /* 2nd conversion fails */
+    CHK(sscanf("pre 7", "%s %d", s2, &a)==2 && strcmp(s2,"pre")==0 && a==7, "sscanf s+d");
+}
+
 int main(void)
 {
     t_string();
     t_ctype();
     t_stdlib();
     t_stdio();
+    t_scanf();
     if (fails == 0) printf("LIBC_OK %d/%d\n", checks - fails, checks);
     else            printf("LIBC_FAIL %d/%d (%d failed)\n", checks - fails, checks, fails);
     return fails ? 1 : 0;

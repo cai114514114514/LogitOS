@@ -39,6 +39,8 @@ int   getchar(void);
 int   ungetc(int, FILE *);
 char *fgets(char *, int, FILE *);
 size_t fread(void *, size_t, size_t, FILE *);
+int   sscanf(const char *, const char *, ...);
+int   vsscanf(const char *, const char *, va_list);
 
 /* open / close / position / status */
 FILE *fopen(const char *, const char *);
