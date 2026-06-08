@@ -4,9 +4,12 @@
 #include <stdint.h>
 
 /* A minimal active-open (client) TCP: reliable byte stream over IPv4. No
- * listen/accept, no out-of-order reassembly, single outstanding segment --
- * enough for HTTP GET. The public API is blocking-ish (it pumps net_poll) and
- * must run with interrupts enabled, exactly like dns_resolve(). */
+ * listen/accept. Receive does full out-of-order reassembly (a sorted interval
+ * set over a seq-indexed 64 KiB ring), so a reordered/lost segment mid-flight no
+ * longer discards the rest -- large TLS handshake flights arrive reliably. Send
+ * keeps a single outstanding segment but segments payloads > MSS (no truncation).
+ * The public API is blocking-ish (it pumps net_poll) and must run with
+ * interrupts enabled, exactly like dns_resolve(). */
 
 /* RX entry (handed to ip_input's protocol dispatch). */
 void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);

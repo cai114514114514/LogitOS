@@ -119,10 +119,17 @@ Key notes:
   defers the RX-queue flush ~1s, so RX needs a real time base to observe.
 - M10 TCP (`net/tcp.c`): client byte stream over IP proto 6 (IP_PROTO_TCP via
   ip_input's weak hook); tcp_connect/send/recv/close; single outstanding seg +
-  timeout retransmit; no out-of-order/window-scaling/congestion (enough for GET).
-  NCONN=8; a closed connection's slot is freed promptly (FIN_WAIT -> CLOSED on
-  the peer's FIN, plus a `tcp_poll` backstop) -- the old code leaked slots in
-  FIN_WAIT/TIME_WAIT, which a multi-connection page (e.g. a redirect) exhausted.
+  timeout retransmit. **M26 robustness:** receive now does **out-of-order
+  reassembly** (a sorted interval set over a seq-indexed 64 KiB ring, NOOO=16),
+  so a reordered/lost segment mid-flight no longer discards the rest -- large TLS
+  handshake flights arrive reliably (the old strict-in-order drop was the
+  "sectigo fails" cause). `tcp_send` segments payloads > MSS instead of
+  truncating. Still no window-scaling/congestion-control/SACK (perf, deferred).
+  Reassembly is unit-tested host-side (`make test-tcp-host`, 26 checks incl. a
+  32 KiB flight delivered in reverse + seq wraparound). NCONN=8; a closed
+  connection's slot is freed promptly (FIN_WAIT -> CLOSED on the peer's FIN, plus
+  a `tcp_poll` backstop) -- the old code leaked slots in FIN_WAIT/TIME_WAIT,
+  which a multi-connection page (e.g. a redirect) exhausted.
 - M11 HTTP (`net/http.c` + `net/url.c` + `net/html.c`): http_get(url) does
   DNS+TCP+GET synchronously and html_render strips tags/decodes entities/extracts
   `<a>` links; `user/browser.c` is the GUI. **Gotcha:** blocking net calls
@@ -178,10 +185,12 @@ Key notes:
   Root Class 3 CA 2 2009 (a SHA-512 chain anchor) is one of the 130 roots. Verified host-side
   against 8 real chains (incl. bsi.bund.de SHA-512, sectigo SHA-384) + synthetic
   PSS/SHA-512 certs vs openssl; in QEMU bsi.bund.de (SHA-512 + RSA-PSS
-  CertVerify) opens. **Known separate limitation:** sites with large multi-cert
-  RSA flights (e.g. sectigo, 4 certs incl. a 4096-bit CA) fail with TLS_E_PROTO
-  -- the M10 TCP (single outstanding segment, no reorder) can't reliably receive
-  the bigger handshake flight. That's a TCP robustness gap, not a crypto one.
+  CertVerify) opens. **Former limitation, now fixed (M26):** sites with large
+  multi-cert RSA flights (e.g. sectigo, 4 certs incl. a 4096-bit CA) used to fail
+  with TLS_E_PROTO because the M10 TCP dropped any out-of-order segment; the M26
+  TCP reassembly (see M10 note above) receives the bigger handshake flight
+  reliably. (A separate cap remains: the whole flight must fit the 64 KiB window
+  -- true for all real chains.)
 
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the AetherFS disk = real **ring-3 processes** scheduled

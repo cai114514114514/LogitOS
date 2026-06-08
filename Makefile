@@ -55,7 +55,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp
+.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host
 
 all: $(ISO)
 
@@ -251,6 +251,13 @@ test-nvme: $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
 	@sh scripts/run-shell-test.sh $(ISO) $(DISK)
+
+# Host unit test for TCP out-of-order reassembly (white-box: #includes tcp.c).
+# Stub headers in tools/t/tcpstub let tcp.c compile on the host (no x86 asm).
+test-tcp-host:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tools/t/tcp_test.c -Itools/t/tcpstub -Isrc/net/transport
+	@./$(BUILD)/tcp_test
 
 # On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: $(ISO) $(DISK)

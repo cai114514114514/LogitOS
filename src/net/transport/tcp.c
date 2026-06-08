@@ -18,24 +18,37 @@ void *memset(void *, int, size_t);
 enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSING, TIME_WAIT };
 
 #define NCONN    8
-#define RXBUF    65536      /* 64 KiB receive window: a full HTTP body fits in one
-                            * window, so the sender streams it without zero-window
-                            * stalls (the old 16 KiB throttled downloads badly). */
+#define RXBUF    65536      /* 64 KiB receive window: a full HTTP body / TLS flight
+                            * fits in one window, so the sender streams it without
+                            * zero-window stalls. Must be a power of two (ring &). */
 #define TXBUF    1460     /* MSS: 1500 MTU - 20 IP - 20 TCP. Caps a segment so it
                           * fits ip_send's 1500-byte pkt[] (was 2048 -> >1480-byte
                           * payloads were silently dropped by ip_send). */
+#define NOOO     16        /* out-of-order reassembly intervals tracked per conn */
+
+/* A received byte range [seq, end) that sits AHEAD of rcv_nxt (a hole precedes
+ * it). The list is kept sorted by seq, merged, and non-overlapping. */
+struct ooo_seg { uint32_t seq, end; };
 
 struct tcp_conn {
     int      state;
     uint16_t lport, rport;
     uint32_t rip;               /* remote IP, host order */
     uint32_t snd_una, snd_nxt;  /* send sequence space */
-    uint32_t rcv_nxt;           /* next expected receive seq */
+    uint32_t rcv_nxt;           /* next expected (contiguous) receive seq */
     int      peer_fin;          /* peer sent FIN (no more data coming) */
 
+    /* Receive ring, indexed by sequence: byte seq s -> rx[(rx_head + (s -
+     * read_seq)) & (RXBUF-1)]. read_seq is the seq of rx_head (first unread
+     * byte); contiguous readable bytes = rcv_nxt - read_seq = rx_len. Bytes that
+     * arrived out of order live in the ring too (at their seq slot) and become
+     * readable when the preceding hole fills and rcv_nxt advances over them. */
     uint8_t  rx[RXBUF];
-    int      rx_head, rx_tail;  /* consumed .. filled */
-    int      rx_len;
+    int      rx_head;           /* ring index of first unread byte */
+    int      rx_len;            /* contiguous unread bytes (rcv_nxt - read_seq) */
+    uint32_t read_seq;          /* seq of rx_head */
+    struct ooo_seg ooo[NOOO];   /* received-but-not-contiguous ranges, sorted */
+    int      n_ooo;
     int      adv_wnd;           /* window we last advertised (for drain updates) */
 
     /* single outstanding (data/SYN/FIN) segment for retransmit */
@@ -62,6 +75,10 @@ struct tcp_hdr {
     uint16_t urg;
 } __attribute__((packed));
 
+/* Wraparound-safe sequence comparison (RFC 793 "SEQ < SEQ" via signed diff). */
+static int seq_lt(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
+static int seq_le(uint32_t a, uint32_t b) { return (int32_t)(a - b) <= 0; }
+
 /* Ones-complement checksum over the TCP pseudo-header + segment. src/dst are
  * host order; folding (>>16)+(&0xFFFF) matches the on-wire big-endian words. */
 static uint16_t tcp_checksum(uint32_t src, uint32_t dst, const uint8_t *seg, int len)
@@ -80,7 +97,88 @@ static uint16_t tcp_checksum(uint32_t src, uint32_t dst, const uint8_t *seg, int
     return (uint16_t)~sum;
 }
 
-static int rx_free(struct tcp_conn *c) { return RXBUF - c->rx_len; }
+/* Furthest sequence we have any buffered byte for (contiguous end, or the top of
+ * the highest out-of-order interval). */
+static uint32_t rx_furthest(struct tcp_conn *c)
+{
+    return c->n_ooo ? c->ooo[c->n_ooo - 1].end : c->rcv_nxt;
+}
+
+/* Free receive-buffer space = window we can advertise (accounts for OOO bytes
+ * already parked in the ring). */
+static int rx_free(struct tcp_conn *c)
+{
+    int occ = (int)(rx_furthest(c) - c->read_seq);
+    int f = RXBUF - occ;
+    return f < 0 ? 0 : f;
+}
+
+/* Write n bytes at the ring slot for sequence s (caller guarantees the whole
+ * [s, s+n) range lies within [read_seq, read_seq+RXBUF)). Handles the wrap. */
+static void ring_write(struct tcp_conn *c, uint32_t s, const uint8_t *src, int n)
+{
+    int pos = (c->rx_head + (int)(s - c->read_seq)) & (RXBUF - 1);
+    int first = RXBUF - pos;
+    if (n <= first) {
+        memcpy(c->rx + pos, src, (size_t)n);
+    } else {
+        memcpy(c->rx + pos, src, (size_t)first);
+        memcpy(c->rx, src + first, (size_t)(n - first));
+    }
+}
+
+/* Merge received range [s, e) into the reassembly set and advance rcv_nxt over
+ * any contiguous data. Precondition: bytes are already in the ring and
+ * rcv_nxt <= e, s <= read_seq+RXBUF (clipped by the caller). */
+static void reassemble(struct tcp_conn *c, uint32_t s, uint32_t e)
+{
+    if (seq_le(s, c->rcv_nxt)) {
+        /* touches the contiguous front: extend, then absorb adjacent OOO ranges */
+        if (seq_lt(c->rcv_nxt, e)) c->rcv_nxt = e;
+        int w = 0;
+        for (int i = 0; i < c->n_ooo; i++) {
+            if (seq_le(c->ooo[i].seq, c->rcv_nxt)) {
+                if (seq_lt(c->rcv_nxt, c->ooo[i].end)) c->rcv_nxt = c->ooo[i].end;
+            } else {
+                c->ooo[w++] = c->ooo[i];     /* still a hole before this one */
+            }
+        }
+        c->n_ooo = w;
+    } else {
+        /* a hole precedes [s,e): merge it into the sorted OOO list */
+        int w = 0;
+        for (int i = 0; i < c->n_ooo; i++) {
+            uint32_t is = c->ooo[i].seq, ie = c->ooo[i].end;
+            if (seq_lt(e, is) || seq_lt(ie, s)) {
+                c->ooo[w++] = c->ooo[i];     /* disjoint (e==is / ie==s still merge) */
+            } else {
+                if (seq_lt(is, s)) s = is;   /* overlap/adjacent: grow [s,e) */
+                if (seq_lt(e, ie)) e = ie;
+            }
+        }
+        if (w < NOOO) {
+            int j = w;
+            while (j > 0 && seq_lt(s, c->ooo[j - 1].seq)) { c->ooo[j] = c->ooo[j - 1]; j--; }
+            c->ooo[j].seq = s; c->ooo[j].end = e;
+            c->n_ooo = w + 1;
+        } else {
+            c->n_ooo = w;                    /* table full: drop; sender resends */
+        }
+    }
+    c->rx_len = (int)(c->rcv_nxt - c->read_seq);
+}
+
+/* Take an inbound data segment into the receive buffer (with reassembly). */
+static void rx_data(struct tcp_conn *c, uint32_t seg_seq, const uint8_t *payload, int dlen)
+{
+    uint32_t s = seg_seq, e = seg_seq + (uint32_t)dlen;
+    if (seq_lt(s, c->rcv_nxt)) { payload += (c->rcv_nxt - s); s = c->rcv_nxt; }  /* trim dup prefix */
+    uint32_t win_end = c->read_seq + RXBUF;
+    if (seq_lt(win_end, e)) e = win_end;                                          /* trim beyond buffer */
+    if (seq_le(e, s)) return;                                                     /* nothing new */
+    ring_write(c, s, payload, (int)(e - s));
+    reassemble(c, s, e);
+}
 
 /* Build and transmit one segment. `data`/`dlen` is the payload (may be 0). */
 static void send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq,
@@ -150,6 +248,7 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
     if (c->state == SYN_SENT) {
         if ((flags & (SYN | ACK)) == (SYN | ACK) && seg_ack == c->snd_nxt) {
             c->rcv_nxt = seg_seq + 1;
+            c->read_seq = c->rcv_nxt;           /* align the receive ring base */
             c->snd_una = seg_ack;
             c->tx_len = 0; c->tx_flags = 0;     /* SYN acked */
             c->state = ESTABLISHED;
@@ -158,33 +257,26 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
         return;
     }
 
-    /* Established (and closing states): ack our outstanding data, take theirs. */
+    /* Established (and closing states): ack our outstanding data, take theirs.
+     * Single outstanding segment, so snd_nxt is the end of everything we've sent
+     * (data + the +1 for SYN/FIN); a cumulative ACK reaching it frees the slot. */
     if (flags & ACK) {
-        if (seg_ack == c->snd_nxt) { c->snd_una = seg_ack; c->tx_len = 0; c->tx_flags = 0; }
+        if (seq_lt(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_nxt))
+            c->snd_una = seg_ack;
+        if (c->tx_flags && seq_le(c->snd_nxt, seg_ack)) { c->tx_len = 0; c->tx_flags = 0; }
     }
-    if (dlen > 0 && c->state == ESTABLISHED) {
-        if (seg_seq == c->rcv_nxt && rx_free(c) >= dlen) {
-            /* Two-part ring copy (RXBUF is 2^16, so & (RXBUF-1) == % RXBUF). */
-            int space = RXBUF - c->rx_tail;          /* bytes before wrap */
-            if (dlen <= space) {
-                memcpy(c->rx + c->rx_tail, payload, dlen);
-            } else {
-                memcpy(c->rx + c->rx_tail, payload, space);
-                memcpy(c->rx, payload + space, dlen - space);
-            }
-            c->rx_tail = (c->rx_tail + dlen) & (RXBUF - 1);
-            c->rx_len += dlen;
-            c->rcv_nxt += dlen;
-        }
-        send_seg(c, ACK, c->snd_nxt, NULL, 0);  /* ack in-order, or dup-ack to nudge */
+    if (dlen > 0 && (c->state == ESTABLISHED || c->state == FIN_WAIT)) {
+        rx_data(c, seg_seq, payload, dlen);
+        send_seg(c, ACK, c->snd_nxt, NULL, 0);  /* cumulative ack (dup-ack on a hole) */
     }
     if (flags & FIN) {
-        if (seg_seq + dlen == c->rcv_nxt) {     /* in-order FIN */
+        /* Accept the FIN only when it is in-order: everything up to its seq has
+         * been received (after reassembly), so rcv_nxt == the FIN's sequence. */
+        uint32_t fin_seq = seg_seq + (uint32_t)dlen;
+        if (fin_seq == c->rcv_nxt) {
             c->rcv_nxt += 1;
             c->peer_fin = 1;
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
-            /* If we already closed (client done), the slot can be released now;
-             * skipping TIME_WAIT is fine for an outbound-only client. */
             if (c->state == FIN_WAIT) { c->state = CLOSED; c->used = 0; }
         }
     }
@@ -243,22 +335,40 @@ int tcp_connect(uint32_t dst, uint16_t port)
 
 int tcp_send(int id, const void *buf, int len)
 {
-    if (id < 0 || id >= NCONN) return -1;
+    if (id < 0 || id >= NCONN || len < 0) return -1;
     struct tcp_conn *c = &conns[id];
-    uint64_t f = net_lock();
-    int rc;
-    if (!c->used || c->state != ESTABLISHED) {
-        rc = -1;
-    } else {
-        if (len > TXBUF) len = TXBUF;
+    const uint8_t *p = (const uint8_t *)buf;
+    int remaining = len, sent = 0;
+
+    do {
+        uint64_t f = net_lock();
+        if (!c->used || c->state != ESTABLISHED) { net_unlock(f); return sent > 0 ? sent : -1; }
+        int chunk = remaining > TXBUF ? TXBUF : remaining;
+        if (chunk == 0) { net_unlock(f); break; }
         uint32_t seq = c->snd_nxt;
-        send_seg(c, PSH | ACK, seq, buf, len);
-        arm_retransmit(c, PSH | ACK, seq, buf, len);
-        c->snd_nxt += len;
-        rc = len;
-    }
-    net_unlock(f);
-    return rc;
+        send_seg(c, PSH | ACK, seq, p, chunk);
+        arm_retransmit(c, PSH | ACK, seq, p, chunk);
+        c->snd_nxt += (uint32_t)chunk;
+        net_unlock(f);
+        p += chunk; remaining -= chunk; sent += chunk;
+
+        /* Single outstanding segment: before sending the next chunk, wait for
+         * this one's ACK (pumping net_poll, IF=1). The final chunk returns
+         * without waiting -- the caller's recv loop collects its ACK -- so the
+         * common <=MSS request keeps its old one-shot fast path. */
+        if (remaining > 0) {
+            uint64_t start = timer_ticks();
+            while (timer_ticks() - start < 800) {   /* ~8 s */
+                net_poll();
+                if (!c->used) return sent;
+                if (c->tx_flags == 0) break;        /* acked */
+                net_idle();
+            }
+            if (c->tx_flags) return sent;           /* timed out: partial send */
+        }
+    } while (remaining > 0);
+
+    return sent;
 }
 
 int tcp_recv(int id, void *buf, int max)
@@ -280,12 +390,13 @@ int tcp_recv(int id, void *buf, int max)
             /* Two-part ring drain (RXBUF is 2^16, so & (RXBUF-1) == % RXBUF). */
             int space = RXBUF - c->rx_head;          /* bytes before wrap */
             if (n <= space) {
-                memcpy(out, c->rx + c->rx_head, n);
+                memcpy(out, c->rx + c->rx_head, (size_t)n);
             } else {
-                memcpy(out, c->rx + c->rx_head, space);
-                memcpy(out + space, c->rx, n - space);
+                memcpy(out, c->rx + c->rx_head, (size_t)space);
+                memcpy(out + space, c->rx, (size_t)(n - space));
             }
             c->rx_head = (c->rx_head + n) & (RXBUF - 1);
+            c->read_seq += (uint32_t)n;              /* keep read_seq == seq of rx_head */
             c->rx_len -= n;
             /* Window update: the sender learns our window only from ACKs (sent on
              * inbound data). After draining a burst, proactively ACK so it doesn't
