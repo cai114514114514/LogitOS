@@ -675,6 +675,20 @@ static void draw_menubar(void)
 }
 
 static int dock_x0, dock_y0, dock_isz = 50, dock_gap = 14;
+
+/* Draw one dock tile of side `sz` centered at (cx,cy): glossy gradient + sheen +
+ * the app's vector icon (or its letter). Used at base size and, for the hovered
+ * icon, magnified -- the corner radius and icon scale track `sz`. */
+static void dock_tile(int i, int cx, int cy, int sz)
+{
+    int x = cx - sz / 2, y = cy - sz / 2, rad = sz * 12 / 50;
+    fb_round_rect_vgrad(x, y, sz, sz, rad, fb_shade(reg[i].color, 38), fb_shade(reg[i].color, -26));
+    fb_blend_round_rect(x, y, sz, sz / 2, rad, 255, 255, 255, 32);
+    int ic = icon_for_app(reg[i].file, reg[i].ext);
+    if (ic >= 0) { int isz = sz * 62 / 100; icon_draw(ic, cx - isz / 2, cy - isz / 2, isz, rgb(255, 255, 255)); }
+    else { char ch[2] = { reg[i].icon, 0 }; fb_text(cx - FW / 2, cy - FH / 2, ch, rgb(255, 255, 255)); }
+}
+
 static void draw_dock(void)
 {
     int n = nreg < 1 ? 1 : nreg;
@@ -684,20 +698,29 @@ static void draw_dock(void)
     fb_blur_rect(dock_x0, dock_y0, dw, dh, 6, 28);                                  /* frost the live backdrop */
     fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 58);           /* translucent glass tint */
     fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, 115);       /* bright top sheen */
-    for (int i = 0; i < nreg; i++) {
-        int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
-        /* glossy tile: a vertical gradient (lighter top -> base -> darker foot) */
-        fb_round_rect_vgrad(ix, iy, dock_isz, dock_isz, 12,
-                            fb_shade(reg[i].color, 38), fb_shade(reg[i].color, -26));
-        fb_blend_round_rect(ix, iy, dock_isz, dock_isz / 2, 12, 255, 255, 255, 32);
-        int ic = icon_for_app(reg[i].file, reg[i].ext);
-        if (ic >= 0) {
-            int isz = dock_isz * 62 / 100;     /* ~31px vector icon centered in the tile */
-            icon_draw(ic, ix + (dock_isz - isz) / 2, iy + (dock_isz - isz) / 2, isz, rgb(255, 255, 255));
-        } else {
-            char ch[2] = { reg[i].icon, 0 };
-            fb_text(ix + dock_isz / 2 - FW / 2, iy + dock_isz / 2 - FH / 2, ch, rgb(255, 255, 255));
+
+    /* Live hover magnification: the icon under the cursor grows in place (kept
+     * inside the panel + gap so it never overlaps a neighbour) and shows its name
+     * as a tooltip. Re-evaluated every frame, and the WM repaints on each mouse
+     * move, so it animates as the cursor sweeps the dock. */
+    int ccy = dock_y0 + 10 + dock_isz / 2, hov = -1;
+    if (my >= dock_y0 && my < dock_y0 + dh)
+        for (int i = 0; i < nreg; i++) {
+            int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
+            if (mx >= ix && mx < ix + dock_isz) { hov = i; break; }
         }
+    for (int i = 0; i < nreg; i++) {
+        if (i == hov) continue;                            /* hovered tile drawn last, on top */
+        int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
+        dock_tile(i, ccx, ccy, dock_isz);
+    }
+    if (hov >= 0) {
+        int ccx = dock_x0 + dock_gap + hov * (dock_isz + dock_gap) + dock_isz / 2;
+        dock_tile(hov, ccx, ccy, dock_isz * 130 / 100);    /* 1.3x pop */
+        const char *nm = reg[hov].name;                    /* tooltip above the dock */
+        int tw = fb_text_width(nm), tx = ccx - tw / 2;
+        fb_blend_round_rect(tx - 9, dock_y0 - 28, tw + 18, 23, 7, 28, 28, 34, 225);
+        fb_text(tx, dock_y0 - 25, nm, rgb(244, 244, 248));
     }
 }
 
