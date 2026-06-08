@@ -84,7 +84,12 @@ void sched_init(void)
         uint64_t *sp = (uint64_t *)top;
         *--sp = (uint64_t)kthread_bootstrap;
         *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
-        *--sp = 0x202;
+        *--sp = 0x002;   /* RFLAGS: IF=0 (reserved bit1 only). A first-run thread MUST
+                      * start with interrupts OFF: its bootstrap still holds
+                      * g_sched_lock, and a timer IRQ there would acquire g_bkl in
+                      * reverse order (g_sched_lock->g_bkl) -> ABBA deadlock. The
+                      * bootstrap re-enables IF at its own controlled point (kthread:
+                      * sti after taking g_bkl; ring3: the iretq's RFLAGS). */
         bi->rsp = (uint64_t)sp;
     }
     g_cpus[0].idle = bi;
@@ -112,7 +117,12 @@ void thread_create(void (*entry)(void), const char *name)
     uint64_t *sp = (uint64_t *)top;
     *--sp = (uint64_t)kthread_bootstrap;  /* ret target (drops g_sched_lock, calls entry) */
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
-    *--sp = 0x202;
+    *--sp = 0x002;   /* RFLAGS: IF=0 (reserved bit1 only). A first-run thread MUST
+                      * start with interrupts OFF: its bootstrap still holds
+                      * g_sched_lock, and a timer IRQ there would acquire g_bkl in
+                      * reverse order (g_sched_lock->g_bkl) -> ABBA deadlock. The
+                      * bootstrap re-enables IF at its own controlled point (kthread:
+                      * sti after taking g_bkl; ring3: the iretq's RFLAGS). */
     t->rsp = (uint64_t)sp;
 
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
@@ -153,7 +163,12 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     *--sp = 0;                           /* r13 */
     *--sp = ustack;                      /* r14 */
     *--sp = entry;                       /* r15 */
-    *--sp = 0x202;                       /* rflags */
+    *--sp = 0x002;   /* RFLAGS: IF=0 (reserved bit1 only). A first-run thread MUST
+                      * start with interrupts OFF: its bootstrap still holds
+                      * g_sched_lock, and a timer IRQ there would acquire g_bkl in
+                      * reverse order (g_sched_lock->g_bkl) -> ABBA deadlock. The
+                      * bootstrap re-enables IF at its own controlled point (kthread:
+                      * sti after taking g_bkl; ring3: the iretq's RFLAGS). */                       /* rflags */
     t->rsp = (uint64_t)sp;
 
     uint64_t f = spin_lock_irqsave(&g_sched_lock);

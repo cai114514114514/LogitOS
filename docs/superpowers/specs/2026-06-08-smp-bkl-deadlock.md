@@ -1,8 +1,33 @@
 # M25 P0 hardening — the -smp 4 BKL ↔ g_sched_lock ABBA deadlock
 
-Status: **OPEN** (real, reproducible; NOT the QEMU MTTCG artifact — reproduces in
-single-thread TCG too). This is the next SMP task. Single-core is fully stable
-(the WM input-vs-render freeze was fixed in commit ffd3b90).
+Status: **FIXED** (2026-06-08). Root cause + fix below. Was: real, reproducible,
+NOT the QEMU MTTCG artifact (reproduced in single-thread TCG too).
+
+## THE FIX (root cause)
+
+First-run thread hand-built frames in `sched.c` set RFLAGS = **0x202 (IF=1)** for
+the ring3_bootstrap / kthread_bootstrap entries. When `context_switch` (switch.asm)
+`popfq`s that frame to first-run the thread, IF becomes 1 *while the bootstrap
+still holds g_sched_lock* (it releases it a few instructions later). A timer IRQ in
+that window enters `interrupt_handler` and does `spin_lock_irqsave(&g_bkl)` --
+acquiring g_bkl while holding g_sched_lock, the reverse of the BKL→sched order --
+which ABBA-deadlocks against a core that holds g_bkl and is waiting for g_sched_lock
+in `schedule()`. First-run threads happen on every app launch, so GUI churn hit it.
+
+Fix: hand-built frames now set RFLAGS = **0x002 (IF=0)** (like fork_ret already
+did). Each bootstrap re-enables IF at its own controlled point AFTER releasing
+g_sched_lock (kthread_bootstrap: `sti` after taking g_bkl; ring3_bootstrap: the
+iretq's RFLAGS=0x202). Plus `context_switch` returns IF=0 defensively (a `cli`
+after popfq). Verified: -smp 4 (both `-accel tcg` and `tcg,thread=multi`) survives
+1800+ ops of a motion/drag/click/key + dock-launch storm that previously wedged all
+cores by op ~19-150; g_bkl ticket/serving stays healthy; UI stays usable.
+
+The original investigation notes are kept below for reference.
+
+---
+
+Original status when OPEN: real, reproducible; NOT the QEMU MTTCG artifact. Single-core
+was already stable (the WM input-vs-render freeze fixed in commit ffd3b90).
 
 ## Symptom
 

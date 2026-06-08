@@ -229,14 +229,14 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(AEX) tools/mkfs.py
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
-# `make run`/`debug` default to a SINGLE core: the single-core freeze (the WM
-# IRQ-vs-render race) is fixed, so -smp 1 is rock-solid for daily interactive use.
-# Multi-core still has a known SMP-scheduler ABBA deadlock under GUI load (g_bkl
-# vs g_sched_lock in schedule()'s context_switch hand-off -- see
-# docs/superpowers/specs/2026-06-08-smp-bkl-deadlock.md, the next M25 task). For
-# SMP work: `make run QEMU_SMP="-smp 4 -accel tcg,thread=multi"`. Tests still run
-# -smp 4 via their own scripts.
-QEMU_SMP  ?= -smp 1
+# 4 cores, parallel TCG threads. Both system-freeze bugs are now fixed: the
+# single-core WM IRQ-vs-render race (input deferral, commit ffd3b90) and the
+# multi-core g_bkl/g_sched_lock ABBA deadlock (first-run threads now start IF=0,
+# see docs/superpowers/specs/2026-06-08-smp-bkl-deadlock.md). Overridable, e.g.
+# `make run QEMU_SMP="-smp 1"`. (On an Apple-Silicon host, thread=multi still has
+# the separate QEMU-MTTCG FP/XMM artifact for FP-heavy ring-3 apps -- not a freeze;
+# see the smp-mttcg note. Drop `,thread=multi` for correct-but-serial 4-core TCG.)
+QEMU_SMP  ?= -smp 4 -accel tcg,thread=multi
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
 QEMU_GPU  := -vga none -device virtio-gpu-pci   # modern GPU; kernel drives the scanout
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
