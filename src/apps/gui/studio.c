@@ -8,9 +8,9 @@
 #define MAXT    65536
 #define WINW    780
 #define WINH    620
-#define CELL    8                 /* monospace cell width  */
-#define ROWH    16                /* text row height       */
-#define GUTTER  46                /* line-number column    */
+#define CELL    10                /* monospace cell width (matches Terminal; the AA mono font is 16px) */
+#define ROWH    19                /* text row height (16px glyphs + 3px leading) */
+#define GUTTER  58                /* line-number column (fits up to 5 digits at CELL=10) */
 #define TOOLH   26                /* top toolbar           */
 #define OUTH    150               /* bottom output pane    */
 #define EDIT_Y  TOOLH
@@ -84,21 +84,25 @@ static int is_kw(const char *s, int n)
     return 0;
 }
 
-/* draw one source line [s,e) at (x0,y) with highlighting */
+/* draw one source line [s,e) at (x0,y), 16px AA mono, cell-snapped to the CELL grid */
 static void draw_code_line(int x0, int y, int s, int e)
 {
+    char buf[160];
     int i = s;
     while (i < e) {
         char c = text[i];
         int col = i - s, start = i;
         unsigned color;
+        if (c == ' ' || c == '\t') { while (i < e && (text[i] == ' ' || text[i] == '\t')) i++; continue; }  /* blanks: the column grid spaces the next token */
         if (c == '#') { color = C_COMMENT; i = e; }                                   /* comment to EOL */
         else if (c == '"' || c == '\'') { char q = c; i++; while (i < e && text[i] != q) { if (text[i] == '\\' && i + 1 < e) i++; i++; } if (i < e) i++; color = C_STR; }
         else if (is_d(c)) { while (i < e && (is_an(text[i]) || text[i] == '.')) i++; color = C_NUM; }
         else if (is_a(c)) { while (i < e && is_an(text[i])) i++; color = is_kw(text + start, i - start) ? C_KW : C_TEXT; }
-        else if (c == ' ' || c == '\t') { while (i < e && (text[i] == ' ' || text[i] == '\t')) i++; col = start - s; gui_text_run(x0 + col * CELL, y, CELL, 1, C_TEXT, text + start, i - start); continue; }
         else { i++; color = C_OP; }                                                   /* operator / punct */
-        gui_text_run(x0 + col * CELL, y, CELL, 1, color, text + start, i - start);
+        int n = i - start; if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
+        for (int k = 0; k < n; k++) buf[k] = text[start + k];
+        buf[n] = 0;
+        gui_text_mono(x0 + col * CELL, y, color, CELL, buf);                          /* fixed 16px, snapped to CELL */
     }
 }
 
@@ -195,7 +199,7 @@ static void redraw(void)
     int first = ns - rows; if (first < 0) first = 0;
     for (int li = first; li < ns; li++) {
         int s = starts[li]; int e = s; while (e < outlen && out[e] != '\n') e++;
-        if (e > s) gui_text_run(8, oy + 22 + (li - first) * ROWH, CELL, 1, C_OUTTXT, out + s, e - s);
+        if (e > s) gui_text_run(8, oy + 22 + (li - first) * ROWH, 16, 1, C_OUTTXT, out + s, e - s);
     }
     gui_flush();
 }
