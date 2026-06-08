@@ -55,7 +55,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete
+.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
 
 all: $(ISO)
 
@@ -224,17 +224,32 @@ $(BUILD)/as.elf: $(AS_OBJ) $(APPDIR)/crt0_cli.asm
 $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/as.elf $@ as - '*' 150 150 150
 
+# /bin/libctest -- mini-libc on-target test battery (run by `make test-libc`).
+# Links the real mini-libc objects already built for /bin/as + a test main, at
+# the common CLI base via crt0_cli. (Host-native testing is awkward: string.c
+# defines memcpy/etc. which clash with the host libc -- so we test on Aether.)
+LIBC_OBJS := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
+$(BUILD)/asobj/tools/t/libctest_main.o: tools/t/libctest_main.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+$(BUILD)/libctest.elf: $(BUILD)/asobj/tools/t/libctest_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/libctest.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/libctest.crt0c.o $(BUILD)/asobj/tools/t/libctest_main.o $(LIBC_OBJS)
+$(BUILD)/libctest.aex: $(BUILD)/libctest.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/libctest.elf $@ libctest - '?' 150 150 150
+
 # Font subsets (proprietary source; regenerated, .gitignored). See tools/mkfont.py.
 $(FONTS): tools/mkfont.py
 	@mkdir -p fsroot/fonts
 	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(AEX) tools/mkfs.py
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(AEX) $(BUILD)/libctest.aex tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
-	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as \
+	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
@@ -281,6 +296,10 @@ test-tcp-host:
 # On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: $(ISO) $(DISK)
 	@sh scripts/run-as-test.sh $(ISO) $(DISK)
+
+# mini-libc on-target test battery: boots Aether, runs /bin/libctest, asserts LIBC_OK.
+test-libc: $(ISO) $(DISK)
+	@sh scripts/run-libc-test.sh $(ISO) $(DISK)
 
 # M25 SMP concurrency proof: boots -smp 4, runs /bin/smptest, asserts SMP_TEST_OK
 # (no cross-core corruption + genuine parallelism across >=2 cores).

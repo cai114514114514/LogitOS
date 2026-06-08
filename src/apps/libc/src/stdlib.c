@@ -1,6 +1,9 @@
 #include <stddef.h>
+#include <errno.h>
 
 /* errno is defined in io.c (the single syscall TU); declared via <errno.h>. */
+#define LL_MAX 0x7fffffffffffffffLL
+#define LL_MIN (-LL_MAX - 1LL)
 
 #define SYS_EXIT 2
 static long sys(long n, long a, long b, long c)
@@ -26,21 +29,53 @@ static int isspace_(int c) { return c == ' ' || (c >= 9 && c <= 13); }
 static int digit(int c, int base)
 { int v = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'z') ? c - 'a' + 10 : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : 99; return v < base ? v : -1; }
 
+/* Shared numeric prefix scan: skip ws, sign, base prefix; advance *s past them.
+ * Returns the resolved base; sets *neg. */
+static int strto_pre(const char **s, int *neg, int base)
+{
+    while (isspace_(**s)) (*s)++;
+    *neg = 0; if (**s == '+' || **s == '-') *neg = (*(*s)++ == '-');
+    if ((base == 16 || base == 0) && (*s)[0] == '0' && ((*s)[1] == 'x' || (*s)[1] == 'X')) { *s += 2; base = 16; }
+    else if (base == 0) base = ((*s)[0] == '0') ? 8 : 10;
+    return base;
+}
+
 long long strtoll(const char *s, char **end, int base)
 {
-    while (isspace_(*s)) s++;
-    int neg = 0; if (*s == '+' || *s == '-') neg = (*s++ == '-');
-    if ((base == 16 || base == 0) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; base = 16; }
-    if (base == 0) base = (s[0] == '0') ? 8 : 10;
-    long long v = 0; int any = 0, d;
-    while ((d = digit(*s, base)) >= 0) { v = v * base + d; s++; any = 1; }
-    if (end) *end = (char *)(any ? s : s);
-    return neg ? -v : v;
+    const char *start = s; int neg;
+    base = strto_pre(&s, &neg, base);
+    unsigned long long cutoff = neg ? (unsigned long long)LL_MAX + 1ULL : (unsigned long long)LL_MAX;
+    int cutlim = (int)(cutoff % (unsigned)base);
+    cutoff /= (unsigned)base;
+    unsigned long long acc = 0; int any = 0, ovf = 0, d;
+    while ((d = digit(*s, base)) >= 0) {
+        if (ovf || acc > cutoff || (acc == cutoff && d > cutlim)) ovf = 1;
+        else acc = acc * (unsigned)base + (unsigned)d;
+        s++; any = 1;
+    }
+    if (end) *end = (char *)(any ? s : start);
+    if (ovf) { errno = ERANGE; return neg ? LL_MIN : LL_MAX; }
+    return neg ? -(long long)acc : (long long)acc;
 }
 unsigned long long strtoull(const char *s, char **end, int base)
-{ return (unsigned long long)strtoll(s, end, base); }
-long strtol(const char *s, char **e, int b) { return (long)strtoll(s, e, b); }
-unsigned long strtoul(const char *s, char **e, int b) { return (unsigned long)strtoll(s, e, b); }
+{
+    const char *start = s; int neg;
+    base = strto_pre(&s, &neg, base);
+    unsigned long long cutoff = ~0ULL / (unsigned)base;
+    int cutlim = (int)(~0ULL % (unsigned)base);
+    unsigned long long acc = 0; int any = 0, ovf = 0, d;
+    while ((d = digit(*s, base)) >= 0) {
+        if (ovf || acc > cutoff || (acc == cutoff && d > cutlim)) ovf = 1;
+        else acc = acc * (unsigned)base + (unsigned)d;
+        s++; any = 1;
+    }
+    if (end) *end = (char *)(any ? s : start);
+    if (ovf) { errno = ERANGE; return ~0ULL; }
+    return neg ? -acc : acc;                /* C: a leading '-' negates (mod 2^64) */
+}
+/* x86-64 LP64: long == long long, so no extra range clamp needed. */
+long strtol(const char *s, char **e, int b)            { return (long)strtoll(s, e, b); }
+unsigned long strtoul(const char *s, char **e, int b)  { return (unsigned long)strtoull(s, e, b); }
 int  atoi(const char *s)  { return (int)strtoll(s, NULL, 10); }
 long atol(const char *s)  { return (long)strtoll(s, NULL, 10); }
 long long atoll(const char *s) { return strtoll(s, NULL, 10); }
