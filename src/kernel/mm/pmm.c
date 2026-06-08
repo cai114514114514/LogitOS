@@ -231,5 +231,14 @@ void pmm_free(uint64_t phys_addr)
     spin_unlock_irqrestore(&pmm_lock, fl);
 }
 
-uint64_t pmm_total_bytes(void) { return usable_bytes; }
-uint64_t pmm_free_bytes(void)  { return (total_frames - used_frames) * FRAME_SIZE; }
+uint64_t pmm_total_bytes(void) { return usable_bytes; }   /* set once at boot; no lock needed */
+/* M25 P3: read used_frames under pmm_lock -- it's written by the BKL-free
+ * allocator path (kmalloc->grow->pmm_alloc_contig), so a BKL-covered reader
+ * (sysinfo) is NOT serialized against it by the BKL. */
+uint64_t pmm_free_bytes(void)
+{
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    uint64_t free = (total_frames - used_frames) * FRAME_SIZE;
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return free;
+}
