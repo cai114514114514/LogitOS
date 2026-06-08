@@ -1,4 +1,4 @@
-#include "aqua.h"
+#include "aether.h"
 #include "dom.h"
 #include "css.h"
 #include "layout.h"
@@ -252,7 +252,7 @@ void app_main(void)
     int editing = 1;
 
     for (;;) {
-        struct aqua_event e;
+        struct aether_event e;
         int need = 0;                 /* coalesce: drain the whole event burst, repaint once */
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);

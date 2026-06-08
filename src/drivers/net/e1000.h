@@ -1,5 +1,5 @@
-#ifndef AQUA_E1000_H
-#define AQUA_E1000_H
+#ifndef AETHER_E1000_H
+#define AETHER_E1000_H
 
 #include <stdint.h>
 
@@ -28,4 +28,4 @@ void e1000_irq_enable(void (*cb)(const uint8_t *frame, uint16_t len));
 int  e1000_irq_line(void);
 void e1000_irq(void);
 
-#endif /* AQUA_E1000_H */
+#endif /* AETHER_E1000_H */

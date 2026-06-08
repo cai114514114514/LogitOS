@@ -1,19 +1,19 @@
 ---
-title: M22.4 AquaScript Exceptions
+title: M22.4 AetherScript Exceptions
 status: spec
 milestone: M22.4
 date: 2026-06-06
 ---
 
-# M22.4 — AquaScript Exceptions (raise / try / except)
+# M22.4 — AetherScript Exceptions (raise / try / except)
 
 Status: spec. Milestone M22.4 (the "advanced language features" arc: closures done,
-GC done, classes done, now exceptions). Targets the from-scratch AquaScript stack
-bytecode VM in `src/apps/aqs/`.
+GC done, classes done, now exceptions). Targets the from-scratch AetherScript stack
+bytecode VM in `src/apps/as/`.
 
 ## Goal
 
-Add catchable exceptions to AquaScript so a script can `raise` an arbitrary value,
+Add catchable exceptions to AetherScript so a script can `raise` an arbitrary value,
 catch it with `try/except`, and so that BUILT-IN runtime errors (e.g. division by
 zero, undefined variable, bad native argument) become catchable instead of always
 aborting the program. This is the systems-language counterpart to Python's
@@ -63,11 +63,11 @@ except NAME:               # catch-all, binds the thrown value to local NAME
 5. If no enclosing handler exists, the throw is uncaught and the program aborts with
    an error, exactly as built-in runtime errors do today. The uncaught value's text
    (its string content, or a generic message for non-strings) is reported via the
-   existing `aqs_err` channel.
+   existing `as_err` channel.
 6. Built-in runtime errors are unified with `raise`: every internal `runtime_error()`
    (division by zero, undefined variable, type mismatch, index out of range, bad
    opcode, call-arity mismatch, etc.) becomes a thrown string exception that a
-   `try/except` can catch. Native-function failures (`aqs_native_fail`, e.g.
+   `try/except` can catch. Native-function failures (`as_native_fail`, e.g.
    `len()` with a bad argument, `range()` step 0) likewise become catchable string
    exceptions.
 7. A `return` inside a `try` body (returning out of the enclosing function) discards
@@ -133,8 +133,8 @@ Explicitly OUT of scope (future work, do NOT implement):
 
 ## Tests (assert list — full wiring in the plan)
 
-Host unit tests (`tools/t/aqs_test.c`, via `ok()`/`err()`), each also run under
-`-DAQS_GC_STRESS` by `make test-aqs-gcstress`:
+Host unit tests (`tools/t/as_test.c`, via `ok()`/`err()`), each also run under
+`-DAS_GC_STRESS` by `make test-as-gcstress`:
 
 1. `raise`+catch a string: `try: raise "x"` / `except e: print(e)` -> `x`.
 2. Catch a built-in runtime error: `try: print(1/0)` / `except e: print("caught")`
@@ -152,6 +152,6 @@ Host unit tests (`tools/t/aqs_test.c`, via `ok()`/`err()`), each also run under
 11. `return` from inside a `try` body returns normally (handler is cleaned up; a
     later throw in the caller is not mis-caught by the dead handler).
 
-On-Aqua end-to-end (`fsroot/aqs/exc.aqs` + `scripts/run-aqs-test.sh`): a script that
+On-Aether end-to-end (`fsroot/as/exc.as` + `scripts/run-as-test.sh`): a script that
 raises+catches a string, catches a `1/0` runtime error, and prints a stable marker
-line, asserted over serial after booting Aqua and running `/bin/aqs`.
+line, asserted over serial after booting Aether and running `/bin/as`.

@@ -1,4 +1,4 @@
-#include "aqua.h"
+#include "aether.h"
 
 /* A terminal emulator: it forks + execs the real /bin/sh, wires the shell's
  * stdin/stdout/stderr to a pair of pipes (so this app is the PTY master), renders
@@ -87,12 +87,12 @@ void app_main(void)
     if (spawn_shell() < 0) { feed('s'); feed('h'); feed('?'); }
 
     /* Opened on a file (the WM's file-type fallback launches the Terminal with the
-     * path as its arg): run it. .aqs scripts run through the interpreter; any other
+     * path as its arg): run it. .as scripts run through the interpreter; any other
      * file is shown with cat. */
     {
         char arg[160];
         if (get_arg(arg, sizeof arg) > 0 && in_w >= 0) {
-            send_line(ends_with(arg, ".aqs") ? "aqs " : "cat ");
+            send_line(ends_with(arg, ".as") ? "as " : "cat ");
             send_line(arg);
             send_line("\n");
         }
@@ -100,7 +100,7 @@ void app_main(void)
 
     int redraw = 1, alive = 1;
     for (;;) {
-        struct aqua_event e;
+        struct aether_event e;
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);
             if (e.type == EV_KEY && in_w >= 0 && alive) {

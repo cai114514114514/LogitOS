@@ -12,11 +12,11 @@ void app_main(void)
 
     int last = -1;
     for (;;) {
-        struct aqua_event e;
+        struct aether_event e;
         while (poll_event(&e))
             if (e.type == EV_CLOSE) app_exit(0);
 
-        struct aqua_time t;
+        struct aether_time t;
         get_time(&t);
         if (t.second != last) {                 /* refresh ~1 Hz */
             last = t.second;

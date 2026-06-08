@@ -1,5 +1,5 @@
-#ifndef AQUA_IOAPIC_H
-#define AQUA_IOAPIC_H
+#ifndef AETHER_IOAPIC_H
+#define AETHER_IOAPIC_H
 #include <stdint.h>
 
 void ioapic_init(void);

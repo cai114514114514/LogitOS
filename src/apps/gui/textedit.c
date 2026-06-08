@@ -63,7 +63,7 @@ void app_main(void)
     redraw();
 
     for (;;) {
-        struct aqua_event e;
+        struct aether_event e;
         int changed = 0;
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE)

@@ -13,7 +13,7 @@
 #include "rtc.h"
 #include "aex.h"
 #include "img.h"
-#include "aqua_abi.h"
+#include "aether_abi.h"
 #include "net.h"
 #include "http.h"
 #include "kprintf.h"
@@ -27,8 +27,8 @@
 #define MAXWIN     16
 #define MENUBAR_H  24
 #define TITLEBAR_H 30
-#define FW         AQUA_FONT_W
-#define FH         AQUA_FONT_H
+#define FW         AETHER_FONT_W
+#define FH         AETHER_FONT_H
 #define USER_PATH_MAX 128
 #define USER_URL_MAX  384
 #define USER_TEXT_MAX 1024
@@ -59,7 +59,7 @@ struct win {
     enum wkind kind;
     struct app *app;          /* owner (NULL for builtin) */
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
-    struct aqua_event evq[EVQ_N];
+    struct aether_event evq[EVQ_N];
     int  evhead, evtail;
     int  wants_close;
     char cwd[128];            /* Finder: current directory path */
@@ -233,8 +233,8 @@ static void launch_for_ext(const char *ext, const char *file)
         if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
     /* Images open in the Preview viewer (the kernel decodes PNG/GIF). */
     if (streq(ext, "png") || streq(ext, "gif")) { wm_launch("preview.aex", file); return; }
-    /* No registered handler -> open it in the Terminal (it runs `aqs <file>` for
-     * .aqs scripts, else `cat`). Beats the old "no app handles that file type". */
+    /* No registered handler -> open it in the Terminal (it runs `as <file>` for
+     * .as scripts, else `cat`). Beats the old "no app handles that file type". */
     wm_launch("terminal.aex", file);
 }
 
@@ -358,7 +358,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_POLL_EVENT: {
         struct win *w = app_window(ap); if (!w) return 0;
-        struct aqua_event *ev = (struct aqua_event *)a;
+        struct aether_event *ev = (struct aether_event *)a;
         if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
         if (w->evhead == w->evtail) return 0;
         *ev = w->evq[w->evhead];
@@ -470,7 +470,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_TEXT_RUN: {
         struct win *w = app_window(ap); if (!w) return -1;
-        struct aqua_run r;
+        struct aether_run r;
         if (!user_range_ok((const void *)a, sizeof r, 0)) return -1;
         memcpy(&r, (const void *)a, sizeof r);
         int len = r.len; if (len < 0) len = 0; if (len > USER_TEXT_MAX - 1) len = USER_TEXT_MAX - 1;
@@ -500,7 +500,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_BLIT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        struct aqua_blit bl;
+        struct aether_blit bl;
         if (!user_range_ok((const void *)a, sizeof bl, 0)) return -1;
         memcpy(&bl, (const void *)a, sizeof bl);
         if (bl.sw <= 0 || bl.sh <= 0 || bl.sw > 4096 || bl.sh > 4096) return -1;
@@ -654,7 +654,7 @@ static void draw_background(void)
     fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, 28);      /* hairline separator */
     uint32_t ink = rgb(40, 40, 48);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
-    fb_text(32, 4, "Aqua OS", ink);
+    fb_text(32, 4, "Aether OS", ink);
     fb_text(112, 4, "File", ink);
     fb_text(156, 4, "Edit", ink);
     fb_text(200, 4, "View", ink);
@@ -876,7 +876,7 @@ static void scan_apps(void)
         char nm[64];
         scopy(nm, vfs_ent_name("/", i), sizeof nm);
         if (!ends_aex(nm)) continue;
-        /* aquafs reads whole-file (errors if the buffer is smaller), so size the
+        /* aetherfs reads whole-file (errors if the buffer is smaller), so size the
          * buffer to the file -- the JS app's .aex is ~1 MiB, far over any header
          * scratch. We only need the header, but read it all then free. */
         int sz = vfs_size(nm);

@@ -1,5 +1,5 @@
-#ifndef AQUA_ACPI_H
-#define AQUA_ACPI_H
+#ifndef AETHER_ACPI_H
+#define AETHER_ACPI_H
 #include <stdint.h>
 
 #define ACPI_MAX_CPUS 32

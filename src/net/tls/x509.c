@@ -278,8 +278,8 @@ int x509_verify_signed_by(const struct cert *child, const struct cert *issuer)
  * in-band; trust it directly without re-checking its self-signature). */
 static int is_pinned_root(const struct cert *c)
 {
-    for (int i = 0; i < aqua_nroots; i++) {
-        const struct root_ca *r = &aqua_roots[i];
+    for (int i = 0; i < aether_nroots; i++) {
+        const struct root_ca *r = &aether_roots[i];
         if (r->type == ROOT_EC && c->key_type == KEY_EC && r->curve == c->key_curve) {
             if (c->publen == 1 + r->eclen && c->pub[0] == 0x04 &&
                 memcmp(c->pub + 1, r->ec, r->eclen) == 0) return 1;
@@ -298,8 +298,8 @@ static int signed_by_root(const struct cert *top)
     int sa = top->sig_alg;
     int rsa = (sa == SIG_RSA_SHA256 || sa == SIG_RSA_SHA384 || sa == SIG_RSA_SHA512 ||
                sa == SIG_RSA_PSS_SHA256 || sa == SIG_RSA_PSS_SHA384 || sa == SIG_RSA_PSS_SHA512);
-    for (int i = 0; i < aqua_nroots; i++) {
-        const struct root_ca *r = &aqua_roots[i];
+    for (int i = 0; i < aether_nroots; i++) {
+        const struct root_ca *r = &aether_roots[i];
         if (rsa) {
             if (r->type != ROOT_RSA) continue;
             if (verify_with_key(top, KEY_RSA, 0, 0, 0, r->n, r->nlen, r->e, r->elen)) return 1;

@@ -143,7 +143,7 @@ static void exec_line(char *line)
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    outs("Aqua shell -- type 'help'\n");
+    outs("Aether shell -- type 'help'\n");
     char line[LINE];
     for (;;) {
         char cwd[128]; sys_getcwd(cwd, sizeof cwd);

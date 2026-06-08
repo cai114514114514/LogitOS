@@ -1,5 +1,5 @@
-#ifndef AQUA_NVME_H
-#define AQUA_NVME_H
+#ifndef AETHER_NVME_H
+#define AETHER_NVME_H
 
 #include <stdint.h>
 
@@ -12,4 +12,4 @@ int nvme_busy(void);
 int nvme_read(uint32_t lba, uint8_t count, void *buf);
 int nvme_write(uint32_t lba, uint8_t count, const void *buf);
 
-#endif /* AQUA_NVME_H */
+#endif /* AETHER_NVME_H */

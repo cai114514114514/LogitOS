@@ -1,5 +1,5 @@
-#ifndef AQUA_SCHED_H
-#define AQUA_SCHED_H
+#ifndef AETHER_SCHED_H
+#define AETHER_SCHED_H
 
 #include <stdint.h>
 
@@ -24,4 +24,4 @@ unsigned long sched_switches(void);                     /* total context switche
 void *sched_current_data(void);                         /* current thread's payload */
 uint64_t sched_current_cr3(void);                        /* active thread address space */
 
-#endif /* AQUA_SCHED_H */
+#endif /* AETHER_SCHED_H */

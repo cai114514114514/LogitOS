@@ -1,5 +1,5 @@
-#ifndef AQUA_PCI_H
-#define AQUA_PCI_H
+#ifndef AETHER_PCI_H
+#define AETHER_PCI_H
 
 #include <stdint.h>
 
@@ -19,4 +19,4 @@ void     pci_cfg_write(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uin
  * *out), -1 otherwise. Also enables MMIO + bus-master in its command register. */
 int pci_find(uint16_t vendor, uint16_t device, struct pci_dev *out);
 
-#endif /* AQUA_PCI_H */
+#endif /* AETHER_PCI_H */

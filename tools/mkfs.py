@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an AquaFS v3 disk image: a hierarchical, inode-based filesystem with a
+"""Build an AetherFS v3 disk image: a hierarchical, inode-based filesystem with a
 free-block bitmap and subdirectories (Unix-style).
 
 Usage: mkfs.py <out.img> <host[:/dest/path] | host> ...
@@ -25,7 +25,7 @@ import struct
 SECTOR = 512
 BS = 4096                       # block size
 SPB = BS // SECTOR              # sectors per block (8)
-MAGIC = 0x41515541              # "AQUA"
+MAGIC = 0x41455448              # "AETH"
 VERSION = 3
 INODE_SIZE = 128
 NDIRECT = 12
@@ -195,7 +195,7 @@ def main():
     img, used = b.serialize()
     with open(out, "wb") as f:
         f.write(img)
-    print(f"mkfs: {out} -> AquaFS v3, {TOTAL_BLOCKS} blocks "
+    print(f"mkfs: {out} -> AetherFS v3, {TOTAL_BLOCKS} blocks "
           f"({TOTAL_BLOCKS * BS // 1024} KiB), {used} used, {b.next_ino} inode(s)")
 
 

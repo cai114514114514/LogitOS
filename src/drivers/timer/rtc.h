@@ -1,5 +1,5 @@
-#ifndef AQUA_RTC_H
-#define AQUA_RTC_H
+#ifndef AETHER_RTC_H
+#define AETHER_RTC_H
 
 #include <stdint.h>
 
@@ -13,4 +13,4 @@ struct rtc_time {
 /* Read the current date/time from the hardware RTC. */
 void rtc_now(struct rtc_time *t);
 
-#endif /* AQUA_RTC_H */
+#endif /* AETHER_RTC_H */

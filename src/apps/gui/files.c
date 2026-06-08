@@ -1,6 +1,6 @@
 #include "aui.h"
 
-/* Aqua Files -- a ring-3 file manager (immediate-mode, aui toolkit).
+/* Aether Files -- a ring-3 file manager (immediate-mode, aui toolkit).
  *
  * Path bar + Up, a toolbar (New Folder/Rename/Delete/Copy/Cut/Paste), a
  * scrollable list view (icon + name + size), multi-select (plain/shift/ctrl
@@ -35,7 +35,7 @@ static int  last_click_row = -1, last_click_frame = -1, frame_no;
 static int  info_open;              /* Get Info panel showing */
 static char info_text[256];
 
-/* --- tiny helpers (GUI apps use aqua.h, not clib.h) --- */
+/* --- tiny helpers (GUI apps use aether.h, not clib.h) --- */
 static int  slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 static int  streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void scpy(char *d, const char *s, int max) { int i = 0; for (; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
@@ -524,7 +524,7 @@ void app_main(void)
     gui_create("Finder", WINW, WINH);
     frame();
 
-    struct aqua_event e;
+    struct aether_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         frame_no++;

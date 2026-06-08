@@ -3,7 +3,7 @@
  * net/{dom,css,layout}.c are compiled into browser.aex unchanged; they reference
  * kernel symbols (kmalloc/kfree/text_measure/res_fetch/img_*). Map those onto the
  * app's mini-libc + the new render syscalls here. */
-#include "aqua.h"
+#include "aether.h"
 #include <stddef.h>
 #include "img.h"
 

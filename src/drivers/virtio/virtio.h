@@ -1,5 +1,5 @@
-#ifndef AQUA_VIRTIO_H
-#define AQUA_VIRTIO_H
+#ifndef AETHER_VIRTIO_H
+#define AETHER_VIRTIO_H
 
 #include <stdint.h>
 
@@ -68,4 +68,4 @@ int  virtio_request(struct virtio_dev *vd, struct virtq *vq, int qidx,
 /* Non-zero while a virtio request is polling: the timer must not preempt it. */
 int  virtio_busy(void);
 
-#endif /* AQUA_VIRTIO_H */
+#endif /* AETHER_VIRTIO_H */

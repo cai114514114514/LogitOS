@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""AquaFS v3 UI smoke test, self-contained and reproducible.
+"""AetherFS v3 UI smoke test, self-contained and reproducible.
 
 Boots the ISO headless with a QMP socket, waits until the kernel is armed
-(serial prints AQUA_BOOT_OK -- injecting input before mouse_init() silently
+(serial prints AETHER_BOOT_OK -- injecting input before mouse_init() silently
 drops events), drives the Terminal over QMP to create a nested file, screenshots,
 then inspects the raw disk image to confirm the write persisted.
 
-Usage: qmp_fs.py <aqua.iso> <disk.img> [out.ppm]
+Usage: qmp_fs.py <aether.iso> <disk.img> [out.ppm]
 
 Notes baked in from debugging this stack:
-  - wait for AQUA_BOOT_OK before sending any input;
+  - wait for AETHER_BOOT_OK before sending any input;
   - QEMU qcodes are 'ctrl'/'shift' (NOT 'ctrl_l'/'shift_l');
   - PS/2 relative motion is clamped to ~9 bits, so step moves <=200 px.
 """
@@ -31,7 +31,7 @@ proc = subprocess.Popen([
 def armed():
     try:
         with open(serial) as fh:
-            return "AQUA_BOOT_OK" in fh.read()
+            return "AETHER_BOOT_OK" in fh.read()
     except OSError:
         return False
 
@@ -46,7 +46,7 @@ for _ in range(200):                       # wait for the kernel to arm input
     if proc.poll() is not None: fail("qemu exited during boot")
     time.sleep(0.1)
 else:
-    fail("AQUA_BOOT_OK never appeared")
+    fail("AETHER_BOOT_OK never appeared")
 time.sleep(0.4)
 
 s = socket.socket(socket.AF_UNIX)

@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aqua OS - Multiboot2 header
+; Aether OS - Multiboot2 header
 ;
 ; GRUB scans the first 32 KiB of the kernel image for this 8-byte-aligned
 ; structure. The linker script places this section first (at 1 MiB), so the

@@ -1,5 +1,5 @@
-#ifndef AQUA_NET_H
-#define AQUA_NET_H
+#ifndef AETHER_NET_H
+#define AETHER_NET_H
 
 #include <stdint.h>
 
@@ -50,4 +50,4 @@ static inline void net_unlock(uint64_t f)
     if (f & 0x200) __asm__ volatile ("sti" ::: "memory");
 }
 
-#endif /* AQUA_NET_H */
+#endif /* AETHER_NET_H */

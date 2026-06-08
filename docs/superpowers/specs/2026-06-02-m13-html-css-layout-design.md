@@ -1,4 +1,4 @@
-# Aqua OS — M13: HTML/CSS layout + images (the browser's body)
+# Aether OS — M13: HTML/CSS layout + images (the browser's body)
 
 ## Problem
 
@@ -152,7 +152,7 @@ the page-render syscalls.
   pure modules.
 - **QEMU:** load a styled page (zh.wikipedia) and a page with a PNG logo;
   screenshot — eyeball styled blocks, fonts/colors, wrapping, and the image.
-- `make test` (AQUA_BOOT_OK) stays green throughout.
+- `make test` (AETHER_BOOT_OK) stays green throughout.
 
 ## Build order (layered, each verifiable)
 

@@ -1,14 +1,14 @@
 ---
-title: Aqua OS on bare metal — driver roadmap (M24)
+title: Aether OS on bare metal — driver roadmap (M24)
 status: spec (roadmap)
 date: 2026-06-07
 ---
 
-# Aqua OS on bare metal — driver roadmap (M24)
+# Aether OS on bare metal — driver roadmap (M24)
 
 ## Goal
 
-Boot Aqua OS to its desktop on a **real machine**, not just QEMU. Target box:
+Boot Aether OS to its desktop on a **real machine**, not just QEMU. Target box:
 
 - **CPU**: Intel Xeon E5 (x86-64, multi-core, has PS/2-less modern chipset)
 - **GPU**: NVIDIA GTX 1050 — used as a *firmware framebuffer only* (see constraints)
@@ -27,13 +27,13 @@ document is the roadmap that fixes the architecture, ordering, and key decisions
    NVIDIA modesetting driver (closed, undocumented). On bare metal the display is
    a **firmware-provided linear framebuffer**: VBE under legacy BIOS (GRUB already
    requests a 1280×800×32 mode via the Multiboot2 framebuffer-request tag), or GOP
-   under UEFI. Aqua's existing `fb.c` multiboot-tag-8 LFB path IS this path. The
+   under UEFI. Aether's existing `fb.c` multiboot-tag-8 LFB path IS this path. The
    1050 runs as an **unaccelerated framebuffer** — pixels yes, 3D/HW-composite no.
    This is good news: display on bare metal is mostly *already implemented*.
 
 2. **No PS/2 → input needs USB, eventually.** Real USB HID is a large stack
    (xHCI + USB core + HID). **Bridge:** BIOS "USB Legacy Support" uses SMM to
-   emulate a USB keyboard as an i8042/PS/2 device. As long as Aqua **does not
+   emulate a USB keyboard as an i8042/PS/2 device. As long as Aether **does not
    initialize the xHCI controller**, the existing PS/2 driver keeps receiving the
    keyboard. So D0 gets a keyboard for free; the real USB stack is deferred to D2
    (needed for a reliable mouse — legacy emulation is keyboard-biased).
@@ -45,7 +45,7 @@ document is the roadmap that fixes the architecture, ordering, and key decisions
 
 ## Architecture principle: ONE kernel, two targets (runtime probe)
 
-Aqua keeps running on QEMU **and** runs on bare metal from the *same build*. The
+Aether keeps running on QEMU **and** runs on bare metal from the *same build*. The
 kernel **probes at runtime** and picks the driver:
 
 - Display: virtio-gpu if present → else the multiboot LFB (VBE/GOP) framebuffer.
@@ -88,7 +88,7 @@ calibration** (TSC/HPET, since real PIT/LAPIC frequencies must be measured).
 
 ### D0 — First light (boot + framebuffer + serial + keyboard)
 
-**Goal:** the real box powers on, prints the boot log over serial, draws the Aqua
+**Goal:** the real box powers on, prints the boot log over serial, draws the Aether
 desktop on the 1050's framebuffer, and takes keyboard input. Proves boot + display
 + debug + basic input with **minimal new code** — mostly hardening existing
 fallback paths against real-hardware quirks.
@@ -113,16 +113,16 @@ PS/2 `keyboard.c` via BIOS legacy-USB emulation; PIC/IOAPIC/LAPIC/ACPI.
 keyboard not enabled in BIOS, a real-hardware fault in early init invisible
 without serial (mitigated by serial-first bring-up).
 
-**Done when:** desktop renders on the monitor + serial shows `AQUA_BOOT_OK` and
+**Done when:** desktop renders on the monitor + serial shows `AETHER_BOOT_OK` and
 the WM log; a keypress reaches an app. Mouse may be absent until D2.
 
 ### D1 — NVMe storage
 
-**Goal:** read/write the 120 GB NVMe SSD; mount AquaFS on a real GPT partition so
+**Goal:** read/write the 120 GB NVMe SSD; mount AetherFS on a real GPT partition so
 the system has persistent storage on metal.
 
 **Reuse:** `blkdev.c` block abstraction (virtio-blk/ATA already plug in here);
-AquaFS + VFS unchanged (they sit above `blkdev`).
+AetherFS + VFS unchanged (they sit above `blkdev`).
 
 **New:**
 - **Full PCI(e) enumeration**: walk all buses/devices/functions, match NVMe by
@@ -134,19 +134,19 @@ AquaFS + VFS unchanged (they sit above `blkdev`).
   PRP lists for data, issue Identify + Read/Write commands, handle completions.
   INTx via IOAPIC first; **MSI/MSI-X** as a follow-on (most NVMe needs MSI-X for
   best behavior, but INTx or polling works to start).
-- **GPT partition parse** (read LBA1 GPT header + entries) to find the AquaFS
+- **GPT partition parse** (read LBA1 GPT header + entries) to find the AetherFS
   partition; `blkdev` exposes it with an LBA offset.
 
 **Risks:** MSI-X likely required on some controllers (fallback: poll the
-completion queue); 64-bit BARs + ECAM; PRP/boundary edge cases; AquaFS was built
+completion queue); 64-bit BARs + ECAM; PRP/boundary edge cases; AetherFS was built
 for a whole-disk image, now needs a partition offset.
 
-**Done when:** AquaFS reads/writes survive a power cycle on the NVMe partition;
+**Done when:** AetherFS reads/writes survive a power cycle on the NVMe partition;
 the shell + Finder operate on real persistent files.
 
 ### D2 — USB stack (xHCI + USB core + HID)
 
-**Goal:** real USB keyboard **and mouse**, freeing Aqua from BIOS legacy
+**Goal:** real USB keyboard **and mouse**, freeing Aether from BIOS legacy
 emulation (and giving reliable mouse input the desktop needs).
 
 **New (the largest effort):**
@@ -158,7 +158,7 @@ emulation (and giving reliable mouse input the desktop needs).
 - **HID**: boot-protocol keyboard + mouse (the simple fixed report formats), feed
   events into the existing WM input path (`wm_key`, `wm_mouse_event`).
 - Take ownership from BIOS (the xHCI legacy handoff: BIOS-owned → OS-owned via the
-  USBLEGSUP capability) — once Aqua owns xHCI, legacy PS/2 emulation stops, so the
+  USBLEGSUP capability) — once Aether owns xHCI, legacy PS/2 emulation stops, so the
   HID driver must be live before that handoff completes.
 
 **Risks:** the single biggest driver; legacy-handoff timing (don't lose the
@@ -219,7 +219,7 @@ fresh driver.
 
 ## Testing strategy
 
-- **QEMU (unchanged):** the entire existing `make test / test-shell / test-aqs* `
+- **QEMU (unchanged):** the entire existing `make test / test-shell / test-as* `
   suite stays green — the dual-target architecture means bare-metal work must not
   regress QEMU. Every milestone re-runs the QEMU suite.
 - **Bare metal:** per-milestone serial-log assertions (boot reaches a marker,
@@ -231,5 +231,5 @@ fresh driver.
 
 **D0 (first light)** — it's the cheapest (mostly hardening existing fallback
 paths), it stands up the serial-debug + framebuffer foundation every later driver
-needs, and it produces a visible, motivating result (Aqua's desktop on real
+needs, and it produces a visible, motivating result (Aether's desktop on real
 hardware). NVMe (D1) and USB (D2) are blind without it.

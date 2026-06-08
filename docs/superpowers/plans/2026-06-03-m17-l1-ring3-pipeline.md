@@ -25,17 +25,17 @@ ABI 现有最大号 = 35 (`SYS_PAGE_SCRIPTS`)。新增 36–41:
 ```c
 #define SYS_HTTP_BODY    36  /* (buf, max) -> 拷上次 http_get 的响应体, 返回长度 */
 #define SYS_TEXT_MEASURE 37  /* (s, len, (px<<1)|mono) -> 文本像素宽度 */
-#define SYS_GUI_TEXT_RUN 38  /* (struct aqua_run*) 画一段定长文本(px/mono/color) */
+#define SYS_GUI_TEXT_RUN 38  /* (struct aether_run*) 画一段定长文本(px/mono/color) */
 #define SYS_RES_FETCH    39  /* (src, buf, max) -> 取子资源原始字节, 返回长度或 <0 */
-#define SYS_GUI_BLIT     40  /* (struct aqua_blit*) 把 RGBA 位图贴进窗口 surface */
+#define SYS_GUI_BLIT     40  /* (struct aether_blit*) 把 RGBA 位图贴进窗口 surface */
 #define SYS_GUI_CLIP     41  /* ((x<<16)|y, (w<<16)|h) 设窗口裁剪; (0,0,0,0)=清除 */
 ```
 
-结构体(放 `aqua_abi.h`,内核 + app 共用):
+结构体(放 `aether_abi.h`,内核 + app 共用):
 
 ```c
-struct aqua_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
-struct aqua_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
+struct aether_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
+struct aether_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 ```
 
 - **改语义**:`SYS_HTTP_GET (26)` 只做 DNS+TCP+TLS+HTTP(+重定向),不再建 DOM/布局。
@@ -48,12 +48,12 @@ struct aqua_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 ## Task 1: ABI — syscall 号 + 结构体 + 用户态封装
 
 **Files:**
-- Modify: `include/aqua_abi.h`(加 36–41 与两个 struct;删 31–35 注释行)
-- Modify: `user/aqua.h`(加封装,删 `page_*` 封装)
+- Modify: `include/aether_abi.h`(加 36–41 与两个 struct;删 31–35 注释行)
+- Modify: `user/aether.h`(加封装,删 `page_*` 封装)
 
-- [ ] **Step 1:** `include/aqua_abi.h`:把 `SYS_PAGE_RENDER`..`SYS_PAGE_SCRIPTS`
+- [ ] **Step 1:** `include/aether_abi.h`:把 `SYS_PAGE_RENDER`..`SYS_PAGE_SCRIPTS`
   这 5 行替换为上面 36–41 的 6 个定义;在文件结尾(`#endif` 前)加两个 struct。
-- [ ] **Step 2:** `user/aqua.h`:删 `page_render/page_height/page_hittest/page_load_images/page_scripts`
+- [ ] **Step 2:** `user/aether.h`:删 `page_render/page_height/page_hittest/page_load_images/page_scripts`
   封装;加:
 
 ```c
@@ -61,16 +61,16 @@ static inline int http_body(char *buf, int max) { return (int)_sys(SYS_HTTP_BODY
 static inline int text_measure_px(const char *s,int len,int px,int mono)
 { return (int)_sys(SYS_TEXT_MEASURE,(long)s,len,((long)px<<1)|(mono&1)); }
 static inline void gui_text_run(int x,int y,int px,int mono,unsigned color,const char *s,int len)
-{ struct aqua_run r={x,y,px,mono,color,s,len}; _sys(SYS_GUI_TEXT_RUN,(long)&r,0,0); }
+{ struct aether_run r={x,y,px,mono,color,s,len}; _sys(SYS_GUI_TEXT_RUN,(long)&r,0,0); }
 static inline int res_fetch_raw(const char *src,unsigned char *buf,int max)
 { return (int)_sys(SYS_RES_FETCH,(long)src,(long)buf,max); }
 static inline void gui_blit(int x,int y,int w,int h,const unsigned char *rgba,int sw,int sh)
-{ struct aqua_blit b={x,y,w,h,rgba,sw,sh}; _sys(SYS_GUI_BLIT,(long)&b,0,0); }
+{ struct aether_blit b={x,y,w,h,rgba,sw,sh}; _sys(SYS_GUI_BLIT,(long)&b,0,0); }
 static inline void gui_clip(int x,int y,int w,int h)
 { _sys(SYS_GUI_CLIP,((long)(x&0xFFFF)<<16)|(y&0xFFFF),((long)(w&0xFFFF)<<16)|(h&0xFFFF),0); }
 ```
 
-- [ ] **Step 3:** 编译冒烟:`make build/clock.aex`(任意 app 引用 aqua.h 即可验证头不报错)
+- [ ] **Step 3:** 编译冒烟:`make build/clock.aex`(任意 app 引用 aether.h 即可验证头不报错)
   —— 期望成功。Commit:`git commit -am "m17 L1: ABI for ring-3 render pipeline (syscalls 36-41)"`
 
 ## Task 2: 内核 — 新 syscall 实现 + SYS_HTTP_GET 改为只 fetch + 退役 SYS_PAGE_*
@@ -117,7 +117,7 @@ case SYS_TEXT_MEASURE: {
 }
 case SYS_GUI_TEXT_RUN: {
     struct win *w = app_window(ap); if (!w) return -1;
-    struct aqua_run r;
+    struct aether_run r;
     if (!user_range_ok((void *)a, sizeof r, 0)) return -1;
     memcpy(&r, (void *)a, sizeof r);
     int len = r.len; if (len < 0 || len > USER_TEXT_MAX - 1) len = USER_TEXT_MAX - 1;
@@ -145,7 +145,7 @@ case SYS_RES_FETCH: {
 }
 case SYS_GUI_BLIT: {
     struct win *w = app_window(ap); if (!w) return -1;
-    struct aqua_blit bl;
+    struct aether_blit bl;
     if (!user_range_ok((void *)a, sizeof bl, 0)) return -1;
     memcpy(&bl, (void *)a, sizeof bl);
     if (bl.sw <= 0 || bl.sh <= 0 || bl.sw > 4096 || bl.sh > 4096) return -1;
@@ -179,7 +179,7 @@ case SYS_GUI_CLIP: {
 - [ ] **Step 1:** 写 shim,把管线对内核符号的依赖映射到 app:
 
 ```c
-#include "aqua.h"
+#include "aether.h"
 #include <stddef.h>
 #include "img.h"
 void *malloc(size_t); void free(void *);
@@ -221,7 +221,7 @@ int  browser_hittest(int x, int y, int scroll, char *buf, int max);
   用绘制原语画(对照内核 `net/paint.c` 的逻辑,把 `fb_*`→`gui_*`):
 
 ```c
-#include "aqua.h"
+#include "aether.h"
 #include "layout.h"
 #include "browser_paint.h"
 
@@ -280,8 +280,8 @@ int browser_hittest(int x, int y, int scroll, char *buf, int max)
 **Files:**
 - Modify: `user/browser.c`
 
-- [ ] **Step 1:** 顶部 include 改为:`#include "aqua.h"` + `"dom.h"` `"css.h"`
-  `"layout.h"` `"browser_paint.h"`。删 http_get 错误码本地宏(用 aqua.h/ABI)。
+- [ ] **Step 1:** 顶部 include 改为:`#include "aether.h"` + `"dom.h"` `"css.h"`
+  `"layout.h"` `"browser_paint.h"`。删 http_get 错误码本地宏(用 aether.h/ABI)。
 - [ ] **Step 2:** 把 `collect_style` / `collect_scripts`(从旧 wm.c 搬来)作为 static
   函数加入 browser.c —— 遍历本地 DOM,签名 `int collect_style(struct node*,char*,int,int)`
   / `int collect_scripts(...)`(代码同旧 wm.c 版本)。

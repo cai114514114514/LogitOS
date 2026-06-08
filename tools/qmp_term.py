@@ -8,7 +8,7 @@ proc = subprocess.Popen([qemu, "-cdrom", iso,
     "-display", "none", "-no-reboot", "-m", "512M",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait"])
 def armed():
-    try: return "AQUA_BOOT_OK" in open(serial).read()
+    try: return "AETHER_BOOT_OK" in open(serial).read()
     except OSError: return False
 for _ in range(250):
     if armed(): break
@@ -54,14 +54,14 @@ def send(t):
         else: key(KMAP.get(ch,ch))
 json.loads(f.readline()); cmd({"execute":"qmp_capabilities"})
 goto(672,753); click(); time.sleep(1.2)        # launch Terminal from the Dock (6 apps)
-for line in ["uname\n","ls /bin | wc\n","echo aqua-os-is-real > /hi.txt\n","cat /hi.txt\n"]:
+for line in ["uname\n","ls /bin | wc\n","echo aether-os-is-real > /hi.txt\n","cat /hi.txt\n"]:
     send(line); time.sleep(1.6)
 time.sleep(1.5)
 cmd({"execute":"screendump","arguments":{"filename":out}}); time.sleep(0.5)
 cmd({"execute":"quit"})
 try: proc.wait(timeout=5)
 except Exception: proc.kill()
-ok = b"aqua-os-is-real" in open(disk,"rb").read()
+ok = b"aether-os-is-real" in open(disk,"rb").read()
 for p in (sock,serial):
     try: os.unlink(p)
     except OSError: pass

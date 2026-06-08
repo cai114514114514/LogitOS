@@ -1,0 +1,3 @@
+# write straight to fd 1 via the Aether syscall, bypassing print
+msg = "hello via syscall\n"
+syscall(SYS_WRITE, 1, addr(msg), len(msg))

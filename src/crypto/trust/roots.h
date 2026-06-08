@@ -1,5 +1,5 @@
-#ifndef AQUA_ROOTS_H
-#define AQUA_ROOTS_H
+#ifndef AETHER_ROOTS_H
+#define AETHER_ROOTS_H
 
 #include <stdint.h>
 
@@ -19,7 +19,7 @@ struct root_ca {
     const uint8_t *e;   int elen;   /* RSA: public exponent (big-endian) */
 };
 
-extern const struct root_ca aqua_roots[];
-extern const int aqua_nroots;
+extern const struct root_ca aether_roots[];
+extern const int aether_nroots;
 
-#endif /* AQUA_ROOTS_H */
+#endif /* AETHER_ROOTS_H */

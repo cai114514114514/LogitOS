@@ -1,5 +1,5 @@
-#ifndef AQUA_PIT_H
-#define AQUA_PIT_H
+#ifndef AETHER_PIT_H
+#define AETHER_PIT_H
 
 #include <stdint.h>
 
@@ -12,4 +12,4 @@ void timer_tick(void);
 /* Monotonic tick count since pit_init. */
 uint64_t timer_ticks(void);
 
-#endif /* AQUA_PIT_H */
+#endif /* AETHER_PIT_H */

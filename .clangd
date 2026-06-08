@@ -23,7 +23,7 @@ CompileFlags:
     - -Iinclude/abi
     - -Isrc
     - -Isrc/apps
-    - -Isrc/apps/aqs
+    - -Isrc/apps/as
     - -Isrc/apps/browser
     - -Isrc/apps/libc
     - -Isrc/apps/libc/include

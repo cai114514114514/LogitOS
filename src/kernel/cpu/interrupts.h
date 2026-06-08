@@ -1,5 +1,5 @@
-#ifndef AQUA_INTERRUPTS_H
-#define AQUA_INTERRUPTS_H
+#ifndef AETHER_INTERRUPTS_H
+#define AETHER_INTERRUPTS_H
 
 #include <stdint.h>
 
@@ -15,4 +15,4 @@ struct registers {
 /* Common C dispatcher, called from the assembly stub. */
 void interrupt_handler(struct registers *regs);
 
-#endif /* AQUA_INTERRUPTS_H */
+#endif /* AETHER_INTERRUPTS_H */

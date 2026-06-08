@@ -1,42 +1,42 @@
 ---
-title: Aqua Files — implementation plan
+title: Aether Files — implementation plan
 status: plan
 date: 2026-06-06
 ---
 
-Implement bottom-up; each step is independently buildable + has a gating check before the next. Build commands: `make` (kernel/ISO), `make build/disk.img` (apps/CLI/disk), `make test`, `make test-shell`, `make test-aqs*`. All paths absolute.
+Implement bottom-up; each step is independently buildable + has a gating check before the next. Build commands: `make` (kernel/ISO), `make build/disk.img` (apps/CLI/disk), `make test`, `make test-shell`, `make test-as*`. All paths absolute.
 
 ---
 ### STEP 1 -- FS primitive: vfs_rename (no syscall yet)
-Files: `/Users/wangzhe/ststem/src/fs/vfs.h`, `/Users/wangzhe/ststem/src/fs/vfs.c`, `/Users/wangzhe/ststem/src/fs/aquafs.c`.
+Files: `/Users/wangzhe/ststem/src/fs/vfs.h`, `/Users/wangzhe/ststem/src/fs/vfs.c`, `/Users/wangzhe/ststem/src/fs/aetherfs.c`.
 
 1a. vfs.h: add `int (*rename)(const char *old, const char *new_path);` to `struct filesystem` (after `mkdir`, line 19). Add declaration after vfs_mkdir (line 37): `int vfs_rename(const char *old_path, const char *new_path);`.
 
 1b. vfs.c: append wrapper after vfs_mkdir (line 62):
 `int vfs_rename(const char *old_path, const char *new_path) { return (root && root->rename) ? root->rename(old_path, new_path) : -1; }`
 
-1c. aquafs.c: add `static int aquafs_rename(const char *old_path, const char *new_path)` immediately before the `struct filesystem aquafs` initializer (line 547). Algorithm (resolve-all-first, then mutate):
+1c. aetherfs.c: add `static int aetherfs_rename(const char *old_path, const char *new_path)` immediately before the `struct filesystem aetherfs` initializer (line 547). Algorithm (resolve-all-first, then mutate):
   - `uint32_t src = resolve(old_path); if (src == NOINO || src == sb.root_ino) return -1;`
   - `if (resolve(new_path) != NOINO) return -1;` (no clobber)
   - `char old_leaf[NAME_MAX], new_leaf[NAME_MAX];`
   - `uint32_t op = resolve_parent(old_path, old_leaf); if (op == NOINO) return -1;`
   - `uint32_t np = resolve_parent(new_path, new_leaf); if (np == NOINO) return -1;`
   - `struct dinode *npd = iget(np); if (!npd || npd->type != T_DIR) return -1;`
-  - Cycle guard: `struct dinode *si = iget(src); if (si && si->type == T_DIR && path_under(old_path, new_path)) return -1;` where `path_under(a,b)` returns 1 iff normalized `b` equals `a` or starts with `a` followed by '/'. Implement `path_under` as a small static string helper in aquafs.c (operates on the already-absolute kernel paths).
+  - Cycle guard: `struct dinode *si = iget(src); if (si && si->type == T_DIR && path_under(old_path, new_path)) return -1;` where `path_under(a,b)` returns 1 iff normalized `b` equals `a` or starts with `a` followed by '/'. Implement `path_under` as a small static string helper in aetherfs.c (operates on the already-absolute kernel paths).
   - Mutate: `if (dir_add(np, new_leaf, src) < 0) return -1;`
   - `if (dir_remove(op, old_leaf) < 0) { dir_remove(np, new_leaf); return -1; }` (rollback)
   - `if (flush_inode(op) || flush_inode(np) || flush_bitmap()) return -1; return 0;`
   - NOTE: do not call resolve/dir_lookup/dir_nth between dir_add and dir_remove (shared blk_buf hazard) -- all resolution is done above.
 
-1d. aquafs.c: add `.rename = aquafs_rename,` to the `struct filesystem aquafs` initializer (lines 547-560).
+1d. aetherfs.c: add `.rename = aetherfs_rename,` to the `struct filesystem aetherfs` initializer (lines 547-560).
 
-GATE 1: `make` compiles cleanly (kernel links; aquafs_rename referenced by the struct so no unused-static warning). No behavior change yet (nothing calls it).
+GATE 1: `make` compiles cleanly (kernel links; aetherfs_rename referenced by the struct so no unused-static warning). No behavior change yet (nothing calls it).
 
 ---
 ### STEP 2 -- Syscalls + ABI + userland wrappers
-Files: `/Users/wangzhe/ststem/include/abi/aqua_abi.h`, `/Users/wangzhe/ststem/src/kernel/exec/syscall.c`, `/Users/wangzhe/ststem/src/kernel/gui/wm.c`, `/Users/wangzhe/ststem/src/apps/aqua.h`, `/Users/wangzhe/ststem/src/apps/clib.h`.
+Files: `/Users/wangzhe/ststem/include/abi/aether_abi.h`, `/Users/wangzhe/ststem/src/kernel/exec/syscall.c`, `/Users/wangzhe/ststem/src/kernel/gui/wm.c`, `/Users/wangzhe/ststem/src/apps/aether.h`, `/Users/wangzhe/ststem/src/apps/clib.h`.
 
-2a. aqua_abi.h: after SYS_SETNB (line 58) add `#define SYS_RENAME 65` and `#define SYS_OPEN_PATH 66`. After EV_CLOSE (line 89) add `#define EV_MOUSE_R 4`.
+2a. aether_abi.h: after SYS_SETNB (line 58) add `#define SYS_RENAME 65` and `#define SYS_OPEN_PATH 66`. After EV_CLOSE (line 89) add `#define EV_MOUSE_R 4`.
 
 2b. syscall.c: add a `case SYS_RENAME:` before `default:` (line 254), mirroring SYS_MKDIR (lines 145-151):
 ```
@@ -65,7 +65,7 @@ case SYS_OPEN_PATH: {
 ```
 (ends_aex line 123, ext_of line 127, launch_for_ext line 242, wm_launch line 160 -- all visible here; USER_PATH_MAX=128 wm.c:29. The `if(!ap) return -1` guard at 297-298 keeps it GUI-only. No change to syscall.c for this -- the default arm forwards it.)
 
-2d. aqua.h: after make_dir (line 66) add:
+2d. aether.h: after make_dir (line 66) add:
 `static inline int sys_rename(const char *old, const char *new_path){ return (int)_sys(SYS_RENAME,(long)old,(long)new_path,0); }`
 `static inline int sys_open_path(const char *path){ return (int)_sys(SYS_OPEN_PATH,(long)path,0,0); }`
 
@@ -114,7 +114,7 @@ Files: NEW `/Users/wangzhe/ststem/src/apps/gui/files.c`, `/Users/wangzhe/ststem/
 
 4a. files.c: `#include "aui.h"`. State: `char cwd[128]="/"; int sel_count; char sel[N][128]; int anchor; int scroll; int rename_mode,newfolder_mode; char editbuf[64]; int menu_open,menu_x,menu_y; char clip[N][128]; int clip_count,clip_cut; int shift_down,ctrl_down; int last_click_row,last_click_frame,frame_no;`. Pick N (e.g. 64) selection/clipboard cap.
   - `frame()`: `aui_begin(AUI_BG)`; draw breadcrumb (cwd) + Up button; toolbar row (New Folder/Rename/Delete/Copy/Cut/Paste aui_buttons -> set modes / run actions); list view rows from `dir_count(cwd)`/`dir_name(cwd,i,nm)` (folder marker + name + size-or-`--`), selected rows drawn with AUI_ACCENT background; the inline rename/newfolder aui_textfield when a mode is active; Get-Info panel when requested; finally the context menu (if menu_open) drawn last via gui_rect+gui_text_run; `aui_end()`.
-  - Helpers: `copy_file(src,dst)` (sys_open O_RDONLY / O_WRONLY|O_CREAT|O_TRUNC, 4 KiB loop, close); `copy_tree(src,dst)` (make_dir + walk + recurse); `delete_tree(path)` (walk, delete files, recurse into dirs, then delete_file the empty dir); `is_dir(path)` via dir_count>=0 or dir_name parent lookup; `path_join` (reuse from clib.h is CLI-only -- define a local one here or include clib.h; simplest: a local static path_join in files.c since GUI apps use aqua.h not clib.h). Use `sys_open_path` for double-click-file open; `sys_rename` for move/rename; `make_dir` for New Folder.
+  - Helpers: `copy_file(src,dst)` (sys_open O_RDONLY / O_WRONLY|O_CREAT|O_TRUNC, 4 KiB loop, close); `copy_tree(src,dst)` (make_dir + walk + recurse); `delete_tree(path)` (walk, delete files, recurse into dirs, then delete_file the empty dir); `is_dir(path)` via dir_count>=0 or dir_name parent lookup; `path_join` (reuse from clib.h is CLI-only -- define a local one here or include clib.h; simplest: a local static path_join in files.c since GUI apps use aether.h not clib.h). Use `sys_open_path` for double-click-file open; `sys_rename` for move/rename; `make_dir` for New Folder.
   - Event loop (modeled on widgets.c lines 50-62): `gui_create("Files", WINW, WINH); frame();` then loop poll_event:
     - EV_CLOSE -> app_exit(0).
     - EV_KEY: track shift/ctrl if the keyboard delivers them as keys (if not delivered, modifiers stay 0 -> single-select fallback, acceptable); PageUp/PageDown adjust `scroll`; feed to aui (for the active textfield) then frame.
@@ -153,7 +153,7 @@ GATE 6: `make test-shell` prints PASS and the new cpmvprobe assertion holds. Thi
 ### STEP 7 -- QMP screenshot test for the Files app
 File: NEW `/Users/wangzhe/ststem/tools/qmp_files.py` (model on `/Users/wangzhe/ststem/tools/qmp_fs.py`).
 
-7a. Boot ISO+disk headless with QMP socket + serial file; wait for AQUA_BOOT_OK (qmp_fs.py:31-49 pattern). Connect QMP, qmp_capabilities.
+7a. Boot ISO+disk headless with QMP socket + serial file; wait for AETHER_BOOT_OK (qmp_fs.py:31-49 pattern). Connect QMP, qmp_capabilities.
 
 7b. Launch Files from the Dock: `goto(<files dock icon x>, 720); click()` -- compute the icon x from dock layout (Files is the 6th scanned app; if exact x is uncertain, reuse the qmp_fs.py goto+click helpers and target the Files icon by stepping along the dock row; acceptable to screenshot the whole desktop and assert the window appears).
 
@@ -161,14 +161,14 @@ File: NEW `/Users/wangzhe/ststem/tools/qmp_files.py` (model on `/Users/wangzhe/s
 
 7d. `screendump` to the out .ppm; `quit`; print `PASS: files app new/rename/delete + screenshot` (or FAIL). Mirror qmp_fs.py exit semantics. (This test is screenshot/launch oriented -- the deterministic data correctness is already covered by STEP 6.)
 
-GATE 7: `python3 tools/qmp_files.py build/aqua.iso build/disk.img build/files_smoke.ppm` runs to completion and produces the screenshot (PASS). Inspect the .ppm visually if needed.
+GATE 7: `python3 tools/qmp_files.py build/aether.iso build/disk.img build/files_smoke.ppm` runs to completion and produces the screenshot (PASS). Inspect the .ppm visually if needed.
 
 ---
 ### STEP 8 -- Full regression
-8a. `make` (clean kernel build) -> AQUA_BOOT_OK path intact.
+8a. `make` (clean kernel build) -> AETHER_BOOT_OK path intact.
 8b. `make test` -> PASS (boot/serial assertion).
 8c. `make test-shell` -> PASS (incl. new cp/mv/mkdir/rm round-trip).
-8d. `make test-aqs` + `make test-aqs-gcstress` + `make test-aqs-os` -> PASS (ABI additions are pure appends; must be unaffected).
+8d. `make test-as` + `make test-as-gcstress` + `make test-as-os` -> PASS (ABI additions are pure appends; must be unaffected).
 8e. `make build/disk.img` -> all .aex (files, cp, mv) packed; MAXWIN=8 not exceeded (7 Dock apps).
 
 GATE 8 (final): every command above passes. Deliverables: vfs_rename primitive, SYS_RENAME + SYS_OPEN_PATH + EV_MOUSE_R, files.c app, cp/mv coreutils, extended shell test + qmp_files.py, all regressions green.

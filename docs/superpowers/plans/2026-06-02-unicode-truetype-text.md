@@ -4,7 +4,7 @@
 
 **Goal:** Render Unicode text — including Chinese — across the whole UI with a from-scratch, scalable TrueType rasterizer that produces genuine grayscale anti-aliasing, replacing the 8×16 ASCII bitmap font.
 
-**Architecture:** `lib/utf8.c` decodes UTF-8 → code points. `lib/ttf.c` parses a real `.ttf` (cmap/glyf/loca/hmtx/head/hhea) into glyph outlines + metrics, screen-agnostic. `kernel/text.c` rasterizes outlines to grayscale coverage (scanline fill, 4× vertical oversampling + fractional horizontal coverage), caches glyphs by (font,codepoint,size), lays out runs, and blits via a new `fb_blit_glyph`. Two fonts on the AquaFS disk (Noto Sans CJK SC subset for UI, DejaVu Sans Mono for the Terminal) load at boot; a fallback chain resolves missing glyphs.
+**Architecture:** `lib/utf8.c` decodes UTF-8 → code points. `lib/ttf.c` parses a real `.ttf` (cmap/glyf/loca/hmtx/head/hhea) into glyph outlines + metrics, screen-agnostic. `kernel/text.c` rasterizes outlines to grayscale coverage (scanline fill, 4× vertical oversampling + fractional horizontal coverage), caches glyphs by (font,codepoint,size), lays out runs, and blits via a new `fb_blit_glyph`. Two fonts on the AetherFS disk (Noto Sans CJK SC subset for UI, DejaVu Sans Mono for the Terminal) load at boot; a fallback chain resolves missing glyphs.
 
 **Tech Stack:** C (freestanding, `clang --target=x86_64-elf`), nasm, QEMU; host-side `clang` + Python (`fonttools`/`pyftsubset`) for tooling and tests.
 
@@ -264,7 +264,7 @@ void fb_blit_glyph(int x, int y, const uint8_t *cov, int w, int h, uint32_t colo
 
 - [ ] **Step 3:** Build the disk; boot; confirm `vfs` lists `/fonts/ui.ttf` (Terminal `ls /fonts`) and `text_init` loads it (serial: print font load OK temporarily).
 
-- [ ] **Step 4: Commit** `git commit -am "build: pack /fonts on the AquaFS disk; QEMU -m 512M (M14)"`
+- [ ] **Step 4: Commit** `git commit -am "build: pack /fonts on the AetherFS disk; QEMU -m 512M (M14)"`
 
 ---
 

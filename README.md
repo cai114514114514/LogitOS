@@ -1,8 +1,8 @@
-# Aqua OS
+# Aether OS
 
 A real operating system built from the lowest level up — a from-scratch
 x86_64 kernel that boots under GRUB/Multiboot2 — with the long-term goal of a
-macOS-style ("Aqua") graphical desktop.
+macOS-style ("Aether") graphical desktop.
 
 This is not a simulation. It is an actual kernel that boots and runs.
 
@@ -17,7 +17,7 @@ This is not a simulation. It is an actual kernel that boots and runs.
   frame allocator, and a kernel heap (`kmalloc`/`kfree`).
 - **M4 Multitasking:** kernel threads, an assembly context switch, and a
   preemptive round-robin scheduler driven by the timer.
-- **M5 Storage & filesystem:** a polled ATA PIO disk driver, the custom AquaFS
+- **M5 Storage & filesystem:** a polled ATA PIO disk driver, the custom AetherFS
   on-disk filesystem, a VFS layer, and a host `mkfs.py` that builds the disk.
 - **M6 Userland:** a GDT + TSS, ring 3, `int 0x80` system calls, an ELF64
   loader, and user paging — runs an unprivileged program loaded off the disk.
@@ -43,7 +43,7 @@ platform**: programs are `.aex` executables on disk, each launched as a genuine
 - **Wall clock** — the menu bar and Clock read the real date/time from the CMOS
   RTC.
 
-See the [design spec](docs/superpowers/specs/2026-05-30-aqua-os-m1-design.md).
+See the [design spec](docs/superpowers/specs/2026-05-30-aether-os-m1-design.md).
 Run `make run`: drag windows, click Dock icons, open a `.txt`, type in the Terminal.
 
 ## Build & run
@@ -52,7 +52,7 @@ Requires (macOS / Homebrew): `clang`, `nasm`, `lld`, `qemu`, `xorriso`,
 `i686-elf-grub`.
 
 ```sh
-make        # build build/aqua.iso
+make        # build build/aether.iso
 make run    # boot in QEMU (VGA window + serial on this terminal)
 make test   # headless boot smoke test (asserts the kernel reaches 64-bit C)
 make debug  # boot frozen with a gdb stub on localhost:1234
@@ -66,12 +66,12 @@ boot/     boot path, Multiboot2 header, ISR stubs, context switch, ring-3 entry 
 kernel/   kernel_main + core services: idt, gdt, pmm, vmm, kheap, sched, fb,
           wm (window manager + GUI syscalls), elf, aex (loader), syscall
 drivers/  VGA text, COM1 serial, PIC, PIT, PS/2 keyboard + mouse, ATA disk, RTC
-fs/        VFS layer + AquaFS filesystem
+fs/        VFS layer + AetherFS filesystem
 lib/      freestanding helpers (memset/memcpy/…)
-user/      ring-3 apps (clock, textedit, terminal, monitor) + aqua.h + crt0
+user/      ring-3 apps (clock, textedit, terminal, monitor) + aether.h + crt0
 tools/     mkfs.py (disk image), mkaex.py (executables), genfont.py (font)
 fsroot/    files packed into the disk image
-include/  public headers (incl. aqua_abi.h — the app/syscall ABI)
+include/  public headers (incl. aether_abi.h — the app/syscall ABI)
 linker.ld kernel link script (loads at 1 MiB)
 grub.cfg  GRUB Multiboot2 menu entry
 scripts/  build/test helpers
@@ -84,6 +84,6 @@ The host is Apple Silicon (arm64); the target is x86_64. `clang` cross-compiles
 natively, but Apple's linker only emits Mach-O, so linking uses `ld.lld`
 (`brew install lld`). QEMU fully emulates x86_64 on the arm64 host.
 
-## Aqua Script
+## Aether Script
 
 we use 2300 lines to build the script

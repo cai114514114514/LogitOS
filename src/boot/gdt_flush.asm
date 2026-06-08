@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aqua OS - load the GDT and TSS
+; Aether OS - load the GDT and TSS
 ;
 ;   void gdt_flush(void *gdt_ptr);   rdi = &gdtr
 ;   void tss_flush(uint16_t sel);    di  = TSS selector

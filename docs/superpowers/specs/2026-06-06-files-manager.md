@@ -1,13 +1,13 @@
 ---
-title: Aqua Files — mature file manager
+title: Aether Files — mature file manager
 status: spec
 date: 2026-06-06
 ---
 
-## Aqua Files -- a mature ring-3 file manager
+## Aether Files -- a mature ring-3 file manager
 
 ### Goals
-Add a real, Dock-launchable, windowed file-manager app (`files.aex`) to Aqua OS, plus the kernel/FS/input primitives it needs, plus matching `cp`/`mv` CLI tools. The existing in-kernel Finder (wm.c WK_FINDER) is kept untouched as the lightweight desktop browser -- this work is purely additive.
+Add a real, Dock-launchable, windowed file-manager app (`files.aex`) to Aether OS, plus the kernel/FS/input primitives it needs, plus matching `cp`/`mv` CLI tools. The existing in-kernel Finder (wm.c WK_FINDER) is kept untouched as the lightweight desktop browser -- this work is purely additive.
 
 Locked scope: right-click context menu only (NO drag-drop; no mouse-move / button-up delivery). Copy is done in userland via the fd API (no kernel copy primitive). Move/rename is a single new FS primitive (`vfs_rename`) that re-links a directory entry.
 
@@ -30,15 +30,15 @@ A single window (`gui_create("Files", ...)`), drawn with the aui toolkit + raw `
 After every handled event the app re-runs `frame()` (immediate-mode), matching the widgets.c loop.
 
 ### FS / VFS changes (src/fs)
-- **`vfs_rename(old, new)`** -- new primitive. Re-links a directory entry to move/rename a file OR a directory, within the single AquaFS volume (same-dir rename or cross-dir move). Implemented as `aquafs_rename` in aquafs.c using existing helpers (`resolve`, `resolve_parent`, `dir_add`, `dir_remove`, `iget`, `flush_inode`, `flush_bitmap`). Exposed through `struct filesystem.rename` (new fn pointer in vfs.h) + `vfs_rename` wrapper in vfs.c.
+- **`vfs_rename(old, new)`** -- new primitive. Re-links a directory entry to move/rename a file OR a directory, within the single AetherFS volume (same-dir rename or cross-dir move). Implemented as `aetherfs_rename` in aetherfs.c using existing helpers (`resolve`, `resolve_parent`, `dir_add`, `dir_remove`, `iget`, `flush_inode`, `flush_bitmap`). Exposed through `struct filesystem.rename` (new fn pointer in vfs.h) + `vfs_rename` wrapper in vfs.c.
   - Resolve everything first (src ino, dest collision, both parents + leaves) into locals, THEN mutate, to avoid the shared static `blk_buf`/`ind_buf` hazard.
   - Reject: src == NOINO, src == root, dest already exists, parent not a dir, and (if src is a dir) dest being under src (cycle guard via absolute-path prefix test).
   - Order: `dir_add(new_parent, new_leaf, src_ino)` then `dir_remove(old_parent, old_leaf)`; roll back the add if the remove fails. Flush old_parent, new_parent, bitmap.
-- **Directory deletion**: already supported. `aquafs_delete` (aquafs.c:481) deletes an EMPTY directory and rejects non-empty; `vfs_delete` (SYS_DELETE_FILE) is the rmdir path. No new primitive; recursive delete is driven by the caller (app/CLI).
+- **Directory deletion**: already supported. `aetherfs_delete` (aetherfs.c:481) deletes an EMPTY directory and rejects non-empty; `vfs_delete` (SYS_DELETE_FILE) is the rmdir path. No new primitive; recursive delete is driven by the caller (app/CLI).
 - **Copy**: NOT a kernel primitive. Callers use the fd API.
 
 ### Syscall / ABI changes
-In `include/abi/aqua_abi.h` (next free numbers after SYS_SETNB=64):
+In `include/abi/aether_abi.h` (next free numbers after SYS_SETNB=64):
 - `#define SYS_RENAME    65   /* (old_path, new_path) -> 0, or -1 */`
 - `#define SYS_OPEN_PATH 66   /* (path) -> 0; open file with its associated app (GUI only) */`
 - `#define EV_MOUSE_R    4    /* a = x, b = y (window-local), right-button down */` (after EV_CLOSE=3)
@@ -47,18 +47,18 @@ Kernel dispatch:
 - `SYS_RENAME` -> a new `case` in `syscall_dispatch` (syscall.c, before `default:` at line 254). Copies both user strings, `proc_resolve`s each against the proc cwd, calls `vfs_rename`. Placed here (not wm) so CLI `mv` works.
 - `SYS_OPEN_PATH` -> a new `case` inside `wm_gui_syscall` (wm.c, before line 525). Copies the path; if it ends in `.aex` `wm_launch(path,"")`, else `launch_for_ext(ext_of(path), path)`. No syscall.c change (the `default:` arm already forwards unknown numbers to wm_gui_syscall). GUI-only by design (`cur_app()==NULL` guard returns -1 for CLI).
 
-Userland wrappers in `src/apps/aqua.h`:
+Userland wrappers in `src/apps/aether.h`:
 - `sys_rename(const char *old, const char *new)` -> `_sys(SYS_RENAME, old, new, 0)`
 - `sys_open_path(const char *path)` -> `_sys(SYS_OPEN_PATH, path, 0, 0)`
 
-`src/apps/clib.h` includes aqua.h, so both wrappers reach the coreutils automatically. Add a `path_join(dst, dir, name, max)` static-inline helper to clib.h (mirrors wm.c's path_join) for cp/mv and reuse the same logic in files.c.
+`src/apps/clib.h` includes aether.h, so both wrappers reach the coreutils automatically. Add a `path_join(dst, dir, name, max)` static-inline helper to clib.h (mirrors wm.c's path_join) for cp/mv and reuse the same logic in files.c.
 
 ### Input changes (right-click only)
 - `src/drivers/char/mouse.c`: extract `int right = packet[0] & 0x02;` (line ~87, currently discarded) and pass it: `wm_mouse_event(mx, my, left, right);` (line 104).
 - `src/kernel/gui/wm.h:10`: `void wm_mouse_event(int x, int y, int left, int right);`
 - `src/kernel/gui/wm.c`: add `static int mright;` beside `mleft` (line 69); extend `wm_mouse_event` (line 846) with a `right` param; add a `right && !mright` edge block (mirroring the `left && !mleft` block) that hit-tests windows in z-order and, for the topmost WK_APP hit in the content area, `enqueue(w, EV_MOUSE_R, cx, cy - TITLEBAR_H)`; set `mright = right;` beside `mleft = left;` (line 906). The right block does NOT raise/drag/close and ignores WK_FINDER and the Dock (the kernel Finder stays unchanged). NO mouse-move / button-up delivery is added.
 
-EV_MOUSE_R surfaces through the existing `SYS_POLL_EVENT` ring-buffer pop (wm.c:363) unchanged. struct aqua_event is unchanged. Existing apps ignore type=4.
+EV_MOUSE_R surfaces through the existing `SYS_POLL_EVENT` ring-buffer pop (wm.c:363) unchanged. struct aether_event is unchanged. Existing apps ignore type=4.
 
 ### CLI changes (src/apps/coreutils)
 - **`mv.c`**: `mv SRC DST` -> `sys_rename(SRC, DST)`; nonzero exit + stderr on failure. Works for files and dirs (kernel re-links the dirent).
@@ -75,8 +75,8 @@ EV_MOUSE_R surfaces through the existing `SYS_POLL_EVENT` ring-buffer pop (wm.c:
 
 ### Test plan
 1. **Build**: `make` (kernel ISO) and `make build/disk.img` (apps/CLI/fsroot) both succeed; `files.aex`, `cp.aex`, `mv.aex` packed.
-2. **make test**: existing AQUA_BOOT_OK serial assertion still passes (regression).
+2. **make test**: existing AETHER_BOOT_OK serial assertion still passes (regression).
 3. **make test-shell** (extended): the serial-shell round-trip in scripts/run-shell-test.sh gains `mkdir /cptest; echo MARKER > /cptest/a.txt; cp /cptest/a.txt /cptest/b.txt; cat /cptest/b.txt; mv /cptest/b.txt /cptest/c.txt; ls /cptest; rm /cptest/a.txt; rm /cptest/c.txt; rm /cptest` and asserts a deterministic marker (e.g. `cp-mv-ok` echoed after the sequence, or the MARKER text from `cat`) appears -- exercising cp (fd copy), mv (SYS_RENAME), mkdir, and rm (incl. empty-dir removal). Uses -snapshot (already present) for determinism.
-4. **make test-aqs / test-aqs-os / test-aqs-gcstress**: unchanged, must still pass (regression -- the ABI additions are pure appends).
-5. **QMP screenshot test** (new tools/qmp_files.py, modeled on qmp_fs.py): wait for AQUA_BOOT_OK, launch Files from the Dock, then drive: New Folder (toolbar) -> type a name -> Enter; Rename it -> type new name -> Enter; Delete it; screendump to a .ppm. Optionally inject a `right` button (`input-send-event` btn right) to pop the context menu and screenshot it. Asserts the app launched and the screendump was produced (PASS/FAIL print like the other qmp_* scripts).
-6. **Full regression**: make / make test / make test-shell / make test-aqs*.
+4. **make test-as / test-as-os / test-as-gcstress**: unchanged, must still pass (regression -- the ABI additions are pure appends).
+5. **QMP screenshot test** (new tools/qmp_files.py, modeled on qmp_fs.py): wait for AETHER_BOOT_OK, launch Files from the Dock, then drive: New Folder (toolbar) -> type a name -> Enter; Rename it -> type new name -> Enter; Delete it; screendump to a .ppm. Optionally inject a `right` button (`input-send-event` btn right) to pop the context menu and screenshot it. Asserts the app launched and the screendump was produced (PASS/FAIL print like the other qmp_* scripts).
+6. **Full regression**: make / make test / make test-shell / make test-as*.

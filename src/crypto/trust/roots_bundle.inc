@@ -366,7 +366,7 @@ static const uint8_t r14_ec[] = {
     0x08, 0xf8, 0x03, 0x88, 0xf7, 0xa7, 0xc3, 0x92, 0x4b, 0x19, 0x54, 0x81,
 };
 
-const struct root_ca aqua_roots[] = {
+const struct root_ca aether_roots[] = {
     /* ISRG Root X1 (Let's Encrypt, RSA-4096) */
     { ROOT_RSA, 0, 0, 0, r0_n, sizeof r0_n, r0_e, sizeof r0_e },
     /* ISRG Root X2 (Let's Encrypt, EC P-384) */
@@ -398,4 +398,4 @@ const struct root_ca aqua_roots[] = {
     /* SSL.com TLS ECC Root CA 2022 (EC P-384, example.com) */
     { ROOT_EC, 384, r14_ec, sizeof r14_ec, 0, 0, 0, 0 },
 };
-const int aqua_nroots = (int)(sizeof aqua_roots / sizeof aqua_roots[0]);
+const int aether_nroots = (int)(sizeof aether_roots / sizeof aether_roots[0]);

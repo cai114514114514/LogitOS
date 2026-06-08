@@ -1,5 +1,5 @@
 # ============================================================================
-# Aqua OS - build system
+# Aether OS - build system
 #
 #   make        build the bootable ISO
 #   make run    boot it in QEMU (VGA window + serial on this terminal)
@@ -17,14 +17,14 @@ ARCH        := x86_64
 BUILD       := build
 ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
-ISO         := $(BUILD)/aqua.iso
+ISO         := $(BUILD)/aether.iso
 DISK        := $(BUILD)/disk.img
-FS_FILES    := $(filter-out fsroot/fonts fsroot/aqs,$(wildcard fsroot/*))
-# AquaScript layout: example scripts (source, run directly) vs library modules
-# (precompiled to .la). Packed to /usr/aqs/examples/ and /usr/aqs/lib/ respectively.
-AQS_EXAMPLES := $(wildcard fsroot/aqs/examples/*.aqs)
-AQS_LIB_SRCS := $(wildcard fsroot/aqs/lib/*.aqs)
-AQS_LA       := $(patsubst fsroot/aqs/lib/%.aqs,$(BUILD)/%.la,$(AQS_LIB_SRCS))
+FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
+# AetherScript layout: example scripts (source, run directly) vs library modules
+# (precompiled to .la). Packed to /usr/as/examples/ and /usr/as/lib/ respectively.
+AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
+AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
+AS_LA       := $(patsubst fsroot/as/lib/%.as,$(BUILD)/%.la,$(AS_LIB_SRCS))
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
 CC          := clang
@@ -55,7 +55,7 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
-.PHONY: all run debug test test-nvme clean test-aqs test-aqs-gcstress test-shell test-aqs-os test-smp
+.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp
 
 all: $(ISO)
 
@@ -82,16 +82,16 @@ $(ISO): $(KERNEL) grub.cfg
 # --- userland applications (.aex), each a ring-3 process ---
 # APP_RULE: name, link base, display name, ext, icon-glyph, "r g b" color
 APPDIR := src/apps
-# GUIDIR = windowed apps (link aqua.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
+# GUIDIR = windowed apps (link aether.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
 GUIDIR := src/apps/gui
 CLIDIR := src/apps/coreutils
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
-$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/aqua.h
+$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/aether.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
 define APP_RULE
-$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aqua.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
+$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
@@ -130,7 +130,7 @@ CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname ne
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
-AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $(BUILD)/aqs.aex
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $(BUILD)/as.aex
 
 # --- QuickJS engine + musl libm + mini-libc, shared by the JS app and Browser ---
 QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
@@ -138,7 +138,7 @@ QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
               third_party/quickjs/libbf.c
 ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard src/apps/libc/src/*.c)
 JS_INC     := -Ithird_party/libm -Ithird_party/quickjs    # mini-libc covered by INCDIRS
-JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aqua-2024"' -DAQUA_OS -DCONFIG_STACK_CHECK $(JS_INC)
+JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aether-2024"' -DAETHER_OS -DCONFIG_STACK_CHECK $(JS_INC)
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(ENGINE_SRCS))
 
 # mini-libc asm helpers (setjmp/longjmp) join the engine bundle.
@@ -185,47 +185,47 @@ $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/src/apps/browser/browser.o $(
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
 
-# --- AquaScript: /bin/aqs -- a ring-3 CLI program. Links the aqs core + mini-libc
+# --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
-# can't be reused: those programs use aqua.h inline syscalls, not mini-libc.) ---
-AQS_C    := $(wildcard src/apps/aqs/*.c)
-AQS_LIBC := $(wildcard src/apps/libc/src/*.c)
-AQS_LASM := $(wildcard src/apps/libc/src/*.asm)
-AQS_OBJ  := $(patsubst %.c,$(BUILD)/aqsobj/%.o,$(AQS_C)) \
-            $(patsubst %.c,$(BUILD)/aqsobj/%.o,$(AQS_LIBC)) \
-            $(patsubst %.asm,$(BUILD)/aqsobj/%.o,$(AQS_LASM))
-# aqs.h carries AQS_BC_VERSION + the opcode enum; depend on it so a version bump
-# rebuilds EVERY aqsobj (esp. aqs_bc.o, whose .c rarely changes) -- otherwise a
-# stale aqs_bc.o in /bin/aqs rejects the freshly-bumped .la files on Aqua.
-AQS_HDRS := $(wildcard src/apps/aqs/*.h)
+# can't be reused: those programs use aether.h inline syscalls, not mini-libc.) ---
+AS_C    := $(wildcard src/apps/as/*.c)
+AS_LIBC := $(wildcard src/apps/libc/src/*.c)
+AS_LASM := $(wildcard src/apps/libc/src/*.asm)
+AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
+            $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) \
+            $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
+# as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
+# rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
+# stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Aether.
+AS_HDRS := $(wildcard src/apps/as/*.h)
 
-$(BUILD)/aqsobj/%.o: %.c $(AQS_HDRS)
+$(BUILD)/asobj/%.o: %.c $(AS_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
-$(BUILD)/aqsobj/%.o: %.asm
+$(BUILD)/asobj/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@
 
-$(BUILD)/aqs.elf: $(AQS_OBJ) $(APPDIR)/crt0_cli.asm
+$(BUILD)/as.elf: $(AS_OBJ) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
-	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/aqs.crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/aqs.crt0c.o $(AQS_OBJ)
-$(BUILD)/aqs.aex: $(BUILD)/aqs.elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/aqs.elf $@ aqs - '*' 150 150 150
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/as.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/as.crt0c.o $(AS_OBJ)
+$(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/as.elf $@ as - '*' 150 150 150
 
 # Font subsets (proprietary source; regenerated, .gitignored). See tools/mkfont.py.
 $(FONTS): tools/mkfont.py
 	@mkdir -p fsroot/fonts
 	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
 
-$(DISK): $(FS_FILES) $(AQS_EXAMPLES) $(AQS_LA) $(FONTS) $(AEX) tools/mkfs.py
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(AEX) tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
-	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/aqs.aex:/bin/aqs \
-	    $(foreach e,$(AQS_EXAMPLES),$(e):/usr/aqs/examples/$(notdir $(e))) \
-	    $(foreach l,$(AQS_LA),$(l):/usr/aqs/lib/$(notdir $(l)))
+	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as \
+	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
+	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l)))
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
@@ -245,59 +245,59 @@ test: $(ISO) $(DISK)
 	@sh scripts/run-test.sh $(ISO) $(DISK)
 
 # Same smoke test, but attach the disk via NVMe -- proves the from-scratch NVMe
-# driver brings up a controller and aquafs mounts + reads off it (M24 bare-metal).
+# driver brings up a controller and aetherfs mounts + reads off it (M24 bare-metal).
 test-nvme: $(ISO) $(DISK)
 	@BLK=nvme sh scripts/run-test.sh $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
 	@sh scripts/run-shell-test.sh $(ISO) $(DISK)
 
-# On-Aqua AquaScript test: boots and runs /bin/aqs on the /usr/aqs examples.
-test-aqs-os: $(ISO) $(DISK)
-	@sh scripts/run-aqs-test.sh $(ISO) $(DISK)
+# On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
+test-as-os: $(ISO) $(DISK)
+	@sh scripts/run-as-test.sh $(ISO) $(DISK)
 
 # M25 SMP concurrency proof: boots -smp 4, runs /bin/smptest, asserts SMP_TEST_OK
 # (no cross-core corruption + genuine parallelism across >=2 cores).
 test-smp: $(ISO) $(DISK)
 	@sh scripts/run-smp-test.sh $(ISO) $(DISK)
 
-# AquaScript host unit test: the language core (lexer/compiler/vm/value/object)
+# AetherScript host unit test: the language core (lexer/compiler/vm/value/object)
 # is portable C, so it builds and runs natively -- no QEMU. Asserts print output
 # for arithmetic/control-flow/recursion incl. fib(20).
-AQS_CORE := src/apps/aqs/value.c src/apps/aqs/aqs_io.c src/apps/aqs/lexer.c \
-            src/apps/aqs/compiler.c src/apps/aqs/vm.c src/apps/aqs/object.c \
-            src/apps/aqs/aqs_native.c src/apps/aqs/aqs_ll.c src/apps/aqs/aqs_bc.c
-test-aqs:
+AS_CORE := src/apps/as/value.c src/apps/as/as_io.c src/apps/as/lexer.c \
+            src/apps/as/compiler.c src/apps/as/vm.c src/apps/as/object.c \
+            src/apps/as/as_native.c src/apps/as/as_ll.c src/apps/as/as_bc.c
+test-as:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/aqs_test tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
-	@$(BUILD)/aqs_test
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tools/t/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	@$(BUILD)/as_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
-# or wrong output. Runs the same host unit suite under -DAQS_GC_STRESS.
-test-aqs-gcstress:
+# or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
+test-as-gcstress:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAQS_GC_STRESS -o $(BUILD)/aqs_test_gcstress tools/t/aqs_test.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
-	@$(BUILD)/aqs_test_gcstress
+	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tools/t/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	@$(BUILD)/as_test_gcstress
 
-# Host `aqsc`: the aqs core + the aqs.c entry built natively (no --target -> arm64
-# host binary), used at `make` time to precompile the stdlib .aqs to .la. `-c`
-# mode never invokes the syscall path, so the arm64 aqs_ll.c stub is fine. Host
-# and target share AQS_CORE/aqs.h, so AQS_BC_VERSION + the opcode enum match and a
-# host-produced .la loads on Aqua.
-AQSC := $(BUILD)/aqsc
-# aqs.h carries AQS_BC_VERSION + the opcode enum; list it so a version bump or
-# opcode change forces aqsc (and therefore every .la) to rebuild. Without this
-# dep a bumped AQS_BC_VERSION silently keeps stale .la files that the kernel's
-# aqs_load then rejects (cf. the roots_bundle.inc dep gotcha).
-$(AQSC): $(AQS_CORE) src/apps/aqs/aqs.c src/apps/aqs/aqs.h
+# Host `asc`: the as core + the as.c entry built natively (no --target -> arm64
+# host binary), used at `make` time to precompile the stdlib .as to .la. `-c`
+# mode never invokes the syscall path, so the arm64 as_ll.c stub is fine. Host
+# and target share AS_CORE/as.h, so AS_BC_VERSION + the opcode enum match and a
+# host-produced .la loads on Aether.
+ASC := $(BUILD)/asc
+# as.h carries AS_BC_VERSION + the opcode enum; list it so a version bump or
+# opcode change forces asc (and therefore every .la) to rebuild. Without this
+# dep a bumped AS_BC_VERSION silently keeps stale .la files that the kernel's
+# as_load then rejects (cf. the roots_bundle.inc dep gotcha).
+$(ASC): $(AS_CORE) src/apps/as/as.c src/apps/as/as.h
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -o $@ src/apps/aqs/aqs.c $(AQS_CORE) -Isrc/apps/aqs -Iinclude/abi
+	$(CC) -O2 -o $@ src/apps/as/as.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
 
-# Precompile the LibAqua library modules (fsroot/aqs/lib/*.aqs) to .la (compiled
+# Precompile the LibAether library modules (fsroot/as/lib/*.as) to .la (compiled
 # bytecode). -c is compile-only (no run), so even a lib with module-mate calls
-# (mathx) is fine; packed to /usr/aqs/lib/.
-$(BUILD)/%.la: fsroot/aqs/lib/%.aqs $(AQSC)
-	$(AQSC) -c $< -o $@
+# (mathx) is fine; packed to /usr/as/lib/.
+$(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
+	$(ASC) -c $< -o $@
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

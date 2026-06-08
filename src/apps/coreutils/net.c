@@ -27,7 +27,7 @@ static void mac_print(const unsigned char *m)
 
 static int do_info(void)
 {
-    struct aqua_netinfo ni;
+    struct aether_netinfo ni;
     if (net_info(&ni) != 1) { errs("net: no network interface\n"); return 1; }
     outs("ip    "); ip_print(ni.ip);   outc('\n');
     outs("mask  "); ip_print(ni.mask); outc('\n');
@@ -39,13 +39,13 @@ static int do_info(void)
 /* Seconds-of-day, for coarse wall-clock timeouts (RTC has 1 s resolution). */
 static int now_secs(void)
 {
-    struct aqua_time t; get_time(&t);
+    struct aether_time t; get_time(&t);
     return t.hour * 3600 + t.minute * 60 + t.second;
 }
 
 static int do_ping(void)
 {
-    struct aqua_netinfo ni;
+    struct aether_netinfo ni;
     if (net_info(&ni) != 1) { errs("net: no network interface\n"); return 1; }
     outs("ping "); ip_print(ni.gw); outs(" ...\n");
     /* The first send returns -1 until ARP resolves, so (re)send once a second and

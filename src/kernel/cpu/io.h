@@ -1,5 +1,5 @@
-#ifndef AQUA_IO_H
-#define AQUA_IO_H
+#ifndef AETHER_IO_H
+#define AETHER_IO_H
 
 #include <stdint.h>
 
@@ -41,4 +41,4 @@ static inline uint32_t inl(uint16_t port)
     return ret;
 }
 
-#endif /* AQUA_IO_H */
+#endif /* AETHER_IO_H */

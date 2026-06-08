@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aqua OS - 32-bit boot entry
+; Aether OS - 32-bit boot entry
 ;
 ; GRUB hands control here in 32-bit protected mode (per Multiboot2). We:
 ;   1. set up a stack

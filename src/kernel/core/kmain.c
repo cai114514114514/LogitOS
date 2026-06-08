@@ -9,7 +9,7 @@
 #include "wm.h"
 #include "mouse.h"
 #include "vfs.h"
-#include "aquafs.h"
+#include "aetherfs.h"
 #include "net.h"
 #include "text.h"
 #include "img.h"
@@ -21,22 +21,22 @@
 
 #define TIMER_HZ 100
 
-#define BOOT_OK_MARKER "AQUA_BOOT_OK"
+#define BOOT_OK_MARKER "AETHER_BOOT_OK"
 
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
-    serial_puts("\n[aqua] long mode, C kernel running\n");
+    serial_puts("\n[aether] long mode, C kernel running\n");
 
     idt_init();
     gdt_init();
     pic_remap();
     pit_init(TIMER_HZ);
     pmm_init(mb_info);
-    serial_puts("[aqua] interrupts + memory + gdt/tss online\n");
+    serial_puts("[aether] interrupts + memory + gdt/tss online\n");
 
     if (!fb_init(mb_info)) {
-        serial_puts("\nAQUA_FB_FAIL\n");
+        serial_puts("\nAETHER_FB_FAIL\n");
         for (;;) __asm__ volatile ("hlt");
     }
 
@@ -44,9 +44,9 @@ void kernel_main(uint64_t mb_info)
     file_init();   /* open-file-description pool */
 
     nvme_init();         /* prefer NVMe (M24 bare-metal target) when present */
-    virtio_blk_init();   /* else virtio-blk; aquafs falls back to ATA */
+    virtio_blk_init();   /* else virtio-blk; aetherfs falls back to ATA */
 
-    vfs_register(&aquafs);
+    vfs_register(&aetherfs);
     int fs_ok = (vfs_mount() == 0);
     serial_puts(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
 
@@ -58,7 +58,7 @@ void kernel_main(uint64_t mb_info)
     wm_init();
     wm_render();                 /* first frame -> desktop visible */
     mouse_init();
-    serial_puts("[aqua] desktop up; mouse + keyboard armed\n");
+    serial_puts("[aether] desktop up; mouse + keyboard armed\n");
 
     smp_init();   /* detect + bring up the other CPUs */
 

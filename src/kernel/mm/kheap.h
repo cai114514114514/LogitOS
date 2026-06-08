@@ -1,5 +1,5 @@
-#ifndef AQUA_KHEAP_H
-#define AQUA_KHEAP_H
+#ifndef AETHER_KHEAP_H
+#define AETHER_KHEAP_H
 
 #include <stddef.h>
 
@@ -8,4 +8,4 @@
 void *kmalloc(size_t size);
 void  kfree(void *ptr);
 
-#endif /* AQUA_KHEAP_H */
+#endif /* AETHER_KHEAP_H */

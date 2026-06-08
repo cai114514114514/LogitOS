@@ -1,6 +1,6 @@
 /* Ring-3 paint (M17 L1): walk the layout display list and draw it with the GUI
  * render syscalls. Mirrors the old kernel net/paint.c, fb_* -> gui_*. */
-#include "aqua.h"
+#include "aether.h"
 #include "layout.h"
 #include "browser_paint.h"
 

@@ -13,7 +13,7 @@ static void txt(int x, int y, unsigned c, const char *s) { gui_text_run(x, y, PX
 static int clicked_in(int x, int y, int w, int h)
 { return ev_type == EV_MOUSE && ev_a >= x && ev_a < x + w && ev_b >= y && ev_b < y + h; }
 
-void aui_feed(const struct aqua_event *e) { ev_type = e->type; ev_a = e->a; ev_b = e->b; }
+void aui_feed(const struct aether_event *e) { ev_type = e->type; ev_a = e->a; ev_b = e->b; }
 void aui_feed_done(void) { ev_type = 0; }
 
 void aui_begin(unsigned bg) { id_ctr = 0; gui_clear(bg); }

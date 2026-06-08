@@ -1,5 +1,5 @@
-#ifndef AQUA_PERCPU_H
-#define AQUA_PERCPU_H
+#ifndef AETHER_PERCPU_H
+#define AETHER_PERCPU_H
 
 #include <stdint.h>
 #include "gdt.h"        /* struct tss, struct gdt_entry, struct gdt_ptr */
@@ -33,4 +33,4 @@ void percpu_ap_init(int index, uint32_t lapic_id);   /* AP: build+load its GDT/T
 void percpu_register_id(int index, uint32_t lapic_id);
 void percpu_tss_set_rsp0(uint64_t rsp0);             /* this_cpu()->tss.rsp0 */
 
-#endif /* AQUA_PERCPU_H */
+#endif /* AETHER_PERCPU_H */

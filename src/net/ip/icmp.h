@@ -1,5 +1,5 @@
-#ifndef AQUA_ICMP_H
-#define AQUA_ICMP_H
+#ifndef AETHER_ICMP_H
+#define AETHER_ICMP_H
 
 #include <stdint.h>
 
@@ -15,4 +15,4 @@ int  icmp_ping(uint32_t dst);
  * no reply has arrived since the last ping. */
 int  icmp_last_rtt(void);
 
-#endif /* AQUA_ICMP_H */
+#endif /* AETHER_ICMP_H */

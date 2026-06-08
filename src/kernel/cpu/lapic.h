@@ -1,5 +1,5 @@
-#ifndef AQUA_LAPIC_H
-#define AQUA_LAPIC_H
+#ifndef AETHER_LAPIC_H
+#define AETHER_LAPIC_H
 #include <stdint.h>
 
 void     lapic_init(void);                          /* enable this CPU's LAPIC */

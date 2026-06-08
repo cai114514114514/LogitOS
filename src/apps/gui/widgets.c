@@ -51,7 +51,7 @@ void app_main(void)
 {
     gui_create("Widgets", 320, 280);
     frame();                                  /* initial paint */
-    struct aqua_event e;
+    struct aether_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         if (e.type == EV_CLOSE) app_exit(0);

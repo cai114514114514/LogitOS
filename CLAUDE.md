@@ -1,4 +1,4 @@
-# Aqua OS — notes for Claude
+# Aether OS — notes for Claude
 
 A from-scratch x86_64 OS kernel (C + nasm), booted via GRUB/Multiboot2, aiming
 toward a macOS-style desktop. Real kernel, not a simulation.
@@ -6,9 +6,9 @@ toward a macOS-style desktop. Real kernel, not a simulation.
 ## Build / run / test
 
 ```sh
-make        # -> build/aqua.iso
+make        # -> build/aether.iso
 make run    # QEMU: VGA window + serial on terminal
-make test   # headless; asserts kernel prints AQUA_BOOT_OK on serial
+make test   # headless; asserts kernel prints AETHER_BOOT_OK on serial
 make debug  # QEMU frozen with gdb stub on :1234
 ```
 
@@ -34,21 +34,21 @@ make debug  # QEMU frozen with gdb stub on :1234
 All source lives under `src/`, headers **colocated** with their `.c`. Header
 names are unique, so the Makefile's `INCDIRS := $(shell find src include -type d)`
 makes every `#include "foo.h"` resolve without path qualifiers. `include/` keeps
-only the cross-cutting kernel↔user ABI (`include/abi/aqua_abi.h`).
+only the cross-cutting kernel↔user ABI (`include/abi/aether_abi.h`).
 
 ```
 src/boot/                                        multiboot + long-mode entry (asm)
 src/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
 src/drivers/{char,timer,block,net}/              device drivers
-src/fs/                                          vfs + aquafs
+src/fs/                                          vfs + aetherfs
 src/net/{link,ip,transport,core,dns,http,tls}/   network stack
 src/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
 src/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
-src/apps/                                        shared: aqua.h clib.h crt0.asm crt0_cli.asm
+src/apps/                                        shared: aether.h clib.h crt0.asm crt0_cli.asm
 src/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp widgets
                                                  + aui.{h,c} = immediate-mode widget toolkit (linked into each)
 src/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
-src/apps/aqs/                                     AquaScript language (M20): /bin/aqs
+src/apps/as/                                     AetherScript language (M20): /bin/as
 src/apps/browser/                                browser + render engine (dom, layout,
                                                  css_engine, browser_paint, js_dom) — also links QuickJS
 src/apps/libc/                                   mini-libc (string/stdio/malloc/setjmp…)
@@ -61,9 +61,9 @@ subsystem are unchanged, so they're easy to find under `src/`.
 ## Roadmap
 
 M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) ✅ ·
-M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AquaFS + VFS) ✅ ·
+M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AetherFS + VFS) ✅ ·
 M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
-(framebuffer + VMM + Aqua desktop) ✅ · M8 window system (font + double-buffer +
+(framebuffer + VMM + Aether desktop) ✅ · M8 window system (font + double-buffer +
 PS/2 mouse + draggable windows) ✅ · M9 networking (PCI + e1000 + ARP/IPv4/
 ICMP/UDP + DNS + Network app) ✅.
 
@@ -81,10 +81,10 @@ TTF parser (cmap fmt4/12, glyf simple+composite, hmtx) and an integer-only AA
 rasterizer (4× vertical oversample + fractional horizontal coverage → 0–255
 alpha), with a glyph cache + font fallback. `fb_text` routes through it, so the
 whole UI is anti-aliased; the Terminal uses `text_draw_mono` (SYS_GUI_TEXT_MONO).
-Fonts live on the AquaFS disk (`/fonts/{ui,mono}.ttf`, subset by
+Fonts live on the AetherFS disk (`/fonts/{ui,mono}.ttf`, subset by
 `tools/mkfont.py`: Heiti SC GB2312 + Menlo, glyf), loaded by `text_init()` after
-fs mount; QEMU `-m 512M`. The CJK font is 6 MB, so AquaFS gained **double-
-indirect** inodes (`fs/aquafs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
+fs mount; QEMU `-m 512M`. The CJK font is 6 MB, so AetherFS gained **double-
+indirect** inodes (`fs/aetherfs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
 bitmap font (`font8x16.h`, `genfont.py`) was removed. Chinese web pages render
 (`zh.wikipedia.org`). Notes: no hinting (macOS-style), grayscale (no subpixel),
 no bidi/shaping; the rasterizer is integer-only because the kernel is `-mno-sse`.
@@ -98,7 +98,7 @@ Key notes:
   user pages. Intermediate table entries carry USER; leaf PTE flags protect
   kernel pages. User images link at 1 GiB (above the identity huge-page region).
 - Disk: QEMU `-drive ...,if=ide` primary master; `drivers/ata.c` (PIO
-  read+write) + `fs/aquafs.c` + `fs/vfs.c`. AquaFS is a **hierarchical,
+  read+write) + `fs/aetherfs.c` + `fs/vfs.c`. AetherFS is a **hierarchical,
   read-write inode FS** (on-disk v3, 4 KiB blocks: superblock, free-block
   bitmap, inode table with direct[12]+single-indirect, directories = inodes of
   dirents). Subdirectories + files up to ~4 MiB; `vfs_*` are path-based. Build
@@ -178,7 +178,7 @@ Key notes:
   the bigger handshake flight. That's a TCP robustness gap, not a crypto one.
 
 ## Application platform (on top of M8)
-- Apps are `.aex` files on the AquaFS disk = real **ring-3 processes** scheduled
+- Apps are `.aex` files on the AetherFS disk = real **ring-3 processes** scheduled
   by M4. `kernel/wm.c` is the window manager AND the GUI/app backend.
 - Executable format: `include/aex.h` (header wrapping an ELF), built by
   `tools/mkaex.py`; loaded by `kernel/aex.c` (reuses `elf_load`). Each app links
@@ -187,7 +187,7 @@ Key notes:
 - Process model: `thread_create_user` (sched.c) spawns a ring-3 thread with its
   own kernel stack; `schedule()` sets TSS rsp0; `thread_exit()` reaps it.
   `sched_current_data()` maps the running thread to its `struct app`.
-- ABI: `include/aqua_abi.h` (shared with userland `user/aqua.h`). Syscalls via
+- ABI: `include/aether_abi.h` (shared with userland `user/aether.h`). Syscalls via
   int 0x80: GUI create/clear/rect/text/flush, poll_event (key/mouse/close),
   get_arg, get_time, read_file, write_file/delete_file, mkdir,
   dir_count/dir_name (path-scoped listing), net_info/net_ping/net_dns (+ result
@@ -202,7 +202,7 @@ Key notes:
 - WM: dynamic windows + per-window surfaces composited each frame; app registry
   scanned from *.aex; Dock launches apps; Finder opens a file with the app whose
   `ext` matches (file association); red close button -> EV_CLOSE -> app exits.
-- Adding an app: write `user/<name>.c` (include "aqua.h", define `app_main`),
+- Adding an app: write `user/<name>.c` (include "aether.h", define `app_main`),
   add an `APP_RULE` line + the name to `APPS` in the Makefile.
 - `tools/qmp_*.py` drive mouse/keyboard over QEMU QMP for screenshots/CI.
 M15 SSE2/FPU ✅ (JS-engine prerequisite): the kernel was integer-only because
@@ -222,7 +222,7 @@ M16 JavaScript (QuickJS) ✅: ported QuickJS 2024-01-13 as a **ring-3 app**
 `fenv`→MXCSR rounding, `time`→RTC syscall, 128-bit `__udivti3` compiler-rt) +
 **musl libm** (`third_party/libm/`, double-only subset, 83 files) + the engine
 (`third_party/quickjs/`: quickjs+cutils+libregexp+libunicode+libbf). Atomics are
-off (`-DAQUA_OS` guards `CONFIG_ATOMICS`; single-threaded). Builds via the
+off (`-DAETHER_OS` guards `CONFIG_ATOMICS`; single-threaded). Builds via the
 Makefile `js` rule into a ~1 MiB `.aex`; JS output goes to a window + serial
 through `SYS_WRITE`. Runs fib, Array.map/arrow fns, JSON, Math.* (libm), etc.
 **Gotchas:** QuickJS returns `double` so M15's SSE is mandatory (`-msse2`);
@@ -266,7 +266,7 @@ provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
   host LibCSS unit tests need `-DCONFIG_BIGNUM` for libbf's decimal symbols.
 
 M18 Real processes ✅ (the "toward a real OS" step: run software not written for
-Aqua). A POSIX-ish process model independent of the window manager:
+Aether). A POSIX-ish process model independent of the window manager:
 `src/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
 cr3/fd[]/cwd); `thread->data` is a `struct proc*` (a GUI app is a proc whose
 `->gui` owns a window). **fork** = `vmm_clone_user` (eager copy of the private
@@ -289,7 +289,7 @@ kernel low memory. `wm_launch` gives every GUI app fd 0/1/2 = tty so an app's
 robust**: under `-smp` TCG the AP framebuffer-present contends the device lock and
 intermittently delayed IDE PIO past the old bounded poll -> nondeterministic
 "file not found"; `drivers/block/ata.c` now retries the command 8x. Known-open
-aquafs issues (separate): cross-boot write durability (corrupts after repeated
+aetherfs issues (separate): cross-boot write durability (corrupts after repeated
 non-snapshot boots; use `-snapshot`) and under-enumeration of runtime-`mkdir`'d
 dirs. `tools/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
 (PS/2 1-byte buffer).
@@ -299,7 +299,7 @@ paravirtual device stack in `src/drivers/virtio/` replacing the legacy devices.
 `virtio.c` is the virtio-pci transport (parses the vendor-0x09 PCI caps to find
 the modern cfg structures in BAR4, negotiates VIRTIO_F_VERSION_1, sets up split
 virtqueues, synchronous request/poll). **virtio-blk** (`virtio_blk.c` +
-`drivers/block/blkdev.c`) replaces ATA PIO as the disk (aquafs bread/bwrite go
+`drivers/block/blkdev.c`) replaces ATA PIO as the disk (aetherfs bread/bwrite go
 through blkdev; ATA is the fallback). **virtio-gpu** (`virtio_gpu.c`) replaces the
 uncached-VGA-MMIO framebuffer: a RAM-backed 2D scanout resource, present =
 TRANSFER_TO_HOST_2D + RESOURCE_FLUSH (a DMA, not a per-pixel CPU copy -- the old
@@ -316,27 +316,27 @@ freestanding C lib. `io.c` is the single errno/syscall TU (POSIX wrappers over
 int 0x80); `stdio.c` is now **fd-backed buffered FILE I/O** (fopen/fread/fgets/
 fseek/…); added `fcntl.h`/`unistd.h`/`setjmp.h` (+`setjmp.asm`), `strtok`/`memmem`.
 Also fixed stdio bugs (short-write loss, `%g` trailing zeros, `%*`/`.*` neg width,
-round-half-to-even). Only browser/JS + `/bin/aqs` link mini-libc; CLI coreutils use
-`aqua.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
+round-half-to-even). Only browser/JS + `/bin/as` link mini-libc; CLI coreutils use
+`aether.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
 `.clangd` (full INCDIRS) kill the host-SDK false-positive squiggles.
 
-M20 AquaScript ✅: a **from-scratch language**, `aqs`/`.aqs`, in `src/apps/aqs/`
+M20 AetherScript ✅: a **from-scratch language**, `as`/`.as`, in `src/apps/as/`
 (clox-lineage: single-pass compiler → flat bytecode → stack VM; Python-ish
 indentation). **A1** lexer (INDENT/DEDENT) + Pratt compiler + VM: nil/bool/int(i64)/
 float(double), arithmetic/cmp/logic (short-circuit), if/elif/else, while, def/
 return/recursion, globals + lexically-scoped locals. **A2** strings (concat/index/
 len), lists (`[...]`, index get/set, `.append()` via OP_INVOKE, len), `for x in
 range()/list`, builtins (print/len/range); real block scoping. **A3 indirection**
-(the point — systems programming, not a sandbox): `aqs_ll.c` raw mem peek/poke +
+(the point — systems programming, not a sandbox): `as_ll.c` raw mem peek/poke +
 inline-asm `int 0x80` syscall (portable: real on x86_64-elf, stubbed on the arm64
-host) + `aqs_native.c` addr/peek8-64/poke8-64/i8-64ptr/syscall + `SYS_*` globals;
-typed pointer `ObjPtr{addr,width,signed}` via `p[i]`. Shipped as **`/bin/aqs`** (own
-Makefile rule: aqs core + mini-libc + crt0_cli @0x50000000; reads scripts via
-mini-libc `fopen`) + `/usr/aqs/*.aqs`. **Modules/import**: `import NAME` / `from NAME import …`,
+host) + `as_native.c` addr/peek8-64/poke8-64/i8-64ptr/syscall + `SYS_*` globals;
+typed pointer `ObjPtr{addr,width,signed}` via `p[i]`. Shipped as **`/bin/as`** (own
+Makefile rule: as core + mini-libc + crt0_cli @0x50000000; reads scripts via
+mini-libc `fopen`) + `/usr/as/*.as`. **Modules/import**: `import NAME` / `from NAME import …`,
 `mod.attr` + `mod.fn()` via the `.` operator; each ObjFn carries `->module` so
 globals resolve per-module with a shared builtins fallback; loader caches +
-`fopen`s `/usr/aqs/NAME.aqs` (or an in-memory registry for tests). Tests: `make
-test-aqs` (host, 55 checks incl. fib + import) + `make test-aqs-os` (boots Aqua,
+`fopen`s `/usr/as/NAME.as` (or an in-memory registry for tests). Tests: `make
+test-as` (host, 55 checks incl. fib + import) + `make test-as-os` (boots Aether,
 runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
 (≈CPython). Deferred: dict, closures, GC, computed-goto dispatch.
 

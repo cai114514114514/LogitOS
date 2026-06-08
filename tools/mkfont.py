@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Subset a CJK + a monospace font down to GB2312 + Latin for the Aqua disk.
+"""Subset a CJK + a monospace font down to GB2312 + Latin for the Aether disk.
 
 Output is plain TrueType (glyf outlines) so kernel/ttf.c can parse it. Source
 fonts default to ones bundled with macOS (Heiti SC = sans-serif Simplified

@@ -1,4 +1,4 @@
-; AquaScript / mini-libc setjmp + longjmp (x86-64 SysV).
+; AetherScript / mini-libc setjmp + longjmp (x86-64 SysV).
 ; jmp_buf layout (8 longs): [0]rbx [1]rbp [2]r12 [3]r13 [4]r14 [5]r15 [6]rsp [7]rip
 global setjmp
 global longjmp

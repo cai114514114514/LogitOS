@@ -1,5 +1,5 @@
-#ifndef AQUA_TCP_H
-#define AQUA_TCP_H
+#ifndef AETHER_TCP_H
+#define AETHER_TCP_H
 
 #include <stdint.h>
 
@@ -31,4 +31,4 @@ void tcp_close(int id);
 /* 1 if the connection is still usable (not closed/reset). */
 int  tcp_alive(int id);
 
-#endif /* AQUA_TCP_H */
+#endif /* AETHER_TCP_H */

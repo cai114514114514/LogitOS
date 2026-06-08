@@ -1,5 +1,5 @@
-#ifndef AQUA_CSS_H
-#define AQUA_CSS_H
+#ifndef AETHER_CSS_H
+#define AETHER_CSS_H
 
 #include <stdint.h>
 #include "dom.h"
@@ -35,4 +35,4 @@ void css_apply(struct node *root, const char *page_css, int page_len);
  * the expanded length. (Our LibCSS predates native var() support.) */
 int  css_expand_vars(const char *in, int inlen, char *out, int outmax);
 
-#endif /* AQUA_CSS_H */
+#endif /* AETHER_CSS_H */

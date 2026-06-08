@@ -1,5 +1,5 @@
-#ifndef AQUA_VMM_H
-#define AQUA_VMM_H
+#ifndef AETHER_VMM_H
+#define AETHER_VMM_H
 
 #include <stdint.h>
 
@@ -47,4 +47,4 @@ void vmm_free_space(uint64_t cr3);
 /* Load CR3 (switch the active address space). */
 void vmm_switch(uint64_t cr3);
 
-#endif /* AQUA_VMM_H */
+#endif /* AETHER_VMM_H */

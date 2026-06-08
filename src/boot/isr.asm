@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aqua OS - interrupt service routine stubs (64-bit)
+; Aether OS - interrupt service routine stubs (64-bit)
 ;
 ; One stub per vector 0..47. Each pushes a (dummy where needed) error code and
 ; the vector number, then jumps to a common path that saves all GP registers,

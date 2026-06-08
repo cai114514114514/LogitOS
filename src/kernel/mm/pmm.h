@@ -1,5 +1,5 @@
-#ifndef AQUA_PMM_H
-#define AQUA_PMM_H
+#ifndef AETHER_PMM_H
+#define AETHER_PMM_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -19,4 +19,4 @@ uint64_t pmm_alloc_contig(size_t n);
 uint64_t pmm_total_bytes(void);   /* usable RAM reported by firmware */
 uint64_t pmm_free_bytes(void);    /* currently free */
 
-#endif /* AQUA_PMM_H */
+#endif /* AETHER_PMM_H */

@@ -1,5 +1,5 @@
-#ifndef AQUA_IMG_H
-#define AQUA_IMG_H
+#ifndef AETHER_IMG_H
+#define AETHER_IMG_H
 
 #include <stdint.h>
 
@@ -18,4 +18,4 @@ void png_register(void);
 void gif_register(void);
 void jpeg_register(void);
 
-#endif /* AQUA_IMG_H */
+#endif /* AETHER_IMG_H */

@@ -1,5 +1,5 @@
-#ifndef AQUA_VIRTIO_GPU_H
-#define AQUA_VIRTIO_GPU_H
+#ifndef AETHER_VIRTIO_GPU_H
+#define AETHER_VIRTIO_GPU_H
 
 #include <stdint.h>
 
@@ -10,4 +10,4 @@ uint32_t  virtio_gpu_width(void);
 uint32_t  virtio_gpu_height(void);
 void      virtio_gpu_flush(int x, int y, int w, int h);   /* DMA a dirty rect + display */
 
-#endif /* AQUA_VIRTIO_GPU_H */
+#endif /* AETHER_VIRTIO_GPU_H */

@@ -1,4 +1,4 @@
-/* Aqua OS kernel linker script.
+/* Aether OS kernel linker script.
  *
  * The kernel is loaded at the conventional 1 MiB mark. The Multiboot2 header
  * is forced to the very front so GRUB finds it within the first 32 KiB.

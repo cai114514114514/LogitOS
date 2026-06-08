@@ -1,5 +1,5 @@
-#ifndef AQUA_ATA_H
-#define AQUA_ATA_H
+#ifndef AETHER_ATA_H
+#define AETHER_ATA_H
 
 #include <stdint.h>
 
@@ -17,4 +17,4 @@ int ata_write(uint32_t lba, uint8_t count, const void *buf);
  * (schedule()) mid-transfer, or the half-read controller state is abandoned. */
 int ata_busy(void);
 
-#endif /* AQUA_ATA_H */
+#endif /* AETHER_ATA_H */

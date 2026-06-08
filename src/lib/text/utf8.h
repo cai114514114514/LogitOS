@@ -1,5 +1,5 @@
-#ifndef AQUA_UTF8_H
-#define AQUA_UTF8_H
+#ifndef AETHER_UTF8_H
+#define AETHER_UTF8_H
 
 #include <stdint.h>
 
@@ -9,4 +9,4 @@
  * decodes to cp=0 and returns s+1 (callers test cp==0 to stop). */
 const char *utf8_next(const char *s, uint32_t *cp);
 
-#endif /* AQUA_UTF8_H */
+#endif /* AETHER_UTF8_H */

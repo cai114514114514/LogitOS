@@ -1,7 +1,7 @@
 #ifndef _FCNTL_H
 #define _FCNTL_H
 
-/* open() flags -- must match the kernel ABI (include/abi/aqua_abi.h). */
+/* open() flags -- must match the kernel ABI (include/abi/aether_abi.h). */
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_RDWR   2

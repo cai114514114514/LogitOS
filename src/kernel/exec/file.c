@@ -5,7 +5,7 @@
 #include "vfs.h"
 #include "sched.h"      /* schedule() -- block by yielding */
 #include "serial.h"     /* F_TTY console */
-#include "aqua_abi.h"   /* O_*, SEEK_* */
+#include "aether_abi.h"   /* O_*, SEEK_* */
 #include "percpu.h"     /* this_cpu (SMP: drop BKL while blocked on input) */
 #include "spinlock.h"   /* g_bkl */
 
@@ -157,7 +157,7 @@ static void scopy(char *d, const char *s, int max)
 
 /* --- F_VFS backend: the whole file lives in a kmalloc buffer with an offset
  *     cursor; writes grow the buffer and mark dirty; the last close flushes it
- *     back to the on-disk filesystem. Avoids touching aquafs block logic. --- */
+ *     back to the on-disk filesystem. Avoids touching aetherfs block logic. --- */
 
 static int vfs_ensure_cap(struct file *f, long need)
 {

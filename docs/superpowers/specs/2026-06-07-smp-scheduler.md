@@ -8,15 +8,15 @@ date: 2026-06-07
 
 ## Goal
 
-Make Aqua run threads on **multiple cores at once**. Today the APs only do a
+Make Aether run threads on **multiple cores at once**. Today the APs only do a
 parallel framebuffer present (`ap_entry` = `for(;;) sti;hlt`, woken by vector-240
 IPIs); **all real threads run on the BSP**, and the scheduler/`current`/TSS are
 single globals. This milestone turns the APs into full scheduling cores so that
 ring-3 (and eventually kernel) work runs truly in parallel.
 
-This is the **A-layer prerequisite** for Java-style multi-threaded AquaScript
+This is the **A-layer prerequisite** for Java-style multi-threaded AetherScript
 (the B-layer, a later milestone): real parallelism for compute-bound code, which
-is exactly the thing Python's GIL denies. AquaScript already uses mark-sweep GC
+is exactly the thing Python's GIL denies. AetherScript already uses mark-sweep GC
 (not refcounting), so it has no GIL-equivalent baked in — the only blocker to
 parallelism is this OS-level scheduler.
 
@@ -96,7 +96,7 @@ A single `bkl` spinlock taken on **every entry into kernel code**:
 - Kernel threads (WM, init) run holding the BKL while in kernel code; they drop it
   only when blocking/yielding.
 Effect: **at most one core executes kernel code at a time; ring-3 runs in
-parallel.** A compute-bound aqs program with two threads doing arithmetic runs on
+parallel.** A compute-bound as program with two threads doing arithmetic runs on
 two cores simultaneously, contending the BKL only on syscalls/GC — near-linear
 speedup for the anti-GIL workload.
 
@@ -129,7 +129,7 @@ correctness. **P4** restores parallelism as a scheduler-aware parallel job
 
 - **P0 — multi-core boots, ring-3 parallel.** Spinlocks + per-CPU state + AP
   scheduler entry + global run queue + BKL + context-switch/BKL hand-off + present
-  reverted to BSP-only. Gate: `make test` / `test-shell` / `test-aqs-os` pass
+  reverted to BSP-only. Gate: `make test` / `test-shell` / `test-as-os` pass
   under `-smp 4`; a new SMP stress test shows two ring-3 threads running on two
   cores at once (a wall-clock or concurrency-counter proof).
 - **P1 — peel kheap.** `kmalloc`/`kfree` get their own lock; remove them from BKL
@@ -158,8 +158,8 @@ correctness. **P4** restores parallelism as a scheduler-aware parallel job
 
 ## Testing
 
-- The existing `make test / test-shell / test-aqs / test-aqs-gcstress /
-  test-aqs-os` already run under `-smp 4 -accel tcg,thread=multi` — they must stay
+- The existing `make test / test-shell / test-as / test-as-gcstress /
+  test-as-os` already run under `-smp 4 -accel tcg,thread=multi` — they must stay
   green at every phase (now exercising real cross-core scheduling, not just
   parallel present).
 - **New `make test-smp`**: a kernel/userland stress that spawns N threads across
@@ -170,8 +170,8 @@ correctness. **P4** restores parallelism as a scheduler-aware parallel job
 
 ## Scope & the B-layer hooks (noted, not implemented here)
 
-Out of scope: AquaScript thread model (per-thread VM context, stop-the-world GC
-across all aqs threads, `Thread`/`spawn`, monitors/locks/atomics, a memory model)
+Out of scope: AetherScript thread model (per-thread VM context, stop-the-world GC
+across all as threads, `Thread`/`spawn`, monitors/locks/atomics, a memory model)
 — that is the **B-layer**, a separate later milestone built on this one. Hooks
 left for it: per-CPU `current` makes "all running threads" enumerable for a GC
 stop-the-world; the spinlock + IPI infrastructure here is what an IPI-based

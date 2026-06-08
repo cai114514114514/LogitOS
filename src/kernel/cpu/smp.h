@@ -1,5 +1,5 @@
-#ifndef AQUA_SMP_H
-#define AQUA_SMP_H
+#ifndef AETHER_SMP_H
+#define AETHER_SMP_H
 #include <stdint.h>
 
 void smp_init(void);          /* detect + bring up application processors */

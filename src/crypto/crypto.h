@@ -1,5 +1,5 @@
-#ifndef AQUA_CRYPTO_H
-#define AQUA_CRYPTO_H
+#ifndef AETHER_CRYPTO_H
+#define AETHER_CRYPTO_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -77,4 +77,4 @@ int rsa_pkcs1_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
 int rsa_pss_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
                    const uint8_t *sig, int siglen, const uint8_t *mhash, int hlen);
 
-#endif /* AQUA_CRYPTO_H */
+#endif /* AETHER_CRYPTO_H */

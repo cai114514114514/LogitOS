@@ -1,5 +1,5 @@
-#ifndef AQUA_ETH_H
-#define AQUA_ETH_H
+#ifndef AETHER_ETH_H
+#define AETHER_ETH_H
 
 #include <stdint.h>
 
@@ -26,4 +26,4 @@ void eth_input(const uint8_t *frame, uint16_t len);
 /* Stats (for the Network app / debugging). */
 uint32_t eth_rx_count(void);
 
-#endif /* AQUA_ETH_H */
+#endif /* AETHER_ETH_H */

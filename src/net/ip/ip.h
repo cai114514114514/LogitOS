@@ -1,5 +1,5 @@
-#ifndef AQUA_IP_H
-#define AQUA_IP_H
+#ifndef AETHER_IP_H
+#define AETHER_IP_H
 
 #include <stdint.h>
 
@@ -25,4 +25,4 @@ void icmp_input(uint32_t src, const uint8_t *data, uint16_t len);
 void udp_input(uint32_t src, const uint8_t *data, uint16_t len);
 void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);
 
-#endif /* AQUA_IP_H */
+#endif /* AETHER_IP_H */

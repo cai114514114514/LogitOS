@@ -1,4 +1,4 @@
-; Aqua OS userland C runtime: call app_main, then exit.
+; Aether OS userland C runtime: call app_main, then exit.
 global _start
 extern app_main
 

@@ -1,5 +1,5 @@
-#ifndef AQUA_TEXT_H
-#define AQUA_TEXT_H
+#ifndef AETHER_TEXT_H
+#define AETHER_TEXT_H
 
 #include <stdint.h>
 #include "ttf.h"
@@ -26,4 +26,4 @@ int  text_measure(const char *s, int len, int px, int mono);  /* length-delimite
 int  text_draw_run(int x, int y, const char *s, int len, int px, int mono, uint32_t color);
 int  text_line_height(int px);
 
-#endif /* AQUA_TEXT_H */
+#endif /* AETHER_TEXT_H */

@@ -1,5 +1,5 @@
-#ifndef AQUA_UDP_H
-#define AQUA_UDP_H
+#ifndef AETHER_UDP_H
+#define AETHER_UDP_H
 
 #include <stdint.h>
 
@@ -18,4 +18,4 @@ void udp_recv_bind(uint16_t port, uint8_t *buf, int max);
 int  udp_recv_len(void);        /* bytes received, or -1 if nothing yet */
 uint32_t udp_recv_src(void);    /* source IP of the received datagram */
 
-#endif /* AQUA_UDP_H */
+#endif /* AETHER_UDP_H */

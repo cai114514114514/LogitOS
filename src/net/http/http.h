@@ -1,5 +1,5 @@
-#ifndef AQUA_HTTP_H
-#define AQUA_HTTP_H
+#ifndef AETHER_HTTP_H
+#define AETHER_HTTP_H
 
 #include <stdint.h>
 
@@ -32,4 +32,4 @@ const char *http_body(int *len);
  * caller must kfree. Used by the layout engine for <img>. */
 int  res_fetch(const char *src, uint8_t **buf, int *len);
 
-#endif /* AQUA_HTTP_H */
+#endif /* AETHER_HTTP_H */

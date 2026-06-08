@@ -7,15 +7,15 @@ set -u
 
 ISO="${1:?usage: run-test.sh <iso> [disk.img]}"
 DISK="${2:-}"
-MARKER="AQUA_BOOT_OK"
+MARKER="AETHER_BOOT_OK"
 LOG="$(mktemp)"
 QEMU="${QEMU:-qemu-system-x86_64}"
 
 # BLK selects the disk controller the image is attached to: virtio (default) or
-# nvme (exercises the from-scratch NVMe driver -- aquafs must mount + read off it).
+# nvme (exercises the from-scratch NVMe driver -- aetherfs must mount + read off it).
 BLK="${BLK:-virtio}"
 case "$BLK" in
-    nvme)   BLK_DEV="-device nvme,drive=hd0,serial=aqua0" ;;
+    nvme)   BLK_DEV="-device nvme,drive=hd0,serial=aether0" ;;
     virtio) BLK_DEV="-device virtio-blk-pci,drive=hd0" ;;
     *)      echo "unknown BLK='$BLK' (want virtio|nvme)" >&2; exit 2 ;;
 esac
@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 # An e1000 on SLIRP user networking lets the boot-time net self-test run
-# (prints AQUA_NET_OK); the pass marker stays AQUA_BOOT_OK so the test still
+# (prints AETHER_NET_OK); the pass marker stays AETHER_BOOT_OK so the test still
 # passes on hosts where outbound networking is unavailable.
 NET_ARGS="-netdev user,id=n0 -device e1000,netdev=n0"
 GPU_ARGS="-vga none -device virtio-gpu-pci"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Aqua Files UI smoke test, self-contained and reproducible.
+"""Aether Files UI smoke test, self-contained and reproducible.
 
 Boots the ISO headless with a QMP socket, waits until the kernel is armed
-(serial prints AQUA_BOOT_OK -- injecting input before mouse_init() silently
+(serial prints AETHER_BOOT_OK -- injecting input before mouse_init() silently
 drops events), launches the Files app from the Dock, drives a New Folder via
 the toolbar, injects a right-button to pop the context menu, screenshots the
 desktop, and prints PASS.
@@ -12,10 +12,10 @@ correctness (cp/mv/mkdir/rm) is covered by scripts/run-shell-test.sh. Here we
 only assert that the Files app boots, launches from the Dock, and survives the
 right-click + new-folder drive without crashing -- then capture a screenshot.
 
-Usage: qmp_files.py <aqua.iso> <disk.img> [out.ppm]
+Usage: qmp_files.py <aether.iso> <disk.img> [out.ppm]
 
 Notes baked in from debugging this stack (see qmp_fs.py):
-  - wait for AQUA_BOOT_OK before sending any input;
+  - wait for AETHER_BOOT_OK before sending any input;
   - QEMU qcodes are 'ctrl'/'shift' (NOT 'ctrl_l'/'shift_l');
   - PS/2 relative motion tracks 1:1 in screen pixels when the QMP-side cursor
     bookkeeping starts at the kernel's actual cursor origin (screen center,
@@ -48,7 +48,7 @@ proc = subprocess.Popen([
 def armed():
     try:
         with open(serial) as fh:
-            return "AQUA_BOOT_OK" in fh.read()
+            return "AETHER_BOOT_OK" in fh.read()
     except OSError:
         return False
 
@@ -63,7 +63,7 @@ for _ in range(250):                       # wait for the kernel to arm input
     if proc.poll() is not None: fail("qemu exited during boot")
     time.sleep(0.1)
 else:
-    fail("AQUA_BOOT_OK never appeared")
+    fail("AETHER_BOOT_OK never appeared")
 time.sleep(1.5)                            # let the desktop + auto-launched Clock settle
 
 s = socket.socket(socket.AF_UNIX)

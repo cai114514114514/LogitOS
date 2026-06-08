@@ -1,5 +1,5 @@
-#ifndef AQUA_GDT_H
-#define AQUA_GDT_H
+#ifndef AETHER_GDT_H
+#define AETHER_GDT_H
 
 #include <stdint.h>
 
@@ -42,4 +42,4 @@ void gdt_init(void);
 /* Set the kernel stack the CPU switches to on a ring 3 -> ring 0 trap. */
 void tss_set_rsp0(uint64_t rsp0);
 
-#endif /* AQUA_GDT_H */
+#endif /* AETHER_GDT_H */

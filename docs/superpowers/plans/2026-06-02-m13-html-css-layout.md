@@ -69,7 +69,7 @@ int  paint_hittest(int x, int y, int scroll_y, char *url, int max);  /* 0 + url,
 int res_fetch(const char *url, uint8_t **buf, int *len);  /* sub-resource GET; *buf kmalloc'd; 0 ok */
 ```
 
-New syscalls (`include/aqua_abi.h`): `SYS_PAGE_RENDER 31`, `SYS_PAGE_HEIGHT 32`, `SYS_PAGE_HITTEST 33`.
+New syscalls (`include/aether_abi.h`): `SYS_PAGE_RENDER 31`, `SYS_PAGE_HEIGHT 32`, `SYS_PAGE_HITTEST 33`.
 
 ---
 
@@ -151,10 +151,10 @@ New syscalls (`include/aqua_abi.h`): `SYS_PAGE_RENDER 31`, `SYS_PAGE_HEIGHT 32`,
 
 ## Task 6: Paint + syscalls + browser app; retire the text renderer (L6)
 
-**Files:** Create `include/paint.h`, `net/paint.c`. Modify `kernel/wm.c`, `include/aqua_abi.h`, `user/aqua.h`, `user/browser.c`. Remove `net/html.c` + its API once unused.
+**Files:** Create `include/paint.h`, `net/paint.c`. Modify `kernel/wm.c`, `include/aether_abi.h`, `user/aether.h`, `user/browser.c`. Remove `net/html.c` + its API once unused.
 
 - [ ] **Step 1: `net/paint.c`:** `paint_viewport(vx,vy,vw,vh,scroll)` walks the box tree; for boxes intersecting `[scroll, scroll+vh)`: fill `background` (rounded if `radius`), draw `border`, draw each `textrun` via `text_draw_sz`/`_mono` at `(vx + run.x, vy + run.y - scroll)` in its color (+ underline line), `fb_blit` images (alpha) scaled to dest rect. Clip to the viewport rect. `paint_hittest(x,y,scroll,buf,max)` finds the topmost box with an `href` containing `(x, y+scroll-vy)` → copies its href.
-- [ ] **Step 2:** `aqua_abi.h`: add `SYS_PAGE_RENDER 31`, `SYS_PAGE_HEIGHT 32`, `SYS_PAGE_HITTEST 33`. `user/aqua.h`: `page_render(scroll,vx,vy,vw,vh)`, `page_height()`, `page_hittest(x,y,scroll,buf,max)` inline wrappers (pack args as the abi comments specify).
+- [ ] **Step 2:** `aether_abi.h`: add `SYS_PAGE_RENDER 31`, `SYS_PAGE_HEIGHT 32`, `SYS_PAGE_HITTEST 33`. `user/aether.h`: `page_render(scroll,vx,vy,vw,vh)`, `page_height()`, `page_hittest(x,y,scroll,buf,max)` inline wrappers (pack args as the abi comments specify).
 - [ ] **Step 3:** `kernel/wm.c`: `SYS_HTTP_GET` → `http_get` (now: fetch → `dom_parse` → `css_apply` → `layout_page(viewport_w)`; store root + box tree; free the previous page first). Add cases `SYS_PAGE_RENDER` (set `fb_target(&w->surf)`, `paint_viewport(...)`, target NULL), `SYS_PAGE_HEIGHT` (`return layout_height()`), `SYS_PAGE_HITTEST` (`paint_hittest` into the user buffer). The pipeline runs with IF=1 (same as the M12 SYS_HTTP_GET fix) because `res_fetch` blocks on the net.
 - [ ] **Step 4:** Rewrite `user/browser.c`: keep the address bar (typed URL + Enter → `load`). `load(url)`: `http_get(url)`; on ok `scroll=0`, `ph=page_height()`. Main loop: `gui_clear`; draw address bar; `page_render(scroll, 0, BARH, WINW, WINH-BARH)`; `gui_flush`. Keys: Up/Down/PageUp/PageDown adjust `scroll` (clamp `0..max(0,ph-(WINH-BARH))`). Mouse click in the page area → `page_hittest(mx, my-BARH, scroll, buf)` → if URL, `load(buf)`. Remove the old `http_read`/`http_link` text rendering.
 - [ ] **Step 5:** Remove `net/html.c` and the `http_read`/`http_link`/`html_render` declarations + the now-unused `SYS_HTTP_READ/STATUS/LINK` handling (or keep STATUS). Ensure nothing references them (`grep`). `make clean && make test` green.

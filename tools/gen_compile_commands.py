@@ -31,8 +31,8 @@ BASE = ["clang", "--target=x86_64-elf", "-ffreestanding", "-nostdlib", "-nostdli
         "-mno-red-zone", "-mno-mmx", "-msse", "-msse2", "-std=c11"]
 
 # The engine bundle (QuickJS + libm + mini-libc + browser) is built with JS_CF.
-ENGINE = ["-include", "features.h", '-DCONFIG_VERSION="aqua-2024"',
-          "-DAQUA_OS", "-DCONFIG_STACK_CHECK"] + JS_INC
+ENGINE = ["-include", "features.h", '-DCONFIG_VERSION="aether-2024"',
+          "-DAETHER_OS", "-DCONFIG_STACK_CHECK"] + JS_INC
 
 def flags_for(path):
     if path.startswith("third_party/css/"):

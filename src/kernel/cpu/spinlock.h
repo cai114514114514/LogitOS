@@ -1,5 +1,5 @@
-#ifndef AQUA_SPINLOCK_H
-#define AQUA_SPINLOCK_H
+#ifndef AETHER_SPINLOCK_H
+#define AETHER_SPINLOCK_H
 
 #include <stdint.h>
 
@@ -23,4 +23,4 @@ void     spin_unlock_irqrestore(spinlock_t *l, uint64_t flags);
 extern spinlock_t g_bkl;            /* Big Kernel Lock (M25 P0) */
 extern volatile int g_bkl_owner;    /* cpu index holding g_bkl (-1 = free); for nested detection */
 
-#endif /* AQUA_SPINLOCK_H */
+#endif /* AETHER_SPINLOCK_H */

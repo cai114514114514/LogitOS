@@ -1,4 +1,4 @@
-# Aqua OS — Unicode + from-scratch TrueType anti-aliased text (M14)
+# Aether OS — Unicode + from-scratch TrueType anti-aliased text (M14)
 
 ## Problem
 
@@ -76,7 +76,7 @@ No hinting: scale outline by `px_size / units_per_em`, rasterize, done.
   CJK in the Terminal **falls back** to Noto (full-width / 2 cells).
 - The engine loads multiple fonts and resolves a glyph through a **fallback
   chain** (Terminal = [mono, noto]; everything else = [noto]).
-- Both `.ttf` files live on the **AquaFS disk** (packed by `tools/mkfs.py`),
+- Both `.ttf` files live on the **AetherFS disk** (packed by `tools/mkfs.py`),
   loaded into memory **after fs mount, before the desktop comes up**. If loading
   fails, text renders as missing-glyph boxes (should not happen in practice).
 - QEMU RAM bumped to **`-m 512M`** (the pmm sizes itself from the multiboot map;
@@ -136,7 +136,7 @@ once the disk font loads.
   (PGM, eyeball AA); UTF-8 decode unit checks.
 - **QEMU:** screenshots — a Chinese web page in the Browser, the AA system UI,
   the Terminal — eyeballed for correctness and AA quality.
-- `make test` (AQUA_BOOT_OK) stays green throughout.
+- `make test` (AETHER_BOOT_OK) stays green throughout.
 
 ## Risks
 

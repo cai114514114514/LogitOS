@@ -2,7 +2,7 @@
 #include "keyboard.h"
 #include "io.h"
 #include "wm.h"
-#include "aqua_abi.h"   /* KEY_* codes for arrows / page keys */
+#include "aether_abi.h"   /* KEY_* codes for arrows / page keys */
 
 #define KBD_DATA 0x60
 
