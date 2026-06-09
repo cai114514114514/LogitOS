@@ -97,6 +97,7 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
     while (n < len) {
         while (p->count == PIPE_SZ) {
             if (p->readers == 0) return n > 0 ? n : -1;   /* broken pipe */
+            if (f->flags & O_NONBLOCK) return n > 0 ? n : EAGAIN_RC;  /* would block */
             schedule();
         }
         if (p->readers == 0) return n > 0 ? n : -1;

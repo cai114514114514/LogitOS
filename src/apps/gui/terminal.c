@@ -15,6 +15,22 @@ static char scr[ROWS][COLS];
 static int  crow, ccol;
 static int  in_w = -1, out_r = -1;   /* shell stdin (write), shell stdout (read) */
 
+/* Pending keystrokes queued for the shell's stdin. in_w is NON-blocking (so a
+ * keystroke never blocks the terminal while the shell is busy and not reading
+ * stdin -- the old blocking write deadlocked against a flooded stdout pipe), and
+ * we flush this ring opportunistically each frame. */
+#define PINSZ 512
+static char pin[PINSZ];
+static int  pin_head, pin_tail;
+static void pin_push(char c) { int nt = (pin_tail + 1) % PINSZ; if (nt != pin_head) { pin[pin_tail] = c; pin_tail = nt; } }
+static void flush_input(void)
+{
+    while (pin_head != pin_tail && in_w >= 0) {
+        if (sys_write(in_w, &pin[pin_head], 1) == 1) pin_head = (pin_head + 1) % PINSZ;
+        else break;                       /* EAGAIN / error -> retry next frame */
+    }
+}
+
 static void nl(void)
 {
     if (crow < ROWS - 1) crow++;
@@ -62,6 +78,7 @@ static int spawn_shell(void)
     in_w = inpipe[1];
     out_r = outpipe[0];
     sys_set_nonblock(out_r);             /* poll the shell's output without blocking */
+    sys_set_nonblock(in_w);              /* never block sending input (deadlock fix) */
     return 0;
 }
 
@@ -69,7 +86,7 @@ static int spawn_shell(void)
  * a command when the Terminal is opened on a file). */
 static void send_line(const char *s)
 {
-    for (const char *p = s; *p; p++) { feed(*p); sys_write(in_w, p, 1); }
+    for (const char *p = s; *p; p++) { feed(*p); pin_push(*p); }   /* queued; flushed in the loop */
 }
 
 static int ends_with(const char *s, const char *suf)
@@ -104,20 +121,25 @@ void app_main(void)
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);
             if (e.type == EV_KEY && in_w >= 0 && alive) {
-                char c = (char)e.a;
                 if (e.a > 0xFF) continue;          /* ignore arrow/page keys for now */
+                char c = (char)e.a;
                 feed(c);                            /* local echo (sh on a pipe doesn't echo) */
-                sys_write(in_w, &c, 1);             /* send to the shell */
+                pin_push(c);                        /* queue for the shell (flushed below) */
                 redraw = 1;
             }
         }
-        /* drain any shell output (non-blocking) */
+        flush_input();                              /* push queued keystrokes (non-blocking) */
+        /* Drain shell output in a BOUNDED batch (one redraw for the whole batch, so
+         * a flooding command can't trigger thousands of full redraws -> stall). The
+         * 64-round cap keeps the loop yielding so input/close stay responsive. */
         if (out_r >= 0 && alive) {
-            char ob[256];
-            int n = sys_read(out_r, ob, sizeof ob);
-            if (n > 0) { for (int i = 0; i < n; i++) feed(ob[i]); redraw = 1; }
-            else if (n == 0) { alive = 0; feed('\n'); for (const char *s = "[shell exited]"; *s; s++) feed(*s); redraw = 1; }
-            /* n == EAGAIN_RC: no data yet */
+            char ob[1024]; int n = EAGAIN_RC, rounds = 0;
+            while (rounds++ < 64 && (n = sys_read(out_r, ob, sizeof ob)) > 0) {
+                for (int i = 0; i < n; i++) feed(ob[i]);
+                redraw = 1;
+            }
+            if (n == 0) { alive = 0; feed('\n'); for (const char *s = "[shell exited]"; *s; s++) feed(*s); redraw = 1; }
+            /* n == EAGAIN_RC: no more data this round */
         }
         if (redraw) {
             redraw = 0;
