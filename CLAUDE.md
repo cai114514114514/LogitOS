@@ -36,6 +36,13 @@ names are unique, so the Makefile's `INCDIRS := $(shell find src include -type d
 makes every `#include "foo.h"` resolve without path qualifiers. `include/` keeps
 only the cross-cutting kernel↔user ABI (`include/abi/aether_abi.h`).
 
+Tests live under **`tests/`** (moved out of `tools/` in the 2026-06-09 declutter):
+`tests/unit/` = host unit/fuzz tests (`make test-tcp-host`/`test-as`/`test-png`/…)
++ `tcpstub/` + generators; `tests/boot/` = QEMU boot harnesses (`run-*.sh`, driven by
+`make test`/`test-nvme`/`test-shell`/`test-libc`/`test-smp`); `tests/qmp/` = QMP
+mouse/keyboard/screenshot drivers. `tools/` is now **build tools only** (mkaex,
+mkfs, mkfont, genroots, gen_compile_commands, gen_libcss, mkwallpaper).
+
 ```
 src/boot/                                        multiboot + long-mode entry (asm)
 src/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
@@ -219,7 +226,7 @@ Key notes:
   `ext` matches (file association); red close button -> EV_CLOSE -> app exits.
 - Adding an app: write `user/<name>.c` (include "aether.h", define `app_main`),
   add an `APP_RULE` line + the name to `APPS` in the Makefile.
-- `tools/qmp_*.py` drive mouse/keyboard over QEMU QMP for screenshots/CI.
+- `tests/qmp/qmp_*.py` drive mouse/keyboard over QEMU QMP for screenshots/CI.
 M15 SSE2/FPU ✅ (JS-engine prerequisite): the kernel was integer-only because
 x86-64 SysV passes `double` in XMM, so `-mno-sse` made FP unusable. Now
 `boot/long.asm` enables SSE at boot (clear CR0.EM, set CR0.MP/NE + CR4.OSFXSR/
@@ -296,7 +303,7 @@ a SysV argc/argv/envp stack. Userland: `crt0_cli.asm` (argc/argv→main), `clib.
 (ls cat echo pwd wc head true false sleep mkdir rm touch clear uname). init:
 `wm_run` proc_spawns `/bin/sh` on the serial console (fd 0/1/2 = tty); the GUI
 **Terminal is now a terminal emulator** that fork+execve's the same `/bin/sh` over
-two pipes. CI: `make test-shell` (`scripts/run-shell-test.sh`). **Gotchas:** CLI
+two pipes. CI: `make test-shell` (`tests/boot/run-shell-test.sh`). **Gotchas:** CLI
 programs link at a *common* base **0x50000000** -- it must be inside the private
 user region PML4[0]/PDPT[1] (0x40000000-0x7FFFFFFF); 0x10000000 would be shared
 kernel low memory. `wm_launch` gives every GUI app fd 0/1/2 = tty so an app's
@@ -306,7 +313,7 @@ intermittently delayed IDE PIO past the old bounded poll -> nondeterministic
 "file not found"; `drivers/block/ata.c` now retries the command 8x. Known-open
 aetherfs issues (separate): cross-boot write durability (corrupts after repeated
 non-snapshot boots; use `-snapshot`) and under-enumeration of runtime-`mkdir`'d
-dirs. `tools/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
+dirs. `tests/qmp/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
 (PS/2 1-byte buffer).
 
 M19 virtio ✅ (the "VGA is too primitive" follow-up): a modern (virtio 1.0)

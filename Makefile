@@ -243,13 +243,13 @@ $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 # the common CLI base via crt0_cli. (Host-native testing is awkward: string.c
 # defines memcpy/etc. which clash with the host libc -- so we test on Aether.)
 LIBC_OBJS := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
-$(BUILD)/asobj/tools/t/libctest_main.o: tools/t/libctest_main.c
+$(BUILD)/asobj/tests/unit/libctest_main.o: tests/unit/libctest_main.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
-$(BUILD)/libctest.elf: $(BUILD)/asobj/tools/t/libctest_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+$(BUILD)/libctest.elf: $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/libctest.crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/libctest.crt0c.o $(BUILD)/asobj/tools/t/libctest_main.o $(LIBC_OBJS)
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/libctest.crt0c.o $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS)
 $(BUILD)/libctest.aex: $(BUILD)/libctest.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/libctest.elf $@ libctest - '?' 150 150 150
 
@@ -290,35 +290,35 @@ debug: $(ISO) $(DISK)
 	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S
 
 test: $(ISO) $(DISK)
-	@sh scripts/run-test.sh $(ISO) $(DISK)
+	@sh tests/boot/run-test.sh $(ISO) $(DISK)
 
 # Same smoke test, but attach the disk via NVMe -- proves the from-scratch NVMe
 # driver brings up a controller and aetherfs mounts + reads off it (M24 bare-metal).
 test-nvme: $(ISO) $(DISK)
-	@BLK=nvme sh scripts/run-test.sh $(ISO) $(DISK)
+	@BLK=nvme sh tests/boot/run-test.sh $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
-	@sh scripts/run-shell-test.sh $(ISO) $(DISK)
+	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
 
 # Host unit test for TCP out-of-order reassembly (white-box: #includes tcp.c).
-# Stub headers in tools/t/tcpstub let tcp.c compile on the host (no x86 asm).
+# Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).
 test-tcp-host:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tools/t/tcp_test.c -Itools/t/tcpstub -Isrc/net/transport
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Isrc/net/transport
 	@./$(BUILD)/tcp_test
 
 # On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: $(ISO) $(DISK)
-	@sh scripts/run-as-test.sh $(ISO) $(DISK)
+	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
 
 # mini-libc on-target test battery: boots Aether, runs /bin/libctest, asserts LIBC_OK.
 test-libc: $(ISO) $(DISK)
-	@sh scripts/run-libc-test.sh $(ISO) $(DISK)
+	@sh tests/boot/run-libc-test.sh $(ISO) $(DISK)
 
 # M25 SMP concurrency proof: boots -smp 4, runs /bin/smptest, asserts SMP_TEST_OK
 # (no cross-core corruption + genuine parallelism across >=2 cores).
 test-smp: $(ISO) $(DISK)
-	@sh scripts/run-smp-test.sh $(ISO) $(DISK)
+	@sh tests/boot/run-smp-test.sh $(ISO) $(DISK)
 
 # AetherScript host unit test: the language core (lexer/compiler/vm/value/object)
 # is portable C, so it builds and runs natively -- no QEMU. Asserts print output
@@ -328,21 +328,21 @@ AS_CORE := src/apps/as/value.c src/apps/as/as_io.c src/apps/as/lexer.c \
             src/apps/as/as_native.c src/apps/as/as_ll.c src/apps/as/as_bc.c
 test-as:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tools/t/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
 	@$(BUILD)/as_test
 
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
 test-complete:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tools/t/complete_test.c src/apps/as/complete.c -Isrc/apps/as
+	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c src/apps/as/complete.c -Isrc/apps/as
 	@$(BUILD)/complete_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
 # or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
 test-as-gcstress:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tools/t/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
 	@$(BUILD)/as_test_gcstress
 
 # Host `asc`: the as core + the as.c entry built natively (no --target -> arm64
@@ -369,8 +369,8 @@ $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
 test-png:
 	@mkdir -p $(BUILD)/pngtest
-	@python3 tools/t/png_gen.py $(BUILD)/pngtest
-	@$(CC) -O2 -o $(BUILD)/png_test tools/t/png_test.c \
+	@python3 tests/unit/png_gen.py $(BUILD)/pngtest
+	@$(CC) -O2 -o $(BUILD)/png_test tests/unit/png_test.c \
 	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/inflate.c \
 	    -Isrc/lib/image -Isrc/kernel/mm
 	@$(BUILD)/png_test $(BUILD)/pngtest
@@ -380,12 +380,12 @@ test-png:
 # (-nosmooth = box chroma upsample, matching ours) as the reference. JPEG is lossy,
 # so we compare two decoders of the same bytes within a tight per-channel tolerance,
 # never against the original pixels. Also asserts progressive/CMYK fail gracefully.
-# Needs PIL + djpeg. (Ad-hoc tests tools/t/img_test.c, tools/t/img_fuzz.c have no
+# Needs PIL + djpeg. (Ad-hoc tests tests/unit/img_test.c, tests/unit/img_fuzz.c have no
 # target; if run by hand, add src/lib/image/jpeg.c to their source list.)
 test-jpeg:
 	@mkdir -p $(BUILD)/jpegtest
-	@python3 tools/t/jpeg_gen.py $(BUILD)/jpegtest
-	@$(CC) -O2 -o $(BUILD)/jpeg_test tools/t/jpeg_test.c \
+	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest
+	@$(CC) -O2 -o $(BUILD)/jpeg_test tests/unit/jpeg_test.c \
 	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/inflate.c \
 	    -Isrc/lib/image -Isrc/kernel/mm
 	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
