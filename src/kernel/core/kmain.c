@@ -23,10 +23,13 @@
 
 #define BOOT_OK_MARKER "AETHER_BOOT_OK"
 
+void rust_selftest(void);   /* hybrid C+Rust: implemented in rust/src/lib.rs */
+
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
     serial_puts("\n[aether] long mode, C kernel running\n");
+    rust_selftest();        /* prove the no_std Rust staticlib is linked + FFI works */
 
     idt_init();
     gdt_init();

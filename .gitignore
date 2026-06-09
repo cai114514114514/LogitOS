@@ -25,3 +25,6 @@ fsroot/fonts/*.ttf
 
 # Wallpaper (Apple Desktop Picture; regenerate via tools/mkwallpaper.sh)
 fsroot/wallpaper.png
+
+# Rust (hybrid C+Rust) build artifacts
+rust/target/

@@ -55,6 +55,14 @@ ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
+# --- Hybrid C+Rust: a no_std staticlib (rust/) linked with the C objects. Rust
+# owns the memory-safety-critical untrusted-input parsers; C owns the core. Use
+# the RUSTUP toolchain's cargo/rustc (Homebrew's rust lacks cross targets); the
+# x86_64-unknown-none std is `rustup target add x86_64-unknown-none`. ---
+RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
+RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
+RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
+
 .PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
 
 all: $(ISO)
@@ -63,6 +71,10 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Rust no_std staticlib (kept after `all:` so it never becomes the default goal).
+$(RUST_LIB): $(RUST_SRC)
+	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release --target x86_64-unknown-none
+
 # roots.c #includes the generated bundle; rebuild it when the bundle changes.
 $(BUILD)/src/crypto/trust/roots.o: src/crypto/trust/roots_bundle.inc src/crypto/trust/roots.h
 
@@ -70,8 +82,8 @@ $(BUILD)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) $(ASFLAGS) $< -o $@
 
-$(KERNEL): $(OBJ) linker.ld
-	$(LD) $(LDFLAGS) -o $@ $(OBJ)
+$(KERNEL): $(OBJ) $(RUST_LIB) linker.ld
+	$(LD) $(LDFLAGS) -o $@ --start-group $(OBJ) $(RUST_LIB) --end-group
 
 $(ISO): $(KERNEL) grub.cfg
 	@mkdir -p $(ISO_DIR)/boot/grub

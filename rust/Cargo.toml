@@ -1,0 +1,17 @@
+[package]
+name = "aether_rust"
+version = "0.1.0"
+edition = "2021"
+
+# Hybrid C+Rust kernel: Rust is compiled to a freestanding staticlib and linked
+# alongside the C objects (see the Makefile). It owns the memory-safety-critical
+# untrusted-input parsers; the C kernel owns the core, drivers, and scheduler.
+[lib]
+crate-type = ["staticlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[profile.dev]
+panic = "abort"
