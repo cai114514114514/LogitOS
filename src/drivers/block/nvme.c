@@ -63,7 +63,8 @@ static volatile uint8_t *g_regs;
 static struct nvme_q g_admin, g_io;
 static uint32_t g_nsid = 1, g_lba = 512;
 static uint64_t g_cap;                 /* capacity in LBAs */
-static uint8_t *g_bounce;              /* one page-aligned DMA bounce buffer */
+static uint64_t *g_prp_list;           /* one page: up to 512 PRP entries for large DMA */
+static uint32_t g_max_sectors = 0xFFFF;/* per-command cap from the controller's MDTS */
 static int g_ready = 0;
 
 volatile int g_nvme_busy = 0;          /* interrupts.c: don't preempt mid-poll */
@@ -167,20 +168,36 @@ int nvme_init(void)
         return -1;
     }
 
-    /* Identify Namespace (NSID 1) -> capacity + LBA size. */
     uint8_t *idbuf = (uint8_t *)(uintptr_t)pmm_alloc();
     if (!idbuf) return -1;
-    memset(idbuf, 0, 4096);
     struct nvme_sqe cmd;
+
+    /* Identify Controller (CNS=1): MDTS (max transfer in 2^MDTS host pages) + model. */
+    memset(idbuf, 0, 4096);
     memset(&cmd, 0, sizeof cmd);
-    cmd.cdw0 = 0x06; cmd.nsid = 1; cmd.prp1 = (uint64_t)(uintptr_t)idbuf; cmd.cdw10 = 0; /* CNS=0 */
+    cmd.cdw0 = 0x06; cmd.nsid = 0; cmd.prp1 = (uint64_t)(uintptr_t)idbuf; cmd.cdw10 = 1;  /* CNS=1 */
+    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] identify ctrl failed\n"); return -1; }
+    uint8_t mdts = idbuf[77];
+    g_max_sectors = mdts ? ((1u << mdts) * (4096u / 512u)) : 0xFFFF;   /* MPS=0 -> 4 KiB pages */
+    char model[41]; for (int i = 0; i < 40; i++) model[i] = (char)idbuf[24 + i]; model[40] = 0;
+    for (int i = 39; i >= 0 && model[i] == ' '; i--) model[i] = 0;     /* trim trailing spaces */
+
+    /* Active Namespace List (CNS=2): use the first active NSID, not a hardcoded 1. */
+    memset(idbuf, 0, 4096);
+    memset(&cmd, 0, sizeof cmd);
+    cmd.cdw0 = 0x06; cmd.nsid = 0; cmd.prp1 = (uint64_t)(uintptr_t)idbuf; cmd.cdw10 = 2;  /* CNS=2 */
+    g_nsid = (nvme_submit(&g_admin, &cmd) == 0 && *(uint32_t *)idbuf) ? *(uint32_t *)idbuf : 1;
+
+    /* Identify Namespace (chosen NSID) -> capacity + LBA size. */
+    memset(idbuf, 0, 4096);
+    memset(&cmd, 0, sizeof cmd);
+    cmd.cdw0 = 0x06; cmd.nsid = g_nsid; cmd.prp1 = (uint64_t)(uintptr_t)idbuf; cmd.cdw10 = 0; /* CNS=0 */
     if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] identify ns failed\n"); return -1; }
     g_cap = *(uint64_t *)idbuf;                          /* NSZE */
     uint8_t flbas = idbuf[26] & 0xF;
     uint8_t lbads = idbuf[128 + flbas * 4 + 2];          /* LBAF[flbas].LBADS */
     g_lba = 1u << lbads;
-    g_nsid = 1;
-    if (g_lba != 512) { kprintf("[nvme] unsupported lba size %d\n", (int)g_lba); return -1; }
+    if (g_lba != 512) { kprintf("[nvme] unsupported lba size %d (need 512)\n", (int)g_lba); return -1; }
 
     /* Create I/O Completion Queue (qid 1). */
     g_io.cq = (struct nvme_cqe *)(uintptr_t)pmm_alloc();
@@ -206,35 +223,50 @@ int nvme_init(void)
     g_io.sq_db = g_regs + 0x1000 + 2 * stride;
     g_io.cq_db = g_regs + 0x1000 + 3 * stride;
 
-    g_bounce = (uint8_t *)(uintptr_t)pmm_alloc();
-    if (!g_bounce) return -1;
+    g_prp_list = (uint64_t *)(uintptr_t)pmm_alloc();    /* PRP-list page for large DMA */
+    if (!g_prp_list) return -1;
 
     g_ready = 1;
-    kprintf("[nvme] up (slot %d %x:%x) ns=1 lba=%d cap=%u sectors\n",
-            dev.slot, dev.vendor, dev.device, (int)g_lba, (unsigned)g_cap);
+    kprintf("[nvme] up (slot %d %x:%x '%s') ns=%d lba=%d cap=%u sectors maxxfer=%d\n",
+            dev.slot, dev.vendor, dev.device, model, (int)g_nsid, (int)g_lba,
+            (unsigned)g_cap, (int)g_max_sectors);
     return 0;
 }
 
-/* Read/write `count` 512-byte sectors at `lba` through the page-aligned bounce
- * buffer, <=8 sectors (one 4KiB page = PRP1 only) per NVMe command. */
+/* Read/write `count` 512-byte sectors at `lba`, DMAing DIRECTLY from the caller's
+ * identity-mapped buffer (kernel buffers: virt==phys) via PRP1 (+PRP2 page, or a
+ * PRP list for >2 pages). No bounce buffer, no per-I/O memcpy. Each command moves
+ * up to min(MDTS, one PRP-list page worth) sectors; large requests loop. */
 static int nvme_io(int write, uint64_t lba, uint32_t count, void *buf)
 {
     if (!g_ready) return -1;
     uint8_t *p = (uint8_t *)buf;
     while (count > 0) {
-        uint32_t n = count > 8 ? 8 : count;
-        if (write) memcpy(g_bounce, p, n * 512);
+        uint32_t n = count;
+        if (n > g_max_sectors) n = g_max_sectors;
+        if (n > 2048) n = 2048;                         /* keep PRP list within one page */
+        uint64_t addr  = (uint64_t)(uintptr_t)p;
+        uint64_t bytes = (uint64_t)n * 512;
+        uint64_t first = addr & ~0xFFFULL;
+        uint64_t last  = (addr + bytes - 1) & ~0xFFFULL;
+        int npages = (int)((last - first) / 0x1000) + 1;
+
         struct nvme_sqe cmd;
         memset(&cmd, 0, sizeof cmd);
         cmd.cdw0  = write ? 0x01 : 0x02;               /* Write : Read */
         cmd.nsid  = g_nsid;
-        cmd.prp1  = (uint64_t)(uintptr_t)g_bounce;
+        cmd.prp1  = addr;
+        if (npages == 1)      cmd.prp2 = 0;
+        else if (npages == 2) cmd.prp2 = first + 0x1000;
+        else {                                          /* PRP list: pages 1..npages-1 */
+            for (int i = 1; i < npages; i++) g_prp_list[i - 1] = first + (uint64_t)i * 0x1000;
+            cmd.prp2 = (uint64_t)(uintptr_t)g_prp_list;
+        }
         cmd.cdw10 = (uint32_t)(lba & 0xFFFFFFFF);      /* SLBA low */
         cmd.cdw11 = (uint32_t)(lba >> 32);             /* SLBA high */
         cmd.cdw12 = n - 1;                             /* NLB (0-based) */
         if (nvme_submit(&g_io, &cmd) != 0) return -1;
-        if (!write) memcpy(p, g_bounce, n * 512);
-        p += n * 512; lba += n; count -= n;
+        p += bytes; lba += n; count -= n;
     }
     return 0;
 }
