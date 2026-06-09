@@ -835,13 +835,30 @@ static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int
     fb_text(x + (ww - tw) / 2, y + 7, title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
 }
 
+/* Normal (non-animating) window frame: a LIQUID GLASS titlebar that frosts +
+ * refracts the live backdrop behind the window's top. Drawn while `back` still
+ * holds the backdrop (the app's content surface is blitted afterwards and covers
+ * the body), so the glass samples real content, not the window's own fill. The
+ * glass strip runs TITLEBAR_H+10 tall so its rounded bottom corners hide under
+ * the content surface; the top corners round the window. (draw_frame_body, with a
+ * solid gradient titlebar, is used only by the open-pop temp render, which has no
+ * backdrop to sample.) */
 static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
     shadow_band(x, y, ww, wh, 8, focused ? 11 : 7);        /* faint outer fringe */
     shadow_band(x, y, ww, wh, 4, focused ? 22 : 13);       /* mid */
     shadow_band(x, y, ww, wh, 2, focused ? 40 : 24);       /* dark edge */
-    draw_frame_body(x, y, ww, wh, w->title, focused);
+    uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
+    if (g_ui_dark) fb_liquid_glass(x, y, ww, TITLEBAR_H + 10, 10, 30, 30, 40, a);
+    else           fb_liquid_glass(x, y, ww, TITLEBAR_H + 10, 10, 250, 250, 255, a);
+    fb_fill_rect(x, y + TITLEBAR_H, ww, 1, g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+    uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
+    fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
+    fb_fill_circle(x + 34, y + 15, 6, focused ? rgb(254, 188, 46) : off);
+    fb_fill_circle(x + 52, y + 15, 6, focused ? rgb(40, 200, 64) : off);
+    int tw = fb_text_width(w->title);
+    fb_text(x + (ww - tw) / 2, y + 7, w->title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
 }
 
 static const char *cursor_bmp[] = {
