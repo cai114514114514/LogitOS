@@ -90,7 +90,10 @@ void aui_text_sz(int x, int y, const char *s, unsigned color, int px);
 int  aui_text_w(const char *s, int px);      /* measured width at size px        */
 
 void aui_panel(int x, int y, int w, int h, unsigned color);
-int  aui_button(int x, int y, int w, int h, const char *label);   /* 1 on click */
+/* Liquid-glass a region over the content drawn behind it (theme-tinted). For app
+ * chrome (sidebars/toolbars/cards) -- draw the content first, then glass on top. */
+void aui_glass(int x, int y, int w, int h, int radius);
+int  aui_button(int x, int y, int w, int h, const char *label);   /* 1 on click; glass pill */
 int  aui_checkbox(int x, int y, const char *label, int *state);   /* 1 when toggled */
 int  aui_textfield(int x, int y, int w, char *buf, int cap);      /* 1 on Enter */
 

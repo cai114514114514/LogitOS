@@ -125,13 +125,25 @@ void aui_end(void) { gui_flush(); }
 void aui_panel(int x, int y, int w, int h, unsigned color) { gui_rect(x, y, w, h, color); }
 void aui_label(int x, int y, const char *s, unsigned color) { txt(x, y, color, s); }
 
+/* Liquid-glass a region over the app's own content (theme-tinted body). */
+void aui_glass(int x, int y, int w, int h, int radius)
+{
+    aui_ensure();
+    if (theme_dark) gui_glass(x, y, w, h, radius, 34, 36, 46, 120);
+    else            gui_glass(x, y, w, h, radius, 255, 255, 255, 50);
+}
+
 int aui_button(int x, int y, int w, int h, const char *label)
 {
     id_ctr++;
     int hit = clicked_in(x, y, w, h);
-    gui_rect(x, y, w, h, hit ? AUI_ACCENT : AUI_FACE);
-    gui_rect(x, y, w, 1, AUI_HI);                        /* top highlight */
-    gui_rect(x, y + h - 1, w, 1, AUI_BORDER);            /* bottom edge */
+    int rad = h / 2; if (rad > 11) rad = 11;             /* rounded glass pill */
+    if (hit) {                                           /* pressed -> accent-tinted glass */
+        if (theme_dark) gui_glass(x, y, w, h, rad, 94, 150, 255, 180);
+        else            gui_glass(x, y, w, h, rad, 64, 130, 246, 170);
+    } else {
+        aui_glass(x, y, w, h, rad);
+    }
     int lw = tw(label);
     txt(x + (w - lw) / 2, y + (h - PX) / 2 - 1, hit ? AUI_ACCENT_TEXT : AUI_TEXT, label);
     return hit;
@@ -154,7 +166,7 @@ int aui_textfield(int x, int y, int w, char *buf, int cap)
     if (clicked_in(x, y, w, h)) focus_id = myid;
     int foc = (focus_id == myid);
 
-    gui_rect(x, y, w, h, AUI_SURFACE);
+    aui_glass(x, y, w, h, 8);                            /* glass field */
     unsigned b = foc ? AUI_FOCUS : AUI_BORDER;
     gui_rect(x, y, w, 1, b); gui_rect(x, y + h - 1, w, 1, b);
     gui_rect(x, y, 1, h, b); gui_rect(x + w - 1, y, 1, h, b);

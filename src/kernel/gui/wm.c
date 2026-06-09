@@ -367,6 +367,15 @@ long wm_gui_syscall(long num, long a, long b, long c)
         fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
         return 0;
     }
+    case SYS_GUI_GLASS: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int gw = (int)((b >> 16) & 0xFFFF), gh = (int)(b & 0xFFFF);
+        int radius = (int)((c >> 32) & 0xFF);
+        uint8_t tr = (c >> 24) & 0xFF, tg = (c >> 16) & 0xFF, tb = (c >> 8) & 0xFF, ta = c & 0xFF;
+        fb_target(&w->surf); fb_liquid_glass(x, y, gw, gh, radius, tr, tg, tb, ta); fb_target(NULL);
+        return 0;
+    }
     case SYS_GUI_FLUSH: {
         struct win *w = app_window(ap);          /* repaint just this app's window */
         if (w) dirty_rect(w->x, w->y, w->w, w->h); else dirty_full();

@@ -110,6 +110,13 @@ enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)
 { _sys(SYS_GUI_ICON, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
        ((long)(id & 0xFFFF) << 16) | (px & 0xFFFF), color); }
+/* Liquid-glass a region of THIS window over the content already drawn there
+ * (frost + rim refraction + specular highlight + body tint). */
+static inline void gui_glass(int x, int y, int w, int h, int radius,
+                             unsigned char tr, unsigned char tg, unsigned char tb, unsigned char ta)
+{ _sys(SYS_GUI_GLASS, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
+       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF),
+       ((long)radius << 32) | ((long)tr << 24) | ((long)tg << 16) | ((long)tb << 8) | ta); }
 /* Fetch a sub-resource's raw bytes (e.g. an image) into buf (<= max); length or <0. */
 static inline int res_fetch_raw(const char *src, unsigned char *buf, int max)
 { return (int)_sys(SYS_RES_FETCH, (long)src, (long)buf, max); }

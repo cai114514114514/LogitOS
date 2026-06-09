@@ -373,7 +373,7 @@ static void clamp_scroll(void)
 /* --- frame draw --- */
 static void draw_sidebar(void)
 {
-    gui_rect(0, 0, SIDEBAR_W, WINH, AUI_FACE);
+    aui_glass(0, 0, SIDEBAR_W, WINH, 1);                 /* liquid-glass sidebar */
     gui_rect(SIDEBAR_W - 1, 0, 1, WINH, AUI_BORDER);
     unsigned selbg = aui_is_dark() ? rgb(58, 70, 92) : rgb(210, 224, 250);
     for (int i = 0; i < SIDE_N; i++) {
@@ -386,10 +386,32 @@ static void draw_sidebar(void)
     }
 }
 
+/* toolbar button rects (shared by draw + hit-test, so no immediate-mode lag) */
+#define TB_BTN_Y 10
+#define TB_BTN_H 26
+#define TB_BACK_X (CX + 8)
+#define TB_BACK_W 30
+#define TB_NEW_X  (WINW - 8 - 50)
+#define TB_NEW_W  50
+#define TB_VIEW_X (WINW - 8 - 50 - 56)
+#define TB_VIEW_W 52
+
+static int hit(int px, int py, int x, int y, int w, int h)
+{ return px >= x && px < x + w && py >= y && py < y + h; }
+
+static void glass_btn(int x, int y, int w, int h, const char *label)
+{
+    int rad = h / 2; if (rad > 11) rad = 11;
+    aui_glass(x, y, w, h, rad);
+    int lw = text_measure_px(label, slen(label), 13, 0);
+    gui_text_run(x + (w - lw) / 2, y + (h - 13) / 2, 13, 0, AUI_TEXT, label, slen(label));
+}
+
 static void draw_toolbar(void)
 {
+    aui_glass(CX, 0, CWID, TOOLBAR_H, 1);               /* liquid-glass toolbar */
     gui_rect(CX, TOOLBAR_H - 1, CWID, 1, AUI_BORDER);
-    if (aui_button(CX + 8, 10, 30, 26, "<")) go_up();
+    glass_btn(TB_BACK_X, TB_BTN_Y, TB_BACK_W, TB_BTN_H, "<");
 
     /* title (folder leaf) or inline rename / new-folder field */
     if (rename_mode) {
@@ -402,11 +424,8 @@ static void draw_toolbar(void)
         else leaf_of(cwd, title, sizeof title);
         aui_heading(CX + 48, 12, title, AUI_TEXT);
     }
-
-    /* right side: a single view toggle (shows the mode you'll switch TO) + New */
-    int nb = WINW - 8 - 50, vb = nb - 56;
-    if (aui_button(vb, 10, 52, 26, view_mode ? "Icons" : "List")) { view_mode = !view_mode; scroll = 0; }
-    if (aui_button(nb, 10, 50, 26, "+New")) start_newfolder();
+    glass_btn(TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H, view_mode ? "Icons" : "List");
+    glass_btn(TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H, "+New");
 }
 
 static void draw_grid(void)
@@ -451,13 +470,14 @@ static void draw_list(void)
 static void frame(void)
 {
     aui_begin(AUI_BG);
-    /* Chrome first: toolbar buttons (view toggle / back / New) and sidebar set
-     * view_mode/cwd THIS frame; the content below then reflects them immediately
-     * (the three regions are disjoint, so draw order doesn't affect pixels). */
-    draw_toolbar();
-    draw_sidebar();
+    /* Content first, then the glass sidebar + toolbar composited ON TOP of it
+     * (so the chrome frosts the app's own content). Toolbar/sidebar actions are
+     * handled in handle_click (before this frame), so the content already
+     * reflects the current view_mode/cwd -- no immediate-mode lag. */
     clamp_scroll();
     if (view_mode) draw_list(); else draw_grid();
+    draw_sidebar();
+    draw_toolbar();
 
     if (info_open) {
         int pw = 248, ph = 104, px = CX + (CWID - pw) / 2, py = CY + (CHGT - ph) / 2;
@@ -535,7 +555,12 @@ static void handle_click(int x, int y)
 {
     if (menu_open) { int item; menu_hit(x, y, &item); menu_open = 0; if (item >= 0) run_menu(item); return; }
     if (x < SIDEBAR_W) { sidebar_click(y); return; }
-    if (y < TOOLBAR_H) return;                       /* toolbar -> aui buttons */
+    if (y < TOOLBAR_H) {                              /* toolbar glass-pill buttons */
+        if (hit(x, y, TB_BACK_X, TB_BTN_Y, TB_BACK_W, TB_BTN_H)) go_up();
+        else if (hit(x, y, TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H)) { view_mode = !view_mode; scroll = 0; }
+        else if (hit(x, y, TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H)) start_newfolder();
+        return;                                       /* rename/new field handled by aui */
+    }
 
     int row = entry_at(x, y);
     if (row < 0) { if (!shift_down && !ctrl_down) { clear_sel(); anchor = -1; } return; }

@@ -63,6 +63,7 @@
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
 #define SYS_GUI_ICON    71 /* ((x<<16)|y, (id<<16)|px, color) draw a vector icon into the window */
+#define SYS_GUI_GLASS   72 /* ((x<<16)|y, (w<<16)|h, (radius<<32)|(tr<<24)|(tg<<16)|(tb<<8)|ta) liquid-glass a region of the window over its own content */
 
 /* open() flags */
 #define O_RDONLY 0
