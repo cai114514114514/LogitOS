@@ -247,8 +247,8 @@ static void redraw(void)
 {
     gui_clear(C_BG);
 
-    /* toolbar */
-    gui_rect(0, 0, WINW, TOOLH, C_TOOL);
+    /* Liquid Glass toolbar */
+    gui_glass(0, 0, WINW, TOOLH, 1, 40, 43, 53, 150);
     gui_rect(0, TOOLH - 1, WINW, 1, rgb(18, 19, 24));
     gui_text(10, 6, modified ? rgb(229, 192, 123) : C_TEXT, fname);
     gui_rect(WINW - 70, 4, 60, TOOLH - 8, running ? rgb(70, 80, 96) : rgb(60, 120, 90));

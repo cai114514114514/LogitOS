@@ -231,15 +231,15 @@ static void load(const char *u)
 static void redraw(int editing)
 {
     gui_clear(rgb(252, 252, 253));
-    /* address bar */
-    gui_rect(0, 0, WINW, BARH, rgb(225, 228, 234));
-    gui_rect(10, 5, WINW - 20, 20, rgb(255, 255, 255));
+    /* Liquid Glass address bar + a glass URL field */
+    gui_glass(0, 0, WINW, BARH, 1, 255, 255, 255, 70);
+    gui_glass(10, 5, WINW - 20, 20, 8, 255, 255, 255, 95);
     gui_text(14, 7, rgb(40, 40, 48), url);
     if (editing) gui_rect(14 + ulen * 8, 7, 8, 16, rgb(90, 150, 240));
     /* the page */
     browser_paint(0, BARH, WINW, VIEW_H, scroll);
-    /* status line */
-    gui_rect(0, WINH - 18, WINW, 18, rgb(238, 240, 244));
+    /* glass status line (frosts the bottom of the page) */
+    gui_glass(0, WINH - 18, WINW, 18, 1, 255, 255, 255, 70);
     gui_text(10, WINH - 16, rgb(110, 110, 120), status);
     gui_flush();
 }
