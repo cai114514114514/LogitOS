@@ -570,7 +570,11 @@ void app_main(void)
             aui_feed(&e); frame(); aui_feed_done();
             continue;
         }
-        if (e.type == EV_MOUSE_R) { menu_open = 1; menu_x = e.a; menu_y = e.b; info_open = 0; frame(); continue; }
+        if (e.type == EV_MOUSE_R) {
+            int row = entry_at(e.a, e.b);            /* right-click selects the item under it */
+            if (row >= 0 && !in_sel(row)) select_one(row);
+            menu_open = 1; menu_x = e.a; menu_y = e.b; info_open = 0; frame(); continue;
+        }
         if (e.type == EV_MOUSE) { handle_click(e.a, e.b); aui_feed(&e); frame(); aui_feed_done(); continue; }
         frame();
     }
