@@ -31,8 +31,8 @@ make debug  # QEMU frozen with gdb stub on :1234
 
 ## Source layout
 
-All source lives under `src/`, headers **colocated** with their `.c`. Header
-names are unique, so the Makefile's `INCDIRS := $(shell find src include -type d)`
+All source lives under `c/`, headers **colocated** with their `.c`. Header
+names are unique, so the Makefile's `INCDIRS := $(shell find c include -type d)`
 makes every `#include "foo.h"` resolve without path qualifiers. `include/` keeps
 only the cross-cutting kernel↔user ABI (`include/abi/aether_abi.h`).
 
@@ -44,26 +44,26 @@ mouse/keyboard/screenshot drivers. `tools/` is now **build tools only** (mkaex,
 mkfs, mkfont, genroots, gen_compile_commands, gen_libcss, mkwallpaper).
 
 ```
-src/boot/                                        multiboot + long-mode entry (asm)
-src/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
-src/drivers/{char,timer,block,net}/              device drivers
-src/fs/                                          vfs + aetherfs
-src/net/{link,ip,transport,core,dns,http,tls}/   network stack
-src/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
-src/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
-src/apps/                                        shared: aether.h clib.h crt0.asm crt0_cli.asm
-src/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp widgets
+c/boot/                                        multiboot + long-mode entry (asm)
+c/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
+c/drivers/{char,timer,block,net}/              device drivers
+c/fs/                                          vfs + aetherfs
+c/net/{link,ip,transport,core,dns,http,tls}/   network stack
+c/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
+c/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
+c/apps/                                        shared: aether.h clib.h crt0.asm crt0_cli.asm
+c/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp widgets
                                                  + aui.{h,c} = immediate-mode widget toolkit (linked into each)
-src/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
-src/apps/as/                                     AetherScript language (M20): /bin/as
-src/apps/browser/                                browser + render engine (dom, layout,
+c/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
+c/apps/as/                                     AetherScript language (M20): /bin/as
+c/apps/browser/                                browser + render engine (dom, layout,
                                                  css_engine, browser_paint, js_dom) — also links QuickJS
-src/apps/libc/                                   mini-libc (string/stdio/malloc/setjmp…)
+c/apps/libc/                                   mini-libc (string/stdio/malloc/setjmp…)
 ```
 
 **File paths quoted in the Notes below are pre-reorg names** (e.g. `net/tcp.c` is
-now `src/net/transport/tcp.c`, `kernel/wm.c` → `src/kernel/gui/wm.c`); basename +
-subsystem are unchanged, so they're easy to find under `src/`.
+now `c/net/transport/tcp.c`, `kernel/wm.c` → `c/kernel/gui/wm.c`); basename +
+subsystem are unchanged, so they're easy to find under `c/`.
 
 ## Roadmap
 
@@ -167,7 +167,7 @@ Key notes:
   both `x509_verify_signed_by` and the new `signed_by_root` (top cert trusted if
   its issuer is a held root, not only if the root is sent in-band). Trust store
   is a **130-root bundle** (`tools/roots/*.pem` -> `tools/genroots.py` ->
-  `src/crypto/trust/roots_bundle.inc`) -- a near-full mirror of the host
+  `c/crypto/trust/roots_bundle.inc`) -- a near-full mirror of the host
   Mozilla/NSS store (`/etc/ssl/cert.pem`), so the browser trusts essentially the
   whole public web. `genroots.py` globs `tools/roots/*.pem`, extracts just each
   root's SPKI (RSA n,e or EC P-256/P-384 point), and **skips** any key type the
@@ -289,7 +289,7 @@ provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
 
 M18 Real processes ✅ (the "toward a real OS" step: run software not written for
 Aether). A POSIX-ish process model independent of the window manager:
-`src/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
+`c/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
 cr3/fd[]/cwd); `thread->data` is a `struct proc*` (a GUI app is a proc whose
 `->gui` owns a window). **fork** = `vmm_clone_user` (eager copy of the private
 user subtree) + `thread_fork` building a child kstack that returns through
@@ -317,7 +317,7 @@ dirs. `tests/qmp/qmp_term.py` drives the GUI terminal; QMP key injection must be
 (PS/2 1-byte buffer).
 
 M19 virtio ✅ (the "VGA is too primitive" follow-up): a modern (virtio 1.0)
-paravirtual device stack in `src/drivers/virtio/` replacing the legacy devices.
+paravirtual device stack in `c/drivers/virtio/` replacing the legacy devices.
 `virtio.c` is the virtio-pci transport (parses the vendor-0x09 PCI caps to find
 the modern cfg structures in BAR4, negotiates VIRTIO_F_VERSION_1, sets up split
 virtqueues, synchronous request/poll). **virtio-blk** (`virtio_blk.c` +
@@ -333,7 +333,7 @@ virtio-gpu-pci` + `virtio-blk-pci`. (Post-M18 fixes also landed: Finder list
 clipping, runtime-mkdir clean dirs, the ATA IF-on/non-preempt fix, inode_trunc
 double-indirect free.)
 
-Pre-M20 prerequisite — **mini-libc 大补**: `src/apps/libc` grew into a real
+Pre-M20 prerequisite — **mini-libc 大补**: `c/apps/libc` grew into a real
 freestanding C lib. `io.c` is the single errno/syscall TU (POSIX wrappers over
 int 0x80); `stdio.c` is now **fd-backed buffered FILE I/O** (fopen/fread/fgets/
 fseek/…); added `fcntl.h`/`unistd.h`/`setjmp.h` (+`setjmp.asm`), `strtok`/`memmem`.
@@ -342,7 +342,7 @@ round-half-to-even). Only browser/JS + `/bin/as` link mini-libc; CLI coreutils u
 `aether.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
 `.clangd` (full INCDIRS) kill the host-SDK false-positive squiggles.
 
-M20 AetherScript ✅: a **from-scratch language**, `as`/`.as`, in `src/apps/as/`
+M20 AetherScript ✅: a **from-scratch language**, `as`/`.as`, in `c/apps/as/`
 (clox-lineage: single-pass compiler → flat bytecode → stack VM; Python-ish
 indentation). **A1** lexer (INDENT/DEDENT) + Pratt compiler + VM: nil/bool/int(i64)/
 float(double), arithmetic/cmp/logic (short-circuit), if/elif/else, while, def/

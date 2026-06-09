@@ -1,34 +1,22 @@
 //! Aether kernel — Rust modules (`#![no_std]`, target `x86_64-unknown-none`).
 //!
-//! Hybrid C+Rust strategy: Rust owns the **memory-safety-critical, untrusted-input
-//! parsers** (where the security audit found whole bug classes); the C kernel keeps
-//! the core, drivers, and scheduler (the FFI boundary cost is only worth paying for
-//! modules with a narrow `(ptr,len) -> result` interface and bounds-heavy internals).
-//!
-//! This crate compiles to a `staticlib` and links with the C objects via ld.lld.
-//! Functions exposed to C are `#[no_mangle] extern "C"`; calls into C are `unsafe`.
+//! Hybrid C+Rust: Rust owns the **memory-safety-critical, untrusted-input parsers**
+//! (the bug class the security audit kept finding); the C kernel keeps the core,
+//! drivers, and scheduler. This crate compiles to a `staticlib` and links with the
+//! C objects via ld.lld. C-facing functions are `#[no_mangle] extern "C"`; calls
+//! into C are `unsafe`.
 
 #![no_std]
 
 use core::panic::PanicInfo;
 
-mod inflate;   /* RFC1951/1950 inflate, ported to safe Rust -- replaces inflate.c */
+mod inflate; // RFC 1951/1950 DEFLATE/zlib, ported to safe Rust (replaces inflate.c)
 
-extern "C" {
-    fn serial_puts(s: *const u8); /* C: void serial_puts(const char *) */
-}
-
-/// Boot self-test: proves the C->Rust call, the Rust->C call, and the no_std link
-/// all work. Called once from kernel_main.
-#[no_mangle]
-pub extern "C" fn rust_selftest() {
-    unsafe {
-        serial_puts(b"[rust] hello -- no_std rust linked into the C kernel (x86_64-unknown-none)\n\0".as_ptr());
-    }
-}
-
+// The crate is deliberately FREE of any kernel FFI so the same staticlib links
+// into BOTH the C kernel AND the ring-3 browser (which has its own image pipeline
+// and cannot reach kernel symbols). inflate is written to never panic (every error
+// path returns -1), so this handler is a never-firing lang-item: just halt.
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    unsafe { serial_puts(b"[rust] PANIC\n\0".as_ptr()); }
     loop {}
 }

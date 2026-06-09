@@ -113,24 +113,24 @@ file in Code Studio, or open the Browser and load `https://en.wikipedia.org`.
 
 ## Source layout
 
-All source lives under `src/`, with headers colocated next to their `.c` (header
+All source lives under `c/`, with headers colocated next to their `.c` (header
 names are unique, so every `#include "foo.h"` resolves via the Makefile's `INCDIRS`).
 `include/` holds only the cross-cutting kernel↔user ABI.
 
 ```text
-src/boot/                                       Multiboot2 + long-mode entry, ISR stubs, ring-3 entry (nasm)
-src/kernel/{core,cpu,mm,sched,exec,gui,pci}/    kernel by subsystem (incl. wm = window manager + GUI syscalls, SMP)
-src/drivers/{char,timer,block,net,virtio}/      device drivers (PS/2, PIT/RTC, ATA/NVMe/virtio-blk, e1000, virtio-gpu)
-src/fs/                                          VFS + AetherFS (hierarchical read-write inode FS)
-src/net/{link,ip,transport,core,dns,http,tls}/  network stack: eth/arp/ip/icmp/udp/dns/tcp/http + TLS 1.3 + x509
-src/crypto/{hash,aead,pubkey,trust}/            from-scratch crypto (SHA, HMAC/HKDF, ChaCha20-Poly1305, AES-GCM, X25519, ECDSA, RSA, roots)
-src/lib/{image,text}/                            shared libs (inflate/png/gif, utf8, TrueType raster)
-src/apps/                                        ring-3 apps + shared aether.h / clib.h / crt0
-src/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Code Studio + the aui toolkit
-src/apps/coreutils/                              /bin/sh + coreutils
-src/apps/as/                                     AetherScript: /bin/as (lexer, compiler, VM)
-src/apps/browser/                                browser + render engine (dom, layout, css_engine, paint, js_dom) + QuickJS
-src/apps/libc/                                   from-scratch freestanding mini-libc
+c/boot/                                       Multiboot2 + long-mode entry, ISR stubs, ring-3 entry (nasm)
+c/kernel/{core,cpu,mm,sched,exec,gui,pci}/    kernel by subsystem (incl. wm = window manager + GUI syscalls, SMP)
+c/drivers/{char,timer,block,net,virtio}/      device drivers (PS/2, PIT/RTC, ATA/NVMe/virtio-blk, e1000, virtio-gpu)
+c/fs/                                          VFS + AetherFS (hierarchical read-write inode FS)
+c/net/{link,ip,transport,core,dns,http,tls}/  network stack: eth/arp/ip/icmp/udp/dns/tcp/http + TLS 1.3 + x509
+c/crypto/{hash,aead,pubkey,trust}/            from-scratch crypto (SHA, HMAC/HKDF, ChaCha20-Poly1305, AES-GCM, X25519, ECDSA, RSA, roots)
+c/lib/{image,text}/                            shared libs (inflate/png/gif, utf8, TrueType raster)
+c/apps/                                        ring-3 apps + shared aether.h / clib.h / crt0
+c/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Code Studio + the aui toolkit
+c/apps/coreutils/                              /bin/sh + coreutils
+c/apps/as/                                     AetherScript: /bin/as (lexer, compiler, VM)
+c/apps/browser/                                browser + render engine (dom, layout, css_engine, paint, js_dom) + QuickJS
+c/apps/libc/                                   from-scratch freestanding mini-libc
 third_party/                                     ported, not from-scratch: QuickJS, NetSurf LibCSS, musl libm
 include/abi/aether_abi.h                         the app/syscall ABI (kernel ↔ userland)
 tools/                                           mkfs.py, mkaex.py, mkfont.py, genroots.py, QMP screenshot/CI drivers
@@ -149,7 +149,7 @@ docs/superpowers/specs/                          design specs (spec → plan →
 
 ## AetherScript
 
-A from-scratch language — not a port — in `src/apps/as/` (~3,400 lines of C +
+A from-scratch language — not a port — in `c/apps/as/` (~3,400 lines of C +
 assembly): a clox-lineage single-pass compiler that emits flat bytecode for a
 computed-goto stack VM. Python-ish (indentation blocks, dynamic types), with `def`,
 `if`/`elif`/`else`, `while`, `for … in range()`/lists, lists + dicts + strings,
@@ -165,7 +165,7 @@ and compiles modules to `.la` bytecode.
 The **LibAether** standard library (`/usr/as/lib`, ~1,450 lines of AetherScript)
 provides `seq`, `dicts`, `strings`, `sets`, `stats`, `random`, `paths`, `bits`,
 `math`, and `mathx`, with a `test` assertion module. **Code Studio**
-(`src/apps/gui/studio.c`) is its IDE: a syntax-highlighting editor that saves, runs
+(`c/apps/gui/studio.c`) is its IDE: a syntax-highlighting editor that saves, runs
 `/bin/as` over a pipe into an output pane, and jumps the caret to the reported error
 line.
 

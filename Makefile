@@ -7,7 +7,7 @@
 #   make test   headless boot, assert the kernel reaches 64-bit C
 #   make clean  remove build artifacts
 #
-# Source layout: everything lives under src/ (boot, kernel, drivers, fs, net,
+# Source layout: everything lives under c/ (boot, kernel, drivers, fs, net,
 # crypto, lib, apps). Headers sit next to their .c; header names are unique, so
 # -I covers every source dir (generated below) and #include "foo.h" just works.
 # include/ holds only the cross-cutting kernel<->user ABI.
@@ -34,7 +34,7 @@ GRUB_RESCUE := i686-elf-grub-mkrescue
 QEMU        := qemu-system-x86_64
 
 # Colocated headers resolve via -I across every source dir (names are unique).
-INCDIRS := $(addprefix -I,$(shell find src include -type d))
+INCDIRS := $(addprefix -I,$(shell find C include -type d))
 
 CFLAGS  := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
@@ -49,11 +49,11 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 $(INCDIRS)
 
-# Kernel sources. The browser render pipeline lives in src/apps/browser, not here.
+# Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
 # inflate.c is excluded: it was ported to Rust (rust/src/inflate.rs provides the
 # inflate_raw/zlib_decompress symbols) -- the first hybrid C+Rust module.
-C_SRC   := $(filter-out src/lib/image/inflate.c,$(shell find src/kernel src/drivers src/lib src/fs src/net src/crypto -name '*.c'))
-ASM_SRC := $(wildcard src/boot/*.asm)
+C_SRC   := $(filter-out c/lib/image/inflate.c,$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
 
@@ -78,7 +78,7 @@ $(RUST_LIB): $(RUST_SRC)
 	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release --target x86_64-unknown-none
 
 # roots.c #includes the generated bundle; rebuild it when the bundle changes.
-$(BUILD)/src/crypto/trust/roots.o: src/crypto/trust/roots_bundle.inc src/crypto/trust/roots.h
+$(BUILD)/c/crypto/trust/roots.o: c/crypto/trust/roots_bundle.inc c/crypto/trust/roots.h
 
 $(BUILD)/%.o: %.asm
 	@mkdir -p $(dir $@)
@@ -95,10 +95,10 @@ $(ISO): $(KERNEL) grub.cfg
 
 # --- userland applications (.aex), each a ring-3 process ---
 # APP_RULE: name, link base, display name, ext, icon-glyph, "r g b" color
-APPDIR := src/apps
+APPDIR := c/apps
 # GUIDIR = windowed apps (link aether.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
-GUIDIR := src/apps/gui
-CLIDIR := src/apps/coreutils
+GUIDIR := c/apps/gui
+CLIDIR := c/apps/coreutils
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
 $(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/aether.h
 	@mkdir -p $(BUILD)/apps
@@ -123,13 +123,13 @@ $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 $(eval $(call APP_RULE,preview, 0x48000000,Preview,-,P,200,150,110))
 # Code Studio links the AetherScript completion engine (complete.o) for IntelliSense.
-$(BUILD)/apps/complete.o: src/apps/as/complete.c src/apps/as/complete.h
+$(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c src/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o src/apps/as/complete.h
+	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
+$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Isrc/apps/as
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
 	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
@@ -161,13 +161,13 @@ AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $
 QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
               third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c \
               third_party/quickjs/libbf.c
-ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard src/apps/libc/src/*.c)
+ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard c/apps/libc/src/*.c)
 JS_INC     := -Ithird_party/libm -Ithird_party/quickjs    # mini-libc covered by INCDIRS
 JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aether-2024"' -DAETHER_OS -DCONFIG_STACK_CHECK $(JS_INC)
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(ENGINE_SRCS))
 
 # mini-libc asm helpers (setjmp/longjmp) join the engine bundle.
-LIBC_ASM    := $(wildcard src/apps/libc/src/*.asm)
+LIBC_ASM    := $(wildcard c/apps/libc/src/*.asm)
 ENGINE_OBJ  += $(patsubst %.asm,$(BUILD)/jsobj/%.o,$(LIBC_ASM))
 
 $(BUILD)/jsobj/%.o: %.c
@@ -183,10 +183,12 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $@
 
 # --- browser: render pipeline + image codecs + LibCSS, all into one ring-3 app ---
-BROWSER_PIPE := src/apps/browser/dom.c src/apps/browser/layout.c \
-                src/apps/browser/browser_rt.c src/apps/browser/browser_paint.c \
-                src/apps/browser/css_vars.c \
-                src/lib/image/inflate.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/img.c
+# inflate is gone -- the ring-3 browser links the same Rust staticlib as the kernel
+# (rust/src/inflate.rs provides inflate_raw/zlib_decompress; the crate is FFI-free).
+BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
+                c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
+                c/apps/browser/css_vars.c \
+                c/lib/image/png.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
 $(BUILD)/browserobj/%.o: %.c
@@ -198,14 +200,14 @@ CSS_DIR := third_party/css
 CSS_INC := -I$(CSS_DIR)/libwapcaplet/include -I$(CSS_DIR)/libparserutils/include \
            -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src -I$(CSS_DIR)/libparserutils/src
 CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c)
-CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/src/apps/browser/css_engine.o
+CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/browser/css_engine.o
 
 $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/src/apps/browser/browser.o $(BUILD)/jsobj/src/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(BUILD)/apps/crt0.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/src/apps/browser/browser.o $(BUILD)/jsobj/src/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ)
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) --end-group
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
@@ -213,16 +215,16 @@ $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 # --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
 # can't be reused: those programs use aether.h inline syscalls, not mini-libc.) ---
-AS_C    := $(wildcard src/apps/as/*.c)
-AS_LIBC := $(wildcard src/apps/libc/src/*.c)
-AS_LASM := $(wildcard src/apps/libc/src/*.asm)
+AS_C    := $(wildcard c/apps/as/*.c)
+AS_LIBC := $(wildcard c/apps/libc/src/*.c)
+AS_LASM := $(wildcard c/apps/libc/src/*.asm)
 AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
             $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) \
             $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
 # as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
 # rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
 # stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Aether.
-AS_HDRS := $(wildcard src/apps/as/*.h)
+AS_HDRS := $(wildcard c/apps/as/*.h)
 
 $(BUILD)/asobj/%.o: %.c $(AS_HDRS)
 	@mkdir -p $(dir $@)
@@ -304,7 +306,7 @@ test-shell: $(ISO) $(DISK)
 # Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).
 test-tcp-host:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Isrc/net/transport
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Ic/net/transport
 	@./$(BUILD)/tcp_test
 
 # On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
@@ -323,26 +325,26 @@ test-smp: $(ISO) $(DISK)
 # AetherScript host unit test: the language core (lexer/compiler/vm/value/object)
 # is portable C, so it builds and runs natively -- no QEMU. Asserts print output
 # for arithmetic/control-flow/recursion incl. fib(20).
-AS_CORE := src/apps/as/value.c src/apps/as/as_io.c src/apps/as/lexer.c \
-            src/apps/as/compiler.c src/apps/as/vm.c src/apps/as/object.c \
-            src/apps/as/as_native.c src/apps/as/as_ll.c src/apps/as/as_bc.c
+AS_CORE := c/apps/as/value.c c/apps/as/as_io.c c/apps/as/lexer.c \
+            c/apps/as/compiler.c c/apps/as/vm.c c/apps/as/object.c \
+            c/apps/as/as_native.c c/apps/as/as_ll.c c/apps/as/as_bc.c
 test-as:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test
 
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
 test-complete:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c src/apps/as/complete.c -Isrc/apps/as
+	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/complete.c -Ic/apps/as
 	@$(BUILD)/complete_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
 # or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
 test-as-gcstress:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test_gcstress
 
 # Host `asc`: the as core + the as.c entry built natively (no --target -> arm64
@@ -355,9 +357,9 @@ ASC := $(BUILD)/asc
 # opcode change forces asc (and therefore every .la) to rebuild. Without this
 # dep a bumped AS_BC_VERSION silently keeps stale .la files that the kernel's
 # as_load then rejects (cf. the roots_bundle.inc dep gotcha).
-$(ASC): $(AS_CORE) src/apps/as/as.c src/apps/as/as.h
+$(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -o $@ src/apps/as/as.c $(AS_CORE) -Isrc/apps/as -Iinclude/abi
+	$(CC) -O2 -o $@ c/apps/as/as.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 
 # Precompile the LibAether library modules (fsroot/as/lib/*.as) to .la (compiled
 # bytecode). -c is compile-only (no run), so even a lib with module-mate calls
@@ -371,8 +373,8 @@ test-png:
 	@mkdir -p $(BUILD)/pngtest
 	@python3 tests/unit/png_gen.py $(BUILD)/pngtest
 	@$(CC) -O2 -o $(BUILD)/png_test tests/unit/png_test.c \
-	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/inflate.c \
-	    -Isrc/lib/image -Isrc/kernel/mm
+	    c/lib/image/img.c c/lib/image/png.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/inflate.c \
+	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/png_test $(BUILD)/pngtest
 
 # JPEG baseline decoder host test: PIL encodes baseline JPEGs (grayscale + colour,
@@ -381,13 +383,13 @@ test-png:
 # so we compare two decoders of the same bytes within a tight per-channel tolerance,
 # never against the original pixels. Also asserts progressive/CMYK fail gracefully.
 # Needs PIL + djpeg. (Ad-hoc tests tests/unit/img_test.c, tests/unit/img_fuzz.c have no
-# target; if run by hand, add src/lib/image/jpeg.c to their source list.)
+# target; if run by hand, add c/lib/image/jpeg.c to their source list.)
 test-jpeg:
 	@mkdir -p $(BUILD)/jpegtest
 	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest
 	@$(CC) -O2 -o $(BUILD)/jpeg_test tests/unit/jpeg_test.c \
-	    src/lib/image/img.c src/lib/image/png.c src/lib/image/gif.c src/lib/image/jpeg.c src/lib/image/inflate.c \
-	    -Isrc/lib/image -Isrc/kernel/mm
+	    c/lib/image/img.c c/lib/image/png.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/inflate.c \
+	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
 
 clean:

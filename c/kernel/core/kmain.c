@@ -23,14 +23,12 @@
 
 #define BOOT_OK_MARKER "AETHER_BOOT_OK"
 
-void rust_selftest(void);          /* hybrid C+Rust: implemented in rust/src/lib.rs */
-int  rust_inflate_selftest(void);  /* rust/src/inflate.rs -- DEFLATE port self-check */
+int rust_inflate_selftest(void);   /* rust/src/inflate.rs -- DEFLATE port self-check */
 
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
     serial_puts("\n[aether] long mode, C kernel running\n");
-    rust_selftest();        /* prove the no_std Rust staticlib is linked + FFI works */
     serial_puts(rust_inflate_selftest() == 0 ? "[rust] inflate selftest OK\n"
                                              : "[rust] inflate selftest FAIL\n");
 

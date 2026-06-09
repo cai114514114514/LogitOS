@@ -1,6 +1,6 @@
 # Make clangd analyze the tree the way the Makefile builds it: x86_64-elf
 # freestanding target with every project include dir on the path, so our own
-# freestanding headers (<stdio.h>, <unistd.h>, ...) resolve to src/apps/libc
+# freestanding headers (<stdio.h>, <unistd.h>, ...) resolve to c/apps/libc
 # instead of the host macOS SDK. Per-file specifics (engine -D defines) live in
 # compile_commands.json -- regenerate it with:  python3 tools/gen_compile_commands.py
 # (clangd merges these Add: flags on top of that database; this list is also a
@@ -21,46 +21,46 @@ CompileFlags:
     # --- project include dirs (mirror the Makefile's INCDIRS) ---
     - -Iinclude
     - -Iinclude/abi
-    - -Isrc
-    - -Isrc/apps
-    - -Isrc/apps/as
-    - -Isrc/apps/browser
-    - -Isrc/apps/libc
-    - -Isrc/apps/libc/include
-    - -Isrc/apps/libc/include/sys
-    - -Isrc/apps/libc/src
-    - -Isrc/boot
-    - -Isrc/crypto
-    - -Isrc/crypto/aead
-    - -Isrc/crypto/hash
-    - -Isrc/crypto/pubkey
-    - -Isrc/crypto/trust
-    - -Isrc/drivers
-    - -Isrc/drivers/block
-    - -Isrc/drivers/char
-    - -Isrc/drivers/net
-    - -Isrc/drivers/timer
-    - -Isrc/drivers/virtio
-    - -Isrc/fs
-    - -Isrc/kernel
-    - -Isrc/kernel/core
-    - -Isrc/kernel/cpu
-    - -Isrc/kernel/exec
-    - -Isrc/kernel/gui
-    - -Isrc/kernel/mm
-    - -Isrc/kernel/pci
-    - -Isrc/kernel/sched
-    - -Isrc/lib
-    - -Isrc/lib/image
-    - -Isrc/lib/text
-    - -Isrc/net
-    - -Isrc/net/core
-    - -Isrc/net/dns
-    - -Isrc/net/http
-    - -Isrc/net/ip
-    - -Isrc/net/link
-    - -Isrc/net/tls
-    - -Isrc/net/transport
+    - -Ic
+    - -Ic/apps
+    - -Ic/apps/as
+    - -Ic/apps/browser
+    - -Ic/apps/libc
+    - -Ic/apps/libc/include
+    - -Ic/apps/libc/include/sys
+    - -Ic/apps/libc/src
+    - -Ic/boot
+    - -Ic/crypto
+    - -Ic/crypto/aead
+    - -Ic/crypto/hash
+    - -Ic/crypto/pubkey
+    - -Ic/crypto/trust
+    - -Ic/drivers
+    - -Ic/drivers/block
+    - -Ic/drivers/char
+    - -Ic/drivers/net
+    - -Ic/drivers/timer
+    - -Ic/drivers/virtio
+    - -Ic/fs
+    - -Ic/kernel
+    - -Ic/kernel/core
+    - -Ic/kernel/cpu
+    - -Ic/kernel/exec
+    - -Ic/kernel/gui
+    - -Ic/kernel/mm
+    - -Ic/kernel/pci
+    - -Ic/kernel/sched
+    - -Ic/lib
+    - -Ic/lib/image
+    - -Ic/lib/text
+    - -Ic/net
+    - -Ic/net/core
+    - -Ic/net/dns
+    - -Ic/net/http
+    - -Ic/net/ip
+    - -Ic/net/link
+    - -Ic/net/tls
+    - -Ic/net/transport
     # --- third-party (engine + LibCSS) ---
     - -Ithird_party/quickjs
     - -Ithird_party/libm

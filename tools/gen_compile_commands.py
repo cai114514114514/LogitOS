@@ -15,7 +15,7 @@ ROOT = os.getcwd()
 def find(*args):
     return subprocess.check_output(["find", *args]).decode().split()
 
-incdirs = find("src", "include", "-type", "d")
+incdirs = find("c", "include", "-type", "d")
 INC = [f"-I{d}" for d in incdirs]
 
 JS_INC  = ["-Ithird_party/libm", "-Ithird_party/quickjs"]
@@ -38,12 +38,12 @@ def flags_for(path):
     if path.startswith("third_party/css/"):
         return BASE + ["-fcommon", "-D_ALIGNED=", "-DWITHOUT_ICONV_FILTER"] + CSS_INC + INC
     if (path.startswith("third_party/quickjs/") or path.startswith("third_party/libm/")
-            or path.startswith("src/apps/libc/") or path.startswith("src/apps/browser/")
-            or path.startswith("src/apps/js")):
+            or path.startswith("c/apps/libc/") or path.startswith("c/apps/browser/")
+            or path.startswith("c/apps/js")):
         return BASE + ENGINE + INC
     return BASE + INC
 
-files = find("src", "third_party", "-name", "*.c")
+files = find("c", "third_party", "-name", "*.c")
 db = [{"directory": ROOT, "file": f, "arguments": flags_for(f) + ["-c", f]} for f in files]
 
 with open("compile_commands.json", "w") as fh:
