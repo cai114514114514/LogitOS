@@ -99,12 +99,17 @@ int fb_init(uint64_t mb_info_addr)
     return 1;
 }
 
+/* The clip rect is an app-surface concept (set via SYS_GUI_CLIP). It must NOT
+ * affect the WM's own screen compositing: an app can be preempted between
+ * gui_clip(set) and gui_clip(clear), and the WM (drawing to &screen) would
+ * otherwise inherit that stale clip and drop chrome (e.g. the menu-bar text).
+ * So the clip applies only when the active target is an app surface. */
 void fb_put(int x, int y, uint32_t color)
 {
     struct surface *s = T ? T : &screen;
     if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return;
-    if (clip_on && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
+    if (clip_on && s != &screen && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
         return;
     s->px[y * s->w + x] = color;
 }
@@ -114,7 +119,7 @@ static uint32_t fb_get(int x, int y)
     struct surface *s = T ? T : &screen;
     if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return 0;
-    if (clip_on && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
+    if (clip_on && s != &screen && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
         return 0;
     return s->px[y * s->w + x];
 }
@@ -427,6 +432,113 @@ void fb_blur_rect(int x, int y, int w, int h, int radius, int corner)
                 s->px[(long)(y + j) * s->w + (x + i)] = fb_rgb((uint8_t)(sr / cnt), (uint8_t)(sg / cnt), (uint8_t)(sb / cnt));
             int a = j + radius + 1; if (a < h)  { unpack(tmp[(long)a * w + i], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
             int d = j - radius;     if (d >= 0) { unpack(tmp[(long)d * w + i], &r, &g, &b); sr -= r; sg -= g; sb -= b; cnt--; }
+        }
+    }
+}
+
+/* integer square root */
+static unsigned isqrt_u(unsigned long v)
+{
+    unsigned long r = 0, b = 1UL << 30;
+    while (b > v) b >>= 2;
+    while (b) { if (v >= r + b) { v -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
+    return (unsigned)r;
+}
+
+/* "Liquid Glass": frost the live backdrop of a rounded-rect panel AND refract it
+ * through the curved rim, with a specular rim highlight + body tint -- Apple's
+ * Liquid Glass material, integer-only (modelled from a Python optics study,
+ * /tmp/glass_study.py). Pipeline: copy the backdrop -> separable box blur -> for
+ * each pixel compute the rounded-rect signed distance + outward normal; within an
+ * edge band sample the blurred backdrop displaced INWARD along the normal (the
+ * lens/bevel that bends the background at the rim); tint; add a rim highlight
+ * where the bevel faces the (up-left) light and a faint contact shadow opposite.
+ * Pixels outside the rounded rect are left untouched (so a drop shadow shows). */
+static uint32_t *glass_buf;
+static int glass_buf_n;
+static int *glass_line;
+static int glass_line_n;
+void fb_liquid_glass(int x, int y, int w, int h, int radius,
+                     uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta)
+{
+    struct surface *s = T ? T : &screen;
+    if (!s->px) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > s->w) w = s->w - x;
+    if (y + h > s->h) h = s->h - y;
+    if (w <= 0 || h <= 0 || radius < 1) return;
+    if (w * h > glass_buf_n) { if (glass_buf) kfree(glass_buf); glass_buf = (uint32_t *)kmalloc((unsigned long)w * h * 4); glass_buf_n = glass_buf ? w * h : 0; }
+    int lmax = w > h ? w : h;
+    if (lmax * 3 > glass_line_n) { if (glass_line) kfree(glass_line); glass_line = (int *)kmalloc((unsigned long)lmax * 3 * sizeof(int)); glass_line_n = glass_line ? lmax * 3 : 0; }
+    if (!glass_buf || !glass_line) { fb_blur_rect(x, y, w, h, 6, radius); return; }   /* frost-only fallback */
+    uint32_t *g = glass_buf;
+
+    for (int j = 0; j < h; j++) {            /* copy live backdrop -> scratch */
+        const uint32_t *srow = s->px + (long)(y + j) * s->w + x;
+        uint32_t *drow = g + (long)j * w;
+        for (int i = 0; i < w; i++) drow[i] = srow[i];
+    }
+    const int RB = 6;
+    for (int j = 0; j < h; j++) {            /* blur: horizontal moving sum */
+        uint32_t *row = g + (long)j * w; int sr = 0, sg = 0, sb = 0, cnt = 0, r, gg, b;
+        for (int k = 0; k <= RB && k < w; k++) { unpack(row[k], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
+        for (int i = 0; i < w; i++) {
+            glass_line[i * 3] = sr / cnt; glass_line[i * 3 + 1] = sg / cnt; glass_line[i * 3 + 2] = sb / cnt;
+            int a = i + RB + 1; if (a < w)  { unpack(row[a], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
+            int d = i - RB;     if (d >= 0) { unpack(row[d], &r, &gg, &b); sr -= r; sg -= gg; sb -= b; cnt--; }
+        }
+        for (int i = 0; i < w; i++) row[i] = fb_rgb((uint8_t)glass_line[i * 3], (uint8_t)glass_line[i * 3 + 1], (uint8_t)glass_line[i * 3 + 2]);
+    }
+    for (int i = 0; i < w; i++) {            /* blur: vertical moving sum */
+        int sr = 0, sg = 0, sb = 0, cnt = 0, r, gg, b;
+        for (int k = 0; k <= RB && k < h; k++) { unpack(g[(long)k * w + i], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
+        for (int j = 0; j < h; j++) {
+            glass_line[j * 3] = sr / cnt; glass_line[j * 3 + 1] = sg / cnt; glass_line[j * 3 + 2] = sb / cnt;
+            int a = j + RB + 1; if (a < h)  { unpack(g[(long)a * w + i], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
+            int d = j - RB;     if (d >= 0) { unpack(g[(long)d * w + i], &r, &gg, &b); sr -= r; sg -= gg; sb -= b; cnt--; }
+        }
+        for (int j = 0; j < h; j++) g[(long)j * w + i] = fb_rgb((uint8_t)glass_line[j * 3], (uint8_t)glass_line[j * 3 + 1], (uint8_t)glass_line[j * 3 + 2]);
+    }
+
+    int cx = w / 2, cy = h / 2, ix = cx - radius, iy = cy - radius;
+    int minside = w < h ? w : h;
+    int E = 22; if (E > minside / 2) E = minside / 2; if (E < 4) E = 4;   /* thin panels -> smaller band */
+    int REFRACT = 18; if (REFRACT > E) REFRACT = E;
+    const int SPEC = 150;
+    int eband = E * 7 / 10; if (eband < 1) eband = 1;
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            int px = i - cx, py = j - cy, ax = px < 0 ? -px : px, ay = py < 0 ? -py : py;
+            int qx = ax - ix, qy = ay - iy, qxc = qx > 0 ? qx : 0, qyc = qy > 0 ? qy : 0;
+            int outd = (qxc || qyc) ? (int)isqrt_u((unsigned long)qxc * qxc + (unsigned long)qyc * qyc) : 0;
+            int ins = qx > qy ? qx : qy; if (ins > 0) ins = 0;
+            int sdf = outd + ins - radius;
+            if (sdf >= 0) continue;                              /* outside the rounded rect */
+            int gx, gy;
+            if (qxc > 0 || qyc > 0) { gx = (px < 0 ? -1 : 1) * qxc; gy = (py < 0 ? -1 : 1) * qyc; }
+            else if (qx > qy)       { gx = (px < 0 ? -1 : 1); gy = 0; }
+            else                    { gx = 0; gy = (py < 0 ? -1 : 1); }
+            int nlen = (int)isqrt_u((unsigned long)gx * gx + (unsigned long)gy * gy); if (!nlen) nlen = 1;
+            int nx = gx * 256 / nlen, ny = gy * 256 / nlen;       /* outward unit x256 */
+            int depth = -sdf, t = depth * 256 / E; if (t > 256) t = 256; int omt = 256 - t;
+            int disp = REFRACT * omt * omt / 65536;               /* (1-t)^2 * REFRACT px */
+            int sxp = i - nx * disp / 256, syp = j - ny * disp / 256;
+            if (sxp < 0) sxp = 0; if (sxp >= w) sxp = w - 1;
+            if (syp < 0) syp = 0; if (syp >= h) syp = h - 1;
+            int r, gg, b; unpack(g[(long)syp * w + sxp], &r, &gg, &b);
+            r += (tr - r) * ta / 255; gg += (tg - gg) * ta / 255; b += (tb - b) * ta / 255;
+            int band = 256 - depth * 256 / eband; if (band < 0) band = 0;
+            int facing = (nx * (-154) + ny * (-205)) / 256; if (facing < 0) facing = 0; if (facing > 256) facing = 256;
+            int hi = facing * band / 256; hi = hi * hi / 256; hi = hi * SPEC / 256;
+            r += (255 - r) * hi / 256; gg += (255 - gg) * hi / 256; b += (255 - b) * hi / 256;
+            int op = (nx * 154 + ny * 205) / 256; if (op < 0) op = 0;
+            int sh = op * band / 256; sh = sh * sh / 256; sh = sh * 46 / 256;
+            r -= r * sh / 256; gg -= gg * sh / 256; b -= b * sh / 256;
+            if (r < 0) r = 0; if (r > 255) r = 255;
+            if (gg < 0) gg = 0; if (gg > 255) gg = 255;
+            if (b < 0) b = 0; if (b > 255) b = 255;
+            s->px[(long)(y + j) * s->w + (x + i)] = fb_rgb((uint8_t)r, (uint8_t)gg, (uint8_t)b);
         }
     }
 }

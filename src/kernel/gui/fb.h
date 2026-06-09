@@ -73,6 +73,12 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
  * rounds the written region so a rounded panel leaves no blurred corner nubs. */
 void fb_blur_rect(int x, int y, int w, int h, int radius, int corner);
 
+/* "Liquid Glass" material: frost + rim refraction + specular highlight + tint of a
+ * rounded-rect panel over the live backdrop on the current target. tint = body
+ * colour (white for light glass, dark for dark glass), ta = its 0..255 strength. */
+void fb_liquid_glass(int x, int y, int w, int h, int radius,
+                     uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta);
+
 /* Vertical gradient fills (top color at the first row -> bottom color). */
 void fb_fill_vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
 void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom);

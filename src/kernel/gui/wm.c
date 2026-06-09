@@ -697,9 +697,9 @@ static void draw_clock(void);
 static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
 static void draw_menubar(void)
 {
-    fb_blur_rect(0, 0, W, MENUBAR_H, 6, 0);                  /* frost live backdrop */
-    if (g_ui_dark) fb_blend_rect(0, 0, W, MENUBAR_H, 28, 28, 34, 165);   /* dark glass */
-    else           fb_blend_rect(0, 0, W, MENUBAR_H, 255, 255, 255, 120); /* light glass */
+    /* Liquid Glass menu bar (thin -> adaptive edge band) */
+    if (g_ui_dark) fb_liquid_glass(0, 0, W, MENUBAR_H, 2, 24, 24, 32, 150);
+    else           fb_liquid_glass(0, 0, W, MENUBAR_H, 2, 255, 255, 255, 110);
     fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
@@ -751,10 +751,9 @@ static void draw_dock(void)
     int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
     dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
     fb_blend_round_rect(dock_x0 - 1, dock_y0 + 7, dw + 2, dh, 28, 0, 0, 0, 50);    /* soft drop shadow */
-    fb_blur_rect(dock_x0, dock_y0, dw, dh, 6, 28);                                  /* frost the live backdrop */
-    if (g_ui_dark) fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 36, 36, 44, 120);   /* dark glass */
-    else           fb_blend_round_rect(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 58); /* light glass */
-    fb_blend_rect(dock_x0 + 16, dock_y0 + 1, dw - 32, 1, 255, 255, 255, g_ui_dark ? 60 : 115); /* top sheen */
+    /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
+    if (g_ui_dark) fb_liquid_glass(dock_x0, dock_y0, dw, dh, 28, 26, 26, 34, 104);
+    else           fb_liquid_glass(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 44);
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
