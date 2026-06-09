@@ -360,6 +360,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         fb_target(&w->surf); text_draw_mono(x, y, text, cell, color); fb_target(NULL);
         return 0;
     }
+    case SYS_GUI_ICON: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int id = (int)((b >> 16) & 0xFFFF), px = (int)(b & 0xFFFF);
+        fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
+        return 0;
+    }
     case SYS_GUI_FLUSH: {
         struct win *w = app_window(ap);          /* repaint just this app's window */
         if (w) dirty_rect(w->x, w->y, w->w, w->h); else dirty_full();

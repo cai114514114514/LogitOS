@@ -1,41 +1,49 @@
 #include "aui.h"
 
-/* Aether Files -- a ring-3 file manager (immediate-mode, aui toolkit).
+/* Aether Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
  *
- * Path bar + Up, a toolbar (New Folder/Rename/Delete/Copy/Cut/Paste), a
- * scrollable list view (icon + name + size), multi-select (plain/shift/ctrl
- * click), a right-click (EV_MOUSE_R) context menu, an in-app clipboard
- * (copy/cut + recursive copy_tree/delete_tree paste), inline rename/new-folder
- * text entry, Get Info, and double-click open-file / enter-folder.
+ * Layout: a sectioned SIDEBAR (个人收藏 / 位置) on the left, a TOOLBAR (back +
+ * folder title + Grid/List view toggle + New) across the top of the main area,
+ * and a content view that is either an ICON GRID (default, vector folder/file
+ * icons) or a LIST. Multi-select (plain/shift/ctrl), right-click context menu,
+ * in-app clipboard (copy/cut + recursive paste), inline rename / new-folder,
+ * Get Info, double-click open. Follows the system light/dark theme via aui.
  *
- * The app owns its own cwd (starts at "/") and always builds absolute paths,
- * so the kernel's cwd-relative resolution never surprises us. */
+ * The app owns its own cwd (starts at "/") and always builds absolute paths. */
 
-#define WINW   520
-#define WINH   420
-#define N       64          /* selection + clipboard cap */
-#define PMAX   128          /* path buffer size */
-#define ROW_H   22
-#define LIST_Y  92          /* first list row top */
-#define LIST_X  12
+#define WINW       640
+#define WINH       444
+#define SIDEBAR_W  168
+#define TOOLBAR_H  46
+#define CX         SIDEBAR_W          /* content origin x */
+#define CY         TOOLBAR_H          /* content origin y */
+#define CWID       (WINW - SIDEBAR_W) /* content width  */
+#define CHGT       (WINH - TOOLBAR_H) /* content height */
+#define GW         104                /* grid cell w */
+#define GH         96                 /* grid cell h */
+#define GICON      52                 /* grid icon px */
+#define LH         28                 /* list row h */
+#define N       64
+#define PMAX   128
 
 /* --- app state --- */
 static char cwd[PMAX] = "/";
-static int  sel[N];                 /* selected row indices into the current listing */
+static int  view_mode;              /* 0 = icon grid, 1 = list */
+static int  sel[N];
 static int  sel_count;
-static int  anchor = -1;            /* shift-select anchor row */
-static int  scroll;                 /* first visible row */
+static int  anchor = -1;
+static int  scroll;                 /* first visible item-row (cell-row in grid) */
 static int  rename_mode, newfolder_mode;
 static char editbuf[64];
 static int  menu_open, menu_x, menu_y;
-static char clip[N][PMAX];          /* in-app clipboard: absolute source paths */
-static int  clip_count, clip_cut;   /* clip_cut: 1 = move on paste, 0 = copy */
+static char clip[N][PMAX];
+static int  clip_count, clip_cut;
 static int  shift_down, ctrl_down;
 static int  last_click_row = -1, last_click_frame = -1, frame_no;
-static int  info_open;              /* Get Info panel showing */
+static int  info_open;
 static char info_text[256];
 
-/* --- tiny helpers (GUI apps use aether.h, not clib.h) --- */
+/* --- tiny helpers --- */
 static int  slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 static int  streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void scpy(char *d, const char *s, int max) { int i = 0; for (; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
@@ -51,7 +59,6 @@ static void itoa_(long v, char *b)
     b[p] = 0;
 }
 
-/* Join dir + name into dst, inserting a single '/' (mirrors clib.h path_join). */
 static void pjoin(char *dst, const char *dir, const char *name, int max)
 {
     int i = 0;
@@ -63,8 +70,6 @@ static void pjoin(char *dst, const char *dir, const char *name, int max)
 
 static int is_dir(const char *path) { return dir_count(path) >= 0; }
 
-/* 1 iff absolute path `b` equals `a` or is nested under it (a is an ancestor).
- * Used to refuse copy/move of a folder into itself or a descendant. */
 static int path_under(const char *a, const char *b)
 {
     int la = 0; while (a[la]) la++;
@@ -76,8 +81,7 @@ static int path_under(const char *a, const char *b)
     return lb == la || b[la] == '/';
 }
 
-/* --- recursive copy / delete (userland, via the fd + dir API) --- */
-
+/* --- recursive copy / delete --- */
 static int copy_file(const char *src, const char *dst)
 {
     int rf = sys_open(src, O_RDONLY);
@@ -98,9 +102,8 @@ static int copy_file(const char *src, const char *dst)
 static int copy_tree(const char *src, const char *dst)
 {
     if (!is_dir(src)) return copy_file(src, dst);
-    int n = dir_count(src);             /* capture BEFORE make_dir: if dst were under src,
-                                         * creating dst would inflate src's listing -> runaway */
-    if (make_dir(dst) < 0) { /* may already exist; continue regardless */ }
+    int n = dir_count(src);
+    if (make_dir(dst) < 0) { /* may exist */ }
     for (int i = 0; i < n; i++) {
         char nm[64];
         if (dir_name(src, i, nm) < 0 || !nm[0] || streq(nm, ".") || streq(nm, "..")) continue;
@@ -112,14 +115,10 @@ static int copy_tree(const char *src, const char *dst)
     return 0;
 }
 
-/* Delete a tree leaf-first. Deleting a dirent tombstones it, which shifts the
- * LIVE index of every later entry down by one -- so a captured-once `for i<n`
- * loop skips ~half the children. Instead always delete the FIRST live entry
- * until the directory is empty; `prev` breaks the loop if a child won't delete
- * (no progress), so a stuck entry can't spin forever. */
+static int delete_file_path(const char *p) { return delete_file(p); }
 static int delete_tree(const char *path)
 {
-    if (!is_dir(path)) return delete_file(path);
+    if (!is_dir(path)) return delete_file_path(path);
     char nm[64], child[PMAX];
     int prev = -1;
     for (;;) {
@@ -130,17 +129,13 @@ static int delete_tree(const char *path)
         pjoin(child, path, nm, PMAX);
         delete_tree(child);
     }
-    return delete_file(path);          /* the (now empty) directory itself */
+    return delete_file_path(path);
 }
 
 /* --- selection helpers --- */
 static void clear_sel(void) { sel_count = 0; }
 static int  in_sel(int row) { for (int i = 0; i < sel_count; i++) if (sel[i] == row) return 1; return 0; }
-static void add_sel(int row)
-{
-    if (in_sel(row) || sel_count >= N) return;
-    sel[sel_count++] = row;
-}
+static void add_sel(int row) { if (in_sel(row) || sel_count >= N) return; sel[sel_count++] = row; }
 static void toggle_sel(int row)
 {
     for (int i = 0; i < sel_count; i++)
@@ -156,7 +151,6 @@ static void select_range(int from, int to)
     for (int r = lo; r <= hi; r++) add_sel(r);
 }
 
-/* Build absolute path for listing row `i` into out. Returns 0 ok, -1 bad. */
 static int row_path(int i, char *out, int max, int *is_dir_out)
 {
     char nm[64];
@@ -167,39 +161,37 @@ static int row_path(int i, char *out, int max, int *is_dir_out)
     return 0;
 }
 
-/* --- actions --- */
+/* --- navigation --- */
+static void reset_view(void) { clear_sel(); scroll = 0; anchor = -1; info_open = 0; }
+
+static void navigate(const char *path) { scpy(cwd, path, PMAX); reset_view(); }
 
 static void go_up(void)
 {
     if (streq(cwd, "/")) return;
     int n = slen(cwd);
-    if (n > 1 && cwd[n - 1] == '/') n--;          /* trailing slash */
-    while (n > 1 && cwd[n - 1] != '/') n--;        /* strip leaf */
-    if (n > 1 && cwd[n - 1] == '/') n--;           /* drop the slash, unless root */
+    if (n > 1 && cwd[n - 1] == '/') n--;
+    while (n > 1 && cwd[n - 1] != '/') n--;
+    if (n > 1 && cwd[n - 1] == '/') n--;
     if (n < 1) n = 1;
     cwd[n] = 0;
     if (!cwd[0]) { cwd[0] = '/'; cwd[1] = 0; }
-    clear_sel(); scroll = 0; anchor = -1; info_open = 0;
+    reset_view();
 }
 
 static void enter_dir(const char *name)
 {
     char np[PMAX];
     pjoin(np, cwd, name, PMAX);
-    scpy(cwd, np, PMAX);
-    clear_sel(); scroll = 0; anchor = -1; info_open = 0;
+    navigate(np);
 }
 
 static void do_open(int row)
 {
     char path[PMAX]; int isd;
     if (row_path(row, path, PMAX, &isd) < 0) return;
-    if (isd) {
-        char nm[64]; dir_name(cwd, row, nm);
-        enter_dir(nm);
-    } else {
-        sys_open_path(path);
-    }
+    if (isd) { char nm[64]; dir_name(cwd, row, nm); enter_dir(nm); }
+    else sys_open_path(path);
 }
 
 static void do_delete(void)
@@ -222,7 +214,6 @@ static void do_copy(int cut)
     }
 }
 
-/* extract the leaf name of an absolute path into out */
 static void leaf_of(const char *path, char *out, int max)
 {
     int n = slen(path), e = n;
@@ -242,13 +233,11 @@ static void do_paste(void)
         if (!leaf[0]) continue;
         char dst[PMAX];
         pjoin(dst, cwd, leaf, PMAX);
-        /* skip if the destination is the source itself or nested under it --
-         * otherwise copy_tree would recurse into the copy it just made. */
         if (path_under(clip[i], dst)) continue;
         if (clip_cut) sys_rename(clip[i], dst);
         else          copy_tree(clip[i], dst);
     }
-    if (clip_cut) clip_count = 0;                    /* a cut item moves once */
+    if (clip_cut) clip_count = 0;
     clear_sel(); anchor = -1;
 }
 
@@ -266,27 +255,18 @@ static void commit_rename(void)
     if (editbuf[0] && sel_count == 1) {
         char old[PMAX]; int isd;
         if (row_path(sel[0], old, PMAX, &isd) == 0) {
-            char np[PMAX];
-            pjoin(np, cwd, editbuf, PMAX);
+            char np[PMAX]; pjoin(np, cwd, editbuf, PMAX);
             sys_rename(old, np);
         }
     }
     rename_mode = 0; editbuf[0] = 0; clear_sel(); anchor = -1;
 }
 
-static void start_newfolder(void)
-{
-    editbuf[0] = 0;
-    newfolder_mode = 1; rename_mode = 0; info_open = 0;
-}
+static void start_newfolder(void) { editbuf[0] = 0; newfolder_mode = 1; rename_mode = 0; info_open = 0; }
 
 static void commit_newfolder(void)
 {
-    if (editbuf[0]) {
-        char np[PMAX];
-        pjoin(np, cwd, editbuf, PMAX);
-        make_dir(np);
-    }
+    if (editbuf[0]) { char np[PMAX]; pjoin(np, cwd, editbuf, PMAX); make_dir(np); }
     newfolder_mode = 0; editbuf[0] = 0;
 }
 
@@ -297,7 +277,6 @@ static void do_get_info(void)
     if (row_path(sel[0], path, PMAX, &isd) < 0) { info_open = 0; return; }
     char nm[64]; long sz = dir_name(cwd, sel[0], nm);
     char num[24];
-    /* compose: Name / Type / Size (+ item count for dirs) */
     char *o = info_text; int oi = 0;
     const char *seg;
     seg = "Name: "; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
@@ -307,12 +286,10 @@ static void do_get_info(void)
     o[oi++] = '\n';
     if (isd) {
         seg = "Items: "; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
-        itoa_(dir_count(path), num);
-        for (int i = 0; num[i]; i++) o[oi++] = num[i];
+        itoa_(dir_count(path), num); for (int i = 0; num[i]; i++) o[oi++] = num[i];
     } else {
         seg = "Size: "; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
-        itoa_(sz, num);
-        for (int i = 0; num[i]; i++) o[oi++] = num[i];
+        itoa_(sz, num); for (int i = 0; num[i]; i++) o[oi++] = num[i];
         seg = " bytes"; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
     }
     o[oi] = 0;
@@ -320,250 +297,281 @@ static void do_get_info(void)
 }
 
 /* --- context menu --- */
-static const char *MENU[] = { "Open", "New Folder", "Rename", "Delete",
-                              "Copy", "Cut", "Paste", "Get Info" };
+static const char *MENU[] = { "Open", "New Folder", "Rename", "Delete", "Copy", "Cut", "Paste", "Get Info" };
 #define MENU_N 8
-#define MENU_W 120
-#define MENU_IH 22
+#define MENU_W 124
+#define MENU_IH 24
 
 static void run_menu(int idx)
 {
     switch (idx) {
-    case 0: if (sel_count == 1) do_open(sel[0]); break;   /* Open */
-    case 1: start_newfolder(); break;                     /* New Folder */
-    case 2: start_rename(); break;                        /* Rename */
-    case 3: do_delete(); break;                           /* Delete */
-    case 4: do_copy(0); break;                            /* Copy */
-    case 5: do_copy(1); break;                            /* Cut */
-    case 6: do_paste(); break;                            /* Paste */
-    case 7: do_get_info(); break;                         /* Get Info */
+    case 0: if (sel_count == 1) do_open(sel[0]); break;
+    case 1: start_newfolder(); break;
+    case 2: start_rename(); break;
+    case 3: do_delete(); break;
+    case 4: do_copy(0); break;
+    case 5: do_copy(1); break;
+    case 6: do_paste(); break;
+    case 7: do_get_info(); break;
     }
 }
 
-/* --- frame draw --- */
+/* --- icon + color per entry type --- */
+static int ext_icon(const char *nm, int isd, unsigned *color)
+{
+    int dark = aui_is_dark();
+    if (isd) { *color = rgb(82, 150, 235); return GICON_FOLDER; }
+    int n = slen(nm), d = -1;
+    for (int i = 0; i < n; i++) if (nm[i] == '.') d = i;
+    const char *e = d >= 0 ? nm + d + 1 : "";
+    if (streq(e, "png") || streq(e, "gif") || streq(e, "jpg") || streq(e, "jpeg")) { *color = rgb(80, 190, 160); return GICON_IMAGE; }
+    if (streq(e, "as")) { *color = rgb(165, 120, 230); return GICON_CODE; }
+    if (streq(e, "aex")) { *color = rgb(235, 145, 90); return GICON_GRID; }
+    *color = dark ? rgb(170, 178, 192) : rgb(132, 142, 160);
+    return GICON_DOC;
+}
 
-static int visible_rows(void) { return (WINH - LIST_Y - 8) / ROW_H; }
+/* truncate `s` to fit `maxpx` at 13px, appending ".." if cut */
+static void fit_label(const char *s, int maxpx, char *out, int omax)
+{
+    scpy(out, s, omax);
+    if (text_measure_px(out, slen(out), 13, 0) <= maxpx) return;
+    int len = slen(out);
+    while (len > 1) { out[--len] = 0; if (text_measure_px(out, len, 13, 0) + 8 <= maxpx) break; }
+    if (len < omax - 2) { out[len] = '.'; out[len + 1] = '.'; out[len + 2] = 0; }
+}
+
+/* --- sidebar model --- */
+struct side { const char *label; const char *path; int icon; int header; };
+static const struct side SIDE[] = {
+    { "个人收藏", 0, 0, 1 },
+    { "文稿",    "/docs",  GICON_DOC,    0 },
+    { "字体",    "/fonts", GICON_FOLDER, 0 },
+    { "位置", 0, 0, 1 },
+    { "Aether HD", "/",    GICON_GRID,   0 },
+    { "应用程序",  "/",    GICON_TERMINAL, 0 },
+};
+#define SIDE_N (int)(sizeof SIDE / sizeof SIDE[0])
+
+/* y of sidebar entry i's top (headers and items share the same 28px rhythm) */
+static int side_y(int i) { return 14 + i * 28; }
+
+/* --- view geometry --- */
+static int grid_cols(void) { int c = (CWID - 16) / GW; return c < 1 ? 1 : c; }
+static int grid_x0(void) { int c = grid_cols(); return CX + 8 + ((CWID - 16) - c * GW) / 2; }
+static int total_items(void) { int t = dir_count(cwd); return t < 0 ? 0 : t; }
+static int item_rows(void) { return view_mode ? total_items() : (total_items() + grid_cols() - 1) / grid_cols(); }
+static int visible_rows(void) { return view_mode ? (CHGT - 8) / LH : CHGT / GH; }
+
+static void clamp_scroll(void)
+{
+    int max = item_rows() - visible_rows();
+    if (scroll > max) scroll = max;
+    if (scroll < 0) scroll = 0;
+}
+
+/* --- frame draw --- */
+static void draw_sidebar(void)
+{
+    gui_rect(0, 0, SIDEBAR_W, WINH, AUI_FACE);
+    gui_rect(SIDEBAR_W - 1, 0, 1, WINH, AUI_BORDER);
+    unsigned selbg = aui_is_dark() ? rgb(58, 70, 92) : rgb(210, 224, 250);
+    for (int i = 0; i < SIDE_N; i++) {
+        int ty = side_y(i);
+        if (SIDE[i].header) { gui_text_run(16, ty + 4, 12, 0, AUI_MUTED, SIDE[i].label, slen(SIDE[i].label)); continue; }
+        int active = streq(cwd, SIDE[i].path) && SIDE[i].icon != GICON_TERMINAL;
+        if (active) gui_rect(8, ty - 2, SIDEBAR_W - 16, 26, selbg);
+        gui_icon(SIDE[i].icon, 16, ty, 18, rgb(86, 152, 236));
+        gui_text_run(42, ty + 3, 14, 0, AUI_TEXT, SIDE[i].label, slen(SIDE[i].label));
+    }
+}
+
+static void draw_toolbar(void)
+{
+    gui_rect(CX, TOOLBAR_H - 1, CWID, 1, AUI_BORDER);
+    if (aui_button(CX + 8, 10, 30, 26, "<")) go_up();
+
+    /* title (folder leaf) or inline rename / new-folder field */
+    if (rename_mode) {
+        if (aui_textfield(CX + 48, 11, 230, editbuf, sizeof editbuf)) commit_rename();
+    } else if (newfolder_mode) {
+        if (aui_textfield(CX + 48, 11, 230, editbuf, sizeof editbuf)) commit_newfolder();
+    } else {
+        char title[64];
+        if (streq(cwd, "/")) scpy(title, "Aether HD", sizeof title);
+        else leaf_of(cwd, title, sizeof title);
+        aui_heading(CX + 48, 12, title, AUI_TEXT);
+    }
+
+    /* right side: a single view toggle (shows the mode you'll switch TO) + New */
+    int nb = WINW - 8 - 50, vb = nb - 56;
+    if (aui_button(vb, 10, 52, 26, view_mode ? "Icons" : "List")) { view_mode = !view_mode; scroll = 0; }
+    if (aui_button(nb, 10, 50, 26, "+New")) start_newfolder();
+}
+
+static void draw_grid(void)
+{
+    int total = total_items(), cols = grid_cols(), gx0 = grid_x0();
+    unsigned selbg = aui_is_dark() ? rgb(58, 70, 92) : rgb(208, 224, 250);
+    gui_clip(CX, CY, CWID, CHGT);
+    for (int idx = 0; idx < total; idx++) {
+        int cr = idx / cols, cc = idx % cols;
+        if (cr < scroll || cr >= scroll + visible_rows() + 1) continue;
+        char nm[64]; long sz = dir_name(cwd, idx, nm); int isd = (sz == -2);
+        int cellx = gx0 + cc * GW, celly = CY + 6 + (cr - scroll) * GH;
+        if (in_sel(idx)) gui_rect(cellx + 6, celly, GW - 12, GH - 8, selbg);
+        unsigned col; int icon = ext_icon(nm, isd, &col);
+        gui_icon(icon, cellx + (GW - GICON) / 2, celly + 8, GICON, col);
+        char lab[40]; fit_label(nm, GW - 14, lab, sizeof lab);
+        int lw = text_measure_px(lab, slen(lab), 13, 0);
+        gui_text_run(cellx + (GW - lw) / 2, celly + GICON + 16, 13, 0, AUI_TEXT, lab, slen(lab));
+    }
+    gui_clip(0, 0, 0, 0);
+}
+
+static void draw_list(void)
+{
+    int total = total_items();
+    unsigned selbg = aui_is_dark() ? rgb(58, 70, 92) : rgb(208, 224, 250);
+    gui_clip(CX, CY, CWID, CHGT);
+    int y = CY + 4;
+    for (int r = scroll; r < total && r < scroll + visible_rows() + 1; r++, y += LH) {
+        char nm[64]; long sz = dir_name(cwd, r, nm); int isd = (sz == -2);
+        if (in_sel(r)) gui_rect(CX + 4, y - 2, CWID - 8, LH, selbg);
+        unsigned col; int icon = ext_icon(nm, isd, &col);
+        gui_icon(icon, CX + 10, y, 20, col);
+        char lab[48]; fit_label(nm, CWID - 150, lab, sizeof lab);
+        gui_text_run(CX + 38, y + 4, 14, 0, AUI_TEXT, lab, slen(lab));
+        if (isd) gui_text_run(WINW - 96, y + 4, 13, 0, AUI_MUTED, "--", 2);
+        else { char num[24]; itoa_(sz, num); gui_text_run(WINW - 96, y + 4, 13, 0, AUI_MUTED, num, slen(num)); }
+    }
+    gui_clip(0, 0, 0, 0);
+}
 
 static void frame(void)
 {
     aui_begin(AUI_BG);
+    /* Chrome first: toolbar buttons (view toggle / back / New) and sidebar set
+     * view_mode/cwd THIS frame; the content below then reflects them immediately
+     * (the three regions are disjoint, so draw order doesn't affect pixels). */
+    draw_toolbar();
+    draw_sidebar();
+    clamp_scroll();
+    if (view_mode) draw_list(); else draw_grid();
 
-    /* path bar */
-    gui_rect(0, 0, WINW, 34, AUI_FACE);
-    if (aui_button(LIST_X, 6, 48, 22, "Up")) go_up();
-    aui_label(70, 10, cwd, AUI_TEXT);
-
-    /* toolbar */
-    int bx = LIST_X, by = 40, bw = 78, bh = 24, gap = 4;
-    if (aui_button(bx, by, bw, bh, "New Folder")) { start_newfolder(); }
-    bx += bw + gap;
-    if (aui_button(bx, by, 64, bh, "Rename")) { start_rename(); }
-    bx += 64 + gap;
-    if (aui_button(bx, by, 60, bh, "Delete")) { do_delete(); }
-    bx += 60 + gap;
-    if (aui_button(bx, by, 52, bh, "Copy")) { do_copy(0); }
-    bx += 52 + gap;
-    if (aui_button(bx, by, 48, bh, "Cut")) { do_copy(1); }
-    bx += 48 + gap;
-    if (aui_button(bx, by, 56, bh, "Paste")) { do_paste(); }
-
-    /* inline rename / new-folder field */
-    if (rename_mode) {
-        aui_label(LIST_X, 70, "Rename:", AUI_MUTED);
-        if (aui_textfield(70, 66, 200, editbuf, sizeof editbuf)) commit_rename();
-    } else if (newfolder_mode) {
-        aui_label(LIST_X, 70, "New Folder:", AUI_MUTED);
-        if (aui_textfield(96, 66, 200, editbuf, sizeof editbuf)) commit_newfolder();
-    } else {
-        aui_label(LIST_X, 70, "Name", AUI_MUTED);
-        aui_label(WINW - 110, 70, "Size", AUI_MUTED);
-    }
-
-    /* list view */
-    int total = dir_count(cwd);
-    if (total < 0) total = 0;
-    int vis = visible_rows();
-    if (scroll > total - vis) scroll = total - vis;
-    if (scroll < 0) scroll = 0;
-
-    int y = LIST_Y;
-    for (int r = scroll; r < total && r < scroll + vis; r++, y += ROW_H) {
-        char nm[64];
-        long sz = dir_name(cwd, r, nm);
-        int isd = (sz == -2);
-        if (in_sel(r)) gui_rect(0, y - 2, WINW, ROW_H, AUI_ACCENT);
-        unsigned fg = in_sel(r) ? rgb(255, 255, 255) : AUI_TEXT;
-        /* type marker */
-        aui_label(LIST_X, y, isd ? "[D]" : "   ", isd ? (in_sel(r) ? fg : AUI_ACCENT) : fg);
-        aui_label(LIST_X + 30, y, nm, fg);
-        /* size column */
-        if (isd) {
-            aui_label(WINW - 110, y, "--", in_sel(r) ? fg : AUI_MUTED);
-        } else {
-            char num[24]; itoa_(sz, num);
-            aui_label(WINW - 110, y, num, in_sel(r) ? fg : AUI_MUTED);
-        }
-    }
-
-    /* scroll hint */
-    if (total > vis) {
-        char sb[48];
-        char a[12], b[12], c[12];
-        itoa_(scroll + 1, a); itoa_(scroll + vis < total ? scroll + vis : total, b); itoa_(total, c);
-        int i = 0; const char *p;
-        p = a; while (*p) sb[i++] = *p++;
-        sb[i++] = '-';
-        p = b; while (*p) sb[i++] = *p++;
-        sb[i++] = ' '; sb[i++] = 'o'; sb[i++] = 'f'; sb[i++] = ' ';
-        p = c; while (*p) sb[i++] = *p++;
-        sb[i] = 0;
-        aui_label(WINW - 130, WINH - 18, sb, AUI_MUTED);
-    }
-
-    /* Get Info panel */
     if (info_open) {
-        int pw = 240, ph = 96, px = (WINW - pw) / 2, py = (WINH - ph) / 2;
-        gui_rect(px - 2, py - 2, pw + 4, ph + 4, rgb(120, 124, 134));
-        gui_rect(px, py, pw, ph, rgb(252, 252, 254));
-        aui_label(px + 10, py + 8, "Get Info", AUI_TEXT);
-        /* render info_text line by line */
-        int ly = py + 30; char line[128]; int li = 0;
+        int pw = 248, ph = 104, px = CX + (CWID - pw) / 2, py = CY + (CHGT - ph) / 2;
+        gui_rect(px - 1, py - 1, pw + 2, ph + 2, AUI_BORDER);
+        gui_rect(px, py, pw, ph, AUI_SURFACE);
+        aui_label(px + 12, py + 10, "Get Info", AUI_TEXT);
+        int ly = py + 34; char line[128]; int li = 0;
         for (int i = 0; ; i++) {
             char ch = info_text[i];
             if (ch == '\n' || ch == 0) {
-                line[li] = 0;
-                aui_label(px + 10, ly, line, AUI_MUTED);
-                ly += 18; li = 0;
+                line[li] = 0; aui_label(px + 12, ly, line, AUI_MUTED); ly += 18; li = 0;
                 if (ch == 0) break;
             } else if (li < 120) line[li++] = ch;
         }
-        if (aui_button(px + pw - 60, py + ph - 26, 50, 20, "OK")) info_open = 0;
+        if (aui_button(px + pw - 60, py + ph - 28, 50, 22, "OK")) info_open = 0;
     }
 
-    /* context menu drawn last (on top) */
     if (menu_open) {
-        int mh = MENU_N * MENU_IH + 4;
-        int mx = menu_x, my = menu_y;
+        int mh = MENU_N * MENU_IH + 4, mx = menu_x, my = menu_y;
         if (mx + MENU_W > WINW) mx = WINW - MENU_W;
         if (my + mh > WINH) my = WINH - mh;
         if (mx < 0) mx = 0; if (my < 0) my = 0;
-        gui_rect(mx - 1, my - 1, MENU_W + 2, mh + 2, rgb(120, 124, 134));
-        gui_rect(mx, my, MENU_W, mh, rgb(250, 250, 252));
-        for (int i = 0; i < MENU_N; i++) {
-            int iy = my + 2 + i * MENU_IH;
-            gui_text_run(mx + 10, iy + 4, 15, 0, AUI_TEXT, MENU[i], slen(MENU[i]));
-        }
+        gui_rect(mx - 1, my - 1, MENU_W + 2, mh + 2, AUI_BORDER);
+        gui_rect(mx, my, MENU_W, mh, AUI_SURFACE);
+        for (int i = 0; i < MENU_N; i++)
+            gui_text_run(mx + 12, my + 6 + i * MENU_IH, 14, 0, AUI_TEXT, MENU[i], slen(MENU[i]));
     }
 
     aui_end();
 }
 
-/* hit-test a click against the context menu; returns 1 if consumed (menu was
- * open), filling *item with the chosen index or -1 if clicked outside. */
+/* --- hit-testing --- */
 static int menu_hit(int x, int y, int *item)
 {
     *item = -1;
     if (!menu_open) return 0;
-    int mh = MENU_N * MENU_IH + 4;
-    int mx = menu_x, my = menu_y;
+    int mh = MENU_N * MENU_IH + 4, mx = menu_x, my = menu_y;
     if (mx + MENU_W > WINW) mx = WINW - MENU_W;
     if (my + mh > WINH) my = WINH - mh;
     if (mx < 0) mx = 0; if (my < 0) my = 0;
     if (x >= mx && x < mx + MENU_W && y >= my && y < my + mh) {
-        int i = (y - my - 2) / MENU_IH;
+        int i = (y - my - 4) / MENU_IH;
         if (i >= 0 && i < MENU_N) *item = i;
     }
     return 1;
 }
 
-/* map a content-area y to a listing row, or -1 */
-static int row_at(int y)
+/* map a content click to an item index, or -1 */
+static int entry_at(int x, int y)
 {
-    if (y < LIST_Y - 2) return -1;
-    int r = scroll + (y - (LIST_Y - 2)) / ROW_H;
-    int total = dir_count(cwd);
-    if (total < 0) total = 0;
-    if (r < scroll || r >= total) return -1;
-    return r;
+    if (x < CX || y < CY) return -1;
+    int total = total_items();
+    if (view_mode) {
+        int r = scroll + (y - (CY + 2)) / LH;
+        return (r >= scroll && r < total) ? r : -1;
+    }
+    int cols = grid_cols(), gx0 = grid_x0();
+    int cc = (x - gx0) / GW;
+    if (cc < 0 || cc >= cols || x < gx0) return -1;
+    int cr = scroll + (y - (CY + 6)) / GH;
+    int idx = cr * cols + cc;
+    return (idx >= 0 && idx < total) ? idx : -1;
+}
+
+static void sidebar_click(int y)
+{
+    for (int i = 0; i < SIDE_N; i++) {
+        if (SIDE[i].header) continue;
+        int ty = side_y(i);
+        if (y >= ty - 2 && y < ty + 24) { navigate(SIDE[i].path); return; }
+    }
 }
 
 static void handle_click(int x, int y)
 {
-    /* if a menu is open, route the click through it first */
-    if (menu_open) {
-        int item;
-        menu_hit(x, y, &item);
-        menu_open = 0;
-        if (item >= 0) run_menu(item);
-        return;
-    }
+    if (menu_open) { int item; menu_hit(x, y, &item); menu_open = 0; if (item >= 0) run_menu(item); return; }
+    if (x < SIDEBAR_W) { sidebar_click(y); return; }
+    if (y < TOOLBAR_H) return;                       /* toolbar -> aui buttons */
 
-    int row = row_at(y);
+    int row = entry_at(x, y);
     if (row < 0) { if (!shift_down && !ctrl_down) { clear_sel(); anchor = -1; } return; }
-
-    if (ctrl_down) {
-        toggle_sel(row);
-        anchor = row;
-    } else if (shift_down) {
-        select_range(anchor, row);
-    } else {
-        /* double-click detection: same row within a few frames */
-        if (row == last_click_row && frame_no - last_click_frame <= 12) {
-            do_open(row);
-            last_click_row = -1;
-            return;
-        }
+    if (ctrl_down) { toggle_sel(row); anchor = row; }
+    else if (shift_down) { select_range(anchor, row); }
+    else {
+        if (row == last_click_row && frame_no - last_click_frame <= 12) { do_open(row); last_click_row = -1; return; }
         select_one(row);
     }
-    last_click_row = row;
-    last_click_frame = frame_no;
+    last_click_row = row; last_click_frame = frame_no;
 }
 
 void app_main(void)
 {
     gui_create("Finder", WINW, WINH);
     frame();
-
     struct aether_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         frame_no++;
-
         if (e.type == EV_CLOSE) app_exit(0);
+
+        if (e.type == EV_THEME) { frame(); continue; }   /* system light/dark changed */
 
         if (e.type == EV_KEY) {
             int k = e.a;
-            /* modifier tracking is best-effort; most builds don't deliver shift/
-             * ctrl as standalone keys, so these stay 0 and we degrade to single
-             * select (per spec, acceptable). */
             if (k == KEY_PGUP) { scroll -= visible_rows(); if (scroll < 0) scroll = 0; }
-            else if (k == KEY_PGDN) { scroll += visible_rows(); }
+            else if (k == KEY_PGDN) scroll += visible_rows();
             else if (k == KEY_UP) { if (scroll > 0) scroll--; }
-            else if (k == KEY_DOWN) { scroll++; }
-            else if (k == 27) { /* ESC closes overlays */
-                menu_open = 0; info_open = 0; rename_mode = 0; newfolder_mode = 0;
-            }
-            /* feed printable keys + Enter/backspace to the active textfield */
+            else if (k == KEY_DOWN) scroll++;
+            else if (k == 27) { menu_open = 0; info_open = 0; rename_mode = 0; newfolder_mode = 0; }
             aui_feed(&e); frame(); aui_feed_done();
             continue;
         }
-
-        if (e.type == EV_MOUSE_R) {
-            menu_open = 1; menu_x = e.a; menu_y = e.b;
-            info_open = 0;
-            frame();
-            continue;
-        }
-
-        if (e.type == EV_MOUSE) {
-            /* selection + menu + double-click are handled by the app; toolbar
-             * buttons + the inline textfield are handled by aui. Run our hit-test
-             * first (it consumes nothing aui needs), then let aui see the event. */
-            handle_click(e.a, e.b);
-            aui_feed(&e); frame(); aui_feed_done();
-            continue;
-        }
-
+        if (e.type == EV_MOUSE_R) { menu_open = 1; menu_x = e.a; menu_y = e.b; info_open = 0; frame(); continue; }
+        if (e.type == EV_MOUSE) { handle_click(e.a, e.b); aui_feed(&e); frame(); aui_feed_done(); continue; }
         frame();
     }
 }

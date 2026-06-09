@@ -62,6 +62,7 @@
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
+#define SYS_GUI_ICON    71 /* ((x<<16)|y, (id<<16)|px, color) draw a vector icon into the window */
 
 /* open() flags */
 #define O_RDONLY 0

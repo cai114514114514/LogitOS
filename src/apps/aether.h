@@ -104,6 +104,12 @@ static inline int img_open(const char *path, unsigned char *rgba, int max, int *
 static inline void gui_clip(int x, int y, int w, int h)
 { _sys(SYS_GUI_CLIP, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
        ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
+/* Procedural vector icons (ids match src/kernel/gui/icons.h), painted in `color`. */
+enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
+       GICON_CODE, GICON_CHART, GICON_CLOCK, GICON_IMAGE };
+static inline void gui_icon(int id, int x, int y, int px, unsigned color)
+{ _sys(SYS_GUI_ICON, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
+       ((long)(id & 0xFFFF) << 16) | (px & 0xFFFF), color); }
 /* Fetch a sub-resource's raw bytes (e.g. an image) into buf (<= max); length or <0. */
 static inline int res_fetch_raw(const char *src, unsigned char *buf, int max)
 { return (int)_sys(SYS_RES_FETCH, (long)src, (long)buf, max); }
