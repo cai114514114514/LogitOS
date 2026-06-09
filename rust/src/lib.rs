@@ -12,6 +12,8 @@
 
 use core::panic::PanicInfo;
 
+mod inflate;   /* RFC1951/1950 inflate, ported to safe Rust -- replaces inflate.c */
+
 extern "C" {
     fn serial_puts(s: *const u8); /* C: void serial_puts(const char *) */
 }

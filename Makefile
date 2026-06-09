@@ -50,7 +50,9 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -std=c11 -Wall -Wextra -O2 $(INCDIRS)
 
 # Kernel sources. The browser render pipeline lives in src/apps/browser, not here.
-C_SRC   := $(shell find src/kernel src/drivers src/lib src/fs src/net src/crypto -name '*.c')
+# inflate.c is excluded: it was ported to Rust (rust/src/inflate.rs provides the
+# inflate_raw/zlib_decompress symbols) -- the first hybrid C+Rust module.
+C_SRC   := $(filter-out src/lib/image/inflate.c,$(shell find src/kernel src/drivers src/lib src/fs src/net src/crypto -name '*.c'))
 ASM_SRC := $(wildcard src/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
