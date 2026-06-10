@@ -885,6 +885,7 @@ int main(void)
     ok("file_rt",    "p = \"/tmp/as_s0_test.bin\"\ndata = \"\".join([chr(b % 256) for b in range(1000)])\nprint(file_write(p, data))\nback = file_read(p)\nprint(len(back), back == data)\nprint(file_read(\"/no/such/file\") == nil)\n",
                      "1000\n1000 true\ntrue\n");
     ok("str_sub",    "s = \"hello world\"\nprint(s.sub(0, 5))\nprint(s.sub(6, 99))\nprint(s.sub(3, 3) == \"\")\n", "hello\nworld\ntrue\n");
+    ok("prop_index_set", "class C:\n    def init(self):\n        self.d = {}\n        self.xs = [0, 0]\n    def go(self):\n        self.d[\"k\"] = 7\n        self.xs[1] = 9\n        return self.d[\"k\"] + self.xs[1]\nprint(C().go())\n", "16\n");
     ok("prop_compound", "class P:\n    def init(self):\n        self.i = 10\n    def bump(self):\n        self.i += 5\n        self.i *= 2\n        self.i -= 4\np = P()\np.bump()\nprint(p.i)\n", "26\n");
     ok("args_host",  "a = args()\nprint(a == nil or len(a) >= 0)\n", "true\n");
 

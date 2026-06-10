@@ -82,7 +82,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost-lex clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
+.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
 
 all: $(ISO)
 
@@ -395,6 +395,16 @@ $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 # token stream byte-identical to the C lexer over the whole in-tree corpus.
 test-selfhost-lex: $(BUILD)/asc
 	@bash tests/unit/run-selfhost-lex.sh $(BUILD)/asc
+
+# S2/S3: programs compiled by the self-hosted compiler (lib/asc.as) run identically.
+test-selfhost-compile: $(BUILD)/asc
+	@bash tests/unit/run-selfhost-compile.sh $(BUILD)/asc
+
+# S4: the self-hosting fixpoint -- the compiler compiled by itself reproduces itself.
+test-selfhost-fixpoint: $(BUILD)/asc
+	@bash tests/unit/run-selfhost-fixpoint.sh $(BUILD)/asc
+
+test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
 
 # kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
 # headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts

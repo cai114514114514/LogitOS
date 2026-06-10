@@ -265,6 +265,11 @@ static Value native_f64bits(int argc, Value *args)   /* IEEE-754 bits of a float
     memcpy(&u, &d, 8);
     return INT_VAL(u);
 }
+static Value native_parse_float(int argc, Value *args)  /* strtod parity with the C compiler */
+{
+    if (argc != 1 || !IS_STR(args[0])) return as_native_fail("parse_float() takes a string");
+    return FLOAT_VAL(strtod(AS_STR(args[0])->chars, NULL));
+}
 static Value native_file_read(int argc, Value *args)
 {
     if (argc != 1 || !IS_STR(args[0])) return as_native_fail("file_read() takes a path string");
@@ -1193,6 +1198,7 @@ int as_run(ObjFn *script)
     as_define_native("chr", native_chr);
     as_define_native("ord", native_ord);
     as_define_native("f64bits", native_f64bits);
+    as_define_native("parse_float", native_parse_float);
     as_define_native("file_read", native_file_read);
     as_define_native("file_write", native_file_write);
     as_define_native("args", native_args);

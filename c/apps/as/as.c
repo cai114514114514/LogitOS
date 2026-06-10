@@ -71,6 +71,40 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Run a compiled .la directly (M21-P3 S2 harness): load + stamp + run. */
+    if (argc >= 3 && strcmp(argv[1], "-run") == 0) {
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[2]); as_emit_cstr("\n"); return 1; }
+        src = slurp(f);
+        fclose(f);
+        if (!src) { as_emit_cstr("as: out of memory\n"); return 1; }
+        /* slurp NUL-terminates but .la is binary: recover the true length */
+        fseek((f = fopen(argv[2], "rb")), 0, SEEK_END);
+        long blen = ftell(f);
+        fclose(f);
+        ObjFn *fn = as_load((const uint8_t *)src, (int)blen);
+        free(src);
+        if (!fn) { as_emit_cstr("as: bad .la file\n"); as_free_objects(); return 1; }
+        as_gc_push_disable();
+        ObjModule *m = as_module_new("__main__", 8);
+        {   /* stamp the tree (mirrors import) */
+            ObjFn *stack[256]; int sp2 = 0;
+            stack[sp2++] = fn;
+            while (sp2 > 0) {
+                ObjFn *x = stack[--sp2];
+                x->module = m;
+                for (int i = 0; i < x->kcount; i++)
+                    if (IS_FN(x->consts[i]) && sp2 < 256) stack[sp2++] = AS_FN(x->consts[i]);
+            }
+        }
+        as_gc_pop_disable();
+        as_set_args(argc - 2, argv + 2);
+        int rc = as_run(fn);
+        if (rc) { as_emit_cstr("as: "); as_emit_cstr(as_err); as_emit_cstr("\n"); }
+        as_free_objects();
+        return rc;
+    }
+
     if (argc >= 2) {
         FILE *f = fopen(argv[1], "r");
         if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[1]); as_emit_cstr("\n"); return 1; }

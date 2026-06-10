@@ -783,50 +783,50 @@ static void assignment(void)
         }
         return;
     }
-    if (match(T_DOT)) {                            /* property target: name.field = v */
+    /* name.field OP= rhs (compound on a single property -- self.i += 1). The
+     * receiver is a bare name, so re-reading it is pure (no dup opcode needed). */
+    if (check(T_DOT) && T[P + 1].type == T_IDENT && compound_op(T[P + 2].type) >= 0) {
+        advance();                                 /* '.' */
         consume(T_IDENT, "expected a field name after '.'");
-        Token field = tk_prev();
-        int fk = identConst(field.start, field.len);
-        int cop = compound_op(tk_cur().type);
-        if (cop >= 0) {                            /* name.field OP= rhs (M21-P3: self.i += 1).
-                                                    * The receiver is a bare NAME (local/global)
-                                                    * -- re-reading it is pure, so no dup opcode
-                                                    * is needed: [recv, recv.field OP rhs]. */
-            advance();
-            named_variable(name);                  /* recv (for the SET) */
-            named_variable(name);                  /* recv (for the GET) */
-            emit(OP_GET_PROPERTY); emit16(fk);     /* -> [recv, oldval] */
-            expression();                          /* -> [recv, oldval, rhs] */
-            emit((uint8_t)cop);                    /* -> [recv, newval] */
-            emit(OP_SET_PROPERTY); emit16(fk);     /* -> [newval] */
-            emit(OP_POP);
-            return;
-        }
-        named_variable(name);                      /* push the receiver */
-        consume(T_ASSIGN, "expected '=' in property assignment");
-        expression();                              /* the value */
-        emit(OP_SET_PROPERTY); emit16(fk);         /* [.. recv val] -> leaves val */
-        emit(OP_POP);                              /* statement: discard the result */
+        int fk = identConst(tk_prev().start, tk_prev().len);
+        int cop = compound_op(tk_cur().type); advance();
+        named_variable(name);                      /* recv (for the SET) */
+        named_variable(name);                      /* recv (for the GET) */
+        emit(OP_GET_PROPERTY); emit16(fk);         /* -> [recv, oldval] */
+        expression();                              /* -> [recv, oldval, rhs] */
+        emit((uint8_t)cop);                        /* -> [recv, newval] */
+        emit(OP_SET_PROPERTY); emit16(fk);         /* -> [newval] */
+        emit(OP_POP);
         return;
     }
-    if (match(T_LBRACKET)) {                       /* indexed target: name[i]...[k] = v */
-        int slot = resolve_local(current, name.start, name.len);
-        if (slot >= 0) emit2(OP_GET_LOCAL, (uint8_t)slot);
-        else {
-            int up = resolve_upvalue(current, name.start, name.len);
-            if (up >= 0) emit2(OP_GET_UPVALUE, (uint8_t)up);
-            else { emit(OP_GET_GLOBAL); emit16(identConst(name.start, name.len)); }
-        }
+    if (check(T_DOT) || check(T_LBRACKET)) {       /* general lvalue chain, plain '=':
+                                                    * name (.field | [idx])* (.field | [idx]) = v.
+                                                    * Every accessor but the LAST emits a GET
+                                                    * (descend into the container); the last
+                                                    * emits SET_PROPERTY / INDEX_SET. */
+        named_variable(name);                      /* base on the stack */
         for (;;) {
-            expression();
+            if (match(T_DOT)) {
+                consume(T_IDENT, "expected a field name after '.'");
+                int fk = identConst(tk_prev().start, tk_prev().len);
+                if (check(T_DOT) || check(T_LBRACKET)) { emit(OP_GET_PROPERTY); emit16(fk); continue; }
+                consume(T_ASSIGN, "expected '=' in property assignment");
+                expression();
+                emit(OP_SET_PROPERTY); emit16(fk); /* [recv val] -> val */
+                emit(OP_POP);
+                return;
+            }
+            match(T_LBRACKET);                     /* the '[' (guaranteed by the loop entry) */
+            expression();                          /* index -> stack */
             consume(T_RBRACKET, "expected ']'");
-            if (match(T_LBRACKET)) { emit(OP_INDEX_GET); continue; }   /* intermediate index */
-            break;
+            if (check(T_DOT) || check(T_LBRACKET)) { emit(OP_INDEX_GET); continue; }
+            consume(T_ASSIGN, "expected '=' in indexed assignment");
+            expression();
+            emit(OP_INDEX_SET);                    /* (obj, idx, val) -> set */
+            return;
         }
-        consume(T_ASSIGN, "expected '=' in indexed assignment");
-        expression();
-        emit(OP_INDEX_SET);                        /* (obj, idx, val) -> set, leaves nothing */
-    } else {
+    }
+    {
         int cop = compound_op(tk_cur().type);
         if (cop >= 0) {                            /* name += / -= / *= / /= / %= rhs */
             advance();                             /* consume the compound operator */
