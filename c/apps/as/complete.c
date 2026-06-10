@@ -29,12 +29,26 @@ static const char *const KEYWORDS[] = {
     "true","false","nil","break","continue", 0
 };
 static const char *const BUILTINS[] = {
-    "print","len","range","gc","gc_stats",
-    "addr","syscall","peek8","peek16","peek32","peek64",
+    "print","len","range","str","gc","gc_stats",
+    "addr","syscall","alloc","dealloc","mem2str","mem2cstr",
+    "peek8","peek16","peek32","peek64",
     "poke8","poke16","poke32","poke64","i8ptr","i16ptr","i32ptr","i64ptr", 0
+};
+/* the M23.5 system surface (mirrors as_native.c) -- prefix-typed (SYS_/EV_), so
+ * they only surface when the user starts typing one */
+static const char *const SYSCONSTS[] = {
+    "SYS_WRITE","SYS_READ","SYS_OPEN","SYS_CLOSE","SYS_LSEEK","SYS_EXIT","SYS_YIELD",
+    "SYS_GETPID","SYS_FORK","SYS_EXECVE","SYS_WAITPID","SYS_PIPE","SYS_DUP2",
+    "SYS_MKDIR","SYS_GETCWD","SYS_CHDIR","SYS_READ_FILE","SYS_WRITE_FILE",
+    "SYS_DELETE_FILE","SYS_RENAME","SYS_DIR_COUNT","SYS_DIR_NAME","SYS_GET_TIME",
+    "SYS_NET_INFO","SYS_NET_PING","SYS_NET_PING_RTT","SYS_NET_DNS","SYS_NET_DNS_RESULT",
+    "SYS_CPU_INDEX","SYS_UI_DARK","SYS_GUI_CREATE","SYS_GUI_CLEAR","SYS_GUI_RECT",
+    "SYS_GUI_TEXT","SYS_GUI_TEXT_MONO","SYS_GUI_FLUSH","SYS_GUI_ICON","SYS_GUI_GLASS",
+    "SYS_POLL_EVENT","EV_NONE","EV_KEY","EV_MOUSE","EV_CLOSE","EV_MOUSE_R","EV_THEME", 0
 };
 static const char *const LIST_METHODS[] = { "append", 0 };
 static const char *const DICT_METHODS[] = { "get","has","keys","values","remove", 0 };
+static const char *const STR_METHODS[]  = { "join","split","strip","upper","lower","replace","find", 0 };
 
 static int is_kw(const char *s, int n){
     for (int i=0; KEYWORDS[i]; i++) if (c_neq(s, KEYWORDS[i], n)) return 1;
@@ -71,8 +85,43 @@ static int line_start_of(const char *src, int caret){
 }
 static CmpCtx ctx_at(const char *src, int len, int caret){
     CmpCtx c; c.prefix[0]=0; c.receiver[0]=0; c.after_import=0; c.word_start=caret;
+    c.in_string=0; c.recv_str=0;
     if (caret < 0) caret = 0; if (caret > len) caret = len;
     int ls = line_start_of(src, caret);
+    /* String-state scan of the line up to the caret. States: CODE; STR (inside a
+     * quoted literal, is_f marks an f-string); HOLE (inside an f-string {expr},
+     * which is CODE-like); HSTR (a string literal nested in a hole). The caret in
+     * STR/HSTR suppresses the popup; in a HOLE completion works as expression
+     * context (the M23 f-string holes are full expressions). */
+    {
+        enum { ST_CODE, ST_STR, ST_HOLE, ST_HSTR } st = ST_CODE;
+        char q=0, hq=0; int isf=0, hd=0;
+        for (int i = ls; i < caret; i++) {
+            char ch = src[i];
+            if (st == ST_CODE) {
+                if (ch=='#') break;                       /* comment: rest is dead anyway */
+                if (ch=='"' || ch=='\'') {
+                    isf = (i>ls && (src[i-1]=='f'||src[i-1]=='F') && (i-1==ls || !c_isan(src[i-2])));
+                    q = ch; st = ST_STR;
+                }
+            } else if (st == ST_STR) {
+                if (ch=='\\' && i+1<caret) { i++; continue; }
+                if (ch==q) { st = ST_CODE; }
+                else if (isf && ch=='{') {
+                    if (i+1<caret && src[i+1]=='{') { i++; continue; }
+                    st = ST_HOLE; hd = 1;
+                }
+            } else if (st == ST_HOLE) {
+                if (ch=='"' || ch=='\'') { hq = ch; st = ST_HSTR; }
+                else if (ch=='{'||ch=='('||ch=='[') hd++;
+                else if (ch=='}'||ch==')'||ch==']') { hd--; if (hd<=0) st = ST_STR; }
+            } else { /* ST_HSTR */
+                if (ch=='\\' && i+1<caret) { i++; continue; }
+                if (ch==hq) st = ST_HOLE;
+            }
+        }
+        if (st == ST_STR || st == ST_HSTR) { c.in_string = 1; return c; }
+    }
     int p = caret; while (p > ls && c_isan(src[p-1])) p--;
     c.word_start = p;
     int plen = caret - p; if (plen > 47) plen = 47;
@@ -80,9 +129,13 @@ static CmpCtx ctx_at(const char *src, int len, int caret){
     int q = p; while (q > ls && c_issp(src[q-1])) q--;
     if (q > ls && src[q-1] == '.') {
         int r = q-1; while (r > ls && c_issp(src[r-1])) r--;
-        int re = r; while (r > ls && c_isan(src[r-1])) r--;
-        int rl = re - r; if (rl > 47) rl = 47;
-        for (int i=0;i<rl;i++) c.receiver[i]=src[r+i]; c.receiver[rl]=0;
+        if (r > ls && (src[r-1]=='"' || src[r-1]=='\'')) {
+            c.recv_str = 1;                       /* "literal".<caret> -> string methods */
+        } else {
+            int re = r; while (r > ls && c_isan(src[r-1])) r--;
+            int rl = re - r; if (rl > 47) rl = 47;
+            for (int i=0;i<rl;i++) c.receiver[i]=src[r+i]; c.receiver[rl]=0;
+        }
     }
     int s = ls; while (s < caret && c_issp(src[s])) s++;
     if (c_neq(src+s, "import", 6) || c_neq(src+s, "from", 4)) c.after_import = 1;
@@ -134,6 +187,14 @@ static int collect_scope(const Tok *t, int nt, const char *src, Completion *out,
     for (int i = 0; i < nt; i++) {
         if (t[i].kind==TK_IDENT && is_assign(t,nt,src,i))
             if (!already(out,n,src+t[i].start,t[i].len)) put(out,&n,max,src+t[i].start,t[i].len,CMP_LOCAL,70);
+        /* M23 multiple assignment: a, b, c = ... -> every chain ident is a local */
+        if (t[i].kind==TK_IDENT && i+1<nt && t[i+1].kind==TK_OP && src[t[i+1].start]==',') {
+            int j = i, ok = 0;
+            while (j+2 < nt && t[j+1].kind==TK_OP && src[t[j+1].start]==',' && t[j+2].kind==TK_IDENT) j += 2;
+            ok = is_assign(t, nt, src, j);
+            if (ok) for (int k = i; k <= j; k += 2)
+                if (!already(out,n,src+t[k].start,t[k].len)) put(out,&n,max,src+t[k].start,t[k].len,CMP_LOCAL,70);
+        }
         if (t[i].kind==TK_KW && (c_neq(src+t[i].start,"def",t[i].len)||c_neq(src+t[i].start,"class",t[i].len)) && i+1<nt && t[i+1].kind==TK_IDENT) {
             int kw_def = c_neq(src+t[i].start,"def",t[i].len);
             if (!already(out,n,src+t[i+1].start,t[i+1].len)) put(out,&n,max,src+t[i+1].start,t[i+1].len, kw_def?CMP_FUNC:CMP_CLASS, 75);
@@ -196,9 +257,24 @@ static int type_of(const Tok *t, int nt, const char *src, int caret, const char 
         if (i+2 >= nt) { ty = TY_UNKNOWN; continue; }
         const Tok *r = &t[i+2];
         char rc = src[r->start];
-        if (rc=='[') ty=TY_LIST;
+        /* RHS shape -> type. Checked in specificity order. */
+        int mty = TY_UNKNOWN;                        /* X.method(...) result type */
+        if ((r->kind==TK_STR || r->kind==TK_IDENT) && i+4<nt
+            && t[i+3].kind==TK_DOT && t[i+4].kind==TK_IDENT) {
+            const char *m = src + t[i+4].start; int ml = t[i+4].len;
+            if (c_neq(m,"join",ml)||c_neq(m,"strip",ml)||c_neq(m,"upper",ml)
+                ||c_neq(m,"lower",ml)||c_neq(m,"replace",ml)) mty = TY_STR;
+            else if (c_neq(m,"split",ml)||c_neq(m,"keys",ml)||c_neq(m,"values",ml)) mty = TY_LIST;
+            else if (c_neq(m,"find",ml)) mty = TY_INT;
+        }
+        if (mty != TY_UNKNOWN) ty = mty;
+        else if (rc=='[') ty=TY_LIST;
         else if (rc=='{') ty=TY_DICT;
         else if (r->kind==TK_STR) ty=TY_STR;
+        else if (r->kind==TK_IDENT && r->len==1 && (rc=='f'||rc=='F')
+                 && i+3<nt && t[i+3].kind==TK_STR) ty=TY_STR;   /* x = f"..." */
+        else if (r->kind==TK_IDENT && c_neq(src+r->start,"str",r->len)
+                 && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='(') ty=TY_STR;
         else if (r->kind==TK_NUM) ty = has_dot(src+r->start, r->len) ? TY_FLOAT : TY_INT;
         else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
                  && is_class(t,nt,src,src+r->start,r->len)) {
@@ -241,6 +317,11 @@ int as_complete(const char *src, int len, int caret, Completion *out, int max){
     static Completion all[512];
     int na = 0;
 
+    if (cx.in_string) return 0;                /* no popup inside string text */
+    if (cx.recv_str) {                          /* "literal". -> string methods */
+        for (int i=0;STR_METHODS[i]&&na<512;i++) put(all,&na,512,STR_METHODS[i],c_slen(STR_METHODS[i]),CMP_METHOD,90);
+        goto rank;
+    }
     if (cx.after_import && cx.receiver[0]==0) {
         char names[64][48];
         int nm = g_list ? g_list(names, 64) : 0;
@@ -254,16 +335,32 @@ int as_complete(const char *src, int len, int caret, Completion *out, int max){
         goto rank;
     }
     if (cx.receiver[0]) {
+        if (c_neq(cx.receiver, "self", c_slen(cx.receiver))) {
+            /* self.<x> inside a class body: members of the ENCLOSING class --
+             * the nearest `class NAME` whose body the caret is inside. */
+            const char *cn = 0; int cl = 0;
+            for (int i=0; i+1<nt && toks[i].start < caret; i++)
+                if (toks[i].kind==TK_KW && c_neq(src+toks[i].start,"class",toks[i].len)
+                    && toks[i+1].kind==TK_IDENT) { cn = src+toks[i+1].start; cl = toks[i+1].len; }
+            if (cn) {
+                char cls2[48]; int k = cl > 47 ? 47 : cl;
+                for (int j=0;j<k;j++) cls2[j]=cn[j]; cls2[k]=0;
+                na = collect_class(toks,nt,src,cls2,k,all,512);
+            }
+            goto rank;
+        }
         char cls[48];
         int ty = type_of(toks, nt, src, caret, cx.receiver, cls, (int)sizeof cls);
         if (ty==TY_LIST)          for (int i=0;LIST_METHODS[i]&&na<512;i++) put(all,&na,512,LIST_METHODS[i],c_slen(LIST_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_DICT)     for (int i=0;DICT_METHODS[i]&&na<512;i++) put(all,&na,512,DICT_METHODS[i],c_slen(DICT_METHODS[i]),CMP_METHOD,90);
+        else if (ty==TY_STR)      for (int i=0;STR_METHODS[i]&&na<512;i++) put(all,&na,512,STR_METHODS[i],c_slen(STR_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_INSTANCE) na = collect_class(toks,nt,src,cls,c_slen(cls),all,512);
         goto rank;
     }
 
     na = collect_scope(toks, nt, src, all, 512);
     for (int i=0; BUILTINS[i] && na<512; i++) put(all,&na,512,BUILTINS[i],c_slen(BUILTINS[i]),CMP_BUILTIN,40);
+    for (int i=0; SYSCONSTS[i] && na<512; i++) put(all,&na,512,SYSCONSTS[i],c_slen(SYSCONSTS[i]),CMP_BUILTIN,35);
     for (int i=0; KEYWORDS[i] && na<512; i++) put(all,&na,512,KEYWORDS[i],c_slen(KEYWORDS[i]),CMP_KEYWORD,30);
 
 rank: ;

@@ -32,7 +32,11 @@ void as_complete_set_providers(cmp_list_modules_fn list, cmp_read_module_fn read
 /* internal token kinds + caret context + value types (exposed so host tests can
  * assert against them; harmless in the app build) */
 enum { TK_EOF, TK_IDENT, TK_KW, TK_NUM, TK_STR, TK_DOT, TK_OP, TK_NL };
-typedef struct { char prefix[48]; char receiver[48]; int after_import; int word_start; } CmpCtx;
+typedef struct {
+    char prefix[48]; char receiver[48]; int after_import; int word_start;
+    int in_string;   /* caret inside a plain string / f-string TEXT -> suppress popup */
+    int recv_str;    /* receiver is a string LITERAL ("ab".<caret>) -> string methods */
+} CmpCtx;
 enum { TY_UNKNOWN, TY_LIST, TY_DICT, TY_STR, TY_INT, TY_FLOAT, TY_INSTANCE };
 
 #ifdef AS_COMPLETE_TEST

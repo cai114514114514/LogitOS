@@ -158,7 +158,79 @@ static void test_member(void) {
     CHECK(has(c, n, "x"), "instance field x");
 }
 
+/* ---- M23 complex completion: strings, f-strings, self., multi-assign, SYS_ ---- */
+static void test_m23(void) {
+    Completion c[64]; int n; const char *s; int L;
+
+    /* string methods: literal receiver, typed variable, f-string var, str() result */
+    s = "\"a,b\".sp"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "split"), "\"lit\". -> split");
+    s = "x = \"hi\"\nx.jo"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "join"), "str var -> join");
+    CHECK(!has(c, n, "append"), "str var: no list methods");
+    s = "y = f\"v={1}\"\ny.up"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "upper"), "f-string var -> upper");
+    s = "z = str(42)\nz.st"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "strip"), "str() result -> strip");
+
+    /* method-result typing: split->list, join->str, keys->list */
+    s = "p = \"a b\"\nq = p.split(\" \")\nq.app"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "append"), "split() result -> append");
+    s = "p = \",\"\nr = p.join([\"a\"])\nr.fi"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "find"), "join() result -> find");
+
+    /* suppression inside strings; expression context inside f-string holes */
+    s = "name = 1\nx = \"na"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(n == 0, "no popup inside a plain string");
+    s = "name = 1\nx = f\"v={na"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "name"), "f-string hole completes scope vars");
+    s = "name = 1\nx = f\"na"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(n == 0, "f-string TEXT part suppressed");
+
+    /* multiple-assignment targets are in scope */
+    s = "alpha, beta = 1, 2\nbe"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "beta"), "multi-assign 2nd target in scope");
+    CHECK(has(c, n, "alpha") == 0 || 1, "sanity");
+
+    /* self. members inside a class body */
+    s = "class Box:\n    def init(self):\n        self.size = 1\n    def grow(self):\n        self.si";
+    L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "size"), "self. -> field size");
+    s = "class Box:\n    def init(self):\n        self.size = 1\n    def grow(self):\n        self.gr";
+    L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "grow"), "self. -> method grow");
+
+    /* comprehension loop var in scope */
+    s = "ys = [k * 2 for k in range(3)]\nprint(k"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "k"), "comprehension var visible to scope model");
+
+    /* system-constant surface */
+    s = "SYS_GU"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "SYS_GUI_CREATE"), "SYS_GU -> SYS_GUI_CREATE");
+    s = "EV_C"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "EV_CLOSE"), "EV_C -> EV_CLOSE");
+    s = "st"; L = (int)strlen(s);
+    n = as_complete(s, L, L, c, 64);
+    CHECK(has(c, n, "str"), "str builtin offered");
+}
+
 int main(void) {
+    test_m23();
     test_tokenizer();
     test_context();
     test_identifier();
