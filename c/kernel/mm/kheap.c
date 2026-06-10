@@ -3,6 +3,7 @@
 #include "kheap.h"
 #include "pmm.h"
 #include "spinlock.h"
+#include "kprintf.h"
 
 /* M25 P1: kheap is peeled out from under the BKL -- kmalloc/kfree take their own
  * lock so they are safe to call from BKL-free kernel paths running concurrently
@@ -35,6 +36,15 @@ struct header {
 static struct header *bins[NUM_BINS] = { NULL };
 static uint8_t *brk = NULL;
 static size_t   brk_left = 0;
+
+/* Fail-safe bound on a single free-list walk. No real bin ever holds anywhere
+ * near this many free blocks; a walk that exceeds it means the list has been
+ * corrupted into a cycle (a stray write smashed a node's `next`). Because the
+ * walk runs under kheap_lock with interrupts OFF, an actual cycle would spin the
+ * core forever -- hanging the WHOLE system, not just the faulting task. We refuse
+ * to do that: on detection we drop the corrupt bin's list (leaking those blocks)
+ * and keep running, so a heap-corrupting bug degrades to a leak, never a freeze. */
+#define FREELIST_WALK_MAX 1000000UL
 
 /* Map a (16-aligned) size to its bin: min(ceil_log2(size/16), NUM_BINS-1),
  * computed in O(1). size is always >= 16 here, so size/16 >= 1. */
@@ -85,7 +95,13 @@ void *kmalloc(size_t size)
      * higher bin also fits, so we search this bin and up. Within a bin sizes
      * vary, so still confirm block->size >= size before handing it out. */
     for (int i = bin_index(size); i < NUM_BINS; i++) {
+        unsigned long walked = 0;
         for (struct header **pp = &bins[i]; *pp; pp = &(*pp)->next) {
+            if (++walked > FREELIST_WALK_MAX) {   /* corrupted into a cycle -> fail safe */
+                kprintf("[kheap] bin %d free list corrupt (cycle) -- dropping it to stay alive\n", i);
+                bins[i] = NULL;
+                break;
+            }
             if ((*pp)->size >= size) {
                 struct header *b = *pp;
                 *pp = b->next;
