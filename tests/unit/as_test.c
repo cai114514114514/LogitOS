@@ -843,6 +843,7 @@ int main(void)
     ok("tern",       "print(1 if true else 2)\nprint(1 if false else 2)\n", "1\n2\n");
     ok("tern_expr",  "x = 5\ns = \"big\" if x > 3 else \"small\"\nprint(s)\n", "big\n");
     ok("tern_nest",  "def f(n):\n    return \"neg\" if n < 0 else (\"zero\" if n == 0 else \"pos\")\nprint(f(-1), f(0), f(2))\n", "neg zero pos\n");
+    ok("tern_lazy_then", "d = {\"a\": 1}\nprint(d[\"x\"] if \"x\" in d else -1)\nprint(d[\"a\"] if \"a\" in d else -1)\n", "-1\n1\n");
     ok("tern_lazy",  "print(1 if true else 1 / 0)\nprint(2 if false else 9)\n", "1\n9\n");
     ok("tern_fstr",  "n = 4\nprint(f\"{'even' if n % 2 == 0 else 'odd'}\")\n", "even\n");
     err("tern_noelse","print(1 if true)\n");
@@ -874,6 +875,18 @@ int main(void)
     ok("argv_build", "args = [\"echo\", \"hi\"]\npv = alloc(8 * 3)\nfor i in range(2):\n    poke64(addr(pv) + 8 * i, addr(args[i]))\npoke64(addr(pv) + 16, 0)\nprint(mem2cstr(peek64(addr(pv) + 8)))\ndealloc(pv)\n", "hi\n");
     err("alloc_bad",  "alloc(0)\n");
     err("dealloc_bad","dealloc(42)\n");
+
+    /* ---- M21-P3 S0: self-hosting natives ---- */
+    ok("chr_ord",    "print(chr(65) + chr(66))\nprint(ord(\"a\"), ord(\"\\n\"))\nprint(chr(0) == \"\\0\")\n", "AB\n97 10\ntrue\n");
+    err("chr_range",  "chr(256)\n");
+    ok("chr_join",   "print(len(\"\".join([chr(b) for b in range(256)])))\n", "256\n");
+    ok("f64bits",    "print(f64bits(1.0))\nprint(f64bits(2.0))\nprint(f64bits(0.5) == 0x3FE0000000000000)\n",
+                     "4607182418800017408\n4611686018427387904\ntrue\n");
+    ok("file_rt",    "p = \"/tmp/as_s0_test.bin\"\ndata = \"\".join([chr(b % 256) for b in range(1000)])\nprint(file_write(p, data))\nback = file_read(p)\nprint(len(back), back == data)\nprint(file_read(\"/no/such/file\") == nil)\n",
+                     "1000\n1000 true\ntrue\n");
+    ok("str_sub",    "s = \"hello world\"\nprint(s.sub(0, 5))\nprint(s.sub(6, 99))\nprint(s.sub(3, 3) == \"\")\n", "hello\nworld\ntrue\n");
+    ok("prop_compound", "class P:\n    def init(self):\n        self.i = 10\n    def bump(self):\n        self.i += 5\n        self.i *= 2\n        self.i -= 4\np = P()\np.bump()\nprint(p.i)\n", "26\n");
+    ok("args_host",  "a = args()\nprint(a == nil or len(a) >= 0)\n", "true\n");
 
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();

@@ -227,6 +227,9 @@ void      as_emit(const char *s, int n);
 void      as_emit_cstr(const char *s);
 void      as_capture(char *buf, int cap);   /* redirect as_emit to a buffer (tests); NULL = stdout */
 
+/* script argv (vm.c): as.c stashes argv[1..] so the args() native can return it */
+void      as_set_args(int argc, char **argv);
+
 /* native registration (vm.c) + A3 indirection builtins (as_native.c) */
 void      as_define_native(const char *name, NativeFn fn);
 void      as_define_int(const char *name, int64_t v);

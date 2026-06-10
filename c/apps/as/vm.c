@@ -237,6 +237,83 @@ static Value native_len(int argc, Value *args)
     if (IS_DICT(args[0])) return INT_VAL(AS_DICT(args[0])->live);
     return as_native_fail("len() needs a list, string, or dict");
 }
+/* ---- M21-P3 self-hosting natives: byte/char primitives + portable file I/O.
+ * file_read/file_write use stdio (host libc AND Aether mini-libc), NOT Aether
+ * syscalls -- the self-hosted compiler must run its fixpoint test on the host. */
+static Value native_chr(int argc, Value *args)
+{
+    if (argc != 1 || !IS_INT(args[0]) || AS_INT(args[0]) < 0 || AS_INT(args[0]) > 255)
+        return as_native_fail("chr() takes an integer 0..255");
+    char c = (char)AS_INT(args[0]);
+    ObjStr *s = as_str_copy(&c, 1);
+    return s ? OBJ_VAL(s) : NIL_VAL;
+}
+static Value native_ord(int argc, Value *args)
+{
+    if (argc != 1 || !IS_STR(args[0]) || AS_STR(args[0])->len < 1)
+        return as_native_fail("ord() takes a non-empty string");
+    return INT_VAL((uint8_t)AS_STR(args[0])->chars[0]);
+}
+static Value native_f64bits(int argc, Value *args)   /* IEEE-754 bits of a float */
+{
+    if (argc != 1) return as_native_fail("f64bits() takes 1 argument");
+    double d;
+    if (IS_FLOAT(args[0]))    d = AS_FLOAT(args[0]);
+    else if (IS_INT(args[0])) d = (double)AS_INT(args[0]);
+    else return as_native_fail("f64bits() takes a number");
+    int64_t u;
+    memcpy(&u, &d, 8);
+    return INT_VAL(u);
+}
+static Value native_file_read(int argc, Value *args)
+{
+    if (argc != 1 || !IS_STR(args[0])) return as_native_fail("file_read() takes a path string");
+    FILE *f = fopen(AS_STR(args[0])->chars, "rb");
+    if (!f) return NIL_VAL;
+    size_t cap = 4096, n = 0;
+    char *buf = (char *)as_malloc(cap);
+    if (!buf) { fclose(f); return NIL_VAL; }
+    for (;;) {
+        if (n + 4096 + 1 > cap) {
+            cap *= 2;
+            char *nb = (char *)as_realloc(buf, cap);
+            if (!nb) { free(buf); fclose(f); return NIL_VAL; }
+            buf = nb;
+        }
+        size_t r = fread(buf + n, 1, 4096, f);
+        n += r;
+        if (r < 4096) break;
+    }
+    fclose(f);
+    ObjStr *s = as_str_copy(buf, (int)n);    /* embedded NULs preserved (len-based) */
+    free(buf);
+    return s ? OBJ_VAL(s) : NIL_VAL;
+}
+static Value native_file_write(int argc, Value *args)
+{
+    if (argc != 2 || !IS_STR(args[0]) || !IS_STR(args[1]))
+        return as_native_fail("file_write() takes (path, data) strings");
+    FILE *f = fopen(AS_STR(args[0])->chars, "wb");
+    if (!f) return INT_VAL(-1);
+    ObjStr *s = AS_STR(args[1]);
+    size_t w = s->len ? fwrite(s->chars, 1, (size_t)s->len, f) : 0;
+    fclose(f);
+    return INT_VAL((int64_t)w == s->len ? (int64_t)s->len : -1);
+}
+static int    g_argc = 0;
+static char **g_argv = NULL;
+void as_set_args(int argc, char **argv) { g_argc = argc; g_argv = argv; }
+static Value native_args(int argc, Value *args)
+{
+    (void)argc; (void)args;
+    as_gc_push_disable();                    /* list + strings before any is rooted */
+    ObjList *l = as_list_new();
+    for (int i = 0; i < g_argc; i++)
+        as_list_push(l, OBJ_VAL(as_str_copy(g_argv[i], (int)strlen(g_argv[i]))));
+    as_gc_pop_disable();
+    return OBJ_VAL(l);
+}
+
 static Value native_str(int argc, Value *args)   /* M23: print-form of any value */
 {
     if (argc != 1) return as_native_fail("str() takes 1 argument");
@@ -860,6 +937,16 @@ static int run_until(int floor)
                     ObjStr *r = as_str_take(buf, (int)total);
                     if (!r) goto err;
                     sp -= argc + 1; push(OBJ_VAL(r));
+                } else if (name_eq(name, "sub")) {
+                    /* s.sub(a, b) -> s[a:b] (clamped; the compiler's substring) */
+                    if (argc != 2 || !IS_INT(peek(1)) || !IS_INT(peek(0))) { runtime_error("sub() takes (start, end) integers"); goto err; }
+                    int64_t a = AS_INT(peek(1)), b2 = AS_INT(peek(0));
+                    if (a < 0) a = 0;
+                    if (b2 > s->len) b2 = s->len;
+                    if (b2 < a) b2 = a;
+                    ObjStr *r = as_str_copy(s->chars + a, (int)(b2 - a));
+                    if (!r) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(r));
                 } else if (name_eq(name, "find")) {
                     if (argc != 1 || !IS_STR(peek(0))) { runtime_error("find() takes one string argument"); goto err; }
                     ObjStr *sub = AS_STR(peek(0));
@@ -1103,6 +1190,12 @@ int as_run(ObjFn *script)
     as_define_native("len", native_len);
     as_define_native("range", native_range);
     as_define_native("str", native_str);
+    as_define_native("chr", native_chr);
+    as_define_native("ord", native_ord);
+    as_define_native("f64bits", native_f64bits);
+    as_define_native("file_read", native_file_read);
+    as_define_native("file_write", native_file_write);
+    as_define_native("args", native_args);
     as_define_native("gc_stats", native_gc_stats);
     as_define_native("gc", native_gc);
     as_install_indirection();          /* addr/peek/poke/iNptr/syscall + SYS_* */

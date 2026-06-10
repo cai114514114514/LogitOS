@@ -1,4 +1,5 @@
 #include "as.h"
+#include "lexer.h"
 #include <stdio.h>      /* FILE, fopen/fread/fclose, stdin */
 #include <stdlib.h>     /* malloc/realloc/free */
 #include <string.h>     /* strcmp (-c mode) */
@@ -48,11 +49,34 @@ int main(int argc, char **argv)
         return rc;
     }
 
+    /* Token-dump mode (M21-P3 S1 fixpoint harness): `as -lex file.as` prints one
+     * "type line len checksum" per token -- compared byte-for-byte against the
+     * self-hosted lexer (lib/aslex.as) over the whole corpus. */
+    if (argc == 3 && strcmp(argv[1], "-lex") == 0) {
+        FILE *f = fopen(argv[2], "r");
+        if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[2]); as_emit_cstr("\n"); return 1; }
+        src = slurp(f);
+        fclose(f);
+        if (!src) { as_emit_cstr("as: out of memory\n"); return 1; }
+        int count = 0;
+        Token *toks = as_lex(src, &count);
+        if (!toks) { as_emit_cstr("as: "); as_emit_cstr(as_err); as_emit_cstr("\n"); free(src); return 1; }
+        for (int i = 0; i < count; i++) {
+            unsigned sum = 0;
+            for (int k = 0; k < toks[i].len; k++) sum = (sum + (unsigned char)toks[i].start[k]) % 9973;
+            printf("%d %d %d %u\n", (int)toks[i].type, toks[i].line, toks[i].len, sum);
+        }
+        free(toks);
+        free(src);
+        return 0;
+    }
+
     if (argc >= 2) {
         FILE *f = fopen(argv[1], "r");
         if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[1]); as_emit_cstr("\n"); return 1; }
         src = slurp(f);
         fclose(f);
+        as_set_args(argc - 1, argv + 1);    /* args() = [script, script-args...] */
     } else {
         src = slurp(stdin);
     }

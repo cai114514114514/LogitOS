@@ -48,7 +48,7 @@ static const char *const SYSCONSTS[] = {
 };
 static const char *const LIST_METHODS[] = { "append", 0 };
 static const char *const DICT_METHODS[] = { "get","has","keys","values","remove", 0 };
-static const char *const STR_METHODS[]  = { "join","split","strip","upper","lower","replace","find", 0 };
+static const char *const STR_METHODS[]  = { "join","split","strip","upper","lower","replace","find","sub", 0 };
 
 static int is_kw(const char *s, int n){
     for (int i=0; KEYWORDS[i]; i++) if (c_neq(s, KEYWORDS[i], n)) return 1;

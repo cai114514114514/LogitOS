@@ -633,34 +633,61 @@ static void init_rules(void)
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
 
+/* Where the expression currently being parsed at each nesting depth STARTED in
+ * the code stream -- ternary_ rewinds to this point so the consequent only runs
+ * when the condition is true (Python semantics: `a if c else b` must not
+ * evaluate `a` eagerly -- `d[k] if k in d else x` would throw). */
+static int expr_start[64];
+static int expr_depth;
+
 static void parse_precedence(Prec prec)
 {
+    if (expr_depth < 64) expr_start[expr_depth] = current->fn->count;
+    expr_depth++;
     advance();
     ParseFn prefix = get_rule(tk_prev().type)->prefix;
-    if (!prefix) { error("expected an expression"); return; }
+    if (!prefix) { error("expected an expression"); expr_depth--; return; }
     prefix();
     while (!had_error && prec <= get_rule(tk_cur().type)->prec) {
         advance();
         get_rule(tk_prev().type)->infix();
     }
+    expr_depth--;
 }
 static void expression(void) { parse_precedence(PREC_TERNARY); }
 
-/* M23 ternary `a if c else b` -- an infix on T_IF. The consequent `a` is already
- * on the stack; the condition parses at PREC_OR (a nested bare ternary inside the
- * condition would be ambiguous), the alternative at PREC_TERNARY (right-assoc).
- * Both arms leave exactly one value; the untaken arm never runs. */
+/* M23 ternary `a if c else b` -- an infix on T_IF, with PYTHON evaluation order:
+ * condition first, then exactly one arm. By the time the infix fires, the
+ * consequent's bytecode is already emitted -- so lift it out: rewind the code
+ * stream to the expression start (expr_start), compile the condition in its
+ * place, and re-append the saved consequent bytes behind the branch. Safe to
+ * relocate because jumps are RELATIVE and the block is self-contained (an
+ * expression cannot contain break/continue patch targets), so internal offsets
+ * survive the move; constant indexes are position-independent. */
 static void ternary_(void)
 {
-    parse_precedence(PREC_OR);                /* condition -> [a, c] */
-    int else_j = emitJump(OP_JUMP_IF_FALSE);  /* peeks c */
-    emit(OP_POP);                              /* true: drop c, keep a */
+    int cstart = (expr_depth > 0 && expr_depth <= 64) ? expr_start[expr_depth - 1]
+                                                       : current->fn->count;
+    int clen = current->fn->count - cstart;
+    uint8_t saved[1024];
+    uint8_t *cons = saved;
+    if (clen > (int)sizeof saved) {
+        cons = (uint8_t *)as_malloc((size_t)clen);
+        if (!cons) { error("out of memory"); return; }
+    }
+    for (int i = 0; i < clen; i++) cons[i] = current->fn->code[cstart + i];
+    current->fn->count = cstart;               /* rewind: condition goes here */
+
+    parse_precedence(PREC_OR);                 /* condition -> [c] */
+    int else_j = emitJump(OP_JUMP_IF_FALSE);   /* peeks c */
+    emit(OP_POP);                               /* true path: drop c */
+    for (int i = 0; i < clen; i++) emit(cons[i]);   /* now run the consequent -> [a] */
+    if (cons != saved) free(cons);
     int end_j = emitJump(OP_JUMP);
     patchJump(else_j);
-    emit(OP_POP);                              /* false: drop c */
-    emit(OP_POP);                              /* false: drop a */
+    emit(OP_POP);                               /* false path: drop c */
     consume(T_ELSE, "expected 'else' in conditional expression");
-    parse_precedence(PREC_TERNARY);            /* alternative -> [b] */
+    parse_precedence(PREC_TERNARY);             /* alternative -> [b] */
     patchJump(end_j);
 }
 
@@ -757,10 +784,25 @@ static void assignment(void)
         return;
     }
     if (match(T_DOT)) {                            /* property target: name.field = v */
-        named_variable(name);                      /* push the receiver */
         consume(T_IDENT, "expected a field name after '.'");
         Token field = tk_prev();
         int fk = identConst(field.start, field.len);
+        int cop = compound_op(tk_cur().type);
+        if (cop >= 0) {                            /* name.field OP= rhs (M21-P3: self.i += 1).
+                                                    * The receiver is a bare NAME (local/global)
+                                                    * -- re-reading it is pure, so no dup opcode
+                                                    * is needed: [recv, recv.field OP rhs]. */
+            advance();
+            named_variable(name);                  /* recv (for the SET) */
+            named_variable(name);                  /* recv (for the GET) */
+            emit(OP_GET_PROPERTY); emit16(fk);     /* -> [recv, oldval] */
+            expression();                          /* -> [recv, oldval, rhs] */
+            emit((uint8_t)cop);                    /* -> [recv, newval] */
+            emit(OP_SET_PROPERTY); emit16(fk);     /* -> [newval] */
+            emit(OP_POP);
+            return;
+        }
+        named_variable(name);                      /* push the receiver */
         consume(T_ASSIGN, "expected '=' in property assignment");
         expression();                              /* the value */
         emit(OP_SET_PROPERTY); emit16(fk);         /* [.. recv val] -> leaves val */

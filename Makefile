@@ -82,7 +82,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
+.PHONY: all run debug test test-nvme test-selfhost-lex clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
 
 all: $(ISO)
 
@@ -390,6 +390,11 @@ $(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
 # (mathx) is fine; packed to /usr/as/lib/.
 $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 	$(ASC) -c $< -o $@
+
+# M21-P3 self-hosting S1: the AetherScript lexer (lib/aslex.as) must emit a
+# token stream byte-identical to the C lexer over the whole in-tree corpus.
+test-selfhost-lex: $(BUILD)/asc
+	@bash tests/unit/run-selfhost-lex.sh $(BUILD)/asc
 
 # kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
 # headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts
