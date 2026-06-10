@@ -40,6 +40,17 @@ CFLAGS  := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
            -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 -g $(INCDIRS)
+
+# Debug knobs (objects are NOT flag-tracked: touch the affected sources or
+# `make clean` when toggling these):
+#   make CHURN=1   app open/close churn stress in the WM loop (freeze repro)
+#   make GROWFI=1  kheap grow() fault injection (exercise pmm-contig failure)
+ifeq ($(CHURN),1)
+CFLAGS += -DWM_CHURN_STRESS
+endif
+ifeq ($(GROWFI),1)
+CFLAGS += -DKHEAP_GROW_FAULT_INJECT
+endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
 
@@ -374,6 +385,16 @@ $(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
 # (mathx) is fine; packed to /usr/as/lib/.
 $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 	$(ASC) -c $< -o $@
+
+# kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
+# headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts
+# the no-two-live-allocations-overlap invariant -- including across injected
+# pmm_alloc_contig failures (the grow() double-accounting bug class).
+test-kheap:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/kheap.c \
+	    -Itests/unit/kheapstub -Ic/kernel/mm
+	@$(BUILD)/kheap_test
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

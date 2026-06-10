@@ -60,6 +60,32 @@ static int bin_index(size_t size)
 
 static int grow(size_t need)
 {
+    size_t frames = ARENA_FRAMES;
+    while (frames * FRAME_SIZE < need)
+        frames *= 2;
+
+    uint64_t phys;
+#ifdef KHEAP_GROW_FAULT_INJECT
+    /* Debug knob (make GROWFI=1): after boot settles, fail every other grow to
+     * exercise the contig-allocation-failure path deterministically. */
+    static unsigned grow_calls;
+    if (++grow_calls > 16 && (grow_calls & 1))
+        phys = 0;
+    else
+#endif
+    phys = pmm_alloc_contig(frames);
+    if (!phys) {
+        kprintf("[kheap] grow: pmm_alloc_contig(%d frames) FAILED\n", (int)frames);
+        return 0;
+    }
+
+    /* Retire the old bump area's tail onto a free list ONLY now that the new
+     * arena is in hand. Doing this before the (fallible) arena allocation was
+     * the app-churn freeze root cause: on failure brk/brk_left kept describing
+     * a block that was already free-listed, so the next small kmalloc bump-
+     * allocated memory that a later bin-fit alloc would hand out AGAIN -- two
+     * owners for one block, whose writes smashed free-list headers into cycles
+     * (see tests/unit/kheap_test.c for the deterministic reproduction). */
     if (brk && brk_left >= sizeof(struct header) + 16) {
         struct header *h = (struct header *)brk;
         h->size = brk_left - sizeof(struct header);
@@ -67,14 +93,6 @@ static int grow(size_t need)
         h->next = bins[b];
         bins[b] = h;
     }
-
-    size_t frames = ARENA_FRAMES;
-    while (frames * FRAME_SIZE < need)
-        frames *= 2;
-
-    uint64_t phys = pmm_alloc_contig(frames);
-    if (!phys)
-        return 0;
 
     brk = (uint8_t *)phys;                 /* identity-mapped */
     brk_left = frames * FRAME_SIZE;

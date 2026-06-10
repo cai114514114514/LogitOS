@@ -1108,6 +1108,27 @@ void wm_run(void)
 
     uint64_t last = 0;
     for (;;) {
+#ifdef WM_CHURN_STRESS
+        /* Churn stress (make CHURN=1): hammer the real wm_launch + EV_CLOSE
+         * close path -- the repro harness for the app-churn heap corruption.
+         * Heartbeat "[s]" to serial every 32 steps; if it stops, we froze. */
+        {
+            /* terminal-heavy: it fork+execve's /bin/sh over two pipes; closing it
+             * orphans the sh -> exercises fork/exec/pipe/orphan-reap teardown. */
+            static const char *FILE[3] = { "terminal.aex", "clock.aex", "monitor.aex" };
+            static const char *NAME[3] = { "Terminal", "Clock", "Monitor" };
+            static int sk; static uint64_t snext; static unsigned scnt;
+            uint64_t tnow = timer_ticks();
+            if (tnow >= snext) {
+                snext = tnow + 4;           /* ~40ms/step */
+                int k = sk++ % 3;
+                struct app *liv = find_live_app(NAME[k]);   /* match by NAME, not filename */
+                if (liv && liv->win >= 0) enqueue(&wins[liv->win], EV_CLOSE, 0, 0);
+                else if (!liv) wm_launch(FILE[k], "");
+                if ((++scnt & 31) == 0) serial_puts("[s]\n");
+            }
+        }
+#endif
         wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */
         if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
