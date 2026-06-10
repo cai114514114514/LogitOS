@@ -867,6 +867,14 @@ int main(void)
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
 
+    /* ---- M23.5: memory natives for the sys/gui libraries ---- */
+    ok("alloc_rt",   "b = alloc(16)\npoke32(addr(b), 0x41424344)\npoke8(addr(b) + 4, 0)\nprint(mem2cstr(b))\nprint(mem2str(b, 2))\ndealloc(b)\nprint(\"freed\")\n",
+                     "DCBA\nDC\nfreed\n");
+    ok("alloc_zero", "b = alloc(8)\nprint(peek64(addr(b)))\ndealloc(b)\n", "0\n");
+    ok("argv_build", "args = [\"echo\", \"hi\"]\npv = alloc(8 * 3)\nfor i in range(2):\n    poke64(addr(pv) + 8 * i, addr(args[i]))\npoke64(addr(pv) + 16, 0)\nprint(mem2cstr(peek64(addr(pv) + 8)))\ndealloc(pv)\n", "hi\n");
+    err("alloc_bad",  "alloc(0)\n");
+    err("dealloc_bad","dealloc(42)\n");
+
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();
 

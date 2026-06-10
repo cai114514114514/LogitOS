@@ -223,6 +223,13 @@ void syscall_dispatch(struct registers *r)
     case SYS_EXIT:
         proc_exit((int)r->rdi);  /* zombie + close fds + mark window dead; never returns */
         return;
+    case SYS_YIELD:
+        /* Handled HERE, not in wm_gui_syscall: a CLI process (sleep, an .as
+         * script's poll loop) has no window, and the wm route returned -1
+         * WITHOUT yielding -- `sleep` busy-burned its whole core. */
+        schedule();
+        r->rax = 0;
+        return;
     case SYS_FORK:
         r->rax = (uint64_t)proc_fork(r);
         return;

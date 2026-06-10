@@ -15,7 +15,7 @@ cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] &
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 4; printf 'as /usr/as/examples/hello.as\nas /usr/as/examples/fib.as\nas /usr/as/examples/ptr.as\nas /usr/as/examples/sys.as\nas /usr/as/examples/use_mod.as\nas /usr/as/examples/dict.as\nas /usr/as/examples/closure.as\nas /usr/as/examples/gc.as\nas /usr/as/examples/classes.as\nas /usr/as/examples/exc.as\nas /usr/as/examples/stdlib.as\nas /usr/as/examples/strings.as\nexit\n'; sleep 8; } | \
+{ sleep 4; printf 'as /usr/as/examples/hello.as\nas /usr/as/examples/fib.as\nas /usr/as/examples/ptr.as\nas /usr/as/examples/sys.as\nas /usr/as/examples/use_mod.as\nas /usr/as/examples/dict.as\nas /usr/as/examples/closure.as\nas /usr/as/examples/gc.as\nas /usr/as/examples/classes.as\nas /usr/as/examples/exc.as\nas /usr/as/examples/stdlib.as\nas /usr/as/examples/strings.as\nas /usr/as/examples/sysdemo.as\nas /usr/as/examples/guidemo.as &\nexit\n'; sleep 10; } | \
   "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
@@ -36,8 +36,11 @@ for _ in $(seq 1 300); do
        && grep -aq "stdlib ok" "$LOG" \
        && grep -aq "join: a,b,c" "$LOG" && grep -aq "fstr: n=7 sq=49" "$LOG" \
        && grep -aq "compif: 0,2,4,6" "$LOG" && grep -aq "swap: 2 1 unpack: 60" "$LOG" \
-       && grep -aq "strings ok" "$LOG"; then
-        echo "PASS: /bin/as ran A1+A2+A3+import+dict+closures+gc+classes+exceptions+stdlib+M23-strings scripts on Aether"
+       && grep -aq "strings ok" "$LOG" \
+       && grep -aq "roundtrip: written by AetherScript" "$LOG" && grep -aq "ls has it: true" "$LOG" \
+       && grep -aq "spawn exit: 0" "$LOG" && grep -aq "clock sane: true" "$LOG" \
+       && grep -aq "sysdemo ok" "$LOG" && grep -aq "gui ok" "$LOG"; then
+        echo "PASS: /bin/as ran the full example suite incl. M23.5 sys (files/spawn/time) + a GUI window from a script"
         exit 0
     fi
     kill -0 "$QPID" 2>/dev/null || break

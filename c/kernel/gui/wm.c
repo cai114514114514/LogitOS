@@ -294,7 +294,26 @@ static struct app *cur_app(void)
 long wm_gui_syscall(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
-    if (!ap) return -1;
+    if (!ap) {
+        /* Window ADOPTION: a CLI process (e.g. /bin/as running a script) gets a
+         * window on its first SYS_GUI_CREATE -- allocate an app slot and bind it
+         * to the proc, then fall through to the normal create. Exit/teardown
+         * reuses the standard path: proc_exit -> wm_app_exit (alive=0) -> reap.
+         * Any other GUI call without a window stays an error. */
+        struct proc *p = proc_current();
+        if (!p || num != SYS_GUI_CREATE) return -1;
+        int ai = -1;
+        for (int i = 0; i < MAXWIN; i++) if (!apps[i].used) { ai = i; break; }
+        if (ai < 0) return -1;
+        ap = &apps[ai];
+        ap->used = ap->alive = 1;
+        ap->id = next_app_id++;
+        ap->base = 0;
+        ap->win = -1;
+        scopy(ap->name, p->name, sizeof ap->name);
+        ap->arg[0] = 0;
+        p->gui = ap;
+    }
 
     switch (num) {
     case SYS_GUI_CREATE: {
