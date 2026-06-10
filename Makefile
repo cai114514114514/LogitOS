@@ -50,9 +50,10 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -std=c11 -Wall -Wextra -O2 $(INCDIRS)
 
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
-# inflate.c is excluded: it was ported to Rust (rust/src/inflate.rs provides the
-# inflate_raw/zlib_decompress symbols) -- the first hybrid C+Rust module.
-C_SRC   := $(filter-out c/lib/image/inflate.c,$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+# inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
+# inflate_raw/zlib_decompress + png_register/png_detect/png_decode) -- the hybrid
+# C+Rust modules. The .c files are deleted, so the filter-out is a defensive guard.
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c,$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -76,6 +77,12 @@ $(BUILD)/%.o: %.c
 # Rust no_std staticlib (kept after `all:` so it never becomes the default goal).
 $(RUST_LIB): $(RUST_SRC)
 	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release --target x86_64-unknown-none
+
+# Same crate built for the HOST, for the host-side image tests (test-png/test-jpeg):
+# the crate is no_std either way; the tests' own malloc shims satisfy kmalloc/kfree.
+RUST_LIB_HOST := rust/target/release/libaether_rust.a
+$(RUST_LIB_HOST): $(RUST_SRC)
+	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release
 
 # roots.c #includes the generated bundle; rebuild it when the bundle changes.
 $(BUILD)/c/crypto/trust/roots.o: c/crypto/trust/roots_bundle.inc c/crypto/trust/roots.h
@@ -183,12 +190,13 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $@
 
 # --- browser: render pipeline + image codecs + LibCSS, all into one ring-3 app ---
-# inflate is gone -- the ring-3 browser links the same Rust staticlib as the kernel
-# (rust/src/inflate.rs provides inflate_raw/zlib_decompress; the crate is FFI-free).
+# inflate + png are gone -- the ring-3 browser links the same Rust staticlib as the
+# kernel (rust/src/{inflate,png}.rs provide zlib_decompress + png_*; the crate only
+# calls kmalloc/kfree/img_register, which browser_rt.c shims into the ring-3 heap).
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_vars.c \
-                c/lib/image/png.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/img.c
+                c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
 $(BUILD)/browserobj/%.o: %.c
@@ -369,11 +377,11 @@ $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
-test-png:
+test-png: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/pngtest
 	@python3 tests/unit/png_gen.py $(BUILD)/pngtest
 	@$(CC) -O2 -o $(BUILD)/png_test tests/unit/png_test.c \
-	    c/lib/image/img.c c/lib/image/png.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/inflate.c \
+	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
 	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/png_test $(BUILD)/pngtest
 
@@ -384,11 +392,11 @@ test-png:
 # never against the original pixels. Also asserts progressive/CMYK fail gracefully.
 # Needs PIL + djpeg. (Ad-hoc tests tests/unit/img_test.c, tests/unit/img_fuzz.c have no
 # target; if run by hand, add c/lib/image/jpeg.c to their source list.)
-test-jpeg:
+test-jpeg: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/jpegtest
 	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest
 	@$(CC) -O2 -o $(BUILD)/jpeg_test tests/unit/jpeg_test.c \
-	    c/lib/image/img.c c/lib/image/png.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/inflate.c \
+	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
 	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
 

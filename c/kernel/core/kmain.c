@@ -24,6 +24,7 @@
 #define BOOT_OK_MARKER "AETHER_BOOT_OK"
 
 int rust_inflate_selftest(void);   /* rust/src/inflate.rs -- DEFLATE port self-check */
+int rust_png_selftest(void);       /* rust/src/png.rs -- PNG decoder self-check (needs heap) */
 
 void kernel_main(uint64_t mb_info)
 {
@@ -38,6 +39,8 @@ void kernel_main(uint64_t mb_info)
     pit_init(TIMER_HZ);
     pmm_init(mb_info);
     serial_puts("[aether] interrupts + memory + gdt/tss online\n");
+    serial_puts(rust_png_selftest() == 0 ? "[rust] png selftest OK\n"
+                                          : "[rust] png selftest FAIL\n");
 
     if (!fb_init(mb_info)) {
         serial_puts("\nAETHER_FB_FAIL\n");
