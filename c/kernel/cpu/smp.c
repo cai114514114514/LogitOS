@@ -56,10 +56,78 @@ int smp_irq_via_apic(void) { return g_via_apic; }
 
 int smp_cpu_count(void) { return g_online; }
 
-/* P0: the vector-240 present-IPI is retired (APs now run the scheduler, not a
- * present band). Kept as a no-op so the interrupts.c vector-240 path stays valid;
- * no IPI-240 is sent anymore. (P4 restores a scheduler-aware parallel present.) */
-void smp_ipi_work(void) { }
+/* M25 P4b: parallel framebuffer present, restored on vector 241 (240 now belongs
+ * to the TLB shootdown). The presenting core splits a tall rect's rows into one
+ * band per online core, publishes the bands, IPIs the other cores, copies its own
+ * band, and waits for acks WITH A TIMEOUT: a core that can't service the IPI
+ * promptly (IF=0 spinning on a lock, or parked in early bring-up) is covered by
+ * the presenter copying that band itself -- the copy is idempotent (same source
+ * rows to the same destination rows), so a late ack arriving mid-fallback is
+ * harmless. The handler is BKL-free (the presenter usually HOLDS the BKL while
+ * waiting, so a handler that took it would deadlock) and touches only its
+ * published band + the ack word. */
+static struct { int x, y, w, h; } g_band[PERCPU_MAXCPU];
+static volatile int g_band_ack[PERCPU_MAXCPU];
+
+void smp_present_ipi(void)               /* vector-241 handler body (interrupts.c) */
+{
+    int i = this_cpu()->index;
+    if (!__atomic_load_n(&g_band_ack[i], __ATOMIC_SEQ_CST)) {
+        fb_copy_rect(g_band[i].x, g_band[i].y, g_band[i].w, g_band[i].h);
+        __atomic_store_n(&g_band_ack[i], 1, __ATOMIC_SEQ_CST);
+    }
+}
+
+static void smp_present_par(int x, int y, int w, int h)
+{
+    int n = g_online;
+    if (n > PERCPU_MAXCPU) n = PERCPU_MAXCPU;
+    int self = this_cpu()->index;
+    if (n <= 1) { fb_copy_rect(x, y, w, h); return; }
+
+    /* Contention gate: if anyone is queued on the BKL, present solo. The queued
+     * cores spin with IF=0 (irqsave) and cannot service the band IPI until the
+     * presenter -- who HOLDS the BKL -- releases it: every parallel attempt would
+     * ride the full ack timeout while keeping the BKL, starving the whole system
+     * (observed: 3 cores BKL-queued, boot-to-shell fine but smptest crawling).
+     * Parallel present thus engages exactly when it helps: big composites while
+     * the other cores are idle or in ring 3. */
+    unsigned int t = __atomic_load_n(&g_bkl.ticket,  __ATOMIC_SEQ_CST);
+    unsigned int s = __atomic_load_n(&g_bkl.serving, __ATOMIC_SEQ_CST);
+    if (t - s > 1) { fb_copy_rect(x, y, w, h); return; }
+
+    /* Row bands, top to bottom; the presenter takes band 0 (no IPI to self).
+     * Presents are serialized by the BKL, so the band table has one writer. */
+    int per = h / n, yy = y;
+    int band_of[PERCPU_MAXCPU]; int nb = 0;
+    for (int i = 0; i < n; i++) {
+        int bh = (i == n - 1) ? (y + h - yy) : per;
+        int core = (i == 0) ? self : (i <= self ? i - 1 : i);   /* others fill remaining slots */
+        g_band[core].x = x; g_band[core].y = yy; g_band[core].w = w; g_band[core].h = bh;
+        g_band_ack[core] = (i == 0);     /* self band needs no ack */
+        if (i > 0) band_of[nb++] = core;
+        yy += bh;
+    }
+    __sync_synchronize();
+    for (int i = 0; i < nb; i++)
+        lapic_send_ipi((uint8_t)g_cpus[band_of[i]].lapic_id, 241);
+
+    fb_copy_rect(g_band[self].x, g_band[self].y, g_band[self].w, g_band[self].h);
+
+    /* Bounded wait, then idempotent fallback for any band still un-acked. */
+    for (volatile long spin = 0; spin < 500000L; spin++) {
+        int done = 1;
+        for (int i = 0; i < nb; i++)
+            if (!g_band_ack[band_of[i]]) { done = 0; break; }
+        if (done) return;
+        __asm__ volatile ("pause");
+    }
+    for (int i = 0; i < nb; i++) {
+        int c = band_of[i];
+        if (!__atomic_exchange_n(&g_band_ack[c], 1, __ATOMIC_SEQ_CST))
+            fb_copy_rect(g_band[c].x, g_band[c].y, g_band[c].w, g_band[c].h);
+    }
+}
 
 /* First C code each AP runs: enable LAPIC, load the shared IDT + its own GDT/TSS,
  * arm a periodic preemption timer, then become a full scheduling core. */
@@ -85,8 +153,14 @@ static void ap_entry(void)
      * from its park `hlt` so it can re-check g_sched_ready -- nothing else sends
      * the AP an interrupt -- and (b) becomes the preemption tick once scheduling
      * starts. While parked, me->current is NULL: schedule() short-circuits on a
-     * NULL current (guarded), so a timer tick during the park is a harmless no-op. */
-    lapic_timer_init(32, LAPIC_AP_TIMER_COUNT);
+     * NULL current (guarded), so a timer tick during the park is a harmless no-op.
+     * The period is STAGGERED per core (+12.5% per index): identical periods armed
+     * at near-identical times keep every core's preemption tick in phase forever,
+     * so the cores hit the shared scheduler lock in lock-step (a convoy) and
+     * sample each other's state at correlated instants (discovered during the
+     * M25 P4 per-CPU-runqueue experiment; see the P4 spec doc). Drifted phases
+     * decorrelate both. */
+    lapic_timer_init(32, LAPIC_AP_TIMER_COUNT + (uint32_t)idx * (LAPIC_AP_TIMER_COUNT / 8));
     __atomic_add_fetch(&g_online, 1, __ATOMIC_SEQ_CST);
     kprintf("[smp] CPU %d apic_id=%d online\n", idx, (int)lapic_id());
     ap_ack = 1;
@@ -152,7 +226,8 @@ void smp_init(void)
         if (!ap_ack) { cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }
     }
     kprintf("[smp] %d/%d CPUs online\n", g_online, n);
-    /* P0: present reverted to BSP-only (fb keeps g_par_present NULL). The APs are
-     * now scheduling cores, not idle present-helpers. Parallel present returns in
-     * P4 as a scheduler-aware job. */
+    if (g_online > 1) {
+        fb_set_present_par(smp_present_par);   /* M25 P4b: band-parallel present */
+        kprintf("[smp] parallel present on %d cores (IPI 241)\n", g_online);
+    }
 }

@@ -19,6 +19,10 @@ void     spin_lock(spinlock_t *l);
 void     spin_unlock(spinlock_t *l);
 uint64_t spin_lock_irqsave(spinlock_t *l);
 void     spin_unlock_irqrestore(spinlock_t *l, uint64_t flags);
+int      spin_trylock(spinlock_t *l);   /* 1 = acquired, 0 = busy; never waits.
+                                         * M25 P4: lets a core holding its own
+                                         * rq_lock probe another's without any
+                                         * wait -> no AB-BA by construction. */
 
 extern spinlock_t g_bkl;            /* Big Kernel Lock (M25 P0) */
 extern volatile int g_bkl_owner;    /* cpu index holding g_bkl (-1 = free); for nested detection */

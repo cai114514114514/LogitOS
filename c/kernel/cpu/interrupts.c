@@ -31,11 +31,14 @@ static const char *const exception_names[32] = {
 
 static void panic_exception(struct registers *r)
 {
+    uint64_t cr2 = 0; __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+    struct cpu *me = this_cpu();
     vga_set_color(VGA_WHITE, VGA_RED);
     kprintf("\n  *** EXCEPTION: %s (vector %d) ***\n",
             exception_names[r->vector & 31], (int)r->vector);
-    kprintf("  error=%x  rip=%p  rflags=%x\n",
-            (unsigned)r->error_code, (void *)r->rip, (unsigned)r->rflags);
+    kprintf("  error=%x  rip=%p  rflags=%x cr2=%p cpu=%d cur=%p\n",
+            (unsigned)r->error_code, (void *)r->rip, (unsigned)r->rflags,
+            (void *)cr2, me->index, (void *)me->current);
     for (;;)
         __asm__ volatile ("cli; hlt");
 }
@@ -65,10 +68,12 @@ void interrupt_handler(struct registers *r)
      * timer; between locks they hold nothing, so a timer preempt is as safe as
      * preempting ring 3. Only the syscall vector can be bkl-free; IRQs/faults
      * always take the BKL. */
-    /* vector 240 = TLB-shootdown IPI: MUST be BKL-free -- the initiator may hold
-     * the BKL while waiting for this core to ack, so taking the BKL here would
-     * deadlock. The handler only reloads CR3 + acks (no shared state). */
-    int bkl_free = ((r->vector == 128) && syscall_is_bkl_free((int)r->rax)) || r->vector == 240;
+    /* vectors 240 (TLB shootdown) / 241 (parallel-present band): MUST be BKL-free
+     * -- the initiator may hold the BKL while waiting for this core to ack, so
+     * taking the BKL here would deadlock. Each handler touches only its own
+     * published work item + an ack word. */
+    int bkl_free = ((r->vector == 128) && syscall_is_bkl_free((int)r->rax))
+                   || r->vector == 240 || r->vector == 241;
     uint64_t bf = 0;
     if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
@@ -78,6 +83,11 @@ void interrupt_handler(struct registers *r)
     }
     if (r->vector == 240) {        /* M25 P2: TLB-shootdown IPI (BKL-free) */
         tlb_ipi();
+        lapic_eoi();
+        goto done;
+    }
+    if (r->vector == 241) {        /* M25 P4b: parallel-present band IPI (BKL-free) */
+        smp_present_ipi();
         lapic_eoi();
         goto done;
     }
@@ -106,8 +116,8 @@ void interrupt_handler(struct registers *r)
         if (irq == 0) {
             if (me->index == 0) timer_tick();   /* BSP owns the wall-clock tick */
             if (apic) lapic_eoi(); else pic_eoi(0);
-            /* Don't preempt mid block-I/O, and never re-enter schedule() from a
-             * NESTED IRQ (the sti window inside an in-progress kernel op). */
+            /* Don't preempt mid block-I/O, and never re-enter the scheduler from
+             * a NESTED IRQ (the sti window inside an in-progress kernel op). */
             if (!nested && !ata_busy() && !virtio_busy() && !nvme_busy())
                 schedule();    /* preempt: round-robin to the next thread */
             goto done;

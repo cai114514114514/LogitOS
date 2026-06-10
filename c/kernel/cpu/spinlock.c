@@ -28,6 +28,21 @@ void spin_unlock(spinlock_t *l)
     __atomic_fetch_add(&l->serving, 1, __ATOMIC_SEQ_CST);
 }
 
+/* Ticket-lock trylock: the lock is free iff ticket==serving; claim it by
+ * advancing ticket from s to s+1 atomically. If any other core grabbed a ticket
+ * between our load and the cmpxchg, the cmpxchg fails and we report busy --
+ * we never wait, and a failed attempt takes no ticket (no queue pollution). */
+int spin_trylock(spinlock_t *l)
+{
+    unsigned int s = __atomic_load_n(&l->serving, __ATOMIC_SEQ_CST);
+    unsigned int expect = s;
+    if (!__atomic_compare_exchange_n(&l->ticket, &expect, s + 1, 0,
+                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+        return 0;
+    if (l == &g_bkl) g_bkl_owner = this_cpu()->index;
+    return 1;
+}
+
 uint64_t spin_lock_irqsave(spinlock_t *l)
 {
     uint64_t flags;

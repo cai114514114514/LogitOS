@@ -36,10 +36,15 @@ QEMU        := qemu-system-x86_64
 # Colocated headers resolve via -I across every source dir (names are unique).
 INCDIRS := $(addprefix -I,$(shell find C include -type d))
 
+# -MMD -MP: every compile also emits a .d makefile fragment listing its real
+# header dependencies (see the -include at the bottom). Without this, editing a
+# shared header (e.g. percpu.h's struct cpu) only rebuilt the .c files git
+# touched -- stale objects then disagreed about struct layouts and corrupted
+# memory at runtime (the M25 P4 g_cpus skew).
 CFLAGS  := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
            -mno-red-zone -mno-mmx -msse -msse2 \
-           -std=c11 -Wall -Wextra -O2 -g $(INCDIRS)
+           -std=c11 -Wall -Wextra -O2 -g -MMD -MP $(INCDIRS)
 
 # Debug knobs (objects are NOT flag-tracked: touch the affected sources or
 # `make clean` when toggling these):
@@ -58,7 +63,7 @@ LDFLAGS := -n -nostdlib -T linker.ld
 UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
            -mno-red-zone -mno-mmx -msse -msse2 \
-           -std=c11 -Wall -Wextra -O2 $(INCDIRS)
+           -std=c11 -Wall -Wextra -O2 -MMD -MP $(INCDIRS)
 
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
@@ -423,3 +428,7 @@ test-jpeg: $(RUST_LIB_HOST)
 
 clean:
 	rm -rf $(BUILD)
+
+# Header-dependency fragments emitted by -MMD (kernel AND app objects). A stale
+# object compiled against an old struct layout is memory corruption at runtime.
+-include $(shell find $(BUILD) -name '*.d' 2>/dev/null)

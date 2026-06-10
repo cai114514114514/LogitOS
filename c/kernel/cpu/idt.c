@@ -30,6 +30,7 @@ extern void *isr_stub_table[];
 extern void isr128(void);
 extern void isr65(void);
 extern void isr240(void);
+extern void isr241(void);
 extern void isr255(void);
 
 static void idt_set(int vec, void *handler, uint8_t type)
@@ -52,7 +53,8 @@ void idt_init(void)
     /* int 0x80 must be reachable from ring 3, so DPL 3. */
     idt_set(SYSCALL_VEC, (void *)isr128, GATE_USER);
     idt_set(65,  (void *)isr65,  GATE_INT64);     /* e1000 NIC */
-    idt_set(240, (void *)isr240, GATE_INT64);     /* SMP work IPI */
+    idt_set(240, (void *)isr240, GATE_INT64);     /* TLB-shootdown IPI */
+    idt_set(241, (void *)isr241, GATE_INT64);     /* parallel-present band IPI */
     idt_set(255, (void *)isr255, GATE_INT64);     /* LAPIC spurious */
 
     idtp.limit = sizeof(idt) - 1;

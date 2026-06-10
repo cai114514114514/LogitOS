@@ -19,8 +19,13 @@
 #define KS_SIZE    512          /* bytes per block (the per-byte fill/verify is the
                                  * concurrent, un-locked work that yields the speedup) */
 #define KS_ITERS   8000L         /* alloc-batches per chunk */
-#define KS_CHUNKS  16           /* chunks per child; cpu index sampled between chunks
-                                 * so a migrating child observes every core it ran on */
+#define KS_CHUNKS  48           /* chunks per child; cpu index sampled between chunks
+                                 * so a migrating child observes every core it ran on.
+                                 * Sized so T1 >= ~5s: with the M25 P4 per-CPU
+                                 * scheduler the baseline child gets a clean core and
+                                 * 16 chunks finished in ~1s -- below the test's own
+                                 * >=2s floor, making the 1s-granularity RTC clock
+                                 * read as +/-50% noise on the TN/T1 ratio. */
 
 /* Run the BKL-free heap stress, returning the total corruption count (want 0) and
  * OR-ing every core this child observed into *seen_mask. */
