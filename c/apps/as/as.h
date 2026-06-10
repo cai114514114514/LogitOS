@@ -46,7 +46,10 @@ typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE
                O_CLASS, O_INSTANCE, O_BOUND_METHOD } ObjType;
 struct Obj { ObjType type; uint8_t marked; Obj *next; };   /* next: alloc list; marked: GC */
 
-typedef struct { Obj obj; int len; uint32_t hash; char *chars; } ObjStr;
+/* M23 lazy hash: `hash` is computed on first use (as_str_hash), not at creation.
+ * Eager hashing made every str_concat O(result) twice -- read ->hash only through
+ * as_str_hash(). */
+typedef struct { Obj obj; int len; uint8_t hashed; uint32_t hash; char *chars; } ObjStr;
 
 typedef struct {           /* a compiled function (also the top-level "script") */
     Obj obj;
@@ -183,6 +186,7 @@ void       as_add_module_source(const char *name, const char *src); /* in-memory
 /* object/value helpers (object.c, value.c) */
 ObjStr   *as_str_copy(const char *chars, int len);
 ObjStr   *as_str_take(char *chars, int len);
+uint32_t  as_str_hash(ObjStr *s);     /* lazy: computes + caches on first call */
 ObjFn    *as_fn_new(void);
 ObjClosure *as_closure_new(ObjFn *fn);
 ObjUpvalue *as_upvalue_new(Value *slot);
@@ -205,6 +209,7 @@ int       as_chunk_const(ObjFn *fn, Value v);
 int       as_value_eq(Value a, Value b);
 int       as_truthy(Value v);
 void      as_print_value(Value v);    /* for `print` + REPL echo */
+int       value_to_cstr(Value v, char *buf, int cap);  /* print-form into buf; returns length */
 int       as_fmt_float(double d, char *buf, int cap);  /* shortest round-trip; ".0" for whole floats */
 void      as_free_objects(void);      /* free all heap objects (end of run) */
 

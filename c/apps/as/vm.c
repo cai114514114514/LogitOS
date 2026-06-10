@@ -54,7 +54,7 @@ static int        nmsrc;
 static Value *builtin_slot(ObjStr *name, int create)
 {
     for (int i = 0; i < nbuiltins; i++)
-        if (builtins[i].name->hash == name->hash && builtins[i].name->len == name->len
+        if (as_str_hash(builtins[i].name) == as_str_hash(name) && builtins[i].name->len == name->len
             && memcmp(builtins[i].name->chars, name->chars, name->len) == 0) return &builtins[i].val;
     if (!create || nbuiltins >= 128) return NULL;
     builtins[nbuiltins].name = name; builtins[nbuiltins].val = NIL_VAL;
@@ -236,6 +236,14 @@ static Value native_len(int argc, Value *args)
     if (IS_STR(args[0]))  return INT_VAL(AS_STR(args[0])->len);
     if (IS_DICT(args[0])) return INT_VAL(AS_DICT(args[0])->live);
     return as_native_fail("len() needs a list, string, or dict");
+}
+static Value native_str(int argc, Value *args)   /* M23: print-form of any value */
+{
+    if (argc != 1) return as_native_fail("str() takes 1 argument");
+    char buf[1024];
+    int n = value_to_cstr(args[0], buf, sizeof buf);
+    ObjStr *s = as_str_copy(buf, n);            /* args[] stay stack-rooted across this */
+    return s ? OBJ_VAL(s) : NIL_VAL;            /* OOM: g_oom set, dispatch unwinds */
 }
 static Value native_gc_stats(int argc, Value *args)
 {
@@ -749,6 +757,118 @@ static int run_until(int floor)
                     as_list_push(AS_LIST(recv), peek(0));
                     sp -= argc + 1; push(NIL_VAL);
                 } else { runtime_error("list has no method '%.*s'", name->len, name->chars); goto err; }
+            } else if (IS_STR(recv)) {
+                /* M23 string methods. GC discipline: the receiver + args stay on the
+                 * stack (rooted) until the result exists; adjust sp LAST. ASCII-only
+                 * case/whitespace, byte-oriented -- consistent with string indexing. */
+                ObjStr *s = AS_STR(recv);
+                if (name_eq(name, "join")) {
+                    if (argc != 1 || !IS_LIST(peek(0))) { runtime_error("join() takes one list argument"); goto err; }
+                    ObjList *l = AS_LIST(peek(0));
+                    int total = 0;
+                    for (int i = 0; i < l->count; i++) {
+                        if (!IS_STR(l->items[i])) { runtime_error("join() list items must be strings"); goto err; }
+                        total += AS_STR(l->items[i])->len;
+                    }
+                    if (l->count > 1) total += s->len * (l->count - 1);
+                    char *buf = (char *)as_malloc((size_t)total + 1);
+                    if (!buf) goto err;
+                    int o = 0;
+                    for (int i = 0; i < l->count; i++) {
+                        if (i) { memcpy(buf + o, s->chars, (size_t)s->len); o += s->len; }
+                        ObjStr *it = AS_STR(l->items[i]);
+                        memcpy(buf + o, it->chars, (size_t)it->len); o += it->len;
+                    }
+                    buf[total] = 0;
+                    ObjStr *r = as_str_take(buf, total);   /* inputs still stack-rooted */
+                    if (!r) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(r));
+                } else if (name_eq(name, "split")) {
+                    ObjStr *sep = NULL;
+                    if (argc == 1) {
+                        if (!IS_STR(peek(0))) { runtime_error("split() separator must be a string"); goto err; }
+                        sep = AS_STR(peek(0));
+                        if (sep->len == 0) { runtime_error("split() separator must not be empty"); goto err; }
+                    } else if (argc != 0) { runtime_error("split() takes 0 or 1 arguments"); goto err; }
+                    /* The result list + its slice strings are fresh allocations that
+                     * nothing roots while LATER slices allocate -- disable GC across
+                     * the build (the inputs are big-O the result, so this is bounded). */
+                    as_gc_push_disable();
+                    ObjList *l = as_list_new();
+                    if (sep) {
+                        int start = 0;
+                        for (int i = 0; i + sep->len <= s->len; ) {
+                            if (memcmp(s->chars + i, sep->chars, (size_t)sep->len) == 0) {
+                                as_list_push(l, OBJ_VAL(as_str_copy(s->chars + start, i - start)));
+                                i += sep->len; start = i;
+                            } else i++;
+                        }
+                        as_list_push(l, OBJ_VAL(as_str_copy(s->chars + start, s->len - start)));
+                    } else {
+                        for (int i = 0; i < s->len; ) {        /* runs of ASCII whitespace */
+                            while (i < s->len && (s->chars[i]==' '||s->chars[i]=='\t'||s->chars[i]=='\n'||s->chars[i]=='\r'||s->chars[i]=='\f'||s->chars[i]=='\v')) i++;
+                            if (i >= s->len) break;
+                            int st = i;
+                            while (i < s->len && !(s->chars[i]==' '||s->chars[i]=='\t'||s->chars[i]=='\n'||s->chars[i]=='\r'||s->chars[i]=='\f'||s->chars[i]=='\v')) i++;
+                            as_list_push(l, OBJ_VAL(as_str_copy(s->chars + st, i - st)));
+                        }
+                    }
+                    as_gc_pop_disable();
+                    if (g_oom) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(l));
+                } else if (name_eq(name, "strip")) {
+                    if (argc != 0) { runtime_error("strip() takes no arguments"); goto err; }
+                    int a = 0, b = s->len;
+                    while (a < b && (s->chars[a]==' '||s->chars[a]=='\t'||s->chars[a]=='\n'||s->chars[a]=='\r'||s->chars[a]=='\f'||s->chars[a]=='\v')) a++;
+                    while (b > a && (s->chars[b-1]==' '||s->chars[b-1]=='\t'||s->chars[b-1]=='\n'||s->chars[b-1]=='\r'||s->chars[b-1]=='\f'||s->chars[b-1]=='\v')) b--;
+                    ObjStr *r = as_str_copy(s->chars + a, b - a);
+                    if (!r) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(r));
+                } else if (name_eq(name, "upper") || name_eq(name, "lower")) {
+                    if (argc != 0) { runtime_error("upper()/lower() take no arguments"); goto err; }
+                    int up = name_eq(name, "upper");
+                    char *buf = (char *)as_malloc((size_t)s->len + 1);
+                    if (!buf) goto err;
+                    for (int i = 0; i < s->len; i++) {
+                        char ch = s->chars[i];
+                        if (up)  { if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 'a' + 'A'); }
+                        else     { if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a'); }
+                        buf[i] = ch;
+                    }
+                    buf[s->len] = 0;
+                    ObjStr *r = as_str_take(buf, s->len);
+                    if (!r) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(r));
+                } else if (name_eq(name, "replace")) {
+                    if (argc != 2 || !IS_STR(peek(1)) || !IS_STR(peek(0))) { runtime_error("replace() takes two string arguments"); goto err; }
+                    ObjStr *old = AS_STR(peek(1)), *new_ = AS_STR(peek(0));
+                    if (old->len == 0) { runtime_error("replace() old string must not be empty"); goto err; }
+                    int count = 0;                              /* pass 1: count occurrences */
+                    for (int i = 0; i + old->len <= s->len; )
+                        if (memcmp(s->chars + i, old->chars, (size_t)old->len) == 0) { count++; i += old->len; }
+                        else i++;
+                    long total = (long)s->len + (long)count * (new_->len - old->len);
+                    char *buf = (char *)as_malloc((size_t)total + 1);
+                    if (!buf) goto err;
+                    int o = 0;                                  /* pass 2: write */
+                    for (int i = 0; i < s->len; ) {
+                        if (i + old->len <= s->len && memcmp(s->chars + i, old->chars, (size_t)old->len) == 0) {
+                            memcpy(buf + o, new_->chars, (size_t)new_->len); o += new_->len; i += old->len;
+                        } else buf[o++] = s->chars[i++];
+                    }
+                    buf[total] = 0;
+                    ObjStr *r = as_str_take(buf, (int)total);
+                    if (!r) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(r));
+                } else if (name_eq(name, "find")) {
+                    if (argc != 1 || !IS_STR(peek(0))) { runtime_error("find() takes one string argument"); goto err; }
+                    ObjStr *sub = AS_STR(peek(0));
+                    int64_t at = sub->len == 0 ? 0 : -1;        /* empty sub -> 0 (Python) */
+                    if (sub->len > 0)
+                        for (int i = 0; i + sub->len <= s->len; i++)
+                            if (memcmp(s->chars + i, sub->chars, (size_t)sub->len) == 0) { at = i; break; }
+                    sp -= argc + 1; push(INT_VAL(at));
+                } else { runtime_error("string has no method '%.*s'", name->len, name->chars); goto err; }
             } else if (IS_DICT(recv)) {
                 ObjDict *d = AS_DICT(recv);
                 if (name_eq(name, "has")) {
@@ -982,6 +1102,7 @@ int as_run(ObjFn *script)
     as_define_native("print", native_print);
     as_define_native("len", native_len);
     as_define_native("range", native_range);
+    as_define_native("str", native_str);
     as_define_native("gc_stats", native_gc_stats);
     as_define_native("gc", native_gc);
     as_install_indirection();          /* addr/peek/poke/iNptr/syscall + SYS_* */

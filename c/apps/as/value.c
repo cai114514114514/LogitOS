@@ -124,3 +124,96 @@ static void print_repr(Value v)
     if (IS_STR(v)) { ObjStr *s = AS_STR(v); as_emit("'", 1); as_emit(s->chars, s->len); as_emit("'", 1); }
     else as_print_value(v);
 }
+
+/* M23 str(x): format a Value exactly like `print` would, into a caller buffer.
+ * Self-contained (no as_capture redirection -- reentrant), defensive against cap.
+ * Returns the number of bytes written (NUL-terminated, < cap). Allocates nothing,
+ * so it is GC-safe with unrooted inputs. */
+static int vts(Value v, char *buf, int cap, int repr);
+
+static int vts_put(char *buf, int cap, int o, const char *s, int n)
+{
+    if (n > cap - 1 - o) n = cap - 1 - o;
+    if (n > 0) { memcpy(buf + o, s, (size_t)n); o += n; }
+    return o;
+}
+
+static int vts(Value v, char *buf, int cap, int repr)
+{
+    char tmp[40]; int n, o = 0;
+    switch (v.type) {
+    case V_NIL:   return vts_put(buf, cap, 0, "nil", 3);
+    case V_BOOL:  return AS_BOOL(v) ? vts_put(buf, cap, 0, "true", 4) : vts_put(buf, cap, 0, "false", 5);
+    case V_INT:   n = snprintf(tmp, sizeof tmp, "%lld", (long long)AS_INT(v));
+                  return vts_put(buf, cap, 0, tmp, n);
+    case V_FLOAT: n = as_fmt_float(AS_FLOAT(v), tmp, sizeof tmp);
+                  return vts_put(buf, cap, 0, tmp, n);
+    case V_OBJ:
+        if (IS_STR(v)) {
+            ObjStr *s = AS_STR(v);
+            if (!repr) return vts_put(buf, cap, 0, s->chars, s->len);
+            o = vts_put(buf, cap, 0, "'", 1);
+            o = vts_put(buf, cap, o, s->chars, s->len);
+            return vts_put(buf, cap, o, "'", 1);
+        }
+        if (IS_LIST(v)) {
+            ObjList *l = AS_LIST(v);
+            o = vts_put(buf, cap, 0, "[", 1);
+            for (int i = 0; i < l->count && o < cap - 1; i++) {
+                if (i) o = vts_put(buf, cap, o, ", ", 2);
+                o += vts(l->items[i], buf + o, cap - o, 1);
+            }
+            return vts_put(buf, cap, o, "]", 1);
+        }
+        if (IS_DICT(v)) {
+            ObjDict *d = AS_DICT(v);
+            int first = 1;
+            o = vts_put(buf, cap, 0, "{", 1);
+            for (int i = 0; i < d->cap && o < cap - 1; i++) {
+                DictEntry *e = &d->entries[i];
+                if (e->kind != AS_DK_STR && e->kind != AS_DK_INT) continue;
+                if (!first) o = vts_put(buf, cap, o, ", ", 2);
+                first = 0;
+                if (e->kind == AS_DK_STR) o += vts(OBJ_VAL(e->kstr), buf + o, cap - o, 1);
+                else { n = snprintf(tmp, sizeof tmp, "%lld", (long long)e->kint); o = vts_put(buf, cap, o, tmp, n); }
+                o = vts_put(buf, cap, o, ": ", 2);
+                o += vts(e->val, buf + o, cap - o, 1);
+            }
+            return vts_put(buf, cap, o, "}", 1);
+        }
+        if (IS_PTR(v)) {
+            ObjPtr *p = AS_PTR(v);
+            n = snprintf(tmp, sizeof tmp, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);
+            return vts_put(buf, cap, 0, tmp, n);
+        }
+        if (IS_MODULE(v)) {
+            o = vts_put(buf, cap, 0, "<module ", 8);
+            o = vts_put(buf, cap, o, AS_MODULE(v)->name->chars, AS_MODULE(v)->name->len);
+            return vts_put(buf, cap, o, ">", 1);
+        }
+        if (IS_FN(v) || IS_CLOSURE(v)) return vts_put(buf, cap, 0, "<fn>", 4);
+        if (IS_NATIVE(v))              return vts_put(buf, cap, 0, "<native fn>", 11);
+        if (IS_CLASS(v)) {
+            o = vts_put(buf, cap, 0, "<class ", 7);
+            o = vts_put(buf, cap, o, AS_CLASS(v)->name->chars, AS_CLASS(v)->name->len);
+            return vts_put(buf, cap, o, ">", 1);
+        }
+        if (IS_INSTANCE(v)) {
+            ObjStr *nm = AS_INSTANCE(v)->klass->name;
+            o = vts_put(buf, cap, 0, "<", 1);
+            o = vts_put(buf, cap, o, nm->chars, nm->len);
+            return vts_put(buf, cap, o, " instance>", 10);
+        }
+        if (IS_BOUND_METHOD(v)) return vts_put(buf, cap, 0, "<bound method>", 14);
+        return vts_put(buf, cap, 0, "<obj>", 5);
+    }
+    return 0;
+}
+
+int value_to_cstr(Value v, char *buf, int cap)
+{
+    if (cap <= 0) return 0;
+    int n = vts(v, buf, cap, 0);
+    buf[n] = 0;
+    return n;
+}

@@ -166,7 +166,9 @@ static void loop_finish(void) { if (loop_depth > 0) loop_depth--; }
 
 /* ---- Pratt parser ---- */
 typedef enum {
-    PREC_NONE, PREC_OR, PREC_AND, PREC_EQ, PREC_CMP,
+    PREC_NONE,
+    PREC_TERNARY,                                 /* a if c else b (M23; lowest expr level) */
+    PREC_OR, PREC_AND, PREC_EQ, PREC_CMP,
     PREC_BOR, PREC_BXOR, PREC_BAND, PREC_SHIFT,   /* | ^ & <<>> (Python order, below +/-) */
     PREC_TERM, PREC_FACTOR, PREC_UNARY,
     PREC_POW,                                     /* ** : right-assoc, binds tighter than unary */
@@ -183,6 +185,7 @@ static void block(void);
 static void lambda_(void);
 static void class_declaration(void);
 static void super_(void);
+static void ternary_(void);
 
 static void number(void)
 {
@@ -234,8 +237,232 @@ static void string(void)
 
 static void grouping(void) { expression(); consume(T_RPAREN, "expected ')' after expression"); }
 
-static void list_literal(void)   /* prefix for '[' : a list display */
+/* M23 f-string: the lexer delivered the raw interior as one T_FSTR token.
+ * Lower `f"a{x}b"` to  "a" + str(x) + "b" : text runs become string constants
+ * ({{ }} -> literal braces, backslash escapes decoded like string()); each
+ * {hole} is re-lexed + compiled as an expression wrapped in the str() builtin.
+ * Pieces chain left-to-right with OP_ADD. */
+static void fstring(void)
 {
+    Token t = tk_prev();
+    const char *src = t.start;
+    int len = t.len, i = 0, piece = 0;
+
+    while (i < len && !had_error) {
+        if (src[i] != '{' || (i + 1 < len && src[i + 1] == '{')) {
+            /* ---- text run (ends at a hole-opening '{' or the end) ---- */
+            char *seg = (char *)as_malloc((size_t)(len - i) + 1);
+            if (!seg) { error("out of memory"); return; }
+            int n = 0;
+            while (i < len) {
+                char c = src[i];
+                if (c == '{') {
+                    if (i + 1 < len && src[i + 1] == '{') { seg[n++] = '{'; i += 2; continue; }
+                    break;                                   /* hole begins */
+                }
+                if (c == '}' && i + 1 < len && src[i + 1] == '}') { seg[n++] = '}'; i += 2; continue; }
+                if (c == '\\' && i + 1 < len) {              /* same escapes as string() */
+                    char e = src[++i];
+                    switch (e) {
+                    case 'n': c = '\n'; break; case 't': c = '\t'; break; case 'r': c = '\r'; break;
+                    case '0': c = '\0'; break; case '\\': c = '\\'; break;
+                    case '"': c = '"';  break; case '\'': c = '\''; break;
+                    default:  c = e; break;
+                    }
+                }
+                seg[n++] = c; i++;
+            }
+            seg[n] = 0;
+            emitConst(OBJ_VAL(as_str_take(seg, n)));
+            if (piece++) emit(OP_ADD);
+            continue;
+        }
+
+        /* ---- hole: src[i] == '{' ---- */
+        i++;                                                  /* past '{' */
+        int hs = i, depth = 0, colon = 0;
+        while (i < len) {                                     /* find the matching '}' */
+            char c = src[i];
+            if (c == '\'' || c == '"') {                      /* skip string literals */
+                char q = c; i++;
+                while (i < len && src[i] != q) { if (src[i] == '\\' && i + 1 < len) i += 2; else i++; }
+                if (i < len) i++;
+                continue;
+            }
+            if (c == '{' || c == '(' || c == '[') depth++;
+            else if (c == ')' || c == ']') depth--;
+            else if (c == '}') { if (depth == 0) break; depth--; }
+            else if (c == ':' && depth == 0) colon = 1;
+            i++;
+        }
+        if (i >= len) { error_at(t, "unterminated '{' in f-string"); return; }
+        int he = i; i++;                                      /* past '}' */
+        if (colon) { error_at(t, "format spec not supported in f-string"); return; }
+        while (hs < he && (src[hs] == ' ' || src[hs] == '\t')) hs++;      /* strip (else the */
+        while (he > hs && (src[he - 1] == ' ' || src[he - 1] == '\t')) he--; /* re-lex sees INDENT) */
+        if (hs == he) { error_at(t, "empty expression in f-string"); return; }
+
+        char *hole = (char *)as_malloc((size_t)(he - hs) + 1);
+        if (!hole) { error("out of memory"); return; }
+        memcpy(hole, src + hs, (size_t)(he - hs)); hole[he - hs] = 0;
+
+        emit(OP_GET_GLOBAL); emit16(identConst("str", 3));    /* str(<hole>) */
+        int hc;
+        Token *ht = as_lex(hole, &hc);
+        if (!ht) { had_error = 1; free(hole); return; }       /* as_err set by the lexer */
+        Token *savedT = T; int savedP = P;
+        T = ht; P = 0;
+        expression();
+        if (!had_error && T[P].type != T_NEWLINE && T[P].type != T_EOF)
+            error_at(t, "unexpected text after the f-string expression");
+        T = savedT; P = savedP;
+        free(ht); free(hole);
+        if (had_error) return;
+        emit2(OP_CALL, 1);
+        if (piece++) emit(OP_ADD);
+    }
+
+    if (piece == 0) emitConst(OBJ_VAL(as_str_copy("", 0)));   /* f"" */
+}
+
+/* From the cursor (just past '['), find a depth-0 T_FOR before the matching
+ * depth-0 ']' -> this is a comprehension; return the T_FOR token index, else -1. */
+static int comprehension_ahead(void)
+{
+    int depth = 0;
+    for (int k = P; T[k].type != T_EOF; k++) {
+        TokType tt = T[k].type;
+        if (tt == T_LBRACKET || tt == T_LPAREN || tt == T_LBRACE) depth++;
+        else if (tt == T_RBRACKET) { if (depth == 0) return -1; depth--; }
+        else if (tt == T_RPAREN || tt == T_RBRACE) depth--;
+        else if (tt == T_FOR && depth == 0) return k;
+    }
+    return -1;
+}
+
+/* M23 list comprehension `[elem for var in iter]` (+ optional trailing `if cond`).
+ * Compiled as an IMMEDIATELY-INVOKED zero-arg closure (Python does the same): a
+ * comprehension is an EXPRESSION, so at its site the value stack may already hold
+ * temporaries (e.g. `print` in `print([...])`) -- hidden slot-indexed locals in
+ * the ENCLOSING frame would be offset by those temporaries. A fresh function frame
+ * starts with a clean stack, so the slots are exact; outer variables are reached
+ * through the normal upvalue capture. The element expression precedes `for` in
+ * source but must run per iteration, so we parse out of source order with saved
+ * cursors: jump to the `for` clause to set up the loop, then re-enter the element
+ * (and guard) text inside the loop body. The loop variable is a local of the
+ * closure: it cannot leak. */
+static void compile_comprehension(int forP)
+{
+    int saved_loop_depth = loop_depth;               /* no break/continue across the boundary */
+    loop_depth = 0;
+    Compiler comp;
+    comp.enclosing = current;
+    comp.fn = as_fn_new();
+    comp.fn->name = as_str_copy("<listcomp>", 10);
+    comp.fn->module = g_module;
+    comp.local_count = 0;
+    comp.scope_depth = 0;
+    comp.locals[0].name = ""; comp.locals[0].len = 0;
+    comp.locals[0].depth = 0; comp.locals[0].is_captured = 0;
+    comp.local_count = 1;                            /* slot 0 = callee */
+    current = &comp;
+
+    emit2(OP_MAKE_LIST, 0);                          /* the accumulator */
+    int acc = add_local("", 0);
+
+    int elem_P = P;                                  /* element expr starts here */
+    P = forP;
+    advance();                                       /* consume T_FOR */
+    consume(T_IDENT, "expected a loop variable");
+    Token var = tk_prev();
+    consume(T_IN, "expected 'in' after the loop variable");
+    parse_precedence(PREC_OR);                       /* iterable (PREC_OR: leave `if` for the guard) */
+    emit(OP_ITER);
+    int seq = add_local("", 0);
+    emitConst(INT_VAL(0));
+    int idx = add_local("", 0);
+    emit(OP_NIL);
+    int vslot = add_local(var.start, var.len);
+
+    int guard_P = -1;
+    if (match(T_IF)) {                               /* skip the guard text to the ']' */
+        guard_P = P;
+        int d = 0;
+        while (!(T[P].type == T_RBRACKET && d == 0) && T[P].type != T_EOF) {
+            TokType tt = T[P].type;
+            if (tt == T_LBRACKET || tt == T_LPAREN || tt == T_LBRACE) d++;
+            else if (tt == T_RBRACKET || tt == T_RPAREN || tt == T_RBRACE) d--;
+            P++;
+        }
+    }
+    int after_P = P;                                 /* at the ']' */
+
+    int loop_start = current->fn->count;
+    emit2(OP_GET_LOCAL, (uint8_t)idx);               /* idx < len(seq) ? */
+    emit2(OP_GET_LOCAL, (uint8_t)seq);
+    emit(OP_LEN);
+    emit(OP_LT);
+    int exit_j = emitJump(OP_JUMP_IF_FALSE);
+    emit(OP_POP);
+    emit2(OP_GET_LOCAL, (uint8_t)seq);               /* var = seq[idx] */
+    emit2(OP_GET_LOCAL, (uint8_t)idx);
+    emit(OP_INDEX_GET);
+    emit2(OP_SET_LOCAL, (uint8_t)vslot);
+    emit(OP_POP);
+
+    int skip_j = -1;
+    if (guard_P >= 0) {                              /* if cond -> skip the append */
+        int sP = P; P = guard_P;
+        parse_precedence(PREC_OR);
+        P = sP;
+        skip_j = emitJump(OP_JUMP_IF_FALSE);
+        emit(OP_POP);
+    }
+
+    emit2(OP_GET_LOCAL, (uint8_t)acc);               /* acc.append(elem) */
+    {
+        int sP = P; P = elem_P;
+        expression();                                /* the element (ternary allowed) */
+        if (!had_error && P != forP) error("unexpected text after the comprehension element");
+        P = sP;
+    }
+    emit(OP_INVOKE); emit16(identConst("append", 6)); emit(1);
+    emit(OP_POP);                                    /* drop append's nil */
+
+    if (skip_j >= 0) {
+        int cont = emitJump(OP_JUMP);
+        patchJump(skip_j);
+        emit(OP_POP);                                /* drop the false guard value */
+        patchJump(cont);
+    }
+
+    emit2(OP_GET_LOCAL, (uint8_t)idx);               /* idx += 1 */
+    emitConst(INT_VAL(1));
+    emit(OP_ADD);
+    emit2(OP_SET_LOCAL, (uint8_t)idx);
+    emit(OP_POP);
+    emitLoop(loop_start);
+    patchJump(exit_j);
+    emit(OP_POP);                                    /* drop the false loop condition */
+
+    P = after_P;
+    consume(T_RBRACKET, "expected ']' after the comprehension");
+
+    emit2(OP_GET_LOCAL, (uint8_t)acc);               /* return the accumulator */
+    emit(OP_RET);
+
+    ObjFn *fn = comp.fn;
+    current = comp.enclosing;
+    loop_depth = saved_loop_depth;
+    emit(OP_CLOSURE); emit16(makeConst(OBJ_VAL(fn)));
+    for (int i = 0; i < fn->upvalue_count; i++) { emit(comp.upvalues[i].is_local); emit(comp.upvalues[i].index); }
+    emit2(OP_CALL, 0);                               /* invoke immediately -> the list */
+}
+
+static void list_literal(void)   /* prefix for '[' : a list display or comprehension */
+{
+    int forP = comprehension_ahead();
+    if (forP >= 0) { compile_comprehension(forP); return; }
     int n = 0;
     if (!check(T_RBRACKET)) {
         do { expression(); n++; } while (match(T_COMMA));
@@ -368,6 +595,7 @@ static void init_rules(void)
     rules[T_INT]     = (ParseRule){ number, 0, PREC_NONE };
     rules[T_FLOAT]   = (ParseRule){ number, 0, PREC_NONE };
     rules[T_STR]     = (ParseRule){ string, 0, PREC_NONE };
+    rules[T_FSTR]    = (ParseRule){ fstring, 0, PREC_NONE };
     rules[T_IDENT]   = (ParseRule){ variable, 0, PREC_NONE };
     rules[T_NIL]     = (ParseRule){ literal, 0, PREC_NONE };
     rules[T_TRUE]    = (ParseRule){ literal, 0, PREC_NONE };
@@ -400,6 +628,7 @@ static void init_rules(void)
     rules[T_TILDE]   = (ParseRule){ unary, 0, PREC_NONE };    /* ~ */
     rules[T_LAMBDA]  = (ParseRule){ lambda_, 0, PREC_NONE };
     rules[T_SUPER]   = (ParseRule){ super_, 0, PREC_NONE };
+    rules[T_IF]      = (ParseRule){ 0, ternary_, PREC_TERNARY };   /* a if c else b */
     rules_ready = 1;
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
@@ -415,7 +644,25 @@ static void parse_precedence(Prec prec)
         get_rule(tk_prev().type)->infix();
     }
 }
-static void expression(void) { parse_precedence(PREC_OR); }
+static void expression(void) { parse_precedence(PREC_TERNARY); }
+
+/* M23 ternary `a if c else b` -- an infix on T_IF. The consequent `a` is already
+ * on the stack; the condition parses at PREC_OR (a nested bare ternary inside the
+ * condition would be ambiguous), the alternative at PREC_TERNARY (right-assoc).
+ * Both arms leave exactly one value; the untaken arm never runs. */
+static void ternary_(void)
+{
+    parse_precedence(PREC_OR);                /* condition -> [a, c] */
+    int else_j = emitJump(OP_JUMP_IF_FALSE);  /* peeks c */
+    emit(OP_POP);                              /* true: drop c, keep a */
+    int end_j = emitJump(OP_JUMP);
+    patchJump(else_j);
+    emit(OP_POP);                              /* false: drop c */
+    emit(OP_POP);                              /* false: drop a */
+    consume(T_ELSE, "expected 'else' in conditional expression");
+    parse_precedence(PREC_TERNARY);            /* alternative -> [b] */
+    patchJump(end_j);
+}
 
 /* ---- statements ---- */
 
@@ -469,6 +716,46 @@ static void assignment(void)
 {
     consume(T_IDENT, "expected a name");
     Token name = tk_prev();
+    if (check(T_COMMA)) {                          /* M23 multiple assignment / unpack */
+        Token targets[64]; int nt = 0; targets[nt++] = name;
+        while (match(T_COMMA)) {
+            consume(T_IDENT, "expected a name in multiple assignment");
+            if (nt >= 64) { error("too many assignment targets"); return; }
+            targets[nt++] = tk_prev();
+        }
+        consume(T_ASSIGN, "expected '=' in multiple assignment");
+        /* Inside a function, pre-declare any NEW targets as nil locals FIRST: the
+         * stores below run right-to-left (consuming the stacked values top-down),
+         * and store_name's new-local path binds the value in place WITHOUT a pop --
+         * in reverse order that would bind the slots backwards. Pre-declared, every
+         * target takes the uniform SET+POP path. (Top level: DEF_GLOBAL consumes.) */
+        if (current->enclosing != NULL)
+            for (int i = 0; i < nt; i++)
+                if (resolve_local(current, targets[i].start, targets[i].len) < 0 &&
+                    resolve_upvalue(current, targets[i].start, targets[i].len) < 0) {
+                    emit(OP_NIL);
+                    add_local(targets[i].start, targets[i].len);
+                }
+        expression();                              /* first RHS value */
+        if (check(T_COMMA)) {                      /* tuple form: a,b,... = e1,e2,... */
+            int nv = 1;
+            while (match(T_COMMA)) { expression(); nv++; }
+            if (nv != nt) { error("assignment count mismatch"); return; }
+            /* values v0..v_{n-1} on the stack, v_{n-1} on top: store last->first */
+            for (int i = nt - 1; i >= 0; i--) store_name(targets[i]);
+        } else {                                   /* list form: a,b,... = <list> */
+            begin_scope();
+            int tmp = add_local("", 0);            /* the RHS list value = this slot */
+            for (int i = 0; i < nt; i++) {
+                emit2(OP_GET_LOCAL, (uint8_t)tmp);
+                emitConst(INT_VAL(i));
+                emit(OP_INDEX_GET);                /* bounds-checked: too-few -> runtime error */
+                store_name(targets[i]);
+            }
+            end_scope();                           /* pops tmp */
+        }
+        return;
+    }
     if (match(T_DOT)) {                            /* property target: name.field = v */
         named_variable(name);                      /* push the receiver */
         consume(T_IDENT, "expected a field name after '.'");

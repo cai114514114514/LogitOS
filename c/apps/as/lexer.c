@@ -104,7 +104,39 @@ Token *as_lex(const char *src, int *count)
             } else if (is_alpha(c)) {
                 while (is_alnum(*p)) p++;
                 int len = (int)(p - s);
-                push(&b, keyword(s, len), s, len, line);
+                if (len == 1 && (s[0] == 'f' || s[0] == 'F') && (*p == '"' || *p == '\'')) {
+                    /* M23 f-string: emit the raw interior (holes intact) as ONE
+                     * T_FSTR token; the compiler re-lexes each {hole}. The scan
+                     * must treat {{ }} as literal braces, and inside a hole track
+                     * ()[]{} nesting + skip string literals, so f"{ {1: 2} }" and
+                     * f"{ ',' }" terminate at the right closing quote. */
+                    char q = *p++; const char *cs = p; int depth = 0;
+                    while (*p && (*p != q || depth > 0)) {
+                        char ch = *p;
+                        if (ch == '\n') { line++; p++; continue; }
+                        if (depth == 0) {
+                            if (ch == '\\' && p[1]) { p += 2; continue; }
+                            if (ch == '{' && p[1] == '{') { p += 2; continue; }
+                            if (ch == '}' && p[1] == '}') { p += 2; continue; }
+                            if (ch == '{') { depth = 1; p++; continue; }
+                            p++; continue;
+                        }
+                        if (ch == '\'' || ch == '"') {          /* string literal inside the hole */
+                            char hq = ch; p++;
+                            while (*p && *p != hq) { if (*p == '\\' && p[1]) p += 2; else { if (*p == '\n') line++; p++; } }
+                            if (*p) p++;
+                            continue;
+                        }
+                        if (ch == '{' || ch == '(' || ch == '[') depth++;
+                        else if (ch == '}' || ch == ')' || ch == ']') depth--;   /* hole's } -> 0 */
+                        p++;
+                    }
+                    if (*p != q) { snprintf(as_err, sizeof as_err, "unterminated f-string (line %d)", line); err = 1; break; }
+                    push(&b, T_FSTR, cs, (int)(p - cs), line);
+                    p++;                                        /* closing quote */
+                } else {
+                    push(&b, keyword(s, len), s, len, line);
+                }
             } else if (c == '"' || c == '\'') {
                 char q = c; p++; const char *cs = p;
                 /* track embedded newlines so line numbers stay correct past a

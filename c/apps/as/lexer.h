@@ -21,6 +21,7 @@ typedef enum {
     T_AMP, T_PIPE, T_CARET, T_TILDE, T_SHL, T_SHR, T_POW,  /* bitwise / shift / power */
     T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ, /* compound assignment */
     T_SEMI,                                                /* ';' statement separator */
+    T_FSTR,                                                /* M23 f-string: raw interior, holes intact */
     T_EOF, T_ERROR
 } TokType;
 

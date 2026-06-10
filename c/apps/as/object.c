@@ -60,8 +60,14 @@ ObjStr *as_str_take(char *chars, int len)   /* takes ownership of `chars` */
 {
     ObjStr *s = (ObjStr *)alloc_obj(sizeof(ObjStr), O_STR);
     if (!s) { free(chars); return NULL; }     /* OOM: release the buffer we took */
-    s->len = len; s->chars = chars; s->hash = hash_str(chars, len);
+    s->len = len; s->chars = chars; s->hash = 0; s->hashed = 0;   /* M23: hash lazily */
     return s;
+}
+
+uint32_t as_str_hash(ObjStr *s)
+{
+    if (!s->hashed) { s->hash = hash_str(s->chars, s->len); s->hashed = 1; }
+    return s->hash;
 }
 
 ObjStr *as_str_copy(const char *chars, int len)
@@ -138,7 +144,7 @@ ObjModule *as_module_new(const char *name, int len)
 Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
 {
     for (int i = 0; i < m->count; i++)
-        if (m->vars[i].name->hash == name->hash && m->vars[i].name->len == name->len
+        if (as_str_hash(m->vars[i].name) == as_str_hash(name) && m->vars[i].name->len == name->len
             && memcmp(m->vars[i].name->chars, name->chars, name->len) == 0) return &m->vars[i].val;
     if (!create) return NULL;
     if (m->count + 1 > m->cap) {
@@ -184,10 +190,10 @@ static uint32_t hash_int(int64_t v)
     x =  x ^ (x >> 31);
     return (uint32_t)x;
 }
-static uint32_t key_hash(Value k) { return IS_STR(k) ? AS_STR(k)->hash : hash_int(AS_INT(k)); }
+static uint32_t key_hash(Value k) { return IS_STR(k) ? as_str_hash(AS_STR(k)) : hash_int(AS_INT(k)); }
 static int key_match(DictEntry *e, Value k)
 {
-    if (IS_STR(k)) return e->kind == AS_DK_STR && e->kstr->hash == AS_STR(k)->hash
+    if (IS_STR(k)) return e->kind == AS_DK_STR && as_str_hash(e->kstr) == as_str_hash(AS_STR(k))
                           && e->kstr->len == AS_STR(k)->len
                           && memcmp(e->kstr->chars, AS_STR(k)->chars, (size_t)e->kstr->len) == 0;
     return e->kind == AS_DK_INT && e->kint == AS_INT(k);

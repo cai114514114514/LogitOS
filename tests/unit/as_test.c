@@ -801,6 +801,72 @@ int main(void)
     ok("semicolon",   "a = 1; b = 2; print(a + b)\n", "3\n");
     roundtrip("bc_loopctl", "s = 0\nfor i in range(8):\n    if i == 3:\n        continue\n    if i == 6:\n        break\n    s += i\nprint(s)\n");
 
+    /* ---- M23 Stage A: string methods + str() + lazy hash ---- */
+    ok("join",       "print(\",\".join([\"a\",\"b\",\"c\"]))\n", "a,b,c\n");
+    ok("join_empty", "print(\"-\".join([]))\nprint(\"-\".join([\"x\"]))\n", "\nx\n");
+    err("join_badarg",  "print(\",\".join(42))\n");
+    err("join_baditem", "print(\",\".join([\"a\", 1]))\n");
+    ok("split",      "print(\"a,,b\".split(\",\"))\n", "['a', '', 'b']\n");
+    ok("split_trail","print(\"a,b,\".split(\",\"))\n", "['a', 'b', '']\n");
+    ok("split_ws",   "print(\" a  b\\tc \".split())\n", "['a', 'b', 'c']\n");
+    err("split_empty_sep", "print(\"ab\".split(\"\"))\n");
+    ok("strip",      "print(\"  hi  \".strip())\nprint(len(\"\\t\\n\".strip()))\n", "hi\n0\n");
+    ok("case",       "print(\"MiXed3\".upper())\nprint(\"MiXed3\".lower())\n", "MIXED3\nmixed3\n");
+    ok("replace",    "print(\"aXaXa\".replace(\"X\",\"--\"))\nprint(\"aaa\".replace(\"a\",\"\"))\n", "a--a--a\n\n");
+    err("replace_empty_old", "print(\"x\".replace(\"\",\"y\"))\n");
+    ok("find",       "print(\"hello\".find(\"ll\"))\nprint(\"x\".find(\"z\"))\nprint(\"ab\".find(\"\"))\n", "2\n-1\n0\n");
+    err("str_nomethod", "print(\"x\".nope())\n");
+    /* join is O(total): build 2000 pieces and join -- must be instant + exact */
+    ok("join_perf",  "p = []\nfor i in range(2000):\n    p.append(\"ab\")\ns = \",\".join(p)\nprint(len(s))\nprint(s[2])\n", "5999\n,\n");
+    /* str() of every type (matches print's formatting) */
+    ok("str_of",     "print(str(42) + \"|\" + str(3.5) + \"|\" + str(true) + \"|\" + str(nil) + \"|\" + str([1, 2]) + \"|\" + str(\"hi\"))\n",
+                     "42|3.5|true|nil|[1, 2]|hi\n");
+    /* lazy hash: a concat-BUILT key must behave identically to a literal key
+     * (dict set/get + module var via import) */
+    ok("lazy_hash",  "d = {}\nk = \"ab\" + \"cd\"\nd[k] = 7\nprint(d[\"abcd\"])\nimport goodmod\nprint(goodmod.v)\n", "7\n42\n");
+
+    /* ---- M23 Stage B: f-strings ---- */
+    ok("fstr",       "print(f\"x={1+2}\")\n", "x=3\n");
+    ok("fstr_lit",   "print(f\"{{literal}}\")\n", "{literal}\n");
+    ok("fstr_multi", "a = 7\nprint(f\"a={a} sq={a*a}!\")\n", "a=7 sq=49!\n");
+    ok("fstr_str",   "print(f\"{'a'}{2}\")\n", "a2\n");
+    ok("fstr_list",  "print(f\"v={[1,2]}\")\n", "v=[1, 2]\n");
+    ok("fstr_dict",  "print(f\"{ {1: 2} }\")\n", "{1: 2}\n");
+    ok("fstr_only",  "print(f\"{99}\")\nprint(len(f\"\"))\n", "99\n0\n");
+    ok("fstr_nested","x = 3\nprint(f\"a{f'b{x}'}c\")\n", "ab3c\n");
+    ok("fstr_call",  "def sq(n):\n    return n * n\nprint(f\"r={sq(4)}\")\n", "r=16\n");
+    err("fstr_spec",  "x = 1\nprint(f\"{x:.2f}\")\n");
+    err("fstr_empty", "print(f\"{}\")\n");
+    err("fstr_unterm","print(f\"{1+2\")\n");
+
+    /* ---- M23 Stage C: ternary + list comprehension ---- */
+    ok("tern",       "print(1 if true else 2)\nprint(1 if false else 2)\n", "1\n2\n");
+    ok("tern_expr",  "x = 5\ns = \"big\" if x > 3 else \"small\"\nprint(s)\n", "big\n");
+    ok("tern_nest",  "def f(n):\n    return \"neg\" if n < 0 else (\"zero\" if n == 0 else \"pos\")\nprint(f(-1), f(0), f(2))\n", "neg zero pos\n");
+    ok("tern_lazy",  "print(1 if true else 1 / 0)\nprint(2 if false else 9)\n", "1\n9\n");
+    ok("tern_fstr",  "n = 4\nprint(f\"{'even' if n % 2 == 0 else 'odd'}\")\n", "even\n");
+    err("tern_noelse","print(1 if true)\n");
+    ok("comp",       "print([x * x for x in range(4)])\n", "[0, 1, 4, 9]\n");
+    ok("comp_if",    "print([x for x in range(6) if x % 2 == 0])\n", "[0, 2, 4]\n");
+    ok("comp_lit",   "print([s + \"!\" for s in [\"a\", \"b\"]])\n", "['a!', 'b!']\n");
+    ok("comp_fn",    "def f():\n    return [i + 1 for i in range(3)]\nprint(f())\n", "[1, 2, 3]\n");
+    ok("comp_tern",  "print([\"e\" if x % 2 == 0 else \"o\" for x in range(4)])\n", "['e', 'o', 'e', 'o']\n");
+    ok("comp_noleak","x = 99\nprint(len([x * 2 for x in range(5)]))\nprint(x)\n", "5\n99\n");
+    ok("comp_nested_src", "print([y for y in [10, 20]])\n", "[10, 20]\n");
+    ok("comp_join",  "print(\",\".join([str(i) for i in range(4)]))\n", "0,1,2,3\n");
+    err("comp_junk",  "print([x y for x in range(3)])\n");
+
+    /* ---- M23 Stage D: multiple assignment / unpack ---- */
+    ok("massign",    "a, b = 1, 2\nprint(a, b)\n", "1 2\n");
+    ok("mswap",      "a, b = 1, 2\na, b = b, a\nprint(a, b)\n", "2 1\n");
+    ok("munpack",    "a, b, c = [10, 20, 30]\nprint(a + b + c)\n", "60\n");
+    ok("massign_fn", "def f():\n    x, y = 3, 4\n    x, y = y, x\n    return [x, y]\nprint(f())\n", "[4, 3]\n");
+    ok("munpack_fn", "def f(l):\n    p, q = l\n    return p * q\nprint(f([6, 7]))\n", "42\n");
+    ok("massign_mix","def f():\n    a = 1\n    a, b = 5, 6\n    return a + b\nprint(f())\n", "11\n");
+    ok("massign_expr","a, b = 2 + 3, \"x\" + \"y\"\nprint(a, b)\n", "5 xy\n");
+    err("mcount",     "a, b = 1, 2, 3\n");
+    err("munpack_few","a, b, c = [1, 2]\n");
+
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();
 
