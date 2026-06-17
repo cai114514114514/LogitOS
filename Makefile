@@ -82,7 +82,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc
+.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc test-fb-clip
 
 all: $(ISO)
 
@@ -363,6 +363,14 @@ test-complete:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/complete.c -Ic/apps/as
 	@$(BUILD)/complete_test
+
+# Framebuffer clip is per-target (struct surface), not global: this builds the
+# real c/kernel/gui/fb.c host-side and asserts a clip set on one app's surface
+# does NOT bleed into a draw on another's (the "white Terminal" cross-app leak).
+test-fb-clip:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb.c $(INCDIRS)
+	@$(BUILD)/fb_clip_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
 # or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.

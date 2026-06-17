@@ -32,11 +32,16 @@ static int using_gpu;             /* fb_mem is a virtio-gpu RAM resource, not VG
 static struct surface screen;     /* wraps the back buffer (the visible screen) */
 static struct surface *T;         /* current draw target (defaults to screen) */
 
-/* Optional clip rectangle on the current target (clx0..clx1, cly0..cly1),
- * half-open; disabled when clip_on == 0. */
-static int clip_on, clx0, cly0, clx1, cly1;
-void fb_set_clip(int x, int y, int w, int h) { clip_on = 1; clx0 = x; cly0 = y; clx1 = x + w; cly1 = y + h; }
-void fb_clear_clip(void) { clip_on = 0; }
+/* The clip rectangle lives ON THE CURRENT TARGET (struct surface), not in a
+ * global -- so a clip set while drawing into one app's surface can never affect
+ * a draw into another app's surface (the cross-app leak that left a freshly
+ * opened Terminal white). */
+void fb_set_clip(int x, int y, int w, int h)
+{
+    struct surface *s = T ? T : &screen;
+    s->clip_on = 1; s->clx0 = x; s->cly0 = y; s->clx1 = x + w; s->cly1 = y + h;
+}
+void fb_clear_clip(void) { struct surface *s = T ? T : &screen; s->clip_on = 0; }
 
 uint32_t fb_width(void)  { return fb_w; }
 uint32_t fb_height(void) { return fb_h; }
@@ -99,17 +104,16 @@ int fb_init(uint64_t mb_info_addr)
     return 1;
 }
 
-/* The clip rect is an app-surface concept (set via SYS_GUI_CLIP). It must NOT
- * affect the WM's own screen compositing: an app can be preempted between
- * gui_clip(set) and gui_clip(clear), and the WM (drawing to &screen) would
- * otherwise inherit that stale clip and drop chrome (e.g. the menu-bar text).
- * So the clip applies only when the active target is an app surface. */
+/* The clip rect is carried by the target surface (struct surface), so it bounds
+ * only draws into that surface and never leaks onto another app's surface or the
+ * WM's screen compositing. The screen back buffer's clip is never set, so chrome
+ * is always drawn in full. */
 void fb_put(int x, int y, uint32_t color)
 {
     struct surface *s = T ? T : &screen;
     if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return;
-    if (clip_on && s != &screen && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
+    if (s->clip_on && (x < s->clx0 || y < s->cly0 || x >= s->clx1 || y >= s->cly1))
         return;
     s->px[y * s->w + x] = color;
 }
@@ -119,7 +123,7 @@ static uint32_t fb_get(int x, int y)
     struct surface *s = T ? T : &screen;
     if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
         return 0;
-    if (clip_on && s != &screen && (x < clx0 || y < cly0 || x >= clx1 || y >= cly1))
+    if (s->clip_on && (x < s->clx0 || y < s->cly0 || x >= s->clx1 || y >= s->cly1))
         return 0;
     return s->px[y * s->w + x];
 }

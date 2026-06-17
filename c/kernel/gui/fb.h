@@ -26,16 +26,24 @@ void fb_set_present_par(void (*fn)(int, int, int, int));  /* register SMP parall
 void fb_fb_put(int x, int y, uint32_t color);       /* write straight to the framebuffer */
 void fb_flush_rect(int x, int y, int w, int h);     /* display a rect drawn straight into fb_mem */
 
-/* An off-screen drawing target (e.g. an application window's canvas). */
+/* An off-screen drawing target (e.g. an application window's canvas). The clip
+ * rectangle is a PROPERTY OF THE TARGET, not a global: app A setting a clip on
+ * its own surface must never affect a draw into app B's surface. The old global
+ * clip leaked across apps -- between an app's gui_clip(set) and gui_clip(clear)
+ * (two separate syscalls) the scheduler could switch to another app, whose
+ * gui_clear then inherited the stale rect and left most of its window at the
+ * white window-create fill -> the "white Terminal" bug. clip_on == 0 = unclipped. */
 struct surface {
     uint32_t *px;
     int w, h;
+    int clip_on, clx0, cly0, clx1, cly1;   /* per-target clip, half-open */
 };
 
 /* Route subsequent drawing to `s`, or NULL for the screen back buffer. */
 void fb_target(struct surface *s);
 
-/* Restrict drawing to a rectangle on the current target (half-open). */
+/* Restrict drawing to a rectangle on the CURRENT TARGET (half-open); the clip
+ * is stored on that surface, so it does not bleed onto other draw targets. */
 void fb_set_clip(int x, int y, int w, int h);
 void fb_clear_clip(void);
 

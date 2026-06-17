@@ -340,6 +340,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
           if (w->y + w->h > SH - 4) w->y = SH - 4 - w->h; if (w->y < 24) w->y = 24; }
         scopy(w->title, title, sizeof w->title);
         w->surf.w = cw; w->surf.h = ch;
+        w->surf.clip_on = 0;             /* fresh canvas: a reused slot must not inherit a clip */
         w->surf.px = kmalloc((size_t)(pxcount * 4));
         if (!w->surf.px) { w->used = 0; return -1; }
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
@@ -561,8 +562,12 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
         int cw2 = (int)((b >> 16) & 0xFFFF), ch2 = (int)(b & 0xFFFF);
+        /* The clip is stored ON the window surface, so target it first; this is
+         * why a clip set here can't bleed into another app's surface draws. */
+        fb_target(&w->surf);
         if (cw2 == 0 && ch2 == 0) fb_clear_clip();
         else fb_set_clip(x, y, cw2, ch2);
+        fb_target(NULL);
         return 0;
     }
     case SYS_OPEN_PATH: {
@@ -946,7 +951,7 @@ void wm_render(void)
             if (need > anim_buf_n) { if (anim_buf) kfree(anim_buf); anim_buf = kmalloc((unsigned)need * 4); anim_buf_n = anim_buf ? need : 0; }
             if (anim_buf) {
                 animating = 1;
-                struct surface tmp = { anim_buf, w->w, w->h };
+                struct surface tmp = { .px = anim_buf, .w = w->w, .h = w->h };  /* clip_on = 0: scratch is unclipped */
                 fb_target(&tmp);           /* render the whole window into scratch... */
                 draw_frame_body(0, 0, w->w, w->h, w->title, focused);
                 if (w->surf.px) fb_blit_surface(0, TITLEBAR_H, &w->surf);
