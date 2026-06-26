@@ -159,6 +159,7 @@ void wm_launch(const char *aex_file, const char *arg)
     if (exist) {                            /* single instance: just focus it */
         if (exist->win >= 0) raise_win(exist->win);
         dirty_full();
+        kfree(img);                         /* image not needed -- app already running */
         return;
     }
 
@@ -230,6 +231,7 @@ void wm_launch(const char *aex_file, const char *arg)
     { struct file *tty = file_open_tty();
       if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; } }
     p->tid = thread_create_user(ap->name, entry, ustack_top, p, space);
+    kfree(img);                             /* aex_load copied the image into `space`; drop the load buffer */
     serial_puts("[wm] launched ");
     serial_puts(ap->name);
     serial_puts("\n");
