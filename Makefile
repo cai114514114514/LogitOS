@@ -31,7 +31,9 @@ FONT_MONO_SRC := third_party/fonts/NotoSansMono-VF.ttf
 FONT_NOTICES := third_party/fonts/OFL-NotoSansSC.txt \
                 third_party/fonts/OFL-NotoSansMono.txt \
                 third_party/fonts/README.md
-RELEASE_NOTICES := LICENSE THIRD_PARTY.md $(FONT_NOTICES)
+RELEASE_NOTICES := LICENSE LICENSING.md \
+                   LICENSES/GPL-3.0-or-later.txt LICENSES/MIT.txt \
+                   THIRD_PARTY.md $(FONT_NOTICES)
 
 CC          := clang
 LD          := ld.lld
@@ -322,7 +324,9 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
-	    LICENSE:/licenses/Aether-MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
+	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Aether-LICENSING.md \
+	    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
+	    LICENSES/MIT.txt:/licenses/MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
 	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
 	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
