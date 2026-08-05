@@ -331,6 +331,21 @@ int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
     bn_from_be(qx, pub, fl); bn_from_be(qy, pub + fl, fl);
     /* reject out-of-range coordinates: Barrett reduction assumes inputs < m */
     if (bn_cmp(qx, c->p) >= 0 || bn_cmp(qy, c->p) >= 0) return 0;
+    /* reject points not on the curve: y^2 must equal x^3 + a*x + b (mod p).
+     * Without this, an attacker-supplied public key on a different curve with
+     * a small-order subgroup would leak the verifier's agreement on forgeries
+     * (invalid-curve attack); verification only handles public data, but a
+     * wrong "valid" verdict is itself the vulnerability. */
+    {
+        bn x3, ax, rhs, y2;
+        mod_mul(x3, qx, qx, c->p);
+        mod_mul(x3, x3, qx, c->p);              /* x^3 */
+        mod_mul(ax, c->a, qx, c->p);            /* a*x (a stored as p-3) */
+        mod_add(rhs, x3, ax, c->p);
+        mod_add(rhs, rhs, c->b, c->p);
+        mod_mul(y2, qy, qy, c->p);
+        if (bn_cmp(y2, rhs) != 0) return 0;
+    }
 
     struct jpt t1, t2, R;
     jpt_mul(&t1, u1, c->gx, c->gy, c);          /* u1*G */

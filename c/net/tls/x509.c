@@ -110,6 +110,7 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
 {
     out->der = der; out->derlen = len;
     out->cn = 0; out->cnlen = 0; out->san = 0; out->sanlen = 0;
+    out->san_err = 0; out->tbs_sig_alg = 0; out->tbs_sig_alglen = 0;
     out->is_ca = 0;                                      /* BasicConstraints cA (default FALSE) */
 
     struct der top, cert;
@@ -126,9 +127,12 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
     int tag, clen; const uint8_t *c;
     if (tbs.p < tbs.end && tbs.p[0] == 0xA0) { if (der_tlv(&tbs,&tag,&c,&clen)) return X509_E_PARSE; } /* version */
     if (der_tlv(&tbs,&tag,&c,&clen)) return X509_E_PARSE;        /* serial */
-    /* signature algorithm (inside tbs) */
-    { struct der sa; struct der t=tbs; if (der_enter(&t,0x30,&sa)) return X509_E_PARSE;
+    /* signature algorithm (inside tbs): keep the raw TLV so the outer
+     * signatureAlgorithm can be required to match it (RFC 5280 4.1.1.2) */
+    { struct der sa; struct der t=tbs; const uint8_t *s = t.p;
+      if (der_enter(&t,0x30,&sa)) return X509_E_PARSE;
       int g; const uint8_t *oc; int ol; if (der_tlv(&sa,&g,&oc,&ol)) return X509_E_PARSE;
+      out->tbs_sig_alg = s; out->tbs_sig_alglen = (int)(sa.end - s);
       tbs = t; }
     /* issuer Name (raw) */
     { const uint8_t *s=tbs.p; struct der nm; if (der_enter(&tbs,0x30,&nm)) return X509_E_PARSE;
@@ -175,17 +179,28 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
           while (el > 0 && ec[0] == 0) { ec++; el--; }
           out->rsa_n = nc; out->rsa_nlen = nl; out->rsa_e = ec; out->rsa_elen = el;
       } else return X509_E_PARSE;
-      /* optional extensions: scan for SAN */
+      /* optional issuer/subject unique identifiers [1]/[2] (implicit BIT STRING,
+       * primitive or constructed encoding): skip them, or they would hide the
+       * [3] extensions block behind a tag mismatch */
+      while (tbs.p < tbs.end &&
+             (tbs.p[0] == 0x81 || tbs.p[0] == 0x82 || tbs.p[0] == 0xA1 || tbs.p[0] == 0xA2)) {
+          if (der_tlv(&tbs,&tag,&c,&clen)) return X509_E_PARSE;
+      }
+      /* optional extensions: scan for SAN. Fail closed on any DER error here
+       * (san_err): a malformed extension block must not silently drop the SAN
+       * and fall back to the weaker CN name check. */
       if (tbs.p < tbs.end && tbs.p[0] == 0xA3) {
-          struct der exts3; if (!der_enter(&tbs,0xA3,&exts3)) {
-              struct der exts; if (!der_enter(&exts3,0x30,&exts)) {
+          struct der exts3; if (der_enter(&tbs,0xA3,&exts3)) out->san_err = 1;
+          else {
+              struct der exts; if (der_enter(&exts3,0x30,&exts)) out->san_err = 1;
+              else {
                   while (exts.p < exts.end) {
-                      struct der ex; if (der_enter(&exts,0x30,&ex)) break;
-                      int eg; const uint8_t *eo; int eol; if (der_tlv(&ex,&eg,&eo,&eol)) break;
+                      struct der ex; if (der_enter(&exts,0x30,&ex)) { out->san_err = 1; break; }
+                      int eg; const uint8_t *eo; int eol; if (der_tlv(&ex,&eg,&eo,&eol)) { out->san_err = 1; break; }
                       /* optional BOOLEAN critical */
                       const uint8_t *vo; int vl; int vg;
-                      if (ex.p < ex.end && ex.p[0]==0x01) { if (der_tlv(&ex,&vg,&vo,&vl)) break; }
-                      if (der_tlv(&ex,&vg,&vo,&vl)) break;        /* OCTET STRING value */
+                      if (ex.p < ex.end && ex.p[0]==0x01) { if (der_tlv(&ex,&vg,&vo,&vl)) { out->san_err = 1; break; } }
+                      if (der_tlv(&ex,&vg,&vo,&vl)) { out->san_err = 1; break; }  /* OCTET STRING value */
                       if (oid_eq(eo,eol,OID_SAN,sizeof OID_SAN)) { out->san=vo; out->sanlen=vl; }
                       if (oid_eq(eo,eol,OID_BC,sizeof OID_BC)) {
                           /* BasicConstraints: SEQ { cA BOOLEAN DEFAULT FALSE, pathLen INTEGER OPT } */
@@ -204,8 +219,15 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
     }
 
     /* back in Certificate: signatureAlgorithm, signatureValue */
-    { struct der sa; if (der_enter(&cert,0x30,&sa)) return X509_E_PARSE;
+    { struct der sa; const uint8_t *s = cert.p;
+      if (der_enter(&cert,0x30,&sa)) return X509_E_PARSE;
       int g; const uint8_t *oc; int ol; if (der_tlv(&sa,&g,&oc,&ol)) return X509_E_PARSE;
+      /* RFC 5280 4.1.1.2: the outer signatureAlgorithm must repeat the one
+       * inside tbsCertificate -- a mismatch means the signed bytes and the
+       * envelope disagree about how to verify */
+      if ((int)(sa.end - s) != out->tbs_sig_alglen ||
+          memcmp(s, out->tbs_sig_alg, (size_t)out->tbs_sig_alglen) != 0)
+          return X509_E_PARSE;
       out->sig_alg = oid_eq(oc,ol,OID_ECDSA_SHA256,sizeof OID_ECDSA_SHA256) ? SIG_ECDSA_SHA256 :
                      oid_eq(oc,ol,OID_ECDSA_SHA384,sizeof OID_ECDSA_SHA384) ? SIG_ECDSA_SHA384 :
                      oid_eq(oc,ol,OID_ECDSA_SHA512,sizeof OID_ECDSA_SHA512) ? SIG_ECDSA_SHA512 :
@@ -219,20 +241,24 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
     return X509_OK;
 }
 
-/* Convert a DER ECDSA signature SEQ{ INTEGER r, INTEGER s } into fixed r||s. */
-static int sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
+/* Convert a DER ECDSA signature SEQ{ INTEGER r, INTEGER s } into fixed r||s.
+ * Strict: both elements must be INTEGERs and nothing may trail them (tls.c
+ * uses this for CertificateVerify, x509.c for chain signatures). */
+int x509_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
 {
     struct der d; d.p = sig; d.end = sig + len;
     struct der seq; if (der_enter(&d, 0x30, &seq)) return -1;
     for (int half = 0; half < 2; half++) {
         int g; const uint8_t *ic; int il;
         if (der_tlv(&seq, &g, &ic, &il)) return -1;
+        if (g != 0x02) return -1;                            /* must be INTEGER */
         while (il > 0 && ic[0] == 0) { ic++; il--; }             /* strip sign byte */
         if (il > flen) return -1;
         uint8_t *dst = rs + half*flen;
         for (int i = 0; i < flen; i++) dst[i] = 0;
         for (int i = 0; i < il; i++) dst[flen - il + i] = ic[i];
     }
+    if (seq.p != seq.end) return -1;                         /* trailing garbage */
     return 0;
 }
 
@@ -269,7 +295,7 @@ static int verify_with_key(const struct cert *child, int issuer_type, int issuer
     if (issuer_type != KEY_EC || (issuer_curve != 256 && issuer_curve != 384)) return 0;
     int flen = issuer_curve / 8;
     uint8_t rs[96];
-    if (sig_to_rs(child->sig, child->siglen, rs, flen)) return 0;
+    if (x509_der_sig_to_rs(child->sig, child->siglen, rs, flen)) return 0;
     if (eclen < 2*flen) return 0;
     return ecdsa_verify(issuer_curve, ec, rs, hash, hlen);
 }
@@ -352,6 +378,7 @@ static int host_match(const char *host, int hl, const char *pat, int pl)
 static int name_ok(const struct cert *leaf, const char *host)
 {
     int hl = 0; while (host[hl]) hl++;
+    if (leaf->san_err) return 0;               /* malformed extensions: fail closed */
     if (leaf->san && leaf->sanlen > 0) {
         struct der d; d.p = leaf->san; d.end = leaf->san + leaf->sanlen;
         struct der seq; if (der_enter(&d, 0x30, &seq) == 0) {

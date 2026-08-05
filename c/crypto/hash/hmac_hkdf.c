@@ -62,17 +62,25 @@ void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
     }
 }
 
-/* HKDF-Expand-Label: HkdfLabel = len(out) || "tls13 "+label || context. */
-void hkdf_expand_label(int hlen, const uint8_t *secret, const char *label,
-                       const uint8_t *ctx, int ctxlen, uint8_t *out, int outlen)
+/* HKDF-Expand-Label: HkdfLabel = len(out) || "tls13 "+label || context.
+ * Returns 0 on success, -1 if label/context/outlen would overflow the
+ * fixed info[] buffer (callers in tls.c use short literals + 32-byte hashes,
+ * so this never fails in practice -- but a library must not scribble past
+ * its stack buffer on a bad caller). */
+int hkdf_expand_label(int hlen, const uint8_t *secret, const char *label,
+                      const uint8_t *ctx, int ctxlen, uint8_t *out, int outlen)
 {
     uint8_t info[2 + 1 + 6 + 64 + 1 + 64]; int n = 0;
-    info[n++] = (uint8_t)(outlen >> 8); info[n++] = (uint8_t)outlen;
     int ll = 0; while (label[ll]) ll++;
+    if (ll > 64 || ctxlen < 0 || ctxlen > 64 || outlen < 0 || outlen > 0xFFFF)
+        return -1;
+    if (hlen != 32 && hlen != 48) return -1;
+    info[n++] = (uint8_t)(outlen >> 8); info[n++] = (uint8_t)outlen;
     info[n++] = (uint8_t)(6 + ll);
     const char *p = "tls13 "; for (int i = 0; i < 6; i++) info[n++] = p[i];
     for (int i = 0; i < ll; i++) info[n++] = label[i];
     info[n++] = (uint8_t)ctxlen;
     for (int i = 0; i < ctxlen; i++) info[n++] = ctx[i];
     hkdf_expand(hlen, secret, info, n, out, outlen);
+    return 0;
 }

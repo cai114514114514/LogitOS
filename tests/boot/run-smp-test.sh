@@ -20,7 +20,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # runs two compute batches (1 child baseline + 4 children), several seconds each
 # under TCG. Give a generous window before exit.
 { sleep 11; printf '/bin/smptest\n'; sleep 75; printf 'exit\n'; sleep 2; } | \
-  "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
+  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 

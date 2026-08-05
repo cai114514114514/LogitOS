@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-typedef unsigned long size_t_;
+#include <stddef.h>
 void sha256(const void*a,size_t b,uint8_t*c){(void)a;(void)b;(void)c;}
 void sha384(const void*a,size_t b,uint8_t*c){(void)a;(void)b;(void)c;}
 void sha512(const void*a,size_t b,uint8_t*c){(void)a;(void)b;(void)c;}

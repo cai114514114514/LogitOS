@@ -92,7 +92,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg
+.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-x509-fuzz
 
 all: $(ISO)
 
@@ -342,19 +342,41 @@ QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cach
 # the separate QEMU-MTTCG FP/XMM artifact for FP-heavy ring-3 apps -- not a freeze;
 # see the smp-mttcg note. Drop `,thread=multi` for correct-but-serial 4-core TCG.)
 QEMU_SMP  ?= -smp 4 -accel tcg,thread=multi
+# The default TCG cpu (qemu64) has no RDRAND/RDSEED, and the kernel TLS client
+# refuses to handshake on the weak rdtsc-only RNG fallback -- expose the
+# hardware-RNG flags so HTTPS works. Overridable: `make run QEMU_CPU="-cpu qemu64"`.
+QEMU_CPU  ?= -cpu max
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
 QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1280,yres=800   # modern GPU; kernel drives the scanout. xres/yres pin the EDID preferred mode: the driver reads the resolution ONCE at boot, so a small/not-yet-realized QEMU window would otherwise lock the desktop to 640x480 with most windows off-screen.
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -qmp unix:/tmp/aether-qmp.sock,server,nowait
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -qmp unix:/tmp/aether-qmp.sock,server,nowait
 
 debug: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S
 
-test: $(ISO) $(DISK)
+test: test-crypto test-net $(ISO) $(DISK)
 	@sh tests/boot/run-test.sh $(ISO) $(DISK)
+
+# Host-side crypto known-answer tests: 90 vectors for SHA/HMAC/HKDF/AEAD/
+# X25519/ECDSA/RSA (tests/unit/crypto_vec_test.c + crypto_vectors.h, generated
+# by crypto_vec_gen.py), plus the ecdsa modmul and rsa modexp batteries.
+CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/pubkey -name '*.c')
+test-crypto: $(BUILD)
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_vec_test tests/unit/crypto_vec_test.c $(CRYPTO_SRC) -Ic/crypto -Itests/unit
+	$(BUILD)/crypto_vec_test
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/ecdsa_test tests/unit/ecdsa_test.c c/crypto/pubkey/ecdsa.c -Ic/crypto
+	$(BUILD)/ecdsa_test
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rsa_test tests/unit/rsa_test.c c/crypto/pubkey/rsa.c -Ic/crypto
+	$(BUILD)/rsa_test
+
+# ASan/UBSan fuzz of the X.509 DER parser (attacker-controlled input on every
+# HTTPS handshake) against a real cert. Long-running; not part of `make test`.
+test-x509-fuzz: $(BUILD)
+	$(CC) -O1 -g -fsanitize=address,undefined -o $(BUILD)/x509_fuzz tests/unit/x509_fuzz.c c/net/tls/x509.c $(CRYPTO_SRC) c/crypto/trust/roots.c -Ic/net/tls -Ic/crypto -Ic/crypto/trust
+	$(BUILD)/x509_fuzz tests/unit/cert.der
 
 # Same smoke test, but attach the disk via NVMe -- proves the from-scratch NVMe
 # driver brings up a controller and aetherfs mounts + reads off it (M24 bare-metal).

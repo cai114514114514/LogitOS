@@ -38,7 +38,7 @@ GPU_ARGS="-vga none -device virtio-gpu-pci"
 # M25: boot under -smp 4 (multi-core TCG) so this smoke test exercises the SMP
 # scheduler + BKL, matching the rest of the suite.
 SMP_ARGS="-smp 4 -accel tcg,thread=multi"
-"$QEMU" -cdrom "$ISO" $DISK_ARGS $NET_ARGS $GPU_ARGS $SMP_ARGS -m 512M -serial "file:$LOG" -display none -no-reboot &
+"$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" $DISK_ARGS $NET_ARGS $GPU_ARGS $SMP_ARGS -m 512M -serial "file:$LOG" -display none -no-reboot &
 QPID=$!
 
 # Poll the serial log for up to ~15s.

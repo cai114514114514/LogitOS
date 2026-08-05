@@ -33,9 +33,10 @@ void hkdf_extract(int hlen, const uint8_t *salt, int saltlen,
                   const uint8_t *ikm, int ikmlen, uint8_t *prk);
 void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
                  uint8_t *out, int outlen);
-/* TLS 1.3 HKDF-Expand-Label (RFC 8446 §7.1). */
-void hkdf_expand_label(int hlen, const uint8_t *secret, const char *label,
-                       const uint8_t *ctx, int ctxlen, uint8_t *out, int outlen);
+/* TLS 1.3 HKDF-Expand-Label (RFC 8446 §7.1). 0 ok, -1 if label > 64 bytes,
+ * context > 64 bytes, or outlen out of range (fixed internal buffer). */
+int hkdf_expand_label(int hlen, const uint8_t *secret, const char *label,
+                      const uint8_t *ctx, int ctxlen, uint8_t *out, int outlen);
 
 /* --- AEAD: ChaCha20-Poly1305 (RFC 8439) ---
  * key=32, nonce=12. seal writes ciphertext (len bytes) + tag[16]; open verifies

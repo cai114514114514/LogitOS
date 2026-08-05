@@ -9,7 +9,7 @@ work = tempfile.mktemp(suffix=".img")
 shutil.copyfile(disk, work)
 fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)
 serial = os.path.join(outdir, "freeze2-serial.log")
-args = ["qemu-system-x86_64", "-cdrom", iso,
+args = ["qemu-system-x86_64", "-cpu", "max", "-cdrom", iso,
     "-drive", f"file={work},format=raw,if=ide", "-boot", "d",
     "-m", "512", "-smp", "4", "-accel", "tcg,thread=multi", "-rtc", "base=localtime",
     "-vga", "none", "-device", "virtio-gpu-pci",

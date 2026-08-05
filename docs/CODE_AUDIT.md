@@ -676,3 +676,41 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 - 测试：新增 `make test-net` 与 `make test-net-os`；`TCP protocol tests` 39/39、`IPv4/UDP/ICMP protocol tests` 17/17 通过；相关网络对象以 freestanding x86_64 flags 强制重编译通过；QEMU 启动 smoke test 通过，guest 经 e1000/IPv4/TCP/HTTP 完整获取宿主 32768-byte fixture。
 
 仍未实现的协议范围记录在 `docs/NETWORK.md`，包括 IPv6、DHCP、IPv4 分片重组、被动 TCP、拥塞控制、RTT/RTO 估计、窗口缩放、SACK、时间戳和完整 TIME_WAIT 状态机。
+
+---
+
+## TLS 安全修复批（2026-08-05）
+
+本节是继「后续 TCP/IP 补充」之后的 TLS/X.509/加密层专项，配套主机侧已知答案测试全部落地。
+
+### 测试证据
+
+- 新增 `make test-crypto`（挂入 `make test` 链）：90 条向量覆盖 SHA-256/384/512、HMAC（RFC 4231）、HKDF（RFC 5869）、HKDF-Expand-Label（RFC 8448）、AES-128-GCM、ChaCha20-Poly1305（RFC 8439）、X25519（RFC 7748）、ECDSA P-256/P-384 签发验证与拒绝用例、RSA PKCS#1/PSS 验证与拒绝用例，**90 passed, 0 failed**；另有 ecdsa modmul 12 例与 rsa modexp 5 例全过。测试与向量在 `tests/unit/crypto_vec_test.c` / `crypto_vectors.h`（`crypto_vec_gen.py` 生成）。
+- 其中 `ecdsa offcurve pub rejects sig`、`ecdsa reject qx=p` 两条直接验证本批新增的公钥校验。
+- 新增 `make test-x509-fuzz`：X.509 DER 解析器 ASan/UBSan 模糊测试（真证书 + 全截断 + 30 万次变异），本批改动后的解析器全程零越界，`X509 FUZZ DONE`。
+
+### 必修三项
+
+- **握手无绝对超时（慢滴水 DoS）**：`rec_read` 原以「800 tick 无字节」为超时且每收一字节即复位，对端逐字节慢发可无限拖延。改为调用方传入绝对 `deadline`（`tls_connect` 全程 3000 tick ≈ 30s，`tls_recv` 每次 3000 tick），收到数据不再复位。
+- **弱熵源照常握手**：RNG 无 RDSEED/RDRAND 时回退 rdtsc 种子（可预测）。新增 `rng_strong()`（rng.c/rng.h），`tls_connect` 起手即查，弱熵直接拒绝握手（`TLS_E_CRYPTO`）而非用可预测种子派发会话密钥。QEMU 默认 qemu64 无 RDRAND/RDSEED，故 Makefile 新增 `QEMU_CPU ?= -cpu max`，`make run/debug`、8 个 `tests/boot/*.sh`、7 个 `tests/qmp/*.py` 全部带上 `-cpu max`。
+- **密钥残留**：`tls_connect` 栈上全部密钥材料（私钥/共享秘密/各级 HKDF 秘密）集中进单一 `sec` 结构，所有失败路径经 `TLS_FAIL` 宏、成功路径在密钥迁入 `sessions[]` 后统一 `wipe()`（volatile 防消除）；`tls_close` 整体擦除会话槽（流量密钥+缓冲明文+used 标志）；`aead_seal` 的 16 KiB static 明文暂存用后即刻擦除。
+
+### 小修批
+
+- `rec_write` 只判 `<0`，部分写会发出截断记录；改为判 `!= 期望长度`。
+- ServerHello 增加 HelloRetryRequest magic random 检测：本客户端无法重发 ClientHello，收到 HRR 显式报错（`[tls] HelloRetryRequest unsupported`），不再当作普通 SH 误解析。
+- X.509 扩展解析 **fail-closed**：扩展块任何 DER 错误置 `cert.san_err`，`name_ok` 开头拒绝——此前错误会静默丢弃 SAN 回退到更弱的 CN 匹配。
+- 跳过 tbs 内 issuer/subject uniqueID（`[1]`/`[2]`，primitive/constructed 两种编码），否则带 uniqueID 的证书会挡住 `[3]` 扩展块导致 SAN 丢失。
+- RFC 5280 4.1.1.2：外层 `signatureAlgorithm` 必须与 tbs 内层逐字节一致，否则 `X509_E_PARSE`。
+- `tls_der_sig_to_rs` 与 x509.c 的 `sig_to_rs` 两份重复实现合并为 `x509_der_sig_to_rs`（x509.h 声明），并加严格项：两个元素必须是 INTEGER、SEQ 后不允许尾部垃圾。
+- `ecdsa_verify` 在坐标范围检查之后补 **on-curve 校验**（y² ≡ x³+ax+b mod p），堵住 invalid-curve 类伪造公钥。
+- `hkdf_expand_label` 返回 int 并加边界检查（label ≤ 64、ctx ≤ 64、outlen 合法），溢出固定 `info[]` 栈缓冲的调用直接失败；tls.c 调用点（短字面量 label + 32 字节 hash）注释说明恒在界内。
+
+### 已知限制（明确不声称）
+
+- X.509 不强制 EKU / KeyUsage / pathLenConstraint（仅强制 BasicConstraints cA 与 issuer==subject 字节绑定）。
+- 不支持 HelloRetryRequest（显式报错）、不支持会话恢复/0-RTT/客户端证书。
+- 无 HSTS、无混合内容拦截；HTTPS 仅按域名+链验证。
+- `tls_close` 不发送 close_notify（tls.h 注释保留为待办描述，实际只释放并擦除会话）。
+- AES-GCM 查表实现存在 timing 侧信道面；DRBG 运行期不重播种。
+- 握手转录静态缓冲（`body`/`flight`/`dec`）只装公开消息（证书、Finished），不擦除。

@@ -45,6 +45,14 @@ static int cpu_has_rdseed(void)
     return (b & (1u << 18)) != 0;
 }
 
+/* 1 when a hardware entropy source (RDSEED/RDRAND) is available, 0 when the
+ * DRBG would fall back to rdtsc-only seeding. TLS refuses to handshake on 0:
+ * session keys from a predictable seed are worse than a clear error. */
+int rng_strong(void)
+{
+    return cpu_has_rdseed() || cpu_has_rdrand();
+}
+
 static int rdrand64(uint64_t *out)
 {
     uint8_t ok;

@@ -16,7 +16,7 @@ trap cleanup EXIT
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # -snapshot: ephemeral disk writes, so the test is deterministic across runs.
 { sleep 4; printf 'uname\necho hello-aether-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\n'; sleep 5; } | \
-  "$QEMU" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
+  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 

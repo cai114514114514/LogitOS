@@ -58,11 +58,22 @@ static struct tls_sess sessions[2];
  * SHA-256 DRBG seeded from RDSEED/RDRAND + RDTSC), not a TLS-local PRNG. */
 static void rand_bytes(uint8_t *b, int n) { kernel_random_bytes(b, n); }
 
-/* --- TCP record I/O (blocking with timeout; pumps net_poll) --- */
-/* Read exactly one TLS record: hdr[5] + body. Returns body length or -1. */
-static int rec_read(struct tls_sess *s, uint8_t *type, uint8_t *body, int maxbody)
+/* Overwrite key material through a volatile pointer so the compiler cannot
+ * elide it as a dead store. */
+static void wipe(void *p, size_t n)
 {
-    uint64_t start = timer_ticks();
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
+
+/* --- TCP record I/O (blocking with timeout; pumps net_poll) --- */
+/* Read exactly one TLS record: hdr[5] + body. Returns body length or -1.
+ * `deadline` is an absolute timer_ticks() value shared by the whole handshake:
+ * a peer trickling one byte at a time must not be able to stretch the wait
+ * forever by resetting a per-record idle timer. */
+static int rec_read(struct tls_sess *s, uint8_t *type, uint8_t *body, int maxbody,
+                    uint64_t deadline)
+{
     for (;;) {
         if (s->rxlen >= 5) {
             int blen = (s->rxrec[3] << 8) | s->rxrec[4];
@@ -76,10 +87,10 @@ static int rec_read(struct tls_sess *s, uint8_t *type, uint8_t *body, int maxbod
                 return blen;
             }
         }
-        if (timer_ticks() - start > 800) return -1;      /* ~8s */
+        if (timer_ticks() >= deadline) return -1;
         net_poll();
         int n = tcp_recv(s->tcp, s->rxrec + s->rxlen, (int)sizeof s->rxrec - s->rxlen);
-        if (n > 0) { s->rxlen += n; start = timer_ticks(); continue; }  /* data: loop tight */
+        if (n > 0) { s->rxlen += n; continue; }                 /* data: loop tight */
         if (n < 0) return -1;
         net_idle();                                  /* no data yet: sleep to next tick, don't peg host CPU */
     }
@@ -88,8 +99,10 @@ static int rec_read(struct tls_sess *s, uint8_t *type, uint8_t *body, int maxbod
 static int rec_write(struct tls_sess *s, uint8_t type, const uint8_t *body, int len)
 {
     uint8_t hdr[5] = { type, 0x03, 0x03, (uint8_t)(len >> 8), (uint8_t)len };
-    if (tcp_send(s->tcp, hdr, 5) < 0) return -1;
-    if (len && tcp_send(s->tcp, body, len) < 0) return -1;
+    /* a short write would put a truncated record on the wire that the server
+     * cannot parse -- treat it as failure, not success */
+    if (tcp_send(s->tcp, hdr, 5) != 5) return -1;
+    if (len && tcp_send(s->tcp, body, len) != len) return -1;
     return 0;
 }
 
@@ -115,6 +128,7 @@ static int aead_seal(struct aead *a, uint8_t inner_type, const uint8_t *content,
     else
         aes128_gcm_seal(a->key, nonce, aad, 5, plain, plen, out, out + plen);
     a->seq++;
+    wipe(plain, (size_t)plen);      /* the staging buffer held plaintext */
     return rlen;
 }
 
@@ -140,6 +154,8 @@ static int aead_open(struct aead *a, const uint8_t *body, int blen,
 }
 
 /* --- key schedule helpers --- */
+/* Labels are all <=12-char literals and ctx is a 32-byte hash (or NULL), so
+ * hkdf_expand_label()'s bounds are always satisfied and it cannot fail here. */
 static void derive_secret(const uint8_t *secret, const char *label,
                           const uint8_t *thash, uint8_t *out)
 { hkdf_expand_label(HLEN, secret, label, thash, HLEN, out, HLEN); }
@@ -159,8 +175,31 @@ static void transcript_hash(const struct sha256 *running, uint8_t out[32])
 /* big-endian helpers for building messages */
 static int put_u16(uint8_t *p, int v) { p[0]=(uint8_t)(v>>8); p[1]=(uint8_t)v; return 2; }
 
+/* Bail out of the handshake: wipe every stack secret and the session slot
+ * (which may already hold derived traffic keys) before returning. */
+#define TLS_FAIL(rc) do { \
+    wipe(&sec, sizeof sec); \
+    wipe(s, sizeof *s); \
+    return (rc); \
+} while (0)
+
 int tls_connect(int tcp_id, const char *host, int64_t now)
 {
+    /* all key material lives in one struct so TLS_FAIL can wipe it in one call */
+    struct {
+        uint8_t priv[32], shared[32];
+        uint8_t early[32], derived[32], hs[32], s_hs[32], c_hs[32];
+        uint8_t fk[32], cfk[32], derived2[32], master[32], c_ap[32], s_ap[32];
+    } sec;
+    /* the whole handshake must finish within 3000 ticks (~30s) total */
+    uint64_t deadline = timer_ticks() + 3000;
+
+    /* refuse to key a handshake from the weak rdtsc-only RNG fallback */
+    if (!rng_strong()) {
+        kprintf("[tls] refusing handshake: weak RNG (no rdrand/rdseed)\n");
+        return TLS_E_CRYPTO;
+    }
+
     int id = -1;
     for (int i = 0; i < 2; i++) if (!sessions[i].used) { id = i; break; }
     if (id < 0) return TLS_E_PROTO;
@@ -169,12 +208,12 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     s->used = 1; s->tcp = tcp_id;
 
     /* our X25519 ephemeral keypair */
-    uint8_t priv[32], pub[32];
-    rand_bytes(priv, 32);
-    x25519_base(pub, priv);
+    uint8_t pub[32];
+    rand_bytes(sec.priv, 32);
+    x25519_base(pub, sec.priv);
 
     int hl = 0; while (host[hl]) hl++;
-    if (hl > 255) { s->used=0; return TLS_E_PROTO; } /* SNI must fit the ClientHello buffer */
+    if (hl > 255) TLS_FAIL(TLS_E_PROTO); /* SNI must fit the ClientHello buffer */
 
     /* --- build ClientHello --- */
     uint8_t ch[512]; int n = 0;
@@ -207,18 +246,33 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
 
     struct sha256 th; sha256_init(&th);
     sha256_update(&th, ch, n);
-    if (rec_write(s, REC_HANDSHAKE, ch, n)) { s->used=0; return TLS_E_TCP; }
-
+    if (rec_write(s, REC_HANDSHAKE, ch, n)) TLS_FAIL(TLS_E_TCP);
     /* --- read ServerHello --- */
     static uint8_t body[20000]; uint8_t rtype;
-    int blen = rec_read(s, &rtype, body, sizeof body);
-    if (blen < 0 || rtype != REC_HANDSHAKE || body[0] != HS_SERVER_HELLO) { s->used=0; return TLS_E_PROTO; }
+    int blen = rec_read(s, &rtype, body, sizeof body, deadline);
+    if (blen < 0 || rtype != REC_HANDSHAKE || body[0] != HS_SERVER_HELLO) TLS_FAIL(TLS_E_PROTO);
     int shlen = (body[1]<<16)|(body[2]<<8)|body[3];
     int shend = 4 + shlen;
     /* Bound the ServerHello to what was actually received AND to the minimum fixed
      * layout (4 hdr + 2 ver + 32 random + 1 sid-len + 2 suite + 1 comp + 2 ext-len)
      * before touching any field -- a short/malicious SH otherwise reads past blen. */
-    if (blen < 44 || shlen < 40 || shend > blen) { s->used=0; return TLS_E_PROTO; }
+    if (blen < 44 || shlen < 40 || shend > blen) TLS_FAIL(TLS_E_PROTO);
+    /* HelloRetryRequest carries a magic ServerHello.random (RFC 8446 4.1.3):
+     * the server wants the ClientHello redone with new parameters, which we
+     * don't support -- fail loudly instead of misparsing the retry as a
+     * normal ServerHello. */
+    {
+        static const uint8_t hrr[32] = {
+            0xCF,0x21,0xAD,0x74,0xE5,0x9A,0x61,0x11,
+            0xBE,0x1D,0x8C,0x02,0x1E,0x65,0xB8,0x91,
+            0xC2,0xA2,0x11,0x16,0x7A,0xBB,0x8C,0x5E,
+            0x07,0x9E,0x09,0xE2,0xC8,0xA8,0x33,0x9C
+        };
+        if (memcmp(body + 6, hrr, 32) == 0) {
+            kprintf("[tls] HelloRetryRequest unsupported\n");
+            TLS_FAIL(TLS_E_PROTO);
+        }
+    }
     sha256_update(&th, body, shend);
     /* Downgrade protection (RFC 8446 4.1.3): a genuine TLS 1.3 server sets the
      * last 8 bytes of ServerHello.random to a fixed sentinel iff it negotiated a
@@ -228,20 +282,19 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
         const uint8_t *sr = body + 6;                    /* ServerHello.random */
         static const uint8_t d12[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x01};
         static const uint8_t d11[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x00};
-        if (memcmp(sr + 24, d12, 8) == 0 || memcmp(sr + 24, d11, 8) == 0) {
-            s->used = 0; return TLS_E_PROTO;
-        }
+        if (memcmp(sr + 24, d12, 8) == 0 || memcmp(sr + 24, d11, 8) == 0)
+            TLS_FAIL(TLS_E_PROTO);
     }
     /* parse SH: cipher suite + server key share. Every access is bounded by shend
      * (= 4 + shlen <= blen), so a crafted SH can't read past the received bytes. */
     int p = 4 + 2 + 32;                                  /* skip ver+random */
     int sidlen = body[p++]; p += sidlen;                 /* session id echo */
-    if (p + 5 > shend) { s->used=0; return TLS_E_PROTO; } /* suite(2)+comp(1)+extlen(2) */
+    if (p + 5 > shend) TLS_FAIL(TLS_E_PROTO); /* suite(2)+comp(1)+extlen(2) */
     int suite = (body[p]<<8)|body[p+1]; p += 2;
     p += 1;                                              /* compression */
     int elen = (body[p]<<8)|body[p+1]; p += 2;
     int eend = p + elen; const uint8_t *spub = 0;
-    if (eend > shend) { s->used=0; return TLS_E_PROTO; }  /* extensions must fit */
+    if (eend > shend) TLS_FAIL(TLS_E_PROTO);  /* extensions must fit */
     while (p + 4 <= eend) {
         int et = (body[p]<<8)|body[p+1], el = (body[p+2]<<8)|body[p+3]; p += 4;
         if (p + el > eend) break;                         /* extension body must fit */
@@ -251,40 +304,38 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
         }
         p += el;
     }
-    if (!spub || (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256)) { s->used=0; return TLS_E_PROTO; }
+    if (!spub || (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256)) TLS_FAIL(TLS_E_PROTO);
 
     /* --- key schedule: handshake secrets --- */
-    uint8_t shared[32]; x25519(shared, priv, spub);
+    x25519(sec.shared, sec.priv, spub);
     /* RFC 7748/8446 contributory check: reject an all-zero shared secret (the
      * peer sent a low-order point, e.g. a zero public key). */
-    uint8_t szero = 0; for (int i = 0; i < 32; i++) szero |= shared[i];
-    if (!szero) { s->used=0; return TLS_E_CRYPTO; }
+    uint8_t szero = 0; for (int i = 0; i < 32; i++) szero |= sec.shared[i];
+    if (!szero) TLS_FAIL(TLS_E_CRYPTO);
     uint8_t zeros[32]; memset(zeros, 0, 32);
-    uint8_t early[32], derived[32], hs[32];
-    hkdf_extract(HLEN, 0, 0, zeros, 32, early);
+    hkdf_extract(HLEN, 0, 0, zeros, 32, sec.early);
     uint8_t emptyhash[32]; sha256("", 0, emptyhash);     /* hash of "" */
-    derive_secret(early, "derived", emptyhash, derived);
-    hkdf_extract(HLEN, derived, HLEN, shared, 32, hs);
+    derive_secret(sec.early, "derived", emptyhash, sec.derived);
+    hkdf_extract(HLEN, sec.derived, HLEN, sec.shared, 32, sec.hs);
     uint8_t th_chsh[32]; transcript_hash(&th, th_chsh);
-    uint8_t s_hs[32], c_hs[32];
-    derive_secret(hs, "s hs traffic", th_chsh, s_hs);
-    derive_secret(hs, "c hs traffic", th_chsh, c_hs);
-    traffic_keys(s_hs, suite, &s->cr);
-    traffic_keys(c_hs, suite, &s->cw);
+    derive_secret(sec.hs, "s hs traffic", th_chsh, sec.s_hs);
+    derive_secret(sec.hs, "c hs traffic", th_chsh, sec.c_hs);
+    traffic_keys(sec.s_hs, suite, &s->cr);
+    traffic_keys(sec.c_hs, suite, &s->cw);
 
     /* --- read encrypted handshake flight: EE, Certificate, CertVerify, Finished --- */
     static uint8_t flight[16384]; int flen = 0;
     int got_fin = 0;
     while (!got_fin) {
-        blen = rec_read(s, &rtype, body, sizeof body);
-        if (blen < 0) { s->used=0; return TLS_E_PROTO; }
+        blen = rec_read(s, &rtype, body, sizeof body, deadline);
+        if (blen < 0) TLS_FAIL(TLS_E_PROTO);
         if (rtype == REC_CCS) continue;                  /* ignore middlebox CCS */
-        if (rtype != REC_APPDATA) { s->used=0; return TLS_E_PROTO; }
+        if (rtype != REC_APPDATA) TLS_FAIL(TLS_E_PROTO);
         static uint8_t dec[20000]; uint8_t it;
         int dl = aead_open(&s->cr, body, blen, dec, &it);
-        if (dl < 0) { s->used=0; return TLS_E_CRYPTO; }
+        if (dl < 0) TLS_FAIL(TLS_E_CRYPTO);
         if (it != REC_HANDSHAKE) continue;
-        if (flen + dl > (int)sizeof flight) { s->used=0; return TLS_E_PROTO; }
+        if (flen + dl > (int)sizeof flight) TLS_FAIL(TLS_E_PROTO);
         memcpy(flight + flen, dec, dl); flen += dl;
         /* do we now hold a complete Finished at the end? scan messages */
         int q = 0;
@@ -312,28 +363,28 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
             /* parse: cert_request_ctx(1) + cert_list(3) of {cert(3) + exts(2)}.
              * Every length field is bounded by ml, so a crafted Certificate can't
              * read past the handshake message (into flight[]'s tail or beyond). */
-            if (ml < 4) { s->used=0; return TLS_E_PROTO; }
+            if (ml < 4) TLS_FAIL(TLS_E_PROTO);
             int cp = 1 + mb[0];                          /* skip request context */
-            if (cp + 3 > ml) { s->used=0; return TLS_E_PROTO; }
+            if (cp + 3 > ml) TLS_FAIL(TLS_E_PROTO);
             int listlen = (mb[cp]<<16)|(mb[cp+1]<<8)|mb[cp+2]; cp += 3;
             int cend = cp + listlen;
-            if (cend > ml) { s->used=0; return TLS_E_PROTO; }
+            if (cend > ml) TLS_FAIL(TLS_E_PROTO);
             while (cp + 3 <= cend && ncert < 8) {
                 int clen = (mb[cp]<<16)|(mb[cp+1]<<8)|mb[cp+2]; cp += 3;
-                if (cp + clen + 2 > cend) { s->used=0; return TLS_E_PROTO; }
+                if (cp + clen + 2 > cend) TLS_FAIL(TLS_E_PROTO);
                 if (x509_parse(mb + cp, clen, &chain[ncert]) == 0) ncert++;
                 cp += clen;
                 int extl = (mb[cp]<<8)|mb[cp+1]; cp += 2;
-                if (cp + extl > cend) { s->used=0; return TLS_E_PROTO; }
+                if (cp + extl > cend) TLS_FAIL(TLS_E_PROTO);
                 cp += extl;
             }
             transcript_hash(&th, th_cert);
         } else if (mt == HS_CERT_VERIFY) {
             /* signature over: 64*0x20 || "TLS 1.3, server CertificateVerify" || 0 || th_cert */
-            if (ml < 4) { s->used=0; return TLS_E_PROTO; }
+            if (ml < 4) TLS_FAIL(TLS_E_PROTO);
             int sigalg = (mb[0]<<8)|mb[1];
             int siglen = (mb[2]<<8)|mb[3];
-            if (4 + siglen > ml) { s->used=0; return TLS_E_PROTO; }
+            if (4 + siglen > ml) TLS_FAIL(TLS_E_PROTO);
             const uint8_t *sig = mb + 4;
             uint8_t signed_data[64 + 33 + 1 + 32]; int sd = 0;
             for (int i = 0; i < 64; i++) signed_data[sd++] = 0x20;
@@ -351,9 +402,8 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
                 uint8_t hash[48]; int hh;
                 if (curve == 256) { sha256(signed_data, sd, hash); hh = 32; }
                 else { sha384(signed_data, sd, hash); hh = 48; }
-                extern int tls_der_sig_to_rs(const uint8_t*, int, uint8_t*, int);
                 uint8_t rs[96];
-                if (chain[0].key_type == KEY_EC && tls_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
+                if (chain[0].key_type == KEY_EC && x509_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
                     chain[0].publen == 1 + 2*flen2 && chain[0].pub[0] == 0x04 &&
                     ecdsa_verify(curve, chain[0].pub + 1, rs, hash, hh)) okv = 1;
             } else if (ncert > 0 && (sigalg == 0x0804 || sigalg == 0x0805 || sigalg == 0x0806) &&
@@ -367,47 +417,47 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
                 if (rsa_pss_verify(chain[0].rsa_n, chain[0].rsa_nlen, chain[0].rsa_e, chain[0].rsa_elen,
                                    sig, siglen, hash, hh)) okv = 1;
             }
-            if (!okv) { s->used=0; return TLS_E_CERT; }
+            if (!okv) TLS_FAIL(TLS_E_CERT);
             sha256_update(&th, flight + q, 4 + ml);
         } else if (mt == HS_FINISHED) {
             uint8_t th_cv[32]; transcript_hash(&th, th_cv);   /* thru CertVerify */
-            uint8_t fk[32], expect[32];
-            hkdf_expand_label(HLEN, s_hs, "finished", 0, 0, fk, 32);
-            hmac(HLEN, fk, 32, th_cv, 32, expect);
-            if (ml != 32 || memcmp(expect, mb, 32) != 0) { s->used=0; return TLS_E_CRYPTO; }
+            uint8_t expect[32];
+            hkdf_expand_label(HLEN, sec.s_hs, "finished", 0, 0, sec.fk, 32);
+            hmac(HLEN, sec.fk, 32, th_cv, 32, expect);
+            if (ml != 32 || memcmp(expect, mb, 32) != 0) TLS_FAIL(TLS_E_CRYPTO);
             sha256_update(&th, flight + q, 4 + ml);
         }
         q += 4 + ml;
     }
 
     /* verify the certificate chain (strict) */
-    if (ncert < 1 || x509_verify_chain(chain, ncert, host, now) != X509_OK) { s->used=0; return TLS_E_CERT; }
+    if (ncert < 1 || x509_verify_chain(chain, ncert, host, now) != X509_OK) TLS_FAIL(TLS_E_CERT);
 
     /* --- client Finished --- */
     uint8_t th_full[32]; transcript_hash(&th, th_full);
-    uint8_t cfk[32], cverify[32];
-    hkdf_expand_label(HLEN, c_hs, "finished", 0, 0, cfk, 32);
-    hmac(HLEN, cfk, 32, th_full, 32, cverify);
+    uint8_t cverify[32];
+    hkdf_expand_label(HLEN, sec.c_hs, "finished", 0, 0, sec.cfk, 32);
+    hmac(HLEN, sec.cfk, 32, th_full, 32, cverify);
     uint8_t fin[4 + 32]; fin[0]=HS_FINISHED; fin[1]=0; fin[2]=0; fin[3]=32; memcpy(fin+4, cverify, 32);
     uint8_t finrec[64];
     int frl = aead_seal(&s->cw, REC_HANDSHAKE, fin, sizeof fin, finrec);
     /* client also sends a dummy CCS first (compat) */
     uint8_t ccs = 1; rec_write(s, REC_CCS, &ccs, 1);
-    if (rec_write(s, REC_APPDATA, finrec, frl)) { s->used=0; return TLS_E_TCP; }
-
+    if (rec_write(s, REC_APPDATA, finrec, frl)) TLS_FAIL(TLS_E_TCP);
     /* --- application traffic secrets --- */
-    uint8_t derived2[32], master[32];
-    derive_secret(hs, "derived", emptyhash, derived2);
-    hkdf_extract(HLEN, derived2, HLEN, zeros, 32, master);
-    uint8_t c_ap[32], s_ap[32];
-    derive_secret(master, "c ap traffic", th_full, c_ap);
-    derive_secret(master, "s ap traffic", th_full, s_ap);
-    traffic_keys(c_ap, suite, &s->cw);
-    traffic_keys(s_ap, suite, &s->cr);
+    derive_secret(sec.hs, "derived", emptyhash, sec.derived2);
+    hkdf_extract(HLEN, sec.derived2, HLEN, zeros, 32, sec.master);
+    derive_secret(sec.master, "c ap traffic", th_full, sec.c_ap);
+    derive_secret(sec.master, "s ap traffic", th_full, sec.s_ap);
+    traffic_keys(sec.c_ap, suite, &s->cw);
+    traffic_keys(sec.s_ap, suite, &s->cr);
 
+    /* the live keys now live in sessions[] (s->cw/s->cr); drop every stack copy */
+    wipe(&sec, sizeof sec);
     s->established = 1;
     return id;
 }
+#undef TLS_FAIL
 
 int tls_send(int id, const void *buf, int len)
 {
@@ -431,7 +481,8 @@ int tls_recv(int id, void *buf, int max)
     }
     s->applen = s->appoff = 0;
     uint8_t rtype; static uint8_t body[20000];
-    int blen = rec_read(s, &rtype, body, sizeof body);
+    /* one recv waits at most ~30s absolute, however the peer paces its bytes */
+    int blen = rec_read(s, &rtype, body, sizeof body, timer_ticks() + 3000);
     if (blen < 0) return -1;
     if (rtype == REC_CCS) return 0;
     if (rtype != REC_APPDATA) return -1;
@@ -449,32 +500,9 @@ int tls_recv(int id, void *buf, int max)
 void tls_close(int id)
 {
     if (id < 0 || id >= 2 || !sessions[id].used) return;
-    sessions[id].used = 0;
+    /* drop traffic keys, buffered plaintext and the in-use flag in one shot */
+    wipe(&sessions[id], sizeof sessions[id]);
 }
 
-/* DER ECDSA sig SEQ{r,s} -> fixed-width r||s (shared with x509.c logic). */
-int tls_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
-{
-    const uint8_t *p = sig, *end = sig + len;
-    if (p >= end || *p++ != 0x30) return -1;
-    if (p >= end) return -1;
-    int sl = *p++; if (sl & 0x80) {
-        int nb = sl & 0x7f;
-        if (nb == 0 || nb > 3 || p + nb > end) return -1;   /* mirror x509.c der_tlv */
-        sl = 0; while (nb--) sl = (sl<<8)|*p++;
-    }
-    if (p + sl > end) return -1;                            /* SEQ content must fit */
-    for (int half = 0; half < 2; half++) {
-        if (p >= end || *p++ != 0x02) return -1;
-        if (p >= end) return -1;
-        int il = *p++;
-        if (p + il > end) return -1;                        /* INTEGER content must fit */
-        const uint8_t *ic = p; p += il;
-        while (il > 0 && ic[0] == 0) { ic++; il--; }
-        if (il > flen) return -1;
-        uint8_t *dst = rs + half * flen;
-        for (int i = 0; i < flen; i++) dst[i] = 0;
-        for (int i = 0; i < il; i++) dst[flen - il + i] = ic[i];
-    }
-    return 0;
-}
+/* tls_der_sig_to_rs() moved to x509.c as x509_der_sig_to_rs() -- one shared
+ * implementation (declared in x509.h). */

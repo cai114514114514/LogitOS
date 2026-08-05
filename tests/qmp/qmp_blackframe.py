@@ -16,7 +16,7 @@ def run_once(rnd):
     shutil.copyfile(disk, work)
     fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)
     serial = os.path.join(outdir, f"bf{rnd}-serial.log")
-    args = ["qemu-system-x86_64", "-cdrom", iso,
+    args = ["qemu-system-x86_64", "-cpu", "max", "-cdrom", iso,
         "-drive", f"file={work},format=raw,if=none,id=hd0",
         "-device", "virtio-blk-pci,drive=hd0", "-boot", "d",
         "-m", "512", "-smp", "4", "-accel", "tcg,thread=multi", "-rtc", "base=localtime",

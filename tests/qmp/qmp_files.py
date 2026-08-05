@@ -41,7 +41,7 @@ fd, serial = tempfile.mkstemp(suffix=".log"); os.close(fd)
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
 
 proc = subprocess.Popen([
-    qemu, "-cdrom", iso,
+    qemu, "-cpu", "max", "-cdrom", iso,
     "-drive", f"file={disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
     "-snapshot",                                   # ephemeral writes -> deterministic
     "-display", "none", "-no-reboot",

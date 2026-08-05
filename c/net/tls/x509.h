@@ -19,6 +19,8 @@ struct cert {
     const uint8_t *issuer; int issuerlen;       /* raw DER of Issuer Name */
     const char *cn; int cnlen;                  /* leaf CN (for name check) */
     const uint8_t *san; int sanlen;             /* SubjectAltName extension value */
+    int   san_err;                              /* extension block was malformed: fail closed */
+    const uint8_t *tbs_sig_alg; int tbs_sig_alglen; /* inner signatureAlgorithm (raw TLV) */
     int   is_ca;                                /* BasicConstraints cA=TRUE */
     int64_t not_before, not_after;              /* unix-ish seconds */
 };
@@ -41,6 +43,10 @@ int x509_parse(const uint8_t *der, int len, struct cert *out);
 
 /* Verify that `child`'s signature was made by `issuer`'s public key. 0 = ok. */
 int x509_verify_signed_by(const struct cert *child, const struct cert *issuer);
+
+/* Convert a DER ECDSA signature SEQ{ INTEGER r, INTEGER s } into fixed-width
+ * r||s (flen bytes each, big-endian). 0 ok, -1 malformed. Shared with tls.c. */
+int x509_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen);
 
 /* Verify a chain certs[0..n-1] (leaf first): each signed by the next, the top
  * signed by (or equal to) a built-in trusted root, plus host-name and validity

@@ -114,10 +114,13 @@ Known limitations and boundaries include:
   behavior or IPv6 support. It configures itself with DHCP (static QEMU-oriented
   fallback) and its TCP sender uses a single outstanding segment; see
   [docs/NETWORK.md](docs/NETWORK.md).
-- TLS and X.509 support a constrained set of algorithms and certificate forms.
-  The code is custom and has not received an independent cryptographic audit.
-- If RDSEED/RDRAND is unavailable, the kernel logs that its timing-based entropy
-  fallback is weak. TLS must not be trusted in that mode.
+- TLS and X.509 support a constrained set of algorithms and certificate forms
+  (for example: no HelloRetryRequest, no resumption or 0-RTT, no client
+  authentication, and no enforcement of extended key usage). The code is
+  custom and has not received an independent cryptographic audit.
+- If RDSEED/RDRAND is unavailable, the kernel's entropy fallback is
+  timing-based and weak; the TLS client refuses to handshake in that mode
+  rather than keying sessions from a predictable seed.
 - The browser implements a small portion of modern web standards and has no origin
   or JavaScript sandbox suitable for adversarial pages.
 - AetherScript deliberately exposes raw-memory and direct-syscall operations; it

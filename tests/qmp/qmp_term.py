@@ -6,7 +6,7 @@ iso, disk, out = sys.argv[1], sys.argv[2], sys.argv[3]
 fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)  # QEMU binds the socket itself
 fd, serial = tempfile.mkstemp(suffix=".log"); os.close(fd)
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
-proc = subprocess.Popen([qemu, "-cdrom", iso,
+proc = subprocess.Popen([qemu, "-cpu", "max", "-cdrom", iso,
     "-drive", f"file={disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
     "-snapshot",            # ephemeral writes -> the disk probe can't leak across runs
     "-display", "none", "-no-reboot", "-m", "512M",
