@@ -13,7 +13,7 @@
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
 
-#define RAW_MAX  (512*1024)   /* big enough for large pages + stylesheets (github's
+#define RAW_MAX  (1024*1024)  /* big enough for large pages + stylesheets (github's
                               * primer CSS is hundreds of KB); the TCP 64 KiB window
                               * slides as fetch_once drains raw[] continuously. */
 
@@ -33,17 +33,20 @@ const char *http_body(int *len)
     return raw + (body_off >= 0 ? body_off : 0);
 }
 
-/* Build "GET <path> HTTP/1.0\r\nHost: <host>\r\nConnection: close\r\n\r\n". */
+/* Build "GET <path> HTTP/1.1\r\nHost: <host>\r\nConnection: close\r\n\r\n".
+ * HTTP/1.1 so virtual hosts/CDNs answer properly; Connection: close keeps the
+ * state machine trivial, and Accept-Encoding: identity opts out of gzip (we
+ * have no inflater on this path). */
 static int build_request(const struct url *u, char *req, int max)
 {
     int o = 0;
     const char *g = "GET ";
     for (const char *p = g; *p && o < max; p++) req[o++] = *p;
     for (const char *p = u->path; *p && o < max; p++) req[o++] = *p;
-    const char *v = " HTTP/1.0\r\nHost: ";
+    const char *v = " HTTP/1.1\r\nHost: ";
     for (const char *p = v; *p && o < max; p++) req[o++] = *p;
     for (const char *p = u->host; *p && o < max; p++) req[o++] = *p;
-    const char *tail = "\r\nConnection: close\r\nUser-Agent: Logit/1.0\r\n\r\n";
+    const char *tail = "\r\nConnection: close\r\nAccept-Encoding: identity\r\nUser-Agent: Logit/1.0\r\n\r\n";
     for (const char *p = tail; *p && o < max; p++) req[o++] = *p;
     return o;
 }
@@ -74,6 +77,69 @@ static int find_body(const char *buf, int len)
         if (buf[i] == '\r' && buf[i+1] == '\n' && buf[i+2] == '\r' && buf[i+3] == '\n')
             return i + 4;
     return -1;
+}
+
+static int header_value(const char *buf, int len, const char *name, char *out, int max);
+
+/* 1 if the Transfer-Encoding header value mentions "chunked" (case-insensitive). */
+static int te_is_chunked(const char *buf, int len)
+{
+    char te[48];
+    if (header_value(buf, len, "transfer-encoding", te, sizeof te) != 0) return 0;
+    const char *k = "chunked";
+    for (int i = 0; te[i]; i++) {
+        int j = 0;
+        for (; k[j]; j++) {
+            char c = te[i+j];
+            if (c >= 'A' && c <= 'Z') c += 32;
+            if (c != k[j]) break;
+        }
+        if (!k[j]) return 1;
+    }
+    return 0;
+}
+
+/* 1 if a chunked body looks complete: the terminal "0\r\n\r\n" chunk seen.
+ * Trailers between the 0-chunk and the final CRLF are not recognized; those
+ * responses simply fall back to the FIN/timeout path. */
+static int chunked_done(const char *b, int len)
+{
+    if (len >= 5 && b[0] == '0' && b[1] == '\r' && b[2] == '\n' &&
+        b[3] == '\r' && b[4] == '\n') return 1;
+    for (int i = 0; i + 6 < len; i++)
+        if (b[i] == '\r' && b[i+1] == '\n' && b[i+2] == '0' &&
+            b[i+3] == '\r' && b[i+4] == '\n' && b[i+5] == '\r' && b[i+6] == '\n')
+            return 1;
+    return 0;
+}
+
+/* De-chunk a body in place (write cursor stays behind the read cursor, so a
+ * plain forward byte loop is overlap-safe). Returns the decoded length, or -1
+ * on malformed framing (caller then keeps the raw bytes). */
+static int dechunk(char *b, int len)
+{
+    int r = 0, w = 0;
+    for (;;) {
+        long sz = 0; int any = 0;
+        while (r < len && b[r] != '\r') {
+            char c = b[r]; int v = -1;
+            if (c >= '0' && c <= '9') v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else if (c == ';') { while (r < len && b[r] != '\r') r++; break; }  /* chunk-ext */
+            else return -1;
+            if (v >= 0) { sz = (sz << 4) | v; any = 1; if (sz > len) return -1; r++; }
+        }
+        if (!any || r + 1 >= len || b[r] != '\r' || b[r+1] != '\n') return -1;
+        r += 2;
+        if (sz == 0) break;                      /* terminal chunk: ignore trailers */
+        if (r + sz > len) return -1;
+        for (long i = 0; i < sz; i++) b[w + (int)i] = b[r + (int)i];
+        w += (int)sz; r += (int)sz;
+        if (r + 1 >= len || b[r] != '\r' || b[r+1] != '\n') return -1;
+        r += 2;
+    }
+    return w;
 }
 
 /* Status code from the "HTTP/1.x NNN ..." response line, or 0. */
@@ -135,6 +201,7 @@ static int fetch_once(const struct url *u)
 
     int hdr_end = -1;        /* offset past the response headers, once seen */
     int clen = -1;           /* Content-Length, if the server sent one */
+    int chunked = 0;         /* Transfer-Encoding: chunked seen */
     uint64_t start = timer_ticks();
     while (timer_ticks() - start < 800) {       /* ~8 s idle budget */
         net_poll();
@@ -158,8 +225,11 @@ static int fetch_once(const struct url *u)
                         clen = clen*10 + (*p-'0');
                     }
                 }
+                chunked = te_is_chunked(raw, hdr_end);
+                if (chunked) clen = -1;          /* RFC 9112: TE overrides CL */
             }
             if (clen >= 0 && hdr_end >= 0 && raw_len - hdr_end >= clen) break;
+            if (chunked && chunked_done(raw + hdr_end, raw_len - hdr_end)) break;
             if (raw_len >= RAW_MAX) break;
             continue;                            /* data flowing: drain tightly, no delay */
         }
@@ -204,6 +274,10 @@ int http_get(const char *url)
     }
 
     int body = find_body(raw, raw_len);
+    if (body >= 0 && te_is_chunked(raw, body)) {
+        int dl = dechunk(raw + body, raw_len - body);
+        if (dl >= 0) raw_len = body + dl;        /* malformed: keep raw, parser tolerates */
+    }
     body_off = body < 0 ? 0 : body;
     status = HTTP_DONE;
     http_busy = 0;
@@ -282,6 +356,10 @@ int res_fetch(const char *src, uint8_t **buf, int *len)
     }
     int body = find_body(raw, raw_len); if (body < 0) return -1;
     int blen = raw_len - body;
+    if (te_is_chunked(raw, body)) {
+        int dl = dechunk(raw + body, blen);
+        if (dl >= 0) blen = dl;
+    }
     if (blen <= 0) return -1;
     uint8_t *b = kmalloc(blen); if (!b) return -1;
     memcpy(b, raw + body, (size_t)blen);

@@ -23,7 +23,7 @@ int text_measure(const char *s, int len, int px, int mono)
  * hand the layout engine a malloc'd copy it can kfree (matches net/http.c's ABI). */
 int res_fetch(const char *src, unsigned char **buf, int *len)
 {
-    static unsigned char raw[393216];           /* 384 KiB single-image cap */
+    static unsigned char raw[786432];           /* 768 KiB single-image cap */
     int n = res_fetch_raw(src, raw, sizeof raw);
     if (n <= 0) return -1;
     unsigned char *b = malloc((size_t)n);

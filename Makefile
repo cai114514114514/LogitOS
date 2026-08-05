@@ -233,7 +233,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 # calls kmalloc/kfree/img_register, which browser_rt.c shims into the ring-3 heap).
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
-                c/apps/browser/css_vars.c \
+                c/apps/browser/css_vars.c c/net/http/url.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
@@ -435,7 +435,7 @@ test-https-smoke: $(ISO) $(DISK)
 	@bash tests/boot/run-https-smoke.sh $(ISO) $(DISK)
 
 # On-Logit AetherScript test: boots and runs /bin/as on the /usr/as examples.
-test-as-os: $(ISO) $(DISK)
+test-as-os: check-asops $(ISO) $(DISK)
 	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
 
 # mini-libc on-target test battery: boots Logit, runs /bin/libctest, asserts LIBC_OK.
@@ -453,7 +453,7 @@ test-smp: $(ISO) $(DISK)
 AS_CORE := c/apps/as/value.c c/apps/as/as_io.c c/apps/as/lexer.c \
             c/apps/as/compiler.c c/apps/as/vm.c c/apps/as/object.c \
             c/apps/as/as_native.c c/apps/as/as_ll.c c/apps/as/as_bc.c
-test-as:
+test-as: check-asops
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test
@@ -461,7 +461,11 @@ test-as:
 # The opcode/token/builtin numbers are hand-copied into three implementations
 # (as.h -> asc.as, lexer.h -> aslex.as, vm.c -> complete.c). A drift in the first
 # two is a SILENT miscompile: the self-hosted compiler emits an instruction the C
-# VM decodes as a different one. Read-only check; run it before every as target.
+# VM decodes as a different one -- and NOTHING else catches it. Verified: setting
+# OP_RET to 99 in asc.as still leaves test-as and test-as-gcstress at 254/254
+# green. So every as-facing target depends on this; being a phony prerequisite is
+# why it stays off file targets like $(ASC) (that would force a rebuild each run).
+# Read-only: it never rewrites asc.as/aslex.as.
 check-asops:
 	@python3 tools/gen_as_opcodes.py --check
 
@@ -482,7 +486,7 @@ test-fb-clip:
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
 # or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
-test-as-gcstress:
+test-as-gcstress: check-asops
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test_gcstress
@@ -490,7 +494,7 @@ test-as-gcstress:
 # Robustness suite: deep recursion, huge allocations, many locals, boundary
 # values -- the paths that a runtime rewrite breaks first. Uses only the public
 # API (as_interpret/as_capture/as_gc_live), so it survives representation changes.
-test-as-stress:
+test-as-stress: check-asops
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_stress tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_stress
@@ -517,15 +521,15 @@ $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 
 # M21-P3 self-hosting S1: the AetherScript lexer (lib/aslex.as) must emit a
 # token stream byte-identical to the C lexer over the whole in-tree corpus.
-test-selfhost-lex: $(BUILD)/asc
+test-selfhost-lex: check-asops $(BUILD)/asc
 	@bash tests/unit/run-selfhost-lex.sh $(BUILD)/asc
 
 # S2/S3: programs compiled by the self-hosted compiler (lib/asc.as) run identically.
-test-selfhost-compile: $(BUILD)/asc
+test-selfhost-compile: check-asops $(BUILD)/asc
 	@bash tests/unit/run-selfhost-compile.sh $(BUILD)/asc
 
 # S4: the self-hosting fixpoint -- the compiler compiled by itself reproduces itself.
-test-selfhost-fixpoint: $(BUILD)/asc
+test-selfhost-fixpoint: check-asops $(BUILD)/asc
 	@bash tests/unit/run-selfhost-fixpoint.sh $(BUILD)/asc
 
 test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
@@ -535,7 +539,7 @@ test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
 # every compiled stdlib module against a checked-in baseline, so a slice that
 # accidentally perturbs codegen is caught at the module level (and long before
 # the fixpoint test would notice a 37 KB binary moved).
-test-as-bcstable: $(BUILD)/asc
+test-as-bcstable: check-asops $(BUILD)/asc
 	@bash tests/unit/run-bcstable.sh $(BUILD)/asc
 
 # kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
@@ -569,6 +573,8 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(BUILD)/var_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/parse_fuzz tests/unit/parse_fuzz.c c/net/http/url.c c/lib/text/utf8.c
 	@$(BUILD)/parse_fuzz
+	@$(CC) -O2 -w $(HOST_INCDIRS) -o $(BUILD)/http_dechunk_test tests/unit/http_dechunk_test.c c/net/http/url.c
+	@$(BUILD)/http_dechunk_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_test tests/unit/css_engine_test.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
 	@$(BUILD)/css_engine_test

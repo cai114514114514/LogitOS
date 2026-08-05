@@ -4,6 +4,7 @@
 #include "layout.h"
 #include "browser_paint.h"
 #include "js_dom.h"
+#include "url.h"                 /* url_parse + url_resolve for link clicks */
 
 /* A web browser. The whole render pipeline now runs in this ring-3 app: the
  * kernel does DNS+TCP+TLS+HTTP (SYS_HTTP_GET) and hands us the raw body
@@ -155,7 +156,26 @@ static int fetch_css_links(struct node *n, char *out, int o, int max)
     return o;
 }
 
-static char bodybuf[393216];             /* page HTML (384 KiB) */
+static void load(const char *u);
+
+/* Follow a clicked link: resolve relative hrefs against the current page URL
+ * (url_resolve handles absolute/protocol-relative refs itself), skip schemes we
+ * can't act on. Without this every "/wiki/Foo"-style href died in url_parse. */
+static void follow_link(const char *href)
+{
+    if (!href[0] || href[0] == '#') return;              /* pure fragment: no anchor support */
+    if (has_ci(href, "javascript:") || has_ci(href, "mailto:") || has_ci(href, "data:")) return;
+    char abs[600];
+    struct url base;
+    const char *target = href;
+    if (url_parse(url, &base) == 0 && url_resolve(&base, href, abs, sizeof abs) == 0)
+        target = abs;
+    int i = 0; while (target[i] && i < (int)sizeof url - 1) { url[i] = target[i]; i++; }
+    url[i] = 0; ulen = i;
+    load(url);
+}
+
+static char bodybuf[1048576];            /* page HTML (1 MiB) */
 static char author_css[1310720];         /* inline <style> + fetched external <link> CSS (1.25 MiB, raw with var()) */
 static char css_expanded[1572864];       /* author_css after var() expansion -> LibCSS (1.5 MiB) */
 static int  css_exlen;
@@ -188,7 +208,7 @@ static void load(const char *u)
     set_status("loaded -- fetching stylesheets...");
     redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
 
-    g_css_budget = 8;                /* fetch external <link> stylesheets, then re-style */
+    g_css_budget = 16;               /* fetch external <link> stylesheets, then re-style */
     int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
     if (css2 > css_len) {
         css_len = css2;
@@ -199,7 +219,7 @@ static void load(const char *u)
         redraw(0);                   /* re-paint with the page's real stylesheets */
     }
     set_status("loaded");
-    if (layout_load_images(3) > 0) { /* ... then fetch a few images and repaint */
+    if (layout_load_images(8) > 0) { /* ... then fetch a few images and repaint */
         ph = layout_height();
         redraw(0);
     }
@@ -276,11 +296,8 @@ void app_main(void)
                 int mx = e.a, my = e.b;              /* window-local */
                 if (my >= BARH && my < BARH + VIEW_H) {
                     char nu[256];
-                    if (browser_hittest(mx, my - BARH, scroll, nu, sizeof nu)) {
-                        int i = 0; while (nu[i] && i < (int)sizeof url - 1) { url[i] = nu[i]; i++; }
-                        url[i] = 0; ulen = i;
-                        load(url);
-                    }
+                    if (browser_hittest(mx, my - BARH, scroll, nu, sizeof nu))
+                        follow_link(nu);
                     need = 1;
                 }
             }

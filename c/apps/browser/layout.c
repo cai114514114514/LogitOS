@@ -7,7 +7,7 @@ void *memset(void *, int, unsigned long);
 int   text_measure(const char *s, int len, int px, int mono);
 int   res_fetch(const char *url, uint8_t **buf, int *len);   /* net/http.c */
 
-#define MAXITEM 8192
+#define MAXITEM 16384
 static struct item *items;
 static int nitem;
 static int doc_h;
