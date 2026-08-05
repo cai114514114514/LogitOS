@@ -371,6 +371,8 @@ test-crypto: $(BUILD)
 	$(BUILD)/ecdsa_test
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rsa_test tests/unit/rsa_test.c c/crypto/pubkey/rsa.c -Ic/crypto
 	$(BUILD)/rsa_test
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c -Ic/crypto -Ic/kernel/core -Itests/unit/rngstub
+	$(BUILD)/rng_test
 
 # ASan/UBSan fuzz of the X.509 DER parser (attacker-controlled input on every
 # HTTPS handshake) against a real cert. Long-running; not part of `make test`.

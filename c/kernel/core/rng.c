@@ -8,11 +8,41 @@
 
 void *memcpy(void *, const void *, size_t);
 
+/* SHA-256 Hash_DRBG-style kernel PRNG with state/output separation.
+ *
+ * Structure:
+ *   reseed:    state = H(state || 0x00 || entropy)
+ *   generate:  block = H(state || 0x01 || counter)   -> 32 bytes of output
+ *              state = H(state || 0x02 || counter)   -> state evolves per block
+ *
+ * The output never IS the internal state (the pre-refactor design hashed the
+ * state and emitted it verbatim, so one state compromise exposed every past
+ * and future output). Here a compromised state cannot rewind: earlier states
+ * are one hash pre-image away, so earlier outputs stay sealed (forward
+ * secrecy within a reseed epoch).
+ *
+ * Entropy enters at first use and then periodically -- every
+ * RNG_RESEED_REQUESTS generate calls or RNG_RESEED_BYTES of output,
+ * whichever comes first -- from RDSEED/RDRAND when the CPU offers them. */
+
 static uint8_t rng_state[32];
-static uint64_t rng_counter;
+static uint64_t rng_counter;                 /* block counter within an epoch */
+static uint64_t rng_requests;                /* generate calls this epoch */
+static uint64_t rng_bytes;                   /* bytes produced this epoch */
 static int rng_seeded;
 /* BKL-free callers can reach kernel_random_bytes concurrently: guard the state. */
 static spinlock_t rng_lock = SPINLOCK_INIT;
+
+#define RNG_RESEED_REQUESTS 1024ULL
+#define RNG_RESEED_BYTES    (1024ULL*1024ULL)
+
+/* Overwrite key material through a volatile pointer so the compiler cannot
+ * elide it as a dead store. */
+static void wipe(void *p, size_t n)
+{
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
 
 static uint64_t rdtsc(void)
 {
@@ -73,43 +103,59 @@ static int rdseed64(uint64_t *out)
     return 1;
 }
 
-static void rng_absorb(const void *data, int len)
+/* out = H(state || tag || data). `out` may alias rng_state: the state is
+ * absorbed into the hash context before anything is written. */
+static void rng_hash(uint8_t tag, const void *data, size_t len, uint8_t out[32])
 {
     struct sha256 h;
     sha256_init(&h);
     sha256_update(&h, rng_state, sizeof rng_state);
-    sha256_update(&h, data, (size_t)len);
-    sha256_final(&h, rng_state);
+    sha256_update(&h, &tag, 1);
+    if (data && len) sha256_update(&h, data, len);
+    sha256_final(&h, out);
+    wipe(&h, sizeof h);          /* the context held the old state */
 }
 
-static void rng_seed(void)
+/* Collect entropy: up to 4 hardware words (RDSEED preferred, RDRAND else,
+ * each retried against transient CF=0 under contention), then rdtsc + tick
+ * count as a cheap always-available (but weak) supplement. */
+static int rng_gather(uint64_t *buf)
 {
-    uint64_t seed[12];
     int n = 0;
-    seed[n++] = rdtsc();
-    seed[n++] = timer_ticks();
-    seed[n++] = (uint64_t)&seed;
-    seed[n++] = (uint64_t)&rng_state;
-
     int has_rdseed = cpu_has_rdseed();
     int has_rdrand = cpu_has_rdrand();
-    if (!has_rdseed && !has_rdrand)
-        kprintf("[rng] WARNING: no rdseed/rdrand; entropy falls back to rdtsc (weak)\n");
     for (int i = 0; i < 4; i++) {
         uint64_t v = 0;
         int got = 0;
-        /* rdseed/rdrand can transiently fail (CF=0) under contention: retry a few
-         * times before degrading to rdtsc. */
         for (int t = 0; t < 16 && !got; t++) {
             if (has_rdseed)      got = rdseed64(&v);
             else if (has_rdrand) got = rdrand64(&v);
             else break;
         }
-        if (got) seed[n++] = v;
-        else seed[n++] = rdtsc() ^ ((uint64_t)timer_ticks() << (i + 1));
+        if (got) buf[n++] = v;
     }
+    buf[n++] = rdtsc();
+    buf[n++] = timer_ticks();
+    return n;
+}
 
-    rng_absorb(seed, n * (int)sizeof(seed[0]));
+/* state = H(state || 0x00 || fresh entropy); starts a new epoch. */
+static void rng_reseed(void)
+{
+    uint64_t ent[8];
+    int n = rng_gather(ent);
+    rng_hash(0x00, ent, (size_t)n * sizeof(uint64_t), rng_state);
+    wipe(ent, sizeof ent);
+    rng_counter = 0;
+    rng_requests = 0;
+    rng_bytes = 0;
+}
+
+static void rng_seed(void)
+{
+    if (!cpu_has_rdseed() && !cpu_has_rdrand())
+        kprintf("[rng] WARNING: no rdseed/rdrand; entropy falls back to rdtsc (weak)\n");
+    rng_reseed();
     rng_seeded = 1;
 }
 
@@ -119,22 +165,43 @@ void kernel_random_bytes(uint8_t *out, int len)
     uint64_t fl = spin_lock_irqsave(&rng_lock);
     if (!rng_seeded) rng_seed();
 
-    int has_rdseed = cpu_has_rdseed();
-    int has_rdrand = cpu_has_rdrand();
-    for (int off = 0; off < len;) {
-        uint64_t extra[3];
-        extra[0] = ++rng_counter;
-        extra[1] = rdtsc();
-        extra[2] = timer_ticks();
-        uint64_t hw;
-        if (has_rdseed && rdseed64(&hw)) extra[2] ^= hw;
-        else if (has_rdrand && rdrand64(&hw)) extra[2] ^= hw;
-        rng_absorb(extra, sizeof extra);
+    /* periodic reseed: bound how much output one epoch of entropy covers */
+    if (rng_requests >= RNG_RESEED_REQUESTS || rng_bytes >= RNG_RESEED_BYTES)
+        rng_reseed();
+    rng_requests++;
+    rng_bytes += (uint64_t)len;
 
+    for (int off = 0; off < len; ) {
+        uint8_t ctr[8];
+        for (int i = 0; i < 8; i++) ctr[i] = (uint8_t)(rng_counter >> (8*i));
+        uint8_t block[32];
+        rng_hash(0x01, ctr, sizeof ctr, block);       /* the output block */
+        rng_hash(0x02, ctr, sizeof ctr, rng_state);   /* evolve the state */
+        rng_counter++;
         int n = len - off;
-        if (n > (int)sizeof rng_state) n = (int)sizeof rng_state;
-        memcpy(out + off, rng_state, (size_t)n);
+        if (n > (int)sizeof block) n = (int)sizeof block;
+        memcpy(out + off, block, (size_t)n);
         off += n;
+        wipe(block, sizeof block);                    /* block is pre-image of nothing public */
     }
+    spin_unlock_irqrestore(&rng_lock, fl);
+}
+
+/* Test hooks (tests/unit/rng_test.c): let the host-side structural test peek
+ * at the internals so it can assert output != state, state evolution, and
+ * that the periodic reseed really fires. Not used by the kernel. */
+void rng_test_state(uint8_t out[32], uint64_t *counter)
+{
+    uint64_t fl = spin_lock_irqsave(&rng_lock);
+    memcpy(out, rng_state, 32);
+    *counter = rng_counter;
+    spin_unlock_irqrestore(&rng_lock, fl);
+}
+
+void rng_test_force_reseed(void)
+{
+    uint64_t fl = spin_lock_irqsave(&rng_lock);
+    if (!rng_seeded) rng_seed();
+    rng_reseed();
     spin_unlock_irqrestore(&rng_lock, fl);
 }
