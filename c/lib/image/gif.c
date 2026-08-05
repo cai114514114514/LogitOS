@@ -36,7 +36,7 @@ static int gif_lzw(const uint8_t *data, int dlen, uint8_t *idx, int cap)
         int sp = 0, cur = code;
         if (cur == next && prev >= 0) { stack[sp++] = (uint8_t)0; cur = prev; }  /* KwKwK */
         int first = 0;
-        if (cur > next) goto done;                       /* corrupt */
+        if (cur >= next) goto done;                      /* corrupt (incl. first code == next after a clear) */
         while (cur >= clear + 2) { stack[sp++] = suffix[cur]; cur = prefix[cur]; if (sp >= 4096) goto done; }
         first = cur; stack[sp++] = (uint8_t)cur;
         if (code == next && prev >= 0) stack[0] = (uint8_t)first;   /* fix KwKwK last byte */
@@ -78,6 +78,7 @@ static int gif_decode(const uint8_t *p, int n, struct image *out)
             if (pos + 9 > n) return -1;                    /* need the 9-byte image descriptor */
             int iw = p[pos+4] | (p[pos+5]<<8), ih = p[pos+6] | (p[pos+7]<<8);
             int ipacked = p[pos+8];
+            int interlaced = ipacked & 0x40;
             pos += 9;
             const uint8_t *ctab = gctab; int nct = gct;
             if (ipacked & 0x80) { nct = 2 << (ipacked & 7); if (pos + nct*3 > n) return -1; ctab = p + pos; pos += nct*3; }
@@ -86,8 +87,19 @@ static int gif_decode(const uint8_t *p, int n, struct image *out)
             int got = gif_lzw(p + pos, n - pos, idx, iw*ih);
             if (got < iw*ih) { /* pad short data with 0 */ for (int k=got<0?0:got;k<iw*ih;k++) idx[k]=0; }
             uint8_t *rgba = kmalloc(iw*ih*4); if (!rgba) { kfree(idx); return -1; }
+            /* Interlaced images store rows in 4 passes (8/8/4/2 offsets); map each
+             * stored row to its display row, sequential otherwise. */
+            int p1 = (ih + 7) / 8, p2 = (ih + 3) / 8, p3 = (ih + 1) / 4;
             for (int k = 0; k < iw*ih; k++) {
-                int ix = idx[k]; uint8_t *o = rgba + k*4;
+                int ix = idx[k];
+                int dr = k / iw;
+                if (interlaced) {
+                    if (dr < p1) dr = dr * 8;
+                    else if (dr < p1 + p2) dr = 4 + (dr - p1) * 8;
+                    else if (dr < p1 + p2 + p3) dr = 2 + (dr - p1 - p2) * 4;
+                    else dr = 1 + (dr - p1 - p2 - p3) * 2;
+                }
+                uint8_t *o = rgba + ((long)dr * iw + k % iw) * 4;
                 if (ix < nct) { o[0]=ctab[ix*3]; o[1]=ctab[ix*3+1]; o[2]=ctab[ix*3+2]; }
                 else { o[0]=o[1]=o[2]=0; }
                 o[3] = (ix == transparent) ? 0 : 255;

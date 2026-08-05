@@ -14,13 +14,28 @@ static char *slurp(FILE *f)
     char *buf = (char *)malloc(cap);
     if (!buf) return NULL;
     for (;;) {
-        if (len + 4096 + 1 > cap) { cap *= 2; buf = (char *)realloc(buf, cap); if (!buf) return NULL; }
+        if (len + 4096 + 1 > cap) {
+            cap *= 2;
+            char *nb = (char *)realloc(buf, cap);
+            if (!nb) { free(buf); return NULL; }
+            buf = nb;
+        }
         size_t r = fread(buf + len, 1, 4096, f);
         len += r;
         if (r < 4096) break;       /* short read == EOF (our fread only stops short at EOF) */
     }
     buf[len] = 0;
     return buf;
+}
+
+/* Recursively stamp ->module on fn and every O_FN constant (mirrors the VM's
+ * stamp_module). Recursion depth is safe: as_load caps FN-constant nesting
+ * (AS_LA_MAX_DEPTH in as_bc.c). Pointer writes only -- allocates nothing. */
+static void stamp_tree(ObjFn *fn, ObjModule *m)
+{
+    fn->module = m;
+    for (int i = 0; i < fn->kcount; i++)
+        if (IS_FN(fn->consts[i])) stamp_tree(AS_FN(fn->consts[i]), m);
 }
 
 int main(int argc, char **argv)
@@ -76,10 +91,10 @@ int main(int argc, char **argv)
         FILE *f = fopen(argv[2], "rb");
         if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[2]); as_emit_cstr("\n"); return 1; }
         src = slurp(f);
-        fclose(f);
-        if (!src) { as_emit_cstr("as: out of memory\n"); return 1; }
-        /* slurp NUL-terminates but .la is binary: recover the true length */
-        fseek((f = fopen(argv[2], "rb")), 0, SEEK_END);
+        if (!src) { fclose(f); as_emit_cstr("as: out of memory\n"); return 1; }
+        /* slurp NUL-terminates but .la is binary: recover the true length from the
+         * SAME open file (slurp stopped at EOF, so the position is the byte count) --
+         * re-opening would race a concurrent modification of the file. */
         long blen = ftell(f);
         fclose(f);
         ObjFn *fn = as_load((const uint8_t *)src, (int)blen);
@@ -87,16 +102,8 @@ int main(int argc, char **argv)
         if (!fn) { as_emit_cstr("as: bad .la file\n"); as_free_objects(); return 1; }
         as_gc_push_disable();
         ObjModule *m = as_module_new("__main__", 8);
-        {   /* stamp the tree (mirrors import) */
-            ObjFn *stack[256]; int sp2 = 0;
-            stack[sp2++] = fn;
-            while (sp2 > 0) {
-                ObjFn *x = stack[--sp2];
-                x->module = m;
-                for (int i = 0; i < x->kcount; i++)
-                    if (IS_FN(x->consts[i]) && sp2 < 256) stack[sp2++] = AS_FN(x->consts[i]);
-            }
-        }
+        if (!m) { as_gc_pop_disable(); as_emit_cstr("as: out of memory\n"); as_free_objects(); return 1; }
+        stamp_tree(fn, m);   /* mirrors import's stamp_module (recursion is depth-capped by as_load) */
         as_gc_pop_disable();
         as_set_args(argc - 2, argv + 2);
         int rc = as_run(fn);

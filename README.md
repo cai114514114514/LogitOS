@@ -1,46 +1,46 @@
 # Aether OS
 
-A real operating system built from the lowest level up — a from-scratch
-x86_64 kernel that boots under GRUB/Multiboot2 into a macOS-style graphical
-desktop. Not a simulation, not a Linux distribution: an actual kernel, its own
-drivers, its own filesystem, its own network stack and crypto, its own window
-system and applications — and its own programming language.
+Aether OS is an experimental, AI-assisted x86_64 operating-system project. It
+contains a standalone kernel that boots through GRUB/Multiboot2 into a graphical
+desktop; it is not a Linux distribution or a renamed Linux kernel. The kernel,
+drivers, AetherFS, network stack, window system, and applications are maintained
+in this repository, alongside explicitly identified ports and adapted code.
 
-It boots to a frosted-glass desktop, opens **real HTTPS websites** (Wikipedia
-included) through a from-scratch TLS 1.3 stack, runs a POSIX-ish shell with
-`fork`/`exec`/pipes, and ships a language of its own — **AetherScript** — with a
-standard library and a small IDE. The long-term north star is for Aether to
-become a genuine *AI system* that owns its inference end to end; the strategy is
-to build a solid, real OS first and reach the AI capstone from there.
+In its tested QEMU configuration it boots to a frosted-glass desktop, can fetch
+and render selected public HTTP and HTTPS pages, runs a POSIX-inspired shell with
+`fork`/`exec`/pipes, and ships **AetherScript**, a project language with a standard
+library and a small IDE. It is a research and learning system, not a production
+OS, security product, or standards-complete web browser.
 
-~23,000 lines of from-scratch C and assembly across 219 commits, plus three
-ported engines (QuickJS, NetSurf LibCSS, musl libm) used only where re-deriving
-them adds nothing.
+Development has been heavily assisted by Claude and other coding agents. That
+does not change the license, but it is part of the project's provenance. See
+[Project Transparency](TRANSPARENCY.md), [Third-Party Software and Data](THIRD_PARTY.md),
+and the [Security Policy](SECURITY.md).
 
 ## What it can do
 
 - **Boots to a macOS-style desktop** — gradient wallpaper, a frosted menu bar and
   Dock, draggable/focusable windows with traffic-light controls, a compositor with
   alpha blending, a PS/2 mouse cursor, and a real wall clock from the CMOS RTC.
-- **Browses the real web** — `http://` and **`https://`** pages over a from-scratch
-  TCP → HTTP(S) → TLS 1.3 stack with strict X.509 verification against a **130-root**
-  trust store, an HTML/DOM + CSS-cascade + layout + paint pipeline, decoded PNG/GIF
-  images, and inline `<script>` execution. Renders `en.wikipedia.org` and
-  `zh.wikipedia.org`.
-- **Anti-aliased Unicode text** — a from-scratch TrueType parser + integer-only AA
+- **Browses selected real sites** — `http://` and **`https://`** pages over project
+  implementations of TCP, HTTP, TLS 1.3, and a limited X.509 verifier backed by a
+  **130-root** trust store, plus an HTML/DOM + CSS-cascade + layout + paint pipeline,
+  decoded PNG/GIF images, and inline `<script>` execution. Wikipedia has been used
+  as an interoperability test; this is not a general-purpose or security-hardened
+  browser.
+- **Anti-aliased Unicode text** — a project TrueType parser + integer-only AA
   rasterizer (the kernel is `-mno-sse` in places) with a glyph cache, font fallback,
   and CJK support; the whole UI is anti-aliased.
 - **Runs real processes** — a POSIX-ish model (`fork`/`execve`/`waitpid`, file
   descriptors, pipes, a TTY) with `/bin/sh` (pipes, redirects, job control) and
   coreutils (`ls cat echo wc head mkdir rm …`). The GUI Terminal is a real terminal
   emulator over the same shell.
-- **Its own language** — **AetherScript** (`/bin/as`, `.as`): a from-scratch
-  Python-flavored language (indentation blocks, closures, classes, exceptions, a
-  mark-sweep GC) compiled to bytecode and run on a stack VM, with raw memory + direct
-  syscall access for systems programming. Ships with the **LibAether** standard
-  library and **Code Studio**, a syntax-highlighting IDE that edits, runs, and
-  jumps-to-error on `.as` files.
-- **Runs JavaScript** — a ported QuickJS as a ring-3 app, on a from-scratch
+- **Its own language** — **AetherScript** (`/bin/as`, `.as`): a Python-flavored,
+  clox-lineage language with substantial project-specific syntax, runtime features,
+  bytecode, libraries, and OS integration. It has raw-memory and direct-syscall
+  facilities and is not a sandbox. See [Third-Party Software and Data](THIRD_PARTY.md)
+  for the lineage and upstream notice.
+- **Runs JavaScript** — a ported QuickJS as a ring-3 app, on a project
   freestanding mini-libc + musl libm; the browser runs page scripts with DOM bindings.
 - **Multi-core** — an SMP scheduler: AP bring-up (ACPI + LAPIC + trampoline), a
   big-kernel-lock model with ring-3 parallelism, and parallel framebuffer present.
@@ -58,12 +58,12 @@ VFS · GDT/TSS + ring 3 + `int 0x80` + ELF loader · framebuffer VMM + macOS-sty
 desktop · font + double-buffered compositor + mouse + draggable windows.
 
 **The browser arc (M9–M14):** PCI + e1000 + ARP/IPv4/ICMP/UDP/DNS · **TCP** ·
-**HTTP** + Browser app · **TLS 1.3** (from-scratch SHA/HMAC/HKDF, ChaCha20-Poly1305,
+**HTTP** + Browser app · **TLS 1.3** (project SHA/HMAC/HKDF, ChaCha20-Poly1305,
 AES-GCM, X25519, P-256/384 ECDSA, **RSA** + a 130-root CA bundle) · **HTML/CSS**
-layout → paint with images · **Unicode + from-scratch anti-aliased TrueType** text.
+layout → paint with images · **Unicode + project anti-aliased TrueType** text.
 
 **Becoming a real platform (M15–M19):** SSE2/FPU at boot · **JavaScript** (QuickJS)
-as a ring-3 app on a from-scratch mini-libc + libm · **LibCSS** + the whole render
+as a ring-3 app on a project mini-libc + ported libm · **LibCSS** + the whole render
 pipeline moved into the browser app, with JS↔DOM bindings · **real processes**
 (`fork`/`exec`/pipes/shell/coreutils) · **virtio** (modern paravirtual disk + GPU).
 
@@ -85,8 +85,19 @@ Each milestone follows **spec → plan → implement**; specs live in
 
 ## Build & run
 
-Host: macOS / Apple Silicon (arm64). Target: x86_64 (clang cross-compiles natively).
-Requires (Homebrew): `clang`, `nasm`, `lld`, `qemu`, `xorriso`, `i686-elf-grub`.
+Primary development host: macOS / Apple Silicon (arm64). The remediation snapshot
+documented in `docs/CODE_AUDIT.md` was also built under WSL/Ubuntu 26.04. The
+Makefile expects a POSIX shell and Unix utilities; direct PowerShell builds are not
+documented. Target: x86_64.
+
+Required tools include LLVM/Clang + LLD, NASM, Rustup with the
+`x86_64-unknown-none` target, Python 3, GNU Make and Unix utilities, QEMU, xorriso,
+and GRUB's `grub-mkrescue` (named `i686-elf-grub-mkrescue` by the Makefile).
+
+The default font generator reads proprietary macOS fonts. A fresh or
+redistributable build must supply suitable fonts explicitly; do not publish an ISO
+containing generated Apple-font subsets unless you have redistribution rights. See
+`fsroot/fonts/README.md` and [RELEASING.md](RELEASING.md).
 
 ```sh
 make                 # build build/aether.iso
@@ -103,7 +114,7 @@ make test            # boot smoke test (asserts the kernel prints AETHER_BOOT_OK
 make test-shell      # fork/exec + pipes + coreutils via /bin/sh
 make test-as         # AetherScript language core (host unit tests, no QEMU)
 make test-as-os      # AetherScript on Aether: runs the examples incl. the LibAether stdlib
-make test-tcp-host   # TCP reassembly unit tests (host)
+make test-net        # TCP + IPv4/UDP/ICMP protocol unit tests (host)
 make test-smp        # boots -smp 4 and asserts genuine cross-core parallelism
 make test-nvme       # NVMe driver
 ```
@@ -123,14 +134,14 @@ c/kernel/{core,cpu,mm,sched,exec,gui,pci}/    kernel by subsystem (incl. wm = wi
 c/drivers/{char,timer,block,net,virtio}/      device drivers (PS/2, PIT/RTC, ATA/NVMe/virtio-blk, e1000, virtio-gpu)
 c/fs/                                          VFS + AetherFS (hierarchical read-write inode FS)
 c/net/{link,ip,transport,core,dns,http,tls}/  network stack: eth/arp/ip/icmp/udp/dns/tcp/http + TLS 1.3 + x509
-c/crypto/{hash,aead,pubkey,trust}/            from-scratch crypto (SHA, HMAC/HKDF, ChaCha20-Poly1305, AES-GCM, X25519, ECDSA, RSA, roots)
+c/crypto/{hash,aead,pubkey,trust}/            project crypto code (SHA, HMAC/HKDF, ChaCha20-Poly1305, AES-GCM, X25519, ECDSA, RSA, roots)
 c/lib/{image,text}/                            shared libs (inflate/png/gif, utf8, TrueType raster)
 c/apps/                                        ring-3 apps + shared aether.h / clib.h / crt0
 c/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Code Studio + the aui toolkit
 c/apps/coreutils/                              /bin/sh + coreutils
 c/apps/as/                                     AetherScript: /bin/as (lexer, compiler, VM)
 c/apps/browser/                                browser + render engine (dom, layout, css_engine, paint, js_dom) + QuickJS
-c/apps/libc/                                   from-scratch freestanding mini-libc
+c/apps/libc/                                   project freestanding mini-libc
 third_party/                                     ported, not from-scratch: QuickJS, NetSurf LibCSS, musl libm
 include/abi/aether_abi.h                         the app/syscall ABI (kernel ↔ userland)
 tools/                                           mkfs.py, mkaex.py, mkfont.py, genroots.py, QMP screenshot/CI drivers
@@ -149,9 +160,10 @@ docs/superpowers/specs/                          design specs (spec → plan →
 
 ## AetherScript
 
-A from-scratch language — not a port — in `c/apps/as/` (~3,400 lines of C +
-assembly): a clox-lineage single-pass compiler that emits flat bytecode for a
-computed-goto stack VM. Python-ish (indentation blocks, dynamic types), with `def`,
+A project language in `c/apps/as/`: a materially adapted clox-lineage single-pass
+compiler that emits flat bytecode for a computed-goto stack VM. Its surface syntax,
+bytecode format, OS integration, and many runtime features are Aether-specific.
+Python-ish (indentation blocks, dynamic types), with `def`,
 `if`/`elif`/`else`, `while`, `for … in range()`/lists, lists + dicts + strings,
 closures and lambdas, classes (single inheritance + `super`), exceptions
 (`raise`/`try`/`except`), and a mark-sweep GC.
@@ -171,8 +183,17 @@ line.
 
 ## A note on honesty
 
-"From scratch" here means the kernel, drivers, filesystem, network stack, crypto,
-window system, applications, and the AetherScript language are all original. Three
-large pieces are **ported** and labelled as such: the QuickJS JavaScript engine,
-NetSurf's LibCSS, and a double-only subset of musl's libm — used because the goal is a
-working web/JS platform, not re-deriving a CSS parser or `pow()` by hand.
+"Project implementation" means that the implementation is maintained here rather
+than taken from Linux or another OS. It does not mean standards completeness,
+production readiness, absence of AI assistance, or absence of conceptual influence.
+Vendored and adapted components are listed in [THIRD_PARTY.md](THIRD_PARTY.md), and
+the authorship, testing, and capability boundaries are recorded in
+[TRANSPARENCY.md](TRANSPARENCY.md). Binary distributors should also follow
+[RELEASING.md](RELEASING.md).
+
+## License
+
+The original Aether OS code is open source under the [MIT License](LICENSE).
+Code and data listed in [THIRD_PARTY.md](THIRD_PARTY.md) remain under their
+respective upstream licenses; the repository's MIT License does not replace or
+override those notices.

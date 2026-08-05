@@ -187,7 +187,11 @@ def main():
     out = sys.argv[1]
     b = Builder()
     for spec in sys.argv[2:]:
-        host, sep, dest = spec.partition(":")
+        # Skip a Windows drive-letter prefix ("D:\..." / "D:/...") so the first
+        # colon of an absolute host path isn't read as the host:dest separator.
+        off = 2 if len(spec) > 2 and spec[1] == ":" and spec[2] in "/\\" else 0
+        host, sep, dest = spec[off:].partition(":")
+        host = spec[:off] + host
         if not sep or not dest:
             dest = "/" + os.path.basename(host)
         with open(host, "rb") as f:

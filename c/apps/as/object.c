@@ -81,6 +81,7 @@ ObjStr *as_str_copy(const char *chars, int len)
 ObjFn *as_fn_new(void)
 {
     ObjFn *fn = (ObjFn *)alloc_obj(sizeof(ObjFn), O_FN);
+    if (!fn) return NULL;             /* g_oom set; caller propagates */
     fn->arity = 0; fn->name = NULL;
     fn->code = NULL; fn->count = fn->cap = 0;
     fn->consts = NULL; fn->kcount = fn->kcap = 0;
@@ -98,12 +99,14 @@ ObjClosure *as_closure_new(ObjFn *fn)
         for (int i = 0; i < fn->upvalue_count; i++) ups[i] = NULL;
     }
     ObjClosure *c = (ObjClosure *)alloc_obj(sizeof(ObjClosure), O_CLOSURE);
+    if (!c) { free(ups); return NULL; }     /* g_oom set; ups was ours */
     c->fn = fn; c->upvalues = ups; c->upvalue_count = fn->upvalue_count;
     return c;
 }
 ObjUpvalue *as_upvalue_new(Value *slot)
 {
     ObjUpvalue *u = (ObjUpvalue *)alloc_obj(sizeof(ObjUpvalue), O_UPVALUE);
+    if (!u) return NULL;
     u->location = slot; u->closed = NIL_VAL; u->next = NULL;
     return u;
 }
@@ -112,6 +115,7 @@ ObjClass *as_class_new(ObjStr *name)
 {
     as_gc_push_disable();      /* two allocs (class + methods dict) before either is rooted */
     ObjClass *c = (ObjClass *)alloc_obj(sizeof(ObjClass), O_CLASS);
+    if (!c) { as_gc_pop_disable(); return NULL; }
     c->name = name; c->super = NULL;
     c->methods = as_dict_new();
     as_gc_pop_disable();
@@ -121,6 +125,7 @@ ObjInstance *as_instance_new(ObjClass *klass)
 {
     as_gc_push_disable();      /* two allocs (instance + fields dict) before either is rooted */
     ObjInstance *in = (ObjInstance *)alloc_obj(sizeof(ObjInstance), O_INSTANCE);
+    if (!in) { as_gc_pop_disable(); return NULL; }
     in->klass = klass;
     in->fields = as_dict_new();
     as_gc_pop_disable();
@@ -129,6 +134,7 @@ ObjInstance *as_instance_new(ObjClass *klass)
 ObjBoundMethod *as_bound_method_new(Value receiver, ObjClosure *method)
 {
     ObjBoundMethod *bm = (ObjBoundMethod *)alloc_obj(sizeof(ObjBoundMethod), O_BOUND_METHOD);
+    if (!bm) return NULL;
     bm->receiver = receiver; bm->method = method;
     return bm;
 }
@@ -136,7 +142,9 @@ ObjBoundMethod *as_bound_method_new(Value receiver, ObjClosure *method)
 ObjModule *as_module_new(const char *name, int len)
 {
     ObjModule *m = (ObjModule *)alloc_obj(sizeof(ObjModule), O_MODULE);
+    if (!m) return NULL;
     m->name = as_str_copy(name, len);
+    if (!m->name) return NULL;              /* g_oom set; a NULL name would crash module_find */
     m->vars = NULL; m->count = m->cap = 0; m->state = 0;
     return m;
 }
@@ -148,9 +156,10 @@ Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
             && memcmp(m->vars[i].name->chars, name->chars, name->len) == 0) return &m->vars[i].val;
     if (!create) return NULL;
     if (m->count + 1 > m->cap) {
-        m->cap = m->cap < 8 ? 8 : m->cap * 2;
-        m->vars = (NameVal *)as_realloc(m->vars, m->cap * sizeof(NameVal));
-        if (g_oom) return NULL;
+        int nc = m->cap < 8 ? 8 : m->cap * 2;
+        NameVal *nv = (NameVal *)as_realloc(m->vars, (size_t)nc * sizeof(NameVal));
+        if (!nv) return NULL;                /* g_oom set; old vars + count intact */
+        m->vars = nv; m->cap = nc;
     }
     m->vars[m->count].name = name;
     m->vars[m->count].val = NIL_VAL;
@@ -160,6 +169,7 @@ Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
 ObjNative *as_native_new(NativeFn fn, const char *name)
 {
     ObjNative *n = (ObjNative *)alloc_obj(sizeof(ObjNative), O_NATIVE);
+    if (!n) return NULL;
     n->fn = fn; n->name = name;
     return n;
 }
@@ -167,6 +177,7 @@ ObjNative *as_native_new(NativeFn fn, const char *name)
 ObjList *as_list_new(void)
 {
     ObjList *l = (ObjList *)alloc_obj(sizeof(ObjList), O_LIST);
+    if (!l) return NULL;
     l->items = NULL; l->count = l->cap = 0;
     return l;
 }
@@ -174,9 +185,10 @@ ObjList *as_list_new(void)
 void as_list_push(ObjList *l, Value v)
 {
     if (l->count + 1 > l->cap) {
-        l->cap = l->cap < 8 ? 8 : l->cap * 2;
-        l->items = (Value *)as_realloc(l->items, l->cap * sizeof(Value));
-        if (g_oom) return;
+        int nc = l->cap < 8 ? 8 : l->cap * 2;
+        Value *ni = (Value *)as_realloc(l->items, (size_t)nc * sizeof(Value));
+        if (!ni) return;                     /* g_oom set; old items + count intact */
+        l->items = ni; l->cap = nc;
     }
     l->items[l->count++] = v;
 }
@@ -216,6 +228,7 @@ static DictEntry *find_entry(DictEntry *es, int cap, Value k)
 ObjDict *as_dict_new(void)
 {
     ObjDict *d = (ObjDict *)alloc_obj(sizeof(ObjDict), O_DICT);
+    if (!d) return NULL;
     d->entries = NULL; d->live = d->used = d->cap = 0;
     return d;
 }
@@ -272,6 +285,7 @@ int as_dict_remove(ObjDict *d, Value key)
 ObjList *as_dict_keys(ObjDict *d)
 {
     ObjList *l = as_list_new();
+    if (!l) return NULL;
     for (int i = 0; i < d->cap; i++) {
         DictEntry *e = &d->entries[i];
         if (e->kind == AS_DK_STR)      as_list_push(l, OBJ_VAL(e->kstr));
@@ -282,6 +296,7 @@ ObjList *as_dict_keys(ObjDict *d)
 ObjList *as_dict_values(ObjDict *d)
 {
     ObjList *l = as_list_new();
+    if (!l) return NULL;
     for (int i = 0; i < d->cap; i++) {
         DictEntry *e = &d->entries[i];
         if (e->kind == AS_DK_STR || e->kind == AS_DK_INT) as_list_push(l, e->val);
@@ -292,6 +307,7 @@ ObjList *as_dict_values(ObjDict *d)
 ObjPtr *as_ptr_new(uint64_t addr, int width, int is_signed)
 {
     ObjPtr *p = (ObjPtr *)alloc_obj(sizeof(ObjPtr), O_PTR);
+    if (!p) return NULL;
     p->addr = addr; p->width = width; p->is_signed = is_signed;
     return p;
 }
@@ -299,9 +315,10 @@ ObjPtr *as_ptr_new(uint64_t addr, int width, int is_signed)
 void as_chunk_write(ObjFn *fn, uint8_t b)
 {
     if (fn->count + 1 > fn->cap) {
-        fn->cap = fn->cap < 8 ? 8 : fn->cap * 2;
-        fn->code = (uint8_t *)as_realloc(fn->code, fn->cap);
-        if (g_oom) return;                       /* compiler polls g_oom -> aborts the compile */
+        int nc = fn->cap < 8 ? 8 : fn->cap * 2;
+        uint8_t *nb = (uint8_t *)as_realloc(fn->code, (size_t)nc);
+        if (!nb) return;                     /* g_oom set; compiler polls g_oom -> aborts the compile */
+        fn->code = nb; fn->cap = nc;
     }
     fn->code[fn->count++] = b;
 }
@@ -312,9 +329,10 @@ int as_chunk_const(ObjFn *fn, Value v)
     for (int i = 0; i < fn->kcount; i++)
         if (as_value_eq(fn->consts[i], v)) return i;
     if (fn->kcount + 1 > fn->kcap) {
-        fn->kcap = fn->kcap < 8 ? 8 : fn->kcap * 2;
-        fn->consts = (Value *)as_realloc(fn->consts, fn->kcap * sizeof(Value));
-        if (g_oom) return fn->kcount;            /* compiler polls g_oom -> aborts the compile */
+        int nk = fn->kcap < 8 ? 8 : fn->kcap * 2;
+        Value *nv = (Value *)as_realloc(fn->consts, (size_t)nk * sizeof(Value));
+        if (!nv) return fn->kcount;          /* g_oom set; compiler polls g_oom -> aborts the compile */
+        fn->consts = nv; fn->kcap = nk;
     }
     fn->consts[fn->kcount] = v;
     return fn->kcount++;
@@ -327,12 +345,13 @@ void gc_mark_obj(Obj *o)
     if (gray_count + 1 > gray_cap) {
         int nc = gray_cap < 16 ? 16 : gray_cap * 2;
         Obj **ng = (Obj **)as_realloc(gray, (size_t)nc * sizeof(Obj *));
-        /* OOM during mark: un-mark o so sweep keeps it conservatively LIVE (a leak
-         * is recoverable next GC; freeing a live object would be a UAF), set g_oom,
-         * and return without enqueuing. Collection finishes with a possibly-
-         * incomplete worklist but NO freed-live objects + NO NULL deref; control
-         * returns up to alloc_obj -> opcode -> DISPATCH, which unwinds on g_oom. */
-        if (!ng) { o->marked = 0; return; }   /* g_oom already set by as_realloc */
+        /* OOM during mark: keep o marked so sweep keeps it conservatively LIVE (a
+         * leak is recoverable next GC; freeing a live object would be a UAF), keep
+         * g_oom set, and return without enqueuing. Collection finishes with a
+         * possibly-incomplete worklist but NO freed-live objects + NO NULL deref;
+         * control returns up to alloc_obj -> opcode -> DISPATCH, which unwinds on
+         * g_oom before the VM can touch the untraced subgraph. */
+        if (!ng) return;                    /* o stays marked; g_oom already set by as_realloc */
         gray = ng; gray_cap = nc;
     }
     gray[gray_count++] = o;
@@ -407,6 +426,15 @@ void gc_collect(void)
     gray_count = 0;
     as_vm_mark_roots();                                  /* mark + gray the roots (vm.c) */
     while (gray_count > 0) blacken(gray[--gray_count]);   /* trace to fixpoint */
+    /* OOM during mark (gray worklist grow failed -> g_oom): the trace is incomplete,
+     * so sweeping now could free reachable-but-untraced objects (the UAF the mark
+     * side conservatively avoids). Leak this cycle instead: clear every mark and
+     * bail; the next collection retries from scratch. alloc_obj's as_malloc will
+     * report the OOM and DISPATCH unwinds. */
+    if (g_oom) {
+        for (Obj *o = g_objs; o; o = o->next) o->marked = 0;
+        return;
+    }
     Obj **link = &g_objs;                                 /* sweep */
     while (*link) {
         Obj *o = *link;

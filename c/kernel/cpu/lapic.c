@@ -39,7 +39,13 @@ uint32_t lapic_id(void) { return rd(LAPIC_ID) >> 24; }
 void     lapic_eoi(void) { wr(LAPIC_EOI, 0); }
 int      lapic_ready(void) { return lapic != 0; }   /* MMIO mapped? (percpu this_cpu guard) */
 
-static void ipi_wait(void) { while (rd(LAPIC_ICRLO) & (1 << 12)) ; }   /* delivery status */
+/* Bounded wait on delivery status: a wedged LAPIC must not spin forever (the
+ * bring-up path runs with IF=0 and would take the whole machine down with it). */
+static void ipi_wait(void)
+{
+    for (volatile long s = 0; s < 100000000L && (rd(LAPIC_ICRLO) & (1 << 12)); s++)
+        __asm__ volatile ("pause");
+}
 
 /* INIT-SIPI-SIPI: standard AP wake sequence. `vec` = trampoline page number. */
 void lapic_start_ap(uint8_t apic_id, uint8_t vec)

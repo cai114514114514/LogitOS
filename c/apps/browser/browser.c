@@ -211,6 +211,7 @@ static void load(const char *u)
     jslen = 0; jsout[0] = 0;
     static char scr[16384];
     int sn = collect_scripts(g_root, scr, 0, sizeof scr);
+    scr[sn] = 0;                   /* collect_scripts doesn't NUL-terminate; stale tail bytes from the previous page would be eval'd */
     if (sn > 1 && sn < 2048) {
         int mutated = run_js(scr);
         if (mutated) {                   /* JS changed the DOM -> re-style + re-layout */

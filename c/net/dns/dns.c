@@ -5,6 +5,7 @@
 #include "net.h"
 #include "arp.h"
 #include "pit.h"
+#include "rng.h"
 
 /* A tiny DNS client: one A-query to the SLIRP resolver (10.0.2.3:53), parse the
  * first A answer. No compression building (we only emit one QNAME); answer
@@ -47,11 +48,15 @@ static int skip_name(const uint8_t *msg, int off, int len)
 
 static uint8_t resp[512];
 static uint64_t dns_started;
+static uint16_t txid;           /* of the query in flight (spoofing guard) */
 
 /* Build an A-query for `name` into q; returns its length, or -1. */
 static int build_query(uint8_t *q, const char *name)
 {
-    q[0] = 0x12; q[1] = 0x34; q[2] = 0x01; q[3] = 0x00;
+    kernel_random_bytes((uint8_t *)&txid, sizeof txid);
+    txid ^= (uint16_t)timer_ticks();
+    q[0] = (uint8_t)(txid >> 8); q[1] = (uint8_t)(txid & 0xFF);
+    q[2] = 0x01; q[3] = 0x00;
     q[4] = 0; q[5] = 1; q[6] = 0; q[7] = 0; q[8] = 0; q[9] = 0; q[10] = 0; q[11] = 0;
     int o = 12;
     int n = encode_qname(q + o, name);
@@ -66,10 +71,11 @@ static int build_query(uint8_t *q, const char *name)
 static uint32_t parse_answer(int rlen)
 {
     if (rlen < 12) return 0;
-    /* Reject a response whose transaction ID doesn't match our query (the fixed
-     * 0x1234 set by build_query) -- a basic guard against off-path spoofed
-     * answers landing in our one-shot receive slot. */
-    if (resp[0] != 0x12 || resp[1] != 0x34) return 0;
+    /* Reject a response whose transaction ID doesn't match our query (the
+     * per-query txid set by build_query) -- a basic guard against off-path
+     * spoofed answers landing in our one-shot receive slot. */
+    if (resp[0] != (uint8_t)(txid >> 8) || resp[1] != (uint8_t)(txid & 0xFF))
+        return 0;
     int ancount = (resp[6] << 8) | resp[7];
     if (ancount < 1) return 0;
 
@@ -104,6 +110,8 @@ uint32_t dns_result(void)
 {
     int rlen = udp_recv_len();
     if (rlen >= 0) {
+        if (udp_recv_src() != DNS_SERVER || udp_recv_sport() != DNS_PORT)
+            return 0xFFFFFFFFu;
         uint32_t ip = parse_answer(rlen);
         return ip ? ip : 0xFFFFFFFFu;
     }

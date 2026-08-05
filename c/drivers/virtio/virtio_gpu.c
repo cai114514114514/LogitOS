@@ -60,6 +60,15 @@ static uint32_t gpu_cmd(int cmd_len)
     return ((struct gpu_hdr *)respbuf)->type;
 }
 
+/* Release the RAM framebuffer (init failure unwind; pmm_free is per-frame). */
+static void gpu_free_fb(uint64_t frames)
+{
+    if (!gpu_fb) return;
+    for (uint64_t i = 0; i < frames; i++)
+        pmm_free((uint64_t)(uintptr_t)gpu_fb + i * 4096);
+    gpu_fb = NULL;
+}
+
 int virtio_gpu_init(void)
 {
     if (virtio_init(VIRTIO_DEV_GPU, &gpudev, 0) != 0) return -1;
@@ -89,16 +98,16 @@ int virtio_gpu_init(void)
     { struct gpu_create_2d *c = (struct gpu_create_2d *)cmdbuf; memset(c, 0, sizeof *c);
       c->hdr.type = GPU_CMD_RESOURCE_CREATE_2D;
       c->resource_id = RESID; c->format = GPU_FORMAT_B8G8R8X8; c->width = gpu_w; c->height = gpu_h;
-      if (gpu_cmd(sizeof *c) != GPU_RESP_OK_NODATA) return -1; }
+      if (gpu_cmd(sizeof *c) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
     { struct gpu_attach_backing *a = (struct gpu_attach_backing *)cmdbuf; memset(a, 0, sizeof *a);
       a->hdr.type = GPU_CMD_RESOURCE_ATTACH_BACKING;
       a->resource_id = RESID; a->nr_entries = 1;
       a->addr = (uint64_t)(uintptr_t)gpu_fb; a->length = (uint32_t)bytes;
-      if (gpu_cmd(sizeof *a) != GPU_RESP_OK_NODATA) return -1; }
+      if (gpu_cmd(sizeof *a) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
     { struct gpu_set_scanout *s = (struct gpu_set_scanout *)cmdbuf; memset(s, 0, sizeof *s);
       s->hdr.type = GPU_CMD_SET_SCANOUT;
       s->r.width = gpu_w; s->r.height = gpu_h; s->scanout_id = 0; s->resource_id = RESID;
-      if (gpu_cmd(sizeof *s) != GPU_RESP_OK_NODATA) return -1; }
+      if (gpu_cmd(sizeof *s) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
 
     gpu_ready = 1;
     kprintf("[virtio-gpu] %dx%d, RAM fb @ %p\n", gpu_w, gpu_h, (void *)gpu_fb);

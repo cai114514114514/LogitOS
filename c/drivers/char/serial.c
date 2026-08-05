@@ -22,9 +22,14 @@ static int tx_ready(void)
 
 void serial_putc(char c)
 {
-    while (!tx_ready())
-        ;
-    outb(COM1, (uint8_t)c);
+    /* Bounded wait: a wedged UART (or no serial device at all) must not hang
+     * the caller forever -- drop the byte after a generous timeout. */
+    for (long spins = 0; spins < 1000000; spins++) {
+        if (tx_ready()) {
+            outb(COM1, (uint8_t)c);
+            return;
+        }
+    }
 }
 
 void serial_puts(const char *s)

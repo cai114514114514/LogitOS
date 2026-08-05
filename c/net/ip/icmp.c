@@ -19,6 +19,8 @@ struct icmp_hdr {
 } __attribute__((packed));
 
 static uint16_t ping_id = 0xA10A, ping_seq;
+static uint16_t ping_wait_seq;
+static uint32_t ping_dst;
 static uint64_t ping_sent_tick;
 static int last_rtt = -1;
 
@@ -31,11 +33,13 @@ int icmp_ping(uint32_t dst)
     msg.h.code = 0;
     msg.h.checksum = 0;
     msg.h.id = htons(ping_id);
-    msg.h.seq = htons(++ping_seq);
+    ping_wait_seq = ++ping_seq;
+    msg.h.seq = htons(ping_wait_seq);
     for (int i = 0; i < 32; i++) msg.data[i] = (uint8_t)i;
     msg.h.checksum = htons(ip_checksum(&msg, sizeof msg));
 
     last_rtt = -1;
+    ping_dst = dst;
     ping_sent_tick = timer_ticks();
     return ip_send(dst, IP_PROTO_ICMP, &msg, sizeof msg);
 }
@@ -44,9 +48,11 @@ void icmp_input(uint32_t src, const uint8_t *data, uint16_t len)
 {
     if (len < sizeof(struct icmp_hdr))
         return;
+    if (ip_checksum(data, len) != 0)
+        return;
     const struct icmp_hdr *in = (const struct icmp_hdr *)data;
 
-    if (in->type == ICMP_ECHO_REQUEST) {
+    if (in->type == ICMP_ECHO_REQUEST && in->code == 0) {
         /* Reply: echo the payload back with type 0, fresh checksum. */
         uint8_t buf[1500];
         if (len > sizeof buf) return;
@@ -56,8 +62,9 @@ void icmp_input(uint32_t src, const uint8_t *data, uint16_t len)
         out->checksum = 0;
         out->checksum = htons(ip_checksum(buf, len));
         ip_send(src, IP_PROTO_ICMP, buf, len);
-    } else if (in->type == ICMP_ECHO_REPLY) {
-        if (ntohs(in->id) == ping_id) {
+    } else if (in->type == ICMP_ECHO_REPLY && in->code == 0) {
+        if (src == ping_dst && ntohs(in->id) == ping_id &&
+            ntohs(in->seq) == ping_wait_seq) {
             int rtt = (int)(timer_ticks() - ping_sent_tick);
             last_rtt = rtt < 0 ? 0 : rtt;
         }

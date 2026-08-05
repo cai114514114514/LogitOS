@@ -180,11 +180,13 @@ static int glyf_loc(const struct ttf_font *f, int gid, uint32_t *off, uint32_t *
 static short xf(int a, int c, int x, int y, int d) { return (short)(((a * x + c * y) >> 14) + d); }
 
 /* Emit glyph `gid` into the outline arrays, applying the 2.14 transform
- * [a b / c d] + (dx,dy). Recurses for composites. Returns 0 ok, -1 on overflow. */
+ * [a b / c d] + (dx,dy). Recurses for composites. Returns 0 ok, -1 on overflow.
+ * FL is a caller-owned flags scratch of capPts bytes (used only while parsing a
+ * simple glyph, so one buffer serves every recursion level). */
 static int emit(const struct ttf_font *f, int gid, int depth,
                 int a, int b, int c, int d, int dx, int dy,
-                short *X, short *Y, uint8_t *ON, int *CE, int capPts, int capC,
-                int *npts, int *nc)
+                short *X, short *Y, uint8_t *ON, uint8_t *FL, int *CE,
+                int capPts, int capC, int *npts, int *nc)
 {
     if (depth > 5) return -1;
     uint32_t off, nextoff;
@@ -211,7 +213,7 @@ static int emit(const struct ttf_font *f, int gid, int depth,
         if (p > gend) return -1;
         if (*npts + gpts > capPts || *nc + ncont > capC) return -1;
 
-        uint8_t flags[gpts > 0 ? gpts : 1];
+        uint8_t *flags = FL;                        /* capPts bytes; gpts <= capPts was checked above */
         for (int i = 0; i < gpts; ) {
             if (p >= gend) return -1;
             uint8_t fl = *p++; flags[i++] = fl;
@@ -260,7 +262,7 @@ static int emit(const struct ttf_font *f, int gid, int depth,
         int na = (a * ca + c * cb) >> 14, nb = (b * ca + d * cb) >> 14;
         int nc2 = (a * cc + c * cd) >> 14, nd = (b * cc + d * cd) >> 14;
         int ndx = ((a * cdx + c * cdy) >> 14) + dx, ndy = ((b * cdx + d * cdy) >> 14) + dy;
-        if (emit(f, cgid, depth + 1, na, nb, nc2, nd, ndx, ndy, X, Y, ON, CE, capPts, capC, npts, nc))
+        if (emit(f, cgid, depth + 1, na, nb, nc2, nd, ndx, ndy, X, Y, ON, FL, CE, capPts, capC, npts, nc))
             return -1;
         if (!(flags & 0x0020)) break;                   /* MORE_COMPONENTS */
     }
@@ -270,22 +272,25 @@ static int emit(const struct ttf_font *f, int gid, int depth,
 int ttf_glyph_outline(const struct ttf_font *f, int gid,
                       struct ttf_outline *out, void *scratch, int scratchlen)
 {
-    /* Carve scratch: CE[capC] (int) then X,Y (short) then ON (byte). */
+    /* Carve scratch: CE[capC] (int) then X,Y (short) then ON,FL (byte). FL holds
+     * the per-glyph flag bytes so emit() needs no on-stack VLA -- kernel thread
+     * stacks are far smaller than the worst-case point count. */
     int capC = 64;
     uint8_t *base = (uint8_t *)scratch;
     int *CE = (int *)base;
     uint8_t *rest = base + capC * (int)sizeof(int);
     int restlen = scratchlen - capC * (int)sizeof(int);
     if (restlen < 16) return -1;
-    int capPts = restlen / 6;                            /* 2(x)+2(y)+1(on)+slack */
+    int capPts = restlen / 7;                            /* 2(x)+2(y)+1(on)+1(flags) */
     capPts &= ~1;
     short *X = (short *)rest;
     short *Y = (short *)(rest + capPts * 2);
     uint8_t *ON = rest + capPts * 4;
+    uint8_t *FL = rest + capPts * 6;
 
     out->x = X; out->y = Y; out->on = ON; out->contour_end = CE;
     out->npts = 0; out->ncontours = 0;
-    if (emit(f, gid, 0, 0x4000, 0, 0, 0x4000, 0, 0, X, Y, ON, CE, capPts, capC,
+    if (emit(f, gid, 0, 0x4000, 0, 0, 0x4000, 0, 0, X, Y, ON, FL, CE, capPts, capC,
              &out->npts, &out->ncontours))
         return -1;
 

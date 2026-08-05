@@ -174,6 +174,7 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     x25519_base(pub, priv);
 
     int hl = 0; while (host[hl]) hl++;
+    if (hl > 255) { s->used=0; return TLS_E_PROTO; } /* SNI must fit the ClientHello buffer */
 
     /* --- build ClientHello --- */
     uint8_t ch[512]; int n = 0;
@@ -254,11 +255,14 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
 
     /* --- key schedule: handshake secrets --- */
     uint8_t shared[32]; x25519(shared, priv, spub);
+    /* RFC 7748/8446 contributory check: reject an all-zero shared secret (the
+     * peer sent a low-order point, e.g. a zero public key). */
+    uint8_t szero = 0; for (int i = 0; i < 32; i++) szero |= shared[i];
+    if (!szero) { s->used=0; return TLS_E_CRYPTO; }
     uint8_t zeros[32]; memset(zeros, 0, 32);
     uint8_t early[32], derived[32], hs[32];
     hkdf_extract(HLEN, 0, 0, zeros, 32, early);
-    uint8_t emptyhash[32]; sha256(zeros, 0, emptyhash);  /* hash of "" */
-    sha256("", 0, emptyhash);
+    uint8_t emptyhash[32]; sha256("", 0, emptyhash);     /* hash of "" */
     derive_secret(early, "derived", emptyhash, derived);
     hkdf_extract(HLEN, derived, HLEN, shared, 32, hs);
     uint8_t th_chsh[32]; transcript_hash(&th, th_chsh);
@@ -294,30 +298,42 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
 
     /* --- walk the flight: feed transcript, verify cert + certverify + finished --- */
     static struct cert chain[8]; int ncert = 0;
-    uint8_t th_cert[32];                                 /* hash thru Certificate */
+    uint8_t th_cert[32] = { 0 };                         /* hash thru Certificate (zeroed: a
+        CertVerify arriving before Certificate then fails verification, not stack garbage) */
     int q = 0;
     while (q + 4 <= flen) {
         int mt = flight[q]; int ml = (flight[q+1]<<16)|(flight[q+2]<<8)|flight[q+3];
+        if (q + 4 + ml > flen) break;                    /* ignore incomplete trailing bytes */
         const uint8_t *mb = flight + q + 4;
         if (mt == HS_ENCRYPTED_EXT) {
             sha256_update(&th, flight + q, 4 + ml);
         } else if (mt == HS_CERTIFICATE) {
             sha256_update(&th, flight + q, 4 + ml);
-            /* parse: cert_request_ctx(1) + cert_list(3) of {cert(3) + exts(2)} */
-            int cp = 0; cp += 1 + mb[0];                 /* skip request context */
+            /* parse: cert_request_ctx(1) + cert_list(3) of {cert(3) + exts(2)}.
+             * Every length field is bounded by ml, so a crafted Certificate can't
+             * read past the handshake message (into flight[]'s tail or beyond). */
+            if (ml < 4) { s->used=0; return TLS_E_PROTO; }
+            int cp = 1 + mb[0];                          /* skip request context */
+            if (cp + 3 > ml) { s->used=0; return TLS_E_PROTO; }
             int listlen = (mb[cp]<<16)|(mb[cp+1]<<8)|mb[cp+2]; cp += 3;
             int cend = cp + listlen;
+            if (cend > ml) { s->used=0; return TLS_E_PROTO; }
             while (cp + 3 <= cend && ncert < 8) {
                 int clen = (mb[cp]<<16)|(mb[cp+1]<<8)|mb[cp+2]; cp += 3;
+                if (cp + clen + 2 > cend) { s->used=0; return TLS_E_PROTO; }
                 if (x509_parse(mb + cp, clen, &chain[ncert]) == 0) ncert++;
                 cp += clen;
-                int extl = (mb[cp]<<8)|mb[cp+1]; cp += 2 + extl;
+                int extl = (mb[cp]<<8)|mb[cp+1]; cp += 2;
+                if (cp + extl > cend) { s->used=0; return TLS_E_PROTO; }
+                cp += extl;
             }
             transcript_hash(&th, th_cert);
         } else if (mt == HS_CERT_VERIFY) {
             /* signature over: 64*0x20 || "TLS 1.3, server CertificateVerify" || 0 || th_cert */
+            if (ml < 4) { s->used=0; return TLS_E_PROTO; }
             int sigalg = (mb[0]<<8)|mb[1];
             int siglen = (mb[2]<<8)|mb[3];
+            if (4 + siglen > ml) { s->used=0; return TLS_E_PROTO; }
             const uint8_t *sig = mb + 4;
             uint8_t signed_data[64 + 33 + 1 + 32]; int sd = 0;
             for (int i = 0; i < 64; i++) signed_data[sd++] = 0x20;
@@ -338,7 +354,7 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
                 extern int tls_der_sig_to_rs(const uint8_t*, int, uint8_t*, int);
                 uint8_t rs[96];
                 if (chain[0].key_type == KEY_EC && tls_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
-                    chain[0].pub[0] == 0x04 &&
+                    chain[0].publen == 1 + 2*flen2 && chain[0].pub[0] == 0x04 &&
                     ecdsa_verify(curve, chain[0].pub + 1, rs, hash, hh)) okv = 1;
             } else if (ncert > 0 && (sigalg == 0x0804 || sigalg == 0x0805 || sigalg == 0x0806) &&
                        chain[0].key_type == KEY_RSA) {
@@ -396,6 +412,7 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
 int tls_send(int id, const void *buf, int len)
 {
     if (id < 0 || id >= 2 || !sessions[id].used) return -1;
+    if (len < 0 || len > 16383) return -1;      /* aead_seal's staging buffer holds 16384 (content + inner type) */
     struct tls_sess *s = &sessions[id];
     static uint8_t rec[16400];
     int rl = aead_seal(&s->cw, REC_APPDATA, buf, len, rec);
@@ -418,6 +435,7 @@ int tls_recv(int id, void *buf, int max)
     if (blen < 0) return -1;
     if (rtype == REC_CCS) return 0;
     if (rtype != REC_APPDATA) return -1;
+    if (blen - 16 > (int)sizeof s->app) return -1;   /* decrypted plaintext must fit s->app */
     uint8_t it; int dl = aead_open(&s->cr, body, blen, s->app, &it);
     if (dl < 0) return -1;
     if (it == REC_ALERT) return -1;                       /* close_notify etc */
@@ -439,10 +457,18 @@ int tls_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
 {
     const uint8_t *p = sig, *end = sig + len;
     if (p >= end || *p++ != 0x30) return -1;
-    int sl = *p++; if (sl & 0x80) { int nb = sl & 0x7f; sl = 0; while (nb--) sl = (sl<<8)|*p++; }
+    if (p >= end) return -1;
+    int sl = *p++; if (sl & 0x80) {
+        int nb = sl & 0x7f;
+        if (nb == 0 || nb > 3 || p + nb > end) return -1;   /* mirror x509.c der_tlv */
+        sl = 0; while (nb--) sl = (sl<<8)|*p++;
+    }
+    if (p + sl > end) return -1;                            /* SEQ content must fit */
     for (int half = 0; half < 2; half++) {
         if (p >= end || *p++ != 0x02) return -1;
+        if (p >= end) return -1;
         int il = *p++;
+        if (p + il > end) return -1;                        /* INTEGER content must fit */
         const uint8_t *ic = p; p += il;
         while (il > 0 && ic[0] == 0) { ic++; il--; }
         if (il > flen) return -1;

@@ -37,7 +37,10 @@ int as_value_eq(Value a, Value b)
     return 0;
 }
 
-static void print_repr(Value v);   /* like print, but strings are quoted (for list elements) */
+/* Cycle guard for container printing: a self-referential list/dict
+ * (`l = []; l.append(l); print(l)`) would otherwise recurse until the C stack
+ * blows. Past the cap, containers print as [...] / {...} (Python prints `[...]`). */
+#define PRINT_MAX_DEPTH 32
 
 /* Format a double like Python/JS repr: the SHORTEST decimal that round-trips
  * (fewest significant digits whose strtod() gives `d` back), in fixed notation
@@ -69,7 +72,9 @@ int as_fmt_float(double d, char *buf, int cap)
     return n;
 }
 
-void as_print_value(Value v)
+static void print_repr_depth(Value v, int depth);
+
+static void print_depth(Value v, int depth)
 {
     char buf[40]; int n;
     switch (v.type) {
@@ -82,12 +87,14 @@ void as_print_value(Value v)
     case V_OBJ:
         if (IS_STR(v))         { ObjStr *s = AS_STR(v); as_emit(s->chars, s->len); }
         else if (IS_LIST(v)) {
+            if (depth >= PRINT_MAX_DEPTH) { as_emit_cstr("[...]"); break; }
             ObjList *l = AS_LIST(v);
             as_emit("[", 1);
-            for (int i = 0; i < l->count; i++) { if (i) as_emit(", ", 2); print_repr(l->items[i]); }
+            for (int i = 0; i < l->count; i++) { if (i) as_emit(", ", 2); print_repr_depth(l->items[i], depth + 1); }
             as_emit("]", 1);
         }
         else if (IS_DICT(v)) {
+            if (depth >= PRINT_MAX_DEPTH) { as_emit_cstr("{...}"); break; }
             ObjDict *d = AS_DICT(v);
             as_emit("{", 1);
             int first = 1;
@@ -96,10 +103,10 @@ void as_print_value(Value v)
                 if (e->kind != AS_DK_STR && e->kind != AS_DK_INT) continue;
                 if (!first) as_emit(", ", 2);
                 first = 0;
-                if (e->kind == AS_DK_STR) print_repr(OBJ_VAL(e->kstr));
+                if (e->kind == AS_DK_STR) print_repr_depth(OBJ_VAL(e->kstr), depth + 1);
                 else { n = snprintf(buf, sizeof buf, "%lld", (long long)e->kint); as_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); }
                 as_emit(": ", 2);
-                print_repr(e->val);
+                print_repr_depth(e->val, depth + 1);
             }
             as_emit("}", 1);
         }
@@ -119,17 +126,19 @@ void as_print_value(Value v)
     }
 }
 
-static void print_repr(Value v)
+void as_print_value(Value v) { print_depth(v, 0); }
+
+static void print_repr_depth(Value v, int depth)
 {
     if (IS_STR(v)) { ObjStr *s = AS_STR(v); as_emit("'", 1); as_emit(s->chars, s->len); as_emit("'", 1); }
-    else as_print_value(v);
+    else print_depth(v, depth);
 }
 
 /* M23 str(x): format a Value exactly like `print` would, into a caller buffer.
  * Self-contained (no as_capture redirection -- reentrant), defensive against cap.
  * Returns the number of bytes written (NUL-terminated, < cap). Allocates nothing,
  * so it is GC-safe with unrooted inputs. */
-static int vts(Value v, char *buf, int cap, int repr);
+static int vts(Value v, char *buf, int cap, int repr, int depth);
 
 static int vts_put(char *buf, int cap, int o, const char *s, int n)
 {
@@ -138,7 +147,7 @@ static int vts_put(char *buf, int cap, int o, const char *s, int n)
     return o;
 }
 
-static int vts(Value v, char *buf, int cap, int repr)
+static int vts(Value v, char *buf, int cap, int repr, int depth)
 {
     char tmp[40]; int n, o = 0;
     switch (v.type) {
@@ -157,15 +166,17 @@ static int vts(Value v, char *buf, int cap, int repr)
             return vts_put(buf, cap, o, "'", 1);
         }
         if (IS_LIST(v)) {
+            if (depth >= PRINT_MAX_DEPTH) return vts_put(buf, cap, 0, "[...]", 5);
             ObjList *l = AS_LIST(v);
             o = vts_put(buf, cap, 0, "[", 1);
             for (int i = 0; i < l->count && o < cap - 1; i++) {
                 if (i) o = vts_put(buf, cap, o, ", ", 2);
-                o += vts(l->items[i], buf + o, cap - o, 1);
+                o += vts(l->items[i], buf + o, cap - o, 1, depth + 1);
             }
             return vts_put(buf, cap, o, "]", 1);
         }
         if (IS_DICT(v)) {
+            if (depth >= PRINT_MAX_DEPTH) return vts_put(buf, cap, 0, "{...}", 5);
             ObjDict *d = AS_DICT(v);
             int first = 1;
             o = vts_put(buf, cap, 0, "{", 1);
@@ -174,10 +185,10 @@ static int vts(Value v, char *buf, int cap, int repr)
                 if (e->kind != AS_DK_STR && e->kind != AS_DK_INT) continue;
                 if (!first) o = vts_put(buf, cap, o, ", ", 2);
                 first = 0;
-                if (e->kind == AS_DK_STR) o += vts(OBJ_VAL(e->kstr), buf + o, cap - o, 1);
+                if (e->kind == AS_DK_STR) o += vts(OBJ_VAL(e->kstr), buf + o, cap - o, 1, depth + 1);
                 else { n = snprintf(tmp, sizeof tmp, "%lld", (long long)e->kint); o = vts_put(buf, cap, o, tmp, n); }
                 o = vts_put(buf, cap, o, ": ", 2);
-                o += vts(e->val, buf + o, cap - o, 1);
+                o += vts(e->val, buf + o, cap - o, 1, depth + 1);
             }
             return vts_put(buf, cap, o, "}", 1);
         }
@@ -213,7 +224,7 @@ static int vts(Value v, char *buf, int cap, int repr)
 int value_to_cstr(Value v, char *buf, int cap)
 {
     if (cap <= 0) return 0;
-    int n = vts(v, buf, cap, 0);
+    int n = vts(v, buf, cap, 0, 0);
     buf[n] = 0;
     return n;
 }

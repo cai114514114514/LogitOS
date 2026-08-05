@@ -81,16 +81,18 @@ void pmm_init(uint64_t mb_info_addr)
     /* First pass: find the memory map tag and the highest usable address. */
     while (p < end) {
         struct mb2_tag *tag = (struct mb2_tag *)p;
-        if (tag->type == 0)
-            break;                                   /* end tag */
+        if (tag->type == 0 || tag->size == 0)
+            break;                                   /* end tag (size 0 would stall the walk) */
         if (tag->type == MB2_TAG_MMAP) {
             mmap = (struct mb2_tag_mmap *)tag;
-            uint8_t *e = (uint8_t *)mmap->entries;
-            uint8_t *mend = p + mmap->size;
-            for (; e < mend; e += mmap->entry_size) {
-                struct mb2_mmap_entry *me = (struct mb2_mmap_entry *)e;
-                if (me->type == MMAP_AVAILABLE && me->addr + me->len > highest)
-                    highest = me->addr + me->len;
+            if (mmap->entry_size >= sizeof(struct mb2_mmap_entry)) {   /* entry_size 0 would stall the walk */
+                uint8_t *e = (uint8_t *)mmap->entries;
+                uint8_t *mend = p + mmap->size;
+                for (; e < mend; e += mmap->entry_size) {
+                    struct mb2_mmap_entry *me = (struct mb2_mmap_entry *)e;
+                    if (me->type == MMAP_AVAILABLE && me->addr + me->len > highest)
+                        highest = me->addr + me->len;
+                }
             }
         }
         p += (tag->size + 7) & ~7u;                  /* tags are 8-byte aligned */
@@ -109,7 +111,7 @@ void pmm_init(uint64_t mb_info_addr)
     used_frames = total_frames;
 
     /* ...then free what firmware says is available. */
-    if (mmap) {
+    if (mmap && mmap->entry_size >= sizeof(struct mb2_mmap_entry)) {
         uint8_t *e = (uint8_t *)mmap->entries;
         uint8_t *mend = (uint8_t *)mmap + mmap->size;
         for (; e < mend; e += mmap->entry_size) {

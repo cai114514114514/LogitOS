@@ -69,6 +69,7 @@ void app_main(void)
             if (e.type == EV_CLOSE)
                 app_exit(0);
             if (e.type == EV_KEY) {
+                if (e.a > 0xFF) continue;              /* arrow/Home/End etc: navigation keys, not text */
                 char c = (char)e.a;
                 if (c == CTRL_S) {
                     if (write_file(fname, text, tlen) >= 0)

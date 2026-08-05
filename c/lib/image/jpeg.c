@@ -239,8 +239,10 @@ static int decode_block(struct br *b, struct comp *c, long blk[64])
 {
     memset(blk, 0, 64 * sizeof(long));
     int t = huff_decode(b, &hdc[c->td]);
-    if (t < 0 || t > 16) return -1;
-    int diff = t ? br_ext(br_recv(b, t), t) : 0;
+    if (t < 0 || t > 11) return -1;             /* baseline: DC categories 12+ are reserved (12-bit precision) */
+    int rv = t ? br_recv(b, t) : 0;
+    if (rv < 0) return -1;                      /* entropy data ended mid-block */
+    int diff = t ? br_ext(rv, t) : 0;
     c->dcpred += diff;
     blk[0] = c->dcpred * (long)qt[c->tq][0];
     int k = 1;
@@ -254,7 +256,9 @@ static int decode_block(struct br *b, struct comp *c, long blk[64])
         }
         k += r;
         if (k > 63) return -1;                    /* run overrun: corrupt */
-        int v = br_ext(br_recv(b, s), s);
+        int av = br_recv(b, s);
+        if (av < 0) return -1;                    /* entropy data ended mid-block */
+        int v = br_ext(av, s);
         blk[zz[k]] = (long)v * (long)qt[c->tq][zz[k]];   /* de-zigzag + dequant */
         k++;
     }
@@ -385,7 +389,7 @@ static int jpeg_decode(const unsigned char *p, int n, struct image *out)
         if (m == 0xD9) goto fail;           /* EOI before SOS -> no image */
         if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }  /* TEM/RSTn standalone */
         int len = be16(p + i + 2);
-        if (len < 2 || len > 0x7fff || len > n - i - 2) goto fail;  /* subtraction form */
+        if (len < 2 || len > n - i - 2) goto fail;  /* subtraction form; 16-bit length tops out at 65535 */
         const unsigned char *seg = p + i + 4;
         int slen = len - 2;
         if (m == 0xDB) { if (parse_dqt(seg, slen)) goto fail; }

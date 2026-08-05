@@ -98,7 +98,8 @@ long proc_execve(struct registers *r)
     /* 2. Load + validate the program image (kernel buffer) before destroying the
      *    old space, so a bad path/exec leaves the caller intact and returns -1. */
     int sz = vfs_size(abs);
-    if (sz <= 0) return -1;
+    if (sz < AEX_HDR_SIZE) return -1;        /* aex_info reads the 64-byte header */
+    if (sz > 0x7fffffff - 511) return -1;    /* sz + 511 would overflow int */
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
     if (!img) return -1;
@@ -130,7 +131,8 @@ long proc_execve(struct registers *r)
 int proc_spawn(const char *path, char **argv)
 {
     int sz = vfs_size(path);
-    if (sz <= 0) return -1;
+    if (sz < AEX_HDR_SIZE) return -1;        /* aex_info reads the 64-byte header */
+    if (sz > 0x7fffffff - 511) return -1;    /* sz + 511 would overflow int */
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
     if (!img) return -1;
@@ -162,5 +164,14 @@ int proc_spawn(const char *path, char **argv)
     if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; }
 
     p->tid = thread_create_user(nm, entry, sp, p, space);
+    if (p->tid < 0) {                    /* OOM: undo the spawn (same shape as proc_fork's
+                                          * failure path) instead of leaking the PCB slot
+                                          * + the whole address space under a live pid. */
+        for (int i = 0; i < NFD; i++)
+            if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
+        vmm_free_space(space);
+        p->state = PROC_FREE; p->pid = 0; p->cr3 = 0;
+        return -1;
+    }
     return p->pid;
 }

@@ -146,11 +146,15 @@ static int rd_f64(Cursor *c, double *out)
 }
 
 /* Build one ObjFn (and, recursively, its FN constants). Sets *err=1 on any short
- * read / bad tag; the partially built tree is on g_objs and reclaimed by the next
- * as_free_objects/GC (the load is abandoned). */
-static ObjFn *load_fn(Cursor *c, int *err)
+ * read / bad tag / nesting too deep; the partially built tree is on g_objs and
+ * reclaimed by the next as_free_objects/GC (the load is abandoned). depth caps the
+ * K_FN recursion: an unbounded .la could otherwise blow the C stack. */
+#define AS_LA_MAX_DEPTH 256
+static ObjFn *load_fn(Cursor *c, int *err, int depth)
 {
+    if (depth > AS_LA_MAX_DEPTH) { strcpy(as_err, "as_load: functions nested too deep"); *err = 1; return NULL; }
     ObjFn *fn = as_fn_new();          /* code/consts NULL, count/kcount 0, module NULL */
+    if (!fn) { *err = 1; return NULL; }         /* g_oom set */
     uint32_t u;
 
     if (rd_u32(c, &u)) { *err = 1; return fn; }
@@ -218,14 +222,16 @@ static ObjFn *load_fn(Cursor *c, int *err)
                 if (!sb) { *err = 1; return fn; }
                 if (rd_bytes(c, sb, (int)slen)) { free(sb); *err = 1; return fn; }
             }
-            fn->consts[i] = OBJ_VAL(as_str_copy(sb ? sb : "", (int)slen));
+            ObjStr *os = as_str_copy(sb ? sb : "", (int)slen);
             free(sb);
+            if (!os) { *err = 1; return fn; }        /* g_oom set */
+            fn->consts[i] = OBJ_VAL(os);
             break;
         }
         case K_FN: {
-            ObjFn *sub = load_fn(c, err);
-            fn->consts[i] = OBJ_VAL(sub);
+            ObjFn *sub = load_fn(c, err, depth + 1);
             if (*err) return fn;
+            fn->consts[i] = OBJ_VAL(sub);
             break;
         }
         default:
@@ -235,6 +241,119 @@ static ObjFn *load_fn(Cursor *c, int *err)
         }
     }
     return fn;
+}
+
+/* ---- verifier: a loaded .la is UNTRUSTED input (import prefers NAME.la over
+ * NAME.as, and `as -run` executes one directly). load_fn checks only the file's
+ * structural integrity; this pass rejects bytecode the compiler could never have
+ * emitted: unknown opcodes, truncated operands, const-pool indexes out of range
+ * or of the wrong type (a fake ObjStr/ObjFn constant would be a type-confusion
+ * primitive), jump targets outside [0, count), upvalue indexes beyond
+ * upvalue_count, and upvalue captures in the top-level fn (it runs via call_fn
+ * with a NULL closure). 1-byte local-slot operands are frame-relative and cannot
+ * be bounded statically -- .la files must still come from the trusted in-tree
+ * compiler for stack-slot integrity. Returns 0 ok, 1 bad. */
+static int verify_fn(ObjFn *fn, int depth, int is_top)
+{
+    if (depth > AS_LA_MAX_DEPTH) return 1;
+    if (fn->arity < 0 || fn->upvalue_count < 0 || fn->upvalue_count > 256) return 1;
+    for (int i = 0; i < fn->kcount; i++)
+        if (IS_FN(fn->consts[i]) && verify_fn(AS_FN(fn->consts[i]), depth + 1, 0)) return 1;
+    uint8_t *code = fn->code; int n = fn->count;
+    int ip = 0;
+    while (ip < n) {
+        uint8_t op = code[ip++];
+        switch (op) {
+        /* no operand */
+        case OP_NIL: case OP_TRUE: case OP_FALSE: case OP_POP:
+        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD: case OP_NEG:
+        case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE: case OP_NOT:
+        case OP_RET:
+        case OP_INDEX_GET: case OP_INDEX_SET: case OP_LEN:
+        case OP_IN: case OP_ITER:
+        case OP_CLOSE_UPVALUE:
+        case OP_INHERIT: case OP_RAISE:
+        case OP_BAND: case OP_BOR: case OP_BXOR: case OP_BNOT: case OP_SHL: case OP_SHR: case OP_POW:
+            break;
+        /* 1-byte operand */
+        case OP_GET_LOCAL: case OP_SET_LOCAL:
+        case OP_CALL: case OP_MAKE_LIST: case OP_MAKE_DICT:
+            if (ip + 1 > n) return 1;
+            ip += 1;
+            break;
+        /* 1-byte upvalue index: bounded by this fn's upvalue_count, and needs a
+         * closure (the top-level fn runs with frame->closure == NULL) */
+        case OP_GET_UPVALUE: case OP_SET_UPVALUE:
+            if (is_top) return 1;
+            if (ip + 1 > n) return 1;
+            if (code[ip] >= fn->upvalue_count) return 1;
+            ip += 1;
+            break;
+        /* 2-byte const-pool index, any constant type */
+        case OP_CONST: {
+            if (ip + 2 > n) return 1;
+            int k = (code[ip] << 8) | code[ip + 1];
+            if (k >= fn->kcount) return 1;
+            ip += 2;
+            break;
+        }
+        /* 2-byte const-pool index that must name a string (the VM casts it with
+         * AS_STR without a type check) */
+        case OP_GET_GLOBAL: case OP_SET_GLOBAL: case OP_DEF_GLOBAL:
+        case OP_IMPORT:
+        case OP_CLASS: case OP_METHOD:
+        case OP_GET_PROPERTY: case OP_SET_PROPERTY: case OP_GET_SUPER: {
+            if (ip + 2 > n) return 1;
+            int k = (code[ip] << 8) | code[ip + 1];
+            if (k >= fn->kcount || !IS_STR(fn->consts[k])) return 1;
+            ip += 2;
+            break;
+        }
+        /* 2-byte string const + 1-byte argc */
+        case OP_INVOKE: {
+            if (ip + 3 > n) return 1;
+            int k = (code[ip] << 8) | code[ip + 1];
+            if (k >= fn->kcount || !IS_STR(fn->consts[k])) return 1;
+            ip += 3;
+            break;
+        }
+        /* 2-byte FN const + inline {is_local,index} capture pairs (one per
+         * upvalue of the child fn -- the VM reads them from the code stream) */
+        case OP_CLOSURE: {
+            if (ip + 2 > n) return 1;
+            int k = (code[ip] << 8) | code[ip + 1];
+            if (k >= fn->kcount || !IS_FN(fn->consts[k])) return 1;
+            ObjFn *sub = AS_FN(fn->consts[k]);
+            if (is_top && sub->upvalue_count > 0) return 1;   /* no enclosing closure to capture from */
+            if (ip + 2 + 2 * sub->upvalue_count > n) return 1;
+            ip += 2;
+            for (int i = 0; i < sub->upvalue_count; i++) {
+                if (code[ip] > 1) return 1;                    /* is_local is a boolean */
+                ip += 2;
+            }
+            break;
+        }
+        /* 2-byte forward jump offset: target must land inside the code */
+        case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_SETUP_TRY: case OP_POP_TRY: {
+            if (ip + 2 > n) return 1;
+            int off = (code[ip] << 8) | code[ip + 1];
+            if (ip + 2 + off >= n) return 1;
+            ip += 2;
+            break;
+        }
+        /* 2-byte backward jump offset: target must not pass the start */
+        case OP_LOOP: {
+            if (ip + 2 > n) return 1;
+            int off = (code[ip] << 8) | code[ip + 1];
+            if (off > ip + 2) return 1;
+            ip += 2;
+            break;
+        }
+        default:
+            return 1;   /* unknown / handler-less opcode (incl. OP_GET_ATTR) */
+        }
+    }
+    return 0;   /* ip == n here: ended exactly on an instruction boundary */
 }
 
 ObjFn *as_load(const uint8_t *buf, int len)
@@ -247,7 +366,11 @@ ObjFn *as_load(const uint8_t *buf, int len)
     Cursor c = { buf, 8, len };
     as_gc_push_disable();             /* the tree is unrooted until returned (mirrors as_compile) */
     int err = 0;
-    ObjFn *fn = load_fn(&c, &err);
+    ObjFn *fn = load_fn(&c, &err, 0);
+    if (!err && verify_fn(fn, 0, 1)) {
+        strcpy(as_err, "as_load: bytecode failed verification");
+        err = 1;
+    }
     as_gc_pop_disable();
     return err ? NULL : fn;
 }

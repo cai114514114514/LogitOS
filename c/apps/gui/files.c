@@ -38,6 +38,7 @@ static char editbuf[64];
 static int  menu_open, menu_x, menu_y;
 static char clip[N][PMAX];
 static int  clip_count, clip_cut;
+static char delbuf[N][PMAX];            /* do_delete: path snapshot (row indices drift as entries are removed) */
 static int  shift_down, ctrl_down;
 static int  last_click_row = -1, last_click_frame = -1, frame_no;
 static int  info_open;
@@ -82,6 +83,8 @@ static int path_under(const char *a, const char *b)
 }
 
 /* --- recursive copy / delete --- */
+#define TREE_DEPTH_MAX 32               /* ring-3 stack guard for deep directory trees */
+
 static int copy_file(const char *src, const char *dst)
 {
     int rf = sys_open(src, O_RDONLY);
@@ -99,35 +102,37 @@ static int copy_file(const char *src, const char *dst)
     return rc;
 }
 
-static int copy_tree(const char *src, const char *dst)
+static int copy_tree(const char *src, const char *dst, int depth)
 {
+    if (depth > TREE_DEPTH_MAX) return -1;
     if (!is_dir(src)) return copy_file(src, dst);
     int n = dir_count(src);
     if (make_dir(dst) < 0) { /* may exist */ }
     for (int i = 0; i < n; i++) {
         char nm[64];
-        if (dir_name(src, i, nm) < 0 || !nm[0] || streq(nm, ".") || streq(nm, "..")) continue;
+        if (dir_name(src, i, nm) == -1 || !nm[0] || streq(nm, ".") || streq(nm, "..")) continue;
         char cs[PMAX], cd[PMAX];
         pjoin(cs, src, nm, PMAX);
         pjoin(cd, dst, nm, PMAX);
-        copy_tree(cs, cd);
+        copy_tree(cs, cd, depth + 1);
     }
     return 0;
 }
 
 static int delete_file_path(const char *p) { return delete_file(p); }
-static int delete_tree(const char *path)
+static int delete_tree(const char *path, int depth)
 {
     if (!is_dir(path)) return delete_file_path(path);
+    if (depth > TREE_DEPTH_MAX) return -1;
     char nm[64], child[PMAX];
     int prev = -1;
     for (;;) {
         int n = dir_count(path);
         if (n <= 0 || n == prev) break;
         prev = n;
-        if (dir_name(path, 0, nm) < 0) break;
+        if (dir_name(path, 0, nm) == -1) break;
         pjoin(child, path, nm, PMAX);
-        delete_tree(child);
+        delete_tree(child, depth + 1);
     }
     return delete_file_path(path);
 }
@@ -190,17 +195,23 @@ static void do_open(int row)
 {
     char path[PMAX]; int isd;
     if (row_path(row, path, PMAX, &isd) < 0) return;
-    if (isd) { char nm[64]; dir_name(cwd, row, nm); enter_dir(nm); }
+    if (isd) { char nm[64]; if (dir_name(cwd, row, nm) == -1) return; enter_dir(nm); }
     else sys_open_path(path);
 }
 
 static void do_delete(void)
 {
-    for (int i = 0; i < sel_count; i++) {
+    /* Snapshot every selected path BEFORE deleting anything: each delete shifts
+     * the remaining entries down one row, so resolving sel[] mid-loop would
+     * delete the wrong files. */
+    int ndel = 0;
+    for (int i = 0; i < sel_count && ndel < N; i++) {
         char path[PMAX]; int isd;
         if (row_path(sel[i], path, PMAX, &isd) < 0) continue;
-        delete_tree(path);
+        scpy(delbuf[ndel++], path, PMAX);
     }
+    for (int i = 0; i < ndel; i++)
+        delete_tree(delbuf[i], 0);
     clear_sel(); anchor = -1; info_open = 0;
 }
 
@@ -235,7 +246,7 @@ static void do_paste(void)
         pjoin(dst, cwd, leaf, PMAX);
         if (path_under(clip[i], dst)) continue;
         if (clip_cut) sys_rename(clip[i], dst);
-        else          copy_tree(clip[i], dst);
+        else          copy_tree(clip[i], dst, 0);
     }
     if (clip_cut) clip_count = 0;
     clear_sel(); anchor = -1;
@@ -245,7 +256,7 @@ static void start_rename(void)
 {
     if (sel_count != 1) return;
     char nm[64];
-    dir_name(cwd, sel[0], nm);
+    if (dir_name(cwd, sel[0], nm) == -1) return;
     scpy(editbuf, nm, sizeof editbuf);
     rename_mode = 1; newfolder_mode = 0; info_open = 0;
 }
@@ -275,7 +286,7 @@ static void do_get_info(void)
     if (sel_count != 1) { info_open = 0; return; }
     char path[PMAX]; int isd;
     if (row_path(sel[0], path, PMAX, &isd) < 0) { info_open = 0; return; }
-    char nm[64]; long sz = dir_name(cwd, sel[0], nm);
+    char nm[64]; nm[0] = 0; long sz = dir_name(cwd, sel[0], nm);
     char num[24];
     char *o = info_text; int oi = 0;
     const char *seg;
@@ -436,7 +447,7 @@ static void draw_grid(void)
     for (int idx = 0; idx < total; idx++) {
         int cr = idx / cols, cc = idx % cols;
         if (cr < scroll || cr >= scroll + visible_rows() + 1) continue;
-        char nm[64]; long sz = dir_name(cwd, idx, nm); int isd = (sz == -2);
+        char nm[64]; nm[0] = 0; long sz = dir_name(cwd, idx, nm); int isd = (sz == -2);
         int cellx = gx0 + cc * GW, celly = CY + 6 + (cr - scroll) * GH;
         if (in_sel(idx)) gui_rect(cellx + 6, celly, GW - 12, GH - 8, selbg);
         unsigned col; int icon = ext_icon(nm, isd, &col);
@@ -455,7 +466,7 @@ static void draw_list(void)
     gui_clip(CX, CY, CWID, CHGT);
     int y = CY + 4;
     for (int r = scroll; r < total && r < scroll + visible_rows() + 1; r++, y += LH) {
-        char nm[64]; long sz = dir_name(cwd, r, nm); int isd = (sz == -2);
+        char nm[64]; nm[0] = 0; long sz = dir_name(cwd, r, nm); int isd = (sz == -2);
         if (in_sel(r)) gui_rect(CX + 4, y - 2, CWID - 8, LH, selbg);
         unsigned col; int icon = ext_icon(nm, isd, &col);
         gui_icon(icon, CX + 10, y, 20, col);

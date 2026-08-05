@@ -34,6 +34,8 @@ struct virtq {
     struct virtq_used  *used;
     volatile uint16_t  *notify;   /* this queue's notify register */
     uint16_t last_used;           /* last used.idx we consumed */
+    uint16_t free_head;           /* next request's first descriptor (rotates, so a
+                                   * stale completion's e->id never aliases ours) */
 };
 
 struct virtio_dev {

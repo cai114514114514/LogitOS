@@ -207,7 +207,7 @@ void syscall_dispatch(struct registers *r)
         return;
     case SYS_FILE_NAME: {
         int i = (int)r->rdi; int max = (int)r->rdx;
-        if (i < 0 || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
+        if (i < 0 || i >= vfs_count("/") || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
         { const char *nm = vfs_ent_name("/", i); char *out = (char *)r->rsi;
           int j = 0; for (; j < max - 1 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0; }
         r->rax = (uint64_t)vfs_ent_size("/", i);
@@ -244,7 +244,14 @@ void syscall_dispatch(struct registers *r)
         if (file_pipe(&rf, &wf) < 0) { r->rax = (uint64_t)-1; return; }
         int rfd = proc_fd_alloc(p, rf);
         int wfd = proc_fd_alloc(p, wf);
-        if (rfd < 0 || wfd < 0) { file_close(rf); file_close(wf); r->rax = (uint64_t)-1; return; }
+        if (rfd < 0 || wfd < 0) {
+            /* Unhook any installed fd BEFORE closing: file_close drops the last
+             * ref, the slot becomes reusable, and a dangling p->fd[] entry would
+             * later close the slot's NEW owner (proc_exit/SYS_CLOSE). */
+            if (rfd >= 0) p->fd[rfd] = NULL;
+            if (wfd >= 0) p->fd[wfd] = NULL;
+            file_close(rf); file_close(wf); r->rax = (uint64_t)-1; return;
+        }
         int fds[2] = { rfd, wfd };
         user_copy_to(ufds, fds, sizeof fds);
         r->rax = 0;

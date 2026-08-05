@@ -46,6 +46,10 @@ static void run_external(char **argv)
 {
     if (!argv[0]) app_exit(0);
     char buf[160];
+    if (c_strlen(argv[0]) > (int)sizeof buf - 6) {   /* "/bin/" + name + NUL must fit */
+        errs("sh: command name too long: "); errs(argv[0]); errs("\n");
+        app_exit(127);
+    }
     c_strcpy(buf, "/bin/", sizeof buf);
     int n = 5; for (int i = 0; argv[0][i] && n < (int)sizeof buf - 1; i++) buf[n++] = argv[0][i];
     buf[n] = 0;
@@ -65,6 +69,12 @@ static void run_pipeline(struct cmd *cmds, int ncmd, int background)
         if (i < ncmd - 1 && sys_pipe(pfd) < 0) { errs("sh: pipe failed\n"); break; }
 
         int pid = sys_fork();
+        if (pid < 0) {                                 /* fork failed: don't record a bogus pid */
+            errs("sh: fork failed\n");
+            if (pfd[0] >= 0) sys_close(pfd[0]);
+            if (pfd[1] >= 0) sys_close(pfd[1]);
+            break;
+        }
         if (pid == 0) {                                  /* child */
             if (prev_read >= 0) sys_dup2(prev_read, 0);
             if (i < ncmd - 1) sys_dup2(pfd[1], 1);

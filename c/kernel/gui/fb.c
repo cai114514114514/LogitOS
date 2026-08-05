@@ -78,8 +78,8 @@ int fb_init(uint64_t mb_info_addr)
 
     while (p < end) {
         struct mb2_tag *tag = (struct mb2_tag *)p;
-        if (tag->type == 0)
-            break;
+        if (tag->type == 0 || tag->size < 8)
+            break;                       /* terminator, or a malformed zero-size tag (would loop forever) */
         if (tag->type == 8) {
             fb = (struct mb2_fb_tag *)tag;
             break;
@@ -548,23 +548,35 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
 }
 
 /* Blit a straight-RGBA source (sw x sh) into the dest rect (dx,dy,dw,dh) of the
- * current target with nearest-neighbour scaling and per-pixel alpha. */
+ * current target with nearest-neighbour scaling and per-pixel alpha. The loops
+ * are clipped to the visible target region (in 64-bit, so user-supplied dx/dw
+ * can't overflow the math) WITHOUT rescaling: sx/sy are still computed against
+ * the original dw/dh, so a partially off-screen blit crops exactly as before.
+ * This is what bounds SYS_GUI_BLIT: an unclipped dw*dh double loop (up to
+ * ~(2^31)^2 iterations) inside the syscall gate would freeze the machine. */
 void fb_blit_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh)
 {
-    if (!rgba || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
-    for (int j = 0; j < dh; j++) {
-        int sy = j * sh / dh;
-        for (int i = 0; i < dw; i++) {
-            int sx = i * sw / dw;
+    struct surface *t = T ? T : &screen;
+    if (!rgba || !t->px || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+    long i0 = dx < 0 ? -(long)dx : 0, i1 = dw;
+    long j0 = dy < 0 ? -(long)dy : 0, j1 = dh;
+    if (i1 > (long)t->w - dx) i1 = (long)t->w - dx;
+    if (j1 > (long)t->h - dy) j1 = (long)t->h - dy;
+    if (i0 >= i1 || j0 >= j1) return;
+    for (long j = j0; j < j1; j++) {
+        int sy = (int)(j * sh / dh);
+        for (long i = i0; i < i1; i++) {
+            int sx = (int)(i * sw / dw);
             const uint8_t *p = rgba + ((sy * sw + sx) * 4);
             int a = p[3];
+            int px = (int)(dx + i), py = (int)(dy + j);
             if (!a) continue;
-            if (a >= 255) { fb_put(dx + i, dy + j, fb_rgb(p[0], p[1], p[2])); continue; }
-            int br, bg, bb; unpack(fb_get(dx + i, dy + j), &br, &bg, &bb);
+            if (a >= 255) { fb_put(px, py, fb_rgb(p[0], p[1], p[2])); continue; }
+            int br, bg, bb; unpack(fb_get(px, py), &br, &bg, &bb);
             int nr = (p[0] * a + br * (255 - a)) / 255;
             int ng = (p[1] * a + bg * (255 - a)) / 255;
             int nb = (p[2] * a + bb * (255 - a)) / 255;
-            fb_put(dx + i, dy + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+            fb_put(px, py, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
         }
     }
 }

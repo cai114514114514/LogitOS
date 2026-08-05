@@ -34,7 +34,13 @@ int url_parse(const char *s, struct url *out)
     if (*s == ':') {
         s++;
         int port = 0, any = 0;
-        while (*s >= '0' && *s <= '9') { port = port * 10 + (*s++ - '0'); any = 1; }
+        /* Bail out past 65535 before the accumulation can overflow int; the
+         * range check below then rejects it. */
+        while (*s >= '0' && *s <= '9') {
+            port = port * 10 + (*s++ - '0');
+            any = 1;
+            if (port > 65535) break;
+        }
         if (!any || port == 0 || port > 65535) return -1;
         out->port = (uint16_t)port;
     }

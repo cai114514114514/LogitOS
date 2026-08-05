@@ -84,6 +84,27 @@ void ip_input(const uint8_t *frame, uint16_t len)
     if (ihl < (int)sizeof(struct ip_hdr) || tot < ihl ||
         (uint32_t)sizeof(struct eth_hdr) + tot > len)
         return;
+    /* Drop corrupted headers; ihl (not sizeof *h) so IP options are covered. */
+    if (ip_checksum(h, ihl) != 0)
+        return;
+    if (h->ttl == 0)
+        return;
+    /* Fragment reassembly is not implemented. Passing a first fragment to a
+     * transport parser as if it were a complete segment is worse than an
+     * explicit drop, so reject MF, nonzero offsets, and the reserved flag. */
+    uint16_t frag = ntohs(h->frag);
+    if (frag & 0xBFFFu)                  /* allow only the DF flag (0x4000) */
+        return;
+    /* No forwarding: only packets addressed to us reach the upper layers
+     * (keeps off-subnet noise out of the one-shot UDP/DNS receive slot). */
+    if (ntohl(h->dst) != net_cfg.ip)
+        return;
+    /* This stack has no DHCP/bootstrap receive path, multicast membership, or
+     * loopback-on-wire use. Reject source forms that cannot identify a remote
+     * unicast peer in the supported configuration. */
+    if (src == 0 || src == 0xFFFFFFFFu || (src >> 24) == 127 ||
+        (src >> 28) == 0xEu)
+        return;
 
     const uint8_t *l4 = (const uint8_t *)h + ihl;
     uint16_t l4len = (uint16_t)(tot - ihl);

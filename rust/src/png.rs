@@ -91,11 +91,15 @@ fn depth_ok(ctype: i32, depth: i32) -> bool {
 /// Unfilter `rows` scanlines in place; each is 1 filter byte + `stride` data
 /// bytes. `bpp` = bytes per pixel for the a/c taps (ceil(channels*depth/8), >=1).
 /// Absolute indexing into `buf` (rather than a `prev` cursor) keeps the borrow
-/// checker happy while staying bounds-checked.
-fn unfilter(buf: &mut [u8], rows: usize, stride: usize, bpp: usize) {
+/// checker happy while staying bounds-checked. Returns false on a filter type
+/// byte outside 0..=4 (a spec violation the old code silently treated as None).
+fn unfilter(buf: &mut [u8], rows: usize, stride: usize, bpp: usize) -> bool {
     for y in 0..rows {
         let rs = y * (stride + 1);
         let ft = buf[rs];
+        if ft > 4 {
+            return false;
+        }
         for x in 0..stride {
             let a = if x >= bpp { buf[rs + 1 + x - bpp] as i32 } else { 0 };
             let b = if y > 0 { buf[(y - 1) * (stride + 1) + 1 + x] as i32 } else { 0 };
@@ -115,6 +119,7 @@ fn unfilter(buf: &mut [u8], rows: usize, stride: usize, bpp: usize) {
             buf[rs + 1 + x] = v as u8;
         }
     }
+    true
 }
 
 /// Write pixel `col` of an unfiltered scanline `line` to rgba[(y*W + x)].
@@ -264,7 +269,8 @@ fn scan_meta(p: &[u8]) -> Meta {
         // Deliberate divergence from the old C: a truncated IHDR (clen < 13) is
         // skipped here (-> no have_ihdr -> decode fails cleanly), whereas the C
         // read 13 bytes regardless -- a latent OOB read on a malformed file.
-        if typ == b"IHDR" && clen >= 13 {
+        // The spec requires IHDR to be the FIRST chunk (i == 8).
+        if typ == b"IHDR" && clen >= 13 && i == 8 {
             m.w = be32(&data[0..4]) as i32;
             m.h = be32(&data[4..8]) as i32;
             m.depth = data[8] as i32;
@@ -325,7 +331,9 @@ fn gather_idat(p: &[u8], dst: &mut [u8]) {
 /// Returns None on any malformed input or allocation failure (all scratch freed).
 fn decode_inner(p: &[u8]) -> Option<(i32, i32, *mut u8)> {
     let m = scan_meta(p);
-    if !m.iend || !m.have_ihdr || m.w <= 0 || m.h <= 0 || !depth_ok(m.ctype, m.depth) {
+    if !m.iend || !m.have_ihdr || m.w <= 0 || m.h <= 0 || !depth_ok(m.ctype, m.depth)
+        || m.interlace > 1
+    {
         return None;
     }
     if m.w > 8192 || m.h > 8192 {
@@ -408,7 +416,11 @@ fn decode_inner(p: &[u8]) -> Option<(i32, i32, *mut u8)> {
         let blocklen = (stride + 1) * rows as usize;
         let block = &mut raw_slice[off..off + blocklen];
         off += blocklen;
-        unfilter(block, rows as usize, stride, bpp);
+        if !unfilter(block, rows as usize, stride, bpp) {
+            unsafe { kfree(raw) };
+            unsafe { kfree(rgba) };
+            return None;
+        }
         for r in 0..rows as usize {
             let line = &block[r * (stride + 1) + 1..r * (stride + 1) + 1 + stride];
             let y = if m.interlace != 0 { OY[pass] + r as i32 * SY[pass] } else { r as i32 };

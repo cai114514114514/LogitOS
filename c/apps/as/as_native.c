@@ -67,7 +67,9 @@ static Value n_dealloc(int argc, Value *args)
 }
 static Value n_mem2str(int argc, Value *args)   /* (ptr|addr, len) -> str */
 {
-    if (argc != 2 || !IS_INT(args[1]) || AS_INT(args[1]) < 0)
+    /* len is int64 but ObjStr.len/as_str_copy take int: reject values that would
+     * truncate (e.g. 4294967295 -> -1 -> memcpy of SIZE_MAX). */
+    if (argc != 2 || !IS_INT(args[1]) || AS_INT(args[1]) < 0 || AS_INT(args[1]) > INT32_MAX)
         return as_native_fail("mem2str() takes (ptr_or_addr, len)");
     uint64_t a = IS_PTR(args[0]) ? AS_PTR(args[0])->addr
                : IS_INT(args[0]) ? (uint64_t)AS_INT(args[0]) : 0;

@@ -138,7 +138,7 @@ static CmpCtx ctx_at(const char *src, int len, int caret){
         }
     }
     int s = ls; while (s < caret && c_issp(src[s])) s++;
-    if (c_neq(src+s, "import", 6) || c_neq(src+s, "from", 4)) c.after_import = 1;
+    if ((s + 6 <= len && c_neq(src+s, "import", 6)) || (s + 4 <= len && c_neq(src+s, "from", 4))) c.after_import = 1;
     return c;
 }
 

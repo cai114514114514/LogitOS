@@ -126,7 +126,7 @@ static void scan_error(void)
     err_line = -1;
     for (int i = 0; i + 5 < outlen; i++)
         if (out[i] == 'l' && out[i+1] == 'i' && out[i+2] == 'n' && out[i+3] == 'e' && out[i+4] == ' ') {
-            int n = 0, j = i + 5; while (j < outlen && is_d(out[j])) n = n * 10 + (out[j++] - '0');
+            int n = 0, j = i + 5; while (j < outlen && is_d(out[j])) { if (n < 1000000) n = n * 10 + (out[j] - '0'); j++; }
             if (n > 0) { err_line = n; return; }      /* first "line N" wins */
         }
 }
@@ -305,7 +305,7 @@ void app_main(void)
         struct aether_event e;
         int changed = 0;
         while (poll_event(&e)) {
-            if (e.type == EV_CLOSE) { if (run_fd >= 0) sys_close(run_fd); app_exit(0); }
+            if (e.type == EV_CLOSE) { if (run_fd >= 0) { sys_close(run_fd); if (run_pid >= 0) sys_waitpid(run_pid, 0); } app_exit(0); }
             if (e.type == EV_MOUSE) {
                 int mx = (int)e.a, my = (int)e.b;
                 if (run_btn_hit(mx, my)) { run_file(); changed = 1; }

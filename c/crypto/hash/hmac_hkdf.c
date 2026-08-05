@@ -14,6 +14,7 @@ static int blocklen(int hlen) { return hlen == 32 ? 64 : 128; }
 void hmac(int hlen, const uint8_t *key, int keylen,
           const uint8_t *msg, int msglen, uint8_t *out)
 {
+    if (hlen != 32 && hlen != 48) return;       /* only SHA-256 / SHA-384 are supported */
     int B = blocklen(hlen);
     uint8_t k[128], ipad[128], opad[128], inner[48];
     memset(k, 0, sizeof k);
@@ -36,6 +37,7 @@ void hmac(int hlen, const uint8_t *key, int keylen,
 void hkdf_extract(int hlen, const uint8_t *salt, int saltlen,
                   const uint8_t *ikm, int ikmlen, uint8_t *prk)
 {
+    if (hlen != 32 && hlen != 48) return;       /* zero[] below is only 48 bytes */
     uint8_t zero[48];
     if (!salt || saltlen == 0) { memset(zero, 0, hlen); salt = zero; saltlen = hlen; }
     hmac(hlen, salt, saltlen, ikm, ikmlen, prk);
@@ -44,6 +46,9 @@ void hkdf_extract(int hlen, const uint8_t *salt, int saltlen,
 void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
                  uint8_t *out, int outlen)
 {
+    /* in[] holds T(prev) + info + ctr; RFC 5869 caps outlen at 255*hlen */
+    if (hlen != 32 && hlen != 48) return;
+    if (infolen < 0 || infolen > 256 || outlen < 0 || outlen > 255*hlen) return;
     uint8_t t[48]; int tlen = 0, done = 0; uint8_t ctr = 1;
     while (done < outlen) {
         uint8_t in[48 + 256 + 1]; int n = 0;

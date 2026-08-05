@@ -152,9 +152,16 @@ fn inflate_core(b: &mut BitR, out: &mut [u8], op: &mut usize) -> i32 {
         let final_ = b.getbit(); if final_ < 0 { return -1; }
         let btype = b.getbits(2); if btype < 0 { return -1; }
         if btype == 0 {                                      // stored
-            b.nbits = 0; b.bits = 0;                         // byte-align, drop partial
+            // huff_decode/getbits prefetch aggressively, so the bit buffer may
+            // still hold WHOLE bytes already consumed from the stream past the
+            // end-of-block code. Hand them back (rewind pos) and drop only the
+            // sub-byte padding; dropping the whole buffer would lose bytes.
+            b.pos -= (b.nbits / 8) as usize;
+            b.nbits = 0; b.bits = 0;
             if b.pos + 4 > b.p.len() { return -1; }
             let len = (b.p[b.pos] as usize) | ((b.p[b.pos + 1] as usize) << 8);
+            let nlen = (b.p[b.pos + 2] as usize) | ((b.p[b.pos + 3] as usize) << 8);
+            if nlen != !len & 0xffff { return -1; }          // NLEN must be ~LEN
             b.pos += 4;                                      // skip LEN + NLEN
             if b.pos + len > b.p.len() || *op + len > outcap { return -1; }
             for _ in 0..len { out[*op] = b.p[b.pos]; *op += 1; b.pos += 1; }
@@ -215,6 +222,17 @@ fn inflate_core(b: &mut BitR, out: &mut [u8], op: &mut usize) -> i32 {
     0
 }
 
+/// RFC 1950 Adler-32 checksum.
+fn adler32(data: &[u8]) -> u32 {
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for &x in data {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
 /// C ABI: `int inflate_raw(const uint8_t *in, int inlen, uint8_t *out, int outcap, int *outlen)`.
 #[no_mangle]
 pub extern "C" fn inflate_raw(input: *const u8, inlen: i32, out: *mut u8, outcap: i32, outlen: *mut i32) -> i32 {
@@ -236,10 +254,23 @@ pub extern "C" fn zlib_decompress(input: *const u8, inlen: i32, out: *mut u8, ou
     if input.is_null() || inlen < 2 { return -1; }
     let inb = unsafe { slice::from_raw_parts(input, inlen as usize) };
     if (inb[0] & 0x0f) != 8 { return -1; }                  // not DEFLATE
+    if inb[0] >> 4 > 7 { return -1; }                       // CINFO window > 32K
+    if (inb[0] as u16 * 256 + inb[1] as u16) % 31 != 0 { return -1; }  // FCHECK
     let mut off = 2usize;
     if (inb[1] & 0x20) != 0 { off += 4; }                   // preset dictionary id
-    if off >= inlen as usize { return -1; }
-    inflate_raw(unsafe { input.add(off) }, inlen - off as i32, out, outcap, outlen)
+    if off + 4 > inlen as usize { return -1; }              // room for the adler32 trailer
+    let rc = inflate_raw(unsafe { input.add(off) }, inlen - off as i32, out, outcap, outlen);
+    if rc != 0 { return -1; }
+    // RFC 1950 trailer: Adler-32 of the uncompressed data, big-endian, as the
+    // last 4 bytes of the stream (callers pass the exact zlib stream).
+    let olen = unsafe { *outlen };
+    if olen < 0 { return -1; }
+    let n = inlen as usize;
+    let want = ((inb[n - 4] as u32) << 24) | ((inb[n - 3] as u32) << 16)
+             | ((inb[n - 2] as u32) << 8) | inb[n - 1] as u32;
+    let outb = unsafe { slice::from_raw_parts(out, olen as usize) };
+    if adler32(outb) != want { return -1; }
+    0
 }
 
 /// Boot self-test: decompress a baked-in zlib vector and check length + checksum.

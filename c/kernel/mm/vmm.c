@@ -26,6 +26,11 @@ static uint64_t *next_table(uint64_t *table, int idx)
         memset((void *)frame, 0, 4096);
         table[idx] = frame | PRESENT | WRITABLE | USER;
     } else {
+        if (table[idx] & 0x80)                  /* PS: a large-page leaf, not a table --
+                                                 * refuse to descend (boot.asm maps 0-1 GiB
+                                                 * with 2 MiB pages; treating a PD leaf as a
+                                                 * PT pointer would corrupt that page). */
+            return NULL;
         /* Keep the path user-reachable; leaf PTE flags still gate access, so
          * kernel-only pages (no USER on their final entry) stay protected. */
         table[idx] |= USER;
@@ -165,6 +170,16 @@ void vmm_free_user(uint64_t cr3)
     }
     pmm_free(pde & ~(uint64_t)0xFFF);           /* the PD frame */
     pdpt[USER_PDPT_IDX] = 0;
+
+    /* If this tore down the ACTIVE user space (execve), stale TLB entries for the
+     * old image may still translate its VAs to the just-freed frames (which PMM can
+     * now hand to anyone). No PCID here, so a same-value CR3 reload is the only
+     * full flush available; vmm_free_space never runs on the active CR3, so it
+     * correctly skips this. */
+    uint64_t cur;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cur));
+    if ((cur & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF))
+        vmm_switch(cur);
 }
 
 /* Tear down an entire address space created by vmm_new_space: the user subtree,
@@ -207,8 +222,9 @@ static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
 
 int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write)
 {
-    if (!ptr || !cr3) return 0;
-    if (len == 0) return 1;
+    if (!cr3) return 0;
+    if (len == 0) return 1;                 /* a zero-length access is valid even at NULL */
+    if (!ptr) return 0;
     uint64_t start = (uint64_t)ptr;
     uint64_t end = start + len - 1;
     if (end < start) return 0;

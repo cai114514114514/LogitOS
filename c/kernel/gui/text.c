@@ -40,7 +40,7 @@ static int resolve(uint32_t cp, int prefer, int *fidx)
 {
     if (font_ok[prefer]) { int g = ttf_glyph_id(&fonts[prefer], cp); if (g) { *fidx = prefer; return g; } }
     if (prefer != F_UI && font_ok[F_UI]) { int g = ttf_glyph_id(&fonts[F_UI], cp); if (g) { *fidx = F_UI; return g; } }
-    *fidx = font_ok[prefer] ? prefer : F_UI;
+    *fidx = font_ok[prefer] ? prefer : (font_ok[F_UI] ? F_UI : F_MONO);   /* fall back to a LOADED font */
     return 0;                                  /* .notdef */
 }
 
@@ -81,7 +81,7 @@ static int ascent_px(int fidx, int px) { return (int)(((long)fonts[fidx].ascent 
 static int draw(int x, int y, const char *utf8, int prefer, int px, int cell, uint32_t color)
 {
     if (!font_ok[F_UI] && !font_ok[F_MONO]) return x;
-    int base = y + ascent_px(font_ok[prefer] ? prefer : F_UI, px);
+    int base = y + ascent_px(font_ok[prefer] ? prefer : (font_ok[F_UI] ? F_UI : F_MONO), px);
     uint32_t cp;
     for (const char *s = utf8; *s; ) {
         s = utf8_next(s, &cp);
@@ -99,6 +99,7 @@ static int draw(int x, int y, const char *utf8, int prefer, int px, int cell, ui
 
 static int measure(const char *utf8, int prefer, int px, int cell)
 {
+    if (!font_ok[F_UI] && !font_ok[F_MONO]) return 0;   /* no font: glyph_get would divide by upem==0 */
     uint32_t cp; int x = 0;
     for (const char *s = utf8; *s; ) {
         s = utf8_next(s, &cp); if (!cp) break;
@@ -120,6 +121,7 @@ int text_width(const char *utf8){ return measure(utf8,F_UI,TEXT_UI_PX,0); }
 int text_measure(const char *s, int len, int px, int mono)
 {
     int prefer = mono ? F_MONO : F_UI;
+    if (!font_ok[F_UI] && !font_ok[F_MONO]) return 0;   /* no font: glyph_get would divide by upem==0 */
     uint32_t cp; int x = 0; const char *e = s + len;
     for (const char *p = s; p < e; ) {
         p = utf8_next(p, &cp); if (!cp) break;
@@ -134,7 +136,7 @@ int text_draw_run(int x, int y, const char *s, int len, int px, int mono, uint32
 {
     int prefer = mono ? F_MONO : F_UI;
     if (!font_ok[F_UI] && !font_ok[F_MONO]) return x;
-    int base = y + ascent_px(font_ok[prefer] ? prefer : F_UI, px);
+    int base = y + ascent_px(font_ok[prefer] ? prefer : (font_ok[F_UI] ? F_UI : F_MONO), px);
     uint32_t cp; const char *e = s + len;
     for (const char *p = s; p < e; ) {
         p = utf8_next(p, &cp); if (!cp) break;

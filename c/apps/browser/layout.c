@@ -25,7 +25,7 @@ static struct item *additem(int type)
 
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
-static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9') n=n*10+(*s++-'0'); return n; }
+static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9'){ if(n>100000) break; n=n*10+(*s++-'0'); } return n; }
 
 /* ---- inline flow ---- */
 /* current pen for inline content within a block. `align` is the block's
@@ -315,4 +315,5 @@ void layout_free(void) {
         items = 0;
     }
     nitem = 0; doc_h = 0;
+    page_has_bg = 0;    /* don't keep filling the viewport with the previous page's background */
 }

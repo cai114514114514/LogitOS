@@ -38,23 +38,27 @@ static void var_set(const char *name, int nlen, const char *val, int vlen){
     for (int k = 0; k < vlen; k++) vvals[idx][k] = val[k]; vvals[idx][vlen] = 0;
 }
 
-/* substitute var() in s[0..n) into out (single pass); returns out length */
-static int var_subst(const char *s, int n, char *out, int omax){
+/* substitute var() in s[0..n) into out (single pass); returns out length.
+ * `depth` bounds fallback recursion: nested var(--x, var(--x, ...)) needs only
+ * ~8 input bytes per level, so an unbounded recursion would blow the ring-3
+ * stack on a large stylesheet. Past the limit the fallback is left unexpanded. */
+#define VAR_MAX_DEPTH 32
+static int var_subst(const char *s, int n, char *out, int omax, int depth){
     int o = 0;
     for (int i = 0; i < n && o < omax - 1;) {
         if (i + 4 <= n && s[i]=='v'&&s[i+1]=='a'&&s[i+2]=='r'&&s[i+3]=='(') {
             int p = i + 4; while (p < n && s[p]==' ') p++;
             if (p + 1 < n && s[p]=='-' && s[p+1]=='-') {
                 int ns = p + 2, ne = ns; while (ne < n && vid(s[ne])) ne++;
-                int depth = 1, r = ne, fbs = -1;
-                while (r < n && depth > 0) { char c = s[r];
-                    if (c=='(') depth++; else if (c==')') { depth--; if (!depth) break; }
-                    else if (c==',' && depth==1 && fbs < 0) fbs = r + 1; r++; }
+                int depth_ = 1, r = ne, fbs = -1;
+                while (r < n && depth_ > 0) { char c = s[r];
+                    if (c=='(') depth_++; else if (c==')') { depth_--; if (!depth_) break; }
+                    else if (c==',' && depth_==1 && fbs < 0) fbs = r + 1; r++; }
                 int close = r;                            /* s[close]==')' or n */
                 int idx = var_find(s + ns, ne - ns);
                 if (idx >= 0) { for (int k = 0; vvals[idx][k] && o < omax-1; k++) out[o++] = vvals[idx][k]; }
-                else if (fbs >= 0) { int fe = close; while (fbs < fe && s[fbs]==' ') fbs++;
-                                     o += var_subst(s + fbs, fe - fbs, out + o, omax - o); }  /* fallback may itself be var() */
+                else if (fbs >= 0 && depth < VAR_MAX_DEPTH) { int fe = close; while (fbs < fe && s[fbs]==' ') fbs++;
+                                     o += var_subst(s + fbs, fe - fbs, out + o, omax - o, depth + 1); }  /* fallback may itself be var() */
                 i = (close < n) ? close + 1 : n;
                 continue;
             }
@@ -84,11 +88,11 @@ int css_expand_vars(const char *in, int inlen, char *out, int outmax){
         int changed = 0; char tmp[VVAL];
         for (int i = 0; i < nvars_; i++) {
             if (!has_var(vvals[i])) continue;
-            int tn = var_subst(vvals[i], (int)strlen(vvals[i]), tmp, VVAL);
+            int tn = var_subst(vvals[i], (int)strlen(vvals[i]), tmp, VVAL, 0);
             int same = 1; for (int k = 0; k <= tn; k++) if (tmp[k] != vvals[i][k]) { same = 0; break; }
             if (!same) { for (int k = 0; k <= tn; k++) vvals[i][k] = tmp[k]; changed = 1; }
         }
         if (!changed) break;
     }
-    return var_subst(in, inlen, out, outmax);          /* pass 3: substitute throughout */
+    return var_subst(in, inlen, out, outmax, 0);       /* pass 3: substitute throughout */
 }

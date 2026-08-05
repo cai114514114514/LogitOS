@@ -10,7 +10,10 @@
 /* ---- kernel-dependency stubs (resolve tcp.c's externs) ---- */
 struct net_config net_cfg = { 0x0A00020F };     /* 10.0.2.15 */
 static uint32_t g_last_ack, g_last_win;
+static uint32_t g_last_seq;
 static uint8_t  g_last_flags;
+static uint8_t  g_last_seg[1600];
+static int      g_last_len;
 static int      g_sends;
 int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len)
 {
@@ -18,8 +21,11 @@ int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len)
     const uint8_t *p = payload;
     if (len >= 20) {
         g_last_ack = (uint32_t)p[8]<<24 | (uint32_t)p[9]<<16 | (uint32_t)p[10]<<8 | p[11];
+        g_last_seq = (uint32_t)p[4]<<24 | (uint32_t)p[5]<<16 | (uint32_t)p[6]<<8 | p[7];
         g_last_flags = p[13];
         g_last_win = (uint32_t)p[14]<<8 | p[15];
+        g_last_len = len;
+        memcpy(g_last_seg, payload, len);
         g_sends++;
     }
     return 0;
@@ -27,7 +33,11 @@ int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len)
 static uint64_t g_ticks = 1;
 uint64_t timer_ticks(void) { return g_ticks; }
 void net_poll(void) {}
-void net_idle(void) {}
+void net_idle(void) { g_ticks++; }
+void kernel_random_bytes(uint8_t *out, int len)
+{
+    for (int i = 0; i < len; i++) out[i] = (uint8_t)(0xA5u + (unsigned)i);
+}
 
 /* macOS <string.h> makes memcpy/memset fortify macros; tcp.c re-prototypes them
  * as plain funcs (the kernel has no libc), so drop the macros first. */
@@ -55,22 +65,43 @@ static void setup(uint32_t isn)
     c->lport = LPORT; c->rport = RPORT; c->rip = RIP;
     c->rcv_nxt = c->read_seq = isn;
     c->snd_una = c->snd_nxt = 0xC0DE0000u;
+    c->snd_wnd = 65535; c->peer_mss = TXBUF;
+    c->snd_wl1 = isn; c->snd_wl2 = c->snd_una;
+}
+
+static void put32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
+/* General segment injector. opts must be padded to a 4-byte boundary. */
+static void inject_seg(uint32_t base, uint32_t seq, uint32_t ack, uint16_t window,
+                       int n, uint8_t flags, const uint8_t *opts, int optlen,
+                       int corrupt_checksum)
+{
+    uint8_t buf[60 + 2048];
+    int hlen = 20 + optlen;
+    memset(buf, 0, (size_t)(hlen + n));
+    buf[0] = (RPORT >> 8); buf[1] = RPORT & 0xFF;
+    buf[2] = (LPORT >> 8); buf[3] = LPORT & 0xFF;
+    put32(buf + 4, seq); put32(buf + 8, ack);
+    buf[12] = (uint8_t)((hlen / 4) << 4);
+    buf[13] = flags;
+    buf[14] = (uint8_t)(window >> 8); buf[15] = (uint8_t)window;
+    if (optlen) memcpy(buf + 20, opts, (size_t)optlen);
+    for (int i = 0; i < n; i++) buf[hlen + i] = pat((seq - base) + (uint32_t)i);
+    uint16_t csum = tcp_checksum(RIP, net_cfg.ip, buf, hlen + n);
+    buf[16] = (uint8_t)(csum >> 8); buf[17] = (uint8_t)csum;
+    if (corrupt_checksum) buf[hlen + (n ? n - 1 : 0)] ^= 0x40;
+    tcp_input(RIP, buf, (uint16_t)(hlen + n));
 }
 
 /* Inject a data segment [seq, seq+n): payload byte i = pat(seq_off + i) where
  * seq_off is the stream offset (seq - base). base passed so pattern is absolute. */
 static void inject(uint32_t base, uint32_t seq, int n, uint8_t flags)
 {
-    uint8_t buf[20 + 2048];
-    memset(buf, 0, 20);
-    buf[0] = (RPORT >> 8); buf[1] = RPORT & 0xFF;       /* sport = remote */
-    buf[2] = (LPORT >> 8); buf[3] = LPORT & 0xFF;       /* dport = local  */
-    buf[4]=seq>>24; buf[5]=seq>>16; buf[6]=seq>>8; buf[7]=seq;   /* seq */
-    /* ack = 0 */
-    buf[12] = (5 << 4);                                  /* data offset = 5 words */
-    buf[13] = flags;
-    for (int i = 0; i < n; i++) buf[20 + i] = pat((seq - base) + (uint32_t)i);
-    tcp_input(RIP, buf, (uint16_t)(20 + n));
+    inject_seg(base, seq, conns[0].snd_nxt, 65535, n, flags, NULL, 0, 0);
 }
 
 /* Drain all contiguous bytes; verify each equals its pattern. Returns total. */
@@ -174,6 +205,82 @@ int main(void)
         CHECK(ok, "wrap drain: %d bytes %s", total, ok ? "ok" : "MISMATCH");
     }
 
-    printf("\nTCP reassembly: %d passed, %d failed\n", passed, failed);
+    /* 9) bad TCP checksum is discarded before it can advance receive state. */
+    setup(B);
+    inject_seg(B, B, conns[0].snd_nxt, 65535, 4, ACK, NULL, 0, 1);
+    CHECK(conns[0].rcv_nxt == B && conns[0].rx_len == 0,
+          "checksum: corrupt segment must be discarded");
+
+    /* 10) SYN carries our MSS; SYN-ACK MSS and send window are learned. */
+    setup(B);
+    send_seg(&conns[0], SYN, conns[0].snd_nxt, NULL, 0);
+    CHECK((g_last_seg[12] >> 4) == 6 && g_last_len == 24,
+          "SYN: 24-byte header with MSS option (off=%u len=%d)",
+          g_last_seg[12] >> 4, g_last_len);
+    CHECK(g_last_seg[20] == 2 && g_last_seg[21] == 4 &&
+          (((unsigned)g_last_seg[22] << 8) | g_last_seg[23]) == TXBUF,
+          "SYN: advertises MSS=%d", TXBUF);
+
+    {
+        struct tcp_conn *c = &conns[0];
+        memset(c, 0, sizeof *c);
+        c->used = 1; c->state = SYN_SENT;
+        c->lport = LPORT; c->rport = RPORT; c->rip = RIP;
+        c->snd_una = 100; c->snd_nxt = 101; c->tx_flags = SYN;
+        uint8_t mssopt[4] = { 2, 4, 0x04, 0xB0 };       /* 1200 */
+        inject_seg(500, 500, 101, 4096, 0, SYN | ACK, mssopt, 4, 0);
+        CHECK(c->state == ESTABLISHED && c->peer_mss == 1200 && c->snd_wnd == 4096,
+              "SYN-ACK: state=%d mss=%u wnd=%u", c->state, c->peer_mss, c->snd_wnd);
+    }
+
+    /* 11) newer window updates win; a reordered older update cannot shrink it. */
+    setup(B);
+    inject_seg(B, B + 2, conns[0].snd_nxt, 1000, 0, ACK, NULL, 0, 0);
+    CHECK(conns[0].snd_wnd == 1000, "window: accepted newer update (%u)", conns[0].snd_wnd);
+    inject_seg(B, B + 1, conns[0].snd_nxt, 5, 0, ACK, NULL, 0, 0);
+    CHECK(conns[0].snd_wnd == 1000, "window: ignored reordered shrink (%u)", conns[0].snd_wnd);
+
+    /* 12) in-window non-exact RST gets a challenge ACK; exact RCV.NXT resets. */
+    setup(B);
+    int before = g_sends;
+    inject_seg(B, B + 1, 0, 0, 0, RST, NULL, 0, 0);
+    CHECK(conns[0].used && g_sends == before + 1 && (g_last_flags & ACK),
+          "RST: in-window non-exact reset challenged");
+    inject_seg(B, B, 0, 0, 0, RST, NULL, 0, 0);
+    CHECK(!conns[0].used, "RST: exact RCV.NXT reset accepted");
+
+    /* 13) peer MSS/window cap a queued segment; zero window enters persist
+     * mode rather than killing the connection after ordinary retry count. */
+    setup(B);
+    conns[0].peer_mss = 200; conns[0].snd_wnd = 300;
+    uint8_t sendbuf[500]; memset(sendbuf, 0x5A, sizeof sendbuf);
+    int ns = tcp_send(0, sendbuf, sizeof sendbuf);
+    CHECK(ns == 200 && conns[0].tx_len == 200 && g_last_len == 220,
+          "send cap: queued=%d tx=%d wire=%d", ns, conns[0].tx_len, g_last_len);
+
+    setup(B);
+    conns[0].snd_wnd = 0;
+    ns = tcp_send(0, sendbuf, 1);
+    CHECK(ns == 1 && conns[0].tx_probe && conns[0].tx_len == 1,
+          "zero window: one-byte persist probe queued");
+    g_ticks = conns[0].tx_tick + 2000;
+    for (int i = 0; i < 12; i++) { tcp_poll(); g_ticks += 2000; }
+    CHECK(conns[0].used && conns[0].tx_probe,
+          "zero window: persist retries do not abort connection");
+
+    /* 14) close waits behind unacknowledged payload instead of replacing its
+     * retransmit slot with FIN. The payload ACK then starts the FIN. */
+    setup(B);
+    send_seg(&conns[0], PSH | ACK, conns[0].snd_nxt, sendbuf, 10);
+    arm_retransmit(&conns[0], PSH | ACK, conns[0].snd_nxt, sendbuf, 10);
+    conns[0].snd_nxt += 10;
+    tcp_close(0);
+    CHECK(conns[0].close_pending && conns[0].state == ESTABLISHED &&
+          conns[0].tx_flags == (PSH | ACK), "close: payload retained until ACK");
+    inject_seg(B, B, conns[0].snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+    CHECK(conns[0].state == FIN_WAIT && conns[0].tx_flags == (FIN | ACK),
+          "close: FIN starts after payload ACK");
+
+    printf("\nTCP protocol tests: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

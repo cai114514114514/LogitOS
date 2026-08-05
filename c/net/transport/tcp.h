@@ -3,13 +3,14 @@
 
 #include <stdint.h>
 
-/* A minimal active-open (client) TCP: reliable byte stream over IPv4. No
- * listen/accept. Receive does full out-of-order reassembly (a sorted interval
- * set over a seq-indexed 64 KiB ring), so a reordered/lost segment mid-flight no
- * longer discards the rest -- large TLS handshake flights arrive reliably. Send
- * keeps a single outstanding segment but segments payloads > MSS (no truncation).
- * The public API is blocking-ish (it pumps net_poll) and must run with
- * interrupts enabled, exactly like dns_resolve(). */
+/* A compact active-open (client) TCP over IPv4. No listen/accept. Receive does
+ * out-of-order reassembly over a seq-indexed 64 KiB ring. Send keeps one
+ * outstanding segment, honors the peer MSS and advertised window, and uses
+ * zero-window persist probes. Checksums, receive-sequence acceptability,
+ * cumulative ACKs, retransmission, and challenge ACKs for in-window RSTs are
+ * implemented. Congestion control, window scaling, SACK, timestamps, urgent
+ * data, and a full RFC close/TIME-WAIT state machine are not. The public API is
+ * blocking-ish (it pumps net_poll) and must run with interrupts enabled. */
 
 /* RX entry (handed to ip_input's protocol dispatch). */
 void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);

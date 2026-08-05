@@ -21,6 +21,13 @@ const char *utf8_next(const char *s, uint32_t *cp)
         if ((p[i] & 0xC0) != 0x80) { *cp = 0xFFFD; return s + 1; }  /* bad cont. */
         v = (v << 6) | (p[i] & 0x3F);
     }
+    /* Reject overlong forms, UTF-16 surrogates and values past U+10FFFF: they
+     * are not valid UTF-8 (RFC 3629), and an overlong NUL (C0 80) would decode
+     * to cp==0, which callers take as end-of-string. */
+    if (v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF) ||
+        (n == 1 && v < 0x80) || (n == 2 && v < 0x800) || (n == 3 && v < 0x10000)) {
+        *cp = 0xFFFD; return s + 1;
+    }
     *cp = v;
     return s + 1 + n;
 }

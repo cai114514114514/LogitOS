@@ -1,7 +1,18 @@
 #include "clib.h"
 
 /* cat [file...] -- copy files (or stdin if none) to stdout. */
-static void copy_fd(int fd) { char b[512]; int r; while ((r = sys_read(fd, b, sizeof b)) > 0) sys_write(1, b, r); }
+static void copy_fd(int fd)
+{
+    char b[512]; int r;
+    while ((r = sys_read(fd, b, sizeof b)) > 0) {
+        int o = 0;
+        while (o < r) {                     /* pipe short writes: retry, don't drop data */
+            int w = sys_write(1, b + o, r - o);
+            if (w <= 0) return;
+            o += w;
+        }
+    }
+}
 
 int main(int argc, char **argv)
 {

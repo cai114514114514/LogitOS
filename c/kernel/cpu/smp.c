@@ -26,6 +26,7 @@
 
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
+void  kfree(void *);
 
 extern uint8_t ap_tramp_start[], ap_tramp_end[];
 
@@ -144,8 +145,9 @@ static void ap_entry(void)
     for (int i = 1; i < PERCPU_MAXCPU; i++)
         if (g_cpus[i].lapic_id == my_id) { idx = i; break; }
     if (idx <= 0 || idx >= PERCPU_MAXCPU) {    /* slot 0 = BSP; not found -> park idle */
-        __atomic_add_fetch(&g_online, 1, __ATOMIC_SEQ_CST);
-        ap_ack = 1;
+        ap_ack = 1;                            /* do NOT g_online++ here: this CPU has no
+                                                * percpu slot / g_cpus[] entry, and counting
+                                                * it would overstate smp_cpu_count(). */
         for (;;) __asm__ volatile ("sti; hlt");
     }
     percpu_ap_init(idx, lapic_id());           /* build + load this core's GDT/TSS */
@@ -171,6 +173,11 @@ static void ap_entry(void)
         __asm__ volatile ("sti; hlt");
 
     thread_create_idle(idx);                   /* sets g_cpus[idx].idle + .current = this stack */
+    /* We arrive with IF=1 (the park loop's `sti; hlt`) and the LAPIC timer armed:
+     * a timer IRQ landing between taking the BKL ticket and g_bkl_owner=me would
+     * try to re-acquire the BKL this core holds -> self-deadlock. cli first, per
+     * spinlock.c's "bare re-acquire sites cli around themselves" rule. */
+    __asm__ volatile ("cli");
     spin_lock(&g_bkl);                         /* enter the kernel before first schedule() */
     this_cpu()->in_kernel = 1;
     sched_become_idle();                       /* this AP stack BECOMES the idle thread; never returns */
@@ -211,6 +218,7 @@ void smp_init(void)
     uint32_t bsp = lapic_id();
     cpu_apicid[0] = (uint8_t)bsp;
     for (int i = 0; i < n; i++) {
+        if (g_online >= PERCPU_MAXCPU) break;  /* no percpu slot / g_cpus[] entry beyond this */
         uint8_t aid = acpi_cpu_apic_id(i);
         if (aid == bsp) continue;
         uint8_t *stk = kmalloc(AP_STACK);
@@ -223,7 +231,7 @@ void smp_init(void)
         ap_ack = 0;
         lapic_start_ap(aid, TRAMP_PHYS >> 12);
         for (volatile long w = 0; !ap_ack && w < 200000000L; w++) __asm__ volatile ("pause");
-        if (!ap_ack) { cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }
+        if (!ap_ack) { kfree(stk); cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }
     }
     kprintf("[smp] %d/%d CPUs online\n", g_online, n);
     if (g_online > 1) {

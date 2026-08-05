@@ -358,6 +358,7 @@ static void compile_comprehension(int forP)
     Compiler comp;
     comp.enclosing = current;
     comp.fn = as_fn_new();
+    if (!comp.fn) { loop_depth = saved_loop_depth; error("out of memory"); return; }
     comp.fn->name = as_str_copy("<listcomp>", 10);
     comp.fn->module = g_module;
     comp.local_count = 0;
@@ -642,8 +643,11 @@ static int expr_depth;
 
 static void parse_precedence(Prec prec)
 {
-    if (expr_depth < 64) expr_start[expr_depth] = current->fn->count;
-    expr_depth++;
+    /* Depth cap: expr_start[64] is sized 64, and each nesting level is also one C
+     * frame (grouping/f-string/ternary recursion) -- an uncapped nest both breaks
+     * ternary_'s rewind (expr_start falls off the end) and can exhaust the C stack. */
+    if (expr_depth >= 64) { error("expression nested too deep"); return; }
+    expr_start[expr_depth++] = current->fn->count;
     advance();
     ParseFn prefix = get_rule(tk_prev().type)->prefix;
     if (!prefix) { error("expected an expression"); expr_depth--; return; }
@@ -972,6 +976,7 @@ static void compile_function(const char *name, int namelen, int is_lambda, int i
     Compiler comp;
     comp.enclosing = current;
     comp.fn = as_fn_new();
+    if (!comp.fn) { loop_depth = saved_loop_depth; error("out of memory"); return; }
     comp.fn->name = as_str_copy(name, namelen);
     comp.fn->module = g_module;
     comp.local_count = 0;
@@ -1182,6 +1187,7 @@ static void break_statement(void)
     LoopCtx *L = &loop_stack[loop_depth - 1];
     pop_locals_to(L->break_base);
     if (L->nbreak < 64) L->breaks[L->nbreak++] = emitJump(OP_JUMP);
+    else error("too many 'break' statements in one loop");   /* 65th would emit pops but no jump -> stack imbalance */
     consume_stmt_end();
 }
 static void continue_statement(void)
@@ -1190,6 +1196,7 @@ static void continue_statement(void)
     LoopCtx *L = &loop_stack[loop_depth - 1];
     pop_locals_to(L->cont_base);
     if (L->ncont < 64) L->conts[L->ncont++] = emitJump(OP_JUMP);
+    else error("too many 'continue' statements in one loop");   /* 65th would emit pops but no jump -> stack imbalance */
     consume_stmt_end();
 }
 
@@ -1229,6 +1236,7 @@ ObjFn *as_compile_module(const char *src, ObjModule *module)
     Compiler comp;
     comp.enclosing = NULL;
     comp.fn = as_fn_new();
+    if (!comp.fn) { free(toks); as_gc_pop_disable(); return NULL; }   /* g_oom set */
     comp.fn->name = NULL;                    /* the top-level script */
     comp.fn->module = module;
     comp.local_count = 0;
@@ -1259,5 +1267,6 @@ ObjFn *as_compile(const char *src)   /* standalone: compile into a fresh __main_
     as_gc_push_disable();
     ObjModule *m = as_module_new("__main__", 8);
     as_gc_pop_disable();
+    if (!m) return NULL;                     /* g_oom + as_err set by as_malloc */
     return as_compile_module(src, m);
 }

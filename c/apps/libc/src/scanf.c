@@ -36,7 +36,7 @@ int vsscanf(const char *s, const char *fmt, va_list ap)
         if (*p == '%') { while (sp(*s)) s++; if (*s != '%') return assigned; s++; p++; continue; }
 
         int suppress = 0; if (*p == '*') { suppress = 1; p++; }
-        int width = 0; while (*p >= '0' && *p <= '9') width = width * 10 + (*p++ - '0');
+        int width = 0; while (*p >= '0' && *p <= '9') { width = width * 10 + (*p++ - '0'); if (width > 0x1000000) width = 0x1000000; }  /* clamp: unbounded accumulation is signed-overflow UB */
         int lmod = 0;                                   /* -2=hh -1=h 0=int 1=l 2=ll */
         for (;;) {
             if (*p == 'l') { lmod = (lmod >= 1) ? 2 : 1; p++; }

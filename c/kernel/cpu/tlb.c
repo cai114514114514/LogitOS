@@ -30,10 +30,15 @@ void tlb_flush_all(void)
         lapic_send_ipi((uint8_t)g_cpus[i].lapic_id, TLB_IPI_VEC);
         others++;
     }
-    /* Spin until every other core has flushed. Bounded: the IPI handler takes no
-     * lock, and this runs under the BKL so no other core is initiating a
-     * shootdown concurrently (no cross-shootdown wait cycle). */
-    while (g_tlb_ack < others) __asm__ volatile ("pause");
+    /* Spin until every other core has flushed. BOUNDED: a core spinning to
+     * acquire the BKL does so with IF=0 (irqsave) and cannot service the IPI,
+     * so an unbounded wait here would deadlock the whole machine the day any
+     * caller wires this up under the BKL (the exact failure smp_present_par
+     * guards against with its contention gate). An un-acked core simply keeps
+     * stale TLB entries until its next CR3 switch flushes them -- safe, since
+     * every current use pairs the shootdown with a CR3 reload. */
+    for (volatile long spin = 0; spin < 50000000L && g_tlb_ack < others; spin++)
+        __asm__ volatile ("pause");
 }
 
 void tlb_ipi(void)

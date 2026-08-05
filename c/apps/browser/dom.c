@@ -63,9 +63,16 @@ static int decode_text(const char *s, const char *e, char *out, int cap)
         int v = -1;
         if (*p == '#') {
             int hex = (p[1]=='x'||p[1]=='X'); const char *d = p + (hex?2:1); v = 0;
+            int nd = 0;
             for (; d < semi; d++) { char c=*d;
-                if (hex) { if(c>='0'&&c<='9')v=v*16+c-'0'; else if(c>='a'&&c<='f')v=v*16+c-'a'+10; else if(c>='A'&&c<='F')v=v*16+c-'A'+10; }
-                else if (c>='0'&&c<='9') v=v*10+c-'0'; }
+                int dig = -1;
+                if (hex) { if(c>='0'&&c<='9')dig=c-'0'; else if(c>='a'&&c<='f')dig=c-'a'+10; else if(c>='A'&&c<='F')dig=c-'A'+10; }
+                else if (c>='0'&&c<='9') dig=c-'0';
+                if (dig < 0) { v = -1; break; }            /* e.g. &#xZZ; -> emit literally, not a NUL byte */
+                v = v*(hex?16:10)+dig; nd++;
+                if (v > 0x10FFFF) { v = -1; break; }       /* cap: larger values would emit invalid UTF-8 */
+            }
+            if (!nd) v = -1;
         } else {
             int l = semi - p;
             for (int e2 = 0; ENTITIES[e2].name; e2++)
@@ -91,6 +98,7 @@ static void emit_text(struct node *parent, const char *s, const char *e)
     int len = decode_text(s, e, buf, cap);
     if (len == 0) { kfree(buf); return; }
     struct node *t = newnode(N_TEXT);
+    if (!t) { kfree(buf); return; }
     t->text = buf; t->textlen = len;
     add_child(parent, t);
 }
@@ -148,6 +156,7 @@ struct node *dom_parse(const char *html, int len)
             if (tb) { memcpy(tb->tag, "tbody", 6); add_child(TOP, tb); stack[sd++] = tb; }
         }
         struct node *el = newnode(N_ELEM);
+        if (!el) { while (p<end && *p!='>') p++; if(p<end)p++; continue; }
         memcpy(el->tag, name, nl+1);
         /* attributes */
         struct attr tmp[32]; int na = 0;
@@ -163,12 +172,14 @@ struct node *dom_parse(const char *html, int len)
                 if (p<end && *p=='=') {
                     p++; while (p<end && sp(*p)) p++;
                     int vn=0;
-                    if (p<end && (*p=='"'||*p=='\'')) { char q=*p++; while (p<end && *p!=q && vn<255) tmp[na].val[vn++]=*p++; if(p<end)p++; }
+                    if (p<end && (*p=='"'||*p=='\'')) { char q=*p++; while (p<end && *p!=q && vn<255) tmp[na].val[vn++]=*p++; while (p<end && *p!=q) p++; if(p<end)p++; }  /* skip a truncated value to its closing quote so a quoted '>' can't end the tag early */
                     else { while (p<end && !sp(*p) && *p!='>' && vn<255) tmp[na].val[vn++]=*p++; }  /* unquoted: until ws/'>' */
                     tmp[na].val[vn]=0;
                 }
                 na++;
-            } else { while (p<end && !sp(*p) && *p!='>' && *p!='/') p++; }
+            } else { while (p<end && !sp(*p) && *p!='>' && *p!='/') {     /* overflow attr: skip, honoring quoted values */
+                         if (*p=='"'||*p=='\'') { char q=*p++; while (p<end && *p!=q) p++; if(p<end)p++; }
+                         else p++; } }
         }
         int selfclose = (p<end && *p=='/');
         while (p < end && *p != '>') p++; if (p<end) p++;
@@ -190,7 +201,7 @@ struct node *dom_parse(const char *html, int len)
                 }
                 p++;
             }
-            if (p>rs) { char *buf=kmalloc((int)(p-rs)+1); if(buf){memcpy(buf,rs,p-rs);buf[p-rs]=0;struct node*tx=newnode(N_TEXT);tx->text=buf;tx->textlen=(int)(p-rs);add_child(el,tx);} }
+            if (p>rs) { char *buf=kmalloc((int)(p-rs)+1); if(buf){memcpy(buf,rs,p-rs);buf[p-rs]=0;struct node*tx=newnode(N_TEXT);if(tx){tx->text=buf;tx->textlen=(int)(p-rs);add_child(el,tx);}else kfree(buf);} }
             while (p<end && *p!='>') p++; if(p<end)p++;
             continue;
         }

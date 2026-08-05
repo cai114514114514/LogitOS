@@ -88,9 +88,12 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
 int arp_warm(uint32_t ip, int timeout)
 {
     uint8_t mac[ETH_ALEN];
-    uint64_t start = timer_ticks();
-    while (arp_resolve(ip, mac) != 0) {
+    uint64_t start = timer_ticks(), last = 0;
+    /* Rate-limit requests to ~one per 10 ticks (100 ms): each loop iteration
+     * otherwise fires a broadcast request, which is noise on a busy LAN. */
+    while (cache_get(ip, mac) != 0) {
         if ((int)(timer_ticks() - start) > timeout) return -1;
+        if (timer_ticks() - last >= 10) { arp_resolve(ip, mac); last = timer_ticks(); }
         net_poll();
         net_idle();
     }

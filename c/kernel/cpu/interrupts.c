@@ -75,6 +75,15 @@ void interrupt_handler(struct registers *r)
     int bkl_free = ((r->vector == 128) && syscall_is_bkl_free((int)r->rax))
                    || r->vector == 240 || r->vector == 241;
     uint64_t bf = 0;
+    /* BSP wall-clock tick MUST NOT wait for the BKL: the network stack's
+     * timeouts/retransmits are driven by timer_ticks(), and a thread holding
+     * the BKL in a blocking fetch may itself be waiting for those timeouts.
+     * If the tick queued behind the BKL, ticks would freeze, the fetch would
+     * never time out, and the BKL would never be released -> circular wait,
+     * whole-machine freeze. timer_ticks is a single-writer (BSP timer IRQ
+     * only) volatile counter and its readers are lock-free, so ticking here
+     * is safe. */
+    if (r->vector == 32 && me->index == 0) timer_tick();
     if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
     if (r->vector == 128) {        /* int 0x80 system call */
@@ -114,7 +123,7 @@ void interrupt_handler(struct registers *r)
         int apic = smp_irq_via_apic();      /* EOI to the LAPIC once IRQs go via I/O APIC */
 
         if (irq == 0) {
-            if (me->index == 0) timer_tick();   /* BSP owns the wall-clock tick */
+            /* tick already done above (before the BKL acquire -- see comment) */
             if (apic) lapic_eoi(); else pic_eoi(0);
             /* Don't preempt mid block-I/O, and never re-enter the scheduler from
              * a NESTED IRQ (the sti window inside an in-progress kernel op). */

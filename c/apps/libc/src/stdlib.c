@@ -15,9 +15,9 @@ void exit(int code)  { sys(SYS_EXIT, code, 0, 0); for (;;) {} }
 void _Exit(int code) { sys(SYS_EXIT, code, 0, 0); for (;;) {} }
 void abort(void)     { printf("\n[libc] abort()\n"); sys(SYS_EXIT, 134, 0, 0); for (;;) {} }
 
-int  abs(int x)        { return x < 0 ? -x : x; }
-long labs(long x)      { return x < 0 ? -x : x; }
-long long llabs(long long x) { return x < 0 ? -x : x; }
+int  abs(int x)        { return x < 0 ? (int)-(unsigned)x : x; }   /* unsigned negate: no UB at INT_MIN */
+long labs(long x)      { return x < 0 ? (long)-(unsigned long)x : x; }
+long long llabs(long long x) { return x < 0 ? (long long)-(unsigned long long)x : x; }
 
 typedef struct { int quot, rem; }       div_t;
 typedef struct { long quot, rem; }      ldiv_t;
@@ -97,6 +97,7 @@ static double pow10i(int e)
 }
 double strtod(const char *s, char **end)
 {
+    const char *start = s;
     while (isspace_(*s)) s++;
     int neg = 0; if (*s == '+' || *s == '-') neg = (*s++ == '-');
     double v = 0; int any = 0;
@@ -104,10 +105,12 @@ double strtod(const char *s, char **end)
     if (*s == '.') { s++; double f = 0.1; while (*s >= '0' && *s <= '9') { v += (*s++ - '0') * f; f *= 0.1; any = 1; } }
     if (any && (*s == 'e' || *s == 'E')) {
         s++; int eneg = 0; if (*s == '+' || *s == '-') eneg = (*s++ == '-');
-        int e = 0; while (*s >= '0' && *s <= '9') e = e * 10 + (*s++ - '0');
+        /* clamp while consuming: unbounded accumulation overflows int (UB); any
+         * |e| beyond ~400 already saturates the result to inf or 0 anyway. */
+        int e = 0; while (*s >= '0' && *s <= '9') { if (e < 100000) e = e * 10 + (*s - '0'); s++; }
         v *= pow10i(eneg ? -e : e);
     }
-    if (end) *end = (char *)s;
+    if (end) *end = (char *)(any ? s : start);   /* no conversion: point back at the original s */
     return neg ? -v : v;
 }
 float  strtof(const char *s, char **e) { return (float)strtod(s, e); }

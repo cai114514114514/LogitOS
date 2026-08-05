@@ -11,7 +11,8 @@ int main(int argc, char **argv)
     while (lines < limit && (r = sys_read(fd, buf, sizeof buf)) > 0) {
         int n = 0;                          /* bytes to emit from this read */
         while (n < r && lines < limit) { if (buf[n++] == '\n') lines++; }
-        sys_write(1, buf, n);
+        int o = 0;                          /* pipe short writes: retry, don't drop data */
+        while (o < n) { int w = sys_write(1, buf + o, n - o); if (w <= 0) { if (fd) sys_close(fd); return 1; } o += w; }
     }
     if (fd) sys_close(fd);
     return 0;

@@ -87,8 +87,8 @@ static uint8_t mac[6];
 static int g_irq = -1;                                  /* PCI IRQ line (GSI) */
 static void (*g_rxcb)(const uint8_t *frame, uint16_t len);   /* RX handler for IRQ mode */
 
-static struct rx_desc *rx_ring;
-static struct tx_desc *tx_ring;
+static volatile struct rx_desc *rx_ring;    /* DMA rings: the NIC writes status/length */
+static volatile struct tx_desc *tx_ring;
 static uint8_t *rx_buf[RX_DESC];
 static uint8_t *tx_buf[TX_DESC];
 static int rx_cur, tx_cur;
@@ -98,14 +98,20 @@ static inline void reg_write(uint32_t off, uint32_t v) { *(volatile uint32_t *)(
 
 static void delay(void) { for (volatile int i = 0; i < 1000000; i++) ; }
 
-static void rx_init(void)
+static int rx_init(void)
 {
     /* One contiguous frame holds the descriptor ring (RX_DESC*16 = 512 B). */
     uint64_t ring = pmm_alloc();
+    if (!ring) return -1;
     rx_ring = (struct rx_desc *)ring;
-    memset(rx_ring, 0, RX_DESC * sizeof(struct rx_desc));
+    memset((void *)rx_ring, 0, RX_DESC * sizeof(struct rx_desc));
     for (int i = 0; i < RX_DESC; i++) {
         rx_buf[i] = (uint8_t *)pmm_alloc();      /* 4 KiB frame, holds a 2 KiB buffer */
+        if (!rx_buf[i]) {
+            for (int j = 0; j < i; j++) pmm_free((uint64_t)rx_buf[j]);
+            pmm_free(ring);
+            return -1;
+        }
         rx_ring[i].addr = (uint64_t)rx_buf[i];   /* identity-mapped: phys == virt */
         rx_ring[i].status = 0;
     }
@@ -116,15 +122,22 @@ static void rx_init(void)
     reg_write(REG_RDT, RX_DESC - 1);
     rx_cur = 0;
     reg_write(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048);
+    return 0;
 }
 
-static void tx_init(void)
+static int tx_init(void)
 {
     uint64_t ring = pmm_alloc();
+    if (!ring) return -1;
     tx_ring = (struct tx_desc *)ring;
-    memset(tx_ring, 0, TX_DESC * sizeof(struct tx_desc));
+    memset((void *)tx_ring, 0, TX_DESC * sizeof(struct tx_desc));
     for (int i = 0; i < TX_DESC; i++) {
         tx_buf[i] = (uint8_t *)pmm_alloc();
+        if (!tx_buf[i]) {
+            for (int j = 0; j < i; j++) pmm_free((uint64_t)tx_buf[j]);
+            pmm_free(ring);
+            return -1;
+        }
         tx_ring[i].addr = (uint64_t)tx_buf[i];
         tx_ring[i].status = TXD_STA_DD;          /* mark free */
     }
@@ -136,6 +149,7 @@ static void tx_init(void)
     tx_cur = 0;
     reg_write(REG_TIPG, 10 | (8 << 10) | (6 << 20));
     reg_write(REG_TCTL, TCTL_EN | TCTL_PSP | (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT));
+    return 0;
 }
 
 int e1000_init(void)
@@ -173,8 +187,10 @@ int e1000_init(void)
               ((uint32_t)mac[2] << 16) | ((uint32_t)mac[3] << 24));
     reg_write(REG_RAH0, (uint32_t)mac[4] | ((uint32_t)mac[5] << 8) | (1u << 31));
 
-    rx_init();
-    tx_init();
+    if (rx_init() != 0 || tx_init() != 0) {
+        kprintf("[net] e1000: descriptor ring allocation failed\n");
+        return -1;
+    }
 
     /* QEMU only re-offers a packet that arrived while RX was disabled when the
      * guest pokes the NIC; re-write RDT so any queued frame is flushed to us. */
@@ -187,6 +203,8 @@ int e1000_init(void)
 
 const uint8_t *e1000_mac(void) { return mac; }
 
+/* Contract: callers must hold net_lock (IF=0) -- the TX ring and tx_cur are not
+ * otherwise serialized. All current paths (eth/ip/tcp/udp/icmp send) do. */
 int e1000_tx(const void *frame, uint16_t len)
 {
     if (!mmio || len > BUF_SIZE) return -1;
@@ -210,9 +228,20 @@ int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len))
     if (!mmio) return 0;
     uint64_t f = net_lock();                     /* exclude the RX IRQ + mainline tcp_recv */
     int n = 0;
-    while (rx_ring[rx_cur].status & RXD_STA_DD) {
+    /* Bounded drain: each iteration hands the buffer straight back to the NIC
+     * (RDT write), so under a sustained RX flood the NIC re-posts DD as fast as
+     * we clear it -- an unbounded loop here never exits, and when the caller is
+     * the NIC IRQ (vector 65, IF=0, BKL held) that hard-freezes the machine.
+     * One ring's worth per call is guaranteed progress; the rest is picked up
+     * by the next RXT0 IRQ or the net_poll backstop. */
+    int budget = RX_DESC;
+    while (budget-- > 0 && (rx_ring[rx_cur].status & RXD_STA_DD)) {
         uint16_t len = rx_ring[rx_cur].length;
-        cb(rx_buf[rx_cur], len);
+        /* length/errors/EOP come from the NIC: only hand the stack frames that
+         * fit our 2 KiB buffer and completed in a single descriptor (no jumbo). */
+        if (len > 0 && len <= BUF_SIZE && !rx_ring[rx_cur].errors &&
+            (rx_ring[rx_cur].status & RXD_STA_EOP))
+            cb(rx_buf[rx_cur], len);
         rx_ring[rx_cur].status = 0;
         reg_write(REG_RDT, rx_cur);              /* hand the buffer back to the NIC */
         rx_cur = (rx_cur + 1) % RX_DESC;

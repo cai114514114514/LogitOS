@@ -55,6 +55,7 @@ static const uint8_t OID_P256[]         = {0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x
 static const uint8_t OID_P384[]         = {0x2b,0x81,0x04,0x00,0x22};
 static const uint8_t OID_CN[]           = {0x55,0x04,0x03};
 static const uint8_t OID_SAN[]          = {0x55,0x1d,0x11};
+static const uint8_t OID_BC[]           = {0x55,0x1d,0x13};     /* basicConstraints */
 
 static int oid_eq(const uint8_t *o, int olen, const uint8_t *want, int wlen)
 { return olen == wlen && memcmp(o, want, wlen) == 0; }
@@ -69,7 +70,7 @@ static int64_t parse_time(int tag, const uint8_t *p, int len)
     int year, i = 0;
     int need = (tag == 0x17) ? 12 : 14;   /* YYMMDDHHMMSSZ / YYYYMMDDHHMMSSZ */
     if (len < need) return 0;             /* malformed/truncated time field */
-    if (tag == 0x17) { year = 2000 + two(p); i = 2; }   /* UTCTime YY */
+    if (tag == 0x17) { int yy = two(p); year = (yy >= 50 ? 1900 : 2000) + yy; i = 2; } /* UTCTime YY (RFC 5280) */
     else { year = two(p)*100 + two(p+2); i = 4; }       /* GeneralizedTime YYYY */
     int mon = two(p+i), day = two(p+i+2), hh = two(p+i+4), mm = two(p+i+6), ss = two(p+i+8);
     /* clamp: non-digit/garbage bytes must not index mdays[] out of bounds */
@@ -109,6 +110,7 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
 {
     out->der = der; out->derlen = len;
     out->cn = 0; out->cnlen = 0; out->san = 0; out->sanlen = 0;
+    out->is_ca = 0;                                      /* BasicConstraints cA (default FALSE) */
 
     struct der top, cert;
     top.p = der; top.end = der + len;
@@ -185,6 +187,16 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
                       if (ex.p < ex.end && ex.p[0]==0x01) { if (der_tlv(&ex,&vg,&vo,&vl)) break; }
                       if (der_tlv(&ex,&vg,&vo,&vl)) break;        /* OCTET STRING value */
                       if (oid_eq(eo,eol,OID_SAN,sizeof OID_SAN)) { out->san=vo; out->sanlen=vl; }
+                      if (oid_eq(eo,eol,OID_BC,sizeof OID_BC)) {
+                          /* BasicConstraints: SEQ { cA BOOLEAN DEFAULT FALSE, pathLen INTEGER OPT } */
+                          struct der bcd; bcd.p = vo; bcd.end = vo + vl;
+                          struct der bc; if (der_enter(&bcd, 0x30, &bc) == 0 &&
+                              bc.p < bc.end && bc.p[0] == 0x01) {
+                              int g3; const uint8_t *bv; int bvl;
+                              if (der_tlv(&bc, &g3, &bv, &bvl) == 0 && bvl == 1 && bv[0])
+                                  out->is_ca = 1;
+                          }
+                      }
                   }
               }
           }
@@ -363,9 +375,18 @@ int x509_verify_chain(const struct cert *certs, int n, const char *host, int64_t
     for (int i = 0; i < n; i++)
         if (now < certs[i].not_before || now > certs[i].not_after) return X509_E_EXPIRED;
 
-    /* each cert signed by the next; the highest must chain to a trusted root */
-    for (int i = 0; i + 1 < n; i++)
+    /* each cert signed by the next; the highest must chain to a trusted root.
+     * Every non-leaf must be a CA (BasicConstraints cA=TRUE) and the chain must
+     * be name-bound: certs[i].issuer must equal certs[i+1].subject, byte for
+     * byte -- otherwise any holder of a valid end-entity cert could mint a
+     * "child" cert for an arbitrary domain and pass the signature checks. */
+    for (int i = 0; i + 1 < n; i++) {
+        if (!certs[i+1].is_ca) return X509_E_UNTRUSTED;
+        if (certs[i].issuerlen != certs[i+1].subjectlen ||
+            memcmp(certs[i].issuer, certs[i+1].subject, certs[i].issuerlen) != 0)
+            return X509_E_UNTRUSTED;
         if (x509_verify_signed_by(&certs[i], &certs[i+1]) != X509_OK) return X509_E_SIG;
+    }
 
     /* top of chain: trusted if it IS a root we hold (sent in-band), or if its
      * issuer is one of our roots (i.e. a held root key signed it). */

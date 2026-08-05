@@ -54,22 +54,21 @@ static css_error h_node_classes(void *pw, void *node,
         lwc_string ***classes, uint32_t *n_classes)
 {
     (void)pw; struct node *n = node;
+    /* The array storage is the handler's responsibility and LibCSS only reads it
+     * during the css_select_style call, so keep it in a static buffer: the old
+     * malloc'd array leaked on every call (M11). */
+    static lwc_string *arr[32];
     const char *cls = dom_attr(n, "class");
     *classes = NULL; *n_classes = 0;
     if (!cls || !*cls) return CSS_OK;
-    /* count tokens */
-    int count = 0; const char *p = cls;
-    while (*p) { while (*p && sp(*p)) p++; if (*p) { count++; while (*p && !sp(*p)) p++; } }
-    if (!count) return CSS_OK;
-    lwc_string **arr = malloc(count * sizeof(lwc_string *));
-    if (!arr) return CSS_NOMEM;
-    int i = 0; p = cls;
-    while (*p && i < count) {
+    int i = 0; const char *p = cls;
+    while (*p && i < 32) {
         while (*p && sp(*p)) p++;
         const char *s = p;
         while (*p && !sp(*p)) p++;
         if (p > s) lwc_intern_string(s, (size_t)(p - s), &arr[i++]);
     }
+    if (!i) return CSS_OK;
     *classes = arr; *n_classes = (uint32_t)i;
     return CSS_OK;
 }
@@ -436,6 +435,10 @@ static int len_px(css_fixed val, css_unit unit, int font_px, int *pct)
     }
 }
 
+/* clamp absolutised lengths so a giant CSS value can't overflow the int
+ * coordinates the layout engine accumulates (signed overflow = UB). */
+static int clamp_px(int v) { if (v > 8192) return 8192; if (v < -8192) return -8192; return v; }
+
 static uint32_t to_rgb(css_color c) { return (uint32_t)(c & 0x00FFFFFF); }
 
 static void convert(const css_computed_style *cs, int parent_font, struct cstyle *o)
@@ -446,6 +449,7 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     css_computed_font_size(cs, &len, &unit);
     o->font_px = len_px(len, unit, parent_font, NULL);
     if (o->font_px < 6) o->font_px = 6;
+    else if (o->font_px > 512) o->font_px = 512;
     int fp = o->font_px;
 
     switch (css_computed_display(cs, false)) {
@@ -477,21 +481,21 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       if (css_computed_font_family(cs, &fnames) == CSS_FONT_FAMILY_MONOSPACE) o->mono = 1; }
 
     /* margins (auto -> -1) */
-    o->mt = css_computed_margin_top(cs, &len, &unit)    == CSS_MARGIN_AUTO ? -1 : len_px(len, unit, fp, NULL);
-    o->mr = css_computed_margin_right(cs, &len, &unit)  == CSS_MARGIN_AUTO ? -1 : len_px(len, unit, fp, NULL);
-    o->mb = css_computed_margin_bottom(cs, &len, &unit) == CSS_MARGIN_AUTO ? -1 : len_px(len, unit, fp, NULL);
-    o->ml = css_computed_margin_left(cs, &len, &unit)   == CSS_MARGIN_AUTO ? -1 : len_px(len, unit, fp, NULL);
+    o->mt = css_computed_margin_top(cs, &len, &unit)    == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
+    o->mr = css_computed_margin_right(cs, &len, &unit)  == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
+    o->mb = css_computed_margin_bottom(cs, &len, &unit) == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
+    o->ml = css_computed_margin_left(cs, &len, &unit)   == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
 
-    css_computed_padding_top(cs, &len, &unit);    o->pt = len_px(len, unit, fp, NULL);
-    css_computed_padding_right(cs, &len, &unit);  o->pr = len_px(len, unit, fp, NULL);
-    css_computed_padding_bottom(cs, &len, &unit); o->pb = len_px(len, unit, fp, NULL);
-    css_computed_padding_left(cs, &len, &unit);   o->pl = len_px(len, unit, fp, NULL);
+    css_computed_padding_top(cs, &len, &unit);    o->pt = clamp_px(len_px(len, unit, fp, NULL));
+    css_computed_padding_right(cs, &len, &unit);  o->pr = clamp_px(len_px(len, unit, fp, NULL));
+    css_computed_padding_bottom(cs, &len, &unit); o->pb = clamp_px(len_px(len, unit, fp, NULL));
+    css_computed_padding_left(cs, &len, &unit);   o->pl = clamp_px(len_px(len, unit, fp, NULL));
 
     if (css_computed_width(cs, &len, &unit) == CSS_WIDTH_SET) {
-        int pct; o->width = len_px(len, unit, fp, &pct); o->has_w = 1; o->w_pct = pct;
+        int pct; o->width = clamp_px(len_px(len, unit, fp, &pct)); o->has_w = 1; o->w_pct = pct;
     }
     if (css_computed_height(cs, &len, &unit) == CSS_HEIGHT_SET) {
-        int pct; o->height = len_px(len, unit, fp, &pct); o->has_h = 1; o->h_pct = pct;
+        int pct; o->height = clamp_px(len_px(len, unit, fp, &pct)); o->has_h = 1; o->h_pct = pct;
     }
 
     switch (css_computed_text_align(cs)) {
@@ -501,15 +505,15 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     }
 
     switch (css_computed_line_height(cs, &len, &unit)) {
-    case CSS_LINE_HEIGHT_NUMBER:    o->line_px = FIXTOINT(FMUL(len, INTTOFIX(fp))); break;
-    case CSS_LINE_HEIGHT_DIMENSION: o->line_px = len_px(len, unit, fp, NULL); break;
+    case CSS_LINE_HEIGHT_NUMBER:    o->line_px = clamp_px(FIXTOINT(FMUL(len, INTTOFIX(fp)))); break;
+    case CSS_LINE_HEIGHT_DIMENSION: o->line_px = clamp_px(len_px(len, unit, fp, NULL)); break;
     default:                        o->line_px = 0; break;   /* normal -> layout derives */
     }
 
     /* border: use the top edge for our single-border model */
     if (css_computed_border_top_style(cs) != CSS_BORDER_STYLE_NONE) {
         css_computed_border_top_width(cs, &len, &unit);
-        o->border_w = len_px(len, unit, fp, NULL);
+        o->border_w = clamp_px(len_px(len, unit, fp, NULL));
         if (css_computed_border_top_color(cs, &col) == CSS_BORDER_COLOR_COLOR)
             o->border_color = to_rgb(col);
         else o->border_color = 0x808080;

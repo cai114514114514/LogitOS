@@ -66,6 +66,7 @@ static struct rsdp *find_rsdp(void)
 
 static void parse_madt(const struct sdt_header *madt)
 {
+    if (madt->length < 44) return;                       /* fixed MADT header must be present */
     const uint8_t *p = (const uint8_t *)madt;
     g_lapic_base = *(const uint32_t *)(p + 36);          /* MADT local APIC address */
     for (int i = 0; i < 16; i++) { g_irq_gsi[i] = (uint32_t)i; g_irq_flags[i] = 0; }
@@ -73,7 +74,7 @@ static void parse_madt(const struct sdt_header *madt)
     p += 44;                                             /* skip MADT fixed header */
     while (p + 2 <= e) {
         uint8_t type = p[0], len = p[1];
-        if (len < 2) break;
+        if (len < 2 || p + len > e) break;
         if (type == 0 && len >= 8) {                     /* Processor Local APIC */
             uint8_t apic_id = p[3];
             uint32_t flags = *(const uint32_t *)(p + 4);
@@ -91,7 +92,9 @@ static void parse_madt(const struct sdt_header *madt)
                 g_irq_flags[src] = *(const uint16_t *)(p + 8);
             }
         } else if (type == 5 && len >= 12) {             /* LAPIC address override (64-bit) */
-            g_lapic_base = (uint32_t)*(const uint64_t *)(p + 4);
+            uint64_t la = *(const uint64_t *)(p + 4);
+            if ((la >> 32) == 0)                         /* only a 32-bit base is usable here */
+                g_lapic_base = (uint32_t)la;
         }
         p += len;
     }
@@ -105,6 +108,7 @@ int acpi_init(void)
     const struct sdt_header *madt = NULL;
     if (r->revision >= 2 && r->xsdt_addr) {              /* ACPI 2.0+: 64-bit XSDT */
         const struct sdt_header *xsdt = (const struct sdt_header *)r->xsdt_addr;
+        if (xsdt->length < sizeof *xsdt) { serial_puts("[acpi] bad XSDT length\n"); return -1; }
         int n = (xsdt->length - sizeof *xsdt) / 8;
         const uint64_t *ent = (const uint64_t *)((const uint8_t *)xsdt + sizeof *xsdt);
         for (int i = 0; i < n; i++) {
@@ -113,6 +117,7 @@ int acpi_init(void)
         }
     } else {                                             /* ACPI 1.0: 32-bit RSDT */
         const struct sdt_header *rsdt = (const struct sdt_header *)(uint64_t)r->rsdt_addr;
+        if (rsdt->length < sizeof *rsdt) { serial_puts("[acpi] bad RSDT length\n"); return -1; }
         int n = (rsdt->length - sizeof *rsdt) / 4;
         const uint32_t *ent = (const uint32_t *)((const uint8_t *)rsdt + sizeof *rsdt);
         for (int i = 0; i < n; i++) {

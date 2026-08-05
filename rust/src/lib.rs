@@ -22,5 +22,10 @@ mod png; // PNG decoder, ported to safe Rust (replaces png.c); calls inflate
 // handler is a never-firing lang-item: just halt.
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    // Never-firing lang item (every parser returns -1 on error). If it ever DID
+    // fire, spin with a pause hint instead of burning the core at full tilt;
+    // `hlt` is not an option -- this staticlib also links into the ring-3 browser.
+    loop {
+        core::hint::spin_loop();
+    }
 }

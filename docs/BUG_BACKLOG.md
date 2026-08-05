@@ -1,5 +1,25 @@
 # Confirmed bug backlog (from BUGS_EXTENDED.md triage, 2026-06-07)
 
+## 修复状态（2026-08-04）
+
+13 项已全部修复。逐条修复位置与方法如下（原 triage 表格保留在下方，仅作历史记录）：
+
+- **C2**：`c/net/tls/tls.c` — `aead_open` 前加 `blen-16 > sizeof s->app` 拒绝。
+- **M2**：`c/net/tls/tls.c` — CertVerify 分支加 `ml<4` 与 `4+siglen>ml` 检查。
+- **M3**：`c/net/tls/tls.c` — `tls_der_sig_to_rs` 补全 `p<end` / `nb` / `p+sl` / `p+il` 边界。
+- **M11**：`c/apps/browser/css_engine.c` — `h_node_classes` 改 static 数组（32 上限），消除泄漏。
+- **H2**：`c/net/http/http.c` — Content-Length 解析加饱和上限。
+- **H3**：`c/net/http/url.c` — 端口累积 >65535 即截断。
+- **H5**：`c/net/ip/ip.c` — `ip_input` 加 `ip_checksum(h, ihl)!=0` 丢弃。
+- **H9**：`c/drivers/net/e1000.c` — `rx_init`/`tx_init` 改返回 int，`pmm_alloc` 逐次检查+回滚。
+- **M20**：`c/drivers/virtio/virtio.c` — reset 等待改 2 亿次有界循环。
+- **H11**：`c/kernel/cpu/smp.c` — AP 启动失败分支补 `kfree(stk)`。
+- **H17**：`c/apps/as/vm.c` — `op_DIV`/`op_MOD` 加 INT64_MIN/-1 `runtime_error`。
+- **H18**：`c/apps/as/vm.c` — `op_NEG` 加 INT64_MIN 检查。
+- **M23**：`c/apps/libc/src/stdlib.c` — `strtod` 指数累积钳制（`strtoll` 原有 cutoff 防护核实无误，无需改）。
+
+---
+
 62 claims triaged vs HEAD: **13 REAL**, 4 already-fixed, 33 false, 9 design.
 
 Deferred (user prioritised the SMP scheduler). Fix in a gated batch later; C2 is the one urgent (remote OOB write).

@@ -26,19 +26,41 @@ void js_dom_clear_dirty(void) { g_dirty = 0; }
 
 static JSClassID elem_cid;
 
+/* Wrappers don't hold a bare struct node*: textContent= frees whole subtrees
+ * while scripts may still hold wrappers into them (UAF / double free). Each
+ * wrapper owns a {node, epoch} handle; freeing children bumps g_dom_epoch so
+ * every stale wrapper fails node_of() and reads as NULL instead. */
+struct elem_handle { struct node *n; unsigned long epoch; };
+static unsigned long g_dom_epoch;
+
+static void elem_finalizer(JSRuntime *rt, JSValue val)
+{
+    (void)rt;
+    struct elem_handle *h = JS_GetOpaque(val, elem_cid);
+    if (h) free(h);
+}
+
 /* ---- helpers ---- */
 static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static int ieq(const char *a, const char *b)
 { while (*a && lc((unsigned char)*a) == lc((unsigned char)*b)) { a++; b++; } return lc((unsigned char)*a) == lc((unsigned char)*b); }
 
-static struct node *node_of(JSValueConst v) { return JS_GetOpaque(v, elem_cid); }
+static struct node *node_of(JSValueConst v)
+{
+    struct elem_handle *h = JS_GetOpaque(v, elem_cid);
+    if (!h || h->epoch != g_dom_epoch) return 0;    /* stale wrapper: subtree was freed */
+    return h->n;
+}
 
 static JSValue wrap(JSContext *ctx, struct node *n)
 {
     if (!n) return JS_NULL;
     JSValue o = JS_NewObjectClass(ctx, (int)elem_cid);
     if (JS_IsException(o)) return o;
-    JS_SetOpaque(o, n);
+    struct elem_handle *h = malloc(sizeof *h);
+    if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
+    h->n = n; h->epoch = g_dom_epoch;
+    JS_SetOpaque(o, h);
     return o;
 }
 
@@ -55,6 +77,7 @@ static void free_children(struct node *n)
     struct node *c = n->first_child;
     while (c) { struct node *nx = c->next; dom_free(c); c = nx; }
     n->first_child = n->last_child = 0;
+    g_dom_epoch++;                            /* invalidate wrappers into the freed subtree */
 }
 
 static void set_text(struct node *n, const char *s)
@@ -177,13 +200,18 @@ static const JSCFunctionListEntry elem_proto[] = {
     JS_CFUNC_DEF("setAttribute", 2, el_setattr),
 };
 
-static JSClassDef elem_class = { "Element" };
+static JSClassDef elem_class = { "Element", elem_finalizer };
 
 void js_dom_init(JSContext *ctx, struct node *root)
 {
     g_root = root; g_dirty = 0;
     JSRuntime *rt = JS_GetRuntime(ctx);
-    if (!elem_cid) { JS_NewClassID(&elem_cid); JS_NewClass(rt, elem_cid, &elem_class); }
+    /* class ids index per-runtime arrays: run_js() builds a fresh JSRuntime for
+     * every page, so the class must be registered on each init. The old
+     * `if (!elem_cid)` guard reused the first runtime's id -> out-of-bounds
+     * access on ctx->class_proto[] from the second page on. */
+    JS_NewClassID(&elem_cid);
+    if (JS_NewClass(rt, elem_cid, &elem_class) < 0) return;
     JSValue proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, proto, elem_proto, countof(elem_proto));
     JS_SetClassProto(ctx, elem_cid, proto);
@@ -195,7 +223,9 @@ void js_dom_init(JSContext *ctx, struct node *root)
     JSValue doc = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, doc, "getElementById", JS_NewCFunction(ctx, doc_getById, "getElementById", 1));
     JS_SetPropertyStr(ctx, doc, "querySelector", JS_NewCFunction(ctx, doc_qs, "querySelector", 1));
-    JS_SetPropertyStr(ctx, doc, "body", wrap(ctx, body));
+    JSValue bw = wrap(ctx, body);
+    if (JS_IsException(bw)) bw = JS_NULL;     /* don't hand an exception value to SetPropertyStr */
+    JS_SetPropertyStr(ctx, doc, "body", bw);
     JS_SetPropertyStr(ctx, g, "document", doc);
     JS_FreeValue(ctx, g);
 }

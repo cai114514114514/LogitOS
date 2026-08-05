@@ -34,7 +34,11 @@ GRUB_RESCUE := i686-elf-grub-mkrescue
 QEMU        := qemu-system-x86_64
 
 # Colocated headers resolve via -I across every source dir (names are unique).
-INCDIRS := $(addprefix -I,$(shell find C include -type d))
+INCDIRS := $(addprefix -I,$(shell find c include -type d))
+# Host-built unit tests compile kernel sources against the host libc: the
+# mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
+# and break <stdint.h>, so host tests use INCDIRS without that dir.
+HOST_INCDIRS := $(filter-out -Ic/apps/libc/include,$(INCDIRS))
 
 # -MMD -MP: every compile also emits a .d makefile fragment listing its real
 # header dependencies (see the -include at the bottom). Without this, editing a
@@ -82,7 +86,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-tcp-host test-complete test-libc test-fb-clip
+.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-tcp-host test-net-proto test-complete test-libc test-fb-clip test-kheap test-png test-jpeg
 
 all: $(ISO)
 
@@ -92,12 +96,22 @@ $(BUILD)/%.o: %.c
 
 # Rust no_std staticlib (kept after `all:` so it never becomes the default goal).
 $(RUST_LIB): $(RUST_SRC)
+	@if [ -z "$(RUST_BIN)" ]; then \
+	    echo "error: rustup/cargo not found (RUST_BIN is empty)."; \
+	    echo "       install rustup (https://rustup.rs), then: rustup target add x86_64-unknown-none"; \
+	    exit 1; \
+	fi
 	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release --target x86_64-unknown-none
 
 # Same crate built for the HOST, for the host-side image tests (test-png/test-jpeg):
 # the crate is no_std either way; the tests' own malloc shims satisfy kmalloc/kfree.
 RUST_LIB_HOST := rust/target/release/libaether_rust.a
 $(RUST_LIB_HOST): $(RUST_SRC)
+	@if [ -z "$(RUST_BIN)" ]; then \
+	    echo "error: rustup/cargo not found (RUST_BIN is empty)."; \
+	    echo "       install rustup (https://rustup.rs), then: rustup target add x86_64-unknown-none"; \
+	    exit 1; \
+	fi
 	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release
 
 # roots.c #includes the generated bundle; rebuild it when the bundle changes.
@@ -333,6 +347,15 @@ test-tcp-host:
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Ic/net/transport
 	@./$(BUILD)/tcp_test
 
+# Host protocol tests for IPv4 validation, UDP checksums, and ICMP echo matching.
+test-net-proto:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
+		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/drivers/timer
+	@./$(BUILD)/net_proto_test
+
+test-net: test-tcp-host test-net-proto
+
 # On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: $(ISO) $(DISK)
 	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
@@ -369,7 +392,7 @@ test-complete:
 # does NOT bleed into a draw on another's (the "white Terminal" cross-app leak).
 test-fb-clip:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb.c $(INCDIRS)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb.c $(HOST_INCDIRS)
 	@$(BUILD)/fb_clip_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash

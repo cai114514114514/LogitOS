@@ -74,9 +74,11 @@ int nvme_present(void) { return g_ready; }
 static uint64_t map_bar0(uint8_t slot)
 {
     uint32_t lo = pci_cfg_read(0, slot, 0, 0x10);
+    if (lo == 0 || lo == 0xFFFFFFFF || (lo & 0x1)) return 0;   /* absent or I/O BAR */
     uint64_t base = lo & ~(uint64_t)0xF;
     if ((lo & 0x6) == 0x4)             /* 64-bit BAR: high dword in the next slot */
         base |= (uint64_t)pci_cfg_read(0, slot, 0, 0x14) << 32;
+    if (!base) return 0;
     vmm_map_range(base, base, 0x8000, VMM_WRITABLE | VMM_NOCACHE);
     return base;
 }
@@ -123,10 +125,13 @@ static int nvme_submit(struct nvme_q *q, const struct nvme_sqe *cmd)
         barrier();
         volatile struct nvme_cqe *e = &q->cq[q->cq_head];
         if ((e->status & 1) == q->cq_phase) {
-            status = (e->status >> 1) & 0x7FFF;
+            uint16_t ecid = e->cid;
+            uint16_t estat = (uint16_t)((e->status >> 1) & 0x7FFF);
             q->cq_head = (uint16_t)((q->cq_head + 1) % q->depth);
             if (q->cq_head == 0) q->cq_phase ^= 1;
             *(volatile uint32_t *)q->cq_db = q->cq_head;
+            if (ecid != cid) continue;      /* stale CQE from a timed-out command */
+            status = estat;
             break;
         }
     }
@@ -135,23 +140,45 @@ static int nvme_submit(struct nvme_q *q, const struct nvme_sqe *cmd)
     return status;
 }
 
+/* Free every queue/DMA frame allocated so far (init failure unwind). The
+ * controller is disabled first so it can't DMA into frames returned to the PMM. */
+static void nvme_free_all(void)
+{
+    w32(g_regs, REG_CC, 0);
+    if (g_admin.sq) { pmm_free((uint64_t)(uintptr_t)g_admin.sq); g_admin.sq = NULL; }
+    if (g_admin.cq) { pmm_free((uint64_t)(uintptr_t)g_admin.cq); g_admin.cq = NULL; }
+    if (g_io.sq)    { pmm_free((uint64_t)(uintptr_t)g_io.sq);    g_io.sq = NULL; }
+    if (g_io.cq)    { pmm_free((uint64_t)(uintptr_t)g_io.cq);    g_io.cq = NULL; }
+    if (g_prp_list) { pmm_free((uint64_t)(uintptr_t)g_prp_list); g_prp_list = NULL; }
+}
+
 int nvme_init(void)
 {
     struct pci_dev dev;
     if (nvme_find(&dev) != 0) return -1;
-    g_regs = (volatile uint8_t *)map_bar0(dev.slot);
+    uint64_t bar0 = map_bar0(dev.slot);
+    if (!bar0) { kprintf("[nvme] invalid BAR0\n"); return -1; }
+    g_regs = (volatile uint8_t *)bar0;
 
     uint64_t cap = r64(g_regs, REG_CAP);
     uint32_t stride = 4u << ((cap >> 32) & 0xF);          /* doorbell stride */
+    if ((uint16_t)(cap & 0xFFFF) < AQ_DEPTH - 1) {        /* CAP.MQES (0-based) */
+        kprintf("[nvme] max queue entries %d < %d\n", (int)(cap & 0xFFFF) + 1, AQ_DEPTH);
+        return -1;
+    }
 
     /* Reset, then wait CSTS.RDY == 0. */
     w32(g_regs, REG_CC, r32(g_regs, REG_CC) & ~1u);
     for (long i = 0; i < 100000000L && (r32(g_regs, REG_CSTS) & 1); i++) barrier();
+    if (r32(g_regs, REG_CSTS) & 1) {
+        kprintf("[nvme] reset timeout (csts=%x)\n", r32(g_regs, REG_CSTS));
+        return -1;
+    }
 
     /* Admin queues (one frame each: 64*64B SQ = 4KiB, 64*16B CQ = 1KiB). */
     g_admin.sq = (struct nvme_sqe *)(uintptr_t)pmm_alloc();
     g_admin.cq = (struct nvme_cqe *)(uintptr_t)pmm_alloc();
-    if (!g_admin.sq || !g_admin.cq) return -1;
+    if (!g_admin.sq || !g_admin.cq) { nvme_free_all(); return -1; }
     memset(g_admin.sq, 0, 4096); memset(g_admin.cq, 0, 4096);
     g_admin.depth = AQ_DEPTH; g_admin.sq_tail = 0; g_admin.cq_head = 0; g_admin.cq_phase = 1; g_admin.cid = 0;
     g_admin.sq_db = g_regs + 0x1000 + 0 * stride;
@@ -165,19 +192,21 @@ int nvme_init(void)
     for (long i = 0; i < 100000000L && !(r32(g_regs, REG_CSTS) & 1); i++) barrier();
     if (!(r32(g_regs, REG_CSTS) & 1) || (r32(g_regs, REG_CSTS) & 2)) {
         kprintf("[nvme] controller enable failed (csts=%x)\n", r32(g_regs, REG_CSTS));
+        nvme_free_all();
         return -1;
     }
 
     uint8_t *idbuf = (uint8_t *)(uintptr_t)pmm_alloc();
-    if (!idbuf) return -1;
+    if (!idbuf) { nvme_free_all(); return -1; }
     struct nvme_sqe cmd;
 
     /* Identify Controller (CNS=1): MDTS (max transfer in 2^MDTS host pages) + model. */
     memset(idbuf, 0, 4096);
     memset(&cmd, 0, sizeof cmd);
     cmd.cdw0 = 0x06; cmd.nsid = 0; cmd.prp1 = (uint64_t)(uintptr_t)idbuf; cmd.cdw10 = 1;  /* CNS=1 */
-    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] identify ctrl failed\n"); return -1; }
+    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] identify ctrl failed\n"); pmm_free((uint64_t)(uintptr_t)idbuf); nvme_free_all(); return -1; }
     uint8_t mdts = idbuf[77];
+    if (mdts > 7) mdts = 7;                             /* avoid 1u<<mdts UB / *8 overflow */
     g_max_sectors = mdts ? ((1u << mdts) * (4096u / 512u)) : 0xFFFF;   /* MPS=0 -> 4 KiB pages */
     char model[41]; for (int i = 0; i < 40; i++) model[i] = (char)idbuf[24 + i]; model[40] = 0;
     for (int i = 39; i >= 0 && model[i] == ' '; i--) model[i] = 0;     /* trim trailing spaces */
@@ -192,39 +221,40 @@ int nvme_init(void)
     memset(idbuf, 0, 4096);
     memset(&cmd, 0, sizeof cmd);
     cmd.cdw0 = 0x06; cmd.nsid = g_nsid; cmd.prp1 = (uint64_t)(uintptr_t)idbuf; cmd.cdw10 = 0; /* CNS=0 */
-    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] identify ns failed\n"); return -1; }
+    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] identify ns failed\n"); pmm_free((uint64_t)(uintptr_t)idbuf); nvme_free_all(); return -1; }
     g_cap = *(uint64_t *)idbuf;                          /* NSZE */
     uint8_t flbas = idbuf[26] & 0xF;
     uint8_t lbads = idbuf[128 + flbas * 4 + 2];          /* LBAF[flbas].LBADS */
     g_lba = 1u << lbads;
-    if (g_lba != 512) { kprintf("[nvme] unsupported lba size %d (need 512)\n", (int)g_lba); return -1; }
+    pmm_free((uint64_t)(uintptr_t)idbuf);                /* done with the identify buffer */
+    if (g_lba != 512) { kprintf("[nvme] unsupported lba size %d (need 512)\n", (int)g_lba); nvme_free_all(); return -1; }
 
     /* Create I/O Completion Queue (qid 1). */
     g_io.cq = (struct nvme_cqe *)(uintptr_t)pmm_alloc();
-    if (!g_io.cq) return -1;
+    if (!g_io.cq) { nvme_free_all(); return -1; }
     memset(g_io.cq, 0, 4096);
     memset(&cmd, 0, sizeof cmd);
     cmd.cdw0 = 0x05; cmd.prp1 = (uint64_t)(uintptr_t)g_io.cq;
     cmd.cdw10 = ((IO_DEPTH - 1) << 16) | 1;              /* qsize-1 | qid=1 */
     cmd.cdw11 = 1;                                       /* PC=1, IEN=0 (polled) */
-    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] create io cq failed\n"); return -1; }
+    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] create io cq failed\n"); nvme_free_all(); return -1; }
 
     /* Create I/O Submission Queue (qid 1, bound to cqid 1). */
     g_io.sq = (struct nvme_sqe *)(uintptr_t)pmm_alloc();
-    if (!g_io.sq) return -1;
+    if (!g_io.sq) { nvme_free_all(); return -1; }
     memset(g_io.sq, 0, 4096);
     memset(&cmd, 0, sizeof cmd);
     cmd.cdw0 = 0x01; cmd.prp1 = (uint64_t)(uintptr_t)g_io.sq;
     cmd.cdw10 = ((IO_DEPTH - 1) << 16) | 1;             /* qsize-1 | qid=1 */
     cmd.cdw11 = (1u << 16) | 1u;                        /* CQID=1 | PC=1 */
-    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] create io sq failed\n"); return -1; }
+    if (nvme_submit(&g_admin, &cmd) != 0) { kprintf("[nvme] create io sq failed\n"); nvme_free_all(); return -1; }
 
     g_io.depth = IO_DEPTH; g_io.sq_tail = 0; g_io.cq_head = 0; g_io.cq_phase = 1; g_io.cid = 0;
     g_io.sq_db = g_regs + 0x1000 + 2 * stride;
     g_io.cq_db = g_regs + 0x1000 + 3 * stride;
 
     g_prp_list = (uint64_t *)(uintptr_t)pmm_alloc();    /* PRP-list page for large DMA */
-    if (!g_prp_list) return -1;
+    if (!g_prp_list) { nvme_free_all(); return -1; }
 
     g_ready = 1;
     kprintf("[nvme] up (slot %d %x:%x '%s') ns=%d lba=%d cap=%u sectors maxxfer=%d\n",

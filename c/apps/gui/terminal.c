@@ -48,7 +48,7 @@ static void feed(char c)
     if (c == '\r') return;
     if (c == '\n') { nl(); return; }
     if (c == '\b' || c == 127) { if (ccol > 0) { ccol--; scr[crow][ccol] = 0; } return; }
-    if (c == '\t') { do { if (ccol < COLS - 1) scr[crow][ccol++] = ' '; } while (ccol % 4); return; }
+    if (c == '\t') { do { if (ccol < COLS - 1) scr[crow][ccol++] = ' '; } while (ccol % 4 && ccol < COLS - 1); return; }
     if (ccol >= COLS - 1) nl();
     scr[crow][ccol++] = c;
     scr[crow][ccol] = 0;
@@ -58,10 +58,15 @@ static void feed(char c)
 static int spawn_shell(void)
 {
     int inpipe[2], outpipe[2];           /* inpipe: term->sh stdin; outpipe: sh->term stdout */
-    if (sys_pipe(inpipe) < 0 || sys_pipe(outpipe) < 0) return -1;
+    if (sys_pipe(inpipe) < 0) return -1;
+    if (sys_pipe(outpipe) < 0) { sys_close(inpipe[0]); sys_close(inpipe[1]); return -1; }
 
     int pid = sys_fork();
-    if (pid < 0) return -1;
+    if (pid < 0) {
+        sys_close(inpipe[0]); sys_close(inpipe[1]);
+        sys_close(outpipe[0]); sys_close(outpipe[1]);
+        return -1;
+    }
     if (pid == 0) {                      /* child -> become the shell */
         sys_dup2(inpipe[0], 0);
         sys_dup2(outpipe[1], 1);
@@ -138,7 +143,7 @@ void app_main(void)
                 for (int i = 0; i < n; i++) feed(ob[i]);
                 redraw = 1;
             }
-            if (n == 0) { alive = 0; feed('\n'); for (const char *s = "[shell exited]"; *s; s++) feed(*s); redraw = 1; }
+            if (n == 0) { alive = 0; if (in_w >= 0) { sys_close(in_w); in_w = -1; } feed('\n'); for (const char *s = "[shell exited]"; *s; s++) feed(*s); redraw = 1; }
             /* n == EAGAIN_RC: no more data this round */
         }
         if (redraw) {

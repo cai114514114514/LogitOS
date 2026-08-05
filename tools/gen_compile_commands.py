@@ -5,17 +5,35 @@ every project include dir on the path. Without this the IDE falls back to the ho
 arm64/macOS-SDK target and reports spurious 'stdio.h not found' / '__sFILE has no
 field' errors for our own freestanding headers.
 
-Run from the repo root:  python3 tools/gen_compile_commands.py
-The output is machine-specific (absolute directory) and is .gitignored.
+Can be run from any directory:  python3 tools/gen_compile_commands.py
+Paths are anchored at the repo root (this script's parent dir), and the source
+walk uses os.walk -- no dependency on cwd or a host GNU find. The output is
+machine-specific (absolute directory) and is .gitignored.
 """
-import json, os, subprocess
+import json, os
 
-ROOT = os.getcwd()
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-def find(*args):
-    return subprocess.check_output(["find", *args]).decode().split()
+def _rel(p):
+    return os.path.relpath(p, ROOT).replace(os.sep, "/")
 
-incdirs = find("c", "include", "-type", "d")
+def find_dirs(*bases):
+    out = []
+    for base in bases:
+        for dirpath, _dirnames, _files in os.walk(os.path.join(ROOT, base)):
+            out.append(_rel(dirpath))
+    return out
+
+def find_files(*bases, suffix):
+    out = []
+    for base in bases:
+        for dirpath, _dirnames, files in os.walk(os.path.join(ROOT, base)):
+            for f in files:
+                if f.endswith(suffix):
+                    out.append(_rel(os.path.join(dirpath, f)))
+    return out
+
+incdirs = find_dirs("c", "include")
 INC = [f"-I{d}" for d in incdirs]
 
 JS_INC  = ["-Ithird_party/libm", "-Ithird_party/quickjs"]
@@ -43,9 +61,9 @@ def flags_for(path):
         return BASE + ENGINE + INC
     return BASE + INC
 
-files = find("c", "third_party", "-name", "*.c")
+files = find_files("c", "third_party", suffix=".c")
 db = [{"directory": ROOT, "file": f, "arguments": flags_for(f) + ["-c", f]} for f in files]
 
-with open("compile_commands.json", "w") as fh:
+with open(os.path.join(ROOT, "compile_commands.json"), "w") as fh:
     json.dump(db, fh, indent=1)
 print(f"wrote compile_commands.json: {len(db)} entries")

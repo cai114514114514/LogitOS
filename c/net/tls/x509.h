@@ -19,6 +19,7 @@ struct cert {
     const uint8_t *issuer; int issuerlen;       /* raw DER of Issuer Name */
     const char *cn; int cnlen;                  /* leaf CN (for name check) */
     const uint8_t *san; int sanlen;             /* SubjectAltName extension value */
+    int   is_ca;                                /* BasicConstraints cA=TRUE */
     int64_t not_before, not_after;              /* unix-ish seconds */
 };
 

@@ -17,14 +17,20 @@ static int update_in_progress(void)
     return inb(CMOS_DATA) & 0x80;
 }
 
+/* Bounded UIP wait: a stuck CMOS must not hang the caller. */
+static void wait_update_done(void)
+{
+    for (long spins = 0; spins < 1000000 && update_in_progress(); spins++)
+        ;
+}
+
 void rtc_now(struct rtc_time *t)
 {
     struct rtc_time a, b;
 
     /* Read twice and require agreement, so we never observe a mid-update. */
     do {
-        while (update_in_progress())
-            ;
+        wait_update_done();
         a.second  = cmos_read(0x00);
         a.minute  = cmos_read(0x02);
         a.hour    = cmos_read(0x04);
@@ -33,8 +39,7 @@ void rtc_now(struct rtc_time *t)
         a.month   = cmos_read(0x08);
         a.year    = cmos_read(0x09);
 
-        while (update_in_progress())
-            ;
+        wait_update_done();
         b.second = cmos_read(0x00);
         b.minute = cmos_read(0x02);
         b.hour   = cmos_read(0x04);
@@ -57,6 +62,11 @@ void rtc_now(struct rtc_time *t)
     a.hour &= 0x7F;
     if (!h24 && pm)
         a.hour = (a.hour + 12) % 24;
+
+    /* Clamp insane CMOS values -- callers index month-length tables with
+     * md[month - 1], so a corrupt register must not escape as an index. */
+    if (a.month < 1 || a.month > 12) a.month = 1;
+    if (a.day < 1 || a.day > 31) a.day = 1;
 
     t->second  = a.second;
     t->minute  = a.minute;

@@ -19,6 +19,7 @@ void *memset(void *, int, size_t);
 #define PPB        (BS / 4)             /* u32 pointers per indirect block */
 #define DIRENT_SZ  64
 #define NAME_MAX   60
+#define MAX_FILE_SZ ((NDIRECT + PPB) * BS)   /* inode_write reach: direct + single indirect */
 #define T_FREE     0
 #define T_FILE     1
 #define T_DIR      2
@@ -54,15 +55,35 @@ static uint32_t ind_buf[PPB];           /* indirect-block staging */
 static uint32_t dind_buf[PPB];          /* double-indirect L1 staging (inode_trunc) */
 static char     namebuf[NAME_MAX];      /* ent_name return storage */
 
+/* Concurrency: every op runs under the kernel BKL and the shared static staging
+ * buffers above (blk_buf/ind_buf/dind_buf/namebuf) carry no lock of their own.
+ * Correctness relies on the BKL never being dropped mid-operation. */
+
 /* --- helpers --- */
+/* Compare a fixed-size on-disk dirent name against a C string without ever
+ * reading past NAME_MAX bytes of the on-disk field (a forged image may omit
+ * the NUL terminator). */
 static int streq(const char *a, const char *b)
 {
-    while (*a && *a == *b) { a++; b++; }
-    return *a == *b;
+    for (int i = 0; i < NAME_MAX; i++) {
+        if (a[i] != b[i]) return 0;
+        if (!a[i]) return 1;
+    }
+    return 0;
 }
 
-static int bread(uint32_t blk, void *buf)        { return blk_read(blk * SPB, SPB, buf); }
-static int bwrite(uint32_t blk, const void *buf) { return blk_write(blk * SPB, SPB, buf); }
+/* Block numbers come from the disk (inode tables, indirect blocks, superblock)
+ * and are untrusted: refuse anything outside the mounted image. */
+static int bread(uint32_t blk, void *buf)
+{
+    if (blk >= sb.total_blocks) return -1;
+    return blk_read(blk * SPB, SPB, buf);
+}
+static int bwrite(uint32_t blk, const void *buf)
+{
+    if (blk >= sb.total_blocks) return -1;
+    return blk_write(blk * SPB, SPB, buf);
+}
 
 static int  bit_test(uint32_t b)  { return bitmap[b >> 3] & (1 << (b & 7)); }
 static void bit_set(uint32_t b)   { bitmap[b >> 3] |=  (1 << (b & 7)); }
@@ -74,7 +95,7 @@ static uint32_t balloc(void)
         if (!bit_test(b)) { bit_set(b); return b; }
     return 0;                            /* disk full (0 = none) */
 }
-static void bfree(uint32_t b) { if (b) bit_clear(b); }
+static void bfree(uint32_t b) { if (b && b < sb.total_blocks) bit_clear(b); }
 
 static struct dinode *iget(uint32_t ino)
 {
@@ -131,7 +152,10 @@ static int flush_inode(uint32_t ino)
 static int inode_read(struct dinode *in, void *buf, int max)
 {
     uint32_t size = in->size;
-    if ((int)size > max) return -1;
+    /* size is untrusted on-disk data: compare unsigned so a value >= 2^31
+     * can't wrap negative and bypass the bound, and cap it to what imap() can
+     * actually reach (keeps nblk below from wrapping too). */
+    if (max < 0 || size > (uint32_t)max || size > MAX_FILE_SZ) return -1;
     uint8_t  *out  = buf;
     uint32_t  nblk = (size + BS - 1) / BS;
     for (uint32_t i = 0; i < nblk; i++) {
@@ -200,17 +224,24 @@ static int inode_write(struct dinode *in, const void *buf, int size)
 fail:
     for (int j = 0; j < nalloc; j++) bfree(allocated[j]);
     if (ind) bfree(ind);
-    inode_trunc(in);
+    /* Don't leave dangling block pointers behind: the entry inode_trunc() ran
+     * when size was already 0, so it won't clear the direct[]/indirect values
+     * set above -- and indirect may alias the just-freed ind. */
+    memset(in->direct, 0, sizeof in->direct);
+    in->indirect = 0;
+    in->size = 0;
     return -1;
 }
 
 /* --- directory ops --- */
 static uint32_t dir_lookup(struct dinode *d, const char *name)
 {
-    uint32_t sz = d->size, nblk = (sz + BS - 1) / BS;
+    uint32_t sz = d->size;
+    if (sz > MAX_FILE_SZ) return 0;          /* forged size: refuse a BKL-held mega-scan */
+    uint32_t nblk = (sz + BS - 1) / BS;
     for (uint32_t bi = 0; bi < nblk; bi++) {
         uint32_t blk = imap(d, bi);
-        if (!blk || bread(blk, blk_buf)) continue;
+        if (!blk || bread(blk, blk_buf)) break;   /* sparse/corrupt chain: stop scanning */
         struct dirent *de = (struct dirent *)blk_buf;
         for (int j = 0; j < BS / DIRENT_SZ; j++) {
             if (bi * BS + (uint32_t)j * DIRENT_SZ >= sz) break;
@@ -225,15 +256,17 @@ static uint32_t dir_nth(uint32_t dino, int idx, char *nameout)
 {
     struct dinode *d = iget(dino);
     if (!d || d->type != T_DIR) return 0;
-    uint32_t sz = d->size, nblk = (sz + BS - 1) / BS;
+    uint32_t sz = d->size;
+    if (sz > MAX_FILE_SZ) return 0;
+    uint32_t nblk = (sz + BS - 1) / BS;
     int seen = 0;
     for (uint32_t bi = 0; bi < nblk; bi++) {
         uint32_t blk = imap(d, bi);
-        if (!blk || bread(blk, blk_buf)) continue;
+        if (!blk || bread(blk, blk_buf)) break;
         struct dirent *de = (struct dirent *)blk_buf;
         for (int j = 0; j < BS / DIRENT_SZ; j++) {
             if (bi * BS + (uint32_t)j * DIRENT_SZ >= sz) break;
-            if (de[j].name[0] == 0) continue;
+            if (de[j].name[0] == 0 || de[j].ino == 0) continue;   /* ino 0 (root) is never a child */
             if (seen == idx) {
                 if (nameout) {
                     int k = 0;
@@ -248,19 +281,36 @@ static uint32_t dir_nth(uint32_t dino, int idx, char *nameout)
     return 0;
 }
 
+/* Count live entries in one pass (calling dir_nth per index was O(n^2)
+ * re-scanning under the BKL -- a system-wide stall on a large directory). */
 static int dir_count_live(uint32_t dino)
 {
+    struct dinode *d = iget(dino);
+    if (!d || d->type != T_DIR) return 0;
+    uint32_t sz = d->size;
+    if (sz > MAX_FILE_SZ) return 0;
+    uint32_t nblk = (sz + BS - 1) / BS;
     int n = 0;
-    while (dir_nth(dino, n, NULL)) n++;
+    for (uint32_t bi = 0; bi < nblk; bi++) {
+        uint32_t blk = imap(d, bi);
+        if (!blk || bread(blk, blk_buf)) break;
+        struct dirent *de = (struct dirent *)blk_buf;
+        for (int j = 0; j < BS / DIRENT_SZ; j++) {
+            if (bi * BS + (uint32_t)j * DIRENT_SZ >= sz) break;
+            if (de[j].name[0] && de[j].ino) n++;
+        }
+    }
     return n;
 }
 
 static int dir_is_empty(struct dinode *d)
 {
-    uint32_t sz = d->size, nblk = (sz + BS - 1) / BS;
+    uint32_t sz = d->size;
+    if (sz > MAX_FILE_SZ) return 0;          /* treat corrupt dirs as non-empty: don't rmdir them */
+    uint32_t nblk = (sz + BS - 1) / BS;
     for (uint32_t bi = 0; bi < nblk; bi++) {
         uint32_t blk = imap(d, bi);
-        if (!blk || bread(blk, blk_buf)) continue;
+        if (!blk || bread(blk, blk_buf)) break;
         struct dirent *de = (struct dirent *)blk_buf;
         for (int j = 0; j < BS / DIRENT_SZ; j++) {
             if (bi * BS + (uint32_t)j * DIRENT_SZ >= sz) break;
@@ -273,7 +323,11 @@ static int dir_is_empty(struct dinode *d)
 static int dir_add(uint32_t dino, const char *name, uint32_t child)
 {
     struct dinode *d = iget(dino);
-    uint32_t old = d->size, cap = old + DIRENT_SZ;
+    uint32_t old = d->size;
+    /* old is on-disk data: bound it before old + DIRENT_SZ can wrap the
+     * allocation size (and before the (int)old cast below can go negative). */
+    if (old > MAX_FILE_SZ - DIRENT_SZ) return -1;
+    uint32_t cap = old + DIRENT_SZ;
     uint8_t *buf = kmalloc(cap);
     if (!buf) return -1;
     memset(buf, 0, cap);
@@ -299,7 +353,7 @@ static int dir_remove(uint32_t dino, const char *name)
 {
     struct dinode *d = iget(dino);
     uint32_t sz = d->size;
-    if (!sz) return -1;
+    if (!sz || sz > MAX_FILE_SZ) return -1;
     uint8_t *buf = kmalloc(sz);
     if (!buf) return -1;
     if (inode_read(d, buf, (int)sz) < 0) { kfree(buf); return -1; }
@@ -332,7 +386,7 @@ static uint32_t resolve(const char *path)
         int k = 0;
         while (*p && *p != '/' && k < NAME_MAX - 1) comp[k++] = *p++;
         comp[k] = 0;
-        while (*p && *p != '/') p++;          /* skip an over-long component tail */
+        if (*p && *p != '/') return NOINO;    /* over-long component: refuse, don't match a truncated prefix */
 
         if (comp[0] == '.' && comp[1] == 0) continue;
         if (comp[0] == '.' && comp[1] == '.' && comp[2] == 0) {
@@ -360,7 +414,9 @@ static uint32_t resolve_parent(const char *path, char *leaf)
     int k = 0;
     for (int i = s; i < e && k < NAME_MAX - 1; i++) leaf[k++] = path[i];
     leaf[k] = 0;
-    if (k == 0) return NOINO;
+    if (k == 0 || e - s > NAME_MAX - 1) return NOINO;   /* empty or over-long leaf */
+    if (leaf[0] == '.' && (leaf[1] == 0 || (leaf[1] == '.' && leaf[2] == 0)))
+        return NOINO;                                   /* never create/remove "." or ".." entries */
 
     char dirpath[MAX_PATH];
     int dl = 0;
@@ -373,6 +429,7 @@ static uint32_t resolve_parent(const char *path, char *leaf)
 /* --- VFS ops --- */
 static int aetherfs_mount(void)
 {
+    if (bitmap || inodes) return -1;           /* already mounted: no re-entry */
     uint8_t b0[SECTOR];
     if (blk_read(0, 1, b0)) return -1;
     uint32_t *w = (uint32_t *)b0;
@@ -396,14 +453,28 @@ static int aetherfs_mount(void)
     /* total_blocks indexes the free bitmap via balloc()/bit_set(); a crafted
      * value past the bitmap's bit coverage is an OOB heap write on any alloc. */
     if (sb.total_blocks > (uint32_t)sb.bitmap_blocks * BS * 8) return -1;
+    /* Region bounds: keep every area inside total_blocks (64-bit sums so a
+     * crafted start can't wrap the comparison) and in mkfs order so the areas
+     * can't overlap each other or the superblock in block 0. */
+    if (sb.bitmap_start == 0) return -1;
+    if ((uint64_t)sb.bitmap_start + sb.bitmap_blocks > sb.total_blocks) return -1;
+    if ((uint64_t)sb.inode_start + sb.inode_blocks > sb.total_blocks) return -1;
+    if (sb.data_start > sb.total_blocks) return -1;
+    if (sb.inode_start < sb.bitmap_start + sb.bitmap_blocks) return -1;
+    if (sb.data_start < sb.inode_start + sb.inode_blocks) return -1;
+    if (sb.root_ino >= sb.inode_count) return -1;
     bitmap = kmalloc((size_t)((uint64_t)sb.bitmap_blocks * BS));
     inodes = kmalloc((size_t)((uint64_t)sb.inode_blocks  * BS));
-    if (!bitmap || !inodes) return -1;
+    if (!bitmap || !inodes) goto oom;
     for (uint32_t i = 0; i < sb.bitmap_blocks; i++)
-        if (bread(sb.bitmap_start + i, bitmap + i * BS)) return -1;
+        if (bread(sb.bitmap_start + i, bitmap + i * BS)) goto oom;
     for (uint32_t i = 0; i < sb.inode_blocks; i++)
-        if (bread(sb.inode_start + i, (uint8_t *)inodes + i * BS)) return -1;
+        if (bread(sb.inode_start + i, (uint8_t *)inodes + i * BS)) goto oom;
     return 0;
+oom:
+    kfree(bitmap); kfree(inodes);
+    bitmap = 0; inodes = 0;
+    return -1;
 }
 
 static int aetherfs_size(const char *path)
@@ -411,7 +482,10 @@ static int aetherfs_size(const char *path)
     uint32_t ino = resolve(path);
     if (ino == NOINO) return -1;
     struct dinode *in = iget(ino);
-    return in ? (int)in->size : -1;
+    /* -1 for directories (callers open/size files) and for on-disk sizes that
+     * don't fit the int return value. */
+    if (!in || in->type != T_FILE || in->size > (uint32_t)INT32_MAX) return -1;
+    return (int)in->size;
 }
 
 static int aetherfs_read(const char *path, void *buf, int max)
@@ -462,7 +536,11 @@ static int aetherfs_mkdir(const char *path)
      * resolution (resolve()/proc_resolve) handles . and .. itself, and the Finder
      * draws ".." on its own. Storing them made `ls` list them, made an empty dir
      * look non-empty (couldn't rmdir), and was inconsistent with mkfs-built dirs. */
-    if (flush_inode((uint32_t)ni)) return -1;
+    if (flush_inode((uint32_t)ni)) {
+        nd->type = T_FREE;                   /* don't leak the fresh inode */
+        flush_inode((uint32_t)ni);
+        return -1;
+    }
     if (dir_add(parent, leaf, (uint32_t)ni) < 0) {
         nd->type = T_FREE;
         flush_inode((uint32_t)ni); flush_bitmap();
@@ -518,7 +596,7 @@ static int aetherfs_ent_size(const char *dir, int i)
     if (dino == NOINO) return 0;
     uint32_t ino = dir_nth(dino, i, NULL);
     struct dinode *in = ino ? iget(ino) : NULL;
-    return in ? (int)in->size : 0;
+    return (in && in->size <= (uint32_t)INT32_MAX) ? (int)in->size : 0;
 }
 
 static int aetherfs_ent_is_dir(const char *dir, int i)
@@ -579,7 +657,11 @@ static int aetherfs_rename(const char *old_path, const char *new_path)
     if (si && si->type == T_DIR && path_under(old_path, new_path)) return -1;
 
     if (dir_add(np, new_leaf, src) < 0) return -1;
-    if (dir_remove(op, old_leaf) < 0) { dir_remove(np, new_leaf); return -1; }
+    if (dir_remove(op, old_leaf) < 0) {
+        if (dir_remove(np, new_leaf) < 0)
+            kprintf("[fs] rename rollback failed: '%s' linked in both directories\n", new_leaf);
+        return -1;
+    }
     if (flush_inode(op) || flush_inode(np) || flush_bitmap()) return -1;
     return 0;
 }

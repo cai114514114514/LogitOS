@@ -39,7 +39,11 @@ static int blk_rw(int write, uint64_t lba, uint32_t count, void *buf)
         { (uint64_t)(uintptr_t)buf,     count * 512u, !write },      /* read: device writes data */
         { (uint64_t)(uintptr_t)&status, 1,            1 },           /* device writes status */
     };
-    if (virtio_request(&blkdev, &blkvq, 0, b, 3) < 0) return -1;
+    int rc = virtio_request(&blkdev, &blkvq, 0, b, 3);
+    if (rc < 0) return -1;
+    /* Cross-check the DMA length: a read must return count*512 data bytes plus
+     * the 1 status byte, so a short (or stale) completion can't pass as success. */
+    if (!write && (uint64_t)rc < (uint64_t)count * 512 + 1) return -1;
     return status == 0 ? 0 : -1;
 }
 

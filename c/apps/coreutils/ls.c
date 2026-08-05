@@ -10,7 +10,7 @@ int main(int argc, char **argv)
     int n = dir_count(path);
     if (n < 0) { errs("ls: no such directory: "); errs(path); errs("\n"); return 1; }
     for (int i = 0; i < n; i++) {
-        char nm[64];
+        char nm[64]; nm[0] = 0;
         int r = dir_name(path, i, nm);
         outs(nm);
         if (r == -2) outc('/');

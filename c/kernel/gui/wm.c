@@ -146,17 +146,20 @@ void wm_launch(const char *aex_file, const char *arg)
 {
     int sz = vfs_size(aex_file);
     if (sz <= 0) { serial_puts("[wm] launch: not found\n"); return; }
+    if (sz < AEX_HDR_SIZE) { serial_puts("[wm] launch: bad aex\n"); return; }  /* aex_info reads the 64-byte header */
 
+    if (sz > 0x7FF00000) { serial_puts("[wm] launch: too large\n"); return; }  /* sz+511 would overflow int */
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
-    if (!img) return;
-    if (vfs_read(aex_file, img, bytes) <= 0) { kfree(img); return; }
+    if (!img) { serial_puts("[wm] launch: kmalloc img failed\n"); return; }
+    if (vfs_read(aex_file, img, bytes) <= 0) { serial_puts("[wm] launch: vfs_read failed\n"); kfree(img); return; }
 
     char name[32], ext[8];
     if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); kfree(img); return; }
 
     struct app *exist = find_live_app(name);
     if (exist) {                            /* single instance: just focus it */
+        serial_puts("[wm] launch: already live, focusing\n");
         if (exist->win >= 0) raise_win(exist->win);
         dirty_full();
         kfree(img);                         /* image not needed -- app already running */
@@ -173,14 +176,16 @@ void wm_launch(const char *aex_file, const char *arg)
      * space, so switch CR3 into it (interrupts off, so the scheduler can't run
      * and reset CR3 mid-load), load, then restore the kernel space. */
     uint64_t space = vmm_new_space();
-    if (!space) { serial_puts("[wm] launch: no address space\n"); return; }
+    if (!space) { serial_puts("[wm] launch: no address space\n"); kfree(img); return; }
 
-    /* wm_launch may run from the WM thread (kernel CR3) OR from the mouse IRQ
-     * while a ring-3 app is current (that app's CR3). Save and restore the CR3
-     * that was actually active, not the kernel's -- otherwise returning from the
-     * IRQ into the interrupted app would run it with the wrong address space. */
-    uint64_t prev_cr3;
-    __asm__ volatile ("cli");
+    /* wm_launch may run from the WM thread (kernel CR3) OR from an app's
+     * syscall (SYS_OPEN_PATH / dock-open) while a ring-3 app is current (that
+     * app's CR3). Save and restore the CR3 that was actually active, not the
+     * kernel's -- otherwise returning into the interrupted app would run it
+     * with the wrong address space. (Input IRQs no longer reach here: they
+     * only enqueue into inq[], and the WM thread calls us.) */
+    uint64_t prev_cr3, fl;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");   /* save IF, then off */
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
     vmm_switch(space);
     uint64_t entry = aex_load(img, (uint64_t)bytes, name, ext);   /* maps + copies into `space` */
@@ -206,12 +211,16 @@ void wm_launch(const char *aex_file, const char *arg)
         }
     }
     vmm_switch(prev_cr3);
-    __asm__ volatile ("sti");
+    /* Restore IF to the caller's state, NOT unconditionally: from the int 0x80
+     * gate (SYS_OPEN_PATH -> launch) IF=0 on entry and the syscall-exit path
+     * expects it still off; a blind sti here leaks IF=1 through the whole
+     * return path (nested-IRQ windows the gate never planned for). */
+    if (fl & 0x200) __asm__ volatile ("sti");
     if (!entry) { serial_puts("[wm] launch: load failed\n"); vmm_free_space(space); kfree(img); return; }
 
     int ai = -1;
     for (int i = 0; i < MAXWIN; i++) if (!apps[i].used) { ai = i; break; }
-    if (ai < 0) { kfree(img); return; }
+    if (ai < 0) { serial_puts("[wm] launch: app slots full\n"); vmm_free_space(space); kfree(img); return; }
     struct app *ap = &apps[ai];
     ap->used = ap->alive = 1;
     ap->id = next_app_id++;
@@ -224,13 +233,25 @@ void wm_launch(const char *aex_file, const char *arg)
      * payload; it carries the address space + fd table, and points back at the
      * window owner via ->gui. GUI apps are launched by the WM (ppid 0). */
     struct proc *p = proc_create(space, ap, ap->name, 0);
-    if (!p) { ap->used = ap->alive = 0; vmm_free_space(space); kfree(img); return; }
+    if (!p) { serial_puts("[wm] launch: proc table full\n"); ap->used = ap->alive = 0; vmm_free_space(space); kfree(img); return; }
     /* Give every app real stdio (fd 0/1/2 = the serial console). Apps that only
      * draw never touch them, but it means pipe()/dup2() in an app (e.g. the
      * Terminal spawning a shell) get fds >= 3 and don't collide with 0/1/2. */
     { struct file *tty = file_open_tty();
       if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; } }
     p->tid = thread_create_user(ap->name, entry, ustack_top, p, space);
+    if (p->tid < 0) {
+        /* OOM: no thread will ever run this proc. Undo everything (the slot-undo
+         * idiom matches proc_fork's failure path) or the proc + its address space
+         * + the app slot all leak, and a RUNNING proc with no thread is unreapable. */
+        for (int i = 0; i < NFD; i++) if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
+        p->state = PROC_FREE; p->pid = 0; p->cr3 = 0;
+        ap->used = ap->alive = 0;
+        vmm_free_space(space);
+        kfree(img);
+        serial_puts("[wm] launch: no thread\n");
+        return;
+    }
     kfree(img);                             /* aex_load copied the image into `space`; drop the load buffer */
     serial_puts("[wm] launched ");
     serial_puts(ap->name);
@@ -280,6 +301,11 @@ static int sysinfo_text(char *buf, int max)
 }
 
 /* ---------- GUI syscalls (called from syscall.c in the app's context) ---------- */
+/* Watchdog for g_net_busy: set when a fetch owns the net (SYS_HTTP_GET /
+ * SYS_RES_FETCH). If that thread is killed mid-fetch (window closed, fault),
+ * the flag would stay 1 forever and net_poll in the WM loop would never run
+ * again. Armed/cleared alongside g_net_busy; checked in the WM main loop. */
+static uint64_t net_busy_t0;
 static struct win *app_window(struct app *ap)
 {
     return (ap && ap->win >= 0) ? &wins[ap->win] : NULL;
@@ -362,6 +388,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
         int rw = (int)((b >> 16) & 0xFFFF), rh = (int)(b & 0xFFFF);
+        /* rw/rh are user-controlled (up to 65535 each): an unclamped fill runs
+         * up to 65535^2 fb_put calls inside the syscall gate (IF=0 + BKL held),
+         * freezing the machine for seconds per call. Intersect with the surface. */
+        if (rw > w->surf.w - x) rw = w->surf.w - x;
+        if (rh > w->surf.h - y) rh = w->surf.h - y;
         fb_target(&w->surf); fb_fill_rect(x, y, rw, rh, (uint32_t)c); fb_target(NULL);
         return 0;
     }
@@ -386,6 +417,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
         int id = (int)((b >> 16) & 0xFFFF), px = (int)(b & 0xFFFF);
+        if (px < 1 || px > 512) return -1;   /* icon_draw allocates px*px before rasterizing */
         fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
         return 0;
     }
@@ -490,11 +522,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (user_copy_string(url, sizeof url, (const char *)a) < 0) return -1;
         __asm__ volatile ("sti");
         g_net_busy = 1;                          /* we own the net; WM thread must not poll */
+        net_busy_t0 = timer_ticks();
         uint64_t t0 = timer_ticks();
         int grc = http_get(url);
         for (int retry = 0; grc < 0 && retry < 3; retry++)   /* transient DNS/conn/TLS loss */
             grc = http_get(url);
         g_net_busy = 0;
+        net_busy_t0 = 0;
         kprintf("[http] get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
         __asm__ volatile ("cli");
         return grc;
@@ -514,6 +548,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         const char *s = (const char *)a; int len = (int)b;
         int px = (int)((c >> 1) & 0x7FFFFFFF), mono = (int)(c & 1);
         if (len < 0 || len > USER_TEXT_MAX) return 0;
+        if (px < 1 || px > 512) return 0;    /* unbounded px overflows the rasterizer's w*h math */
         char tmp[USER_TEXT_MAX];
         if (len > 0) { if (!user_range_ok(s, (uint64_t)len, 0)) return -1; memcpy(tmp, s, (size_t)len); }
         return text_measure(tmp, len, px, mono);
@@ -523,6 +558,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct aether_run r;
         if (!user_range_ok((const void *)a, sizeof r, 0)) return -1;
         memcpy(&r, (const void *)a, sizeof r);
+        if (r.px < 1 || r.px > 512) return -1;   /* unbounded px overflows the rasterizer's w*h math */
         int len = r.len; if (len < 0) len = 0; if (len > USER_TEXT_MAX - 1) len = USER_TEXT_MAX - 1;
         char tmp[USER_TEXT_MAX];
         if (len > 0) { if (!user_range_ok(r.s, (uint64_t)len, 0)) return -1; memcpy(tmp, r.s, (size_t)len); }
@@ -539,8 +575,10 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
         __asm__ volatile ("sti");
         g_net_busy = 1;
+        net_busy_t0 = timer_ticks();
         uint8_t *rb = 0; int rl = 0; int rc = res_fetch(src, &rb, &rl);
         g_net_busy = 0;
+        net_busy_t0 = 0;
         __asm__ volatile ("cli");
         if (rc != 0 || !rb) return -1;
         int n = rl < max ? rl : max;
@@ -555,6 +593,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
         memcpy(&bl, (const void *)a, sizeof bl);
         if (bl.sw <= 0 || bl.sh <= 0 || bl.sw > 4096 || bl.sh > 4096) return -1;
         if (!user_range_ok(bl.rgba, (uint64_t)bl.sw * (uint64_t)bl.sh * 4, 0)) return -1;
+        /* dw/dh come straight from the app: fb_blit_rgba clips its loops to the
+         * visible target region, but reject non-positive sizes here. */
+        if (bl.w <= 0 || bl.h <= 0) return -1;
         fb_target(&w->surf);
         fb_blit_rgba(bl.x, bl.y, bl.w, bl.h, bl.rgba, bl.sw, bl.sh);
         fb_target(NULL);
@@ -624,6 +665,7 @@ static void reap(void)
                 if (wins[wi].surf.px) kfree(wins[wi].surf.px);
                 wins[wi].used = 0;
                 remove_win(wi);
+                if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
             }
             apps[i].used = 0;
         }
@@ -941,6 +983,7 @@ void wm_render(void)
     int animating = 0;
     reap();
     fb_target(NULL);
+    if (!back || !bg) return;              /* wm_init OOM fallback: nothing to composite into */
     for (int y = 0; y < H; y++)            /* wallpaper (baked in bg) */
         blit(back + y * W, bg + y * W, W);
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
@@ -998,6 +1041,17 @@ static void wm_process_mouse(int x, int y, int left, int right)
     }
     if (left && !mleft) {
         content = 1;
+        /* The dock is chrome drawn ON TOP of every window (hover tooltip already
+         * resolves it regardless of overlap), so it must win the click too:
+         * checking windows first lets a tall window (e.g. Code Studio, whose
+         * bottom edge reaches into the dock strip) silently SWALLOW dock clicks
+         * as content clicks -- the icon you see is not the icon you hit. */
+        int docked = 0;
+        for (int i = 0; i < nreg; i++) {
+            int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
+            if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) { wm_launch(reg[i].file, ""); docked = 1; break; }
+        }
+        if (!docked) {
         int hitorder = -1;
         for (int i = norder - 1; i >= 0; i--) {
             struct win *w = &wins[order[i]];
@@ -1017,12 +1071,7 @@ static void wm_process_mouse(int x, int y, int left, int right)
             } else if (w->kind == WK_APP) {
                 enqueue(w, EV_MOUSE, cx, cy - TITLEBAR_H);
             }
-        } else {
-            /* dock? */
-            for (int i = 0; i < nreg; i++) {
-                int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
-                if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) { wm_launch(reg[i].file, ""); break; }
-            }
+        }
         }
     }
     if (right && !mright) {
@@ -1059,7 +1108,7 @@ static void scan_apps(void)
          * buffer to the file -- the JS app's .aex is ~1 MiB, far over any header
          * scratch. We only need the header, but read it all then free. */
         int sz = vfs_size(nm);
-        if (sz <= 0) continue;
+        if (sz < AEX_HDR_SIZE) continue;    /* aex_info reads the 64-byte header */
         char *buf = kmalloc(sz);
         if (!buf) continue;
         if (vfs_read(nm, buf, sz) <= 0) { kfree(buf); continue; }
@@ -1090,6 +1139,14 @@ void wm_init(void)
     uint64_t pages = ((uint64_t)count * 4 + 4095) / 4096;
     back = (uint32_t *)pmm_alloc_contig(pages);
     bg   = (uint32_t *)pmm_alloc_contig(pages);
+    if (!back || !bg) {
+        /* OOM: bail instead of handing wm_render a NULL buffer to blit from/to.
+         * screen.px stays NULL, so all fb_put/fb_blit_surface draws no-op safely;
+         * the machine keeps running (blank screen) rather than faulting here. */
+        kprintf("[wm] init: out of memory (%ux%u)\n", fb_width(), fb_height());
+        back = bg = NULL;
+        return;
+    }
     fb_set_backbuffer(back);
     mx = W / 2; my = H / 2;
 
@@ -1157,6 +1214,12 @@ void wm_run(void)
 #endif
         wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */
+        /* net busy watchdog: a fetch legitimately blocks for seconds, but if its
+         * thread died mid-fetch the flag is stuck -- expire it after 100 s. */
+        if (g_net_busy && net_busy_t0 && timer_ticks() - net_busy_t0 > 10000) {
+            g_net_busy = 0; net_busy_t0 = 0;
+            serial_puts("[wm] net_busy watchdog expired\n");
+        }
         if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
         uint64_t now = timer_ticks();
         /* Composite on change: a full frame only when geometry changed; an app's

@@ -108,7 +108,9 @@ int rsa_modexp_be(const uint8_t *base, int bl, const uint8_t *e, int el,
                   const uint8_t *n, int nl, uint8_t *out)
 {
     rbn B, E, N, M;
-    if (nl < 1 || nl > RL*4) return -1;
+    /* nl must leave one limb of headroom: mont_mul copies s+1 result words
+     * into an RL-limb rbn (s = rb_nwords(n)); bl/el just bound rb_from_be. */
+    if (nl < 1 || nl > RL*4 - 4 || bl < 0 || bl > RL*4 || el < 1 || el > RL*4) return -1;
     rb_from_be(B, base, bl); rb_from_be(E, e, el); rb_from_be(N, n, nl);
     if (!(N[0] & 1)) return -2;
     if (rb_cmp(B, N) >= 0) return -3;
@@ -130,9 +132,12 @@ static const uint8_t DI_SHA512[] =
 static int rsa_public(const uint8_t *n, int nlen, const uint8_t *e, int elen,
                       const uint8_t *sig, int siglen, uint8_t *em)
 {
-    if (nlen < 1 || nlen > RL*4 || siglen > nlen) return -1;
+    /* elen bounds rb_from_be(E); nlen must leave one limb of headroom (see
+     * rsa_modexp_be): otherwise mont_mul's s+1-word result copy overruns rbn. */
+    if (nlen < 1 || nlen > RL*4 - 4 || siglen > nlen || elen < 1 || elen > RL*4) return -1;
     rbn N, E, S, M;
     rb_from_be(N, n, nlen);
+    if (!(N[0] & 1)) return -1;                      /* Montgomery requires an odd modulus */
     rb_from_be(E, e, elen);
     rb_from_be(S, sig, siglen);
     if (rb_cmp(S, N) >= 0) return -1;

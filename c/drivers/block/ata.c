@@ -85,6 +85,12 @@ static int ata_write_once(uint32_t lba, uint8_t count, const uint16_t *in);
 
 static int ata_guarded(int write, uint32_t lba, uint8_t count, void *buf)
 {
+    /* LBA28: reject out-of-range addresses instead of letting the drive-head
+     * nibble ((lba >> 24) & 0x0F) silently truncate them onto wrong sectors. */
+    if (lba >= (1u << 28) || (uint32_t)count > (1u << 28) - lba) return -1;
+    /* SECCOUNT=0 means 256 sectors to the drive, but the C loops below would
+     * transfer 0 and desync the controller -- reject it instead. */
+    if (count == 0) return -1;
     uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
     g_ata_busy++;
     __asm__ volatile ("sti");

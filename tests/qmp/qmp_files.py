@@ -23,18 +23,21 @@ Notes baked in from debugging this stack (see qmp_fs.py):
     cadence (the PS/2 1-byte buffer drops fast bursts). This mirrors the proven
     tools/qmp_term.py driver.
   - the Dock scans root .aex in mkfs packing order:
-    clock(0) textedit(1) monitor(2) terminal(3) widgets(4) files(5) browser(6).
-    Dock icon i center x = 448 + i*64 (dw=14+7*64, x0=(1280-462)/2=409),
-    y = 753 (dock_y0=718, +10+25). So Files (index 5) sits at (768, 753).
-    (qmp_term.py predates Files: 6 apps put Terminal at x=672; the 7th app
-    shifts the layout, putting Files at 768.) Verified vs a clean boot shot.
+    clock(0) textedit(1) monitor(2) terminal(3) widgets(4) files(5)
+    preview(6) studio(7) browser(8). With 9 icons @1280x800 the dock is
+    dw=14+9*64=590 wide, x0=(1280-590)/2=345, icon i center x = 384 + i*64,
+    y = 753 (dock_y0=H-82=718, +10+25). So Files (index 5) sits at (704,753).
+  - wm_run auto-launches files.aex (cascade 0 -> window (110,70), content
+    origin (110,100)) and clock.aex (cascade 1 -> (138,98), spans x138-378,
+    y98-230). The dock click on Files just raises that boot window
+    (single-instance), so all window coordinates below reference (110,70).
 """
 import socket, json, sys, os, time, subprocess, tempfile
 
 iso, disk = sys.argv[1], sys.argv[2]
 out = sys.argv[3] if len(sys.argv) > 3 else "build/files_smoke.ppm"
-sock = tempfile.mktemp(suffix=".qmp")
-serial = tempfile.mktemp(suffix=".log")
+fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)  # QEMU binds the socket itself
+fd, serial = tempfile.mkstemp(suffix=".log"); os.close(fd)
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
 
 proc = subprocess.Popen([
@@ -104,21 +107,22 @@ def send(t):
 
 json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
 
-# 1. Launch Files from the Dock (index 5 -> screen (768,753); see header note).
-goto(768, 753); click(); time.sleep(1.2)
+# 1. Launch (raise) Files from the Dock (index 5 of 9 -> screen (704,753)).
+goto(704, 753); click(); time.sleep(1.2)
 
 # 2. Drive New Folder: click the toolbar "New Folder" button, type a name, Enter.
-#    Clock auto-launches first (cascade 0 -> x=110,y=70); Files is the 2nd app,
-#    cascade 1 -> window x=138,y=70+28=98, content origin (138, 98+30=128). The
-#    "New Folder" button is window-local (12,40)+(78x24) -> center screen (189,180).
-#    A miss is harmless -- the screenshot still proves the app launched, and the
-#    data-correctness path is covered by run-shell-test.sh.
-goto(189, 180); click(); time.sleep(0.4)        # New Folder toolbar button
+#    The boot Finder window sits at cascade 0 -> (110,70), content origin
+#    (110,100). Toolbar "New Folder" is content-local TB_NEW_X=582, y=10,
+#    50x26 -> center screen (110+607, 100+23) = (717,123). A miss is harmless
+#    -- the screenshot still proves the app launched, and the data-correctness
+#    path is covered by run-shell-test.sh.
+goto(717, 123); click(); time.sleep(0.4)        # New Folder toolbar button
 send("qmpdir\n"); time.sleep(0.4)               # type a folder name + Enter
 
-# 3. Inject a right-button to pop the Files context menu over the list area
-#    (screen (338,238) -> window-content-local ~ (200,110)).
-goto(338, 238); time.sleep(0.2)
+# 3. Inject a right-button to pop the Files context menu over the list area.
+#    Content-local (400,200) -> screen (510,300), clear of the auto-launched
+#    Clock window (x138-378, y98-230).
+goto(510, 300); time.sleep(0.2)
 click("right"); time.sleep(0.6)
 
 # 4. Screenshot the desktop.

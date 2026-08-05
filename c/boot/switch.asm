@@ -26,10 +26,11 @@ context_switch:
     mov [rdi], rsp      ; save outgoing stack pointer
     mov rsp, rsi        ; load incoming stack pointer
 
-    popfq
-    ; Return with interrupts DISABLED, always. popfq above restored the INCOMING
+    ; Return with interrupts DISABLED, always. popfq below restores the INCOMING
     ; thread's saved RFLAGS, and a FIRST-RUN thread's hand-built frame has IF=1 --
-    ; so without this cli the switch leaves IF=1 while the incoming side still holds
+    ; so clear IF in the saved flags BEFORE popfq (closing the one-instruction
+    ; interrupt window between popfq and a trailing cli): without it the switch
+    ; leaves IF=1 while the incoming side still holds
     ; g_sched_lock (schedule's [context_switch .. spin_unlock(g_sched_lock)] window,
     ; and the bootstraps before they release it). A timer IRQ landing there enters
     ; interrupt_handler and acquires g_bkl WHILE holding g_sched_lock -- reverse
@@ -37,7 +38,9 @@ context_switch:
     ; in schedule() (the -smp 4 "all cores wedged in spin_lock" freeze). Every resume
     ; site re-enables IF at its own controlled point (schedule's `if(flags&IF) sti`,
     ; kthread_bootstrap's sti, the iretq into ring 3), so forcing IF=0 here is safe.
-    cli
+    and qword [rsp], ~0x200   ; force IF=0 in the restored RFLAGS
+    popfq
+    cli                       ; belt-and-braces (IF already 0 via the mask above)
     pop r15
     pop r14
     pop r13

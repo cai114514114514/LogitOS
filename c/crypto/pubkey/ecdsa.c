@@ -329,6 +329,8 @@ int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
 
     bn qx, qy;
     bn_from_be(qx, pub, fl); bn_from_be(qy, pub + fl, fl);
+    /* reject out-of-range coordinates: Barrett reduction assumes inputs < m */
+    if (bn_cmp(qx, c->p) >= 0 || bn_cmp(qy, c->p) >= 0) return 0;
 
     struct jpt t1, t2, R;
     jpt_mul(&t1, u1, c->gx, c->gy, c);          /* u1*G */

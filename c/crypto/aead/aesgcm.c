@@ -136,6 +136,7 @@ void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
 {
+    if (aadlen < 0 || len < 0) return;          /* negative lengths would walk backwards */
     gcm_core(key, nonce, aad, aadlen, pt, len, ct, tag);
 }
 
@@ -143,6 +144,7 @@ int aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
                     const uint8_t *aad, int aadlen,
                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
 {
+    if (aadlen < 0 || len < 0) return -1;
     /* GHASH is over the ciphertext, so compute the tag from ct, then decrypt. */
     uint8_t rk[176]; key_expand(key, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);

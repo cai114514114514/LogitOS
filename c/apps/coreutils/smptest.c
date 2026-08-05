@@ -60,7 +60,13 @@ static long run_batch(int n, int *ok, unsigned *seen_all, int *got)
     int pids[NCHILD_MAX];
     for (int i = 0; i < n; i++) {
         int pid = sys_fork();
-        if (pid < 0) { outs("smptest: fork failed\n"); *ok = 0; *got = 0; return 0; }
+        if (pid < 0) {                              /* reap already-forked children, don't leak fds */
+            outs("smptest: fork failed\n");
+            sys_close(fds[1]);                      /* parent's write end: no longer needed */
+            for (int k = 0; k < i; k++) sys_waitpid(pids[k], 0);
+            sys_close(fds[0]);
+            *ok = 0; *got = 0; return 0;
+        }
         if (pid == 0) {
             sys_close(fds[0]);
             unsigned seen = 0;

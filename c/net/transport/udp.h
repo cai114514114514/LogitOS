@@ -17,5 +17,6 @@ int  udp_send(uint32_t dst, uint16_t dport, uint16_t sport,
 void udp_recv_bind(uint16_t port, uint8_t *buf, int max);
 int  udp_recv_len(void);        /* bytes received, or -1 if nothing yet */
 uint32_t udp_recv_src(void);    /* source IP of the received datagram */
+uint16_t udp_recv_sport(void);  /* source port of the received datagram */
 
 #endif /* AETHER_UDP_H */

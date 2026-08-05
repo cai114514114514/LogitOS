@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
+# Dock geometry (9 icons @1280x800): icon i center = (384 + i*64, 753);
+# terminal is index 3 -> (576,753). Cursor starts at screen center (640,400).
 import socket, json, sys, os, time, subprocess, tempfile
 iso, disk, out = sys.argv[1], sys.argv[2], sys.argv[3]
-sock = tempfile.mktemp(suffix=".qmp"); serial = tempfile.mktemp(suffix=".log")
+fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)  # QEMU binds the socket itself
+fd, serial = tempfile.mkstemp(suffix=".log"); os.close(fd)
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
 proc = subprocess.Popen([qemu, "-cdrom", iso,
     "-drive", f"file={disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
+    "-snapshot",            # ephemeral writes -> the disk probe can't leak across runs
     "-display", "none", "-no-reboot", "-m", "512M",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait"])
 def armed():
@@ -53,7 +57,7 @@ def send(t):
         elif ch=="|": shift_key("backslash")
         else: key(KMAP.get(ch,ch))
 json.loads(f.readline()); cmd({"execute":"qmp_capabilities"})
-goto(672,753); click(); time.sleep(1.2)        # launch Terminal from the Dock (6 apps)
+goto(576,753); click(); time.sleep(1.2)        # launch Terminal from the Dock (icon 3 of 9)
 for line in ["uname\n","ls /bin | wc\n","echo aether-os-is-real > /hi.txt\n","cat /hi.txt\n"]:
     send(line); time.sleep(1.6)
 time.sleep(1.5)

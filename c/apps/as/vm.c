@@ -127,6 +127,7 @@ static int name_eq(ObjStr *s, const char *lit)
 
 static ObjStr *str_concat(ObjStr *a, ObjStr *b)
 {
+    if (a->len > INT32_MAX - 1 - b->len) { runtime_error("string too long"); return NULL; }
     int n = a->len + b->len;
     char *buf = (char *)as_malloc((size_t)n + 1);
     if (!buf) return NULL;                       /* g_oom set; op_ADD goes to err */
@@ -174,7 +175,12 @@ static char *module_source(ObjStr *name)
         size_t cap = 4096, len = 0; char *buf = (char *)as_malloc(cap);
         if (!buf) { fclose(f); return NULL; }
         for (;;) {
-            if (len + 4096 + 1 > cap) { cap *= 2; buf = (char *)as_realloc(buf, cap); if (!buf) { fclose(f); return NULL; } }
+            if (len + 4096 + 1 > cap) {
+                cap *= 2;
+                char *nb = (char *)as_realloc(buf, cap);
+                if (!nb) { free(buf); fclose(f); return NULL; }   /* g_oom set */
+                buf = nb;
+            }
             size_t r = fread(buf + len, 1, 4096, f);
             len += r; if (r < 4096) break;
         }
@@ -202,7 +208,12 @@ static ObjFn *module_try_la(ObjStr *name)
         size_t cap = 4096, len = 0; uint8_t *buf = (uint8_t *)malloc(cap);
         if (!buf) { fclose(f); return NULL; }
         for (;;) {
-            if (len + 4096 + 1 > cap) { cap *= 2; buf = (uint8_t *)realloc(buf, cap); if (!buf) { fclose(f); return NULL; } }
+            if (len + 4096 + 1 > cap) {
+                cap *= 2;
+                uint8_t *nb = (uint8_t *)realloc(buf, cap);
+                if (!nb) { free(buf); fclose(f); return NULL; }
+                buf = nb;
+            }
             size_t r = fread(buf + len, 1, 4096, f);
             len += r; if (r < 4096) break;
         }
@@ -313,8 +324,12 @@ static Value native_args(int argc, Value *args)
     (void)argc; (void)args;
     as_gc_push_disable();                    /* list + strings before any is rooted */
     ObjList *l = as_list_new();
-    for (int i = 0; i < g_argc; i++)
-        as_list_push(l, OBJ_VAL(as_str_copy(g_argv[i], (int)strlen(g_argv[i]))));
+    if (!l) { as_gc_pop_disable(); return NIL_VAL; }    /* g_oom set; dispatch unwinds */
+    for (int i = 0; i < g_argc; i++) {
+        ObjStr *s = as_str_copy(g_argv[i], (int)strlen(g_argv[i]));
+        if (!s) { as_gc_pop_disable(); return NIL_VAL; }    /* g_oom set; don't store OBJ_VAL(NULL) */
+        as_list_push(l, OBJ_VAL(s));
+    }
     as_gc_pop_disable();
     return OBJ_VAL(l);
 }
@@ -349,18 +364,32 @@ static Value native_range(int argc, Value *args)
     else return as_native_fail("range() takes 1 to 3 arguments");
     if (step == 0) return as_native_fail("range() step must not be zero");
     ObjList *l = as_list_new();
-    if (step > 0) for (int64_t i = start; i < stop; i += step) as_list_push(l, INT_VAL(i));
-    else          for (int64_t i = start; i > stop; i += step) as_list_push(l, INT_VAL(i));
+    if (!l) return NIL_VAL;                  /* g_oom set; dispatch unwinds */
+    /* i += step guarded against signed overflow: without it range(INT64_MAX-1,
+     * INT64_MAX, 2) wraps i negative and loops until OOM. */
+    if (step > 0) for (int64_t i = start; i < stop; ) {
+        as_list_push(l, INT_VAL(i));
+        if (i > INT64_MAX - step) break;
+        i += step;
+    } else for (int64_t i = start; i > stop; ) {
+        as_list_push(l, INT_VAL(i));
+        if (i < INT64_MIN - step) break;
+        i += step;
+    }
     return OBJ_VAL(l);
 }
 void as_define_native(const char *name, NativeFn fn)
 {
     int len = (int)strlen(name);
-    *builtin_slot(as_str_copy(name, len), 1) = OBJ_VAL(as_native_new(fn, name));
+    ObjStr *nm = as_str_copy(name, len);
+    if (!nm) return;                         /* g_oom set; setup unwinds on the first DISPATCH */
+    *builtin_slot(nm, 1) = OBJ_VAL(as_native_new(fn, name));
 }
 void as_define_int(const char *name, int64_t v)
 {
-    *builtin_slot(as_str_copy(name, (int)strlen(name)), 1) = INT_VAL(v);
+    ObjStr *nm = as_str_copy(name, (int)strlen(name));
+    if (!nm) return;                         /* g_oom set; setup unwinds on the first DISPATCH */
+    *builtin_slot(nm, 1) = INT_VAL(v);
 }
 void as_add_module_source(const char *name, const char *src)
 {
@@ -437,6 +466,7 @@ static ObjUpvalue *capture_upvalue(Value *slot)
     while (cur && cur->location > slot) { prev = cur; cur = cur->next; }
     if (cur && cur->location == slot) return cur;
     ObjUpvalue *uv = as_upvalue_new(slot);
+    if (!uv) return NULL;                    /* g_oom set; caller stores NULL, dispatch unwinds */
     uv->next = cur;
     if (prev) prev->next = uv; else open_upvalues = uv;
     return uv;
@@ -490,6 +520,7 @@ static ObjModule *as_import(ObjStr *name)
     if (nmodules >= 64) { runtime_error("too many modules"); return NULL; }
     as_gc_push_disable();                         /* guard as_module_new: two allocs before m is rooted */
     m = as_module_new(name->chars, name->len);
+    if (!m) { as_gc_pop_disable(); runtime_error("out of memory"); return NULL; }
     modules[nmodules++] = m;                       /* register before running -> circular-safe */
     as_gc_pop_disable();                          /* m is now a GC root via modules[] */
     ObjFn *script = module_try_la(name);           /* prefer a precompiled NAME.la */
@@ -609,6 +640,7 @@ static int run_until(int floor)
             if (!IS_NUM(a) || !IS_NUM(b)) { runtime_error("operands of '/' must be numbers"); goto err; }
             if (IS_INT(a) && IS_INT(b)) {
                 if (AS_INT(b) == 0) { runtime_error("integer division by zero"); goto err; }
+                if (AS_INT(a) == INT64_MIN && AS_INT(b) == -1) { runtime_error("integer overflow: INT64_MIN / -1"); goto err; }
                 sp -= 2; push(INT_VAL(AS_INT(a) / AS_INT(b)));
             } else { sp -= 2; push(FLOAT_VAL(AS_NUM(a) / AS_NUM(b))); }
             DISPATCH();
@@ -617,6 +649,7 @@ static int run_until(int floor)
             Value b = peek(0), a = peek(1);
             if (!IS_INT(a) || !IS_INT(b)) { runtime_error("operands of '%%' must be integers"); goto err; }
             if (AS_INT(b) == 0) { runtime_error("modulo by zero"); goto err; }
+            if (AS_INT(a) == INT64_MIN && AS_INT(b) == -1) { runtime_error("integer overflow: INT64_MIN %% -1"); goto err; }
             sp -= 2; push(INT_VAL(AS_INT(a) % AS_INT(b)));
             DISPATCH();
         }
@@ -669,7 +702,7 @@ static int run_until(int floor)
                 else { sp -= 2; push(INT_VAL(r)); }
             } else if (IS_NUM(a) && IS_NUM(b)) {
                 if (!IS_INT(b)) { runtime_error("** float exponent unsupported (no libm in /bin/as)"); goto err; }
-                double base = AS_NUM(a); int64_t e = AS_INT(b); int neg = e < 0; if (neg) e = -e;
+                double base = AS_NUM(a); int64_t e = AS_INT(b); int neg = e < 0; if (neg) { if (e == INT64_MIN) { runtime_error("** exponent overflow: cannot negate INT64_MIN"); goto err; } e = -e; }
                 double r = 1.0; while (e > 0) { if (e & 1) r *= base; base *= base; e >>= 1; }
                 if (neg) r = 1.0 / r;
                 sp -= 2; push(FLOAT_VAL(r));
@@ -678,7 +711,10 @@ static int run_until(int floor)
         }
         op_NEG: {
             Value a = peek(0);
-            if (IS_INT(a))        { sp--; push(INT_VAL(-AS_INT(a))); }
+            if (IS_INT(a)) {
+                if (AS_INT(a) == INT64_MIN) { runtime_error("integer overflow: cannot negate INT64_MIN"); goto err; }
+                sp--; push(INT_VAL(-AS_INT(a)));
+            }
             else if (IS_FLOAT(a)) { sp--; push(FLOAT_VAL(-AS_FLOAT(a))); }
             else { runtime_error("operand of unary '-' must be a number"); goto err; }
             DISPATCH();
@@ -748,6 +784,7 @@ static int run_until(int floor)
         op_MAKE_LIST: {
             int n = READ_BYTE();
             ObjList *l = as_list_new();
+            if (!l) goto err;                     /* g_oom set */
             for (int i = 0; i < n; i++) as_list_push(l, sp[-n + i]);
             sp -= n;
             push(OBJ_VAL(l));
@@ -756,6 +793,7 @@ static int run_until(int floor)
         op_MAKE_DICT: {
             int n = READ_BYTE();
             ObjDict *d = as_dict_new();
+            if (!d) goto err;                     /* g_oom set */
             for (int i = 0; i < n; i++) {
                 Value key = sp[-2 * n + 2 * i];
                 Value val = sp[-2 * n + 2 * i + 1];
@@ -877,6 +915,7 @@ static int run_until(int floor)
                      * the build (the inputs are big-O the result, so this is bounded). */
                     as_gc_push_disable();
                     ObjList *l = as_list_new();
+                    if (!l) { as_gc_pop_disable(); goto err; }    /* g_oom set */
                     if (sep) {
                         int start = 0;
                         for (int i = 0; i + sep->len <= s->len; ) {
@@ -1081,15 +1120,24 @@ static int run_until(int floor)
         op_CLOSURE: {
             ObjFn *fn = AS_FN(READ_CONST());
             ObjClosure *cl = as_closure_new(fn);
+            if (!cl) goto err;                    /* g_oom set */
             checked_push(OBJ_VAL(cl));   /* root cl NOW: capture_upvalue allocates and may trigger GC */
             for (int i = 0; i < cl->upvalue_count; i++) {
                 uint8_t is_local = READ_BYTE();
                 uint8_t index = READ_BYTE();
-                /* non-local: inherit from the enclosing closure. frame->closure is
+                /* The .la verifier bounds these for well-formed files; re-check at
+                 * runtime so a corrupt capture pair can never fabricate an upvalue
+                 * pointing outside the live stack (a type-confusion primitive).
+                 * non-local: inherit from the enclosing closure. frame->closure is
                  * non-NULL here because any fn with upvalue_count>0 is nested in a
                  * function, which is always invoked via call_closure (never call_fn). */
-                cl->upvalues[i] = is_local ? capture_upvalue(frame->slots + index)
-                                           : frame->closure->upvalues[index];
+                if (is_local) {
+                    if (frame->slots + index < stack || frame->slots + index >= sp) { runtime_error("bad upvalue capture"); goto err; }
+                    cl->upvalues[i] = capture_upvalue(frame->slots + index);
+                } else {
+                    if (!frame->closure || index >= frame->closure->upvalue_count) { runtime_error("bad upvalue capture"); goto err; }
+                    cl->upvalues[i] = frame->closure->upvalues[index];
+                }
             }
             DISPATCH();   /* cl is already on the stack as the result */
         }

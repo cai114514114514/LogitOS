@@ -4,6 +4,7 @@
 #include "ip.h"
 #include "net.h"
 #include "pit.h"
+#include "rng.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -24,6 +25,7 @@ enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSING, TIME_WAIT };
 #define TXBUF    1460     /* MSS: 1500 MTU - 20 IP - 20 TCP. Caps a segment so it
                           * fits ip_send's 1500-byte pkt[] (was 2048 -> >1480-byte
                           * payloads were silently dropped by ip_send). */
+#define DEFAULT_MSS 536   /* RFC 9293 IPv4 send-MSS default when peer omits it */
 #define NOOO     16        /* out-of-order reassembly intervals tracked per conn */
 
 /* A received byte range [seq, end) that sits AHEAD of rcv_nxt (a hole precedes
@@ -35,6 +37,9 @@ struct tcp_conn {
     uint16_t lport, rport;
     uint32_t rip;               /* remote IP, host order */
     uint32_t snd_una, snd_nxt;  /* send sequence space */
+    uint32_t snd_wnd;           /* peer-advertised window (no scaling negotiated) */
+    uint32_t snd_wl1, snd_wl2;  /* SEG.SEQ/ACK of last accepted window update */
+    uint16_t peer_mss;          /* MSS from SYN-ACK, or DEFAULT_MSS */
     uint32_t rcv_nxt;           /* next expected (contiguous) receive seq */
     int      peer_fin;          /* peer sent FIN (no more data coming) */
 
@@ -57,7 +62,10 @@ struct tcp_conn {
     uint8_t  tx_flags;
     uint32_t tx_seq;
     uint64_t tx_tick;
+    uint64_t rx_tick;           /* last valid inbound segment (FIN_WAIT backstop) */
     int      tx_retries;
+    int      tx_probe;          /* retransmit indefinitely while peer window is 0 */
+    int      close_pending;     /* send FIN after the one-slot TX queue drains */
     int      used;
 };
 
@@ -99,18 +107,51 @@ static uint16_t tcp_checksum(uint32_t src, uint32_t dst, const uint8_t *seg, int
 
 /* Furthest sequence we have any buffered byte for (contiguous end, or the top of
  * the highest out-of-order interval). */
-static uint32_t rx_furthest(struct tcp_conn *c)
+/* Receive window starts at rcv_nxt and ends at the fixed right edge of our
+ * seq-indexed ring. OOO bytes already occupy their sequence slots, so they do
+ * not move that edge. Without window scaling, the wire value is capped at
+ * 65535 even though the ring itself holds 65536 bytes. */
+static int recv_window(struct tcp_conn *c)
 {
-    return c->n_ooo ? c->ooo[c->n_ooo - 1].end : c->rcv_nxt;
+    uint32_t used = c->rcv_nxt - c->read_seq;
+    if (used >= RXBUF) return 0;
+    uint32_t win = RXBUF - used;
+    return win > 65535 ? 65535 : (int)win;
 }
 
-/* Free receive-buffer space = window we can advertise (accounts for OOO bytes
- * already parked in the ring). */
-static int rx_free(struct tcp_conn *c)
+/* RFC 9293 receive-window acceptability (SEG.LEN counts FIN). */
+static int segment_acceptable(struct tcp_conn *c, uint32_t seq, uint32_t seglen)
 {
-    int occ = (int)(rx_furthest(c) - c->read_seq);
-    int f = RXBUF - occ;
-    return f < 0 ? 0 : f;
+    uint32_t win = (uint32_t)recv_window(c);
+    if (seglen == 0) {
+        if (win == 0) return seq == c->rcv_nxt;
+        return seq_le(c->rcv_nxt, seq) && seq_lt(seq, c->rcv_nxt + win);
+    }
+    if (win == 0) return 0;
+    uint32_t last = seq + seglen - 1;
+    return (seq_le(c->rcv_nxt, seq) && seq_lt(seq, c->rcv_nxt + win)) ||
+           (seq_le(c->rcv_nxt, last) && seq_lt(last, c->rcv_nxt + win));
+}
+
+/* Validate the option list and extract MSS from a SYN. Unknown options are
+ * skipped as required; malformed lengths reject the segment. */
+static int parse_options(const uint8_t *opt, int len, uint16_t *mss)
+{
+    *mss = 0;
+    for (int i = 0; i < len;) {
+        uint8_t kind = opt[i];
+        if (kind == 0) break;                 /* EOL */
+        if (kind == 1) { i++; continue; }     /* NOP */
+        if (i + 1 >= len) return -1;
+        int olen = opt[i + 1];
+        if (olen < 2 || i + olen > len) return -1;
+        if (kind == 2) {
+            if (olen != 4) return -1;
+            *mss = (uint16_t)(((uint16_t)opt[i + 2] << 8) | opt[i + 3]);
+        }
+        i += olen;
+    }
+    return 0;
 }
 
 /* Write n bytes at the ring slot for sequence s (caller guarantees the whole
@@ -173,7 +214,7 @@ static void rx_data(struct tcp_conn *c, uint32_t seg_seq, const uint8_t *payload
 {
     uint32_t s = seg_seq, e = seg_seq + (uint32_t)dlen;
     if (seq_lt(s, c->rcv_nxt)) { payload += (c->rcv_nxt - s); s = c->rcv_nxt; }  /* trim dup prefix */
-    uint32_t win_end = c->read_seq + RXBUF;
+    uint32_t win_end = c->rcv_nxt + (uint32_t)recv_window(c);
     if (seq_lt(win_end, e)) e = win_end;                                          /* trim beyond buffer */
     if (seq_le(e, s)) return;                                                     /* nothing new */
     ring_write(c, s, payload, (int)(e - s));
@@ -184,23 +225,29 @@ static void rx_data(struct tcp_conn *c, uint32_t seg_seq, const uint8_t *payload
 static void send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq,
                      const void *data, int dlen)
 {
-    uint8_t seg[sizeof(struct tcp_hdr) + TXBUF];
+    uint8_t seg[sizeof(struct tcp_hdr) + 4 + TXBUF];
     struct tcp_hdr *h = (struct tcp_hdr *)seg;
     memset(h, 0, sizeof *h);
     h->sport = htons(c->lport);
     h->dport = htons(c->rport);
     h->seq = htonl(seq);
     h->ack = htonl(c->rcv_nxt);
-    h->off = (uint8_t)((sizeof(struct tcp_hdr) / 4) << 4);
+    int hlen = (int)sizeof *h;
+    if (flags & SYN) {
+        /* We can reassemble a full Ethernet-MTU segment. Advertising MSS avoids
+         * making the peer fall back to IPv4's conservative 536-byte default. */
+        seg[hlen++] = 2; seg[hlen++] = 4;
+        seg[hlen++] = (uint8_t)(TXBUF >> 8); seg[hlen++] = (uint8_t)TXBUF;
+    }
+    h->off = (uint8_t)((hlen / 4) << 4);
     h->flags = flags;
-    int win = rx_free(c);
-    if (win > 65535) win = 65535;
+    int win = recv_window(c);
     h->window = htons((uint16_t)win);
     c->adv_wnd = win;                       /* remember what the peer now believes */
     if (dlen > 0)
-        memcpy(seg + sizeof *h, data, (size_t)dlen);
+        memcpy(seg + hlen, data, (size_t)dlen);
     h->checksum = 0;
-    int total = (int)sizeof *h + dlen;
+    int total = hlen + dlen;
     h->checksum = htons(tcp_checksum(net_cfg.ip, c->rip, seg, total));
     ip_send(c->rip, IP_PROTO_TCP, seg, (uint16_t)total);
 }
@@ -215,6 +262,42 @@ static void arm_retransmit(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     if (dlen > 0) memcpy(c->tx, data, (size_t)dlen);
     c->tx_tick = timer_ticks();
     c->tx_retries = 0;
+    c->tx_probe = 0;
+}
+
+static void start_fin(struct tcp_conn *c)
+{
+    uint32_t seq = c->snd_nxt;
+    send_seg(c, FIN | ACK, seq, NULL, 0);
+    arm_retransmit(c, FIN | ACK, seq, NULL, 0);
+    c->snd_nxt += 1;
+    c->state = FIN_WAIT;
+}
+
+/* Bytes the peer currently permits beyond data already in flight. */
+static uint32_t send_available(struct tcp_conn *c)
+{
+    uint32_t flight = c->snd_nxt - c->snd_una;
+    return c->snd_wnd > flight ? c->snd_wnd - flight : 0;
+}
+
+static void update_send_window(struct tcp_conn *c, uint32_t seg_seq,
+                               uint32_t seg_ack, uint16_t seg_wnd)
+{
+    if (!seq_le(c->snd_una, seg_ack) || !seq_le(seg_ack, c->snd_nxt)) return;
+    if (seq_lt(c->snd_wl1, seg_seq) ||
+        (c->snd_wl1 == seg_seq && seq_le(c->snd_wl2, seg_ack))) {
+        c->snd_wnd = seg_wnd;
+        c->snd_wl1 = seg_seq;
+        c->snd_wl2 = seg_ack;
+        /* A persist probe becomes an ordinary outstanding byte as soon as the
+         * window reopens. Make tcp_poll retransmit it promptly. */
+        if (c->tx_probe && c->snd_wnd > 0) {
+            c->tx_probe = 0;
+            c->tx_retries = 0;
+            c->tx_tick = c->rx_tick >= 50 ? c->rx_tick - 50 : 0;
+        }
+    }
 }
 
 static struct tcp_conn *find_conn(uint16_t lport, uint32_t rip, uint16_t rport)
@@ -240,30 +323,84 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
     uint8_t  flags = h->flags;
     int hlen = (h->off >> 4) * 4;
     if (hlen < (int)sizeof *h || hlen > len) return;
+    /* Verify the pseudo-header + segment checksum; a valid segment's ones-
+     * complement sum (checksum field included) folds to 0. */
+    if (tcp_checksum(src, net_cfg.ip, data, len) != 0) return;
+    uint16_t offered_mss;
+    if (parse_options(data + sizeof *h, hlen - (int)sizeof *h, &offered_mss) != 0)
+        return;
     const uint8_t *payload = data + hlen;
     int dlen = len - hlen;
 
-    if (flags & RST) { c->state = CLOSED; c->used = 0; return; }
-
+    /* RFC 793: accept a RST only when its seq falls inside the receive window
+     * (in SYN_SENT, only an RST that acks our SYN). A blind RST from off-path
+     * must not tear down the connection. */
     if (c->state == SYN_SENT) {
+        if (flags & RST) {
+            if ((flags & ACK) && seg_ack == c->snd_nxt)
+                { c->state = CLOSED; c->used = 0; }
+            return;
+        }
         if ((flags & (SYN | ACK)) == (SYN | ACK) && seg_ack == c->snd_nxt) {
             c->rcv_nxt = seg_seq + 1;
             c->read_seq = c->rcv_nxt;           /* align the receive ring base */
             c->snd_una = seg_ack;
+            c->snd_wnd = ntohs(h->window);
+            c->snd_wl1 = seg_seq; c->snd_wl2 = seg_ack;
+            c->peer_mss = offered_mss ? offered_mss : DEFAULT_MSS;
+            if (c->peer_mss > TXBUF) c->peer_mss = TXBUF;
+            if (c->peer_mss == 0) c->peer_mss = 1;
             c->tx_len = 0; c->tx_flags = 0;     /* SYN acked */
             c->state = ESTABLISHED;
+            c->rx_tick = timer_ticks();
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
         }
         return;
     }
 
+    uint32_t seglen = (uint32_t)dlen + ((flags & FIN) ? 1u : 0u);
+    int acceptable = segment_acceptable(c, seg_seq, seglen);
+    if (flags & RST) {
+        /* RFC 5961 challenge ACK: only an exact RCV.NXT reset tears down an
+         * established connection; an in-window non-exact RST gets challenged. */
+        if (seg_seq == c->rcv_nxt) { c->state = CLOSED; c->used = 0; return; }
+        if (acceptable) send_seg(c, ACK, c->snd_nxt, NULL, 0);
+        return;
+    }
+    if (!acceptable) {
+        send_seg(c, ACK, c->snd_nxt, NULL, 0);
+        return;
+    }
+    if (flags & SYN) {                         /* unexpected SYN on this connection */
+        send_seg(c, ACK, c->snd_nxt, NULL, 0);
+        return;
+    }
+
+    c->rx_tick = timer_ticks();
+
     /* Established (and closing states): ack our outstanding data, take theirs.
      * Single outstanding segment, so snd_nxt is the end of everything we've sent
      * (data + the +1 for SYN/FIN); a cumulative ACK reaching it frees the slot. */
     if (flags & ACK) {
+        if (seq_lt(c->snd_nxt, seg_ack)) {     /* acknowledges bytes never sent */
+            send_seg(c, ACK, c->snd_nxt, NULL, 0);
+            return;
+        }
+        update_send_window(c, seg_seq, seg_ack, ntohs(h->window));
         if (seq_lt(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_nxt))
             c->snd_una = seg_ack;
-        if (c->tx_flags && seq_le(c->snd_nxt, seg_ack)) { c->tx_len = 0; c->tx_flags = 0; }
+        /* Free the retransmit slot only when the ACK covers exactly the whole
+         * outstanding segment; an ACK beyond snd_nxt is illegal and must not
+         * silently drop an unacknowledged segment (hole in the byte stream). */
+        if (c->tx_flags && seg_ack == c->snd_nxt) {
+            c->tx_len = 0; c->tx_flags = 0; c->tx_probe = 0;
+            if (c->close_pending && c->state == ESTABLISHED) {
+                c->close_pending = 0;
+                start_fin(c);
+            } else if (c->state == FIN_WAIT && c->peer_fin) {
+                c->state = CLOSED; return;     /* keep buffered data drainable */
+            }
+        }
     }
     if (dlen > 0 && (c->state == ESTABLISHED || c->state == FIN_WAIT)) {
         rx_data(c, seg_seq, payload, dlen);
@@ -277,7 +414,8 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
             c->rcv_nxt += 1;
             c->peer_fin = 1;
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
-            if (c->state == FIN_WAIT) { c->state = CLOSED; c->used = 0; }
+            if (c->state == FIN_WAIT && c->tx_flags == 0)
+                c->state = CLOSED;             /* keep buffered data drainable */
         }
     }
 }
@@ -289,14 +427,26 @@ void tcp_poll(void)
     for (int i = 0; i < NCONN; i++) {
         struct tcp_conn *c = &conns[i];
         if (!c->used) continue;
-        if (c->tx_flags && now - c->tx_tick >= 50) {   /* ~0.5 s RTO */
-            if (++c->tx_retries > 8) { c->state = CLOSED; c->used = 0; continue; }
+        uint64_t rto = 50;                              /* base ~0.5 s RTO */
+        if (c->tx_probe) {
+            int shift = c->tx_retries > 5 ? 5 : c->tx_retries;
+            rto <<= shift;                              /* persist backoff to 16 s */
+        }
+        if (c->tx_flags && now - c->tx_tick >= rto) {
+            if (c->tx_probe) {
+                if (c->tx_retries < 6) c->tx_retries++;
+            } else if (++c->tx_retries > 8) {
+                c->state = CLOSED; c->used = 0; continue;
+            }
             send_seg(c, c->tx_flags, c->tx_seq, c->tx_len ? c->tx : NULL, c->tx_len);
             c->tx_tick = now;
         }
         /* Backstop: our FIN was acked but the peer's FIN never came -- don't leak
-         * the slot (NCONN is small and a browser opens many connections). */
-        if (c->state == FIN_WAIT && c->tx_flags == 0 && now - c->tx_tick > 200)
+         * the slot (NCONN is small and a browser opens many connections). Only
+         * fire after the peer has also gone quiet: a half-closed peer may still
+         * be legally streaming data, which refreshes rx_tick on each segment. */
+        if (c->state == FIN_WAIT && c->tx_flags == 0 && now - c->tx_tick > 200 &&
+            now - c->rx_tick > 200)
             { c->state = CLOSED; c->used = 0; }
     }
     net_unlock(f);
@@ -315,8 +465,12 @@ int tcp_connect(uint32_t dst, uint16_t port)
     c->lport = next_port++;
     if (next_port == 0) next_port = 49152;
     c->rip = dst; c->rport = port;
-    uint32_t iss = (uint32_t)timer_ticks() * 2654435761u + iss_counter++;
+    uint32_t iss;
+    kernel_random_bytes((uint8_t *)&iss, sizeof iss);
+    iss ^= (uint32_t)timer_ticks() * 2654435761u ^ dst ^
+           ((uint32_t)c->lport << 16) ^ port ^ iss_counter++;
     c->snd_una = iss; c->snd_nxt = iss + 1;     /* SYN consumes one seq */
+    c->peer_mss = DEFAULT_MSS;
 
     send_seg(c, SYN, iss, NULL, 0);
     arm_retransmit(c, SYN, iss, NULL, 0);
@@ -329,44 +483,53 @@ int tcp_connect(uint32_t dst, uint16_t port)
         if (!c->used) return -1;
         net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
     }
+    f = net_lock();             /* clear the slot under the same lock as setup */
     c->used = 0;
+    net_unlock(f);
     return -1;
 }
 
 int tcp_send(int id, const void *buf, int len)
 {
-    if (id < 0 || id >= NCONN || len < 0) return -1;
+    if (id < 0 || id >= NCONN || len < 0 || (!buf && len > 0)) return -1;
     struct tcp_conn *c = &conns[id];
     const uint8_t *p = (const uint8_t *)buf;
     int remaining = len, sent = 0;
 
-    do {
+    while (remaining > 0) {
+        /* There is deliberately one retransmission slot. Never overwrite a
+         * previous call's final segment or a close/persist segment. */
+        uint64_t start = timer_ticks();
+        while (c->used && c->tx_flags && timer_ticks() - start < 800) {
+            net_poll();
+            if (!c->tx_flags) break;
+            net_idle();
+        }
+        if (!c->used || c->tx_flags) return sent > 0 ? sent : -1;
+
         uint64_t f = net_lock();
         if (!c->used || c->state != ESTABLISHED) { net_unlock(f); return sent > 0 ? sent : -1; }
-        int chunk = remaining > TXBUF ? TXBUF : remaining;
-        if (chunk == 0) { net_unlock(f); break; }
+        uint32_t avail = send_available(c);
+        int chunk;
+        if (avail == 0) {
+            /* RFC 9293 zero-window probe: queue one byte of new data. It stays
+             * in the retransmit slot with exponential persist backoff until the
+             * peer reports a reopened window. */
+            chunk = 1;
+        } else {
+            uint32_t cap = avail;
+            if (cap > TXBUF) cap = TXBUF;
+            if (cap > c->peer_mss) cap = c->peer_mss;
+            chunk = remaining > (int)cap ? (int)cap : remaining;
+        }
         uint32_t seq = c->snd_nxt;
         send_seg(c, PSH | ACK, seq, p, chunk);
         arm_retransmit(c, PSH | ACK, seq, p, chunk);
+        if (avail == 0) c->tx_probe = 1;
         c->snd_nxt += (uint32_t)chunk;
         net_unlock(f);
         p += chunk; remaining -= chunk; sent += chunk;
-
-        /* Single outstanding segment: before sending the next chunk, wait for
-         * this one's ACK (pumping net_poll, IF=1). The final chunk returns
-         * without waiting -- the caller's recv loop collects its ACK -- so the
-         * common <=MSS request keeps its old one-shot fast path. */
-        if (remaining > 0) {
-            uint64_t start = timer_ticks();
-            while (timer_ticks() - start < 800) {   /* ~8 s */
-                net_poll();
-                if (!c->used) return sent;
-                if (c->tx_flags == 0) break;        /* acked */
-                net_idle();
-            }
-            if (c->tx_flags) return sent;           /* timed out: partial send */
-        }
-    } while (remaining > 0);
+    }
 
     return sent;
 }
@@ -383,6 +546,7 @@ int tcp_recv(int id, void *buf, int max)
     } else {
         int avail = c->rx_len;
         if (avail <= 0) {
+            if (c->state == CLOSED) c->used = 0;
             rc = (c->peer_fin || c->state == CLOSED) ? -1 : 0;
         } else {
             int n = avail > max ? max : avail;
@@ -401,7 +565,7 @@ int tcp_recv(int id, void *buf, int max)
             /* Window update: the sender learns our window only from ACKs (sent on
              * inbound data). After draining a burst, proactively ACK so it doesn't
              * stall on a stale small window. */
-            if (c->state == ESTABLISHED && rx_free(c) - c->adv_wnd >= RXBUF / 4)
+            if (c->state == ESTABLISHED && recv_window(c) - c->adv_wnd >= RXBUF / 4)
                 send_seg(c, ACK, c->snd_nxt, NULL, 0);
             rc = n;
         }
@@ -417,12 +581,10 @@ void tcp_close(int id)
     uint64_t f = net_lock();
     if (!c->used || c->state != ESTABLISHED) {
         if (c->used) c->used = 0;
+    } else if (c->tx_flags) {
+        c->close_pending = 1;               /* do not overwrite unacked payload */
     } else {
-        uint32_t seq = c->snd_nxt;
-        send_seg(c, FIN | ACK, seq, NULL, 0);
-        arm_retransmit(c, FIN | ACK, seq, NULL, 0);
-        c->snd_nxt += 1;
-        c->state = FIN_WAIT;
+        start_fin(c);
     }
     net_unlock(f);
 }

@@ -12,18 +12,24 @@ Notes baked in from debugging this stack:
   - wait for AETHER_BOOT_OK before sending any input;
   - QEMU qcodes are 'ctrl'/'shift' (NOT 'ctrl_l'/'shift_l');
   - PS/2 relative motion is clamped to ~9 bits, so step moves <=200 px.
+  - the Dock scans root .aex in mkfs packing order (see qmp_files.py):
+    clock(0) textedit(1) monitor(2) terminal(3) widgets(4) files(5)
+    preview(6) studio(7) browser(8). With 9 icons @1280x800 the dock is
+    dw=14+9*64=590 wide, x0=(1280-590)/2=345, icon i center x = 384 + i*64,
+    y = 753; the kernel cursor starts at screen center (640,400).
 """
 import socket, json, sys, os, time, subprocess, tempfile
 
 iso, disk = sys.argv[1], sys.argv[2]
 out = sys.argv[3] if len(sys.argv) > 3 else "build/fs_smoke.ppm"
-sock = tempfile.mktemp(suffix=".qmp")
-serial = tempfile.mktemp(suffix=".log")
+fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)  # QEMU binds the socket itself
+fd, serial = tempfile.mkstemp(suffix=".log"); os.close(fd)
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
 
 proc = subprocess.Popen([
     qemu, "-cdrom", iso,
     "-drive", f"file={disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
+    "-snapshot",                                   # ephemeral writes -> no probe residue across runs
     "-display", "none", "-no-reboot",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait",
 ])
@@ -62,7 +68,7 @@ def recv():
         if "return" in m or "error" in m: return m
 def cmd(d): f.write(json.dumps(d) + "\n"); f.flush(); return recv()
 
-cur = [512, 384]
+cur = [640, 400]                              # kernel cursor starts at screen center
 def goto(tx, ty):
     while cur[0] != tx or cur[1] != ty:
         sx = max(-200, min(200, tx - cur[0])); sy = max(-200, min(200, ty - cur[1]))
@@ -93,7 +99,7 @@ def send(t):
         else: key(KMAP.get(ch, ch))
 
 json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
-goto(607, 720); click(); time.sleep(1.0)            # launch Terminal from the Dock
+goto(576, 753); click(); time.sleep(1.0)            # launch Terminal from the Dock (icon 3 of 9)
 for line in ["mkdir proj\n", "cd proj\n", "echo smokeprobe > note.txt\n", "ls\n", "cat note.txt\n"]:
     send(line); time.sleep(0.5)
 time.sleep(0.4)

@@ -28,3 +28,6 @@ fsroot/wallpaper.png
 
 # Rust (hybrid C+Rust) build artifacts
 rust/target/
+
+# Local scratch (WSL helper scripts, baseline worktrees, logs)
+.cache/

@@ -42,9 +42,11 @@ int virtio_busy(void) { return g_virtio_busy; }
 static uint64_t map_bar(uint8_t slot, int barn)
 {
     uint32_t lo = pci_cfg_read(0, slot, 0, 0x10 + barn * 4);
+    if (lo == 0 || lo == 0xFFFFFFFF || (lo & 0x1)) return 0;   /* absent or I/O BAR */
     uint64_t base = lo & ~(uint64_t)0xF;
     if ((lo & 0x6) == 0x4)        /* 64-bit BAR: high dword in the next slot */
         base |= (uint64_t)pci_cfg_read(0, slot, 0, 0x10 + (barn + 1) * 4) << 32;
+    if (!base) return 0;
     vmm_map_range(base, base, 0x8000, VMM_WRITABLE | VMM_NOCACHE);
     return base;
 }
@@ -65,12 +67,15 @@ int virtio_init(uint16_t devid, struct virtio_dev *vd, uint32_t want_lo)
         if (vndr == 0x09) {
             uint8_t barn = pci_cfg_read(0, dev.slot, 0, cap + 4) & 0xFF;
             uint32_t off = pci_cfg_read(0, dev.slot, 0, cap + 8);
-            volatile uint8_t *p = (volatile uint8_t *)(map_bar(dev.slot, barn) + off);
-            switch (type) {
-            case 1: vd->common = p; break;
-            case 2: vd->notify_base = p; vd->notify_mult = pci_cfg_read(0, dev.slot, 0, cap + 16); break;
-            case 3: vd->isr = p; break;
-            case 4: vd->device = p; break;
+            uint64_t base = map_bar(dev.slot, barn);
+            if (base && off < 0x8000) {              /* skip invalid BAR / out-of-map offset */
+                volatile uint8_t *p = (volatile uint8_t *)(base + off);
+                switch (type) {
+                case 1: vd->common = p; break;
+                case 2: vd->notify_base = p; vd->notify_mult = pci_cfg_read(0, dev.slot, 0, cap + 16); break;
+                case 3: vd->isr = p; break;
+                case 4: vd->device = p; break;
+                }
             }
         }
         cap = next;
@@ -78,7 +83,13 @@ int virtio_init(uint16_t devid, struct virtio_dev *vd, uint32_t want_lo)
     if (!vd->common || !vd->notify_base) { kprintf("[virtio] %x: missing caps\n", devid); return -1; }
 
     w8(vd->common, C_STATUS, 0);                       /* reset */
-    while (r8(vd->common, C_STATUS) != 0) ;
+    for (long i = 0; i < 200000000; i++) {
+        if (r8(vd->common, C_STATUS) == 0) break;
+    }
+    if (r8(vd->common, C_STATUS) != 0) {
+        kprintf("[virtio] %x: reset timeout\n", devid);
+        return -1;
+    }
     w8(vd->common, C_STATUS, VIRTIO_S_ACK);
     w8(vd->common, C_STATUS, VIRTIO_S_ACK | VIRTIO_S_DRIVER);
 
@@ -110,9 +121,15 @@ int virtio_queue_setup(struct virtio_dev *vd, int qidx, struct virtq *vq)
     vq->desc  = (struct virtq_desc  *)pmm_alloc();     /* size*16 <= 4096 */
     vq->avail = (struct virtq_avail *)pmm_alloc();
     vq->used  = (struct virtq_used  *)pmm_alloc();
-    if (!vq->desc || !vq->avail || !vq->used) return -1;
+    if (!vq->desc || !vq->avail || !vq->used) {
+        if (vq->desc)  pmm_free((uint64_t)(uintptr_t)vq->desc);
+        if (vq->avail) pmm_free((uint64_t)(uintptr_t)vq->avail);
+        if (vq->used)  pmm_free((uint64_t)(uintptr_t)vq->used);
+        return -1;
+    }
     memset(vq->desc, 0, 4096); memset(vq->avail, 0, 4096); memset(vq->used, 0, 4096);
     vq->last_used = 0;
+    vq->free_head = 0;
 
     w64(vd->common, C_QDESC,   (uint64_t)vq->desc);
     w64(vd->common, C_QDRIVER, (uint64_t)vq->avail);
@@ -133,14 +150,18 @@ int virtio_request(struct virtio_dev *vd, struct virtq *vq, int qidx,
 {
     (void)vd;
     if (n <= 0 || n > vq->size) return -1;
+    /* Descriptors rotate through the ring: after a timeout the device may still
+     * own the old chain, and its late completion must not alias our head. */
+    uint16_t head = vq->free_head;
     for (int i = 0; i < n; i++) {
-        vq->desc[i].addr  = bufs[i].addr;
-        vq->desc[i].len   = bufs[i].len;
-        vq->desc[i].flags = (uint16_t)((bufs[i].device_writes ? VIRTQ_DESC_F_WRITE : 0) |
+        uint16_t d = (uint16_t)((head + i) % vq->size);
+        vq->desc[d].addr  = bufs[i].addr;
+        vq->desc[d].len   = bufs[i].len;
+        vq->desc[d].flags = (uint16_t)((bufs[i].device_writes ? VIRTQ_DESC_F_WRITE : 0) |
                                        (i < n - 1 ? VIRTQ_DESC_F_NEXT : 0));
-        vq->desc[i].next  = (uint16_t)(i + 1);
+        vq->desc[d].next  = (uint16_t)((d + 1) % vq->size);
     }
-    uint16_t head = 0;
+    vq->free_head = (uint16_t)((vq->free_head + n) % vq->size);
     vq->avail->ring[vq->avail->idx % vq->size] = head;
     barrier();
     vq->avail->idx++;
@@ -157,8 +178,9 @@ int virtio_request(struct virtio_dev *vd, struct virtq *vq, int qidx,
         barrier();
         if (vq->used->idx != vq->last_used) {
             struct virtq_used_elem *e = &vq->used->ring[vq->last_used % vq->size];
-            rc = (int)e->len;
             vq->last_used++;
+            if (e->id != head) continue;        /* stale completion from a timed-out request */
+            rc = (int)e->len;
             break;
         }
     }

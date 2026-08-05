@@ -174,7 +174,8 @@ int    as_interpret(const char *src); /* compile + run; returns 0 ok */
 /* .la serialize/deserialize (as_bc.c). as_dump writes the LAQ1 header + the
  * recursive ObjFn tree to `out` (0 ok, nonzero on a write/unserializable error);
  * as_load deserializes a buffer into a runnable ObjFn (->module left NULL for the
- * caller to stamp), returning NULL on bad magic/version/EOF. */
+ * caller to stamp), returning NULL on bad magic/version/EOF or when the bytecode
+ * fails the post-load verifier (as_bc.c -- a .la is untrusted input). */
 int    as_dump(ObjFn *fn, FILE *out);
 ObjFn *as_load(const uint8_t *buf, int len);
 

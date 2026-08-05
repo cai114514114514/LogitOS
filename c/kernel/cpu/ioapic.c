@@ -8,6 +8,7 @@
 
 static volatile uint8_t *io;        /* IOAPIC MMIO base */
 static uint32_t gsi_base;
+static int      max_rte;            /* max redirection entry index (from VER reg) */
 
 static uint32_t rd(uint8_t reg) { *(volatile uint32_t *)(io + 0) = reg; return *(volatile uint32_t *)(io + 0x10); }
 static void     wr(uint8_t reg, uint32_t v) { *(volatile uint32_t *)(io + 0) = reg; *(volatile uint32_t *)(io + 0x10) = v; }
@@ -19,8 +20,8 @@ void ioapic_init(void)
     vmm_map_page(base, base, VMM_WRITABLE | VMM_NOCACHE);
     io = (volatile uint8_t *)base;
     gsi_base = acpi_ioapic_gsibase();
-    int max = (rd(0x01) >> 16) & 0xFF;                  /* max redirection entry */
-    for (int i = 0; i <= max; i++) {                    /* mask everything to start */
+    max_rte = (rd(0x01) >> 16) & 0xFF;                  /* max redirection entry */
+    for (int i = 0; i <= max_rte; i++) {                /* mask everything to start */
         wr(0x10 + 2 * i, 1 << 16);
         wr(0x11 + 2 * i, 0);
     }
@@ -34,6 +35,7 @@ void ioapic_route(uint32_t gsi, uint8_t vec, uint8_t apic_id, int level, int act
 {
     if (!io || gsi < gsi_base) return;
     int n = (int)(gsi - gsi_base);
+    if (n > max_rte) return;                            /* beyond the redirection table */
     uint32_t low = (uint32_t)vec
                  | (active_low ? (1u << 13) : 0)        /* polarity */
                  | (level ? (1u << 15) : 0);            /* trigger; mask bit 16 = 0 (enabled) */

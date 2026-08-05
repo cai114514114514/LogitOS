@@ -58,7 +58,8 @@ static int64_t now_unix(void)
     for (int y = 1970; y < t.year; y++)
         days += (y%4==0 && (y%100!=0 || y%400==0)) ? 366 : 365;
     static const int md[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    for (int m = 1; m < t.month; m++) {
+    /* Clamp a bogus RTC month so md[m-1] can't index past md[12]. */
+    for (int m = 1; m < t.month && m <= 12; m++) {
         days += md[m-1];
         if (m==2 && (t.year%4==0 && (t.year%100!=0 || t.year%400==0))) days++;
     }
@@ -149,7 +150,13 @@ static int fetch_once(const struct url *u)
                 char cl[16];
                 if (header_value(raw, hdr_end, "content-length", cl, sizeof cl) == 0) {
                     clen = 0;
-                    for (const char *p = cl; *p >= '0' && *p <= '9'; p++) clen = clen*10 + (*p-'0');
+                    /* Cap the accumulation: raw_len can never exceed RAW_MAX, so
+                     * saturating at RAW_MAX keeps the 'have the whole body'
+                     * short-circuit exact without risking signed overflow. */
+                    for (const char *p = cl; *p >= '0' && *p <= '9'; p++) {
+                        if (clen > (RAW_MAX - 9) / 10) { clen = RAW_MAX; break; }
+                        clen = clen*10 + (*p-'0');
+                    }
                 }
             }
             if (clen >= 0 && hdr_end >= 0 && raw_len - hdr_end >= clen) break;
@@ -270,7 +277,7 @@ int res_fetch(const char *src, uint8_t **buf, int *len)
             }
             return -1;
         }
-        if (code && code != 200) return -1;
+        if (code != 200) return -1;     /* code 0 = unparseable status line: not HTTP */
         break;
     }
     int body = find_body(raw, raw_len); if (body < 0) return -1;

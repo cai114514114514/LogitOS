@@ -164,7 +164,10 @@ static int vfs_ensure_cap(struct file *f, long need)
 {
     if (need <= f->cap) return 0;
     long ncap = f->cap ? f->cap : 4096;
-    while (ncap < need) ncap *= 2;
+    while (ncap < need) {
+        if (ncap > (long)0x3fffffffffffffffL) return -1;   /* doubling would overflow -> never terminates */
+        ncap *= 2;
+    }
     char *nb = kmalloc((size_t)ncap);
     if (!nb) return -1;
     if (f->backing && f->size) memcpy(nb, f->backing, (size_t)f->size);
@@ -219,6 +222,7 @@ long file_write(struct file *f, const void *buf, long len)
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
         if (f->flags & O_APPEND) f->off = f->size;
+        if (f->off > (long)0x7fffffffffffffffL - len) return -1;   /* off+len would wrap negative */
         if (vfs_ensure_cap(f, f->off + len) < 0) return -1;
         memcpy((char *)f->backing + f->off, buf, (size_t)len);
         f->off += len;
@@ -273,29 +277,40 @@ void file_close(struct file *f)
 {
     if (!f) return;
     /* Drop the reference under the lock; only the caller that takes it to 0 owns the
-     * teardown (which then runs OUTSIDE the lock -- vfs flush / kfree are kheap). */
+     * teardown. The slot is fully detached (fields reset) BEFORE the lock is
+     * released: a concurrent file_alloc can reclaim a refcount==0 slot immediately,
+     * so teardown writes to f->* after the unlock would clobber the NEW owner's
+     * state. The vfs flush / kfree still run OUTSIDE the lock, on local copies. */
     uint64_t fl = spin_lock_irqsave(&g_file_lock);
     if (f->refcount <= 0) { spin_unlock_irqrestore(&g_file_lock, fl); return; }
     int last = (--f->refcount == 0);
+    int type = 0, dirty = 0, is_write = 0;
+    long size = 0;
+    void *backing = 0;
+    char path[sizeof f->path];
+    if (last) {
+        type = f->type; dirty = f->dirty; is_write = f->is_write;
+        size = f->size; backing = f->backing;
+        memcpy(path, f->path, sizeof path);
+        f->backing = 0; f->path[0] = 0; f->type = F_NONE;
+    }
     spin_unlock_irqrestore(&g_file_lock, fl);
     if (!last) return;
 
-    if (f->type == F_VFS) {
-        if (f->dirty && f->path[0])
-            vfs_write(f->path, f->backing ? f->backing : "", (int)f->size);
-        if (f->backing) kfree(f->backing);
-    } else if (f->type == F_PIPE) {
-        struct pipe *p = (struct pipe *)f->backing;
+    if (type == F_VFS) {
+        if (dirty && path[0])
+            vfs_write(path, backing ? backing : "", (int)size);
+        if (backing) kfree(backing);
+    } else if (type == F_PIPE) {
+        struct pipe *p = (struct pipe *)backing;
         if (p) {
             /* readers/writers are shared with the other pipe end -> decrement under
              * the lock; the side that drops the last count frees the pipe (outside). */
             uint64_t fl2 = spin_lock_irqsave(&g_file_lock);
-            if (f->is_write) p->writers--; else p->readers--;
+            if (is_write) p->writers--; else p->readers--;
             int free_pipe = (p->readers == 0 && p->writers == 0);
             spin_unlock_irqrestore(&g_file_lock, fl2);
             if (free_pipe) kfree(p);
         }
     }
-    f->backing = 0;
-    f->type = F_NONE;
 }

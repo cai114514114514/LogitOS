@@ -85,7 +85,7 @@ static void fmt_float(struct buf *b, double v, int prec, char conv, int plus, in
     if (v < 0 || (v == 0 && __builtin_signbit(v))) { sgn = '-'; v = -v; }
     else if (plus) sgn = '+'; else if (space) sgn = ' ';
     double inf = 1e308 * 10;
-    if (v > inf - 1) { if (sgn) bput(b, sgn); bputs(b, upper ? "INF" : "inf", 3); return; }
+    if (v >= inf) { if (sgn) bput(b, sgn); bputs(b, upper ? "INF" : "inf", 3); return; }
     if (prec < 0) prec = 6;
 
     int exp = 0; double t = v;
@@ -114,8 +114,11 @@ static void fmt_float(struct buf *b, double v, int prec, char conv, int plus, in
         if (ea < 10) bput(&lb, '0');
         emit_uint(&lb, (unsigned long long)ea);
     } else {                                   /* 'f' */
-        unsigned long long ip = (unsigned long long)v;
-        double frac = v - (double)ip;
+        /* (unsigned long long)v is UB for v >= 2^64 (cvttsd2usi yields an
+         * indeterminate value); clamp first so the conversion stays defined. */
+        unsigned long long ip = v < 18446744073709551616.0
+                              ? (unsigned long long)v : ~0ULL;
+        double frac = v < 18446744073709551616.0 ? v - (double)ip : 0;   /* huge v: digits are noise anyway */
         int np = prec > 39 ? 39 : prec; int fd[40];
         for (int i = 0; i < np; i++) { frac *= 10; int di = (int)frac; if (di < 0) di = 0; if (di > 9) di = 9; fd[i] = di; frac -= di; }
         int f_odd = np ? (fd[np - 1] & 1) : (int)(ip & 1ULL);   /* round half to even */
@@ -142,10 +145,10 @@ int vsnprintf(char *out, size_t cap, const char *fmt, va_list ap)
         }
         int width = 0;
         if (*fmt == '*') { width = va_arg(ap, int); fmt++; if (width < 0) { left = 1; width = -width; } }
-        else while (*fmt >= '0' && *fmt <= '9') width = width * 10 + (*fmt++ - '0');
+        else while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt++ - '0'); if (width > 0x1000000) width = 0x1000000; }  /* clamp: unbounded accumulation is signed-overflow UB */
         int prec = -1;
         if (*fmt == '.') { fmt++; prec = 0; if (*fmt == '*') { prec = va_arg(ap, int); fmt++; if (prec < 0) prec = -1; }
-                           else while (*fmt >= '0' && *fmt <= '9') prec = prec * 10 + (*fmt++ - '0'); }
+                           else while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt++ - '0'); if (prec > 0x1000000) prec = 0x1000000; } }
         int lng = 0;
         while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') { if (*fmt == 'l') lng++; if (*fmt == 'z' || *fmt == 'j' || *fmt == 't') lng = 2; fmt++; }
 
@@ -217,6 +220,7 @@ int fputs(const char *s, FILE *f)
 size_t fwrite(const void *p, size_t sz, size_t n, FILE *f)
 {
     if (sz == 0 || n == 0) return 0;
+    if (n > (size_t)-1 / sz) { if (f) f->flags |= F_ERR; return 0; }  /* sz*n overflow */
     size_t total = sz * n, off = 0; const char *cp = (const char *)p;
     while (off < total) { long k = write(f ? f->fd : 1, cp + off, total - off); if (k <= 0) { if (f) f->flags |= F_ERR; break; } off += (size_t)k; }
     return off / sz;
@@ -246,8 +250,9 @@ int ungetc(int c, FILE *f) { if (c == EOF) return EOF; f->ungot = (unsigned char
 
 size_t fread(void *ptr, size_t sz, size_t n, FILE *f)
 {
-    size_t total = sz * n, got = 0; unsigned char *out = (unsigned char *)ptr;
     if (sz == 0) return 0;
+    if (n > (size_t)-1 / sz) return 0;           /* sz*n overflow */
+    size_t total = sz * n, got = 0; unsigned char *out = (unsigned char *)ptr;
     while (got < total) { int c = fgetc(f); if (c == EOF) break; out[got++] = (unsigned char)c; }
     return got / sz;
 }
@@ -311,7 +316,9 @@ int fclose(FILE *f)
 {
     if (!f) return EOF;
     int fd = f->fd;
-    if (f->flags & F_ALLOC) { if (f->rbuf) free(f->rbuf); close(fd); free(f); }
+    if (f->rbuf) free(f->rbuf);
+    if (f->flags & F_ALLOC) { close(fd); free(f); }
+    else { f->rbuf = NULL; f->rcap = f->rpos = f->rlen = 0; }   /* static FILE: stay usable after close */
     return 0;
 }
 int remove(const char *path) { return unlink(path); }

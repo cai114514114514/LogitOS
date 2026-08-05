@@ -7,6 +7,7 @@
 #include "interrupts.h"   /* struct registers (fork) */
 #include "percpu.h"
 #include "spinlock.h"
+#include "kprintf.h"
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -47,6 +48,7 @@ uint64_t sched_current_cr3(void) { struct thread *t = this_cpu()->current; retur
 void sched_init(void)
 {
     struct thread *main = kmalloc(sizeof *main);
+    if (!main) { kprintf("[sched] OOM creating boot thread\n"); return; }
     main->rsp = 0;
     main->stack = NULL;
     main->kstack_top = 0;        /* the WM thread runs in ring 0; rsp0 unused */
@@ -67,7 +69,9 @@ void sched_init(void)
      * thread_exit()/schedule() on core 0 always have a valid idle fallback. It
      * first runs via a hand-built kthread_bootstrap frame -> sched_become_idle. */
     struct thread *bi = kmalloc(sizeof *bi);
+    if (!bi) { kprintf("[sched] OOM creating BSP idle thread\n"); return; }
     bi->stack = kmalloc(STACK_SIZE);
+    if (!bi->stack) { kprintf("[sched] OOM creating BSP idle stack\n"); kfree(bi); return; }
     bi->rsp = 0;
     bi->kstack_top = 0;
     bi->cr3 = vmm_kernel_cr3();
@@ -100,7 +104,9 @@ extern void kthread_bootstrap(void);   /* sched.c: releases g_sched_lock, calls 
 void thread_create(void (*entry)(void), const char *name)
 {
     struct thread *t = kmalloc(sizeof *t);
+    if (!t) return;
     t->stack = kmalloc(STACK_SIZE);
+    if (!t->stack) { kfree(t); return; }
     t->kstack_top = 0;
     t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
@@ -389,6 +395,7 @@ __attribute__((noreturn)) void kthread_bootstrap(void)
 void thread_create_idle(int idx)
 {
     struct thread *t = kmalloc(sizeof *t);
+    if (!t) { kprintf("[sched] OOM creating idle thread for core %d\n", idx); return; }
     t->stack = NULL;        /* runs on the core's bring-up stack, not a kmalloc one */
     t->rsp = 0;
     t->kstack_top = 0;

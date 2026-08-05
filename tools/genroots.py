@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Generate include/roots_bundle.inc from the root-CA PEMs in tools/roots/.
+# Generate c/crypto/trust/roots_bundle.inc from the root-CA PEMs in tools/roots/.
 # For each root we extract just the SubjectPublicKeyInfo (the trust anchor's
 # public key): an EC point (X||Y) or an RSA (modulus, exponent). No DN, no
 # expiry -- the kernel trusts a root by verifying that the top of a presented
@@ -7,7 +7,7 @@
 import base64, glob, os, sys
 
 ROOTS = os.path.join(os.path.dirname(__file__), "roots")
-OUT   = os.path.join(os.path.dirname(__file__), "..", "src", "crypto", "trust", "roots_bundle.inc")
+OUT   = os.path.join(os.path.dirname(__file__), "..", "c", "crypto", "trust", "roots_bundle.inc")
 
 # OIDs (DER content, no tag/len)
 OID_RSA = bytes([0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01])

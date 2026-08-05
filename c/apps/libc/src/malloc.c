@@ -15,7 +15,7 @@ struct hdr { size_t size; size_t used; };   /* 16 bytes, keeps payload 16-aligne
 static void heap_init(void)
 {
     struct hdr *h = (struct hdr *)arena;
-    h->size = ARENA_SIZE - HDR;     /* one big free block (minus end sentinel) */
+    h->size = ARENA_SIZE - 2 * HDR; /* one big free block, ending AT the sentinel */
     h->used = 0;
     struct hdr *end = (struct hdr *)(arena + ARENA_SIZE - HDR);
     end->size = 0;                  /* sentinel: size 0 marks the end */
@@ -37,7 +37,7 @@ void *malloc(size_t n)
          * was corrupted (e.g. clobbered), bail to NULL rather than walking off
          * into an unmapped page and faulting -- an allocator must never fault. */
         unsigned char *np = (unsigned char *)h + HDR + h->size;
-        if (np <= (unsigned char *)h || np > aend) return NULL;
+        if (np <= (unsigned char *)h || np + HDR > aend) return NULL;
         struct hdr *next = (struct hdr *)np;
         if (!h->used) {
             /* coalesce following free blocks */
@@ -66,6 +66,8 @@ void *malloc(size_t n)
 void free(void *p)
 {
     if (!p) return;
+    if ((unsigned char *)p < arena + HDR || (unsigned char *)p >= arena + ARENA_SIZE)
+        return;                     /* not ours: never scribble outside the arena */
     struct hdr *h = (struct hdr *)((unsigned char *)p - HDR);
     h->used = 0;
 }
@@ -73,6 +75,8 @@ void free(void *p)
 size_t malloc_usable_size(void *p)
 {
     if (!p) return 0;
+    if ((unsigned char *)p < arena + HDR || (unsigned char *)p >= arena + ARENA_SIZE)
+        return 0;                   /* not ours */
     struct hdr *h = (struct hdr *)((unsigned char *)p - HDR);
     return h->size;
 }

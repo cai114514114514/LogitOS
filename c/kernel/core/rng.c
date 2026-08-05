@@ -3,12 +3,16 @@
 #include "rng.h"
 #include "pit.h"
 #include "crypto.h"
+#include "spinlock.h"
+#include "kprintf.h"
 
 void *memcpy(void *, const void *, size_t);
 
 static uint8_t rng_state[32];
 static uint64_t rng_counter;
 static int rng_seeded;
+/* BKL-free callers can reach kernel_random_bytes concurrently: guard the state. */
+static spinlock_t rng_lock = SPINLOCK_INIT;
 
 static uint64_t rdtsc(void)
 {
@@ -81,10 +85,19 @@ static void rng_seed(void)
 
     int has_rdseed = cpu_has_rdseed();
     int has_rdrand = cpu_has_rdrand();
+    if (!has_rdseed && !has_rdrand)
+        kprintf("[rng] WARNING: no rdseed/rdrand; entropy falls back to rdtsc (weak)\n");
     for (int i = 0; i < 4; i++) {
         uint64_t v = 0;
-        if (has_rdseed && rdseed64(&v)) seed[n++] = v;
-        else if (has_rdrand && rdrand64(&v)) seed[n++] = v;
+        int got = 0;
+        /* rdseed/rdrand can transiently fail (CF=0) under contention: retry a few
+         * times before degrading to rdtsc. */
+        for (int t = 0; t < 16 && !got; t++) {
+            if (has_rdseed)      got = rdseed64(&v);
+            else if (has_rdrand) got = rdrand64(&v);
+            else break;
+        }
+        if (got) seed[n++] = v;
         else seed[n++] = rdtsc() ^ ((uint64_t)timer_ticks() << (i + 1));
     }
 
@@ -95,6 +108,7 @@ static void rng_seed(void)
 void kernel_random_bytes(uint8_t *out, int len)
 {
     if (!out || len <= 0) return;
+    uint64_t fl = spin_lock_irqsave(&rng_lock);
     if (!rng_seeded) rng_seed();
 
     int has_rdseed = cpu_has_rdseed();
@@ -114,4 +128,5 @@ void kernel_random_bytes(uint8_t *out, int len)
         memcpy(out + off, rng_state, (size_t)n);
         off += n;
     }
+    spin_unlock_irqrestore(&rng_lock, fl);
 }

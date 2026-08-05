@@ -144,6 +144,7 @@ void chacha20_poly1305_seal(const uint8_t key[32], const uint8_t nonce[12],
                             const uint8_t *aad, int aadlen,
                             const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
 {
+    if (aadlen < 0 || len < 0) return;          /* negative lengths would walk backwards */
     chacha20(key, 1, nonce, pt, len, ct);           /* counter starts at 1 */
     aead_mac(key, nonce, aad, aadlen, ct, len, tag);
 }
@@ -152,6 +153,7 @@ int chacha20_poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
                            const uint8_t *aad, int aadlen,
                            const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
 {
+    if (aadlen < 0 || len < 0) return -1;
     uint8_t t[16];
     aead_mac(key, nonce, aad, aadlen, ct, len, t);
     int diff = 0; for (int i = 0; i < 16; i++) diff |= t[i] ^ tag[i];

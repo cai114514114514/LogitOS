@@ -61,8 +61,11 @@ static int bin_index(size_t size)
 static int grow(size_t need)
 {
     size_t frames = ARENA_FRAMES;
-    while (frames * FRAME_SIZE < need)
+    while (frames * FRAME_SIZE < need) {
+        if (frames > SIZE_MAX / (2 * FRAME_SIZE))   /* doubling would wrap to 0 -> spin forever (holding the lock) */
+            return 0;
         frames *= 2;
+    }
 
     uint64_t phys;
 #ifdef KHEAP_GROW_FAULT_INJECT
@@ -102,6 +105,8 @@ static int grow(size_t need)
 void *kmalloc(size_t size)
 {
     if (size == 0)
+        return NULL;
+    if (size > SIZE_MAX - 15 - sizeof(struct header))   /* ALIGN16/header add would wrap */
         return NULL;
     size = ALIGN16(size);
 
