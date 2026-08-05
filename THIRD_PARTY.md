@@ -1,6 +1,6 @@
 # Third-Party Software and Data
 
-Aether OS uses the first-party GPL-3.0-or-later/MIT boundary defined in
+LogitOS OS uses the first-party GPL-3.0-or-later/MIT boundary defined in
 [LICENSING.md](LICENSING.md). This file records code and data that came from, or
 was materially derived from, other projects. Those components remain subject to
 their upstream licenses; neither first-party license replaces or overrides them.
@@ -24,7 +24,7 @@ subject to upstream terms where required.
 | Noto Sans SC and Noto Sans Mono | Source fonts and generated runtime subsets | `third_party/fonts/`, `fsroot/fonts/` | Google Fonts commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3` | SIL OFL 1.1 |
 | macOS Desktop Picture | Locally generated wallpaper | Ignored `fsroot/wallpaper.png`; see `tools/mkwallpaper.sh` | Host-installed macOS asset | Proprietary; not covered by this repository's license |
 | GNU GRUB | Bootloader code embedded in generated ISO images | Generated `build/aether.iso`; no GRUB source is stored here | Host-tool version is not pinned | GPLv3 or later, subject to the exact GRUB distribution used |
-| Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into Aether binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
+| Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into LogitOS binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
 
 ## QuickJS
 
@@ -33,12 +33,12 @@ subject to upstream terms where required.
 - Copyright: Fabrice Bellard and Charlie Gordon, as stated in the vendored
   source files.
 - License: MIT.
-- Imported by Aether OS commit `9374d8c` as the QuickJS 2024-01-13 core.
+- Imported by LogitOS OS commit `9374d8c` as the QuickJS 2024-01-13 core.
 
 The repository vendors the core engine, regexp, Unicode, bignum, and utility
-sources. Aether OS compiles them for its freestanding ring-3 environment with
+sources. LogitOS OS compiles them for its freestanding ring-3 environment with
 its mini-libc and local build configuration. The standalone upstream tools and
-standard library are not shipped as separate Aether applications.
+standard library are not shipped as separate LogitOS applications.
 
 The upstream copyright and MIT permission notice are retained in the vendored
 QuickJS source files, including `quickjs.c`, `quickjs.h`, `cutils.*`,
@@ -50,11 +50,11 @@ QuickJS source files, including `quickjs.c`, `quickjs.h`, `cutils.*`,
 - Source repository: <https://git.musl-libc.org/cgit/musl/>
 - Upstream copyright and license file:
   <https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT>
-- Imported by Aether OS commit `9374d8c`.
+- Imported by LogitOS OS commit `9374d8c`.
 
 `third_party/libm/` is a selected, double-precision-oriented subset of musl's
 math library. The import omitted many float, long-double, Bessel, gamma, and FMA
-sources and is compiled against Aether OS's freestanding headers.
+sources and is compiled against LogitOS OS's freestanding headers.
 
 musl's math sources contain code with several permissive origins. The vendored
 files retain their individual notices, including MIT-licensed Arm code,
@@ -64,7 +64,7 @@ used for the import was not recorded and should not be inferred from this tree.
 
 ## NetSurf CSS libraries
 
-The following libraries were imported in Aether OS commit `f840b45` and trimmed
+The following libraries were imported in LogitOS OS commit `f840b45` and trimmed
 to the source, public headers, generators, and license files needed by the
 browser port. Upstream tests, documentation, examples, CI configuration, and
 NetSurf build files were not retained.
@@ -90,7 +90,7 @@ NetSurf build files were not retained.
 - Copyright: Copyright 2009 The NetSurf Browser Project.
 - License: MIT; see `third_party/css/libwapcaplet/COPYING`.
 
-Aether OS's DOM select handler and computed-style adapter live in
+LogitOS OS's DOM select handler and computed-style adapter live in
 `c/apps/browser/css_engine.c`; that adapter is project code and is covered by
 the outer-component MIT License defined in `LICENSING.md`.
 
@@ -137,7 +137,7 @@ Required upstream notice:
 > SOFTWARE.
 
 The Crafting Interpreters book prose, illustrations, website, and other
-non-code material use different terms, including CC BY-NC-ND 4.0. Aether OS
+non-code material use different terms, including CC BY-NC-ND 4.0. LogitOS OS
 does not claim those materials under either first-party license.
 
 ## Mozilla/NSS-derived CA trust store
@@ -171,11 +171,11 @@ external bundle provenance byte-for-byte from a named upstream snapshot.
 The repository preserves the unmodified upstream fonts, metadata, licenses,
 source URLs, and SHA-256 values in `third_party/fonts/`. `tools/mkfont.py`
 creates fixed-weight character subsets and changes their internal family names
-to `Aether UI` and `Aether Mono`. It retains the upstream copyright and license
+to `LogitOS UI` and `LogitOS Mono`. It retains the upstream copyright and license
 metadata. This is especially important because Noto Sans SC's notice reserves
 the name `Source`.
 
-The source fonts and modified subsets remain under the OFL; neither Aether
+The source fonts and modified subsets remain under the OFL; neither LogitOS
 first-party license relicenses them. The normal disk-image rule packages only
 the checked-in subsets and never reads Apple or other undeclared host fonts. It
 also installs both complete OFL texts and the source record under
@@ -186,7 +186,7 @@ also installs both complete OFL texts and the source record under
 `tools/mkwallpaper.sh` explicitly converts a host-installed macOS Desktop Picture
 into `fsroot/wallpaper.png`. The output is ignored by Git but is included in the
 normal disk image when present. It has no recorded redistribution grant and is
-not covered by either Aether first-party license. Replace it with an original or
+not covered by either LogitOS first-party license. Replace it with an original or
 suitably licensed asset, preserve that asset's provenance and notice, and
 rebuild the disk before distributing a binary image.
 
@@ -200,9 +200,9 @@ rebuild the disk before distributing a binary image.
 
 GRUB is not vendored in the Git source tree, but it is more than a host-only tool:
 `grub-mkrescue` places GRUB boot code into the distributable ISO. Anyone publishing
-an Aether ISO must identify the exact GRUB version, include the applicable license
+an LogitOS ISO must identify the exact GRUB version, include the applicable license
 and notices, and satisfy the GPL corresponding-source requirements for the GRUB
-binary in the manner required by that distribution. Aether Core's GPL license is
+binary in the manner required by that distribution. LogitOS Core's GPL license is
 a separate grant from separate copyright holders and does not relicense the GRUB
 files placed in the ISO.
 
@@ -218,7 +218,7 @@ files placed in the ISO.
 The Rust crate uses `crate-type = ["staticlib"]`. Rust documents that a static
 library contains the local crate together with its upstream dependencies. Even
 though this crate is `no_std` and has no Cargo package dependencies, generated
-archives and final Aether binaries may contain Rust `core` and compiler-support
+archives and final LogitOS binaries may contain Rust `core` and compiler-support
 code from the installed toolchain. A binary release therefore needs to pin the
 Rust version and ship the notices applicable to that version.
 
@@ -242,7 +242,7 @@ Future vendor updates should close these gaps rather than guessing:
    component is updated.
 
 Other host tools such as LLVM/Clang, NASM, QEMU, xorriso, Python, and Perl are not
-stored in this repository. They normally do not become part of Aether binaries,
+stored in this repository. They normally do not become part of LogitOS binaries,
 but release tooling must verify the actual outputs rather than relying on that
 assumption. GRUB and Rust are called out above because their code can enter the
 generated ISO or linked binaries.

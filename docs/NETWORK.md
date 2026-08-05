@@ -2,7 +2,7 @@
 
 Status snapshot: 2026-08-05.
 
-Aether's network stack is a project implementation maintained under `c/net/`; it
+LogitOS's network stack is a project implementation maintained under `c/net/`; it
 is not Linux networking code under different names. It is intentionally small and
 client-oriented. This document records the implemented subset and the missing
 pieces so that interoperability demonstrations are not mistaken for RFC-complete
@@ -146,7 +146,7 @@ Run the local, deterministic end-to-end data-path test with:
 make test-net-os
 ```
 
-It boots Aether under QEMU, serves a 32 KiB fixture from the host, and checks that
+It boots LogitOS under QEMU, serves a 32 KiB fixture from the host, and checks that
 the guest `net get` command receives the complete HTTP body through e1000, IPv4,
 TCP, HTTP, the syscall boundary, and a ring-3 process. It does not require a public
 Internet server. `make test-dhcp-os` additionally asserts the DHCP lease is bound

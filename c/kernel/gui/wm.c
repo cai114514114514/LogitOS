@@ -782,7 +782,7 @@ static void draw_menubar(void)
     fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
-    fb_text(32, 4, "Aether OS", ink);
+    fb_text(32, 4, "LogitOS", ink);
     fb_text(112, 4, "File", ink);
     fb_text(156, 4, "Edit", ink);
     fb_text(200, 4, "View", ink);

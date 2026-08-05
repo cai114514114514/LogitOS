@@ -359,7 +359,7 @@ static const struct side SIDE[] = {
     { "文稿",    "/docs",  GICON_DOC,    0 },
     { "字体",    "/fonts", GICON_FOLDER, 0 },
     { "位置", 0, 0, 1 },
-    { "Aether HD", "/",    GICON_GRID,   0 },
+    { "LogitOS HD", "/",    GICON_GRID,   0 },
     { "应用程序",  "/",    GICON_TERMINAL, 0 },
 };
 #define SIDE_N (int)(sizeof SIDE / sizeof SIDE[0])
@@ -431,7 +431,7 @@ static void draw_toolbar(void)
         if (aui_textfield(CX + 48, 11, 230, editbuf, sizeof editbuf)) commit_newfolder();
     } else {
         char title[64];
-        if (streq(cwd, "/")) scpy(title, "Aether HD", sizeof title);
+        if (streq(cwd, "/")) scpy(title, "LogitOS HD", sizeof title);
         else leaf_of(cwd, title, sizeof title);
         aui_heading(CX + 48, 12, title, AUI_TEXT);
     }

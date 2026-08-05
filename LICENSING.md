@@ -1,11 +1,11 @@
 # Licensing boundary
 
-Aether intentionally separates its copyleft operating-system core from its
+LogitOS intentionally separates its copyleft operating-system core from its
 permissively licensed outer development and application surface. This document
 is the authoritative first-party path mapping. Third-party material always
 keeps its upstream terms as recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-## Aether Core — GPL-3.0-or-later
+## LogitOS Core — GPL-3.0-or-later
 
 Project-authored files in these paths are licensed under
 `GPL-3.0-or-later`:
@@ -57,7 +57,7 @@ MIT shared sources does not acquire the kernel's GPL license from them.
 
 ## Third-party and adapted material
 
-The path rules above apply only to copyright held by Aether OS contributors.
+The path rules above apply only to copyright held by LogitOS OS contributors.
 They do not overwrite notices on third-party or materially adapted files.
 Important examples include:
 
@@ -95,14 +95,14 @@ third-party material unless its copyright and license have been verified.
 
 Use these descriptions:
 
-- **Source repository:** multi-license; Aether Core is GPL-3.0-or-later and
+- **Source repository:** multi-license; LogitOS Core is GPL-3.0-or-later and
   project-authored outer components are MIT.
 - **Kernel binary:** GPL-3.0-or-later as a combined work, with compatible
   third-party notices retained.
 - **Application binaries:** retain their applicable outer/third-party terms;
   an application that incorporates GPL-covered core source must instead comply
   with GPL-3.0-or-later for that combined binary.
-- **Bootable ISO:** a multi-license aggregate containing the GPL-covered Aether
+- **Bootable ISO:** a multi-license aggregate containing the GPL-covered LogitOS
   kernel, separate GPL-covered GRUB bootloader code, MIT applications, and
   additional third-party data and software.
 

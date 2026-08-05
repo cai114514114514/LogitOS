@@ -22,7 +22,7 @@ QPID=$!
 
 # Poll for the markers for up to ~20s.
 for _ in $(seq 1 200); do
-    if grep -aq "hello-aether-shell" "$LOG" && grep -aq "Aether OS x86_64" "$LOG" \
+    if grep -aq "hello-aether-shell" "$LOG" && grep -aq "LogitOS x86_64" "$LOG" \
        && grep -aq "cpmvprobe" "$LOG"; then
         # echo builtin + an exec'd coreutil produced output, and the cp/mv/mkdir/rm
         # round-trip flowed real data: cp made b.txt, cat read it back as "cpmvprobe"

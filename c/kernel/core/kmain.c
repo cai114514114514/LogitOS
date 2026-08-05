@@ -29,7 +29,7 @@ int rust_png_selftest(void);       /* rust/src/png.rs -- PNG decoder self-check 
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
-    serial_puts("\n[aether] long mode, C kernel running\n");
+    serial_puts("\n[logitos] long mode, C kernel running\n");
     serial_puts(rust_inflate_selftest() == 0 ? "[rust] inflate selftest OK\n"
                                              : "[rust] inflate selftest FAIL\n");
 
@@ -38,7 +38,7 @@ void kernel_main(uint64_t mb_info)
     pic_remap();
     pit_init(TIMER_HZ);
     pmm_init(mb_info);
-    serial_puts("[aether] interrupts + memory + gdt/tss online\n");
+    serial_puts("[logitos] interrupts + memory + gdt/tss online\n");
     serial_puts(rust_png_selftest() == 0 ? "[rust] png selftest OK\n"
                                           : "[rust] png selftest FAIL\n");
 
@@ -65,7 +65,7 @@ void kernel_main(uint64_t mb_info)
     wm_init();
     wm_render();                 /* first frame -> desktop visible */
     mouse_init();
-    serial_puts("[aether] desktop up; mouse + keyboard armed\n");
+    serial_puts("[logitos] desktop up; mouse + keyboard armed\n");
 
     smp_init();   /* detect + bring up the other CPUs */
 

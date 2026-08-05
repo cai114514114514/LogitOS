@@ -1,5 +1,5 @@
 # ============================================================================
-# Aether OS - build system
+# LogitOS - build system
 #
 #   make        build the bootable ISO
 #   make run    boot it in QEMU (VGA window + serial on this terminal)

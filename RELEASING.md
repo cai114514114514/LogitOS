@@ -1,7 +1,7 @@
 # Release Checklist
 
 A source repository and a bootable ISO have different licensing and provenance
-surfaces. Do not publish an Aether binary merely because the root project license
+surfaces. Do not publish an LogitOS binary merely because the root project license
 is open source. The core, outer components, third-party files, and aggregate ISO
 do not share one license.
 
@@ -44,7 +44,7 @@ The known unresolved items are maintained in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 The release bundle should include at least:
 
-- Aether's `LICENSE`, `LICENSING.md`, and the complete GPL-3.0-or-later and MIT
+- LogitOS's `LICENSE`, `LICENSING.md`, and the complete GPL-3.0-or-later and MIT
   texts from `LICENSES/`;
 - `THIRD_PARTY.md` and all vendored license files;
 - the QuickJS, musl, NetSurf, and Robert Nystrom notices;
@@ -53,7 +53,7 @@ The release bundle should include at least:
   notices for code entering the static libraries;
 - GNU GRUB's applicable GPL license and notices.
 
-For `kernel.elf`, publish the complete corresponding Aether Core source and the
+For `kernel.elf`, publish the complete corresponding LogitOS Core source and the
 scripts and build definitions needed to produce the binary, as required by
 GPL-3.0-or-later. Keep the MIT application and ABI notices intact; their presence
 in the same image does not make the whole image a single-license work.

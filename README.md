@@ -1,6 +1,6 @@
-# Aether OS
+# LogitOS OS
 
-Aether OS is an experimental, AI-assisted x86_64 operating-system project. It
+LogitOS OS is an experimental, AI-assisted x86_64 operating-system project. It
 contains a standalone kernel that boots through GRUB/Multiboot2 into a graphical
 desktop; it is not a Linux distribution or a renamed Linux kernel. The kernel,
 drivers, AetherFS, network stack, window system, and applications are maintained
@@ -75,7 +75,7 @@ and raw-memory + syscall indirection. Plus the LibAether stdlib and the Code Stu
 
 **Scaling & hardening (M25–M26 + ongoing):** a preemptive **SMP** scheduler · TCP
 out-of-order **reassembly** (large TLS handshake flights arrive reliably) · NVMe ·
-the **Aqua → Aether** rename · a system-wide security/bug-hunt pass.
+the **Aqua → LogitOS** rename · a system-wide security/bug-hunt pass.
 
 **Post-roadmap:** per-process address spaces (each app its own PML4, CR3 switched on
 schedule) and ring-3 fault containment — an app fault kills only that app; the
@@ -95,7 +95,7 @@ Required tools include LLVM/Clang + LLD, NASM, Rustup with the
 `x86_64-unknown-none` target, Python 3, GNU Make and Unix utilities, QEMU, xorriso,
 and GRUB's `grub-mkrescue` (named `i686-elf-grub-mkrescue` by the Makefile).
 
-Aether now vendors OFL-licensed Noto Sans SC and Noto Sans Mono source fonts and
+LogitOS now vendors OFL-licensed Noto Sans SC and Noto Sans Mono source fonts and
 checked-in, distinctly named runtime subsets. A normal build does not read host
 fonts or use the network. Run `make regen-fonts` only when intentionally rebuilding
 the subsets; see `fsroot/fonts/README.md` and [THIRD_PARTY.md](THIRD_PARTY.md).
@@ -118,7 +118,7 @@ Tests (headless, asserted over serial unless noted):
 make test            # boot smoke test (asserts the kernel prints AETHER_BOOT_OK)
 make test-shell      # fork/exec + pipes + coreutils via /bin/sh
 make test-as         # AetherScript language core (host unit tests, no QEMU)
-make test-as-os      # AetherScript on Aether: runs the examples incl. the LibAether stdlib
+make test-as-os      # AetherScript on LogitOS: runs the examples incl. the LibAether stdlib
 make test-net        # TCP + IPv4/UDP/ICMP protocol unit tests (host)
 make test-net-os     # QEMU: guest fetches a 32 KiB file from a host-local HTTP server
 make test-smp        # boots -smp 4 and asserts genuine cross-core parallelism
@@ -168,7 +168,7 @@ docs/superpowers/specs/                          design specs (spec → plan →
 
 A project language in `c/apps/as/`: a materially adapted clox-lineage single-pass
 compiler that emits flat bytecode for a computed-goto stack VM. Its surface syntax,
-bytecode format, OS integration, and many runtime features are Aether-specific.
+bytecode format, OS integration, and many runtime features are LogitOS-specific.
 Python-ish (indentation blocks, dynamic types), with `def`,
 `if`/`elif`/`else`, `while`, `for … in range()`/lists, lists + dicts + strings,
 closures and lambdas, classes (single inheritance + `super`), exceptions
@@ -199,7 +199,7 @@ the authorship, testing, and capability boundaries are recorded in
 
 ## License
 
-Aether is a multi-license project. The project-authored operating-system core —
+LogitOS is a multi-license project. The project-authored operating-system core —
 kernel, boot code, drivers, filesystems, network stack, AetherTLS, cryptography,
 and kernel-only support libraries — is licensed under `GPL-3.0-or-later`.
 Project-authored user applications, the public userspace ABI, shared Rust parser

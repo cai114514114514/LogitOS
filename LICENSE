@@ -1,10 +1,10 @@
-Aether OS Licensing Notice
+LogitOS OS Licensing Notice
 ==========================
 
-Aether OS is a multi-license project.  No single license covers every file or
+LogitOS OS is a multi-license project.  No single license covers every file or
 every generated release artifact.
 
-Aether Core
+LogitOS Core
 -----------
 
 The project-authored kernel, boot, driver, filesystem, network, cryptography,
@@ -41,7 +41,7 @@ LICENSING.md.
 Historical MIT grants
 ---------------------
 
-Versions of Aether code already received under the MIT License remain usable
+Versions of LogitOS code already received under the MIT License remain usable
 under that grant.  Open-source licenses already granted for those copies are
 not withdrawn.  The GPL-3.0-or-later boundary governs the core in repository
 versions that carry this notice and new core contributions made under it.

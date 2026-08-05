@@ -1,4 +1,4 @@
-# Aether OS 代码审计报告
+# LogitOS OS 代码审计报告
 
 - 审计日期：2026-08-04
 - 审计范围：`c/`（内核、驱动、文件系统、网络/TLS、密码学、共享库、用户态应用）、`rust/`、`tools/`、`Makefile`/`linker.ld`/`grub.cfg`、`tests/`，共 15 个模块

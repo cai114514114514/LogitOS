@@ -1,6 +1,6 @@
 # Project Transparency
 
-This document states what Aether OS is, where its code came from, what has been
+This document states what LogitOS OS is, where its code came from, what has been
 tested, and what the project does not claim. It is intended to make technical
 claims auditable rather than to diminish the value of the work.
 
@@ -9,7 +9,7 @@ commit `3973dec`; uncommitted working-tree changes are not counted.
 
 ## Short version
 
-- Aether is a standalone experimental x86_64 kernel, not a Linux distribution,
+- LogitOS is a standalone experimental x86_64 kernel, not a Linux distribution,
   a Linux fork, or a compatibility skin over a host OS.
 - The project is human-directed and heavily AI-assisted.
 - The first-party operating-system core is GPL-3.0-or-later; project-authored
@@ -49,11 +49,11 @@ distributed.
 
 | Class | Examples | Meaning |
 |---|---|---|
-| Project implementation | Kernel, drivers, AetherFS, network stack, TLS/crypto code, window system, applications | Maintained as Aether code; not copied from Linux. May be AI-assisted and informed by public specifications and literature. |
-| Material adaptation | AetherScript compiler and VM | Substantial Aether-specific development built on identifiable clox/Crafting Interpreters lineage; both facts must be stated. |
-| Vendored or ported code | QuickJS, NetSurf LibCSS and dependencies, musl libm subset | Upstream code compiled or adapted for Aether; governed by upstream notices. |
+| Project implementation | Kernel, drivers, AetherFS, network stack, TLS/crypto code, window system, applications | Maintained as LogitOS code; not copied from Linux. May be AI-assisted and informed by public specifications and literature. |
+| Material adaptation | AetherScript compiler and VM | Substantial LogitOS-specific development built on identifiable clox/Crafting Interpreters lineage; both facts must be stated. |
+| Vendored or ported code | QuickJS, NetSurf LibCSS and dependencies, musl libm subset | Upstream code compiled or adapted for LogitOS; governed by upstream notices. |
 | External data/build input | Mozilla-derived trust roots, fonts | Not program code, but still has provenance and redistribution constraints. |
-| Host tool | LLVM/Clang, LLD, NASM, QEMU, xorriso, Python, Perl | Used to build, generate, or test Aether; normally not shipped as Aether code. |
+| Host tool | LLVM/Clang, LLD, NASM, QEMU, xorriso, Python, Perl | Used to build, generate, or test LogitOS; normally not shipped as LogitOS code. |
 | Generated binary dependency | GNU GRUB boot image; Rust `core`/compiler support | Not stored as source here, but may be embedded into a generated ISO or statically linked binary and therefore matters to binary distribution. |
 
 The detailed inventory, notices, known missing revisions, and redistribution
@@ -92,7 +92,7 @@ system, native C compiler, assembler, or linker is self-hosted.
 
 These words must be attached to a precise property and test or audit result. They
 must not be used as a blanket claim. Ring 3 and separate address spaces provide a
-meaningful isolation mechanism, but Aether does not claim a production multi-user
+meaningful isolation mechanism, but LogitOS does not claim a production multi-user
 security model, secure boot chain, browser sandbox, or independently validated
 cryptography.
 
@@ -143,7 +143,7 @@ Known limitations and boundaries include:
 - AetherFS does not make a documented journaling or crash-consistency guarantee.
 - Hardware support is narrow and primarily exercised through QEMU devices.
 - Runtime fonts are renamed subsets of OFL-licensed Noto fonts, not original
-  Aether typeface designs; their source and license records are vendored.
+  LogitOS typeface designs; their source and license records are vendored.
 - The current local wallpaper is derived from a macOS Desktop Picture and is not
   cleared for redistribution; it must be replaced before a public binary release.
 
@@ -173,6 +173,6 @@ needs:
 - release checksums and, preferably, signed tags or attestations;
 - an explicit list of known failures alongside every release.
 
-Until those items exist, Aether should be described as open-source and buildable in
+Until those items exist, LogitOS should be described as open-source and buildable in
 documented development environments, but not as bit-for-bit reproducible.
 See [RELEASING.md](RELEASING.md) for the concrete source and binary release gates.

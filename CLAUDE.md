@@ -1,4 +1,4 @@
-# Aether OS — notes for Claude
+# LogitOS OS — notes for Claude
 
 A from-scratch x86_64 OS kernel (C + nasm), booted via GRUB/Multiboot2, aiming
 toward a macOS-style desktop. Real kernel, not a simulation.
@@ -70,7 +70,7 @@ subsystem are unchanged, so they're easy to find under `c/`.
 M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) ✅ ·
 M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AetherFS + VFS) ✅ ·
 M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
-(framebuffer + VMM + Aether desktop) ✅ · M8 window system (font + double-buffer +
+(framebuffer + VMM + LogitOS desktop) ✅ · M8 window system (font + double-buffer +
 PS/2 mouse + draggable windows) ✅ · M9 networking (PCI + e1000 + ARP/IPv4/
 ICMP/UDP + DNS + Network app) ✅.
 
@@ -289,7 +289,7 @@ provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
   host LibCSS unit tests need `-DCONFIG_BIGNUM` for libbf's decimal symbols.
 
 M18 Real processes ✅ (the "toward a real OS" step: run software not written for
-Aether). A POSIX-ish process model independent of the window manager:
+LogitOS). A POSIX-ish process model independent of the window manager:
 `c/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
 cr3/fd[]/cwd); `thread->data` is a `struct proc*` (a GUI app is a proc whose
 `->gui` owns a window). **fork** = `vmm_clone_user` (eager copy of the private
@@ -359,7 +359,7 @@ mini-libc `fopen`) + `/usr/as/*.as`. **Modules/import**: `import NAME` / `from N
 `mod.attr` + `mod.fn()` via the `.` operator; each ObjFn carries `->module` so
 globals resolve per-module with a shared builtins fallback; loader caches +
 `fopen`s `/usr/as/NAME.as` (or an in-memory registry for tests). Tests: `make
-test-as` (host, 55 checks incl. fib + import) + `make test-as-os` (boots Aether,
+test-as` (host, 55 checks incl. fib + import) + `make test-as-os` (boots LogitOS,
 runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
 (≈CPython). Deferred: dict, closures, GC, computed-goto dispatch.
 

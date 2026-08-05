@@ -2,11 +2,11 @@
 
 ## Project status
 
-Aether OS is an experimental operating-system project. No version currently
+LogitOS OS is an experimental operating-system project. No version currently
 receives production-grade security support, and there is no security SLA. The
 latest working tree receives best-effort fixes.
 
-Do not use Aether to protect real credentials, personal data, private keys,
+Do not use LogitOS to protect real credentials, personal data, private keys,
 cryptocurrency, production workloads, or other valuable secrets. Do not treat its
 browser, TLS implementation, process isolation, filesystem, or device drivers as a
 security boundary for hostile workloads.
@@ -33,7 +33,7 @@ but cannot promise response or release deadlines.
 
 ## Security boundaries that do exist
 
-Aether implements ring-3 user processes, per-process address spaces, syscall
+LogitOS implements ring-3 user processes, per-process address spaces, syscall
 entry, executable loading checks, and fault containment intended to keep an
 ordinary application fault from directly crashing the kernel. Network parsers and
 cryptographic primitives also have host-side and QEMU test coverage.
