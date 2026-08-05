@@ -36,14 +36,6 @@ static spinlock_t rng_lock = SPINLOCK_INIT;
 #define RNG_RESEED_REQUESTS 1024ULL
 #define RNG_RESEED_BYTES    (1024ULL*1024ULL)
 
-/* Overwrite key material through a volatile pointer so the compiler cannot
- * elide it as a dead store. */
-static void wipe(void *p, size_t n)
-{
-    volatile uint8_t *v = (volatile uint8_t *)p;
-    while (n--) *v++ = 0;
-}
-
 static uint64_t rdtsc(void)
 {
     uint32_t lo, hi;
@@ -113,7 +105,7 @@ static void rng_hash(uint8_t tag, const void *data, size_t len, uint8_t out[32])
     sha256_update(&h, &tag, 1);
     if (data && len) sha256_update(&h, data, len);
     sha256_final(&h, out);
-    wipe(&h, sizeof h);          /* the context held the old state */
+    crypto_wipe(&h, sizeof h);          /* the context held the old state */
 }
 
 /* Collect entropy: up to 4 hardware words (RDSEED preferred, RDRAND else,
@@ -145,7 +137,7 @@ static void rng_reseed(void)
     uint64_t ent[8];
     int n = rng_gather(ent);
     rng_hash(0x00, ent, (size_t)n * sizeof(uint64_t), rng_state);
-    wipe(ent, sizeof ent);
+    crypto_wipe(ent, sizeof ent);
     rng_counter = 0;
     rng_requests = 0;
     rng_bytes = 0;
@@ -182,7 +174,7 @@ void kernel_random_bytes(uint8_t *out, int len)
         if (n > (int)sizeof block) n = (int)sizeof block;
         memcpy(out + off, block, (size_t)n);
         off += n;
-        wipe(block, sizeof block);                    /* block is pre-image of nothing public */
+        crypto_wipe(block, sizeof block);                    /* block is pre-image of nothing public */
     }
     spin_unlock_irqrestore(&rng_lock, fl);
 }

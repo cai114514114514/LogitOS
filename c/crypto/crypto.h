@@ -4,6 +4,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Overwrite key material through a volatile pointer so the compiler cannot
+ * elide it as a dead store. Single shared implementation -- every crypto
+ * primitive (and tls.c, rng.c) wipes through this. */
+static inline void crypto_wipe(void *p, size_t n)
+{
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
+
 /* --- SHA-256 --- */
 #define SHA256_BLOCK 64
 #define SHA256_LEN   32

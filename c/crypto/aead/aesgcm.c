@@ -3,7 +3,11 @@
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
-/* --- AES-128 (FIPS-197), table-free --- */
+/* --- AES-128 (FIPS-197) ---
+ * Byte-oriented S-box implementation. NOTE: the sbox is indexed by secret
+ * state, so this is NOT constant-time (cache-timing side channel) -- an
+ * accepted, documented limitation for a TLS client under QEMU/TCG with no
+ * cache-sharing tenants; see TRANSPARENCY.md. */
 static const uint8_t sbox[256] = {
 0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
 0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -115,6 +119,7 @@ static void gctr(const uint8_t rk[176], const uint8_t icb[16],
         for (int i = 0; i < n; i++) out[off+i] = in[off+i] ^ ks[i];
         for (int i = 15; i >= 12; i--) { if (++ctr[i]) break; }   /* inc low 32 bits */
     }
+    crypto_wipe(ks, sizeof ks);                 /* keystream */
 }
 
 static void gcm_core(const uint8_t key[16], const uint8_t nonce[12],
@@ -125,11 +130,14 @@ static void gcm_core(const uint8_t key[16], const uint8_t nonce[12],
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
     aes_encrypt(rk, zero, H);
     uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
-    uint8_t ctr1[16]; memcpy(ctr1, j0, 16); ctr1[15] = 2;
+    uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
+    for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0): counter starts at 2 */
     gctr(rk, ctr1, in, len, out);               /* encrypt/decrypt with counter from 2 */
     uint8_t S[16]; ghash(H, aad, aadlen, out, len, S);
     uint8_t ej0[16]; aes_encrypt(rk, j0, ej0);
     for (int i = 0; i < 16; i++) tag[i] = S[i] ^ ej0[i];
+    crypto_wipe(rk, sizeof rk);              /* expanded key */
+    crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
 }
 
 void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
@@ -154,8 +162,15 @@ int aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
     uint8_t ej0[16]; aes_encrypt(rk, j0, ej0);
     uint8_t t[16]; for (int i = 0; i < 16; i++) t[i] = S[i] ^ ej0[i];
     int diff = 0; for (int i = 0; i < 16; i++) diff |= t[i] ^ tag[i];
-    if (diff) return -1;
-    uint8_t ctr1[16]; memcpy(ctr1, j0, 16); ctr1[15] = 2;
+    if (diff) {
+        crypto_wipe(rk, sizeof rk);
+        crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
+        return -1;
+    }
+    uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
+    for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0) */
     gctr(rk, ctr1, ct, len, pt);
+    crypto_wipe(rk, sizeof rk);
+    crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
     return 0;
 }

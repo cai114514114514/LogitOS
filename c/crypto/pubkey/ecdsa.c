@@ -321,7 +321,6 @@ int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
     /* e = leftmost min(hlen, nbytes) bytes of hash, as an integer mod n */
     int use = hlen < fl ? hlen : fl;
     bn_from_be(e, hash, use);
-    if (use > fl) { /* shouldn't happen */ }
 
     bn w; mod_inv(w, s, c->n);
     mod_mul(u1, e, w, c->n);

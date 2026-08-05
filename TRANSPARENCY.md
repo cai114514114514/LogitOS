@@ -12,8 +12,9 @@ commit `3973dec`; uncommitted working-tree changes are not counted.
 - Aether is a standalone experimental x86_64 kernel, not a Linux distribution,
   a Linux fork, or a compatibility skin over a host OS.
 - The project is human-directed and heavily AI-assisted.
-- First-party code is open under MIT. Vendored, adapted, and data dependencies
-  retain their upstream terms and are listed in `THIRD_PARTY.md`.
+- The first-party operating-system core is GPL-3.0-or-later; project-authored
+  outer components are MIT. Vendored, adapted, and data dependencies retain
+  their upstream terms and are listed in `THIRD_PARTY.md`.
 - AetherScript is a distinct project language with substantial original work,
   but its compiler and VM have material clox/Crafting Interpreters lineage.
 - The network, TLS, cryptographic, browser, and isolation code are educational
@@ -118,9 +119,16 @@ Known limitations and boundaries include:
   (for example: no HelloRetryRequest, no resumption or 0-RTT, no client
   authentication, and no enforcement of extended key usage). The code is
   custom and has not received an independent cryptographic audit.
-- If RDSEED/RDRAND is unavailable, the kernel's entropy fallback is
-  timing-based and weak; the TLS client refuses to handshake in that mode
-  rather than keying sessions from a predictable seed.
+- The kernel DRBG is a SHA-256 Hash_DRBG-style construction with state/output
+  separation (an output block is never the internal state) and periodic
+  reseeding from RDSEED/RDRAND (every 1024 generate calls or 1 MiB of
+  output). If RDSEED/RDRAND is unavailable, seeding falls back to
+  timing-based weak entropy; the TLS client refuses to handshake in that
+  mode rather than keying sessions from a predictable seed.
+- The AES-128 implementation is byte-oriented with a secret-indexed S-box
+  and is not constant-time (a cache-timing side channel). This is an
+  accepted limitation for a QEMU/TCG demo TLS client, not a claim of
+  side-channel resistance.
 - The browser implements a small portion of modern web standards and has no origin
   or JavaScript sandbox suitable for adversarial pages.
 - AetherScript deliberately exposes raw-memory and direct-syscall operations; it

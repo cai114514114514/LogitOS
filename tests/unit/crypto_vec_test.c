@@ -277,6 +277,242 @@ static void test_rsa(void)
     ok("rsa pss reject bad trailer", rsa_pss_verify(rsa_n, nl, rsa_e, el, rsa_pss_badtrailer, nl, rsa_h256, 32) == 0);
 }
 
+/* ---- negative / boundary tests (Wycheproof-style): what must reject ---- */
+
+/* rsa.c test hook (not in crypto.h; declared the same way rsa_test.c does). */
+int rsa_modexp_be(const uint8_t*,int,const uint8_t*,int,const uint8_t*,int,uint8_t*);
+
+static int allzero(const uint8_t *a, int n) { for (int i = 0; i < n; i++) if (a[i]) return 0; return 1; }
+
+/* AEAD: tampering with tag/ct/aad, wrong nonce/key must all fail open;
+ * empty pt and empty aad must roundtrip. Both suites, same contract. */
+static void test_aead_negative(void)
+{
+    /* AES-128-GCM on the McGrew-Viega TC3 vector */
+    uint8_t key[16], iv[12], aad[32], pt[64], ct[64], tag[16], o[64];
+    unhex("feffe9928665731c6d6a8f9467308308", key);
+    unhex("cafebabefacedbaddecaf888", iv);
+    int al = unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2", aad);
+    int n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39", pt);
+    aes128_gcm_seal(key, iv, aad, al, pt, n, ct, tag);
+    ok("neg gcm open valid", aes128_gcm_open(key, iv, aad, al, ct, n, tag, o) == 0 && eq(o, pt, n));
+    uint8_t t2[16], c2[64], a2[32], k2[16], v2[12];
+    for (int i = 0; i < 3; i++) {                       /* tag head/mid/tail */
+        int pos = i == 0 ? 0 : (i == 1 ? 8 : 15);
+        memcpy(t2, tag, 16); t2[pos] ^= 1;
+        char b[64]; snprintf(b, sizeof b, "neg gcm tag flip[%d] rejected", pos);
+        ok(b, aes128_gcm_open(key, iv, aad, al, ct, n, t2, o) == -1);
+    }
+    memcpy(c2, ct, n); c2[0] ^= 1;
+    ok("neg gcm ct flip rejected", aes128_gcm_open(key, iv, aad, al, c2, n, tag, o) == -1);
+    memcpy(a2, aad, al); a2[0] ^= 1;
+    ok("neg gcm aad flip rejected", aes128_gcm_open(key, iv, a2, al, ct, n, tag, o) == -1);
+    aes128_gcm_seal(key, iv, aad, al, pt, 0, ct, tag);
+    ok("neg gcm empty pt roundtrip", aes128_gcm_open(key, iv, aad, al, ct, 0, tag, o) == 0);
+    aes128_gcm_seal(key, iv, 0, 0, pt, n, ct, tag);
+    ok("neg gcm empty aad roundtrip", aes128_gcm_open(key, iv, 0, 0, ct, n, tag, o) == 0 && eq(o, pt, n));
+    memcpy(v2, iv, 12); v2[0] ^= 1;
+    ok("neg gcm wrong nonce rejected", aes128_gcm_open(key, v2, aad, al, ct, n, tag, o) == -1);
+    memcpy(k2, key, 16); k2[0] ^= 1;
+    ok("neg gcm wrong key rejected", aes128_gcm_open(k2, iv, aad, al, ct, n, tag, o) == -1);
+
+    /* ChaCha20-Poly1305 on the RFC 8439 A.5 vector */
+    uint8_t ck[32], cn[12], ca[16], cp[128], cc[128], ct2[16], co[128];
+    unhex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", ck);
+    unhex("070000004041424344454647", cn);
+    int cal = unhex("50515253c0c1c2c3c4c5c6c7", ca);
+    const char *m = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+    int cn2 = (int)strlen(m); memcpy(cp, m, cn2);
+    chacha20_poly1305_seal(ck, cn, ca, cal, cp, cn2, cc, ct2);
+    ok("neg chacha open valid", chacha20_poly1305_open(ck, cn, ca, cal, cc, cn2, ct2, co) == 0 && eq(co, cp, cn2));
+    for (int i = 0; i < 3; i++) {
+        int pos = i == 0 ? 0 : (i == 1 ? 8 : 15);
+        memcpy(t2, ct2, 16); t2[pos] ^= 1;
+        char b[64]; snprintf(b, sizeof b, "neg chacha tag flip[%d] rejected", pos);
+        ok(b, chacha20_poly1305_open(ck, cn, ca, cal, cc, cn2, t2, co) == -1);
+    }
+    memcpy(c2, cc, cn2); c2[cn2 - 1] ^= 1;
+    ok("neg chacha ct flip rejected", chacha20_poly1305_open(ck, cn, ca, cal, c2, cn2, ct2, co) == -1);
+    memcpy(a2, ca, cal); a2[cal - 1] ^= 1;
+    ok("neg chacha aad flip rejected", chacha20_poly1305_open(ck, cn, ca, cal, cc, cn2, ct2, co) == -1);
+    chacha20_poly1305_seal(ck, cn, ca, cal, cp, 0, cc, ct2);
+    ok("neg chacha empty pt roundtrip", chacha20_poly1305_open(ck, cn, ca, cal, cc, 0, ct2, co) == 0);
+    chacha20_poly1305_seal(ck, cn, 0, 0, cp, cn2, cc, ct2);
+    ok("neg chacha empty aad roundtrip", chacha20_poly1305_open(ck, cn, 0, 0, cc, cn2, ct2, co) == 0 && eq(co, cp, cn2));
+    memcpy(v2, cn, 12); v2[11] ^= 1;
+    ok("neg chacha wrong nonce rejected", chacha20_poly1305_open(ck, v2, ca, cal, cc, cn2, ct2, co) == -1);
+    uint8_t ck2[32]; memcpy(ck2, ck, 32); ck2[31] ^= 1;
+    ok("neg chacha wrong key rejected", chacha20_poly1305_open(ck2, cn, ca, cal, cc, cn2, ct2, co) == -1);
+}
+
+/* X25519 low-order points: the function never rejects, so callers (tls.c
+ * contributory check) depend on the all-zero output for every one of these. */
+static void test_x25519_loworder(void)
+{
+    uint8_t s[32], u[32], o[32];
+    unhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4", s);
+    /* p = 2^255-19 little-endian: ec ff..ff 7f */
+    struct { const char *nm; int first; int top; } pts[] = {
+        { "u=0",       0x00, 0x00 },
+        { "u=1",       0x01, 0x00 },
+        { "u=p-1",     0xec, 0x7f },
+        { "u=p",       0xed, 0x7f },
+        { "u=p+1",     0xee, 0x7f },
+        { "u=0|bit255",0x00, 0x80 },    /* bit255 must be masked -> same as u=0 */
+    };
+    for (int i = 0; i < 6; i++) {
+        memset(u, 0, 32);
+        u[0] = (uint8_t)pts[i].first;
+        if (pts[i].top == 0x7f) { memset(u + 1, 0xff, 30); u[31] = 0x7f; }
+        else u[31] = (uint8_t)pts[i].top;
+        x25519(o, s, u);
+        char b[64]; snprintf(b, sizeof b, "neg x25519 %s -> zero", pts[i].nm);
+        ok(b, allzero(o, 32));
+    }
+    memset(u, 0, 32); u[0] = 9;                 /* sanity: base point must not fold */
+    x25519(o, s, u);
+    ok("neg x25519 u=9 nonzero (sanity)", !allzero(o, 32));
+}
+
+/* ECDSA boundary rejects, driven per curve. n/p copied from curves_init() in
+ * c/crypto/pubkey/ecdsa.c. */
+static void ec_neg_case(int cvid, const uint8_t *nn, const uint8_t *pp,
+                        const uint8_t *pub, const uint8_t *sig, const uint8_t *hash,
+                        int hlen, const char *nm)
+{
+    int fl = cvid / 8;
+    char b[128];
+    uint8_t m[96];
+    snprintf(b, sizeof b, "%s valid", nm);
+    ok(b, ecdsa_verify(cvid, pub, sig, hash, hlen) == 1);
+
+    memcpy(m, sig, 2 * fl); memset(m, 0, fl);
+    snprintf(b, sizeof b, "%s reject r=0", nm); ok(b, ecdsa_verify(cvid, pub, m, hash, hlen) == 0);
+    memcpy(m, sig, 2 * fl); memset(m + fl, 0, fl);
+    snprintf(b, sizeof b, "%s reject s=0", nm); ok(b, ecdsa_verify(cvid, pub, m, hash, hlen) == 0);
+    memcpy(m, nn, fl); memcpy(m + fl, sig + fl, fl);
+    snprintf(b, sizeof b, "%s reject r=n", nm); ok(b, ecdsa_verify(cvid, pub, m, hash, hlen) == 0);
+    memcpy(m, sig, 2 * fl); memcpy(m + fl, nn, fl);
+    snprintf(b, sizeof b, "%s reject s=n", nm); ok(b, ecdsa_verify(cvid, pub, m, hash, hlen) == 0);
+    memcpy(m, nn, fl); m[fl - 1]++;             /* n+1 (last byte of both n's is odd, no carry) */
+    memcpy(m + fl, sig + fl, fl);
+    snprintf(b, sizeof b, "%s reject r=n+1", nm); ok(b, ecdsa_verify(cvid, pub, m, hash, hlen) == 0);
+
+    memcpy(m, pp, fl); memcpy(m + fl, pub + fl, fl);
+    snprintf(b, sizeof b, "%s reject qx=p", nm); ok(b, ecdsa_verify(cvid, m, sig, hash, hlen) == 0);
+    memcpy(m, pub, 2 * fl); memcpy(m + fl, pp, fl);
+    snprintf(b, sizeof b, "%s reject qy=p", nm); ok(b, ecdsa_verify(cvid, m, sig, hash, hlen) == 0);
+    memcpy(m, pub, 2 * fl); m[2 * fl - 1] ^= 1;  /* still < p, but off the curve */
+    snprintf(b, sizeof b, "%s reject offcurve pub", nm); ok(b, ecdsa_verify(cvid, m, sig, hash, hlen) == 0);
+    memset(m, 0, 2 * fl);                        /* point at infinity encoding */
+    snprintf(b, sizeof b, "%s reject zero pub", nm); ok(b, ecdsa_verify(cvid, m, sig, hash, hlen) == 0);
+
+    memcpy(m, sig, 2 * fl); m[fl / 2] ^= 1;
+    snprintf(b, sizeof b, "%s reject sig flip", nm); ok(b, ecdsa_verify(cvid, pub, m, hash, hlen) == 0);
+    uint8_t wh[64]; memcpy(wh, hash, hlen); wh[hlen - 1] ^= 1;
+    snprintf(b, sizeof b, "%s reject hash flip", nm); ok(b, ecdsa_verify(cvid, pub, sig, wh, hlen) == 0);
+}
+
+static void test_ecdsa_negative(void)
+{
+    uint8_t p384n[48], p384p[48];
+    unhex("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973", p384n);
+    unhex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff", p384p);
+    ec_neg_case(256, p256_n, p256_p, ec256_256_pub, ec256_256_sig, ec256_256_hash, 32, "neg ecdsa p256");
+    ec_neg_case(384, p384n, p384p, ec384_384_pub, ec384_384_sig, ec384_384_hash, 48, "neg ecdsa p384");
+}
+
+static void test_rsa_negative(void)
+{
+    const int nl = 256, el = 3;
+    uint8_t bad[256], even_n[256], wh[64];
+    ok("neg rsa pkcs1 valid", rsa_pkcs1_verify(rsa_n, nl, rsa_e, el, rsa_sig256, nl, rsa_h256, 32) == 1);
+    ok("neg rsa pss valid", rsa_pss_verify(rsa_n, nl, rsa_e, el, rsa_pss256, nl, rsa_h256, 32) == 1);
+
+    memcpy(bad, rsa_sig256, nl); bad[200] ^= 1;
+    ok("neg rsa pkcs1 sig flip", rsa_pkcs1_verify(rsa_n, nl, rsa_e, el, bad, nl, rsa_h256, 32) == 0);
+    memcpy(bad, rsa_pss256, nl); bad[200] ^= 1;
+    ok("neg rsa pss sig flip", rsa_pss_verify(rsa_n, nl, rsa_e, el, bad, nl, rsa_h256, 32) == 0);
+    memcpy(wh, rsa_h256, 32); wh[31] ^= 1;
+    ok("neg rsa pkcs1 hash flip", rsa_pkcs1_verify(rsa_n, nl, rsa_e, el, rsa_sig256, nl, wh, 32) == 0);
+    ok("neg rsa pss hash flip", rsa_pss_verify(rsa_n, nl, rsa_e, el, rsa_pss256, nl, wh, 32) == 0);
+
+    /* siglen > nlen must be refused before any bignum work */
+    ok("neg rsa pkcs1 siglen>nlen", rsa_pkcs1_verify(rsa_n, nl, rsa_e, el, rsa_sig256, nl + 1, rsa_h256, 32) == 0);
+    ok("neg rsa pss siglen>nlen", rsa_pss_verify(rsa_n, nl, rsa_e, el, rsa_pss256, nl + 1, rsa_h256, 32) == 0);
+    /* Montgomery requires an odd modulus */
+    memcpy(even_n, rsa_n, nl); even_n[nl - 1] &= (uint8_t)~1;
+    ok("neg rsa pkcs1 even modulus", rsa_pkcs1_verify(even_n, nl, rsa_e, el, rsa_sig256, nl, rsa_h256, 32) == 0);
+    ok("neg rsa pss even modulus", rsa_pss_verify(even_n, nl, rsa_e, el, rsa_pss256, nl, rsa_h256, 32) == 0);
+    /* sig >= n refused */
+    ok("neg rsa pkcs1 sig=n", rsa_pkcs1_verify(rsa_n, nl, rsa_e, el, rsa_n, nl, rsa_h256, 32) == 0);
+    ok("neg rsa pss sig=n", rsa_pss_verify(rsa_n, nl, rsa_e, el, rsa_n, nl, rsa_h256, 32) == 0);
+
+    /* rsa_modexp_be hook boundaries (RL=130 -> nl must be <= 516) */
+    uint8_t big[520], outm[520], e3[1] = {3};
+    memset(big, 0x11, sizeof big);
+    ok("neg rsa modexp nl=517", rsa_modexp_be(big, 1, e3, 1, big, 517, outm) == -1);
+    uint8_t n32[32], b32[32];
+    memset(n32, 0, 32); n32[31] = 0x65;         /* odd */
+    memset(b32, 0, 32); b32[31] = 2;
+    n32[31] &= (uint8_t)~1;                      /* even modulus */
+    ok("neg rsa modexp even n", rsa_modexp_be(b32, 32, e3, 1, n32, 32, outm) == -2);
+    n32[31] = 0x65;
+    ok("neg rsa modexp base>=n", rsa_modexp_be(n32, 32, e3, 1, n32, 32, outm) == -3);
+    memset(b32, 0, 32);                          /* base = 0 */
+    int rc = rsa_modexp_be(b32, 32, e3, 1, n32, 32, outm);
+    ok("neg rsa modexp 0^3 = 0", rc == 0 && allzero(outm, 32));
+}
+
+static void test_hkdf_bounds(void)
+{
+    static uint8_t o[12240];
+    uint8_t ref[48], info[2 + 1 + 6 + 64 + 1 + 64];
+    char label[66];
+    memset(label, 'L', 65); label[65] = 0;
+    ok("neg expand_label label 65", hkdf_expand_label(32, el256_secret, label, 0, 0, o, 32) == -1);
+    uint8_t ctx[65]; memset(ctx, 0x55, 65);
+    ok("neg expand_label ctx 65", hkdf_expand_label(32, el256_secret, "k", ctx, 65, o, 32) == -1);
+    ok("neg expand_label outlen 65536", hkdf_expand_label(32, el256_secret, "k", 0, 0, o, 65536) == -1);
+    /* 8161 = 255*32+1: above the RFC 5869 cap hkdf_expand() enforces, so
+     * expand_label must reject it too -- returning 0 would leave `o` unwritten */
+    ok("neg expand_label outlen 255*hlen+1", hkdf_expand_label(32, el256_secret, "k", 0, 0, o, 8161) == -1);
+    ok("neg expand_label hlen 16", hkdf_expand_label(16, el256_secret, "k", 0, 0, o, 32) == -1);
+
+    /* boundary accepts: label/ctx exactly 64 bytes, outlen 32. Verify against a
+     * hand-built RFC 8446 HkdfLabel fed through plain hkdf_expand. */
+    label[64] = 0;                               /* now exactly 64 chars */
+    int n = 0;
+    info[n++] = 0; info[n++] = 32;               /* outlen BE */
+    info[n++] = (uint8_t)(6 + 64);
+    memcpy(info + n, "tls13 ", 6); n += 6;
+    memcpy(info + n, label, 64); n += 64;
+    info[n++] = 64;
+    memcpy(info + n, ctx, 64); n += 64;
+    ok("neg expand_label 64/64/32 rc", hkdf_expand_label(32, el256_secret, label, ctx, 64, o, 32) == 0);
+    hkdf_expand(32, el256_secret, info, n, ref, 32);
+    ok("neg expand_label 64/64/32 matches manual HkdfLabel", eq(o, ref, 32));
+
+    /* hkdf_expand at the RFC 5869 ceiling: outlen = 255*hlen must succeed */
+    uint8_t prk[32], i10[10];
+    unhex("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", prk);
+    int il = unhex("f0f1f2f3f4f5f6f7f8f9", i10);
+    uint8_t w42[42];
+    unhex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865", w42);
+    memset(o, 0xAA, 8160);
+    hkdf_expand(32, prk, i10, il, o, 8160);      /* 255*32 */
+    ok("neg hkdf_expand L=255*32 head", eq(o, w42, 42));
+    ok("neg hkdf_expand L=255*32 tail written", o[8159] != 0xAA);
+    memset(o, 0xAA, 12240);
+    hkdf_expand(48, hk384_prk, hk384_info, (int)sizeof(hk384_info), o, 12240);  /* 255*48 */
+    ok("neg hkdf_expand L=255*48 head", eq(o, hk384_okm, 100));
+    ok("neg hkdf_expand L=255*48 tail written", o[12239] != 0xAA);
+    /* hlen other than 32/48: documented silent no-op (early return, no writes) */
+    memset(o, 0xAA, 64);
+    hkdf_expand(16, prk, i10, il, o, 64);
+    ok("neg hkdf_expand hlen16 silent no-op", o[0] == 0xAA && o[63] == 0xAA);
+}
+
 int main(void)
 {
     test_sha();
@@ -286,6 +522,11 @@ int main(void)
     test_x25519();
     test_ecdsa();
     test_rsa();
+    test_aead_negative();
+    test_x25519_loworder();
+    test_ecdsa_negative();
+    test_rsa_negative();
+    test_hkdf_bounds();
     printf("\n%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }

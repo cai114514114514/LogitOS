@@ -58,14 +58,6 @@ static struct tls_sess sessions[2];
  * SHA-256 DRBG seeded from RDSEED/RDRAND + RDTSC), not a TLS-local PRNG. */
 static void rand_bytes(uint8_t *b, int n) { kernel_random_bytes(b, n); }
 
-/* Overwrite key material through a volatile pointer so the compiler cannot
- * elide it as a dead store. */
-static void wipe(void *p, size_t n)
-{
-    volatile uint8_t *v = (volatile uint8_t *)p;
-    while (n--) *v++ = 0;
-}
-
 /* --- TCP record I/O (blocking with timeout; pumps net_poll) --- */
 /* Read exactly one TLS record: hdr[5] + body. Returns body length or -1.
  * `deadline` is an absolute timer_ticks() value shared by the whole handshake:
@@ -128,7 +120,7 @@ static int aead_seal(struct aead *a, uint8_t inner_type, const uint8_t *content,
     else
         aes128_gcm_seal(a->key, nonce, aad, 5, plain, plen, out, out + plen);
     a->seq++;
-    wipe(plain, (size_t)plen);      /* the staging buffer held plaintext */
+    crypto_wipe(plain, (size_t)plen);      /* the staging buffer held plaintext */
     return rlen;
 }
 
@@ -178,8 +170,8 @@ static int put_u16(uint8_t *p, int v) { p[0]=(uint8_t)(v>>8); p[1]=(uint8_t)v; r
 /* Bail out of the handshake: wipe every stack secret and the session slot
  * (which may already hold derived traffic keys) before returning. */
 #define TLS_FAIL(rc) do { \
-    wipe(&sec, sizeof sec); \
-    wipe(s, sizeof *s); \
+    crypto_wipe(&sec, sizeof sec); \
+    crypto_wipe(s, sizeof *s); \
     return (rc); \
 } while (0)
 
@@ -453,7 +445,7 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
     traffic_keys(sec.s_ap, suite, &s->cr);
 
     /* the live keys now live in sessions[] (s->cw/s->cr); drop every stack copy */
-    wipe(&sec, sizeof sec);
+    crypto_wipe(&sec, sizeof sec);
     s->established = 1;
     return id;
 }
@@ -501,7 +493,7 @@ void tls_close(int id)
 {
     if (id < 0 || id >= 2 || !sessions[id].used) return;
     /* drop traffic keys, buffered plaintext and the in-use flag in one shot */
-    wipe(&sessions[id], sizeof sessions[id]);
+    crypto_wipe(&sessions[id], sizeof sessions[id]);
 }
 
 /* tls_der_sig_to_rs() moved to x509.c as x509_der_sig_to_rs() -- one shared

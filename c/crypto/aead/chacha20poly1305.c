@@ -42,6 +42,7 @@ static void chacha20(const uint8_t key[32], uint32_t counter, const uint8_t nonc
         int n = len - off; if (n > 64) n = 64;
         for (int i = 0; i < n; i++) out[off+i] = in[off+i] ^ ks[i];
     }
+    crypto_wipe(ks, sizeof ks);                 /* keystream */
 }
 
 /* --- Poly1305 (RFC 8439 §2.5), 130-bit accumulator over 5 26-bit limbs --- */
@@ -138,6 +139,9 @@ static void aead_mac(const uint8_t key[32], const uint8_t nonce[12],
     for (int i = 0; i < 8; i++) lenblk[8+i] = (uint8_t)((uint64_t)ctlen  >> (8*i));
     poly_blocks(&st, lenblk, 16, 0);
     poly_finish(&st, tag);
+    /* polykey (one-time key from block 0) and the state holding r/pad */
+    crypto_wipe(polykey, sizeof polykey);
+    crypto_wipe(&st, sizeof st);
 }
 
 void chacha20_poly1305_seal(const uint8_t key[32], const uint8_t nonce[12],
