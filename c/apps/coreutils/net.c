@@ -5,6 +5,7 @@
  *   net [info]        show IP / mask / gateway / MAC
  *   net ping          ping the gateway, print the round-trip time
  *   net dns <host>    resolve a hostname to an IPv4 address
+ *   net get <url>     fetch HTTP(S), print body length + FNV-1a checksum
  * Ping/DNS are non-blocking in the kernel; we poll + sys_yield so the WM loop
  * pumps net_poll (the RX path) between polls. */
 
@@ -78,6 +79,24 @@ static int do_dns(const char *host)
     }
 }
 
+#define GET_MAX (128 * 1024)
+static unsigned char get_buf[GET_MAX];
+
+static int do_get(const char *url)
+{
+    int rc = http_get(url);
+    if (rc < 0 || http_status() != 2) {
+        errs("net: fetch failed (rc="); outn_fd(2, rc); errs(")\n");
+        return 1;
+    }
+    int n = http_body((char *)get_buf, sizeof get_buf);
+    if (n < 0) { errs("net: could not read response body\n"); return 1; }
+    unsigned hash = 2166136261u;
+    for (int i = 0; i < n; i++) { hash ^= get_buf[i]; hash *= 16777619u; }
+    outs("http bytes "); outn(n); outs(" fnv1a "); outn(hash); outc('\n');
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || c_streq(argv[1], "info")) return do_info();
@@ -86,6 +105,10 @@ int main(int argc, char **argv)
         if (argc < 3) { errs("usage: net dns <host>\n"); return 1; }
         return do_dns(argv[2]);
     }
-    errs("usage: net [info | ping | dns <host>]\n");
+    if (c_streq(argv[1], "get")) {
+        if (argc < 3) { errs("usage: net get <url>\n"); return 1; }
+        return do_get(argv[2]);
+    }
+    errs("usage: net [info | ping | dns <host> | get <url>]\n");
     return 1;
 }

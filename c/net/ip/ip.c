@@ -103,7 +103,7 @@ void ip_input(const uint8_t *frame, uint16_t len)
      * loopback-on-wire use. Reject source forms that cannot identify a remote
      * unicast peer in the supported configuration. */
     if (src == 0 || src == 0xFFFFFFFFu || (src >> 24) == 127 ||
-        (src >> 28) == 0xEu)
+        (src >> 28) >= 0xEu)
         return;
 
     const uint8_t *l4 = (const uint8_t *)h + ihl;

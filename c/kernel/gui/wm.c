@@ -322,12 +322,14 @@ static struct app *cur_app(void)
 long wm_gui_syscall(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
-    if (!ap) {
+    if (!ap && num != SYS_HTTP_GET && num != SYS_HTTP_STATUS &&
+        num != SYS_HTTP_BODY) {
         /* Window ADOPTION: a CLI process (e.g. /bin/as running a script) gets a
          * window on its first SYS_GUI_CREATE -- allocate an app slot and bind it
          * to the proc, then fall through to the normal create. Exit/teardown
          * reuses the standard path: proc_exit -> wm_app_exit (alive=0) -> reap.
-         * Any other GUI call without a window stays an error. */
+         * HTTP fetch/body/status are process-safe non-GUI services and also pass
+         * this gate; any other GUI call without a window stays an error. */
         struct proc *p = proc_current();
         if (!p || num != SYS_GUI_CREATE) return -1;
         int ai = -1;

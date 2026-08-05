@@ -27,7 +27,8 @@ and the [Security Policy](SECURITY.md).
   **130-root** trust store, plus an HTML/DOM + CSS-cascade + layout + paint pipeline,
   decoded PNG/GIF images, and inline `<script>` execution. Wikipedia has been used
   as an interoperability test; this is not a general-purpose or security-hardened
-  browser.
+  browser. The implemented and missing protocol pieces are listed in the
+  [network support matrix](docs/NETWORK.md).
 - **Anti-aliased Unicode text** — a project TrueType parser + integer-only AA
   rasterizer (the kernel is `-mno-sse` in places) with a glyph cache, font fallback,
   and CJK support; the whole UI is anti-aliased.
@@ -115,6 +116,7 @@ make test-shell      # fork/exec + pipes + coreutils via /bin/sh
 make test-as         # AetherScript language core (host unit tests, no QEMU)
 make test-as-os      # AetherScript on Aether: runs the examples incl. the LibAether stdlib
 make test-net        # TCP + IPv4/UDP/ICMP protocol unit tests (host)
+make test-net-os     # QEMU: guest fetches a 32 KiB file from a host-local HTTP server
 make test-smp        # boots -smp 4 and asserts genuine cross-core parallelism
 make test-nvme       # NVMe driver
 ```

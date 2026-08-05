@@ -64,7 +64,7 @@ struct tcp_conn {
     uint64_t tx_tick;
     uint64_t rx_tick;           /* last valid inbound segment (FIN_WAIT backstop) */
     int      tx_retries;
-    int      tx_probe;          /* retransmit indefinitely while peer window is 0 */
+    int      tx_probe;          /* persist retransmit while peer window is zero */
     int      close_pending;     /* send FIN after the one-slot TX queue drains */
     int      used;
 };
@@ -140,7 +140,10 @@ static int parse_options(const uint8_t *opt, int len, uint16_t *mss)
     *mss = 0;
     for (int i = 0; i < len;) {
         uint8_t kind = opt[i];
-        if (kind == 0) break;                 /* EOL */
+        if (kind == 0) {                      /* EOL; remaining bytes are zero pad */
+            for (int j = i + 1; j < len; j++) if (opt[j] != 0) return -1;
+            break;
+        }
         if (kind == 1) { i++; continue; }     /* NOP */
         if (i + 1 >= len) return -1;
         int olen = opt[i + 1];
@@ -148,6 +151,7 @@ static int parse_options(const uint8_t *opt, int len, uint16_t *mss)
         if (kind == 2) {
             if (olen != 4) return -1;
             *mss = (uint16_t)(((uint16_t)opt[i + 2] << 8) | opt[i + 3]);
+            if (*mss == 0) return -1;
         }
         i += olen;
     }
@@ -270,6 +274,7 @@ static void start_fin(struct tcp_conn *c)
     uint32_t seq = c->snd_nxt;
     send_seg(c, FIN | ACK, seq, NULL, 0);
     arm_retransmit(c, FIN | ACK, seq, NULL, 0);
+    if (c->snd_wnd == 0) c->tx_probe = 1;
     c->snd_nxt += 1;
     c->state = FIN_WAIT;
 }
@@ -307,6 +312,19 @@ static struct tcp_conn *find_conn(uint16_t lport, uint32_t rip, uint16_t rport)
             conns[i].rip == rip && conns[i].rport == rport)
             return &conns[i];
     return NULL;
+}
+
+static uint16_t alloc_lport(void)
+{
+    for (int tries = 0; tries < 16384; tries++) {
+        uint16_t p = next_port++;
+        if (next_port < 49152) next_port = 49152;
+        int busy = 0;
+        for (int i = 0; i < NCONN; i++)
+            if (conns[i].used && conns[i].lport == p) { busy = 1; break; }
+        if (!busy) return p;
+    }
+    return 0;
 }
 
 void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
@@ -375,6 +393,7 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
         send_seg(c, ACK, c->snd_nxt, NULL, 0);
         return;
     }
+    if (!(flags & ACK)) return;                /* ACK is mandatory after handshake */
 
     c->rx_tick = timer_ticks();
 
@@ -462,8 +481,8 @@ int tcp_connect(uint32_t dst, uint16_t port)
     memset(c, 0, sizeof *c);
     c->used = 1;
     c->state = SYN_SENT;
-    c->lport = next_port++;
-    if (next_port == 0) next_port = 49152;
+    c->lport = alloc_lport();
+    if (c->lport == 0) { c->used = 0; net_unlock(f); return -1; }
     c->rip = dst; c->rport = port;
     uint32_t iss;
     kernel_random_bytes((uint8_t *)&iss, sizeof iss);
