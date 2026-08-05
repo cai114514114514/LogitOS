@@ -20,9 +20,10 @@ e1000
         -> TCP -> HTTP -> TLS 1.3
 ```
 
-The current runtime configuration is static and matches QEMU SLIRP:
-`10.0.2.15/24`, gateway `10.0.2.2`, DNS server `10.0.2.3`. There is no DHCP
-client yet.
+The runtime configuration comes from a DHCPv4 client (RFC 2131/2132) that
+negotiates at boot and renews at T1; if negotiation fails it falls back to the
+static QEMU SLIRP defaults: `10.0.2.15/24`, gateway `10.0.2.2`, DNS server
+`10.0.2.3`.
 
 ## Implemented behavior
 
@@ -50,13 +51,25 @@ client yet.
 
 ### UDP and DNS
 
-- UDP transmit and one-shot client receive slot.
+- Up to eight UDP sockets (`udp_bind`/`udp_close`), each with a four-datagram
+  receive queue recording source IP/port; queue overflows are counted.
+- ICMP port-unreachable is generated for datagrams to unbound ports (rate
+  limited, never for broadcasts), and inbound ICMP errors are delivered to the
+  matching UDP socket and to TCP connections.
 - Pseudo-header checksum generation on every transmitted datagram.
 - Validation of nonzero incoming checksums; a zero checksum remains accepted for
   IPv4 compatibility.
 - UDP length validation and source IP/port reporting.
-- DNS client sends one A query, randomizes the transaction ID, and accepts a
-  response only from the configured DNS server and port.
+- DNS client sends one A query from a random ephemeral port to the configured
+  resolver (from DHCP or the fallback), randomizes the transaction ID, and
+  accepts a response only from the resolver's address and port.
+
+### DHCP
+
+- Minimal DHCPv4 client (RFC 2131/2132): DISCOVER/OFFER/REQUEST/ACK with the
+  broadcast flag set, xid/chaddr/magic-cookie validation, and options 1/3/6/51.
+- Lease renewal (T1) via a ciaddr REQUEST; NAK or persistent silence restarts
+  from DISCOVER.
 
 ### TCP
 
@@ -70,6 +83,15 @@ client yet.
 - Zero-window persist probes with exponential backoff.
 - One outstanding transmit segment, cumulative acknowledgments, retransmission,
   and segmentation of larger writes.
+- RFC 6298 RTT estimation (srtt/rttvar in timer ticks) with Karn's algorithm:
+  retransmitted segments are never sampled. RTO = srtt + max(G, 4*rttvar),
+  clamped to [100 ms, 60 s], doubling on each timeout retransmission.
+- Fast retransmit on the third duplicate ACK (RFC 5681 definition adapted to
+  the single-outstanding model, where it is exact).
+- Full close state machine: CLOSE_WAIT/LAST_ACK for the passive side, FIN_WAIT
+  and CLOSING (simultaneous close) flowing into a shortened TIME_WAIT (~10 s
+  instead of 2MSL — `alloc_lport` never immediately reuses a local port, and
+  eight connection slots cannot afford full-length waits).
 - A 64 KiB sequence-indexed receive ring with overlap handling and out-of-order
   interval reassembly.
 - Receive-window sequence acceptability checks and rejection of ACKs beyond
@@ -83,22 +105,20 @@ client yet.
 The following are not implemented and must not be inferred from a successful web
 request:
 
-- IPv6, DHCP, IP fragmentation/reassembly, multicast, forwarding, and a general
+- IPv6, IP fragmentation/reassembly, multicast, forwarding, and a general
   routing table.
 - Passive TCP open (`listen`/`accept`) and server sockets.
-- RFC congestion control, RTT-based retransmission timeout estimation, fast
-  retransmit/recovery, and path-MTU discovery.
-- TCP window scaling, SACK, timestamps, ECN, urgent data, keepalives, and a full
-  close/TIME-WAIT state machine.
-- General UDP sockets, concurrent UDP receive queues, and ICMP error delivery to
-  transports.
-- General DNS record types, TCP fallback, DNSSEC, caching, and configurable
-  resolvers.
+- Multiple outstanding segments (a sliding send window), NewReno congestion
+  control (cwnd), SACK, TCP window scaling, and path-MTU discovery. Under the
+  single-outstanding model congestion control has nothing to act on; doing it
+  for real means rebuilding the send buffer as a sliding window, which is a
+  separate project in its own right.
+- TCP timestamps, ECN, urgent data, and keepalives.
+- General DNS record types, TCP fallback, DNSSEC, and caching.
 
 The single-outstanding-segment TCP sender is conservative, but that is not a
-substitute for standards-compliant congestion control. The fixed retransmission
-timer is adequate for the tested QEMU/SLIRP path, not a claim about arbitrary
-networks.
+substitute for standards-compliant congestion control. The RTT estimator and
+fast retransmit make it robust on lossy paths, not faster on uncongested ones.
 
 ## Verification
 
@@ -109,10 +129,12 @@ make test-net
 ```
 
 This executes host-side white-box tests for TCP checksum and reassembly, MSS and
-window negotiation, zero-window persistence, reset handling, delayed close, IPv4
-validation, UDP checksums, fragment rejection, and ICMP echo matching. QEMU boot
-and browser tests remain necessary integration evidence; host protocol tests alone
-do not prove driver timing or Internet interoperability.
+window negotiation, zero-window persistence, reset handling, delayed close, RTT
+estimation and RTO backoff, fast retransmit, the close state machine, IPv4
+validation, UDP sockets and checksums, fragment rejection, ICMP echo matching,
+and the DHCP client state machine. QEMU boot and browser tests remain necessary
+integration evidence; host protocol tests alone do not prove driver timing or
+Internet interoperability.
 
 Run the local, deterministic end-to-end data-path test with:
 
@@ -123,7 +145,8 @@ make test-net-os
 It boots Aether under QEMU, serves a 32 KiB fixture from the host, and checks that
 the guest `net get` command receives the complete HTTP body through e1000, IPv4,
 TCP, HTTP, the syscall boundary, and a ring-3 process. It does not require a public
-Internet server.
+Internet server. `make test-dhcp-os` additionally asserts the DHCP lease is bound
+during boot before the same fetch.
 
 Normative references used for this implementation include
 [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html) for TCP,

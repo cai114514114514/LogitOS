@@ -355,6 +355,185 @@ int main(void)
         CHECK(!c->used, "tcp_error: SYN_SENT abort must free the slot");
     }
 
+    /* 17) RTT estimation (RFC 6298): first sample seeds srtt/rttvar/rto; a
+     *    retransmitted segment's ACK is not sampled (Karn); timeouts double
+     *    the RTO; the RTO is clamped to [RTO_MIN, RTO_MAX]. */
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        send_seg(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        arm_retransmit(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        c->snd_nxt += 100;
+        g_ticks += 30;
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+        CHECK(c->srtt == 30 && c->rttvar == 15 && c->rto == 90,
+              "rtt: first sample srtt=%llu rttvar=%llu rto=%llu (want 30/15/90)",
+              (unsigned long long)c->srtt, (unsigned long long)c->rttvar,
+              (unsigned long long)c->rto);
+        /* Karn: time the segment out, then its ACK must not sample. */
+        send_seg(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        arm_retransmit(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        c->snd_nxt += 100;
+        g_ticks += 200;                     /* > rto (90): timeout retransmit */
+        before = g_sends;
+        tcp_poll();
+        CHECK(g_sends == before + 1 && c->tx_rexmitted && c->rto == 180,
+              "rtt: timeout retransmits and doubles RTO (rto=%llu)",
+              (unsigned long long)c->rto);
+        g_ticks += 500;                     /* huge apparent RTT, must be ignored */
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+        CHECK(c->srtt == 30,
+              "rtt: Karn - retransmitted ACK not sampled (srtt=%llu)",
+              (unsigned long long)c->srtt);
+        /* Upper clamp: a giant sample still yields RTO <= RTO_MAX. */
+        send_seg(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        arm_retransmit(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        c->snd_nxt += 100;
+        g_ticks += 100000;
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+        CHECK(c->rto == RTO_MAX, "rtt: clamped at RTO_MAX (rto=%llu)",
+              (unsigned long long)c->rto);
+    }
+    /* Lower clamp and the SYN-ACK handshake sample. */
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        send_seg(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        arm_retransmit(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        c->snd_nxt += 100;
+        g_ticks += 1;
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+        CHECK(c->srtt == 1 && c->rto == RTO_MIN,
+              "rtt: tiny sample clamps to RTO_MIN (srtt=%llu rto=%llu)",
+              (unsigned long long)c->srtt, (unsigned long long)c->rto);
+    }
+    {
+        struct tcp_conn *c = &conns[0];
+        memset(c, 0, sizeof *c);
+        c->used = 1; c->state = SYN_SENT;
+        c->lport = LPORT; c->rport = RPORT; c->rip = RIP;
+        c->snd_una = 100; c->snd_nxt = 101;
+        c->tx_flags = SYN; c->tx_seq = 100; c->tx_tick = g_ticks;
+        g_ticks += 20;
+        inject_seg(500, 500, 101, 4096, 0, SYN | ACK, NULL, 0, 0);
+        CHECK(c->state == ESTABLISHED && c->srtt == 20,
+              "rtt: SYN-ACK yields the first sample (srtt=%llu)",
+              (unsigned long long)c->srtt);
+    }
+
+    /* 18) Fast retransmit: the third duplicate ACK resends the outstanding
+     *    segment; two do not; an advancing ACK resets the counter. */
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        send_seg(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        arm_retransmit(c, PSH | ACK, c->snd_nxt, sendbuf, 100);
+        uint32_t dseq = c->snd_nxt;
+        c->snd_nxt += 100;
+        before = g_sends;
+        inject_seg(B, B, c->snd_una, 65535, 0, ACK, NULL, 0, 0);   /* dup 1 */
+        inject_seg(B, B, c->snd_una, 65535, 0, ACK, NULL, 0, 0);   /* dup 2 */
+        CHECK(g_sends == before && c->dup_acks == 2,
+              "fastrtx: 2 dup ACKs must not retransmit (sends=%d)", g_sends);
+        inject_seg(B, B, c->snd_una, 65535, 0, ACK, NULL, 0, 0);   /* dup 3 */
+        CHECK(g_sends == before + 1 && g_last_seq == dseq && g_last_len == 120,
+              "fastrtx: 3rd dup ACK retransmits (sends=%d seq=%u len=%d)",
+              g_sends, g_last_seq, g_last_len);
+        CHECK(c->dup_acks == 0 && c->tx_rexmitted && c->tx_tick == g_ticks,
+              "fastrtx: counter reset, segment marked retransmitted");
+        /* An advancing ACK resets the counter; it restarts from zero. */
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+        send_seg(c, PSH | ACK, c->snd_nxt, sendbuf, 50);
+        arm_retransmit(c, PSH | ACK, c->snd_nxt, sendbuf, 50);
+        c->snd_nxt += 50;
+        before = g_sends;
+        inject_seg(B, B, c->snd_una, 65535, 0, ACK, NULL, 0, 0);
+        inject_seg(B, B, c->snd_una, 65535, 0, ACK, NULL, 0, 0);
+        CHECK(g_sends == before && c->dup_acks == 2,
+              "fastrtx: counter restarts after an advancing ACK (dups=%d)",
+              c->dup_acks);
+        /* A window change breaks the run: not a duplicate per RFC 5681, so it
+         * is not counted (the existing count is left alone, not reset). */
+        inject_seg(B, B, c->snd_una, 60000, 0, ACK, NULL, 0, 0);
+        CHECK(c->dup_acks == 2 && g_sends == before,
+              "fastrtx: window-changing ACK is not a dup (dups=%d)", c->dup_acks);
+    }
+
+    /* 19) Passive close: peer FIN -> CLOSE_WAIT -> drain/EOF -> tcp_close ->
+     *    LAST_ACK -> our FIN acked -> slot released. */
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        inject(B, B, 8, ACK);
+        inject(B, B + 8, 0, FIN | ACK);
+        CHECK(c->peer_fin && c->state == CLOSE_WAIT && c->rcv_nxt == B + 9,
+              "pclose: peer FIN -> CLOSE_WAIT (state=%d rcv_nxt=%u)",
+              c->state, c->rcv_nxt);
+        drain_verify(B, 8);
+        CHECK(tcp_recv(0, sendbuf, sizeof sendbuf) == -1 && c->used,
+              "pclose: drained CLOSE_WAIT reports EOF, slot kept");
+        tcp_close(0);
+        CHECK(c->state == LAST_ACK && c->tx_flags == (FIN | ACK) &&
+              (g_last_flags & FIN),
+              "pclose: tcp_close sends our FIN -> LAST_ACK (state=%d)", c->state);
+        inject_seg(B, B + 9, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);
+        CHECK(!c->used, "pclose: FIN acked -> slot released (state=%d used=%d)",
+              c->state, c->used);
+    }
+
+    /* 20) Active close: FIN_WAIT -> peer FIN -> TIME_WAIT (not alive, slot
+     *    held for drain/late segments) -> timeout frees the slot. */
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        tcp_close(0);
+        CHECK(c->state == FIN_WAIT && c->tx_flags == (FIN | ACK),
+              "aclose: our FIN in flight -> FIN_WAIT");
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);   /* ack our FIN */
+        CHECK(c->state == FIN_WAIT && c->tx_flags == 0,
+              "aclose: FIN acked, still FIN_WAIT (state=%d)", c->state);
+        inject(B, B, 0, FIN | ACK);                                 /* peer FIN */
+        CHECK(c->state == TIME_WAIT && c->peer_fin && (g_last_flags & ACK),
+              "aclose: peer FIN -> TIME_WAIT (state=%d)", c->state);
+        CHECK(!tcp_alive(0) && c->used,
+              "aclose: TIME_WAIT is not alive but keeps the slot");
+        /* A retransmitted peer FIN is re-ACKed and restarts the wait. */
+        before = g_sends;
+        inject(B, B, 0, FIN | ACK);
+        CHECK(g_sends == before + 1 && (g_last_flags & ACK) && g_last_ack == B + 1,
+              "aclose: duplicate FIN re-ACKed (sends=%d ack=%u)",
+              g_sends, g_last_ack);
+        uint64_t t0 = g_ticks;
+        g_ticks = t0 + 999; tcp_poll();
+        CHECK(c->used, "aclose: TIME_WAIT held before 1000 ticks");
+        g_ticks = t0 + 1001; tcp_poll();
+        CHECK(!c->used, "aclose: TIME_WAIT frees the slot at the deadline");
+    }
+
+    /* 21) Simultaneous close: peer FIN while our FIN is unacked -> CLOSING ->
+     *    our FIN acked -> TIME_WAIT. Plus the FIN_WAIT silence backstop. */
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        tcp_close(0);                                               /* FIN in flight */
+        inject_seg(B, B, c->snd_una, 65535, 0, FIN | ACK, NULL, 0, 0); /* peer FIN, no ack of ours */
+        CHECK(c->state == CLOSING && c->peer_fin,
+              "sclose: crossing FINs -> CLOSING (state=%d)", c->state);
+        inject_seg(B, B + 1, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);   /* our FIN acked */
+        CHECK(c->state == TIME_WAIT, "sclose: acked in CLOSING -> TIME_WAIT");
+        g_ticks += 1001; tcp_poll();
+        CHECK(!c->used, "sclose: TIME_WAIT frees the slot");
+    }
+    setup(B);
+    {
+        struct tcp_conn *c = &conns[0];
+        tcp_close(0);
+        inject_seg(B, B, c->snd_nxt, 65535, 0, ACK, NULL, 0, 0);   /* our FIN acked */
+        g_ticks += 500;                        /* peer quiet past the backstop */
+        tcp_poll();
+        CHECK(!c->used, "backstop: silent FIN_WAIT frees the slot");
+    }
+
     printf("\nTCP protocol tests: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

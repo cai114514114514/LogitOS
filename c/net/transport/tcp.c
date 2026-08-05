@@ -16,7 +16,8 @@ void *memset(void *, int, size_t);
 #define PSH 0x08
 #define ACK 0x10
 
-enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSING, TIME_WAIT };
+enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, LAST_ACK,
+       CLOSING, TIME_WAIT };
 
 #define NCONN    8
 #define RXBUF    65536      /* 64 KiB receive window: a full HTTP body / TLS flight
@@ -66,6 +67,14 @@ struct tcp_conn {
     int      tx_retries;
     int      tx_probe;          /* persist retransmit while peer window is zero */
     int      close_pending;     /* send FIN after the one-slot TX queue drains */
+    /* RFC 6298 RTT estimation, in ticks (fixed point via integer shifts). */
+    uint64_t srtt;              /* smoothed RTT (0 = no sample yet) */
+    uint64_t rttvar;            /* RTT variation */
+    uint64_t rto;               /* current RTO, timeout backoff applied */
+    int      tx_rexmitted;      /* outstanding segment was retransmitted (Karn:
+                                 * its ACK must not produce an RTT sample) */
+    int      dup_acks;          /* consecutive duplicate ACKs (fast retransmit) */
+    uint64_t tw_tick;           /* entered TIME_WAIT (slot-release deadline) */
     int      used;
 };
 
@@ -256,6 +265,38 @@ static void send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     ip_send(c->rip, IP_PROTO_TCP, seg, (uint16_t)total);
 }
 
+#define RTO_DEFAULT 50      /* 0.5 s before the first RTT sample */
+#define RTO_MIN     10      /* RFC 6298 lower bound (100 ms at 100 Hz) */
+#define RTO_MAX     6000    /* RFC 6298 upper bound (60 s) */
+
+/* RFC 6298 RTO from the current estimators, in ticks (clock granularity
+ * G = 1 tick = 10 ms). */
+static uint64_t base_rto(struct tcp_conn *c)
+{
+    if (c->srtt == 0) return RTO_DEFAULT;
+    uint64_t var = 4 * c->rttvar;
+    uint64_t rto = c->srtt + (var > 1 ? var : 1);   /* SRTT + max(G, 4*RTTVAR) */
+    if (rto < RTO_MIN) rto = RTO_MIN;
+    if (rto > RTO_MAX) rto = RTO_MAX;
+    return rto;
+}
+
+/* Fold one RTT sample into the estimators (Jacobson/Karels shifts). The caller
+ * applies Karn's algorithm: only ACKs of never-retransmitted segments sample. */
+static void rtt_sample(struct tcp_conn *c, uint64_t rtt)
+{
+    if (rtt == 0) rtt = 1;
+    if (c->srtt == 0) {
+        c->srtt = rtt;
+        c->rttvar = rtt / 2;
+    } else {
+        uint64_t d = c->srtt > rtt ? c->srtt - rtt : rtt - c->srtt;
+        c->rttvar = (3 * c->rttvar + d) / 4;
+        c->srtt = (7 * c->srtt + rtt) / 8;
+    }
+    c->rto = base_rto(c);
+}
+
 /* Remember the segment that consumes sequence space, for retransmit. */
 static void arm_retransmit(struct tcp_conn *c, uint8_t flags, uint32_t seq,
                            const void *data, int dlen)
@@ -267,6 +308,9 @@ static void arm_retransmit(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     c->tx_tick = timer_ticks();
     c->tx_retries = 0;
     c->tx_probe = 0;
+    c->rto = base_rto(c);
+    c->tx_rexmitted = 0;
+    c->dup_acks = 0;
 }
 
 static void start_fin(struct tcp_conn *c)
@@ -276,7 +320,9 @@ static void start_fin(struct tcp_conn *c)
     arm_retransmit(c, FIN | ACK, seq, NULL, 0);
     if (c->snd_wnd == 0) c->tx_probe = 1;
     c->snd_nxt += 1;
-    c->state = FIN_WAIT;
+    /* Active close waits for the peer's FIN; answering the peer's FIN waits
+     * only for the ACK of ours. */
+    c->state = (c->state == CLOSE_WAIT) ? LAST_ACK : FIN_WAIT;
 }
 
 /* Bytes the peer currently permits beyond data already in flight. */
@@ -300,7 +346,8 @@ static void update_send_window(struct tcp_conn *c, uint32_t seg_seq,
         if (c->tx_probe && c->snd_wnd > 0) {
             c->tx_probe = 0;
             c->tx_retries = 0;
-            c->tx_tick = c->rx_tick >= 50 ? c->rx_tick - 50 : 0;
+            uint64_t now = timer_ticks(), r = base_rto(c);
+            c->tx_tick = now >= r ? now - r : 0;
         }
     }
 }
@@ -402,6 +449,8 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
             if (c->peer_mss > TXBUF) c->peer_mss = TXBUF;
             if (c->peer_mss == 0) c->peer_mss = 1;
             c->tx_len = 0; c->tx_flags = 0;     /* SYN acked */
+            if (!c->tx_rexmitted)               /* handshake RTT is a valid sample */
+                rtt_sample(c, timer_ticks() - c->tx_tick);
             c->state = ESTABLISHED;
             c->rx_tick = timer_ticks();
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
@@ -438,19 +487,45 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
             return;
         }
+        uint32_t prev_wnd = c->snd_wnd;
         update_send_window(c, seg_seq, seg_ack, ntohs(h->window));
-        if (seq_lt(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_nxt))
+        int advanced = 0;
+        if (seq_lt(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_nxt)) {
             c->snd_una = seg_ack;
+            advanced = 1;
+        }
+        /* RFC 5681 duplicate ACK: ack number unchanged, no data, no window
+         * update, a segment outstanding. The third one retransmits that
+         * segment at once -- exact under the single-outstanding model. The RTO
+         * backoff is reset (not doubled, unlike a timeout) and the segment is
+         * marked retransmitted so its eventual ACK cannot be sampled (Karn). */
+        if (advanced) {
+            c->dup_acks = 0;
+        } else if (dlen == 0 && !(flags & (SYN | FIN)) && c->tx_flags &&
+                   c->snd_wnd == prev_wnd && ++c->dup_acks >= 3) {
+            c->dup_acks = 0;
+            c->tx_tick = timer_ticks();
+            c->tx_rexmitted = 1;
+            c->rto = base_rto(c);
+            send_seg(c, c->tx_flags, c->tx_seq, c->tx_len ? c->tx : NULL, c->tx_len);
+        }
         /* Free the retransmit slot only when the ACK covers exactly the whole
          * outstanding segment; an ACK beyond snd_nxt is illegal and must not
          * silently drop an unacknowledged segment (hole in the byte stream). */
         if (c->tx_flags && seg_ack == c->snd_nxt) {
+            if (!c->tx_rexmitted)
+                rtt_sample(c, timer_ticks() - c->tx_tick);
             c->tx_len = 0; c->tx_flags = 0; c->tx_probe = 0;
-            if (c->close_pending && c->state == ESTABLISHED) {
+            if (c->close_pending &&
+                (c->state == ESTABLISHED || c->state == CLOSE_WAIT)) {
                 c->close_pending = 0;
                 start_fin(c);
-            } else if (c->state == FIN_WAIT && c->peer_fin) {
-                c->state = CLOSED; return;     /* keep buffered data drainable */
+            } else if (c->state == CLOSING) {
+                c->state = TIME_WAIT;           /* simultaneous close completed */
+                c->tw_tick = timer_ticks();
+            } else if (c->state == LAST_ACK) {
+                /* The app already closed and everything is acknowledged. */
+                c->state = CLOSED; c->used = 0;
             }
         }
     }
@@ -466,8 +541,26 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
             c->rcv_nxt += 1;
             c->peer_fin = 1;
             send_seg(c, ACK, c->snd_nxt, NULL, 0);
-            if (c->state == FIN_WAIT && c->tx_flags == 0)
-                c->state = CLOSED;             /* keep buffered data drainable */
+            if (c->state == ESTABLISHED) {
+                /* Passive close: the app may keep draining (and sending) until
+                 * it calls tcp_close, which moves us to LAST_ACK. */
+                c->state = CLOSE_WAIT;
+            } else if (c->state == FIN_WAIT) {
+                if (c->tx_flags) {
+                    c->state = CLOSING;         /* simultaneous close: our FIN
+                                                 * is still unacknowledged */
+                } else {
+                    c->state = TIME_WAIT;
+                    c->tw_tick = timer_ticks();
+                }
+            }
+        } else if (c->state == CLOSE_WAIT || c->state == LAST_ACK ||
+                   c->state == CLOSING || c->state == TIME_WAIT) {
+            /* The peer retransmitted its FIN (our ACK was lost): re-ACK so it
+             * can finish; in TIME_WAIT this also restarts the wait. */
+            send_seg(c, ACK, c->snd_nxt, NULL, 0);
+            if (c->state == TIME_WAIT)
+                c->tw_tick = timer_ticks();
         }
     }
 }
@@ -479,10 +572,16 @@ void tcp_poll(void)
     for (int i = 0; i < NCONN; i++) {
         struct tcp_conn *c = &conns[i];
         if (!c->used) continue;
-        uint64_t rto = 50;                              /* base ~0.5 s RTO */
+        /* Persist probes keep their own exponential backoff (on top of the
+         * dynamic base RTO); ordinary segments use the conn's current RTO,
+         * which doubles on every timeout retransmission. */
+        uint64_t rto;
         if (c->tx_probe) {
             int shift = c->tx_retries > 5 ? 5 : c->tx_retries;
-            rto <<= shift;                              /* persist backoff to 16 s */
+            rto = base_rto(c) << shift;
+            if (rto > RTO_MAX) rto = RTO_MAX;
+        } else {
+            rto = c->rto ? c->rto : RTO_DEFAULT;
         }
         if (c->tx_flags && now - c->tx_tick >= rto) {
             if (c->tx_probe) {
@@ -492,6 +591,11 @@ void tcp_poll(void)
             }
             send_seg(c, c->tx_flags, c->tx_seq, c->tx_len ? c->tx : NULL, c->tx_len);
             c->tx_tick = now;
+            c->tx_rexmitted = 1;                /* Karn: no sample from its ACK */
+            if (!c->tx_probe) {
+                c->rto = rto * 2;               /* RFC 6298 backoff on timeout */
+                if (c->rto > RTO_MAX) c->rto = RTO_MAX;
+            }
         }
         /* Backstop: our FIN was acked but the peer's FIN never came -- don't leak
          * the slot (NCONN is small and a browser opens many connections). Only
@@ -499,6 +603,15 @@ void tcp_poll(void)
          * be legally streaming data, which refreshes rx_tick on each segment. */
         if (c->state == FIN_WAIT && c->tx_flags == 0 && now - c->tx_tick > 200 &&
             now - c->rx_tick > 200)
+            { c->state = CLOSED; c->used = 0; }
+        /* TIME_WAIT: a shortened 2MSL (~10 s). alloc_lport() never immediately
+         * reuses a local port, and with NCONN=8 slots a full 2MSL would leak
+         * connection slots on a browser fetching many objects. */
+        if (c->state == TIME_WAIT && now - c->tw_tick >= 1000)
+            { c->state = CLOSED; c->used = 0; }
+        /* LAST_ACK and CLOSING always hold our outstanding FIN, so the
+         * retransmit cap above is their backstop; this sweep is defensive. */
+        if ((c->state == LAST_ACK || c->state == CLOSING) && c->tx_flags == 0)
             { c->state = CLOSED; c->used = 0; }
     }
     net_unlock(f);
@@ -631,12 +744,16 @@ void tcp_close(int id)
     if (id < 0 || id >= NCONN) return;
     struct tcp_conn *c = &conns[id];
     uint64_t f = net_lock();
-    if (!c->used || c->state != ESTABLISHED) {
-        if (c->used) c->used = 0;
-    } else if (c->tx_flags) {
-        c->close_pending = 1;               /* do not overwrite unacked payload */
+    if (!c->used) {
+        /* nothing to do */
+    } else if (c->state == ESTABLISHED || c->state == CLOSE_WAIT) {
+        if (c->tx_flags) {
+            c->close_pending = 1;         /* do not overwrite unacked payload */
+        } else {
+            start_fin(c);                 /* ESTABLISHED->FIN_WAIT, CLOSE_WAIT->LAST_ACK */
+        }
     } else {
-        start_fin(c);
+        c->used = 0;
     }
     net_unlock(f);
 }
@@ -644,7 +761,11 @@ void tcp_close(int id)
 int tcp_alive(int id)
 {
     if (id < 0 || id >= NCONN) return 0;
-    return conns[id].used && conns[id].state != CLOSED;
+    /* TIME_WAIT reports not-alive: both FINs are exchanged, so from the app's
+     * perspective the connection is over (same as the old direct-to-CLOSED
+     * path); the slot lingers only to catch retransmitted FINs. */
+    return conns[id].used && conns[id].state != CLOSED &&
+           conns[id].state != TIME_WAIT;
 }
 
 /* icmp.c weak-hook target: an ICMP error quoting one of our segments. RFC
