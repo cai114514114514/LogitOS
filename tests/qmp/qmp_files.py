@@ -50,7 +50,7 @@ proc = subprocess.Popen([
 
 def armed():
     try:
-        with open(serial) as fh:
+        with open(serial, encoding="utf-8", errors="replace") as fh:
             return "AETHER_BOOT_OK" in fh.read()
     except OSError:
         return False

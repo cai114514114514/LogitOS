@@ -646,6 +646,14 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 
 **验证**：`tests/qmp/qmp_freeze.py`（Studio 编辑 → 开终端 → uname → 拖拽）与 `tests/qmp/qmp_freeze2.py`（Studio 编辑→关闭 → Monitor 开→关 → 终端 → uname）在 `make run` 全参数（-smp 4 TCG + virtio-gpu + e1000 + 真实显示窗口）下通过，终端正常启动并执行命令。tick/BKL 修复后，`tests/qmp/qmp_watch.py` 零扰动冻结猎手连跑 **30/30 轮无一冻结**（修复前基线约 1/14 轮冻结）。注：QEMU TCG 下从未复现出「发白+全系统冻结」的确切画面，已修复的 6 个 bug 覆盖该类症状的已知路径；wm_launch 的各失败分支已补全串口日志（此前 4 处静默返回），若现场再现有日志可查。
 
+**黑框专案（同日第二现场，QMP 取证实锤）**：用户 100% 复现流程「关 Finder → 关 Clock → 开 Code Studio → 关 Studio → 开终端」之后终端黑框 + 菜单栏时钟停（整机冻结）。用 QMP 看门狗（画面静止 10 秒自动 dump 全核寄存器与访客内存，`tests/qmp/` 同方法）活捉现场：串口止于 `[execve] pid 6: /bin/sh loading`；CPU0/1/2 全部停在 `spin_lock_irqsave` 的 ticket 等待循环（IF=0，RDI=&g_bkl），`g_bkl` ticket−serving=4（1 持有人 + 3 等待者），`g_bkl_owner`=3；CPU3 在 sh 的新用户地址空间（CR3 已切换）里从 `pipe_read` 空调用 `schedule()`。
+
+**根因**：`pipe_read`/`pipe_write`/`proc_waitpid` 的阻塞等待循环用裸 `schedule()`。`schedule()` 在所有其他线程都 running=1（各自核上运行或排队等 BKL）时走 next==prev 分支立即返回 → 调用方自旋重试且**全程持 BKL** → 其余核全堵在 BKL ticket 队列（IF=0，无法响应任何中断/IPI）→ 整机冻结。触发条件苛刻：需要「可运行线程数 ≤ CPU 数」窗口——用户关掉 3 个应用后剩 4 线程对 4 核，人人有核、无人可换，必中；此前自动化脚本一直留着 Finder/Clock（6 线程对 4 核，总有 running=0 的线程可切入），故 35+ 轮从未复现。`tty_read`（file.c）早前修过同一病灶，修复模式照抄：新增 `bkl_hlt_wait()`（sched.c）——cli → in_kernel=0 → 释放 BKL → sti;hlt;cli（睡到下一个中断，让出本核）→ 重拿 BKL → in_kernel=1——替换 pipe_read、pipe_write、proc_waitpid 三处裸 `schedule()`。`schedule()` 的 next==prev 语义本身未改（抢占路径依赖它），SYS_YIELD 保持原样（一次性让出，不会楔死）。
+
+**同场修复**：virtio-gpu 分辨率锁死——QEMU 窗口未撑开时 GET_DISPLAY_INFO 回报 640x480，驱动按此建 framebuffer，所有 1280x800 布局的窗口画出屏外（症状：「打不开预览/Studio/浏览器」）。修复：Makefile 的 `QEMU_GPU` 钉定 `xres=1280,yres=800`（EDID），驱动侧 GET_DISPLAY_INFO 后钳制 `w<1024||h<700` 回退 1280x800。
+
+**取证方法备注**：QMP `human-monitor-command` 的 `cpu N` 无法切核（每次调用回 CPU0），须用 `info registers` + `cpu-index` 参数；访客内存用 `xp /2wx 0x<addr>`（低地址恒等映射）读 `g_bkl`/`g_bkl_owner`（地址随 build 变，用 `nm build/kernel.elf` 重取）。诊断埋点 `[execve]`/`[fork]`/`[pipe]`/`[sched] first-run tid` 保留在代码里（first-run 的线程名偶发乱码，boot sh 名字指针寿命问题，仅打印层面）。
+
 ---
 
 ## WSL 回归测试结果（2026-08-04，Ubuntu 26.04 + clang 21 + qemu-system-x86_64 TCG）
@@ -655,3 +663,16 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 - **QEMU 引导 5/6 通过**：test、test-nvme、test-shell、test-libc(93/93)、test-as-os。
 - **test-smp 失败但已证实为环境问题**：`T1=4s TN=18~21s children=4 distinct_cpus=4 corruption=0` —— 4 核全部跑到、无数据损坏，仅无 wall-clock 加速。用修复前基线（HEAD 3973dec）建 git worktree 做 A/B 对比，基线同样失败（`T1=6s TN=22s`），签名一致，判定为 x86 TCG 模拟器多核串行化所致，非本次修复引入的回归。真机/KVM 下应复测。
 - **回归中捕获并修复的 2 个修复引入问题**：virtio cap 遍历 `continue` 跳过 `cap=next` 导致死循环（"missing caps" → AETHER_FB_FAIL）；elf.c VA 安全检查误拒 ld.lld 新版生成的 vaddr=0x200000 只读 headers PT_LOAD（改为跳过不映射）。均已复测通过。
+
+---
+
+## 后续 TCP/IP 补充（2026-08-05）
+
+本节是审计快照之后的后续记录，不改写上文当时成立的发现。它取代「遗留风险清单」中“TCP 不记录对端通告窗口”和“UDP 入站校验和未验证”两项：
+
+- TCP：加入 MSS option 收发与 IPv4 536-byte 缺省值；记录并按 `SND.WL1`/`SND.WL2` 更新对端窗口；限制发送量；零窗口 persist probe 指数退避；接收序列可接受性检查；超前 ACK 拒绝；RFC 5961 风格 exact-RST/challenge-ACK；未确认数据后的延迟 FIN；随机化 ISN；保留单 outstanding segment 与 OOO 重组模型。
+- UDP/DNS：出站生成 UDP 伪首部校验和，入站非零校验和必须验证；保留 IPv4 零校验和兼容；记录源端口；DNS 响应同时校验随机 transaction ID、配置的 DNS 源地址与 53 端口。
+- IPv4/ICMP：拒绝当前无法重组的 IPv4 分片、TTL=0 与不支持的源地址形态；ICMP 入站校验 checksum，echo reply 按源地址、ID、序列号匹配。
+- 测试：新增 `make test-net` 与 `make test-net-os`；`TCP protocol tests` 39/39、`IPv4/UDP/ICMP protocol tests` 17/17 通过；相关网络对象以 freestanding x86_64 flags 强制重编译通过；QEMU 启动 smoke test 通过，guest 经 e1000/IPv4/TCP/HTTP 完整获取宿主 32768-byte fixture。
+
+仍未实现的协议范围记录在 `docs/NETWORK.md`，包括 IPv6、DHCP、IPv4 分片重组、被动 TCP、拥塞控制、RTT/RTO 估计、窗口缩放、SACK、时间戳和完整 TIME_WAIT 状态机。

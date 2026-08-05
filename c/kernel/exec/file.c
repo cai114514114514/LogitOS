@@ -3,7 +3,7 @@
 #include "file.h"
 #include "kheap.h"
 #include "vfs.h"
-#include "sched.h"      /* schedule() -- block by yielding */
+#include "sched.h"      /* bkl_hlt_wait() -- block without hogging the BKL */
 #include "serial.h"     /* F_TTY console */
 #include "aether_abi.h"   /* O_*, SEEK_* */
 #include "percpu.h"     /* this_cpu (SMP: drop BKL while blocked on input) */
@@ -78,7 +78,7 @@ static long pipe_read(struct file *f, void *vbuf, long len)
     while (p->count == 0) {
         if (p->writers == 0) return 0;     /* EOF: all write ends closed */
         if (f->flags & O_NONBLOCK) return EAGAIN_RC;   /* would block */
-        schedule();                        /* wait for a writer */
+        bkl_hlt_wait();                    /* wait for a writer WITHOUT hogging the BKL */
     }
     long n = 0;
     while (n < len && p->count > 0) {
@@ -98,7 +98,7 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
         while (p->count == PIPE_SZ) {
             if (p->readers == 0) return n > 0 ? n : -1;   /* broken pipe */
             if (f->flags & O_NONBLOCK) return n > 0 ? n : EAGAIN_RC;  /* would block */
-            schedule();
+            bkl_hlt_wait();                /* wait for a reader WITHOUT hogging the BKL */
         }
         if (p->readers == 0) return n > 0 ? n : -1;
         while (n < len && p->count < PIPE_SZ) {

@@ -319,12 +319,12 @@ QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cach
 # see the smp-mttcg note. Drop `,thread=multi` for correct-but-serial 4-core TCG.)
 QEMU_SMP  ?= -smp 4 -accel tcg,thread=multi
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
-QEMU_GPU  := -vga none -device virtio-gpu-pci   # modern GPU; kernel drives the scanout
+QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1280,yres=800   # modern GPU; kernel drives the scanout. xres/yres pin the EDID preferred mode: the driver reads the resolution ONCE at boot, so a small/not-yet-realized QEMU window would otherwise lock the desktop to 640x480 with most windows off-screen.
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -qmp unix:/tmp/aether-qmp.sock,server,nowait
 
 debug: $(ISO) $(DISK)
 	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S

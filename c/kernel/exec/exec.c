@@ -91,32 +91,33 @@ long proc_execve(struct registers *r)
     static char *argv[MAXARG], *envp[MAXARG];
     int used = 0;
     int argc = copy_uvec((char **)r->rsi, argv, argstore, &used, ARGBUFSZ);
-    if (argc < 0) return -1;
+    if (argc < 0) { kprintf("[execve] %s: bad argv\n", abs); return -1; }
     int envc = copy_uvec((char **)r->rdx, envp, argstore, &used, ARGBUFSZ);
-    if (envc < 0) return -1;
+    if (envc < 0) { kprintf("[execve] %s: bad envp\n", abs); return -1; }
 
     /* 2. Load + validate the program image (kernel buffer) before destroying the
      *    old space, so a bad path/exec leaves the caller intact and returns -1. */
     int sz = vfs_size(abs);
-    if (sz < AEX_HDR_SIZE) return -1;        /* aex_info reads the 64-byte header */
+    if (sz < AEX_HDR_SIZE) { kprintf("[execve] %s: missing/too small (%d)\n", abs, sz); return -1; }
     if (sz > 0x7fffffff - 511) return -1;    /* sz + 511 would overflow int */
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
-    if (!img) return -1;
-    if (vfs_read(abs, img, bytes) <= 0) { kfree(img); return -1; }
+    if (!img) { kprintf("[execve] %s: kmalloc %d failed\n", abs, bytes); return -1; }
+    if (vfs_read(abs, img, bytes) <= 0) { kprintf("[execve] %s: read failed\n", abs); kfree(img); return -1; }
     char nm[32], ext[8];
-    if (aex_info(img, nm, ext) != 0) { kfree(img); return -1; }
+    if (aex_info(img, nm, ext) != 0) { kprintf("[execve] %s: bad aex header\n", abs); kfree(img); return -1; }
 
     /* 3. Point of no return: swap the user address space. */
+    kprintf("[execve] pid %d: %s loading\n", p->pid, abs);   /* DIAG: reached = child alive */
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
     uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext);  /* maps into the active (p->cr3) space */
     kfree(img);
-    if (!entry) proc_exit(127);                  /* image gone, can't recover */
+    if (!entry) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
 
     /* 4+5. Fresh user stack with the SysV argc/argv/envp layout. */
     uint64_t sp = setup_cli_stack(entry, argv, argc, envp, envc);
-    if (!sp) proc_exit(127);
+    if (!sp) { kprintf("[execve] %s: stack setup failed\n", abs); proc_exit(127); }
 
     /* 6. Rewrite the syscall-return frame to land in the new program. */
     scopy(p->name, nm, sizeof p->name);

@@ -12,7 +12,7 @@ proc = subprocess.Popen([qemu, "-cdrom", iso,
     "-display", "none", "-no-reboot", "-m", "512M",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait"])
 def armed():
-    try: return "AETHER_BOOT_OK" in open(serial).read()
+    try: return "AETHER_BOOT_OK" in open(serial, encoding="utf-8", errors="replace").read()
     except OSError: return False
 for _ in range(250):
     if armed(): break

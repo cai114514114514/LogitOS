@@ -21,7 +21,7 @@ if not os.environ.get("QMP_DISPLAY"):
 proc = subprocess.Popen(args)
 
 def armed():
-    try: return "AETHER_BOOT_OK" in open(serial).read()
+    try: return "AETHER_BOOT_OK" in open(serial, encoding="utf-8", errors="replace").read()
     except OSError: return False
 for _ in range(300):
     if armed(): break
@@ -78,7 +78,7 @@ for q in list("uname") + ["ret"]: key(q)
 time.sleep(3)
 shot("v2-terminal.ppm")
 print("--- serial tail:")
-try: print(open(serial).read()[-1200:])
+try: print(open(serial, encoding="utf-8", errors="replace").read()[-1200:])
 except OSError: pass
 cmd({"execute": "quit"})
 try: proc.wait(timeout=5)

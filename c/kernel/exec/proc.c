@@ -123,14 +123,15 @@ long proc_fork(struct registers *r)
     if (!parent) return -1;
 
     uint64_t space = vmm_new_space();
-    if (!space) return -1;
+    if (!space) { kprintf("[fork] vmm_new_space failed\n"); return -1; }
     if (vmm_clone_user(space, parent->cr3) < 0) {   /* OOM mid-clone: don't run a partial child */
+        kprintf("[fork] clone_user failed\n");
         vmm_free_space(space);
         return -1;
     }
 
     struct proc *child = alloc_proc();
-    if (!child) { vmm_free_space(space); return -1; }
+    if (!child) { kprintf("[fork] proc table full\n"); vmm_free_space(space); return -1; }
     child->cr3  = space;
     child->ppid = parent->pid;
     child->gui  = NULL;                      /* a forked child has no window */
@@ -143,6 +144,7 @@ long proc_fork(struct registers *r)
 
     child->tid = thread_fork(child->name, r, child, space);
     if (child->tid < 0) {                    /* OOM building the child kstack/thread */
+        kprintf("[fork] thread_fork failed\n");
         /* Undo the fork instead of leaking the PCB slot + dup'd fds + address space
          * (and falsely returning a pid for a child that will never run). */
         for (int i = 0; i < NFD; i++)
@@ -201,7 +203,7 @@ long proc_waitpid(int pid, int *status)
             return rpid;
         }
         if (!have_child) return -1;
-        schedule();        /* let the child run, then re-check (outside the lock) */
+        bkl_hlt_wait();    /* let the child run, then re-check (outside the lock) */
     }
 }
 

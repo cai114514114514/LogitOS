@@ -20,7 +20,9 @@ struct thread {
     uint64_t kstack_top;     /* ring-0 stack top (TSS rsp0) for ring-3 threads */
     uint64_t cr3;            /* address space (PML4 phys); kernel space if 0 set at init */
     void *data;              /* opaque per-thread payload (the app) */
-    const char *name;
+    char name[32];           /* owned copy -- callers pass stack/temp buffers
+                              * (execve's `nm` is a stack array; a bare pointer
+                              * dangles as soon as the caller returns) */
     int id;
     int alive;
     int running;             /* 1 while owned by some core (SMP: skip in pick) */
@@ -41,6 +43,13 @@ static volatile unsigned long switches = 0;
 static struct thread *dead_threads = NULL;
 static spinlock_t g_sched_lock = SPINLOCK_INIT;
 
+static void name_set(struct thread *t, const char *n)
+{
+    int i = 0;
+    if (n) for (; i < 31 && n[i]; i++) t->name[i] = n[i];
+    t->name[i] = 0;
+}
+
 unsigned long sched_switches(void) { return switches; }
 void *sched_current_data(void) { struct thread *t = this_cpu()->current; return t ? t->data : NULL; }
 uint64_t sched_current_cr3(void) { struct thread *t = this_cpu()->current; return t ? t->cr3 : vmm_kernel_cr3(); }
@@ -54,7 +63,7 @@ void sched_init(void)
     main->kstack_top = 0;        /* the WM thread runs in ring 0; rsp0 unused */
     main->cr3 = vmm_kernel_cr3();/* the kernel/shared address space */
     main->data = NULL;
-    main->name = "wm";
+    name_set(main, "wm");
     main->id = next_id++;
     main->alive = 1;
     main->running = 1;
@@ -76,7 +85,7 @@ void sched_init(void)
     bi->kstack_top = 0;
     bi->cr3 = vmm_kernel_cr3();
     bi->data = NULL;
-    bi->name = "idle0";
+    name_set(bi, "idle0");
     bi->id = next_id++;
     bi->alive = 1;
     bi->running = 0;            /* not currently running (WM is core 0's current) */
@@ -110,7 +119,7 @@ void thread_create(void (*entry)(void), const char *name)
     t->kstack_top = 0;
     t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
-    t->name = name;
+    name_set(t, name);
     t->id = next_id++;
     t->alive = 1;
     t->running = 0;
@@ -148,7 +157,7 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     uint8_t *ks = kmalloc(KSTACK_SIZE);
     if (!ks) { kfree(t); return -1; }
     t->stack = ks;
-    t->name = name;
+    name_set(t, name);
     t->id = next_id++;
     t->data = data;
     t->alive = 1;
@@ -198,7 +207,7 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     uint8_t *ks = kmalloc(KSTACK_SIZE);
     if (!ks) { kfree(t); return -1; }
     t->stack = ks;
-    t->name = name;
+    name_set(t, name);
     t->id = next_id++;
     t->data = data;
     t->alive = 1;
@@ -368,6 +377,10 @@ void thread_exit(void)
  * fork_ret (enter_user.asm). */
 void sched_unlock_new_thread(void)
 {
+    /* DIAG: one line per ring-3/forked thread at its first dispatch -- proves a
+     * forked child (e.g. the terminal's /bin/sh) actually got a time slice. */
+    struct thread *t = this_cpu()->current;
+    if (t) kprintf("[sched] first-run tid %d (%s)\n", t->id, t->name[0] ? t->name : "?");
     spin_unlock(&g_sched_lock);
 }
 
@@ -388,6 +401,26 @@ __attribute__((noreturn)) void kthread_bootstrap(void)
     for (;;) __asm__ volatile ("hlt");
 }
 
+/* Block briefly WITHOUT hogging the BKL: drop it, idle until the next interrupt
+ * (timer 100Hz at worst), re-acquire. Use this in blocking-wait loops
+ * (pipe_read/pipe_write/proc_waitpid): a bare schedule() there is a no-op when
+ * every other thread is currently running on its own core (next==prev), so the
+ * loop spins holding the BKL with IF=0 and wedges the whole machine -- the
+ * "Terminal black frame + frozen clock" deadlock: with enough apps closed,
+ * sh's blocking pipe_read on an all-cores-busy system never releases the BKL.
+ * Same release/re-acquire protocol as the WM idle loop and tty_read: BOTH
+ * windows must run with IF=0 or a nested IRQ re-acquires the BKL this core
+ * still holds (self-deadlock). */
+void bkl_hlt_wait(void)
+{
+    __asm__ volatile ("cli");
+    this_cpu()->in_kernel = 0;
+    spin_unlock(&g_bkl);
+    __asm__ volatile ("sti\n\thlt\n\tcli");
+    spin_lock(&g_bkl);
+    this_cpu()->in_kernel = 1;
+}
+
 /* Create core `idx`'s off-ring idle thread and make it that core's current. The
  * idle thread does NOT get a hand-built startup frame: its "context" is the
  * bring-up call stack that runs sched_become_idle() below. Its rsp is filled when
@@ -401,7 +434,7 @@ void thread_create_idle(int idx)
     t->kstack_top = 0;
     t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
-    t->name = "idle";
+    name_set(t, "idle");
     t->id = next_id++;
     t->alive = 1;
     t->running = 1;          /* idle is always "running" on its core */

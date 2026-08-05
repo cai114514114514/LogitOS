@@ -15,6 +15,7 @@ int  thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void 
 int  thread_fork(const char *name, struct registers *r, void *data, uint64_t cr3);
 void thread_exit(void);                                 /* end the current thread */
 void schedule(void);                                    /* switch to the next ready thread */
+void bkl_hlt_wait(void);                                /* blocking waits: drop BKL + hlt, re-acquire */
 void thread_create_idle(int idx);                       /* SMP: build core `idx`'s idle thread */
 void sched_become_idle(void);                           /* SMP: AP enters its idle loop (never returns) */
 void sched_unlock_new_thread(void);                     /* new ring-3/fork first-run: drop g_sched_lock + BKL */

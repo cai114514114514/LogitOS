@@ -86,6 +86,12 @@ int virtio_gpu_init(void)
           }
       }
     }
+    /* The desktop layout is designed for >=1280x800. A not-yet-realized host
+     * window reports 640x480, which would push nearly every window off-screen
+     * (and the driver reads the size only once, here). Refuse small modes and
+     * program 1280x800 via SET_SCANOUT instead -- QEMU honors it and grows the
+     * console/window to match. */
+    if (gpu_w < 1024 || gpu_h < 700) { gpu_w = 1280; gpu_h = 800; }
 
     /* 2. RAM framebuffer (contiguous, identity-mapped). */
     uint64_t bytes = (uint64_t)gpu_w * gpu_h * 4;

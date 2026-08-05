@@ -22,7 +22,7 @@ def run_once(rnd):
         "-qmp", f"unix:{sock},server,nowait"]
     proc = subprocess.Popen(args)
     def armed():
-        try: return "AETHER_BOOT_OK" in open(serial).read()
+        try: return "AETHER_BOOT_OK" in open(serial, encoding="utf-8", errors="replace").read()
         except OSError: return False
     for _ in range(300):
         if armed(): break
@@ -83,7 +83,7 @@ def run_once(rnd):
             print((r or {}).get("return", ""))
         mon("cpu 0")
         print("--- serial ---")
-        try: print(open(serial).read())
+        try: print(open(serial, encoding="utf-8", errors="replace").read())
         except OSError: pass
         cmd({"execute": "quit"})
         try: proc.wait(timeout=5)

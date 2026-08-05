@@ -16,6 +16,7 @@
 #include "img.h"
 #include "kheap.h"
 #include "percpu.h"
+#include "kprintf.h"
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -241,13 +242,14 @@ void syscall_dispatch(struct registers *r)
         int *ufds = (int *)r->rdi;
         if (!p || !user_range_ok(ufds, sizeof(int) * 2, 1)) { r->rax = (uint64_t)-1; return; }
         struct file *rf = 0, *wf = 0;
-        if (file_pipe(&rf, &wf) < 0) { r->rax = (uint64_t)-1; return; }
+        if (file_pipe(&rf, &wf) < 0) { kprintf("[pipe] file_pipe failed (file table/kheap)\n"); r->rax = (uint64_t)-1; return; }
         int rfd = proc_fd_alloc(p, rf);
         int wfd = proc_fd_alloc(p, wf);
         if (rfd < 0 || wfd < 0) {
             /* Unhook any installed fd BEFORE closing: file_close drops the last
              * ref, the slot becomes reusable, and a dangling p->fd[] entry would
              * later close the slot's NEW owner (proc_exit/SYS_CLOSE). */
+            kprintf("[pipe] fd table full (pid %d)\n", p->pid);
             if (rfd >= 0) p->fd[rfd] = NULL;
             if (wfd >= 0) p->fd[wfd] = NULL;
             file_close(rf); file_close(wf); r->rax = (uint64_t)-1; return;
