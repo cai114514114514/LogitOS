@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress check-asops test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -458,6 +458,13 @@ test-as:
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test
 
+# The opcode/token/builtin numbers are hand-copied into three implementations
+# (as.h -> asc.as, lexer.h -> aslex.as, vm.c -> complete.c). A drift in the first
+# two is a SILENT miscompile: the self-hosted compiler emits an instruction the C
+# VM decodes as a different one. Read-only check; run it before every as target.
+check-asops:
+	@python3 tools/gen_as_opcodes.py --check
+
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
 test-complete:
@@ -479,6 +486,14 @@ test-as-gcstress:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test_gcstress
+
+# Robustness suite: deep recursion, huge allocations, many locals, boundary
+# values -- the paths that a runtime rewrite breaks first. Uses only the public
+# API (as_interpret/as_capture/as_gc_live), so it survives representation changes.
+test-as-stress:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_stress tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	@$(BUILD)/as_stress
 
 # Host `asc`: the as core + the as.c entry built natively (no --target -> arm64
 # host binary), used at `make` time to precompile the stdlib .as to .la. `-c`
@@ -515,6 +530,14 @@ test-selfhost-fixpoint: $(BUILD)/asc
 
 test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
 
+# Bytecode stability: the runtime-rewrite milestone changes how values, objects,
+# the GC and lookups are represented -- but NOT what the compiler emits. Hashes
+# every compiled stdlib module against a checked-in baseline, so a slice that
+# accidentally perturbs codegen is caught at the module level (and long before
+# the fixpoint test would notice a 37 KB binary moved).
+test-as-bcstable: $(BUILD)/asc
+	@bash tests/unit/run-bcstable.sh $(BUILD)/asc
+
 # kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
 # headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts
 # the no-two-live-allocations-overlap invariant -- including across injected
@@ -524,6 +547,47 @@ test-kheap:
 	@$(CC) -O1 -g -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/kheap.c \
 	    -Itests/unit/kheapstub -Ic/kernel/mm
 	@$(BUILD)/kheap_test
+
+# --- test-browser: host unit tests for the ring-3 browser render pipeline ---
+# The tests self-stub kmalloc/kfree/img_* so they link the real pipeline
+# sources (dom/css_engine/css_vars/layout/js_dom) on the host. LibCSS is
+# archived once per build tree (libcss_host.a) and shared by the CSS tests.
+BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text
+CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC))
+
+$(BUILD)/csshost/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
+
+$(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
+	@ar rcs $@ $^
+
+test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c c/apps/browser/dom.c
+	@$(BUILD)/dom_test
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/var_test tests/unit/var_test.c c/apps/browser/css_vars.c
+	@$(BUILD)/var_test
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/parse_fuzz tests/unit/parse_fuzz.c c/net/http/url.c c/lib/text/utf8.c
+	@$(BUILD)/parse_fuzz
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_test tests/unit/css_engine_test.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
+	@$(BUILD)/css_engine_test
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
+	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    $(BUILD)/libcss_host.a
+	@$(BUILD)/layout_test
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
+	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    $(BUILD)/libcss_host.a
+	@$(BUILD)/page_test
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/pipeline_stress tests/unit/pipeline_stress.c \
+	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    $(BUILD)/libcss_host.a
+	@$(BUILD)/pipeline_stress
+	@$(CC) -O2 -w $(BTEST_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
+	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/dom.c $(QJS_SRC) -lm
+	@$(BUILD)/js_dom_test
+	@echo "test-browser: ALL PASS"
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

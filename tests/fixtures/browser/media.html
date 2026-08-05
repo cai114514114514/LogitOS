@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>Media fixture</title>
+<style>
+.box { background: #cfc; padding: 8px; }
+@media (min-width: 1000px) {
+  .wide-only { display: block; color: #008; }
+  .narrow-only { display: none; }
+}
+@media (max-width: 999px) {
+  .wide-only { display: none; }
+  .narrow-only { display: block; color: #800; }
+}
+</style></head>
+<body>
+<h1>Media query test</h1>
+<div class="box wide-only">wide viewport styles active</div>
+<div class="box narrow-only">narrow viewport styles active</div>
+</body>
+</html>
