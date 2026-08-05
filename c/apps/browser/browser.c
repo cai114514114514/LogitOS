@@ -27,8 +27,39 @@ static char url[600] = "http://example.com/";
 static int  ulen = 19;
 static int  scroll;                      /* pixel scroll offset */
 static int  ph;                          /* laid-out page height */
-static char status[96] = "ready -- edit URL, Enter to load";
+static char status[96] = "ready -- Enter loads; Left/Right=history";
 static struct node *g_root;              /* current page DOM (owns display-list strings) */
+
+/* back/forward history: URL ring, hcur = current entry, htop = newest */
+static char hist[32][600];
+static int  hcur = -1, htop = -1;
+
+static void hist_push(const char *u)
+{
+    if (hcur >= 0) {                       /* don't push a duplicate of current */
+        int same = 1;
+        for (int i = 0; hist[hcur][i] || u[i]; i++)
+            if (hist[hcur][i] != u[i]) { same = 0; break; }
+        if (same) return;
+    }
+    if (hcur < 31) hcur++;
+    else {                                 /* full: drop the oldest */
+        for (int i = 0; i < 31; i++)
+            for (int j = 0; j < 600; j++) { hist[i][j] = hist[i+1][j]; if (!hist[i][j]) break; }
+    }
+    int i = 0; while (u[i] && i < 599) { hist[hcur][i] = u[i]; i++; } hist[hcur][i] = 0;
+    htop = hcur;                           /* navigating truncates the forward branch */
+}
+
+static int hist_go(int delta)              /* -1 back, +1 forward; 1 if moved */
+{
+    int t = hcur + delta;
+    if (t < 0 || t > htop) return 0;
+    hcur = t;
+    int i = 0; while (hist[hcur][i] && i < (int)sizeof url - 1) { url[i] = hist[hcur][i]; i++; }
+    url[i] = 0; ulen = i;
+    return 1;
+}
 
 static void set_status(const char *s)
 { int i = 0; while (s[i] && i < (int)sizeof status - 1) { status[i] = s[i]; i++; } status[i] = 0; }
@@ -172,6 +203,7 @@ static void follow_link(const char *href)
         target = abs;
     int i = 0; while (target[i] && i < (int)sizeof url - 1) { url[i] = target[i]; i++; }
     url[i] = 0; ulen = i;
+    hist_push(url);
     load(url);
 }
 
@@ -291,14 +323,21 @@ void app_main(void)
                 else if (k == KEY_PGUP) scroll -= VIEW_H - 40;
                 else if (k == KEY_HOME) scroll = 0;
                 else if (k == KEY_END)  scroll = maxs;
-                else if (k == '\n') { editing = 0; load(url); editing = 1; }
-                else if (k == '\b') { if (ulen > 0) url[--ulen] = 0; }
-                else if (k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
+                else if (k == KEY_LEFT)  { if (hist_go(-1)) { editing = 0; load(url); } }
+                else if (k == KEY_RIGHT) { if (hist_go(+1)) { editing = 0; load(url); } }
+                else if (editing && k == '\n') { editing = 0; hist_push(url); load(url); }
+                else if (k == '\b') {
+                    if (editing) { if (ulen > 0) url[--ulen] = 0; }
+                    else if (hist_go(-1)) load(url);          /* Backspace = back */
+                }
+                else if (editing && k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
                 need = 1;
             } else if (e.type == EV_MOUSE) {
                 int mx = e.a, my = e.b;              /* window-local */
-                if (my >= BARH && my < BARH + VIEW_H) {
+                if (my < BARH) editing = 1;          /* click the bar to edit */
+                else if (my >= BARH && my < BARH + VIEW_H) {
+                    editing = 0;
                     char nu[256];
                     if (browser_hittest(mx, my - BARH, scroll, nu, sizeof nu))
                         follow_link(nu);
