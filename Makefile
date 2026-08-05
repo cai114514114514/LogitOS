@@ -92,7 +92,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-complete test-libc test-fb-clip test-kheap test-png test-jpeg
+.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-complete test-libc test-fb-clip test-kheap test-png test-jpeg
 
 all: $(ISO)
 
@@ -380,11 +380,18 @@ test-net-proto:
 		-Ic/drivers/timer -Ic/kernel/core
 	@./$(BUILD)/net_proto_test
 
-test-net: test-tcp-host test-net-proto
+test-net: test-tcp-host test-net-proto test-dhcp-host
+
+test-dhcp-host: $(BUILD)
+	$(CC) -O2 -Wall -Wextra -DAETHER_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
+	$(BUILD)/dhcp_test
 
 # End-to-end e1000 -> IPv4 -> TCP -> HTTP transfer against a host-local server.
 test-net-os: $(ISO) $(DISK)
 	@bash tests/boot/run-net-test.sh $(ISO) $(DISK)
+
+test-dhcp-os: $(ISO) $(DISK)
+	@bash tests/boot/run-dhcp-test.sh $(ISO) $(DISK)
 
 # On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: $(ISO) $(DISK)

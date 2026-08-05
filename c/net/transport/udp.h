@@ -8,22 +8,29 @@
 void udp_input(uint32_t src, const uint8_t *data, uint16_t len,
                const uint8_t *iph);
 
-/* Send a UDP datagram to dst:dport from sport (all host order except data).
- * Returns 0 on success, -1 if ARP is still resolving (caller retries). */
+/* Socket API: NUDP sockets, each with a small FIFO of received datagrams. */
+int  udp_bind(uint16_t port);           /* socket id (>=0), or -1 (in use/full) */
+void udp_close(int sock);
+
+/* Pop the oldest queued datagram. Returns its length (truncated to max), 0 if
+ * the queue is empty, or -1 once if an ICMP error quoted this socket's port
+ * (the error is cleared by reporting it). src/sport may be NULL. */
+int  udp_recv(int sock, void *buf, int max, uint32_t *src, uint16_t *sport);
+
+/* Send from the socket's bound port. Same return convention as udp_send. */
+int  udp_send_to(int sock, uint32_t dst, uint16_t dport,
+                 const void *data, uint16_t len);
+
+/* Socket-less raw send (explicit source port). Returns 0 on success, -1 if
+ * ARP is still resolving (caller retries). */
 int  udp_send(uint32_t dst, uint16_t dport, uint16_t sport,
               const void *data, uint16_t len);
 
-/* Register a one-shot receive slot for `port`: the next datagram to that port
- * is copied into buf (up to max) and its length recorded. Poll udp_recv_len()
- * for >= 0. Re-arm by calling udp_recv_bind() again. */
-void udp_recv_bind(uint16_t port, uint8_t *buf, int max);
-int  udp_recv_len(void);        /* bytes received, or -1 if nothing yet */
-int  udp_recv_err(void);        /* nonzero if an ICMP error hit the armed slot */
-uint32_t udp_recv_src(void);    /* source IP of the received datagram */
-uint16_t udp_recv_sport(void);  /* source port of the received datagram */
+/* Datagrams dropped because the socket's receive queue was full. */
+uint32_t udp_drops(int sock);
 
 /* ICMP error hook (called from icmp.c, weak-linked): an error quoting one of
- * our datagrams arrived. Marks the armed receive slot as failed. */
+ * our datagrams arrived. Marks the matching socket (by local port). */
 void udp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code);
 
 #endif /* AETHER_UDP_H */

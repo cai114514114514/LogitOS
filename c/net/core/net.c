@@ -7,17 +7,28 @@
 
 void *memcpy(void *, const void *, size_t);
 
-/* Static config matching QEMU SLIRP (user networking) defaults. A net_config
- * struct rather than constants so DHCP can fill it in later. */
-struct net_config net_cfg = {
-    .ip   = IPV4(10, 0, 2, 15),
-    .mask = IPV4(255, 255, 255, 0),
-    .gw   = IPV4(10, 0, 2, 2),
-};
+/* net_cfg starts empty; net_init fills it via DHCP, or with the static SLIRP
+ * fallback below if negotiation fails. */
+struct net_config net_cfg;
+
+/* Static config matching QEMU SLIRP (user networking) defaults, used when
+ * DHCP does not answer (and identical to what SLIRP hands out when it does). */
+static void net_cfg_fallback(void)
+{
+    net_cfg.ip   = IPV4(10, 0, 2, 15);
+    net_cfg.mask = IPV4(255, 255, 255, 0);
+    net_cfg.gw   = IPV4(10, 0, 2, 2);
+    net_cfg.dns  = IPV4(10, 0, 2, 3);
+    kprintf("[net] dhcp failed; static ip 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3\n");
+}
 
 static int up;
 
 int net_up(void) { return up; }
+
+/* dhcp.c is linked into the kernel but kept optional like the other layers. */
+int  dhcp_run(int timeout_ticks) __attribute__((weak));
+void dhcp_poll(void) __attribute__((weak));
 
 int net_init(void)
 {
@@ -26,7 +37,10 @@ int net_init(void)
     memcpy(net_cfg.mac, e1000_mac(), 6);
     up = 1;
     e1000_irq_enable(eth_input);    /* IRQ-driven RX (RXT0 only -- see e1000.c; net_poll still backstops) */
-    kprintf("[net] ip 10.0.2.15/24 gw 10.0.2.2\n");
+    /* Unconfigured while negotiating: DHCPDISCOVER leaves from 0.0.0.0, and
+     * only broadcast UDP can come back in until we own an address. */
+    if (!dhcp_run || dhcp_run(300) != 0)    /* ~3 s */
+        net_cfg_fallback();
     return 0;
 }
 
@@ -46,6 +60,7 @@ void net_poll(void)
         e1000_rx_poll(eth_input);
         if (tcp_poll) tcp_poll();
         if (ip_poll) ip_poll();
+        if (dhcp_poll) dhcp_poll();
     }
 }
 

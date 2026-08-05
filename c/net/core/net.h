@@ -22,6 +22,7 @@ struct net_config {
     uint32_t ip;        /* host order */
     uint32_t mask;
     uint32_t gw;
+    uint32_t dns;       /* resolver (DHCP option 6, or static fallback) */
 };
 
 extern struct net_config net_cfg;

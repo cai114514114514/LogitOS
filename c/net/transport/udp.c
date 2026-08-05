@@ -7,6 +7,7 @@
 #include "pit.h"
 
 void *memcpy(void *, const void *, size_t);
+void *memset(void *, int, size_t);
 
 struct udp_hdr {
     uint16_t sport;
@@ -14,6 +15,25 @@ struct udp_hdr {
     uint16_t length;
     uint16_t checksum;      /* zero is accepted on IPv4; Aether always sends one */
 } __attribute__((packed));
+
+#define NUDP       8        /* sockets (DNS, DHCP, ...); port 68 is DHCP's */
+#define UDP_QUEUES 4        /* received datagrams buffered per socket */
+#define UDP_SLOT   1500     /* per-datagram buffer (full Ethernet MTU) */
+
+struct udp_sock {
+    int      used;
+    uint16_t port;
+    int      err;                       /* ICMP error pending report */
+    uint32_t drops;                     /* queue-full drops */
+    int      qhead;                     /* oldest datagram */
+    int      qcount;
+    uint16_t qlen[UDP_QUEUES];
+    uint32_t qsrc[UDP_QUEUES];
+    uint16_t qsport[UDP_QUEUES];
+    uint8_t  q[UDP_QUEUES][UDP_SLOT];
+};
+
+static struct udp_sock socks[NUDP];
 
 static uint16_t udp_checksum(uint32_t src, uint32_t dst,
                              const uint8_t *datagram, uint16_t len)
@@ -30,37 +50,67 @@ static uint16_t udp_checksum(uint32_t src, uint32_t dst,
     return (uint16_t)~sum;
 }
 
-/* A single one-shot receive slot (enough for the DNS demo). */
-static struct {
-    uint16_t  port;
-    uint8_t  *buf;
-    int       max;
-    int       len;          /* -1 until a datagram arrives */
-    int       err;          /* nonzero once an ICMP error quotes this port */
-    uint32_t  src;
-    uint16_t  sport;
-} slot = { .len = -1 };
-
-void udp_recv_bind(uint16_t port, uint8_t *buf, int max)
+static struct udp_sock *find_sock(uint16_t port)
 {
-    slot.port = port;
-    slot.buf = (buf && max >= 0) ? buf : NULL;
-    slot.max = max >= 0 ? max : 0;
-    slot.len = -1; slot.err = 0; slot.src = 0; slot.sport = 0;
+    for (int i = 0; i < NUDP; i++)
+        if (socks[i].used && socks[i].port == port)
+            return &socks[i];
+    return NULL;
 }
-int      udp_recv_len(void) { return slot.len; }
-int      udp_recv_err(void) { return slot.err; }
-uint32_t udp_recv_src(void) { return slot.src; }
-uint16_t udp_recv_sport(void) { return slot.sport; }
 
-/* icmp.c weak-hook target: an ICMP error quoting a datagram we sent. The
- * one-shot slot records no peer, so the match is by local port only -- the
- * consumer (dns_result) re-validates the peer of whatever it receives. */
-void udp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code)
+int udp_bind(uint16_t port)
 {
-    (void)rip; (void)rport;
-    if (slot.len < 0 && slot.buf && slot.port == lport)
-        slot.err = (type << 8) | code;
+    uint64_t f = net_lock();        /* udp_input runs from the RX IRQ */
+    int rc = -1, free = -1;
+    for (int i = 0; i < NUDP; i++) {
+        if (socks[i].used && socks[i].port == port)
+            goto out;                       /* one owner per port */
+        if (!socks[i].used && free < 0)
+            free = i;
+    }
+    if (free >= 0) {
+        memset(&socks[free], 0, sizeof socks[free]);
+        socks[free].used = 1;
+        socks[free].port = port;
+        rc = free;
+    }
+out:
+    net_unlock(f);
+    return rc;
+}
+
+void udp_close(int sock)
+{
+    if (sock < 0 || sock >= NUDP)
+        return;
+    uint64_t f = net_lock();
+    socks[sock].used = 0;
+    net_unlock(f);
+}
+
+int udp_recv(int sock, void *buf, int max, uint32_t *src, uint16_t *sport)
+{
+    if (sock < 0 || sock >= NUDP || max < 0 || (!buf && max > 0))
+        return -1;
+    uint64_t f = net_lock();
+    struct udp_sock *s = &socks[sock];
+    int rc = 0;
+    if (!s->used) {
+        rc = -1;
+    } else if (s->err) {
+        rc = -1;
+        s->err = 0;                 /* report an ICMP error exactly once */
+    } else if (s->qcount > 0) {
+        int n = s->qlen[s->qhead] > (uint16_t)max ? max : s->qlen[s->qhead];
+        memcpy(buf, s->q[s->qhead], (size_t)n);
+        if (src)   *src   = s->qsrc[s->qhead];
+        if (sport) *sport = s->qsport[s->qhead];
+        s->qhead = (s->qhead + 1) % UDP_QUEUES;
+        s->qcount--;
+        rc = n;
+    }
+    net_unlock(f);
+    return rc;
 }
 
 int udp_send(uint32_t dst, uint16_t dport, uint16_t sport,
@@ -83,12 +133,38 @@ int udp_send(uint32_t dst, uint16_t dport, uint16_t sport,
     return ip_send(dst, IP_PROTO_UDP, pkt, total);
 }
 
+int udp_send_to(int sock, uint32_t dst, uint16_t dport,
+                const void *data, uint16_t len)
+{
+    if (sock < 0 || sock >= NUDP || !socks[sock].used)
+        return -1;
+    return udp_send(dst, dport, socks[sock].port, data, len);
+}
+
+uint32_t udp_drops(int sock)
+{
+    if (sock < 0 || sock >= NUDP || !socks[sock].used)
+        return 0;
+    return socks[sock].drops;
+}
+
+/* icmp.c weak-hook target: an ICMP error quoting a datagram we sent. Sockets
+ * record no peer, so the match is by local port only -- the consumer
+ * (dns_result) re-validates the peer of whatever it receives. */
+void udp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code)
+{
+    (void)rip; (void)rport;
+    for (int i = 0; i < NUDP; i++)
+        if (socks[i].used && socks[i].port == lport)
+            socks[i].err = (type << 8) | code;
+}
+
 /* Rate limit for ICMP port-unreachable replies: at most one per target IP
  * per second (RFC 1122-style courtesy, and it blunts reflector abuse). */
 static uint32_t unreach_ip;
 static uint64_t unreach_tick;
 
-/* A datagram arrived for a port nobody is receiving on: tell the sender with
+/* A datagram arrived for a port no socket is bound to: tell the sender with
  * an ICMP port-unreachable quoting the original IP header + 8 L4 bytes. */
 static void send_port_unreach(uint32_t src, const uint8_t *iph,
                               const uint8_t *data)
@@ -129,12 +205,18 @@ void udp_input(uint32_t src, const uint8_t *data, uint16_t len,
     uint16_t dlen  = (uint16_t)(udp_len - sizeof *h);
     const uint8_t *payload = data + sizeof *h;
 
-    if (slot.len < 0 && slot.buf && dport == slot.port) {
-        int n = dlen > slot.max ? slot.max : dlen;
-        memcpy(slot.buf, payload, n);
-        slot.len = n;
-        slot.src = src;
-        slot.sport = ntohs(h->sport);
+    struct udp_sock *s = find_sock(dport);
+    if (s) {
+        if (s->qcount == UDP_QUEUES) {
+            s->drops++;             /* newest loses; drain faster */
+        } else {
+            int tail = (s->qhead + s->qcount) % UDP_QUEUES;
+            memcpy(s->q[tail], payload, dlen);
+            s->qlen[tail] = dlen;
+            s->qsrc[tail] = src;
+            s->qsport[tail] = ntohs(h->sport);
+            s->qcount++;
+        }
     } else if (!ip_is_broadcast(dst)) {
         /* No receiver on this port. Never send ICMP errors about broadcasts
          * (RFC 1122 3.2.2) -- that way lie broadcast storms. */

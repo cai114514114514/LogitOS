@@ -7,11 +7,11 @@
 #include "pit.h"
 #include "rng.h"
 
-/* A tiny DNS client: one A-query to the SLIRP resolver (10.0.2.3:53), parse the
- * first A answer. No compression building (we only emit one QNAME); answer
- * parsing skips compressed names via the 0xC0 pointer form. */
+/* A tiny DNS client: one A-query to the configured resolver (net_cfg.dns,
+ * from DHCP or the static fallback), parse the first A answer. No compression
+ * building (we only emit one QNAME); answer parsing skips compressed names
+ * via the 0xC0 pointer form. */
 
-#define DNS_SERVER IPV4(10, 0, 2, 3)
 #define DNS_PORT   53
 
 /* Encode "a.b.c" as length-prefixed labels into out; returns bytes written. */
@@ -94,34 +94,60 @@ static uint32_t parse_answer(int rlen)
     return 0;
 }
 
-/* Non-blocking: send the query, arm the receive slot, record the start time. */
+static int      dns_sock = -1;  /* UDP socket for the query in flight */
+
+/* Random ephemeral source port (well clear of the DHCP client port 68). */
+static uint16_t pick_lport(void)
+{
+    uint16_t r;
+    kernel_random_bytes((uint8_t *)&r, sizeof r);
+    return (uint16_t)(49152 + r % 10000);
+}
+
+/* Non-blocking: send the query, arm the receive socket, record the start time. */
 void dns_start(const char *name)
 {
     uint8_t q[512];
     int o = build_query(q, name);
-    if (o < 0) return;
-    udp_recv_bind(0x4444, resp, sizeof resp);
+    if (o < 0) { dns_sock = -1; return; }
+    if (dns_sock < 0) {
+        for (int tries = 0; tries < 16 && dns_sock < 0; tries++)
+            dns_sock = udp_bind(pick_lport());
+        if (dns_sock < 0) return;       /* no free socket: dns_result fails */
+    }
     dns_started = timer_ticks();
-    udp_send(DNS_SERVER, DNS_PORT, 0x4444, q, (uint16_t)o);
+    udp_send_to(dns_sock, net_cfg.dns, DNS_PORT, q, (uint16_t)o);
 }
 
-/* 0 = pending, 0xFFFFFFFF = timeout/ICMP error, else the resolved IP (host order). */
+/* 0 = pending, 0xFFFFFFFF = timeout/ICMP error, else the resolved IP (host
+ * order). A terminal answer releases the socket. */
 uint32_t dns_result(void)
 {
-    /* An ICMP error (e.g. port-unreachable) against the waiting slot fails
-     * the lookup immediately instead of riding out the 3 s timeout. */
-    if (udp_recv_err())
-        return 0xFFFFFFFFu;
-    int rlen = udp_recv_len();
-    if (rlen >= 0) {
-        if (udp_recv_src() != DNS_SERVER || udp_recv_sport() != DNS_PORT)
-            return 0xFFFFFFFFu;
-        uint32_t ip = parse_answer(rlen);
-        return ip ? ip : 0xFFFFFFFFu;
+    if (dns_sock < 0)
+        return 0xFFFFFFFFu;             /* dns_start could not arm a query */
+    uint32_t src;
+    uint16_t sport;
+    int rlen = udp_recv(dns_sock, resp, sizeof resp, &src, &sport);
+    uint32_t rc = 0;
+    if (rlen < 0) {
+        /* An ICMP error (e.g. port-unreachable) against the query port fails
+         * the lookup immediately instead of riding out the 3 s timeout. */
+        rc = 0xFFFFFFFFu;
+    } else if (rlen > 0) {
+        if (src == net_cfg.dns && sport == DNS_PORT) {
+            uint32_t ip = parse_answer(rlen);
+            rc = ip ? ip : 0xFFFFFFFFu;
+        }
+        /* else: someone else's datagram on our ephemeral port -- ignore it
+         * and stay pending (the one-shot slot used to fail outright here). */
+    } else if (timer_ticks() - dns_started > 300) {     /* ~3 s */
+        rc = 0xFFFFFFFFu;
     }
-    if (timer_ticks() - dns_started > 300)      /* ~3 s */
-        return 0xFFFFFFFFu;
-    return 0;
+    if (rc) {
+        udp_close(dns_sock);
+        dns_sock = -1;
+    }
+    return rc;
 }
 
 /* Dotted-decimal IP literal "a.b.c.d" -> host-order IP, or 0 if not a literal. */
@@ -142,7 +168,7 @@ uint32_t dns_resolve(const char *name)
 {
     uint32_t lit = parse_ip_literal(name);   /* skip DNS for "10.0.2.2" etc. */
     if (lit) return lit;
-    arp_warm(DNS_SERVER, 30);                 /* resolve the resolver's MAC first, so the */
+    arp_warm(net_cfg.dns, 30);                /* resolve the resolver's MAC first, so the */
     dns_start(name);                          /* query isn't dropped on a cold ARP cache */
     uint64_t start = timer_ticks(), last = start;
     while (timer_ticks() - start < 300) {
@@ -155,6 +181,10 @@ uint32_t dns_resolve(const char *name)
             dns_start(name);
         }
         net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
+    }
+    if (dns_sock >= 0) {                            /* overall timeout: release */
+        udp_close(dns_sock);
+        dns_sock = -1;
     }
     return 0;
 }
