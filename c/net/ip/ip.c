@@ -4,6 +4,7 @@
 #include "eth.h"
 #include "arp.h"
 #include "net.h"
+#include "reasm.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -22,7 +23,8 @@ struct ip_hdr {
 
 /* Upper-layer hooks are optional until their layers are linked in. */
 void icmp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
-void udp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
+void udp_input(uint32_t, const uint8_t *, uint16_t,
+               const uint8_t *) __attribute__((weak));
 void tcp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
 
 uint16_t ip_checksum(const void *data, int len)
@@ -42,13 +44,17 @@ static uint16_t ip_id;
 
 int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len)
 {
-    /* Next hop: the destination if it shares our subnet, else the gateway. */
-    uint32_t nexthop = ((dst & net_cfg.mask) == (net_cfg.ip & net_cfg.mask))
-                       ? dst : net_cfg.gw;
     uint8_t mac[ETH_ALEN];
-    if (arp_resolve(nexthop, mac) != 0)
-        return -1;                          /* ARP pending; caller retries */
-
+    if (ip_is_broadcast(dst)) {
+        /* Broadcasts are not ARP'd: there is no single next hop to resolve. */
+        memcpy(mac, eth_broadcast, ETH_ALEN);
+    } else {
+        /* Next hop: the destination if it shares our subnet, else the gateway. */
+        uint32_t nexthop = ((dst & net_cfg.mask) == (net_cfg.ip & net_cfg.mask))
+                           ? dst : net_cfg.gw;
+        if (arp_resolve(nexthop, mac) != 0)
+            return -1;                          /* ARP pending; caller retries */
+    }
     uint8_t pkt[1500];
     if (sizeof(struct ip_hdr) + len > sizeof pkt)
         return -1;
@@ -89,15 +95,17 @@ void ip_input(const uint8_t *frame, uint16_t len)
         return;
     if (h->ttl == 0)
         return;
-    /* Fragment reassembly is not implemented. Passing a first fragment to a
-     * transport parser as if it were a complete segment is worse than an
-     * explicit drop, so reject MF, nonzero offsets, and the reserved flag. */
+    /* The reserved flag must be zero; MF/nonzero-offset fragments go through
+     * reassembly below (the DF flag is meaningless on receive and ignored). */
     uint16_t frag = ntohs(h->frag);
-    if (frag & 0xBFFFu)                  /* allow only the DF flag (0x4000) */
+    if (frag & 0x8000u)
         return;
+    uint32_t dst = ntohl(h->dst);
     /* No forwarding: only packets addressed to us reach the upper layers
-     * (keeps off-subnet noise out of the one-shot UDP/DNS receive slot). */
-    if (ntohl(h->dst) != net_cfg.ip)
+     * (keeps off-subnet noise out of the one-shot UDP/DNS receive slot).
+     * Broadcasts (limited or subnet-directed) are let through for UDP only --
+     * they are how DHCP-class services reach us; TCP/ICMP stay unicast-only. */
+    if (dst != net_cfg.ip && (!ip_is_broadcast(dst) || h->proto != IP_PROTO_UDP))
         return;
     /* This stack has no DHCP/bootstrap receive path, multicast membership, or
      * loopback-on-wire use. Reject source forms that cannot identify a remote
@@ -108,11 +116,27 @@ void ip_input(const uint8_t *frame, uint16_t len)
 
     const uint8_t *l4 = (const uint8_t *)h + ihl;
     uint16_t l4len = (uint16_t)(tot - ihl);
+    const uint8_t *iph = (const uint8_t *)h;
+    struct reasm_dgram g;
+
+    if (frag & 0x3FFFu) {          /* MF set or nonzero offset: reassemble */
+        if (!reasm_input(src, dst, h->proto, ntohs(h->id),
+                         iph, (uint8_t)ihl,
+                         (uint16_t)((frag & 0x1FFFu) << 3), (frag & 0x2000u) != 0,
+                         l4, l4len, &g))
+            return;                /* incomplete -- or poisoned and dropped */
+        iph = g.iph;
+        l4 = g.l4;
+        l4len = g.l4len;
+    }
 
     if (h->proto == IP_PROTO_ICMP && icmp_input)
         icmp_input(src, l4, l4len);
     else if (h->proto == IP_PROTO_UDP && udp_input)
-        udp_input(src, l4, l4len);
+        udp_input(src, l4, l4len, iph);
     else if (h->proto == IP_PROTO_TCP && tcp_input)
         tcp_input(src, l4, l4len);
+
+    if (frag & 0x3FFFu)
+        reasm_release(&g);
 }

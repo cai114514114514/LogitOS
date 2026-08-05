@@ -2,7 +2,9 @@
 #include <stddef.h>
 #include "udp.h"
 #include "ip.h"
+#include "icmp.h"
 #include "net.h"
+#include "pit.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -34,6 +36,7 @@ static struct {
     uint8_t  *buf;
     int       max;
     int       len;          /* -1 until a datagram arrives */
+    int       err;          /* nonzero once an ICMP error quotes this port */
     uint32_t  src;
     uint16_t  sport;
 } slot = { .len = -1 };
@@ -43,11 +46,22 @@ void udp_recv_bind(uint16_t port, uint8_t *buf, int max)
     slot.port = port;
     slot.buf = (buf && max >= 0) ? buf : NULL;
     slot.max = max >= 0 ? max : 0;
-    slot.len = -1; slot.src = 0; slot.sport = 0;
+    slot.len = -1; slot.err = 0; slot.src = 0; slot.sport = 0;
 }
 int      udp_recv_len(void) { return slot.len; }
+int      udp_recv_err(void) { return slot.err; }
 uint32_t udp_recv_src(void) { return slot.src; }
 uint16_t udp_recv_sport(void) { return slot.sport; }
+
+/* icmp.c weak-hook target: an ICMP error quoting a datagram we sent. The
+ * one-shot slot records no peer, so the match is by local port only -- the
+ * consumer (dns_result) re-validates the peer of whatever it receives. */
+void udp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code)
+{
+    (void)rip; (void)rport;
+    if (slot.len < 0 && slot.buf && slot.port == lport)
+        slot.err = (type << 8) | code;
+}
 
 int udp_send(uint32_t dst, uint16_t dport, uint16_t sport,
              const void *data, uint16_t len)
@@ -69,7 +83,31 @@ int udp_send(uint32_t dst, uint16_t dport, uint16_t sport,
     return ip_send(dst, IP_PROTO_UDP, pkt, total);
 }
 
-void udp_input(uint32_t src, const uint8_t *data, uint16_t len)
+/* Rate limit for ICMP port-unreachable replies: at most one per target IP
+ * per second (RFC 1122-style courtesy, and it blunts reflector abuse). */
+static uint32_t unreach_ip;
+static uint64_t unreach_tick;
+
+/* A datagram arrived for a port nobody is receiving on: tell the sender with
+ * an ICMP port-unreachable quoting the original IP header + 8 L4 bytes. */
+static void send_port_unreach(uint32_t src, const uint8_t *iph,
+                              const uint8_t *data)
+{
+    uint64_t now = timer_ticks();
+    if (src == unreach_ip && now - unreach_tick < 100)
+        return;
+    unreach_ip = src;
+    unreach_tick = now;
+    int ihl = (iph[0] & 0xF) * 4;
+    uint8_t quote[60 + 8];
+    memcpy(quote, iph, (size_t)ihl);
+    memcpy(quote + ihl, data, sizeof(struct udp_hdr));
+    icmp_send_unreach(src, ICMP_DEST_UNREACH, ICMP_UNREACH_PORT,
+                      quote, (uint16_t)(ihl + sizeof(struct udp_hdr)));
+}
+
+void udp_input(uint32_t src, const uint8_t *data, uint16_t len,
+               const uint8_t *iph)
 {
     if (len < sizeof(struct udp_hdr))
         return;
@@ -80,9 +118,13 @@ void udp_input(uint32_t src, const uint8_t *data, uint16_t len)
     uint16_t udp_len = ntohs(h->length);
     if (udp_len < sizeof *h || udp_len > len)
         return;
+    /* The pseudo-header destination is the packet's real one -- which may be
+     * a broadcast address we accepted -- not necessarily net_cfg.ip. */
+    uint32_t dst = ((uint32_t)iph[16] << 24) | ((uint32_t)iph[17] << 16) |
+                   ((uint32_t)iph[18] << 8) | iph[19];
     /* A zero UDP checksum is legal in IPv4. Any nonzero checksum is mandatory
      * to verify over the pseudo-header and the UDP length (not IP padding). */
-    if (h->checksum != 0 && udp_checksum(src, net_cfg.ip, data, udp_len) != 0)
+    if (h->checksum != 0 && udp_checksum(src, dst, data, udp_len) != 0)
         return;
     uint16_t dlen  = (uint16_t)(udp_len - sizeof *h);
     const uint8_t *payload = data + sizeof *h;
@@ -93,5 +135,9 @@ void udp_input(uint32_t src, const uint8_t *data, uint16_t len)
         slot.len = n;
         slot.src = src;
         slot.sport = ntohs(h->sport);
+    } else if (!ip_is_broadcast(dst)) {
+        /* No receiver on this port. Never send ICMP errors about broadcasts
+         * (RFC 1122 3.2.2) -- that way lie broadcast storms. */
+        send_port_unreach(src, iph, data);
     }
 }

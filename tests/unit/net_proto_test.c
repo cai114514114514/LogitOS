@@ -1,6 +1,8 @@
-/* Host-side IPv4/UDP/ICMP protocol tests. This is a white-box translation unit:
- * it includes the three implementation files and stubs only ARP, Ethernet, and
- * the timer, so checksums and IP dispatch run exactly as they do in the kernel. */
+/* Host-side IPv4/UDP/ICMP/DNS protocol tests. This is a white-box translation
+ * unit: it includes the implementation files and stubs only ARP, Ethernet,
+ * the RNG, and the timer, so checksums, fragment reassembly, and IP dispatch
+ * run exactly as they do in the kernel. Built with -DAETHER_NET_HOST so
+ * net_lock() degenerates to a no-op (cli/sti are ring-0 only). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,9 +11,11 @@
 #include "eth.h"
 #include "arp.h"
 #include "pit.h"
+#include "rng.h"
 
 #define LOCAL_IP 0x0A00020Fu       /* 10.0.2.15 */
 #define REMOTE_IP 0x0A000202u      /* 10.0.2.2  */
+#define DNS_IP   0x0A000203u       /* 10.0.2.3  */
 
 struct net_config net_cfg = {
     .mac = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 },
@@ -21,35 +25,53 @@ struct net_config net_cfg = {
 static uint8_t wire[1600];
 static uint16_t wire_len;
 static int eth_sends;
+static uint8_t eth_last_dst[ETH_ALEN];
+static int arp_calls;
 static uint64_t ticks;
 
 uint64_t timer_ticks(void) { return ticks; }
 int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
 {
     (void)ip;
+    arp_calls++;
     memset(mac, 0xAB, ETH_ALEN);
     return 0;
 }
+int arp_warm(uint32_t ip, int timeout) { (void)ip; (void)timeout; return 0; }
 int eth_send(const uint8_t dst[ETH_ALEN], uint16_t type,
              const void *payload, uint16_t len)
 {
-    (void)dst;
     if (type != ETHERTYPE_IP || len > sizeof wire) return -1;
+    memcpy(eth_last_dst, dst, ETH_ALEN);
     memcpy(wire, payload, len);
     wire_len = len;
     eth_sends++;
     return 0;
 }
+const uint8_t eth_broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+void net_poll(void) {}
+void net_idle(void) {}
+void kernel_random_bytes(uint8_t *out, int len)
+{
+    for (int i = 0; i < len; i++) out[i] = (uint8_t)(0x5Au + (unsigned)i);
+}
 
 /* Avoid fortified memcpy macros conflicting with the kernel prototypes. */
 #undef memcpy
+#undef memset
 #include "ip.c"
-#include "udp.c"
+#include "reasm.c"
 #include "icmp.c"
+#include "udp.c"
+#include "dns.c"
 
 static int passed, failed;
 #define CHECK(c, ...) do { if (c) passed++; else { failed++; \
     printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
+
+/* IP identification for frames built from now on; tests that poke reassembly
+ * state set a distinct id per scenario so leftover slots cannot collide. */
+static uint16_t frame_id;
 
 static int make_frame(uint8_t *frame, uint32_t src, uint32_t dst,
                       uint8_t proto, const void *l4, uint16_t l4len,
@@ -62,6 +84,7 @@ static int make_frame(uint8_t *frame, uint32_t src, uint32_t dst,
     memset(ih, 0, sizeof *ih);
     ih->ver_ihl = 0x45;
     ih->total_len = htons((uint16_t)(sizeof *ih + l4len));
+    ih->id = htons(frame_id);
     ih->frag = htons(frag);
     ih->ttl = ttl;
     ih->proto = proto;
@@ -85,6 +108,36 @@ static uint16_t make_udp(uint8_t *out, uint32_t src, uint32_t dst,
         h->checksum = htons(sum ? sum : 0xFFFFu);
     }
     return len;
+}
+
+/* Build an ICMP error message (type/code) quoting an "original" packet: a
+ * fresh IP header (osrc -> odst, oproto) plus the first 8 bytes of its L4. */
+static uint16_t make_icmp_error(uint8_t *out, int type, int code,
+                                uint32_t osrc, uint32_t odst, uint8_t oproto,
+                                const uint8_t *ol4, uint16_t ol4len)
+{
+    struct icmp_hdr *h = (struct icmp_hdr *)out;
+    h->type = (uint8_t)type; h->code = (uint8_t)code;
+    h->checksum = 0; h->id = 0; h->seq = 0;
+    struct ip_hdr *oh = (struct ip_hdr *)(out + sizeof *h);
+    memset(oh, 0, sizeof *oh);
+    oh->ver_ihl = 0x45;
+    oh->total_len = htons((uint16_t)(sizeof *oh + ol4len));
+    oh->ttl = 64; oh->proto = oproto;
+    oh->src = htonl(osrc); oh->dst = htonl(odst);
+    oh->checksum = htons(ip_checksum(oh, sizeof *oh));
+    memcpy(out + sizeof *h + sizeof *oh, ol4, 8);
+    uint16_t len = (uint16_t)(sizeof *h + sizeof *oh + 8);
+    h->checksum = htons(ip_checksum(out, len));
+    return len;
+}
+
+/* White-box helper: reasm.c's slots are visible in this translation unit. */
+static int used_slots(void)
+{
+    int n = 0;
+    for (int i = 0; i < REASM_SLOTS; i++) n += slots[i].used;
+    return n;
 }
 
 int main(void)
@@ -149,11 +202,12 @@ int main(void)
     CHECK(udp_recv_len() == (int)sizeof odd_payload,
           "UDP zero checksum should be accepted on IPv4");
 
-    /* 5) Unsupported IP fragments, zero TTL, wrong destination, and invalid
-     * on-wire source forms are rejected before transport dispatch. */
+    /* 5) The reserved fragment flag, zero TTL, wrong destination, and invalid
+     * on-wire source forms are rejected before transport dispatch. (MF and
+     * nonzero-offset fragments are no longer dropped -- group 8 covers the
+     * reassembly they now go through.) */
     const struct { uint16_t frag; uint8_t ttl; uint32_t src, dst; const char *name; } bad_ip[] = {
-        { 0x2000, 64, REMOTE_IP, LOCAL_IP, "MF fragment" },
-        { 0x0001, 64, REMOTE_IP, LOCAL_IP, "offset fragment" },
+        { 0x8000, 64, REMOTE_IP, LOCAL_IP, "reserved fragment flag" },
         { 0,       0, REMOTE_IP, LOCAL_IP, "zero TTL" },
         { 0,      64, REMOTE_IP, 0x0A000210u, "wrong destination" },
         { 0,      64, 0x7F000001u, LOCAL_IP, "loopback source on wire" },
@@ -205,6 +259,200 @@ int main(void)
     CHECK(icmp_last_rtt() == -1, "ICMP accepted reply from wrong host");
     icmp_input(REMOTE_IP, reply, wilen);
     CHECK(icmp_last_rtt() == 7, "ICMP RTT=%d want 7", icmp_last_rtt());
+
+    /* 8) IPv4 reassembly: two fragments delivered out of order are reassembled
+     *    and dispatched as one UDP datagram (checksum re-verified end to end). */
+    ticks = 1000;
+    uint8_t big[100], bigbuf[128];
+    for (int i = 0; i < (int)sizeof big; i++) big[i] = (uint8_t)(i * 3 + 1);
+    uint16_t blen = make_udp(datagram, REMOTE_IP, LOCAL_IP, 53, 0x4444,
+                             big, sizeof big, 1);
+    frame_id = 0x1001;
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);
+    /* tail fragment first: offset 64 bytes = 8 units, MF clear */
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram + 64, (uint16_t)(blen - 64), 8, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_len() == -1 && used_slots() == 1,
+          "reasm: tail fragment alone must wait (len=%d slots=%d)",
+          udp_recv_len(), used_slots());
+    /* head fragment: offset 0, MF set, 64 bytes */
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, 64, 0x2000, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_len() == (int)sizeof big &&
+          memcmp(bigbuf, big, sizeof big) == 0 &&
+          udp_recv_src() == REMOTE_IP && udp_recv_sport() == 53 &&
+          used_slots() == 0,
+          "reasm: out-of-order fragments reassembled (len=%d)", udp_recv_len());
+
+    /* 9) An overlapping fragment poisons the whole datagram (RFC 5722):
+     *    even the honest tail that arrives later cannot complete it. */
+    frame_id = 0x1002;
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, 64, 0x2000, 64);
+    ip_input(frame, (uint16_t)flen);
+    /* overlaps [32,64) of the first fragment */
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram + 32, 64, 0x2000 | 4, 64);
+    ip_input(frame, (uint16_t)flen);
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram + 64, (uint16_t)(blen - 64), 8, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_len() == -1,
+          "reasm: overlapping fragment must kill the datagram");
+
+    /* 10) A lone fragment times out (~30 s) and its slot is forgotten; the
+     *    late tail then starts a new, incomplete datagram. */
+    frame_id = 0x1003;
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);
+    ticks = 5000;
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, 64, 0x2000, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_len() == -1 && used_slots() >= 1,
+          "reasm: head fragment buffered");
+    ticks = 5000 + 3001;                 /* past the ~30 s reassembly timeout */
+    ip_poll();
+    CHECK(used_slots() == 0, "reasm: stale slot not swept (slots=%d)", used_slots());
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram + 64, (uint16_t)(blen - 64), 8, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_len() == -1,
+          "reasm: timed-out datagram must stay dead");
+    ticks += 3001;                       /* sweep the tail's slot too */
+    ip_poll();
+    CHECK(used_slots() == 0, "reasm: cleanup sweep (slots=%d)", used_slots());
+
+    /* 11) A datagram that would exceed the 64 KiB slot buffer is dropped. */
+    frame_id = 0x1004;
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);
+    ticks = 12000;
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, 64, 0x2000, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(used_slots() == 1, "reasm: head fragment buffered before oversize");
+    /* offset 65520 (8190 units) + 64 bytes > 64 KiB -> poison */
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, 64, 0x2000 | 8190, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_len() == -1 && used_slots() == 0,
+          "reasm: >64 KiB datagram must be dropped (slots=%d)", used_slots());
+
+    /* 12) An ICMP port-unreachable quoting our DNS query fails the waiting
+     *    receive slot immediately; one quoting a different port does not. */
+    frame_id = 0;
+    ticks = 10;
+    uint8_t ouh[sizeof(struct udp_hdr) + 4];
+    make_udp(ouh, LOCAL_IP, DNS_IP, 0x4444, 53, (const uint8_t *)"A?", 2, 0);
+    dns_start("example.com");            /* arms the 0x4444 one-shot slot */
+    uint16_t mlen = make_icmp_error(datagram, 3, 3, LOCAL_IP, DNS_IP,
+                                    IP_PROTO_UDP, ouh, sizeof ouh);
+    flen = make_frame(frame, DNS_IP, LOCAL_IP, IP_PROTO_ICMP,
+                      datagram, mlen, 0, 255);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_err() != 0, "icmp error: slot not marked (err=%d)",
+          udp_recv_err());
+    CHECK(dns_result() == 0xFFFFFFFFu,
+          "icmp error: dns_result did not fail fast (got %08x)", dns_result());
+
+    ticks = 10;
+    make_udp(ouh, LOCAL_IP, DNS_IP, 0x5555, 53, (const uint8_t *)"A?", 2, 0);
+    dns_start("example.com");            /* re-arms (clears the error state) */
+    mlen = make_icmp_error(datagram, 3, 3, LOCAL_IP, DNS_IP,
+                           IP_PROTO_UDP, ouh, sizeof ouh);
+    flen = make_frame(frame, DNS_IP, LOCAL_IP, IP_PROTO_ICMP,
+                      datagram, mlen, 0, 255);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(udp_recv_err() == 0 && dns_result() == 0,
+          "icmp error: error for another port must not fail the slot");
+
+    /* 13) A datagram for a port with no receiver draws a rate-limited ICMP
+     *    port-unreachable quoting the original IP header + UDP ports. */
+    ticks = 20000;
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);   /* armed for 0x4444 only */
+    ulen = make_udp(datagram, REMOTE_IP, LOCAL_IP, 9999, 0x9999,
+                    odd_payload, sizeof odd_payload, 1);
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, ulen, 0, 64);
+    eth_sends = 0;
+    ip_input(frame, (uint16_t)flen);
+    CHECK(eth_sends == 1, "unreach: expected one ICMP error (sends=%d)", eth_sends);
+    wip = (struct ip_hdr *)wire;
+    wilen = (uint16_t)(ntohs(wip->total_len) - sizeof *wip);
+    wic = (struct icmp_hdr *)(wire + sizeof *wip);
+    CHECK(wip->proto == IP_PROTO_ICMP && wic->type == 3 && wic->code == 3 &&
+          ip_checksum(wic, wilen) == 0,
+          "unreach: not a valid port-unreachable (proto=%d type=%d code=%d)",
+          wip->proto, wic->type, wic->code);
+    struct ip_hdr *qip = (struct ip_hdr *)(wire + sizeof *wip + sizeof *wic);
+    const uint8_t *ql4 = (const uint8_t *)qip + sizeof *qip;
+    CHECK(ntohl(qip->src) == REMOTE_IP && ntohl(qip->dst) == LOCAL_IP &&
+          qip->proto == IP_PROTO_UDP &&
+          ql4[0] == 0x27 && ql4[1] == 0x0F &&     /* sport 9999 */
+          ql4[2] == 0x99 && ql4[3] == 0x99,       /* dport 0x9999 */
+          "unreach: quote does not match the original packet");
+    /* within the same second: suppressed; after it: allowed again */
+    ticks = 20050;
+    ip_input(frame, (uint16_t)flen);
+    CHECK(eth_sends == 1, "unreach: second error within 1 s not suppressed");
+    ticks = 20100;
+    ip_input(frame, (uint16_t)flen);
+    CHECK(eth_sends == 2, "unreach: error after 1 s was suppressed");
+    /* an armed slot for the very port receives quietly (no error) */
+    ulen = make_udp(datagram, REMOTE_IP, LOCAL_IP, 53, 0x4444,
+                    odd_payload, sizeof odd_payload, 1);
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, ulen, 0, 64);
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(eth_sends == 2 && udp_recv_len() == (int)sizeof odd_payload,
+          "unreach: armed port must receive quietly (sends=%d)", eth_sends);
+
+    /* 14) Broadcast UDP (limited and subnet-directed) is received; broadcast
+     *    ICMP echo is not answered; broadcast UDP with no receiver draws no
+     *    ICMP error either. */
+    uint32_t bcasts[] = { 0xFFFFFFFFu, 0x0A0002FFu };
+    for (unsigned i = 0; i < sizeof bcasts / sizeof bcasts[0]; i++) {
+        ulen = make_udp(datagram, REMOTE_IP, bcasts[i], 53, 0x4444,
+                        odd_payload, sizeof odd_payload, 1);
+        flen = make_frame(frame, REMOTE_IP, bcasts[i], IP_PROTO_UDP,
+                          datagram, ulen, 0, 64);
+        udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);
+        ip_input(frame, (uint16_t)flen);
+        CHECK(udp_recv_len() == (int)sizeof odd_payload &&
+              memcmp(bigbuf, odd_payload, sizeof odd_payload) == 0,
+              "broadcast UDP to %08x dropped", bcasts[i]);
+    }
+    memset(echo, 0, sizeof echo);
+    eh->type = ICMP_ECHO_REQUEST; eh->id = htons(7); eh->seq = htons(9);
+    memcpy(echo + sizeof *eh, "ping!", 5);
+    eh->checksum = htons(ip_checksum(echo, sizeof echo));
+    flen = make_frame(frame, REMOTE_IP, 0xFFFFFFFFu, IP_PROTO_ICMP,
+                      echo, sizeof echo, 0, 64);
+    eth_sends = 0;
+    ip_input(frame, (uint16_t)flen);
+    CHECK(eth_sends == 0, "broadcast ICMP echo must not be answered");
+    ulen = make_udp(datagram, REMOTE_IP, 0xFFFFFFFFu, 9999, 0x9999,
+                    odd_payload, sizeof odd_payload, 1);
+    flen = make_frame(frame, REMOTE_IP, 0xFFFFFFFFu, IP_PROTO_UDP,
+                      datagram, ulen, 0, 64);
+    udp_recv_bind(0x4444, bigbuf, sizeof bigbuf);   /* armed, wrong port */
+    ip_input(frame, (uint16_t)flen);
+    CHECK(eth_sends == 0 && udp_recv_len() == -1,
+          "broadcast UDP with no receiver drew an ICMP error");
+
+    /* 15) ip_send to a broadcast address skips ARP and uses eth_broadcast. */
+    eth_sends = 0; arp_calls = 0;
+    CHECK(ip_send(0xFFFFFFFFu, IP_PROTO_UDP, odd_payload,
+                  sizeof odd_payload) == 0 &&
+          eth_sends == 1 && arp_calls == 0 &&
+          eth_last_dst[0] == 0xFF && eth_last_dst[5] == 0xFF,
+          "broadcast send must use eth_broadcast without ARP");
+    CHECK(ip_send(REMOTE_IP, IP_PROTO_UDP, odd_payload,
+                  sizeof odd_payload) == 0 && arp_calls == 1,
+          "unicast send must still go through ARP");
 
     printf("\nIPv4/UDP/ICMP protocol tests: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

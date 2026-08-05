@@ -38,7 +38,13 @@ extern volatile int g_net_busy;     /* 1 while a blocking fetch owns the network
 /* Mutual exclusion between the RX interrupt (which runs eth/ip/tcp_input) and
  * mainline net code (tcp_recv/send/poll, udp). Everything net runs on the BSP,
  * and the NIC IRQ is routed to the BSP, so masking interrupts is enough. Save
- * and restore IF so this is safe both in the IRQ (IF already 0) and mainline. */
+ * and restore IF so this is safe both in the IRQ (IF already 0) and mainline.
+ * Host-side unit tests compile with -DAETHER_NET_HOST: cli/sti are ring-0
+ * only, so the lock degenerates to a no-op there. */
+#ifdef AETHER_NET_HOST
+static inline uint64_t net_lock(void) { return 0; }
+static inline void net_unlock(uint64_t f) { (void)f; }
+#else
 static inline uint64_t net_lock(void)
 {
     uint64_t f;
@@ -49,5 +55,6 @@ static inline void net_unlock(uint64_t f)
 {
     if (f & 0x200) __asm__ volatile ("sti" ::: "memory");
 }
+#endif
 
 #endif /* AETHER_NET_H */

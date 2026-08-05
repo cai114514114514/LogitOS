@@ -31,6 +31,7 @@ int net_init(void)
 }
 
 void tcp_poll(void) __attribute__((weak));
+void ip_poll(void) __attribute__((weak));
 
 /* Set while a blocking fetch (http_get/res_fetch, on the app thread) owns the
  * network. The WM render thread is preempted into ~100x/s and also calls
@@ -44,6 +45,7 @@ void net_poll(void)
     if (up) {
         e1000_rx_poll(eth_input);
         if (tcp_poll) tcp_poll();
+        if (ip_poll) ip_poll();
     }
 }
 

@@ -105,9 +105,13 @@ void dns_start(const char *name)
     udp_send(DNS_SERVER, DNS_PORT, 0x4444, q, (uint16_t)o);
 }
 
-/* 0 = pending, 0xFFFFFFFF = timeout, else the resolved IP (host order). */
+/* 0 = pending, 0xFFFFFFFF = timeout/ICMP error, else the resolved IP (host order). */
 uint32_t dns_result(void)
 {
+    /* An ICMP error (e.g. port-unreachable) against the waiting slot fails
+     * the lookup immediately instead of riding out the 3 s timeout. */
+    if (udp_recv_err())
+        return 0xFFFFFFFFu;
     int rlen = udp_recv_len();
     if (rlen >= 0) {
         if (udp_recv_src() != DNS_SERVER || udp_recv_sport() != DNS_PORT)

@@ -371,11 +371,13 @@ test-tcp-host:
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Ic/net/transport
 	@./$(BUILD)/tcp_test
 
-# Host protocol tests for IPv4 validation, UDP checksums, and ICMP echo matching.
+# Host protocol tests for IPv4 validation/reassembly, UDP checksums, ICMP
+# echo matching and error routing, and the DNS waiter's error path.
 test-net-proto:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
-		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/drivers/timer
+	@$(CC) -O2 -Wall -Wextra -DAETHER_NET_HOST -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
+		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
+		-Ic/drivers/timer -Ic/kernel/core
 	@./$(BUILD)/net_proto_test
 
 test-net: test-tcp-host test-net-proto

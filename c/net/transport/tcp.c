@@ -314,6 +314,25 @@ static struct tcp_conn *find_conn(uint16_t lport, uint32_t rip, uint16_t rport)
     return NULL;
 }
 
+/* RFC 793: a segment that matches no connection gets a RST (unless it is one
+ * itself -- RSTs never elicit RSTs). Connection-less send: no state, no
+ * retransmit slot. */
+static void send_reset(uint32_t rip, uint16_t lport, uint16_t rport,
+                       uint32_t seq, uint32_t ack, int with_ack)
+{
+    struct tcp_hdr h;
+    memset(&h, 0, sizeof h);
+    h.sport = htons(lport);
+    h.dport = htons(rport);
+    h.seq = htonl(seq);
+    h.ack = htonl(ack);
+    h.off = (uint8_t)((sizeof h / 4) << 4);
+    h.flags = RST | (with_ack ? ACK : 0);
+    h.checksum = htons(tcp_checksum(net_cfg.ip, rip, (const uint8_t *)&h,
+                                    (int)sizeof h));
+    ip_send(rip, IP_PROTO_TCP, &h, (uint16_t)sizeof h);
+}
+
 static uint16_t alloc_lport(void)
 {
     for (int tries = 0; tries < 16384; tries++) {
@@ -334,8 +353,22 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
     const struct tcp_hdr *h = (const struct tcp_hdr *)data;
     uint16_t lport = ntohs(h->dport), rport = ntohs(h->sport);
     struct tcp_conn *c = find_conn(lport, src, rport);
-    if (!c)
+    if (!c) {
+        /* No connection: validate before answering (a RST in response to
+         * garbage is how RST storms start), then follow RFC 793's rules. */
+        int hlen0 = (h->off >> 4) * 4;
+        if (hlen0 < (int)sizeof *h || hlen0 > len) return;
+        if (tcp_checksum(src, net_cfg.ip, data, len) != 0) return;
+        if (h->flags & RST) return;                 /* never RST a RST */
+        if (h->flags & ACK) {
+            send_reset(src, lport, rport, ntohl(h->ack), 0, 0);
+        } else {
+            uint32_t seglen0 = (uint32_t)(len - hlen0) +
+                ((h->flags & SYN) ? 1u : 0u) + ((h->flags & FIN) ? 1u : 0u);
+            send_reset(src, lport, rport, 0, ntohl(h->seq) + seglen0, 1);
+        }
         return;
+    }
 
     uint32_t seg_seq = ntohl(h->seq), seg_ack = ntohl(h->ack);
     uint8_t  flags = h->flags;
@@ -612,4 +645,30 @@ int tcp_alive(int id)
 {
     if (id < 0 || id >= NCONN) return 0;
     return conns[id].used && conns[id].state != CLOSED;
+}
+
+/* icmp.c weak-hook target: an ICMP error quoting one of our segments. RFC
+ * 1122 4.2.3.9 treats destination-unreachable codes 0 (net), 1 (host),
+ * 3 (port) and 4 (fragmentation needed) as hard errors and aborts the
+ * connection; time-exceeded and the soft codes are left to the retransmit
+ * timer. Mirroring icmp.h's values locally keeps tcp.c self-contained (the
+ * host white-box test compiles it without the ip-layer headers). */
+#define ICMP_TYPE_DEST_UNREACH 3
+void tcp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code)
+{
+    if (type != ICMP_TYPE_DEST_UNREACH)
+        return;
+    if (code != 0 && code != 1 && code != 3 && code != 4)
+        return;
+    struct tcp_conn *c = find_conn(lport, rip, rport);
+    if (!c)
+        return;
+    int was_syn_sent = (c->state == SYN_SENT);
+    c->state = CLOSED;
+    /* Keep used=1 so a blocked tcp_recv() reports the failure and frees the
+     * slot (same convention as the FIN_WAIT -> CLOSED path). In SYN_SENT
+     * there is no reader to notify; free now so tcp_connect() fails fast
+     * instead of riding out its handshake timeout. */
+    if (was_syn_sent)
+        c->used = 0;
 }

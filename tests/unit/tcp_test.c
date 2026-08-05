@@ -118,6 +118,25 @@ static int drain_verify(uint32_t base, int expect_total)
     return total;
 }
 
+/* Inject a segment to an arbitrary local port (for the no-connection RST
+ * path); corrupt_checksum flips a bit after the checksum is computed. */
+static void inject_to(uint16_t dport, uint32_t seq, uint32_t ack,
+                      uint8_t flags, int n, int corrupt_checksum)
+{
+    uint8_t buf[20 + 2048];
+    int hlen = 20;
+    memset(buf, 0, (size_t)(hlen + n));
+    buf[0] = (RPORT >> 8); buf[1] = RPORT & 0xFF;
+    buf[2] = (dport >> 8); buf[3] = dport & 0xFF;
+    put32(buf + 4, seq); put32(buf + 8, ack);
+    buf[12] = (uint8_t)((hlen / 4) << 4);
+    buf[13] = flags;
+    uint16_t csum = tcp_checksum(RIP, net_cfg.ip, buf, hlen + n);
+    buf[16] = (uint8_t)(csum >> 8); buf[17] = (uint8_t)csum;
+    if (corrupt_checksum) buf[hlen + (n ? n - 1 : 0)] ^= 0x40;
+    tcp_input(RIP, buf, (uint16_t)(hlen + n));
+}
+
 int main(void)
 {
     uint32_t B = 1000;
@@ -280,6 +299,61 @@ int main(void)
     inject_seg(B, B, conns[0].snd_nxt, 65535, 0, ACK, NULL, 0, 0);
     CHECK(conns[0].state == FIN_WAIT && conns[0].tx_flags == (FIN | ACK),
           "close: FIN starts after payload ACK");
+
+    /* 15) RFC 793: a segment that matches no connection gets a RST.
+     *    With ACK -> RST seq = inbound ack; without ACK -> RST+ACK with
+     *    ack = inbound seq + seglen. A RST never elicits a RST, and a
+     *    corrupt segment gets silence, not a RST. */
+    setup(B);
+    before = g_sends;
+    inject_to(9999, 100, 0x12345678u, ACK, 0, 0);
+    CHECK(g_sends == before + 1 && g_last_flags == RST &&
+          g_last_seq == 0x12345678u && g_last_len == 20,
+          "no-conn ACK: RST seq=%08x flags=%02x (sends=%d)",
+          g_last_seq, g_last_flags, g_sends);
+    inject_to(9999, 100, 0, 0, 10, 0);          /* 10 data bytes, no ACK */
+    CHECK(g_sends == before + 2 && g_last_flags == (RST | ACK) &&
+          g_last_seq == 0 && g_last_ack == 110,
+          "no-conn data: RST+ACK ack=%u flags=%02x want ack=110",
+          g_last_ack, g_last_flags);
+    inject_to(9999, 100, 0, SYN, 0, 0);         /* SYN costs one sequence */
+    CHECK(g_last_flags == (RST | ACK) && g_last_ack == 101,
+          "no-conn SYN: RST+ACK ack=%u want 101", g_last_ack);
+    inject_to(9999, 100, 0, RST, 0, 0);
+    CHECK(g_sends == before + 3, "no-conn RST must beget silence (sends=%d)",
+          g_sends);
+    inject_to(9999, 100, 0x12345678u, ACK, 4, 1);   /* corrupt checksum */
+    CHECK(g_sends == before + 3, "corrupt segment must not draw a RST");
+    CHECK(conns[0].used && conns[0].state == ESTABLISHED,
+          "no-conn RSTs disturbed the real connection");
+
+    /* 16) tcp_error: ICMP hard errors abort the matching connection and the
+     *    failure surfaces through tcp_recv; soft errors and non-matching
+     *    tuples are ignored. */
+    setup(B);
+    tcp_error(LPORT, RIP, RPORT, 11, 0);        /* time exceeded */
+    CHECK(conns[0].state == ESTABLISHED, "tcp_error: time-exceeded must be ignored");
+    tcp_error(LPORT, RIP, RPORT, 3, 2);         /* protocol unreachable: soft */
+    CHECK(conns[0].state == ESTABLISHED, "tcp_error: soft code must be ignored");
+    tcp_error(9999, RIP, RPORT, 3, 3);          /* no matching connection */
+    CHECK(conns[0].state == ESTABLISHED, "tcp_error: wrong tuple must not match");
+    tcp_error(LPORT, RIP, RPORT, 3, 3);         /* port unreachable: hard */
+    CHECK(conns[0].state == CLOSED && conns[0].used,
+          "tcp_error: hard error must close (state=%d used=%d)",
+          conns[0].state, conns[0].used);
+    {
+        uint8_t tmp[8];
+        CHECK(tcp_recv(0, tmp, sizeof tmp) == -1 && !conns[0].used,
+              "tcp_error: tcp_recv must report the error and free the slot");
+    }
+    {   /* SYN_SENT has no reader: the slot is freed so tcp_connect fails fast */
+        struct tcp_conn *c = &conns[0];
+        memset(c, 0, sizeof *c);
+        c->used = 1; c->state = SYN_SENT;
+        c->lport = LPORT; c->rport = RPORT; c->rip = RIP;
+        tcp_error(LPORT, RIP, RPORT, 3, 1);     /* host unreachable: hard */
+        CHECK(!c->used, "tcp_error: SYN_SENT abort must free the slot");
+    }
 
     printf("\nTCP protocol tests: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
