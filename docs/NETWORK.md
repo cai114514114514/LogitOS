@@ -37,10 +37,12 @@ static QEMU SLIRP defaults: `10.0.2.15/24`, gateway `10.0.2.2`, DNS server
 
 - Header construction, Internet checksum generation and validation.
 - Header-length and total-length validation, including IP options in the checksum.
-- Destination filtering for the configured local address.
+- Destination filtering for the configured local address; limited and
+  subnet-directed broadcasts are accepted for UDP only (the DHCP receive path).
 - TTL and supported-source validation.
-- DF is used on transmit. Incoming fragmented datagrams are explicitly dropped
-  because fragment reassembly is not implemented.
+- Fragment reassembly: four slots keyed by (src, dst, id, proto) with a 64 KiB
+  cap; overlapping, conflicting, or oversized datagrams are dropped, and
+  stalled slots expire. DF is used on transmit; the send path never fragments.
 - No forwarding or routing role.
 
 ### ICMP
@@ -48,6 +50,9 @@ static QEMU SLIRP defaults: `10.0.2.15/24`, gateway `10.0.2.2`, DNS server
 - Echo request and echo reply.
 - Checksum validation before processing.
 - Ping replies are matched by source, identifier, and sequence number.
+- Destination-unreachable and time-exceeded errors are validated against the
+  quoted IP/L4 headers and delivered to the matching UDP socket or TCP
+  connection.
 
 ### UDP and DNS
 
@@ -105,8 +110,7 @@ static QEMU SLIRP defaults: `10.0.2.15/24`, gateway `10.0.2.2`, DNS server
 The following are not implemented and must not be inferred from a successful web
 request:
 
-- IPv6, IP fragmentation/reassembly, multicast, forwarding, and a general
-  routing table.
+- IPv6, multicast, forwarding, and a general routing table.
 - Passive TCP open (`listen`/`accept`) and server sockets.
 - Multiple outstanding segments (a sliding send window), NewReno congestion
   control (cwnd), SACK, TCP window scaling, and path-MTU discovery. Under the
@@ -131,10 +135,10 @@ make test-net
 This executes host-side white-box tests for TCP checksum and reassembly, MSS and
 window negotiation, zero-window persistence, reset handling, delayed close, RTT
 estimation and RTO backoff, fast retransmit, the close state machine, IPv4
-validation, UDP sockets and checksums, fragment rejection, ICMP echo matching,
-and the DHCP client state machine. QEMU boot and browser tests remain necessary
-integration evidence; host protocol tests alone do not prove driver timing or
-Internet interoperability.
+validation and fragment reassembly, UDP sockets and checksums, ICMP echo
+matching and error delivery, and the DHCP client state machine. QEMU boot and
+browser tests remain necessary integration evidence; host protocol tests alone
+do not prove driver timing or Internet interoperability.
 
 Run the local, deterministic end-to-end data-path test with:
 
@@ -146,9 +150,14 @@ It boots Aether under QEMU, serves a 32 KiB fixture from the host, and checks th
 the guest `net get` command receives the complete HTTP body through e1000, IPv4,
 TCP, HTTP, the syscall boundary, and a ring-3 process. It does not require a public
 Internet server. `make test-dhcp-os` additionally asserts the DHCP lease is bound
-during boot before the same fetch.
+during boot before the same fetch. `make test-https-smoke` performs a live
+Internet fetch (DHCP -> DNS -> TCP -> TLS 1.3) and therefore requires outbound
+network access; it is not part of the deterministic offline suite.
 
 Normative references used for this implementation include
 [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html) for TCP,
-[RFC 768](https://www.rfc-editor.org/rfc/rfc768.html) for UDP, and
+[RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html) for RTT estimation,
+[RFC 768](https://www.rfc-editor.org/rfc/rfc768.html) for UDP,
+[RFC 791](https://www.rfc-editor.org/rfc/rfc791.html) for IPv4 fragmentation,
+[RFC 2131](https://www.rfc-editor.org/rfc/rfc2131.html) for DHCP, and
 [RFC 1122](https://www.rfc-editor.org/rfc/rfc1122.html) for IPv4 host behavior.

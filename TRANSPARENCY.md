@@ -111,8 +111,9 @@ that no related defect remains, and an emulated test is not hardware validation.
 Known limitations and boundaries include:
 
 - The TCP/IP stack is an intentionally small subset and does not claim RFC-complete
-  behavior or IPv6 support. It currently uses static QEMU-oriented configuration
-  and explicitly drops IPv4 fragments; see [docs/NETWORK.md](docs/NETWORK.md).
+  behavior or IPv6 support. It configures itself with DHCP (static QEMU-oriented
+  fallback) and its TCP sender uses a single outstanding segment; see
+  [docs/NETWORK.md](docs/NETWORK.md).
 - TLS and X.509 support a constrained set of algorithms and certificate forms.
   The code is custom and has not received an independent cryptographic audit.
 - If RDSEED/RDRAND is unavailable, the kernel logs that its timing-based entropy
