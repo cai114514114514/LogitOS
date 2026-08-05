@@ -8,7 +8,7 @@
 
 void *memcpy(void *, const void *, size_t);
 
-/* Loaded fonts. UI = proportional CJK (Heiti subset); MONO = Menlo. Glyph
+/* Loaded fonts. UI = proportional CJK; MONO = terminal Latin. Glyph
  * lookup falls back from a requested font to UI so the Terminal's mono font can
  * borrow CJK glyphs. */
 enum { F_UI = 0, F_MONO = 1, NFONT = 2 };

@@ -26,6 +26,12 @@ AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
 AS_LA       := $(patsubst fsroot/as/lib/%.as,$(BUILD)/%.la,$(AS_LIB_SRCS))
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+FONT_UI_SRC := third_party/fonts/NotoSansSC-VF.ttf
+FONT_MONO_SRC := third_party/fonts/NotoSansMono-VF.ttf
+FONT_NOTICES := third_party/fonts/OFL-NotoSansSC.txt \
+                third_party/fonts/OFL-NotoSansMono.txt \
+                third_party/fonts/README.md
+RELEASE_NOTICES := LICENSE THIRD_PARTY.md $(FONT_NOTICES)
 
 CC          := clang
 LD          := ld.lld
@@ -293,15 +299,33 @@ $(BUILD)/libctest.elf: $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS) $(
 $(BUILD)/libctest.aex: $(BUILD)/libctest.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/libctest.elf $@ libctest - '?' 150 150 150
 
-# Font subsets (proprietary source; regenerated, .gitignored). See tools/mkfont.py.
-$(FONTS): tools/mkfont.py
+# Redistributable OFL font subsets are checked in, so a normal build never
+# consults host fonts or the network. Regeneration is explicit and reproducible
+# from the vendored source fonts. See third_party/fonts/README.md.
+.PHONY: verify-font-sources verify-fonts regen-fonts
+verify-font-sources:
+	@cd third_party/fonts && sha256sum -c SHA256SUMS
+
+verify-fonts: verify-font-sources
+	@cd fsroot/fonts && sha256sum -c SHA256SUMS
+
+regen-fonts: verify-font-sources tools/mkfont.py $(FONT_UI_SRC) $(FONT_MONO_SRC)
 	@mkdir -p fsroot/fonts
 	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+	@cd fsroot/fonts && sha256sum -c SHA256SUMS
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(AEX) $(BUILD)/libctest.aex tools/mkfs.py
+$(FONTS):
+	@echo "missing tracked runtime font '$@'; run 'make regen-fonts'" >&2
+	@false
+
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
+	    LICENSE:/licenses/Aether-MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
+	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
+	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
+	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \

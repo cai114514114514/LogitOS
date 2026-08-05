@@ -28,14 +28,16 @@ The known unresolved items are maintained in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## 3. Use redistributable assets
 
-- Replace the default Heiti SC and Menlo inputs with fonts whose licenses permit
-  redistribution of the generated subsets.
-- Include the chosen font license and copyright notices.
+- Verify the vendored Noto source and generated-subset hashes against
+  `third_party/fonts/README.md` and `fsroot/fonts/README.md`.
+- Include both Noto OFL files and copyright/metadata records in the release
+  notices. The font sources and subsets remain OFL-licensed, not MIT-licensed.
+- If fonts are changed, give modified subsets distinct internal names and update
+  their exact source commit, hashes, licenses, and copyright notices.
+- Replace `fsroot/wallpaper.png`; the current local generator derives it from a
+  proprietary macOS Desktop Picture. Record the replacement's source and license.
 - Inspect the disk image for undeclared fonts, keys, certificates, images, and
   other generated host inputs.
-
-Do not publish an ISO containing Apple-font-derived subsets unless you have
-separate permission to redistribute them.
 
 ## 4. Satisfy binary-license obligations
 

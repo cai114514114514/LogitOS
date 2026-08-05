@@ -89,8 +89,9 @@ rasterizer (4× vertical oversample + fractional horizontal coverage → 0–255
 alpha), with a glyph cache + font fallback. `fb_text` routes through it, so the
 whole UI is anti-aliased; the Terminal uses `text_draw_mono` (SYS_GUI_TEXT_MONO).
 Fonts live on the AetherFS disk (`/fonts/{ui,mono}.ttf`, subset by
-`tools/mkfont.py`: Heiti SC GB2312 + Menlo, glyf), loaded by `text_init()` after
-fs mount; QEMU `-m 512M`. The CJK font is 6 MB, so AetherFS gained **double-
+`tools/mkfont.py` from vendored OFL Noto Sans SC + Noto Sans Mono sources,
+glyf), loaded by `text_init()` after fs mount; QEMU `-m 512M`. The CJK font is
+about 2.2 MB, and AetherFS supports **double-
 indirect** inodes (`fs/aetherfs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
 bitmap font (`font8x16.h`, `genfont.py`) was removed. Chinese web pages render
 (`zh.wikipedia.org`). Notes: no hinting (macOS-style), grayscale (no subpixel),

@@ -125,8 +125,10 @@ Known limitations and boundaries include:
   production multi-user authorization or permissions model.
 - AetherFS does not make a documented journaling or crash-consistency guarantee.
 - Hardware support is narrow and primarily exercised through QEMU devices.
-- The default font-generation path depends on proprietary host fonts; release
-  artifacts need redistributable substitutes.
+- Runtime fonts are renamed subsets of OFL-licensed Noto fonts, not original
+  Aether typeface designs; their source and license records are vendored.
+- The current local wallpaper is derived from a macOS Desktop Picture and is not
+  cleared for redistribution; it must be replaced before a public binary release.
 
 See [SECURITY.md](SECURITY.md) for the operational security warning and reporting
 process.
@@ -146,7 +148,7 @@ needs:
 - exact upstream revisions and archive hashes for every vendored component;
 - a machine-readable SPDX or CycloneDX SBOM generated from those pinned inputs;
 - pinned compiler, linker, generator, and boot-tool versions;
-- redistributable fonts and a reproducible CA-bundle snapshot;
+- a reproducible CA-bundle snapshot;
 - the exact GRUB source corresponding to the bootloader placed in each ISO and
   the exact Rust notices corresponding to statically linked runtime code;
 - a clean-build procedure that does not depend on undeclared host files;

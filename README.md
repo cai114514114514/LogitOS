@@ -95,15 +95,19 @@ Required tools include LLVM/Clang + LLD, NASM, Rustup with the
 `x86_64-unknown-none` target, Python 3, GNU Make and Unix utilities, QEMU, xorriso,
 and GRUB's `grub-mkrescue` (named `i686-elf-grub-mkrescue` by the Makefile).
 
-The default font generator reads proprietary macOS fonts. A fresh or
-redistributable build must supply suitable fonts explicitly; do not publish an ISO
-containing generated Apple-font subsets unless you have redistribution rights. See
-`fsroot/fonts/README.md` and [RELEASING.md](RELEASING.md).
+Aether now vendors OFL-licensed Noto Sans SC and Noto Sans Mono source fonts and
+checked-in, distinctly named runtime subsets. A normal build does not read host
+fonts or use the network. Run `make regen-fonts` only when intentionally rebuilding
+the subsets; see `fsroot/fonts/README.md` and [THIRD_PARTY.md](THIRD_PARTY.md).
+
+The current local wallpaper is a separate, unresolved Apple-derived asset and is
+not cleared for public binary distribution. Replace it before publishing an image.
 
 ```sh
 make                 # build build/aether.iso
 make run             # boot in QEMU (-smp 4, virtio GPU/disk + e1000); desktop window + serial here
 make build/disk.img  # rebuild the disk image after changing apps / fonts / fsroot
+make verify-fonts    # verify vendored OFL sources and generated subset hashes
 make debug           # boot frozen with a gdb stub on localhost:1234
 make clean
 ```

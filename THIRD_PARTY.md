@@ -21,7 +21,8 @@ to license them.
 | NetSurf libwapcaplet | Interned strings used by LibCSS | `third_party/css/libwapcaplet/` | Exact upstream revision not recorded | MIT |
 | Crafting Interpreters / clox | Architectural lineage and adapted implementation in AetherScript | `c/apps/as/` and related design documents | Exact upstream revision not recorded | MIT for upstream code |
 | Mozilla/NSS-derived CA trust store | Public TLS trust anchors | `tools/roots/`, generated into `c/crypto/trust/roots_bundle.inc` | 130-root host bundle imported 2026-06-08; exact source revision/hash not recorded | MPL 2.0 for the Mozilla-derived bundle |
-| macOS Heiti SC and Menlo | Local build inputs for generated font subsets | Not tracked; see `fsroot/fonts/README.md` | Host-installed fonts | Proprietary; not covered by this repository's license |
+| Noto Sans SC and Noto Sans Mono | Source fonts and generated runtime subsets | `third_party/fonts/`, `fsroot/fonts/` | Google Fonts commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3` | SIL OFL 1.1 |
+| macOS Desktop Picture | Locally generated wallpaper | Ignored `fsroot/wallpaper.png`; see `tools/mkwallpaper.sh` | Host-installed macOS asset | Proprietary; not covered by this repository's license |
 | GNU GRUB | Bootloader code embedded in generated ISO images | Generated `build/aether.iso`; no GRUB source is stored here | Host-tool version is not pinned | GPLv3 or later, subject to the exact GRUB distribution used |
 | Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into Aether binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
 
@@ -157,18 +158,36 @@ authorities. The exact source bundle revision, download URL, and SHA-256 were
 not recorded at import time, so the repository cannot currently reproduce the
 external bundle provenance byte-for-byte from a named upstream snapshot.
 
-## Fonts used by local builds
+## Fonts
 
-`tools/mkfont.py` defaults to subsets of macOS Heiti SC and Menlo. Those fonts
-are proprietary, are intentionally ignored by Git, and are not licensed by the
-Aether OS MIT License. Do not redistribute generated subsets unless the font
-license permits it. For redistributable builds, use suitable OFL-licensed fonts
-and pass them to the font-generation tool. See `fsroot/fonts/README.md`.
+- Upstream snapshot: Google Fonts commit
+  `2796410152d4f9524b68ed46e69c1b60f8e0f7c3`.
+- Source inputs: `third_party/fonts/NotoSansSC-VF.ttf` and
+  `third_party/fonts/NotoSansMono-VF.ttf`.
+- Generated runtime files: `fsroot/fonts/ui.ttf` and
+  `fsroot/fonts/mono.ttf`.
+- License: SIL Open Font License 1.1.
 
-The normal disk-image rule includes `fsroot/fonts/ui.ttf` and
-`fsroot/fonts/mono.ttf`. Consequently, an ISO built with the default proprietary
-inputs must not be assumed redistributable merely because the Aether source is
-MIT-licensed.
+The repository preserves the unmodified upstream fonts, metadata, licenses,
+source URLs, and SHA-256 values in `third_party/fonts/`. `tools/mkfont.py`
+creates fixed-weight character subsets and changes their internal family names
+to `Aether UI` and `Aether Mono`. It retains the upstream copyright and license
+metadata. This is especially important because Noto Sans SC's notice reserves
+the name `Source`.
+
+The source fonts and modified subsets remain under the OFL; the root MIT License
+does not relicense them. The normal disk-image rule packages only the checked-in
+subsets and never reads Apple or other undeclared host fonts. It also installs
+both complete OFL texts and the source record under `/licenses/fonts/`.
+
+## Wallpaper used by local builds
+
+`tools/mkwallpaper.sh` explicitly converts a host-installed macOS Desktop Picture
+into `fsroot/wallpaper.png`. The output is ignored by Git but is included in the
+normal disk image when present. It has no recorded redistribution grant and is
+not covered by Aether's MIT License. Replace it with an original or suitably
+licensed asset, preserve that asset's provenance and notice, and rebuild the disk
+before distributing a binary image.
 
 ## GNU GRUB in generated ISO images
 
@@ -213,7 +232,8 @@ Future vendor updates should close these gaps rather than guessing:
 3. Record the exact Crafting Interpreters revision used as the adaptation base.
 4. Replace or regenerate the CA trust store from a named Mozilla/curl snapshot
    and record its URL, date, certificate count, and SHA-256.
-5. Use redistributable fonts by default for release artifacts.
+5. Replace the local Apple-derived wallpaper with an original or redistributable
+   default and record its source and license.
 6. Pin the GRUB and Rust toolchain versions used for binary releases and collect
    their exact license files and corresponding-source information.
 7. Keep local modifications as reviewable patches or commits when any vendored
