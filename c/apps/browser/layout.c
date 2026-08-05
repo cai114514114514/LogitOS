@@ -23,6 +23,18 @@ static struct item *additem(int type)
     return it;
 }
 
+static int any_border(const struct cstyle *st)
+{ return st->border_w[0] || st->border_w[1] || st->border_w[2] || st->border_w[3]; }
+
+/* Fill an IT_RECT (bg + per-edge borders + radius) at x/y/w; h set by caller. */
+static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int y, int w)
+{
+    bg->x = x; bg->y = y; bg->w = w;
+    bg->bg = st->background; bg->has_bg = st->has_bg;
+    for (int i = 0; i < 4; i++) { bg->border_w[i] = st->border_w[i]; bg->border_color[i] = st->border_color[i]; }
+    bg->radius = st->radius; bg->radius_pct = st->radius_pct;
+}
+
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
 static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9'){ if(n>100000) break; n=n*10+(*s++-'0'); } return n; }
@@ -213,13 +225,9 @@ static int layout_block(struct node *n, int x, int y, int w)
             int top = cy;
             if (st->list_item) emit_list_marker(c, st, bx + st->pl, top, x);
             int bgidx = -1;
-            if (st->has_bg || st->border_w) {
+            if (st->has_bg || any_border(st)) {
                 struct item *bg = additem(IT_RECT);
-                if (bg) { bgidx = (int)(bg - items);
-                    bg->x = bx; bg->y = top; bg->w = bw;
-                    bg->bg = st->background; bg->has_bg = st->has_bg;
-                    bg->border_w = st->border_w; bg->border_color = st->border_color;
-                    bg->radius = st->radius; }
+                if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, top, bw); }
             }
             int inner = tag_eq(c->tag, "table")
                 ? layout_table(c, bx + st->pl, top + st->pt, bw - st->pl - st->pr)
@@ -275,13 +283,9 @@ static int layout_flex(struct node *n, int x, int y, int w)
         int top = y + (st && st->mt > 0 ? st->mt : 0);
         int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
         int bgidx = -1;
-        if (st && (st->has_bg || st->border_w)) {
+        if (st && (st->has_bg || any_border(st))) {
             struct item *bg = additem(IT_RECT);
-            if (bg) { bgidx = (int)(bg - items);
-                bg->x = cx; bg->y = top; bg->w = iw;
-                bg->bg = st->background; bg->has_bg = st->has_bg;
-                bg->border_w = st->border_w; bg->border_color = st->border_color;
-                bg->radius = st->radius; }
+            if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cx, top, iw); }
         }
         int inner = layout_block(c, cx + pl, top + pt, iw - pl - pr);
         int ch = (inner - top) + pb;
@@ -395,13 +399,9 @@ static int layout_table(struct node *t, int x, int y, int w)
             int pt = st ? st->pt : 0, pb = st ? st->pb : 0;
             int cx = rx + ml, top = cy + (st && st->mt > 0 ? st->mt : 0);
             int bgidx = -1;
-            if (st && (st->has_bg || st->border_w)) {
+            if (st && (st->has_bg || any_border(st))) {
                 struct item *bg = additem(IT_RECT);
-                if (bg) { bgidx = (int)(bg - items);
-                    bg->x = rx; bg->y = cy; bg->w = cw[ci];
-                    bg->bg = st->background; bg->has_bg = st->has_bg;
-                    bg->border_w = st->border_w; bg->border_color = st->border_color;
-                    bg->radius = st->radius; }
+                if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }
             int inner = layout_block(c, cx + pl, top + pt, cw[ci] - ml - pl - pr);
             int ch = (inner - top) + pb;

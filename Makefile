@@ -233,7 +233,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 # calls kmalloc/kfree/img_register, which browser_rt.c shims into the ring-3 heap).
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
-                c/apps/browser/css_vars.c c/net/http/url.c \
+                c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
@@ -578,6 +578,10 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_test tests/unit/css_engine_test.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
 	@$(BUILD)/css_engine_test
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_extra_test tests/unit/css_extra_test.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/dom.c \
+	    $(BUILD)/libcss_host.a
+	@$(BUILD)/css_extra_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
 	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a

@@ -203,6 +203,7 @@ static void load(const char *u)
     int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
     css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
     css_apply(g_root, css_expanded, css_exlen);
+    css_extra_apply(g_root, css_expanded, css_exlen);
     layout_page(g_root, WINW);
     ph = layout_height();
     set_status("loaded -- fetching stylesheets...");
@@ -214,6 +215,7 @@ static void load(const char *u)
         css_len = css2;
         css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
         css_apply(g_root, css_expanded, css_exlen);
+    css_extra_apply(g_root, css_expanded, css_exlen);
         layout_page(g_root, WINW);
         ph = layout_height();
         redraw(0);                   /* re-paint with the page's real stylesheets */
@@ -236,6 +238,7 @@ static void load(const char *u)
         int mutated = run_js(scr);
         if (mutated) {                   /* JS changed the DOM -> re-style + re-layout */
             css_apply(g_root, css_expanded, css_exlen);
+    css_extra_apply(g_root, css_expanded, css_exlen);
             layout_page(g_root, WINW);
             ph = layout_height();
         }
@@ -268,6 +271,7 @@ static void redraw(int editing)
 void app_main(void)
 {
     css_init();             /* build the UA default stylesheet */
+    css_viewport(WINW, WINH);   /* @media/vw/vh evaluate against the real window */
     img_init();             /* register PNG + GIF decoders */
     gui_create("Browser", WINW, WINH);
     redraw(1);

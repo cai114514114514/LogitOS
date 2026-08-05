@@ -9,7 +9,8 @@
 enum { IT_RECT, IT_TEXT, IT_IMAGE };
 struct item {
     int type, x, y, w, h;
-    /* RECT */ uint32_t bg; int has_bg, border_w; uint32_t border_color; int radius;
+    /* RECT */ uint32_t bg; int has_bg; int border_w[4]; uint32_t border_color[4];
+    int radius, radius_pct;
     /* TEXT */ const char *text; int len, font_px, bold, italic, mono, underline; uint32_t color;
     char marker[12];                    /* backing store for <li> bullet/number items */
     /* IMAGE */ struct image *img; const char *imgsrc;  /* decoded image + its URL */

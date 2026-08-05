@@ -19,13 +19,26 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
         int sy = vy + top;
 
         if (e->type == IT_RECT) {
-            if (e->has_bg) gui_rect(sx, sy, e->w, e->h, e->bg);
-            if (e->border_w > 0) {
-                int bw = e->border_w;
-                gui_rect(sx, sy, e->w, bw, e->border_color);
-                gui_rect(sx, sy + e->h - bw, e->w, bw, e->border_color);
-                gui_rect(sx, sy, bw, e->h, e->border_color);
-                gui_rect(sx + e->w - bw, sy, bw, e->h, e->border_color);
+            int bmax = e->border_w[0];
+            for (int k = 1; k < 4; k++) if (e->border_w[k] > bmax) bmax = e->border_w[k];
+            int r = e->radius_pct ? (e->w < e->h ? e->w : e->h) * e->radius_pct / 100 : e->radius;
+            int maxr = (e->w < e->h ? e->w : e->h) / 2; if (r > maxr) r = maxr;
+            if (r > 0 && e->has_bg) {
+                /* rounded box: border ring (uniform color/width approximation) +
+                 * rounded fill inset by the widest edge */
+                if (bmax > 0) {
+                    gui_rrect(sx, sy, e->w, e->h, r, e->border_color[0]);
+                    gui_rrect(sx + bmax, sy + bmax, e->w - 2*bmax, e->h - 2*bmax,
+                              r > bmax ? r - bmax : 0, e->bg);
+                } else {
+                    gui_rrect(sx, sy, e->w, e->h, r, e->bg);
+                }
+            } else {
+                if (e->has_bg) gui_rect(sx, sy, e->w, e->h, e->bg);
+                if (e->border_w[0] > 0) gui_rect(sx, sy, e->w, e->border_w[0], e->border_color[0]);
+                if (e->border_w[2] > 0) gui_rect(sx, sy + e->h - e->border_w[2], e->w, e->border_w[2], e->border_color[2]);
+                if (e->border_w[3] > 0) gui_rect(sx, sy, e->border_w[3], e->h, e->border_color[3]);
+                if (e->border_w[1] > 0) gui_rect(sx + e->w - e->border_w[1], sy, e->border_w[1], e->h, e->border_color[1]);
             }
         } else if (e->type == IT_TEXT) {
             gui_text_run(sx, sy, e->font_px, e->mono, e->color, e->text, e->len);

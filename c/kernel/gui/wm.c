@@ -398,6 +398,18 @@ long wm_gui_syscall(long num, long a, long b, long c)
         fb_target(&w->surf); fb_fill_rect(x, y, rw, rh, (uint32_t)c); fb_target(NULL);
         return 0;
     }
+    case SYS_GUI_RRECT: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int rw = (int)((b >> 16) & 0xFFFF), rh = (int)(b & 0xFFFF);
+        int radius = (int)((c >> 24) & 0xFF);
+        /* same surface-intersection clamp as SYS_GUI_RECT (user-controlled size
+         * behind the syscall gate) */
+        if (rw > w->surf.w - x) rw = w->surf.w - x;
+        if (rh > w->surf.h - y) rh = w->surf.h - y;
+        fb_target(&w->surf); fb_round_rect(x, y, rw, rh, radius, (uint32_t)(c & 0xFFFFFF)); fb_target(NULL);
+        return 0;
+    }
     case SYS_GUI_TEXT: {
         struct win *w = app_window(ap); if (!w) return -1;
         int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);

@@ -422,6 +422,14 @@ void css_init(void)
     if (g_ua_sheet) css_select_ctx_append_sheet(g_ctx, g_ua_sheet, CSS_ORIGIN_UA, NULL);
 }
 
+void css_viewport(int w, int h)
+{
+    g_media.width  = INTTOFIX(w);
+    g_media.height = INTTOFIX(h);
+    g_unit.viewport_width  = INTTOFIX(w);
+    g_unit.viewport_height = INTTOFIX(h);
+}
+
 /* ---------- computed style -> struct cstyle ---------- */
 static int len_px(css_fixed val, css_unit unit, int font_px, int *pct)
 {
@@ -512,14 +520,20 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     default:                        o->line_px = 0; break;   /* normal -> layout derives */
     }
 
-    /* border: use the top edge for our single-border model */
-    if (css_computed_border_top_style(cs) != CSS_BORDER_STYLE_NONE) {
-        css_computed_border_top_width(cs, &len, &unit);
-        o->border_w = clamp_px(len_px(len, unit, fp, NULL));
-        if (css_computed_border_top_color(cs, &col) == CSS_BORDER_COLOR_COLOR)
-            o->border_color = to_rgb(col);
-        else o->border_color = 0x808080;
+    /* borders: full per-edge model (top/right/bottom/left) */
+#define EDGE_CONVERT(i, NAME) \
+    if (css_computed_border_##NAME##_style(cs) != CSS_BORDER_STYLE_NONE) { \
+        css_computed_border_##NAME##_width(cs, &len, &unit); \
+        o->border_w[i] = clamp_px(len_px(len, unit, fp, NULL)); \
+        if (css_computed_border_##NAME##_color(cs, &col) == CSS_BORDER_COLOR_COLOR) \
+            o->border_color[i] = to_rgb(col); \
+        else o->border_color[i] = 0x808080; \
     }
+    EDGE_CONVERT(0, top)
+    EDGE_CONVERT(1, right)
+    EDGE_CONVERT(2, bottom)
+    EDGE_CONVERT(3, left)
+#undef EDGE_CONVERT
 
     if (css_computed_text_decoration(cs) & CSS_TEXT_DECORATION_UNDERLINE) o->underline = 1;
 }

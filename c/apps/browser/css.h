@@ -18,14 +18,23 @@ struct cstyle {
     int width, height; int has_w, has_h, w_pct, h_pct;
     int text_align;
     int line_px;                    /* line height (px); 0 = derive from font */
-    int border_w; uint32_t border_color;
-    int radius;
+    int border_w[4];                /* top, right, bottom, left (px); 0 = none */
+    uint32_t border_color[4];       /* per edge, 0xRRGGBB */
+    int radius;                     /* border-radius px (via css_extra; LibCSS predates it) */
+    int radius_pct;                 /* border-radius % (of min(w,h) at paint) */
     int underline;
     int list_item;                  /* 1 for <li>-style markers */
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
 };
 
 void css_init(void);                            /* build the UA default stylesheet */
+/* Set the real viewport size for @media evaluation + vw/vh units (css_init
+ * defaults to 760x540 for host tests). */
+void css_viewport(int w, int h);
+/* Post-pass for properties our LibCSS doesn't know (border-radius): scans the
+ * author sheet's simple selectors + inline style= attrs and patches node->style
+ * after css_apply. */
+void css_extra_apply(struct node *root, const char *page_css, int page_len);
 /* Compute and attach a `struct cstyle*` to every node of `root` (in node->style),
  * cascading UA defaults + `page_css` (page_len bytes from <style>) + inline style=. */
 void css_apply(struct node *root, const char *page_css, int page_len);

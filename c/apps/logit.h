@@ -24,6 +24,10 @@ static inline void gui_rect(int x, int y, int w, int h, unsigned color)
 { _sys(SYS_GUI_RECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
        ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), color); }
 
+static inline void gui_rrect(int x, int y, int w, int h, int radius, unsigned color)
+{ _sys(SYS_GUI_RRECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
+       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), ((long)(radius & 0xFF) << 24) | (color & 0xFFFFFF)); }
+
 static inline void gui_text(int x, int y, unsigned color, const char *s)
 { _sys(SYS_GUI_TEXT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF), color, (long)s); }
 
