@@ -56,13 +56,15 @@ def typ(t):
 json.loads(f.readline())
 cmd({"execute":"qmp_capabilities"})
 
-# Launch Browser from the Dock (6th of 6 icons C T M > N B; ~x=799 y=752 @1280x800)
-goto(799, 752); click()
+# Launch Browser from the Dock (globe icon, rightmost; ~x=985 y=752 @1280x800;
+# override with 5th arg "x,y" if the dock layout changes)
+dx, dy = (map(int, sys.argv[5].split(","))) if len(sys.argv) > 5 else (985, 752)
+goto(dx, dy); click()
 time.sleep(1.2)
 
 if url:
     # focus the address bar, clear it, type the new URL
-    goto(300, 142); click(); time.sleep(0.2)
+    goto(420, 145); click(); time.sleep(0.2)
     for _ in range(60): key("backspace")
     typ(url)
 
