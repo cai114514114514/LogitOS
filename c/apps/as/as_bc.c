@@ -356,6 +356,223 @@ static int verify_fn(ObjFn *fn, int depth, int is_top)
     return 0;   /* ip == n here: ended exactly on an instruction boundary */
 }
 
+/* ---- disassembler (as -dis foo.la) ----------------------------------------
+ * When a self-hosting stage stops reproducing itself, the only evidence is two
+ * .la files that differ somewhere in ~37 KB of bytes. This turns both into a
+ * line-per-instruction text form so `diff` names the instruction that moved.
+ * Output goes through as_emit (fd 1), not fprintf: it must work under mini-libc
+ * on Logit too. Operand widths mirror verify_fn above -- `make check-asops`
+ * asserts OPNAMES stays in step with the OpCode enum. */
+
+static const char *const OPNAMES[] = {
+    "CONST", "NIL", "TRUE", "FALSE", "POP",
+    "GET_LOCAL", "SET_LOCAL", "GET_GLOBAL", "SET_GLOBAL", "DEF_GLOBAL",
+    "ADD", "SUB", "MUL", "DIV", "MOD", "NEG",
+    "EQ", "NE", "LT", "LE", "GT", "GE", "NOT",
+    "JUMP", "JUMP_IF_FALSE", "LOOP",
+    "CALL", "RET",
+    "MAKE_LIST", "INDEX_GET", "INDEX_SET", "LEN", "INVOKE",
+    "GET_ATTR", "IMPORT",
+    "MAKE_DICT", "IN", "ITER",
+    "CLOSURE", "GET_UPVALUE", "SET_UPVALUE", "CLOSE_UPVALUE",
+    "CLASS", "INHERIT", "METHOD",
+    "GET_PROPERTY", "SET_PROPERTY", "GET_SUPER",
+    "SETUP_TRY", "POP_TRY", "RAISE",
+    "BAND", "BOR", "BXOR", "BNOT", "SHL", "SHR", "POW",
+};
+#define N_OPNAMES ((int)(sizeof OPNAMES / sizeof OPNAMES[0]))
+
+static void dis_emit(const char *s) { as_emit_cstr(s); }
+
+static void dis_pad(int from, int to)
+{
+    for (int i = from; i < to; i++) as_emit(" ", 1);
+}
+
+/* One constant, abbreviated: `str "foo"` / `int 42` / `fn <name>`. */
+static void dis_const(Value v, char *buf, int cap)
+{
+    if (IS_FN(v)) {
+        ObjFn *f = AS_FN(v);
+        int n = snprintf(buf, (size_t)cap, "fn <%.*s>",
+                         f->name ? f->name->len : 6, f->name ? f->name->chars : "script");
+        if (n < 0) buf[0] = 0;
+        return;
+    }
+    const char *kind = IS_STR(v) ? "str " : IS_INT(v) ? "int " : IS_FLOAT(v) ? "float "
+                     : IS_BOOL(v) ? "bool " : IS_NIL(v) ? "" : "obj ";
+    int p = snprintf(buf, (size_t)cap, "%s", kind);
+    if (p < 0 || p >= cap) { if (cap) buf[cap - 1] = 0; return; }
+    if (IS_NIL(v)) { snprintf(buf + p, (size_t)(cap - p), "nil"); return; }
+    if (IS_STR(v)) {
+        /* quote it so a trailing-space or empty-string difference is visible */
+        int q = p;
+        if (q < cap - 1) buf[q++] = '"';
+        ObjStr *s = AS_STR(v);
+        for (int i = 0; i < s->len && q < cap - 2; i++) {
+            unsigned char c = (unsigned char)s->chars[i];
+            if (c == '\n') { if (q < cap - 3) { buf[q++] = '\\'; buf[q++] = 'n'; } }
+            else if (c == '"') { if (q < cap - 3) { buf[q++] = '\\'; buf[q++] = '"'; } }
+            else if (c < 32)   { if (q < cap - 3) { buf[q++] = '\\'; buf[q++] = '?'; } }
+            else buf[q++] = (char)c;
+        }
+        if (q < cap - 1) buf[q++] = '"';
+        buf[q] = 0;
+        return;
+    }
+    value_to_cstr(v, buf + p, cap - p);
+}
+
+static void dis_fn(ObjFn *fn, int depth)
+{
+    char buf[512];
+    const char *nm = fn->name ? fn->name->chars : "script";
+    int nl = fn->name ? fn->name->len : 6;
+    snprintf(buf, sizeof buf, "\nfn <%.*s> arity=%d upvals=%d consts=%d code=%d depth=%d\n",
+             nl, nm, fn->arity, fn->upvalue_count, fn->kcount, fn->count, depth);
+    dis_emit(buf);
+
+    for (int i = 0; i < fn->kcount; i++) {
+        char cv[400];
+        dis_const(fn->consts[i], cv, sizeof cv);
+        snprintf(buf, sizeof buf, "  k[%d] %s\n", i, cv);
+        dis_emit(buf);
+    }
+
+    uint8_t *code = fn->code;
+    int n = fn->count, ip = 0;
+    while (ip < n) {
+        int at = ip;
+        uint8_t op = code[ip++];
+        const char *name = (op < N_OPNAMES) ? OPNAMES[op] : "???";
+        /* snprintf returns the width it wrote -- use that rather than summing
+         * field widths by hand, so the comment column always lines up. The
+         * mnemonic is NOT padded here: operand-less opcodes must not emit
+         * trailing whitespace, or every diff of a disassembly is noise. */
+        int col = snprintf(buf, sizeof buf, "  %04d  %s", at, name);
+        if (col < 0) col = 0;
+        dis_emit(buf);
+        /* OPERAND(): pad to the operand column. Only the arms that actually
+         * print an operand call it, so operand-less opcodes end the line right
+         * after the mnemonic -- no trailing whitespace for diff to trip on. */
+#define OPERAND() do { dis_pad(col, 22); if (col < 22) col = 22; } while (0)
+
+        switch (op) {
+        /* 2-byte const index: show the constant it names */
+        case OP_CONST: case OP_GET_GLOBAL: case OP_SET_GLOBAL: case OP_DEF_GLOBAL:
+        case OP_IMPORT: case OP_CLASS: case OP_METHOD:
+        case OP_GET_PROPERTY: case OP_SET_PROPERTY: case OP_GET_SUPER: {
+            OPERAND();
+            if (ip + 2 > n) { dis_emit("  <truncated>\n"); return; }
+            int k = (code[ip] << 8) | code[ip + 1];
+            ip += 2;
+            int w = snprintf(buf, sizeof buf, "%d", k);
+            dis_emit(buf); col += (w > 0 ? w : 0);
+            dis_pad(col, 40);
+            char cv[400];
+            if (k < fn->kcount) dis_const(fn->consts[k], cv, sizeof cv);
+            else snprintf(cv, sizeof cv, "<oob>");
+            snprintf(buf, sizeof buf, "; %s\n", cv);
+            dis_emit(buf);
+            break;
+        }
+        case OP_INVOKE: {
+            OPERAND();
+            if (ip + 3 > n) { dis_emit("  <truncated>\n"); return; }
+            int k = (code[ip] << 8) | code[ip + 1];
+            int argc = code[ip + 2];
+            ip += 3;
+            char cv[400];
+            if (k < fn->kcount) dis_const(fn->consts[k], cv, sizeof cv);
+            else snprintf(cv, sizeof cv, "<oob>");
+            int w = snprintf(buf, sizeof buf, "%d argc=%d", k, argc);
+            dis_emit(buf); col += (w > 0 ? w : 0);
+            dis_pad(col, 40);
+            snprintf(buf, sizeof buf, "; %s\n", cv);
+            dis_emit(buf);
+            break;
+        }
+        case OP_CLOSURE: {
+            OPERAND();
+            if (ip + 2 > n) { dis_emit("  <truncated>\n"); return; }
+            int k = (code[ip] << 8) | code[ip + 1];
+            ip += 2;
+            char cv[400];
+            if (k < fn->kcount) dis_const(fn->consts[k], cv, sizeof cv);
+            else snprintf(cv, sizeof cv, "<oob>");
+            int w = snprintf(buf, sizeof buf, "%d", k);
+            dis_emit(buf); col += (w > 0 ? w : 0);
+            dis_pad(col, 40);
+            snprintf(buf, sizeof buf, "; %s\n", cv);
+            dis_emit(buf);
+            /* inline {is_local,index} capture pairs live in this code stream */
+            int ups = (k < fn->kcount && IS_FN(fn->consts[k])) ? AS_FN(fn->consts[k])->upvalue_count : 0;
+            for (int i = 0; i < ups && ip + 2 <= n; i++) {
+                snprintf(buf, sizeof buf, "        upval %s %d\n",
+                         code[ip] ? "local" : "outer", code[ip + 1]);
+                dis_emit(buf);
+                ip += 2;
+            }
+            break;
+        }
+        /* 2-byte relative jump: show the absolute target */
+        case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_SETUP_TRY: case OP_POP_TRY: {
+            OPERAND();
+            if (ip + 2 > n) { dis_emit("  <truncated>\n"); return; }
+            int off = (code[ip] << 8) | code[ip + 1];
+            ip += 2;
+            int w = snprintf(buf, sizeof buf, "%d", off);
+            dis_emit(buf); col += (w > 0 ? w : 0);
+            dis_pad(col, 40);
+            snprintf(buf, sizeof buf, "; -> %d\n", ip + off);
+            dis_emit(buf);
+            break;
+        }
+        case OP_LOOP: {
+            OPERAND();
+            if (ip + 2 > n) { dis_emit("  <truncated>\n"); return; }
+            int off = (code[ip] << 8) | code[ip + 1];
+            ip += 2;
+            int w = snprintf(buf, sizeof buf, "%d", off);
+            dis_emit(buf); col += (w > 0 ? w : 0);
+            dis_pad(col, 40);
+            snprintf(buf, sizeof buf, "; -> %d\n", ip - off);
+            dis_emit(buf);
+            break;
+        }
+        /* 1-byte operand */
+        case OP_GET_LOCAL: case OP_SET_LOCAL: case OP_CALL:
+        case OP_MAKE_LIST: case OP_MAKE_DICT:
+        case OP_GET_UPVALUE: case OP_SET_UPVALUE: {
+            OPERAND();
+            if (ip + 1 > n) { dis_emit("  <truncated>\n"); return; }
+            snprintf(buf, sizeof buf, "%d\n", code[ip]);
+            dis_emit(buf);
+            ip += 1;
+            break;
+        }
+        default:
+            dis_emit("\n");
+            break;
+        }
+    }
+
+    #undef OPERAND
+
+    /* nested functions after the parent, depth-first, so the order is stable */
+    for (int i = 0; i < fn->kcount; i++)
+        if (IS_FN(fn->consts[i])) dis_fn(AS_FN(fn->consts[i]), depth + 1);
+}
+
+void as_disasm(ObjFn *fn)
+{
+    char buf[128];
+    snprintf(buf, sizeof buf, "; AetherScript .la disassembly (AS_BC_VERSION %u)\n",
+             (unsigned)AS_BC_VERSION);
+    as_emit_cstr(buf);
+    dis_fn(fn, 0);
+}
+
 ObjFn *as_load(const uint8_t *buf, int len)
 {
     if (len < 8 || memcmp(buf, "LAQ1", 4) != 0) return NULL;

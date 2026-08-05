@@ -28,8 +28,12 @@ static const char *const KEYWORDS[] = {
     "while","for","in","and","or","not","lambda","import","from",
     "true","false","nil","break","continue", 0
 };
+/* Mirrors the as_define_native() calls in vm.c + as_native.c. `make check-asops`
+ * (tools/gen_as_opcodes.py) asserts this list stays complete -- it had silently
+ * missed the seven M21-P3 self-hosting natives since they landed. */
 static const char *const BUILTINS[] = {
     "print","len","range","str","gc","gc_stats",
+    "chr","ord","f64bits","parse_float","file_read","file_write","args",
     "addr","syscall","alloc","dealloc","mem2str","mem2cstr",
     "peek8","peek16","peek32","peek64",
     "poke8","poke16","poke32","poke64","i8ptr","i16ptr","i32ptr","i64ptr", 0

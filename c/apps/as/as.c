@@ -86,6 +86,24 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Disassemble a .la (`as -dis foo.la`): one line per instruction, so a
+     * self-hosting fixpoint break can be diffed instead of hex-dumped. Loads
+     * through as_load, so the verifier still gates malformed input. */
+    if (argc == 3 && strcmp(argv[1], "-dis") == 0) {
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[2]); as_emit_cstr("\n"); return 1; }
+        src = slurp(f);
+        if (!src) { fclose(f); as_emit_cstr("as: out of memory\n"); return 1; }
+        long blen = ftell(f);            /* .la is binary; recover length like -run does */
+        fclose(f);
+        ObjFn *fn = as_load((const uint8_t *)src, (int)blen);
+        free(src);
+        if (!fn) { as_emit_cstr("as: bad .la file\n"); as_free_objects(); return 1; }
+        as_disasm(fn);
+        as_free_objects();
+        return 0;
+    }
+
     /* Run a compiled .la directly (M21-P3 S2 harness): load + stamp + run. */
     if (argc >= 3 && strcmp(argv[1], "-run") == 0) {
         FILE *f = fopen(argv[2], "rb");

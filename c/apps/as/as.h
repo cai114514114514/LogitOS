@@ -178,6 +178,10 @@ int    as_interpret(const char *src); /* compile + run; returns 0 ok */
  * fails the post-load verifier (as_bc.c -- a .la is untrusted input). */
 int    as_dump(ObjFn *fn, FILE *out);
 ObjFn *as_load(const uint8_t *buf, int len);
+/* Print a loaded ObjFn tree as one line per instruction (as -dis). This is the
+ * debugging tool for a broken self-hosting fixpoint: disassemble both .la files
+ * and diff, instead of staring at two 37 KB binaries. */
+void   as_disasm(ObjFn *fn);
 
 /* modules (vm.c): the loader/cache + namespace access used by import. */
 ObjModule *as_module_new(const char *name, int len);
