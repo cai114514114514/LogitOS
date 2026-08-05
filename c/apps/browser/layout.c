@@ -131,10 +131,50 @@ static int is_block(struct node *n)
 {
     if (!n || n->type != N_ELEM) return 0;
     struct cstyle *st = n->style;
-    return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX);
+    /* inline-block joins the block path: it becomes a full-width box unless it
+     * has an explicit CSS width (shrink-to-fit is out of scope, but this stops
+     * button/chip rows smearing into the surrounding text run). */
+    return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX ||
+                  st->display == DISP_INLINE_BLOCK);
 }
 
 static int layout_flex(struct node *n, int x, int y, int w);   /* fwd: flex row */
+static int layout_table(struct node *t, int x, int y, int w);  /* fwd: minimal grid */
+
+/* Emit the bullet (ul) or 1-based number (ol) for a <li> block child. `bx` is
+ * the li's content-box left edge, `top` its first line's y. */
+static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top, int minx)
+{
+    struct item *mk = additem(IT_TEXT);
+    if (!mk) return;
+    int n = 0, ordered = 0, idx = 1;
+    if (li->parent && li->parent->type == N_ELEM && tag_eq(li->parent->tag, "ol")) {
+        ordered = 1; idx = 0;
+        for (struct node *s = li->parent->first_child; s && s != li; s = s->next)
+            if (s->type == N_ELEM && tag_eq(s->tag, "li")) {
+                struct cstyle *ss = s->style;
+                if (!(ss && ss->display == DISP_NONE)) idx++;
+            }
+        idx++;
+    }
+    if (ordered) {
+        char tmp[12]; int v = idx, p = 0;
+        do { tmp[p++] = (char)('0' + v % 10); v /= 10; } while (v && p < 10);
+        while (p > 0 && n < (int)sizeof mk->marker - 2) mk->marker[n++] = tmp[--p];
+        mk->marker[n++] = '.';
+    } else {
+        mk->marker[0] = (char)0xE2; mk->marker[1] = (char)0x80; mk->marker[2] = (char)0xA2;
+        n = 3;                                        /* U+2022 BULLET */
+    }
+    mk->text = mk->marker; mk->len = n;
+    mk->font_px = st->font_px; mk->bold = st->bold; mk->mono = st->mono;
+    mk->color = st->color; mk->h = st->font_px * 5 / 4; mk->y = top;
+    int mw = text_measure(mk->text, mk->len, st->font_px, st->mono);
+    (void)minx;                                /* deep nests may push the marker to x=0 */
+    mk->x = bx - mw - 6; if (mk->x < 0) mk->x = 0;
+    mk->w = mw;
+}
+
 static int has_block_child(struct node *n)
 {
     for (struct node *c = n->first_child; c; c = c->next) if (is_block(c)) return 1;
@@ -171,6 +211,7 @@ static int layout_block(struct node *n, int x, int y, int w)
             if (st->ml < 0 && st->mr < 0 && st->has_w) bx = x + (w - bw)/2;   /* margin:auto center */
             cy += st->mt > 0 ? st->mt : 0;
             int top = cy;
+            if (st->list_item) emit_list_marker(c, st, bx + st->pl, top, x);
             int bgidx = -1;
             if (st->has_bg || st->border_w) {
                 struct item *bg = additem(IT_RECT);
@@ -180,7 +221,9 @@ static int layout_block(struct node *n, int x, int y, int w)
                     bg->border_w = st->border_w; bg->border_color = st->border_color;
                     bg->radius = st->radius; }
             }
-            int inner = layout_block(c, bx + st->pl, top + st->pt, bw - st->pl - st->pr);
+            int inner = tag_eq(c->tag, "table")
+                ? layout_table(c, bx + st->pl, top + st->pt, bw - st->pl - st->pr)
+                : layout_block(c, bx + st->pl, top + st->pt, bw - st->pl - st->pr);
             int ch = (inner - top) + st->pb;
             if (st->has_h && !st->h_pct && st->height > ch) ch = st->height;
             if (ch < st->font_px) ch = st->font_px;          /* min line */
@@ -249,6 +292,129 @@ static int layout_flex(struct node *n, int x, int y, int w)
         cx += iw + mr;
     }
     return maxb;
+}
+
+/* ---- minimal table layout ----
+ * Rows are collected from the <table>'s children (through thead/tbody/tfoot
+ * wrappers), column widths are proportional to each column's widest word, and
+ * each row is as tall as its tallest cell. colspan/rowspan are treated as 1. */
+#define TBL_MAXROWS 64
+#define TBL_MAXCOLS 16
+
+static int tbl_row_visible(struct node *r)
+{
+    struct cstyle *rs = r->style;
+    return r->type == N_ELEM && tag_eq(r->tag, "tr") && !(rs && rs->display == DISP_NONE);
+}
+
+/* The widest single word anywhere under `n` (skip display:none subtrees). */
+static int tbl_widest_word(struct node *n, int px, int mono)
+{
+    int best = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        struct cstyle *cs = c->style;
+        if (cs && cs->display == DISP_NONE) continue;
+        if (c->type == N_TEXT) {
+            const char *s = c->text; int len = c->textlen, i = 0;
+            while (i < len) {
+                while (i < len && sp(s[i])) i++;
+                int ws = i; while (i < len && !sp(s[i])) i++;
+                if (i > ws) {
+                    int ww = text_measure(s + ws, i - ws, px, mono);
+                    if (ww > best) best = ww;
+                }
+            }
+        } else if (c->type == N_ELEM) {
+            int w = tbl_widest_word(c, px, mono);
+            if (w > best) best = w;
+        }
+    }
+    return best;
+}
+
+static int tbl_cell_count(struct node *r)
+{
+    int n = 0;
+    for (struct node *c = r->first_child; c; c = c->next) {
+        if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
+        struct cstyle *cs = c->style;
+        if (!(cs && cs->display == DISP_NONE)) n++;
+    }
+    return n;
+}
+
+static int layout_table(struct node *t, int x, int y, int w)
+{
+    struct node *rows[TBL_MAXROWS]; int nr = 0;
+    for (struct node *c = t->first_child; c && nr < TBL_MAXROWS; c = c->next) {
+        if (c->type != N_ELEM) continue;
+        struct cstyle *cs = c->style;
+        if (cs && cs->display == DISP_NONE) continue;
+        if (tbl_row_visible(c)) { rows[nr++] = c; continue; }
+        if (tag_eq(c->tag, "tbody") || tag_eq(c->tag, "thead") || tag_eq(c->tag, "tfoot"))
+            for (struct node *r = c->first_child; r && nr < TBL_MAXROWS; r = r->next)
+                if (tbl_row_visible(r)) rows[nr++] = r;
+    }
+    if (!nr) return y;
+
+    int nc = 0;
+    for (int i = 0; i < nr; i++) { int k = tbl_cell_count(rows[i]); if (k > nc) nc = k; }
+    if (!nc || nc > TBL_MAXCOLS) nc = nc > TBL_MAXCOLS ? TBL_MAXCOLS : nc;
+    if (!nc) return y;
+
+    int desired[TBL_MAXCOLS];
+    for (int i = 0; i < nc; i++) desired[i] = 8;
+    for (int i = 0; i < nr; i++) {
+        int ci = 0;
+        for (struct node *c = rows[i]->first_child; c && ci < nc; c = c->next) {
+            if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
+            struct cstyle *cs = c->style;
+            if (cs && cs->display == DISP_NONE) continue;
+            int px = cs ? cs->font_px : 16, mono = cs ? cs->mono : 0;
+            int dw = tbl_widest_word(c, px, mono) + (cs ? cs->pl + cs->pr : 0) + 12;
+            if (dw > desired[ci]) desired[ci] = dw;
+            ci++;
+        }
+    }
+    int total = 0;
+    for (int i = 0; i < nc; i++) total += desired[i];
+    if (total <= 0) total = 1;
+    int cw[TBL_MAXCOLS], acc = 0;
+    for (int i = 0; i < nc; i++) { cw[i] = w * desired[i] / total; if (cw[i] < 24) cw[i] = 24; acc += cw[i]; }
+    cw[nc-1] += w - acc; if (cw[nc-1] < 24) cw[nc-1] = 24;   /* absorb rounding */
+
+    int cy = y;
+    for (int i = 0; i < nr; i++) {
+        int rx = x, maxb = cy, ci = 0;
+        for (struct node *c = rows[i]->first_child; c && ci < nc; c = c->next) {
+            if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
+            struct cstyle *st = c->style;
+            if (st && st->display == DISP_NONE) continue;
+            int ml = st && st->ml > 0 ? st->ml : 0;
+            int pl = st ? st->pl : 0, pr = st ? st->pr : 0;
+            int pt = st ? st->pt : 0, pb = st ? st->pb : 0;
+            int cx = rx + ml, top = cy + (st && st->mt > 0 ? st->mt : 0);
+            int bgidx = -1;
+            if (st && (st->has_bg || st->border_w)) {
+                struct item *bg = additem(IT_RECT);
+                if (bg) { bgidx = (int)(bg - items);
+                    bg->x = rx; bg->y = cy; bg->w = cw[ci];
+                    bg->bg = st->background; bg->has_bg = st->has_bg;
+                    bg->border_w = st->border_w; bg->border_color = st->border_color;
+                    bg->radius = st->radius; }
+            }
+            int inner = layout_block(c, cx + pl, top + pt, cw[ci] - ml - pl - pr);
+            int ch = (inner - top) + pb;
+            if (st && ch < st->font_px) ch = st->font_px;
+            if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+            if (bgidx >= 0) items[bgidx].h = ch;
+            if (cy + ch > maxb) maxb = cy + ch;
+            rx += cw[ci];
+            ci++;
+        }
+        cy = maxb;
+    }
+    return cy;
 }
 
 void layout_page(struct node *root, int canvas_w)

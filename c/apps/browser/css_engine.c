@@ -367,6 +367,8 @@ static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_st
 static const char UA_CSS[] =
     "body{display:block;margin:8px}"
     "div,p,h1,h2,h3,h4,h5,h6,ul,ol,li,pre,header,footer,section,article,nav,main,blockquote,figure,figcaption,table,form{display:block}"
+    "tr,td,th,thead,tbody,tfoot{display:block}"
+    "th{font-weight:bold}"
     "h1{font-size:32px;font-weight:bold;margin:14px 0}"
     "h2{font-size:24px;font-weight:bold;margin:12px 0}"
     "h3{font-size:19px;font-weight:bold;margin:10px 0}"

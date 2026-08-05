@@ -586,6 +586,10 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/page_test
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_test tests/unit/table_list_test.c \
+	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    $(BUILD)/libcss_host.a
+	@$(BUILD)/table_list_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/pipeline_stress tests/unit/pipeline_stress.c \
 	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a

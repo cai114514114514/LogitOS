@@ -11,6 +11,7 @@ struct item {
     int type, x, y, w, h;
     /* RECT */ uint32_t bg; int has_bg, border_w; uint32_t border_color; int radius;
     /* TEXT */ const char *text; int len, font_px, bold, italic, mono, underline; uint32_t color;
+    char marker[12];                    /* backing store for <li> bullet/number items */
     /* IMAGE */ struct image *img; const char *imgsrc;  /* decoded image + its URL */
     const char *href;                 /* link target for this item (or NULL) */
 };
