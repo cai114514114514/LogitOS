@@ -1,0 +1,14 @@
+Aether source license boundary
+==============================
+
+Unless an exception below or an in-file notice says otherwise, project-authored
+files under boot/, kernel/, drivers/, fs/, net/, crypto/, and lib/ are licensed
+under GPL-3.0-or-later. See ../LICENSES/GPL-3.0-or-later.txt.
+
+Project-authored files under apps/ and the shared lib/image/ sources are
+licensed under MIT. See ../LICENSES/MIT.txt.
+
+Third-party and generated material retains its own license. In particular,
+crypto/trust/roots_bundle.inc contains Mozilla/NSS-derived MPL-2.0 data.
+
+See ../LICENSING.md and ../THIRD_PARTY.md for the complete mapping.

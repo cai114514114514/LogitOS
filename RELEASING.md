@@ -2,7 +2,8 @@
 
 A source repository and a bootable ISO have different licensing and provenance
 surfaces. Do not publish an Aether binary merely because the root project license
-is MIT.
+is open source. The core, outer components, third-party files, and aggregate ISO
+do not share one license.
 
 This checklist is a project policy, not legal advice.
 
@@ -43,13 +44,19 @@ The known unresolved items are maintained in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 The release bundle should include at least:
 
-- Aether's `LICENSE`;
+- Aether's `LICENSE`, `LICENSING.md`, and the complete GPL-3.0-or-later and MIT
+  texts from `LICENSES/`;
 - `THIRD_PARTY.md` and all vendored license files;
 - the QuickJS, musl, NetSurf, and Robert Nystrom notices;
 - MPL 2.0 information for the Mozilla-derived trust data;
 - the exact Rust toolchain's MIT, Apache-2.0, copyright, and applicable exception
   notices for code entering the static libraries;
 - GNU GRUB's applicable GPL license and notices.
+
+For `kernel.elf`, publish the complete corresponding Aether Core source and the
+scripts and build definitions needed to produce the binary, as required by
+GPL-3.0-or-later. Keep the MIT application and ABI notices intact; their presence
+in the same image does not make the whole image a single-license work.
 
 Because `grub-mkrescue` embeds GRUB in the ISO, distribute the corresponding GRUB
 source, or make it available in another GPL-compliant manner appropriate to the

@@ -1,14 +1,14 @@
 # Third-Party Software and Data
 
-Aether OS is licensed under the repository's [MIT License](LICENSE) for code
-authored by Aether OS contributors. This file records code and data that came
-from, or was materially derived from, other projects. Those components remain
-subject to their upstream licenses; the Aether OS license does not replace or
-override them.
+Aether OS uses the first-party GPL-3.0-or-later/MIT boundary defined in
+[LICENSING.md](LICENSING.md). This file records code and data that came from, or
+was materially derived from, other projects. Those components remain subject to
+their upstream licenses; neither first-party license replaces or overrides them.
 
 Local adapters, ports, patches, build integration, and other original changes
-are licensed under the Aether OS MIT License to the extent the project is able
-to license them.
+use GPL-3.0-or-later in core paths and MIT in outer paths, to the extent the
+project is able to license them. Changes to upstream-covered files remain
+subject to upstream terms where required.
 
 ## Summary
 
@@ -92,7 +92,7 @@ NetSurf build files were not retained.
 
 Aether OS's DOM select handler and computed-style adapter live in
 `c/apps/browser/css_engine.c`; that adapter is project code and is covered by
-the repository MIT License.
+the outer-component MIT License defined in `LICENSING.md`.
 
 ## Crafting Interpreters / clox lineage
 
@@ -138,7 +138,7 @@ Required upstream notice:
 
 The Crafting Interpreters book prose, illustrations, website, and other
 non-code material use different terms, including CC BY-NC-ND 4.0. Aether OS
-does not claim those materials under its MIT License.
+does not claim those materials under either first-party license.
 
 ## Mozilla/NSS-derived CA trust store
 
@@ -175,19 +175,20 @@ to `Aether UI` and `Aether Mono`. It retains the upstream copyright and license
 metadata. This is especially important because Noto Sans SC's notice reserves
 the name `Source`.
 
-The source fonts and modified subsets remain under the OFL; the root MIT License
-does not relicense them. The normal disk-image rule packages only the checked-in
-subsets and never reads Apple or other undeclared host fonts. It also installs
-both complete OFL texts and the source record under `/licenses/fonts/`.
+The source fonts and modified subsets remain under the OFL; neither Aether
+first-party license relicenses them. The normal disk-image rule packages only
+the checked-in subsets and never reads Apple or other undeclared host fonts. It
+also installs both complete OFL texts and the source record under
+`/licenses/fonts/`.
 
 ## Wallpaper used by local builds
 
 `tools/mkwallpaper.sh` explicitly converts a host-installed macOS Desktop Picture
 into `fsroot/wallpaper.png`. The output is ignored by Git but is included in the
 normal disk image when present. It has no recorded redistribution grant and is
-not covered by Aether's MIT License. Replace it with an original or suitably
-licensed asset, preserve that asset's provenance and notice, and rebuild the disk
-before distributing a binary image.
+not covered by either Aether first-party license. Replace it with an original or
+suitably licensed asset, preserve that asset's provenance and notice, and
+rebuild the disk before distributing a binary image.
 
 ## GNU GRUB in generated ISO images
 
@@ -201,8 +202,9 @@ GRUB is not vendored in the Git source tree, but it is more than a host-only too
 `grub-mkrescue` places GRUB boot code into the distributable ISO. Anyone publishing
 an Aether ISO must identify the exact GRUB version, include the applicable license
 and notices, and satisfy the GPL corresponding-source requirements for the GRUB
-binary in the manner required by that distribution. Aether's root MIT License does
-not relicense the GRUB files placed in the ISO.
+binary in the manner required by that distribution. Aether Core's GPL license is
+a separate grant from separate copyright holders and does not relicense the GRUB
+files placed in the ISO.
 
 ## Rust runtime code in linked binaries
 

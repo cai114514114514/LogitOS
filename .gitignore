@@ -30,3 +30,6 @@ rust/target/
 
 # Local scratch (WSL helper scripts, baseline worktrees, logs)
 .cache/
+
+# API tokens / credentials -- never commit
+.env

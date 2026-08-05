@@ -199,7 +199,13 @@ the authorship, testing, and capability boundaries are recorded in
 
 ## License
 
-The original Aether OS code is open source under the [MIT License](LICENSE).
-Code and data listed in [THIRD_PARTY.md](THIRD_PARTY.md) remain under their
-respective upstream licenses; the repository's MIT License does not replace or
-override those notices.
+Aether is a multi-license project. The project-authored operating-system core —
+kernel, boot code, drivers, filesystems, network stack, AetherTLS, cryptography,
+and kernel-only support libraries — is licensed under `GPL-3.0-or-later`.
+Project-authored user applications, the public userspace ABI, shared Rust parser
+code, build tools, tests, documentation, and examples are licensed under `MIT`.
+
+See [LICENSE](LICENSE) and [LICENSING.md](LICENSING.md) for the exact path
+boundary. Code and data listed in [THIRD_PARTY.md](THIRD_PARTY.md) retain their
+upstream licenses. The bootable ISO is consequently a multi-license aggregate,
+not an entirely MIT or entirely GPL artifact.

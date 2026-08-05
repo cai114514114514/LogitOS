@@ -2,6 +2,7 @@
 name = "aether_rust"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 # Hybrid C+Rust kernel: Rust is compiled to a freestanding staticlib and linked
 # alongside the C objects (see the Makefile). It owns the memory-safety-critical

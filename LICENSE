@@ -1,21 +1,47 @@
-MIT License
+Aether OS Licensing Notice
+==========================
 
-Copyright (c) 2026 Aether OS contributors
+Aether OS is a multi-license project.  No single license covers every file or
+every generated release artifact.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Aether Core
+-----------
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The project-authored kernel, boot, driver, filesystem, network, cryptography,
+and kernel-support sources identified in LICENSING.md are licensed under the
+GNU General Public License, version 3 or (at your option) any later version
+(SPDX: GPL-3.0-or-later).
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The complete license text is in:
+
+    LICENSES/GPL-3.0-or-later.txt
+
+Outer project components
+------------------------
+
+The project-authored user applications, public userspace ABI, shared parser
+library, build and development tools, tests, documentation, examples, and
+other outer components identified in LICENSING.md are licensed under the MIT
+License (SPDX: MIT).
+
+The complete license text is in:
+
+    LICENSES/MIT.txt
+
+Third-party material
+--------------------
+
+Vendored, adapted, generated, and externally sourced material retains its
+upstream license.  See THIRD_PARTY.md and notices stored with those components.
+Neither GPL-3.0-or-later nor MIT relicenses third-party material.
+
+The authoritative path-by-path boundary and binary-distribution rules are in
+LICENSING.md.
+
+Historical MIT grants
+---------------------
+
+Versions of Aether code already received under the MIT License remain usable
+under that grant.  Open-source licenses already granted for those copies are
+not withdrawn.  The GPL-3.0-or-later boundary governs the core in repository
+versions that carry this notice and new core contributions made under it.

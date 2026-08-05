@@ -5,9 +5,17 @@ requirement is that every contribution be technically and legally traceable.
 
 ## Licensing
 
-By submitting a contribution, you agree that your original contribution may be
-distributed under the repository's MIT License, and you confirm that you have the
-right to submit it under those terms.
+By submitting an original contribution, you agree that it may be distributed
+under the license assigned to its destination in [LICENSING.md](LICENSING.md),
+and you confirm that you have the right to submit it under those terms:
+
+- Aether Core paths use `GPL-3.0-or-later`.
+- Project-authored outer paths use `MIT`.
+- A contribution spanning both boundaries is licensed per file.
+
+New project-authored source files should carry an SPDX copyright line and the
+applicable `SPDX-License-Identifier`. Do not change a third-party license merely
+because the file is stored beneath a first-party directory.
 
 Do not copy code, generated tables, certificates, fonts, images, or other data into
 the repository without recording its source and redistribution terms.
@@ -44,8 +52,8 @@ Also check generated outputs. A host tool becomes a distribution concern when it
 code or data is copied into an artifact; GRUB code in the ISO and Rust runtime code
 in a `staticlib` are current examples.
 
-Do not describe a component as MIT merely because the Aether adapter around it is
-MIT. Each upstream license continues to govern its own material.
+Do not describe a component as GPL or MIT merely because an Aether adapter around
+it uses that license. Each upstream license continues to govern its own material.
 
 ## AI-assisted contributions
 
