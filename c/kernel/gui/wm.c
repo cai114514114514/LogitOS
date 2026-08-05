@@ -14,7 +14,7 @@
 #include "rtc.h"
 #include "aex.h"
 #include "img.h"
-#include "aether_abi.h"
+#include "logit_abi.h"
 #include "net.h"
 #include "http.h"
 #include "kprintf.h"
@@ -28,8 +28,8 @@
 #define MAXWIN     16
 #define MENUBAR_H  24
 #define TITLEBAR_H 30
-#define FW         AETHER_FONT_W
-#define FH         AETHER_FONT_H
+#define FW         LOGIT_FONT_W
+#define FH         LOGIT_FONT_H
 #define USER_PATH_MAX 128
 #define USER_URL_MAX  384
 #define USER_TEXT_MAX 1024
@@ -60,7 +60,7 @@ struct win {
     enum wkind kind;
     struct app *app;          /* owner (NULL for builtin) */
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
-    struct aether_event evq[EVQ_N];
+    struct logit_event evq[EVQ_N];
     int  evhead, evtail;
     int  wants_close;
     char cwd[128];            /* Finder: current directory path */
@@ -439,7 +439,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_POLL_EVENT: {
         struct win *w = app_window(ap); if (!w) return 0;
-        struct aether_event *ev = (struct aether_event *)a;
+        struct logit_event *ev = (struct logit_event *)a;
         if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
         if (w->evhead == w->evtail) return 0;
         *ev = w->evq[w->evhead];
@@ -557,7 +557,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_TEXT_RUN: {
         struct win *w = app_window(ap); if (!w) return -1;
-        struct aether_run r;
+        struct logit_run r;
         if (!user_range_ok((const void *)a, sizeof r, 0)) return -1;
         memcpy(&r, (const void *)a, sizeof r);
         if (r.px < 1 || r.px > 512) return -1;   /* unbounded px overflows the rasterizer's w*h math */
@@ -590,7 +590,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_BLIT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        struct aether_blit bl;
+        struct logit_blit bl;
         if (!user_range_ok((const void *)a, sizeof bl, 0)) return -1;
         memcpy(&bl, (const void *)a, sizeof bl);
         if (bl.sw <= 0 || bl.sh <= 0 || bl.sw > 4096 || bl.sh > 4096) return -1;
@@ -1106,7 +1106,7 @@ static void scan_apps(void)
         char nm[64];
         scopy(nm, vfs_ent_name("/", i), sizeof nm);
         if (!ends_aex(nm)) continue;
-        /* aetherfs reads whole-file (errors if the buffer is smaller), so size the
+        /* logitfs reads whole-file (errors if the buffer is smaller), so size the
          * buffer to the file -- the JS app's .aex is ~1 MiB, far over any header
          * scratch. We only need the header, but read it all then free. */
         int sz = vfs_size(nm);

@@ -1,5 +1,5 @@
-#ifndef AETHER_SCHED_H
-#define AETHER_SCHED_H
+#ifndef LOGIT_SCHED_H
+#define LOGIT_SCHED_H
 
 #include <stdint.h>
 
@@ -25,4 +25,4 @@ unsigned long sched_switches(void);                     /* total context switche
 void *sched_current_data(void);                         /* current thread's payload */
 uint64_t sched_current_cr3(void);                        /* active thread address space */
 
-#endif /* AETHER_SCHED_H */
+#endif /* LOGIT_SCHED_H */

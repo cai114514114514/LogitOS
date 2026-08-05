@@ -1,5 +1,5 @@
-#ifndef AETHER_VFS_H
-#define AETHER_VFS_H
+#ifndef LOGIT_VFS_H
+#define LOGIT_VFS_H
 
 /* A deliberately tiny virtual filesystem layer: one registered backend that
  * implements these operations. Enough to abstract the on-disk filesystem from
@@ -38,4 +38,4 @@ int         vfs_delete(const char *path);
 int         vfs_mkdir(const char *path);
 int         vfs_rename(const char *old_path, const char *new_path);
 
-#endif /* AETHER_VFS_H */
+#endif /* LOGIT_VFS_H */

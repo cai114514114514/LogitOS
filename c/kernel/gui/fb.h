@@ -1,5 +1,5 @@
-#ifndef AETHER_FB_H
-#define AETHER_FB_H
+#ifndef LOGIT_FB_H
+#define LOGIT_FB_H
 
 #include <stdint.h>
 
@@ -10,8 +10,8 @@ int fb_init(uint64_t mb_info_addr);
 uint32_t fb_width(void);
 uint32_t fb_height(void);
 
-#define AETHER_FONT_W 8
-#define AETHER_FONT_H 16
+#define LOGIT_FONT_W 8
+#define LOGIT_FONT_H 16
 
 /* Pack 8-bit channels into the framebuffer's native pixel format. */
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
@@ -94,4 +94,4 @@ void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, u
 /* Lighten (delta>0) / darken (delta<0) a packed color by delta per channel. */
 uint32_t fb_shade(uint32_t c, int delta);
 
-#endif /* AETHER_FB_H */
+#endif /* LOGIT_FB_H */

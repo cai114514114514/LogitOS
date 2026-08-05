@@ -111,7 +111,7 @@ void aui_next(int w, int h, int *x, int *y)
 static int clicked_in(int x, int y, int w, int h)
 { return ev_type == EV_MOUSE && ev_a >= x && ev_a < x + w && ev_b >= y && ev_b < y + h; }
 
-void aui_feed(const struct aether_event *e) { ev_type = e->type; ev_a = e->a; ev_b = e->b; }
+void aui_feed(const struct logit_event *e) { ev_type = e->type; ev_a = e->a; ev_b = e->b; }
 void aui_feed_done(void) { ev_type = 0; }
 
 void aui_begin(unsigned bg)

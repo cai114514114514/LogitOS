@@ -249,7 +249,7 @@ static Value native_len(int argc, Value *args)
     return as_native_fail("len() needs a list, string, or dict");
 }
 /* ---- M21-P3 self-hosting natives: byte/char primitives + portable file I/O.
- * file_read/file_write use stdio (host libc AND Aether mini-libc), NOT Aether
+ * file_read/file_write use stdio (host libc AND Logit mini-libc), NOT Logit
  * syscalls -- the self-hosted compiler must run its fixpoint test on the host. */
 static Value native_chr(int argc, Value *args)
 {

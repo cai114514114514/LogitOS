@@ -1,7 +1,7 @@
 #include "as.h"
 
 /* Low-level indirection bridge. peek/poke are plain machine-word memory access
- * (work on host and Aether alike). The syscall path is the asm bridge to Aether's
+ * (work on host and Logit alike). The syscall path is the asm bridge to Logit's
  * int 0x80 ABI -- compiled only for the freestanding x86_64 target; on hosted
  * builds (arm64 macOS, x86_64 Linux) it stubs to -1 so the portable core still
  * builds & tests. The __STDC_HOSTED__ guard matters on x86_64 Linux, where a
@@ -37,6 +37,6 @@ long as_ll_syscall(long n, long a, long b, long c)
     return r;
 #else
     (void)n; (void)a; (void)b; (void)c;
-    return -1;            /* host: Aether syscalls unavailable */
+    return -1;            /* host: Logit syscalls unavailable */
 #endif
 }

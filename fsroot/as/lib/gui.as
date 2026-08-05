@@ -1,4 +1,4 @@
-# gui -- windowed Aether apps in pure AetherScript (M23.5).
+# gui -- windowed Logit apps in pure AetherScript (M23.5).
 #   import gui
 #   gui.create("My App", 400, 300)
 #   gui.rect(10, 10, 100, 50, 0x3478F6)
@@ -8,7 +8,7 @@
 # The kernel adopts the script's process as a window owner on create(); closing
 # the window delivers EV_CLOSE and the script exits like any app.
 
-_ev = alloc(12)              # struct aether_event { int type, a, b; }
+_ev = alloc(12)              # struct logit_event { int type, a, b; }
 
 def create(title, w, h):
     return syscall(SYS_GUI_CREATE, addr(title), (w << 16) | h)

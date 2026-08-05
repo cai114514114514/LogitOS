@@ -1,4 +1,4 @@
-#include "aether.h"
+#include "logit.h"
 
 /* Preview: a minimal image viewer. The kernel decodes the file (PNG/GIF/JPEG) into
  * our RGBA buffer via SYS_IMG_DECODE; we aspect-fit it into the window with gui_blit
@@ -21,7 +21,7 @@ void app_main(void)
 
     int redraw = 1;
     for (;;) {
-        struct aether_event e;
+        struct logit_event e;
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);
             if (e.type == EV_KEY && e.a == 27) app_exit(0);   /* Esc closes */

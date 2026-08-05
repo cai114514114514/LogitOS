@@ -1,5 +1,5 @@
-#ifndef AETHER_PIC_H
-#define AETHER_PIC_H
+#ifndef LOGIT_PIC_H
+#define LOGIT_PIC_H
 
 /* 8259 PIC: remap IRQs 0..15 to interrupt vectors 32..47 and unmask the
  * timer (IRQ0) and keyboard (IRQ1). */
@@ -11,4 +11,4 @@ void pic_eoi(int irq);
 /* Mask all PIC lines (when IRQs are routed through the I/O APIC instead). */
 void pic_disable(void);
 
-#endif /* AETHER_PIC_H */
+#endif /* LOGIT_PIC_H */

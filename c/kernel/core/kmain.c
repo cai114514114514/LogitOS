@@ -9,7 +9,7 @@
 #include "wm.h"
 #include "mouse.h"
 #include "vfs.h"
-#include "aetherfs.h"
+#include "logitfs.h"
 #include "net.h"
 #include "text.h"
 #include "img.h"
@@ -21,7 +21,7 @@
 
 #define TIMER_HZ 100
 
-#define BOOT_OK_MARKER "AETHER_BOOT_OK"
+#define BOOT_OK_MARKER "LOGIT_BOOT_OK"
 
 int rust_inflate_selftest(void);   /* rust/src/inflate.rs -- DEFLATE port self-check */
 int rust_png_selftest(void);       /* rust/src/png.rs -- PNG decoder self-check (needs heap) */
@@ -43,7 +43,7 @@ void kernel_main(uint64_t mb_info)
                                           : "[rust] png selftest FAIL\n");
 
     if (!fb_init(mb_info)) {
-        serial_puts("\nAETHER_FB_FAIL\n");
+        serial_puts("\nLOGIT_FB_FAIL\n");
         for (;;) __asm__ volatile ("hlt");
     }
 
@@ -51,9 +51,9 @@ void kernel_main(uint64_t mb_info)
     file_init();   /* open-file-description pool */
 
     nvme_init();         /* prefer NVMe (M24 bare-metal target) when present */
-    virtio_blk_init();   /* else virtio-blk; aetherfs falls back to ATA */
+    virtio_blk_init();   /* else virtio-blk; logitfs falls back to ATA */
 
-    vfs_register(&aetherfs);
+    vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
     serial_puts(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
 

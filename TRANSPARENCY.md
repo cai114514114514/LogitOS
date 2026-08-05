@@ -49,7 +49,7 @@ distributed.
 
 | Class | Examples | Meaning |
 |---|---|---|
-| Project implementation | Kernel, drivers, AetherFS, network stack, TLS/crypto code, window system, applications | Maintained as LogitOS code; not copied from Linux. May be AI-assisted and informed by public specifications and literature. |
+| Project implementation | Kernel, drivers, LogitFS, network stack, TLS/crypto code, window system, applications | Maintained as LogitOS code; not copied from Linux. May be AI-assisted and informed by public specifications and literature. |
 | Material adaptation | AetherScript compiler and VM | Substantial LogitOS-specific development built on identifiable clox/Crafting Interpreters lineage; both facts must be stated. |
 | Vendored or ported code | QuickJS, NetSurf LibCSS and dependencies, musl libm subset | Upstream code compiled or adapted for LogitOS; governed by upstream notices. |
 | External data/build input | Mozilla-derived trust roots, fonts | Not program code, but still has provenance and redistribution constraints. |
@@ -140,7 +140,7 @@ Known limitations and boundaries include:
   is a systems language facility, not an untrusted-code sandbox.
 - The project has ring separation and per-process address spaces, but not a
   production multi-user authorization or permissions model.
-- AetherFS does not make a documented journaling or crash-consistency guarantee.
+- LogitFS does not make a documented journaling or crash-consistency guarantee.
 - Hardware support is narrow and primarily exercised through QEMU devices.
 - Runtime fonts are renamed subsets of OFL-licensed Noto fonts, not original
   LogitOS typeface designs; their source and license records are vendored.

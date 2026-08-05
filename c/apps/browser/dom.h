@@ -1,5 +1,5 @@
-#ifndef AETHER_DOM_H
-#define AETHER_DOM_H
+#ifndef LOGIT_DOM_H
+#define LOGIT_DOM_H
 
 #include <stdint.h>
 
@@ -25,4 +25,4 @@ const char *dom_attr(const struct node *n, const char *name);
 
 void dom_free(struct node *root);
 
-#endif /* AETHER_DOM_H */
+#endif /* LOGIT_DOM_H */

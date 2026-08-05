@@ -1,5 +1,5 @@
-#ifndef AETHER_TLS_H
-#define AETHER_TLS_H
+#ifndef LOGIT_TLS_H
+#define LOGIT_TLS_H
 
 #include <stdint.h>
 
@@ -28,4 +28,4 @@ void tls_close(int id);
 #define TLS_E_CRYPTO  -3
 #define TLS_E_TCP     -4
 
-#endif /* AETHER_TLS_H */
+#endif /* LOGIT_TLS_H */

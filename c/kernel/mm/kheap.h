@@ -1,5 +1,5 @@
-#ifndef AETHER_KHEAP_H
-#define AETHER_KHEAP_H
+#ifndef LOGIT_KHEAP_H
+#define LOGIT_KHEAP_H
 
 #include <stddef.h>
 
@@ -8,4 +8,4 @@
 void *kmalloc(size_t size);
 void  kfree(void *ptr);
 
-#endif /* AETHER_KHEAP_H */
+#endif /* LOGIT_KHEAP_H */

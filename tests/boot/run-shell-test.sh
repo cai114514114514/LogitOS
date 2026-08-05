@@ -15,14 +15,14 @@ trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # -snapshot: ephemeral disk writes, so the test is deterministic across runs.
-{ sleep 4; printf 'uname\necho hello-aether-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\n'; sleep 5; } | \
+{ sleep 4; printf 'uname\necho hello-logit-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\n'; sleep 5; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 
 # Poll for the markers for up to ~20s.
 for _ in $(seq 1 200); do
-    if grep -aq "hello-aether-shell" "$LOG" && grep -aq "LogitOS x86_64" "$LOG" \
+    if grep -aq "hello-logit-shell" "$LOG" && grep -aq "LogitOS x86_64" "$LOG" \
        && grep -aq "cpmvprobe" "$LOG"; then
         # echo builtin + an exec'd coreutil produced output, and the cp/mv/mkdir/rm
         # round-trip flowed real data: cp made b.txt, cat read it back as "cpmvprobe"

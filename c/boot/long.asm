@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aether OS - 64-bit long mode entry
+; Logit OS - 64-bit long mode entry
 ;
 ; Reached via the far jump in boot.asm once paging + long mode are live.
 ; We zero the data segment selectors (segmentation is flat in long mode) and

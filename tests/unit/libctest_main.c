@@ -1,5 +1,5 @@
 /* /bin/libctest -- on-target mini-libc test battery. Links the real mini-libc
- * (src/apps/libc) and exercises it under Aether; prints "LIBC_OK <n>/<n>" on
+ * (src/apps/libc) and exercises it under Logit; prints "LIBC_OK <n>/<n>" on
  * success or "LIBC_FAIL" with details. Run by `make test-libc` over the serial
  * shell (scripts/run-libc-test.sh). Host name-clashes (string.c defines memcpy
  * etc.) make a native test awkward, so this runs in the real environment. */

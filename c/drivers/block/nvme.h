@@ -1,5 +1,5 @@
-#ifndef AETHER_NVME_H
-#define AETHER_NVME_H
+#ifndef LOGIT_NVME_H
+#define LOGIT_NVME_H
 
 #include <stdint.h>
 
@@ -12,4 +12,4 @@ int nvme_busy(void);
 int nvme_read(uint32_t lba, uint8_t count, void *buf);
 int nvme_write(uint32_t lba, uint8_t count, const void *buf);
 
-#endif /* AETHER_NVME_H */
+#endif /* LOGIT_NVME_H */

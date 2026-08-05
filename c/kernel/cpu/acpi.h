@@ -1,5 +1,5 @@
-#ifndef AETHER_ACPI_H
-#define AETHER_ACPI_H
+#ifndef LOGIT_ACPI_H
+#define LOGIT_ACPI_H
 #include <stdint.h>
 
 #define ACPI_MAX_CPUS 32

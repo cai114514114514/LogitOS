@@ -1,5 +1,5 @@
-#ifndef AETHER_TTF_H
-#define AETHER_TTF_H
+#ifndef LOGIT_TTF_H
+#define LOGIT_TTF_H
 
 #include <stdint.h>
 
@@ -41,4 +41,4 @@ struct ttf_outline {
 int ttf_glyph_outline(const struct ttf_font *f, int gid,
                       struct ttf_outline *out, void *scratch, int scratchlen);
 
-#endif /* AETHER_TTF_H */
+#endif /* LOGIT_TTF_H */

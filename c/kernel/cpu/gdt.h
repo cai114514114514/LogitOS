@@ -1,5 +1,5 @@
-#ifndef AETHER_GDT_H
-#define AETHER_GDT_H
+#ifndef LOGIT_GDT_H
+#define LOGIT_GDT_H
 
 #include <stdint.h>
 
@@ -42,4 +42,4 @@ void gdt_init(void);
 /* Set the kernel stack the CPU switches to on a ring 3 -> ring 0 trap. */
 void tss_set_rsp0(uint64_t rsp0);
 
-#endif /* AETHER_GDT_H */
+#endif /* LOGIT_GDT_H */

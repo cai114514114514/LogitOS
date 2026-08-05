@@ -3,7 +3,7 @@
 #include "kprintf.h"
 
 /* virtio-blk: block read/write over the virtio transport. Synchronous (one
- * request at a time), which matches how aetherfs uses the block layer. */
+ * request at a time), which matches how logitfs uses the block layer. */
 
 #define VIRTIO_BLK_T_IN   0   /* read  (device writes our buffer) */
 #define VIRTIO_BLK_T_OUT  1   /* write (device reads our buffer)  */

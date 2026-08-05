@@ -6,9 +6,9 @@ toward a macOS-style desktop. Real kernel, not a simulation.
 ## Build / run / test
 
 ```sh
-make        # -> build/aether.iso
+make        # -> build/logit.iso
 make run    # QEMU: VGA window + serial on terminal
-make test   # headless; asserts kernel prints AETHER_BOOT_OK on serial
+make test   # headless; asserts kernel prints LOGIT_BOOT_OK on serial
 make debug  # QEMU frozen with gdb stub on :1234
 ```
 
@@ -34,7 +34,7 @@ make debug  # QEMU frozen with gdb stub on :1234
 All source lives under `c/`, headers **colocated** with their `.c`. Header
 names are unique, so the Makefile's `INCDIRS := $(shell find c include -type d)`
 makes every `#include "foo.h"` resolve without path qualifiers. `include/` keeps
-only the cross-cutting kernel↔user ABI (`include/abi/aether_abi.h`).
+only the cross-cutting kernel↔user ABI (`include/abi/logit_abi.h`).
 
 Tests live under **`tests/`** (moved out of `tools/` in the 2026-06-09 declutter):
 `tests/unit/` = host unit/fuzz tests (`make test-tcp-host`/`test-as`/`test-png`/…)
@@ -47,11 +47,11 @@ mkfs, mkfont, genroots, gen_compile_commands, gen_libcss, mkwallpaper).
 c/boot/                                        multiboot + long-mode entry (asm)
 c/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
 c/drivers/{char,timer,block,net}/              device drivers
-c/fs/                                          vfs + aetherfs
+c/fs/                                          vfs + logitfs
 c/net/{link,ip,transport,core,dns,http,tls}/   network stack
 c/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
 c/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
-c/apps/                                        shared: aether.h clib.h crt0.asm crt0_cli.asm
+c/apps/                                        shared: logit.h clib.h crt0.asm crt0_cli.asm
 c/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp widgets
                                                  + aui.{h,c} = immediate-mode widget toolkit (linked into each)
 c/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
@@ -68,7 +68,7 @@ subsystem are unchanged, so they're easy to find under `c/`.
 ## Roadmap
 
 M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) ✅ ·
-M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + AetherFS + VFS) ✅ ·
+M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + LogitFS + VFS) ✅ ·
 M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
 (framebuffer + VMM + LogitOS desktop) ✅ · M8 window system (font + double-buffer +
 PS/2 mouse + draggable windows) ✅ · M9 networking (PCI + e1000 + ARP/IPv4/
@@ -88,11 +88,11 @@ TTF parser (cmap fmt4/12, glyf simple+composite, hmtx) and an integer-only AA
 rasterizer (4× vertical oversample + fractional horizontal coverage → 0–255
 alpha), with a glyph cache + font fallback. `fb_text` routes through it, so the
 whole UI is anti-aliased; the Terminal uses `text_draw_mono` (SYS_GUI_TEXT_MONO).
-Fonts live on the AetherFS disk (`/fonts/{ui,mono}.ttf`, subset by
+Fonts live on the LogitFS disk (`/fonts/{ui,mono}.ttf`, subset by
 `tools/mkfont.py` from vendored OFL Noto Sans SC + Noto Sans Mono sources,
 glyf), loaded by `text_init()` after fs mount; QEMU `-m 512M`. The CJK font is
-about 2.2 MB, and AetherFS supports **double-
-indirect** inodes (`fs/aetherfs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
+about 2.2 MB, and LogitFS supports **double-
+indirect** inodes (`fs/logitfs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
 bitmap font (`font8x16.h`, `genfont.py`) was removed. Chinese web pages render
 (`zh.wikipedia.org`). Notes: no hinting (macOS-style), grayscale (no subpixel),
 no bidi/shaping; the rasterizer is integer-only because the kernel is `-mno-sse`.
@@ -106,7 +106,7 @@ Key notes:
   user pages. Intermediate table entries carry USER; leaf PTE flags protect
   kernel pages. User images link at 1 GiB (above the identity huge-page region).
 - Disk: QEMU `-drive ...,if=ide` primary master; `drivers/ata.c` (PIO
-  read+write) + `fs/aetherfs.c` + `fs/vfs.c`. AetherFS is a **hierarchical,
+  read+write) + `fs/logitfs.c` + `fs/vfs.c`. LogitFS is a **hierarchical,
   read-write inode FS** (on-disk v3, 4 KiB blocks: superblock, free-block
   bitmap, inode table with direct[12]+single-indirect, directories = inodes of
   dirents). Subdirectories + files up to ~4 MiB; `vfs_*` are path-based. Build
@@ -201,7 +201,7 @@ Key notes:
   -- true for all real chains.)
 
 ## Application platform (on top of M8)
-- Apps are `.aex` files on the AetherFS disk = real **ring-3 processes** scheduled
+- Apps are `.aex` files on the LogitFS disk = real **ring-3 processes** scheduled
   by M4. `kernel/wm.c` is the window manager AND the GUI/app backend.
 - Executable format: `include/aex.h` (header wrapping an ELF), built by
   `tools/mkaex.py`; loaded by `kernel/aex.c` (reuses `elf_load`). Each app links
@@ -210,7 +210,7 @@ Key notes:
 - Process model: `thread_create_user` (sched.c) spawns a ring-3 thread with its
   own kernel stack; `schedule()` sets TSS rsp0; `thread_exit()` reaps it.
   `sched_current_data()` maps the running thread to its `struct app`.
-- ABI: `include/aether_abi.h` (shared with userland `user/aether.h`). Syscalls via
+- ABI: `include/logit_abi.h` (shared with userland `user/logit.h`). Syscalls via
   int 0x80: GUI create/clear/rect/text/flush, poll_event (key/mouse/close),
   get_arg, get_time, read_file, write_file/delete_file, mkdir,
   dir_count/dir_name (path-scoped listing), net_info/net_ping/net_dns (+ result
@@ -225,7 +225,7 @@ Key notes:
 - WM: dynamic windows + per-window surfaces composited each frame; app registry
   scanned from *.aex; Dock launches apps; Finder opens a file with the app whose
   `ext` matches (file association); red close button -> EV_CLOSE -> app exits.
-- Adding an app: write `user/<name>.c` (include "aether.h", define `app_main`),
+- Adding an app: write `user/<name>.c` (include "logit.h", define `app_main`),
   add an `APP_RULE` line + the name to `APPS` in the Makefile.
 - `tests/qmp/qmp_*.py` drive mouse/keyboard over QEMU QMP for screenshots/CI.
 M15 SSE2/FPU ✅ (JS-engine prerequisite): the kernel was integer-only because
@@ -245,7 +245,7 @@ M16 JavaScript (QuickJS) ✅: ported QuickJS 2024-01-13 as a **ring-3 app**
 `fenv`→MXCSR rounding, `time`→RTC syscall, 128-bit `__udivti3` compiler-rt) +
 **musl libm** (`third_party/libm/`, double-only subset, 83 files) + the engine
 (`third_party/quickjs/`: quickjs+cutils+libregexp+libunicode+libbf). Atomics are
-off (`-DAETHER_OS` guards `CONFIG_ATOMICS`; single-threaded). Builds via the
+off (`-DLOGIT_OS` guards `CONFIG_ATOMICS`; single-threaded). Builds via the
 Makefile `js` rule into a ~1 MiB `.aex`; JS output goes to a window + serial
 through `SYS_WRITE`. Runs fib, Array.map/arrow fns, JSON, Math.* (libm), etc.
 **Gotchas:** QuickJS returns `double` so M15's SSE is mandatory (`-msse2`);
@@ -312,7 +312,7 @@ kernel low memory. `wm_launch` gives every GUI app fd 0/1/2 = tty so an app's
 robust**: under `-smp` TCG the AP framebuffer-present contends the device lock and
 intermittently delayed IDE PIO past the old bounded poll -> nondeterministic
 "file not found"; `drivers/block/ata.c` now retries the command 8x. Known-open
-aetherfs issues (separate): cross-boot write durability (corrupts after repeated
+logitfs issues (separate): cross-boot write durability (corrupts after repeated
 non-snapshot boots; use `-snapshot`) and under-enumeration of runtime-`mkdir`'d
 dirs. `tests/qmp/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
 (PS/2 1-byte buffer).
@@ -322,7 +322,7 @@ paravirtual device stack in `c/drivers/virtio/` replacing the legacy devices.
 `virtio.c` is the virtio-pci transport (parses the vendor-0x09 PCI caps to find
 the modern cfg structures in BAR4, negotiates VIRTIO_F_VERSION_1, sets up split
 virtqueues, synchronous request/poll). **virtio-blk** (`virtio_blk.c` +
-`drivers/block/blkdev.c`) replaces ATA PIO as the disk (aetherfs bread/bwrite go
+`drivers/block/blkdev.c`) replaces ATA PIO as the disk (logitfs bread/bwrite go
 through blkdev; ATA is the fallback). **virtio-gpu** (`virtio_gpu.c`) replaces the
 uncached-VGA-MMIO framebuffer: a RAM-backed 2D scanout resource, present =
 TRANSFER_TO_HOST_2D + RESOURCE_FLUSH (a DMA, not a per-pixel CPU copy -- the old
@@ -340,7 +340,7 @@ int 0x80); `stdio.c` is now **fd-backed buffered FILE I/O** (fopen/fread/fgets/
 fseek/…); added `fcntl.h`/`unistd.h`/`setjmp.h` (+`setjmp.asm`), `strtok`/`memmem`.
 Also fixed stdio bugs (short-write loss, `%g` trailing zeros, `%*`/`.*` neg width,
 round-half-to-even). Only browser/JS + `/bin/as` link mini-libc; CLI coreutils use
-`aether.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
+`logit.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
 `.clangd` (full INCDIRS) kill the host-SDK false-positive squiggles.
 
 M20 AetherScript ✅: a **from-scratch language**, `as`/`.as`, in `c/apps/as/`

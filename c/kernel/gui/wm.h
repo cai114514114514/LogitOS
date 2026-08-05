@@ -1,5 +1,5 @@
-#ifndef AETHER_WM_H
-#define AETHER_WM_H
+#ifndef LOGIT_WM_H
+#define LOGIT_WM_H
 
 /* Window manager / compositor + application platform. */
 void wm_init(void);
@@ -17,4 +17,4 @@ void wm_launch(const char *aex_file, const char *arg);
 long wm_gui_syscall(long num, long a, long b, long c);
 void wm_app_exit(void);
 
-#endif /* AETHER_WM_H */
+#endif /* LOGIT_WM_H */

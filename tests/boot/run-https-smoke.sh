@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-Internet HTTPS smoke test: boot Aether under QEMU/SLIRP and fetch a
+# Real-Internet HTTPS smoke test: boot Logit under QEMU/SLIRP and fetch a
 # live site (default zh.wikipedia.org) through the full guest path:
 # e1000 -> DHCP -> DNS -> TCP (RTT estimator, fast retransmit, close machine)
 # -> TLS 1.3 -> HTTP. Asserts the `net get` marker line with a nonzero byte

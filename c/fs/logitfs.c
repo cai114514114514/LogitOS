@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "aetherfs.h"
+#include "logitfs.h"
 #include "blkdev.h"
 #include "kheap.h"
 #include "kprintf.h"
@@ -12,7 +12,7 @@ void *memset(void *, int, size_t);
 #define SECTOR     512
 #define BS         4096                 /* block size */
 #define SPB        (BS / SECTOR)        /* sectors per block (8) */
-#define MAGIC      0x41455448u          /* "AETH" */
+#define MAGIC      0x4C4F4749u          /* "LOGI" */
 #define VERSION    3
 #define INODE_SIZE 128
 #define NDIRECT    12
@@ -427,7 +427,7 @@ static uint32_t resolve_parent(const char *path, char *leaf)
 }
 
 /* --- VFS ops --- */
-static int aetherfs_mount(void)
+static int logitfs_mount(void)
 {
     if (bitmap || inodes) return -1;           /* already mounted: no re-entry */
     uint8_t b0[SECTOR];
@@ -477,7 +477,7 @@ oom:
     return -1;
 }
 
-static int aetherfs_size(const char *path)
+static int logitfs_size(const char *path)
 {
     uint32_t ino = resolve(path);
     if (ino == NOINO) return -1;
@@ -488,7 +488,7 @@ static int aetherfs_size(const char *path)
     return (int)in->size;
 }
 
-static int aetherfs_read(const char *path, void *buf, int max)
+static int logitfs_read(const char *path, void *buf, int max)
 {
     uint32_t ino = resolve(path);
     if (ino == NOINO) return -1;
@@ -497,7 +497,7 @@ static int aetherfs_read(const char *path, void *buf, int max)
     return inode_read(in, buf, max);
 }
 
-static int aetherfs_write(const char *path, const void *buf, int size)
+static int logitfs_write(const char *path, const void *buf, int size)
 {
     uint32_t ino = resolve(path);
     if (ino != NOINO) {                          /* overwrite existing file */
@@ -521,7 +521,7 @@ static int aetherfs_write(const char *path, const void *buf, int size)
     return size;
 }
 
-static int aetherfs_mkdir(const char *path)
+static int logitfs_mkdir(const char *path)
 {
     if (resolve(path) != NOINO) return -1;        /* already exists */
     char leaf[NAME_MAX];
@@ -550,7 +550,7 @@ static int aetherfs_mkdir(const char *path)
     return 0;
 }
 
-static int aetherfs_delete(const char *path)
+static int logitfs_delete(const char *path)
 {
     uint32_t ino = resolve(path);
     if (ino == NOINO || ino == sb.root_ino) return -1;
@@ -576,13 +576,13 @@ static uint32_t resolve_dir(const char *dir)
     return (d && d->type == T_DIR) ? ino : NOINO;
 }
 
-static int aetherfs_count(const char *dir)
+static int logitfs_count(const char *dir)
 {
     uint32_t ino = resolve_dir(dir);
     return ino == NOINO ? -1 : dir_count_live(ino);   /* -1: not a directory */
 }
 
-static const char *aetherfs_ent_name(const char *dir, int i)
+static const char *logitfs_ent_name(const char *dir, int i)
 {
     namebuf[0] = 0;
     uint32_t ino = resolve_dir(dir);
@@ -590,7 +590,7 @@ static const char *aetherfs_ent_name(const char *dir, int i)
     return namebuf;
 }
 
-static int aetherfs_ent_size(const char *dir, int i)
+static int logitfs_ent_size(const char *dir, int i)
 {
     uint32_t dino = resolve_dir(dir);
     if (dino == NOINO) return 0;
@@ -599,7 +599,7 @@ static int aetherfs_ent_size(const char *dir, int i)
     return (in && in->size <= (uint32_t)INT32_MAX) ? (int)in->size : 0;
 }
 
-static int aetherfs_ent_is_dir(const char *dir, int i)
+static int logitfs_ent_is_dir(const char *dir, int i)
 {
     uint32_t dino = resolve_dir(dir);
     if (dino == NOINO) return 0;
@@ -608,10 +608,10 @@ static int aetherfs_ent_is_dir(const char *dir, int i)
     return in && in->type == T_DIR;
 }
 
-static void aetherfs_list(void)
+static void logitfs_list(void)
 {
     int n = dir_count_live(sb.root_ino);
-    kprintf("[fs] AetherFS v3: %d entr(ies) in /:\n", n);
+    kprintf("[fs] LogitFS v3: %d entr(ies) in /:\n", n);
     for (int i = 0; i < n; i++) {
         char nm[NAME_MAX]; nm[0] = 0;
         uint32_t ino = dir_nth(sb.root_ino, i, nm);
@@ -638,7 +638,7 @@ static int path_under(const char *a, const char *b)
 /* Move/rename: re-link a directory entry. Resolve everything first (the shared
  * static blk_buf/ind_buf make interleaving resolution with dir_add/dir_remove
  * unsafe), then mutate add-then-remove with rollback. */
-static int aetherfs_rename(const char *old_path, const char *new_path)
+static int logitfs_rename(const char *old_path, const char *new_path)
 {
     uint32_t src = resolve(old_path);
     if (src == NOINO || src == sb.root_ino) return -1;
@@ -666,18 +666,18 @@ static int aetherfs_rename(const char *old_path, const char *new_path)
     return 0;
 }
 
-struct filesystem aetherfs = {
-    .name     = "aetherfs",
-    .mount    = aetherfs_mount,
-    .list     = aetherfs_list,
-    .size     = aetherfs_size,
-    .read     = aetherfs_read,
-    .count      = aetherfs_count,
-    .ent_name   = aetherfs_ent_name,
-    .ent_size   = aetherfs_ent_size,
-    .ent_is_dir = aetherfs_ent_is_dir,
-    .write    = aetherfs_write,
-    .del      = aetherfs_delete,
-    .mkdir    = aetherfs_mkdir,
-    .rename   = aetherfs_rename,
+struct filesystem logitfs = {
+    .name     = "logitfs",
+    .mount    = logitfs_mount,
+    .list     = logitfs_list,
+    .size     = logitfs_size,
+    .read     = logitfs_read,
+    .count      = logitfs_count,
+    .ent_name   = logitfs_ent_name,
+    .ent_size   = logitfs_ent_size,
+    .ent_is_dir = logitfs_ent_is_dir,
+    .write    = logitfs_write,
+    .del      = logitfs_delete,
+    .mkdir    = logitfs_mkdir,
+    .rename   = logitfs_rename,
 };

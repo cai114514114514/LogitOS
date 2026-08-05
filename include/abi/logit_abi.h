@@ -1,5 +1,5 @@
-#ifndef AETHER_ABI_H
-#define AETHER_ABI_H
+#ifndef LOGIT_ABI_H
+#define LOGIT_ABI_H
 
 /* System-call ABI shared between the kernel and userland applications.
  * Convention: rax = number, rdi/rsi/rdx = args, return value in rax. */
@@ -24,7 +24,7 @@
 #define SYS_MKDIR      18   /* (path) -> 0, or -1 */
 #define SYS_DIR_COUNT  19   /* (dir) -> entries in dir, or -1 if not a directory */
 #define SYS_DIR_NAME   20   /* (dir, i, buf<=64) -> file size, -2 if dir, -1 if no entry */
-#define SYS_NET_INFO   21   /* (struct aether_netinfo*) -> 1 if a NIC is up, else 0 */
+#define SYS_NET_INFO   21   /* (struct logit_netinfo*) -> 1 if a NIC is up, else 0 */
 #define SYS_NET_PING   22   /* (ip) start a ping; -> 0 ok, -1 no NIC. ip = a<<24|b<<16|c<<8|d */
 #define SYS_NET_PING_RTT 23 /* () -> RTT in ms (>=0), or -1 if no reply yet */
 #define SYS_NET_DNS    24   /* (name) start a DNS A-query; -> 0 ok, -1 no NIC */
@@ -35,9 +35,9 @@
 /* M17 L1: ring-3 render-pipeline primitives (DOM/CSS/layout/paint live in the app). */
 #define SYS_HTTP_BODY    36 /* (buf, max) -> copy the last http_get response body to the app; length */
 #define SYS_TEXT_MEASURE 37 /* (s, len, (px<<1)|mono) -> pixel width of a length-delimited run */
-#define SYS_GUI_TEXT_RUN 38 /* (struct aether_run*) draw a length-delimited text run (px/mono/color) */
+#define SYS_GUI_TEXT_RUN 38 /* (struct logit_run*) draw a length-delimited text run (px/mono/color) */
 #define SYS_RES_FETCH    39 /* (src, buf, max) -> fetch a sub-resource's raw bytes; length, or <0 */
-#define SYS_GUI_BLIT     40 /* (struct aether_blit*) blit an RGBA bitmap into the window surface */
+#define SYS_GUI_BLIT     40 /* (struct logit_blit*) blit an RGBA bitmap into the window surface */
 #define SYS_GUI_CLIP     41 /* ((x<<16)|y, (w<<16)|h) set window clip rect; (0,0,0,0) clears it */
 
 /* M18: real processes -- fork/exec/wait, file descriptors, pipes. */
@@ -58,7 +58,7 @@
 #define SYS_SETNB       64 /* (fd) -> 0; mark the fd non-blocking (reads return -2/EAGAIN) */
 #define SYS_RENAME      65 /* (old_path, new_path) -> 0, or -1 (re-link a dir entry) */
 #define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
-#define SYS_IMG_DECODE  67 /* (struct aether_imgreq*) decode an image file -> RGBA in app buffer */
+#define SYS_IMG_DECODE  67 /* (struct logit_imgreq*) decode an image file -> RGBA in app buffer */
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
@@ -100,31 +100,31 @@
 #define EV_MOUSE_R 4  /* a = x, b = y (window-local), right-button down */
 #define EV_THEME  5   /* the system light/dark theme changed -- repaint to follow */
 
-struct aether_event {
+struct logit_event {
     int type;
     int a;
     int b;
 };
 
 /* Wall-clock time (mirrors the kernel's struct rtc_time field order). */
-struct aether_time {
+struct logit_time {
     int year, month, day;
     int hour, minute, second;
     int weekday;
 };
 
 /* Network info filled by SYS_NET_INFO. IPs are host order (a.b.c.d packed). */
-struct aether_netinfo {
+struct logit_netinfo {
     unsigned ip, mask, gw;
     unsigned char mac[6];
 };
 
 /* M17 L1: payloads for the ring-3 render syscalls. */
-struct aether_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
-struct aether_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
+struct logit_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
+struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 
 /* SYS_IMG_DECODE: the app provides `path` + an `rgba` buffer of `max` bytes; the
  * kernel decodes the image (PNG/GIF) and fills rgba + w/h (w*h*4 must be <= max). */
-struct aether_imgreq { const char *path; unsigned char *rgba; int max; int w, h; };
+struct logit_imgreq { const char *path; unsigned char *rgba; int max; int w, h; };
 
-#endif /* AETHER_ABI_H */
+#endif /* LOGIT_ABI_H */

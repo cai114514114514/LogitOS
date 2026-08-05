@@ -1,4 +1,4 @@
-# guidemo -- a REAL windowed Aether app written in AetherScript (M23.5 lib/gui.as).
+# guidemo -- a REAL windowed Logit app written in AetherScript (M23.5 lib/gui.as).
 # A bouncing ball you can quit with q/ESC or the window's close button.
 import gui
 

@@ -1,9 +1,9 @@
-#ifndef AETHER_AEX_H
-#define AETHER_AEX_H
+#ifndef LOGIT_AEX_H
+#define LOGIT_AEX_H
 
 #include <stdint.h>
 
-/* AEX -- the Aether native executable format (v1).
+/* AEX -- the Logit native executable format (v1).
  *   [ 64-byte header ][ a standard ELF64 image ]
  * The header carries metadata the system needs without loading the program:
  * display name, the file extension it opens, and a Dock icon (glyph + color).
@@ -33,4 +33,4 @@ uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *ou
 /* Validate + read metadata without loading. Returns 0 on success. */
 int aex_info(const void *file, char *out_name, char *out_ext);
 
-#endif /* AETHER_AEX_H */
+#endif /* LOGIT_AEX_H */

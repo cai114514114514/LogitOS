@@ -13,7 +13,7 @@ struct udp_hdr {
     uint16_t sport;
     uint16_t dport;
     uint16_t length;
-    uint16_t checksum;      /* zero is accepted on IPv4; Aether always sends one */
+    uint16_t checksum;      /* zero is accepted on IPv4; Logit always sends one */
 } __attribute__((packed));
 
 #define NUDP       8        /* sockets (DNS, DHCP, ...); port 68 is DHCP's */

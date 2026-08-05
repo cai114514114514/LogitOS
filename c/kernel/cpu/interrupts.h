@@ -1,5 +1,5 @@
-#ifndef AETHER_INTERRUPTS_H
-#define AETHER_INTERRUPTS_H
+#ifndef LOGIT_INTERRUPTS_H
+#define LOGIT_INTERRUPTS_H
 
 #include <stdint.h>
 
@@ -15,4 +15,4 @@ struct registers {
 /* Common C dispatcher, called from the assembly stub. */
 void interrupt_handler(struct registers *regs);
 
-#endif /* AETHER_INTERRUPTS_H */
+#endif /* LOGIT_INTERRUPTS_H */

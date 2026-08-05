@@ -1,5 +1,5 @@
-#ifndef AETHER_REASM_H
-#define AETHER_REASM_H
+#ifndef LOGIT_REASM_H
+#define LOGIT_REASM_H
 
 #include <stdint.h>
 
@@ -31,4 +31,4 @@ void reasm_release(struct reasm_dgram *g);
 /* Timeout sweep (~30 s), hooked from net_poll() via a weak reference. */
 void ip_poll(void);
 
-#endif /* AETHER_REASM_H */
+#endif /* LOGIT_REASM_H */

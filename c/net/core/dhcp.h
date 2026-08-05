@@ -1,5 +1,5 @@
-#ifndef AETHER_DHCP_H
-#define AETHER_DHCP_H
+#ifndef LOGIT_DHCP_H
+#define LOGIT_DHCP_H
 
 #include <stdint.h>
 
@@ -13,4 +13,4 @@ int  dhcp_run(int timeout_ticks);
  * renewal. A no-op until dhcp_run() has succeeded once. */
 void dhcp_poll(void);
 
-#endif /* AETHER_DHCP_H */
+#endif /* LOGIT_DHCP_H */

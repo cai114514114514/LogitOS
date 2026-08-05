@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'aether-system-bug-hunt',
-  description: 'System-wide bug hunt across Aether OS: per-subsystem finders + adversarial verification (read-only)',
+  name: 'logit-system-bug-hunt',
+  description: 'System-wide bug hunt across Logit OS: per-subsystem finders + adversarial verification (read-only)',
   phases: [
     { title: 'Find', detail: '16 parallel code-reviewer finders, one per subsystem lane' },
     { title: 'Verify', detail: 'each candidate independently verified by a skeptic, default-reject' },
@@ -14,7 +14,7 @@ const NONBUGS = `KNOWN/INTENTIONAL -- do NOT report these as bugs:
 - e1000 NIC is POLLED (no NIC IRQ); net_poll pumped from the WM loop. By design.
 - TCP (net/transport/tcp.c): single outstanding segment, no reordering / window scaling /
   congestion control; large multi-cert RSA handshake flights can fail. Known limitation.
-- AetherFS cross-boot write durability degrades across repeated non-snapshot boots (use -snapshot). Known.
+- LogitFS cross-boot write durability degrades across repeated non-snapshot boots (use -snapshot). Known.
 - TLS 1.3 only, two cipher suites (ChaCha20-Poly1305, AES-128-GCM), no resumption/0-RTT/client-certs. Intentional.
 - TTF rasterizer: no hinting, grayscale only (no subpixel), no bidi/shaping; integer-only. Intentional.
 - One instance per GUI app; no lazy-FP (CR0.TS). Intentional.
@@ -24,7 +24,7 @@ const NONBUGS = `KNOWN/INTENTIONAL -- do NOT report these as bugs:
   scheduler). So general cross-core data races are NOT applicable -- but IRQ reentrancy (timer/keyboard/mouse/
   IRQ handlers vs main-thread code touching the same state) IS a real, in-scope bug class.`
 
-const CTX = `Aether OS -- a from-scratch x86_64 kernel + userland (C + nasm), QEMU/TCG. You are hunting for
+const CTX = `Logit OS -- a from-scratch x86_64 kernel + userland (C + nasm), QEMU/TCG. You are hunting for
 REAL, CONCRETE bugs: memory safety (buffer/array overflow, out-of-bounds, use-after-free, double-free,
 uninitialized reads, type confusion), integer overflow/signedness leading to bad sizes/indices, missing
 error/NULL checks (esp. on attacker- or disk- or network-controlled input), resource leaks (memory, fds,
@@ -79,7 +79,7 @@ const LANES = [
   { key: 'net-lower',    paths: `${R}/drivers/net/ ${R}/net/link/ ${R}/net/ip/ ${R}/net/core/`, focus: 'e1000 (RX/TX descriptor rings, polled, the set_rx_control flush timing, buffer sizes), eth/arp/ip/icmp/udp parsing of RECEIVED packets (untrusted!): length checks, header bounds, checksum, ARP cache, fragment handling, copy sizes.' },
   { key: 'net-upper',    paths: `${R}/net/transport/ ${R}/net/dns/ ${R}/net/http/`, focus: 'TCP state machine & slot lifecycle (FIN_WAIT/TIME_WAIT leaks already fixed -- look for OTHERS), seq/ack math, recv buffer bounds; DNS response parse (untrusted: name compression pointers -> infinite loop / OOB, record counts), HTTP/URL/HTML parse (header parsing, Content-Length, redirect Location, de-tag buffer bounds, entity decode).' },
   { key: 'tls-crypto',   paths: `${R}/net/tls/ ${R}/crypto/`, focus: 'TLS 1.3 record/handshake parse (untrusted server data: length fields, transcript, key schedule), X.509/DER parse (crypto/trust: length/tag bounds, recursion depth, integer parse), RSA (bignum modexp bounds, PKCS#1/PSS padding checks -- forgery!), ECDSA/EC point validation, AEAD tag verification (constant-time?), HKDF. OOB in DER/cert parsing is critical.' },
-  { key: 'fs',           paths: `${R}/fs/`, focus: 'AetherFS on-disk parse (untrusted disk image: superblock validation, block/inode bounds, direct[12]+single+double indirect index math, dir entry iteration bounds, free-block bitmap), VFS path resolution (path length, traversal), inode_trunc (double-indirect free), read/write offset+length bounds.' },
+  { key: 'fs',           paths: `${R}/fs/`, focus: 'LogitFS on-disk parse (untrusted disk image: superblock validation, block/inode bounds, direct[12]+single+double indirect index math, dir entry iteration bounds, free-block bitmap), VFS path resolution (path length, traversal), inode_trunc (double-indirect free), read/write offset+length bounds.' },
   { key: 'lib-image',    paths: `${R}/lib/image/ ${R}/lib/text/`, focus: 'DEFLATE/inflate (huffman table bounds, distance/length codes, output buffer overflow -- classic), PNG (chunk length, IDAT, filter, scanline bounds), GIF (LZW dictionary overflow, image descriptor bounds), img wrapper; UTF-8 decode (overlong/truncated sequences), TTF parser (cmap fmt4/12 bounds, glyf simple+composite recursion, hmtx, loca, table offset validation -- untrusted font file). All parse untrusted input -> high value.' },
   { key: 'libc',         paths: `${R}/apps/libc/`, focus: 'mini-libc: malloc arena (free-list, coalescing, alignment, OOB), str/mem funcs (off-by-one, missing NUL), vsnprintf (%e/%f/%g, width/precision, buffer bounds), strtod/strtoll, setjmp/longjmp, fd-backed stdio (short read/write, fseek, EOF), io.c errno/syscall wrappers.' },
   { key: 'apps-gui-cli', paths: `${R}/apps/gui/ ${R}/apps/coreutils/`, focus: 'aui toolkit, GUI apps (clock/textedit/monitor/terminal/netapp/widgets), sh (pipe/redirect/arg parsing, PATH), coreutils. Look for buffer overflows in input handling, unchecked syscall returns, arg parsing bounds, terminal emulator escape/pipe handling.' },

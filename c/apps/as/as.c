@@ -6,7 +6,7 @@
 
 /* /bin/as : run a script file (as foo.as) or, with no argument, read a whole
  * program from stdin (so `echo 'print(6*7)' | as` works). The interpreter core
- * is portable; this file is the Aether/host entry that does the file I/O. */
+ * is portable; this file is the Logit/host entry that does the file I/O. */
 
 static char *slurp(FILE *f)
 {
@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     /* Compile-only mode: `as -c in.as -o out.la` writes a .la (LAQ1 header +
      * serialized bytecode). as_compile gives a standalone ObjFn whose ->module is
      * the throwaway __main__ (as_dump never serializes ->module). as.c builds into
-     * both the host asc and on-Aether /bin/as, so both get this mode. */
+     * both the host asc and on-Logit /bin/as, so both get this mode. */
     if (argc == 5 && strcmp(argv[1], "-c") == 0 && strcmp(argv[3], "-o") == 0) {
         FILE *f = fopen(argv[2], "r");
         if (!f) { as_emit_cstr("as: cannot open "); as_emit_cstr(argv[2]); as_emit_cstr("\n"); return 1; }

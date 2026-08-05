@@ -12,7 +12,7 @@ proc = subprocess.Popen([qemu, "-cpu", "max", "-cdrom", iso,
     "-display", "none", "-no-reboot", "-m", "512M",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait"])
 def armed():
-    try: return "AETHER_BOOT_OK" in open(serial, encoding="utf-8", errors="replace").read()
+    try: return "LOGIT_BOOT_OK" in open(serial, encoding="utf-8", errors="replace").read()
     except OSError: return False
 for _ in range(250):
     if armed(): break
@@ -58,14 +58,14 @@ def send(t):
         else: key(KMAP.get(ch,ch))
 json.loads(f.readline()); cmd({"execute":"qmp_capabilities"})
 goto(576,753); click(); time.sleep(1.2)        # launch Terminal from the Dock (icon 3 of 9)
-for line in ["uname\n","ls /bin | wc\n","echo aether-os-is-real > /hi.txt\n","cat /hi.txt\n"]:
+for line in ["uname\n","ls /bin | wc\n","echo logit-os-is-real > /hi.txt\n","cat /hi.txt\n"]:
     send(line); time.sleep(1.6)
 time.sleep(1.5)
 cmd({"execute":"screendump","arguments":{"filename":out}}); time.sleep(0.5)
 cmd({"execute":"quit"})
 try: proc.wait(timeout=5)
 except Exception: proc.kill()
-ok = b"aether-os-is-real" in open(disk,"rb").read()
+ok = b"logit-os-is-real" in open(disk,"rb").read()
 for p in (sock,serial):
     try: os.unlink(p)
     except OSError: pass

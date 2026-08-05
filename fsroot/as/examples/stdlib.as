@@ -1,4 +1,4 @@
-# stdlib demo: import the LibAether modules and exercise them.
+# stdlib demo: import the LibLogit modules and exercise them.
 import seq
 import math
 import dicts
@@ -20,7 +20,7 @@ print("isqrt 144:", math.isqrt(144))
 print("merged:", dicts.merge({"a": 1}, {"b": 2}))
 print("chunks:", seq.chunk(range(1, 6), 2))
 print("prime:", math.next_prime(100))
-print("words:", strings.split("aether script stdlib", " "))
+print("words:", strings.split("logit script stdlib", " "))
 print("set union:", sets.to_list(sets.union(sets.from_list([1, 2]), sets.from_list([2, 3]))))
 print("stats:", stats.mean([1, 2, 3, 4]), stats.median([5, 1, 2]))
 random.seed(7)

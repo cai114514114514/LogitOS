@@ -1,5 +1,5 @@
-#ifndef AETHER_SPINLOCK_H
-#define AETHER_SPINLOCK_H
+#ifndef LOGIT_SPINLOCK_H
+#define LOGIT_SPINLOCK_H
 #include <stdint.h>
 /* Host-side no-op stub: the unit test is single-threaded. */
 typedef struct { int locked; int unused; } spinlock_t;

@@ -389,7 +389,7 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
     p.params_version = CSS_STYLESHEET_PARAMS_VERSION_1;
     p.level = CSS_LEVEL_DEFAULT;
     p.charset = "UTF-8";
-    p.url = "http://aether/";
+    p.url = "http://logit/";
     p.title = NULL;
     p.inline_style = inl;
     p.resolve = resolve_url;

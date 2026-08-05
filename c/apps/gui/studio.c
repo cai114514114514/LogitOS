@@ -169,7 +169,7 @@ static int poll_run(void)
     return got;
 }
 
-/* ---- completion providers: enumerate + read LibAether modules off the disk ---- */
+/* ---- completion providers: enumerate + read LibLogit modules off the disk ---- */
 static int sd_list_modules(char names[][48], int max)
 {
     int cnt = dir_count("/usr/as/lib"); if (cnt < 0) return 0;
@@ -302,7 +302,7 @@ void app_main(void)
     redraw();
 
     for (;;) {
-        struct aether_event e;
+        struct logit_event e;
         int changed = 0;
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) { if (run_fd >= 0) { sys_close(run_fd); if (run_pid >= 0) sys_waitpid(run_pid, 0); } app_exit(0); }

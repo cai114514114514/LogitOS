@@ -1,5 +1,5 @@
-#ifndef AETHER_TCP_H
-#define AETHER_TCP_H
+#ifndef LOGIT_TCP_H
+#define LOGIT_TCP_H
 
 #include <stdint.h>
 
@@ -35,4 +35,4 @@ void tcp_close(int id);
 /* 1 if the connection is still usable (not closed/reset). */
 int  tcp_alive(int id);
 
-#endif /* AETHER_TCP_H */
+#endif /* LOGIT_TCP_H */

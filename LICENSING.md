@@ -20,7 +20,7 @@ Project-authored files in these paths are licensed under
 - `linker.ld`
 
 This boundary covers the kernel, boot entry, hardware drivers, filesystem,
-TCP/IP and other network protocols, AetherTLS, project cryptography, and support
+TCP/IP and other network protocols, LogitTLS, project cryptography, and support
 code linked into `kernel.elf`. A distributed `kernel.elf` is therefore a
 GPL-3.0-or-later covered work as a whole, while separately identifiable
 third-party or permissively licensed source files retain their own notices.

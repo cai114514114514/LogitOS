@@ -29,7 +29,7 @@ def run_once(rnd):
         try: return open(serial, encoding="utf-8", errors="replace").read()
         except OSError: return ""
     for _ in range(300):
-        if "AETHER_BOOT_OK" in read_serial(): break
+        if "LOGIT_BOOT_OK" in read_serial(): break
         if proc.poll() is not None: print("QEMU_DIED"); return False
         time.sleep(0.1)
     time.sleep(2)

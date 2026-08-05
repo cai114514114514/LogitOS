@@ -1,12 +1,12 @@
-#ifndef AETHER_FILE_H
-#define AETHER_FILE_H
+#ifndef LOGIT_FILE_H
+#define LOGIT_FILE_H
 
 #include <stdint.h>
 
 /* An open file description (the thing a file descriptor points at). Shared by
  * dup/dup2/fork via refcount. Three backends:
  *   F_VFS  -- a regular file; `backing` holds the whole file in a kmalloc buffer
- *             with an offset cursor (P2). Avoids touching aetherfs block logic.
+ *             with an offset cursor (P2). Avoids touching logitfs block logic.
  *   F_PIPE -- an in-kernel ring buffer with two ends (P3).
  *   F_TTY  -- the serial console (P5).                                       */
 #define F_NONE 0
@@ -41,4 +41,4 @@ long          file_write(struct file *f, const void *buf, long len);
 long          file_lseek(struct file *f, long off, int whence);
 int           file_pipe(struct file **rd, struct file **wr);  /* P3 */
 
-#endif /* AETHER_FILE_H */
+#endif /* LOGIT_FILE_H */

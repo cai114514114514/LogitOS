@@ -5,7 +5,7 @@
 #include "nvme.h"
 
 /* Block layer: prefer NVMe (M24 bare-metal target), then virtio-blk (modern,
- * async, no PIO busy-poll), else the legacy ATA PIO driver. aetherfs talks to this,
+ * async, no PIO busy-poll), else the legacy ATA PIO driver. logitfs talks to this,
  * not the drivers directly. LBA + count are in 512-byte sectors. */
 
 int blk_read(uint32_t lba, uint8_t count, void *buf)

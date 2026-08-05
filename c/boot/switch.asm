@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aether OS - context switch
+; Logit OS - context switch
 ;
 ;   void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
 ;     rdi = where to save the outgoing thread's stack pointer

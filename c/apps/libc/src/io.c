@@ -1,7 +1,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include "aether_abi.h"   /* SYS_* numbers (shared kernel ABI; -Iinclude/abi) */
+#include "logit_abi.h"   /* SYS_* numbers (shared kernel ABI; -Iinclude/abi) */
 
 /* POSIX-ish syscall layer over int 0x80. errno is defined here (the one TU). */
 int errno;

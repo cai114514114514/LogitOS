@@ -67,7 +67,7 @@ void app_main(void)
     gui_create("Widgets", 340, 290);
     dark = sys_ui_dark(-1) > 0;               /* reflect the current system theme */
     frame();                                  /* initial paint */
-    struct aether_event e;
+    struct logit_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         if (e.type == EV_CLOSE) app_exit(0);

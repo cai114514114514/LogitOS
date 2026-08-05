@@ -1,5 +1,5 @@
-#ifndef AETHER_RTC_H
-#define AETHER_RTC_H
+#ifndef LOGIT_RTC_H
+#define LOGIT_RTC_H
 
 #include <stdint.h>
 
@@ -13,4 +13,4 @@ struct rtc_time {
 /* Read the current date/time from the hardware RTC. */
 void rtc_now(struct rtc_time *t);
 
-#endif /* AETHER_RTC_H */
+#endif /* LOGIT_RTC_H */

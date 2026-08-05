@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end TCP test: serve a deterministic 32 KiB file on the host, boot
-# Aether under QEMU/SLIRP, fetch it through the guest's real e1000 -> IPv4 ->
+# Logit under QEMU/SLIRP, fetch it through the guest's real e1000 -> IPv4 ->
 # TCP -> HTTP path, and assert that the full body reached a ring-3 CLI process.
 
 set -u

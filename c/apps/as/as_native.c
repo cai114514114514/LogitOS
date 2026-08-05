@@ -1,8 +1,8 @@
 #include "as.h"
-#include "aether_abi.h"   /* SYS_* numbers (shared kernel ABI) */
+#include "logit_abi.h"   /* SYS_* numbers (shared kernel ABI) */
 
 /* A3 indirection builtins: raw memory (peek/poke), the address of an object's
- * backing store (addr), typed pointers (iNptr -> p[i]), and direct Aether syscalls
+ * backing store (addr), typed pointers (iNptr -> p[i]), and direct Logit syscalls
  * (syscall). This is what lets AetherScript do systems programming, not just compute. */
 
 static Value n_addr(int argc, Value *args)

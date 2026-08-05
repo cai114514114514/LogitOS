@@ -1,5 +1,5 @@
-#ifndef AETHER_ICMP_H
-#define AETHER_ICMP_H
+#ifndef LOGIT_ICMP_H
+#define LOGIT_ICMP_H
 
 #include <stdint.h>
 
@@ -26,4 +26,4 @@ int  icmp_ping(uint32_t dst);
  * no reply has arrived since the last ping. */
 int  icmp_last_rtt(void);
 
-#endif /* AETHER_ICMP_H */
+#endif /* LOGIT_ICMP_H */

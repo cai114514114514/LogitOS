@@ -1,6 +1,6 @@
 #include "aui.h"
 
-/* Aether Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
+/* Logit Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
  *
  * Layout: a sectioned SIDEBAR (个人收藏 / 位置) on the left, a TOOLBAR (back +
  * folder title + Grid/List view toggle + New) across the top of the main area,
@@ -588,7 +588,7 @@ void app_main(void)
 {
     gui_create("Finder", WINW, WINH);
     frame();
-    struct aether_event e;
+    struct logit_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         frame_no++;

@@ -67,7 +67,7 @@ def emit(name, bs):
 ec_cases = []
 for cvid, hf in [(256, hashlib.sha256), (256, hashlib.sha384), (384, hashlib.sha384), (384, hashlib.sha512)]:
     c = CURVES[cvid]; nb = c['nb']; n = c['n']
-    msg = b"aether ecdsa audit message curve%d" % cvid
+    msg = b"logit ecdsa audit message curve%d" % cvid
     h = hf(msg).digest()
     d = rnd_below(n); k = rnd_below(n)
     Q, r, s = ecdsa_sign(cvid, d, k, h)
@@ -120,7 +120,7 @@ DI256 = bytes.fromhex("3031300d060960864801650304020105000420")
 DI384 = bytes.fromhex("3041300d060960864801650304020205000430")
 DI512 = bytes.fromhex("3051300d060960864801650304020305000440")
 
-msg = b"aether rsa audit message"
+msg = b"logit rsa audit message"
 h256 = hashlib.sha256(msg).digest()
 h384 = hashlib.sha384(msg).digest()
 h512 = hashlib.sha512(msg).digest()
@@ -176,7 +176,7 @@ def hkdf_expand(hf, prk, info, L):
         okm += t; c += 1
     return okm[:L]
 
-ikm = bytes(range(0x30)); salt = bytes(range(0x40,0x70)); info = b"aether hkdf info"
+ikm = bytes(range(0x30)); salt = bytes(range(0x40,0x70)); info = b"logit hkdf info"
 prk384 = hkdf_extract(hashlib.sha384, salt, ikm)
 okm384 = hkdf_expand(hashlib.sha384, prk384, info, 100)
 emit("hk384_ikm", ikm); emit("hk384_salt", salt); emit("hk384_info", info)

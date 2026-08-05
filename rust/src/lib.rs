@@ -1,4 +1,4 @@
-//! Aether kernel — Rust modules (`#![no_std]`, target `x86_64-unknown-none`).
+//! Logit kernel — Rust modules (`#![no_std]`, target `x86_64-unknown-none`).
 //!
 //! Hybrid C+Rust: Rust owns the **memory-safety-critical, untrusted-input parsers**
 //! (the bug class the security audit kept finding); the C kernel keeps the core,

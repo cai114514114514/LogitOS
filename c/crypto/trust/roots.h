@@ -1,5 +1,5 @@
-#ifndef AETHER_ROOTS_H
-#define AETHER_ROOTS_H
+#ifndef LOGIT_ROOTS_H
+#define LOGIT_ROOTS_H
 
 #include <stdint.h>
 
@@ -19,7 +19,7 @@ struct root_ca {
     const uint8_t *e;   int elen;   /* RSA: public exponent (big-endian) */
 };
 
-extern const struct root_ca aether_roots[];
-extern const int aether_nroots;
+extern const struct root_ca logit_roots[];
+extern const int logit_nroots;
 
-#endif /* AETHER_ROOTS_H */
+#endif /* LOGIT_ROOTS_H */

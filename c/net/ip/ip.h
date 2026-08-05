@@ -1,5 +1,5 @@
-#ifndef AETHER_IP_H
-#define AETHER_IP_H
+#ifndef LOGIT_IP_H
+#define LOGIT_IP_H
 
 #include <stdint.h>
 #include "net.h"
@@ -39,4 +39,4 @@ void udp_input(uint32_t src, const uint8_t *data, uint16_t len,
                const uint8_t *iph);
 void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);
 
-#endif /* AETHER_IP_H */
+#endif /* LOGIT_IP_H */

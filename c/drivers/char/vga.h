@@ -1,5 +1,5 @@
-#ifndef AETHER_VGA_H
-#define AETHER_VGA_H
+#ifndef LOGIT_VGA_H
+#define LOGIT_VGA_H
 
 #include <stdint.h>
 
@@ -16,4 +16,4 @@ void vga_set_color(enum vga_color fg, enum vga_color bg);
 void vga_putc(char c);
 void vga_puts(const char *s);
 
-#endif /* AETHER_VGA_H */
+#endif /* LOGIT_VGA_H */

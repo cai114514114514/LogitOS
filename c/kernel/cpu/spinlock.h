@@ -1,5 +1,5 @@
-#ifndef AETHER_SPINLOCK_H
-#define AETHER_SPINLOCK_H
+#ifndef LOGIT_SPINLOCK_H
+#define LOGIT_SPINLOCK_H
 
 #include <stdint.h>
 
@@ -27,4 +27,4 @@ int      spin_trylock(spinlock_t *l);   /* 1 = acquired, 0 = busy; never waits.
 extern spinlock_t g_bkl;            /* Big Kernel Lock (M25 P0) */
 extern volatile int g_bkl_owner;    /* cpu index holding g_bkl (-1 = free); for nested detection */
 
-#endif /* AETHER_SPINLOCK_H */
+#endif /* LOGIT_SPINLOCK_H */

@@ -4108,7 +4108,7 @@ static const uint8_t r129_e[] = {
     0x01, 0x00, 0x01,
 };
 
-const struct root_ca aether_roots[] = {
+const struct root_ca logit_roots[] = {
     /* ISRG Root X1 (Let's Encrypt, RSA-4096) */
     { ROOT_RSA, 0, 0, 0, r0_n, sizeof r0_n, r0_e, sizeof r0_e },
     /* ISRG Root X2 (Let's Encrypt, EC P-384) */
@@ -4370,4 +4370,4 @@ const struct root_ca aether_roots[] = {
     /* atos_trustedroot_2011 */
     { ROOT_RSA, 0, 0, 0, r129_n, sizeof r129_n, r129_e, sizeof r129_e },
 };
-const int aether_nroots = (int)(sizeof aether_roots / sizeof aether_roots[0]);
+const int logit_nroots = (int)(sizeof logit_roots / sizeof logit_roots[0]);

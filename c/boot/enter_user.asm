@@ -1,5 +1,5 @@
 ; ============================================================================
-; Aether OS - drop to ring 3
+; Logit OS - drop to ring 3
 ;
 ;   void enter_user(uint64_t entry, uint64_t user_rsp);
 ;     rdi = user entry point, rsi = user stack top

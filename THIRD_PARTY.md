@@ -23,7 +23,7 @@ subject to upstream terms where required.
 | Mozilla/NSS-derived CA trust store | Public TLS trust anchors | `tools/roots/`, generated into `c/crypto/trust/roots_bundle.inc` | 130-root host bundle imported 2026-06-08; exact source revision/hash not recorded | MPL 2.0 for the Mozilla-derived bundle |
 | Noto Sans SC and Noto Sans Mono | Source fonts and generated runtime subsets | `third_party/fonts/`, `fsroot/fonts/` | Google Fonts commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3` | SIL OFL 1.1 |
 | macOS Desktop Picture | Locally generated wallpaper | Ignored `fsroot/wallpaper.png`; see `tools/mkwallpaper.sh` | Host-installed macOS asset | Proprietary; not covered by this repository's license |
-| GNU GRUB | Bootloader code embedded in generated ISO images | Generated `build/aether.iso`; no GRUB source is stored here | Host-tool version is not pinned | GPLv3 or later, subject to the exact GRUB distribution used |
+| GNU GRUB | Bootloader code embedded in generated ISO images | Generated `build/logit.iso`; no GRUB source is stored here | Host-tool version is not pinned | GPLv3 or later, subject to the exact GRUB distribution used |
 | Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into LogitOS binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
 
 ## QuickJS
@@ -195,7 +195,7 @@ rebuild the disk before distributing a binary image.
 - Upstream: <https://www.gnu.org/software/grub/>
 - License: GNU GPL version 3 or later, subject to the exact files and GRUB build
   supplied by the host environment.
-- Generated location: the bootloader content installed into `build/aether.iso`
+- Generated location: the bootloader content installed into `build/logit.iso`
   by `grub-mkrescue`.
 
 GRUB is not vendored in the Git source tree, but it is more than a host-only tool:
@@ -213,7 +213,7 @@ files placed in the ISO.
 - License summary: Rust is primarily distributed under MIT or Apache-2.0, with
   portions under BSD-like licenses; consult the `COPYRIGHT` and license files for
   the exact pinned toolchain.
-- Generated inputs: `rust/target/**/libaether_rust.a`.
+- Generated inputs: `rust/target/**/liblogit_rust.a`.
 
 The Rust crate uses `crate-type = ["staticlib"]`. Rust documents that a static
 library contains the local crate together with its upstream dependencies. Even

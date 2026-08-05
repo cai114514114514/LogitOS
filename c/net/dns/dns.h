@@ -1,5 +1,5 @@
-#ifndef AETHER_DNS_H
-#define AETHER_DNS_H
+#ifndef LOGIT_DNS_H
+#define LOGIT_DNS_H
 
 #include <stdint.h>
 
@@ -14,4 +14,4 @@ uint32_t dns_resolve(const char *name);
 void     dns_start(const char *name);
 uint32_t dns_result(void);
 
-#endif /* AETHER_DNS_H */
+#endif /* LOGIT_DNS_H */

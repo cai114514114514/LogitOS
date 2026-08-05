@@ -1,5 +1,5 @@
-#ifndef AETHER_PROC_H
-#define AETHER_PROC_H
+#ifndef LOGIT_PROC_H
+#define LOGIT_PROC_H
 
 #include <stdint.h>
 #include "interrupts.h"   /* struct registers */
@@ -50,4 +50,4 @@ struct file  *proc_fd_get(struct proc *p, int fd);
 /* Resolve `in` to an absolute canonical path against p->cwd (collapses . and ..). */
 void          proc_resolve(struct proc *p, const char *in, char *out, int max);
 
-#endif /* AETHER_PROC_H */
+#endif /* LOGIT_PROC_H */

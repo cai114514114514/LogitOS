@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the Aether app platform over QMP.
+"""Exercise the Logit app platform over QMP.
 Usage: qmp_apps.py <qmp.sock> <a.ppm> <b.ppm>"""
 import socket, json, sys, time
 

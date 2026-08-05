@@ -1,5 +1,5 @@
-#ifndef AETHER_ARP_H
-#define AETHER_ARP_H
+#ifndef LOGIT_ARP_H
+#define LOGIT_ARP_H
 
 #include <stdint.h>
 #include "eth.h"
@@ -15,4 +15,4 @@ int  arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN]);
  * Warms the cache before a cold fetch's first send. Fetch context only. */
 int  arp_warm(uint32_t ip, int timeout);
 
-#endif /* AETHER_ARP_H */
+#endif /* LOGIT_ARP_H */

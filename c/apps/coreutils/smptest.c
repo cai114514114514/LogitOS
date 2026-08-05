@@ -44,7 +44,7 @@ static long compute(unsigned long seed, unsigned *seen_mask)
  * window; day rollover is irrelevant here). */
 static long now_secs(void)
 {
-    struct aether_time t; get_time(&t);
+    struct logit_time t; get_time(&t);
     return ((long)t.hour * 60 + t.minute) * 60 + t.second;
 }
 

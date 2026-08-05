@@ -1,5 +1,5 @@
-#ifndef AETHER_INFLATE_H
-#define AETHER_INFLATE_H
+#ifndef LOGIT_INFLATE_H
+#define LOGIT_INFLATE_H
 
 #include <stdint.h>
 
@@ -12,4 +12,4 @@ int inflate_raw(const uint8_t *in, int inlen, uint8_t *out, int outcap, int *out
  * body, ignore the trailing adler32. Same return contract. */
 int zlib_decompress(const uint8_t *in, int inlen, uint8_t *out, int outcap, int *outlen);
 
-#endif /* AETHER_INFLATE_H */
+#endif /* LOGIT_INFLATE_H */

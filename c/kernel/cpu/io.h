@@ -1,5 +1,5 @@
-#ifndef AETHER_IO_H
-#define AETHER_IO_H
+#ifndef LOGIT_IO_H
+#define LOGIT_IO_H
 
 #include <stdint.h>
 
@@ -41,4 +41,4 @@ static inline uint32_t inl(uint16_t port)
     return ret;
 }
 
-#endif /* AETHER_IO_H */
+#endif /* LOGIT_IO_H */

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# crypto_diff_gen.py - random differential-test vector generator for Aether's
+# crypto_diff_gen.py - random differential-test vector generator for Logit's
 # hand-rolled crypto (c/crypto/). Writes a text vector file consumed by
 # tests/unit/crypto_diff_test.c; the C implementation must reproduce every
 # expected output byte-for-byte.
@@ -423,15 +423,15 @@ def self_check():
     # --- HKDF-SHA384: vectors from tests/unit/crypto_vectors.h ---
     ikm = bytes(range(0x00, 0x30))
     salt = bytes(range(0x40, 0x70))
-    info = b"aether hkdf info"
+    info = b"logit hkdf info"
     prk = hkdf_extract_ref(48, salt, ikm)
     chk("hkdf384 vectors.h extract", prk,
         _h("412a5ab53e6945a1270d92e0ea5b62e79ce4133f99e2de74ee048e108939af43"
            "c72505856e960b29d4c06185ad2b08f2"))
     chk("hkdf384 vectors.h expand L=100", hkdf_expand_ref(48, prk, info, 100),
-        _h("4d7883349ded4cc1381315874acf9f9f8ca1134cc58d25df5f2d8b6e4f9fb612"
-           "e083496087930ac932438a8a5f716a6462d3fb3f0532ec9523ea993e7c8d029979"
-           "e2ba8151d0697178de11e0f286a2589947eed4f004a94fa3f3767ec032bd3da7d246b4"))
+        _h("c3d1057ea66d94443012d5e52ae94bc367636553373b2c16e571eb52234d74bd48"
+           "e0950e30599a9b59ab47c6505398dfd5a49a0d1a377833fae4d01e6c5f580af0117d85"
+           "d4fb9996afe7732129612d76c2644abd0c344d9d96868776a60d25d7017750a8"))
 
     # --- HKDF-Expand-Label: vectors from tests/unit/crypto_vectors.h ---
     el256_secret = bytes(range(0x00, 0x20))

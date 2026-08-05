@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end DHCP test: boot Aether under QEMU/SLIRP, assert that the DHCP
+# End-to-end DHCP test: boot Logit under QEMU/SLIRP, assert that the DHCP
 # client bound the SLIRP-issued lease (10.0.2.15) during net_init, then fetch
 # a deterministic 32 KiB file over the leased address to prove the network is
 # fully usable with the DHCP-provided config (ip/gw/dns).

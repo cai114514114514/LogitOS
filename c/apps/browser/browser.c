@@ -1,4 +1,4 @@
-#include "aether.h"
+#include "logit.h"
 #include "dom.h"
 #include "css.h"
 #include "layout.h"
@@ -254,7 +254,7 @@ void app_main(void)
     int editing = 1;
 
     for (;;) {
-        struct aether_event e;
+        struct logit_event e;
         int need = 0;                 /* coalesce: drain the whole event burst, repaint once */
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);

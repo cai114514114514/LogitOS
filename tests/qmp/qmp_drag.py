@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the Aether OS PS/2 mouse over QMP to demonstrate window dragging,
+"""Drive the Logit OS PS/2 mouse over QMP to demonstrate window dragging,
 then screendump. Usage: qmp_drag.py <qmp.sock> <out.ppm>"""
 import socket
 import json

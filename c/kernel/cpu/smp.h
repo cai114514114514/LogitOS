@@ -1,5 +1,5 @@
-#ifndef AETHER_SMP_H
-#define AETHER_SMP_H
+#ifndef LOGIT_SMP_H
+#define LOGIT_SMP_H
 #include <stdint.h>
 
 void smp_init(void);          /* detect + bring up application processors */

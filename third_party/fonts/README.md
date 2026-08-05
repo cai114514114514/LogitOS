@@ -1,6 +1,6 @@
 # Vendored font sources
 
-Aether vendors the two unmodified variable TrueType inputs used to build its
+Logit vendors the two unmodified variable TrueType inputs used to build its
 checked-in font subsets. They came from the official Google Fonts repository at
 commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3`, imported on 2026-08-05.
 
@@ -19,8 +19,8 @@ https://raw.githubusercontent.com/google/fonts/2796410152d4f9524b68ed46e69c1b60f
 
 Noto Sans SC carries the Adobe copyright notice and reserves the font name
 `Source`. Noto Sans Mono carries the Noto Project Authors copyright notice. Both
-are licensed under SIL Open Font License 1.1. The Aether subsets are modified
-font software, are renamed internally to `Aether UI` and `Aether Mono`, and
+are licensed under SIL Open Font License 1.1. The Logit subsets are modified
+font software, are renamed internally to `Logit UI` and `Logit Mono`, and
 remain under the OFL rather than the repository's MIT license.
 
 To reproduce the checked-in subsets in a clean Python environment:

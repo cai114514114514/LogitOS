@@ -1,5 +1,5 @@
-#ifndef AETHER_TLB_H
-#define AETHER_TLB_H
+#ifndef LOGIT_TLB_H
+#define LOGIT_TLB_H
 
 /* M25 P2: cross-core TLB shootdown. When a core changes or frees a mapping that
  * another core may have cached, broadcast an IPI so every other online core
@@ -20,4 +20,4 @@
 void tlb_flush_all(void);   /* initiator: flush self + all other cores; wait for ack */
 void tlb_ipi(void);         /* IPI-240 handler (BKL-free), called from interrupt_handler */
 
-#endif /* AETHER_TLB_H */
+#endif /* LOGIT_TLB_H */

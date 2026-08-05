@@ -1,5 +1,5 @@
-#ifndef AETHER_PIT_H
-#define AETHER_PIT_H
+#ifndef LOGIT_PIT_H
+#define LOGIT_PIT_H
 
 #include <stdint.h>
 
@@ -12,4 +12,4 @@ void timer_tick(void);
 /* Monotonic tick count since pit_init. */
 uint64_t timer_ticks(void);
 
-#endif /* AETHER_PIT_H */
+#endif /* LOGIT_PIT_H */

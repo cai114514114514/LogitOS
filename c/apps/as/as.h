@@ -237,7 +237,7 @@ void      as_define_int(const char *name, int64_t v);
 Value     as_native_fail(const char *msg);  /* a native aborts the run with this message */
 void      as_install_indirection(void);     /* registers peek/poke/addr/iNptr/syscall + SYS_* */
 
-/* low-level bridge (as_ll.c): raw memory + the int 0x80 syscall (asm on Aether). */
+/* low-level bridge (as_ll.c): raw memory + the int 0x80 syscall (asm on Logit). */
 uint64_t  as_ll_peek(uint64_t addr, int width);
 void      as_ll_poke(uint64_t addr, int width, uint64_t val);
 long      as_ll_syscall(long n, long a, long b, long c);

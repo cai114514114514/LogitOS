@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive Aether OS over QMP: type shell commands, then click a file in Finder.
+"""Drive Logit OS over QMP: type shell commands, then click a file in Finder.
 Usage: qmp_demo.py <qmp.sock> <out_a.ppm> <out_b.ppm>"""
 import socket, json, sys, time
 

@@ -1,5 +1,5 @@
-#ifndef AETHER_MOUSE_H
-#define AETHER_MOUSE_H
+#ifndef LOGIT_MOUSE_H
+#define LOGIT_MOUSE_H
 
 /* PS/2 mouse (IRQ12). Enables the auxiliary device and streaming. */
 void mouse_init(void);
@@ -8,4 +8,4 @@ void mouse_init(void);
  * 3-byte packet, updates the cursor and notifies the window manager. */
 void mouse_handle(void);
 
-#endif /* AETHER_MOUSE_H */
+#endif /* LOGIT_MOUSE_H */

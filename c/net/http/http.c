@@ -43,7 +43,7 @@ static int build_request(const struct url *u, char *req, int max)
     const char *v = " HTTP/1.0\r\nHost: ";
     for (const char *p = v; *p && o < max; p++) req[o++] = *p;
     for (const char *p = u->host; *p && o < max; p++) req[o++] = *p;
-    const char *tail = "\r\nConnection: close\r\nUser-Agent: Aether/1.0\r\n\r\n";
+    const char *tail = "\r\nConnection: close\r\nUser-Agent: Logit/1.0\r\n\r\n";
     for (const char *p = tail; *p && o < max; p++) req[o++] = *p;
     return o;
 }

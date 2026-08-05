@@ -1,5 +1,5 @@
-#ifndef AETHER_X509_H
-#define AETHER_X509_H
+#ifndef LOGIT_X509_H
+#define LOGIT_X509_H
 
 #include <stdint.h>
 
@@ -61,4 +61,4 @@ int x509_verify_chain(const struct cert *certs, int n, const char *host, int64_t
 #define X509_E_NAME       -4
 #define X509_E_EXPIRED    -5
 
-#endif /* AETHER_X509_H */
+#endif /* LOGIT_X509_H */

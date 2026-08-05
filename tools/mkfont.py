@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build Aether's redistributable UI and terminal font subsets.
+"""Build Logit's redistributable UI and terminal font subsets.
 
 The checked-in sources are SIL-OFL Noto variable TrueType fonts.  This tool
 pins them to regular instances, subsets them to the character inventory used by
-Aether, and gives the modified fonts distinct internal names.  Output remains
+Logit, and gives the modified fonts distinct internal names.  Output remains
 plain TrueType (glyf outlines) so c/kernel/gui/ttf.c can parse it.
 
 Usage: mkfont.py [--ui-src FONT] [--mono-src FONT] <ui.ttf> <mono.ttf>
@@ -66,9 +66,9 @@ def _set_names(font, family, description, copyright_text, license_text,
         0: copyright_text,
         1: family,
         2: "Regular",
-        3: f"Aether OS:{family}:1.0",
+        3: f"Logit OS:{family}:1.0",
         4: f"{family} Regular",
-        5: "Version 1.0; Aether OS subset",
+        5: "Version 1.0; Logit OS subset",
         6: postscript,
         10: description,
         13: license_text,
@@ -124,7 +124,7 @@ def subset(src, face, unicodes, out, family, source_family, axes):
     _set_names(
         f,
         family,
-        f"Aether OS character subset derived from {source_family}.",
+        f"Logit OS character subset derived from {source_family}.",
         copyright_text,
         license_text,
         license_url,
@@ -154,10 +154,10 @@ def main():
 
     ui_set = gb2312_unicodes() | latin_punct()
     subset(args.ui_src, args.ui_face, ui_set, args.out_ui,
-           "Aether UI", "Noto Sans SC", {"wght": 400})
+           "Logit UI", "Noto Sans SC", {"wght": 400})
     subset(args.mono_src, args.mono_face,
            set(range(0x20, 0x7F)) | {0x00A0}, args.out_mono,
-           "Aether Mono", "Noto Sans Mono", {"wght": 400, "wdth": 100})
+           "Logit Mono", "Noto Sans Mono", {"wght": 400, "wdth": 100})
     print(f"ui:   {args.out_ui}  {os.path.getsize(args.out_ui)//1024} KiB  ({len(ui_set)} codepoints)",
           file=sys.stderr)
     print(f"mono: {args.out_mono}  {os.path.getsize(args.out_mono)//1024} KiB", file=sys.stderr)

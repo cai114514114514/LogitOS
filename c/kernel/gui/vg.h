@@ -1,5 +1,5 @@
-#ifndef AETHER_VG_H
-#define AETHER_VG_H
+#ifndef LOGIT_VG_H
+#define LOGIT_VG_H
 #include <stdint.h>
 
 /* Tiny from-scratch vector path rasterizer (integer/fixed-point; kernel is
@@ -19,4 +19,4 @@ struct vg_cmd { uint8_t op; short x[3], y[3]; };
 int vg_render_path(const struct vg_cmd *cmds, int ncmd, int unit, int px_size,
                    uint8_t *cov, int covcap, int *wout, int *hout);
 
-#endif /* AETHER_VG_H */
+#endif /* LOGIT_VG_H */

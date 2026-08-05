@@ -10,11 +10,11 @@ void app_main(void)
 
     int last = -1;
     for (;;) {
-        struct aether_event e;
+        struct logit_event e;
         while (poll_event(&e))
             if (e.type == EV_CLOSE) app_exit(0);
 
-        struct aether_time t;
+        struct logit_time t;
         get_time(&t);
         if (t.second != last) {
             last = t.second;

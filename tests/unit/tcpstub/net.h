@@ -1,5 +1,5 @@
-#ifndef AETHER_NET_H
-#define AETHER_NET_H
+#ifndef LOGIT_NET_H
+#define LOGIT_NET_H
 #include <stdint.h>
 static inline uint16_t htons(uint16_t x){ return (uint16_t)((x<<8)|(x>>8)); }
 static inline uint16_t ntohs(uint16_t x){ return htons(x); }

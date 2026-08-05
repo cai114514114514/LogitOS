@@ -1,5 +1,5 @@
-#ifndef AETHER_VMM_H
-#define AETHER_VMM_H
+#ifndef LOGIT_VMM_H
+#define LOGIT_VMM_H
 
 #include <stdint.h>
 
@@ -47,4 +47,4 @@ void vmm_free_space(uint64_t cr3);
 /* Load CR3 (switch the active address space). */
 void vmm_switch(uint64_t cr3);
 
-#endif /* AETHER_VMM_H */
+#endif /* LOGIT_VMM_H */

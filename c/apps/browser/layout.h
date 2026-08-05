@@ -1,5 +1,5 @@
-#ifndef AETHER_LAYOUT_H
-#define AETHER_LAYOUT_H
+#ifndef LOGIT_LAYOUT_H
+#define LOGIT_LAYOUT_H
 
 #include <stdint.h>
 #include "dom.h"
@@ -28,4 +28,4 @@ int   layout_count(void);
 const struct item *layout_items(void);
 void  layout_free(void);
 
-#endif /* AETHER_LAYOUT_H */
+#endif /* LOGIT_LAYOUT_H */

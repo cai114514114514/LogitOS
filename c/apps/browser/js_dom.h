@@ -1,5 +1,5 @@
-#ifndef AETHER_JS_DOM_H
-#define AETHER_JS_DOM_H
+#ifndef LOGIT_JS_DOM_H
+#define LOGIT_JS_DOM_H
 
 #include "quickjs.h"
 
@@ -13,4 +13,4 @@ void js_dom_init(JSContext *ctx, struct node *root);
 int  js_dom_dirty(void);
 void js_dom_clear_dirty(void);
 
-#endif /* AETHER_JS_DOM_H */
+#endif /* LOGIT_JS_DOM_H */

@@ -1,4 +1,4 @@
-#include "aether.h"
+#include "logit.h"
 
 /* A terminal emulator: it forks + execs the real /bin/sh, wires the shell's
  * stdin/stdout/stderr to a pair of pipes (so this app is the PTY master), renders
@@ -122,7 +122,7 @@ void app_main(void)
 
     int redraw = 1, alive = 1;
     for (;;) {
-        struct aether_event e;
+        struct logit_event e;
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE) app_exit(0);
             if (e.type == EV_KEY && in_w >= 0 && alive) {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Headless end-to-end AetherScript test: boot, drive the serial shell to run the
 # packaged /bin/as on the /usr/as/*.as examples, and assert their output. This
-# exercises the whole stack on real Aether: fork+execve /bin/as -> mini-libc fopen
-# reads the script off AetherFS -> compile -> VM, incl. A2 (for/range) and A3
+# exercises the whole stack on real Logit: fork+execve /bin/as -> mini-libc fopen
+# reads the script off LogitFS -> compile -> VM, incl. A2 (for/range) and A3
 # (typed pointer + a direct SYS_WRITE syscall). Portable (no `timeout`).
 
 set -u
@@ -41,7 +41,7 @@ for _ in $(seq 1 300); do
        && grep -aq "spawn exit: 0" "$LOG" && grep -aq "clock sane: true" "$LOG" \
        && grep -aq "sysdemo ok" "$LOG" && grep -aq "gui ok" "$LOG" \
        && grep -aq "selfhost magic: LAQ1" "$LOG" && grep -aq "selfhost ok" "$LOG"; then
-        echo "PASS: /bin/as ran the full example suite incl. M23.5 sys + GUI + the self-hosted compiler (asc.as) ON Aether"
+        echo "PASS: /bin/as ran the full example suite incl. M23.5 sys + GUI + the self-hosted compiler (asc.as) ON Logit"
         exit 0
     fi
     kill -0 "$QPID" 2>/dev/null || break

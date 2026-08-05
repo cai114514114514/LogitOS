@@ -17,7 +17,7 @@ ARCH        := x86_64
 BUILD       := build
 ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
-ISO         := $(BUILD)/aether.iso
+ISO         := $(BUILD)/logit.iso
 DISK        := $(BUILD)/disk.img
 FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
 # AetherScript layout: example scripts (source, run directly) vs library modules
@@ -91,7 +91,7 @@ OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
 # the RUSTUP toolchain's cargo/rustc (Homebrew's rust lacks cross targets); the
 # x86_64-unknown-none std is `rustup target add x86_64-unknown-none`. ---
 RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
-RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
+RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-crypto-diff test-x509-fuzz
@@ -113,7 +113,7 @@ $(RUST_LIB): $(RUST_SRC)
 
 # Same crate built for the HOST, for the host-side image tests (test-png/test-jpeg):
 # the crate is no_std either way; the tests' own malloc shims satisfy kmalloc/kfree.
-RUST_LIB_HOST := rust/target/release/libaether_rust.a
+RUST_LIB_HOST := rust/target/release/liblogit_rust.a
 $(RUST_LIB_HOST): $(RUST_SRC)
 	@if [ -z "$(RUST_BIN)" ]; then \
 	    echo "error: rustup/cargo not found (RUST_BIN is empty)."; \
@@ -141,16 +141,16 @@ $(ISO): $(KERNEL) grub.cfg
 # --- userland applications (.aex), each a ring-3 process ---
 # APP_RULE: name, link base, display name, ext, icon-glyph, "r g b" color
 APPDIR := c/apps
-# GUIDIR = windowed apps (link aether.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
+# GUIDIR = windowed apps (link logit.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
 GUIDIR := c/apps/gui
 CLIDIR := c/apps/coreutils
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
-$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/aether.h
+$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
 define APP_RULE
-$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
+$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
@@ -171,7 +171,7 @@ $(eval $(call APP_RULE,preview, 0x48000000,Preview,-,P,200,150,110))
 $(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/aether.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o c/apps/as/complete.h
+$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
@@ -208,7 +208,7 @@ QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
               third_party/quickjs/libbf.c
 ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard c/apps/libc/src/*.c)
 JS_INC     := -Ithird_party/libm -Ithird_party/quickjs    # mini-libc covered by INCDIRS
-JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"aether-2024"' -DAETHER_OS -DCONFIG_STACK_CHECK $(JS_INC)
+JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"logit-2024"' -DLOGIT_OS -DCONFIG_STACK_CHECK $(JS_INC)
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(ENGINE_SRCS))
 
 # mini-libc asm helpers (setjmp/longjmp) join the engine bundle.
@@ -260,7 +260,7 @@ $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 
 # --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
-# can't be reused: those programs use aether.h inline syscalls, not mini-libc.) ---
+# can't be reused: those programs use logit.h inline syscalls, not mini-libc.) ---
 AS_C    := $(wildcard c/apps/as/*.c)
 AS_LIBC := $(wildcard c/apps/libc/src/*.c)
 AS_LASM := $(wildcard c/apps/libc/src/*.asm)
@@ -269,7 +269,7 @@ AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
             $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
 # as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
 # rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
-# stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Aether.
+# stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Logit.
 AS_HDRS := $(wildcard c/apps/as/*.h)
 
 $(BUILD)/asobj/%.o: %.c $(AS_HDRS)
@@ -289,7 +289,7 @@ $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 # /bin/libctest -- mini-libc on-target test battery (run by `make test-libc`).
 # Links the real mini-libc objects already built for /bin/as + a test main, at
 # the common CLI base via crt0_cli. (Host-native testing is awkward: string.c
-# defines memcpy/etc. which clash with the host libc -- so we test on Aether.)
+# defines memcpy/etc. which clash with the host libc -- so we test on Logit.)
 LIBC_OBJS := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
 $(BUILD)/asobj/tests/unit/libctest_main.o: tests/unit/libctest_main.c
 	@mkdir -p $(dir $@)
@@ -324,7 +324,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
-	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Aether-LICENSING.md \
+	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
 	    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
 	    LICENSES/MIT.txt:/licenses/MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
 	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
@@ -356,7 +356,7 @@ QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -qmp unix:/tmp/aether-qmp.sock,server,nowait
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
 
 debug: $(ISO) $(DISK)
 	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S
@@ -394,7 +394,7 @@ test-x509-fuzz: $(BUILD)
 	$(BUILD)/x509_fuzz tests/unit/cert.der
 
 # Same smoke test, but attach the disk via NVMe -- proves the from-scratch NVMe
-# driver brings up a controller and aetherfs mounts + reads off it (M24 bare-metal).
+# driver brings up a controller and logitfs mounts + reads off it (M24 bare-metal).
 test-nvme: $(ISO) $(DISK)
 	@BLK=nvme sh tests/boot/run-test.sh $(ISO) $(DISK)
 
@@ -412,7 +412,7 @@ test-tcp-host:
 # echo matching and error routing, and the DNS waiter's error path.
 test-net-proto:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAETHER_NET_HOST -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
+	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
 		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
 		-Ic/drivers/timer -Ic/kernel/core
 	@./$(BUILD)/net_proto_test
@@ -420,7 +420,7 @@ test-net-proto:
 test-net: test-tcp-host test-net-proto test-dhcp-host
 
 test-dhcp-host: $(BUILD)
-	$(CC) -O2 -Wall -Wextra -DAETHER_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
+	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
 	$(BUILD)/dhcp_test
 
 # End-to-end e1000 -> IPv4 -> TCP -> HTTP transfer against a host-local server.
@@ -434,11 +434,11 @@ test-dhcp-os: $(ISO) $(DISK)
 test-https-smoke: $(ISO) $(DISK)
 	@bash tests/boot/run-https-smoke.sh $(ISO) $(DISK)
 
-# On-Aether AetherScript test: boots and runs /bin/as on the /usr/as examples.
+# On-Logit AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: $(ISO) $(DISK)
 	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
 
-# mini-libc on-target test battery: boots Aether, runs /bin/libctest, asserts LIBC_OK.
+# mini-libc on-target test battery: boots Logit, runs /bin/libctest, asserts LIBC_OK.
 test-libc: $(ISO) $(DISK)
 	@sh tests/boot/run-libc-test.sh $(ISO) $(DISK)
 
@@ -484,7 +484,7 @@ test-as-gcstress:
 # host binary), used at `make` time to precompile the stdlib .as to .la. `-c`
 # mode never invokes the syscall path, so the arm64 as_ll.c stub is fine. Host
 # and target share AS_CORE/as.h, so AS_BC_VERSION + the opcode enum match and a
-# host-produced .la loads on Aether.
+# host-produced .la loads on Logit.
 ASC := $(BUILD)/asc
 # as.h carries AS_BC_VERSION + the opcode enum; list it so a version bump or
 # opcode change forces asc (and therefore every .la) to rebuild. Without this
@@ -494,7 +494,7 @@ $(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -o $@ c/apps/as/as.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 
-# Precompile the LibAether library modules (fsroot/as/lib/*.as) to .la (compiled
+# Precompile the LibLogit library modules (fsroot/as/lib/*.as) to .la (compiled
 # bytecode). -c is compile-only (no run), so even a lib with module-mate calls
 # (mathx) is fine; packed to /usr/as/lib/.
 $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)

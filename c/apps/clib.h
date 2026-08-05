@@ -1,12 +1,12 @@
-#ifndef AETHER_CLIB_H
-#define AETHER_CLIB_H
+#ifndef LOGIT_CLIB_H
+#define LOGIT_CLIB_H
 
 /* Tiny header-only support library for the CLI programs (sh + coreutils): the
- * string + stdio helpers they all need, on top of the raw syscalls in aether.h.
+ * string + stdio helpers they all need, on top of the raw syscalls in logit.h.
  * Header-only (static inline) so each program just #includes it -- no separate
  * libc link, and none of the heavy mini-libc arena. */
 
-#include "aether.h"
+#include "logit.h"
 
 static inline int   c_strlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 static inline int   c_streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
@@ -60,4 +60,4 @@ static inline int   readline(int fd, char *buf, int max)
     return n;
 }
 
-#endif /* AETHER_CLIB_H */
+#endif /* LOGIT_CLIB_H */

@@ -1,7 +1,7 @@
 /* Host-side IPv4/UDP/ICMP/DNS protocol tests. This is a white-box translation
  * unit: it includes the implementation files and stubs only ARP, Ethernet,
  * the RNG, and the timer, so checksums, fragment reassembly, and IP dispatch
- * run exactly as they do in the kernel. Built with -DAETHER_NET_HOST so
+ * run exactly as they do in the kernel. Built with -DLOGIT_NET_HOST so
  * net_lock() degenerates to a no-op (cli/sti are ring-0 only). */
 #include <stdint.h>
 #include <stdio.h>

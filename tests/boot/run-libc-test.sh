@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Headless mini-libc test: boot Aether, drive the serial shell to run /bin/libctest
+# Headless mini-libc test: boot Logit, drive the serial shell to run /bin/libctest
 # (which links the real mini-libc and exercises string/stdlib/stdio/ctype + the
 # additions), and assert "LIBC_OK". Portable (no `timeout`). Mirrors run-as-test.sh.
 set -u

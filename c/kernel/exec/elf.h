@@ -1,5 +1,5 @@
-#ifndef AETHER_ELF_H
-#define AETHER_ELF_H
+#ifndef LOGIT_ELF_H
+#define LOGIT_ELF_H
 
 #include <stdint.h>
 
@@ -9,4 +9,4 @@
  * is untrusted on-disk data). Returns the entry virtual address, or 0 on failure. */
 uint64_t elf_load(void *image, uint64_t image_size);
 
-#endif /* AETHER_ELF_H */
+#endif /* LOGIT_ELF_H */

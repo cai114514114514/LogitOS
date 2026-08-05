@@ -1,17 +1,17 @@
 #ifndef AUI_H
 #define AUI_H
-#include "aether.h"
+#include "logit.h"
 
-/* Aether immediate-mode UI toolkit, layered on the gui_* syscalls.
+/* Logit immediate-mode UI toolkit, layered on the gui_* syscalls.
  *
- * Aether's event model delivers click-downs (EV_MOUSE: a=x, b=y, window-local) and
+ * Logit's event model delivers click-downs (EV_MOUSE: a=x, b=y, window-local) and
  * keys (EV_KEY: a=char or KEY_*) -- no hover/move/drag. So widgets are *drawn and
  * handled in the same call*, and the app re-runs its frame after each event:
  *
  *     void app_main(void) {
  *         gui_create("Demo", 320, 240);
  *         frame();                            // initial paint
- *         struct aether_event e;
+ *         struct logit_event e;
  *         for (;;) {
  *             if (!poll_event(&e)) { sys_yield(); continue; }
  *             if (e.type == EV_CLOSE) app_exit(0);
@@ -77,7 +77,7 @@ void     aui_set_accent(unsigned color); /* recolor the accent + focus tokens   
 #define AUI_FS_TITLE    20
 #define AUI_FS_HEADING  26
 
-void aui_feed(const struct aether_event *e);   /* stash the event for the coming frame */
+void aui_feed(const struct logit_event *e);   /* stash the event for the coming frame */
 void aui_feed_done(void);                    /* clear it after the frame */
 
 void aui_begin(unsigned bg);                 /* reset widget ids + clear the window */

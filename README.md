@@ -3,7 +3,7 @@
 LogitOS OS is an experimental, AI-assisted x86_64 operating-system project. It
 contains a standalone kernel that boots through GRUB/Multiboot2 into a graphical
 desktop; it is not a Linux distribution or a renamed Linux kernel. The kernel,
-drivers, AetherFS, network stack, window system, and applications are maintained
+drivers, LogitFS, network stack, window system, and applications are maintained
 in this repository, alongside explicitly identified ports and adapted code.
 
 In its tested QEMU configuration it boots to a frosted-glass desktop, can fetch
@@ -54,7 +54,7 @@ The original M1–M8 roadmap (boot → desktop) is complete, and the project has
 far beyond it.
 
 **Foundation & desktop (M1–M8):** boot + long mode + serial/VGA · interrupts +
-PS/2 keyboard · PMM + kernel heap · preemptive scheduler · ATA + **AetherFS** +
+PS/2 keyboard · PMM + kernel heap · preemptive scheduler · ATA + **LogitFS** +
 VFS · GDT/TSS + ring 3 + `int 0x80` + ELF loader · framebuffer VMM + macOS-style
 desktop · font + double-buffered compositor + mouse + draggable windows.
 
@@ -71,7 +71,7 @@ pipeline moved into the browser app, with JS↔DOM bindings · **real processes*
 **Its own language (M20–M22):** **AetherScript** — lexer (INDENT/DEDENT) + single-pass
 compiler + stack VM; strings/lists/dicts, `for`/`range`, modules + `import`, closures,
 classes (inheritance + `super`), exceptions (`raise`/`try`/`except`), a mark-sweep GC,
-and raw-memory + syscall indirection. Plus the LibAether stdlib and the Code Studio IDE.
+and raw-memory + syscall indirection. Plus the LibLogit stdlib and the Code Studio IDE.
 
 **Scaling & hardening (M25–M26 + ongoing):** a preemptive **SMP** scheduler · TCP
 out-of-order **reassembly** (large TLS handshake flights arrive reliably) · NVMe ·
@@ -104,7 +104,7 @@ The current local wallpaper is a separate, unresolved Apple-derived asset and is
 not cleared for public binary distribution. Replace it before publishing an image.
 
 ```sh
-make                 # build build/aether.iso
+make                 # build build/logit.iso
 make run             # boot in QEMU (-smp 4, virtio GPU/disk + e1000); desktop window + serial here
 make build/disk.img  # rebuild the disk image after changing apps / fonts / fsroot
 make verify-fonts    # verify vendored OFL sources and generated subset hashes
@@ -115,10 +115,10 @@ make clean
 Tests (headless, asserted over serial unless noted):
 
 ```sh
-make test            # boot smoke test (asserts the kernel prints AETHER_BOOT_OK)
+make test            # boot smoke test (asserts the kernel prints LOGIT_BOOT_OK)
 make test-shell      # fork/exec + pipes + coreutils via /bin/sh
 make test-as         # AetherScript language core (host unit tests, no QEMU)
-make test-as-os      # AetherScript on LogitOS: runs the examples incl. the LibAether stdlib
+make test-as-os      # AetherScript on LogitOS: runs the examples incl. the LibLogit stdlib
 make test-net        # TCP + IPv4/UDP/ICMP protocol unit tests (host)
 make test-net-os     # QEMU: guest fetches a 32 KiB file from a host-local HTTP server
 make test-smp        # boots -smp 4 and asserts genuine cross-core parallelism
@@ -138,20 +138,20 @@ names are unique, so every `#include "foo.h"` resolves via the Makefile's `INCDI
 c/boot/                                       Multiboot2 + long-mode entry, ISR stubs, ring-3 entry (nasm)
 c/kernel/{core,cpu,mm,sched,exec,gui,pci}/    kernel by subsystem (incl. wm = window manager + GUI syscalls, SMP)
 c/drivers/{char,timer,block,net,virtio}/      device drivers (PS/2, PIT/RTC, ATA/NVMe/virtio-blk, e1000, virtio-gpu)
-c/fs/                                          VFS + AetherFS (hierarchical read-write inode FS)
+c/fs/                                          VFS + LogitFS (hierarchical read-write inode FS)
 c/net/{link,ip,transport,core,dns,http,tls}/  network stack: eth/arp/ip/icmp/udp/dns/tcp/http + TLS 1.3 + x509
 c/crypto/{hash,aead,pubkey,trust}/            project crypto code (SHA, HMAC/HKDF, ChaCha20-Poly1305, AES-GCM, X25519, ECDSA, RSA, roots)
 c/lib/{image,text}/                            shared libs (inflate/png/gif, utf8, TrueType raster)
-c/apps/                                        ring-3 apps + shared aether.h / clib.h / crt0
+c/apps/                                        ring-3 apps + shared logit.h / clib.h / crt0
 c/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Code Studio + the aui toolkit
 c/apps/coreutils/                              /bin/sh + coreutils
 c/apps/as/                                     AetherScript: /bin/as (lexer, compiler, VM)
 c/apps/browser/                                browser + render engine (dom, layout, css_engine, paint, js_dom) + QuickJS
 c/apps/libc/                                   project freestanding mini-libc
 third_party/                                     ported, not from-scratch: QuickJS, NetSurf LibCSS, musl libm
-include/abi/aether_abi.h                         the app/syscall ABI (kernel ↔ userland)
+include/abi/logit_abi.h                         the app/syscall ABI (kernel ↔ userland)
 tools/                                           mkfs.py, mkaex.py, mkfont.py, genroots.py, QMP screenshot/CI drivers
-fsroot/                                          files packed into the disk image (incl. /usr/as LibAether stdlib + examples)
+fsroot/                                          files packed into the disk image (incl. /usr/as LibLogit stdlib + examples)
 docs/superpowers/specs/                          design specs (spec → plan → implement)
 ```
 
@@ -180,7 +180,7 @@ and make `int 0x80` syscalls directly — systems programming in a language that
 like Python. It ships as `/bin/as`, runs scripts or a REPL, pipes through the shell,
 and compiles modules to `.la` bytecode.
 
-The **LibAether** standard library (`/usr/as/lib`, ~1,450 lines of AetherScript)
+The **LibLogit** standard library (`/usr/as/lib`, ~1,450 lines of AetherScript)
 provides `seq`, `dicts`, `strings`, `sets`, `stats`, `random`, `paths`, `bits`,
 `math`, and `mathx`, with a `test` assertion module. **Code Studio**
 (`c/apps/gui/studio.c`) is its IDE: a syntax-highlighting editor that saves, runs
@@ -200,7 +200,7 @@ the authorship, testing, and capability boundaries are recorded in
 ## License
 
 LogitOS is a multi-license project. The project-authored operating-system core —
-kernel, boot code, drivers, filesystems, network stack, AetherTLS, cryptography,
+kernel, boot code, drivers, filesystems, network stack, LogitTLS, cryptography,
 and kernel-only support libraries — is licensed under `GPL-3.0-or-later`.
 Project-authored user applications, the public userspace ABI, shared Rust parser
 code, build tools, tests, documentation, and examples are licensed under `MIT`.

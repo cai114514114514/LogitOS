@@ -1,5 +1,5 @@
-#ifndef AETHER_ICONS_H
-#define AETHER_ICONS_H
+#ifndef LOGIT_ICONS_H
+#define LOGIT_ICONS_H
 #include <stdint.h>
 
 /* Procedural monochrome vector icons (M26), drawn via the vg rasterizer. */
@@ -15,4 +15,4 @@ void icon_draw(int id, int x, int y, int px, uint32_t color);
 /* Map an app (.aex file name) to an icon id, or -1 if none. */
 int  icon_for_app(const char *name, const char *ext);
 
-#endif /* AETHER_ICONS_H */
+#endif /* LOGIT_ICONS_H */

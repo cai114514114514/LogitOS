@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "syscall.h"
-#include "aether_abi.h"
+#include "logit_abi.h"
 #include "serial.h"
 #include "wm.h"
 #include "sched.h"
@@ -288,7 +288,7 @@ void syscall_dispatch(struct registers *r)
      * WM loop while the caller yields. */
     case SYS_NET_INFO: {
         if (!net_up()) { r->rax = 0; return; }
-        struct aether_netinfo *ni = (struct aether_netinfo *)r->rdi;
+        struct logit_netinfo *ni = (struct logit_netinfo *)r->rdi;
         if (!user_range_ok(ni, sizeof *ni, 1)) { r->rax = (uint64_t)-1; return; }
         ni->ip = net_cfg.ip; ni->mask = net_cfg.mask; ni->gw = net_cfg.gw;
         for (int i = 0; i < 6; i++) ni->mac[i] = net_cfg.mac[i];
@@ -316,7 +316,7 @@ void syscall_dispatch(struct registers *r)
     case SYS_IMG_DECODE: {
         /* Decode an image file (PNG/GIF) in-kernel and hand the RGBA back to the
          * caller's buffer -- so the Preview app needs no codec/libc of its own. */
-        struct aether_imgreq req;
+        struct logit_imgreq req;
         struct proc *p = proc_current();
         if (!p || user_copy_from(&req, (const void *)r->rdi, sizeof req) < 0) { r->rax = (uint64_t)-1; return; }
         char path[128], abs[128];

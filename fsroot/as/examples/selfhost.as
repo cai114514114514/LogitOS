@@ -1,4 +1,4 @@
-# selfhost -- run the AetherScript compiler (written in AetherScript) ON Aether.
+# selfhost -- run the AetherScript compiler (written in AetherScript) ON Logit.
 # Proves the whole pipeline (lex -> Pratt parse -> bytecode -> .la serialize)
 # executes on the real OS, not just the host.
 import asc

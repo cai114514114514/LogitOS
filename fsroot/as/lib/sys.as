@@ -1,4 +1,4 @@
-# sys -- direct Aether system access from AetherScript (M23.5).
+# sys -- direct Logit system access from AetherScript (M23.5).
 # Pure AetherScript over syscall()/alloc()/addr(): files, dirs, processes
 # (fork+execve+waitpid), time, network. This is the surface a sandboxed
 # scripting language doesn't get: the OS, first-class.

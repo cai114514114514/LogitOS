@@ -1,7 +1,7 @@
 #include <time.h>
 
 #define SYS_GET_TIME 10
-struct aether_time { int year, month, day, hour, minute, second, weekday; };
+struct logit_time { int year, month, day, hour, minute, second, weekday; };
 static long sys(long n, long a, long b, long c)
 { long r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory"); return r; }
 
@@ -19,7 +19,7 @@ static time_t ymd_to_unix(int Y, int Mo, int D, int h, int mi, int s)
 
 time_t time(time_t *tp)
 {
-    struct aether_time t = {0};
+    struct logit_time t = {0};
     sys(SYS_GET_TIME, (long)&t, 0, 0);
     time_t r = ymd_to_unix(t.year, t.month, t.day, t.hour, t.minute, t.second);
     if (tp) *tp = r;
@@ -49,7 +49,7 @@ struct tm *localtime(const time_t *tp) { return gmtime_r(tp, &_tmbuf); }
 
 time_t timegm(struct tm *tm)
 { return ymd_to_unix(tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec); }
-time_t mktime(struct tm *tm) { return timegm(tm); }   /* UTC == local on Aether */
+time_t mktime(struct tm *tm) { return timegm(tm); }   /* UTC == local on Logit */
 
 clock_t clock(void) { return (clock_t)0; }
 int clock_gettime(int id, struct timespec *ts) { (void)id; ts->tv_sec = time(NULL); ts->tv_nsec = 0; return 0; }

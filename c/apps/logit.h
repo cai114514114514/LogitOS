@@ -1,7 +1,7 @@
-#ifndef AETHER_USERLIB_H
-#define AETHER_USERLIB_H
+#ifndef LOGIT_USERLIB_H
+#define LOGIT_USERLIB_H
 
-#include "aether_abi.h"     /* shared with the kernel (-Iinclude) */
+#include "logit_abi.h"     /* shared with the kernel (-Iinclude) */
 
 static inline long _sys(long n, long a, long b, long c)
 {
@@ -33,9 +33,9 @@ static inline void gui_text_mono(int x, int y, unsigned color, int cell, const c
        ((long)(cell & 0xFF) << 24) | (color & 0xFFFFFF), (long)s); }
 
 static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
-static inline int  poll_event(struct aether_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
+static inline int  poll_event(struct logit_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
 static inline int  get_arg(char *b, int m) { return (int)_sys(SYS_GET_ARG, (long)b, m, 0); }
-static inline void get_time(struct aether_time *t) { _sys(SYS_GET_TIME, (long)t, 0, 0); }
+static inline void get_time(struct logit_time *t) { _sys(SYS_GET_TIME, (long)t, 0, 0); }
 static inline int  read_file(const char *n, void *b, int m) { return (int)_sys(SYS_READ_FILE, (long)n, (long)b, m); }
 static inline void sys_yield(void) { _sys(SYS_YIELD, 0, 0, 0); }
 static inline void app_exit(int c) { _sys(SYS_EXIT, c, 0, 0); }
@@ -74,7 +74,7 @@ static inline int  dir_count(const char *p) { return (int)_sys(SYS_DIR_COUNT, (l
 static inline int  dir_name(const char *p, int i, char *buf) { return (int)_sys(SYS_DIR_NAME, (long)p, i, (long)buf); }
 
 /* --- networking --- */
-static inline int      net_info(struct aether_netinfo *ni) { return (int)_sys(SYS_NET_INFO, (long)ni, 0, 0); }
+static inline int      net_info(struct logit_netinfo *ni) { return (int)_sys(SYS_NET_INFO, (long)ni, 0, 0); }
 static inline int      net_ping(unsigned ip) { return (int)_sys(SYS_NET_PING, (long)ip, 0, 0); }
 static inline int      net_ping_rtt(void) { return (int)_sys(SYS_NET_PING_RTT, 0, 0, 0); }
 static inline int      net_dns(const char *name) { return (int)_sys(SYS_NET_DNS, (long)name, 0, 0); }
@@ -90,13 +90,13 @@ static inline int http_body(char *buf, int max) { return (int)_sys(SYS_HTTP_BODY
 static inline int text_measure_px(const char *s, int len, int px, int mono)
 { return (int)_sys(SYS_TEXT_MEASURE, (long)s, len, ((long)px << 1) | (mono & 1)); }
 static inline void gui_text_run(int x, int y, int px, int mono, unsigned color, const char *s, int len)
-{ struct aether_run r = { x, y, px, mono, color, s, len }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
+{ struct logit_run r = { x, y, px, mono, color, s, len }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
 static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
-{ struct aether_blit b = { x, y, w, h, rgba, sw, sh }; _sys(SYS_GUI_BLIT, (long)&b, 0, 0); }
+{ struct logit_blit b = { x, y, w, h, rgba, sw, sh }; _sys(SYS_GUI_BLIT, (long)&b, 0, 0); }
 /* Decode an image file into `rgba` (>= w*h*4 bytes); returns 0 + sets *w,*h, or -1. */
 static inline int img_open(const char *path, unsigned char *rgba, int max, int *w, int *h)
 {
-    struct aether_imgreq q = { path, rgba, max, 0, 0 };
+    struct logit_imgreq q = { path, rgba, max, 0, 0 };
     int rc = (int)_sys(SYS_IMG_DECODE, (long)&q, 0, 0);
     if (rc == 0) { *w = q.w; *h = q.h; }
     return rc;
@@ -121,4 +121,4 @@ static inline void gui_glass(int x, int y, int w, int h, int radius,
 static inline int res_fetch_raw(const char *src, unsigned char *buf, int max)
 { return (int)_sys(SYS_RES_FETCH, (long)src, (long)buf, max); }
 
-#endif /* AETHER_USERLIB_H */
+#endif /* LOGIT_USERLIB_H */

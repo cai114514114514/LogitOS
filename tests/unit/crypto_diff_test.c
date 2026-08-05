@@ -1,4 +1,4 @@
-/* crypto_diff_test.c - differential asserter for Aether's hand-rolled crypto.
+/* crypto_diff_test.c - differential asserter for Logit's hand-rolled crypto.
  * Streams the random vector file produced by tests/unit/crypto_diff_gen.py
  * (argv[1]), runs every case through the C implementation and compares
  * byte-for-byte. Mismatches print the line number and op and the run

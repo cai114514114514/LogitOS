@@ -1,6 +1,6 @@
 export const meta = {
   name: 'files-app-impl',
-  description: 'Implement the Aether Files manager per the committed plan, in sequential build/test-gated stages',
+  description: 'Implement the Logit Files manager per the committed plan, in sequential build/test-gated stages',
   phases: [
     { title: 'Kernel', detail: 'vfs_rename + SYS_RENAME/SYS_OPEN_PATH + EV_MOUSE_R (plan steps 1-3)' },
     { title: 'App', detail: 'the files.c ring-3 app (plan step 4)' },
@@ -20,7 +20,7 @@ const SCHEMA = {
   },
   required: ['ok', 'summary', 'files_changed', 'gate_output'],
 }
-const base = `You are implementing "Aether Files" in /Users/wangzhe/ststem (cwd = repo root). The authoritative,
+const base = `You are implementing "Logit Files" in /Users/wangzhe/ststem (cwd = repo root). The authoritative,
 line-anchored plan is at ${PLAN} and the spec at ${SPEC}. READ THE PLAN FIRST. It was grounded against
 the real code; its symbols/line anchors are verified. Follow it exactly; if you must deviate, do the
 correct thing and record it in summary. The system builds clean and ALL tests pass today -- do not
@@ -38,13 +38,13 @@ async function stage(phaseName, prompt, label) {
 
 phase('Kernel')
 const s1 = await stage('Kernel',
-  `Implement PLAN STEPS 1, 2, and 3 only (vfs_rename in fs/{vfs.h,vfs.c,aetherfs.c}; SYS_RENAME in syscall.c + SYS_OPEN_PATH in wm.c + the EV_MOUSE_R/SYS_* defines in aether_abi.h + wrappers in aether.h + path_join in clib.h; right-button in mouse.c + wm.h + wm.c). Honor the aetherfs_rename hazard rules in the plan (resolve-all-first, add-then-remove with rollback, reject existing dest, reject dir-move-cycle, reject root). GATE: run \`make\` (clean), \`make test\` (boot PASS), \`make test-shell\` (PASS). All three must pass.`,
+  `Implement PLAN STEPS 1, 2, and 3 only (vfs_rename in fs/{vfs.h,vfs.c,logitfs.c}; SYS_RENAME in syscall.c + SYS_OPEN_PATH in wm.c + the EV_MOUSE_R/SYS_* defines in logit_abi.h + wrappers in logit.h + path_join in clib.h; right-button in mouse.c + wm.h + wm.c). Honor the logitfs_rename hazard rules in the plan (resolve-all-first, add-then-remove with rollback, reject existing dest, reject dir-move-cycle, reject root). GATE: run \`make\` (clean), \`make test\` (boot PASS), \`make test-shell\` (PASS). All three must pass.`,
   'kernel')
 if (!s1.ok) return { failed_at: 'Kernel', detail: s1 }
 
 phase('App')
 const s2 = await stage('App',
-  `Implement PLAN STEP 4 only: create src/apps/gui/files.c (the ring-3 Files app) and wire it into the Makefile (APP_RULE + APPS list, base 0x47000000). Model the structure on src/apps/gui/widgets.c and textedit.c; use the aui toolkit (read src/apps/gui/aui.h) + gui_* + the fd API (sys_open/read/write/close from aether.h) + dir_count/dir_name + sys_rename/sys_open_path/make_dir. Implement: path bar + Up, toolbar (New Folder/Rename/Delete/Copy/Cut/Paste), list view (icon+name+size), multi-select (click/shift/ctrl), right-click (EV_MOUSE_R) context menu, in-app clipboard (copy/cut/paste with recursive copy_tree + delete_tree), inline rename/new-folder textfield, Get Info, double-click open-file(sys_open_path)/enter-folder. GATE: \`make build/disk.img\` builds files.aex with NO new warnings/errors and packs it. (Functional GUI verified later in the Tests stage; here the gate is a clean build + the app links.)`,
+  `Implement PLAN STEP 4 only: create src/apps/gui/files.c (the ring-3 Files app) and wire it into the Makefile (APP_RULE + APPS list, base 0x47000000). Model the structure on src/apps/gui/widgets.c and textedit.c; use the aui toolkit (read src/apps/gui/aui.h) + gui_* + the fd API (sys_open/read/write/close from logit.h) + dir_count/dir_name + sys_rename/sys_open_path/make_dir. Implement: path bar + Up, toolbar (New Folder/Rename/Delete/Copy/Cut/Paste), list view (icon+name+size), multi-select (click/shift/ctrl), right-click (EV_MOUSE_R) context menu, in-app clipboard (copy/cut/paste with recursive copy_tree + delete_tree), inline rename/new-folder textfield, Get Info, double-click open-file(sys_open_path)/enter-folder. GATE: \`make build/disk.img\` builds files.aex with NO new warnings/errors and packs it. (Functional GUI verified later in the Tests stage; here the gate is a clean build + the app links.)`,
   'app')
 if (!s2.ok) return { failed_at: 'App', detail: s2, kernel: s1.summary }
 

@@ -1,5 +1,5 @@
-#ifndef AETHER_URL_H
-#define AETHER_URL_H
+#ifndef LOGIT_URL_H
+#define LOGIT_URL_H
 
 #include <stdint.h>
 
@@ -22,4 +22,4 @@ int url_parse(const char *s, struct url *out);
  * Returns 0 on success. */
 int url_resolve(const struct url *base, const char *ref, char *out, int max);
 
-#endif /* AETHER_URL_H */
+#endif /* LOGIT_URL_H */

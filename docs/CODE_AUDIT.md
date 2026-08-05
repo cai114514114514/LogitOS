@@ -36,19 +36,19 @@
 - 后果：内核任意地址写 → 内核代码执行（本地提权级）。
 - 修复建议：`elf.c:57` 后加 `if (start < 0x40000000 || end > 0x80000000) return 0;`（USER_PDPT_IDX=1 覆盖的 1 GiB），并同样校验 `e_entry`；`next_table` 的 `|= USER` 应限制在用户子树内。
 
-### S3. AetherFS `bfree()` 对盘上块号无边界校验 —— 内核堆越界写 [已核实]
+### S3. LogitFS `bfree()` 对盘上块号无边界校验 —— 内核堆越界写 [已核实]
 
-- 位置：`c/fs/aetherfs.c:77`（`bfree`），触发点 `aetherfs.c:148-170`（`inode_trunc`）
-- 问题：`bfree` 仅查 `b != 0` 即 `bit_clear(b)` → `bitmap[b >> 3]`（`aetherfs.c:69`）。bitmap 缓冲区只有 `bitmap_blocks * BS`（合法镜像 4 KiB），而 `inode_trunc` 把 inode 的 `direct[i]`、间接/双间接块表项（全是可被篡改的盘上数据）直接传入，`b` 可达 0xFFFFFFFF → 攻击者可控偏移的堆越界写。mount 只校验了 superblock 计数（`aetherfs.c:390-398`），从未校验 inode 内块号 `< total_blocks`。
-- 触发条件：挂载伪造/损坏的 AetherFS 镜像后，删除或覆写一个 direct 指针被篡改的文件。
+- 位置：`c/fs/logitfs.c:77`（`bfree`），触发点 `logitfs.c:148-170`（`inode_trunc`）
+- 问题：`bfree` 仅查 `b != 0` 即 `bit_clear(b)` → `bitmap[b >> 3]`（`logitfs.c:69`）。bitmap 缓冲区只有 `bitmap_blocks * BS`（合法镜像 4 KiB），而 `inode_trunc` 把 inode 的 `direct[i]`、间接/双间接块表项（全是可被篡改的盘上数据）直接传入，`b` 可达 0xFFFFFFFF → 攻击者可控偏移的堆越界写。mount 只校验了 superblock 计数（`logitfs.c:390-398`），从未校验 inode 内块号 `< total_blocks`。
+- 触发条件：挂载伪造/损坏的 LogitFS 镜像后，删除或覆写一个 direct 指针被篡改的文件。
 - 后果：内核堆越界写，偏移与位值部分可控。
 - 修复建议：`bfree`/`bit_clear` 内加 `if (b == 0 || b >= sb.total_blocks) return;`；更彻底是在 `imap()`/`inode_trunc` 使用任何盘上块号前统一校验范围。
 
-### S4. AetherFS `inode_read()` 有符号比较绕过 —— 大长度缓冲区溢出 [已核实]
+### S4. LogitFS `inode_read()` 有符号比较绕过 —— 大长度缓冲区溢出 [已核实]
 
-- 位置：`c/fs/aetherfs.c:134`：`if ((int)size > max) return -1;`
-- 问题：`in->size` 是不可信的盘上 uint32。`size ≥ 0x80000000` 时 `(int)size` 为负，恒不大于非负 `max`，检查被绕过；随后循环按 `size` 字节写入调用方按真实文件大小分配的缓冲区。`nblk = (size + BS - 1)/BS`（`aetherfs.c:136`）在 `size > 0xFFFFF000` 时还会回绕。`imap` 支持到双间接（约 4 GiB），可写体量远超缓冲区。
-- 触发条件：伪造镜像中一个 `size` 巨大的文件 + 任意读路径。`vfs_size` 返回 `(int)in->size`（`aetherfs.c:414`）此时为负，多数"先 size 后 read"的调用方会拒绝，但 `SYS_READ_FILE` 允许用户直接指定 `max`，是最直接的触发面。
+- 位置：`c/fs/logitfs.c:134`：`if ((int)size > max) return -1;`
+- 问题：`in->size` 是不可信的盘上 uint32。`size ≥ 0x80000000` 时 `(int)size` 为负，恒不大于非负 `max`，检查被绕过；随后循环按 `size` 字节写入调用方按真实文件大小分配的缓冲区。`nblk = (size + BS - 1)/BS`（`logitfs.c:136`）在 `size > 0xFFFFF000` 时还会回绕。`imap` 支持到双间接（约 4 GiB），可写体量远超缓冲区。
+- 触发条件：伪造镜像中一个 `size` 巨大的文件 + 任意读路径。`vfs_size` 返回 `(int)in->size`（`logitfs.c:414`）此时为负，多数"先 size 后 read"的调用方会拒绝，但 `SYS_READ_FILE` 允许用户直接指定 `max`，是最直接的触发面。
 - 后果：内核堆/用户缓冲区溢出，长度攻击者可控。
 - 修复建议：改用无符号比较并封顶：`if (size > (uint32_t)max || size > MAX_FILE_SZ) return -1;`，`MAX_FILE_SZ` 不超过 `imap` 可达范围；`vfs_size`/`inode_read` 对 `size > INT_MAX` 直接报错。
 
@@ -118,7 +118,7 @@
 ### H-5. `SYS_GUI_BLIT` 目标尺寸 dw/dh 完全未校验 → 永久系统冻结 [已核实]
 
 - 位置：`c/kernel/gui/wm.c:551-561` + `c/kernel/gui/fb.c:552-569`
-- 问题：`bl.w`/`bl.h` 来自用户态 `struct aether_blit`，只校验了 `bl.sw/bl.sh ≤ 4096`（`wm.c:556`），随后直接 `fb_blit_rgba(bl.x, bl.y, bl.w, bl.h, ...)`。`fb_blit_rgba` 按 `dw*dh` 双重循环，每次 fb_put 越界即返回——不写内存，但循环次数可达 (2³¹-1)² ≈ 4.6e18。该循环在 int 0x80 上下文执行（IF=0、持有 BKL），时钟中断无法抢占。
+- 问题：`bl.w`/`bl.h` 来自用户态 `struct logit_blit`，只校验了 `bl.sw/bl.sh ≤ 4096`（`wm.c:556`），随后直接 `fb_blit_rgba(bl.x, bl.y, bl.w, bl.h, ...)`。`fb_blit_rgba` 按 `dw*dh` 双重循环，每次 fb_put 越界即返回——不写内存，但循环次数可达 (2³¹-1)² ≈ 4.6e18。该循环在 int 0x80 上下文执行（IF=0、持有 BKL），时钟中断无法抢占。
 - 触发条件：任意 ring-3 app 发一次 SYS_GUI_BLIT 并设 `bl.w=bl.h=INT_MAX`。
 - 后果：整机永久挂死。
 - 修复建议：循环前将 `dw/dh` clamp 到目标 surface（`if (dx+dw > w->surf.w) dw = w->surf.w - dx;` 等），或硬上限 4096。
@@ -138,23 +138,23 @@
 - 后果：静默数据损坏（比 NVMe 更直接）。
 - 修复建议：校验 `e->id`，或对超时做设备/队列 reset；blk_rw 至少交叉验证返回 len `>= count*512+1`。
 
-### H-8. AetherFS `dir_add()` 分配尺寸整数回绕 → 堆溢出 [已核实]
+### H-8. LogitFS `dir_add()` 分配尺寸整数回绕 → 堆溢出 [已核实]
 
-- 位置：`c/fs/aetherfs.c:276-280`：`uint32_t old = d->size, cap = old + DIRENT_SZ; kmalloc(cap); inode_read(d, buf, (int)old)`
+- 位置：`c/fs/logitfs.c:276-280`：`uint32_t old = d->size, cap = old + DIRENT_SZ; kmalloc(cap); inode_read(d, buf, (int)old)`
 - 问题：`old` 来自盘上。`old > 0xFFFFFFBF` 时 `cap` 回绕为小值，`kmalloc` 小缓冲区，随后 `inode_read`（配合 S4 的检查绕过）把最多 `old` 字节写进去 → 堆溢出。
 - 触发条件：`SYS_MKDIR`/`SYS_WRITE_FILE`/`SYS_RENAME` 作用于一个 size 被篡改的目录。
 - 修复建议：`if (old > UINT32_MAX - DIRENT_SZ || old > MAX_FILE_SZ) return -1;`，并使用 S4 修复后的安全 `inode_read`。
 
 ### H-9. 超大目录 size 导致 BKL 下的长时间/无限扫描（系统级 DoS） [已核实]
 
-- 位置：`c/fs/aetherfs.c:210-211, 228-230, 260-262`（`dir_lookup`/`dir_nth`/`dir_is_empty`）
-- 问题：`nblk = (sz + BS - 1)/BS` 中 `sz` 未校验，伪造目录 size 接近 4 GiB 时，`resolve()` → `dir_lookup` 会对约 100 万个块逐个 `imap`+`bread`（每个 4 KiB 磁盘读）。FS 操作在 BKL 下执行，期间全系统停摆数分钟。`dir_count_live`（`aetherfs.c:251-256`）逐次调用 `dir_nth`，本身是 O(n²) 重扫。另 `imap` 返回 0 时循环是 `continue` 而非 `break`（213/232 行），稀疏空洞会一直扫到底。
+- 位置：`c/fs/logitfs.c:210-211, 228-230, 260-262`（`dir_lookup`/`dir_nth`/`dir_is_empty`）
+- 问题：`nblk = (sz + BS - 1)/BS` 中 `sz` 未校验，伪造目录 size 接近 4 GiB 时，`resolve()` → `dir_lookup` 会对约 100 万个块逐个 `imap`+`bread`（每个 4 KiB 磁盘读）。FS 操作在 BKL 下执行，期间全系统停摆数分钟。`dir_count_live`（`logitfs.c:251-256`）逐次调用 `dir_nth`，本身是 O(n²) 重扫。另 `imap` 返回 0 时循环是 `continue` 而非 `break`（213/232 行），稀疏空洞会一直扫到底。
 - 修复建议：目录遍历前校验 `sz` 上限（≤ 单间接可达且为 DIRENT_SZ 整数倍）；`imap` 返回 0 时 `break`。
 
 ### H-10. 块号未校验 + ATA 28 位 LBA 静默截断 → 读写错误扇区 [已核实]
 
-- 位置：`c/fs/aetherfs.c:64-65`（`bread`/`bwrite`：`blk * SPB`，uint32 可回绕）+ `c/drivers/block/ata.c:52`（`(lba >> 24) & 0x0F`，仅 28 位 LBA）
-- 问题：inode 块号、间接表项、superblock 的 `bitmap_start`/`inode_start` 均未与 `total_blocks` 或设备容量核对。伪造镜像可让 `bread` 读任意扇区（经 `aetherfs_read` 把任意磁盘内容返回用户态），让 `flush_bitmap`/`flush_inode` 写到攻击者选定扇区；ATA 下 lba ≥ 2²⁸ 静默回绕，掩盖越界。
+- 位置：`c/fs/logitfs.c:64-65`（`bread`/`bwrite`：`blk * SPB`，uint32 可回绕）+ `c/drivers/block/ata.c:52`（`(lba >> 24) & 0x0F`，仅 28 位 LBA）
+- 问题：inode 块号、间接表项、superblock 的 `bitmap_start`/`inode_start` 均未与 `total_blocks` 或设备容量核对。伪造镜像可让 `bread` 读任意扇区（经 `logitfs_read` 把任意磁盘内容返回用户态），让 `flush_bitmap`/`flush_inode` 写到攻击者选定扇区；ATA 下 lba ≥ 2²⁸ 静默回绕，掩盖越界。
 - 后果：磁盘破坏/信息泄露面（内存安全之外）。
 - 修复建议：`bread`/`bwrite` 入口校验 `blk < sb.total_blocks`；mount 时校验 sb 各区域 start+count ≤ total_blocks 且互不重叠；blkdev 层按设备容量拒绝越界 LBA。
 
@@ -334,17 +334,17 @@
 ### 文件系统（fs）补充中/低
 
 **中**
-- `c/fs/aetherfs.c:58-62`（触发点 217/309）— `streq()` 对非 NUL 终止的盘上目录名越界读：`de[j].name` 是 60 字节定长字段，伪造镜像可不写 NUL → 一直读到 `blk_buf` 之外。修：`strncmp` 限定 60 字节。
-- `c/fs/aetherfs.c:582` — `aetherfs_rename` 回滚不完整：回滚也失败（IO 错误）时同一 inode 链接在两个目录项下，之后删除任一路径会释放该 inode，另一目录项指向已释放 inode（UAF-on-disk，无 fsck 则永久损坏）。
-- `c/fs/aetherfs.c:354-371,426-473` — `resolve_parent` 允许 leaf 为 "." / ".."：现有防线碰巧都靠上游规范化挡住，aetherfs 自身没有任何 leaf 合法性检查；内核内部调用方传未规范化路径即可在盘上创建名为 `..` 的目录项。
+- `c/fs/logitfs.c:58-62`（触发点 217/309）— `streq()` 对非 NUL 终止的盘上目录名越界读：`de[j].name` 是 60 字节定长字段，伪造镜像可不写 NUL → 一直读到 `blk_buf` 之外。修：`strncmp` 限定 60 字节。
+- `c/fs/logitfs.c:582` — `logitfs_rename` 回滚不完整：回滚也失败（IO 错误）时同一 inode 链接在两个目录项下，之后删除任一路径会释放该 inode，另一目录项指向已释放 inode（UAF-on-disk，无 fsck 则永久损坏）。
+- `c/fs/logitfs.c:354-371,426-473` — `resolve_parent` 允许 leaf 为 "." / ".."：现有防线碰巧都靠上游规范化挡住，logitfs 自身没有任何 leaf 合法性检查；内核内部调用方传未规范化路径即可在盘上创建名为 `..` 的目录项。
 
 **低**
-- `c/fs/aetherfs.c:399-405` — mount 校验不完整 + 错误路径泄漏：任一 `bread` 失败直接 return（`bitmap`/`inodes` 泄漏）；无防重入；`root_ino` 未校验。
-- `c/fs/aetherfs.c:200-204` — `inode_write` 失败路径遗留悬空 direct 指针（trunc 后 nblk==0 不再清 direct[]；bitmap 一致，不会双重释放，属悬空状态）。
-- `c/fs/aetherfs.c:333-335` — 超长路径分量被静默截断后参与查找：70 字符名的查找可能命中 59 字符前缀的同名文件。修：分量超限直接返回 NOINO。
-- `c/fs/aetherfs.c:452` — mkdir 里 `flush_inode` 失败时新 inode 保持已分配但无目录项 → inode 泄漏（与 dir_add 失败分支的正确清理不一致）。
-- `c/fs/aetherfs.c:414,521` — `aetherfs_size`/`aetherfs_ent_size` 把 uint32 size 截断为 int；且不区分目录与文件，`file_open_vfs` 能把目录"打开"为空文件。
-- `c/fs/aetherfs.c:243` — `dir_nth` 可能返回 ino=0 的伪造目录项，`dir_count_live` 遇 0 提前停止 → 枚举计数错误（仅伪造镜像）。
+- `c/fs/logitfs.c:399-405` — mount 校验不完整 + 错误路径泄漏：任一 `bread` 失败直接 return（`bitmap`/`inodes` 泄漏）；无防重入；`root_ino` 未校验。
+- `c/fs/logitfs.c:200-204` — `inode_write` 失败路径遗留悬空 direct 指针（trunc 后 nblk==0 不再清 direct[]；bitmap 一致，不会双重释放，属悬空状态）。
+- `c/fs/logitfs.c:333-335` — 超长路径分量被静默截断后参与查找：70 字符名的查找可能命中 59 字符前缀的同名文件。修：分量超限直接返回 NOINO。
+- `c/fs/logitfs.c:452` — mkdir 里 `flush_inode` 失败时新 inode 保持已分配但无目录项 → inode 泄漏（与 dir_add 失败分支的正确清理不一致）。
+- `c/fs/logitfs.c:414,521` — `logitfs_size`/`logitfs_ent_size` 把 uint32 size 截断为 int；且不区分目录与文件，`file_open_vfs` 能把目录"打开"为空文件。
+- `c/fs/logitfs.c:243` — `dir_nth` 可能返回 ino=0 的伪造目录项，`dir_count_live` 遇 0 提前停止 → 枚举计数错误（仅伪造镜像）。
 - 整个 FS 依赖 BKL 串行化（`blk_buf`/`ind_buf`/`namebuf` 等共享静态缓冲无自旋锁），正确性系于"BKL 不在 FS 操作中途释放"的约定，值得在文件头注释明示。
 
 ### 网络栈下层与传输层（net/link + ip + transport）
@@ -459,7 +459,7 @@
 ### GUI 应用与命令行工具（apps/gui / apps/coreutils）
 
 **中**
-- `c/apps/gui/textedit.c:71-83` — 特殊键被截断成控制字符插入文本：ABI 明确 EV_KEY 的非打印键 > 0xFF（`include/abi/aether_abi.h:89-96`），这里直接 `(char)e.a`，方向键/Home/End 变成 0x01–0x08 插入文档并随 Ctrl+S 写盘。对比 `terminal.c:124` 有正确过滤。修：插入前加 `if (e.a > 0xFF) continue;`。
+- `c/apps/gui/textedit.c:71-83` — 特殊键被截断成控制字符插入文本：ABI 明确 EV_KEY 的非打印键 > 0xFF（`include/abi/logit_abi.h:89-96`），这里直接 `(char)e.a`，方向键/Home/End 变成 0x01–0x08 插入文档并随 Ctrl+S 写盘。对比 `terminal.c:124` 有正确过滤。修：插入前加 `if (e.a > 0xFF) continue;`。
 - `c/apps/coreutils/cp.c:30-43` — `cp -r` 复制目录到自身子树无防护：`cp -r /a /a/b` 无限递归直到 128 字节路径截断才碰巧终止（期间产生大量嵌套目录）。`files.c:236` 有 `path_under()` 防护，cp.c 没有，行为不一致。
 
 **低**
@@ -560,7 +560,7 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 6. **S2 ELF 加载器 VA 界限**（`elf.c:50-57`）——本地 ring-3 → 内核任意写；两行范围检查。
 7. **S1 execve TLB flush**（`exec.c:111` / `vmm.c:150-168`）——本地 ring-3 → 内核物理内存读写；一行 CR3 reload。
 8. **H-2 file_write 偏移溢出**（`file.c:222,163-167,234-247`）——本地 ring-3 → 内核破坏/整机冻结；三处溢出守卫。
-9. **S3+S4+H-8 AetherFS 盘上数据校验**（`aetherfs.c:77,134,276`）——不可信镜像 → 内核堆破坏；统一在 `imap`/`bfree`/`inode_read` 三个隘口加范围校验，一处修补覆盖大部分攻击面。
+9. **S3+S4+H-8 LogitFS 盘上数据校验**（`logitfs.c:77,134,276`）——不可信镜像 → 内核堆破坏；统一在 `imap`/`bfree`/`inode_read` 三个隘口加范围校验，一处修补覆盖大部分攻击面。
 10. **H-5 GUI_BLIT 尺寸 clamp + H-3 SYS_PIPE 悬挂 fd**（`wm.c:551-561` / `syscall.c:245-247`）——本地冻结/UAF，各一行级修复。
 
 次优批次（稳定性/正确性）：H-1（smp BKL 自死锁）、H-6/H-7（NVMe/virtio 超时 desync）、H-16（TTF VLA）、H-17（malloc sentinel）、H-18（GC 标记反向）、H-20/H-21（浏览器 JS-DOM 桥）、H-25（inflate stored 对齐）、H-24（Makefile 大小写）。
@@ -591,7 +591,7 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 | 模块 | 修复要点 | 主要跳过/遗留项 |
 |------|----------|------------------|
 | tls/crypto | 4 严重 4 高全修：BasicConstraints 链校验、rsa `elen` 校验、`mont_mul` 上限收紧到 516 字节、x25519 共享密钥全零检查，及 C2/M2/M3/S6/S7 等解析边界 | `tls_close` 不发 close_notify；x509 `pathLenConstraint` 未解析 |
-| fs | `bfree`/`inode_read`/`dir_add`/mount 全面校验盘上不可信数据；ATA LBA28 越界守卫 | `aetherfs_rename` 回滚失败仅告警（UAF-on-disk 风险记录在案） |
+| fs | `bfree`/`inode_read`/`dir_add`/mount 全面校验盘上不可信数据；ATA LBA28 越界守卫 | `logitfs_rename` 回滚失败仅告警（UAF-on-disk 风险记录在案） |
 | kernel | vmm execve 后 CR3 reload 清 TLB、ELF 加载 VA 界限、`file_write` 偏移溢出、`file_close` 锁内快照拆毁、SYS_PIPE 悬挂 fd、smp BKL 前 `cli`、H11 AP 栈泄漏 | fork 不继承 fenv（舍入模式不传递） |
 | gui 内核 / PCI | BLIT/RECT/TEXT 的 px/尺寸统一收敛 clamp、拖拽 `dragging` 悬索引、`wm_launch` 失败路径泄漏、`text_measure` font_ok 守卫 | `pci_find` 只扫 bus0/func0（设计限制） |
 | drivers | nvme 完成队列 `cid` 校验、virtio `free_head` 轮转修复超时 desync、e1000 RX 长度校验 + volatile + H9 分配检查、多处 init 失败泄漏、pit/serial/rtc 无界等待加超时 | — |
@@ -604,7 +604,7 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 
 ### 修复中新发现并顺手修复的问题
 
-- `c/fs/aetherfs.c` — `inode_write` 失败路径双重 `bfree`。
+- `c/fs/logitfs.c` — `inode_write` 失败路径双重 `bfree`。
 - `c/kernel/sched/sched.c` — `thread_create_idle` 的 `kmalloc` 返回值未检查。
 - `c/kernel/cpu/smp.c` — `cpu_apicid` 数组越界写。
 - `c/drivers/virtio/virtio.c` — descriptor `head` 恒为 0，使 used entry id 校验失效。
@@ -625,7 +625,7 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 - `c/boot/enter_user.asm` — fork 不继承 fenv：子进程丢失父进程舍入模式设置。
 - `c/net/tls/tls.c` — `tls_close` 不发 close_notify：与 `tls.h` 注释契约的行为简化。
 - `c/net/tls/x509.c` — `pathLenConstraint` 未解析：只校验 cA=TRUE。
-- `c/fs/aetherfs.c` — `aetherfs_rename` 回滚失败仅告警：IO 错误时可致盘上 UAF。
+- `c/fs/logitfs.c` — `logitfs_rename` 回滚失败仅告警：IO 错误时可致盘上 UAF。
 - `c/net/transport/udp.c` — 入站 UDP 校验和未验证。
 - `c/apps/coreutils/sh.c` — 无 quoting：含空格路径被拆成多参。
 - `c/apps/gui/studio.c` — 后台进程僵尸：EV_CLOSE 只 close 不 waitpid。
@@ -658,11 +658,11 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 
 ## WSL 回归测试结果（2026-08-04，Ubuntu 26.04 + clang 21 + qemu-system-x86_64 TCG）
 
-- **全量编译**：kernel.elf + aether.iso + disk.img（全部 .aex、真实 rust 静态库）零错误。
+- **全量编译**：kernel.elf + logit.iso + disk.img（全部 .aex、真实 rust 静态库）零错误。
 - **主机单测 8/8 通过**：test-as(254)、test-as-gcstress、test-tcp-host(26)、test-complete、test-fb-clip、test-kheap、test-png、test-jpeg。
 - **QEMU 引导 5/6 通过**：test、test-nvme、test-shell、test-libc(93/93)、test-as-os。
 - **test-smp 失败但已证实为环境问题**：`T1=4s TN=18~21s children=4 distinct_cpus=4 corruption=0` —— 4 核全部跑到、无数据损坏，仅无 wall-clock 加速。用修复前基线（HEAD 3973dec）建 git worktree 做 A/B 对比，基线同样失败（`T1=6s TN=22s`），签名一致，判定为 x86 TCG 模拟器多核串行化所致，非本次修复引入的回归。真机/KVM 下应复测。
-- **回归中捕获并修复的 2 个修复引入问题**：virtio cap 遍历 `continue` 跳过 `cap=next` 导致死循环（"missing caps" → AETHER_FB_FAIL）；elf.c VA 安全检查误拒 ld.lld 新版生成的 vaddr=0x200000 只读 headers PT_LOAD（改为跳过不映射）。均已复测通过。
+- **回归中捕获并修复的 2 个修复引入问题**：virtio cap 遍历 `continue` 跳过 `cap=next` 导致死循环（"missing caps" → LOGIT_FB_FAIL）；elf.c VA 安全检查误拒 ld.lld 新版生成的 vaddr=0x200000 只读 headers PT_LOAD（改为跳过不映射）。均已复测通过。
 
 ---
 

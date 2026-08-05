@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "aether_rust"
+name = "logit_rust"
 version = "0.1.0"

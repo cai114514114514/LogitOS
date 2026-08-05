@@ -1,5 +1,5 @@
-#ifndef AETHER_UDP_H
-#define AETHER_UDP_H
+#ifndef LOGIT_UDP_H
+#define LOGIT_UDP_H
 
 #include <stdint.h>
 
@@ -33,4 +33,4 @@ uint32_t udp_drops(int sock);
  * our datagrams arrived. Marks the matching socket (by local port). */
 void udp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code);
 
-#endif /* AETHER_UDP_H */
+#endif /* LOGIT_UDP_H */
