@@ -714,3 +714,63 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 - `tls_close` 不发送 close_notify（tls.h 注释保留为待办描述，实际只释放并擦除会话）。
 - AES-GCM 查表实现存在 timing 侧信道面；DRBG 运行期不重播种。
 - 握手转录静态缓冲（`body`/`flight`/`dec`）只装公开消息（证书、Finished），不擦除。
+
+---
+
+## Crypto 安全修复批（2026-08-05）
+
+本节是继「TLS 安全修复批」之后对 `c/crypto/` 与内核 RNG 的专项，取代上节
+「已知限制」中「DRBG 运行期不重播种」一项。
+
+### DRBG 重构（commit 39d6510）
+
+原 SHA-256 DRBG 把内部状态哈希后原样作为随机数输出——**输出即内部状态**：
+任意一个 32 字节输出块泄露即暴露全部历史与未来输出，且首次播种后永不重播种。
+重构为 Hash_DRBG 风格的状态/输出分离：
+
+- reseed：`state = H(state ‖ 0x00 ‖ entropy)`（RDSEED 优先、RDRAND 兜底，各重试 16 次）
+- generate：`block = H(state ‖ 0x01 ‖ counter)` 输出；`state = H(state ‖ 0x02 ‖ counter)` 逐块演化
+- 周期重播种：每 1024 次调用或 1 MiB 输出（先到为准）强制混入硬件熵
+
+泄露单个 state 无法回推历史输出（epoch 内前向安全）。结构测试 `tests/unit/rng_test.c`
+（11 项断言，挂入 `make test-crypto`）：输出 ≠ 生成态/演化态、状态逐块演化、4096 块两两互异、
+强制/周期 reseed 生效、部分块消耗整计数步、空调用安全。
+
+### 清零统一 + 负向向量 + hkdf 契约修复（commit c563df0）
+
+- `crypto.h` 提供单实现 `crypto_wipe()`（volatile 防死存储消除）；AES-GCM 轮密钥/GHASH 密钥/
+  E(J0)/CTR 密钥流、ChaCha 一次性 Poly 密钥/poly 状态/密钥流、HMAC 三块密钥垫/中间摘要/
+  哈希上下文、HKDF T 链全部用后即擦；tls.c 与 rng.c 的本地 wipe 统一到该实现。
+- 负向/Wycheproof 风格向量：断言数 90 → **169**。AEAD 双套件 tag/ct/aad/nonce/key 篡改必拒 +
+  零长往返；X25519 低阶点全家桶（u=0/1/p−1/p/p+1/bit255 掩码）输出必须全零（tls.c contributory
+  检查依赖此性质）；ECDSA P-256/P-384 的 r/s 边界（0/n/n+1）、坐标越界、off-curve、全零公钥必拒；
+  RSA 篡改/偶数模数/sig≥n/siglen>n 必拒 + `rsa_modexp_be` 边界码；HKDF RFC 上限与 expand_label
+  边界接受/拒绝。
+- **hkdf_expand_label 契约 bug（负向测试钓出）**：原接受 outlen ≤ 0xFFFF，但 hkdf_expand 对
+  outlen > 255·hlen 静默不写输出——调用方拿到「成功 + 未初始化数据」。现收紧到 255·hlen。
+
+### 随机差分测试（本批新增 `make test-crypto-diff`）
+
+手写大数的稀有进位 bug 是固定 KAT 抓不住的。新增纯 Python 参考实现
+（`tests/unit/crypto_diff_gen.py`，stdlib only，固定 seed 可复现）与 C 断言器
+（`tests/unit/crypto_diff_test.c`）。参考实现先过 27 项官方向量自验（RFC 7748 §5.2/§6.1、
+FIPS-197 App.B、NIST GCM、RFC 8439 A.5/§2.8.2、RFC 5869、既有可信 KAT）才允许生成——
+自验环节实际拦下 3 个参考实现自身 bug。**128,714 / 128,714 逐字节一致，0 失配**：
+
+| op | 规模 | 覆盖 |
+|---|---|---|
+| emul | 101,024 | ECDSA modmul（P-256/P-384 × 模 p/模 n，Barrett 全路径）+ 边界 {0,1,m−1,m−2} |
+| rexp | 5,030 | RSA modexp（512–4096 位随机奇模数，Montgomery 全路径）+ 边界 |
+| x255 | 8,160 | X25519 随机梯子 + 低阶点边界 |
+| gcm / aead | 各 4,000 | AES-128-GCM / ChaCha20-Poly1305（0–4096 字节，含非整块）+ open 回环 + tag 翻转必拒 |
+| hash | 3,000 | SHA-256/384/512 随机长消息 + 12 个跨块边界长度 |
+| hmac / hkdf / exlb | 2,000 / 1,000 / 500 | 长短密钥、RFC 上限、11 个真实 TLS 标签 |
+
+长跑步进 `make test`；生成产物在 `build/` 不进 git。
+
+### 已知限制（明确不声称，本节仍然有效）
+
+- AES-128 为字节型 S-box 查表实现，非常量时间（cache-timing 面）——QEMU/TCG 演示
+  TLS 客户端的接受取舍，代码注释与 TRANSPARENCY.md 已如实声明。
+- RSA/ECDSA 仅验签（公开数据），不做常量时间化。
+- HKDF 仅 SHA-256/384；`hkdf_expand` 对非法参数是静默 no-op（调用方契约，已断言文档化）。

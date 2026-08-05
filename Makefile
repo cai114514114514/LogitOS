@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/libaether_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-x509-fuzz
+.PHONY: all run debug test test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -377,6 +377,15 @@ test-crypto: $(BUILD)
 	$(BUILD)/rsa_test
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c -Ic/crypto -Ic/kernel/core -Itests/unit/rngstub
 	$(BUILD)/rng_test
+
+# Randomized differential tests: a self-checked pure-Python reference
+# (tests/unit/crypto_diff_gen.py) emits ~127k random vectors; the C asserter
+# (tests/unit/crypto_diff_test.c) replays them against the C implementations
+# and requires byte-identical output. Long-running; not part of `make test`.
+test-crypto-diff: $(BUILD)
+	python3 tests/unit/crypto_diff_gen.py $(BUILD)/crypto_diff_vec.txt
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_diff_test tests/unit/crypto_diff_test.c $(CRYPTO_SRC) -Ic/crypto
+	$(BUILD)/crypto_diff_test $(BUILD)/crypto_diff_vec.txt
 
 # ASan/UBSan fuzz of the X.509 DER parser (attacker-controlled input on every
 # HTTPS handshake) against a real cert. Long-running; not part of `make test`.

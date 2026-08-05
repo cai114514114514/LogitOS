@@ -129,6 +129,11 @@ Known limitations and boundaries include:
   and is not constant-time (a cache-timing side channel). This is an
   accepted limitation for a QEMU/TCG demo TLS client, not a claim of
   side-channel resistance.
+- Cryptographic correctness claims are backed by host-side evidence, not
+  external review: `make test-crypto` runs 169 known-answer and negative
+  vectors plus the ecdsa/rsa/rng batteries, and `make test-crypto-diff`
+  replays 128,714 randomized differential cases against a self-checked
+  pure-Python reference (all byte-identical at the time of writing).
 - The browser implements a small portion of modern web standards and has no origin
   or JavaScript sandbox suitable for adversarial pages.
 - AetherScript deliberately exposes raw-memory and direct-syscall operations; it
