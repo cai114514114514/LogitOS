@@ -1,6 +1,15 @@
 #include "as.h"
 #include "logit_abi.h"   /* SYS_* numbers (shared kernel ABI) */
 
+/* The syscall numbers above are an identity, not a copy -- as_define_int()
+ * below hands the kernel's own SYS_* to the script, so they cannot drift. This
+ * makes the struct LAYOUTS the same kind of identity: every offset and size in
+ * the generated fsroot/as/lib/abi.as is asserted here against the real struct,
+ * by this very compile. A kernel that reorders a field breaks the build instead
+ * of leaving a script reading the wrong bytes.
+ *   regenerate: python3 tools/gen_abi.py --write   verify: make check-abi */
+#include "abi_layout.inc"
+
 /* A3 indirection builtins: raw memory (peek/poke), the address of an object's
  * backing store (addr), typed pointers (iNptr -> p[i]), and direct Logit syscalls
  * (syscall). This is what lets AetherScript do systems programming, not just compute. */
