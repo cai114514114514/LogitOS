@@ -36,10 +36,24 @@ DC=/usr/as/examples/durcheck.as
 WORK="$(mktemp -d)"
 DISKC="$WORK/disk.img"
 cp "$DISK" "$DISKC"
-cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; rm -rf "$WORK"; }
+cleanup() { [ -n "${QPID:-}" ] && kill -9 "$QPID" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
+
+# Never `wait` for a SIGKILLed background-pipeline member here: under WSL the
+# SIGCHLD is never delivered and bash's do_wait wedges until some OTHER child
+# dies. Kill, then poll for the process to vanish (bounded; a stale zombie is
+# tolerated -- it holds no open files and cannot touch the disk image).
+reap() {
+    [ -n "${QPID:-}" ] || return 0
+    kill -9 "$QPID" 2>/dev/null
+    for _ in $(seq 1 100); do
+        kill -0 "$QPID" 2>/dev/null || break
+        sleep 0.1
+    done
+    QPID=""
+}
 
 # One boot against the persistent copy. $1 = what to type, $2 = log, $3 = settle
 # seconds after typing (writes go straight through virtio-blk with no cache, so
@@ -54,8 +68,7 @@ boot() {
     QPID=$!
     local waited=0
     while kill -0 "$QPID" 2>/dev/null && [ "$waited" -lt 150 ]; do sleep 1; waited=$((waited + 1)); done
-    kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
-    QPID=""
+    reap
     tr -d '\r' <"$log" >"$log.n" && mv "$log.n" "$log"   # serial is CRLF
 }
 
