@@ -1,0 +1,42 @@
+# How AetherScript calls the kernel. THE source for it -- not a copy of one.
+#
+# include/abi/logit_abi.h defines the syscall NUMBERS and the struct LAYOUTS, and
+# both of those are already identities: as_native.c hands the kernel's own SYS_*
+# to the script, and every struct offset is asserted against the header at
+# compile time. What the header could not express was the CALLING CONVENTION --
+# `SYS_GUI_RECT 5 /* ((x<<16)|y, (w<<16)|h, color) */` puts it in a comment, and
+# a comment is not checkable. So it was written out by hand three times: here in
+# the comment, packed in fsroot/as/lib/gui.as, and unpacked in c/kernel/gui/wm.c.
+#
+# This file is the one place it is written. tools/gen_abi.py generates from it:
+#   fsroot/as/lib/abi.as     the script-side wrappers, which do the packing
+#   include/abi/logit_pack.h the kernel-side unpack macros, same fields
+# so the two sides cannot disagree about where a field lives.
+#
+# Syntax, one call per line:
+#   call <as_name> <SYS_SYMBOL> <arg>...
+# where each arg is one syscall argument (the kernel takes at most 3 after the
+# number):
+#   int(n)                 passed through unchanged
+#   str(s)                 a string; the wrapper passes addr(s)
+#   buf(b)                 a buffer or layout; the wrapper passes addr(b)
+#   lit(N)                 a constant the caller never supplies
+#   pack(f:shift:width,..) bitfields in ONE argument, written high bits first
+#
+# pack() spells out shift and width rather than inferring them: an ABI source of
+# truth should be unambiguous ahead of pretty, and both the pack and the unpack
+# fall out of the same three numbers.
+
+# ---- window + drawing (fsroot/as/lib/gui.as is a thin wrapper over these) ----
+call gui_create     SYS_GUI_CREATE     str(title) pack(w:16:16, h:0:16)
+call gui_clear      SYS_GUI_CLEAR      int(color)
+call gui_rect       SYS_GUI_RECT       pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) int(color)
+call gui_text       SYS_GUI_TEXT       pack(x:16:16, y:0:16) int(color) str(s)
+call gui_text_mono  SYS_GUI_TEXT_MONO  pack(x:16:16, y:0:16) pack(cell:24:8, color:0:24) str(s)
+call gui_icon       SYS_GUI_ICON       pack(x:16:16, y:0:16) pack(id:16:16, px:0:16) int(color)
+call gui_glass      SYS_GUI_GLASS      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:32:32, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
+call gui_flush      SYS_GUI_FLUSH
+call gui_poll_event SYS_POLL_EVENT     buf(ev)
+call ui_dark_query  SYS_UI_DARK        lit(-1)
+call ui_dark_set    SYS_UI_DARK        int(on)
+call sys_yield      SYS_YIELD

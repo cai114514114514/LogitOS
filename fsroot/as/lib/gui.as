@@ -7,8 +7,16 @@
 #   ev = gui.poll()          # nil, or an Event with .type .a .b (EV_KEY/EV_MOUSE/EV_CLOSE)
 # The kernel adopts the script's process as a window owner on create(); closing
 # the window delivers EV_CLOSE and the script exits like any app.
+#
+# There is no bit-twiddling left in this file. `(x << 16) | y` is a calling
+# convention, and a convention written out by hand at each caller is one nothing
+# checks -- it lived here, in a logit_abi.h comment, and in the kernel's
+# unpacking: three copies of one rule. It is stated once now, in
+# include/abi/logit_calls.abi, which generates both the packing these wrappers
+# call (`abi`) and the kernel's unpack macros (include/abi/logit_pack.h).
 
-from abi import Event
+from abi import Event, gui_create, gui_clear, gui_rect, gui_text, gui_text_mono
+from abi import gui_icon, gui_glass, gui_flush, gui_poll_event, ui_dark_query, sys_yield
 
 # One event struct, reused: the kernel fills it on each poll and the caller is
 # expected to handle the event before polling again. Its field offsets come from
@@ -17,36 +25,39 @@ from abi import Event
 _ev = Event()
 
 def create(title, w, h):
-    return syscall(SYS_GUI_CREATE, addr(title), (w << 16) | h)
+    return gui_create(title, w, h)
 
 def clear(color):
-    return syscall(SYS_GUI_CLEAR, color)
+    return gui_clear(color)
 
 def rect(x, y, w, h, color):
-    return syscall(SYS_GUI_RECT, (x << 16) | y, (w << 16) | h, color)
+    return gui_rect(x, y, w, h, color)
 
 def text(x, y, color, s):
-    return syscall(SYS_GUI_TEXT, (x << 16) | y, color, addr(s))
+    return gui_text(x, y, color, s)
 
 def text_mono(x, y, cell, color, s):
-    return syscall(SYS_GUI_TEXT_MONO, (x << 16) | y, (cell << 24) | color, addr(s))
+    return gui_text_mono(x, y, cell, color, s)
 
 def icon(x, y, id, px, color):
-    return syscall(SYS_GUI_ICON, (x << 16) | y, (id << 16) | px, color)
+    return gui_icon(x, y, id, px, color)
 
-def glass(x, y, w, h, spec):
-    return syscall(SYS_GUI_GLASS, (x << 16) | y, (w << 16) | h, spec)
+# radius and an RGBA tint, each its own argument now. It used to take one
+# pre-packed 64-bit `spec`, which meant the packing rule leaked out of this
+# module and into every caller.
+def glass(x, y, w, h, radius, tr, tg, tb, ta):
+    return gui_glass(x, y, w, h, radius, tr, tg, tb, ta)
 
 def flush():
-    return syscall(SYS_GUI_FLUSH)
+    return gui_flush()
 
 def dark():
-    return syscall(SYS_UI_DARK, -1)
+    return ui_dark_query()
 
 def poll():
-    if syscall(SYS_POLL_EVENT, addr(_ev)) != 1:
+    if gui_poll_event(_ev) != 1:
         return nil
     return _ev
 
 def yield_():
-    return syscall(SYS_YIELD)
+    return sys_yield()

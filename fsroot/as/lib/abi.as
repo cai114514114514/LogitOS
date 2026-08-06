@@ -10,6 +10,12 @@
 # against the real struct, and a kernel that reorders a field breaks the build
 # instead of leaving a script reading the wrong bytes.
 #
+# The call wrappers below come from include/abi/logit_calls.abi, which is the one
+# place the calling convention is written: the same field positions generate the
+# kernel-side unpack macros in include/abi/logit_pack.h. `(x << 16) | y` used to
+# live in a header comment, in gui.as, and in wm.c -- three copies of a rule
+# nothing checked.
+#
 # Regenerate:  python3 tools/gen_abi.py --write
 # Verify:      make check-abi
 
@@ -64,3 +70,41 @@ Imgreq = layout("logit_imgreq", 32, [
     ["w", 20, 4, "i"],
     ["h", 24, 4, "i"]
 ])
+
+# ---- calls (include/abi/logit_calls.abi) ----
+
+def gui_create(title, w, h):
+    return syscall(SYS_GUI_CREATE, addr(title), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)))
+
+def gui_clear(color):
+    return syscall(SYS_GUI_CLEAR, color)
+
+def gui_rect(x, y, w, h, color):
+    return syscall(SYS_GUI_RECT, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)), color)
+
+def gui_text(x, y, color, s):
+    return syscall(SYS_GUI_TEXT, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), color, addr(s))
+
+def gui_text_mono(x, y, cell, color, s):
+    return syscall(SYS_GUI_TEXT_MONO, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((cell & 0xFF) << 24) | ((color & 0xFFFFFF)), addr(s))
+
+def gui_icon(x, y, id, px, color):
+    return syscall(SYS_GUI_ICON, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((id & 0xFFFF) << 16) | ((px & 0xFFFF)), color)
+
+def gui_glass(x, y, w, h, radius, tr, tg, tb, ta):
+    return syscall(SYS_GUI_GLASS, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)), ((radius & 0xFFFFFFFF) << 32) | ((tr & 0xFF) << 24) | ((tg & 0xFF) << 16) | ((tb & 0xFF) << 8) | ((ta & 0xFF)))
+
+def gui_flush():
+    return syscall(SYS_GUI_FLUSH)
+
+def gui_poll_event(ev):
+    return syscall(SYS_POLL_EVENT, addr(ev))
+
+def ui_dark_query():
+    return syscall(SYS_UI_DARK, -1)
+
+def ui_dark_set(on):
+    return syscall(SYS_UI_DARK, on)
+
+def sys_yield():
+    return syscall(SYS_YIELD)
