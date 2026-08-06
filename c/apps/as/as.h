@@ -57,7 +57,7 @@ typedef struct {
 
 /* --- objects --- */
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
-               O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE, O_SHAPE,
+               O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE, O_SHAPE, O_BUF,
                O__COUNT } ObjType;   /* sentinel: sizes the descriptor table in object.c */
 /* Two bytes, where an intrusive allocation list cost sixteen. The `next` pointer
  * moved out into a contiguous registry (object.c): sweeping a dense array beats
@@ -114,7 +114,11 @@ typedef struct {           /* a compiled function (also the top-level "script") 
      * the case the cache exists for. Runtime only, never serialized. */
     struct PCache *pcache; int pcache_n;
 } ObjFn;
-struct PCache { uint32_t shape_id; int slot; };   /* shape_id 0 == empty */
+/* shape_id 0 == empty. `kind` is SK_VALUE for an ordinary object (a == the slot
+ * index) and a machine kind for a layout (a == the byte offset, width from the
+ * shape). One cache serves both: shape ids are globally unique and never reused,
+ * so an entry armed by an instance can never be hit by a buffer. */
+struct PCache { uint32_t shape_id; int32_t a; uint16_t width; uint8_t kind; };
 
 /* M22 closures: an upvalue points at a captured variable — a live stack slot
  * while "open", or its own `closed` copy once the slot leaves the stack. */
@@ -168,6 +172,11 @@ typedef struct ObjClass {
  *
  * This is also the groundwork for declared fields: `field a, b, c` gives the
  * shape at class-definition time instead of discovering it during init. */
+/* How one slot of a machine-typed shape is stored. Absent (specs == NULL) for an
+ * ordinary object shape, whose slots are Values. */
+enum { SK_VALUE = 0, SK_I = 1, SK_U = 2, SK_PTR = 3, SK_SPAN = 4 };
+typedef struct { uint16_t off; uint16_t width; uint8_t kind; } SlotSpec;
+
 typedef struct Shape {
     Obj obj;
     uint32_t id;                        /* identity for inline caches; never 0, never reused */
@@ -175,8 +184,29 @@ typedef struct Shape {
     ObjStr **names;                     /* names[i] -> slot i */
     struct ShapeEdge *edges;            /* name -> the shape with that field appended */
     int nedges, edgecap;
+    /* A machine-typed shape describes bytes rather than Values: slot i lives at
+     * specs[i].off for specs[i].width bytes. It is complete and immutable the
+     * moment it is built (a kernel struct does not grow fields), so it never has
+     * edges. `bytes` is the whole struct's size. */
+    SlotSpec *specs;                    /* NULL for an ordinary object shape */
+    ObjStr *sname;                      /* the C struct's name, for diagnostics */
+    int bytes;
 } Shape;
 struct ShapeEdge { ObjStr *name; Shape *to; };
+
+/* A byte buffer the collector owns, optionally carrying a shape that names
+ * fields at fixed offsets.
+ *
+ * Shapeless it replaces alloc()/dealloc(): the same raw memory, minus the
+ * pairing -- and `read_file_max` really did leak its buffer forever if anything
+ * between the two raised, because that memory was plain malloc the GC never saw.
+ *
+ * Shaped it is a kernel struct. The offsets do not come from counting bytes in a
+ * header comment; they are generated from include/abi/logit_abi.h and asserted
+ * against that header by the compiler that builds /bin/as (see abi_layout.inc),
+ * so a struct the kernel changes is a build failure rather than a script quietly
+ * reading the wrong field. addr(buf) is exactly the pointer the kernel wants. */
+typedef struct { Obj obj; Shape *shape; uint8_t *raw; int nbytes; } ObjBuf;
 
 typedef struct {
     Obj obj;
@@ -231,6 +261,10 @@ typedef struct ObjModule {
 #define AS_CLASS(v)        ((ObjClass *)AS_OBJ(v))
 #define IS_INSTANCE(v)     ((v).tag == OBJ_TAG(O_INSTANCE))
 #define AS_INSTANCE(v)     ((ObjInstance *)AS_OBJ(v))
+#define IS_BUF(v)          ((v).tag == OBJ_TAG(O_BUF))
+#define AS_BUF(v)          ((ObjBuf *)AS_OBJ(v))
+#define IS_SHAPE(v)        ((v).tag == OBJ_TAG(O_SHAPE))
+#define AS_SHAPE(v)        ((Shape *)AS_OBJ(v))
 #define IS_RANGE(v)        ((v).tag == OBJ_TAG(O_RANGE))
 #define AS_RANGE(v)        ((ObjRange *)AS_OBJ(v))
 /* i-th element; the caller bounds-checks against ->count. */
@@ -312,6 +346,12 @@ ObjRange *as_range_new(int64_t start, int64_t step, int64_t count);
 /* Instance fields, by shape. as_instance_get returns 0 if the field is absent;
  * as_instance_set adds it (transitioning the shape) and returns 0 only on OOM. */
 int  as_shape_find(Shape *s, ObjStr *name);        /* slot index, or -1 */
+/* Machine-typed shapes + the buffers that carry them. as_layout_shape_new takes
+ * ownership of neither array; it copies. */
+Shape  *as_layout_shape_new(ObjStr *sname, int bytes, ObjStr **names, SlotSpec *specs, int n);
+ObjBuf *as_buf_new(Shape *shape, int nbytes);      /* zeroed; shape may be NULL */
+int  as_buf_get(ObjBuf *b, const SlotSpec *sp, Value *out);
+int  as_buf_set(ObjBuf *b, const SlotSpec *sp, Value v);   /* 0 = type/range error */
 int  as_instance_get(ObjInstance *in, ObjStr *name, Value *out);
 int  as_instance_set(ObjInstance *in, ObjStr *name, Value val);
 void      as_chunk_write(ObjFn *fn, uint8_t b);

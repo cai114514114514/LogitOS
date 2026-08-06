@@ -163,12 +163,42 @@ static struct PCache *fn_pcache(ObjFn *fn, int ki)
 static int instance_get_cached(ObjFn *fn, int ki, ObjInstance *in, Value *out)
 {
     struct PCache *pc = fn_pcache(fn, ki);
-    if (pc && pc->shape_id == in->shape->id) { *out = in->slots[pc->slot]; return 1; }
+    if (pc && pc->shape_id == in->shape->id) { *out = in->slots[pc->a]; return 1; }
     int i = as_shape_find(in->shape, AS_STR(fn->consts[ki]));
     if (i < 0) return 0;
-    if (pc) { pc->shape_id = in->shape->id; pc->slot = i; }
+    if (pc) { pc->shape_id = in->shape->id; pc->a = i; pc->kind = SK_VALUE; pc->width = 0; }
     *out = in->slots[i];
     return 1;
+}
+
+/* The same cache and the same guard, resolving to a byte offset instead of a
+ * slot index. Shape ids are globally unique, so an entry armed here can never be
+ * hit by the instance path above or the other way round -- the two share one
+ * table without needing a discriminator. (`fs`, not `sp`: sp is the VM stack
+ * pointer.) */
+static int buf_slot_cached(ObjFn *fn, int ki, ObjBuf *b, SlotSpec *fs)
+{
+    if (!b->shape || !b->shape->specs) return 0;      /* a plain buffer has no fields */
+    struct PCache *pc = fn_pcache(fn, ki);
+    if (pc && pc->shape_id == b->shape->id) {
+        fs->off = (uint16_t)pc->a; fs->width = pc->width; fs->kind = pc->kind;
+        return 1;
+    }
+    int i = as_shape_find(b->shape, AS_STR(fn->consts[ki]));
+    if (i < 0) return 0;
+    *fs = b->shape->specs[i];
+    if (pc) { pc->shape_id = b->shape->id; pc->a = fs->off; pc->width = fs->width; pc->kind = fs->kind; }
+    return 1;
+}
+
+/* Name a buffer for an error message: its C struct name when it has a layout. */
+static void buf_where(ObjBuf *b, const char **pre, int *len, const char **chars)
+{
+    if (b->shape && b->shape->sname) {
+        *pre = "layout "; *len = b->shape->sname->len; *chars = b->shape->sname->chars;
+    } else {
+        *pre = "a plain "; *len = 6; *chars = "buffer";
+    }
 }
 
 /* Resolve consts[ki] as a global, memoising where it landed in fn->gcache.
@@ -310,6 +340,7 @@ static Value native_len(int argc, Value *args)
     if (IS_STR(args[0]))   return INT_VAL(AS_STR(args[0])->len);
     if (IS_DICT(args[0]))  return INT_VAL(AS_DICT(args[0])->live);
     if (IS_RANGE(args[0])) return INT_VAL(AS_RANGE(args[0])->count);
+    if (IS_BUF(args[0]))   return INT_VAL(AS_BUF(args[0])->nbytes);
     return as_native_fail("len() needs a list, string, or dict");
 }
 /* ---- M21-P3 self-hosting natives: byte/char primitives + portable file I/O.
@@ -407,6 +438,58 @@ static Value native_str(int argc, Value *args)   /* M23: print-form of any value
     ObjStr *s = as_str_copy(buf, n);            /* args[] stay stack-rooted across this */
     return s ? OBJ_VAL(s) : NIL_VAL;            /* OOM: g_oom set, dispatch unwinds */
 }
+/* buffer(n) -- n zeroed bytes the collector owns. This is alloc() without the
+ * dealloc(): the same raw memory, minus the pairing that leaked the buffer for
+ * good whenever anything between the two raised. */
+static Value native_buffer(int argc, Value *args)
+{
+    if (argc != 1 || !IS_INT(args[0]) || AS_INT(args[0]) < 0 || AS_INT(args[0]) > (1 << 26))
+        return as_native_fail("buffer() takes a byte count (0 .. 64 MiB)");
+    ObjBuf *b = as_buf_new(NULL, (int)AS_INT(args[0]));
+    return b ? OBJ_VAL(b) : NIL_VAL;              /* g_oom set; dispatch unwinds */
+}
+
+/* layout(struct_name, size, [[field, offset, width, kind], ...]) -> a callable
+ * layout. Called only from the GENERATED fsroot/as/lib/abi.as, whose numbers come
+ * from include/abi/logit_abi.h and are asserted against that header by the very
+ * compiler that builds /bin/as. Validated anyway: a bad width or an offset past
+ * the end is a wild read, and "it is generated" is not a memory-safety argument. */
+#define AS_LAYOUT_MAX_FIELDS 32
+static Value native_layout(int argc, Value *args)
+{
+    if (argc != 3 || !IS_STR(args[0]) || !IS_INT(args[1]) || !IS_LIST(args[2]))
+        return as_native_fail("layout() takes (struct_name, size, fields)");
+    int64_t bytes = AS_INT(args[1]);
+    if (bytes <= 0 || bytes > 65535) return as_native_fail("layout() size out of range");
+    ObjList *fl = AS_LIST(args[2]);
+    if (fl->count > AS_LAYOUT_MAX_FIELDS)
+        return as_native_fail("layout() supports at most 32 fields");
+
+    ObjStr  *names[AS_LAYOUT_MAX_FIELDS];
+    SlotSpec specs[AS_LAYOUT_MAX_FIELDS];
+    for (int i = 0; i < fl->count; i++) {
+        if (!IS_LIST(fl->items[i])) return as_native_fail("layout() field must be a list");
+        ObjList *f = AS_LIST(fl->items[i]);
+        if (f->count != 4 || !IS_STR(f->items[0]) || !IS_INT(f->items[1])
+            || !IS_INT(f->items[2]) || !IS_STR(f->items[3]))
+            return as_native_fail("layout() field is [name, offset, width, kind]");
+        int64_t off = AS_INT(f->items[1]), w = AS_INT(f->items[2]);
+        ObjStr *ks = AS_STR(f->items[3]);
+        if (ks->len != 1) return as_native_fail("layout() kind is one of i u p s");
+        int kind = ks->chars[0] == 'i' ? SK_I : ks->chars[0] == 'u' ? SK_U
+                 : ks->chars[0] == 'p' ? SK_PTR : ks->chars[0] == 's' ? SK_SPAN : 0;
+        if (!kind) return as_native_fail("layout() kind is one of i u p s");
+        if (kind != SK_SPAN && w != 1 && w != 2 && w != 4 && w != 8)
+            return as_native_fail("layout() scalar width must be 1, 2, 4, or 8");
+        if (off < 0 || w <= 0 || off + w > bytes)
+            return as_native_fail("layout() field does not fit inside the struct");
+        names[i] = AS_STR(f->items[0]);
+        specs[i].off = (uint16_t)off; specs[i].width = (uint16_t)w; specs[i].kind = (uint8_t)kind;
+    }
+    Shape *s = as_layout_shape_new(AS_STR(args[0]), (int)bytes, names, specs, fl->count);
+    return s ? OBJ_VAL(s) : NIL_VAL;
+}
+
 static Value native_gc_stats(int argc, Value *args)
 {
     (void)argc; (void)args;
@@ -505,6 +588,17 @@ static int call_value(Value callee, int argc)   /* 0 ok, 1 error */
             }
             if (argc != 0) return runtime_error("%.*s() takes no arguments (no init)", k->name->len, k->name->chars);
             return 0;                                  /* instance already on the stack as the result */
+        }
+        case O_SHAPE: {
+            /* Symmetric with O_CLASS: the layout is the constructor, so `Time()`
+             * allocates a zeroed struct of exactly the kernel's size for it. */
+            Shape *sh = (Shape *)AS_OBJ(callee);
+            if (!sh->specs) return runtime_error("only a layout can be called");
+            if (argc != 0) return runtime_error("a layout constructor takes no arguments");
+            ObjBuf *b = as_buf_new(sh, sh->bytes);    /* sh is the callee on the stack: rooted */
+            if (!b) return 1;                          /* g_oom set */
+            sp[-argc - 1] = OBJ_VAL(b);                /* replace the callee with the result */
+            return 0;
         }
         case O_BOUND_METHOD: {
             ObjBoundMethod *bm = (ObjBoundMethod *)AS_OBJ(callee);
@@ -932,6 +1026,7 @@ static int run_until(int floor)
             else if (IS_STR(v))   push(INT_VAL(AS_STR(v)->len));
             else if (IS_DICT(v))  push(INT_VAL(AS_DICT(v)->live));
             else if (IS_RANGE(v)) push(INT_VAL(AS_RANGE(v)->count));
+            else if (IS_BUF(v))   push(INT_VAL(AS_BUF(v)->nbytes));
             else { runtime_error("object has no length"); goto err; }
             DISPATCH();
         }
@@ -1144,22 +1239,52 @@ static int run_until(int floor)
                 runtime_error("'%.*s instance' has no property '%.*s'", in->klass->name->len, in->klass->name->chars,
                               AS_STR(frame->fn->consts[ki])->len, AS_STR(frame->fn->consts[ki])->chars); goto err;
             }
+            if (IS_BUF(recv)) {
+                ObjBuf *b = AS_BUF(recv);
+                SlotSpec fs; Value out;
+                if (buf_slot_cached(frame->fn, ki, b, &fs) && as_buf_get(b, &fs, &out)) {
+                    pop(); push(out); DISPATCH();
+                }
+                if (g_oom) goto err;                  /* a span read allocates a string */
+                ObjStr *n = AS_STR(frame->fn->consts[ki]);
+                const char *pre, *c; int cl;
+                buf_where(b, &pre, &cl, &c);
+                runtime_error("%s%.*s has no field '%.*s'", pre, cl, c, n->len, n->chars); goto err;
+            }
             if (IS_MODULE(recv)) {
                 ObjStr *n = AS_STR(frame->fn->consts[ki]);
                 Value *s = as_module_slot(AS_MODULE(recv), n, 0);
                 if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, n->len, n->chars); goto err; }
                 pop(); push(*s); DISPATCH();
             }
-            runtime_error("only instances and modules have properties"); goto err;
+            runtime_error("only instances, layouts, and modules have properties"); goto err;
         }
         op_SET_PROPERTY: {
             int ki = READ_SHORT();
             Value val = peek(0), recv = peek(1);
-            if (!IS_INSTANCE(recv)) { runtime_error("only instances have settable fields"); goto err; }
+            if (IS_BUF(recv)) {
+                ObjBuf *b = AS_BUF(recv);
+                ObjStr *n = AS_STR(frame->fn->consts[ki]);
+                SlotSpec fs;
+                if (!buf_slot_cached(frame->fn, ki, b, &fs)) {
+                    const char *pre, *c; int cl;
+                    buf_where(b, &pre, &cl, &c);
+                    runtime_error("%s%.*s has no field '%.*s'", pre, cl, c, n->len, n->chars); goto err;
+                }
+                if (!as_buf_set(b, &fs, val)) {
+                    runtime_error("field '%.*s' takes %s", n->len, n->chars,
+                                  fs.kind == SK_SPAN ? "a string no longer than the field"
+                                                     : "an integer");
+                    goto err;
+                }
+                sp -= 2; push(val);
+                DISPATCH();
+            }
+            if (!IS_INSTANCE(recv)) { runtime_error("only instances and layouts have settable fields"); goto err; }
             ObjInstance *in = AS_INSTANCE(recv);
             struct PCache *pc = fn_pcache(frame->fn, ki);
             if (pc && pc->shape_id == in->shape->id) {           /* known field of a known shape */
-                in->slots[pc->slot] = val;
+                in->slots[pc->a] = val;
             } else {
                 ObjStr *n = AS_STR(frame->fn->consts[ki]);
                 /* A first assignment transitions the shape, so the cache is only
@@ -1167,7 +1292,10 @@ static int run_until(int floor)
                  * would point the next instance at the wrong slot. */
                 int existing = as_shape_find(in->shape, n) >= 0;
                 if (!as_instance_set(in, n, val)) goto err;      /* g_oom set */
-                if (pc && existing) { pc->shape_id = in->shape->id; pc->slot = as_shape_find(in->shape, n); }
+                if (pc && existing) {
+                    pc->shape_id = in->shape->id; pc->a = as_shape_find(in->shape, n);
+                    pc->kind = SK_VALUE; pc->width = 0;
+                }
             }
             sp -= 2; push(val);                   /* leave the assigned value as the expression result */
             DISPATCH();
@@ -1343,6 +1471,8 @@ int as_run(ObjFn *script)
     as_define_native("print", native_print);
     as_define_native("len", native_len);
     as_define_native("range", native_range);
+    as_define_native("buffer", native_buffer);
+    as_define_native("layout", native_layout);
     as_define_native("str", native_str);
     as_define_native("chr", native_chr);
     as_define_native("ord", native_ord);

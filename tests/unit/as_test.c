@@ -876,6 +876,52 @@ int main(void)
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
 
+    /* ---- layouts: a shape whose slots are machine words, not Values ----------
+     * The point of the type is that addr(t) is exactly the pointer a syscall
+     * receives, so these check the bytes, not just the accessors: writing a
+     * field and reading it back through poke/peek at a raw address (and the
+     * reverse) is what proves the two views are the same memory. The offsets
+     * here are written by hand ON PURPOSE -- the generated abi.as gets its
+     * numbers from logit_abi.h, but this file has to exercise the mechanism
+     * without depending on any particular kernel struct. */
+#define LAY_T "T = layout(\"t\", 28, [[\"year\",0,4,\"i\"], [\"month\",4,4,\"i\"], [\"hour\",12,4,\"i\"]])\n"
+    ok("lay_rw",     LAY_T "t = T()\nt.year = 2026\nt.hour = 13\nprint(t.year, t.month, t.hour)\n",
+                     "2026 0 13\n");
+    ok("lay_print",  LAY_T "t = T()\nt.year = 7\nprint(t)\nprint(len(t))\n",
+                     "t(year=7, month=0, hour=0)\n28\n");
+    ok("lay_is_mem", LAY_T "t = T()\nt.year = 1\npoke32(addr(t) + 4, 9)\nprint(t.month)\n"
+                     "t.hour = 5\nprint(peek32(addr(t) + 12))\n", "9\n5\n");
+    ok("lay_signed", "W = layout(\"w\", 16, [[\"b\",0,1,\"i\"], [\"ub\",1,1,\"u\"], [\"h\",2,2,\"i\"], [\"q\",8,8,\"i\"]])\n"
+                     "w = W()\nw.b = -1\nw.ub = 255\nw.h = -300\nw.q = -1\nprint(w.b, w.ub, w.h, w.q)\n",
+                     "-1 255 -300 -1\n");
+    ok("lay_span",   "N = layout(\"n\", 8, [[\"mac\",0,6,\"s\"]])\n"
+                     "n = N()\nn.mac = \"abcdef\"\nprint(len(n.mac), n.mac)\n"
+                     "n.mac = \"ab\"\nprint(len(n.mac), ord(n.mac[2]))\n",
+                     "6 abcdef\n6 0\n");
+    err("lay_span_long", "N = layout(\"n\", 8, [[\"mac\",0,6,\"s\"]])\nn = N()\nn.mac = \"toolongxx\"\n");
+    err("lay_no_field",  LAY_T "print(T().nope)\n");
+    err("lay_ctor_args", LAY_T "T(1)\n");
+    err("lay_oob",       "layout(\"x\", 4, [[\"a\",2,4,\"i\"]])\n");   /* field past the end */
+    err("lay_badwidth",  "layout(\"x\", 8, [[\"a\",0,3,\"i\"]])\n");   /* 3 is not a scalar width */
+    /* One site, two different layouts, then a layout and an ordinary instance:
+     * the cache is keyed by shape id and both must miss cleanly rather than
+     * reuse the other's offset. */
+    ok("lay_ic_poly", LAY_T "U = layout(\"u\", 8, [[\"hour\",4,4,\"i\"]])\n"
+                      "def get(x):\n    return x.hour\n"
+                      "t = T()\nt.hour = 13\nu = U()\nu.hour = 99\n"
+                      "print(get(t), get(u), get(t), get(u))\n", "13 99 13 99\n");
+    ok("lay_ic_mixed", LAY_T "class C:\n    def init(self):\n        self.hour = 1\n"
+                      "def get(x):\n    return x.hour\n"
+                      "t = T()\nt.hour = 13\nc = C()\n"
+                      "print(get(t), get(c), get(t), get(c))\n", "13 1 13 1\n");
+    /* buffer(): alloc() without the dealloc() -- the collector owns it, so the
+     * loop below leaks nothing even though nothing is freed. */
+    ok("buf_basic",  "b = buffer(16)\nprint(len(b), b)\npoke64(addr(b), 0x4142434445464748)\n"
+                     "print(mem2str(b, 4))\n", "16 <buffer 16>\nHGFE\n");
+    ok("buf_gc",     "n = 0\nfor i in range(3000):\n    b = buffer(64)\n    poke32(addr(b), i)\n"
+                     "    n = n + peek32(addr(b))\nprint(n)\n", "4498500\n");
+    err("buf_field", "b = buffer(8)\nprint(b.x)\n");
+
     /* ---- shapes + the property inline cache: the cases a cache gets wrong ----
      * Instance fields live in numbered slots now, with the layout ("shape")
      * shared by every instance built the same way, and each property site

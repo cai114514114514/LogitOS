@@ -159,9 +159,17 @@ static void tr_instance(Obj *o)
      * holding whatever was there before, and tracing it would resurrect it. */
     if (in->shape) for (int i = 0; i < in->shape->nslots; i++) gc_mark_value(in->slots[i]);
 }
+static void tr_buf(Obj *o)
+{
+    /* The bytes hold machine words, never Values -- only the shape is an object.
+     * (A pointer field holds a raw address the GC knows nothing about; that is
+     * the same bargain addr() already makes.) */
+    gc_mark_obj((Obj *)((ObjBuf *)o)->shape);
+}
 static void tr_shape(Obj *o)
 {
     Shape *s = (Shape *)o;
+    gc_mark_obj((Obj *)s->sname);
     for (int i = 0; i < s->nslots; i++) gc_mark_obj((Obj *)s->names[i]);
     /* Edges keep child shapes alive. A shape tree is per field-name-sequence and
      * shared by every instance built that way, so it is small and long-lived by
@@ -222,8 +230,15 @@ static void fin_shape(Obj *o)
 {
     Shape *s = (Shape *)o;
     gc_account(-(long)((size_t)s->nslots * sizeof(ObjStr *))
-               - (long)((size_t)s->edgecap * sizeof(struct ShapeEdge)));
-    free(s->names); free(s->edges);
+               - (long)((size_t)s->edgecap * sizeof(struct ShapeEdge))
+               - (long)(s->specs ? (size_t)s->nslots * sizeof(SlotSpec) : 0));
+    free(s->names); free(s->edges); free(s->specs);
+}
+static void fin_buf(Obj *o)
+{
+    ObjBuf *b = (ObjBuf *)o;
+    gc_account(-(long)b->nbytes);
+    free(b->raw);
 }
 static void fin_closure(Obj *o)
 {
@@ -249,6 +264,7 @@ static const ObjInfo OBJ_INFO[] = {
     [O_BOUND_METHOD] = { "bound method", sizeof(ObjBoundMethod), tr_bound,    NULL        },
     [O_RANGE]        = { "range",        sizeof(ObjRange),       NULL,        NULL        },
     [O_SHAPE]        = { "shape",        sizeof(Shape),          tr_shape,    fin_shape   },
+    [O_BUF]          = { "buffer",       sizeof(ObjBuf),         tr_buf,      fin_buf     },
 };
 /* A type added to the enum without a row here would read a zeroed descriptor:
  * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). With
@@ -371,6 +387,7 @@ static Shape *shape_new(void)
     s->id = shape_next_id++;
     s->nslots = 0; s->names = NULL;
     s->edges = NULL; s->nedges = s->edgecap = 0;
+    s->specs = NULL; s->sname = NULL; s->bytes = 0;
     return s;
 }
 static Shape *shape_root(void)
@@ -416,6 +433,94 @@ static Shape *shape_transition(Shape *from, ObjStr *name)
     from->edges[from->nedges].to   = to;
     from->nedges++;
     return to;
+}
+
+/* --- machine-typed shapes + buffers ---------------------------------------
+ * A layout shape is built complete and never transitions: a kernel struct does
+ * not grow fields at runtime. Everything is copied in, so the caller's arrays
+ * (which live in the VM's stack or a list) are not captured. */
+Shape *as_layout_shape_new(ObjStr *sname, int bytes, ObjStr **names, SlotSpec *specs, int n)
+{
+    Shape *s = shape_new();              /* the only call here that can collect */
+    if (!s) return NULL;
+    s->bytes = bytes;
+    s->sname = sname;
+    if (n > 0) {
+        s->names = (ObjStr **)as_malloc((size_t)n * sizeof(ObjStr *));
+        if (!s->names) return NULL;
+        s->specs = (SlotSpec *)as_malloc((size_t)n * sizeof(SlotSpec));
+        if (!s->specs) return NULL;      /* names is freed by fin_shape via nslots=0 */
+        memcpy(s->names, names, (size_t)n * sizeof(ObjStr *));
+        memcpy(s->specs, specs, (size_t)n * sizeof(SlotSpec));
+        s->nslots = n;                   /* only now are both arrays traceable */
+        gc_account((long)((size_t)n * (sizeof(ObjStr *) + sizeof(SlotSpec))));
+    }
+    return s;
+}
+
+ObjBuf *as_buf_new(Shape *shape, int nbytes)
+{
+    /* Protect the shape: alloc_obj can collect, and a freshly built layout shape
+     * may not be reachable from anything yet. */
+    as_gc_protect((Obj *)shape);
+    ObjBuf *b = (ObjBuf *)alloc_obj(O_BUF);
+    as_gc_release(1);
+    if (!b) return NULL;
+    b->shape = shape; b->raw = NULL; b->nbytes = 0;
+    if (nbytes > 0) {
+        b->raw = (uint8_t *)as_malloc((size_t)nbytes);
+        if (!b->raw) return NULL;                 /* g_oom set; nbytes stays 0 */
+        memset(b->raw, 0, (size_t)nbytes);        /* a kernel struct starts zeroed */
+        b->nbytes = nbytes;
+        gc_account((long)nbytes);
+    }
+    return b;
+}
+
+/* Read `width` bytes at `off`. Little-endian on both the host and the target, so
+ * the load is a memcpy rather than a byte loop. */
+static uint64_t buf_load(const uint8_t *p, int width)
+{
+    uint64_t u = 0;
+    memcpy(&u, p, (size_t)width);
+    return u;
+}
+
+int as_buf_get(ObjBuf *b, const SlotSpec *sp, Value *out)
+{
+    if (sp->off + sp->width > b->nbytes) return 0;    /* a layout wider than its buffer */
+    if (sp->kind == SK_SPAN) {
+        ObjStr *s = as_str_copy((const char *)(b->raw + sp->off), (int)sp->width);
+        if (!s) return 0;
+        *out = OBJ_VAL(s);                            /* fixed length, NOT NUL-trimmed */
+        return 1;
+    }
+    uint64_t u = buf_load(b->raw + sp->off, sp->width);
+    if (sp->kind == SK_I && sp->width < 8) {          /* sign-extend from width bytes */
+        int bits = sp->width * 8;
+        int64_t m = (int64_t)1 << (bits - 1);
+        *out = INT_VAL(((int64_t)u ^ m) - m);
+    } else {
+        *out = INT_VAL((int64_t)u);                   /* SK_U/SK_PTR: raw bits */
+    }
+    return 1;
+}
+
+int as_buf_set(ObjBuf *b, const SlotSpec *sp, Value v)
+{
+    if (sp->off + sp->width > b->nbytes) return 0;
+    if (sp->kind == SK_SPAN) {
+        if (!IS_STR(v)) return 0;
+        ObjStr *s = AS_STR(v);
+        if (s->len > (int)sp->width) return 0;        /* refuse to truncate silently */
+        memcpy(b->raw + sp->off, s->chars, (size_t)s->len);
+        memset(b->raw + sp->off + s->len, 0, (size_t)sp->width - (size_t)s->len);
+        return 1;
+    }
+    if (!IS_INT(v)) return 0;
+    uint64_t u = (uint64_t)AS_INT(v);
+    memcpy(b->raw + sp->off, &u, (size_t)sp->width);  /* LE: the low bytes are first */
+    return 1;
 }
 
 ObjClass *as_class_new(ObjStr *name)

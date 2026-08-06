@@ -12,7 +12,10 @@ static Value n_addr(int argc, Value *args)
     if (IS_STR(v))  return INT_VAL((int64_t)(uintptr_t)AS_STR(v)->chars);
     if (IS_LIST(v)) return INT_VAL((int64_t)(uintptr_t)AS_LIST(v)->items);
     if (IS_PTR(v))  return INT_VAL((int64_t)AS_PTR(v)->addr);
-    return as_native_fail("addr() needs a string, list, or pointer");
+    /* A buffer's address is the whole point of it: this is the pointer a syscall
+     * receives, and for a layout it is exactly the kernel's struct pointer. */
+    if (IS_BUF(v))  return INT_VAL((int64_t)(uintptr_t)AS_BUF(v)->raw);
+    return as_native_fail("addr() needs a string, list, buffer, or pointer");
 }
 
 static Value peek_w(int argc, Value *args, int w)
@@ -72,6 +75,7 @@ static Value n_mem2str(int argc, Value *args)   /* (ptr|addr, len) -> str */
     if (argc != 2 || !IS_INT(args[1]) || AS_INT(args[1]) < 0 || AS_INT(args[1]) > INT32_MAX)
         return as_native_fail("mem2str() takes (ptr_or_addr, len)");
     uint64_t a = IS_PTR(args[0]) ? AS_PTR(args[0])->addr
+               : IS_BUF(args[0]) ? (uint64_t)(uintptr_t)AS_BUF(args[0])->raw
                : IS_INT(args[0]) ? (uint64_t)AS_INT(args[0]) : 0;
     if (!a) return as_native_fail("mem2str() takes (ptr_or_addr, len)");
     ObjStr *s = as_str_copy((const char *)(uintptr_t)a, (int)AS_INT(args[1]));
@@ -81,6 +85,7 @@ static Value n_mem2cstr(int argc, Value *args)  /* (ptr|addr) -> str up to the N
 {
     if (argc != 1) return as_native_fail("mem2cstr() takes a pointer or address");
     uint64_t a = IS_PTR(args[0]) ? AS_PTR(args[0])->addr
+               : IS_BUF(args[0]) ? (uint64_t)(uintptr_t)AS_BUF(args[0])->raw
                : IS_INT(args[0]) ? (uint64_t)AS_INT(args[0]) : 0;
     if (!a) return as_native_fail("mem2cstr() takes a pointer or address");
     const char *p = (const char *)(uintptr_t)a;

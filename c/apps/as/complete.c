@@ -32,7 +32,7 @@ static const char *const KEYWORDS[] = {
  * (tools/gen_as_opcodes.py) asserts this list stays complete -- it had silently
  * missed the seven M21-P3 self-hosting natives since they landed. */
 static const char *const BUILTINS[] = {
-    "print","len","range","str","gc","gc_stats",
+    "print","len","range","str","gc","gc_stats","buffer","layout",
     "chr","ord","f64bits","parse_float","file_read","file_write","args",
     "addr","syscall","alloc","dealloc","mem2str","mem2cstr",
     "peek8","peek16","peek32","peek64",

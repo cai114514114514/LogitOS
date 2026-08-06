@@ -174,7 +174,34 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
     case O_INSTANCE:     put(k, "<", 1); putstr(k, AS_INSTANCE(v)->klass->name); putz(k, " instance>"); return;
     case O_BOUND_METHOD: putz(k, "<bound method>"); return;
     case O_UPVALUE:      break;   /* never user-visible: lives only in a closure */
-    case O_SHAPE:        break;   /* never user-visible: an instance's field layout */
+    case O_SHAPE: {
+        Shape *sh = AS_SHAPE(v);
+        if (!sh->specs) break;               /* an object shape is never a user value */
+        putz(k, "<layout "); putstr(k, sh->sname); put(k, ">", 1);
+        return;
+    }
+    case O_BUF: {
+        /* Printing the field values, not an opaque handle: reading a kernel
+         * struct at a debug prompt is what this type exists for. */
+        ObjBuf *b = AS_BUF(v);
+        if (!b->shape || !b->shape->specs) {
+            int n = snprintf(tmp, sizeof tmp, "<buffer %d>", b->nbytes);
+            put(k, tmp, n < (int)sizeof tmp ? n : (int)sizeof tmp - 1);
+            return;
+        }
+        putstr(k, b->shape->sname);
+        put(k, "(", 1);
+        for (int i = 0; i < b->shape->nslots && !sink_full(k); i++) {
+            Value fv;
+            if (i) put(k, ", ", 2);
+            putstr(k, b->shape->names[i]);
+            put(k, "=", 1);
+            if (as_buf_get(b, &b->shape->specs[i], &fv)) fmt_value(k, fv, 1, depth + 1);
+            else putz(k, "?");
+        }
+        put(k, ")", 1);
+        return;
+    }
     case O__COUNT:       break;   /* not a type; listed so -Wswitch still catches real ones */
     }
     putz(k, "<obj>");
