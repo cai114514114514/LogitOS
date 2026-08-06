@@ -8,6 +8,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static int checks, fails;
 #define CHK(c, msg) do { checks++; if (!(c)) { fails++; printf("FAIL: %s\n", msg); } } while (0)
@@ -136,6 +138,28 @@ static void t_scanf(void)
     CHK(sscanf("pre 7", "%s %d", s2, &a)==2 && strcmp(s2,"pre")==0 && a==7, "sscanf s+d");
 }
 
+static void t_io(void)
+{
+    /* fsync: a dirty fd flushes to the filesystem, a clean one is a no-op,
+     * a bad one fails. The read-back proves the bytes really landed. */
+    const char *p = "/libctest_io.tmp";
+    int fd = open(p, O_CREAT | O_TRUNC | O_RDWR);
+    CHK(fd >= 0, "open O_CREAT|O_TRUNC|O_RDWR");
+    if (fd >= 0) {
+        char b[8] = {0};
+        CHK_INT(write(fd, "logit", 5), 5, "write");
+        CHK_INT(fsync(fd), 0, "fsync dirty fd");
+        CHK_INT(fsync(fd), 0, "fsync clean fd (idempotent)");
+        CHK_INT(lseek(fd, 0, SEEK_SET), 0, "lseek SEEK_SET");
+        CHK_INT(read(fd, b, 5), 5, "read back");
+        CHK_STR(b, "logit", "content after fsync");
+        CHK_INT(close(fd), 0, "close");
+        CHK_INT(unlink(p), 0, "unlink");
+    }
+    errno = 0;
+    CHK_INT(fsync(-1), -1, "fsync bad fd fails");
+}
+
 int main(void)
 {
     t_string();
@@ -143,6 +167,7 @@ int main(void)
     t_stdlib();
     t_stdio();
     t_scanf();
+    t_io();
     if (fails == 0) printf("LIBC_OK %d/%d\n", checks - fails, checks);
     else            printf("LIBC_FAIL %d/%d (%d failed)\n", checks - fails, checks, fails);
     return fails ? 1 : 0;

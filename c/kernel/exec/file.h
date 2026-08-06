@@ -39,6 +39,7 @@ struct file  *file_open_tty(void);                          /* P5: serial consol
 long          file_read(struct file *f, void *buf, long len);
 long          file_write(struct file *f, const void *buf, long len);
 long          file_lseek(struct file *f, long off, int whence);
+int           file_fsync(struct file *f);   /* F_VFS: flush dirty data to disk now */
 int           file_pipe(struct file **rd, struct file **wr);  /* P3 */
 
 #endif /* LOGIT_FILE_H */

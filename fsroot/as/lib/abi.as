@@ -202,6 +202,9 @@ def fd_pipe(fds):
 def fd_setnb(fd):
     return syscall(SYS_SETNB, fd)
 
+def fd_fsync(fd):
+    return syscall(SYS_FSYNC, fd)
+
 def open_path(path):
     return syscall(SYS_OPEN_PATH, addr(path))
 

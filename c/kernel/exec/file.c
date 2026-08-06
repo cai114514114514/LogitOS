@@ -250,6 +250,22 @@ long file_lseek(struct file *f, long off, int whence)
     return no;
 }
 
+/* Flush a dirty F_VFS file back to the on-disk filesystem NOW, without waiting
+ * for the last close. Clears dirty only on success, so a failed flush is still
+ * retried at close instead of being silently dropped. The caller holds an fd
+ * reference, so the file cannot be torn down mid-flush. */
+int file_fsync(struct file *f)
+{
+    if (!f) return -1;
+    if (f->type != F_VFS) return 0;            /* pipes/tty: nothing to persist */
+    if (!f->dirty) return 0;
+    if (!f->path[0]) return -1;
+    int rc = vfs_write(f->path, f->backing ? f->backing : "", (int)f->size);
+    if (rc < 0) return -1;
+    f->dirty = 0;
+    return 0;
+}
+
 /* Create a pipe: two struct files (read end is_write=0, write end is_write=1)
  * sharing one ring buffer. */
 int file_pipe(struct file **rd, struct file **wr)

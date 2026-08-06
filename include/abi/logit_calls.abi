@@ -81,6 +81,7 @@ call fd_dup         SYS_DUP            int(fd)
 call fd_dup2        SYS_DUP2           int(oldfd) int(newfd)
 call fd_pipe        SYS_PIPE           buf(fds)
 call fd_setnb       SYS_SETNB          int(fd)
+call fd_fsync       SYS_FSYNC          int(fd)
 call open_path      SYS_OPEN_PATH      str(path)
 
 # ---- network / http / render payloads ----

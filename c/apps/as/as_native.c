@@ -171,6 +171,30 @@ void as_install_indirection(void)
     as_define_int("SYS_GUI_ICON",    SYS_GUI_ICON);
     as_define_int("SYS_GUI_GLASS",   SYS_GUI_GLASS);
     as_define_int("SYS_POLL_EVENT",  SYS_POLL_EVENT);
+    /* Every remaining symbol a generated abi.as wrapper can name: the wrappers
+     * are only resolved at call time, so a missing define here is an
+     * "undefined variable" at first call rather than a build error. Keep this
+     * list in step with include/abi/logit_calls.abi. */
+    as_define_int("SYS_GET_ARG",     SYS_GET_ARG);
+    as_define_int("SYS_SYSINFO",     SYS_SYSINFO);
+    as_define_int("SYS_FILE_COUNT",  SYS_FILE_COUNT);
+    as_define_int("SYS_FILE_NAME",   SYS_FILE_NAME);
+    as_define_int("SYS_SPAWN",       SYS_SPAWN);
+    as_define_int("SYS_DUP",         SYS_DUP);
+    as_define_int("SYS_SETNB",       SYS_SETNB);
+    as_define_int("SYS_FSYNC",       SYS_FSYNC);
+    as_define_int("SYS_OPEN_PATH",   SYS_OPEN_PATH);
+    as_define_int("SYS_IMG_DECODE",  SYS_IMG_DECODE);
+    as_define_int("SYS_KHEAP_STRESS", SYS_KHEAP_STRESS);
+    as_define_int("SYS_HTTP_GET",    SYS_HTTP_GET);
+    as_define_int("SYS_HTTP_STATUS", SYS_HTTP_STATUS);
+    as_define_int("SYS_HTTP_BODY",   SYS_HTTP_BODY);
+    as_define_int("SYS_RES_FETCH",   SYS_RES_FETCH);
+    as_define_int("SYS_TEXT_MEASURE", SYS_TEXT_MEASURE);
+    as_define_int("SYS_GUI_TEXT_RUN", SYS_GUI_TEXT_RUN);
+    as_define_int("SYS_GUI_BLIT",    SYS_GUI_BLIT);
+    as_define_int("SYS_GUI_RRECT",   SYS_GUI_RRECT);
+    as_define_int("SYS_GUI_CLIP",    SYS_GUI_CLIP);
     as_define_int("EV_NONE",  EV_NONE);
     as_define_int("EV_KEY",   EV_KEY);
     as_define_int("EV_MOUSE", EV_MOUSE);

@@ -15,6 +15,7 @@ ssize_t read(int fd, void *buf, size_t n)        { return fail(sys(SYS_READ, fd,
 ssize_t write(int fd, const void *buf, size_t n) { return fail(sys(SYS_WRITE, fd, (long)buf, (long)n), EIO); }
 int     close(int fd)                            { return (int)fail(sys(SYS_CLOSE, fd, 0, 0), EBADF); }
 off_t   lseek(int fd, off_t off, int whence)     { return fail(sys(SYS_LSEEK, fd, off, whence), EINVAL); }
+int     fsync(int fd)                            { return (int)fail(sys(SYS_FSYNC, fd, 0, 0), EIO); }
 int     dup(int fd)                              { return (int)fail(sys(SYS_DUP, fd, 0, 0), EBADF); }
 int     dup2(int o, int nw)                      { return (int)fail(sys(SYS_DUP2, o, nw, 0), EBADF); }
 int     pipe(int fds[2])                         { return (int)fail(sys(SYS_PIPE, (long)fds, 0, 0), EMFILE); }
