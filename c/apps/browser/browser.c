@@ -152,7 +152,7 @@ static int collect_scripts(struct node *n, char *out, int o, int max)
     return o;
 }
 
-static unsigned char css_tmp[393216];    /* scratch for one external stylesheet (384 KiB) */
+static unsigned char css_tmp[524288];    /* scratch for one external stylesheet (512 KiB) */
 
 /* case-insensitive substring test (rel may be "stylesheet", "preload stylesheet", ...) */
 static int has_ci(const char *h, const char *n)
@@ -168,18 +168,30 @@ static int has_ci(const char *h, const char *n)
 
 /* Fetch each <link rel="stylesheet" href> over HTTP(S) and append its CSS to out
  * (relative hrefs resolve against the page; this is why github/wikipedia were bare).
- * Budgeted: each fetch is a full HTTPS handshake to a CDN, so cap the count. */
+ * Budgeted: each fetch is a full HTTPS handshake to a CDN, so cap the count.
+ * Duplicate hrefs are skipped (github links the same module CSS 3x). */
 static int g_css_budget;
+#define MAX_CSS_SEEN 32
+static const char *g_css_seen[MAX_CSS_SEEN];
+static int g_css_nseen;
+static int str_eq(const char *a, const char *b)
+{ int i = 0; while (a[i] && a[i] == b[i]) i++; return a[i] == b[i]; }
 static int fetch_css_links(struct node *n, char *out, int o, int max)
 {
     if (!n) return o;
     if (g_css_budget > 0 && o < max - 64 && n->type == N_ELEM && tag_is(n->tag, "link")) {
         const char *rel = dom_attr(n, "rel"), *href = dom_attr(n, "href");
         if (href && has_ci(rel, "stylesheet")) {
-            g_css_budget--;
-            int got = res_fetch_raw(href, css_tmp, (int)sizeof css_tmp);
-            for (int i = 0; i < got && o < max - 1; i++) out[o++] = (char)css_tmp[i];
-            if (got > 0 && o < max - 1) out[o++] = '\n';
+            int dup = 0;
+            for (int i = 0; i < g_css_nseen; i++)
+                if (str_eq(g_css_seen[i], href)) { dup = 1; break; }
+            if (!dup) {
+                if (g_css_nseen < MAX_CSS_SEEN) g_css_seen[g_css_nseen++] = href;
+                g_css_budget--;
+                int got = res_fetch_raw(href, css_tmp, (int)sizeof css_tmp);
+                for (int i = 0; i < got && o < max - 1; i++) out[o++] = (char)css_tmp[i];
+                if (got > 0 && o < max - 1) out[o++] = '\n';
+            }
         }
     }
     for (struct node *c = n->first_child; c; c = c->next)
@@ -208,8 +220,8 @@ static void follow_link(const char *href)
 }
 
 static char bodybuf[1048576];            /* page HTML (1 MiB) */
-static char author_css[1310720];         /* inline <style> + fetched external <link> CSS (1.25 MiB, raw with var()) */
-static char css_expanded[1572864];       /* author_css after var() expansion -> LibCSS (1.5 MiB) */
+static char author_css[2097152];         /* inline <style> + fetched external <link> CSS (2 MiB, raw with var()) */
+static char css_expanded[2359296];       /* author_css after var() expansion -> LibCSS (2.25 MiB) */
 static int  css_exlen;
 
 static void load(const char *u)
@@ -241,7 +253,8 @@ static void load(const char *u)
     set_status("loaded -- fetching stylesheets...");
     redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
 
-    g_css_budget = 16;               /* fetch external <link> stylesheets, then re-style */
+    g_css_budget = 24;               /* fetch external <link> stylesheets, then re-style */
+    g_css_nseen = 0;
     int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
     if (css2 > css_len) {
         css_len = css2;
