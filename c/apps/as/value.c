@@ -7,7 +7,7 @@ char as_err[256];
 
 int as_truthy(Value v)
 {
-    switch (v.type) {
+    switch (VTYPE(v)) {
     case V_NIL:   return 0;
     case V_BOOL:  return AS_BOOL(v);
     case V_INT:   return AS_INT(v) != 0;
@@ -21,8 +21,8 @@ int as_truthy(Value v)
  * (1 == 1.0) itself before falling back here. */
 int as_value_eq(Value a, Value b)
 {
-    if (a.type != b.type) return 0;
-    switch (a.type) {
+    if (a.tag != b.tag) return 0;          /* differing object types are unequal by tag alone */
+    switch (VTYPE(a)) {
     case V_NIL:   return 1;
     case V_BOOL:  return AS_BOOL(a) == AS_BOOL(b);
     case V_INT:   return AS_INT(a) == AS_INT(b);
@@ -104,7 +104,7 @@ static int fmt_i64(char *tmp, int cap, int64_t v)
 static void fmt_value(Sink *k, Value v, int repr, int depth)
 {
     char tmp[40];
-    switch (v.type) {
+    switch (VTYPE(v)) {
     case V_NIL:   putz(k, "nil"); return;
     case V_BOOL:  putz(k, AS_BOOL(v) ? "true" : "false"); return;
     case V_INT:   put(k, tmp, fmt_i64(tmp, (int)sizeof tmp, AS_INT(v))); return;
@@ -113,7 +113,7 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
     default:      return;
     }
 
-    switch (AS_OBJ(v)->type) {
+    switch (OBJ_TYPE(v)) {
     case O_STR:
         if (!repr) { putstr(k, AS_STR(v)); return; }
         put(k, "'", 1); putstr(k, AS_STR(v)); put(k, "'", 1);

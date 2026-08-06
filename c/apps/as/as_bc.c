@@ -64,7 +64,7 @@ static int dump_fn(FILE *out, ObjFn *fn)
     if (wr_u32(out, (uint32_t)fn->kcount)) return 1;
     for (int i = 0; i < fn->kcount; i++) {
         Value v = fn->consts[i];
-        switch (v.type) {
+        switch (VTYPE(v)) {
         case V_NIL:   if (fputc(K_NIL,  out) == EOF) return 1; break;
         case V_BOOL:  if (fputc(K_BOOL, out) == EOF) return 1;
                       if (fputc(v.as.i ? 1 : 0, out) == EOF) return 1; break;

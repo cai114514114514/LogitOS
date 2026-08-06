@@ -13,26 +13,40 @@
 #include <stdlib.h>     /* malloc/free/realloc/strtoll/strtod (host libc or mini-libc) */
 #include <string.h>     /* memcpy/memset/strlen/strcmp */
 
-/* --- values --- */
+/* --- values ---
+ * A Value is a 32-bit tag plus a 64-bit payload. The tag's low byte is the
+ * VType; for heap values its high byte is the ObjType, so IS_STR / IS_LIST /
+ * ... are a single register compare rather than a load of the object header.
+ * Type tests are the most frequent operation in the VM and they used to be a
+ * pointer chase each.
+ *
+ * Deliberately 16 bytes, not NaN-boxed: NaN-boxing hides the tag in the unused
+ * payloads of a double, but an AetherScript int is a full int64 (f64bits(2.0)
+ * == 2^62 is asserted in-tree), so there are no spare bits in 8. The cost worth
+ * removing was never the 8 bytes of footprint, it was the memory round-trip. */
 typedef enum { V_NIL, V_BOOL, V_INT, V_FLOAT, V_OBJ } VType;
 typedef struct Obj Obj;
 
 typedef struct {
-    VType type;
+    uint32_t tag;                                  /* VType | ObjType << 8 */
     union { int64_t i; double f; Obj *obj; } as;
 } Value;
+
+#define OBJ_TAG(ot) ((uint32_t)V_OBJ | ((uint32_t)(ot) << 8))
+#define VTYPE(v)    ((VType)((v).tag & 0xFFu))
+#define OBJ_TYPE(v) ((ObjType)((v).tag >> 8))      /* meaningful only when IS_OBJ(v) */
 
 #define NIL_VAL        ((Value){ V_NIL,   { .i = 0 } })
 #define BOOL_VAL(b)    ((Value){ V_BOOL,  { .i = (b) } })
 #define INT_VAL(n)     ((Value){ V_INT,   { .i = (n) } })
 #define FLOAT_VAL(x)   ((Value){ V_FLOAT, { .f = (x) } })
-#define OBJ_VAL(o)     ((Value){ V_OBJ,   { .obj = (Obj *)(o) } })
+/* OBJ_VAL is defined below, once struct Obj is complete: it reads o->type. */
 
-#define IS_NIL(v)   ((v).type == V_NIL)
-#define IS_BOOL(v)  ((v).type == V_BOOL)
-#define IS_INT(v)   ((v).type == V_INT)
-#define IS_FLOAT(v) ((v).type == V_FLOAT)
-#define IS_OBJ(v)   ((v).type == V_OBJ)
+#define IS_NIL(v)   ((v).tag == V_NIL)
+#define IS_BOOL(v)  ((v).tag == V_BOOL)
+#define IS_INT(v)   ((v).tag == V_INT)
+#define IS_FLOAT(v) ((v).tag == V_FLOAT)
+#define IS_OBJ(v)   (VTYPE(v) == V_OBJ)
 #define AS_BOOL(v)  ((v).as.i != 0)
 #define AS_INT(v)   ((v).as.i)
 #define AS_FLOAT(v) ((v).as.f)
@@ -45,6 +59,20 @@ typedef struct {
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
                O_CLASS, O_INSTANCE, O_BOUND_METHOD } ObjType;
 struct Obj { ObjType type; uint8_t marked; Obj *next; };   /* next: alloc list; marked: GC */
+
+/* Wrapping an object copies its type into the tag -- valid because an object's
+ * type is fixed at allocation. NULL yields nil rather than an object value with
+ * a NULL payload: allocation failures reach here (`push(OBJ_VAL(as_str_copy(..)))`
+ * with g_oom already set), and nil is inert where the old NULL-carrying object
+ * value made the very next IS_STR() a NULL dereference. */
+static inline Value as_obj_val(Obj *o)
+{
+    Value v;
+    v.tag = o ? OBJ_TAG(o->type) : (uint32_t)V_NIL;
+    v.as.obj = o;
+    return v;
+}
+#define OBJ_VAL(o) as_obj_val((Obj *)(o))
 
 /* M23 lazy hash: `hash` is computed on first use (as_str_hash), not at creation.
  * Eager hashing made every str_concat O(result) twice -- read ->hash only through
@@ -121,26 +149,26 @@ typedef struct ObjModule {
     int state;             /* 0 = loading, 1 = loaded (guards circular imports) */
 } ObjModule;
 
-#define IS_STR(v)    (IS_OBJ(v) && AS_OBJ(v)->type == O_STR)
-#define IS_FN(v)     (IS_OBJ(v) && AS_OBJ(v)->type == O_FN)
-#define IS_NATIVE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_NATIVE)
-#define IS_LIST(v)   (IS_OBJ(v) && AS_OBJ(v)->type == O_LIST)
-#define IS_PTR(v)    (IS_OBJ(v) && AS_OBJ(v)->type == O_PTR)
-#define IS_MODULE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_MODULE)
+#define IS_STR(v)    ((v).tag == OBJ_TAG(O_STR))
+#define IS_FN(v)     ((v).tag == OBJ_TAG(O_FN))
+#define IS_NATIVE(v) ((v).tag == OBJ_TAG(O_NATIVE))
+#define IS_LIST(v)   ((v).tag == OBJ_TAG(O_LIST))
+#define IS_PTR(v)    ((v).tag == OBJ_TAG(O_PTR))
+#define IS_MODULE(v) ((v).tag == OBJ_TAG(O_MODULE))
 #define AS_STR(v)    ((ObjStr *)AS_OBJ(v))
 #define AS_FN(v)     ((ObjFn *)AS_OBJ(v))
 #define AS_LIST(v)   ((ObjList *)AS_OBJ(v))
 #define AS_PTR(v)    ((ObjPtr *)AS_OBJ(v))
 #define AS_MODULE(v) ((ObjModule *)AS_OBJ(v))
-#define IS_DICT(v)   (IS_OBJ(v) && AS_OBJ(v)->type == O_DICT)
+#define IS_DICT(v)   ((v).tag == OBJ_TAG(O_DICT))
 #define AS_DICT(v)   ((ObjDict *)AS_OBJ(v))
-#define IS_CLOSURE(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_CLOSURE)
+#define IS_CLOSURE(v) ((v).tag == OBJ_TAG(O_CLOSURE))
 #define AS_CLOSURE(v) ((ObjClosure *)AS_OBJ(v))
-#define IS_CLASS(v)        (IS_OBJ(v) && AS_OBJ(v)->type == O_CLASS)
+#define IS_CLASS(v)        ((v).tag == OBJ_TAG(O_CLASS))
 #define AS_CLASS(v)        ((ObjClass *)AS_OBJ(v))
-#define IS_INSTANCE(v)     (IS_OBJ(v) && AS_OBJ(v)->type == O_INSTANCE)
+#define IS_INSTANCE(v)     ((v).tag == OBJ_TAG(O_INSTANCE))
 #define AS_INSTANCE(v)     ((ObjInstance *)AS_OBJ(v))
-#define IS_BOUND_METHOD(v) (IS_OBJ(v) && AS_OBJ(v)->type == O_BOUND_METHOD)
+#define IS_BOUND_METHOD(v) ((v).tag == OBJ_TAG(O_BOUND_METHOD))
 #define AS_BOUND_METHOD(v) ((ObjBoundMethod *)AS_OBJ(v))
 
 /* --- opcodes --- */
