@@ -24,6 +24,37 @@ static void ok(const char *name, const char *src, const char *want)
     as_free_objects();
 }
 
+/* Expect a runtime error AND a particular call stack. The traceback is captured
+ * by the library (as_traceback) and printed by the CLI, so this asserts the
+ * capture without depending on as.c -- and pins the two properties that are easy
+ * to get wrong: innermost frame first, and nothing left behind by an exception
+ * the program caught. */
+static void errtrace(const char *name, const char *src, const char *want_trace)
+{
+    char buf[1024];
+    as_capture(buf, sizeof buf);
+    int r = as_interpret(src);
+    as_capture(NULL, 0);
+    total++;
+    /* Compare with the (+N) bytecode offsets stripped: which frames, in which
+     * order, is the durable property. The offsets are for a human reading the
+     * output next to `as -dis`, and pinning them here would make every codegen
+     * change break these tests for no reason. */
+    char got[512]; int gi = 0, skip = 0;
+    for (const char *p = as_traceback(); *p && gi < (int)sizeof got - 1; p++) {
+        if (p[0] == ' ' && p[1] == '(' && p[2] == '+') skip = 1;
+        if (!skip) got[gi++] = *p;
+        if (*p == ')') skip = 0;
+    }
+    got[gi] = 0;
+    if (r == 0) { fails++; printf("FAIL %-10s expected an error, got none\n", name); }
+    else if (strcmp(got, want_trace) != 0) {
+        fails++;
+        printf("FAIL %-10s traceback\n  want [%s]\n  got  [%s]\n", name, want_trace, got);
+    }
+    as_free_objects();
+}
+
 static void err(const char *name, const char *src)   /* expect a compile/runtime error */
 {
     char buf[1024];
@@ -875,6 +906,32 @@ int main(void)
     ok("massign_expr","a, b = 2 + 3, \"x\" + \"y\"\nprint(a, b)\n", "5 xy\n");
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
+
+    /* ---- tracebacks: a runtime error says WHERE, not just what ---------------
+     * Every Frame already knew its function and its instruction pointer; the
+     * error path simply never read them, so "undefined variable 'nope'" arrived
+     * with no location at all. Captured at the point nothing is left to catch
+     * the error -- which is where frames[] is still intact, and where we know it
+     * is worth capturing. */
+    errtrace("tb_depth",  "def inner(x):\n    return nope + x\ndef middle(x):\n    return inner(x)\n"
+                          "def outer():\n    return middle(3)\nouter()\n",
+                          "  in inner\n  in middle\n  in outer\n  in <script>\n");
+    errtrace("tb_top",    "nope\n", "  in <script>\n");
+    errtrace("tb_native", "def f():\n    return chr(999)\nf()\n", "  in f\n  in <script>\n");
+    errtrace("tb_method", "class C:\n    def go(self):\n        return self.missing\n"
+                          "def use(c):\n    return c.go()\nuse(C())\n",
+                          "  in go\n  in use\n  in <script>\n");
+    /* A caught exception must leave nothing behind: only the error that actually
+     * escaped may be described. Here the first raise is handled and a different
+     * failure escapes later -- the trace must be the second one's alone. */
+    errtrace("tb_caught", "def a():\n    raise \"handled\"\ndef b():\n    return nope\n"
+                          "try:\n    a()\nexcept e:\n    print(e)\nb()\n",
+                          "  in b\n  in <script>\n");
+    /* Deep recursion elides the repetitive middle rather than filling the buffer
+     * with one frame repeated 250 times. */
+    errtrace("tb_deep",   "def r(n):\n    return r(n + 1)\nr(0)\n",
+                          "  in r\n  in r\n  in r\n  in r\n  in r\n  in r\n  in r\n  in r\n"
+                          "  ... 245 more frames\n  in r\n  in r\n  in <script>\n");
 
     /* ---- layouts: a shape whose slots are machine words, not Values ----------
      * The point of the type is that addr(t) is exactly the pointer a syscall

@@ -84,9 +84,70 @@ static void checked_push(Value v)
     *sp++ = v;
 }
 
+/* Where an error happened, captured for the CLI to print. A runtime error used
+ * to say only what went wrong -- "undefined variable 'nope'" with no function,
+ * no location, nothing -- which in a 1400-line self-hosted compiler is close to
+ * useless. Every frame already knows its function and its instruction pointer;
+ * nothing was reading them.
+ *
+ * Captured at the point NOTHING is left to catch the error, because that is
+ * where frames[] is still intact and where we know it matters. An exception the
+ * program catches costs nothing and leaves no trace behind: the buffer is only
+ * printed if the whole run ends up failing (as.c), so an inner run_until
+ * finishing "uncaught" while an outer handler still takes the value prints
+ * nothing either. */
+static char trace_buf[512];
+static int  trace_len;
+
 static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL;
                                 handler_count = 0; g_has_exc = 0; g_exc = NIL_VAL; g_native_err = 0;
-                                g_stack_overflow = 0; g_oom = 0; }
+                                g_stack_overflow = 0; g_oom = 0;
+                                trace_buf[0] = 0; trace_len = 0; }
+
+static void trace_add(const char *s, int n)
+{
+    if (n > (int)sizeof trace_buf - 1 - trace_len) n = (int)sizeof trace_buf - 1 - trace_len;
+    if (n > 0) { memcpy(trace_buf + trace_len, s, (size_t)n); trace_len += n; trace_buf[trace_len] = 0; }
+}
+
+/* Innermost frame first. The `+N` is the bytecode offset of the instruction that
+ * failed, in the same numbering `as -dis` prints, so a trace line and a
+ * disassembly line can be matched up by eye. Deep recursion is elided in the
+ * middle: the innermost frames are where the fault is and the outermost is how
+ * you got there; the thousand identical frames between are noise. */
+#define TRACE_HEAD 8
+#define TRACE_TAIL 2
+static void capture_trace(void)
+{
+    char line[160];
+    trace_buf[0] = 0; trace_len = 0;
+    for (int i = frame_count - 1; i >= 0; i--) {
+        if (frame_count > TRACE_HEAD + TRACE_TAIL + 1
+            && i == frame_count - 1 - TRACE_HEAD) {
+            /* TRACE_TAIL+1 frames follow the ellipsis (indices TRACE_TAIL..0). */
+            int hidden = frame_count - TRACE_HEAD - TRACE_TAIL - 1;
+            int n = snprintf(line, sizeof line, "  ... %d more frames\n", hidden);
+            trace_add(line, n < (int)sizeof line ? n : (int)sizeof line - 1);
+            i = TRACE_TAIL;                      /* jump to the outermost few */
+        }
+        ObjFn *fn = frames[i].fn;
+        const char *nm = "<script>"; int nl = 8;
+        if (fn->name) { nm = fn->name->chars; nl = fn->name->len; }
+        const char *mod = ""; int ml = 0;
+        if (fn->module && fn->module->name && !(fn->module->name->len == 8
+            && memcmp(fn->module->name->chars, "__main__", 8) == 0)) {
+            mod = fn->module->name->chars; ml = fn->module->name->len;
+        }
+        long off = fn->code ? (long)(frames[i].ip - fn->code) : 0;
+        int n;
+        if (ml) n = snprintf(line, sizeof line, "  in %.*s.%.*s (+%ld)\n", ml, mod, nl, nm, off);
+        else    n = snprintf(line, sizeof line, "  in %.*s (+%ld)\n", nl, nm, off);
+        trace_add(line, n < (int)sizeof line ? n : (int)sizeof line - 1);
+    }
+}
+
+/* The innermost stack that nothing caught, or "" if the run succeeded. */
+const char *as_traceback(void) { return trace_buf; }
 
 /* GC roots: everything the running program can still reach. */
 void as_vm_mark_roots(void)
@@ -1445,7 +1506,9 @@ static int run_until(int floor)
             g_has_exc = 0;
             DISPATCH();                                      /* RESUME dispatch at the handler */
         }
-        /* uncaught: finalize as_err for the caller, then abort. */
+        /* uncaught: record where it happened while frames[] is still intact,
+         * then finalize as_err for the caller and abort. */
+        capture_trace();
         if (IS_STR(g_exc)) {
             ObjStr *s = AS_STR(g_exc);
             int n = s->len < (int)sizeof(as_err) - 1 ? s->len : (int)sizeof(as_err) - 1;

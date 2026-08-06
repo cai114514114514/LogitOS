@@ -125,7 +125,8 @@ int main(int argc, char **argv)
         as_gc_pop_disable();
         as_set_args(argc - 2, argv + 2);
         int rc = as_run(fn);
-        if (rc) { as_emit_cstr("as: "); as_emit_cstr(as_err); as_emit_cstr("\n"); }
+        if (rc) { as_emit_cstr("as: "); as_emit_cstr(as_err); as_emit_cstr("\n");
+                  as_emit_cstr(as_traceback()); }
         as_free_objects();
         return rc;
     }
@@ -142,7 +143,8 @@ int main(int argc, char **argv)
     if (!src) { as_emit_cstr("as: out of memory\n"); return 1; }
 
     int rc = as_interpret(src);
-    if (rc) { as_emit_cstr("as: "); as_emit_cstr(as_err); as_emit_cstr("\n"); }
+    if (rc) { as_emit_cstr("as: "); as_emit_cstr(as_err); as_emit_cstr("\n");
+              as_emit_cstr(as_traceback()); }   /* empty for a compile error: no VM stack */
     free(src);
     as_free_objects();
     return rc;

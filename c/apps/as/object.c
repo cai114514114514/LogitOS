@@ -114,8 +114,17 @@ static void tr_fn(Obj *o)
     ObjFn *fn = (ObjFn *)o;
     if (fn->name) gc_mark_obj((Obj *)fn->name);
     for (int i = 0; i < fn->kcount; i++) gc_mark_value(fn->consts[i]);
-    /* fn->module is NOT traced here: modules are permanently rooted via modules[]
-     * (never collected during a run). Revisit if modules ever become collectable. */
+    /* fn->module IS traced. It used to be skipped, on the premise that modules
+     * are permanently rooted via modules[] -- but that premise is false in one
+     * real case: a FAILED import drops its partial module from the table on
+     * purpose (so it cannot poison later imports), while frames belonging to it
+     * are still unwinding. The module then has no root, and anything reading
+     * fn->module afterwards -- the traceback, or global_slot's
+     * &fn->module->vars[i] -- touches freed memory. ASan caught this the moment
+     * the traceback started reading it under GC stress.
+     * A function's globals live in its module, so needing the module alive for
+     * as long as the function is alive is simply correct. */
+    gc_mark_obj((Obj *)fn->module);
 }
 static void tr_closure(Obj *o)
 {

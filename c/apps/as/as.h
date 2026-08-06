@@ -387,6 +387,12 @@ void as_gc_push_disable(void);
 void as_gc_pop_disable(void);
 
 /* platform output (as_io.c): write raw bytes to stdout (fd 1). */
+/* The call stack of the innermost error nothing caught, innermost frame first,
+ * one "  in <fn> (+<bytecode offset>)" line each; "" when the run succeeded.
+ * The library only captures it -- printing is the CLI's call (as.c), so
+ * embedders and the test harness see no extra output. */
+const char *as_traceback(void);
+
 void      as_emit(const char *s, int n);
 void      as_emit_cstr(const char *s);
 void      as_capture(char *buf, int cap);   /* redirect as_emit to a buffer (tests); NULL = stdout */
