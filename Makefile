@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -410,6 +410,16 @@ test-nvme: $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
 	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
+
+# Does the filesystem store data? Every other boot harness passes -snapshot,
+# which discards the disk on exit -- deterministic, and it means nothing here has
+# ever asserted that a write survives a reboot. This one runs five real boots
+# against one image with no -snapshot, verifying three files BYTE FOR BYTE (a
+# filesystem that hands one block to two files yields a file of exactly the right
+# length holding someone else's data, which a length check cannot see). Slow by
+# nature -- five boots -- so it is its own target rather than part of any suite.
+test-durability: $(ISO) $(DISK)
+	@bash tests/boot/run-durability-test.sh $(ISO) $(DISK)
 
 # Host unit test for TCP out-of-order reassembly (white-box: #includes tcp.c).
 # Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).
