@@ -66,6 +66,23 @@ static void newline(struct iflow *f)
     f->line_start = nitem;
 }
 
+/* emit one text item at the current pen position and advance the pen */
+static void emit_word(struct iflow *f, const char *s, int len, int w,
+                      struct cstyle *st, const char *href, int lh, int px, int mono)
+{
+    struct item *it = additem(IT_TEXT);
+    if (!it) return;
+    it->x = f->x; it->w = w; it->text = s; it->len = len;
+    it->font_px = px; it->bold = st->bold; it->italic = st->italic; it->mono = mono;
+    it->underline = st->underline; it->color = st->color; it->href = href;
+    it->hidden = st->hidden;
+    f->x += w;
+    f->line_started = 1;
+    if (lh > f->lineh) f->lineh = lh;
+    it->y = f->y;                                     /* top of line; baseline handled in paint */
+    it->h = lh;
+}
+
 /* place a text run (one element's text) into the flow, wrapping on words */
 static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st, const char *href)
 {
@@ -82,18 +99,37 @@ static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st
         if (f->line_started && f->x + spacew + ww > f->x1 && ww <= (f->x1 - f->x0)) {
             newline(f);                                   /* wrap */
         }
-        if (f->line_started) f->x += spacew;
-        struct item *it = additem(IT_TEXT);
-        if (!it) return;
-        it->x = f->x; it->w = ww; it->text = s + ws; it->len = wlen;
-        it->font_px = px; it->bold = st->bold; it->italic = st->italic; it->mono = mono;
-        it->underline = st->underline; it->color = st->color; it->href = href;
-        it->hidden = st->hidden;
-        f->x += ww;
-        f->line_started = 1;
-        if (lh > f->lineh) f->lineh = lh;
-        it->y = f->y;                                     /* top of line; baseline handled in paint */
-        it->h = lh;
+        if (ww <= f->x1 - f->x0) {
+            if (f->line_started) f->x += spacew;
+            emit_word(f, s + ws, wlen, ww, st, href, lh, px, mono);
+            continue;
+        }
+        /* A word wider than the whole line (CJK titles have no spaces to wrap
+         * on): break it anywhere. This is also what makes flex items honor
+         * their allocated width -- min-width:auto is compressible for text,
+         * so an over-long word must shrink-wrap instead of overflowing. */
+        int off = 0;
+        while (off < wlen) {
+            int avail = f->x1 - (f->line_started ? f->x + spacew : f->x);
+            if (avail <= 0) {
+                if (f->line_started) { newline(f); continue; }
+                avail = f->x1 - f->x0;              /* degenerate 0-width box: force progress */
+            }
+            /* largest prefix (UTF-8 char boundaries) that fits avail; >=1 char */
+            int bl = 0, bw = 0;
+            for (int p = 0; p < wlen - off; ) {
+                int adv = 1;
+                while (p + adv < wlen - off && (s[ws + off + p + adv] & 0xC0) == 0x80) adv++;
+                int mw = text_measure(s + ws + off, p + adv, px, mono);
+                if (mw > avail && bl > 0) break;
+                p += adv; bl = p; bw = mw;
+                if (bw >= avail) break;
+            }
+            if (f->line_started) f->x += spacew;
+            emit_word(f, s + ws + off, bl, bw, st, href, lh, px, mono);
+            off += bl;
+            if (off < wlen) newline(f);
+        }
     }
 }
 
@@ -165,6 +201,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         struct item *it = additem(IT_IMAGE);
         if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
                   it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2;
+                  if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");   /* lazy-load */
                   it->hidden = st ? st->hidden : 0; }
         f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
         return;
@@ -181,11 +218,12 @@ static int is_block(struct node *n)
      * has an explicit CSS width (shrink-to-fit is out of scope, but this stops
      * button/chip rows smearing into the surrounding text run). */
     return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX ||
-                  st->display == DISP_INLINE_BLOCK);
+                  st->display == DISP_GRID || st->display == DISP_INLINE_BLOCK);
 }
 
 static int layout_flex(struct node *n, int x, int y, int w);   /* fwd: flex row */
-static int layout_table(struct node *t, int x, int y, int w);  /* fwd: minimal grid */
+static int layout_grid(struct node *n, int x, int y, int w);   /* fwd: minimal grid */
+static int layout_table(struct node *t, int x, int y, int w);  /* fwd: minimal table */
 
 /* Emit the bullet (ul) or 1-based number (ol) for a <li> block child. `bx` is
  * the li's content-box left edge, `top` its first line's y. */
@@ -234,6 +272,8 @@ static int layout_block(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
     if (nst && nst->display == DISP_FLEX) return layout_flex(n, x, y, w);
+    if (nst && nst->display == DISP_GRID && nst->grid_cols > 0)
+        return layout_grid(n, x, y, w);
     int al = nst ? nst->text_align : ALIGN_LEFT;
     int cy = y;
     /* if this block has no block children, the whole content is one inline
@@ -473,6 +513,67 @@ static int layout_flex(struct node *n, int x, int y, int w)
         c = c->next;
     }
     return maxb;
+}
+
+/* ---- minimal grid layout ----
+ * Only what css_extra parses: N equal/fr/px columns (repeat(N,1fr) etc.) with
+ * px gaps. Children are placed in document order, left to right, wrapping
+ * every N; each row is as tall as its tallest item; items lay out with their
+ * column width as containing block. No areas/spans/auto-placement. */
+static int layout_grid(struct node *n, int x, int y, int w)
+{
+    struct cstyle *nst = n->style;
+    int nc = nst->grid_cols;
+    if (nc > GRID_MAXCOL) nc = GRID_MAXCOL;
+    if (nc < 1) return y;
+    int gx = nst->grid_gap_x > 0 ? nst->grid_gap_x : 0;
+    int gy = nst->grid_gap_y > 0 ? nst->grid_gap_y : 0;
+    int fixed = 0, weights = 0;
+    for (int i = 0; i < nc; i++) {
+        int t = nst->grid_tracks[i];
+        if (t > 0) fixed += t; else weights += -t;
+    }
+    int leftover = w - gx * (nc - 1) - fixed;
+    if (leftover < 0) leftover = 0;
+    int colw[GRID_MAXCOL], acc = 0;
+    for (int i = 0; i < nc; i++) {
+        int t = nst->grid_tracks[i];
+        colw[i] = t > 0 ? t : (weights > 0 ? leftover * (-t) / weights : leftover / nc);
+        acc += colw[i];
+    }
+    /* let a trailing fr track absorb the integer-rounding remainder */
+    if (nc > 0 && nst->grid_tracks[nc-1] < 0 && leftover > acc)
+        colw[nc-1] += leftover - acc;
+
+    int cy = y, rowbot = y, col = 0, items_in_row = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (c->type != N_ELEM || skipped(c)) continue;
+        if (col == 0 && items_in_row) { cy = rowbot + gy; rowbot = cy; }
+        struct cstyle *st = c->style;
+        int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
+        int pl = st ? st->pl : 0, pr = st ? st->pr : 0;
+        int pt = st ? st->pt : 0, pb = st ? st->pb : 0;
+        int cellx = x;
+        for (int i = 0; i < col; i++) cellx += colw[i] + gx;
+        int cw = colw[col] - ml - mr; if (cw < 0) cw = 0;
+        int top = cy + (st && st->mt > 0 ? st->mt : 0);
+        int bgidx = -1;
+        if (st && (st->has_bg || any_border(st))) {
+            struct item *bg = additem(IT_RECT);
+            if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
+        }
+        int inw = cw - pl - pr; if (inw < 0) inw = 0;
+        int inner = layout_block(c, cellx + ml + pl, top + pt, inw);
+        int ch = (inner - top) + pb;
+        if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+        if (st && ch < st->font_px) ch = st->font_px;
+        if (bgidx >= 0) items[bgidx].h = ch;
+        if (top + ch > rowbot) rowbot = top + ch;
+        items_in_row = 1;
+        if (++col == nc) col = 0;
+    }
+    (void)items_in_row;
+    return rowbot;
 }
 
 /* ---- minimal table layout ----

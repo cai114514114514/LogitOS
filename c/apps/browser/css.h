@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include "dom.h"
 
-enum { DISP_INLINE, DISP_BLOCK, DISP_INLINE_BLOCK, DISP_FLEX, DISP_NONE };
+enum { DISP_INLINE, DISP_BLOCK, DISP_INLINE_BLOCK, DISP_FLEX, DISP_NONE, DISP_GRID };
 enum { ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT };
+
+#define GRID_MAXCOL 24
 
 /* Computed style for one node. Lengths are px unless a *_pct flag says percent. */
 struct cstyle {
@@ -27,6 +29,12 @@ struct cstyle {
     int hidden;                     /* visibility:hidden/collapse or opacity:0 */
     int pos_abs;                    /* position:absolute -- out of flow (laid out nowhere) */
     int flex_grow;                  /* flex-grow as css_fixed (1.0 = 1024); 0 = don't grow */
+    int grid_cols;                  /* >0: grid container with this many columns (css_extra) */
+    int grid_tracks[GRID_MAXCOL];   /* per column: >0 = px width, <0 = fr weight (-v) */
+    int grid_gap_x, grid_gap_y;     /* column-gap / row-gap (px) */
+    int anim;                       /* has a non-none animation/animation-name (css_extra);
+                                     * opacity:0 + animation approximates its visible end
+                                     * state, so css_extra clears `hidden` for these */
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
 };
 
@@ -34,6 +42,8 @@ void css_init(void);                            /* build the UA default styleshe
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */
 void css_viewport(int w, int h);
+/* Current viewport width in px (for css_extra's naive @media gating). */
+int  css_media_width(void);
 /* Post-pass for properties our LibCSS doesn't know (border-radius): scans the
  * author sheet's simple selectors + inline style= attrs and patches node->style
  * after css_apply. */

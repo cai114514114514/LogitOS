@@ -109,6 +109,65 @@ int main(void)
     CHECK(noscr && CST(noscr) && CST(noscr)->display == DISP_NONE, "noscript -> display none");
     CHECK(tmpl && CST(tmpl) && CST(tmpl)->display == DISP_NONE, "template -> display none");
 
+    /* grid tracks: repeat(N,1fr) + grid-gap, px/fr lists, and @media tiers */
+    const char *html5 =
+        "<body><div class='gd'>x</div><div class='gl'>y</div>"
+        "<div class='gm'>z</div></body>";
+    const char *css5 =
+        ".gd { display:grid; grid-template-columns:repeat(4,1fr); grid-gap:20px }"
+        ".gl { display:grid; grid-template-columns:100px 1fr 2fr; column-gap:8px; row-gap:4px }"
+        "@media (min-width:1140px) and (max-width:1299.9px) {"
+        "  .gm { display:grid; grid-template-columns:repeat(4,1fr) } }"
+        "@media (max-width:1139.9px) {"
+        "  .gm { display:grid; grid-template-columns:repeat(2,1fr) } }";
+    struct node *r5 = dom_parse(html5, (int)strlen(html5));
+    css_viewport(1180, 620);
+    css_apply(r5, css5, (int)strlen(css5));
+    css_extra_apply(r5, css5, (int)strlen(css5));
+    struct node *gd = find_by_class(r5, "gd");
+    struct node *gl = find_by_class(r5, "gl");
+    struct node *gm = find_by_class(r5, "gm");
+    CHECK(gd && CST(gd) && CST(gd)->display == DISP_GRID, "display:grid mapped");
+    CHECK(gd && CST(gd) && CST(gd)->grid_cols == 4 && CST(gd)->grid_tracks[0] == -10,
+          "repeat(4,1fr) parsed to 4 fr tracks");
+    CHECK(gd && CST(gd) && CST(gd)->grid_gap_x == 20 && CST(gd)->grid_gap_y == 20,
+          "grid-gap px parsed");
+    CHECK(gl && CST(gl) && CST(gl)->grid_cols == 3 && CST(gl)->grid_tracks[0] == 100 &&
+          CST(gl)->grid_tracks[1] == -10 && CST(gl)->grid_tracks[2] == -20,
+          "px/fr track list parsed");
+    CHECK(gl && CST(gl) && CST(gl)->grid_gap_x == 8 && CST(gl)->grid_gap_y == 4,
+          "column-gap/row-gap parsed");
+    CHECK(gm && CST(gm) && CST(gm)->grid_cols == 4, "media tier 1140-1299.9 applies at 1180");
+    struct node *r5b = dom_parse(html5, (int)strlen(html5));
+    css_viewport(1000, 620);
+    css_apply(r5b, css5, (int)strlen(css5));
+    css_extra_apply(r5b, css5, (int)strlen(css5));
+    gm = find_by_class(r5b, "gm");
+    CHECK(gm && CST(gm) && CST(gm)->grid_cols == 2, "media tier max-1139.9 applies at 1000");
+    css_viewport(1180, 620);
+
+    /* opacity:0 + animation -> visible end state (hidden cleared);
+     * opacity:0 + transition only -> stays hidden; animation:none -> hidden. */
+    const char *html6 =
+        "<body><p class='fa'>a</p><p class='tr'>b</p><p class='an'>c</p>"
+        "<p class='sh'>d</p></body>";
+    const char *css6 =
+        ".fa { opacity:0; animation-name:fade-up }"
+        ".tr { opacity:0; transition:opacity .3s }"
+        ".an { opacity:0; animation:none !important }"
+        ".sh { opacity:0; animation:.3s ease-in 1s forwards slide-in }";
+    struct node *r6 = dom_parse(html6, (int)strlen(html6));
+    css_apply(r6, css6, (int)strlen(css6));
+    css_extra_apply(r6, css6, (int)strlen(css6));
+    struct node *fa = find_by_class(r6, "fa");
+    struct node *tr = find_by_class(r6, "tr");
+    struct node *an = find_by_class(r6, "an");
+    struct node *sh = find_by_class(r6, "sh");
+    CHECK(fa && CST(fa) && CST(fa)->hidden == 0, "opacity:0 + animation-name -> visible");
+    CHECK(sh && CST(sh) && CST(sh)->hidden == 0, "opacity:0 + animation shorthand -> visible");
+    CHECK(tr && CST(tr) && CST(tr)->hidden == 1, "opacity:0 + transition-only stays hidden");
+    CHECK(an && CST(an) && CST(an)->hidden == 1, "opacity:0 + animation:none stays hidden");
+
     if (fail) { printf("FAILURES\n"); return 1; }
     printf("ALL PASS\n");
     return 0;

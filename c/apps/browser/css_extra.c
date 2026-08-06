@@ -1,15 +1,23 @@
 /* css_extra.c -- capture properties our vendored LibCSS doesn't know about.
- * Currently: border-radius (px + %), and the "visually hidden" pattern
+ * Currently: border-radius (px + %), the "visually hidden" pattern
  * (clip-path:inset(50%) / clip:rect(0,0,0,0)) which real browsers lift out of
- * flow via position:absolute -- we force display:none instead. The author
- * sheet is scanned for simple selectors (tag, .class, #id, tag.class, comma
- * lists; descendant selectors match on their last compound) and inline style=
- * attributes, and matching nodes' cstyle is patched after css_apply. */
+ * flow via position:absolute -- we force display:none instead, minimal grid
+ * tracks (grid-template-columns repeat(N,1fr)/px/fr lists + px gaps), and the
+ * opacity:0 + animation static-end-state approximation (an element with a
+ * non-none animation will become visible, so the opacity:0 hidden flag is
+ * cleared; transition-only elements stay hidden). The author sheet is scanned
+ * for simple selectors (tag, .class, #id, tag.class, comma lists; descendant
+ * selectors match on their last compound) and inline style= attributes, and
+ * matching nodes' cstyle is patched after css_apply. @media blocks are gated
+ * on the viewport width (min/max-width only), so tiered rules like Bilibili's
+ * repeat(2..17,1fr) breakpoints apply only in their tier. */
 #include <string.h>
 #include "css.h"
 #include "dom.h"
 
 static int spc(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+static int ident(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                 (c >= '0' && c <= '9') || c == '-' || c == '_'; }
 
 /* Parse a border-radius value list: first length wins. "6px" -> 6, "50%" -> pct. */
 static int parse_radius(const char *v, int len, int *px, int *pct)
@@ -62,6 +70,146 @@ static int decls_vish(const char *d, int dlen)
             if (!memcmp(d + i, pat, pl)) return 1;
     }
     return 0;
+}
+
+/* Find the LAST "key: value" declaration in [d,dlen); *vs/*ve get the value
+ * span. The key must start a declaration (preceded by start/ws/';'/'{', so
+ * "gap" never matches inside "column-gap") and be followed by ':'. */
+static int find_decl(const char *d, int dlen, const char *key, int *vs, int *ve)
+{
+    int kl = (int)strlen(key), found = 0;
+    for (int i = 0; i + kl < dlen; i++) {
+        if (i > 0 && !spc(d[i-1]) && d[i-1] != ';' && d[i-1] != '{') continue;
+        if (memcmp(d + i, key, kl)) continue;
+        int j = i + kl;
+        while (j < dlen && spc(d[j])) j++;
+        if (j >= dlen || d[j] != ':') continue;
+        j++;
+        int s = j;
+        while (j < dlen && d[j] != ';' && d[j] != '}') j++;
+        *vs = s; *ve = j; found = 1;
+        i = j;
+    }
+    return found;
+}
+
+/* Parse one grid track: "<n>px" -> +px, "<n>fr" -> -weight (fr in tenths, so
+ * 0.5fr still counts). Returns 0 on success. */
+static int parse_track(const char *v, int len, int *i, int *track)
+{
+    int n = 0, frac = 0, any = 0;
+    while (*i < len && spc(v[*i])) (*i)++;
+    for (; *i < len && v[*i] >= '0' && v[*i] <= '9'; (*i)++) {
+        if (n < 100000) n = n * 10 + (v[*i] - '0');
+        any = 1;
+    }
+    if (*i < len && v[*i] == '.' && *i + 1 < len && v[*i+1] >= '0' && v[*i+1] <= '9') {
+        frac = v[*i+1] - '0'; (*i) += 2;
+        while (*i < len && v[*i] >= '0' && v[*i] <= '9') (*i)++;
+    }
+    if (!any) return -1;
+    if (*i + 1 < len && v[*i] == 'p' && v[*i+1] == 'x') { *i += 2; *track = n; return 0; }
+    if (*i + 1 < len && v[*i] == 'f' && v[*i+1] == 'r') { *i += 2; *track = -(n * 10 + frac); return 0; }
+    return -1;                                  /* auto/minmax/...: unsupported */
+}
+
+/* grid-template-columns: repeat(N, 1fr) | repeat(N, <px>) | "<px|fr> ..." .
+ * Fills tracks[] (>0 px, <0 fr weight in tenths) and *cols. -1 = unsupported. */
+static int parse_grid_cols(const char *v, int len, int *cols, int tracks[])
+{
+    int i = 0;
+    while (i < len && spc(v[i])) i++;
+    if (i + 6 <= len && !memcmp(v + i, "repeat", 6)) {
+        i += 6;
+        while (i < len && spc(v[i])) i++;
+        if (i >= len || v[i] != '(') return -1;
+        i++;
+        int n = 0;
+        while (i < len && spc(v[i])) i++;
+        for (; i < len && v[i] >= '0' && v[i] <= '9'; i++) n = n * 10 + (v[i] - '0');
+        while (i < len && spc(v[i])) i++;
+        if (i >= len || v[i] != ',') return -1;
+        i++;
+        int t;
+        if (parse_track(v, len, &i, &t) != 0) return -1;
+        if (n < 1) return -1;
+        if (n > GRID_MAXCOL) n = GRID_MAXCOL;
+        for (int k = 0; k < n; k++) tracks[k] = t;
+        *cols = n;
+        return 0;
+    }
+    int n = 0;
+    while (n < GRID_MAXCOL) {
+        int save = i, t;
+        if (parse_track(v, len, &i, &t) != 0) { i = save; break; }
+        tracks[n++] = t;
+        while (i < len && spc(v[i])) i++;
+        if (i >= len || v[i] == ';' || v[i] == '}') break;
+    }
+    if (!n) return -1;
+    *cols = n;
+    return 0;
+}
+
+/* Parse one or two px lengths: "20px" -> both, "14px 8px" -> row 14, col 8. */
+static int parse_gap(const char *v, int len, int *gx, int *gy)
+{
+    int i = 0, t1, t2;
+    if (parse_track(v, len, &i, &t1) != 0 || t1 < 0) return -1;
+    int save = i;
+    if (parse_track(v, len, &i, &t2) == 0 && t2 >= 0) { *gy = t1; *gx = t2; }
+    else { i = save; *gx = *gy = t1; }
+    return 0;
+}
+
+/* animation / animation-name present? 1 = non-none (will become visible),
+ * -1 = explicitly none, 0 = not declared. !important stripped. */
+static int decls_anim(const char *d, int dlen)
+{
+    int vs, ve;
+    if (!find_decl(d, dlen, "animation-name", &vs, &ve) &&
+        !find_decl(d, dlen, "animation", &vs, &ve)) return 0;
+    for (int i = vs; i < ve; i++) if (d[i] == '!') { ve = i; break; }
+    while (vs < ve && spc(d[vs])) vs++;
+    while (ve > vs && spc(d[ve-1])) ve--;
+    if (ve - vs >= 4 && !memcmp(d + vs, "none", 4) &&
+        (ve - vs == 4 || !ident(d[vs+4]))) return -1;
+    return 1;
+}
+
+/* Everything we may want to patch from one declarations block. */
+struct xpatch {
+    int do_none;                            /* visually-hidden -> display:none */
+    int do_radius, px, pct;
+    int do_grid, gcols, gtracks[GRID_MAXCOL];
+    int gx_set, gx, gy_set, gy;
+    int anim;                               /* 0 = untouched, 1 = animated, -1 = none */
+};
+
+static void parse_decls(const char *d, int dlen, struct xpatch *p)
+{
+    memset(p, 0, sizeof *p);
+    if (decls_vish(d, dlen)) p->do_none = 1;
+    if (decls_radius(d, dlen, &p->px, &p->pct)) p->do_radius = 1;
+    int vs, ve;
+    if (find_decl(d, dlen, "grid-template-columns", &vs, &ve) &&
+        parse_grid_cols(d + vs, ve - vs, &p->gcols, p->gtracks) == 0)
+        p->do_grid = 1;
+    if (find_decl(d, dlen, "gap", &vs, &ve) && parse_gap(d + vs, ve - vs, &p->gx, &p->gy) == 0) {
+        p->gx_set = p->gy_set = 1;
+    }
+    if (find_decl(d, dlen, "column-gap", &vs, &ve)) { int x, y;
+        if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gx = x; p->gx_set = 1; } }
+    if (find_decl(d, dlen, "row-gap", &vs, &ve)) { int x, y;
+        if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gy = y; p->gy_set = 1; } }
+    if (find_decl(d, dlen, "grid-gap", &vs, &ve) && parse_gap(d + vs, ve - vs, &p->gx, &p->gy) == 0) {
+        p->gx_set = p->gy_set = 1;
+    }
+    if (find_decl(d, dlen, "grid-column-gap", &vs, &ve)) { int x, y;
+        if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gx = x; p->gx_set = 1; } }
+    if (find_decl(d, dlen, "grid-row-gap", &vs, &ve)) { int x, y;
+        if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gy = y; p->gy_set = 1; } }
+    p->anim = decls_anim(d, dlen);
 }
 
 /* Match ONE compound selector (no combinators): [tag][#id][.cls][.cls]... */
@@ -132,47 +280,133 @@ static int match_selector(struct node *n, const char *s, int len)
     return 0;
 }
 
-/* mode 0: patch border-radius (px/pct); mode 1: force display:none */
-static void apply_patch(struct node *n, int px, int pct, int mode)
+static void apply_patch(struct node *n, const struct xpatch *p)
 {
     if (!n->style) return;
     struct cstyle *st = n->style;
-    if (mode == 1) { st->display = DISP_NONE; return; }
-    if (pct > 0) { st->radius_pct = pct; st->radius = 0; }
-    else { st->radius = px; st->radius_pct = 0; }
+    if (p->do_none) { st->display = DISP_NONE; return; }
+    if (p->do_radius) {
+        if (p->pct > 0) { st->radius_pct = p->pct; st->radius = 0; }
+        else { st->radius = p->px; st->radius_pct = 0; }
+    }
+    if (p->do_grid) {
+        st->grid_cols = p->gcols;
+        for (int i = 0; i < p->gcols && i < GRID_MAXCOL; i++) st->grid_tracks[i] = p->gtracks[i];
+    }
+    if (p->gx_set) st->grid_gap_x = p->gx;
+    if (p->gy_set) st->grid_gap_y = p->gy;
+    if (p->anim > 0) st->anim = 1;
+    else if (p->anim < 0) st->anim = 0;
 }
 
-static void walk(struct node *n, const char *sel, int slen, int px, int pct, int mode)
+static void walk(struct node *n, const char *sel, int slen, const struct xpatch *p)
 {
-    if (n->type == N_ELEM && match_selector(n, sel, slen)) apply_patch(n, px, pct, mode);
-    for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, px, pct, mode);
+    if (n->type == N_ELEM && match_selector(n, sel, slen)) apply_patch(n, p);
+    for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, p);
 }
 
-/* inline style="border-radius:..." / visually-hidden clip on each element */
+/* opacity:0 + animation -> the animation's end state is visible (we have no
+ * animation clock, so approximate the static end state): clear the hidden
+ * flag opacity:0 set. Transition-only elements stay hidden (nothing triggers
+ * them without JS). */
+static void walk_anim(struct node *n)
+{
+    struct cstyle *st = n->style;
+    if (n->type == N_ELEM && st && st->anim) st->hidden = 0;
+    for (struct node *c = n->first_child; c; c = c->next) walk_anim(c);
+}
+
+/* inline style="border-radius:...;animation:..." on each element */
 static void walk_inline(struct node *n)
 {
     if (n->type == N_ELEM && n->style) {
         const char *st = dom_attr(n, "style");
         if (st) {
-            int slen = (int)strlen(st);
-            if (decls_vish(st, slen)) apply_patch(n, 0, 0, 1);
-            else {
-                int px = 0, pct = 0;
-                if (decls_radius(st, slen, &px, &pct)) apply_patch(n, px, pct, 0);
-            }
+            struct xpatch p;
+            parse_decls(st, (int)strlen(st), &p);
+            apply_patch(n, &p);
         }
     }
     for (struct node *c = n->first_child; c; c = c->next) walk_inline(c);
 }
 
+/* ---- @media gating ----
+ * Pre-scan the sheet for @media blocks (brace-matched, so @keyframes /
+ * @font-face nesting can't confuse it); each block records its span and
+ * whether its min/max-width conditions hold for the current viewport. */
+#define MAX_MREGION 512
+struct mregion { int start, end, active; };
+static struct mregion g_mr[MAX_MREGION];
+static int g_nmr;
+
+/* 1 if every min-width/max-width in the header holds (no width terms = match,
+ * e.g. "@media screen"). Values in px, one decimal digit ("1299.9px"). */
+static int media_eval(const char *h, int len)
+{
+    int vw10 = css_media_width() * 10, ok = 1, terms = 0;
+    for (int i = 0; i + 6 < len && ok; i++) {
+        int is_min = 0, is_max = 0;
+        if (i + 10 <= len && !memcmp(h + i, "min-width:", 10)) { is_min = 1; i += 10; }
+        else if (i + 10 <= len && !memcmp(h + i, "max-width:", 10)) { is_max = 1; i += 10; }
+        else continue;
+        int n = 0, frac = 0, any = 0;
+        for (; i < len && h[i] >= '0' && h[i] <= '9'; i++) { n = n * 10 + (h[i] - '0'); any = 1; }
+        if (i + 1 < len && h[i] == '.' && h[i+1] >= '0' && h[i+1] <= '9') { frac = h[i+1] - '0'; i++; }
+        if (!any) continue;
+        terms++;
+        int v10 = n * 10 + frac;
+        if (is_min && vw10 < v10) ok = 0;
+        if (is_max && vw10 > v10) ok = 0;
+    }
+    (void)terms;
+    return ok;
+}
+
+static void media_scan(const char *css, int len)
+{
+    int mdepths[64], nm = 0, depth = 0;
+    g_nmr = 0;
+    for (int i = 0; i < len; i++) {
+        if (css[i] == '@' && i + 6 < len && !memcmp(css + i + 1, "media", 5) &&
+            !ident(css[i+6])) {
+            int b = i + 6;
+            while (b < len && css[b] != '{' && css[b] != ';') b++;
+            if (b < len && css[b] == '{') {
+                if (g_nmr < MAX_MREGION && nm < 64) {
+                    g_mr[g_nmr].start = b + 1;
+                    g_mr[g_nmr].end = len;      /* unterminated: runs to EOF */
+                    g_mr[g_nmr].active = media_eval(css + i + 6, b - (i + 6));
+                    mdepths[nm++] = depth + 1;
+                    g_nmr++;
+                }
+            }
+        } else if (css[i] == '{') {
+            depth++;
+        } else if (css[i] == '}') {
+            if (nm > 0 && depth == mdepths[nm-1]) { g_mr[g_nmr - 1].end = i; nm--; }
+            if (depth > 0) depth--;
+        }
+    }
+}
+
+/* 1 if position s is not inside any inactive @media block. */
+static int media_active_at(int s)
+{
+    for (int r = 0; r < g_nmr; r++)
+        if (s >= g_mr[r].start && s < g_mr[r].end && !g_mr[r].active) return 0;
+    return 1;
+}
+
 void css_extra_apply(struct node *root, const char *css, int len)
 {
-    if (!root || !css || len <= 0) { if (root) walk_inline(root); return; }
+    if (!root) return;
+    if (!css || len <= 0) { walk_inline(root); walk_anim(root); return; }
+    media_scan(css, len);
     int i = 0;
     while (i < len) {
         /* selector up to '{' (skip @-blocks naively: their inner rules still
-         * get matched, which for our simple media usage is fine). Stray '}'
-         * from closed @-blocks must be skipped too, else it poisons the next
+         * get matched, gated by the media pre-scan above). Stray '}' from
+         * closed @-blocks must be skipped too, else it poisons the next
          * selector as a bogus tag name. */
         while (i < len && (spc(css[i]) || css[i] == '}')) i++;
         if (i >= len) break;
@@ -189,11 +423,12 @@ void css_extra_apply(struct node *root, const char *css, int len)
         int d = i, depth = 1;
         while (i < len && depth) { if (css[i] == '{') depth++; else if (css[i] == '}') depth--; i++; }
         int dlen = i - 1 - d;
-        int px = 0, pct = 0;
-        if (dlen > 0 && decls_vish(css + d, dlen))
-            walk(root, css + s, slen, 0, 0, 1);
-        else if (dlen > 0 && decls_radius(css + d, dlen, &px, &pct))
-            walk(root, css + s, slen, px, pct, 0);
+        if (dlen <= 0 || !media_active_at(s)) continue;
+        struct xpatch p;
+        parse_decls(css + d, dlen, &p);
+        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim)
+            walk(root, css + s, slen, &p);
     }
     walk_inline(root);
+    walk_anim(root);
 }

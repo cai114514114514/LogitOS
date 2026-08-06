@@ -436,6 +436,8 @@ void css_viewport(int w, int h)
     g_unit.viewport_height = INTTOFIX(h);
 }
 
+int css_media_width(void) { return g_vw ? g_vw : 760; }
+
 /* ---------- computed style -> struct cstyle ---------- */
 static int len_px(css_fixed val, css_unit unit, int font_px, int *pct)
 {
@@ -475,7 +477,9 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     case CSS_DISPLAY_LIST_ITEM:    o->display = DISP_BLOCK; o->list_item = 1; break;
     case CSS_DISPLAY_FLEX:         o->display = DISP_FLEX; break;
     case CSS_DISPLAY_INLINE_FLEX:  o->display = DISP_FLEX; break;
-    default:                       o->display = DISP_BLOCK; break;  /* block + grid + table-ish */
+    case CSS_DISPLAY_GRID:         o->display = DISP_GRID; break;
+    case CSS_DISPLAY_INLINE_GRID:  o->display = DISP_GRID; break;
+    default:                       o->display = DISP_BLOCK; break;  /* block + table-ish */
     }
 
     if (css_computed_color(cs, &col) == CSS_COLOR_COLOR) o->color = to_rgb(col);
