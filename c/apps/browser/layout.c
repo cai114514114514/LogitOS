@@ -184,6 +184,11 @@ static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st
 
 static void flow_node(struct iflow *f, struct node *c, const char *href);
 
+/* Nonzero while laying out an absolutely-positioned overlay's subtree: flow_node
+ * must not drop children merely because their ancestor is position:absolute
+ * (bilibili's cover <img> lives inside a pos_abs <picture> overlay). */
+static int g_in_overlay;
+
 /* flow all inline descendants of `n` (text + inline elements + img) */
 static void flow_children(struct iflow *f, struct node *n, const char *href)
 {
@@ -198,7 +203,12 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
 {
     struct cstyle *st = c->style;
     if (skipped(c)) return;
-    if (c->parent && skipped(c->parent)) return;
+    if (c->parent && skipped(c->parent)) {
+        struct cstyle *ps = c->parent->style;
+        /* inside an overlay the ancestor's pos_abs is expected, not a reason to
+         * drop the child -- display:none still prunes. */
+        if (!(g_in_overlay && ps && ps->pos_abs && ps->display != DISP_NONE)) return;
+    }
 
     if (c->type == N_TEXT) {
         struct cstyle *ps = c->parent && c->parent->style ? c->parent->style : st;
@@ -282,6 +292,12 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (st && st->has_h && !st->h_pct) ih = st->height;
         if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
         if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
+        if (iw <= 0 && c->parent && c->parent->style &&
+            ((struct cstyle *)c->parent->style)->pos_abs)
+            iw = f->x1 - f->x0;              /* unsized <img> in an absolute overlay:
+                                              * fill it (bilibili's cover <picture>) */
+        int h_auto = 0;
+        if (iw > 0 && ih <= 0) h_auto = 1;   /* height follows the decoded aspect */
         if (iw <= 0) iw = ih > 0 ? ih : 24;
         if (ih <= 0) ih = iw;
         if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih*s2/iw; iw = s2; }
@@ -289,6 +305,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         struct item *it = additem(IT_IMAGE);
         if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
                   it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2;
+                  it->h_auto = h_auto;
                   if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");   /* lazy-load */
                   it->hidden = st ? st->hidden : 0; }
         f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
@@ -383,8 +400,59 @@ static int layout_block(struct node *n, int x, int y, int w)
     }
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *st = c->style;
+        if (st && st->pos_abs && blockish(c)) {
+            /* Absolutely-positioned overlay: anchor at this block's padding-box
+             * origin (+ top/left offsets) and lay out out-of-flow (cy unchanged).
+             * Full-bleed covers (bilibili's .bili-video-card__cover: top:0;left:0;
+             * w/h:100%) land exactly on their card; dropdown menus come here too
+             * but stay hidden through their visibility/opacity styles. */
+            int ppl = nst ? nst->pl : 0, ppt = nst ? nst->pt : 0, ppr = nst ? nst->pr : 0;
+            int ml = st->ml<0?0:st->ml;
+            int ox = x - ppl + (st->has_left ? st->left : 0) + ml;
+            int oy = y - ppt + (st->has_top ? st->top : 0);
+            int pw = w + ppl + ppr;                      /* containing block = padding box */
+            int ow = st->has_w && !st->w_pct ? st->width
+                   : st->has_w && st->w_pct ? pw*st->width/100
+                   : pw - (st->has_left ? st->left : 0) - ml;
+            if (ow < 0) ow = 0;
+            if (st->has_bg || any_border(st)) {
+                struct item *bg = additem(IT_RECT);
+                if (bg) { fill_rect_item(bg, st, ox, oy, ow);
+                          bg->h = st->has_h && !st->h_pct ? st->height : 0; }
+            }
+            int ovl_save = g_in_overlay;
+            g_in_overlay = 1;
+            layout_block(c, ox + st->pl, oy + st->pt, ow - st->pl - st->pr);
+            g_in_overlay = ovl_save;
+            continue;
+        }
         if (skipped(c)) continue;
         if (blockish(c)) {
+            if (tag_eq(c->tag, "img")) {
+                /* Block-level <img> is a replaced element, not an empty block box
+                 * (bilibili's blanket img{display:block} rule would otherwise eat
+                 * every cover). Unsized: fill the line; height follows the
+                 * decoded aspect via h_auto. */
+                int ml = st->ml<0?0:st->ml, mr = st->mr<0?0:st->mr;
+                int iw = st->has_w && !st->w_pct ? st->width
+                       : st->has_w && st->w_pct ? w*st->width/100 : 0;
+                int ih = st->has_h && !st->h_pct ? st->height : 0;
+                if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
+                if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
+                int h_auto = 0;
+                if (iw <= 0) { iw = w - ml - mr; h_auto = 1; }
+                else if (ih <= 0) h_auto = 1;
+                if (iw < 0) iw = 0;
+                if (ih <= 0) ih = iw;
+                cy += st->mt > 0 ? st->mt : 0;
+                struct item *it = additem(IT_IMAGE);
+                if (it) { it->x = x + ml; it->y = cy; it->w = iw; it->h = ih;
+                          it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
+                          if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");
+                          it->hidden = st->hidden; }
+                cy += ih + (st->mb > 0 ? st->mb : 0);
+                continue;
+            }
             int ml = st->ml<0?0:st->ml, mr = st->mr<0?0:st->mr;
             int bx = x + ml;
             int bw = st->has_w && !st->w_pct ? st->width
@@ -836,7 +904,12 @@ int layout_load_images(int max)
         if (res_fetch(it->imgsrc, &buf, &blen) != 0) continue;
         struct image *holder = kmalloc(sizeof *holder);
         struct image tmp;
-        if (holder && img_decode(buf, blen, &tmp) == 0) { *holder = tmp; it->img = holder; loaded++; }
+        if (holder && img_decode(buf, blen, &tmp) == 0) {
+            *holder = tmp; it->img = holder; loaded++;
+            /* height was only a guess: snap the box to the real aspect ratio */
+            if (it->h_auto && tmp.w > 0 && tmp.h > 0)
+                it->h = it->w * tmp.h / tmp.w;
+        }
         else if (holder) kfree(holder);
         kfree(buf);
     }

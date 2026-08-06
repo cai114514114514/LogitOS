@@ -30,6 +30,8 @@ struct cstyle {
     int op0;                        /* hidden was (also) caused by opacity:0 */
     int vis_hid;                    /* hidden was caused by visibility:hidden/collapse */
     int pos_abs;                    /* position:absolute -- out of flow (laid out nowhere) */
+    int top, left;                  /* pos_abs px offsets from the containing block */
+    int has_top, has_left;          /* top/left were set (vs auto) */
     int flex_grow;                  /* flex-grow as css_fixed (1.0 = 1024); 0 = don't grow */
     int grid_cols;                  /* >0: grid container with this many columns (css_extra) */
     int grid_tracks[GRID_MAXCOL];   /* per column: >0 = px width, <0 = fr weight (-v) */

@@ -14,6 +14,8 @@ struct item {
     /* TEXT */ const char *text; int len, font_px, bold, italic, mono, underline; uint32_t color;
     char marker[12];                    /* backing store for <li> bullet/number items */
     /* IMAGE */ struct image *img; const char *imgsrc;  /* decoded image + its URL */
+    int h_auto;                       /* img height was derived (no explicit px): may be
+                                       * corrected from the decoded image's aspect ratio */
     const char *href;                 /* link target for this item (or NULL) */
     int hidden;                       /* visibility:hidden / opacity:0 -- layout space kept, nothing painted */
 };

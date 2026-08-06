@@ -555,6 +555,11 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       /* absolute: out of flow (dropdowns/overlays would smear the normal
        * flow). fixed stays in flow -- fixed headers sit at the top anyway. */
       if (p == CSS_POSITION_ABSOLUTE) o->pos_abs = 1; }
+    { css_fixed v; css_unit u;         /* offsets for pos_abs overlay anchoring */
+      if (css_computed_top(cs, &v, &u) == CSS_TOP_SET && u == CSS_UNIT_PX)
+          { o->top = clamp_px(FIXTOINT(v)); o->has_top = 1; }
+      if (css_computed_left(cs, &v, &u) == CSS_LEFT_SET && u == CSS_UNIT_PX)
+          { o->left = clamp_px(FIXTOINT(v)); o->has_left = 1; } }
     { css_fixed fg = 0;
       if (css_computed_flex_grow(cs, &fg) == CSS_FLEX_GROW_SET && fg > 0)
           o->flex_grow = fg; }
