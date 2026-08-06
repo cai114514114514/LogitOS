@@ -91,8 +91,14 @@ def gui_text_mono(x, y, cell, color, s):
 def gui_icon(x, y, id, px, color):
     return syscall(SYS_GUI_ICON, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((id & 0xFFFF) << 16) | ((px & 0xFFFF)), color)
 
+def gui_rrect(x, y, w, h, radius, color):
+    return syscall(SYS_GUI_RRECT, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)), ((radius & 0xFF) << 24) | ((color & 0xFFFFFF)))
+
 def gui_glass(x, y, w, h, radius, tr, tg, tb, ta):
-    return syscall(SYS_GUI_GLASS, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)), ((radius & 0xFFFFFFFF) << 32) | ((tr & 0xFF) << 24) | ((tg & 0xFF) << 16) | ((tb & 0xFF) << 8) | ((ta & 0xFF)))
+    return syscall(SYS_GUI_GLASS, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)), ((radius & 0xFF) << 32) | ((tr & 0xFF) << 24) | ((tg & 0xFF) << 16) | ((tb & 0xFF) << 8) | ((ta & 0xFF)))
+
+def gui_clip(x, y, w, h):
+    return syscall(SYS_GUI_CLIP, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)))
 
 def gui_flush():
     return syscall(SYS_GUI_FLUSH)

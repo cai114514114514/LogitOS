@@ -15,6 +15,13 @@
 #include "aex.h"
 #include "img.h"
 #include "logit_abi.h"
+/* Generated from include/abi/logit_calls.abi, which is where the packed syscall
+ * arguments are described. Unpacking them by hand here meant the convention was
+ * stated once in a logit_abi.h comment, once in the caller's packing, and once
+ * here -- three copies of `(x<<16)|y` that nothing checked against each other.
+ * Writing it down found a real disagreement: SYS_GUI_GLASS's radius is 8 bits,
+ * which the comment's `(radius<<32)|...` never said. */
+#include "logit_pack.h"
 #include "net.h"
 #include "http.h"
 #include "kprintf.h"
@@ -354,7 +361,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         int wi = -1;
         for (int i = 0; i < MAXWIN; i++) if (!wins[i].used) { wi = i; break; }
         if (wi < 0) return -1;
-        int cw = (int)((b >> 16) & 0xFFFF), ch = (int)(b & 0xFFFF);
+        int cw = LOGIT_GUI_CREATE_B_W(b), ch = LOGIT_GUI_CREATE_B_H(b);
         if (cw <= 0 || ch <= 0) return -1;
         /* cw,ch are each up to 65535 -- cw*ch*4 overflows int. A window larger
          * than the screen is meaningless, so cap to the framebuffer; do the size
@@ -389,8 +396,8 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_RECT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        int rw = (int)((b >> 16) & 0xFFFF), rh = (int)(b & 0xFFFF);
+        int x = LOGIT_GUI_RECT_A_X(a), y = LOGIT_GUI_RECT_A_Y(a);
+        int rw = LOGIT_GUI_RECT_B_W(b), rh = LOGIT_GUI_RECT_B_H(b);
         /* rw/rh are user-controlled (up to 65535 each): an unclamped fill runs
          * up to 65535^2 fb_put calls inside the syscall gate (IF=0 + BKL held),
          * freezing the machine for seconds per call. Intersect with the surface. */
@@ -401,19 +408,19 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_RRECT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        int rw = (int)((b >> 16) & 0xFFFF), rh = (int)(b & 0xFFFF);
-        int radius = (int)((c >> 24) & 0xFF);
+        int x = LOGIT_GUI_RRECT_A_X(a), y = LOGIT_GUI_RRECT_A_Y(a);
+        int rw = LOGIT_GUI_RRECT_B_W(b), rh = LOGIT_GUI_RRECT_B_H(b);
+        int radius = LOGIT_GUI_RRECT_C_RADIUS(c);
         /* same surface-intersection clamp as SYS_GUI_RECT (user-controlled size
          * behind the syscall gate) */
         if (rw > w->surf.w - x) rw = w->surf.w - x;
         if (rh > w->surf.h - y) rh = w->surf.h - y;
-        fb_target(&w->surf); fb_round_rect(x, y, rw, rh, radius, (uint32_t)(c & 0xFFFFFF)); fb_target(NULL);
+        fb_target(&w->surf); fb_round_rect(x, y, rw, rh, radius, (uint32_t)LOGIT_GUI_RRECT_C_COLOR(c)); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_TEXT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
+        int x = LOGIT_GUI_TEXT_A_X(a), y = LOGIT_GUI_TEXT_A_Y(a);
         char text[USER_TEXT_MAX];
         if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
         fb_target(&w->surf); fb_text(x, y, text, (uint32_t)b); fb_target(NULL);
@@ -421,8 +428,8 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_TEXT_MONO: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        int cell = (int)((b >> 24) & 0xFF); uint32_t color = (uint32_t)(b & 0xFFFFFF);
+        int x = LOGIT_GUI_TEXT_MONO_A_X(a), y = LOGIT_GUI_TEXT_MONO_A_Y(a);
+        int cell = LOGIT_GUI_TEXT_MONO_B_CELL(b); uint32_t color = (uint32_t)LOGIT_GUI_TEXT_MONO_B_COLOR(b);
         char text[USER_TEXT_MAX];
         if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
         fb_target(&w->surf); text_draw_mono(x, y, text, cell, color); fb_target(NULL);
@@ -430,18 +437,19 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_ICON: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        int id = (int)((b >> 16) & 0xFFFF), px = (int)(b & 0xFFFF);
+        int x = LOGIT_GUI_ICON_A_X(a), y = LOGIT_GUI_ICON_A_Y(a);
+        int id = LOGIT_GUI_ICON_B_ID(b), px = LOGIT_GUI_ICON_B_PX(b);
         if (px < 1 || px > 512) return -1;   /* icon_draw allocates px*px before rasterizing */
         fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_GLASS: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        int gw = (int)((b >> 16) & 0xFFFF), gh = (int)(b & 0xFFFF);
-        int radius = (int)((c >> 32) & 0xFF);
-        uint8_t tr = (c >> 24) & 0xFF, tg = (c >> 16) & 0xFF, tb = (c >> 8) & 0xFF, ta = c & 0xFF;
+        int x = LOGIT_GUI_GLASS_A_X(a), y = LOGIT_GUI_GLASS_A_Y(a);
+        int gw = LOGIT_GUI_GLASS_B_W(b), gh = LOGIT_GUI_GLASS_B_H(b);
+        int radius = LOGIT_GUI_GLASS_C_RADIUS(c);
+        uint8_t tr = (uint8_t)LOGIT_GUI_GLASS_C_TR(c), tg = (uint8_t)LOGIT_GUI_GLASS_C_TG(c),
+                tb = (uint8_t)LOGIT_GUI_GLASS_C_TB(c), ta = (uint8_t)LOGIT_GUI_GLASS_C_TA(c);
         fb_target(&w->surf); fb_liquid_glass(x, y, gw, gh, radius, tr, tg, tb, ta); fb_target(NULL);
         return 0;
     }
@@ -619,8 +627,8 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_CLIP: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = (int)((a >> 16) & 0xFFFF), y = (int)(a & 0xFFFF);
-        int cw2 = (int)((b >> 16) & 0xFFFF), ch2 = (int)(b & 0xFFFF);
+        int x = LOGIT_GUI_CLIP_A_X(a), y = LOGIT_GUI_CLIP_A_Y(a);
+        int cw2 = LOGIT_GUI_CLIP_B_W(b), ch2 = LOGIT_GUI_CLIP_B_H(b);
         /* The clip is stored ON the window surface, so target it first; this is
          * why a clip set here can't bleed into another app's surface draws. */
         fb_target(&w->surf);

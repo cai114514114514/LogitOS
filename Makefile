@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -445,7 +445,7 @@ test-https-smoke: $(ISO) $(DISK)
 	@bash tests/boot/run-https-smoke.sh $(ISO) $(DISK)
 
 # On-Logit AetherScript test: boots and runs /bin/as on the /usr/as examples.
-test-as-os: check-asops $(ISO) $(DISK)
+test-as-os: check-asops check-abi $(ISO) $(DISK)
 	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
 
 # mini-libc on-target test battery: boots Logit, runs /bin/libctest, asserts LIBC_OK.
@@ -466,7 +466,7 @@ test-smp: $(ISO) $(DISK)
 # used to be a hand-written list, so a new core .c built into /bin/as fine and
 # then failed to link every host test until someone remembered to add it here.
 AS_CORE := $(filter-out c/apps/as/as.c c/apps/as/complete.c,$(AS_C))
-test-as: check-asops
+test-as: check-asops check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test
@@ -481,6 +481,22 @@ test-as: check-asops
 # Read-only: it never rewrites asc.as/aslex.as.
 check-asops:
 	@python3 tools/gen_as_opcodes.py --check
+
+# The kernel struct layouts AetherScript reads (fsroot/as/lib/abi.as) are
+# generated from include/abi/logit_abi.h, and every offset in them is ALSO
+# emitted as a _Static_assert that as_native.c compiles -- so a struct the
+# kernel reorders fails the build rather than leaving a script reading the wrong
+# bytes. That leaves one gap the asserts cannot see: a field RENAMED at the same
+# offset. This closes it by regenerating and diffing. Read-only, like
+# check-asops: it never rewrites the generated files (use --write for that).
+check-abi:
+	@python3 tools/gen_abi.py --check
+
+# as_native.c #includes the generated asserts; rebuild it when they change, or a
+# stale object would keep vouching for the old layout (cf. the roots_bundle.inc
+# gotcha, where a missing dep silently kept the old CA roots in the kernel).
+$(BUILD)/asobj/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
+$(BUILD)/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
 
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
@@ -499,7 +515,7 @@ test-fb-clip:
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
 # or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
-test-as-gcstress: check-asops
+test-as-gcstress: check-asops check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_test_gcstress
@@ -507,7 +523,7 @@ test-as-gcstress: check-asops
 # Robustness suite: deep recursion, huge allocations, many locals, boundary
 # values -- the paths that a runtime rewrite breaks first. Uses only the public
 # API (as_interpret/as_capture/as_gc_live), so it survives representation changes.
-test-as-stress: check-asops
+test-as-stress: check-asops check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_stress tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_stress
@@ -534,15 +550,15 @@ $(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
 
 # M21-P3 self-hosting S1: the AetherScript lexer (lib/aslex.as) must emit a
 # token stream byte-identical to the C lexer over the whole in-tree corpus.
-test-selfhost-lex: check-asops $(BUILD)/asc
+test-selfhost-lex: check-asops check-abi $(BUILD)/asc
 	@bash tests/unit/run-selfhost-lex.sh $(BUILD)/asc
 
 # S2/S3: programs compiled by the self-hosted compiler (lib/asc.as) run identically.
-test-selfhost-compile: check-asops $(BUILD)/asc
+test-selfhost-compile: check-asops check-abi $(BUILD)/asc
 	@bash tests/unit/run-selfhost-compile.sh $(BUILD)/asc
 
 # S4: the self-hosting fixpoint -- the compiler compiled by itself reproduces itself.
-test-selfhost-fixpoint: check-asops $(BUILD)/asc
+test-selfhost-fixpoint: check-asops check-abi $(BUILD)/asc
 	@bash tests/unit/run-selfhost-fixpoint.sh $(BUILD)/asc
 
 test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
@@ -552,14 +568,14 @@ test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
 # every compiled stdlib module against a checked-in baseline, so a slice that
 # accidentally perturbs codegen is caught at the module level (and long before
 # the fixpoint test would notice a 37 KB binary moved).
-test-as-bcstable: check-asops $(BUILD)/asc
+test-as-bcstable: check-asops check-abi $(BUILD)/asc
 	@bash tests/unit/run-bcstable.sh $(BUILD)/asc
 
 # The runtime rewrite replaces the allocator and object headers: a chunk overrun
 # corrupts a DIFFERENT object, so the crash lands far from the cause. The target
 # can't run a sanitizer (freestanding, no runtime), but the host can -- use it.
 # Slow (gcstress x asan), so it is not part of test-as-fast.
-test-as-asan: check-asops
+test-as-asan: check-asops check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -o $(BUILD)/as_test_asan tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi

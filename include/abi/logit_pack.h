@@ -43,6 +43,18 @@
 #define LOGIT_GUI_ICON_B_ID(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_ICON_B_PX(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
+/* SYS_GUI_RRECT arg a: x<<16 | y */
+#define LOGIT_GUI_RRECT_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_RRECT_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
+/* SYS_GUI_RRECT arg b: w<<16 | h */
+#define LOGIT_GUI_RRECT_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_RRECT_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
+/* SYS_GUI_RRECT arg c: radius<<24 | color */
+#define LOGIT_GUI_RRECT_C_RADIUS(v) ((int)(((unsigned long long)(v) >> 24) & 0xFFULL))
+#define LOGIT_GUI_RRECT_C_COLOR(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFFFULL))
+
 /* SYS_GUI_GLASS arg a: x<<16 | y */
 #define LOGIT_GUI_GLASS_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_GLASS_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
@@ -52,10 +64,18 @@
 #define LOGIT_GUI_GLASS_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
 /* SYS_GUI_GLASS arg c: radius<<32 | tr<<24 | tg<<16 | tb<<8 | ta */
-#define LOGIT_GUI_GLASS_C_RADIUS(v) ((int)(((unsigned long long)(v) >> 32) & 0xFFFFFFFFULL))
+#define LOGIT_GUI_GLASS_C_RADIUS(v) ((int)(((unsigned long long)(v) >> 32) & 0xFFULL))
 #define LOGIT_GUI_GLASS_C_TR(v) ((int)(((unsigned long long)(v) >> 24) & 0xFFULL))
 #define LOGIT_GUI_GLASS_C_TG(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFULL))
 #define LOGIT_GUI_GLASS_C_TB(v) ((int)(((unsigned long long)(v) >> 8) & 0xFFULL))
 #define LOGIT_GUI_GLASS_C_TA(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFULL))
+
+/* SYS_GUI_CLIP arg a: x<<16 | y */
+#define LOGIT_GUI_CLIP_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_CLIP_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
+/* SYS_GUI_CLIP arg b: w<<16 | h */
+#define LOGIT_GUI_CLIP_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_CLIP_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
 #endif /* LOGIT_PACK_H */

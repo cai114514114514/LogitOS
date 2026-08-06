@@ -34,7 +34,13 @@ call gui_rect       SYS_GUI_RECT       pack(x:16:16, y:0:16) pack(w:16:16, h:0:1
 call gui_text       SYS_GUI_TEXT       pack(x:16:16, y:0:16) int(color) str(s)
 call gui_text_mono  SYS_GUI_TEXT_MONO  pack(x:16:16, y:0:16) pack(cell:24:8, color:0:24) str(s)
 call gui_icon       SYS_GUI_ICON       pack(x:16:16, y:0:16) pack(id:16:16, px:0:16) int(color)
-call gui_glass      SYS_GUI_GLASS      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:32:32, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
+call gui_rrect      SYS_GUI_RRECT      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:24:8, color:0:24)
+# radius is 8 bits, not the 32 the header comment's `(radius<<32)|...` suggests:
+# c/kernel/gui/wm.c reads it as (c >> 32) & 0xFF. Writing the convention down is
+# what surfaced that -- a shift with no width is exactly the kind of thing a
+# comment can leave unsaid and a caller can get wrong.
+call gui_glass      SYS_GUI_GLASS      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:32:8, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
+call gui_clip       SYS_GUI_CLIP       pack(x:16:16, y:0:16) pack(w:16:16, h:0:16)
 call gui_flush      SYS_GUI_FLUSH
 call gui_poll_event SYS_POLL_EVENT     buf(ev)
 call ui_dark_query  SYS_UI_DARK        lit(-1)

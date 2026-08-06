@@ -15,8 +15,8 @@
 # include/abi/logit_calls.abi, which generates both the packing these wrappers
 # call (`abi`) and the kernel's unpack macros (include/abi/logit_pack.h).
 
-from abi import Event, gui_create, gui_clear, gui_rect, gui_text, gui_text_mono
-from abi import gui_icon, gui_glass, gui_flush, gui_poll_event, ui_dark_query, sys_yield
+from abi import Event, gui_create, gui_clear, gui_rect, gui_rrect, gui_text, gui_text_mono
+from abi import gui_icon, gui_glass, gui_clip, gui_flush, gui_poll_event, ui_dark_query, sys_yield
 
 # One event struct, reused: the kernel fills it on each poll and the caller is
 # expected to handle the event before polling again. Its field offsets come from
@@ -32,6 +32,15 @@ def clear(color):
 
 def rect(x, y, w, h, color):
     return gui_rect(x, y, w, h, color)
+
+# A rounded rect, like a web border-radius. radius is 8 bits (the kernel reads
+# it as such), which the header comment never said out loud.
+def rrect(x, y, w, h, radius, color):
+    return gui_rrect(x, y, w, h, radius, color)
+
+# Restrict drawing to a rectangle of this window's surface; (0,0,0,0) clears it.
+def clip(x, y, w, h):
+    return gui_clip(x, y, w, h)
 
 def text(x, y, color, s):
     return gui_text(x, y, color, s)
