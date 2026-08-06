@@ -19,12 +19,73 @@ void *as_realloc(void *p, size_t n)
     return q;
 }
 
-/* All heap objects are chained on g_objs: the mark-sweep GC sweeps this list
- * (gc_collect), and as_free_objects walks it to release everything at run end. */
-static Obj *g_objs = NULL;
-static long   live_objects = 0;    /* number of live heap objects (for gc_stats + trigger) */
-static long   next_gc = 1024;      /* collect when live_objects reaches this (count threshold) */
-static int    gc_disabled = 0;     /* >0 disables collection (during compile / VM setup) */
+/* Every heap object is registered in one contiguous array. Sweeping walks it
+ * linearly and compacts in place, which is a dense pass over cache lines the
+ * prefetcher can see coming -- the intrusive `next` chain this replaced was a
+ * dependent load per object, in allocation order, i.e. scattered. It also gets
+ * the pointer out of the object header (see struct Obj). */
+static Obj  **g_objs = NULL;
+static long   live_objects = 0;    /* entries in g_objs (for gc_stats + as_gc_live) */
+static long   objs_cap = 0;
+static int    gc_disabled = 0;     /* >0 disables collection (compile / load only, see below) */
+
+/* Two triggers, whichever trips first. Counting objects alone -- what this used
+ * to do -- meant a heap of a thousand 1 MB strings and a heap of a thousand
+ * empty lists collected at exactly the same point, so the case that actually
+ * needs collecting on a 24 MiB static arena was the one the trigger ignored.
+ * Counting bytes alone has the opposite blind spot: a million tiny objects are
+ * cheap in bytes but expensive in registry space and sweep time. Neither
+ * subsumes the other, so both are watched.
+ *
+ * gc_account() is called from the object allocator and from every site that
+ * grows or frees an object-owned buffer, so `heap_bytes` tracks what a collection
+ * could actually reclaim. (as_malloc/as_realloc are NOT the choke point: the
+ * lexer's token buffer and the string builders in vm.c go through them for
+ * memory the GC never owns.) */
+static size_t heap_bytes = 0;
+static size_t next_gc_bytes = 1u << 20;      /* first collection after 1 MiB ... */
+static long   next_gc_objs = 1024;           /* ... or 1024 objects, whichever comes first */
+#define GC_MIN_HEAP (1u << 20)
+#define GC_MIN_OBJS 1024
+
+static void gc_account(long delta)
+{
+    if (delta < 0) {
+        size_t d = (size_t)(-delta);
+        heap_bytes = heap_bytes > d ? heap_bytes - d : 0;
+    } else {
+        heap_bytes += (size_t)delta;
+    }
+}
+
+/* Temporary GC roots: objects that exist but are not reachable from the VM yet.
+ * The alternative -- and what this replaces at every runtime site -- was to turn
+ * the collector OFF for the duration, which means the heap grows without bound
+ * for as long as the operation runs. `"...".split()` on a large string did
+ * exactly that: one disable spanning thousands of allocations. Protecting the
+ * few in-flight objects instead keeps the collector running throughout.
+ * Compile and load still disable outright; see gc_collect. */
+#define GC_TEMPS_MAX 16
+static Obj *temps[GC_TEMPS_MAX];
+static int  ntemps = 0;
+static int  temps_overflow = 0;   /* protects that did not fit; each holds a gc_disable */
+
+void as_gc_protect(Obj *o)
+{
+    if (!o) { temps_overflow++; gc_disabled++; return; }   /* still a slot to release */
+    if (ntemps < GC_TEMPS_MAX) { temps[ntemps++] = o; return; }
+    temps_overflow++; gc_disabled++;      /* never drop a root; fall back to the blunt instrument */
+}
+/* Protect/release nest strictly, so anything that overflowed is by construction
+ * more recent than anything on the array -- release those first or the pairing
+ * would come apart. */
+void as_gc_release(int n)
+{
+    while (n-- > 0) {
+        if (temps_overflow > 0) { temps_overflow--; if (gc_disabled > 0) gc_disabled--; }
+        else if (ntemps > 0) ntemps--;
+    }
+}
 
 static Obj  **gray = NULL;          /* GC mark worklist (raw realloc'd buffer, NOT a GC object) */
 static int    gray_count = 0, gray_cap = 0;
@@ -102,12 +163,45 @@ static void tr_bound(Obj *o)
     gc_mark_obj((Obj *)bm->method);
 }
 
-static void fin_str(Obj *o)     { free(((ObjStr *)o)->chars); }
-static void fin_fn(Obj *o)      { free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); free(((ObjFn *)o)->gcache); }
-static void fin_list(Obj *o)    { free(((ObjList *)o)->items); }
-static void fin_dict(Obj *o)    { free(((ObjDict *)o)->entries); }
-static void fin_module(Obj *o)  { free(((ObjModule *)o)->vars); }
-static void fin_closure(Obj *o) { free(((ObjClosure *)o)->upvalues); }
+/* Each finalizer gives back exactly what its allocation site charged, so
+ * heap_bytes stays honest across a collection. gcache is deliberately not
+ * accounted: it is a runtime memo the GC cannot reclaim by collecting. */
+static void fin_str(Obj *o)
+{
+    ObjStr *s = (ObjStr *)o;
+    gc_account(-(long)s->len - 1);
+    free(s->chars);
+}
+static void fin_fn(Obj *o)
+{
+    ObjFn *f = (ObjFn *)o;
+    gc_account(-(long)f->cap - (long)((size_t)f->kcap * sizeof(Value)));
+    free(f->code); free(f->consts); free(f->gcache);
+}
+static void fin_list(Obj *o)
+{
+    ObjList *l = (ObjList *)o;
+    gc_account(-(long)((size_t)l->cap * sizeof(Value)));
+    free(l->items);
+}
+static void fin_dict(Obj *o)
+{
+    ObjDict *d = (ObjDict *)o;
+    gc_account(-(long)((size_t)d->cap * sizeof(DictEntry)));
+    free(d->entries);
+}
+static void fin_module(Obj *o)
+{
+    ObjModule *m = (ObjModule *)o;
+    gc_account(-(long)((size_t)m->cap * sizeof(NameVal)));
+    free(m->vars);
+}
+static void fin_closure(Obj *o)
+{
+    ObjClosure *c = (ObjClosure *)o;
+    gc_account(-(long)((size_t)c->upvalue_count * sizeof(ObjUpvalue *)));
+    free(c->upvalues);
+}
 
 /* Designated initializers on purpose: the row is bound to its ObjType by name,
  * so reordering the enum can't silently shift the table. */
@@ -145,16 +239,24 @@ static Obj *alloc_obj(ObjType type)
 #ifdef AS_GC_STRESS
         gc_collect();
 #else
-        if (live_objects >= next_gc) gc_collect();
+        if (heap_bytes >= next_gc_bytes || live_objects >= next_gc_objs) gc_collect();
 #endif
+    }
+    /* Grow the registry BEFORE allocating: a live object that failed to register
+     * would be invisible to both the sweep and the teardown, i.e. leaked with no
+     * way to ever find it again. */
+    if (live_objects + 1 > objs_cap) {
+        long nc = objs_cap < 256 ? 256 : objs_cap * 2;
+        Obj **nv = (Obj **)realloc(g_objs, (size_t)nc * sizeof(Obj *));
+        if (!nv) { snprintf(as_err, sizeof as_err, "out of memory"); g_oom = 1; return NULL; }
+        g_objs = nv; objs_cap = nc;
     }
     Obj *o = (Obj *)as_malloc(size);
     if (!o) return NULL;          /* g_oom set; caller propagates, DISPATCH unwinds */
-    o->type = type;
+    o->type = (uint8_t)type;
     o->marked = 0;
-    o->next = g_objs;
-    g_objs = o;
-    live_objects++;
+    g_objs[live_objects++] = o;
+    gc_account((long)size);
     return o;
 }
 
@@ -170,6 +272,7 @@ ObjStr *as_str_take(char *chars, int len)   /* takes ownership of `chars` */
     ObjStr *s = (ObjStr *)alloc_obj(O_STR);
     if (!s) { free(chars); return NULL; }     /* OOM: release the buffer we took */
     s->len = len; s->chars = chars; s->hash = 0; s->hashed = 0;   /* M23: hash lazily */
+    gc_account((long)len + 1);          /* as_str_take owns `chars` from here on */
     return s;
 }
 
@@ -211,6 +314,7 @@ ObjClosure *as_closure_new(ObjFn *fn)
     ObjClosure *c = (ObjClosure *)alloc_obj(O_CLOSURE);
     if (!c) { free(ups); return NULL; }     /* g_oom set; ups was ours */
     c->fn = fn; c->upvalues = ups; c->upvalue_count = fn->upvalue_count;
+    gc_account((long)((size_t)c->upvalue_count * sizeof(ObjUpvalue *)));
     return c;
 }
 ObjUpvalue *as_upvalue_new(Value *slot)
@@ -223,22 +327,24 @@ ObjUpvalue *as_upvalue_new(Value *slot)
 
 ObjClass *as_class_new(ObjStr *name)
 {
-    as_gc_push_disable();      /* two allocs (class + methods dict) before either is rooted */
     ObjClass *c = (ObjClass *)alloc_obj(O_CLASS);
-    if (!c) { as_gc_pop_disable(); return NULL; }
+    if (!c) return NULL;
     c->name = name; c->super = NULL;
+    c->methods = NULL;                    /* set before the dict alloc: tr_class reads it */
+    as_gc_protect((Obj *)c);              /* c is unreachable while as_dict_new allocates */
     c->methods = as_dict_new();
-    as_gc_pop_disable();
+    as_gc_release(1);
     return c;
 }
 ObjInstance *as_instance_new(ObjClass *klass)
 {
-    as_gc_push_disable();      /* two allocs (instance + fields dict) before either is rooted */
     ObjInstance *in = (ObjInstance *)alloc_obj(O_INSTANCE);
-    if (!in) { as_gc_pop_disable(); return NULL; }
+    if (!in) return NULL;
     in->klass = klass;
+    in->fields = NULL;                    /* set before the dict alloc: tr_instance reads it */
+    as_gc_protect((Obj *)in);             /* in is unreachable while as_dict_new allocates */
     in->fields = as_dict_new();
-    as_gc_pop_disable();
+    as_gc_release(1);
     return in;
 }
 ObjBoundMethod *as_bound_method_new(Value receiver, ObjClosure *method)
@@ -253,9 +359,12 @@ ObjModule *as_module_new(const char *name, int len)
 {
     ObjModule *m = (ObjModule *)alloc_obj(O_MODULE);
     if (!m) return NULL;
-    m->name = as_str_copy(name, len);
-    if (!m->name) return NULL;              /* g_oom set; a NULL name would crash module_find */
+    m->name = NULL;                         /* tr_module reads it during the as_str_copy below */
     m->vars = NULL; m->count = m->cap = 0; m->state = 0;
+    as_gc_protect((Obj *)m);                /* m is unreachable until the caller registers it */
+    m->name = as_str_copy(name, len);
+    as_gc_release(1);
+    if (!m->name) return NULL;              /* g_oom set; a NULL name would crash module_find */
     return m;
 }
 
@@ -282,6 +391,7 @@ Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
         int nc = m->cap < 8 ? 8 : m->cap * 2;
         NameVal *nv = (NameVal *)as_realloc(m->vars, (size_t)nc * sizeof(NameVal));
         if (!nv) return NULL;                /* g_oom set; old vars + count intact */
+        gc_account((long)((size_t)(nc - m->cap) * sizeof(NameVal)));
         m->vars = nv; m->cap = nc;
     }
     m->vars[m->count].name = name;
@@ -312,6 +422,7 @@ void as_list_push(ObjList *l, Value v)
         int nc = l->cap < 8 ? 8 : l->cap * 2;
         Value *ni = (Value *)as_realloc(l->items, (size_t)nc * sizeof(Value));
         if (!ni) return;                     /* g_oom set; old items + count intact */
+        gc_account((long)((size_t)(nc - l->cap) * sizeof(Value)));
         l->items = ni; l->cap = nc;
     }
     l->items[l->count++] = v;
@@ -371,6 +482,7 @@ static void dict_grow(ObjDict *d)
         live++;
     }
     free(d->entries);
+    gc_account((long)((size_t)(newcap - d->cap) * sizeof(DictEntry)));
     d->entries = ne; d->cap = newcap; d->used = live; d->live = live;
 }
 int as_dict_set(ObjDict *d, Value key, Value val)
@@ -449,6 +561,7 @@ void as_chunk_write(ObjFn *fn, uint8_t b)
     if (fn->count + 1 > fn->cap) {
         int nc = fn->cap < 8 ? 8 : fn->cap * 2;
         uint8_t *nb = (uint8_t *)as_realloc(fn->code, (size_t)nc);
+        if (nb) gc_account((long)(nc - fn->cap));
         if (!nb) return;                     /* g_oom set; compiler polls g_oom -> aborts the compile */
         fn->code = nb; fn->cap = nc;
     }
@@ -463,6 +576,7 @@ int as_chunk_const(ObjFn *fn, Value v)
     if (fn->kcount + 1 > fn->kcap) {
         int nk = fn->kcap < 8 ? 8 : fn->kcap * 2;
         Value *nv = (Value *)as_realloc(fn->consts, (size_t)nk * sizeof(Value));
+        if (nv) gc_account((long)((size_t)(nk - fn->kcap) * sizeof(Value)));
         if (!nv) return fn->kcount;          /* g_oom set; compiler polls g_oom -> aborts the compile */
         fn->consts = nv; fn->kcap = nk;
     }
@@ -499,9 +613,15 @@ static void blacken(Obj *o)
 
 void gc_collect(void)
 {
-    if (gc_disabled) return;     /* no-op during compile / VM setup (objects not yet rooted) */
+    /* Still an outright disable, but now only for compilation and .la loading:
+     * those build a tree of ObjFns that is unreachable from the VM until it is
+     * returned, and no temporary-root stack can express "the half-built function
+     * the compiler is currently inside". Both are bounded to a single compile of
+     * a single module, unlike the runtime disables this replaced. */
+    if (gc_disabled) return;
     gray_count = 0;
     as_vm_mark_roots();                                  /* mark + gray the roots (vm.c) */
+    for (int i = 0; i < ntemps; i++) gc_mark_obj(temps[i]);   /* allocated, not yet reachable */
     while (gray_count > 0) blacken(gray[--gray_count]);   /* trace to fixpoint */
     /* OOM during mark (gray worklist grow failed -> g_oom): the trace is incomplete,
      * so sweeping now could free reachable-but-untraced objects (the UAF the mark
@@ -509,39 +629,45 @@ void gc_collect(void)
      * bail; the next collection retries from scratch. alloc_obj's as_malloc will
      * report the OOM and DISPATCH unwinds. */
     if (g_oom) {
-        for (Obj *o = g_objs; o; o = o->next) o->marked = 0;
+        for (long i = 0; i < live_objects; i++) g_objs[i]->marked = 0;
         return;
     }
-    Obj **link = &g_objs;                                 /* sweep */
-    while (*link) {
-        Obj *o = *link;
-        if (o->marked) { o->marked = 0; link = &o->next; }
-        else { *link = o->next; free_object(o); }
+    long w = 0;                                           /* sweep: compact in place */
+    for (long i = 0; i < live_objects; i++) {
+        Obj *o = g_objs[i];
+        if (o->marked) { o->marked = 0; g_objs[w++] = o; }
+        else free_object(o);
     }
-    next_gc = live_objects * 2;
-    if (next_gc < 1024) next_gc = 1024;
+    live_objects = w;
+    next_gc_bytes = heap_bytes * 2;
+    if (next_gc_bytes < GC_MIN_HEAP) next_gc_bytes = GC_MIN_HEAP;
+    next_gc_objs = live_objects * 2;
+    if (next_gc_objs < GC_MIN_OBJS) next_gc_objs = GC_MIN_OBJS;
 }
 
 /* Free one object's owned sub-allocations + the object itself. Used by both the
  * GC sweep and the end-of-run teardown. Does NOT touch other objects it references
- * (those are separate entries on the g_objs chain). */
+ * (those are separate entries in the registry). The caller owns the registry
+ * bookkeeping -- the sweep compacts, so it cannot also be decrementing a count. */
 static void free_object(Obj *o)
 {
     void (*finalize)(Obj *) = OBJ_INFO[o->type].finalize;
-    if (finalize) finalize(o);
-    live_objects--;
+    if (finalize) finalize(o);        /* accounts its own buffers */
+    gc_account(-(long)OBJ_INFO[o->type].size);
     free(o);
 }
 
 void as_free_objects(void)
 {
-    Obj *o = g_objs;
-    while (o) { Obj *next = o->next; free_object(o); o = next; }
-    g_objs = NULL;
+    for (long i = 0; i < live_objects; i++) free_object(g_objs[i]);
+    free(g_objs); g_objs = NULL; objs_cap = 0;
     free(gray); gray = NULL; gray_count = gray_cap = 0;
     live_objects = 0;          /* defensive: fresh state for the next run */
-    next_gc = 1024;
+    heap_bytes = 0;
+    next_gc_bytes = GC_MIN_HEAP;
+    next_gc_objs = GC_MIN_OBJS;
     gc_disabled = 0;
+    ntemps = 0; temps_overflow = 0;
 }
 
 long as_gc_live(void) { return live_objects; }

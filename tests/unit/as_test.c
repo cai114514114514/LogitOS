@@ -810,6 +810,14 @@ int main(void)
     ok("split_trail","print(\"a,b,\".split(\",\"))\n", "['a', 'b', '']\n");
     ok("split_ws",   "print(\" a  b\\tc \".split())\n", "['a', 'b', 'c']\n");
     err("split_empty_sep", "print(\"ab\".split(\"\"))\n");
+    /* split, class construction and args() no longer switch the collector off for
+     * their duration -- they root the object under construction and let it run.
+     * Under -DAS_GC_STRESS every one of the allocations below collects first, so a
+     * missing root is a use-after-free here rather than a rare production crash. */
+    ok("split_gc",   "s = \"\"\nfor i in range(200):\n    s = s + \"ab \"\n"
+                     "p = s.split(\" \")\nprint(len(p), p[0], p[199])\n", "201 ab ab\n");
+    ok("class_gc",   "class P:\n    def init(self, a):\n        self.a = a\n"
+                     "t = 0\nfor i in range(200):\n    t = t + P(i).a\nprint(t)\n", "19900\n");
     ok("strip",      "print(\"  hi  \".strip())\nprint(len(\"\\t\\n\".strip()))\n", "hi\n0\n");
     ok("case",       "print(\"MiXed3\".upper())\nprint(\"MiXed3\".lower())\n", "MIXED3\nmixed3\n");
     ok("replace",    "print(\"aXaXa\".replace(\"X\",\"--\"))\nprint(\"aaa\".replace(\"a\",\"\"))\n", "a--a--a\n\n");

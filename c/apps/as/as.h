@@ -59,7 +59,13 @@ typedef struct {
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
                O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE,
                O__COUNT } ObjType;   /* sentinel: sizes the descriptor table in object.c */
-struct Obj { ObjType type; uint8_t marked; Obj *next; };   /* next: alloc list; marked: GC */
+/* Two bytes, where an intrusive allocation list cost sixteen. The `next` pointer
+ * moved out into a contiguous registry (object.c): sweeping a dense array beats
+ * chasing a linked list through the whole heap, and the eight bytes it cost sat
+ * in every object, cold, purely so the GC could find it. `type` is a uint8_t for
+ * the same reason -- as an enum it was an int, and the padding around it was
+ * bigger than the field. */
+struct Obj { uint8_t type; uint8_t marked; };
 
 /* Wrapping an object copies its type into the tag -- valid because an object's
  * type is fixed at allocation. NULL yields nil rather than an object value with
@@ -288,7 +294,17 @@ void gc_mark_obj(Obj *o);          /* mark + push to the gray worklist */
 void gc_mark_value(Value v);
 void as_vm_mark_roots(void);      /* mark the VM roots (implemented in vm.c) */
 long as_gc_live(void);            /* current live object count */
-void as_gc_push_disable(void);    /* disable GC (re-entrant counter) -- use around compile/setup */
+/* Temporary roots for objects that exist but aren't reachable from the VM yet.
+ * Strictly LIFO: as_gc_release(n) drops the n most recent. Prefer these to
+ * disabling the collector -- a disable that spans many allocations lets the heap
+ * grow without bound, which on a 24 MiB arena is a real failure and not just a
+ * missed collection. */
+void as_gc_protect(Obj *o);
+void as_gc_release(int n);
+/* The blunt instrument. Only compile and .la load may use it: they build an
+ * ObjFn tree that is unreachable until returned, and the object the builder is
+ * currently inside cannot be named as a root. */
+void as_gc_push_disable(void);
 void as_gc_pop_disable(void);
 
 /* platform output (as_io.c): write raw bytes to stdout (fd 1). */

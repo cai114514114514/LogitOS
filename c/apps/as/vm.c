@@ -359,15 +359,16 @@ void as_set_args(int argc, char **argv) { g_argc = argc; g_argv = argv; }
 static Value native_args(int argc, Value *args)
 {
     (void)argc; (void)args;
-    as_gc_push_disable();                    /* list + strings before any is rooted */
     ObjList *l = as_list_new();
-    if (!l) { as_gc_pop_disable(); return NIL_VAL; }    /* g_oom set; dispatch unwinds */
+    if (!l) return NIL_VAL;                            /* g_oom set; dispatch unwinds */
+    as_gc_protect((Obj *)l);        /* rooting the list is enough: each string is pushed into
+                                       it before the next allocation can collect */
     for (int i = 0; i < g_argc; i++) {
         ObjStr *s = as_str_copy(g_argv[i], (int)strlen(g_argv[i]));
-        if (!s) { as_gc_pop_disable(); return NIL_VAL; }    /* g_oom set; don't store OBJ_VAL(NULL) */
+        if (!s) { as_gc_release(1); return NIL_VAL; }   /* g_oom set; don't store OBJ_VAL(NULL) */
         as_list_push(l, OBJ_VAL(s));
     }
-    as_gc_pop_disable();
+    as_gc_release(1);
     return OBJ_VAL(l);
 }
 
@@ -559,11 +560,9 @@ static ObjModule *as_import(ObjStr *name)
     ObjModule *m = module_find(name);
     if (m) return m;                              /* cached (loaded, or mid-load == partial) */
     if (nmodules >= 64) { runtime_error("too many modules"); return NULL; }
-    as_gc_push_disable();                         /* guard as_module_new: two allocs before m is rooted */
-    m = as_module_new(name->chars, name->len);
-    if (!m) { as_gc_pop_disable(); runtime_error("out of memory"); return NULL; }
+    m = as_module_new(name->chars, name->len);    /* protects itself across its second alloc */
+    if (!m) { runtime_error("out of memory"); return NULL; }
     modules[nmodules++] = m;                       /* register before running -> circular-safe */
-    as_gc_pop_disable();                          /* m is now a GC root via modules[] */
     ObjFn *script = module_try_la(name);           /* prefer a precompiled NAME.la */
     if (script) {
         stamp_module(script, m);                    /* pointer writes only -- GC-safe; must precede run_module (OP_DEF_GLOBAL needs ->module) */
@@ -958,12 +957,16 @@ static int run_until(int floor)
                         sep = AS_STR(peek(0));
                         if (sep->len == 0) { runtime_error("split() separator must not be empty"); goto err; }
                     } else if (argc != 0) { runtime_error("split() takes 0 or 1 arguments"); goto err; }
-                    /* The result list + its slice strings are fresh allocations that
-                     * nothing roots while LATER slices allocate -- disable GC across
-                     * the build (the inputs are big-O the result, so this is bounded). */
-                    as_gc_push_disable();
+                    /* Rooting the result list is enough, and is what lets the
+                     * collector keep running through the whole split: every slice
+                     * string is pushed into the list before the next allocation,
+                     * so it is reachable by the time a collection could see it.
+                     * This used to disable GC outright for the duration, which on
+                     * a large input meant thousands of allocations with the heap
+                     * growing unbounded. */
                     ObjList *l = as_list_new();
-                    if (!l) { as_gc_pop_disable(); goto err; }    /* g_oom set */
+                    if (!l) goto err;                            /* g_oom set */
+                    as_gc_protect((Obj *)l);
                     if (sep) {
                         int start = 0;
                         for (int i = 0; i + sep->len <= s->len; ) {
