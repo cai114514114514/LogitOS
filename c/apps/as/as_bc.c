@@ -83,8 +83,12 @@ static int dump_fn(FILE *out, ObjFn *fn)
                 if (dump_fn(out, AS_FN(v))) return 1;   /* recurse */
             } else {
                 /* O_NATIVE/O_LIST/O_DICT/O_CLOSURE/etc. never appear in a
-                 * compiler-built const pool; a native holds a raw C fn ptr. */
-                strcpy(as_err, "as_dump: unserializable constant");
+                 * compiler-built const pool; a native holds a raw C fn ptr.
+                 * Naming the type matters: reaching here means the compiler put
+                 * something new in a const pool, and "unserializable constant"
+                 * alone doesn't say what. */
+                snprintf(as_err, sizeof as_err, "as_dump: unserializable %s constant",
+                         as_obj_type_name(AS_OBJ(v)));
                 return 1;
             }
             break;

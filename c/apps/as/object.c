@@ -25,13 +25,118 @@ static Obj *g_objs = NULL;
 static long   live_objects = 0;    /* number of live heap objects (for gc_stats + trigger) */
 static long   next_gc = 1024;      /* collect when live_objects reaches this (count threshold) */
 static int    gc_disabled = 0;     /* >0 disables collection (during compile / VM setup) */
-static void free_object(Obj *o);   /* fwd: free one object + its owned sub-allocations */
 
 static Obj  **gray = NULL;          /* GC mark worklist (raw realloc'd buffer, NOT a GC object) */
 static int    gray_count = 0, gray_cap = 0;
 
-static Obj *alloc_obj(size_t size, ObjType type)
+/* --- type descriptors -----------------------------------------------------
+ * Everything the runtime needs to know about an ObjType, in one row. It used to
+ * be spread over parallel switch statements (allocate / trace / free / print /
+ * str), so adding a type meant finding all of them and a miss was silent: an
+ * untraced type is a use-after-free that only shows up under GC stress, an
+ * unfinalized one is a steady leak. Now a new type is one row, and the compiler
+ * flags a missing case in the one remaining switch (the formatter in value.c).
+ *
+ * `trace` marks the objects this one references (NULL = leaf); `finalize` frees
+ * the sub-allocations this object owns, never the objects it points at -- those
+ * are separate entries on the g_objs chain that sweep handles individually. */
+typedef struct {
+    const char *name;               /* for diagnostics (as_obj_type_name) */
+    size_t      size;               /* allocation size; alloc_obj takes only the type */
+    void      (*trace)(Obj *);
+    void      (*finalize)(Obj *);
+} ObjInfo;
+
+static void tr_upvalue(Obj *o) { gc_mark_value(((ObjUpvalue *)o)->closed); }
+static void tr_fn(Obj *o)
 {
+    ObjFn *fn = (ObjFn *)o;
+    if (fn->name) gc_mark_obj((Obj *)fn->name);
+    for (int i = 0; i < fn->kcount; i++) gc_mark_value(fn->consts[i]);
+    /* fn->module is NOT traced here: modules are permanently rooted via modules[]
+     * (never collected during a run). Revisit if modules ever become collectable. */
+}
+static void tr_closure(Obj *o)
+{
+    ObjClosure *c = (ObjClosure *)o;
+    gc_mark_obj((Obj *)c->fn);
+    for (int i = 0; i < c->upvalue_count; i++) gc_mark_obj((Obj *)c->upvalues[i]);
+}
+static void tr_list(Obj *o)
+{
+    ObjList *l = (ObjList *)o;
+    for (int i = 0; i < l->count; i++) gc_mark_value(l->items[i]);
+}
+static void tr_dict(Obj *o)
+{
+    ObjDict *d = (ObjDict *)o;
+    for (int i = 0; i < d->cap; i++) {
+        DictEntry *e = &d->entries[i];
+        if (e->kind == AS_DK_STR) gc_mark_obj((Obj *)e->kstr);
+        if (e->kind == AS_DK_STR || e->kind == AS_DK_INT) gc_mark_value(e->val);
+    }
+}
+static void tr_module(Obj *o)
+{
+    ObjModule *m = (ObjModule *)o;
+    gc_mark_obj((Obj *)m->name);
+    for (int i = 0; i < m->count; i++) { gc_mark_obj((Obj *)m->vars[i].name); gc_mark_value(m->vars[i].val); }
+}
+static void tr_class(Obj *o)
+{
+    ObjClass *k = (ObjClass *)o;
+    gc_mark_obj((Obj *)k->name);
+    gc_mark_obj((Obj *)k->super);     /* gc_mark_obj is NULL-safe */
+    gc_mark_obj((Obj *)k->methods);
+}
+static void tr_instance(Obj *o)
+{
+    ObjInstance *in = (ObjInstance *)o;
+    gc_mark_obj((Obj *)in->klass);
+    gc_mark_obj((Obj *)in->fields);
+}
+static void tr_bound(Obj *o)
+{
+    ObjBoundMethod *bm = (ObjBoundMethod *)o;
+    gc_mark_value(bm->receiver);
+    gc_mark_obj((Obj *)bm->method);
+}
+
+static void fin_str(Obj *o)     { free(((ObjStr *)o)->chars); }
+static void fin_fn(Obj *o)      { free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); }
+static void fin_list(Obj *o)    { free(((ObjList *)o)->items); }
+static void fin_dict(Obj *o)    { free(((ObjDict *)o)->entries); }
+static void fin_module(Obj *o)  { free(((ObjModule *)o)->vars); }
+static void fin_closure(Obj *o) { free(((ObjClosure *)o)->upvalues); }
+
+/* Designated initializers on purpose: the row is bound to its ObjType by name,
+ * so reordering the enum can't silently shift the table. */
+static const ObjInfo OBJ_INFO[] = {
+    [O_STR]          = { "str",          sizeof(ObjStr),         NULL,        fin_str     },
+    [O_FN]           = { "fn",           sizeof(ObjFn),          tr_fn,       fin_fn      },
+    [O_NATIVE]       = { "native fn",    sizeof(ObjNative),      NULL,        NULL        },
+    [O_LIST]         = { "list",         sizeof(ObjList),        tr_list,     fin_list    },
+    [O_PTR]          = { "ptr",          sizeof(ObjPtr),         NULL,        NULL        },
+    [O_MODULE]       = { "module",       sizeof(ObjModule),      tr_module,   fin_module  },
+    [O_DICT]         = { "dict",         sizeof(ObjDict),        tr_dict,     fin_dict    },
+    [O_CLOSURE]      = { "fn",           sizeof(ObjClosure),     tr_closure,  fin_closure },
+    [O_UPVALUE]      = { "upvalue",      sizeof(ObjUpvalue),     tr_upvalue,  NULL        },
+    [O_CLASS]        = { "class",        sizeof(ObjClass),       tr_class,    NULL        },
+    [O_INSTANCE]     = { "instance",     sizeof(ObjInstance),    tr_instance, NULL        },
+    [O_BOUND_METHOD] = { "bound method", sizeof(ObjBoundMethod), tr_bound,    NULL        },
+};
+/* A type added to the enum without a row here would read a zeroed descriptor:
+ * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). */
+_Static_assert(sizeof OBJ_INFO / sizeof OBJ_INFO[0] == O_BOUND_METHOD + 1,
+               "OBJ_INFO is missing a row for some ObjType");
+
+const char *as_obj_type_name(Obj *o) { return OBJ_INFO[o->type].name; }
+
+static void free_object(Obj *o);   /* fwd: free one object + its owned sub-allocations */
+
+static Obj *alloc_obj(ObjType type)
+{
+    size_t size = OBJ_INFO[type].size;
     if (!gc_disabled) {            /* collect BEFORE the new object exists, so it can't be swept */
 #ifdef AS_GC_STRESS
         gc_collect();
@@ -58,7 +163,7 @@ static uint32_t hash_str(const char *s, int len)
 
 ObjStr *as_str_take(char *chars, int len)   /* takes ownership of `chars` */
 {
-    ObjStr *s = (ObjStr *)alloc_obj(sizeof(ObjStr), O_STR);
+    ObjStr *s = (ObjStr *)alloc_obj(O_STR);
     if (!s) { free(chars); return NULL; }     /* OOM: release the buffer we took */
     s->len = len; s->chars = chars; s->hash = 0; s->hashed = 0;   /* M23: hash lazily */
     return s;
@@ -80,7 +185,7 @@ ObjStr *as_str_copy(const char *chars, int len)
 
 ObjFn *as_fn_new(void)
 {
-    ObjFn *fn = (ObjFn *)alloc_obj(sizeof(ObjFn), O_FN);
+    ObjFn *fn = (ObjFn *)alloc_obj(O_FN);
     if (!fn) return NULL;             /* g_oom set; caller propagates */
     fn->arity = 0; fn->name = NULL;
     fn->code = NULL; fn->count = fn->cap = 0;
@@ -98,14 +203,14 @@ ObjClosure *as_closure_new(ObjFn *fn)
         if (!ups) return NULL;
         for (int i = 0; i < fn->upvalue_count; i++) ups[i] = NULL;
     }
-    ObjClosure *c = (ObjClosure *)alloc_obj(sizeof(ObjClosure), O_CLOSURE);
+    ObjClosure *c = (ObjClosure *)alloc_obj(O_CLOSURE);
     if (!c) { free(ups); return NULL; }     /* g_oom set; ups was ours */
     c->fn = fn; c->upvalues = ups; c->upvalue_count = fn->upvalue_count;
     return c;
 }
 ObjUpvalue *as_upvalue_new(Value *slot)
 {
-    ObjUpvalue *u = (ObjUpvalue *)alloc_obj(sizeof(ObjUpvalue), O_UPVALUE);
+    ObjUpvalue *u = (ObjUpvalue *)alloc_obj(O_UPVALUE);
     if (!u) return NULL;
     u->location = slot; u->closed = NIL_VAL; u->next = NULL;
     return u;
@@ -114,7 +219,7 @@ ObjUpvalue *as_upvalue_new(Value *slot)
 ObjClass *as_class_new(ObjStr *name)
 {
     as_gc_push_disable();      /* two allocs (class + methods dict) before either is rooted */
-    ObjClass *c = (ObjClass *)alloc_obj(sizeof(ObjClass), O_CLASS);
+    ObjClass *c = (ObjClass *)alloc_obj(O_CLASS);
     if (!c) { as_gc_pop_disable(); return NULL; }
     c->name = name; c->super = NULL;
     c->methods = as_dict_new();
@@ -124,7 +229,7 @@ ObjClass *as_class_new(ObjStr *name)
 ObjInstance *as_instance_new(ObjClass *klass)
 {
     as_gc_push_disable();      /* two allocs (instance + fields dict) before either is rooted */
-    ObjInstance *in = (ObjInstance *)alloc_obj(sizeof(ObjInstance), O_INSTANCE);
+    ObjInstance *in = (ObjInstance *)alloc_obj(O_INSTANCE);
     if (!in) { as_gc_pop_disable(); return NULL; }
     in->klass = klass;
     in->fields = as_dict_new();
@@ -133,7 +238,7 @@ ObjInstance *as_instance_new(ObjClass *klass)
 }
 ObjBoundMethod *as_bound_method_new(Value receiver, ObjClosure *method)
 {
-    ObjBoundMethod *bm = (ObjBoundMethod *)alloc_obj(sizeof(ObjBoundMethod), O_BOUND_METHOD);
+    ObjBoundMethod *bm = (ObjBoundMethod *)alloc_obj(O_BOUND_METHOD);
     if (!bm) return NULL;
     bm->receiver = receiver; bm->method = method;
     return bm;
@@ -141,7 +246,7 @@ ObjBoundMethod *as_bound_method_new(Value receiver, ObjClosure *method)
 
 ObjModule *as_module_new(const char *name, int len)
 {
-    ObjModule *m = (ObjModule *)alloc_obj(sizeof(ObjModule), O_MODULE);
+    ObjModule *m = (ObjModule *)alloc_obj(O_MODULE);
     if (!m) return NULL;
     m->name = as_str_copy(name, len);
     if (!m->name) return NULL;              /* g_oom set; a NULL name would crash module_find */
@@ -168,7 +273,7 @@ Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
 
 ObjNative *as_native_new(NativeFn fn, const char *name)
 {
-    ObjNative *n = (ObjNative *)alloc_obj(sizeof(ObjNative), O_NATIVE);
+    ObjNative *n = (ObjNative *)alloc_obj(O_NATIVE);
     if (!n) return NULL;
     n->fn = fn; n->name = name;
     return n;
@@ -176,7 +281,7 @@ ObjNative *as_native_new(NativeFn fn, const char *name)
 
 ObjList *as_list_new(void)
 {
-    ObjList *l = (ObjList *)alloc_obj(sizeof(ObjList), O_LIST);
+    ObjList *l = (ObjList *)alloc_obj(O_LIST);
     if (!l) return NULL;
     l->items = NULL; l->count = l->cap = 0;
     return l;
@@ -227,7 +332,7 @@ static DictEntry *find_entry(DictEntry *es, int cap, Value k)
 }
 ObjDict *as_dict_new(void)
 {
-    ObjDict *d = (ObjDict *)alloc_obj(sizeof(ObjDict), O_DICT);
+    ObjDict *d = (ObjDict *)alloc_obj(O_DICT);
     if (!d) return NULL;
     d->entries = NULL; d->live = d->used = d->cap = 0;
     return d;
@@ -306,7 +411,7 @@ ObjList *as_dict_values(ObjDict *d)
 
 ObjPtr *as_ptr_new(uint64_t addr, int width, int is_signed)
 {
-    ObjPtr *p = (ObjPtr *)alloc_obj(sizeof(ObjPtr), O_PTR);
+    ObjPtr *p = (ObjPtr *)alloc_obj(O_PTR);
     if (!p) return NULL;
     p->addr = addr; p->width = width; p->is_signed = is_signed;
     return p;
@@ -358,66 +463,11 @@ void gc_mark_obj(Obj *o)
 }
 void gc_mark_value(Value v) { if (IS_OBJ(v)) gc_mark_obj(AS_OBJ(v)); }
 
-/* Mark everything an already-gray object references. */
+/* Mark everything an already-gray object references (OBJ_INFO[].trace). */
 static void blacken(Obj *o)
 {
-    switch (o->type) {
-    case O_STR: case O_NATIVE: case O_PTR: break;   /* no object references */
-    case O_UPVALUE: gc_mark_value(((ObjUpvalue *)o)->closed); break;
-    case O_FN: {
-        ObjFn *fn = (ObjFn *)o;
-        if (fn->name) gc_mark_obj((Obj *)fn->name);
-        for (int i = 0; i < fn->kcount; i++) gc_mark_value(fn->consts[i]);
-        /* fn->module is NOT traced here: modules are permanently rooted via modules[]
-         * (never collected during a run). Revisit if modules ever become collectable. */
-        break;
-    }
-    case O_CLOSURE: {
-        ObjClosure *c = (ObjClosure *)o;
-        gc_mark_obj((Obj *)c->fn);
-        for (int i = 0; i < c->upvalue_count; i++) gc_mark_obj((Obj *)c->upvalues[i]);
-        break;
-    }
-    case O_LIST: {
-        ObjList *l = (ObjList *)o;
-        for (int i = 0; i < l->count; i++) gc_mark_value(l->items[i]);
-        break;
-    }
-    case O_DICT: {
-        ObjDict *d = (ObjDict *)o;
-        for (int i = 0; i < d->cap; i++) {
-            DictEntry *e = &d->entries[i];
-            if (e->kind == AS_DK_STR) gc_mark_obj((Obj *)e->kstr);
-            if (e->kind == AS_DK_STR || e->kind == AS_DK_INT) gc_mark_value(e->val);
-        }
-        break;
-    }
-    case O_MODULE: {
-        ObjModule *m = (ObjModule *)o;
-        gc_mark_obj((Obj *)m->name);
-        for (int i = 0; i < m->count; i++) { gc_mark_obj((Obj *)m->vars[i].name); gc_mark_value(m->vars[i].val); }
-        break;
-    }
-    case O_CLASS: {
-        ObjClass *k = (ObjClass *)o;
-        gc_mark_obj((Obj *)k->name);
-        gc_mark_obj((Obj *)k->super);     /* gc_mark_obj is NULL-safe */
-        gc_mark_obj((Obj *)k->methods);
-        break;
-    }
-    case O_INSTANCE: {
-        ObjInstance *in = (ObjInstance *)o;
-        gc_mark_obj((Obj *)in->klass);
-        gc_mark_obj((Obj *)in->fields);
-        break;
-    }
-    case O_BOUND_METHOD: {
-        ObjBoundMethod *bm = (ObjBoundMethod *)o;
-        gc_mark_value(bm->receiver);
-        gc_mark_obj((Obj *)bm->method);
-        break;
-    }
-    }
+    void (*trace)(Obj *) = OBJ_INFO[o->type].trace;
+    if (trace) trace(o);
 }
 
 void gc_collect(void)
@@ -450,15 +500,8 @@ void gc_collect(void)
  * (those are separate entries on the g_objs chain). */
 static void free_object(Obj *o)
 {
-    switch (o->type) {
-    case O_STR:  free(((ObjStr *)o)->chars); break;
-    case O_FN:   free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); break;
-    case O_LIST:   free(((ObjList *)o)->items); break;
-    case O_DICT:   free(((ObjDict *)o)->entries); break;
-    case O_MODULE: free(((ObjModule *)o)->vars); break;
-    case O_CLOSURE: free(((ObjClosure *)o)->upvalues); break;
-    default: break;
-    }
+    void (*finalize)(Obj *) = OBJ_INFO[o->type].finalize;
+    if (finalize) finalize(o);
     live_objects--;
     free(o);
 }

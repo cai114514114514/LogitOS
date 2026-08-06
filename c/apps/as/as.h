@@ -218,6 +218,10 @@ int       value_to_cstr(Value v, char *buf, int cap);  /* print-form into buf; r
 int       as_fmt_float(double d, char *buf, int cap);  /* shortest round-trip; ".0" for whole floats */
 void      as_free_objects(void);      /* free all heap objects (end of run) */
 
+/* Human-readable type name from the object descriptor table (object.c). Closures
+ * report "fn" like functions do -- the distinction is an implementation detail. */
+const char *as_obj_type_name(Obj *o);
+
 /* mark-sweep GC (object.c + vm.c) */
 void gc_collect(void);
 void gc_mark_obj(Obj *o);          /* mark + push to the gray worklist */

@@ -72,159 +72,109 @@ int as_fmt_float(double d, char *buf, int cap)
     return n;
 }
 
-static void print_repr_depth(Value v, int depth);
+/* --- one formatter, two sinks ---------------------------------------------
+ * `print` streams to as_emit; `str(x)` fills a caller buffer. These used to be
+ * two full copies of the same 70-line walk (print_depth + vts), which is exactly
+ * how they drifted. A Sink unifies them: buf==NULL streams, otherwise it fills
+ * and truncates. The stream sink keeps `off` at 0 -- it has no capacity, so the
+ * fill-side guards (`sink_full`) are simply never true for it, which reproduces
+ * the old print path's unguarded loops. */
+typedef struct { char *buf; int cap; int off; } Sink;
 
-static void print_depth(Value v, int depth)
+static void put(Sink *k, const char *s, int n)
 {
-    char buf[40]; int n;
+    if (n <= 0) return;
+    if (!k->buf) { as_emit(s, n); return; }        /* stream: no capacity, off stays 0 */
+    if (n > k->cap - 1 - k->off) n = k->cap - 1 - k->off;   /* keep room for the NUL */
+    if (n > 0) { memcpy(k->buf + k->off, s, (size_t)n); k->off += n; }
+}
+static void putz(Sink *k, const char *s) { put(k, s, (int)strlen(s)); }
+static void putstr(Sink *k, ObjStr *s)   { put(k, s->chars, s->len); }
+static int  sink_full(Sink *k)           { return k->buf && k->off >= k->cap - 1; }
+
+/* snprintf into a fixed scratch buffer; returns the clamped byte count. */
+static int fmt_i64(char *tmp, int cap, int64_t v)
+{
+    int n = snprintf(tmp, (size_t)cap, "%lld", (long long)v);
+    return n < cap ? n : cap - 1;
+}
+
+/* `repr` quotes strings (containers print their elements repr-style, like
+ * Python); `depth` is the cycle guard. */
+static void fmt_value(Sink *k, Value v, int repr, int depth)
+{
+    char tmp[40];
     switch (v.type) {
-    case V_NIL:   as_emit_cstr("nil"); break;
-    case V_BOOL:  as_emit_cstr(AS_BOOL(v) ? "true" : "false"); break;
-    case V_INT:   n = snprintf(buf, sizeof buf, "%lld", (long long)AS_INT(v));
-                  as_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); break;
-    case V_FLOAT: n = as_fmt_float(AS_FLOAT(v), buf, sizeof buf);
-                  as_emit(buf, n); break;
-    case V_OBJ:
-        if (IS_STR(v))         { ObjStr *s = AS_STR(v); as_emit(s->chars, s->len); }
-        else if (IS_LIST(v)) {
-            if (depth >= PRINT_MAX_DEPTH) { as_emit_cstr("[...]"); break; }
-            ObjList *l = AS_LIST(v);
-            as_emit("[", 1);
-            for (int i = 0; i < l->count; i++) { if (i) as_emit(", ", 2); print_repr_depth(l->items[i], depth + 1); }
-            as_emit("]", 1);
-        }
-        else if (IS_DICT(v)) {
-            if (depth >= PRINT_MAX_DEPTH) { as_emit_cstr("{...}"); break; }
-            ObjDict *d = AS_DICT(v);
-            as_emit("{", 1);
-            int first = 1;
-            for (int i = 0; i < d->cap; i++) {
-                DictEntry *e = &d->entries[i];
-                if (e->kind != AS_DK_STR && e->kind != AS_DK_INT) continue;
-                if (!first) as_emit(", ", 2);
-                first = 0;
-                if (e->kind == AS_DK_STR) print_repr_depth(OBJ_VAL(e->kstr), depth + 1);
-                else { n = snprintf(buf, sizeof buf, "%lld", (long long)e->kint); as_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); }
-                as_emit(": ", 2);
-                print_repr_depth(e->val, depth + 1);
-            }
-            as_emit("}", 1);
-        }
-        else if (IS_PTR(v)) {
-            ObjPtr *p = AS_PTR(v);
-            n = snprintf(buf, sizeof buf, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);
-            as_emit(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1);
-        }
-        else if (IS_MODULE(v)) { as_emit_cstr("<module "); ObjStr *nm = AS_MODULE(v)->name; as_emit(nm->chars, nm->len); as_emit_cstr(">"); }
-        else if (IS_FN(v) || IS_CLOSURE(v)) as_emit_cstr("<fn>");
-        else if (IS_NATIVE(v))  as_emit_cstr("<native fn>");
-        else if (IS_CLASS(v))   { as_emit_cstr("<class "); ObjStr *nm = AS_CLASS(v)->name; as_emit(nm->chars, nm->len); as_emit_cstr(">"); }
-        else if (IS_INSTANCE(v)){ as_emit_cstr("<"); ObjStr *nm = AS_INSTANCE(v)->klass->name; as_emit(nm->chars, nm->len); as_emit_cstr(" instance>"); }
-        else if (IS_BOUND_METHOD(v)) as_emit_cstr("<bound method>");
-        else                    as_emit_cstr("<obj>");
-        break;
+    case V_NIL:   putz(k, "nil"); return;
+    case V_BOOL:  putz(k, AS_BOOL(v) ? "true" : "false"); return;
+    case V_INT:   put(k, tmp, fmt_i64(tmp, (int)sizeof tmp, AS_INT(v))); return;
+    case V_FLOAT: put(k, tmp, as_fmt_float(AS_FLOAT(v), tmp, (int)sizeof tmp)); return;
+    case V_OBJ:   break;
+    default:      return;
     }
-}
 
-void as_print_value(Value v) { print_depth(v, 0); }
-
-static void print_repr_depth(Value v, int depth)
-{
-    if (IS_STR(v)) { ObjStr *s = AS_STR(v); as_emit("'", 1); as_emit(s->chars, s->len); as_emit("'", 1); }
-    else print_depth(v, depth);
-}
-
-/* M23 str(x): format a Value exactly like `print` would, into a caller buffer.
- * Self-contained (no as_capture redirection -- reentrant), defensive against cap.
- * Returns the number of bytes written (NUL-terminated, < cap). Allocates nothing,
- * so it is GC-safe with unrooted inputs. */
-static int vts(Value v, char *buf, int cap, int repr, int depth);
-
-static int vts_put(char *buf, int cap, int o, const char *s, int n)
-{
-    if (n > cap - 1 - o) n = cap - 1 - o;
-    if (n > 0) { memcpy(buf + o, s, (size_t)n); o += n; }
-    return o;
-}
-
-static int vts(Value v, char *buf, int cap, int repr, int depth)
-{
-    char tmp[40]; int n, o = 0;
-    switch (v.type) {
-    case V_NIL:   return vts_put(buf, cap, 0, "nil", 3);
-    case V_BOOL:  return AS_BOOL(v) ? vts_put(buf, cap, 0, "true", 4) : vts_put(buf, cap, 0, "false", 5);
-    case V_INT:   n = snprintf(tmp, sizeof tmp, "%lld", (long long)AS_INT(v));
-                  return vts_put(buf, cap, 0, tmp, n);
-    case V_FLOAT: n = as_fmt_float(AS_FLOAT(v), tmp, sizeof tmp);
-                  return vts_put(buf, cap, 0, tmp, n);
-    case V_OBJ:
-        if (IS_STR(v)) {
-            ObjStr *s = AS_STR(v);
-            if (!repr) return vts_put(buf, cap, 0, s->chars, s->len);
-            o = vts_put(buf, cap, 0, "'", 1);
-            o = vts_put(buf, cap, o, s->chars, s->len);
-            return vts_put(buf, cap, o, "'", 1);
+    switch (AS_OBJ(v)->type) {
+    case O_STR:
+        if (!repr) { putstr(k, AS_STR(v)); return; }
+        put(k, "'", 1); putstr(k, AS_STR(v)); put(k, "'", 1);
+        return;
+    case O_LIST: {
+        if (depth >= PRINT_MAX_DEPTH) { putz(k, "[...]"); return; }
+        ObjList *l = AS_LIST(v);
+        put(k, "[", 1);
+        for (int i = 0; i < l->count && !sink_full(k); i++) {
+            if (i) put(k, ", ", 2);
+            fmt_value(k, l->items[i], 1, depth + 1);
         }
-        if (IS_LIST(v)) {
-            if (depth >= PRINT_MAX_DEPTH) return vts_put(buf, cap, 0, "[...]", 5);
-            ObjList *l = AS_LIST(v);
-            o = vts_put(buf, cap, 0, "[", 1);
-            for (int i = 0; i < l->count && o < cap - 1; i++) {
-                if (i) o = vts_put(buf, cap, o, ", ", 2);
-                o += vts(l->items[i], buf + o, cap - o, 1, depth + 1);
-            }
-            return vts_put(buf, cap, o, "]", 1);
-        }
-        if (IS_DICT(v)) {
-            if (depth >= PRINT_MAX_DEPTH) return vts_put(buf, cap, 0, "{...}", 5);
-            ObjDict *d = AS_DICT(v);
-            int first = 1;
-            o = vts_put(buf, cap, 0, "{", 1);
-            for (int i = 0; i < d->cap && o < cap - 1; i++) {
-                DictEntry *e = &d->entries[i];
-                if (e->kind != AS_DK_STR && e->kind != AS_DK_INT) continue;
-                if (!first) o = vts_put(buf, cap, o, ", ", 2);
-                first = 0;
-                if (e->kind == AS_DK_STR) o += vts(OBJ_VAL(e->kstr), buf + o, cap - o, 1, depth + 1);
-                else { n = snprintf(tmp, sizeof tmp, "%lld", (long long)e->kint); o = vts_put(buf, cap, o, tmp, n); }
-                o = vts_put(buf, cap, o, ": ", 2);
-                o += vts(e->val, buf + o, cap - o, 1, depth + 1);
-            }
-            return vts_put(buf, cap, o, "}", 1);
-        }
-        if (IS_PTR(v)) {
-            ObjPtr *p = AS_PTR(v);
-            n = snprintf(tmp, sizeof tmp, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);
-            return vts_put(buf, cap, 0, tmp, n);
-        }
-        if (IS_MODULE(v)) {
-            o = vts_put(buf, cap, 0, "<module ", 8);
-            o = vts_put(buf, cap, o, AS_MODULE(v)->name->chars, AS_MODULE(v)->name->len);
-            return vts_put(buf, cap, o, ">", 1);
-        }
-        if (IS_FN(v) || IS_CLOSURE(v)) return vts_put(buf, cap, 0, "<fn>", 4);
-        if (IS_NATIVE(v))              return vts_put(buf, cap, 0, "<native fn>", 11);
-        if (IS_CLASS(v)) {
-            o = vts_put(buf, cap, 0, "<class ", 7);
-            o = vts_put(buf, cap, o, AS_CLASS(v)->name->chars, AS_CLASS(v)->name->len);
-            return vts_put(buf, cap, o, ">", 1);
-        }
-        if (IS_INSTANCE(v)) {
-            ObjStr *nm = AS_INSTANCE(v)->klass->name;
-            o = vts_put(buf, cap, 0, "<", 1);
-            o = vts_put(buf, cap, o, nm->chars, nm->len);
-            return vts_put(buf, cap, o, " instance>", 10);
-        }
-        if (IS_BOUND_METHOD(v)) return vts_put(buf, cap, 0, "<bound method>", 14);
-        return vts_put(buf, cap, 0, "<obj>", 5);
+        put(k, "]", 1);
+        return;
     }
-    return 0;
+    case O_DICT: {
+        if (depth >= PRINT_MAX_DEPTH) { putz(k, "{...}"); return; }
+        ObjDict *d = AS_DICT(v);
+        int first = 1;
+        put(k, "{", 1);
+        for (int i = 0; i < d->cap && !sink_full(k); i++) {
+            DictEntry *e = &d->entries[i];
+            if (e->kind != AS_DK_STR && e->kind != AS_DK_INT) continue;
+            if (!first) put(k, ", ", 2);
+            first = 0;
+            if (e->kind == AS_DK_STR) fmt_value(k, OBJ_VAL(e->kstr), 1, depth + 1);
+            else                      put(k, tmp, fmt_i64(tmp, (int)sizeof tmp, e->kint));
+            put(k, ": ", 2);
+            fmt_value(k, e->val, 1, depth + 1);
+        }
+        put(k, "}", 1);
+        return;
+    }
+    case O_PTR: {
+        ObjPtr *p = AS_PTR(v);
+        int n = snprintf(tmp, sizeof tmp, "<i%d ptr @0x%llx>", p->width * 8, (unsigned long long)p->addr);
+        put(k, tmp, n < (int)sizeof tmp ? n : (int)sizeof tmp - 1);
+        return;
+    }
+    case O_MODULE:       putz(k, "<module "); putstr(k, AS_MODULE(v)->name); put(k, ">", 1); return;
+    case O_FN: case O_CLOSURE: putz(k, "<fn>"); return;
+    case O_NATIVE:       putz(k, "<native fn>"); return;
+    case O_CLASS:        putz(k, "<class "); putstr(k, AS_CLASS(v)->name); put(k, ">", 1); return;
+    case O_INSTANCE:     put(k, "<", 1); putstr(k, AS_INSTANCE(v)->klass->name); putz(k, " instance>"); return;
+    case O_BOUND_METHOD: putz(k, "<bound method>"); return;
+    case O_UPVALUE:      break;   /* never user-visible: lives only in a closure */
+    }
+    putz(k, "<obj>");
+}
+
+void as_print_value(Value v)
+{
+    Sink k = { NULL, 0, 0 };
+    fmt_value(&k, v, 0, 0);
 }
 
 int value_to_cstr(Value v, char *buf, int cap)
 {
     if (cap <= 0) return 0;
-    int n = vts(v, buf, cap, 0, 0);
-    buf[n] = 0;
-    return n;
+    Sink k = { buf, cap, 0 };
+    fmt_value(&k, v, 0, 0);
+    buf[k.off] = 0;
+    return k.off;
 }
