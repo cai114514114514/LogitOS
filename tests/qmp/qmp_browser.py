@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Drive the Browser app over QMP: launch from the Dock, load the default URL
 (then optionally type one passed in), screenshot.
-Usage: qmp_browser.py <qmp.sock> <out.ppm> [url]"""
+Usage: qmp_browser.py <qmp.sock> <out.ppm> [url] [wait] [x,y] [scrolls]
+When scrolls > 0, also captures out-scroll<N>.ppm after N PageDowns each."""
 import socket, json, sys, time
 
 sock_path, out = sys.argv[1], sys.argv[2]
@@ -72,4 +73,13 @@ key("ret")                          # load
 time.sleep(wait)                    # DNS + TCP (+TLS) + parse + external CSS + layout
 cmd({"execute":"screendump","arguments":{"filename":out}})
 time.sleep(0.5)
+
+scrolls = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+for i in range(1, scrolls + 1):
+    for _ in range(3): key("pgdn")  # ~3 viewport pages per capture
+    time.sleep(1.0)
+    base = out.rsplit(".", 1)
+    name = base[0] + "-scroll" + str(i) + "." + (base[1] if len(base) > 1 else "ppm")
+    cmd({"execute":"screendump","arguments":{"filename":name}})
+    time.sleep(0.5)
 print("done")
