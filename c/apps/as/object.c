@@ -154,7 +154,23 @@ static void tr_instance(Obj *o)
 {
     ObjInstance *in = (ObjInstance *)o;
     gc_mark_obj((Obj *)in->klass);
-    gc_mark_obj((Obj *)in->fields);
+    gc_mark_obj((Obj *)in->shape);
+    /* Only the slots the shape names: anything past nslots is spare capacity
+     * holding whatever was there before, and tracing it would resurrect it. */
+    if (in->shape) for (int i = 0; i < in->shape->nslots; i++) gc_mark_value(in->slots[i]);
+}
+static void tr_shape(Obj *o)
+{
+    Shape *s = (Shape *)o;
+    for (int i = 0; i < s->nslots; i++) gc_mark_obj((Obj *)s->names[i]);
+    /* Edges keep child shapes alive. A shape tree is per field-name-sequence and
+     * shared by every instance built that way, so it is small and long-lived by
+     * design -- holding the children is what makes a repeated `init` land on the
+     * same shape instead of building a new one each time. */
+    for (int i = 0; i < s->nedges; i++) {
+        gc_mark_obj((Obj *)s->edges[i].name);
+        gc_mark_obj((Obj *)s->edges[i].to);
+    }
 }
 static void tr_bound(Obj *o)
 {
@@ -176,7 +192,7 @@ static void fin_fn(Obj *o)
 {
     ObjFn *f = (ObjFn *)o;
     gc_account(-(long)f->cap - (long)((size_t)f->kcap * sizeof(Value)));
-    free(f->code); free(f->consts); free(f->gcache);
+    free(f->code); free(f->consts); free(f->gcache); free(f->pcache);
 }
 static void fin_list(Obj *o)
 {
@@ -195,6 +211,19 @@ static void fin_module(Obj *o)
     ObjModule *m = (ObjModule *)o;
     gc_account(-(long)((size_t)m->cap * sizeof(NameVal)));
     free(m->vars);
+}
+static void fin_instance(Obj *o)
+{
+    ObjInstance *in = (ObjInstance *)o;
+    gc_account(-(long)((size_t)in->slotcap * sizeof(Value)));
+    free(in->slots);
+}
+static void fin_shape(Obj *o)
+{
+    Shape *s = (Shape *)o;
+    gc_account(-(long)((size_t)s->nslots * sizeof(ObjStr *))
+               - (long)((size_t)s->edgecap * sizeof(struct ShapeEdge)));
+    free(s->names); free(s->edges);
 }
 static void fin_closure(Obj *o)
 {
@@ -216,9 +245,10 @@ static const ObjInfo OBJ_INFO[] = {
     [O_CLOSURE]      = { "fn",           sizeof(ObjClosure),     tr_closure,  fin_closure },
     [O_UPVALUE]      = { "upvalue",      sizeof(ObjUpvalue),     tr_upvalue,  NULL        },
     [O_CLASS]        = { "class",        sizeof(ObjClass),       tr_class,    NULL        },
-    [O_INSTANCE]     = { "instance",     sizeof(ObjInstance),    tr_instance, NULL        },
+    [O_INSTANCE]     = { "instance",     sizeof(ObjInstance),    tr_instance, fin_instance },
     [O_BOUND_METHOD] = { "bound method", sizeof(ObjBoundMethod), tr_bound,    NULL        },
     [O_RANGE]        = { "range",        sizeof(ObjRange),       NULL,        NULL        },
+    [O_SHAPE]        = { "shape",        sizeof(Shape),          tr_shape,    fin_shape   },
 };
 /* A type added to the enum without a row here would read a zeroed descriptor:
  * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). With
@@ -300,6 +330,7 @@ ObjFn *as_fn_new(void)
     fn->module = NULL;
     fn->upvalue_count = 0;
     fn->gcache = NULL; fn->gcache_n = 0; fn->gcache_gen = 0;
+    fn->pcache = NULL; fn->pcache_n = 0;
     return fn;
 }
 
@@ -325,6 +356,68 @@ ObjUpvalue *as_upvalue_new(Value *slot)
     return u;
 }
 
+/* --- shapes ---------------------------------------------------------------
+ * Every instance starts on the empty shape and walks one edge per field its
+ * init assigns. Because the edges are memoised on the shape they leave, every
+ * instance built by the same init arrives at the same Shape object -- which is
+ * what a call site can cache against. */
+static Shape   *g_shape_root = NULL;
+static uint32_t shape_next_id = 1;      /* 0 is reserved: it means "nothing cached" */
+
+static Shape *shape_new(void)
+{
+    Shape *s = (Shape *)alloc_obj(O_SHAPE);
+    if (!s) return NULL;
+    s->id = shape_next_id++;
+    s->nslots = 0; s->names = NULL;
+    s->edges = NULL; s->nedges = s->edgecap = 0;
+    return s;
+}
+static Shape *shape_root(void)
+{
+    if (!g_shape_root) g_shape_root = shape_new();
+    return g_shape_root;
+}
+
+/* `from` plus one field named `name`, reusing the edge when it already exists. */
+static Shape *shape_transition(Shape *from, ObjStr *name)
+{
+    for (int i = 0; i < from->nedges; i++) {
+        ObjStr *k = from->edges[i].name;
+        if (k == name || (k->len == name->len && as_str_hash(k) == as_str_hash(name)
+                          && memcmp(k->chars, name->chars, (size_t)k->len) == 0))
+            return from->edges[i].to;
+    }
+    /* shape_new is the only call below that can collect. `from` is the shape of
+     * the instance the caller protected, and `name` is in the running function's
+     * constant pool, so both survive it -- everything after is plain malloc. */
+    Shape *to = shape_new();
+    if (!to) return NULL;
+
+    to->nslots = from->nslots + 1;
+    to->names = (ObjStr **)as_malloc((size_t)to->nslots * sizeof(ObjStr *));
+    if (!to->names) { to->nslots = 0; return NULL; }        /* g_oom set; `to` stays traceable */
+    gc_account((long)((size_t)to->nslots * sizeof(ObjStr *)));
+    /* The root shape has nslots 0 and names NULL, and memcpy(dst, NULL, 0) is
+     * undefined even though it copies nothing -- UBSan flags it. */
+    if (from->nslots) memcpy(to->names, from->names, (size_t)from->nslots * sizeof(ObjStr *));
+    to->names[from->nslots] = name;
+
+    if (from->nedges + 1 > from->edgecap) {
+        int nc = from->edgecap < 4 ? 4 : from->edgecap * 2;
+        struct ShapeEdge *ne = (struct ShapeEdge *)as_realloc(from->edges, (size_t)nc * sizeof *ne);
+        /* Failing to memoise costs cache hits, not correctness: the next instance
+         * builds an equivalent shape with a different id and simply misses. */
+        if (!ne) return to;
+        gc_account((long)((size_t)(nc - from->edgecap) * sizeof(struct ShapeEdge)));
+        from->edges = ne; from->edgecap = nc;
+    }
+    from->edges[from->nedges].name = name;
+    from->edges[from->nedges].to   = to;
+    from->nedges++;
+    return to;
+}
+
 ObjClass *as_class_new(ObjStr *name)
 {
     ObjClass *c = (ObjClass *)alloc_obj(O_CLASS);
@@ -341,11 +434,57 @@ ObjInstance *as_instance_new(ObjClass *klass)
     ObjInstance *in = (ObjInstance *)alloc_obj(O_INSTANCE);
     if (!in) return NULL;
     in->klass = klass;
-    in->fields = NULL;                    /* set before the dict alloc: tr_instance reads it */
-    as_gc_protect((Obj *)in);             /* in is unreachable while as_dict_new allocates */
-    in->fields = as_dict_new();
+    in->shape = NULL;                     /* tr_instance reads it during the alloc below */
+    in->slots = NULL; in->slotcap = 0;
+    as_gc_protect((Obj *)in);             /* in is unreachable while the root shape allocates */
+    in->shape = shape_root();
     as_gc_release(1);
     return in;
+}
+
+int as_shape_find(Shape *s, ObjStr *name)
+{
+    for (int i = 0; i < s->nslots; i++) {
+        ObjStr *k = s->names[i];
+        if (k == name) return i;                      /* same constant-pool string: common */
+        if (k->len == name->len && as_str_hash(k) == as_str_hash(name)
+            && memcmp(k->chars, name->chars, (size_t)k->len) == 0) return i;
+    }
+    return -1;
+}
+
+int as_instance_get(ObjInstance *in, ObjStr *name, Value *out)
+{
+    int i = as_shape_find(in->shape, name);
+    if (i < 0) return 0;
+    *out = in->slots[i];
+    return 1;
+}
+
+int as_instance_set(ObjInstance *in, ObjStr *name, Value val)
+{
+    int i = as_shape_find(in->shape, name);
+    if (i >= 0) { in->slots[i] = val; return 1; }
+
+    /* A new field: move to the shape that has it appended. Protect the instance
+     * -- shape_transition allocates, and nothing else roots `in` if this runs
+     * from a native. */
+    as_gc_protect((Obj *)in);
+    Shape *next = shape_transition(in->shape, name);
+    as_gc_release(1);
+    if (!next) return 0;                              /* g_oom set */
+    if (next->nslots > in->slotcap) {
+        int nc = in->slotcap < 4 ? 4 : in->slotcap * 2;
+        if (nc < next->nslots) nc = next->nslots;
+        Value *ns = (Value *)as_realloc(in->slots, (size_t)nc * sizeof(Value));
+        if (!ns) return 0;                            /* g_oom set; shape unchanged */
+        gc_account((long)((size_t)(nc - in->slotcap) * sizeof(Value)));
+        for (int k = in->slotcap; k < nc; k++) ns[k] = NIL_VAL;   /* tr_instance never sees junk */
+        in->slots = ns; in->slotcap = nc;
+    }
+    in->slots[next->nslots - 1] = val;
+    in->shape = next;                                 /* only now is the new slot in range */
+    return 1;
 }
 ObjBoundMethod *as_bound_method_new(Value receiver, ObjClosure *method)
 {
@@ -622,6 +761,7 @@ void gc_collect(void)
     gray_count = 0;
     as_vm_mark_roots();                                  /* mark + gray the roots (vm.c) */
     for (int i = 0; i < ntemps; i++) gc_mark_obj(temps[i]);   /* allocated, not yet reachable */
+    gc_mark_obj((Obj *)g_shape_root);      /* the shape tree hangs off it via edges */
     while (gray_count > 0) blacken(gray[--gray_count]);   /* trace to fixpoint */
     /* OOM during mark (gray worklist grow failed -> g_oom): the trace is incomplete,
      * so sweeping now could free reachable-but-untraced objects (the UAF the mark
@@ -668,6 +808,7 @@ void as_free_objects(void)
     next_gc_objs = GC_MIN_OBJS;
     gc_disabled = 0;
     ntemps = 0; temps_overflow = 0;
+    g_shape_root = NULL;       /* freed with everything else; must not dangle into the next run */
 }
 
 long as_gc_live(void) { return live_objects; }

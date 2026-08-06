@@ -174,6 +174,7 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
     case O_INSTANCE:     put(k, "<", 1); putstr(k, AS_INSTANCE(v)->klass->name); putz(k, " instance>"); return;
     case O_BOUND_METHOD: putz(k, "<bound method>"); return;
     case O_UPVALUE:      break;   /* never user-visible: lives only in a closure */
+    case O_SHAPE:        break;   /* never user-visible: an instance's field layout */
     case O__COUNT:       break;   /* not a type; listed so -Wswitch still catches real ones */
     }
     putz(k, "<obj>");

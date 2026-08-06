@@ -876,6 +876,31 @@ int main(void)
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
 
+    /* ---- shapes + the property inline cache: the cases a cache gets wrong ----
+     * Instance fields live in numbered slots now, with the layout ("shape")
+     * shared by every instance built the same way, and each property site
+     * remembering the shape and slot it last saw. All of these read naturally
+     * and would pass without any cache at all -- they exist because each one
+     * puts a *different* shape through a site that has already been armed. */
+    ok("shape_order",  "class T:\n    def init(self, k):\n        if k:\n            self.p = 1\n            self.q = 2\n"
+                       "        else:\n            self.q = 2\n            self.p = 1\n"
+                       "def read(o):\n    return o.p\n"
+                       "x = T(1)\ny = T(0)\nprint(read(x), read(y), read(x))\n", "1 1 1\n");
+    ok("shape_grow",   "class B:\n    def init(self):\n        self.a = 1\n"
+                       "b = B()\nb.z = 26\nb.m = 13\nprint(b.a, b.z, b.m)\nb.a = 99\nprint(b.a, b.z, b.m)\n",
+                       "1 26 13\n99 26 13\n");
+    ok("shape_poly",   "class A:\n    def init(self):\n        self.v = 1\n"
+                       "class B:\n    def init(self):\n        self.w = 0\n        self.v = 2\n"
+                       "def get(o):\n    return o.v\n"
+                       "a = A()\nb = B()\nprint(get(a), get(b), get(a), get(b))\n", "1 2 1 2\n");
+    ok("shape_field_over_method",
+                       "class S:\n    def init(self):\n        self.go = 7\n    def go(self):\n        return \"m\"\n"
+                       "print(S().go)\n", "7\n");
+    ok("shape_many",   "class W:\n    def init(self):\n        self.a = 1\n"
+                       "w = W()\nw.b = 2\nw.c = 3\nw.d = 4\nw.e = 5\nw.f = 6\n"
+                       "print(w.a + w.b + w.c + w.d + w.e + w.f)\n", "21\n");
+    err("shape_missing", "class E:\n    def init(self):\n        self.a = 1\nprint(E().nope)\n");
+
     /* ---- range is lazy: it must stay indistinguishable from the list it was ----
      * range() computes elements on demand instead of building an ObjList, so a
      * 2,000,000-iteration loop costs 1.7 MB instead of 33 MB -- which on Logit,

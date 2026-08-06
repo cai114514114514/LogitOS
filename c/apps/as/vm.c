@@ -144,6 +144,33 @@ static ObjStr *str_concat(ObjStr *a, ObjStr *b)
 }
 
 /* Resolve a global read: the running function's module, then builtins. */
+/* The inline-cache entry for constant `ki`, allocated on first use. A NULL
+ * return just means "do not cache"; there is no error path. */
+static struct PCache *fn_pcache(ObjFn *fn, int ki)
+{
+    if (!fn->pcache && fn->kcount > 0) {
+        fn->pcache = (struct PCache *)calloc((size_t)fn->kcount, sizeof(struct PCache));
+        fn->pcache_n = fn->pcache ? fn->kcount : 0;
+    }
+    return (fn->pcache && ki < fn->pcache_n) ? &fn->pcache[ki] : NULL;
+}
+
+/* Read an instance property through the cache. Returns 1 and fills *out on a
+ * field hit, 0 if the instance has no such field (the caller then tries
+ * methods). The guard is the shape id, not the shape pointer: ids are never
+ * reused, so a shape that was collected and had its address recycled cannot be
+ * mistaken for the one that was cached. */
+static int instance_get_cached(ObjFn *fn, int ki, ObjInstance *in, Value *out)
+{
+    struct PCache *pc = fn_pcache(fn, ki);
+    if (pc && pc->shape_id == in->shape->id) { *out = in->slots[pc->slot]; return 1; }
+    int i = as_shape_find(in->shape, AS_STR(fn->consts[ki]));
+    if (i < 0) return 0;
+    if (pc) { pc->shape_id = in->shape->id; pc->slot = i; }
+    *out = in->slots[i];
+    return 1;
+}
+
 /* Resolve consts[ki] as a global, memoising where it landed in fn->gcache.
  * The cache stores an INDEX, not a slot pointer, so the module's var array is
  * still free to grow by realloc. Module first, then builtins -- keeping the
@@ -1084,7 +1111,7 @@ static int run_until(int floor)
             } else if (IS_INSTANCE(recv)) {
                 ObjInstance *in = AS_INSTANCE(recv);
                 Value field;
-                if (as_dict_get(in->fields, OBJ_VAL(name), &field)) {   /* a callable field shadows a method */
+                if (as_instance_get(in, name, &field)) {   /* a callable field shadows a method */
                     sp[-argc - 1] = field;                              /* replace receiver with the callable */
                     if (call_value(field, argc)) goto err;
                     frame = &frames[frame_count - 1];
@@ -1101,21 +1128,24 @@ static int run_until(int floor)
             DISPATCH();
         }
         op_GET_PROPERTY: {
-            ObjStr *n = AS_STR(READ_CONST());
+            int ki = READ_SHORT();
             Value recv = peek(0);                 /* keep recv rooted across bind_method's alloc */
             if (IS_INSTANCE(recv)) {
                 ObjInstance *in = AS_INSTANCE(recv);
                 Value field;
-                if (as_dict_get(in->fields, OBJ_VAL(n), &field)) { pop(); push(field); DISPATCH(); }
+                if (instance_get_cached(frame->fn, ki, in, &field)) { pop(); push(field); DISPATCH(); }
+                ObjStr *n = AS_STR(frame->fn->consts[ki]);
                 int b = bind_method(in->klass, n, recv);          /* pushes the bound method */
                 if (b < 0) goto err;                              /* stack overflow */
                 if (b) {
                     Value bm = pop(); pop(); push(bm);            /* drop the receiver, keep bound method */
                     DISPATCH();
                 }
-                runtime_error("'%.*s instance' has no property '%.*s'", in->klass->name->len, in->klass->name->chars, n->len, n->chars); goto err;
+                runtime_error("'%.*s instance' has no property '%.*s'", in->klass->name->len, in->klass->name->chars,
+                              AS_STR(frame->fn->consts[ki])->len, AS_STR(frame->fn->consts[ki])->chars); goto err;
             }
             if (IS_MODULE(recv)) {
+                ObjStr *n = AS_STR(frame->fn->consts[ki]);
                 Value *s = as_module_slot(AS_MODULE(recv), n, 0);
                 if (!s) { runtime_error("module '%.*s' has no '%.*s'", AS_MODULE(recv)->name->len, AS_MODULE(recv)->name->chars, n->len, n->chars); goto err; }
                 pop(); push(*s); DISPATCH();
@@ -1123,10 +1153,22 @@ static int run_until(int floor)
             runtime_error("only instances and modules have properties"); goto err;
         }
         op_SET_PROPERTY: {
-            ObjStr *n = AS_STR(READ_CONST());
+            int ki = READ_SHORT();
             Value val = peek(0), recv = peek(1);
             if (!IS_INSTANCE(recv)) { runtime_error("only instances have settable fields"); goto err; }
-            as_dict_set(AS_INSTANCE(recv)->fields, OBJ_VAL(n), val);
+            ObjInstance *in = AS_INSTANCE(recv);
+            struct PCache *pc = fn_pcache(frame->fn, ki);
+            if (pc && pc->shape_id == in->shape->id) {           /* known field of a known shape */
+                in->slots[pc->slot] = val;
+            } else {
+                ObjStr *n = AS_STR(frame->fn->consts[ki]);
+                /* A first assignment transitions the shape, so the cache is only
+                 * armed for the update case -- caching the pre-transition shape
+                 * would point the next instance at the wrong slot. */
+                int existing = as_shape_find(in->shape, n) >= 0;
+                if (!as_instance_set(in, n, val)) goto err;      /* g_oom set */
+                if (pc && existing) { pc->shape_id = in->shape->id; pc->slot = as_shape_find(in->shape, n); }
+            }
             sp -= 2; push(val);                   /* leave the assigned value as the expression result */
             DISPATCH();
         }

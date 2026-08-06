@@ -57,7 +57,7 @@ typedef struct {
 
 /* --- objects --- */
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
-               O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE,
+               O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE, O_SHAPE,
                O__COUNT } ObjType;   /* sentinel: sizes the descriptor table in object.c */
 /* Two bytes, where an intrusive allocation list cost sixteen. The `next` pointer
  * moved out into a contiguous registry (object.c): sweeping a dense array beats
@@ -106,7 +106,15 @@ typedef struct {           /* a compiled function (also the top-level "script") 
      * already-resolved name points (a module-level `def range(xs)` taking over
      * from the builtin of that name). */
     int32_t *gcache; int gcache_n; uint32_t gcache_gen;
+    /* Property inline cache, also parallel to consts. A property access on an
+     * instance remembers which shape it saw and which slot the name was in;
+     * repeating it is then an integer compare and an array index instead of a
+     * search. Keyed by constant index, so two sites naming the same property in
+     * one function share an entry -- fine while code is monomorphic, which is
+     * the case the cache exists for. Runtime only, never serialized. */
+    struct PCache *pcache; int pcache_n;
 } ObjFn;
+struct PCache { uint32_t shape_id; int slot; };   /* shape_id 0 == empty */
 
 /* M22 closures: an upvalue points at a captured variable — a live stack slot
  * while "open", or its own `closed` copy once the slot leaves the stack. */
@@ -145,10 +153,36 @@ typedef struct ObjClass {
     struct ObjClass *super;     /* parent class, or NULL */
     ObjDict *methods;           /* name(str) -> ObjClosure */
 } ObjClass;
+/* A Shape is the field layout an instance currently has: names[i] lives in
+ * slots[i]. Instances that were built the same way share one Shape, so the
+ * layout is stored once per shape rather than once per instance -- an instance
+ * is now a flat Value array instead of a hash table.
+ *
+ * Shapes are immutable and form a tree: adding a field to a shape follows (or
+ * creates) an edge to the shape that has that field appended. Two instances
+ * built by the same `init` therefore end up on the same Shape by construction,
+ * which is what makes a property access cacheable: the call site remembers a
+ * shape and a slot index, and one integer compare decides whether the memo
+ * holds. `id` is what the caches compare -- never reused, so a collected shape
+ * whose address is recycled cannot be mistaken for the one that was cached.
+ *
+ * This is also the groundwork for declared fields: `field a, b, c` gives the
+ * shape at class-definition time instead of discovering it during init. */
+typedef struct Shape {
+    Obj obj;
+    uint32_t id;                        /* identity for inline caches; never 0, never reused */
+    int nslots;
+    ObjStr **names;                     /* names[i] -> slot i */
+    struct ShapeEdge *edges;            /* name -> the shape with that field appended */
+    int nedges, edgecap;
+} Shape;
+struct ShapeEdge { ObjStr *name; Shape *to; };
+
 typedef struct {
     Obj obj;
     ObjClass *klass;
-    ObjDict *fields;            /* name(str) -> Value */
+    Shape *shape;               /* which field lives in which slot */
+    Value *slots; int slotcap;  /* slots[0 .. shape->nslots) */
 } ObjInstance;
 typedef struct {
     Obj obj;
@@ -275,6 +309,11 @@ ObjList  *as_dict_keys(ObjDict *d);
 ObjList  *as_dict_values(ObjDict *d);
 ObjPtr   *as_ptr_new(uint64_t addr, int width, int is_signed);
 ObjRange *as_range_new(int64_t start, int64_t step, int64_t count);
+/* Instance fields, by shape. as_instance_get returns 0 if the field is absent;
+ * as_instance_set adds it (transitioning the shape) and returns 0 only on OOM. */
+int  as_shape_find(Shape *s, ObjStr *name);        /* slot index, or -1 */
+int  as_instance_get(ObjInstance *in, ObjStr *name, Value *out);
+int  as_instance_set(ObjInstance *in, ObjStr *name, Value val);
 void      as_chunk_write(ObjFn *fn, uint8_t b);
 int       as_chunk_const(ObjFn *fn, Value v);
 int       as_value_eq(Value a, Value b);
