@@ -93,6 +93,35 @@ int main(void)
     CHECK(sy >= 0, "second button text emitted");
     CHECK(py >= 0 && sy >= 0 && py == sy, "both button labels share the flex row");
 
+    /* A width:100% flex item must not starve its auto siblings (GitHub's
+     * header nav vanished because the cta container's width:100% claimed the
+     * whole row); it takes only the leftover. A flex-grow item absorbs the
+     * remaining space. */
+    const char *html3 =
+        "<body><div class='row'>"
+        "<div class='nv'><span>NavLabel</span></div>"
+        "<div class='cta'><span>CtaLabel</span></div>"
+        "</div>"
+        "<div class='gr'><div class='g'><span>x</span></div></div></body>";
+    const char *css3 =
+        ".row{display:flex;width:400px}.cta{width:100%}"
+        ".gr{display:flex;width:400px}.g{flex-grow:1;background:#102030}";
+    struct node *r3 = dom_parse(html3, (int)strlen(html3));
+    CHECK(r3 != NULL, "flex pct/grow dom_parse");
+    css_apply(r3, css3, (int)strlen(css3));
+    layout_page(r3, 800);
+    n = layout_count();
+    it = layout_items();
+    int nwx = -1, ctx = -1, groww = -1;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type == IT_TEXT && it[i].len == 8 && !memcmp(it[i].text, "NavLabel", 8)) nwx = it[i].x;
+        if (it[i].type == IT_TEXT && it[i].len == 8 && !memcmp(it[i].text, "CtaLabel", 8)) ctx = it[i].x;
+        if (it[i].type == IT_RECT && it[i].has_bg) groww = it[i].w;
+    }
+    CHECK(nwx >= 0, "auto item next to width:100% item keeps its content width");
+    CHECK(ctx > nwx, "width:100% item claims only the leftover, after auto siblings");
+    CHECK(groww == 400, "flex-grow item absorbs the row's leftover space");
+
     printf(fail ? "\nLAYOUT TEST FAILED\n" : "\nLAYOUT TEST PASSED\n");
     return fail;
 }

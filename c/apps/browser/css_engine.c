@@ -551,6 +551,9 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       /* absolute: out of flow (dropdowns/overlays would smear the normal
        * flow). fixed stays in flow -- fixed headers sit at the top anyway. */
       if (p == CSS_POSITION_ABSOLUTE) o->pos_abs = 1; }
+    { css_fixed fg = 0;
+      if (css_computed_flex_grow(cs, &fg) == CSS_FLEX_GROW_SET && fg > 0)
+          o->flex_grow = fg; }
 }
 
 /* ---------- traversal ---------- */

@@ -346,6 +346,13 @@ static int content_width(struct node *n, int px, int mono, int depth)
     int acc = 0;
     for (struct node *c = n->first_child; c; c = c->next) {
         int cw = content_width(c, cpx, cmono, depth + 1);
+        /* horizontal margins are part of the child's footprint (a shrink-to-fit
+         * parent must leave room for them or the child's text wraps). */
+        if (c->type == N_ELEM && c->style && !skipped(c)) {
+            struct cstyle *cs = c->style;
+            if (cs->ml > 0) cw += cs->ml;
+            if (cs->mr > 0) cw += cs->mr;
+        }
         if (row) acc += cw; else if (cw > acc) acc = cw;
     }
     return acc + pad;
@@ -375,9 +382,14 @@ static int layout_flex(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
     int fpx = nst ? nst->font_px : 16, fmono = nst ? nst->mono : 0;
-    /* Measure: explicit widths stay fixed; auto items size to their content
-     * (flex:auto semantics). Percentage widths resolve against the row. */
+    if (w < 0) w = 0;
+    /* Measure: explicit px widths stay fixed; auto items size to their content
+     * (flex:auto basis). Percentage widths no longer count as fixed up front:
+     * they claim from whatever the fixed + content-sized items leave behind,
+     * so a width:100% item can't starve its auto siblings (real flexbox would
+     * shrink it via flex-shrink). */
     int fixed = 0, autosum = 0;
+    long growsum = 0;
     struct node *c = n->first_child;
     while (c) {
         if (c->type != N_ELEM || !is_block(c)) {
@@ -391,13 +403,27 @@ static int layout_flex(struct node *n, int x, int y, int w)
         int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
         fixed += ml + mr;
         if (st && st->has_w && !st->w_pct) fixed += st->width;
-        else if (st && st->has_w && st->w_pct) fixed += w*st->width/100;
+        else if (st && st->has_w && st->w_pct) { /* claims leftover below */ }
         else autosum += content_width(c, fpx, fmono, 0);
+        if (st && st->flex_grow > 0) growsum += st->flex_grow;
         c = c->next;
     }
     int avail = w - fixed; if (avail < 0) avail = 0;
     /* Over-constrained row: shrink the content-sized items proportionally. */
     int scale = (autosum > avail && autosum > 0) ? avail * 100 / autosum : 100;
+    /* Space the percentage items may claim (in tree order), then the space
+     * flex-grow items split proportionally to their grow factor. */
+    int pctpool = avail - autosum * scale / 100;
+    int growspace = pctpool;
+    for (struct node *p = n->first_child; p; p = p->next) {
+        if (p->type != N_ELEM || !is_block(p) || skipped(p)) continue;
+        struct cstyle *st = p->style;
+        if (st && st->has_w && st->w_pct) {
+            int want = w * st->width / 100;
+            growspace -= want < growspace ? want : growspace;
+        }
+    }
+    if (growspace < 0) growspace = 0;
     int cx = x, maxb = y;
     c = n->first_child;
     while (c) {
@@ -420,9 +446,14 @@ static int layout_flex(struct node *n, int x, int y, int w)
         int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
         int iw;
         if (st && st->has_w && !st->w_pct) iw = st->width;
-        else if (st && st->has_w && st->w_pct) iw = w*st->width/100;
-        else iw = content_width(c, fpx, fmono, 0) * scale / 100;
+        else if (st && st->has_w && st->w_pct) {
+            int want = w*st->width/100;
+            iw = want < pctpool ? want : pctpool;
+            pctpool -= iw;
+        } else iw = content_width(c, fpx, fmono, 0) * scale / 100;
         if (iw < 0) iw = 0;
+        if (growspace > 0 && growsum > 0 && st && st->flex_grow > 0)
+            iw += (int)((long)growspace * st->flex_grow / growsum);
         cx += ml;
         int top = y + (st && st->mt > 0 ? st->mt : 0);
         int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
@@ -431,7 +462,8 @@ static int layout_flex(struct node *n, int x, int y, int w)
             struct item *bg = additem(IT_RECT);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cx, top, iw); }
         }
-        int inner = layout_block(c, cx + pl, top + pt, iw - pl - pr);
+        int inw = iw - pl - pr; if (inw < 0) inw = 0;
+        int inner = layout_block(c, cx + pl, top + pt, inw);
         int ch = (inner - top) + pb;
         if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
         if (st && ch < st->font_px) ch = st->font_px;
