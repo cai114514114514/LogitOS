@@ -57,6 +57,64 @@ int main(void)
     CK(run(ctx, "if (document.getElementById('nope') !== null) throw 'should be null';"),
        "getElementById(missing) returns null");
 
+    /* createElement + appendChild: a new node enters the live DOM and is findable */
+    js_dom_clear_dirty();
+    CK(run(ctx, "var d = document.createElement('DIV');"
+                "d.setAttribute('id', 'new'); d.textContent = 'made';"
+                "document.body.appendChild(d);"),
+       "eval createElement/setAttribute/appendChild");
+    CK(js_dom_dirty(), "DOM dirty after appendChild");
+    CK(run(ctx, "if (document.getElementById('new').textContent !== 'made') throw 'not in DOM';"),
+       "appended element reachable via getElementById");
+    struct node *dv = find(root, "div");
+    CK(dv && !strcmp(firsttext(dv), "made"), "div node really linked under body");
+
+    /* appendChild moves (reparents) an existing node */
+    CK(run(ctx, "document.querySelector('h1').appendChild(document.querySelector('a'));"),
+       "eval appendChild reparent");
+    struct node *h1b = find(root, "h1");
+    CK(h1b && find(h1b, "a"), "a moved under h1");
+
+    /* removeChild drops the subtree from the DOM */
+    js_dom_clear_dirty();
+    CK(run(ctx, "var b = document.body, p = document.querySelector('.x');"
+                "b.removeChild(p);"),
+       "eval removeChild");
+    CK(js_dom_dirty(), "DOM dirty after removeChild");
+    CK(!find(root, "p"), "p node gone from the tree");
+    CK(run(ctx, "if (document.querySelector('.x') !== null) throw 'should be gone';"),
+       "querySelector no longer finds removed node");
+
+    /* classList add/remove/toggle/contains */
+    js_dom_clear_dirty();
+    CK(run(ctx, "var cl = document.querySelector('h1').classList;"
+                "cl.add('big');"
+                "if (!cl.contains('big')) throw 'add failed';"
+                "cl.toggle('on'); cl.toggle('big');"
+                "if (cl.contains('big')) throw 'toggle off failed';"
+                "if (!cl.contains('on')) throw 'toggle on failed';"
+                "cl.remove('on');"
+                "if (cl.contains('on')) throw 'remove failed';"),
+       "classList add/remove/toggle/contains");
+    CK(js_dom_dirty(), "DOM dirty after classList ops");
+    CK(!strcmp(dom_attr(h1b, "class") ? dom_attr(h1b, "class") : "", ""),
+       "h1 class attribute back to empty");
+
+    /* addEventListener: recorded, does not throw */
+    CK(run(ctx, "document.body.addEventListener('click', function() {});"
+                "document.body.addEventListener('keydown', function() {});"),
+       "addEventListener does not throw");
+    CK(js_dom_listener_count() == 2, "two listeners recorded");
+
+    /* document.documentElement exists (no <html> in fixture -> first element) */
+    CK(run(ctx, "if (document.documentElement === null) throw 'no documentElement';"),
+       "document.documentElement is non-null");
+
+    /* console.log/warn/error are installed and callable */
+    CK(run(ctx, "console.log('L', 1); console.warn('W'); console.error('E');"),
+       "console.log/warn/error callable");
+
+    js_dom_cleanup(ctx);
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
     printf(fails ? "\nJS-DOM TEST FAILED\n" : "\nJS-DOM TEST PASSED\n");
     return fails;

@@ -13,4 +13,10 @@ void js_dom_init(JSContext *ctx, struct node *root);
 int  js_dom_dirty(void);
 void js_dom_clear_dirty(void);
 
+/* Number of addEventListener handlers recorded (no dispatch yet). */
+int  js_dom_listener_count(void);
+
+/* Release listener handler refs; call before JS_FreeContext/JS_FreeRuntime. */
+void js_dom_cleanup(JSContext *ctx);
+
 #endif /* LOGIT_JS_DOM_H */

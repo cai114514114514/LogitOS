@@ -66,7 +66,7 @@ static void set_status(const char *s)
 
 static void redraw(int editing);
 
-/* ---- page JavaScript via QuickJS (console.log only; no DOM bindings yet) ---- */
+/* ---- page JavaScript via QuickJS (console + live DOM bindings) ---- */
 #include "quickjs.h"
 int printf(const char *, ...);
 unsigned long strlen(const char *);
@@ -88,6 +88,10 @@ static JSValue js_log(JSContext *ctx, JSValueConst t, int argc, JSValueConst *ar
     jsput("\n"); printf("\n");
     return JS_UNDEFINED;
 }
+static JSValue js_warn(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ jsput("[warn] "); printf("[warn] "); return js_log(ctx, t, argc, argv); }
+static JSValue js_error(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ jsput("[error] "); printf("[error] "); return js_log(ctx, t, argc, argv); }
 
 static int run_js(const char *src)        /* returns 1 if the script mutated the DOM */
 {
@@ -103,6 +107,8 @@ static int run_js(const char *src)        /* returns 1 if the script mutated the
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue con = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, con, "log", JS_NewCFunction(ctx, js_log, "log", 1));
+    JS_SetPropertyStr(ctx, con, "warn", JS_NewCFunction(ctx, js_warn, "warn", 1));
+    JS_SetPropertyStr(ctx, con, "error", JS_NewCFunction(ctx, js_error, "error", 1));
     JS_SetPropertyStr(ctx, g, "console", con);
     JS_SetPropertyStr(ctx, g, "print", JS_NewCFunction(ctx, js_log, "print", 1));
     JS_FreeValue(ctx, g);
@@ -118,6 +124,7 @@ static int run_js(const char *src)        /* returns 1 if the script mutated the
     }
     JS_FreeValue(ctx, v);
     int mutated = js_dom_dirty();
+    js_dom_cleanup(ctx);              /* release addEventListener handler refs */
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
     return mutated;
 }
@@ -137,15 +144,45 @@ static int collect_style(struct node *n, char *out, int o, int max)
     return o;
 }
 
+static int has_ci(const char *h, const char *n);   /* defined below, next to fetch_css_links */
+static int str_eq(const char *a, const char *b);
+
+/* <script src="..."> fetch: same channel as fetch_css_links (res_fetch_raw; the
+ * kernel resolves relative srcs against the page URL). Budgeted -- each fetch
+ * is a full HTTPS handshake -- and duplicate srcs are skipped. A failed fetch
+ * just skips that one script; the rest of the page's JS still runs. */
+static int g_js_budget;
+#define MAX_JS_SEEN 16
+static const char *g_js_seen[MAX_JS_SEEN];
+static int g_js_nseen;
+static unsigned char js_tmp[65536];        /* scratch for one external script (64 KiB) */
+
 static int collect_scripts(struct node *n, char *out, int o, int max)
 {
     if (!n) return o;
-    if (n->type == N_ELEM && tag_is(n->tag, "script") && !dom_attr(n, "src")) {
-        for (struct node *c = n->first_child; c; c = c->next)
-            if (c->type == N_TEXT && c->text)
-                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
-        if (o < max - 1) out[o++] = '\n';
-        if (o < max - 1) out[o++] = ';';
+    if (n->type == N_ELEM && tag_is(n->tag, "script")) {
+        const char *src = dom_attr(n, "src");
+        if (src) {                         /* external: fetch in document order */
+            if (g_js_budget > 0 && o < max - 64 &&
+                !has_ci(src, "javascript:") && !has_ci(src, "data:")) {
+                int dup = 0;
+                for (int i = 0; i < g_js_nseen; i++)
+                    if (str_eq(g_js_seen[i], src)) { dup = 1; break; }
+                if (!dup) {
+                    if (g_js_nseen < MAX_JS_SEEN) g_js_seen[g_js_nseen++] = src;
+                    g_js_budget--;
+                    int got = res_fetch_raw(src, js_tmp, (int)sizeof js_tmp);
+                    for (int i = 0; i < got && o < max - 1; i++) out[o++] = (char)js_tmp[i];
+                    if (got > 0 && o < max - 1) out[o++] = '\n';
+                }
+            }
+        } else {                           /* inline */
+            for (struct node *c = n->first_child; c; c = c->next)
+                if (c->type == N_TEXT && c->text)
+                    for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+            if (o < max - 1) out[o++] = '\n';
+            if (o < max - 1) out[o++] = ';';
+        }
     }
     for (struct node *c = n->first_child; c; c = c->next)
         o = collect_scripts(c, out, o, max);
@@ -283,16 +320,17 @@ static void load(const char *u)
         ph = layout_height();
         redraw(0);
     }
-    /* Run the page's inline <script> through QuickJS -- but only small scripts.
-     * Real sites ship huge minified bundles that assume a full browser env; with
-     * no real DOM they just throw, and some (github) drive QuickJS into a
-     * recursion our build can't bound, faulting the app. We have no JS sandbox,
-     * so cap at a size only hand-written demo scripts stay under. */
+    /* Run the page's <script>s (inline + up to 8 external) through QuickJS, capped
+     * at 64 KiB total. Real sites ship huge minified bundles that assume a full
+     * browser env; with no real DOM they just throw. The cap keeps those out while
+     * allowing real page scripts, and run_js's 2 MiB stack guard bounds recursive
+     * scripts so a bad bundle throws a catchable RangeError instead of faulting. */
     jslen = 0; jsout[0] = 0;
-    static char scr[16384];
+    static char scr[65536];
+    g_js_budget = 8; g_js_nseen = 0;
     int sn = collect_scripts(g_root, scr, 0, sizeof scr);
     scr[sn] = 0;                   /* collect_scripts doesn't NUL-terminate; stale tail bytes from the previous page would be eval'd */
-    if (sn > 1 && sn < 2048) {
+    if (sn > 1 && sn < (int)sizeof scr) {
         int mutated = run_js(scr);
         if (mutated) {                   /* JS changed the DOM -> re-style + re-layout */
             css_apply(g_root, css_expanded, css_exlen);
