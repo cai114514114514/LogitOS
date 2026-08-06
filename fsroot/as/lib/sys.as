@@ -1,21 +1,24 @@
 # sys -- direct Logit system access from AetherScript (M23.5).
-# Pure AetherScript over syscall()/alloc()/addr(): files, dirs, processes
+# Pure AetherScript over syscall()/buffer()/addr(): files, dirs, processes
 # (fork+execve+waitpid), time, network. This is the surface a sandboxed
 # scripting language doesn't get: the OS, first-class.
 #   from sys import read_file, write_file, ls, run, time
 # Strings passed to the kernel are NUL-terminated (ObjStr always is); buffers
-# come from alloc() and are freed with dealloc().
+# come from buffer(), which the collector owns -- there is nothing to free, and
+# nothing to leak when a call in between raises. Kernel structs come from `abi`,
+# whose field offsets are generated from include/abi/logit_abi.h and checked
+# against it by the compiler that builds /bin/as.
+
+from abi import Time
 
 # ---- files ----
 def read_file(path):
     return read_file_max(path, 262144)
 
 def read_file_max(path, max):
-    buf = alloc(max)
+    buf = buffer(max)
     n = syscall(SYS_READ_FILE, addr(path), addr(buf), max)
-    s = mem2str(buf, n) if n >= 0 else nil
-    dealloc(buf)
-    return s
+    return mem2str(buf, n) if n >= 0 else nil
 
 def write_file(path, data):
     return syscall(SYS_WRITE_FILE, addr(path), addr(data), len(data))
@@ -35,20 +38,17 @@ def ls(dir):
     if n < 0:
         return nil
     out = []
-    buf = alloc(64)
+    buf = buffer(64)
     for i in range(n):
         sz = syscall(SYS_DIR_NAME, addr(dir), i, addr(buf))
         if sz != -1:
             out.append(mem2cstr(buf))
-    dealloc(buf)
     return out
 
 def cwd():
-    buf = alloc(128)
+    buf = buffer(128)
     n = syscall(SYS_GETCWD, addr(buf), 128)
-    s = mem2str(buf, n) if n >= 0 else nil
-    dealloc(buf)
-    return s
+    return mem2str(buf, n) if n >= 0 else nil
 
 def chdir(path):
     return syscall(SYS_CHDIR, addr(path))
@@ -62,7 +62,7 @@ def pid():
 # copies before returning) -- the addr()s point into the strings' own bytes.
 def _argv(args):
     n = len(args)
-    pv = alloc(8 * (n + 1))
+    pv = buffer(8 * (n + 1))
     for i in range(n):
         poke64(addr(pv) + 8 * i, addr(args[i]))
     poke64(addr(pv) + 8 * n, 0)
@@ -79,11 +79,9 @@ def spawn(path, args):
     return p
 
 def wait(p):
-    st = alloc(4)
+    st = buffer(4)
     rc = syscall(SYS_WAITPID, p, addr(st), 0)
-    code = peek32(addr(st))
-    dealloc(st)
-    return code if rc >= 0 else -1
+    return peek32(addr(st)) if rc >= 0 else -1
 
 def run(path, args):
     return wait(spawn(path, args))
@@ -95,28 +93,19 @@ def cpu():
     return syscall(SYS_CPU_INDEX)
 
 # ---- time ----
-# -> {"year","month","day","hour","minute","second","weekday"} (RTC wall clock)
+# -> a Time layout: .year .month .day .hour .minute .second .weekday
+# (RTC wall clock). The kernel writes struct logit_time straight into it.
 def time():
-    buf = alloc(28)
-    syscall(SYS_GET_TIME, addr(buf))
-    a = addr(buf)
-    t = {}
-    t["year"] = peek32(a)
-    t["month"] = peek32(a + 4)
-    t["day"] = peek32(a + 8)
-    t["hour"] = peek32(a + 12)
-    t["minute"] = peek32(a + 16)
-    t["second"] = peek32(a + 20)
-    t["weekday"] = peek32(a + 24)
-    dealloc(buf)
+    t = Time()
+    syscall(SYS_GET_TIME, addr(t))
     return t
 
 def sleep(secs):
     t0 = time()
-    start = (t0["hour"] * 60 + t0["minute"]) * 60 + t0["second"]
+    start = (t0.hour * 60 + t0.minute) * 60 + t0.second
     while true:
         t = time()
-        now = (t["hour"] * 60 + t["minute"]) * 60 + t["second"]
+        now = (t.hour * 60 + t.minute) * 60 + t.second
         if now < start:
             now = now + 86400
         if now - start >= secs:

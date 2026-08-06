@@ -16,9 +16,9 @@ running = true
 while running:
     ev = gui.poll()
     while ev != nil:
-        if ev["type"] == EV_CLOSE:
+        if ev.type == EV_CLOSE:
             running = false
-        if ev["type"] == EV_KEY and (ev["a"] == 113 or ev["a"] == 27):
+        if ev.type == EV_KEY and (ev.a == 113 or ev.a == 27):
             running = false
         ev = gui.poll()
 

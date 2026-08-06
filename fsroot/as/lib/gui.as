@@ -4,11 +4,17 @@
 #   gui.rect(10, 10, 100, 50, 0x3478F6)
 #   gui.text(20, 30, 0xFFFFFF, "hello")
 #   gui.flush()
-#   ev = gui.poll()          # nil, or {"type","a","b"} (gui.EV_KEY/EV_MOUSE/EV_CLOSE)
+#   ev = gui.poll()          # nil, or an Event with .type .a .b (EV_KEY/EV_MOUSE/EV_CLOSE)
 # The kernel adopts the script's process as a window owner on create(); closing
 # the window delivers EV_CLOSE and the script exits like any app.
 
-_ev = alloc(12)              # struct logit_event { int type, a, b; }
+from abi import Event
+
+# One event struct, reused: the kernel fills it on each poll and the caller is
+# expected to handle the event before polling again. Its field offsets come from
+# include/abi/logit_abi.h, so a kernel that changes struct logit_event breaks the
+# build rather than this reading the wrong words.
+_ev = Event()
 
 def create(title, w, h):
     return syscall(SYS_GUI_CREATE, addr(title), (w << 16) | h)
@@ -40,11 +46,7 @@ def dark():
 def poll():
     if syscall(SYS_POLL_EVENT, addr(_ev)) != 1:
         return nil
-    e = {}
-    e["type"] = peek32(addr(_ev))
-    e["a"] = peek32(addr(_ev) + 4)
-    e["b"] = peek32(addr(_ev) + 8)
-    return e
+    return _ev
 
 def yield_():
     return syscall(SYS_YIELD)

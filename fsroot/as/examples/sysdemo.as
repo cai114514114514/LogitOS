@@ -17,6 +17,6 @@ print("spawn exit:", code)
 
 # wall clock + identity
 t = time()
-print("clock sane:", t["year"] >= 2024 and t["hour"] >= 0 and t["hour"] < 24)
+print("clock sane:", t.year >= 2024 and t.hour >= 0 and t.hour < 24)
 print(f"pid={pid() > 0} cwd={cwd()}")
 print("sysdemo ok")
