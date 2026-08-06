@@ -27,7 +27,8 @@ int aex_info(const void *file, char *out_name, char *out_ext)
     return 0;
 }
 
-uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *out_ext)
+uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *out_ext,
+                  uint64_t *out_top)
 {
     const struct aex_header *h = file;
     if (file_size <= AEX_HDR_SIZE)
@@ -36,5 +37,6 @@ uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *ou
         return 0;
     if (out_name) copy_field(out_name, h->name, 32);
     if (out_ext)  copy_field(out_ext, h->ext, 8);
-    return elf_load((void *)((const uint8_t *)file + AEX_HDR_SIZE), file_size - AEX_HDR_SIZE);
+    return elf_load((void *)((const uint8_t *)file + AEX_HDR_SIZE), file_size - AEX_HDR_SIZE,
+                    out_top);
 }

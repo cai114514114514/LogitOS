@@ -206,7 +206,8 @@ AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $
 QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
               third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c \
               third_party/quickjs/libbf.c
-ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) $(wildcard c/apps/libc/src/*.c)
+ENGINE_SRCS:= $(QJS_SRC) $(wildcard third_party/libm/*.c) \
+              $(filter-out c/apps/libc/src/malloc.c,$(wildcard c/apps/libc/src/*.c))
 JS_INC     := -Ithird_party/libm -Ithird_party/quickjs    # mini-libc covered by INCDIRS
 JS_CF      := $(UCFLAGS) -w -include features.h -DCONFIG_VERSION='"logit-2024"' -DLOGIT_OS -DCONFIG_STACK_CHECK $(JS_INC)
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(ENGINE_SRCS))
@@ -252,8 +253,17 @@ $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) --end-group
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+
+# The shared libc arena (24 MiB, sized as a JS heap) ran dry while LibCSS parsed
+# github.com's ~3 MiB of stylesheets: malloc started returning NULL mid-sheet, the
+# tail of the CSS (incl. the marketing-header module) was silently dropped and the
+# page rendered unstyled. The browser is the only ENGINE_OBJ consumer, so it gets
+# its own malloc with a 96 MiB arena; every other app keeps the 24 MiB default.
+$(BUILD)/browserobj/malloc_big.o: c/apps/libc/src/malloc.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -DARENA_SIZE=100663296u -c $< -o $@
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240

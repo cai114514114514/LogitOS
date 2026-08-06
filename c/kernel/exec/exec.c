@@ -111,7 +111,7 @@ long proc_execve(struct registers *r)
     kprintf("[execve] pid %d: %s loading\n", p->pid, abs);   /* DIAG: reached = child alive */
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
-    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext);  /* maps into the active (p->cr3) space */
+    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext, NULL);  /* maps into the active (p->cr3) space */
     kfree(img);
     if (!entry) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
 
@@ -151,7 +151,7 @@ int proc_spawn(const char *path, char **argv)
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext);
+    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext, NULL);
     uint64_t sp = entry ? setup_cli_stack(entry, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");

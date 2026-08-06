@@ -27,8 +27,10 @@ struct aex_header {
 
 /* Load an in-memory .aex (`file_size` bytes) into the current address space
  * (user pages) and return the entry point (0 on failure). Fills name/ext if
- * non-NULL. file_size bounds the embedded ELF parse against the buffer. */
-uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *out_ext);
+ * non-NULL. file_size bounds the embedded ELF parse against the buffer.
+ * out_top (may be NULL) receives the page-aligned top of the loaded image. */
+uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *out_ext,
+                  uint64_t *out_top);
 
 /* Validate + read metadata without loading. Returns 0 on success. */
 int aex_info(const void *file, char *out_name, char *out_ext);

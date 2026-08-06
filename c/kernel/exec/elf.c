@@ -29,9 +29,11 @@ struct elf64_phdr {
 #define USER_VA_BASE 0x40000000ull
 #define USER_VA_END  0x80000000ull
 
-uint64_t elf_load(void *image, uint64_t image_size)
+uint64_t elf_load(void *image, uint64_t image_size, uint64_t *out_top)
 {
     struct elf64_ehdr *eh = image;
+    uint64_t top = 0;
+    if (out_top) *out_top = 0;
 
     if (image_size < sizeof *eh) return 0;
     if (eh->e_ident[0] != 0x7F || eh->e_ident[1] != 'E' ||
@@ -74,6 +76,7 @@ uint64_t elf_load(void *image, uint64_t image_size)
          * region boundary is still rejected outright. */
         if (end <= USER_VA_BASE) continue;
         if (start < USER_VA_BASE || end > USER_VA_END) return 0;  /* outside the user region */
+        if (end > top) top = end;
 
         for (uint64_t a = start; a < end; a += 0x1000) {
             uint64_t frame = pmm_alloc();
@@ -87,5 +90,6 @@ uint64_t elf_load(void *image, uint64_t image_size)
                ph[i].p_filesz);
     }
 
+    if (out_top) *out_top = top;
     return eh->e_entry;
 }

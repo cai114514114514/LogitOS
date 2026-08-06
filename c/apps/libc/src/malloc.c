@@ -4,11 +4,19 @@
  * prefixed by a 16-byte header {size, used}. first-fit; free() just marks; the
  * malloc scan coalesces physically-adjacent free blocks (no footer needed). */
 
+#ifndef ARENA_SIZE
 #define ARENA_SIZE (24u * 1024u * 1024u)   /* 24 MiB JS heap */
+#endif
 #define HDR 16u
 
 static unsigned char arena[ARENA_SIZE] __attribute__((aligned(16)));
 static int inited;
+
+/* high-water mark of live bytes (payload only) -- lets the browser report how
+ * much heap a page really needed (github.com's 3 MiB of CSS blew the 24 MiB
+ * arena mid-parse and the tail of the stylesheet silently vanished). */
+size_t malloc_peak;
+static size_t malloc_cur;
 
 struct hdr { size_t size; size_t used; };   /* 16 bytes, keeps payload 16-aligned */
 
@@ -55,6 +63,8 @@ void *malloc(size_t n)
                     h->size = need;
                 }
                 h->used = 1;
+                malloc_cur += h->size;
+                if (malloc_cur > malloc_peak) malloc_peak = malloc_cur;
                 return (unsigned char *)h + HDR;
             }
         }
@@ -70,6 +80,7 @@ void free(void *p)
         return;                     /* not ours: never scribble outside the arena */
     struct hdr *h = (struct hdr *)((unsigned char *)p - HDR);
     h->used = 0;
+    if (malloc_cur >= h->size) malloc_cur -= h->size; else malloc_cur = 0;
 }
 
 size_t malloc_usable_size(void *p)

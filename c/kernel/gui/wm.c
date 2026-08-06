@@ -188,22 +188,23 @@ void wm_launch(const char *aex_file, const char *arg)
     __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");   /* save IF, then off */
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, (uint64_t)bytes, name, ext);   /* maps + copies into `space` */
+    uint64_t img_top = 0;
+    uint64_t entry = aex_load(img, (uint64_t)bytes, name, ext, &img_top);   /* maps + copies into `space` */
     uint64_t ustack_top = 0;
     if (entry) {
-        /* The stack must sit ABOVE the whole app image. browser/js link a 24 MiB
-         * mini-libc arena in BSS plus several large CSS/page buffers (image
-         * reaches ~entry+30 MiB), and a stack landing *inside* that BSS would
-         * corrupt the allocator. Top at 40 MiB clears the image; the stack is
-         * 4 MiB because QuickJS recurses deeply throwing errors on real pages'
-         * scripts (github overran a 256 KiB stack inside JS_ThrowError2). */
-        ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
-        /* The browser links QuickJS, which recurses deeply on real pages' scripts
-         * (and deeper still when THROWING a stack-overflow error in JS_ThrowError2);
-         * 4 MiB wasn't enough headroom for the throw to complete, so it overran the
-         * stack into a page fault. Give it 8 MiB. (Stack bottom 0x47000000 still
-         * clears the ~30 MiB browser image.) Other apps keep 4 MiB. */
+        /* The stack must sit ABOVE the whole app image. browser/js link a large
+         * mini-libc arena in BSS (96 MiB for the browser) plus several big CSS/page
+         * buffers; a stack landing *inside* that BSS corrupts the allocator (and
+         * vice versa), which is exactly what happened when the arena outgrew the
+         * old fixed entry+40 MiB stack slot. Keep 40 MiB as the floor for small
+         * apps, but raise the stack above the real image top (+ 4 MiB guard) when
+         * the image is bigger. The stack is 8 MiB for the browser because QuickJS
+         * recurses deeply throwing errors on real pages' scripts (github overran a
+         * 256 KiB stack inside JS_ThrowError2); other apps get 4 MiB. */
         int stk_pages = streq(name, "browser.aex") ? 2048 : 1024;
+        ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
+        uint64_t need = img_top + 0x400000 + (uint64_t)stk_pages * 0x1000;
+        if (img_top && need > ustack_top) ustack_top = need;
         for (int i = 1; i <= stk_pages; i++) {
             uint64_t frame = pmm_alloc();
             if (!frame) { entry = 0; break; }    /* OOM: fail the launch, don't run on a partial stack */

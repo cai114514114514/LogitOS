@@ -314,6 +314,7 @@ static void load(const char *u)
     css_extra_apply(g_root, css_expanded, css_exlen);
         layout_page(g_root, WINW);
         ph = layout_height();
+        { extern size_t malloc_peak; printf("[browser] heap peak %uK\n", (unsigned)(malloc_peak / 1024)); }
         redraw(0);                   /* re-paint with the page's real stylesheets */
     }
     if (layout_load_images(8) > 0) { /* ... then fetch a few images and repaint */
