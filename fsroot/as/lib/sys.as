@@ -9,7 +9,9 @@
 # whose field offsets are generated from include/abi/logit_abi.h and checked
 # against it by the compiler that builds /bin/as.
 
-from abi import Time, now_s, sys_yield, wait_dns, wait_ping
+from abi import Time, now_s, sys_yield, wait_dns, wait_ping, get_time
+from abi import file_read, file_write, file_delete, file_rename, dir_make, dir_count, dir_name
+from abi import getcwd, chdir, proc_pid, proc_fork, proc_execve, proc_exit, proc_waitpid, cpu_index
 
 # How long a network operation is given before it is called a timeout. Seconds,
 # because it is real elapsed time: the loops these replaced counted 500 polls,
@@ -17,50 +19,52 @@ from abi import Time, now_s, sys_yield, wait_dns, wait_ping
 NET_TIMEOUT_S = 5
 
 # ---- files ----
+# The syscall invocations themselves are generated (abi): the convention --
+# which argument is the string, which is the buffer -- is stated once in
+# include/abi/logit_calls.abi, not at each of these call sites.
 def read_file(path):
     return read_file_max(path, 262144)
 
 def read_file_max(path, max):
     buf = buffer(max)
-    n = syscall(SYS_READ_FILE, addr(path), addr(buf), max)
+    n = file_read(path, buf, max)
     return mem2str(buf, n) if n >= 0 else nil
 
 def write_file(path, data):
-    return syscall(SYS_WRITE_FILE, addr(path), addr(data), len(data))
+    return file_write(path, data, len(data))
 
 def remove(path):
-    return syscall(SYS_DELETE_FILE, addr(path))
+    return file_delete(path)
 
 def rename(old, new):
-    return syscall(SYS_RENAME, addr(old), addr(new))
+    return file_rename(old, new)
 
 def mkdir(path):
-    return syscall(SYS_MKDIR, addr(path))
+    return dir_make(path)
 
 # ---- directories ----
 def ls(dir):
-    n = syscall(SYS_DIR_COUNT, addr(dir))
+    n = dir_count(dir)
     if n < 0:
         return nil
     out = []
     buf = buffer(64)
     for i in range(n):
-        sz = syscall(SYS_DIR_NAME, addr(dir), i, addr(buf))
+        sz = dir_name(dir, i, buf)
         if sz != -1:
             out.append(mem2cstr(buf))
     return out
 
 def cwd():
     buf = buffer(128)
-    n = syscall(SYS_GETCWD, addr(buf), 128)
+    n = getcwd(buf, 128)
     return mem2str(buf, n) if n >= 0 else nil
 
-def chdir(path):
-    return syscall(SYS_CHDIR, addr(path))
+# chdir is imported from abi unchanged: the generated wrapper IS the convention.
 
 # ---- processes ----
 def pid():
-    return syscall(SYS_GETPID)
+    return proc_pid()
 
 # Build a NULL-terminated char*[] from a list of strings, in script memory.
 # The list MUST stay live while the kernel reads the array (it does: execve
@@ -76,33 +80,33 @@ def _argv(args):
 # spawn(path, args) -> child pid (args = full argv incl. argv[0]).
 # fork + execve in pure script: the child VM replaces itself with the program.
 def spawn(path, args):
-    p = syscall(SYS_FORK)
+    p = proc_fork()
     if p == 0:
         pv = _argv(args)
-        syscall(SYS_EXECVE, addr(path), addr(pv), 0)
-        syscall(SYS_EXIT, 127)          # execve failed
+        proc_execve(path, pv, 0)
+        proc_exit(127)                  # execve failed
     return p
 
 def wait(p):
     st = buffer(4)
-    rc = syscall(SYS_WAITPID, p, addr(st), 0)
+    rc = proc_waitpid(p, st, 0)
     return peek32(addr(st)) if rc >= 0 else -1
 
 def run(path, args):
     return wait(spawn(path, args))
 
 def exit(code):
-    syscall(SYS_EXIT, code)
+    proc_exit(code)
 
 def cpu():
-    return syscall(SYS_CPU_INDEX)
+    return cpu_index()
 
 # ---- time ----
 # -> a Time layout: .year .month .day .hour .minute .second .weekday
 # (RTC wall clock). The kernel writes struct logit_time straight into it.
 def time():
     t = Time()
-    syscall(SYS_GET_TIME, addr(t))
+    get_time(t)
     return t
 
 def sleep(secs):

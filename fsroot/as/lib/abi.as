@@ -118,6 +118,120 @@ def sys_yield():
 def get_time(t):
     return syscall(SYS_GET_TIME, addr(t))
 
+def io_write(fd, b, len):
+    return syscall(SYS_WRITE, fd, addr(b), len)
+
+def proc_exit(code):
+    return syscall(SYS_EXIT, code)
+
+def get_arg(b, max):
+    return syscall(SYS_GET_ARG, addr(b), max)
+
+def sysinfo(b, max):
+    return syscall(SYS_SYSINFO, addr(b), max)
+
+def file_read(path, b, max):
+    return syscall(SYS_READ_FILE, addr(path), addr(b), max)
+
+def file_count():
+    return syscall(SYS_FILE_COUNT)
+
+def file_name(i, b, max):
+    return syscall(SYS_FILE_NAME, i, addr(b), max)
+
+def file_write(path, b, size):
+    return syscall(SYS_WRITE_FILE, addr(path), addr(b), size)
+
+def file_delete(path):
+    return syscall(SYS_DELETE_FILE, addr(path))
+
+def file_rename(old, new):
+    return syscall(SYS_RENAME, addr(old), addr(new))
+
+def dir_make(path):
+    return syscall(SYS_MKDIR, addr(path))
+
+def dir_count(dir):
+    return syscall(SYS_DIR_COUNT, addr(dir))
+
+def dir_name(dir, i, b):
+    return syscall(SYS_DIR_NAME, addr(dir), i, addr(b))
+
+def getcwd(b, max):
+    return syscall(SYS_GETCWD, addr(b), max)
+
+def chdir(path):
+    return syscall(SYS_CHDIR, addr(path))
+
+def proc_fork():
+    return syscall(SYS_FORK)
+
+def proc_execve(path, argv, envp):
+    return syscall(SYS_EXECVE, addr(path), addr(argv), envp)
+
+def proc_waitpid(pid, st, opts):
+    return syscall(SYS_WAITPID, pid, addr(st), opts)
+
+def proc_pid():
+    return syscall(SYS_GETPID)
+
+def proc_spawn(path, argv):
+    return syscall(SYS_SPAWN, addr(path), addr(argv))
+
+def fd_open(path, flags):
+    return syscall(SYS_OPEN, addr(path), flags)
+
+def fd_close(fd):
+    return syscall(SYS_CLOSE, fd)
+
+def fd_read(fd, b, len):
+    return syscall(SYS_READ, fd, addr(b), len)
+
+def fd_lseek(fd, off, whence):
+    return syscall(SYS_LSEEK, fd, off, whence)
+
+def fd_dup(fd):
+    return syscall(SYS_DUP, fd)
+
+def fd_dup2(oldfd, newfd):
+    return syscall(SYS_DUP2, oldfd, newfd)
+
+def fd_pipe(fds):
+    return syscall(SYS_PIPE, addr(fds))
+
+def fd_setnb(fd):
+    return syscall(SYS_SETNB, fd)
+
+def open_path(path):
+    return syscall(SYS_OPEN_PATH, addr(path))
+
+def net_info(ni):
+    return syscall(SYS_NET_INFO, addr(ni))
+
+def http_body(b, max):
+    return syscall(SYS_HTTP_BODY, addr(b), max)
+
+def res_fetch(src, b, max):
+    return syscall(SYS_RES_FETCH, addr(src), addr(b), max)
+
+def text_measure(s, len, px, mono):
+    return syscall(SYS_TEXT_MEASURE, addr(s), len, ((px & 0x7FFFFFFF) << 1) | ((mono & 0x1)))
+
+def gui_text_run(run):
+    return syscall(SYS_GUI_TEXT_RUN, addr(run))
+
+def gui_blit(blit):
+    return syscall(SYS_GUI_BLIT, addr(blit))
+
+def img_decode(req):
+    return syscall(SYS_IMG_DECODE, addr(req))
+
+def cpu_index():
+    return syscall(SYS_CPU_INDEX)
+
+def kheap_stress(iters, size, seed):
+    return syscall(SYS_KHEAP_STRESS, iters, size, seed)
+
 # ---- waiting ----
 # Logit exposes these as start + poll: there is no in-kernel wait queue for them,
 # so the caller spins and yields. Each call site used to write that loop itself,
@@ -136,13 +250,16 @@ def now_s():
 # distinct: a value is returned, a failure raises, a timeout raises something
 # else. Conflating the last two is what made sys.dns() answer 0 both when a name
 # did not resolve and when the loop simply ran out.
-def await_(poll, pending_neg, pending_val, has_fail, fail_val, timeout_s, label):
+def await_(poll, pending_neg, pending_val, has_fail, fail_neg, fail_val, timeout_s, label):
     start = now_s()
     while true:
         v = poll()
         pending = v < 0 if pending_neg else v == pending_val
         if not pending:
-            if has_fail and v == fail_val:
+            failed = false
+            if has_fail:
+                failed = v < 0 if fail_neg else v == fail_val
+            if failed:
                 raise label + ": failed"
             return v
         now = now_s()
@@ -161,7 +278,7 @@ def dns_poll():
 def wait_dns(name, timeout_s):
     if dns_start(name) < 0:
         raise "dns: cannot start"
-    return await_(dns_poll, false, 0, true, 4294967295, timeout_s, "dns")
+    return await_(dns_poll, false, 0, true, false, 4294967295, timeout_s, "dns")
 
 def ping_start(ip):
     return syscall(SYS_NET_PING, ip)
@@ -172,4 +289,15 @@ def ping_poll():
 def wait_ping(ip, timeout_s):
     if ping_start(ip) < 0:
         raise "ping: cannot start"
-    return await_(ping_poll, true, 0, false, 0, timeout_s, "ping")
+    return await_(ping_poll, true, 0, false, false, 0, timeout_s, "ping")
+
+def http_start(url):
+    return syscall(SYS_HTTP_GET, addr(url))
+
+def http_poll():
+    return syscall(SYS_HTTP_STATUS)
+
+def wait_http(url, timeout_s):
+    if http_start(url) < 0:
+        raise "http: cannot start"
+    return await_(http_poll, false, 1, true, true, 0, timeout_s, "http")

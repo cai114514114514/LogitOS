@@ -937,21 +937,26 @@ int main(void)
      * Nothing else covers this: test-as-os never touches the network. */
     ok("await_value",   "from abi import await_\nc = [0]\ndef poll():\n    c[0] = c[0] + 1\n"
                         "    return 0 if c[0] < 3 else 42\n"
-                        "print(await_(poll, false, 0, false, 0, 60, \"t\"), c[0])\n", "42 3\n");
+                        "print(await_(poll, false, 0, false, false, 0, 60, \"t\"), c[0])\n", "42 3\n");
     ok("await_pend_neg","from abi import await_\nc = [0]\ndef poll():\n    c[0] = c[0] + 1\n"
                         "    return -1 if c[0] < 3 else 9\n"
-                        "print(await_(poll, true, 0, false, 0, 60, \"t\"))\n", "9\n");
+                        "print(await_(poll, true, 0, false, false, 0, 60, \"t\"))\n", "9\n");
     /* failure and timeout are DIFFERENT outcomes, which is the whole point */
     ok("await_fail",    "from abi import await_\ndef poll():\n    return 7\n"
-                        "try:\n    await_(poll, false, 0, true, 7, 60, \"dns\")\nexcept e:\n    print(e)\n",
+                        "try:\n    await_(poll, false, 0, true, false, 7, 60, \"dns\")\nexcept e:\n    print(e)\n",
                         "dns: failed\n");
     ok("await_timeout", "from abi import await_\ndef poll():\n    return 0\n"
-                        "try:\n    await_(poll, false, 0, true, 7, 0, \"dns\")\nexcept e:\n    print(e)\n",
+                        "try:\n    await_(poll, false, 0, true, false, 7, 0, \"dns\")\nexcept e:\n    print(e)\n",
                         "dns: timed out after 0s\n");
     /* a value that merely looks like the failure sentinel of ANOTHER operation
        is an ordinary result here */
     ok("await_no_fail", "from abi import await_\ndef poll():\n    return 7\n"
-                        "print(await_(poll, false, 0, false, 0, 60, \"t\"))\n", "7\n");
+                        "print(await_(poll, false, 0, false, false, 0, 60, \"t\"))\n", "7\n");
+    /* fail(lt:0): the failure is any negative (http's error is a code, not one
+       sentinel) -- and a negative is NOT mistaken for pending when pending is eq: */
+    ok("await_fail_neg","from abi import await_\ndef poll():\n    return -5\n"
+                        "try:\n    await_(poll, false, 1, true, true, 0, 60, \"http\")\nexcept e:\n    print(e)\n",
+                        "http: failed\n");
 
     /* ---- tracebacks: a runtime error says WHERE, not just what ---------------
      * Every Frame already knew its function and its instruction pointer; the

@@ -200,10 +200,8 @@ def parse_calls():
                     which, op, val = m.group(1), m.group(2), int(m.group(3), 0)
                     if which == "pending":
                         pending = (op, val)
-                    elif op != "eq":
-                        raise Unsupported("%s:%d: fail() takes eq: only" % (CALLS, lineno))
                     else:
-                        fail = val
+                        fail = (op, val)
                 else:
                     args_toks.append(a)
             if not pending:
@@ -289,10 +287,8 @@ BANNER_PACK = """\
  * The kernel side of the packed syscall arguments. fsroot/as/lib/abi.as packs
  * these fields; these macros unpack them, and both come from the same three
  * numbers in the .abi file -- so where a field lives is written once.
- *
- * c/kernel/gui/wm.c still unpacks inline (`(a >> 16) & 0xFFFF`); switching it to
- * these is what makes the convention single-sourced end to end rather than
- * merely generated on one side. */
+ * c/kernel/gui/wm.c unpacks through these macros, which makes the convention
+ * single-sourced end to end rather than merely generated on one side. */
 #ifndef LOGIT_PACK_H
 #define LOGIT_PACK_H
 """
@@ -344,13 +340,16 @@ def now_s():
 # distinct: a value is returned, a failure raises, a timeout raises something
 # else. Conflating the last two is what made sys.dns() answer 0 both when a name
 # did not resolve and when the loop simply ran out.
-def await_(poll, pending_neg, pending_val, has_fail, fail_val, timeout_s, label):
+def await_(poll, pending_neg, pending_val, has_fail, fail_neg, fail_val, timeout_s, label):
     start = now_s()
     while true:
         v = poll()
         pending = v < 0 if pending_neg else v == pending_val
         if not pending:
-            if has_fail and v == fail_val:
+            failed = false
+            if has_fail:
+                failed = v < 0 if fail_neg else v == fail_val
+            if failed:
                 raise label + ": failed"
             return v
         now = now_s()
@@ -441,10 +440,12 @@ def render():
             a.append("def wait_%s(%s):" % (name, ", ".join(params + ["timeout_s"])))
             a.append("    if %s_start(%s) < 0:" % (name, ", ".join(params)))
             a.append("        raise \"%s: cannot start\"" % name)
-            a.append("    return await_(%s_poll, %s, %d, %s, %d, timeout_s, \"%s\")"
+            a.append("    return await_(%s_poll, %s, %d, %s, %s, %d, timeout_s, \"%s\")"
                      % (name,
                         "true" if pending[0] == "lt" else "false", pending[1],
-                        "true" if fail is not None else "false", fail if fail is not None else 0,
+                        "true" if fail is not None else "false",
+                        "true" if fail is not None and fail[0] == "lt" else "false",
+                        fail[1] if fail is not None else 0,
                         name))
     a.append("")
 

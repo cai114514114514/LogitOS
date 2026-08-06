@@ -3,10 +3,8 @@
  * The kernel side of the packed syscall arguments. fsroot/as/lib/abi.as packs
  * these fields; these macros unpack them, and both come from the same three
  * numbers in the .abi file -- so where a field lives is written once.
- *
- * c/kernel/gui/wm.c still unpacks inline (`(a >> 16) & 0xFFFF`); switching it to
- * these is what makes the convention single-sourced end to end rather than
- * merely generated on one side. */
+ * c/kernel/gui/wm.c unpacks through these macros, which makes the convention
+ * single-sourced end to end rather than merely generated on one side. */
 #ifndef LOGIT_PACK_H
 #define LOGIT_PACK_H
 
@@ -77,5 +75,9 @@
 /* SYS_GUI_CLIP arg b: w<<16 | h */
 #define LOGIT_GUI_CLIP_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_CLIP_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
+/* SYS_TEXT_MEASURE arg c: px<<1 | mono */
+#define LOGIT_TEXT_MEASURE_C_PX(v) ((int)(((unsigned long long)(v) >> 1) & 0x7FFFFFFFULL))
+#define LOGIT_TEXT_MEASURE_C_MONO(v) ((int)(((unsigned long long)(v) >> 0) & 0x1ULL))
 
 #endif /* LOGIT_PACK_H */

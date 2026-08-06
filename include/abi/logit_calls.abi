@@ -48,8 +48,55 @@ call ui_dark_set    SYS_UI_DARK        int(on)
 call sys_yield      SYS_YIELD
 call get_time       SYS_GET_TIME       buf(t)
 
+# ---- io / basics ----
+call io_write       SYS_WRITE          int(fd) buf(b) int(len)
+call proc_exit      SYS_EXIT           int(code)
+call get_arg        SYS_GET_ARG        buf(b) int(max)
+call sysinfo        SYS_SYSINFO        buf(b) int(max)
+
+# ---- files / directories ----
+call file_read      SYS_READ_FILE      str(path) buf(b) int(max)
+call file_count     SYS_FILE_COUNT
+call file_name      SYS_FILE_NAME      int(i) buf(b) int(max)
+call file_write     SYS_WRITE_FILE     str(path) buf(b) int(size)
+call file_delete    SYS_DELETE_FILE    str(path)
+call file_rename    SYS_RENAME         str(old) str(new)
+call dir_make       SYS_MKDIR          str(path)
+call dir_count      SYS_DIR_COUNT      str(dir)
+call dir_name       SYS_DIR_NAME       str(dir) int(i) buf(b)
+call getcwd         SYS_GETCWD         buf(b) int(max)
+call chdir          SYS_CHDIR          str(path)
+
+# ---- processes / file descriptors ----
+call proc_fork      SYS_FORK
+call proc_execve    SYS_EXECVE         str(path) buf(argv) int(envp)
+call proc_waitpid   SYS_WAITPID        int(pid) buf(st) int(opts)
+call proc_pid       SYS_GETPID
+call proc_spawn     SYS_SPAWN          str(path) buf(argv)
+call fd_open        SYS_OPEN           str(path) int(flags)
+call fd_close       SYS_CLOSE          int(fd)
+call fd_read        SYS_READ           int(fd) buf(b) int(len)
+call fd_lseek       SYS_LSEEK          int(fd) int(off) int(whence)
+call fd_dup         SYS_DUP            int(fd)
+call fd_dup2        SYS_DUP2           int(oldfd) int(newfd)
+call fd_pipe        SYS_PIPE           buf(fds)
+call fd_setnb       SYS_SETNB          int(fd)
+call open_path      SYS_OPEN_PATH      str(path)
+
+# ---- network / http / render payloads ----
+call net_info       SYS_NET_INFO       buf(ni)
+call http_body      SYS_HTTP_BODY      buf(b) int(max)
+call res_fetch      SYS_RES_FETCH      str(src) buf(b) int(max)
+call text_measure   SYS_TEXT_MEASURE   str(s) int(len) pack(px:1:31, mono:0:1)
+call gui_text_run   SYS_GUI_TEXT_RUN   buf(run)
+call gui_blit       SYS_GUI_BLIT       buf(blit)
+call img_decode     SYS_IMG_DECODE     buf(req)
+call cpu_index      SYS_CPU_INDEX
+call kheap_stress   SYS_KHEAP_STRESS   int(iters) int(size) int(seed)
+
 # ---- operations you have to wait for ----
 #   wait <name> <START> <POLL> <arg>... pending(<pred>) [fail(eq:<value>)]
+#                                                     [fail(lt:0)]
 #
 # Logit has no blocking form for these. The kernel starts the operation and the
 # caller polls, because there is no in-kernel wait queue for them -- the NIC is
@@ -67,5 +114,10 @@ call get_time       SYS_GET_TIME       buf(t)
 # pending(lt:0)  still running while the poll returns a negative value
 # fail(eq:V)     V means the operation failed (absent: failure is indistinguishable
 #                from still-pending, so only a timeout can end the wait)
+# fail(lt:0)     any negative value means failed (http: the error is a code, not
+#                one sentinel, so it cannot be written as eq:)
 wait dns  SYS_NET_DNS  SYS_NET_DNS_RESULT  str(name) pending(eq:0)  fail(eq:0xFFFFFFFF)
 wait ping SYS_NET_PING SYS_NET_PING_RTT    int(ip)   pending(lt:0)
+# HTTP is the same shape: GET starts the fetch, STATUS polls (1 busy, 2 done,
+# any negative an error code) -- failure is "anything < 0", not one value.
+wait http SYS_HTTP_GET SYS_HTTP_STATUS     str(url)  pending(eq:1)  fail(lt:0)
