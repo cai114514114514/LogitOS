@@ -1,4 +1,4 @@
-# LogitOS OS
+# LogitOS
 
 LogitOS OS is an experimental, AI-assisted x86_64 operating-system project. It
 contains a standalone kernel that boots through GRUB/Multiboot2 into a graphical
