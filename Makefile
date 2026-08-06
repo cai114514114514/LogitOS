@@ -598,6 +598,11 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/pipeline_stress
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
+	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c \
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -Ic/kernel/mm
+	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
 	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/dom.c $(QJS_SRC) -lm
 	@$(BUILD)/js_dom_test

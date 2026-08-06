@@ -139,6 +139,7 @@ struct node *dom_parse(const char *html, int len)
             continue;
         }
         /* start tag */
+        const char *tag0 = p;                           /* the '<' itself */
         p++; const char *t = p;
         while (p < end && *p != '>' && *p != '/' && !sp(*p)) p++;
         char name[16]; int nl = 0; for (const char *k=t; k<p && nl<15; k++) name[nl++]=lc(*k); name[nl]=0;
@@ -190,6 +191,52 @@ struct node *dom_parse(const char *html, int len)
             continue;
         }
         add_child(TOP, el);
+        if (ieq(name, "svg")) {
+            /* Keep the verbatim source span so layout can feed the svg decoder
+             * raw bytes (DOM attrs lowercase viewBox and truncate path data
+             * at 255 chars). Scan to the matching </svg>, counting nested
+             * <svg> depth; quoted '>' inside attrs can't end a tag early. */
+            const char *se = p;                       /* past the start tag */
+            if (!selfclose) {
+                int depth = 1;
+                while (se < end && depth > 0) {
+                    if (*se != '<') { se++; continue; }
+                    if (se + 3 < end && se[1]=='!' && se[2]=='-' && se[3]=='-') {
+                        se += 4;
+                        while (se + 2 < end && !(se[0]=='-'&&se[1]=='-'&&se[2]=='>')) se++;
+                        se = (se + 2 < end) ? se + 3 : end;
+                        continue;
+                    }
+                    if (se + 1 < end && se[1] == '/') {           /* end tag */
+                        const char *q = se + 2;
+                        char cn[16]; int cl = 0;
+                        while (q < end && *q != '>' && !sp(*q) && cl < 15) cn[cl++] = lc(*q++);
+                        cn[cl] = 0;
+                        while (q < end && *q != '>') q++;
+                        se = (q < end) ? q + 1 : end;
+                        if (ieq(cn, "svg")) depth--;
+                        continue;
+                    }
+                    if (se + 3 < end && lc(se[1])=='s' && lc(se[2])=='v' && lc(se[3])=='g' &&
+                        (se + 4 >= end || sp(se[4]) || se[4]=='>' || se[4]=='/')) {
+                        /* nested <svg ...>: find its '>' honoring quoted attrs */
+                        const char *q = se + 4; int closed = 0;
+                        while (q < end && *q != '>') {
+                            if (*q=='"' || *q=='\'') { char qq = *q++; while (q < end && *q != qq) q++; if (q < end) q++; }
+                            else { if (*q=='/' && q+1 < end && q[1]=='>') closed = 1; q++; }
+                        }
+                        if (q < end) q++;
+                        se = q;
+                        if (!closed) depth++;
+                        continue;
+                    }
+                    se++;
+                }
+            }
+            int span = (int)(se - tag0);
+            char *raw = kmalloc(span);
+            if (raw) { memcpy(raw, tag0, span); el->raw = raw; el->rawlen = span; }
+        }
         if (is_void(name) || selfclose) continue;
         if (is_rawtext(name)) {                           /* consume raw text to </name> */
             const char *rs = p;
@@ -225,6 +272,7 @@ void dom_free(struct node *n)
     while (c) { struct node *nx = c->next; dom_free(c); c = nx; }
     if (n->attrs) kfree(n->attrs);
     if (n->text) kfree(n->text);
+    if (n->raw) kfree(n->raw);
     if (n->style) kfree(n->style);
     kfree(n);
 }

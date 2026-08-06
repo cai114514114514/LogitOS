@@ -45,6 +45,55 @@ static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
 static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9'){ if(n>100000) break; n=n*10+(*s++-'0'); } return n; }
 
+/* Extract the viewBox width/height from a raw svg source span (the spelling
+ * must match what svg.c's parser accepts: exact case "viewBox"). Returns 1
+ * and sets *ow/*oh on success. Needed because svg.c's decoder falls back to
+ * the raw viewBox dims instead of the aspect-preserving size when only one
+ * of width/height is given, so the decoded raster can't be used for the
+ * missing-axis aspect derivation. */
+static int raw_viewbox_wh(const char *s, int n, int *ow, int *oh)
+{
+    static const char vb[] = "viewBox";
+    int i = 0;
+    while (i + 7 <= n) {
+        int j = 0;
+        while (j < 7 && s[i + j] == vb[j]) j++;
+        if (j == 7) break;
+        i++;
+    }
+    if (i + 7 > n) return 0;
+    i += 7;
+    while (i < n && s[i] != '"' && s[i] != '\'') i++;
+    if (i >= n) return 0;
+    i++;
+    double v[4]; int nv = 0;
+    while (i < n && s[i] != '"' && s[i] != '\'' && nv < 4) {
+        char c = s[i];
+        if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.') {
+            int neg = 0, any = 0;
+            if (c == '-') { neg = 1; i++; } else if (c == '+') i++;
+            double val = 0;
+            while (i < n && s[i] >= '0' && s[i] <= '9') { val = val * 10 + (s[i] - '0'); i++; any = 1; }
+            if (i < n && s[i] == '.') {
+                i++; double f = 0.1;
+                while (i < n && s[i] >= '0' && s[i] <= '9') { val += (s[i] - '0') * f; f *= 0.1; i++; any = 1; }
+            }
+            if (any) v[nv++] = neg ? -val : val;
+        } else i++;
+    }
+    if (nv == 4 && v[2] > 0 && v[3] > 0) { *ow = (int)(v[2] + 0.5); *oh = (int)(v[3] + 0.5); return 1; }
+    return 0;
+}
+
+/* Measurement-only width of an inline <svg> (no decode): CSS > attr > 16px. */
+static int svg_attr_w(struct node *n, const struct cstyle *st)
+{
+    if (st && st->has_w && !st->w_pct) return st->width;
+    const char *wa = dom_attr(n, "width");
+    int iw = wa ? atoi_(wa) : 0;
+    return iw > 0 ? iw : 16;
+}
+
 /* ---- inline flow ---- */
 /* current pen for inline content within a block. `align` is the block's
  * text-align; `line_start` is the display-list index of the first item on the
@@ -158,6 +207,47 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
     }
     if (c->type != N_ELEM) return;
 
+    const char *h2 = href;
+    if (tag_eq(c->tag, "a")) { const char *u = dom_attr(c, "href"); if (u) h2 = u; }
+
+    /* Inline <svg>: a replaced element like <img>. Decode straight from the
+     * verbatim source span the DOM parser recorded (keeps the viewBox case and
+     * path data longer than the 255-char attr cap intact), emit IT_IMAGE.
+     * Box size priority: CSS > width/height attrs > viewBox > 16px default.
+     * Placed before the is_block check: CSS display:block/inline-block on an
+     * svg (GitHub's .octicon is inline-block) must not route it to the empty
+     * block-box path. */
+    if (tag_eq(c->tag, "svg")) {
+        int iw = 0, ih = 0;
+        if (st && st->has_w && !st->w_pct) iw = st->width;
+        if (st && st->has_h && !st->h_pct) ih = st->height;
+        if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
+        if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
+        struct image tmp, *holder = 0;
+        if (c->raw && img_decode((const uint8_t *)c->raw, c->rawlen, &tmp) == 0) {
+            holder = kmalloc(sizeof *holder);
+            if (holder) *holder = tmp;
+        }
+        if (!holder) return;                          /* undecodable: skip silently */
+        int vbw = 0, vbh = 0;
+        if (raw_viewbox_wh(c->raw, c->rawlen, &vbw, &vbh)) {
+            if (!iw && !ih) { iw = vbw; ih = vbh; }
+            else if (!iw) iw = ih * vbw / vbh;
+            else if (!ih) ih = iw * vbh / vbw;
+        }
+        if (iw <= 0) iw = ih > 0 ? ih : 16;
+        if (ih <= 0) ih = iw;
+        if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih*s2/iw; iw = s2; }
+        if (f->line_started && f->x + iw > f->x1) newline(f);
+        struct item *it = additem(IT_IMAGE);
+        if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
+                  it->img = holder; it->imgsrc = 0; it->href = h2;
+                  it->hidden = st ? st->hidden : 0; }
+        else { img_free(holder); kfree(holder); }     /* display list full */
+        f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
+        return;
+    }
+
     /* A block box inside an inline context breaks the inline flow (CSS splits
      * the surrounding inline into anonymous block boxes). Custom elements
      * (<react-partial>, <turbo-frame>, ...) default to display:inline, so
@@ -182,8 +272,6 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         return;
     }
 
-    const char *h2 = href;
-    if (tag_eq(c->tag, "a")) { const char *u = dom_attr(c, "href"); if (u) h2 = u; }
     if (tag_eq(c->tag, "br")) { newline(f); return; }
 
     if (tag_eq(c->tag, "img")) {
@@ -219,6 +307,14 @@ static int is_block(struct node *n)
      * button/chip rows smearing into the surrounding text run). */
     return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX ||
                   st->display == DISP_GRID || st->display == DISP_INLINE_BLOCK);
+}
+
+/* A node that really takes the block path. <svg> is excluded: even with
+ * display:block/inline-block it is a replaced element handled by flow_node's
+ * image branch (routing it here would yield an empty block box). */
+static int blockish(struct node *n)
+{
+    return is_block(n) && !(n->type == N_ELEM && tag_eq(n->tag, "svg"));
 }
 
 static int layout_flex(struct node *n, int x, int y, int w);   /* fwd: flex row */
@@ -262,7 +358,7 @@ static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top
 
 static int has_block_child(struct node *n)
 {
-    for (struct node *c = n->first_child; c; c = c->next) if (is_block(c)) return 1;
+    for (struct node *c = n->first_child; c; c = c->next) if (blockish(c)) return 1;
     return 0;
 }
 
@@ -288,7 +384,7 @@ static int layout_block(struct node *n, int x, int y, int w)
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *st = c->style;
         if (skipped(c)) continue;
-        if (is_block(c)) {
+        if (blockish(c)) {
             int ml = st->ml<0?0:st->ml, mr = st->mr<0?0:st->mr;
             int bx = x + ml;
             int bw = st->has_w && !st->w_pct ? st->width
@@ -315,11 +411,11 @@ static int layout_block(struct node *n, int x, int y, int w)
         } else {
             /* run of inline siblings: gather until next block */
             struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
-            while (c && !is_block(c)) {
+            while (c && !blockish(c)) {
                 struct cstyle *cs = c->style;
                 if (!skipped(c)) flow_node(&f, c, 0);
                 struct node *nx = c->next;
-                if (!nx || is_block(nx)) break;
+                if (!nx || blockish(nx)) break;
                 c = nx;
             }
             newline(&f);
@@ -357,6 +453,7 @@ static int flex_text_width(struct node *n, int px, int mono)
         else if (c->type == N_ELEM) {
             struct cstyle *st = c->style;
             if (skipped(c)) continue;
+            if (tag_eq(c->tag, "svg")) { w += svg_attr_w(c, st); continue; }
             w += flex_text_width(c, px, mono);
         }
     }
@@ -379,6 +476,7 @@ static int content_width(struct node *n, int px, int mono, int depth)
         if (!iw) { const char *wa = dom_attr(n, "width"); if (wa) iw = atoi_(wa); }
         return iw > 0 ? iw : 24;
     }
+    if (tag_eq(n->tag, "svg")) return svg_attr_w(n, st);
     int pad = (st ? st->pl + st->pr : 0);
     if (st && st->has_w && !st->w_pct) return st->width + pad;
     int cpx = st ? st->font_px : px, cmono = st ? st->mono : mono;
@@ -408,7 +506,8 @@ static int flex_run(struct node *first, struct node **end, int px, int mono)
         if (c->type == N_ELEM) {
             struct cstyle *st = c->style;
             if (skipped(c)) continue;
-            if (is_block(c)) break;
+            if (blockish(c)) break;
+            if (tag_eq(c->tag, "svg")) { w += svg_attr_w(c, st); continue; }
             w += flex_text_width(c, px, mono);   /* inline element (button/svg icon etc.) */
             continue;
         }
@@ -432,7 +531,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
     long growsum = 0;
     struct node *c = n->first_child;
     while (c) {
-        if (c->type != N_ELEM || !is_block(c)) {
+        if (c->type != N_ELEM || !blockish(c)) {
             struct node *end;
             autosum += flex_run(c, &end, fpx, fmono);
             c = end;                     /* resume at the block that ended the run (or NULL) */
@@ -456,7 +555,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
     int pctpool = avail - autosum * scale / 100;
     int growspace = pctpool;
     for (struct node *p = n->first_child; p; p = p->next) {
-        if (p->type != N_ELEM || !is_block(p) || skipped(p)) continue;
+        if (p->type != N_ELEM || !blockish(p) || skipped(p)) continue;
         struct cstyle *st = p->style;
         if (st && st->has_w && st->w_pct) {
             int want = w * st->width / 100;
@@ -467,7 +566,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
     int cx = x, maxb = y;
     c = n->first_child;
     while (c) {
-        if (c->type != N_ELEM || !is_block(c)) {
+        if (c->type != N_ELEM || !blockish(c)) {
             struct node *end;
             int rw = flex_run(c, &end, fpx, fmono) * scale / 100;
             if (rw > 0) {

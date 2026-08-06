@@ -14,6 +14,10 @@ struct node {
     char *text; int textlen;        /* N_TEXT (NUL-terminated) */
     struct node *parent, *first_child, *last_child, *next;
     void *style;                    /* struct cstyle* (filled by css) */
+    char *raw; int rawlen;          /* <svg>: verbatim source span (start '<' to
+                                     * matching "</svg>"), kmalloc'd copy; the DOM
+                                     * attrs lowercase viewBox and truncate long
+                                     * path data, so layout decodes from this. */
 };
 
 /* Parse an HTML document into a DOM tree; returns the root element (a synthetic
