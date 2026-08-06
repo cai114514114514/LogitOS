@@ -27,6 +27,8 @@ struct cstyle {
     int underline;
     int list_item;                  /* 1 for <li>-style markers */
     int hidden;                     /* visibility:hidden/collapse or opacity:0 */
+    int op0;                        /* hidden was (also) caused by opacity:0 */
+    int vis_hid;                    /* hidden was caused by visibility:hidden/collapse */
     int pos_abs;                    /* position:absolute -- out of flow (laid out nowhere) */
     int flex_grow;                  /* flex-grow as css_fixed (1.0 = 1024); 0 = don't grow */
     int grid_cols;                  /* >0: grid container with this many columns (css_extra) */
@@ -35,6 +37,8 @@ struct cstyle {
     int anim;                       /* has a non-none animation/animation-name (css_extra);
                                      * opacity:0 + animation approximates its visible end
                                      * state, so css_extra clears `hidden` for these */
+    int trans_op;                   /* transition declares opacity/all (css_extra); same
+                                     * end-state approximation as anim (scroll-reveal) */
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
 };
 

@@ -147,14 +147,17 @@ int main(void)
     css_viewport(1180, 620);
 
     /* opacity:0 + animation -> visible end state (hidden cleared);
-     * opacity:0 + transition only -> stays hidden; animation:none -> hidden. */
+     * opacity:0 + transition on opacity -> visible (scroll-reveal pattern);
+     * opacity:0 + visibility:hidden + transition -> stays hidden (hover menu);
+     * animation:none -> hidden. */
     const char *html6 =
         "<body><p class='fa'>a</p><p class='tr'>b</p><p class='an'>c</p>"
-        "<p class='sh'>d</p></body>";
+        "<p class='vh'>d</p><p class='sh'>e</p></body>";
     const char *css6 =
         ".fa { opacity:0; animation-name:fade-up }"
         ".tr { opacity:0; transition:opacity .3s }"
         ".an { opacity:0; animation:none !important }"
+        ".vh { opacity:0; visibility:hidden; transition:opacity .3s }"
         ".sh { opacity:0; animation:.3s ease-in 1s forwards slide-in }";
     struct node *r6 = dom_parse(html6, (int)strlen(html6));
     css_apply(r6, css6, (int)strlen(css6));
@@ -162,10 +165,12 @@ int main(void)
     struct node *fa = find_by_class(r6, "fa");
     struct node *tr = find_by_class(r6, "tr");
     struct node *an = find_by_class(r6, "an");
+    struct node *vh = find_by_class(r6, "vh");
     struct node *sh = find_by_class(r6, "sh");
     CHECK(fa && CST(fa) && CST(fa)->hidden == 0, "opacity:0 + animation-name -> visible");
     CHECK(sh && CST(sh) && CST(sh)->hidden == 0, "opacity:0 + animation shorthand -> visible");
-    CHECK(tr && CST(tr) && CST(tr)->hidden == 1, "opacity:0 + transition-only stays hidden");
+    CHECK(tr && CST(tr) && CST(tr)->hidden == 0, "opacity:0 + transition:opacity -> visible (scroll-reveal)");
+    CHECK(vh && CST(vh) && CST(vh)->hidden == 1, "opacity:0 + visibility:hidden + transition stays hidden");
     CHECK(an && CST(an) && CST(an)->hidden == 1, "opacity:0 + animation:none stays hidden");
 
     if (fail) { printf("FAILURES\n"); return 1; }

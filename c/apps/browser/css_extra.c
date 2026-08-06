@@ -3,9 +3,11 @@
  * (clip-path:inset(50%) / clip:rect(0,0,0,0)) which real browsers lift out of
  * flow via position:absolute -- we force display:none instead, minimal grid
  * tracks (grid-template-columns repeat(N,1fr)/px/fr lists + px gaps), and the
- * opacity:0 + animation static-end-state approximation (an element with a
- * non-none animation will become visible, so the opacity:0 hidden flag is
- * cleared; transition-only elements stay hidden). The author sheet is scanned
+ * opacity:0 + animation/opacity-transition static-end-state approximation (an
+ * element with a non-none animation, or a transition on opacity/all, will
+ * become visible, so the opacity:0 hidden flag is cleared -- but only when
+ * visibility:hidden isn't also in play, which keeps hover-reveal menus
+ * hidden). The author sheet is scanned
  * for simple selectors (tag, .class, #id, tag.class, comma lists; descendant
  * selectors match on their last compound) and inline style= attributes, and
  * matching nodes' cstyle is patched after css_apply. @media blocks are gated
@@ -177,6 +179,28 @@ static int decls_anim(const char *d, int dlen)
     return 1;
 }
 
+/* transition declaring opacity (or all) present? 1 = yes, 0 = no.
+ * Scroll-reveal patterns (IntersectionObserver adds a class, opacity fades in)
+ * look like "opacity:0; transition:opacity ..." in the static stylesheet; the
+ * element's steady state IS visible, so we treat it like the animation
+ * end-state approximation. Hover-reveal menus additionally carry
+ * visibility:hidden, which we still honor (see walk_anim). */
+static int decls_trans_op(const char *d, int dlen)
+{
+    int vs, ve;
+    int found = find_decl(d, dlen, "transition-property", &vs, &ve) ||
+                find_decl(d, dlen, "transition", &vs, &ve);
+    if (!found) return 0;
+    for (int i = vs; i < ve; i++) if (d[i] == '!') { ve = i; break; }
+    for (int i = vs; i + 3 < ve; i++) {
+        if ((d[i]=='o'||d[i]=='O') && i + 7 <= ve && !memcmp(d + i, "opacity", 7) &&
+            (i == vs || !ident(d[i-1])) && (i + 7 == ve || !ident(d[i+7]))) return 1;
+        if ((d[i]=='a'||d[i]=='A') && i + 3 <= ve && !memcmp(d + i, "all", 3) &&
+            (i == vs || !ident(d[i-1])) && (i + 3 == ve || !ident(d[i+3]))) return 1;
+    }
+    return 0;
+}
+
 /* Everything we may want to patch from one declarations block. */
 struct xpatch {
     int do_none;                            /* visually-hidden -> display:none */
@@ -184,6 +208,7 @@ struct xpatch {
     int do_grid, gcols, gtracks[GRID_MAXCOL];
     int gx_set, gx, gy_set, gy;
     int anim;                               /* 0 = untouched, 1 = animated, -1 = none */
+    int trans_op;                           /* transition declares opacity/all */
 };
 
 static void parse_decls(const char *d, int dlen, struct xpatch *p)
@@ -210,6 +235,7 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     if (find_decl(d, dlen, "grid-row-gap", &vs, &ve)) { int x, y;
         if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gy = y; p->gy_set = 1; } }
     p->anim = decls_anim(d, dlen);
+    p->trans_op = decls_trans_op(d, dlen);
 }
 
 /* Match ONE compound selector (no combinators): [tag][#id][.cls][.cls]... */
@@ -297,6 +323,7 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     if (p->gy_set) st->grid_gap_y = p->gy;
     if (p->anim > 0) st->anim = 1;
     else if (p->anim < 0) st->anim = 0;
+    if (p->trans_op) st->trans_op = 1;
 }
 
 static void walk(struct node *n, const char *sel, int slen, const struct xpatch *p)
@@ -305,14 +332,15 @@ static void walk(struct node *n, const char *sel, int slen, const struct xpatch 
     for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, p);
 }
 
-/* opacity:0 + animation -> the animation's end state is visible (we have no
- * animation clock, so approximate the static end state): clear the hidden
- * flag opacity:0 set. Transition-only elements stay hidden (nothing triggers
- * them without JS). */
+/* opacity:0 + animation/opacity-transition -> the end state is visible (we
+ * have no animation clock, so approximate the static end state): clear the
+ * hidden flag opacity:0 set. Only when the hide came from opacity alone --
+ * hover-reveal menus also carry visibility:hidden and stay hidden. */
 static void walk_anim(struct node *n)
 {
     struct cstyle *st = n->style;
-    if (n->type == N_ELEM && st && st->anim) st->hidden = 0;
+    if (n->type == N_ELEM && st && (st->anim || st->trans_op) &&
+        st->op0 && !st->vis_hid) st->hidden = 0;
     for (struct node *c = n->first_child; c; c = c->next) walk_anim(c);
 }
 
@@ -426,7 +454,7 @@ void css_extra_apply(struct node *root, const char *css, int len)
         if (dlen <= 0 || !media_active_at(s)) continue;
         struct xpatch p;
         parse_decls(css + d, dlen, &p);
-        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim)
+        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op)
             walk(root, css + s, slen, &p);
     }
     walk_inline(root);

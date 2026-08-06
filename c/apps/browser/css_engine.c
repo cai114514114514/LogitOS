@@ -548,9 +548,9 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     if (css_computed_text_decoration(cs) & CSS_TEXT_DECORATION_UNDERLINE) o->underline = 1;
 
     { uint8_t v = css_computed_visibility(cs);
-      if (v == CSS_VISIBILITY_HIDDEN || v == CSS_VISIBILITY_COLLAPSE) o->hidden = 1; }
+      if (v == CSS_VISIBILITY_HIDDEN || v == CSS_VISIBILITY_COLLAPSE) { o->hidden = 1; o->vis_hid = 1; } }
     { css_fixed op;
-      if (css_computed_opacity(cs, &op) == CSS_OPACITY_SET && op <= 0) o->hidden = 1; }
+      if (css_computed_opacity(cs, &op) == CSS_OPACITY_SET && op <= 0) { o->hidden = 1; o->op0 = 1; } }
     { uint8_t p = css_computed_position(cs);
       /* absolute: out of flow (dropdowns/overlays would smear the normal
        * flow). fixed stays in flow -- fixed headers sit at the top anyway. */
