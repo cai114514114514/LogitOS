@@ -103,7 +103,7 @@ static void tr_bound(Obj *o)
 }
 
 static void fin_str(Obj *o)     { free(((ObjStr *)o)->chars); }
-static void fin_fn(Obj *o)      { free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); }
+static void fin_fn(Obj *o)      { free(((ObjFn *)o)->code); free(((ObjFn *)o)->consts); free(((ObjFn *)o)->gcache); }
 static void fin_list(Obj *o)    { free(((ObjList *)o)->items); }
 static void fin_dict(Obj *o)    { free(((ObjDict *)o)->entries); }
 static void fin_module(Obj *o)  { free(((ObjModule *)o)->vars); }
@@ -192,6 +192,7 @@ ObjFn *as_fn_new(void)
     fn->consts = NULL; fn->kcount = fn->kcap = 0;
     fn->module = NULL;
     fn->upvalue_count = 0;
+    fn->gcache = NULL; fn->gcache_n = 0; fn->gcache_gen = 0;
     return fn;
 }
 
@@ -254,11 +255,24 @@ ObjModule *as_module_new(const char *name, int len)
     return m;
 }
 
-Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
+/* Bumped whenever a new global name is created (in any module or in builtins).
+ * That is the only event that can move where an already-resolved name points, so
+ * it is what invalidates every ObjFn's gcache. Starts at 1 so a zeroed
+ * gcache_gen never looks current. */
+uint32_t as_globals_gen = 1;
+
+int as_module_index(ObjModule *m, ObjStr *name)
 {
     for (int i = 0; i < m->count; i++)
         if (as_str_hash(m->vars[i].name) == as_str_hash(name) && m->vars[i].name->len == name->len
-            && memcmp(m->vars[i].name->chars, name->chars, name->len) == 0) return &m->vars[i].val;
+            && memcmp(m->vars[i].name->chars, name->chars, name->len) == 0) return i;
+    return -1;
+}
+
+Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
+{
+    int at = as_module_index(m, name);
+    if (at >= 0) return &m->vars[at].val;
     if (!create) return NULL;
     if (m->count + 1 > m->cap) {
         int nc = m->cap < 8 ? 8 : m->cap * 2;
@@ -268,6 +282,7 @@ Value *as_module_slot(ObjModule *m, ObjStr *name, int create)
     }
     m->vars[m->count].name = name;
     m->vars[m->count].val = NIL_VAL;
+    as_globals_gen++;                        /* a new name can shadow a builtin */
     return &m->vars[m->count++].val;
 }
 

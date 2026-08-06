@@ -868,6 +868,20 @@ int main(void)
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
 
+    /* ---- global resolution: the cases a global-lookup cache gets wrong ----
+     * A global read memoises where the name resolved (ObjFn.gcache). These pin
+     * the two events that must invalidate it: a module-level def taking over a
+     * name that previously resolved to a builtin (fsroot/as/lib/stats.as really
+     * does define `range`), and a function compiled before the global it reads
+     * exists. Both would pass trivially without a cache, which is the point --
+     * they only ever fail when the invalidation is wrong. */
+    ok("gshadow",    "def show():\n    return range(3)\nprint(show())\n"
+                     "def range(n):\n    return \"shadowed\" + str(n)\nprint(show())\n",
+                     "[0, 1, 2]\nshadowed3\n");
+    ok("gshadow_len","print(len(\"abcd\"))\ndef len(x):\n    return -1\nprint(len(\"abcd\"))\n", "4\n-1\n");
+    ok("gforward",   "def get():\n    return later\nlater = 41\nprint(get())\nlater = 42\nprint(get())\n", "41\n42\n");
+    ok("gset_cached","def bump():\n    global_n = 0\nn = 1\ndef inc():\n    return n\nprint(inc())\nn = 2\nprint(inc())\n", "1\n2\n");
+
     /* ---- M23.5: memory natives for the sys/gui libraries ---- */
     ok("alloc_rt",   "b = alloc(16)\npoke32(addr(b), 0x41424344)\npoke8(addr(b) + 4, 0)\nprint(mem2cstr(b))\nprint(mem2str(b, 2))\ndealloc(b)\nprint(\"freed\")\n",
                      "DCBA\nDC\nfreed\n");

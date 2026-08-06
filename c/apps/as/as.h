@@ -87,6 +87,18 @@ typedef struct {           /* a compiled function (also the top-level "script") 
     ObjStr *name;
     struct ObjModule *module;             /* the module this fn's globals resolve in */
     int upvalue_count;                    /* how many enclosing vars this fn captures */
+    /* Global-lookup cache, parallel to consts (runtime only, never serialized).
+     * A global read used to scan the module's name list and then the builtin
+     * list, comparing hash + bytes -- linear in how late the name was defined,
+     * and measurably so: 10M reads of a name at index 90 of 100 cost 5x the same
+     * reads of a name at index 0. Each entry memoises where the name resolved:
+     * 0 = not cached, +i+1 = module->vars[i], -i-1 = builtins[i]. Indices, not
+     * pointers, so the module's var array stays free to grow by realloc.
+     * as_globals_gen invalidates the whole cache whenever a NEW global name
+     * appears anywhere, which is the only event that can change where an
+     * already-resolved name points (a module-level `def range(xs)` taking over
+     * from the builtin of that name). */
+    int32_t *gcache; int gcache_n; uint32_t gcache_gen;
 } ObjFn;
 
 /* M22 closures: an upvalue points at a captured variable — a live stack slot
@@ -214,6 +226,10 @@ void   as_disasm(ObjFn *fn);
 /* modules (vm.c): the loader/cache + namespace access used by import. */
 ObjModule *as_module_new(const char *name, int len);
 Value     *as_module_slot(ObjModule *m, ObjStr *name, int create);  /* find/insert; NULL if absent */
+int        as_module_index(ObjModule *m, ObjStr *name);   /* position in vars[], or -1 */
+/* Incremented whenever a new global name is created anywhere; ObjFn.gcache is
+ * valid only while it matches. */
+extern uint32_t as_globals_gen;
 void       as_add_module_source(const char *name, const char *src); /* in-memory module (tests) */
 
 /* object/value helpers (object.c, value.c) */

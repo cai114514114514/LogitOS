@@ -51,13 +51,21 @@ static int        nmodules;
 static struct { const char *name; const char *src; } msrc[32];   /* in-memory module sources (tests) */
 static int        nmsrc;
 
-static Value *builtin_slot(ObjStr *name, int create)
+static int builtin_index(ObjStr *name)
 {
     for (int i = 0; i < nbuiltins; i++)
         if (as_str_hash(builtins[i].name) == as_str_hash(name) && builtins[i].name->len == name->len
-            && memcmp(builtins[i].name->chars, name->chars, name->len) == 0) return &builtins[i].val;
+            && memcmp(builtins[i].name->chars, name->chars, name->len) == 0) return i;
+    return -1;
+}
+
+static Value *builtin_slot(ObjStr *name, int create)
+{
+    int at = builtin_index(name);
+    if (at >= 0) return &builtins[at].val;
     if (!create || nbuiltins >= 128) return NULL;
     builtins[nbuiltins].name = name; builtins[nbuiltins].val = NIL_VAL;
+    as_globals_gen++;
     return &builtins[nbuiltins++].val;
 }
 
@@ -136,10 +144,37 @@ static ObjStr *str_concat(ObjStr *a, ObjStr *b)
 }
 
 /* Resolve a global read: the running function's module, then builtins. */
-static Value *resolve_global(ObjFn *fn, ObjStr *name)
+/* Resolve consts[ki] as a global, memoising where it landed in fn->gcache.
+ * The cache stores an INDEX, not a slot pointer, so the module's var array is
+ * still free to grow by realloc. Module first, then builtins -- keeping the
+ * fallback dynamic is what lets a module define `range` and shadow the builtin
+ * (fsroot/as/lib/stats.as does exactly that), which a compile-time binding
+ * would get wrong. A failed cache allocation just means no caching; there is no
+ * error path to propagate. */
+static Value *global_slot(ObjFn *fn, int ki)
 {
-    Value *s = fn->module ? as_module_slot(fn->module, name, 0) : NULL;
-    return s ? s : builtin_slot(name, 0);
+    if (fn->gcache_gen != as_globals_gen) {              /* a new global name appeared */
+        if (fn->gcache) memset(fn->gcache, 0, sizeof(int32_t) * (size_t)fn->gcache_n);
+        fn->gcache_gen = as_globals_gen;
+    }
+    if (!fn->gcache && fn->kcount > 0) {
+        fn->gcache = (int32_t *)calloc((size_t)fn->kcount, sizeof(int32_t));
+        fn->gcache_n = fn->gcache ? fn->kcount : 0;
+    }
+    int cached = (fn->gcache && ki < fn->gcache_n) ? fn->gcache[ki] : 0;
+    if (cached > 0) return &fn->module->vars[cached - 1].val;
+    if (cached < 0) return &builtins[-cached - 1].val;
+
+    ObjStr *name = AS_STR(fn->consts[ki]);
+    int at = fn->module ? as_module_index(fn->module, name) : -1;
+    if (at < 0) {
+        at = builtin_index(name);
+        if (at < 0) return NULL;
+        if (fn->gcache && ki < fn->gcache_n) fn->gcache[ki] = -(at + 1);
+        return &builtins[at].val;
+    }
+    if (fn->gcache && ki < fn->gcache_n) fn->gcache[ki] = at + 1;
+    return &fn->module->vars[at].val;
 }
 
 /* ---- module loader / cache ---- */
@@ -229,6 +264,7 @@ static ObjFn *module_try_la(ObjStr *name)
 static void stamp_module(ObjFn *fn, ObjModule *m)
 {
     fn->module = m;
+    as_globals_gen++;      /* the fn's globals now resolve elsewhere: drop every gcache */
     for (int i = 0; i < fn->kcount; i++)
         if (IS_FN(fn->consts[i])) stamp_module(AS_FN(fn->consts[i]), m);
 }
@@ -597,17 +633,18 @@ static int run_until(int floor)
         op_GET_LOCAL: { uint8_t s = READ_BYTE(); checked_push(frame->slots[s]); DISPATCH(); }
         op_SET_LOCAL: { uint8_t s = READ_BYTE(); frame->slots[s] = peek(0); DISPATCH(); }
         op_GET_GLOBAL: {
-            ObjStr *n = AS_STR(READ_CONST());
-            Value *s = resolve_global(frame->fn, n);
-            if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
+            int ki = READ_SHORT();
+            Value *s = global_slot(frame->fn, ki);
+            if (!s) { ObjStr *n = AS_STR(frame->fn->consts[ki]);
+                      runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
             checked_push(*s); DISPATCH();
         }
         op_DEF_GLOBAL: { ObjStr *n = AS_STR(READ_CONST()); *as_module_slot(frame->fn->module, n, 1) = peek(0); pop(); DISPATCH(); }
         op_SET_GLOBAL: {
-            ObjStr *n = AS_STR(READ_CONST());
-            Value *s = frame->fn->module ? as_module_slot(frame->fn->module, n, 0) : NULL;
-            if (!s) s = builtin_slot(n, 0);
-            if (!s) { runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
+            int ki = READ_SHORT();
+            Value *s = global_slot(frame->fn, ki);
+            if (!s) { ObjStr *n = AS_STR(frame->fn->consts[ki]);
+                      runtime_error("undefined variable '%.*s'", n->len, n->chars); goto err; }
             *s = peek(0); DISPATCH();
         }
 

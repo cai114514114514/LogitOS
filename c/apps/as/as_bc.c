@@ -10,7 +10,8 @@
  * of Value.as.i / Value.as.f). No cross-endian support.
  *
  * NOT serialized: ObjFn->module (re-stamped by the import/CLI caller), the
- * cap/kcap (rebuilt = count/kcount), ObjStr->hash (recomputed by as_str_copy),
+ * gcache (a runtime memo of where each global name resolved; rebuilt on demand),
+ * the cap/kcap (rebuilt = count/kcount), ObjStr->hash (recomputed by as_str_copy),
  * and the Obj GC header. Upvalue {is_local,index} capture pairs are NOT a
  * separate section -- the compiler emits them inline into the *parent* function's
  * code stream after each OP_CLOSURE (vm.c reads them from there at runtime), so
