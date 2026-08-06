@@ -21,6 +21,7 @@ void img_init(void)
     png_register();
     gif_register();
     jpeg_register();
+    svg_register();
 }
 
 int img_decode(const uint8_t *p, int n, struct image *out)

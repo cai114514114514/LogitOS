@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress check-asops test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -234,7 +234,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
-                c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/img.c
+                c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
 $(BUILD)/browserobj/%.o: %.c
@@ -450,9 +450,12 @@ test-smp: $(ISO) $(DISK)
 # AetherScript host unit test: the language core (lexer/compiler/vm/value/object)
 # is portable C, so it builds and runs natively -- no QEMU. Asserts print output
 # for arithmetic/control-flow/recursion incl. fib(20).
-AS_CORE := c/apps/as/value.c c/apps/as/as_io.c c/apps/as/lexer.c \
-            c/apps/as/compiler.c c/apps/as/vm.c c/apps/as/object.c \
-            c/apps/as/as_native.c c/apps/as/as_ll.c c/apps/as/as_bc.c
+# Derived from AS_C (the wildcard that builds /bin/as) minus the two files that
+# aren't part of the core: as.c owns main(), and complete.c is the self-contained
+# completion engine (own -DAS_COMPLETE_TEST target, doesn't include as.h). This
+# used to be a hand-written list, so a new core .c built into /bin/as fine and
+# then failed to link every host test until someone remembered to add it here.
+AS_CORE := $(filter-out c/apps/as/as.c c/apps/as/complete.c,$(AS_C))
 test-as: check-asops
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
@@ -542,6 +545,26 @@ test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
 test-as-bcstable: check-asops $(BUILD)/asc
 	@bash tests/unit/run-bcstable.sh $(BUILD)/asc
 
+# The runtime rewrite replaces the allocator and object headers: a chunk overrun
+# corrupts a DIFFERENT object, so the crash lands far from the cause. The target
+# can't run a sanitizer (freestanding, no runtime), but the host can -- use it.
+# Slow (gcstress x asan), so it is not part of test-as-fast.
+test-as-asan: check-asops
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/as_test_asan tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	@$(BUILD)/as_test_asan
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -DAS_GC_STRESS \
+	    -o $(BUILD)/as_stress_asan tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	@$(BUILD)/as_stress_asan
+
+# The gate every runtime slice must pass before it is committed: unit + GC stress
+# + robustness + completion + the three self-hosting stages + the bytecode
+# baseline. All host, ~1 minute. `test-as-os` (QEMU) is the separate slow gate --
+# a host-green slice can still break on the 24 MiB static arena.
+test-as-fast: test-as test-as-gcstress test-as-stress test-complete \
+              test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint test-as-bcstable
+
 # kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
 # headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts
 # the no-two-live-allocations-overlap invariant -- including across injected
@@ -614,7 +637,7 @@ test-png: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/pngtest
 	@python3 tests/unit/png_gen.py $(BUILD)/pngtest
 	@$(CC) -O2 -o $(BUILD)/png_test tests/unit/png_test.c \
-	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
+	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
 	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/png_test $(BUILD)/pngtest
 
@@ -624,14 +647,23 @@ test-png: $(RUST_LIB_HOST)
 # so we compare two decoders of the same bytes within a tight per-channel tolerance,
 # never against the original pixels. Also asserts progressive/CMYK fail gracefully.
 # Needs PIL + djpeg. (Ad-hoc tests tests/unit/img_test.c, tests/unit/img_fuzz.c have no
-# target; if run by hand, add c/lib/image/jpeg.c to their source list.)
+# target; if run by hand, add c/lib/image/jpeg.c + c/lib/image/svg.c to their source list.)
 test-jpeg: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/jpegtest
 	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest
 	@$(CC) -O2 -o $(BUILD)/jpeg_test tests/unit/jpeg_test.c \
-	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
+	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
 	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
+
+# SVG rasterizer host test: embedded cases (real GitHub octicon mark path,
+# rect/circle/ellipse, g fill inheritance, fill-rule evenodd, opacity, xml
+# sniffing) plus truncation/garbage robustness checks. No asset generation.
+test-svg: $(RUST_LIB_HOST)
+	@$(CC) -O2 -o $(BUILD)/svg_test tests/unit/svg_test.c \
+	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
+	    -Ic/lib/image -Ic/kernel/mm
+	@$(BUILD)/svg_test
 
 clean:
 	rm -rf $(BUILD)
