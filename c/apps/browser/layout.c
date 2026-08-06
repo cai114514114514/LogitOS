@@ -33,6 +33,7 @@ static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int 
     bg->bg = st->background; bg->has_bg = st->has_bg;
     for (int i = 0; i < 4; i++) { bg->border_w[i] = st->border_w[i]; bg->border_color[i] = st->border_color[i]; }
     bg->radius = st->radius; bg->radius_pct = st->radius_pct;
+    bg->hidden = st->hidden;
 }
 
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
@@ -82,6 +83,7 @@ static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st
         it->x = f->x; it->w = ww; it->text = s + ws; it->len = wlen;
         it->font_px = px; it->bold = st->bold; it->italic = st->italic; it->mono = mono;
         it->underline = st->underline; it->color = st->color; it->href = href;
+        it->hidden = st->hidden;
         f->x += ww;
         f->line_started = 1;
         if (lh > f->lineh) f->lineh = lh;
@@ -131,7 +133,8 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (f->line_started && f->x + iw > f->x1) newline(f);
         struct item *it = additem(IT_IMAGE);
         if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
-                  it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2; }
+                  it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2;
+                  it->hidden = st ? st->hidden : 0; }
         f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
         return;
     }
@@ -179,6 +182,7 @@ static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top
         n = 3;                                        /* U+2022 BULLET */
     }
     mk->text = mk->marker; mk->len = n;
+    mk->hidden = st->hidden;
     mk->font_px = st->font_px; mk->bold = st->bold; mk->mono = st->mono;
     mk->color = st->color; mk->h = st->font_px * 5 / 4; mk->y = top;
     int mw = text_measure(mk->text, mk->len, st->font_px, st->mono);

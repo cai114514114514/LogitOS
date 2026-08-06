@@ -26,6 +26,16 @@ static struct node *find_by_class(struct node *n, const char *cls)
     return NULL;
 }
 
+static struct node *find_by_tag(struct node *n, const char *tag)
+{
+    if (n->type == N_ELEM && !strcmp(n->tag, tag)) return n;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        struct node *r = find_by_tag(c, tag);
+        if (r) return r;
+    }
+    return NULL;
+}
+
 int main(void)
 {
     css_init();
@@ -71,6 +81,33 @@ int main(void)
     css_apply(r3, css2, (int)strlen(css2));
     mq = find_by_class(r3, "mq");
     CHECK(mq && CST(mq) && CST(mq)->color != 0x112233, "media min-width misses at 700");
+
+    /* visibility / opacity -> hidden flag (layout keeps space, paint skips) */
+    const char *html4 =
+        "<body><p class='v'>a</p><p class='o'>b</p><p class='k'>c</p>"
+        "<div class='sr'>d</div><span hidden>e</span><noscript>f</noscript><template>g</template></body>";
+    const char *css4 =
+        ".v { visibility: hidden }"
+        ".o { opacity: 0 }"
+        ".k { visibility: visible }"
+        ".sr { position:absolute; width:1px; height:1px; clip-path:inset(50%); overflow:hidden }";
+    struct node *r4 = dom_parse(html4, (int)strlen(html4));
+    css_apply(r4, css4, (int)strlen(css4));
+    css_extra_apply(r4, css4, (int)strlen(css4));
+    struct node *v = find_by_class(r4, "v");
+    struct node *op = find_by_class(r4, "o");
+    struct node *k = find_by_class(r4, "k");
+    struct node *sr = find_by_class(r4, "sr");
+    CHECK(v && CST(v) && CST(v)->hidden == 1, "visibility:hidden sets hidden");
+    CHECK(op && CST(op) && CST(op)->hidden == 1, "opacity:0 sets hidden");
+    CHECK(k && CST(k) && CST(k)->hidden == 0, "visible element stays unhidden");
+    CHECK(sr && CST(sr) && CST(sr)->display == DISP_NONE, "clip-path visually-hidden -> display none");
+    struct node *hspan = find_by_tag(r4, "span");
+    struct node *noscr = find_by_tag(r4, "noscript");
+    struct node *tmpl = find_by_tag(r4, "template");
+    CHECK(hspan && CST(hspan) && CST(hspan)->display == DISP_NONE, "[hidden] attribute -> display none");
+    CHECK(noscr && CST(noscr) && CST(noscr)->display == DISP_NONE, "noscript -> display none");
+    CHECK(tmpl && CST(tmpl) && CST(tmpl)->display == DISP_NONE, "template -> display none");
 
     if (fail) { printf("FAILURES\n"); return 1; }
     printf("ALL PASS\n");

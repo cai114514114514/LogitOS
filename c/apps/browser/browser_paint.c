@@ -14,6 +14,7 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
     for (int i = 0; i < n; i++) {
         const struct item *e = &it[i];
         int top = e->y - scroll;                  /* viewport-local top */
+        if (e->hidden) continue;                  /* visibility:hidden / opacity:0 */
         if (top + e->h < 0 || top > vh) continue; /* fully outside */
         int sx = vx + e->x;
         int sy = vy + top;
@@ -61,7 +62,7 @@ int browser_hittest(int x, int y, int scroll, char *buf, int max)
     int dy = y + scroll;                          /* into doc coordinates */
     for (int i = n - 1; i >= 0; i--) {            /* topmost first */
         const struct item *e = &it[i];
-        if (!e->href) continue;
+        if (!e->href || e->hidden) continue;
         if (x >= e->x && x < e->x + e->w && dy >= e->y && dy < e->y + e->h) {
             int o = 0;
             while (e->href[o] && o < max - 1) { buf[o] = e->href[o]; o++; }

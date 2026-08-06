@@ -15,6 +15,7 @@ struct item {
     char marker[12];                    /* backing store for <li> bullet/number items */
     /* IMAGE */ struct image *img; const char *imgsrc;  /* decoded image + its URL */
     const char *href;                 /* link target for this item (or NULL) */
+    int hidden;                       /* visibility:hidden / opacity:0 -- layout space kept, nothing painted */
 };
 
 /* Lay out `root` (a parsed+styled DOM) into a display list at the given canvas

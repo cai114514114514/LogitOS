@@ -1,8 +1,10 @@
 /* css_extra.c -- capture properties our vendored LibCSS doesn't know about.
- * Currently: border-radius (px + %). The author sheet is scanned for simple
- * selectors (tag, .class, #id, tag.class, comma lists; descendant selectors
- * match on their last compound) and inline style= attributes, and matching
- * nodes' cstyle.radius/radius_pct are patched after css_apply. */
+ * Currently: border-radius (px + %), and the "visually hidden" pattern
+ * (clip-path:inset(50%) / clip:rect(0,0,0,0)) which real browsers lift out of
+ * flow via position:absolute -- we force display:none instead. The author
+ * sheet is scanned for simple selectors (tag, .class, #id, tag.class, comma
+ * lists; descendant selectors match on their last compound) and inline style=
+ * attributes, and matching nodes' cstyle is patched after css_apply. */
 #include <string.h>
 #include "css.h"
 #include "dom.h"
@@ -44,6 +46,22 @@ static int decls_radius(const char *d, int dlen, int *px, int *pct)
         i = j;
     }
     return found;
+}
+
+/* 1 if the declarations block uses the classic "visually hidden" pattern
+ * (clip-path:inset(50%) or clip:rect(0...)). Real browsers pull those out of
+ * flow with position:absolute; we treat them as display:none. */
+static int decls_vish(const char *d, int dlen)
+{
+    static const char *pats[] = { "clip-path:inset(50%", "clip:rect(0,0,0,0)",
+                                  "clip:rect(0 0 0 0)", "clip:rect(1px" };
+    for (int p = 0; p < 4; p++) {
+        const char *pat = pats[p];
+        int pl = (int)strlen(pat);
+        for (int i = 0; i + pl <= dlen; i++)
+            if (!memcmp(d + i, pat, pl)) return 1;
+    }
+    return 0;
 }
 
 /* Match ONE compound selector (no combinators): [tag][#id][.cls][.cls]... */
@@ -114,28 +132,34 @@ static int match_selector(struct node *n, const char *s, int len)
     return 0;
 }
 
-static void apply_radius(struct node *n, int px, int pct)
+/* mode 0: patch border-radius (px/pct); mode 1: force display:none */
+static void apply_patch(struct node *n, int px, int pct, int mode)
 {
     if (!n->style) return;
     struct cstyle *st = n->style;
+    if (mode == 1) { st->display = DISP_NONE; return; }
     if (pct > 0) { st->radius_pct = pct; st->radius = 0; }
     else { st->radius = px; st->radius_pct = 0; }
 }
 
-static void walk(struct node *n, const char *sel, int slen, int px, int pct)
+static void walk(struct node *n, const char *sel, int slen, int px, int pct, int mode)
 {
-    if (n->type == N_ELEM && match_selector(n, sel, slen)) apply_radius(n, px, pct);
-    for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, px, pct);
+    if (n->type == N_ELEM && match_selector(n, sel, slen)) apply_patch(n, px, pct, mode);
+    for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, px, pct, mode);
 }
 
-/* inline style="border-radius:..." on each element */
+/* inline style="border-radius:..." / visually-hidden clip on each element */
 static void walk_inline(struct node *n)
 {
     if (n->type == N_ELEM && n->style) {
         const char *st = dom_attr(n, "style");
         if (st) {
-            int px = 0, pct = 0;
-            if (decls_radius(st, (int)strlen(st), &px, &pct)) apply_radius(n, px, pct);
+            int slen = (int)strlen(st);
+            if (decls_vish(st, slen)) apply_patch(n, 0, 0, 1);
+            else {
+                int px = 0, pct = 0;
+                if (decls_radius(st, slen, &px, &pct)) apply_patch(n, px, pct, 0);
+            }
         }
     }
     for (struct node *c = n->first_child; c; c = c->next) walk_inline(c);
@@ -164,8 +188,10 @@ void css_extra_apply(struct node *root, const char *css, int len)
         while (i < len && depth) { if (css[i] == '{') depth++; else if (css[i] == '}') depth--; i++; }
         int dlen = i - 1 - d;
         int px = 0, pct = 0;
-        if (dlen > 0 && decls_radius(css + d, dlen, &px, &pct))
-            walk(root, css + s, slen, px, pct);
+        if (dlen > 0 && decls_vish(css + d, dlen))
+            walk(root, css + s, slen, 0, 0, 1);
+        else if (dlen > 0 && decls_radius(css + d, dlen, &px, &pct))
+            walk(root, css + s, slen, px, pct, 0);
     }
     walk_inline(root);
 }

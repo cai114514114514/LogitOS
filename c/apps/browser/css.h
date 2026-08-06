@@ -24,6 +24,7 @@ struct cstyle {
     int radius_pct;                 /* border-radius % (of min(w,h) at paint) */
     int underline;
     int list_item;                  /* 1 for <li>-style markers */
+    int hidden;                     /* visibility:hidden/collapse or opacity:0 */
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
 };
 

@@ -382,7 +382,7 @@ static const char UA_CSS[] =
     "ul{margin:8px 0;padding-left:28px}ol{margin:8px 0;padding-left:28px}"
     "li{display:list-item}"
     "pre{font-family:monospace;margin:8px 0}code{font-family:monospace}"
-    "script,style,head,title,meta,link{display:none}";
+    "script,style,head,title,meta,link,noscript,template,[hidden]{display:none}";
 
 static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
 {
@@ -536,6 +536,11 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
 #undef EDGE_CONVERT
 
     if (css_computed_text_decoration(cs) & CSS_TEXT_DECORATION_UNDERLINE) o->underline = 1;
+
+    { uint8_t v = css_computed_visibility(cs);
+      if (v == CSS_VISIBILITY_HIDDEN || v == CSS_VISIBILITY_COLLAPSE) o->hidden = 1; }
+    { css_fixed op;
+      if (css_computed_opacity(cs, &op) == CSS_OPACITY_SET && op <= 0) o->hidden = 1; }
 }
 
 /* ---------- traversal ---------- */
