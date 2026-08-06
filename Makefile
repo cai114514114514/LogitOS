@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-fscrash test-hugefile test-fsreplay test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -420,6 +420,23 @@ test-shell: $(ISO) $(DISK)
 # nature -- five boots -- so it is its own target rather than part of any suite.
 test-durability: $(ISO) $(DISK)
 	@bash tests/boot/run-durability-test.sh $(ISO) $(DISK)
+
+# The other half of durability: SIGKILL mid-write, four rounds, and demand the
+# journal's contract -- the victim is always whole-or-absent, never torn.
+test-fscrash: $(ISO) $(DISK)
+	@bash tests/boot/run-fscrash-test.sh $(ISO) $(DISK)
+
+# The double-indirect tree (>1036 blocks, ~4.1 MiB up) is touched by no other
+# test. Write a 4.4 MB file, verify it in the same boot and again after a
+# clean reboot. Slow: the AS interpreter builds the content char by char.
+test-hugefile: $(ISO) $(DISK)
+	@bash tests/boot/run-hugefile-test.sh $(ISO) $(DISK)
+
+# log_recover deterministically: craft a sealed-but-not-installed transaction
+# (the state a crash between seal and install leaves), boot on it, assert the
+# logged block was installed and the header cleared. No kill -9 timing luck.
+test-fsreplay: $(ISO) $(DISK)
+	@bash tests/boot/run-fsreplay-test.sh $(ISO) $(DISK)
 
 # Host unit test for TCP out-of-order reassembly (white-box: #includes tcp.c).
 # Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).

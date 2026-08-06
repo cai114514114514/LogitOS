@@ -13,13 +13,13 @@ void *memset(void *, int, size_t);
 #define BS         4096                 /* block size */
 #define SPB        (BS / SECTOR)        /* sectors per block (8) */
 #define MAGIC      0x4C4F4749u          /* "LOGI" */
-#define VERSION    3
+#define VERSION    4
 #define INODE_SIZE 128
 #define NDIRECT    12
 #define PPB        (BS / 4)             /* u32 pointers per indirect block */
 #define DIRENT_SZ  64
 #define NAME_MAX   60
-#define MAX_FILE_SZ ((NDIRECT + PPB) * BS)   /* inode_write reach: direct + single indirect */
+#define MAX_FILE_SZ ((uint64_t)(NDIRECT + PPB + (uint64_t)PPB * PPB) * BS) /* inode_write reach: direct + single + double indirect */
 #define T_FREE     0
 #define T_FILE     1
 #define T_DIR      2
@@ -45,14 +45,43 @@ static struct {
     uint32_t magic, version, block_size, total_blocks, inode_count;
     uint32_t bitmap_start, bitmap_blocks, inode_start, inode_blocks;
     uint32_t data_start, root_ino;
+    uint32_t log_start, log_blocks;
 } sb;
 
 static uint8_t      *bitmap;            /* bitmap_blocks * BS, in RAM */
 static struct dinode *inodes;           /* inode_blocks  * BS, in RAM */
 
+/* --- write-ahead log -------------------------------------------------------
+ * Every metadata write (bitmap, inode table, indirect pointer blocks, and
+ * directory data blocks -- a dirent can point at a fresh inode, so it is
+ * metadata too) goes through the log: it is staged in RAM, written to the log
+ * area, and only then installed at its real location. A crash anywhere in that
+ * sequence is resolved at mount: a complete log header replays the install
+ * (idempotent), a missing one discards the transaction whole. So after a crash
+ * every file is either fully old or fully new, and the bitmap never disagrees
+ * with the inode table.
+ *
+ * Ordinary file DATA blocks are written straight to their real location, but
+ * always BEFORE the metadata that points at them commits (ext4's data=ordered):
+ * a crash mid-data-write rolls the metadata back, so the new blocks simply turn
+ * free again -- never shared, never leaked.
+ *
+ * One transaction per VFS mutating op (tx_begin .. log_commit/log_abort). The
+ * BKL serializes ops, so there is no nesting. The log is written once per op,
+ * not once per block: flush_* below only STAGE blocks. */
+#define LOGMAGIC   0x4C4F4734u          /* "LOG4" */
+#define LOG_MAX    128                  /* cap on sb.log_blocks - 1 */
+static uint32_t  log_max;               /* sb.log_blocks - 1 (data slots) */
+static uint32_t  tx_targets[LOG_MAX];
+static uint8_t (*tx_bufs)[BS];          /* log_max staged blocks, kmalloc'd */
+static int       tx_count;
+static uint32_t  tx_gen;
+static uint8_t   tx_hdr[BS];            /* log header staging */
+
 static uint8_t  blk_buf[BS];            /* general block staging */
 static uint32_t ind_buf[PPB];           /* indirect-block staging */
-static uint32_t dind_buf[PPB];          /* double-indirect L1 staging (inode_trunc) */
+static uint32_t dind_buf[PPB];          /* double-indirect L1 staging */
+static uint32_t l2_buf[PPB];            /* double-indirect L2 staging (inode_write) */
 static char     namebuf[NAME_MAX];      /* ent_name return storage */
 
 /* Concurrency: every op runs under the kernel BKL and the shared static staging
@@ -77,12 +106,81 @@ static int streq(const char *a, const char *b)
 static int bread(uint32_t blk, void *buf)
 {
     if (blk >= sb.total_blocks) return -1;
+    /* Read-your-writes inside a transaction: a staged (not yet installed) block
+     * must read back fresh -- a same-directory rename re-reads the directory it
+     * has just rewritten, and the on-disk copy is still the old one. */
+    for (int i = 0; i < tx_count; i++)
+        if (tx_targets[i] == blk) { memcpy(buf, tx_bufs[i], BS); return 0; }
     return blk_read(blk * SPB, SPB, buf);
 }
 static int bwrite(uint32_t blk, const void *buf)
 {
     if (blk >= sb.total_blocks) return -1;
     return blk_write(blk * SPB, SPB, buf);
+}
+
+/* Stage a metadata block into the current transaction (COPIES buf, so callers
+ * may keep using their staging buffers). -1 if the log is full: the op fails
+ * without committing anything, which is safe -- an over-full log is not. */
+static int log_add(uint32_t blk, const void *buf)
+{
+    if (blk >= sb.total_blocks || (uint32_t)tx_count >= log_max) return -1;
+    tx_targets[tx_count] = blk;
+    memcpy(tx_bufs[tx_count], buf, BS);
+    tx_count++;
+    return 0;
+}
+
+static void tx_begin(void)  { tx_count = 0; }
+static void log_abort(void) { tx_count = 0; }   /* nothing staged ever reached disk */
+
+/* Write the staged blocks to the log, seal it with a valid header, install them
+ * at their real locations, then clear the header. A crash before the seal loses
+ * the whole transaction; a crash after it replays the install at mount. */
+static int log_commit(void)
+{
+    int n = tx_count, rc = 0;
+    tx_count = 0;
+    if (!n) return 0;
+    for (int i = 0; i < n; i++)
+        if (bwrite(sb.log_start + 1 + i, tx_bufs[i])) rc = -1;
+    uint32_t *h = (uint32_t *)tx_hdr;
+    memset(tx_hdr, 0, BS);
+    h[0] = LOGMAGIC; h[1] = ++tx_gen; h[2] = (uint32_t)n;
+    for (int i = 0; i < n; i++) h[3 + i] = tx_targets[i];
+    if (bwrite(sb.log_start, tx_hdr)) rc = -1;
+    for (int i = 0; i < n; i++)
+        if (bwrite(tx_targets[i], tx_bufs[i])) rc = -1;
+    memset(tx_hdr, 0, BS);
+    if (bwrite(sb.log_start, tx_hdr)) rc = -1;
+    return rc;
+}
+
+/* Mount-time recovery: a valid header means a committed transaction whose
+ * install may not have finished. Re-install (idempotent) and clear. A torn or
+ * absent header fails the magic/count checks and means "nothing to do" -- the
+ * pre-transaction state is intact. (Like xv6, we assume a header block write
+ * does not tear in a way that preserves magic + count + a corrupted target.) */
+static int log_recover(void)
+{
+    if (bread(sb.log_start, tx_hdr)) return -1;
+    uint32_t *h = (uint32_t *)tx_hdr;
+    if (h[0] != LOGMAGIC || h[2] == 0 || h[2] > log_max) return 0;
+    int n = (int)h[2];
+    tx_gen = h[1];
+    for (int i = 0; i < n; i++) {
+        uint32_t tgt = h[3 + i];
+        /* forged header: refuse the superblock, the log itself, and anything
+         * outside the image rather than letting recovery overwrite them */
+        if (tgt == 0 || tgt >= sb.total_blocks) return -1;
+        if (tgt >= sb.log_start && tgt < sb.log_start + sb.log_blocks) return -1;
+        if (bread(sb.log_start + 1 + i, tx_bufs[i])) return -1;
+        if (bwrite(tgt, tx_bufs[i])) return -1;
+    }
+    memset(tx_hdr, 0, BS);
+    if (bwrite(sb.log_start, tx_hdr)) return -1;
+    kprintf("[fs] log: replayed %d block(s) from an interrupted transaction\n", n);
+    return 0;
 }
 
 static int  bit_test(uint32_t b)  { return bitmap[b >> 3] & (1 << (b & 7)); }
@@ -134,18 +232,18 @@ static uint32_t imap(struct dinode *in, uint32_t i)
     return 0;
 }
 
-static int flush_bitmap(void)           /* persist the free-block bitmap */
+static int flush_bitmap(void)           /* stage the free-block bitmap */
 {
     for (uint32_t i = 0; i < sb.bitmap_blocks; i++)
-        if (bwrite(sb.bitmap_start + i, bitmap + i * BS)) return -1;
+        if (log_add(sb.bitmap_start + i, bitmap + i * BS)) return -1;
     return 0;
 }
 
-/* persist only the inode-table block that holds inode `ino` */
+/* stage only the inode-table block that holds inode `ino` */
 static int flush_inode(uint32_t ino)
 {
     uint32_t blk = ino / (BS / INODE_SIZE);
-    return bwrite(sb.inode_start + blk, (uint8_t *)inodes + blk * BS);
+    return log_add(sb.inode_start + blk, (uint8_t *)inodes + blk * BS);
 }
 
 /* --- whole-file I/O --- */
@@ -193,19 +291,42 @@ static void inode_trunc(struct dinode *in)
     in->size = 0;
 }
 
-static int inode_write(struct dinode *in, const void *buf, int size)
+/* logged=1: data blocks are staged into the transaction too (directories --
+ * a dirent can point at an inode created in the same op, so the whole thing
+ * must commit or roll back as one). logged=0: data blocks are written straight
+ * to disk, but always before the metadata commit (data=ordered).
+ * Pointer blocks (single/double indirect) are metadata and ALWAYS logged. */
+static int inode_write(struct dinode *in, const void *buf, int size, int logged)
 {
     if (size < 0) return -1;
     uint32_t nblk = ((uint32_t)size + BS - 1) / BS;
-    if (nblk > NDIRECT + PPB) return -1;        /* exceeds single-indirect reach */
+    if ((uint64_t)nblk > (uint64_t)NDIRECT + PPB + (uint64_t)PPB * PPB) return -1;
+    if ((uint64_t)nblk + 2 > sb.total_blocks - sb.data_start) return -1;   /* cannot fit this disk */
 
     inode_trunc(in);
     const uint8_t *src = buf;
-    uint32_t ind = 0;
-    if (nblk > NDIRECT) { ind = balloc(); if (!ind) return -1; memset(ind_buf, 0, BS); }
 
-    uint32_t allocated[NDIRECT + PPB];
+    /* Track EVERY balloc, not just the ones already linked: a block linked only
+     * into a staged (not yet logged) pointer block is invisible to inode_trunc,
+     * so the failure path cannot rely on the tree alone. */
+    uint32_t cap = nblk + PPB + 2;              /* data + L2s + indirect + L1 */
+    uint32_t *allocated = kmalloc(cap * sizeof(uint32_t));
+    if (!allocated) return -1;
     int nalloc = 0;
+    uint32_t ind = 0, dind = 0, l2 = 0;
+
+    if (nblk > NDIRECT) {
+        ind = balloc();
+        if (!ind) goto fail;
+        allocated[nalloc++] = ind;
+        memset(ind_buf, 0, BS);
+    }
+    if (nblk > NDIRECT + PPB) {
+        dind = balloc();
+        if (!dind) goto fail;
+        allocated[nalloc++] = dind;
+        memset(dind_buf, 0, BS);
+    }
 
     for (uint32_t i = 0; i < nblk; i++) {
         uint32_t blk = balloc();
@@ -213,22 +334,49 @@ static int inode_write(struct dinode *in, const void *buf, int size)
         allocated[nalloc++] = blk;
         uint32_t off = i * BS;
         uint32_t n   = (uint32_t)size - off < BS ? (uint32_t)size - off : BS;
-        if (n == BS) { if (bwrite(blk, src + off)) goto fail; }
-        else { memset(blk_buf, 0, BS); memcpy(blk_buf, src + off, n); if (bwrite(blk, blk_buf)) goto fail; }
+        int     wrc;
+        if (n == BS) wrc = logged ? log_add(blk, src + off) : bwrite(blk, src + off);
+        else {
+            memset(blk_buf, 0, BS); memcpy(blk_buf, src + off, n);
+            wrc = logged ? log_add(blk, blk_buf) : bwrite(blk, blk_buf);
+        }
+        if (wrc) goto fail;
         if (i < NDIRECT) in->direct[i] = blk;
-        else ind_buf[i - NDIRECT] = blk;
+        else if (i < NDIRECT + PPB) ind_buf[i - NDIRECT] = blk;
+        else {
+            uint32_t j = i - NDIRECT - PPB;
+            if (j % PPB == 0) {                 /* seal the previous L2, open a new one */
+                if (l2) {
+                    dind_buf[j / PPB - 1] = l2;
+                    if (log_add(l2, l2_buf)) goto fail;
+                }
+                l2 = balloc();
+                if (!l2) goto fail;
+                allocated[nalloc++] = l2;
+                memset(l2_buf, 0, BS);
+            }
+            l2_buf[j % PPB] = blk;
+        }
     }
-    if (nblk > NDIRECT) { in->indirect = ind; if (bwrite(ind, ind_buf)) goto fail; }
+    if (l2) {                                   /* seal the last L2 */
+        uint32_t last = ((uint32_t)nblk - NDIRECT - PPB + PPB - 1) / PPB - 1;
+        dind_buf[last] = l2;
+        if (log_add(l2, l2_buf)) goto fail;
+    }
+    if (ind)  { in->indirect = ind;   if (log_add(ind, ind_buf)) goto fail; }
+    if (dind) { in->double_indirect = dind; if (log_add(dind, dind_buf)) goto fail; }
     in->size = (uint32_t)size;
+    kfree(allocated);
     return size;
 fail:
     for (int j = 0; j < nalloc; j++) bfree(allocated[j]);
-    if (ind) bfree(ind);
+    kfree(allocated);
     /* Don't leave dangling block pointers behind: the entry inode_trunc() ran
      * when size was already 0, so it won't clear the direct[]/indirect values
-     * set above -- and indirect may alias the just-freed ind. */
+     * set above -- and the staged pointer blocks were never installed. */
     memset(in->direct, 0, sizeof in->direct);
     in->indirect = 0;
+    in->double_indirect = 0;
     in->size = 0;
     return -1;
 }
@@ -344,7 +492,7 @@ static int dir_add(uint32_t dino, const char *name, uint32_t child)
     while (name[k] && k < NAME_MAX - 1) { de[slot].name[k] = name[k]; k++; }
     de[slot].name[k] = 0;
 
-    int rc = inode_write(d, buf, (int)newsize);
+    int rc = inode_write(d, buf, (int)newsize, 1);   /* directory: fully logged */
     kfree(buf);
     return rc < 0 ? -1 : 0;
 }
@@ -365,7 +513,7 @@ static int dir_remove(uint32_t dino, const char *name)
     de[found].name[0] = 0;
     de[found].ino = 0;
 
-    int rc = inode_write(d, buf, (int)sz);
+    int rc = inode_write(d, buf, (int)sz, 1);        /* directory: fully logged */
     kfree(buf);
     return rc < 0 ? -1 : 0;
 }
@@ -439,6 +587,7 @@ static int logitfs_mount(void)
     sb.bitmap_start = w[5]; sb.bitmap_blocks = w[6];
     sb.inode_start = w[7]; sb.inode_blocks = w[8];
     sb.data_start = w[9]; sb.root_ino = w[10];
+    sb.log_start = w[11]; sb.log_blocks = w[12];
 
     /* Bound the untrusted on-disk counts before sizing: bitmap_blocks*BS is
      * uint32*int and would wrap to a tiny (or zero) allocation for a crafted
@@ -462,18 +611,27 @@ static int logitfs_mount(void)
     if (sb.data_start > sb.total_blocks) return -1;
     if (sb.inode_start < sb.bitmap_start + sb.bitmap_blocks) return -1;
     if (sb.data_start < sb.inode_start + sb.inode_blocks) return -1;
+    /* The log sits between the inode table and the data area, with at least a
+     * header block and one data block, and within the static staging cap. */
+    if (sb.log_blocks < 2 || sb.log_blocks - 1 > LOG_MAX) return -1;
+    if (sb.log_start < sb.inode_start + sb.inode_blocks) return -1;
+    if ((uint64_t)sb.log_start + sb.log_blocks > sb.data_start) return -1;
     if (sb.root_ino >= sb.inode_count) return -1;
+    log_max = sb.log_blocks - 1;
     bitmap = kmalloc((size_t)((uint64_t)sb.bitmap_blocks * BS));
     inodes = kmalloc((size_t)((uint64_t)sb.inode_blocks  * BS));
-    if (!bitmap || !inodes) goto oom;
+    tx_bufs = kmalloc((size_t)log_max * BS);
+    if (!bitmap || !inodes || !tx_bufs) goto oom;
     for (uint32_t i = 0; i < sb.bitmap_blocks; i++)
         if (bread(sb.bitmap_start + i, bitmap + i * BS)) goto oom;
     for (uint32_t i = 0; i < sb.inode_blocks; i++)
         if (bread(sb.inode_start + i, (uint8_t *)inodes + i * BS)) goto oom;
+    tx_count = 0;
+    if (log_recover()) goto oom;           /* finish an interrupted transaction, if any */
     return 0;
 oom:
-    kfree(bitmap); kfree(inodes);
-    bitmap = 0; inodes = 0;
+    kfree(bitmap); kfree(inodes); kfree(tx_bufs);
+    bitmap = 0; inodes = 0; tx_bufs = 0;
     return -1;
 }
 
@@ -503,9 +661,10 @@ static int logitfs_write(const char *path, const void *buf, int size)
     if (ino != NOINO) {                          /* overwrite existing file */
         struct dinode *in = iget(ino);
         if (!in || in->type != T_FILE) return -1;
-        if (inode_write(in, buf, size) < 0) return -1;
-        if (flush_inode(ino) || flush_bitmap()) return -1;
-        return size;
+        tx_begin();
+        if (inode_write(in, buf, size, 0) < 0) { log_abort(); return -1; }
+        if (flush_inode(ino) || flush_bitmap()) { log_abort(); return -1; }
+        return log_commit() ? -1 : size;
     }
     char leaf[NAME_MAX];                          /* else create */
     uint32_t parent = resolve_parent(path, leaf);
@@ -515,10 +674,11 @@ static int logitfs_write(const char *path, const void *buf, int size)
     int ni = ialloc(T_FILE);
     if (ni < 0) return -1;
     struct dinode *in = iget((uint32_t)ni);
-    if (inode_write(in, buf, size) < 0) { in->type = T_FREE; return -1; }
-    if (dir_add(parent, leaf, (uint32_t)ni) < 0) { inode_trunc(in); in->type = T_FREE; return -1; }
-    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) return -1;
-    return size;
+    tx_begin();
+    if (inode_write(in, buf, size, 0) < 0) { log_abort(); in->type = T_FREE; return -1; }
+    if (dir_add(parent, leaf, (uint32_t)ni) < 0) { log_abort(); inode_trunc(in); in->type = T_FREE; return -1; }
+    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) { log_abort(); return -1; }
+    return log_commit() ? -1 : size;
 }
 
 static int logitfs_mkdir(const char *path)
@@ -535,19 +695,13 @@ static int logitfs_mkdir(const char *path)
     /* Create an EMPTY directory: "." and ".." are NOT stored on disk -- path
      * resolution (resolve()/proc_resolve) handles . and .. itself, and the Finder
      * draws ".." on its own. Storing them made `ls` list them, made an empty dir
-     * look non-empty (couldn't rmdir), and was inconsistent with mkfs-built dirs. */
-    if (flush_inode((uint32_t)ni)) {
-        nd->type = T_FREE;                   /* don't leak the fresh inode */
-        flush_inode((uint32_t)ni);
-        return -1;
-    }
-    if (dir_add(parent, leaf, (uint32_t)ni) < 0) {
-        nd->type = T_FREE;
-        flush_inode((uint32_t)ni); flush_bitmap();
-        return -1;
-    }
-    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) return -1;
-    return 0;
+     * look non-empty (couldn't rmdir), and was inconsistent with mkfs-built dirs.
+     * The whole op is one transaction: the dirent and the fresh inode commit
+     * together or not at all, so no intermediate flush ordering is needed. */
+    tx_begin();
+    if (dir_add(parent, leaf, (uint32_t)ni) < 0) { log_abort(); nd->type = T_FREE; return -1; }
+    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) { log_abort(); return -1; }
+    return log_commit() ? -1 : 0;
 }
 
 static int logitfs_delete(const char *path)
@@ -560,11 +714,12 @@ static int logitfs_delete(const char *path)
     char leaf[NAME_MAX];
     uint32_t parent = resolve_parent(path, leaf);
     if (parent == NOINO) return -1;
-    if (dir_remove(parent, leaf) < 0) return -1;
+    tx_begin();
+    if (dir_remove(parent, leaf) < 0) { log_abort(); return -1; }
     inode_trunc(in);
     in->type = T_FREE;
-    if (flush_inode(ino) || flush_inode(parent) || flush_bitmap()) return -1;
-    return 0;
+    if (flush_inode(ino) || flush_inode(parent) || flush_bitmap()) { log_abort(); return -1; }
+    return log_commit() ? -1 : 0;
 }
 
 /* Directory-scoped enumeration. */
@@ -611,7 +766,7 @@ static int logitfs_ent_is_dir(const char *dir, int i)
 static void logitfs_list(void)
 {
     int n = dir_count_live(sb.root_ino);
-    kprintf("[fs] LogitFS v3: %d entr(ies) in /:\n", n);
+    kprintf("[fs] LogitFS v4: %d entr(ies) in /:\n", n);
     for (int i = 0; i < n; i++) {
         char nm[NAME_MAX]; nm[0] = 0;
         uint32_t ino = dir_nth(sb.root_ino, i, nm);
@@ -637,7 +792,8 @@ static int path_under(const char *a, const char *b)
 
 /* Move/rename: re-link a directory entry. Resolve everything first (the shared
  * static blk_buf/ind_buf make interleaving resolution with dir_add/dir_remove
- * unsafe), then mutate add-then-remove with rollback. */
+ * unsafe), then mutate add-then-remove inside ONE transaction -- a crash sees
+ * the entry in exactly one place, never both and never neither. */
 static int logitfs_rename(const char *old_path, const char *new_path)
 {
     uint32_t src = resolve(old_path);
@@ -656,14 +812,17 @@ static int logitfs_rename(const char *old_path, const char *new_path)
     struct dinode *si = iget(src);
     if (si && si->type == T_DIR && path_under(old_path, new_path)) return -1;
 
-    if (dir_add(np, new_leaf, src) < 0) return -1;
+    tx_begin();
+    if (dir_add(np, new_leaf, src) < 0) { log_abort(); return -1; }
     if (dir_remove(op, old_leaf) < 0) {
-        if (dir_remove(np, new_leaf) < 0)
-            kprintf("[fs] rename rollback failed: '%s' linked in both directories\n", new_leaf);
+        /* Nothing committed yet: discard the transaction and unwind the add in
+         * RAM so the in-memory inode/bitmap agree with the untouched disk. */
+        dir_remove(np, new_leaf);
+        log_abort();
         return -1;
     }
-    if (flush_inode(op) || flush_inode(np) || flush_bitmap()) return -1;
-    return 0;
+    if (flush_inode(op) || flush_inode(np) || flush_bitmap()) { log_abort(); return -1; }
+    return log_commit() ? -1 : 0;
 }
 
 struct filesystem logitfs = {

@@ -3,13 +3,16 @@
 
 #include "vfs.h"
 
-/* LogitFS v3: a hierarchical, inode-based on-disk filesystem with a free-block
- * bitmap and subdirectories (4 KiB blocks).
+/* LogitFS v4: a hierarchical, inode-based on-disk filesystem with a free-block
+ * bitmap, subdirectories, and a write-ahead log (4 KiB blocks).
  *   block 0          superblock
  *   block 1..        block bitmap (1 bit/block)
- *   block ..         inode table (128B inodes: type, size, direct[12], indirect)
+ *   block ..         inode table (128B inodes: type, size, direct[12], indirect, double_indirect)
+ *   block log_start  write-ahead log (1 header + data slots)
  *   block data_start file/dir data; directories hold { u32 ino; char name[60] }
- * Read-write at runtime; built on the host by tools/mkfs.py. */
+ * Metadata mutations commit through the log, so a crash mid-op replays or
+ * discards the whole transaction at mount. Read-write at runtime; built on the
+ * host by tools/mkfs.py. */
 extern struct filesystem logitfs;
 
 #endif /* LOGIT_LOGITFS_H */

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Build an LogitFS v3 disk image: a hierarchical, inode-based filesystem with a
-free-block bitmap and subdirectories (Unix-style).
+"""Build an LogitFS v4 disk image: a hierarchical, inode-based filesystem with a
+free-block bitmap, subdirectories, and a write-ahead log (Unix-style).
 
 Usage: mkfs.py <out.img> <host[:/dest/path] | host> ...
   host                -> placed at /<basename(host)>
@@ -11,12 +11,19 @@ Layout (4 KiB blocks = 8 x 512B sectors):
   block 0                      superblock
   block 1..                    block bitmap (1 bit/block)
   block ..                     inode table (inode_count x 128B)
+  block log_start..            write-ahead log: 1 header block + log_blocks-1 data
   block data_start..           data blocks (files + dirs + indirect blocks)
 
 Inode (128B): u16 type(0=free,1=file,2=dir); u16 pad; u32 size;
-              u32 direct[12]; u32 indirect; (rest reserved)
+              u32 direct[12]; u32 indirect; u32 double_indirect; (rest reserved)
 Directory data = array of dirents { u32 ino; char name[60] } (64B each).
 A directory is just an inode of type=dir whose data holds its dirents.
+
+v4 -> v3: the log area appeared between the inode table and the data blocks, and
+the superblock grew two fields (log_start, log_blocks). Every metadata write at
+runtime goes through the log first (c/fs/logitfs.c), so a crash mid-operation
+replays or discards a whole transaction instead of leaving the bitmap and the
+inode table disagreeing.
 """
 import sys
 import os
@@ -26,7 +33,7 @@ SECTOR = 512
 BS = 4096                       # block size
 SPB = BS // SECTOR              # sectors per block (8)
 MAGIC = 0x4C4F4749              # "LOGI"
-VERSION = 3
+VERSION = 4
 INODE_SIZE = 128
 NDIRECT = 12
 PPB = BS // 4                   # u32 pointers per (indirect) block (1024)
@@ -34,8 +41,10 @@ DIRENT = 64
 NAME_MAX = 60                   # bytes in a dirent name (incl. NUL)
 T_FREE, T_FILE, T_DIR = 0, 1, 2
 
-TOTAL_BLOCKS = 4096             # 16 MiB image
+TOTAL_BLOCKS = 16384            # 64 MiB image
 INODE_COUNT = 256
+LOG_BLOCKS = 64                 # 1 header + 63 data blocks; a transaction's
+                                # metadata is a handful of blocks, never near this
 
 
 class Builder:
@@ -109,7 +118,8 @@ class Builder:
         bitmap_blocks = (TOTAL_BLOCKS + 8 * BS - 1) // (8 * BS)
         inode_start = bitmap_start + bitmap_blocks
         inode_blocks = (INODE_COUNT * INODE_SIZE + BS - 1) // BS
-        data_start = inode_start + inode_blocks
+        log_start = inode_start + inode_blocks
+        data_start = log_start + LOG_BLOCKS
 
         img = bytearray(TOTAL_BLOCKS * BS)
         nextb = data_start
@@ -160,10 +170,10 @@ class Builder:
                         struct.pack_into("<I", img, sib * BS + m * 4, blks[bi])
 
         # 4) superblock
-        struct.pack_into("<11I", img, 0,
+        struct.pack_into("<13I", img, 0,
                          MAGIC, VERSION, BS, TOTAL_BLOCKS, INODE_COUNT,
                          bitmap_start, bitmap_blocks, inode_start, inode_blocks,
-                         data_start, self.root)
+                         data_start, self.root, log_start, LOG_BLOCKS)
 
         # 5) bitmap: blocks 0..nextb-1 are in use (metadata + allocated data)
         for b in range(nextb):
@@ -199,7 +209,7 @@ def main():
     img, used = b.serialize()
     with open(out, "wb") as f:
         f.write(img)
-    print(f"mkfs: {out} -> LogitFS v3, {TOTAL_BLOCKS} blocks "
+    print(f"mkfs: {out} -> LogitFS v4, {TOTAL_BLOCKS} blocks "
           f"({TOTAL_BLOCKS * BS // 1024} KiB), {used} used, {b.next_ino} inode(s)")
 
 
