@@ -9,7 +9,12 @@
 # whose field offsets are generated from include/abi/logit_abi.h and checked
 # against it by the compiler that builds /bin/as.
 
-from abi import Time
+from abi import Time, now_s, sys_yield, wait_dns, wait_ping
+
+# How long a network operation is given before it is called a timeout. Seconds,
+# because it is real elapsed time: the loops these replaced counted 500 polls,
+# which is a different amount of time on every machine and under every load.
+NET_TIMEOUT_S = 5
 
 # ---- files ----
 def read_file(path):
@@ -101,37 +106,40 @@ def time():
     return t
 
 def sleep(secs):
-    t0 = time()
-    start = (t0.hour * 60 + t0.minute) * 60 + t0.second
+    start = now_s()
     while true:
-        t = time()
-        now = (t.hour * 60 + t.minute) * 60 + t.second
+        now = now_s()
         if now < start:
-            now = now + 86400
+            now = now + 86400            # the RTC clock wrapped past midnight
         if now - start >= secs:
             return nil
-        syscall(SYS_YIELD)
+        sys_yield()
 
 # ---- network ----
+# dns() and ping() RAISE on failure and on timeout, and those are two different
+# messages. They used to answer 0 and -1 respectively for both -- and for "no
+# network interface" as well, so three outcomes shared one value and a caller
+# could not tell them apart. The waiting itself is generated from
+# include/abi/logit_calls.abi, which is where the protocol (0 means pending,
+# 0xFFFFFFFF means failed) is now stated.
 def dns(name):
-    if syscall(SYS_NET_DNS, addr(name)) < 0:
-        return 0
-    for i in range(500):
-        ip = syscall(SYS_NET_DNS_RESULT)
-        if ip != 0:
-            return 0 if ip == 0xFFFFFFFF else ip
-        syscall(SYS_YIELD)
-    return 0
+    return wait_dns(name, NET_TIMEOUT_S)
+
+# The old shape, for callers that would rather have a sentinel than a handler.
+def dns_or(name, default):
+    try:
+        return dns(name)
+    except e:
+        return default
 
 def ip_str(ip):
     return f"{(ip >> 24) & 255}.{(ip >> 16) & 255}.{(ip >> 8) & 255}.{ip & 255}"
 
 def ping(ip):
-    if syscall(SYS_NET_PING, ip) < 0:
-        return -1
-    for i in range(500):
-        rtt = syscall(SYS_NET_PING_RTT)
-        if rtt >= 0:
-            return rtt
-        syscall(SYS_YIELD)
-    return -1
+    return wait_ping(ip, NET_TIMEOUT_S)
+
+def ping_or(ip, default):
+    try:
+        return ping(ip)
+    except e:
+        return default

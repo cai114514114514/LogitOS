@@ -185,40 +185,74 @@ def parse_calls():
         if cur:
             toks.append(cur)
 
+        if toks[0] == "wait":
+            if len(toks) < 4:
+                raise Unsupported("%s:%d: expected `wait <name> <START> <POLL> <arg>... pending(...)`"
+                                  % (CALLS, lineno))
+            name, start_sym, poll_sym, rest = toks[1], toks[2], toks[3], toks[4:]
+            for sym in (start_sym, poll_sym):
+                if not sym.startswith("SYS_"):
+                    raise Unsupported("%s:%d: %r is not a SYS_ symbol" % (CALLS, lineno, sym))
+            pending, fail, args_toks = None, None, []
+            for a in rest:
+                m = re.match(r"^(pending|fail)\((eq|lt):(-?(?:0x)?[0-9A-Fa-f]+)\)$", a)
+                if m:
+                    which, op, val = m.group(1), m.group(2), int(m.group(3), 0)
+                    if which == "pending":
+                        pending = (op, val)
+                    elif op != "eq":
+                        raise Unsupported("%s:%d: fail() takes eq: only" % (CALLS, lineno))
+                    else:
+                        fail = val
+                else:
+                    args_toks.append(a)
+            if not pending:
+                raise Unsupported("%s:%d: %s has no pending(...): nothing says when the wait is over"
+                                  % (CALLS, lineno, name))
+            out.append(("wait", name, start_sym, poll_sym, parse_args(CALLS, lineno, args_toks),
+                        pending, fail))
+            continue
+
         if len(toks) < 3 or toks[0] != "call":
             raise Unsupported("%s:%d: expected `call <name> <SYS_SYMBOL> <arg>...`" % (CALLS, lineno))
-        name, sym, args = toks[1], toks[2], []
+        name, sym, args = toks[1], toks[2], parse_args(CALLS, lineno, toks[3:])
         if not sym.startswith("SYS_"):
             raise Unsupported("%s:%d: %r is not a SYS_ symbol" % (CALLS, lineno, sym))
-        for a in toks[3:]:
+        if len(args) > 3:
+            raise Unsupported("%s:%d: %s takes %d arguments; the kernel takes at most 3"
+                              % (CALLS, lineno, name, len(args)))
+        out.append(("call", name, sym, args))
+    return out
+
+
+def parse_args(where, lineno, toks):
+    args = []
+    if True:
+        for a in toks:
             m = re.match(r"^(int|str|buf|lit|pack)\((.*)\)$", a)
             if not m:
-                raise Unsupported("%s:%d: cannot parse argument %r" % (CALLS, lineno, a))
+                raise Unsupported("%s:%d: cannot parse argument %r" % (where, lineno, a))
             kind, body = m.group(1), m.group(2).strip()
             if kind == "pack":
                 fields = []
                 for f in body.split(","):
                     fm = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\d+)\s*:\s*(\d+)\s*$", f)
                     if not fm:
-                        raise Unsupported("%s:%d: pack field %r is not name:shift:width" % (CALLS, lineno, f))
+                        raise Unsupported("%s:%d: pack field %r is not name:shift:width" % (where, lineno, f))
                     fields.append((fm.group(1), int(fm.group(2)), int(fm.group(3))))
                 for fname, sh, w in fields:
                     if sh + w > 64:
-                        raise Unsupported("%s:%d: field %s runs past bit 64" % (CALLS, lineno, fname))
+                        raise Unsupported("%s:%d: field %s runs past bit 64" % (where, lineno, fname))
                 out_fields = sorted(fields, key=lambda t: -t[1])
                 for i in range(len(out_fields) - 1):           # overlapping fields = silent corruption
                     fa, sa, wa = out_fields[i]
                     fb, sb, wb = out_fields[i + 1]
                     if sb + wb > sa:
-                        raise Unsupported("%s:%d: fields %s and %s overlap" % (CALLS, lineno, fa, fb))
+                        raise Unsupported("%s:%d: fields %s and %s overlap" % (where, lineno, fa, fb))
                 args.append(("pack", fields))
             else:
                 args.append((kind, body))
-        if len(args) > 3:
-            raise Unsupported("%s:%d: %s takes %d arguments; the kernel takes at most 3"
-                              % (CALLS, lineno, name, len(args)))
-        out.append((name, sym, args))
-    return out
+    return args
 
 
 def call_params(args):
@@ -264,9 +298,12 @@ BANNER_PACK = """\
 """
 
 
-def render_pack(calls):
+def render_pack(entries):
     c = [BANNER_PACK]
-    for name, sym, args in calls:
+    for e in entries:
+        if e[0] != "call":
+            continue                       # a wait's start/poll take plain arguments
+        _, name, sym, args = e
         letters = "abc"
         for i, (kind, body) in enumerate(args):
             if kind != "pack":
@@ -282,6 +319,47 @@ def render_pack(calls):
     c.append("#endif /* LOGIT_PACK_H */")
     c.append("")
     return "\n".join(c)
+
+
+# Emitted verbatim when the description has any `wait`. The loop is written once
+# here rather than generated per operation: what differs between operations is
+# the protocol (which syscall polls, what pending looks like, what failure looks
+# like), and that is exactly what the .abi states.
+WAIT_PRELUDE = """
+# ---- waiting ----
+# Logit exposes these as start + poll: there is no in-kernel wait queue for them,
+# so the caller spins and yields. Each call site used to write that loop itself,
+# with its own retry count, and answer the same value for "failed" and "gave up".
+
+_wait_t = Time()
+
+# Seconds since midnight, off the RTC. Second granularity is what struct
+# logit_time offers; there is no monotonic millisecond source in the ABI.
+def now_s():
+    get_time(_wait_t)
+    return (_wait_t.hour * 60 + _wait_t.minute) * 60 + _wait_t.second
+
+# The deadline is real seconds, not a retry count -- a count means a different
+# amount of time on every machine and every load. The three outcomes stay
+# distinct: a value is returned, a failure raises, a timeout raises something
+# else. Conflating the last two is what made sys.dns() answer 0 both when a name
+# did not resolve and when the loop simply ran out.
+def await_(poll, pending_neg, pending_val, has_fail, fail_val, timeout_s, label):
+    start = now_s()
+    while true:
+        v = poll()
+        pending = v < 0 if pending_neg else v == pending_val
+        if not pending:
+            if has_fail and v == fail_val:
+                raise label + ": failed"
+            return v
+        now = now_s()
+        if now < start:
+            now = now + 86400            # the RTC clock wrapped past midnight
+        if now - start >= timeout_s:
+            raise label + ": timed out after " + str(timeout_s) + "s"
+        sys_yield()
+"""
 
 
 BANNER_AS = """\
@@ -336,15 +414,38 @@ def render():
             a.append("    [\"%s\", %d, %d, \"%s\"]%s" % (fname, off, fsize, kind, comma))
         a.append("])")
 
-    if calls:
+    plain = [e for e in calls if e[0] == "call"]
+    waits = [e for e in calls if e[0] == "wait"]
+
+    if plain:
         a.append("")
         a.append("# ---- calls (include/abi/logit_calls.abi) ----")
-        for name, sym, args in calls:
-            params = call_params(args)
+        for _, name, sym, args in plain:
             a.append("")
-            a.append("def %s(%s):" % (name, ", ".join(params)))
+            a.append("def %s(%s):" % (name, ", ".join(call_params(args))))
             exprs = [sym] + [as_arg_expr(k, b) for k, b in args]
             a.append("    return syscall(%s)" % ", ".join(exprs))
+
+    if waits:
+        a.append(WAIT_PRELUDE.rstrip("\n"))
+        for _, name, start_sym, poll_sym, args, pending, fail in waits:
+            params = call_params(args)
+            a.append("")
+            a.append("def %s_start(%s):" % (name, ", ".join(params)))
+            exprs = [start_sym] + [as_arg_expr(k, b) for k, b in args]
+            a.append("    return syscall(%s)" % ", ".join(exprs))
+            a.append("")
+            a.append("def %s_poll():" % name)
+            a.append("    return syscall(%s)" % poll_sym)
+            a.append("")
+            a.append("def wait_%s(%s):" % (name, ", ".join(params + ["timeout_s"])))
+            a.append("    if %s_start(%s) < 0:" % (name, ", ".join(params)))
+            a.append("        raise \"%s: cannot start\"" % name)
+            a.append("    return await_(%s_poll, %s, %d, %s, %d, timeout_s, \"%s\")"
+                     % (name,
+                        "true" if pending[0] == "lt" else "false", pending[1],
+                        "true" if fail is not None else "false", fail if fail is not None else 0,
+                        name))
     a.append("")
 
     c = [BANNER_INC]

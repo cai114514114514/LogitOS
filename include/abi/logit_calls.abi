@@ -40,3 +40,26 @@ call gui_poll_event SYS_POLL_EVENT     buf(ev)
 call ui_dark_query  SYS_UI_DARK        lit(-1)
 call ui_dark_set    SYS_UI_DARK        int(on)
 call sys_yield      SYS_YIELD
+call get_time       SYS_GET_TIME       buf(t)
+
+# ---- operations you have to wait for ----
+#   wait <name> <START> <POLL> <arg>... pending(<pred>) [fail(eq:<value>)]
+#
+# Logit has no blocking form for these. The kernel starts the operation and the
+# caller polls, because there is no in-kernel wait queue for them -- the NIC is
+# polled and net_poll() is pumped from the window manager's loop. So every caller
+# wrote its own spin loop, and the two facts that make such a loop correct --
+# what "still pending" looks like, and what "failed" looks like -- were in a
+# header comment:
+#
+#   SYS_NET_DNS_RESULT 25 /* -> resolved IP, 0 pending, 0xFFFFFFFF failed */
+#
+# Stated here instead, they generate the loop, which is then written once rather
+# than once per call site with a different magic retry count each time.
+#
+# pending(eq:V)  still running while the poll returns exactly V
+# pending(lt:0)  still running while the poll returns a negative value
+# fail(eq:V)     V means the operation failed (absent: failure is indistinguishable
+#                from still-pending, so only a timeout can end the wait)
+wait dns  SYS_NET_DNS  SYS_NET_DNS_RESULT  str(name) pending(eq:0)  fail(eq:0xFFFFFFFF)
+wait ping SYS_NET_PING SYS_NET_PING_RTT    int(ip)   pending(lt:0)

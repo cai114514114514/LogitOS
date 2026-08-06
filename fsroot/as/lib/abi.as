@@ -108,3 +108,62 @@ def ui_dark_set(on):
 
 def sys_yield():
     return syscall(SYS_YIELD)
+
+def get_time(t):
+    return syscall(SYS_GET_TIME, addr(t))
+
+# ---- waiting ----
+# Logit exposes these as start + poll: there is no in-kernel wait queue for them,
+# so the caller spins and yields. Each call site used to write that loop itself,
+# with its own retry count, and answer the same value for "failed" and "gave up".
+
+_wait_t = Time()
+
+# Seconds since midnight, off the RTC. Second granularity is what struct
+# logit_time offers; there is no monotonic millisecond source in the ABI.
+def now_s():
+    get_time(_wait_t)
+    return (_wait_t.hour * 60 + _wait_t.minute) * 60 + _wait_t.second
+
+# The deadline is real seconds, not a retry count -- a count means a different
+# amount of time on every machine and every load. The three outcomes stay
+# distinct: a value is returned, a failure raises, a timeout raises something
+# else. Conflating the last two is what made sys.dns() answer 0 both when a name
+# did not resolve and when the loop simply ran out.
+def await_(poll, pending_neg, pending_val, has_fail, fail_val, timeout_s, label):
+    start = now_s()
+    while true:
+        v = poll()
+        pending = v < 0 if pending_neg else v == pending_val
+        if not pending:
+            if has_fail and v == fail_val:
+                raise label + ": failed"
+            return v
+        now = now_s()
+        if now < start:
+            now = now + 86400            # the RTC clock wrapped past midnight
+        if now - start >= timeout_s:
+            raise label + ": timed out after " + str(timeout_s) + "s"
+        sys_yield()
+
+def dns_start(name):
+    return syscall(SYS_NET_DNS, addr(name))
+
+def dns_poll():
+    return syscall(SYS_NET_DNS_RESULT)
+
+def wait_dns(name, timeout_s):
+    if dns_start(name) < 0:
+        raise "dns: cannot start"
+    return await_(dns_poll, false, 0, true, 4294967295, timeout_s, "dns")
+
+def ping_start(ip):
+    return syscall(SYS_NET_PING, ip)
+
+def ping_poll():
+    return syscall(SYS_NET_PING_RTT)
+
+def wait_ping(ip, timeout_s):
+    if ping_start(ip) < 0:
+        raise "ping: cannot start"
+    return await_(ping_poll, true, 0, false, 0, timeout_s, "ping")

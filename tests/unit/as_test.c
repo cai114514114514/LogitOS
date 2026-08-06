@@ -238,11 +238,31 @@ static const char *MATHX =
     "def quad(x):\n"
     "    return square(square(x))\n";
 
+/* Read a repo file whole (the harness runs from the repo root). Never freed:
+ * as_add_module_source keeps the pointer for the whole run. */
+static char *slurp_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("FATAL: cannot open %s (run from the repo root)\n", path); exit(1); }
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) { printf("FATAL: cannot read %s\n", path); exit(1); }
+    buf[n] = 0;
+    fclose(f);
+    return buf;
+}
+
 int main(void)
 {
     as_add_module_source("mathx", MATHX);
     as_add_module_source("badmod", "x = 1 / 0\n");   /* item D: raises on import */
     as_add_module_source("goodmod", "v = 42\n");
+    /* The REAL generated abi.as, not a copy of it: the wait driver in there is
+     * the thing under test, and test-as-os does not reach it (sysdemo uses files
+     * and processes, never the network). On the host as_ll_syscall stubs to -1,
+     * so get_time() writes nothing and now_s() is a constant 0 -- which makes the
+     * timeout path deterministic instead of a test that has to sleep. */
+    as_add_module_source("abi", slurp_file("fsroot/as/lib/abi.as"));
 
     /* arithmetic + precedence */
     ok("prec",   "print(1 + 2 * 3)\n", "7\n");
@@ -906,6 +926,32 @@ int main(void)
     ok("massign_expr","a, b = 2 + 3, \"x\" + \"y\"\nprint(a, b)\n", "5 xy\n");
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
+
+    /* ---- the generated wait driver -----------------------------------------
+     * Logit has no blocking form for DNS or ping: the kernel starts, the caller
+     * polls. Every call site used to write that loop with its own retry count,
+     * and answer one value for "failed", "timed out" and "no interface" alike.
+     * The protocol now lives in include/abi/logit_calls.abi and the loop is
+     * generated once; these drive it with their own poll function, which is what
+     * taking one as an argument buys.
+     * Nothing else covers this: test-as-os never touches the network. */
+    ok("await_value",   "from abi import await_\nc = [0]\ndef poll():\n    c[0] = c[0] + 1\n"
+                        "    return 0 if c[0] < 3 else 42\n"
+                        "print(await_(poll, false, 0, false, 0, 60, \"t\"), c[0])\n", "42 3\n");
+    ok("await_pend_neg","from abi import await_\nc = [0]\ndef poll():\n    c[0] = c[0] + 1\n"
+                        "    return -1 if c[0] < 3 else 9\n"
+                        "print(await_(poll, true, 0, false, 0, 60, \"t\"))\n", "9\n");
+    /* failure and timeout are DIFFERENT outcomes, which is the whole point */
+    ok("await_fail",    "from abi import await_\ndef poll():\n    return 7\n"
+                        "try:\n    await_(poll, false, 0, true, 7, 60, \"dns\")\nexcept e:\n    print(e)\n",
+                        "dns: failed\n");
+    ok("await_timeout", "from abi import await_\ndef poll():\n    return 0\n"
+                        "try:\n    await_(poll, false, 0, true, 7, 0, \"dns\")\nexcept e:\n    print(e)\n",
+                        "dns: timed out after 0s\n");
+    /* a value that merely looks like the failure sentinel of ANOTHER operation
+       is an ordinary result here */
+    ok("await_no_fail", "from abi import await_\ndef poll():\n    return 7\n"
+                        "print(await_(poll, false, 0, false, 0, 60, \"t\"))\n", "7\n");
 
     /* ---- tracebacks: a runtime error says WHERE, not just what ---------------
      * Every Frame already knew its function and its instruction pointer; the
