@@ -57,7 +57,8 @@ typedef struct {
 
 /* --- objects --- */
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
-               O_CLASS, O_INSTANCE, O_BOUND_METHOD } ObjType;
+               O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE,
+               O__COUNT } ObjType;   /* sentinel: sizes the descriptor table in object.c */
 struct Obj { ObjType type; uint8_t marked; Obj *next; };   /* next: alloc list; marked: GC */
 
 /* Wrapping an object copies its type into the tag -- valid because an object's
@@ -153,6 +154,16 @@ typedef struct {
  * bytes at addr + i*width (sign-extended on read when is_signed). */
 typedef struct { Obj obj; uint64_t addr; int width; int is_signed; } ObjPtr;
 
+/* range() -- an arithmetic sequence computed on demand, never materialised.
+ * It used to build an ObjList, so `for i in range(1000000)` cost 16 MB of Value
+ * array; on Logit /bin/as runs in a 24 MiB static arena, which made big loops a
+ * correctness problem rather than a slow path. Nothing in the bytecode had to
+ * change for this: `for x in seq` compiles to OP_LEN + OP_INDEX_GET, so a type
+ * that answers both is iterable, and print/str/len/`in`/indexing are the rest of
+ * the surface a list exposed. It is immutable: item assignment and .append()
+ * fail, as they do for a string. */
+typedef struct { Obj obj; int64_t start, step, count; } ObjRange;
+
 /* A module: a name -> value namespace populated by running a .as file's top
  * level. `mod.x` reads `vars`; functions defined in it resolve globals here. */
 typedef struct { ObjStr *name; Value val; } NameVal;
@@ -180,6 +191,10 @@ typedef struct ObjModule {
 #define AS_CLASS(v)        ((ObjClass *)AS_OBJ(v))
 #define IS_INSTANCE(v)     ((v).tag == OBJ_TAG(O_INSTANCE))
 #define AS_INSTANCE(v)     ((ObjInstance *)AS_OBJ(v))
+#define IS_RANGE(v)        ((v).tag == OBJ_TAG(O_RANGE))
+#define AS_RANGE(v)        ((ObjRange *)AS_OBJ(v))
+/* i-th element; the caller bounds-checks against ->count. */
+#define RANGE_AT(r, i)     ((r)->start + (r)->step * (i))
 #define IS_BOUND_METHOD(v) ((v).tag == OBJ_TAG(O_BOUND_METHOD))
 #define AS_BOUND_METHOD(v) ((ObjBoundMethod *)AS_OBJ(v))
 
@@ -253,6 +268,7 @@ int       as_dict_remove(ObjDict *d, Value key);           /* 1 removed, 0 absen
 ObjList  *as_dict_keys(ObjDict *d);
 ObjList  *as_dict_values(ObjDict *d);
 ObjPtr   *as_ptr_new(uint64_t addr, int width, int is_signed);
+ObjRange *as_range_new(int64_t start, int64_t step, int64_t count);
 void      as_chunk_write(ObjFn *fn, uint8_t b);
 int       as_chunk_const(ObjFn *fn, Value v);
 int       as_value_eq(Value a, Value b);

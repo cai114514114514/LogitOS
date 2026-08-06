@@ -279,9 +279,10 @@ static Value native_print(int argc, Value *args)
 static Value native_len(int argc, Value *args)
 {
     if (argc != 1) return as_native_fail("len() takes exactly 1 argument");
-    if (IS_LIST(args[0])) return INT_VAL(AS_LIST(args[0])->count);
-    if (IS_STR(args[0]))  return INT_VAL(AS_STR(args[0])->len);
-    if (IS_DICT(args[0])) return INT_VAL(AS_DICT(args[0])->live);
+    if (IS_LIST(args[0]))  return INT_VAL(AS_LIST(args[0])->count);
+    if (IS_STR(args[0]))   return INT_VAL(AS_STR(args[0])->len);
+    if (IS_DICT(args[0]))  return INT_VAL(AS_DICT(args[0])->live);
+    if (IS_RANGE(args[0])) return INT_VAL(AS_RANGE(args[0])->count);
     return as_native_fail("len() needs a list, string, or dict");
 }
 /* ---- M21-P3 self-hosting natives: byte/char primitives + portable file I/O.
@@ -399,20 +400,24 @@ static Value native_range(int argc, Value *args)
     else if (argc == 3) { start = AS_INT(args[0]); stop = AS_INT(args[1]); step = AS_INT(args[2]); }
     else return as_native_fail("range() takes 1 to 3 arguments");
     if (step == 0) return as_native_fail("range() step must not be zero");
-    ObjList *l = as_list_new();
-    if (!l) return NIL_VAL;                  /* g_oom set; dispatch unwinds */
-    /* i += step guarded against signed overflow: without it range(INT64_MAX-1,
-     * INT64_MAX, 2) wraps i negative and loops until OOM. */
-    if (step > 0) for (int64_t i = start; i < stop; ) {
-        as_list_push(l, INT_VAL(i));
-        if (i > INT64_MAX - step) break;
-        i += step;
-    } else for (int64_t i = start; i > stop; ) {
-        as_list_push(l, INT_VAL(i));
-        if (i < INT64_MIN - step) break;
-        i += step;
+    /* Element count by division rather than by iterating: the sequence is never
+     * materialised, and this is also what stops range(0, INT64_MAX) from being a
+     * loop at all. Unsigned span arithmetic, because stop - start overflows for a
+     * range wider than INT64_MAX. */
+    int64_t count = 0;
+    if (step > 0 && start < stop) {
+        uint64_t span = (uint64_t)stop - (uint64_t)start;
+        uint64_t n = (span + (uint64_t)step - 1) / (uint64_t)step;
+        count = n > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)n;
+    } else if (step < 0 && start > stop) {
+        uint64_t span = (uint64_t)start - (uint64_t)stop;
+        uint64_t mag  = (uint64_t)(-(step + 1)) + 1;      /* |step|, correct at INT64_MIN */
+        uint64_t n = (span + mag - 1) / mag;
+        count = n > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)n;
     }
-    return OBJ_VAL(l);
+    ObjRange *r = as_range_new(start, step, count);
+    if (!r) return NIL_VAL;                  /* g_oom set; dispatch unwinds */
+    return OBJ_VAL(r);
 }
 void as_define_native(const char *name, NativeFn fn)
 {
@@ -857,6 +862,11 @@ static int run_until(int floor)
                 ObjList *l = AS_LIST(obj); int64_t i = AS_INT(idx); if (i < 0) i += l->count;
                 if (i < 0 || i >= l->count) { runtime_error("list index out of range"); goto err; }
                 push(l->items[i]);
+            } else if (IS_RANGE(obj)) {
+                if (!IS_INT(idx)) { runtime_error("list index must be an integer"); goto err; }
+                ObjRange *r = AS_RANGE(obj); int64_t i = AS_INT(idx); if (i < 0) i += r->count;
+                if (i < 0 || i >= r->count) { runtime_error("list index out of range"); goto err; }
+                push(INT_VAL(RANGE_AT(r, i)));
             } else if (IS_STR(obj)) {
                 if (!IS_INT(idx)) { runtime_error("string index must be an integer"); goto err; }
                 ObjStr *s = AS_STR(obj); int64_t i = AS_INT(idx); if (i < 0) i += s->len;
@@ -892,9 +902,10 @@ static int run_until(int floor)
         }
         op_LEN: {
             Value v = pop();
-            if (IS_LIST(v))      push(INT_VAL(AS_LIST(v)->count));
-            else if (IS_STR(v))  push(INT_VAL(AS_STR(v)->len));
-            else if (IS_DICT(v)) push(INT_VAL(AS_DICT(v)->live));
+            if (IS_LIST(v))       push(INT_VAL(AS_LIST(v)->count));
+            else if (IS_STR(v))   push(INT_VAL(AS_STR(v)->len));
+            else if (IS_DICT(v))  push(INT_VAL(AS_DICT(v)->live));
+            else if (IS_RANGE(v)) push(INT_VAL(AS_RANGE(v)->count));
             else { runtime_error("object has no length"); goto err; }
             DISPATCH();
         }
@@ -1137,6 +1148,14 @@ static int run_until(int floor)
                     Value e = l->items[i];
                     int eq = (IS_NUM(item) && IS_NUM(e)) ? (AS_NUM(item) == AS_NUM(e)) : as_value_eq(item, e);
                     if (eq) { found = 1; break; }
+                }
+            } else if (IS_RANGE(cont)) {
+                /* Membership by arithmetic rather than by walking: `x in range(0, N)`
+                 * is O(1) where the list it replaced was O(N). */
+                ObjRange *r = AS_RANGE(cont);
+                if (IS_INT(item) && r->count > 0) {
+                    int64_t d = AS_INT(item) - r->start;
+                    found = (d % r->step == 0) && (d / r->step) >= 0 && (d / r->step) < r->count;
                 }
             } else if (IS_STR(cont)) {
                 if (!IS_STR(item)) { runtime_error("substring test needs a string on the left of 'in'"); goto err; }

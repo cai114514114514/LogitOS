@@ -129,6 +129,20 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
         put(k, "]", 1);
         return;
     }
+    case O_RANGE: {
+        /* Prints exactly as the list it replaced did -- range(3) is "[0, 1, 2]",
+         * and the in-tree tests assert those bytes. Depth-capped like the other
+         * containers even though a range can't nest, so the two stay symmetric. */
+        if (depth >= PRINT_MAX_DEPTH) { putz(k, "[...]"); return; }
+        ObjRange *r = AS_RANGE(v);
+        put(k, "[", 1);
+        for (int64_t i = 0; i < r->count && !sink_full(k); i++) {
+            if (i) put(k, ", ", 2);
+            put(k, tmp, fmt_i64(tmp, (int)sizeof tmp, RANGE_AT(r, i)));
+        }
+        put(k, "]", 1);
+        return;
+    }
     case O_DICT: {
         if (depth >= PRINT_MAX_DEPTH) { putz(k, "{...}"); return; }
         ObjDict *d = AS_DICT(v);
@@ -160,6 +174,7 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
     case O_INSTANCE:     put(k, "<", 1); putstr(k, AS_INSTANCE(v)->klass->name); putz(k, " instance>"); return;
     case O_BOUND_METHOD: putz(k, "<bound method>"); return;
     case O_UPVALUE:      break;   /* never user-visible: lives only in a closure */
+    case O__COUNT:       break;   /* not a type; listed so -Wswitch still catches real ones */
     }
     putz(k, "<obj>");
 }

@@ -124,10 +124,14 @@ static const ObjInfo OBJ_INFO[] = {
     [O_CLASS]        = { "class",        sizeof(ObjClass),       tr_class,    NULL        },
     [O_INSTANCE]     = { "instance",     sizeof(ObjInstance),    tr_instance, NULL        },
     [O_BOUND_METHOD] = { "bound method", sizeof(ObjBoundMethod), tr_bound,    NULL        },
+    [O_RANGE]        = { "range",        sizeof(ObjRange),       NULL,        NULL        },
 };
 /* A type added to the enum without a row here would read a zeroed descriptor:
- * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). */
-_Static_assert(sizeof OBJ_INFO / sizeof OBJ_INFO[0] == O_BOUND_METHOD + 1,
+ * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). With
+ * designated initializers the array only reaches O__COUNT entries once the last
+ * type has a row, so this needs no editing when a type is added -- it just fires.
+ * (It already has: O_RANGE was caught by it.) */
+_Static_assert(sizeof OBJ_INFO / sizeof OBJ_INFO[0] == O__COUNT,
                "OBJ_INFO is missing a row for some ObjType");
 
 const char *as_obj_type_name(Obj *o) { return OBJ_INFO[o->type].name; }
@@ -430,6 +434,14 @@ ObjPtr *as_ptr_new(uint64_t addr, int width, int is_signed)
     if (!p) return NULL;
     p->addr = addr; p->width = width; p->is_signed = is_signed;
     return p;
+}
+
+ObjRange *as_range_new(int64_t start, int64_t step, int64_t count)
+{
+    ObjRange *r = (ObjRange *)alloc_obj(O_RANGE);
+    if (!r) return NULL;
+    r->start = start; r->step = step; r->count = count;
+    return r;
 }
 
 void as_chunk_write(ObjFn *fn, uint8_t b)

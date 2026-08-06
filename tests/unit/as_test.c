@@ -868,6 +868,26 @@ int main(void)
     err("mcount",     "a, b = 1, 2, 3\n");
     err("munpack_few","a, b, c = [1, 2]\n");
 
+    /* ---- range is lazy: it must stay indistinguishable from the list it was ----
+     * range() computes elements on demand instead of building an ObjList, so a
+     * 2,000,000-iteration loop costs 1.7 MB instead of 33 MB -- which on Logit,
+     * where /bin/as has a 24 MiB static arena, is the difference between running
+     * and not. Nothing in the bytecode changed: `for x in seq` compiles to
+     * OP_LEN + OP_INDEX_GET, and answering those two is what makes a type
+     * iterable. These pin the rest of the surface a list used to provide. */
+    ok("range_len",   "print(len(range(1000000)))\n", "1000000\n");
+    ok("range_index", "print(range(10)[3], range(10)[-1])\n", "3 9\n");
+    ok("range_neg",   "print(range(5, 0, -1))\n", "[5, 4, 3, 2, 1]\n");
+    ok("range_in",    "print(3 in range(0, 10, 3), 4 in range(0, 10, 3), 12 in range(0, 10, 3))\n",
+                      "true false false\n");
+    ok("range_str",   "print(str(range(4)))\n", "[0, 1, 2, 3]\n");
+    ok("range_seq",   "def f(xs):\n    t = 0\n    for x in xs:\n        t = t + x\n    return t\n"
+                      "print(f(range(1, 5)))\n", "10\n");
+    ok("range_huge",  "n = 0\nfor i in range(500000):\n    n = n + 1\nprint(n)\n", "500000\n");
+    err("range_set",  "r = range(5)\nr[0] = 9\n");
+    err("range_grow", "r = range(5)\nr.append(9)\n");
+    err("range_oob",  "print(range(3)[3])\n");
+
     /* ---- global resolution: the cases a global-lookup cache gets wrong ----
      * A global read memoises where the name resolved (ObjFn.gcache). These pin
      * the two events that must invalidate it: a module-level def taking over a
