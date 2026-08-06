@@ -260,6 +260,16 @@ static void load(const char *u)
     g_css_budget = 24;               /* fetch external <link> stylesheets, then re-style */
     g_css_nseen = 0;
     int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
+    /* report what actually arrived: sheet count + KiB (debug aid for CDN fetch issues) */
+    { char st[64]; int p = 0; const char *pre = "loaded, ";
+      while (*pre) st[p++] = *pre++;
+      int v = g_css_nseen, d = 100, started = 0;
+      while (d) { int dig = v / d; if (dig || started || d == 1) { st[p++] = (char)('0' + dig); started = 1; } v %= d; d /= 10; }
+      const char *mid = " sheets, ";
+      while (*mid) st[p++] = *mid++;
+      v = css2 / 1024; d = 10000; started = 0;
+      while (d) { int dig = v / d; if (dig || started || d == 1) { st[p++] = (char)('0' + dig); started = 1; } v %= d; d /= 10; }
+      st[p++] = 'K'; st[p] = 0; set_status(st); }
     if (css2 > css_len) {
         css_len = css2;
         css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
@@ -269,7 +279,6 @@ static void load(const char *u)
         ph = layout_height();
         redraw(0);                   /* re-paint with the page's real stylesheets */
     }
-    set_status("loaded");
     if (layout_load_images(8) > 0) { /* ... then fetch a few images and repaint */
         ph = layout_height();
         redraw(0);

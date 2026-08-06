@@ -69,6 +69,30 @@ int main(void)
     CHECK(first_p_y >= h1_bottom, "paragraph starts below the h1");
     CHECK(h > h1_bottom + p_lh, "document height > h1 + one paragraph line");
 
+    /* flex container with buttons holding bare text: the text must survive as
+     * an anonymous flex item, on the same row as the other button's text */
+    const char *html2 =
+        "<body><div class='bar'>"
+        "<button class='b'>Platform</button>"
+        "<button class='c'>Solutions</button>"
+        "</div></body>";
+    const char *css2 = ".bar{display:flex}.b{display:flex}";
+    struct node *r2 = dom_parse(html2, (int)strlen(html2));
+    CHECK(r2 != NULL, "flex dom_parse");
+    css_apply(r2, css2, (int)strlen(css2));
+    layout_page(r2, 400);
+    n = layout_count();
+    it = layout_items();
+    int py = -1, sy = -1;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type != IT_TEXT) continue;
+        if (it[i].len == 8 && !memcmp(it[i].text, "Platform", 8)) py = it[i].y;
+        if (it[i].len == 9 && !memcmp(it[i].text, "Solutions", 9)) sy = it[i].y;
+    }
+    CHECK(py >= 0, "bare text inside flex button emitted");
+    CHECK(sy >= 0, "second button text emitted");
+    CHECK(py >= 0 && sy >= 0 && py == sy, "both button labels share the flex row");
+
     printf(fail ? "\nLAYOUT TEST FAILED\n" : "\nLAYOUT TEST PASSED\n");
     return fail;
 }

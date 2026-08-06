@@ -360,6 +360,7 @@ static css_select_ctx *g_ctx;
 static css_stylesheet *g_ua_sheet;
 static css_unit_ctx g_unit;
 static css_media g_media;
+static int g_vw, g_vh;          /* last viewport set via css_viewport (0 = never) */
 
 static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_string **abs)
 { (void)pw; (void)base; *abs = lwc_string_ref(rel); return CSS_OK; }
@@ -382,6 +383,7 @@ static const char UA_CSS[] =
     "ul{margin:8px 0;padding-left:28px}ol{margin:8px 0;padding-left:28px}"
     "li{display:list-item}"
     "pre{font-family:monospace;margin:8px 0}code{font-family:monospace}"
+    "svg{display:inline}"
     "script,style,head,title,meta,link,noscript,template,[hidden]{display:none}";
 
 static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
@@ -404,14 +406,17 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
 
 void css_init(void)
 {
+    /* Honour a viewport set before init (css_apply lazily inits on first use,
+     * which must not clobber an explicit css_viewport call). */
+    int vw = g_vw ? g_vw : 760, vh = g_vh ? g_vh : 540;
     memset(&g_media, 0, sizeof g_media);
     g_media.type = CSS_MEDIA_SCREEN;
-    g_media.width  = INTTOFIX(760);
-    g_media.height = INTTOFIX(540);
+    g_media.width  = INTTOFIX(vw);
+    g_media.height = INTTOFIX(vh);
 
     memset(&g_unit, 0, sizeof g_unit);
-    g_unit.viewport_width  = INTTOFIX(760);
-    g_unit.viewport_height = INTTOFIX(540);
+    g_unit.viewport_width  = INTTOFIX(vw);
+    g_unit.viewport_height = INTTOFIX(vh);
     g_unit.font_size_default = INTTOFIX(16);
     g_unit.font_size_minimum = INTTOFIX(6);
     g_unit.device_dpi = INTTOFIX(96);
@@ -424,6 +429,7 @@ void css_init(void)
 
 void css_viewport(int w, int h)
 {
+    g_vw = w; g_vh = h;
     g_media.width  = INTTOFIX(w);
     g_media.height = INTTOFIX(h);
     g_unit.viewport_width  = INTTOFIX(w);
@@ -541,6 +547,10 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       if (v == CSS_VISIBILITY_HIDDEN || v == CSS_VISIBILITY_COLLAPSE) o->hidden = 1; }
     { css_fixed op;
       if (css_computed_opacity(cs, &op) == CSS_OPACITY_SET && op <= 0) o->hidden = 1; }
+    { uint8_t p = css_computed_position(cs);
+      /* absolute: out of flow (dropdowns/overlays would smear the normal
+       * flow). fixed stays in flow -- fixed headers sit at the top anyway. */
+      if (p == CSS_POSITION_ABSOLUTE) o->pos_abs = 1; }
 }
 
 /* ---------- traversal ---------- */

@@ -26,6 +26,11 @@ static struct item *additem(int type)
 static int any_border(const struct cstyle *st)
 { return st->border_w[0] || st->border_w[1] || st->border_w[2] || st->border_w[3]; }
 
+/* Out-of-layout nodes: display:none, or position:absolute/fixed (we don't do
+ * positioned overlays -- they'd smear hidden menus over the normal flow). */
+static int skipped(struct node *n)
+{ struct cstyle *st = n->style; return st && (st->display == DISP_NONE || st->pos_abs); }
+
 /* Fill an IT_RECT (bg + per-edge borders + radius) at x/y/w; h set by caller. */
 static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int y, int w)
 {
@@ -102,11 +107,13 @@ static void flow_children(struct iflow *f, struct node *n, const char *href)
 }
 
 /* flow a single node into the inline context */
+static int layout_block(struct node *n, int x, int y, int w);   /* fwd */
+static int is_block(struct node *n);                            /* fwd */
 static void flow_node(struct iflow *f, struct node *c, const char *href)
 {
     struct cstyle *st = c->style;
-    if (st && st->display == DISP_NONE) return;
-    if (c->parent && c->parent->style && ((struct cstyle *)c->parent->style)->display == DISP_NONE) return;
+    if (skipped(c)) return;
+    if (c->parent && skipped(c->parent)) return;
 
     if (c->type == N_TEXT) {
         struct cstyle *ps = c->parent && c->parent->style ? c->parent->style : st;
@@ -114,6 +121,30 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         return;
     }
     if (c->type != N_ELEM) return;
+
+    /* A block box inside an inline context breaks the inline flow (CSS splits
+     * the surrounding inline into anonymous block boxes). Custom elements
+     * (<react-partial>, <turbo-frame>, ...) default to display:inline, so
+     * without this their whole block subtree would be flattened into one
+     * smeared inline run. */
+    if (is_block(c)) {
+        newline(f);
+        int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
+        int bx = f->x0, bw = f->x1 - f->x0;
+        int bgidx = -1;
+        if (st && (st->has_bg || any_border(st))) {
+            struct item *bg = additem(IT_RECT);
+            if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, f->y, bw); }
+        }
+        int inner = layout_block(c, bx + pl, f->y + pt, bw - pl - pr);
+        int ch = (inner - f->y) + pb;
+        if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+        if (st && ch < st->font_px) ch = st->font_px;
+        if (bgidx >= 0) items[bgidx].h = ch;
+        f->y += ch;
+        f->x = f->x0; f->lineh = 0; f->line_started = 0; f->line_start = nitem;
+        return;
+    }
 
     const char *h2 = href;
     if (tag_eq(c->tag, "a")) { const char *u = dom_attr(c, "href"); if (u) h2 = u; }
@@ -168,7 +199,7 @@ static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top
         for (struct node *s = li->parent->first_child; s && s != li; s = s->next)
             if (s->type == N_ELEM && tag_eq(s->tag, "li")) {
                 struct cstyle *ss = s->style;
-                if (!(ss && ss->display == DISP_NONE)) idx++;
+                if (!skipped(s)) idx++;
             }
         idx++;
     }
@@ -216,7 +247,7 @@ static int layout_block(struct node *n, int x, int y, int w)
     }
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *st = c->style;
-        if (st && st->display == DISP_NONE) continue;
+        if (skipped(c)) continue;
         if (is_block(c)) {
             int ml = st->ml<0?0:st->ml, mr = st->mr<0?0:st->mr;
             int bx = x + ml;
@@ -246,7 +277,7 @@ static int layout_block(struct node *n, int x, int y, int w)
             struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
             while (c && !is_block(c)) {
                 struct cstyle *cs = c->style;
-                if (!(cs && cs->display == DISP_NONE)) flow_node(&f, c, 0);
+                if (!skipped(c)) flow_node(&f, c, 0);
                 struct node *nx = c->next;
                 if (!nx || is_block(nx)) break;
                 c = nx;
@@ -261,27 +292,136 @@ static int layout_block(struct node *n, int x, int y, int w)
 /* Lay out a flex container's element children in a single row (a pragmatic
  * subset: row direction, no wrap; items with a CSS width keep it, the rest
  * split the remaining space; cross-axis tops align). Enough to put nav bars and
- * button rows side-by-side instead of stacking them vertically. */
+ * button rows side-by-side instead of stacking them vertically.
+ * Bare text / inline siblings participate too: CSS wraps them in anonymous
+ * flex items (a <button>Platform<svg/></button> must not lose "Platform"). */
+
+/* Word-wise width of one text node as a single unwrapped line. */
+static int measure_words(const char *s, int len, int px, int mono)
+{
+    int w = 0, i = 0;
+    while (i < len) {
+        while (i < len && sp(s[i])) i++;
+        int ws = i; while (i < len && !sp(s[i])) i++;
+        if (i > ws) w += text_measure(s + ws, i - ws, px, mono) + px / 4;
+    }
+    return w;
+}
+
+/* Text width under an inline element (button label in a span, etc.). */
+static int flex_text_width(struct node *n, int px, int mono)
+{
+    int w = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (c->type == N_TEXT) w += measure_words(c->text, c->textlen, px, mono);
+        else if (c->type == N_ELEM) {
+            struct cstyle *st = c->style;
+            if (skipped(c)) continue;
+            w += flex_text_width(c, px, mono);
+        }
+    }
+    return w;
+}
+
+/* Max-content width of a subtree: text measured unwrapped, flex rows summed,
+ * block stacks take the widest child. Used to size auto flex items by content
+ * (real flexbox sizes flex:auto items this way instead of splitting space). */
+static int content_width(struct node *n, int px, int mono, int depth)
+{
+    if (depth > 32) return 0;
+    struct cstyle *st = n->style;
+    if (n->type == N_TEXT) return measure_words(n->text, n->textlen, px, mono);
+    if (n->type != N_ELEM) return 0;
+    if (skipped(n)) return 0;
+    if (tag_eq(n->tag, "img")) {
+        int iw = 0;
+        if (st && st->has_w && !st->w_pct) iw = st->width;
+        if (!iw) { const char *wa = dom_attr(n, "width"); if (wa) iw = atoi_(wa); }
+        return iw > 0 ? iw : 24;
+    }
+    int pad = (st ? st->pl + st->pr : 0);
+    if (st && st->has_w && !st->w_pct) return st->width + pad;
+    int cpx = st ? st->font_px : px, cmono = st ? st->mono : mono;
+    int row = st && st->display == DISP_FLEX;
+    int acc = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        int cw = content_width(c, cpx, cmono, depth + 1);
+        if (row) acc += cw; else if (cw > acc) acc = cw;
+    }
+    return acc + pad;
+}
+
+/* Measure one anonymous inline run starting at `first` as a single unwrapped
+ * line; *end gets the first node past the run (a block sibling or NULL). */
+static int flex_run(struct node *first, struct node **end, int px, int mono)
+{
+    int w = 0;
+    struct node *c = first;
+    for (; c; c = c->next) {
+        if (c->type == N_ELEM) {
+            struct cstyle *st = c->style;
+            if (skipped(c)) continue;
+            if (is_block(c)) break;
+            w += flex_text_width(c, px, mono);   /* inline element (button/svg icon etc.) */
+            continue;
+        }
+        if (c->type == N_TEXT) w += measure_words(c->text, c->textlen, px, mono);
+    }
+    *end = c;
+    return w;
+}
+
 static int layout_flex(struct node *n, int x, int y, int w)
 {
-    int fixed = 0, nauto = 0;
-    for (struct node *c = n->first_child; c; c = c->next) {
-        if (c->type != N_ELEM) continue;
+    struct cstyle *nst = n->style;
+    int fpx = nst ? nst->font_px : 16, fmono = nst ? nst->mono : 0;
+    /* Measure: explicit widths stay fixed; auto items size to their content
+     * (flex:auto semantics). Percentage widths resolve against the row. */
+    int fixed = 0, autosum = 0;
+    struct node *c = n->first_child;
+    while (c) {
+        if (c->type != N_ELEM || !is_block(c)) {
+            struct node *end;
+            autosum += flex_run(c, &end, fpx, fmono);
+            c = end;                     /* resume at the block that ended the run (or NULL) */
+            continue;
+        }
         struct cstyle *st = c->style;
-        if (st && st->display == DISP_NONE) continue;
+        if (skipped(c)) { c = c->next; continue; }
         int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
-        if (st && st->has_w) fixed += (st->w_pct ? w*st->width/100 : st->width) + ml + mr;
-        else { nauto++; fixed += ml + mr; }
+        fixed += ml + mr;
+        if (st && st->has_w && !st->w_pct) fixed += st->width;
+        else if (st && st->has_w && st->w_pct) fixed += w*st->width/100;
+        else autosum += content_width(c, fpx, fmono, 0);
+        c = c->next;
     }
     int avail = w - fixed; if (avail < 0) avail = 0;
-    int autow = nauto > 0 ? avail / nauto : 0;
+    /* Over-constrained row: shrink the content-sized items proportionally. */
+    int scale = (autosum > avail && autosum > 0) ? avail * 100 / autosum : 100;
     int cx = x, maxb = y;
-    for (struct node *c = n->first_child; c; c = c->next) {
-        if (c->type != N_ELEM) continue;
+    c = n->first_child;
+    while (c) {
+        if (c->type != N_ELEM || !is_block(c)) {
+            struct node *end;
+            int rw = flex_run(c, &end, fpx, fmono) * scale / 100;
+            if (rw > 0) {
+                struct iflow f = { cx, cx + rw, cx, y, 0, 0, ALIGN_LEFT, nitem };
+                for (struct node *r = c; r != end; r = r->next) flow_node(&f, r, 0);
+                newline(&f);
+                int rb = f.y + f.lineh;
+                if (rb > maxb) maxb = rb;
+            }
+            cx += rw;
+            c = end;
+            continue;
+        }
         struct cstyle *st = c->style;
-        if (st && st->display == DISP_NONE) continue;
+        if (skipped(c)) { c = c->next; continue; }
         int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
-        int iw = (st && st->has_w) ? (st->w_pct ? w*st->width/100 : st->width) : autow;
+        int iw;
+        if (st && st->has_w && !st->w_pct) iw = st->width;
+        else if (st && st->has_w && st->w_pct) iw = w*st->width/100;
+        else iw = content_width(c, fpx, fmono, 0) * scale / 100;
         if (iw < 0) iw = 0;
         cx += ml;
         int top = y + (st && st->mt > 0 ? st->mt : 0);
@@ -298,6 +438,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
         if (bgidx >= 0) items[bgidx].h = ch;
         if (top + ch > maxb) maxb = top + ch;
         cx += iw + mr;
+        c = c->next;
     }
     return maxb;
 }
@@ -321,7 +462,7 @@ static int tbl_widest_word(struct node *n, int px, int mono)
     int best = 0;
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *cs = c->style;
-        if (cs && cs->display == DISP_NONE) continue;
+        if (skipped(c)) continue;
         if (c->type == N_TEXT) {
             const char *s = c->text; int len = c->textlen, i = 0;
             while (i < len) {
@@ -346,7 +487,7 @@ static int tbl_cell_count(struct node *r)
     for (struct node *c = r->first_child; c; c = c->next) {
         if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
         struct cstyle *cs = c->style;
-        if (!(cs && cs->display == DISP_NONE)) n++;
+        if (!skipped(c)) n++;
     }
     return n;
 }
@@ -357,7 +498,7 @@ static int layout_table(struct node *t, int x, int y, int w)
     for (struct node *c = t->first_child; c && nr < TBL_MAXROWS; c = c->next) {
         if (c->type != N_ELEM) continue;
         struct cstyle *cs = c->style;
-        if (cs && cs->display == DISP_NONE) continue;
+        if (skipped(c)) continue;
         if (tbl_row_visible(c)) { rows[nr++] = c; continue; }
         if (tag_eq(c->tag, "tbody") || tag_eq(c->tag, "thead") || tag_eq(c->tag, "tfoot"))
             for (struct node *r = c->first_child; r && nr < TBL_MAXROWS; r = r->next)
@@ -377,7 +518,7 @@ static int layout_table(struct node *t, int x, int y, int w)
         for (struct node *c = rows[i]->first_child; c && ci < nc; c = c->next) {
             if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
             struct cstyle *cs = c->style;
-            if (cs && cs->display == DISP_NONE) continue;
+            if (skipped(c)) continue;
             int px = cs ? cs->font_px : 16, mono = cs ? cs->mono : 0;
             int dw = tbl_widest_word(c, px, mono) + (cs ? cs->pl + cs->pr : 0) + 12;
             if (dw > desired[ci]) desired[ci] = dw;
@@ -397,7 +538,7 @@ static int layout_table(struct node *t, int x, int y, int w)
         for (struct node *c = rows[i]->first_child; c && ci < nc; c = c->next) {
             if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
             struct cstyle *st = c->style;
-            if (st && st->display == DISP_NONE) continue;
+            if (skipped(c)) continue;
             int ml = st && st->ml > 0 ? st->ml : 0;
             int pl = st ? st->pl : 0, pr = st ? st->pr : 0;
             int pt = st ? st->pt : 0, pb = st ? st->pb : 0;

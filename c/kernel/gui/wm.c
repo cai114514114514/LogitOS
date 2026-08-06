@@ -594,7 +594,8 @@ long wm_gui_syscall(long num, long a, long b, long c)
         g_net_busy = 0;
         net_busy_t0 = 0;
         __asm__ volatile ("cli");
-        if (rc != 0 || !rb) return -1;
+        if (rc != 0 || !rb) { kprintf("[res] fetch FAILED rc=%d url=%s\n", rc, src); return -1; }
+        kprintf("[res] ok %d bytes url=%s\n", rl, src);
         int n = rl < max ? rl : max;
         memcpy(buf, rb, (size_t)n);
         kfree(rb);

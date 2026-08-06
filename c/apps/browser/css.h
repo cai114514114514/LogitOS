@@ -25,6 +25,7 @@ struct cstyle {
     int underline;
     int list_item;                  /* 1 for <li>-style markers */
     int hidden;                     /* visibility:hidden/collapse or opacity:0 */
+    int pos_abs;                    /* position:absolute -- out of flow (laid out nowhere) */
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
 };
 
