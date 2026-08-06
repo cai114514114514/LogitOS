@@ -152,7 +152,7 @@ static int collect_scripts(struct node *n, char *out, int o, int max)
     return o;
 }
 
-static unsigned char css_tmp[524288];    /* scratch for one external stylesheet (512 KiB) */
+static unsigned char css_tmp[1048576];   /* scratch for one external stylesheet (1 MiB; github's site.css is 858 KiB) */
 
 /* case-insensitive substring test (rel may be "stylesheet", "preload stylesheet", ...) */
 static int has_ci(const char *h, const char *n)
@@ -181,6 +181,10 @@ static int fetch_css_links(struct node *n, char *out, int o, int max)
     if (!n) return o;
     if (g_css_budget > 0 && o < max - 64 && n->type == N_ELEM && tag_is(n->tag, "link")) {
         const char *rel = dom_attr(n, "rel"), *href = dom_attr(n, "href");
+        /* a11y override themes are inactive unless the user selected them;
+         * skipping saves ~1 MiB of CSS and ~10 TLS handshakes on github.com */
+        if (href && (has_ci(href, "high_contrast") || has_ci(href, "colorblind") ||
+                     has_ci(href, "tritanopia"))) href = 0;
         if (href && has_ci(rel, "stylesheet")) {
             int dup = 0;
             for (int i = 0; i < g_css_nseen; i++)
@@ -220,8 +224,8 @@ static void follow_link(const char *href)
 }
 
 static char bodybuf[1048576];            /* page HTML (1 MiB) */
-static char author_css[2097152];         /* inline <style> + fetched external <link> CSS (2 MiB, raw with var()) */
-static char css_expanded[2359296];       /* author_css after var() expansion -> LibCSS (2.25 MiB) */
+static char author_css[4194304];         /* inline <style> + fetched external <link> CSS (4 MiB; github.com ships ~3.25 MiB) */
+static char css_expanded[4718592];       /* author_css after var() expansion -> LibCSS (4.5 MiB) */
 static int  css_exlen;
 
 static void load(const char *u)

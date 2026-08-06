@@ -171,8 +171,10 @@ void css_extra_apply(struct node *root, const char *css, int len)
     int i = 0;
     while (i < len) {
         /* selector up to '{' (skip @-blocks naively: their inner rules still
-         * get matched, which for our simple media usage is fine) */
-        while (i < len && spc(css[i])) i++;
+         * get matched, which for our simple media usage is fine). Stray '}'
+         * from closed @-blocks must be skipped too, else it poisons the next
+         * selector as a bogus tag name. */
+        while (i < len && (spc(css[i]) || css[i] == '}')) i++;
         if (i >= len) break;
         if (css[i] == '@') {                       /* @media ... { -> scan inside */
             while (i < len && css[i] != '{') i++;
