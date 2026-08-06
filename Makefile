@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-fscrash test-hugefile test-fsreplay test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -420,6 +420,14 @@ test-shell: $(ISO) $(DISK)
 # nature -- five boots -- so it is its own target rather than part of any suite.
 test-durability: $(ISO) $(DISK)
 	@bash tests/boot/run-durability-test.sh $(ISO) $(DISK)
+
+# A journal orders nothing unless the ordering is asked of the hardware: a disk
+# reorders freely inside its own write cache, so "blocks, then commit record"
+# only holds if a barrier separates them. Asserts both that the device reports a
+# writeback cache (otherwise the test proves nothing and says so) and that a file
+# write issues barriers -- counted by the kernel, not inferred from the source.
+test-barrier: $(ISO) $(DISK)
+	@bash tests/boot/run-barrier-test.sh $(ISO) $(DISK)
 
 # The other half of durability: SIGKILL mid-write, four rounds, and demand the
 # journal's contract -- the victim is always whole-or-absent, never torn.

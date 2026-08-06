@@ -98,7 +98,8 @@ int virtio_init(uint16_t devid, struct virtio_dev *vd, uint32_t want_lo)
     w32(vd->common, C_DRVFEAT_SEL, 1); w32(vd->common, C_DRVFEAT, 1);   /* bit 32 */
     w32(vd->common, C_DEVFEAT_SEL, 0);
     uint32_t devlo = r32(vd->common, C_DEVFEAT);
-    w32(vd->common, C_DRVFEAT_SEL, 0); w32(vd->common, C_DRVFEAT, devlo & want_lo);
+    vd->features_lo = devlo & want_lo;          /* what we actually got, for the driver to test */
+    w32(vd->common, C_DRVFEAT_SEL, 0); w32(vd->common, C_DRVFEAT, vd->features_lo);
 
     w8(vd->common, C_STATUS, VIRTIO_S_ACK | VIRTIO_S_DRIVER | VIRTIO_S_FEATURES_OK);
     if (!(r8(vd->common, C_STATUS) & VIRTIO_S_FEATURES_OK)) {

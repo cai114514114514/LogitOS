@@ -11,5 +11,6 @@ int nvme_present(void);
 int nvme_busy(void);
 int nvme_read(uint32_t lba, uint8_t count, void *buf);
 int nvme_write(uint32_t lba, uint8_t count, const void *buf);
+int nvme_flush(void);                     /* commit the controller write cache to media */
 
 #endif /* LOGIT_NVME_H */

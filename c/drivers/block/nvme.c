@@ -267,6 +267,21 @@ int nvme_init(void)
  * identity-mapped buffer (kernel buffers: virt==phys) via PRP1 (+PRP2 page, or a
  * PRP list for >2 pages). No bounce buffer, no per-I/O memcpy. Each command moves
  * up to min(MDTS, one PRP-list page worth) sectors; large requests loop. */
+/* NVM command set opcode 0x00: Flush. Completing it means the namespace's
+ * volatile write cache is on non-volatile media. Without this a controller with
+ * a write cache is free to have the journal's commit record on media while the
+ * blocks it vouches for are not -- which is the one state the journal exists to
+ * make impossible. */
+int nvme_flush(void)
+{
+    if (!g_ready) return -1;
+    struct nvme_sqe cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.cdw0 = 0x00;
+    cmd.nsid = g_nsid;
+    return nvme_submit(&g_io, &cmd) == 0 ? 0 : -1;
+}
+
 static int nvme_io(int write, uint64_t lba, uint32_t count, void *buf)
 {
     if (!g_ready) return -1;

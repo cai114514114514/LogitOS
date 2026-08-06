@@ -45,6 +45,11 @@ struct virtio_dev {
     volatile uint8_t *isr;
     volatile uint8_t *device;     /* device-specific config */
     uint8_t bus, slot, func;
+    /* What the device actually accepted of `want_lo`. A driver must ask this
+     * rather than assume: requesting a feature bit does not mean getting it, and
+     * sending a command the feature gates (VIRTIO_BLK_T_FLUSH) without it is
+     * undefined behaviour, not a graceful no-op. */
+    uint32_t features_lo;
 };
 
 /* One scatter/gather buffer for a request. addr is a PHYSICAL address

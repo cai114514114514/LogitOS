@@ -79,6 +79,8 @@ static int ata_read_once(uint32_t lba, uint8_t count, uint16_t *out)
  * controller). g_ata_busy tells the timer handler to skip schedule() while a
  * transfer is in flight; the NIC/keyboard/mouse IRQs still run harmlessly. */
 volatile int g_ata_busy = 0;
+int ata_flush(void) { return 0; }   /* ata_write already issues FLUSH CACHE per write */
+
 int ata_busy(void) { return g_ata_busy; }
 
 static int ata_write_once(uint32_t lba, uint8_t count, const uint16_t *in);

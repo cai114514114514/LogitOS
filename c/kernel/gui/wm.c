@@ -13,6 +13,7 @@
 #include "vfs.h"
 #include "rtc.h"
 #include "aex.h"
+#include "blkdev.h"
 #include "img.h"
 #include "logit_abi.h"
 /* Generated from include/abi/logit_calls.abi, which is where the packed syscall
@@ -296,7 +297,13 @@ static int sysinfo_text(char *buf, int max)
     p = ap_str(p, end, "Uptime  "); p = ap_num(p, end, timer_ticks() / 100); p = ap_str(p, end, " s\n");
     p = ap_str(p, end, "Memory  "); p = ap_num(p, end, (pmm_total_bytes() - pmm_free_bytes()) >> 20);
     p = ap_str(p, end, " / "); p = ap_num(p, end, pmm_total_bytes() >> 20); p = ap_str(p, end, " MB used\n");
-    p = ap_str(p, end, "Switches "); p = ap_num(p, end, sched_switches()); p = ap_str(p, end, "\n\n");
+    p = ap_str(p, end, "Switches "); p = ap_num(p, end, sched_switches()); p = ap_str(p, end, "\n");
+    /* Write barriers issued since boot. A journal orders nothing without them
+     * -- a disk reorders freely inside its own write cache -- so this is the
+     * one number that says whether the ordering the log claims is actually
+     * being asked of the hardware. tests/boot/run-barrier-test.sh reads it. */
+    p = ap_str(p, end, "Barriers "); p = ap_num(p, end, (long)blk_flush_count());
+    p = ap_str(p, end, "\n\n");
     p = ap_str(p, end, "PID  NAME\n");
     p = ap_str(p, end, "  0  wm (compositor)\n");
     for (int i = 0; i < MAXWIN; i++)
@@ -331,13 +338,16 @@ long wm_gui_syscall(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
     if (!ap && num != SYS_HTTP_GET && num != SYS_HTTP_STATUS &&
-        num != SYS_HTTP_BODY) {
+        num != SYS_HTTP_BODY && num != SYS_SYSINFO) {
         /* Window ADOPTION: a CLI process (e.g. /bin/as running a script) gets a
          * window on its first SYS_GUI_CREATE -- allocate an app slot and bind it
          * to the proc, then fall through to the normal create. Exit/teardown
          * reuses the standard path: proc_exit -> wm_app_exit (alive=0) -> reap.
          * HTTP fetch/body/status are process-safe non-GUI services and also pass
-         * this gate; any other GUI call without a window stays an error. */
+         * this gate, as does SYSINFO -- it is a read-only query about the system
+         * with no window semantics at all, and gating it meant /bin/sh and every
+         * CLI program could not ask the machine about itself. Any other GUI call
+         * without a window stays an error. */
         struct proc *p = proc_current();
         if (!p || num != SYS_GUI_CREATE) return -1;
         int ai = -1;

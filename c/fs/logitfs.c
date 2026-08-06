@@ -137,6 +137,25 @@ static void log_abort(void) { tx_count = 0; }   /* nothing staged ever reached d
 /* Write the staged blocks to the log, seal it with a valid header, install them
  * at their real locations, then clear the header. A crash before the seal loses
  * the whole transaction; a crash after it replays the install at mount. */
+/* Three barriers, because a completed bwrite() means the DEVICE has the block,
+ * not the platter -- and a disk reorders freely inside its own write cache.
+ * Every step below orders against the next one, and each has a distinct failure
+ * if it is missing:
+ *
+ *   B1  staged log blocks (and, before them, this op's data=ordered data writes)
+ *       must be on media before the commit record is. Without it a crash can
+ *       leave the header on media vouching for log blocks that never landed --
+ *       and recovery then dutifully copies that garbage over good data. This is
+ *       the one that makes an unbarriered journal WORSE than no journal.
+ *   B2  the commit record must be on media before any checkpoint write is.
+ *       Without it a checkpoint can land while the record does not, so recovery
+ *       discards a transaction that is already half applied.
+ *   B3  the checkpoint must be on media before the header is cleared. Without it
+ *       the clear can land first and a committed transaction vanishes entirely.
+ *
+ * Failures are recorded but do not abort: a barrier that could not be issued
+ * leaves the transaction no worse off than it was before this function existed,
+ * and rc already propagates to the caller. */
 static int log_commit(void)
 {
     int n = tx_count, rc = 0;
@@ -144,13 +163,16 @@ static int log_commit(void)
     if (!n) return 0;
     for (int i = 0; i < n; i++)
         if (bwrite(sb.log_start + 1 + i, tx_bufs[i])) rc = -1;
+    if (blk_flush()) rc = -1;                              /* B1 */
     uint32_t *h = (uint32_t *)tx_hdr;
     memset(tx_hdr, 0, BS);
     h[0] = LOGMAGIC; h[1] = ++tx_gen; h[2] = (uint32_t)n;
     for (int i = 0; i < n; i++) h[3 + i] = tx_targets[i];
     if (bwrite(sb.log_start, tx_hdr)) rc = -1;
+    if (blk_flush()) rc = -1;                              /* B2 */
     for (int i = 0; i < n; i++)
         if (bwrite(tx_targets[i], tx_bufs[i])) rc = -1;
+    if (blk_flush()) rc = -1;                              /* B3 */
     memset(tx_hdr, 0, BS);
     if (bwrite(sb.log_start, tx_hdr)) rc = -1;
     return rc;
@@ -177,8 +199,13 @@ static int log_recover(void)
         if (bread(sb.log_start + 1 + i, tx_bufs[i])) return -1;
         if (bwrite(tgt, tx_bufs[i])) return -1;
     }
+    /* Same reason as B3: if the header clear reaches media before the replayed
+     * blocks do, a second crash loses the transaction that recovery just
+     * restored -- and the log no longer says how to restore it again. */
+    if (blk_flush()) return -1;
     memset(tx_hdr, 0, BS);
     if (bwrite(sb.log_start, tx_hdr)) return -1;
+    if (blk_flush()) return -1;
     kprintf("[fs] log: replayed %d block(s) from an interrupted transaction\n", n);
     return 0;
 }
