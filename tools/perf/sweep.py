@@ -64,8 +64,11 @@ def prepare(sha, args):
     disk = os.path.join(dst, "disk.img")
     if os.path.exists(iso) and os.path.exists(disk):
         return True, "cached"
-    if os.path.exists(os.path.join(dst, "BUILD-FAIL")):
-        return False, "build-fail(cached)"
+    bf = os.path.join(dst, "BUILD-FAIL")
+    if os.path.exists(bf):
+        with open(bf, errors="replace") as f:
+            stage = (f.readline().strip() or "?")
+        return False, "build-fail(%s)" % stage
 
     src = args.tree
     # Never a git worktree: on this host a fresh worktree rewrites line endings
@@ -78,14 +81,45 @@ def prepare(sha, args):
         return False, "checkout-fail"
     sh(["git", "clean", "-qxfd", "build"], cwd=src)
 
-    r = sh("make -j%d >/dev/null 2>&1 && make -j%d build/disk.img >/dev/null 2>&1"
-           % (args.jobs, args.jobs), cwd=src, timeout=args.build_timeout)
     os.makedirs(dst, exist_ok=True)
+    log = os.path.join(dst, "build.log")
+
+    # The ISO and the disk image are SEPARATE targets and both must be built.
+    # Every ring-3 program lives on the disk image, so a sweep that stopped at
+    # the ISO would benchmark one commit's kernel against another commit's
+    # userland -- and, worse, would score commits that cannot produce a
+    # userland at all as if they were merely slow. (Real: 23 of today's
+    # commits build an ISO and fail on the disk image, because the Makefile
+    # referenced c/apps/audio/audiocheck.c 66 minutes before that file was
+    # committed.)
+    with open(log, "w") as lf:
+        r1 = subprocess.run("make -j%d" % args.jobs, cwd=src, shell=True,
+                            stdout=lf, stderr=subprocess.STDOUT,
+                            timeout=args.build_timeout)
+        stage = "iso"
+        r2 = None
+        if r1.returncode == 0:
+            stage = "disk"
+            r2 = subprocess.run("make -j%d build/disk.img" % args.jobs, cwd=src,
+                                shell=True, stdout=lf, stderr=subprocess.STDOUT,
+                                timeout=args.build_timeout)
+
     bi = os.path.join(src, "build", "logit.iso")
     bd = os.path.join(src, "build", "disk.img")
-    if r.returncode != 0 or not os.path.exists(bi) or not os.path.exists(bd):
-        open(os.path.join(dst, "BUILD-FAIL"), "w").close()
-        return False, "build-fail"
+    failed = (r1.returncode != 0 or r2 is None or r2.returncode != 0
+              or not os.path.exists(bi) or not os.path.exists(bd))
+    if failed:
+        why = ""
+        try:
+            with open(log, errors="replace") as lf:
+                lines = [l.rstrip() for l in lf if
+                         ("error" in l.lower() or l.startswith("make:"))]
+            why = lines[-1][:160] if lines else ""
+        except OSError:
+            pass
+        with open(os.path.join(dst, "BUILD-FAIL"), "w") as f:
+            f.write("%s\n%s\n" % (stage, why))
+        return False, "build-fail(%s)" % stage
     shutil.copyfile(bi, iso)
     shutil.copyfile(bd, disk)
     return True, "built"

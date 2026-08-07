@@ -342,6 +342,7 @@ def run_once(args, port, seq):
         # ---- boot ---------------------------------------------------------
         if not ser.wait_for(PROMPT, args.boot_timeout, proc):
             return out, "no-prompt"
+        deadline = time.time() + args.run_budget
 
         # Host-clock boot timeline. Works on EVERY commit, including the ~110
         # of today's that predate /dev/kstat and /dev/kmsg. GRUB's own delay is
@@ -403,6 +404,15 @@ def run_once(args, port, seq):
             whose command failed instantly would otherwise be recorded as an
             enormous speed-up -- the single most dangerous failure mode a perf
             harness has, and the one tests/qmp/qmp_freeze.py fell into."""
+            # A whole-run deadline, not just a per-phase one. Ten phases with
+            # generous individual timeouts add up to twenty minutes on a build
+            # where several of them hang, and a sweep over 140 commits cannot
+            # afford that tail. Past the deadline the remaining phases are
+            # skipped and reported missing -- which is the correct answer for a
+            # machine that is not answering.
+            if time.time() > deadline:
+                return None, None
+            timeout = min(timeout, max(5.0, deadline - time.time()))
             tag = "PB%s" % name
             probe = "cat /dev/kstat\n" if has_kstat else ""
             blob = ("echo %sA\n" % tag + probe
@@ -571,6 +581,9 @@ def main():
     ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--port", type=int, default=0, help="0 = pick a free one")
     ap.add_argument("--boot-timeout", type=float, default=90.0)
+    ap.add_argument("--run-budget", type=float, default=180.0,
+                    help="seconds of phases per boot before the rest are "
+                         "abandoned and reported missing")
     # NOT the browser: a GUI .aex execve'd from a tty has no window and never
     # returns (probed -- it hangs at the prompt), so it cannot be a phase. The
     # honest decomposition of "the browser takes ages to open" is (a) the

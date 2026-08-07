@@ -1005,6 +1005,34 @@ test-html5lib-asan: $(BUILD)/libcss_host.a
 test-video: $(ISO) $(DISK)
 	@bash tests/boot/run-video-test.sh $(ISO) $(DISK)
 
+# ---------------------------------------------------------------------------
+# Performance. "It got laggier" is not a number; these targets produce numbers.
+#
+#   make test-perf         boot the machine N times and print, per metric, a
+#                          median and its spread: time to LOGIT_BOOT_OK and to
+#                          `desktop live`, a shell round trip, a 2.2 MB read
+#                          off logitfs, loading a large ring-3 image, a fetch
+#                          of a fixed host-served page, and what a moving
+#                          pointer costs concurrent work. Exits 0 whatever the
+#                          numbers are -- it reports, it does not judge.
+#
+#   make test-perf-gate    the same measurement as a gate. Needs an explicit
+#                          PERF_METRIC and PERF_THRESHOLD, because a threshold
+#                          nobody chose is a threshold nobody will defend:
+#                            PERF_METRIC=read_net_ms PERF_THRESHOLD=1400 #                              make test-perf-gate
+#                          Exit 125 (not 1) if the metric could not be measured
+#                          at all -- which is also `git bisect`s skip code.
+#
+# Across history, tools/perf/sweep.py drives the same harness over a list of
+# commits, and tools/perf/bisect.sh is the `git bisect run` form. Both keep the
+# harness OUTSIDE the tree being measured, so a bisect cannot end up measuring
+# changes to its own instrument. See tools/perf/README.md.
+test-perf: $(ISO) $(DISK)
+	@bash tests/boot/run-perf-test.sh $(ISO) $(DISK)
+
+test-perf-gate: $(ISO) $(DISK)
+	@bash tests/boot/run-perf-gate.sh $(ISO) $(DISK)
+
 # The per-window event ring, split out of wm.c so it can be tested on the host:
 # FIFO order, motion coalescing under flood, and -- the property that matters --
 # that a click is never merged away by the motion samples around it.
