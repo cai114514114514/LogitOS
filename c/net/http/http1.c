@@ -1060,9 +1060,24 @@ int h1_conn_pump(struct h1_conn *c)
     }
 
     /* One read per pump, so a fast server cannot starve the caller's event
-     * loop (several requests are meant to make progress in parallel). */
+     * loop (several requests are meant to make progress in parallel).
+     *
+     * THE POLL HINT DOES NOT GATE THE READ, and that asymmetry is the whole
+     * point of this comment. A readiness hint may be trusted when it says
+     * "ready" -- at worst a read comes back H1_AGAIN. It may NEVER be trusted
+     * when it says "not ready", because a layered transport holds bytes the
+     * hint cannot see. Our own TLS is exactly that: tls_rec_pull() drains the
+     * whole TCP receive buffer into the session's record buffer and then hands
+     * back ONE record's plaintext, so after the first read the socket reports
+     * `tcp_available() == 0` and `tls_pending() == 0` while several complete,
+     * still-encrypted records sit in the session. Gating on that hint stalled
+     * every https response after its status line until the next wire event --
+     * for www.baidu.com, the server's close_notify SIXTY SECONDS later.
+     *
+     * `read` is the only authority on whether there are bytes. It is a cheap
+     * call that returns H1_AGAIN when there are none, so asking it costs one
+     * call per idle request per pump and buys a stall that cannot happen. */
     uint8_t buf[4096];
-    if (c->t.poll && c->t.poll(c->t.ctx, 0) == 0) return c->state;
     int n = c->t.read(c->t.ctx, buf, (int)sizeof buf);
     if (n == H1_AGAIN) return c->state;
     if (n == H1_EOF) {
@@ -1072,6 +1087,7 @@ int h1_conn_pump(struct h1_conn *c)
         return c->state;
     }
     if (n < 0) return conn_fail(c, H1_E_TRANSPORT);
+    c->rx_bytes += (uint64_t)n;
 
     int used = h1_response_feed(&c->resp, buf, n);
     if (used < 0) return conn_fail(c, used);
@@ -1089,4 +1105,10 @@ int h1_conn_pump(struct h1_conn *c)
     }
     if (h1_response_done(&c->resp)) c->state = H1_C_DONE;
     return c->state;
+}
+
+uint64_t h1_conn_progress(const struct h1_conn *c)
+{
+    if (!c) return 0;
+    return (uint64_t)c->out_off + c->rx_bytes;
 }

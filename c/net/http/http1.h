@@ -54,8 +54,15 @@
 struct h1_transport {
     int (*read)(void *ctx, void *buf, int len);
     int (*write)(void *ctx, const void *buf, int len);
-    /* Optional readiness hint; NULL means "always try". want_write selects
-     * the direction. Returns 1 ready, 0 not ready, -1 dead. */
+    /* Optional WRITE-side readiness hint; NULL means "always try". Called only
+     * with want_write = 1. Returns 1 ready, 0 not ready, -1 dead.
+     *
+     * It is deliberately not consulted before a read. A hint that says "ready"
+     * costs at worst a read that answers H1_AGAIN; a hint that says "not ready"
+     * is a claim no socket-level hint is entitled to make, because a layered
+     * transport (ours: TLS) buffers whole records the hint cannot see. See the
+     * long note in h1_conn_pump -- believing it stalled every https response
+     * after its status line. `read` is the authority on whether bytes exist. */
     int (*poll)(void *ctx, int want_write);
     void *ctx;
 };
@@ -258,6 +265,9 @@ struct h1_conn {
     /* Bytes read past the end of the response: the head of the next one. */
     uint8_t  spill[4096];
     int      spill_len;
+    /* Bytes this exchange has pulled off the transport. With out_off it is the
+     * exchange's progress counter -- see h1_conn_progress. */
+    uint64_t rx_bytes;
 };
 
 /* Takes ownership of the serialized request buffer (frees it in h1_conn_free). */
@@ -266,5 +276,12 @@ void h1_conn_free(struct h1_conn *c);
 /* One non-blocking step: writes what it can, reads what is there, feeds the
  * parser. Returns the new H1_C_* state. Never blocks, never sleeps. */
 int  h1_conn_pump(struct h1_conn *c);
+
+/* Bytes moved in either direction so far; strictly non-decreasing. A caller
+ * that pumps in a loop must decide when to stop, and "the socket says it is no
+ * longer readable" is the wrong test for exactly the reason the poll hint is
+ * not consulted above -- it cannot see a layered transport's buffer. "The last
+ * pump moved no bytes" is the right one, and this is how to ask. */
+uint64_t h1_conn_progress(const struct h1_conn *c);
 
 #endif /* LOGIT_HTTP1_H */
