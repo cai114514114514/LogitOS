@@ -53,6 +53,10 @@ double logb(double); long long llrint(double); long llround(double);
 long   lrint(double); long lround(double); double modf(double,double*);
 double nan(const char*); double nearbyint(double); double nextafter(double,double);
 double pow(double,double); double remainder(double,double); double remquo(double,double,int*);
+/* nexttoward's second argument is long double by definition; third_party/libm
+ * supplies it. Like every other transcendental here it resolves only for the
+ * consumers that link libm (browser, js) -- /bin/as links mini-libc alone. */
+double nexttoward(double,long double);
 double rint(double); double round(double); double scalbln(double,long);
 double scalbn(double,int); double sin(double); double sinh(double); double sqrt(double);
 double tan(double); double tanh(double); double tgamma(double); double trunc(double);
