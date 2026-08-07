@@ -148,7 +148,13 @@ void h265_dequant(int16_t *coeff, int n, int qp, int log2_size,
             int c = coeff[y * n + x];
             if (!c) continue;
             int m = scaling_factor(scaling, dc_scale, log2_size, x, y);
-            int64_t v = ((int64_t)c * m * ls) << sh;
+            /* Multiply rather than shift: a left shift of a negative value is
+             * undefined in C, and coefficients are routinely negative. The two
+             * are identical on every two's-complement target, which is why
+             * this only ever showed up under UBSan and never as a wrong
+             * pixel -- and why it is worth fixing before a compiler decides
+             * otherwise. */
+            int64_t v = (int64_t)c * m * ls * ((int64_t)1 << sh);
             v = (v + add) >> bd_shift;
             if (v < -32768) v = -32768;
             if (v > 32767) v = 32767;
@@ -206,7 +212,7 @@ void h265_transform_skip_add(const int16_t *coeff, int log2_size,
     int ts_shift = 5 + log2_size;
     for (int y = 0; y < n; y++)
         for (int x = 0; x < n; x++) {
-            int32_t r = ((int32_t)coeff[y * n + x] << ts_shift);
+            int32_t r = (int32_t)coeff[y * n + x] * (int32_t)(1 << ts_shift);
             r = (r + 2048) >> 12;
             dst[y * stride + x] = (uint8_t)h265_clip_u8(dst[y * stride + x] + r);
         }

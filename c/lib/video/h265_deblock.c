@@ -134,7 +134,9 @@ void h265_deblock_chroma_n(uint8_t *base, int dstep, int lstep, int n,
 {
     for (int l = 0; l < n; l++) {
         int p0 = P(0, l), p1 = P(1, l), q0 = Q(0, l), q1 = Q(1, l);
-        int delta = h265_clip3(-tc, tc, ((((q0 - p0) << 2) + p1 - q1 + 4) >> 3));
+        /* * 4 rather than << 2: q0 - p0 is signed and often negative, and a
+         * left shift of a negative value is undefined in C. */
+        int delta = h265_clip3(-tc, tc, (((q0 - p0) * 4 + p1 - q1 + 4) >> 3));
         if (!no_p) P(0, l) = (uint8_t)h265_clip_u8(p0 + delta);
         if (!no_q) Q(0, l) = (uint8_t)h265_clip_u8(q0 - delta);
     }

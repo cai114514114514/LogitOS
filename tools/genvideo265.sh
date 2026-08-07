@@ -86,12 +86,16 @@ if [ "$GROUP" = core ] || [ "$GROUP" = all ]; then
     # restored at the start of the next, plus per-row entry points.
     case_gen ip-wpp          "$TS:size=320x240" 0.7 \
              "pools=none:frame-threads=1:rc-lookahead=0:bframes=0:qp=27:wpp=1"
-    # Multiple slices per picture: the CTU address restarts and CABAC is
-    # re-initialised mid-picture. x265 refuses --slices without --wpp, so this
-    # case is slices ON TOP of wavefronts; ip-wpp above is the wavefront-only
-    # control that tells the two apart.
-    case_gen ip-slices       "$TS:size=320x240" 0.7 \
-             "pools=none:frame-threads=1:rc-lookahead=0:bframes=0:qp=27:wpp=1:slices=4"
+    # NO multi-slice case, deliberately. x265 4.1 refuses --slices without
+    # --wpp, and with both it emits a stream that ffmpeg's own decoder rejects
+    # ("Overread slice header by 6 bits", "Skipping invalid undecodable NALU"),
+    # while other geometries make it write a zero-byte file. Our decoder
+    # returns H265_ERR_CORRUPT on the same stream, which is the correct answer
+    # to a malformed one -- but a case both decoders refuse measures the
+    # ENCODER, not us. Multiple slice segments per picture are implemented
+    # (segment_address, per-slice CABAC re-init, entry points) and are
+    # therefore UNVERIFIED; ip-wpp does cover entry-point offsets and CABAC
+    # context save/restore, which is the machinery they share.
 fi
 
 if [ "$GROUP" = b ] || [ "$GROUP" = all ]; then

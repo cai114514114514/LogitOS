@@ -76,6 +76,55 @@ $(BUILD)/h265_diff: tests/unit/h265_diff.c $(H265_SRC) c/lib/video/h265.h \
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $@ tests/unit/h265_diff.c $(H265_SRC) $(H265_INC)
 
+# --- the WHOLE decoder under ASan/UBSan --------------------------------------
+# The per-module ASan target above covers three leaf modules. This runs the
+# orchestrator -- the CTU quadtree, the DPB, the tile and z-scan tables, all the
+# malloc/free of reference pictures -- over every stream in the matrix,
+# INCLUDING the ones it decodes wrongly and the one it refuses as corrupt, since
+# error paths are where a decoder leaks or reads past a buffer. Every input byte
+# is untrusted; this is the target that says so with evidence.
+test-h265-asan:
+	@mkdir -p $(BUILD)/h265ref
+	@bash tools/genvideo265.sh $(BUILD)/h265ref all || exit 0
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    -o $(BUILD)/h265_test_asan tests/unit/h265test.c $(H265_SRC) $(H265_INC)
+	@rc=0; for f in $(BUILD)/h265ref/*.h265 tests/fixtures/video265/sample.h265; do \
+	    out=`ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+	         $(BUILD)/h265_test_asan $$f 2>&1`; \
+	    if echo "$$out" | grep -q 'runtime error\|AddressSanitizer\|LeakSanitizer'; then \
+	        echo "SANITIZER: `basename $$f`"; echo "$$out" | head -12; rc=1; \
+	    fi; \
+	 done; \
+	 [ $$rc = 0 ] && echo "test-h265-asan: clean over the whole matrix" || exit 1
+
+# --- the decoder on the device ----------------------------------------------
+# /bin/vidcheck265 links the SAME decoder sources against mini-libc for ring 3
+# (they are already in VID_OBJ -- c/lib/video/*.c is a wildcard) and prints the
+# same CRC32 the host driver prints. Everything above this line is a glibc
+# build on Linux; only this says the decoder works on LogitOS.
+#
+# It gets onto the disk image WITHOUT editing the root Makefile's $(DISK)
+# recipe: FS_FILES is expanded when that recipe runs, which is after every
+# -include has been read, and mkfs.py takes host[:/dest] for any argument. So
+# appending here is enough, and the prerequisites go on a second, recipe-less
+# rule for the same target. This tree is worked on by several people at once
+# and $(DISK) is a line they all touch; not touching it is the point.
+FS_FILES += $(BUILD)/vidcheck265.aex:/bin/vidcheck265 \
+            tests/fixtures/video265/sample.h265:/media/sample.h265
+$(DISK): $(BUILD)/vidcheck265.aex tests/fixtures/video265/sample.h265
+$(BUILD)/vidcheck265.elf: $(BUILD)/vidobj/c/apps/video/vidcheck265.o $(VID_OBJ) \
+                          $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidcheck265.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ \
+	    $(BUILD)/apps/vidcheck265.crt0c.o \
+	    $(BUILD)/vidobj/c/apps/video/vidcheck265.o $(VID_OBJ) $(LIBC_OBJS)
+$(BUILD)/vidcheck265.aex: $(BUILD)/vidcheck265.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/vidcheck265.elf $@ vidcheck265 - 'V' 150 150 150
+
+test-video265: $(ISO) $(DISK)
+	@bash tests/boot/run-video265-test.sh $(ISO) $(DISK)
+
 # --- B slices, gated separately ---------------------------------------------
 # Kept out of test-h265 until they are bit-exact, so that target never has to
 # be read as "passes except for the part it silently skips".

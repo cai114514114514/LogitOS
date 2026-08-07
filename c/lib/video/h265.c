@@ -52,8 +52,6 @@
 #endif
 
 /* ============================== small helpers =========================== */
-static int ceil_log2(int v) { int n = 0; while ((1 << n) < v) n++; return n; }
-
 static int diff_poc(int a, int b) { return a - b; }
 
 /* ============================ picture storage =========================== */
@@ -563,13 +561,15 @@ static void derive_qp(h265dec *d)
     int qg_x = d->qg_x, qg_y = d->qg_y;
     int ctb_mask = ~((1 << sps->log2_ctb) - 1);
 
+    /* The same-CTB test is one comparison per neighbour, not two: qPY_A sits at
+     * (xQg-1, yQg), so only its x can leave the CTB, and qPY_B at (xQg, yQg-1)
+     * only its y. Writing both halves made the other half a self-comparison,
+     * which is what -Wtautological-compare was pointing at. */
     int qp_a = d->qp_y_prev, qp_b = d->qp_y_prev;
     if (qg_x > 0 && avail_z(d, d->cu_x, d->cu_y, qg_x - 1, qg_y) &&
-        ((qg_x - 1) & ctb_mask) == (qg_x & ctb_mask) &&
-        ((qg_y) & ctb_mask) == (qg_y & ctb_mask))
+        ((qg_x - 1) & ctb_mask) == (qg_x & ctb_mask))
         qp_a = h265_bi(d, qg_x - 1, qg_y)->qp;
     if (qg_y > 0 && avail_z(d, d->cu_x, d->cu_y, qg_x, qg_y - 1) &&
-        ((qg_x) & ctb_mask) == (qg_x & ctb_mask) &&
         ((qg_y - 1) & ctb_mask) == (qg_y & ctb_mask))
         qp_b = h265_bi(d, qg_x, qg_y - 1)->qp;
 

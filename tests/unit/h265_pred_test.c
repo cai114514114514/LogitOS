@@ -181,7 +181,9 @@ static void test_transform_skip_and_bypass(void)
     memset(dst, 128, 16);
     h265_transform_skip_add(coeff, 2, dst, 4);
     for (int i = 0; i < 16; i++) {
-        int want = h265_clip_u8(128 + ((((int)coeff[i] << 7) + 2048) >> 12));
+        /* * 128 rather than << 7: coeff[i] is signed and shifting a negative
+         * value left is undefined, which UBSan reports. */
+        int want = h265_clip_u8(128 + (((int)coeff[i] * 128 + 2048) >> 12));
         CHECK(dst[i] == want, "transform_skip[%d] = %d, want %d", i, dst[i], want);
     }
 
@@ -214,7 +216,8 @@ static void test_dequant(void)
             int16_t want[32 * 32];
             int bd = log2 + 3;
             for (int i = 0; i < n * n; i++) {
-                long long v = ((long long)c[i] * 16 * level_scale[qp % 6]) << (qp / 6);
+                long long v = (long long)c[i] * 16 * level_scale[qp % 6] *
+                              (1LL << (qp / 6));   /* not <<: c[i] is signed */
                 v = (v + (1LL << (bd - 1))) >> bd;
                 if (v < -32768) v = -32768;
                 if (v > 32767) v = 32767;

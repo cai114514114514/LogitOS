@@ -85,14 +85,16 @@ int main(int argc, char **argv)
             if (n < 0) {
                 fprintf(stderr, "H265-FAIL: decode error %d at byte %ld (picture %d)\n",
                         n, pos, frames);
-                h265_close(d);
-                return 1;
+                goto fail;
             }
             if (n == 0 && !got) break;          /* consumed nothing more */
             pos += n;
         } else {
             n = h265_flush(d, &f);
-            if (n < 0) { fprintf(stderr, "H265-FAIL: flush error %d\n", n); return 1; }
+            if (n < 0) {
+                fprintf(stderr, "H265-FAIL: flush error %d\n", n);
+                goto fail;
+            }
             if (n == 0) break;
             got = 1;
         }
@@ -113,8 +115,7 @@ int main(int argc, char **argv)
             if (!refbuf || fread(refbuf, 1, need, ref) != need) {
                 fprintf(stderr, "H265-FAIL: ref.yuv ran out at picture %d "
                         "(decoder produced MORE pictures than ffmpeg)\n", frames);
-                h265_close(d);
-                return 1;
+                goto fail;
             }
             size_t off = 0;
             for (int p = 0; p < 3 && !bad; p++) {
@@ -137,7 +138,7 @@ int main(int argc, char **argv)
             }
         }
         frames++;
-        if (bad) { h265_close(d); return 1; }
+        if (bad) goto fail;
     }
 
     if (ref) {
@@ -146,8 +147,7 @@ int main(int argc, char **argv)
         if (fread(&extra, 1, 1, ref) == 1) {
             fprintf(stderr, "H265-FAIL: decoder produced FEWER pictures (%d) than ffmpeg\n",
                     frames);
-            h265_close(d);
-            return 1;
+            goto fail;
         }
         fclose(ref);
         printf("H265-OK %d pictures bit-exact (%s)\n", frames, argv[1]);
@@ -158,4 +158,14 @@ int main(int argc, char **argv)
     free(data);
     free(refbuf);
     return 0;
+
+fail:
+    /* Release everything so this driver can be run under ASan and any leak it
+     * reports belongs to the DECODER rather than to the test -- which is the
+     * whole point of test-h265-asan. */
+    h265_close(d);
+    free(data);
+    free(refbuf);
+    if (ref) fclose(ref);
+    return 1;
 }

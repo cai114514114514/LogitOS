@@ -1,0 +1,21 @@
+tests/fixtures/video265/ -- a committed HEVC stream and the CRC32 of its
+correct decode.
+
+sample.h265  Main profile, 8-bit 4:2:0, 176x144, 21 pictures, I and P slices
+             only, keyint 12 so there are two IRAPs and the DPB turns over.
+             Encoded with ffmpeg/libx265 4.1 at qp 27 with deterministic
+             settings (pools=none:frame-threads=1:wpp=0:rc-lookahead=0).
+sample.crc32 CRC32 of the concatenated visible YUV of all 21 decoded pictures
+             in output order -- the number tests/unit/h265test.c prints with no
+             reference argument, and the number /bin/vidcheck265 prints from
+             inside LogitOS.
+
+Why this is committed rather than generated: `make test-h265` builds its main
+matrix with ffmpeg/libx265, which is not installed everywhere. Without a
+vendored stream that target would silently become a no-op on such a machine.
+Same reasoning and same arrangement as tests/fixtures/video for H.264.
+
+The CRC was pinned from a decode verified BIT-EXACT against ffmpeg's own HEVC
+decoder -- h265_test sample.h265 sample.ref.yuv printed "21 pictures
+bit-exact" -- so it is a reference value, not a number this decoder recorded
+about itself.
