@@ -12,8 +12,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "quickjs.h"
 #include "dom.h"
+#include "css.h"
 #include "js_dom.h"
 #include "js_page.h"
 
@@ -460,6 +462,625 @@ static void live_page_tests(void)
     dom_free(root);
 }
 
+/* ======================================================================
+ * Part 3: the CSSOM -- element.style, getComputedStyle, classList, and the
+ * invalidation record that decides how much of the document a mutation costs.
+ * ====================================================================== */
+
+/* Kept as a separate C string rather than inside a <style> element, because
+ * that is the shape css_apply() takes: browser.c collects the <style> text out
+ * of the DOM and hands it over as a buffer. */
+static const char CSSOM_CSS[] =
+    "#box { color: blue; background-color: #ffff00; width: 200px;"
+    "       padding: 5px 6px 7px 8px; margin: 1px 2px 3px 4px;"
+    "       font-size: 20px; font-family: Georgia, serif; position: relative;"
+    "       top: 3px; left: 4px;"
+    "       opacity: 0.5; z-index: 7; overflow: hidden;"
+    "       border: 2px dashed #00ff00; text-align: center; line-height: 24px;"
+    "       box-sizing: border-box; min-width: 10px; max-width: 400px; }"
+    "#flex { display: flex; flex-direction: column; flex-wrap: wrap;"
+    "        justify-content: space-between; align-items: center; }"
+    "#fi { flex-grow: 2; flex-shrink: 0; flex-basis: 30px; order: 3;"
+    "      align-self: flex-end; visibility: hidden; }"
+    /* right/bottom get their own element: on a `position:relative` box CSS
+     * §9.4.3 makes them the negation of left/top, so #box could never show
+     * their authored values. */
+    "#abs { position: absolute; right: 5px; bottom: 6px; }"
+    "#gone { display: none; }"
+    ".hot { color: #ff0000; }"
+    ".wide { width: 333px; }"
+    ".on + .after { color: rgb(1, 2, 3); }";
+
+/* #leaf is deliberately the LAST child of <body>: the scoped re-style covers an
+ * element and its FOLLOWING siblings, so a leaf at the end has a scope of
+ * exactly one element and the count assertion below can be exact rather than
+ * approximate. */
+static const char CSSOM_HTML[] =
+    "<html><body>"
+    "<div id='box' style='font-weight: bold'>B</div>"
+    "<div id='flex'><span id='fi'>i</span></div>"
+    "<div id='sib'>s</div><div id='af' class='after'>a</div>"
+    "<div id='abs'>p</div>"
+    "<div id='gone'>g</div>"
+    "<div id='par'><i id='k1'>1</i><i id='k2'>2</i></div>"
+    "<div id='leaf'>leaf</div>"
+    "</body></html>";
+
+/* browser.c's restyle(), in miniature: read the invalidation record, re-style
+ * exactly the marked scopes, fall back to the document when there are none.
+ * Having the test drive the same decision procedure is the point -- it is the
+ * decision procedure, not css_apply_scoped alone, that has to be right. */
+static int settle(struct node *root, const char *css, int csslen)
+{
+    int level = js_dom_inval_level();
+    if (level == INVAL_NONE) return CSS_CHANGED_NONE;
+    int nroots = js_dom_inval_roots(), changed = CSS_CHANGED_NONE;
+    for (int i = 0; i < nroots; i++) {
+        int sib = 0;
+        struct node *n = js_dom_inval_root(i, &sib);
+        if (!n) { nroots = 0; break; }
+        changed |= css_apply_scoped(n, sib, css, csslen);
+    }
+    if (nroots == 0) { css_apply(root, css, csslen); changed = CSS_CHANGED_LAYOUT; }
+    if (level >= INVAL_LAYOUT) changed |= CSS_CHANGED_LAYOUT;
+    js_dom_clear_dirty();
+    return changed;
+}
+
+/* How many elements the last cascade actually touched. */
+static int styled_since(int *mark)
+{
+    int now = 0;
+    css_stats(&now, 0);
+    int d = now - *mark;
+    *mark = now;
+    return d;
+}
+
+/* Assert a JS expression evaluates to the expected string. Reported by value,
+ * because "expected 16px, got 20px" is the whole diagnostic. */
+static void ckstr(const char *expr, const char *want, const char *what)
+{
+    char src[1024];
+    snprintf(src, sizeof src,
+             "(function(){var v=String(%s);if(v!==\"%s\")throw \"%s -> \"+v;})()",
+             expr, want, what);
+    if (!prun(src)) { printf("FAIL %s\n", what); fails = 1; }
+    else printf("ok: %s == %s\n", what, want);
+}
+
+static void cssom_tests(void)
+{
+    css_init();
+    css_viewport(760, 540);
+
+    struct node *root = dom_parse(CSSOM_HTML, (int)strlen(CSSOM_HTML));
+    CK(root != NULL, "part3: fixture parsed");
+    if (!root) return;
+    css_apply(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+
+    struct node *box  = dom_get_element_by_id(root->doc, "box");
+    struct node *fi   = dom_get_element_by_id(root->doc, "fi");
+    struct node *sib  = dom_get_element_by_id(root->doc, "sib");
+    struct node *af   = dom_get_element_by_id(root->doc, "af");
+    struct node *leaf = dom_get_element_by_id(root->doc, "leaf");
+    struct node *par  = dom_get_element_by_id(root->doc, "par");
+    CK(box && fi && sib && af && leaf && par, "part3: fixture elements found");
+    CK(box && box->computed != NULL,
+       "css_apply left a css_computed_style on the node (the thing getComputedStyle reads)");
+
+    g_now = 5000;
+    js_page_set_clock(fake_clock);
+    CK(js_page_open(root), "part3: page runtime opens over the styled DOM");
+
+    /* ---- A. element.style: a live view of the style attribute ---- */
+    ckstr("document.getElementById('box').style.fontWeight", "bold",
+          "style reads a declaration that was in the markup");
+    ckstr("document.getElementById('box').style.getPropertyValue('font-weight')", "bold",
+          "getPropertyValue agrees with the camelCase accessor");
+    ckstr("document.getElementById('box').style.color", "",
+          "a property the attribute does not carry reads as empty");
+
+    CK(prun("document.getElementById('box').style.backgroundColor = 'lime';"),
+       "el.style.backgroundColor = 'lime'");
+    CK(box && strstr(dom_attr(box, "style") ? dom_attr(box, "style") : "",
+                     "background-color: lime") != NULL,
+       "the write went into the style ATTRIBUTE, dashed-name and all");
+    CK(box && strstr(dom_attr(box, "style") ? dom_attr(box, "style") : "",
+                     "font-weight: bold") != NULL,
+       "the declaration that was already there survived the write");
+    ckstr("document.getElementById('box').style.backgroundColor", "lime",
+          "the write round-trips through the attribute");
+
+    CK(prun("document.getElementById('box').style.setProperty('margin-top', '9px');"),
+       "setProperty('margin-top', '9px')");
+    ckstr("document.getElementById('box').style.marginTop", "9px",
+          "setProperty is visible through the camelCase accessor");
+    ckstr("document.getElementById('box').style['margin-top']", "9px",
+          "and through the dashed spelling");
+
+    /* !important survives the round trip and is reported separately, which is
+     * what makes getPropertyValue's answer usable as a value. */
+    CK(prun("document.getElementById('box').style.setProperty('padding-top', '4px', 'important');"),
+       "setProperty with priority");
+    ckstr("document.getElementById('box').style.getPropertyValue('padding-top')", "4px",
+          "getPropertyValue strips !important");
+    ckstr("document.getElementById('box').style.getPropertyPriority('padding-top')", "important",
+          "getPropertyPriority reports it");
+    CK(box && strstr(dom_attr(box, "style"), "!important") != NULL,
+       "!important really reached the attribute (so LibCSS sees it)");
+
+    ckstr("document.getElementById('box').style.removeProperty('margin-top')", "9px",
+          "removeProperty returns the old value");
+    ckstr("document.getElementById('box').style.marginTop", "",
+          "removeProperty removed it");
+    ckstr("document.getElementById('box').style.fontWeight", "bold",
+          "and left the neighbouring declarations alone");
+
+    CK(prun("var s = document.getElementById('box').style;"
+            "if (s.length < 3) throw 'length ' + s.length;"
+            "var names = []; for (var i = 0; i < s.length; i++) names.push(s.item(i));"
+            "if (names.indexOf('font-weight') < 0) throw 'item(): ' + names.join(',');"),
+       "length + item() enumerate the declarations by name");
+
+    CK(prun("document.getElementById('leaf').style.cssText = 'color: teal; width: 12px';"
+            "var s = document.getElementById('leaf').style;"
+            "if (s.color !== 'teal' || s.width !== '12px') throw 'cssText= ' + s.cssText;"
+            "if (s.cssText.indexOf('teal') < 0) throw 'cssText read ' + s.cssText;"),
+       "cssText writes and reads the whole declaration block");
+    CK(prun("document.getElementById('leaf').style.removeProperty('color');"
+            "document.getElementById('leaf').style.removeProperty('width');"),
+       "leaf inline style cleared again");
+
+    /* ---- B. cascade priority: inline still beats an author rule ----
+     * This is the property that would have been silently lost by writing
+     * computed values straight onto the node instead of into the attribute. */
+    ckstr("getComputedStyle(document.getElementById('box')).color", "rgb(0, 0, 255)",
+          "before the inline write the author rule (#box{color:blue}) wins");
+    CK(prun("document.getElementById('box').style.color = 'red';"), "inline color: red");
+    CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) != CSS_CHANGED_NONE,
+       "the inline write re-styled something");
+    ckstr("getComputedStyle(document.getElementById('box')).color", "rgb(255, 0, 0)",
+          "INLINE STYLE BEATS THE AUTHOR RULE (it went through LibCSS as an inline sheet)");
+    CK(prun("document.getElementById('box').style.removeProperty('color');"),
+       "inline color removed again");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    ckstr("getComputedStyle(document.getElementById('box')).color", "rgb(0, 0, 255)",
+          "removing the inline declaration hands the cascade back to the author rule");
+
+    /* ---- C. getComputedStyle: resolved values as CSS text ----
+     * Clear the inline declarations part A wrote first, so what is measured
+     * here is the author sheet rather than this test's own leftovers. */
+    CK(prun("var s = document.getElementById('box').style;"
+            "s.removeProperty('background-color'); s.removeProperty('padding-top');"),
+       "part A's inline declarations removed");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    CK(prun("window.cs = getComputedStyle(document.getElementById('box'));"),
+       "getComputedStyle(el) returns a declaration");
+    ckstr("cs.backgroundColor", "rgb(255, 255, 0)", "background-color");
+    ckstr("cs.width", "200px", "width");
+    ckstr("cs.paddingTop", "5px", "padding-top");
+    ckstr("cs.paddingRight", "6px", "padding-right");
+    ckstr("cs.paddingBottom", "7px", "padding-bottom");
+    ckstr("cs.paddingLeft", "8px", "padding-left");
+    ckstr("cs.marginTop", "1px", "margin-top");
+    ckstr("cs.marginRight", "2px", "margin-right");
+    ckstr("cs.marginBottom", "3px", "margin-bottom");
+    ckstr("cs.marginLeft", "4px", "margin-left");
+    ckstr("cs.fontSize", "20px", "font-size");
+    ckstr("cs.fontFamily", "Georgia, serif", "font-family keeps the authored list");
+    ckstr("cs.fontWeight", "700", "font-weight is numeric, as a real UA reports it");
+    ckstr("cs.fontStyle", "normal", "font-style");
+    ckstr("cs.display", "block", "display");
+    ckstr("cs.position", "relative", "position");
+    ckstr("cs.top", "3px", "top");
+    ckstr("cs.left", "4px", "left");
+    /* On a relatively positioned box, right/bottom are the negation of
+     * left/top (CSS 9.4.3) -- so both the authored pair and the derived pair
+     * get checked, on two different elements. */
+    ckstr("cs.right", "-4px", "right on a relative box is -left");
+    ckstr("cs.bottom", "-3px", "bottom on a relative box is -top");
+    ckstr("getComputedStyle(document.getElementById('abs')).right", "5px",
+          "right, authored on an absolutely positioned box");
+    ckstr("getComputedStyle(document.getElementById('abs')).bottom", "6px",
+          "bottom, authored on an absolutely positioned box");
+    ckstr("cs.opacity", "0.5", "opacity");
+    ckstr("cs.zIndex", "7", "z-index");
+    ckstr("cs.overflow", "hidden", "overflow (both axes agree -> one value)");
+    ckstr("cs.borderTopWidth", "2px", "border-top-width");
+    ckstr("cs.borderLeftStyle", "dashed", "border-left-style");
+    ckstr("cs.borderRightColor", "rgb(0, 255, 0)", "border-right-color");
+    ckstr("cs.textAlign", "center", "text-align");
+    ckstr("cs.lineHeight", "24px", "line-height");
+    ckstr("cs.visibility", "visible", "visibility");
+    ckstr("cs.boxSizing", "border-box", "box-sizing");
+    ckstr("cs.minWidth", "10px", "min-width");
+    ckstr("cs.maxWidth", "400px", "max-width");
+    /* Nothing set them, so these report their initial values -- which is the
+     * whole point of a COMPUTED style as opposed to the declarations. */
+    ckstr("cs.maxHeight", "none", "max-height falls back to its initial value");
+    ckstr("cs.height", "auto", "height reports the computed value (see css.h on resolved values)");
+    ckstr("cs.float", "none", "float");
+    ckstr("cs.cssFloat", "none", "cssFloat is the same property under its IDL name");
+    ckstr("cs.whiteSpace", "normal", "white-space");
+    ckstr("cs.textDecoration", "none", "text-decoration");
+
+    CK(prun("window.fs = getComputedStyle(document.getElementById('flex'));"
+            "window.fis = getComputedStyle(document.getElementById('fi'));"), "flex styles");
+    ckstr("fs.display", "flex", "display:flex");
+    ckstr("fs.flexDirection", "column", "flex-direction");
+    ckstr("fs.flexWrap", "wrap", "flex-wrap");
+    ckstr("fs.justifyContent", "space-between", "justify-content");
+    ckstr("fs.alignItems", "center", "align-items");
+    ckstr("fis.flexGrow", "2", "flex-grow");
+    ckstr("fis.flexShrink", "0", "flex-shrink");
+    ckstr("fis.flexBasis", "30px", "flex-basis");
+    ckstr("fis.order", "3", "order");
+    ckstr("fis.alignSelf", "flex-end", "align-self");
+    ckstr("fis.visibility", "hidden", "visibility:hidden");
+    ckstr("getComputedStyle(document.getElementById('gone')).display", "none",
+          "display:none is reported, not hidden from the CSSOM");
+    /* Inheritance is what a computed style is FOR: #fi never mentions colour. */
+    ckstr("fis.color", "rgb(0, 0, 0)", "an inherited property resolves on the child");
+
+    /* CSS property names are ASCII case-insensitive, so getPropertyValue has
+     * to answer whatever case a page hands it. */
+    ckstr("cs.getPropertyValue('BACKGROUND-COLOR')", "rgb(255, 255, 0)",
+          "getPropertyValue is case-insensitive on the dashed name");
+    ckstr("cs.getPropertyValue('no-such-property')", "",
+          "a property we cannot resolve reads as empty, not as a throw");
+    CK(prun("var c = getComputedStyle(document.getElementById('box'));"
+            "if (c.length < 40) throw 'length ' + c.length;"
+            "if (c.item(0) !== 'width') throw 'item(0) ' + c.item(0);"
+            "if (c.cssText !== '') throw 'computed cssText should be empty';"
+            "c.color = 'purple'; c.setProperty('color', 'purple');"
+            "if (getComputedStyle(document.getElementById('box')).color !== 'rgb(0, 0, 255)')"
+            "  throw 'a computed declaration must be read-only';"),
+       "a computed declaration enumerates, has no cssText and ignores writes");
+
+    /* ---- D. classList, completed ---- */
+    CK(prun("var e = document.getElementById('leaf');"
+            "e.setAttribute('class', 'a b c');"
+            "var cl = e.classList;"
+            "if (cl.length !== 3) throw 'length ' + cl.length;"
+            "if (cl.item(0) !== 'a' || cl.item(2) !== 'c') throw 'item()';"
+            "if (cl.item(9) !== null) throw 'item() past the end must be null';"
+            "if (cl[1] !== 'b') throw 'index ' + cl[1];"
+            "if (cl[9] !== undefined) throw 'index past the end';"
+            "if (String(cl) !== 'a b c') throw 'toString ' + String(cl);"
+            "if (cl.value !== 'a b c') throw 'value ' + cl.value;"),
+       "classList length / item() / indexing / toString / value");
+    CK(prun("var cl = document.getElementById('leaf').classList;"
+            "if ([...cl].join('-') !== 'a-b-c') throw 'spread ' + [...cl].join('-');"
+            "var seen = []; for (var t of cl) seen.push(t);"
+            "if (seen.join('-') !== 'a-b-c') throw 'for-of ' + seen.join('-');"
+            "var f = []; cl.forEach(function(t){ f.push(t); });"
+            "if (f.join('-') !== 'a-b-c') throw 'forEach ' + f.join('-');"),
+       "classList is iterable (spread, for..of, forEach)");
+    /* The index hook is consulted for EVERY key, including Symbol.iterator.
+     * It must fall through to the prototype for a non-index key, and it must
+     * not try to stringify a symbol on the way (that throws, and the exception
+     * would sit pending in the context until something unrelated tripped
+     * over it). */
+    CK(prun("var cl = document.getElementById('leaf').classList;"
+            "if (typeof cl[Symbol.iterator] !== 'function') throw 'no Symbol.iterator';"
+            "if (typeof cl.add !== 'function') throw 'the index hook shadowed the prototype';"
+            "if (!('length' in cl)) throw 'length missing';"
+            "if (cl.nosuchkey !== undefined) throw 'made up a value for an unknown key';"),
+       "the index hook falls through to the prototype and tolerates a Symbol key");
+    CK(prun("var cl = document.getElementById('leaf').classList;"
+            "if (cl.replace('b', 'B') !== true) throw 'replace returned false';"
+            "if (String(cl) !== 'a B c') throw 'replace lost the position: ' + String(cl);"
+            "if (cl.replace('zz', 'yy') !== false) throw 'replace of a missing token';"),
+       "classList.replace() swaps in place and reports whether it did");
+    CK(prun("var cl = document.getElementById('leaf').classList;"
+            "cl.add('d', 'e');"
+            "if (String(cl) !== 'a B c d e') throw 'multi-add ' + String(cl);"
+            "cl.remove('a', 'e');"
+            "if (String(cl) !== 'B c d') throw 'multi-remove ' + String(cl);"
+            "if (cl.toggle('c', true) !== true || String(cl) !== 'B c d') throw 'toggle force-on';"
+            "if (cl.toggle('c', false) !== false || String(cl) !== 'B d') throw 'toggle force-off';"),
+       "add/remove take several tokens and toggle takes a force flag");
+    /* The live-ness the exotic index hook exists for: the SAME object must see
+     * a token added after it was handed out. */
+    CK(prun("var cl = document.getElementById('leaf').classList;"
+            "var before = cl.length; cl.add('zed');"
+            "if (cl.length !== before + 1) throw 'length did not update';"
+            "if (cl[cl.length - 1] !== 'zed') throw 'index did not update';"
+            "cl.remove('zed');"),
+       "a token list handed to a script stays LIVE");
+    CK(prun("document.getElementById('leaf').setAttribute('class', '');"), "leaf class cleared");
+
+    /* ---- E. invalidation: the right scope, and not the whole document ---- */
+    js_dom_clear_dirty();
+    CK(js_dom_inval_level() == INVAL_NONE, "a clean page reports INVAL_NONE");
+
+    CK(prun("document.getElementById('leaf').classList.add('hot');"), "class toggle on a leaf");
+    CK(js_dom_inval_level() == INVAL_STYLE, "a class change is a STYLE invalidation");
+    CK(js_dom_inval_roots() == 1, "it marked exactly ONE scope, not the document");
+    {
+        int sib = 0;
+        CK(js_dom_inval_root(0, &sib) == leaf, "the scope is the element that changed");
+        CK(sib == 1, "and its following siblings, for the sibling combinators");
+    }
+    {
+        int mark = 0; styled_since(&mark);
+        int ch = settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+        int n = styled_since(&mark);
+        /* #leaf is the last child of <body>, so the scope is exactly itself. */
+        CK(n == 1, "the re-style touched ONE element, not the document");
+        CK(ch == CSS_CHANGED_PAINT,
+           ".hot { color } is reported as PAINT-only: no box moved");
+        printf("    (leaf class toggle re-styled %d element(s))\n", n);
+    }
+    ckstr("getComputedStyle(document.getElementById('leaf')).color", "rgb(255, 0, 0)",
+          "and the scoped re-style really produced the new colour");
+
+    /* A class that matches no rule at all: the cascade runs and reports that
+     * nothing came out different, so the caller skips layout AND the repaint. */
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('leaf').classList.add('nosuchrule');"), "meaningless class");
+    CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) == CSS_CHANGED_NONE,
+       "a class that matches NO rule costs no layout and no repaint");
+
+    /* A width class does move boxes. */
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('leaf').classList.add('wide');"), "width class");
+    CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) == CSS_CHANGED_LAYOUT,
+       ".wide { width } is reported as LAYOUT-affecting");
+    ckstr("getComputedStyle(document.getElementById('leaf')).width", "333px", "the width took");
+    prun("document.getElementById('leaf').setAttribute('class', '');");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+
+    /* Inline-style writes are tiered by which property they touch. */
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('box').style.color = 'green';"), "inline paint-only write");
+    CK(js_dom_inval_level() == INVAL_PAINT, "writing a colour is a PAINT invalidation");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('box').style.width = '111px';"), "inline geometry write");
+    CK(js_dom_inval_level() == INVAL_STYLE, "writing a width is a STYLE invalidation");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    prun("document.getElementById('box').style.removeProperty('color');"
+         "document.getElementById('box').style.removeProperty('width');");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+
+    /* Writing the value that is already there must not dirty anything: a page
+     * that re-asserts its style every animation frame otherwise re-styles (and
+     * grows the DOM arena) forever. */
+    prun("document.getElementById('box').style.color = 'orange';");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('box').style.color = 'orange';"), "same value written again");
+    CK(js_dom_inval_level() == INVAL_NONE, "a redundant style write does not dirty the page");
+    prun("document.getElementById('leaf').classList.add('hot');");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('leaf').classList.add('hot');"), "class already present");
+    CK(js_dom_inval_level() == INVAL_NONE, "re-adding a class that is present does not dirty it");
+    prun("document.getElementById('leaf').setAttribute('class', '');");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    prun("document.getElementById('box').style.removeProperty('color');");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+
+    /* Structural changes are LAYOUT by construction, rooted at the parent (that
+     * is what moves :first-child / :nth-child / :empty for the siblings). */
+    js_dom_clear_dirty();
+    CK(prun("var d = document.createElement('b');"
+            "document.getElementById('par').appendChild(d);"), "appendChild");
+    CK(js_dom_inval_level() == INVAL_LAYOUT, "appendChild is a LAYOUT invalidation");
+    {
+        int sib = 0;
+        CK(js_dom_inval_roots() == 1 && js_dom_inval_root(0, &sib) == par,
+           "the scope is the PARENT whose child list changed");
+        CK(sib == 0, "structural changes need no sibling scope (no :has())");
+    }
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('par').textContent = 'flat';"), "textContent=");
+    CK(js_dom_inval_level() == INVAL_LAYOUT, "textContent= is a LAYOUT invalidation");
+    CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) == CSS_CHANGED_LAYOUT,
+       "a structural change forces layout even when no computed style moved");
+
+    /* Coalescing: several mutations under one parent are ONE scope, and a
+     * mutation on an ancestor swallows the scopes below it. */
+    js_dom_clear_dirty();
+    CK(prun("var p = document.getElementById('par');"
+            "p.appendChild(document.createElement('u'));"
+            "p.appendChild(document.createElement('u'));"
+            "p.appendChild(document.createElement('u'));"), "three appends under one parent");
+    CK(js_dom_inval_roots() == 1, "three mutations in one place are ONE scope");
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('par').classList.add('x');"
+            "document.body.classList.add('y');"), "a leaf then an ancestor");
+    CK(js_dom_inval_roots() == 1 && js_dom_inval_root(0, 0) == dom_doc_body(root->doc),
+       "an ancestor scope swallows the descendant scope it already covers");
+    prun("document.getElementById('par').setAttribute('class','');"
+         "document.body.setAttribute('class','');");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+
+    /* Overflow: more distinct places than the record holds falls back to the
+     * whole document, which is exactly what every mutation used to do. */
+    js_dom_clear_dirty();
+    CK(prun("var b = document.body;"
+            "for (var i = 0; i < 12; i++) {"
+            "  var d = document.createElement('div'); d.setAttribute('id','ov'+i);"
+            "  b.appendChild(d); }"
+            "for (var i = 0; i < 12; i++)"
+            "  document.getElementById('ov'+i).classList.add('hot');"),
+       "twelve separate scopes marked");
+    CK(js_dom_inval_roots() == 0, "past the cap the record reports 'whole document'");
+    CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) == CSS_CHANGED_LAYOUT,
+       "and the caller re-styles everything, which is the old behaviour");
+
+    /* A scope whose node is destroyed before the embedder gets to it. The
+     * subtree is torn down through the DOM API directly, NOT through
+     * removeChild -- removeChild would mark its parent and the record would
+     * notice the recycled slot at mark time. This is the other order: the node
+     * dies quietly and the staleness has to be caught at READ time, by the
+     * serial. */
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('ov0').classList.add('wide');"),
+       "a scope marked on a node that is about to die");
+    CK(js_dom_inval_roots() == 1, "one scope marked");
+    dom_destroy_subtree(dom_get_element_by_id(root->doc, "ov0"));
+    CK(js_dom_inval_root(0, 0) == NULL,
+       "a scope whose node was recycled reads as NULL, not as the new occupant");
+    CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) == CSS_CHANGED_LAYOUT,
+       "and the caller falls back to re-styling the whole document");
+
+    /* ---- F. sibling scope: `.on + .after` ---- */
+    js_dom_clear_dirty();
+    ckstr("getComputedStyle(document.getElementById('af')).color", "rgb(0, 0, 0)",
+          "the sibling rule does not match yet");
+    CK(prun("document.getElementById('sib').classList.add('on');"), "class added to #sib");
+    {
+        int want_sib = 0;
+        CK(js_dom_inval_root(0, &want_sib) == sib && want_sib == 1,
+           "the scope is #sib AND its following siblings");
+    }
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    ckstr("getComputedStyle(document.getElementById('af')).color", "rgb(1, 2, 3)",
+          "THE FOLLOWING SIBLING was re-styled -- `.on + .after` fired");
+    /* And the converse: a scope WITHOUT the sibling flag leaves #af behind,
+     * which is the bug this flag exists to prevent. */
+    prun("document.getElementById('sib').setAttribute('class', '');");
+    js_dom_clear_dirty();
+    css_apply_scoped(sib, 0, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    ckstr("getComputedStyle(document.getElementById('af')).color", "rgb(1, 2, 3)",
+          "without the sibling flag the neighbour keeps its stale colour (why the flag exists)");
+    css_apply_scoped(sib, 1, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    ckstr("getComputedStyle(document.getElementById('af')).color", "rgb(0, 0, 0)",
+          "with it, the neighbour is corrected");
+
+    js_page_close();
+    dom_free(root);
+    (void)fi; (void)box;
+}
+
+/* ======================================================================
+ * The invalidation measurement.
+ *
+ * The claim being tested is not "scoped re-styling is architecturally nicer",
+ * it is "a class toggle on a leaf must not cost a full-document re-style" --
+ * so it is measured, on a document of a few thousand elements, in the two
+ * units that matter: how many elements the cascade visited, and how long it
+ * took. Both paths do the identical toggle; only the invalidation scope
+ * differs.
+ * ====================================================================== */
+
+#define MEAS_SECTIONS 120
+#define MEAS_LEAVES    25            /* -> 120 * 26 + 2 = ~3100 elements */
+#define MEAS_REPS      20
+
+static const char MEAS_CSS[] =
+    "body{margin:0;font-family:sans-serif}"
+    "section{display:block;padding:4px;border-bottom:1px solid #eee}"
+    "section p{margin:2px 0;line-height:1.4}"
+    "section p b{font-weight:bold}"
+    "section:first-child{padding-top:0}"
+    ".hot{color:#c00}.cold{color:#00c}"
+    "p.hot b{text-decoration:underline}"
+    "div > section > p{font-size:14px}"
+    "[data-k]{opacity:1}"
+    "p:nth-child(2n){background:#fafafa}"
+    "section p + p{margin-top:6px}"
+    "a:link{color:#1a0dab}a:hover{color:#c00}"
+    "#wrap{max-width:900px}";
+
+/* a tiny local growable buffer (the test cannot see js_dom.c's) */
+struct mbuf { char *p; size_t n, cap; };
+static void mb(struct mbuf *b, const char *s)
+{
+    size_t l = strlen(s);
+    if (b->n + l + 1 > b->cap) {
+        size_t c = b->cap ? b->cap : 4096;
+        while (c < b->n + l + 1) c *= 2;
+        b->p = realloc(b->p, c);
+        b->cap = c;
+    }
+    memcpy(b->p + b->n, s, l);
+    b->n += l;
+    b->p[b->n] = 0;
+}
+
+static void measure_invalidation(void)
+{
+    struct mbuf h = { 0, 0, 0 };
+    char tmp[128];
+    mb(&h, "<html><body><div id='wrap'>");
+    for (int s = 0; s < MEAS_SECTIONS; s++) {
+        snprintf(tmp, sizeof tmp, "<section id='S%d' data-k='%d'>", s, s);
+        mb(&h, tmp);
+        for (int i = 0; i < MEAS_LEAVES; i++) {
+            snprintf(tmp, sizeof tmp, "<p id='L%d'>t<b>x</b></p>", s * MEAS_LEAVES + i);
+            mb(&h, tmp);
+        }
+        mb(&h, "</section>");
+    }
+    mb(&h, "</div></body></html>");
+
+    struct node *root = dom_parse(h.p, (int)h.n);
+    if (!root) { printf("FAIL measurement fixture\n"); fails = 1; free(h.p); return; }
+    const int csslen = (int)sizeof MEAS_CSS - 1;
+    css_apply(root, MEAS_CSS, csslen);          /* warm: the scoped path resumes from this */
+
+    /* The very last <p> in the document: no following siblings, so the scope is
+     * exactly the element that changed -- the shape a framework's class toggle
+     * actually has. */
+    snprintf(tmp, sizeof tmp, "L%d", MEAS_SECTIONS * MEAS_LEAVES - 1);
+    struct node *leaf = dom_get_element_by_id(root->doc, tmp);
+    if (!leaf) { printf("FAIL measurement leaf\n"); fails = 1; dom_free(root); free(h.p); return; }
+
+    int mark = 0;
+    styled_since(&mark);
+
+    /* BEFORE: what every mutation used to cost -- css_apply over the document. */
+    clock_t t0 = clock();
+    for (int r = 0; r < MEAS_REPS; r++) {
+        dom_set_attr(leaf, "class", (r & 1) ? "hot" : "cold");
+        css_apply(root, MEAS_CSS, csslen);
+    }
+    clock_t t1 = clock();
+    int full_total = styled_since(&mark);
+
+    /* AFTER: the same toggle, re-styling only the scope the mutation marked. */
+    clock_t t2 = clock();
+    for (int r = 0; r < MEAS_REPS; r++) {
+        dom_set_attr(leaf, "class", (r & 1) ? "hot" : "cold");
+        css_apply_scoped(leaf, 1, MEAS_CSS, csslen);
+    }
+    clock_t t3 = clock();
+    int scoped_total = styled_since(&mark);
+
+    double full_ms = (double)(t1 - t0) * 1000.0 / CLOCKS_PER_SEC / MEAS_REPS;
+    double scoped_ms = (double)(t3 - t2) * 1000.0 / CLOCKS_PER_SEC / MEAS_REPS;
+    int elems = full_total / MEAS_REPS;
+
+    printf("\n--- invalidation measurement (%d elements, %d toggles each) ---\n",
+           elems, MEAS_REPS);
+    printf("  before (css_apply, whole document): %6d elements re-styled, %8.3f ms per toggle\n",
+           full_total / MEAS_REPS, full_ms);
+    printf("  after  (css_apply_scoped, one leaf): %5d elements re-styled, %8.3f ms per toggle\n",
+           scoped_total / MEAS_REPS, scoped_ms);
+    if (scoped_ms > 0.0)
+        printf("  -> %dx fewer elements, %.0fx faster\n",
+               (full_total / MEAS_REPS) / (scoped_total / MEAS_REPS > 0 ? scoped_total / MEAS_REPS : 1),
+               full_ms / scoped_ms);
+
+    CK(full_total / MEAS_REPS > 2000,
+       "measurement: the old path really did re-style the whole document");
+    /* Two: the <p> that changed and the <b> inside it. The subtree is not
+     * optional -- the child inherits from the parent, and `p.hot b` in the
+     * sheet keys off the class that just moved. */
+    CK(scoped_total / MEAS_REPS == 2,
+       "measurement: the new path re-styles the changed element and its subtree, nothing else");
+    CK(scoped_ms * 20.0 < full_ms,
+       "measurement: and it is more than an order of magnitude faster");
+
+    dom_free(root);
+    free(h.p);
+}
+
 int main(void)
 {
     const char *html = "<body><h1 id='t'>Old</h1><p class='x'>hi</p><a href='/y'>z</a>"
@@ -596,6 +1217,11 @@ int main(void)
 
     printf("\n--- live page: persistent runtime, events, timers ---\n");
     live_page_tests();
+
+    printf("\n--- CSSOM: element.style, getComputedStyle, classList, invalidation ---\n");
+    cssom_tests();
+
+    measure_invalidation();
 
     printf(fails ? "\nJS-DOM TEST FAILED\n" : "\nJS-DOM TEST PASSED\n");
     return fails;

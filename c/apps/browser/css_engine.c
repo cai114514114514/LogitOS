@@ -973,6 +973,578 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     }
 }
 
+/* ======================================================================
+ * CSSOM readback: computed style -> CSS text
+ *
+ * `convert()` above digests a computed style into the ~45 fields LAYOUT needs.
+ * This half answers a different question -- "what would getComputedStyle say?"
+ * -- and so it reads node->computed (the real LibCSS block, ~110 properties)
+ * and serialises single properties back into CSS syntax. The two must not be
+ * merged: cstyle is lossy on purpose (font-family names, numeric font weights,
+ * per-edge border styles as keywords, `auto` vs `0`), and it is exactly those
+ * distinctions a script asking for a computed value is asking about.
+ *
+ * See css.h for which of these are resolved values and which are computed
+ * values -- they differ for width/height/margin/padding/offsets, and the
+ * difference is visible if you diff against Chrome.
+ * ====================================================================== */
+
+/* Dashed names, indexed by CSSP_*. Order must match the enum in css.h. */
+static const char *const g_prop_names[CSSP__COUNT] = {
+    "width", "height",
+    "min-width", "max-width", "min-height", "max-height",
+    "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "color", "background-color",
+    "font-size", "font-family", "font-weight", "font-style",
+    "display", "position",
+    "top", "right", "bottom", "left",
+    "opacity", "z-index", "visibility",
+    "overflow", "overflow-x", "overflow-y",
+    "flex-direction", "flex-wrap", "flex-grow", "flex-shrink",
+    "flex-basis", "justify-content", "align-items", "align-self",
+    "align-content", "order",
+    "border-top-width", "border-right-width",
+    "border-bottom-width", "border-left-width",
+    "border-top-style", "border-right-style",
+    "border-bottom-style", "border-left-style",
+    "border-top-color", "border-right-color",
+    "border-bottom-color", "border-left-color",
+    "text-align", "line-height", "text-decoration",
+    "box-sizing", "white-space", "float", "clear",
+    "list-style-type",
+};
+
+const char *css_prop_name(int i)
+{ return (i >= 0 && i < CSSP__COUNT) ? g_prop_names[i] : 0; }
+
+/* Accepts both spellings a script can hand us. The IDL name is the dashed name
+ * with each "-x" folded to "X", so one comparison covers both: walk the dashed
+ * name and let the caller's string either supply the '-' or the capital.
+ * `cssFloat` is spelled out separately -- `float` was a reserved word when the
+ * IDL was written, and pages still use both. */
+int css_prop_lookup(const char *name, int len)
+{
+    if (!name) return -1;
+    if (len < 0) { len = 0; while (name[len]) len++; }
+    if (len <= 0) return -1;
+    if (len == 8 && memcmp(name, "cssFloat", 8) == 0) return CSSP_FLOAT;
+    for (int p = 0; p < CSSP__COUNT; p++) {
+        const char *d = g_prop_names[p];
+        int i = 0, j = 0, ok = 1;
+        while (d[i]) {
+            if (j >= len) { ok = 0; break; }
+            if (d[i] == '-') {
+                if (name[j] == '-') { i++; j++; continue; }        /* dashed spelling */
+                if (name[j] == (char)(d[i + 1] - 32)) { i += 2; j++; continue; }  /* camelCase */
+                ok = 0; break;
+            }
+            /* CSS property names are ASCII case-insensitive, so
+             * getPropertyValue("BACKGROUND-COLOR") has to resolve; only the
+             * capital that STANDS IN for a dash is matched exactly. */
+            if (lc((unsigned char)name[j]) != d[i]) { ok = 0; break; }
+            i++; j++;
+        }
+        if (ok && j == len) return p;
+    }
+    return -1;
+}
+
+int css_prop_paint_only(int prop)
+{
+    switch (prop) {
+    /* No box moves and no box changes size when these change -- that is the
+     * definition the invalidation tier uses, and it is the one a future
+     * incremental repaint would key off. (border-*-style is here because
+     * `none` -> `solid` also changes border-*-width, which is NOT in this
+     * list, so a style change that does take space is still caught.) */
+    case CSSP_COLOR: case CSSP_BACKGROUND_COLOR:
+    case CSSP_BORDER_TOP_COLOR: case CSSP_BORDER_RIGHT_COLOR:
+    case CSSP_BORDER_BOTTOM_COLOR: case CSSP_BORDER_LEFT_COLOR:
+    case CSSP_BORDER_TOP_STYLE: case CSSP_BORDER_RIGHT_STYLE:
+    case CSSP_BORDER_BOTTOM_STYLE: case CSSP_BORDER_LEFT_STYLE:
+    case CSSP_OPACITY: case CSSP_VISIBILITY: case CSSP_Z_INDEX:
+    case CSSP_TEXT_DECORATION:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* ---- a bounded output buffer (no stdio: css_engine.c is freestanding) ---- */
+struct obuf { char *p; int n, max; };
+static void ob_ch(struct obuf *b, char c) { if (b->n < b->max - 1) b->p[b->n++] = c; }
+static void ob_s(struct obuf *b, const char *s) { while (s && *s) ob_ch(b, *s++); }
+static void ob_sn(struct obuf *b, const char *s, int n) { for (int i = 0; i < n; i++) ob_ch(b, s[i]); }
+static void ob_i(struct obuf *b, int v)
+{
+    char t[12]; int k = 0;
+    if (v < 0) { ob_ch(b, '-'); v = -v; }
+    do { t[k++] = (char)('0' + v % 10); v /= 10; } while (v && k < 11);
+    while (k) ob_ch(b, t[--k]);
+}
+
+/* A css_fixed as a plain decimal, trailing zeros trimmed: 1, 0.5, 0.33.
+ * Done in integers because css_fixed IS an integer (22:10) and the browser's
+ * CSS path must not depend on the FPU being enabled. */
+static void ob_fixed(struct obuf *b, css_fixed v)
+{
+    if (v < 0) { ob_ch(b, '-'); v = -v; }
+    ob_i(b, (int)(v >> CSS_RADIX_POINT));
+    int frac = (int)(((long long)(v & ((1 << CSS_RADIX_POINT) - 1)) * 10000 + 512) / 1024);
+    if (frac > 9999) frac = 9999;
+    if (frac) {
+        char d[4];
+        for (int i = 3; i >= 0; i--) { d[i] = (char)('0' + frac % 10); frac /= 10; }
+        int last = 3;
+        while (last > 0 && d[last] == '0') last--;
+        ob_ch(b, '.');
+        for (int i = 0; i <= last; i++) ob_ch(b, d[i]);
+    }
+}
+
+/* CSS Color 4 serialisation, as every browser reports it: opaque colours are
+ * `rgb(r, g, b)` and anything else `rgba(r, g, b, a)` with a in 0..1. */
+static void ob_color(struct obuf *b, css_color c)
+{
+    unsigned a = (c >> 24) & 0xFF;
+    ob_s(b, a == 0xFF ? "rgb(" : "rgba(");
+    ob_i(b, (int)((c >> 16) & 0xFF)); ob_s(b, ", ");
+    ob_i(b, (int)((c >> 8) & 0xFF));  ob_s(b, ", ");
+    ob_i(b, (int)(c & 0xFF));
+    if (a != 0xFF) { ob_s(b, ", "); ob_fixed(b, FDIV(INTTOFIX((int)a), INTTOFIX(255))); }
+    ob_ch(b, ')');
+}
+
+/* A length in the same integer pixels the rest of the engine speaks, or a
+ * percentage kept as a percentage (see the resolved-vs-computed note in css.h). */
+static void ob_len(struct obuf *b, css_fixed val, css_unit unit, int fp)
+{
+    if (unit == CSS_UNIT_PCT) { ob_fixed(b, val); ob_ch(b, '%'); return; }
+    ob_i(b, len_px(val, unit, fp, 0));
+    ob_s(b, "px");
+}
+
+static const char *border_style_name(uint8_t s)
+{
+    switch (s) {
+    case CSS_BORDER_STYLE_HIDDEN: return "hidden";
+    case CSS_BORDER_STYLE_DOTTED: return "dotted";
+    case CSS_BORDER_STYLE_DASHED: return "dashed";
+    case CSS_BORDER_STYLE_SOLID:  return "solid";
+    case CSS_BORDER_STYLE_DOUBLE: return "double";
+    case CSS_BORDER_STYLE_GROOVE: return "groove";
+    case CSS_BORDER_STYLE_RIDGE:  return "ridge";
+    case CSS_BORDER_STYLE_INSET:  return "inset";
+    case CSS_BORDER_STYLE_OUTSET: return "outset";
+    default:                      return "none";
+    }
+}
+
+static const char *overflow_name(uint8_t v)
+{
+    switch (v) {
+    case CSS_OVERFLOW_HIDDEN: return "hidden";
+    case CSS_OVERFLOW_SCROLL: return "scroll";
+    case CSS_OVERFLOW_AUTO:   return "auto";
+    default:                  return "visible";
+    }
+}
+
+static const char *display_name(const css_computed_style *cs)
+{
+    switch (css_computed_display(cs, false)) {
+    case CSS_DISPLAY_NONE:          return "none";
+    case CSS_DISPLAY_INLINE:        return "inline";
+    case CSS_DISPLAY_INLINE_BLOCK:  return "inline-block";
+    case CSS_DISPLAY_LIST_ITEM:     return "list-item";
+    case CSS_DISPLAY_FLEX:          return "flex";
+    case CSS_DISPLAY_INLINE_FLEX:   return "inline-flex";
+    case CSS_DISPLAY_GRID:          return "grid";
+    case CSS_DISPLAY_INLINE_GRID:   return "inline-grid";
+    case CSS_DISPLAY_TABLE:         return "table";
+    case CSS_DISPLAY_TABLE_ROW:     return "table-row";
+    case CSS_DISPLAY_TABLE_CELL:    return "table-cell";
+    case CSS_DISPLAY_INLINE_TABLE:  return "inline-table";
+    default:                        return "block";
+    }
+}
+
+/* The font-size of `n`'s PARENT, which is what an em-valued length on `n`
+ * resolves against. convert() already computed it and left it in the parent's
+ * cstyle, so this is a lookup, not a second cascade. */
+static int parent_font_of(struct node *n)
+{
+    struct node *p = n ? n->parent : 0;
+    while (p && p->type != N_ELEM) p = p->parent;
+    return (p && p->style) ? ((struct cstyle *)p->style)->font_px : 16;
+}
+
+int css_computed_text(struct node *n, int prop, char *out, int outmax)
+{
+    if (!out || outmax <= 0) return 0;
+    out[0] = 0;
+    if (!n || n->type != N_ELEM || !n->computed || prop < 0 || prop >= CSSP__COUNT) return 0;
+    const css_computed_style *cs = (const css_computed_style *)n->computed;
+
+    struct obuf b = { out, 0, outmax };
+    css_fixed len = 0; css_unit unit = CSS_UNIT_PX; css_color col = 0;
+    /* An em-valued length on any property BUT font-size resolves against the
+     * element's OWN font-size, which convert() already worked out (and clamped)
+     * into the cstyle. Only font-size itself would need the parent's, and that
+     * one is read straight back out of the cstyle rather than re-derived. */
+    int fp = n->style ? ((struct cstyle *)n->style)->font_px : parent_font_of(n);
+
+    switch (prop) {
+    case CSSP_WIDTH:
+        if (css_computed_width(cs, &len, &unit) == CSS_WIDTH_SET) ob_len(&b, len, unit, fp);
+        else ob_s(&b, "auto");
+        break;
+    case CSSP_HEIGHT:
+        if (css_computed_height(cs, &len, &unit) == CSS_HEIGHT_SET) ob_len(&b, len, unit, fp);
+        else ob_s(&b, "auto");
+        break;
+    /* min-*: the RAW getter, for the same reason convert() uses it -- the public
+     * accessor reports `auto` as a set 0 unless the element is itself a flex
+     * container, and `min-width:auto` vs `min-width:0` is precisely the
+     * distinction a script inspecting a flex item is asking about. */
+    case CSSP_MIN_WIDTH:
+        if (get_min_width(cs, &len, &unit) == CSS_MIN_WIDTH_SET) ob_len(&b, len, unit, fp);
+        else ob_s(&b, "auto");
+        break;
+    case CSSP_MIN_HEIGHT:
+        if (get_min_height(cs, &len, &unit) == CSS_MIN_HEIGHT_SET) ob_len(&b, len, unit, fp);
+        else ob_s(&b, "auto");
+        break;
+    case CSSP_MAX_WIDTH:
+        if (css_computed_max_width(cs, &len, &unit) == CSS_MAX_WIDTH_SET) ob_len(&b, len, unit, fp);
+        else ob_s(&b, "none");
+        break;
+    case CSSP_MAX_HEIGHT:
+        if (css_computed_max_height(cs, &len, &unit) == CSS_MAX_HEIGHT_SET) ob_len(&b, len, unit, fp);
+        else ob_s(&b, "none");
+        break;
+
+#define MARGIN_CASE(P, NAME) \
+    case P: \
+        if (css_computed_margin_##NAME(cs, &len, &unit) == CSS_MARGIN_AUTO) ob_s(&b, "auto"); \
+        else ob_len(&b, len, unit, fp); \
+        break;
+    MARGIN_CASE(CSSP_MARGIN_TOP, top)
+    MARGIN_CASE(CSSP_MARGIN_RIGHT, right)
+    MARGIN_CASE(CSSP_MARGIN_BOTTOM, bottom)
+    MARGIN_CASE(CSSP_MARGIN_LEFT, left)
+#undef MARGIN_CASE
+
+#define PADDING_CASE(P, NAME) \
+    case P: css_computed_padding_##NAME(cs, &len, &unit); ob_len(&b, len, unit, fp); break;
+    PADDING_CASE(CSSP_PADDING_TOP, top)
+    PADDING_CASE(CSSP_PADDING_RIGHT, right)
+    PADDING_CASE(CSSP_PADDING_BOTTOM, bottom)
+    PADDING_CASE(CSSP_PADDING_LEFT, left)
+#undef PADDING_CASE
+
+    case CSSP_COLOR:
+        css_computed_color(cs, &col);
+        ob_color(&b, col);
+        break;
+    case CSSP_BACKGROUND_COLOR:
+        /* An unset background is transparent, and every browser spells that
+         * "rgba(0, 0, 0, 0)" rather than the keyword. */
+        if (css_computed_background_color(cs, &col) == CSS_BACKGROUND_COLOR_COLOR) ob_color(&b, col);
+        else ob_s(&b, "rgba(0, 0, 0, 0)");
+        break;
+
+    case CSSP_FONT_SIZE:
+        /* Resolved through convert()'s clamp, so it agrees with what actually
+         * got rendered rather than with what the cascade nominally said. */
+        ob_i(&b, fp); ob_s(&b, "px");
+        break;
+    case CSSP_FONT_FAMILY: {
+        /* LibCSS splits a font-family list in two: the named families land in
+         * the string array and the trailing GENERIC family becomes the status
+         * (select/properties/font_family.c drops everything after the first
+         * generic). Re-joining them reproduces the authored list, which is what
+         * a browser reports.
+         *
+         * The one inaccuracy: a list with NO generic in it inherits its status
+         * from the parent (or the UA hint), so `font-family: Georgia` comes
+         * back as "Georgia, sans-serif". The generic really is part of the
+         * computed value here -- it is what font fallback uses -- so reporting
+         * it is closer to right than dropping it, but it is a difference a
+         * strict comparison against Chrome would see. */
+        lwc_string **names = NULL;
+        uint8_t st = css_computed_font_family(cs, &names);
+        int wrote = 0;
+        for (int i = 0; names && names[i]; i++) {
+            if (wrote++) ob_s(&b, ", ");
+            ob_sn(&b, lwc_string_data(names[i]), (int)lwc_string_length(names[i]));
+        }
+        const char *gen = st == CSS_FONT_FAMILY_SERIF ? "serif" :
+                          st == CSS_FONT_FAMILY_CURSIVE ? "cursive" :
+                          st == CSS_FONT_FAMILY_FANTASY ? "fantasy" :
+                          st == CSS_FONT_FAMILY_MONOSPACE ? "monospace" :
+                          st == CSS_FONT_FAMILY_SANS_SERIF ? "sans-serif" : 0;
+        if (gen) { if (wrote) ob_s(&b, ", "); ob_s(&b, gen); }
+        else if (!wrote) ob_s(&b, "sans-serif");
+        break;
+    }
+    case CSSP_FONT_WEIGHT: {
+        /* Numeric, like a real getComputedStyle: `bold` computes to 700. */
+        static const int wmap[] = { 400, 400, 700, 700, 400,
+                                    100, 200, 300, 400, 500, 600, 700, 800, 900 };
+        uint8_t w = css_computed_font_weight(cs);
+        ob_i(&b, w < (uint8_t)(sizeof wmap / sizeof wmap[0]) ? wmap[w] : 400);
+        break;
+    }
+    case CSSP_FONT_STYLE: {
+        uint8_t s = css_computed_font_style(cs);
+        ob_s(&b, s == CSS_FONT_STYLE_ITALIC ? "italic" :
+                 s == CSS_FONT_STYLE_OBLIQUE ? "oblique" : "normal");
+        break;
+    }
+
+    case CSSP_DISPLAY: ob_s(&b, display_name(cs)); break;
+    case CSSP_POSITION:
+        switch (css_computed_position(cs)) {
+        case CSS_POSITION_ABSOLUTE: ob_s(&b, "absolute"); break;
+        case CSS_POSITION_RELATIVE: ob_s(&b, "relative"); break;
+        case CSS_POSITION_FIXED:    ob_s(&b, "fixed"); break;
+        case CSS_POSITION_STICKY:   ob_s(&b, "sticky"); break;
+        default:                    ob_s(&b, "static"); break;
+        }
+        break;
+
+#define OFFSET_CASE(P, NAME, SET) \
+    case P: \
+        if (css_computed_##NAME(cs, &len, &unit) == SET) ob_len(&b, len, unit, fp); \
+        else ob_s(&b, "auto"); \
+        break;
+    OFFSET_CASE(CSSP_TOP, top, CSS_TOP_SET)
+    OFFSET_CASE(CSSP_RIGHT, right, CSS_RIGHT_SET)
+    OFFSET_CASE(CSSP_BOTTOM, bottom, CSS_BOTTOM_SET)
+    OFFSET_CASE(CSSP_LEFT, left, CSS_LEFT_SET)
+#undef OFFSET_CASE
+
+    case CSSP_OPACITY: {
+        css_fixed op = F_1;
+        if (css_computed_opacity(cs, &op) != CSS_OPACITY_SET) op = F_1;
+        ob_fixed(&b, op);
+        break;
+    }
+    case CSSP_Z_INDEX: {
+        int32_t z = 0;
+        /* Stored raw (a css_fixed), unlike `order` which the cascade already
+         * truncated -- so `z-index:5` arrives as 5120. */
+        if (css_computed_z_index(cs, &z) == CSS_Z_INDEX_SET) ob_i(&b, FIXTOINT((css_fixed)z));
+        else ob_s(&b, "auto");
+        break;
+    }
+    case CSSP_VISIBILITY: {
+        uint8_t v = css_computed_visibility(cs);
+        ob_s(&b, v == CSS_VISIBILITY_HIDDEN ? "hidden" :
+                 v == CSS_VISIBILITY_COLLAPSE ? "collapse" : "visible");
+        break;
+    }
+
+    /* `overflow` is a shorthand: it serialises to the single value only when
+     * both axes agree, which is what the CSSOM says a shorthand does. */
+    case CSSP_OVERFLOW: {
+        uint8_t x = css_computed_overflow_x(cs), y = css_computed_overflow_y(cs);
+        ob_s(&b, overflow_name(x));
+        if (x != y) { ob_ch(&b, ' '); ob_s(&b, overflow_name(y)); }
+        break;
+    }
+    case CSSP_OVERFLOW_X: ob_s(&b, overflow_name(css_computed_overflow_x(cs))); break;
+    case CSSP_OVERFLOW_Y: ob_s(&b, overflow_name(css_computed_overflow_y(cs))); break;
+
+    case CSSP_FLEX_DIRECTION:
+        switch (css_computed_flex_direction(cs)) {
+        case CSS_FLEX_DIRECTION_ROW_REVERSE:    ob_s(&b, "row-reverse"); break;
+        case CSS_FLEX_DIRECTION_COLUMN:         ob_s(&b, "column"); break;
+        case CSS_FLEX_DIRECTION_COLUMN_REVERSE: ob_s(&b, "column-reverse"); break;
+        default:                                ob_s(&b, "row"); break;
+        }
+        break;
+    case CSSP_FLEX_WRAP:
+        switch (css_computed_flex_wrap(cs)) {
+        case CSS_FLEX_WRAP_WRAP:         ob_s(&b, "wrap"); break;
+        case CSS_FLEX_WRAP_WRAP_REVERSE: ob_s(&b, "wrap-reverse"); break;
+        default:                         ob_s(&b, "nowrap"); break;
+        }
+        break;
+    case CSSP_FLEX_GROW: {
+        css_fixed g = 0;
+        if (css_computed_flex_grow(cs, &g) != CSS_FLEX_GROW_SET) g = 0;
+        ob_fixed(&b, g);
+        break;
+    }
+    case CSSP_FLEX_SHRINK: {
+        css_fixed s = F_1;
+        if (css_computed_flex_shrink(cs, &s) != CSS_FLEX_SHRINK_SET) s = F_1;
+        ob_fixed(&b, s);
+        break;
+    }
+    case CSSP_FLEX_BASIS:
+        switch (css_computed_flex_basis(cs, &len, &unit)) {
+        case CSS_FLEX_BASIS_SET:     ob_len(&b, len, unit, fp); break;
+        case CSS_FLEX_BASIS_CONTENT: ob_s(&b, "content"); break;
+        default:                     ob_s(&b, "auto"); break;
+        }
+        break;
+    case CSSP_JUSTIFY_CONTENT:
+        switch (css_computed_justify_content(cs)) {
+        case CSS_JUSTIFY_CONTENT_FLEX_END:      ob_s(&b, "flex-end"); break;
+        case CSS_JUSTIFY_CONTENT_CENTER:        ob_s(&b, "center"); break;
+        case CSS_JUSTIFY_CONTENT_SPACE_BETWEEN: ob_s(&b, "space-between"); break;
+        case CSS_JUSTIFY_CONTENT_SPACE_AROUND:  ob_s(&b, "space-around"); break;
+        case CSS_JUSTIFY_CONTENT_SPACE_EVENLY:  ob_s(&b, "space-evenly"); break;
+        default:                                ob_s(&b, "flex-start"); break;
+        }
+        break;
+    case CSSP_ALIGN_ITEMS:
+    case CSSP_ALIGN_SELF: {
+        uint8_t a = (prop == CSSP_ALIGN_ITEMS) ? css_computed_align_items(cs)
+                                               : css_computed_align_self(cs);
+        if (prop == CSSP_ALIGN_SELF && a == CSS_ALIGN_SELF_AUTO) { ob_s(&b, "auto"); break; }
+        ob_s(&b, a == CSS_ALIGN_ITEMS_FLEX_START ? "flex-start" :
+                 a == CSS_ALIGN_ITEMS_FLEX_END   ? "flex-end" :
+                 a == CSS_ALIGN_ITEMS_CENTER     ? "center" :
+                 a == CSS_ALIGN_ITEMS_BASELINE   ? "baseline" : "stretch");
+        break;
+    }
+    case CSSP_ALIGN_CONTENT:
+        switch (css_computed_align_content(cs)) {
+        case CSS_ALIGN_CONTENT_FLEX_START:    ob_s(&b, "flex-start"); break;
+        case CSS_ALIGN_CONTENT_FLEX_END:      ob_s(&b, "flex-end"); break;
+        case CSS_ALIGN_CONTENT_CENTER:        ob_s(&b, "center"); break;
+        case CSS_ALIGN_CONTENT_SPACE_BETWEEN: ob_s(&b, "space-between"); break;
+        case CSS_ALIGN_CONTENT_SPACE_AROUND:  ob_s(&b, "space-around"); break;
+        default:                              ob_s(&b, "stretch"); break;
+        }
+        break;
+    case CSSP_ORDER: {
+        int32_t o = 0;
+        css_computed_order(cs, &o);
+        ob_i(&b, (int)o);
+        break;
+    }
+
+    /* border-*-width: a `none`/`hidden` border occupies no space whatever the
+     * width says, and that is the used value every browser reports. */
+#define BW_CASE(P, NAME) \
+    case P: \
+        if (css_computed_border_##NAME##_style(cs) == CSS_BORDER_STYLE_NONE || \
+            css_computed_border_##NAME##_style(cs) == CSS_BORDER_STYLE_HIDDEN) ob_s(&b, "0px"); \
+        else { css_computed_border_##NAME##_width(cs, &len, &unit); ob_len(&b, len, unit, fp); } \
+        break;
+    BW_CASE(CSSP_BORDER_TOP_WIDTH, top)
+    BW_CASE(CSSP_BORDER_RIGHT_WIDTH, right)
+    BW_CASE(CSSP_BORDER_BOTTOM_WIDTH, bottom)
+    BW_CASE(CSSP_BORDER_LEFT_WIDTH, left)
+#undef BW_CASE
+#define BS_CASE(P, NAME) \
+    case P: ob_s(&b, border_style_name(css_computed_border_##NAME##_style(cs))); break;
+    BS_CASE(CSSP_BORDER_TOP_STYLE, top)
+    BS_CASE(CSSP_BORDER_RIGHT_STYLE, right)
+    BS_CASE(CSSP_BORDER_BOTTOM_STYLE, bottom)
+    BS_CASE(CSSP_BORDER_LEFT_STYLE, left)
+#undef BS_CASE
+    /* border-*-color: `currentColor` is the initial value, and it resolves to
+     * the element's own colour -- which is what a browser reports too. */
+#define BC_CASE(P, NAME) \
+    case P: \
+        if (css_computed_border_##NAME##_color(cs, &col) != CSS_BORDER_COLOR_COLOR) \
+            css_computed_color(cs, &col); \
+        ob_color(&b, col); \
+        break;
+    BC_CASE(CSSP_BORDER_TOP_COLOR, top)
+    BC_CASE(CSSP_BORDER_RIGHT_COLOR, right)
+    BC_CASE(CSSP_BORDER_BOTTOM_COLOR, bottom)
+    BC_CASE(CSSP_BORDER_LEFT_COLOR, left)
+#undef BC_CASE
+
+    case CSSP_TEXT_ALIGN:
+        switch (css_computed_text_align(cs)) {
+        case CSS_TEXT_ALIGN_CENTER:
+        case CSS_TEXT_ALIGN_LIBCSS_CENTER: ob_s(&b, "center"); break;
+        case CSS_TEXT_ALIGN_RIGHT:
+        case CSS_TEXT_ALIGN_LIBCSS_RIGHT:  ob_s(&b, "right"); break;
+        case CSS_TEXT_ALIGN_JUSTIFY:       ob_s(&b, "justify"); break;
+        default:                           ob_s(&b, "left"); break;
+        }
+        break;
+    case CSSP_LINE_HEIGHT:
+        switch (css_computed_line_height(cs, &len, &unit)) {
+        /* A unitless line-height stays a number: it is inherited as a number,
+         * so reporting the px it happens to make on THIS element would be a
+         * different value from the one the cascade holds. */
+        case CSS_LINE_HEIGHT_NUMBER:    ob_fixed(&b, len); break;
+        case CSS_LINE_HEIGHT_DIMENSION: ob_len(&b, len, unit, fp); break;
+        default:                        ob_s(&b, "normal"); break;
+        }
+        break;
+    case CSSP_TEXT_DECORATION: {
+        uint8_t td = css_computed_text_decoration(cs);
+        int wrote = 0;
+        if (td & CSS_TEXT_DECORATION_UNDERLINE)    { ob_s(&b, "underline"); wrote = 1; }
+        if (td & CSS_TEXT_DECORATION_OVERLINE)     { if (wrote) ob_ch(&b, ' '); ob_s(&b, "overline"); wrote = 1; }
+        if (td & CSS_TEXT_DECORATION_LINE_THROUGH) { if (wrote) ob_ch(&b, ' '); ob_s(&b, "line-through"); wrote = 1; }
+        if (!wrote) ob_s(&b, "none");
+        break;
+    }
+
+    case CSSP_BOX_SIZING:
+        ob_s(&b, css_computed_box_sizing(cs) == CSS_BOX_SIZING_BORDER_BOX
+                 ? "border-box" : "content-box");
+        break;
+    case CSSP_WHITE_SPACE:
+        switch (css_computed_white_space(cs)) {
+        case CSS_WHITE_SPACE_PRE:      ob_s(&b, "pre"); break;
+        case CSS_WHITE_SPACE_NOWRAP:   ob_s(&b, "nowrap"); break;
+        case CSS_WHITE_SPACE_PRE_WRAP: ob_s(&b, "pre-wrap"); break;
+        case CSS_WHITE_SPACE_PRE_LINE: ob_s(&b, "pre-line"); break;
+        default:                       ob_s(&b, "normal"); break;
+        }
+        break;
+    case CSSP_FLOAT:
+        switch (css_computed_float(cs)) {
+        case CSS_FLOAT_LEFT:  ob_s(&b, "left"); break;
+        case CSS_FLOAT_RIGHT: ob_s(&b, "right"); break;
+        default:              ob_s(&b, "none"); break;
+        }
+        break;
+    case CSSP_CLEAR:
+        switch (css_computed_clear(cs)) {
+        case CSS_CLEAR_LEFT:  ob_s(&b, "left"); break;
+        case CSS_CLEAR_RIGHT: ob_s(&b, "right"); break;
+        case CSS_CLEAR_BOTH:  ob_s(&b, "both"); break;
+        default:              ob_s(&b, "none"); break;
+        }
+        break;
+    case CSSP_LIST_STYLE_TYPE:
+        switch (css_computed_list_style_type(cs)) {
+        case CSS_LIST_STYLE_TYPE_NONE:                 ob_s(&b, "none"); break;
+        case CSS_LIST_STYLE_TYPE_CIRCLE:               ob_s(&b, "circle"); break;
+        case CSS_LIST_STYLE_TYPE_SQUARE:               ob_s(&b, "square"); break;
+        case CSS_LIST_STYLE_TYPE_DECIMAL:              ob_s(&b, "decimal"); break;
+        case CSS_LIST_STYLE_TYPE_DECIMAL_LEADING_ZERO: ob_s(&b, "decimal-leading-zero"); break;
+        case CSS_LIST_STYLE_TYPE_LOWER_ALPHA:
+        case CSS_LIST_STYLE_TYPE_LOWER_LATIN:          ob_s(&b, "lower-alpha"); break;
+        case CSS_LIST_STYLE_TYPE_UPPER_ALPHA:
+        case CSS_LIST_STYLE_TYPE_UPPER_LATIN:          ob_s(&b, "upper-alpha"); break;
+        case CSS_LIST_STYLE_TYPE_LOWER_ROMAN:          ob_s(&b, "lower-roman"); break;
+        case CSS_LIST_STYLE_TYPE_UPPER_ROMAN:          ob_s(&b, "upper-roman"); break;
+        default:                                       ob_s(&b, "disc"); break;
+        }
+        break;
+    default:
+        break;
+    }
+    out[b.n] = 0;
+    return b.n;
+}
+
 /* ---------- traversal ---------- */
 static void style_node(struct node *n, const css_computed_style *parent, int parent_font)
 {
@@ -1070,4 +1642,190 @@ void css_apply(struct node *root, const char *page_css, int page_len)
         css_select_ctx_remove_sheet(g_ctx, author);
         css_stylesheet_destroy(author);
     }
+}
+
+/* ======================================================================
+ * Scoped re-style
+ *
+ * The whole reason this exists: a live page mutates ONE element per tick, and
+ * re-running the cascade over every element in the document to find that out
+ * is the difference between a setInterval a machine can keep up with and one it
+ * cannot. css_apply is still the right thing for a load or a new sheet set --
+ * this is the incremental path.
+ * ====================================================================== */
+
+/* Snapshot of the styles in scope, taken BEFORE the cascade runs so the caller
+ * can be told whether anything actually moved.
+ *
+ * It is a snapshot rather than a compare-on-write inside style_node because of
+ * css_extra: that post-pass patches node->style AFTER the cascade (radius,
+ * grid tracks, the animation end-state), so a diff taken inside style_node
+ * would see every one of those patches as a change on every single re-style
+ * and the mechanism would report "changed" forever. The caller registers it
+ * through css_set_post_pass and it runs inside the measured window. */
+struct snapent { struct node *n; struct cstyle s; unsigned char had; };
+static struct snapent *g_snap;
+static int g_snapn, g_snapcap;
+static int g_snap_over;                 /* scope bigger than the cap: give up measuring */
+
+/* Above this the scope is not "one element and its subtree" any more, it is a
+ * document re-style wearing a hat -- and holding a copy of every style would
+ * cost more than the pass it is measuring. Past it we stop recording and answer
+ * conservatively (CHANGED_LAYOUT), which is exactly what css_apply does anyway. */
+#define SNAP_MAX 1024
+
+static void (*g_post_pass)(struct node *root, const char *css, int len);
+void css_set_post_pass(void (*fn)(struct node *root, const char *css, int len))
+{ g_post_pass = fn; }
+
+static int snap_push(struct node *n)
+{
+    if (g_snapn >= SNAP_MAX) { g_snap_over = 1; return 0; }
+    if (g_snapn == g_snapcap) {
+        int ncap = g_snapcap ? g_snapcap * 2 : 64;
+        struct snapent *ns = kmalloc((unsigned long)ncap * sizeof *ns);
+        if (!ns) { g_snap_over = 1; return 0; }
+        for (int i = 0; i < g_snapn; i++) ns[i] = g_snap[i];
+        if (g_snap) kfree(g_snap);
+        g_snap = ns; g_snapcap = ncap;
+    }
+    struct snapent *e = &g_snap[g_snapn++];
+    e->n = n;
+    e->had = n->style ? 1 : 0;
+    /* memcpy, not struct assignment: the comparison below is a memcmp over the
+     * whole object, and only a byte copy is guaranteed to carry the padding
+     * across (a member-wise copy may leave the destination's padding
+     * indeterminate, and then every diff would report a change). */
+    if (e->had) memcpy(&e->s, n->style, sizeof e->s);
+    return 1;
+}
+
+/* The scope walk, used three times over (snapshot, cascade, diff) and therefore
+ * written once: `n`'s subtree, then -- if `siblings` -- each following element
+ * sibling's subtree. Deterministic order, so the snapshot and the diff line up
+ * positionally without a second lookup table. */
+static void snap_subtree(struct node *n)
+{
+    if (n->type == N_ELEM && !snap_push(n)) return;
+    for (struct node *c = n->first_child; c; c = c->next) snap_subtree(c);
+}
+
+static void snap_scope(struct node *n, int siblings)
+{
+    snap_subtree(n);
+    if (siblings)
+        for (struct node *s = n->next; s; s = s->next)
+            if (s->type == N_ELEM) snap_subtree(s);
+}
+
+/* Which half of the style moved?
+ *
+ * memcmp answers "anything at all" -- both blocks are memset to 0 before being
+ * filled, so their padding bytes are identical and the compare is well defined.
+ * To answer the narrower "anything LAYOUT reads", copy the old style, overwrite
+ * exactly the fields only the PAINTER looks at, and compare again: if the
+ * copies now agree, no box moved and no box changed size.
+ *
+ * Writing it as "overwrite the paint fields" rather than "compare the layout
+ * fields" is deliberate -- a field added to struct cstyle and forgotten here
+ * defaults to being treated as layout-affecting, which is the safe direction. */
+static int cstyle_diff(const struct cstyle *a, const struct cstyle *b)
+{
+    if (!a || !b) return CSS_CHANGED_LAYOUT;
+    if (memcmp(a, b, sizeof *a) == 0) return CSS_CHANGED_NONE;
+    struct cstyle t;
+    memcpy(&t, a, sizeof t);                    /* byte copy: see snap_push */
+    t.color = b->color;
+    t.background = b->background; t.has_bg = b->has_bg; t.bg_alpha = b->bg_alpha;
+    for (int i = 0; i < 4; i++) {
+        t.border_color[i] = b->border_color[i];
+        t.border_style[i] = b->border_style[i];
+    }
+    t.underline = b->underline; t.strike = b->strike; t.overline = b->overline;
+    t.opacity = b->opacity;
+    t.hidden = b->hidden; t.op0 = b->op0; t.vis_hid = b->vis_hid;
+    t.radius = b->radius; t.radius_pct = b->radius_pct;
+    t.z_index = b->z_index; t.has_z = b->has_z;
+    t.anim = b->anim; t.trans_op = b->trans_op;
+    return memcmp(&t, b, sizeof t) == 0 ? CSS_CHANGED_PAINT : CSS_CHANGED_LAYOUT;
+}
+
+/* The document element (<html>): the reference `rem` resolves against and the
+ * style LibCSS wants in g_unit.root_style. A scoped pass never visits it, so it
+ * has to be re-published by hand before style_node runs. */
+static struct node *doc_element_of(struct node *n)
+{
+    struct node *r = n;
+    while (r->parent && r->parent->type == N_ELEM) r = r->parent;
+    return r;
+}
+
+int css_apply_scoped(struct node *n, int siblings, const char *page_css, int page_len)
+{
+    if (!n || n->type != N_ELEM) return CSS_CHANGED_NONE;
+    if (!g_ctx) css_init();
+    if (!g_ctx) return CSS_CHANGED_LAYOUT;
+
+    /* An unstyled ancestor means no full pass has run for this sheet set, so
+     * there is nothing to resume from: tell the caller to do the whole thing. */
+    struct node *pe = n->parent;
+    while (pe && pe->type != N_ELEM) pe = pe->parent;
+    if (pe && !pe->computed) return CSS_CHANGED_LAYOUT;
+
+    g_allow_quirks = n->doc && dom_doc_quirks(n->doc) == QM_QUIRKS;
+    set_quirks_sheet(g_allow_quirks ? 1 : 0);
+
+    g_snapn = 0; g_snap_over = 0;
+    snap_scope(n, siblings);
+
+    css_stylesheet *author = NULL;
+    if (page_css && page_len > 0) {
+        author = make_sheet(page_css, (size_t)page_len, false, g_allow_quirks);
+        if (author) css_select_ctx_append_sheet(g_ctx, author, CSS_ORIGIN_AUTHOR, NULL);
+    }
+
+    /* Re-publish the root reference. style_node only sets these when it styles
+     * the root itself, and a scoped pass starts below it -- without this every
+     * `rem` in the scope would resolve against whatever the last pass left, or
+     * against 16 if this is the first mutation after a fresh css_apply. */
+    struct node *docel = doc_element_of(n);
+    g_unit.root_style = (const css_computed_style *)docel->computed;
+    if (docel->style) g_root_px = ((struct cstyle *)docel->style)->font_px;
+
+    nd_reset();                              /* the node-data cache is pass-scoped */
+    const css_computed_style *parent_eff = pe ? (const css_computed_style *)pe->computed : NULL;
+    int parent_font = (pe && pe->style) ? ((struct cstyle *)pe->style)->font_px : 16;
+
+    style_node(n, parent_eff, parent_font);
+    if (siblings)
+        for (struct node *s = n->next; s; s = s->next)
+            if (s->type == N_ELEM) style_node(s, parent_eff, parent_font);
+
+    nd_reset();
+    g_unit.root_style = NULL;
+
+    if (author) {
+        css_select_ctx_remove_sheet(g_ctx, author);
+        css_stylesheet_destroy(author);
+    }
+
+    /* css_extra's patches belong to the style being measured, so they land
+     * before the diff, not after it. */
+    if (g_post_pass) {
+        g_post_pass(n, page_css, page_len);
+        if (siblings)
+            for (struct node *s = n->next; s; s = s->next)
+                if (s->type == N_ELEM) g_post_pass(s, page_css, page_len);
+    }
+
+    if (g_snap_over) return CSS_CHANGED_LAYOUT;
+
+    int changed = CSS_CHANGED_NONE;
+    for (int i = 0; i < g_snapn; i++) {
+        struct snapent *e = &g_snap[i];
+        if (!e->had || !e->n->style) { changed |= CSS_CHANGED_LAYOUT; break; }
+        changed |= cstyle_diff(&e->s, (struct cstyle *)e->n->style);
+        if (changed & CSS_CHANGED_LAYOUT) break;      /* nothing coarser to learn */
+    }
+    return changed;
 }

@@ -18,6 +18,54 @@ void js_dom_init(JSContext *ctx, struct node *root);
 int  js_dom_dirty(void);
 void js_dom_clear_dirty(void);
 
+/* ---- invalidation ----
+ *
+ * A live page mutates ONE element per tick. The old answer to that was a single
+ * global boolean, and the browser's response to it was to re-run the cascade
+ * over every element in the document and rebuild the whole layout -- so a
+ * setInterval nudging one leaf cost a full-document re-style every 16 ms.
+ *
+ * So a mutation now records BOTH what kind of change it was and WHERE, and the
+ * embedder re-styles that scope instead of the document.
+ *
+ * The tiers, in increasing cost. They are ordered, and a batch of mutations
+ * reports the maximum:
+ *
+ *   INVAL_NONE    nothing was mutated.
+ *   INVAL_PAINT   the cascade must run again over the marked scope, but only
+ *                 properties that move no box and resize no box can have
+ *                 changed (a colour, opacity, visibility, z-order). A future
+ *                 incremental repaint can skip layout entirely on this tier.
+ *   INVAL_STYLE   the cascade must run again over the marked scope, and
+ *                 whether layout follows is decided by what it produces --
+ *                 css_apply_scoped() compares the new computed styles against
+ *                 the old ones and answers CSS_CHANGED_NONE when a class
+ *                 toggle turned out to match no rule at all.
+ *   INVAL_LAYOUT  the box tree itself changed (nodes inserted, removed, text
+ *                 replaced), so layout must run whatever the cascade says.
+ *
+ * HONEST LIMITATION: our display list is built by layout_page(), which is also
+ * what fills in every painted colour -- so today INVAL_PAINT still costs a
+ * display-list rebuild, exactly like INVAL_STYLE. The tier is recorded and
+ * exposed so the incremental-repaint path can be added on the layout side
+ * without any of this having to change. What IS already saved is the big one:
+ * the cascade runs over a subtree instead of a document, and a change that
+ * resolves to nothing costs no layout and no repaint at all. */
+enum { INVAL_NONE = 0, INVAL_PAINT, INVAL_STYLE, INVAL_LAYOUT };
+
+/* The highest tier reached since the last js_dom_clear_dirty(). */
+int  js_dom_inval_level(void);
+/* How many independent scopes were marked. ZERO means "the whole document" --
+ * either nothing was marked, or the scopes stopped being worth tracking
+ * separately (too many, or one of them was destroyed before we got here). */
+int  js_dom_inval_roots(void);
+/* Scope `i`: the element whose subtree must be re-styled. NULL if the node was
+ * destroyed since it was marked, which the caller must read as "fall back to
+ * the whole document". *siblings is set when the element's FOLLOWING siblings
+ * must be re-styled too -- an `a + b` / `a ~ b` rule can key off a class the
+ * mutation just changed. */
+struct node *js_dom_inval_root(int i, int *siblings);
+
 /* Number of registered event listeners across the whole document. */
 int  js_dom_listener_count(void);
 

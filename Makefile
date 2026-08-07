@@ -797,6 +797,11 @@ test-kheap:
 # sources (dom/css_engine/css_vars/layout/js_dom) on the host. LibCSS is
 # archived once per build tree (libcss_host.a) and shared by the CSS tests.
 BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text
+# The painter draws through logit.h's `int 0x80` wrappers, which a host process
+# cannot execute. tests/unit/painthost/logit.h shadows them with recorders, so
+# paint_test links the REAL browser_paint.c and asserts on the draw ops. It must
+# come first on the include path (same shape as tests/unit/kheapstub).
+PAINT_INC := -Itests/unit/painthost
 CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC))
 
 $(BUILD)/csshost/%.o: %.c
@@ -828,6 +833,10 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/layout_test
+	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_test tests/unit/paint_test.c \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(HTML_PARSER_SRC) \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	@$(BUILD)/paint_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
@@ -847,6 +856,7 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
 	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
+	    c/apps/browser/css_engine.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
 	@echo "test-browser: ALL PASS"
@@ -859,6 +869,7 @@ test-js-dom-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_asan \
 	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
+	    c/apps/browser/css_engine.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_asan
 
@@ -887,6 +898,11 @@ test-css-asan: $(BUILD)/libcss_host.a
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
 	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/layout_asan >/dev/null
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_asan tests/unit/paint_test.c \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(HTML_PARSER_SRC) \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/paint_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_asan tests/unit/table_list_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \

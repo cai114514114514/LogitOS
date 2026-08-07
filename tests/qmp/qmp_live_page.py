@@ -17,6 +17,8 @@ layout coordinates:
   #timer (green)   a setTimeout rewrites its text           -> the timer queue runs
   #plink (blue)    a link whose handler calls preventDefault -> the DEFAULT ACTION is optional
   #golink(magenta) an identical link with NO handler         -> the control
+  #cssom (cyan)    a handler READS getComputedStyle and then WRITES element.style
+                   -> the CSSOM is connected to the pixels in both directions
 
 Each assertion is made twice over, from two independent channels:
 
@@ -47,6 +49,10 @@ ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
 
 RED, GREEN, BLUE, MAGENTA = (254, 1, 2), (2, 254, 1), (1, 2, 254), (254, 1, 254)
+# The CSSOM block's before/after colours. The "after" one is never written in
+# the page's stylesheet -- it exists only as the value a script assigns to
+# el.style, so finding it on screen is proof the assignment reached the paint.
+CYAN, ORANGE = (1, 254, 254), (254, 127, 1)
 
 # Single-word strings on purpose: layout emits one text box PER WORD, so a click
 # aimed at a glyph inside a multi-word run can land in the gap between boxes and
@@ -59,9 +65,11 @@ div, a { display: block; font-size: 30px; color: #000000; text-decoration: none;
 #timer  { background: #02fe01; }
 #plink  { background: #0102fe; }
 #golink { background: #fe01fe; }
+#cssom  { background: #01fefe; padding: 4px; }
 </style></head><body>
 <div id="tgt">CLICKTARGETBEFORE</div>
 <div id="timer">TIMERBEFOREWAITING</div>
+<div id="cssom">CSSOMBLOCK</div>
 <a id="plink" href="/navigated.html">PREVENTDEFAULTLINK</a>
 <a id="golink" href="/navigated.html">GOLINK</a>
 <script>
@@ -82,6 +90,27 @@ document.getElementById('plink').addEventListener('click', function (e) {
   e.preventDefault();
   document.getElementById('plink').textContent = 'Z';
   console.log('LIVE-MARK-PREVENT');
+});
+/* The CSSOM, both directions, on the real machine. The read is logged verbatim
+   so a mismatch is diagnosable from the serial log rather than only from a
+   pixel count, and the write is GATED on the read being right -- so if
+   getComputedStyle lied, the colour on screen never changes and the harness
+   sees it. font-size is written alongside the colour because the two exercise
+   different invalidation tiers: a colour moves no box, 60px moves every box
+   below it. */
+document.getElementById('cssom').addEventListener('click', function (e) {
+  var el = e.currentTarget;
+  var cs = getComputedStyle(el);
+  console.log('LIVE-CSSOM-READ ' + cs.backgroundColor + ' / ' + cs.fontSize +
+              ' / ' + cs.display + ' / ' + cs.paddingTop);
+  if (cs.backgroundColor === 'rgb(1, 254, 254)' && cs.fontSize === '30px' &&
+      cs.display === 'block' && cs.paddingTop === '4px') {
+    el.style.backgroundColor = '#fe7f01';
+    el.style.fontSize = '60px';
+    console.log('LIVE-CSSOM-WROTE ' + el.style.cssText);
+  } else {
+    console.log('LIVE-CSSOM-BADREAD');
+  }
 });
 </script>
 </body></html>
@@ -184,11 +213,23 @@ def block(img, colour, what):
 try:
     if not wait_serial("LOGIT_BOOT_OK", 180, "boot"):
         die("kernel never printed LOGIT_BOOT_OK")
-    time.sleep(6)                          # desktop + dock composited
+    # The WM says when the desktop is composited; a fixed sleep here is a coin
+    # flip on a loaded host, and a dock click that lands one frame early is
+    # simply swallowed -- which then shows up much later as "the page never
+    # loaded", pointing at entirely the wrong thing.
+    if not wait_serial("desktop live", 60, "desktop"):
+        die("the window manager never brought the desktop up")
+    time.sleep(3)
 
     ui = Session(qmp_path)
     ui.click_at(*dock_icon(BROWSER_SLOT))
-    time.sleep(6)                          # ~2.7 MB .aex off virtio-blk, ELF load, first paint
+    for _ in range(4):                     # re-click: the first can still be too early
+        if wait_serial("launched Browser", 15, "browser launch"):
+            break
+        ui.click_at(*dock_icon(BROWSER_SLOT))
+    else:
+        die("the Dock never launched the Browser")
+    time.sleep(6)                          # ~2.8 MB .aex off virtio-blk, ELF load, first paint
 
     # Address bar, clear it, type the fixture URL. 10.0.2.2 is the SLIRP host.
     ui.click_at(420, 145)
@@ -206,7 +247,10 @@ try:
     b_tim = block(p0, GREEN, "timer")
     b_pl = block(p0, BLUE, "preventDefault link")
     b_go = block(p0, MAGENTA, "control link")
-    ck(True, "all four fixture blocks are painted on screen")
+    b_css = block(p0, CYAN, "CSSOM")
+    ck(True, "all five fixture blocks are painted on screen")
+    ck(p0.find_color(ORANGE) is None,
+       "the colour only a script can produce is NOT on screen yet")
 
     # The timer baseline has to be read from THIS screenshot, before anything
     # else in the harness has had time to happen -- see the comment on the
@@ -227,6 +271,35 @@ try:
        "the click handler's DOM mutation reached the screen (text pixels %d -> %d)"
        % (before, after))
 
+    # ---- 1b. the CSSOM, both directions -------------------------------------
+    # getComputedStyle has to answer with the page's real cascaded values (the
+    # handler refuses to write anything unless all four properties come back
+    # exactly right), and the element.style write has to survive the cascade,
+    # layout and paint -- which is only demonstrable by a colour appearing on
+    # screen that no stylesheet in the page contains.
+    b_css = block(p1, CYAN, "CSSOM")           # re-located: step 1 changed the page
+    css_h_before = b_css[3] - b_css[1]
+    aim = p1.first_dark(b_css) or ((b_css[0] + b_css[2]) // 2, (b_css[1] + b_css[3]) // 2)
+    ui.click_at(aim[0], aim[1])
+    ck(wait_serial("LIVE-CSSOM-READ", 20, "getComputedStyle"),
+       "the handler read getComputedStyle on the real machine")
+    ck("LIVE-CSSOM-BADREAD" not in serial(),
+       "getComputedStyle returned the page's real cascaded values "
+       "(background-color, font-size, display and padding-top all matched)")
+    ck(wait_serial("LIVE-CSSOM-WROTE", 20, "element.style write"),
+       "and the handler then wrote element.style")
+    time.sleep(2.0)
+    p1b = PPM(ui.screendump(shot("p1b")))
+    b_orange = p1b.find_color(ORANGE)
+    ck(b_orange is not None,
+       "el.style.backgroundColor reached the PIXELS -- a colour no stylesheet "
+       "in the page mentions is now on screen")
+    ck(p1b.find_color(CYAN) is None, "and the stylesheet's colour is gone from that box")
+    css_h_after = b_orange[3] - b_orange[1]
+    ck(css_h_after > css_h_before,
+       "el.style.fontSize reached LAYOUT too: the box grew (%d -> %d px tall)"
+       % (css_h_before, css_h_after))
+
     # ---- 2. setTimeout ------------------------------------------------------
     ck(wait_serial("LIVE-MARK-TIMER", 60, "setTimeout"),
        "a setTimeout registered at load fired later, from the main loop")
@@ -241,6 +314,9 @@ try:
     requested[:] = [r for r in requested]
     ck(not any("navigated" in r for r in requested),
        "nothing has fetched /navigated.html yet")
+    # Re-located from THIS screenshot: step 1b grew the block above it, so the
+    # link has moved down since p0 was taken.
+    b_pl = block(p2, BLUE, "preventDefault link")
     aim = p2.first_dark(b_pl) or ((b_pl[0] + b_pl[2]) // 2, (b_pl[1] + b_pl[3]) // 2)
     pl_before = p2.dark_pixels(b_pl)
     ui.click_at(aim[0], aim[1])
@@ -257,6 +333,7 @@ try:
     # ---- 4. the control: an unhandled link DOES navigate --------------------
     # Without this, "no request for /navigated.html" would also be the reading
     # if clicks never reached the page at all.
+    b_go = block(p3, MAGENTA, "control link")
     aim = p3.first_dark(b_go) or ((b_go[0] + b_go[2]) // 2, (b_go[1] + b_go[3]) // 2)
     ui.click_at(aim[0], aim[1])
     end = time.time() + 25

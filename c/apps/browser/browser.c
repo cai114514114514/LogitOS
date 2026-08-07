@@ -219,15 +219,16 @@ static int  css_exlen;
 
 /* Re-style + re-lay-out after script changed the DOM. Every path that can run
  * JS ends here, so a mutation from a click handler and one from a timer take
- * exactly the same route back to the screen. Returns 1 if anything changed. */
-static void restyle(void);
+ * exactly the same route back to the screen. Returns 1 if the page actually
+ * changed and needs repainting. */
+static int restyle(void);
 
 static int settle_dom(void)
 {
     if (!js_dom_dirty()) return 0;
+    int changed = restyle();
     js_dom_clear_dirty();
-    restyle();
-    return 1;
+    return changed;
 }
 
 /* Console bytes already reflected in the status bar. The status line only ever
@@ -352,16 +353,57 @@ static void load(const char *u)
     }
 }
 
-/* Re-run the cascade + layout over the current DOM. Shared by the load path and
- * by every script mutation; the expanded stylesheet is whatever the last fetch
- * produced, so this is safe to call at any point after the first css_apply. */
-static void restyle(void)
+/* Re-run the cascade + layout after a script mutation. The expanded stylesheet
+ * is whatever the last fetch produced, so this is safe to call at any point
+ * after the first css_apply.
+ *
+ * This used to be "css_apply over the whole document, then layout_page over the
+ * whole document", unconditionally, for every mutation. With pages live, that
+ * is what a setInterval nudging one element cost every single tick. Now the
+ * mutation says WHERE it happened (js_dom.c's invalidation record) and HOW
+ * much can have moved, and the work follows:
+ *
+ *   - a marked scope re-styles that subtree (+ its following siblings, for the
+ *     sibling combinators) instead of the document;
+ *   - the cascade reports whether anything actually came out different, so a
+ *     class toggle that matches no rule costs no layout and no repaint at all;
+ *   - a structural change skips that question, because inserting or removing a
+ *     node moves boxes whatever the computed styles say.
+ *
+ * The fallbacks are all in the safe direction: no scopes, too many scopes, or
+ * a scope whose node was destroyed before we got here all mean "do what this
+ * function used to do". */
+static int restyle(void)
 {
-    if (!g_root) return;
-    css_apply(g_root, css_expanded, css_exlen);
-    css_extra_apply(g_root, css_expanded, css_exlen);
+    if (!g_root) return 0;
+    int level = js_dom_inval_level();
+    if (level == INVAL_NONE) return 0;
+
+    int nroots = js_dom_inval_roots();
+    int changed = CSS_CHANGED_NONE;
+    for (int i = 0; i < nroots; i++) {
+        int sib = 0;
+        struct node *n = js_dom_inval_root(i, &sib);
+        if (!n) { nroots = 0; break; }        /* destroyed since it was marked */
+        changed |= css_apply_scoped(n, sib, css_expanded, css_exlen);
+    }
+    if (nroots == 0) {                        /* whole document */
+        css_apply(g_root, css_expanded, css_exlen);
+        css_extra_apply(g_root, css_expanded, css_exlen);
+        changed = CSS_CHANGED_LAYOUT;
+    }
+    /* Nodes came or went: the box tree changed even if every computed style
+     * came back identical. */
+    if (level >= INVAL_LAYOUT) changed |= CSS_CHANGED_LAYOUT;
+
+    if (changed == CSS_CHANGED_NONE) return 0;
+    /* CSS_CHANGED_PAINT still rebuilds the display list: layout_page is what
+     * fills in every painted colour, so there is no cheaper path to take until
+     * layout grows one. The tier is already carried this far, so adding it is
+     * a change on the layout side alone. */
     layout_page(g_root, WINW);
     ph = layout_height();
+    return 1;
 }
 
 static void redraw(int editing)
@@ -427,6 +469,9 @@ void app_main(void)
 {
     css_init();             /* build the UA default stylesheet */
     css_viewport(WINW, WINH);   /* @media/vw/vh evaluate against the real window */
+    /* css_extra patches node->style after the cascade, so a scoped re-style has
+     * to run it before it decides whether anything changed -- see css.h. */
+    css_set_post_pass(css_extra_apply);
     img_init();             /* register PNG + GIF decoders */
     js_page_set_clock(clock_ms);
     gui_create("Browser", WINW, WINH);

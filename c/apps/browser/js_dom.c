@@ -23,6 +23,7 @@
  * stays alive until js_dom_cleanup() runs. */
 #include "quickjs.h"
 #include "dom.h"
+#include "css.h"
 #include "dom_serialize.h"
 #include "html_tree.h"
 #include "js_dom.h"
@@ -35,7 +36,6 @@
 #endif
 
 static struct node *g_root;
-static int g_dirty;
 
 /* The context the page is bound to. Dispatch is entered from C (a click, a
  * timer), not from JS, so there is no `ctx` argument to ride in on -- the
@@ -43,8 +43,98 @@ static int g_dirty;
  * which is what makes a single static correct rather than a shortcut. */
 static JSContext *g_ctx;
 
-int  js_dom_dirty(void) { return g_dirty; }
-void js_dom_clear_dirty(void) { g_dirty = 0; }
+/* ---- the invalidation record ----
+ *
+ * See js_dom.h for what the tiers mean. The representation is deliberately
+ * tiny: a level, and a handful of {node, serial} scope roots. A page that
+ * touches more places than fit simply falls back to "the whole document",
+ * which is what every mutation used to do unconditionally -- so the worst case
+ * of this mechanism is the old behaviour, never worse.
+ *
+ * The serial is the same safety property the wrappers and the listener store
+ * use: a marked node can be destroyed before the embedder gets round to
+ * re-styling (a click handler that marks a node and then replaces its parent's
+ * innerHTML does exactly that), and re-styling from a recycled slot would walk
+ * a different element's children. A dead root reads as NULL and the embedder
+ * re-styles everything. */
+#define JS_DOM_MAX_DIRTY 8
+
+struct dirty_root { struct node *n; uint32_t serial; unsigned char siblings; };
+static struct dirty_root g_droot[JS_DOM_MAX_DIRTY];
+static int g_ndroot;
+static int g_level;                     /* INVAL_* */
+static int g_whole;                     /* scope escaped the root set */
+
+int  js_dom_dirty(void) { return g_level != INVAL_NONE; }
+void js_dom_clear_dirty(void) { g_level = INVAL_NONE; g_ndroot = 0; g_whole = 0; }
+int  js_dom_inval_level(void) { return g_level; }
+int  js_dom_inval_roots(void) { return g_whole ? 0 : g_ndroot; }
+
+struct node *js_dom_inval_root(int i, int *siblings)
+{
+    if (siblings) *siblings = 0;
+    if (g_whole || i < 0 || i >= g_ndroot) return 0;
+    struct dirty_root *r = &g_droot[i];
+    if (!r->n || r->n->serial != r->serial) return 0;
+    if (siblings) *siblings = r->siblings;
+    return r->n;
+}
+
+static int is_ancestor(const struct node *a, const struct node *b)
+{
+    for (const struct node *p = b ? b->parent : 0; p; p = p->parent)
+        if (p == a) return 1;
+    return 0;
+}
+
+/* Record that `n`'s subtree needs re-styling at `level`. Roots are coalesced:
+ * a scope already covered by one in the set is dropped, and one that c overs an
+ * existing scope replaces it. Without that, a handler doing three appendChilds
+ * under the same parent would ask for the same subtree three times. */
+static void mark(struct node *n, int level, int siblings)
+{
+    if (level > g_level) g_level = level;
+    if (g_whole) return;
+    if (!n || n->type != N_ELEM) { g_whole = 1; return; }
+
+    for (int i = 0; i < g_ndroot; i++) {
+        struct node *r = g_droot[i].n;
+        if (!r || r->serial != g_droot[i].serial) { g_whole = 1; return; }
+        if (r == n) { g_droot[i].siblings |= (unsigned char)!!siblings; return; }
+        /* An ancestor's subtree already contains n AND every sibling of n
+         * (siblings share n's parent, which is inside that subtree), so the
+         * sibling flag needs no propagation here. */
+        if (is_ancestor(r, n)) return;
+    }
+    /* n covers one or more existing roots: swallow them. */
+    int w = 0;
+    for (int i = 0; i < g_ndroot; i++)
+        if (!is_ancestor(n, g_droot[i].n)) g_droot[w++] = g_droot[i];
+    g_ndroot = w;
+
+    if (g_ndroot >= JS_DOM_MAX_DIRTY) { g_whole = 1; return; }
+    g_droot[g_ndroot].n = n;
+    g_droot[g_ndroot].serial = n->serial;
+    g_droot[g_ndroot].siblings = (unsigned char)!!siblings;
+    g_ndroot++;
+}
+
+/* The two shapes every mutation in this file reduces to.
+ *
+ * mark_self: this element's own selector inputs changed (class, id, style, any
+ * attribute an [attr] selector could key off). Its subtree needs the cascade
+ * again -- descendant combinators and inheritance -- and so do its FOLLOWING
+ * siblings, because `+`/`~` exist. Preceding siblings and ancestors cannot be
+ * affected: CSS has no previous-sibling combinator and our LibCSS has no
+ * `:has()`.
+ *
+ * mark_children: this element's child list changed. That is a layout change by
+ * construction, and it also moves the sibling-position pseudo-classes
+ * (:first-child, :nth-child, :empty) of everything under it -- hence the whole
+ * subtree, rooted at the PARENT of what changed. */
+static void mark_self(struct node *n, int level) { mark(n, level, 1); }
+static void mark_children(struct node *n) { mark(n, INVAL_LAYOUT, 0); }
+
 struct node *js_dom_root(void) { return g_root; }
 
 static void (*g_note)(const char *);
@@ -213,7 +303,7 @@ static JSValue el_set_text(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
     const char *s = JS_ToCString(ctx, v);
-    if (s) { set_text(n, s); JS_FreeCString(ctx, s); g_dirty = 1; }
+    if (s) { set_text(n, s); JS_FreeCString(ctx, s); mark_children(n); }
     return JS_UNDEFINED;
 }
 static JSValue el_get_tag(JSContext *ctx, JSValueConst t)
@@ -253,7 +343,7 @@ static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
             struct node *cp = dom_import_node(n->doc, c);
             if (cp) dom_append_child(n, cp);
         }
-        g_dirty = 1;
+        mark_children(n);
     }
     if (fdoc) dom_free(dom_doc_root(fdoc));
     return JS_UNDEFINED;
@@ -270,7 +360,10 @@ static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst
     struct node *n = node_of(t); if (!n || argc < 2) return JS_UNDEFINED;
     const char *nm = JS_ToCString(ctx, argv[0]);
     const char *vl = JS_ToCString(ctx, argv[1]);
-    if (nm && vl) { dom_set_attr(n, nm, vl); g_dirty = 1; }
+    /* Any attribute at all, not just class/id/style: [data-state="on"] and
+     * [href^="/"] are ordinary selectors, so there is no attribute whose value
+     * provably cannot participate in the cascade. */
+    if (nm && vl) { dom_set_attr(n, nm, vl); mark_self(n, INVAL_STYLE); }
     if (nm) JS_FreeCString(ctx, nm);
     if (vl) JS_FreeCString(ctx, vl);
     return JS_UNDEFINED;
@@ -292,8 +385,13 @@ static JSValue el_appendChild(JSContext *ctx, JSValueConst t, int argc, JSValueC
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
     struct node *c = node_of(argv[0]); if (!c || c == n) return JS_NULL;
+    /* appendChild MOVES: the old parent lost a child, so its subtree's
+     * sibling-position pseudo-classes moved too and it needs marking before
+     * the link is broken and we can no longer find it. */
+    struct node *old = c->parent;
     dom_append_child(n, c);                    /* move semantics: detaches from any old parent */
-    g_dirty = 1;
+    if (old && old != n) mark_children(old);
+    mark_children(n);
     return JS_DupValue(ctx, argv[0]);          /* like the DOM: return the appended child */
 }
 
@@ -302,7 +400,7 @@ static JSValue el_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueC
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
     struct node *c = node_of(argv[0]); if (!c || c->parent != n) return JS_NULL;
     dom_destroy_subtree(c);                    /* wrappers into it go stale via serial */
-    g_dirty = 1;
+    mark_children(n);
     return JS_DupValue(ctx, argv[0]);
 }
 
@@ -333,16 +431,97 @@ static JSValue el_get_classlist(JSContext *ctx, JSValueConst t)
                                                 * belongs to the Element wrapper */
 }
 
+/* the token list receiver, serial-checked */
+static struct node *token_node(JSValueConst t)
+{
+    struct elem_handle *h = JS_GetOpaque(t, token_cid);
+    if (!h || !h->n || h->n->serial != h->serial) return 0;
+    return h->n;
+}
+
 /* shared arg decode: token list receiver + class name from argv[0] */
 static struct node *token_args(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv,
                                const char **name)
 {
     *name = 0;
     if (argc < 1) return 0;
-    struct elem_handle *h = JS_GetOpaque(t, token_cid);
-    if (!h || !h->n || h->n->serial != h->serial) return 0;
+    struct node *n = token_node(t);
+    if (!n) return 0;
     *name = JS_ToCString(ctx, argv[0]);
-    return *name ? h->n : 0;
+    return *name ? n : 0;
+}
+
+/* Token `i` of a whitespace-separated list, or NULL. Whitespace runs collapse,
+ * so "  a   b " has exactly two tokens -- which is what the class attribute
+ * means and what the length/index surface has to agree with. */
+static const char *tok_at(const char *cls, int i, int *len)
+{
+    if (!cls) return 0;
+    const char *p = cls;
+    for (int k = 0; ; k++) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f') p++;
+        if (!*p) return 0;
+        const char *s = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != '\f') p++;
+        if (k == i) { if (len) *len = (int)(p - s); return s; }
+    }
+}
+
+static int tok_count(const char *cls)
+{
+    int n = 0;
+    while (tok_at(cls, n, 0)) n++;
+    return n;
+}
+
+/* Write a rebuilt class attribute, but only if it differs from what is already
+ * there. Two reasons, and the second is the important one: dom.c's attribute
+ * store bump-allocates every value into the document arena (it never frees an
+ * old one), and a script that re-adds a class it already has in a rAF loop
+ * would grow the arena forever. Skipping the write also keeps the invalidation
+ * record honest -- a no-op does not dirty the page. */
+static void class_write(struct node *n, const char *text)
+{
+    const char *cur = dom_attr(n, "class");
+    if (cur && strcmp(cur, text) == 0) return;
+    if (!cur && !text[0]) return;
+    if (dom_set_attr(n, "class", text)) mark_self(n, INVAL_STYLE);
+}
+
+/* The class attribute with `drop` removed (drop == NULL keeps everything) and
+ * `add` appended (add == NULL adds nothing). One builder for add/remove/replace
+ * so the three cannot disagree about tokenisation. It grows: real pages carry
+ * class lists far past the 255 characters the old fixed buffers allowed, and
+ * truncating one would silently drop unrelated classes. */
+static void class_rebuild(struct node *n, const char *drop, const char *add)
+{
+    const char *cls = dom_attr(n, "class");
+    struct sbuf b = { 0, 0, 0 };
+    size_t dl = drop ? strlen(drop) : 0;
+    int added = 0;
+    for (int i = 0; ; i++) {
+        int tl = 0;
+        const char *t = tok_at(cls, i, &tl);
+        if (!t) break;
+        if (drop && (size_t)tl == dl && memcmp(t, drop, dl) == 0) {
+            /* replace() keeps the token's POSITION, which is what makes
+             * `classList.replace('a','b')` different from remove+add. */
+            if (add && !added) {
+                if (b.len) sb_push(&b, " ", 1);
+                sb_push(&b, add, strlen(add));
+                added = 1;
+            }
+            continue;
+        }
+        if (b.len) sb_push(&b, " ", 1);
+        sb_push(&b, t, (size_t)tl);
+    }
+    if (add && !added) {
+        if (b.len) sb_push(&b, " ", 1);
+        sb_push(&b, add, strlen(add));
+    }
+    class_write(n, b.p ? b.p : "");
+    free(b.p);
 }
 
 static JSValue cl_contains(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -353,63 +532,635 @@ static JSValue cl_contains(JSContext *ctx, JSValueConst t, int argc, JSValueCons
     JS_FreeCString(ctx, nm);
     return JS_NewBool(ctx, has);
 }
-/* Both rebuild the class attribute through a growable buffer: real pages carry
- * class lists far past the 255 characters the old fixed buffers allowed, and
- * truncating one here would silently drop unrelated classes. */
+/* add/remove take any number of tokens, as the DOM specifies. */
 static JSValue cl_add(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    const char *nm; struct node *n = token_args(ctx, t, argc, argv, &nm);
+    struct node *n = token_node(t);
     if (!n) return JS_UNDEFINED;
-    const char *cls = dom_attr(n, "class");
-    if (!word_has(cls, nm)) {
-        struct sbuf b = { 0, 0, 0 };
-        if (cls && *cls) { sb_push(&b, cls, strlen(cls)); sb_push(&b, " ", 1); }
-        sb_push(&b, nm, strlen(nm));
-        if (b.p) { dom_set_attr(n, "class", b.p); g_dirty = 1; }
-        free(b.p);
+    for (int i = 0; i < argc; i++) {
+        const char *nm = JS_ToCString(ctx, argv[i]);
+        if (!nm) continue;
+        if (*nm && !word_has(dom_attr(n, "class"), nm)) class_rebuild(n, 0, nm);
+        JS_FreeCString(ctx, nm);
     }
-    JS_FreeCString(ctx, nm);
     return JS_UNDEFINED;
 }
 static JSValue cl_remove(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    const char *nm; struct node *n = token_args(ctx, t, argc, argv, &nm);
+    struct node *n = token_node(t);
     if (!n) return JS_UNDEFINED;
-    const char *cls = dom_attr(n, "class");
-    if (word_has(cls, nm)) {
-        struct sbuf b = { 0, 0, 0 };
-        size_t wl = strlen(nm);
-        const char *p = cls;
-        while (*p) {
-            while (*p == ' ') p++;
-            const char *s = p; while (*p && *p != ' ') p++;
-            if (p == s) continue;
-            if ((size_t)(p - s) == wl && memcmp(s, nm, wl) == 0) continue;
-            if (b.len) sb_push(&b, " ", 1);
-            sb_push(&b, s, (size_t)(p - s));
-        }
-        dom_set_attr(n, "class", b.p ? b.p : "");
-        g_dirty = 1;
-        free(b.p);
+    for (int i = 0; i < argc; i++) {
+        const char *nm = JS_ToCString(ctx, argv[i]);
+        if (!nm) continue;
+        if (word_has(dom_attr(n, "class"), nm)) class_rebuild(n, nm, 0);
+        JS_FreeCString(ctx, nm);
     }
-    JS_FreeCString(ctx, nm);
     return JS_UNDEFINED;
 }
+/* toggle(token[, force]): the two-argument form is how frameworks drive a
+ * boolean state without reading the current one first. */
 static JSValue cl_toggle(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    int has = JS_ToBool(ctx, cl_contains(ctx, t, argc, argv));
-    if (has) cl_remove(ctx, t, argc, argv); else cl_add(ctx, t, argc, argv);
-    return JS_NewBool(ctx, !has);
+    const char *nm; struct node *n = token_args(ctx, t, argc, argv, &nm);
+    if (!n) return JS_FALSE;
+    int has = word_has(dom_attr(n, "class"), nm);
+    int want = argc > 1 ? (JS_ToBool(ctx, argv[1]) > 0) : !has;
+    if (want && !has) class_rebuild(n, 0, nm);
+    else if (!want && has) class_rebuild(n, nm, 0);
+    JS_FreeCString(ctx, nm);
+    return JS_NewBool(ctx, want);
+}
+/* replace(old, new) -> did it replace anything? */
+static JSValue cl_replace(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    if (argc < 2) return JS_FALSE;
+    struct node *n = token_node(t);
+    if (!n) return JS_FALSE;
+    const char *a = JS_ToCString(ctx, argv[0]);
+    const char *b = JS_ToCString(ctx, argv[1]);
+    int did = 0;
+    if (a && b && *a && *b && word_has(dom_attr(n, "class"), a)) {
+        /* Replacing with a token that is already present degenerates to a
+         * removal, which is exactly what the DOM's ordered-set semantics say. */
+        class_rebuild(n, a, word_has(dom_attr(n, "class"), b) ? 0 : b);
+        did = 1;
+    }
+    if (a) JS_FreeCString(ctx, a);
+    if (b) JS_FreeCString(ctx, b);
+    return JS_NewBool(ctx, did);
+}
+static JSValue cl_item(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = token_node(t);
+    int32_t i = -1;
+    if (!n || argc < 1) return JS_NULL;
+    if (JS_ToInt32(ctx, &i, argv[0]) < 0) return JS_EXCEPTION;   /* leave nothing pending */
+    if (i < 0) return JS_NULL;
+    int tl = 0;
+    const char *tk = tok_at(dom_attr(n, "class"), (int)i, &tl);
+    return tk ? JS_NewStringLen(ctx, tk, (size_t)tl) : JS_NULL;
+}
+static JSValue cl_get_length(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = token_node(t);
+    return JS_NewInt32(ctx, n ? tok_count(dom_attr(n, "class")) : 0);
+}
+/* value / toString: the serialised list. Both spellings exist in the DOM and
+ * both are used -- `String(el.classList)` and `el.classList.value`. */
+static JSValue cl_get_value(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = token_node(t);
+    const char *v = n ? dom_attr(n, "class") : 0;
+    return JS_NewString(ctx, v ? v : "");
+}
+static JSValue cl_set_value(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = token_node(t);
+    if (!n) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (s) { class_write(n, s); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+static JSValue cl_toString(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ (void)argc; (void)argv; return cl_get_value(ctx, t); }
+
+/* Indexed access (cl[0]) through the exotic hook rather than by defining index
+ * properties when the list is built: the token list is LIVE, so `cl.add('x')`
+ * has to make `cl[n]` appear on the object the script is already holding.
+ *
+ * Only get_own_property is implemented, and only for array indices. That is the
+ * one exotic hook that FALLS THROUGH: returning FALSE lets the lookup carry on
+ * to the prototype, so `add`, `contains` and the rest stay reachable. (The
+ * get_property hook would have shadowed every one of them.) */
+static int cl_own_prop(JSContext *ctx, JSPropertyDescriptor *desc,
+                       JSValueConst obj, JSAtom prop)
+{
+    struct node *n = token_node(obj);
+    if (!n) return 0;
+    JSValue key = JS_AtomToValue(ctx, prop);
+    if (JS_IsException(key)) return -1;
+    /* Decide on the VALUE's type, never by stringifying the atom. This hook is
+     * consulted for every lookup on the object, and Symbol.iterator is one of
+     * them -- JS_ToCString on a symbol throws, and the exception would be left
+     * pending in the context to surface at some unrelated point later. */
+    int idx = -1;
+    if (JS_IsNumber(key)) {                     /* an array-index atom */
+        int32_t v = -1;
+        if (JS_ToInt32(ctx, &v, key) == 0 && v >= 0) idx = v;
+    } else if (JS_IsString(key)) {
+        const char *s = JS_ToCString(ctx, key);
+        if (s) {
+            int v = 0, ok = s[0] != 0;
+            for (const char *p = s; *p; p++) {
+                if (*p < '0' || *p > '9' || v > 100000) { ok = 0; break; }
+                v = v * 10 + (*p - '0');
+            }
+            if (ok && s[0] == '0' && s[1]) ok = 0;   /* "01" is not an index */
+            if (ok) idx = v;
+            JS_FreeCString(ctx, s);
+        }
+    }
+    JS_FreeValue(ctx, key);
+    if (idx < 0) return 0;
+
+    int tl = 0;
+    const char *tk = tok_at(dom_attr(n, "class"), idx, &tl);
+    if (!tk) return 0;
+    if (desc) {
+        desc->flags = JS_PROP_ENUMERABLE;       /* read-only, like the DOM's */
+        desc->value = JS_NewStringLen(ctx, tk, (size_t)tl);
+        desc->getter = JS_UNDEFINED;
+        desc->setter = JS_UNDEFINED;
+    }
+    return 1;
 }
 
 static const JSCFunctionListEntry token_proto[] = {
     JS_CFUNC_DEF("add", 1, cl_add),
     JS_CFUNC_DEF("remove", 1, cl_remove),
     JS_CFUNC_DEF("toggle", 1, cl_toggle),
+    JS_CFUNC_DEF("replace", 2, cl_replace),
     JS_CFUNC_DEF("contains", 1, cl_contains),
+    JS_CFUNC_DEF("item", 1, cl_item),
+    JS_CFUNC_DEF("toString", 0, cl_toString),
+    JS_CGETSET_DEF("length", cl_get_length, NULL),
+    JS_CGETSET_DEF("value", cl_get_value, cl_set_value),
 };
 
-static JSClassDef token_class = { "DOMTokenList", token_finalizer };
+static JSClassExoticMethods token_exotic = { cl_own_prop };
+static JSClassDef token_class = { "DOMTokenList", token_finalizer, NULL, NULL, &token_exotic };
+
+/* Iteration. A DOMTokenList is an array-like with `length` and index
+ * properties, which is exactly the contract Array.prototype's iterator and
+ * forEach are written against -- so borrowing them is not a shortcut, it is the
+ * same generic algorithm the spec defines these methods in terms of. Writing
+ * our own would be a second implementation of the same walk. */
+static void install_arraylike(JSContext *ctx, JSValueConst proto)
+{
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue arr = JS_GetPropertyStr(ctx, g, "Array");
+    JSValue ap = JS_GetPropertyStr(ctx, arr, "prototype");
+    JSValue values = JS_GetPropertyStr(ctx, ap, "values");
+    JSValue foreach = JS_GetPropertyStr(ctx, ap, "forEach");
+    JSValue sym = JS_GetPropertyStr(ctx, g, "Symbol");
+    JSValue symit = JS_GetPropertyStr(ctx, sym, "iterator");
+
+    if (JS_IsFunction(ctx, values) && !JS_IsUndefined(symit)) {
+        JSAtom a = JS_ValueToAtom(ctx, symit);
+        JS_DefinePropertyValue(ctx, proto, a, JS_DupValue(ctx, values),
+                               JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
+        JS_FreeAtom(ctx, a);
+        JS_SetPropertyStr(ctx, proto, "values", JS_DupValue(ctx, values));
+        JS_SetPropertyStr(ctx, proto, "keys", JS_GetPropertyStr(ctx, ap, "keys"));
+        JS_SetPropertyStr(ctx, proto, "entries", JS_GetPropertyStr(ctx, ap, "entries"));
+    }
+    if (JS_IsFunction(ctx, foreach))
+        JS_SetPropertyStr(ctx, proto, "forEach", JS_DupValue(ctx, foreach));
+
+    JS_FreeValue(ctx, symit); JS_FreeValue(ctx, sym);
+    JS_FreeValue(ctx, foreach); JS_FreeValue(ctx, values);
+    JS_FreeValue(ctx, ap); JS_FreeValue(ctx, arr); JS_FreeValue(ctx, g);
+}
+
+/* ======================================================================
+ * CSSStyleDeclaration -- element.style and getComputedStyle(el)
+ *
+ * One class, two modes, because the JS surface is the same object type in the
+ * DOM and splitting it would mean two prototypes carrying the same six methods.
+ *
+ *   INLINE   backed by the element's `style` CONTENT ATTRIBUTE. Reads parse it,
+ *            writes rewrite it. Nothing is cached: the attribute is the single
+ *            source of truth, so a setAttribute('style', ...) and an
+ *            el.style.color= can never disagree, and -- the part that actually
+ *            matters -- the inline declarations keep their cascade priority for
+ *            free. css_engine's style_node() already parses that attribute as
+ *            a LibCSS *inline sheet*, which is where inline style's precedence
+ *            over author rules comes from. Writing computed values straight
+ *            into node->style instead would have been simpler and would have
+ *            silently thrown that priority away.
+ *
+ *   COMPUTED backed by node->computed, the css_computed_style css_apply left
+ *            on the node. Read-only. This is the half that was impossible
+ *            before: the cascade used to compute a full style, digest it into
+ *            the lossy 45-field cstyle and destroy the original, so there was
+ *            nothing left to answer getComputedStyle FROM.
+ * ====================================================================== */
+
+static JSClassID cssd_cid;
+enum { CSSD_INLINE = 0, CSSD_COMPUTED = 1 };
+
+struct cssd_handle { struct node *n; uint32_t serial; unsigned char computed; };
+
+static void cssd_finalizer(JSRuntime *rt, JSValue val)
+{ (void)rt; free(JS_GetOpaque(val, cssd_cid)); }
+
+static struct node *cssd_node(JSValueConst t, int *computed)
+{
+    struct cssd_handle *h = JS_GetOpaque(t, cssd_cid);
+    if (computed) *computed = h ? h->computed : 0;
+    if (!h || !h->n || h->n->serial != h->serial) return 0;
+    return h->n;
+}
+
+/* ---- the style attribute, parsed in place ----
+ *
+ * A CSS declaration block is "name : value" separated by ';'. Everything below
+ * works on spans into the attribute text rather than copies, so reading a
+ * property costs no allocation at all -- which matters because a page that
+ * animates does it every frame. */
+static int cssws(int c)
+{ return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+
+/* Find declaration `name` (case-insensitive, as CSS property names are) in the
+ * block `s`. Returns 1 and fills the spans: [ds,de) is the whole declaration
+ * (so it can be dropped), [vs,ve) is the trimmed value INCLUDING any
+ * !important, and *imp says whether it carried one. */
+static int sty_find(const char *s, const char *name, size_t nlen,
+                    int *ds, int *de, int *vs, int *ve, int *imp)
+{
+    if (!s || !name || !nlen) return 0;
+    int i = 0;
+    while (s[i]) {
+        while (s[i] && (cssws(s[i]) || s[i] == ';')) i++;
+        if (!s[i]) break;
+        int d0 = i;
+        while (s[i] && s[i] != ';') i++;
+        int d1 = i;                                   /* declaration is [d0,d1) */
+        int c = d0;
+        while (c < d1 && s[c] != ':') c++;
+        if (c >= d1) continue;                        /* no colon: not a declaration */
+        int n0 = d0, n1 = c;
+        while (n1 > n0 && cssws(s[n1 - 1])) n1--;
+        if ((size_t)(n1 - n0) == nlen) {
+            size_t k = 0;
+            while (k < nlen && lc((unsigned char)s[n0 + k]) == lc((unsigned char)name[k])) k++;
+            if (k == nlen) {
+                int v0 = c + 1, v1 = d1;
+                while (v0 < v1 && cssws(s[v0])) v0++;
+                while (v1 > v0 && cssws(s[v1 - 1])) v1--;
+                int important = 0;
+                if (v1 - v0 >= 10) {
+                    int b = v1 - 10;
+                    if (s[b] == '!' && lc((unsigned char)s[b+1]) == 'i' &&
+                        lc((unsigned char)s[b+2]) == 'm' && lc((unsigned char)s[b+3]) == 'p' &&
+                        lc((unsigned char)s[b+4]) == 'o' && lc((unsigned char)s[b+5]) == 'r' &&
+                        lc((unsigned char)s[b+6]) == 't' && lc((unsigned char)s[b+7]) == 'a' &&
+                        lc((unsigned char)s[b+8]) == 'n' && lc((unsigned char)s[b+9]) == 't') {
+                        important = 1;
+                        while (b > v0 && cssws(s[b - 1])) b--;
+                        v1 = b;
+                    }
+                }
+                if (ds) *ds = d0; if (de) *de = d1;
+                if (vs) *vs = v0; if (ve) *ve = v1;
+                if (imp) *imp = important;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* The i-th declaration's property name span, for length/item(). */
+static const char *sty_name_at(const char *s, int idx, int *len)
+{
+    if (!s) return 0;
+    int i = 0, k = 0;
+    while (s[i]) {
+        while (s[i] && (cssws(s[i]) || s[i] == ';')) i++;
+        if (!s[i]) break;
+        int d0 = i;
+        while (s[i] && s[i] != ';') i++;
+        int c = d0;
+        while (c < i && s[c] != ':') c++;
+        if (c >= i) continue;
+        int n1 = c;
+        while (n1 > d0 && cssws(s[n1 - 1])) n1--;
+        if (n1 == d0) continue;
+        if (k++ == idx) { if (len) *len = n1 - d0; return s + d0; }
+    }
+    return 0;
+}
+
+static int sty_count(const char *s)
+{ int n = 0; while (sty_name_at(s, n, 0)) n++; return n; }
+
+/* Commit a rebuilt style attribute and record the invalidation.
+ *
+ * The no-op check is not an optimisation detail: dom.c's attribute store
+ * bump-allocates every value into the document arena and never reclaims the
+ * old one, so `el.style.left = x` writing the same string every animation
+ * frame would grow the arena without bound. It also keeps a redundant write
+ * from dirtying the page. */
+static void style_write(struct node *n, const char *text, int level)
+{
+    const char *cur = dom_attr(n, "style");
+    if (cur && strcmp(cur, text) == 0) return;
+    if (!cur && !text[0]) return;
+    if (dom_set_attr(n, "style", text)) mark_self(n, level);
+}
+
+/* setProperty / the camelCase setters / removeProperty, in one rebuild.
+ * `value == NULL` (or empty) removes the declaration, which is what the CSSOM
+ * says an empty value means. A replaced declaration keeps its POSITION, so
+ * relative order -- and therefore the later-wins tiebreak inside the inline
+ * block -- survives a rewrite. */
+static void style_set(struct node *n, const char *name, const char *value, int important)
+{
+    if (!n || !name || !*name) return;
+    size_t nlen = strlen(name);
+    const char *cur = dom_attr(n, "style");
+    int ds = 0, de = 0;
+    int found = sty_find(cur, name, nlen, &ds, &de, 0, 0, 0);
+    int empty = !value || !*value;
+    if (!found && empty) return;
+
+    struct sbuf b = { 0, 0, 0 };
+    if (found) {
+        /* copy the head, splice, copy the tail */
+        int h = ds;
+        while (h > 0 && (cssws(cur[h - 1]) || cur[h - 1] == ';')) h--;
+        if (h) { sb_push(&b, cur, (size_t)h); }
+        if (!empty) {
+            if (b.len) sb_push(&b, "; ", 2);
+            sb_push(&b, name, nlen);
+            sb_push(&b, ": ", 2);
+            sb_push(&b, value, strlen(value));
+            if (important) sb_push(&b, " !important", 11);
+        }
+        const char *tail = cur + de;
+        while (*tail == ';' || cssws(*tail)) tail++;
+        if (*tail) { if (b.len) sb_push(&b, "; ", 2); sb_push(&b, tail, strlen(tail)); }
+    } else {
+        if (cur && *cur) {
+            size_t cl = strlen(cur);
+            while (cl && (cssws(cur[cl - 1]) || cur[cl - 1] == ';')) cl--;
+            if (cl) { sb_push(&b, cur, cl); sb_push(&b, "; ", 2); }
+        }
+        sb_push(&b, name, nlen);
+        sb_push(&b, ": ", 2);
+        sb_push(&b, value, strlen(value));
+        if (important) sb_push(&b, " !important", 11);
+    }
+    if (b.p || (cur && *cur)) {
+        int prop = css_prop_lookup(name, (int)nlen);
+        /* A property we can classify and that only the painter reads gets the
+         * cheaper tier; anything we do not recognise is assumed to move boxes. */
+        int level = (prop >= 0 && css_prop_paint_only(prop)) ? INVAL_PAINT : INVAL_STYLE;
+        style_write(n, b.p ? b.p : "", level);
+    }
+    free(b.p);
+}
+
+/* ---- the JS surface ---- */
+
+static JSValue cssd_new(JSContext *ctx, struct node *n, int computed)
+{
+    if (!n) return JS_NULL;
+    JSValue o = JS_NewObjectClass(ctx, (int)cssd_cid);
+    if (JS_IsException(o)) return o;
+    struct cssd_handle *h = malloc(sizeof *h);
+    if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
+    h->n = n; h->serial = n->serial; h->computed = (unsigned char)!!computed;
+    JS_SetOpaque(o, h);
+    return o;
+}
+
+/* Read one property by name. `computed` picks the backing store. */
+static JSValue cssd_read(JSContext *ctx, struct node *n, int computed, const char *name)
+{
+    if (!n || !name || !*name) return JS_NewString(ctx, "");
+    if (computed) {
+        int prop = css_prop_lookup(name, -1);
+        /* An unresolvable property reads as "", the same answer a real browser
+         * gives for one it does not implement. We cannot do better: what is on
+         * the node is a css_computed_style, and it only holds what LibCSS
+         * knows how to compute. */
+        if (prop < 0) return JS_NewString(ctx, "");
+        char buf[512];
+        int len = css_computed_text(n, prop, buf, (int)sizeof buf);
+        return JS_NewStringLen(ctx, buf, (size_t)len);
+    }
+    const char *sv = dom_attr(n, "style");
+    int vs = 0, ve = 0;
+    if (!sty_find(sv, name, strlen(name), 0, 0, &vs, &ve, 0)) return JS_NewString(ctx, "");
+    return JS_NewStringLen(ctx, sv + vs, (size_t)(ve - vs));
+}
+
+static JSValue cssd_getPropertyValue(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    if (argc < 1) return JS_NewString(ctx, "");
+    const char *nm = JS_ToCString(ctx, argv[0]);
+    if (!nm) return JS_NewString(ctx, "");
+    JSValue r = cssd_read(ctx, n, computed, nm);
+    JS_FreeCString(ctx, nm);
+    return r;
+}
+
+static JSValue cssd_getPropertyPriority(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    if (!n || computed || argc < 1) return JS_NewString(ctx, "");
+    const char *nm = JS_ToCString(ctx, argv[0]);
+    if (!nm) return JS_NewString(ctx, "");
+    int imp = 0;
+    int got = sty_find(dom_attr(n, "style"), nm, strlen(nm), 0, 0, 0, 0, &imp);
+    JS_FreeCString(ctx, nm);
+    return JS_NewString(ctx, (got && imp) ? "important" : "");
+}
+
+static JSValue cssd_setProperty(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    /* A computed declaration is read-only. The DOM throws
+     * NoModificationAllowedError here; we ignore the write instead, because a
+     * page that accidentally assigns to a getComputedStyle result should lose
+     * that one assignment, not its whole script. */
+    if (!n || computed || argc < 1) return JS_UNDEFINED;
+    const char *nm = JS_ToCString(ctx, argv[0]);
+    const char *vl = argc > 1 ? JS_ToCString(ctx, argv[1]) : 0;
+    const char *pr = argc > 2 ? JS_ToCString(ctx, argv[2]) : 0;
+    if (nm) style_set(n, nm, vl, pr && (pr[0] == 'i' || pr[0] == 'I'));
+    if (nm) JS_FreeCString(ctx, nm);
+    if (vl) JS_FreeCString(ctx, vl);
+    if (pr) JS_FreeCString(ctx, pr);
+    return JS_UNDEFINED;
+}
+
+static JSValue cssd_removeProperty(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    if (!n || computed || argc < 1) return JS_NewString(ctx, "");
+    const char *nm = JS_ToCString(ctx, argv[0]);
+    if (!nm) return JS_NewString(ctx, "");
+    JSValue old = cssd_read(ctx, n, 0, nm);      /* removeProperty returns the old value */
+    style_set(n, nm, 0, 0);
+    JS_FreeCString(ctx, nm);
+    return old;
+}
+
+static JSValue cssd_item(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    int32_t i = -1;
+    if (!n || argc < 1) return JS_NewString(ctx, "");
+    if (JS_ToInt32(ctx, &i, argv[0]) < 0) return JS_EXCEPTION;
+    if (i < 0) return JS_NewString(ctx, "");
+    if (computed) {
+        const char *nm = css_prop_name((int)i);
+        return JS_NewString(ctx, nm ? nm : "");
+    }
+    int len = 0;
+    const char *nm = sty_name_at(dom_attr(n, "style"), (int)i, &len);
+    return nm ? JS_NewStringLen(ctx, nm, (size_t)len) : JS_NewString(ctx, "");
+}
+
+static JSValue cssd_get_length(JSContext *ctx, JSValueConst t)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    if (!n) return JS_NewInt32(ctx, 0);
+    /* A computed declaration enumerates every property we can resolve, which is
+     * what a real one does (it enumerates every property the engine supports). */
+    return JS_NewInt32(ctx, computed ? CSSP__COUNT : sty_count(dom_attr(n, "style")));
+}
+
+static JSValue cssd_get_cssText(JSContext *ctx, JSValueConst t)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    /* cssText is "" on a computed declaration, per the CSSOM: there is no
+     * source text behind it. */
+    const char *v = (n && !computed) ? dom_attr(n, "style") : 0;
+    return JS_NewString(ctx, v ? v : "");
+}
+
+static JSValue cssd_set_cssText(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    if (!n || computed) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    /* Replacing the whole block can change anything, so it takes the
+     * layout-affecting tier without inspecting what is in it. */
+    if (s) { style_write(n, s, INVAL_STYLE); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+
+/* The named accessors (el.style.backgroundColor, getComputedStyle(el).display).
+ * `magic` is the CSSP_* id, so one getter/setter pair serves all of them. */
+static JSValue cssd_prop_get(JSContext *ctx, JSValueConst t, int magic)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    const char *nm = css_prop_name(magic);
+    if (!n || !nm) return JS_NewString(ctx, "");
+    return cssd_read(ctx, n, computed, nm);
+}
+
+static JSValue cssd_prop_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic)
+{
+    int computed = 0;
+    struct node *n = cssd_node(t, &computed);
+    const char *nm = css_prop_name(magic);
+    if (!n || computed || !nm) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (s) { style_set(n, nm, s, 0); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+
+static const JSCFunctionListEntry cssd_proto[] = {
+    JS_CFUNC_DEF("getPropertyValue", 1, cssd_getPropertyValue),
+    JS_CFUNC_DEF("getPropertyPriority", 1, cssd_getPropertyPriority),
+    JS_CFUNC_DEF("setProperty", 2, cssd_setProperty),
+    JS_CFUNC_DEF("removeProperty", 1, cssd_removeProperty),
+    JS_CFUNC_DEF("item", 1, cssd_item),
+    JS_CGETSET_DEF("length", cssd_get_length, NULL),
+    JS_CGETSET_DEF("cssText", cssd_get_cssText, cssd_set_cssText),
+};
+
+static JSClassDef cssd_class = { "CSSStyleDeclaration", cssd_finalizer };
+
+/* The IDL spelling of a dashed CSS name: "background-color" -> backgroundColor.
+ * Returns 0 if the name had no dashes (the two spellings coincide). */
+static int camel_of(const char *dashed, char *out, size_t cap)
+{
+    size_t o = 0;
+    int had = 0;
+    for (const char *p = dashed; *p; p++) {
+        if (o + 2 >= cap) return 0;
+        if (*p == '-') { p++; if (!*p) break; had = 1;
+                         out[o++] = (char)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p); continue; }
+        out[o++] = *p;
+    }
+    out[o] = 0;
+    return had;
+}
+
+/* Install a getter/setter for every property in the table, under BOTH the
+ * dashed name and the IDL camelCase name -- pages use both, and the CSSOM
+ * defines both. Built at runtime rather than as a hand-written table of ~130
+ * JSCFunctionListEntry lines that could drift from css.h's enum. */
+static void install_css_props(JSContext *ctx, JSValueConst proto)
+{
+    for (int p = 0; p < CSSP__COUNT; p++) {
+        const char *d = css_prop_name(p);
+        if (!d) continue;
+        char cam[64];
+        int has_camel = camel_of(d, cam, sizeof cam);
+        for (int pass = 0; pass < 2; pass++) {
+            const char *nm = pass ? cam : d;
+            if (pass && !has_camel) break;
+            JSAtom a = JS_NewAtom(ctx, nm);
+            JSValue g = JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_get, nm, 0,
+                                         JS_CFUNC_getter_magic, p);
+            JSValue s = JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_set, nm, 1,
+                                         JS_CFUNC_setter_magic, p);
+            JS_DefinePropertyGetSet(ctx, proto, a, g, s, JS_PROP_CONFIGURABLE);
+            JS_FreeAtom(ctx, a);
+        }
+    }
+    /* `float` was a reserved word when the CSSOM was written, so the IDL name
+     * is cssFloat -- and both spellings are in use to this day. */
+    JSAtom a = JS_NewAtom(ctx, "cssFloat");
+    JS_DefinePropertyGetSet(ctx, proto, a,
+        JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_get, "cssFloat", 0,
+                         JS_CFUNC_getter_magic, CSSP_FLOAT),
+        JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_set, "cssFloat", 1,
+                         JS_CFUNC_setter_magic, CSSP_FLOAT),
+        JS_PROP_CONFIGURABLE);
+    JS_FreeAtom(ctx, a);
+}
+
+static JSValue el_get_style(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    /* Not cached in the node: the Element wrapper owns the one weak slot a node
+     * has, and a fresh declaration object costs one small malloc while a cache
+     * would cost a second slot in every struct node in the document. */
+    return n ? cssd_new(ctx, n, CSSD_INLINE) : JS_NULL;
+}
+
+/* window.getComputedStyle(el[, pseudo]).
+ *
+ * The pseudo-element argument is accepted and ignored: we have no ::before /
+ * ::after boxes to report on, and returning the element's own style is a far
+ * better answer than throwing at a page that passes `null` (which is by far the
+ * most common second argument in the wild). */
+static JSValue js_getComputedStyle(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 1) return JS_NULL;
+    struct node *n = node_of(argv[0]);
+    if (!n) return JS_NULL;
+    return cssd_new(ctx, n, CSSD_COMPUTED);
+}
 
 /* ======================================================================
  * Events
@@ -1301,6 +2052,7 @@ static const JSCFunctionListEntry elem_proto[] = {
     JS_CGETSET_DEF("tagName", el_get_tag, NULL),
     JS_CGETSET_DEF("id", el_get_id, NULL),
     JS_CGETSET_DEF("classList", el_get_classlist, NULL),
+    JS_CGETSET_DEF("style", el_get_style, NULL),
     JS_CFUNC_DEF("getAttribute", 1, el_getattr),
     JS_CFUNC_DEF("setAttribute", 2, el_setattr),
     JS_CFUNC_DEF("appendChild", 1, el_appendChild),
@@ -1408,7 +2160,8 @@ static JSValue make_event_class(JSContext *ctx, JSValue g, const char *name,
 void js_dom_init(JSContext *ctx, struct node *root)
 {
     g_ctx = ctx;
-    g_root = root; g_dirty = 0;
+    g_root = root;
+    js_dom_clear_dirty();               /* scope roots from the previous page are dead */
     g_proto_event = g_proto_ui = g_proto_mouse = g_proto_key = JS_UNDEFINED;
     /* Defensive: if a previous page's runtime went away without a cleanup call,
      * its wrapper slots are dangling JSObject*s. Start every page with none. */
@@ -1429,10 +2182,21 @@ void js_dom_init(JSContext *ctx, struct node *root)
     if (JS_NewClass(rt, token_cid, &token_class) >= 0) {
         JSValue tp = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, tp, token_proto, countof(token_proto));
+        install_arraylike(ctx, tp);        /* length + indices make it iterable */
         JS_SetClassProto(ctx, token_cid, tp);
     }
 
+    JS_NewClassID(&cssd_cid);
+    if (JS_NewClass(rt, cssd_cid, &cssd_class) >= 0) {
+        JSValue sp = JS_NewObject(ctx);
+        JS_SetPropertyFunctionList(ctx, sp, cssd_proto, countof(cssd_proto));
+        install_css_props(ctx, sp);
+        JS_SetClassProto(ctx, cssd_cid, sp);
+    }
+
     JSValue g = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, g, "getComputedStyle",
+                      JS_NewCFunction(ctx, js_getComputedStyle, "getComputedStyle", 2));
 
     JS_NewClassID(&event_cid);
     if (JS_NewClass(rt, event_cid, &event_class) >= 0) {

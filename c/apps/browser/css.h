@@ -107,6 +107,83 @@ struct cstyle {
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
 };
 
+/* ---------------- CSSOM: the property surface ----------------
+ *
+ * The named properties `getComputedStyle()` can answer and `element.style`'s
+ * camelCase accessors expose. This is a TABLE, not the full CSS property set:
+ * element.style can still carry any property at all (it is stored verbatim in
+ * the style attribute and handed to LibCSS as an inline sheet, so `transform`
+ * or a custom property round-trips through setProperty/getPropertyValue
+ * untouched) -- the enum only names the ones we can also RESOLVE, i.e. read
+ * back out of a computed style.
+ *
+ * Edges are always in CSS shorthand order -- top, right, bottom, left -- so the
+ * four-per-property groups can be indexed arithmetically. */
+enum {
+    CSSP_WIDTH = 0, CSSP_HEIGHT,
+    CSSP_MIN_WIDTH, CSSP_MAX_WIDTH, CSSP_MIN_HEIGHT, CSSP_MAX_HEIGHT,
+    CSSP_MARGIN_TOP, CSSP_MARGIN_RIGHT, CSSP_MARGIN_BOTTOM, CSSP_MARGIN_LEFT,
+    CSSP_PADDING_TOP, CSSP_PADDING_RIGHT, CSSP_PADDING_BOTTOM, CSSP_PADDING_LEFT,
+    CSSP_COLOR, CSSP_BACKGROUND_COLOR,
+    CSSP_FONT_SIZE, CSSP_FONT_FAMILY, CSSP_FONT_WEIGHT, CSSP_FONT_STYLE,
+    CSSP_DISPLAY, CSSP_POSITION,
+    CSSP_TOP, CSSP_RIGHT, CSSP_BOTTOM, CSSP_LEFT,
+    CSSP_OPACITY, CSSP_Z_INDEX, CSSP_VISIBILITY,
+    CSSP_OVERFLOW, CSSP_OVERFLOW_X, CSSP_OVERFLOW_Y,
+    CSSP_FLEX_DIRECTION, CSSP_FLEX_WRAP, CSSP_FLEX_GROW, CSSP_FLEX_SHRINK,
+    CSSP_FLEX_BASIS, CSSP_JUSTIFY_CONTENT, CSSP_ALIGN_ITEMS, CSSP_ALIGN_SELF,
+    CSSP_ALIGN_CONTENT, CSSP_ORDER,
+    CSSP_BORDER_TOP_WIDTH, CSSP_BORDER_RIGHT_WIDTH,
+    CSSP_BORDER_BOTTOM_WIDTH, CSSP_BORDER_LEFT_WIDTH,
+    CSSP_BORDER_TOP_STYLE, CSSP_BORDER_RIGHT_STYLE,
+    CSSP_BORDER_BOTTOM_STYLE, CSSP_BORDER_LEFT_STYLE,
+    CSSP_BORDER_TOP_COLOR, CSSP_BORDER_RIGHT_COLOR,
+    CSSP_BORDER_BOTTOM_COLOR, CSSP_BORDER_LEFT_COLOR,
+    CSSP_TEXT_ALIGN, CSSP_LINE_HEIGHT, CSSP_TEXT_DECORATION,
+    CSSP_BOX_SIZING, CSSP_WHITE_SPACE, CSSP_FLOAT, CSSP_CLEAR,
+    CSSP_LIST_STYLE_TYPE,
+    CSSP__COUNT
+};
+
+/* Dashed CSS name of property `i` ("background-color"), or NULL out of range. */
+const char *css_prop_name(int i);
+/* Property id for a name given either dashed ("background-color") or in the
+ * IDL's camelCase spelling ("backgroundColor"); -1 if we cannot resolve it.
+ * `len` < 0 means NUL-terminated. */
+int  css_prop_lookup(const char *name, int len);
+/* 1 if changing this property can only change what gets PAINTED -- colour,
+ * visibility, opacity, decoration, stacking order -- and never the geometry of
+ * any box. The invalidation tiering in js_dom.c uses it to decide whether a
+ * write to element.style needs to be able to move boxes. */
+int  css_prop_paint_only(int prop);
+
+/* Serialise property `prop` of `n`'s COMPUTED style (node->computed, the
+ * LibCSS css_computed_style css_apply left behind) into `out` as CSS syntax:
+ * "16px", "rgb(255, 0, 0)", "block". Returns the string length, or 0 if the
+ * node has no computed style (never styled, or not an element).
+ *
+ * RESOLVED vs COMPUTED, and where they differ -- this matters if you compare
+ * against a real browser:
+ *
+ *   - CSS's "resolved value" is the USED value for width/height, the four
+ *     margins/paddings and the four box offsets: a real getComputedStyle
+ *     reports `width:auto` on a block as the pixel width it ended up with.
+ *     Used values live in the display list (layout.c), not in the cascade, so
+ *     what comes back here is the COMPUTED value -- "auto" stays "auto" and a
+ *     percentage stays a percentage. That is exactly what a real browser
+ *     returns for a `display:none` element, and it is the honest answer for an
+ *     engine whose layout is not queryable per node.
+ *   - Everything else in the table (colour, font, display, position, opacity,
+ *     z-index, overflow, the flex properties, border widths/styles/colours,
+ *     text-align, line-height, visibility) has resolved value == computed
+ *     value, so those match a real browser.
+ *   - line-height:normal reports "normal" (Firefox reports a px number here,
+ *     Chrome reports "normal"); the number depends on font metrics layout owns.
+ *   - Lengths are whole pixels: the whole engine is integer-px, so there is no
+ *     fractional value to report.
+ */
+int  css_computed_text(struct node *n, int prop, char *out, int outmax);
+
 void css_init(void);                            /* build the UA default stylesheet */
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */
@@ -120,6 +197,43 @@ void css_extra_apply(struct node *root, const char *page_css, int page_len);
 /* Compute and attach a `struct cstyle*` to every node of `root` (in node->style),
  * cascading UA defaults + `page_css` (page_len bytes from <style>) + inline style=. */
 void css_apply(struct node *root, const char *page_css, int page_len);
+
+/* What a re-style actually moved, as a bitmask. CSS_CHANGED_NONE is the answer
+ * that pays for this whole mechanism: a class toggle whose class carries no
+ * matching rule changes nothing, and the caller can then skip layout AND the
+ * repaint instead of rebuilding the page to produce identical pixels. */
+enum { CSS_CHANGED_NONE = 0, CSS_CHANGED_PAINT = 1, CSS_CHANGED_LAYOUT = 2 };
+
+/* Re-run the cascade over JUST `n` and its subtree instead of the whole
+ * document, resuming from the parent's already-computed style.
+ *
+ * `siblings` additionally re-styles every FOLLOWING element sibling and its
+ * subtree. That is not belt and braces: `a + b` and `a ~ b` mean an attribute
+ * or class change on `n` can change the style of elements after it, and
+ * nothing else in this design would notice. Preceding siblings cannot be
+ * affected (CSS has no "previous sibling" combinator), and ancestors cannot
+ * either (we have no `:has()`), which is what makes the scope this narrow and
+ * still correct.
+ *
+ * Returns a CSS_CHANGED_* mask over every node it re-styled: the old cstyle is
+ * compared field-for-field against the new one, so "the cascade ran again and
+ * produced the same answer" is reported as CSS_CHANGED_NONE.
+ *
+ * Requires that `n`'s ancestors are already styled (node->computed set) --
+ * i.e. that a full css_apply has run for this sheet set at least once. */
+int css_apply_scoped(struct node *n, int siblings, const char *page_css, int page_len);
+
+/* Register the post-cascade pass that runs INSIDE css_apply_scoped's measured
+ * window, over the same scope. The browser registers css_extra_apply here.
+ *
+ * It has to be inside: css_extra patches node->style AFTER the cascade (border
+ * radius, grid tracks, the animation end-state approximation), so a change
+ * diff taken before it ran would see every one of those patches as a fresh
+ * change on every single re-style and css_apply_scoped could never answer
+ * CSS_CHANGED_NONE. It is a hook rather than a direct call because css_extra.c
+ * is not linked into the CSS host tests, and css_engine.c must keep building
+ * without it. */
+void css_set_post_pass(void (*fn)(struct node *root, const char *css, int len));
 
 /* Cumulative selection statistics: elements styled, and LibCSS node-data cache
  * hits (parent-bloom lookups plus sibling style-sharing probes that found a
