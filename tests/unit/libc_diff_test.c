@@ -546,6 +546,35 @@ static void section_printf_float(long iters)
         DIFF_FMT(fmt, INFINITY); DIFF_FMT(fmt, -INFINITY); DIFF_FMT(fmt, NAN);
       }
 
+    /* %a / %A: the exact hexadecimal float. Given its own pass because it is
+     * the one conversion whose digits come straight from the mantissa bits, so
+     * a disagreement means the bit surgery is wrong rather than the rounding. */
+    { static const char aconvs[] = "aA";
+      for (size_t f = 0; f < sizeof flagsets / sizeof *flagsets; f++)
+        for (const char *c = aconvs; *c; c++)
+          for (size_t v = 0; v < sizeof vals / sizeof *vals; v++) {
+            static const char *const aw[] = { "", "1", "14", "30" };
+            static const char *const ap[] = { "", ".0", ".1", ".2", ".5", ".13", ".20" };
+            for (size_t w = 0; w < sizeof aw / sizeof *aw; w++)
+              for (size_t p = 0; p < sizeof ap / sizeof *ap; p++) {
+                snprintf(fmt, sizeof fmt, "%%%s%s%s%c", flagsets[f], aw[w], ap[p], *c);
+                DIFF_FMT(fmt, vals[v]);
+                DIFF_FMT(fmt, -vals[v]);
+              }
+          }
+      for (long i = 0; i < iters; i++) {
+          union { uint64_t u; double d; } u; u.u = rnd();
+          if (isnan(u.d) || isinf(u.d)) continue;
+          int pr = (int)rnd_below(16) - 1;
+          if (pr < 0) snprintf(fmt, sizeof fmt, "%%a");
+          else snprintf(fmt, sizeof fmt, "%%.%da", pr);
+          DIFF_FMT(fmt, u.d);
+          if (pr < 0) snprintf(fmt, sizeof fmt, "%%A");
+          else snprintf(fmt, sizeof fmt, "%%#.%dA", pr);
+          DIFF_FMT(fmt, u.d);
+      }
+    }
+
     for (long i = 0; i < iters; i++) {
         union { uint64_t u; double d; } u; u.u = rnd();
         if (isnan(u.d)) continue;

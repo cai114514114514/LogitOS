@@ -676,7 +676,7 @@ test-aes-ni-control: $(BUILD)
 # ASan/UBSan fuzz of the X.509 DER parser (attacker-controlled input on every
 # HTTPS handshake) against a real cert. Long-running; not part of `make test`.
 test-x509-fuzz: $(BUILD)
-	$(CC) -O1 -g -fsanitize=address,undefined -o $(BUILD)/x509_fuzz tests/unit/x509_fuzz.c c/net/tls/x509.c $(CRYPTO_SRC) c/crypto/trust/roots.c -Ic/net/tls $(CRYPTO_INC) -Ic/crypto/trust
+	$(CC) -O1 -g -fsanitize=address,undefined -o $(BUILD)/x509_fuzz tests/unit/x509_fuzz.c c/net/tls/x509.c $(CRYPTO_SRC) c/crypto/trust/roots.c -Ic/net/tls -Ic/crypto -Ic/crypto/trust
 	$(BUILD)/x509_fuzz tests/unit/cert.der
 
 # Same smoke test, but attach the disk via NVMe -- proves the from-scratch NVMe

@@ -78,17 +78,10 @@ python3 "$ROOT/tools/genroots.py" "$TMP/roots" "$TMP/roots_bundle.inc" >/dev/nul
     echo "FAIL: could not build the test trust bundle"; exit 1; }
 cp "$ROOT/c/crypto/trust/roots.c" "$TMP/roots_test.c"
 
-# c/kernel/cpu/cpufeat.c comes along because the AES-GCM backend is chosen at
-# runtime from CPUID (c/crypto/aead/aes_dispatch.c). Including it here is not a
-# detail: on a host with AES-NI this suite then exercises the SAME accelerated
-# path the kernel will use against a real openssl s_server, which is the only
-# place the two implementations meet a third-party peer.
-INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
-      -I$ROOT/c/net/tls -I$ROOT/c/net/core \
-      -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
-      -I$ROOT/c/kernel/cpu"
+INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/trust -I$ROOT/c/net/tls -I$ROOT/c/net/core \
+      -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core"
 SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c \
-     $ROOT/c/net/tls/x509.c $TMP/roots_test.c $ROOT/c/kernel/cpu/cpufeat.c \
+     $ROOT/c/net/tls/x509.c $TMP/roots_test.c \
      $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" -name '*.c')"
 # ASan+UBSan: this binary parses adversarial-shaped input (certificates, records)
 # with the same code the kernel runs, so it is the cheapest place to catch a

@@ -166,14 +166,17 @@ static void fb(struct fbuf *o, char c) { if (o->n < sizeof o->b) o->b[o->n++] = 
 static void fbs(struct fbuf *o, const char *s, size_t n) { while (n--) fb(o, *s++); }
 static void fbrep(struct fbuf *o, char c, long n) { while (n-- > 0) fb(o, c); }
 
-static void fmt_exp(struct fbuf *o, int e, char echar)
+/* `mind` differs by conversion and it is not a detail: %e/%E require AT LEAST
+ * TWO exponent digits ("1e+05"), while %a/%A require at least ONE ("0x1p+5").
+ * Padding both to two prints 0x0p+00, which no other libc produces. */
+static void fmt_exp(struct fbuf *o, int e, char echar, int mind)
 {
     fb(o, echar);
     fb(o, e < 0 ? '-' : '+');
     unsigned a = (unsigned)(e < 0 ? -e : e);
     char t[8]; int n = 0;
     do { t[n++] = (char)('0' + a % 10); a /= 10; } while (a);
-    while (n < 2) t[n++] = '0';             /* C: at least two exponent digits */
+    while (n < mind) t[n++] = '0';
     while (n--) fb(o, t[n]);
 }
 
@@ -220,14 +223,16 @@ static void fmt_hexfloat(struct fbuf *o, double v, int prec, int upper, int alt)
         while (nd > 0 && hd[nd - 1] == '0') nd--;   /* shortest exact form */
     }
 
-    fb(o, '0'); fb(o, upper ? 'X' : 'x');
+    /* The "0x" is NOT written here: it is a PREFIX in the emit() sense, so that
+     * a '0' flag pads between it and the digits (%014a -> "0x000000000p+0")
+     * exactly as it does for %#x, rather than in front of it. */
     fb(o, (char)('0' + lead));
     if (nd > 0 || alt || (prec > 0)) {
         fb(o, '.');
         fbs(o, hd, (size_t)nd);
         if (prec > nd) fbrep(o, '0', prec - nd);
     }
-    fmt_exp(o, e2, upper ? 'P' : 'p');
+    fmt_exp(o, e2, upper ? 'P' : 'p', 1);
 }
 
 static void fmt_float(struct __printf_sink *sk, double v, int prec, char conv,
@@ -257,7 +262,7 @@ static void fmt_float(struct __printf_sink *sk, double v, int prec, char conv,
 
     if (lc == 'a') {
         fmt_hexfloat(&o, v, prec, upper, alt);
-        emit(sk, sign, NULL, o.b, o.n, width, left, zero);
+        emit(sk, sign, upper ? "0X" : "0x", o.b, o.n, width, left, zero);
         return;
     }
 
@@ -300,7 +305,7 @@ static void fmt_float(struct __printf_sink *sk, double v, int prec, char conv,
             for (int i = 1; i <= prec; i++) fb(&o, i < nd ? digs[i] : '0');
         }
         TRIM_G();
-        fmt_exp(&o, nd > 0 ? decpt - 1 : 0, upper ? 'E' : 'e');
+        fmt_exp(&o, nd > 0 ? decpt - 1 : 0, upper ? 'E' : 'e', 2);
     } else {
         if (decpt <= 0) fb(&o, '0');
         else for (int i = 0; i < decpt; i++) fb(&o, i < nd ? digs[i] : '0');
