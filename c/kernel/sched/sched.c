@@ -8,6 +8,7 @@
 #include "percpu.h"
 #include "spinlock.h"
 #include "kprintf.h"
+#include "pit.h"          /* timer_ticks() -- deadline sleeps */
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -28,6 +29,17 @@ struct thread {
     int running;             /* 1 while owned by some core (SMP: skip in pick) */
     void (*entry)(void);     /* kernel-thread trampoline target (kthread_bootstrap) */
     int is_idle;             /* per-core idle thread (off the shared ring) */
+
+    /* --- M27 blocking core (see sched.h for the lost-wakeup argument) --- */
+    int state;               /* THREAD_READY / THREAD_BLOCKED */
+    int on_ring;             /* 1 while spliced into g_ring's circular list */
+    unsigned long slices;    /* times this thread was DISPATCHED. The number that
+                              * makes "it sleeps now" a measurement rather than a
+                              * claim: a parked thread's slices do not move. */
+    struct thread *tw_next;  /* deadline list (g_timer_wait) link */
+    int    on_timer;         /* 1 while linked into the deadline list */
+    uint64_t deadline;       /* timer_ticks() value at which to force a wake */
+    int    timed_out;        /* set by sched_timer_expire when it did the waking */
 };
 
 extern void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
@@ -43,11 +55,70 @@ static volatile unsigned long switches = 0;
 static struct thread *dead_threads = NULL;
 static spinlock_t g_sched_lock = SPINLOCK_INIT;
 
+/* M27: threads parked with a deadline (sched_block_self_unlock_until). Singly
+ * linked, guarded by g_sched_lock; walked once per timer tick. Short by
+ * construction -- only threads in a timed sleep are on it. */
+static struct thread *g_timer_wait = NULL;
+static volatile unsigned long g_blocked = 0;
+
 static void name_set(struct thread *t, const char *n)
 {
     int i = 0;
     if (n) for (; i < 31 && n[i]; i++) t->name[i] = n[i];
     t->name[i] = 0;
+}
+
+/* Zero the M27 block-core fields. Every creation site calls this, so a new
+ * field is added in exactly one place. */
+static void block_fields_init(struct thread *t, int on_ring)
+{
+    t->state     = THREAD_READY;
+    t->on_ring   = on_ring;
+    t->slices    = 0;
+    t->tw_next   = NULL;
+    t->on_timer  = 0;
+    t->deadline  = 0;
+    t->timed_out = 0;
+}
+
+/* --- run-ring membership. Both callers hold g_sched_lock. ---
+ *
+ * A parked thread is genuinely removed from the ring rather than skipped in the
+ * pick loop, with one guard: a thread that is the ring's SOLE member stays
+ * linked (marked BLOCKED, so the pick loop skips it anyway). That keeps g_ring
+ * non-NULL unconditionally, which thread_create/thread_fork rely on to splice. */
+static void ring_unlink(struct thread *t)
+{
+    if (!t->on_ring || t->next == t) return;    /* off-ring, or the sole member */
+    if (g_ring == t) g_ring = t->next;
+    t->prev->next = t->next;
+    t->next->prev = t->prev;
+    t->next = t;
+    t->prev = t;
+    t->on_ring = 0;
+}
+
+static void ring_link(struct thread *t)
+{
+    if (t->on_ring || !g_ring) return;
+    t->next = g_ring->next;
+    t->prev = g_ring;
+    t->next->prev = t;
+    g_ring->next = t;
+    t->on_ring = 1;
+}
+
+/* Remove `t` from the deadline list. Caller holds g_sched_lock. */
+static void timerlist_remove(struct thread *t)
+{
+    struct thread **pp = &g_timer_wait;
+    if (!t->on_timer) return;
+    while (*pp) {
+        if (*pp == t) { *pp = t->tw_next; break; }
+        pp = &(*pp)->tw_next;
+    }
+    t->tw_next  = NULL;
+    t->on_timer = 0;
 }
 
 unsigned long sched_switches(void) { return switches; }
@@ -71,6 +142,7 @@ void sched_init(void)
     main->is_idle = 0;
     main->next = main;
     main->prev = main;
+    block_fields_init(main, 1);
     g_ring = main;
     this_cpu()->current = main;     /* BSP (this_cpu falls back to g_cpus[0]) */
 
@@ -92,6 +164,7 @@ void sched_init(void)
     bi->entry = sched_become_idle;
     bi->is_idle = 1;
     bi->next = bi; bi->prev = bi;   /* off the shared ring */
+    block_fields_init(bi, 0);
     {
         uint64_t top = ((uint64_t)bi->stack + STACK_SIZE) & ~(uint64_t)0xF;
         uint64_t *sp = (uint64_t *)top;
@@ -125,6 +198,7 @@ void thread_create(void (*entry)(void), const char *name)
     t->running = 0;
     t->entry = entry;
     t->is_idle = 0;
+    block_fields_init(t, 1);
 
     /* First switch lands in kthread_bootstrap, which drops g_sched_lock then
      * calls entry() (kernel threads keep the BKL while in kernel code). */
@@ -166,6 +240,7 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     t->is_idle = 0;
     t->cr3 = cr3 ? cr3 : vmm_kernel_cr3();
     t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
+    block_fields_init(t, 1);
 
     /* Hand-built kernel frame: context_switch "returns" into ring3_bootstrap
      * with entry in r15 and the user stack in r14. (ring3_bootstrap releases
@@ -216,6 +291,7 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     t->is_idle = 0;
     t->cr3 = cr3 ? cr3 : vmm_kernel_cr3();
     t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
+    block_fields_init(t, 1);
 
     /* Copy of the parent's full register frame at the top of the child kstack,
      * with rax = 0 (the value fork returns in the child). */
@@ -275,10 +351,13 @@ __attribute__((noinline)) void schedule(void)
      * idle prev is off-ring and couldn't otherwise reach shared-ring threads.
      * Start the scan one past prev when prev is on the ring (round-robin); else
      * from g_ring's successor. */
-    struct thread *anchor = (prev->is_idle ? g_ring : prev);
+    /* An anchor that is no longer ON the ring (it parked and was unlinked) has
+     * next==itself, so scanning from it would see nothing: fall back to g_ring. */
+    struct thread *anchor = (prev->is_idle || !prev->on_ring) ? g_ring : prev;
     struct thread *next = NULL, *s = anchor->next, *start = s;
     do {
-        if (s != prev && s->alive && !s->running && !s->is_idle) { next = s; break; }
+        if (s != prev && s->alive && !s->running && !s->is_idle &&
+            s->state == THREAD_READY) { next = s; break; }
         s = s->next;
     } while (s != start);
 
@@ -291,6 +370,7 @@ __attribute__((noinline)) void schedule(void)
     if (next && next != prev) {
         if (!prev->is_idle) prev->running = 0;
         next->running = 1;
+        next->slices++;
         me->current = next;
         switches++;
         if (next->kstack_top)
@@ -331,9 +411,10 @@ void thread_exit(void)
     struct cpu *me = this_cpu();
     struct thread *dead = me->current;
 
-    /* Pick a runnable successor (skip running-on-other-core / idle). */
+    /* Pick a runnable successor (skip running-on-other-core / idle / parked). */
     struct thread *next = dead->next;
-    while (next != dead && (next->running || next->is_idle)) next = next->next;
+    while (next != dead && (next->running || next->is_idle ||
+                            next->state != THREAD_READY)) next = next->next;
     if (next == dead) next = me->idle;            /* nothing runnable: go idle */
 
     if (next == dead) {                           /* truly nothing: stop this core */
@@ -342,16 +423,20 @@ void thread_exit(void)
     }
 
     /* O(1) unlink the dead thread from the shared ring (idle is off-ring). */
-    if (!dead->is_idle) {
+    if (!dead->is_idle && dead->on_ring) {
         dead->prev->next = dead->next;
         dead->next->prev = dead->prev;
+        if (g_ring == dead && dead->next != dead) g_ring = dead->next;
     }
+    dead->on_ring = 0;
+    timerlist_remove(dead);
     dead->running = 0;
     dead->alive = 0;
     dead->next = dead_threads;
     dead_threads = dead;
 
     next->running = 1;
+    next->slices++;
     me->current = next;
     switches++;
     if (next->kstack_top)
@@ -365,6 +450,168 @@ void thread_exit(void)
     spin_unlock(&g_bkl);
     context_switch(&me->exit_discard, next->rsp);   /* per-cpu discard, NOT static */
     /* unreachable: the dead thread never resumes. */
+}
+
+/* ==========================================================================
+ * M27 blocking core: park / unpark / deadline expiry.
+ * The lost-wakeup argument lives in sched.h next to the declarations -- read it
+ * there before changing anything below.
+ * ========================================================================== */
+
+struct thread *sched_current_thread(void) { return this_cpu()->current; }
+int sched_thread_id(struct thread *t) { return t ? t->id : -1; }
+unsigned long sched_slices_of(struct thread *t) { return t ? t->slices : 0; }
+unsigned long sched_blocked_count(void) { return g_blocked; }
+
+/* Park the caller until sched_wake(), releasing `outer` atomically w.r.t. wakers.
+ *
+ * Preconditions (all of them, every time):
+ *   - `outer` is held by this core via spin_lock_irqsave(), `flags` is its result;
+ *   - the condition being waited on was tested under `outer`;
+ *   - this core holds the BKL (dropped across the switch, re-taken on resume);
+ *   - no other spinlock is held.
+ *
+ * Returns with `outer` NOT held and IF restored from `flags`. Wakeups may be
+ * spurious -- callers loop.
+ *
+ * `deadline` != 0 additionally arms a timer wake; *timed_out (if non-NULL) is
+ * set to 1 when the deadline, not a wake, is what made us runnable. */
+static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int *timed_out)
+{
+    spin_lock(&g_sched_lock);                 /* IF is already 0 (outer was irqsave) */
+
+    struct cpu *me = this_cpu();
+    struct thread *self = me->current;
+
+    /* Degrade to a plain unlock rather than wedge a core: the idle thread has no
+     * successor to hand to, and a core not yet adopted has no `current`. Callers
+     * are `while (!cond)` loops, so returning early is always safe -- it just
+     * costs a spin. */
+    if (!self || self->is_idle || !me->idle) {
+        spin_unlock(&g_sched_lock);
+        spin_unlock_irqrestore(outer, flags);
+        return;
+    }
+
+    /* Pick a successor from the shared ring (same rules as schedule()). */
+    struct thread *anchor = self->on_ring ? self : g_ring;
+    struct thread *next = NULL, *s = anchor->next, *start = s;
+    do {
+        if (s != self && s->alive && !s->running && !s->is_idle &&
+            s->state == THREAD_READY) { next = s; break; }
+        s = s->next;
+    } while (s != start);
+    if (!next) next = me->idle;
+    if (next == self) {                       /* cannot happen (idle != self) */
+        spin_unlock(&g_sched_lock);
+        spin_unlock_irqrestore(outer, flags);
+        return;
+    }
+
+    self->state     = THREAD_BLOCKED;
+    self->running   = 0;
+    self->timed_out = 0;
+    ring_unlink(self);
+    g_blocked++;
+    if (deadline) {
+        self->deadline = deadline;
+        self->tw_next  = g_timer_wait;
+        g_timer_wait   = self;
+        self->on_timer = 1;
+    }
+
+    /* THE ORDERING THAT CLOSES THE LOST WAKEUP: `outer` is released only now --
+     * after we are marked BLOCKED and off the ring, and while g_sched_lock is
+     * still held. A waker that acquires `outer` from here on must then wait on
+     * g_sched_lock (released by the INCOMING thread, i.e. after context_switch
+     * has saved our rsp), so it can only ever observe a fully parked thread. */
+    spin_unlock(outer);
+
+    next->running = 1;
+    next->slices++;
+    me->current = next;
+    switches++;
+    if (next->kstack_top)
+        percpu_tss_set_rsp0(next->kstack_top);
+    if (next->cr3 && next->cr3 != self->cr3)
+        vmm_switch(next->cr3);
+
+    /* Same BKL hand-off as schedule(): drop before the switch, the incoming
+     * thread re-acquires after. IF stays 0 across the whole window. */
+    me->in_kernel = 0;
+    spin_unlock(&g_bkl);
+    context_switch(&self->rsp, next->rsp);
+    /* === RESUMED (someone called sched_wake / the deadline fired) ===
+     * g_sched_lock is held, the BKL is not. */
+    me = this_cpu();
+    timerlist_remove(self);                   /* no-op if the deadline already popped us */
+    if (timed_out) *timed_out = self->timed_out;
+    spin_unlock(&g_sched_lock);
+    spin_lock(&g_bkl);
+    me->in_kernel = 1;
+    if (flags & 0x200) __asm__ volatile ("sti");
+}
+
+void sched_block_self_unlock(spinlock_t *outer, uint64_t flags)
+{
+    block_self(outer, flags, 0, NULL);
+}
+
+int sched_block_self_unlock_until(spinlock_t *outer, uint64_t flags, uint64_t deadline)
+{
+    int to = 0;
+    block_self(outer, flags, deadline ? deadline : 1, &to);
+    return !to;
+}
+
+/* Make `t` runnable. Callable from any core and from interrupt context; takes
+ * only g_sched_lock, so the lock order is always <caller's lock> -> g_sched_lock
+ * and never the reverse. Returns 1 iff this call did the unparking. */
+int sched_wake(struct thread *t)
+{
+    int did = 0;
+    if (!t) return 0;
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    if (t->alive && t->state == THREAD_BLOCKED) {
+        t->state = THREAD_READY;
+        timerlist_remove(t);
+        ring_link(t);
+        if (g_blocked) g_blocked--;
+        did = 1;
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return did;
+}
+
+/* Deadline expiry, driven from the timer IRQ BEFORE the BKL is acquired (see
+ * interrupts.c). Touches only g_sched_lock, never the BKL: a sleeper's deadline
+ * must not be able to queue behind a BKL held by a thread that is itself waiting
+ * for that deadline -- the same circular wait that made timer_tick() move ahead
+ * of the BKL acquire. */
+void sched_timer_expire(void)
+{
+    uint64_t now;
+    /* Lock-free early-out: this runs on every tick and the list is empty almost
+     * always. A stale read costs at most one tick of latency. */
+    if (!__atomic_load_n(&g_timer_wait, __ATOMIC_RELAXED)) return;
+    now = timer_ticks();
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    struct thread **pp = &g_timer_wait;
+    while (*pp) {
+        struct thread *t = *pp;
+        if (t->state == THREAD_BLOCKED && (int64_t)(now - t->deadline) >= 0) {
+            *pp = t->tw_next;
+            t->tw_next   = NULL;
+            t->on_timer  = 0;
+            t->timed_out = 1;
+            t->state     = THREAD_READY;
+            ring_link(t);
+            if (g_blocked) g_blocked--;
+            continue;
+        }
+        pp = &t->tw_next;
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
 }
 
 /* First-run helpers ------------------------------------------------------- */
@@ -442,6 +689,7 @@ void thread_create_idle(int idx)
     t->is_idle = 1;
     t->next = t;            /* off the shared ring */
     t->prev = t;
+    block_fields_init(t, 0);
 
     g_cpus[idx].idle = t;
     g_cpus[idx].current = t;
