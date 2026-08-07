@@ -94,7 +94,8 @@ import time
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT      # noqa: E402
+from qmp_ui import (Session, PPM, dock_icon, BROWSER_SLOT,      # noqa: E402
+                    configure, pt)
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -254,12 +255,29 @@ srv = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Fixture)
 PORT = srv.server_port
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 
+# Every hardcoded click coordinate below is a POINT, and QMP's pointer works in
+# DEVICE pixels -- so the harness has to derive the same backing scale the
+# kernel derives from the mode, before it clicks anything. Without this the
+# fixtures load at 1280x800 (where the scale is 100 and the two units coincide)
+# and click empty desktop at any denser mode.
+XRES = int(os.environ.get("QMP_XRES", "1280"))
+YRES = int(os.environ.get("QMP_YRES", "800"))
+SCALE = configure(XRES, YRES)
+print("display %dx%d device px, backing scale %d%%" % (XRES, YRES, SCALE))
+
 proc = subprocess.Popen(
     [QEMU, "-cpu", os.environ.get("QEMU_CPU", "max"), "-cdrom", ISO,
      "-drive", "file=%s,format=raw,if=none,id=hd0" % DISK,
      "-device", "virtio-blk-pci,drive=hd0", "-boot", "d",
      "-snapshot", "-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi",
-     "-vga", "none", "-device", "virtio-gpu-pci,xres=1280,yres=800",
+     # Overridable so the same fixtures can be measured on a SCALED display.
+     # fb.c's pick_scale() derives the backing scale factor from the mode
+     # (1280x800 -> 100, 2560x1600 -> 200), and a CSS px must stay a logical
+     # unit across that: a `width:240px` box has to paint 240 POINTS, which is
+     # 480 device pixels at 2x. If a CSS px ever became a device pixel the box
+     # would come back 240 device px wide and every page would render half size.
+     # QMP_XRES=2560 QMP_YRES=1600 is how that is checked.
+     "-vga", "none", "-device", "virtio-gpu-pci,xres=%d,yres=%d" % (XRES, YRES),
      "-display", "none", "-no-reboot",
      "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
      "-serial", "file:" + serial_path,
@@ -361,7 +379,7 @@ try:
     time.sleep(3.0)                        # ~2.7 MB .aex off virtio-blk, then ELF load
     ui.screendump(os.path.join(tmp, "launch.ppm"), settle=0.4)
 
-    ui.click_at(420, 145)                  # address bar
+    ui.click_at(pt(420), pt(145))          # address bar (points -> device px)
     for _ in range(60):
         ui.key("backspace")
     ui.typ("http://10.0.2.2:%d/cssfid.html" % PORT)
@@ -423,7 +441,7 @@ try:
     # y=175, not the 145 used above: the first click happens while the window is
     # still playing its open-pop animation and the bar is higher up. By now the
     # window has settled and 145 is the title bar.
-    ui.click_at(420, 175)                  # address bar
+    ui.click_at(pt(420), pt(175))          # address bar (points -> device px)
     for _ in range(80):
         ui.key("backspace")
     ui.typ("http://10.0.2.2:%d/paint.html" % PORT)
@@ -491,7 +509,7 @@ try:
        "the two measures differ by the float's width, i.e. the lines really narrowed")
 
     # ================= third fixture: custom properties =================
-    ui.click_at(420, 175)                  # address bar
+    ui.click_at(pt(420), pt(175))          # address bar (points -> device px)
     for _ in range(80):
         ui.key("backspace")
     ui.typ("http://10.0.2.2:%d/var.html" % PORT)
