@@ -102,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-html5lib test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-html5lib test-html5lib-tok test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -473,6 +473,29 @@ test-shell: $(ISO) $(DISK)
 #
 #   make test-html5lib          per-file counts + the total
 #   make test-html5lib V=20     also dump the first 20 failing cases
+# How spec-conformant is the TOKENIZER? Companion to test-html5lib below, which
+# measures tree construction. The tokenizer is the layer where the number can
+# honestly be 100%: mechanical, no DOM interaction, exhaustively covered by the
+# upstream corpus. The 7032 cases are converted from JSON at build time (650 KB
+# of derived C is not worth committing); the entity and tag tables ARE
+# committed, following the tools/genroots.py -> roots_bundle.inc convention.
+#   make test-html5lib-tok          pass counts
+#   make test-html5lib-tok V=20     dump the first 20 failures
+$(BUILD)/html5lib_tok_cases.inc: tools/gen_html5lib_tok.py \
+                                 $(wildcard third_party/html5lib-tests/tokenizer/*.test)
+	@mkdir -p $(BUILD)
+	@python3 tools/gen_html5lib_tok.py third_party/html5lib-tests/tokenizer $@
+
+test-html5lib-tok: $(BUILD)/html5lib_tok_cases.inc
+	@$(CC) -O2 -w $(BTEST_INC) -I$(BUILD) -o $(BUILD)/html_tok_test \
+	    tests/unit/html_tok_test.c c/apps/browser/html_tokenizer.c
+	@$(BUILD)/html_tok_test $(if $(V),-v $(V),)
+
+# roots.o carries an explicit dep on roots_bundle.inc because regenerating a
+# bundle without one silently keeps the old data in the binary. Same trap here.
+$(BUILD)/browserobj/c/apps/browser/html_tokenizer.o: \
+    c/apps/browser/html_entities.inc c/apps/browser/html_tags.inc
+
 test-html5lib:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
