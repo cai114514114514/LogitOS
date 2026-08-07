@@ -9,16 +9,42 @@
 #include "vfs.h"
 #include "vfs_path.h"
 #include "vfs_meta.h"
-#include "kdiag.h"      /* kernel-served synthetic files: /dev/kmsg, kstat, ktrigger */
 #include "vfsctl.h"     /* the VFS's own control + introspection nodes under /dev */
 
 /* Synthetic files come first. They are served by the kernel itself (no disk, no
- * inode) and every one of them returns KDIAG_NOT_MINE for a path it does not
+ * inode) and every one of them returns SYN_NOT_MINE for a path it does not
  * own, so an unrelated path falls through to the mounted filesystem unchanged.
  * This is the whole cost of making the kernel log readable from userland:
  * `cat /dev/kmsg` needs no new syscall and no new ABI number. The VFS's own
  * nodes (/dev/vfsctl, /dev/vfsmounts, /dev/vfsmeta) follow the same protocol
- * for the same reason -- see vfsctl.h. */
+ * for the same reason -- see vfsctl.h.
+ *
+ * kdiag is declared WEAK here rather than through c/kernel/core/kdiag.h. It is
+ * a facility owned by another line and its files are not always present; a
+ * hard #include makes this file -- which every path in the kernel goes through
+ * -- fail to compile whenever that line is mid-landing. Weak symbols say what
+ * is actually true: "if kdiag is linked in, ask it first". The host unit tests
+ * define these strongly and are unaffected. */
+#define SYN_NOT_MINE (-2)
+
+int         kdiag_size(const char *path) __attribute__((weak));
+int         kdiag_read(const char *path, void *buf, int max) __attribute__((weak));
+int         kdiag_write(const char *path, const void *buf, int len) __attribute__((weak));
+int         kdiag_dir_count(const char *dir) __attribute__((weak));
+const char *kdiag_dir_name(const char *dir, int i) __attribute__((weak));
+int         kdiag_dir_size(const char *dir, int i) __attribute__((weak));
+
+static int k_size(const char *p)  { return kdiag_size ? kdiag_size(p) : SYN_NOT_MINE; }
+static int k_read(const char *p, void *b, int m)
+{ return kdiag_read ? kdiag_read(p, b, m) : SYN_NOT_MINE; }
+static int k_write(const char *p, const void *b, int n)
+{ return kdiag_write ? kdiag_write(p, b, n) : SYN_NOT_MINE; }
+static int k_dir_count(const char *d)
+{ return kdiag_dir_count ? kdiag_dir_count(d) : SYN_NOT_MINE; }
+static const char *k_dir_name(const char *d, int i)
+{ return kdiag_dir_name ? kdiag_dir_name(d, i) : 0; }
+static int k_dir_size(const char *d, int i)
+{ return kdiag_dir_size ? kdiag_dir_size(d, i) : SYN_NOT_MINE; }
 
 /* --------------------------------------------------------------------------
  * The mount table
@@ -365,8 +391,8 @@ int vfs_lstat(const char *path, struct vattr *a)
 
 static int syn_size(const char *p)
 {
-    int n = kdiag_size(p);
-    if (n != KDIAG_NOT_MINE) return n;
+    int n = k_size(p);
+    if (n != SYN_NOT_MINE) return n;
     return vfsctl_size(p);
 }
 
@@ -381,7 +407,7 @@ int vfs_size(const char *path)
     if (rc < 0) return rc;
 
     int n = syn_size(abs);
-    if (n != KDIAG_NOT_MINE) return n;
+    if (n != SYN_NOT_MINE) return n;
 
     const char *real = vmeta_canon(abs);
     struct vmountent *m = mount_for(real);
@@ -398,12 +424,12 @@ int vfs_read(const char *path, void *buf, int max)
 
     struct vcred c; cred_now(&c);
 
-    int n = kdiag_read(abs, buf, max);
-    if (n != KDIAG_NOT_MINE) {
+    int n = k_read(abs, buf, max);
+    if (n != SYN_NOT_MINE) {
         if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
         return n;
     }
-    if (vfsctl_size(abs) != KDIAG_NOT_MINE) {
+    if (vfsctl_size(abs) != SYN_NOT_MINE) {
         if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
         return vfsctl_read(abs, buf, max);
     }
@@ -427,12 +453,12 @@ int vfs_write(const char *path, const void *buf, int size)
 
     /* Writing to a synthetic node is a command, not a file update; the write
      * permission on the node is what gates it. */
-    int n = kdiag_write(abs, buf, size);
-    if (n != KDIAG_NOT_MINE) {
+    int n = k_write(abs, buf, size);
+    if (n != SYN_NOT_MINE) {
         if ((rc = check_file(abs, &c, MAY_WRITE)) < 0) return rc;
         return n;
     }
-    if (vfsctl_size(abs) != KDIAG_NOT_MINE) {
+    if (vfsctl_size(abs) != SYN_NOT_MINE) {
         if ((rc = check_file(abs, &c, MAY_WRITE)) < 0) return rc;
         return vfsctl_write(abs, buf, size);
     }
@@ -551,11 +577,11 @@ int vfs_rename(const char *old_path, const char *new_path)
 
 static int syn_count(const char *dir)
 {
-    int a = kdiag_dir_count(dir), b = vfsctl_dir_count(dir);
+    int a = k_dir_count(dir), b = vfsctl_dir_count(dir);
     int n = 0;
-    if (a != KDIAG_NOT_MINE) n += a;
-    if (b != KDIAG_NOT_MINE) n += b;
-    return (a == KDIAG_NOT_MINE && b == KDIAG_NOT_MINE) ? KDIAG_NOT_MINE : n;
+    if (a != SYN_NOT_MINE) n += a;
+    if (b != SYN_NOT_MINE) n += b;
+    return (a == SYN_NOT_MINE && b == SYN_NOT_MINE) ? SYN_NOT_MINE : n;
 }
 
 int vfs_count(const char *dir)
@@ -571,21 +597,21 @@ int vfs_count(const char *dir)
     char sub[VFS_PATH_MAX];
     int back = m ? fs_count(m->fs, sub_path(m, abs, sub, (int)sizeof sub)) : -1;
 
-    if (syn == KDIAG_NOT_MINE && back < 0) return back;
+    if (syn == SYN_NOT_MINE && back < 0) return back;
     /* Listing a directory needs read permission on it. Search (x) is what the
      * walk already checked; r is what turns "I may pass through" into "I may
      * see what is in here". */
     if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
-    return (syn == KDIAG_NOT_MINE ? 0 : syn) + (back < 0 ? 0 : back);
+    return (syn == SYN_NOT_MINE ? 0 : syn) + (back < 0 ? 0 : back);
 }
 
 /* Split a merged index into (provider, local index). */
 static int syn_split(const char *abs, int i, int *which)
 {
-    int a = kdiag_dir_count(abs);
-    if (a != KDIAG_NOT_MINE) { if (i < a) { *which = 0; return i; } i -= a; }
+    int a = k_dir_count(abs);
+    if (a != SYN_NOT_MINE) { if (i < a) { *which = 0; return i; } i -= a; }
     int b = vfsctl_dir_count(abs);
-    if (b != KDIAG_NOT_MINE) { if (i < b) { *which = 1; return i; } i -= b; }
+    if (b != SYN_NOT_MINE) { if (i < b) { *which = 1; return i; } i -= b; }
     *which = 2;
     return i;
 }
@@ -595,7 +621,7 @@ const char *vfs_ent_name(const char *dir, int i)
     char abs[VFS_PATH_MAX];
     if (resolve(dir, abs, (int)sizeof abs, 1) < 0) return "";
     int which, li = syn_split(abs, i, &which);
-    if (which == 0) { const char *s = kdiag_dir_name(abs, li); return s ? s : ""; }
+    if (which == 0) { const char *s = k_dir_name(abs, li); return s ? s : ""; }
     if (which == 1) { const char *s = vfsctl_dir_name(abs, li); return s ? s : ""; }
     struct vmountent *m = mount_for(abs);
     if (!m) return "";
@@ -608,8 +634,8 @@ int vfs_ent_size(const char *dir, int i)
     char abs[VFS_PATH_MAX];
     if (resolve(dir, abs, (int)sizeof abs, 1) < 0) return 0;
     int which, li = syn_split(abs, i, &which);
-    if (which == 0) { int n = kdiag_dir_size(abs, li); return n == KDIAG_NOT_MINE ? 0 : n; }
-    if (which == 1) { int n = vfsctl_dir_size(abs, li); return n == KDIAG_NOT_MINE ? 0 : n; }
+    if (which == 0) { int n = k_dir_size(abs, li); return n == SYN_NOT_MINE ? 0 : n; }
+    if (which == 1) { int n = vfsctl_dir_size(abs, li); return n == SYN_NOT_MINE ? 0 : n; }
     struct vmountent *m = mount_for(abs);
     if (!m) return 0;
     char sub[VFS_PATH_MAX];

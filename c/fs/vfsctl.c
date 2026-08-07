@@ -7,12 +7,16 @@
 #include "vfs.h"
 #include "vfs_meta.h"
 #include "vfs_cred.h"
-#include "kdiag.h"        /* KDIAG_NOT_MINE -- the protocol, shared verbatim */
 #include "ramfs.h"
 #include "lfsro.h"
 #include "proc.h"
 #include "file.h"
 #include "logit_abi.h"    /* O_* */
+
+/* The same "not mine" sentinel c/fs/vfs.c uses. Defined here rather than
+ * included from kdiag.h: this facility must not fail to compile because
+ * another line has its diagnostic files half-landed. */
+#define KDIAG_NOT_MINE (-2)
 
 #define CTL_RESULT_MAX 1024
 
