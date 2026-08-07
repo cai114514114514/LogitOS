@@ -20,9 +20,21 @@
 # the program lands under /bin without touching the shared CLI line. CLI_AEX was
 # already expanded with :=, so the .aex is added as an explicit prerequisite of
 # the disk image instead.
+#
+# Guarded by $(wildcard) rather than assumed, and that guard has already earned
+# itself: a concurrent commit rebuilt the tree from a stale index and dropped
+# sndtest.c, at which point this rule made `make build/disk.img` fail for all
+# twenty lines with "No rule to make target". A TEST fragment must not be able
+# to break the build of the thing it tests. Missing source -> no /bin/sndtest,
+# a warning saying so, and everything else still builds.
+SNDTEST_SRC := $(wildcard $(CLIDIR)/sndtest.c)
+ifneq ($(SNDTEST_SRC),)
 CLI += sndtest
 $(eval $(call CLI_RULE,sndtest))
 $(DISK): $(BUILD)/sndtest.aex
+else
+$(warning tests/audio.mk: $(CLIDIR)/sndtest.c is missing -- /bin/sndtest will not be built, and the on-device audio targets cannot run)
+endif
 
 # --- host: the PCM layer ------------------------------------------------------
 # Compiles the REAL c/kernel/audio/pcm.c -- a test of a copy proves things about
