@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "vfsctl.h"
+#include "fsbench.h"
 #include "vfs.h"
 #include "vfs_meta.h"
 #include "vfs_cred.h"
@@ -27,7 +28,8 @@ static int  c_len(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 static int  c_eq(const char *a, const char *b)
 { int i = 0; for (; a[i] && a[i] == b[i]; i++) {} return a[i] == b[i]; }
 
-static const char *g_names[] = { "vfsctl", "vfsmounts", "vfsmeta" };
+static const char *g_names[] = { "vfsctl", "vfsmounts", "vfsmeta", "fsbench" };
+#define NODE_FSBENCH 3
 #define NCTL ((int)(sizeof g_names / sizeof g_names[0]))
 
 static int which_node(const char *path)
@@ -319,6 +321,7 @@ int vfsctl_size(const char *path)
     int w = which_node(path);
     if (w < 0) return KDIAG_NOT_MINE;
     if (w == 0) return g_result_len;
+    if (w == NODE_FSBENCH) return fsbench_len();
     char tmp[4096];
     return w == 1 ? vfs_mounts_render(tmp, (int)sizeof tmp)
                   : vmeta_render(tmp, (int)sizeof tmp) + vfs_cred_render(tmp, (int)sizeof tmp);
@@ -334,6 +337,7 @@ int vfsctl_read(const char *path, void *buf, int max)
         for (int i = 0; i < n; i++) out[i] = g_result[i];
         return n;
     }
+    if (w == NODE_FSBENCH) return fsbench_render(out, max);
     if (w == 1) return vfs_mounts_render(out, max);
     int n = vmeta_render(out, max);
     if (n < max) n += vfs_cred_render(out + n, max - n);
@@ -344,6 +348,7 @@ int vfsctl_write(const char *path, const void *buf, int len)
 {
     int w = which_node(path);
     if (w < 0) return KDIAG_NOT_MINE;
+    if (w == NODE_FSBENCH) { if (len > 0) fsbench_command((const char *)buf, len); return len; }
     if (w != 0) return -1;                    /* the rendered views are read-only */
     if (len <= 0) return 0;
     run((const char *)buf, len);

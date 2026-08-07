@@ -15,6 +15,10 @@
 #define BLK_SECTOR 512
 
 int  blk_read(uint32_t lba, uint8_t count, void *buf);
+/* The wide read the buffer cache's run path uses. Present here so the host
+ * tests drive the SAME coalescing code the machine does -- a run reader that
+ * only ever ran on device is a run reader whose off-by-one nobody checked. */
+int  blk_read_n(uint64_t lba, uint32_t count, void *buf);
 int  blk_write(uint32_t lba, uint8_t count, const void *buf);
 int  blk_flush(void);
 unsigned long blk_flush_count(void);

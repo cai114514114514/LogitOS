@@ -186,7 +186,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-dns test-ip6-dns-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -1019,9 +1019,10 @@ test-video: $(ISO) $(DISK)
 #   make test-perf-gate    the same measurement as a gate. Needs an explicit
 #                          PERF_METRIC and PERF_THRESHOLD, because a threshold
 #                          nobody chose is a threshold nobody will defend:
-#                            PERF_METRIC=read_net_ms PERF_THRESHOLD=1400 #                              make test-perf-gate
+#                            PERF_METRIC=read_net_ms PERF_THRESHOLD=1400 \
+#                              make test-perf-gate
 #                          Exit 125 (not 1) if the metric could not be measured
-#                          at all -- which is also `git bisect`s skip code.
+#                          at all -- which is also `git bisect`'s skip code.
 #
 # Across history, tools/perf/sweep.py drives the same harness over a list of
 # commits, and tools/perf/bisect.sh is the `git bisect run` form. Both keep the
@@ -1146,13 +1147,67 @@ test-fs-format: $(DISK)
 	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_format_test tests/unit/fs_format_test.c 	    c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
 	@$(BUILD)/fs_format_test $(DISK)
 
-test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format
+# "The device was asked fewer times for the same bytes" -- an exact number, on
+# the host, against the simulated device's own command counter. Carries the
+# NEGATIVE CONTROL for the whole bulk-read change: the COALESCING assertion
+# bounds a 900-block read at 14 device commands, which the one-command-per-block
+# filesystem this replaced cannot meet and could never meet.
+test-bulkread:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_bulkread_test tests/unit/fs_bulkread_test.c $(FS_CORE) $(FS_STUB)
+	@$(BUILD)/fs_bulkread_test
+
+# The negative control, and it is a real one: the SAME test binary, linked
+# against the whole-file read path as it stood before this change (pulled out of
+# git, not a re-implementation of it), which must FAIL. A test that cannot fail
+# measures nothing, and the specific thing being proved here is that the
+# COALESCING assertion is sensitive to the code it names -- not to the simulated
+# device, not to the cache, not to the test's own arithmetic.
+#
+# NEGCTL_REV is the commit whose logitfs.c reads a block at a time. Only
+# inode_read/imap moved, so the old file compiles unchanged against everything
+# else in this tree.
+NEGCTL_REV ?= b9b33ef
+test-bulkread-negctl:
+	@mkdir -p $(BUILD)/negctl
+	@git show $(NEGCTL_REV):c/fs/logitfs.c > $(BUILD)/negctl/logitfs.c
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_bulkread_negctl tests/unit/fs_bulkread_test.c \
+	    $(BUILD)/negctl/logitfs.c c/fs/bcache.c c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB) -Ic/fs
+	@if $(BUILD)/fs_bulkread_negctl > $(BUILD)/negctl.log 2>&1; then \
+	    echo "NEGATIVE CONTROL FAILED: the pre-change read path PASSED the coalescing test"; \
+	    cat $(BUILD)/negctl.log; exit 1; \
+	 else \
+	    echo "negative control OK -- the $(NEGCTL_REV) read path fails it:"; \
+	    grep -E "COALESCING|carried|BYPASS" $(BUILD)/negctl.log || true; \
+	 fi
+
+test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format \
+              test-bulkread test-bulkread-negctl
 
 # Every mount now runs a read-only fsck, so this boots twice WITHOUT -snapshot
 # and demands the kernel's own checker say "clean" both times -- once on the
 # image mkfs built, and once on an image the kernel has written to and rebooted.
 test-fsmount: $(ISO) $(DISK)
 	@bash tests/boot/run-fsmount-test.sh $(ISO) $(DISK)
+
+# The storage-path stopwatch: what opening an app costs, by phase, on the real
+# machine. Not an assertion -- a measurement. `make bench-fs BLK=ahci` runs the
+# same table against a polled AHCI disk instead of virtio-blk, which is how
+# "polled AHCI costs X" becomes a number rather than a worry.
+# BENCH_BLK, not BLK: `make test-nvme` already passes BLK=nvme into a recipe's
+# environment, and a make variable of the same name is the kind of collision
+# that surfaces months later as one harness quietly testing the wrong device.
+BENCH_BLK  ?= virtio
+BENCH_REPS ?= 5
+.PHONY: bench-fs bench-launch test-bulkread test-bulkread-negctl
+bench-fs: $(ISO) $(DISK)
+	@bash tests/boot/run-fsbench.sh $(ISO) $(DISK) $(BENCH_REPS) $(BENCH_BLK)
+
+# The other half of the launch table: what the phases this line does NOT own
+# cost, attributed by kprof's sampler over a real Dock click. No source change
+# in c/kernel is needed or made -- that is the entire reason the sampler exists.
+bench-launch: $(ISO) $(DISK)
+	@bash tests/boot/run-launch-profile.sh $(ISO) $(DISK) $(if $(APP),$(APP),browser) 4
 
 # Host unit test for the TCP state machines (white-box: #includes tcp.c).
 # Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).
@@ -2147,7 +2202,6 @@ test-dom-bindings-asan: $(BUILD)/libcss_host.a
 BENCH_PAGE  ?= tests/fixtures/cssperf/deepseek.html
 BENCH_CSS   ?= $(wildcard tests/fixtures/cssperf/ds-*.css)
 BENCH_ITERS ?= 9
-.PHONY: bench-css
 $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
                     c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                     c/apps/browser/css_extra.c c/apps/browser/layout.c \
@@ -2159,7 +2213,6 @@ $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
 
 bench-css: $(BUILD)/css_bench
 	@$(BUILD)/css_bench --iters=$(BENCH_ITERS) $(BENCH_PAGE) $(BENCH_CSS)
-
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
@@ -2504,12 +2557,13 @@ clean:
 # test-video265). Same reason, same shape as the fragments above.
 -include tests/h265.mk
 
-# The profiler: test-prof (on device), test-prof-host / test-prof-negctl
-# (host), test-prof-control (the -DKPROF_DISABLE negative control). Same reason,
-# same shape as the fragments above.
+# Full-system test, the commit gate and the test-liveness audit
+# (test-fullsystem, verify-commit, check-test-liveness). Same reason, same
+# shape as the fragments above.
+-include tests/fullsystem.mk
+
 -include tests/prof.mk
 
-# Full-system test, the commit gate and the test-liveness audit
-# (test-fullsystem, test-freeze, verify-commit, check-test-liveness). Same
-# reason, same shape as the fragments above.
--include tests/fullsystem.mk
+# TLS/crypto performance: the per-phase handshake breakdown, the host
+# primitive costs, the gate and its two controls. Own fragment; see the file.
+-include tests/tlsperf.mk

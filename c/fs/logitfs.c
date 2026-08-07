@@ -107,6 +107,29 @@ static int bread(uint32_t blk, void *buf)
         if (tx_targets[i] == blk) { memcpy(buf, tx_bufs[i], BS); return 0; }
     return bcache_read(blk, buf);
 }
+/* Read `n` consecutive blocks in as few device commands as the cache can manage.
+ *
+ * The staged-block override above is why this cannot simply call
+ * bcache_read_run: a block staged in the open transaction is not part of the
+ * filesystem's state, and letting the device answer for it would show a reader
+ * the OLD contents of a block this operation has already rewritten. Any overlap
+ * with the log therefore drops the whole run to the per-block path -- correct,
+ * and never the common case, because whole-file reads do not run inside a
+ * transaction. */
+static int bread_run(uint32_t blk, uint32_t n, void *buf)
+{
+    if (n == 0) return -1;
+    if (blk >= sb.total_blocks || n > sb.total_blocks - blk) return -1;
+    for (int i = 0; i < tx_count; i++)
+        if (tx_targets[i] >= blk && tx_targets[i] < blk + n) {
+            uint8_t *o = (uint8_t *)buf;
+            for (uint32_t k = 0; k < n; k++)
+                if (bread(blk + k, o + (size_t)k * BS)) return -1;
+            return 0;
+        }
+    return bcache_read_run(blk, n, buf);
+}
+
 /* Deferred: the block is in the cache and dirty, and may reach the device at any
  * moment or not until the next bcache_sync(). Every ordering this filesystem
  * relies on is a bcache_sync(), never the absence of a write. */
@@ -437,6 +460,56 @@ static uint32_t imap(struct dinode *in, uint32_t i)
     return 0;
 }
 
+/* The block numbers of file blocks i0 .. i0+want-1, reading each indirect block
+ * AT MOST ONCE. Returns how many it filled; short means a hole or an unreadable
+ * chain, and the caller stops there exactly as it would on imap() == 0.
+ *
+ * imap() re-reads the indirect block on every single call, so mapping a 741-
+ * block file cost 741 lookups of the same block -- cache hits, but 741 x 4 KiB
+ * of memcpy and 741 hash probes to learn 741 consecutive words of one array.
+ * The indirect block is the thing that changes slowly here; the loop over it is
+ * what should be fast. (Clobbers ind_buf and dind_buf, like imap().) */
+static uint32_t imap_fill(struct dinode *in, uint32_t i0, uint32_t want, uint32_t *out)
+{
+    uint32_t n = 0;
+    uint32_t have_ind = 0, have_dind = 0;    /* which block each staging buffer holds;
+                                              * 0 is never a valid data/indirect block */
+    while (n < want) {
+        uint32_t i = i0 + n, b;
+        if (i < NDIRECT) {
+            b = in->direct[i];
+        } else {
+            uint32_t j = i - NDIRECT;
+            if (j < PPB) {                                  /* single indirect */
+                if (!in->indirect) break;
+                if (have_ind != in->indirect) {
+                    if (bread(in->indirect, ind_buf)) break;
+                    have_ind = in->indirect;
+                }
+                b = ind_buf[j];
+            } else {
+                j -= PPB;
+                if (j >= PPB * PPB) break;                  /* past what imap can address */
+                if (!in->double_indirect) break;
+                if (have_dind != in->double_indirect) {
+                    if (bread(in->double_indirect, dind_buf)) break;
+                    have_dind = in->double_indirect;
+                }
+                uint32_t ib = dind_buf[j / PPB];
+                if (!ib) break;
+                if (have_ind != ib) {
+                    if (bread(ib, ind_buf)) break;
+                    have_ind = ib;
+                }
+                b = ind_buf[j % PPB];
+            }
+        }
+        if (!b) break;                                      /* a hole: not readable */
+        out[n++] = b;
+    }
+    return n;
+}
+
 static int flush_bitmap(void)           /* stage the free-block bitmap */
 {
     /* Every operation calls this immediately before it commits, which makes it
@@ -455,7 +528,38 @@ static int flush_inode(uint32_t ino)
     return log_add(sb.inode_start + blk, (uint8_t *)inodes + blk * BS);
 }
 
-/* --- whole-file I/O --- */
+/* --- whole-file I/O ---
+ *
+ * READ_RUN is how many blocks one device command may carry: 128 x 4 KiB =
+ * 512 KiB. The ceiling is a deliberate compromise and not a hardware limit.
+ * Bigger commands keep helping right up to the whole file, but a device command
+ * runs with the BKL held and non-preemptible, so its duration is time no other
+ * thread on the machine can use; 512 KiB is about 150 us on this device, which
+ * is comparable to one scheduler slice and therefore not a latency anyone can
+ * see. It also bounds the run-map array to 512 bytes of BSS. */
+#define READ_RUN   128
+static uint32_t run_map[READ_RUN];
+
+/* The A/B control for the whole bulk-read change.
+ *
+ * Setting this to 1 reproduces the previous read path EXACTLY -- one device
+ * command per 4 KiB block, and (because a 1-block run is under the cache's
+ * stream threshold) the same install-everything cache behaviour that a big file
+ * used to destroy the pool with. So "before" and "after" can be measured in ONE
+ * boot, back to back, on the same host, minutes apart from nothing. That matters
+ * more than it sounds: this host runs several QEMU instances concurrently and
+ * TCG throughput swings by a factor of two, so two numbers from two boots are
+ * not comparable and two numbers from two seconds apart are. */
+static uint32_t read_run = READ_RUN;
+
+void logitfs_set_read_run(uint32_t n)
+{
+    if (n < 1) n = 1;
+    if (n > READ_RUN) n = READ_RUN;
+    read_run = n;
+}
+uint32_t logitfs_read_run(void) { return read_run; }
+
 static int inode_read(struct dinode *in, void *buf, int max)
 {
     uint32_t size = in->size;
@@ -463,15 +567,30 @@ static int inode_read(struct dinode *in, void *buf, int max)
      * can't wrap negative and bypass the bound, and cap it to what imap() can
      * actually reach (keeps nblk below from wrapping too). */
     if (max < 0 || size > (uint32_t)max || !size_ok(size)) return -1;
-    uint8_t  *out  = buf;
-    uint32_t  nblk = (size + BS - 1) / BS;
-    for (uint32_t i = 0; i < nblk; i++) {
-        uint32_t blk = imap(in, i);                  /* direct / single / double indirect */
+    uint8_t  *out   = buf;
+    uint32_t  nblk  = (size + BS - 1) / BS;
+    uint32_t  whole = size / BS;             /* blocks that are entirely file data */
+
+    /* Whole blocks go straight into the caller's buffer, in runs that are
+     * contiguous ON THE DEVICE. A file laid down by mkfs is one run; a file
+     * fragmented by the allocator is several, and each one is still a single
+     * command, so fragmentation degrades this smoothly instead of falling off
+     * a cliff back to one command per block. */
+    for (uint32_t i = 0; i < whole; ) {
+        uint32_t want = whole - i;
+        if (want > read_run) want = read_run;
+        uint32_t got = imap_fill(in, i, want, run_map);
+        if (!got) return -1;                 /* hole or broken chain: not a readable file */
+        uint32_t run = 1;
+        while (run < got && run_map[run] == run_map[0] + run) run++;
+        if (bread_run(run_map[0], run, out + (size_t)i * BS)) return -1;
+        i += run;
+    }
+    if (nblk > whole) {                      /* the short tail block */
+        uint32_t blk = imap(in, whole);
         if (!blk) return -1;
-        uint32_t off = i * BS;
-        uint32_t n   = size - off < BS ? size - off : BS;
-        if (n == BS) { if (bread(blk, out + off)) return -1; }
-        else { if (bread(blk, blk_buf)) return -1; memcpy(out + off, blk_buf, n); }
+        if (bread(blk, blk_buf)) return -1;
+        memcpy(out + (size_t)whole * BS, blk_buf, size - whole * BS);
     }
     itouch(in, TS_A);      /* lazytime: RAM only, no transaction (see above) */
     return (int)size;

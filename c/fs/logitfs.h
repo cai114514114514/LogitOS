@@ -49,4 +49,13 @@ int logitfs_fsck(int repair);
  * reproducible mtimes; pass NULL to restore the RTC. */
 void logitfs_set_clock(int64_t (*now_unix)(void));
 
+/* How many consecutive blocks a whole-file read may ask the device for in ONE
+ * command (default 128 = 512 KiB; clamped to that). Setting it to 1 restores the
+ * block-at-a-time read path this filesystem had before, which is what makes the
+ * before/after of that change measurable in a single boot rather than across two
+ * of them on a host whose speed moves. Nothing in the kernel changes it; it
+ * exists for /dev/fsbench and for the tests. */
+void     logitfs_set_read_run(uint32_t n);
+uint32_t logitfs_read_run(void);
+
 #endif /* LOGIT_LOGITFS_H */

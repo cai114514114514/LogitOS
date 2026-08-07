@@ -58,6 +58,35 @@ void bcache_shutdown(void);
 /* Read a block: from a resident buffer, else from the device into one. */
 int  bcache_read(uint32_t blk, void *buf);
 
+/* Read `n` CONSECUTIVE blocks starting at `blk` into `buf` (n * BC_BS bytes).
+ *
+ * WHY THIS IS NOT A LOOP OVER bcache_read
+ * ---------------------------------------
+ * Two separate costs, both measured on this machine (make bench-fs):
+ *
+ *  1. A device round trip costs about 80 us no matter how big it is -- 81 us
+ *     for 8 sectors, 120 us for 255. A block-at-a-time loop over a 3 MB file
+ *     issues 741 of them and spends 51 ms; coalescing the misses into 512 KiB
+ *     commands issues six.
+ *
+ *  2. The cache was not merely failing to help that read, it was being DESTROYED
+ *     by it. 741 blocks streamed through 256 buffers evict every buffer in the
+ *     pool including all the metadata a subsequent lookup needs, and none of the
+ *     741 is ever read again. The measurement is unambiguous: before this
+ *     existed, a WARM read of browser.aex (54.4 ms) was no faster than a COLD
+ *     one (51.5 ms), while a warm read of the 12 KB clock.aex was 14x faster
+ *     than cold. The cache was helping small files and being ruined by big ones.
+ *
+ * So a run read serves resident blocks from their buffers, coalesces every
+ * contiguous miss into ONE device command straight into the caller's buffer,
+ * and installs what it read only when the whole request is small enough not to
+ * be a stream (n <= nbuf/4). A big sequential read stays out of the pool.
+ *
+ * SAFE because the cache is the only writer and a dirty buffer is therefore
+ * always resident: any block this function does not find resident has its
+ * current contents on the device, which is precisely the block it reads. */
+int  bcache_read_run(uint32_t blk, uint32_t n, void *buf);
+
 /* Write a block: resident buffer updated + marked dirty. Does NOT reach the
  * device until an eviction or a bcache_sync(). */
 int  bcache_write(uint32_t blk, const void *buf);
@@ -74,6 +103,11 @@ void bcache_drop(void);
 struct bcache_stats {
     unsigned long hits, misses, evictions, dirty_evictions, writebacks, syncs;
     unsigned long resident, dirty;
+    /* What the run reader did. `dev_reads` is the number of device commands the
+     * cache issued; `dev_blocks` the blocks they carried. dev_blocks/dev_reads
+     * is the coalescing factor, and it is the number that says whether a
+     * sequential read is still one round trip per block. */
+    unsigned long dev_reads, dev_blocks, bypassed;
 };
 void bcache_getstats(struct bcache_stats *out);
 

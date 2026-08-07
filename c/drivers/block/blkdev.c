@@ -103,6 +103,12 @@ int blk_read(uint32_t lba, uint8_t count, void *buf)
     return blk_dev_read(g_root, lba, count, buf);
 }
 
+int blk_read_n(uint64_t lba, uint32_t count, void *buf)
+{
+    blk_ensure();
+    return blk_dev_read(g_root, lba, count, buf);
+}
+
 int blk_write(uint32_t lba, uint8_t count, const void *buf)
 {
     blk_ensure();
@@ -143,10 +149,41 @@ unsigned long blk_flush_count(void) { return flush_count; }
  * the adapters below rather than fail. Nothing in the kernel issues one today
  * (logitfs works in 8-sector blocks and the partition scanner reads one sector
  * at a time), but "nothing does today" is not a bound, so make it one. */
-static int narrow_ok(uint64_t lba, uint32_t n) { return n != 0 && n <= 255 && lba <= 0xFFFFFFFFu; }
+static int narrow_ok(uint64_t lba, uint32_t n)
+{
+    /* The whole request must be addressable by a 32-bit LBA, and the last
+     * sector of it too -- checking only the first would let a wide request
+     * start in range and finish past 2 TiB with a wrapped address. */
+    return n != 0 && lba <= 0xFFFFFFFFu && (uint64_t)lba + n <= 0x100000000ull;
+}
 
-static int nvme_r(void *c, uint64_t lba, uint32_t n, void *b)        { (void)c; return narrow_ok(lba, n) ? nvme_read((uint32_t)lba, (uint8_t)n, b) : -1; }
-static int nvme_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; return narrow_ok(lba, n) ? nvme_write((uint32_t)lba, (uint8_t)n, b) : -1; }
+/* A request wider than the driver's own `uint8_t count`, split.
+ *
+ * This is an ADAPTER limit, not a device one, and it belongs here rather than
+ * in the caller: bcache_read_run issues one 512 KiB read because that is what
+ * makes a 3 MB file cost six device round trips instead of 741, and it must not
+ * have to ask which driver holds the root disk before deciding how wide a read
+ * it is allowed to want. NVMe and virtio both take the whole thing; legacy ATA
+ * PIO gets it as 255-sector pieces and is still 128x better off than it was at
+ * 8. */
+static int narrow_rw(int (*rd)(uint32_t, uint8_t, void *),
+                     int (*wr)(uint32_t, uint8_t, const void *),
+                     uint64_t lba, uint32_t n, void *b)
+{
+    if (!narrow_ok(lba, n)) return -1;
+    uint8_t *p = (uint8_t *)b;
+    while (n) {
+        uint32_t c = n > 255 ? 255 : n;
+        int rc = rd ? rd((uint32_t)lba, (uint8_t)c, p)
+                    : wr((uint32_t)lba, (uint8_t)c, p);
+        if (rc) return rc;
+        lba += c; n -= c; p += (size_t)c * BLK_SECTOR;
+    }
+    return 0;
+}
+
+static int nvme_r(void *c, uint64_t lba, uint32_t n, void *b)        { (void)c; return narrow_rw(nvme_read, 0, lba, n, b); }
+static int nvme_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; return narrow_rw(0, nvme_write, lba, n, (void *)b); }
 static int nvme_f(void *c)                                           { (void)c; return nvme_flush(); }
 static const struct blk_ops nvme_bops = { nvme_r, nvme_w, nvme_f };
 
@@ -155,8 +192,8 @@ static int vblk_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; 
 static int vblk_f(void *c)                                           { (void)c; return virtio_blk_flush(); }
 static const struct blk_ops vblk_bops = { vblk_r, vblk_w, vblk_f };
 
-static int ata_r(void *c, uint64_t lba, uint32_t n, void *b)         { (void)c; return narrow_ok(lba, n) ? ata_read((uint32_t)lba, (uint8_t)n, b) : -1; }
-static int ata_w(void *c, uint64_t lba, uint32_t n, const void *b)   { (void)c; return narrow_ok(lba, n) ? ata_write((uint32_t)lba, (uint8_t)n, b) : -1; }
+static int ata_r(void *c, uint64_t lba, uint32_t n, void *b)         { (void)c; return narrow_rw(ata_read, 0, lba, n, b); }
+static int ata_w(void *c, uint64_t lba, uint32_t n, const void *b)   { (void)c; return narrow_rw(0, ata_write, lba, n, (void *)b); }
 static int ata_f(void *c)                                            { (void)c; return ata_flush(); }
 static const struct blk_ops ata_bops = { ata_r, ata_w, ata_f };
 

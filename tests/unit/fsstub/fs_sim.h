@@ -52,6 +52,11 @@ static long          sim_writes;          /* writes issued since sim_reset_count
 static jmp_buf       sim_crash_jmp;
 static int           sim_crash_armed;
 static unsigned long sim_barriers;
+/* Device READ accounting. "The filesystem coalesces" is a claim about how many
+ * times the device was asked for data, and the only place that is observable is
+ * the device -- so the simulated one counts commands and the blocks they
+ * carried, and a test can assert the ratio. */
+static unsigned long sim_reads, sim_read_blocks;
 
 static uint32_t sim_rand_state = 1;
 static uint32_t sim_rand(void)
@@ -78,8 +83,27 @@ int blk_read(uint32_t lba, uint8_t count, void *buf)
     uint8_t *out = buf;
     if (!count) return -1;
     if ((uint64_t)lba + count > (uint64_t)sim_nblocks * LFS_SPB) return -1;
+    sim_reads++;
+    sim_read_blocks += count / LFS_SPB;
     for (uint32_t s = 0; s < count; s++) {
         uint32_t blk = (lba + s) / LFS_SPB, off = ((lba + s) % LFS_SPB) * LFS_SECTOR;
+        int p = sim_pend_find(blk);
+        const uint8_t *src = (p >= 0) ? sim_pend[p].data
+                                      : sim_media + (size_t)blk * LFS_BS;
+        memcpy(out + (size_t)s * LFS_SECTOR, src + off, LFS_SECTOR);
+    }
+    return 0;
+}
+
+int blk_read_n(uint64_t lba, uint32_t count, void *buf)
+{
+    uint8_t *out = (uint8_t *)buf;
+    if (!count) return -1;
+    if (lba + count > (uint64_t)sim_nblocks * LFS_SPB) return -1;
+    sim_reads++;
+    sim_read_blocks += count / LFS_SPB;
+    for (uint32_t s = 0; s < count; s++) {
+        uint32_t blk = (uint32_t)((lba + s) / LFS_SPB), off = (uint32_t)(((lba + s) % LFS_SPB) * LFS_SECTOR);
         int p = sim_pend_find(blk);
         const uint8_t *src = (p >= 0) ? sim_pend[p].data
                                       : sim_media + (size_t)blk * LFS_BS;

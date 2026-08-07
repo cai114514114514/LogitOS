@@ -164,12 +164,66 @@ int bcache_read(uint32_t blk, void *buf)
     if (i != NIL) { st.hits++; touch(i); memcpy(buf, data[i], BC_BS); return 0; }
     st.misses++;
     i = claim(blk);
-    if (i == NIL) return blk_read(blk * SPB, SPB, buf);   /* no buffer: bypass */
+    if (i == NIL) {                                       /* no buffer: bypass */
+        st.dev_reads++; st.dev_blocks++;
+        return blk_read(blk * SPB, SPB, buf);
+    }
+    st.dev_reads++; st.dev_blocks++;
     if (blk_read(blk * SPB, SPB, data[i])) {
         release(i);      /* never leave a buffer claiming a block it never read */
         return -1;
     }
     memcpy(buf, data[i], BC_BS);
+    return 0;
+}
+
+int bcache_read_run(uint32_t blk, uint32_t n, void *buf)
+{
+    if (n == 0) return -1;
+    if (!hdr) {                                  /* no cache up: straight through */
+        st.dev_reads++; st.dev_blocks += n;
+        return blk_read_n((uint64_t)blk * SPB, n * SPB, buf);
+    }
+    if (blk >= dev_blocks || n > dev_blocks - blk) return -1;
+
+    /* A small request is a working-set read (a directory, a 12 KB app, an
+     * indirect chain) and belongs in the pool; a big one is a stream and would
+     * evict the working set to hold data nobody reads twice. nbuf/4 is the line:
+     * a request that could take a quarter of the pool is already too big to be
+     * a working set. */
+    int install = (n <= (uint32_t)(nbuf / 4));
+    uint8_t *out = (uint8_t *)buf;
+
+    for (uint32_t k = 0; k < n; ) {
+        int i = lookup(blk + k);
+        if (i != NIL) {                          /* resident: the cache is authoritative */
+            st.hits++; touch(i);
+            memcpy(out + (size_t)k * BC_BS, data[i], BC_BS);
+            k++;
+            continue;
+        }
+        /* Grow the miss as far as it stays contiguous AND non-resident: a
+         * resident block in the middle must be served from its buffer (it may
+         * be dirty), so it ends the run rather than being read over. */
+        uint32_t run = 1;
+        while (k + run < n && lookup(blk + k + run) == NIL) run++;
+
+        st.misses += run;
+        st.dev_reads++;
+        st.dev_blocks += run;
+        if (!install) st.bypassed += run;
+        if (blk_read_n((uint64_t)(blk + k) * SPB, run * SPB, out + (size_t)k * BC_BS))
+            return -1;
+
+        if (install)
+            for (uint32_t j = 0; j < run; j++) {
+                int c = claim(blk + k + j);
+                if (c == NIL) break;             /* no buffer to spare; the data is
+                                                  * already in the caller's hands */
+                memcpy(data[c], out + (size_t)(k + j) * BC_BS, BC_BS);
+            }
+        k += run;
+    }
     return 0;
 }
 
