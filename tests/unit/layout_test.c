@@ -558,6 +558,281 @@ int main(void)
               lastright = it[i].x + it[i].w;
       CHECK(lastright < 8 + 200, "the last line is not justified"); }
 
+    /* ---- floats ----
+     *
+     * The stub metrics make every number here checkable by hand: a glyph is
+     * px/2 wide, so a 16px 3-letter word is 24px and an inter-word space is
+     * 8px, and a line box is 16*5/4 = 20px tall. `layout_page(root, 400)` gives
+     * <body> an 8px margin all round, i.e. a content box of 384px starting at
+     * x=8, y=8.
+     *
+     * Twenty 3-letter words is deliberate: a 200px line holds six of them
+     * (24 + 5*32 = 184, a seventh would need 216), so three narrowed lines use
+     * eighteen and the rest lands on the first line BELOW the float, where the
+     * measure is the full 300px again. That is the whole float contract in one
+     * fixture -- narrow while beside it, full width once past it. */
+    const char *words20 =
+        "aaa bbb ccc ddd eee fff ggg hhh iii jjj "
+        "kkk lll mmm nnn ooo ppp qqq rrr sss ttt";
+    char fbuf[512];
+
+    snprintf(fbuf, sizeof fbuf,
+             "<body><div class='f'></div><div class='t'>%s</div></body>", words20);
+    const char *cssF1 = ".f{float:left;width:100px;height:60px;background:#0a0b0c}"
+                        ".t{width:300px}";
+    struct node *rf1 = dom_parse(fbuf, (int)strlen(fbuf));
+    css_apply(rf1, cssF1, (int)strlen(cssF1));
+    layout_page(rf1, 400);
+    n = layout_count(); it = layout_items();
+    int flx = -1, fly = -1, flw = -1, flh = -1;
+    int beside_min_x = 1 << 30, beside_max_r = 0, below_min_x = 1 << 30, nbelow = 0;
+    int ftops[16], nftop = 0;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type == IT_RECT && it[i].bg == 0x0a0b0c)
+            { flx = it[i].x; fly = it[i].y; flw = it[i].w; flh = it[i].h; }
+        if (it[i].type != IT_TEXT) continue;
+        int seen = 0;
+        for (int j = 0; j < nftop; j++) if (ftops[j] == it[i].y) seen = 1;
+        if (!seen && nftop < 16) ftops[nftop++] = it[i].y;
+        if (it[i].y < 68) {
+            if (it[i].x < beside_min_x) beside_min_x = it[i].x;
+            if (it[i].x + it[i].w > beside_max_r) beside_max_r = it[i].x + it[i].w;
+        } else {
+            nbelow++;
+            if (it[i].x < below_min_x) below_min_x = it[i].x;
+        }
+    }
+    CHECK(flx == 8 && fly == 8 && flw == 100 && flh == 60,
+          "float:left placed at the content origin at its declared size");
+    CHECK(beside_min_x == 108,
+          "text beside a left float starts at the float's right edge (8+100)");
+    CHECK(beside_max_r <= 308, "text beside the float still ends at the block's right edge");
+    CHECK(nftop == 4, "20 words -> 3 narrowed lines beside the float + 1 below");
+    CHECK(nbelow == 2 && below_min_x == 8,
+          "the line below the float regains the full 300px measure (2 words at x=8)");
+
+    /* float:right, declared INSIDE the block whose text wraps around it -- the
+     * inline-context path, where flow_node takes the float out of flow without
+     * breaking the line. Forty words this time so the first line past the float
+     * is FULL (9 words, 24 + 8*32 = 280px) and its right edge can be checked
+     * against the float's left edge; twenty would have left it two words long
+     * and proved nothing. */
+    snprintf(fbuf, sizeof fbuf,
+             "<body><div class='t'><div class='f'></div>%s %s</div></body>", words20, words20);
+    const char *cssF2 = ".t{width:300px}"
+                        ".f{float:right;width:100px;height:60px;background:#0a0b0c}";
+    struct node *rf2 = dom_parse(fbuf, (int)strlen(fbuf));
+    css_apply(rf2, cssF2, (int)strlen(cssF2));
+    layout_page(rf2, 400);
+    n = layout_count(); it = layout_items();
+    int frx = -1, frw = -1, r_beside_max = 0, r_beside_minx = 1 << 30, r_below_max = 0;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type == IT_RECT && it[i].bg == 0x0a0b0c) { frx = it[i].x; frw = it[i].w; }
+        if (it[i].type != IT_TEXT) continue;
+        if (it[i].y < 68) {
+            if (it[i].x + it[i].w > r_beside_max) r_beside_max = it[i].x + it[i].w;
+            if (it[i].x < r_beside_minx) r_beside_minx = it[i].x;
+        } else if (it[i].x + it[i].w > r_below_max) r_below_max = it[i].x + it[i].w;
+    }
+    CHECK(frx == 208 && frw == 100, "float:right sits against the block's right edge (308-100)");
+    CHECK(r_beside_minx == 8, "text beside a right float still starts at the left edge");
+    CHECK(r_beside_max <= 208, "no text beside the right float crosses into it");
+    CHECK(r_below_max > 208, "the line below the right float uses the full measure again");
+
+    /* Two floats, one per side, narrowing the SAME line: 300 - 60 - 60 = 180px,
+     * which holds five words (24 + 4*32 = 152; a sixth needs 184). */
+    snprintf(fbuf, sizeof fbuf,
+             "<body><div class='t'><div class='fl'></div><div class='fr'></div>%s</div></body>",
+             words20);
+    const char *cssF3 = ".t{width:300px}"
+                        ".fl{float:left;width:60px;height:40px;background:#010101}"
+                        ".fr{float:right;width:60px;height:40px;background:#020202}";
+    struct node *rf3 = dom_parse(fbuf, (int)strlen(fbuf));
+    css_apply(rf3, cssF3, (int)strlen(cssF3));
+    layout_page(rf3, 400);
+    n = layout_count(); it = layout_items();
+    int flx3 = -1, frx3 = -1, first_y = 1 << 30, nfirst = 0, f3_minx = 1 << 30, f3_maxr = 0;
+    for (int i = 0; i < n; i++)
+        if (it[i].type == IT_TEXT && it[i].y < first_y) first_y = it[i].y;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type == IT_RECT && it[i].bg == 0x010101) flx3 = it[i].x;
+        if (it[i].type == IT_RECT && it[i].bg == 0x020202) frx3 = it[i].x;
+        if (it[i].type != IT_TEXT || it[i].y != first_y) continue;
+        nfirst++;
+        if (it[i].x < f3_minx) f3_minx = it[i].x;
+        if (it[i].x + it[i].w > f3_maxr) f3_maxr = it[i].x + it[i].w;
+    }
+    CHECK(flx3 == 8 && frx3 == 248, "left and right floats take opposite edges of the block");
+    CHECK(f3_minx == 68 && f3_maxr <= 248,
+          "the line between two floats runs from 68 to at most 248");
+    CHECK(nfirst == 5, "the 180px band between the two floats holds exactly 5 words");
+
+    /* Three same-side floats in a 300px block. The two 100px ones sit side by
+     * side in the first band (8..108 and 108..208). The 150px third does not
+     * fit in the 100px left over, so it drops to the first band where it does:
+     * past the SHALLOWER of the two (b, bottom 48), where only a still excludes
+     * it and 200px are free from x=108. Landing at (108,48) rather than (8,68)
+     * is the whole point -- a naive "drop below everything" placement would
+     * waste the band beside the deeper float. */
+    snprintf(fbuf, sizeof fbuf,
+             "<body><div class='t'><div class='a'></div><div class='b'></div>"
+             "<div class='c'></div>%s</div></body>", words20);
+    const char *cssF8 = ".t{width:300px}"
+                        ".a{float:left;width:100px;height:60px;background:#0a0a0a}"
+                        ".b{float:left;width:100px;height:40px;background:#0b0b0b}"
+                        ".c{float:left;width:150px;height:20px;background:#0c0c0c}";
+    struct node *rf8 = dom_parse(fbuf, (int)strlen(fbuf));
+    css_apply(rf8, cssF8, (int)strlen(cssF8));
+    layout_page(rf8, 400);
+    n = layout_count(); it = layout_items();
+    int ax8 = -1, ay8 = -1, bx8 = -1, by8 = -1, cx8 = -1, cy8 = -1;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type != IT_RECT) continue;
+        if (it[i].bg == 0x0a0a0a) { ax8 = it[i].x; ay8 = it[i].y; }
+        if (it[i].bg == 0x0b0b0b) { bx8 = it[i].x; by8 = it[i].y; }
+        if (it[i].bg == 0x0c0c0c) { cx8 = it[i].x; cy8 = it[i].y; }
+    }
+    CHECK(ax8 == 8 && ay8 == 8, "the first left float takes the content origin");
+    CHECK(bx8 == 108 && by8 == 8, "the second left float sits beside it in the same band");
+    CHECK(cx8 == 108 && cy8 == 48,
+          "the third drops past the shallower float only, and lands beside the deeper one");
+
+    /* A float declared MID-LINE cannot narrow words that were already measured
+     * against the wider band, so it starts at the next line box instead. The
+     * first line therefore keeps the full measure. */
+    snprintf(fbuf, sizeof fbuf,
+             "<body><div class='t'>xxx yyy<div class='f'></div>%s</div></body>", words20);
+    const char *cssF9 = ".t{width:300px}"
+                        ".f{float:left;width:100px;height:60px;background:#0d0d0d}";
+    struct node *rf9 = dom_parse(fbuf, (int)strlen(fbuf));
+    css_apply(rf9, cssF9, (int)strlen(cssF9));
+    layout_page(rf9, 400);
+    n = layout_count(); it = layout_items();
+    int mfy = -1, mfx = -1, first_row_minx = 1 << 30, second_row_minx = 1 << 30;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type == IT_RECT && it[i].bg == 0x0d0d0d) { mfx = it[i].x; mfy = it[i].y; }
+        if (it[i].type != IT_TEXT) continue;
+        if (it[i].y == 8 && it[i].x < first_row_minx) first_row_minx = it[i].x;
+        if (it[i].y == 28 && it[i].x < second_row_minx) second_row_minx = it[i].x;
+    }
+    CHECK(mfx == 8 && mfy == 28, "a mid-line float starts at the NEXT line box, not this one");
+    CHECK(first_row_minx == 8, "the line the float appeared on keeps its full measure");
+    CHECK(second_row_minx == 108, "the following line is narrowed by it");
+
+    /* `clear` drops a following block below the floats on the named side. The
+     * two floats end at different depths on purpose (58 and 88), so each value
+     * of `clear` lands somewhere different. One cleared box per run, so the
+     * numbers are independent instead of chaining through each other's
+     * heights. */
+    const char *htmlF4 =
+        "<body><div class='fl'></div><div class='fr'></div><div class='c'>x</div></body>";
+    static const char *const clear_css[4] = {
+        ".fl{float:left;width:60px;height:50px;background:#010101}"
+        ".fr{float:right;width:60px;height:80px;background:#020202}"
+        ".c{background:#033333}",
+        ".fl{float:left;width:60px;height:50px;background:#010101}"
+        ".fr{float:right;width:60px;height:80px;background:#020202}"
+        ".c{clear:left;background:#033333}",
+        ".fl{float:left;width:60px;height:50px;background:#010101}"
+        ".fr{float:right;width:60px;height:80px;background:#020202}"
+        ".c{clear:right;background:#033333}",
+        ".fl{float:left;width:60px;height:50px;background:#010101}"
+        ".fr{float:right;width:60px;height:80px;background:#020202}"
+        ".c{clear:both;background:#033333}",
+    };
+    int cleary[4] = { -1, -1, -1, -1 };
+    for (int k = 0; k < 4; k++) {
+        struct node *rf4 = dom_parse(htmlF4, (int)strlen(htmlF4));
+        css_apply(rf4, clear_css[k], (int)strlen(clear_css[k]));
+        layout_page(rf4, 400);
+        n = layout_count(); it = layout_items();
+        for (int i = 0; i < n; i++)
+            if (it[i].type == IT_RECT && it[i].bg == 0x033333) cleary[k] = it[i].y;
+    }
+    CHECK(cleary[0] == 8, "without `clear` the block starts beside the floats, at the top");
+    CHECK(cleary[1] == 58, "clear:left drops to the left float's bottom (8+50)");
+    CHECK(cleary[2] == 88, "clear:right drops to the right float's bottom (8+80)");
+    CHECK(cleary[3] == 88, "clear:both drops past the deeper of the two");
+
+    /* A float taller than its container. A BFC root (overflow:hidden here)
+     * GROWS to contain its floats -- the classic clearfix -- while an ordinary
+     * block does not and the float simply overflows it. The control box is what
+     * makes this an assertion about containment and not about the float. */
+    const char *htmlF5 =
+        "<body><div class='box'><div class='f'></div>hi</div>"
+        "<div class='plain'><div class='f'></div>hi</div></body>";
+    const char *cssF5 =
+        ".box{overflow:hidden;width:300px;background:#040404}"
+        ".plain{width:300px;background:#060606}"
+        ".f{float:left;width:80px;height:120px;background:#050505}";
+    struct node *rf5 = dom_parse(htmlF5, (int)strlen(htmlF5));
+    css_apply(rf5, cssF5, (int)strlen(cssF5));
+    layout_page(rf5, 400);
+    n = layout_count(); it = layout_items();
+    int boxh = -1, plainh = -1, boxy = -1, plainy = -1;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type != IT_RECT) continue;
+        if (it[i].bg == 0x040404) { boxh = it[i].h; boxy = it[i].y; }
+        if (it[i].bg == 0x060606) { plainh = it[i].h; plainy = it[i].y; }
+    }
+    CHECK(boxh == 120, "overflow:hidden grows to contain a 120px float (clearfix)");
+    CHECK(plainh == 20, "a plain block keeps its one-line height and lets the float overflow");
+    CHECK(boxy == 8 && plainy == 128,
+          "the contained float pushed the next block down; the overflowing one did not");
+
+    /* ---- overflow clip ----
+     * The clip is stamped onto every item the subtree emits, in document
+     * coordinates, and is the ancestor's PADDING box. With an auto height there
+     * is nothing below the content to cut, so only the horizontal bounds are
+     * finite; a definite height bounds it both ways. */
+    const char *htmlF6 =
+        "<body><div class='auto'>hi</div><div class='sized'>hi</div>"
+        "<div class='vis'>hi</div></body>";
+    const char *cssF6 =
+        ".auto{overflow:hidden;width:300px;padding:10px}"
+        ".sized{overflow:hidden;width:200px;height:40px}"
+        ".vis{width:200px}";
+    struct node *rf6 = dom_parse(htmlF6, (int)strlen(htmlF6));
+    css_apply(rf6, cssF6, (int)strlen(cssF6));
+    layout_page(rf6, 400);
+    n = layout_count(); it = layout_items();
+    int a_clip = -1, a_cx = -1, a_cw = -1, a_cy = -1;
+    int s_clip = -1, s_ch = -1, s_cw = -1;
+    int v_clip = -1;
+    int seen_txt = 0;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type != IT_TEXT) continue;
+        if (seen_txt == 0) { a_clip = it[i].has_clip; a_cx = it[i].clip_x;
+                             a_cw = it[i].clip_w; a_cy = it[i].clip_y; }
+        if (seen_txt == 1) { s_clip = it[i].has_clip; s_ch = it[i].clip_h; s_cw = it[i].clip_w; }
+        if (seen_txt == 2) v_clip = it[i].has_clip;
+        seen_txt++;
+    }
+    CHECK(a_clip == 1 && a_cx == 8 && a_cw == 320 && a_cy == 8,
+          "overflow:hidden clips content to the padding box (8..328 with 10px padding)");
+    CHECK(s_clip == 1 && s_cw == 200 && s_ch == 40,
+          "a definite height bounds the clip vertically as well");
+    CHECK(v_clip == 0, "overflow:visible leaves its content unclipped");
+
+    /* A floated <img> is a replaced element, not an empty block box: it has to
+     * reserve its declared size and exclude the text just like a floated div. */
+    snprintf(fbuf, sizeof fbuf,
+             "<body><div class='t'><img src='a.png' width='80' height='60' class='fi'>%s</div></body>",
+             words20);
+    const char *cssF7 = ".t{width:300px}.fi{float:left}";
+    struct node *rf7 = dom_parse(fbuf, (int)strlen(fbuf));
+    css_apply(rf7, cssF7, (int)strlen(cssF7));
+    layout_page(rf7, 400);
+    n = layout_count(); it = layout_items();
+    int imx = -1, imy = -1, imw = -1, imh = -1, i_minx = 1 << 30;
+    for (int i = 0; i < n; i++) {
+        if (it[i].type == IT_IMAGE) { imx = it[i].x; imy = it[i].y; imw = it[i].w; imh = it[i].h; }
+        if (it[i].type == IT_TEXT && it[i].y < 68 && it[i].x < i_minx) i_minx = it[i].x;
+    }
+    CHECK(imx == 8 && imy == 8 && imw == 80 && imh == 60,
+          "a floated <img> reserves its declared box out of flow");
+    CHECK(i_minx == 88, "text wraps beside the floated image (8+80)");
+
     printf(fail ? "\nLAYOUT TEST FAILED\n" : "\nLAYOUT TEST PASSED\n");
     return fail;
 }

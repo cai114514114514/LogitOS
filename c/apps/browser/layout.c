@@ -19,6 +19,36 @@ static uint32_t page_bg; static int page_has_bg;   /* html/body bg -> viewport f
  * finished list by it. */
 static int g_z;
 
+/* Clip rectangle in force for everything emitted right now: the padding box of
+ * the nearest ancestor whose overflow is not `visible`, intersected with any
+ * outer clip. Document coordinates. Stamped onto each item exactly like g_z --
+ * the painter has only the flat list, so the box that owns the clip cannot be
+ * found again at paint time. */
+static int g_clip_on, g_clipx, g_clipy, g_clipw, g_cliph;
+
+/* ---- float exclusions ----
+ *
+ * A float is taken out of normal flow and placed against one content edge of
+ * its block formatting context; every LINE BOX whose vertical band overlaps it
+ * is narrowed by it, while block boxes keep their full width and simply paint
+ * underneath (that asymmetry is real CSS, not a shortcut).
+ *
+ * The exclusions live in one flat array in DOCUMENT coordinates rather than in
+ * a per-block structure, because a float declared in one block goes on
+ * narrowing the lines of its *later siblings* until something clears it -- the
+ * list is scoped by the block formatting context, not by the box that made it.
+ * bfc_enter/bfc_leave are the scope: they truncate the array back, which is
+ * also what makes a BFC root "contain" its floats.
+ *
+ * MAXFLOAT is a hard cap; past it a float still lays out and paints, it just
+ * stops excluding. A page with 64 live floats in one BFC has already lost. */
+#define MAXFLOAT 64
+struct fbox { int x0, x1, y0, y1; unsigned char side; };
+static struct fbox g_float[MAXFLOAT];
+static int g_nfloat;
+static int g_fbase;      /* first float index the current BFC can see */
+static int g_in_float;   /* nonzero while emitting a floated box's own items */
+
 static struct item *additem(int type, struct node *n)
 {
     if (!items || nitem >= MAXITEM) return 0;
@@ -28,7 +58,73 @@ static struct item *additem(int type, struct node *n)
     it->node = n;                       /* provenance: painted box -> DOM node */
     it->z = g_z;
     it->opacity = 255;
+    it->has_clip = (unsigned char)g_clip_on;
+    it->clip_x = g_clipx; it->clip_y = g_clipy;
+    it->clip_w = g_clipw; it->clip_h = g_cliph;
+    it->is_float = (unsigned char)g_in_float;
     return it;
+}
+
+/* The horizontal segment left for a line box occupying [y, y+h) inside the
+ * content edges [lo0,hi0). A left float pushes the start right, a right float
+ * pulls the end left; a band squeezed to nothing comes back empty (hi == lo)
+ * and the caller drops to the next float bottom. */
+static void float_band(int y, int h, int lo0, int hi0, int *lo, int *hi)
+{
+    *lo = lo0; *hi = hi0;
+    if (h < 1) h = 1;
+    for (int i = g_fbase; i < g_nfloat; i++) {
+        const struct fbox *f = &g_float[i];
+        if (f->y1 <= y || f->y0 >= y + h) continue;      /* no vertical overlap */
+        if (f->side == FLT_LEFT) { if (f->x1 > *lo) *lo = f->x1; }
+        else                     { if (f->x0 < *hi) *hi = f->x0; }
+    }
+    if (*hi < *lo) *hi = *lo;
+}
+
+/* The next y below `y` at which the set of overlapping floats changes, i.e. the
+ * lowest float bottom strictly greater than y among floats that straddle y.
+ * Returns y itself when nothing overlaps, which is the caller's loop guard. */
+static int float_next_bottom(int y)
+{
+    int best = 0, any = 0;
+    for (int i = g_fbase; i < g_nfloat; i++) {
+        const struct fbox *f = &g_float[i];
+        if (f->y1 <= y || f->y0 > y) continue;
+        if (!any || f->y1 < best) { best = f->y1; any = 1; }
+    }
+    return any ? best : y;
+}
+
+/* `clear`: the first y at or below `y` that is past every float on the named
+ * side(s). CLR_BOTH is the union, which is why the sides are tested with a
+ * mask rather than an equality. */
+static int float_clear_y(int which, int y)
+{
+    for (int i = g_fbase; i < g_nfloat; i++) {
+        const struct fbox *f = &g_float[i];
+        int want = (f->side == FLT_LEFT) ? CLR_LEFT : CLR_RIGHT;
+        if (which != CLR_BOTH && which != want) continue;
+        if (f->y1 > y) y = f->y1;
+    }
+    return y;
+}
+
+/* Lowest bottom edge among the floats added since `from`. A block formatting
+ * context grows to contain its own floats -- this is the number that makes
+ * `overflow:hidden` work as the classic clearfix. */
+static int float_max_bottom(int from)
+{
+    int b = 0;
+    for (int i = from; i < g_nfloat; i++) if (g_float[i].y1 > b) b = g_float[i].y1;
+    return b;
+}
+
+static void float_add(int x0, int x1, int y0, int y1, int side)
+{
+    if (g_nfloat >= MAXFLOAT || x1 <= x0 || y1 <= y0) return;
+    struct fbox *f = &g_float[g_nfloat++];
+    f->x0 = x0; f->x1 = x1; f->y0 = y0; f->y1 = y1; f->side = (unsigned char)side;
 }
 
 /* Translate a display-list range. Used wherever a box's final position is only
@@ -204,8 +300,53 @@ static int svg_attr_w(struct node *n, const struct cstyle *st)
 /* ---- inline flow ---- */
 /* current pen for inline content within a block. `align` is the block's
  * text-align; `line_start` is the display-list index of the first item on the
- * current line, so newline() can shift the whole line for center/right. */
-struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start; };
+ * current line, so newline() can shift the whole line for center/right.
+ *
+ * x0/x1 are the CURRENT LINE's edges, which is not the same thing as the
+ * block's: bx0/bx1 are the block's content edges and x0/x1 are what is left of
+ * them after the floats overlapping this line's band are subtracted. Every
+ * existing user of x0/x1 (wrapping, tab stops, text-align, the replaced-element
+ * fitting) therefore became float-aware for free; only the two places that mean
+ * "the block, not this line" had to switch to bx0/bx1.
+ *
+ * `probe` is the line height used to query the float band before the line's
+ * real height is known. Line height is content-driven and the band is
+ * height-driven, so something has to break the circularity; real engines lay
+ * the line out twice, we probe with the block's own line height. It is exact
+ * unless a line mixes font sizes right at a float's top or bottom edge. */
+struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start;
+               int bx0, bx1, probe; };
+
+/* Re-derive the current line's edges from the float list, dropping past any
+ * float that leaves no room at all. Called whenever the pen moves to a new y. */
+static void flow_relayout_line(struct iflow *f)
+{
+    for (int guard = 0; guard < MAXFLOAT + 1; guard++) {
+        float_band(f->y, f->probe, f->bx0, f->bx1, &f->x0, &f->x1);
+        if (f->x1 > f->x0) break;
+        int nb = float_next_bottom(f->y);
+        if (nb <= f->y) break;                        /* nothing left to clear */
+        f->y = nb;
+    }
+    f->x = f->x0;
+}
+
+static void iflow_init(struct iflow *f, int x, int w, int y, int align, int probe)
+{
+    f->bx0 = x; f->bx1 = x + w;
+    f->y = y; f->lineh = 0; f->line_started = 0; f->align = align;
+    f->line_start = nitem;
+    f->probe = probe > 0 ? probe : 20;
+    flow_relayout_line(f);
+}
+
+/* The block's own line height, used as the float-band probe. */
+static int style_lineh(const struct cstyle *st)
+{
+    if (!st) return 20;
+    int px = st->font_px > 0 ? st->font_px : 16;
+    return st->line_px > px ? st->line_px : px * 5 / 4;
+}
 
 /* Close the current line. `last` marks a line that ends the block (or is cut
  * short by <br> or a block-level sibling): CSS does not justify those, and
@@ -221,18 +362,28 @@ static void newline2(struct iflow *f, int last)
              * the line rides along with the word it follows. */
             int extra = (f->x1 - f->x0) - (f->x - f->x0);
             if (extra > 0)
-                for (int i = 1; i < n; i++)
+                for (int i = 1; i < n; i++) {
+                    /* A float that landed mid-line sits in this range but is
+                     * out of flow: it must not be spread with the words (its
+                     * position is what the line was measured against). It still
+                     * counts in `n`, so the spacing either side of it is a
+                     * little uneven -- a float inside a justified line is rare
+                     * enough not to warrant a second index pass. */
+                    if (items[f->line_start + i].is_float) continue;
                     items[f->line_start + i].x += (int)((long)extra * i / (n - 1));
+                }
         } else if (f->align == ALIGN_CENTER || f->align == ALIGN_RIGHT) {
             int used = f->x - f->x0, avail = f->x1 - f->x0;
             int off = (f->align == ALIGN_CENTER) ? (avail - used) / 2 : (avail - used);
             if (off > 0)
-                for (int i = f->line_start; i < nitem; i++) items[i].x += off;
+                for (int i = f->line_start; i < nitem; i++)
+                    if (!items[i].is_float) items[i].x += off;
         }
         f->y += f->lineh;
     }
-    f->x = f->x0; f->lineh = 0; f->line_started = 0;
+    f->lineh = 0; f->line_started = 0;
     f->line_start = nitem;
+    flow_relayout_line(f);              /* the new line sees a different band */
 }
 
 /* A soft break inside a paragraph: the line just closed is justifiable. */
@@ -262,6 +413,23 @@ static void hard_break(struct iflow *f, int lh)
 {
     if (!f->line_started) { f->lineh = lh; f->line_started = 1; }
     newline2(f, 1);
+}
+
+/* A word that does not fit the current line but WOULD fit the block's full
+ * measure is not a break-anywhere case -- a float is in the way. Drop the
+ * (still empty) line past float bottoms until it fits or the floats run out.
+ * Only ever called on an unstarted line, so there is nothing to move. */
+static void flow_clear_for(struct iflow *f, int need)
+{
+    if (f->line_started || need <= f->x1 - f->x0) return;
+    if (need > f->bx1 - f->bx0) return;               /* genuinely wider than the block */
+    for (int guard = 0; guard < MAXFLOAT + 1; guard++) {
+        int nb = float_next_bottom(f->y);
+        if (nb <= f->y) return;
+        f->y = nb;
+        flow_relayout_line(f);
+        if (need <= f->x1 - f->x0) return;
+    }
 }
 
 /* place a text run (one element's text) into the flow.
@@ -325,12 +493,14 @@ static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
                 int nsp = p - t0;
                 while (p < i && s[p] != ' ') p++;
                 int tlen = p - t0, tw = text_measure(s + t0, tlen, px, mono);
-                if (f->line_started && f->x + tw > f->x1 && tw <= f->x1 - f->x0) {
+                if (f->line_started && f->x + tw > f->x1 &&
+                    (tw <= f->x1 - f->x0 || tw <= f->bx1 - f->bx0)) {
                     newline(f);
                     t0 += nsp; tlen -= nsp;
                     if (tlen <= 0) continue;
                     tw = text_measure(s + t0, tlen, px, mono);
                 }
+                flow_clear_for(f, tw);          /* narrowed by a float, not by the measure */
                 emit_word(f, src, s + t0, tlen, tw, st, href, lh, px, mono);
             }
         }
@@ -350,10 +520,16 @@ static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
         int wlen = i - ws;
         if (!wlen) continue;
         int ww = text_measure(s + ws, wlen, px, mono);
+        /* The second clause used to be `ww <= x1 - x0` alone: a word too wide
+         * for a whole line is broken from where the pen stands rather than
+         * pointlessly wrapped first. With floats the line can be narrower than
+         * the block, so a word that the BLOCK could hold is still worth
+         * wrapping -- and then dropping past the float. */
         if (can_wrap && f->line_started && f->x + spacew + ww > f->x1 &&
-            ww <= (f->x1 - f->x0)) {
+            (ww <= f->x1 - f->x0 || ww <= f->bx1 - f->bx0)) {
             newline(f);                                   /* wrap */
         }
+        if (can_wrap) flow_clear_for(f, ww);
         if (!can_wrap || ww <= f->x1 - f->x0) {
             if (f->line_started) f->x += spacew;
             emit_word(f, src, s + ws, wlen, ww, st, href, lh, px, mono);
@@ -405,6 +581,7 @@ static void flow_children(struct iflow *f, struct node *n, const char *href)
 /* flow a single node into the inline context */
 static int layout_block(struct node *n, int x, int y, int w);   /* fwd */
 static int is_block(struct node *n);                            /* fwd */
+static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int y); /* fwd */
 static void flow_node(struct iflow *f, struct node *c, const char *href)
 {
     struct cstyle *st = c->style;
@@ -470,10 +647,28 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
      * (<react-partial>, <turbo-frame>, ...) default to display:inline, so
      * without this their whole block subtree would be flattened into one
      * smeared inline run. */
+    /* A float inside an inline context does NOT break the line: it is taken out
+     * of flow at the current line's top and the words keep coming, now against
+     * a narrower band. Placed before the is_block test because float blockifies
+     * -- <span style="float:left"> arrives here as a block. */
+    if (st && st->flt != FLT_NONE && !st->pos_abs && c->type == N_ELEM &&
+        !tag_eq(c->tag, "svg")) {
+        /* Words already on this line were measured against the old band, so a
+         * mid-line float cannot narrow it retroactively: it is placed at the
+         * NEXT line's top instead. CSS would keep it on this line when it still
+         * fits beside the placed words; starting one line lower is the
+         * conservative version of that rule and can never overlap text. */
+        place_float(c, st, f->bx0, f->bx1, f->line_started ? f->y + f->lineh : f->y);
+        if (!f->line_started) { flow_relayout_line(f); f->line_start = nitem; }
+        return;
+    }
+
     if (is_block(c)) {
         newline2(f, 1);                  /* the line it interrupts is a last line */
-        int avail = f->x1 - f->x0;
-        int bx = f->x0 + (st && st->ml > 0 ? st->ml : 0);
+        /* A block box is measured against the BLOCK, not against the line: CSS
+         * does not narrow block boxes by floats, only their line boxes. */
+        int avail = f->bx1 - f->bx0;
+        int bx = f->bx0 + (st && st->ml > 0 ? st->ml : 0);
         int bw = block_width(st, avail);
         int bgidx = -1;
         if (st && (st->has_bg || any_border(st))) {
@@ -486,7 +681,8 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (st && ch < st->font_px) ch = st->font_px;
         if (bgidx >= 0) items[bgidx].h = ch;
         f->y += ch;
-        f->x = f->x0; f->lineh = 0; f->line_started = 0; f->line_start = nitem;
+        f->lineh = 0; f->line_started = 0; f->line_start = nitem;
+        flow_relayout_line(f);
         return;
     }
 
@@ -530,9 +726,29 @@ static int is_block(struct node *n)
     struct cstyle *st = n->style;
     /* inline-block joins the block path: it becomes a full-width box unless it
      * has an explicit CSS width (shrink-to-fit is out of scope, but this stops
-     * button/chip rows smearing into the surrounding text run). */
+     * button/chip rows smearing into the surrounding text run).
+     *
+     * `float` BLOCKIFIES: CSS computes display:inline on a floated box to
+     * display:block, which is why `<span style="float:left">` is a box and not
+     * a word. Our LibCSS reports the specified display, so the fixup is here. */
     return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX ||
-                  st->display == DISP_GRID || st->display == DISP_INLINE_BLOCK);
+                  st->display == DISP_GRID || st->display == DISP_INLINE_BLOCK ||
+                  (st->flt != FLT_NONE && st->display != DISP_NONE));
+}
+
+/* Does this box establish a new block formatting context? Floats inside a BFC
+ * are invisible outside it, and the BFC root grows to contain them -- which is
+ * exactly why `overflow:hidden` on a container is the clearfix everybody uses.
+ */
+static int is_bfc_root(struct node *n, const struct cstyle *st)
+{
+    if (!st) return 0;
+    if (st->flt != FLT_NONE || st->pos_abs) return 1;
+    if (st->overflow_x != OVF_VISIBLE || st->overflow_y != OVF_VISIBLE) return 1;
+    if (st->display == DISP_INLINE_BLOCK || st->display == DISP_FLEX ||
+        st->display == DISP_GRID) return 1;
+    if (n && n->type == N_ELEM && tag_eq(n->tag, "table")) return 1;
+    return 0;
 }
 
 /* A node that really takes the block path. <svg> is excluded: even with
@@ -626,27 +842,196 @@ static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top
     mk->w = mw;
 }
 
+/* A floated child does NOT break the surrounding inline context (that is the
+ * whole point of a float), so it must not push its block onto the
+ * child-by-child path -- `<p><img style="float:left">lots of text</p>` has to
+ * stay one inline formatting context for the text to wrap beside the image. */
+static int floated(struct node *n)
+{ struct cstyle *st = n->style; return st && st->flt != FLT_NONE && !st->pos_abs; }
+
 static int has_block_child(struct node *n)
 {
-    for (struct node *c = n->first_child; c; c = c->next) if (blockish(c)) return 1;
+    for (struct node *c = n->first_child; c; c = c->next)
+        if (blockish(c) && !floated(c)) return 1;
     return 0;
 }
 
-/* lay out the children of block `n` whose content box starts at (x,y) width w;
- * returns the bottom y. */
+static int content_width(struct node *n, int px, int mono, int depth);      /* fwd */
+static int min_content_width(struct node *n, int px, int mono, int depth);  /* fwd */
+
+/* Border-box width of a floated box. A float is never auto-width in the block
+ * sense: with no specified width it SHRINKS TO FIT, which CSS defines as
+ * min(max(min-content, available), max-content). */
+static int float_box_width(struct node *c, struct cstyle *st, int avail)
+{
+    if (st->has_w)
+        return clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, avail)), avail);
+    int px = st->font_px, mono = st->mono;
+    int w = content_width(c, px, mono, 0);
+    if (w > avail) w = avail;
+    int minc = min_content_width(c, px, mono, 0);
+    if (w < minc) w = minc;
+    if (w > avail) w = avail;
+    if (w < 0) w = 0;
+    return clamp_w(st, w, avail);
+}
+
+/* Place one floated box out of flow against the left or right content edge of
+ * the current block formatting context, and register its MARGIN box as an
+ * exclusion. `y` is the earliest the float may start: the block's pen, or the
+ * top of the line box it appeared in. Nothing is returned because the float
+ * consumes no space in the flow -- only the exclusion list changes. */
+static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int y)
+{
+    int ml = st->ml > 0 ? st->ml : 0, mr = st->mr > 0 ? st->mr : 0;
+    int mt = st->mt > 0 ? st->mt : 0, mb = st->mb > 0 ? st->mb : 0;
+    int side = st->flt;
+    int avail = bx1 - bx0 - ml - mr; if (avail < 0) avail = 0;
+    int isimg = (c->type == N_ELEM && tag_eq(c->tag, "img"));
+    int fw, fh = 0, h_auto = 0;
+    if (isimg) {
+        /* Same box reservation as the in-flow <img> paths: the pixels arrive
+         * later from layout_load_images, so the exclusion has to be built from
+         * the declared size. */
+        int iw = 0, ih = 0;
+        if (st->has_w && !st->w_pct) iw = st->width;
+        if (st->has_h && !st->h_pct) ih = st->height;
+        if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
+        if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
+        if (iw > 0 && ih <= 0) h_auto = 1;
+        if (iw <= 0) iw = ih > 0 ? ih : 24;
+        if (ih <= 0) { ih = iw; h_auto = 1; }
+        if (avail > 0 && iw > avail) { ih = ih * avail / iw; iw = avail; }
+        fw = iw; fh = ih;
+    } else {
+        fw = float_box_width(c, st, avail);
+    }
+    if (st->clr != CLR_NONE) y = float_clear_y(st->clr, y);
+
+    /* Highest band at or below y that leaves room for the whole margin box.
+     * The band is probed at the float's TOP (height 1) and not over its full
+     * height, because the height is only known after it is laid out -- probing
+     * the top is what lets two same-side floats sit side by side and then wrap
+     * onto the next band when the third no longer fits. */
+    int need = ml + fw + mr, lo = bx0, hi = bx1;
+    for (int guard = 0; guard < MAXFLOAT + 1; guard++) {
+        float_band(y, 1, bx0, bx1, &lo, &hi);
+        if (hi - lo >= need) break;
+        int nb = float_next_bottom(y);
+        if (nb <= y) break;                    /* nothing left to drop past */
+        y = nb;
+    }
+    int fx = (side == FLT_LEFT) ? lo + ml : hi - mr - fw;
+    if (fx < bx0) fx = bx0;
+    int top = y + mt;
+
+    int zsave = g_z, flsave = g_in_float;
+    g_in_float = 1;
+    if (st->has_z && st->position != POS_STATIC) g_z = st->z_index;
+    int ch;
+    if (isimg) {
+        struct item *it = additem(IT_IMAGE, c);
+        if (it) { it->x = fx; it->y = top; it->w = fw; it->h = fh;
+                  it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
+                  if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");
+                  it->hidden = st->hidden; it->opacity = st->opacity; }
+        ch = fh;
+    } else {
+        int bgidx = -1;
+        if (st->has_bg || any_border(st)) {
+            struct item *bg = additem(IT_RECT, c);
+            if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, fx, top, fw); }
+        }
+        if (st->list_item) emit_list_marker(c, st, fx + cx_off(st), top, bx0);
+        int inw = fw - hextra(st); if (inw < 0) inw = 0;
+        /* layout_block sees flt != none and opens a BFC, so the float's own
+         * contents neither see nor leak the outer exclusions. */
+        int inner = tag_eq(c->tag, "table")
+            ? layout_table(c, fx + cx_off(st), top + cy_off(st), inw)
+            : layout_block(c, fx + cx_off(st), top + cy_off(st), inw);
+        ch = (inner - top) + st->pb + st->border_w[2];
+        ch = block_height(st, ch, -1);
+        if (ch < st->font_px) ch = st->font_px;
+        if (bgidx >= 0) items[bgidx].h = ch;
+    }
+    g_z = zsave;
+    g_in_float = flsave;
+    float_add(fx - ml, fx + fw + mr, y, top + ch + mb, side);
+}
+
+/* Narrow the active clip to this box's padding box, which is where CSS clips
+ * overflow. The box's own background and border were emitted by the CALLER
+ * before this runs, so a box never clips away its own border.
+ *
+ * Only a definite height bounds the clip vertically: with an auto height the
+ * content is what set the height, so there is nothing below it to cut. That
+ * makes `overflow:hidden` exact for the sized case and a horizontal-only clip
+ * for the auto case -- which is the shape (`nowrap` + `hidden`) that actually
+ * occurs in stylesheets. */
+static void clip_push(const struct cstyle *st, int x, int y, int w)
+{
+    int px0 = x - st->pl, px1 = x + w + st->pr;
+    int py0 = y - st->pt, py1 = 0x3FFFFFFF;
+    int sh = spec_h(st, -1);            /* -1 == auto, >= 0 == definite */
+    if (sh >= 0) {
+        int inner = sh - st->border_w[0] - st->border_w[2];
+        py1 = py0 + (inner > 0 ? inner : 0);
+    }
+    if (g_clip_on) {
+        if (g_clipx > px0) px0 = g_clipx;
+        if (g_clipx + g_clipw < px1) px1 = g_clipx + g_clipw;
+        if (g_clipy > py0) py0 = g_clipy;
+        if (g_clipy + g_cliph < py1) py1 = g_clipy + g_cliph;
+    }
+    if (px1 < px0) px1 = px0;
+    if (py1 < py0) py1 = py0;
+    g_clip_on = 1;
+    g_clipx = px0; g_clipy = py0; g_clipw = px1 - px0; g_cliph = py1 - py0;
+}
+
+static int layout_flow(struct node *n, int x, int y, int w);   /* fwd */
+
+/* Lay out the children of block `n` whose content box starts at (x,y) with
+ * content width w; returns the bottom y.
+ *
+ * This wrapper owns the two things that are properties of the BOX rather than
+ * of its content: the block formatting context (float scoping + "a BFC root
+ * grows to contain its floats") and the overflow clip stamped onto every item
+ * the subtree emits. */
 static int layout_block(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
-    if (nst && nst->display == DISP_FLEX) return layout_flex(n, x, y, w);
-    if (nst && nst->display == DISP_GRID && nst->grid_cols > 0)
-        return layout_grid(n, x, y, w);
+    int nsave = g_nfloat, bsave = g_fbase, bfc = is_bfc_root(n, nst);
+    int con = g_clip_on, cx0 = g_clipx, cy0 = g_clipy, cw0 = g_clipw, ch0 = g_cliph;
+    if (bfc) g_fbase = g_nfloat;
+    if (nst && (nst->overflow_x != OVF_VISIBLE || nst->overflow_y != OVF_VISIBLE))
+        clip_push(nst, x, y, w);
+
+    int cy;
+    if (nst && nst->display == DISP_FLEX)                       cy = layout_flex(n, x, y, w);
+    else if (nst && nst->display == DISP_GRID && nst->grid_cols > 0) cy = layout_grid(n, x, y, w);
+    else                                                        cy = layout_flow(n, x, y, w);
+
+    if (bfc) {
+        int b = float_max_bottom(nsave);
+        if (b > cy) cy = b;
+        g_nfloat = nsave; g_fbase = bsave;
+    }
+    g_clip_on = con; g_clipx = cx0; g_clipy = cy0; g_clipw = cw0; g_cliph = ch0;
+    return cy;
+}
+
+static int layout_flow(struct node *n, int x, int y, int w)
+{
+    struct cstyle *nst = n->style;
     int al = nst ? nst->text_align : ALIGN_LEFT;
     int cy = y;
     /* if this block has no block children, the whole content is one inline
      * context. */
     if (!has_block_child(n)) {
         const char *href = (n->type == N_ELEM && tag_eq(n->tag, "a")) ? dom_attr(n, "href") : 0;
-        struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
+        struct iflow f;
+        iflow_init(&f, x, w, cy, al, style_lineh(nst));
         flow_children(&f, n, href);
         newline2(&f, 1);
         return f.y;
@@ -687,7 +1072,17 @@ static int layout_block(struct node *n, int x, int y, int w)
             continue;
         }
         if (skipped(c)) continue;
+        if (blockish(c) && floated(c)) {
+            /* Out of flow: cy does not move. The float may only start at the
+             * current pen, never above content already placed. */
+            place_float(c, st, x, x + w, cy);
+            continue;
+        }
         if (blockish(c)) {
+            /* `clear` drops the box below the floats on the named side(s). It
+             * applies before the top margin is added, which is why it is here
+             * and not folded into the cy += mt below. */
+            if (st->clr != CLR_NONE) cy = float_clear_y(st->clr, cy);
             if (tag_eq(c->tag, "img")) {
                 /* Block-level <img> is a replaced element, not an empty block box
                  * (bilibili's blanket img{display:block} rule would otherwise eat
@@ -751,12 +1146,15 @@ static int layout_block(struct node *n, int x, int y, int w)
             g_z = zsave;
             cy = top + ch + (st->mb > 0 ? st->mb : 0);
         } else {
-            /* run of inline siblings: gather until next block */
-            struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
-            while (c && !blockish(c)) {
+            /* Run of inline siblings: gather until the next block. A FLOATED
+             * sibling does not end the run -- flow_node takes it out of flow
+             * and the rest of the run wraps beside it. */
+            struct iflow f;
+            iflow_init(&f, x, w, cy, al, style_lineh(nst));
+            while (c && (!blockish(c) || floated(c))) {
                 if (!skipped(c)) flow_node(&f, c, 0);
                 struct node *nx = c->next;
-                if (!nx || blockish(nx)) break;
+                if (!nx || (blockish(nx) && !floated(nx))) break;
                 c = nx;
             }
             newline2(&f, 1);
@@ -1011,7 +1409,8 @@ static int flex_place(struct fitem *f, int px, int py, int iw, int forced_h, int
 {
     f->lo = nitem;
     if (!f->st) {                                    /* anonymous inline run */
-        struct iflow fl = { px, px + (iw > 0 ? iw : 1), px, py, 0, 0, ALIGN_LEFT, nitem };
+        struct iflow fl;
+        iflow_init(&fl, px, iw > 0 ? iw : 1, py, ALIGN_LEFT, fpx * 5 / 4);
         for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
         newline2(&fl, 1);
         f->hi = nitem;
@@ -1020,6 +1419,11 @@ static int flex_place(struct fitem *f, int px, int py, int iw, int forced_h, int
     }
     struct cstyle *st = f->st;
     int zsave = g_z;
+    /* Every flex item is a block formatting context of its own: a float inside
+     * one must not narrow the lines of the item beside it. layout_block only
+     * opens a BFC when the item's own style says so, so scope it here. */
+    int nsave = g_nfloat, bsave = g_fbase;
+    g_fbase = g_nfloat;
     /* z-index applies to a flex ITEM even when it is not positioned -- that is
      * the one place CSS lets an unpositioned box make a stacking context. */
     if (st->has_z) g_z = st->z_index;
@@ -1029,6 +1433,8 @@ static int flex_place(struct fitem *f, int px, int py, int iw, int forced_h, int
     }
     int inw = iw - hextra(st); if (inw < 0) inw = 0;
     int inner = layout_block(f->n, px + cx_off(st), py + cy_off(st), inw);
+    { int b = float_max_bottom(nsave); if (b > inner) inner = b; }
+    g_nfloat = nsave; g_fbase = bsave;
     int ch = (inner - py) + st->pb + st->border_w[2];
     ch = block_height(st, ch, -1);
     if (forced_h > ch) ch = forced_h;
@@ -1362,7 +1768,11 @@ static int layout_grid(struct node *n, int x, int y, int w)
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
         }
         int inw = cw - hextra(st); if (inw < 0) inw = 0;
+        int nsave = g_nfloat, bsave = g_fbase;
+        g_fbase = g_nfloat;                     /* each grid item is its own BFC */
         int inner = layout_block(c, cellx + ml + cx_off(st), top + cy_off(st), inw);
+        { int b = float_max_bottom(nsave); if (b > inner) inner = b; }
+        g_nfloat = nsave; g_fbase = bsave;
         int ch = (inner - top) + (st ? st->pb + st->border_w[2] : 0);
         ch = block_height(st, ch, -1);
         if (st && ch < st->font_px) ch = st->font_px;
@@ -1476,7 +1886,11 @@ static int layout_table(struct node *t, int x, int y, int w)
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }
             int inw = cw[ci] - ml - hextra(st); if (inw < 0) inw = 0;
+            int nsave = g_nfloat, bsave = g_fbase;
+            g_fbase = g_nfloat;                 /* each cell is its own BFC */
             int inner = layout_block(c, cx + cx_off(st), top + cy_off(st), inw);
+            { int b = float_max_bottom(nsave); if (b > inner) inner = b; }
+            g_nfloat = nsave; g_fbase = bsave;
             int ch = (inner - top) + (st ? st->pb + st->border_w[2] : 0);
             if (st && ch < st->font_px) ch = st->font_px;
             ch = block_height(st, ch, -1);
@@ -1499,7 +1913,19 @@ static int layout_table(struct node *t, int x, int y, int w)
  * paints over the content that follows it in the document, and the hit test
  * agrees. What it does NOT buy is real stacking contexts -- a positioned
  * descendant of a z-index:1 parent is not trapped inside its parent's level,
- * because a flat list cannot express containment.
+ * because ONE INTEGER per item cannot express containment.
+ *
+ * The fix, when it earns its keep, is a composite key rather than a box tree:
+ * stamp each item with the PATH of z levels from the root (the nearest N
+ * stacking contexts, outermost first, each level tie-broken by the document
+ * order of the context that created it) and sort lexicographically. Two items
+ * then compare at the level where their contexts diverge, which is exactly
+ * CSS's painting order, and the display list stays flat -- neither the painter
+ * nor the hit test changes. The cost is N ints per item (N = 4 covers every
+ * real page) plus threading the path through additem the way g_z is threaded
+ * now. It was left out here rather than approximated, because a half-built
+ * stacking context is worse than an honest flat one: it reorders some pages
+ * correctly and others arbitrarily.
  *
  * Skipped entirely when nothing set a z-index, which is the overwhelmingly
  * common case and keeps this off the hot path. */
@@ -1540,6 +1966,8 @@ void layout_page(struct node *root, int canvas_w)
     layout_free();
     items = kmalloc(sizeof(struct item) * MAXITEM);
     nitem = 0; canvas = canvas_w; g_z = 0;
+    g_nfloat = 0; g_fbase = 0; g_in_float = 0;
+    g_clip_on = 0; g_clipx = g_clipy = g_clipw = g_cliph = 0;
     if (!items) { doc_h = 0; return; }
     /* <body> and <html> straight from the document. The tree builder always
      * produces both for a parsed page; the fallbacks cover a tree assembled
@@ -1557,6 +1985,9 @@ void layout_page(struct node *root, int canvas_w)
     else if (bst && bst->has_bg) { page_has_bg = 1; page_bg = bst->background; }
 
     doc_h = layout_block(start, mx, bst&&bst->mt>0?bst->mt:8, canvas_w - 2*mx);
+    /* The initial containing block contains its floats too: a page whose last
+     * content is a tall float must still scroll far enough to see it. */
+    { int b = float_max_bottom(0); if (b > doc_h) doc_h = b; }
     zsort();
 }
 

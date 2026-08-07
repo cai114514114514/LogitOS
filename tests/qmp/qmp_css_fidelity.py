@@ -30,6 +30,24 @@ properties are under test, each chosen because it was completely absent before:
                must be pushed right by the 100px of slack. Before, flex was a
                single unwrapped row that ignored justify-content entirely.
 
+A second fixture covers the PAINTER-side properties, which have the same
+"correct in the display list, wrong on the screen" failure mode:
+
+  alpha        a `rgba(254,0,0,.5)` veil over an opaque `#0000fe` plate. The
+               overlapped pixels must be the arithmetic blend (~127,0,~127) and
+               the opaque red must appear NOWHERE. Before, rgba painted solid.
+
+  decoration   three single-word runs, one per text-decoration line, each in its
+               own colour. Each must show a row of solid colour spanning the
+               whole run -- at the TOP of the box for overline, mid-box for
+               line-through, below it for underline. Before, only underline was
+               drawn at all.
+
+  float        a 120x80 left float inside a 420px block of text. Every glyph in
+               the float's vertical band must be to the RIGHT of it, and the
+               text must return to the left edge below it. Before, float was
+               read into the cstyle and ignored.
+
 The screendumps are kept in the temp directory named at the end so a failure can
 be looked at rather than guessed at.
 """
@@ -84,6 +102,44 @@ CCCC</pre>
 </body></html>
 """
 
+# ---- second fixture: the painter-side properties ----
+PLATE = (0, 0, 254)            # #0000fe, the opaque backdrop for the alpha veil
+VEIL = (254, 0, 0)             # #fe0000, the 50% overlay -- must never appear raw
+OVER_C = (2, 3, 254)           # #0203fe  overline
+STRIKE_C = (254, 2, 3)         # #fe0203  line-through
+UNDER_C = (2, 254, 3)          # #02fe03  underline
+FLOAT_C = (254, 1, 253)        # #fe01fd  the floated block
+WRAP_BG = (253, 253, 254)      # #fdfdfe  the block whose text wraps around it
+
+# Enough words that the text runs several lines past the 80px-tall float.
+WORDS = ("alpha bravo charlie delta echo foxtrot golf hotel india juliet "
+         "kilo lima mike november oscar papa quebec romeo sierra tango "
+         "uniform victor whiskey xray yankee zulu ") * 3
+
+PAGE2 = """<!doctype html>
+<html><head><title>paintfid</title><style>
+html, body { background: #ffffff; margin: 0; padding: 0; color: #000000; }
+/* An opaque plate with a half-transparent veil over its top half. */
+#plate { background: #0000fe; width: 300px; height: 80px; }
+#veil  { background: rgba(254,0,0,0.5); width: 300px; height: 40px; }
+/* One single-word run per decoration line, each in its own colour so the
+   harness can isolate it by exact pixel match. */
+p.d { margin: 0; font-size: 24px; }
+#ov { color: #0203fe; text-decoration: overline; }
+#st { color: #fe0203; text-decoration: line-through; }
+#un { color: #02fe03; text-decoration: underline; }
+/* A left float with text wrapping beside and then below it. */
+#wrap { background: #fdfdfe; width: 420px; }
+#fl { float: left; width: 120px; height: 80px; background: #fe01fd; }
+</style></head><body>
+<div id="plate"><div id="veil"></div></div>
+<p class="d" id="ov">OVERLINE</p>
+<p class="d" id="st">STRIKE</p>
+<p class="d" id="un">UNDER</p>
+<div id="wrap"><div id="fl"></div>%s</div>
+</body></html>
+""" % WORDS
+
 tmp = tempfile.mkdtemp(prefix="qmp_cssfid_")
 qmp_path = os.path.join(tmp, "qmp.sock")
 serial_path = os.path.join(tmp, "serial.log")
@@ -93,7 +149,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
 
     def do_GET(self):
-        raw = PAGE.encode()
+        raw = (PAGE2 if "paint" in self.path else PAGE).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(raw)))
@@ -165,6 +221,46 @@ def block(img, colour, what):
     return box
 
 
+def row_runs(img, box, colour):
+    """(count, y) of the row inside `box` holding the most pixels of exactly
+    `colour`. A decoration line is a solid rect, so its row wins outright over
+    any row of anti-aliased glyph stems."""
+    x0, y0, x1, y1 = box
+    best, besty = 0, y0
+    for y in range(y0, y1 + 1):
+        c = 0
+        for x in range(x0, x1 + 1):
+            if img.at(x, y) == colour:
+                c += 1
+        if c > best:
+            best, besty = c, y
+    return best, besty
+
+
+def count_where(img, box, pred):
+    x0, y0, x1, y1 = box
+    n = 0
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if pred(img.at(x, y)):
+                n += 1
+    return n
+
+
+def leftmost_dark(img, box, y0, y1, thresh=100):
+    """Smallest x of a near-black pixel in rows [y0,y1] of `box`, or None."""
+    bx0, _, bx1, _ = box
+    best = None
+    for y in range(max(0, y0), min(img.h - 1, y1) + 1):
+        for x in range(bx0, bx1 + 1):
+            r, g, b = img.at(x, y)
+            if r < thresh and g < thresh and b < thresh:
+                if best is None or x < best:
+                    best = x
+                break
+    return best
+
+
 try:
     if not wait_serial("LOGIT_BOOT_OK", 180, "boot"):
         die("kernel never printed LOGIT_BOOT_OK")
@@ -232,6 +328,77 @@ try:
     # 500 - 400 = 100px of slack, pushed to the LEFT of A by justify-content:flex-end
     ck(fa[0] - pre[0] >= 90, "justify-content:flex-end pushed the first row right by ~100px")
     ck(abs(fc[2] - fb[2]) <= 2, "the wrapped row is flex-end aligned too")
+
+    # ================= second fixture: the painter =================
+    # y=175, not the 145 used above: the first click happens while the window is
+    # still playing its open-pop animation and the bar is higher up. By now the
+    # window has settled and 145 is the title bar.
+    ui.click_at(420, 175)                  # address bar
+    for _ in range(80):
+        ui.key("backspace")
+    ui.typ("http://10.0.2.2:%d/paint.html" % PORT)
+    ui.key("ret")
+    time.sleep(10)
+    shot2 = os.path.join(tmp, "paint.ppm")
+    ui.screendump(shot2)
+    img = PPM(shot2)
+
+    # ---- background-color alpha ----
+    # find_color sees only the UNVEILED half of the plate, because the veiled
+    # half is no longer #0000fe -- which is already half the proof. The veil sits
+    # directly above it and is the same size, so that band is where the blend
+    # must be, pixel for pixel.
+    pure = block(img, PLATE, "unveiled half of the plate")
+    pw = pure[2] - pure[0] + 1
+    ph = pure[3] - pure[1] + 1
+    veil_box = (pure[0], pure[1] - ph, pure[2], pure[1] - 1)
+    ck(img.find_color(VEIL) is None,
+       "the rgba(254,0,0,.5) veil never painted its raw colour anywhere")
+    ck(abs(pw - 300) <= 2 and abs(ph - 40) <= 2,
+       "exactly half the 300x80 plate survived as its own colour")
+    # 50% of (254,0,0) over (0,0,254) is (~127, 0, ~127): green stays 0, and the
+    # other two channels land halfway. Integer rounding puts each at 126 or 127.
+    blended = count_where(img, veil_box,
+                          lambda p: p[1] == 0 and 118 <= p[0] <= 136 and 118 <= p[2] <= 136)
+    print("plate: unveiled %s (%dx%d); veiled band %s -> %d/%d blended px, sample %s"
+          % (pure, pw, ph, veil_box, blended, pw * ph,
+             img.at(pure[0] + 4, pure[1] - 4)))
+    ck(blended >= pw * ph * 95 // 100,
+       "the veiled band is the arithmetic blend of the veil over the plate")
+
+    # ---- text-decoration ----
+    for colour, name, lo, hi in ((OVER_C, "overline", 0.0, 0.25),
+                                 (STRIKE_C, "line-through", 0.30, 0.70),
+                                 (UNDER_C, "underline", 0.75, 1.0)):
+        box = block(img, colour, name)
+        w = box[2] - box[0] + 1
+        h = box[3] - box[1] + 1
+        run, ry = row_runs(img, box, colour)
+        frac = (ry - box[1]) / float(h - 1) if h > 1 else 0.0
+        print("%-13s box %s  solid row %d/%d px at %.2f of the box height"
+              % (name, box, run, w, frac))
+        ck(run >= w * 9 // 10,
+           "%s is drawn as a solid line across the whole run" % name)
+        ck(lo - 0.06 <= frac <= hi + 0.06,
+           "%s sits at the right height inside the text box" % name)
+
+    # ---- float ----
+    fl = block(img, FLOAT_C, "left float")
+    wrap = block(img, WRAP_BG, "wrapping block")
+    flw, flh = fl[2] - fl[0] + 1, fl[3] - fl[1] + 1
+    print("float %s (%dx%d)  wrap %s" % (fl, flw, flh, wrap))
+    ck(abs(flw - 120) <= 2 and abs(flh - 80) <= 2,
+       "the float painted at its declared 120x80")
+    ck(fl[0] - wrap[0] <= 2, "the float sits against the block's left content edge")
+    beside = leftmost_dark(img, wrap, fl[1], fl[3])
+    below = leftmost_dark(img, wrap, fl[3] + 4, wrap[3])
+    print("leftmost glyph beside the float: %s   below it: %s" % (beside, below))
+    ck(beside is not None and beside > fl[2],
+       "every glyph in the float's band is to the RIGHT of the float")
+    ck(below is not None and below < fl[0] + 8,
+       "text returns to the block's left edge below the float")
+    ck(below is not None and beside is not None and beside - below > 100,
+       "the two measures differ by the float's width, i.e. the lines really narrowed")
 
     print("\nALL PASS -- artefacts in %s" % tmp)
 finally:

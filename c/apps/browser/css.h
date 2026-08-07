@@ -54,8 +54,8 @@ struct cstyle {
     uint32_t color;                 /* 0xRRGGBB (text) */
     uint32_t background; int has_bg;
     int bg_alpha;                   /* background-color alpha 0..255 (255 = opaque).
-                                     * Carried through to the display list; the
-                                     * painter does not blend yet. */
+                                     * Blended by the painter, combined with the
+                                     * element's opacity. */
     int font_px, bold, italic, mono;
     int mt, mr, mb, ml;             /* margins (px); ml/mr = -1 means auto */
     int pt, pr, pb, pl;             /* paddings (px) */
@@ -68,8 +68,10 @@ struct cstyle {
     int line_px;                    /* line height (px); 0 = derive from font */
     int border_w[4];                /* top, right, bottom, left (px); 0 = none */
     uint32_t border_color[4];       /* per edge, 0xRRGGBB */
-    unsigned char border_style[4];  /* CSS_BORDER_STYLE_* (solid/dashed/...); the
-                                     * painter draws every non-none style solid */
+    unsigned char border_style[4];  /* CSS_BORDER_STYLE_* per edge. The painter
+                                     * draws solid/dotted/dashed/double and the
+                                     * four bevelled styles; double degrades to
+                                     * solid below 3px, where it cannot show. */
     int radius;                     /* border-radius px (via css_extra; LibCSS predates it) */
     int radius_pct;                 /* border-radius % (of min(w,h) at paint) */
     int underline, strike, overline;            /* text-decoration bits */

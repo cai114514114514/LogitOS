@@ -1,0 +1,76 @@
+/* Host stand-in for c/apps/logit.h, used ONLY by tests/unit/paint_test.c.
+ *
+ * browser_paint.c draws through five syscall wrappers and nothing else, so the
+ * cheapest way to test it on the host is to replace those five with recorders
+ * and assert on the ops. The real logit.h issues `int 0x80`, which a host
+ * process obviously cannot do -- so the test build puts THIS directory first on
+ * the include path and `#include "logit.h"` resolves here instead. (Same trick
+ * as tests/unit/kheapstub for the kernel heap.)
+ *
+ * The recorded op list is the painter's real output: geometry, colour, and --
+ * crucially for the blended paths -- the alpha the painter chose. */
+#ifndef PAINTHOST_LOGIT_H
+#define PAINTHOST_LOGIT_H
+
+#include <stdint.h>
+
+enum { OP_CLIP, OP_RECT, OP_RRECT, OP_BLIT, OP_TEXT };
+
+struct paintop {
+    int kind;
+    int x, y, w, h;
+    unsigned color;        /* RECT/RRECT/TEXT: the colour asked for.
+                            * BLIT of a 1x1 source: its RGB. */
+    int alpha;             /* BLIT: the source alpha. 255 elsewhere. */
+    int radius;            /* RRECT */
+    int px, mono;          /* TEXT */
+    const char *text; int len;
+    int solid;             /* BLIT: 1 when the source was a single pixel, i.e.
+                            * an alpha FILL rather than an image */
+};
+
+#define PAINT_MAXOPS 4096
+extern struct paintop paint_ops[PAINT_MAXOPS];
+extern int paint_nops;
+
+static inline struct paintop *paint_push(int kind)
+{
+    static struct paintop sink;
+    if (paint_nops >= PAINT_MAXOPS) return &sink;
+    struct paintop *o = &paint_ops[paint_nops++];
+    o->kind = kind; o->x = o->y = o->w = o->h = 0;
+    o->color = 0; o->alpha = 255; o->radius = 0;
+    o->px = 0; o->mono = 0; o->text = 0; o->len = 0; o->solid = 0;
+    return o;
+}
+
+struct logit_run { int x, y, px, mono; unsigned color; const char *s; int len; };
+struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
+
+static inline void gui_rect(int x, int y, int w, int h, unsigned color)
+{ struct paintop *o = paint_push(OP_RECT); o->x=x; o->y=y; o->w=w; o->h=h; o->color=color; }
+
+static inline void gui_rrect(int x, int y, int w, int h, int radius, unsigned color)
+{ struct paintop *o = paint_push(OP_RRECT); o->x=x; o->y=y; o->w=w; o->h=h;
+  o->radius=radius; o->color=color; }
+
+static inline void gui_clip(int x, int y, int w, int h)
+{ struct paintop *o = paint_push(OP_CLIP); o->x=x; o->y=y; o->w=w; o->h=h; }
+
+static inline void gui_text_run(int x, int y, int px, int mono, unsigned color,
+                                const char *s, int len)
+{ struct paintop *o = paint_push(OP_TEXT); o->x=x; o->y=y; o->px=px; o->mono=mono;
+  o->color=color; o->text=s; o->len=len; }
+
+static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba,
+                            int sw, int sh)
+{
+    struct paintop *o = paint_push(OP_BLIT);
+    o->x=x; o->y=y; o->w=w; o->h=h; o->solid = (sw == 1 && sh == 1);
+    if (rgba && o->solid) {
+        o->color = ((unsigned)rgba[0] << 16) | ((unsigned)rgba[1] << 8) | rgba[2];
+        o->alpha = rgba[3];
+    }
+}
+
+#endif /* PAINTHOST_LOGIT_H */
