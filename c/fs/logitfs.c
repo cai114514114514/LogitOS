@@ -866,7 +866,17 @@ static int logitfs_mount(void)
     if (fsck_super_valid(&sb)) return -1;
 
     log_max = sb.log_blocks - 1;
-    if (bcache_init(sb.total_blocks, 0)) return -1;
+    /* The cache wants 1 MiB of contiguous kernel heap. Mount is early, so it
+     * should be there -- but a filesystem that refuses to mount because it could
+     * not get a CACHE would be an absurd way to lose the machine, so fall back
+     * through smaller pools and, in the worst case, run with a handful of
+     * buffers. Nothing about correctness depends on the size. */
+    if (bcache_init(sb.total_blocks, 0)) {
+        int n = BC_NBUF / 4;
+        while (n >= 8 && bcache_init(sb.total_blocks, n)) n /= 2;
+        if (n < 8) return -1;
+        kprintf("[fs] buffer cache: only %d buffers available\n", n);
+    }
     bitmap = kmalloc((size_t)((uint64_t)sb.bitmap_blocks * BS));
     inodes = kmalloc((size_t)((uint64_t)sb.inode_blocks  * BS));
     tx_bufs = kmalloc((size_t)log_max * BS);
