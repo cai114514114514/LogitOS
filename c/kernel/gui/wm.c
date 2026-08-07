@@ -23,6 +23,7 @@
  * Writing it down found a real disagreement: SYS_GUI_GLASS's radius is 8 bits,
  * which the comment's `(radius<<32)|...` never said. */
 #include "logit_pack.h"
+#include "ktime.h"
 #include "evq.h"
 #include "keyboard.h"
 #include "net.h"
@@ -122,6 +123,27 @@ static int W, H;
 static void dirty_full(void) { dirty = 1; }
 static void dirty_rect(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; dirty = 1; }
 static int next_app_id = 1;
+
+/* ---- compositor cost, measured on the machine ------------------------------
+ *
+ * "It got laggier" is not a number, and neither is a frame counter: what makes
+ * the compositor expensive is a full recomposite, and what makes the DESKTOP
+ * feel expensive is how many of those a user's hand provokes per second. So the
+ * two things counted here are (a) composites and how long each one took, and
+ * (b) pointer-motion samples -- the highest-frequency input in the system, and
+ * the one whose cost this work is about. The ratio between them IS the claim:
+ * one composite per motion sample is the old behaviour, ~zero is the new one.
+ *
+ * The clock is the monotonic ns clock (ktime.h), not timer_ticks(): a 10 ms tick
+ * cannot resolve a frame, and a frame time quoted in ticks is exactly the kind
+ * of unitless duration that let a 2x-fast PIT hide for the life of the kernel.
+ *
+ * Cumulative, with a timestamp, deliberately: a test brackets an interval with
+ * two lines and subtracts. A driver that printed per-interval rates would force
+ * its own idea of the interval on every reader. */
+static uint64_t perf_composites, perf_comp_ns, perf_comp_ns_max;
+static uint64_t perf_motions;                  /* pointer-motion samples processed */
+static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor updates */
 
 /* System light/dark theme. The kernel-drawn chrome (menu bar, dock, window
  * frames) reads this directly; ring-3 apps query it via SYS_UI_DARK and follow. */
@@ -1197,6 +1219,7 @@ void wm_render(void)
     reap();
     fb_target(NULL);
     if (!back || !bg) return;              /* wm_init OOM fallback: nothing to composite into */
+    uint64_t t_start = time_mono_ns();
     for (int y = 0; y < H; y++)            /* wallpaper (baked in bg) */
         blit(back + y * W, bg + y * W, W);
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
@@ -1228,6 +1251,11 @@ void wm_render(void)
     draw_cursor_back(mx, my);              /* cursor on top, into the composite */
     fb_present();                          /* full back -> framebuffer + virtio flush */
     if (animating) dirty = 1;              /* keep compositing until the pop settles */
+
+    uint64_t dt = time_mono_ns() - t_start;
+    perf_composites++;
+    perf_comp_ns += dt;
+    if (dt > perf_comp_ns_max) perf_comp_ns_max = dt;
 }
 
 /* ---------- input ---------- */
@@ -1268,6 +1296,7 @@ static void wm_process_mouse(const struct inev *in)
     int moved = (x != mx || y != my);
     int content = 0;                       /* did anything other than the cursor change? */
     mx = x; my = y;
+    if (moved) perf_motions++;
 
     if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
         wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
@@ -1472,6 +1501,31 @@ void wm_init(void)
 
 void wm_render_first(void) { wm_render(); }
 
+/* One line per second of ACTIVITY, and silence otherwise.
+ *
+ * Silence is the load-bearing half. This console is also `/bin/sh`'s stdout --
+ * `make test-shell` reads command output off it -- so a compositor that
+ * chattered once a second would interleave itself into another test's expected
+ * bytes. An idle desktop composites twice a second to move the clock and moves
+ * the pointer never, so "did a hand touch this machine" is a question the
+ * counters can answer: report only when the pointer moved, or when composites
+ * ran far above the idle 2 Hz floor. */
+static void wm_perf_report(void)
+{
+    static uint64_t next_ms, last_comp, last_mot;
+    uint64_t ms = time_mono_ms();
+    if (ms < next_ms) return;
+    next_ms = ms + 1000;
+    uint64_t dc = perf_composites - last_comp, dm = perf_motions - last_mot;
+    last_comp = perf_composites; last_mot = perf_motions;
+    if (dm == 0 && dc <= 20) return;                 /* idle: the clock strip only */
+    kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu curns=%lu\n",
+            (unsigned long)ms, (unsigned long)perf_composites,
+            (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
+            (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
+            (unsigned long)perf_cursor_ns);
+}
+
 void wm_run(void)
 {
     __asm__ volatile ("mov $0x10, %%ax\n\tmov %%ax,%%ds\n\tmov %%ax,%%es\n\t"
@@ -1542,6 +1596,7 @@ void wm_run(void)
             dirty = 0; last = now;
             wm_render();
         }
+        wm_perf_report();
         /* Idle until the next interrupt instead of spinning schedule(): the timer
          * IRQ (100 Hz) preempts + round-robins the app threads, and mouse/keyboard
          * IRQs wake us immediately. This stops the whole system busy-spinning --
