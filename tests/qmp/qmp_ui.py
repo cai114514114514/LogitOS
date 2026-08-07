@@ -14,20 +14,73 @@ import socket
 import time
 
 # --- Dock geometry, mirrored from draw_dock() in c/kernel/gui/wm.c ---
-SCREEN_W, SCREEN_H = 1280, 800
-DOCK_ISZ, DOCK_GAP = 50, 14           # wm.c: dock_isz, dock_gap
+#
+# TWO UNITS LIVE HERE. wm.c's dock constants are POINTS; QMP's pointer works in
+# DEVICE pixels. The compositor multiplies by a backing scale it derives from the
+# mode (fb.c pick_scale), so this arithmetic has to derive the same scale from
+# the same numbers -- otherwise every driver's coordinates silently rot the way
+# they did when the app count changed, except now they rot when the RESOLUTION
+# changes and nothing in a driver mentions resolution at all.
+#
+# The default is 1280x800, where the scale is 100 and a point IS a pixel, so
+# every existing driver -- all of which boot QEMU at 1280x800 themselves -- gets
+# byte-identical coordinates to before. A driver that boots at another mode calls
+# configure() first.
+DESIGN_W_PT, DESIGN_H_PT = 1280, 800  # fb.c: DESIGN_W_PT / DESIGN_H_PT
+DOCK_ISZ_PT, DOCK_GAP_PT = 50, 14     # wm.c: DOCK_ISZ_PT, DOCK_GAP_PT
 NAPPS = 9                             # *.aex at the LogitFS root, in scan_apps order:
 BROWSER_SLOT = 8                      # clock textedit monitor terminal widgets
                                       # files preview studio browser
 
 
+def pick_scale(dev_w, dev_h):
+    """The backing scale the kernel will choose for this mode -- fb.c pick_scale.
+
+    Kept as one readable expression rather than a table because it is a claim
+    about the kernel's behaviour, and a test that guesses at it proves nothing:
+    qmp_scale.py asserts the guest's own reported scale equals this."""
+    s = min(dev_w * 100 // DESIGN_W_PT, dev_h * 100 // DESIGN_H_PT)
+    s = (s // 25) * 25
+    return max(100, min(300, s))
+
+
+SCREEN_W, SCREEN_H = DESIGN_W_PT, DESIGN_H_PT   # device pixels
+SCALE = 100
+
+
+def configure(dev_w, dev_h):
+    """Point every geometry helper at a different display mode."""
+    global SCREEN_W, SCREEN_H, SCALE
+    SCREEN_W, SCREEN_H, SCALE = dev_w, dev_h, pick_scale(dev_w, dev_h)
+    return SCALE
+
+
+def pt(v):
+    """Points -> device pixels, floored exactly as fb_pt() does."""
+    return v * SCALE // 100
+
+
 def dock_icon(i, n=NAPPS):
-    """Centre of dock icon `i` (0-based), matching wm.c's draw_dock()."""
-    dw = DOCK_GAP + n * (DOCK_ISZ + DOCK_GAP)
+    """Centre of dock icon `i` (0-based) in DEVICE pixels, matching draw_dock()."""
+    isz, gap = pt(DOCK_ISZ_PT), pt(DOCK_GAP_PT)
+    dw = gap + n * (isz + gap)
     x0 = (SCREEN_W - dw) // 2
-    y0 = SCREEN_H - (DOCK_ISZ + 20) - 12
-    return (x0 + DOCK_GAP + i * (DOCK_ISZ + DOCK_GAP) + DOCK_ISZ // 2,
-            y0 + 10 + DOCK_ISZ // 2)
+    y0 = SCREEN_H - (isz + pt(20)) - pt(12)
+    return (x0 + gap + i * (isz + gap) + isz // 2,
+            y0 + pt(10) + isz // 2)
+
+
+# The cursor's outline colour, from draw_cursor_back() in c/kernel/gui/wm.c. The
+# arrow's top-left cell is opaque outline, so the bounding box of this colour
+# starts exactly at the pointer's hotspot -- which makes the composited frame an
+# authoritative answer to "where is the pointer", something QMP cannot be asked.
+CURSOR_RGB = (20, 20, 26)
+
+
+def locate_cursor(ppm):
+    """The pointer's (x, y) as the guest drew it, or None."""
+    box = ppm.find_color(CURSOR_RGB)
+    return None if box is None else (box[0], box[1])
 
 
 KMAP = {" ": "spc", ".": "dot", "\n": "ret", "-": "minus", "/": "slash",
@@ -75,10 +128,25 @@ class Session:
     def _input(self, events):
         return self.cmd({"execute": "input-send-event", "arguments": {"events": events}})
 
+    # A PS/2 mouse packet carries a 9-bit signed delta, so one "rel" event cannot
+    # express an arbitrary jump: past ~255 px per axis the movement is clamped and
+    # the pointer stops SHORT of where the driver believes it is, silently. That
+    # never bit anything while every driver worked on a 1280x800 screen and every
+    # jump was small; on a 2560x1600 display the dock is 700 px below centre and
+    # the click landed on the wallpaper -- which looks exactly like the app
+    # failing to launch. Step the move instead. The endpoint is identical at every
+    # resolution, so this changes nothing for the existing drivers.
+    STEP = 128
+
     def goto(self, tx, ty, settle=0.2):
-        self._input([{"type": "rel", "data": {"axis": "x", "value": tx - self.cur[0]}},
-                     {"type": "rel", "data": {"axis": "y", "value": ty - self.cur[1]}}])
-        self.cur[0], self.cur[1] = tx, ty
+        while self.cur != [tx, ty]:
+            dx = max(-self.STEP, min(self.STEP, tx - self.cur[0]))
+            dy = max(-self.STEP, min(self.STEP, ty - self.cur[1]))
+            self._input([{"type": "rel", "data": {"axis": "x", "value": dx}},
+                         {"type": "rel", "data": {"axis": "y", "value": dy}}])
+            self.cur[0] += dx
+            self.cur[1] += dy
+            time.sleep(0.01)
         time.sleep(settle)
 
     def click(self, hold=0.12):
@@ -124,6 +192,41 @@ class Session:
         self.cmd({"execute": "screendump", "arguments": {"filename": path}})
         time.sleep(settle)
         return path
+
+    def settle_pointer(self, ppm_path, tx, ty, tries=8, settle=0.4):
+        """Move to (tx,ty) and CONFIRM the guest's pointer got there.
+
+        Dead reckoning off `rel` deltas is a guess, and on a 2560x1600 desktop it
+        is a wrong one: the emulated PS/2 controller buffers a byte at a time, so
+        a long move sent as a burst of packets loses some of them and the pointer
+        stops short. Nothing reports that. The click then lands on whatever
+        happens to be at the wrong place, which reads as a hit-testing bug in the
+        thing being tested rather than a lie in the harness.
+
+        The cursor is composited into the frame, so the screendump already
+        contains the answer: find it, correct, repeat. Returns the confirmed
+        position, or None if it never converged."""
+        self.goto(tx, ty, settle)
+        for _ in range(tries):
+            self.screendump(ppm_path, settle=0.2)
+            got = locate_cursor(PPM(ppm_path))
+            if got is None:
+                return None
+            if got == (tx, ty):
+                return got
+            # Believe the picture, not the model, then re-aim.
+            self.cur = [got[0], got[1]]
+            self.goto(tx, ty, settle)
+        return None
+
+    def click_at_confirmed(self, ppm_path, x, y):
+        """click_at, but only after the pointer is verified to be on the pixel."""
+        got = self.settle_pointer(ppm_path, x, y)
+        if got != (x, y):
+            raise AssertionError("pointer would not settle at (%d,%d); it is at %r"
+                                 % (x, y, got))
+        self.click()
+        return got
 
 
 # ---- PPM inspection -------------------------------------------------------

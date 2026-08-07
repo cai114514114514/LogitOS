@@ -46,6 +46,70 @@ void fb_clear_clip(void) { struct surface *s = T ? T : &screen; s->clip_on = 0; 
 uint32_t fb_width(void)  { return fb_w; }
 uint32_t fb_height(void) { return fb_h; }
 
+/* ---- UI scale ----------------------------------------------------------
+ * See the long comment in fb.h. 100 until fb_init() picks one, so anything that
+ * draws before a mode is known behaves exactly as it did before scaling existed. */
+static int ui_scale = 100;
+
+void fb_set_scale(int pct)
+{
+    if (pct < 100) pct = 100;          /* the UI is authored at 1x; never shrink it */
+    if (pct > 400) pct = 400;
+    ui_scale = pct;
+}
+int fb_scale(void) { return ui_scale; }
+
+/* Floor toward negative infinity, not toward zero: a window dragged off the left
+ * edge has negative content coordinates, and truncation there makes fb_pt
+ * non-monotonic across 0 -- two adjacent logical columns would map to the same
+ * device column and the frame would visibly shear at x=0. */
+int fb_pt(int points)
+{
+    if (points >= 0) return points * ui_scale / 100;
+    return -(((-points) * ui_scale + 99) / 100);
+}
+/* THE INVERSE OF A FLOOR IS NOT A FLOOR, and getting this wrong is the exact
+ * shape of the classic scaled-UI bug: at 150% the point 3 lands on device pixel
+ * 4, but 4*100/150 floors back to 2, so a click one row below a button's top
+ * edge reports as being above it. Every third row is misattributed and the
+ * widget's hit box quietly drifts from the pixels it drew.
+ *
+ * What is wanted is the point whose CELL contains this pixel -- the largest v
+ * with fb_pt(v) <= px -- which is ceil(100*(px+1)/scale) - 1. The host test
+ * (tests/unit/scale_test.c) asserts both directions of this for every scale, and
+ * it is what caught the floor-inverse version. */
+int fb_dev2pt(int px)
+{
+    int a = 100 * (px + 1), b = ui_scale;
+    int q = (a >= 0) ? (a + b - 1) / b : -((-a) / b);   /* ceil, negatives too */
+    return q - 1;
+}
+int fb_ui_px(void)    { return TEXT_UI_PX * ui_scale / 100; }
+int fb_width_pt(void)  { return fb_dev2pt((int)fb_w); }
+int fb_height_pt(void) { return fb_dev2pt((int)fb_h); }
+
+/* The desktop is designed against a 1280x800 point canvas: the browser alone
+ * asks for a 1180x620 window, and a logical desktop smaller than that would make
+ * SYS_GUI_CREATE refuse it. So the rule is not "pick a pretty number", it is
+ * "spend every pixel beyond the design canvas on DENSITY, never on shrinking the
+ * UI" -- which is exactly what makes a resolution bump an improvement instead of
+ * the usual make-everything-tiny regression.
+ *
+ * Quantised to 25% steps so the arithmetic stays predictable and a one-pixel
+ * change in the reported mode cannot jitter the whole layout. */
+#define DESIGN_W_PT 1280
+#define DESIGN_H_PT 800
+static int pick_scale(uint32_t w, uint32_t h)
+{
+    int sw = (int)w * 100 / DESIGN_W_PT, sh = (int)h * 100 / DESIGN_H_PT;
+    int s = sw < sh ? sw : sh;
+    s = (s / 25) * 25;
+    if (s < 100) s = 100;              /* a mode smaller than the design canvas
+                                        * stays 1x: shrinking is never the answer */
+    if (s > 300) s = 300;
+    return s;
+}
+
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     return ((uint32_t)r << rpos) | ((uint32_t)g << gpos) | ((uint32_t)b << bpos);
@@ -68,6 +132,7 @@ int fb_init(uint64_t mb_info_addr)
         rpos = 16; gpos = 8; bpos = 0;          /* B8G8R8X8 backing == 0x00RRGGBB */
         fb_mem = (volatile uint8_t *)virtio_gpu_fb();
         using_gpu = 1;
+        fb_set_scale(pick_scale(fb_w, fb_h));
         return 1;
     }
 
@@ -101,6 +166,7 @@ int fb_init(uint64_t mb_info_addr)
     vmm_map_range(fb->addr, fb->addr, (uint64_t)fb->pitch * fb->height,
                   VMM_WRITABLE | VMM_NOCACHE);
     fb_mem = (volatile uint8_t *)fb->addr;
+    fb_set_scale(pick_scale(fb_w, fb_h));
     return 1;
 }
 
@@ -233,26 +299,32 @@ void fb_fb_put(int x, int y, uint32_t color)
 
 /* Text now goes through the anti-aliased Unicode engine (kernel/text.c). These
  * stay as thin wrappers so existing callers keep working; `y` is the cell top. */
+/* These three take DEVICE coordinates but draw at the SCALED default UI size --
+ * they are the kernel chrome's text, and the chrome converts its own point
+ * geometry with fb_pt() before calling in. Routing the size through fb_ui_px()
+ * here rather than at each of the ~20 call sites is what makes the menu bar and
+ * window titles get re-rasterized (sharper), not stretched. */
 void fb_char(int x, int y, char ch, uint32_t color)
 {
     char s[2] = { ch, 0 };
-    text_draw(x, y, s, color);
+    text_draw_sz(x, y, s, fb_ui_px(), color);
 }
 
 void fb_text(int x, int y, const char *s, uint32_t color)
 {
-    int x0 = x, lh = text_line_height(TEXT_UI_PX);
+    int px = fb_ui_px();
+    int x0 = x, lh = text_line_height(px);
     char line[512]; int li = 0;
     for (;;) {
         if (*s == '\n' || *s == 0) {
-            line[li] = 0; text_draw(x0, y, line, color); li = 0;
+            line[li] = 0; text_draw_sz(x0, y, line, px, color); li = 0;
             if (*s == 0) break;
             y += lh; s++;
         } else { if (li < 511) line[li++] = *s; s++; }
     }
 }
 
-int fb_text_width(const char *s) { return text_width(s); }
+int fb_text_width(const char *s) { return text_width_sz(s, fb_ui_px()); }
 
 void fb_clear(uint32_t color)
 {

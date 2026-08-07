@@ -10,6 +10,34 @@ int fb_init(uint64_t mb_info_addr);
 uint32_t fb_width(void);
 uint32_t fb_height(void);
 
+/* ---- UI scale: points vs device pixels ---------------------------------
+ *
+ * The desktop is authored in POINTS -- a resolution-independent unit -- and the
+ * compositor rasterizes at the display's device resolution. A point is one
+ * pixel at scale 100; at scale 200 it is a 2x2 block of pixels, and text, vector
+ * icons and rounded corners are RE-RASTERIZED at the larger size rather than
+ * magnified, so they get sharper instead of blockier. This is the only reason
+ * the whole thing is possible without redrawing any art: every primitive under
+ * this header already takes a size (text_draw_run's px, icon_draw's px,
+ * fb_blit_rgba's dest rect), so handing it a bigger number is all that "retina"
+ * means here.
+ *
+ * fb_pt() FLOORS. Convert a rectangle as (fb_pt(x), fb_pt(x+w) - fb_pt(x)),
+ * never as (fb_pt(x), fb_pt(w)): two abutting logical rects must stay abutting
+ * at every scale, and rounding each width independently leaves seams.
+ *
+ * The scale is chosen from the mode in fb_init() -- see pick_scale() there --
+ * so raising the resolution raises the density instead of shrinking the UI. */
+void fb_set_scale(int pct);
+int  fb_scale(void);        /* percent; 100 = 1x */
+int  fb_pt(int points);     /* points -> device pixels (floor, negatives too) */
+int  fb_dev2pt(int px);     /* device pixels -> points (the inverse, for input) */
+int  fb_ui_px(void);        /* the default UI text size, in device pixels */
+
+/* The logical desktop size, in points: what an app should size itself against. */
+int  fb_width_pt(void);
+int  fb_height_pt(void);
+
 #define LOGIT_FONT_W 8
 #define LOGIT_FONT_H 16
 

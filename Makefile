@@ -511,6 +511,20 @@ QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
 #   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=1280,yres=800"    # 1x
 # (A not-yet-realized QEMU window still reports 640x480; virtio_gpu.c refuses
 # that and programs the default rather than locking the desktop to it.)
+# Modern GPU; the kernel drives the scanout. xres/yres set the EDID preferred
+# mode, which the driver reads once at boot. This used to be a CAGE: without a
+# scale factor the desktop's geometry was measured in raw device pixels, so
+# 1280x800 was simultaneously the resolution AND the layout, and any other number
+# either shrank every control or pushed windows off-screen. Now it is only a
+# DEFAULT. The kernel treats app geometry as points and picks a backing scale
+# from the mode (fb.c pick_scale), holding the logical desktop at >= 1280x800 and
+# spending the surplus pixels on density -- so 1920x1200 is the same desk space
+# at 1.5x, drawn with 2.25x the pixels, and text/icons are re-rasterized rather
+# than magnified. Override freely; the UI follows:
+#   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=2560,yres=1600"   # 2x
+#   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=1280,yres=800"    # 1x
+# (A not-yet-realized QEMU window still reports 640x480; virtio_gpu.c refuses
+# that and programs the default rather than locking the desktop to it.)
 QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1920,yres=1200
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap

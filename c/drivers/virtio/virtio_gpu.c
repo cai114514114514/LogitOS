@@ -23,6 +23,15 @@ void *memset(void *, int, size_t);
 #define GPU_FORMAT_B8G8R8X8          2     /* mem bytes B,G,R,X == our 0x00RRGGBB */
 #define RESID 1
 
+/* The mode to program when the host cannot tell us a usable one. It matches the
+ * Makefile's QEMU_GPU default on purpose: an unrealized window should come up as
+ * the desktop we ship, not as a fallback that looks like a different product. */
+#define GPU_DEFAULT_W 1920
+#define GPU_DEFAULT_H 1200
+/* Below this the desktop's own windows do not fit -- see the note at the check. */
+#define GPU_MIN_W     1280
+#define GPU_MIN_H     800
+
 struct gpu_hdr { uint32_t type, flags; uint64_t fence_id; uint32_t ctx_id, padding; } __attribute__((packed));
 struct gpu_rect { uint32_t x, y, width, height; } __attribute__((packed));
 
@@ -75,8 +84,14 @@ int virtio_gpu_init(void)
     if (virtio_queue_setup(&gpudev, 0, &gpuvq) != 0) return -1;   /* controlq */
     virtio_driver_ok(&gpudev);
 
-    /* 1. Display info -> preferred resolution (fall back to 1280x800). */
-    gpu_w = 1280; gpu_h = 800;
+    /* 1. Display info -> preferred resolution.
+     *
+     * WHATEVER THE DEVICE REPORTS AT OR ABOVE THE MINIMUM IS TAKEN AS IS, and a
+     * bigger mode is now a genuinely better desktop rather than a smaller-looking
+     * one: the compositor picks a backing scale from this size (fb.c pick_scale)
+     * and keeps the logical desktop at the design canvas, so extra pixels buy
+     * density. The driver still reads the mode exactly once. */
+    gpu_w = GPU_DEFAULT_W; gpu_h = GPU_DEFAULT_H;
     { struct gpu_hdr *h = (struct gpu_hdr *)cmdbuf; memset(h, 0, sizeof *h);
       h->type = GPU_CMD_GET_DISPLAY_INFO;
       if (gpu_cmd(sizeof *h) == GPU_RESP_OK_DISPLAY_INFO) {
@@ -86,12 +101,14 @@ int virtio_gpu_init(void)
           }
       }
     }
-    /* The desktop layout is designed for >=1280x800. A not-yet-realized host
-     * window reports 640x480, which would push nearly every window off-screen
-     * (and the driver reads the size only once, here). Refuse small modes and
-     * program 1280x800 via SET_SCANOUT instead -- QEMU honors it and grows the
-     * console/window to match. */
-    if (gpu_w < 1024 || gpu_h < 700) { gpu_w = 1280; gpu_h = 800; }
+    /* The floor is the DESIGN CANVAS, not an arbitrary threshold: the desktop is
+     * authored in 1280x800 points and the browser alone asks for a 1180-point
+     * window, so a smaller scanout is not a smaller desktop -- it is a desktop
+     * whose windows do not fit, and scaling cannot rescue that (the scale factor
+     * only ever goes up). A not-yet-realized host window reports 640x480 and is
+     * exactly this case. Program the default via SET_SCANOUT instead; QEMU honors
+     * it and grows the console/window to match. */
+    if (gpu_w < GPU_MIN_W || gpu_h < GPU_MIN_H) { gpu_w = GPU_DEFAULT_W; gpu_h = GPU_DEFAULT_H; }
 
     /* 2. RAM framebuffer (contiguous, identity-mapped). */
     uint64_t bytes = (uint64_t)gpu_w * gpu_h * 4;

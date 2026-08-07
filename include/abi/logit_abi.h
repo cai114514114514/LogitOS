@@ -146,6 +146,33 @@
 #define SOCK_E_TLS    -4   /* handshake or certificate verification failed */
 #define SOCK_E_NOSLOT -5   /* the socket or connection table is full */
 
+/* ---- Display geometry ------------------------------------------------------
+ *
+ * EVERY SIZE AND COORDINATE AN APP EXCHANGES WITH THE WINDOW MANAGER IS IN
+ * POINTS, NOT DEVICE PIXELS. gui_create(w,h), the rects, the text origins, the
+ * coordinates in struct logit_event -- all points. The compositor multiplies by
+ * the display's scale factor on the way in and divides on the way out, and it
+ * re-rasterizes text and vector icons at the device size, so a denser display
+ * makes the same app look SHARPER at the same physical size. That is why this
+ * arrived without an ABI break and without touching a single app: at scale 100 a
+ * point is a pixel and every existing number still means what it always meant.
+ *
+ * This call is how an app finds out what it is drawing onto. Fields are selected
+ * by the argument rather than filled into a struct deliberately -- a struct here
+ * would change the generated AetherScript ABI bindings, and a display query is
+ * not worth that blast radius.
+ *
+ * SCALE IS INFORMATION, NOT AN INSTRUCTION. An app that multiplies its own
+ * coordinates by SCREEN_SCALE will draw everything twice as large as it meant
+ * to, because the kernel has already applied it. Read it to choose an asset or
+ * to report the display, not to do arithmetic on layout. */
+#define SYS_SCREEN_INFO 82 /* (what) -> one SCREEN_* field below, or -1 */
+#define SCREEN_W       0   /* logical desktop width, in points  */
+#define SCREEN_H       1   /* logical desktop height, in points */
+#define SCREEN_SCALE   2   /* backing scale factor, in percent (100 = 1x)       */
+#define SCREEN_DEV_W   3   /* real framebuffer width, in device pixels          */
+#define SCREEN_DEV_H   4   /* real framebuffer height, in device pixels         */
+
 /* open() flags */
 #define O_RDONLY 0
 #define O_WRONLY 1

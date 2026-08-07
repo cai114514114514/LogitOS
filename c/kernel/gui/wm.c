@@ -36,8 +36,30 @@
 #include "spinlock.h"
 
 #define MAXWIN     16
-#define MENUBAR_H  24
-#define TITLEBAR_H 30
+/* ---- units ----------------------------------------------------------------
+ * Every geometry constant in this file is in POINTS; `struct win`'s x/y/w/h and
+ * everything that touches a pixel are in DEVICE pixels. S() converts one to the
+ * other and is the boundary between the two worlds.
+ *
+ * The surfaces are allocated at DEVICE size, and that single choice is the whole
+ * difference between a sharp desktop and a magnified one. Allocating a window's
+ * canvas at its logical size and scaling the blit at composite time would be far
+ * less code -- and would produce exactly the blurry upscale this work exists to
+ * avoid, because the glyphs would have been rasterized once at 1x. Instead the
+ * app's draw calls are scaled on the way in, so text and vector icons are
+ * rasterized AT the device size and the blit is 1:1.
+ *
+ * The other half is symmetry: what goes down as points*scale must come back up
+ * as pixels/scale. A scaled UI with unscaled hit-testing is worse than no
+ * scaling at all -- every click lands at a fraction of where it was aimed -- so
+ * every enqueue_input() below routes its window-local coordinates through PT().
+ */
+#define S(v)       fb_pt(v)          /* points -> device pixels */
+#define PT(v)      fb_dev2pt(v)      /* device pixels -> points */
+#define MENUBAR_H  24                /* points */
+#define TITLEBAR_H 30                /* points */
+#define MBH        S(MENUBAR_H)
+#define TBH        S(TITLEBAR_H)
 #define FW         LOGIT_FONT_W
 #define FH         LOGIT_FONT_H
 #define USER_PATH_MAX 128
@@ -70,6 +92,7 @@ struct win {
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
     struct evq ev;            /* SYS_POLL_EVENT ring (coalesces motion -- see evq.h) */
     int  wants_close;
+    int  cw_pt, ch_pt;        /* content size in POINTS -- what the app asked for */
     char cwd[128];            /* Finder: current directory path */
     uint64_t open_t0;         /* tick the open "pop" animation began (0 = settled) */
 };
@@ -299,6 +322,16 @@ static int sysinfo_text(char *buf, int max)
 {
     if (max <= 0) return 0;
     char *p = buf, *end = buf + max - 1;            /* reserve 1 byte for NUL */
+    /* Display geometry, in both units. Printed rather than merely known because
+     * "the desktop is 1280x800" and "the framebuffer is 1280x800" stopped being
+     * the same sentence the moment a scale factor existed, and every screenshot
+     * argument from here on needs to say which one it means. */
+    p = ap_str(p, end, "Display "); p = ap_num(p, end, (uint64_t)fb_width());
+    p = ap_str(p, end, "x"); p = ap_num(p, end, (uint64_t)fb_height());
+    p = ap_str(p, end, " px @ "); p = ap_num(p, end, (uint64_t)fb_scale());
+    p = ap_str(p, end, "% = "); p = ap_num(p, end, (uint64_t)fb_width_pt());
+    p = ap_str(p, end, "x"); p = ap_num(p, end, (uint64_t)fb_height_pt());
+    p = ap_str(p, end, " pt\n");
     p = ap_str(p, end, "Uptime  "); p = ap_num(p, end, timer_ticks() / 100); p = ap_str(p, end, " s\n");
     p = ap_str(p, end, "Memory  "); p = ap_num(p, end, (pmm_total_bytes() - pmm_free_bytes()) >> 20);
     p = ap_str(p, end, " / "); p = ap_num(p, end, pmm_total_bytes() >> 20); p = ap_str(p, end, " MB used\n");
@@ -373,7 +406,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
     if (!ap && num != SYS_HTTP_GET && num != SYS_HTTP_STATUS &&
-        num != SYS_HTTP_BODY && num != SYS_SYSINFO) {
+        num != SYS_HTTP_BODY && num != SYS_SYSINFO && num != SYS_SCREEN_INFO) {
         /* Window ADOPTION: a CLI process (e.g. /bin/as running a script) gets a
          * window on its first SYS_GUI_CREATE -- allocate an app slot and bind it
          * to the proc, then fall through to the normal create. Exit/teardown
@@ -406,8 +439,15 @@ long wm_gui_syscall(long num, long a, long b, long c)
         int wi = -1;
         for (int i = 0; i < MAXWIN; i++) if (!wins[i].used) { wi = i; break; }
         if (wi < 0) return -1;
-        int cw = LOGIT_GUI_CREATE_B_W(b), ch = LOGIT_GUI_CREATE_B_H(b);
-        if (cw <= 0 || ch <= 0) return -1;
+        /* (cw,ch) are POINTS. Every app in the tree passed device pixels here
+         * before scaling existed, and at scale 100 the two are the same number,
+         * which is precisely why reinterpreting the unit needed no ABI break and
+         * no app edit: an app that says 640x444 keeps getting the window it has
+         * always got, and on a denser display gets the same window drawn with
+         * more pixels. */
+        int cw_pt = LOGIT_GUI_CREATE_B_W(b), ch_pt = LOGIT_GUI_CREATE_B_H(b);
+        if (cw_pt <= 0 || ch_pt <= 0) return -1;
+        int cw = S(cw_pt), ch = S(ch_pt);
         /* cw,ch are each up to 65535 -- cw*ch*4 overflows int. A window larger
          * than the screen is meaningless, so cap to the framebuffer; do the size
          * math in 64-bit. */
@@ -415,12 +455,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         uint64_t pxcount = (uint64_t)cw * (uint64_t)ch;
         struct win *w = &wins[wi];
         w->used = 1; w->kind = WK_APP; w->app = ap;
-        w->w = cw; w->h = TITLEBAR_H + ch;
-        w->x = 110 + cascade * 28; w->y = 70 + cascade * 28;
+        w->cw_pt = cw_pt; w->ch_pt = ch_pt;
+        w->w = cw; w->h = TBH + ch;
+        w->x = S(110 + cascade * 28); w->y = S(70 + cascade * 28);
         cascade = (cascade + 1) % 6;
         { int SW = (int)fb_width(), SH = (int)fb_height();   /* keep big windows on-screen */
           if (w->x + w->w > SW) w->x = SW - w->w; if (w->x < 0) w->x = 0;
-          if (w->y + w->h > SH - 4) w->y = SH - 4 - w->h; if (w->y < 24) w->y = 24; }
+          if (w->y + w->h > SH - S(4)) w->y = SH - S(4) - w->h; if (w->y < MBH) w->y = MBH; }
         scopy(w->title, title, sizeof w->title);
         w->surf.w = cw; w->surf.h = ch;
         w->surf.clip_on = 0;             /* fresh canvas: a reused slot must not inherit a clip */
@@ -441,8 +482,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_RECT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_RECT_A_X(a), y = LOGIT_GUI_RECT_A_Y(a);
-        int rw = LOGIT_GUI_RECT_B_W(b), rh = LOGIT_GUI_RECT_B_H(b);
+        /* Points in, device pixels out. The width is the DIFFERENCE of two
+         * converted edges, not the converted width: at scale 150 two abutting
+         * 5-point columns are 7 and 8 pixels wide, and converting each width on
+         * its own would make them 7 and 7 and leave a seam that moves as the
+         * app scrolls. Same idiom in every rect-shaped call below. */
+        int x = S(LOGIT_GUI_RECT_A_X(a)), y = S(LOGIT_GUI_RECT_A_Y(a));
+        int rw = S(LOGIT_GUI_RECT_A_X(a) + LOGIT_GUI_RECT_B_W(b)) - x;
+        int rh = S(LOGIT_GUI_RECT_A_Y(a) + LOGIT_GUI_RECT_B_H(b)) - y;
         /* rw/rh are user-controlled (up to 65535 each): an unclamped fill runs
          * up to 65535^2 fb_put calls inside the syscall gate (IF=0 + BKL held),
          * freezing the machine for seconds per call. Intersect with the surface. */
@@ -453,9 +500,10 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_RRECT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_RRECT_A_X(a), y = LOGIT_GUI_RRECT_A_Y(a);
-        int rw = LOGIT_GUI_RRECT_B_W(b), rh = LOGIT_GUI_RRECT_B_H(b);
-        int radius = LOGIT_GUI_RRECT_C_RADIUS(c);
+        int x = S(LOGIT_GUI_RRECT_A_X(a)), y = S(LOGIT_GUI_RRECT_A_Y(a));
+        int rw = S(LOGIT_GUI_RRECT_A_X(a) + LOGIT_GUI_RRECT_B_W(b)) - x;
+        int rh = S(LOGIT_GUI_RRECT_A_Y(a) + LOGIT_GUI_RRECT_B_H(b)) - y;
+        int radius = S(LOGIT_GUI_RRECT_C_RADIUS(c));
         /* same surface-intersection clamp as SYS_GUI_RECT (user-controlled size
          * behind the syscall gate) */
         if (rw > w->surf.w - x) rw = w->surf.w - x;
@@ -465,34 +513,42 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_TEXT: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_TEXT_A_X(a), y = LOGIT_GUI_TEXT_A_Y(a);
+        int x = S(LOGIT_GUI_TEXT_A_X(a)), y = S(LOGIT_GUI_TEXT_A_Y(a));
         char text[USER_TEXT_MAX];
         if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
+        /* fb_text picks up the scaled UI size itself (fb_ui_px), so the glyphs
+         * are re-rasterized larger, not blown up. */
         fb_target(&w->surf); fb_text(x, y, text, (uint32_t)b); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_TEXT_MONO: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_TEXT_MONO_A_X(a), y = LOGIT_GUI_TEXT_MONO_A_Y(a);
-        int cell = LOGIT_GUI_TEXT_MONO_B_CELL(b); uint32_t color = (uint32_t)LOGIT_GUI_TEXT_MONO_B_COLOR(b);
+        int x = S(LOGIT_GUI_TEXT_MONO_A_X(a)), y = S(LOGIT_GUI_TEXT_MONO_A_Y(a));
+        int cell = S(LOGIT_GUI_TEXT_MONO_B_CELL(b)); uint32_t color = (uint32_t)LOGIT_GUI_TEXT_MONO_B_COLOR(b);
         char text[USER_TEXT_MAX];
         if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
-        fb_target(&w->surf); text_draw_mono(x, y, text, cell, color); fb_target(NULL);
+        /* The GLYPH size scales with the cell. Scaling only the cell would space
+         * the same small glyphs further apart -- a terminal with gaps, not a
+         * bigger terminal. */
+        fb_target(&w->surf); text_draw_mono_sz(x, y, text, fb_ui_px(), cell, color); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_ICON: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_ICON_A_X(a), y = LOGIT_GUI_ICON_A_Y(a);
-        int id = LOGIT_GUI_ICON_B_ID(b), px = LOGIT_GUI_ICON_B_PX(b);
+        int x = S(LOGIT_GUI_ICON_A_X(a)), y = S(LOGIT_GUI_ICON_A_Y(a));
+        int id = LOGIT_GUI_ICON_B_ID(b), px = S(LOGIT_GUI_ICON_B_PX(b));
         if (px < 1 || px > 512) return -1;   /* icon_draw allocates px*px before rasterizing */
+        /* Icons are vector paths in a 0..100 box, so a scaled px is a genuinely
+         * re-rasterized icon: the one place where "retina" costs nothing at all. */
         fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_GLASS: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_GLASS_A_X(a), y = LOGIT_GUI_GLASS_A_Y(a);
-        int gw = LOGIT_GUI_GLASS_B_W(b), gh = LOGIT_GUI_GLASS_B_H(b);
-        int radius = LOGIT_GUI_GLASS_C_RADIUS(c);
+        int x = S(LOGIT_GUI_GLASS_A_X(a)), y = S(LOGIT_GUI_GLASS_A_Y(a));
+        int gw = S(LOGIT_GUI_GLASS_A_X(a) + LOGIT_GUI_GLASS_B_W(b)) - x;
+        int gh = S(LOGIT_GUI_GLASS_A_Y(a) + LOGIT_GUI_GLASS_B_H(b)) - y;
+        int radius = S(LOGIT_GUI_GLASS_C_RADIUS(c));
         uint8_t tr = (uint8_t)LOGIT_GUI_GLASS_C_TR(c), tg = (uint8_t)LOGIT_GUI_GLASS_C_TG(c),
                 tb = (uint8_t)LOGIT_GUI_GLASS_C_TB(c), ta = (uint8_t)LOGIT_GUI_GLASS_C_TA(c);
         fb_target(&w->surf); fb_liquid_glass(x, y, gw, gh, radius, tr, tg, tb, ta); fb_target(NULL);
@@ -645,7 +701,12 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (px < 1 || px > 512) return 0;    /* unbounded px overflows the rasterizer's w*h math */
         char tmp[USER_TEXT_MAX];
         if (len > 0) { if (!user_range_ok(s, (uint64_t)len, 0)) return -1; memcpy(tmp, s, (size_t)len); }
-        return text_measure(tmp, len, px, mono);
+        /* Measure at the size it will actually be DRAWN at, then answer in
+         * points. Measuring at the unscaled px instead would be self-consistent
+         * arithmetic and still wrong: hinting-free advances do not scale exactly
+         * linearly, so a caller that word-wraps on the 1x width would overflow
+         * its own box once the 1.5x glyphs landed. */
+        return PT(text_measure(tmp, len, S(px), mono));
     }
     case SYS_GUI_TEXT_RUN: {
         struct win *w = app_window(ap); if (!w) return -1;
@@ -658,7 +719,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (len > 0) { if (!user_range_ok(r.s, (uint64_t)len, 0)) return -1; memcpy(tmp, r.s, (size_t)len); }
         tmp[len] = 0;
         fb_target(&w->surf);
-        text_draw_run(r.x, r.y, tmp, len, r.px, r.mono, r.color);
+        text_draw_run(S(r.x), S(r.y), tmp, len, S(r.px), r.mono, r.color);
         fb_target(NULL);
         return 0;
     }
@@ -691,23 +752,41 @@ long wm_gui_syscall(long num, long a, long b, long c)
         /* dw/dh come straight from the app: fb_blit_rgba clips its loops to the
          * visible target region, but reject non-positive sizes here. */
         if (bl.w <= 0 || bl.h <= 0) return -1;
+        /* The DEST rect scales; the source bitmap does not. fb_blit_rgba already
+         * rescales nearest-neighbour, so an image simply covers the same logical
+         * area. A bitmap cannot gain detail it never had -- unlike the text and
+         * icons around it, which do. */
+        int bx = S(bl.x), by = S(bl.y);
         fb_target(&w->surf);
-        fb_blit_rgba(bl.x, bl.y, bl.w, bl.h, bl.rgba, bl.sw, bl.sh);
+        fb_blit_rgba(bx, by, S(bl.x + bl.w) - bx, S(bl.y + bl.h) - by, bl.rgba, bl.sw, bl.sh);
         fb_target(NULL);
         return 0;
     }
     case SYS_GUI_CLIP: {
         struct win *w = app_window(ap); if (!w) return -1;
-        int x = LOGIT_GUI_CLIP_A_X(a), y = LOGIT_GUI_CLIP_A_Y(a);
+        int x = S(LOGIT_GUI_CLIP_A_X(a)), y = S(LOGIT_GUI_CLIP_A_Y(a));
         int cw2 = LOGIT_GUI_CLIP_B_W(b), ch2 = LOGIT_GUI_CLIP_B_H(b);
         /* The clip is stored ON the window surface, so target it first; this is
          * why a clip set here can't bleed into another app's surface draws. */
         fb_target(&w->surf);
         if (cw2 == 0 && ch2 == 0) fb_clear_clip();
-        else fb_set_clip(x, y, cw2, ch2);
+        else fb_set_clip(x, y, S(LOGIT_GUI_CLIP_A_X(a) + cw2) - x,
+                               S(LOGIT_GUI_CLIP_A_Y(a) + ch2) - y);
         fb_target(NULL);
         return 0;
     }
+    /* Display geometry. Allowed without a window (see the !ap gate above): it is
+     * a read-only query about the machine, exactly like SYS_SYSINFO, and a CLI
+     * program that wants to know the desktop size has no window by definition. */
+    case SYS_SCREEN_INFO:
+        switch ((int)a) {
+        case SCREEN_W:     return fb_width_pt();
+        case SCREEN_H:     return fb_height_pt();
+        case SCREEN_SCALE: return fb_scale();
+        case SCREEN_DEV_W: return (int)fb_width();
+        case SCREEN_DEV_H: return (int)fb_height();
+        }
+        return -1;
     case SYS_OPEN_PATH: {
         char path[USER_PATH_MAX];
         if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
@@ -884,29 +963,39 @@ static void draw_background(void)
  * of whatever is behind it (wallpaper or a window slid up under it). */
 static void draw_clock(void);
 static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
+/* menu_tog_* are DEVICE pixels: they are written here and read by the click
+ * handler, which sees device mouse coordinates. Keeping the stored rect in the
+ * same space as the thing it is tested against is the whole trick -- the
+ * alternative (store points, convert at every comparison) is where a scaled UI
+ * with unscaled hit-testing comes from. */
 static void draw_menubar(void)
 {
     /* Liquid Glass menu bar (thin -> adaptive edge band) */
-    if (g_ui_dark) fb_liquid_glass(0, 0, W, MENUBAR_H, 2, 24, 24, 32, 150);
-    else           fb_liquid_glass(0, 0, W, MENUBAR_H, 2, 255, 255, 255, 110);
-    fb_blend_rect(0, MENUBAR_H - 1, W, 1, 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
+    if (g_ui_dark) fb_liquid_glass(0, 0, W, MBH, S(2), 24, 24, 32, 150);
+    else           fb_liquid_glass(0, 0, W, MBH, S(2), 255, 255, 255, 110);
+    fb_blend_rect(0, MBH - S(1), W, S(1), 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
-    fb_fill_circle(16, MENUBAR_H / 2, 6, ink);
-    fb_text(32, 4, "LogitOS", ink);
-    fb_text(112, 4, "File", ink);
-    fb_text(156, 4, "Edit", ink);
-    fb_text(200, 4, "View", ink);
+    fb_fill_circle(S(16), MBH / 2, S(6), ink);
+    fb_text(S(32), S(4), "LogitOS", ink);
+    fb_text(S(112), S(4), "File", ink);
+    fb_text(S(156), S(4), "Edit", ink);
+    fb_text(S(200), S(4), "View", ink);
     /* dark-mode toggle switch: track + knob (knob right = dark) */
-    menu_tog_x = W - 210; menu_tog_y = (MENUBAR_H - menu_tog_h) / 2;
+    menu_tog_w = S(38); menu_tog_h = S(18);
+    menu_tog_x = W - S(210); menu_tog_y = (MBH - menu_tog_h) / 2;
     if (g_ui_dark) fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(94, 150, 255));
     else           fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(198, 200, 208));
-    int kr = menu_tog_h / 2 - 2;
-    int kx = g_ui_dark ? menu_tog_x + menu_tog_w - kr - 3 : menu_tog_x + kr + 3;
+    int kr = menu_tog_h / 2 - S(2);
+    int kx = g_ui_dark ? menu_tog_x + menu_tog_w - kr - S(3) : menu_tog_x + kr + S(3);
     fb_fill_circle(kx, menu_tog_y + menu_tog_h / 2, kr, rgb(255, 255, 255));
     draw_clock();
 }
 
-static int dock_x0, dock_y0, dock_isz = 50, dock_gap = 14;
+/* Points; DOCK_ISZ/DOCK_GAP are the device-pixel values draw_dock() derives from
+ * them each frame and the click handler tests against. */
+#define DOCK_ISZ_PT 50
+#define DOCK_GAP_PT 14
+static int dock_x0, dock_y0, dock_isz = DOCK_ISZ_PT, dock_gap = DOCK_GAP_PT;
 
 /* Draw one dock tile of side `sz` centered at (cx,cy): glossy gradient + sheen +
  * the app's vector icon (or its letter). Used at base size and, for the hovered
@@ -918,7 +1007,7 @@ static void dock_tile(int i, int cx, int cy, int sz)
     fb_blend_round_rect(x, y, sz, sz / 2, rad, 255, 255, 255, 32);
     int ic = icon_for_app(reg[i].file, reg[i].ext);
     if (ic >= 0) { int isz = sz * 62 / 100; icon_draw(ic, cx - isz / 2, cy - isz / 2, isz, rgb(255, 255, 255)); }
-    else { char ch[2] = { reg[i].icon, 0 }; fb_text(cx - FW / 2, cy - FH / 2, ch, rgb(255, 255, 255)); }
+    else { char ch[2] = { reg[i].icon, 0 }; fb_text(cx - S(FW) / 2, cy - S(FH) / 2, ch, rgb(255, 255, 255)); }
 }
 
 /* Upward pixel offset of dock icon `i`'s launch bounce (two decaying parabolic
@@ -929,7 +1018,7 @@ static int dock_bounce_off(int i)
     if (!t0) return 0;
     uint64_t e = timer_ticks() - t0, DUR = 55, half = DUR / 2;
     if (e >= DUR) { reg_bounce[i] = 0; return 0; }
-    int hop = (e < half) ? 0 : 1, H = hop ? 7 : 14;
+    int hop = (e < half) ? 0 : 1, H = S(hop ? 7 : 14);
     int u = (int)(e - (uint64_t)hop * half), d = (int)half;   /* 0..d within the arc */
     return H * 4 * u * (d - u) / (d * d);                      /* parabola, peak mid-arc */
 }
@@ -937,18 +1026,19 @@ static int dock_bounce_off(int i)
 static void draw_dock(void)
 {
     int n = nreg < 1 ? 1 : nreg;
-    int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + 20;
-    dock_x0 = (W - dw) / 2; dock_y0 = H - dh - 12;
-    fb_blend_round_rect(dock_x0 - 1, dock_y0 + 7, dw + 2, dh, 28, 0, 0, 0, 50);    /* soft drop shadow */
+    dock_isz = S(DOCK_ISZ_PT); dock_gap = S(DOCK_GAP_PT);   /* device px, for the click path */
+    int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + S(20);
+    dock_x0 = (W - dw) / 2; dock_y0 = H - dh - S(12);
+    fb_blend_round_rect(dock_x0 - S(1), dock_y0 + S(7), dw + S(2), dh, S(28), 0, 0, 0, 50);   /* soft drop shadow */
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
-    if (g_ui_dark) fb_liquid_glass(dock_x0, dock_y0, dw, dh, 28, 26, 26, 34, 104);
-    else           fb_liquid_glass(dock_x0, dock_y0, dw, dh, 28, 255, 255, 255, 44);
+    if (g_ui_dark) fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 26, 26, 34, 104);
+    else           fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 255, 255, 255, 44);
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
      * as a tooltip. Re-evaluated every frame, and the WM repaints on each mouse
      * move, so it animates as the cursor sweeps the dock. */
-    int ccy = dock_y0 + 10 + dock_isz / 2, hov = -1, animating = 0;
+    int ccy = dock_y0 + S(10) + dock_isz / 2, hov = -1, animating = 0;
     if (my >= dock_y0 && my < dock_y0 + dh)
         for (int i = 0; i < nreg; i++) {
             int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
@@ -965,9 +1055,9 @@ static void draw_dock(void)
         int ccx = dock_x0 + dock_gap + hov * (dock_isz + dock_gap) + dock_isz / 2;
         dock_tile(hov, ccx, ccy - b, dock_isz * 130 / 100);  /* 1.3x pop */
         const char *nm = reg[hov].name;                    /* tooltip above the dock */
-        int tw = fb_text_width(nm), tx = ccx - tw / 2;
-        fb_blend_round_rect(tx - 9, dock_y0 - 28, tw + 18, 23, 7, 28, 28, 34, 225);
-        fb_text(tx, dock_y0 - 25, nm, rgb(244, 244, 248));
+        int tw = fb_text_width(nm), tx = ccx - tw / 2;     /* already device px (scaled font) */
+        fb_blend_round_rect(tx - S(9), dock_y0 - S(28), tw + S(18), S(23), S(7), 28, 28, 34, 225);
+        fb_text(tx, dock_y0 - S(25), nm, rgb(244, 244, 248));
     }
     if (animating) dirty = 1;                              /* keep compositing while a bounce runs */
 }
@@ -985,7 +1075,7 @@ static void draw_clock(void)
     b[p++]=' '; b[p++]=' ';
     p+=fmt2(b+p,t.hour); b[p++]=':'; p+=fmt2(b+p,t.minute); b[p++]=':'; p+=fmt2(b+p,t.second);
     b[p]=0;
-    fb_text(W - fb_text_width(b) - 12, 4, b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
+    fb_text(W - fb_text_width(b) - S(12), S(4), b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
 }
 
 /* The file browser is now the ring-3 Finder app (src/apps/gui/files.c), launched
@@ -1010,18 +1100,18 @@ static void shadow_band(int x, int y, int w, int h, int t, int a)
  * for the open-pop scale animation as well as straight into `back`. */
 static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int focused)
 {
-    fb_round_rect(x, y, ww, wh, 10, g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252));
+    fb_round_rect(x, y, ww, wh, S(10), g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252));
     uint32_t tbtop, tbbot;
     if (g_ui_dark) { tbtop = focused ? rgb(60, 60, 70) : rgb(40, 40, 48); tbbot = focused ? rgb(44, 44, 52) : rgb(34, 34, 40); }
     else           { tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252); tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244); }
-    fb_round_rect_vgrad(x, y, ww, TITLEBAR_H, 10, tbtop, tbbot);
-    fb_fill_rect(x, y + TITLEBAR_H, ww, 1, g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+    fb_round_rect_vgrad(x, y, ww, TBH, S(10), tbtop, tbbot);
+    fb_fill_rect(x, y + TBH, ww, S(1), g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
-    fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
-    fb_fill_circle(x + 34, y + 15, 6, focused ? rgb(254, 188, 46) : off);
-    fb_fill_circle(x + 52, y + 15, 6, focused ? rgb(40, 200, 64) : off);
+    fb_fill_circle(x + S(16), y + S(15), S(6), focused ? rgb(255, 95, 86) : off);  /* close */
+    fb_fill_circle(x + S(34), y + S(15), S(6), focused ? rgb(254, 188, 46) : off);
+    fb_fill_circle(x + S(52), y + S(15), S(6), focused ? rgb(40, 200, 64) : off);
     int tw = fb_text_width(title);
-    fb_text(x + (ww - tw) / 2, y + 7, title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
+    fb_text(x + (ww - tw) / 2, y + S(7), title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
 }
 
 /* Normal (non-animating) window frame: a LIQUID GLASS titlebar that frosts +
@@ -1035,19 +1125,19 @@ static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int
 static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    shadow_band(x, y, ww, wh, 8, focused ? 11 : 7);        /* faint outer fringe */
-    shadow_band(x, y, ww, wh, 4, focused ? 22 : 13);       /* mid */
-    shadow_band(x, y, ww, wh, 2, focused ? 40 : 24);       /* dark edge */
+    shadow_band(x, y, ww, wh, S(8), focused ? 11 : 7);      /* faint outer fringe */
+    shadow_band(x, y, ww, wh, S(4), focused ? 22 : 13);     /* mid */
+    shadow_band(x, y, ww, wh, S(2), focused ? 40 : 24);     /* dark edge */
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
-    if (g_ui_dark) fb_liquid_glass(x, y, ww, TITLEBAR_H + 10, 10, 30, 30, 40, a);
-    else           fb_liquid_glass(x, y, ww, TITLEBAR_H + 10, 10, 250, 250, 255, a);
-    fb_fill_rect(x, y + TITLEBAR_H, ww, 1, g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+    if (g_ui_dark) fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 30, 30, 40, a);
+    else           fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 250, 250, 255, a);
+    fb_fill_rect(x, y + TBH, ww, S(1), g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
-    fb_fill_circle(x + 16, y + 15, 6, focused ? rgb(255, 95, 86) : off);  /* close */
-    fb_fill_circle(x + 34, y + 15, 6, focused ? rgb(254, 188, 46) : off);
-    fb_fill_circle(x + 52, y + 15, 6, focused ? rgb(40, 200, 64) : off);
+    fb_fill_circle(x + S(16), y + S(15), S(6), focused ? rgb(255, 95, 86) : off);  /* close */
+    fb_fill_circle(x + S(34), y + S(15), S(6), focused ? rgb(254, 188, 46) : off);
+    fb_fill_circle(x + S(52), y + S(15), S(6), focused ? rgb(40, 200, 64) : off);
     int tw = fb_text_width(w->title);
-    fb_text(x + (ww - tw) / 2, y + 7, w->title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
+    fb_text(x + (ww - tw) / 2, y + S(7), w->title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
 }
 
 static const char *cursor_bmp[] = {
@@ -1060,16 +1150,27 @@ static const char *cursor_bmp[] = {
 /* The cursor is composited into `back` on top of everything else, then presented
  * with the rest of the frame -- no save-under overlay (that restored a stale
  * `back` and smeared garbage as the cursor moved). */
+/* The bitmap is one CELL per character, not one pixel: at scale 200 a cell is a
+ * 2x2 block. A 16-pixel arrow on a 2560-wide display is a mote -- the pointer is
+ * the one piece of chrome a user tracks continuously, and leaving it at device
+ * resolution is the single most obvious way a "scaled" desktop announces that it
+ * is only half scaled. Cell edges come from S() of the cell index, so the blocks
+ * tile exactly with no seams and no overlap at fractional scales. */
 static void draw_cursor_back(int x, int y)
 {
     uint32_t o = rgb(20, 20, 26), f = rgb(255, 255, 255);
     int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
-    for (int r = 0; r < rows; r++)
+    for (int r = 0; r < rows; r++) {
+        int y0 = S(r), y1 = S(r + 1);
         for (int c = 0; cursor_bmp[r][c]; c++) {
             char p = cursor_bmp[r][c];
-            if (p == '#') fb_put(x + c, y + r, o);
-            else if (p == '.') fb_put(x + c, y + r, f);
+            if (p != '#' && p != '.') continue;
+            uint32_t col = (p == '#') ? o : f;
+            int x0 = S(c), x1 = S(c + 1);
+            for (int j = y0; j < y1; j++)
+                for (int i = x0; i < x1; i++) fb_put(x + i, y + j, col);
         }
+    }
 }
 
 /* Open "pop" animation: 0.85 -> 1.0 scale over ~0.14s (easeOutCubic). Returns the
@@ -1111,7 +1212,7 @@ void wm_render(void)
                 struct surface tmp = { .px = anim_buf, .w = w->w, .h = w->h };  /* clip_on = 0: scratch is unclipped */
                 fb_target(&tmp);           /* render the whole window into scratch... */
                 draw_frame_body(0, 0, w->w, w->h, w->title, focused);
-                if (w->surf.px) fb_blit_surface(0, TITLEBAR_H, &w->surf);
+                if (w->surf.px) fb_blit_surface(0, TBH, &w->surf);
                 fb_target(NULL);
                 int dw = w->w * s / 256, dh = w->h * s / 256;     /* ...scale to back */
                 fb_blit_surface_scaled(w->x + (w->w - dw) / 2, w->y + (w->h - dh) / 2, dw, dh, &tmp);
@@ -1120,7 +1221,7 @@ void wm_render(void)
         }
         draw_frame(w, focused);
         if (w->surf.px)
-            fb_blit_surface(w->x, w->y + TITLEBAR_H, &w->surf);
+            fb_blit_surface(w->x, w->y + TBH, &w->surf);
     }
     draw_menubar();                        /* frosted chrome ON TOP: real-time */
     draw_dock();                           /* vibrancy frosts the live windows  */
@@ -1155,7 +1256,7 @@ static int win_content_at(int x, int y)
     for (int i = norder - 1; i >= 0; i--) {
         struct win *w = &wins[order[i]];
         if (!w->used || w->kind != WK_APP) continue;
-        if (in_rect(x, y, w->x, w->y + TITLEBAR_H, w->w, w->h - TITLEBAR_H)) return order[i];
+        if (in_rect(x, y, w->x, w->y + TBH, w->w, w->h - TBH)) return order[i];
     }
     return -1;
 }
@@ -1196,14 +1297,14 @@ static void wm_process_mouse(const struct inev *in)
             struct win *w = &wins[wi];
             raise_win(wi);
             int cx = x - w->x, cy = y - w->y;
-            if (cy < TITLEBAR_H) {
-                if ((cx - 16) * (cx - 16) + (cy - 15) * (cy - 15) <= 64) {
+            if (cy < TBH) {
+                if ((cx - S(16)) * (cx - S(16)) + (cy - S(15)) * (cy - S(15)) <= S(8) * S(8)) {
                     if (w->kind == WK_APP) enqueue(w, EV_CLOSE, 0, 0);  /* close button */
                 } else {
                     dragging = wi; drag_dx = cx; drag_dy = cy;
                 }
             } else if (w->kind == WK_APP) {
-                enqueue_input(w, EV_MOUSE, cx, cy - TITLEBAR_H, mods, EV_BTN_LEFT, 0);
+                enqueue_input(w, EV_MOUSE, PT(cx), PT(cy - TBH), mods, EV_BTN_LEFT, 0);
                 mouse_capture = wi;     /* this window owns the pointer until the button comes up */
             }
         }
@@ -1214,9 +1315,9 @@ static void wm_process_mouse(const struct inev *in)
             struct win *w = &wins[order[i]];
             if (!w->used || !in_rect(x, y, w->x, w->y, w->w, w->h)) continue;
             int cx = x - w->x, cy = y - w->y;
-            if (cy >= TITLEBAR_H && w->kind == WK_APP) {
+            if (cy >= TBH && w->kind == WK_APP) {
                 raise_win(order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
-                enqueue_input(w, EV_MOUSE_R, cx, cy - TITLEBAR_H, mods, EV_BTN_RIGHT, 0);
+                enqueue_input(w, EV_MOUSE_R, PT(cx), PT(cy - TBH), mods, EV_BTN_RIGHT, 0);
                 mouse_capture = order[i];
                 content = 1;
             }
@@ -1231,7 +1332,7 @@ static void wm_process_mouse(const struct inev *in)
         int wi = win_content_at(x, y);
         if (wi >= 0) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_MOUSE, x - w->x, y - w->y - TITLEBAR_H, mods, EV_BTN_MIDDLE, 0);
+            enqueue_input(w, EV_MOUSE, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_MIDDLE, 0);
             mouse_capture = wi;
             content = 1;
         }
@@ -1254,7 +1355,7 @@ static void wm_process_mouse(const struct inev *in)
             int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
             if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) continue;
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_MOUSE_UP, x - w->x, y - w->y - TITLEBAR_H, mods, id[k], 0);
+            enqueue_input(w, EV_MOUSE_UP, PT(x - w->x), PT(y - w->y - TBH), mods, id[k], 0);
             content = 1;
         }
     }
@@ -1278,7 +1379,7 @@ static void wm_process_mouse(const struct inev *in)
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_MOUSE_MOVE, x - w->x, y - w->y - TITLEBAR_H, mods, EV_BTN_NONE, 0);
+            enqueue_input(w, EV_MOUSE_MOVE, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE, 0);
         }
     }
 
@@ -1289,7 +1390,7 @@ static void wm_process_mouse(const struct inev *in)
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_WHEEL, x - w->x, y - w->y - TITLEBAR_H, mods, EV_BTN_NONE, in->wheel);
+            enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE, in->wheel);
             content = 1;
         }
     }
@@ -1355,6 +1456,12 @@ void wm_init(void)
     }
     fb_set_backbuffer(back);
     mx = W / 2; my = H / 2;
+    /* The one line that says what "the resolution" now means. A test that wants
+     * to assert the scale reads this off the serial log; a human reading a
+     * screenshot argument needs it to know whether 1920x1200 is four times the
+     * desk space or the same desk space at 2.25x the pixels. */
+    kprintf("[wm] display %ux%u px, scale %d%%, desktop %dx%d pt\n",
+            fb_width(), fb_height(), fb_scale(), fb_width_pt(), fb_height_pt());
 
     scan_apps();
 

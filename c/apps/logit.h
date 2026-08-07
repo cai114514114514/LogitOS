@@ -151,4 +151,15 @@ static inline void gui_glass(int x, int y, int w, int h, int radius,
 static inline int res_fetch_raw(const char *src, unsigned char *buf, int max)
 { return (int)_sys(SYS_RES_FETCH, (long)src, (long)buf, max); }
 
+/* --- display geometry (see the SYS_SCREEN_INFO note in logit_abi.h) ---
+ * screen_w()/screen_h() are POINTS -- the same unit gui_create() and every
+ * coordinate in struct logit_event use -- so `gui_create("X", screen_w()-80,
+ * screen_h()-120)` sizes a window against the desktop at any display density.
+ * ui_scale() is for reporting and asset choice ONLY: the kernel has already
+ * applied it, and multiplying layout by it draws everything twice too big. */
+static inline int screen_info(int what) { return (int)_sys(SYS_SCREEN_INFO, what, 0, 0); }
+static inline int screen_w(void)  { return screen_info(SCREEN_W); }
+static inline int screen_h(void)  { return screen_info(SCREEN_H); }
+static inline int ui_scale(void)  { return screen_info(SCREEN_SCALE); }
+
 #endif /* LOGIT_USERLIB_H */
