@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><title>LogitOS perf fixture</title>
+<style>
+body { font-family: sans-serif; margin: 0; padding: 16px; background: #fff; color: #111; }
+h1 { font-size: 28px; margin: 0 0 12px 0; }
+.card { border: 1px solid #ccc; padding: 8px; margin: 6px 0; background: #f7f7f7; }
+.card p { margin: 4px 0; line-height: 1.4; }
+.grid { display: block; }
+a { color: #06c; }
+table { border-collapse: collapse; }
+td, th { border: 1px solid #bbb; padding: 3px 6px; }
+</style></head>
+<body>
+<h1>LogitOS render benchmark fixture</h1>
+<p>This page is served from the host over SLIRP at a fixed byte size so that a
+page load is a repeatable unit of work: the same bytes, the same DOM, the same
+cascade, the same layout, every run, on every commit.</p>
+<div class="grid">
+<div class="card"><p>Block 01 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 02 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 03 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 04 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 05 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 06 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 07 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+<div class="card"><p>Block 08 &mdash; paragraph text exercising the text measure and shaping path, long enough that layout has to break lines rather than trivially fitting one.</p><p>Secondary line with <a href="/bench.html">a link</a> and <b>bold</b> and <i>italic</i> runs.</p></div>
+</div>
+<table>
+<tr><th>metric</th><th>unit</th><th>note</th></tr>
+<tr><td>fetch</td><td>ms</td><td>dns + tcp + http</td></tr>
+<tr><td>parse</td><td>ms</td><td>tokenise + tree build</td></tr>
+<tr><td>style</td><td>ms</td><td>libcss cascade</td></tr>
+<tr><td>layout</td><td>ms</td><td>block + inline</td></tr>
+<tr><td>paint</td><td>ms</td><td>display list</td></tr>
+</table>
+<script>
+var n = 0;
+for (var i = 0; i < 2000; i++) { n = (n + i * 3) % 100003; }
+console.log("fixture script ran, n=" + n);
+</script>
+</body></html>

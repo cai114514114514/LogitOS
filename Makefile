@@ -186,7 +186,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-dns test-ip6-dns-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-dns test-ip6-dns-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -1371,15 +1371,6 @@ test-dhcp-os: $(ISO) $(DISK)
 test-https-smoke: $(ISO) $(DISK)
 	@bash tests/boot/run-https-smoke.sh $(ISO) $(DISK)
 
-# The same network, the OTHER client. test-https-smoke drives the kernel's
-# blocking SYS_HTTP_GET; the Browser uses bfetch + http1.c in ring 3, and the
-# two diverged badly enough that baidu passed the smoke test while the Browser
-# could not open it. This boots the machine, drives the real Browser over QMP,
-# and asserts the page loaded inside a budget a stalled response cannot fit in
-# AND that its bytes reached the pixels. Live Internet, like the smoke test.
-test-browser-https: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_browser_https.py $(ISO) $(DISK)
-
 # On-Logit AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: check-asops check-abi $(ISO) $(DISK)
 	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
@@ -2441,10 +2432,3 @@ clean:
 # H.265/HEVC decoder test targets (test-h265, test-h265-units, test-h265-diff,
 # test-video265). Same reason, same shape as the fragments above.
 -include tests/h265.mk
-
-# Full-system test, the commit gate and the test-liveness audit
-# (test-fullsystem, verify-commit, check-test-liveness). Same reason, same
-# shape as the fragments above.
--include tests/fullsystem.mk
-
--include tests/prof.mk

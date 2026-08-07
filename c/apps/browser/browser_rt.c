@@ -45,13 +45,6 @@ int text_measure(const char *s, int len, int px, int mono)
  * scheduling one. */
 #define BF_REQ_MS 60000
 
-/* The whole request, redirects and retries included. BF_REQ_MS bounds one
- * ATTEMPT's silence; this bounds the product, which nothing did. Long enough
- * that a slow multi-hop page still lands, short enough that a user waits
- * rather than concluding the machine is dead -- which they will, because
- * load() is not reentrant and answers only its close button meanwhile. */
-#define BF_TOTAL_MS 90000
-
 enum { RQ_FREE = 0, RQ_QUEUED, RQ_DIAL, RQ_XFER, RQ_DONE, RQ_FAIL };
 
 struct breq {
@@ -70,18 +63,6 @@ struct breq {
     int   status;
     const char *err;
     unsigned long long t0;
-    /* When the whole request started, redirects and retries included. t0 is a
-     * per-attempt IDLE deadline and every hop resets it, which is right for a
-     * hop and wrong for the product: BF_HOPS is 8 and BF_REQ_MS is 60 s, so a
-     * chain that keeps redirecting could legitimately live for eight minutes,
-     * times the retries. https://bing.com is three hops on its own.
-     *
-     * That is the same shape as the kernel-side bug fixed in 7131e34 -- "every
-     * layer has its own timeout and they MULTIPLY, with nothing bounding the
-     * product" -- and it is worse here only because load() is not yet
-     * reentrant, so every one of those minutes is a browser that answers its
-     * close button and drops every other keystroke. */
-    unsigned long long t_start;
 };
 
 static struct breq g_req[BF_NREQ];
@@ -232,19 +213,13 @@ static int tr_write(void *ctx, const void *buf, int len)
     return H1_AGAIN;
 }
 
-/* Write-side readiness only. http1.c never asks about reading -- SOCK_P_READABLE
- * is derived from tcp_available() and tls_pending(), neither of which can see a
- * complete TLS record already pulled off the wire and not yet decrypted, so it
- * reports "quiet" on a connection with a whole response sitting in it. The
- * writable bit has no such problem: it comes from the socket's own transmit
- * ring, which is the thing it describes. */
 static int tr_poll(void *ctx, int want_write)
 {
     struct breq *r = (struct breq *)ctx;
-    if (!want_write) return 1;                  /* never trusted; read anyway */
     int bits = sock_poll(r->fd);
     if (bits < 0 || (bits & SOCK_P_ERROR)) return -1;
-    return (bits & SOCK_P_WRITABLE) ? 1 : 0;
+    if (want_write) return (bits & SOCK_P_WRITABLE) ? 1 : 0;
+    return (bits & (SOCK_P_READABLE | SOCK_P_EOF)) ? 1 : 0;
 }
 
 /* ---- request lifecycle ---- */
@@ -382,45 +357,27 @@ static int req_retry_fresh(struct breq *r)
     return 1;
 }
 
-/* t0 is this attempt s idle deadline; t_start is the age of the whole
- * request. A hop resets t0 on purpose -- a redirect really is a fresh
- * exchange -- and nothing may reset t_start, which is the point. */
-static int req_expired(const struct breq *r)
-{
-    unsigned long long now = monotonic_ms();
-    return (now - r->t0 > BF_REQ_MS) || (now - r->t_start > BF_TOTAL_MS);
-}
-
 static void req_step_xfer(struct breq *r)
 {
     /* h1_conn_pump reads at most 4 KiB per call so that one fast server cannot
      * starve the others. That is the right rule per REQUEST, but calling it once
      * per yield would leave the kernel's 64 KiB receive ring full and the TCP
      * window shut for a 1.5 MB bundle -- so drain while bytes are actually
-     * moving, bounded, and stop the moment they stop.
+     * there, bounded, and stop the moment the socket goes quiet.
      *
      * 64 * 4 KiB = 256 KiB per pass, four times the receive ring. Anything less
      * and a slow pass (a repaint, a decode, another agent's QEMU on the same
      * host CPU) lets the ring overrun; wikipedia's 216 KB stylesheet is the
-     * case that found this.
-     *
-     * The loop used to stop on `sock_poll` no longer reporting SOCK_P_READABLE,
-     * and that was half of the stall this file existed to avoid. sock_poll sees
-     * the WIRE: tls_rec_pull() drains the whole TCP receive buffer into the TLS
-     * session's record buffer, so one read of one record leaves tcp_available()
-     * and tls_pending() both at zero with several complete records still
-     * undecrypted. The socket says quiet and it is not. Ask the exchange what it
-     * moved instead -- that answer comes from the read itself and is true at
-     * every layer. */
+     * case that found this. */
     int st = H1_C_RECV;
     for (int k = 0; k < 64; k++) {
-        unsigned long long before = h1_conn_progress(&r->c);
         st = h1_conn_pump(&r->c);
         if (st != H1_C_SEND && st != H1_C_RECV) break;
-        if (h1_conn_progress(&r->c) == before) break;      /* nothing moved */
+        int bits = sock_poll(r->fd);
+        if (bits < 0 || !(bits & (SOCK_P_READABLE | SOCK_P_EOF))) break;
     }
     if (st == H1_C_SEND || st == H1_C_RECV) {
-        if (req_expired(r)) req_fail(r, "timed out");
+        if (monotonic_ms() - r->t0 > BF_REQ_MS) req_fail(r, "timed out");
         return;
     }
     if (st == H1_C_ERROR) {
@@ -471,7 +428,7 @@ int bfetch_pump(void)
         struct breq *r = &g_req[i];
         if (r->state == RQ_FREE || r->state == RQ_DONE || r->state == RQ_FAIL) continue;
         pending++;
-        if (req_expired(r)) { req_fail(r, "timed out"); continue; }
+        if (monotonic_ms() - r->t0 > BF_REQ_MS) { req_fail(r, "timed out"); continue; }
         if (r->state == RQ_QUEUED) { req_connect(r); continue; }
         if (r->state == RQ_DIAL) {
             int bits = sock_poll(r->fd);
@@ -502,7 +459,6 @@ int bfetch_start_from(const char *base, const char *ref)
         r->url[n] = 0;
         if (url_parse(r->url, &r->u) != 0) { r->state = RQ_FREE; return -1; }
         r->t0 = monotonic_ms();
-        r->t_start = r->t0;                 /* the one clock no hop may reset */
         r->state = RQ_QUEUED;
         g_reqs++;
         req_connect(r);                     /* a free slot dials immediately */
