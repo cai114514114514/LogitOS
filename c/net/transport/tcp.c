@@ -602,10 +602,26 @@ static void send_ack(struct tcp_conn *c)
     send_seg(c, ACK, c->snd_nxt, 0);
 }
 
-#define RTO_DEFAULT 100     /* 1 s before the first RTT sample (RFC 6298 §2.1) */
-#define RTO_MIN     10      /* RFC 6298 lower bound (100 ms at 100 Hz) */
-#define RTO_MAX     6000    /* RFC 6298 upper bound (60 s) */
-#define DELACK_MAX  20      /* RFC 1122: an ACK MUST be delayed < 0.5 s; 200 ms */
+/* Every duration in this file is written in MILLISECONDS and converted, never
+ * open-coded as a tick count. A tick is not a unit: the PIT ran at exactly
+ * twice its programmed rate for a long time, so every timeout expressed in
+ * ticks was silently half its stated value, and fixing the rate doubled them
+ * all at once. Protocol timers are the worst place for that to happen quietly
+ * -- an RTO that is really half of what the comment says is a stack that
+ * retransmits into a healthy path. Rounding up keeps a sub-tick duration from
+ * collapsing to zero. */
+#define MS_TICKS(ms) ((uint64_t)(((ms) * (uint64_t)TIMER_HZ + 999) / 1000))
+
+#define RTO_DEFAULT MS_TICKS(1000)    /* RFC 6298 §2.1: 1 s until the first sample */
+#define RTO_MIN     MS_TICKS(100)     /* below the RFC's 1 s floor on purpose: this
+                                       * is a LAN/VM stack and a 1 s minimum makes
+                                       * every lost segment cost a second */
+#define RTO_MAX     MS_TICKS(60000)   /* RFC 6298 §2.5 upper bound */
+#define DELACK_MAX  MS_TICKS(200)     /* RFC 1122 4.2.3.2: MUST be < 500 ms */
+#define TIME_WAIT_MS 10000            /* shortened 2MSL; see tcp_poll */
+#define FINWAIT_QUIET_MS 2000         /* half-closed backstop */
+#define CONNECT_MS  5000              /* tcp_connect's own deadline */
+#define TXWAIT_MS   8000              /* how long tcp_send waits for ring space */
 
 /* RFC 6298 RTO from the current estimators, in ticks (clock granularity
  * G = 1 tick = 10 ms). */
@@ -1298,13 +1314,13 @@ void tcp_poll(void)
          * the slot (NCONN is small and a browser opens many connections). Only
          * fire after the peer has also gone quiet: a half-closed peer may still
          * be legally streaming data, which refreshes rx_tick on each segment. */
-        if (c->state == FIN_WAIT && !c->rtx_running && now - c->rtx_tick > 200 &&
-            now - c->rx_tick > 200)
+        if (c->state == FIN_WAIT && !c->rtx_running && now - c->rtx_tick > MS_TICKS(FINWAIT_QUIET_MS) &&
+            now - c->rx_tick > MS_TICKS(FINWAIT_QUIET_MS))
             conn_closed(c);
         /* TIME_WAIT: a shortened 2MSL (~10 s). alloc_lport() never immediately
          * reuses a local port, and with NCONN slots a full 2MSL would leak
          * connection slots on a browser fetching many objects. */
-        if (c->state == TIME_WAIT && now - c->tw_tick >= 1000)
+        if (c->state == TIME_WAIT && now - c->tw_tick >= MS_TICKS(TIME_WAIT_MS))
             conn_closed(c);
         /* LAST_ACK and CLOSING always hold our outstanding FIN, so the
          * retransmit cap above is their backstop; this sweep is defensive. */
@@ -1388,7 +1404,7 @@ int tcp_connect(uint32_t dst, uint16_t port)
     int id = tcp_connect_start(dst, port);
     if (id < 0) return -1;
     uint64_t start = timer_ticks();
-    while (timer_ticks() - start < 500) {        /* ~5 s */
+    while (timer_ticks() - start < MS_TICKS(CONNECT_MS)) {
         net_poll();
         int st = tcp_connect_status(id);
         if (st > 0) return id;
@@ -1439,7 +1455,7 @@ int tcp_send(int id, const void *buf, int len)
              * of it to take more. Report a short write rather than an error --
              * tls.c treats 0 as "would block" and retries. */
             uint64_t start = timer_ticks();
-            while (n == 0 && timer_ticks() - start < 800) {
+            while (n == 0 && timer_ticks() - start < MS_TICKS(TXWAIT_MS)) {
                 net_poll();
                 n = tcp_send_nb(id, p, remaining);
                 if (n != 0) break;
