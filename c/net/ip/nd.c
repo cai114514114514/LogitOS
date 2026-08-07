@@ -408,6 +408,14 @@ static void dad_failed(struct ip6_ifaddr *e)
  * fault and we defend by advertising (RFC 4862 s5.4.4). */
 static void dad_conflict(const ip6_addr *target)
 {
+#ifdef IP6_NEGCTL_NO_DAD
+    /* NEGATIVE CONTROL ONLY (`make test-nd-negctl`), never in the kernel build:
+     * the classic way to get DAD wrong is to send the probe and then assign the
+     * address whatever anybody answers. With this defined the suite must FAIL;
+     * a DAD test that still passes here is not testing DAD. */
+    (void)target;
+    return;
+#endif
     for (int i = 0; i < IP6_NADDR; i++) {
         if (!ip6_addrs[i].used || !ip6_equal(&ip6_addrs[i].addr, target)) continue;
         if (ip6_addrs[i].state == IP6_TENTATIVE)

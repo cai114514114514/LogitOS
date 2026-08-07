@@ -1,6 +1,9 @@
 #include "text.h"
 #include "ttf.h"
 #include "utf8.h"
+#include "shape.h"
+#include "script.h"
+#include "bidi.h"
 #include "fb.h"
 #include "vfs.h"
 #include "kheap.h"
@@ -8,10 +11,15 @@
 
 void *memcpy(void *, const void *, size_t);
 
-/* Loaded fonts. UI = proportional CJK; MONO = terminal Latin. Glyph
- * lookup falls back from a requested font to UI so the Terminal's mono font can
- * borrow CJK glyphs. */
-enum { F_UI = 0, F_MONO = 1, NFONT = 2 };
+/* Loaded fonts, in fallback order after whichever one was asked for.
+ *   UI    proportional, Latin + CJK (a Noto Sans SC subset)
+ *   MONO  the Terminal's fixed-pitch Latin
+ *   TEXT  DejaVu Sans, vendored unmodified: the only one of the three with
+ *         Arabic and Hebrew, and the only one with GSUB/GPOS at all -- the two
+ *         Noto subsets lost their layout tables to subsetting, so without this
+ *         font the shaper has nothing to apply. See third_party/fonts/README.md.
+ */
+enum { F_UI = 0, F_MONO = 1, F_TEXT = 2, NFONT = 3 };
 static struct ttf_font fonts[NFONT];
 static int font_ok[NFONT];
 
@@ -33,15 +41,7 @@ void text_init(void)
 {
     load_font("/fonts/ui.ttf", F_UI);
     load_font("/fonts/mono.ttf", F_MONO);
-}
-
-/* Resolve a code point to (font, gid), trying `prefer` then UI. */
-static int resolve(uint32_t cp, int prefer, int *fidx)
-{
-    if (font_ok[prefer]) { int g = ttf_glyph_id(&fonts[prefer], cp); if (g) { *fidx = prefer; return g; } }
-    if (prefer != F_UI && font_ok[F_UI]) { int g = ttf_glyph_id(&fonts[F_UI], cp); if (g) { *fidx = F_UI; return g; } }
-    *fidx = font_ok[prefer] ? prefer : (font_ok[F_UI] ? F_UI : F_MONO);   /* fall back to a LOADED font */
-    return 0;                                  /* .notdef */
+    load_font("/fonts/text.ttf", F_TEXT);
 }
 
 /* --- glyph cache (open addressing with hash-slot eviction) --- */
@@ -76,81 +76,128 @@ fill: ;
 
 static int ascent_px(int fidx, int px) { return (int)(((long)fonts[fidx].ascent * px) / fonts[fidx].units_per_em); }
 
-/* Draw `utf8` at (x, y=top). `prefer` font, `px` size, snapping advance to
- * `cell` when cell>0 (monospace: narrow=cell, wide CJK=2*cell). Returns end x. */
-static int draw(int x, int y, const char *utf8, int prefer, int px, int cell, uint32_t color)
+/* ---------------------------------------------------------------- layout --
+ *
+ * Everything below goes through shape_line() -- ONE function, whether it is
+ * measuring or drawing. That is not tidiness, it is the invariant the display
+ * line stated: text_measure and text_draw_run must agree at the same px,
+ * because wm.c measures at S(px) and divides the answer back. Shaping breaks
+ * any measurement that walks characters: "fi" is one glyph, "AV" is narrower
+ * than A plus V. A separate measuring path would drift a few pixels per line
+ * in a way nobody could reproduce, so there is not one.
+ *
+ * The scratch is file scope because the whole UI runs under the big kernel
+ * lock, and because a 32 KiB kernel stack has no room for it. */
+
+#define TL_CP    1024
+#define TL_GLYPH 2048
+#define TL_RUN     64
+
+static uint32_t tl_cps[TL_CP];
+static uint8_t  tl_levels[TL_CP];
+static int      tl_order[TL_CP];
+static struct shape_glyph tl_glyphs[TL_GLYPH];
+static struct text_run    tl_runs[TL_RUN];
+/* bidi_scratch_size is 26n + slack; 32 KiB covers TL_CP with room to spare. */
+static uint8_t  tl_bidi[32 * 1024];
+
+/* The blit callback. The pixel size rides in the context because shape_emit
+ * does not pass it -- the shaper has no business knowing what a raster is.
+ *
+ * `map` translates the shaper's font-set index into an index into fonts[].
+ * They are NOT the same number: the set is built in preference order for this
+ * particular call, so set slot 1 is the second CHOICE, not fonts[1]. Feeding
+ * the set index straight to the glyph cache rasterizes the right glyph id out
+ * of the wrong font, which renders as nothing at all when that font is a
+ * 97-glyph subset. */
+struct emit_ctx { int base, px; uint32_t color; const int *map; };
+
+static void emit_blit(void *ud, int fidx, int gid, int x, int y_off)
 {
-    if (!font_ok[F_UI] && !font_ok[F_MONO]) return x;
-    int base = y + ascent_px(font_ok[prefer] ? prefer : (font_ok[F_UI] ? F_UI : F_MONO), px);
-    uint32_t cp;
-    for (const char *s = utf8; *s; ) {
-        s = utf8_next(s, &cp);
-        if (!cp) break;
-        int fidx, gid = resolve(cp, prefer, &fidx);
-        struct gentry *g = glyph_get(fidx, gid, px);
-        int adv = g->adv;
-        if (cell > 0) adv = (g->adv > cell * 3 / 2) ? cell * 2 : cell;   /* mono cells */
-        if (g->cov) fb_blit_glyph(x + g->ox + (cell ? (adv - g->w) / 2 : 0), base - g->oy,
-                                  g->cov, g->w, g->h, color);
-        x += adv;
-    }
-    return x;
+    struct emit_ctx *e = (struct emit_ctx *)ud;
+    struct gentry *g = glyph_get(e->map[fidx], gid, e->px);
+    if (g->cov)
+        fb_blit_glyph(x + g->ox, e->base - y_off - g->oy, g->cov, g->w, g->h, e->color);
 }
 
-static int measure(const char *utf8, int prefer, int px, int cell)
+static void tl_scratch(struct shape_scratch *sc)
 {
-    if (!font_ok[F_UI] && !font_ok[F_MONO]) return 0;   /* no font: glyph_get would divide by upem==0 */
-    uint32_t cp; int x = 0;
-    for (const char *s = utf8; *s; ) {
-        s = utf8_next(s, &cp); if (!cp) break;
-        int fidx, gid = resolve(cp, prefer, &fidx);
-        struct gentry *g = glyph_get(fidx, gid, px);
-        x += cell > 0 ? ((g->adv > cell * 3 / 2) ? cell * 2 : cell) : g->adv;
-    }
-    return x;
+    sc->cps = tl_cps; sc->levels = tl_levels; sc->order = tl_order;
+    sc->glyphs = tl_glyphs; sc->runs = tl_runs; sc->bidi = tl_bidi;
+    sc->ncp_cap = TL_CP; sc->nglyph_cap = TL_GLYPH; sc->nrun_cap = TL_RUN;
+    sc->bidi_cap = (int)sizeof tl_bidi;
 }
 
-int text_draw_sz(int x, int y, const char *utf8, int px, uint32_t color){ return draw(x,y,utf8,F_UI,px,0,color); }
-int text_draw(int x, int y, const char *utf8, uint32_t color){ return draw(x,y,utf8,F_UI,TEXT_UI_PX,0,color); }
-int text_draw_mono(int x, int y, const char *utf8, int cell_w, uint32_t color){ return draw(x,y,utf8,F_MONO,TEXT_UI_PX,cell_w,color); }
+/* Font preference order for a run: the requested font, then UI, then the
+ * shaping font, then mono. A code point none of them covers renders as .notdef
+ * in the first, which is visible rather than silently missing. */
+static void tl_fonts(struct shape_font_set *fs, int prefer, int *map)
+{
+    static const int order[NFONT] = { F_UI, F_TEXT, F_MONO };
+    fs->n = 0;
+    if (font_ok[prefer]) { map[fs->n] = prefer; fs->f[fs->n++] = &fonts[prefer]; }
+    for (int i = 0; i < NFONT && fs->n < SHAPE_MAX_FONTS; i++)
+        if (order[i] != prefer && font_ok[order[i]]) {
+            map[fs->n] = order[i];
+            fs->f[fs->n++] = &fonts[order[i]];
+        }
+}
+
+/* The one layout entry point. `draw` = 0 measures, 1 draws. Returns end x. */
+static int layout(int x, int y, const char *s, int len, int prefer, int px,
+                  int cell, uint32_t color, int draw)
+{
+    if (!font_ok[F_UI] && !font_ok[F_MONO] && !font_ok[F_TEXT]) return x;
+    if (len <= 0) return x;
+
+    struct shape_font_set fs;
+    int map[SHAPE_MAX_FONTS];
+    tl_fonts(&fs, prefer, map);
+    if (fs.n == 0) return x;
+
+    struct shape_scratch sc;
+    tl_scratch(&sc);
+
+    if (!draw) return shape_line(&fs, s, len, px, cell, x, 0, &sc);
+
+    struct emit_ctx ec = { y + ascent_px(map[0], px), px, color, map };
+    struct shape_emit em = { emit_blit, &ec };
+    return shape_line(&fs, s, len, px, cell, x, &em, &sc);
+}
+
+static int slen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
+
+int text_draw_sz(int x, int y, const char *utf8, int px, uint32_t color)
+{ return layout(x, y, utf8, slen(utf8), F_UI, px, 0, color, 1); }
+
+int text_draw(int x, int y, const char *utf8, uint32_t color)
+{ return layout(x, y, utf8, slen(utf8), F_UI, TEXT_UI_PX, 0, color, 1); }
+
+int text_draw_mono(int x, int y, const char *utf8, int cell_w, uint32_t color)
+{ return layout(x, y, utf8, slen(utf8), F_MONO, TEXT_UI_PX, cell_w, color, 1); }
+
 /* Same, at an explicit pixel size. The Terminal picks its cell width in points
  * and the WM scales BOTH the cell and the glyph size, so a 2x display draws
  * genuinely larger glyphs rather than the same glyphs in wider cells. */
-int text_draw_mono_sz(int x, int y, const char *utf8, int px, int cell_w, uint32_t color){ return draw(x,y,utf8,F_MONO,px,cell_w,color); }
-int text_width_sz(const char *utf8, int px){ return measure(utf8,F_UI,px,0); }
-int text_width(const char *utf8){ return measure(utf8,F_UI,TEXT_UI_PX,0); }
+int text_draw_mono_sz(int x, int y, const char *utf8, int px, int cell_w, uint32_t color)
+{ return layout(x, y, utf8, slen(utf8), F_MONO, px, cell_w, color, 1); }
+
+int text_width_sz(const char *utf8, int px)
+{ return layout(0, 0, utf8, slen(utf8), F_UI, px, 0, 0, 0); }
+
+int text_width(const char *utf8)
+{ return layout(0, 0, utf8, slen(utf8), F_UI, TEXT_UI_PX, 0, 0, 0); }
 
 /* Measure a length-delimited UTF-8 run at `px`, in the mono or UI font (for the
- * layout engine's word-wrap). */
+ * layout engine's word-wrap). Same function as the draw below, one argument
+ * apart -- see the note above. */
 int text_measure(const char *s, int len, int px, int mono)
-{
-    int prefer = mono ? F_MONO : F_UI;
-    if (!font_ok[F_UI] && !font_ok[F_MONO]) return 0;   /* no font: glyph_get would divide by upem==0 */
-    uint32_t cp; int x = 0; const char *e = s + len;
-    for (const char *p = s; p < e; ) {
-        p = utf8_next(p, &cp); if (!cp) break;
-        int fi, g = resolve(cp, prefer, &fi);
-        x += glyph_get(fi, g, px)->adv;
-    }
-    return x;
-}
+{ return layout(0, 0, s, len, mono ? F_MONO : F_UI, px, 0, 0, 0); }
+
 /* Draw a length-delimited UTF-8 run at (x, y=top) in the UI or mono font at
  * `px`, returning the end x. For the layout engine's display list. */
 int text_draw_run(int x, int y, const char *s, int len, int px, int mono, uint32_t color)
-{
-    int prefer = mono ? F_MONO : F_UI;
-    if (!font_ok[F_UI] && !font_ok[F_MONO]) return x;
-    int base = y + ascent_px(font_ok[prefer] ? prefer : (font_ok[F_UI] ? F_UI : F_MONO), px);
-    uint32_t cp; const char *e = s + len;
-    for (const char *p = s; p < e; ) {
-        p = utf8_next(p, &cp); if (!cp) break;
-        int fi, gid = resolve(cp, prefer, &fi);
-        struct gentry *g = glyph_get(fi, gid, px);
-        if (g->cov) fb_blit_glyph(x + g->ox, base - g->oy, g->cov, g->w, g->h, color);
-        x += g->adv;
-    }
-    return x;
-}
+{ return layout(x, y, s, len, mono ? F_MONO : F_UI, px, 0, color, 1); }
 
 int text_line_height(int px)
 {

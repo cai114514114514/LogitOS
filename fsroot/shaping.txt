@@ -1,0 +1,22 @@
+LogitOS text shaping
+
+Latin -- ligatures and kerning:
+office fluffier waffle
+AVATAR To Wave Yo.
+
+Arabic -- initial, medial, final, isolated:
+العربية
+مرحبا بالعالم
+السلام عليكم
+كَتَبَ
+
+Hebrew -- right to left:
+שלום עולם
+
+Mixed direction:
+Read العربية now
+
+Every glyph on this page is chosen by c/lib/text/shape.c from the font's
+GSUB and GPOS tables, and checked against HarfBuzz by "make test-shape".
+Before that existed the Arabic lines came out as disconnected isolated
+letters in logical order.

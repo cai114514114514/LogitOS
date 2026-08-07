@@ -1417,10 +1417,6 @@ static int coding_unit(h265dec *d, int x0, int y0, int log2cb)
         bi_t t; memset(&t, 0, sizeof t); t.qp = (int8_t)d->qp_y;
         fill_bi(d, x0, y0, ncbs, ncbs, &t, 2 | 4);
         if ((rc = prediction_unit(d, x0, y0, ncbs, x0, y0, ncbs, ncbs, 0))) return rc;
-        /* A skipped CU has no transform tree, but its boundary is still a
-         * TRANSFORM block edge -- see the note at the rqt_root_cbf == 0 case
-         * below. prediction_unit only marked it as a prediction edge. */
-        mark_edges(d, x0, y0, ncbs, ncbs, 1);
         return H265_OK;
     }
 
@@ -1525,17 +1521,6 @@ static int coding_unit(h265dec *d, int x0, int y0, int log2cb)
             : sps->max_transform_hierarchy_depth_inter;
         rc = transform_tree(d, x0, y0, x0, y0, log2cb, 0, 0);
         if (rc) return rc;
-    } else {
-        /* No transform tree, so nothing marked this CU's boundary as a
-         * TRANSFORM block edge -- but it is one. 8.7.2.4's second rule raises
-         * bS to 1 when "the edge is a transform block edge and p0 or q0 is in a
-         * transform block containing a non-zero coefficient", and the two sides
-         * of a CU boundary are always different transform blocks. Marking only
-         * the prediction edge here loses every bS=1 edge where the residual is
-         * entirely on the OTHER side of a merged or residual-free CU: the
-         * picture is right except for a thin, low-amplitude error along those
-         * edges, which is exactly the kind of thing a PSNR threshold passes. */
-        mark_edges(d, x0, y0, ncbs, ncbs, 1);
     }
     return H265_OK;
 }
