@@ -18,6 +18,7 @@
 #include "nvme.h"
 #include "percpu.h"
 #include "spinlock.h"
+#include "work.h"        /* M27: softirq_run_pending() on the kernel-exit path */
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -83,7 +84,16 @@ void interrupt_handler(struct registers *r)
      * whole-machine freeze. timer_ticks is a single-writer (BSP timer IRQ
      * only) volatile counter and its readers are lock-free, so ticking here
      * is safe. */
-    if (r->vector == 32 && me->index == 0) timer_tick();
+    if (r->vector == 32 && me->index == 0) {
+        timer_tick();
+        /* M27: expire timed sleeps in the SAME pre-BKL window, for the same
+         * reason. A thread parked with a deadline is made runnable here;
+         * sched_timer_expire() takes only g_sched_lock and never the BKL, so a
+         * deadline can never queue behind a BKL held by a thread that is itself
+         * waiting for that deadline -- the identical circular wait that made
+         * timer_tick() move ahead of the acquire. */
+        sched_timer_expire();
+    }
     if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
     if (r->vector == 128) {        /* int 0x80 system call */
@@ -140,6 +150,20 @@ void interrupt_handler(struct registers *r)
     }
 
 done:
+    /* M27 deferred work runs HERE: the tail of the interrupt that raised it,
+     * still holding the BKL, before the exit window below. This is the piece the
+     * kernel never had -- a handler can now say "finish this later" instead of
+     * doing everything inside the IRQ (e1000_irq drains the whole RX ring in
+     * interrupt context) or leaving it for the WM loop to notice (net_poll).
+     *
+     * Conditions: only when THIS entry owns the BKL (a nested IRQ's outer frame
+     * will run them, and a BKL-free vector must not touch shared state), and not
+     * inside a device's non-preemptible poll window -- the same guard the timer
+     * preempt uses, for the same reason. Softirq handlers must not sleep: there
+     * is a live interrupt frame under them. */
+    if (!nested && !bkl_free && !ata_busy() && !virtio_busy() && !nvme_busy())
+        softirq_run_pending();
+
     /* schedule() (called above for timer preemption, or inside a blocking syscall)
      * may have switched this thread out and later RESUMED it on a DIFFERENT core,
      * so `me` (captured at entry) is now stale. Clear in_kernel on the core we

@@ -9,6 +9,8 @@
 #include "spinlock.h"
 #include "kprintf.h"
 #include "pit.h"          /* timer_ticks() -- deadline sleeps */
+#include "work.h"         /* work_init(): the kworker thread (deferred work) */
+#include "wait_selftest.h"
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -179,6 +181,13 @@ void sched_init(void)
         bi->rsp = (uint64_t)sp;
     }
     g_cpus[0].idle = bi;
+
+    /* M27: the run ring exists, so kernel threads can be created. Start the
+     * deferred-work thread (the context an interrupt hands blocking work to),
+     * then the boot-time wait/wake self-test. Both are ordinary ring-0 threads
+     * spliced onto the ring; the caller (wm_run) continues immediately. */
+    work_init();
+    wait_selftest_start();
 }
 
 extern void kthread_bootstrap(void);   /* sched.c: releases g_sched_lock, calls entry, exits */
