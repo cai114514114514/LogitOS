@@ -1,0 +1,31 @@
+# Scripts that tools/check-test-liveness.py's rule 1 finds -- no failing path
+# at all -- and that are accepted anyway, each with the reason.
+#
+# Format:  <path relative to the repo root>: <why it is allowed to pass always>
+#
+# The point of this file is that "known" has to cost something. A warning
+# nobody reads is how a test stays dead for weeks; a line here is a decision
+# somebody made, in writing, that a reviewer can disagree with. Adding a NEW
+# always-passing test means adding a line here, in the same commit, under your
+# own name in the log.
+#
+# Two categories live below and they are not the same thing. A screenshot tool
+# is not a test and never claimed to be. A "hunter" that prints FROZEN and
+# exits 0 IS a test, and a broken one -- it is listed here because fixing
+# another line's file is not this line's job, not because it is fine.
+
+# --- tools, not tests: they produce a picture or drive the machine for a human
+tests/boot/run-prof-manual.sh: its own first line says "scratch driver -- see run-prof-test.sh for the real harness"
+tests/qmp/qmp_shot.py: screendumps a running QEMU; the output IS the result
+tests/qmp/qmp_demo.py: drives a demo sequence for a screenshot
+tests/qmp/qmp_drag.py: demonstrates window dragging for a screenshot
+tests/qmp/qmp_apps.py: opens two apps and screendumps; no claim is made about what is in the pictures
+tests/qmp/qmp_browser.py: launches the Browser and screendumps a page for a human to look at
+tests/qmp/qmp_probe.py: a minimal "does a click arrive" probe used interactively
+tests/qmp/qmp_stress.py: soak driver -- reloads a page N times; the artefact is the screenshot afterwards
+
+# --- these PRESENT as detectors and cannot report what they detect.
+# Not this line's files to fix; listed so the next person to touch them knows.
+tests/qmp/qmp_blackframe.py: its docstring defines healthy vs black-frame by pixel content, then exits 0 whichever it saw
+tests/qmp/qmp_fuzz.py: "if heartbeats stop -> FROZEN" is in the docstring; nothing in the code acts on it
+tests/qmp/qmp_watch.py: dumps every CPU's registers when the screen goes static, then exits 0 -- the dump is the output, the verdict is not
