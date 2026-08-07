@@ -1045,6 +1045,29 @@ static int dock_bounce_off(int i)
     return H * 4 * u * (d - u) / (d * d);                      /* parabola, peak mid-arc */
 }
 
+/* Which dock icon a device-pixel point hovers, or -1.
+ *
+ * Split out of draw_dock because the INPUT path has to ask it too. With the
+ * pointer on a display plane, plain motion no longer repaints anything -- but
+ * the dock magnifies the icon under the cursor, so the one kind of motion that
+ * genuinely does change the picture is motion that crosses an icon boundary.
+ * The compositor and the input path have to agree about where those boundaries
+ * are, and the way to guarantee that is to have one function say so.
+ *
+ * Valid only after the first draw_dock() has published dock_x0/dock_y0/isz/gap;
+ * before that they are the point-valued defaults and this returns -1 for the
+ * whole screen, which is correct -- there is no dock on screen yet either. */
+static int dock_hover_at(int x, int y)
+{
+    int dh = dock_isz + S(20);
+    if (y < dock_y0 || y >= dock_y0 + dh) return -1;
+    for (int i = 0; i < nreg; i++) {
+        int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
+        if (x >= ix && x < ix + dock_isz) return i;
+    }
+    return -1;
+}
+
 static void draw_dock(void)
 {
     int n = nreg < 1 ? 1 : nreg;
@@ -1058,14 +1081,12 @@ static void draw_dock(void)
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
-     * as a tooltip. Re-evaluated every frame, and the WM repaints on each mouse
-     * move, so it animates as the cursor sweeps the dock. */
-    int ccy = dock_y0 + S(10) + dock_isz / 2, hov = -1, animating = 0;
-    if (my >= dock_y0 && my < dock_y0 + dh)
-        for (int i = 0; i < nreg; i++) {
-            int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
-            if (mx >= ix && mx < ix + dock_isz) { hov = i; break; }
-        }
+     * as a tooltip. Re-evaluated every frame; the input path asks dock_hover_at()
+     * the same question and requests a frame when the answer changes, which is
+     * what still animates this as the cursor sweeps the dock now that plain
+     * motion no longer repaints anything. */
+    int ccy = dock_y0 + S(10) + dock_isz / 2, animating = 0;
+    int hov = dock_hover_at(mx, my);
     for (int i = 0; i < nreg; i++) {
         if (i == hov) continue;                            /* hovered tile drawn last, on top */
         int b = dock_bounce_off(i); if (b) animating = 1;  /* launch bounce lifts the icon */
@@ -1195,6 +1216,53 @@ static void draw_cursor_back(int x, int y)
     }
 }
 
+/* ---- the pointer as a display plane ---------------------------------------
+ *
+ * Set once, at init, when the display has a cursor plane. Everything else in
+ * this file branches on it: wm_render stops drawing the arrow, and plain motion
+ * stops setting `dirty`. When it is 0 the file behaves exactly as it did --
+ * that is the fallback for a multiboot LFB, and it is why the removal of the
+ * old save-under path is not being undone here. There is still no partial
+ * rendering and still no save-under; the pointer simply is not in the frame. */
+static int hw_cursor;
+
+/* The same arrow as draw_cursor_back, encoded as a 64x64 ARGB plane image.
+ * Deliberately reads the SAME cursor_bmp with the SAME S() cell scaling, so the
+ * hardware pointer and the software one are the same picture -- a plane cursor
+ * that is a different shape from the composited one turns every screenshot
+ * comparison into an argument.
+ *
+ * The plane is 64x64 and a cell is S(1) px, so the arrow fits up to scale 300
+ * (17 rows x 3 = 51). fb_cursor_image crops beyond that rather than corrupting
+ * anything, and pick_scale() never goes past 300. */
+#define CUR_PLANE 64
+static uint32_t cursor_plane[CUR_PLANE * CUR_PLANE];
+static int build_cursor_plane(void)
+{
+    uint32_t o = 0xFF000000u | rgb(20, 20, 26), f = 0xFF000000u | rgb(255, 255, 255);
+    for (int i = 0; i < CUR_PLANE * CUR_PLANE; i++) cursor_plane[i] = 0;
+    int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
+    for (int r = 0; r < rows; r++) {
+        int y0 = S(r), y1 = S(r + 1);
+        if (y0 >= CUR_PLANE) break;
+        if (y1 > CUR_PLANE) y1 = CUR_PLANE;
+        for (int c = 0; cursor_bmp[r][c]; c++) {
+            char p = cursor_bmp[r][c];
+            if (p != '#' && p != '.') continue;
+            uint32_t col = (p == '#') ? o : f;
+            int x0 = S(c), x1 = S(c + 1);
+            if (x0 >= CUR_PLANE) break;
+            if (x1 > CUR_PLANE) x1 = CUR_PLANE;
+            for (int j = y0; j < y1; j++)
+                for (int i = x0; i < x1; i++) cursor_plane[j * CUR_PLANE + i] = col;
+        }
+    }
+    /* The arrow's tip is the top-left cell, so the hotspot is (0,0) -- the same
+     * relationship draw_cursor_back(mx,my) had, which is what keeps hit-testing
+     * and the pointer position identical across the two paths. */
+    return fb_cursor_image(cursor_plane, CUR_PLANE, CUR_PLANE, 0, 0) == 0;
+}
+
 /* Open "pop" animation: 0.85 -> 1.0 scale over ~0.14s (easeOutCubic). Returns the
  * scale in /256 (256 = full), or 0 when settled / not animating. */
 static uint32_t *anim_buf;
@@ -1248,7 +1316,7 @@ void wm_render(void)
     }
     draw_menubar();                        /* frosted chrome ON TOP: real-time */
     draw_dock();                           /* vibrancy frosts the live windows  */
-    draw_cursor_back(mx, my);              /* cursor on top, into the composite */
+    if (!hw_cursor) draw_cursor_back(mx, my);   /* no plane: arrow into the composite */
     fb_present();                          /* full back -> framebuffer + virtio flush */
     if (animating) dirty = 1;              /* keep compositing until the pop settles */
 
@@ -1295,6 +1363,7 @@ static void wm_process_mouse(const struct inev *in)
     int mods = in->mods;
     int moved = (x != mx || y != my);
     int content = 0;                       /* did anything other than the cursor change? */
+    int old_hov = dock_hover_at(mx, my);   /* before the pointer moves */
     mx = x; my = y;
     if (moved) perf_motions++;
 
@@ -1427,9 +1496,27 @@ static void wm_process_mouse(const struct inev *in)
     mleft = left;
     mright = right;
     mmiddle = middle;
-    /* Any change -- content (click/drag) or pure cursor motion -- recomposites the
-     * whole screen next frame; the cursor is part of the composite now. */
-    if (content || moved) dirty = 1;
+    if (content) dirty = 1;
+
+    /* THE POINT OF THIS WORK.
+     *
+     * Motion used to imply a recomposite unconditionally, because the arrow was
+     * pixels in the frame. It is a display plane now, so moving it changes
+     * nothing the compositor drew -- with one real exception: the dock magnifies
+     * the icon under the pointer, so motion that crosses an icon boundary DOES
+     * change the picture. That is a content change that happens to be caused by
+     * motion, and it is asked for by name rather than by repainting the screen
+     * on the chance that it happened.
+     *
+     * Everything else that a moving pointer can change is already covered: an
+     * app that highlights on hover receives EV_MOUSE_MOVE and flushes, and a
+     * flush sets `dirty` itself; a titlebar drag moves a window and sets
+     * `content`. Without a plane (LFB fallback) the arrow is still in the frame,
+     * so motion still means a recomposite -- the old behaviour, unchanged. */
+    if (moved) {
+        if (!hw_cursor) dirty = 1;
+        else if (dock_hover_at(x, y) != old_hov) dirty = 1;
+    }
 }
 
 /* ---------- registry + init ---------- */
@@ -1492,6 +1579,16 @@ void wm_init(void)
     kprintf("[wm] display %ux%u px, scale %d%%, desktop %dx%d pt\n",
             fb_width(), fb_height(), fb_scale(), fb_width_pt(), fb_height_pt());
 
+    /* Ask the display for a pointer plane. Everything downstream branches on
+     * the answer, and the answer is worth a line of its own: "the pointer is
+     * free to move" and "every mouse sample repaints the screen" are the same
+     * desktop from a screenshot, and this is the only place they differ. */
+    hw_cursor = build_cursor_plane();
+    if (hw_cursor) fb_cursor_move(mx, my);
+    kprintf("[wm] pointer: %s\n",
+            hw_cursor ? "display cursor plane (motion does not composite)"
+                      : "composited into the frame (no cursor plane)");
+
     scan_apps();
 
     /* The Finder is now the ring-3 file-manager app, launched in wm_run(). */
@@ -1500,6 +1597,40 @@ void wm_init(void)
 }
 
 void wm_render_first(void) { wm_render(); }
+
+/* Push the pointer to the display plane, and tell the outside world where it
+ * ended up.
+ *
+ * ONE command per loop iteration, not one per PS/2 packet: a drain can hand us
+ * a dozen motion samples and only the last position is on screen, so the rest
+ * would be a dozen virtqueue round-trips producing an arrow nobody ever saw.
+ *
+ * The serial line is not decoration. With the pointer on a plane it is no
+ * longer in the scanout, so a screendump cannot be asked where the cursor is --
+ * and a QMP `rel` event is a delta the harness can only dead-reckon from, which
+ * on a large desktop silently stops short and reads as a hit-testing bug in
+ * whatever is being tested. This is the guest's own account, printed once when
+ * the pointer SETTLES (so a sweep is one line, not five hundred). */
+static void wm_pointer_sync(void)
+{
+    static int cx = -1, cy = -1, reported = 1;
+    static uint64_t settle_ms;
+    if (mx != cx || my != cy) {
+        cx = mx; cy = my;
+        if (hw_cursor) {
+            uint64_t t0 = time_mono_ns();
+            fb_cursor_move(cx, cy);
+            perf_cursor_ns += time_mono_ns() - t0;
+            perf_cursor_moves++;
+        }
+        settle_ms = time_mono_ms();
+        reported = 0;
+    }
+    if (!reported && time_mono_ms() - settle_ms >= 100) {
+        kprintf("[wm] ptr %d %d\n", cx, cy);
+        reported = 1;
+    }
+}
 
 /* One line per second of ACTIVITY, and silence otherwise.
  *
@@ -1580,6 +1711,7 @@ void wm_run(void)
         }
 #endif
         wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
+        wm_pointer_sync();            /* one cursor-plane command per loop, not per packet */
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */
         /* net busy watchdog: a fetch legitimately blocks for seconds, but if its
          * thread died mid-fetch the flag is stuck -- expire it after 100 s. */
