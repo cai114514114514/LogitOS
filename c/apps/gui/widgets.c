@@ -71,6 +71,12 @@ void app_main(void)
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
         if (e.type == EV_CLOSE) app_exit(0);
+        /* Every event here ends in a full repaint, and the WM now delivers
+         * EV_MOUSE_MOVE at pointer rate. aui has no hover state to update, so
+         * repainting on motion would be ~100 wasted frames a second for no
+         * visible difference. (When aui grows hover, this is the line to
+         * delete -- deliberately one line, not an ABI opt-in.) */
+        if (e.type == EV_MOUSE_MOVE) continue;
         dark = sys_ui_dark(-1) > 0;           /* follow the menu-bar switch too */
         aui_feed(&e);
         frame();                              /* the Dark checkbox may flip `dark` */

@@ -329,8 +329,13 @@ WAIT_PRELUDE = """
 
 _wait_t = Time()
 
-# Seconds since midnight, off the RTC. Second granularity is what struct
-# logit_time offers; there is no monotonic millisecond source in the ABI.
+# Seconds since midnight, off the RTC -- the WALL clock, hence the midnight
+# wrap fixup below. monotonic_ms() exists now and is the better clock for an
+# interval, but this loop deliberately stays on the wall clock: the host test
+# (make test-as) runs the real abi.as with syscalls stubbed to -1, where a
+# monotonic reading is a CONSTANT -1 and "now - start" never reaches the
+# timeout -- the wait would hang instead of failing. A timeout loop has to
+# still terminate when its clock is broken.
 def now_s():
     get_time(_wait_t)
     return (_wait_t.hour * 60 + _wait_t.minute) * 60 + _wait_t.second

@@ -4,7 +4,17 @@
 #   gui.rect(10, 10, 100, 50, 0x3478F6)
 #   gui.text(20, 30, 0xFFFFFF, "hello")
 #   gui.flush()
-#   ev = gui.poll()          # nil, or an Event with .type .a .b (EV_KEY/EV_MOUSE/EV_CLOSE)
+#   ev = gui.poll()          # nil, or an Event
+# An Event carries .type .a .b .mods .button .wheel:
+#   .type    EV_KEY / EV_MOUSE (a button went down) / EV_MOUSE_R (right down) /
+#            EV_MOUSE_UP / EV_MOUSE_MOVE / EV_WHEEL / EV_CLOSE / EV_THEME
+#   .a .b    EV_KEY: the character or KEY_* code. Pointer events: window-local x,y
+#   .mods    EV_MOD_SHIFT | EV_MOD_CTRL | EV_MOD_ALT held when it happened
+#   .button  EV_BTN_LEFT / _RIGHT / _MIDDLE on a press or release, else EV_BTN_NONE
+#   .wheel   EV_WHEEL only: notches, positive = scrolled down
+# EV_MOUSE_MOVE is COALESCED by the kernel -- consecutive samples collapse to the
+# newest one, so a script that repaints slowly gets the pointer's current
+# position rather than a backlog. Clicks and wheel notches are never merged.
 # The kernel adopts the script's process as a window owner on create(); closing
 # the window delivers EV_CLOSE and the script exits like any app.
 #

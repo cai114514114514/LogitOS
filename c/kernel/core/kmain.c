@@ -19,7 +19,8 @@
 #include "virtio_blk.h"
 #include "nvme.h"
 
-#define TIMER_HZ 100
+/* TIMER_HZ now lives in pit.h: SYS_MONOTONIC_MS divides by it, so the tick rate
+ * is part of a userland-visible answer and cannot be a private constant here. */
 
 #define BOOT_OK_MARKER "LOGIT_BOOT_OK"
 

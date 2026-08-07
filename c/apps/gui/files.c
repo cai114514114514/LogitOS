@@ -591,6 +591,13 @@ void app_main(void)
     struct logit_event e;
     for (;;) {
         if (!poll_event(&e)) { sys_yield(); continue; }
+        /* The WM delivers EV_MOUSE_MOVE now, at pointer rate (~100/s). New event
+         * types are additive and this app ignores the ones it does not know --
+         * but "ignore" here means falling through to the frame() at the bottom
+         * of the loop, i.e. a full repaint per sample. The Finder has no hover
+         * state, so drop motion explicitly and keep costing what it cost before
+         * the ABI grew. Before frame_no++, so that still counts painted frames. */
+        if (e.type == EV_MOUSE_MOVE) continue;
         frame_no++;
         if (e.type == EV_CLOSE) app_exit(0);
 
