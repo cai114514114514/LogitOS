@@ -113,6 +113,28 @@ every ring-3 program lives on the disk image, a harness that stopped at `make`
 would have benchmarked one commit's kernel against a stale userland and never
 noticed.
 
+## How stable each metric is, measured
+
+Not all of these are equally usable, and the differences are large enough to
+change which one you should bisect with. Spread is min..max across a 30-commit
+sweep on a contended host:
+
+| metric | spread | verdict |
+| --- | --- | --- |
+| `boot_ok_ms` | 2–5% | the most trustworthy; use it |
+| `page_net_ms` | ~10% | fine |
+| `shell_net_ms` | ~10% | fine; this is what `plant-regression.sh` judges |
+| `launch_net_ms` | 10–20% | usable |
+| `read_net_ms` | **50–90%** | **do not bisect with this** |
+| `mouse_tax_ms` | larger than the effect | needs many more rounds |
+
+`read_net_ms` measures opening a 2.2 MB file, which pulls the whole thing
+through virtio-blk while the driver polls with the BKL held — so its cost is
+set by when QEMU's IO thread gets scheduled. Measured on **one unchanged
+build**, in consecutive minutes: **889 ms and 1686 ms**. Anything read off that
+metric below about 2× is the host, not the code. Two planted-regression runs
+were bisected to the wrong commit before this was understood.
+
 ## The harness must be able to fail
 
 `tests/qmp/qmp_freeze.py` in this repo passes on broken and working builds
@@ -126,3 +148,24 @@ that is a finding about the metric, not a flaky test.
 
 The harness lives outside the tree being bisected (`PERF_TOOLS`), so a bisect
 can never end up measuring changes to its own instrument.
+
+**Result, 2026-08-08:** `PASS: bisect named the planted commit ce56a4ac4`
+(`shell_net_ms`: good 558 ms, bad 1052 ms, 1.886× separation, decided at
+1.373×). It took three attempts to get there, and the two failures were the
+useful part — see the metric-stability table above.
+
+## Absolute thresholds do not survive this host
+
+`bisect.sh` can decide two ways, and the second is the one to use:
+
+- `PERF_THRESHOLD=1400` — an absolute number. A bisect walks for an hour and
+  this host's load moves a metric by 2.3× inside that hour.
+- `PERF_REF_ISO=… PERF_REF_DISK=… PERF_RATIO=1.30` — the reference build is
+  re-benchmarked at **every step**, immediately before the candidate, and the
+  decision is the ratio. One extra boot per step, about ten seconds.
+
+This is not a refinement. In the ratio-mode run above, a genuinely-regressed
+commit measured 1600 ms while the reference measured 889 ms in the same
+minute — ratio 1.80, correctly BAD. Under the absolute threshold derived from
+the same two endpoints (~2400 ms) that identical 1600 ms reading would have
+been called GOOD, and the bisect would have walked the wrong way.
