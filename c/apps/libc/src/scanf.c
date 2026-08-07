@@ -141,7 +141,7 @@ static int collect(struct eng *e, char *buf, int cap, int width,
 int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
 {
     struct eng E; E.src = src; E.npb = 0; E.nread = 0;
-    int assigned = 0, eof_hit = 0;
+    int assigned = 0, eof_hit = 0, progress = 0;
     const char *p = fmt;
     char buf[512];
 
@@ -149,15 +149,17 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
         if (sp((unsigned char)*p)) {
             /* Whitespace in the format matches any run, including none. Hitting
              * EOF here is not by itself a failure. */
-            int c;
-            while ((c = eg(&E)) != EOFC && sp(c)) ;
+            int c, skipped = 0;
+            while ((c = eg(&E)) != EOFC && sp(c)) skipped++;
             if (c == EOFC) eof_hit = 1; else eu(&E, c);
+            if (skipped) progress = 1;
             continue;
         }
         if (*p != '%') {
             int c = eg(&E);
             if (c == EOFC) { eof_hit = 1; goto out; }
             if (c != (unsigned char)*p) { eu(&E, c); goto out; }
+            progress = 1;
             continue;
         }
         p++;
@@ -166,6 +168,7 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
             while ((c = eg(&E)) != EOFC && sp(c)) ;
             if (c == EOFC) { eof_hit = 1; goto out; }
             if (c != '%') { eu(&E, c); goto out; }
+            progress = 1;
             continue;
         }
 
@@ -199,10 +202,11 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
             int uns = (conv != 'd' && conv != 'i');
             unsigned long long uv = 0; long long sv = 0;
             if (uns) uv = strtoull(buf, &endp, base); else sv = strtoll(buf, &endp, base);
-            if (endp == buf) goto out;
-            /* Give back anything the number parser did not use (e.g. the "x" of
-             * a bare "0x"), so the next directive sees it. */
-            for (int k = n - 1; k >= (int)(endp - buf); k--) eu(&E, (unsigned char)buf[k]);
+            /* C: the directive consumes the longest prefix-OF-a-match, and then
+             * fails unless that item IS a match. So "0x" under %i is consumed
+             * and reported as a matching failure -- it is not silently the
+             * number 0 with the "x" pushed back. */
+            if (endp != buf + n) goto out;
             if (suppress) break;
             if (conv == 'p') { *va_arg(ap, void **) = (void *)(uintptr_t)uv; assigned++; break; }
             if (uns) {
@@ -229,9 +233,10 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
             int n = collect(&E, buf, (int)sizeof buf, width, flt_prefix, 0, 0);
             if (n == 0) goto out;
             char *endp;
+            /* Same rule as the integer case: "1e" is a prefix of "1e5", so it
+             * is consumed and then fails, rather than converting to 1.0. */
             double dv = strtod(buf, &endp);
-            if (endp == buf) goto out;
-            for (int k = n - 1; k >= (int)(endp - buf); k--) eu(&E, (unsigned char)buf[k]);
+            if (endp != buf + n) goto out;
             if (suppress) break;
             if (lmod == 3) *va_arg(ap, long double *) = (long double)dv;
             else if (lmod >= 1) *va_arg(ap, double *) = dv;
@@ -331,6 +336,10 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
 out:
     /* Return at most one character to the real stream; see the note on `pb`. */
     if (E.npb) src->unget(src, E.pb[E.npb - 1]);
-    if (assigned == 0 && eof_hit) return EOFC;
+    /* EOF is reserved for "the input ran out before ANYTHING matched". Once a
+     * literal or an explicit whitespace directive has consumed input, running
+     * out is an ordinary zero-conversion return -- the difference every
+     * `while (scanf(...) != EOF)` loop is built on. */
+    if (assigned == 0 && eof_hit && !progress) return EOFC;
     return assigned;
 }

@@ -270,18 +270,27 @@ static void sb_num(struct sb *s, long v, int width, char pad)
     while (n--) sb_ch(s, t[n]);
 }
 
-/* ISO 8601 week-of-year and week-based year (%V and %G/%g). */
+/* ISO 8601 week-of-year and week-based year (%V and %G/%g).
+ *
+ * The week a date belongs to can be in the NEIGHBOURING year -- 1969-12-31 is
+ * in week 1 of 1970 -- which is the whole reason %G exists separately from %Y
+ * and the case the previous attempt got wrong. A year has 53 ISO weeks exactly
+ * when it starts on a Thursday or is a leap year starting on a Wednesday;
+ * expressed on the last day, when 31 December is a Thursday (p == 3 with
+ * Monday = 0) or the year before ended on a Wednesday. */
+static int weeks_in_year(long y)
+{
+    int p  = (int)((((y     + y/4     - y/100     + y/400)     % 7) + 7) % 7);
+    int py = (int)(((((y-1) + (y-1)/4 - (y-1)/100 + (y-1)/400) % 7) + 7) % 7);
+    return (p == 4 || py == 3) ? 53 : 52;
+}
 static void iso_week(const struct tm *tm, int *week, long *year)
 {
     long y = (long)tm->tm_year + 1900;
     int wday = (tm->tm_wday + 6) % 7;                 /* Monday = 0 */
     int w = (tm->tm_yday - wday + 10) / 7;
-    if (w < 1) { y--; int py = 365 + is_leap(y); int pwd = (tm->tm_wday + 6) % 7;
-                 w = (tm->tm_yday + py - pwd + 10) / 7; }
-    else if (w > 52) {
-        int dec31wd = (tm->tm_wday + (365 + is_leap(y) - tm->tm_yday) - 1) % 7;
-        if (dec31wd < 3) { w = 1; y++; }
-    }
+    if (w < 1) { y--; w = weeks_in_year(y); }
+    else if (w > weeks_in_year(y)) { w = 1; y++; }
     *week = w; *year = y;
 }
 

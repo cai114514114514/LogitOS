@@ -249,6 +249,11 @@ static unsigned long long strto_uint(const char *s, char **end, int base,
     if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
         && digit((unsigned char)p[2], 16) >= 0) {
         p += 2; base = 16;
+    } else if ((base == 0 || base == 2) && p[0] == '0' && (p[1] == 'b' || p[1] == 'B')
+               && digit((unsigned char)p[2], 2) >= 0) {
+        /* C23 added the 0b/0B prefix for bases 0 and 2; current glibc accepts
+         * it, so code being ported already relies on it. */
+        p += 2; base = 2;
     } else if (base == 0) {
         base = (p[0] == '0') ? 8 : 10;
     }

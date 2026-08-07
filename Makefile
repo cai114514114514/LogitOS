@@ -53,8 +53,18 @@ HOST_INCDIRS := $(filter-out -Ic/apps/libc/include,$(INCDIRS))
 # shared header (e.g. percpu.h's struct cpu) only rebuilt the .c files git
 # touched -- stale objects then disagreed about struct layouts and corrupted
 # memory at runtime (the M25 P4 g_cpus skew).
+# -fno-omit-frame-pointer: the kernel's stack BACKTRACE depends on it and there
+# is no other way to get one here. At -O2 clang treats rbp as a general-purpose
+# register, so the "frame chain" a panic would walk is whatever integers the
+# code left on the stack -- and a backtrace that silently prints plausible
+# garbage is worse than printing none. DWARF unwinding is not an option either:
+# linker.ld /DISCARD/s .eh_frame, and a ring-0 unwinder that parses CFI is a
+# large amount of code to run in the one situation where the machine is already
+# broken. The cost is one register on x86-64 and a percent or so of code size.
+# Turn it off to see the difference: `make FPO=1` (see the knobs below) -- that
+# is the negative control for tests/boot/run-panic-test.sh.
 CFLAGS  := --target=$(ARCH)-elf -ffreestanding -nostdlib \
-           -fno-stack-protector -fno-pic -fno-pie \
+           -fno-stack-protector -fno-pic -fno-pie -fno-omit-frame-pointer \
            -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 -g -MMD -MP $(INCDIRS)
 
@@ -67,6 +77,20 @@ CFLAGS += -DWM_CHURN_STRESS
 endif
 ifeq ($(GROWFI),1)
 CFLAGS += -DKHEAP_GROW_FAULT_INJECT
+endif
+#   make FPO=1     drop frame pointers -- the NEGATIVE CONTROL for the panic
+#                  backtrace. Build with this and run-panic-test.sh's frame
+#                  assertions fail, which is how "the backtrace is real" is
+#                  demonstrated rather than asserted.
+ifeq ($(FPO),1)
+CFLAGS += -fomit-frame-pointer
+endif
+#   make KLOGUNSAFE=1  build klog WITHOUT its interrupt guard and per-CPU line
+#                  buffers, i.e. the naive logger. The negative control for the
+#                  interrupt-context claim: `echo irqstorm > /dev/ktrigger`
+#                  then reports torn records instead of torn=0.
+ifeq ($(KLOGUNSAFE),1)
+CFLAGS += -DKLOG_UNSAFE
 endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
@@ -121,7 +145,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-klog test-klog-control test-panic test-panic-log
 
 all: $(ISO)
 
@@ -156,8 +180,12 @@ $(BUILD)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) $(ASFLAGS) $< -o $@
 
+# -Map: the linker map is what a backtrace's hex addresses are READ with. It is
+# free to emit, it changes nothing in the binary, and without it the panic
+# output on an unfamiliar machine is a column of numbers nobody can resolve.
+# tests/boot/run-panic-test.sh checks a real frame against it.
 $(KERNEL): $(OBJ) $(RUST_LIB) linker.ld
-	$(LD) $(LDFLAGS) -o $@ --start-group $(OBJ) $(RUST_LIB) --end-group
+	$(LD) $(LDFLAGS) -Map=$(BUILD)/kernel.map -o $@ --start-group $(OBJ) $(RUST_LIB) --end-group
 
 $(ISO): $(KERNEL) grub.cfg
 	@mkdir -p $(ISO_DIR)/boot/grub
@@ -686,6 +714,7 @@ test-ahci-mbr: $(ISO) $(DISK)
 test-ahci-gpt: $(ISO) $(DISK)
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) gpt
 
+
 test-shell: $(ISO) $(DISK)
 	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
 
@@ -876,6 +905,53 @@ test-as-os: check-asops check-abi $(ISO) $(DISK)
 test-libc: $(ISO) $(DISK)
 	@sh tests/boot/run-libc-test.sh $(ISO) $(DISK)
 
+# --- mini-libc <-> glibc differential test --------------------------------
+#
+# The `test-crypto-diff` idiom applied to the C library: build the mini-libc
+# sources UNMODIFIED with every symbol renamed to mini_* (tests/unit/
+# libc_rename.h, force-included), link them beside glibc in one process, and
+# require identical results -- value, endptr, errno and formatted bytes -- over
+# a large randomized and adversarial corpus. This is the only kind of test that
+# catches the failures that matter in a libc, because a strtod that misrounds
+# the last bit and a printf that rounds 2.5 the wrong way are both silent.
+#
+# The mini-libc TUs are compiled -nostdinc against their own headers plus
+# clang's freestanding ones, exactly as they are for the target -- otherwise
+# glibc's <features.h> and mini-libc's collide (the same reason HOST_INCDIRS
+# exists). Each source is a separate object because several define a static
+# helper of the same name.
+#
+# The suite also builds a SABOTAGED copy of itself (one strtod result in a
+# thousand perturbed by one ulp, tests/unit/libc_sabotage.c) and REQUIRES it to
+# fail. A suite that has never failed is not known to be able to.
+LIBCDIFF_SRC  := $(filter-out c/apps/libc/src/malloc.c c/apps/libc/src/io.c c/apps/libc/src/runtime.c,\
+                   $(wildcard c/apps/libc/src/*.c))
+LIBCDIFF_INC  := -nostdinc -isystem $(shell $(CC) -print-resource-dir)/include \
+                 -Ic/apps/libc/include -Ic/apps/libc/src -Iinclude/abi
+LIBCDIFF_SAN  := -fsanitize=address,undefined -fno-sanitize-recover=all -g
+LIBCDIFF_OBJ  := $(patsubst %.c,$(BUILD)/libcdiff/%.o,$(LIBCDIFF_SRC))
+LIBCDIFF_SOBJ := $(patsubst %.c,$(BUILD)/libcdiff-sab/%.o,$(LIBCDIFF_SRC))
+
+$(BUILD)/libcdiff/%.o: %.c tests/unit/libc_rename.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O1 -w $(LIBCDIFF_SAN) $(LIBCDIFF_INC) \
+	      -include tests/unit/libc_rename.h -c $< -o $@
+$(BUILD)/libcdiff-sab/%.o: %.c tests/unit/libc_rename.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O1 -w -DLIBC_SABOTAGE $(LIBCDIFF_SAN) $(LIBCDIFF_INC) \
+	      -include tests/unit/libc_rename.h -c $< -o $@
+
+test-libc-diff: $(LIBCDIFF_OBJ) $(LIBCDIFF_SOBJ) tests/unit/libc_diff_test.c tests/unit/libc_sabotage.c
+	@$(CC) -std=gnu11 -O1 -g $(LIBCDIFF_SAN) -o $(BUILD)/libc_diff_test \
+	    tests/unit/libc_diff_test.c $(LIBCDIFF_OBJ) -lm
+	@$(CC) -std=gnu11 -O1 -g $(LIBCDIFF_SAN) -DLIBC_DIFF_NEGATIVE_CONTROL \
+	    -o $(BUILD)/libc_diff_sabotaged \
+	    tests/unit/libc_diff_test.c tests/unit/libc_sabotage.c $(LIBCDIFF_SOBJ) -lm
+	@echo "--- mini-libc vs glibc"
+	@$(BUILD)/libc_diff_test $(LIBCDIFF_ITERS) $(LIBCDIFF_SEED)
+	@echo "--- negative control (must detect a 1-ulp strtod regression)"
+	@$(BUILD)/libc_diff_sabotaged $(LIBCDIFF_ITERS) $(LIBCDIFF_SEED)
+
 # M25 SMP concurrency proof: boots -smp 4, runs /bin/smptest, asserts SMP_TEST_OK
 # (no cross-core corruption + genuine parallelism across >=2 cores).
 test-smp: $(ISO) $(DISK)
@@ -1015,6 +1091,52 @@ test-as-asan: check-asops check-abi
 test-as-fast: test-as test-as-gcstress test-as-stress test-complete \
               test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint test-as-bcstable
 
+# --- the kernel log ring, host-side ---------------------------------------
+# Compiles the REAL c/kernel/core/klog.c + kprintf.c against tests/unit/klogstub
+# (which shadows the interrupt guard, the spinlock, per-CPU identity, the timer
+# and the two console sinks) and asserts wraparound, truncation, level
+# filtering, full-ring behaviour, two producers interleaving mid-line, and the
+# rendered form `cat /dev/kmsg` serves.
+# --- the same, on the machine ---------------------------------------------
+# test-panic-log: the ring survives the events that wrote it, is readable from
+#   userland (`cat /dev/kmsg`), overwrites instead of blocking when full, and
+#   -- the claim that matters -- takes records from a real interrupt handler
+#   driven by asynchronous IPIs without tearing or deadlocking.
+# test-panic: a deliberate panic prints a reason, registers, a backtrace and
+#   the log, then halts without rebooting. Every backtrace frame is resolved
+#   against build/kernel.map and required to land on the functions that really
+#   called panic(). Negative control: `make FPO=1` (no frame pointers).
+test-panic-log: $(ISO) $(DISK)
+	@bash tests/boot/run-panic-log-test.sh $(ISO) $(DISK)
+
+test-panic: $(ISO) $(DISK)
+	@bash tests/boot/run-panic-test.sh $(ISO) $(DISK)
+
+KLOG_TEST_SRC := tests/unit/log_test.c c/kernel/core/klog.c c/kernel/core/kprintf.c
+KLOG_TEST_INC := -Itests/unit/klogstub -Ic/kernel/core
+test-klog:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    $(KLOG_TEST_INC) -o $(BUILD)/log_test $(KLOG_TEST_SRC)
+	@$(BUILD)/log_test
+
+# THE NEGATIVE CONTROL, and the reason test-klog is evidence rather than
+# decoration. -DKLOG_UNSAFE removes klog's interrupt guard and its per-CPU line
+# buffers -- the logger you write if you do not think about interrupt context.
+# This target REQUIRES the suite to fail; if it ever passes, test-klog is
+# measuring something other than the property it claims to.
+test-klog-control:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -w -DKLOG_UNSAFE $(KLOG_TEST_INC) \
+	    -o $(BUILD)/log_test_unsafe $(KLOG_TEST_SRC)
+	@if $(BUILD)/log_test_unsafe > $(BUILD)/log_test_unsafe.out 2>&1; then \
+	    echo "CONTROL FAILED: the naive logger passed the interleaving test"; \
+	    cat $(BUILD)/log_test_unsafe.out; exit 1; \
+	 else \
+	    echo "control ok: -DKLOG_UNSAFE fails as expected --"; \
+	    grep -E '^  FAIL|failures' $(BUILD)/log_test_unsafe.out | head -8; \
+	 fi
+
 # kheap host test: compiles the real kheap.c against stub pmm/spinlock/kprintf
 # headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts
 # the no-two-live-allocations-overlap invariant -- including across injected
@@ -1068,8 +1190,18 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(BUILD)/dom_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(BUILD)/dom_api_test
-	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/var_test tests/unit/var_test.c c/apps/browser/css_vars.c
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/var_test tests/unit/var_test.c \
+	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(BUILD)/var_test
+# css_vars_test: the cascade half of the same file -- WHICH declaration wins,
+# rather than whether substitution happens. It links css_engine.c because the
+# @media verdict is now LibCSS's own (css_select_ctx_media_matches), which is
+# the entire point: there is one evaluator, not one per caller.
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_test tests/unit/css_vars_test.c \
+	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@$(BUILD)/css_vars_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/parse_fuzz tests/unit/parse_fuzz.c c/net/http/url.c c/lib/text/utf8.c
 	@$(BUILD)/parse_fuzz
 	@$(CC) -O2 -w $(HOST_INCDIRS) -o $(BUILD)/http_dechunk_test tests/unit/http_dechunk_test.c c/net/http/url.c
@@ -1445,6 +1577,13 @@ test-pci: $(BUILD)
 	    -o $(BUILD)/devmodel_test tests/unit/devmodel_test.c \
 	    c/drivers/core/device.c $(PCI_HOST_INC)
 	@$(BUILD)/devmodel_test
+	@# pcistub MUST come before c/kernel/cpu here: pci_msi.c reaches the real
+	@# io.h otherwise and the "config space" writes go to real x86 ports.
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_HOST_TEST \
+	    -o $(BUILD)/pci_msi_test tests/unit/pci_msi_test.c c/kernel/pci/pci_msi.c \
+	    c/kernel/pci/pci.c c/drivers/core/device.c \
+	    -Itests/unit/pcistub -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/cpu
+	@$(BUILD)/pci_msi_test
 
 # Two DIFFERENT QEMU machines and device sets against the same kernel: set 'a'
 # is i440fx with an e1000 + QEMU's `edu` device (asserts an MSI and a legacy

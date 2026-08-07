@@ -184,10 +184,10 @@ static const struct fltinfo f32 = { 23,  8,  -127 };
  * small counts: powtab[i] ~= i * log2(10), chosen so a shift never overshoots. */
 static const int powtab[] = { 1, 3, 6, 9, 13, 16, 19, 22, 26 };
 
-static uint64_t dec_to_bits(struct dec *a, const struct fltinfo *f, int *ovf)
+static uint64_t dec_to_bits(struct dec *a, const struct fltinfo *f, int *ovf, int *inex)
 {
     int exp; uint64_t mant;
-    *ovf = 0;
+    *ovf = 0; if (inex) *inex = 0;
 
     if (a->nd == 0) { mant = 0; exp = f->bias; goto out; }
     if (a->dp > 310) goto overflow;
@@ -210,6 +210,11 @@ static uint64_t dec_to_bits(struct dec *a, const struct fltinfo *f, int *ovf)
     if (exp - f->bias >= (1 << f->expbits) - 1) goto overflow;
 
     dshift(a, 1 + f->mantbits);
+    /* Whether the final rounding to an integer DISCARDED anything is exactly
+     * the question ERANGE-on-underflow asks: a subnormal result is only an
+     * underflow if precision was lost reaching it. 0x1p-1074 is the smallest
+     * subnormal and is exact, and glibc reports no error for it. */
+    if (inex) *inex = (a->trunc || a->nd > a->dp);
     mant = dround_int(a);
     if (mant == (uint64_t)2 << f->mantbits) {
         mant >>= 1; exp++;
@@ -341,16 +346,17 @@ static double parse_hex(const char *s, const char **endp, int neg,
     a->nd = n; a->dp = n; a->neg = neg; a->trunc = sticky;
     dshift(a, e2);
 
-    int ovf = 0;
-    uint64_t b = dec_to_bits(a, f, &ovf);
+    int ovf = 0, inex = 0;
+    uint64_t b = dec_to_bits(a, f, &ovf, &inex);
     if (ovf) { *range = 1; return make_inf(neg); }
+    inex = inex || sticky;
     if (f == &f32) {
         union { uint32_t u; float f; } u; u.u = (uint32_t)b;
-        if (u.f == 0 || ((u.u >> 23) & 0xff) == 0) *range = 1;
+        if (u.f == 0 || (((u.u >> 23) & 0xff) == 0 && inex)) *range = 1;
         return u.f;
     }
     union { uint64_t u; double d; } u; u.u = b;
-    if (u.d == 0 || ((u.u >> 52) & 0x7ff) == 0) *range = 1;
+    if (u.d == 0 || (((u.u >> 52) & 0x7ff) == 0 && inex)) *range = 1;
     return u.d;
 }
 
@@ -429,16 +435,17 @@ double __libc_strtox(const char *s, char **end, int bits)
 
     if (fast_path(a, f, &result)) return result;
 
-    int ovf = 0;
-    uint64_t b = dec_to_bits(a, f, &ovf);
+    int ovf = 0, inex = 0;
+    uint64_t b = dec_to_bits(a, f, &ovf, &inex);
     if (ovf) { errno = ERANGE; return make_inf(neg); }
+    /* Underflow is "subnormal AND lost precision", not "subnormal". */
     if (f == &f32) {
         union { uint32_t u; float f; } u; u.u = (uint32_t)b;
-        if (u.f == 0 || ((u.u >> 23) & 0xff) == 0) errno = ERANGE;   /* zero or subnormal */
+        if (u.f == 0 || (((u.u >> 23) & 0xff) == 0 && inex)) errno = ERANGE;
         return u.f;
     }
     union { uint64_t u; double d; } u; u.u = b;
-    if (u.d == 0 || ((u.u >> 52) & 0x7ff) == 0) errno = ERANGE;
+    if (u.d == 0 || (((u.u >> 52) & 0x7ff) == 0 && inex)) errno = ERANGE;
     return u.d;
 }
 

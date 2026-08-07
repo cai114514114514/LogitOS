@@ -281,33 +281,39 @@ static void fmt_float(struct __printf_sink *sk, double v, int prec, char conv,
         nd = __libc_dtoa(v, 1, want, digs, &decpt);
     }
     int gconv = (conv | 0x20) == 'g';
+    long dot_at = -1;                    /* where the '.' went, or -1 for none */
+
+    /* %g removes trailing zeros from the FRACTIONAL portion only. Stripping the
+     * whole tail instead turns "100000" into "1" and "0" into "", which is why
+     * this is anchored on the decimal point rather than on the last character. */
+    #define TRIM_G() do { \
+        if (gconv && !alt && dot_at >= 0) { \
+            while ((long)o.n > dot_at + 1 && o.b[o.n - 1] == '0') o.n--; \
+            if ((long)o.n == dot_at + 1) o.n--; \
+        } \
+    } while (0)
 
     if (lc == 'e') {
         fb(&o, nd > 0 ? digs[0] : '0');
         if (prec > 0 || alt) {
-            fb(&o, '.');
+            dot_at = (long)o.n; fb(&o, '.');
             for (int i = 1; i <= prec; i++) fb(&o, i < nd ? digs[i] : '0');
         }
-        if (gconv && !alt) {                    /* %g: strip trailing fraction zeros */
-            while (o.n && o.b[o.n - 1] == '0') o.n--;
-            if (o.n && o.b[o.n - 1] == '.') o.n--;
-        }
+        TRIM_G();
         fmt_exp(&o, nd > 0 ? decpt - 1 : 0, upper ? 'E' : 'e');
     } else {
         if (decpt <= 0) fb(&o, '0');
         else for (int i = 0; i < decpt; i++) fb(&o, i < nd ? digs[i] : '0');
         if (prec > 0 || alt) {
-            fb(&o, '.');
+            dot_at = (long)o.n; fb(&o, '.');
             for (int j = 1; j <= prec; j++) {
                 int idx = decpt + j - 1;
                 fb(&o, (idx >= 0 && idx < nd) ? digs[idx] : '0');
             }
         }
-        if (gconv && !alt) {
-            while (o.n && o.b[o.n - 1] == '0') o.n--;
-            if (o.n && o.b[o.n - 1] == '.') o.n--;
-        }
+        TRIM_G();
     }
+    #undef TRIM_G
     emit(sk, sign, NULL, o.b, o.n, width, left, zero);
 }
 
@@ -385,7 +391,6 @@ int __libc_vformat(struct __printf_sink *sk, const char *fmt, va_list ap)
             else if (lng <= -2) v = (unsigned char)v;
             int base = (c == 'u') ? 10 : (c == 'o') ? 8 : 16;
             blen = (size_t)u64_to(num, v, base, c == 'X');
-            if (alt && c == 'o' && num[0] != '0') prefix = "0";
             if (alt && (c == 'x' || c == 'X') && v) prefix = (c == 'X') ? "0X" : "0x";
             uval = v;
             break; }
@@ -463,9 +468,10 @@ int __libc_vformat(struct __printf_sink *sk, const char *fmt, va_list ap)
         {
             const char *body = num;
             char padbuf[80];
+            (void)is_signed;
             if (prec >= 0) {
-                zero = 0;
-                if (uval == 0 && prec == 0) blen = 0;
+                zero = 0;                       /* C: precision disables '0' */
+                if (uval == 0 && prec == 0) blen = 0;   /* zero at precision 0 prints nothing */
                 if ((size_t)prec > blen && (size_t)prec < sizeof padbuf) {
                     size_t z = (size_t)prec - blen;
                     memset(padbuf, '0', z);
@@ -473,7 +479,12 @@ int __libc_vformat(struct __printf_sink *sk, const char *fmt, va_list ap)
                     body = padbuf; blen = (size_t)prec;
                 }
             }
-            if (is_signed && sign == 0 && uval == 0 && prec == 0) { /* nothing */ }
+            /* '#' on %o: "increase the precision, if and only if necessary, to
+             * force the first digit to be a zero". Stated as a rule about the
+             * FINISHED digit string, which is why it is applied here and not
+             * before the precision padding -- %#.5o of 1 is "00001", already
+             * starting with a zero, and must not gain a sixth digit. */
+            if (alt && c == 'o' && (blen == 0 || body[0] != '0')) prefix = "0";
             emit(sk, sign, prefix, body, blen, width, left, zero);
         }
     }
