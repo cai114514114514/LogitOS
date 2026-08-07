@@ -1117,6 +1117,7 @@ test-tcp-throughput: $(ISO) $(DISK)
 test-net-proto:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
+		c/net/ip/ip6_addr.c \
 		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
 		-Ic/drivers/timer -Ic/kernel/core
 	@./$(BUILD)/net_proto_test

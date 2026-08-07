@@ -38,6 +38,21 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
     return 0;
 }
 int arp_warm(uint32_t ip, int timeout) { (void)ip; (void)timeout; return 0; }
+
+/* IPv6 reachability, stubbed to "no v6" so the v4 tests below mean what they
+ * always meant. dns.c asks these two before it will send a AAAA query
+ * (`want6 = (ip6_up() == 2)`), and the whole of ip6.c cannot come into this
+ * translation unit to answer them: it drags in nd.c, icmp6, tcp_input_af,
+ * net_up and kprintf -- the entire kernel network layer, in a test whose point
+ * is to be a small white-box unit. The address helpers this file DOES exercise
+ * live in ip6_addr.c, which is self-contained and is linked in.
+ *
+ * A v6-enabled variant of these paths needs its own target with the real
+ * module and its dependencies, not a wider link line here. */
+int ip6_up(void) { return 0; }
+struct ip6_src_cand;
+int ip6_dual_candidates(struct ip6_src_cand *cand, int max)
+{ (void)cand; (void)max; return 0; }
 int eth_send(const uint8_t dst[ETH_ALEN], uint16_t type,
              const void *payload, uint16_t len)
 {
