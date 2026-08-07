@@ -12,7 +12,7 @@
  * that by regenerating and diffing the names.) */
 
 
-_Static_assert(sizeof(struct logit_event) == 12,
+_Static_assert(sizeof(struct logit_event) == 24,
                "abi.as is stale: sizeof(struct logit_event) changed -- run tools/gen_abi.py --write");
 _Static_assert(offsetof(struct logit_event, type) == 0,
                "abi.as is stale: logit_event.type moved -- run tools/gen_abi.py --write");
@@ -26,6 +26,18 @@ _Static_assert(offsetof(struct logit_event, b) == 8,
                "abi.as is stale: logit_event.b moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_event *)0)->b) == 4,
                "abi.as is stale: logit_event.b changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_event, mods) == 12,
+               "abi.as is stale: logit_event.mods moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_event *)0)->mods) == 4,
+               "abi.as is stale: logit_event.mods changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_event, button) == 16,
+               "abi.as is stale: logit_event.button moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_event *)0)->button) == 4,
+               "abi.as is stale: logit_event.button changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_event, wheel) == 20,
+               "abi.as is stale: logit_event.wheel moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_event *)0)->wheel) == 4,
+               "abi.as is stale: logit_event.wheel changed width -- run tools/gen_abi.py --write");
 
 _Static_assert(sizeof(struct logit_time) == 28,
                "abi.as is stale: sizeof(struct logit_time) changed -- run tools/gen_abi.py --write");

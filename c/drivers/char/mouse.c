@@ -38,6 +38,33 @@ static void mouse_write(uint8_t b)
     (void)inb(PS2_DATA);        /* consume ACK (0xFA) */
 }
 
+static uint8_t mouse_read(void)  /* one byte the device sent unprompted (e.g. a device ID) */
+{
+    wait_output();
+    return inb(PS2_DATA);
+}
+
+/* 3 for a plain PS/2 mouse, 4 once the wheel is on (packets grow by a byte). */
+static int packet_len = 3;
+
+/* Turn on the Microsoft "IntelliMouse" extension: a device that sees the sample
+ * rates 200, 100, 80 in a row changes its reported ID from 0 to 3 and starts
+ * sending FOUR-byte packets whose extra byte is the scroll wheel. There is no
+ * feature bit to query first -- the knock IS the query, and the ID afterwards is
+ * the answer, which is why this reads the ID rather than assuming.
+ *
+ * Without it a PS/2 mouse has no wheel at all (the 3-byte packet has no room for
+ * one), so EV_WHEEL would be a constant the kernel could never generate. */
+static void mouse_enable_wheel(void)
+{
+    mouse_write(0xF3); mouse_write(200);
+    mouse_write(0xF3); mouse_write(100);
+    mouse_write(0xF3); mouse_write(80);
+    mouse_write(0xF2);                        /* get device ID */
+    if (mouse_read() == 3) packet_len = 4;
+    mouse_write(0xF3); mouse_write(100);      /* back to a sane report rate */
+}
+
 void mouse_init(void)
 {
     drain();
@@ -58,11 +85,12 @@ void mouse_init(void)
     drain();                    /* flush self-test/id bytes (0xAA, 0x00, ...) */
 
     mouse_write(0xF6);          /* set defaults */
+    mouse_enable_wheel();       /* ... then ask for the wheel, which F6 does not undo */
     mouse_write(0xF4);          /* enable data reporting */
     drain();
 }
 
-static uint8_t packet[3];
+static uint8_t packet[4];
 static int cycle;
 static int mx, my;
 static int initialized;
@@ -78,7 +106,7 @@ void mouse_handle(void)
         return;
 
     packet[cycle++] = data;
-    if (cycle < 3)
+    if (cycle < packet_len)
         return;
     cycle = 0;
 
@@ -86,6 +114,11 @@ void mouse_handle(void)
     int dy = (int)packet[2] - ((packet[0] << 3) & 0x100);
     int left = packet[0] & 0x01;
     int right = packet[0] & 0x02;
+    int middle = packet[0] & 0x04;
+    /* Wheel notches this packet. Signed 8-bit; QEMU (like real hardware) sends
+     * +1 for a scroll toward the user and -1 away, which is already the sign
+     * EV_WHEEL and the DOM's deltaY use -- so no negation here, on purpose. */
+    int dz = packet_len == 4 ? (int)(int8_t)packet[3] : 0;
 
     if (!initialized) {
         mx = (int)fb_width() / 2;
@@ -102,5 +135,9 @@ void mouse_handle(void)
     if (mx > w - 1) mx = w - 1;
     if (my > h - 1) my = h - 1;
 
-    wm_mouse_event(mx, my, left, right);
+    /* Buttons are reported as a LEVEL in every packet, not as transitions: this
+     * driver has never known "went down" from "still down", and it stays that
+     * way -- the WM already tracks the previous level to derive edges, and it is
+     * the side that knows which window owns the press. */
+    wm_mouse_event(mx, my, left, right, middle, dz);
 }

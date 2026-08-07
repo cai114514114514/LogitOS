@@ -5,7 +5,9 @@
 void mouse_init(void);
 
 /* Called from the IRQ12 handler: reads one packet byte and, on a complete
- * 3-byte packet, updates the cursor and notifies the window manager. */
+ * packet, updates the cursor and notifies the window manager. Packets are 3
+ * bytes, or 4 once mouse_init has switched the device into IntelliMouse mode
+ * (the extra byte is the scroll wheel). */
 void mouse_handle(void);
 
 #endif /* LOGIT_MOUSE_H */

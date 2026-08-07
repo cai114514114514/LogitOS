@@ -47,6 +47,11 @@ call ui_dark_query  SYS_UI_DARK        lit(-1)
 call ui_dark_set    SYS_UI_DARK        int(on)
 call sys_yield      SYS_YIELD
 call get_time       SYS_GET_TIME       buf(t)
+# The monotonic clock, in milliseconds since boot. Distinct from get_time, which
+# is the WALL clock in whole seconds off a CMOS RTC a user can set backwards --
+# you cannot measure an interval with that, and await_() below had to say so in a
+# comment and then use it anyway. Granularity is 10 ms (100 Hz tick), not 1 ms.
+call monotonic_ms   SYS_MONOTONIC_MS
 
 # ---- io / basics ----
 call io_write       SYS_WRITE          int(fd) buf(b) int(len)

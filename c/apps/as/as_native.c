@@ -155,6 +155,7 @@ void as_install_indirection(void)
     as_define_int("SYS_DIR_COUNT",   SYS_DIR_COUNT);
     as_define_int("SYS_DIR_NAME",    SYS_DIR_NAME);
     as_define_int("SYS_GET_TIME",    SYS_GET_TIME);
+    as_define_int("SYS_MONOTONIC_MS", SYS_MONOTONIC_MS);
     as_define_int("SYS_NET_INFO",    SYS_NET_INFO);
     as_define_int("SYS_NET_PING",    SYS_NET_PING);
     as_define_int("SYS_NET_PING_RTT",SYS_NET_PING_RTT);
@@ -201,4 +202,17 @@ void as_install_indirection(void)
     as_define_int("EV_CLOSE", EV_CLOSE);
     as_define_int("EV_MOUSE_R", EV_MOUSE_R);
     as_define_int("EV_THEME", EV_THEME);
+    as_define_int("EV_MOUSE_UP", EV_MOUSE_UP);
+    as_define_int("EV_MOUSE_MOVE", EV_MOUSE_MOVE);
+    as_define_int("EV_WHEEL", EV_WHEEL);
+    /* The two side fields of an event: which button, and which modifiers. A
+     * script reads them off the Event layout in abi.as, so it needs the names
+     * for the bits as much as it needs the names for the types. */
+    as_define_int("EV_MOD_SHIFT", EV_MOD_SHIFT);
+    as_define_int("EV_MOD_CTRL", EV_MOD_CTRL);
+    as_define_int("EV_MOD_ALT", EV_MOD_ALT);
+    as_define_int("EV_BTN_NONE", EV_BTN_NONE);
+    as_define_int("EV_BTN_LEFT", EV_BTN_LEFT);
+    as_define_int("EV_BTN_RIGHT", EV_BTN_RIGHT);
+    as_define_int("EV_BTN_MIDDLE", EV_BTN_MIDDLE);
 }

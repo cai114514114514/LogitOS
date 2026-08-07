@@ -17,6 +17,7 @@
 #include "kheap.h"
 #include "percpu.h"
 #include "kprintf.h"
+#include "pit.h"
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -228,6 +229,16 @@ void syscall_dispatch(struct registers *r)
         r->rax = 0;
         return;
     }
+    case SYS_MONOTONIC_MS:
+        /* Handled here beside SYS_GET_TIME, not in wm_gui_syscall: a clock is
+         * not a GUI service. /bin/as, vidcheck and every coreutil are windowless
+         * processes, and the wm route answers -1 for those.
+         *
+         * No user_range_ok: the answer is the return value, so there is no user
+         * pointer to validate -- and no failure mode either. 10 ms granular; see
+         * the SYS_MONOTONIC_MS comment in logit_abi.h. */
+        r->rax = timer_ms();
+        return;
     case SYS_EXIT:
         proc_exit((int)r->rdi);  /* zombie + close fds + mark window dead; never returns */
         return;

@@ -102,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-html5lib test-html5lib-tok test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -514,6 +514,27 @@ test-html5lib: $(BUILD)/libcss_host.a
 # 24 MiB arena, boot-time SSE and LogitFS are all in the loop.
 test-video: $(ISO) $(DISK)
 	@bash tests/boot/run-video-test.sh $(ISO) $(DISK)
+
+# The per-window event ring, split out of wm.c so it can be tested on the host:
+# FIFO order, motion coalescing under flood, and -- the property that matters --
+# that a click is never merged away by the motion samples around it.
+test-evq:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/evq_test tests/unit/evq_test.c \
+	    c/kernel/gui/evq.c -Ic/kernel/gui -Iinclude/abi
+	@$(BUILD)/evq_test
+
+# Does the monotonic clock actually advance, at the rate it claims? Cross-checked
+# on device against the CMOS RTC, which is an independent timer -- so a tick/ms
+# confusion or a wrong PIT mode fails instead of agreeing with itself.
+test-clock: $(ISO) $(DISK)
+	@bash tests/boot/run-clock-test.sh $(ISO) $(DISK)
+
+# Drives real PS/2 input over QMP: move, press, release, right button, wheel
+# both ways, shift held, window-local coordinates -- then floods the ring and
+# reads the kernel's own queued/merged/dropped counters back.
+test-input: $(ISO) $(DISK)
+	@bash tests/boot/run-input-test.sh $(ISO) $(DISK)
 
 # Does the filesystem store data? Every other boot harness passes -snapshot,
 # which discards the disk on exit -- deterministic, and it means nothing here has

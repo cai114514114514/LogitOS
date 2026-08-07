@@ -40,6 +40,16 @@ static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
 static inline int  poll_event(struct logit_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
 static inline int  get_arg(char *b, int m) { return (int)_sys(SYS_GET_ARG, (long)b, m, 0); }
 static inline void get_time(struct logit_time *t) { _sys(SYS_GET_TIME, (long)t, 0, 0); }
+/* Milliseconds since boot: the clock to SUBTRACT. get_time() is the wall clock
+ * in whole seconds and can be set backwards, so it can neither time an
+ * animation nor pace a frame.
+ *
+ * Resolution is 10 ms, not 1 ms -- the value comes from the kernel's 100 Hz
+ * tick, so it advances in steps of ten. Time a 3 ms operation with it and the
+ * honest answers are 0 and 10. Returns unsigned 64-bit and never wraps in any
+ * real uptime, so `monotonic_ms() - t0` needs no wraparound guard. */
+static inline unsigned long long monotonic_ms(void)
+{ return (unsigned long long)_sys(SYS_MONOTONIC_MS, 0, 0, 0); }
 static inline int  read_file(const char *n, void *b, int m) { return (int)_sys(SYS_READ_FILE, (long)n, (long)b, m); }
 static inline void sys_yield(void) { _sys(SYS_YIELD, 0, 0, 0); }
 static inline void app_exit(int c) { _sys(SYS_EXIT, c, 0, 0); }

@@ -41,10 +41,31 @@ static const char scancode_map_shift[128] = {
 #define SC_LCTRL  0x1D
 #define SC_LSHIFT 0x2A
 #define SC_RSHIFT 0x36
+#define SC_LALT   0x38
+
+/* Modifier state, at file scope because it is no longer only this driver's
+ * business: every key AND mouse event now carries an EV_MOD_* mask, and the
+ * mouse IRQ has no other way to know whether shift is down. Read from IRQ
+ * context (both IRQ1 and IRQ12), written only by IRQ1 -- a torn read is not
+ * possible for a single int, and a modifier that changes in the same microsecond
+ * as a click is genuinely ambiguous anyway.
+ *
+ * NOTE: the extended (E0-prefixed) right-hand Ctrl and Alt are not tracked. The
+ * E0 branch below consumes them as unknown extended keys, which is the behaviour
+ * that was already there; fixing it is a keyboard-driver change, not an event
+ * ABI one. */
+static int mod_ctrl, mod_shift, mod_alt;
+
+int kbd_mods(void)
+{
+    return (mod_shift ? EV_MOD_SHIFT : 0) |
+           (mod_ctrl  ? EV_MOD_CTRL  : 0) |
+           (mod_alt   ? EV_MOD_ALT   : 0);
+}
 
 void keyboard_handle(void)
 {
-    static int ctrl, shift, ext;
+    static int ext;
     uint8_t sc = inb(KBD_DATA);
 
     if (sc == 0xE0) { ext = 1; return; }            /* extended-key prefix */
@@ -63,10 +84,12 @@ void keyboard_handle(void)
     }
 
     switch (sc) {
-    case SC_LCTRL:                                  ctrl  = 1; return;
-    case SC_LCTRL  | 0x80:                          ctrl  = 0; return;
-    case SC_LSHIFT:        case SC_RSHIFT:          shift = 1; return;
-    case SC_LSHIFT | 0x80: case SC_RSHIFT | 0x80:   shift = 0; return;
+    case SC_LCTRL:                                  mod_ctrl  = 1; return;
+    case SC_LCTRL  | 0x80:                          mod_ctrl  = 0; return;
+    case SC_LSHIFT:        case SC_RSHIFT:          mod_shift = 1; return;
+    case SC_LSHIFT | 0x80: case SC_RSHIFT | 0x80:   mod_shift = 0; return;
+    case SC_LALT:                                   mod_alt   = 1; return;
+    case SC_LALT   | 0x80:                          mod_alt   = 0; return;
     }
     if (sc & 0x80)
         return;                      /* other key releases */
@@ -74,11 +97,11 @@ void keyboard_handle(void)
     char base = scancode_map[sc & 0x7F];
     if (!base)
         return;
-    if (ctrl && base >= 'a' && base <= 'z') {
+    if (mod_ctrl && base >= 'a' && base <= 'z') {
         wm_key(base - 'a' + 1);      /* Ctrl+letter -> control code (Ctrl+S=0x13) */
         return;
     }
-    char c = shift ? scancode_map_shift[sc & 0x7F] : base;
+    char c = mod_shift ? scancode_map_shift[sc & 0x7F] : base;
     if (c)
         wm_key(c);                   /* route to the focused UI */
 }

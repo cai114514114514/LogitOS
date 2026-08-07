@@ -23,6 +23,8 @@
  * Writing it down found a real disagreement: SYS_GUI_GLASS's radius is 8 bits,
  * which the comment's `(radius<<32)|...` never said. */
 #include "logit_pack.h"
+#include "evq.h"
+#include "keyboard.h"
 #include "net.h"
 #include "http.h"
 #include "kprintf.h"
@@ -41,8 +43,6 @@
 #define USER_PATH_MAX 128
 #define USER_URL_MAX  384
 #define USER_TEXT_MAX 1024
-#define EVQ_N         256        /* per-window event ring: deep enough that a burst of
-                                  * keystrokes isn't dropped while the app repaints */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -68,8 +68,7 @@ struct win {
     enum wkind kind;
     struct app *app;          /* owner (NULL for builtin) */
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
-    struct logit_event evq[EVQ_N];
-    int  evhead, evtail;
+    struct evq ev;            /* SYS_POLL_EVENT ring (coalesces motion -- see evq.h) */
     int  wants_close;
     char cwd[128];            /* Finder: current directory path */
     uint64_t open_t0;         /* tick the open "pop" animation began (0 = settled) */
@@ -79,8 +78,14 @@ static struct app apps[MAXWIN];
 static struct win wins[MAXWIN];
 static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
 
-static int mx, my, mleft, mright;
+static int mx, my, mleft, mright, mmiddle;
 static int dragging = -1, drag_dx, drag_dy;
+/* The window that owns the pointer until every button comes back up. Set on a
+ * press inside a window's content; motion and the matching release go there even
+ * once the pointer has left the window. Without it, dragging a scrollbar or
+ * selecting text stops the instant the cursor slips outside -- and the app never
+ * sees the button-up at all, so it stays stuck in "dragging" forever. */
+static int mouse_capture = -1;
 static volatile int dirty = 1;           /* the next frame needs a full recomposite */
 
 static uint32_t *back, *bg;
@@ -303,7 +308,22 @@ static int sysinfo_text(char *buf, int max)
      * one number that says whether the ordering the log claims is actually
      * being asked of the hardware. tests/boot/run-barrier-test.sh reads it. */
     p = ap_str(p, end, "Barriers "); p = ap_num(p, end, (long)blk_flush_count());
-    p = ap_str(p, end, "\n\n");
+    p = ap_str(p, end, "\n");
+    /* Milliseconds since boot -- the same number SYS_MONOTONIC_MS answers, so a
+     * caller can cross-check its own clock against the machine's without a
+     * second syscall. 10 ms granular (100 Hz tick); see pit.h. */
+    p = ap_str(p, end, "Uptime-ms "); p = ap_num(p, end, timer_ms());
+    p = ap_str(p, end, "\n");
+    /* Event-ring accounting. `merged` is mouse motion coalesced onto an unread
+     * motion sample instead of taking a slot; `dropped` is events lost to a full
+     * ring, and it is the number that has to stay 0 -- a dropped click is a
+     * click the user made and the machine did not act on. Printed rather than
+     * merely counted because "motion cannot overflow the queue" is a claim, and
+     * a claim you cannot read back is a comment. */
+    p = ap_str(p, end, "Events "); p = ap_num(p, end, evq_queued());
+    p = ap_str(p, end, " queued, "); p = ap_num(p, end, evq_coalesced());
+    p = ap_str(p, end, " merged, "); p = ap_num(p, end, evq_dropped());
+    p = ap_str(p, end, " dropped\n\n");
     p = ap_str(p, end, "PID  NAME\n");
     p = ap_str(p, end, "  0  wm (compositor)\n");
     for (int i = 0; i < MAXWIN; i++)
@@ -392,7 +412,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->surf.px = kmalloc((size_t)(pxcount * 4));
         if (!w->surf.px) { w->used = 0; return -1; }
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
-        w->evhead = w->evtail = 0; w->wants_close = 0;
+        evq_reset(&w->ev); w->wants_close = 0;
         { uint64_t t = timer_ticks(); w->open_t0 = t ? t : 1; }   /* trigger open pop */
         ap->win = wi;
         raise_win(wi);
@@ -472,10 +492,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return 0;
         struct logit_event *ev = (struct logit_event *)a;
         if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
-        if (w->evhead == w->evtail) return 0;
-        *ev = w->evq[w->evhead];
-        w->evhead = (w->evhead + 1) % EVQ_N;
-        return 1;
+        /* The struct GREW (mods/button/wheel). An app built against the old
+         * three-int layout still writes a three-int buffer here, and this would
+         * scribble 12 bytes past it -- which is why sizeof is asserted at
+         * compile time on both sides and every app in the tree rebuilds from the
+         * one header. There is no ABI version negotiation on this call and there
+         * is deliberately not going to be one: the .aex files and the kernel ship
+         * as a single image. */
+        return evq_pop(&w->ev, ev);
     }
     case SYS_GET_ARG: {
         char *buf = (char *)a; int max = (int)b, i = 0;
@@ -667,14 +691,19 @@ void wm_app_exit(void)
     dirty_full();
 }
 
+/* The plain form: a window-level event with no button and no wheel (EV_KEY,
+ * EV_CLOSE, EV_THEME). Everything mouse-shaped goes through enqueue_input so
+ * `mods`/`button`/`wheel` are filled in one place rather than at each call. */
 static void enqueue(struct win *w, int type, int a, int b)
 {
-    int nt = (w->evtail + 1) % EVQ_N;
-    if (nt == w->evhead) return;       /* full, drop */
-    w->evq[w->evtail].type = type;
-    w->evq[w->evtail].a = a;
-    w->evq[w->evtail].b = b;
-    w->evtail = nt;
+    struct logit_event e = { type, a, b, 0, EV_BTN_NONE, 0 };
+    evq_push(&w->ev, &e);
+}
+
+static void enqueue_input(struct win *w, int type, int a, int b, int mods, int button, int wheel)
+{
+    struct logit_event e = { type, a, b, mods, button, wheel };
+    evq_push(&w->ev, &e);
 }
 
 /* Flip the system theme: kernel chrome follows immediately (redrawn each frame);
@@ -700,6 +729,7 @@ static void reap(void)
                 wins[wi].used = 0;
                 remove_win(wi);
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
+                if (mouse_capture == wi) mouse_capture = -1;   /* ...nor deliver its drag to the slot's next tenant */
             }
             apps[i].used = 0;
         }
@@ -720,23 +750,34 @@ static void reap(void)
  * locks); the WM thread drains the queue and does ALL processing in thread
  * context (wm_drain_input -> wm_process_mouse/wm_process_key), serialized with
  * its own compositing. This removes the entire IRQ-vs-render race class. */
-struct inev { int type; int x, y, l, r; };   /* type 0 = mouse (x,y,l,r); 1 = key (x = code) */
+/* type 0 = mouse (x,y + button levels + wheel notches); 1 = key (x = code).
+ * `mods` is sampled HERE, in the IRQ, not when the WM thread drains: the whole
+ * point of an event carrying modifiers is that they were the modifiers at the
+ * moment the button went down, and the drain can be a frame later. */
+struct inev { int type; int x, y, l, r, m, wheel, mods; };
 #define INQ_N 512
 static struct inev inq[INQ_N];
 static volatile int inq_head, inq_tail;
-static void inq_push(int type, int x, int y, int l, int r)   /* IRQ-safe: no locks, no shared-state */
+static void inq_push(const struct inev *e)   /* IRQ-safe: no locks, no shared-state */
 {
     int nt = (inq_tail + 1) % INQ_N;
     if (nt == inq_head) return;            /* full: drop (cosmetic under flooding) */
-    inq[inq_tail].type = type; inq[inq_tail].x = x; inq[inq_tail].y = y;
-    inq[inq_tail].l = l; inq[inq_tail].r = r;
+    inq[inq_tail] = *e;
     inq_tail = nt;
 }
-static void wm_process_mouse(int x, int y, int left, int right);   /* fwd: bodies below */
-static void wm_process_key(int c);
+static void wm_process_mouse(const struct inev *e);   /* fwd: bodies below */
+static void wm_process_key(int c, int mods);
 /* The IRQ entry points (called from mouse.c / keyboard.c) now ONLY enqueue. */
-void wm_mouse_event(int x, int y, int left, int right) { inq_push(0, x, y, left, right); }
-void wm_key(int c)                                      { inq_push(1, c, 0, 0, 0); }
+void wm_mouse_event(int x, int y, int left, int right, int middle, int wheel)
+{
+    struct inev e = { 0, x, y, left, right, middle, wheel, kbd_mods() };
+    inq_push(&e);
+}
+void wm_key(int c)
+{
+    struct inev e = { 1, c, 0, 0, 0, 0, 0, kbd_mods() };
+    inq_push(&e);
+}
 static void wm_drain_input(void)           /* WM thread: process all input here, NOT in the IRQ */
 {
     for (;;) {
@@ -746,8 +787,8 @@ static void wm_drain_input(void)           /* WM thread: process all input here,
         if (!empty) { e = inq[inq_head]; inq_head = (inq_head + 1) % INQ_N; }
         __asm__ volatile ("sti");
         if (empty) break;
-        if (e.type == 0) wm_process_mouse(e.x, e.y, e.l, e.r);
-        else             wm_process_key(e.x);
+        if (e.type == 0) wm_process_mouse(&e);
+        else             wm_process_key(e.x, e.mods);
     }
 }
 
@@ -1055,22 +1096,44 @@ void wm_render(void)
 static int in_rect(int px, int py, int x, int y, int w, int h)
 { return px >= x && px < x + w && py >= y && py < y + h; }
 
-static void wm_process_key(int c)
+static void wm_process_key(int c, int mods)
 {
     if (norder == 0) return;
     struct win *w = &wins[order[norder - 1]];
-    if (w->kind == WK_APP) { enqueue(w, EV_KEY, (int)c, 0); dirty_rect(w->x, w->y, w->w, w->h); }
+    if (w->kind == WK_APP) {
+        /* `a` is unchanged -- Ctrl+S still arrives as 0x13, because a decade of
+         * terminal habit lives on that mapping and TextEdit reads it. `mods` is
+         * additional information, not a replacement encoding. */
+        enqueue_input(w, EV_KEY, c, 0, mods, EV_BTN_NONE, 0);
+        dirty_rect(w->x, w->y, w->w, w->h);
+    }
 }
 
-static void wm_process_mouse(int x, int y, int left, int right)
+/* Topmost app window whose CONTENT area (below the titlebar) contains (x,y),
+ * or -1. Pointer events that are not part of a drag go to what is visibly under
+ * the cursor, which is not necessarily the focused window -- that is what makes
+ * :hover work on a background window the way it does everywhere else. */
+static int win_content_at(int x, int y)
 {
+    for (int i = norder - 1; i >= 0; i--) {
+        struct win *w = &wins[order[i]];
+        if (!w->used || w->kind != WK_APP) continue;
+        if (in_rect(x, y, w->x, w->y + TITLEBAR_H, w->w, w->h - TITLEBAR_H)) return order[i];
+    }
+    return -1;
+}
+
+static void wm_process_mouse(const struct inev *in)
+{
+    int x = in->x, y = in->y, left = in->l, right = in->r, middle = in->m;
+    int mods = in->mods;
     int moved = (x != mx || y != my);
     int content = 0;                       /* did anything other than the cursor change? */
     mx = x; my = y;
 
     if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
         wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
-        mleft = left; mright = right; dirty = 1;
+        mleft = left; mright = right; mmiddle = middle; dirty = 1;
         return;
     }
     if (left && !mleft) {
@@ -1103,7 +1166,8 @@ static void wm_process_mouse(int x, int y, int left, int right)
                     dragging = wi; drag_dx = cx; drag_dy = cy;
                 }
             } else if (w->kind == WK_APP) {
-                enqueue(w, EV_MOUSE, cx, cy - TITLEBAR_H);
+                enqueue_input(w, EV_MOUSE, cx, cy - TITLEBAR_H, mods, EV_BTN_LEFT, 0);
+                mouse_capture = wi;     /* this window owns the pointer until the button comes up */
             }
         }
         }
@@ -1115,16 +1179,87 @@ static void wm_process_mouse(int x, int y, int left, int right)
             int cx = x - w->x, cy = y - w->y;
             if (cy >= TITLEBAR_H && w->kind == WK_APP) {
                 raise_win(order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
-                enqueue(w, EV_MOUSE_R, cx, cy - TITLEBAR_H);
+                enqueue_input(w, EV_MOUSE_R, cx, cy - TITLEBAR_H, mods, EV_BTN_RIGHT, 0);
+                mouse_capture = order[i];
                 content = 1;
             }
             break;
         }
     }
+    /* Middle press. It does NOT raise the window: a middle click is "do the
+     * thing under the pointer" (paste, open-in-background), and raising would
+     * hide the thing it was aimed at. Delivered as EV_MOUSE with button=MIDDLE
+     * -- see the EV_BTN_* note in logit_abi.h for why there is no EV_MOUSE_M. */
+    if (middle && !mmiddle) {
+        int wi = win_content_at(x, y);
+        if (wi >= 0) {
+            struct win *w = &wins[wi];
+            enqueue_input(w, EV_MOUSE, x - w->x, y - w->y - TITLEBAR_H, mods, EV_BTN_MIDDLE, 0);
+            mouse_capture = wi;
+            content = 1;
+        }
+    }
+
+    /* Releases. Every press that reached an app gets its matching EV_MOUSE_UP,
+     * delivered to the window that CAPTURED the press even if the pointer has
+     * since left it -- so window-local coordinates here can be negative or past
+     * the window's size, and that is information (how far outside the drag went),
+     * not an error to clamp away. An app that never sees the up is an app stuck
+     * mid-drag forever, which is the bug this exists to prevent. */
+    {
+        /* All three, not the first one found: a packet reports every button's
+         * level at once, so letting go of two buttons together is one packet and
+         * a chain of else-ifs would swallow the second release. */
+        int was[3] = { mleft, mright, mmiddle }, now[3] = { left, right, middle };
+        int id[3] = { EV_BTN_LEFT, EV_BTN_RIGHT, EV_BTN_MIDDLE };
+        for (int k = 0; k < 3; k++) {
+            if (!was[k] || now[k]) continue;
+            int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
+            if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) continue;
+            struct win *w = &wins[wi];
+            enqueue_input(w, EV_MOUSE_UP, x - w->x, y - w->y - TITLEBAR_H, mods, id[k], 0);
+            content = 1;
+        }
+    }
+    if (!left && !right && !middle) mouse_capture = -1;   /* all buttons up: release the pointer */
+
     if (!left) dragging = -1;
     if (dragging >= 0 && left) { wins[dragging].x = x - drag_dx; wins[dragging].y = y - drag_dy; content = 1; }
+
+    /* Motion. Goes to the capture target while a button is held, else to
+     * whatever window is visibly under the pointer -- including an unfocused
+     * one, which is what makes :hover behave. Suppressed while the WM itself is
+     * dragging a titlebar: the pointer belongs to the compositor then, and
+     * feeding the app a stream of moves it must ignore is just ring pressure.
+     *
+     * This is the flood the ring's coalescing exists for: one PS/2 packet per
+     * motion sample, an app that polls once per painted frame, and no upper
+     * bound on how far apart those two rates can drift. evq_push merges
+     * consecutive moves, so motion occupies at most ONE slot and can never evict
+     * a queued click. */
+    if (moved && dragging < 0) {
+        int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
+        if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
+            struct win *w = &wins[wi];
+            enqueue_input(w, EV_MOUSE_MOVE, x - w->x, y - w->y - TITLEBAR_H, mods, EV_BTN_NONE, 0);
+        }
+    }
+
+    /* Wheel. Same routing as motion; `wheel` is notches, not pixels, and is
+     * never coalesced -- three notches are three notches and merging them would
+     * silently shorten the scroll. */
+    if (in->wheel) {
+        int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
+        if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
+            struct win *w = &wins[wi];
+            enqueue_input(w, EV_WHEEL, x - w->x, y - w->y - TITLEBAR_H, mods, EV_BTN_NONE, in->wheel);
+            content = 1;
+        }
+    }
+
     mleft = left;
     mright = right;
+    mmiddle = middle;
     /* Any change -- content (click/drag) or pure cursor motion -- recomposites the
      * whole screen next frame; the cursor is part of the composite now. */
     if (content || moved) dirty = 1;

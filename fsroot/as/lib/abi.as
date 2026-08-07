@@ -20,10 +20,13 @@
 # Verify:      make check-abi
 
 
-Event = layout("logit_event", 12, [
+Event = layout("logit_event", 24, [
     ["type", 0, 4, "i"],
     ["a", 4, 4, "i"],
-    ["b", 8, 4, "i"]
+    ["b", 8, 4, "i"],
+    ["mods", 12, 4, "i"],
+    ["button", 16, 4, "i"],
+    ["wheel", 20, 4, "i"]
 ])
 
 Time = layout("logit_time", 28, [
@@ -117,6 +120,9 @@ def sys_yield():
 
 def get_time(t):
     return syscall(SYS_GET_TIME, addr(t))
+
+def monotonic_ms():
+    return syscall(SYS_MONOTONIC_MS)
 
 def io_write(fd, b, len):
     return syscall(SYS_WRITE, fd, addr(b), len)
@@ -242,8 +248,13 @@ def kheap_stress(iters, size, seed):
 
 _wait_t = Time()
 
-# Seconds since midnight, off the RTC. Second granularity is what struct
-# logit_time offers; there is no monotonic millisecond source in the ABI.
+# Seconds since midnight, off the RTC -- the WALL clock, hence the midnight
+# wrap fixup below. monotonic_ms() exists now and is the better clock for an
+# interval, but this loop deliberately stays on the wall clock: the host test
+# (make test-as) runs the real abi.as with syscalls stubbed to -1, where a
+# monotonic reading is a CONSTANT -1 and "now - start" never reaches the
+# timeout -- the wait would hang instead of failing. A timeout loop has to
+# still terminate when its clock is broken.
 def now_s():
     get_time(_wait_t)
     return (_wait_t.hour * 60 + _wait_t.minute) * 60 + _wait_t.second

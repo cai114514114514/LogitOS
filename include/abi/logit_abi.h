@@ -66,6 +66,25 @@
 #define SYS_GUI_GLASS   72 /* ((x<<16)|y, (w<<16)|h, (radius<<32)|(tr<<24)|(tg<<16)|(tb<<8)|ta) liquid-glass a region of the window over its own content */
 #define SYS_GUI_RRECT   73 /* ((x<<16)|y, (w<<16)|h, (radius<<24)|color) filled rounded rect (web border-radius) */
 #define SYS_FSYNC       74 /* (fd) -> 0, or -1; flush a dirty F_VFS file to disk NOW (not at close) */
+/* () -> milliseconds since boot, as an unsigned 64-bit count in rax.
+ *
+ * SYS_GET_TIME answers the wall clock, in whole SECONDS, off a CMOS RTC that a
+ * user can set backwards -- useless both for measuring an interval and for
+ * pacing anything. This is the other clock: monotonic (never steps back, never
+ * jumps), zero at boot, and the only time source an app can subtract.
+ *
+ * GRANULARITY IS 10 ms, NOT 1 ms. The value is derived from the 100 Hz PIT
+ * tick, so it advances in steps of 10; the unit is milliseconds because that is
+ * what callers want to compute in (and because a faster tick later changes the
+ * step, not the ABI). Measure a 3 ms interval with it and you will read 0 or 10
+ * -- that is the clock, not a bug.
+ *
+ * The counter is 64-bit and only ever increments, so it does not wrap in any
+ * uptime this machine will see (2^64 ms is ~585 million years); callers do not
+ * need wraparound-safe subtraction. It DOES stop advancing while interrupts are
+ * off, which is the state inside the int 0x80 gate -- never spin on it from
+ * kernel code that has not re-enabled IF (the same trap SYS_HTTP_GET documents). */
+#define SYS_MONOTONIC_MS 75
 
 /* open() flags */
 #define O_RDONLY 0
@@ -101,11 +120,50 @@
 #define EV_CLOSE  3   /* the window's close button was pressed */
 #define EV_MOUSE_R 4  /* a = x, b = y (window-local), right-button down */
 #define EV_THEME  5   /* the system light/dark theme changed -- repaint to follow */
+#define EV_MOUSE_UP   6  /* a = x, b = y (window-local); `button` says which one came up */
+#define EV_MOUSE_MOVE 7  /* a = x, b = y (window-local); the pointer moved. Coalesced (see below) */
+#define EV_WHEEL      8  /* a = x, b = y (window-local); `wheel` = notches, + = scroll DOWN */
 
+/* Modifier keys held when the event was generated (struct logit_event.mods).
+ * Sampled in the IRQ that produced the event, not when the app polls it -- a
+ * shift released while the app was repainting must not un-shift the click that
+ * is still sitting in the queue. */
+#define EV_MOD_SHIFT 0x01
+#define EV_MOD_CTRL  0x02
+#define EV_MOD_ALT   0x04
+
+/* Which button a press/release is about (struct logit_event.button); 0 on every
+ * other event type. EV_MOUSE stays "a button went down" and EV_MOUSE_R stays
+ * "the right button went down" so apps written before this field keep working;
+ * `button` is how a new app tells left from middle without a third down-type.
+ * (A pre-existing app that ignores `button` reads a middle-click as a left
+ * click. That is the price of not minting EV_MOUSE_M, and it is the same trade
+ * X11 made when it numbered buttons instead of typing them.) */
+#define EV_BTN_NONE   0
+#define EV_BTN_LEFT   1
+#define EV_BTN_RIGHT  2
+#define EV_BTN_MIDDLE 3
+
+/* GROWN, not packed. Window-local coordinates do fit in 16 bits, so button +
+ * modifiers could have ridden in the high halves of `a`/`b` without changing
+ * sizeof -- and that is exactly the argument against it: every app in the tree
+ * reads e.a/e.b as plain ints, so a packed right-click at x=100 would silently
+ * read as 131172, and NOTHING in the build would notice. Appending fields
+ * instead leaves every existing offset alone (asserted field by field in
+ * c/apps/as/abi_layout.inc) and moves only sizeof -- which the same generated
+ * _Static_assert catches, and which `make check-abi` catches by name. The ABI
+ * machinery exists to make staleness a build failure; growing is the change it
+ * can see, packing is the change it cannot. */
 struct logit_event {
     int type;
     int a;
     int b;
+    int mods;     /* EV_MOD_* bitmask -- key, button and wheel events */
+    int button;   /* EV_BTN_* on EV_MOUSE / EV_MOUSE_R / EV_MOUSE_UP; 0 otherwise */
+    int wheel;    /* EV_WHEEL: notches this event scrolled. + = down/away from
+                   * the content start, matching the DOM's deltaY sign. PS/2
+                   * has no horizontal wheel, so shift+wheel is the horizontal
+                   * gesture -- read `mods` for it. */
 };
 
 /* Wall-clock time (mirrors the kernel's struct rtc_time field order). */
