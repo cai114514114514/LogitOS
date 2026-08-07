@@ -265,7 +265,10 @@ typedef struct {
     uint8_t  bypass;       /* cu_transquant_bypass_flag */
     uint8_t  pcm;          /* pcm_flag */
     uint8_t  cbf_luma;     /* the covering transform block has luma coeffs */
-    uint8_t  bnd;          /* bit0: left edge is a TU/PU boundary; bit1: top */
+    uint8_t  bnd;          /* bit0: left edge is a TU or PU boundary, bit1: top
+                            * edge is; bit2/bit3: that edge is a TRANSFORM
+                            * block edge specifically, which is the only case
+                            * where a non-zero cbf raises bS to 1 */
     int8_t   qp;           /* QpY of the covering quantisation group */
     int8_t   ref_idx[2];
     int16_t  mv[2][2];

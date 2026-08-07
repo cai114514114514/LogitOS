@@ -30,6 +30,27 @@ test-h265-units:
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h265_mc_test \
 	    tests/unit/h265_mc_test.c c/lib/video/h265_mc.c $(H265_INC)
 	@$(BUILD)/h265_mc_test
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h265_deblock_test \
+	    tests/unit/h265_deblock_test.c c/lib/video/h265_deblock.c $(H265_INC)
+	@$(BUILD)/h265_deblock_test
+
+# The negative control. The SAME test file against h265_mc.c built with
+# -DH265_CONTROL_NO_14BIT, which rounds the horizontal interpolation pass back
+# to 8-bit samples before the vertical one -- the textbook HEVC MC bug, wrong
+# on every half-pel diagonal and visually almost invisible. This target PASSES
+# when the test FAILS. If it ever stops failing, test-h265-units is not
+# measuring the intermediate precision it claims to.
+test-h265-units-control:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DH265_CONTROL_NO_14BIT -o $(BUILD)/h265_mc_control \
+	    tests/unit/h265_mc_test.c c/lib/video/h265_mc.c $(H265_INC)
+	@if $(BUILD)/h265_mc_control > $(BUILD)/h265_mc_control.log 2>&1; then \
+	    echo "CONTROL-FAIL: h265_mc_test passed with the 14-bit intermediate removed"; \
+	    exit 1; \
+	 else \
+	    echo "CONTROL-OK: h265_mc_test fails without the 14-bit intermediate"; \
+	    head -3 $(BUILD)/h265_mc_control.log; \
+	 fi
 
 # Same three, under ASan/UBSan. The interpolation module indexes a padded
 # plane by hand and falls back to an emulated copy for far-out vectors, which

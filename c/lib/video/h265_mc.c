@@ -114,6 +114,16 @@ void h265_mc_luma(int16_t *dst, int dst_stride,
         for (int i = 0; i < w; i++) {
             int s = 0;
             for (int k = 0; k < 8; k++) s += fx[k] * r[i + k - 3];
+#ifdef H265_CONTROL_NO_14BIT
+            /* The negative control (make test-h265-units-control). Rounding
+             * the horizontal pass back to 8-bit samples before the vertical
+             * one is the textbook HEVC interpolation bug: the picture still
+             * looks right, every block is within a couple of levels, and the
+             * decoder is wrong on every half-pel diagonal in the stream. The
+             * unit test must FAIL when this is defined; if it ever passes,
+             * the test is measuring something other than what it claims. */
+            s = h265_clip_u8((s + 32) >> 6) << 6;
+#endif
             o[i] = (int16_t)s;
         }
     }
