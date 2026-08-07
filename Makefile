@@ -71,10 +71,18 @@ endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
 
-# Userland (ring 3) build flags
+# Userland (ring 3) build flags.
+#
+# -DNDEBUG: mini-libc's <assert.h> is now the conformant one -- it honours
+# NDEBUG instead of deleting every assertion unconditionally, which is not a
+# header's decision to make about programs it did not write. Release userland is
+# where "no assertions" belongs, and defining it here keeps every shipped .aex
+# behaving exactly as it did before that header changed (notably the ~320
+# asserts in third_party/{quickjs,css}). Drop it from one rule to build that
+# component with its assertions live.
 UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
-           -mno-red-zone -mno-mmx -msse -msse2 \
+           -mno-red-zone -mno-mmx -msse -msse2 -DNDEBUG \
            -std=c11 -Wall -Wextra -O2 -MMD -MP $(INCDIRS)
 
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
@@ -113,7 +121,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
 
 all: $(ISO)
 
@@ -524,15 +532,27 @@ test: test-crypto test-net $(ISO) $(DISK)
 # Host-side crypto known-answer tests: 90 vectors for SHA/HMAC/HKDF/AEAD/
 # X25519/ECDSA/RSA (tests/unit/crypto_vec_test.c + crypto_vectors.h, generated
 # by crypto_vec_gen.py), plus the ecdsa modmul and rsa modexp batteries.
-CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/pubkey -name '*.c')
+# c/kernel/cpu/cpufeat.c rides along: the AES-GCM backend dispatch asks it
+# whether this CPU has AES-NI + PCLMULQDQ, and it is deliberately free of
+# kernel dependencies so it can be linked here. CRYPTO_INC is what every
+# host-side crypto build needs on its include path.
+CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/pubkey -name '*.c') \
+              c/kernel/cpu/cpufeat.c
+CRYPTO_INC := -Ic/crypto -Ic/crypto/aead -Ic/kernel/cpu
 test-crypto: $(BUILD)
-	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_vec_test tests/unit/crypto_vec_test.c $(CRYPTO_SRC) -Ic/crypto -Itests/unit
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_vec_test tests/unit/crypto_vec_test.c $(CRYPTO_SRC) $(CRYPTO_INC) -Itests/unit
 	$(BUILD)/crypto_vec_test
+	@$(MAKE) --no-print-directory test-cpufeat
+	@$(MAKE) --no-print-directory test-aes-ni
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/ecdsa_test tests/unit/ecdsa_test.c c/crypto/pubkey/ecdsa.c -Ic/crypto
 	$(BUILD)/ecdsa_test
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rsa_test tests/unit/rsa_test.c c/crypto/pubkey/rsa.c -Ic/crypto
 	$(BUILD)/rsa_test
-	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c -Ic/crypto -Ic/kernel/core -Itests/unit/rngstub
+	@# rngstub MUST come first on the include path: rng.c now includes
+	@# cpufeat.h from c/kernel/cpu, and that directory also holds the REAL
+	@# spinlock.h/kprintf.h. Listed after, they shadow the stubs and the link
+	@# fails on spin_lock_irqsave.
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c c/kernel/cpu/cpufeat.c -Itests/unit/rngstub -Ic/crypto -Ic/kernel/core -Ic/kernel/cpu
 	$(BUILD)/rng_test
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/ecdh_test tests/unit/ecdh_test.c c/crypto/pubkey/ecdsa.c -Ic/crypto
 	$(BUILD)/ecdh_test
@@ -563,10 +583,53 @@ test-tls-interop: $(BUILD)
 # (tests/unit/crypto_diff_gen.py) emits ~127k random vectors; the C asserter
 # (tests/unit/crypto_diff_test.c) replays them against the C implementations
 # and requires byte-identical output. Long-running; not part of `make test`.
+# Every AES-GCM vector now runs through BOTH backends (accelerated + portable)
+# and they must agree with the reference AND with each other -- see run_aead().
 test-crypto-diff: $(BUILD)
 	python3 tests/unit/crypto_diff_gen.py $(BUILD)/crypto_diff_vec.txt
-	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_diff_test tests/unit/crypto_diff_test.c $(CRYPTO_SRC) -Ic/crypto
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_diff_test tests/unit/crypto_diff_test.c $(CRYPTO_SRC) $(CRYPTO_INC)
 	$(BUILD)/crypto_diff_test $(BUILD)/crypto_diff_vec.txt
+
+# --- CPUID decode + SIMD dispatch, host-side -----------------------------
+# Declared in their own .PHONY line rather than appended to the big one at the
+# top: several workstreams edit that line, and a separate declaration means no
+# merge conflict for a target list that make is happy to see twice.
+.PHONY: test-cpufeat test-aes-ni test-aes-ni-control
+
+# test-cpufeat cross-checks c/kernel/cpu/cpufeat.c against /proc/cpuinfo (an
+# independent decode of the same bits) in both directions, so a mis-numbered
+# feature bit fails here rather than at the point where a dispatch picks an
+# implementation the CPU cannot run.
+test-cpufeat: $(BUILD)
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/cpufeat_test tests/unit/cpufeat_test.c \
+	    c/kernel/cpu/cpufeat.c -Ic/kernel/cpu
+	$(BUILD)/cpufeat_test
+
+# test-aes-ni proves the three things the accelerated crypto path needs: the
+# AES-NI and portable backends produce identical bytes on 20k primitive and 4k
+# full-AEAD random cases, published vectors pass under EACH backend, and the
+# dispatch really selected the accelerated one (rather than quietly testing the
+# C path twice). No timing is measured -- see the file header for why a TCG or
+# same-process number would not mean anything.
+test-aes-ni: $(BUILD)
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/aes_ni_test tests/unit/aes_ni_test.c \
+	    $(CRYPTO_SRC) $(CRYPTO_INC)
+	$(BUILD)/aes_ni_test
+
+# Negative control for test-aes-ni, run by hand rather than in CI because it is
+# meant to FAIL: it forces the dispatch to pick the portable backend on a CPU
+# that has AES-NI, so the "the dispatch actually dispatches" assertion must
+# fire. If this passes, that assertion is vacuous and the suite proves nothing.
+test-aes-ni-control: $(BUILD)
+	$(CC) -O2 -Wall -Wextra -DAESNI_CONTROL_NO_ACCEL -o $(BUILD)/aes_ni_control \
+	    tests/unit/aes_ni_test.c $(CRYPTO_SRC) $(CRYPTO_INC)
+	@if $(BUILD)/aes_ni_control > $(BUILD)/aes_ni_control.log 2>&1; then \
+	    echo "CONTROL FAILED: the crippled build passed -- the dispatch assertions are vacuous"; \
+	    exit 1; \
+	else \
+	    echo "control ok: crippled build fails as intended:"; \
+	    grep '^FAIL' $(BUILD)/aes_ni_control.log | head -5; \
+	fi
 
 # ASan/UBSan fuzz of the X.509 DER parser (attacker-controlled input on every
 # HTTPS handshake) against a real cert. Long-running; not part of `make test`.
@@ -578,6 +641,50 @@ test-x509-fuzz: $(BUILD)
 # driver brings up a controller and logitfs mounts + reads off it (M24 bare-metal).
 test-nvme: $(ISO) $(DISK)
 	@BLK=nvme sh tests/boot/run-test.sh $(ISO) $(DISK)
+
+# Partition-table parsing (MBR incl. the extended chain, GPT incl. both CRC32s),
+# on the host against synthetic sector images. This is where nearly all the risk
+# in the storage widening lives: every field comes off a disk somebody else
+# formatted, and none of it needs a controller or a boot to exercise. The cases
+# that matter are the malformed ones -- a corrupted entry-array CRC, an extended
+# chain that points at itself, an entry that runs off the end of the device.
+test-part:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/part_test tests/unit/part_test.c \
+	    c/drivers/block/part.c c/drivers/block/crc32.c -Ic/drivers/block
+	@$(BUILD)/part_test
+
+# The same under ASan/UBSan. The parser reads attacker-shaped sector images into
+# fixed buffers with offsets taken from those same images, so an out-of-bounds
+# read is the failure mode to look for, and it is invisible without this.
+test-part-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/part_asan tests/unit/part_test.c \
+	    c/drivers/block/part.c c/drivers/block/crc32.c -Ic/drivers/block
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/part_asan
+
+# AHCI/SATA on device. Three boots, each asserting a different claim over the
+# serial log -- enumeration alone is not the claim, "the OS booted off it" is:
+#   raw  the disk is attached to an ich9-ahci controller with no partition table
+#        (today's image, new transport): the controller is found, the port
+#        signature says SATA disk, and logitfs mounts and reads a file off it.
+#   mbr  the same filesystem inside partition 1 of an MBR-partitioned disk.
+#   gpt  the same, inside a GPT partition behind a protective MBR.
+# The mbr/gpt runs are the ones that prove a partition table is understood: the
+# filesystem no longer starts at LBA 0, so a kernel that cannot read a partition
+# table cannot find its own root.
+test-ahci: $(ISO) $(DISK)
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) raw
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) mbr
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) gpt
+
+test-ahci-raw: $(ISO) $(DISK)
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) raw
+test-ahci-mbr: $(ISO) $(DISK)
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) mbr
+test-ahci-gpt: $(ISO) $(DISK)
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) gpt
 
 test-shell: $(ISO) $(DISK)
 	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
@@ -1177,8 +1284,13 @@ test-modules: $(ISO) $(DISK)
 # was wired in and 4 after. Also screendumps the page, because a handshake count
 # that fell because the page stopped loading is not an improvement.
 #   make test-handshakes URL=https://example.com/ MAXHS=3
+# The gate is 12, not the best observed number. The count depends on how eagerly
+# the far-side CDN drops keep-alive connections, and repeated runs against
+# wikipedia landed on 4, 7, 9, 9 and 10 against a 14 baseline -- so a gate at
+# the best run would be a flaky test rather than a stricter one. Read the
+# printed number; the gate only catches a regression to the old behaviour.
 URL   ?= https://en.wikipedia.org/wiki/Operating_system
-MAXHS ?= 8
+MAXHS ?= 12
 test-handshakes: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_handshakes.py $(ISO) $(DISK) '$(URL)' $(MAXHS) build/handshakes.ppm
 
