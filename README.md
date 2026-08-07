@@ -6,11 +6,18 @@ desktop; it is not a Linux distribution or a renamed Linux kernel. The kernel,
 drivers, LogitFS, network stack, window system, and applications are maintained
 in this repository, alongside explicitly identified ports and adapted code.
 
-In its tested QEMU configuration it boots to a frosted-glass desktop, can fetch
-and render selected public HTTP and HTTPS pages, runs a POSIX-inspired shell with
-`fork`/`exec`/pipes, and ships **AetherScript**, a project language with a standard
-library and a small IDE. It is a research and learning system, not a production
-OS, security product, or standards-complete web browser.
+In its tested QEMU configuration it boots to a frosted-glass desktop, fetches and
+renders selected public HTTP and HTTPS pages through a from-scratch HTML5 parser
+with **live** pages (event handlers, timers, promises), plays H.264 video, runs a
+POSIX-inspired shell with `fork`/`exec`/pipes, and ships **AetherScript**, a
+project language with a standard library and a small IDE. It is a research and
+learning system, not a production OS, security product, or standards-complete web
+browser.
+
+Where a claim here can be measured, it is, and the number is the claim: the HTML
+tokenizer passes **7032/7032** of the shared html5lib corpus and tree construction
+**1723/1818**; the H.264 decoder is byte-identical to ffmpeg across eleven streams.
+Where something does not work, this file says so rather than omitting it.
 
 Development has been heavily assisted by Claude and other coding agents. That
 does not change the license, but it is part of the project's provenance. See
@@ -24,11 +31,29 @@ and the [Security Policy](SECURITY.md).
   alpha blending, a PS/2 mouse cursor, and a real wall clock from the CMOS RTC.
 - **Browses selected real sites** — `http://` and **`https://`** pages over project
   implementations of TCP, HTTP, TLS 1.3, and a limited X.509 verifier backed by a
-  **130-root** trust store, plus an HTML/DOM + CSS-cascade + layout + paint pipeline,
-  decoded PNG/GIF images, and inline `<script>` execution. Wikipedia has been used
-  as an interoperability test; this is not a general-purpose or security-hardened
-  browser. The implemented and missing protocol pieces are listed in the
-  [network support matrix](docs/NETWORK.md).
+  **130-root** trust store. The TLS client negotiates x25519, P-256 and P-384 and
+  handles **HelloRetryRequest**, so a server that wants a curve we did not offer
+  first is reachable rather than impossible. It is **TLS 1.3 only** — servers that
+  speak only 1.2 (sectigo.com among them) cannot be opened yet. The implemented and
+  missing protocol pieces are listed in the [network support matrix](docs/NETWORK.md).
+- **A from-scratch HTML5 parser** — a spec tokenizer and tree construction,
+  including the **adoption agency algorithm** and foster parenting, which is what
+  makes real-world malformed markup produce the right tree instead of a quietly
+  wrong one. Measured against the corpus every browser is measured against
+  (`third_party/html5lib-tests`, data only — the runner and the parser are ours):
+  **tokenizer 7032/7032, tree construction 1723/1818**, with the remaining failures
+  categorised rather than left as a number.
+- **Pages are alive, not just rendered** — a persistent QuickJS runtime that
+  outlives page load, `setTimeout`/`setInterval`/`requestAnimationFrame`, a drained
+  microtask queue (so promises and `await` actually resolve), full capture → target
+  → bubble event dispatch, and link navigation as a real **default action**, so
+  `preventDefault()` prevents it. Plus a **CSSOM**: `element.style`,
+  `getComputedStyle`, and scoped invalidation — a class toggle on a leaf re-styles
+  2 elements instead of the whole document.
+- **Plays H.264 video** — a from-scratch baseline decoder (CAVLC, I/P slices,
+  multiple references, weighted prediction, deblocking) that is **byte-identical to
+  ffmpeg** across eleven test streams. It runs in ring 3, not the kernel: a video is
+  decoded thirty times a second and holds megabytes of reference frames.
 - **Anti-aliased Unicode text** — a project TrueType parser + integer-only AA
   rasterizer (the kernel is `-mno-sse` in places) with a glyph cache, font fallback,
   and CJK support; the whole UI is anti-aliased.
@@ -42,7 +67,10 @@ and the [Security Policy](SECURITY.md).
   facilities and is not a sandbox. See [Third-Party Software and Data](THIRD_PARTY.md)
   for the lineage and upstream notice.
 - **Runs JavaScript** — a ported QuickJS as a ring-3 app, on a project
-  freestanding mini-libc + musl libm; the browser runs page scripts with DOM bindings.
+  freestanding mini-libc + musl libm. What is missing is the platform, not the
+  language: there is no `fetch`, no `XMLHttpRequest`, no `localStorage`, and
+  `querySelectorAll` does not exist (`querySelector` handles only `#id`, `.class`
+  and a bare tag). A modern single-page app does not run here.
 - **Multi-core** — an SMP scheduler: AP bring-up (ACPI + LAPIC + trampoline), a
   big-kernel-lock model with ring-3 parallelism, and parallel framebuffer present.
 - **Modern devices** — a virtio 1.0 PCI stack (virtio-blk disk, virtio-gpu display
@@ -80,6 +108,27 @@ the **Aqua → LogitOS** rename · a system-wide security/bug-hunt pass.
 **Post-roadmap:** per-process address spaces (each app its own PML4, CR3 switched on
 schedule) and ring-3 fault containment — an app fault kills only that app; the
 kernel and desktop survive.
+
+**H.264 video:** a from-scratch baseline decoder in `c/lib/video/`, held to
+byte-identity with ffmpeg rather than to a tolerance — H.264 reconstruction is
+exactly specified integer arithmetic, so any mismatch is a bug and not a rounding
+difference. `make test-video` boots LogitOS and requires the CRC32 the guest
+computes to equal the host's.
+
+**The browser rewritten around a real HTML5 parser:** the 279-line tag-soup scanner
+was replaced by a spec tokenizer and tree construction, and the DOM data model with
+it — a chunk arena instead of a malloc per node, which on the target's first-fit
+allocator took a 120k-node parse from **110 seconds to 29 milliseconds**. On top of
+that: a persistent JS runtime with timers and real event dispatch, a CSSOM with
+scoped invalidation, roughly 45 CSS properties read from LibCSS instead of 19 (the
+rest were being computed and thrown away), floats, overflow clipping and true alpha
+compositing.
+
+**Networking, in progress:** HTTP is moving out of the kernel. Today a fetch runs
+the whole of DNS + TCP + TLS + HTTP synchronously inside a ring-0 syscall, so the
+UI freezes for the duration and only one request can ever be in flight. A ring-3
+HTTP/1.1 client with a real header list, a cookie jar, a connection pool and gzip is
+written and tested; the async socket layer beneath it is in progress.
 
 Each milestone follows **spec → plan → implement**; specs live in
 `docs/superpowers/specs/`.
@@ -123,7 +172,30 @@ make test-net        # TCP + IPv4/UDP/ICMP protocol unit tests (host)
 make test-net-os     # QEMU: guest fetches a 32 KiB file from a host-local HTTP server
 make test-smp        # boots -smp 4 and asserts genuine cross-core parallelism
 make test-nvme       # NVMe driver
+
+make test-html5lib     # HTML tree construction vs the shared corpus (a rate, ratcheted)
+make test-html5lib-tok # HTML tokenizer vs the same corpus, plus a byte-at-a-time cross-check
+make test-browser      # the whole render pipeline, host-side: DOM, CSS, layout, JS, paint
+make test-live-page    # on device: a click handler, a timer and preventDefault reach real pixels
+make test-css-fidelity # on device: border-box, <pre>, and a wrapping flex row, measured in pixels
+make test-video        # on device: decodes H.264 and requires the guest CRC to match the host
+make test-tls-interop  # the real TLS client against a real openssl s_server, with a throwaway CA
+make test-https-smoke  # live network: per-site handshake and reachability
+make test-http-fuzz    # the ring-3 HTTP parser under ASan/UBSan, ~1.4M iterations
 ```
+
+Two of these deserve a note, because both encode a lesson that cost real time:
+
+`make test-html5lib` reports a **rate**, not pass/fail, and diffs against a
+committed expected-failure list. A gate that is red on every run for weeks only
+teaches people to stop reading the build; it becomes a gate when there is a rate
+worth defending.
+
+`make shot` boots headless, screendumps over QMP and writes `build/desktop.png`. It
+exists to answer one question: when `make run` shows a QEMU window with nothing in
+it, is the guest not drawing, or is the host not painting? Those look identical from
+the outside and have completely different causes. If the image is correct, stop
+looking at this repository.
 
 Boot the desktop with `make run`: drag windows, launch from the Dock, open a `.as`
 file in Code Studio, or open the Browser and load `https://en.wikipedia.org`.
