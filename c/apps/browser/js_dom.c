@@ -27,6 +27,7 @@
 #include "dom_serialize.h"
 #include "html_tree.h"
 #include "js_dom.h"
+#include "layout.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -34,6 +35,25 @@
 #ifndef countof
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
+
+/* getBoundingClientRect reads the display list, and the display list lives in
+ * layout.c -- which is NOT linked into every consumer of this file. browser.aex
+ * has it; the host binding test (tests/unit/js_dom_test.c) links the DOM, the
+ * CSS engine and QuickJS and deliberately nothing else, and adding layout.c to
+ * that link would drag in the image codecs and the whole paint surface.
+ *
+ * So the two accessors are reached through WEAK references: the linker resolves
+ * them to 0 where layout is absent, `have_layout()` sees that, and the rect
+ * comes back all-zero -- which is also what a real browser returns for an
+ * element that has no box. Nothing else in this file depends on layout, so the
+ * dependency stays exactly this wide.
+ *
+ * Spelt `__weak__` and not `weak`: the OS build force-includes
+ * c/apps/libc/include/features.h, which defines a `weak` MACRO, so the plain
+ * spelling expands to a nested __attribute__ and does not compile. */
+extern int layout_count(void) __attribute__((__weak__));
+extern const struct item *layout_items(void) __attribute__((__weak__));
+static int have_layout(void) { return &layout_count != 0 && &layout_items != 0; }
 
 static struct node *g_root;
 
@@ -91,6 +111,21 @@ static int is_ancestor(const struct node *a, const struct node *b)
  * a scope already covered by one in the set is dropped, and one that c overs an
  * existing scope replaces it. Without that, a handler doing three appendChilds
  * under the same parent would ask for the same subtree three times. */
+/* KNOWN COST, measured and left in place. A mutation on a node that is not
+ * attached to the document contributes no box and no pixel, so in principle it
+ * needs no scope at all -- and react-dom's commit shape is exactly that: build
+ * a subtree off-document with thirty mutations, then attach it with one call.
+ * Each of those thirty claims a scope root today, there are only
+ * JS_DOM_MAX_DIRTY of them, so a React commit overflows the record and falls
+ * back to a whole-document re-style every time.
+ *
+ * The fix is one line here (skip nodes whose parent chain does not reach
+ * g_root; the attach marks the destination, and re-styling that scope covers
+ * everything that came in with it). It is NOT applied because it changes an
+ * assertion in tests/unit/js_dom_test.c -- whose overflow fixture builds its
+ * twelve scopes out of DETACHED nodes -- and that file belongs to another
+ * change in flight. The consequence is a slow commit, never a wrong screen:
+ * "whole document" is what every mutation used to mean. */
 static void mark(struct node *n, int level, int siblings)
 {
     if (level > g_level) g_level = level;
@@ -134,6 +169,25 @@ static void mark(struct node *n, int level, int siblings)
  * subtree, rooted at the PARENT of what changed. */
 static void mark_self(struct node *n, int level) { mark(n, level, 1); }
 static void mark_children(struct node *n) { mark(n, INVAL_LAYOUT, 0); }
+
+/* A TEXT/COMMENT node's data changed. mark() only records ELEMENT scopes (a
+ * text node has no subtree to re-style and no selector can key off it), so the
+ * scope is the nearest element ancestor -- its child list did not change but the
+ * text INSIDE it did, which is a layout change all the same: a longer string
+ * reflows the line boxes.
+ *
+ * A character-data node with no element ancestor is detached, and nothing on
+ * screen depends on it. Marking is skipped rather than escalated to
+ * whole-document, because the insertion that eventually connects it marks the
+ * insertion point anyway. This is the one place the record is deliberately
+ * quiet, and it is the case React hits hardest: it creates a text node, writes
+ * it, and only then appends it. */
+static void mark_chardata(struct node *n)
+{
+    struct node *p = n ? n->parent : 0;
+    while (p && p->type != N_ELEM) p = p->parent;
+    if (p) mark(p, INVAL_LAYOUT, 0);
+}
 
 struct node *js_dom_root(void) { return g_root; }
 
@@ -236,9 +290,31 @@ static void gather_text(struct node *root, struct sbuf *b)
     }
 }
 
+/* Replace a TEXT/COMMENT node's data in place. dom.c can only APPEND to a
+ * payload (the tree builder never rewrites one), so a rewrite is "truncate,
+ * then append" over the same public fields dom_text_append maintains. Done in
+ * place rather than by swapping in a fresh node because every JS wrapper, every
+ * listener bucket and every invalidation root already held is keyed on this
+ * node -- React's commitTextUpdate writes the SAME text node over and over. */
+static void chardata_set(struct node *n, const char *s, size_t len)
+{
+    if (!n || (n->type != N_TEXT && n->type != N_COMMENT)) return;
+    n->textlen = 0;
+    if (n->text && n->textcap > 0) n->text[0] = 0;
+    if (len) dom_text_append(n, s, (int)len);
+    mark_chardata(n);
+}
+
 static void set_text(struct node *n, const char *s)
 {
     dom_destroy_children(n);
+    /* The DOM's "string replace all" adds NO node for an empty string, and the
+     * difference is observable: `el.textContent = ''` is how a page (and React)
+     * empties a container, and the old unconditional append left an empty text
+     * node behind -- so childNodes.length came back 1, and a script that then
+     * appended and read firstChild got the leftover instead of what it just
+     * inserted. */
+    if (!s || !*s) return;
     struct node *t = dom_create_text(n->doc, s, -1);
     if (t) dom_append_child(n, t);
 }
@@ -302,14 +378,35 @@ static JSValue el_get_text(JSContext *ctx, JSValueConst t)
 static JSValue el_set_text(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
-    const char *s = JS_ToCString(ctx, v);
-    if (s) { set_text(n, s); JS_FreeCString(ctx, s); mark_children(n); }
+    size_t sl = 0;
+    const char *s = JS_ToCStringLen(ctx, &sl, v);
+    if (!s) return JS_UNDEFINED;
+    /* On a TEXT/COMMENT node textContent IS the data. The old code ran the
+     * element path unconditionally, which appended a text node as the CHILD of
+     * a text node -- a shape nothing downstream can read, so the write silently
+     * did nothing. It could not be reached before createTextNode existed. */
+    if (n->type == N_TEXT || n->type == N_COMMENT) chardata_set(n, s, sl);
+    else { set_text(n, s); mark_children(n); }
+    JS_FreeCString(ctx, s);
     return JS_UNDEFINED;
 }
 static JSValue el_get_tag(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); return n ? JS_NewString(ctx, n->tag) : JS_UNDEFINED; }
 static JSValue el_get_id(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); const char *v = n ? dom_attr(n, "id") : 0; return JS_NewString(ctx, v ? v : ""); }
+/* `id` was read-only, which is not a small omission: `el.id = 'x'` is the
+ * ordinary way to name a node you just created, it fails SILENTLY on a
+ * read-only accessor in sloppy mode, and the element then never enters the
+ * document's id index -- so getElementById keeps answering null and the page
+ * looks like it lost the node. */
+static JSValue el_set_id(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (s) { if (dom_set_attr(n, "id", s)) mark_self(n, INVAL_STYLE); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
 /* Real innerHTML, both ways. The getter used to alias el_get_text, which is a
  * different property entirely: it returns the concatenated text with every tag
  * stripped, so a script that read innerHTML got markup-free text back and any
@@ -381,18 +478,99 @@ static JSValue doc_createElement(JSContext *ctx, JSValueConst t, int argc, JSVal
     return wrap(ctx, n);
 }
 
+/* ---- DocumentFragment ----
+ *
+ * dom.c has four node types and none of them is a fragment. Adding one would
+ * mean touching every switch in the tokenizer, the tree builder, the
+ * serialiser, the CSS engine and layout -- none of which is this file's to
+ * change -- so a fragment is instead an ELEMENT whose tag name the HTML
+ * tokenizer can never produce ('#' is not a name-start character).
+ *
+ * What makes that safe is that the fragment is the one node which never enters
+ * the tree: insert_run() below MOVES its children and leaves the fragment
+ * behind, exactly as the DOM specifies. Layout, CSS and the serialiser
+ * therefore never see one, and the only code that has to know is nodeType (11)
+ * and the insertion helpers. */
+#define FRAG_TAG "#document-fragment"
+static int is_fragment(const struct node *n)
+{
+    return n && n->type == N_ELEM && n->tag && n->tag[0] == '#' && !strcmp(n->tag, FRAG_TAG);
+}
+
+/* Can `c` legally be inserted into `p`? The DOM throws HierarchyRequestError;
+ * we refuse and return null, for the same reason a computed-style write is
+ * ignored rather than thrown -- one bad call should cost the page that call,
+ * not the rest of the script.
+ *
+ * The cycle test is not paranoia: `a.appendChild(a.parentNode)` would otherwise
+ * splice the tree into a ring and the very next iterative walk (gather_text,
+ * the propagation path, layout) would spin forever. Cross-document inserts are
+ * refused too -- every string a node owns lives in ITS document's arena, so
+ * splicing across would leave the tree pointing into an arena that can be freed
+ * independently. */
+static int can_insert(struct node *p, struct node *c)
+{
+    if (!p || !c || p == c) return 0;
+    if (c->type == N_DOCUMENT || c->type == N_DOCTYPE) return 0;
+    if (p->type != N_ELEM && p->type != N_DOCUMENT) return 0;   /* not a container */
+    if (p->doc != c->doc) return 0;
+    if (is_ancestor(c, p)) return 0;                            /* would make a cycle */
+    return 1;
+}
+
+/* The one insertion path: insertBefore(c, ref) with ref == NULL meaning append,
+ * and a fragment meaning "insert each of its children instead".
+ *
+ * Marking is the part that must not drift from el_appendChild's original: BOTH
+ * the destination and any old parent are marked INVAL_LAYOUT, because a move
+ * changes two child lists and the sibling-position pseudo-classes
+ * (:first-child, :nth-child, :empty) under each. The old parent has to be read
+ * BEFORE the link is broken. */
+static int insert_run(struct node *p, struct node *c, struct node *ref)
+{
+    if (!can_insert(p, c)) return 0;
+    if (ref && ref->parent != p) ref = 0;                       /* not ours: append */
+    if (ref == c) return 1;                                     /* already in place */
+
+    if (is_fragment(c)) {
+        struct node *k = c->first_child;
+        if (!k) return 1;                    /* an empty fragment inserts nothing */
+        while (k) {
+            struct node *nx = k->next;
+            dom_insert_before(p, k, ref);
+            k = nx;
+        }
+    } else {
+        struct node *old = c->parent;
+        dom_insert_before(p, c, ref);        /* move semantics: detaches from any old parent */
+        if (old && old != p) mark_children(old);
+    }
+    mark_children(p);
+    return 1;
+}
+
 static JSValue el_appendChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
-    struct node *c = node_of(argv[0]); if (!c || c == n) return JS_NULL;
-    /* appendChild MOVES: the old parent lost a child, so its subtree's
-     * sibling-position pseudo-classes moved too and it needs marking before
-     * the link is broken and we can no longer find it. */
-    struct node *old = c->parent;
-    dom_append_child(n, c);                    /* move semantics: detaches from any old parent */
-    if (old && old != n) mark_children(old);
-    mark_children(n);
+    struct node *c = node_of(argv[0]); if (!c) return JS_NULL;
+    if (!insert_run(n, c, 0)) return JS_NULL;
     return JS_DupValue(ctx, argv[0]);          /* like the DOM: return the appended child */
+}
+
+/* insertBefore(new, ref). `ref` null/undefined appends -- which is not a
+ * courtesy, it is how react-dom appends at all: its host config calls
+ * insertBefore(parent, child, before) with `before` null for the last position. */
+static JSValue el_insertBefore(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
+    struct node *c = node_of(argv[0]); if (!c) return JS_NULL;
+    struct node *ref = (argc > 1 && !JS_IsNull(argv[1]) && !JS_IsUndefined(argv[1]))
+                       ? node_of(argv[1]) : 0;
+    if (argc > 1 && !JS_IsNull(argv[1]) && !JS_IsUndefined(argv[1]) && !ref)
+        return JS_NULL;                        /* a stale/foreign reference node */
+    if (ref && ref->parent != n) return JS_NULL;   /* NotFoundError */
+    if (!insert_run(n, c, ref)) return JS_NULL;
+    return JS_DupValue(ctx, argv[0]);
 }
 
 static JSValue el_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -403,6 +581,431 @@ static JSValue el_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueC
     mark_children(n);
     return JS_DupValue(ctx, argv[0]);
 }
+
+/* replaceChild(new, old) -> old.
+ *
+ * KNOWN DEVIATION, and it is the same one removeChild already carries: the
+ * removed node is RECYCLED, not merely detached, so the returned wrapper is
+ * stale and cannot be re-inserted. Detach-only would be the spec answer, but
+ * dom.c reclaims nodes exclusively through dom_destroy_subtree, so an orphan
+ * that a script drops on the floor would live until the page is freed -- and a
+ * list that replaces a row per frame would grow the document arena without
+ * bound. Recycling is the safe end of that trade because the {node, serial}
+ * handle makes the staleness DETECTABLE (the wrapper reads as null) rather than
+ * a use-after-free. */
+static JSValue el_replaceChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 2) return JS_NULL;
+    struct node *nw = node_of(argv[0]);
+    struct node *od = node_of(argv[1]);
+    if (!nw || !od || od->parent != n) return JS_NULL;
+    if (nw == od) return JS_DupValue(ctx, argv[1]);
+    if (!insert_run(n, nw, od)) return JS_NULL;
+    dom_destroy_subtree(od);
+    mark_children(n);
+    return JS_DupValue(ctx, argv[1]);
+}
+
+/* ======================================================================
+ * The Node surface: types, navigation, character data, namespaces.
+ *
+ * Everything above this point speaks Element. react-dom's host config does not:
+ * it creates text nodes and comments, walks parentNode/nextSibling to find its
+ * insertion points, and reads nodeType to tell a text instance from a host
+ * instance. Without these a React commit cannot even start.
+ *
+ * All of it is installed on the ONE wrapper class. Splitting Node / Element /
+ * Text / Comment into four prototypes would be the spec shape, but our wrapper
+ * is keyed on a `struct node` whose type is a runtime field, so the split would
+ * buy a nicer `instanceof` and cost a per-type wrapper cache. The accessors
+ * check the node type themselves instead, and return what the spec says the
+ * wrong type gets (null / undefined / "").
+ * ====================================================================== */
+
+/* The `document` object itself, so ownerDocument and the parentNode of
+ * <html> can answer with it. A strong ref, freed by js_dom_cleanup: it is the
+ * global object's own `document`, so this cannot create a cycle that keeps a
+ * page alive. */
+static JSValue g_document;
+
+#define NSURI_HTML   "http://www.w3.org/1999/xhtml"
+#define NSURI_SVG    "http://www.w3.org/2000/svg"
+#define NSURI_MATHML "http://www.w3.org/1998/Math/MathML"
+
+/* DOM nodeType numbers. Ours are a different enumeration (dom.h N_*), and the
+ * two must not be conflated: N_ELEM is 0 and ELEMENT_NODE is 1. */
+static int node_type_of(const struct node *n)
+{
+    if (!n) return 0;
+    if (is_fragment(n)) return 11;              /* DOCUMENT_FRAGMENT_NODE */
+    switch (n->type) {
+    case N_ELEM:     return 1;
+    case N_TEXT:     return 3;
+    case N_COMMENT:  return 8;
+    case N_DOCUMENT: return 9;
+    case N_DOCTYPE:  return 10;
+    default:         return 0;
+    }
+}
+
+static JSValue el_get_nodeType(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? JS_NewInt32(ctx, node_type_of(n)) : JS_UNDEFINED; }
+
+/* nodeName. KNOWN DEVIATION: the DOM uppercases an HTML element's name and we
+ * return it lowercase, the same as tagName already does. Changing it now would
+ * change tagName's long-standing answer under a page's feet; library code that
+ * cares almost always writes nodeName.toLowerCase(), which is a no-op here. */
+static JSValue el_get_nodeName(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? JS_NewString(ctx, n->tag) : JS_UNDEFINED; }
+
+/* nodeValue / data: the character-data payload, and null on anything else --
+ * which is the spec's answer for an element, not an error. */
+static JSValue el_get_nodeValue(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    if (!n) return JS_UNDEFINED;
+    if (n->type != N_TEXT && n->type != N_COMMENT) return JS_NULL;
+    return JS_NewStringLen(ctx, n->text ? n->text : "", (size_t)(n->text ? n->textlen : 0));
+}
+static JSValue el_set_nodeValue(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = node_of(t);
+    if (!n || (n->type != N_TEXT && n->type != N_COMMENT)) return JS_UNDEFINED;
+    size_t len = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, v);
+    if (s) { chardata_set(n, s, len); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+
+/* ---- navigation ---- */
+static JSValue el_get_parentNode(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    if (!n || !n->parent) return n ? JS_NULL : JS_UNDEFINED;
+    /* <html>'s parent is the document, and a script comparing
+     * `el.parentNode === document` has to get true -- so the synthetic
+     * #document node resolves to the `document` object, not to an Element
+     * wrapper around it. */
+    if (n->parent == g_root && !JS_IsUndefined(g_document))
+        return JS_DupValue(ctx, g_document);
+    return wrap(ctx, n->parent);
+}
+static JSValue el_get_parentElement(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    if (!n || !n->parent || n->parent->type != N_ELEM) return JS_NULL;
+    return wrap(ctx, n->parent);
+}
+static JSValue el_get_firstChild(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, n->first_child) : JS_UNDEFINED; }
+static JSValue el_get_lastChild(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, n->last_child) : JS_UNDEFINED; }
+static JSValue el_get_nextSibling(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, n->next) : JS_UNDEFINED; }
+static JSValue el_get_prevSibling(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, n->prev) : JS_UNDEFINED; }
+
+static struct node *next_elem(struct node *n) { while (n && n->type != N_ELEM) n = n->next; return n; }
+static struct node *prev_elem(struct node *n) { while (n && n->type != N_ELEM) n = n->prev; return n; }
+
+static JSValue el_get_firstElemChild(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, next_elem(n->first_child)) : JS_UNDEFINED; }
+static JSValue el_get_lastElemChild(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, prev_elem(n->last_child)) : JS_UNDEFINED; }
+static JSValue el_get_nextElemSib(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, next_elem(n->next)) : JS_UNDEFINED; }
+static JSValue el_get_prevElemSib(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? wrap(ctx, prev_elem(n->prev)) : JS_UNDEFINED; }
+
+/* childNodes / children.
+ *
+ * KNOWN DEVIATION: a real NodeList/HTMLCollection is LIVE. These are Array
+ * SNAPSHOTS taken at property-access time. A live list needs an exotic object
+ * whose every index lookup re-walks the child list, and the cost is not the
+ * walk -- it is that the list must survive its nodes being recycled, i.e. a
+ * second {node,serial} handle class. Snapshots satisfy every real use
+ * (`for (var c of el.childNodes)`, `Array.from(el.children)`, `.length`) and a
+ * page that caches one across a mutation is rare and gets a stale array rather
+ * than a wrong one. */
+static JSValue child_array(JSContext *ctx, struct node *n, int elems_only)
+{
+    JSValue a = JS_NewArray(ctx);
+    if (!n || JS_IsException(a)) return a;
+    uint32_t i = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (elems_only && c->type != N_ELEM) continue;
+        JS_DefinePropertyValueUint32(ctx, a, i++, wrap(ctx, c), JS_PROP_C_W_E);
+    }
+    return a;
+}
+static JSValue el_get_childNodes(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? child_array(ctx, n, 0) : JS_UNDEFINED; }
+static JSValue el_get_children(JSContext *ctx, JSValueConst t)
+{ struct node *n = node_of(t); return n ? child_array(ctx, n, 1) : JS_UNDEFINED; }
+
+static JSValue el_hasChildNodes(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ (void)argc; (void)argv; struct node *n = node_of(t); return JS_NewBool(ctx, n && n->first_child != 0); }
+
+/* contains(other): inclusive, as the DOM defines it. Widely used for
+ * click-outside handling, which is why it is here and cloneNode is not. */
+static JSValue el_contains(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (!n || argc < 1) return JS_FALSE;
+    struct node *o = node_of(argv[0]);
+    return JS_NewBool(ctx, o && (o == n || is_ancestor(n, o)));
+}
+
+static JSValue el_get_ownerDocument(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    if (!n) return JS_UNDEFINED;
+    if (n->type == N_DOCUMENT) return JS_NULL;      /* the document owns no document */
+    return JS_IsUndefined(g_document) ? JS_NULL : JS_DupValue(ctx, g_document);
+}
+
+static JSValue el_get_namespaceURI(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM) return JS_NULL;
+    return JS_NewString(ctx, n->ns == NS_SVG ? NSURI_SVG :
+                             n->ns == NS_MATHML ? NSURI_MATHML : NSURI_HTML);
+}
+
+/* ---- attributes: the two halves setAttribute was missing ---- */
+
+/* dom.c has no attribute REMOVAL: the tree builder only ever adds, so nothing
+ * before now needed one, and dom.c is not this file's to extend. The removal is
+ * therefore done over `struct node`'s public attribute array, in two steps that
+ * must stay in this order:
+ *
+ *   1. dom_set_attr(n, name, "") -- this is what un-indexes the node from the
+ *      document's id table and empties node->classes. Those two derived indexes
+ *      are private to dom.c and re-derived only through attr_set, so shifting
+ *      the array down without this first would leave a removed id="x" still
+ *      answering getElementById('x').
+ *   2. shift the entry out of attrs[] so dom_attr() reports it ABSENT, which is
+ *      what [attr] selectors and hasAttribute() key off. Step 1 alone leaves an
+ *      empty-valued attribute, and `[hidden]` matches an empty value.
+ *
+ * The interned name and the arena value are abandoned, exactly as an overwrite
+ * through attr_set abandons the old value: the arena is bump-allocated and
+ * reclaimed with the document. */
+static int attr_remove(struct node *n, const char *name)
+{
+    if (!n || n->type != N_ELEM || !name || !*name) return 0;
+    if (!dom_attr(n, name)) return 0;                    /* not present */
+    dom_set_attr(n, name, "");                           /* step 1: sync id/class */
+    for (int i = 0; i < n->nattr; i++) {
+        const char *an = dom_attr_name_at(n, i);
+        if (!an || !ieq(an, name)) continue;
+        for (int k = i + 1; k < n->nattr; k++) n->attrs[k - 1] = n->attrs[k];
+        n->nattr--;
+        return 1;
+    }
+    return 0;
+}
+
+static JSValue el_removeAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 1) return JS_UNDEFINED;
+    const char *nm = JS_ToCString(ctx, argv[0]);
+    if (!nm) return JS_UNDEFINED;
+    /* Same tier as setAttribute: any attribute can be a selector input. */
+    if (attr_remove(n, nm)) mark_self(n, INVAL_STYLE);
+    JS_FreeCString(ctx, nm);
+    return JS_UNDEFINED;
+}
+
+static JSValue el_hasAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 1) return JS_FALSE;
+    const char *nm = JS_ToCString(ctx, argv[0]);
+    if (!nm) return JS_FALSE;
+    int has = dom_attr(n, nm) != 0;
+    JS_FreeCString(ctx, nm);
+    return JS_NewBool(ctx, has);
+}
+
+/* Defined with the DOMTokenList below: one writer for the class attribute, so
+ * className= and classList.add() cannot disagree about the no-op check or the
+ * invalidation tier. */
+static void class_write(struct node *n, const char *text);
+
+/* className. React sets it on essentially every element it renders, and
+ * classList -- which is all we had -- cannot express "replace the whole list"
+ * in one call the way React needs. It goes through class_write(), so the
+ * no-op check and the invalidation tier are shared with classList. */
+static JSValue el_get_className(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    const char *v = (n && n->type == N_ELEM) ? dom_attr(n, "class") : 0;
+    return JS_NewString(ctx, v ? v : "");
+}
+static JSValue el_set_className(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (s) { class_write(n, s); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+
+/* ---- getBoundingClientRect ----
+ *
+ * React does not call this; almost every UI library built on React does
+ * (popovers, tooltips, virtualised lists, drag handles).
+ *
+ * layout.c produces a FLAT display list, not a box tree: `struct item` carries
+ * the DOM node each painted box came from and nothing else. So the element's
+ * border box is recovered as the UNION of every item whose node is the element
+ * or one of its descendants. That is exact whenever the element paints its own
+ * box (a background or any border makes layout emit an IT_RECT covering the
+ * whole border box) and is the INK BOUNDS of the subtree otherwise -- a
+ * background-less <div> reports the extent of its text and images, so the
+ * height is right and the width is the widest line rather than the full
+ * containing-block width. Recording that here rather than "fixing" it in
+ * layout.c is deliberate: layout.c belongs to the render pipeline, and making
+ * it emit an invisible rect per element would cost a display-list entry for
+ * every node on every page to serve a call most pages never make.
+ *
+ * Two further honest limits:
+ *  - The rect is read from the LAST COMPLETED LAYOUT. A real browser flushes a
+ *    pending reflow on this call; we cannot, because layout runs from the
+ *    browser's main loop with a canvas width this file does not have. A script
+ *    that mutates and measures in the same turn measures the pre-mutation box.
+ *  - Client coordinates are document coordinates minus the scroll offset, and
+ *    the scroll offset has to be pushed in by the embedder (js_dom_set_scroll).
+ *    Until it is, the two coincide -- which they do exactly at page load. */
+static int g_scroll_x, g_scroll_y;
+void js_dom_set_scroll(int x, int y) { g_scroll_x = x; g_scroll_y = y; }
+
+static int in_subtree(const struct node *root, const struct node *n)
+{
+    for (; n; n = n->parent) if (n == root) return 1;
+    return 0;
+}
+
+/* Union of the subtree's painted boxes. Returns 0 if the element has no box at
+ * all, in which case the DOM says every field is zero. */
+static int subtree_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
+{
+    *ox = *oy = *ow = *oh = 0;
+    if (!el || !have_layout()) return 0;
+    const struct item *it = layout_items();
+    int n = layout_count();
+    if (!it || n <= 0) return 0;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0, got = 0;
+    for (int i = 0; i < n; i++) {
+        if (!it[i].node || !in_subtree(el, it[i].node)) continue;
+        int ax = it[i].x, ay = it[i].y, bx = it[i].x + it[i].w, by = it[i].y + it[i].h;
+        if (!got) { x0 = ax; y0 = ay; x1 = bx; y1 = by; got = 1; continue; }
+        if (ax < x0) x0 = ax;
+        if (ay < y0) y0 = ay;
+        if (bx > x1) x1 = bx;
+        if (by > y1) y1 = by;
+    }
+    if (!got) return 0;
+    *ox = x0 - g_scroll_x; *oy = y0 - g_scroll_y;
+    *ow = x1 - x0;         *oh = y1 - y0;
+    return 1;
+}
+
+static JSValue rect_num(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ (void)argc; (void)argv; return JS_DupValue(ctx, t); }    /* toJSON: the object itself */
+
+static JSValue el_getBoundingClientRect(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)argc; (void)argv;
+    struct node *n = node_of(t);
+    int x = 0, y = 0, w = 0, h = 0;
+    if (n) subtree_box(n, &x, &y, &w, &h);
+    JSValue r = JS_NewObject(ctx);
+    if (JS_IsException(r)) return r;
+    JS_SetPropertyStr(ctx, r, "x", JS_NewFloat64(ctx, x));
+    JS_SetPropertyStr(ctx, r, "y", JS_NewFloat64(ctx, y));
+    JS_SetPropertyStr(ctx, r, "width", JS_NewFloat64(ctx, w));
+    JS_SetPropertyStr(ctx, r, "height", JS_NewFloat64(ctx, h));
+    JS_SetPropertyStr(ctx, r, "left", JS_NewFloat64(ctx, x));
+    JS_SetPropertyStr(ctx, r, "top", JS_NewFloat64(ctx, y));
+    JS_SetPropertyStr(ctx, r, "right", JS_NewFloat64(ctx, x + w));
+    JS_SetPropertyStr(ctx, r, "bottom", JS_NewFloat64(ctx, y + h));
+    JS_SetPropertyStr(ctx, r, "toJSON", JS_NewCFunction(ctx, rect_num, "toJSON", 0));
+    return r;
+}
+
+/* ---- document factory methods ---- */
+static JSValue doc_createTextNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; if (!g_root) return JS_NULL;
+    size_t len = 0;
+    const char *s = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : 0;
+    /* createTextNode() with no argument makes an EMPTY text node, which React
+     * relies on: it creates the node and writes nodeValue afterwards. */
+    struct node *n = dom_create_text(g_root->doc, s ? s : "", (int)(s ? len : 0));
+    if (s) JS_FreeCString(ctx, s);
+    return wrap(ctx, n);
+}
+
+static JSValue doc_createComment(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; if (!g_root) return JS_NULL;
+    size_t len = 0;
+    const char *s = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : 0;
+    struct node *n = dom_create_comment(g_root->doc, s ? s : "", (int)(s ? len : 0));
+    if (s) JS_FreeCString(ctx, s);
+    return wrap(ctx, n);
+}
+
+static JSValue doc_createFragment(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    if (!g_root) return JS_NULL;
+    return wrap(ctx, dom_create_element(g_root->doc, FRAG_TAG, (int)strlen(FRAG_TAG)));
+}
+
+/* createElementNS(ns, qualifiedName). The namespace decides the CASE rule, and
+ * that is the whole reason this cannot just forward to createElement: SVG local
+ * names are case-sensitive ("clipPath", "feGaussianBlur", "linearGradient") and
+ * dom_create_element ASCII-lowercases, which would silently produce elements
+ * no SVG renderer can match. dom_create_element_ns takes the name verbatim. */
+static JSValue doc_createElementNS(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; if (argc < 2 || !g_root) return JS_NULL;
+    const char *uri = JS_IsNull(argv[0]) ? 0 : JS_ToCString(ctx, argv[0]);
+    const char *qn = JS_ToCString(ctx, argv[1]);
+    if (!qn) { if (uri) JS_FreeCString(ctx, uri); return JS_NULL; }
+
+    int ns = NS_HTML;
+    if (uri) {
+        if (!strcmp(uri, NSURI_SVG)) ns = NS_SVG;
+        else if (!strcmp(uri, NSURI_MATHML)) ns = NS_MATHML;
+    }
+    /* A qualified name may carry a prefix ("svg:rect"); the node stores the
+     * LOCAL name, the prefix being carried by the namespace we just resolved. */
+    const char *local = qn;
+    for (const char *p = qn; *p; p++) if (*p == ':') local = p + 1;
+
+    struct node *n = (ns == NS_HTML)
+        ? dom_create_element(g_root->doc, local, (int)strlen(local))
+        : dom_create_element_ns(g_root->doc, local, (int)strlen(local), ns);
+    if (uri) JS_FreeCString(ctx, uri);
+    JS_FreeCString(ctx, qn);
+    return wrap(ctx, n);
+}
+
+/* document.head. The tree builder always makes one, but a fragment-built
+ * document may not have it, so this resolves against the live tree the same
+ * way document.body does rather than being captured at init. */
+static JSValue doc_get_head(JSContext *ctx, JSValueConst t)
+{
+    (void)t;
+    struct node *head = 0;
+    if (g_root) for (struct node *c = g_root->first_child; c && !head; c = c->next) head = find_sel(c, "head");
+    return wrap(ctx, head);
+}
+static JSValue doc_get_nodeType(JSContext *ctx, JSValueConst t)
+{ (void)t; return JS_NewInt32(ctx, 9); }
 
 /* ---- classList (DOMTokenList over the class attribute) ---- */
 static JSClassID token_cid;
@@ -2042,6 +2645,7 @@ void js_dom_cleanup(JSContext *ctx)
     JS_FreeValue(ctx, g_proto_ui);    g_proto_ui    = JS_UNDEFINED;
     JS_FreeValue(ctx, g_proto_mouse); g_proto_mouse = JS_UNDEFINED;
     JS_FreeValue(ctx, g_proto_key);   g_proto_key   = JS_UNDEFINED;
+    JS_FreeValue(ctx, g_document);    g_document    = JS_UNDEFINED;
     if (g_root) dom_clear_wrappers(g_root->doc);
     g_ctx = 0;
 }
@@ -2050,12 +2654,39 @@ static const JSCFunctionListEntry elem_proto[] = {
     JS_CGETSET_DEF("textContent", el_get_text, el_set_text),
     JS_CGETSET_DEF("innerHTML", el_get_html, el_set_html),
     JS_CGETSET_DEF("tagName", el_get_tag, NULL),
-    JS_CGETSET_DEF("id", el_get_id, NULL),
+    JS_CGETSET_DEF("id", el_get_id, el_set_id),
     JS_CGETSET_DEF("classList", el_get_classlist, NULL),
+    JS_CGETSET_DEF("className", el_get_className, el_set_className),
     JS_CGETSET_DEF("style", el_get_style, NULL),
+    /* Node */
+    JS_CGETSET_DEF("nodeType", el_get_nodeType, NULL),
+    JS_CGETSET_DEF("nodeName", el_get_nodeName, NULL),
+    JS_CGETSET_DEF("nodeValue", el_get_nodeValue, el_set_nodeValue),
+    JS_CGETSET_DEF("data", el_get_nodeValue, el_set_nodeValue),
+    JS_CGETSET_DEF("parentNode", el_get_parentNode, NULL),
+    JS_CGETSET_DEF("parentElement", el_get_parentElement, NULL),
+    JS_CGETSET_DEF("firstChild", el_get_firstChild, NULL),
+    JS_CGETSET_DEF("lastChild", el_get_lastChild, NULL),
+    JS_CGETSET_DEF("nextSibling", el_get_nextSibling, NULL),
+    JS_CGETSET_DEF("previousSibling", el_get_prevSibling, NULL),
+    JS_CGETSET_DEF("firstElementChild", el_get_firstElemChild, NULL),
+    JS_CGETSET_DEF("lastElementChild", el_get_lastElemChild, NULL),
+    JS_CGETSET_DEF("nextElementSibling", el_get_nextElemSib, NULL),
+    JS_CGETSET_DEF("previousElementSibling", el_get_prevElemSib, NULL),
+    JS_CGETSET_DEF("childNodes", el_get_childNodes, NULL),
+    JS_CGETSET_DEF("children", el_get_children, NULL),
+    JS_CGETSET_DEF("ownerDocument", el_get_ownerDocument, NULL),
+    JS_CGETSET_DEF("namespaceURI", el_get_namespaceURI, NULL),
+    JS_CFUNC_DEF("hasChildNodes", 0, el_hasChildNodes),
+    JS_CFUNC_DEF("contains", 1, el_contains),
     JS_CFUNC_DEF("getAttribute", 1, el_getattr),
     JS_CFUNC_DEF("setAttribute", 2, el_setattr),
+    JS_CFUNC_DEF("removeAttribute", 1, el_removeAttribute),
+    JS_CFUNC_DEF("hasAttribute", 1, el_hasAttribute),
+    JS_CFUNC_DEF("getBoundingClientRect", 0, el_getBoundingClientRect),
     JS_CFUNC_DEF("appendChild", 1, el_appendChild),
+    JS_CFUNC_DEF("insertBefore", 2, el_insertBefore),
+    JS_CFUNC_DEF("replaceChild", 2, el_replaceChild),
     JS_CFUNC_DEF("removeChild", 1, el_removeChild),
     JS_CFUNC_DEF("addEventListener", 2, el_addEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, el_removeEventListener),
@@ -2133,11 +2764,17 @@ static const JSCFunctionListEntry doc_funcs[] = {
     JS_CFUNC_DEF("getElementById", 1, doc_getById),
     JS_CFUNC_DEF("querySelector", 1, doc_qs),
     JS_CFUNC_DEF("createElement", 1, doc_createElement),
+    JS_CFUNC_DEF("createElementNS", 2, doc_createElementNS),
+    JS_CFUNC_DEF("createTextNode", 1, doc_createTextNode),
+    JS_CFUNC_DEF("createComment", 1, doc_createComment),
+    JS_CFUNC_DEF("createDocumentFragment", 0, doc_createFragment),
     JS_CFUNC_DEF("addEventListener", 2, doc_addEventListener),
     JS_CFUNC_DEF("removeEventListener", 2, doc_removeEventListener),
     JS_CFUNC_DEF("dispatchEvent", 1, doc_dispatchEvent),
     JS_CGETSET_DEF("body", doc_get_body, NULL),
+    JS_CGETSET_DEF("head", doc_get_head, NULL),
     JS_CGETSET_DEF("documentElement", doc_get_docel, NULL),
+    JS_CGETSET_DEF("nodeType", doc_get_nodeType, NULL),
 };
 
 /* Register one event constructor and its prototype. `parent` chains the
@@ -2163,6 +2800,8 @@ void js_dom_init(JSContext *ctx, struct node *root)
     g_root = root;
     js_dom_clear_dirty();               /* scope roots from the previous page are dead */
     g_proto_event = g_proto_ui = g_proto_mouse = g_proto_key = JS_UNDEFINED;
+    g_document = JS_UNDEFINED;          /* the previous page's, if any, died with its runtime */
+    g_scroll_x = g_scroll_y = 0;        /* a new page starts at the top */
     /* Defensive: if a previous page's runtime went away without a cleanup call,
      * its wrapper slots are dangling JSObject*s. Start every page with none. */
     if (root) dom_clear_wrappers(root->doc);
@@ -2218,6 +2857,10 @@ void js_dom_init(JSContext *ctx, struct node *root)
     JSValue doc = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, doc, doc_funcs, countof(doc_funcs));
     install_on_props(ctx, doc, doc_on_get, doc_on_set);
+    /* Held strongly so ownerDocument and <html>.parentNode can hand the SAME
+     * object back -- `el.ownerDocument === document` has to be true. Released
+     * by js_dom_cleanup, alongside the event prototypes. */
+    g_document = JS_DupValue(ctx, doc);
     JS_SetPropertyStr(ctx, g, "document", doc);
     JS_FreeValue(ctx, g);
     maybe_install_console(ctx);

@@ -69,6 +69,20 @@ struct node *js_dom_inval_root(int i, int *siblings);
 /* Number of registered event listeners across the whole document. */
 int  js_dom_listener_count(void);
 
+/* ---- viewport ----
+ *
+ * Where the page currently sits under the viewport, in document pixels. This is
+ * what turns getBoundingClientRect's answer from DOCUMENT coordinates into
+ * CLIENT coordinates, and it is the same origin the client_x/client_y of a
+ * dispatched mouse event already uses -- so a page that measures an element and
+ * compares the rect against event.clientY gets a consistent answer.
+ *
+ * The embedder owns the scroll offset (browser.c's `scroll`), so it has to push
+ * it in whenever it changes. NOT calling this is safe and merely means rects
+ * are reported in document coordinates; the two coincide at scroll 0, which is
+ * where every page starts. js_dom_init resets it to 0 for the new page. */
+void js_dom_set_scroll(int x, int y);
+
 /* Release listener + wrapper state; call before JS_FreeContext/JS_FreeRuntime. */
 void js_dom_cleanup(JSContext *ctx);
 

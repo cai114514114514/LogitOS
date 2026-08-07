@@ -1089,6 +1089,40 @@ MAXHS ?= 8
 test-handshakes: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_handshakes.py $(ISO) $(DISK) '$(URL)' $(MAXHS) build/handshakes.ppm
 
+# --- test-dom-device: the on-device proof for the same bindings ---
+# The host test asserts on `struct node`; this one boots the OS, serves a page
+# whose script builds a subtree entirely through the new bindings, and asserts
+# on the SCREENDUMP -- three colours that only a className= can produce, in the
+# order insertBefore asked for, at the geometry getBoundingClientRect reported.
+# See the docstring in tests/qmp/qmp_dom_bindings.py.
+test-dom-device: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_dom_bindings.py $(ISO) $(DISK)
+
+# --- test-dom-bindings: the Node half of the JS bindings, against real layout ---
+# Separate from js_dom_test (which links neither layout nor the codecs) because
+# getBoundingClientRect can only be checked against the display list layout.c
+# actually produced -- the point is that what a script MEASURES and what the
+# painter DRAWS are the same numbers.
+test-dom-bindings: $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
+	    -o $(BUILD)/dom_bindings_test tests/unit/dom_bindings_test.c \
+	    c/apps/browser/js_dom.c c/apps/browser/layout.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	@$(BUILD)/dom_bindings_test
+
+# Same test under ASan+UBSan. The insertion helpers move nodes between parents
+# and the attribute removal shifts a live array in place; both are the shape
+# where a wrong index is silent until much later.
+test-dom-bindings-asan: $(BUILD)/libcss_host.a
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
+	    -o $(BUILD)/dom_bindings_asan tests/unit/dom_bindings_test.c \
+	    c/apps/browser/js_dom.c c/apps/browser/layout.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/dom_bindings_asan
+
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
 test-png: $(RUST_LIB_HOST)
