@@ -21,7 +21,13 @@
 #include "kprintf.h"
 #include "pit.h"
 #include "ktime.h"
-#include "wait.h"        /* M27 sched_sleep_ms: the kernel's ONE sleeper */
+/* Path-qualified, and it has to be: mini-libc ships c/apps/libc/include/sys/
+ * wait.h, that directory is in INCDIRS, and it sorts BEFORE c/kernel/core -- so
+ * a bare #include "wait.h" from OUTSIDE c/kernel/core silently resolves to the
+ * userland one, and sched_sleep_ms below becomes an undeclared function. (Files
+ * in c/kernel/core get away with the bare form only because a quoted include
+ * searches the including file's own directory first.) */
+#include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
 #include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO */
 
