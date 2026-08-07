@@ -102,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -268,8 +268,13 @@ $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BUILD)/jsobj/c/apps/browser/browser.o $(BUILD)/jsobj/c/apps/browser/js_dom.o $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+# The app's own TUs that touch QuickJS headers, so they build with JS_CF (and
+# not with the plain browser flags, which lack -Ithird_party/quickjs).
+BROWSER_JS_SRC := c/apps/browser/browser.c c/apps/browser/js_dom.c c/apps/browser/js_page.c
+BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
+
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 
 # The shared libc arena (24 MiB, sized as a JS heap) ran dry while LibCSS parsed
 # github.com's ~3 MiB of stylesheets: malloc started returning NULL mid-sheet, the
@@ -841,9 +846,76 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -Ic/kernel/mm
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
-	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
 	@echo "test-browser: ALL PASS"
+
+# Same test under ASan+UBSan. The event system is where a JSValue can outlive its
+# runtime and a listener can outlive its node, and neither of those shows up as a
+# wrong answer -- only as corrupted memory some events later. So it gets its own
+# instrumented run rather than riding on the -O2 build's silence.
+test-js-dom-asan: $(BUILD)/libcss_host.a
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_asan \
+	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	@$(BUILD)/js_dom_asan
+
+# The CSS engine + layout under ASan/UBSan, and -- for the engine -- LeakSanitizer.
+#
+# The leak check is the point of the first half. LibCSS builds a css_node_data
+# (an ancestor bloom filter plus refs to the element's selection results) for
+# every element on every css_apply and hands it to the client's
+# set_libcss_node_data. Ours used to be a no-op, so all of it was dropped on the
+# floor: roughly 70 bytes per element per re-style, and a page re-styles three
+# or four times as its external sheets arrive. css_engine_test frees its own
+# documents at the end, so anything LSan still reports is LibCSS's.
+#
+# layout.c gets ASan/UBSan without the leak check: the layout tests deliberately
+# leave their documents allocated, and what matters there is that the display
+# list's index arithmetic (the flex line/range bookkeeping, the z-index sort)
+# stays in bounds.
+test-css-asan: $(BUILD)/libcss_host.a
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_asan tests/unit/css_engine_test.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/css_engine_asan >/dev/null
+	@echo "css_engine_test: ASan + UBSan + LeakSanitizer clean"
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_asan tests/unit/layout_test.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
+	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/layout_asan >/dev/null
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_asan tests/unit/table_list_test.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
+	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/table_list_asan >/dev/null
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_asan tests/unit/page_test.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
+	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/page_asan >/dev/null
+	@echo "test-css-asan: ALL PASS"
+
+# --- test-css-fidelity: the on-device proof that the CSS reaches the pixels ---
+# Host tests assert on the display list, which is one step short: a box can have
+# the right geometry in `struct item` and still never be painted. This boots the
+# OS, serves a fixture from the host and measures the screendump -- border-box
+# vs content-box painted widths, a <pre> that keeps its blank line and its
+# indentation, and a flex row that wraps and honours justify-content.
+test-css-fidelity: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_css_fidelity.py $(ISO) $(DISK)
+
+# --- test-live-page: the on-device proof that a loaded page stays alive ---
+# Boots the OS, serves a fixture page from the host, loads it in the Browser and
+# then CLICKS it: a handler mutates the DOM, a setTimeout fires seconds after the
+# load, and a link's preventDefault suppresses the navigation (with an identical
+# handler-free link as the control). Screenshots + the host server's request log
+# are the evidence; see the docstring in tests/qmp/qmp_live_page.py.
+test-live-page: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_live_page.py $(ISO) $(DISK)
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

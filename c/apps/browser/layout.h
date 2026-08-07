@@ -14,15 +14,26 @@ struct item {
                                        * hit test / inspector / future event
                                        * dispatch go from a painted box back to
                                        * the element without a second search. */
-    /* RECT */ uint32_t bg; int has_bg; int border_w[4]; uint32_t border_color[4];
+    int z;                            /* stacking level: the z-index of the
+                                       * nearest positioned ancestor that set
+                                       * one, 0 otherwise. layout_page stable-
+                                       * sorts the list by it, so both the
+                                       * forward paint and the backward hit test
+                                       * see the right box on top. */
+    /* RECT */ uint32_t bg; int has_bg; int bg_alpha; int border_w[4]; uint32_t border_color[4];
+    unsigned char border_style[4];    /* CSS_BORDER_STYLE_*; the painter draws
+                                       * every non-none style solid */
     int radius, radius_pct;
     /* TEXT */ const char *text; int len, font_px, bold, italic, mono, underline; uint32_t color;
-    char marker[12];                    /* backing store for <li> bullet/number items */
+    int strike, overline;             /* the other two text-decoration lines */
+    char marker[16];                    /* backing store for <li> markers (roman
+                                       * numerals are the long case) */
     /* IMAGE */ struct image *img; const char *imgsrc;  /* decoded image + its URL */
     int h_auto;                       /* img height was derived (no explicit px): may be
                                        * corrected from the decoded image's aspect ratio */
     const char *href;                 /* link target for this item (or NULL) */
     int hidden;                       /* visibility:hidden / opacity:0 -- layout space kept, nothing painted */
+    int opacity;                      /* 0..255 from the element's opacity */
 };
 
 /* Lay out `root` (a parsed+styled DOM) into a display list at the given canvas

@@ -14,6 +14,11 @@ static int doc_h;
 static int canvas;
 static uint32_t page_bg; static int page_has_bg;   /* html/body bg -> viewport fill */
 
+/* Stacking level for everything emitted right now: the z-index of the nearest
+ * enclosing positioned box (or flex item) that set one. layout_page sorts the
+ * finished list by it. */
+static int g_z;
+
 static struct item *additem(int type, struct node *n)
 {
     if (!items || nitem >= MAXITEM) return 0;
@@ -21,11 +26,108 @@ static struct item *additem(int type, struct node *n)
     memset(it, 0, sizeof *it);
     it->type = type;
     it->node = n;                       /* provenance: painted box -> DOM node */
+    it->z = g_z;
+    it->opacity = 255;
     return it;
+}
+
+/* Translate a display-list range. Used wherever a box's final position is only
+ * known after its contents have been laid out: flex cross-axis alignment,
+ * justify-content, position:relative. */
+static void shift_items(int lo, int hi, int dx, int dy)
+{
+    if (!dx && !dy) return;
+    if (hi > nitem) hi = nitem;
+    for (int i = lo; i < hi; i++) { items[i].x += dx; items[i].y += dy; }
 }
 
 static int any_border(const struct cstyle *st)
 { return st->border_w[0] || st->border_w[1] || st->border_w[2] || st->border_w[3]; }
+
+/* ---- box model ----
+ * Every width/height below is a BORDER-BOX size: the rectangle the background
+ * and borders are painted into, and the one CSS `box-sizing:border-box` names
+ * directly. Content boxes are derived from it by subtracting borders+padding.
+ * Before this the two were conflated -- `width` was treated as the padding box
+ * and border widths took no space at all -- so a border-box site laid out
+ * padding-sized and a content-box site lost its padding. */
+static int hextra(const struct cstyle *st)
+{ return st ? st->pl + st->pr + st->border_w[3] + st->border_w[1] : 0; }
+static int vextra(const struct cstyle *st)
+{ return st ? st->pt + st->pb + st->border_w[0] + st->border_w[2] : 0; }
+/* Content-box origin offsets from the border-box origin. */
+static int cx_off(const struct cstyle *st) { return st ? st->border_w[3] + st->pl : 0; }
+static int cy_off(const struct cstyle *st) { return st ? st->border_w[0] + st->pt : 0; }
+
+/* An authored width/height turned into a border-box size. */
+static int to_border_w(const struct cstyle *st, int v)
+{ return (st && st->box_sizing == BOX_BORDER) ? v : v + hextra(st); }
+static int to_border_h(const struct cstyle *st, int v)
+{ return (st && st->box_sizing == BOX_BORDER) ? v : v + vextra(st); }
+
+/* A css length that is either px, or a percentage of `avail` plus a px addend
+ * (the calc(100% - 20px) shape css_engine folds into pct+off). */
+static int resolve_len(int v, int pct, int off, int avail)
+{ return pct ? avail * v / 100 + off : v; }
+
+/* Clamp a border-box width by min-width/max-width. Both are authored under the
+ * element's own box-sizing, so they go through the same conversion. */
+static int clamp_w(const struct cstyle *st, int w, int avail)
+{
+    if (st) {
+        if (st->has_max_w) {
+            int m = to_border_w(st, resolve_len(st->max_w, st->max_w_pct, 0, avail));
+            if (w > m) w = m;
+        }
+        if (st->has_min_w) {
+            int m = to_border_w(st, resolve_len(st->min_w, st->min_w_pct, 0, avail));
+            if (w < m) w = m;
+        }
+    }
+    return w < 0 ? 0 : w;
+}
+
+/* The specified border-box height, or -1 for auto. `avail` is the containing
+ * block's content height, or -1 when that is itself auto -- in which case a
+ * percentage height is undefined and we fall back to auto, as before. */
+static int spec_h(const struct cstyle *st, int avail)
+{
+    if (!st || !st->has_h) return -1;
+    if (st->h_pct && avail < 0) return -1;
+    int h = to_border_h(st, resolve_len(st->height, st->h_pct, st->h_off, avail));
+    /* max-height clamps the SPECIFIED height only. Clamping a content-derived
+     * height would need the painter to clip, which it cannot; an overflowing
+     * box growing past its max-height is far less wrong than one that overlaps
+     * whatever follows it. */
+    if (st->has_max_h && !(st->max_h_pct && avail < 0)) {
+        int m = to_border_h(st, resolve_len(st->max_h, st->max_h_pct, 0, avail));
+        if (h > m) h = m;
+    }
+    return h;
+}
+
+/* Final border-box height of a block whose content produced `ch`. */
+static int block_height(const struct cstyle *st, int ch, int avail)
+{
+    int h = spec_h(st, avail);
+    if (h > ch) ch = h;
+    if (st && st->has_min_h && !(st->min_h_pct && avail < 0)) {
+        int m = to_border_h(st, resolve_len(st->min_h, st->min_h_pct, 0, avail));
+        if (ch < m) ch = m;
+    }
+    return ch;
+}
+
+/* Used border-box width of an in-flow block child inside a containing block of
+ * content width `avail`. `auto` fills the line minus its own margins. */
+static int block_width(const struct cstyle *st, int avail)
+{
+    if (!st) return avail;
+    int ml = st->ml < 0 ? 0 : st->ml, mr = st->mr < 0 ? 0 : st->mr;
+    int w = st->has_w ? to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, avail))
+                      : avail - ml - mr;
+    return clamp_w(st, w, avail);
+}
 
 /* Out-of-layout nodes: display:none, or position:absolute/fixed (we don't do
  * positioned overlays -- they'd smear hidden menus over the normal flow). */
@@ -36,10 +138,14 @@ static int skipped(struct node *n)
 static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int y, int w)
 {
     bg->x = x; bg->y = y; bg->w = w;
-    bg->bg = st->background; bg->has_bg = st->has_bg;
-    for (int i = 0; i < 4; i++) { bg->border_w[i] = st->border_w[i]; bg->border_color[i] = st->border_color[i]; }
+    bg->bg = st->background; bg->has_bg = st->has_bg; bg->bg_alpha = st->bg_alpha;
+    for (int i = 0; i < 4; i++) {
+        bg->border_w[i] = st->border_w[i]; bg->border_color[i] = st->border_color[i];
+        bg->border_style[i] = st->border_style[i];
+    }
     bg->radius = st->radius; bg->radius_pct = st->radius_pct;
     bg->hidden = st->hidden;
+    bg->opacity = st->opacity;
 }
 
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
@@ -101,10 +207,23 @@ static int svg_attr_w(struct node *n, const struct cstyle *st)
  * current line, so newline() can shift the whole line for center/right. */
 struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start; };
 
-static void newline(struct iflow *f)
+/* Close the current line. `last` marks a line that ends the block (or is cut
+ * short by <br> or a block-level sibling): CSS does not justify those, and
+ * stretching a two-word final line to the full measure is the classic
+ * give-away of a broken justify implementation. */
+static void newline2(struct iflow *f, int last)
 {
     if (f->line_started) {
-        if (f->align != ALIGN_LEFT && nitem > f->line_start) {
+        int n = nitem - f->line_start;
+        if (f->align == ALIGN_JUSTIFY && !last && n > 1) {
+            /* Spread the slack between the words: item k of n moves right by
+             * k/(n-1) of it. Only text items take part -- an inline image on
+             * the line rides along with the word it follows. */
+            int extra = (f->x1 - f->x0) - (f->x - f->x0);
+            if (extra > 0)
+                for (int i = 1; i < n; i++)
+                    items[f->line_start + i].x += (int)((long)extra * i / (n - 1));
+        } else if (f->align == ALIGN_CENTER || f->align == ALIGN_RIGHT) {
             int used = f->x - f->x0, avail = f->x1 - f->x0;
             int off = (f->align == ALIGN_CENTER) ? (avail - used) / 2 : (avail - used);
             if (off > 0)
@@ -116,6 +235,9 @@ static void newline(struct iflow *f)
     f->line_start = nitem;
 }
 
+/* A soft break inside a paragraph: the line just closed is justifiable. */
+static void newline(struct iflow *f) { newline2(f, 0); }
+
 /* emit one text item at the current pen position and advance the pen */
 static void emit_word(struct iflow *f, struct node *src, const char *s, int len, int w,
                       struct cstyle *st, const char *href, int lh, int px, int mono)
@@ -124,8 +246,9 @@ static void emit_word(struct iflow *f, struct node *src, const char *s, int len,
     if (!it) return;
     it->x = f->x; it->w = w; it->text = s; it->len = len;
     it->font_px = px; it->bold = st->bold; it->italic = st->italic; it->mono = mono;
-    it->underline = st->underline; it->color = st->color; it->href = href;
-    it->hidden = st->hidden;
+    it->underline = st->underline; it->strike = st->strike; it->overline = st->overline;
+    it->color = st->color; it->href = href;
+    it->hidden = st->hidden; it->opacity = st->opacity;
     f->x += w;
     f->line_started = 1;
     if (lh > f->lineh) f->lineh = lh;
@@ -133,24 +256,105 @@ static void emit_word(struct iflow *f, struct node *src, const char *s, int len,
     it->h = lh;
 }
 
-/* place a text run (one element's text) into the flow, wrapping on words */
+/* Force a line break even on an empty line -- a blank line inside <pre> still
+ * takes a line box, and newline2 only advances y for a started line. */
+static void hard_break(struct iflow *f, int lh)
+{
+    if (!f->line_started) { f->lineh = lh; f->line_started = 1; }
+    newline2(f, 1);
+}
+
+/* place a text run (one element's text) into the flow.
+ *
+ * white-space decides three independent things and this is the only place any
+ * of them matter:
+ *   collapse   runs of spaces/tabs/newlines fold into one inter-word space
+ *   keep_nl    a literal '\n' forces a line break
+ *   can_wrap   a full line may break at a space
+ * normal = collapse+wrap, pre = neither, nowrap = collapse only,
+ * pre-wrap = wrap+newlines, pre-line = collapse+wrap+newlines.
+ *
+ * Tab stops are honoured wherever spaces are preserved: a tab advances the pen
+ * to the next multiple of 8 space widths from the line's left edge, which is
+ * what makes indented code in a <pre> line up. Measuring '\t' with the font
+ * instead would draw a missing-glyph box. */
 static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
                       struct cstyle *st, const char *href)
 {
     int px = st->font_px, mono = st->mono;
     int lh = st->line_px > px ? st->line_px : px*5/4;
     int spacew = text_measure(" ", 1, px, mono);
+    int ws_mode = st->white_space;
+    int collapse = (ws_mode == WS_NORMAL || ws_mode == WS_NOWRAP || ws_mode == WS_PRE_LINE);
+    int keep_nl  = (ws_mode != WS_NORMAL && ws_mode != WS_NOWRAP);
+    int can_wrap = (ws_mode != WS_PRE && ws_mode != WS_NOWRAP);
+    int tabw = spacew * 8; if (tabw <= 0) tabw = 1;
     int i = 0;
+
+    if (!collapse) {
+        /* Preserved spaces: emit each run of literal characters verbatim, so
+         * the indentation and the internal spacing survive into the item. */
+        while (i < len) {
+            if (s[i] == '\n') { hard_break(f, lh); i++; continue; }
+            if (s[i] == '\r') { i++; continue; }
+            if (s[i] == '\t') {
+                int col = f->x - f->x0;
+                f->x = f->x0 + (col / tabw + 1) * tabw;
+                f->line_started = 1;
+                if (lh > f->lineh) f->lineh = lh;
+                i++; continue;
+            }
+            int seg = i;
+            while (i < len && s[i] != '\n' && s[i] != '\r' && s[i] != '\t') i++;
+            int slen = i - seg;
+            if (!can_wrap) {                       /* pre: one item, may overflow */
+                int w = text_measure(s + seg, slen, px, mono);
+                emit_word(f, src, s + seg, slen, w, st, href, lh, px, mono);
+                continue;
+            }
+            /* pre-wrap: break at spaces but keep them. Each token is
+             * [run of spaces][run of non-spaces], emitted as one item so the
+             * leading spaces are drawn. A token that will not fit starts a new
+             * line, and its leading spaces are dropped there -- CSS "hangs"
+             * them off the end of the previous line instead, which paints the
+             * same. */
+            int p = seg;
+            while (p < i) {
+                int t0 = p;
+                while (p < i && s[p] == ' ') p++;
+                int nsp = p - t0;
+                while (p < i && s[p] != ' ') p++;
+                int tlen = p - t0, tw = text_measure(s + t0, tlen, px, mono);
+                if (f->line_started && f->x + tw > f->x1 && tw <= f->x1 - f->x0) {
+                    newline(f);
+                    t0 += nsp; tlen -= nsp;
+                    if (tlen <= 0) continue;
+                    tw = text_measure(s + t0, tlen, px, mono);
+                }
+                emit_word(f, src, s + t0, tlen, tw, st, href, lh, px, mono);
+            }
+        }
+        return;
+    }
+
     while (i < len) {
-        while (i < len && sp(s[i])) i++;                 /* collapse whitespace */
+        if (keep_nl) {                                   /* pre-line */
+            while (i < len && sp(s[i]) && s[i] != '\n') i++;
+            if (i < len && s[i] == '\n') { hard_break(f, lh); i++; continue; }
+        } else {
+            while (i < len && sp(s[i])) i++;             /* collapse whitespace */
+        }
         if (i >= len) break;
-        int ws = i; while (i < len && !sp(s[i])) i++;     /* one word [ws,i) */
+        int ws = i;
+        while (i < len && !sp(s[i])) i++;                /* one word [ws,i) */
         int wlen = i - ws;
+        if (!wlen) continue;
         int ww = text_measure(s + ws, wlen, px, mono);
-        if (f->line_started && f->x + spacew + ww > f->x1 && ww <= (f->x1 - f->x0)) {
+        if (can_wrap && f->line_started && f->x + spacew + ww > f->x1 &&
+            ww <= (f->x1 - f->x0)) {
             newline(f);                                   /* wrap */
         }
-        if (ww <= f->x1 - f->x0) {
+        if (!can_wrap || ww <= f->x1 - f->x0) {
             if (f->line_started) f->x += spacew;
             emit_word(f, src, s + ws, wlen, ww, st, href, lh, px, mono);
             continue;
@@ -267,17 +471,18 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
      * without this their whole block subtree would be flattened into one
      * smeared inline run. */
     if (is_block(c)) {
-        newline(f);
-        int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
-        int bx = f->x0, bw = f->x1 - f->x0;
+        newline2(f, 1);                  /* the line it interrupts is a last line */
+        int avail = f->x1 - f->x0;
+        int bx = f->x0 + (st && st->ml > 0 ? st->ml : 0);
+        int bw = block_width(st, avail);
         int bgidx = -1;
         if (st && (st->has_bg || any_border(st))) {
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, f->y, bw); }
         }
-        int inner = layout_block(c, bx + pl, f->y + pt, bw - pl - pr);
-        int ch = (inner - f->y) + pb;
-        if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+        int inner = layout_block(c, bx + cx_off(st), f->y + cy_off(st), bw - hextra(st));
+        int ch = (inner - f->y) + (st ? st->pb + st->border_w[2] : 0);
+        ch = block_height(st, ch, -1);
         if (st && ch < st->font_px) ch = st->font_px;
         if (bgidx >= 0) items[bgidx].h = ch;
         f->y += ch;
@@ -285,7 +490,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         return;
     }
 
-    if (tag_eq(c->tag, "br")) { newline(f); return; }
+    if (tag_eq(c->tag, "br")) { newline2(f, 1); return; }
 
     if (tag_eq(c->tag, "img")) {
         /* Reserve the box from CSS/HTML width&height; the actual pixels are
@@ -310,7 +515,8 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
                   it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2;
                   it->h_auto = h_auto;
                   if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");   /* lazy-load */
-                  it->hidden = st ? st->hidden : 0; }
+                  it->hidden = st ? st->hidden : 0;
+                  it->opacity = st ? st->opacity : 255; }
         f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
         return;
     }
@@ -341,33 +547,77 @@ static int layout_flex(struct node *n, int x, int y, int w);   /* fwd: flex row 
 static int layout_grid(struct node *n, int x, int y, int w);   /* fwd: minimal grid */
 static int layout_table(struct node *t, int x, int y, int w);  /* fwd: minimal table */
 
-/* Emit the bullet (ul) or 1-based number (ol) for a <li> block child. `bx` is
- * the li's content-box left edge, `top` its first line's y. */
+/* Render list item `idx` (1-based) in the marker alphabet `kind` into `buf`,
+ * returning the byte count. Bullets are UTF-8 glyphs; every numeric alphabet
+ * gets the trailing '.' a UA sheet's ::marker content would supply. */
+static int marker_text(int kind, int idx, char *buf, int max)
+{
+    /* U+2022 BULLET, U+25E6 WHITE BULLET, U+25AA BLACK SMALL SQUARE */
+    static const char *const bullets[] = { "\xE2\x80\xA2", "\xE2\x97\xA6", "\xE2\x96\xAA" };
+    if (kind >= LST_DISC && kind <= LST_SQUARE) {
+        const char *b = bullets[kind - LST_DISC];
+        int n = 0;
+        while (b[n] && n < max) { buf[n] = b[n]; n++; }
+        return n;
+    }
+    if (idx < 1) idx = 1;
+    char tmp[16]; int p = 0;                    /* built least-significant first */
+    if (kind == LST_LOWER_ALPHA || kind == LST_UPPER_ALPHA) {
+        /* bijective base 26: 1->a .. 26->z, 27->aa */
+        int base = (kind == LST_LOWER_ALPHA) ? 'a' : 'A', v = idx;
+        while (v > 0 && p < 12) { tmp[p++] = (char)(base + (v - 1) % 26); v = (v - 1) / 26; }
+    } else if (kind == LST_LOWER_ROMAN || kind == LST_UPPER_ROMAN) {
+        static const int val[13] = { 1000,900,500,400,100,90,50,40,10,9,5,4,1 };
+        static const char *const sym[13] = { "m","cm","d","cd","c","xc","l","xl",
+                                             "x","ix","v","iv","i" };
+        char r[16]; int rn = 0, v = idx > 3999 ? 3999 : idx;
+        for (int i = 0; i < 13 && rn < 12; i++)
+            while (v >= val[i] && rn < 12) {
+                for (const char *s = sym[i]; *s && rn < 12; s++)
+                    r[rn++] = (kind == LST_UPPER_ROMAN) ? (char)(*s - 32) : *s;
+                v -= val[i];
+            }
+        while (rn > 0 && p < 12) tmp[p++] = r[--rn];   /* reversed; un-reversed below */
+    } else {
+        int v = idx;
+        do { tmp[p++] = (char)('0' + v % 10); v /= 10; } while (v && p < 10);
+        if (kind == LST_DECIMAL_ZERO && p < 2) tmp[p++] = '0';
+    }
+    int n = 0;
+    while (p > 0 && n < max - 1) buf[n++] = tmp[--p];
+    if (n < max) buf[n++] = '.';
+    return n;
+}
+
+/* Emit the marker for a <li> block child. `bx` is the li's content-box left
+ * edge, `top` its first line's y. The alphabet comes from the inherited
+ * list-style-type, so `ol{list-style-type:lower-roman}` really numbers i, ii,
+ * iii and `list-style:none` emits nothing. */
 static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top, int minx)
 {
-    struct item *mk = additem(IT_TEXT, li);
-    if (!mk) return;
-    int n = 0, ordered = 0, idx = 1;
-    if (li->parent && li->parent->type == N_ELEM && tag_eq(li->parent->tag, "ol")) {
-        ordered = 1; idx = 0;
-        for (struct node *s = li->parent->first_child; s && s != li; s = s->next)
-            if (s->type == N_ELEM && tag_eq(s->tag, "li")) {
-                struct cstyle *ss = s->style;
-                if (!skipped(s)) idx++;
+    int kind = st->list_style;
+    if (kind == LST_NONE) return;
+    int idx = 1;
+    if (kind >= LST_DECIMAL) {           /* only the counting alphabets need one */
+        struct node *par = li->parent;
+        idx = 0;
+        if (par && par->type == N_ELEM) {
+            for (struct node *s = par->first_child; s && s != li; s = s->next)
+                if (s->type == N_ELEM && tag_eq(s->tag, "li") && !skipped(s)) idx++;
+            /* <ol start=N> shifts the whole run; the attribute is the only way
+             * a page can say "this list continues an earlier one". */
+            if (tag_eq(par->tag, "ol")) {
+                const char *sa = dom_attr(par, "start");
+                if (sa) { int sv = atoi_(sa); if (sv > 0) idx += sv - 1; }
             }
+        }
         idx++;
     }
-    if (ordered) {
-        char tmp[12]; int v = idx, p = 0;
-        do { tmp[p++] = (char)('0' + v % 10); v /= 10; } while (v && p < 10);
-        while (p > 0 && n < (int)sizeof mk->marker - 2) mk->marker[n++] = tmp[--p];
-        mk->marker[n++] = '.';
-    } else {
-        mk->marker[0] = (char)0xE2; mk->marker[1] = (char)0x80; mk->marker[2] = (char)0xA2;
-        n = 3;                                        /* U+2022 BULLET */
-    }
+    struct item *mk = additem(IT_TEXT, li);
+    if (!mk) return;
+    int n = marker_text(kind, idx, mk->marker, (int)sizeof mk->marker);
     mk->text = mk->marker; mk->len = n;
-    mk->hidden = st->hidden;
+    mk->hidden = st->hidden; mk->opacity = st->opacity;
     mk->font_px = st->font_px; mk->bold = st->bold; mk->mono = st->mono;
     mk->color = st->color; mk->h = st->font_px * 5 / 4; mk->y = top;
     int mw = text_measure(mk->text, mk->len, st->font_px, st->mono);
@@ -398,7 +648,7 @@ static int layout_block(struct node *n, int x, int y, int w)
         const char *href = (n->type == N_ELEM && tag_eq(n->tag, "a")) ? dom_attr(n, "href") : 0;
         struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
         flow_children(&f, n, href);
-        newline(&f);
+        newline2(&f, 1);
         return f.y;
     }
     for (struct node *c = n->first_child; c; c = c->next) {
@@ -411,22 +661,29 @@ static int layout_block(struct node *n, int x, int y, int w)
              * but stay hidden through their visibility/opacity styles. */
             int ppl = nst ? nst->pl : 0, ppt = nst ? nst->pt : 0, ppr = nst ? nst->pr : 0;
             int ml = st->ml<0?0:st->ml;
-            int ox = x - ppl + (st->has_left ? st->left : 0) + ml;
-            int oy = y - ppt + (st->has_top ? st->top : 0);
             int pw = w + ppl + ppr;                      /* containing block = padding box */
-            int ow = st->has_w && !st->w_pct ? st->width
-                   : st->has_w && st->w_pct ? pw*st->width/100
-                   : pw - (st->has_left ? st->left : 0) - ml;
-            if (ow < 0) ow = 0;
+            int ow = st->has_w ? to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, pw))
+                               : pw - (st->has_left ? st->left : 0) - ml;
+            ow = clamp_w(st, ow, pw);
+            /* right/bottom anchor the opposite edge when the near one is auto:
+             * `position:absolute;right:0` is how every close button and badge
+             * in the corner of a card is written. */
+            int ox = st->has_left || !st->has_right
+                   ? x - ppl + (st->has_left ? st->left : 0) + ml
+                   : x - ppl + pw - st->right - ow;
+            int oy = y - ppt + (st->has_top ? st->top : 0);
+            int zsave = g_z;
+            if (st->has_z) g_z = st->z_index;
             if (st->has_bg || any_border(st)) {
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { fill_rect_item(bg, st, ox, oy, ow);
-                          bg->h = st->has_h && !st->h_pct ? st->height : 0; }
+                          int sh = spec_h(st, -1); bg->h = sh > 0 ? sh : 0; }
             }
             int ovl_save = g_in_overlay;
             g_in_overlay = 1;
-            layout_block(c, ox + st->pl, oy + st->pt, ow - st->pl - st->pr);
+            layout_block(c, ox + cx_off(st), oy + cy_off(st), ow - hextra(st));
             g_in_overlay = ovl_save;
+            g_z = zsave;
             continue;
         }
         if (skipped(c)) continue;
@@ -437,8 +694,7 @@ static int layout_block(struct node *n, int x, int y, int w)
                  * every cover). Unsized: fill the line; height follows the
                  * decoded aspect via h_auto. */
                 int ml = st->ml<0?0:st->ml, mr = st->mr<0?0:st->mr;
-                int iw = st->has_w && !st->w_pct ? st->width
-                       : st->has_w && st->w_pct ? w*st->width/100 : 0;
+                int iw = st->has_w ? resolve_len(st->width, st->w_pct, st->w_off, w) : 0;
                 int ih = st->has_h && !st->h_pct ? st->height : 0;
                 if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
                 if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
@@ -446,62 +702,69 @@ static int layout_block(struct node *n, int x, int y, int w)
                 if (iw <= 0) { iw = w - ml - mr; h_auto = 1; }
                 else if (ih <= 0) h_auto = 1;
                 if (iw < 0) iw = 0;
+                /* max-width really does apply to replaced elements, and
+                 * `img{max-width:100%}` is in essentially every page's reset;
+                 * without it a wide photo used to blow past its column. */
+                { int cw = clamp_w(st, iw, w);
+                  if (cw != iw) { if (iw > 0 && ih > 0 && !h_auto) ih = ih * cw / iw; iw = cw; } }
                 if (ih <= 0) ih = iw;
                 cy += st->mt > 0 ? st->mt : 0;
                 struct item *it = additem(IT_IMAGE, c);
                 if (it) { it->x = x + ml; it->y = cy; it->w = iw; it->h = ih;
                           it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
                           if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");
-                          it->hidden = st->hidden; }
+                          it->hidden = st->hidden; it->opacity = st->opacity; }
                 cy += ih + (st->mb > 0 ? st->mb : 0);
                 continue;
             }
-            int ml = st->ml<0?0:st->ml, mr = st->mr<0?0:st->mr;
+            int ml = st->ml<0?0:st->ml;
             int bx = x + ml;
-            int bw = st->has_w && !st->w_pct ? st->width
-                   : st->has_w && st->w_pct ? w*st->width/100
-                   : w - ml - mr;
-            if (bw < 0) bw = 0;
-            if (st->ml < 0 && st->mr < 0 && st->has_w) bx = x + (w - bw)/2;   /* margin:auto center */
+            int bw = block_width(st, w);
+            if (st->ml < 0 && st->mr < 0) bx = x + (w - bw)/2;   /* margin:auto center */
             cy += st->mt > 0 ? st->mt : 0;
             int top = cy;
-            if (st->list_item) emit_list_marker(c, st, bx + st->pl, top, x);
+            int mark = nitem;                       /* for position:relative below */
+            int zsave = g_z;
+            if (st->has_z && st->position != POS_STATIC) g_z = st->z_index;
+            if (st->list_item) emit_list_marker(c, st, bx + cx_off(st), top, x);
             int bgidx = -1;
             if (st->has_bg || any_border(st)) {
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, top, bw); }
             }
+            int inw = bw - hextra(st); if (inw < 0) inw = 0;
             int inner = tag_eq(c->tag, "table")
-                ? layout_table(c, bx + st->pl, top + st->pt, bw - st->pl - st->pr)
-                : layout_block(c, bx + st->pl, top + st->pt, bw - st->pl - st->pr);
-            int ch = (inner - top) + st->pb;
-            if (st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+                ? layout_table(c, bx + cx_off(st), top + cy_off(st), inw)
+                : layout_block(c, bx + cx_off(st), top + cy_off(st), inw);
+            int ch = (inner - top) + st->pb + st->border_w[2];
+            ch = block_height(st, ch, -1);
             if (ch < st->font_px) ch = st->font_px;          /* min line */
             if (bgidx >= 0) items[bgidx].h = ch;
+            /* position:relative (and sticky, which is relative until scrolled
+             * to) offsets the painted box without changing the space it
+             * reserved -- so shift what it emitted and leave cy alone. */
+            if (st->position == POS_RELATIVE || st->position == POS_STICKY) {
+                int dx = st->has_left ? st->left : (st->has_right ? -st->right : 0);
+                int dy = st->has_top ? st->top : (st->has_bottom ? -st->bottom : 0);
+                shift_items(mark, nitem, dx, dy);
+            }
+            g_z = zsave;
             cy = top + ch + (st->mb > 0 ? st->mb : 0);
         } else {
             /* run of inline siblings: gather until next block */
             struct iflow f = { x, x + w, x, cy, 0, 0, al, nitem };
             while (c && !blockish(c)) {
-                struct cstyle *cs = c->style;
                 if (!skipped(c)) flow_node(&f, c, 0);
                 struct node *nx = c->next;
                 if (!nx || blockish(nx)) break;
                 c = nx;
             }
-            newline(&f);
+            newline2(&f, 1);
             cy = f.y;
         }
     }
     return cy;
 }
-
-/* Lay out a flex container's element children in a single row (a pragmatic
- * subset: row direction, no wrap; items with a CSS width keep it, the rest
- * split the remaining space; cross-axis tops align). Enough to put nav bars and
- * button rows side-by-side instead of stacking them vertically.
- * Bare text / inline siblings participate too: CSS wraps them in anonymous
- * flex items (a <button>Platform<svg/></button> must not lose "Platform"). */
 
 /* Word-wise width of one text node as a single unwrapped line. */
 static int measure_words(const char *s, int len, int px, int mono)
@@ -548,10 +811,16 @@ static int content_width(struct node *n, int px, int mono, int depth)
         return iw > 0 ? iw : 24;
     }
     if (tag_eq(n->tag, "svg")) return svg_attr_w(n, st);
-    int pad = (st ? st->pl + st->pr : 0);
-    if (st && st->has_w && !st->w_pct) return st->width + pad;
+    /* Everything below is a BORDER-BOX max-content width, so borders and
+     * padding count once, here, and box-sizing decides whether an explicit
+     * width already includes them. */
+    int extra = hextra(st);
+    if (st && st->has_w && !st->w_pct) return to_border_w(st, st->width);
     int cpx = st ? st->font_px : px, cmono = st ? st->mono : mono;
-    int row = st && st->display == DISP_FLEX;
+    /* Only a ROW flex container sums its children; a column stacks them, so it
+     * is as wide as its widest child like any block. */
+    int row = st && st->display == DISP_FLEX &&
+              (st->flex_dir == FDIR_ROW || st->flex_dir == FDIR_ROW_REV);
     int acc = 0;
     for (struct node *c = n->first_child; c; c = c->next) {
         int cw = content_width(c, cpx, cmono, depth + 1);
@@ -564,7 +833,63 @@ static int content_width(struct node *n, int px, int mono, int depth)
         }
         if (row) acc += cw; else if (cw > acc) acc = cw;
     }
-    return acc + pad;
+    return acc + extra;
+}
+
+/* Widest unbreakable token in one text run. A token is whitespace-delimited;
+ * one containing a multi-byte UTF-8 sequence counts only as its widest single
+ * CHARACTER, because CJK has a line-break opportunity between any two
+ * ideographs and flow_text's break-anywhere path already takes it. An ASCII
+ * word has no such opportunity and stays indivisible, which is exactly the
+ * distinction real line breakers draw. */
+static int min_word_width(const char *s, int len, int px, int mono)
+{
+    int best = 0, i = 0;
+    while (i < len) {
+        while (i < len && sp(s[i])) i++;
+        int ws = i, wide = 0;
+        while (i < len && !sp(s[i])) { if ((unsigned char)s[i] & 0x80) wide = 1; i++; }
+        if (i <= ws) continue;
+        if (!wide) {
+            int w = text_measure(s + ws, i - ws, px, mono);
+            if (w > best) best = w;
+        } else {
+            for (int p = ws; p < i; ) {
+                int adv = 1;
+                while (p + adv < i && (s[p + adv] & 0xC0) == 0x80) adv++;
+                int w = text_measure(s + p, adv, px, mono);
+                if (w > best) best = w;
+                p += adv;
+            }
+        }
+    }
+    return best;
+}
+
+/* Min-content width of a subtree: the narrowest the box can get without
+ * breaking something the line breaker cannot break. This is CSS's automatic
+ * minimum size -- what `min-width:auto` (the initial value FOR A FLEX ITEM,
+ * unlike everywhere else) resolves to, and the reason a flex row squeezes its
+ * spacing before it squeezes a label into a vertical letter-stack. */
+static int min_content_width(struct node *n, int px, int mono, int depth)
+{
+    if (depth > 32) return 0;
+    struct cstyle *st = n->style;
+    if (n->type == N_TEXT) return min_word_width(n->text, n->textlen, px, mono);
+    if (n->type != N_ELEM) return 0;
+    if (skipped(n)) return 0;
+    /* Replaced content has no internal break opportunity at all. */
+    if (tag_eq(n->tag, "img") || tag_eq(n->tag, "svg"))
+        return content_width(n, px, mono, depth);
+    int cpx = st ? st->font_px : px, cmono = st ? st->mono : mono;
+    int rowdir = st && st->display == DISP_FLEX &&
+                 (st->flex_dir == FDIR_ROW || st->flex_dir == FDIR_ROW_REV);
+    int acc = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        int cw = min_content_width(c, cpx, cmono, depth + 1);
+        if (rowdir) acc += cw; else if (cw > acc) acc = cw;
+    }
+    return acc + hextra(st);
 }
 
 /* Measure one anonymous inline run starting at `first` as a single unwrapped
@@ -588,101 +913,406 @@ static int flex_run(struct node *first, struct node **end, int px, int mono)
     return w;
 }
 
+/* ---- flexbox ----
+ *
+ * The real algorithm, bounded where the display list cannot express the
+ * result. What IS implemented: flex-direction (all four), flex-wrap (including
+ * wrap-reverse), order, flex-basis, flex-grow, flex-shrink, justify-content,
+ * align-items and align-self, row/column gaps, and min/max clamping of the
+ * resolved main size.
+ *
+ * The two structural liberties, both stated where they are taken below:
+ *   - main sizes in a ROW are resolved from a max-content measurement
+ *     (content_width) rather than from a trial layout, and flexible lengths
+ *     are resolved in ONE pass rather than iterating after min/max clamping;
+ *   - a COLUMN's items are stacked at their natural laid-out heights, because
+ *     an auto-height column container has no free space to distribute -- grow
+ *     and justify-content only engage when the container height is definite.
+ *
+ * Cross-axis alignment is done by translating each item's finished slice of
+ * the display list, which is why every item records the [lo,hi) range it
+ * emitted. That is also how position:relative works, and it is much cheaper
+ * than laying an item out twice.
+ *
+ * Bare text / inline siblings participate as anonymous flex items, exactly as
+ * CSS says (a <button>Platform<svg/></button> must not lose "Platform"). */
+
+struct fitem {
+    struct node *n;        /* element item, or the first node of an inline run */
+    struct node *end;      /* anonymous run: one past its last node; else NULL */
+    struct cstyle *st;     /* n->style for an element item, else NULL */
+    int order;
+    int base;              /* hypothetical main size (border box, no margins) */
+    int ms, me;            /* main-axis start/end margins */
+    int cms, cme;          /* cross-axis start/end margins */
+    int used;              /* resolved main size */
+    int minsz;             /* automatic minimum (min-width:auto), main axis */
+    int grow, shrink;      /* css_fixed (1.0 == 1024) */
+    int lo, hi;            /* display-list range once placed */
+    int bgidx;             /* IT_RECT index, or -1 */
+    int cross;             /* measured cross size (border box) */
+};
+
+/* The container's effective align value for one item. */
+static int flex_align_of(const struct cstyle *nst, const struct fitem *fi)
+{
+    int a = fi->st ? fi->st->align_self : AL_AUTO;
+    if (a == AL_AUTO) a = nst ? nst->align_items : AL_STRETCH;
+    /* We have no baseline metrics in the display list; first-baseline
+     * alignment of same-font items is indistinguishable from flex-start. */
+    if (a == AL_BASELINE) a = AL_START;
+    return a;
+}
+
+/* Gather the container's flex items in document order, then stable-sort by
+ * `order`. `cap` is the child count, which is an upper bound on the item count
+ * (an anonymous run always swallows at least one child). */
+static int flex_collect(struct node *n, struct fitem *fi, int cap, int fpx, int fmono)
+{
+    int cnt = 0;
+    struct node *c = n->first_child;
+    while (c && cnt < cap) {
+        if (c->type != N_ELEM || !blockish(c)) {
+            struct node *end;
+            int rw = flex_run(c, &end, fpx, fmono);
+            if (end == c) { c = c->next; continue; }   /* nothing consumable */
+            if (rw > 0) {
+                struct fitem *f = &fi[cnt++];
+                memset(f, 0, sizeof *f);
+                f->n = c; f->end = end; f->base = rw;
+                f->shrink = 1024; f->bgidx = -1;
+            }
+            c = end;
+            continue;
+        }
+        if (skipped(c)) { c = c->next; continue; }
+        struct fitem *f = &fi[cnt++];
+        memset(f, 0, sizeof *f);
+        f->n = c; f->st = c->style; f->bgidx = -1;
+        f->order = f->st ? f->st->order : 0;
+        f->grow = f->st ? f->st->flex_grow : 0;
+        f->shrink = f->st ? f->st->flex_shrink : 1024;
+        c = c->next;
+    }
+    /* Insertion sort: stable, and `order` is almost always all-zero so this is
+     * a single comparison pass in practice. */
+    for (int i = 1; i < cnt; i++) {
+        struct fitem key = fi[i];
+        int j = i - 1;
+        while (j >= 0 && fi[j].order > key.order) { fi[j + 1] = fi[j]; j--; }
+        fi[j + 1] = key;
+    }
+    return cnt;
+}
+
+/* Lay one flex item out at (px,py) with border-box main/cross sizes, recording
+ * the display-list range and background index. Returns its border-box height. */
+static int flex_place(struct fitem *f, int px, int py, int iw, int forced_h, int fpx, int fmono)
+{
+    f->lo = nitem;
+    if (!f->st) {                                    /* anonymous inline run */
+        struct iflow fl = { px, px + (iw > 0 ? iw : 1), px, py, 0, 0, ALIGN_LEFT, nitem };
+        for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
+        newline2(&fl, 1);
+        f->hi = nitem;
+        (void)fpx; (void)fmono;
+        return fl.y - py;
+    }
+    struct cstyle *st = f->st;
+    int zsave = g_z;
+    /* z-index applies to a flex ITEM even when it is not positioned -- that is
+     * the one place CSS lets an unpositioned box make a stacking context. */
+    if (st->has_z) g_z = st->z_index;
+    if (st->has_bg || any_border(st)) {
+        struct item *bg = additem(IT_RECT, f->n);
+        if (bg) { f->bgidx = (int)(bg - items); fill_rect_item(bg, st, px, py, iw); }
+    }
+    int inw = iw - hextra(st); if (inw < 0) inw = 0;
+    int inner = layout_block(f->n, px + cx_off(st), py + cy_off(st), inw);
+    int ch = (inner - py) + st->pb + st->border_w[2];
+    ch = block_height(st, ch, -1);
+    if (forced_h > ch) ch = forced_h;
+    if (ch < st->font_px) ch = st->font_px;
+    if (f->bgidx >= 0) items[f->bgidx].h = ch;
+    if (st->position == POS_RELATIVE || st->position == POS_STICKY)
+        shift_items(f->lo, nitem,
+                    st->has_left ? st->left : (st->has_right ? -st->right : 0),
+                    st->has_top ? st->top : (st->has_bottom ? -st->bottom : 0));
+    g_z = zsave;
+    f->hi = nitem;
+    return ch;
+}
+
+/* Distribute `freesp` main-axis pixels over one line, then clamp. Positive free
+ * space goes to flex-grow, negative to flex-shrink scaled by the base size --
+ * which is why an over-full row of default (shrink:1) items compresses in
+ * proportion to how big each one wanted to be. */
+static void flex_resolve(struct fitem *fi, int lo, int hi, int freesp, int mainw)
+{
+    long gsum = 0, ssum = 0;
+    for (int i = lo; i < hi; i++) {
+        gsum += fi[i].grow;
+        ssum += (long)fi[i].shrink * (fi[i].base > 0 ? fi[i].base : 0);
+    }
+    long total = (freesp > 0) ? gsum : ssum;
+    long acc = 0, given = 0;
+    for (int i = lo; i < hi; i++) {
+        int u = fi[i].base;
+        if (total > 0 && freesp) {
+            acc += (freesp > 0) ? (long)fi[i].grow
+                                : (long)fi[i].shrink * (fi[i].base > 0 ? fi[i].base : 0);
+            /* Cumulative rather than per-item, so the deltas sum to EXACTLY
+             * freesp instead of each losing up to a pixel to truncation. A row
+             * of eight grow items used to land eight pixels short of its
+             * container's right edge. */
+            long want = (long)freesp * acc / total;
+            u += (int)(want - given);
+            given = want;
+        }
+        if (u < 0) u = 0;
+        if (u < fi[i].minsz) u = fi[i].minsz;
+        /* One clamping pass, not the spec's freeze-and-redistribute loop: an
+         * item that hits a bound here keeps space the others would otherwise
+         * have shared. It shows only when several items on one line clamp at
+         * once, and the line then over- or under-flows by the difference --
+         * which is also what a real browser does when the minimums do not fit. */
+        fi[i].used = clamp_w(fi[i].st, u, mainw);
+    }
+}
+
+/* Leading offset and per-gap extra for justify-content over `slack` px. */
+static void flex_justify(int mode, int slack, int count, int *lead, int *between)
+{
+    *lead = 0; *between = 0;
+    if (slack <= 0 || count <= 0) return;
+    switch (mode) {
+    case JC_END:     *lead = slack; break;
+    case JC_CENTER:  *lead = slack / 2; break;
+    case JC_BETWEEN: if (count > 1) *between = slack / (count - 1); else *lead = 0; break;
+    case JC_AROUND:  *between = slack / count; *lead = *between / 2; break;
+    case JC_EVENLY:  *between = slack / (count + 1); *lead = *between; break;
+    default:         break;                            /* flex-start */
+    }
+}
+
 static int layout_flex(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
     int fpx = nst ? nst->font_px : 16, fmono = nst ? nst->mono : 0;
     if (w < 0) w = 0;
-    /* Measure: explicit px widths stay fixed; auto items size to their content
-     * (flex:auto basis). Percentage widths no longer count as fixed up front:
-     * they claim from whatever the fixed + content-sized items leave behind,
-     * so a width:100% item can't starve its auto siblings (real flexbox would
-     * shrink it via flex-shrink). */
-    int fixed = 0, autosum = 0;
-    long growsum = 0;
-    struct node *c = n->first_child;
-    while (c) {
-        if (c->type != N_ELEM || !blockish(c)) {
-            struct node *end;
-            autosum += flex_run(c, &end, fpx, fmono);
-            c = end;                     /* resume at the block that ended the run (or NULL) */
-            continue;
-        }
-        struct cstyle *st = c->style;
-        if (skipped(c)) { c = c->next; continue; }
-        int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
-        fixed += ml + mr;
-        if (st && st->has_w && !st->w_pct) fixed += st->width;
-        else if (st && st->has_w && st->w_pct) { /* claims leftover below */ }
-        else autosum += content_width(c, fpx, fmono, 0);
-        if (st && st->flex_grow > 0) growsum += st->flex_grow;
-        c = c->next;
-    }
-    int avail = w - fixed; if (avail < 0) avail = 0;
-    /* Over-constrained row: shrink the content-sized items proportionally. */
-    int scale = (autosum > avail && autosum > 0) ? avail * 100 / autosum : 100;
-    /* Space the percentage items may claim (in tree order), then the space
-     * flex-grow items split proportionally to their grow factor. */
-    int pctpool = avail - autosum * scale / 100;
-    int growspace = pctpool;
-    for (struct node *p = n->first_child; p; p = p->next) {
-        if (p->type != N_ELEM || !blockish(p) || skipped(p)) continue;
-        struct cstyle *st = p->style;
-        if (st && st->has_w && st->w_pct) {
-            int want = w * st->width / 100;
-            growspace -= want < growspace ? want : growspace;
-        }
-    }
-    if (growspace < 0) growspace = 0;
-    int cx = x, maxb = y;
-    c = n->first_child;
-    while (c) {
-        if (c->type != N_ELEM || !blockish(c)) {
-            struct node *end;
-            int rw = flex_run(c, &end, fpx, fmono) * scale / 100;
-            if (rw > 0) {
-                struct iflow f = { cx, cx + rw, cx, y, 0, 0, ALIGN_LEFT, nitem };
-                for (struct node *r = c; r != end; r = r->next) flow_node(&f, r, 0);
-                newline(&f);
-                int rb = f.y + f.lineh;
-                if (rb > maxb) maxb = rb;
+    int dir = nst ? nst->flex_dir : FDIR_ROW;
+    int row = (dir == FDIR_ROW || dir == FDIR_ROW_REV);
+    int rev = (dir == FDIR_ROW_REV || dir == FDIR_COL_REV);
+    int wrap = nst ? nst->flex_wrap : FWRAP_NOWRAP;
+    int gap_main = nst ? (row ? nst->grid_gap_x : nst->grid_gap_y) : 0;
+    int gap_cross = nst ? (row ? nst->grid_gap_y : nst->grid_gap_x) : 0;
+    if (gap_main < 0) gap_main = 0;
+    if (gap_cross < 0) gap_cross = 0;
+
+    /* One heap allocation for the items and the per-line bookkeeping, sized to
+     * the actual child count. Heap and not stack because flex nests -- a column
+     * of rows of columns is the standard card grid -- and sized rather than
+     * capped because a wrapping tag cloud really can have hundreds of items,
+     * and silently dropping the tail is a much worse failure than the malloc. */
+    int nkids = 0;
+    for (struct node *k = n->first_child; k; k = k->next) nkids++;
+    if (!nkids) return y;
+    struct fitem *fi = kmalloc(sizeof(struct fitem) * (unsigned long)nkids +
+                               sizeof(int) * (unsigned long)nkids * 4);
+    if (!fi) return y;
+    int *lstart = (int *)(fi + nkids);
+    int *lend = lstart + nkids, *ytop = lend + nkids, *yhgt = ytop + nkids;
+    int cnt = flex_collect(n, fi, nkids, fpx, fmono);
+    if (!cnt) { kfree(fi); return y; }
+
+    if (!row) {
+        /* ---- column ----
+         * An auto-height column container has no free main space, so items
+         * simply stack at the height their own layout produces -- which is
+         * what a block stack does, and the right answer for the card/sidebar
+         * shape that `flex-direction:column` is nearly always used for.
+         * flex-wrap is treated as nowrap here: a multi-column wrap needs a
+         * definite height to break against, which we do not have. */
+        int container_h = spec_h(nst, -1);
+        int cy = y, first = 1;
+        for (int k = 0; k < cnt; k++) {
+            struct fitem *f = &fi[rev ? cnt - 1 - k : k];
+            struct cstyle *st = f->st;
+            f->cms = st && st->ml > 0 ? st->ml : 0;
+            f->cme = st && st->mr > 0 ? st->mr : 0;
+            f->ms  = st && st->mt > 0 ? st->mt : 0;
+            f->me  = st && st->mb > 0 ? st->mb : 0;
+            int align = flex_align_of(nst, f);
+            int avail = w - f->cms - f->cme; if (avail < 0) avail = 0;
+            int iw;
+            if (st && st->has_w) iw = clamp_w(st, block_width(st, w), w);
+            else if (align == AL_STRETCH) iw = avail;
+            else {                                   /* shrink to fit the content */
+                iw = content_width(f->n, fpx, fmono, 0);
+                if (iw > avail) iw = avail;
+                iw = clamp_w(st, iw, w);
             }
-            cx += rw;
-            c = end;
+            if (iw < 0) iw = 0;
+            int ax = x + f->cms;
+            if (align == AL_END)         ax = x + w - f->cme - iw;
+            else if (align == AL_CENTER) ax = x + (w - iw) / 2;
+            if (!first) cy += gap_main;
+            first = 0;
+            cy += f->ms;
+            int forced = spec_h(st, container_h);
+            int ch = flex_place(f, ax, cy, iw, forced > 0 ? forced : 0, fpx, fmono);
+            f->used = ch;
+            cy += ch + f->me;
+        }
+        /* Only a definite container height leaves anything to distribute. */
+        if (container_h > 0 && container_h > cy - y) {
+            int slack = container_h - (cy - y);
+            long gsum = 0;
+            for (int i = 0; i < cnt; i++) gsum += fi[i].grow;
+            if (gsum > 0) {
+                /* Growing an already-laid-out item stretches its box, not its
+                 * content: the background/border grows and the following items
+                 * move down, but the text stays at the top of the box. */
+                int run = 0;
+                for (int k = 0; k < cnt; k++) {
+                    struct fitem *f = &fi[rev ? cnt - 1 - k : k];
+                    shift_items(f->lo, f->hi, 0, run);
+                    int d = (int)((long)slack * f->grow / gsum);
+                    if (f->bgidx >= 0) items[f->bgidx].h += d;
+                    run += d;
+                }
+                cy += run;
+            } else {
+                int lead, between;
+                flex_justify(nst ? nst->justify : JC_START, slack, cnt, &lead, &between);
+                int run = lead;
+                for (int k = 0; k < cnt; k++) {
+                    struct fitem *f = &fi[rev ? cnt - 1 - k : k];
+                    shift_items(f->lo, f->hi, 0, run);
+                    run += between;
+                }
+                cy = y + container_h;
+            }
+        }
+        kfree(fi);
+        return cy;
+    }
+
+    /* ---- row: measure hypothetical main sizes ---- */
+    for (int i = 0; i < cnt; i++) {
+        struct fitem *f = &fi[i];
+        struct cstyle *st = f->st;
+        if (!st) {
+            /* Anonymous run: base is its unwrapped width, and its minimum is
+             * the widest token in it, so a bare label between two sized items
+             * is not shredded either. */
+            int mn = 0;
+            for (struct node *r = f->n; r && r != f->end; r = r->next) {
+                int v = min_content_width(r, fpx, fmono, 0);
+                if (v > mn) mn = v;
+            }
+            f->minsz = mn > w ? w : mn;
             continue;
         }
-        struct cstyle *st = c->style;
-        if (skipped(c)) { c = c->next; continue; }
-        int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
-        int iw;
-        if (st && st->has_w && !st->w_pct) iw = st->width;
-        else if (st && st->has_w && st->w_pct) {
-            int want = w*st->width/100;
-            iw = want < pctpool ? want : pctpool;
-            pctpool -= iw;
-        } else iw = content_width(c, fpx, fmono, 0) * scale / 100;
-        if (iw < 0) iw = 0;
-        if (growspace > 0 && growsum > 0 && st && st->flex_grow > 0)
-            iw += (int)((long)growspace * st->flex_grow / growsum);
-        cx += ml;
-        int top = y + (st && st->mt > 0 ? st->mt : 0);
-        int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
-        int bgidx = -1;
-        if (st && (st->has_bg || any_border(st))) {
-            struct item *bg = additem(IT_RECT, c);
-            if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cx, top, iw); }
+        f->ms  = st->ml > 0 ? st->ml : 0;
+        f->me  = st->mr > 0 ? st->mr : 0;
+        f->cms = st->mt > 0 ? st->mt : 0;
+        f->cme = st->mb > 0 ? st->mb : 0;
+        int spec = st->has_w ? to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, w)) : -1;
+        int b;
+        if (st->has_fb)       b = to_border_w(st, resolve_len(st->flex_basis, st->fb_pct, st->fb_off, w));
+        else if (spec >= 0)   b = spec;
+        else                  b = content_width(f->n, fpx, fmono, 0);
+        f->base = clamp_w(st, b, w);
+        /* min-width:auto. An explicit min-width replaces it outright (clamp_w
+         * applies that), and overflow != visible switches it off -- which is
+         * why `min-width:0` and `overflow:hidden` are the two standard escapes
+         * from a flex item that refuses to shrink. */
+        if (!st->has_min_w && st->overflow_x == OVF_VISIBLE) {
+            int mn = min_content_width(f->n, fpx, fmono, 0);
+            if (spec >= 0 && mn > spec) mn = spec;    /* capped by the size suggestion */
+            if (mn > w) mn = w;                       /* never wider than the container */
+            f->minsz = mn;
         }
-        int inw = iw - pl - pr; if (inw < 0) inw = 0;
-        int inner = layout_block(c, cx + pl, top + pt, inw);
-        int ch = (inner - top) + pb;
-        if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
-        if (st && ch < st->font_px) ch = st->font_px;
-        if (bgidx >= 0) items[bgidx].h = ch;
-        if (top + ch > maxb) maxb = top + ch;
-        cx += iw + mr;
-        c = c->next;
     }
-    return maxb;
+
+    /* ---- break into lines ---- */
+    int nline = 0;
+    if (wrap == FWRAP_NOWRAP) {
+        lstart[0] = 0; lend[0] = cnt; nline = 1;
+    } else {
+        int i = 0;
+        while (i < cnt && nline < nkids) {      /* every line takes >=1 item */
+            int used = 0, j = i;
+            while (j < cnt) {
+                int outer = fi[j].ms + fi[j].base + fi[j].me + (j > i ? gap_main : 0);
+                if (j > i && used + outer > w) break;
+                used += outer; j++;
+            }
+            if (j == i) j = i + 1;                    /* always make progress */
+            lstart[nline] = i; lend[nline] = j; nline++;
+            i = j;
+        }
+    }
+
+    /* ---- resolve, place, align ---- */
+    int cy = y;
+    for (int L = 0; L < nline; L++) {
+        int lo = lstart[L], hi = lend[L], ncell = hi - lo;
+        int sum = 0;
+        for (int i = lo; i < hi; i++) sum += fi[i].ms + fi[i].base + fi[i].me;
+        sum += gap_main * (ncell - 1);
+        flex_resolve(fi, lo, hi, w - sum, w);
+
+        int taken = gap_main * (ncell - 1);
+        for (int i = lo; i < hi; i++) taken += fi[i].ms + fi[i].used + fi[i].me;
+        int lead, between;
+        flex_justify(nst ? nst->justify : JC_START, w - taken, ncell, &lead, &between);
+
+        int cx = x + lead, linetop = cy, linecross = 0;
+        for (int k = 0; k < ncell; k++) {
+            struct fitem *f = &fi[rev ? hi - 1 - k : lo + k];
+            cx += f->ms;
+            int top = cy + f->cms;
+            int ch = flex_place(f, cx, top, f->used, 0, fpx, fmono);
+            f->cross = ch;
+            if (f->cms + ch + f->cme > linecross) linecross = f->cms + ch + f->cme;
+            cx += f->used + f->me + gap_main + between;
+        }
+        /* Cross-axis alignment, applied by translating each item's finished
+         * range now that the line's cross size is known. */
+        for (int i = lo; i < hi; i++) {
+            struct fitem *f = &fi[i];
+            int align = flex_align_of(nst, f);
+            int space = linecross - (f->cms + f->cross + f->cme);
+            if (align == AL_STRETCH) {
+                /* Stretch grows the box, not the content -- same liberty as
+                 * the column grow path above. An item with a definite height
+                 * is not stretched. */
+                if (f->bgidx >= 0 && space > 0 && !(f->st && f->st->has_h))
+                    items[f->bgidx].h = f->cross + space;
+            } else if (space > 0) {
+                int off = (align == AL_END) ? space : (align == AL_CENTER) ? space / 2 : 0;
+                shift_items(f->lo, f->hi, 0, off);
+            }
+        }
+        ytop[L] = linetop; yhgt[L] = linecross;
+        cy = linetop + linecross + (L + 1 < nline ? gap_cross : 0);
+    }
+
+    /* wrap-reverse stacks the lines from the far cross edge back. Mirroring the
+     * finished lines is exact and costs one pass. */
+    if (wrap == FWRAP_WRAP_REV && nline > 1) {
+        int total = cy - y;
+        for (int L = 0; L < nline; L++) {
+            int newtop = y + total - (ytop[L] - y) - yhgt[L];
+            for (int i = lstart[L]; i < lend[L]; i++)
+                shift_items(fi[i].lo, fi[i].hi, 0, newtop - ytop[L]);
+        }
+    }
+
+    kfree(fi);
+    return cy;
 }
 
 /* ---- minimal grid layout ----
@@ -721,21 +1351,20 @@ static int layout_grid(struct node *n, int x, int y, int w)
         if (col == 0 && items_in_row) { cy = rowbot + gy; rowbot = cy; }
         struct cstyle *st = c->style;
         int ml = st && st->ml > 0 ? st->ml : 0, mr = st && st->mr > 0 ? st->mr : 0;
-        int pl = st ? st->pl : 0, pr = st ? st->pr : 0;
-        int pt = st ? st->pt : 0, pb = st ? st->pb : 0;
         int cellx = x;
         for (int i = 0; i < col; i++) cellx += colw[i] + gx;
         int cw = colw[col] - ml - mr; if (cw < 0) cw = 0;
+        cw = clamp_w(st, cw, colw[col]);
         int top = cy + (st && st->mt > 0 ? st->mt : 0);
         int bgidx = -1;
         if (st && (st->has_bg || any_border(st))) {
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
         }
-        int inw = cw - pl - pr; if (inw < 0) inw = 0;
-        int inner = layout_block(c, cellx + ml + pl, top + pt, inw);
-        int ch = (inner - top) + pb;
-        if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+        int inw = cw - hextra(st); if (inw < 0) inw = 0;
+        int inner = layout_block(c, cellx + ml + cx_off(st), top + cy_off(st), inw);
+        int ch = (inner - top) + (st ? st->pb + st->border_w[2] : 0);
+        ch = block_height(st, ch, -1);
         if (st && ch < st->font_px) ch = st->font_px;
         if (bgidx >= 0) items[bgidx].h = ch;
         if (top + ch > rowbot) rowbot = top + ch;
@@ -764,7 +1393,6 @@ static int tbl_widest_word(struct node *n, int px, int mono)
 {
     int best = 0;
     for (struct node *c = n->first_child; c; c = c->next) {
-        struct cstyle *cs = c->style;
         if (skipped(c)) continue;
         if (c->type == N_TEXT) {
             const char *s = c->text; int len = c->textlen, i = 0;
@@ -789,7 +1417,6 @@ static int tbl_cell_count(struct node *r)
     int n = 0;
     for (struct node *c = r->first_child; c; c = c->next) {
         if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
-        struct cstyle *cs = c->style;
         if (!skipped(c)) n++;
     }
     return n;
@@ -800,7 +1427,6 @@ static int layout_table(struct node *t, int x, int y, int w)
     struct node *rows[TBL_MAXROWS]; int nr = 0;
     for (struct node *c = t->first_child; c && nr < TBL_MAXROWS; c = c->next) {
         if (c->type != N_ELEM) continue;
-        struct cstyle *cs = c->style;
         if (skipped(c)) continue;
         if (tbl_row_visible(c)) { rows[nr++] = c; continue; }
         if (tag_eq(c->tag, "tbody") || tag_eq(c->tag, "thead") || tag_eq(c->tag, "tfoot"))
@@ -843,18 +1469,17 @@ static int layout_table(struct node *t, int x, int y, int w)
             struct cstyle *st = c->style;
             if (skipped(c)) continue;
             int ml = st && st->ml > 0 ? st->ml : 0;
-            int pl = st ? st->pl : 0, pr = st ? st->pr : 0;
-            int pt = st ? st->pt : 0, pb = st ? st->pb : 0;
             int cx = rx + ml, top = cy + (st && st->mt > 0 ? st->mt : 0);
             int bgidx = -1;
             if (st && (st->has_bg || any_border(st))) {
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }
-            int inner = layout_block(c, cx + pl, top + pt, cw[ci] - ml - pl - pr);
-            int ch = (inner - top) + pb;
+            int inw = cw[ci] - ml - hextra(st); if (inw < 0) inw = 0;
+            int inner = layout_block(c, cx + cx_off(st), top + cy_off(st), inw);
+            int ch = (inner - top) + (st ? st->pb + st->border_w[2] : 0);
             if (st && ch < st->font_px) ch = st->font_px;
-            if (st && st->has_h && !st->h_pct && st->height > ch) ch = st->height;
+            ch = block_height(st, ch, -1);
             if (bgidx >= 0) items[bgidx].h = ch;
             if (cy + ch > maxb) maxb = cy + ch;
             rx += cw[ci];
@@ -865,11 +1490,56 @@ static int layout_table(struct node *t, int x, int y, int w)
     return cy;
 }
 
+/* Reorder the finished display list by stacking level.
+ *
+ * The list is painted forward and hit-tested backward, so its ORDER is the
+ * paint order -- there is no separate stacking-context tree. A stable sort by
+ * the z-index inherited from the nearest positioned ancestor (additem stamps
+ * it) buys the visible half of z-index for one pass: a z-index:10 dropdown
+ * paints over the content that follows it in the document, and the hit test
+ * agrees. What it does NOT buy is real stacking contexts -- a positioned
+ * descendant of a z-index:1 parent is not trapped inside its parent's level,
+ * because a flat list cannot express containment.
+ *
+ * Skipped entirely when nothing set a z-index, which is the overwhelmingly
+ * common case and keeps this off the hot path. */
+static void zsort(void)
+{
+    int need = 0;
+    for (int i = 0; i < nitem; i++) if (items[i].z) { need = 1; break; }
+    if (!need || nitem < 2) return;
+    int *idx = kmalloc(sizeof(int) * (unsigned long)nitem * 2);
+    if (!idx) return;
+    int *tmp = idx + nitem;
+    for (int i = 0; i < nitem; i++) idx[i] = i;
+    /* Bottom-up merge sort. `<` (not `<=`) on the right-hand run is what makes
+     * it stable, so equal levels keep document order. */
+    for (int width = 1; width < nitem; width *= 2) {
+        for (int i = 0; i < nitem; i += 2 * width) {
+            int m = i + width > nitem ? nitem : i + width;
+            int r = i + 2 * width > nitem ? nitem : i + 2 * width;
+            int a = i, b = m, o = i;
+            while (a < m && b < r)
+                tmp[o++] = (items[idx[b]].z < items[idx[a]].z) ? idx[b++] : idx[a++];
+            while (a < m) tmp[o++] = idx[a++];
+            while (b < r) tmp[o++] = idx[b++];
+        }
+        for (int i = 0; i < nitem; i++) idx[i] = tmp[i];
+    }
+    struct item *dst = kmalloc(sizeof(struct item) * (unsigned long)nitem);
+    if (dst) {
+        for (int i = 0; i < nitem; i++) dst[i] = items[idx[i]];
+        for (int i = 0; i < nitem; i++) items[i] = dst[i];
+        kfree(dst);
+    }
+    kfree(idx);
+}
+
 void layout_page(struct node *root, int canvas_w)
 {
     layout_free();
     items = kmalloc(sizeof(struct item) * MAXITEM);
-    nitem = 0; canvas = canvas_w;
+    nitem = 0; canvas = canvas_w; g_z = 0;
     if (!items) { doc_h = 0; return; }
     /* <body> and <html> straight from the document. The tree builder always
      * produces both for a parsed page; the fallbacks cover a tree assembled
@@ -887,6 +1557,7 @@ void layout_page(struct node *root, int canvas_w)
     else if (bst && bst->has_bg) { page_has_bg = 1; page_bg = bst->background; }
 
     doc_h = layout_block(start, mx, bst&&bst->mt>0?bst->mt:8, canvas_w - 2*mx);
+    zsort();
 }
 
 /* Page (canvas) background, propagated from <html>/<body>. 1 if set. */

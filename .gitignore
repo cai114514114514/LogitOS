@@ -8,6 +8,7 @@ build/
 
 # Python bytecode cache
 tools/__pycache__/
+tests/qmp/__pycache__/
 
 # IDE compilation database (machine-specific paths; regenerate via tools/gen_compile_commands.py)
 compile_commands.json
