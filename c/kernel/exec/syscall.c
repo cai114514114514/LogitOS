@@ -23,6 +23,7 @@
 #include "ktime.h"
 #include "wait.h"        /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
+#include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
