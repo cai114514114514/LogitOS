@@ -1,0 +1,63 @@
+# Corpus for the HarfBuzz shaping differential (tests/unit/shape_hb_gen.py).
+#
+# Three tab-separated fields per case:
+#
+#   name    TAB   text (UTF-8)   TAB   runs
+#
+# `runs` is the segmentation the text layer must produce, listed in VISUAL
+# (left-to-right) order, semicolon separated:
+#
+#   <OpenType script tag>:<L|R>:<first code point index>:<code point count>
+#
+# The indices are LOGICAL, into the text field; the ORDER is visual. That is
+# the whole of what bidi + script segmentation has to get right, and it is
+# stated here by hand so the test is checking our pipeline against a written
+# expectation rather than against itself.
+#
+# HarfBuzz supplies the glyphs: the generator shapes each run separately with
+# the stated script and direction and concatenates the results in the stated
+# order. Our shaper runs the full pipeline on the whole text and must produce
+# the same glyph ids at the same positions.
+#
+# Nothing in the corpus may contain a tab.
+
+# --- Latin -----------------------------------------------------------------
+# Kerning: every one of these pairs is in DejaVu's GPOS 'kern'. The naive sum
+# of hmtx advances is several units wider than the shaped width, which is the
+# case the measure/draw invariant is most likely to break on.
+latin-kern	AVATAR To Wave Yo.	latn:L:0:18
+latin-kern2	Two Warthogs, Yes: P.T.A.	latn:L:0:25
+# Ligatures: 'fi' and 'fl' are GSUB 'liga' in DejaVu, so the glyph count is
+# smaller than the code point count and no per-character walk can find them.
+latin-liga	office fluffier waffle	latn:L:0:22
+latin-liga2	final flight, fifty affluent flags	latn:L:0:34
+latin-plain	The quick brown fox jumps over the lazy dog	latn:L:0:43
+latin-digits	Version 2.10 (build 4275) AV	latn:L:0:28
+
+# --- Arabic ----------------------------------------------------------------
+# The acceptance case. Every letter below takes a different glyph depending on
+# what is beside it; without GSUB init/medi/fina these come out as
+# disconnected isolated forms, which is not readable Arabic.
+arabic-word	العربية	arab:R:0:7
+arabic-hello	مرحبا بالعالم	arab:R:0:13
+arabic-lang	اللغة العربية جميلة	arab:R:0:19
+# Vowelled: the harakat are Joining_Type T, so they must be stepped over by the
+# joining state machine (the letters on either side still join through them)
+# and then placed by GPOS 'mark' with a zero advance.
+arabic-harakat	كَتَبَ	arab:R:0:6
+arabic-alef	السلام عليكم	arab:R:0:12
+# A word whose first letter is right-joining (dal), so the letter after it
+# takes an initial rather than a medial form.
+arabic-dal	درس ودرس	arab:R:0:8
+
+# --- Hebrew ----------------------------------------------------------------
+# No joining, but right to left and with GPOS kerning of its own.
+hebrew-word	שלום	hebr:R:0:4
+hebrew-sentence	שלום עולם כתב	hebr:R:0:13
+
+# --- Mixed direction -------------------------------------------------------
+# Where naive implementations fail: the runs must come out in visual order and
+# each must be shaped with its own script and direction.
+mixed-latin-hebrew	Hello שלום world	latn:L:0:6;hebr:R:6:4;latn:L:10:6
+mixed-latin-arabic	Read العربية now	latn:L:0:5;arab:R:5:7;latn:L:12:4
+mixed-arabic-latin	العربية Wafer العربية	arab:R:13:8;latn:L:8:5;arab:R:0:8
