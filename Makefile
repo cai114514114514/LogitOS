@@ -113,7 +113,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
 
 all: $(ISO)
 
@@ -461,7 +461,21 @@ QEMU_SMP  ?= -smp 4 -accel tcg,thread=multi
 # hardware-RNG flags so HTTPS works. Overridable: `make run QEMU_CPU="-cpu qemu64"`.
 QEMU_CPU  ?= -cpu max
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
-QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1280,yres=800   # modern GPU; kernel drives the scanout. xres/yres pin the EDID preferred mode: the driver reads the resolution ONCE at boot, so a small/not-yet-realized QEMU window would otherwise lock the desktop to 640x480 with most windows off-screen.
+# Modern GPU; the kernel drives the scanout. xres/yres set the EDID preferred
+# mode, which the driver reads once at boot. This used to be a CAGE: without a
+# scale factor the desktop's geometry was measured in raw device pixels, so
+# 1280x800 was simultaneously the resolution AND the layout, and any other number
+# either shrank every control or pushed windows off-screen. Now it is only a
+# DEFAULT. The kernel treats app geometry as points and picks a backing scale
+# from the mode (fb.c pick_scale), holding the logical desktop at >= 1280x800 and
+# spending the surplus pixels on density -- so 1920x1200 is the same desk space
+# at 1.5x, drawn with 2.25x the pixels, and text/icons are re-rasterized rather
+# than magnified. Override freely; the UI follows:
+#   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=2560,yres=1600"   # 2x
+#   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=1280,yres=800"    # 1x
+# (A not-yet-realized QEMU window still reports 640x480; virtio_gpu.c refuses
+# that and programs the default rather than locking the desktop to it.)
+QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1920,yres=1200
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
@@ -903,6 +917,25 @@ test-kheap:
 	@$(CC) -O1 -g -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/kheap.c \
 	    -Itests/unit/kheapstub -Ic/kernel/mm
 	@$(BUILD)/kheap_test
+
+# mini-libc allocator host test: asserts the SCALING of c/apps/libc/src/malloc.c,
+# not a duration -- doubling the number of live blocks must roughly double the
+# time, which the pre-2026-08 first-fit-from-the-arena-base allocator failed by a
+# factor of four per doubling. malloc.c's entry points are renamed on the command
+# line (a host process cannot have two mallocs) and the arena is enlarged to
+# 64 MiB so the sweep can hold 240k blocks live. See the file header for the
+# before/after curve and for how to run the negative control.
+MALLOC_TEST_ARENA := 67108864u
+test-malloc:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -DARENA_SIZE=$(MALLOC_TEST_ARENA) -Dmalloc=lmalloc -Dfree=lfree \
+	    -Drealloc=lrealloc -Dcalloc=lcalloc -Dmalloc_usable_size=lmalloc_usable_size \
+	    -c c/apps/libc/src/malloc.c -o $(BUILD)/malloc_under_test.o
+	@$(CC) -O2 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -DARENA_SIZE=$(MALLOC_TEST_ARENA) -o $(BUILD)/malloc_test \
+	    tests/unit/malloc_test.c $(BUILD)/malloc_under_test.o
+	@$(BUILD)/malloc_test
 
 # --- test-browser: host unit tests for the ring-3 browser render pipeline ---
 # The tests self-stub kmalloc/kfree/img_* so they link the real pipeline
