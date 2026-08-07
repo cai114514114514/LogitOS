@@ -20,6 +20,7 @@ window is a handful of block writes, milliseconds wide).
 import os
 import struct
 import sys
+import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
 import mkfs  # layout constants (BS, LOG_MAGIC is local here, structs identical)
@@ -29,7 +30,18 @@ INODE_SIZE = mkfs.INODE_SIZE
 NDIRECT = mkfs.NDIRECT
 PPB = mkfs.PPB
 DIRENT = mkfs.DIRENT
-LOGMAGIC = 0x4C4F4734  # "LOG4" -- c/fs/logitfs.c
+# The commit record (c/fs/logitfs_fmt.h). It carries two CRC-32s, and crafting
+# one without them is now indistinguishable from a torn record -- which is the
+# point of them, so this tool has to seal a record exactly the way the
+# filesystem does. zlib.crc32 is the same polynomial, init and final xor as
+# c/drivers/block/crc32.c.
+LOGMAGIC = mkfs.LOG_MAGIC              # "LOG5"
+LOGH_MAGIC = mkfs.LOGH_MAGIC
+LOGH_GEN = mkfs.LOGH_GEN
+LOGH_COUNT = mkfs.LOGH_COUNT
+LOGH_BCRC = mkfs.LOGH_BCRC
+LOGH_TARGET = mkfs.LOGH_TARGET
+LOGH_HCRC = mkfs.LOGH_HCRC
 GEN = 77
 
 SB = "<13I"
@@ -110,9 +122,15 @@ def craft(img_in, img_out, path, sentinel):
         sys.exit("mkreplay: sentinel longer than the file (%d bytes)" % size)
     target = blks[0]
     body = body_block(sentinel)
-    # Seal: header with one valid target; body in the first log data slot.
+    # Seal: a one-block commit record. bcrc covers the body blocks in slot
+    # order; hcrc covers the header block up to (not including) itself.
     hdr = bytearray(BS)
-    struct.pack_into("<4I", hdr, 0, LOGMAGIC, GEN, 1, target)
+    struct.pack_into("<I", hdr, LOGH_MAGIC * 4, LOGMAGIC)
+    struct.pack_into("<I", hdr, LOGH_GEN * 4, GEN)
+    struct.pack_into("<I", hdr, LOGH_COUNT * 4, 1)
+    struct.pack_into("<I", hdr, LOGH_BCRC * 4, zlib.crc32(body) & 0xFFFFFFFF)
+    struct.pack_into("<I", hdr, LOGH_TARGET * 4, target)
+    struct.pack_into("<I", hdr, LOGH_HCRC * 4, zlib.crc32(bytes(hdr[:BS - 4])) & 0xFFFFFFFF)
     img[geo["log_start"] * BS:(geo["log_start"] + 1) * BS] = hdr
     img[(geo["log_start"] + 1) * BS:(geo["log_start"] + 2) * BS] = body
     open(img_out, "wb").write(bytes(img))

@@ -15,7 +15,8 @@ Layout (4 KiB blocks = 8 x 512B sectors):
   block data_start..           data blocks (files + dirs + indirect blocks)
 
 Inode (128B): u16 type(0=free,1=file,2=dir); u16 pad; u32 size;
-              u32 direct[12]; u32 indirect; u32 double_indirect; (rest reserved)
+              u32 direct[12]; u32 indirect; u32 double_indirect;
+              i64 atime; i64 mtime; i64 ctime; (rest reserved)
 Directory data = array of dirents { u32 ino; char name[60] } (64B each).
 A directory is just an inode of type=dir whose data holds its dirents.
 
@@ -24,10 +25,23 @@ the superblock grew two fields (log_start, log_blocks). Every metadata write at
 runtime goes through the log first (c/fs/logitfs.c), so a crash mid-operation
 replays or discards a whole transaction instead of leaving the bitmap and the
 inode table disagreeing.
+
+Timestamps (atime/mtime/ctime, i64 seconds since the Unix epoch) went into the
+inode bytes this tool has always zero-filled, so the superblock VERSION is still
+4 on purpose: an image written here is read correctly by code that predates
+timestamps, and an image written before them reads back as all-zero, which is
+"unknown", not corruption. Bumping the version would have broken the root-device
+probe in c/drivers/block/blkdev.c for no gain. mkfs stamps every inode with the
+build time, so a freshly built image does not look like it was made in 1970.
+
+The C mirror of every constant and offset here is c/fs/logitfs_fmt.h;
+tests/unit/fs_format_test.c reads a real image from this tool and asserts the
+two agree field by field.
 """
 import sys
 import os
 import struct
+import time
 
 SECTOR = 512
 BS = 4096                       # block size
@@ -40,6 +54,24 @@ PPB = BS // 4                   # u32 pointers per (indirect) block (1024)
 DIRENT = 64
 NAME_MAX = 60                   # bytes in a dirent name (incl. NUL)
 T_FREE, T_FILE, T_DIR = 0, 1, 2
+
+# Inode field offsets (bytes from the start of the 128-byte inode).
+OFF_TYPE = 0
+OFF_SIZE = 4
+OFF_DIRECT = 8
+OFF_INDIRECT = OFF_DIRECT + NDIRECT * 4          # 56
+OFF_DINDIRECT = OFF_INDIRECT + 4                 # 60
+OFF_ATIME = OFF_DINDIRECT + 4                    # 64
+OFF_MTIME = OFF_ATIME + 8                        # 72
+OFF_CTIME = OFF_MTIME + 8                        # 80
+
+# The write-ahead log's commit record (c/fs/logitfs_fmt.h). mkfs only ever
+# writes an EMPTY log -- a fresh image has no transaction outstanding -- but the
+# constants live here so mkreplay.py and the tests can seal one the way the
+# filesystem does.
+LOG_MAGIC = 0x4C4F4735                           # "LOG5"
+LOGH_MAGIC, LOGH_GEN, LOGH_COUNT, LOGH_BCRC, LOGH_TARGET = 0, 1, 2, 3, 4
+LOGH_HCRC = BS // 4 - 1
 
 TOTAL_BLOCKS = 16384            # 64 MiB image
 INODE_COUNT = 256
@@ -179,14 +211,19 @@ class Builder:
         for b in range(nextb):
             img[bitmap_start * BS + (b >> 3)] |= 1 << (b & 7)
 
-        # 6) inode table
+        # 6) inode table. Every live inode is stamped with the build time: a
+        # zero timestamp means "unknown" to the kernel, and an image that has
+        # only ever been read would otherwise report the epoch forever.
+        now = int(os.environ.get("SOURCE_DATE_EPOCH", time.time()))
         for ino in range(INODE_COUNT):
             off = inode_start * BS + ino * INODE_SIZE
             struct.pack_into("<HHI", img, off, self.itype[ino], 0, size[ino])
             for i in range(NDIRECT):
-                struct.pack_into("<I", img, off + 8 + i * 4, direct[ino][i])
-            struct.pack_into("<I", img, off + 8 + NDIRECT * 4, indirect[ino])
-            struct.pack_into("<I", img, off + 8 + NDIRECT * 4 + 4, dindirect[ino])  # double indirect
+                struct.pack_into("<I", img, off + OFF_DIRECT + i * 4, direct[ino][i])
+            struct.pack_into("<I", img, off + OFF_INDIRECT, indirect[ino])
+            struct.pack_into("<I", img, off + OFF_DINDIRECT, dindirect[ino])
+            if self.itype[ino] != T_FREE:
+                struct.pack_into("<qqq", img, off + OFF_ATIME, now, now, now)
 
         return img, nextb
 
