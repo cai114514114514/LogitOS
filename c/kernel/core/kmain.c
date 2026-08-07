@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "serial.h"
+#include "kprintf.h"
 #include "idt.h"
 #include "gdt.h"
 #include "pic.h"
@@ -18,6 +19,9 @@
 #include "file.h"
 #include "virtio_blk.h"
 #include "nvme.h"
+#include "klog.h"
+#include "kdiag.h"
+#include "blkdev.h"
 #include "pci.h"
 #include "driver.h"
 
@@ -32,8 +36,15 @@ int rust_png_selftest(void);       /* rust/src/png.rs -- PNG decoder self-check 
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
-    serial_puts("\n[logitos] long mode, C kernel running\n");
-    serial_puts(rust_inflate_selftest() == 0 ? "[rust] inflate selftest OK\n"
+    /* Boot narration goes through kprintf, not serial_puts. Same bytes on the
+     * same wire -- but serial_puts writes ONLY to COM1 and keeps nothing, so
+     * every line below used to be invisible to anyone who was not watching the
+     * port at the time. Through kprintf they also land in the log ring, which
+     * is the whole point: on a machine that fails to bring up a disk you want
+     * to read the boot log AFTER it happened, and on a laptop there is no
+     * serial port to have been watching. */
+    kprintf("\n[logitos] long mode, C kernel running\n");
+    kprintf(rust_inflate_selftest() == 0 ? "[rust] inflate selftest OK\n"
                                              : "[rust] inflate selftest FAIL\n");
 
     idt_init();
@@ -41,18 +52,28 @@ void kernel_main(uint64_t mb_info)
     pic_remap();
     pit_init(TIMER_HZ);
     pmm_init(mb_info);
-    serial_puts("[logitos] interrupts + memory + gdt/tss online\n");
+    kprintf("[logitos] interrupts + memory + gdt/tss online\n");
+
+    /* Diagnostics come up early and deliberately: everything printed from here
+     * on is also retained in the log ring, so a failure further down this
+     * function can be read back afterwards instead of only being visible to
+     * whoever was watching the serial port. kdiag_init installs the two
+     * diagnostic IDT gates (panic's stop-the-other-cores IPI, and the
+     * interrupt-context log probe). */
+    kdiag_init();
+    kinfo("[klog] ring %u lines x %u bytes; `cat /dev/kmsg`, `cat /dev/kstat`",
+          (unsigned)KLOG_SLOTS, (unsigned)KLOG_TEXT);
 
     /* Enumerate PCI before any driver runs: everything below -- including the
      * legacy pci_find() the NVMe/e1000/virtio drivers still call -- answers out
      * of the device registry this builds. Binding happens later (dev_probe_all,
      * after smp_init), because wiring an interrupt needs a live LAPIC. */
     pci_init();
-    serial_puts(rust_png_selftest() == 0 ? "[rust] png selftest OK\n"
+    kprintf(rust_png_selftest() == 0 ? "[rust] png selftest OK\n"
                                           : "[rust] png selftest FAIL\n");
 
     if (!fb_init(mb_info)) {
-        serial_puts("\nLOGIT_FB_FAIL\n");
+        kprintf("\nLOGIT_FB_FAIL\n");
         for (;;) __asm__ volatile ("hlt");
     }
 
@@ -61,10 +82,11 @@ void kernel_main(uint64_t mb_info)
 
     nvme_init();         /* prefer NVMe (M24 bare-metal target) when present */
     virtio_blk_init();   /* else virtio-blk; logitfs falls back to ATA */
+    blk_init();          /* + AHCI/SATA, partition tables, and pick the root device */
 
     vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
-    serial_puts(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
+    kprintf(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
 
@@ -74,7 +96,7 @@ void kernel_main(uint64_t mb_info)
     wm_init();
     wm_render();                 /* first frame -> desktop visible */
     mouse_init();
-    serial_puts("[logitos] desktop up; mouse + keyboard armed\n");
+    kprintf("[logitos] desktop up; mouse + keyboard armed\n");
 
     smp_init();   /* detect + bring up the other CPUs */
 
@@ -86,7 +108,7 @@ void kernel_main(uint64_t mb_info)
     dev_dump();
 
     if (fs_ok)
-        serial_puts("\n" BOOT_OK_MARKER "\n");
+        kprintf("\n" BOOT_OK_MARKER "\n");
 
     wm_run();                    /* becomes the scheduler main thread; never returns */
 }
