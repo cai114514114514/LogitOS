@@ -2508,3 +2508,8 @@ clean:
 # (host), test-prof-control (the -DKPROF_DISABLE negative control). Same reason,
 # same shape as the fragments above.
 -include tests/prof.mk
+
+# Full-system test, the commit gate and the test-liveness audit
+# (test-fullsystem, test-freeze, verify-commit, check-test-liveness). Same
+# reason, same shape as the fragments above.
+-include tests/fullsystem.mk
