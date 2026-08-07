@@ -102,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-html5lib test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -461,6 +461,24 @@ test-nvme: $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
 	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
+
+# How spec-conformant is the HTML parser? Runs the shared tree-construction
+# suite every browser is measured against (third_party/html5lib-tests -- data
+# only, the runner is ours) and prints a pass rate.
+#
+# This is a MEASUREMENT, not a gate: it exits 0 whatever the rate. The parser
+# is being rewritten, and a target that is red on every single run for weeks
+# only teaches people to stop reading the build. It becomes a gate, with a
+# ratchet on the pass count, once there is a rate worth defending.
+#
+#   make test-html5lib          per-file counts + the total
+#   make test-html5lib V=20     also dump the first 20 failing cases
+test-html5lib:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
+	    c/apps/browser/dom.c
+	@$(BUILD)/html5lib_test third_party/html5lib-tests/tree-construction \
+	    $(if $(V),-v $(V),)
 
 # Does the H.264 decoder work on LogitOS, not just on the host? make test-h264
 # proves it bit-exact against ffmpeg, but that is a glibc build on Linux. This

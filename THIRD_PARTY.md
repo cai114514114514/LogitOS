@@ -25,6 +25,7 @@ subject to upstream terms where required.
 | macOS Desktop Picture | Locally generated wallpaper | Ignored `fsroot/wallpaper.png`; see `tools/mkwallpaper.sh` | Host-installed macOS asset | Proprietary; not covered by this repository's license |
 | GNU GRUB | Bootloader code embedded in generated ISO images | Generated `build/logit.iso`; no GRUB source is stored here | Host-tool version is not pinned | GPLv3 or later, subject to the exact GRUB distribution used |
 | Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into LogitOS binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
+| html5lib-tests and web-platform-tests HTML parser cases | Shared conformance test DATA for the HTML5 parser (no upstream code is used) | `third_party/html5lib-tests/` | tokenizer cases from html5lib-tests `master`, tree-construction cases from web-platform-tests `html/syntax/parsing/resources`, both imported 2026-08-07 | MIT (html5lib-tests) and BSD-3-Clause (web-platform-tests) |
 
 ## QuickJS
 
@@ -246,3 +247,21 @@ stored in this repository. They normally do not become part of LogitOS binaries,
 but release tooling must verify the actual outputs rather than relying on that
 assumption. GRUB and Rust are called out above because their code can enter the
 generated ISO or linked binaries.
+
+## html5lib-tests and web-platform-tests parser cases
+
+- Upstream (tokenizer): <https://github.com/html5lib/html5lib-tests>
+- Upstream (tree construction): <https://github.com/web-platform-tests/wpt>,
+  directory `html/syntax/parsing/resources`
+- Licenses: MIT for html5lib-tests, BSD-3-Clause for web-platform-tests. Both
+  texts are vendored beside the data as `LICENSE.html5lib-tests` and
+  `LICENSE.wpt`.
+
+Only DATA is vendored -- `.dat` and `.test` case files. No upstream code is
+compiled or shipped; the runner (`tests/unit/html5lib_test.c`) is ours. The
+HTML parser itself is hand-written, and these cases exist so that claim can be
+answered with a pass rate instead of an opinion.
+
+Note that the tree-construction suite no longer lives in html5lib-tests: its
+README now points at web-platform-tests as the sole maintained home, which is
+why the two halves come from two repositories.
