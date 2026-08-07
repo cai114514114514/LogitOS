@@ -217,13 +217,12 @@ int main(int argc, char **argv)
             int w = g8(&r); uint32_t li = g32(&r), si = g32(&r);
             uint16_t gid = g16(&r); int32_t want = gi32(&r);
             if (!have[w] || !cur_sub[w] || (int)li != cur_li[w] || (int)si != cur_si[w]) break;
-            /* the coverage is the first offset of nearly every subtable shape;
-             * ask through the same door a shaper would */
+            /* Coverage is the first offset after the format field in every
+             * subtable shape the reference dumps (the mark subtables put the
+             * MARK coverage there, which is the one the reference dumped for
+             * them). Ask through the same door a shaper would. */
             struct fr b = { fdata, (uint32_t)flen };
-            uint32_t s = cur_sub[w];
-            uint32_t cov = (cur_type[w] == (w ? OTL_GPOS_MARK_BASE : 0) ||
-                            (w && cur_type[w] >= OTL_GPOS_MARK_BASE && cur_type[w] <= OTL_GPOS_MARK_MARK))
-                           ? fr_off16(&b, s, s + 2) : fr_off16(&b, s, s + 2);
+            uint32_t cov = fr_off16(&b, cur_sub[w], cur_sub[w] + 2);
             int got = otl_coverage_index(&tab[w], cov, gid);
             if (got != want) FAILF("lookup %u sub %u: coverage index of gid %u is %d, want %d",
                                    li, si, gid, got, want);

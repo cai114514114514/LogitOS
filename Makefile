@@ -252,7 +252,7 @@ APPS := clock textedit monitor terminal widgets files preview studio
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
@@ -261,7 +261,8 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
+       show dir chart prog
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -536,6 +537,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
+	    tests/fixtures/img/dot.png:/media/dot.png \
 	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
 	    tests/fixtures/audio/sample.flac:/media/sample.flac \
 	    tests/fixtures/audio/sample.wav:/media/sample.wav \
@@ -2110,6 +2112,7 @@ test-h264-units:
 	    c/lib/video/h264_deblock.c -Ic/lib/video
 	@$(BUILD)/h264_deblock_test
 
+
 # --- device model / PCI (c/drivers/core + c/kernel/pci) ---------------------
 # Host tests run the bus driver's pure logic against a synthetic configuration
 # space (tests/unit/pcistub stubs out port I/O, vmm and kprintf), which is how
@@ -2207,6 +2210,13 @@ clean:
 # Audio test targets (test-audio, test-audio-pcm, test-audio-wav/mix/underrun/
 # none) and /bin/sndtest. Same reason, same shape.
 -include tests/audio.mk
+
+# Audio CODEC test targets (test-wav/test-flac/test-mp3, test-audio-codec-units/
+# -fuzz/-negctl/-os) for the from-scratch decoders in c/lib/audio. A separate
+# fragment from tests/audio.mk above: that one is the sound-driver line's PCM
+# layer and mixer, this one is the decoders that feed it, and the two are
+# developed independently. Same reason, same shape.
+-include tests/audio_codec.mk
 
 # USB test targets (test-usb, test-usb-host/ring/desc/hid, test-usb-os,
 # test-usb-none, test-usb-negctl). Same reason, same shape. The DRIVER needs no
