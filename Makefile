@@ -41,8 +41,27 @@ ASM         := nasm
 GRUB_RESCUE := i686-elf-grub-mkrescue
 QEMU        := qemu-system-x86_64
 
-# Colocated headers resolve via -I across every source dir (names are unique).
-INCDIRS := $(addprefix -I,$(shell find c include -type d))
+# Colocated headers resolve via -I across every source dir. That works only
+# while header basenames are unique, and it needs the -I ORDER to be a function
+# of the sources rather than of the disk. Both properties were quietly broken:
+#
+#  1. `find` emits directories in filesystem traversal order, and this repo is
+#     built from an NTFS working tree AND from ext4 clones. The two orders
+#     differ, so `-Ic/apps/libc/include/sys` sorted before or after
+#     `-Ic/kernel/core` depending on where you stood. $(sort) makes the command
+#     line a function of the tree. (Same failure as tools/genroots.py's sort
+#     key, fixed in 912175a: a build input that depended on the filesystem.)
+#
+#  2. c/apps/libc/include/sys must NOT be on the include path. Its headers are
+#     reached as <sys/wait.h> through -Ic/apps/libc/include, exactly as C code
+#     expects; adding the directory itself also makes them reachable as bare
+#     "wait.h", which collides with c/kernel/core/wait.h -- the kernel's wait
+#     queues. Combined with (1) the symptom was a kernel file including
+#     "wait.h", getting POSIX waitpid instead, and failing with `call to
+#     undeclared function 'sched_sleep_ms'` -- on some machines and not others,
+#     from identical sources. Nothing includes those headers by bare name; all
+#     nine uses in the tree are already <sys/...>.
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys,$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
