@@ -62,6 +62,24 @@ void idt_init(void)
     __asm__ volatile ("lidt %0" : : "m"(idtp));
 }
 
+/* Install a ring-0 interrupt gate for a vector this file does not own.
+ *
+ * Additive: it changes nothing about the 48 exception/IRQ stubs, int 0x80 or
+ * the IPI vectors above. It exists so a subsystem can own a vector END TO END
+ * -- its own entry stub, no BKL, no dispatch through interrupts.c -- which is
+ * what c/kernel/core/kdiag.c needs for the diagnostic IPIs: a probe that has to
+ * be able to land on a core that is ALREADY inside the kernel cannot go
+ * through a path that acquires the BKL. The IDT is shared by every core
+ * (idt_load just re-points the same table), so installing once covers all of
+ * them. `handler` must be a real interrupt entry point: it is entered with the
+ * CPU's 40-byte frame on the stack and must leave through iretq. */
+void idt_install_gate(int vec, void *handler)
+{
+    if (vec < 0 || vec >= IDT_ENTRIES || !handler)
+        return;
+    idt_set(vec, handler, GATE_INT64);
+}
+
 /* Load the (shared) IDT on an application processor. */
 void idt_load(void)
 {
