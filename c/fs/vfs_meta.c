@@ -216,6 +216,21 @@ void vmeta_forget_subtree(const char *prefix)
 int vmeta_permission(const struct vattr *a, const struct vcred *c, int want)
 {
     if (!a || !c) return VFS_EACCES;
+
+#ifdef VFS_NEGCTL_STORE_ONLY
+    /* THE NEGATIVE CONTROL (make test-vfs-negctl, and see the recipe in
+     * tests/boot/run-vfs-test.sh for the on-device form).
+     *
+     * Under this define the mode, the owner and the group are all stored, all
+     * readable back through stat, and never once consulted. That is exactly
+     * what a permission model that is not enforced looks like from outside,
+     * and it is what this layer has to be distinguishable from -- so every
+     * refusal assertion in both suites must fail here. If they do not, they
+     * were not testing enforcement. */
+    (void)want;
+    return 0;
+#endif
+
     if (!(want & (MAY_READ | MAY_WRITE | MAY_EXEC))) return 0;
 
     if (c->uid == 0) {

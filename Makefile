@@ -789,8 +789,28 @@ test-vfs-mount-asan:
 	    -Ic/fs -Ic/kernel/core
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_mount_asan
 
+# THE NEGATIVE CONTROL. The same suite against a build where the mode, the
+# owner and the group are all stored, all readable back through stat, and never
+# once consulted -- which is precisely what an unenforced permission model looks
+# like from outside, and the thing this layer has to be distinguishable from.
+# Every refusal assertion must fail here. If they do not, they were never
+# testing enforcement, and this target failing IS the finding.
+.PHONY: test-vfs-negctl
+test-vfs-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DVFS_NEGCTL_STORE_ONLY -o $(BUILD)/vfs_negctl \
+	    tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) -Ic/fs -Ic/kernel/core
+	@if $(BUILD)/vfs_negctl > $(BUILD)/vfs_negctl.log 2>&1; then \
+	    echo "CONTROL FAILED: a build that never checks the mode passed the suite"; \
+	    exit 1; \
+	else \
+	    echo "control ok: with the mode stored but never checked, these fail:"; \
+	    grep FAIL $(BUILD)/vfs_negctl.log | head -8; \
+	    tail -1 $(BUILD)/vfs_negctl.log; \
+	fi
+
 # Everything the VFS layer can prove without a machine.
-test-vfs: test-vfs-path test-vfs-path-asan test-vfs-mount test-vfs-mount-asan
+test-vfs: test-vfs-path test-vfs-path-asan test-vfs-mount test-vfs-mount-asan test-vfs-negctl
 
 # The SECOND filesystem, on its own disk. A tiny independent LogitFS image
 # built by the same tools/mkfs.py that builds the root one -- the markers live

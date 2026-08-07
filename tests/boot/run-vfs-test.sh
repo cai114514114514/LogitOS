@@ -26,6 +26,18 @@
 # Everything is driven through /bin/sh on the serial console, so every request
 # comes from a real ring-3 process going through the real syscall path.
 #
+# THE NEGATIVE CONTROL, on device. Build the kernel with the permission check
+# neutered and every refusal assertion here must fail:
+#
+#   $(CC) ... -DVFS_NEGCTL_STORE_ONLY ... c/fs/vfs_meta.c     # see vmeta_permission
+#
+# Measured: the 0600 file's content then appears TWICE instead of once (the
+# unprivileged process read it), cat's open failure disappears, and the
+# unprivileged write to /dev/vfsctl succeeds -- 3 assertions fail, the other 18
+# still pass. Both halves matter: a change that broke everything would fail
+# these too and would not be evidence of anything. `make test-vfs-negctl` runs
+# the same control host-side, where it costs a second instead of a kernel build.
+#
 # Usage: run-vfs-test.sh <iso> <disk.img> <disk2.img>
 
 set -u
