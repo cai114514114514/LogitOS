@@ -60,8 +60,10 @@ console.log('WEBAPI-START typeof-fetch=' + (typeof fetch) +
             ' typeof-history-pushState=' + (typeof (window.history && history.pushState)));
 
 /* location, parsed -- an SPA routes on these before it renders anything. */
-console.log('WEBAPI-LOCATION ' + location.protocol + '|' + location.hostname + '|' +
-            location.port + '|' + location.pathname + '|' + location.origin);
+try {
+  console.log('WEBAPI-LOCATION ' + location.protocol + '|' + location.hostname + '|' +
+              location.port + '|' + location.pathname + '|' + location.origin);
+} catch (e) { console.log('WEBAPI-LOCATION-FAIL ' + e); }
 
 /* URL + URLSearchParams over the page's own address. */
 try {
@@ -92,8 +94,12 @@ try {
   history.back();
 } catch (e) { console.log('WEBAPI-HISTORY-FAIL ' + e); }
 
-console.log('WEBAPI-MEDIA ' + matchMedia('(min-width: 400px)').matches + '|' +
-            matchMedia('(min-width: 9000px)').matches);
+/* try/catch on every section, so the --expect-no-webapi run reaches the fetch
+   branch below instead of dying on the first missing global. */
+try {
+  console.log('WEBAPI-MEDIA ' + matchMedia('(min-width: 400px)').matches + '|' +
+              matchMedia('(min-width: 9000px)').matches);
+} catch (e) { console.log('WEBAPI-MEDIA-FAIL ' + e); }
 
 /* The one that has to reach the screen. */
 if (typeof fetch !== 'function') {
@@ -130,7 +136,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         requested.append(self.path)
         if self.path.startswith("/data.json"):
-            req_headers.append(dict(self.headers))
+            # Lower-cased keys: Headers normalizes names on the way out, so the
+            # request carries `x-from`, not `X-From`.
+            req_headers.append({k.lower(): v for k, v in self.headers.items()})
             time.sleep(DATA_DELAY)             # see DATA_DELAY
             raw = DATA.encode()
             ctype = "application/json"
@@ -317,10 +325,12 @@ try:
        "status/ok/headers.get/url are all right (%s)" % stat)
     ck(any("data.json" in r for r in requested),
        "the HOST SERVER saw the request -- it really left the machine")
-    ck(req_headers and req_headers[0].get("X-From") == "logit",
+    ck(req_headers and req_headers[0].get("x-from") == "logit",
        "the caller's request header arrived at the server")
-    ck(req_headers and req_headers[0].get("Host") == "10.0.2.2:%d" % PORT,
+    ck(req_headers and req_headers[0].get("host") == "10.0.2.2:%d" % PORT,
        "Host was built from the URL")
+    ck(req_headers and "gzip" in (req_headers[0].get("accept-encoding") or ""),
+       "and Accept-Encoding advertises what the client can actually decode")
 
     ck(wait_serial("WEBAPI-FETCHED", 30, "json + DOM write"),
        "json() parsed the body and the handler wrote it into the DOM")
