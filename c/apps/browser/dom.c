@@ -518,12 +518,28 @@ void dom_remove_child(struct node *p, struct node *c)
     unlink_from_parent(c);                       /* O(1): the node knows its prev */
 }
 
+void dom_insert_before(struct node *p, struct node *c, struct node *ref)
+{
+    if (!p || !c || p == c || c == c->doc->root) return;
+    if (!ref || ref->parent != p) { dom_append_child(p, c); return; }
+    if (ref == c) return;
+    if (c->parent) unlink_from_parent(c);        /* DOM move semantics */
+    c->parent = p;
+    c->next = ref;
+    c->prev = ref->prev;
+    if (ref->prev) ref->prev->next = c; else p->first_child = c;
+    ref->prev = c;
+}
+
 /* ------------------------------------------------------------------ */
 /* node construction                                                   */
 /* ------------------------------------------------------------------ */
 /* Lowercase into the arena. Element and attribute names are ASCII-lowercased
  * exactly as the old scanner did (HTML namespace); the copy is transient, the
  * interned string is what survives. */
+static int attr_set(struct dom_doc *d, struct node *n, const char *lname, size_t nlen,
+                    const char *val, size_t vlen);   /* defined with the attributes */
+
 static char *lower_tmp(struct dom_doc *d, const char *s, size_t len, char *stackbuf, size_t stackcap)
 {
     char *out = (len < stackcap) ? stackbuf : (char *)arena_alloc(d, len + 1);
@@ -557,6 +573,49 @@ struct node *dom_create_element(struct dom_doc *d, const char *name, int len)
     return elem_new(d, low, l);
 }
 
+/* The tree builder's counterpart: the name is taken verbatim and the namespace
+ * is explicit. Everything else (interning, tag_id, the arena) is shared with
+ * dom_create_element, so a foreign element is not a second kind of node. */
+struct node *dom_create_element_ns(struct dom_doc *d, const char *name, int len, int ns)
+{
+    if (!d || !name) return 0;
+    size_t l = (len < 0) ? zlen(name) : (size_t)len;
+    if (!l) return 0;
+    struct node *n = elem_new(d, name, l);
+    if (n) n->ns = (uint8_t)ns;
+    return n;
+}
+
+struct node *dom_clone_element(const struct node *src)
+{
+    if (!src || src->type != N_ELEM || !src->doc) return 0;
+    struct dom_doc *d = src->doc;
+    struct node *n = node_alloc(d);
+    if (!n) return 0;
+    n->type = N_ELEM;
+    n->ns = src->ns;
+    n->name = doc_hold(d, src->name);            /* already interned by src */
+    n->tag = src->name ? lwc_string_data(src->name) : "";
+    n->tag_id = src->tag_id;
+    n->htag = src->htag;
+    /* Attributes are copied through attr_set so the clone's id/class indexes
+     * are built the same way the original's were -- a clone that skipped that
+     * would be invisible to getElementById and to every class selector. */
+    for (int i = 0; i < src->nattr; i++) {
+        lwc_string *an = src->attrs[i].name;
+        attr_set(d, n, lwc_string_data(an), lwc_string_length(an),
+                 src->attrs[i].value, src->attrs[i].vlen);
+    }
+    return n;
+}
+
+void dom_set_raw(struct node *n, const char *src, int len)
+{
+    if (!n || !n->doc || !src || len < 0) return;
+    n->raw = arena_dup(n->doc, src, (size_t)len);
+    n->rawlen = n->raw ? len : 0;
+}
+
 struct node *dom_create_text(struct dom_doc *d, const char *text, int len)
 {
     if (!d) return 0;
@@ -568,7 +627,32 @@ struct node *dom_create_text(struct dom_doc *d, const char *text, int len)
     n->text = arena_dup(d, text ? text : "", l);
     if (!n->text) { node_recycle(d, n); return 0; }
     n->textlen = (int)l;
+    n->textcap = (int)l + 1;
     return n;
+}
+
+int dom_text_append(struct node *n, const char *s, int len)
+{
+    if (!n || !n->doc || !s || len <= 0) return 0;
+    if (n->type != N_TEXT && n->type != N_COMMENT) return 0;
+    struct dom_doc *d = n->doc;
+    size_t need = (size_t)n->textlen + (size_t)len + 1;
+    if ((size_t)n->textcap < need) {
+        /* Geometric growth in the arena. The old block is abandoned rather than
+         * freed -- that is the arena's whole bargain, and a text run doubles at
+         * most log2(len) times, so the waste is bounded by the run itself. */
+        size_t cap = n->textcap > 0 ? (size_t)n->textcap : 32;
+        while (cap < need) cap *= 2;
+        char *nb = arena_alloc(d, cap);
+        if (!nb) return 0;
+        if (n->textlen) memcpy(nb, n->text, (unsigned long)n->textlen);
+        n->text = nb;
+        n->textcap = (int)cap;
+    }
+    memcpy(n->text + n->textlen, s, (unsigned long)len);
+    n->textlen += len;
+    n->text[n->textlen] = 0;
+    return 1;
 }
 
 struct node *dom_create_comment(struct dom_doc *d, const char *data, int len)
@@ -585,6 +669,7 @@ struct node *dom_create_comment(struct dom_doc *d, const char *data, int len)
     n->text = arena_dup(d, data ? data : "", l);
     if (!n->text) { node_recycle(d, n); return 0; }
     n->textlen = (int)l;
+    n->textcap = (int)l + 1;
     return n;
 }
 
@@ -605,6 +690,12 @@ struct node *dom_create_doctype(struct dom_doc *d, const char *name,
     if (pubid) n->pubid = arena_dup(d, pubid, zlen(pubid));
     if (sysid) n->sysid = arena_dup(d, sysid, zlen(sysid));
     return n;
+}
+
+const char *dom_doctype_name(const struct node *n)
+{
+    if (!n || n->type != N_DOCTYPE || !n->name) return "";
+    return lwc_string_data(n->name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -689,6 +780,14 @@ int dom_set_attr(struct node *n, const char *name, const char *val)
     char *low = lower_tmp(d, name, nl, sb, sizeof sb);
     if (!low) return 0;
     return attr_set(d, n, low, nl, val ? val : "", val ? zlen(val) : 0);
+}
+
+int dom_set_attr_raw(struct node *n, const char *name, int nlen,
+                     const char *val, int vlen)
+{
+    if (!n || !name || n->type != N_ELEM || nlen <= 0) return 0;
+    return attr_set(n->doc, n, name, (size_t)nlen,
+                    val ? val : "", (vlen > 0) ? (size_t)vlen : 0);
 }
 
 const char *dom_attr_lw(const struct node *n, lwc_string *name)

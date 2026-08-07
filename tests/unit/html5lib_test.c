@@ -22,19 +22,47 @@
  * The expected tree is 2 spaces of indent per depth after a "| " prefix.
  * Elements are <tag>, attributes appear on their own lines sorted by name,
  * text is quoted, comments are <!-- ... -->, doctypes are <!DOCTYPE ...>.
+ * Foreign elements carry their namespace: "<svg circle>", "<math mi>".
  *
- * Usage: html5lib_test <dir-with-.dat-files> [-v]
- *   -v prints the first N failing cases with expected/got trees.
+ * Two optional sections change how a case is run:
+ *   #document-fragment <context>   parse with the fragment algorithm
+ *   #script-on / #script-off       the expected tree for a parser with
+ *                                  scripting enabled / disabled
  *
- * Exit code is 0 whatever the pass rate: this is a MEASUREMENT, not a gate.
- * Wiring it as a gate only makes sense once there is a rate worth defending;
- * until then a red build every run teaches people to ignore the build.
+ * We are scripting-ENABLED (browser.c runs a page's <script>s), so #script-on
+ * cases are run and #script-off cases are skipped. That is a choice, not an
+ * omission: no parser can satisfy both, and picking the one that matches the
+ * product is the only honest option.
+ *
+ * ------------------------------------------------------------------------
+ * THE BASELINE
+ * ------------------------------------------------------------------------
+ * A pass RATE tells you where you are; it does not tell you whether the change
+ * you just made broke something. tests/unit/html5lib_expected_fail.txt lists
+ * every case that fails today, by "<file>:<case index>". The runner diffs
+ * against it and reports NEW FAILURES and NEWLY PASSING separately, so a change
+ * that fixes twelve cases and breaks one is visible as exactly that instead of
+ * as "+11".
+ *
+ * Usage: html5lib_test <dir-with-.dat-files> [-v [n]] [-b <baseline>]
+ *                      [--write-baseline] [--strict]
+ *   -v [n]            print the first n failing cases with expected/got trees
+ *   -b <path>         baseline file (default tests/unit/html5lib_expected_fail.txt)
+ *   --write-baseline  rewrite the baseline from this run's failures
+ *   --strict          exit non-zero if there are new failures
+ *
+ * Without --strict the exit code is 0 whatever the rate: this is a
+ * MEASUREMENT. Wiring it as a gate only makes sense once there is a rate worth
+ * defending; until then a red build every run teaches people to ignore the
+ * build.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include "dom.h"
+#include "html_tree.h"
+#include "dom_serialize.h"
 
 /* dom.c allocates through the browser's arena shims; on the host they are
  * plain malloc/free, the same stubs every other browser test uses. */
@@ -58,93 +86,13 @@ static char *xread(const char *path, long *len)
     return b;
 }
 
-/* A growable string, so serialisation has no length cap of its own -- the
- * point of this suite is to find OUR caps, not to add new ones. */
-struct sb { char *p; size_t len, cap; };
-
-static void sb_put(struct sb *s, const char *d, size_t n)
-{
-    if (s->len + n + 1 > s->cap) {
-        size_t c = s->cap ? s->cap * 2 : 256;
-        while (c < s->len + n + 1) c *= 2;
-        s->p = realloc(s->p, c);
-        s->cap = c;
-    }
-    memcpy(s->p + s->len, d, n);
-    s->len += n;
-    s->p[s->len] = 0;
-}
-static void sb_str(struct sb *s, const char *d) { sb_put(s, d, strlen(d)); }
-static void sb_free(struct sb *s) { free(s->p); s->p = 0; s->len = s->cap = 0; }
-
-/* --------------------------------------------------- our tree -> text ---- */
-/* Serialise in the suite's own format so the comparison is a plain strcmp.
- * Attributes are emitted sorted by name, which is what the format requires
- * (it is a set, not a sequence). */
-static void ser_indent(struct sb *s, int depth)
-{
-    sb_str(s, "| ");
-    for (int i = 0; i < depth; i++) sb_str(s, "  ");
-}
-
-static void ser_node(struct sb *s, const struct node *n, int depth)
-{
-    if (n->type == N_TEXT) {
-        ser_indent(s, depth);
-        sb_str(s, "\"");
-        sb_put(s, n->text ? n->text : "", n->text ? (size_t)n->textlen : 0);
-        sb_str(s, "\"\n");
-        return;
-    }
-
-    ser_indent(s, depth);
-    sb_str(s, "<");
-    sb_str(s, n->tag);
-    sb_str(s, ">\n");
-
-    /* attributes, sorted by name */
-    if (n->nattr > 0) {
-        int *order = malloc(sizeof(int) * (size_t)n->nattr);
-        for (int i = 0; i < n->nattr; i++) order[i] = i;
-        for (int i = 1; i < n->nattr; i++) {          /* insertion sort */
-            int v = order[i], j = i - 1;
-            /* S1b: attribute names are interned lwc_strings; go through the
-             * positional accessors so this file needs no libwapcaplet include. */
-            while (j >= 0 && strcmp(dom_attr_name_at(n, order[j]), dom_attr_name_at(n, v)) > 0) {
-                order[j + 1] = order[j]; j--;
-            }
-            order[j + 1] = v;
-        }
-        for (int i = 0; i < n->nattr; i++) {
-            ser_indent(s, depth + 1);
-            sb_str(s, dom_attr_name_at(n, order[i]));
-            sb_str(s, "=\"");
-            sb_str(s, dom_attr_value_at(n, order[i]));
-            sb_str(s, "\"\n");
-        }
-        free(order);
-    }
-
-    for (const struct node *c = n->first_child; c; c = c->next)
-        ser_node(s, c, depth + 1);
-}
-
-static char *serialize(const struct node *root)
-{
-    struct sb s = { 0, 0, 0 };
-    for (const struct node *c = root->first_child; c; c = c->next)
-        ser_node(&s, c, 0);
-    if (!s.p) sb_str(&s, "");
-    return s.p;
-}
-
 /* ------------------------------------------------------- .dat parsing ---- */
 struct kase {
     char *data;        /* input HTML */
     long  datalen;
     char *doc;         /* expected serialisation */
-    int   fragment;    /* #document-fragment case -- we do not support these */
-    int   scripted;    /* #script-on -- needs a script-executing parser */
+    char *frag;        /* #document-fragment context, or NULL */
+    int   script_off;  /* #script-off -- expects scripting disabled */
 };
 
 /* Split one .dat buffer into cases. The separator is a blank line followed by
@@ -166,7 +114,7 @@ static int split_cases(char *buf, long len, struct kase **out)
         if (!errs) break;
         char *doc = strstr(errs, "\n#document\n");
         char *frag = strstr(errs, "\n#document-fragment\n");
-        char *son  = strstr(errs, "\n#script-on\n");
+        char *soff = strstr(errs, "\n#script-off\n");
         if (!doc) break;
 
         /* the next case starts at the next "\n#data\n" after this #document */
@@ -189,8 +137,16 @@ static int split_cases(char *buf, long len, struct kase **out)
         k[n].doc[dl] = '\n';
         k[n].doc[dl + 1] = 0;
 
-        k[n].fragment = frag && (!nxt || frag < nxt);
-        k[n].scripted = son && (!nxt || son < nxt);
+        if (frag && (!nxt || frag < nxt)) {
+            char *fs = frag + 20;                  /* past "\n#document-fragment\n" */
+            char *fe = strchr(fs, '\n');
+            if (fe) {
+                k[n].frag = malloc((size_t)(fe - fs) + 1);
+                memcpy(k[n].frag, fs, (size_t)(fe - fs));
+                k[n].frag[fe - fs] = 0;
+            }
+        }
+        k[n].script_off = soff && (!nxt || soff < nxt);
         n++;
         p = nxt ? nxt + 1 : end;
     }
@@ -198,15 +154,58 @@ static int split_cases(char *buf, long len, struct kase **out)
     return n;
 }
 
+/* --------------------------------------------------------- baseline ------ */
+struct baseline { char **id; int n, cap; };
+
+static void bl_add(struct baseline *b, const char *id)
+{
+    if (b->n == b->cap) {
+        b->cap = b->cap ? b->cap * 2 : 256;
+        b->id = realloc(b->id, (size_t)b->cap * sizeof *b->id);
+    }
+    b->id[b->n++] = strdup(id);
+}
+
+static int bl_has(const struct baseline *b, const char *id)
+{
+    for (int i = 0; i < b->n; i++) if (!strcmp(b->id[i], id)) return 1;
+    return 0;
+}
+
+static void bl_load(struct baseline *b, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        char *h = strchr(line, '#');
+        if (h) *h = 0;
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        char *e = s + strlen(s);
+        while (e > s && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
+        if (*s) bl_add(b, s);
+    }
+    fclose(f);
+}
+
 /* ---------------------------------------------------------------- main -- */
 int main(int argc, char **argv)
 {
-    if (argc < 2) { fprintf(stderr, "usage: %s <dir> [-v [n]]\n", argv[0]); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: %s <dir> [-v [n]] [-b <baseline>]"
+                                    " [--write-baseline] [--strict]\n", argv[0]); return 2; }
     const char *dir = argv[1];
-    int verbose = 0, vmax = 5;
+    const char *blpath = "tests/unit/html5lib_expected_fail.txt";
+    int verbose = 0, vmax = 5, writebl = 0, strict = 0;
     for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "-v")) { verbose = 1; if (i + 1 < argc) vmax = atoi(argv[i + 1]); }
+        if (!strcmp(argv[i], "-v")) { verbose = 1; if (i + 1 < argc && argv[i+1][0] != '-') vmax = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "-b") && i + 1 < argc) blpath = argv[++i];
+        else if (!strcmp(argv[i], "--write-baseline")) writebl = 1;
+        else if (!strcmp(argv[i], "--strict")) strict = 1;
     }
+
+    struct baseline expected = { 0, 0, 0 };
+    bl_load(&expected, blpath);
 
     DIR *d = opendir(dir);
     if (!d) { fprintf(stderr, "cannot open %s\n", dir); return 2; }
@@ -226,6 +225,8 @@ int main(int argc, char **argv)
         names[j + 1] = v;
     }
 
+    struct baseline failures = { 0, 0, 0 };
+
     for (int fi = 0; fi < nn; fi++) {
         char path[512];
         snprintf(path, sizeof path, "%s/%s", dir, names[fi]);
@@ -238,31 +239,93 @@ int main(int argc, char **argv)
         long fpass = 0, ftotal = 0;
 
         for (int i = 0; i < nk; i++) {
-            if (k[i].fragment || k[i].scripted) { skipped++; continue; }
+            /* We are scripting-enabled; a #script-off case asks for a tree only
+             * a scripting-disabled parser can produce. */
+            if (k[i].script_off) { skipped++; continue; }
             ftotal++; total++;
 
-            struct node *root = dom_parse(k[i].data, (int)k[i].datalen);
-            char *got = root ? serialize(root) : strdup("");
+            struct dom_doc *doc = 0;
+            struct node *root;
+            if (k[i].frag) {
+                /* Context is "tag" or "<ns> <tag>" ("svg path", "math ms"). */
+                const char *ctx = k[i].frag;
+                int ns = NS_HTML;
+                const char *sp = strchr(ctx, ' ');
+                if (sp) {
+                    if (!strncmp(ctx, "svg ", 4)) ns = NS_SVG;
+                    else if (!strncmp(ctx, "math ", 5)) ns = NS_MATHML;
+                    ctx = sp + 1;
+                }
+                root = html_parse_fragment(&doc, k[i].data, (int)k[i].datalen,
+                                           ctx, (int)strlen(ctx), ns);
+            } else {
+                root = html_parse(&doc, k[i].data, (int)k[i].datalen);
+            }
+
+            char *got = root ? dom_serialize_test(root) : 0;
+            if (!got) got = strdup("");
             int ok = !strcmp(got, k[i].doc);
+            char id[288];
+            snprintf(id, sizeof id, "%s:%d", names[fi], i);
             if (ok) { pass++; fpass++; }
-            else if (verbose && shown < vmax) {
-                shown++;
-                printf("\n--- FAIL %s case %d ---\ninput: %s\n--- want ---\n%s--- got ---\n%s",
-                       names[fi], i, k[i].data, k[i].doc, got);
+            else {
+                bl_add(&failures, id);
+                if (verbose && shown < vmax && !bl_has(&expected, id)) {
+                    shown++;
+                    printf("\n--- FAIL %s ---\ninput: %s\n%s--- want ---\n%s--- got ---\n%s",
+                           id, k[i].data, k[i].frag ? "" : "",
+                           k[i].doc, got);
+                }
             }
             free(got);
-            if (root) dom_free(root);
+            if (doc) dom_free(dom_doc_root(doc));
         }
 
         if (ftotal) printf("  %-40s %4ld/%-4ld\n", names[fi], fpass, ftotal);
-        for (int i = 0; i < nk; i++) { free(k[i].data); free(k[i].doc); }
+        for (int i = 0; i < nk; i++) { free(k[i].data); free(k[i].doc); free(k[i].frag); }
         free(k);
         free(buf);
-        free(names[fi]);
     }
 
     printf("\nhtml5lib tree-construction: %ld/%ld passed (%.1f%%), %ld skipped"
-           " (fragment/scripted cases we do not support)\n",
+           " (#script-off: we parse with scripting enabled)\n",
            pass, total, total ? 100.0 * (double)pass / (double)total : 0.0, skipped);
-    return 0;
+
+    /* Diff against the baseline. */
+    int newfail = 0, newpass = 0;
+    for (int i = 0; i < failures.n; i++)
+        if (!bl_has(&expected, failures.id[i])) {
+            if (newfail < 20) printf("  NEW FAILURE: %s\n", failures.id[i]);
+            newfail++;
+        }
+    for (int i = 0; i < expected.n; i++)
+        if (!bl_has(&failures, expected.id[i])) newpass++;
+
+    if (expected.n)
+        printf("baseline %s: %d expected failures; %d new, %d newly passing\n",
+               blpath, expected.n, newfail, newpass);
+    else
+        printf("baseline %s: not found (run with --write-baseline to create it)\n", blpath);
+
+    if (writebl) {
+        FILE *f = fopen(blpath, "wb");
+        if (f) {
+            fprintf(f, "# html5lib tree-construction cases that fail today, as\n"
+                       "# \"<file>:<case index>\". Regenerate with --write-baseline.\n"
+                       "# Shrinking this file is the point; growing it needs a reason\n"
+                       "# written next to the new entries.\n");
+            for (int i = 0; i < failures.n; i++) fprintf(f, "%s\n", failures.id[i]);
+            fclose(f);
+            printf("wrote %d entries to %s\n", failures.n, blpath);
+        } else {
+            fprintf(stderr, "cannot write %s\n", blpath);
+        }
+    }
+
+    for (int i = 0; i < nn; i++) free(names[i]);
+    for (int i = 0; i < failures.n; i++) free(failures.id[i]);
+    for (int i = 0; i < expected.n; i++) free(expected.id[i]);
+    free(failures.id); free(expected.id);
+
+    return (strict && newfail) ? 1 : 0;
 }

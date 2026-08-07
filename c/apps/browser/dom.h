@@ -125,6 +125,20 @@ struct node {
     uint8_t  ns;                    /* NS_* */
     int attrcap;                    /* capacity of attrs[] (arena, doubling) */
 
+    uint16_t htag;                  /* enum html_tag (html_tags.inc), the id the
+                                     * HTML5 tree builder branches on. It is a
+                                     * DIFFERENT enumeration from tag_id above:
+                                     * tag_id names the ~90 tags layout/CSS care
+                                     * about, htag names the 147 the spec's
+                                     * special/formatting/scope sets are written
+                                     * over. Only html_tree.c fills it in -- the
+                                     * legacy scanner and the DOM API leave it 0,
+                                     * which reads as "unknown tag" and is the
+                                     * right answer for a node nobody parsed. */
+    int textcap;                    /* N_TEXT/N_COMMENT: bytes reserved for
+                                     * ->text, so dom_text_append can grow a run
+                                     * in place instead of re-copying per token */
+
     lwc_string *name;               /* interned element name (N_ELEM), else NULL.
                                      * For N_DOCTYPE this is the doctype name. */
     lwc_string *id;                 /* interned value of the id attribute, or NULL */
@@ -162,7 +176,11 @@ struct node {
 /* ---------------- parsing / lifetime ---------------- */
 
 /* Parse an HTML document; returns the document node (type N_DOCUMENT, tag
- * "#document") whose children are the top-level nodes, or NULL. */
+ * "#document") whose children are the top-level nodes, or NULL.
+ *
+ * This is still the legacy tolerant scanner. html_parse() in html_tree.h is the
+ * spec tree builder that replaces it; the switch is deliberately a separate
+ * change because it moves every layout test's expected geometry. */
 struct node *dom_parse(const char *html, int len);
 
 /* Free a whole document (pass the N_DOCUMENT root) or detach+recycle a subtree
@@ -190,6 +208,14 @@ int         dom_has_attr_lw(const struct node *n, lwc_string *name);
 /* Set (or add) an attribute; the name is lowercased, the value copied into the
  * arena. Keeps node->id and node->classes in sync. 1 on success. */
 int         dom_set_attr(struct node *n, const char *name, const char *val);
+/* Same, but the name is used VERBATIM (already lowercase, or deliberately not:
+ * "viewBox" on an SVG element) and both strings carry explicit lengths so an
+ * attribute value may contain NUL. The namespaced foreign attributes are stored
+ * under their serialised form -- "xlink href", "xml lang", "xmlns xlink" -- a
+ * space being the one character an HTML attribute name can never contain, so
+ * one interned name still identifies one attribute. */
+int         dom_set_attr_raw(struct node *n, const char *name, int nlen,
+                             const char *val, int vlen);
 /* Positional access for code that enumerates attributes (serialisers, dumps)
  * and would otherwise need libwapcaplet on its include path just to turn an
  * interned name back into bytes. Both are NUL-terminated; NULL if out of range. */
@@ -204,7 +230,37 @@ struct node *dom_create_comment(struct dom_doc *d, const char *data, int len);
 struct node *dom_create_doctype(struct dom_doc *d, const char *name,
                                 const char *pubid, const char *sysid);
 
+/* Create an element in an explicit namespace with the name taken VERBATIM --
+ * no ASCII-lowercasing. Foreign content needs both halves of that: SVG's
+ * localName is case-sensitive ("foreignObject", "clipPath", "feGaussianBlur"),
+ * and the caller (html_tree.c) has already lowercased HTML names via the
+ * tokenizer, so lowercasing again here would only be able to do damage. */
+struct node *dom_create_element_ns(struct dom_doc *d, const char *name, int len, int ns);
+
+/* A shallow copy: same document, namespace, name, htag and attributes, no
+ * children and no parent. This is what "reconstruct the active formatting
+ * elements" and the adoption agency algorithm mean by "create an element for
+ * the token for which the element was created". */
+struct node *dom_clone_element(const struct node *n);
+
+/* The doctype's name as bytes ("" if the doctype had none), so a serialiser
+ * does not need libwapcaplet on its include path to print it. */
+const char *dom_doctype_name(const struct node *n);
+
+/* N_ELEM: record the verbatim source span this element was parsed from
+ * (node->raw / ->rawlen). Only <svg> uses it -- see the field comment. */
+void dom_set_raw(struct node *n, const char *src, int len);
+
 void dom_append_child(struct node *parent, struct node *child);
+/* Insert `child` immediately before `ref` (a child of `parent`); ref == NULL
+ * appends. Foster parenting is the reason this exists: stray content inside a
+ * <table> is inserted BEFORE the table, not at the end of some parent. */
+void dom_insert_before(struct node *parent, struct node *child, struct node *ref);
+/* Append bytes to an N_TEXT/N_COMMENT payload, growing ->text geometrically.
+ * The tree builder inserts characters token by token but the spec's tree has
+ * one text node per run, so without this every entity in a paragraph would
+ * either split the node or re-copy the whole run. */
+int  dom_text_append(struct node *n, const char *s, int len);
 /* O(1): the node knows its prev. Only unlinks; the child stays allocated. */
 void dom_remove_child(struct node *parent, struct node *child);
 /* Unlink `n` from its parent and return it and its whole subtree to the free

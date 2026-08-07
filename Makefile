@@ -102,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -500,12 +500,33 @@ test-html5lib-tok: $(BUILD)/html5lib_tok_cases.inc
 $(BUILD)/browserobj/c/apps/browser/html_tokenizer.o: \
     c/apps/browser/html_entities.inc c/apps/browser/html_tags.inc
 
+HTML_PARSER_SRC := c/apps/browser/dom.c c/apps/browser/html_tree.c \
+                   c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c
+
 test-html5lib: $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
-	    c/apps/browser/dom.c $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(BUILD)/html5lib_test third_party/html5lib-tests/tree-construction \
-	    $(if $(V),-v $(V),)
+	    $(if $(V),-v $(V),) $(if $(BASELINE),--write-baseline,) $(if $(STRICT),--strict,)
+
+# The same corpus under ASan/UBSan/LeakSanitizer, plus a fuzz pass that feeds
+# truncations and mutations of every case through 12 fragment contexts. That is
+# what drives the adoption agency's reparenting loop against unbalanced stacks,
+# which is where a hand-written tree builder fails by use-after-free.
+# STRICT makes it exit non-zero on a regression against the expected-fail list.
+test-html5lib-asan: $(BUILD)/libcss_host.a
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_asan tests/unit/html5lib_test.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+	    $(BUILD)/html5lib_asan third_party/html5lib-tests/tree-construction --strict
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_fuzz tests/unit/html5lib_fuzz.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+	    $(BUILD)/html5lib_fuzz third_party/html5lib-tests/tree-construction
 
 # Does the H.264 decoder work on LogitOS, not just on the host? make test-h264
 # proves it bit-exact against ffmpeg, but that is a glibc build on Linux. This
