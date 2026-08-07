@@ -54,6 +54,9 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
     gui_clip(0, 0, 0, 0);
 }
 
+static int item_hit(const struct item *e, int x, int dy)
+{ return x >= e->x && x < e->x + e->w && dy >= e->y && dy < e->y + e->h; }
+
 int browser_hittest(int x, int y, int scroll, char *buf, int max)
 {
     if (max <= 0) return 0;
@@ -63,12 +66,47 @@ int browser_hittest(int x, int y, int scroll, char *buf, int max)
     for (int i = n - 1; i >= 0; i--) {            /* topmost first */
         const struct item *e = &it[i];
         if (!e->href || e->hidden) continue;
-        if (x >= e->x && x < e->x + e->w && dy >= e->y && dy < e->y + e->h) {
+        if (item_hit(e, x, dy)) {
             int o = 0;
             while (e->href[o] && o < max - 1) { buf[o] = e->href[o]; o++; }
             buf[o] = 0;
             return 1;
         }
+    }
+    return 0;
+}
+
+int browser_hittest_node(int x, int y, int scroll, struct node **node, char *href, int max)
+{
+    if (node) *node = 0;
+    if (href && max > 0) href[0] = 0;
+    const struct item *it = layout_items();
+    int n = layout_count();
+    int dy = y + scroll;
+    /* Back to front. The display list is emitted parent-before-child (a block's
+     * background rect, then its text), so the LAST box covering the point is the
+     * innermost one -- which is the element a DOM event should target. */
+    for (int i = n - 1; i >= 0; i--) {
+        const struct item *e = &it[i];
+        if (e->hidden || !item_hit(e, x, dy)) continue;
+        if (node) {
+            /* Text boxes hang off the TEXT node; an event target must be an
+             * element, so climb until we find one. */
+            struct node *p = e->node;
+            while (p && p->type != N_ELEM && p->type != N_DOCUMENT) p = p->parent;
+            *node = p;
+        }
+        if (href && max > 0 && e->href) {
+            int o = 0;
+            while (e->href[o] && o < max - 1) { href[o] = e->href[o]; o++; }
+            href[o] = 0;
+        }
+        /* An inner box without its own href still navigates its ancestor link
+         * (layout propagates the href down the inline flow, but a background
+         * rect emitted for a nested element may carry none) -- so if this box
+         * had no href, fall back to the link hit test over the same point. */
+        if (href && max > 0 && !href[0]) browser_hittest(x, y, scroll, href, max);
+        return 1;
     }
     return 0;
 }
