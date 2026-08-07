@@ -2432,3 +2432,8 @@ clean:
 # H.265/HEVC decoder test targets (test-h265, test-h265-units, test-h265-diff,
 # test-video265). Same reason, same shape as the fragments above.
 -include tests/h265.mk
+
+# Full-system test, the commit gate and the test-liveness audit
+# (test-fullsystem, verify-commit, check-test-liveness). Same reason, same
+# shape as the fragments above.
+-include tests/fullsystem.mk
