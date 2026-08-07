@@ -281,7 +281,10 @@ $(BUILD)/cssobj/%.o: %.c
 
 # The app's own TUs that touch QuickJS headers, so they build with JS_CF (and
 # not with the plain browser flags, which lack -Ithird_party/quickjs).
-BROWSER_JS_SRC := c/apps/browser/browser.c c/apps/browser/js_dom.c c/apps/browser/js_page.c
+# Globbed, not listed: the JS/DOM side is being extended by several parallel
+# lines at once (module loader, DOM bindings, web APIs) and a hand-kept list
+# makes this one line the thing they all have to edit.
+BROWSER_JS_SRC := c/apps/browser/browser.c $(sort $(wildcard c/apps/browser/js_*.c))
 BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 
 $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
