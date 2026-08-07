@@ -426,4 +426,51 @@ struct logit_sndstate {
     unsigned int       state;           /* SND_S_* */
 };
 
+/* --------------------------------------------------------------------------
+ * Memory: a process can ask for more of it.
+ *
+ * Until now the only memory a ring-3 program had was the fixed arena it linked
+ * with -- which is why mini-libc carries a static 24 MiB heap and why its
+ * allocator cannot grow: there was nothing to grow into. mmap is the piece
+ * that changes that. It reserves ADDRESS SPACE; the frames appear on first
+ * touch, so reserving 64 MiB and using 200 KiB of it costs 200 KiB.
+ *
+ * Deliberately not POSIX mmap: no file backing, no MAP_FIXED, no offset. It is
+ * the anonymous-memory subset an allocator needs, and adding the rest later
+ * costs a flag, not an ABI break.
+ * -------------------------------------------------------------------------- */
+#define MMAP_PROT_READ   0x1
+#define MMAP_PROT_WRITE  0x2
+#define MMAP_PROT_EXEC   0x4
+
+/* (len, prot, hint) -> base address, or 0 on failure.
+ * `hint` is a preferred base (0 = anywhere) and is honoured only if it is free
+ * -- it never evicts an existing mapping. `len` is rounded up to a page. */
+#define SYS_MMAP        92
+/* (addr, len) -> 0, or -1 if the range is not a subset of what is mapped.
+ * Frames that were touched are released; ones that never were cost nothing. */
+#define SYS_MUNMAP      93
+/* (struct logit_meminfo *) -> 0. The machine's memory in numbers, so a program
+ * (or a test) can see sharing and leaks rather than infer them. */
+#define SYS_MEMINFO     94
+
+struct logit_meminfo {
+    unsigned long long frame_bytes;      /* 4096 */
+    unsigned long long frames_total;     /* usable RAM, in frames */
+    unsigned long long frames_free;
+    unsigned long long frames_used;      /* frames with at least one reference */
+    unsigned long long frames_shared;    /* used frames referenced more than once */
+    unsigned long long refs_total;       /* sum of every frame's reference count.
+                                          * refs_total - frames_used is how many
+                                          * mappings sharing saved. */
+    unsigned long long frames_pinned;    /* reference counts that saturated: a
+                                          * known, bounded, deliberate leak */
+    unsigned long long cow_pages;        /* pages currently mapped copy-on-write */
+    unsigned long long cow_faults;       /* write faults resolved BY COPYING */
+    unsigned long long cow_reuse;        /* ...resolved without copying (sole owner) */
+    unsigned long long anon_faults;      /* first-touch anonymous pages filled */
+    unsigned long long mm_bugs;          /* allocator invariant violations; must be 0 */
+    unsigned long long mmap_reserved;    /* bytes this process has reserved */
+};
+
 #endif /* LOGIT_ABI_H */

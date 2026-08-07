@@ -2,6 +2,10 @@
 #include <stddef.h>
 #include "vmm.h"
 #include "pmm.h"
+#include "mm.h"
+#include "vma.h"
+#include "mmhost.h"
+#include "kprintf.h"
 
 #define PRESENT  0x1
 #define WRITABLE 0x2
@@ -10,20 +14,17 @@
 void *memset(void *, int, size_t);     /* lib/string.c */
 void *memcpy(void *, const void *, size_t);
 
-static inline void invlpg(uint64_t addr)
-{
-    __asm__ volatile ("invlpg (%0)" : : "r"(addr) : "memory");
-}
+static inline void invlpg(uint64_t addr) { mm_invlpg(addr); }
 
 /* Return the next-level table for `idx`, allocating and linking it if absent.
  * Physical frames live in the identity-mapped low region, so a frame's
- * physical address is directly usable as a pointer. */
+ * physical address is directly usable as a pointer (mm_p2v). */
 static uint64_t *next_table(uint64_t *table, int idx)
 {
     if (!(table[idx] & PRESENT)) {
         uint64_t frame = pmm_alloc();
         if (!frame) return NULL;                 /* OOM: frame 0 is reserved; never install it */
-        memset((void *)frame, 0, 4096);
+        memset(mm_p2v(frame), 0, 4096);
         table[idx] = frame | PRESENT | WRITABLE | USER;
     } else {
         if (table[idx] & 0x80)                  /* PS: a large-page leaf, not a table --
@@ -35,15 +36,14 @@ static uint64_t *next_table(uint64_t *table, int idx)
          * kernel-only pages (no USER on their final entry) stay protected. */
         table[idx] |= USER;
     }
-    return (uint64_t *)(table[idx] & ~(uint64_t)0xFFF);
+    return (uint64_t *)mm_p2v(table[idx] & ~(uint64_t)0xFFF);
 }
 
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    uint64_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    uint64_t cr3 = mm_read_cr3();
 
-    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
     uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
@@ -72,43 +72,51 @@ void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags)
 #define USER_PDPT_IDX 1
 
 static uint64_t g_kernel_cr3;
+/* Statistics, not state: every writer (this file's clone, fault.c's resolve,
+ * the two unmap paths) runs under the BKL today -- SYS_FORK is not in
+ * syscall_is_bkl_free() and faults always take the BKL -- so plain increments
+ * are correct. If fork is ever made BKL-free these need the same treatment the
+ * PTE edits below would: a per-address-space lock. */
+uint64_t g_mm_cow_pages;                 /* PTEs currently carrying VMM_PTE_COW (mm.h) */
+static uint64_t g_clone_shared, g_clone_copied;
+
+uint64_t mm_cow_pages(void) { return g_mm_cow_pages; }
 
 uint64_t vmm_kernel_cr3(void)
 {
     if (!g_kernel_cr3)
-        __asm__ volatile ("mov %%cr3, %0" : "=r"(g_kernel_cr3));
+        g_kernel_cr3 = mm_read_cr3();
     return g_kernel_cr3 & ~(uint64_t)0xFFF;
 }
 
-void vmm_switch(uint64_t cr3)
-{
-    __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
-}
+void vmm_switch(uint64_t cr3) { mm_write_cr3(cr3); }
 
 uint64_t vmm_new_space(void)
 {
     uint64_t kcr3 = vmm_kernel_cr3();
-    uint64_t *kpml4 = (uint64_t *)kcr3;
-    uint64_t *kpdpt = (uint64_t *)(kpml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t *kpml4 = (uint64_t *)mm_p2v(kcr3);
+    uint64_t *kpdpt = (uint64_t *)mm_p2v(kpml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
 
     uint64_t pml4 = pmm_alloc();
     uint64_t pdpt = pmm_alloc();
     if (!pml4 || !pdpt) { if (pml4) pmm_free(pml4); if (pdpt) pmm_free(pdpt); return 0; }
 
     /* Copy the kernel PML4 wholesale: every region stays mapped by default. */
-    memcpy((void *)pml4, (void *)kcr3, 4096);
+    memcpy(mm_p2v(pml4), mm_p2v(kcr3), 4096);
     /* Copy the kernel's low PDPT, then give this space its own PDPT so its
      * user sub-tree (PDPT[1]) can diverge without touching the kernel's. */
-    memcpy((void *)pdpt, (void *)kpdpt, 4096);
-    ((uint64_t *)pdpt)[USER_PDPT_IDX] = 0;          /* private, populated lazily */
-    ((uint64_t *)pml4)[USER_PML4_IDX] = pdpt | PRESENT | WRITABLE | USER;
+    memcpy(mm_p2v(pdpt), kpdpt, 4096);
+    ((uint64_t *)mm_p2v(pdpt))[USER_PDPT_IDX] = 0;   /* private, populated lazily */
+    ((uint64_t *)mm_p2v(pml4))[USER_PML4_IDX] = pdpt | PRESENT | WRITABLE | USER;
+
+    vma_space_new(pml4);
     return pml4;
 }
 
 /* Like next_table() but walks the table tree rooted at an explicit PML4. */
 void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
     uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
@@ -117,55 +125,179 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
     /* No invlpg: this space is not active while being populated. */
 }
 
-/* fork(): eager-copy the private user subtree (PML4[0]/PDPT[1]) of `src_cr3`
- * into `dst_cr3` -- every mapped user page gets a fresh frame with identical
- * contents at the same virtual address. The kernel + framebuffer mappings are
- * shared via the PML4 copy done in vmm_new_space, so we only walk PDPT[1]. */
-/* Returns 0 on success, -1 on OOM (mid-clone). On -1 the partially-built dst
- * subtree is left for the caller to reclaim via vmm_free_space (which it must, to
- * both abort the fork and free the frames cloned so far). */
+/* Walk to the leaf PTE without allocating anything. NULL if any level is
+ * absent, or if a level is a 2 MiB/1 GiB leaf (boot.asm's identity map). */
+uint64_t *vmm_pte(uint64_t cr3, uint64_t virt)
+{
+    uint64_t *t = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    int shift[3] = { 39, 30, 21 };
+    for (int lvl = 0; lvl < 3; lvl++) {
+        uint64_t e = t[(virt >> shift[lvl]) & 0x1FF];
+        if (!(e & PRESENT)) return NULL;
+        if (e & 0x80) return NULL;              /* large page: not a table */
+        t = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
+    }
+    return &t[(virt >> 12) & 0x1FF];
+}
+
+/* ---------------------------------------------------------------- fork --
+ *
+ * COPY-ON-WRITE. Both spaces are pointed at the same frames, mapped read-only
+ * with VMM_PTE_COW set in BOTH; the frame's refcount goes up by one. Nothing
+ * is copied until somebody writes (fault.c).
+ *
+ * THE REFCOUNT ARGUMENT -- the invariant this whole design rests on:
+ *
+ *     refcount(f) == the number of leaf PTEs, across all address spaces, that
+ *                    point at f.
+ *
+ * It holds because there are exactly five places a user PTE is created or
+ * destroyed, and each moves the count by exactly one in the same direction:
+ *
+ *   create   pmm_alloc()          -> count 1, and the caller installs exactly
+ *                                    one PTE (elf_load, setup_cli_stack,
+ *                                    wm_launch, the anon fault, the COW copy).
+ *   create   this function        -> pmm_ref() +1 per PTE it installs in dst.
+ *   destroy  vmm_free_user()      -> pmm_free() once per present user PTE.
+ *   destroy  vmm_unmap_range_in() -> pmm_free() once per PTE it clears.
+ *   replace  the COW fault        -> installs a NEW frame in this space's PTE
+ *                                    (count 1) and pmm_free()s the old one,
+ *                                    which is this space's single reference.
+ *
+ * Two things make that argument airtight rather than merely plausible:
+ *   (a) within ONE address space a frame is never mapped at two addresses --
+ *       every caller above maps a freshly allocated frame at one VA -- so
+ *       "one PTE per space" and "one reference per space" are the same
+ *       statement, and freeing a space by walking its PTEs cannot double-count.
+ *   (b) pmm_free() is a DECREMENT, not a free: the frame returns to the pool
+ *       only at zero, and a decrement below zero is refused and reported
+ *       (pmm.c mm_bug) rather than silently freeing a live frame.
+ * The host test drives every one of those transitions and re-derives the whole
+ * table afterwards (tests/unit/mm_vmm_test.c).
+ *
+ * FAILURE PATH. On OOM the caller frees dst, which drops every reference this
+ * function took. The src PTEs already made read-only stay that way: that is
+ * SAFE, not a leak -- the parent's next write takes a COW fault, finds itself
+ * the sole owner (count 1) and simply gets WRITABLE back without copying.
+ *
+ * TLB. src is the running process's own space and a process has exactly one
+ * thread, so no other core can have these translations cached. We invalidate
+ * on this core as we go, and reload CR3 at the end if src is active. */
 int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
 {
-    uint64_t *spml4 = (uint64_t *)(src_cr3 & ~(uint64_t)0xFFF);
+    g_clone_shared = g_clone_copied = 0;
+
+    uint64_t *spml4 = (uint64_t *)mm_p2v(src_cr3 & ~(uint64_t)0xFFF);
     if (!(spml4[USER_PML4_IDX] & PRESENT)) return 0;
-    uint64_t *spdpt = (uint64_t *)(spml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t *spdpt = (uint64_t *)mm_p2v(spml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
     uint64_t pde = spdpt[USER_PDPT_IDX];
     if (!(pde & PRESENT)) return 0;
-    uint64_t *spd = (uint64_t *)(pde & ~(uint64_t)0xFFF);
+    uint64_t *spd = (uint64_t *)mm_p2v(pde & ~(uint64_t)0xFFF);
+
+    int cow = mm_cow_enabled();
+    int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (src_cr3 & ~(uint64_t)0xFFF));
+
+    vma_space_clone(dst_cr3, src_cr3);
+
     for (int i = 0; i < 512; i++) {
         if (!(spd[i] & PRESENT)) continue;
-        uint64_t *spt = (uint64_t *)(spd[i] & ~(uint64_t)0xFFF);
+        uint64_t *spt = (uint64_t *)mm_p2v(spd[i] & ~(uint64_t)0xFFF);
         for (int j = 0; j < 512; j++) {
             uint64_t e = spt[j];
             if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
             uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
                           ((uint64_t)i << 21) | ((uint64_t)j << 12);
-            uint64_t frame = pmm_alloc();
-            if (!frame) return -1;       /* OOM: caller must vmm_free_space(dst) + fail the fork */
-            memcpy((void *)frame, (void *)(e & ~(uint64_t)0xFFF), 4096);
-            vmm_map_page_in(dst_cr3, va, frame, VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0));
+            uint64_t frame = e & ~(uint64_t)0xFFF;
+
+            if (cow && pmm_ref(frame) == 0) {
+                /* Share. Drop WRITABLE in both and mark both copy-on-write, so
+                 * whichever side writes first takes the fault. A page that was
+                 * ALREADY read-only keeps its flags (it may be read-only
+                 * because of an earlier fork -- then it is still COW and both
+                 * new holders inherit that -- or genuinely read-only, in which
+                 * case neither side may ever write it and no COW is needed). */
+                uint64_t shared_e = e;
+                if (e & WRITABLE) {
+                    shared_e = (e & ~(uint64_t)WRITABLE) | VMM_PTE_COW;
+                    spt[j] = shared_e;
+                    g_mm_cow_pages += 2;           /* both spaces now hold a COW PTE */
+                    if (active) invlpg(va);
+                } else if (e & VMM_PTE_COW) {
+                    g_mm_cow_pages += 1;           /* src already counted; dst is new */
+                }
+                vmm_map_page_in(dst_cr3, va, shared_e, shared_e & 0xFFF);
+                g_clone_shared++;
+                continue;
+            }
+
+            /* No COW (disabled), or the refcount saturated and the frame may
+             * not be shared: copy it, exactly as the eager clone always did. */
+            uint64_t nf = pmm_alloc();
+            if (!nf) return -1;       /* OOM: caller must vmm_free_space(dst) + fail the fork */
+            memcpy(mm_p2v(nf), mm_p2v(frame), 4096);
+            vmm_map_page_in(dst_cr3, va, nf, VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0));
+            g_clone_copied++;
         }
     }
+    if (active) vmm_switch(mm_read_cr3());      /* flush the stale writable entries */
     return 0;
+}
+
+void vmm_clone_stats(uint64_t *shared, uint64_t *copied)
+{
+    if (shared) *shared = g_clone_shared;
+    if (copied) *copied = g_clone_copied;
+}
+
+/* Drop one reference per present PTE in [virt, virt+len) and clear the entries.
+ * The page tables themselves are left in place (they are per-space and are
+ * reclaimed wholesale by vmm_free_user). */
+uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
+{
+    uint64_t start = virt & ~(uint64_t)0xFFF;
+    if (len == 0 || start > ~(uint64_t)0 - len - 0xFFF) return 0;
+    uint64_t end = (virt + len + 0xFFF) & ~(uint64_t)0xFFF;
+    int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF));
+    uint64_t n = 0;
+    for (uint64_t a = start; a < end; a += 4096) {
+        uint64_t *pte = vmm_pte(cr3, a);
+        if (!pte) continue;
+        uint64_t e = *pte;
+        if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
+        if (e & VMM_PTE_COW) g_mm_cow_pages--;
+        *pte = 0;
+        pmm_free(e & ~(uint64_t)0xFFF);
+        if (active) invlpg(a);
+        n++;
+    }
+    return n;
 }
 
 /* Free every frame + page-table page under the private user subtree (PDPT[1]).
  * Leaves the (now-empty) PDPT[1] slot zeroed so the space can be repopulated
- * (execve). Does NOT touch the shared kernel PDPT entries. */
+ * (execve). Does NOT touch the shared kernel PDPT entries.
+ *
+ * With copy-on-write this is still exactly one pmm_free per present user PTE,
+ * which is exactly one reference: a shared frame simply has other spaces'
+ * references left and stays allocated. */
 void vmm_free_user(uint64_t cr3)
 {
-    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    vma_space_clear(cr3);
+
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
     if (!(pml4[USER_PML4_IDX] & PRESENT)) return;
-    uint64_t *pdpt = (uint64_t *)(pml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t *pdpt = (uint64_t *)mm_p2v(pml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
     uint64_t pde = pdpt[USER_PDPT_IDX];
     if (!(pde & PRESENT)) return;
-    uint64_t *pd = (uint64_t *)(pde & ~(uint64_t)0xFFF);
+    uint64_t *pd = (uint64_t *)mm_p2v(pde & ~(uint64_t)0xFFF);
     for (int i = 0; i < 512; i++) {
         if (!(pd[i] & PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)(pd[i] & ~(uint64_t)0xFFF);
+        uint64_t *pt = (uint64_t *)mm_p2v(pd[i] & ~(uint64_t)0xFFF);
         for (int j = 0; j < 512; j++)
-            if ((pt[j] & (PRESENT | USER)) == (PRESENT | USER))
+            if ((pt[j] & (PRESENT | USER)) == (PRESENT | USER)) {
+                if (pt[j] & VMM_PTE_COW) g_mm_cow_pages--;
                 pmm_free(pt[j] & ~(uint64_t)0xFFF);
+            }
         pmm_free(pd[i] & ~(uint64_t)0xFFF);     /* the PT frame */
     }
     pmm_free(pde & ~(uint64_t)0xFFF);           /* the PD frame */
@@ -176,8 +308,7 @@ void vmm_free_user(uint64_t cr3)
      * now hand to anyone). No PCID here, so a same-value CR3 reload is the only
      * full flush available; vmm_free_space never runs on the active CR3, so it
      * correctly skips this. */
-    uint64_t cur;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cur));
+    uint64_t cur = mm_read_cr3();
     if ((cur & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF))
         vmm_switch(cur);
 }
@@ -188,9 +319,10 @@ void vmm_free_user(uint64_t cr3)
 void vmm_free_space(uint64_t cr3)
 {
     if (!cr3) return;
-    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
     uint64_t pdpt_e = pml4[USER_PML4_IDX];
     vmm_free_user(cr3);
+    vma_space_free(cr3);
     if (pdpt_e & PRESENT) pmm_free(pdpt_e & ~(uint64_t)0xFFF);   /* private PDPT frame */
     pmm_free(cr3 & ~(uint64_t)0xFFF);                            /* PML4 frame */
     /* NB: NO tlb_flush_all() here. vmm_free_space runs under the BKL, and a core
@@ -204,16 +336,16 @@ void vmm_free_space(uint64_t cr3)
 
 static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
 {
-    uint64_t *pml4 = (uint64_t *)(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
     uint64_t e = pml4[(virt >> 39) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
-    uint64_t *pdpt = (uint64_t *)(e & ~(uint64_t)0xFFF);
+    uint64_t *pdpt = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
     e = pdpt[(virt >> 30) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
-    uint64_t *pd = (uint64_t *)(e & ~(uint64_t)0xFFF);
+    uint64_t *pd = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
     e = pd[(virt >> 21) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
-    uint64_t *pt = (uint64_t *)(e & ~(uint64_t)0xFFF);
+    uint64_t *pt = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
     e = pt[(virt >> 12) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
     if (write && !(e & WRITABLE)) return 0;
@@ -231,6 +363,35 @@ int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write)
     if ((start >> 47) != 0 || (end >> 47) != 0) return 0;
     for (uint64_t p = start & ~(uint64_t)0xFFF;; p += 0x1000) {
         if (!user_page_ok(cr3, p, write)) return 0;
+        if (p >= (end & ~(uint64_t)0xFFF)) break;
+    }
+    return 1;
+}
+
+/* See vmm.h. This is the kernel-side half of the Dirty COW lesson: a kernel
+ * write to a user page must RESOLVE the copy-on-write first, through the same
+ * code a userspace write goes through, and must not be allowed to reach a
+ * plain memcpy against a read-only mapping. See usercopy.c for the argument
+ * about why resolve-then-copy has no window here. */
+int vmm_user_range_fault_in(uint64_t cr3, const void *ptr, uint64_t len, int write)
+{
+    if (!cr3) return 0;
+    if (len == 0) return 1;
+    if (!ptr) return 0;
+    uint64_t start = (uint64_t)ptr;
+    uint64_t end = start + len - 1;
+    if (end < start) return 0;
+    if ((start >> 47) != 0 || (end >> 47) != 0) return 0;
+
+    for (uint64_t p = start & ~(uint64_t)0xFFF;; p += 0x1000) {
+        if (!user_page_ok(cr3, p, write)) {
+            /* Not usable as-is. Ask the fault path to make it usable; it only
+             * says yes for a copy-on-write page or a reserved anonymous page,
+             * so a genuinely bad pointer still fails here. */
+            uint64_t err = (write ? 0x2 : 0x0) | (user_page_ok(cr3, p, 0) ? 0x1 : 0x0);
+            if (!mm_fault_in(cr3, p, err)) return 0;
+            if (!user_page_ok(cr3, p, write)) return 0;    /* belt and braces */
+        }
         if (p >= (end & ~(uint64_t)0xFFF)) break;
     }
     return 1;

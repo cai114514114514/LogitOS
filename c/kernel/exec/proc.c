@@ -4,6 +4,9 @@
 #include "file.h"
 #include "sched.h"
 #include "vmm.h"
+#include "mm.h"
+#include "pmm.h"
+#include "pit.h"
 #include "kprintf.h"
 #include "spinlock.h"
 
@@ -24,6 +27,80 @@ static spinlock_t g_proc_lock = SPINLOCK_INIT;
 
 static struct proc procs[NPROC];
 static int next_pid = 1;
+
+/* --- fork accounting ------------------------------------------------------
+ * "fork is faster now" is not a claim anybody can check; "fork of the shell
+ * copied 0 of its 331 pages, in 1.1 Mcycles instead of 47" is. These are the
+ * numbers the copy-on-write work is judged on, so the kernel keeps them itself
+ * rather than leaving them to be inferred from a stopwatch.
+ *
+ * TSC rather than timer_ticks(): the PIT runs at 100 Hz, so a whole fork
+ * rounds to 0 or 1 ticks and the difference being measured is invisible. The
+ * TSC has no calibrated frequency here, so cycles are reported as cycles --
+ * a ratio between two builds on the same host is exactly what is wanted. */
+static uint64_t g_forks, g_fork_cycles, g_fork_shared, g_fork_copied;
+static uint64_t g_rep_ms, g_rep_forks;
+
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Prototype here rather than in proc.h: this line owns proc.c but not proc.h.
+ * It belongs in the header the day a caller outside this file needs it (a
+ * meminfo syscall would); until then a local prototype keeps the change inside
+ * the file this line is allowed to change. */
+void proc_fork_stats(uint64_t *forks, uint64_t *cycles, uint64_t *shared, uint64_t *copied);
+
+void proc_fork_stats(uint64_t *forks, uint64_t *cycles, uint64_t *shared, uint64_t *copied)
+{
+    if (forks)  *forks  = g_forks;
+    if (cycles) *cycles = g_fork_cycles;
+    if (shared) *shared = g_fork_shared;
+    if (copied) *copied = g_fork_copied;
+}
+
+/* An idle desktop stays silent; a shell running commands leaves a continuous
+ * trace of the free-frame count, which is the only way a one-frame-per-fork
+ * leak is ever noticed -- it is invisible in any single test and fatal in an
+ * hour.
+ *
+ * Sampled from two places, both deliberate:
+ *   - proc_waitpid(), immediately AFTER the child's address space is freed.
+ *     That is the only moment at which the free-frame count is comparable
+ *     between samples: taken with a child alive it is short by that child's
+ *     private pages (~256 for the shell), which is 6x the size of the leak
+ *     being looked for and would bury it.
+ *   - the WM loop, on a 5 s timer, so a slow trickle from GUI apps (which are
+ *     reaped by proc_reap, not waited for) still leaves a trail.
+ * Rate-limited either way: every 8 forks, or every 5 seconds. */
+#define FORK_REPORT_EVERY 8
+
+static void fork_report_tick(void)
+{
+    uint64_t now = timer_ms();
+    if (g_forks == g_rep_forks) return;
+    if (g_forks - g_rep_forks < FORK_REPORT_EVERY && g_rep_ms && now - g_rep_ms < 5000) return;
+    g_rep_ms = now ? now : 1;
+    g_rep_forks = g_forks;
+    /* `live` is what makes two samples comparable. The free-frame count on its
+     * own is not: taken while one more process exists it is short by that
+     * process's pages (~256 for a shell), which is far bigger than the leak
+     * being watched for and would bury it. Reading it lets a reader -- or a
+     * test -- compare only samples taken with the same set of processes
+     * alive. */
+    int live = 0;
+    for (int i = 0; i < NPROC; i++) if (procs[i].state != PROC_FREE) live++;
+
+    kprintf("[mm] fork: cow=%s, %d forks, %d pages shared, %d copied, %d kcycles/fork; "
+            "%d frames free, %d shared, %d bugs, %d live\n",
+            mm_cow_enabled() ? "on" : "off",
+            (int)g_forks, (int)g_fork_shared, (int)g_fork_copied,
+            (int)(g_forks ? g_fork_cycles / g_forks / 1000 : 0),
+            (int)pmm_free_frames(), (int)pmm_shared_frames(), (int)pmm_bugs(), live);
+}
 
 void proc_init(void)
 {
@@ -125,12 +202,23 @@ long proc_fork(struct registers *r)
     struct proc *parent = proc_current();
     if (!parent) return -1;
 
+    uint64_t t0 = rdtsc();
     uint64_t space = vmm_new_space();
     if (!space) { kprintf("[fork] vmm_new_space failed\n"); return -1; }
     if (vmm_clone_user(space, parent->cr3) < 0) {   /* OOM mid-clone: don't run a partial child */
         kprintf("[fork] clone_user failed\n");
         vmm_free_space(space);
         return -1;
+    }
+    {   /* Charge the address-space clone only: the fd table and the child
+         * thread cost the same before and after, and mixing them in would
+         * hide the thing being measured. */
+        uint64_t shared = 0, copied = 0;
+        vmm_clone_stats(&shared, &copied);
+        g_forks++;
+        g_fork_cycles += rdtsc() - t0;
+        g_fork_shared += shared;
+        g_fork_copied += copied;
     }
 
     struct proc *child = alloc_proc();
@@ -208,6 +296,7 @@ long proc_waitpid(int pid, int *status)
         spin_unlock_irqrestore(&g_proc_lock, fl);
         if (rpid != -1) {                         /* freed the address space OUTSIDE the lock */
             if (freed_cr3) vmm_free_space(freed_cr3);
+            fork_report_tick();                   /* sample with the child gone -- see above */
             if (status) *status = code;
             return rpid;
         }
@@ -220,6 +309,7 @@ long proc_waitpid(int pid, int *status)
  * WM) and orphans whose parent slot is already gone. Called from the WM loop. */
 void proc_reap(void)
 {
+    fork_report_tick();
     for (int i = 0; i < NPROC; i++) {
         uint64_t freed_cr3 = 0;
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);

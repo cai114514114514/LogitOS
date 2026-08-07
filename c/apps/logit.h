@@ -236,4 +236,24 @@ static inline int snd_write_all(int h, const void *buf, int bytes)
   }
   return off; }
 
+/* --- memory ---------------------------------------------------------------
+ * Reserve address space; the pages appear when you touch them. This is what
+ * lets an allocator grow instead of living inside whatever arena its program
+ * happened to link with.
+ *
+ * Returns 0 on failure, so the idiom is `p = sys_mmap(n, ...); if (!p) ...`
+ * rather than checking for MAP_FAILED. */
+static inline void *sys_mmap(unsigned long len, int prot)
+{ return (void *)_sys(SYS_MMAP, (long)len, prot, 0); }
+
+static inline void *sys_mmap_at(unsigned long len, int prot, void *hint)
+{ return (void *)_sys(SYS_MMAP, (long)len, prot, (long)hint); }
+
+static inline int sys_munmap(void *addr, unsigned long len)
+{ return (int)_sys(SYS_MUNMAP, (long)addr, (long)len, 0); }
+
+/* The machine's memory in numbers. Zero-fill the struct first: it grows. */
+static inline int sys_meminfo(struct logit_meminfo *mi)
+{ return (int)_sys(SYS_MEMINFO, (long)mi, 0, 0); }
+
 #endif /* LOGIT_USERLIB_H */
