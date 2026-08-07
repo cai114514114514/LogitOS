@@ -25,7 +25,17 @@ int wav_parse(const uint8_t *buf, long len, wavinfo *w)
      * as it is inside the buffer we were actually given -- files are commonly
      * truncated in transit, and a size that overruns is not licence to read. */
     long riff_end = 8 + (long)rd32(buf + 4);
+#if defined(AUDIO_FUZZ_SABOTAGE)
+    /* NEGATIVE CONTROL, never defined by a shipping build. Believing the
+     * declared RIFF size is the canonical WAV parser bug: the chunk walk below
+     * then reads `ch[0..7]` at offsets past the end of the caller's buffer.
+     * test-audio-codec-fuzz-negctl compiles with this to prove the fuzzer's
+     * sanitizers actually fire -- a fuzz target that has never caught anything
+     * is indistinguishable from one wired to /dev/null. */
+    (void)len;
+#else
     if (riff_end > len || riff_end < 12) riff_end = len;
+#endif
 
     memset(w, 0, sizeof(*w));
     int have_fmt = 0;

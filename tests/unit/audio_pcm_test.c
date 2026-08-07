@@ -51,7 +51,16 @@ static void t_formats(void)
     ok(snd_fmt_ok(44100, 1, SND_FMT_F32), "44.1k mono f32 accepted");
     ok(!snd_fmt_ok(48000, 2, 99),   "unknown format rejected");
     ok(!snd_fmt_ok(48000, 0, SND_FMT_S16), "zero channels rejected");
-    ok(!snd_fmt_ok(48000, 3, SND_FMT_S16), "3 channels rejected (we mix to <=2)");
+    /* 3..8 channels are ACCEPTED, and that is deliberate -- see the comment on
+     * snd_fmt_ok. A 5.1 FLAC is 6 channels; refusing it would make the file
+     * unplayable rather than merely un-surrounded, so the layer takes the front
+     * pair and drops the rest. This assertion used to read "3 channels
+     * rejected", which was the design before that decision and made the whole
+     * suite fail against the shipped code. What the drop actually DOES is
+     * asserted in t_convert(); accepting the format is only half a claim. */
+    ok(snd_fmt_ok(48000, 3, SND_FMT_S16), "3 channels accepted (front pair taken)");
+    ok(snd_fmt_ok(48000, 6, SND_FMT_S16), "5.1 accepted rather than unplayable");
+    ok(!snd_fmt_ok(48000, 9, SND_FMT_S16), "9 channels rejected (past the ceiling)");
     /* The rate bound is not fussiness: rate feeds a Q16.16 step and an
      * unbounded ratio overflows it. A rejected rate is a returned error; an
      * accepted-then-overflowing one is noise. */
@@ -111,6 +120,45 @@ static void t_convert(void)
         eqi(out[1], 1000, "mono->stereo fills right with the SAME sample");
         eqi(out[2], -2000, "mono->stereo frame 2 left");
         eqi(out[3], -2000, "mono->stereo frame 2 right");
+    }
+
+    /* More than two source channels: the front pair is TAKEN, the rest are
+     * dropped. This path had no test at all, which is how a stale "3 channels
+     * are rejected" assertion survived next to code that accepts up to 8.
+     *
+     * Channel order in WAV/FLAC is FL, FR, FC, LFE, BL, BR -- so taking [0] and
+     * [1] is a real stereo signal. The bug this guards against is reading the
+     * frame with the WRONG STRIDE: at src_ch=6 the second frame starts at index
+     * 6, and a decoder that used dst_ch or a hardcoded 2 would return FC and
+     * LFE as if they were the next frame's L/R. That is inaudible on a sine and
+     * unmistakable on real content, so it is asserted on frame 2, not frame 1. */
+    {
+        int16_t in[12] = { 100, 200, 300, 400, 500, 600,       /* frame 0 */
+                           111, 222, 333, 444, 555, 666 };     /* frame 1 */
+        memset(out, 0x7F, sizeof out);
+        pcm_to_s16(out, 2, in, 6, SND_FMT_S16, 2);
+        eqi(out[0], 100, "5.1 frame 0 -> front left");
+        eqi(out[1], 200, "5.1 frame 0 -> front right");
+        eqi(out[2], 111, "5.1 frame 1 -> front left (stride is src_ch, not 2)");
+        eqi(out[3], 222, "5.1 frame 1 -> front right");
+    }
+
+    /* And the same source folded to a single output channel must average the
+     * front pair -- not average all six, and not take FL alone. */
+    {
+        int16_t in[6] = { 1000, 2000, -30000, -30000, -30000, -30000 };
+        pcm_to_s16(out, 1, in, 6, SND_FMT_S16, 1);
+        eqi(out[0], 1500, "5.1 -> mono averages the FRONT PAIR only");
+    }
+
+    /* A 3-channel source with dst_ch=2: the third channel is dropped, and the
+     * output is not left holding whatever was in the buffer before. */
+    {
+        int16_t in[3] = { -500, 500, 32767 };
+        memset(out, 0x7F, sizeof out);
+        pcm_to_s16(out, 2, in, 3, SND_FMT_S16, 1);
+        eqi(out[0], -500, "3ch -> left");
+        eqi(out[1], 500,  "3ch -> right, centre channel dropped");
     }
 
     /* Stereo folded to mono averages rather than dropping a channel. */

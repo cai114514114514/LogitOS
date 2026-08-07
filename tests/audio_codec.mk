@@ -85,13 +85,64 @@ test-mp3: $(AUDIO_STAMP)
 # structurally hostile headers, uniform noise, and the properties that must
 # hold even on garbage (bounded writes, determinism, no leaks).
 #   make test-audio-codec-fuzz SCALE=40 SEED=0x1234    goes deeper
+#
+# -fno-sanitize-recover=all is not decoration. UBSan's DEFAULT is to print the
+# diagnostic and CARRY ON, so a signed overflow or a misaligned load would be
+# reported on stderr and the harness would still exit 0 and print its own
+# "no sanitizer report" line -- a gate that reports the opposite of what it
+# found. With -fno-sanitize-recover the first UB aborts the process, which is
+# the only way that line can be true. halt_on_error=1 does the same for ASan's
+# few recoverable classes, and abort_on_error makes the exit status unambiguous.
 SCALE ?= 6
 SEED  ?= 0x243F6A8885A308D3
+ASAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
+              -fno-omit-frame-pointer
+ASAN_ENV   := ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=0 \
+              UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+
 test-audio-codec-fuzz:
 	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	@$(CC) -O1 -g $(ASAN_FLAGS) -w \
 	    -Ic/lib/audio -o $(BUILD)/audio_fuzz tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC)
-	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/audio_fuzz $(SCALE) $(SEED) tests/fixtures/audio
+	@$(ASAN_ENV) $(BUILD)/audio_fuzz $(SCALE) $(SEED) tests/fixtures/audio
+
+# A soak run over several seeds. Not part of test-audio-codecs -- it takes
+# minutes, not seconds -- but it is what a "the parsers are fuzzed" claim
+# should be able to point at.
+#   make test-audio-codec-fuzz-deep SCALE=60
+test-audio-codec-fuzz-deep:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g $(ASAN_FLAGS) -w \
+	    -Ic/lib/audio -o $(BUILD)/audio_fuzz tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC)
+	@for s in 0x243F6A8885A308D3 0x13198A2E03707344 0xA4093822299F31D0 \
+	          0x082EFA98EC4E6C89 0x452821E638D01377; do \
+	    echo "--- seed $$s ---"; \
+	    $(ASAN_ENV) $(BUILD)/audio_fuzz $(SCALE) $$s tests/fixtures/audio || exit 1; \
+	 done
+
+# NEGATIVE CONTROL for the fuzzer itself. A fuzz target that has never caught
+# anything is indistinguishable from one wired to /dev/null, and this one
+# reports "no sanitizer report" in its own output -- so the sanitizers have to
+# be shown to be live. -DAUDIO_FUZZ_SABOTAGE reintroduces a one-byte
+# over-read in the WAV chunk walk (the exact bug class this fuzzer exists for).
+# REQUIRED TO FAIL, and required to fail with an ASan report specifically.
+test-audio-codec-fuzz-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g $(ASAN_FLAGS) -w -DAUDIO_FUZZ_SABOTAGE=1 \
+	    -Ic/lib/audio -o $(BUILD)/audio_fuzz_neg tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC)
+	@if $(ASAN_ENV) $(BUILD)/audio_fuzz_neg 2 $(SEED) tests/fixtures/audio \
+	        >$(BUILD)/audio_fuzz_neg.log 2>&1; then \
+	    echo "NEGCTL-FAIL: a deliberate out-of-bounds read in the WAV chunk walk"; \
+	    echo "  did not trip the fuzzer -- the sanitizers are not doing anything."; \
+	    exit 1; \
+	 elif grep -q 'AddressSanitizer' $(BUILD)/audio_fuzz_neg.log; then \
+	    echo "negctl: the injected WAV over-read is caught by AddressSanitizer"; \
+	    grep -m1 'ERROR: AddressSanitizer' $(BUILD)/audio_fuzz_neg.log | sed 's/^/       /'; \
+	 else \
+	    echo "NEGCTL-FAIL: the sabotaged build failed, but not with an ASan report --"; \
+	    echo "  so this proves the harness noticed, not that the sanitizer did."; \
+	    head -20 $(BUILD)/audio_fuzz_neg.log | sed 's/^/       /'; exit 1; \
+	 fi
 
 # THE NEGATIVE CONTROL: a gate that never fails is not a gate. Two deliberate
 # faults, each a real bug class, each behind a -DAUDIO_SABOTAGE that no
