@@ -9,6 +9,11 @@
 #include <stdbool.h>
 
 #include <libcss/libcss.h>
+/* css__computed_style_ref lives in LibCSS's internal header; CSS_INC already
+ * puts libcss/src on the include path (css_engine.c is LibCSS's adapter, not a
+ * client of its public API alone). Needed to keep a reference to each node's
+ * effective computed style -- see style_node. */
+#include "select/computed.h"
 
 /* cstyle is owned by the DOM node and freed via kfree in dom_free. */
 void *kmalloc(unsigned long);
@@ -28,25 +33,30 @@ static int tag_is_ci(struct node *n, lwc_string *name)
     return 1;
 }
 
-/* previous element sibling (our DOM is singly linked, walk from parent). */
+/* previous element sibling: the DOM is doubly linked now, so this is a short
+ * hop backwards instead of a scan from the parent's first child (the old
+ * version made every :first-child / A+B test O(siblings)). */
 static struct node *prev_elem_sibling(struct node *n)
 {
-    struct node *prev = 0, *c;
-    if (!n->parent) return 0;
-    for (c = n->parent->first_child; c && c != n; c = c->next)
-        if (c->type == N_ELEM) prev = c;
-    return prev;
+    struct node *p = n->prev;
+    while (p && p->type != N_ELEM) p = p->prev;
+    return p;
 }
 
-/* iterate whitespace-delimited tokens of a node's class attribute */
+/* whitespace, for the space-separated attribute selectors ([rel~=me]) */
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 
 /* ---------- select handler (drives LibCSS off our struct node) ---------- */
+/* Ref contract: LibCSS unrefs the name, the id and every class it is handed
+ * (css_select__finalise_selection_state), so each handler below returns a +1
+ * reference. The arrays themselves stay ours -- LibCSS never frees those. */
 static css_error h_node_name(void *pw, void *node, css_qname *qname)
 {
     (void)pw; struct node *n = node;
     qname->ns = NULL;
-    lwc_intern_string(n->tag, strlen(n->tag), &qname->name);
+    /* The name is already interned by the DOM: no per-call intern (hash of the
+     * tag bytes) any more, just a refcount bump. */
+    qname->name = n->name ? lwc_string_ref(n->name) : NULL;
     return CSS_OK;
 }
 
@@ -54,31 +64,22 @@ static css_error h_node_classes(void *pw, void *node,
         lwc_string ***classes, uint32_t *n_classes)
 {
     (void)pw; struct node *n = node;
-    /* The array storage is the handler's responsibility and LibCSS only reads it
-     * during the css_select_style call, so keep it in a static buffer: the old
-     * malloc'd array leaked on every call (M11). */
-    static lwc_string *arr[32];
-    const char *cls = dom_attr(n, "class");
     *classes = NULL; *n_classes = 0;
-    if (!cls || !*cls) return CSS_OK;
-    int i = 0; const char *p = cls;
-    while (*p && i < 32) {
-        while (*p && sp(*p)) p++;
-        const char *s = p;
-        while (*p && !sp(*p)) p++;
-        if (p > s) lwc_intern_string(s, (size_t)(p - s), &arr[i++]);
-    }
-    if (!i) return CSS_OK;
-    *classes = arr; *n_classes = (uint32_t)i;
+    if (n->type != N_ELEM || n->nclass <= 0) return CSS_OK;
+    /* Hand back the node's own token array. The old code re-tokenised the class
+     * attribute into a single static[32] on every call, which also silently
+     * broke style sharing: the candidate node's classes overwrote the current
+     * node's in the same buffer, so the comparison always matched. */
+    for (int i = 0; i < n->nclass; i++) lwc_string_ref(n->classes[i]);
+    *classes = n->classes;
+    *n_classes = (uint32_t)n->nclass;
     return CSS_OK;
 }
 
 static css_error h_node_id(void *pw, void *node, lwc_string **id)
 {
     (void)pw; struct node *n = node;
-    const char *i = dom_attr(n, "id");
-    *id = NULL;
-    if (i && *i) lwc_intern_string(i, strlen(i), id);
+    *id = n->id ? lwc_string_ref(n->id) : NULL;
     return CSS_OK;
 }
 
@@ -111,10 +112,9 @@ static css_error h_named_sibling_node(void *pw, void *node,
 static css_error h_named_generic_sibling_node(void *pw, void *node,
         const css_qname *qname, void **sibling)
 {
-    (void)pw; struct node *n = node, *c, *found = 0;
-    if (n->parent)
-        for (c = n->parent->first_child; c && c != n; c = c->next)
-            if (c->type == N_ELEM && tag_is_ci(c, qname->name)) found = c;
+    (void)pw; struct node *n = node, *found = 0;
+    for (struct node *c = n->prev; c && !found; c = c->prev)
+        if (c->type == N_ELEM && tag_is_ci(c, qname->name)) found = c;
     *sibling = found;
     return CSS_OK;
 }
@@ -122,9 +122,9 @@ static css_error h_named_generic_sibling_node(void *pw, void *node,
 static css_error h_parent_node(void *pw, void *node, void **parent)
 {
     (void)pw; struct node *p = ((struct node *)node)->parent;
-    /* The synthetic #document root is not a CSS parent -> report root as NULL,
-     * so LibCSS treats <html> as the root element and resolves absolute sizes. */
-    *parent = (p && p->type == N_ELEM && p->tag[0] != '#') ? p : NULL;
+    /* The #document node is not a CSS parent -> report root as NULL, so LibCSS
+     * treats <html> as the root element and resolves absolute sizes. */
+    *parent = (p && p->type == N_ELEM) ? p : NULL;
     return CSS_OK;
 }
 
@@ -149,53 +149,38 @@ static css_error h_node_has_class(void *pw, void *node,
         lwc_string *name, bool *match)
 {
     (void)pw; struct node *n = node;
-    const char *want = lwc_string_data(name);
-    size_t wl = lwc_string_length(name);
-    const char *cls = dom_attr(n, "class");
+    /* Both sides are interned, so class matching is a pointer compare per
+     * token -- no re-tokenising of the class attribute per selector. */
     *match = false;
-    if (!cls) return CSS_OK;
-    const char *p = cls;
-    while (*p) {
-        while (*p && sp(*p)) p++;
-        const char *s = p;
-        while (*p && !sp(*p)) p++;
-        if ((size_t)(p - s) == wl && memcmp(s, want, wl) == 0) { *match = true; break; }
-    }
+    for (int i = 0; i < n->nclass; i++)
+        if (n->classes[i] == name) { *match = true; break; }
     return CSS_OK;
 }
 
 static css_error h_node_has_id(void *pw, void *node, lwc_string *name, bool *match)
 {
     (void)pw; struct node *n = node;
-    const char *id = dom_attr(n, "id");
-    *match = id && strlen(id) == lwc_string_length(name) &&
-             memcmp(id, lwc_string_data(name), lwc_string_length(name)) == 0;
+    *match = (n->id != NULL && n->id == name);
     return CSS_OK;
 }
 
-/* attribute name from qname (NUL-terminate into a small buffer) */
-static const char *qattr(const css_qname *qname, char *buf, int cap)
-{
-    size_t n = lwc_string_length(qname->name);
-    if ((int)n >= cap) n = cap - 1;
-    memcpy(buf, lwc_string_data(qname->name), n);
-    buf[n] = 0;
-    return buf;
-}
-
+/* Attribute lookups go straight through the selector's interned name. Besides
+ * being a pointer compare, this removes qattr()'s silent 63-character
+ * attribute-name truncation (a selector on a longer data-* name used to match
+ * every attribute sharing its first 63 characters). */
 static css_error h_node_has_attribute(void *pw, void *node,
         const css_qname *qname, bool *match)
 {
-    (void)pw; char b[64];
-    *match = dom_attr(node, qattr(qname, b, sizeof b)) != NULL;
+    (void)pw;
+    *match = dom_has_attr_lw(node, qname->name) != 0;
     return CSS_OK;
 }
 
 static css_error h_node_has_attribute_equal(void *pw, void *node,
         const css_qname *qname, lwc_string *value, bool *match)
 {
-    (void)pw; char b[64];
-    const char *v = dom_attr(node, qattr(qname, b, sizeof b));
+    (void)pw;
+    const char *v = dom_attr_lw(node, qname->name);
     *match = v && strlen(v) == lwc_string_length(value) &&
              memcmp(v, lwc_string_data(value), lwc_string_length(value)) == 0;
     return CSS_OK;
@@ -211,8 +196,8 @@ static int substr(const char *h, const char *n, size_t nl)
 static css_error h_node_has_attribute_dashmatch(void *pw, void *node,
         const css_qname *qname, lwc_string *value, bool *match)
 {
-    (void)pw; char b[64];
-    const char *v = dom_attr(node, qattr(qname, b, sizeof b));
+    (void)pw;
+    const char *v = dom_attr_lw(node, qname->name);
     const char *w = lwc_string_data(value); size_t wl = lwc_string_length(value);
     *match = false;
     if (v && wl) { size_t vl = strlen(v);
@@ -224,8 +209,8 @@ static css_error h_node_has_attribute_dashmatch(void *pw, void *node,
 static css_error h_node_has_attribute_includes(void *pw, void *node,
         const css_qname *qname, lwc_string *value, bool *match)
 {
-    (void)pw; char b[64];
-    const char *v = dom_attr(node, qattr(qname, b, sizeof b));
+    (void)pw;
+    const char *v = dom_attr_lw(node, qname->name);
     const char *w = lwc_string_data(value); size_t wl = lwc_string_length(value);
     *match = false;
     if (!v || !wl) return CSS_OK;
@@ -238,8 +223,8 @@ static css_error h_node_has_attribute_includes(void *pw, void *node,
 static css_error h_node_has_attribute_prefix(void *pw, void *node,
         const css_qname *qname, lwc_string *value, bool *match)
 {
-    (void)pw; char b[64];
-    const char *v = dom_attr(node, qattr(qname, b, sizeof b));
+    (void)pw;
+    const char *v = dom_attr_lw(node, qname->name);
     const char *w = lwc_string_data(value); size_t wl = lwc_string_length(value);
     *match = v && wl && strlen(v) >= wl && memcmp(v, w, wl) == 0;
     return CSS_OK;
@@ -248,8 +233,8 @@ static css_error h_node_has_attribute_prefix(void *pw, void *node,
 static css_error h_node_has_attribute_suffix(void *pw, void *node,
         const css_qname *qname, lwc_string *value, bool *match)
 {
-    (void)pw; char b[64];
-    const char *v = dom_attr(node, qattr(qname, b, sizeof b));
+    (void)pw;
+    const char *v = dom_attr_lw(node, qname->name);
     const char *w = lwc_string_data(value); size_t wl = lwc_string_length(value);
     *match = false;
     if (v && wl) { size_t vl = strlen(v); if (vl >= wl && memcmp(v + vl - wl, w, wl) == 0) *match = true; }
@@ -259,8 +244,8 @@ static css_error h_node_has_attribute_suffix(void *pw, void *node,
 static css_error h_node_has_attribute_substring(void *pw, void *node,
         const css_qname *qname, lwc_string *value, bool *match)
 {
-    (void)pw; char b[64];
-    const char *v = dom_attr(node, qattr(qname, b, sizeof b));
+    (void)pw;
+    const char *v = dom_attr_lw(node, qname->name);
     *match = v && substr(v, lwc_string_data(value), lwc_string_length(value));
     return CSS_OK;
 }
@@ -268,7 +253,7 @@ static css_error h_node_has_attribute_substring(void *pw, void *node,
 static css_error h_node_is_root(void *pw, void *node, bool *match)
 {
     (void)pw; struct node *n = node;
-    *match = !n->parent || (n->parent->tag[0] == '#');   /* parent is #document */
+    *match = !n->parent || n->parent->type == N_DOCUMENT;
     return CSS_OK;
 }
 
@@ -276,11 +261,12 @@ static css_error h_node_count_siblings(void *pw, void *node,
         bool same_name, bool after, int32_t *count)
 {
     (void)pw; (void)after; struct node *n = node; int cnt = 0;
-    /* same_name (:nth-of-type) counts only same-tag siblings. (The old
-     * tag_is_ci(c, NULL) here passed a NULL lwc_string -> NULL deref crash.) */
-    if (n && n->parent)
-        for (struct node *c = n->parent->first_child; c && c != n; c = c->next)
-            if (c->type == N_ELEM && (!same_name || strcmp(c->tag, n->tag) == 0))
+    /* same_name (:nth-of-type) counts only same-tag siblings -- an interned
+     * pointer compare now. (The old tag_is_ci(c, NULL) here passed a NULL
+     * lwc_string -> NULL deref crash.) */
+    if (n)
+        for (struct node *c = n->prev; c; c = c->prev)
+            if (c->type == N_ELEM && (!same_name || c->name == n->name))
                 cnt++;
     *count = cnt;
     return CSS_OK;
@@ -296,7 +282,7 @@ static css_error h_node_is_empty(void *pw, void *node, bool *match)
 static css_error h_node_is_link(void *pw, void *node, bool *match)
 {
     (void)pw; struct node *n = node;
-    *match = (strcmp(n->tag, "a") == 0 && dom_attr(n, "href") != NULL);
+    *match = (n->tag_id == TAG_A && dom_has_attr_lw(n, dom_atoms.a_href));
     return CSS_OK;
 }
 
@@ -404,8 +390,15 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
     return s;
 }
 
+/* dom.c owns node->computed but must not know what a css_computed_style is
+ * (dom.c links without LibCSS in the standalone host tests), so it calls back
+ * through a registered releaser. */
+static void free_computed(void *p)
+{ if (p) css_computed_style_destroy((css_computed_style *)p); }
+
 void css_init(void)
 {
+    dom_set_computed_free(free_computed);
     /* Honour a viewport set before init (css_apply lazily inits on first use,
      * which must not clobber an explicit css_viewport call). */
     int vw = g_vw ? g_vw : 760, vh = g_vh ? g_vh : 540;
@@ -572,7 +565,7 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
 
     css_select_results *res = NULL;
     css_stylesheet *inl = NULL;
-    const char *istyle = dom_attr(n, "style");
+    const char *istyle = dom_attr_lw(n, dom_atoms.a_style);
     if (istyle && *istyle) inl = make_sheet(istyle, strlen(istyle), true);
 
     if (css_select_style(g_ctx, n, &g_unit, &g_media, inl,
@@ -583,9 +576,9 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
 
     /* select_style already absolutised the root; non-root nodes inherit + resolve
      * relative units against the parent's composed style via compose(). */
-    const css_computed_style *base = res->styles[CSS_PSEUDO_ELEMENT_NONE];
+    css_computed_style *base = res->styles[CSS_PSEUDO_ELEMENT_NONE];
     css_computed_style *composed = NULL;
-    const css_computed_style *eff = base;
+    css_computed_style *eff = base;
     if (parent && css_computed_style_compose(parent, base, &g_unit, &composed) == CSS_OK && composed)
         eff = composed;
 
@@ -597,6 +590,14 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
         if (n->style) kfree(n->style);
         n->style = o;
     }
+
+    /* Keep the effective computed style on the node. LibCSS arena-interns and
+     * refcounts computed styles (select/arena.c), so identical styles across a
+     * page share one block and holding a reference costs ~8 bytes per node --
+     * cheap enough to make the real style available to anything that needs a
+     * property `struct cstyle` does not carry. */
+    if (n->computed) { css_computed_style_destroy((css_computed_style *)n->computed); n->computed = NULL; }
+    n->computed = css__computed_style_ref(eff);
 
     int my_font = o ? o->font_px : parent_font;
     for (struct node *c = n->first_child; c; c = c->next)

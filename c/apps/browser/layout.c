@@ -14,12 +14,13 @@ static int doc_h;
 static int canvas;
 static uint32_t page_bg; static int page_has_bg;   /* html/body bg -> viewport fill */
 
-static struct item *additem(int type)
+static struct item *additem(int type, struct node *n)
 {
     if (!items || nitem >= MAXITEM) return 0;
     struct item *it = &items[nitem++];
     memset(it, 0, sizeof *it);
     it->type = type;
+    it->node = n;                       /* provenance: painted box -> DOM node */
     return it;
 }
 
@@ -116,10 +117,10 @@ static void newline(struct iflow *f)
 }
 
 /* emit one text item at the current pen position and advance the pen */
-static void emit_word(struct iflow *f, const char *s, int len, int w,
+static void emit_word(struct iflow *f, struct node *src, const char *s, int len, int w,
                       struct cstyle *st, const char *href, int lh, int px, int mono)
 {
-    struct item *it = additem(IT_TEXT);
+    struct item *it = additem(IT_TEXT, src);
     if (!it) return;
     it->x = f->x; it->w = w; it->text = s; it->len = len;
     it->font_px = px; it->bold = st->bold; it->italic = st->italic; it->mono = mono;
@@ -133,7 +134,8 @@ static void emit_word(struct iflow *f, const char *s, int len, int w,
 }
 
 /* place a text run (one element's text) into the flow, wrapping on words */
-static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st, const char *href)
+static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
+                      struct cstyle *st, const char *href)
 {
     int px = st->font_px, mono = st->mono;
     int lh = st->line_px > px ? st->line_px : px*5/4;
@@ -150,7 +152,7 @@ static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st
         }
         if (ww <= f->x1 - f->x0) {
             if (f->line_started) f->x += spacew;
-            emit_word(f, s + ws, wlen, ww, st, href, lh, px, mono);
+            emit_word(f, src, s + ws, wlen, ww, st, href, lh, px, mono);
             continue;
         }
         /* A word wider than the whole line (CJK titles have no spaces to wrap
@@ -175,7 +177,7 @@ static void flow_text(struct iflow *f, const char *s, int len, struct cstyle *st
                 if (bw >= avail) break;
             }
             if (f->line_started) f->x += spacew;
-            emit_word(f, s + ws + off, bl, bw, st, href, lh, px, mono);
+            emit_word(f, src, s + ws + off, bl, bw, st, href, lh, px, mono);
             off += bl;
             if (off < wlen) newline(f);
         }
@@ -212,7 +214,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
 
     if (c->type == N_TEXT) {
         struct cstyle *ps = c->parent && c->parent->style ? c->parent->style : st;
-        if (ps) flow_text(f, c->text, c->textlen, ps, href);
+        if (ps) flow_text(f, c, c->text, c->textlen, ps, href);
         return;
     }
     if (c->type != N_ELEM) return;
@@ -250,7 +252,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (ih <= 0) ih = iw;
         if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih*s2/iw; iw = s2; }
         if (f->line_started && f->x + iw > f->x1) newline(f);
-        struct item *it = additem(IT_IMAGE);
+        struct item *it = additem(IT_IMAGE, c);
         if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
                   it->img = holder; it->imgsrc = 0; it->href = h2;
                   it->hidden = st ? st->hidden : 0; }
@@ -270,7 +272,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         int bx = f->x0, bw = f->x1 - f->x0;
         int bgidx = -1;
         if (st && (st->has_bg || any_border(st))) {
-            struct item *bg = additem(IT_RECT);
+            struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, f->y, bw); }
         }
         int inner = layout_block(c, bx + pl, f->y + pt, bw - pl - pr);
@@ -303,7 +305,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (ih <= 0) ih = iw;
         if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih*s2/iw; iw = s2; }
         if (f->line_started && f->x + iw > f->x1) newline(f);
-        struct item *it = additem(IT_IMAGE);
+        struct item *it = additem(IT_IMAGE, c);
         if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
                   it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2;
                   it->h_auto = h_auto;
@@ -343,7 +345,7 @@ static int layout_table(struct node *t, int x, int y, int w);  /* fwd: minimal t
  * the li's content-box left edge, `top` its first line's y. */
 static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top, int minx)
 {
-    struct item *mk = additem(IT_TEXT);
+    struct item *mk = additem(IT_TEXT, li);
     if (!mk) return;
     int n = 0, ordered = 0, idx = 1;
     if (li->parent && li->parent->type == N_ELEM && tag_eq(li->parent->tag, "ol")) {
@@ -417,7 +419,7 @@ static int layout_block(struct node *n, int x, int y, int w)
                    : pw - (st->has_left ? st->left : 0) - ml;
             if (ow < 0) ow = 0;
             if (st->has_bg || any_border(st)) {
-                struct item *bg = additem(IT_RECT);
+                struct item *bg = additem(IT_RECT, c);
                 if (bg) { fill_rect_item(bg, st, ox, oy, ow);
                           bg->h = st->has_h && !st->h_pct ? st->height : 0; }
             }
@@ -446,7 +448,7 @@ static int layout_block(struct node *n, int x, int y, int w)
                 if (iw < 0) iw = 0;
                 if (ih <= 0) ih = iw;
                 cy += st->mt > 0 ? st->mt : 0;
-                struct item *it = additem(IT_IMAGE);
+                struct item *it = additem(IT_IMAGE, c);
                 if (it) { it->x = x + ml; it->y = cy; it->w = iw; it->h = ih;
                           it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
                           if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");
@@ -466,7 +468,7 @@ static int layout_block(struct node *n, int x, int y, int w)
             if (st->list_item) emit_list_marker(c, st, bx + st->pl, top, x);
             int bgidx = -1;
             if (st->has_bg || any_border(st)) {
-                struct item *bg = additem(IT_RECT);
+                struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, top, bw); }
             }
             int inner = tag_eq(c->tag, "table")
@@ -667,7 +669,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
         int pl = st?st->pl:0, pr = st?st->pr:0, pt = st?st->pt:0, pb = st?st->pb:0;
         int bgidx = -1;
         if (st && (st->has_bg || any_border(st))) {
-            struct item *bg = additem(IT_RECT);
+            struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cx, top, iw); }
         }
         int inw = iw - pl - pr; if (inw < 0) inw = 0;
@@ -727,7 +729,7 @@ static int layout_grid(struct node *n, int x, int y, int w)
         int top = cy + (st && st->mt > 0 ? st->mt : 0);
         int bgidx = -1;
         if (st && (st->has_bg || any_border(st))) {
-            struct item *bg = additem(IT_RECT);
+            struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
         }
         int inw = cw - pl - pr; if (inw < 0) inw = 0;
@@ -846,7 +848,7 @@ static int layout_table(struct node *t, int x, int y, int w)
             int cx = rx + ml, top = cy + (st && st->mt > 0 ? st->mt : 0);
             int bgidx = -1;
             if (st && (st->has_bg || any_border(st))) {
-                struct item *bg = additem(IT_RECT);
+                struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }
             int inner = layout_block(c, cx + pl, top + pt, cw[ci] - ml - pl - pr);

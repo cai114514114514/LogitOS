@@ -108,16 +108,18 @@ static void ser_node(struct sb *s, const struct node *n, int depth)
         for (int i = 0; i < n->nattr; i++) order[i] = i;
         for (int i = 1; i < n->nattr; i++) {          /* insertion sort */
             int v = order[i], j = i - 1;
-            while (j >= 0 && strcmp(n->attrs[order[j]].name, n->attrs[v].name) > 0) {
+            /* S1b: attribute names are interned lwc_strings; go through the
+             * positional accessors so this file needs no libwapcaplet include. */
+            while (j >= 0 && strcmp(dom_attr_name_at(n, order[j]), dom_attr_name_at(n, v)) > 0) {
                 order[j + 1] = order[j]; j--;
             }
             order[j + 1] = v;
         }
         for (int i = 0; i < n->nattr; i++) {
             ser_indent(s, depth + 1);
-            sb_str(s, n->attrs[order[i]].name);
+            sb_str(s, dom_attr_name_at(n, order[i]));
             sb_str(s, "=\"");
-            sb_str(s, n->attrs[order[i]].val);
+            sb_str(s, dom_attr_value_at(n, order[i]));
             sb_str(s, "\"\n");
         }
         free(order);

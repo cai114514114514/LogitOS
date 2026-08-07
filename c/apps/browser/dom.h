@@ -2,31 +2,249 @@
 #define LOGIT_DOM_H
 
 #include <stdint.h>
+#include <stddef.h>
 
-enum { N_ELEM, N_TEXT };
+/* S1b: the DOM core.
+ *
+ * `struct node` is a *field-compatible superset* of the old one: every name
+ * layout.c / css_extra.c / browser.c / the host tests already touch keeps its
+ * meaning, so those files compile unchanged. The single representation change
+ * is `char tag[16]` -> `const char *tag` (still NUL-terminated), which keeps
+ * strcmp(n->tag,..), n->tag[k], strlen(n->tag) and JS_NewString(ctx,n->tag)
+ * working while removing the 15-character tag-name cap.
+ *
+ * Everything a document owns -- nodes, attribute/class arrays, text, comment
+ * data, verbatim <svg> spans -- lives in a `struct dom_doc` arena of 256 KiB
+ * chunks. That is a feasibility prerequisite, not an optimisation: mini-libc's
+ * malloc (c/apps/libc/src/malloc.c) is first-fit and walks the header chain
+ * from the arena start on every call, so with LibCSS's hundreds of thousands
+ * of live blocks a per-node malloc turns parsing into a quadratic crawl.
+ * Bump-allocating from chunks also makes dom_free() non-recursive: it drops
+ * the chunk chain instead of walking the tree.
+ *
+ * Names (tag names, attribute names, the id value, class tokens) are interned
+ * through libwapcaplet -- LibCSS's own interning library, already linked --
+ * so selector matching is a pointer compare. VALUES are arena copies, never
+ * interned: attribute values (Tailwind class lists, data-*, srcset), text and
+ * comment data are effectively unique per occurrence and interning them would
+ * grow the process-global lwc table without bound.
+ */
 
-struct attr { char name[32]; char val[256]; };
+/* libwapcaplet's lwc_string, forward-declared so dom.h itself costs no include
+ * path (only dom.c and css_engine.c need -I third_party/css/libwapcaplet). C11
+ * permits the identical typedef to appear again when libwapcaplet.h is pulled
+ * in afterwards. */
+#ifndef libwapcaplet_h_
+typedef struct lwc_string_s lwc_string;
+#endif
 
-struct node {
-    int type;                       /* N_ELEM / N_TEXT */
-    char tag[16];                   /* lowercased tag name (N_ELEM) */
-    struct attr *attrs; int nattr;
-    char *text; int textlen;        /* N_TEXT (NUL-terminated) */
-    struct node *parent, *first_child, *last_child, *next;
-    void *style;                    /* struct cstyle* (filled by css) */
-    char *raw; int rawlen;          /* <svg>: verbatim source span (start '<' to
-                                     * matching "</svg>"), kmalloc'd copy; the DOM
-                                     * attrs lowercase viewBox and truncate long
-                                     * path data, so layout decodes from this. */
+struct dom_doc;
+
+/* Node types. N_ELEM/N_TEXT keep their values (0/1) -- they are compared, not
+ * serialised, but there is no reason to renumber them. */
+enum { N_ELEM = 0, N_TEXT = 1, N_COMMENT = 2, N_DOCTYPE = 3, N_DOCUMENT = 4 };
+
+/* Element namespace. The scanner only ever produces NS_HTML; the future tree
+ * builder sets NS_SVG/NS_MATHML inside foreign content. */
+enum { NS_HTML = 0, NS_SVG = 1, NS_MATHML = 2 };
+
+/* Document quirks mode (from the doctype). Recorded now, not yet fed to the
+ * UA stylesheet -- that lands with the real parser. */
+enum { QM_NO_QUIRKS = 0, QM_QUIRKS = 1, QM_LIMITED_QUIRKS = 2 };
+
+/* node->flags */
+enum {
+    NF_ID_INDEXED = 1u << 0,   /* node is linked into doc->idbuckets via id_next */
+    NF_WRAPLISTED = 1u << 1,   /* node is on doc's wrap_next chain (never cleared:
+                                * see dom_clear_wrappers) */
+    NF_SELF_CLOSED = 1u << 2   /* start tag ended in "/>" (informational) */
 };
 
-/* Parse an HTML document into a DOM tree; returns the root element (a synthetic
- * "#document" element whose children are the top-level nodes), or NULL. */
+/* Well-known tag ids. 0 = unknown/other; the value is stable for switch(). The
+ * scanner fills node->tag_id from the interned name, so a tree builder or
+ * layout can branch on an integer instead of strcmp. */
+enum {
+    TAG_UNKNOWN = 0,
+    TAG_HTML, TAG_HEAD, TAG_BODY, TAG_TITLE, TAG_META, TAG_LINK, TAG_BASE,
+    TAG_STYLE, TAG_SCRIPT, TAG_NOSCRIPT, TAG_TEMPLATE,
+    TAG_DIV, TAG_SPAN, TAG_P, TAG_A, TAG_IMG, TAG_BR, TAG_HR, TAG_WBR,
+    TAG_H1, TAG_H2, TAG_H3, TAG_H4, TAG_H5, TAG_H6,
+    TAG_UL, TAG_OL, TAG_LI, TAG_DL, TAG_DT, TAG_DD,
+    TAG_TABLE, TAG_THEAD, TAG_TBODY, TAG_TFOOT, TAG_TR, TAG_TD, TAG_TH,
+    TAG_CAPTION, TAG_COL, TAG_COLGROUP,
+    TAG_FORM, TAG_INPUT, TAG_BUTTON, TAG_SELECT, TAG_OPTION, TAG_TEXTAREA,
+    TAG_LABEL, TAG_FIELDSET, TAG_LEGEND,
+    TAG_B, TAG_I, TAG_EM, TAG_STRONG, TAG_CODE, TAG_PRE, TAG_SMALL, TAG_SUB,
+    TAG_SUP, TAG_U, TAG_S, TAG_Q, TAG_BLOCKQUOTE,
+    TAG_HEADER, TAG_FOOTER, TAG_SECTION, TAG_ARTICLE, TAG_NAV, TAG_MAIN,
+    TAG_ASIDE, TAG_FIGURE, TAG_FIGCAPTION,
+    TAG_SVG, TAG_MATH, TAG_CANVAS, TAG_VIDEO, TAG_AUDIO, TAG_SOURCE,
+    TAG_IFRAME, TAG_EMBED, TAG_OBJECT, TAG_PARAM, TAG_TRACK, TAG_AREA,
+    TAG_PICTURE, TAG_FRAME, TAG_FRAMESET, TAG_PLAINTEXT, TAG_XMP, TAG_IMAGE,
+    TAG__COUNT
+};
+
+/* One attribute. The name is interned (pointer-comparable, always lowercase for
+ * HTML); the value is an arena copy that is NUL-terminated at value[vlen]. */
+struct dom_attr {
+    lwc_string *name;
+    const char *value;
+    uint32_t    vlen;
+};
+
+struct node {
+    /* ---------------- the compatibility core ---------------- */
+    int type;                       /* N_ELEM / N_TEXT / N_COMMENT / ... */
+    const char *tag;                /* NUL-terminated: the lowercased element
+                                     * name (== lwc_string_data(name)), or one of
+                                     * "#text"/"#comment"/"#document"/"#doctype".
+                                     * Never NULL, so tag[0] is always safe. */
+    struct dom_attr *attrs; int nattr;
+    char *text; int textlen;        /* N_TEXT/N_COMMENT payload: an arena copy,
+                                     * NUL-terminated at text[textlen]. Never a
+                                     * slice of the source buffer -- layout.c
+                                     * points struct item.text straight at it. */
+    struct node *parent, *first_child, *last_child, *next;
+    void *style;                    /* struct cstyle*, kmalloc'd by css_engine */
+    char *raw; int rawlen;          /* <svg>: verbatim source span (start '<' to
+                                     * the matching "</svg>"), an arena copy; the
+                                     * DOM attrs lowercase viewBox, so layout
+                                     * decodes SVG from this instead. */
+
+    /* ---------------- the new model ---------------- */
+    struct node *prev;              /* previous sibling -> O(1) unlink, and the
+                                     * previous-element-sibling walk CSS needs */
+    struct dom_doc *doc;            /* owning document (never NULL) */
+    uint32_t serial;                /* generation stamp: bumped every time this
+                                     * slot is handed out. A JS wrapper stores
+                                     * {node,serial} and compares, so a slot
+                                     * recycled from the free list can never be
+                                     * addressed through a stale handle. */
+    uint16_t tag_id;                /* TAG_* (0 = unknown) */
+    uint16_t flags;                 /* NF_* */
+    uint8_t  ns;                    /* NS_* */
+    int attrcap;                    /* capacity of attrs[] (arena, doubling) */
+
+    lwc_string *name;               /* interned element name (N_ELEM), else NULL.
+                                     * For N_DOCTYPE this is the doctype name. */
+    lwc_string *id;                 /* interned value of the id attribute, or NULL */
+    lwc_string **classes; int nclass, clscap;   /* interned class tokens */
+
+    struct node *id_next;           /* doc id-index bucket chain */
+    struct node *cls_next;          /* reserved for the class index. Not wired:
+                                     * one link per node cannot express
+                                     * membership of several class buckets, so
+                                     * the selector index will need its own
+                                     * (class,node) pair list. Kept so the
+                                     * struct does not churn again. */
+
+    void *computed;                 /* css_computed_style* (LibCSS interns and
+                                     * refcounts these, so holding one is ~8
+                                     * bytes/node, not a whole style block) */
+    void *jsw;                      /* WEAK JS wrapper slot: the JSObject* of the
+                                     * Element wrapper, holding NO reference.
+                                     * The finalizer clears it. */
+    struct node *wrap_next;         /* doc's chain of nodes that ever had a
+                                     * wrapper (see dom_clear_wrappers) */
+
+    const char *pubid, *sysid;      /* N_DOCTYPE: PUBLIC/SYSTEM identifiers */
+};
+
+/* The scanner's open-element stack is still 64 deep (unchanged behaviour). The
+ * constant below is for the real tree builder: the DOM data model itself has no
+ * depth limit, but the recursive consumers (css_engine's style_node,
+ * layout.c's layout_block, css_extra's walk) run on the browser's 8 MiB ring-3
+ * stack. Measured worst frame is ~1 KiB (style_node holds a css_select_results
+ * plus locals), so ~512 is the depth at which those walks must be converted to
+ * explicit stacks rather than the tree builder being capped. */
+#define DOM_MAX_TREE_DEPTH 512
+
+/* ---------------- parsing / lifetime ---------------- */
+
+/* Parse an HTML document; returns the document node (type N_DOCUMENT, tag
+ * "#document") whose children are the top-level nodes, or NULL. */
 struct node *dom_parse(const char *html, int len);
 
-/* Attribute value by (case-insensitive) name, or NULL. */
-const char *dom_attr(const struct node *n, const char *name);
+/* Free a whole document (pass the N_DOCUMENT root) or detach+recycle a subtree
+ * (pass any other node). Never recursive. */
+void dom_free(struct node *n);
 
-void dom_free(struct node *root);
+/* An empty document, for building a tree through the API. */
+struct dom_doc *dom_doc_new(void);
+struct node    *dom_doc_root(struct dom_doc *d);
+/* Total bytes this document holds from the allocator (arena chunks + its two
+ * index tables). */
+size_t dom_doc_bytes(const struct dom_doc *d);
+int    dom_doc_quirks(const struct dom_doc *d);
+void   dom_doc_set_quirks(struct dom_doc *d, int mode);
+
+/* ---------------- attributes ---------------- */
+
+/* Attribute value by (case-insensitive) name, or NULL. Valueless attributes
+ * read as "". */
+const char *dom_attr(const struct node *n, const char *name);
+/* Same, but the caller already holds the interned (lowercase) name: a pointer
+ * compare per attribute. */
+const char *dom_attr_lw(const struct node *n, lwc_string *name);
+int         dom_has_attr_lw(const struct node *n, lwc_string *name);
+/* Set (or add) an attribute; the name is lowercased, the value copied into the
+ * arena. Keeps node->id and node->classes in sync. 1 on success. */
+int         dom_set_attr(struct node *n, const char *name, const char *val);
+/* Positional access for code that enumerates attributes (serialisers, dumps)
+ * and would otherwise need libwapcaplet on its include path just to turn an
+ * interned name back into bytes. Both are NUL-terminated; NULL if out of range. */
+const char *dom_attr_name_at(const struct node *n, int i);
+const char *dom_attr_value_at(const struct node *n, int i);
+
+/* ---------------- construction / tree mutation ---------------- */
+
+struct node *dom_create_element(struct dom_doc *d, const char *name, int len);
+struct node *dom_create_text(struct dom_doc *d, const char *text, int len);
+struct node *dom_create_comment(struct dom_doc *d, const char *data, int len);
+struct node *dom_create_doctype(struct dom_doc *d, const char *name,
+                                const char *pubid, const char *sysid);
+
+void dom_append_child(struct node *parent, struct node *child);
+/* O(1): the node knows its prev. Only unlinks; the child stays allocated. */
+void dom_remove_child(struct node *parent, struct node *child);
+/* Unlink `n` from its parent and return it and its whole subtree to the free
+ * list (iterative). Every wrapper into the subtree goes stale via `serial`. */
+void dom_destroy_subtree(struct node *n);
+/* Recycle every child of `n`, keeping `n` itself. */
+void dom_destroy_children(struct node *n);
+
+/* ---------------- indexes / wrappers ---------------- */
+
+/* Exact-match (DOM-spec, case-sensitive) id lookup over the document's id
+ * index; only nodes connected to the document root are returned. */
+struct node *dom_get_element_by_id(struct dom_doc *d, const char *id);
+
+/* Record (or clear) the WEAK JS wrapper for a node: `jsobj` is the wrapper's
+ * JSObject*, stored without taking a reference. The first non-NULL store links
+ * the node into the document's wrapper chain. */
+void dom_set_wrapper(struct node *n, void *jsobj);
+
+/* Drop every JS wrapper slot in the document. MUST be called before the
+ * JSRuntime the wrappers came from is freed: browser.c's run_js() builds a
+ * fresh JSRuntime per page, so a slot left over from page 1 would hand page 2
+ * a dangling JSObject* the moment it touched document.body. */
+void dom_clear_wrappers(struct dom_doc *d);
+
+/* css_engine registers how to release node->computed, so dom.c stays free of
+ * any LibCSS dependency beyond libwapcaplet. */
+void dom_set_computed_free(void (*fn)(void *));
+
+/* ---------------- interned atoms ---------------- */
+
+/* Process-global atoms for the names hot paths ask for by literal. Interned
+ * once (never released: they live as long as the process, like any atom
+ * table). dom_atoms_init() is idempotent and is called lazily by dom.c. */
+struct dom_atoms {
+    lwc_string *a_class, *a_id, *a_style, *a_href, *a_src, *a_rel;
+    lwc_string *a_width, *a_height, *a_type, *a_name, *a_data_src;
+    lwc_string *a_alt, *a_title;
+};
+extern struct dom_atoms dom_atoms;
+void dom_atoms_init(void);
 
 #endif /* LOGIT_DOM_H */

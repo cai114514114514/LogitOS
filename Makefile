@@ -247,9 +247,13 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
+# dom.c interns element and attribute names through libwapcaplet (LibCSS's own
+# interning library, already linked), so this group needs CSS_INC. Only dom.c
+# actually does: dom.h forward-declares lwc_string, so every other consumer of
+# the DOM still compiles without the include path.
 $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(CC) $(UCFLAGS) $(CSS_INC) -c $< -o $@
 
 # NetSurf LibCSS (+ libparserutils + libwapcaplet) + our css_engine.c adapter.
 CSS_DIR := third_party/css
@@ -496,10 +500,10 @@ test-html5lib-tok: $(BUILD)/html5lib_tok_cases.inc
 $(BUILD)/browserobj/c/apps/browser/html_tokenizer.o: \
     c/apps/browser/html_entities.inc c/apps/browser/html_tags.inc
 
-test-html5lib:
+test-html5lib: $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
-	    c/apps/browser/dom.c
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
+	    c/apps/browser/dom.c $(BUILD)/libcss_host.a
 	@$(BUILD)/html5lib_test third_party/html5lib-tests/tree-construction \
 	    $(if $(V),-v $(V),)
 
@@ -751,8 +755,10 @@ $(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
 	@ar rcs $@ $^
 
 test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c c/apps/browser/dom.c
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
 	@$(BUILD)/dom_test
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
+	@$(BUILD)/dom_api_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/var_test tests/unit/var_test.c c/apps/browser/css_vars.c
 	@$(BUILD)/var_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/parse_fuzz tests/unit/parse_fuzz.c c/net/http/url.c c/lib/text/utf8.c
@@ -787,8 +793,8 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -Ic/kernel/mm
 	@$(BUILD)/layout_svg_test
-	@$(CC) -O2 -w $(BTEST_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
-	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/dom.c $(QJS_SRC) -lm
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
+	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/dom.c $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
 	@echo "test-browser: ALL PASS"
 

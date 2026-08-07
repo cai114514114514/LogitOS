@@ -16,8 +16,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-void dom_free(struct node *);          /* net/dom.c */
-
 #ifndef countof
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
@@ -30,18 +28,30 @@ void js_dom_clear_dirty(void) { g_dirty = 0; }
 
 static JSClassID elem_cid;
 
-/* Wrappers don't hold a bare struct node*: textContent= frees whole subtrees
+/* Wrappers don't hold a bare struct node*: textContent= recycles whole subtrees
  * while scripts may still hold wrappers into them (UAF / double free). Each
- * wrapper owns a {node, epoch} handle; freeing children bumps g_dom_epoch so
- * every stale wrapper fails node_of() and reads as NULL instead. */
-struct elem_handle { struct node *n; unsigned long epoch; };
-static unsigned long g_dom_epoch;
+ * wrapper owns a {node, serial} handle and node_of() checks the serial.
+ *
+ * The serial is PER NODE (dom.c stamps every slot it hands out), replacing the
+ * old global epoch counter: that one invalidated EVERY live wrapper on any
+ * subtree free, so a script that did one textContent= lost document.body. It is
+ * also what makes the DOM's node free list safe -- a recycled slot gets a fresh
+ * serial, so an old handle can never silently address the new occupant. */
+struct elem_handle { struct node *n; uint32_t serial; };
 
 static void elem_finalizer(JSRuntime *rt, JSValue val)
 {
     (void)rt;
     struct elem_handle *h = JS_GetOpaque(val, elem_cid);
-    if (h) free(h);
+    if (!h) return;
+    /* Clear the node's weak wrapper slot, but only if it still points at THIS
+     * object: after a recycle the slot may belong to a different node, and a
+     * DOMTokenList shares this finalizer without ever owning a slot.
+     * Contract: the DOM must outlive the JSRuntime (browser.c frees the page
+     * DOM only after run_js has torn its runtime down). */
+    if (h->n && h->n->serial == h->serial && h->n->jsw == JS_VALUE_GET_PTR(val))
+        dom_set_wrapper(h->n, NULL);
+    free(h);
 }
 
 /* ---- helpers ---- */
@@ -52,65 +62,72 @@ static int ieq(const char *a, const char *b)
 static struct node *node_of(JSValueConst v)
 {
     struct elem_handle *h = JS_GetOpaque(v, elem_cid);
-    if (!h || h->epoch != g_dom_epoch) return 0;    /* stale wrapper: subtree was freed */
+    if (!h || !h->n || h->n->serial != h->serial) return 0;   /* stale: node recycled */
     return h->n;
 }
 
+static struct elem_handle *new_handle(struct node *n)
+{
+    struct elem_handle *h = malloc(sizeof *h);
+    if (h) { h->n = n; h->serial = n->serial; }
+    return h;
+}
+
+/* One wrapper per node, cached in the node's weak `jsw` slot, so
+ * document.body === document.body and a script can hang expandos off an
+ * element. The slot takes no reference: the finalizer clears it, and
+ * js_dom_cleanup() clears every slot in the document when the page's runtime
+ * goes away. */
 static JSValue wrap(JSContext *ctx, struct node *n)
 {
     if (!n) return JS_NULL;
+    if (n->jsw) return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, n->jsw));
     JSValue o = JS_NewObjectClass(ctx, (int)elem_cid);
     if (JS_IsException(o)) return o;
-    struct elem_handle *h = malloc(sizeof *h);
+    struct elem_handle *h = new_handle(n);
     if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
-    h->n = n; h->epoch = g_dom_epoch;
     JS_SetOpaque(o, h);
+    dom_set_wrapper(n, JS_VALUE_GET_PTR(o));
     return o;
 }
 
-static int gather_text(struct node *n, char *out, int o, int max)
+/* ---- a growable byte buffer: textContent has no business being capped ---- */
+struct sbuf { char *p; size_t len, cap; };
+
+static int sb_push(struct sbuf *b, const char *s, size_t n)
 {
-    if (n->type == N_TEXT && n->text)
-        for (int i = 0; i < n->textlen && o < max - 1; i++) out[o++] = n->text[i];
-    for (struct node *c = n->first_child; c; c = c->next) o = gather_text(c, out, o, max);
-    return o;
+    if (b->len + n + 1 > b->cap) {
+        size_t ncap = b->cap ? b->cap : 256;
+        while (ncap < b->len + n + 1) ncap *= 2;
+        char *np = realloc(b->p, ncap);
+        if (!np) return 0;
+        b->p = np; b->cap = ncap;
+    }
+    if (n) memcpy(b->p + b->len, s, n);
+    b->len += n;
+    b->p[b->len] = 0;
+    return 1;
 }
 
-static void free_children(struct node *n)
+/* Iterative: a script can build a tree far deeper than a recursive gather
+ * would survive on the browser's stack. */
+static void gather_text(struct node *root, struct sbuf *b)
 {
-    struct node *c = n->first_child;
-    if (!c) return;                           /* nothing freed: don't invalidate wrappers */
-    while (c) { struct node *nx = c->next; dom_free(c); c = nx; }
-    n->first_child = n->last_child = 0;
-    g_dom_epoch++;                            /* invalidate wrappers into the freed subtree */
+    struct node *n = root;
+    while (n) {
+        if (n->type == N_TEXT && n->text) sb_push(b, n->text, (size_t)n->textlen);
+        if (n->first_child) { n = n->first_child; continue; }
+        while (n && n != root && !n->next) n = n->parent;
+        if (!n || n == root) break;
+        n = n->next;
+    }
 }
 
 static void set_text(struct node *n, const char *s)
 {
-    free_children(n);
-    int len = 0; while (s[len]) len++;
-    char *buf = malloc(len + 1); if (!buf) return; memcpy(buf, s, len + 1);
-    struct node *t = malloc(sizeof *t); if (!t) { free(buf); return; }
-    memset(t, 0, sizeof *t);
-    t->type = N_TEXT; t->text = buf; t->textlen = len; t->parent = n;
-    n->first_child = n->last_child = t;
-}
-
-static void copy_into(char *dst, const char *src, int cap)
-{ int j = 0; while (src[j] && j < cap - 1) { dst[j] = src[j]; j++; } dst[j] = 0; }
-
-static void set_attr(struct node *n, const char *name, const char *val)
-{
-    for (int i = 0; i < n->nattr; i++)
-        if (ieq(n->attrs[i].name, name)) { copy_into(n->attrs[i].val, val, 256); return; }
-    struct attr *na = malloc((n->nattr + 1) * sizeof(struct attr));
-    if (!na) return;
-    if (n->attrs) { memcpy(na, n->attrs, n->nattr * sizeof(struct attr)); free(n->attrs); }
-    n->attrs = na;
-    struct attr *a = &n->attrs[n->nattr];
-    int j = 0; while (name[j] && j < 31) { a->name[j] = (char)lc((unsigned char)name[j]); j++; } a->name[j] = 0;
-    copy_into(a->val, val, 256);
-    n->nattr++;
+    dom_destroy_children(n);
+    struct node *t = dom_create_text(n->doc, s, -1);
+    if (t) dom_append_child(n, t);
 }
 
 /* whitespace-separated word membership test ("a b c" contains "b") */
@@ -138,19 +155,15 @@ static struct node *find_sel(struct node *n, const char *sel)
     for (struct node *c = n->first_child; c; c = c->next) { struct node *r = find_sel(c, sel); if (r) return r; }
     return 0;
 }
-static struct node *find_id(struct node *n, const char *id)
-{
-    if (n->type == N_ELEM) { const char *v = dom_attr(n, "id"); if (v && ieq(v, id)) return n; }
-    for (struct node *c = n->first_child; c; c = c->next) { struct node *r = find_id(c, id); if (r) return r; }
-    return 0;
-}
-
 /* ---- document methods ---- */
 static JSValue doc_getById(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; if (argc < 1 || !g_root) return JS_NULL;
     const char *id = JS_ToCString(ctx, argv[0]); if (!id) return JS_NULL;
-    struct node *n = find_id(g_root, id); JS_FreeCString(ctx, id);
+    /* The document's id index, not a tree walk: getElementById is O(1) and,
+     * per the DOM spec, case-sensitive (the old walk compared case-insensitively). */
+    struct node *n = dom_get_element_by_id(g_root->doc, id);
+    JS_FreeCString(ctx, id);
     return wrap(ctx, n);
 }
 static JSValue doc_qs(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -167,8 +180,11 @@ static JSValue doc_qs(JSContext *ctx, JSValueConst t, int argc, JSValueConst *ar
 static JSValue el_get_text(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
-    static char buf[8192]; int len = gather_text(n, buf, 0, sizeof buf); buf[len] = 0;
-    return JS_NewString(ctx, buf);
+    struct sbuf b = { 0, 0, 0 };
+    gather_text(n, &b);
+    JSValue v = JS_NewStringLen(ctx, b.p ? b.p : "", b.len);
+    free(b.p);
+    return v;
 }
 static JSValue el_set_text(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
@@ -194,7 +210,7 @@ static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst
     struct node *n = node_of(t); if (!n || argc < 2) return JS_UNDEFINED;
     const char *nm = JS_ToCString(ctx, argv[0]);
     const char *vl = JS_ToCString(ctx, argv[1]);
-    if (nm && vl) { set_attr(n, nm, vl); g_dirty = 1; }
+    if (nm && vl) { dom_set_attr(n, nm, vl); g_dirty = 1; }
     if (nm) JS_FreeCString(ctx, nm);
     if (vl) JS_FreeCString(ctx, vl);
     return JS_UNDEFINED;
@@ -203,39 +219,20 @@ static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst
 /* ---- tree mutation: createElement / appendChild / removeChild ---- */
 static JSValue doc_createElement(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    (void)t; if (argc < 1) return JS_NULL;
+    (void)t; if (argc < 1 || !g_root) return JS_NULL;
     const char *tag = JS_ToCString(ctx, argv[0]); if (!tag) return JS_NULL;
-    struct node *n = malloc(sizeof *n);
-    if (n) {
-        memset(n, 0, sizeof *n);
-        n->type = N_ELEM;
-        int j = 0; while (tag[j] && j < 15) { n->tag[j] = (char)lc((unsigned char)tag[j]); j++; } n->tag[j] = 0;
-    }
+    /* Created in the page's document so it shares the arena and the id index;
+     * it stays detached (and so invisible to getElementById) until appended. */
+    struct node *n = dom_create_element(g_root->doc, tag, -1);
     JS_FreeCString(ctx, tag);
     return wrap(ctx, n);
-}
-
-static void unlink_node(struct node *c)
-{
-    struct node *p = c->parent; if (!p) return;
-    struct node **pp = &p->first_child;
-    while (*pp && *pp != c) pp = &(*pp)->next;
-    if (*pp) *pp = c->next;
-    if (p->last_child == c) {
-        p->last_child = 0;
-        for (struct node *k = p->first_child; k; k = k->next) p->last_child = k;
-    }
-    c->parent = 0; c->next = 0;
 }
 
 static JSValue el_appendChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
     struct node *c = node_of(argv[0]); if (!c || c == n) return JS_NULL;
-    unlink_node(c);                            /* move semantics: detach from any old parent */
-    c->parent = n; c->next = 0;
-    if (n->last_child) n->last_child->next = c; else n->first_child = c;
-    n->last_child = c;
+    dom_append_child(n, c);                    /* move semantics: detaches from any old parent */
     g_dirty = 1;
     return JS_DupValue(ctx, argv[0]);          /* like the DOM: return the appended child */
 }
@@ -244,9 +241,7 @@ static JSValue el_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueC
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
     struct node *c = node_of(argv[0]); if (!c || c->parent != n) return JS_NULL;
-    unlink_node(c);
-    dom_free(c);
-    g_dom_epoch++;                             /* invalidate wrappers into the freed subtree */
+    dom_destroy_subtree(c);                    /* wrappers into it go stale via serial */
     g_dirty = 1;
     return JS_DupValue(ctx, argv[0]);
 }
@@ -259,11 +254,11 @@ static JSValue el_get_classlist(JSContext *ctx, JSValueConst t)
     struct node *n = node_of(t); if (!n) return JS_NULL;
     JSValue o = JS_NewObjectClass(ctx, (int)token_cid);
     if (JS_IsException(o)) return o;
-    struct elem_handle *h = malloc(sizeof *h);
+    struct elem_handle *h = new_handle(n);
     if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
-    h->n = n; h->epoch = g_dom_epoch;
     JS_SetOpaque(o, h);
-    return o;
+    return o;                                  /* not cached in n->jsw: that slot
+                                                * belongs to the Element wrapper */
 }
 
 /* shared arg decode: token list receiver + class name from argv[0] */
@@ -273,7 +268,7 @@ static struct node *token_args(JSContext *ctx, JSValueConst t, int argc, JSValue
     *name = 0;
     if (argc < 1) return 0;
     struct elem_handle *h = JS_GetOpaque(t, token_cid);
-    if (!h || h->epoch != g_dom_epoch) return 0;
+    if (!h || !h->n || h->n->serial != h->serial) return 0;
     *name = JS_ToCString(ctx, argv[0]);
     return *name ? h->n : 0;
 }
@@ -286,19 +281,20 @@ static JSValue cl_contains(JSContext *ctx, JSValueConst t, int argc, JSValueCons
     JS_FreeCString(ctx, nm);
     return JS_NewBool(ctx, has);
 }
+/* Both rebuild the class attribute through a growable buffer: real pages carry
+ * class lists far past the 255 characters the old fixed buffers allowed, and
+ * truncating one here would silently drop unrelated classes. */
 static JSValue cl_add(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     const char *nm; struct node *n = token_args(ctx, t, argc, argv, &nm);
     if (!n) return JS_UNDEFINED;
     const char *cls = dom_attr(n, "class");
     if (!word_has(cls, nm)) {
-        char buf[256];
-        int j = 0;
-        if (cls) for (int i = 0; cls[i] && j < 253; i++) buf[j++] = cls[i];
-        if (j) buf[j++] = ' ';
-        for (int i = 0; nm[i] && j < 255; i++) buf[j++] = nm[i];
-        buf[j] = 0;
-        set_attr(n, "class", buf); g_dirty = 1;
+        struct sbuf b = { 0, 0, 0 };
+        if (cls && *cls) { sb_push(&b, cls, strlen(cls)); sb_push(&b, " ", 1); }
+        sb_push(&b, nm, strlen(nm));
+        if (b.p) { dom_set_attr(n, "class", b.p); g_dirty = 1; }
+        free(b.p);
     }
     JS_FreeCString(ctx, nm);
     return JS_UNDEFINED;
@@ -309,18 +305,20 @@ static JSValue cl_remove(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     if (!n) return JS_UNDEFINED;
     const char *cls = dom_attr(n, "class");
     if (word_has(cls, nm)) {
-        char buf[256]; int j = 0; int wl = 0; while (nm[wl]) wl++;
+        struct sbuf b = { 0, 0, 0 };
+        size_t wl = strlen(nm);
         const char *p = cls;
         while (*p) {
             while (*p == ' ') p++;
             const char *s = p; while (*p && *p != ' ') p++;
-            if (!(p - s == wl && memcmp(s, nm, (size_t)wl) == 0)) {
-                if (j) buf[j++] = ' ';
-                for (const char *k = s; k < p && j < 255; k++) buf[j++] = *k;
-            }
+            if (p == s) continue;
+            if ((size_t)(p - s) == wl && memcmp(s, nm, wl) == 0) continue;
+            if (b.len) sb_push(&b, " ", 1);
+            sb_push(&b, s, (size_t)(p - s));
         }
-        buf[j] = 0;
-        set_attr(n, "class", buf); g_dirty = 1;
+        dom_set_attr(n, "class", b.p ? b.p : "");
+        g_dirty = 1;
+        free(b.p);
     }
     JS_FreeCString(ctx, nm);
     return JS_UNDEFINED;
@@ -347,7 +345,7 @@ static JSClassDef token_class = { "DOMTokenList", elem_finalizer };
  * before the page's context/runtime is freed (JS_FreeRuntime asserts on
  * live GC objects). */
 #define MAX_LISTENERS 64
-static struct { struct node *n; unsigned long epoch; char type[32]; JSValue fn; }
+static struct { struct node *n; uint32_t serial; char type[32]; JSValue fn; }
     g_listeners[MAX_LISTENERS];
 static int g_nlisteners;
 
@@ -358,7 +356,7 @@ static JSValue el_addEventListener(JSContext *ctx, JSValueConst t, int argc, JSV
     const char *ty = JS_ToCString(ctx, argv[0]); if (!ty) return JS_UNDEFINED;
     if (g_nlisteners < MAX_LISTENERS) {
         int i = g_nlisteners++;
-        g_listeners[i].n = n; g_listeners[i].epoch = g_dom_epoch;
+        g_listeners[i].n = n; g_listeners[i].serial = n->serial;
         int j = 0; while (ty[j] && j < 31) { g_listeners[i].type[j] = ty[j]; j++; }
         g_listeners[i].type[j] = 0;
         g_listeners[i].fn = JS_DupValue(ctx, argv[1]);
@@ -369,12 +367,19 @@ static JSValue el_addEventListener(JSContext *ctx, JSValueConst t, int argc, JSV
 /* queryable from tests / future event dispatch */
 int js_dom_listener_count(void) { return g_nlisteners; }
 
-/* Free the dup'd listener handler refs. Call before JS_FreeContext on the
- * context js_dom_init() was last run with. */
+/* Free the dup'd listener handler refs AND drop every wrapper slot in the
+ * document. Call before JS_FreeContext on the context js_dom_init() was last
+ * run with.
+ *
+ * The wrapper part is not optional: browser.c's run_js() builds a fresh
+ * JSRuntime for every page, so any node->jsw left behind points at a JSObject
+ * in a runtime that no longer exists. The very next document.body on the next
+ * page would hand that dangling pointer straight back to JS. */
 void js_dom_cleanup(JSContext *ctx)
 {
     for (int i = 0; i < g_nlisteners; i++) JS_FreeValue(ctx, g_listeners[i].fn);
     g_nlisteners = 0;
+    if (g_root) dom_clear_wrappers(g_root->doc);
 }
 
 static const JSCFunctionListEntry elem_proto[] = {
@@ -430,10 +435,13 @@ static void maybe_install_console(JSContext *ctx)
     JS_FreeValue(ctx, g);
 }
 
-/* document.body / .documentElement are getters, not captured wrappers: a wrapper
- * made at init goes stale as soon as any subtree free bumps g_dom_epoch (e.g.
- * after one textContent=, document.body would read as NULL). Resolving per
- * access keeps them valid for the page's lifetime. */
+/* document.body / .documentElement are getters, not wrappers captured at init:
+ * a script may replace <body>'s subtree, and the getter must always resolve
+ * against the live tree. (Under the old global epoch a captured wrapper also
+ * went stale the moment ANY subtree was freed -- one textContent= and
+ * document.body read as NULL. Per-node serials removed that failure mode, but
+ * resolving per access is still the correct semantics.) The wrapper the getter
+ * returns is the node's cached one, so document.body === document.body. */
 static JSValue doc_get_body(JSContext *ctx, JSValueConst t)
 {
     (void)t;
@@ -465,6 +473,9 @@ static const JSCFunctionListEntry doc_funcs[] = {
 void js_dom_init(JSContext *ctx, struct node *root)
 {
     g_root = root; g_dirty = 0; g_nlisteners = 0;
+    /* Defensive: if a previous page's runtime went away without a cleanup call,
+     * its wrapper slots are dangling JSObject*s. Start every page with none. */
+    if (root) dom_clear_wrappers(root->doc);
     JSRuntime *rt = JS_GetRuntime(ctx);
     /* class ids index per-runtime arrays: run_js() builds a fresh JSRuntime for
      * every page, so the class must be registered on each init. The old
