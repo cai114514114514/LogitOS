@@ -8,6 +8,9 @@
 #include "spinlock.h"
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
+/* net/core/sock.c: release the non-blocking sockets this process owns. Weak so
+ * the process model does not hard-depend on the network stack being linked. */
+void sock_close_owner(int pid) __attribute__((weak));
 
 /* M25 P2: the process table is peeled out from under the BKL so SYS_FORK can run
  * BKL-free (concurrent worker spawn). g_proc_lock guards the procs[] table + the
@@ -165,6 +168,12 @@ void proc_exit(int code)
          * sees RUNNING and keeps waiting -- no premature reap. */
         for (int i = 0; i < NFD; i++)
             if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
+        /* Sockets are a separate table from the fds, so they need their own
+         * sweep. Without it a tab that dies mid-load (window closed, page
+         * faulted) strands its connections until something else needs the slot
+         * -- the same class of leak the g_net_busy watchdog exists to catch on
+         * the blocking path, except here it can simply be closed properly. */
+        if (sock_close_owner) sock_close_owner(p->pid);
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         p->exit_code = code;
         p->state = PROC_ZOMBIE;

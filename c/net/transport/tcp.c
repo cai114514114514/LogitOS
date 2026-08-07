@@ -19,7 +19,21 @@ void *memset(void *, int, size_t);
 enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, LAST_ACK,
        CLOSING, TIME_WAIT };
 
-#define NCONN    8
+/* 32, up from 8. A connection POOL is the point of the async socket layer: a
+ * real page pulls stylesheets/scripts/images from a handful of origins, and a
+ * browser keeps ~6 sockets open per origin, so 8 slots could not hold even one
+ * origin's pool plus the legacy blocking SYS_HTTP_GET path plus the slots that
+ * linger in TIME_WAIT after each object. 32 covers four origins at six each and
+ * still leaves headroom for the closing states.
+ *
+ * The cost is BSS, and it is the honest reason this is 32 rather than 128: each
+ * conn carries its own 64 KiB seq-indexed receive ring, so a slot is ~67 KiB and
+ * conns[] is ~2.1 MiB (it was 536 KiB). That is affordable on the 512 MiB the
+ * machine boots with, and the alternative -- kmalloc'ing the ring per connect --
+ * would put a failure path in the middle of the SYN and break the white-box host
+ * test (tests/unit/tcp_test.c #includes this file with no heap). Revisit that
+ * trade if the pool ever needs hundreds of slots. */
+#define NCONN    32
 #define RXBUF    65536      /* 64 KiB receive window: a full HTTP body / TLS flight
                             * fits in one window, so the sender streams it without
                             * zero-window stalls. Must be a power of two (ring &). */
@@ -617,13 +631,21 @@ void tcp_poll(void)
     net_unlock(f);
 }
 
-int tcp_connect(uint32_t dst, uint16_t port)
+/* Active open, NON-blocking: claim a slot, emit the SYN, return immediately with
+ * the connection in SYN_SENT. Nothing here waits, so N of these can be in flight
+ * at once and tcp_poll() (pumped by net_poll) retransmits all of them in
+ * parallel -- which is the whole reason the socket layer exists. Poll the result
+ * with tcp_connect_status(). */
+int tcp_connect_start(uint32_t dst, uint16_t port)
 {
     int id = -1;
-    for (int i = 0; i < NCONN; i++) if (!conns[i].used) { id = i; break; }
-    if (id < 0) return -1;
-    struct tcp_conn *c = &conns[id];
     uint64_t f = net_lock();                    /* build the conn atomically vs the RX IRQ */
+    /* Slot search moved INSIDE the lock: with a pool, two starts can race the
+     * same free slot between the scan and the memset, and the loser would then
+     * scribble over a connection that had already sent its SYN. */
+    for (int i = 0; i < NCONN; i++) if (!conns[i].used) { id = i; break; }
+    if (id < 0) { net_unlock(f); return -1; }
+    struct tcp_conn *c = &conns[id];
     memset(c, 0, sizeof *c);
     c->used = 1;
     c->state = SYN_SENT;
@@ -640,63 +662,120 @@ int tcp_connect(uint32_t dst, uint16_t port)
     send_seg(c, SYN, iss, NULL, 0);
     arm_retransmit(c, SYN, iss, NULL, 0);
     net_unlock(f);
+    return id;
+}
 
+/* 1 = ESTABLISHED, 0 = still handshaking, -1 = the open failed (RST, ICMP hard
+ * error, or tcp_poll gave up retransmitting the SYN and released the slot).
+ * There is no timeout of its own: tcp_poll's retransmit cap is the timeout, and
+ * a caller that wants a shorter deadline enforces it itself. */
+int tcp_connect_status(int id)
+{
+    if (id < 0 || id >= NCONN) return -1;
+    struct tcp_conn *c = &conns[id];
+    if (!c->used || c->state == CLOSED) return -1;
+    return c->state == SYN_SENT ? 0 : 1;
+}
+
+int tcp_connect(uint32_t dst, uint16_t port)
+{
+    int id = tcp_connect_start(dst, port);
+    if (id < 0) return -1;
     uint64_t start = timer_ticks();
     while (timer_ticks() - start < 500) {        /* ~5 s */
         net_poll();
-        if (c->state == ESTABLISHED) return id;
-        if (!c->used) return -1;
+        int st = tcp_connect_status(id);
+        if (st > 0) return id;
+        if (st < 0) return -1;
         net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
     }
-    f = net_lock();             /* clear the slot under the same lock as setup */
-    c->used = 0;
+    uint64_t f = net_lock();    /* clear the slot under the same lock as setup */
+    conns[id].used = 0;
     net_unlock(f);
     return -1;
+}
+
+/* Put at most ONE segment on the wire and return how many bytes it took: 0 when
+ * nothing can be sent right now (the single retransmit slot still holds unacked
+ * data, or a persist probe is outstanding), -1 when the connection is gone.
+ *
+ * The point is what it does NOT do: it never waits and never calls net_poll().
+ * tcp_send() below does both, which makes it illegal inside a syscall (the int
+ * 0x80 gate runs with IF=0, so the tick it waits for never arrives) and inside
+ * net_poll() itself (re-entry). Everything on the non-blocking socket path
+ * sends through here, from sock_pump(). */
+int tcp_send_nb(int id, const void *buf, int len)
+{
+    if (id < 0 || id >= NCONN || len < 0 || (!buf && len > 0)) return -1;
+    struct tcp_conn *c = &conns[id];
+    uint64_t f = net_lock();
+    if (!c->used || c->state != ESTABLISHED) { net_unlock(f); return -1; }
+    if (len == 0)      { net_unlock(f); return 0; }
+    /* There is deliberately one retransmission slot. Never overwrite a previous
+     * call's segment, or a close/persist segment. */
+    if (c->tx_flags)   { net_unlock(f); return 0; }
+    uint32_t avail = send_available(c);
+    int chunk;
+    if (avail == 0) {
+        /* RFC 9293 zero-window probe: queue one byte of new data. It stays in
+         * the retransmit slot with exponential persist backoff until the peer
+         * reports a reopened window. */
+        chunk = 1;
+    } else {
+        uint32_t cap = avail;
+        if (cap > TXBUF) cap = TXBUF;
+        if (cap > c->peer_mss) cap = c->peer_mss;
+        chunk = len > (int)cap ? (int)cap : len;
+    }
+    uint32_t seq = c->snd_nxt;
+    send_seg(c, PSH | ACK, seq, buf, chunk);
+    arm_retransmit(c, PSH | ACK, seq, buf, chunk);
+    if (avail == 0) c->tx_probe = 1;
+    c->snd_nxt += (uint32_t)chunk;
+    net_unlock(f);
+    return chunk;
 }
 
 int tcp_send(int id, const void *buf, int len)
 {
     if (id < 0 || id >= NCONN || len < 0 || (!buf && len > 0)) return -1;
-    struct tcp_conn *c = &conns[id];
     const uint8_t *p = (const uint8_t *)buf;
     int remaining = len, sent = 0;
 
     while (remaining > 0) {
-        /* There is deliberately one retransmission slot. Never overwrite a
-         * previous call's final segment or a close/persist segment. */
+        /* Try first, then wait for the retransmit slot to free -- the
+         * segmentation/window arithmetic lives once, in tcp_send_nb. */
+        int n = tcp_send_nb(id, p, remaining);
         uint64_t start = timer_ticks();
-        while (c->used && c->tx_flags && timer_ticks() - start < 800) {
+        while (n == 0 && timer_ticks() - start < 800) {
             net_poll();
-            if (!c->tx_flags) break;
+            n = tcp_send_nb(id, p, remaining);
+            if (n != 0) break;
             net_idle();
         }
-        if (!c->used || c->tx_flags) return sent > 0 ? sent : -1;
-
-        uint64_t f = net_lock();
-        if (!c->used || c->state != ESTABLISHED) { net_unlock(f); return sent > 0 ? sent : -1; }
-        uint32_t avail = send_available(c);
-        int chunk;
-        if (avail == 0) {
-            /* RFC 9293 zero-window probe: queue one byte of new data. It stays
-             * in the retransmit slot with exponential persist backoff until the
-             * peer reports a reopened window. */
-            chunk = 1;
-        } else {
-            uint32_t cap = avail;
-            if (cap > TXBUF) cap = TXBUF;
-            if (cap > c->peer_mss) cap = c->peer_mss;
-            chunk = remaining > (int)cap ? (int)cap : remaining;
-        }
-        uint32_t seq = c->snd_nxt;
-        send_seg(c, PSH | ACK, seq, p, chunk);
-        arm_retransmit(c, PSH | ACK, seq, p, chunk);
-        if (avail == 0) c->tx_probe = 1;
-        c->snd_nxt += (uint32_t)chunk;
-        net_unlock(f);
-        p += chunk; remaining -= chunk; sent += chunk;
+        if (n <= 0) return sent > 0 ? sent : -1;
+        p += n; remaining -= n; sent += n;
     }
 
     return sent;
+}
+
+/* Readable bytes waiting right now, without consuming any: >0 = that many,
+ * 0 = nothing yet but the stream is open, -1 = finished (peer FIN drained, or
+ * the connection is gone). tcp_recv() cannot answer this -- it either takes the
+ * bytes or reports 0/-1 -- and a poller has to distinguish "not yet" from "end"
+ * before the app asks for data. */
+int tcp_available(int id)
+{
+    if (id < 0 || id >= NCONN) return -1;
+    struct tcp_conn *c = &conns[id];
+    uint64_t f = net_lock();
+    int rc;
+    if (!c->used)          rc = -1;
+    else if (c->rx_len > 0) rc = c->rx_len;
+    else rc = (c->peer_fin || c->state == CLOSED) ? -1 : 0;
+    net_unlock(f);
+    return rc;
 }
 
 int tcp_recv(int id, void *buf, int max)

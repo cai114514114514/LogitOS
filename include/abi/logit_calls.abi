@@ -91,6 +91,17 @@ call open_path      SYS_OPEN_PATH      str(path)
 
 # ---- network / http / render payloads ----
 call net_info       SYS_NET_INFO       buf(ni)
+# Non-blocking sockets (M27). port and flags share one argument: the kernel takes
+# three, and spending two of them on two 16-bit values would have left nothing for
+# a third if one is ever needed. flags is SOCK_F_* -- TLS on/off plus which ALPN
+# protocols to offer -- so the ALPN list is an integer here rather than a pointer
+# to an array of strings the kernel would have to walk out of user memory.
+call sock_open      SYS_SOCK_OPEN      str(host) pack(port:16:16, flags:0:16)
+call sock_poll      SYS_SOCK_POLL      int(fd)
+call sock_send      SYS_SOCK_SEND      int(fd) buf(b) int(len)
+call sock_recv      SYS_SOCK_RECV      int(fd) buf(b) int(max)
+call sock_alpn      SYS_SOCK_ALPN      int(fd) buf(b) int(max)
+call sock_close     SYS_SOCK_CLOSE     int(fd)
 call http_body      SYS_HTTP_BODY      buf(b) int(max)
 call res_fetch      SYS_RES_FETCH      str(src) buf(b) int(max)
 call text_measure   SYS_TEXT_MEASURE   str(s) int(len) pack(px:1:31, mono:0:1)

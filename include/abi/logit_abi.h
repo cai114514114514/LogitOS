@@ -86,6 +86,66 @@
  * kernel code that has not re-enabled IF (the same trap SYS_HTTP_GET documents). */
 #define SYS_MONOTONIC_MS 75
 
+/* ---- M27: non-blocking client sockets -------------------------------------
+ *
+ * The network used to be reachable from ring 3 only through SYS_HTTP_GET, which
+ * did the whole fetch -- DNS, TCP, the TLS handshake, the request, the body --
+ * inside one syscall, holding the big kernel lock, with the window manager told
+ * not to poll the network for the duration. One request could exist in the
+ * machine at a time and the desktop was frozen while it ran, so a page with
+ * forty sub-resources meant forty sequential TLS handshakes behind a dead UI,
+ * and a JS fetch() could not be built on it at all.
+ *
+ * These six calls are the replacement, and every one of them returns at once.
+ * Progress happens in net_poll(), pumped from the WM loop, which advances EVERY
+ * open socket on every pass -- so connections handshake concurrently, which is
+ * the entire point. SYS_HTTP_GET and SYS_RES_FETCH still work, unchanged, so
+ * both paths coexist while the ring-3 HTTP client is written.
+ *
+ * A socket handle is NOT a POSIX fd: sockets live in their own table, scoped to
+ * the process that opened them, so that adding them could not perturb the
+ * fork/exec/pipe fd semantics in c/kernel/exec/file.c. They are released when
+ * the owning process exits. */
+#define SYS_SOCK_OPEN   76 /* (host, (port<<16)|flags) -> handle >= 0, or SOCK_E_* */
+#define SYS_SOCK_POLL   77 /* (fd) -> SOCK_P_* bits, or SOCK_E_* (negative) */
+#define SYS_SOCK_SEND   78 /* (fd, buf, len) -> bytes taken (may be short, may be 0) */
+#define SYS_SOCK_RECV   79 /* (fd, buf, max) -> bytes (0 = nothing yet, -1 = closed) */
+#define SYS_SOCK_ALPN   80 /* (fd, buf, max) -> length of the negotiated protocol */
+#define SYS_SOCK_CLOSE  81 /* (fd) -> 0 */
+
+/* sock_open() flags.
+ *
+ * ALPN rides in the flag word as a bitmask rather than as a pointer to a list of
+ * strings, because the set of protocols a browser ever offers is exactly these
+ * two, and a flat integer is one less user pointer for the kernel to copy and
+ * validate on every connection. If both bits are set, "h2" is offered first --
+ * preference is the fixed order, not the bit order. */
+#define SOCK_F_TLS          0x0001  /* wrap the connection in TLS (and send SNI) */
+#define SOCK_F_ALPN_H2      0x0002  /* offer "h2" */
+#define SOCK_F_ALPN_HTTP11  0x0004  /* offer "http/1.1" */
+#define SOCK_F_ALPN_ANY     (SOCK_F_ALPN_H2 | SOCK_F_ALPN_HTTP11)
+
+/* sock_poll() result bits. CONNECTED means the transport is up -- including the
+ * TLS handshake, if one was asked for -- so an app has exactly one thing to wait
+ * for. READABLE and EOF are distinct: a peer can send its FIN with data still
+ * buffered, and an app that treated the FIN as "no more bytes" would truncate
+ * the response. */
+#define SOCK_P_CONNECTED    0x01
+#define SOCK_P_READABLE     0x02
+#define SOCK_P_WRITABLE     0x04
+#define SOCK_P_EOF          0x08
+#define SOCK_P_ERROR        0x10
+/* On SOCK_P_ERROR, bits 8..15 carry the negated SOCK_E_* code: a poll result of
+ * 0 would otherwise be the same answer for "still connecting" and "failed", and
+ * the app has no other way to tell a DNS failure from a refused connection. */
+#define SOCK_ERR_CODE(v)    (-(((v) >> 8) & 0xFF))
+
+#define SOCK_E_ARG    -1   /* bad handle, bad length, not the caller's socket */
+#define SOCK_E_DNS    -2   /* the name did not resolve */
+#define SOCK_E_CONN   -3   /* TCP never established, or died */
+#define SOCK_E_TLS    -4   /* handshake or certificate verification failed */
+#define SOCK_E_NOSLOT -5   /* the socket or connection table is full */
+
 /* open() flags */
 #define O_RDONLY 0
 #define O_WRONLY 1

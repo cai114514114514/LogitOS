@@ -19,11 +19,25 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);
 void tcp_poll(void);
 
 /* Open a connection to dst:port (host order). Returns a connection id (>=0) on
- * ESTABLISHED, or -1 on failure/timeout. */
+ * ESTABLISHED, or -1 on failure/timeout. Blocking (pumps net_poll). */
 int  tcp_connect(uint32_t dst, uint16_t port);
 
-/* Queue/send bytes on an established connection. Returns bytes sent, or -1. */
+/* The same open, split so it does not block: _start sends the SYN and returns
+ * the id at once, _status reports 1 established / 0 pending / -1 failed. Many
+ * of these progress concurrently under tcp_poll(); tcp_connect() is just the
+ * two of them with a wait loop between. */
+int  tcp_connect_start(uint32_t dst, uint16_t port);
+int  tcp_connect_status(int id);
+
+/* Queue/send bytes on an established connection. Returns bytes sent, or -1.
+ * Blocking (pumps net_poll): NOT callable from a syscall or from net_poll. */
 int  tcp_send(int id, const void *buf, int len);
+
+/* One segment at most, never waits: bytes taken (0 = would block), or -1. */
+int  tcp_send_nb(int id, const void *buf, int len);
+
+/* Bytes readable without consuming: >0 count, 0 none yet, -1 stream finished. */
+int  tcp_available(int id);
 
 /* Copy up to max received bytes into buf. Returns the count (0 if none yet,
  * -1 if the connection is closed and drained). */

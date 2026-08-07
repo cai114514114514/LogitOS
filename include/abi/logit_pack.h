@@ -76,6 +76,10 @@
 #define LOGIT_GUI_CLIP_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_CLIP_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
+/* SYS_SOCK_OPEN arg b: port<<16 | flags */
+#define LOGIT_SOCK_OPEN_B_PORT(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_SOCK_OPEN_B_FLAGS(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
 /* SYS_TEXT_MEASURE arg c: px<<1 | mono */
 #define LOGIT_TEXT_MEASURE_C_PX(v) ((int)(((unsigned long long)(v) >> 1) & 0x7FFFFFFFULL))
 #define LOGIT_TEXT_MEASURE_C_MONO(v) ((int)(((unsigned long long)(v) >> 0) & 0x1ULL))

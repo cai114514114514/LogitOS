@@ -217,6 +217,24 @@ def open_path(path):
 def net_info(ni):
     return syscall(SYS_NET_INFO, addr(ni))
 
+def sock_open(host, port, flags):
+    return syscall(SYS_SOCK_OPEN, addr(host), ((port & 0xFFFF) << 16) | ((flags & 0xFFFF)))
+
+def sock_poll(fd):
+    return syscall(SYS_SOCK_POLL, fd)
+
+def sock_send(fd, b, len):
+    return syscall(SYS_SOCK_SEND, fd, addr(b), len)
+
+def sock_recv(fd, b, max):
+    return syscall(SYS_SOCK_RECV, fd, addr(b), max)
+
+def sock_alpn(fd, b, max):
+    return syscall(SYS_SOCK_ALPN, fd, addr(b), max)
+
+def sock_close(fd):
+    return syscall(SYS_SOCK_CLOSE, fd)
+
 def http_body(b, max):
     return syscall(SYS_HTTP_BODY, addr(b), max)
 

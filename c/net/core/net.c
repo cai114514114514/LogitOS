@@ -46,6 +46,8 @@ int net_init(void)
 
 void tcp_poll(void) __attribute__((weak));
 void ip_poll(void) __attribute__((weak));
+void dns_poll(void) __attribute__((weak));   /* async resolver pool */
+void sock_pump(void) __attribute__((weak));  /* non-blocking client sockets */
 
 /* Set while a blocking fetch (http_get/res_fetch, on the app thread) owns the
  * network. The WM render thread is preempted into ~100x/s and also calls
@@ -61,6 +63,13 @@ void net_poll(void)
         if (tcp_poll) tcp_poll();
         if (ip_poll) ip_poll();
         if (dhcp_poll) dhcp_poll();
+        /* The async half, and the reason a fetch no longer freezes the desktop:
+         * these two advance EVERY outstanding lookup and EVERY open socket by
+         * whatever the bytes already received allow, then return. Ordering is
+         * deliberate -- dns_poll first, so a name that resolves on this pass has
+         * its socket move on to the SYN in the same pass rather than the next. */
+        if (dns_poll) dns_poll();
+        if (sock_pump) sock_pump();
     }
 }
 

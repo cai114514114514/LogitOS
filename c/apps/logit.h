@@ -94,6 +94,22 @@ static inline int      net_ping_rtt(void) { return (int)_sys(SYS_NET_PING_RTT, 0
 static inline int      net_dns(const char *name) { return (int)_sys(SYS_NET_DNS, (long)name, 0, 0); }
 static inline unsigned net_dns_result(void) { return (unsigned)_sys(SYS_NET_DNS_RESULT, 0, 0, 0); }
 
+/* --- M27: non-blocking client sockets ---
+ * Nothing here waits. sock_open returns a handle immediately and the connection
+ * (DNS -> TCP -> TLS) is driven forward by the kernel's net_poll, so an app can
+ * hold several of these open at once and they progress together. Poll with
+ * sock_poll until SOCK_P_CONNECTED, then send/recv; both may be short, and a
+ * recv of 0 means "nothing yet", not end of stream (that is SOCK_P_EOF). */
+static inline int sock_open(const char *host, int port, int flags)
+{ return (int)_sys(SYS_SOCK_OPEN, (long)host,
+                   ((long)(port & 0xFFFF) << 16) | (flags & 0xFFFF), 0); }
+static inline int sock_poll(int fd) { return (int)_sys(SYS_SOCK_POLL, fd, 0, 0); }
+static inline int sock_send(int fd, const void *buf, int len) { return (int)_sys(SYS_SOCK_SEND, fd, (long)buf, len); }
+static inline int sock_recv(int fd, void *buf, int max) { return (int)_sys(SYS_SOCK_RECV, fd, (long)buf, max); }
+/* The negotiated ALPN protocol ("h2" / "http/1.1"), NUL-terminated; 0 if none. */
+static inline int sock_alpn(int fd, char *buf, int max) { return (int)_sys(SYS_SOCK_ALPN, fd, (long)buf, max); }
+static inline int sock_close(int fd) { return (int)_sys(SYS_SOCK_CLOSE, fd, 0, 0); }
+
 /* --- HTTP + ring-3 render pipeline (browser) --- */
 static inline int http_get(const char *url) { return (int)_sys(SYS_HTTP_GET, (long)url, 0, 0); }
 static inline int http_status(void) { return (int)_sys(SYS_HTTP_STATUS, 0, 0, 0); }

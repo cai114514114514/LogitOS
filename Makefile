@@ -89,7 +89,18 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # once, so the image codecs can sit behind SYS_IMG_DECODE; a video is decoded
 # thirty times a second, holds megabytes of reference frames, and would run
 # under the BKL. See the VID_OBJ rules further down for who does link it.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+#
+#
+# RING3_NET is excluded for exactly the same reason as c/lib/video: it is the
+# ring-3 HTTP client (connection pool, cookie jar, HTTP/1.1 framing) that runs on
+# top of the non-blocking socket syscalls, and it allocates with malloc/free and
+# uses strchr/strcmp/memchr from mini-libc -- none of which exist in the kernel.
+# It shares c/net/http with the kernel's own blocking client (http.c/url.c), so
+# it cannot be excluded by directory; the find below was dragging it into the
+# kernel link, where it failed with six undefined symbols. Its consumers link it
+# with LIBC_OBJS, like the video decoder does.
+RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -102,7 +113,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net
 
 all: $(ISO)
 
@@ -205,7 +216,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -347,6 +358,25 @@ $(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
+# --- ring-3 HTTP client, built for the target -----------------------------
+# Same shape and same reasoning as VID_OBJ above: RING3_NET is filtered out of
+# the kernel's C_SRC (see the comment at the top) and compiled here with the
+# userland flags instead, against mini-libc. Consumers link R3NET_OBJ the way
+# Preview and /bin/vidcheck link VID_OBJ. Nothing links it yet -- browser.c is
+# wired up in a later slice -- so `check-ring3-net` exists to keep it building
+# with the REAL freestanding flags rather than only under the host compiler,
+# which is where a stray <stdio.h> or a long-long division helper would hide.
+R3NET_SRC  := $(RING3_NET)
+R3NET_HDRS := c/net/http/http1.h c/net/http/cookies.h c/net/http/hpool.h
+R3NET_OBJ  := $(patsubst %.c,$(BUILD)/r3netobj/%.o,$(R3NET_SRC))
+
+$(BUILD)/r3netobj/%.o: %.c $(R3NET_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+check-ring3-net: $(R3NET_OBJ)
+	@echo "check-ring3-net: http1/cookies/hpool build freestanding"
+
 # /bin/vidcheck -- decodes a stream on-device and prints the same CRC32 the
 # host driver prints, which is what turns "it also works on LogitOS" into a
 # comparison rather than a claim. Driven by tests/boot/run-video-test.sh.
@@ -482,6 +512,30 @@ test-crypto: $(BUILD)
 	$(BUILD)/rsa_test
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c -Ic/crypto -Ic/kernel/core -Itests/unit/rngstub
 	$(BUILD)/rng_test
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/ecdh_test tests/unit/ecdh_test.c c/crypto/pubkey/ecdsa.c -Ic/crypto
+	$(BUILD)/ecdh_test
+	@$(MAKE) --no-print-directory check-roots
+
+# The trust store must not lie about its own size. genroots.py silently drops
+# any root whose key type the kernel cannot verify (P-521, Ed25519); until this
+# target existed, that produced a bundle smaller than tools/roots/ with nothing
+# in the build output to say so. This regenerates into a scratch file, prints
+# the skip list, and fails if the committed bundle is stale -- which also
+# catches the classic "edited tools/roots/ and forgot to regenerate".
+check-roots: $(BUILD)
+	@python3 tools/genroots.py tools/roots $(BUILD)/roots_bundle.check 2>$(BUILD)/roots.log; \
+	 grep -c 'ROOT_RSA\|ROOT_EC' $(BUILD)/roots_bundle.check | xargs -I{} echo "roots: {} compiled in"; \
+	 if grep -q '^!!' $(BUILD)/roots.log; then grep '^!!' $(BUILD)/roots.log; fi; \
+	 if ! cmp -s $(BUILD)/roots_bundle.check c/crypto/trust/roots_bundle.inc; then \
+	   echo "FAIL: c/crypto/trust/roots_bundle.inc is stale -- re-run tools/genroots.py"; exit 1; \
+	 fi
+
+# TLS 1.3 interop against a real `openssl s_server`: HelloRetryRequest, each
+# key-exchange group, both AEADs, EC and RSA leaves, ALPN, and the rejections.
+# Not in `make test` because it spawns servers and takes ~2 min under ASan; it
+# is the test that proves the reachability claims, so run it on any TLS change.
+test-tls-interop: $(BUILD)
+	@bash tests/unit/run-tls-interop.sh
 
 # Randomized differential tests: a self-checked pure-Python reference
 # (tests/unit/crypto_diff_gen.py) emits ~127k random vectors; the C asserter
@@ -660,6 +714,23 @@ test-dhcp-host: $(BUILD)
 # End-to-end e1000 -> IPv4 -> TCP -> HTTP transfer against a host-local server.
 test-net-os: $(ISO) $(DISK)
 	@bash tests/boot/run-net-test.sh $(ISO) $(DISK)
+
+# The non-blocking socket ABI. Kernel sockets cannot be host-tested -- they are
+# a syscall over a real stack over a real NIC -- so this boots LogitOS and runs
+# /bin/socktest against a host server. It does not merely check that four
+# transfers succeed (a secretly-serial implementation would too): it requires
+# that the LAST connection came up before the FIRST one finished, and that the
+# per-socket events interleave more than a sequential run could produce.
+test-sock: $(ISO) $(DISK)
+	@bash tests/boot/run-sock-test.sh $(ISO) $(DISK)
+
+# The other half, and the reason any of this was worth doing: does the DESKTOP
+# still respond while a transfer runs? Injects real clicks over QMP during a
+# deliberately slow four-connection fetch and measures how long each takes to
+# reach an app. Runs the same injection against the old blocking SYS_HTTP_GET
+# for contrast -- if the control does not freeze, the measurement proves nothing.
+test-sock-ui: $(ISO) $(DISK)
+	@bash tests/boot/run-sock-ui-test.sh $(ISO) $(DISK)
 
 test-dhcp-os: $(ISO) $(DISK)
 	@bash tests/boot/run-dhcp-test.sh $(ISO) $(DISK)
@@ -892,7 +963,31 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    c/apps/browser/css_engine.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/http1_test tests/unit/http1_test.c \
+	    c/net/http/http1.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST)
+	@$(BUILD)/http1_test
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/cookie_test tests/unit/cookie_test.c c/net/http/cookies.c
+	@$(BUILD)/cookie_test
+	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/hpool_test tests/unit/hpool_test.c c/net/http/hpool.c
+	@$(BUILD)/hpool_test
 	@echo "test-browser: ALL PASS"
+
+# --- test-http-fuzz: ASan+UBSan fuzz for the ring-3 HTTP client -----------
+# The layer this replaces (c/net/http/http.c) parses attacker-chosen bytes in
+# ring 0 and has never been fuzzed. Beyond not crashing, each phase asserts a
+# property: that a response parses identically however the bytes are split
+# across reads, that a built request cannot carry an injected header, that the
+# cookie jar never answers a host the RFC rules forbid, and that the pool never
+# breaches its caps. ~1 s per scale unit, so it is cheap enough to run often;
+# `make test-http-fuzz SCALE=20 SEED=0x1234` goes deeper.
+SCALE ?= 6
+SEED  ?= 0x243F6A8885A308D3
+test-http-fuzz: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w $(BTEST_INC) \
+	    -o $(BUILD)/http1_fuzz tests/unit/http1_fuzz.c $(RING3_NET) \
+	    tests/unit/rust_host_shim.c $(RUST_LIB_HOST)
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/http1_fuzz $(SCALE) $(SEED)
 
 # Same test under ASan+UBSan. The event system is where a JSValue can outlive its
 # runtime and a listener can outlive its node, and neither of those shows up as a

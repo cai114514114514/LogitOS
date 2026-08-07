@@ -13,6 +13,8 @@
 #include "net.h"
 #include "icmp.h"
 #include "dns.h"
+#include "sock.h"
+#include "logit_pack.h"     /* generated: the port/flags unpack for SYS_SOCK_OPEN */
 #include "img.h"
 #include "kheap.h"
 #include "percpu.h"
@@ -330,6 +332,61 @@ void syscall_dispatch(struct registers *r)
     case SYS_NET_DNS_RESULT:
         r->rax = (uint64_t)(long)(int)dns_result();
         return;
+
+    /* M27 non-blocking sockets. Handled here rather than in wm_gui_syscall for
+     * the same reason as SYS_NET_*: they are a process-level service, not a
+     * window one, and /bin/socktest (and any future CLI HTTP client) has no
+     * window. Every one of these returns without waiting -- which is the whole
+     * change. The blocking SYS_HTTP_GET runs with the BKL held for the length of
+     * a fetch, which is exactly why the desktop froze; these hold it for a memcpy
+     * and the real work happens in net_poll() on the WM thread. */
+    case SYS_SOCK_OPEN: {
+        char host[SOCK_HOST_MAX];
+        struct proc *p = proc_current();
+        if (!p) { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        if (user_copy_string(host, sizeof host, (const char *)r->rdi) < 0)
+            { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        int port  = LOGIT_SOCK_OPEN_B_PORT(r->rsi);
+        int flags = LOGIT_SOCK_OPEN_B_FLAGS(r->rsi);
+        r->rax = (uint64_t)(long)sock_open(host, port, flags, p->pid);
+        return;
+    }
+    case SYS_SOCK_POLL: {
+        struct proc *p = proc_current();
+        if (!p) { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        r->rax = (uint64_t)(long)sock_poll_bits((int)r->rdi, p->pid);
+        return;
+    }
+    case SYS_SOCK_SEND: {
+        struct proc *p = proc_current();
+        int len = (int)r->rdx;
+        if (!p || len < 0 || (len > 0 && !user_range_ok((const void *)r->rsi, (uint64_t)len, 0)))
+            { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        r->rax = (uint64_t)(long)sock_send((int)r->rdi, (const void *)r->rsi, len, p->pid);
+        return;
+    }
+    case SYS_SOCK_RECV: {
+        struct proc *p = proc_current();
+        int max = (int)r->rdx;
+        if (!p || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1))
+            { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        r->rax = (uint64_t)(long)sock_recv((int)r->rdi, (void *)r->rsi, max, p->pid);
+        return;
+    }
+    case SYS_SOCK_ALPN: {
+        struct proc *p = proc_current();
+        int max = (int)r->rdx;
+        if (!p || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1))
+            { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        r->rax = (uint64_t)(long)sock_alpn((int)r->rdi, (char *)r->rsi, max, p->pid);
+        return;
+    }
+    case SYS_SOCK_CLOSE: {
+        struct proc *p = proc_current();
+        if (!p) { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
+        r->rax = (uint64_t)(long)sock_close((int)r->rdi, p->pid);
+        return;
+    }
 
     case SYS_IMG_DECODE: {
         /* Decode an image file (PNG/GIF) in-kernel and hand the RGBA back to the
