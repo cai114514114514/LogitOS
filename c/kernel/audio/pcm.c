@@ -20,7 +20,14 @@ int snd_fmt_bytes(int fmt)
 int snd_fmt_ok(unsigned rate, unsigned channels, int fmt)
 {
     if (!snd_fmt_bytes(fmt)) return 0;
-    if (channels < 1 || channels > 2) return 0;
+    /* Up to 8 in, because that is what the decoders produce (a 5.1 FLAC is 6).
+     * Anything past the first two is DROPPED, not folded down: channels 0 and 1
+     * are front-left and front-right in WAV/FLAC order, so taking them is a
+     * real stereo signal rather than a wrong one. A proper downmix wants the
+     * centre and LFE coefficients and is a separate piece of work -- see the
+     * gap list. Refusing 6 channels outright would be worse: it would make a
+     * surround file unplayable rather than merely un-surrounded. */
+    if (channels < 1 || channels > 8) return 0;
     /* 4 kHz is below any real content; 192 kHz is above anything we would be
      * handed. The bound matters because rate feeds a Q16.16 step below and a
      * ratio outside ~1:1000 would overflow it. */
@@ -209,7 +216,7 @@ unsigned pcm_ring_write(struct pcm_ring *r, const void *src, unsigned bytes)
     return n;
 }
 
-unsigned pcm_ring_read(struct pcm_ring *r, void *dst, unsigned bytes)
+unsigned pcm_ring_peek(const struct pcm_ring *r, void *dst, unsigned bytes)
 {
     uint8_t *d = (uint8_t *)dst;
     unsigned have = pcm_ring_used(r), n, off, first;
@@ -221,6 +228,18 @@ unsigned pcm_ring_read(struct pcm_ring *r, void *dst, unsigned bytes)
 
     for (unsigned i = 0; i < first; i++) d[i] = r->buf[off + i];
     for (unsigned i = 0; i < n - first; i++) d[first + i] = r->buf[i];
+    return n;
+}
+
+void pcm_ring_advance(struct pcm_ring *r, unsigned bytes)
+{
+    unsigned have = pcm_ring_used(r);
+    r->tail += (bytes < have ? bytes : have);
+}
+
+unsigned pcm_ring_read(struct pcm_ring *r, void *dst, unsigned bytes)
+{
+    unsigned n = pcm_ring_peek(r, dst, bytes);
     r->tail += n;
     return n;
 }

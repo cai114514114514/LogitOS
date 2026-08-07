@@ -393,7 +393,7 @@ struct logit_clockinfo {
 
 struct logit_sndfmt {
     unsigned int   rate;       /* Hz, any value 4000..192000; resampled to the card's */
-    unsigned short channels;   /* 1 = mono (fanned to every output channel), 2 = stereo */
+    unsigned short channels;   /* 1..8. 1 = mono (fanned out); >2 keeps front L/R only */
     unsigned short format;     /* SND_FMT_* */
     unsigned int   buffer_ms;  /* wanted ring size in ms; 0 = default. Clamped, see info */
     unsigned int   flags;      /* SND_F_* */

@@ -20,6 +20,7 @@
 #include "percpu.h"
 #include "kprintf.h"
 #include "pit.h"
+#include "snd.h"
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -425,6 +426,21 @@ void syscall_dispatch(struct registers *r)
         r->rax = (uint64_t)vfs_rename(ao, an);
         return;
     }
+
+    /* M29 audio. Forwarded whole to c/kernel/audio/snd.c rather than expanded
+     * into six cases here: which argument is a user buffer and how long it is
+     * are audio facts, and they belong beside the code that knows them. Handled
+     * here and not in wm_gui_syscall because a decoder is a CLI process with no
+     * window -- the same reason the socket calls are here. */
+    case SYS_SND_INFO:
+    case SYS_SND_OPEN:
+    case SYS_SND_WRITE:
+    case SYS_SND_AVAIL:
+    case SYS_SND_CLOSE:
+    case SYS_SND_STATE:
+        r->rax = (uint64_t)snd_syscall((long)r->rax, (long)r->rdi,
+                                       (long)r->rsi, (long)r->rdx);
+        return;
 
     default:
         /* GUI + misc system calls are handled by the window manager, which

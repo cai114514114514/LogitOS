@@ -120,6 +120,13 @@ void snd_init(void);
  * buffering -- the "130 roots, 0 skipped" of audio. On unfamiliar hardware
  * this line is the whole diagnosis, so it prints on the no-card path too. */
 void snd_report(void);
+/* snd_report(), but at most once per boot. Called from snd_init() on the
+ * card-present path and from the first audio syscall otherwise. */
+void snd_report_once(void);
+
+/* The SYS_SND_* entry point. c/kernel/exec/syscall.c forwards to this rather
+ * than carrying six cases of audio-specific pointer validation. */
+long snd_syscall(long num, long a, long b, long c);
 
 /* --------------------------------------------------------- stream handles -- */
 /* These are what the SYS_SND_* syscalls call. They are the same functions the
@@ -191,5 +198,17 @@ unsigned pcm_ring_free(const struct pcm_ring *r);
 unsigned pcm_ring_write(struct pcm_ring *r, const void *src, unsigned bytes);
 /* Returns bytes actually read (short when the ring runs dry). */
 unsigned pcm_ring_read(struct pcm_ring *r, void *dst, unsigned bytes);
+
+/* Read WITHOUT consuming, and consume separately.
+ *
+ * The mixer needs this pair because the resampler decides how much input it
+ * actually used only after it has run: to fill one period it must be handed a
+ * frame or two more than it will consume, and a destructive read would throw
+ * those away. Dropping one input frame per period is a 0.1% pitch error and an
+ * audible tick at the period rate -- the kind of bug that survives listening
+ * tests. So: peek what the resampler might need, then advance by what it says
+ * it took. */
+unsigned pcm_ring_peek(const struct pcm_ring *r, void *dst, unsigned bytes);
+void     pcm_ring_advance(struct pcm_ring *r, unsigned bytes);
 
 #endif /* LOGIT_SND_H */
