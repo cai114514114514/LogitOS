@@ -145,7 +145,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -243,7 +243,7 @@ APPS := clock textedit monitor terminal widgets files preview studio
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
@@ -252,8 +252,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -479,7 +478,6 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
-	    tests/fixtures/img/dot.png:/media/dot.png \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
@@ -888,6 +886,48 @@ test-net-proto:
 
 test-net: test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host
 
+# ---- Terminal / shell ------------------------------------------------------
+# LRT/1 framing (c/apps/coreutils/logit_rich.h): round trip at every chunk size,
+# resync past garbage, truncated frames, impossible lengths, payload underflow,
+# and 50 KiB of random noise that must never yield an unbounded frame.
+test-term-proto:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/term_proto_test tests/unit/term_proto_test.c \
+		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
+	@./$(BUILD)/term_proto_test
+
+# /bin/sh itself. The test #includes sh.c and links it against a pipe model with
+# honest reader/writer refcounts (tests/unit/sh_hoststub.h), so the job-control
+# and control-channel paths are the ones the OS runs.
+test-sh:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/sh_edit_test tests/unit/sh_edit_test.c \
+		-Itests/unit -Ic/apps/coreutils -Ic/apps -Iinclude/abi
+	@./$(BUILD)/sh_edit_test
+
+# Negative control: rebuild the SAME test with the shell's environment filter
+# bypassed (the naive "give every child the rich channel" design) and REQUIRE it
+# to fail. A compatibility assertion that still passes without the filter is not
+# testing the thing that keeps protocol bytes out of a redirected file.
+test-sh-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DSH_NEGATIVE_CONTROL -o $(BUILD)/sh_edit_negctl tests/unit/sh_edit_test.c \
+		-Itests/unit -Ic/apps/coreutils -Ic/apps -Iinclude/abi
+	@if ./$(BUILD)/sh_edit_negctl >$(BUILD)/sh_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes with the rich-channel filter removed"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sh_negctl.log) checks fail without the filter"; \
+	fi
+
+test-term-host: test-term-proto test-sh test-sh-negctl
+
+# On-device: rich output judged by PIXELS (an image at the right size, a drawn
+# progress bar, a ruled table) plus the compatibility claim -- the same commands
+# redirected to a file must leave a file with no protocol bytes in it.
+test-term-ui: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_rich_term.py $(ISO) $(DISK) $(BUILD)/richterm.ppm
+
 test-dhcp-host: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
 	$(BUILD)/dhcp_test
@@ -1201,9 +1241,15 @@ BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text
 PAINT_INC := -Itests/unit/painthost
 CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC))
 
+# -MMD -MP so a change to a vendored LibCSS HEADER rebuilds the objects that
+# include it. Without them this rule tracked .c files only, and LibCSS keeps
+# real code in headers -- select/mq.h is where every @media block in every page
+# is actually matched. Patching it and rebuilding produced a byte-identical
+# archive and the fix silently never reached any test binary. Same shape as the
+# roots_bundle.inc gotcha in CLAUDE.md, one directory over.
 $(BUILD)/csshost/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
+	$(CC) -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP $(CSS_INC) -c $< -o $@
 
 $(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
 	@ar rcs $@ $^
@@ -1331,6 +1377,84 @@ test-webapi-page-control: $(ISO) $(BUILD)/browser-nofetch.aex
 # the control.
 test-fetch-ui: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_fetch_ui.py $(ISO) $(DISK)
+
+# --- test-stream: streaming, SSE framing, EventSource, abort ---------------
+# Same in-memory transport as test-webapi, with one addition that is the whole
+# point: the fake server can RELEASE a response in pieces, so a test can assert
+# the page held the first tokens while the response was still open. See the
+# header of tests/unit/stream_net.h.
+STREAM_TEST_SRC := c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c \
+                   c/net/http/cookies.c tests/unit/rust_host_shim.c
+test-stream: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
+	    -o $(BUILD)/stream_test tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
+	    $(RUST_LIB_HOST) -lm
+	@$(BUILD)/stream_test
+
+# The negative control. The SAME test file against js_webapi.c built with
+# -DWEBAPI_NO_STREAM, which is the buffer-until-complete fetch this change
+# replaced: the partial-delivery assertions are inverted and must hold. If this
+# ever shows partial delivery, test-stream is measuring something else.
+test-stream-control: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' \
+	    -DWEBAPI_HOST -DWEBAPI_NO_STREAM \
+	    -o $(BUILD)/stream_control tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
+	    $(RUST_LIB_HOST) -lm
+	@$(BUILD)/stream_control
+
+test-stream-asan: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
+	    -o $(BUILD)/stream_asan tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
+	    $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/stream_asan
+
+# --- test-cookie-cors: which requests carry the session, and which
+# cross-origin responses a page may read. Every refusal is paired with the
+# permitted case and with an assertion about what went on the wire, because a
+# browser that simply ignored CORS would pass the permitted half.
+test-cookie-cors: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
+	    -o $(BUILD)/cookie_cors_test tests/unit/cookie_cors_test.c $(STREAM_TEST_SRC) \
+	    $(QJS_SRC) $(RUST_LIB_HOST) -lm
+	@$(BUILD)/cookie_cors_test
+
+test-cookie-cors-asan: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
+	    -o $(BUILD)/cookie_cors_asan tests/unit/cookie_cors_test.c $(STREAM_TEST_SRC) \
+	    $(QJS_SRC) $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/cookie_cors_asan
+
+# --- test-sse-page: the on-device proof, TIMED -----------------------------
+# "It streams" is a claim about WHEN bytes become visible, so the host server
+# emits SSE tokens with deliberate gaps and the harness screenshots between
+# them: partial content must be on the framebuffer while the response is still
+# open, with timestamps. A fully buffered browser passes a final-text check and
+# fails this one.
+test-sse-page: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_sse_page.py $(ISO) $(DISK)
+
+# The device negative control: the same harness against a browser.aex whose
+# js_webapi.c was built with -DWEBAPI_NO_STREAM.
+NOSTREAM_OBJ := $(BUILD)/nostream/js_webapi.o
+$(NOSTREAM_OBJ): c/apps/browser/js_webapi.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(JS_INC) -DWEBAPI_NO_STREAM -c $< -o $@
+NOSTREAM_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ)) $(NOSTREAM_OBJ)
+$(BUILD)/browser-nostream.elf: $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-nostream.aex: $(BUILD)/browser-nostream.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/browser-nostream.elf $@ Browser - 'B' 120 130 240
+
+test-sse-page-control: $(ISO) $(BUILD)/browser-nostream.aex
+	@$(MAKE) DISK=$(BUILD)/disk-nostream.img BROWSER_AEX=$(BUILD)/browser-nostream.aex $(BUILD)/disk-nostream.img
+	python3 tests/qmp/qmp_sse_page.py $(ISO) $(BUILD)/disk-nostream.img --expect-buffered
 
 # --- test-http-fuzz: ASan+UBSan fuzz for the ring-3 HTTP client -----------
 # The layer this replaces (c/net/http/http.c) parses attacker-chosen bytes in
