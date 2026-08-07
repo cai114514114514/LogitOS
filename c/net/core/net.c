@@ -65,7 +65,13 @@ void dhcp_poll(void) __attribute__((weak));
  * ------------------------------------------------------------------------- */
 static volatile uint32_t rx_owed;      /* a raise is outstanding */
 static uint32_t rx_n_softirq, rx_n_inline, rx_n_poll, rx_n_irq, rx_frames;
-static uint32_t rx_next_report = 512;
+static uint32_t idle_halts, idle_skips;   /* net_idle: how often it slept vs looked again */
+/* 64, not 512: a fetch has to be reported while it is still small enough to
+ * have IDLE GAPS in it, because "did an interrupt wake us" is only a question
+ * when the machine ever got to sleep. A boot with no traffic receives well
+ * under this (DHCP is two inbound frames plus ARP), so the line stays out of
+ * every other line's serial expectations. */
+static uint32_t rx_next_report = 64;
 
 /* Counts drains that actually DELIVERED something. net_poll runs ~100x/s and
  * mostly finds an empty ring; counting those would drown the comparison this
@@ -103,9 +109,14 @@ void net_rx_schedule(void)
 static void rx_report(void)
 {
     if (rx_frames < rx_next_report) return;
-    rx_next_report = rx_frames + 4096;
-    kprintf("[net] rx path: frames %u irq %u softirq %u inline %u poll %u\n",
-            rx_frames, rx_n_irq, rx_n_softirq, rx_n_inline, rx_n_poll);
+    /* Re-report every 512 frames, so a long fetch ends with a line that
+     * describes the WHOLE transfer rather than only its first moments -- the
+     * counters at frame 64 are a snapshot of the handshake, not of the path. */
+    rx_next_report = rx_frames + 512;
+    kprintf("[net] rx path: frames %u irq %u softirq %u inline %u poll %u "
+            "idle %u/%u halt/skip\n",
+            rx_frames, rx_n_irq, rx_n_softirq, rx_n_inline, rx_n_poll,
+            idle_halts, idle_skips);
 }
 
 int net_init(void)
@@ -181,12 +192,24 @@ void net_poll(void)
  * here, return without halting and let the caller look again. This cannot
  * become a spin -- a second skip requires a second frame -- and it needs no
  * cooperation from the callers, which is the point: tls.c, dns.c, arp.c and
- * tcp.c belong to other lines. */
+ * tcp.c belong to other lines.
+ *
+ * THE SKIP DROPS THE `hlt` AND NOTHING ELSE -- it still executes the `sti`, and
+ * that is deliberate rather than tidy. int 0x80 is an interrupt gate, so a
+ * syscall body runs with IF=0 unless something sets it; SYS_HTTP_GET sets it
+ * once, and every net_lock()/net_unlock() pair below it only RESTORES whatever
+ * IF was on entry. The old unconditional `sti; hlt` therefore re-armed
+ * interrupts on every trip round every blocking loop, and nothing in the tree
+ * says that was incidental. A skip that returned early would quietly remove
+ * that re-arm from paths nobody has audited, which is not a thing to do while
+ * changing something else.
+ */
 void net_idle(void)
 {
     static uint32_t seen;
     if (rx_frames != seen) {        /* the network answered; go look at it */
         seen = rx_frames;
+        __asm__ volatile ("sti");
         return;
     }
     __asm__ volatile ("sti\n\thlt");
