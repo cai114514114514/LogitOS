@@ -72,15 +72,42 @@ def dock_icon(i, n=NAPPS):
 
 # The cursor's outline colour, from draw_cursor_back() in c/kernel/gui/wm.c. The
 # arrow's top-left cell is opaque outline, so the bounding box of this colour
-# starts exactly at the pointer's hotspot -- which makes the composited frame an
-# authoritative answer to "where is the pointer", something QMP cannot be asked.
+# starts exactly at the pointer's hotspot.
+#
+# THIS ONLY WORKS WHEN THE POINTER IS IN THE FRAME. On virtio-gpu the kernel now
+# puts the arrow on the device's cursor plane, so the scanout -- and therefore a
+# screendump -- does not contain it at all, exactly like every other OS with a
+# hardware cursor. That is not a regression to route around: it is the whole
+# reason moving the mouse no longer recomposites the screen. The guest prints
+# `[wm] ptr X Y` on the serial console whenever the pointer settles, and that is
+# the authority now; the picture is the fallback for the software-cursor path.
 CURSOR_RGB = (20, 20, 26)
 
 
 def locate_cursor(ppm):
-    """The pointer's (x, y) as the guest drew it, or None."""
+    """The pointer's (x, y) as the guest drew it, or None.
+
+    None can mean "the pointer is on a display plane", not only "it is missing"
+    -- see the note above. Prefer Session.guest_pointer() when a serial log is
+    available."""
     box = ppm.find_color(CURSOR_RGB)
     return None if box is None else (box[0], box[1])
+
+
+def parse_pointer(text):
+    """The last `[wm] ptr X Y` in a serial log, or None."""
+    got = None
+    for line in text.splitlines():
+        i = line.find("[wm] ptr ")
+        if i < 0:
+            continue
+        parts = line[i + 9:].split()
+        if len(parts) >= 2:
+            try:
+                got = (int(parts[0]), int(parts[1]))
+            except ValueError:
+                pass
+    return got
 
 
 KMAP = {" ": "spc", ".": "dot", "\n": "ret", "-": "minus", "/": "slash",
@@ -94,7 +121,12 @@ class Session:
     The pointer position has to be tracked by us: QEMU's `rel` input events are
     deltas, and there is no way to ask the guest where its cursor ended up."""
 
-    def __init__(self, sock_path, timeout=120.0):
+    def __init__(self, sock_path, timeout=120.0, serial=None):
+        # `serial` is the guest's console log. Given one, the pointer is read
+        # back from the guest's own report instead of guessed from deltas or
+        # hunted for in a screenshot -- which is the only method that survives
+        # the pointer moving to a display plane.
+        self.serial = serial
         self.s = socket.socket(socket.AF_UNIX)
         deadline = time.time() + timeout
         while True:
@@ -193,6 +225,16 @@ class Session:
         time.sleep(settle)
         return path
 
+    def guest_pointer(self):
+        """Where the guest says its pointer is, or None."""
+        if not self.serial:
+            return None
+        try:
+            with open(self.serial, errors="replace") as fh:
+                return parse_pointer(fh.read())
+        except OSError:
+            return None
+
     def settle_pointer(self, ppm_path, tx, ty, tries=8, settle=0.4):
         """Move to (tx,ty) and CONFIRM the guest's pointer got there.
 
@@ -203,18 +245,22 @@ class Session:
         happens to be at the wrong place, which reads as a hit-testing bug in the
         thing being tested rather than a lie in the harness.
 
-        The cursor is composited into the frame, so the screendump already
-        contains the answer: find it, correct, repeat. Returns the confirmed
-        position, or None if it never converged."""
+        So ask the guest instead of guessing: it prints `[wm] ptr X Y` when the
+        pointer settles, which is true whether the arrow is composited into the
+        frame or sitting on the display's cursor plane. Without a serial log the
+        fallback is the picture, which only answers while the arrow is in it.
+        Returns the confirmed position, or None if it never converged."""
         self.goto(tx, ty, settle)
         for _ in range(tries):
-            self.screendump(ppm_path, settle=0.2)
-            got = locate_cursor(PPM(ppm_path))
+            got = self.guest_pointer()
+            if got is None:
+                self.screendump(ppm_path, settle=0.2)
+                got = locate_cursor(PPM(ppm_path))
             if got is None:
                 return None
             if got == (tx, ty):
                 return got
-            # Believe the picture, not the model, then re-aim.
+            # Believe the guest, not the model, then re-aim.
             self.cur = [got[0], got[1]]
             self.goto(tx, ty, settle)
         return None

@@ -179,7 +179,7 @@ def main(argv):
             ck("%dx%d px" % (xres, yres) in line[0],
                "guest framebuffer is %dx%d device px" % (xres, yres))
 
-        ui = Session(sock)
+        ui = Session(sock, serial=serial)
         raw = os.path.join(tmp, "a.ppm")
         ui.screendump(raw, settle=1.0 * slow)
         w, h = ppm_to_png(raw, out)
@@ -187,10 +187,11 @@ def main(argv):
            "screendump is %dx%d (got %dx%d)" % (xres, yres, w, h))
         print("     wrote %s (%dx%d)" % (out, w, h))
 
-        # The pointer is confirmed against the picture before every click, so a
-        # miss is reported as a harness failure rather than misread as the guest
-        # ignoring the click. (It also proves the cursor itself is being drawn at
-        # the scaled size: the arrow is composited, so we can see it.)
+        # The pointer is confirmed against the GUEST'S OWN report before every
+        # click, so a miss is reported as a harness failure rather than misread
+        # as the guest ignoring the click. It used to be confirmed against the
+        # picture; the arrow lives on the display's cursor plane now, so it is
+        # not in a screendump to be found (see qmp_ui.settle_pointer).
         probe = os.path.join(tmp, "probe.ppm")
 
         # 2. Open Widgets and measure something it drew at a known logical size.
