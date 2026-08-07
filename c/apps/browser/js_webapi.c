@@ -616,6 +616,19 @@ static int pfc_hit(const char *origin, const char *method, int creds,
  * is backpressure that reaches the server rather than a counter that does not. */
 #define WF_HIGHWATER (512*1024)
 
+/* The negative control, and the only reason this knob exists.  Built with
+ * -DWEBAPI_NO_STREAM the fetch registers no body sink and does not settle until
+ * the message is complete -- exactly the behaviour this change replaced.
+ * tests/unit/stream_test.c compiles BOTH ways and requires the streaming
+ * assertions to fail in this one, because "the tokens arrived" is a claim about
+ * WHEN, and a test that only checks the final text passes against a fully
+ * buffered implementation just as well. */
+#ifdef WEBAPI_NO_STREAM
+#  define WEBAPI_STREAMING 0
+#else
+#  define WEBAPI_STREAMING 1
+#endif
+
 enum { WF_FREE = 0, WF_DIAL, WF_XFER };
 enum { WF_PH_ACTUAL = 0, WF_PH_PREFLIGHT };
 /* What to do with body bytes arriving right now.  UNKNOWN can only hold for
@@ -745,10 +758,12 @@ static void fetch_fail(JSContext *ctx, struct wfetch *f, const char *msg, const 
 
     if (f->resolved) {
         if (JS_IsFunction(ctx, f->fail)) {
-            JSValue a = JS_NewString(ctx, full);
-            JSValue r = JS_Call(ctx, f->fail, JS_UNDEFINED, 1, (JSValueConst *)&a);
+            JSValue a[2];
+            a[0] = JS_NewString(ctx, full);
+            a[1] = JS_NewString(ctx, name ? name : "TypeError");
+            JSValue r = JS_Call(ctx, f->fail, JS_UNDEFINED, 2, (JSValueConst *)a);
             if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
-            JS_FreeValue(ctx, r); JS_FreeValue(ctx, a);
+            JS_FreeValue(ctx, r); JS_FreeValue(ctx, a[0]); JS_FreeValue(ctx, a[1]);
         }
         fetch_release(ctx, f);
         return;
@@ -881,7 +896,7 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
     if (h1_conn_start(&f->conn, &t, raw, rawlen) != H1_OK) { free(raw); return -1; }
     f->started = 1;                       /* the conn owns `raw` from here */
     h1_response_head(&f->conn.resp, !preflight && ci_streq(f->method, "HEAD"));
-    h1_response_sink(&f->conn.resp, wf_sink, f);
+    if (WEBAPI_STREAMING) h1_response_sink(&f->conn.resp, wf_sink, f);
     f->deliver = preflight ? WF_DEL_DROP : WF_DEL_UNKNOWN;
     f->hold_len = 0;
     return 0;
@@ -1182,7 +1197,8 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
 
         /* Inspect the headers the moment they are complete -- and after EVERY
          * pump, which is what bounds `hold` to one read's worth. */
-        if (f->phase == WF_PH_ACTUAL && !f->resolved && f->deliver == WF_DEL_UNKNOWN &&
+        if (WEBAPI_STREAMING &&
+            f->phase == WF_PH_ACTUAL && !f->resolved && f->deliver == WF_DEL_UNKNOWN &&
             h1_response_headers_done(&f->conn.resp)) {
             struct h1_response *r = &f->conn.resp;
             int will_redirect = h1_is_redirect(r->code) &&
@@ -2646,7 +2662,12 @@ static const char *PRELUDE =
 "    return { r: r,\n"
 "      push: function (buf) { ctrl.enqueue(new Uint8Array(buf)); return ctrl.bytes(); },\n"
 "      close: function () { ctrl.close(); },\n"
-"      error: function (m) { ctrl.error(new TypeError(m)); } };\n"
+   /* The failure that arrives AFTER the promise settled belongs to the body
+      stream -- which is what a browser does when a connection dies (or is
+      aborted) mid-download. The name is carried through so an abort reads as
+      an AbortError to the page and not as a generic network failure. */
+"      error: function (m, n) { var e = new Error(m); e.name = n || 'TypeError';\n"
+"        ctrl.error(e); } };\n"
 "  },\n"
 "  viewportChanged: function () {\n"
 "    mqls.forEach(function (m) {\n"
