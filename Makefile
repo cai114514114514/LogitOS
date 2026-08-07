@@ -742,6 +742,17 @@ test-h264:
 	    $(BUILD)/h264_test $$f $${f%.h264}.ref.yuv || exit 1; \
 	done
 	@echo "all H.264 host cases bit-exact"
+	@# The committed fixture, checked against a CRC pinned in the tree. The
+	@# generated matrix above re-encodes with whatever x264 is installed, so it
+	@# is not a fixed target; this one is, and it is also the only stream we
+	@# have that quantises finely enough to reach a chroma qP below 6. The same
+	@# CRC is what the on-device check prints, which is how a decode inside
+	@# LogitOS gets compared with a decode on the host.
+	@crc=`$(BUILD)/h264_test tests/fixtures/video/sample.h264 | awk '{print $$2}'`; \
+	 want=`cat tests/fixtures/video/sample.crc32`; \
+	 if [ "$$crc" != "$$want" ]; then \
+	     echo "H264-FIXTURE-FAIL crc $$crc want $$want"; exit 1; fi; \
+	 echo "H264-OK fixture crc $$crc (tests/fixtures/video/sample.h264)"
 
 # Per-case byte counts over the WHOLE stream instead of stopping at the first
 # bad pixel. "the first mismatch moved" says nothing about whether a change

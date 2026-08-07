@@ -94,6 +94,9 @@ static int chroma_qp(int qpy, int offset)
     int qpi = clip3(0, 51, qpy + offset);
     return qpi < 30 ? qpi : chroma_qp_map[qpi - 30];
 }
+/* floor(v / 2). Written out because >> of a negative value is
+ * implementation-defined, and because rounding direction matters here. */
+static int half_floor(int v) { return v >= 0 ? v >> 1 : -((-v + 1) >> 1); }
 static int is_intra_type(int t) { return t == MB_I4x4 || t == MB_I16x16 || t == MB_I_PCM; }
 
 /* slice index of a macroblock address (slice_first_mb is raster-ordered) */
@@ -693,12 +696,19 @@ static int residual_chroma(h264dec *d, bs_t *bs, int addr, int cbp_chroma, int q
         if (tc < 0 || bs_error(bs)) { TRACE("chromaDC comp=%d tc=%d err=%d\n", comp, tc, bs_error(bs)); return H264_ERR_CORRUPT; }
         for (int i = 0; i < 4; i++) dc[comp][i] = t[i];
         h264_dcdcm_transform(dc[comp]);
-        int m = qpc[comp] % 6;
+        int m = qpc[comp] % 6, k = qpc[comp] / 6;
         for (int i = 0; i < 4; i++) {
             int p = dc[comp][i] * vq[m][0];
-            /* Spec 8.5.11: scale factor is v * 2^(qpc/6 - 1) (verified against
-             * ffmpeg ff_h264_chroma_dc_dequant_idct). */
-            dc[comp][i] = qpc[comp] >= 6 ? p * (1 << (qpc[comp] / 6 - 1)) : (p + 1) >> 1;
+            /* Spec 8.5.11.2: dcC = ((f * LevelScale4x4(qP%6,0,0)) << (qP/6))
+             * >> 5, and with a flat scaling list LevelScale4x4 is 16*v -- so
+             * the whole expression is p * 2^(qP/6) / 2. That is exact once
+             * qP >= 6; below it the >> 5 is a FLOOR. Rounding half up there
+             * instead is off by one whenever p is odd, which needs both a
+             * chroma qP under 6 and an odd v (11 or 13). Nothing in the
+             * generated matrix quantises that finely; tests/fixtures/video
+             * does, in one macroblock of one frame, and the error then rode
+             * the reference chain through the rest of the stream. */
+            dc[comp][i] = k > 0 ? p * (1 << (k - 1)) : half_floor(p);
         }
     }
     for (int comp = 0; comp < 2; comp++) {
