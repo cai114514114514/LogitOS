@@ -104,9 +104,19 @@ class Session:
         time.sleep(settle)
 
     def typ(self, text):
+        # Uppercase letters go through shift, like every other shifted key.
+        # They used to fall through to `self.key("O")`, and QEMU's qcodes are
+        # lowercase -- so the key name did not exist and the character was
+        # dropped WITHOUT AN ERROR. Every URL with a capital in it therefore
+        # loaded a different page than the test asked for:
+        # ".../wiki/Operating_system" fetched ".../wiki/perating_system", which
+        # is Wikipedia's "no article with this exact name" page. The screenshot
+        # afterwards looks like a rendering bug and is not one.
         for ch in text:
             if ch in SHIFT:
                 self.key_shift(SHIFT[ch])
+            elif "A" <= ch <= "Z":
+                self.key_shift(ch.lower())
             else:
                 self.key(KMAP.get(ch, ch))
 

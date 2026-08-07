@@ -107,16 +107,41 @@ static int g_js_budget;
 #define MAX_JS_SEEN 16
 static const char *g_js_seen[MAX_JS_SEEN];
 static int g_js_nseen;
-static unsigned char js_tmp[65536];        /* scratch for one external script (64 KiB) */
+/* One external script at a time. 1 MiB, matching css_tmp: at 64 KiB this
+ * silently truncated wikipedia's 68 KiB startup module -- see run_scripts. */
+static unsigned char js_tmp[1048576];
+static char js_inline[262144];             /* one inline script, reassembled from its text nodes */
 
-static int collect_scripts(struct node *n, char *out, int o, int max)
+/* Run every <script> in document order, EACH ONE SEPARATELY.
+ *
+ * This used to concatenate the whole page's JS into one 64 KiB buffer and hand
+ * that to a single JS_Eval. Two things were wrong with it, and both were live:
+ *
+ *   - Concatenation is not what the spec says. Each <script> is its own
+ *     program. Joined together, one script that ends inside a string or a
+ *     comment swallows the next, and a SyntaxError anywhere kills ALL of the
+ *     page's JS including the inline scripts that were fine.
+ *   - Both buffers were 64 KiB and neither truncation was detected. The guard
+ *     `sn < sizeof scr` could not fire, because the copy loop's own bound is
+ *     `o < max - 1` -- so sn never reached sizeof scr and the check was always
+ *     true. On en.wikipedia.org the 68894-byte startup module was cut at
+ *     65536 and QuickJS reported `SyntaxError: unexpected end of string`,
+ *     taking the entire page's scripting with it.
+ *
+ * So: never evaluate a truncated source. A program cut in half is not a
+ * program, and feeding it to the parser turns "this one resource is too big"
+ * into "no JS runs on this page". Skipping it says so on the console instead.
+ *
+ * Returns the number of scripts that were actually evaluated. */
+static int run_scripts(struct node *n)
 {
-    if (!n) return o;
+    if (!n) return 0;
+    int ran = 0;
+
     if (n->type == N_ELEM && tag_is(n->tag, "script")) {
         const char *src = dom_attr(n, "src");
         if (src) {                         /* external: fetch in document order */
-            if (g_js_budget > 0 && o < max - 64 &&
-                !has_ci(src, "javascript:") && !has_ci(src, "data:")) {
+            if (g_js_budget > 0 && !has_ci(src, "javascript:") && !has_ci(src, "data:")) {
                 int dup = 0;
                 for (int i = 0; i < g_js_nseen; i++)
                     if (str_eq(g_js_seen[i], src)) { dup = 1; break; }
@@ -124,21 +149,38 @@ static int collect_scripts(struct node *n, char *out, int o, int max)
                     if (g_js_nseen < MAX_JS_SEEN) g_js_seen[g_js_nseen++] = src;
                     g_js_budget--;
                     int got = res_fetch_raw(src, js_tmp, (int)sizeof js_tmp);
-                    for (int i = 0; i < got && o < max - 1; i++) out[o++] = (char)js_tmp[i];
-                    if (got > 0 && o < max - 1) out[o++] = '\n';
+                    if (got >= (int)sizeof js_tmp) {
+                        printf("[browser] script skipped, larger than %uK: %s\n",
+                               (unsigned)(sizeof js_tmp / 1024), src);
+                    } else if (got > 0) {
+                        js_tmp[got] = 0;
+                        js_page_eval((const char *)js_tmp, got, src);
+                        ran++;
+                    }
                 }
             }
-        } else {                           /* inline */
+        } else {                           /* inline: reassemble its text nodes */
+            int o = 0, over = 0;
             for (struct node *c = n->first_child; c; c = c->next)
                 if (c->type == N_TEXT && c->text)
-                    for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
-            if (o < max - 1) out[o++] = '\n';
-            if (o < max - 1) out[o++] = ';';
+                    for (int i = 0; i < c->textlen; i++) {
+                        if (o >= (int)sizeof js_inline - 1) { over = 1; break; }
+                        js_inline[o++] = c->text[i];
+                    }
+            js_inline[o] = 0;
+            if (over) {
+                printf("[browser] inline script skipped, larger than %uK\n",
+                       (unsigned)(sizeof js_inline / 1024));
+            } else if (o > 0) {
+                js_page_eval(js_inline, o, "<inline>");
+                ran++;
+            }
         }
     }
+
     for (struct node *c = n->first_child; c; c = c->next)
-        o = collect_scripts(c, out, o, max);
-    return o;
+        ran += run_scripts(c);
+    return ran;
 }
 
 static unsigned char css_tmp[1048576];   /* scratch for one external stylesheet (1 MiB; github's site.css is 858 KiB) */
@@ -324,18 +366,15 @@ static void load(const char *u)
     js_page_set_location(u);
     js_page_open(g_root);
 
-    /* Run the page's <script>s (inline + up to 8 external), capped at 64 KiB
-     * total. Real sites ship huge minified bundles that assume a full browser
-     * env; with no real DOM they just throw. The cap keeps those out while
-     * allowing real page scripts, and the runtime's 2 MiB stack guard bounds
-     * recursive scripts so a bad bundle throws a catchable RangeError instead
-     * of faulting. */
-    static char scr[65536];
+    /* Run the page's <script>s (inline + up to 8 external), each as its own
+     * program and in document order. Real sites ship huge minified bundles that
+     * assume a full browser env; with no real DOM they just throw -- but they
+     * now throw ALONE, so a bundle that fails no longer takes the page's inline
+     * scripts down with it. The runtime's 2 MiB stack guard bounds recursive
+     * scripts so a bad bundle raises a catchable RangeError instead of
+     * faulting. */
     g_js_budget = 8; g_js_nseen = 0;
-    int sn = collect_scripts(g_root, scr, 0, sizeof scr);
-    scr[sn] = 0;                   /* collect_scripts doesn't NUL-terminate; stale tail bytes from the previous page would be eval'd */
-    int had_script = (sn > 1 && sn < (int)sizeof scr);
-    if (had_script) js_page_eval(scr, sn, "<page>");
+    int had_script = run_scripts(g_root) > 0;
 
     /* The document is parsed and the scripts have run: fire the lifecycle events
      * pages hang their initialisation on. Without these, every page that defers
