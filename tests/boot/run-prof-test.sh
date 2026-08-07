@@ -15,26 +15,33 @@
 #
 #  3. DOES IT SURVIVE FOUR CORES? Samples arrive in interrupt context on every
 #     core at once. The per-CPU counters the handler keeps for itself are the
-#     independent witness: they have one writer each, so they cannot be wrong,
-#     and they must equal what comes back out of the shared histogram. The
-#     profile must also have touched more than one core, or it is not evidence
-#     about an SMP machine at all.
+#     independent witness: one writer each, so they cannot be wrong, and they
+#     must equal what comes back out of the shared histogram. The profile must
+#     also have touched more than one core, or it is not evidence about an SMP
+#     machine at all.
 #
-#  4. DO THE ADDRESSES MEAN ANYTHING? Every hot address in the report is
-#     resolved against build/kernel.map -- the linker's own record -- and the
-#     hottest ones are required to land inside real functions at a small offset.
-#     A histogram of plausible-looking hex is not a profile.
+#  4. DO THE ADDRESSES MEAN ANYTHING? Every hot address is resolved against
+#     build/kernel.map -- the linker's own record -- and the hottest ones are
+#     required to land inside real functions. A histogram of plausible-looking
+#     hex is not a profile.
 #
 # WHY THE FIRST TWO RUN AT -smp 1 AND THE THIRD AT -smp 4. A write to
 # /dev/kprof is a syscall and holds the big kernel lock. Held for seconds on an
-# application processor, it starves every other core of interrupts (they spin
-# for the BKL inside spin_lock_irqsave, i.e. with IF=0), so NOTHING can be
-# sampled -- measured directly: a four-second profile with zero samples on the
-# runs where the shell happened to land off the BSP. At -smp 1 the shell is the
-# BSP by construction and the known-answer test is deterministic. The multi-core
-# claim is then made where it belongs: with the system running normally, which
-# is the shape of the workloads this profiler exists for, and where all four
-# cores really are taking interrupts.
+# application processor it starves every other core of interrupts -- they spin
+# for the BKL inside spin_lock_irqsave, i.e. with IF=0 -- so NOTHING can be
+# sampled anywhere. Measured directly: a four-second profile with zero samples,
+# on the runs where the shell happened to land off the BSP. At -smp 1 the shell
+# is the BSP by construction and the known-answer test is deterministic. The
+# multi-core claim is then made where it belongs: with the system running
+# normally, which is the shape of the workloads this profiler exists for, and
+# where all four cores really are taking interrupts.
+#
+# WHY THE COMMANDS ARE MARKER-DRIVEN AND NOT ON A TIMER. The first version fed
+# the guest on fixed sleeps and passed on one machine and failed on another --
+# the self-test simply never ran, because the preceding measurement took longer
+# than the sleep allowed. A harness whose result depends on how loaded the host
+# is measures the host. Each command here waits for the previous one's verdict
+# to appear on the serial line before the next is sent.
 #
 # The negative controls are `make test-prof-negctl` (the accumulator without its
 # atomics, required to fail host-side) and `make test-prof-control` (the kernel
@@ -51,42 +58,92 @@ fails=0
 ok()  { echo "  ok    $1"; }
 bad() { echo "  FAIL  $1"; fails=$((fails+1)); }
 
-boot() {   # boot <smp> <logfile> <seconds> ; commands on stdin
-    local smp="$1" log="$2" secs="$3"
+QPID=""
+FIFO=""
+LOG=""
+cleanup() {
+    [ -n "$QPID" ] && kill "$QPID" 2>/dev/null
+    [ -n "$QPID" ] && wait "$QPID" 2>/dev/null
+    [ -n "$FIFO" ] && rm -f "$FIFO"
+}
+trap cleanup EXIT
+
+start_vm() {          # start_vm <smp> <logfile>
+    LOG="$2"
+    FIFO="$(mktemp -u)"
+    mkfifo "$FIFO"
     "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
         -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
         -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
-        -m 512M -smp "$smp" -accel tcg,thread=multi \
+        -m 512M -smp "$1" -accel tcg,thread=multi \
         -vga none -device virtio-gpu-pci \
         -netdev user,id=n0 -device e1000,netdev=n0 \
-        -serial stdio -display none -no-reboot >"$log" 2>/dev/null &
-    local pid=$!
-    sleep "$secs"
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        -serial stdio -display none -no-reboot <"$FIFO" >"$LOG" 2>/dev/null &
+    QPID=$!
+    exec 3>"$FIFO"        # hold the write end open so the guest sees no EOF
+}
+
+stop_vm() {
+    exec 3>&-
+    kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+    QPID=""
+    rm -f "$FIFO"; FIFO=""
+}
+
+say() { printf '%s\n' "$1" >&3; }
+
+waitfor() {           # waitfor <grep-pattern> <seconds>
+    local i n=$(( ${2} * 10 ))
+    for ((i = 0; i < n; i++)); do
+        grep -aq -- "$1" "$LOG" && return 0
+        kill -0 "$QPID" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------
 # Pass 1 (-smp 1): the known answer, and what the profiler costs.
 # ---------------------------------------------------------------------------
 LOG1="$(mktemp)"
-{
-  sleep 6
-  printf 'echo overhead 400 > /dev/kprof\n'; sleep 22
-  printf 'echo selftest 4000 > /dev/kprof\n'; sleep 18
-  printf 'cat /dev/kprof\n'; sleep 5
-} | boot 1 "$LOG1" 55
+start_vm 1 "$LOG1"
 
 echo "--- the machine still boots ---"
-if grep -aq "LOGIT_BOOT_OK" "$LOG1"; then ok "LOGIT_BOOT_OK"
+if waitfor "LOGIT_BOOT_OK" 90; then ok "LOGIT_BOOT_OK"
 else bad "the kernel did not reach LOGIT_BOOT_OK"; fi
+sleep 2
+
+# Establish up front that the profiler is even in this kernel. Without this the
+# -DKPROF_DISABLE control run spends ten minutes waiting for markers that can
+# never appear, and a genuinely misconfigured build looks like a timeout rather
+# than like the one-line answer it is.
+say 'cat /dev/kprof'
+built=1
+if waitfor "^built  *yes" 30; then
+    ok "the profiler is compiled into this kernel"
+else
+    built=0
+    bad "/dev/kprof reports the profiler is not built in (-DKPROF_DISABLE?)"
+fi
+
+if [ "$built" = 1 ]; then
+    say 'echo overhead 400 > /dev/kprof'
+    waitfor "KPROF_SPANCOST" 120 || bad "the overhead measurement never finished"
+    say 'echo selftest 4000 > /dev/kprof'
+    waitfor "KPROF_NOMINAL" 120 || bad "the self-test never finished"
+    say 'cat /dev/kprof'
+    waitfor "sample_hz_measured" 30
+    sleep 2
+fi
+stop_vm
 
 echo "--- a workload whose answer is known in advance ---"
 sel=$(grep -a "KPROF_SELFTEST " "$LOG1" | tail -1)
 seln=$(grep -a "KPROF_SELFTEST_N" "$LOG1" | tail -1)
 nom=$(grep -a "KPROF_NOMINAL" "$LOG1" | tail -1)
-[ -n "$sel" ] && echo "      $sel"
+[ -n "$sel" ]  && echo "      $sel"
 [ -n "$seln" ] && echo "      $seln"
-[ -n "$nom" ] && echo "      $nom"
+[ -n "$nom" ]  && echo "      $nom"
 
 case "$sel" in
   *"KPROF_SELFTEST ok"*)
@@ -128,6 +185,10 @@ if [ "$dis" -le 5 ]; then
 else
     bad "spans cost ${dis}ns per pair even when disabled"
 fi
+# 150ppt is not a target, it is a ceiling: measured runs land at 12-51ppt on an
+# unloaded host, and the spread is the host's, not the profiler's. What the
+# bound excludes is a regression that makes sampling cost more than a seventh of
+# the workload, at which point the profile stops describing the unprofiled run.
 ppt=$(printf '%s\n' "$ovh" | sed -n 's/.*(\([0-9]*\)ppt).*/\1/p')
 ppt=${ppt:-9999}
 if [ "$ppt" -le 150 ]; then
@@ -139,17 +200,26 @@ fi
 # ---------------------------------------------------------------------------
 # Pass 2 (-smp 4): four cores really do arrive in the accumulator, and nothing
 # is lost. The load here is the SYSTEM running, not a busy loop in a syscall --
-# see the note at the top of this file for why that distinction is the whole
-# point.
+# see the note at the top of this file for why that distinction is the point.
 # ---------------------------------------------------------------------------
 LOG4="$(mktemp)"
-{
-  sleep 7
-  printf 'echo start > /dev/kprof\n';  sleep 6
-  printf 'echo stop > /dev/kprof\n';   sleep 2
-  printf 'echo smpcheck > /dev/kprof\n'; sleep 2
-  printf 'cat /dev/kprof\n'; sleep 5
-} | boot 4 "$LOG4" 40
+start_vm 4 "$LOG4"
+waitfor "LOGIT_BOOT_OK" 120 || bad "the -smp 4 boot did not reach LOGIT_BOOT_OK"
+sleep 2
+
+if [ "$built" = 1 ]; then
+    say 'echo start > /dev/kprof'
+    waitfor "KPROF_START" 45 || bad "the profiler never started"
+    sleep 6
+    say 'echo stop > /dev/kprof'
+    waitfor "KPROF_STOP" 45 || bad "the profiler never stopped"
+    say 'echo smpcheck > /dev/kprof'
+    waitfor "KPROF_SMP" 45 || bad "the SMP verdict never printed"
+fi
+say 'cat /dev/kprof'
+waitfor "sample_hz_measured" 30
+sleep 2
+stop_vm
 
 echo "--- four cores, one accumulator ---"
 smp=$(grep -a "KPROF_SMP" "$LOG4" | tail -1)
@@ -241,22 +311,24 @@ for a, h, _ in sorted(kern, key=lambda t: -t[1])[:12]:
     print("    %10d  %016x  ->  %s" % (h, a, ("%s+0x%x" % (n, off)) if n else "<unmapped>"))
     (named if n else unnamed).append(a)
 
-# Every hot ring-0 address must be INSIDE a function the linker placed. An
-# address that resolves to nothing is either a wrong map or a fabricated
-# sample; either way the profile is not usable.
+# Every hot ring-0 address must be INSIDE a function the linker placed. One that
+# resolves to nothing is either a wrong map or a fabricated sample; either way
+# the profile is not usable.
 check(not unnamed, "every hot kernel address is inside a mapped function (%r)"
       % [hex(a) for a in unnamed[:3]])
 
-# A profile of an idle-ish system must be dominated by the idle/scheduler path.
-# This is the check a histogram of random numbers cannot pass: it is not "the
-# addresses resolve", it is "they resolve to the functions that must be hot".
+# And a profile of an idle-ish machine must be dominated by the idle, scheduler,
+# compositor and console paths. This is the check a histogram of random numbers
+# cannot pass: not "the addresses resolve" but "they resolve to the functions
+# that have to be hot".
 top = sorted(kern, key=lambda t: -t[1])[:6]
 names = [resolve(a)[0] or '' for a, _, _ in top]
 expect = ('idle', 'sched', 'schedule', 'spin', 'lock', 'hlt', 'wm_', 'fb_',
-          'thread', 'context_switch', 'kprof', 'timer')
+          'thread', 'context_switch', 'kprof', 'timer', 'file_', 'tty',
+          'serial', 'read', 'poll')
 hit = [n for n in names if any(e in n for e in expect)]
 check(bool(hit), "the hottest kernel functions are on the idle/scheduler/"
-      "compositor path, which is where an idle machine must be (%r)" % (names,))
+      "compositor/console path, which is where an idle machine must be (%r)" % (names,))
 
 if user:
     print("  %d ring-3 address(es) were sampled separately from the kernel ones"
