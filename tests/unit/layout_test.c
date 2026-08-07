@@ -70,6 +70,24 @@ int main(void)
     }
     printf("h1_bottom=%d  paragraph_lines=%d\n", h1_bottom, ny);
     CHECK(h1_bottom > 0, "h1 laid out (32px run present)");
+
+    /* The page starts AT <body>, so <body>'s 8px UA margin is the top offset
+     * and is applied exactly ONCE.
+     *
+     * This is the one geometry change the spec parser caused, and it is worth
+     * pinning because it moves every real page. Before the switch, "<body>..."
+     * parsed to #document -> <body>, and layout_page's hand-rolled two-level
+     * scan looked for <body> among the document's GRANDchildren -- so it never
+     * found it, started at #document instead, and then laid <body> out as an
+     * ordinary block inside that. The 8px margin was charged twice, once as
+     * the document's own top offset and again as the body block's margin, top
+     * and bottom: every document was 16px taller than it should be and all its
+     * content sat 8px too low. The spec tree is #document -> <html> -> <body>,
+     * <body> is found, and the double count is gone. */
+    int h1_top = 0x7fffffff;
+    for (int i = 0; i < n; i++)
+        if (it[i].type == IT_TEXT && it[i].font_px == 32 && it[i].y < h1_top) h1_top = it[i].y;
+    CHECK(h1_top == 8 + 14, "h1 top = body margin (8) + h1 margin (14), body margin counted once");
     CHECK(ny >= 2, "long paragraph wrapped into >=2 lines within width 200");
 
     /* paragraph must sit below the h1, and total height exceeds h1 + 1 line */

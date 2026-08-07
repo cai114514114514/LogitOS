@@ -344,6 +344,12 @@ static css_select_handler g_handler = {
 /* ---------- engine state ---------- */
 static css_select_ctx *g_ctx;
 static css_stylesheet *g_ua_sheet;
+static css_stylesheet *g_quirks_sheet;
+static int g_quirks_appended;   /* g_quirks_sheet is currently in g_ctx */
+static bool g_allow_quirks;     /* the document being styled is in quirks mode:
+                                 * every sheet parsed for it (author, inline
+                                 * style=) gets allow_quirks. Set by css_apply,
+                                 * read by style_node. */
 static css_unit_ctx g_unit;
 static css_media g_media;
 static int g_vw, g_vh;          /* last viewport set via css_viewport (0 = never) */
@@ -372,7 +378,36 @@ static const char UA_CSS[] =
     "svg{display:inline}"
     "script,style,head,title,meta,link,noscript,template,[hidden]{display:none}";
 
-static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
+/* The quirks-mode UA sheet, appended ON TOP of UA_CSS (same UA origin, later
+ * wins on equal specificity) when dom_doc_quirks() says QM_QUIRKS. This is the
+ * cascade half of quirks mode; make_sheet's allow_quirks is the parser half.
+ *
+ * COVERS the one cascade quirk that visibly changes real pre-doctype pages:
+ * a <table> does not inherit font or alignment from its ancestors. Legacy
+ * pages routinely set `font-size:small` or `text-align:center` on <body> and
+ * lay the page out in tables that they expect to stay at the default size and
+ * left-aligned -- in standards mode those tables inherit and the page comes
+ * out tiny and centred. (`font-size:medium` is 16px here, matching
+ * g_unit.font_size_default.)
+ *
+ * DOES NOT COVER, deliberately, because each needs engine support we do not
+ * have rather than a CSS rule: the "almost standards" inline-image line-box
+ * quirk (QM_LIMITED_QUIRKS is treated exactly like QM_NO_QUIRKS -- limited
+ * quirks differs from standards ONLY in that quirk); percentage heights
+ * resolving against the viewport through auto-height ancestors; the
+ * unitless-line-height and border-on-img-in-a quirks; and quirks-mode
+ * table-cell width/height distribution. */
+static const char QUIRKS_CSS[] =
+    "table{font-size:medium;font-weight:normal;font-style:normal;"
+    "line-height:normal;text-align:left}";
+
+/* `quirks` is LibCSS's allow_quirks: it loosens the PARSER, not the cascade.
+ * Two things become legal, both of them ubiquitous in pre-doctype HTML:
+ * unitless lengths ("width:100" == 100px, and "0 px" with a stray space) and
+ * hashless hex colours ("color:FF0000", "bgcolor=CCCCCC" carried into CSS).
+ * Without it LibCSS drops those declarations outright and the page loses its
+ * table widths and its colours. */
+static css_stylesheet *make_sheet(const char *data, size_t len, bool inl, bool quirks)
 {
     css_stylesheet_params p;
     memset(&p, 0, sizeof p);
@@ -382,6 +417,7 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl)
     p.url = "http://logit/";
     p.title = NULL;
     p.inline_style = inl;
+    p.allow_quirks = quirks;
     p.resolve = resolve_url;
     css_stylesheet *s = NULL;
     if (css_stylesheet_create(&p, &s) != CSS_OK || !s) return NULL;
@@ -416,8 +452,23 @@ void css_init(void)
     g_unit.root_style = NULL;   /* g_unit.measure stays NULL (it is a const member) */
 
     if (css_select_ctx_create(&g_ctx) != CSS_OK) { g_ctx = NULL; return; }
-    g_ua_sheet = make_sheet(UA_CSS, sizeof UA_CSS - 1, false);
+    g_ua_sheet = make_sheet(UA_CSS, sizeof UA_CSS - 1, false, false);
     if (g_ua_sheet) css_select_ctx_append_sheet(g_ctx, g_ua_sheet, CSS_ORIGIN_UA, NULL);
+    /* Parsed once and kept; it is appended to / removed from the context per
+     * document, since a page's quirks mode is a property of its doctype. */
+    g_quirks_sheet = make_sheet(QUIRKS_CSS, sizeof QUIRKS_CSS - 1, false, false);
+    g_quirks_appended = 0;
+}
+
+/* Match the context's quirks UA sheet to `on`. Idempotent -- css_apply runs
+ * several times per page (after external sheets, after a script mutation) and
+ * appending the same sheet twice would style every table twice over. */
+static void set_quirks_sheet(int on)
+{
+    if (!g_ctx || !g_quirks_sheet || on == g_quirks_appended) return;
+    if (on) css_select_ctx_append_sheet(g_ctx, g_quirks_sheet, CSS_ORIGIN_UA, NULL);
+    else    css_select_ctx_remove_sheet(g_ctx, g_quirks_sheet);
+    g_quirks_appended = on;
 }
 
 void css_viewport(int w, int h)
@@ -566,7 +617,7 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
     css_select_results *res = NULL;
     css_stylesheet *inl = NULL;
     const char *istyle = dom_attr_lw(n, dom_atoms.a_style);
-    if (istyle && *istyle) inl = make_sheet(istyle, strlen(istyle), true);
+    if (istyle && *istyle) inl = make_sheet(istyle, strlen(istyle), true, g_allow_quirks);
 
     if (css_select_style(g_ctx, n, &g_unit, &g_media, inl,
                          &g_handler, NULL, &res) != CSS_OK || !res) {
@@ -613,9 +664,16 @@ void css_apply(struct node *root, const char *page_css, int page_len)
     if (!g_ctx) css_init();
     if (!g_ctx) return;
 
+    /* The document's quirks mode, set from its doctype by html_tree.c. Only
+     * full quirks changes anything: QM_LIMITED_QUIRKS ("almost standards")
+     * differs from standards solely in the inline-image line-box quirk, which
+     * our line layout does not implement either way. */
+    g_allow_quirks = root && root->doc && dom_doc_quirks(root->doc) == QM_QUIRKS;
+    set_quirks_sheet(g_allow_quirks ? 1 : 0);
+
     css_stylesheet *author = NULL;
     if (page_css && page_len > 0) {
-        author = make_sheet(page_css, (size_t)page_len, false);
+        author = make_sheet(page_css, (size_t)page_len, false, g_allow_quirks);
         if (author) css_select_ctx_append_sheet(g_ctx, author, CSS_ORIGIN_AUTHOR, NULL);
     }
 

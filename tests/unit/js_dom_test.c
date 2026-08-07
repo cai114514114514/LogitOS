@@ -35,7 +35,9 @@ static int run(JSContext *ctx, const char *src)
 
 int main(void)
 {
-    const char *html = "<body><h1 id='t'>Old</h1><p class='x'>hi</p><a href='/y'>z</a></body>";
+    const char *html = "<body><h1 id='t'>Old</h1><p class='x'>hi</p><a href='/y'>z</a>"
+                       "<div id='ih'><b>bold</b> and <i>it</i></div>"
+                       "<table><tr id='trc'><td>seed</td></tr></table></body>";
     struct node *root = dom_parse(html, (int)strlen(html));
     JSRuntime *rt = JS_NewRuntime();
     JSContext *ctx = JS_NewContext(rt);
@@ -66,8 +68,11 @@ int main(void)
     CK(js_dom_dirty(), "DOM dirty after appendChild");
     CK(run(ctx, "if (document.getElementById('new').textContent !== 'made') throw 'not in DOM';"),
        "appended element reachable via getElementById");
-    struct node *dv = find(root, "div");
-    CK(dv && !strcmp(firsttext(dv), "made"), "div node really linked under body");
+    /* By id, not find(root,"div"): the fixture has its own <div> for the
+     * innerHTML cases below, and a first-match-by-tag walk would grab that one. */
+    struct node *dv = dom_get_element_by_id(root->doc, "new");
+    CK(dv && !strcmp(dv->tag, "div") && !strcmp(firsttext(dv), "made") &&
+       dv->parent == dom_doc_body(root->doc), "div node really linked under body");
 
     /* appendChild moves (reparents) an existing node */
     CK(run(ctx, "document.querySelector('h1').appendChild(document.querySelector('a'));"),
@@ -109,6 +114,50 @@ int main(void)
     /* document.documentElement exists (no <html> in fixture -> first element) */
     CK(run(ctx, "if (document.documentElement === null) throw 'no documentElement';"),
        "document.documentElement is non-null");
+
+    /* ---- innerHTML, both directions ----
+     * The getter used to alias textContent, so it returned markup-free text.
+     * It must return real markup now, tags and attributes included. */
+    js_dom_clear_dirty();
+    CK(run(ctx, "var iv = document.getElementById('ih');"
+                "if (iv.innerHTML !== '<b>bold</b> and <i>it</i>') throw 'got: ' + iv.innerHTML;"),
+       "innerHTML getter returns markup, not stripped text");
+    CK(run(ctx, "if (document.getElementById('ih').textContent !== 'bold and it') throw 'tc';"),
+       "textContent still strips markup (the two are different properties)");
+    CK(!js_dom_dirty(), "reading innerHTML does not dirty the DOM");
+
+    /* The setter parses through the HTML fragment algorithm and builds real
+     * elements -- not a text node containing angle brackets. */
+    CK(run(ctx, "document.getElementById('ih').innerHTML = '<span id=\"si\">deep<em>er</em></span>';"),
+       "innerHTML setter accepted");
+    CK(js_dom_dirty(), "DOM dirty after innerHTML set");
+    struct node *si = dom_get_element_by_id(root->doc, "si");
+    CK(si && !strcmp(si->tag, "span"), "innerHTML= built a real <span> element");
+    CK(si && si->parent && !strcmp(si->parent->tag, "div"), "new subtree parented under the target");
+    CK(dom_get_element_by_id(root->doc, "si") == si,
+       "imported element joined the target document's id index");
+    struct node *em = si ? find(si, "em") : 0;
+    CK(em && !strcmp(firsttext(em), "er"), "nested <em> imported with its text");
+    CK(run(ctx, "if (document.getElementById('ih').innerHTML !== "
+                "'<span id=\"si\">deep<em>er</em></span>') throw 'rt: ' + "
+                "document.getElementById('ih').innerHTML;"),
+       "innerHTML round-trips through set then get");
+
+    /* The old children are gone, not appended to -- and the strings the new
+     * ones point at must outlive the throwaway fragment document. */
+    CK(find(root, "b") == NULL, "innerHTML= replaced the previous children");
+
+    /* Context-sensitive fragment parsing: "<td>x" is a cell inside a <tr> and
+     * bare text inside a <div>. Same string, two trees -- which is exactly what
+     * the fragment algorithm is for. */
+    CK(run(ctx, "document.getElementById('trc').innerHTML = '<td>cell</td>';"),
+       "innerHTML= on a <tr> accepted");
+    struct node *trc = dom_get_element_by_id(root->doc, "trc");
+    CK(trc && trc->first_child && !strcmp(trc->first_child->tag, "td"),
+       "fragment parsed in <tr> context produced a <td>");
+    CK(run(ctx, "document.getElementById('ih').innerHTML = '<td>cell</td>';"
+                "if (document.getElementById('ih').innerHTML !== 'cell') throw 'div ctx';"),
+       "the same string in <div> context drops the stray <td>");
 
     /* console.log/warn/error are installed and callable */
     CK(run(ctx, "console.log('L', 1); console.warn('W'); console.error('E');"),

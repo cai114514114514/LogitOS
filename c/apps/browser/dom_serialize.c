@@ -150,9 +150,10 @@ char *dom_serialize_test(const struct node *root)
 
 /* The spec's void elements: no end tag, and no children to serialise.
  *
- * htag is only filled in by html_tree.c, so a node the legacy scanner or the
- * DOM API built reads as HTAG_UNKNOWN and has to be matched by name. Both
- * paths are live until dom_parse() is switched over. */
+ * htag is only filled in by html_tree.c, so a node built through the DOM API
+ * (document.createElement) reads as HTAG_UNKNOWN and has to be matched by
+ * name. Both paths stay live: innerHTML serialises parsed and script-built
+ * subtrees alike, and a page mixes the two freely. */
 static int is_void_element(const struct node *n)
 {
     if (n->ns != NS_HTML) return 0;

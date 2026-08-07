@@ -5,6 +5,26 @@ Usage: qmp_browser.py <qmp.sock> <out.ppm> [url] [wait] [x,y] [scrolls]
 When scrolls > 0, also captures out-scroll<N>.ppm after N PageDowns each."""
 import socket, json, sys, time
 
+# --- Dock geometry, mirrored from draw_dock() in c/kernel/gui/wm.c ---
+# This used to be a hardcoded pair, and it silently rotted: the dock is CENTRED,
+# so adding one app moves every icon 32px left and the old coordinate lands on
+# the wrong app (or on the wallpaper, which does nothing at all and looks
+# exactly like the browser failing to open). Deriving it from the app count
+# means the next app costs a one-line edit instead of a silent false pass.
+SCREEN_W, SCREEN_H = 1280, 800
+DOCK_ISZ, DOCK_GAP = 50, 14           # wm.c: dock_isz, dock_gap
+NAPPS = 9                             # *.aex at the LogitFS root, in scan_apps order:
+BROWSER_SLOT = 8                      # clock textedit monitor terminal widgets
+                                      # files preview studio browser
+
+def dock_icon(i, n=NAPPS):
+    """Centre of dock icon `i` (0-based), matching wm.c's draw_dock()."""
+    dw = DOCK_GAP + n * (DOCK_ISZ + DOCK_GAP)
+    x0 = (SCREEN_W - dw) // 2
+    y0 = SCREEN_H - (DOCK_ISZ + 20) - 12
+    return (x0 + DOCK_GAP + i * (DOCK_ISZ + DOCK_GAP) + DOCK_ISZ // 2,
+            y0 + 10 + DOCK_ISZ // 2)
+
 sock_path, out = sys.argv[1], sys.argv[2]
 url = sys.argv[3] if len(sys.argv) > 3 else None
 wait = float(sys.argv[4]) if len(sys.argv) > 4 else 11   # post-Enter wait before screendump
@@ -57,11 +77,19 @@ def typ(t):
 json.loads(f.readline())
 cmd({"execute":"qmp_capabilities"})
 
-# Launch Browser from the Dock (globe icon, rightmost; ~x=985 y=752 @1280x800;
-# override with 5th arg "x,y" if the dock layout changes)
-dx, dy = (map(int, sys.argv[5].split(","))) if len(sys.argv) > 5 else (985, 752)
+# Launch Browser from the Dock (the globe, currently rightmost -> (896, 753)).
+# The 5th arg still overrides, for driving a build with a different app set.
+dx, dy = (map(int, sys.argv[5].split(","))) if len(sys.argv) > 5 else dock_icon(BROWSER_SLOT)
 goto(dx, dy); click()
-time.sleep(1.2)
+time.sleep(2.5)          # the .aex is ~2.6 MB off virtio-blk, then ELF load + first paint
+
+# Capture the window BEFORE any URL is typed. Without this, "the dock click
+# missed" and "the page failed to render" produce the same blank final image
+# and there is nothing to tell them apart after the fact.
+base = out.rsplit(".", 1)
+launch = base[0] + "-launch." + (base[1] if len(base) > 1 else "ppm")
+cmd({"execute":"screendump","arguments":{"filename":launch}})
+time.sleep(0.4)
 
 if url:
     # focus the address bar, clear it, type the new URL

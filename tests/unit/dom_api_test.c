@@ -124,17 +124,27 @@ static void test_deep_tree(void)
     CK(leaf && !strcmp(leaf->text, "bottom"), "deep-tree: leaf text at depth 501");
     dom_free(dom_doc_root(d));
 
-    /* The scanner (not the data model) still uses a 64-deep open-element stack,
-     * unchanged from before S1b. Assert it stays well-behaved rather than
-     * pretending the limit moved. */
+    /* The parser's depth limit is now DOM_MAX_TREE_DEPTH (512), not the legacy
+     * scanner's 64: 300 nested <div>s all survive instead of being dropped
+     * past the 64th.
+     *
+     * NOTE the walk starts at <body>, not at the document node. The old
+     * assertion walked root->first_child and, against a spec tree, that chain
+     * is #document -> <html> -> <head> -- which has no children, so it stopped
+     * at 3 and "md <= 65" held for a reason that had nothing to do with the
+     * open-element stack. An assertion that passes because it is looking at
+     * the wrong branch is worse than no assertion. */
     char *html = malloc(16384);
     int o = 0;
     for (int i = 0; i < 300; i++) o += sprintf(html + o, "<div>");
     o += sprintf(html + o, "deep");
     struct node *root = dom_parse(html, o);
+    struct node *body = dom_doc_body(root->doc);
+    CK(body != NULL, "deep-tree: parsed document has a <body>");
     int md = 0;
-    for (struct node *n = root; n; n = n->first_child) md++;
-    CK(root && md <= 65, "deep-tree: scanner still honours its 64-deep stack");
+    for (struct node *n = body; n; n = n->first_child) md++;
+    /* body + 300 divs + the "deep" text node */
+    CK(md == 302, "deep-tree: all 300 nested divs kept (old scanner capped at 64)");
     dom_free(root);
     free(html);
 }

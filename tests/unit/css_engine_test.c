@@ -55,6 +55,41 @@ int main(void)
     CHECK(st(div)->has_w && st(div)->width == 200, "div width 200px (inline)");
     CHECK(st(pre) && st(pre)->mono, "pre monospace (UA)");
 
+    /* ---- quirks mode ----
+     * The doctype (or its absence) decides. No doctype -> QM_QUIRKS, and
+     * css_apply must then (a) hand LibCSS allow_quirks so unitless lengths and
+     * hashless hex colours parse instead of being dropped, and (b) append the
+     * quirks UA sheet so <table> stops inheriting the body font. */
+    const char *qhtml =                      /* no doctype == quirks mode */
+        "<body style='font-size:40px'>"
+        "<div id='q' style='width:150;color:FF0000'>x</div>"
+        "<table><tr><td>cell</td></tr></table>"
+        "</body>";
+    struct node *qroot = dom_parse(qhtml, (int)strlen(qhtml));
+    CHECK(dom_doc_quirks(qroot->doc) == QM_QUIRKS, "no doctype -> quirks mode");
+    css_apply(qroot, "", 0);
+    struct node *qd = find(qroot, "div"), *qt = find(qroot, "table");
+    CHECK(qd && st(qd)->has_w && st(qd)->width == 150, "quirks: unitless width:150 -> 150px");
+    CHECK(qd && st(qd)->color == 0xff0000, "quirks: hashless colour FF0000 parsed");
+    CHECK(qt && st(qt)->font_px == 16, "quirks: table does not inherit body font-size");
+
+    /* The same markup with a standards doctype must do NEITHER: the quirky
+     * declarations are dropped (so the div keeps its defaults) and the table
+     * inherits normally. If this passes while the block above fails, the
+     * quirks flag is stuck on. */
+    const char *shtml =
+        "<!DOCTYPE html><body style='font-size:40px'>"
+        "<div id='q' style='width:150;color:FF0000'>x</div>"
+        "<table><tr><td>cell</td></tr></table>"
+        "</body>";
+    struct node *sroot = dom_parse(shtml, (int)strlen(shtml));
+    CHECK(dom_doc_quirks(sroot->doc) == QM_NO_QUIRKS, "<!DOCTYPE html> -> no quirks");
+    css_apply(sroot, "", 0);
+    struct node *sd = find(sroot, "div"), *stb = find(sroot, "table");
+    CHECK(sd && !st(sd)->has_w, "standards: unitless width:150 dropped");
+    CHECK(sd && st(sd)->color != 0xff0000, "standards: hashless colour FF0000 dropped");
+    CHECK(stb && st(stb)->font_px == 40, "standards: table inherits the body font-size");
+
     printf(fails ? "\nCSS ENGINE TEST FAILED\n" : "\nCSS ENGINE TEST PASSED\n");
     return fails;
 }

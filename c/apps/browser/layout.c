@@ -871,20 +871,17 @@ void layout_page(struct node *root, int canvas_w)
     items = kmalloc(sizeof(struct item) * MAXITEM);
     nitem = 0; canvas = canvas_w;
     if (!items) { doc_h = 0; return; }
-    /* find <body> (or use root) */
-    struct node *body = 0;
-    for (struct node *h = root->first_child; h && !body; h = h->next)
-        for (struct node *b = h->first_child; b; b = b->next)
-            if (b->type==N_ELEM && tag_eq(b->tag, "body")) { body = b; break; }
+    /* <body> and <html> straight from the document. The tree builder always
+     * produces both for a parsed page; the fallbacks cover a tree assembled
+     * through the DOM API (the layout unit tests do exactly that). */
+    struct node *body = root->doc ? dom_doc_body(root->doc) : 0;
     struct node *start = body ? body : root;
     struct cstyle *bst = start->style;
     int mx = bst ? (bst->ml>0?bst->ml:0) : 8;
 
     /* canvas background: html (else body) background propagates to the viewport */
     page_has_bg = 0;
-    struct node *htmlel = 0;
-    for (struct node *h = root->first_child; h; h = h->next)
-        if (h->type==N_ELEM && tag_eq(h->tag, "html")) { htmlel = h; break; }
+    struct node *htmlel = root->doc ? dom_doc_element(root->doc) : 0;
     struct cstyle *hst = htmlel ? htmlel->style : 0;
     if (hst && hst->has_bg)      { page_has_bg = 1; page_bg = hst->background; }
     else if (bst && bst->has_bg) { page_has_bg = 1; page_bg = bst->background; }

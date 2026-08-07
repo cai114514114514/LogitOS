@@ -4,7 +4,7 @@
  * address space, so JS manipulates the live DOM directly. Exposes:
  *   document.getElementById(id) / .querySelector(sel) / .body / .documentElement
  *         / .createElement(tag)
- *   Element.textContent (get/set), .innerHTML (get), .tagName, .id,
+ *   Element.textContent (get/set), .innerHTML (get/set), .tagName, .id,
  *           .getAttribute(n), .setAttribute(n,v),
  *           .appendChild(c), .removeChild(c), .addEventListener(type,fn),
  *           .classList.add/remove/toggle/contains
@@ -12,6 +12,8 @@
  * Mutations set a dirty flag so the browser re-styles + re-lays-out + repaints. */
 #include "quickjs.h"
 #include "dom.h"
+#include "dom_serialize.h"
+#include "html_tree.h"
 #include "js_dom.h"
 #include <string.h>
 #include <stdlib.h>
@@ -197,7 +199,44 @@ static JSValue el_get_tag(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); return n ? JS_NewString(ctx, n->tag) : JS_UNDEFINED; }
 static JSValue el_get_id(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); const char *v = n ? dom_attr(n, "id") : 0; return JS_NewString(ctx, v ? v : ""); }
-static JSValue el_get_html(JSContext *ctx, JSValueConst t) { return el_get_text(ctx, t); }
+/* Real innerHTML, both ways. The getter used to alias el_get_text, which is a
+ * different property entirely: it returns the concatenated text with every tag
+ * stripped, so a script that read innerHTML got markup-free text back and any
+ * round trip (el.innerHTML = el.innerHTML) silently destroyed the subtree. */
+static JSValue el_get_html(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
+    char *s = dom_serialize_html(n, 0);          /* children only == innerHTML */
+    JSValue v = JS_NewString(ctx, s ? s : "");
+    free(s);
+    return v;
+}
+
+static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (!s) return JS_UNDEFINED;
+
+    /* The HTML fragment parsing algorithm, with this element as context -- so
+     * "<td>x" inside a <tr> builds a cell and inside a <div> does not, exactly
+     * as the spec requires. It parses into its OWN document, so the result has
+     * to be imported (deep-copied) before that document is dropped. */
+    struct dom_doc *fdoc = 0;
+    struct node *frag = html_parse_fragment(&fdoc, s, (int)strlen(s),
+                                            n->tag, (int)strlen(n->tag), n->ns);
+    JS_FreeCString(ctx, s);
+    if (frag) {
+        dom_destroy_children(n);
+        for (struct node *c = frag->first_child; c; c = c->next) {
+            struct node *cp = dom_import_node(n->doc, c);
+            if (cp) dom_append_child(n, cp);
+        }
+        g_dirty = 1;
+    }
+    if (fdoc) dom_free(dom_doc_root(fdoc));
+    return JS_UNDEFINED;
+}
 static JSValue el_getattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
@@ -384,7 +423,7 @@ void js_dom_cleanup(JSContext *ctx)
 
 static const JSCFunctionListEntry elem_proto[] = {
     JS_CGETSET_DEF("textContent", el_get_text, el_set_text),
-    JS_CGETSET_DEF("innerHTML", el_get_html, NULL),
+    JS_CGETSET_DEF("innerHTML", el_get_html, el_set_html),
     JS_CGETSET_DEF("tagName", el_get_tag, NULL),
     JS_CGETSET_DEF("id", el_get_id, NULL),
     JS_CGETSET_DEF("classList", el_get_classlist, NULL),

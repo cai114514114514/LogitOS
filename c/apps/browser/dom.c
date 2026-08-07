@@ -1,13 +1,14 @@
 /* S1b: the DOM core -- arena-allocated nodes, interned names, no hard caps.
  *
- * The HTML scanner at the bottom is the same tolerant single-pass scanner as
- * before, retargeted onto the new node type: same tag soup handling, same
- * entity table, same implied <tbody> / optional-end-tag rules, same 64-deep
- * open-element stack. What changed is everything under it -- see dom.h for the
- * arena and interning rationale. The 15-char tag names, 31-char attribute
- * names, 255-char attribute values and 32-attribute-per-element caps are gone.
+ * This file is now purely the data model and its API: the arena, the interned
+ * name ledger, the id index, node creation/mutation and attribute access. The
+ * tolerant single-pass scanner that used to sit at the bottom is gone --
+ * html_tree.c (over html_tokenizer.c) is the WHATWG tree construction
+ * algorithm and dom_parse() is a one-line call into it. See dom.h for the
+ * arena and interning rationale.
  */
 #include "dom.h"
+#include "html_tree.h"
 
 #include <libwapcaplet/libwapcaplet.h>
 
@@ -23,8 +24,6 @@ static int nmatch(const char *a, const char *b, int n) { for (int i = 0; i < n; 
 static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static int sp(int c) { return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static size_t zlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
-static int zeq(const char *a, const char *b)          /* both already lowercase */
-{ while (*a && *a == *b) { a++; b++; } return *a == *b; }
 
 /* pointer hash (splitmix-style finaliser): the id index and the interned-string
  * ledger are keyed by a pointer (an lwc_string or a node), never by bytes. */
@@ -208,20 +207,6 @@ static void *arena_alloc(struct dom_doc *d, size_t n)
     if (oversize && head) { c->next = head->next; head->next = c; }
     else                  { c->next = head; d->schunks = c; }
     return (unsigned char *)(c + 1);
-}
-
-/* Give back the tail of the most recent allocation (entity decoding sizes its
- * buffer for the worst case, then knows the real length). Only ever shrinks. */
-static void arena_trim(struct dom_doc *d, void *p, size_t oldn, size_t newn)
-{
-    struct dom_chunk *h = d->schunks;
-    if (!h || !p) return;
-    size_t oa = ((oldn + 7u) & ~(size_t)7u), na = ((newn + 7u) & ~(size_t)7u);
-    if (!oa) oa = 8;
-    if (!na) na = 8;
-    if (na >= oa) return;
-    if ((unsigned char *)p + oa != (unsigned char *)(h + 1) + h->used) return;
-    h->used -= (oa - na);
 }
 
 static char *arena_dup(struct dom_doc *d, const char *s, size_t len)
@@ -412,6 +397,31 @@ struct dom_doc *dom_doc_new(void)
 }
 
 struct node *dom_doc_root(struct dom_doc *d) { return d ? d->root : 0; }
+
+/* documentElement / body. Both are one short sibling walk each -- the document
+ * node has a handful of children (doctype, comments, <html>) and <html> has
+ * two or three -- so they are computed rather than cached: a cached pointer
+ * would have to be invalidated by every dom_remove_child() a script makes. */
+struct node *dom_doc_element(struct dom_doc *d)
+{
+    if (!d || !d->root) return 0;
+    for (struct node *c = d->root->first_child; c; c = c->next)
+        if (c->type == N_ELEM && c->tag_id == TAG_HTML && c->ns == NS_HTML) return c;
+    return 0;
+}
+
+struct node *dom_doc_body(struct dom_doc *d)
+{
+    struct node *html = dom_doc_element(d);
+    if (!html) return 0;
+    /* Per the DOM spec, document.body is the first <body> OR <frameset> child
+     * of the document element -- a frameset document has no <body> at all. */
+    for (struct node *c = html->first_child; c; c = c->next)
+        if (c->type == N_ELEM && c->ns == NS_HTML &&
+            (c->tag_id == TAG_BODY || c->tag_id == TAG_FRAMESET)) return c;
+    return 0;
+}
+
 size_t dom_doc_bytes(const struct dom_doc *d) { return d ? d->bytes : 0; }
 int  dom_doc_quirks(const struct dom_doc *d) { return d ? d->quirks : QM_NO_QUIRKS; }
 void dom_doc_set_quirks(struct dom_doc *d, int mode) { if (d) d->quirks = mode; }
@@ -586,10 +596,12 @@ struct node *dom_create_element_ns(struct dom_doc *d, const char *name, int len,
     return n;
 }
 
-struct node *dom_clone_element(const struct node *src)
+/* Shallow element copy into an EXPLICIT document. Interned names are process
+ * global (libwapcaplet), so copying across documents is still just a doc_hold
+ * on the same lwc_string -- only the per-document reference ledger differs.
+ * Values are re-copied into `d`'s arena by attr_set. */
+static struct node *clone_elem_into(struct dom_doc *d, const struct node *src)
 {
-    if (!src || src->type != N_ELEM || !src->doc) return 0;
-    struct dom_doc *d = src->doc;
     struct node *n = node_alloc(d);
     if (!n) return 0;
     n->type = N_ELEM;
@@ -607,6 +619,57 @@ struct node *dom_clone_element(const struct node *src)
                  src->attrs[i].value, src->attrs[i].vlen);
     }
     return n;
+}
+
+struct node *dom_clone_element(const struct node *src)
+{
+    if (!src || src->type != N_ELEM || !src->doc) return 0;
+    return clone_elem_into(src->doc, src);
+}
+
+/* One node, no children, into `d`. NULL for a type a fragment can never carry
+ * (a doctype) -- dom_import_node then skips that node's whole subtree. */
+static struct node *import_one(struct dom_doc *d, const struct node *s)
+{
+    switch (s->type) {
+    case N_ELEM: {
+        struct node *n = clone_elem_into(d, s);
+        if (n && s->raw && s->rawlen > 0) {
+            n->raw = arena_dup(d, s->raw, (size_t)s->rawlen);
+            n->rawlen = n->raw ? s->rawlen : 0;
+        }
+        return n;
+    }
+    case N_TEXT:    return dom_create_text(d, s->text ? s->text : "", s->textlen);
+    case N_COMMENT: return dom_create_comment(d, s->text ? s->text : "", s->textlen);
+    default:        return 0;
+    }
+}
+
+struct node *dom_import_node(struct dom_doc *d, const struct node *src)
+{
+    if (!d || !src) return 0;
+    struct node *root = import_one(d, src);
+    if (!root) return 0;
+
+    /* Iterative, like every other walk here: an innerHTML= string can nest as
+     * deep as the fragment parser allows (DOM_MAX_TREE_DEPTH). The invariant is
+     * `dst == the copy of s->parent`, which each of the three moves preserves:
+     * descending sets dst to the copy of s, a sibling step leaves s->parent (so
+     * dst) alone, and popping walks both up one level in lockstep. */
+    const struct node *s = src->first_child;
+    struct node *dst = root;
+    while (s) {
+        struct node *c = import_one(d, s);
+        if (c) dom_append_child(dst, c);
+        if (c && s->first_child) { s = s->first_child; dst = c; continue; }
+        /* No copy (or nothing below): skip this subtree and take the next
+         * sibling, climbing out of finished levels first. */
+        while (s != src && !s->next) { s = s->parent; dst = dst->parent; }
+        if (s == src) break;
+        s = s->next;
+    }
+    return root;
 }
 
 void dom_set_raw(struct node *n, const char *src, int len)
@@ -888,288 +951,20 @@ void dom_clear_wrappers(struct dom_doc *d)
 }
 
 /* ------------------------------------------------------------------ */
-/* --------------------------  HTML scanner  ------------------------ */
+/* parsing                                                             */
 /* ------------------------------------------------------------------ */
-/* Unchanged in behaviour from the pre-S1b scanner: same void/rawtext sets,
- * same entity table, same optional-end-tag and implied-<tbody> rules, same
- * 64-deep open-element stack (elements deeper than that are still dropped).
- * The real HTML5 tree builder replaces all of it; until then the only thing
- * that moved is where the bytes live. */
-
-static int is_void(const char *t)
-{
-    static const char *const v[] = {"area","base","br","col","embed","hr","img","input",
-                                    "link","meta","param","source","track","wbr",0};
-    for (int i = 0; v[i]; i++) if (zeq(t, v[i])) return 1;
-    return 0;
-}
-static int is_rawtext(const char *t) { return zeq(t,"script") || zeq(t,"style"); }
-
-/* Named HTML entities (common subset). Codepoint is UTF-8 encoded below. */
-static int slen(const char *s){ int n=0; while(s[n]) n++; return n; }
-static const struct { const char *name; int cp; } ENTITIES[] = {
-    {"amp",38},{"lt",60},{"gt",62},{"quot",34},{"apos",39},{"nbsp",32},
-    {"copy",169},{"reg",174},{"trade",8482},{"mdash",8212},{"ndash",8211},
-    {"hellip",8230},{"times",215},{"divide",247},{"laquo",171},{"raquo",187},
-    {"ldquo",8220},{"rdquo",8221},{"lsquo",8216},{"rsquo",8217},{"middot",183},
-    {"bull",8226},{"deg",176},{"plusmn",177},{"sect",167},{"para",182},
-    {"dagger",8224},{"euro",8364},{"pound",163},{"cent",162},{"yen",165},
-    {"frac12",189},{"frac14",188},{"frac34",190},{"sup2",178},{"sup3",179},
-    {"larr",8592},{"rarr",8594},{"uarr",8593},{"darr",8595},{"harr",8596},
-    {"emsp",32},{"ensp",32},{"thinsp",32},{"iexcl",161},{"iquest",191},
-    {"szlig",223},{"aacute",225},{"eacute",233},{"egrave",232},{"agrave",224},
-    {"ccedil",231},{"ntilde",241},{"ouml",246},{"uuml",252},{"auml",228},
-    {"ograve",242},{"oacute",243},{"uacute",250},{"iacute",237},
-    {0,0}
-};
-
-/* Decode HTML entities in [s,e) into out (capacity cap); returns out length. */
-static int decode_text(const char *s, const char *e, char *out, int cap)
-{
-    int o = 0;
-    while (s < e && o < cap - 4) {
-        if (*s != '&') { out[o++] = *s++; continue; }
-        const char *p = s + 1, *semi = 0;
-        for (const char *k = p; k < e && k < p + 10; k++) if (*k == ';') { semi = k; break; }
-        if (!semi) { out[o++] = *s++; continue; }
-        int v = -1;
-        if (*p == '#') {
-            int hex = (p[1]=='x'||p[1]=='X'); const char *dg = p + (hex?2:1); v = 0;
-            int nd = 0;
-            for (; dg < semi; dg++) { char c=*dg;
-                int dig = -1;
-                if (hex) { if(c>='0'&&c<='9')dig=c-'0'; else if(c>='a'&&c<='f')dig=c-'a'+10; else if(c>='A'&&c<='F')dig=c-'A'+10; }
-                else if (c>='0'&&c<='9') dig=c-'0';
-                if (dig < 0) { v = -1; break; }            /* e.g. &#xZZ; -> emit literally, not a NUL byte */
-                v = v*(hex?16:10)+dig; nd++;
-                if (v > 0x10FFFF) { v = -1; break; }       /* cap: larger values would emit invalid UTF-8 */
-            }
-            if (!nd) v = -1;
-        } else {
-            int l = (int)(semi - p);
-            for (int e2 = 0; ENTITIES[e2].name; e2++)
-                if (slen(ENTITIES[e2].name) == l && nmatch(p, ENTITIES[e2].name, l)) { v = ENTITIES[e2].cp; break; }
-        }
-        if (v < 0) { out[o++] = *s++; continue; }
-        if (v < 0x80) out[o++]=(char)v;
-        else if (v < 0x800) { out[o++]=(char)(0xC0|(v>>6)); out[o++]=(char)(0x80|(v&0x3F)); }
-        else if (v < 0x10000) { out[o++]=(char)(0xE0|(v>>12)); out[o++]=(char)(0x80|((v>>6)&0x3F)); out[o++]=(char)(0x80|(v&0x3F)); }
-        else { out[o++]=(char)(0xF0|(v>>18)); out[o++]=(char)(0x80|((v>>12)&0x3F)); out[o++]=(char)(0x80|((v>>6)&0x3F)); out[o++]=(char)(0x80|(v&0x3F)); }
-        s = semi + 1;
-    }
-    out[o] = 0;
-    return o;
-}
-
-static void emit_text(struct dom_doc *d, struct node *parent, const char *s, const char *e)
-{
-    if (e <= s) return;
-    size_t cap = (size_t)(e - s) + 8;
-    /* Decode straight into the arena and hand the tail back: entity decoding
-     * never grows the text, so one worst-case block plus a trim beats sizing
-     * the run twice. */
-    char *buf = arena_alloc(d, cap);
-    if (!buf) return;
-    int len = decode_text(s, e, buf, (int)cap);
-    if (len == 0) { arena_trim(d, buf, cap, 0); return; }
-    arena_trim(d, buf, cap, (size_t)len + 1);
-    struct node *t = node_alloc(d);
-    if (!t) return;
-    t->type = N_TEXT;
-    t->tag = "#text";
-    t->text = buf; t->textlen = len;
-    dom_append_child(parent, t);
-}
-
-#define MAXDEPTH 64                 /* scanner-only; see DOM_MAX_TREE_DEPTH */
-
-/* Lowercase [s,e) into a scratch buffer that grows on demand (tag and
- * attribute names are no longer capped at 15/31 characters). The parser keeps
- * TWO of these: the element name stays live across the whole start tag, so
- * lowering an attribute name must not reuse -- or reallocate -- its buffer. */
-struct scratch { char *buf; size_t cap; };
-static const char *scr(struct scratch *sc, const char *s, const char *e, size_t *outlen)
-{
-    size_t n = (size_t)(e - s);
-    if (n + 1 > sc->cap) {
-        size_t ncap = sc->cap ? sc->cap : 64;
-        while (ncap < n + 1) ncap *= 2;
-        char *nb = kmalloc((unsigned long)ncap);
-        if (!nb) { *outlen = 0; return ""; }
-        if (sc->buf) kfree(sc->buf);
-        sc->buf = nb; sc->cap = ncap;
-    }
-    for (size_t i = 0; i < n; i++) sc->buf[i] = (char)lc((unsigned char)s[i]);
-    sc->buf[n] = 0;
-    *outlen = n;
-    return sc->buf;
-}
-
+/* The tolerant single-pass scanner that used to live here is gone: html_parse()
+ * (html_tree.c, driven by html_tokenizer.c) is the spec algorithm and replaces
+ * it wholesale. dom_parse() stays as the one-line entry point every caller
+ * already uses, so the switch is invisible above dom.h. */
 struct node *dom_parse(const char *html, int len)
 {
-    struct dom_doc *d = dom_doc_new();
-    if (!d) return 0;
-    struct node *root = d->root;
-    if (!html || len <= 0) return root;
-
-    struct scratch sc = { 0, 0 };       /* element / end-tag names */
-    struct scratch asc = { 0, 0 };      /* attribute names */
-    struct node *stack[MAXDEPTH]; int sd = 0; stack[sd++] = root;
-    #define TOP stack[sd-1]
-    const char *p = html, *end = html + len;
-
-    while (p < end) {
-        if (*p != '<') {                                  /* text run */
-            const char *t = p;
-            while (p < end && *p != '<') p++;
-            emit_text(d, TOP, t, p);
-            continue;
-        }
-        /* a tag */
-        if (p + 1 < end && p[1] == '!') {                 /* comment / doctype */
-            /* Both are still discarded, exactly as before. The node types exist
-             * (dom_create_comment/dom_create_doctype) for the tree builder that
-             * replaces this scanner; emitting them here would change what every
-             * downstream walk sees (:empty, serialisation) for no gain. */
-            if (p + 3 < end && p[2]=='-' && p[3]=='-') {
-                p += 4; while (p + 2 < end && !(p[0]=='-'&&p[1]=='-'&&p[2]=='>')) p++; p = (p+3<end)?p+3:end;
-            } else { while (p < end && *p != '>') p++; if (p<end) p++; }
-            continue;
-        }
-        if (p + 1 < end && p[1] == '/') {                 /* end tag */
-            p += 2; const char *t = p;
-            while (p < end && *p != '>' && !sp(*p)) p++;
-            size_t nl; const char *name = scr(&sc, t, p, &nl);
-            while (p < end && *p != '>') p++; if (p<end) p++;
-            /* pop to the matching open element (tolerant) */
-            for (int i = sd-1; i >= 1; i--)
-                if (zeq(stack[i]->tag, name)) { sd = i; break; }
-            continue;
-        }
-        /* start tag */
-        const char *tag0 = p;                           /* the '<' itself */
-        p++; const char *t = p;
-        while (p < end && *p != '>' && *p != '/' && !sp(*p)) p++;
-        size_t nl; const char *name = scr(&sc, t, p, &nl);
-        if (!nl) { while (p<end && *p!='>') p++; if(p<end)p++; continue; }
-        /* HTML5 optional end tags: a new peer auto-closes the still-open one */
-        if (zeq(name,"tr")) { while (sd>1 && (zeq(TOP->tag,"td")||zeq(TOP->tag,"th")||zeq(TOP->tag,"tr"))) sd--; }
-        else if (zeq(name,"td")||zeq(name,"th")) { while (sd>1 && (zeq(TOP->tag,"td")||zeq(TOP->tag,"th"))) sd--; }
-        else if (zeq(name,"li")) { while (sd>1 && zeq(TOP->tag,"li")) sd--; }
-        else if (zeq(name,"dd")||zeq(name,"dt")) { while (sd>1 && (zeq(TOP->tag,"dd")||zeq(TOP->tag,"dt"))) sd--; }
-        else if (zeq(name,"option")) { while (sd>1 && zeq(TOP->tag,"option")) sd--; }
-        else if (zeq(name,"p")) { while (sd>1 && zeq(TOP->tag,"p")) sd--; }
-        /* implied <tbody>: a <tr> placed directly inside <table> (HTML5) */
-        if (zeq(name,"tr") && zeq(TOP->tag,"table") && sd < MAXDEPTH) {
-            struct node *tb = elem_new(d, "tbody", 5);
-            if (tb) { dom_append_child(TOP, tb); stack[sd++] = tb; }
-        }
-        struct node *el = elem_new(d, name, nl);
-        if (!el) { while (p<end && *p!='>') p++; if(p<end)p++; continue; }
-        /* attributes -- straight onto the element, no fixed staging array */
-        while (p < end && *p != '>' && *p != '/') {
-            while (p < end && sp(*p)) p++;
-            if (p>=end || *p=='>' || *p=='/') break;
-            const char *as = p;
-            while (p < end && *p!='=' && *p!='>' && *p!='/' && !sp(*p)) p++;
-            size_t anl = (size_t)(p - as);
-            const char *vs = "", *ve = "";
-            while (p<end && sp(*p)) p++;
-            if (p<end && *p=='=') {
-                p++; while (p<end && sp(*p)) p++;
-                if (p<end && (*p=='"'||*p=='\'')) {
-                    char q=*p++; vs = p;
-                    while (p<end && *p!=q) p++;
-                    ve = p; if (p<end) p++;              /* consume the closing quote */
-                } else {
-                    vs = p;
-                    while (p<end && !sp(*p) && *p!='>') p++;
-                    ve = p;
-                }
-            }
-            if (anl) {
-                size_t lnl; const char *lname = scr(&asc, as, as + anl, &lnl);
-                attr_set(d, el, lname, lnl, vs, (size_t)(ve - vs));
-            }
-        }
-        int selfclose = (p<end && *p=='/');
-        if (selfclose) el->flags |= NF_SELF_CLOSED;
-        while (p < end && *p != '>') p++; if (p<end) p++;
-        if (sd >= MAXDEPTH) { node_recycle(d, el); continue; }
-        dom_append_child(TOP, el);
-        if (zeq(name, "svg")) {
-            /* Keep the verbatim source span so layout can feed the svg decoder
-             * raw bytes (the DOM lowercases viewBox). Scan to the matching
-             * </svg>, counting nested <svg> depth; quoted '>' inside attrs
-             * can't end a tag early. */
-            const char *se = p;                       /* past the start tag */
-            if (!selfclose) {
-                int depth = 1;
-                while (se < end && depth > 0) {
-                    if (*se != '<') { se++; continue; }
-                    if (se + 3 < end && se[1]=='!' && se[2]=='-' && se[3]=='-') {
-                        se += 4;
-                        while (se + 2 < end && !(se[0]=='-'&&se[1]=='-'&&se[2]=='>')) se++;
-                        se = (se + 2 < end) ? se + 3 : end;
-                        continue;
-                    }
-                    if (se + 1 < end && se[1] == '/') {           /* end tag */
-                        const char *q = se + 2;
-                        char cn[16]; int cl = 0;
-                        while (q < end && *q != '>' && !sp(*q) && cl < 15) cn[cl++] = (char)lc((unsigned char)*q++);
-                        cn[cl] = 0;
-                        while (q < end && *q != '>') q++;
-                        se = (q < end) ? q + 1 : end;
-                        if (zeq(cn, "svg")) depth--;
-                        continue;
-                    }
-                    if (se + 3 < end && lc(se[1])=='s' && lc(se[2])=='v' && lc(se[3])=='g' &&
-                        (se + 4 >= end || sp(se[4]) || se[4]=='>' || se[4]=='/')) {
-                        /* nested <svg ...>: find its '>' honoring quoted attrs */
-                        const char *q = se + 4; int closed = 0;
-                        while (q < end && *q != '>') {
-                            if (*q=='"' || *q=='\'') { char qq = *q++; while (q < end && *q != qq) q++; if (q < end) q++; }
-                            else { if (*q=='/' && q+1 < end && q[1]=='>') closed = 1; q++; }
-                        }
-                        if (q < end) q++;
-                        se = q;
-                        if (!closed) depth++;
-                        continue;
-                    }
-                    se++;
-                }
-            }
-            size_t span = (size_t)(se - tag0);
-            char *raw = arena_alloc(d, span ? span : 1);
-            if (raw) { memcpy(raw, tag0, (unsigned long)span); el->raw = raw; el->rawlen = (int)span; }
-        }
-        if (is_void(name) || selfclose) continue;
-        if (is_rawtext(name)) {                           /* consume raw text to </name> */
-            const char *rs = p;
-            while (p < end) {
-                if (*p=='<' && p+1<end && p[1]=='/') {
-                    const char *q=p+2, *qt=q; while (q<end && *q!='>' && !sp(*q)) q++;
-                    char cn[16]; int cl=0; for(const char*k=qt;k<q&&cl<15;k++)cn[cl++]=(char)lc((unsigned char)*k); cn[cl]=0;
-                    if (zeq(cn,name)) break;              /* rawtext is only script/style */
-                }
-                p++;
-            }
-            if (p>rs) {
-                struct node *tx = node_alloc(d);
-                if (tx) {
-                    tx->type = N_TEXT; tx->tag = "#text";
-                    tx->text = arena_dup(d, rs, (size_t)(p - rs));
-                    if (tx->text) { tx->textlen = (int)(p - rs); dom_append_child(el, tx); }
-                    else node_recycle(d, tx);
-                }
-            }
-            while (p<end && *p!='>') p++; if(p<end)p++;
-            continue;
-        }
-        if (sd < MAXDEPTH) stack[sd++] = el;
-    }
-    #undef TOP
-    if (sc.buf) kfree(sc.buf);
-    if (asc.buf) kfree(asc.buf);
-    return root;
+    struct dom_doc *d = 0;
+    struct node *root = html_parse(&d, html, len > 0 ? len : 0);
+    if (root) return root;
+    /* html_parse only fails if the document itself could not be allocated;
+     * hand back an empty document rather than NULL so callers that walk
+     * root->first_child unconditionally keep working. */
+    d = dom_doc_new();
+    return d ? dom_doc_root(d) : 0;
 }

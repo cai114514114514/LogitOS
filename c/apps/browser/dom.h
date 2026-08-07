@@ -44,12 +44,13 @@ struct dom_doc;
  * serialised, but there is no reason to renumber them. */
 enum { N_ELEM = 0, N_TEXT = 1, N_COMMENT = 2, N_DOCTYPE = 3, N_DOCUMENT = 4 };
 
-/* Element namespace. The scanner only ever produces NS_HTML; the future tree
- * builder sets NS_SVG/NS_MATHML inside foreign content. */
+/* Element namespace. html_tree.c sets NS_SVG/NS_MATHML inside foreign content;
+ * everything built through the DOM API is NS_HTML unless it says otherwise. */
 enum { NS_HTML = 0, NS_SVG = 1, NS_MATHML = 2 };
 
-/* Document quirks mode (from the doctype). Recorded now, not yet fed to the
- * UA stylesheet -- that lands with the real parser. */
+/* Document quirks mode, set from the doctype by html_tree.c. css_engine reads
+ * it through dom_doc_quirks() to pick the quirks UA sheet and to let LibCSS
+ * parse quirky lengths/colours. */
 enum { QM_NO_QUIRKS = 0, QM_QUIRKS = 1, QM_LIMITED_QUIRKS = 2 };
 
 /* node->flags */
@@ -60,9 +61,9 @@ enum {
     NF_SELF_CLOSED = 1u << 2   /* start tag ended in "/>" (informational) */
 };
 
-/* Well-known tag ids. 0 = unknown/other; the value is stable for switch(). The
- * scanner fills node->tag_id from the interned name, so a tree builder or
- * layout can branch on an integer instead of strcmp. */
+/* Well-known tag ids. 0 = unknown/other; the value is stable for switch().
+ * Element creation fills node->tag_id from the interned name, so layout and
+ * CSS can branch on an integer instead of strcmp. */
 enum {
     TAG_UNKNOWN = 0,
     TAG_HTML, TAG_HEAD, TAG_BODY, TAG_TITLE, TAG_META, TAG_LINK, TAG_BASE,
@@ -131,10 +132,11 @@ struct node {
                                      * tag_id names the ~90 tags layout/CSS care
                                      * about, htag names the 147 the spec's
                                      * special/formatting/scope sets are written
-                                     * over. Only html_tree.c fills it in -- the
-                                     * legacy scanner and the DOM API leave it 0,
-                                     * which reads as "unknown tag" and is the
-                                     * right answer for a node nobody parsed. */
+                                     * over. Only html_tree.c fills it in -- an
+                                     * element built through the DOM API leaves
+                                     * it 0, which reads as "unknown tag" and is
+                                     * the right answer for a node the tree
+                                     * builder never saw. */
     int textcap;                    /* N_TEXT/N_COMMENT: bytes reserved for
                                      * ->text, so dom_text_append can grow a run
                                      * in place instead of re-copying per token */
@@ -164,8 +166,7 @@ struct node {
     const char *pubid, *sysid;      /* N_DOCTYPE: PUBLIC/SYSTEM identifiers */
 };
 
-/* The scanner's open-element stack is still 64 deep (unchanged behaviour). The
- * constant below is for the real tree builder: the DOM data model itself has no
+/* The tree builder's open-element stack cap. The DOM data model itself has no
  * depth limit, but the recursive consumers (css_engine's style_node,
  * layout.c's layout_block, css_extra's walk) run on the browser's 8 MiB ring-3
  * stack. Measured worst frame is ~1 KiB (style_node holds a css_select_results
@@ -176,11 +177,13 @@ struct node {
 /* ---------------- parsing / lifetime ---------------- */
 
 /* Parse an HTML document; returns the document node (type N_DOCUMENT, tag
- * "#document") whose children are the top-level nodes, or NULL.
+ * "#document") whose children are the doctype, any top-level comments, and the
+ * <html> element. NULL only if the document could not be allocated at all.
  *
- * This is still the legacy tolerant scanner. html_parse() in html_tree.h is the
- * spec tree builder that replaces it; the switch is deliberately a separate
- * change because it moves every layout test's expected geometry. */
+ * This is html_parse() (html_tree.h): the WHATWG tree construction algorithm.
+ * So the tree it returns is a SPEC tree, not the tag soup the old scanner
+ * produced -- there is always an <html> with a <head> and a <body>, misnested
+ * formatting elements are reconstructed, and table content is fostered. */
 struct node *dom_parse(const char *html, int len);
 
 /* Free a whole document (pass the N_DOCUMENT root) or detach+recycle a subtree
@@ -190,6 +193,12 @@ void dom_free(struct node *n);
 /* An empty document, for building a tree through the API. */
 struct dom_doc *dom_doc_new(void);
 struct node    *dom_doc_root(struct dom_doc *d);
+/* document.documentElement: the root <html> element, or NULL. */
+struct node    *dom_doc_element(struct dom_doc *d);
+/* document.body: the first <body>/<frameset> child of the document element, or
+ * NULL. The tree builder always makes one for a parsed document, so a caller
+ * that used to hand-roll a two-level scan for <body> can just ask. */
+struct node    *dom_doc_body(struct dom_doc *d);
 /* Total bytes this document holds from the allocator (arena chunks + its two
  * index tables). */
 size_t dom_doc_bytes(const struct dom_doc *d);
@@ -242,6 +251,14 @@ struct node *dom_create_element_ns(struct dom_doc *d, const char *name, int len,
  * elements" and the adoption agency algorithm mean by "create an element for
  * the token for which the element was created". */
 struct node *dom_clone_element(const struct node *n);
+
+/* DOM importNode(deep): a deep copy of `src`'s whole subtree into document `d`,
+ * returned detached. `src` may belong to a DIFFERENT document -- that is the
+ * point. innerHTML= parses into a throwaway document (html_parse_fragment
+ * makes its own), and the result cannot simply be spliced in: every string in
+ * it lives in the throwaway document's arena and dies with it. Doctypes are
+ * skipped along with their subtree; a fragment never contains one. */
+struct node *dom_import_node(struct dom_doc *d, const struct node *src);
 
 /* The doctype's name as bytes ("" if the doctype had none), so a serialiser
  * does not need libwapcaplet on its include path to print it. */

@@ -241,7 +241,9 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 # inflate + png are gone -- the ring-3 browser links the same Rust staticlib as the
 # kernel (rust/src/{inflate,png}.rs provide zlib_decompress + png_*; the crate only
 # calls kmalloc/kfree/img_register, which browser_rt.c shims into the ring-3 heap).
-BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/layout.c \
+BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
+                c/apps/browser/html_tree.c c/apps/browser/dom_serialize.c \
+                c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/img.c
@@ -500,6 +502,9 @@ test-html5lib-tok: $(BUILD)/html5lib_tok_cases.inc
 $(BUILD)/browserobj/c/apps/browser/html_tokenizer.o: \
     c/apps/browser/html_entities.inc c/apps/browser/html_tags.inc
 
+# The DOM and its parser are one unit now: dom_parse() IS html_parse(), so
+# every host test that links dom.c links the tree builder and tokenizer with
+# it. dom_serialize.c rides along because js_dom.c's innerHTML calls it.
 HTML_PARSER_SRC := c/apps/browser/dom.c c/apps/browser/html_tree.c \
                    c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c
 
@@ -797,9 +802,9 @@ $(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
 	@ar rcs $@ $^
 
 test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(BUILD)/dom_test
-	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(BUILD)/dom_api_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/var_test tests/unit/var_test.c c/apps/browser/css_vars.c
 	@$(BUILD)/var_test
@@ -808,35 +813,35 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(HOST_INCDIRS) -o $(BUILD)/http_dechunk_test tests/unit/http_dechunk_test.c c/net/http/url.c
 	@$(BUILD)/http_dechunk_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_test tests/unit/css_engine_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/dom.c $(BUILD)/libcss_host.a
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(BUILD)/css_engine_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_extra_test tests/unit/css_extra_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/dom.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c $(HTML_PARSER_SRC) \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/css_extra_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
-	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/layout_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
-	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/page_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_test tests/unit/table_list_test.c \
-	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/table_list_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/pipeline_stress tests/unit/pipeline_stress.c \
-	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/pipeline_stress
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
-	    c/apps/browser/layout.c c/apps/browser/dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -Ic/kernel/mm
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
-	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/dom.c $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
 	@echo "test-browser: ALL PASS"
 
