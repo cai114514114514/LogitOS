@@ -33,9 +33,16 @@ static inline int bs_more_rbsp_data(const bs_t *bs)
     if (bs->error) return 0;
     for (int i = bs->len - 1; i >= 0; i--) {
         if (bs->data[i]) {
-            int h = 7;
-            while (!((bs->data[i] >> h) & 1)) h--;
-            int last = i * 8 + (7 - h);   /* absolute bit idx of last set bit */
+            /* rbsp_stop_one_bit is the LAST one in the RBSP, i.e. the LOWEST
+             * set bit of the last non-zero byte -- not its highest. The two
+             * coincide when the byte is 0x80, which is the common case and is
+             * why looking for the highest bit mostly worked: on a trailing byte
+             * like 0b10110000 it puts the stop bit three positions too early,
+             * the slice loop believes the data ran out, and the macroblocks at
+             * the end of that slice are never decoded at all. */
+            int h = 0;
+            while (!((bs->data[i] >> h) & 1)) h++;
+            int last = i * 8 + (7 - h);   /* absolute bit idx of the stop bit */
             return bs->bitpos < last;
         }
     }

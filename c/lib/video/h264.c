@@ -151,8 +151,18 @@ static int alloc_picture(h264dec *d)
     p->reference = 0;
     d->cur = p;
 
-    d->mb = (mbinfo_t *)malloc((size_t)d->mbw * d->mbh * sizeof(mbinfo_t));
+    /* The per-picture mbinfo array must start ZEROED. A macroblock only writes
+     * the fields it owns -- nz[] of uncoded blocks and mv[]/ref_idx[] of intra
+     * macroblocks are left alone -- and its neighbours read those back when
+     * deriving nC for CAVLC and the deblocking boundary strength. This was
+     * malloc'd, and since finish_picture frees a block of exactly this size
+     * every picture, the allocator handed the SAME chunk back on the next one:
+     * each frame silently inherited the previous frame's macroblock state. */
+    size_t mbbytes = (size_t)d->mbw * d->mbh * sizeof(mbinfo_t);
+    d->mb = (mbinfo_t *)malloc(mbbytes);
     if (!d->mb) { release_pic(d, slot); d->cur = 0; return H264_ERR_OOM; }
+    memset(d->mb, 0, mbbytes);   /* malloc+memset, not calloc: mini-libc has
+                                  * no calloc and this file is headed there */
     return H264_OK;
 }
 
@@ -353,17 +363,43 @@ static void finish_picture(h264dec *d, h264frame *out)
 typedef struct { int avail; int ref; int mvx, mvy; } nb_t;
 
 /* Inter-prediction neighbour of the 4x4 block at global grid (gx, gy).
- * Intra MBs and other-slice MBs are unavailable (their ref is -1, mv 0,
- * which yields identical results in every mvp branch). */
+ *
+ * `avail` answers "is mbAddrN available" in the spec's sense -- inside the
+ * picture, same slice, already decoded -- and NOT "does it have a motion
+ * vector". An INTRA neighbour is available; 6.4.11.7 just gives it refIdx -1
+ * and mv (0, 0). The two are not interchangeable, because two rules test
+ * availability itself rather than refIdx:
+ *   - P_Skip (8.4.1.1) forces mv (0,0) when A or B is UNAVAILABLE. Treating an
+ *     intra neighbour as unavailable pins skipped macroblocks next to intra
+ *     ones at zero motion instead of letting them predict.
+ *   - the median (8.4.1.3.1) substitutes A for B and C only when B and C are
+ *     both unavailable.
+ * Everywhere else the two cases coincide, since an unavailable neighbour also
+ * contributes refIdx -1 and mv (0, 0). */
 static nb_t get_nb(h264dec *d, int cur_addr, int gx, int gy)
 {
     nb_t r = { 0, -1, 0, 0 };
     if (gx < 0 || gy < 0 || gx >= d->mbw * 4 || gy >= d->mbh * 4) return r;
     int addr = (gy >> 2) * d->mbw + (gx >> 2);
+    /* A macroblock that comes LATER in decoding order is not a neighbour
+     * (spec 6.4.9): it has not been decoded, so it has no motion vector to
+     * predict from. This matters for mvp's C neighbour, which sits at
+     * (px + pw, py - 1) and therefore lands in the macroblock to the RIGHT
+     * whenever the partition touches the right edge of its own macroblock --
+     * the fourth 8x8 of a P_8x8, the lower half of a 16x8, every sub-partition
+     * in the right-hand column. Those must fall back to the D substitution.
+     * Without this test C came back "available" holding the zeroed state of a
+     * macroblock not yet decoded, i.e. a plausible-looking ref 0 / mv (0,0),
+     * which quietly dragged the median prediction toward zero. Intra streams
+     * never notice -- they do no motion prediction at all. */
+    if (addr > cur_addr) return r;
+    if (addr == cur_addr &&
+        !(d->mb_mv_done & (uint16_t)(1u << ((gy & 3) * 4 + (gx & 3)))))
+        return r;                              /* same MB, not decoded yet */
     if (slice_of(d, addr) != slice_of(d, cur_addr)) return r;
     const mbinfo_t *m = &d->mb[addr];
-    if (is_intra_type(m->type)) return r;
     r.avail = 1;
+    if (is_intra_type(m->type)) return r;      /* available, but refIdx -1 */
     r.ref = m->ref_idx[((gy & 3) >> 1) * 2 + ((gx & 3) >> 1)];
     r.mvx = m->mv[(gy & 3) * 4 + (gx & 3)][0];
     r.mvy = m->mv[(gy & 3) * 4 + (gx & 3)][1];
@@ -452,8 +488,18 @@ static void mv_pred(h264dec *d, int cur, int mbx, int mby,
                     int *outx, int *outy)
 {
     int gx = mbx * 4 + px, gy = mby * 4 + py;
+    /* Spec 6.4.11.7 locates the three neighbours from the partition's TOP-LEFT
+     * corner (x, y), and only C steps to the right by the partition width:
+     *   A = (x - 1, y)   B = (x, y - 1)   C = (x + predPartWidth, y - 1)
+     *   D = (x - 1, y - 1), substituted for C when C is unavailable.
+     * B was reading (x + pw - 1, y - 1) -- the partition's own right edge --
+     * which picks a different 4x4 block whenever the row above is partitioned
+     * more finely than this partition is. The bit count is unaffected (mvd is
+     * read either way), so a wrong mvp never desynchronises the stream; it just
+     * silently shifts the reconstructed block and then feeds the error onward
+     * through every neighbour that predicts from it. */
     nb_t A = get_nb(d, cur, gx - 1, gy);
-    nb_t B = get_nb(d, cur, gx + pw - 1, gy - 1);
+    nb_t B = get_nb(d, cur, gx, gy - 1);
     nb_t C = get_nb(d, cur, gx + pw, gy - 1);
     if (!C.avail) C = get_nb(d, cur, gx - 1, gy - 1);   /* D substitution */
 
@@ -494,8 +540,10 @@ static void mv_pred(h264dec *d, int cur, int mbx, int mby,
  * bare median of the three is not the same function. */
 static void mv_pred_skip(h264dec *d, int cur, int mbx, int mby, int *outx, int *outy)
 {
+    /* A and B here are the 16x16 partition's neighbours from 6.4.11.7, so B is
+     * at (x, y - 1) -- the macroblock's own left column, not its right one. */
     nb_t A = get_nb(d, cur, mbx * 4 - 1, mby * 4);
-    nb_t B = get_nb(d, cur, mbx * 4 + 3, mby * 4 - 1);
+    nb_t B = get_nb(d, cur, mbx * 4, mby * 4 - 1);
     if (!A.avail || !B.avail ||
         (A.ref == 0 && A.mvx == 0 && A.mvy == 0) ||
         (B.ref == 0 && B.mvx == 0 && B.mvy == 0)) {
@@ -514,9 +562,17 @@ static void mc_plane(h264dec *d, uint8_t *dst, int dstride,
                      const uint8_t *plane, int stride, int pw, int ph,
                      int is_luma, int x, int y, int w, int h, int mvx, int mvy)
 {
+    /* Split each component into a floored integer offset and a fraction.
+     * Negative motion vectors are routine, and both `>>` and `<<` on negative
+     * ints are implementation-defined or undefined -- UBSan flags the shift on
+     * essentially every P frame. Do the floor with division and a correction,
+     * matching h264_mc.c's mv_split, which already got this right. */
     int bits = is_luma ? 2 : 3;
-    int qx = mvx >> bits, qy = mvy >> bits;
-    int fx = mvx - (qx << bits), fy = mvy - (qy << bits);
+    int unit = 1 << bits;
+    int qx = mvx / unit, fx = mvx - qx * unit;
+    int qy = mvy / unit, fy = mvy - qy * unit;
+    if (fx < 0) { fx += unit; qx--; }
+    if (fy < 0) { fy += unit; qy--; }
     int m = is_luma ? 2 : 0;                  /* filter taps before the block */
     int t = is_luma ? 3 : 1;                  /* filter taps after the block */
     if (x + qx >= m - H264_PAD && y + qy >= m - H264_PAD &&
@@ -994,6 +1050,14 @@ static int inter_parts(bs_t *bs, int mb_type, part_t *parts)
     return n;
 }
 
+/* The 8x8 quadrant a partition lives in -- the index mi->ref_idx[] is stored
+ * and read back under. Every partition of every P macroblock type starts on an
+ * 8x8 boundary or inside one, so its top-left 4x4 block picks the quadrant. */
+static int part_quadrant(const part_t *pt)
+{
+    return (pt->py >> 1) * 2 + (pt->px >> 1);
+}
+
 static int decode_inter_mb(h264dec *d, bs_t *bs, slice_t *sl, int addr,
                            int *qpyp, int mb_type, pic_t **l0, int n_l0)
 {
@@ -1006,25 +1070,43 @@ static int decode_inter_mb(h264dec *d, bs_t *bs, slice_t *sl, int addr,
     if (npart < 0) return H264_ERR_CORRUPT;
     int nregion = mb_type == 0 ? 1 : (mb_type <= 2 ? 2 : 4);
 
-    /* --- ref_idx per 8x8 region --- */
-    int region_ref[4] = { 0, 0, 0, 0 };
+    /* --- ref_idx: one per macroblock PARTITION on the wire, but stored per
+     * 8x8 QUADRANT.
+     *
+     * The bitstream carries nregion of them (1 for 16x16, 2 for 16x8/8x16, 4
+     * for 8x8), indexed by partition. Everyone who reads mi->ref_idx[] back --
+     * get_nb for mv prediction, the deblocking boundary strength -- indexes it
+     * by 8x8 quadrant, because that is the granularity a neighbouring 4x4
+     * block maps to. Those two indexings only agree for 16x16 (quadrant 0) and
+     * P_8x8; a 16x8 macroblock would leave quadrants 2 and 3 reading 0 and put
+     * its lower partition's ref in quadrant 1. It stays invisible while there
+     * is only one reference picture, which is every frame up to the second P
+     * frame -- and then it quietly corrupts mv prediction from there on. */
+    int part_ref[4] = { 0, 0, 0, 0 };
     if (mb_type != 4 && sl->num_ref_idx_l0_active > 1) {
         for (int r = 0; r < nregion; r++) {
-            region_ref[r] = (int)bs_te(bs, (uint32_t)sl->num_ref_idx_l0_active - 1);
+            part_ref[r] = (int)bs_te(bs, (uint32_t)sl->num_ref_idx_l0_active - 1);
             if (bs_error(bs)) return H264_ERR_CORRUPT;
         }
     }
-    for (int r = 0; r < 4; r++) {
-        int ri = region_ref[r];
-        if (ri >= n_l0) ri = n_l0 - 1;           /* corrupt: clamp */
-        mi->ref_idx[r] = (uint8_t)ri;
-    }
     if (n_l0 == 0) return H264_ERR_CORRUPT;
+    for (int q = 0; q < 4; q++) {                /* q: 8x8 quadrant */
+        int p;
+        if (mb_type == 0)      p = 0;            /* 16x16: one partition */
+        else if (mb_type == 1) p = q >> 1;       /* 16x8:  upper / lower */
+        else if (mb_type == 2) p = q & 1;        /* 8x16:  left / right */
+        else                   p = q;            /* 8x8:   quadrant == region */
+        int ri = part_ref[p];
+        if (ri >= n_l0) ri = n_l0 - 1;           /* corrupt: clamp */
+        mi->ref_idx[q] = (uint8_t)ri;
+        mi->ref_pic[q] = (uint8_t)(l0[ri] - d->pics);
+    }
 
     /* --- mvd per (sub-)partition, mvp per spec --- */
+    d->mb_mv_done = 0;
     for (int p = 0; p < npart; p++) {
         part_t *pt = &parts[p];
-        int ref = mi->ref_idx[pt->region];
+        int ref = mi->ref_idx[part_quadrant(pt)];
         int mvx, mvy;
         mv_pred(d, addr, mbx, mby, pt->px, pt->py, pt->pw, pt->ph,
                 ref, pt->kind, &mvx, &mvy);
@@ -1037,6 +1119,7 @@ static int decode_inter_mb(h264dec *d, bs_t *bs, slice_t *sl, int addr,
             for (int bx = pt->px; bx < pt->px + pt->pw; bx++) {
                 mi->mv[by * 4 + bx][0] = (int16_t)mvx;
                 mi->mv[by * 4 + bx][1] = (int16_t)mvy;
+                d->mb_mv_done |= (uint16_t)(1u << (by * 4 + bx));
             }
     }
 
@@ -1058,8 +1141,9 @@ static int decode_inter_mb(h264dec *d, bs_t *bs, slice_t *sl, int addr,
     /* --- MC all partitions (prediction), then residual on top --- */
     for (int p = 0; p < npart; p++) {
         part_t *pt = &parts[p];
+        int q = part_quadrant(pt);
         inter_pred(d, mbx, mby, pt->px, pt->py, pt->pw, pt->ph,
-                   l0[mi->ref_idx[pt->region]], mi->ref_idx[pt->region], sl);
+                   l0[mi->ref_idx[q]], mi->ref_idx[q], sl);
     }
     for (int blk = 0; blk < 16; blk++) {
         if (!(cbp_luma & (1 << (blk >> 2)))) continue;
@@ -1082,7 +1166,10 @@ static void decode_skip(h264dec *d, slice_t *sl, int addr, int qpy, pic_t **l0)
     memset(mi, 0, sizeof *mi);
     mi->type = MB_P_SKIP;
     mi->qp = (int8_t)qpy;
+    for (int q = 0; q < 4; q++)                  /* P_Skip: refIdxL0 = 0 */
+        mi->ref_pic[q] = (uint8_t)(l0[0] - d->pics);
     int mvx, mvy;
+    d->mb_mv_done = 0;
     mv_pred_skip(d, addr, mbx, mby, &mvx, &mvy);
     for (int i = 0; i < 16; i++) {
         mi->mv[i][0] = (int16_t)mvx;
@@ -1096,7 +1183,10 @@ static int decode_mb(h264dec *d, bs_t *bs, slice_t *sl, int addr, int *qpyp,
 {
     mbinfo_t *mi = &d->mb[addr];
     memset(mi, 0, sizeof *mi);
-    mi->ref_idx[0] = mi->ref_idx[1] = mi->ref_idx[2] = mi->ref_idx[3] = 0xFF;
+    for (int q = 0; q < 4; q++) {                /* "no reference" until set */
+        mi->ref_idx[q] = 0xFF;
+        mi->ref_pic[q] = 0xFF;
+    }
 
     uint32_t mb_type = bs_ue(bs);
     if (bs_error(bs)) return H264_ERR_CORRUPT;
@@ -1147,19 +1237,39 @@ static int build_l0(h264dec *d, slice_t *sl, pic_t **l0)
         while (j >= 0 && lt[j]->lt_idx > p->lt_idx) { lt[j + 1] = lt[j]; j--; }
         lt[j + 1] = p;
     }
+    /* The list is num_ref_idx_l0_active entries long, which is NOT the same as
+     * the number of distinct reference pictures. When there are fewer pictures
+     * than that, the tail is undefined until the modification commands fill it
+     * -- and a picture is allowed to appear at several indices at once. x264's
+     * weighted P does exactly that: it signals more active refs than it holds
+     * and reorders the same picture into the spare slots so each slot can
+     * carry its own luma/chroma weight. */
+    int nactive = sl->num_ref_idx_l0_active;
+    if (nactive < 1) nactive = 1;
+    if (nactive > 16) nactive = 16;
+
     int n = 0;
-    for (int i = 0; i < nst && n < 16; i++) l0[n++] = st[i];
-    for (int i = 0; i < nlt && n < 16; i++) l0[n++] = lt[i];
+    for (int i = 0; i < nst && n < nactive; i++) l0[n++] = st[i];
+    for (int i = 0; i < nlt && n < nactive; i++) l0[n++] = lt[i];
+    for (int i = n; i <= nactive; i++) l0[i] = 0;   /* [nactive] is scratch */
 
     if (sl->n_reorder) {
+        /* Spec 8.2.4.3.1, followed literally. The subtle part is the
+         * compaction: it drops other copies of the picture just inserted only
+         * from the entries AFTER refIdx, never from the ones before it. That
+         * asymmetry is what lets one picture occupy several slots -- removing
+         * every copy first (which is the obvious reading) collapses the
+         * duplicates and silently hands back the wrong reference. */
         int pred = cur_fn;
-        int idx = 0;
-        for (int c = 0; c < sl->n_reorder && idx < 16; c++) {
+        int refIdx = 0;
+        for (int c = 0; c < sl->n_reorder && refIdx < nactive; c++) {
             int idc = sl->reorder_cmds[c][0], arg = sl->reorder_cmds[c][1];
             pic_t *target = 0;
+            int picnum = -1;
             if (idc <= 1) {
                 pred += idc == 0 ? -(arg + 1) : (arg + 1);
                 pred = ((pred % maxfn) + maxfn) % maxfn;
+                picnum = pred;
                 for (int i = 0; i < nst; i++)
                     if (st[i]->frame_num == pred) { target = st[i]; break; }
             } else {                               /* idc == 2: long-term */
@@ -1167,23 +1277,32 @@ static int build_l0(h264dec *d, slice_t *sl, pic_t **l0)
                     if (lt[i]->lt_idx == arg) { target = lt[i]; break; }
             }
             if (!target) return -1;
-            /* remove target if already listed, then insert at idx */
-            int have = 0;
-            for (int i = 0; i < n; i++)
-                if (l0[i] == target) { l0[i] = 0; have = 1; }
-            if (have) {
-                int w = 0;
-                for (int i = 0; i < n; i++) if (l0[i]) l0[w++] = l0[i];
-                n = w;
+
+            for (int cIdx = nactive; cIdx > refIdx; cIdx--)
+                l0[cIdx] = l0[cIdx - 1];
+            l0[refIdx++] = target;
+            int nIdx = refIdx;
+            for (int cIdx = refIdx; cIdx <= nactive; cIdx++) {
+                pic_t *p = l0[cIdx];
+                if (!p) continue;
+                /* PicNumF(): a short-term entry compares by its picture
+                 * number, a long-term one can never match. */
+                int keep = (picnum < 0) ? (p != target)
+                                        : !(p->reference == 1 &&
+                                            p->frame_num == picnum);
+                if (keep) l0[nIdx++] = p;
             }
-            if (idx > n) idx = n;
-            for (int i = n; i > idx; i--) l0[i] = l0[i - 1];
-            l0[idx] = target;
-            if (n < 16) n++;
-            idx++;
+            for (int i = nIdx; i <= nactive; i++) l0[i] = 0;
+            if (n < nactive) n = nIdx < nactive ? nIdx : nactive;
         }
     }
-    return n;
+    /* A conforming stream defines every active entry; if one is still empty
+     * (truncated or corrupt reordering) fall back to the newest reference
+     * rather than handing a null picture to motion compensation. */
+    for (int i = 0; i < nactive; i++)
+        if (!l0[i]) l0[i] = i > 0 ? l0[i - 1] : (n > 0 ? l0[0] : 0);
+    if (!l0[0]) return -1;
+    return nactive;
 }
 
 /* ============================================================= slices ==== */
@@ -1208,11 +1327,27 @@ static int decode_slice(h264dec *d, bs_t *bs, slice_t *sl,
     d->last_slice = *sl;
     TRACE("slice enter: hdr_bits=%d total_mb=%d type=%d\n", bs->bitpos, total, sl->slice_type);
 
-    pic_t *l0[16];
+    pic_t *l0[18];               /* 16 active entries + the 8.2.4.3.1 scratch */
     int n_l0 = 0;
     if (sl->slice_type == 0) {
         n_l0 = build_l0(d, sl, l0);
         if (n_l0 < 0) return H264_ERR_CORRUPT;
+#ifdef H264_TRACE
+        /* The list is worth printing whole: a picture may legitimately appear
+         * at several indices, and the weights that go with each index are how
+         * you tell an ordering bug from a weighting bug. */
+        {
+            char b[160]; int o = 0;
+            for (int i = 0; i < n_l0 && o < 130; i++)
+                o += snprintf(b + o, sizeof b - o, " fn%d(w%d,%d)",
+                              l0[i]->frame_num, sl->wp_luma_w[i],
+                              sl->wp_luma_o[i]);
+            b[o] = 0;
+            TRACE("L0 cur_fn=%d n=%d wp=%d denom=%d/%d:%s\n", sl->frame_num,
+                  n_l0, d->cur_pps->weighted_pred, sl->luma_log2_weight_denom,
+                  sl->chroma_log2_weight_denom, b);
+        }
+#endif
     }
 
     int qpy = ((26 + d->cur_pps->pic_init_qp + sl->slice_qp_delta) % 52 + 52) % 52;

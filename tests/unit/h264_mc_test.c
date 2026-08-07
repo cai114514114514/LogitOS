@@ -248,14 +248,19 @@ static void test_chroma(void)
 static void test_weight(void)
 {
     static const int log2ws[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-    static const int wgts[9] = { 0, 1, -1, 2, 32, 64, 127, -128, -64 };
+    /* 128 belongs in here even though the coded syntax element only reaches
+     * 127: when the weight flag is absent the weight is INFERRED as
+     * 2^log2WD, which is 128 at log2WD 7 and must behave as the identity.
+     * Leaving it out is what let a defensive clamp to 127 turn "unweighted"
+     * into a multiply by 127/128 -- one grey level too dark, everywhere. */
+    static const int wgts[10] = { 0, 1, -1, 2, 32, 64, 127, 128, -128, -64 };
     static const int offs[7] = { 0, 1, -1, 255, -255, 128, -128 };
     static const int pix[8] = { 0, 1, 127, 128, 254, 255, 3, 200 };
     uint8_t blk[8 * 8];
     int li, wi, oi, pi, pj;
 
     for (li = 0; li < 8; li++)
-    for (wi = 0; wi < 9; wi++)
+    for (wi = 0; wi < 10; wi++)
     for (oi = 0; oi < 7; oi++) {
         /* 8 pixels on the diagonal of a 4x4-ish layout: use w=4,h=2 so each
          * distinct pixel value lands exactly once per row. */

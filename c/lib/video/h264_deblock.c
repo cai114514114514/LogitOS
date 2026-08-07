@@ -105,6 +105,24 @@ static int region_of(int bcol, int brow)
     return (brow >> 1) * 2 + (bcol >> 1);
 }
 
+/* mbinfo_t uses TWO different 4x4 block orders and they are not
+ * interchangeable: mv[] and i4mode[] are indexed in raster order (brow*4 +
+ * bcol) while nz[] is indexed in Z (coding) order, because that is the order
+ * the residual blocks arrive in. Everything in h264.c converts with i4_inv
+ * before touching nz[]; this file was indexing nz[] with the raster index it
+ * had already computed for mv[], so eight of the sixteen blocks read another
+ * block's coefficient count. It only distorts bS for INTER macroblocks --
+ * intra ones return 3 or 4 before reaching the nz test -- which is why every
+ * intra-only stream decoded bit-exactly while every stream with a P slice was
+ * wrong along its 4x4 block edges. */
+static int nz_raster(const mbinfo_t *m, int raster)
+{
+    static const uint8_t to_z[16] = {
+        0, 1, 4, 5,  2, 3, 6, 7,  8, 9, 12, 13,  10, 11, 14, 15
+    };
+    return m->nz[to_z[raster & 15]];
+}
+
 /* --------------------------------------------------- bS derivation ------- */
 /* Derive the four segment boundary strengths of one luma edge of the current
  * MB (spec derivation of the content dependent boundary filtering strength).
@@ -133,10 +151,10 @@ static void luma_bs_vert(const mbinfo_t *mc, const mbinfo_t *mn,
             mp = mc; bp = i * 4 + (edge - 1);
             mq = mc; bq = i * 4 + edge;
         }
-        if (mp->nz[bp] > 0 || mq->nz[bq] > 0) {
+        if (nz_raster(mp, bp) > 0 || nz_raster(mq, bq) > 0) {
             bs[i] = 2;
-        } else if (mp->ref_idx[region_of(bp & 3, bp >> 2)] !=
-                   mq->ref_idx[region_of(bq & 3, bq >> 2)] ||
+        } else if (mp->ref_pic[region_of(bp & 3, bp >> 2)] !=
+                   mq->ref_pic[region_of(bq & 3, bq >> 2)] ||
                    iabs(mp->mv[bp][0] - mq->mv[bq][0]) >= 4 ||
                    iabs(mp->mv[bp][1] - mq->mv[bq][1]) >= 4) {
             bs[i] = 1;
@@ -167,10 +185,10 @@ static void luma_bs_horz(const mbinfo_t *mc, const mbinfo_t *mn,
             mp = mc; bp = (edge - 1) * 4 + i;
             mq = mc; bq = edge * 4 + i;
         }
-        if (mp->nz[bp] > 0 || mq->nz[bq] > 0) {
+        if (nz_raster(mp, bp) > 0 || nz_raster(mq, bq) > 0) {
             bs[i] = 2;
-        } else if (mp->ref_idx[region_of(bp & 3, bp >> 2)] !=
-                   mq->ref_idx[region_of(bq & 3, bq >> 2)] ||
+        } else if (mp->ref_pic[region_of(bp & 3, bp >> 2)] !=
+                   mq->ref_pic[region_of(bq & 3, bq >> 2)] ||
                    iabs(mp->mv[bp][0] - mq->mv[bq][0]) >= 4 ||
                    iabs(mp->mv[bp][1] - mq->mv[bq][1]) >= 4) {
             bs[i] = 1;

@@ -67,5 +67,10 @@ int main(int argc, char **argv)
     }
     printf("  frames %d, bad frames %d, bytes wrong: Y %ld  U %ld  V %ld  total %ld\n",
            frames, badframes, bad_y, bad_u, bad_v, bad_y + bad_u + bad_v);
+    /* Release everything so this harness can be run under ASan and any leak it
+     * reports belongs to the decoder rather than to the test. */
+    h264_close(d);
+    free(s);
+    free(ref);
     return (bad_y + bad_u + bad_v) ? 1 : 0;
 }

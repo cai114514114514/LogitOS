@@ -103,12 +103,22 @@ static int ref_bs(const mbinfo_t *mp, const mbinfo_t *mq, int boundary,
         if (r_intra(mp->type))
             return 3;
     }
-    if (mp->nz[bp] > 0 || mq->nz[bq] > 0)
-        return 2;
+    /* nz[] is indexed in Z (coding) order while bp/bq are raster, so the two
+     * differ for eight of the sixteen blocks and must be converted. */
+    {
+        static const uint8_t to_z[16] = {
+            0, 1, 4, 5,  2, 3, 6, 7,  8, 9, 12, 13,  10, 11, 14, 15
+        };
+        if (mp->nz[to_z[bp]] > 0 || mq->nz[to_z[bq]] > 0)
+            return 2;
+    }
     {
         int rp = ((bp >> 2) >> 1) * 2 + ((bp & 3) >> 1);
         int rq = ((bq >> 2) >> 1) * 2 + ((bq & 3) >> 1);
-        if (mp->ref_idx[rp] != mq->ref_idx[rq])
+        /* Spec 8.7.2.1 compares the reference PICTURES, and its note says the
+         * index position in the list must not be considered -- weighted
+         * prediction deliberately puts one picture at several indices. */
+        if (mp->ref_pic[rp] != mq->ref_pic[rq])
             return 1;
         if (riabs(mp->mv[bp][0] - mq->mv[bq][0]) >= 4 ||
             riabs(mp->mv[bp][1] - mq->mv[bq][1]) >= 4)
@@ -542,18 +552,41 @@ static void test_bs1_mv(void)
     frame_free(&f);
 }
 
-/* bS = 1 also via differing reference indices (mv identical). */
+/* bS = 1 also via differing reference PICTURES (mv identical). */
 static void test_bs1_ref(void)
 {
     frame_t f;
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
     for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 40; }
-    for (int r = 0; r < 4; r++) { f.mb[0].ref_idx[r] = 0; f.mb[1].ref_idx[r] = 1; }
+    for (int r = 0; r < 4; r++) { f.mb[0].ref_pic[r] = 0; f.mb[1].ref_pic[r] = 1; }
     set_vline(&f, 0, 0, 85, 85, 98, 100, 120, 122, 135, 135);
     run_module(&f, NULL, 0);
     CHECK(get_y(&f, 0, 15, 0) == 104 && get_y(&f, 0, 16, 0) == 116,
           "bS=1(ref): got %d/%d want 104/116", get_y(&f, 0, 15, 0), get_y(&f, 0, 16, 0));
+    frame_free(&f);
+}
+
+/* The mirror of the above, and the reason ref_pic exists: two DIFFERENT
+ * ref_idx values that resolve to the SAME picture must NOT raise bS. This is
+ * exactly what weighted prediction produces -- one picture entered into the
+ * list several times so each slot can carry its own weights -- and comparing
+ * indices instead of pictures filters edges the spec leaves alone. */
+static void test_bs0_same_pic_different_idx(void)
+{
+    frame_t f;
+    frame_alloc(&f, 2, 1, 8, 8);
+    fill_plane_y(&f, 0, 128);
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 40; }
+    for (int r = 0; r < 4; r++) {
+        f.mb[0].ref_idx[r] = 0; f.mb[0].ref_pic[r] = 7;
+        f.mb[1].ref_idx[r] = 2; f.mb[1].ref_pic[r] = 7;
+    }
+    set_vline(&f, 0, 0, 85, 85, 98, 100, 120, 122, 135, 135);
+    run_module(&f, NULL, 0);
+    CHECK(get_y(&f, 0, 15, 0) == 100 && get_y(&f, 0, 16, 0) == 120,
+          "same picture at two indices must not filter: got %d/%d want 100/120",
+          get_y(&f, 0, 15, 0), get_y(&f, 0, 16, 0));
     frame_free(&f);
 }
 
@@ -829,8 +862,13 @@ static void random_mb(frame_t *f, int idx, uint32_t flavor)
     }
     if (m->type == MB_I16x16)
         m->nz_i16dc = (uint8_t)(rnd() % 17);
-    for (int r = 0; r < 4; r++)
+    /* Draw the index and the picture INDEPENDENTLY. They are correlated in a
+     * real stream but not equal, and drawing them together would let a
+     * decoder that compares indices pass this test by accident. */
+    for (int r = 0; r < 4; r++) {
         m->ref_idx[r] = (uint8_t)(rnd() % 3);
+        m->ref_pic[r] = (uint8_t)(rnd() % 3);
+    }
     for (int k = 0; k < 16; k++) {
         m->mv[k][0] = (int16_t)((int)(rnd() % 25) - 12);
         m->mv[k][1] = (int16_t)((int)(rnd() % 25) - 12);
@@ -959,6 +997,7 @@ int main(void)
     test_tc0_pins();
     test_bs1_mv();
     test_bs1_ref();
+    test_bs0_same_pic_different_idx();
     test_bs0_noop();
     test_bs3_internal();
     test_bs4_strong();

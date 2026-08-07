@@ -104,7 +104,16 @@ typedef struct {
     uint8_t  nz_i16dc;      /* I16x16: nonzero count of the luma DC block */
     uint8_t  nz[24];        /* nonzero counts per 4x4: 16 luma, 4 Cb, 4 Cr.
                                For I16x16 the luma entries count AC only. */
-    uint8_t  ref_idx[4];    /* per 8x8 region L0 ref index (0..15; 0xFF intra) */
+    uint8_t  ref_idx[4];    /* per 8x8 quadrant L0 ref index (0..15; 0xFF intra) */
+    /* Per 8x8 quadrant, the DPB slot of the picture that index resolves to
+     * (0xFF = none). Deblocking asks "are the two sides predicted from the
+     * same reference PICTURE" (8.7.2.1, and its note is explicit that the
+     * index position in the list must not enter into it), which is not the
+     * same question as "are the two ref_idx equal": weighted prediction puts
+     * one picture at several indices on purpose, so that each index can carry
+     * its own weights. Motion vector prediction, by contrast, really does
+     * compare indices -- so both are kept. */
+    uint8_t  ref_pic[4];
     uint8_t  i4mode[16];    /* I4x4: per-block intra pred mode (mode-pred ctx) */
     int16_t  mv[16][2];     /* per 4x4 block motion vector, quarter-pel units */
 } mbinfo_t;
@@ -135,6 +144,13 @@ typedef struct h264dec {
     pic_t *cur;               /* slot being decoded into */
     mbinfo_t *mb;             /* mbw*mbh info array for the current frame */
     int mbw, mbh;             /* in macroblocks */
+    /* Which 4x4 blocks of the macroblock being decoded already have their
+     * motion vector, in raster bit order (brow*4 + bcol). A partition of the
+     * CURRENT macroblock that is not in here is "not yet decoded" and so is
+     * not an available neighbour (6.4.11.7) -- the case that bites is the C
+     * neighbour of an 8x4 sub-partition, which points into the 8x8 region to
+     * its right and that region is coded later. */
+    uint16_t mb_mv_done;
     int width, height;        /* cropped, visible */
     int stride_y, stride_c;
 

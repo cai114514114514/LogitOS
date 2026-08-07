@@ -38,13 +38,25 @@ case_gen slices4-320x240   "$TS:size=320x240" $ENC -slices 4
 case_gen refs4-320x240     "$MV:size=320x240" $ENC -x264-params refs=4
 
 # Deblock-stress: sharp content, high QP edges, and deblock a/b offsets.
+# NOTE: "deblock=0,0" does NOT disable the filter -- those are the alpha/beta
+# offsets and 0,0 is the default, so that spelling produced a stream byte-
+# identical to ip-320x240 and this slot tested nothing. Disabling it takes
+# no-deblock, and a P stream with the loop filter off is worth having: it
+# separates a reconstruction bug from a deblocking bug in one measurement.
 case_gen deblock-320x240   "$TS:size=320x240" $ENC -x264-params deblock=3,3
-case_gen nodeblock-320x240 "$TS:size=320x240" $ENC -x264-params deblock=0,0:8x8dct=0
+case_gen nodeblock-320x240 "$TS:size=320x240" $ENC -x264-params no-deblock=1
 
 # Long GOP: sliding-window DPB eviction + frame_num wraparound paths.
 case_gen longgop-160x120   "$MV:size=160x120" $ENC -g 60
 
 # Weighted P prediction (PPS flag; baseline allows it for P slices).
-case_gen wpred-320x240     "$MV:size=320x240" $ENC -x264-params weightp=1
+# NOTE: "-x264-params weightp=1" on steady content was a no-op against preset
+# veryslow -- it produced the same reconstruction as refs4-320x240 (only the
+# options string x264 writes into an SEI differed), so weighted prediction was
+# never actually exercised. Weighting is what an encoder reaches for on a
+# global luma ramp, so fade the source: that is what puts non-default
+# luma_weight/offset in the slice header.
+case_gen wpred-320x240     "$MV:size=320x240,fade=t=out:st=0:d=2" $ENC \
+                           -x264-params weightp=2
 
 echo "genvideo: matrix generated in $OUT"

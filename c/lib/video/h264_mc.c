@@ -259,12 +259,21 @@ void h264_mc_weight(uint8_t *dst, int stride, int w, int h,
     if (!valid_size(w) || !valid_size(h)) return;
     if (stride < w) return;
 
-    /* Sanitise into the spec ranges (8.4.3): log2WD in 0..7, weight in
-     * -128..127, offset in -255..255. Valid streams never leave these, so
-     * clamping only fires on corrupt input -- where it keeps the arithmetic
-     * small and in bounds instead of overflowing. */
+    /* Sanitise into the spec ranges (8.4.3): log2WD in 0..7, offset in
+     * -255..255. Valid streams never leave these, so clamping only fires on
+     * corrupt input -- where it keeps the arithmetic small and in bounds
+     * instead of overflowing.
+     *
+     * The weight bound is 128, not 127. -128..127 is the range of the CODED
+     * syntax element, but a weight can also be INFERRED: when
+     * luma_weight_l0_flag is 0 the weight is 2^log2WD, which is 128 for
+     * log2WD == 7 -- a value the bitstream cannot express and the clamp must
+     * not touch. Clamping it to 127 turns "no weighting" into a multiply by
+     * 127/128, i.e. every predicted luma sample one too low across whole
+     * macroblocks, and only for luma, since the chroma denominator has to
+     * reach 7 as well before its default leaves the coded range. */
     if (log2w < 0) log2w = 0; else if (log2w > 7) log2w = 7;
-    if (weight < -128) weight = -128; else if (weight > 127) weight = 127;
+    if (weight < -128) weight = -128; else if (weight > 128) weight = 128;
     if (offset < -255) offset = -255; else if (offset > 255) offset = 255;
 
     for (r = 0; r < h; r++) {
