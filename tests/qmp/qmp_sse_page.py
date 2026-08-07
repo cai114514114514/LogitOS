@@ -71,6 +71,8 @@ console.log('SSE-START typeof-EventSource=' + (typeof EventSource) +
 
 var out = document.getElementById('out');
 var got = [];
+var t0 = Date.now();
+function ts() { return '@' + (Date.now() - t0); }
 
 function paint() { out.textContent = got.join(' '); }
 
@@ -78,14 +80,14 @@ if (typeof EventSource !== 'function') {
   console.log('SSE-NO-EVENTSOURCE');
 } else {
   var es = new EventSource('/stream');
-  es.onopen = function () { console.log('SSE-OPEN'); };
+  es.onopen = function () { console.log('SSE-OPEN ' + ts()); };
   es.onmessage = function (e) {
     got.push(e.data);
     paint();
-    console.log('SSE-TOKEN ' + got.length + ' ' + e.data + ' id=' + e.lastEventId);
+    console.log('SSE-TOKEN ' + got.length + ' ' + e.data + ' id=' + e.lastEventId + ' ' + ts());
   };
   es.addEventListener('done', function (e) {
-    console.log('SSE-DONE ' + got.length + ' ' + got.join(','));
+    console.log('SSE-DONE ' + got.length + ' ' + got.join(',') + ' ' + ts());
     es.close();
   });
   es.onerror = function () { console.log('SSE-ERROR state=' + es.readyState); };
@@ -95,7 +97,7 @@ if (typeof EventSource !== 'function') {
    exercised on the device too rather than only in the host tests. */
 if (typeof fetch === 'function') {
   fetch('/stream2').then(function (r) {
-    console.log('SSE-FETCH-HEADERS ' + r.status + ' ' + (r.body ? 'stream' : 'nobody'));
+    console.log('SSE-FETCH-HEADERS ' + r.status + ' ' + (r.body ? 'stream' : 'nobody') + ' ' + ts());
     var rd = r.body.getReader(), dec = new TextDecoder(), n = 0;
     (function loop() {
       rd.read().then(function (c) {
@@ -283,6 +285,21 @@ def token_lines():
     return [ln for ln in serial().splitlines() if "SSE-TOKEN " in ln]
 
 
+def wait_server_tokens(n, secs):
+    """Wait until the FIXTURE has written n tokens. The checkpoint has to be on
+    the server's clock: a checkpoint that waits for the guest would wait out a
+    buffered browser too, and then both implementations pass."""
+    end = time.time() + secs
+    while time.time() < end:
+        poll_markers()
+        if len(stream_token_at.get("stream", [])) >= n:
+            return True
+        if proc.poll() is not None:
+            die("QEMU exited while waiting for the fixture's tokens")
+        time.sleep(0.2)
+    return False
+
+
 try:
     if not wait_serial("LOGIT_BOOT_OK", 240, "boot"):
         die("kernel never printed LOGIT_BOOT_OK")
@@ -315,8 +332,13 @@ try:
     ck("typeof-TextDecoderStream=function" in start, "TextDecoderStream exists")
     ck("typeof-AbortController=function" in start, "AbortController exists")
 
-    ck(wait_serial("SSE-OPEN", 60, "the SSE connection"),
-       "EventSource connected and its onopen fired")
+    # The baseline is gated on the SERVER having the request, NOT on the page's
+    # onopen. A buffered browser does not fire onopen until the response
+    # completes, so waiting for it here would sit out the entire stream and
+    # every mid-stream check below would be taken after the end.
+    end = time.time() + 60
+    while time.time() < end and not any("/stream" in r for r in requested):
+        time.sleep(0.2)
     ck(any("/stream" in r for r in requested),
        "the HOST SERVER saw the request -- it really left the machine")
 
@@ -328,37 +350,40 @@ try:
     print("   baseline text pixels in the block: %d" % baseline)
 
     # ---- MID-STREAM: the whole point ----------------------------------
-    # Wait for the third of five tokens. The fixture has not written the last
-    # two, so the response is provably still open.
-    got_mid = wait_serial("SSE-TOKEN 3", 90, "the third token")
+    # The checkpoint is on the SERVER's clock, not the guest's, and it is the
+    # same checkpoint in both directions: "the fixture has written three of five
+    # tokens and is still holding the response open". Asking instead whether the
+    # guest has seen a token would let a buffered browser pass simply by being
+    # waited for long enough -- which is precisely the failure mode this control
+    # exists to rule out.
+    ck(wait_server_tokens(3, 120), "the fixture has written three of five tokens")
     poll_markers()
-    mid_wall = time.time()
-    server_open_now = "stream" not in stream_finished
+    ck("stream" not in stream_finished,
+       "...and the SERVER HAS NOT FINISHED WRITING the response")
+
+    got_mid = any("SSE-TOKEN " in ln for ln in serial().splitlines())
+    time.sleep(1.2)                        # one repaint
+    p1 = PPM(ui.screendump(shot("p1" if not EXPECT_BUFFERED else "c1")))
+    mid = p1.dark_pixels(p1.find_color(RED))
+    print("   mid-stream text pixels: %d (baseline %d)" % (mid, baseline))
+    still_open = "stream" not in stream_finished
 
     if not EXPECT_BUFFERED:
-        ck(got_mid, "three of five tokens reached the page")
-        ck(server_open_now,
-           "...and the SERVER HAS NOT FINISHED WRITING the response yet")
-
-        time.sleep(1.2)                    # one repaint
-        p1 = PPM(ui.screendump(shot("p1")))
-        mid = p1.dark_pixels(p1.find_color(RED))
-        print("   mid-stream text pixels: %d (baseline %d)" % (mid, baseline))
+        ck(got_mid, "tokens had already reached the page at that moment")
+        ck(still_open, "the response was STILL OPEN when the screenshot was taken")
         ck(mid > baseline,
            "PARTIAL CONTENT IS ON THE FRAMEBUFFER WHILE THE RESPONSE IS STILL OPEN "
            "(text pixels %d -> %d)" % (baseline, mid))
     else:
-        # The control: at this point in wall-clock time a buffered browser has
-        # nothing, because its promise has not settled.
-        p1 = PPM(ui.screendump(shot("c1")))
-        mid = p1.dark_pixels(p1.find_color(RED))
         ck(not got_mid,
-           "CONTROL: no token reached the page while the response was open")
+           "CONTROL: not one token had reached the page while the response was open")
         ck(mid == baseline,
            "CONTROL: the block never changed mid-stream (text pixels %d -> %d)"
            % (baseline, mid))
 
     # ---- let it finish -------------------------------------------------
+    ck(wait_serial("SSE-OPEN", 120, "the SSE connection"),
+       "EventSource connected and its onopen fired")
     ck(wait_serial("SSE-DONE", 120, "the end of the stream"),
        "the stream ended and the page saw its 'done' event")
     poll_markers()
