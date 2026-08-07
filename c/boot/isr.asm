@@ -114,6 +114,21 @@ isr_common:
     ; preemptive context switch (the state rides this interrupt frame).
     ; Layout below the GPR frame: [aligned] -> regs* slot (8B) @ rsp,
     ;                             FXSAVE area (512B) @ rsp+16 (16B aligned).
+    ;
+    ; SCOPE, because it is not obvious and getting it wrong is silent: FXSAVE
+    ; covers x87/MMX state, MXCSR and XMM0-15 -- and nothing else. The upper
+    ; 128 bits of YMM0-15 (and all of ZMM) are NOT saved here. That is fine
+    ; today because nothing in the kernel or in ring 3 uses AVX: boot/long.asm
+    ; deliberately leaves CR4.OSXSAVE clear and never touches XCR0, so the AVX
+    ; state does not exist to be lost. AES-NI and PCLMULQDQ (the crypto
+    ; backend in c/crypto/aead/aes_ni.c) are XMM-only, so they are already
+    ; covered.
+    ;
+    ; If AVX is ever enabled, this block MUST become XSAVE/XRSTOR first, with
+    ; the area sized from CPUID.0x0D:0 ECX and 64-byte aligned. See the
+    ; comment block in boot/long.asm; c/crypto/cpu_report.c prints the size
+    ; this machine reports, and its boot selftest is the thing that would
+    ; catch the mistake.
     sub rsp, 528               ; 512 FXSAVE + 16 (regs* slot, keeps 16-multiple)
     and rsp, -16               ; FXSAVE needs a 16-byte aligned target
     mov [rsp], rdi             ; stash regs* so we can restore rsp after the call
