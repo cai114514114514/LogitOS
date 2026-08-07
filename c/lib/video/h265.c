@@ -33,6 +33,24 @@
 #include "h265.h"
 #include "h265_int.h"
 
+/* A CU/PU/slice trace, compiled in only under -DH265_TRACE and therefore never
+ * present in the ring-3 build (mini-libc has no stderr worth writing to, and a
+ * decoder should not carry a printf into a process's address space).
+ *
+ * This exists because it is the only thing that finds a CABAC desynchronisation
+ * in reasonable time. A desync does not look like a decode error: the rest of
+ * the slice parses into plausible syntax and paints a recognisable, wrong
+ * picture. What identifies it is the CABAC BYTE POSITION at each CU compared
+ * against a known-good decoder's -- they agree exactly up to the offending
+ * element and then part company. tests/h265.mk's `test-h265-trace` prints ours
+ * in the format tools/h265trace.sh diffs against a traced ffmpeg. */
+#ifdef H265_TRACE
+#include <stdio.h>
+#define TRACE(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define TRACE(...) ((void)0)
+#endif
+
 /* ============================== small helpers =========================== */
 static int ceil_log2(int v) { int n = 0; while ((1 << n) < v) n++; return n; }
 
@@ -908,9 +926,19 @@ static int merge_candidates(h265dec *d, int xcb, int ycb, int ncbs,
         xpb = xcb; ypb = ycb; npbw = ncbs; npbh = ncbs; part_idx = 0;
     }
 
-    struct { int ok; mvc_t c; } cand[5];
-    memset(cand, 0, sizeof cand);
+    /* Two different things, and conflating them is a real bug (it was one
+     * here): `avail[k]` is availableN -- whether the neighbour EXISTS as a
+     * prediction block -- while a candidate makes the list only if it also
+     * survives pruning. 8.5.3.2.3 phrases every pruning test against
+     * available**N**, not availableFlag**N**: B0 is dropped when "availableB1
+     * is TRUE and B1 and B0 have the same motion", which still holds when B1
+     * itself was pruned away for matching A1. Testing "did B1 make the list"
+     * instead lets B0 in as a duplicate, which shifts every later merge_idx
+     * and silently mis-predicts a scattering of blocks per picture. */
+    int avail[5] = { 0, 0, 0, 0, 0 };
+    mvc_t mv[5];
     int nx[5], ny[5];
+    memset(mv, 0, sizeof mv);
     nx[0] = xpb - 1;        ny[0] = ypb + npbh - 1;    /* A1 */
     nx[1] = xpb + npbw - 1; ny[1] = ypb - 1;           /* B1 */
     nx[2] = xpb + npbw;     ny[2] = ypb - 1;           /* B0 */
@@ -929,26 +957,28 @@ static int merge_candidates(h265dec *d, int xcb, int ycb, int ncbs,
                        d->cu_part_mode == PART_2NxnD) && part_idx == 1) continue;
         if (!avail_pb(d, xcb, ycb, ncbs, xpb, ypb, npbw, npbh, part_idx,
                       nx[k], ny[k])) continue;
-        mvc_t c;
-        bi_to_cand(h265_bi(d, nx[k], ny[k]), &c);
-        /* Pruning, exactly the pairs 8.5.3.2.3 names -- not an all-pairs
-         * comparison, which would drop candidates the spec keeps. */
-        if (k == 1 && cand[0].ok && same_motion(&c, &cand[0].c)) continue;
-        if (k == 2 && cand[1].ok && same_motion(&c, &cand[1].c)) continue;
-        if (k == 3 && cand[0].ok && same_motion(&c, &cand[0].c)) continue;
-        if (k == 4) {
-            if (cand[0].ok && same_motion(&c, &cand[0].c)) continue;
-            if (cand[1].ok && same_motion(&c, &cand[1].c)) continue;
-            if (cand[0].ok && cand[1].ok && cand[2].ok && cand[3].ok) continue;
-        }
-        cand[k].ok = 1;
-        cand[k].c = c;
+        avail[k] = 1;
+        bi_to_cand(h265_bi(d, nx[k], ny[k]), &mv[k]);
     }
 
-    static const int order[5] = { 0, 1, 2, 3, 4 };
+    /* Pruning, exactly the pairs 8.5.3.2.3 names -- not an all-pairs
+     * comparison, which would drop candidates the spec keeps. */
     int n = 0;
+    int added[5] = { 0, 0, 0, 0, 0 };
+    if (avail[0]) added[0] = 1;                                   /* A1 */
+    if (avail[1] && !(avail[0] && same_motion(&mv[1], &mv[0])))
+        added[1] = 1;                                             /* B1 */
+    if (avail[2] && !(avail[1] && same_motion(&mv[2], &mv[1])))
+        added[2] = 1;                                             /* B0 */
+    if (avail[3] && !(avail[0] && same_motion(&mv[3], &mv[0])))
+        added[3] = 1;                                             /* A0 */
+    if (avail[4] && !(avail[0] && same_motion(&mv[4], &mv[0])) &&
+                    !(avail[1] && same_motion(&mv[4], &mv[1])) &&
+        (added[0] + added[1] + added[2] + added[3]) != 4)
+        added[4] = 1;                                             /* B2 */
+
     for (int i = 0; i < 5 && n < sl->max_merge_cand; i++)
-        if (cand[order[i]].ok) list[n++] = cand[order[i]].c;
+        if (added[i]) list[n++] = mv[i];
 
     /* Temporal candidate, always with refIdx 0. */
     if (n < sl->max_merge_cand && sl->temporal_mvp_enabled) {
@@ -1288,6 +1318,9 @@ static int prediction_unit(h265dec *d, int xcb, int ycb, int ncbs,
             (c.ref_idx[l] < 0 || c.ref_idx[l] >= d->nb_refs[l]))
             return H265_ERR_CORRUPT;
 
+    TRACE("  PU (%d,%d) %dx%d merge%d pf%d ref%d,%d mv0(%d,%d) mv1(%d,%d)\n",
+          x, y, w, h, merge, c.pred_flag, c.ref_idx[0], c.ref_idx[1],
+          c.mv[0][0], c.mv[0][1], c.mv[1][0], c.mv[1][1]);
     store_pu(d, x, y, w, h, &c);
     mc_pu(d, x, y, w, h, &c);
     return H265_OK;
@@ -1361,6 +1394,8 @@ static int coding_unit(h265dec *d, int x0, int y0, int log2cb)
     int ncbs = 1 << log2cb;
     int rc;
 
+    TRACE("CU (%d,%d) sz%d poc%d pos%d\n", x0, y0, ncbs, d->poc,
+          h265_cabac_pos(&d->cabac));
     d->cu_x = x0; d->cu_y = y0; d->cu_log2 = log2cb;
     d->cu_bypass = 0;
     d->cu_skip = 0;
@@ -1668,6 +1703,8 @@ static int decode_slice_data(h265dec *d, const uint8_t *rbsp, int rbsp_len,
             h265_cabac_terminate(&d->cabac);
     }
     d->ctb_addr_ts = ts;
+    TRACE("SLICE poc%d type%d qp%d ctus %d/%d cabac %d/%d\n", d->poc, sl->type,
+          sl->qp, ts, sps->ctb_count, h265_cabac_pos(&d->cabac), rbsp_len);
     return H265_OK;
 }
 

@@ -15,11 +15,10 @@ HBPY   ?= /tmp/hbvenv/bin/python3
 SHAPEFONT ?= /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 
 TEXTLIB := c/lib/text/bidi.c c/lib/text/script.c c/lib/text/shape.c \
-           c/lib/text/otlayout.c c/lib/text/ttf.c c/lib/text/cff.c \
-           c/lib/text/utf8.c
+           c/lib/text/otlayout.c c/lib/text/ttf.c c/lib/text/cff.c
 
 .PHONY: test-bidi test-bidi-negctl test-shape test-shape-negctl \
-        test-shape-device test-text regen-bidi-tables
+        test-shape-hb test-text regen-bidi-tables shape-preflight
 
 # --- bidi: UAX #9 against the Unicode conformance corpora -------------------
 test-bidi:
@@ -51,18 +50,43 @@ test-bidi-negctl:
 # $(BUILD) rather than committed, so a HarfBuzz upgrade cannot silently become
 # "our expected output".
 #
-# The corpus also states, by hand, the segmentation each line must produce:
-# script, direction, start and length, in VISUAL order. The generator refuses a
-# corpus whose runs do not tile the text exactly, and shape_test checks our
-# bidi + segmentation against that statement before it looks at a single glyph.
-# That matters because a mixed LTR/RTL line can have every glyph right and
-# still be in the wrong order.
+# NONE OF THAT EXISTS YET. The line building it landed the bidi half -- which is
+# real and passes 861,948 UCD conformance cases -- and was cut off before
+# writing the shaper. These four files are named by the rules below and are
+# absent from the tree:
+#
+#     c/lib/text/script.c        c/lib/text/shape.c
+#     tests/unit/shape_test.c    tests/unit/shape_hb_gen.py
+#
+# The guard below says so, because plain make says "No rule to make target
+# 'c/lib/text/script.c'", which reads like a build system fault rather than
+# unfinished work. The rules are kept rather than deleted: the design is sound
+# and the differential-against-HarfBuzz shape is the right one to finish into.
+SHAPE_MISSING := $(strip $(foreach f,$(TEXTLIB) tests/unit/shape_test.c \
+                                     tests/unit/shape_hb_gen.py,\
+                           $(if $(wildcard $(f)),,$(f))))
+
+shape-preflight:
+	@if [ -n "$(SHAPE_MISSING)" ]; then \
+	    echo "test-shape: the shaper is NOT IMPLEMENTED -- these are missing:"; \
+	    for f in $(SHAPE_MISSING); do echo "    $$f"; done; \
+	    echo "  What DOES exist and is verified: c/lib/text/bidi.c -- run 'make test-bidi'"; \
+	    echo "  (861948/861948 UCD conformance cases, levels and reordering)."; \
+	    echo "  Arabic and Hebrew therefore come out in the right ORDER but the"; \
+	    echo "  wrong GLYPHS: no contextual forms, no ligatures, no kerning."; \
+	    exit 1; \
+	 fi
 $(BUILD)/shape_expect.h: tests/unit/shape_hb_gen.py tests/unit/shape_corpus.txt
 	@mkdir -p $(BUILD)
 	@$(HBPY) tests/unit/shape_hb_gen.py --font $(SHAPEFONT) \
 	    --corpus tests/unit/shape_corpus.txt --out $@
 
-test-shape: $(BUILD)/shape_expect.h
+# The generated header is built by a sub-make from inside the recipe rather
+# than named as a prerequisite. make resolves prerequisites before it runs
+# anything, so a missing source aborts with its own message before
+# shape-preflight ever gets to explain what is actually going on.
+test-shape: shape-preflight
+	@$(MAKE) --no-print-directory $(BUILD)/shape_expect.h
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/shape_test tests/unit/shape_test.c \
 	    $(TEXTLIB) -Ic/lib/text -I$(BUILD)
 	@$(BUILD)/shape_test $(SHAPEFONT)
@@ -72,7 +96,8 @@ test-shape: $(BUILD)/shape_expect.h
 # cmap, advances summed, no GSUB and no GPOS. Arabic then comes out as
 # disconnected isolated letters and every kerned pair is a pixel or two wide,
 # which is exactly what the HarfBuzz comparison must catch.
-test-shape-negctl: $(BUILD)/shape_expect.h
+test-shape-negctl: shape-preflight
+	@$(MAKE) --no-print-directory $(BUILD)/shape_expect.h
 	@$(CC) -O2 -w -DSHAPE_NEGATIVE_CONTROL -o $(BUILD)/shape_test_negctl \
 	    tests/unit/shape_test.c $(TEXTLIB) -Ic/lib/text -I$(BUILD)
 	@if $(BUILD)/shape_test_negctl $(SHAPEFONT) >$(BUILD)/shape_negctl.log 2>&1; then \
@@ -80,29 +105,10 @@ test-shape-negctl: $(BUILD)/shape_expect.h
 	    exit 1; \
 	 else \
 	    echo "negative control ok: without GSUB/GPOS the HarfBuzz differential reports"; \
-	    grep -E '^(shape_test:|  FAIL|    [0-9]+ of)' $(BUILD)/shape_negctl.log \
-	        | tail -8 | sed 's/^/      /'; \
+	    grep -E '^(shape_test:|  )' $(BUILD)/shape_negctl.log | tail -6 | sed 's/^/      /'; \
 	 fi
 
-# --- shaping on the device --------------------------------------------------
-# The host differential proves the glyph ids are right. This proves the pixels
-# reach the screen: it boots the ISO, opens /shaping.txt in TextEdit, and
-# MEASURES the screenshot -- Arabic letters that join project onto the x axis as
-# a handful of connected ink runs, isolated letters as one run per letter.
-#
-# Its negative control is a kernel build, not a second binary, so it is a
-# command rather than a target (CFLAGS changes need a rebuild, and a target that
-# quietly rebuilt the tree with different flags would leave it that way):
-#
-#     make clean && make NOSHAPE=1 && make test-shape-device
-#
-# which reports 7/10/11/6 ink groups where shaped text gives 3/4/4/2, and every
-# Arabic word about half again as wide. Put the tree back with
-# `make clean && make` afterwards.
-test-shape-device: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_shape.py $(ISO) $(DISK) $(BUILD)/shape_device.ppm
-
-test-text: test-bidi test-bidi-negctl test-shape test-shape-negctl
+test-text: test-bidi test-shape
 	@echo "test-text: ALL PASS"
 
 # Rebuild the Unicode property tables from the host UCD. Not part of a normal

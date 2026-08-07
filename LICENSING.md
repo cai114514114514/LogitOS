@@ -65,9 +65,6 @@ Important examples include:
   `THIRD_PARTY.md`;
 - Mozilla/NSS-derived root data: MPL-2.0;
 - Noto fonts and generated subsets: OFL-1.1;
-- DejaVu Sans (`third_party/fonts/DejaVuSans.ttf`, shipped unmodified as
-  `/fonts/text.ttf`): Bitstream Vera Fonts License and the Arev fonts
-  copyright;
 - AetherScript's clox-derived material: upstream MIT terms remain preserved;
 - GRUB code embedded in generated ISO images: GPLv3-or-later under GRUB's own
   copyright and release obligations;

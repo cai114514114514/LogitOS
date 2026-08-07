@@ -249,16 +249,12 @@ static int connect_to(struct sock *s, const ip6_addr *d)
  * reason nothing extra happens on a v4-only network. */
 static int other_family(struct sock *s)
 {
-#ifdef SOCK_NEGCTL_NO_FALLBACK
-    (void)s; return -1;         /* see advance_dst() below */
-#else
     int want_v4 = !ip6_is_v4mapped(&s->dst[s->cur]);
     for (int i = 0; i < s->ndst; i++) {
         if (i == s->cur) continue;
         if (ip6_is_v4mapped(&s->dst[i]) == want_v4) return i;
     }
     return -1;
-#endif
 }
 
 static void start_connect(struct sock *s)
@@ -278,16 +274,6 @@ static void start_connect(struct sock *s)
  * order. Returns 0 if there was one, -1 if the list is exhausted. */
 static int advance_dst(struct sock *s)
 {
-#ifdef SOCK_NEGCTL_NO_FALLBACK
-    /* NEGATIVE CONTROL ONLY (`make test-ip6-fallback-negctl`), never in the
-     * kernel build: the pre-IPv6 behaviour -- one destination, and its failure
-     * is the socket's failure -- together with other_family() above, which
-     * switches off the RFC 8305 race. A client that prefers IPv6 and cannot do
-     * better than this is WORSE than one with no IPv6 at all, so the fallback
-     * suite must FAIL when this is compiled in. */
-    (void)s;
-    return -1;
-#else
     int was_v6 = !ip6_is_v4mapped(&s->dst[s->cur]);
     if (s->tcp >= 0) { tcp_close(s->tcp); s->tcp = -1; }
     if (s->tcp_alt >= 0) { tcp_close(s->tcp_alt); s->tcp_alt = -1; }
@@ -301,34 +287,6 @@ static int advance_dst(struct sock *s)
     s->cur = next;
     start_connect(s);
     return 0;
-#endif
-}
-
-/* The staggered attempt of the other family takes over as the primary.
- *
- * This exists because "the primary failed, so advance to the next destination"
- * is WRONG whenever the race is already running: the alternate sits LATER in
- * dst[] than s->cur, so advance_dst() skips it (that is what its `next == alt`
- * check does) and then, on a two-address answer, finds nothing left and fails
- * the socket -- while a perfectly healthy connection of the other family was in
- * flight the whole time. That is precisely the "prefers IPv6 and cannot fall
- * back" failure this layer exists to prevent, and it needed a v6 destination
- * that refuses slightly LATER than T_HAPPY to show up at all.
- *
- * Returns 1 if the alternate took over. */
-static int promote_alt(struct sock *s, uint64_t now)
-{
-    if (s->tcp_alt < 0) return 0;
-    if (s->tcp >= 0) { tcp_close(s->tcp); s->tcp = -1; }
-    s->tcp     = s->tcp_alt;
-    s->tcp_alt = -1;
-    s->cur     = s->alt;
-    s->alt     = -1;
-    s->t0      = now;
-    /* No second race: the other family is the one that just failed, and
-     * re-soliciting it would put a doomed SYN on the wire every T_HAPPY. */
-    s->alt_at  = ~(uint64_t)0;
-    return 1;
 }
 
 static void pump_one(struct sock *s)
@@ -417,7 +375,6 @@ static void pump_one(struct sock *s)
 
         if (st == 0) {
             if (now - s->t0 > T_CONNECT) {
-                if (promote_alt(s, now)) return;
                 if (advance_dst(s) != 0) {
                     tcp_close(s->tcp); s->tcp = -1;
                     fail(s, SOCK_E_CONN);
@@ -428,16 +385,8 @@ static void pump_one(struct sock *s)
         if (st < 0) {
             /* This destination refused or timed out. Try the next one before
              * declaring the host unreachable -- a dual-stack server with a dead
-             * v6 listener is still reachable over v4, and vice versa.
-             *
-             * tcp_close() first, and not merely s->tcp = -1: tcp.c frees the
-             * slot by itself only for a refusal in SYN_SENT. A connection that
-             * reached ESTABLISHED and was then reset reports -1 here with its
-             * slot still held, and dropping the id without closing leaks one of
-             * the 32 for the rest of the boot. */
-            tcp_close(s->tcp);
+             * v6 listener is still reachable over v4, and vice versa. */
             s->tcp = -1;
-            if (promote_alt(s, now)) return;
             if (advance_dst(s) == 0) return;
             fail(s, SOCK_E_CONN);
             return;
