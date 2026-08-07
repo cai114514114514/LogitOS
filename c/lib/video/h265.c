@@ -1469,13 +1469,17 @@ static int coding_unit(h265dec *d, int x0, int y0, int log2cb)
         if (rc) return rc;
     }
 
-    /* rqt_root_cbf (7.3.8.5) is absent for intra, and for an inter CU that is
-     * a single 2Nx2N merge partition -- inferred 1 and 0 respectively. */
+    /* rqt_root_cbf (7.3.8.5) is absent for an intra CU and for an inter CU that
+     * is a single 2Nx2N merge partition. In BOTH cases it is inferred 1
+     * (7.4.9.5): the only inference to 0 is cu_skip_flag == 1, and a skipped CU
+     * has already returned above. Inferring 0 here instead reads none of a
+     * merged CU's residual, which is a CABAC desynchronisation, not a wrong
+     * block -- the rest of the slice decodes as garbage that still looks like
+     * syntax. It cost every P and B picture in the matrix. */
     int rqt_root_cbf = 1;
-    if (d->cu_pred_mode != MODE_INTRA) {
-        if (d->cu_part_mode == PART_2Nx2N && d->cu_merge_2nx2n) rqt_root_cbf = 0;
-        else rqt_root_cbf = DEC(CTX_RQT_ROOT_CBF);
-    }
+    if (d->cu_pred_mode != MODE_INTRA &&
+        !(d->cu_part_mode == PART_2Nx2N && d->cu_merge_2nx2n))
+        rqt_root_cbf = DEC(CTX_RQT_ROOT_CBF);
     if (rqt_root_cbf) {
         d->max_trafo_depth = (d->cu_pred_mode == MODE_INTRA)
             ? sps->max_transform_hierarchy_depth_intra + d->intra_split
