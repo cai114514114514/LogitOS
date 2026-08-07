@@ -293,16 +293,51 @@ static void jpt_add(struct jpt *r, const struct jpt *p, const struct jpt *q,
     mod_sub(t, t, z1z1, *P); mod_sub(t, t, z2z2, *P); mod_mul(r->Z, t, h, *P);
 }
 
-/* r = k*P (P affine), result Jacobian. */
-static void jpt_mul(struct jpt *r, const bn k, const bn px, const bn py,
-                    const struct curve *c)
+/* r = k*P (P affine), result Jacobian, scanning the low `nbits` bits of k.
+ * The bit count is explicit because ECDHE below multiplies by a *blinded*
+ * scalar k + rho*n, which is wider than the field. */
+static void jpt_mul_bits(struct jpt *r, const bn k, int nbits, const bn px, const bn py,
+                         const struct curve *c)
 {
     struct jpt acc; bn_zero(acc.X); bn_zero(acc.Y); bn_zero(acc.Z);   /* infinity */
-    for (int bit = c->nbytes*8 - 1; bit >= 0; bit--) {
+    for (int bit = nbits - 1; bit >= 0; bit--) {
         struct jpt t; jpt_dbl(&t, &acc, c); acc=t;
         if ((k[bit/32] >> (bit%32)) & 1) { struct jpt t2; jpt_add_affine(&t2, &acc, px, py, c); acc=t2; }
     }
     *r = acc;
+}
+
+static void jpt_mul(struct jpt *r, const bn k, const bn px, const bn py,
+                    const struct curve *c)
+{ jpt_mul_bits(r, k, c->nbytes*8, px, py, c); }
+
+/* Jacobian -> affine: x = X/Z^2, y = Y/Z^3. Caller must have checked Z != 0. */
+static void jpt_affine(bn ox, bn oy, const struct jpt *p, const struct curve *c)
+{
+    bn zi, z2, z3;
+    mod_inv(zi, p->Z, c->p);
+    mod_mul(z2, zi, zi, c->p);
+    mod_mul(z3, z2, zi, c->p);
+    mod_mul(ox, p->X, z2, c->p);
+    mod_mul(oy, p->Y, z3, c->p);
+}
+
+/* 1 iff (qx,qy) satisfies y^2 == x^3 + a*x + b (mod p), i.e. lies on the curve.
+ * P-256 and P-384 both have cofactor 1, so every on-curve point other than the
+ * point at infinity generates the full prime-order group -- which makes this
+ * single check a complete defence against invalid-curve and small-subgroup
+ * attacks on the ECDH below. Callers must also have range-checked qx,qy < p
+ * (Barrett reduction assumes reduced inputs). */
+static int point_on_curve(const bn qx, const bn qy, const struct curve *c)
+{
+    bn x3, ax, rhs, y2;
+    mod_mul(x3, qx, qx, c->p);
+    mod_mul(x3, x3, qx, c->p);                  /* x^3 */
+    mod_mul(ax, c->a, qx, c->p);                /* a*x (a stored as p-3) */
+    mod_add(rhs, x3, ax, c->p);
+    mod_add(rhs, rhs, c->b, c->p);
+    mod_mul(y2, qy, qy, c->p);
+    return bn_cmp(y2, rhs) == 0;
 }
 
 int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
@@ -335,16 +370,7 @@ int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
      * a small-order subgroup would leak the verifier's agreement on forgeries
      * (invalid-curve attack); verification only handles public data, but a
      * wrong "valid" verdict is itself the vulnerability. */
-    {
-        bn x3, ax, rhs, y2;
-        mod_mul(x3, qx, qx, c->p);
-        mod_mul(x3, x3, qx, c->p);              /* x^3 */
-        mod_mul(ax, c->a, qx, c->p);            /* a*x (a stored as p-3) */
-        mod_add(rhs, x3, ax, c->p);
-        mod_add(rhs, rhs, c->b, c->p);
-        mod_mul(y2, qy, qy, c->p);
-        if (bn_cmp(y2, rhs) != 0) return 0;
-    }
+    if (!point_on_curve(qx, qy, c)) return 0;
 
     struct jpt t1, t2, R;
     jpt_mul(&t1, u1, c->gx, c->gy, c);          /* u1*G */
@@ -357,6 +383,136 @@ int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
     mod_inv(zi, R.Z, c->p); mod_mul(z2, zi, zi, c->p); mod_mul(rx, R.X, z2, c->p);
     if (bn_cmp(rx, c->n) >= 0) { bn t; bn_sub(t, rx, c->n); bn_copy(rx, t); }
     return bn_cmp(rx, r) == 0;
+}
+
+/* ============================================================================
+ * ECDHE on NIST P-256 / P-384 (TLS 1.3 named groups secp256r1 / secp384r1).
+ *
+ * WHY this exists at all: the client used to offer x25519 and nothing else, so
+ * a server configured to insist on a NIST curve was not slow to reach -- it was
+ * unreachable. x25519.c stays the *preferred* group (it is the constant-time
+ * implementation); these two are the fallback that turns "cannot connect" into
+ * "connects", negotiated through HelloRetryRequest.
+ *
+ * SECURITY, stated plainly: this reuses the ECDSA-verification bignum, which is
+ * NOT constant-time (Barrett's conditional subtracts, mod_add/mod_sub's
+ * branches, and the double-and-add's data-dependent point add all leak the
+ * scalar to an attacker who can time individual operations). Verification only
+ * ever touched public data, so that was fine there; an ECDH private scalar is
+ * secret, so it is not fine here. Three things bound the exposure:
+ *   1. the scalar is *ephemeral* -- generated per handshake, used for exactly
+ *      one keygen and one shared-secret computation, then wiped;
+ *   2. it is *blinded*: we multiply by k + rho*n for a fresh 32-bit rho rather
+ *      than by k. Since n*P is the point at infinity for any P in the group,
+ *      (k + rho*n)*P == k*P exactly, but the bit pattern the ladder actually
+ *      processes is randomised per execution, so a single timing trace no
+ *      longer maps onto the bits of k;
+ *   3. the attacker is remote, across TCP, with no shared cache.
+ * That is a deliberate trade, not an oversight: the alternative to using these
+ * curves is not connecting. Randomness is supplied by the caller (both `priv`
+ * and `blind`) so this file stays free of any RNG dependency and remains
+ * host-testable on its own.
+ * ========================================================================== */
+
+/* o = a * m (m a 32-bit scalar), no reduction. Caller guarantees no overflow. */
+static void bn_mul_small(bn o, const bn a, uint32_t m)
+{
+    uint64_t c = 0;
+    for (int i = 0; i < NL; i++) { uint64_t t = (uint64_t)a[i]*m + c; o[i] = (uint32_t)t; c = t >> 32; }
+}
+
+static struct curve *curve_by_id(int curve)
+{
+    curves_init();
+    if (curve == 256) return &P256;
+    if (curve == 384) return &P384;
+    return 0;
+}
+
+/* Build the blinded scalar kb = d + rho*n and report how many bits to scan.
+ * rho is forced into [2^30, 2^31) so the product's width is fixed (a rho that
+ * happened to be tiny would blind almost nothing). With rho < 2^31 and n < 2^384
+ * we get rho*n < 2^415 and d < n, so kb < 2^416 = exactly NL*32 bits -- it fits
+ * the bn with no carry out, which is why the ladder scans nbytes*8 + 32 bits. */
+static int blind_scalar(bn kb, const bn d, uint32_t rho, const struct curve *c)
+{
+    rho = (rho & 0x7fffffffu) | 0x40000000u;
+    bn t; bn_mul_small(t, c->n, rho);
+    if (bn_add(kb, t, d)) return -1;            /* cannot happen; fail closed anyway */
+    crypto_wipe(t, sizeof t);
+    return c->nbytes*8 + 32;
+}
+
+/* Generate the public share for a private scalar. `priv` is nbytes of raw
+ * randomness, big-endian; it is rejected (return -1) unless it lands in
+ * [1, n-1], so the caller must re-randomise and retry -- that keeps the scalar
+ * uniform over the group order instead of biasing it with a reduction. `pub`
+ * receives the uncompressed SEC1 point 0x04||X||Y (1 + 2*nbytes). */
+int ecdh_keygen(int curve, const uint8_t *priv, uint32_t blind, uint8_t *pub)
+{
+    struct curve *c = curve_by_id(curve);
+    if (!c) return -1;
+    bn d; bn_from_be(d, priv, c->nbytes);
+    if (bn_iszero(d) || bn_cmp(d, c->n) >= 0) { crypto_wipe(d, sizeof d); return -1; }
+
+    bn kb; int nbits = blind_scalar(kb, d, blind, c);
+    int rc = -1;
+    struct jpt R;
+    if (nbits > 0) {
+        jpt_mul_bits(&R, kb, nbits, c->gx, c->gy, c);
+        if (!bn_iszero(R.Z)) {
+            bn x, y; jpt_affine(x, y, &R, c);
+            pub[0] = 0x04;
+            bn_to_be(pub + 1, x, c->nbytes);
+            bn_to_be(pub + 1 + c->nbytes, y, c->nbytes);
+            rc = 0;
+        }
+    }
+    crypto_wipe(d, sizeof d); crypto_wipe(kb, sizeof kb); crypto_wipe(&R, sizeof R);
+    return rc;
+}
+
+/* Shared secret = X coordinate of priv * peer, written big-endian as nbytes
+ * (RFC 8446 7.4.2: "the X coordinate ... in the usual big-endian format,
+ * padded to the size of P"). Returns 0 on success.
+ *
+ * The peer point is fully validated first: uncompressed encoding, both
+ * coordinates < p (mod_mul assumes reduced inputs), and on the curve. As noted
+ * at point_on_curve(), cofactor 1 means that is sufficient -- there is no
+ * small-order subgroup for a malicious peer to push us into. A result of
+ * infinity is impossible after those checks but is rejected anyway. */
+int ecdh_shared(int curve, const uint8_t *priv, uint32_t blind,
+                const uint8_t *peer, int peerlen, uint8_t *out)
+{
+    struct curve *c = curve_by_id(curve);
+    if (!c) return -1;
+    if (peerlen != 1 + 2*c->nbytes || peer[0] != 0x04) return -1;
+
+    bn qx, qy;
+    bn_from_be(qx, peer + 1, c->nbytes);
+    bn_from_be(qy, peer + 1 + c->nbytes, c->nbytes);
+    if (bn_cmp(qx, c->p) >= 0 || bn_cmp(qy, c->p) >= 0) return -1;
+    if (bn_iszero(qx) && bn_iszero(qy)) return -1;      /* (0,0) is not on the curve
+                                                          for our b != 0, but be explicit */
+    if (!point_on_curve(qx, qy, c)) return -1;
+
+    bn d; bn_from_be(d, priv, c->nbytes);
+    if (bn_iszero(d) || bn_cmp(d, c->n) >= 0) { crypto_wipe(d, sizeof d); return -1; }
+
+    bn kb; int nbits = blind_scalar(kb, d, blind, c);
+    int rc = -1;
+    struct jpt R;
+    if (nbits > 0) {
+        jpt_mul_bits(&R, kb, nbits, qx, qy, c);
+        if (!bn_iszero(R.Z)) {
+            bn x, y; jpt_affine(x, y, &R, c);
+            bn_to_be(out, x, c->nbytes);
+            crypto_wipe(x, sizeof x); crypto_wipe(y, sizeof y);
+            rc = 0;
+        }
+    }
+    crypto_wipe(d, sizeof d); crypto_wipe(kb, sizeof kb); crypto_wipe(&R, sizeof R);
+    return rc;
 }
 
 /* Test hook (tools/t/ecdsa_test.c): out = a*b mod (curveid?P384:P256 . useorder?n:p),

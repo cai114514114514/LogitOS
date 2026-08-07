@@ -22,4 +22,13 @@ struct root_ca {
 extern const struct root_ca logit_roots[];
 extern const int logit_nroots;
 
+/* Roots that exist as PEMs in tools/roots/ but were NOT compiled in, because
+ * their key type is one this kernel cannot verify (P-521, Ed25519, ...). Each
+ * entry is "slug: reason"; the array is 0-terminated and logit_nroots_skipped
+ * is the count. This is deliberately visible rather than a generator-time
+ * aside: a silently dropped root makes the trust store smaller than its own
+ * documentation claims, and that is a security-relevant lie. */
+extern const char *const logit_roots_skipped[];
+extern const int logit_nroots_skipped;
+
 #endif /* LOGIT_ROOTS_H */

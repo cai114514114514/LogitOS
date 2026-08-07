@@ -70,6 +70,22 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]);
 /* base point u=9 (key generation): out = scalar * basepoint. */
 void x25519_base(uint8_t out[32], const uint8_t scalar[32]);
 
+/* --- ECDHE on NIST P-256 (curve=256) / P-384 (curve=384) ---
+ * Key agreement for the TLS 1.3 named groups secp256r1/secp384r1, used when a
+ * server refuses x25519 (which stays the preferred, constant-time group).
+ * flen = curve/8. `priv` is flen bytes of raw randomness, big-endian; both
+ * calls reject it unless it lies in [1, n-1], so the caller re-randomises and
+ * retries rather than reducing (a reduction would bias the scalar). `blind` is
+ * 32 fresh random bits used to blind the scalar multiplication -- see the long
+ * comment in ecdsa.c for what that does and does not buy.
+ *   ecdh_keygen: pub <- 0x04 || X || Y  (1 + 2*flen bytes)
+ *   ecdh_shared: out <- X coordinate of priv*peer (flen bytes, big-endian);
+ *                the peer point is range- and on-curve-checked.
+ * Both return 0 on success, -1 on a rejected scalar or peer point. */
+int ecdh_keygen(int curve, const uint8_t *priv, uint32_t blind, uint8_t *pub);
+int ecdh_shared(int curve, const uint8_t *priv, uint32_t blind,
+                const uint8_t *peer, int peerlen, uint8_t *out);
+
 /* --- ECDSA verify on NIST P-256 (curve=256) / P-384 (curve=384) ---
  * pub is the uncompressed point X||Y (2*flen bytes, big-endian); sig is r||s
  * (2*flen bytes, big-endian); hash is the message digest (hlen bytes). Returns

@@ -9,7 +9,7 @@ int memcmp(const void *, const void *, size_t);
 /* --- minimal DER reader --- */
 struct der { const uint8_t *p, *end; };
 
-/* Read one TLV; *tag/*content/*clen set; advance past it. 0 ok, -1 error. */
+/* Read one TLV; tag, content and clen set; advance past it. 0 ok, -1 error. */
 static int der_tlv(struct der *d, int *tag, const uint8_t **content, int *clen)
 {
     if (d->p >= d->end) return -1;
