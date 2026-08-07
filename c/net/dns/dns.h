@@ -2,6 +2,7 @@
 #define LOGIT_DNS_H
 
 #include <stdint.h>
+#include "ip6.h"        /* ip6_addr: a lookup's answer set is mixed-family */
 
 /* Resolve `name` to an IPv4 address (host order) via the SLIRP DNS server
  * (10.0.2.3) over UDP. Blocking-ish: pumps net_poll() with a timeout. Returns
@@ -27,5 +28,16 @@ int      dns_query_start(const char *name);
 uint32_t dns_query_result(int id);
 void     dns_query_free(int id);
 void     dns_poll(void);
+
+/* The dual-stack view of the same lookup. A name has an A set and a AAAA set;
+ * this returns them MERGED and ORDERED by RFC 6724 destination selection, with
+ * IPv4 addresses carried as ::ffff:a.b.c.d so the two families are comparable.
+ * 0 = still pending, < 0 = the name did not resolve, else the count written.
+ *
+ * The caller is expected to try out[0], and fall back to out[1..] -- which is
+ * how a host whose IPv6 path is broken still reaches a dual-stack server.
+ * AAAA is only queried when ip6_up() says IPv6 is actually routable, so on a
+ * v4-only network this returns exactly the A records, in resolver order. */
+int      dns_query_addrs(int id, ip6_addr *out, int max);
 
 #endif /* LOGIT_DNS_H */

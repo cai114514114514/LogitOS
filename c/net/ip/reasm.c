@@ -111,6 +111,8 @@ void reasm_release(struct reasm_dgram *g)
     g->slot = -1;
 }
 
+void ip6_poll(void) __attribute__((weak));
+
 void ip_poll(void)
 {
     uint64_t f = net_lock();        /* the RX IRQ feeds slots concurrently */
@@ -119,4 +121,11 @@ void ip_poll(void)
         if (slots[i].used && now - slots[i].tick > REASM_TIMEOUT)
             slots[i].used = 0;
     net_unlock(f);
+    /* The IPv6 timer pump rides here rather than in net_poll(): ip_poll is
+     * already the network layer's per-tick hook and c/net/core/net.c belongs to
+     * another line. Everything IPv6 that is time-driven -- Duplicate Address
+     * Detection, the neighbour cache's REACHABLE/STALE/DELAY/PROBE
+     * transitions, Router Solicitation retransmission, address and router
+     * lifetimes -- is behind this one call. */
+    if (ip6_poll) ip6_poll();
 }

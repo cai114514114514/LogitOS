@@ -9,8 +9,10 @@
 #include "dns.h"
 #include "arp.h"
 #include "eth.h"
+#include "ip6.h"
 #include "pit.h"
 #include "rtc.h"
+#include "kprintf.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -38,6 +40,18 @@ void *memset(void *, int, size_t);
 #define T_CONNECT   700     /* 7 s  */
 #define T_TLS       2000    /* 20 s */
 
+/* RFC 8305 "Connection Attempt Delay": how long the preferred family gets on
+ * its own before the other one is tried IN PARALLEL. The RFC's recommended
+ * value is 250 ms and its minimum is 100 ms; anything longer and a black-holed
+ * IPv6 path is a visible stall, anything shorter and every connection opens two
+ * sockets for no reason. */
+#define T_HAPPY     25      /* 250 ms */
+
+/* Destinations kept per socket. The first is what RFC 6724 ordering chose; the
+ * rest are the fallbacks, which is the whole reason a broken IPv6 path is
+ * survivable rather than fatal. */
+#define SOCK_MAXDST 8
+
 enum { S_FREE, S_RESOLVE, S_ARP, S_CONNECT, S_TLS, S_READY, S_DEAD };
 
 struct sock {
@@ -46,7 +60,6 @@ struct sock {
     int      state;
     int      flags;             /* SOCK_F_* as the app passed them */
     int      err;               /* SOCK_E_*, once state == S_DEAD with err set */
-    uint32_t ip;
     uint16_t port;
     int      dnsq;              /* dns pool query id, or -1 */
     int      tcp;               /* tcp connection id, or -1 */
@@ -54,6 +67,18 @@ struct sock {
     uint64_t t0;                /* when the current phase began */
     uint64_t arp_last;
     int      shut;              /* app called sock_close: drain, then FIN */
+
+    /* --- dual-stack destination list (RFC 6724 order) --- */
+    ip6_addr dst[SOCK_MAXDST];  /* IPv4 carried as ::ffff:a.b.c.d */
+    int      ndst;
+    int      cur;               /* index of the primary attempt */
+    /* The staggered second attempt, of the OTHER family. Two sockets racing is
+     * what turns "IPv6 is broken here" from a seven-second timeout into a
+     * quarter-second hiccup. -1 when there is no race in progress. */
+    int      alt;               /* index in dst[] of the alternate, or -1 */
+    int      tcp_alt;           /* its connection id, or -1 */
+    uint64_t alt_at;            /* tick at which to start it */
+
     char     host[SOCK_HOST_MAX];
     char     alpn[16];          /* negotiated protocol, NUL-terminated */
     int      alpn_len;
@@ -120,16 +145,18 @@ static void fail(struct sock *s, int err)
  * app still has to be told what happened); only sock_release() frees that. */
 static void drop_transport(struct sock *s)
 {
-    if (s->dnsq >= 0) { dns_query_free(s->dnsq); s->dnsq = -1; }
-    if (s->tls >= 0)  { tls_close(s->tls); s->tls = -1; }
-    if (s->tcp >= 0)  { tcp_close(s->tcp); s->tcp = -1; }
+    if (s->dnsq >= 0)    { dns_query_free(s->dnsq); s->dnsq = -1; }
+    if (s->tls >= 0)     { tls_close(s->tls); s->tls = -1; }
+    if (s->tcp >= 0)     { tcp_close(s->tcp); s->tcp = -1; }
+    if (s->tcp_alt >= 0) { tcp_close(s->tcp_alt); s->tcp_alt = -1; }
 }
 
 static void sock_release(struct sock *s)
 {
     drop_transport(s);
     memset(s, 0, sizeof *s);
-    s->dnsq = s->tcp = s->tls = -1;
+    s->dnsq = s->tcp = s->tls = s->tcp_alt = -1;
+    s->alt = -1;
 }
 
 /* ---- the transmit ring -------------------------------------------------- */
@@ -170,12 +197,96 @@ static uint32_t next_hop(uint32_t ip)
     return ((ip & net_cfg.mask) == (net_cfg.ip & net_cfg.mask)) ? ip : net_cfg.gw;
 }
 
+/* ---- one API, two families ----------------------------------------------
+ *
+ * Everything below this point is written against `ip6_addr`, with IPv4 carried
+ * as ::ffff:a.b.c.d. That is not a v6 bias: it is the only way the RFC 6724
+ * comparison between an A record and a AAAA record can be expressed at all, and
+ * it means there is exactly ONE code path for opening a connection rather than
+ * a v4 one and a v6 one that drift apart. The caller never sees a family. */
+
+/* Serial-log announcements. Bounded on purpose: a page with forty sub-resources
+ * would otherwise put forty lines on the console. The first few of each kind
+ * are what a boot test greps for, and the fallback line is the one that says
+ * something went wrong, so it gets its own budget. */
+static int said_v6, said_v4, said_fb;
+
+static void announce(const char *what, const char *host, const ip6_addr *a,
+                     int *budget)
+{
+    if (*budget >= 3) return;
+    (*budget)++;
+    char t[48];
+    ip6_format(a, t, sizeof t);
+    kprintf("[sock] %s %s via %s %s\n", what, host,
+            ip6_is_v4mapped(a) ? "ipv4" : "ipv6", t);
+}
+
+/* Open a TCP connection to one destination. Returns a connection id or < 0. */
+static int connect_to(struct sock *s, const ip6_addr *d)
+{
+#ifdef TCP_AF_INET6
+    struct tcp_addr a;
+    if (ip6_is_v4mapped(d)) {
+        a.af = TCP_AF_INET;
+        a.a.v4 = ip6_to_v4(d);
+    } else {
+        a.af = TCP_AF_INET6;
+        memcpy(a.a.v6, d->b, 16);
+    }
+    return tcp_connect_start_addr(&a, s->port);
+#else
+    /* Without the TCP line's family-general entry point there is no way to
+     * open an IPv6 connection; a v6 destination simply cannot be used, and the
+     * fallback list is what saves the socket. */
+    if (!ip6_is_v4mapped(d)) return -1;
+    return tcp_connect_start(ip6_to_v4(d), s->port);
+#endif
+}
+
+/* The first destination in dst[i..] whose family differs from dst[s->cur]'s.
+ * -1 if the answer was single-family, which is the normal v4-only case and the
+ * reason nothing extra happens on a v4-only network. */
+static int other_family(struct sock *s)
+{
+    int want_v4 = !ip6_is_v4mapped(&s->dst[s->cur]);
+    for (int i = 0; i < s->ndst; i++) {
+        if (i == s->cur) continue;
+        if (ip6_is_v4mapped(&s->dst[i]) == want_v4) return i;
+    }
+    return -1;
+}
+
 static void start_connect(struct sock *s)
 {
-    s->tcp = tcp_connect_start(s->ip, s->port);
+    s->tcp = connect_to(s, &s->dst[s->cur]);
     if (s->tcp < 0) { fail(s, SOCK_E_NOSLOT); return; }
     s->state = S_CONNECT;
     s->t0 = timer_ticks();
+    /* Arm the Happy-Eyeballs race. If the preferred family has not connected
+     * within T_HAPPY, the other one is tried alongside it rather than after it. */
+    s->alt = -1;
+    s->tcp_alt = -1;
+    s->alt_at = s->t0 + T_HAPPY;
+}
+
+/* Give up on the current destination and move to the next one in RFC 6724
+ * order. Returns 0 if there was one, -1 if the list is exhausted. */
+static int advance_dst(struct sock *s)
+{
+    int was_v6 = !ip6_is_v4mapped(&s->dst[s->cur]);
+    if (s->tcp >= 0) { tcp_close(s->tcp); s->tcp = -1; }
+    if (s->tcp_alt >= 0) { tcp_close(s->tcp_alt); s->tcp_alt = -1; }
+    int next = s->cur + 1;
+    if (s->alt >= 0 && next == s->alt) next++;      /* already tried in the race */
+    if (next >= s->ndst) return -1;
+    if (was_v6 && ip6_is_v4mapped(&s->dst[next]) && said_fb < 3) {
+        said_fb++;
+        kprintf("[sock] ipv6 attempt to %s failed, falling back to ipv4\n", s->host);
+    }
+    s->cur = next;
+    start_connect(s);
+    return 0;
 }
 
 static void pump_one(struct sock *s)
@@ -184,14 +295,17 @@ static void pump_one(struct sock *s)
 
     switch (s->state) {
     case S_RESOLVE: {
-        uint32_t r = dns_query_result(s->dnsq);
-        if (r == 0) {
+        int n = dns_query_addrs(s->dnsq, s->dst, SOCK_MAXDST);
+        if (n == 0) {
             if (now - s->t0 > T_RESOLVE) fail(s, SOCK_E_DNS);
             return;
         }
         dns_query_free(s->dnsq); s->dnsq = -1;
-        if (r == 0xFFFFFFFFu) { fail(s, SOCK_E_DNS); return; }
-        s->ip = r;
+        if (n < 0) { fail(s, SOCK_E_DNS); return; }
+        s->ndst = n;
+        s->cur = 0;
+        s->alt = -1;
+        s->tcp_alt = -1;
         s->state = S_ARP;
         s->t0 = now;
         s->arp_last = 0;
@@ -212,18 +326,76 @@ static void pump_one(struct sock *s)
         if (s->arp_last && now - s->arp_last < 10) return;
         s->arp_last = now;
         uint8_t mac[ETH_ALEN];
-        if (arp_resolve(next_hop(s->ip), mac) == 0) { start_connect(s); return; }
+        /* IPv6 has no ARP. Neighbour Discovery warms itself: ip6_output sends
+         * the solicitation on the first miss and TCP's own retransmit covers
+         * the round trip, so a v6 destination goes straight to the SYN. */
+        if (!ip6_is_v4mapped(&s->dst[s->cur])) { start_connect(s); return; }
+        if (arp_resolve(next_hop(ip6_to_v4(&s->dst[s->cur])), mac) == 0) {
+            start_connect(s);
+            return;
+        }
         if (now - s->t0 > T_ARP) start_connect(s);
         return;
     }
 
     case S_CONNECT: {
+        /* Start the other family alongside once the preferred one has had its
+         * head start (RFC 8305 s5). Both attempts then run to completion and
+         * the first to establish wins. */
+        if (s->alt < 0 && s->tcp_alt < 0 && now >= s->alt_at) {
+            int o = other_family(s);
+            if (o >= 0) {
+                int fd = connect_to(s, &s->dst[o]);
+                if (fd >= 0) { s->alt = o; s->tcp_alt = fd; }
+                else s->alt_at = now + T_HAPPY;   /* no slot; try again shortly */
+            } else {
+                s->alt_at = ~(uint64_t)0;        /* single family: never race */
+            }
+        }
+
         int st = tcp_connect_status(s->tcp);
+
+        /* The alternate winning is the interesting outcome: it is what a
+         * black-holed IPv6 path looks like from the application's side --
+         * nothing at all, one extra quarter-second. */
+        if (st <= 0 && s->tcp_alt >= 0) {
+            int sa = tcp_connect_status(s->tcp_alt);
+            if (sa > 0) {
+                if (s->tcp >= 0) tcp_close(s->tcp);
+                s->tcp = s->tcp_alt;
+                s->tcp_alt = -1;
+                s->cur = s->alt;
+                s->alt = -1;
+                st = 1;
+            } else if (sa < 0) {
+                tcp_close(s->tcp_alt);
+                s->tcp_alt = -1;                 /* the alternate lost; keep waiting */
+            }
+        }
+
         if (st == 0) {
-            if (now - s->t0 > T_CONNECT) { tcp_close(s->tcp); s->tcp = -1; fail(s, SOCK_E_CONN); }
+            if (now - s->t0 > T_CONNECT) {
+                if (advance_dst(s) != 0) {
+                    tcp_close(s->tcp); s->tcp = -1;
+                    fail(s, SOCK_E_CONN);
+                }
+            }
             return;
         }
-        if (st < 0) { s->tcp = -1; fail(s, SOCK_E_CONN); return; }
+        if (st < 0) {
+            /* This destination refused or timed out. Try the next one before
+             * declaring the host unreachable -- a dual-stack server with a dead
+             * v6 listener is still reachable over v4, and vice versa. */
+            s->tcp = -1;
+            if (advance_dst(s) == 0) return;
+            fail(s, SOCK_E_CONN);
+            return;
+        }
+
+        /* Connected. The other attempt, if any, is now waste. */
+        if (s->tcp_alt >= 0) { tcp_close(s->tcp_alt); s->tcp_alt = -1; s->alt = -1; }
+        announce("connected", s->host, &s->dst[s->cur],
+                 ip6_is_v4mapped(&s->dst[s->cur]) ? &said_v4 : &said_v6);
 
         if (!(s->flags & SOCK_F_TLS)) { s->state = S_READY; s->t0 = now; return; }
         /* Weak (see tls_step.h): if the stepped TLS side is not linked, fail the
@@ -295,7 +467,8 @@ int sock_open(const char *host, int port, int flags, int pid)
     if (fd < 0) return SOCK_E_NOSLOT;
     struct sock *s = &socks[fd];
     memset(s, 0, sizeof *s);
-    s->dnsq = s->tcp = s->tls = -1;
+    s->dnsq = s->tcp = s->tls = s->tcp_alt = -1;
+    s->alt = -1;
 
     int n = 0;
     while (host[n] && n < SOCK_HOST_MAX - 1) { s->host[n] = host[n]; n++; }

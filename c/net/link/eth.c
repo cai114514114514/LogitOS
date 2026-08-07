@@ -9,6 +9,7 @@ void *memcpy(void *, const void *, size_t);
 /* L2/L3 dispatch handlers (defined in arp.c / ip.c, added in later layers). */
 void arp_input(const uint8_t *frame, uint16_t len) __attribute__((weak));
 void ip_input(const uint8_t *frame, uint16_t len) __attribute__((weak));
+void ip6_input(const uint8_t *frame, uint16_t len) __attribute__((weak));
 
 const uint8_t eth_broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
@@ -41,4 +42,6 @@ void eth_input(const uint8_t *frame, uint16_t len)
         arp_input(frame, len);
     else if (type == ETHERTYPE_IP && ip_input)
         ip_input(frame, len);
+    else if (type == ETHERTYPE_IPV6 && ip6_input)
+        ip6_input(frame, len);
 }
