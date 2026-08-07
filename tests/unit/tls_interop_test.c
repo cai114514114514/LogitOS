@@ -17,7 +17,7 @@
  * run-tls-interop.sh creates, so the chain check is the real one, not a stub.
  *
  * Usage: tls_interop_test <host> <port> <sni> [--alpn LIST] [--expect-alpn P]
- *                         [--expect-fail] [--blocking]
+ *                         [--expect-fail] [--blocking] [--expect-version 12|13]
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -123,12 +123,16 @@ int main(int argc, char **argv)
     if (argc < 4) { fprintf(stderr, "usage: %s host port sni [opts]\n", argv[0]); return 2; }
     const char *host = argv[1], *port = argv[2], *sni = argv[3];
     const char *alpn = 0, *want_alpn = 0;
-    int expect_fail = 0, blocking = 0;
+    int expect_fail = 0, blocking = 0, want_version = 0;
     for (int i = 4; i < argc; i++) {
         if (!strcmp(argv[i], "--alpn") && i + 1 < argc)             alpn = argv[++i];
         else if (!strcmp(argv[i], "--expect-alpn") && i + 1 < argc) want_alpn = argv[++i];
         else if (!strcmp(argv[i], "--expect-fail"))                 expect_fail = 1;
         else if (!strcmp(argv[i], "--blocking"))                    blocking = 1;
+        else if (!strcmp(argv[i], "--expect-version") && i + 1 < argc) {
+            /* "12" / "13" on the command line; the wire values differ by one. */
+            want_version = atoi(argv[++i]) == 12 ? TLS_VER_12 : TLS_VER_13;
+        }
     }
 
     g_fd = dial(host, port);
@@ -167,6 +171,18 @@ int main(int argc, char **argv)
 
     if (expect_fail) {
         printf("RESULT: FAIL (handshake succeeded but should not have)\n");
+        tls_close(id); return 1;
+    }
+
+    /* Report the negotiated version explicitly rather than inferring it from a
+     * log line: "which protocol did we end up speaking" is the single claim
+     * this whole exercise is about, and a test that greps for it in kprintf
+     * output would pass just as happily on a message that was never true. */
+    int ver = tls_version(id);
+    printf("VERSION: %s (0x%04x)\n",
+           ver == TLS_VER_13 ? "TLS1.3" : ver == TLS_VER_12 ? "TLS1.2" : "?", ver);
+    if (want_version && ver != want_version) {
+        printf("RESULT: FAIL (negotiated 0x%04x, expected 0x%04x)\n", ver, want_version);
         tls_close(id); return 1;
     }
 

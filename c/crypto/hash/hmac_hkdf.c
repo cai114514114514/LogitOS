@@ -69,6 +69,59 @@ void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
     crypto_wipe(t, sizeof t);                   /* T(i) chain is PRK-derived */
 }
 
+/* --- TLS 1.2 PRF (RFC 5246 5) ---
+ *
+ * Nothing about this is HKDF. TLS 1.2 predates HKDF and expands with its own
+ * ladder:
+ *
+ *      A(0) = seed;  A(i) = HMAC(secret, A(i-1))
+ *      P_hash(secret, seed) = HMAC(secret, A(1)||seed)
+ *                          || HMAC(secret, A(2)||seed) || ...
+ *      PRF(secret, label, seed) = P_hash(secret, label || seed)
+ *
+ * The hash is the one the negotiated cipher suite names (SHA-256 for the
+ * *_SHA256 suites, SHA-384 for *_SHA384) -- NOT necessarily SHA-256, which is
+ * the single easiest thing to get wrong here: a SHA-256 PRF against an
+ * AES_256_GCM_SHA384 server produces keys that decrypt nothing, and the first
+ * symptom is a Finished mismatch a whole flight later.
+ *
+ * (TLS 1.0/1.1's MD5+SHA-1 split PRF is deliberately absent: we do not offer
+ * those versions, so implementing their PRF would only create a way to end up
+ * using them.) */
+void tls12_prf(int hlen, const uint8_t *secret, int seclen, const char *label,
+               const uint8_t *seed, int seedlen, uint8_t *out, int outlen)
+{
+    if (hlen != 32 && hlen != 48) return;
+    int ll = 0; while (label[ll]) ll++;
+    /* Bounds: the longest label we use is "extended master secret" (22) and the
+     * longest seed is server_random||client_random (64); a session hash is 48.
+     * Refusing rather than truncating keeps a caller bug from silently
+     * producing a key nobody else will derive. */
+    if (ll > 32 || seedlen < 0 || seedlen > 128 || outlen < 0) return;
+
+    uint8_t ls[32 + 128]; int lslen = 0;        /* label || seed */
+    for (int i = 0; i < ll; i++) ls[lslen++] = (uint8_t)label[i];
+    for (int i = 0; i < seedlen; i++) ls[lslen++] = seed[i];
+
+    uint8_t a[48]; int alen = hlen;
+    hmac(hlen, secret, seclen, ls, lslen, a);   /* A(1) = HMAC(secret, seed) */
+
+    int done = 0;
+    while (done < outlen) {
+        uint8_t in[48 + 32 + 128]; int n = 0;
+        for (int i = 0; i < alen; i++) in[n++] = a[i];
+        for (int i = 0; i < lslen; i++) in[n++] = ls[i];
+        uint8_t blk[48];
+        hmac(hlen, secret, seclen, in, n, blk);
+        int take = outlen - done; if (take > hlen) take = hlen;
+        memcpy(out + done, blk, (size_t)take); done += take;
+        hmac(hlen, secret, seclen, a, alen, a); /* A(i+1) = HMAC(secret, A(i)) */
+        crypto_wipe(in, (size_t)n); crypto_wipe(blk, sizeof blk);
+    }
+    crypto_wipe(a, sizeof a);                   /* the A() chain is secret-derived */
+    crypto_wipe(ls, sizeof ls);
+}
+
 /* HKDF-Expand-Label: HkdfLabel = len(out) || "tls13 "+label || context.
  * Returns 0 on success, -1 if label/context/outlen would overflow the
  * fixed info[] buffer (callers in tls.c use short literals + 32-byte hashes,

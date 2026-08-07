@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "tls.h"
+#include "tls_int.h"
 #include "tcp.h"
 #include "net.h"
 #include "pit.h"
@@ -14,123 +15,6 @@ void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 void *memmove(void *, const void *, size_t);
 int   memcmp(const void *, const void *, size_t);
-
-/* cipher suites */
-#define TLS_AES_128_GCM_SHA256       0x1301
-#define TLS_CHACHA20_POLY1305_SHA256 0x1303
-
-/* named groups (RFC 8446 4.2.7) */
-#define GRP_P256    0x0017
-#define GRP_P384    0x0018
-#define GRP_X25519  0x001d
-
-/* handshake message types */
-#define HS_CLIENT_HELLO   1
-#define HS_SERVER_HELLO   2
-#define HS_NEW_TICKET     4
-#define HS_ENCRYPTED_EXT  8
-#define HS_CERTIFICATE    11
-#define HS_CERT_VERIFY    15
-#define HS_FINISHED       20
-#define HS_KEY_UPDATE     24
-#define HS_MESSAGE_HASH   254             /* synthetic, RFC 8446 4.4.1 */
-
-/* record content types */
-#define REC_CCS        20
-#define REC_ALERT      21
-#define REC_HANDSHAKE  22
-#define REC_APPDATA    23
-
-/* extensions */
-#define EXT_SNI            0
-#define EXT_ALPN           16
-#define EXT_SUPPORTED_GRPS 10
-#define EXT_SIG_ALGS       13
-#define EXT_SUPPORTED_VERS 43
-#define EXT_COOKIE         44
-#define EXT_KEY_SHARE      51
-
-#define HLEN 32                              /* SHA-256 transcript/HKDF */
-
-/* Largest TLSCiphertext.length RFC 8446 5.2 permits: 2^14 content + 256 for the
- * inner type, padding and the AEAD tag. Anything longer is a protocol error, so
- * the receive buffer only ever needs one such record plus its 5-byte header. */
-#define REC_BODY_MAX  16640
-#define RXBUF         (5 + REC_BODY_MAX + 16)
-
-/* Outbound application records are capped well below the 2^14 maximum. That is
- * a deliberate memory trade: the send path has to hold a whole sealed record
- * until TCP accepts it (a half-written record is unparseable, so it cannot be
- * abandoned), and 8 sessions x 16 KiB of send buffer is 128 KiB of kernel BSS
- * bought for nothing -- a client's outbound traffic is requests, which are
- * small. Inbound is unaffected and still takes full-size records. */
-#define SEND_REC_MAX  4096
-#define TXBUF         (SEND_REC_MAX + 512)
-
-/* The server's first encrypted flight: EncryptedExtensions + Certificate +
- * CertificateVerify + Finished. Real chains run 4-6 KiB, including the 4-cert
- * RSA-4096 ones; 16 KiB has been enough for every chain we have met and bounds
- * what a hostile server can make us buffer. */
-#define HSBUF         16384
-
-struct aead {
-    int suite;                               /* cipher suite id */
-    uint8_t key[32]; int keylen;             /* 32 chacha / 16 aes */
-    uint8_t iv[12];
-    uint64_t seq;
-};
-
-/* Handshake-phase secrets. Kept in the session (not on the stack) because the
- * handshake is now steppable -- it returns to the caller between flights. Wiped
- * the moment the application traffic keys are derived. */
-struct hs_secrets {
-    uint8_t hs[32];                          /* handshake secret */
-    uint8_t c_hs[32], s_hs[32];              /* client/server handshake traffic */
-};
-
-enum {
-    TS_FREE = 0,
-    TS_SEND_CH,        /* build + queue ClientHello (first or post-HRR) */
-    TS_RECV_SH,        /* read ServerHello, or a HelloRetryRequest */
-    TS_RECV_FLIGHT,    /* read the encrypted EE..Finished flight */
-    TS_FIN_FLUSH,      /* our Finished is queued; drain it */
-    TS_ESTABLISHED,
-    TS_FAILED,
-};
-
-struct tls_sess {
-    int used, tcp, state, err;
-    int64_t now;                             /* cert-validity clock, captured at start */
-    uint64_t deadline;                       /* absolute tick budget for the handshake */
-
-    char host[256];
-    char alpn_offer[96];                     /* comma-separated list, as given */
-    char alpn_sel[32];                       /* what the server picked ("" = none) */
-
-    /* ClientHello fields that must be *identical* in CH1 and CH2 (RFC 8446
-     * 4.1.2): only the key_share and cookie may change across a retry. */
-    uint8_t random[32], sid[32];
-
-    int group;                               /* GRP_* we have a private key for */
-    uint8_t priv[48];                        /* x25519 scalar (32) or EC scalar (32/48) */
-    uint8_t pub[97];                         /* our share, on the wire */
-    int publen;
-    int hrr_seen;                            /* exactly one HelloRetryRequest allowed */
-    int ccs_sent;                            /* the one compat CCS (RFC 8446 D.4) */
-    uint8_t cookie[512]; int cookielen;      /* echoed back in CH2 if HRR sent one */
-
-    int suite;
-    struct sha256 th;                        /* running handshake transcript */
-    struct hs_secrets sec;
-    struct aead cr, cw;                      /* read (server) / write (client) keys */
-
-    /* transport buffers */
-    uint8_t rxrec[RXBUF]; int rxlen;         /* raw bytes / one partial record */
-    int reclen; uint8_t rectype;             /* the record rec_pull() exposed */
-    uint8_t tx[TXBUF]; int txlen, txoff;     /* sealed bytes waiting for TCP */
-    uint8_t hsbuf[HSBUF]; int hslen;         /* server handshake flight */
-    uint8_t app[REC_BODY_MAX]; int applen, appoff;   /* decrypted app data */
-};
 
 static struct tls_sess sessions[TLS_MAX_SESSIONS];
 
@@ -147,16 +31,18 @@ static uint32_t rand_u32(void) { uint32_t v; rand_bytes((uint8_t *)&v, 4); retur
 
 /* Terminal failure. Every secret is wiped immediately -- the slot itself stays
  * allocated so the caller can read the reason back before tls_close(). */
-static int fail(struct tls_sess *s, int rc)
+int tls_fail(struct tls_sess *s, int rc)
 {
     crypto_wipe(&s->sec, sizeof s->sec);
     crypto_wipe(&s->cr, sizeof s->cr);
     crypto_wipe(&s->cw, sizeof s->cw);
     crypto_wipe(s->priv, sizeof s->priv);
+    crypto_wipe(s->master, sizeof s->master);
     s->state = TS_FAILED;
     s->err = rc;
     return rc;
 }
+#define fail(s, rc) tls_fail((s), (rc))
 
 /* ------------------------------------------------------------------ record
  * I/O. Both halves are strictly non-blocking: they move whatever TCP will give
@@ -165,7 +51,7 @@ static int fail(struct tls_sess *s, int rc)
  * handshake steppable. */
 
 /* Push queued bytes at TCP. 1 = everything drained, 0 = would block, -1 fatal. */
-static int tx_flush(struct tls_sess *s)
+int tls_tx_flush(struct tls_sess *s)
 {
     while (s->txoff < s->txlen) {
         int n = tcp_send(s->tcp, s->tx + s->txoff, s->txlen - s->txoff);
@@ -179,7 +65,7 @@ static int tx_flush(struct tls_sess *s)
 
 /* Frame body[len] as a record and queue it. -1 if it would not fit (a caller
  * bug: every producer here bounds its own output). */
-static int tx_queue(struct tls_sess *s, uint8_t type, const uint8_t *body, int len)
+int tls_tx_queue(struct tls_sess *s, uint8_t type, const uint8_t *body, int len)
 {
     if (s->txoff) {                          /* compact away what TCP already took */
         memmove(s->tx, s->tx + s->txoff, (size_t)(s->txlen - s->txoff));
@@ -196,7 +82,7 @@ static int tx_queue(struct tls_sess *s, uint8_t type, const uint8_t *body, int l
 
 /* Try to expose one complete record. 1 = s->rectype/s->reclen describe a record
  * whose body starts at s->rxrec+5, 0 = need more bytes, -1 = fatal. */
-static int rec_pull(struct tls_sess *s)
+int tls_rec_pull(struct tls_sess *s)
 {
     for (;;) {
         if (s->rxlen >= 5) {
@@ -217,7 +103,7 @@ static int rec_pull(struct tls_sess *s)
     }
 }
 
-static void rec_drop(struct tls_sess *s)
+void tls_rec_drop(struct tls_sess *s)
 {
     int used = 5 + s->reclen;
     if (used > s->rxlen) used = s->rxlen;
@@ -226,11 +112,39 @@ static void rec_drop(struct tls_sess *s)
     s->reclen = 0;
 }
 
+/* Compatibility shims so the TLS 1.3 body below reads as it did before the
+ * split; the exported names are what tls12.c uses. */
+#define tx_flush(s)               tls_tx_flush(s)
+#define tx_queue(s, t, b, l)      tls_tx_queue((s), (t), (b), (l))
+#define rec_pull(s)               tls_rec_pull(s)
+#define rec_drop(s)               tls_rec_drop(s)
+
 /* --- AEAD record seal/open (TLS 1.3) --- */
 static void make_nonce(const struct aead *a, uint8_t nonce[12])
 {
     memcpy(nonce, a->iv, 12);
     for (int i = 0; i < 8; i++) nonce[11 - i] ^= (uint8_t)(a->seq >> (8 * i));
+}
+
+/* Dispatch to whichever AEAD the suite named. Shared with tls12.c: the record
+ * framing differs completely between the two versions, the primitive call does
+ * not. */
+void tls_aead_encrypt(const struct aead *a, const uint8_t nonce[12],
+                      const uint8_t *aad, int aadlen,
+                      const uint8_t *pt, int len, uint8_t *ct, uint8_t *tag)
+{
+    if (a->alg == AEAD_CHACHA20)         chacha20_poly1305_seal(a->key, nonce, aad, aadlen, pt, len, ct, tag);
+    else if (a->alg == AEAD_AES_256_GCM) aes256_gcm_seal(a->key, nonce, aad, aadlen, pt, len, ct, tag);
+    else                                 aes128_gcm_seal(a->key, nonce, aad, aadlen, pt, len, ct, tag);
+}
+
+int tls_aead_decrypt(const struct aead *a, const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *ct, int len, const uint8_t *tag, uint8_t *pt)
+{
+    if (a->alg == AEAD_CHACHA20)         return chacha20_poly1305_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
+    else if (a->alg == AEAD_AES_256_GCM) return aes256_gcm_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
+    else                                 return aes128_gcm_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
 }
 
 /* Encrypt (content || inner_type) into a record body; returns the body length.
@@ -247,10 +161,7 @@ static int aead_seal(struct aead *a, uint8_t inner_type, const uint8_t *content,
     int rlen = plen + 16;
     uint8_t aad[5] = { REC_APPDATA, 0x03, 0x03, (uint8_t)(rlen >> 8), (uint8_t)rlen };
     uint8_t nonce[12]; make_nonce(a, nonce);
-    if (a->suite == TLS_CHACHA20_POLY1305_SHA256)
-        chacha20_poly1305_seal(a->key, nonce, aad, 5, plain, plen, out, out + plen);
-    else
-        aes128_gcm_seal(a->key, nonce, aad, 5, plain, plen, out, out + plen);
+    tls_aead_encrypt(a, nonce, aad, 5, plain, plen, out, out + plen);
     a->seq++;
     crypto_wipe(plain, (size_t)plen);
     return rlen;
@@ -265,12 +176,7 @@ static int aead_open(struct aead *a, const uint8_t *body, int blen,
     int plen = blen - 16;
     uint8_t aad[5] = { REC_APPDATA, 0x03, 0x03, (uint8_t)(blen >> 8), (uint8_t)blen };
     uint8_t nonce[12]; make_nonce(a, nonce);
-    int rc;
-    if (a->suite == TLS_CHACHA20_POLY1305_SHA256)
-        rc = chacha20_poly1305_open(a->key, nonce, aad, 5, body, plen, body + plen, out);
-    else
-        rc = aes128_gcm_open(a->key, nonce, aad, 5, body, plen, body + plen, out);
-    if (rc) return -1;
+    if (tls_aead_decrypt(a, nonce, aad, 5, body, plen, body + plen, out)) return -1;
     a->seq++;
     while (plen > 0 && out[plen - 1] == 0) plen--;       /* strip padding */
     if (plen == 0) return -1;
@@ -287,8 +193,10 @@ static void derive_secret(const uint8_t *secret, const char *label,
 
 static void traffic_keys(const uint8_t *secret, int suite, struct aead *a)
 {
-    a->suite = suite;
+    a->alg = (suite == TLS_CHACHA20_POLY1305_SHA256) ? AEAD_CHACHA20 : AEAD_AES_128_GCM;
     a->keylen = (suite == TLS_CHACHA20_POLY1305_SHA256) ? 32 : 16;
+    a->ivlen = 12;
+    a->explicit_nonce = 0;                   /* TLS 1.3 has no explicit nonce */
     hkdf_expand_label(HLEN, secret, "key", 0, 0, a->key, a->keylen);
     hkdf_expand_label(HLEN, secret, "iv", 0, 0, a->iv, 12);
     a->seq = 0;
@@ -297,25 +205,52 @@ static void traffic_keys(const uint8_t *secret, int suite, struct aead *a)
 static void transcript_hash(const struct sha256 *running, uint8_t out[32])
 { struct sha256 c = *running; sha256_final(&c, out); }
 
+/* --- the two-hash transcript ---
+ * Every handshake byte goes into both a SHA-256 and a SHA-384 running hash,
+ * because the hash the handshake is *actually* keyed on is chosen by a cipher
+ * suite the server does not name until the ServerHello -- and TLS 1.2's
+ * AES_256_GCM_SHA384 suites, which 1.2 servers routinely prefer, key on
+ * SHA-384. tls_th_hash then hands back whichever s->hashlen says (32 until the
+ * suite is known, which is what the TLS 1.3 path uses throughout). */
+void tls_th_update(struct tls_sess *s, const void *p, int n)
+{
+    if (n <= 0) return;
+    sha256_update(&s->th, p, (size_t)n);
+    sha512_update(&s->th384, p, (size_t)n);
+}
+
+void tls_th_hash(const struct tls_sess *s, uint8_t *out)
+{
+    if (s->hashlen == 48) { struct sha512 c = s->th384; sha384_final(&c, out); }
+    else                  { struct sha256 c = s->th;    sha256_final(&c, out); }
+}
+
 /* big-endian helpers for building messages */
 static int put_u16(uint8_t *p, int v) { p[0]=(uint8_t)(v>>8); p[1]=(uint8_t)v; return 2; }
 
 /* ------------------------------------------------------------------- groups */
 
+/* Shims, as above: the TLS 1.3 body below keeps the short local names. */
+#define group_name(g)         tls_group_name(g)
+#define group_supported(g)    tls_group_supported(g)
+#define gen_share(s)          tls_gen_share(s)
+#define compute_shared(s,p,l,o,ol)  tls_compute_shared((s),(p),(l),(o),(ol))
+#define log_alert(b,l)        tls_log_alert((b),(l))
+
 static int group_curve(int grp) { return grp == GRP_P256 ? 256 : grp == GRP_P384 ? 384 : 0; }
-static const char *group_name(int grp)
+const char *tls_group_name(int grp)
 {
     return grp == GRP_X25519 ? "x25519" : grp == GRP_P256 ? "secp256r1"
          : grp == GRP_P384 ? "secp384r1" : "?";
 }
-static int group_supported(int grp)
+int tls_group_supported(int grp)
 { return grp == GRP_X25519 || grp == GRP_P256 || grp == GRP_P384; }
 
 /* Generate a fresh ephemeral private key + public share for s->group.
  * The EC path retries on an out-of-range scalar rather than reducing one: a
  * reduction would bias the private key toward small values. Eight tries makes
  * the failure probability (about 2^-32 per try for P-256) unreachable. */
-static int gen_share(struct tls_sess *s)
+int tls_gen_share(struct tls_sess *s)
 {
     if (s->group == GRP_X25519) {
         rand_bytes(s->priv, 32);
@@ -337,8 +272,8 @@ static int gen_share(struct tls_sess *s)
 }
 
 /* Derive the ECDHE shared secret from the server's key share. */
-static int compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
-                          uint8_t *out, int *outlen)
+int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
+                       uint8_t *out, int *outlen)
 {
     if (s->group == GRP_X25519) {
         if (splen != 32) return -1;
@@ -394,15 +329,30 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max)
     /* Everything up to the ALPN extension is fixed-size apart from the host
      * name, so one check here covers all of it; the two variable-length
      * extensions after it (ALPN, cookie, key_share) check themselves. */
-    if (max < 160 + hl) return -1;
+    if (max < 224 + hl) return -1;
 
     ch[n++] = HS_CLIENT_HELLO; int lenpos = n; n += 3;   /* 3-byte length, filled later */
     ch[n++] = 0x03; ch[n++] = 0x03;                      /* legacy_version */
     memcpy(ch + n, s->random, 32); n += 32;
     ch[n++] = 32; memcpy(ch + n, s->sid, 32); n += 32;   /* legacy_session_id */
-    n += put_u16(ch + n, 4);
+
+    /* cipher_suites: the two TLS 1.3 suites first, then the TLS 1.2 ones. The
+     * lists do not compete -- a 1.3 server can only pick from the 0x13xx pair
+     * and a 1.2 server only from the rest -- so this is one offer covering both
+     * protocols, not a preference ordering between versions (that is what
+     * supported_versions below is for). Within 1.2, ChaCha20 leads AES-256
+     * because our AES is a byte-at-a-time software S-box while ChaCha20 is
+     * add-rotate-xor; on this CPU-emulated target that difference is real.
+     * See tls_int.h for why there is no static-RSA or CBC suite here. */
+    n += put_u16(ch + n, 16);
     n += put_u16(ch + n, TLS_AES_128_GCM_SHA256);
-    n += put_u16(ch + n, TLS_CHACHA20_POLY1305_SHA256);  /* cipher_suites */
+    n += put_u16(ch + n, TLS_CHACHA20_POLY1305_SHA256);
+    n += put_u16(ch + n, TLS_ECDHE_ECDSA_CHACHA20_SHA256);
+    n += put_u16(ch + n, TLS_ECDHE_RSA_CHACHA20_SHA256);
+    n += put_u16(ch + n, TLS_ECDHE_ECDSA_AES128_GCM_SHA256);
+    n += put_u16(ch + n, TLS_ECDHE_RSA_AES128_GCM_SHA256);
+    n += put_u16(ch + n, TLS_ECDHE_ECDSA_AES256_GCM_SHA384);
+    n += put_u16(ch + n, TLS_ECDHE_RSA_AES256_GCM_SHA384);
     ch[n++] = 1; ch[n++] = 0;                            /* compression: null */
     int extlenpos = n; n += 2;
 
@@ -411,25 +361,54 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max)
     n += put_u16(ch + n, hl + 3); ch[n++] = 0; n += put_u16(ch + n, hl);
     memcpy(ch + n, s->host, (size_t)hl); n += hl;
 
-    /* supported_versions = TLS 1.3 */
-    n += put_u16(ch + n, EXT_SUPPORTED_VERS); n += put_u16(ch + n, 3);
-    ch[n++] = 2; n += put_u16(ch + n, 0x0304);
+    /* supported_versions: 1.3 first, then 1.2 -- the order IS the preference,
+     * and a 1.3 server takes the first it knows. A 1.2-only server ignores this
+     * extension entirely and answers in ServerHello.legacy_version instead,
+     * which is why offering 1.2 here costs the 1.3 path nothing. */
+    n += put_u16(ch + n, EXT_SUPPORTED_VERS); n += put_u16(ch + n, 5);
+    ch[n++] = 4; n += put_u16(ch + n, TLS_V13); n += put_u16(ch + n, TLS_V12);
 
     /* supported_groups. x25519 is listed first because it is the group we have
      * a constant-time implementation for; the two NIST curves are there so a
      * server that refuses x25519 gets a HelloRetryRequest it can act on
-     * instead of a handshake_failure. */
+     * instead of a handshake_failure. In TLS 1.2 this same list is what the
+     * server picks its ServerKeyExchange curve from. */
     n += put_u16(ch + n, EXT_SUPPORTED_GRPS); n += put_u16(ch + n, 8);
     n += put_u16(ch + n, 6);
     n += put_u16(ch + n, GRP_X25519);
     n += put_u16(ch + n, GRP_P256);
     n += put_u16(ch + n, GRP_P384);
 
-    /* signature_algorithms */
-    n += put_u16(ch + n, EXT_SIG_ALGS); n += put_u16(ch + n, 16); n += put_u16(ch + n, 14);
-    n += put_u16(ch + n, 0x0403); n += put_u16(ch + n, 0x0503);
+    /* ec_point_formats = uncompressed. Meaningless in 1.3 (points have one
+     * encoding) but RFC 4492 4 requires an ECC-capable 1.2 client to send it,
+     * and some 1.2 servers do enforce that. */
+    n += put_u16(ch + n, EXT_EC_FORMATS); n += put_u16(ch + n, 2);
+    ch[n++] = 1; ch[n++] = 0;
+
+    /* extended_master_secret (RFC 7627), empty. In TLS 1.2 the plain master
+     * secret is derived from the two randoms only, which lets an attacker who
+     * can get two different handshakes to agree on the same premaster splice
+     * them together (the triple-handshake attack). Binding the master secret to
+     * a hash of the whole handshake instead closes that. We ask for it on every
+     * 1.2 connection; see tls12.c for what happens when a server declines. */
+    n += put_u16(ch + n, EXT_EMS); n += put_u16(ch + n, 0);
+
+    /* renegotiation_info (RFC 5746), empty = "this is an initial handshake and
+     * I understand secure renegotiation". Servers hardened against the 2009
+     * renegotiation attack reject clients that say nothing at all. We never
+     * renegotiate, so an empty extension is the whole of our participation. */
+    n += put_u16(ch + n, EXT_RENEG_INFO); n += put_u16(ch + n, 1); ch[n++] = 0;
+
+    /* signature_algorithms. In TLS 1.3 each code point pins a curve as well as
+     * a hash; in TLS 1.2 the low byte is only the signature ALGORITHM (3 =
+     * ECDSA, 1 = RSA PKCS#1) and the curve comes from the certificate -- so the
+     * same list means slightly different things to the two servers, and both
+     * readings are covered. The rsa_pkcs1_* entries are here for 1.2's
+     * ServerKeyExchange, which commonly signs with PKCS#1 v1.5. */
+    n += put_u16(ch + n, EXT_SIG_ALGS); n += put_u16(ch + n, 20); n += put_u16(ch + n, 18);
+    n += put_u16(ch + n, 0x0403); n += put_u16(ch + n, 0x0503); n += put_u16(ch + n, 0x0603);
     n += put_u16(ch + n, 0x0804); n += put_u16(ch + n, 0x0805); n += put_u16(ch + n, 0x0806);
-    n += put_u16(ch + n, 0x0401); n += put_u16(ch + n, 0x0501);
+    n += put_u16(ch + n, 0x0401); n += put_u16(ch + n, 0x0501); n += put_u16(ch + n, 0x0601);
 
     /* ALPN */
     int al = put_alpn(s, ch + n, max - n);
@@ -480,7 +459,7 @@ static int step_send_ch(struct tls_sess *s)
         if (tx_queue(s, REC_CCS, &ccs, 1)) return fail(s, TLS_E_PROTO);
         s->ccs_sent = 1;
     }
-    sha256_update(&s->th, ch, (size_t)n);
+    tls_th_update(s, ch, n);
     if (tx_queue(s, REC_HANDSHAKE, ch, n)) return fail(s, TLS_E_PROTO);
     s->state = TS_RECV_SH;
 
@@ -503,67 +482,101 @@ static const uint8_t HRR_RANDOM[32] = {
  * loudly -- it fails at the Finished MAC, which is why it is spelled out. */
 static void transcript_restart_for_hrr(struct tls_sess *s)
 {
-    uint8_t ch1[32];
+    uint8_t ch1[32], ch1_384[48];
     transcript_hash(&s->th, ch1);
+    { struct sha512 c = s->th384; sha384_final(&c, ch1_384); }
     sha256_init(&s->th);
+    sha384_init(&s->th384);
+    /* Both transcripts are restarted, each with its own hash of ClientHello1.
+     * Only the SHA-256 one can ever be used (an HRR means TLS 1.3, and both our
+     * 1.3 suites are SHA-256), but leaving the SHA-384 copy holding the
+     * pre-retry state would make it silently wrong rather than merely unused. */
     uint8_t hdr[4] = { HS_MESSAGE_HASH, 0, 0, HLEN };
     sha256_update(&s->th, hdr, 4);
     sha256_update(&s->th, ch1, HLEN);
+    uint8_t hdr4[4] = { HS_MESSAGE_HASH, 0, 0, 48 };
+    sha512_update(&s->th384, hdr4, 4);
+    sha512_update(&s->th384, ch1_384, 48);
 }
 
-/* Parse a ServerHello / HelloRetryRequest body. Fills *suite and, for a real
- * ServerHello, the server key share; for an HRR, *retry_group / cookie.
- * Every read is bounded by shend, which is bounded by what we received. */
-static int parse_sh(struct tls_sess *s, const uint8_t *body, int blen, int shend,
-                    int *suite, const uint8_t **spub, int *splen, int *retry_group)
+/* What a ServerHello told us, once parsed. */
+struct sh_info {
+    int suite;
+    int version;                             /* from supported_versions, or 0 */
+    const uint8_t *spub; int splen;          /* TLS 1.3 key_share */
+    int retry_group;                         /* HelloRetryRequest key_share */
+    int ems;                                 /* server echoed extended_master_secret */
+    const uint8_t *alpn; int alpnlen;        /* TLS 1.2 puts ALPN here, not in EE */
+};
+
+/* Parse a ServerHello / HelloRetryRequest body into *out. `is_hrr` selects how
+ * the key_share extension is read (a retry names a group and sends no key).
+ * Every read is bounded by shend, which is bounded by what we received.
+ * Returns 0 on a structurally valid message; version negotiation is the
+ * caller's decision, not this function's. */
+static int parse_sh(struct tls_sess *s, const uint8_t *body, int shend,
+                    int is_hrr, struct sh_info *out)
 {
-    (void)blen;
     int p = 4 + 2 + 32;                                  /* skip type/len, ver, random */
     int sidlen = body[p++]; p += sidlen;
     if (p + 5 > shend) return -1;                        /* suite(2)+comp(1)+extlen(2) */
-    *suite = (body[p] << 8) | body[p+1]; p += 2;
-    p += 1;                                              /* compression */
+    out->suite = (body[p] << 8) | body[p+1]; p += 2;
+    /* compression_method. TLS 1.3 requires 0 and TLS 1.2 record compression was
+     * removed by RFC 7525 (CRIME); we only ever offer null, so anything else is
+     * a server answering an offer we did not make. */
+    if (body[p++] != 0) return -1;
     int elen = (body[p] << 8) | body[p+1]; p += 2;
     int eend = p + elen;
     if (eend > shend) return -1;
-    int saw_version = 0;
     while (p + 4 <= eend) {
         int et = (body[p] << 8) | body[p+1], el = (body[p+2] << 8) | body[p+3]; p += 4;
         if (p + el > eend) return -1;
         if (et == EXT_SUPPORTED_VERS && el == 2) {
-            if (((body[p] << 8) | body[p+1]) != 0x0304) return -1;
-            saw_version = 1;
+            out->version = (body[p] << 8) | body[p+1];
         } else if (et == EXT_KEY_SHARE) {
-            if (retry_group) {                           /* HRR: group only, no key */
+            if (is_hrr) {                                /* HRR: group only, no key */
                 if (el != 2) return -1;
-                *retry_group = (body[p] << 8) | body[p+1];
+                out->retry_group = (body[p] << 8) | body[p+1];
             } else {
                 if (el < 4) return -1;
                 int grp = (body[p] << 8) | body[p+1];
                 int kl = (body[p+2] << 8) | body[p+3];
                 if (grp != s->group || kl != el - 4) return -1;   /* must answer our offer */
-                *spub = body + p + 4; *splen = kl;
+                out->spub = body + p + 4; out->splen = kl;
             }
-        } else if (et == EXT_COOKIE && retry_group) {
+        } else if (et == EXT_COOKIE && is_hrr) {
             if (el < 2) return -1;
             int cl = (body[p] << 8) | body[p+1];
             if (cl != el - 2 || cl > (int)sizeof s->cookie) return -1;
             memcpy(s->cookie, body + p + 2, (size_t)cl);
             s->cookielen = cl;
+        } else if (et == EXT_EMS && el == 0) {
+            out->ems = 1;
+        } else if (et == EXT_ALPN) {
+            out->alpn = body + p; out->alpnlen = el;
         }
         p += el;
     }
-    /* A TLS 1.3 server MUST send supported_versions in its ServerHello; without
-     * it we would be talking to something that negotiated an older version in
-     * the legacy field, which we do not implement. */
-    if (!saw_version) return -1;
     return 0;
+}
+
+/* Read the server's ALPN choice out of an ALPN extension body
+ * (ProtocolNameList: list_len(2) then one name_len(1)||name). Shared by the
+ * 1.3 EncryptedExtensions reader and the 1.2 ServerHello reader. */
+void tls_take_alpn(struct tls_sess *s, const uint8_t *ext, int el)
+{
+    if (el < 3) return;
+    int nl = ext[2];
+    if (nl > 0 && nl + 3 <= el && nl < (int)sizeof s->alpn_sel) {
+        memcpy(s->alpn_sel, ext + 3, (size_t)nl);
+        s->alpn_sel[nl] = 0;
+    }
 }
 
 /* Report a plaintext alert -- these carry the reason a server rejected us
  * (e.g. 40 handshake_failure when no group/suite overlapped), and printing it
  * is the difference between a debuggable failure and "TLS_E_PROTO". */
-static void log_alert(const uint8_t *body, int blen)
+void tls_log_alert(const uint8_t *body, int blen)
 {
     if (blen >= 2) kprintf("[tls] alert level=%d desc=%d\n", body[0], body[1]);
 }
@@ -599,29 +612,23 @@ static int step_recv_sh(struct tls_sess *s)
     if (blen < 44 || shlen < 40 || shend > blen) return fail(s, TLS_E_PROTO);
 
     int is_hrr = memcmp(body + 6, HRR_RANDOM, 32) == 0;
-
-    if (!is_hrr) {
-        /* Downgrade protection (RFC 8446 4.1.3): a genuine TLS 1.3 server sets
-         * the last 8 bytes of ServerHello.random to a fixed sentinel iff it
-         * negotiated a *lower* version. We only speak 1.3, so either sentinel
-         * means someone forced a downgrade -- abort. */
-        static const uint8_t d12[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x01};
-        static const uint8_t d11[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x00};
-        if (memcmp(body + 6 + 24, d12, 8) == 0 || memcmp(body + 6 + 24, d11, 8) == 0)
-            return fail(s, TLS_E_PROTO);
-    }
+    int legacy_version = (body[4] << 8) | body[5];
 
     if (is_hrr) {
         if (s->hrr_seen) {                      /* RFC 8446 4.1.4: at most one */
             kprintf("[tls] second HelloRetryRequest -- aborting\n");
             return fail(s, TLS_E_PROTO);
         }
-        int suite = 0, grp = -1;
+        struct sh_info sh; memset(&sh, 0, sizeof sh); sh.retry_group = -1;
         transcript_restart_for_hrr(s);
-        sha256_update(&s->th, body, (size_t)shend);
-        if (parse_sh(s, body, blen, shend, &suite, 0, 0, &grp) != 0)
-            return fail(s, TLS_E_PROTO);
+        tls_th_update(s, body, shend);
+        if (parse_sh(s, body, shend, 1, &sh) != 0) return fail(s, TLS_E_PROTO);
         rec_drop(s);
+        /* A HelloRetryRequest only exists in TLS 1.3, so it must carry
+         * supported_versions saying so; without that we would be acting on a
+         * retry from something that never negotiated 1.3. */
+        if (sh.version != TLS_V13) return fail(s, TLS_E_PROTO);
+        int grp = sh.retry_group;
         /* The retry must ask for a group we offered in supported_groups and
          * did NOT already send a share for; otherwise the server is either
          * confused or trying to make us loop. */
@@ -629,7 +636,7 @@ static int step_recv_sh(struct tls_sess *s)
             kprintf("[tls] HRR asked for group 0x%x (unusable) -- aborting\n", grp);
             return fail(s, TLS_E_PROTO);
         }
-        if (suite != TLS_AES_128_GCM_SHA256 && suite != TLS_CHACHA20_POLY1305_SHA256)
+        if (sh.suite != TLS_AES_128_GCM_SHA256 && sh.suite != TLS_CHACHA20_POLY1305_SHA256)
             return fail(s, TLS_E_PROTO);
         kprintf("[tls] HelloRetryRequest: %s -> %s\n", group_name(s->group), group_name(grp));
         s->hrr_seen = 1;
@@ -641,11 +648,66 @@ static int step_recv_sh(struct tls_sess *s)
     }
 
     /* --- a real ServerHello --- */
-    int suite = 0, splen = 0;
-    const uint8_t *spub = 0;
-    sha256_update(&s->th, body, (size_t)shend);
-    if (parse_sh(s, body, blen, shend, &suite, &spub, &splen, 0) != 0)
+    struct sh_info sh; memset(&sh, 0, sizeof sh); sh.retry_group = -1;
+    tls_th_update(s, body, shend);
+    if (parse_sh(s, body, shend, 0, &sh) != 0) return fail(s, TLS_E_PROTO);
+
+    /* --- version negotiation ---
+     * RFC 8446 4.2.1: a TLS 1.3 server signals 1.3 in supported_versions and
+     * leaves legacy_version at 0x0303. A TLS 1.2 server has never heard of
+     * supported_versions, ignores ours, and answers in legacy_version. So the
+     * extension wins where present and legacy_version decides otherwise. */
+    int version = sh.version ? sh.version : legacy_version;
+    if (version != TLS_V13 && version != TLS_V12) {
+        kprintf("[tls] server chose version 0x%x -- we speak only 1.2 and 1.3\n", version);
         return fail(s, TLS_E_PROTO);
+    }
+    /* Downgrade protection (RFC 8446 4.1.3). A server that KNOWS about TLS 1.3
+     * stamps the last 8 bytes of ServerHello.random with a sentinel whenever it
+     * negotiates something older. We offer 1.3 in every ClientHello, so such a
+     * server would have picked 1.3 if it were really talking to us -- seeing
+     * the sentinel means the version was pushed down in flight, and the whole
+     * point of the sentinel is that the stamp is inside the signed/MACed
+     * handshake where an attacker cannot remove it. A genuinely 1.2-only
+     * server does not set it, which is exactly the case we now support. */
+    if (version == TLS_V12) {
+        static const uint8_t d12[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x01};
+        static const uint8_t d11[8] = {0x44,0x4F,0x57,0x4E,0x47,0x52,0x44,0x00};
+        if (memcmp(body + 6 + 24, d12, 8) == 0 || memcmp(body + 6 + 24, d11, 8) == 0) {
+            kprintf("[tls] TLS 1.3 downgrade sentinel in a 1.2 ServerHello -- aborting\n");
+            return fail(s, TLS_E_PROTO);
+        }
+    }
+    s->version = version;
+
+    if (version == TLS_V12) {
+        /* TLS 1.2 puts ALPN in the (cleartext) ServerHello rather than in 1.3's
+         * encrypted EncryptedExtensions. Same selection, different envelope. */
+        if (sh.alpn) tls_take_alpn(s, sh.alpn, sh.alpnlen);
+        memcpy(s->srandom, body + 6, 32);
+        s->suite = sh.suite;
+        s->ems = sh.ems;
+        /* TLS 1.2 packs as many handshake messages into a record as will fit,
+         * so this record very often continues straight into Certificate,
+         * ServerKeyExchange and ServerHelloDone. Dropping it whole -- which is
+         * safe in 1.3, where everything after the ServerHello is encrypted and
+         * therefore in a different record -- would silently discard the
+         * certificate and leave us waiting for a flight that already arrived.
+         * Hand the remainder to the 1.2 flight buffer first. */
+        int rest = blen - shend;
+        if (rest > 0) {
+            if (rest > (int)sizeof s->hsbuf) return fail(s, TLS_E_PROTO);
+            tls_th_update(s, body + shend, rest);
+            memcpy(s->hsbuf, body + shend, (size_t)rest);
+            s->hslen = rest;
+        }
+        rec_drop(s);
+        return tls12_begin(s);
+    }
+
+    /* --- TLS 1.3 from here on --- */
+    int suite = sh.suite, splen = sh.splen;
+    const uint8_t *spub = sh.spub;
     if (!spub || splen < 1) return fail(s, TLS_E_PROTO);
     if (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256)
         return fail(s, TLS_E_PROTO);
@@ -682,13 +744,34 @@ static int step_recv_sh(struct tls_sess *s)
     crypto_wipe(early, sizeof early);
     crypto_wipe(derived, sizeof derived);
 
-    kprintf("[tls] ServerHello: suite 0x%x, group %s%s\n",
+    kprintf("[tls] ServerHello: TLS 1.3, suite 0x%x, group %s%s\n",
             suite, group_name(s->group), s->hrr_seen ? " (after HRR)" : "");
     s->state = TS_RECV_FLIGHT;
     /* Servers send the whole flight back-to-back, so EncryptedExtensions is
      * usually already in the buffer. Carry straight on instead of reporting
      * WANT_READ for data we are holding. */
     return step_recv_flight(s);
+}
+
+/* Verify a parsed chain against the trust store, and say WHY if it is refused.
+ * "TLS_E_CERT" is indistinguishable between an expired leaf, a name mismatch
+ * and an anchor we do not hold, and those three call for completely different
+ * responses from whoever is looking. Shared by both protocol versions -- the
+ * certificate is the one thing TLS 1.2 and 1.3 agree about. */
+int tls_check_chain(struct tls_sess *s, const struct cert *chain, int ncert)
+{
+    if (ncert < 1) { kprintf("[tls] no usable certificate in the flight\n"); return TLS_E_CERT; }
+    int vr = x509_verify_chain(chain, ncert, s->host, s->now);
+    if (vr != X509_OK) {
+        kprintf("[tls] chain of %d rejected for %s: %s (%d)\n", ncert, s->host,
+                vr == X509_E_NAME ? "host name" : vr == X509_E_EXPIRED ? "validity dates"
+                : vr == X509_E_UNTRUSTED ? "no path to a trusted root"
+                : vr == X509_E_SIG ? "bad signature" : "parse", vr);
+        return TLS_E_CERT;
+    }
+    kprintf("[tls] chain of %d verified for %s%s%s\n", ncert, s->host,
+            s->alpn_sel[0] ? ", alpn=" : "", s->alpn_sel[0] ? s->alpn_sel : "");
+    return 0;
 }
 
 /* Walk the buffered flight and verify it. 0 ok, negative TLS_E_*. */
@@ -714,7 +797,7 @@ static int verify_flight(struct tls_sess *s)
         const uint8_t *mb = flight + q + 4;
 
         if (mt == HS_ENCRYPTED_EXT) {
-            sha256_update(&s->th, flight + q, (size_t)(4 + ml));
+            tls_th_update(s, flight + q, 4 + ml);
             /* EncryptedExtensions is where the server reports its ALPN choice. */
             int p = 0;
             if (ml >= 2) {
@@ -724,19 +807,13 @@ static int verify_flight(struct tls_sess *s)
                     while (p + 4 <= eend) {
                         int et = (mb[p] << 8) | mb[p+1], el = (mb[p+2] << 8) | mb[p+3]; p += 4;
                         if (p + el > eend) break;
-                        if (et == EXT_ALPN && el >= 3) {
-                            int nl = mb[p + 2];
-                            if (nl > 0 && nl + 3 <= el && nl < (int)sizeof s->alpn_sel) {
-                                memcpy(s->alpn_sel, mb + p + 3, (size_t)nl);
-                                s->alpn_sel[nl] = 0;
-                            }
-                        }
+                        if (et == EXT_ALPN) tls_take_alpn(s, mb + p, el);
                         p += el;
                     }
                 }
             }
         } else if (mt == HS_CERTIFICATE) {
-            sha256_update(&s->th, flight + q, (size_t)(4 + ml));
+            tls_th_update(s, flight + q, 4 + ml);
             /* cert_request_ctx(1) + cert_list(3) of {cert(3) + exts(2)}. Every
              * length is bounded by ml, so a crafted Certificate cannot read
              * past the handshake message. */
@@ -794,7 +871,7 @@ static int verify_flight(struct tls_sess *s)
                 kprintf("[tls] CertificateVerify rejected (sigalg 0x%x, %d certs)\n", sigalg, ncert);
                 return TLS_E_CERT;
             }
-            sha256_update(&s->th, flight + q, (size_t)(4 + ml));
+            tls_th_update(s, flight + q, 4 + ml);
         } else if (mt == HS_FINISHED) {
             uint8_t th_cv[32]; transcript_hash(&s->th, th_cv);   /* through CertVerify */
             uint8_t fk[32], expect[32];
@@ -803,26 +880,12 @@ static int verify_flight(struct tls_sess *s)
             int bad = (ml != 32) || memcmp(expect, mb, 32) != 0;
             crypto_wipe(fk, sizeof fk); crypto_wipe(expect, sizeof expect);
             if (bad) return TLS_E_CRYPTO;
-            sha256_update(&s->th, flight + q, (size_t)(4 + ml));
+            tls_th_update(s, flight + q, 4 + ml);
         }
         q += 4 + ml;
     }
 
-    /* Say WHY a chain was refused. "TLS_E_CERT" is indistinguishable between an
-     * expired leaf, a name mismatch and an anchor we do not hold, and those
-     * three call for completely different responses from whoever is looking. */
-    if (ncert < 1) { kprintf("[tls] no usable certificate in the flight\n"); return TLS_E_CERT; }
-    int vr = x509_verify_chain(chain, ncert, s->host, s->now);
-    if (vr != X509_OK) {
-        kprintf("[tls] chain of %d rejected for %s: %s (%d)\n", ncert, s->host,
-                vr == X509_E_NAME ? "host name" : vr == X509_E_EXPIRED ? "validity dates"
-                : vr == X509_E_UNTRUSTED ? "no path to a trusted root"
-                : vr == X509_E_SIG ? "bad signature" : "parse", vr);
-        return TLS_E_CERT;
-    }
-    kprintf("[tls] chain of %d verified for %s%s%s\n", ncert, s->host,
-            s->alpn_sel[0] ? ", alpn=" : "", s->alpn_sel[0] ? s->alpn_sel : "");
-    return 0;
+    return tls_check_chain(s, chain, ncert);
 }
 
 /* Does the buffered flight end with a complete Finished? */
@@ -957,7 +1020,12 @@ int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now)
     s->group = GRP_X25519;
     if (gen_share(s) != 0) { fail(s, TLS_E_CRYPTO); return TLS_E_CRYPTO; }
     s->state = TS_SEND_CH;
+    /* hashlen stays 32 until a cipher suite says otherwise; both transcripts
+     * run from the very first ClientHello byte because the choice arrives after
+     * we have already hashed it. */
+    s->hashlen = 32;
     sha256_init(&s->th);
+    sha384_init(&s->th384);
     return id;
 }
 
@@ -980,11 +1048,13 @@ int tls_step(int id)
     if (fl == 0) return TLS_WANT_WRITE;
 
     switch (s->state) {
-    case TS_SEND_CH:     return step_send_ch(s);
-    case TS_RECV_SH:     return step_recv_sh(s);
-    case TS_RECV_FLIGHT: return step_recv_flight(s);
-    case TS_FIN_FLUSH:   s->state = TS_ESTABLISHED; return TLS_DONE;
-    default:             return fail(s, TLS_E_PROTO);
+    case TS_SEND_CH:       return step_send_ch(s);
+    case TS_RECV_SH:       return step_recv_sh(s);
+    case TS_RECV_FLIGHT:   return step_recv_flight(s);
+    case TS_FIN_FLUSH:     s->state = TS_ESTABLISHED; return TLS_DONE;
+    case TS12_RECV_FLIGHT:
+    case TS12_RECV_CCS:    return tls12_step(s);
+    default:               return fail(s, TLS_E_PROTO);
     }
 }
 
@@ -1013,9 +1083,13 @@ int tls_send(int id, const void *buf, int len)
     if (fl == 0) return 0;                               /* a record is still going out */
     if (len == 0) return 0;
     int n = len > SEND_REC_MAX ? SEND_REC_MAX : len;
-    uint8_t rec[SEND_REC_MAX + 32];
-    int rl = aead_seal(&s->cw, REC_APPDATA, buf, n, rec);
-    if (rl < 0 || tx_queue(s, REC_APPDATA, rec, rl)) return -1;
+    if (s->version == TLS_V12) {
+        if (tls12_write_record(s, REC_APPDATA, buf, n) != 0) return -1;
+    } else {
+        uint8_t rec[SEND_REC_MAX + 32];
+        int rl = aead_seal(&s->cw, REC_APPDATA, buf, n, rec);
+        if (rl < 0 || tx_queue(s, REC_APPDATA, rec, rl)) return -1;
+    }
     if (tx_flush(s) < 0) return -1;
     /* The record is sealed and owned by the session now; whether TCP took all
      * of it is irrelevant to the caller, who must not resend these bytes. */
@@ -1044,6 +1118,32 @@ int tls_recv(int id, void *buf, int max)
         return n;
     }
     s->applen = s->appoff = 0;
+
+    if (s->version == TLS_V12) {
+        /* TLS 1.2 names the content type in the cleartext record header rather
+         * than in a trailing byte inside the ciphertext, so the loop below does
+         * not apply; tls12_read_record hands back the type it read. */
+        for (;;) {
+            uint8_t ct; int dl;
+            int r = tls12_read_record(s, &ct, &dl);
+            if (r == 0) return 0;
+            if (r < 0) return -1;
+            if (ct == REC_ALERT) return -1;              /* close_notify etc */
+            if (ct == REC_HANDSHAKE) {
+                /* A post-handshake HelloRequest is the server asking to
+                 * renegotiate. RFC 5746 lets a client decline by ignoring it,
+                 * and renegotiation is exactly the feature we do not want, so
+                 * ignoring is the whole policy. NewSessionTicket likewise. */
+                continue;
+            }
+            if (ct != REC_APPDATA) continue;
+            if (dl == 0) continue;                       /* legal, and not EOF */
+            s->applen = dl; s->appoff = 0;
+            int n = dl > max ? max : dl;
+            memcpy(buf, s->app, (size_t)n); s->appoff = n;
+            return n;
+        }
+    }
 
     for (;;) {
         int r = rec_pull(s);
@@ -1076,6 +1176,12 @@ int tls_recv(int id, void *buf, int max)
         memcpy(buf, s->app, (size_t)n); s->appoff = n;
         return n;
     }
+}
+
+int tls_version(int id)
+{
+    struct tls_sess *s = sess_of(id);
+    return s ? s->version : 0;
 }
 
 int tls_pending(int id)

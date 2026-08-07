@@ -28,33 +28,52 @@ static const uint8_t sbox[256] = {
 
 static uint8_t xtime(uint8_t x) { return (uint8_t)((x << 1) ^ ((x >> 7) * 0x1b)); }
 
-static void key_expand(const uint8_t key[16], uint8_t rk[176])
+/* AES-128 and AES-256 share this code, parameterised by key length: 16 bytes ->
+ * 10 rounds and a 176-byte schedule, 32 -> 14 rounds and 240. AES-256 is here
+ * because TLS 1.2 servers commonly *prefer* ECDHE_*_WITH_AES_256_GCM_SHA384, so
+ * without it a 1.2 handshake would routinely land on our second choice or on
+ * nothing at all. It is a round count and a slightly longer key schedule, not a
+ * second cipher -- everything below the schedule is unchanged. */
+#define AES_RK_MAX 240                          /* 4 * (14 + 1) * 4 */
+
+static int aes_rounds(int keylen) { return keylen == 32 ? 14 : 10; }
+
+static void key_expand(const uint8_t *key, int keylen, uint8_t *rk)
 {
-    memcpy(rk, key, 16);
+    int nk = keylen / 4;                        /* key words: 4 (AES-128) or 8 */
+    int total = 4 * (nk + 6 + 1) * 4;           /* bytes of expanded key */
+    memcpy(rk, key, (size_t)keylen);
     uint8_t rcon = 1;
-    for (int i = 16; i < 176; i += 4) {
+    for (int i = keylen; i < total; i += 4) {
         uint8_t t[4]; memcpy(t, rk + i - 4, 4);
-        if (i % 16 == 0) {
+        int w = i / 4;                          /* index of the word being built */
+        if (w % nk == 0) {
             uint8_t tmp = t[0];
             t[0] = sbox[t[1]] ^ rcon; t[1] = sbox[t[2]]; t[2] = sbox[t[3]]; t[3] = sbox[tmp];
             rcon = xtime(rcon);
+        } else if (nk > 6 && w % nk == 4) {
+            /* AES-256 only (FIPS-197 5.2): an extra SubWord on every fourth
+             * word. Leaving it out still yields a self-consistent cipher --
+             * encrypt/decrypt round-trip fine -- so the mistake is invisible
+             * until it interoperates with nothing. Hence the NIST vectors. */
+            for (int j = 0; j < 4; j++) t[j] = sbox[t[j]];
         }
-        for (int j = 0; j < 4; j++) rk[i+j] = rk[i-16+j] ^ t[j];
+        for (int j = 0; j < 4; j++) rk[i+j] = rk[i-keylen+j] ^ t[j];
     }
 }
 
-static void aes_encrypt(const uint8_t rk[176], const uint8_t in[16], uint8_t out[16])
+static void aes_encrypt(const uint8_t *rk, int nr, const uint8_t in[16], uint8_t out[16])
 {
     uint8_t s[16]; memcpy(s, in, 16);
     for (int i = 0; i < 16; i++) s[i] ^= rk[i];
-    for (int round = 1; round <= 10; round++) {
+    for (int round = 1; round <= nr; round++) {
         for (int i = 0; i < 16; i++) s[i] = sbox[s[i]];
         uint8_t t[16];                          /* ShiftRows */
         for (int r = 0; r < 4; r++)
             for (int col = 0; col < 4; col++)
                 t[col*4+r] = s[((col+r)%4)*4+r];
         memcpy(s, t, 16);
-        if (round < 10) {                       /* MixColumns */
+        if (round < nr) {                       /* MixColumns */
             for (int col = 0; col < 4; col++) {
                 uint8_t *p = s + col*4;
                 uint8_t a0=p[0],a1=p[1],a2=p[2],a3=p[3];
@@ -108,13 +127,13 @@ static void ghash(const uint8_t H[16], const uint8_t *aad, int aadlen,
     memcpy(out, y, 16);
 }
 
-static void gctr(const uint8_t rk[176], const uint8_t icb[16],
+static void gctr(const uint8_t *rk, int nr, const uint8_t icb[16],
                  const uint8_t *in, int len, uint8_t *out)
 {
     uint8_t ctr[16]; memcpy(ctr, icb, 16);
     uint8_t ks[16];
     for (int off = 0; off < len; off += 16) {
-        aes_encrypt(rk, ctr, ks);
+        aes_encrypt(rk, nr, ctr, ks);
         int n = len - off; if (n > 16) n = 16;
         for (int i = 0; i < n; i++) out[off+i] = in[off+i] ^ ks[i];
         for (int i = 15; i >= 12; i--) { if (++ctr[i]) break; }   /* inc low 32 bits */
@@ -122,44 +141,40 @@ static void gctr(const uint8_t rk[176], const uint8_t icb[16],
     crypto_wipe(ks, sizeof ks);                 /* keystream */
 }
 
-static void gcm_core(const uint8_t key[16], const uint8_t nonce[12],
+static void gcm_core(const uint8_t *key, int keylen, const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen, const uint8_t *in, int len,
                      uint8_t *out, uint8_t tag[16])
 {
-    uint8_t rk[176]; key_expand(key, rk);
+    int nr = aes_rounds(keylen);
+    uint8_t rk[AES_RK_MAX]; key_expand(key, keylen, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
-    aes_encrypt(rk, zero, H);
+    aes_encrypt(rk, nr, zero, H);
     uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
     uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
     for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0): counter starts at 2 */
-    gctr(rk, ctr1, in, len, out);               /* encrypt/decrypt with counter from 2 */
+    gctr(rk, nr, ctr1, in, len, out);           /* encrypt/decrypt with counter from 2 */
     uint8_t S[16]; ghash(H, aad, aadlen, out, len, S);
-    uint8_t ej0[16]; aes_encrypt(rk, j0, ej0);
+    uint8_t ej0[16]; aes_encrypt(rk, nr, j0, ej0);
     for (int i = 0; i < 16; i++) tag[i] = S[i] ^ ej0[i];
     crypto_wipe(rk, sizeof rk);              /* expanded key */
     crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
 }
 
-void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
-                     const uint8_t *aad, int aadlen,
-                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
-{
-    if (aadlen < 0 || len < 0) return;          /* negative lengths would walk backwards */
-    gcm_core(key, nonce, aad, aadlen, pt, len, ct, tag);
-}
-
-int aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
+static int gcm_open(const uint8_t *key, int keylen, const uint8_t nonce[12],
                     const uint8_t *aad, int aadlen,
                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
 {
     if (aadlen < 0 || len < 0) return -1;
-    /* GHASH is over the ciphertext, so compute the tag from ct, then decrypt. */
-    uint8_t rk[176]; key_expand(key, rk);
+    /* GHASH is over the ciphertext, so compute the tag from ct, then decrypt.
+     * Decryption happens only after the tags compare equal -- handing back
+     * unauthenticated plaintext is the classic GCM footgun. */
+    int nr = aes_rounds(keylen);
+    uint8_t rk[AES_RK_MAX]; key_expand(key, keylen, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
-    aes_encrypt(rk, zero, H);
+    aes_encrypt(rk, nr, zero, H);
     uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
     uint8_t S[16]; ghash(H, aad, aadlen, ct, len, S);
-    uint8_t ej0[16]; aes_encrypt(rk, j0, ej0);
+    uint8_t ej0[16]; aes_encrypt(rk, nr, j0, ej0);
     uint8_t t[16]; for (int i = 0; i < 16; i++) t[i] = S[i] ^ ej0[i];
     int diff = 0; for (int i = 0; i < 16; i++) diff |= t[i] ^ tag[i];
     if (diff) {
@@ -169,8 +184,34 @@ int aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
     }
     uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
     for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0) */
-    gctr(rk, ctr1, ct, len, pt);
+    gctr(rk, nr, ctr1, ct, len, pt);
     crypto_wipe(rk, sizeof rk);
     crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
     return 0;
 }
+
+void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
+{
+    if (aadlen < 0 || len < 0) return;          /* negative lengths would walk backwards */
+    gcm_core(key, 16, nonce, aad, aadlen, pt, len, ct, tag);
+}
+
+int aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
+                    const uint8_t *aad, int aadlen,
+                    const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
+{ return gcm_open(key, 16, nonce, aad, aadlen, ct, len, tag, pt); }
+
+void aes256_gcm_seal(const uint8_t key[32], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
+{
+    if (aadlen < 0 || len < 0) return;
+    gcm_core(key, 32, nonce, aad, aadlen, pt, len, ct, tag);
+}
+
+int aes256_gcm_open(const uint8_t key[32], const uint8_t nonce[12],
+                    const uint8_t *aad, int aadlen,
+                    const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
+{ return gcm_open(key, 32, nonce, aad, aadlen, ct, len, tag, pt); }

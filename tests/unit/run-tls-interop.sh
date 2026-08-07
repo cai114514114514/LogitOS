@@ -80,8 +80,8 @@ cp "$ROOT/c/crypto/trust/roots.c" "$TMP/roots_test.c"
 
 INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/trust -I$ROOT/c/net/tls -I$ROOT/c/net/core \
       -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core"
-SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/x509.c \
-     $TMP/roots_test.c \
+SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c \
+     $ROOT/c/net/tls/x509.c $TMP/roots_test.c \
      $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" -name '*.c')"
 # ASan+UBSan: this binary parses adversarial-shaped input (certificates, records)
 # with the same code the kernel runs, so it is the cheapest place to catch a
@@ -92,10 +92,13 @@ $CC -O1 -g -Wall -Wextra $SAN -o "$BUILD/tls_interop_test" $SRC $INCS || {
     echo "FAIL: could not build tls_interop_test"; exit 1; }
 
 # ------------------------------------------------------------------ harness --
+SRV_VER="-tls1_3"        # which version the server is pinned to, per block
+CLI_PORT="$PORT"         # what the client dials (the proxy cases redirect this)
+
 start_server() {   # start_server <chain.pem> <key> [extra openssl args...]
     local chain="$1" key="$2"; shift 2
     "$OPENSSL" s_server -accept "$PORT" -cert "$chain" -key "$key" \
-        -tls1_3 -www -quiet "$@" >"$TMP/server.log" 2>&1 &
+        $SRV_VER -www -quiet "$@" >"$TMP/server.log" 2>&1 &
     SRVPID=$!
     for _ in $(seq 1 100); do
         if (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then exec 3>&-; return 0; fi
@@ -117,7 +120,7 @@ case_run() {
     if ! start_server "$chain" "$key" "${sargs[@]}"; then
         echo "FAIL $label (server did not start)"; cat "$TMP/server.log"; fail=$((fail+1)); return
     fi
-    "$BUILD/tls_interop_test" 127.0.0.1 "$PORT" localhost "${cargs[@]}" >"$TMP/client.log" 2>&1
+    "$BUILD/tls_interop_test" 127.0.0.1 "$CLI_PORT" localhost "${cargs[@]}" >"$TMP/client.log" 2>&1
     local rc=$?
     stop_server
 
@@ -131,13 +134,15 @@ case_run() {
         sed 's/^/    | /' "$TMP/client.log"; fail=$((fail+1)); return
     fi
     local detail
-    detail="$(grep -a 'ServerHello:\|HelloRetryRequest:\|ALPN:' "$TMP/client.log" | tr '\n' ' ')"
+    detail="$(grep -a 'ServerHello:\|HelloRetryRequest:\|VERSION:\|ALPN:' "$TMP/client.log" | tr '\n' ' ')"
     echo "ok   $label  ${detail}"
     pass=$((pass+1))
 }
 
-echo "== TLS 1.3 interop against $($OPENSSL version) =="
+echo "== TLS interop against $($OPENSSL version) =="
 CHAIN="-cert_chain $TMP/ca.pem"        # server sends leaf + CA (in-band anchor)
+
+echo "-- TLS 1.3 --"
 
 # --- key exchange. The group cases are the reachability proof: with only
 #     x25519 offered and no HRR, everything below the first line was
@@ -198,16 +203,126 @@ case_run "rejects wrong host name"  0 "$TMP/bad.pem" "$TMP/bad.key" $CHAIN -grou
 # not hold. This is the check that stands between us and any CA on the internet.
 case_run "rejects untrusted anchor" 0 "$TMP/rogue_leaf.pem" "$TMP/rogue_leaf.key" \
     -cert_chain "$TMP/rogue.pem" -groups X25519 -- --expect-fail
-# TLS 1.2-only server: we do not implement 1.2, so this must fail cleanly rather
-# than misparse a 1.2 ServerHello as a 1.3 one. (When 1.2 lands, flip it.)
-"$OPENSSL" s_server -accept "$PORT" -cert "$TMP/ec.pem" -key "$TMP/ec.key" \
-    -tls1_2 -www -quiet >"$TMP/server.log" 2>&1 &
-SRVPID=$!
-sleep 0.4
-"$BUILD/tls_interop_test" 127.0.0.1 "$PORT" localhost --expect-fail >"$TMP/client.log" 2>&1
-if [ $? -eq 0 ]; then echo "ok   rejects TLS 1.2-only server (not implemented)"; pass=$((pass+1));
-else echo "FAIL rejects TLS 1.2-only server"; sed 's/^/    | /' "$TMP/client.log"; fail=$((fail+1)); fi
-stop_server
+# Even with TLS 1.2 implemented, a server pinned to 1.3 must still land on 1.3 --
+# the reachability work must not have quietly moved the common path backwards.
+# shellcheck disable=SC2086
+case_run "1.3 still wins when offered" 0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -groups X25519 -- --expect-version 13
+
+# ============================================================== TLS 1.2 ======
+# Everything below talks to a server pinned to -tls1_2, which is what
+# sectigo.com / www.mas.gov.sg / www.cbuae.gov.ae actually are. Every case
+# asserts the negotiated VERSION explicitly: a 1.2 case that silently completed
+# over 1.3 would look identical in the pass column and prove nothing.
+echo
+echo "-- TLS 1.2 --"
+SRV_VER="-tls1_2"
+
+# --- cipher suites. Both AEADs at both key sizes, on both certificate key
+#     types, because the suite decides three things at once: the AEAD, the PRF
+#     hash (SHA-384 for the AES-256 suites -- a completely different transcript)
+#     and which signature algorithm the ServerKeyExchange is signed with. ---
+# shellcheck disable=SC2086
+case_run "1.2 ECDHE-ECDSA-AES128-GCM"  0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -cipher ECDHE-ECDSA-AES128-GCM-SHA256 -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 ECDHE-RSA-AES128-GCM"    0 "$TMP/rsa.pem" "$TMP/rsa.key" \
+    $CHAIN -cipher ECDHE-RSA-AES128-GCM-SHA256 -- --expect-version 12
+# The SHA-384 suites are the reason the transcript runs two hashes at once.
+# shellcheck disable=SC2086
+case_run "1.2 ECDHE-ECDSA-AES256-GCM"  0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -cipher ECDHE-ECDSA-AES256-GCM-SHA384 -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 ECDHE-RSA-AES256-GCM"    0 "$TMP/rsa.pem" "$TMP/rsa.key" \
+    $CHAIN -cipher ECDHE-RSA-AES256-GCM-SHA384 -- --expect-version 12
+# ChaCha20 in 1.2 uses the 1.3-style implicit nonce, unlike GCM in the same
+# version -- so it exercises a different branch of the record layer.
+# shellcheck disable=SC2086
+case_run "1.2 ECDHE-ECDSA-CHACHA20"    0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -cipher ECDHE-ECDSA-CHACHA20-POLY1305 -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 ECDHE-RSA-CHACHA20"      0 "$TMP/rsa.pem" "$TMP/rsa.key" \
+    $CHAIN -cipher ECDHE-RSA-CHACHA20-POLY1305 -- --expect-version 12
+
+# --- key exchange groups. In 1.2 there is no HelloRetryRequest: the server
+#     names its curve in the ServerKeyExchange and we generate a key on it. ---
+# shellcheck disable=SC2086
+case_run "1.2 x25519"                  0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519 -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 secp256r1"               0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups P-256  -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 secp384r1"               0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups P-384  -- --expect-version 12
+
+# --- extended master secret, both ways. With the extension the master secret is
+#     bound to the handshake hash; without it, to the two randoms. Both have to
+#     work, and the pair is the only way to know the EMS branch is not dead code
+#     that happens to be skipped. ---
+# shellcheck disable=SC2086
+case_run "1.2 extended master secret"  0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519 -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 without EMS (-no_ems)"   0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519 -no_ems -- --expect-version 12
+
+# --- the rest of the surface ---
+# shellcheck disable=SC2086
+case_run "1.2 alpn h2 preferred"       0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -groups X25519 -alpn h2,http/1.1 -- --alpn "h2,http/1.1" --expect-alpn h2 --expect-version 12
+# A CertificateRequest we decline with an empty Certificate. `-verify` asks for
+# a client certificate but does not require one, which is the configuration that
+# distinguishes "declined politely" from "said nothing and got dropped".
+# shellcheck disable=SC2086
+case_run "1.2 declines client cert"    0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -groups X25519 -verify 1 -- --expect-version 12
+# The anchor held but not sent in band, through the 1.2 Certificate parser.
+case_run "1.2 anchor held, not sent"   0 "$TMP/ec.pem" "$TMP/ec.key" -groups X25519 -- --expect-version 12
+# shellcheck disable=SC2086
+case_run "1.2 blocking tls_connect"    0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519 -- --blocking
+
+# --- rejections, which matter more than the successes ---
+# shellcheck disable=SC2086
+case_run "1.2 rejects wrong host name" 0 "$TMP/bad.pem" "$TMP/bad.key" $CHAIN -groups X25519 -- --expect-fail
+case_run "1.2 rejects untrusted anchor" 0 "$TMP/rogue_leaf.pem" "$TMP/rogue_leaf.key" \
+    -cert_chain "$TMP/rogue.pem" -groups X25519 -- --expect-fail
+
+# --- the ServerKeyExchange signature. In TLS 1.2 the server's first flight is
+#     in the clear, so an on-path attacker can rewrite it; the signature over
+#     client_random || server_random || ECDHParams is the ONLY thing that
+#     notices. tls12_tamper_proxy.py is that attacker. If either of these two
+#     passes the handshake, the 1.2 path is unauthenticated -- which is worse
+#     than not having 1.2 at all. ---
+PROXY_PORT=$((PORT + 1))
+tamper_case() {   # tamper_case <label> <mode> [want-log-line]
+    local label="$1" mode="$2" want="${3:-ServerKeyExchange signature rejected}"
+    if ! start_server "$TMP/ec.pem" "$TMP/ec.key" -cert_chain "$TMP/ca.pem" -groups X25519; then
+        echo "FAIL $label (server did not start)"; fail=$((fail+1)); return
+    fi
+    python3 "$ROOT/tests/unit/tls12_tamper_proxy.py" "$PROXY_PORT" "$PORT" "$mode" \
+        >"$TMP/proxy.log" 2>&1 &
+    local ppid=$!
+    for _ in $(seq 1 100); do
+        (exec 3<>/dev/tcp/127.0.0.1/"$PROXY_PORT") 2>/dev/null && { exec 3>&-; break; }
+        sleep 0.05
+    done
+    "$BUILD/tls_interop_test" 127.0.0.1 "$PROXY_PORT" localhost --expect-fail >"$TMP/client.log" 2>&1
+    local rc=$?
+    kill "$ppid" 2>/dev/null; wait "$ppid" 2>/dev/null
+    stop_server
+    # Not just "it failed": it must have failed for the RIGHT reason. A client
+    # that rejected the tampered handshake at some earlier parse error would
+    # also reject an honest server, and would pass a bare "it failed" check.
+    if [ $rc -eq 0 ] && grep -q "$want" "$TMP/client.log"; then
+        echo "ok   $label"; pass=$((pass+1))
+    else
+        echo "FAIL $label (rc=$rc, expected '$want' in the log)"
+        sed 's/^/    | /' "$TMP/client.log"; sed 's/^/    p /' "$TMP/proxy.log"
+        fail=$((fail+1))
+    fi
+}
+tamper_case "1.2 rejects tampered SKE signature" sig
+tamper_case "1.2 rejects substituted ECDHE key"  pubkey
+# Not a signature case: a length field claiming more bytes than the message
+# holds. The client here is built with ASan, so "rejected cleanly" and "did not
+# read past the buffer" are both being asserted.
+tamper_case "1.2 rejects over-long ECDHE point"  pointlen "ServerKeyExchange malformed"
 
 echo
 echo "$pass passed, $fail failed"

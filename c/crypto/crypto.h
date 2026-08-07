@@ -47,6 +47,16 @@ void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
 int hkdf_expand_label(int hlen, const uint8_t *secret, const char *label,
                       const uint8_t *ctx, int ctxlen, uint8_t *out, int outlen);
 
+/* --- TLS 1.2 PRF (RFC 5246 §5) --- P_hash over HMAC, an entirely different
+ * construction from the HKDF ladder above; see the comment in hmac_hkdf.c.
+ * `hlen` selects the hash the negotiated suite names (32 = SHA-256 for the
+ * *_SHA256 suites, 48 = SHA-384 for *_SHA384). `label` is a NUL-terminated
+ * ASCII literal ("master secret", "key expansion", "client finished", ...) that
+ * is prepended to `seed`. Writes exactly outlen bytes; silently writes nothing
+ * on a bad hlen / over-long label or seed. */
+void tls12_prf(int hlen, const uint8_t *secret, int seclen, const char *label,
+               const uint8_t *seed, int seedlen, uint8_t *out, int outlen);
+
 /* --- AEAD: ChaCha20-Poly1305 (RFC 8439) ---
  * key=32, nonce=12. seal writes ciphertext (len bytes) + tag[16]; open verifies
  * the tag and writes plaintext. open returns 0 on success, -1 on tag mismatch. */
@@ -62,6 +72,16 @@ void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
 int  aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+
+/* --- AEAD: AES-256-GCM --- key=32, nonce=12. Same seal/open contract. Shares
+ * the whole implementation with AES-128-GCM (14 rounds instead of 10). Present
+ * because TLS 1.2 servers commonly prefer ECDHE_*_WITH_AES_256_GCM_SHA384. */
+void aes256_gcm_seal(const uint8_t key[32], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  aes256_gcm_open(const uint8_t key[32], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
 

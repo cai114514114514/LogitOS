@@ -143,6 +143,102 @@ static void test_aesgcm(void)
     ok("gcm tc4 tag", eq(tag,w,16));
 }
 
+/* AES-256-GCM against the McGrew-Viega GCM specification test cases 13-16 (the
+ * same vectors NIST's CAVP GCM set is built from). These are the check on the
+ * AES-256 key schedule specifically: the extra SubWord every fourth word is
+ * invisible to a round-trip test and only shows up against a foreign
+ * implementation's ciphertext. */
+static void test_aes256gcm(void)
+{
+    uint8_t key[32], iv[12], pt[80], aad[32], ct[80], tag[16], o[80], w[80];
+    int n, al;
+
+    memset(key, 0, 32); memset(iv, 0, 12);
+    aes256_gcm_seal(key, iv, 0, 0, 0, 0, ct, tag);
+    unhex("530f8afbc74536b9a963b4f1c4cb738b", w);
+    ok("gcm256 tc13 empty tag", eq(tag,w,16));
+
+    memset(pt, 0, 16);
+    aes256_gcm_seal(key, iv, 0, 0, pt, 16, ct, tag);
+    unhex("cea7403d4d606b6e074ec5d3baf39d18", w);
+    ok("gcm256 tc14 ct", eq(ct,w,16));
+    unhex("d0d1c8a799996bf0265b98b5d48ab919", w);
+    ok("gcm256 tc14 tag", eq(tag,w,16));
+
+    unhex("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308", key);
+    unhex("cafebabefacedbaddecaf888", iv);
+    n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255", pt);
+    aes256_gcm_seal(key, iv, 0, 0, pt, n, ct, tag);
+    unhex("522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662898015ad", w);
+    ok("gcm256 tc15 ct", eq(ct,w,n));
+    unhex("b094dac5d93471bdec1a502270e3cc6c", w);
+    ok("gcm256 tc15 tag", eq(tag,w,16));
+    ok("gcm256 tc15 open", aes256_gcm_open(key, iv, 0, 0, ct, n, tag, o) == 0 && eq(o, pt, n));
+
+    n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39", pt);
+    al = unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2", aad);
+    aes256_gcm_seal(key, iv, aad, al, pt, n, ct, tag);
+    unhex("522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662", w);
+    ok("gcm256 tc16 ct", eq(ct,w,n));
+    unhex("76fc6ece0f4e1768cddf8853bb2d551b", w);
+    ok("gcm256 tc16 tag", eq(tag,w,16));
+    ok("gcm256 tc16 open", aes256_gcm_open(key, iv, aad, al, ct, n, tag, o) == 0 && eq(o, pt, n));
+    tag[7] ^= 1;
+    ok("gcm256 bad tag rejected", aes256_gcm_open(key, iv, aad, al, ct, n, tag, o) != 0);
+    tag[7] ^= 1; ct[5] ^= 1;
+    ok("gcm256 bad ct rejected", aes256_gcm_open(key, iv, aad, al, ct, n, tag, o) != 0);
+
+    /* A 16-byte key must NOT be reinterpreted as a 256-bit one: seal the same
+     * plaintext under aes128 and aes256 with a key whose first half matches and
+     * require different ciphertext. This catches a keylen plumbing mistake that
+     * every "encrypt then decrypt" test would sail past. */
+    uint8_t k16[16]; memcpy(k16, key, 16);
+    uint8_t c128[16], t128[16], c256[16], t256[16];
+    memset(pt, 0x5a, 16);
+    aes128_gcm_seal(k16, iv, 0, 0, pt, 16, c128, t128);
+    aes256_gcm_seal(key, iv, 0, 0, pt, 16, c256, t256);
+    ok("gcm128 != gcm256 for a shared key prefix", memcmp(c128, c256, 16) != 0);
+}
+
+/* TLS 1.2 PRF (RFC 5246 5) against the published test vectors circulated on the
+ * IETF TLS list (the ones every 1.2 stack is checked against). Both hashes are
+ * covered because the suite chooses: SHA-256 for *_SHA256, SHA-384 for the
+ * AES_256_GCM_SHA384 suites that 1.2 servers commonly prefer. */
+static void test_tls12_prf(void)
+{
+    uint8_t secret[64], seed[64], out[256], w[256];
+    int sl, dl;
+
+    sl = unhex("9bbe436ba940f017b17652849a71db35", secret);
+    dl = unhex("a0ba9f936cda311827a6f796ffd5198c", seed);
+    tls12_prf(32, secret, sl, "test label", seed, dl, out, 100);
+    unhex("e3f229ba727be17b8d122620557cd453c2aab21d07c3d495329b52d4e61edb5a6b301791e90d35c9c9a46b4e14baf9af0fa022f7077def17abfd3797c0564bab4fbc91666e9def9b97fce34f796789baa48082d122ee42c5a72e5a5110fff70187347b66", w);
+    ok("tls12 prf sha256 100B", eq(out, w, 100));
+
+    sl = unhex("b80b733d6ceefcdc71566ea48e5567df", secret);
+    dl = unhex("cd665cf6a8447dd6ff8b27555edb7465", seed);
+    tls12_prf(48, secret, sl, "test label", seed, dl, out, 148);
+    unhex("7b0c18e9ced410ed1804f2cfa34a336a1c14dffb4900bb5fd7942107e81c83cde9ca0faa60be9fe34f82b1233c9146a0e534cb400fed2700884f9dc236f80edd8bfa961144c9e8d792eca722a7b32fc3d416d473ebc2c5fd4abfdad05d9184259b5bf8cd4d90fa0d31e2dec479e4f1a26066f2eea9a69236a3e52655c9e9aee691c8f3a26854308d5eaa3be85e0990703d73e56f", w);
+    ok("tls12 prf sha384 148B", eq(out, w, 148));
+
+    /* A short request must be a prefix of a long one -- P_hash is a stream, and
+     * an off-by-one in the A() chain shows up here and nowhere else. */
+    tls12_prf(32, secret, sl, "test label", seed, dl, w, 96);
+    tls12_prf(32, secret, sl, "test label", seed, dl, out, 12);
+    ok("tls12 prf 12B is a prefix of 96B", eq(out, w, 12));
+    /* 12 bytes is exactly the Finished verify_data length, and 48 the master
+     * secret's; neither is a multiple of either digest size, so both exercise
+     * the partial-block tail. */
+    tls12_prf(48, secret, sl, "master secret", seed, dl, out, 48);
+    tls12_prf(48, secret, sl, "master secret", seed, dl, w, 144);
+    ok("tls12 prf 48B is a prefix of 144B", eq(out, w, 48));
+    /* The label is inside the PRF input, not decoration: changing it must
+     * change every byte of the output. */
+    tls12_prf(32, secret, sl, "client finished", seed, dl, out, 32);
+    tls12_prf(32, secret, sl, "server finished", seed, dl, w, 32);
+    ok("tls12 prf label separates outputs", memcmp(out, w, 32) != 0);
+}
+
 static void test_chacha(void)
 {
     uint8_t key[32], nonce[12], aad[16], pt[320], ct[320], tag[16], o[320], w[320];
@@ -518,6 +614,8 @@ int main(void)
     test_sha();
     test_hmac_hkdf();
     test_aesgcm();
+    test_aes256gcm();
+    test_tls12_prf();
     test_chacha();
     test_x25519();
     test_ecdsa();

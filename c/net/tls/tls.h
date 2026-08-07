@@ -3,17 +3,34 @@
 
 #include <stdint.h>
 
-/* A TLS 1.3 client (RFC 8446) over an established TCP connection (M10).
+/* A TLS 1.3 (RFC 8446) and TLS 1.2 (RFC 5246) client over an established TCP
+ * connection (M10). Both versions are offered in every ClientHello and the
+ * server's choice is taken: 1.3 through the supported_versions extension, 1.2
+ * through the legacy ServerHello version a 1.2 server answers with. 1.3 is
+ * preferred and is the path that runs against everything modern; 1.2 exists
+ * because a measurable slice of the web is still 1.2-only (sectigo.com,
+ * www.mas.gov.sg, www.cbuae.gov.ae at the time of writing), and to those hosts
+ * "we only speak 1.3" meant unreachable, not slow.
  *
- * Key exchange: x25519 (preferred) plus secp256r1 / secp384r1, negotiated
- * through HelloRetryRequest when the server refuses our first offer -- before
- * that existed, a server that insisted on a NIST curve was not slow to reach,
- * it was unreachable. AEAD: ChaCha20-Poly1305 and AES-128-GCM. SHA-256
- * transcript and key schedule. ALPN is offered and the selection reported.
- * Certificate chains are verified strictly against the built-in roots.
+ * Key exchange (both versions): x25519 (preferred) plus secp256r1 / secp384r1.
+ * In 1.3 a group we did not lead with is reached through HelloRetryRequest; in
+ * 1.2 the server simply names the curve in its ServerKeyExchange.
  *
- * Not implemented: TLS 1.2, session resumption / PSK / tickets, 0-RTT,
- * client certificates, KeyUpdate, post-quantum groups.
+ * Cipher suites:
+ *   1.3  TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256
+ *   1.2  ECDHE-{RSA,ECDSA} with AES-128-GCM, AES-256-GCM and
+ *        ChaCha20-Poly1305. ECDHE ONLY -- no static-RSA key exchange and no
+ *        CBC suites; see tls_int.h for why that is a security decision and not
+ *        an omission.
+ * Extended master secret (RFC 7627) is requested on every 1.2 handshake.
+ * ALPN is offered and the selection reported. Certificate chains are verified
+ * strictly against the built-in roots, and in 1.2 the ServerKeyExchange
+ * signature is verified against the leaf -- it is the only thing that
+ * authenticates the ephemeral key.
+ *
+ * Not implemented: TLS 1.1 and below, session resumption / PSK / tickets,
+ * 0-RTT, client certificates (a CertificateRequest is declined politely),
+ * renegotiation, KeyUpdate, post-quantum groups.
  *
  * --- Two ways to drive it ---
  *
@@ -76,6 +93,12 @@ int  tls_recv(int id, void *buf, int max);
 /* The ALPN protocol the server selected, as a NUL-terminated string ("" if the
  * server did not select one). Returns its length, or -1 for a bad id. */
 int  tls_alpn(int id, char *out, int max);
+
+/* The negotiated protocol version on the wire: 0x0304 (TLS 1.3), 0x0303
+ * (TLS 1.2), or 0 before the ServerHello has been read / for a bad id. */
+int  tls_version(int id);
+#define TLS_VER_12 0x0303
+#define TLS_VER_13 0x0304
 
 /* Decrypted application bytes already buffered and returnable without touching
  * the transport. A readiness poll that only watched the socket would miss the
