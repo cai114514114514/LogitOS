@@ -305,7 +305,11 @@ static int run(const char *buf, int len)
     if (c_eq(c, "setuid")) { if (A.n < 2) return fail("usage", VFS_EINVAL); return cmd_su(&A, 0); }
     if (c_eq(c, "su"))     { if (A.n < 2) return fail("usage", VFS_EINVAL); return cmd_su(&A, 1); }
 
-    return fail("command", VFS_EINVAL);
+    /* Quote the word that was not understood. "err command -22" tells you
+     * nothing about whether the command was wrong or the bytes were. */
+    r_reset(); r_put("err command -22 got '"); r_put(c); r_put("' argc ");
+    r_num(A.n, 0); r_put("\n");
+    return VFS_EINVAL;
 }
 
 /* --- the node interface -------------------------------------------------- */

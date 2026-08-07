@@ -215,8 +215,11 @@ int vfs_mount_count(void)
     return n;
 }
 
+/* A byte-count API: `max` is how many bytes the caller asked for, not how
+ * many minus room for a terminator. Reserving one truncated the trailing
+ * newline off the last line every time. */
 static int put(char *b, int max, int n, const char *s)
-{ for (int i = 0; s && s[i] && n < max - 1; i++) b[n++] = s[i]; return n; }
+{ for (int i = 0; s && s[i] && n < max; i++) b[n++] = s[i]; return n; }
 
 int vfs_mounts_render(char *buf, int max)
 {

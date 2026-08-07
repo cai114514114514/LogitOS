@@ -238,7 +238,7 @@ int vmeta_permission(const struct vattr *a, const struct vcred *c, int want)
 }
 
 static int put(char *b, int max, int n, const char *s)
-{ for (int i = 0; s[i] && n < max - 1; i++) b[n++] = s[i]; return n; }
+{ for (int i = 0; s[i] && n < max; i++) b[n++] = s[i]; return n; }
 
 static int putn(char *b, int max, int n, unsigned long v, int oct)
 {
@@ -246,7 +246,7 @@ static int putn(char *b, int max, int n, unsigned long v, int oct)
     unsigned long base = oct ? 8 : 10;
     if (!v) t[k++] = '0';
     while (v) { t[k++] = (char)('0' + (v % base)); v /= base; }
-    while (k && n < max - 1) b[n++] = t[--k];
+    while (k && n < max) b[n++] = t[--k];
     return n;
 }
 

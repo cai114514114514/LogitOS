@@ -95,13 +95,13 @@ int vfs_cred_set(int pid, uint32_t uid, uint32_t gid)
 }
 
 static int put(char *b, int max, int n, const char *s)
-{ for (int i = 0; s[i] && n < max - 1; i++) b[n++] = s[i]; return n; }
+{ for (int i = 0; s[i] && n < max; i++) b[n++] = s[i]; return n; }
 static int putn(char *b, int max, int n, unsigned long v)
 {
     char t[24]; int k = 0;
     if (!v) t[k++] = '0';
     while (v) { t[k++] = (char)('0' + v % 10); v /= 10; }
-    while (k && n < max - 1) b[n++] = t[--k];
+    while (k && n < max) b[n++] = t[--k];
     return n;
 }
 

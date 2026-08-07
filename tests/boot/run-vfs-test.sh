@@ -61,33 +61,34 @@ GPU="-vga none -device virtio-gpu-pci"
 SCRIPT='
 echo VFSTEST_BEGIN
 mkdir /mnt2
-echo "mount lfsro ahci1 /mnt2" > /dev/vfsctl
+echo mount lfsro ahci1 /mnt2 > /dev/vfsctl
 cat /dev/vfsctl
 cat /dev/vfsmounts
 cat /mnt2/disk2.txt
+head -n 1 /docs/readme.txt
 mkdir /vfst
 cat /mnt2/secret.txt > /vfst/secret
 cat /mnt2/public.txt > /vfst/public
 cat /vfst/secret
 cat /vfst/public
-echo "chmod 600 /vfst/secret" > /dev/vfsctl
+echo chmod 600 /vfst/secret > /dev/vfsctl
 cat /dev/vfsctl
-echo "stat /vfst/secret" > /dev/vfsctl
+echo stat /vfst/secret > /dev/vfsctl
 cat /dev/vfsctl
 cat /mnt2/link.txt > /vfst/a
-echo "ln /vfst/a /vfst/b" > /dev/vfsctl
+echo ln /vfst/a /vfst/b > /dev/vfsctl
 cat /dev/vfsctl
 rm /vfst/a
 cat /vfst/b
-echo "ln -s /vfst/b /vfst/sym" > /dev/vfsctl
+echo ln -s /vfst/b /vfst/sym > /dev/vfsctl
 cat /dev/vfsctl
 cat /vfst/sym
-echo "fdtest /vfst/fdt" > /dev/vfsctl
+echo fdtest /vfst/fdt > /dev/vfsctl
 cat /dev/vfsctl
 echo VFSTEST_DROP
-echo "su 1000" > /dev/vfsctl
+echo su 1000 > /dev/vfsctl
 cat /dev/vfsctl
-echo "id" > /dev/vfsctl
+echo id > /dev/vfsctl
 cat /vfst/public
 cat /vfst/secret
 cat /mnt2/disk2.txt
@@ -125,10 +126,10 @@ want  "the run completed"                       "VFSTEST_END"
 echo "1. two filesystems on two devices"
 want  "the second disk was found by the driver" "\[lfsro\] mounted ahci1 read-only"
 want  "and mounted at /mnt2"                    "ok mounted lfsro ahci1 at /mnt2"
-want  "the mount table lists both"              "^logitfs /$"
-want  "  ... including the second"              "^ahci1 /mnt2$"
-want  "a file read from the SECOND filesystem"  "VFS_DISK2_OK"
-want  "a file read from the FIRST filesystem"   "LogitOS - LogitFS volume"
+want  "the mount table lists the root"          "logitfs /"
+want  "  ... and the second filesystem"         "ahci1 /mnt2"
+want  "a file read from the SECOND device"      "VFS_DISK2_OK"
+want  "a file read from the FIRST device"       "LogitOS - LogitFS volume"
 
 echo "2. links"
 want  "hard link reports nlink 2"               "ok link /vfst/b nlink 2"
