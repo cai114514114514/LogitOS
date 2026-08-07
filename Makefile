@@ -133,7 +133,15 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # with LIBC_OBJS, like the video decoder does.
 RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
              c/net/http/hpack.c c/net/http/http2.c
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+#
+# c/lib/audio is excluded for exactly the reason c/lib/video is. An image is
+# decoded once, so the image codecs can sit behind SYS_IMG_DECODE; audio is
+# decoded continuously for the length of a track, holds hundreds of kilobytes
+# of live state per stream, and allocates with malloc/free -- names that do not
+# exist in the kernel. In ring 0 it would hold the BKL for the duration of
+# playback and put a parser of attacker-chosen bytes at the highest privilege
+# in the machine. See the AUD_OBJ rules further down for who does link it.
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -146,7 +154,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -452,6 +460,35 @@ $(BUILD)/vidcheck.elf: $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(LIBC
 $(BUILD)/vidcheck.aex: $(BUILD)/vidcheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidcheck.elf $@ vidcheck - 'V' 150 150 150
 
+# --- audio decoders, built for the target --------------------------------
+# Same shape and the same reasoning as VID_OBJ above: c/lib/audio is a RING-3
+# library (WAV, FLAC, MP3), filtered out of the kernel's C_SRC on purpose, and
+# compiled here with the userland flags against mini-libc. It uses no libm --
+# every transcendental is a constant in the generated mp3_tables.h and the two
+# run-time nonlinearities are computed from scratch -- so it links with nothing
+# but LIBC_OBJS.
+AUD_SRC  := $(wildcard c/lib/audio/*.c)
+AUD_HDRS := $(wildcard c/lib/audio/*.h)
+AUD_OBJ  := $(patsubst %.c,$(BUILD)/audobj/%.o,$(AUD_SRC))
+
+$(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+# /bin/audiocheck -- decodes a file on-device and prints the same CRC32 the
+# host build prints, which is what turns "the audio decoders also work on
+# LogitOS" into a comparison rather than a claim. FLAC additionally reports its
+# own STREAMINFO MD5 check, which needs no reference at all. Driven by
+# tests/boot/run-audio-test.sh.
+$(BUILD)/audiocheck.elf: $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) \
+                         $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/audiocheck.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/audiocheck.crt0c.o \
+	    $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) $(LIBC_OBJS)
+$(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/audiocheck.elf $@ audiocheck - 'A' 150 150 150
+
 # Preview: the windowed half. Same link base and the same GUI crt0 as any other
 # app, but it links VID_OBJ + mini-libc instead of going through APP_RULE --
 # the browser already proves logit.h and mini-libc coexist in one .aex. It
@@ -484,7 +521,7 @@ $(FONTS):
 	@echo "missing tracked runtime font '$@'; run 'make regen-fonts'" >&2
 	@false
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/h2check.aex tools/mkfs.py
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
@@ -497,7 +534,11 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BROWSER_AEX):browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
+	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
+	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
+	    tests/fixtures/audio/sample.flac:/media/sample.flac \
+	    tests/fixtures/audio/sample.wav:/media/sample.wav \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
@@ -716,6 +757,31 @@ test-vfs-path-asan:
 	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -o $(BUILD)/vfs_path_asan tests/unit/vfs_path_test.c c/fs/vfs_path.c -Ic/fs
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_path_asan
+
+# The VFS layer itself: the mount table, permission enforcement, hard and
+# symbolic links. Links the REAL c/fs/vfs.c -- only the kernel's synthetic-file
+# providers and "the credential of the current process" are stubbed, so the
+# code deciding every permission here is the code that decides them on the
+# machine. Two filesystems really are mounted and a file really is read from
+# each; the device test then proves the same refusals reach a ring-3 process.
+VFS_TEST_SRC := c/fs/vfs.c c/fs/vfs_meta.c c/fs/vfs_path.c c/fs/ramfs.c
+.PHONY: test-vfs-mount test-vfs-mount-asan test-vfs test-vfs-os
+
+test-vfs-mount:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/vfs_mount_test tests/unit/vfs_mount_test.c \
+	    $(VFS_TEST_SRC) -Ic/fs -Ic/kernel/core
+	@$(BUILD)/vfs_mount_test
+
+test-vfs-mount-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/vfs_mount_asan tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) \
+	    -Ic/fs -Ic/kernel/core
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_mount_asan
+
+# Everything the VFS layer can prove without a machine.
+test-vfs: test-vfs-path test-vfs-path-asan test-vfs-mount test-vfs-mount-asan
 
 # Partition-table parsing (MBR incl. the extended chain, GPT incl. both CRC32s),
 # on the host against synthetic sector images. This is where nearly all the risk
@@ -1917,7 +1983,7 @@ test-font-color:
 test-font-fuzz:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -o $(BUILD)/font_fuzz tests/unit/font_fuzz.c $(FONT_SRC) $(FONT_INC)
+	    -o $(BUILD)/font_fuzz tests/unit/font_fuzz.c $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/font_fuzz \
 	    $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
 	    $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/cbdt-emoji-subset.ttf \
