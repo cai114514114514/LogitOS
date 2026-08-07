@@ -96,25 +96,6 @@ static int streq_eval(const char *src, const char *want)
 
 static struct node *byid(const char *id) { return dom_get_element_by_id(g_root->doc, id); }
 
-/* Is `n`'s subtree going to be re-styled from the current invalidation record?
- *
- * Written as a coverage question rather than "roots == 1 && root(0) == n"
- * because the record is allowed to be COARSER than necessary: zero roots means
- * "the whole document", and an ancestor's scope legitimately swallows a
- * descendant's. What must never happen is the opposite -- the record claiming a
- * scope that does not contain the thing that changed, which is the failure that
- * leaves the DOM right and the screen stale. */
-static int scope_covers(struct node *n)
-{
-    int nr = js_dom_inval_roots();
-    if (nr == 0) return 1;                        /* whole document */
-    for (int i = 0; i < nr; i++) {
-        struct node *r = js_dom_inval_root(i, 0);
-        if (!r) return 1;                         /* a dead root also means whole document */
-        for (struct node *p = n; p; p = p->parent) if (p == r) return 1;
-    }
-    return 0;
-}
 
 static const char *alltext(struct node *n, char *buf, int cap)
 {
@@ -332,8 +313,10 @@ static void test_insertion(void)
     CK(streq_eval("Array.prototype.map.call(q.children,function(c){return c.tagName;}).join(',')",
                   "b,b,b"),
        "the fragment itself did NOT become a child (no '#document-fragment' in the tree)");
-    CK(js_dom_inval_level() == INVAL_LAYOUT && scope_covers(q),
-       "a fragment insert marks a scope that covers the destination");
+    CK(js_dom_inval_level() == INVAL_LAYOUT && js_dom_inval_roots() == 1
+       && js_dom_inval_root(0, 0) == q,
+       "a fragment insert marks exactly the destination subtree -- filling the "
+       "fragment claimed nothing, because a fragment is never in the document");
 
     /* insertBefore of a fragment, the same way React flushes a batch. */
     CK(run("var f2 = document.createDocumentFragment();"
@@ -357,14 +340,13 @@ static void test_detached_build(void)
 {
     /* Build a whole subtree DETACHED and attach it in one call -- react-dom's
      * commit shape, and the one that exercises every binding added here at
-     * once. What is asserted is the CORRECTNESS property: after the attach the
-     * live DOM holds all of it and the record asks for a re-style that covers
-     * the mount point.
-     *
-     * What is deliberately NOT asserted is a scope COUNT. Each off-document
-     * mutation still claims a root today, so the record overflows to "whole
-     * document" here; that is a cost, not a bug (see the KNOWN COST note on
-     * mark() in js_dom.c), and pinning the count would freeze the cost in. */
+     * once. Sixty-odd mutations happen before anything is connected, and only
+     * the final attach may claim a scope. If each off-document mutation claimed
+     * one the record would overflow JS_DOM_MAX_DIRTY and fall back to a
+     * whole-document re-style on every commit -- and it would go unnoticed,
+     * because the SCREEN would still be right. (js_dom_test.c's
+     * measure_commit() puts numbers on what that costs: 6145 elements /
+     * 7.14 ms per commit against 21 / 0.07 ms.) */
     CK(run("var mount = document.getElementById('mnt'); mount.textContent = '';"),
        "mount point emptied");
     js_dom_clear_dirty();                       /* that clear was a real mutation */
@@ -380,11 +362,14 @@ static void test_detached_build(void)
            "  frag.appendChild(row);"
            "}"),
        "twelve rows built entirely off-document");
-    js_dom_clear_dirty();
+    CK(js_dom_inval_level() == INVAL_NONE,
+       "building off-document dirties NOTHING -- no scope is spent before the attach");
+
     CK(run("mount.appendChild(frag);"), "one appendChild attaches the batch");
     CK(js_dom_inval_level() == INVAL_LAYOUT, "the attach asks for layout");
-    CK(scope_covers(byid("mnt")),
-       "and the marked scope covers the mount point");
+    CK(js_dom_inval_roots() == 1 && js_dom_inval_root(0, 0) == byid("mnt"),
+       "and claims exactly ONE scope: the mount point "
+       "(zero roots would mean the record overflowed to the whole document)");
 
     struct node *mnt = byid("mnt");
     char buf[512];

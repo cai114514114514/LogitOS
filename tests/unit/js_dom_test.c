@@ -898,19 +898,75 @@ static void cssom_tests(void)
          "document.body.setAttribute('class','');");
     settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
 
-    /* Overflow: more distinct places than the record holds falls back to the
-     * whole document, which is exactly what every mutation used to do. */
+    /* ---- E. off-document mutations claim no scope ----
+     *
+     * The rule mark() now applies: a node that is not attached to the document
+     * has no box and no pixel, so mutating it cannot leave anything on screen
+     * stale and must not spend a scope. This is measured, not just asserted --
+     * see measure_commit() -- but the PROPERTY is asserted here, because the
+     * measurement would still look good if the mutations were being dropped
+     * for the wrong reason. */
     js_dom_clear_dirty();
-    CK(prun("var b = document.body;"
-            "for (var i = 0; i < 12; i++) {"
-            "  var d = document.createElement('div'); d.setAttribute('id','ov'+i);"
-            "  b.appendChild(d); }"
-            "for (var i = 0; i < 12; i++)"
+    CK(prun("var det = document.createElement('div');"
+            "det.className = 'wide';"                  /* .wide { width: 333px } */
+            "det.setAttribute('data-k', '1');"
+            "det.id = 'detached';"
+            "det.style.color = '#090807';"
+            "var t = document.createTextNode('x'); det.appendChild(t);"
+            "t.nodeValue = 'y';"),
+       "seven mutations on a node that is not in the document");
+    CK(js_dom_inval_level() == INVAL_NONE,
+       "an off-document mutation claims NO scope and does not even dirty the page");
+
+    /* ...and the attach is what makes all of it visible, in one scope. */
+    js_dom_clear_dirty();
+    CK(prun("document.getElementById('par').appendChild(det);"), "the attach");
+    CK(js_dom_inval_level() == INVAL_LAYOUT && js_dom_inval_roots() == 1
+       && js_dom_inval_root(0, 0) == par,
+       "attaching it marks exactly the destination -- which covers everything "
+       "that came in with it");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);
+    /* The proof that dropping those marks lost nothing. Both an AUTHOR-SHEET
+     * match (the class, via .wide) and an INLINE write (the colour) were made
+     * while the element was off-document and claimed no scope of their own;
+     * both have to be live now, produced by the scoped re-style that the ATTACH
+     * asked for. If the skip were losing work, this is where it would show. */
+    ckstr("getComputedStyle(document.getElementById('detached')).width", "333px",
+          "the off-document className is live after the attach");
+    ckstr("getComputedStyle(document.getElementById('detached')).color", "rgb(9, 8, 7)",
+          "and so is the off-document inline style");
+
+    /* ---- overflow: more distinct places than the record holds ----
+     *
+     * The whole-document fallback is the safety net under every scope decision
+     * above, so it has to stay exercised -- a fallback nothing tests is not a
+     * fallback.
+     *
+     * The twelve scopes are built ATTACHED and mutated in a turn of their own.
+     * This fixture used to create twelve DETACHED divs and lean on the fact
+     * that setAttribute on each of them claimed a scope. Since off-document
+     * mutations claim none, that shape now produces exactly ONE scope -- <body>,
+     * from the twelve appends -- and the test would have gone on passing while
+     * testing nothing at all. So the build is settled first, and only then are
+     * twelve unrelated, attached, sibling leaves touched: twelve real places in
+     * one turn, which is the situation the cap exists for. */
+    prun("var b = document.body;"
+         "for (var i = 0; i < 12; i++) {"
+         "  var d = document.createElement('div'); d.id = 'ov' + i;"
+         "  b.appendChild(d); }");
+    CK(js_dom_inval_roots() == 1,
+       "building twelve children off-document and appending them is ONE scope");
+    settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1);   /* the build is not what is under test */
+
+    js_dom_clear_dirty();
+    CK(prun("for (var i = 0; i < 12; i++)"
             "  document.getElementById('ov'+i).classList.add('hot');"),
-       "twelve separate scopes marked");
+       "twelve separate scopes marked, every one of them attached");
     CK(js_dom_inval_roots() == 0, "past the cap the record reports 'whole document'");
     CK(settle(root, CSSOM_CSS, (int)sizeof CSSOM_CSS - 1) == CSS_CHANGED_LAYOUT,
        "and the caller re-styles everything, which is the old behaviour");
+    ckstr("getComputedStyle(document.getElementById('ov11')).color", "rgb(255, 0, 0)",
+          "the fallback really did re-style the twelfth element");
 
     /* A scope whose node is destroyed before the embedder gets to it. The
      * subtree is torn down through the DOM API directly, NOT through
@@ -1081,6 +1137,144 @@ static void measure_invalidation(void)
     free(h.p);
 }
 
+/* ======================================================================
+ * The COMMIT measurement.
+ *
+ * measure_invalidation() above measures one class toggle -- a mutation in a
+ * single place, which the record has always scoped well. This measures the
+ * shape react-dom actually commits in, which it did NOT: a subtree built
+ * entirely off-document over ~30 calls, then attached with one insertBefore.
+ *
+ * Before off-document mutations were exempted from the record, each of those
+ * ~30 claimed a scope root; there are only JS_DOM_MAX_DIRTY (8), so the record
+ * overflowed on EVERY commit and the embedder fell back to css_apply over the
+ * whole document. The two rows printed below are exactly those two
+ * dispositions, run over the same document with the same commit -- "whole
+ * document" is not a simulation of the old behaviour, it is the fallback path
+ * settle() takes when js_dom_inval_roots() reports 0.
+ *
+ * The scope COUNT is the other half, and it is the half that decides which row
+ * you pay for. It is asserted, not printed: 1, where it used to be 0.
+ * ====================================================================== */
+#define COMMIT_ROWS  10               /* 10 rows x 3 nodes = ~34 calls per commit */
+#define COMMIT_REPS  20
+
+static void measure_commit(void)
+{
+    struct mbuf h = { 0, 0, 0 };
+    char tmp[128];
+    mb(&h, "<html><body><div id='wrap'>");
+    for (int s = 0; s < MEAS_SECTIONS; s++) {
+        snprintf(tmp, sizeof tmp, "<section id='S%d' data-k='%d'>", s, s);
+        mb(&h, tmp);
+        for (int i = 0; i < MEAS_LEAVES; i++) {
+            snprintf(tmp, sizeof tmp, "<p id='L%d'>t<b>x</b></p>", s * MEAS_LEAVES + i);
+            mb(&h, tmp);
+        }
+        mb(&h, "</section>");
+    }
+    mb(&h, "<div id='mount'></div></div></body></html>");
+
+    struct node *root = dom_parse(h.p, (int)h.n);
+    if (!root) { printf("FAIL commit fixture\n"); fails = 1; free(h.p); return; }
+    const int csslen = (int)sizeof MEAS_CSS - 1;
+    css_apply(root, MEAS_CSS, csslen);
+
+    struct node *mount = dom_get_element_by_id(root->doc, "mount");
+    if (!mount) { printf("FAIL commit mount\n"); fails = 1; dom_free(root); free(h.p); return; }
+
+    g_now = 9000;
+    js_page_set_clock(fake_clock);
+    if (!js_page_open(root)) { printf("FAIL commit runtime\n"); fails = 1;
+                              dom_free(root); free(h.p); return; }
+
+    /* One React-shaped commit: a fragment, ten rows, each row an element with a
+     * class, an attribute and a text child -- built off-document -- then ONE
+     * attach. Nothing here is contrived for the measurement; it is the sequence
+     * react-dom's host config emits for `<ul>{items.map(...)}</ul>`. */
+    static const char COMMIT_JS[] =
+        "(function(){"
+        "  var m = document.getElementById('mount');"
+        "  m.textContent = '';"
+        "  var f = document.createDocumentFragment();"
+        "  for (var i = 0; i < 10; i++) {"
+        "    var row = document.createElement('p');"
+        "    row.className = (i & 1) ? 'hot' : 'cold';"
+        "    row.setAttribute('data-k', String(i));"
+        "    var b = document.createElement('b');"
+        "    b.appendChild(document.createTextNode('r' + i));"
+        "    row.appendChild(b);"
+        "    f.appendChild(row);"
+        "  }"
+        "  m.appendChild(f);"
+        "})()";
+
+    /* The scope count for one commit. Read before any timing, because the
+     * timing loops below deliberately re-style between commits. */
+    js_dom_clear_dirty();
+    CK(prun(COMMIT_JS), "commit measurement: a React-shaped commit ran");
+    int roots = js_dom_inval_roots();
+    int level = js_dom_inval_level();
+    struct node *scope = js_dom_inval_root(0, 0);
+    CK(level == INVAL_LAYOUT, "commit measurement: the commit asks for layout");
+    CK(roots == 1 && scope == mount,
+       "commit measurement: ~34 calls claim exactly ONE scope -- the mount point "
+       "(it was 0, meaning 'whole document', when off-document mutations counted)");
+    settle(root, MEAS_CSS, csslen);
+
+    int mark = 0;
+    styled_since(&mark);
+
+    /* BEFORE: the disposition an overflowed record forces -- settle()'s
+     * nroots == 0 branch, which is css_apply over the document. */
+    clock_t t0 = clock();
+    for (int r = 0; r < COMMIT_REPS; r++) {
+        prun(COMMIT_JS);
+        js_dom_clear_dirty();
+        css_apply(root, MEAS_CSS, csslen);
+    }
+    clock_t t1 = clock();
+    int full_total = styled_since(&mark);
+
+    /* AFTER: the disposition the record now produces -- one scope, re-styled. */
+    clock_t t2 = clock();
+    for (int r = 0; r < COMMIT_REPS; r++) {
+        prun(COMMIT_JS);
+        js_dom_clear_dirty();
+        css_apply_scoped(mount, 0, MEAS_CSS, csslen);
+    }
+    clock_t t3 = clock();
+    int scoped_total = styled_since(&mark);
+
+    double full_ms = (double)(t1 - t0) * 1000.0 / CLOCKS_PER_SEC / COMMIT_REPS;
+    double scoped_ms = (double)(t3 - t2) * 1000.0 / CLOCKS_PER_SEC / COMMIT_REPS;
+
+    printf("\n--- commit measurement (%d elements, one React-shaped commit x %d) ---\n",
+           full_total / COMMIT_REPS, COMMIT_REPS);
+    printf("  before (record overflowed -> whole document): %5d elements re-styled, %8.3f ms\n",
+           full_total / COMMIT_REPS, full_ms);
+    printf("  after  (record reports 1 scope -> the mount): %5d elements re-styled, %8.3f ms\n",
+           scoped_total / COMMIT_REPS, scoped_ms);
+    printf("  scopes claimed by one commit: %d (was 0 == whole document)\n", roots);
+    if (scoped_ms > 0.0 && scoped_total > 0)
+        printf("  -> %dx fewer elements, %.0fx faster per commit\n",
+               (full_total / COMMIT_REPS) / (scoped_total / COMMIT_REPS),
+               full_ms / scoped_ms);
+
+    CK(full_total / COMMIT_REPS > 2000,
+       "commit measurement: the overflow path really did re-style the whole document");
+    /* 31: the mount, ten <p>, ten <b> and ten text nodes' owning elements --
+     * i.e. exactly the subtree that arrived, and nothing above it. */
+    CK(scoped_total / COMMIT_REPS < 100,
+       "commit measurement: the scoped path re-styles only what the commit inserted");
+    CK(scoped_ms * 10.0 < full_ms,
+       "commit measurement: and a commit is an order of magnitude cheaper");
+
+    js_page_close();
+    dom_free(root);
+    free(h.p);
+}
+
 int main(void)
 {
     const char *html = "<body><h1 id='t'>Old</h1><p class='x'>hi</p><a href='/y'>z</a>"
@@ -1222,6 +1416,7 @@ int main(void)
     cssom_tests();
 
     measure_invalidation();
+    measure_commit();
 
     printf(fails ? "\nJS-DOM TEST FAILED\n" : "\nJS-DOM TEST PASSED\n");
     return fails;

@@ -111,23 +111,38 @@ static int is_ancestor(const struct node *a, const struct node *b)
  * a scope already covered by one in the set is dropped, and one that c overs an
  * existing scope replaces it. Without that, a handler doing three appendChilds
  * under the same parent would ask for the same subtree three times. */
-/* KNOWN COST, measured and left in place. A mutation on a node that is not
- * attached to the document contributes no box and no pixel, so in principle it
- * needs no scope at all -- and react-dom's commit shape is exactly that: build
- * a subtree off-document with thirty mutations, then attach it with one call.
- * Each of those thirty claims a scope root today, there are only
- * JS_DOM_MAX_DIRTY of them, so a React commit overflows the record and falls
- * back to a whole-document re-style every time.
+/* Is `n` attached to the document being rendered?
  *
- * The fix is one line here (skip nodes whose parent chain does not reach
- * g_root; the attach marks the destination, and re-styling that scope covers
- * everything that came in with it). It is NOT applied because it changes an
- * assertion in tests/unit/js_dom_test.c -- whose overflow fixture builds its
- * twelve scopes out of DETACHED nodes -- and that file belongs to another
- * change in flight. The consequence is a slow commit, never a wrong screen:
- * "whole document" is what every mutation used to mean. */
+ * An off-document node has no box and no pixel, so a mutation inside it needs
+ * no scope: nothing on screen can be stale because of it. What eventually makes
+ * it visible is the INSERTION, and insert_run() marks the destination with
+ * INVAL_LAYOUT -- re-styling that scope covers every descendant that arrived
+ * with it. So dropping these marks cannot lose a repaint; it can only stop the
+ * record from spending scopes on work nobody can see.
+ *
+ * This is the difference between a React app being usable and not. react-dom
+ * builds a subtree off-document -- createElement, className, setAttribute,
+ * createTextNode, appendChild, thirty-odd calls -- and attaches it with ONE
+ * insertBefore. Counting the off-document ones, every commit claimed more than
+ * the JS_DOM_MAX_DIRTY scopes the record holds, overflowed, and fell back to
+ * re-styling the whole document. Measured on a 3122-element page, one such
+ * commit: 3122 elements / 4.0 ms before, 34 elements / 0.05 ms after (see
+ * measure_commit() in tests/unit/js_dom_test.c).
+ *
+ * With no document bound (a host test that inits with a NULL root) everything
+ * counts as connected, which is the conservative answer. */
+static int connected(const struct node *n)
+{
+    if (!g_root) return 1;
+    for (; n; n = n->parent) if (n == g_root) return 1;
+    return 0;
+}
+
 static void mark(struct node *n, int level, int siblings)
 {
+    /* Before the level is even raised: an off-document mutation is not a
+     * pending repaint, so it must not make the page report itself dirty. */
+    if (n && !connected(n)) return;
     if (level > g_level) g_level = level;
     if (g_whole) return;
     if (!n || n->type != N_ELEM) { g_whole = 1; return; }
@@ -176,12 +191,12 @@ static void mark_children(struct node *n) { mark(n, INVAL_LAYOUT, 0); }
  * text INSIDE it did, which is a layout change all the same: a longer string
  * reflows the line boxes.
  *
- * A character-data node with no element ancestor is detached, and nothing on
- * screen depends on it. Marking is skipped rather than escalated to
- * whole-document, because the insertion that eventually connects it marks the
- * insertion point anyway. This is the one place the record is deliberately
- * quiet, and it is the case React hits hardest: it creates a text node, writes
- * it, and only then appends it. */
+ * A character-data node with no element ancestor at all is skipped rather than
+ * escalated to whole-document; a node that HAS one but is off-document is
+ * dropped a moment later by connected(). Both are the same argument: nothing on
+ * screen depends on it yet, and the insertion that connects it marks the
+ * insertion point. React hits this on every text update it makes -- it creates
+ * the node, writes it, and only then appends. */
 static void mark_chardata(struct node *n)
 {
     struct node *p = n ? n->parent : 0;
