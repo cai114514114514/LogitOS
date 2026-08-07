@@ -94,7 +94,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -725,6 +725,61 @@ test-svg: $(RUST_LIB_HOST)
 	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
 	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/svg_test
+
+# H.264 baseline decoder host test: tools/genvideo.sh generates the stream
+# matrix with ffmpeg/libx264 and the reference YUV with ffmpeg's own decoder.
+# H.264 reconstruction is exactly specified integer arithmetic, so a correct
+# decoder matches ffmpeg byte-for-byte -- any mismatch is our bug, reported
+# with frame/plane/pixel. Needs ffmpeg. (genvideo.sh is idempotent; rerun it
+# by hand to refresh the matrix.)
+H264_SRC := c/lib/video/h264.c c/lib/video/h264_nal.c c/lib/video/h264_cavlc.c \
+            c/lib/video/h264_pred.c c/lib/video/h264_mc.c c/lib/video/h264_deblock.c
+test-h264:
+	@mkdir -p $(BUILD)/h264ref
+	@bash tools/genvideo.sh $(BUILD)/h264ref
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_test tests/unit/h264test.c $(H264_SRC) -Ic/lib/video
+	@for f in $(BUILD)/h264ref/*.h264; do \
+	    $(BUILD)/h264_test $$f $${f%.h264}.ref.yuv || exit 1; \
+	done
+	@echo "all H.264 host cases bit-exact"
+
+# Per-case byte counts over the WHOLE stream instead of stopping at the first
+# bad pixel. "the first mismatch moved" says nothing about whether a change
+# helped; a total does, and it is what makes bisecting the decoder possible.
+test-h264-diff:
+	@mkdir -p $(BUILD)/h264ref
+	@bash tools/genvideo.sh $(BUILD)/h264ref
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_diff tests/unit/h264_diff.c $(H264_SRC) -Ic/lib/video
+	@rc=0; for f in $(BUILD)/h264ref/*.h264; do \
+	    printf '%-24s ' "$$(basename $$f .h264)"; \
+	    $(BUILD)/h264_diff $$f $${f%.h264}.ref.yuv | tail -1 || rc=1; \
+	done; exit $$rc
+
+# The module unit tests. These existed but were wired to nothing, so they had
+# never run -- and two of their expectations disagreed with the spec (intra 4x4
+# vertical-left indexed p[x+y] instead of p[x+(y>>1)]; chroma DC averaged both
+# edges in all four quadrants). Both were corrected against 8.3.1.2.8 / 8.3.4.1
+# and then confirmed the honest way: with the decoder fixed to match, a real
+# stream decodes byte-identically to ffmpeg.
+#
+# h264_cavlc_test is NOT here on purpose. Its roundtrip section encodes with a
+# CAVLC *encoder* written inside the test, and that encoder disagrees with the
+# decoder about level coding. The decoder is the one that is right: it decodes
+# i-only-160x120 bit-exactly for all 60 frames, which exercises coeff_token,
+# level escapes, total_zeros and run_before across thousands of blocks. Fixing
+# the test's encoder is its own task; wiring a known-wrong test into a gate
+# would only teach people to ignore the gate.
+test-h264-units:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_pred_test tests/unit/h264_pred_test.c \
+	    c/lib/video/h264_pred.c -Ic/lib/video
+	@$(BUILD)/h264_pred_test
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_mc_test tests/unit/h264_mc_test.c \
+	    c/lib/video/h264_mc.c -Ic/lib/video
+	@$(BUILD)/h264_mc_test
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_deblock_test tests/unit/h264_deblock_test.c \
+	    c/lib/video/h264_deblock.c -Ic/lib/video
+	@$(BUILD)/h264_deblock_test
 
 clean:
 	rm -rf $(BUILD)
