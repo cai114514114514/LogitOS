@@ -6,11 +6,86 @@
 # which is the same arrangement tests/nic.mk, tests/audio.mk and tests/usb.mk
 # already use.
 
-.PHONY: test-h265 test-h265-units test-h265-diff test-video265
+.PHONY: test-h265 test-h265-units test-h265-units-control test-h265-units-asan \
+        test-h265-diff test-h265-b test-video265
 
 H265_SRC := c/lib/video/h265.c c/lib/video/h265_nal.c c/lib/video/h265_cabac.c \
             c/lib/video/h265_pred.c c/lib/video/h265_mc.c c/lib/video/h265_deblock.c
 H265_INC := -Ic/lib/video
+
+# The cases `make test-h265` requires to be BIT-EXACT. Anything the decoder does
+# not yet get exactly right is not in this list and is not claimed anywhere; run
+# `make test-h265-diff` to see the whole matrix including the failures, which is
+# the honest picture.
+H265_GATE := i-only-160x120 i-only-322x242 i-nosao-160x120 i-raw-160x120 \
+             i-ctb16-160x120 ip-320x240 ip-640x360 ip-refs4 ip-notmvp ip-amp \
+             ip-longgop ip-tskip ip-wpp
+
+# --- whole-stream gate ------------------------------------------------------
+# Bit-exact against ffmpeg's own HEVC decoder, every byte of every picture.
+# HEVC reconstruction is exactly specified integer arithmetic, so a tolerance
+# would be a decision to stop measuring.
+#
+# The generated matrix needs ffmpeg WITH libx265. When that is missing,
+# genvideo265.sh exits 3 and the generated half is skipped -- but the committed
+# fixture below still runs, so this target means something on a machine with no
+# encoder installed. That is the same reason tests/fixtures/video/sample.h264
+# exists for H.264.
+test-h265: $(BUILD)/h265_test
+	@mkdir -p $(BUILD)/h265ref
+	@rc=0; bash tools/genvideo265.sh $(BUILD)/h265ref core || rc=$$?; \
+	 if [ $$rc = 3 ]; then \
+	    echo "H265: no libx265 -- generated matrix skipped, fixture only"; \
+	 elif [ $$rc != 0 ]; then exit $$rc; \
+	 else \
+	    for c in $(H265_GATE); do \
+	        $(BUILD)/h265_test $(BUILD)/h265ref/$$c.h265 \
+	            $(BUILD)/h265ref/$$c.ref.yuv || exit 1; \
+	    done; \
+	 fi
+	@# The committed fixture: a stream and the CRC32 of its correct decode, so
+	@# this gate still measures something with no encoder on the machine. The
+	@# CRC was pinned from a decode verified bit-exact against ffmpeg.
+	@crc=`$(BUILD)/h265_test tests/fixtures/video265/sample.h265 | awk '{print $$2}'`; \
+	 want=`cat tests/fixtures/video265/sample.crc32`; \
+	 if [ "$$crc" != "$$want" ]; then \
+	    echo "H265-FAIL fixture crc $$crc want $$want"; exit 1; fi; \
+	 echo "H265-OK fixture crc $$crc (tests/fixtures/video265/sample.h265)"
+
+$(BUILD)/h265_test: tests/unit/h265test.c $(H265_SRC) c/lib/video/h265.h \
+                    c/lib/video/h265_int.h
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $@ tests/unit/h265test.c $(H265_SRC) $(H265_INC)
+
+# --- the bisection tool -----------------------------------------------------
+# Total wrong bytes per case, per plane, plus the first three bad pictures and
+# the largest single-sample error. THIS is the number to compare variants
+# against: on a decoder with two in-loop filters a real fix routinely moves the
+# first mismatch EARLIER while removing 90% of the wrong bytes, so "the first
+# mismatch moved" is not evidence of anything. Never gates; always reports.
+test-h265-diff: $(BUILD)/h265_diff
+	@mkdir -p $(BUILD)/h265ref
+	@bash tools/genvideo265.sh $(BUILD)/h265ref all || exit 0
+	@for f in $(BUILD)/h265ref/*.h265; do \
+	    printf '%-20s ' "$$(basename $$f .h265)"; \
+	    $(BUILD)/h265_diff $$f $${f%.h265}.ref.yuv | tail -1; \
+	 done
+
+$(BUILD)/h265_diff: tests/unit/h265_diff.c $(H265_SRC) c/lib/video/h265.h \
+                    c/lib/video/h265_int.h
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $@ tests/unit/h265_diff.c $(H265_SRC) $(H265_INC)
+
+# --- B slices, gated separately ---------------------------------------------
+# Kept out of test-h265 until they are bit-exact, so that target never has to
+# be read as "passes except for the part it silently skips".
+test-h265-b: $(BUILD)/h265_test
+	@mkdir -p $(BUILD)/h265ref
+	@bash tools/genvideo265.sh $(BUILD)/h265ref b
+	@for c in b-320x240 b-pyramid b-weighted; do \
+	    $(BUILD)/h265_test $(BUILD)/h265ref/$$c.h265 \
+	        $(BUILD)/h265ref/$$c.ref.yuv || exit 1; \
+	 done
 
 # --- per-module gates -------------------------------------------------------
 # A whole-stream test says something is wrong; a module test says what. Each of
