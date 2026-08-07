@@ -113,7 +113,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net
+.PHONY: all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
 
 all: $(ISO)
 
@@ -257,6 +257,7 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
+                c/net/http/http1.c c/net/http/hpool.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
@@ -1063,6 +1064,30 @@ test-css-fidelity: $(ISO) $(DISK)
 # are the evidence; see the docstring in tests/qmp/qmp_live_page.py.
 test-live-page: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_live_page.py $(ISO) $(DISK)
+
+# --- test-modules: ES modules, on the machine, in the pixels ---
+# Boots the OS and serves a fixture whose <script type="module"> imports a
+# second file. The decisive assertion is that TWO modules importing the SAME
+# specifier "./lib.mjs" get two DIFFERENT files, because resolution is against
+# the importing module's URL and not against the document -- checked from the
+# page's console, from the host server's request log, and from the screen (each
+# module paints a colour that appears in no stylesheet on the page).
+# On a build without the module loader this fails at the first module: QuickJS
+# reports `SyntaxError: expecting '('` on the import statement.
+test-modules: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_module_page.py $(ISO) $(DISK)
+
+# --- test-handshakes: what one real page costs in TLS handshakes ---
+# `grep -c 'chain of'` on the guest serial log IS the handshake count: the TLS
+# layer prints one line per verified chain and nothing in the browser can forge
+# it. en.wikipedia.org/wiki/Operating_system cost 14 before the connection pool
+# was wired in and 4 after. Also screendumps the page, because a handshake count
+# that fell because the page stopped loading is not an improvement.
+#   make test-handshakes URL=https://example.com/ MAXHS=3
+URL   ?= https://en.wikipedia.org/wiki/Operating_system
+MAXHS ?= 8
+test-handshakes: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_handshakes.py $(ISO) $(DISK) '$(URL)' $(MAXHS) build/handshakes.ppm
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

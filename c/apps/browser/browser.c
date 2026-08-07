@@ -5,7 +5,10 @@
 #include "browser_paint.h"
 #include "js_dom.h"
 #include "js_page.h"
+#include "js_module.h"           /* <script type="module"> + the module loader */
+#include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
+#include <stdlib.h>              /* malloc/realloc/free -- resources are sized to fit */
 
 /* A web browser. The whole render pipeline runs in this ring-3 app: the
  * kernel does DNS+TCP+TLS+HTTP (SYS_HTTP_GET) and hands us the raw body
@@ -96,94 +99,8 @@ static int collect_style(struct node *n, char *out, int o, int max)
     return o;
 }
 
-static int has_ci(const char *h, const char *n);   /* defined below, next to fetch_css_links */
+static int has_ci(const char *h, const char *n);   /* defined below */
 static int str_eq(const char *a, const char *b);
-
-/* <script src="..."> fetch: same channel as fetch_css_links (res_fetch_raw; the
- * kernel resolves relative srcs against the page URL). Budgeted -- each fetch
- * is a full HTTPS handshake -- and duplicate srcs are skipped. A failed fetch
- * just skips that one script; the rest of the page's JS still runs. */
-static int g_js_budget;
-#define MAX_JS_SEEN 16
-static const char *g_js_seen[MAX_JS_SEEN];
-static int g_js_nseen;
-/* One external script at a time. 1 MiB, matching css_tmp: at 64 KiB this
- * silently truncated wikipedia's 68 KiB startup module -- see run_scripts. */
-static unsigned char js_tmp[1048576];
-static char js_inline[262144];             /* one inline script, reassembled from its text nodes */
-
-/* Run every <script> in document order, EACH ONE SEPARATELY.
- *
- * This used to concatenate the whole page's JS into one 64 KiB buffer and hand
- * that to a single JS_Eval. Two things were wrong with it, and both were live:
- *
- *   - Concatenation is not what the spec says. Each <script> is its own
- *     program. Joined together, one script that ends inside a string or a
- *     comment swallows the next, and a SyntaxError anywhere kills ALL of the
- *     page's JS including the inline scripts that were fine.
- *   - Both buffers were 64 KiB and neither truncation was detected. The guard
- *     `sn < sizeof scr` could not fire, because the copy loop's own bound is
- *     `o < max - 1` -- so sn never reached sizeof scr and the check was always
- *     true. On en.wikipedia.org the 68894-byte startup module was cut at
- *     65536 and QuickJS reported `SyntaxError: unexpected end of string`,
- *     taking the entire page's scripting with it.
- *
- * So: never evaluate a truncated source. A program cut in half is not a
- * program, and feeding it to the parser turns "this one resource is too big"
- * into "no JS runs on this page". Skipping it says so on the console instead.
- *
- * Returns the number of scripts that were actually evaluated. */
-static int run_scripts(struct node *n)
-{
-    if (!n) return 0;
-    int ran = 0;
-
-    if (n->type == N_ELEM && tag_is(n->tag, "script")) {
-        const char *src = dom_attr(n, "src");
-        if (src) {                         /* external: fetch in document order */
-            if (g_js_budget > 0 && !has_ci(src, "javascript:") && !has_ci(src, "data:")) {
-                int dup = 0;
-                for (int i = 0; i < g_js_nseen; i++)
-                    if (str_eq(g_js_seen[i], src)) { dup = 1; break; }
-                if (!dup) {
-                    if (g_js_nseen < MAX_JS_SEEN) g_js_seen[g_js_nseen++] = src;
-                    g_js_budget--;
-                    int got = res_fetch_raw(src, js_tmp, (int)sizeof js_tmp);
-                    if (got >= (int)sizeof js_tmp) {
-                        printf("[browser] script skipped, larger than %uK: %s\n",
-                               (unsigned)(sizeof js_tmp / 1024), src);
-                    } else if (got > 0) {
-                        js_tmp[got] = 0;
-                        js_page_eval((const char *)js_tmp, got, src);
-                        ran++;
-                    }
-                }
-            }
-        } else {                           /* inline: reassemble its text nodes */
-            int o = 0, over = 0;
-            for (struct node *c = n->first_child; c; c = c->next)
-                if (c->type == N_TEXT && c->text)
-                    for (int i = 0; i < c->textlen; i++) {
-                        if (o >= (int)sizeof js_inline - 1) { over = 1; break; }
-                        js_inline[o++] = c->text[i];
-                    }
-            js_inline[o] = 0;
-            if (over) {
-                printf("[browser] inline script skipped, larger than %uK\n",
-                       (unsigned)(sizeof js_inline / 1024));
-            } else if (o > 0) {
-                js_page_eval(js_inline, o, "<inline>");
-                ran++;
-            }
-        }
-    }
-
-    for (struct node *c = n->first_child; c; c = c->next)
-        ran += run_scripts(c);
-    return ran;
-}
-
-static unsigned char css_tmp[1048576];   /* scratch for one external stylesheet (1 MiB; github's site.css is 858 KiB) */
 
 /* case-insensitive substring test (rel may be "stylesheet", "preload stylesheet", ...) */
 static int has_ci(const char *h, const char *n)
@@ -197,41 +114,237 @@ static int has_ci(const char *h, const char *n)
     return 0;
 }
 
-/* Fetch each <link rel="stylesheet" href> over HTTP(S) and append its CSS to out
- * (relative hrefs resolve against the page; this is why github/wikipedia were bare).
- * Budgeted: each fetch is a full HTTPS handshake to a CDN, so cap the count.
- * Duplicate hrefs are skipped (github links the same module CSS 3x). */
-static int g_css_budget;
-#define MAX_CSS_SEEN 32
-static const char *g_css_seen[MAX_CSS_SEEN];
-static int g_css_nseen;
 static int str_eq(const char *a, const char *b)
 { int i = 0; while (a[i] && a[i] == b[i]) i++; return a[i] == b[i]; }
-static int fetch_css_links(struct node *n, char *out, int o, int max)
+
+/* ======================= sub-resources: the fetch table =======================
+ *
+ * THE BUDGETS ARE GONE, and it is worth writing down what they were and why
+ * they could not stay.
+ *
+ *   g_css_budget = 24, g_js_budget = 8, MAX_CSS_SEEN = 32.
+ *
+ * They existed because every fetch went through SYS_RES_FETCH, which is one
+ * blocking kernel request with `Connection: close` -- so the count of resources
+ * WAS the count of TLS handshakes, and the count of handshakes was the page
+ * load time. Capping the count was the only lever there was.
+ *
+ * Two things retired them. Commit 65eb2c7 made each <script> its own program,
+ * so more scripts no longer means more truncation; and bfetch pools
+ * connections, so 28 stylesheets from one CDN cost ONE handshake rather than
+ * 28. The caps are now pure loss: kimi.com links 28 stylesheets and would have
+ * lost four of them to a limit that no longer buys anything.
+ *
+ * So the table grows instead. It holds a pointer into the DOM for the
+ * reference, and the fetched bytes are malloc'd to the size that actually
+ * arrived -- which also retires the other silent limit, the 1 MiB static
+ * scratch buffer that kimi's 1.55 MB main bundle already exceeded. */
+struct resent {
+    struct node *node;
+    const char  *ref;         /* the raw attribute value; NULL for an inline script */
+    int   module;             /* <script type="module"> */
+    int   id;                 /* bfetch request id while in flight, else -1 */
+    unsigned char *data;      /* fetched (or inline) source, owned */
+    int   len;
+    char *url;                /* absolute URL after redirects; the module name */
+};
+
+static struct resent *g_res;
+static int g_nres, g_cres;
+
+static void res_reset(void)
 {
-    if (!n) return o;
-    if (g_css_budget > 0 && o < max - 64 && n->type == N_ELEM && tag_is(n->tag, "link")) {
+    for (int i = 0; i < g_nres; i++) {
+        if (g_res[i].id >= 0) bfetch_release(g_res[i].id);
+        free(g_res[i].data);
+        free(g_res[i].url);
+    }
+    g_nres = 0;
+}
+
+static struct resent *res_add(struct node *n, const char *ref, int module)
+{
+    if (g_nres == g_cres) {
+        int nc = g_cres ? g_cres * 2 : 16;
+        struct resent *nv = realloc(g_res, (size_t)nc * sizeof *nv);
+        if (!nv) return 0;
+        g_res = nv; g_cres = nc;
+    }
+    struct resent *e = &g_res[g_nres++];
+    e->node = n; e->ref = ref; e->module = module;
+    e->id = -1; e->data = 0; e->len = 0; e->url = 0;
+    return e;
+}
+
+static char *dupstr(const char *s)
+{
+    int n = 0; while (s[n]) n++;
+    char *p = malloc((size_t)n + 1);
+    if (p) { for (int i = 0; i <= n; i++) p[i] = s[i]; }
+    return p;
+}
+
+/* Keep the window answering while a load is in flight.
+ *
+ * Nothing below this point blocks in the kernel any more -- bfetch runs over
+ * the non-blocking socket ABI, so the WM thread keeps composing the desktop and
+ * running net_poll (which is what advances our own sockets). This hook is what
+ * the BROWSER'S OWN window does with that: honour the close button, and show
+ * progress instead of a frozen "loading...".
+ *
+ * Input other than close is dropped on purpose while loading. There is no page
+ * to deliver it to yet, and queueing it would replay a burst of keystrokes into
+ * whatever document finally arrives. */
+static int  g_prog_done, g_prog_total;
+static unsigned long long g_prog_last;
+static const char *g_prog_what = "";
+
+static void num_append(char *st, int *p, int v)
+{
+    if (v < 0) v = 0;
+    int d = 1; while (v / d >= 10) d *= 10;
+    while (d) { st[(*p)++] = (char)('0' + (v / d) % 10); d /= 10; }
+}
+
+static void load_tick(void)
+{
+    struct logit_event e;
+    while (poll_event(&e))
+        if (e.type == EV_CLOSE) { js_page_close(); bfetch_close_all(); app_exit(0); }
+
+    unsigned long long now = monotonic_ms();
+    if (now - g_prog_last < 400) return;
+    g_prog_last = now;
+    char st[96]; int p = 0;
+    for (const char *s = g_prog_what; *s && p < 60; s++) st[p++] = *s;
+    if (g_prog_total > 0) {
+        st[p++] = ' ';
+        num_append(st, &p, g_prog_done);
+        st[p++] = '/';
+        num_append(st, &p, g_prog_total);
+    }
+    st[p++] = ' '; st[p++] = '.'; st[p++] = '.'; st[p++] = '.';
+    st[p] = 0;
+    set_status(st);
+    if (g_root) redraw(0);
+}
+
+/* Fetch every entry in the table CONCURRENTLY.
+ *
+ * The old code fetched one resource at a time inside a recursive DOM walk, and
+ * each of those was a full DNS+TCP+TLS+HTTP round trip in ring 0. Here the
+ * requests are all in flight together over pooled connections, so a page with
+ * 28 stylesheets on one CDN is one handshake and 28 pipelined-in-parallel
+ * requests rather than 28 handshakes end to end. */
+#define RES_INFLIGHT 8            /* < bfetch's table, and <= the pool's caps */
+
+static void res_fetch_all(const char *what)
+{
+    int next = 0, inflight = 0;
+    g_prog_done = 0; g_prog_total = g_nres; g_prog_what = what; g_prog_last = 0;
+    while (next < g_nres || inflight > 0) {
+        while (next < g_nres && inflight < RES_INFLIGHT) {
+            struct resent *e = &g_res[next++];
+            if (!e->ref) { g_prog_done++; continue; }      /* inline: nothing to fetch */
+            e->id = bfetch_start(e->ref);
+            if (e->id < 0) { printf("[browser] cannot fetch %s\n", e->ref); g_prog_done++; continue; }
+            inflight++;
+        }
+        if (inflight == 0) break;
+        bfetch_pump();
+        for (int i = 0; i < next; i++) {
+            struct resent *e = &g_res[i];
+            if (e->id < 0) continue;
+            int st = bfetch_state(e->id);
+            if (st == BF_PENDING) continue;
+            if (st == BF_DONE && bfetch_status(e->id) / 100 == 2) {
+                e->url = dupstr(bfetch_url(e->id));
+                e->len = bfetch_take(e->id, &e->data);
+                if (e->len < 0) { e->len = 0; e->data = 0; }
+            } else {
+                printf("[browser] fetch failed (status %d) %s: %s\n",
+                       bfetch_status(e->id), e->ref, bfetch_error(e->id));
+                bfetch_release(e->id);
+            }
+            e->id = -1;
+            inflight--;
+            g_prog_done++;
+        }
+        load_tick();
+        sys_yield();
+    }
+}
+
+/* ---- what the DOM offers ---- */
+
+static void collect_css_links(struct node *n)
+{
+    if (!n) return;
+    if (n->type == N_ELEM && tag_is(n->tag, "link")) {
         const char *rel = dom_attr(n, "rel"), *href = dom_attr(n, "href");
         /* a11y override themes are inactive unless the user selected them;
-         * skipping saves ~1 MiB of CSS and ~10 TLS handshakes on github.com */
+         * skipping saves ~1 MiB of CSS on github.com. This is a CORRECTNESS
+         * filter (the sheets do not apply), not a budget. */
         if (href && (has_ci(href, "high_contrast") || has_ci(href, "colorblind") ||
                      has_ci(href, "tritanopia"))) href = 0;
-        if (href && has_ci(rel, "stylesheet")) {
-            int dup = 0;
-            for (int i = 0; i < g_css_nseen; i++)
-                if (str_eq(g_css_seen[i], href)) { dup = 1; break; }
-            if (!dup) {
-                if (g_css_nseen < MAX_CSS_SEEN) g_css_seen[g_css_nseen++] = href;
-                g_css_budget--;
-                int got = res_fetch_raw(href, css_tmp, (int)sizeof css_tmp);
-                for (int i = 0; i < got && o < max - 1; i++) out[o++] = (char)css_tmp[i];
-                if (got > 0 && o < max - 1) out[o++] = '\n';
+        if (href && has_ci(rel, "stylesheet") && !has_ci(href, "data:")) {
+            int dup = 0;                       /* github links the same module CSS 3x */
+            for (int i = 0; i < g_nres; i++)
+                if (g_res[i].ref && str_eq(g_res[i].ref, href)) { dup = 1; break; }
+            if (!dup) res_add(n, href, 0);
+        }
+    }
+    for (struct node *c = n->first_child; c; c = c->next) collect_css_links(c);
+}
+
+/* Every <script> in document order, classified.
+ *
+ * `type` is a whitelist per spec: "module" selects the module goal, a
+ * JavaScript MIME type (or nothing) selects the classic goal, and ANYTHING ELSE
+ * is a data block that must not be executed -- which is how <script
+ * type="application/json"> and <script type="importmap"> stop being reported as
+ * the page's own syntax errors. `nomodule` marks a fallback for engines without
+ * module support; we have it, so those are skipped. */
+static void collect_scripts(struct node *n)
+{
+    if (!n) return;
+    if (n->type == N_ELEM && tag_is(n->tag, "script")) {
+        const char *type = dom_attr(n, "type");
+        const char *src  = dom_attr(n, "src");
+        int module = js_module_is_module_type(type);
+        int classic = !module && js_module_is_classic_type(type);
+        if (!module && !classic) {
+            printf("[browser] skipping <script type=\"%s\"> (not executable)\n", type ? type : "");
+        } else if (!module && dom_attr(n, "nomodule")) {
+            /* the fallback for a browser without modules; we are not one */
+        } else if (src) {
+            if (!has_ci(src, "javascript:") && !has_ci(src, "data:"))
+                res_add(n, src, module);
+        } else {
+            /* inline: reassemble the text nodes into one exactly-sized buffer.
+             * The old path had a 256 KiB static cap and skipped anything over
+             * it; sizing to the content removes the question. */
+            int total = 0;
+            for (struct node *c = n->first_child; c; c = c->next)
+                if (c->type == N_TEXT && c->text) total += c->textlen;
+            if (total <= 0) { /* empty inline script */ }
+            else {
+                struct resent *e = res_add(n, 0, module);
+                if (e) {
+                    e->data = malloc((size_t)total + 1);
+                    if (e->data) {
+                        int o = 0;
+                        for (struct node *c = n->first_child; c; c = c->next)
+                            if (c->type == N_TEXT && c->text)
+                                for (int i = 0; i < c->textlen; i++) e->data[o++] = (unsigned char)c->text[i];
+                        e->data[o] = 0;
+                        e->len = o;
+                    }
+                }
             }
         }
     }
-    for (struct node *c = n->first_child; c; c = c->next)
-        o = fetch_css_links(c, out, o, max);
-    return o;
+    for (struct node *c = n->first_child; c; c = c->next) collect_scripts(c);
 }
 
 static void load(const char *u);
@@ -254,7 +367,10 @@ static void follow_link(const char *href)
     load(url);
 }
 
-static char bodybuf[1048576];            /* page HTML (1 MiB) */
+/* The document source. The DOM borrows text out of it, so it has to outlive the
+ * tree -- which is also why it is a malloc'd buffer sized to the response and no
+ * longer a 1 MiB static: a page bigger than that used to be silently cut. */
+static unsigned char *g_page_src;
 static char author_css[4194304];         /* inline <style> + fetched external <link> CSS (4 MiB; github.com ships ~3.25 MiB) */
 static char css_expanded[4718592];       /* author_css after var() expansion -> LibCSS (4.5 MiB) */
 static int  css_exlen;
@@ -294,6 +410,56 @@ static void status_from_js(const char *fallback)
     set_status(st);
 }
 
+/* Run the page's scripts.
+ *
+ * ORDER IS THE SPEC, and it is two passes rather than one:
+ *
+ *   - classic scripts run first, in document order. (In a real browser they run
+ *     as the parser reaches them; we have already finished parsing, so document
+ *     order is the same answer.)
+ *   - MODULES ARE DEFERRED. Every <script type="module"> is implicitly `defer`,
+ *     so they all run after the document is parsed and after every classic
+ *     script, still in document order among themselves.
+ *
+ * Each script is its own program -- see 65eb2c7 -- so a bundle that throws no
+ * longer takes the page's inline scripts down with it. Returns how many ran. */
+static int run_collected_scripts(const char *page_url)
+{
+    int ran = 0, inline_n = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < g_nres; i++) {
+            struct resent *e = &g_res[i];
+            if (e->module != pass) continue;            /* pass 0 classic, pass 1 module */
+            if (!e->data || e->len <= 0) continue;
+            if (!e->module) {
+                js_page_eval((const char *)e->data, e->len, e->url ? e->url : "<inline>");
+                ran++;
+                continue;
+            }
+            /* A module needs a UNIQUE ABSOLUTE URL: it is both the key in the
+             * module map (so an import of the same file twice instantiates it
+             * once) and the base every specifier inside it resolves against.
+             * An inline module has no URL of its own, so it gets the document's
+             * with a discriminator -- which resolves relative specifiers exactly
+             * as the spec says, against the document. */
+            char name[600];
+            const char *nm = e->url;
+            if (!nm) {
+                int p = 0;
+                for (const char *s = page_url; *s && p < 560; s++) name[p++] = *s;
+                const char *tag = "#inline-module-";
+                for (const char *s = tag; *s && p < 590; s++) name[p++] = *s;
+                num_append(name, &p, ++inline_n);
+                name[p] = 0;
+                nm = name;
+            }
+            js_module_eval((const char *)e->data, e->len, nm);
+            ran++;
+        }
+    }
+    return ran;
+}
+
 static void load(const char *u)
 {
     set_status("loading...");
@@ -305,20 +471,49 @@ static void load(const char *u)
     js_page_close();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
+    res_reset();
+    free(g_page_src); g_page_src = 0;
     ph = 0; scroll = 0;
-    int rc = http_get(u);
-    if (rc < 0) {
-        set_status(rc == HTTP_ERR_URL  ? "load failed: bad URL (need http:// or https://)" :
-                   rc == HTTP_ERR_DNS  ? "load failed: DNS lookup failed" :
-                   rc == HTTP_ERR_CONN ? "load failed: could not connect (timed out)" :
-                   rc == HTTP_ERR_TLS  ? "load failed: TLS/certificate error" :
-                                         "load failed");
+
+    /* A navigation ends the old page's connections: keeping them would hold
+     * pool slots (and kernel socket slots) for an origin the new page may have
+     * nothing to do with. */
+    bfetch_init();
+    bfetch_set_tick(load_tick);
+    bfetch_close_all();
+    bfetch_reset_stats();
+    js_module_reset();
+    bfetch_set_base(u);
+
+    g_prog_what = "fetching page"; g_prog_total = 0; g_prog_done = 0; g_prog_last = 0;
+    int doc = bfetch_start(u);
+    if (doc < 0) { set_status("load failed: bad URL (need http:// or https://)"); return; }
+    bfetch_wait(doc, load_tick);
+    if (bfetch_state(doc) != BF_DONE) {
+        printf("[browser] page fetch failed: %s\n", bfetch_error(doc));
+        set_status("load failed: could not fetch the page");
+        bfetch_release(doc);
         return;
     }
-    if (http_status() != 2) { set_status("error: could not load"); return; }
-    int blen = http_body(bodybuf, sizeof bodybuf);
+    int code = bfetch_status(doc);
+    /* The URL AFTER redirects is the base for every relative reference on the
+     * page. Resolving against the typed URL instead is how a redirected page
+     * ends up asking the wrong origin for its own stylesheets. */
+    char base[600];
+    { const char *f = bfetch_url(doc); int i = 0;
+      while (f[i] && i < (int)sizeof base - 1) { base[i] = f[i]; i++; } base[i] = 0; }
+    bfetch_set_base(base);
+    int blen = 0;
+    blen = bfetch_take(doc, &g_page_src);
+    if (code / 100 != 2) {
+        char st[64]; int p = 0; const char *pre = "error: HTTP ";
+        while (*pre) st[p++] = *pre++;
+        num_append(st, &p, code); st[p] = 0;
+        set_status(st);
+        if (blen <= 0) return;                       /* still render an error body */
+    }
     if (blen <= 0) { set_status("error: empty response"); return; }
-    g_root = dom_parse(bodybuf, blen);
+    g_root = dom_parse((const char *)g_page_src, blen);
     if (!g_root) { set_status("error: parse failed"); return; }
     int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
     css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
@@ -329,18 +524,29 @@ static void load(const char *u)
     set_status("loaded -- fetching stylesheets...");
     redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
 
-    g_css_budget = 24;               /* fetch external <link> stylesheets, then re-style */
-    g_css_nseen = 0;
-    int css2 = fetch_css_links(g_root, author_css, css_len, (int)sizeof author_css);
+    /* ---- external stylesheets, all at once, no budget ---- */
+    res_reset();
+    collect_css_links(g_root);
+    int nsheets = g_nres;
+    res_fetch_all("stylesheets");
+    int css2 = css_len, got_sheets = 0;
+    for (int i = 0; i < g_nres; i++) {
+        struct resent *e = &g_res[i];
+        if (!e->data || e->len <= 0) continue;
+        got_sheets++;
+        for (int k = 0; k < e->len && css2 < (int)sizeof author_css - 1; k++)
+            author_css[css2++] = (char)e->data[k];
+        if (css2 < (int)sizeof author_css - 1) author_css[css2++] = '\n';
+    }
+    res_reset();
     /* report what actually arrived: sheet count + KiB (debug aid for CDN fetch issues) */
-    { char st[64]; int p = 0; const char *pre = "loaded, ";
+    { char st[96]; int p = 0; const char *pre = "loaded, ";
       while (*pre) st[p++] = *pre++;
-      int v = g_css_nseen, d = 100, started = 0;
-      while (d) { int dig = v / d; if (dig || started || d == 1) { st[p++] = (char)('0' + dig); started = 1; } v %= d; d /= 10; }
+      num_append(st, &p, got_sheets);
+      st[p++] = '/'; num_append(st, &p, nsheets);
       const char *mid = " sheets, ";
       while (*mid) st[p++] = *mid++;
-      v = css2 / 1024; d = 10000; started = 0;
-      while (d) { int dig = v / d; if (dig || started || d == 1) { st[p++] = (char)('0' + dig); started = 1; } v %= d; d /= 10; }
+      num_append(st, &p, css2 / 1024);
       st[p++] = 'K'; st[p] = 0; set_status(st); }
     if (css2 > css_len) {
         css_len = css2;
@@ -352,7 +558,11 @@ static void load(const char *u)
         { extern size_t malloc_peak; printf("[browser] heap peak %uK\n", (unsigned)(malloc_peak / 1024)); }
         redraw(0);                   /* re-paint with the page's real stylesheets */
     }
-    if (layout_load_images(8) > 0) { /* ... then fetch a few images and repaint */
+    /* Images ride the same pooled connections now, so eight of them from one
+     * host is one handshake rather than eight. That is why this number can go
+     * up without the load time going with it. */
+    g_prog_what = "images"; g_prog_total = 0; g_prog_last = 0;
+    if (layout_load_images(16) > 0) {
         ph = layout_height();
         redraw(0);
     }
@@ -363,18 +573,25 @@ static void load(const char *u)
      * a context to run in. */
     js_page_output_clear();
     js_out_shown = 0;
-    js_page_set_location(u);
+    js_page_set_location(base);
     js_page_open(g_root);
 
-    /* Run the page's <script>s (inline + up to 8 external), each as its own
-     * program and in document order. Real sites ship huge minified bundles that
-     * assume a full browser env; with no real DOM they just throw -- but they
-     * now throw ALONE, so a bundle that fails no longer takes the page's inline
-     * scripts down with it. The runtime's 2 MiB stack guard bounds recursive
-     * scripts so a bad bundle raises a catchable RangeError instead of
-     * faulting. */
-    g_js_budget = 8; g_js_nseen = 0;
-    int had_script = run_scripts(g_root) > 0;
+    /* Fetch every external script CONCURRENTLY, then run them in spec order.
+     * Real sites ship huge minified bundles that assume a full browser env;
+     * with no real DOM they just throw -- but they throw ALONE. The runtime's
+     * 2 MiB stack guard bounds recursive scripts so a bad bundle raises a
+     * catchable RangeError instead of faulting. */
+    res_reset();
+    collect_scripts(g_root);
+    res_fetch_all("scripts");
+    g_prog_what = "running scripts"; g_prog_total = 0; g_prog_last = 0;
+    int had_script = run_collected_scripts(base) > 0;
+    { int dials = 0, reuses = 0, reqs = 0, mods = 0, modfail = 0;
+      bfetch_stats(&dials, &reuses, &reqs);
+      js_module_stats(&mods, &modfail);
+      printf("[browser] load done: %d requests, %d connections dialled, %d reused"
+             ", %d modules loaded (%d failed)\n", reqs, dials, reuses, mods, modfail); }
+    res_reset();
 
     /* The document is parsed and the scripts have run: fire the lifecycle events
      * pages hang their initialisation on. Without these, every page that defers
