@@ -117,6 +117,70 @@ struct score {
     long peak_at;
 };
 
+/* THE ERROR DISTRIBUTION, corpus-wide.
+ *
+ * A pass/fail against a bound, or even a per-file RMS, is a summary; it cannot
+ * distinguish "every sample is a little off" from "almost every sample is
+ * exact and a handful are at the limit". Those are different decoders and only
+ * the second one is converging on the reference. Since MP3 has no bit-exact
+ * answer to point at, the shape of the disagreement IS the evidence, so every
+ * sample compared anywhere in the corpus is counted into a log-spaced
+ * histogram of |error| as a fraction of the 2^-15 peak bound and the
+ * percentiles are printed at the end.
+ *
+ * Buckets are upper bounds, as a fraction of ISO_FULL_PEAK. The last one is
+ * "at or over the bound" and must come out empty. */
+static const double HIST_EDGE[] = {
+    0.0,        /* exactly zero: bit-identical to ffmpeg */
+    0.001, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.00, 1e30
+};
+#define NHIST ((int)(sizeof(HIST_EDGE) / sizeof(HIST_EDGE[0])))
+static long   g_hist[NHIST];
+static long   g_hist_total;
+
+static void hist_add(double abserr)
+{
+    double frac = abserr / ISO_FULL_PEAK;
+    for (int b = 0; b < NHIST; b++) {
+        if (b == 0 ? (frac == 0.0) : (frac <= HIST_EDGE[b])) { g_hist[b]++; break; }
+    }
+    g_hist_total++;
+}
+
+/* The |error| below which `q` of all samples fall, read off the histogram.
+ * Reported as a bucket upper bound, which is the honest resolution of a
+ * histogram -- an interpolated percentile would imply precision it lacks. */
+static double hist_quantile(double q)
+{
+    long target = (long)(q * (double)g_hist_total), run = 0;
+    for (int b = 0; b < NHIST; b++) {
+        run += g_hist[b];
+        if (run >= target) return b == 0 ? 0.0 : HIST_EDGE[b];
+    }
+    return HIST_EDGE[NHIST - 1];
+}
+
+static void hist_report(void)
+{
+    static const char *LABEL[NHIST] = {
+        "exactly 0 (bit-identical)", "<= 0.1% of bound", "<= 1%", "<= 5%",
+        "<= 10%", "<= 25%", "<= 50%", "<= 75%", "<= 100%", "OVER THE BOUND"
+    };
+    printf("\n  per-sample |error| distribution over all %ld samples compared\n",
+           g_hist_total);
+    printf("  (as a fraction of the 2^-15 peak bound; MP3 has no bit-exact\n"
+           "   answer, so the SHAPE of the disagreement is the evidence)\n");
+    for (int b = 0; b < NHIST; b++) {
+        if (!g_hist[b]) continue;
+        printf("    %-26s %10ld  %6.2f%%\n", LABEL[b], g_hist[b],
+               100.0 * (double)g_hist[b] / (double)g_hist_total);
+    }
+    printf("    p50 <= %.2f%% of bound, p90 <= %.2f%%, p99 <= %.2f%%, "
+           "p99.9 <= %.2f%%\n",
+           100.0 * hist_quantile(0.50), 100.0 * hist_quantile(0.90),
+           100.0 * hist_quantile(0.99), 100.0 * hist_quantile(0.999));
+}
+
 static void compare(const float *got, long gn, const float *ref, long rn,
                     struct score *s)
 {
@@ -129,6 +193,7 @@ static void compare(const float *got, long gn, const float *ref, long rn,
         double a = dv < 0 ? -dv : dv;
         if (a > peak) { peak = a; peak_at = i; }
         if (a > ISO_FULL_PEAK) over++;
+        hist_add(a);
     }
     s->n = n;
     s->rms = n ? sqrt(acc / (double)n) : 0.0;
@@ -221,6 +286,14 @@ int main(int argc, char **argv)
     for (int i = 0; i < NCASES; i++)
         if (test_one(dir, CASES[i], 1) == 0) ran++;
     CHECK(ran >= 14, "only %d of %d cases were available", ran, NCASES);
+
+    hist_report();
+    /* The last bucket is "at or over the peak bound". The per-file checks
+     * already fail on any such sample, so this is a cross-check that the
+     * histogram and the per-file scoring are measuring the same thing rather
+     * than a second gate. */
+    CHECK(g_hist[NHIST - 1] == 0,
+          "%ld samples at or over the peak bound", g_hist[NHIST - 1]);
 
     if (failures) {
         printf("MP3-FAIL %d of %d checks failed\n", failures, checks);

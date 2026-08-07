@@ -38,6 +38,7 @@
 # test-audio-codec-fuzz do not.
 
 .PHONY: test-audio-codecs test-audio-codec-units test-audio-codec-fuzz \
+        test-audio-codec-fuzz-deep test-audio-codec-fuzz-negctl \
         test-audio-codec-negctl test-audio-codec-os test-wav test-flac test-mp3
 
 AUDIO_CODEC_SRC := c/lib/audio/audio.c c/lib/audio/wav.c c/lib/audio/flac.c \
@@ -171,7 +172,7 @@ test-audio-codec-negctl: $(AUDIO_STAMP)
 
 # Everything host-side, in one target.
 test-audio-codecs: test-wav test-flac test-mp3 test-audio-codec-fuzz \
-                   test-audio-codec-negctl
+                   test-audio-codec-fuzz-negctl test-audio-codec-negctl
 
 # Does any of this work on LogitOS, or only under glibc? Boots the OS, runs
 # /bin/audiocheck on the wav/flac/mp3 packed into the disk image, and requires
