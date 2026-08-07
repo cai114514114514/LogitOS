@@ -11,6 +11,8 @@
 #include "ramfs.h"
 #include "lfsro.h"
 #include "proc.h"
+#include "file.h"
+#include "logit_abi.h"    /* O_* */
 
 #define CTL_RESULT_MAX 1024
 
@@ -156,6 +158,73 @@ static int cmd_su(struct args *A, int to_parent)
     return okay();
 }
 
+/* Exercise the open-file-description layer in the CALLING process's fd table,
+ * on the real machine.
+ *
+ * The claim being tested is the one that separates a descriptor from a
+ * description: dup(2) makes a second DESCRIPTOR onto ONE description, so the
+ * file offset is shared. Read three bytes through the first and three through
+ * the second: if the description is shared the second read returns DEF, and if
+ * each descriptor secretly had its own offset it returns ABC. There is no way
+ * to tell those two implementations apart by inspection, and every other test
+ * in this tree passes under both.
+ *
+ * fork(2) shares descriptions through exactly this path -- proc_fork() calls
+ * file_dup() on each inherited fd, which is the same refcount share dup uses --
+ * so the refcount half is checked here too: closing one descriptor must leave
+ * the other usable, which is what makes an inherited fd survive the parent's
+ * close.
+ *
+ * Runs in the context of whichever ring-3 process wrote the command, using its
+ * own fd table, and leaves nothing behind. */
+static int cmd_fdtest(const char *path)
+{
+    struct proc *p = proc_current();
+    if (!p) return fail("noproc", VFS_EPERM);
+
+    struct file *w = file_open_vfs(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (!w) return fail("create", VFS_EACCES);
+    if (file_write(w, "ABCDEF", 6) != 6) { file_close(w); return fail("seed", VFS_EIO); }
+    if (file_read(w, (char[4]){0}, 3) != -1) { file_close(w); return fail("wronly-readable", VFS_EIO); }
+    file_close(w);                                   /* the last close flushes */
+
+    struct file *f = file_open_vfs(path, O_RDONLY);
+    if (!f) return fail("open", VFS_EACCES);
+    if (file_write(f, "x", 1) != -1) { file_close(f); return fail("rdonly-writable", VFS_EIO); }
+
+    int fda = proc_fd_alloc(p, f);
+    if (fda < 0) { file_close(f); return fail("fdtable", VFS_EMFILE); }
+    file_dup(f);                                     /* dup(2): +1 descriptor, same description */
+    int fdb = proc_fd_alloc(p, f);
+    if (fdb < 0) {                       /* two references are live: the open and the dup */
+        p->fd[fda] = 0; file_close(f); file_close(f);
+        return fail("fdtable", VFS_EMFILE);
+    }
+
+    char a[4] = { 0 }, b[4] = { 0 };
+    file_read(proc_fd_get(p, fda), a, 3);
+    file_read(proc_fd_get(p, fdb), b, 3);
+
+    /* Close one descriptor; the description must survive for the other. */
+    file_close(p->fd[fda]); p->fd[fda] = 0;
+    char c[4] = { 0 };
+    long after = file_read(proc_fd_get(p, fdb), c, 1);
+    file_close(p->fd[fdb]); p->fd[fdb] = 0;
+
+    int shared   = (a[0] == 'A' && a[1] == 'B' && a[2] == 'C' &&
+                    b[0] == 'D' && b[1] == 'E' && b[2] == 'F');
+    int survived = (after == 0);                     /* at EOF after 6 of 6 bytes */
+
+    r_reset();
+    r_put(shared && survived ? "ok fdtest" : "err fdtest");
+    r_put(" first="); r_put(a);
+    r_put(" second="); r_put(b);
+    r_put(shared ? " OFFSET-SHARED" : " OFFSET-NOT-SHARED");
+    r_put(survived ? " DESCRIPTION-SURVIVED-CLOSE" : " DESCRIPTION-LOST");
+    r_put("\n");
+    return shared && survived ? 0 : VFS_EIO;
+}
+
 static int run(const char *buf, int len)
 {
     struct args A;
@@ -208,6 +277,10 @@ static int run(const char *buf, int len)
         if (rc < 0) return fail("access", rc);
         r_reset(); r_put("ok access "); r_put(A.a[1]); r_put(" "); r_put(A.a[2]);
         return okay();
+    }
+    if (c_eq(c, "fdtest")) {
+        if (A.n < 2) return fail("usage", VFS_EINVAL);
+        return cmd_fdtest(A.a[1]);
     }
     if (c_eq(c, "mount"))  return cmd_mount(&A);
     if (c_eq(c, "umount")) {

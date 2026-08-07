@@ -783,6 +783,27 @@ test-vfs-mount-asan:
 # Everything the VFS layer can prove without a machine.
 test-vfs: test-vfs-path test-vfs-path-asan test-vfs-mount test-vfs-mount-asan
 
+# The SECOND filesystem, on its own disk. A tiny independent LogitFS image
+# built by the same tools/mkfs.py that builds the root one -- the markers live
+# in files here rather than in the test's shell script because the serial
+# console echoes what is typed, and a marker in a command line would show up in
+# the log whether or not anything read it.
+$(BUILD)/disk2.img: tools/mkfs.py
+	@mkdir -p $(BUILD)/vfs2
+	@printf 'VFS_DISK2_OK\n'     > $(BUILD)/vfs2/disk2.txt
+	@printf 'VFS_SECRET_BYTES\n' > $(BUILD)/vfs2/secret.txt
+	@printf 'VFS_PUBLIC_BYTES\n' > $(BUILD)/vfs2/public.txt
+	@printf 'VFS_LINK_BYTES\n'   > $(BUILD)/vfs2/link.txt
+	python3 tools/mkfs.py $@ $(BUILD)/vfs2/disk2.txt:/disk2.txt \
+	    $(BUILD)/vfs2/secret.txt:/secret.txt $(BUILD)/vfs2/public.txt:/public.txt \
+	    $(BUILD)/vfs2/link.txt:/link.txt
+
+# The VFS on the machine: two filesystems on two devices, an unprivileged
+# process refused, links, and dup sharing an offset. See the header of
+# tests/boot/run-vfs-test.sh for what each assertion is worth.
+test-vfs-os: $(ISO) $(DISK) $(BUILD)/disk2.img
+	@bash tests/boot/run-vfs-test.sh $(ISO) $(DISK) $(BUILD)/disk2.img
+
 # Partition-table parsing (MBR incl. the extended chain, GPT incl. both CRC32s),
 # on the host against synthetic sector images. This is where nearly all the risk
 # in the storage widening lives: every field comes off a disk somebody else

@@ -32,6 +32,10 @@
  *   ln -s <target> <link>       symbolic link
  *   stat <path>                 mode, uid, gid, nlink, type, size
  *   readlink <path>
+ *   fdtest <path>               exercise the open-file-description layer in THIS
+ *                               process's fd table: dup shares an offset, and a
+ *                               close through one descriptor leaves the other
+ *                               usable. See cmd_fdtest in vfsctl.c.
  *   mount ramfs <label> <at>    an in-memory filesystem
  *   mount lfsro <blkdev> <at>   a LogitFS image on another block device, read-only
  *   umount <at>

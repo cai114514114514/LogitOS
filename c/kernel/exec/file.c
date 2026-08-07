@@ -136,6 +136,7 @@ struct file *file_alloc(void)
         if (files[i].refcount == 0) {
             f = &files[i];
             f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;  /* claim under lock */
+            f->amode = 0;
             f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
             f->backing = 0; f->path[0] = 0;
             break;
@@ -176,15 +177,44 @@ static int vfs_ensure_cap(struct file *f, long need)
     return 0;
 }
 
+/* The permission check belongs HERE, at open, and not only inside vfs_read.
+ *
+ * A vfs_read that refuses returns a negative count, and the F_VFS backend
+ * treats a failed slurp as "the file is empty" -- so `cat` on a file it may
+ * not read printed nothing and exited 0. That is a refusal nobody can see,
+ * which is the failure mode a permission model is supposed to prevent. Failing
+ * the open means the caller gets -1 from open(2), which is what every program
+ * already knows how to report.
+ *
+ * The mask follows the access mode, and O_TRUNC counts as a write even on a
+ * descriptor that is never written through: truncation IS the modification. */
+static int open_want(int flags)
+{
+    int acc = flags & 3;
+    int want = (acc == O_WRONLY) ? MAY_WRITE
+             : (acc == O_RDWR)   ? (MAY_READ | MAY_WRITE)
+             :                      MAY_READ;
+    if (flags & (O_TRUNC | O_APPEND)) want |= MAY_WRITE;
+    return want;
+}
+
 struct file *file_open_vfs(const char *path, int flags)
 {
     int sz = vfs_size(path);
     int exists = (sz >= 0);
     if (!exists && !(flags & O_CREAT)) return 0;
 
+    /* An existing file is checked against its own mode; a file about to be
+     * created is checked against the directory that would gain the name --
+     * there is nothing else to check, and skipping it is the hole where an
+     * unprivileged process creates files in a root-owned directory. */
+    if (exists) { if (vfs_access(path, open_want(flags)) < 0) return 0; }
+    else        { if (vfs_may_create(path) < 0) return 0; }
+
     struct file *f = file_alloc();
     if (!f) return 0;
     f->type = F_VFS; f->flags = flags; f->off = 0; f->dirty = 0;
+    f->amode = flags & 3;
     scopy(f->path, path, sizeof f->path);
 
     if (exists && !(flags & O_TRUNC)) {
@@ -205,6 +235,10 @@ long file_read(struct file *f, void *buf, long len)
 {
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
+        /* The access mode is a property of the open file DESCRIPTION, so it is
+         * checked here rather than at the descriptor: a dup of a write-only fd
+         * is still write-only, and a fork inherits the same answer. */
+        if (f->amode == O_WRONLY) return -1;
         long avail = f->size - f->off;
         if (avail <= 0) return 0;                 /* EOF */
         long n = len < avail ? len : avail;
@@ -221,6 +255,7 @@ long file_write(struct file *f, const void *buf, long len)
 {
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
+        if (f->amode == O_RDONLY) return -1;
         if (f->flags & O_APPEND) f->off = f->size;
         if (f->off > (long)0x7fffffffffffffffL - len) return -1;   /* off+len would wrap negative */
         if (vfs_ensure_cap(f, f->off + len) < 0) return -1;
