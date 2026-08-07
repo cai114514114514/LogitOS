@@ -145,7 +145,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -669,6 +669,33 @@ test-x509-fuzz: $(BUILD)
 # driver brings up a controller and logitfs mounts + reads off it (M24 bare-metal).
 test-nvme: $(ISO) $(DISK)
 	@BLK=nvme sh tests/boot/run-test.sh $(ISO) $(DISK)
+
+# VFS path resolution, on the host. Every case in here has been a real CVE
+# somewhere: ".." at the root, ".." across a mount point, a looping symlink
+# chain, a symlink to an absolute path, a path exactly at the buffer limit, the
+# empty path. None of them needs a disk or a boot, and all of them are silent
+# in an end-to-end test -- a truncated path is still a valid path, to the wrong
+# file. c/fs/vfs_path.c is kept free of kernel headers precisely so the code
+# under test here is the code that ships.
+# A .PHONY line of its own rather than an entry on the big one at the top: that
+# line is being appended to by a dozen lines at once, and a merge conflict in a
+# list of names is a poor trade for one line of tidiness.
+.PHONY: test-vfs-path test-vfs-path-asan
+
+test-vfs-path:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/vfs_path_test tests/unit/vfs_path_test.c \
+	    c/fs/vfs_path.c -Ic/fs
+	@$(BUILD)/vfs_path_test
+
+# The same under ASan/UBSan: the walker splices symlink targets into a scratch
+# buffer while it is reading from it, which is exactly the shape of bug that
+# passes every assertion and corrupts memory.
+test-vfs-path-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/vfs_path_asan tests/unit/vfs_path_test.c c/fs/vfs_path.c -Ic/fs
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_path_asan
 
 # Partition-table parsing (MBR incl. the extended chain, GPT incl. both CRC32s),
 # on the host against synthetic sector images. This is where nearly all the risk
@@ -1377,84 +1404,6 @@ test-webapi-page-control: $(ISO) $(BUILD)/browser-nofetch.aex
 # the control.
 test-fetch-ui: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_fetch_ui.py $(ISO) $(DISK)
-
-# --- test-stream: streaming, SSE framing, EventSource, abort ---------------
-# Same in-memory transport as test-webapi, with one addition that is the whole
-# point: the fake server can RELEASE a response in pieces, so a test can assert
-# the page held the first tokens while the response was still open. See the
-# header of tests/unit/stream_net.h.
-STREAM_TEST_SRC := c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c \
-                   c/net/http/cookies.c tests/unit/rust_host_shim.c
-test-stream: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
-	    -o $(BUILD)/stream_test tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
-	    $(RUST_LIB_HOST) -lm
-	@$(BUILD)/stream_test
-
-# The negative control. The SAME test file against js_webapi.c built with
-# -DWEBAPI_NO_STREAM, which is the buffer-until-complete fetch this change
-# replaced: the partial-delivery assertions are inverted and must hold. If this
-# ever shows partial delivery, test-stream is measuring something else.
-test-stream-control: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' \
-	    -DWEBAPI_HOST -DWEBAPI_NO_STREAM \
-	    -o $(BUILD)/stream_control tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
-	    $(RUST_LIB_HOST) -lm
-	@$(BUILD)/stream_control
-
-test-stream-asan: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
-	    -o $(BUILD)/stream_asan tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
-	    $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/stream_asan
-
-# --- test-cookie-cors: which requests carry the session, and which
-# cross-origin responses a page may read. Every refusal is paired with the
-# permitted case and with an assertion about what went on the wire, because a
-# browser that simply ignored CORS would pass the permitted half.
-test-cookie-cors: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
-	    -o $(BUILD)/cookie_cors_test tests/unit/cookie_cors_test.c $(STREAM_TEST_SRC) \
-	    $(QJS_SRC) $(RUST_LIB_HOST) -lm
-	@$(BUILD)/cookie_cors_test
-
-test-cookie-cors-asan: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
-	    -o $(BUILD)/cookie_cors_asan tests/unit/cookie_cors_test.c $(STREAM_TEST_SRC) \
-	    $(QJS_SRC) $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/cookie_cors_asan
-
-# --- test-sse-page: the on-device proof, TIMED -----------------------------
-# "It streams" is a claim about WHEN bytes become visible, so the host server
-# emits SSE tokens with deliberate gaps and the harness screenshots between
-# them: partial content must be on the framebuffer while the response is still
-# open, with timestamps. A fully buffered browser passes a final-text check and
-# fails this one.
-test-sse-page: $(ISO) $(DISK)
-	python3 tests/qmp/qmp_sse_page.py $(ISO) $(DISK)
-
-# The device negative control: the same harness against a browser.aex whose
-# js_webapi.c was built with -DWEBAPI_NO_STREAM.
-NOSTREAM_OBJ := $(BUILD)/nostream/js_webapi.o
-$(NOSTREAM_OBJ): c/apps/browser/js_webapi.c
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(JS_INC) -DWEBAPI_NO_STREAM -c $< -o $@
-NOSTREAM_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ)) $(NOSTREAM_OBJ)
-$(BUILD)/browser-nostream.elf: $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
-$(BUILD)/browser-nostream.aex: $(BUILD)/browser-nostream.elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/browser-nostream.elf $@ Browser - 'B' 120 130 240
-
-test-sse-page-control: $(ISO) $(BUILD)/browser-nostream.aex
-	@$(MAKE) DISK=$(BUILD)/disk-nostream.img BROWSER_AEX=$(BUILD)/browser-nostream.aex $(BUILD)/disk-nostream.img
-	python3 tests/qmp/qmp_sse_page.py $(ISO) $(BUILD)/disk-nostream.img --expect-buffered
 
 # --- test-stream: streaming, SSE framing, EventSource, abort ---------------
 # Same in-memory transport as test-webapi, with one addition that is the whole
