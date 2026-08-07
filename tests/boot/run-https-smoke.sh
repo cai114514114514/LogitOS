@@ -50,8 +50,22 @@ else
     # broken, and took the blocking fetch's full timeout chain to do it. A test
     # whose result depends on the operator's location is testing the operator.
     # Pass URLs as arguments to check a specific site.
+    # and two the user hit by hand and reported as RC-5, each proving a
+    # different half of what landed today:
+    #   bing.com           refuses x25519 and answers with a HelloRetryRequest
+    #                      naming secp256r1. The old client sent x25519 alone
+    #                      and rejected HRR outright, so this was not slow, it
+    #                      was shut. Nothing else in this list exercises HRR.
+    #   www.baidu.com      needs BOTH halves at once: it does not speak 1.3 at
+    #                      all AND wants a NIST curve -- TLS 1.2 with
+    #                      ECDHE-RSA-AES128-GCM-SHA256 over secp256r1. It is
+    #                      also the only site here whose content is fully
+    #                      server-rendered (~250 K characters of text), which
+    #                      makes it the one that should actually LOOK like a
+    #                      page rather than an empty SPA shell.
     URLS=(https://cloudflare.com/ https://zh.wikipedia.org/ https://www.bsi.bund.de/
-          https://sectigo.com/ https://www.mas.gov.sg/ https://www.cbuae.gov.ae/)
+          https://sectigo.com/ https://www.mas.gov.sg/ https://www.cbuae.gov.ae/
+          https://bing.com/ https://www.baidu.com/)
 fi
 
 QEMU="${QEMU:-qemu-system-x86_64}"
