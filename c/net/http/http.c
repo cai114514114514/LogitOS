@@ -251,8 +251,19 @@ int http_get(const char *url)
     if (url_parse(url, &cur) != 0) { status = HTTP_ERR_URL; http_busy = 0; return HTTP_ERR_URL; }
 
     /* Follow up to 5 redirects (301/302/303/307/308 with a Location header), so
-     * e.g. https://google.com lands on https://www.google.com like a real browser. */
+     * e.g. https://google.com lands on https://www.google.com like a real browser.
+     *
+     * The hop COUNT is not a time bound, and that distinction bit us: each hop
+     * can spend tcp_connect's 5 s plus a TLS handshake, so a redirect chain into
+     * an unreachable host costs the product, not the sum of anything visible
+     * here. This whole call runs in ring 0 under the big kernel lock, so that
+     * time is time the machine cannot process input. Bound the wall clock too,
+     * and let the caller's own cap be the outer one. */
+    uint64_t fetch_t0 = timer_ticks();
     for (int hop = 0; hop < 5; hop++) {
+        if (hop && timer_ticks() - fetch_t0 > 1200) {   /* ~12 s across all hops */
+            status = HTTP_ERR_CONN; http_busy = 0; return HTTP_ERR_CONN;
+        }
         int rc = fetch_once(&cur);
         if (rc != 0) { status = rc; http_busy = 0; return rc; }
 

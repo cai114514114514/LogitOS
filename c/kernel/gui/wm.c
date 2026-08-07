@@ -341,6 +341,21 @@ static int sysinfo_text(char *buf, int max)
  * the flag would stay 1 forever and net_poll in the WM loop would never run
  * again. Armed/cleared alongside g_net_busy; checked in the WM main loop. */
 static uint64_t net_busy_t0;
+
+/* Hard wall-clock cap on one SYS_HTTP_GET, retries and redirects included.
+ *
+ * Every layer below has its own timeout -- tcp_connect 5 s, http's idle budget
+ * 8 s, up to 5 redirect hops -- and they MULTIPLY. Nothing bounded the product,
+ * so an unreachable host could hold the big kernel lock for minutes while the
+ * machine looked hung. 15 s is long enough for a slow-but-working site over a
+ * TLS handshake and short enough that a user waits rather than reboots.
+ *
+ * Note this got worse, not better, when the PIT was fixed: the tick had been
+ * running at twice its programmed rate, so every timeout expressed in ticks was
+ * silently half its stated duration. Correcting the clock doubled every wait in
+ * this path. The commit that fixed it said durations now mean what they claim;
+ * it should also have said they therefore got longer. */
+#define HTTP_FETCH_CAP_TICKS 1500
 static struct win *app_window(struct app *ap)
 {
     return (ap && ap->win >= 0) ? &wins[ap->win] : NULL;
@@ -582,8 +597,30 @@ long wm_gui_syscall(long num, long a, long b, long c)
         net_busy_t0 = timer_ticks();
         uint64_t t0 = timer_ticks();
         int grc = http_get(url);
-        for (int retry = 0; grc < 0 && retry < 3; retry++)   /* transient DNS/conn/TLS loss */
+        /* Retry only what a retry can fix, and bound the whole thing.
+         *
+         * This used to retry ANY failure three times. For a host that is simply
+         * unreachable -- blocked, black-holed, no route -- that is a
+         * deterministic failure, so the retries only multiply the damage: each
+         * attempt burns tcp_connect's 5 s, times the redirect chain, times
+         * three. And because this fetch runs in ring 0 holding the big kernel
+         * lock, the WM thread cannot enter the kernel to drain input for the
+         * whole of it: the machine appears hung, not merely slow. Reported from
+         * a region where www.google.com does not resolve or connect.
+         *
+         * HTTP_ERR_CONN and HTTP_ERR_URL are verdicts, not glitches. Only DNS
+         * and TLS get a second chance, and only one, under a hard wall-clock
+         * cap so no combination of redirects and retries can exceed it.
+         *
+         * This is mitigation, not the fix. The fix is the non-blocking socket
+         * layer (c/net/core/sock.c) with the browser driving it from its own
+         * event loop, so an unreachable host costs a spinner instead of the
+         * machine. Until browser.c is wired to it, bound the damage. */
+        for (int retry = 0; retry < 1; retry++) {
+            if (grc >= 0 || grc == HTTP_ERR_CONN || grc == HTTP_ERR_URL) break;
+            if (timer_ticks() - t0 > HTTP_FETCH_CAP_TICKS) break;
             grc = http_get(url);
+        }
         g_net_busy = 0;
         net_busy_t0 = 0;
         kprintf("[http] get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
