@@ -20,6 +20,7 @@
 #include "percpu.h"
 #include "kprintf.h"
 #include "pit.h"
+#include "ktime.h"
 #include "snd.h"
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
@@ -242,6 +243,83 @@ void syscall_dispatch(struct registers *r)
          * the SYS_MONOTONIC_MS comment in logit_abi.h. */
         r->rax = timer_ms();
         return;
+
+    /* ---- M28 time subsystem ---------------------------------------------
+     * Beside SYS_MONOTONIC_MS and for the same reason: a clock is not a GUI
+     * service, and /bin/as, the coreutils and vidcheck are windowless. */
+    case SYS_CLOCK_GETTIME: {
+        struct logit_timespec ts;
+        int64_t s = 0, ns = 0;
+        if (!user_range_ok((void *)r->rsi, sizeof ts, 1)) { r->rax = (uint64_t)-1; return; }
+        if (time_clock_gettime((int)r->rdi, &s, &ns) < 0) { r->rax = (uint64_t)-1; return; }
+        ts.tv_sec = (long)s; ts.tv_nsec = (long)ns;
+        user_copy_to((void *)r->rsi, &ts, sizeof ts);
+        r->rax = 0;
+        return;
+    }
+    case SYS_NANOSLEEP: {
+        struct logit_timespec req;
+        if (!user_range_ok((const void *)r->rdi, sizeof req, 0)) { r->rax = (uint64_t)-1; return; }
+        user_copy_from(&req, (const void *)r->rdi, sizeof req);
+        if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000L) {
+            r->rax = (uint64_t)-1; return;
+        }
+        uint64_t want = (uint64_t)req.tv_sec * NS_PER_SEC + (uint64_t)req.tv_nsec;
+        if (want > 3600ull * NS_PER_SEC) want = 3600ull * NS_PER_SEC;   /* one hour cap */
+        uint64_t deadline = time_mono_ns() + want;
+        uint64_t tick_ns  = timer_ns_per_tick();
+        /* NOT a new blocking mechanism -- deliberately. The concurrency line
+         * owns park/unpark (sched_block_self_unlock_until); building a second
+         * sleeper here would give the kernel two, which is one more than any
+         * kernel should have. This uses what exists today:
+         *
+         *   - more than a tick left: bkl_hlt_wait(), the scheduler's own "drop
+         *     the big lock and hlt until an interrupt" primitive, so the core
+         *     idles instead of spinning and every other thread runs;
+         *   - less than a tick left: yield, because hlt would overshoot the
+         *     deadline by up to a whole 10 ms tick and nanosleep(1ms) sleeping
+         *     10 ms is exactly the imprecision this subsystem exists to remove.
+         *
+         * When the ns-deadline park lands, the body of this loop becomes one
+         * call to it and the deadline arithmetic above does not change. */
+        for (;;) {
+            uint64_t now = time_mono_ns();
+            if (now >= deadline) break;
+            if (deadline - now > tick_ns) bkl_hlt_wait();
+            else                          schedule();
+        }
+        if (r->rsi && user_range_ok((void *)r->rsi, sizeof req, 1)) {
+            struct logit_timespec rem = { 0, 0 };
+            user_copy_to((void *)r->rsi, &rem, sizeof rem);
+        }
+        r->rax = 0;
+        return;
+    }
+    case SYS_CLOCK_INFO: {
+        struct logit_clockinfo ci;
+        int set = (int)r->rsi;
+        if (!user_range_ok((void *)r->rdi, sizeof ci, 1)) { r->rax = (uint64_t)-1; return; }
+        if (set >= 0 && time_set_source(set) < 0) { r->rax = (uint64_t)-1; return; }
+        int src = time_get_source();
+        ci.source   = src;
+        ci.nsources = TIMESRC_N;
+        ci.hz       = time_source_hz(src);
+        ci.res_ns   = time_source_res_ns(src);
+        ci.mono_ns  = time_mono_ns();
+        ci.real_ns  = time_real_ns();
+        ci.reads    = time_mono_reads();
+        ci.backsteps = time_mono_backsteps();
+        ci.backstep_max_ns = time_mono_backstep_max_ns();
+        ci.timers_queued = (unsigned long long)ktimer_queued();
+        ci.timers_fired  = ktimer_fired();
+        ci.cores_seen    = time_cores_seen();
+        { const char *n = time_source_name(src); int i = 0;
+          for (; i < (int)sizeof ci.name - 1 && n[i]; i++) ci.name[i] = n[i];
+          for (; i < (int)sizeof ci.name; i++) ci.name[i] = 0; }
+        user_copy_to((void *)r->rdi, &ci, sizeof ci);
+        r->rax = 0;
+        return;
+    }
     case SYS_EXIT:
         proc_exit((int)r->rdi);  /* zombie + close fds + mark window dead; never returns */
         return;

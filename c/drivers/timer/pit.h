@@ -26,4 +26,9 @@ uint64_t timer_ticks(void);
  * every place this value surfaces says so out loud. */
 uint64_t timer_ms(void);
 
+/* The nominal duration of one tick. The tick rate is a property of this driver
+ * and callers should ask rather than open-code 1000/TIMER_HZ -- which is how a
+ * rate change becomes a silent, tree-wide change of meaning. */
+uint64_t timer_ns_per_tick(void);
+
 #endif /* LOGIT_PIT_H */

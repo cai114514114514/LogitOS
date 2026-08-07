@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "pit.h"
 #include "io.h"
+#include "ktime.h"
 
 #define PIT_CHANNEL0 0x40
 #define PIT_COMMAND  0x43
@@ -35,15 +36,45 @@ void pit_init(uint32_t hz)
     outb(PIT_COMMAND, 0x34);
     outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
     outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
+
+    /* Bring the clock up HERE, not in kmain.c.
+     *
+     * The tick and the clock are one thing -- the clock calibrates against PIT
+     * channel 2 while channel 0 is being programmed, and the ordering between
+     * them is a property of this driver, not of the boot sequence. Putting the
+     * call in kmain would mean the timer driver could be initialised into a
+     * state where the clock did not exist, and the only symptom would be
+     * time_mono_ns() returning 0 forever. Idempotent, so a second pit_init() is
+     * harmless. Needs no interrupts, no heap and no filesystem: it is port I/O
+     * and CPUID. */
+    time_init();
 }
 
 void timer_tick(void)
 {
     ticks++;
+    /* The nanosecond clock folds its cycle counter here, expires due timers and
+     * samples CPU accounting. Runs in the SAME pre-BKL window as the tick itself
+     * (see interrupts.c): a deadline must never queue behind a lock held by a
+     * thread that is waiting for that deadline. */
+    time_tick();
 }
 
 uint64_t timer_ticks(void)
 {
+    /* Unchanged: 100 Hz PIT interrupts since boot, exactly as before. Every
+     * timeout in the network stack subtracts these, and the last time the
+     * meaning of a tick moved, every one of them silently doubled (64a16c2 ->
+     * 7131e34). The nanosecond clock is a NEW surface beside this one, not a
+     * reinterpretation of it.
+     *
+     * The one addition is a deferred-work poll, which is a single predicted
+     * branch on a global that is zero for all but a few microseconds of the
+     * machine's life. It is here because timer_ticks() is the one function the
+     * time subsystem owns that gets called from ordinary thread context with
+     * interrupts on -- see time_safepoint(). */
+    if (__builtin_expect(g_time_deferred != 0, 0))
+        time_safepoint();
     return ticks;
 }
 
@@ -57,6 +88,18 @@ uint64_t timer_ms(void)
      * ticks * 10 in 64 bits does not overflow before the heat death of anything
      * that matters, so there is no wraparound case to handle here or in the
      * callers -- which is the whole reason the counter is 64-bit rather than the
-     * 32-bit ms the obvious implementation would give. */
+     * 32-bit ms the obvious implementation would give.
+     *
+     * DELIBERATELY still derived from the tick and not from time_mono_ns(),
+     * even though the ns clock is finer and available. SYS_MONOTONIC_MS's ABI
+     * documents a 10 ms step and tests/boot/run-clock-test.sh asserts it; making
+     * this value finer would change what an existing, published number means,
+     * which is the one thing this subsystem exists to stop happening silently.
+     * New code wants time_mono_ns() / SYS_CLOCK_GETTIME. */
     return ticks * (1000u / TIMER_HZ);
+}
+
+uint64_t timer_ns_per_tick(void)
+{
+    return 1000000000ull / TIMER_HZ;
 }
