@@ -18,6 +18,7 @@
 #include "nvme.h"
 #include "percpu.h"
 #include "spinlock.h"
+#include "mm.h"        /* mm_fault(): the page faults that are work, not errors */
 #include "work.h"        /* M27: softirq_run_pending() on the kernel-exit path */
 
 static const char *const exception_names[32] = {
@@ -116,6 +117,24 @@ void interrupt_handler(struct registers *r)
         goto done;
     }
     if (r->vector < 32) {
+        /* A page fault may be WORK rather than an error: a copy-on-write page
+         * being written, or an anonymous mapping touched for the first time.
+         * mm_fault() claims those and returns non-zero, and we retry the
+         * instruction; it declines everything else and returns 0, so the two
+         * branches below are exactly what they were.
+         *
+         * This hook is why MM_COW_DEFAULT could not be 1 before now: with no
+         * handler, the first write to a shared page after fork looks like a
+         * protection violation and kills the process. The memory line wrote
+         * the whole copy-on-write path against this call and deliberately did
+         * not install it, because a concurrency line was reworking the BKL
+         * discipline in this file and a SIMD line was considering an
+         * FXSAVE->XSAVE migration in the trap prologue at the same time. Both
+         * have landed, so it goes in here rather than being self-installed
+         * behind their backs. */
+        if (r->vector == 14 && mm_fault(mm_cr2(), r->error_code, r->rip))
+            goto done;
+
         if (r->cs & 3) {            /* fault came from ring 3: kill the app, keep the kernel alive */
             uint64_t cr2 = 0; __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
             kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x cr2=%p rsp=%p -- terminating app\n",

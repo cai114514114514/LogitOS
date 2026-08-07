@@ -21,6 +21,7 @@
 #include "kprintf.h"
 #include "pit.h"
 #include "ktime.h"
+#include "wait.h"        /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
@@ -268,25 +269,31 @@ void syscall_dispatch(struct registers *r)
         if (want > 3600ull * NS_PER_SEC) want = 3600ull * NS_PER_SEC;   /* one hour cap */
         uint64_t deadline = time_mono_ns() + want;
         uint64_t tick_ns  = timer_ns_per_tick();
-        /* NOT a new blocking mechanism -- deliberately. The concurrency line
-         * owns park/unpark (sched_block_self_unlock_until); building a second
-         * sleeper here would give the kernel two, which is one more than any
-         * kernel should have. This uses what exists today:
+        /* NOT a second blocking mechanism -- deliberately. sched_sleep_ms() in
+         * c/kernel/core/wait.c is the kernel's sleeper: it UNLINKS the thread
+         * from the run ring, so a sleeper consumes no scheduler time at all, and
+         * its deadline is expired from the timer IRQ ahead of the BKL acquire.
+         * Building a rival here would give the kernel two sleepers, which is one
+         * more than any kernel should have.
          *
-         *   - more than a tick left: bkl_hlt_wait(), the scheduler's own "drop
-         *     the big lock and hlt until an interrupt" primitive, so the core
-         *     idles instead of spinning and every other thread runs;
-         *   - less than a tick left: yield, because hlt would overshoot the
-         *     deadline by up to a whole 10 ms tick and nanosleep(1ms) sleeping
-         *     10 ms is exactly the imprecision this subsystem exists to remove.
+         * The two halves, and why there are two:
+         *   - MORE than two ticks left: park. Aim one tick short of the deadline
+         *     so the park cannot overshoot it -- its deadline is in ticks and
+         *     rounds up, and overshooting is the failure mode a nanosecond
+         *     nanosleep exists to avoid.
+         *   - the LAST tick: yield in a loop against the ns clock. Parking here
+         *     would round a nanosleep(1ms) up to a whole 10 ms, which is exactly
+         *     the imprecision this subsystem was built to remove. Bounded by one
+         *     tick of yielding, no matter how long the total sleep.
          *
-         * When the ns-deadline park lands, the body of this loop becomes one
-         * call to it and the deadline arithmetic above does not change. */
+         * When wait.c grows a nanosecond-deadline park, the whole loop collapses
+         * into one call to it and the arithmetic above does not change. */
         for (;;) {
             uint64_t now = time_mono_ns();
             if (now >= deadline) break;
-            if (deadline - now > tick_ns) bkl_hlt_wait();
-            else                          schedule();
+            uint64_t rem = deadline - now;
+            if (rem > 2 * tick_ns) sched_sleep_ms((unsigned)((rem - tick_ns) / NS_PER_MS));
+            else                   schedule();
         }
         if (r->rsi && user_range_ok((void *)r->rsi, sizeof req, 1)) {
             struct logit_timespec rem = { 0, 0 };
@@ -518,6 +525,13 @@ void syscall_dispatch(struct registers *r)
     case SYS_SND_STATE:
         r->rax = (uint64_t)snd_syscall((long)r->rax, (long)r->rdi,
                                        (long)r->rsi, (long)r->rdx);
+        return;
+
+    case SYS_MMAP:
+    case SYS_MUNMAP:
+    case SYS_MEMINFO:
+        r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
+                                      (long)r->rsi, (long)r->rdx);
         return;
 
     default:

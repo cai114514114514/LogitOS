@@ -34,7 +34,7 @@
  * ------------------------------------------------------------------------ */
 
 /* Flip to 1 in the same commit that adds the interrupts.c hook above. */
-#define MM_COW_DEFAULT 0
+#define MM_COW_DEFAULT 1
 
 /* The private user region (PML4[0]/PDPT[1]); see elf.c, which rejects any
  * program segment outside it. mm only ever claims faults inside this range. */
