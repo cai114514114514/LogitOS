@@ -186,7 +186,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -1170,7 +1170,103 @@ test-net-proto:
 		-Ic/drivers/timer -Ic/kernel/core
 	@./$(BUILD)/net_proto_test
 
-test-net: test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host
+# ---- IPv6 -----------------------------------------------------------------
+#
+# The pure half: address text form (RFC 5952 both directions), classification,
+# prefix arithmetic, the RFC 6724 policy table, source selection and
+# destination ordering. Driven from a table of cases, because the way an IPv6
+# stack fails is not "no packets" -- it is one wrong precedence comparison that
+# shows up months later as "sometimes the page does not load".
+test-ip6-host:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_addr_test \
+		tests/unit/ip6_addr_test.c -Ic/net/ip -Ic/net/link
+	@./$(BUILD)/ip6_addr_test
+
+# Negative control for the claim the whole dual-stack story rests on: a
+# destination with no USABLE source must sort below IPv4. ip6_select_source
+# enforces that by refusing a candidate whose scope is smaller than the
+# destination's; drop that one line (IP6_NEGCTL_NO_SCOPE_GUARD) and a
+# link-local-only host starts sourcing fe80:: for a global destination, so the
+# v6 address stops being demoted and the host strands every connection instead
+# of falling back. The suite MUST fail without it.
+test-ip6-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DLOGIT_NET_HOST -DIP6_NEGCTL_NO_SCOPE_GUARD \
+		-o $(BUILD)/ip6_addr_negctl tests/unit/ip6_addr_test.c -Ic/net/ip -Ic/net/link
+	@if ./$(BUILD)/ip6_addr_negctl >$(BUILD)/ip6_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes without the source-scope guard"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/ip6_negctl.log) checks fail without the source-scope guard"; \
+	fi
+
+# ICMPv6 / Neighbour Discovery / DAD / SLAAC, white-box: the test #includes
+# ip6.c and nd.c and stubs only eth_send, the clock and the console, so every
+# byte asserted here is a byte the kernel would put on the wire.
+test-nd-host:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/nd_test tests/unit/nd_test.c \
+		-Ic/net/ip -Ic/net/link -Ic/net/core -Ic/net/transport -Ic/net/dns \
+		-Ic/drivers/timer -Ic/kernel/core
+	@./$(BUILD)/nd_test
+
+# Negative control for Duplicate Address Detection. The easy way to write DAD
+# is to send the probe and then assign the address regardless of who answers --
+# which passes every "does it configure an address" test ever written.
+# IP6_NEGCTL_NO_DAD makes dad_conflict() ignore a defence; the suite MUST fail.
+test-nd-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DLOGIT_NET_HOST -DIP6_NEGCTL_NO_DAD -o $(BUILD)/nd_negctl \
+		tests/unit/nd_test.c -Ic/net/ip -Ic/net/link -Ic/net/core \
+		-Ic/net/transport -Ic/net/dns -Ic/drivers/timer -Ic/kernel/core
+	@if ./$(BUILD)/nd_negctl >$(BUILD)/nd_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes with DAD ignoring a defence"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/nd_negctl.log) checks fail when DAD does not refuse"; \
+	fi
+
+# The dual-stack socket state machine (c/net/core/sock.c) driven against a
+# model TCP: does a preferred-but-black-holed IPv6 destination actually end up
+# fetching over IPv4, and does a v4-only answer behave EXACTLY as it did before
+# IPv6 existed (one connection, no race, same order)?
+test-ip6-fallback:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_fallback_test \
+		tests/unit/ip6_fallback_test.c -Itests/unit -Ic/net/core -Ic/net/ip \
+		-Ic/net/link -Ic/net/transport -Ic/net/dns -Ic/net/tls -Ic/net/http \
+		-Ic/drivers/timer -Ic/drivers/char -Ic/kernel/core -Iinclude/abi
+	@./$(BUILD)/ip6_fallback_test
+
+# Negative control for the fallback itself: SOCK_NEGCTL_NO_FALLBACK makes a
+# failed destination fail the socket instead of advancing to the next one --
+# i.e. the pre-IPv6 behaviour, which is exactly what a client that "prefers
+# IPv6" and cannot fall back does. The suite MUST fail.
+test-ip6-fallback-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DLOGIT_NET_HOST -DSOCK_NEGCTL_NO_FALLBACK \
+		-o $(BUILD)/ip6_fallback_negctl tests/unit/ip6_fallback_test.c \
+		-Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport \
+		-Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char \
+		-Ic/kernel/core -Iinclude/abi
+	@if ./$(BUILD)/ip6_fallback_negctl >$(BUILD)/ip6_fb_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes with no fallback at all"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/ip6_fb_negctl.log) checks fail without the fallback"; \
+	fi
+
+test-ip6: test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl \
+          test-ip6-fallback test-ip6-fallback-negctl
+
+# On device, against real libslirp: link-local + DAD, a router advertisement,
+# SLAAC, a neighbour resolved through NS/NA, and a real 32 KiB HTTP body
+# fetched over IPv6 -- each asserted separately, plus the v4-unchanged control.
+test-ip6-os: $(ISO) $(DISK)
+	@bash tests/boot/run-ip6-test.sh $(ISO) $(DISK)
+
+test-net: test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-ip6
 
 # ---- Terminal / shell ------------------------------------------------------
 # LRT/1 framing (c/apps/coreutils/logit_rich.h): round trip at every chunk size,
