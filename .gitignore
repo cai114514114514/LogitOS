@@ -7,8 +7,10 @@ build/
 .DS_Store
 
 # Python bytecode cache
-tools/__pycache__/
-tests/qmp/__pycache__/
+# Anywhere, not two named directories: tests/unit/__pycache__ appeared the
+# moment a test grew a Python generator, and a listed-by-hand set of paths only
+# ever covers the places somebody already tripped over.
+__pycache__/
 
 # IDE compilation database (machine-specific paths; regenerate via tools/gen_compile_commands.py)
 compile_commands.json

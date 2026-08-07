@@ -122,7 +122,15 @@ def cmd_churn(dir):
 # The counter it prints is how boot 3 proves the kill actually landed inside the
 # loop: a run where CRASH-WRITE-DONE appears tested a clean shutdown, not a crash.
 def cmd_crashwrite(path):
-    data = build(SIZE_MID)
+    # SIZE_BIG, not SIZE_MID: run-fscrash-test.sh verifies this file with the
+    # "big" spec, so writing a "mid" one made every surviving victim look TORN
+    # ("length 120000 expected 400000") on a filesystem that had done nothing
+    # wrong. The test therefore only passed when the SIGKILL happened to land
+    # while the victim was absent -- which also means its whole-and-intact
+    # branch had never once been exercised. Pre-existing since the v4 journal
+    # landed (95734ad); found by re-running the harness for the crash-
+    # consistency work.
+    data = build(SIZE_BIG)
     other = path + ".b"
     print("CRASH-WRITE-ARMED")
     for i in range(300):

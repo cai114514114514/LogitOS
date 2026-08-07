@@ -42,7 +42,26 @@
 #include "snd.h"
 #include "pmm.h"
 #include "kprintf.h"
-#include "ktime.h"
+#include "pit.h"
+
+/* The monotonic ns clock is what this driver WANTS for its reset and codec
+ * timeouts -- a duration expressed in spins is a different duration on every
+ * host, which is exactly how a driver that works on one machine times out on
+ * another. But c/kernel/core/ktime.h belongs to another line and may not have
+ * landed in the tree being built, and a committed file must build from a clean
+ * clone of itself rather than from whatever happens to be in a shared working
+ * tree. So: use it when it is there, fall back to the 100 Hz tick when it is
+ * not, and never depend on either being precise -- every wait below is ALSO
+ * bounded by an iteration count, so a frozen or missing clock degrades to a
+ * failed probe instead of a hung boot. */
+#if defined(__has_include)
+#  if __has_include("ktime.h")
+#    define HDA_HAVE_KTIME 1
+#  endif
+#endif
+#ifdef HDA_HAVE_KTIME
+#  include "ktime.h"
+#endif
 
 void *memset(void *, int, size_t);
 
@@ -152,6 +171,7 @@ struct hda {
 };
 
 static struct hda g_hda;
+static int g_hda_dbg;   /* TEMP: first-8-commands trace */
 
 /* ------------------------------------------------------------- accessors -- */
 static inline uint8_t  r8 (struct hda *h, unsigned o) { return *(volatile uint8_t  *)(h->mmio + o); }
@@ -161,13 +181,61 @@ static inline void w8 (struct hda *h, unsigned o, uint8_t v)  { *(volatile uint8
 static inline void w16(struct hda *h, unsigned o, uint16_t v) { *(volatile uint16_t *)(h->mmio + o) = v; }
 static inline void w32(struct hda *h, unsigned o, uint32_t v) { *(volatile uint32_t *)(h->mmio + o) = v; }
 
-/* Busy-wait on the monotonic clock, not on a spin count. A loop counter is a
- * different duration on every host and is exactly how a driver that works on
- * one machine times out on another. */
+/* Milliseconds since boot, from the best clock this tree has. */
+static uint64_t hda_ms(void)
+{
+#ifdef HDA_HAVE_KTIME
+    return time_mono_ns() / 1000000ull;
+#else
+    /* 10 ms granularity, and it does not advance with IF=0 -- which is why
+     * every caller pairs it with an iteration cap. */
+    return timer_ticks() * (timer_ns_per_tick() / 1000000ull);
+#endif
+}
+
+/* Three characters of string formatting, done by hand.
+ *
+ * kprintf.h's ksnprintf would be the obvious tool and is deliberately not used:
+ * it is part of another line's in-flight work and was not committed when this
+ * driver was, which is exactly the dependency that broke HEAD once already. The
+ * codec identity line is the single most useful thing this driver prints on
+ * unfamiliar hardware, so it is not worth making it wait on someone else's
+ * commit. Each of these clamps at `end` and never writes the NUL -- the caller
+ * does that once. */
+static char *put_str(char *p, char *end, const char *s)
+{
+    while (*s && p < end) *p++ = *s++;
+    return p;
+}
+
+static char *put_dec(char *p, char *end, unsigned v)
+{
+    char tmp[12]; int n = 0;
+    do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 12);
+    while (n-- && p < end) *p++ = tmp[n];
+    return p;
+}
+
+static char *put_hex4(char *p, char *end, unsigned v)
+{
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 3; i >= 0; i--)
+        if (p < end) *p++ = hx[(v >> (i * 4)) & 0xF];
+    return p;
+}
+
 static void udelay(unsigned us)
 {
+#ifdef HDA_HAVE_KTIME
     uint64_t end = time_mono_ns() + (uint64_t)us * 1000ull;
     while (time_mono_ns() < end) __asm__ volatile ("pause");
+#else
+    /* Coarse on purpose: the tick cannot resolve microseconds, so this is a
+     * bounded spin. It is only used for reset settling at probe time, where
+     * "at least this long" is the requirement and overshooting costs nothing. */
+    volatile unsigned long n = (unsigned long)us * 300ul;
+    while (n--) __asm__ volatile ("pause");
+#endif
 }
 
 /* --------------------------------------------------------- CORB / RIRB --- */
@@ -194,23 +262,58 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
     else
         val = (cad << 28) | (nid << 20) | ((verb & 0xFFF) << 8) | (payload & 0xFF);
 
+    /* Ack any pending response status BEFORE kicking the CORB, not only after
+     * a reply arrives.
+     *
+     * This is the bug that cost the most time here, and it is invisible from
+     * the driver's own state: the controller counts responses and STOPS
+     * FETCHING COMMANDS once that count reaches RINTCNT, until the driver
+     * clears the response-interrupt bit in RIRBSTS. So exactly one verb would
+     * succeed and every one after it would time out -- with CORBCTL and
+     * RIRBCTL both still reading "running", CORBWP correctly advanced, and
+     * CORBRP frozen one behind it. The registers all say the bus is healthy;
+     * it is simply waiting for an acknowledgement nobody sent.
+     *
+     * Two belts here. The ack below makes the gate impossible to be closed when
+     * we kick, and RINTCNT is programmed to 0xFF in probe() rather than 1, so
+     * the count cannot reach it during the short probe conversation at all. */
+    w8(h, RIRBSTS, 0x05);
+
     wp = (h->corb_wp + 1) % 256;
     h->corb[wp] = val;
     h->corb_wp = wp;
     w16(h, CORBWP, (uint16_t)wp);
 
-    deadline = time_mono_ns() + 50ull * NS_PER_MS;
-    for (;;) {
+    /* TWO bounds, not one. The clock bound is the meaningful one; the spin
+     * bound is what keeps a missing, frozen or IF=0-stalled clock from turning
+     * an unresponsive codec into a hung boot. A driver that can hang the
+     * machine when its hardware is absent is worse than no driver. */
+    deadline = hda_ms() + 50;
+    for (unsigned long spins = 0; spins < 200000000ul; spins++) {
         unsigned rwp = r16(h, RIRBWP) & 0xFF;
         if (rwp != h->rirb_rp) {
             h->rirb_rp = (h->rirb_rp + 1) % 256;
             if (resp) *resp = (uint32_t)(h->rirb[h->rirb_rp] & 0xFFFFFFFFu);
             w8(h, RIRBSTS, 0x05);          /* ack response + overrun */
+            if (g_hda_dbg < 8)
+                kprintf("[hda.dbg] cmd %x -> rirb[%u]=%x%x (wp %u)\n", val,
+                        h->rirb_rp, (unsigned)(h->rirb[h->rirb_rp] >> 32),
+                        (unsigned)(h->rirb[h->rirb_rp] & 0xFFFFFFFFu), rwp);
+            g_hda_dbg++;
             return 0;
         }
-        if (time_mono_ns() > deadline) return -1;
+        if (hda_ms() > deadline) {
+            if (g_hda_dbg < 8)
+                kprintf("[hda.dbg] cmd %x TIMEOUT rirbwp=%u rp=%u corbwp=%u corbrp=%u ctl=%x/%x\n",
+                        val, rwp, h->rirb_rp, (unsigned)r16(h, CORBWP),
+                        (unsigned)r16(h, CORBRP), (unsigned)r8(h, CORBCTL),
+                        (unsigned)r8(h, RIRBCTL));
+            g_hda_dbg++;
+            return -1;
+        }
         __asm__ volatile ("pause");
     }
+    return -1;
 }
 
 static uint32_t codec_param(struct hda *h, unsigned nid, unsigned param)
@@ -236,6 +339,13 @@ static int find_output_path(struct hda *h)
     sub = codec_param(h, 0, PARAM_SUBNODE_COUNT);
     fg_start = (sub >> 16) & 0xFF;
     fg_count = sub & 0xFF;
+    /* The widget walk, printed. This is the audio equivalent of the [dev]
+     * table: when a machine is silent, the question is always "what did the
+     * codec say it had", and reconstructing that from a single failure line is
+     * impossible. Four lines on QEMU, a dozen on a laptop -- cheap either way,
+     * and the first thing anyone needs. */
+    kprintf("[hda] codec %u: root subnodes %u..%u\n",
+            h->codec_addr, fg_start, fg_start + fg_count - 1);
 
     for (i = 0; i < fg_count; i++) {
         unsigned fg = fg_start + i;
@@ -243,8 +353,14 @@ static int find_output_path(struct hda *h)
         unsigned dacs[16], ndac = 0;
         unsigned pins[16], npin = 0;
 
-        if ((codec_param(h, fg, PARAM_FG_TYPE) & 0x7F) != 0x01)
-            continue;                      /* not an Audio Function Group */
+        {
+            uint32_t t = codec_param(h, fg, PARAM_FG_TYPE);
+            sub = codec_param(h, fg, PARAM_SUBNODE_COUNT);
+            kprintf("[hda]  fg %u: type %x, widgets %u..%u\n", fg, t,
+                    (unsigned)((sub >> 16) & 0xFF),
+                    (unsigned)(((sub >> 16) & 0xFF) + (sub & 0xFF) - 1));
+            if ((t & 0x7F) != 0x01) continue;   /* not an Audio Function Group */
+        }
 
         /* An AFG comes up powered down on plenty of real codecs; D0 first or
          * every subsequent verb reads back plausible nonsense. */
@@ -259,21 +375,31 @@ static int find_output_path(struct hda *h)
             unsigned type;
             cap = codec_param(h, nid, PARAM_AUDIO_WIDGET_CAP);
             type = (cap >> 20) & 0xF;
-            if (type == WIDGET_DAC && ndac < 16) dacs[ndac++] = nid;
-            else if (type == WIDGET_PIN && npin < 16) {
+            if (type == WIDGET_DAC && ndac < 16) {
+                dacs[ndac++] = nid;
+                kprintf("[hda]   nid %u: DAC (cap %x)\n", nid, cap);
+            } else if (type == WIDGET_PIN && npin < 16) {
                 uint32_t pcap = codec_param(h, nid, PARAM_PIN_CAP);
                 uint32_t cfg = 0;
-                if (!(pcap & (1u << 4))) continue;        /* not output-capable */
                 codec_cmd(h, h->codec_addr, nid, VERB_GET_CONFIG_DEF, 0, &cfg);
+                kprintf("[hda]   nid %u: PIN (cap %x pincap %x cfg %x)\n",
+                        nid, cap, pcap, cfg);
+                if (!(pcap & (1u << 4))) continue;        /* not output-capable */
                 /* Port connectivity 0x1 == "no physical connection". Picking
                  * one of those is how sound goes to a jack that does not
                  * exist -- every register correct, nothing audible. */
                 if (((cfg >> 30) & 0x3) == 0x1) continue;
                 pins[npin++] = nid;
+            } else {
+                kprintf("[hda]   nid %u: type %u (cap %x)\n", nid, type, cap);
             }
         }
 
-        if (!ndac || !npin) continue;
+        if (!ndac || !npin) {
+            kprintf("[hda]   fg %u: %u DAC(s), %u usable output pin(s)\n",
+                    fg, ndac, npin);
+            continue;
+        }
 
         /* Prefer a pin that actually lists a DAC among its sources; fall back
          * to the first output pin and the first DAC, which is right for the
@@ -497,7 +623,10 @@ static int hda_probe(struct device *dev)
     w16(h, CORBRP, 0);
     w16(h, CORBWP, 0);
     w16(h, RIRBWP, 0x8000);                /* write-1-to-reset, self-clearing */
-    w16(h, RINTCNT, 1);
+    /* 0xFF, not 1: see the ack note in codec_cmd. With RINTCNT=1 the
+     * controller stops fetching after every single response until the driver
+     * acks, which turns a polled command bus into exactly one working verb. */
+    w16(h, RINTCNT, 0xFF);
     h->corb_wp = 0;
     h->rirb_rp = 0;
 
@@ -516,10 +645,19 @@ static int hda_probe(struct device *dev)
 
     {
         uint32_t vid = codec_param(h, 0, PARAM_VENDOR);
-        ksnprintf(h->snd.codec, sizeof h->snd.codec,
-                  "codec%u %04x:%04x dac=%u pin=%u",
-                  h->codec_addr, (unsigned)(vid >> 16), (unsigned)(vid & 0xFFFF),
-                  h->dac_nid, h->pin_nid);
+        char *p = h->snd.codec;
+        char *end = h->snd.codec + sizeof h->snd.codec - 1;
+        p = put_str(p, end, "codec");
+        p = put_dec(p, end, h->codec_addr);
+        p = put_str(p, end, " ");
+        p = put_hex4(p, end, (unsigned)(vid >> 16));
+        p = put_str(p, end, ":");
+        p = put_hex4(p, end, (unsigned)(vid & 0xFFFF));
+        p = put_str(p, end, " dac=");
+        p = put_dec(p, end, h->dac_nid);
+        p = put_str(p, end, " pin=");
+        p = put_dec(p, end, h->pin_nid);
+        *p = 0;
     }
 
     codec_setup_output(h);
