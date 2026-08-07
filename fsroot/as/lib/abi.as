@@ -74,6 +74,74 @@ Imgreq = layout("logit_imgreq", 32, [
     ["h", 24, 4, "i"]
 ])
 
+Timespec = layout("logit_timespec", 16, [
+    ["tv_sec", 0, 8, "i"],
+    ["tv_nsec", 8, 8, "i"]
+])
+
+Clockinfo = layout("logit_clockinfo", 104, [
+    ["source", 0, 4, "i"],
+    ["nsources", 4, 4, "i"],
+    ["hz", 8, 8, "u"],
+    ["res_ns", 16, 8, "u"],
+    ["mono_ns", 24, 8, "u"],
+    ["real_ns", 32, 8, "u"],
+    ["reads", 40, 8, "u"],
+    ["backsteps", 48, 8, "u"],
+    ["backstep_max_ns", 56, 8, "u"],
+    ["timers_queued", 64, 8, "u"],
+    ["timers_fired", 72, 8, "u"],
+    ["cores_seen", 80, 4, "u"],
+    ["name", 84, 16, "s"]
+])
+
+Sndfmt = layout("logit_sndfmt", 16, [
+    ["rate", 0, 4, "u"],
+    ["channels", 4, 2, "u"],
+    ["format", 6, 2, "u"],
+    ["buffer_ms", 8, 4, "u"],
+    ["flags", 12, 4, "u"]
+])
+
+Sndinfo = layout("logit_sndinfo", 80, [
+    ["driver", 0, 16, "s"],
+    ["codec", 16, 32, "s"],
+    ["rate", 48, 4, "u"],
+    ["channels", 52, 2, "u"],
+    ["format", 54, 2, "u"],
+    ["period_bytes", 56, 4, "u"],
+    ["periods", 60, 4, "u"],
+    ["streams_max", 64, 4, "u"],
+    ["streams_open", 68, 4, "u"],
+    ["underruns", 72, 4, "u"],
+    ["irq_mode", 76, 4, "u"]
+])
+
+Sndstate = layout("logit_sndstate", 32, [
+    ["frames_written", 0, 8, "u"],
+    ["frames_played", 8, 8, "u"],
+    ["avail_bytes", 16, 4, "u"],
+    ["ring_bytes", 20, 4, "u"],
+    ["underruns", 24, 4, "u"],
+    ["state", 28, 4, "u"]
+])
+
+Meminfo = layout("logit_meminfo", 104, [
+    ["frame_bytes", 0, 8, "u"],
+    ["frames_total", 8, 8, "u"],
+    ["frames_free", 16, 8, "u"],
+    ["frames_used", 24, 8, "u"],
+    ["frames_shared", 32, 8, "u"],
+    ["refs_total", 40, 8, "u"],
+    ["frames_pinned", 48, 8, "u"],
+    ["cow_pages", 56, 8, "u"],
+    ["cow_faults", 64, 8, "u"],
+    ["cow_reuse", 72, 8, "u"],
+    ["anon_faults", 80, 8, "u"],
+    ["mm_bugs", 88, 8, "u"],
+    ["mmap_reserved", 96, 8, "u"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):

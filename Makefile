@@ -845,6 +845,20 @@ test-part:
 	    c/drivers/block/part.c c/drivers/block/crc32.c -Ic/drivers/block
 	@$(BUILD)/part_test
 
+# Memory management: physical-frame refcounting and poisoning, the copy-on-write
+# and demand-paging fault-decision table, and the VMA/mmap arithmetic. Both
+# scripts drive the REAL pmm.c/vmm.c/fault.c/vma.c compiled for the host
+# (-DMM_HOSTTEST, with mmhost.h as the only seam), under ASan+UBSan.
+#
+# The line that wrote these could not add its own targets -- the Makefile was
+# being edited by a dozen other lines at the time -- so it left both scripts
+# runnable directly and said so. They have been runnable and unrun since.
+test-mm:
+	@sh tests/unit/mm_run.sh $(BUILD)
+
+test-mm-os: $(ISO) $(DISK)
+	@bash tests/boot/run-mm-test.sh $(ISO) $(DISK)
+
 # The same under ASan/UBSan. The parser reads attacker-shaped sector images into
 # fixed buffers with offsets taken from those same images, so an out-of-bounds
 # read is the failure mode to look for, and it is invisible without this.
