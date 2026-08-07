@@ -221,14 +221,42 @@ def open_app(slot, name):
 # Clock app redraws every second, so a bare "the pixels changed" claim is worth
 # nothing until it is compared with this. Measured over the same wall-clock
 # span the input steps below take.
+#
+# Taken by REPEATING until it settles, not once. Measured 4 s after the desktop
+# comes up it reads ~230000 pixels on a perfectly healthy machine -- the Finder
+# is still painting its first frame. A threshold derived from that number is
+# larger than the screen, and then every check below fails on a working build:
+# a baseline is only a baseline once the thing has stopped moving.
 QUIET = 6.0
-q0 = shot("quiet-a")
-time.sleep(QUIET)
-q1 = shot("quiet-b")
-BASE = changed(q0, q1)
-print("baseline: %d pixels change in %.0f s with NO input" % (BASE, QUIET),
-      flush=True)
-FLOOR = max(BASE * 8, 4000)
+SETTLED = 20000
+prev = shot("quiet-0")
+BASE = None
+for i in range(6):
+    time.sleep(QUIET)
+    cur = shot("quiet-%d" % (i + 1))
+    BASE = changed(prev, cur)
+    prev = cur
+    print("baseline try %d: %d pixels change in %.0f s with NO input"
+          % (i + 1, BASE, QUIET), flush=True)
+    if BASE < SETTLED:
+        break
+if BASE >= SETTLED:
+    # Not a flaky threshold to tune away: if the desktop repaints a fifth of
+    # itself every six seconds with nobody touching it, no "my input changed
+    # the screen" claim below can mean anything, and saying so is the honest
+    # outcome.
+    ck(False, "the desktop settles when left alone",
+       "%d pixels still changing per %.0f idle seconds after %.0f s of waiting"
+       % (BASE, QUIET, 6 * QUIET))
+    done(1)
+ck(True, "the desktop settles when left alone",
+   "%d pixels change per %.0f idle seconds" % (BASE, QUIET))
+#
+# Six times the idle noise, with an absolute floor. The floor is small on
+# purpose: one shell command in the Terminal repaints about 1800 pixels of
+# glyphs, and a threshold set by eye off the biggest signal (a window drag
+# moves ~370000) would quietly stop noticing the smallest one.
+FLOOR = max(BASE * 6, 600)
 
 # ---- 1. Code Studio, and typing into it -------------------------------------
 open_app(STUDIO_SLOT, STUDIO_NAME)

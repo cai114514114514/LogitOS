@@ -547,10 +547,14 @@ if ui is not None and guest_aex:
                "the click at (%d,%d) produced %r" % (x, y, got))
         time.sleep(1.0)
 else:
+    why = ("the desktop never came up, so nothing could be clicked"
+           if ui is None else
+           "the guest listed no .aex at the disk root, so the Dock is empty -- "
+           "see the filesystem assertions above")
     for name in ("dock: every dock icon launches its app",
                  "dock: NEGATIVE CONTROL -- a click that is not on an icon "
                  "launches nothing"):
-        skip(name, "the desktop never came up, so nothing could be clicked")
+        skip(name, why)
 
 # 10 -------------------------------------------------------------------------
 # Every app is live at once at this point, which is the state that finds the

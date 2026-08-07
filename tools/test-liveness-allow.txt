@@ -15,7 +15,6 @@
 # another line's file is not this line's job, not because it is fine.
 
 # --- tools, not tests: they produce a picture or drive the machine for a human
-tests/boot/run-prof-manual.sh: its own first line says "scratch driver -- see run-prof-test.sh for the real harness"
 tests/qmp/qmp_shot.py: screendumps a running QEMU; the output IS the result
 tests/qmp/qmp_demo.py: drives a demo sequence for a screenshot
 tests/qmp/qmp_drag.py: demonstrates window dragging for a screenshot
@@ -29,3 +28,5 @@ tests/qmp/qmp_stress.py: soak driver -- reloads a page N times; the artefact is 
 tests/qmp/qmp_blackframe.py: its docstring defines healthy vs black-frame by pixel content, then exits 0 whichever it saw
 tests/qmp/qmp_fuzz.py: "if heartbeats stop -> FROZEN" is in the docstring; nothing in the code acts on it
 tests/qmp/qmp_watch.py: dumps every CPU's registers when the screen goes static, then exits 0 -- the dump is the output, the verdict is not
+tests/boot/run-launch-profile.sh: a sampling PROFILER -- it prints a kernel-RIP histogram of an app launch; the histogram is the output and there is no threshold to fail
+tests/qmp/qmp_launch_click.py: its own docstring says it asserts nothing on purpose -- it delivers ONE Dock click at a known moment so run-launch-profile.sh can bracket it, and anything else it did would land in that histogram
