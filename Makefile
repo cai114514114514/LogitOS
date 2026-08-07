@@ -1941,6 +1941,8 @@ FONT_OTL_CASES := $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset
 
 test-font:
 	@mkdir -p $(BUILD)/fontref
+	@$(CC) -O2 -w -o $(BUILD)/ttf_test tests/unit/ttf_test.c $(FONT_SRC) $(FONT_INC)
+	@$(BUILD)/ttf_test fsroot/fonts/ui.ttf $(FONT_FIX)/SourceSans3-Regular.otf
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/font_cff_test tests/unit/font_cff_test.c \
 	    $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
 	@rc=0; for f in $(FONT_CASES); do \

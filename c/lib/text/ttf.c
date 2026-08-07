@@ -1,8 +1,12 @@
 #include "ttf.h"
+#include "fontrd.h"
 
-/* From-scratch TrueType reader: table directory, head/hhea/maxp, cmap (formats
- * 4 and 12), hmtx advances, and glyph outlines (simple + composite). Big-endian
- * on the wire; we read with explicit byte ops so it works on any host. */
+/* From-scratch OpenType reader: table directory, head/hhea/maxp, cmap (formats
+ * 4 and 12), hmtx advances, and glyph outlines. Two outline sources are
+ * supported -- `glyf` (quadratic, simple + composite, handled here) and `CFF `
+ * (Type 2 charstrings, handled by cff.c) -- and both are handed to the
+ * rasterizer as a struct fp_path. Big-endian on the wire; we read with explicit
+ * byte ops so it works on any host. */
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static int16_t  rs16(const uint8_t *p) { return (int16_t)rd16(p); }
@@ -12,17 +16,40 @@ static uint32_t rd32(const uint8_t *p)
 static uint32_t tag4(const char *s)
 { return ((uint32_t)(uint8_t)s[0] << 24) | ((uint8_t)s[1] << 16) | ((uint8_t)s[2] << 8) | (uint8_t)s[3]; }
 
-/* Find a table by tag; returns its offset (0 if absent). */
-static uint32_t find_table(const uint8_t *d, int len, uint32_t tag)
+/* Find a table by tag; returns its offset (0 if absent), and its declared
+ * length through `outlen` when asked. */
+static uint32_t find_table_len(const uint8_t *d, int len, uint32_t tag, uint32_t *outlen)
 {
+    if (outlen) *outlen = 0;
     if (len < 12) return 0;
     int n = rd16(d + 4);
     const uint8_t *rec = d + 12;
     for (int i = 0; i < n; i++, rec += 16) {
         if (rec + 16 > d + len) break;
-        if (rd32(rec) == tag) return rd32(rec + 8);
+        if (rd32(rec) == tag) {
+            uint32_t off = rd32(rec + 8);
+            if (off >= (uint32_t)len) return 0;      /* a table that starts past EOF */
+            if (outlen) {
+                uint32_t l = rd32(rec + 12);
+                if (l > (uint32_t)len - off) l = (uint32_t)len - off;   /* clamp, do not trust */
+                *outlen = l;
+            }
+            return off;
+        }
     }
     return 0;
+}
+
+static uint32_t find_table(const uint8_t *d, int len, uint32_t tag)
+{ return find_table_len(d, len, tag, 0); }
+
+int ttf_table(const struct ttf_font *f, uint32_t tag, uint32_t *off, uint32_t *len)
+{
+    uint32_t l = 0;
+    uint32_t o = find_table_len(f->data, f->len, tag, &l);
+    if (off) *off = o;
+    if (len) *len = l;
+    return o ? 0 : -1;
 }
 
 /* Choose a Unicode cmap subtable: prefer (3,10) format 12, then (3,1) format 4,
@@ -54,11 +81,10 @@ int ttf_parse(const uint8_t *data, int len, struct ttf_font *f)
 {
     if (len < 12) return -1;
     uint32_t ver = rd32(data);
-    if (ver != 0x00010000 && ver != tag4("true") && ver != tag4("OTTO") && ver != tag4("ttcf"))
-        return -1;
-    if (ver == tag4("OTTO")) return -1;             /* CFF outlines unsupported */
-    if (ver == tag4("ttcf")) return -1;             /* collection: extract a face first */
+    if (ver != 0x00010000 && ver != tag4("true") && ver != tag4("OTTO"))
+        return -1;                                  /* 'ttcf': extract a face first */
 
+    for (unsigned i = 0; i < sizeof *f; i++) ((uint8_t *)f)[i] = 0;
     f->data = data; f->len = len;
     f->off_head = find_table(data, len, tag4("head"));
     f->off_hhea = find_table(data, len, tag4("hhea"));
@@ -67,8 +93,10 @@ int ttf_parse(const uint8_t *data, int len, struct ttf_font *f)
     f->off_loca = find_table(data, len, tag4("loca"));
     f->off_glyf = find_table(data, len, tag4("glyf"));
     f->off_cmap = find_table(data, len, tag4("cmap"));
-    if (!f->off_head || !f->off_hhea || !f->off_maxp || !f->off_hmtx ||
-        !f->off_loca || !f->off_glyf || !f->off_cmap) return -1;
+    f->off_cff  = find_table_len(data, len, tag4("CFF "), &f->len_cff);
+    if (!f->off_cff) f->off_cff = find_table_len(data, len, tag4("CFF2"), &f->len_cff);
+    if (!f->off_head || !f->off_hhea || !f->off_maxp || !f->off_hmtx || !f->off_cmap)
+        return -1;
 
     /* find_table only validates the directory record fits, not that the table
      * offset is in range. Bound the head/hhea/maxp reads below (highest read:
@@ -86,10 +114,50 @@ int ttf_parse(const uint8_t *data, int len, struct ttf_font *f)
     f->num_glyphs   = rd16(data + f->off_maxp + 4);
     f->cmap_sub = pick_cmap(data, len, f->off_cmap);
     if (!f->cmap_sub || !f->units_per_em) return -1;
-    /* glyf/loca offsets and num_hmetrics feed pointer math in the outline +
-     * advance paths; reject a font where they are already out of range. */
-    if (f->off_glyf > (uint32_t)len || f->off_loca > (uint32_t)len) return -1;
     if (f->num_hmetrics <= 0) return -1;            /* the spec requires >= 1 */
+
+    /* Pick the outline source. A font that carries both (rare, and only from
+     * broken tooling) is read as glyf, because that is what its loca indexes. */
+    if (f->off_glyf && f->off_loca) {
+        f->outline_fmt = TTF_OUTLINE_GLYF;
+    } else if (f->off_cff) {
+        if (cff_parse(data, (uint32_t)len, f->off_cff, f->len_cff, &f->cff) != 0)
+            return -1;
+        f->outline_fmt = TTF_OUTLINE_CFF;
+        /* head.unitsPerEm is authoritative in OpenType, but a bare/odd CFF can
+         * disagree with its own FontMatrix; trust head and note the CFF value
+         * only when head is absurd. */
+        if (f->units_per_em <= 0) f->units_per_em = f->cff.upem;
+        if (f->num_glyphs > f->cff.nglyphs) f->num_glyphs = f->cff.nglyphs;
+    } else if (find_table(data, len, tag4("CBDT")) || find_table(data, len, tag4("sbix"))) {
+        /* A bitmap-only face -- NotoColorEmoji is exactly this, and it carries no
+         * glyf and no CFF at all. It has no outlines to rasterize, but it does
+         * have a cmap, metrics and strikes, so accepting it is what lets an
+         * emoji come out as an emoji instead of tofu. */
+        f->outline_fmt = TTF_OUTLINE_NONE;
+    } else {
+        return -1;                                  /* nothing we can draw */
+    }
+
+    f->off_gsub = find_table(data, len, tag4("GSUB"));
+    f->off_gpos = find_table(data, len, tag4("GPOS"));
+    f->off_gdef = find_table(data, len, tag4("GDEF"));
+    f->off_kern = find_table(data, len, tag4("kern"));
+    f->off_colr = find_table(data, len, tag4("COLR"));
+    f->off_cpal = find_table(data, len, tag4("CPAL"));
+    f->off_cblc = find_table(data, len, tag4("CBLC"));
+    f->off_cbdt = find_table(data, len, tag4("CBDT"));
+    f->off_sbix = find_table(data, len, tag4("sbix"));
+    f->off_svg  = find_table(data, len, tag4("SVG "));
+    f->off_fvar = find_table(data, len, tag4("fvar"));
+    f->off_avar = find_table(data, len, tag4("avar"));
+    f->off_gvar = find_table(data, len, tag4("gvar"));
+    f->off_hvar = find_table(data, len, tag4("HVAR"));
+    f->off_os2  = find_table(data, len, tag4("OS/2"));
+    f->off_post = find_table(data, len, tag4("post"));
+    f->off_vhea = find_table(data, len, tag4("vhea"));
+    f->off_vmtx = find_table(data, len, tag4("vmtx"));
+    f->off_name = find_table(data, len, tag4("name"));
     return 0;
 }
 
@@ -176,8 +244,34 @@ static int glyf_loc(const struct ttf_font *f, int gid, uint32_t *off, uint32_t *
     return 0;
 }
 
-/* Fixed-point 2.14 (F2Dot14) transform of one point, accumulating into shorts. */
-static short xf(int a, int c, int x, int y, int d) { return (short)(((a * x + c * y) >> 14) + d); }
+/* Fixed-point 2.14 (F2Dot14) arithmetic for composite glyphs.
+ *
+ * These are 64-bit and clamped because the inputs are attacker-controlled: a
+ * component's scale is an F2Dot14 in [-2, 2), five levels of nesting multiply
+ * those together, and `a * x` then overflows int -- which UBSan caught on a
+ * mutated font. The clamp is deliberately far past anything a real glyph
+ * reaches (2^22 in 2.14 is a scale of 256); it exists so the arithmetic stays
+ * defined, not to rescue a glyph that is already nonsense. */
+#define XF_LIM (1 << 22)
+
+static int c214(int64_t v)
+{
+    v >>= 14;
+    if (v >  XF_LIM) v =  XF_LIM;
+    if (v < -XF_LIM) v = -XF_LIM;
+    return (int)v;
+}
+
+static int clamp_off(int64_t v)
+{
+    if (v >  XF_LIM) v =  XF_LIM;
+    if (v < -XF_LIM) v = -XF_LIM;
+    return (int)v;
+}
+
+/* Transform one point through [a c / b d] + (dx,dy), landing back in a short. */
+static short xf(int a, int c, int x, int y, int d)
+{ return (short)(c214((int64_t)a * x + (int64_t)c * y) + d); }
 
 /* Emit glyph `gid` into the outline arrays, applying the 2.14 transform
  * [a b / c d] + (dx,dy). Recurses for composites. Returns 0 ok, -1 on overflow.
@@ -259,9 +353,12 @@ static int emit(const struct ttf_font *f, int gid, int depth,
         int cdx = (flags & 0x0002) ? arg1 : 0;          /* XY offset (point-match unsupported) */
         int cdy = (flags & 0x0002) ? arg2 : 0;
         /* compose parent [a b c d] with child [ca cb cc cd] (2.14) */
-        int na = (a * ca + c * cb) >> 14, nb = (b * ca + d * cb) >> 14;
-        int nc2 = (a * cc + c * cd) >> 14, nd = (b * cc + d * cd) >> 14;
-        int ndx = ((a * cdx + c * cdy) >> 14) + dx, ndy = ((b * cdx + d * cdy) >> 14) + dy;
+        int na  = c214((int64_t)a * ca + (int64_t)c * cb);
+        int nb  = c214((int64_t)b * ca + (int64_t)d * cb);
+        int nc2 = c214((int64_t)a * cc + (int64_t)c * cd);
+        int nd  = c214((int64_t)b * cc + (int64_t)d * cd);
+        int ndx = clamp_off((int64_t)c214((int64_t)a * cdx + (int64_t)c * cdy) + dx);
+        int ndy = clamp_off((int64_t)c214((int64_t)b * cdx + (int64_t)d * cdy) + dy);
         if (emit(f, cgid, depth + 1, na, nb, nc2, nd, ndx, ndy, X, Y, ON, FL, CE, capPts, capC, npts, nc))
             return -1;
         if (!(flags & 0x0020)) break;                   /* MORE_COMPONENTS */
@@ -272,10 +369,19 @@ static int emit(const struct ttf_font *f, int gid, int depth,
 int ttf_glyph_outline(const struct ttf_font *f, int gid,
                       struct ttf_outline *out, void *scratch, int scratchlen)
 {
+    if (f->outline_fmt != TTF_OUTLINE_GLYF) return -1;   /* CFF has no point array */
     /* Carve scratch: CE[capC] (int) then X,Y (short) then ON,FL (byte). FL holds
      * the per-glyph flag bytes so emit() needs no on-stack VLA -- kernel thread
      * stacks are far smaller than the worst-case point count. */
-    int capC = 64;
+    /* Contour capacity was a flat 64, which is not enough: a colour-emoji layer
+     * or a dense CJK ideograph runs to 85-90 contours, and every one of those
+     * glyphs returned -1 and drew NOTHING. Scale it with the scratch instead --
+     * one contour costs 4 bytes here against the ~7 bytes a point costs below,
+     * so giving contours 1/64th of the buffer is generous either way. */
+    int capC = scratchlen / 64;
+    if (capC < 64) capC = 64;
+    if (capC > 8192) capC = 8192;
+    if (capC * (int)sizeof(int) >= scratchlen) return -1;
     uint8_t *base = (uint8_t *)scratch;
     int *CE = (int *)base;
     uint8_t *rest = base + capC * (int)sizeof(int);
@@ -303,4 +409,74 @@ int ttf_glyph_outline(const struct ttf_font *f, int gid,
         out->xmax = rs16(g + 6); out->ymax = rs16(g + 8);
     } else { out->xmin = out->ymin = out->xmax = out->ymax = 0; }
     return 0;
+}
+
+/* --- outline -> drawing commands ---------------------------------------- */
+
+/* One glyf contour as MOVE / LINE / QUAD / CLOSE.
+ *
+ * TrueType stores a contour as a ring of points, each on- or off-curve, with
+ * three things left implicit: the contour may not start on-curve, two adjacent
+ * off-curve points imply an on-curve point halfway between them, and the ring
+ * closes back to where it started. All three are resolved here so that the
+ * rasterizer only ever sees explicit segments. */
+static void contour_to_path(struct fp_path *p, const struct ttf_outline *o,
+                            int start, int end)
+{
+    int n = end - start + 1;
+    if (n < 2) return;
+    int s0 = -1;
+    for (int i = start; i <= end; i++) if (o->on[i]) { s0 = i; break; }
+    int32_t sx, sy;
+    if (s0 < 0) {
+        /* an all-off-curve contour (common in CJK): start at the implied
+         * midpoint between the last and first points */
+        sx = ((int32_t)o->x[start] + o->x[end]) / 2;
+        sy = ((int32_t)o->y[start] + o->y[end]) / 2;
+        s0 = start;
+    } else { sx = o->x[s0]; sy = o->y[s0]; }
+
+    fp_move(p, sx, sy);
+    int have_ctrl = 0; int32_t cx = 0, cy = 0;
+    for (int j = 1; j <= n; j++) {
+        int idx = start + ((s0 - start + j) % n);
+        int32_t px = o->x[idx], py = o->y[idx];
+        if (o->on[idx]) {
+            if (have_ctrl) { fp_quad(p, cx, cy, px, py); have_ctrl = 0; }
+            else fp_line(p, px, py);
+        } else {
+#ifndef FONT_CONTROL_NO_MIDPOINT
+            if (have_ctrl) fp_quad(p, cx, cy, (cx + px) / 2, (cy + py) / 2);
+#else
+            /* NEGATIVE CONTROL (make test-font-control): drop the on-curve point
+             * implied between two consecutive off-curve points, keeping only the
+             * later control. Letters still come out as letters -- rounder, with
+             * one curve missing per pair -- which is precisely the kind of wrong
+             * that an "it drew something" test cannot see. */
+#endif
+            cx = px; cy = py; have_ctrl = 1;
+        }
+    }
+    if (have_ctrl) fp_quad(p, cx, cy, sx, sy);
+    else fp_line(p, sx, sy);
+    fp_close(p);
+}
+
+int ttf_glyph_path(const struct ttf_font *f, int gid, struct fp_path *p,
+                   void *scratch, int scratchlen)
+{
+    if (f->outline_fmt == TTF_OUTLINE_CFF)
+        return cff_glyph_path(&f->cff, gid, p);
+    if (f->outline_fmt != TTF_OUTLINE_GLYF) return -1;
+
+    struct ttf_outline o;
+    if (ttf_glyph_outline(f, gid, &o, scratch, scratchlen)) return -1;
+    int start = 0;
+    for (int ci = 0; ci < o.ncontours; ci++) {
+        int end = o.contour_end[ci];
+        if (end < start || end >= o.npts) { start = end + 1; continue; }
+        contour_to_path(p, &o, start, end);
+        start = end + 1;
+    }
+    return p->overflow ? -1 : 0;
 }
