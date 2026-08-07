@@ -73,6 +73,18 @@
 #  endif
 #endif
 
+/* -DKPROF_DISABLE is the profiler's own compiled-out build (`make KPROF_OFF=1`),
+ * and it is the negative control both for tests/boot/run-prof-test.sh and for
+ * tests/boot/run-tls-bench.sh. In that build kprof.h is still FOUND and still
+ * declares its types, but it stubs KPROF_BEGIN/END to nothing and leaves
+ * kprof_span_begin/kprof_span_end undefined -- so the cross-function span below
+ * has to be turned off by this file rather than by that one. Getting this wrong
+ * is not a silent mismeasurement, it is a link error in the control build, which
+ * is how it was found. */
+#if defined(TLS_PROF_KPROF) && defined(KPROF_DISABLE)
+#  undef TLS_PROF_KPROF
+#endif
+
 #ifdef TLS_PROF_KPROF
 
 #define TLSPROF_BEGIN(name)  KPROF_BEGIN(name)
