@@ -663,6 +663,10 @@ struct wfetch {
     int   resolved;                /* the promise has settled with a Response */
     JSValue push, fin, fail;       /* the stream controller mkResponse handed back */
     long  queued;                  /* bytes the JS queue is holding */
+    /* JS-observable work done in the current fetch_step.  It is what the step
+     * RETURNS, and the return value is what makes the embedder drain the
+     * microtask queue and repaint -- see the note in fetch_step. */
+    int   js_work;
     uint8_t hold[4096];
     int   hold_len;
 };
@@ -706,6 +710,12 @@ static int wf_push(struct wfetch *f, const uint8_t *p, int n)
     JS_ToInt32(ctx, &q, r);
     JS_FreeValue(ctx, r);
     f->queued = q;
+    /* Enqueuing settles a pending reader's promise, and a settled promise is
+     * only a QUEUED job until someone drains the microtask queue.  The embedder
+     * drains it when this step reports work, so a push that did not count would
+     * leave the page's .then() sitting in the queue until the next step that
+     * did -- which for a stream that goes quiet is the end of the response. */
+    f->js_work++;
     return H1_OK;
 }
 
@@ -1091,6 +1101,7 @@ static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
     if (JS_IsException(rv)) JS_FreeValue(ctx, JS_GetException(ctx));
     JS_FreeValue(ctx, rv);
     JS_FreeValue(ctx, resp);
+    f->js_work++;
     return 1;
 }
 
@@ -1172,10 +1183,19 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
     return 1;
 }
 
-/* One frame's work for one request. Returns 1 if a JS callback ran. */
+/* One frame's work for one request.  Returns how much JS-observable work it
+ * did, which is NOT bookkeeping: js_page_run_due() drains the microtask queue
+ * and the embedder repaints only when this is non-zero.  A step that settles a
+ * promise or enqueues a body chunk and then reports 0 leaves the page's
+ * .then() queued -- and for a stream that goes quiet between tokens, "the next
+ * step that reports work" is the end of the response.  That is exactly how this
+ * streamed correctly at the C level and still delivered every token at once on
+ * the device; the host tests could not see it because their loop drains jobs
+ * unconditionally every frame. */
 static int fetch_step(JSContext *ctx, struct wfetch *f)
 {
     f->ctx = ctx;
+    f->js_work = 0;
     if (now_ms() > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
 
     /* Backpressure: while the page is behind, stop reading.  The socket buffer
@@ -1226,10 +1246,10 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
                 if (why) { fetch_reject(ctx, f, why); return 1; }
                 f->phase = WF_PH_ACTUAL;
                 if (fetch_redial(f) != 0) { fetch_reject(ctx, f, "could not reopen after the preflight"); return 1; }
-                return 0;
+                return f->js_work;
             }
             if (h1_is_redirect(f->conn.resp.code) && fetch_redirect(ctx, f))
-                return f->state == WF_FREE ? 1 : 0;
+                return f->state == WF_FREE ? 1 : f->js_work;
             if (!f->resolved) {
                 /* No body state was ever entered (a bodyless status we did not
                  * catch above): deliver now. */
@@ -1238,7 +1258,7 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
             return fetch_finish(ctx, f);
         }
     }
-    return 0;
+    return f->js_work;
 }
 
 /* ---- the C primitives the prelude is handed -------------------------- */

@@ -1,11 +1,20 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "e1000.h"
+#include "netdev.h"
+#include "netring.h"
 #include "pci.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "net.h"
 #include "kprintf.h"
+
+/* Intel 8254x (QEMU "e1000" = 82540EM). MMIO BAR0, legacy RX/TX descriptor
+ * rings, IRQ-driven receive on RXT0 with net_poll() as the backstop.
+ *
+ * This used to BE the network layer -- eth.c called e1000_tx() by name. It is
+ * now one entry in the netdev registry (see net_ids.inc for the match table);
+ * everything below is static, and the only thing it exports is e1000_probe().
+ */
 
 void *memset(void *, int, size_t);
 void *memcpy(void *, const void *, size_t);
@@ -39,6 +48,17 @@ void *memcpy(void *, const void *, size_t);
 #define CTRL_ASDE   (1u << 5)   /* auto speed detect enable */
 
 #define RCTL_EN     (1u << 1)
+#define RCTL_MPE    (1u << 4)   /* multicast promiscuous: accept ALL multicast.
+                                 * IPv6 needs it. Router Advertisements arrive
+                                 * on the all-nodes group and address-resolution
+                                 * solicitations on our solicited-node group, so
+                                 * with this bit clear the NIC silently drops
+                                 * exactly the frames Neighbour Discovery and
+                                 * SLAAC depend on -- v6 looks "implemented but
+                                 * dead". The precise alternative is programming
+                                 * the MTA hash for each joined group; that is
+                                 * the NIC line's call, and this bit is the
+                                 * minimum that makes IPv6 work today. */
 #define RCTL_BAM    (1u << 15)  /* broadcast accept */
 #define RCTL_SECRC  (1u << 26)  /* strip ethernet CRC */
 #define RCTL_BSIZE_2048 0       /* (BSEX=0, SZ=00) */
@@ -83,20 +103,16 @@ struct tx_desc {
 } __attribute__((packed));
 
 static volatile uint8_t *mmio;
-static uint8_t mac[6];
-static int g_irq = -1;                                  /* PCI IRQ line (GSI) */
-static void (*g_rxcb)(const uint8_t *frame, uint16_t len);   /* RX handler for IRQ mode */
+static net_rx_cb g_rxcb;                    /* RX handler for IRQ mode */
 
 static volatile struct rx_desc *rx_ring;    /* DMA rings: the NIC writes status/length */
 static volatile struct tx_desc *tx_ring;
 static uint8_t *rx_buf[RX_DESC];
 static uint8_t *tx_buf[TX_DESC];
-static int rx_cur, tx_cur;
+static uint32_t rx_cur, tx_cur;
 
 static inline uint32_t reg_read(uint32_t off)  { return *(volatile uint32_t *)(mmio + off); }
 static inline void reg_write(uint32_t off, uint32_t v) { *(volatile uint32_t *)(mmio + off) = v; }
-
-static void delay(void) { for (volatile int i = 0; i < 1000000; i++) ; }
 
 static int rx_init(void)
 {
@@ -121,7 +137,7 @@ static int rx_init(void)
     reg_write(REG_RDH, 0);
     reg_write(REG_RDT, RX_DESC - 1);
     rx_cur = 0;
-    reg_write(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048);
+    reg_write(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_MPE | RCTL_SECRC | RCTL_BSIZE_2048);
     return 0;
 }
 
@@ -152,63 +168,12 @@ static int tx_init(void)
     return 0;
 }
 
-int e1000_init(void)
-{
-    struct pci_dev dev;
-    if (pci_find(E1000_VENDOR, E1000_DEVICE, &dev) != 0) {
-        kprintf("[net] no e1000 NIC found\n");
-        return -1;
-    }
-    /* Map the NIC's MMIO BAR (128 KiB) uncached, identity. */
-    vmm_map_range(dev.bar0, dev.bar0, 0x20000, VMM_WRITABLE | VMM_NOCACHE);
-    mmio = (volatile uint8_t *)(uint64_t)dev.bar0;
-    g_irq = dev.irq_line;                        /* PCI IRQ line -> GSI for the I/O APIC */
-
-    /* Reset, then bring the link up. CTRL.RST self-clears when reset completes;
-     * poll for it instead of a blind delay. */
-    reg_write(REG_CTRL, reg_read(REG_CTRL) | CTRL_RST);
-    for (int i = 0; i < 1000; i++) {
-        if (!(reg_read(REG_CTRL) & CTRL_RST)) break;
-        for (volatile int d = 0; d < 10000; d++) ;
-    }
-    reg_write(REG_CTRL, (reg_read(REG_CTRL) | CTRL_SLU | CTRL_ASDE));
-    reg_write(REG_IMC, 0xFFFFFFFF);              /* mask all NIC interrupts (we poll) */
-    reg_read(REG_ICR);                           /* clear pending causes */
-
-    uint32_t ral = reg_read(REG_RAL0), rah = reg_read(REG_RAH0);
-    mac[0] = ral & 0xFF; mac[1] = (ral >> 8) & 0xFF;
-    mac[2] = (ral >> 16) & 0xFF; mac[3] = (ral >> 24) & 0xFF;
-    mac[4] = rah & 0xFF; mac[5] = (rah >> 8) & 0xFF;
-
-    /* Program receive-address filter 0 with our MAC and the Address-Valid bit
-     * (RAH bit 31). Without AV the NIC drops unicast frames (only BAM broadcasts
-     * pass), so ARP/ICMP replies addressed to us would never be received. */
-    reg_write(REG_RAL0, (uint32_t)mac[0] | ((uint32_t)mac[1] << 8) |
-              ((uint32_t)mac[2] << 16) | ((uint32_t)mac[3] << 24));
-    reg_write(REG_RAH0, (uint32_t)mac[4] | ((uint32_t)mac[5] << 8) | (1u << 31));
-
-    if (rx_init() != 0 || tx_init() != 0) {
-        kprintf("[net] e1000: descriptor ring allocation failed\n");
-        return -1;
-    }
-
-    /* QEMU only re-offers a packet that arrived while RX was disabled when the
-     * guest pokes the NIC; re-write RDT so any queued frame is flushed to us. */
-    reg_write(REG_RDT, RX_DESC - 1);
-
-    kprintf("[net] e1000 up: MAC %x:%x:%x:%x:%x:%x  mmio=%p\n",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (void *)(uint64_t)dev.bar0);
-    return 0;
-}
-
-const uint8_t *e1000_mac(void) { return mac; }
-
 /* Contract: callers must hold net_lock (IF=0) -- the TX ring and tx_cur are not
  * otherwise serialized. All current paths (eth/ip/tcp/udp/icmp send) do. */
-int e1000_tx(const void *frame, uint16_t len)
+static int e1000_tx_frame(const void *frame, uint16_t len)
 {
     if (!mmio || len > BUF_SIZE) return -1;
-    int i = tx_cur;
+    uint32_t i = tx_cur;
     /* Wait for this descriptor to be free (its previous send done). */
     int spins = 0;
     while (!(tx_ring[i].status & TXD_STA_DD)) {
@@ -218,12 +183,12 @@ int e1000_tx(const void *frame, uint16_t len)
     tx_ring[i].length = len;
     tx_ring[i].cmd = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
     tx_ring[i].status = 0;
-    tx_cur = (i + 1) % TX_DESC;
+    tx_cur = ring_next(i, TX_DESC);
     reg_write(REG_TDT, tx_cur);
     return 0;
 }
 
-int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len))
+static int e1000_rx_drain(net_rx_cb cb)
 {
     if (!mmio) return 0;
     uint64_t f = net_lock();                     /* exclude the RX IRQ + mainline tcp_recv */
@@ -244,7 +209,7 @@ int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len))
             cb(rx_buf[rx_cur], len);
         rx_ring[rx_cur].status = 0;
         reg_write(REG_RDT, rx_cur);              /* hand the buffer back to the NIC */
-        rx_cur = (rx_cur + 1) % RX_DESC;
+        rx_cur = ring_next(rx_cur, RX_DESC);
         n++;
     }
     net_unlock(f);
@@ -253,7 +218,7 @@ int e1000_rx_poll(void (*cb)(const uint8_t *frame, uint16_t len))
 
 /* IRQ-driven RX: register the receive handler and unmask the NIC's RX causes.
  * Polling (net_poll) stays as a backstop, so this only adds lower latency. */
-void e1000_irq_enable(void (*cb)(const uint8_t *frame, uint16_t len))
+static void e1000_irq_on(net_rx_cb cb)
 {
     if (!mmio) return;
     g_rxcb = cb;
@@ -267,12 +232,66 @@ void e1000_irq_enable(void (*cb)(const uint8_t *frame, uint16_t len))
     reg_write(REG_IMS, ICR_RXT0);                /* unmask receive interrupts */
 }
 
-int e1000_irq_line(void) { return g_irq; }
-
 /* Called from the NIC IRQ handler: ack causes + drain RX into the stack. */
-void e1000_irq(void)
+static void e1000_isr(void)
 {
     if (!mmio) return;
     reg_read(REG_ICR);                           /* read-to-clear the causes */
-    if (g_rxcb) e1000_rx_poll(g_rxcb);
+    if (g_rxcb) e1000_rx_drain(g_rxcb);
+}
+
+static struct netdev e1000_dev = {
+    .name = "e1000", .irq_line = -1,
+    .tx = e1000_tx_frame, .rx_poll = e1000_rx_drain,
+    .irq_enable = e1000_irq_on, .irq = e1000_isr,
+};
+
+int e1000_probe(struct device *dev)
+{
+    if (mmio) return -1;                          /* one NIC bound at a time */
+    dev_enable(dev, 1);                           /* memory decode + bus master (DMA) */
+    /* BAR0 is the register window. dev_bar_map maps exactly the size the BAR
+     * decodes, identity + uncached -- the old code mapped a hardcoded 128 KiB,
+     * which is right for a 82540EM and a guess anywhere else. */
+    uint64_t base = dev_bar_map(dev, 0);
+    if (!base) { kprintf("[e1000] no MMIO BAR\n"); return -1; }
+    mmio = (volatile uint8_t *)(uintptr_t)base;
+    e1000_dev.irq_line = dev->irq_line;           /* PCI IRQ line -> GSI for the I/O APIC */
+
+    /* Reset, then bring the link up. CTRL.RST self-clears when reset completes;
+     * poll for it instead of a blind delay. */
+    reg_write(REG_CTRL, reg_read(REG_CTRL) | CTRL_RST);
+    for (int i = 0; i < 1000; i++) {
+        if (!(reg_read(REG_CTRL) & CTRL_RST)) break;
+        for (volatile int d = 0; d < 10000; d++) ;
+    }
+    reg_write(REG_CTRL, (reg_read(REG_CTRL) | CTRL_SLU | CTRL_ASDE));
+    reg_write(REG_IMC, 0xFFFFFFFF);              /* mask all NIC interrupts for now */
+    reg_read(REG_ICR);                           /* clear pending causes */
+
+    uint32_t ral = reg_read(REG_RAL0), rah = reg_read(REG_RAH0);
+    e1000_dev.mac[0] = ral & 0xFF;        e1000_dev.mac[1] = (ral >> 8) & 0xFF;
+    e1000_dev.mac[2] = (ral >> 16) & 0xFF; e1000_dev.mac[3] = (ral >> 24) & 0xFF;
+    e1000_dev.mac[4] = rah & 0xFF;        e1000_dev.mac[5] = (rah >> 8) & 0xFF;
+
+    /* Program receive-address filter 0 with our MAC and the Address-Valid bit
+     * (RAH bit 31). Without AV the NIC drops unicast frames (only BAM broadcasts
+     * pass), so ARP/ICMP replies addressed to us would never be received. */
+    reg_write(REG_RAL0, (uint32_t)e1000_dev.mac[0] | ((uint32_t)e1000_dev.mac[1] << 8) |
+              ((uint32_t)e1000_dev.mac[2] << 16) | ((uint32_t)e1000_dev.mac[3] << 24));
+    reg_write(REG_RAH0, (uint32_t)e1000_dev.mac[4] | ((uint32_t)e1000_dev.mac[5] << 8) | (1u << 31));
+
+    if (rx_init() != 0 || tx_init() != 0) {
+        kprintf("[e1000] descriptor ring allocation failed\n");
+        mmio = NULL;
+        return -1;
+    }
+
+    /* QEMU only re-offers a packet that arrived while RX was disabled when the
+     * guest pokes the NIC; re-write RDT so any queued frame is flushed to us. */
+    reg_write(REG_RDT, RX_DESC - 1);
+
+    kprintf("[e1000] up: mmio=%p\n", (void *)(uintptr_t)base);
+    dev_set_drvdata(dev, &e1000_dev);
+    return 0;
 }

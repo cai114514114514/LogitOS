@@ -42,26 +42,7 @@
 #include "snd.h"
 #include "pmm.h"
 #include "kprintf.h"
-#include "pit.h"
-
-/* The monotonic ns clock is what this driver WANTS for its reset and codec
- * timeouts -- a duration expressed in spins is a different duration on every
- * host, which is exactly how a driver that works on one machine times out on
- * another. But c/kernel/core/ktime.h belongs to another line and may not have
- * landed in the tree being built, and a committed file must build from a clean
- * clone of itself rather than from whatever happens to be in a shared working
- * tree. So: use it when it is there, fall back to the 100 Hz tick when it is
- * not, and never depend on either being precise -- every wait below is ALSO
- * bounded by an iteration count, so a frozen or missing clock degrades to a
- * failed probe instead of a hung boot. */
-#if defined(__has_include)
-#  if __has_include("ktime.h")
-#    define HDA_HAVE_KTIME 1
-#  endif
-#endif
-#ifdef HDA_HAVE_KTIME
-#  include "ktime.h"
-#endif
+#include "ktime.h"
 
 void *memset(void *, int, size_t);
 
@@ -180,61 +161,13 @@ static inline void w8 (struct hda *h, unsigned o, uint8_t v)  { *(volatile uint8
 static inline void w16(struct hda *h, unsigned o, uint16_t v) { *(volatile uint16_t *)(h->mmio + o) = v; }
 static inline void w32(struct hda *h, unsigned o, uint32_t v) { *(volatile uint32_t *)(h->mmio + o) = v; }
 
-/* Milliseconds since boot, from the best clock this tree has. */
-static uint64_t hda_ms(void)
-{
-#ifdef HDA_HAVE_KTIME
-    return time_mono_ns() / 1000000ull;
-#else
-    /* 10 ms granularity, and it does not advance with IF=0 -- which is why
-     * every caller pairs it with an iteration cap. */
-    return timer_ticks() * (timer_ns_per_tick() / 1000000ull);
-#endif
-}
-
-/* Three characters of string formatting, done by hand.
- *
- * kprintf.h's ksnprintf would be the obvious tool and is deliberately not used:
- * it is part of another line's in-flight work and was not committed when this
- * driver was, which is exactly the dependency that broke HEAD once already. The
- * codec identity line is the single most useful thing this driver prints on
- * unfamiliar hardware, so it is not worth making it wait on someone else's
- * commit. Each of these clamps at `end` and never writes the NUL -- the caller
- * does that once. */
-static char *put_str(char *p, char *end, const char *s)
-{
-    while (*s && p < end) *p++ = *s++;
-    return p;
-}
-
-static char *put_dec(char *p, char *end, unsigned v)
-{
-    char tmp[12]; int n = 0;
-    do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 12);
-    while (n-- && p < end) *p++ = tmp[n];
-    return p;
-}
-
-static char *put_hex4(char *p, char *end, unsigned v)
-{
-    static const char hx[] = "0123456789abcdef";
-    for (int i = 3; i >= 0; i--)
-        if (p < end) *p++ = hx[(v >> (i * 4)) & 0xF];
-    return p;
-}
-
+/* Busy-wait on the monotonic clock, not on a spin count. A loop counter is a
+ * different duration on every host and is exactly how a driver that works on
+ * one machine times out on another. */
 static void udelay(unsigned us)
 {
-#ifdef HDA_HAVE_KTIME
     uint64_t end = time_mono_ns() + (uint64_t)us * 1000ull;
     while (time_mono_ns() < end) __asm__ volatile ("pause");
-#else
-    /* Coarse on purpose: the tick cannot resolve microseconds, so this is a
-     * bounded spin. It is only used for reset settling at probe time, where
-     * "at least this long" is the requirement and overshooting costs nothing. */
-    volatile unsigned long n = (unsigned long)us * 300ul;
-    while (n--) __asm__ volatile ("pause");
-#endif
 }
 
 /* --------------------------------------------------------- CORB / RIRB --- */
@@ -266,12 +199,8 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
     h->corb_wp = wp;
     w16(h, CORBWP, (uint16_t)wp);
 
-    /* TWO bounds, not one. The clock bound is the meaningful one; the spin
-     * bound is what keeps a missing, frozen or IF=0-stalled clock from turning
-     * an unresponsive codec into a hung boot. A driver that can hang the
-     * machine when its hardware is absent is worse than no driver. */
-    deadline = hda_ms() + 50;
-    for (unsigned long spins = 0; spins < 200000000ul; spins++) {
+    deadline = time_mono_ns() + 50ull * NS_PER_MS;
+    for (;;) {
         unsigned rwp = r16(h, RIRBWP) & 0xFF;
         if (rwp != h->rirb_rp) {
             h->rirb_rp = (h->rirb_rp + 1) % 256;
@@ -279,10 +208,9 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
             w8(h, RIRBSTS, 0x05);          /* ack response + overrun */
             return 0;
         }
-        if (hda_ms() > deadline) return -1;
+        if (time_mono_ns() > deadline) return -1;
         __asm__ volatile ("pause");
     }
-    return -1;
 }
 
 static uint32_t codec_param(struct hda *h, unsigned nid, unsigned param)
@@ -588,19 +516,10 @@ static int hda_probe(struct device *dev)
 
     {
         uint32_t vid = codec_param(h, 0, PARAM_VENDOR);
-        char *p = h->snd.codec;
-        char *end = h->snd.codec + sizeof h->snd.codec - 1;
-        p = put_str(p, end, "codec");
-        p = put_dec(p, end, h->codec_addr);
-        p = put_str(p, end, " ");
-        p = put_hex4(p, end, (unsigned)(vid >> 16));
-        p = put_str(p, end, ":");
-        p = put_hex4(p, end, (unsigned)(vid & 0xFFFF));
-        p = put_str(p, end, " dac=");
-        p = put_dec(p, end, h->dac_nid);
-        p = put_str(p, end, " pin=");
-        p = put_dec(p, end, h->pin_nid);
-        *p = 0;
+        ksnprintf(h->snd.codec, sizeof h->snd.codec,
+                  "codec%u %04x:%04x dac=%u pin=%u",
+                  h->codec_addr, (unsigned)(vid >> 16), (unsigned)(vid & 0xFFFF),
+                  h->dac_nid, h->pin_nid);
     }
 
     codec_setup_output(h);
