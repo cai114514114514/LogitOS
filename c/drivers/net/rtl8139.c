@@ -86,6 +86,31 @@ static int rtl_rx_poll(net_rx_cb cb)
 {
     if (!ready) return 0;
     uint64_t f = net_lock();
+    /* THIS CARD DOES NOT GET THE ACK-IN-THE-DRAIN THAT e1000 AND virtio-net DO,
+     * AND THE REASON IS MEASURED, NOT ASSUMED.
+     *
+     * e1000_rx_drain() explains the bug: the ISR is the only reader of the
+     * interrupt-cause register, the I/O APIC entry is edge-triggered, and a line
+     * left asserted produces no further edges, so a cause nobody clears kills
+     * the interrupt for the boot. This card has that shape too, and it shows:
+     * over 5763 timed segments its rx->ack turnaround is median 1.24 ms, p90
+     * 1.70, p99 2.16 -- and max 10.08, one whole 100 Hz tick.
+     *
+     * Adding the same ack here fixes the tail and BREAKS THE CARD. Paired, both
+     * arms booted together, fetches round-robin, nine 900 KiB reps each:
+     *
+     *     without the ack   9/9 completed, median 260.9 Mbit/s, max 10.08 ms
+     *     with the ack      0/9 completed
+     *
+     * (A first version that also handled the overflow causes here was worse
+     * still. A 32 KiB fetch passes either way, which is why test-nic-rtl8139
+     * does not see this and the throughput arm does.) The 8139 receives into one
+     * flat ring rather than descriptors, and CAPR/ISR/CR are coupled in a way
+     * that does not tolerate a second reader at poll rates; working out exactly
+     * which of them is the one that must not be touched is a job for someone
+     * with the datasheet and more time than this took to measure. Until then the
+     * tail stays, documented, on the slowest card of the three -- which is the
+     * right place for a known defect to sit. */
     int n = 0, budget = 64;                       /* bounded: this also runs in the ISR */
     while (budget-- > 0 && !(inb(io + R_CR) & CR_BUFE)) {
         const uint8_t *p = rxbuf + rx_off;

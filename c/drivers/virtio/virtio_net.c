@@ -113,6 +113,21 @@ static int vnet_rx_poll(net_rx_cb cb)
 {
     if (!ready) return 0;
     uint64_t f = net_lock();                   /* exclude the RX IRQ + mainline tcp_recv */
+    /* Ack here as well as in the ISR, for the reason written out in full in
+     * e1000_rx_drain(): reading the ISR status byte is what deasserts the
+     * device's INTx line, that line is routed EDGE-triggered (smp.c), and a
+     * line left asserted produces no further edges -- so if the only reader is
+     * an ISR that can no longer run, the interrupt is dead for the boot.
+     *
+     * This is not theoretical for virtio-net; the driver comparison measured
+     * it. Over 1920 segments each, with only e1000 fixed:
+     *     e1000       rx->ack median 0.69 ms  p99 1.67   max  2.07
+     *     virtio-net  rx->ack median 1.08 ms  p99 9.88   max 10.06
+     *     rtl8139     rx->ack median 1.72 ms  p99 9.94   max 10.52
+     * A 10 ms tail on a 100 Hz kernel is a receive path that only runs when the
+     * timer says so, and it appeared on exactly the two cards that had not had
+     * this line added. */
+    if (vnet.isr) (void)*vnet.isr;
     int n = 0, reposted = 0;
     /* Bounded for the same reason as e1000: each iteration hands the buffer
      * straight back, so a sustained flood makes an unbounded loop non-

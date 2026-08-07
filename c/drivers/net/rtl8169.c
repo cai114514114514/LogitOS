@@ -93,6 +93,15 @@ static int rtl_rx_poll(net_rx_cb cb)
 {
     if (!ready) return 0;
     uint64_t f = net_lock();
+    /* No ack-in-the-drain here either, and deliberately. e1000 and virtio-net
+     * have one (see e1000_rx_drain for what it fixes and what it is worth);
+     * rtl8139 does not, because adding it there took a card that completed 9 of
+     * 9 large transfers to 0 of 9. QEMU has no rtl8169 device model, so this
+     * driver cannot be booted here at all -- which means adding it would be
+     * reasoned symmetry with the one sibling that was measured to be harmed by
+     * it, on a card nobody can run. That is not a trade worth making blind.
+     * Expect the same tick-latency tail rtl8139 has, on real hardware, until
+     * someone can put an actual 8169 in front of it. */
     int n = 0, budget = RX_DESC;      /* bounded: also runs in the ISR */
     while (budget-- > 0) {
         uint32_t o1 = rxd[rx_cur].opts1;
