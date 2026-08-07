@@ -22,6 +22,7 @@ subject to upstream terms where required.
 | Crafting Interpreters / clox | Architectural lineage and adapted implementation in AetherScript | `c/apps/as/` and related design documents | Exact upstream revision not recorded | MIT for upstream code |
 | Mozilla/NSS-derived CA trust store | Public TLS trust anchors | `tools/roots/`, generated into `c/crypto/trust/roots_bundle.inc` | 130-root host bundle imported 2026-06-08; exact source revision/hash not recorded | MPL 2.0 for the Mozilla-derived bundle |
 | Noto Sans SC and Noto Sans Mono | Source fonts and generated runtime subsets | `third_party/fonts/`, `fsroot/fonts/` | Google Fonts commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3` | SIL OFL 1.1 |
+| DejaVu Sans | Unmodified shaping font shipped as `/fonts/text.ttf`; the only runtime font with Arabic, Hebrew and OpenType Layout tables | `third_party/fonts/DejaVuSans.ttf` | Debian `fonts-dejavu-core` 2.37-8build1 | Bitstream Vera Fonts License and the Arev fonts copyright |
 | macOS Desktop Picture | Locally generated wallpaper | Ignored `fsroot/wallpaper.png`; see `tools/mkwallpaper.sh` | Host-installed macOS asset | Proprietary; not covered by this repository's license |
 | GNU GRUB | Bootloader code embedded in generated ISO images | Generated `build/logit.iso`; no GRUB source is stored here | Host-tool version is not pinned | GPLv3 or later, subject to the exact GRUB distribution used |
 | Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into LogitOS binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
@@ -181,6 +182,18 @@ first-party license relicenses them. The normal disk-image rule packages only
 the checked-in subsets and never reads Apple or other undeclared host fonts. It
 also installs both complete OFL texts and the source record under
 `/licenses/fonts/`.
+
+`DejaVuSans.ttf` is a separate, later addition and is NOT part of the Noto
+set above. It is vendored byte for byte from Debian's `fonts-dejavu-core`
+2.37-8build1 (SHA-256
+`b4c632e3cdf9acc7f28758fb5a323c8524d7fc6660d46904d9b6cbe2809c419c`) and is
+shipped to the disk image unmodified as `/fonts/text.ttf`, because the two Noto
+subsets carry neither Arabic nor Hebrew and lost their GSUB/GPOS tables to
+subsetting -- so without it `c/lib/text/shape.c` has nothing to apply. It is
+under the Bitstream Vera Fonts License plus the Arev fonts copyright, whose
+rename clause binds only modified fonts; the full text is preserved as
+`third_party/fonts/LICENSE-DejaVu.txt` and installed to
+`/licenses/fonts/LICENSE-DejaVu.txt`.
 
 ## Wallpaper used by local builds
 

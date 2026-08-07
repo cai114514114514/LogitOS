@@ -26,6 +26,10 @@ AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
 AS_LA       := $(patsubst fsroot/as/lib/%.as,$(BUILD)/%.la,$(AS_LIB_SRCS))
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+# The shaping font. Vendored unmodified (see third_party/fonts/README.md):
+# the Noto subsets above carry no Arabic, no Hebrew and -- because subsetting
+# stripped them -- no GSUB/GPOS at all, so the shaper would have nothing to do.
+FONT_TEXT   := third_party/fonts/DejaVuSans.ttf
 FONT_UI_SRC := third_party/fonts/NotoSansSC-VF.ttf
 FONT_MONO_SRC := third_party/fonts/NotoSansMono-VF.ttf
 FONT_NOTICES := third_party/fonts/OFL-NotoSansSC.txt \
@@ -110,6 +114,15 @@ endif
 #                  then reports torn records instead of torn=0.
 ifeq ($(KLOGUNSAFE),1)
 CFLAGS += -DKLOG_UNSAFE
+endif
+#   make NOSHAPE=1 build the text layer WITHOUT shaping -- one glyph per code
+#                  point straight out of cmap, advances summed, no GSUB and no
+#                  GPOS. The NEGATIVE CONTROL for tests/qmp/qmp_shape.py: build
+#                  with this and the on-device Arabic assertion fails, because
+#                  the letters stop joining and every word gets wider. The same
+#                  define drives the host differential (make test-shape-negctl).
+ifeq ($(NOSHAPE),1)
+CFLAGS += -DSHAPE_NEGATIVE_CONTROL
 endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
@@ -548,16 +561,18 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 	@mkdir -p $(BUILD)
 	@python3 tests/unit/dot_gen.py $@ 60 40
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
+	    $(FONT_TEXT):/fonts/text.ttf \
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
 	    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
 	    LICENSES/MIT.txt:/licenses/MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
 	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
 	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
+	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BROWSER_AEX):browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
