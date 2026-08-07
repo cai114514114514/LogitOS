@@ -1858,3 +1858,7 @@ clean:
 # Text shaping + bidi test targets (test-bidi, test-shape, test-text and
 # their negative controls). Same reason, same shape as the fragments above.
 -include tests/text.mk
+
+# H.265/HEVC decoder test targets (test-h265, test-h265-units, test-h265-diff,
+# test-video265). Same reason, same shape as the fragments above.
+-include tests/h265.mk
