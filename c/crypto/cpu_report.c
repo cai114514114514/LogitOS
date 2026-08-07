@@ -57,6 +57,76 @@ static void put_hex(uint64_t v)
     while (i--) { char c[2] = { b[i], 0 }; put(c); }
 }
 
+/* ---- the AES-NI-versus-C question, answered on the machine ---------------
+ *
+ * aes_ni.c's header says any speedup "cannot be measured under QEMU/TCG, where
+ * both instructions are C helper functions". That is a statement about why the
+ * backend exists (constant time, not speed) -- it is not a reason to leave the
+ * cost unknown, and it is exactly backwards as advice: TCG is the machine this
+ * OS is actually run on, so if AESENC-through-a-TCG-helper were SLOWER than the
+ * portable S-box, the dispatch would be choosing the slow path on every real
+ * boot and nobody would know. crypto_simd_force_baseline() exists so the two
+ * can be compared; this is the comparison, run on every boot, on identical
+ * bytes, back to back, so the answer travels with the machine instead of living
+ * in one agent's terminal.
+ *
+ * TSC, not the PIT: this runs before kernel_main, so there is no tick yet. A
+ * raw cycle count is fine because the only claim made is a RATIO between two
+ * measurements taken microseconds apart on the same core.
+ *
+ * Cost: one pass of 16 KiB through each backend. Under TCG that is roughly ten
+ * milliseconds of a multi-second boot, which is a small price for a number that
+ * would otherwise be a guess. */
+
+static uint8_t bench_buf[16384];
+static uint8_t bench_out[16384];
+
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static uint64_t aes_pass(void)
+{
+    static const uint8_t key[16] = {
+        0x60,0x3d,0xeb,0x10,0x15,0xca,0x71,0xbe,0x2b,0x73,0xae,0xf0,0x85,0x7d,0x77,0x81 };
+    static const uint8_t iv[12] = {
+        0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad,0xde,0xca,0xf8,0x88 };
+    uint8_t tag[16];
+    uint64_t t0 = rdtsc();
+    aes128_gcm_seal(key, iv, 0, 0, bench_buf, (int)sizeof bench_buf, bench_out, tag);
+    return rdtsc() - t0;
+}
+
+static void aes_backend_bench(void)
+{
+    for (unsigned i = 0; i < sizeof bench_buf; i++) bench_buf[i] = (uint8_t)(i * 31 + 7);
+
+    /* Whichever backend the dispatch chose, then the portable one, then put the
+     * selection back exactly as it was -- this must not change what the rest of
+     * the boot runs on. */
+    const char *sel = crypto_simd_backend_name();
+    uint64_t c_sel = aes_pass();
+    crypto_simd_force_baseline(1);
+    uint64_t c_ref = aes_pass();
+    crypto_simd_force_baseline(0);
+
+    put("[cpu] aes-gcm 16 KiB: "); put(sel); put("="); put_u(c_sel);
+    put(" cycles, c="); put_u(c_ref); put(" cycles");
+    if (c_sel) {
+        /* Printed as hundredths so no floating point is needed on a path that
+         * runs before the FPU state is anybody's business. */
+        put(", speedup x"); put_u(c_ref * 100 / c_sel / 100);
+        put(".");
+        uint64_t frac = (c_ref * 100 / c_sel) % 100;
+        if (frac < 10) put("0");
+        put_u(frac);
+    }
+    put("\n");
+}
+
 void cpu_early_init(void)
 {
     static int done;
@@ -96,6 +166,8 @@ void cpu_early_init(void)
     put("; rdrand="); put_u((uint64_t)cpu_has(CPU_RDRAND));
     put(" rdseed="); put_u((uint64_t)cpu_has(CPU_RDSEED));
     put("\n");
+
+    aes_backend_bench();
 }
 
 /* --- the XMM register-file probe ----------------------------------------
