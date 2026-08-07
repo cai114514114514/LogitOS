@@ -38,7 +38,12 @@ int text_measure(const char *s, int len, int px, int mono)
 #define BF_NREQ    16          /* concurrent requests the table can hold */
 #define BF_URLMAX 768          /* URL_HOST_MAX + URL_PATH_MAX + scheme + port */
 #define BF_HOPS      8         /* redirect hops before giving up */
-#define BF_REQ_MS 30000        /* wall-clock cap on one request, redirects apart */
+/* Wall-clock cap on ONE request (each redirect hop gets its own). 60 s, not 30:
+ * a 216 KB gzipped stylesheet over TLS on an emulated CPU takes tens of seconds
+ * when the host is busy, and a cap that expires mid-transfer turns a slow load
+ * into a failed one -- which then looks like a protocol bug rather than a
+ * scheduling one. */
+#define BF_REQ_MS 60000
 
 enum { RQ_FREE = 0, RQ_QUEUED, RQ_DIAL, RQ_XFER, RQ_DONE, RQ_FAIL };
 
@@ -76,10 +81,27 @@ void bfetch_init(void)
 {
     if (g_pool_ready) return;
     hpool_init(&g_pool);
-    /* NCONN is 32 kernel-side and NSOCK 16, so six live connections leaves
-     * plenty of headroom; four per host is what a browser uses and is what
-     * keeps one slow CDN from owning every slot. */
-    hpool_config(&g_pool, 6, 4, 15000);
+    /* TWO connections per host, not the four a desktop browser opens.
+     *
+     * This is a real trade and it goes the other way here. On hardware, more
+     * connections per origin is faster because a handshake is cheap and
+     * latency dominates. On an emulated CPU a TLS handshake is an RSA or ECDSA
+     * chain verification done in software and costs SECONDS, so every extra
+     * connection is a second of wall clock spent to overlap requests that were
+     * going to take milliseconds each once the connection existed.
+     *
+     * Measured on en.wikipedia.org/wiki/Operating_system: four-per-host gave 4
+     * to 10 handshakes run to run, and the spread was connections the CDN had
+     * already closed being re-dialled. Total 6 leaves both origins their two
+     * with room to spare, so nothing is evicted for want of a slot -- eviction
+     * was the other half of that spread.
+     *
+     * The idle timeout is 60 s rather than 10: a load has long gaps in it (the
+     * whole cascade and layout run between the stylesheet phase and the script
+     * phase) and a short timeout means WE close connections that are still
+     * perfectly good. Holding them longer is safe because req_connect polls a
+     * pooled socket before spending a request on it. */
+    hpool_config(&g_pool, 6, 2, 60000);
     hpool_set_closer(&g_pool, pool_closer, 0);
     for (int i = 0; i < BF_NREQ; i++) { g_req[i].state = RQ_FREE; g_req[i].fd = -1; g_req[i].pslot = -1; }
     g_pool_ready = 1;
@@ -279,12 +301,23 @@ static void req_connect(struct breq *r)
     int tls = r->u.https;
     int slot = hpool_acquire(&g_pool, r->u.host, r->u.port, tls, now);
     if (slot >= 0) {
-        r->pslot = slot;
-        r->fd = hpool_fd(&g_pool, slot);
-        r->reused = 1;
-        g_reuses++;
-        req_begin_exchange(r);
-        return;
+        /* A connection the server closed while it sat idle looks exactly like a
+         * live one to the pool, which only knows an fd. Ask the socket before
+         * spending a request on it: this is a cheap check that turns "send,
+         * get EOF, retry" into "dial", and it is the difference between a
+         * failed sub-resource and a slower one when the retry budget is spent. */
+        int fd = hpool_fd(&g_pool, slot);
+        int bits = sock_poll(fd);
+        if (bits < 0 || (bits & (SOCK_P_EOF | SOCK_P_ERROR))) {
+            hpool_drop(&g_pool, slot);
+        } else {
+            r->pslot = slot;
+            r->fd = fd;
+            r->reused = 1;
+            g_reuses++;
+            req_begin_exchange(r);
+            return;
+        }
     }
     if (!hpool_may_open(&g_pool, r->u.host, r->u.port, tls, now))
         return;                                   /* caps full: try again next pump */
@@ -300,18 +333,27 @@ static void req_connect(struct breq *r)
     r->state = RQ_DIAL;
 }
 
-/* A pooled connection the server had already closed looks exactly like a live
- * one until you write to it. When that happens before a single response byte
- * arrives, the request is still perfectly safe to repeat -- so repeat it once,
- * on a connection we dialled ourselves. Without this, every second page load
- * loses a resource to a connection that timed out while we were parsing. */
+/* Repeat the request once, on a connection we dial ourselves.
+ *
+ * This started out as "only if the connection came from the pool", on the
+ * reasoning that a pooled connection the server had already closed looks
+ * exactly like a live one until you write to it. That was too narrow, and one
+ * measured run showed why: a FRESH connection to en.wikipedia.org returned
+ * `connection closed mid-message` on the main document, and because the
+ * connection was not pooled there was no retry and the whole page load failed.
+ *
+ * A GET is idempotent. Replaying one costs a request and can save the page, so
+ * the only condition worth keeping is that it happens at most once -- otherwise
+ * a genuinely broken server becomes an infinite loop. */
 static int req_retry_fresh(struct breq *r)
 {
-    if (!r->reused || r->retried) return 0;
+    if (r->retried) return 0;
     r->retried = 1;
+    printf("[bfetch] retrying on a fresh connection: %s\n", r->url);
     req_drop_conn(r, 0);
     r->state = RQ_QUEUED;
     r->reused = 0;
+    r->t0 = monotonic_ms();
     return 1;
 }
 
@@ -321,9 +363,14 @@ static void req_step_xfer(struct breq *r)
      * starve the others. That is the right rule per REQUEST, but calling it once
      * per yield would leave the kernel's 64 KiB receive ring full and the TCP
      * window shut for a 1.5 MB bundle -- so drain while bytes are actually
-     * there, bounded, and stop the moment the socket goes quiet. */
+     * there, bounded, and stop the moment the socket goes quiet.
+     *
+     * 64 * 4 KiB = 256 KiB per pass, four times the receive ring. Anything less
+     * and a slow pass (a repaint, a decode, another agent's QEMU on the same
+     * host CPU) lets the ring overrun; wikipedia's 216 KB stylesheet is the
+     * case that found this. */
     int st = H1_C_RECV;
-    for (int k = 0; k < 24; k++) {
+    for (int k = 0; k < 64; k++) {
         st = h1_conn_pump(&r->c);
         if (st != H1_C_SEND && st != H1_C_RECV) break;
         int bits = sock_poll(r->fd);
@@ -334,7 +381,7 @@ static void req_step_xfer(struct breq *r)
         return;
     }
     if (st == H1_C_ERROR) {
-        if (r->c.resp.state == H1_ST_STATUS && req_retry_fresh(r)) return;
+        if (req_retry_fresh(r)) return;
         req_fail(r, h1_strerror(r->c.err ? r->c.err : r->c.resp.err));
         return;
     }
@@ -509,12 +556,107 @@ void bfetch_stats(int *dials, int *reuses, int *requests)
     if (reuses) *reuses = g_reuses;
     if (requests) *requests = g_reqs;
 }
+
+/* The pool's own view, which answers a different question from the one above:
+ * when a page dials more than it should have, `evicted` says it ran out of
+ * slots and `closed` says a connection went away. Without these the two are
+ * indistinguishable from the request side.
+ *
+ * hpool's `misses` counter is deliberately NOT surfaced: hpool_acquire is
+ * called on every pump pass for every queued request, so it counts polling
+ * attempts (tens of thousands) rather than requests, and printing it invites
+ * exactly the wrong conclusion. */
+void bfetch_pool_stats(int *hits, int *evicted, int *closed)
+{
+    if (hits) *hits = g_pool.hits;
+    if (evicted) *evicted = g_pool.evicted;
+    if (closed) *closed = g_pool.closed;
+}
 void bfetch_reset_stats(void) { g_dials = g_reuses = g_reqs = 0; }
 
 void bfetch_close_all(void)
 {
     for (int i = 0; i < BF_NREQ; i++) if (g_req[i].state != RQ_FREE) bfetch_release(i);
     if (g_pool_ready) hpool_close_all(&g_pool);
+}
+
+/* ---- the prefetch cache ---- */
+
+#define BF_NCACHE 32
+
+struct bcache {
+    char  url[BF_URLMAX];
+    int   id;                        /* in flight, or -1 */
+    unsigned char *data;
+    int   len;
+    int   used;
+};
+static struct bcache g_cache[BF_NCACHE];
+
+void bfetch_cache_clear(void)
+{
+    for (int i = 0; i < BF_NCACHE; i++) {
+        if (g_cache[i].id >= 0 && g_cache[i].used) bfetch_release(g_cache[i].id);
+        free(g_cache[i].data);
+        memset(&g_cache[i], 0, sizeof g_cache[i]);
+    }
+}
+
+void bfetch_prefetch(const char *ref)
+{
+    if (!g_pool_ready) bfetch_init();
+    char abs[BF_URLMAX];
+    if (bfetch_resolve(0, ref, abs, sizeof abs) != 0) return;
+    for (int i = 0; i < BF_NCACHE; i++)
+        if (g_cache[i].used && strcmp(g_cache[i].url, abs) == 0) return;   /* already have it */
+    for (int i = 0; i < BF_NCACHE; i++) {
+        if (g_cache[i].used) continue;
+        int id = bfetch_start(abs);
+        if (id < 0) return;                      /* table full: the caller falls back to sync */
+        memcpy(g_cache[i].url, abs, sizeof g_cache[i].url);
+        g_cache[i].id = id;
+        g_cache[i].data = 0; g_cache[i].len = 0;
+        g_cache[i].used = 1;
+        return;
+    }
+}
+
+void bfetch_prefetch_wait(void)
+{
+    for (;;) {
+        int live = 0;
+        bfetch_pump();
+        for (int i = 0; i < BF_NCACHE; i++) {
+            struct bcache *e = &g_cache[i];
+            if (!e->used || e->id < 0) continue;
+            int st = bfetch_state(e->id);
+            if (st == BF_PENDING) { live++; continue; }
+            if (st == BF_DONE && bfetch_status(e->id) / 100 == 2) {
+                e->len = bfetch_take(e->id, &e->data);
+                if (e->len < 0) { e->len = 0; e->data = 0; }
+            } else {
+                bfetch_release(e->id);
+            }
+            e->id = -1;
+        }
+        if (!live) return;
+        if (g_tick) g_tick();
+        sys_yield();
+    }
+}
+
+/* Take a prefetched body out of the cache, transferring ownership. */
+static int cache_take(const char *abs, unsigned char **out, int *outlen)
+{
+    for (int i = 0; i < BF_NCACHE; i++) {
+        struct bcache *e = &g_cache[i];
+        if (!e->used || e->id >= 0 || strcmp(e->url, abs) != 0) continue;
+        if (!e->data) { memset(e, 0, sizeof *e); return -1; }   /* it failed; don't retry */
+        *out = e->data; *outlen = e->len;
+        memset(e, 0, sizeof *e);
+        return 0;
+    }
+    return -1;
 }
 
 /* Sub-resource (image) fetch, the name net/layout.c calls.
@@ -526,5 +668,8 @@ void bfetch_close_all(void)
  * being reserved up front. */
 int res_fetch(const char *src, unsigned char **buf, int *len)
 {
+    char abs[BF_URLMAX];
+    if (bfetch_resolve(0, src, abs, sizeof abs) == 0 && cache_take(abs, buf, len) == 0)
+        return 0;
     return bfetch_sync(src, buf, len);
 }

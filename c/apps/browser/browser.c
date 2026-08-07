@@ -199,6 +199,21 @@ static int  g_prog_done, g_prog_total;
 static unsigned long long g_prog_last;
 static const char *g_prog_what = "";
 
+/* getBoundingClientRect reports VIEWPORT coordinates, and js_dom.c cannot know
+ * the scroll offset -- the embedder owns it. Push it whenever it moves.
+ *
+ * The two coincide at scroll 0, which is where every page starts, so a missing
+ * call here is invisible to every test and wrong the instant a user scrolls.
+ * Hence one function called from every site that touches `scroll`, rather than
+ * an assignment sprinkled next to each of them. */
+static int g_scroll_pushed;
+static void sync_scroll(void)
+{
+    if (scroll == g_scroll_pushed) return;
+    g_scroll_pushed = scroll;
+    js_dom_set_scroll(0, scroll);
+}
+
 static void num_append(char *st, int *p, int v)
 {
     if (v < 0) v = 0;
@@ -212,8 +227,25 @@ static void load_tick(void)
     while (poll_event(&e))
         if (e.type == EV_CLOSE) { js_page_close(); bfetch_close_all(); app_exit(0); }
 
+    /* REPAINT BETWEEN RESOURCES, NEVER DURING ONE.
+     *
+     * This used to repaint on a 400 ms timer, and that timer was a bug with a
+     * measurable failure: repainting a wikipedia page is thousands of text-run
+     * syscalls, and while it runs nobody drains the socket. TCP's receive ring
+     * is 64 KiB, so a 216 KB stylesheet arriving during a repaint overran the
+     * window and the transfer died with `connection closed mid-message` -- on
+     * the first attempt AND on the retry, which is why the page then rendered
+     * with none of its stylesheets.
+     *
+     * A progress counter only moves when a resource FINISHES, so keying the
+     * repaint to it puts the expensive work in the gaps between transfers,
+     * which is exactly where it belongs. The close button is still serviced on
+     * every single tick, because that is cheap and it is what makes the window
+     * feel alive. */
     unsigned long long now = monotonic_ms();
-    if (now - g_prog_last < 400) return;
+    static int last_done = -1;
+    if (g_prog_done == last_done && now - g_prog_last < 3000) return;
+    last_done = g_prog_done;
     g_prog_last = now;
     char st[96]; int p = 0;
     for (const char *s = g_prog_what; *s && p < 60; s++) st[p++] = *s;
@@ -474,12 +506,14 @@ static void load(const char *u)
     res_reset();
     free(g_page_src); g_page_src = 0;
     ph = 0; scroll = 0;
+    g_scroll_pushed = 0;          /* js_dom_init resets its side to 0 as well */
 
     /* A navigation ends the old page's connections: keeping them would hold
      * pool slots (and kernel socket slots) for an origin the new page may have
      * nothing to do with. */
     bfetch_init();
     bfetch_set_tick(load_tick);
+    bfetch_cache_clear();
     bfetch_close_all();
     bfetch_reset_stats();
     js_module_reset();
@@ -561,7 +595,24 @@ static void load(const char *u)
     /* Images ride the same pooled connections now, so eight of them from one
      * host is one handshake rather than eight. That is why this number can go
      * up without the load time going with it. */
+    /* QUEUE THEM ALL FIRST, then decode.
+     *
+     * layout_load_images() fetches one image, decodes it, and only then asks
+     * for the next -- and a decode is seconds on an emulated CPU while a CDN's
+     * keep-alive timeout is often five. The pool therefore handed back sockets
+     * the server had already closed: 8 hits, 5 of them dead, 7 handshakes for
+     * 8 images from one host. Queueing every image up front means they all
+     * transfer inside one window with no decode in between, and res_fetch()
+     * then serves each one out of the prefetch cache. */
     g_prog_what = "images"; g_prog_total = 0; g_prog_last = 0;
+    { int n = layout_count(), queued = 0;
+      const struct item *it = layout_items();
+      for (int i = 0; i < n && queued < 16; i++)
+          if (it[i].type == IT_IMAGE && !it[i].img && it[i].imgsrc) {
+              bfetch_prefetch(it[i].imgsrc);
+              queued++;
+          }
+      if (queued) { g_prog_total = queued; bfetch_prefetch_wait(); } }
     if (layout_load_images(16) > 0) {
         ph = layout_height();
         redraw(0);
@@ -587,10 +638,14 @@ static void load(const char *u)
     g_prog_what = "running scripts"; g_prog_total = 0; g_prog_last = 0;
     int had_script = run_collected_scripts(base) > 0;
     { int dials = 0, reuses = 0, reqs = 0, mods = 0, modfail = 0;
+      int hits = 0, evicted = 0, closed = 0;
       bfetch_stats(&dials, &reuses, &reqs);
+      bfetch_pool_stats(&hits, &evicted, &closed);
       js_module_stats(&mods, &modfail);
       printf("[browser] load done: %d requests, %d connections dialled, %d reused"
-             ", %d modules loaded (%d failed)\n", reqs, dials, reuses, mods, modfail); }
+             ", %d modules loaded (%d failed)\n", reqs, dials, reuses, mods, modfail);
+      printf("[browser] pool: %d hits, %d evicted, %d closed\n",
+             hits, evicted, closed); }
     res_reset();
 
     /* The document is parsed and the scripts have run: fire the lifecycle events
@@ -741,6 +796,7 @@ void app_main(void)
         int need = 0;                 /* coalesce: drain the whole event burst, repaint once */
         int navigated = 0;
         while (!navigated && poll_event(&e)) {
+            sync_scroll();
             if (e.type == EV_CLOSE) { js_page_close(); app_exit(0); }
             if (e.type == EV_KEY) {
                 int k = e.a;
@@ -779,6 +835,7 @@ void app_main(void)
                     else if (editing && k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
                 }
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
+                sync_scroll();
                 need = 1;
             } else if (e.type == EV_MOUSE || e.type == EV_MOUSE_R) {
                 int mx = e.a, my = e.b;              /* window-local */
@@ -857,6 +914,7 @@ void app_main(void)
                 }
                 if (allow) scroll += e.wheel * 40;
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
+                sync_scroll();
                 need = 1;
             }
             if (!navigated && settle_dom()) need = 1;   /* a handler rewrote the DOM */

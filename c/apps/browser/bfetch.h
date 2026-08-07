@@ -67,6 +67,24 @@ void bfetch_wait(int id, void (*tick)(void));
 /* One request, run to completion. Returns 0 and a malloc'd body, or -1. */
 int  bfetch_sync(const char *ref, unsigned char **out, int *outlen);
 
+/* ---- prefetch, for callers that fetch one resource at a time ----
+ *
+ * layout.c's image loop calls res_fetch() per <img>, decodes, and only then
+ * asks for the next one. Each decode is seconds on an emulated CPU, and a CDN's
+ * keep-alive timeout is often five -- so the pooled connection was reliably
+ * dead by the time the next image wanted it, and eight images from one host
+ * still cost seven handshakes with a working pool. MEASURED: 8 pool hits, 5 of
+ * them on sockets the server had already closed.
+ *
+ * The fix is not a longer timeout, it is not leaving the connection idle:
+ * queue every image first so they transfer together with no decode in between,
+ * and let res_fetch() take the bytes out of the cache. */
+void bfetch_prefetch(const char *ref);
+/* Drive every queued prefetch to completion, then stop. */
+void bfetch_prefetch_wait(void);
+/* Drop anything still held. Called on navigation. */
+void bfetch_cache_clear(void);
+
 /* The tick bfetch_sync passes to bfetch_wait. Set once by the browser so that
  * the paths which cannot pass one themselves -- layout's image fetch, and
  * QuickJS's module loader, both of which are called from inside code that has
@@ -79,6 +97,10 @@ void bfetch_set_tick(void (*fn)(void));
  * `dials` is how many TCP/TLS connections were actually opened, `reuses` how
  * many requests rode a connection that already existed. */
 void bfetch_stats(int *dials, int *reuses, int *requests);
+/* The pool's own counters. `evicted` (ran out of slots) and `closed` (the
+ * connection went away) are the two reasons a page dials more than it should,
+ * and they are indistinguishable from the request side. */
+void bfetch_pool_stats(int *hits, int *evicted, int *closed);
 void bfetch_reset_stats(void);
 /* Drop every pooled connection (navigation, or shutdown). */
 void bfetch_close_all(void);
