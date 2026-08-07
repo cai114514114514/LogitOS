@@ -17,6 +17,7 @@
 #include "crypto.h"
 #include "tls.h"
 #include "x509.h"
+#include "tls_prof.h"
 
 /* --- cipher suites --------------------------------------------------------
  * TLS 1.3 (RFC 8446): the AEAD and the hash, nothing else -- key exchange and
@@ -200,6 +201,11 @@ struct tls_sess {
     uint8_t tx[TXBUF]; int txlen, txoff;     /* sealed bytes waiting for TCP */
     uint8_t hsbuf[HSBUF]; int hslen;         /* server handshake flight */
     uint8_t app[REC_BODY_MAX]; int applen, appoff;   /* decrypted app data */
+
+    /* The whole-handshake span. It begins in tls_start() and ends in one of
+     * four places (1.3 done, 1.2 done, tls_fail, tls_close), which is why it
+     * lives in the session rather than in a KPROF_BEGIN's function-local. */
+    tls_prof_span prof;
 };
 
 /* --- provided by tls.c, used by tls12.c ---------------------------------- */

@@ -206,6 +206,7 @@ int tls12_read_record(struct tls_sess *s, uint8_t *ctype, int *len)
  * which surfaces only as a Finished mismatch. */
 static void install_keys(struct tls_sess *s, const struct suite12 *sp)
 {
+    TLSPROF_BEGIN(tls12_prf);
     uint8_t seed[64];
     memcpy(seed, s->srandom, 32);
     memcpy(seed + 32, s->random, 32);
@@ -225,6 +226,7 @@ static void install_keys(struct tls_sess *s, const struct suite12 *sp)
     memcpy(s->cr.iv,  block + p, (size_t)sp->fixed_iv);
     s->cw.seq = s->cr.seq = 0;
     crypto_wipe(block, sizeof block);
+    TLSPROF_END(tls12_prf);
 }
 
 /* Derive the master secret from the premaster (RFC 5246 8.1, RFC 7627 4).
@@ -250,6 +252,7 @@ static void install_keys(struct tls_sess *s, const struct suite12 *sp)
 static void derive_master(struct tls_sess *s, const struct suite12 *sp,
                           const uint8_t *pm, int pmlen)
 {
+    TLSPROF_BEGIN(tls12_prf);
     if (s->ems) {
         uint8_t session_hash[48];
         tls_th_hash(s, session_hash);
@@ -262,6 +265,7 @@ static void derive_master(struct tls_sess *s, const struct suite12 *sp,
         memcpy(seed + 32, s->srandom, 32);
         tls12_prf(sp->hashlen, pm, pmlen, "master secret", seed, 64, s->master, 48);
     }
+    TLSPROF_END(tls12_prf);
 }
 
 /* verify_data for a Finished message (RFC 5246 7.4.9):
@@ -387,7 +391,10 @@ static int process_flight(struct tls_sess *s)
             while (cp + 3 <= cend && ncert < 8) {
                 int clen = (mb[cp] << 16) | (mb[cp+1] << 8) | mb[cp+2]; cp += 3;
                 if (clen < 0 || cp + clen > cend) return TLS_E_PROTO;
-                if (x509_parse(mb + cp, clen, &chain[ncert]) == 0) ncert++;
+                TLSPROF_BEGIN(tls_cert_parse);
+                int pr = x509_parse(mb + cp, clen, &chain[ncert]);
+                TLSPROF_END(tls_cert_parse);
+                if (pr == 0) ncert++;
                 cp += clen;
             }
         } else if (mt == HS_SERVER_KX) {
@@ -466,6 +473,11 @@ static int process_flight(struct tls_sess *s)
     memcpy(signed_data + sd, ske, (size_t)params_len); sd += params_len;
 
     int okv = 0;
+    /* Same span name as TLS 1.3's CertificateVerify: it is the same job -- one
+     * signature by the leaf key, tying the ephemeral share to the certificate --
+     * and keeping one name means the two protocol versions are comparable in the
+     * report rather than filed under different headings. */
+    TLSPROF_BEGIN(tls_certverify);
     if (sighash == 0x08) {
         /* rsa_pss_rsae_sha256/384/512: in TLS 1.2's two-byte encoding these
          * appear as 0x08 0x04/05/06, where the first byte is not a hash id at
@@ -483,6 +495,7 @@ static int process_flight(struct tls_sess *s)
     } else {
         okv = verify_ske_signature(&chain[0], sighash, sigalg, signed_data, sd, sig, siglen);
     }
+    TLSPROF_END(tls_certverify);
     if (!okv) {
         kprintf("[tls] ServerKeyExchange signature rejected (hash %d alg %d, %d bytes)\n",
                 sighash, sigalg, siglen);
@@ -590,6 +603,7 @@ static int step12_recv_ccs(struct tls_sess *s)
                 crypto_wipe(s->priv, sizeof s->priv);
                 s->hslen = 0;
                 s->state = TS_ESTABLISHED;
+                tlsprof_close(&s->prof);
                 return TLS_DONE;
             }
             /* Anything else here (NewSessionTicket) is still part of the

@@ -18,6 +18,10 @@ int   memcmp(const void *, const void *, size_t);
 
 static struct tls_sess sessions[TLS_MAX_SESSIONS];
 
+/* Interned once for the whole-handshake span; see tls_prof.h for why this one
+ * cannot use the lexical KPROF_BEGIN/END pair. */
+static int tls_hs_slot = -1;
+
 static struct tls_sess *sess_of(int id)
 {
     if (id < 0 || id >= TLS_MAX_SESSIONS || !sessions[id].used) return 0;
@@ -33,6 +37,7 @@ static uint32_t rand_u32(void) { uint32_t v; rand_bytes((uint8_t *)&v, 4); retur
  * allocated so the caller can read the reason back before tls_close(). */
 int tls_fail(struct tls_sess *s, int rc)
 {
+    tlsprof_close(&s->prof);                 /* a failed handshake still cost time */
     crypto_wipe(&s->sec, sizeof s->sec);
     crypto_wipe(&s->cr, sizeof s->cr);
     crypto_wipe(&s->cw, sizeof s->cw);
@@ -133,18 +138,29 @@ void tls_aead_encrypt(const struct aead *a, const uint8_t nonce[12],
                       const uint8_t *aad, int aadlen,
                       const uint8_t *pt, int len, uint8_t *ct, uint8_t *tag)
 {
+    /* The span is on the dispatcher rather than on each call site because this
+     * is the only place ALL bulk record crypto passes through, for both protocol
+     * versions and both directions -- which makes tls_aead_seal/open the pair of
+     * numbers the "is TCG-emulated AES-NI actually faster than the C path"
+     * question is asked of. */
+    TLSPROF_BEGIN(tls_aead_seal);
     if (a->alg == AEAD_CHACHA20)         chacha20_poly1305_seal(a->key, nonce, aad, aadlen, pt, len, ct, tag);
     else if (a->alg == AEAD_AES_256_GCM) aes256_gcm_seal(a->key, nonce, aad, aadlen, pt, len, ct, tag);
     else                                 aes128_gcm_seal(a->key, nonce, aad, aadlen, pt, len, ct, tag);
+    TLSPROF_END(tls_aead_seal);
 }
 
 int tls_aead_decrypt(const struct aead *a, const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *ct, int len, const uint8_t *tag, uint8_t *pt)
 {
-    if (a->alg == AEAD_CHACHA20)         return chacha20_poly1305_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
-    else if (a->alg == AEAD_AES_256_GCM) return aes256_gcm_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
-    else                                 return aes128_gcm_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
+    TLSPROF_BEGIN(tls_aead_open);
+    int rc;
+    if (a->alg == AEAD_CHACHA20)         rc = chacha20_poly1305_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
+    else if (a->alg == AEAD_AES_256_GCM) rc = aes256_gcm_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
+    else                                 rc = aes128_gcm_open(a->key, nonce, aad, aadlen, ct, len, tag, pt);
+    TLSPROF_END(tls_aead_open);
+    return rc;
 }
 
 /* Encrypt (content || inner_type) into a record body; returns the body length.
@@ -252,46 +268,55 @@ int tls_group_supported(int grp)
  * the failure probability (about 2^-32 per try for P-256) unreachable. */
 int tls_gen_share(struct tls_sess *s)
 {
+    TLSPROF_BEGIN(tls_kx_keygen);
+    int rc = -1;
     if (s->group == GRP_X25519) {
         rand_bytes(s->priv, 32);
         x25519_base(s->pub, s->priv);
         s->publen = 32;
-        return 0;
-    }
-    int curve = group_curve(s->group);
-    if (!curve) return -1;
-    int flen = curve / 8;
-    for (int try = 0; try < 8; try++) {
-        rand_bytes(s->priv, flen);
-        if (ecdh_keygen(curve, s->priv, rand_u32(), s->pub) == 0) {
-            s->publen = 1 + 2 * flen;
-            return 0;
+        rc = 0;
+    } else {
+        int curve = group_curve(s->group);
+        int flen = curve / 8;
+        for (int try = 0; curve && try < 8; try++) {
+            rand_bytes(s->priv, flen);
+            if (ecdh_keygen(curve, s->priv, rand_u32(), s->pub) == 0) {
+                s->publen = 1 + 2 * flen;
+                rc = 0;
+                break;
+            }
         }
     }
-    return -1;
+    TLSPROF_END(tls_kx_keygen);
+    return rc;
 }
 
 /* Derive the ECDHE shared secret from the server's key share. */
 int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
                        uint8_t *out, int *outlen)
 {
+    TLSPROF_BEGIN(tls_kx_shared);
+    int rc = -1;
     if (s->group == GRP_X25519) {
-        if (splen != 32) return -1;
-        x25519(out, s->priv, spub);
-        /* RFC 7748/8446 contributory check: an all-zero shared secret means the
-         * peer sent a low-order point, so the "secret" is one the peer chose. */
-        uint8_t z = 0; for (int i = 0; i < 32; i++) z |= out[i];
-        if (!z) return -1;
-        *outlen = 32;
-        return 0;
+        if (splen == 32) {
+            x25519(out, s->priv, spub);
+            /* RFC 7748/8446 contributory check: an all-zero shared secret means
+             * the peer sent a low-order point, so the "secret" is one the peer
+             * chose. */
+            uint8_t z = 0; for (int i = 0; i < 32; i++) z |= out[i];
+            if (z) { *outlen = 32; rc = 0; }
+        }
+    } else {
+        int curve = group_curve(s->group);
+        /* ecdh_shared range- and on-curve-checks the peer point; with cofactor 1
+         * that rules out invalid-curve and small-subgroup attacks outright. */
+        if (curve && ecdh_shared(curve, s->priv, rand_u32(), spub, splen, out) == 0) {
+            *outlen = curve / 8;
+            rc = 0;
+        }
     }
-    int curve = group_curve(s->group);
-    if (!curve) return -1;
-    /* ecdh_shared range- and on-curve-checks the peer point; with cofactor 1
-     * that rules out invalid-curve and small-subgroup attacks outright. */
-    if (ecdh_shared(curve, s->priv, rand_u32(), spub, splen, out) != 0) return -1;
-    *outlen = curve / 8;
-    return 0;
+    TLSPROF_END(tls_kx_shared);
+    return rc;
 }
 
 /* --------------------------------------------------------------- ClientHello */
@@ -729,6 +754,7 @@ static int step_recv_sh(struct tls_sess *s)
         crypto_wipe(shared, sizeof shared);
         return fail(s, TLS_E_CRYPTO);
     }
+    TLSPROF_BEGIN(tls_sched13);
     uint8_t zeros[32]; memset(zeros, 0, 32);
     uint8_t early[32], derived[32], emptyhash[32];
     hkdf_extract(HLEN, 0, 0, zeros, 32, early);
@@ -743,6 +769,7 @@ static int step_recv_sh(struct tls_sess *s)
     crypto_wipe(shared, sizeof shared);
     crypto_wipe(early, sizeof early);
     crypto_wipe(derived, sizeof derived);
+    TLSPROF_END(tls_sched13);
 
     kprintf("[tls] ServerHello: TLS 1.3, suite 0x%x, group %s%s\n",
             suite, group_name(s->group), s->hrr_seen ? " (after HRR)" : "");
@@ -761,7 +788,9 @@ static int step_recv_sh(struct tls_sess *s)
 int tls_check_chain(struct tls_sess *s, const struct cert *chain, int ncert)
 {
     if (ncert < 1) { kprintf("[tls] no usable certificate in the flight\n"); return TLS_E_CERT; }
+    TLSPROF_BEGIN(tls_chain_verify);
     int vr = x509_verify_chain(chain, ncert, s->host, s->now);
+    TLSPROF_END(tls_chain_verify);
     if (vr != X509_OK) {
         kprintf("[tls] chain of %d rejected for %s: %s (%d)\n", ncert, s->host,
                 vr == X509_E_NAME ? "host name" : vr == X509_E_EXPIRED ? "validity dates"
@@ -826,7 +855,10 @@ static int verify_flight(struct tls_sess *s)
             while (cp + 3 <= cend && ncert < 8) {
                 int clen = (mb[cp] << 16) | (mb[cp+1] << 8) | mb[cp+2]; cp += 3;
                 if (cp + clen + 2 > cend) return TLS_E_PROTO;
-                if (x509_parse(mb + cp, clen, &chain[ncert]) == 0) ncert++;
+                TLSPROF_BEGIN(tls_cert_parse);
+                int pr = x509_parse(mb + cp, clen, &chain[ncert]);
+                TLSPROF_END(tls_cert_parse);
+                if (pr == 0) ncert++;
                 cp += clen;
                 int extl = (mb[cp] << 8) | mb[cp+1]; cp += 2;
                 if (cp + extl > cend) return TLS_E_PROTO;
@@ -847,6 +879,7 @@ static int verify_flight(struct tls_sess *s)
             signed_data[sd++] = 0;
             memcpy(signed_data + sd, th_cert, 32); sd += 32;
             int okv = 0;
+            TLSPROF_BEGIN(tls_certverify);
             if (ncert > 0 && (sigalg == 0x0403 || sigalg == 0x0503)) {
                 int curve = (sigalg == 0x0403) ? 256 : 384;
                 int flen2 = curve / 8;
@@ -867,6 +900,7 @@ static int verify_flight(struct tls_sess *s)
                 if (rsa_pss_verify(chain[0].rsa_n, chain[0].rsa_nlen, chain[0].rsa_e, chain[0].rsa_elen,
                                    sig, siglen, hash, hh)) okv = 1;
             }
+            TLSPROF_END(tls_certverify);
             if (!okv) {
                 kprintf("[tls] CertificateVerify rejected (sigalg 0x%x, %d certs)\n", sigalg, ncert);
                 return TLS_E_CERT;
@@ -915,7 +949,9 @@ static int step_recv_flight(struct tls_sess *s)
         if (s->rectype != REC_APPDATA) return fail(s, TLS_E_PROTO);
         if (blen - 16 > (int)sizeof s->app) return fail(s, TLS_E_PROTO);
         uint8_t it;
+        TLSPROF_BEGIN(tls_hs_aead);
         int dl = aead_open(&s->cr, body, blen, s->app, &it);
+        TLSPROF_END(tls_hs_aead);
         rec_drop(s);
         if (dl < 0) return fail(s, TLS_E_CRYPTO);
         if (it == REC_ALERT) { log_alert(s->app, dl); return fail(s, TLS_E_PROTO); }
@@ -969,6 +1005,7 @@ static int step_recv_flight(struct tls_sess *s)
     if (fl < 0) return fail(s, TLS_E_TCP);
     if (!fl) return TLS_WANT_WRITE;
     s->state = TS_ESTABLISHED;
+    tlsprof_close(&s->prof);
     return TLS_DONE;
 }
 
@@ -1004,6 +1041,7 @@ int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now)
     if (id < 0) return TLS_E_PROTO;
     struct tls_sess *s = &sessions[id];
     memset(s, 0, sizeof *s);
+    tlsprof_open(&s->prof, &tls_hs_slot, "tls_handshake");
     s->used = 1; s->tcp = tcp_id; s->now = now;
     /* One absolute budget for the whole handshake (~30 s). A peer trickling one
      * byte at a time must not be able to stretch the wait forever by resetting
@@ -1051,7 +1089,7 @@ int tls_step(int id)
     case TS_SEND_CH:       return step_send_ch(s);
     case TS_RECV_SH:       return step_recv_sh(s);
     case TS_RECV_FLIGHT:   return step_recv_flight(s);
-    case TS_FIN_FLUSH:     s->state = TS_ESTABLISHED; return TLS_DONE;
+    case TS_FIN_FLUSH:     s->state = TS_ESTABLISHED; tlsprof_close(&s->prof); return TLS_DONE;
     case TS12_RECV_FLIGHT:
     case TS12_RECV_CCS:    return tls12_step(s);
     default:               return fail(s, TLS_E_PROTO);
@@ -1068,9 +1106,16 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
         if (rc < 0) { tls_close(id); return rc; }
         /* Blocking mode: we own the pump. tls_step never sleeps, so without
          * these two the loop would spin the CPU and starve the NIC poll that
-         * has to deliver the very bytes we are waiting for. */
+         * has to deliver the very bytes we are waiting for.
+         *
+         * This is also the round-trip term of the breakdown: every nanosecond
+         * spent here is the network answering, not this machine computing, and
+         * no amount of faster crypto moves it. Reading tls_handshake minus
+         * tls_netwait is what says whether the handshake is CPU-bound at all. */
+        TLSPROF_BEGIN(tls_netwait);
         net_poll();
         net_idle();
+        TLSPROF_END(tls_netwait);
     }
 }
 
@@ -1204,6 +1249,9 @@ int tls_alpn(int id, char *out, int max)
 void tls_close(int id)
 {
     if (id < 0 || id >= TLS_MAX_SESSIONS || !sessions[id].used) return;
+    /* A session abandoned mid-handshake (the caller gave up, not tls_fail) still
+     * spent the time; close the span rather than dropping the sample. */
+    tlsprof_close(&sessions[id].prof);
     /* drop traffic keys, buffered plaintext and the in-use flag in one shot */
     crypto_wipe(&sessions[id], sizeof sessions[id]);
 }
