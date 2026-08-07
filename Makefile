@@ -428,11 +428,25 @@ QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
 # Display backend. QEMU picks gtk by default on Linux, which is the right choice
-# on a normal desktop -- but under WSLg a gtk window can appear in the taskbar and
-# then never paint, with QEMU reporting no error at all. When that happens the
-# guest is usually fine: check with `make shot`, which screendumps over QMP and
-# bypasses the window entirely. If that image is correct, the bug is host-side
-# and one of these usually fixes it:
+# on a normal desktop -- but under WSLg a window can appear in the taskbar and
+# then never paint, with QEMU reporting no error at all.
+#
+# Diagnose that with `make shot` FIRST: it screendumps over QMP with no host
+# window in the path, so a correct image proves the guest is fine and the fault
+# is host-side. Seen once and worth writing down, because no amount of changing
+# DISP fixes it -- the title bar read "WARN(copy mode)" and /mnt/wslg/weston.log
+# said:
+#     RDP backend: enable_copy_warning_title = 1
+#     rdp_allocate_shared_memory: Failed to open "/mnt/shared_memory/{...}":
+#         Input/output error
+# WSLg hands window surfaces to Windows through that shared-memory channel; when
+# it fails it falls back to copying every frame over RDP, and a 1280x800 guest
+# display does not survive the fallback. /dev/dxg and libd3d12 were both present
+# -- the GPU was fine, the channel was not. The fix is on the Windows side
+# (`wsl --shutdown`, then `wsl --update`), not in this repo, and every -display
+# backend fails identically because they all sit above that channel.
+#
+# For the ordinary case where a different backend does help:
 #     make run DISP=gtk,gl=off     GTK without OpenGL (WSLg's GL is virtualised)
 #     make run DISP=sdl            a different toolkit altogether
 #     make run DISP=none           no window; drive it with tests/qmp/*.py
