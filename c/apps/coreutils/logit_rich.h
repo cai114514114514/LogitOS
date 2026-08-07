@@ -107,8 +107,9 @@
                            /*   ncols * str header,                              */
                            /*   nrows*ncols * (u8 cellkind, str text, str target) */
 #define RT_T_CHART      8  /* u16 n, u16 kind, str title, n*(u32 value, str label)*/
-#define RT_T_CWD        9  /* str cwd                      (from the shell)      */
-#define RT_T_JOBS      10  /* u16 n, n*(u32 jobid, u32 pid, str cmd)             */
+/* 9 and 10 are deliberately unassigned. An unknown type is ignored by the
+ * terminal (see the default case in handle_frame), so the protocol grows without
+ * a version bump -- but only types that EXIST are listed here. */
 
 /* ---- terminal -> shell (control channel) --------------------------------- */
 #define RT_C_INTR      64  /* ^C: abandon the foreground job                     */

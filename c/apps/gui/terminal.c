@@ -524,7 +524,6 @@ static void handle_frame(int type, const unsigned char *p, int len)
 
     switch (type) {
     case RT_T_HELLO: break;
-    case RT_T_CWD: break;                       /* drawn from the prompt instead */
     case RT_T_CMD_BEGIN: {
         unsigned id = rt_rd_u32(&r);
         char text[96];
@@ -580,7 +579,7 @@ static void defer_or_run(int type, unsigned seq, const unsigned char *p, int len
 {
     /* Control-ish frames are never deferred: they define the anchor itself. */
     if (type == RT_T_CMD_BEGIN || type == RT_T_CMD_END || type == RT_T_INPUT ||
-        type == RT_T_HELLO || type == RT_T_CWD) { handle_frame(type, p, len); return; }
+        type == RT_T_HELLO) { handle_frame(type, p, len); return; }
     if (stdout_bytes >= (unsigned long)cmd_base + seq || len > (int)sizeof defers[0].p) {
         handle_frame(type, p, len);
         return;
