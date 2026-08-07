@@ -438,7 +438,17 @@ int dns_query_start(const char *name)
      * that has passed DAD, and a default router. Without that, a AAAA answer
      * would only produce destinations we cannot reach -- and on a v4-only
      * network this keeps the wire byte-identical to before IPv6 existed. */
+#ifdef IP6_NEGCTL_ALWAYS_AAAA
+    /* NEGATIVE CONTROL ONLY (`make test-ip6-dns-negctl`), never in the kernel
+     * build: ask for AAAA unconditionally -- the obvious way to write this, and
+     * the one that puts a second query on the wire of every v4-only network for
+     * answers it could never use. tests/unit/ip6_dns_test.c must FAIL with this
+     * defined, because "the v4 wire is unchanged" is a claim about a byte count
+     * and nothing else can check it. */
+    q->want6 = 1;
+#else
     q->want6 = (ip6_up() == 2);
+#endif
 
     for (int tries = 0; tries < 16 && q->sock < 0; tries++)
         q->sock = udp_bind(pick_lport());

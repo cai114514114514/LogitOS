@@ -453,7 +453,10 @@ int ip6_select_source(const ip6_addr *dst,
          * turn what makes destination-ordering rule 1 demote such a destination
          * below IPv4 instead of stranding the connection. Same behaviour as
          * Linux returning EADDRNOTAVAIL. */
+#ifndef IP6_NEGCTL_NO_SCOPE_GUARD
         if (ip6_scope(&cand[i].addr) < ip6_scope(dst)) continue;
+#endif  /* the guard is removed only by `make test-ip6-negctl`, which requires
+         * the suite to FAIL without it. Never defined by the kernel build. */
         if (best < 0 || src_better(&cand[i], &cand[best], dst) > 0)
             best = i;
     }
