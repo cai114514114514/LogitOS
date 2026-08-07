@@ -2437,3 +2437,5 @@ clean:
 # (test-fullsystem, verify-commit, check-test-liveness). Same reason, same
 # shape as the fragments above.
 -include tests/fullsystem.mk
+
+-include tests/prof.mk

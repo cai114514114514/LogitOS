@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include "kdiag.h"
 #include "klog.h"
+#include "kprof.h"
 #include "kprintf.h"
 #include "panic.h"
 #include "percpu.h"
@@ -55,17 +56,26 @@ static int render(const char *path)
         g_snap_len = klog_render(g_snap, (int)sizeof g_snap);
     else if (streq(path, "/dev/kstat"))
         g_snap_len = render_kstat(g_snap, (int)sizeof g_snap);
+    else if (streq(path, "/dev/kprof"))
+        g_snap_len = kprof_report(g_snap, (int)sizeof g_snap);
     else
         return -1;
     scopy(g_snap_for, path, sizeof g_snap_for);
     return g_snap_len;
 }
 
+/* Files whose CONTENT is a rendered snapshot, as opposed to /dev/ktrigger,
+ * which is write-only. */
+static int is_snap_file(const char *p)
+{
+    return streq(p, "/dev/kmsg") || streq(p, "/dev/kstat") || streq(p, "/dev/kprof");
+}
+
 int kdiag_size(const char *path)
 {
     if (!path) return KDIAG_NOT_MINE;
     if (streq(path, "/dev/ktrigger")) return 0;
-    if (streq(path, "/dev/kmsg") || streq(path, "/dev/kstat"))
+    if (is_snap_file(path))
         return render(path);
     return KDIAG_NOT_MINE;
 }
@@ -74,7 +84,7 @@ int kdiag_read(const char *path, void *buf, int max)
 {
     if (!path) return KDIAG_NOT_MINE;
     if (streq(path, "/dev/ktrigger")) return 0;
-    if (!streq(path, "/dev/kmsg") && !streq(path, "/dev/kstat"))
+    if (!is_snap_file(path))
         return KDIAG_NOT_MINE;
 
     /* file.c calls vfs_size() then vfs_read(); serve the SAME snapshot to both
@@ -92,7 +102,7 @@ int kdiag_read(const char *path, void *buf, int max)
 
 /* --- /dev listing --------------------------------------------------------- */
 
-static const char *const g_devnames[] = { "kmsg", "kstat", "ktrigger" };
+static const char *const g_devnames[] = { "kmsg", "kstat", "ktrigger", "kprof" };
 #define NDEV ((int)(sizeof g_devnames / sizeof g_devnames[0]))
 
 int kdiag_dir_count(const char *dir)
@@ -175,6 +185,7 @@ static int render_kstat(char *buf, int max)
                    (unsigned long long)kprintf_misaligned_calls());
     n += ksnprintf(buf + n, max - n, "abi_misaligned_at  %p\n",
                    kprintf_misaligned_caller());
+    n += kprof_summary(buf + n, max - n);
 
     n += ksnprintf(buf + n, max - n, "\npid  ppid state name\n");
     for (int pid = 1; pid <= NPROC * 4 && n < max - 64; pid++) {
@@ -253,6 +264,12 @@ void kdiag_init(void)
 {
     idt_install_gate(KDIAG_VEC_LOG,  (void *)kdiag_log_isr);
     idt_install_gate(KDIAG_VEC_HALT, (void *)kdiag_halt_isr);
+    /* The profiler's sample vector goes in here rather than in kmain.c: this is
+     * already the file that owns the diagnostic gates, and kdiag_init() runs
+     * after pit_init() (hence after time_init()), which is what kprof needs for
+     * the arming timer. Installing a gate costs one IDT entry and arms nothing
+     * -- the sampler is inert until something writes to /dev/kprof. */
+    kprof_init();
 }
 
 void kdiag_stop_other_cpus(void)
@@ -452,7 +469,19 @@ static int cmd_is(const char *b, const char *e, const char *word, const char **r
 
 int kdiag_write(const char *path, const void *buf, int len)
 {
-    if (!path || !streq(path, "/dev/ktrigger"))
+    if (!path)
+        return KDIAG_NOT_MINE;
+    /* /dev/kprof is the profiler's whole control surface -- start, stop, the
+     * self-tests, and the ring-3 `span NAME NS` post. It gets its own file
+     * rather than more ktrigger verbs so that `cat /dev/kprof` can be the
+     * report: a device you write commands to and read results from is one
+     * object, and five perf lines have to be able to remember it. */
+    if (streq(path, "/dev/kprof")) {
+        if (len <= 0) return 0;
+        kprof_command((const char *)buf, (const char *)buf + len);
+        return len;
+    }
+    if (!streq(path, "/dev/ktrigger"))
         return KDIAG_NOT_MINE;
     if (len <= 0)
         return 0;
