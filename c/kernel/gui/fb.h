@@ -54,6 +54,22 @@ void fb_set_present_par(void (*fn)(int, int, int, int));  /* register SMP parall
 void fb_fb_put(int x, int y, uint32_t color);       /* write straight to the framebuffer */
 void fb_flush_rect(int x, int y, int w, int h);     /* display a rect drawn straight into fb_mem */
 
+/* ---- the pointer, as a display plane --------------------------------------
+ * A cursor composited into the scanout makes the highest-frequency event in the
+ * system (mouse motion) cost a whole frame: every pixel under the old arrow has
+ * to be restored and every pixel under the new one overwritten, and with a
+ * single-buffer compositor that means recompositing the screen. A display that
+ * owns a cursor plane makes it cost nothing instead.
+ *
+ * fb_cursor_hw() is the question every caller must ask before relying on the
+ * other two: when it is 0 (multiboot LFB, or a virtio-gpu without a cursor
+ * queue) the pointer has to be drawn into the frame like any other pixel.
+ * `argb` is 0xAARRGGBB, and (hot_x,hot_y) is the pixel inside it that sits on
+ * the reported pointer position. */
+int  fb_cursor_hw(void);
+int  fb_cursor_image(const uint32_t *argb, int w, int h, int hot_x, int hot_y);
+void fb_cursor_move(int x, int y);
+
 /* An off-screen drawing target (e.g. an application window's canvas). The clip
  * rectangle is a PROPERTY OF THE TARGET, not a global: app A setting a clip on
  * its own surface must never affect a draw into app B's surface. The old global

@@ -288,6 +288,27 @@ void fb_flush_rect(int x, int y, int w, int h)
     if (using_gpu) virtio_gpu_flush(x, y, w, h);
 }
 
+/* ---- the pointer ----------------------------------------------------------
+ *
+ * When the display has a cursor plane the pointer is not a framebuffer object
+ * at all: fb_cursor_image() hands the arrow to the display once, and every
+ * subsequent move is one small command with no pixel written anywhere. Callers
+ * must ask fb_cursor_hw() FIRST -- on a plain multiboot LFB there is no plane,
+ * fb_cursor_move() does nothing, and the compositor has to keep drawing the
+ * pointer itself or the desktop loses its cursor. */
+int fb_cursor_hw(void) { return using_gpu && virtio_gpu_cursor_ready(); }
+
+int fb_cursor_image(const uint32_t *argb, int w, int h, int hot_x, int hot_y)
+{
+    if (!fb_cursor_hw()) return -1;
+    return virtio_gpu_cursor_define(argb, w, h, hot_x, hot_y);
+}
+
+void fb_cursor_move(int x, int y)
+{
+    if (fb_cursor_hw()) virtio_gpu_cursor_move(x, y);
+}
+
 /* Write one pixel straight to the framebuffer (not the back buffer): for the
  * cursor overlay, which must not contaminate the cursor-free composite. */
 void fb_fb_put(int x, int y, uint32_t color)

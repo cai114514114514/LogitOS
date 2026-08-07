@@ -18,10 +18,33 @@ void *memset(void *, int, size_t);
 #define GPU_CMD_RESOURCE_FLUSH       0x0104
 #define GPU_CMD_TRANSFER_TO_HOST_2D  0x0105
 #define GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106
+#define GPU_CMD_UPDATE_CURSOR        0x0300
+#define GPU_CMD_MOVE_CURSOR          0x0301
 #define GPU_RESP_OK_NODATA           0x1100
 #define GPU_RESP_OK_DISPLAY_INFO     0x1101
 #define GPU_FORMAT_B8G8R8X8          2     /* mem bytes B,G,R,X == our 0x00RRGGBB */
+#define GPU_FORMAT_B8G8R8A8          1     /* ... with alpha == our 0xAARRGGBB */
 #define RESID 1
+
+/* ---- the cursor plane ------------------------------------------------------
+ *
+ * virtio-gpu has a SECOND virtqueue whose only job is the pointer, and that is
+ * the whole reason this exists. A cursor that lives in the scanout has to be
+ * composited, which means every pixel the pointer passes over is a pixel the
+ * CPU rewrites and the device re-transfers -- at 1920x1200 that is 2.3 M pixels
+ * of work to move an arrow eight of them. On the cursor queue it is one 56-byte
+ * command and the host draws the arrow on its own plane: no framebuffer write,
+ * no DMA, no recomposite.
+ *
+ * The 64x64 is not a choice. The device allocates a fixed 64x64 cursor and
+ * refuses a resource of any other size (QEMU's virtio_gpu_update_cursor_data
+ * compares width/height and silently returns), so the image is padded, not
+ * scaled -- a smaller arrow occupies the top-left corner and the rest is
+ * transparent. B8G8R8A8 rather than the scanout's X8 format: the pointer's
+ * surround has to be see-through, and that is what the A is for. */
+#define CURSOR_QIDX  1
+#define CURSOR_RESID 2
+#define CURSOR_DIM   64
 
 /* The mode to program when the host cannot tell us a usable one. It matches the
  * Makefile's QEMU_GPU default on purpose: an unrealized window should come up as
@@ -46,15 +69,36 @@ struct gpu_set_scanout { struct gpu_hdr hdr; struct gpu_rect r; uint32_t scanout
 struct gpu_transfer { struct gpu_hdr hdr; struct gpu_rect r; uint64_t offset; uint32_t resource_id, padding; } __attribute__((packed));
 struct gpu_flush { struct gpu_hdr hdr; struct gpu_rect r; uint32_t resource_id, padding; } __attribute__((packed));
 
+struct gpu_cursor_pos { uint32_t scanout_id, x, y, padding; } __attribute__((packed));
+struct gpu_update_cursor {
+    struct gpu_hdr hdr;
+    struct gpu_cursor_pos pos;
+    uint32_t resource_id, hot_x, hot_y, padding;
+} __attribute__((packed));
+/* The device checks the LENGTH of a cursor command and drops anything that is
+ * not exactly this struct -- without an error, because there is no response
+ * buffer to put one in. A short write is therefore a pointer that silently
+ * never moves, which is a miserable thing to debug from the outside. */
+_Static_assert(sizeof(struct gpu_update_cursor) == 56, "virtio_gpu_update_cursor is 56 bytes");
+
 static struct virtio_dev gpudev;
 static struct virtq      gpuvq;
+static struct virtq      gpucurvq;
 static int               gpu_ready;
+static int               gpu_cursor_ready;     /* the cursor queue + resource are up */
 static uint32_t          gpu_w, gpu_h;
 static uint32_t         *gpu_fb;        /* the RAM framebuffer (identity-mapped) */
+static uint32_t         *gpu_cursor_px; /* 64x64 0xAARRGGBB backing (identity-mapped) */
 
 /* Static request/response staging (single outstanding, identity-mapped). */
 static uint8_t cmdbuf[256];
 static uint8_t respbuf[256];
+/* The cursor queue gets its own staging buffer rather than sharing cmdbuf.
+ * Requests are synchronous and single-threaded today, so sharing would work --
+ * but a pointer move is issued from the input path and a scanout flush from the
+ * compositor, and the day those stop being the same thread the failure would be
+ * a corrupted command, not a compile error. */
+static uint8_t curbuf[64];
 
 /* Send a command (cmd_len bytes from cmdbuf), receive the response into respbuf.
  * Returns the response type, or 0 on failure. */
@@ -82,6 +126,11 @@ int virtio_gpu_init(void)
 {
     if (virtio_init(VIRTIO_DEV_GPU, &gpudev, 0) != 0) return -1;
     if (virtio_queue_setup(&gpudev, 0, &gpuvq) != 0) return -1;   /* controlq */
+    /* The cursor queue must be programmed BEFORE DRIVER_OK, like every other
+     * queue -- a device is entitled to stop accepting queue configuration once
+     * the driver declares itself ready. Its absence is not fatal: the compositor
+     * falls back to drawing the pointer into the scanout. */
+    int have_cursor_q = (virtio_queue_setup(&gpudev, CURSOR_QIDX, &gpucurvq) == 0);
     virtio_driver_ok(&gpudev);
 
     /* 1. Display info -> preferred resolution.
@@ -133,7 +182,29 @@ int virtio_gpu_init(void)
       if (gpu_cmd(sizeof *s) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
 
     gpu_ready = 1;
-    kprintf("[virtio-gpu] %dx%d, RAM fb @ %p\n", gpu_w, gpu_h, (void *)gpu_fb);
+
+    /* 4. The cursor plane: a second 64x64 resource with alpha, never scanned
+     *    out -- the device composites it over the scanout itself. */
+    if (have_cursor_q) {
+        gpu_cursor_px = (uint32_t *)pmm_alloc_contig((CURSOR_DIM * CURSOR_DIM * 4 + 4095) / 4096);
+        if (gpu_cursor_px) {
+            memset(gpu_cursor_px, 0, CURSOR_DIM * CURSOR_DIM * 4);
+            int ok = 1;
+            { struct gpu_create_2d *c = (struct gpu_create_2d *)cmdbuf; memset(c, 0, sizeof *c);
+              c->hdr.type = GPU_CMD_RESOURCE_CREATE_2D;
+              c->resource_id = CURSOR_RESID; c->format = GPU_FORMAT_B8G8R8A8;
+              c->width = CURSOR_DIM; c->height = CURSOR_DIM;
+              if (gpu_cmd(sizeof *c) != GPU_RESP_OK_NODATA) ok = 0; }
+            if (ok) { struct gpu_attach_backing *a = (struct gpu_attach_backing *)cmdbuf; memset(a, 0, sizeof *a);
+              a->hdr.type = GPU_CMD_RESOURCE_ATTACH_BACKING;
+              a->resource_id = CURSOR_RESID; a->nr_entries = 1;
+              a->addr = (uint64_t)(uintptr_t)gpu_cursor_px; a->length = CURSOR_DIM * CURSOR_DIM * 4;
+              if (gpu_cmd(sizeof *a) != GPU_RESP_OK_NODATA) ok = 0; }
+            if (ok) gpu_cursor_ready = 1;
+        }
+    }
+    kprintf("[virtio-gpu] %dx%d, RAM fb @ %p, cursor plane %s\n",
+            gpu_w, gpu_h, (void *)gpu_fb, gpu_cursor_ready ? "yes" : "no");
     return 0;
 }
 
@@ -161,4 +232,60 @@ void virtio_gpu_flush(int x, int y, int w, int h)
       f->hdr.type = GPU_CMD_RESOURCE_FLUSH;
       f->r.x = x; f->r.y = y; f->r.width = w; f->r.height = h; f->resource_id = RESID;
       gpu_cmd(sizeof *f); }
+}
+
+/* ---- cursor plane --------------------------------------------------------- */
+
+int virtio_gpu_cursor_ready(void) { return gpu_cursor_ready; }
+
+/* One command on the cursor queue. The device consumes it and completes with a
+ * zero-length used element -- there is no response structure, so unlike gpu_cmd
+ * there is nothing to read back and nothing to check beyond "it completed". */
+static int gpu_cursor_cmd(uint32_t type, int x, int y, uint32_t resid, int hot_x, int hot_y)
+{
+    struct gpu_update_cursor *u = (struct gpu_update_cursor *)curbuf;
+    memset(u, 0, sizeof *u);
+    u->hdr.type = type;
+    u->pos.scanout_id = 0;
+    u->pos.x = (uint32_t)(x < 0 ? 0 : x);
+    u->pos.y = (uint32_t)(y < 0 ? 0 : y);
+    u->resource_id = resid;
+    u->hot_x = (uint32_t)hot_x; u->hot_y = (uint32_t)hot_y;
+    struct virtio_buf b = { (uint64_t)(uintptr_t)u, (uint32_t)sizeof *u, 0 };
+    return virtio_request(&gpudev, &gpucurvq, CURSOR_QIDX, &b, 1);
+}
+
+/* Publish a new pointer image. `argb` is w*h pixels of 0xAARRGGBB placed at the
+ * top-left of the 64x64 plane; anything past it stays transparent. Oversized
+ * images are CROPPED rather than rejected, because the alternative at a scale
+ * this driver does not control is no pointer at all. */
+int virtio_gpu_cursor_define(const uint32_t *argb, int w, int h, int hot_x, int hot_y)
+{
+    if (!gpu_cursor_ready || !argb || w <= 0 || h <= 0) return -1;
+    if (w > CURSOR_DIM) w = CURSOR_DIM;
+    if (h > CURSOR_DIM) h = CURSOR_DIM;
+    memset(gpu_cursor_px, 0, CURSOR_DIM * CURSOR_DIM * 4);
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++)
+            gpu_cursor_px[j * CURSOR_DIM + i] = argb[j * w + i];
+
+    /* The device reads the cursor image out of its own copy of the resource, so
+     * the backing has to be transferred exactly like a scanout rect -- on the
+     * CONTROL queue. Skipping this is the classic invisible-cursor bug: the
+     * UPDATE_CURSOR below succeeds and points at 64x64 of zeroes. */
+    { struct gpu_transfer *t = (struct gpu_transfer *)cmdbuf; memset(t, 0, sizeof *t);
+      t->hdr.type = GPU_CMD_TRANSFER_TO_HOST_2D;
+      t->r.x = 0; t->r.y = 0; t->r.width = CURSOR_DIM; t->r.height = CURSOR_DIM;
+      t->offset = 0; t->resource_id = CURSOR_RESID;
+      if (gpu_cmd(sizeof *t) != GPU_RESP_OK_NODATA) return -1; }
+
+    return gpu_cursor_cmd(GPU_CMD_UPDATE_CURSOR, 0, 0, CURSOR_RESID, hot_x, hot_y) < 0 ? -1 : 0;
+}
+
+/* Move the pointer. THIS is the hot path -- one 56-byte descriptor, no
+ * framebuffer write and no transfer of any kind. */
+void virtio_gpu_cursor_move(int x, int y)
+{
+    if (!gpu_cursor_ready) return;
+    gpu_cursor_cmd(GPU_CMD_MOVE_CURSOR, x, y, CURSOR_RESID, 0, 0);
 }
