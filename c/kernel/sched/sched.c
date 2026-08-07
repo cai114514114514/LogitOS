@@ -210,8 +210,26 @@ void thread_create(void (*entry)(void), const char *name)
     block_fields_init(t, 1);
 
     /* First switch lands in kthread_bootstrap, which drops g_sched_lock then
-     * calls entry() (kernel threads keep the BKL while in kernel code). */
-    uint64_t top = ((uint64_t)t->stack + STACK_SIZE) & ~(uint64_t)0xF;
+     * calls entry() (kernel threads keep the BKL while in kernel code).
+     *
+     * The -8 is the ABI, not a fudge. SysV requires RSP to be 16-byte aligned
+     * at a `call`, so a function ENTERED normally sees RSP ≡ 8 (mod 16) -- the
+     * return address the call pushed. This frame is entered by `ret` instead,
+     * which pops rather than pushes, so starting from a 16-aligned top left
+     * kthread_bootstrap running with RSP ≡ 0: misaligned by exactly 8 against
+     * what every function it calls was compiled to assume.
+     *
+     * That was invisible until M15 built the kernel with -msse2. Any callee
+     * with a 16-byte-aligned SSE spill then faults on its own prologue --
+     * `movaps %xmm0,-0x30(%rbp)` takes a #GP -- and `kprintf` is one of them,
+     * so the thread dies before it can report that it died. Found by the USB
+     * line, which hit it at rip=0x11cae8 and then reproduced it with USB
+     * absent entirely, from an unrelated self-test thread. Every kernel thread
+     * created here has been one aligned spill away from this since M15.
+     *
+     * ring3_bootstrap and fork_ret are unaffected: both are assembly and end in
+     * iretq, so no C prologue ever runs on the misaligned frame. */
+    uint64_t top = (((uint64_t)t->stack + STACK_SIZE) & ~(uint64_t)0xF) - 8;
     uint64_t *sp = (uint64_t *)top;
     *--sp = (uint64_t)kthread_bootstrap;  /* ret target (drops g_sched_lock, calls entry) */
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
