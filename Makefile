@@ -102,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -427,8 +427,27 @@ QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1280,yres=800   # modern GPU;
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
+# Display backend. QEMU picks gtk by default on Linux, which is the right choice
+# on a normal desktop -- but under WSLg a gtk window can appear in the taskbar and
+# then never paint, with QEMU reporting no error at all. When that happens the
+# guest is usually fine: check with `make shot`, which screendumps over QMP and
+# bypasses the window entirely. If that image is correct, the bug is host-side
+# and one of these usually fixes it:
+#     make run DISP=gtk,gl=off     GTK without OpenGL (WSLg's GL is virtualised)
+#     make run DISP=sdl            a different toolkit altogether
+#     make run DISP=none           no window; drive it with tests/qmp/*.py
+DISP ?=
+QEMU_DISP := $(if $(DISP),-display $(DISP),)
+
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+
+# What is the guest ACTUALLY drawing? Boots headless, screendumps over QMP and
+# writes a PNG. This is the check that separates "the OS is broken" from "the
+# window is not painting" -- it reads the scanout the guest produced, with no
+# host window involved.
+shot: $(ISO) $(DISK)
+	@bash tools/shot.sh
 
 debug: $(ISO) $(DISK)
 	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S
