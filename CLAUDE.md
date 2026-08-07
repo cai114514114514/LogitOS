@@ -363,6 +363,33 @@ test-as` (host, 55 checks incl. fib + import) + `make test-as-os` (boots LogitOS
 runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
 (≈CPython). Deferred: dict, closures, GC, computed-goto dispatch.
 
+H.264 video ✅ (`c/lib/video/`): a from-scratch baseline-profile decoder --
+Annex-B/NAL, CAVLC, I+P slices, multiple references, weighted P prediction, the
+deblocking filter, cropping. Bit-exactness is the bar, not a tolerance: H.264
+reconstruction is exactly specified integer arithmetic, so any mismatch with
+ffmpeg is our bug. `make test-h264` decodes ten x264-generated streams plus a
+committed fixture and compares every byte (11 streams x 60 frames);
+`make test-h264-units` covers prediction/MC/deblocking as modules;
+`make test-h264-diff` prints per-case wrong-byte totals, which is the metric to
+bisect with -- "the first mismatch moved" says nothing.
+**The decoder is RING-3, not kernel.** `c/lib/video` is filtered out of `C_SRC`
+on purpose: it allocates with malloc/free, and unlike an image (decoded once,
+hence `SYS_IMG_DECODE`) a video is decoded 30x/second with megabytes of live
+reference frames -- in the kernel that holds the BKL per frame and puts a media
+parser in ring 0. Consumers link `VID_OBJ` + mini-libc: `/bin/vidcheck` (prints
+the decoded CRC32; `make test-video` boots LogitOS and requires it to equal the
+host's) and **Preview**, which now shows both images and video and picks the
+path by sniffing the Annex-B start code rather than the file name.
+Gotchas worth keeping: `mbinfo` uses raster order for `mv[]` but **Z order for
+`nz[]`**; mvp's A/B/C all come from the partition's TOP-LEFT corner and only C
+steps right by the partition width; an INTRA neighbour is *available* with
+refIdx -1 (not unavailable), and "available" additionally excludes anything not
+yet decoded, including sub-partitions of the current macroblock; `ref_idx` is
+coded per partition but read back per 8x8 quadrant; deblocking compares
+reference **pictures**, not indices (weighted prediction puts one picture at
+several indices on purpose); and a weight of 128 is inferrable though not
+codable, so clamping weights to 127 silently darkens every frame.
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese

@@ -237,6 +237,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (c->raw && img_decode((const uint8_t *)c->raw, c->rawlen, &tmp) == 0) {
             holder = kmalloc(sizeof *holder);
             if (holder) *holder = tmp;
+            else img_free(&tmp);                      /* decoded but nowhere to keep it */
         }
         if (!holder) return;                          /* undecodable: skip silently */
         int vbw = 0, vbh = 0;

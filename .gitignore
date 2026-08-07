@@ -14,7 +14,8 @@ compile_commands.json
 
 # Codegraph index
 .codegraph/
-
+.vscode
+.claude
 # Redistributable font subsets are tracked; regenerate with `make regen-fonts`.
 
 # Third-party LibCSS keeps code-generation scripts under build/ (mkprops.pl,
