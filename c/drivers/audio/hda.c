@@ -698,8 +698,15 @@ static int hda_probe(struct device *dev)
 
     if (snd_register_device(&h->snd) != 0) return -1;
     /* Start the mixer here rather than from kmain: driver.h's whole point is
-     * that adding a driver requires editing no other file, and dev_probe_all()
-     * runs late enough in boot that thread_create() is available. */
+     * that adding a driver requires editing no other file.
+     *
+     * The second half of that comment used to read "and dev_probe_all() runs
+     * late enough in boot that thread_create() is available". It does not:
+     * kmain.c calls dev_probe_all() and only then wm_run(), which is what calls
+     * sched_init(). snd_init() therefore allocates here and defers the DMA
+     * engine and the kaudio thread to the first stream open. Nothing in this
+     * driver changes; hda_start() is pure MMIO and is called from wherever the
+     * mixer decides it is safe to call it. */
     snd_init();
     return 0;
 }

@@ -49,6 +49,20 @@ void *memset(void *, int, size_t);
 /* Enough input for one period even when resampling 4:1 down from 192 kHz. */
 #define SND_MAX_RATIO   4
 
+/* How many periods ahead of the playback pointer kaudio keeps filled.
+ *
+ * 1 is the minimum that is CORRECT (see kaudio_thread): it fills the period the
+ * engine will play next. It is also the minimum that is correct only if kaudio
+ * always runs within one period of its interrupt, which under QEMU TCG with
+ * four cores and a 100 Hz tick it does not -- a 21 ms period against a 10 ms
+ * tick leaves no margin at all. 3 gives 63 ms of slack out of a 170 ms buffer,
+ * still leaving 4 periods of unplayed audio behind the write point, and costs
+ * 63 ms of latency that nothing here is trying to be under.
+ *
+ * If this is ever raised to within one of `periods`, the cap in kaudio_thread
+ * is what stops it wrapping onto unplayed audio -- not this constant. */
+#define SND_FILL_LEAD   3
+
 struct snd_stream {
     int              used;
     void            *owner;          /* struct proc *, or NULL for a kernel caller */
@@ -238,10 +252,59 @@ static void kaudio_thread(void)
         uint64_t fl = spin_lock_irqsave(&g_snd_lock);
         reap_closed();
         if (g_dev && g_running) {
-            int16_t *period = (int16_t *)(g_dev->ring +
-                                          (g_fill % g_dev->periods) * g_dev->period_bytes);
-            mix_period(period);
-            g_fill++;
+            /* WHERE THE ENGINE IS, derived from the interrupt count rather
+             * than from a position register. The IOC for period p fires when
+             * the engine has FINISHED p, at which instant g_periods_done
+             * becomes p+1 and the engine is already playing period p+1. So the
+             * earliest index it is safe to write is p+2 == g_periods_done + 1.
+             *
+             * The original code seeded g_fill = 1 and filled exactly one period
+             * per interrupt, which made the fill index equal g_periods_done --
+             * THE PERIOD CURRENTLY UNDER THE PLAYBACK POINTER. Every refill
+             * raced the engine, and whatever part of the period the engine had
+             * already passed went out as the silence that was there before.
+             * That is the 2631-frames-in-47637 of dropped ramp indices in the
+             * captured WAV: not a decoder fault, not a lost interrupt, an
+             * off-by-one in the lead. */
+            uint64_t done = g_periods_done;
+            unsigned earliest = (unsigned)done + 1;
+
+            /* Fell behind (a late wake under TCG, or several IOCs coalesced).
+             * The periods between g_fill and `earliest` are already history --
+             * writing them now would put samples into memory the engine has
+             * passed, so they are SKIPPED and counted, and the stream carries
+             * on from the present. Recovering rather than trying to catch up
+             * from behind is what stops a late refill becoming a permanent lag.
+             */
+            if (g_fill < earliest) {
+                g_dev_underruns += earliest - g_fill;
+                g_fill = earliest;
+            }
+
+            /* Fill FORWARD to the lead, which may be several periods on the
+             * first interrupt or after a stall. Bounded by the ring: never
+             * write past g_periods_done + periods, which would clobber a
+             * period the engine has not played yet. */
+            unsigned limit = (unsigned)done + SND_FILL_LEAD;
+            unsigned cap   = (unsigned)done + g_dev->periods - 1;
+            if (limit > cap) limit = cap;
+
+            while (g_fill <= limit) {
+                int16_t *period = (int16_t *)(g_dev->ring +
+                                  (g_fill % g_dev->periods) * g_dev->period_bytes);
+                mix_period(period);
+                g_fill++;
+            }
+
+            /* THE SILENCE GUARANTEE. One period past the lead is zeroed, so a
+             * kaudio that never gets to run again plays silence rather than
+             * whatever was written into that slot `periods` ago. Without this,
+             * a stall produces the last few periods on repeat -- which sounds
+             * like a stutter, is not silence, and passes any "is it still
+             * playing" check. The engine is g_fill - done >= SND_FILL_LEAD
+             * periods away from this slot, so zeroing it races nothing. */
+            memset(g_dev->ring + (g_fill % g_dev->periods) * g_dev->period_bytes,
+                   0, g_dev->period_bytes);
         }
         spin_unlock_irqrestore(&g_snd_lock, fl);
 
@@ -254,6 +317,77 @@ static void kaudio_thread(void)
 
 /* ----------------------------------------------------------------- init -- */
 
+/* Start the DMA engine and the kaudio thread. SEPARATE FROM snd_init(), and
+ * that separation is the whole fix for a boot that did not complete.
+ *
+ * snd_init() is called from a driver's probe(), and hda.c used to carry a
+ * comment claiming "dev_probe_all() runs late enough in boot that
+ * thread_create() is available". It is not. kmain.c calls dev_probe_all() and
+ * only afterwards wm_run(), and it is wm_run() that calls sched_init() -- so at
+ * probe time the run ring (g_ring in sched.c) is still NULL. thread_create()
+ * then read g_ring->next through a NULL g_ring, which does NOT fault, because
+ * the low 1 GiB is identity-mapped with huge pages: it quietly returned the
+ * garbage sitting at physical address 8 (the real-mode interrupt vector table)
+ * and the next store went to a non-canonical address. That is the
+ * "#GP vector 13, error=0, cr2=0, cur=0x0" immediately after a perfectly
+ * correct [snd] boot line, and it killed the boot every time a card was
+ * present -- which is why the card enumerated, the report line was exactly
+ * right, and the capture was silence.
+ *
+ * Nothing here needs to happen at probe time. Deferring costs nothing and buys
+ * the property that a machine nobody plays audio on never creates the thread
+ * or runs the DMA engine at all.
+ *
+ * Idempotent, and called with g_snd_lock NOT held (thread_create takes
+ * g_sched_lock, and the ordering the rest of the kernel uses is
+ * g_sched_lock inside nothing). */
+static int g_engine_up;
+
+static int snd_engine_start(int quiet)
+{
+    if (g_engine_up) return 1;
+    if (!g_dev) return 0;
+
+    /* The guard that makes this safe wherever it is called from. Before
+     * sched_init() there is no current thread on any CPU, and creating one is
+     * the thing that faults. At probe time this is the expected path and says
+     * so; anywhere else it is a diagnosis rather than a silent no-sound. */
+    if (!sched_current_thread()) {
+        if (!quiet)
+            kprintf("[snd] engine start refused: the scheduler is not up yet\n");
+        return 0;
+    }
+
+    /* Fill the WHOLE ring with silence before the engine is allowed to run, so
+     * a card that starts playing the instant it is told to plays silence rather
+     * than whatever was in that RAM. */
+    memset(g_dev->ring, 0, (size_t)g_dev->periods * g_dev->period_bytes);
+
+    if (g_dev->start && g_dev->start(g_dev) != 0) {
+        kprintf("[snd] %s: DMA engine would not start -- audio disabled\n", g_dev->name);
+        g_dev = 0;
+        return 0;
+    }
+    /* The engine is about to start at period 0 and the whole ring is silent.
+     * kaudio's first wake resyncs this to the real playback position anyway
+     * (g_periods_done + 1), so the only thing that matters here is that it is
+     * not AHEAD of the engine -- 1 is the earliest safe value at start. */
+    g_fill = 1;
+    g_running = 1;
+    g_engine_up = 1;
+
+    thread_create(kaudio_thread, "kaudio");
+    kprintf("[snd] engine running: kaudio started, DMA at %u Hz\n", g_dev->rate);
+    return 1;
+}
+
+/* Called from the first operation that actually needs sound to be coming out.
+ * Declared in snd.h so snd.c's syscall entry can use it too. */
+int snd_engine_ensure(void)
+{
+    return snd_engine_start(0);
+}
+
 void snd_init(void)
 {
     unsigned dev_ch, in_frames;
@@ -261,7 +395,11 @@ void snd_init(void)
     semaphore_init(&g_period, 0);
     for (int i = 0; i < SND_MAX_STREAMS; i++) waitq_init(&g_str[i].wq);
 
-    snd_report();
+    /* _once, not snd_report(): this call is what marks the report as done, so
+     * the first audio syscall's snd_report_once() stays quiet. Calling the bare
+     * form here printed the whole boot line twice on every machine that had a
+     * card -- once at probe, once at the first SYS_SND_*. */
+    snd_report_once();
     if (!g_dev) return;      /* no card: nothing allocated, no thread, no cost */
 
     dev_ch = g_dev->channels;
@@ -277,21 +415,11 @@ void snd_init(void)
         return;
     }
 
-    /* Fill the WHOLE ring with silence before the engine is allowed to run, so
-     * a card that starts playing the instant it is told to plays silence rather
-     * than whatever was in that RAM. */
-    memset(g_dev->ring, 0, (size_t)g_dev->periods * g_dev->period_bytes);
-
-    if (g_dev->start && g_dev->start(g_dev) != 0) {
-        kprintf("[snd] %s: DMA engine would not start -- audio disabled\n", g_dev->name);
-        g_dev = 0;
-        return;
-    }
-    /* One period of lead: the engine is at 0, we fill 1. */
-    g_fill = 1;
-    g_running = 1;
-
-    thread_create(kaudio_thread, "kaudio");
+    /* Everything above is allocation and is safe at probe time. The engine and
+     * its thread are not; they start on first use. If some future boot order
+     * probes after sched_init(), this call succeeds here and the deferral never
+     * happens -- so the behaviour is "as early as is safe", not "always late". */
+    snd_engine_start(1);   /* quiet: at probe time deferral is the design */
 }
 
 void snd_report(void)
@@ -332,6 +460,10 @@ int snd_stream_open(void *owner, const struct logit_sndfmt *f)
     uint64_t fl;
 
     if (!g_dev) return SND_E_NODEV;
+    /* First stream on this boot is what starts the DMA engine and kaudio; see
+     * snd_engine_start(). Before the format checks, so a caller that opens with
+     * a bad format does not leave the engine half-started. */
+    if (!snd_engine_ensure()) return SND_E_NODEV;
     if (!snd_fmt_ok(f->rate, f->channels, f->format)) return SND_E_FORMAT;
     /* An app rate more than SND_MAX_RATIO from the card's would need more input
      * per period than the scratch holds. Refuse it rather than truncate, which

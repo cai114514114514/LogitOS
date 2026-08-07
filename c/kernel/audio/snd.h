@@ -116,6 +116,17 @@ int  snd_present(void);
  * nothing on it. */
 void snd_init(void);
 
+/* Start the DMA engine and the kaudio thread if they are not already running.
+ * Returns 1 if sound can now come out, 0 if there is no card or the scheduler
+ * is not up yet.
+ *
+ * This is separate from snd_init() because snd_init() runs from a driver's
+ * probe(), and dev_probe_all() happens BEFORE sched_init() -- so thread_create()
+ * is not available there, and calling it anyway killed the boot on every
+ * machine that had a sound card. Idempotent; called from the first stream open.
+ * See the long comment on snd_engine_start() in mixer.c. */
+int  snd_engine_ensure(void);
+
 /* One line at boot naming the driver, the codec, the rate/format, and the
  * buffering -- the "130 roots, 0 skipped" of audio. On unfamiliar hardware
  * this line is the whole diagnosis, so it prints on the no-card path too. */
