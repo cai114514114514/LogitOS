@@ -607,7 +607,11 @@ static int pfc_hit(const char *origin, const char *method, int creds,
 
 #define WF_MAX        8            /* concurrent requests; TCP has 32 slots total */
 #define WF_HOPS       10
-#define WF_TIMEOUT 30000ull        /* ms per hop, connect included */
+/* An IDLE timeout, not a total one, and the difference is the whole feature: a
+ * chat stream is a connection that sits open for minutes and produces a token
+ * every few seconds.  A total budget would cut the conversation off mid-answer
+ * at exactly the 30-second mark and look like a server fault. */
+#define WF_TIMEOUT 30000ull        /* ms since the last byte; connect included */
 #define WF_STEPS      8            /* h1_conn_pump calls per frame: 8 x 4 KiB */
 /* An SSE response never completes, so there is no "finished" moment at which
  * to stop reading -- the only thing that keeps a fast producer from growing the
@@ -1189,7 +1193,11 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
 
     for (int i = 0; i < WF_STEPS; i++) {
         if (f->state == WF_FREE) return 1;    /* released underneath us */
+        int64_t before = f->conn.resp.body_seen + f->conn.resp.hdr_bytes;
         int st = h1_conn_pump(&f->conn);
+        /* Any progress re-arms the idle timeout. */
+        if (f->conn.resp.body_seen + f->conn.resp.hdr_bytes != before)
+            f->deadline = now_ms() + WF_TIMEOUT;
         if (st == H1_C_ERROR) {
             fetch_fail(ctx, f, h1_strerror(f->conn.err), "TypeError");
             return 1;

@@ -15,6 +15,11 @@
 #include "bytecode/bytecode.h"
 #include "bytecode/opcodes.h"
 #include "stylesheet.h"
+/* css_select_ctx_media_matches (LogitOS) parses a query with the same entry
+ * point sheet media attributes use, and needs the interned property strings to
+ * hand it. */
+#include "parse/mq.h"
+#include "parse/propstrings.h"
 #include "select/arena.h"
 #include "select/calc.h"
 #include "select/computed.h"
@@ -453,6 +458,58 @@ css_error css_select_ctx_get_sheet(css_select_ctx *ctx, uint32_t index,
 		return CSS_INVALID;
 
 	*sheet = ctx->sheets[index].sheet;
+
+	return CSS_OK;
+}
+
+/**
+ * Evaluate a media query string against a media spec.
+ *
+ * LogitOS addition -- see the contract in <libcss/select.h>. The whole point is
+ * that this body contains no matching logic of its own: it is the same
+ * css_parse_media_query that css_select_ctx_insert_sheet calls for a sheet's
+ * media attribute, followed by the same mq__list_match that
+ * mq_rule_good_for_media calls for an @media block. A caller outside LibCSS
+ * that needs the answer therefore gets LibCSS's answer, not a second opinion.
+ */
+css_error css_select_ctx_media_matches(css_select_ctx *ctx,
+		const char *query, size_t len,
+		const css_unit_ctx *unit_ctx, const css_media *media,
+		bool *match)
+{
+	lwc_string **strings;
+	css_mq_query *mq = NULL;
+	css_error error;
+
+	if (ctx == NULL || unit_ctx == NULL || media == NULL || match == NULL)
+		return CSS_BADPARM;
+
+	/* An absent query is "all". */
+	if (query == NULL || len == 0) {
+		*match = true;
+		return CSS_OK;
+	}
+
+	error = css__propstrings_get(&strings);
+	if (error != CSS_OK)
+		return error;
+
+	error = css_parse_media_query(strings, (const uint8_t *) query, len, &mq);
+	if (error != CSS_OK) {
+		/* A query we cannot parse matches nothing. Reporting CSS_OK is
+		 * deliberate: the caller asked a yes/no question and "no" is a
+		 * usable answer, whereas an error code invites the caller to
+		 * invent its own fallback -- which is the divergence this
+		 * function exists to prevent. */
+		css__propstrings_unref();
+		*match = false;
+		return CSS_OK;
+	}
+
+	*match = mq__list_match(mq, unit_ctx, media, &ctx->str);
+
+	css__mq_query_destroy(mq);
+	css__propstrings_unref();
 
 	return CSS_OK;
 }

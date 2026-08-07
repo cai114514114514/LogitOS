@@ -190,8 +190,38 @@ void css_init(void);                            /* build the UA default styleshe
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */
 void css_viewport(int w, int h);
-/* Current viewport width in px (for css_extra's naive @media gating). */
+/* Current viewport width in px. */
 int  css_media_width(void);
+
+/* ---------------- the ONE media-query evaluator ----------------
+ *
+ * 1 if `query` ("(prefers-color-scheme: dark)", "screen and (min-width:64rem)",
+ * "" = all) holds for the viewport and preferences this document is being
+ * rendered with. `len` < 0 means NUL-terminated.
+ *
+ * This is LibCSS's own parser and matcher, reached through the
+ * css_select_ctx_media_matches patch -- byte for byte the test that decides
+ * whether an @media block's rules take part in the cascade. Anything else in
+ * the browser that has to answer the same question calls THIS; it must not
+ * grow a scanner of its own.
+ *
+ * That is not tidiness. A second evaluator does not fail by being approximate,
+ * it fails by DISAGREEING: css_vars.c used to collect custom properties with a
+ * flat last-wins text scan that could not see @media at all, so wikipedia's
+ * `@media (prefers-color-scheme: dark) { :root { --background-color-base:
+ * #101418 } }` overwrote the light value for every reader, and the whole page
+ * rendered dark while LibCSS -- correctly -- had declined that very block.
+ * Three answers to one question is two too many.
+ *
+ * KNOWN REMAINING DIVERGENCE, and it is not mine to close: js_webapi.c ships a
+ * matchMedia() with its own evaluator. It should call this. */
+int  css_media_matches(const char *query, int len);
+
+/* The colour scheme @media (prefers-color-scheme: ...) is evaluated against.
+ * Default light; there is no user setting yet, and "light" is what a UA with no
+ * preference reports. Set BEFORE css_apply -- it changes which rules cascade. */
+void css_set_color_scheme(int dark);
+int  css_color_scheme(void);
 /* Post-pass for properties our LibCSS doesn't know (border-radius): scans the
  * author sheet's simple selectors + inline style= attrs and patches node->style
  * after css_apply. */
@@ -247,5 +277,13 @@ void css_stats(int *styled, int *cache_hits);
  * its --name:value declarations, writing the expanded sheet to `out`. Returns
  * the expanded length. (Our LibCSS predates native var() support.) */
 int  css_expand_vars(const char *in, int inlen, char *out, int outmax);
+
+/* Test seam into the last css_expand_vars: how many distinct custom properties
+ * it collected, and the value the CASCADE chose for one of them (`name` with or
+ * without the leading `--`; NULL if it was never declared, or was declared only
+ * inside an @media block that does not hold). Asserting on this is how a test
+ * distinguishes "the right value won" from "some value was substituted". */
+int  css_vars_count(void);
+const char *css_vars_value(const char *name);
 
 #endif /* LOGIT_CSS_H */

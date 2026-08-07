@@ -1905,3 +1905,7 @@ clean:
 # Makefile change at all -- C_SRC globs c/drivers and it registers itself
 # through the device model's linker section.
 -include tests/usb.mk
+
+# Text shaping + bidi test targets (test-bidi, test-shape, test-text and
+# their negative controls). Same reason, same shape as the fragments above.
+-include tests/text.mk

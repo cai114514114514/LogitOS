@@ -360,35 +360,20 @@ static void walk_inline(struct node *n)
 
 /* ---- @media gating ----
  * Pre-scan the sheet for @media blocks (brace-matched, so @keyframes /
- * @font-face nesting can't confuse it); each block records its span and
- * whether its min/max-width conditions hold for the current viewport. */
+ * @font-face nesting can't confuse it); each block records its span and whether
+ * its query holds.
+ *
+ * The verdict comes from css_media_matches(), which is LibCSS's own parser and
+ * matcher. This file used to carry a scanner that understood `min-width:` and
+ * `max-width:` and silently answered "matches" to everything else -- so
+ * `@media (prefers-color-scheme: dark)` was a match here while LibCSS, one call
+ * later, correctly declined it, and the two disagreed about the same block of
+ * the same sheet. Any place in the browser that needs this answer asks for it;
+ * nowhere computes it twice. */
 #define MAX_MREGION 512
 struct mregion { int start, end, active; };
 static struct mregion g_mr[MAX_MREGION];
 static int g_nmr;
-
-/* 1 if every min-width/max-width in the header holds (no width terms = match,
- * e.g. "@media screen"). Values in px, one decimal digit ("1299.9px"). */
-static int media_eval(const char *h, int len)
-{
-    int vw10 = css_media_width() * 10, ok = 1, terms = 0;
-    for (int i = 0; i + 6 < len && ok; i++) {
-        int is_min = 0, is_max = 0;
-        if (i + 10 <= len && !memcmp(h + i, "min-width:", 10)) { is_min = 1; i += 10; }
-        else if (i + 10 <= len && !memcmp(h + i, "max-width:", 10)) { is_max = 1; i += 10; }
-        else continue;
-        int n = 0, frac = 0, any = 0;
-        for (; i < len && h[i] >= '0' && h[i] <= '9'; i++) { n = n * 10 + (h[i] - '0'); any = 1; }
-        if (i + 1 < len && h[i] == '.' && h[i+1] >= '0' && h[i+1] <= '9') { frac = h[i+1] - '0'; i++; }
-        if (!any) continue;
-        terms++;
-        int v10 = n * 10 + frac;
-        if (is_min && vw10 < v10) ok = 0;
-        if (is_max && vw10 > v10) ok = 0;
-    }
-    (void)terms;
-    return ok;
-}
 
 static void media_scan(const char *css, int len)
 {
@@ -403,7 +388,7 @@ static void media_scan(const char *css, int len)
                 if (g_nmr < MAX_MREGION && nm < 64) {
                     g_mr[g_nmr].start = b + 1;
                     g_mr[g_nmr].end = len;      /* unterminated: runs to EOF */
-                    g_mr[g_nmr].active = media_eval(css + i + 6, b - (i + 6));
+                    g_mr[g_nmr].active = css_media_matches(css + i + 6, b - (i + 6));
                     mdepths[nm++] = depth + 1;
                     g_nmr++;
                 }

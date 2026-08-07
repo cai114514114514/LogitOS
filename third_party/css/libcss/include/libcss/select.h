@@ -215,6 +215,38 @@ css_error css_select_ctx_count_sheets(css_select_ctx *ctx, uint32_t *count);
 css_error css_select_ctx_get_sheet(css_select_ctx *ctx, uint32_t index,
 		const css_stylesheet **sheet);
 
+/**
+ * LogitOS addition: evaluate a media query string against a media spec, using
+ * exactly the parser and the matcher that gate @media rules during selection.
+ *
+ * The engine embedding LibCSS inevitably grows other places that must answer
+ * "does this query hold?" -- a var() pre-pass that has to skip declarations in
+ * a non-matching @media block, a matchMedia() binding a script can call. Each
+ * one that re-implements the test is a second opinion, and the interesting
+ * failure is not that it is approximate but that it DISAGREES: a stylesheet
+ * whose dark theme LibCSS correctly declined can still be applied by a
+ * hand-rolled scanner that only knows how to look for `min-width`.
+ *
+ * So the query is parsed by css_parse_media_query and matched by mq__list_match
+ * -- the same two calls css_select_ctx_insert_sheet and mq_rule_good_for_media
+ * make. There is one implementation and callers borrow it.
+ *
+ * \param ctx       Selection context (supplies the interned feature-name strings)
+ * \param query     Media query text, e.g. "(prefers-color-scheme: dark)". A NULL
+ *                  or empty query is "all", which matches.
+ * \param len       Length of \a query in bytes
+ * \param unit_ctx  Unit conversion context (for length-valued features)
+ * \param media     The media spec to test against
+ * \param match     Pointer to location to receive the result
+ * \return CSS_OK on success, appropriate error otherwise. On a query that does
+ *         not parse, *match is false and CSS_OK is returned: an unintelligible
+ *         query matches nothing, which is what a browser does with one too.
+ */
+css_error css_select_ctx_media_matches(css_select_ctx *ctx,
+		const char *query, size_t len,
+		const css_unit_ctx *unit_ctx, const css_media *media,
+		bool *match);
+
 css_error css_select_default_style(css_select_ctx *ctx,
 		css_select_handler *handler, void *pw,
 		css_computed_style **style);

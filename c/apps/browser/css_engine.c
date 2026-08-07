@@ -478,6 +478,20 @@ static bool g_allow_quirks;     /* the document being styled is in quirks mode:
 static css_unit_ctx g_unit;
 static css_media g_media;
 static int g_vw, g_vh;          /* last viewport set via css_viewport (0 = never) */
+/* The colour scheme this document is being rendered for. Interned once and
+ * pointed at by g_media.prefers_color_scheme.
+ *
+ * It must be a real string, not NULL. LibCSS's mq matcher compares the query's
+ * ident against media->prefers_color_scheme, and with NULL BOTH
+ * `(prefers-color-scheme: dark)` and `(prefers-color-scheme: light)` fail --
+ * which is not "no preference", it is "neither theme". A stylesheet that puts
+ * its light theme inside `@media (prefers-color-scheme: light)` (increasingly
+ * common, and how a `light-dark()`-era sheet is written) then gets no theme at
+ * all. Defaulting to "light" is the honest answer for a UA with no user setting
+ * and it makes exactly one of the two blocks match, which is the shape every
+ * such stylesheet is written against. */
+static lwc_string *g_scheme;
+static int g_scheme_dark;
 
 static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_string **abs)
 { (void)pw; (void)base; *abs = lwc_string_ref(rel); return CSS_OK; }
@@ -576,6 +590,7 @@ void css_init(void)
     g_media.type = CSS_MEDIA_SCREEN;
     g_media.width  = INTTOFIX(vw);
     g_media.height = INTTOFIX(vh);
+    css_set_color_scheme(g_scheme_dark);
 
     memset(&g_unit, 0, sizeof g_unit);
     g_unit.viewport_width  = INTTOFIX(vw);
@@ -612,6 +627,40 @@ void css_viewport(int w, int h)
     g_media.height = INTTOFIX(h);
     g_unit.viewport_width  = INTTOFIX(w);
     g_unit.viewport_height = INTTOFIX(h);
+}
+
+void css_set_color_scheme(int dark)
+{
+    g_scheme_dark = dark ? 1 : 0;
+    if (g_scheme) { lwc_string_unref(g_scheme); g_scheme = NULL; }
+    const char *s = g_scheme_dark ? "dark" : "light";
+    if (lwc_intern_string(s, g_scheme_dark ? 4 : 5, &g_scheme) != lwc_error_ok)
+        g_scheme = NULL;
+    g_media.prefers_color_scheme = g_scheme;
+}
+
+int css_color_scheme(void) { return g_scheme_dark; }
+
+int css_media_matches(const char *query, int len)
+{
+    if (!query) return 1;
+    if (len < 0) { len = 0; while (query[len]) len++; }
+    /* Trim: an @media prelude arrives with the whitespace that separated it
+     * from the '{', and LibCSS's query parser is happy with that -- but an
+     * all-whitespace prelude must read as "all", not as a parse failure. */
+    while (len > 0 && (*query == ' ' || *query == '\t' || *query == '\n' ||
+                       *query == '\r' || *query == '\f')) { query++; len--; }
+    while (len > 0 && (query[len-1] == ' ' || query[len-1] == '\t' ||
+                       query[len-1] == '\n' || query[len-1] == '\r' ||
+                       query[len-1] == '\f')) len--;
+    if (len == 0) return 1;
+    if (!g_ctx) css_init();
+    if (!g_ctx) return 1;
+    bool m = false;
+    if (css_select_ctx_media_matches(g_ctx, query, (size_t)len,
+                                     &g_unit, &g_media, &m) != CSS_OK)
+        return 1;
+    return m ? 1 : 0;
 }
 
 int css_media_width(void) { return g_vw ? g_vw : 760; }

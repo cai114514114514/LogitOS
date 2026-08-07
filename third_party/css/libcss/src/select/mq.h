@@ -177,7 +177,24 @@ static inline bool mq_match_condition(
 
 	for (uint32_t i = 0; i < cond->nparts; i++) {
 		bool part_matched;
-		if (cond->parts[i]->type == CSS_MQ_FEATURE) {
+		if (cond->parts[i] == NULL) {
+			/* <general-enclosed>: syntax inside the parentheses that
+			 * is well-formed but means nothing to this UA --
+			 * `(min-widtcalc(640px - 1px))`, a typo'd feature name
+			 * that lexed as a FUNCTION, or a feature from a level of
+			 * the spec we do not implement.
+			 *
+			 * mq_parse_media_in_parens accepts it and reports it as
+			 * a NULL part, on purpose: the production exists so a
+			 * future feature does not invalidate the whole query.
+			 * The spec says it evaluates to FALSE. Reading through
+			 * the NULL instead was a crash on any page whose
+			 * stylesheet contained one -- reachable from ordinary
+			 * @media parsing via mq_rule_good_for_media, not only
+			 * from css_select_ctx_media_matches. Found by
+			 * tests/unit/css_vars_fuzz.c. */
+			part_matched = false;
+		} else if (cond->parts[i]->type == CSS_MQ_FEATURE) {
 			part_matched = mq_match_feature(
 					cond->parts[i]->data.feat,
 					unit_ctx, media, str);
