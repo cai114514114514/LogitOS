@@ -274,4 +274,156 @@ struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
  * kernel decodes the image (PNG/GIF) and fills rgba + w/h (w*h*4 must be <= max). */
 struct logit_imgreq { const char *path; unsigned char *rgba; int max; int w, h; };
 
+/* ---- M28: the time subsystem ----------------------------------------------
+ *
+ * What userland had before this: SYS_GET_TIME (the CMOS wall clock, in whole
+ * SECONDS, settable, so it cannot measure an interval) and SYS_MONOTONIC_MS
+ * (milliseconds since boot, but derived from the 100 Hz tick, so it steps in
+ * tens). Both stay, byte for byte -- SYS_MONOTONIC_MS still advances in 10 ms
+ * steps and run-clock-test.sh still asserts it. These three are the honest
+ * surface underneath them.
+ *
+ * The clock ids are POSIX's numbers on purpose, so mini-libc's clock_gettime()
+ * passes its argument straight through instead of translating -- a translation
+ * table is a second place for the two sides to disagree. */
+#define SYS_CLOCK_GETTIME 83 /* (clock_id, struct logit_timespec*) -> 0, or -1 on a bad id */
+#define SYS_NANOSLEEP     84 /* (const struct logit_timespec *req, struct logit_timespec *rem) -> 0 */
+#define SYS_CLOCK_INFO    85 /* (struct logit_clockinfo*, set_source) -> 0; set_source<0 = query only */
+
+#define LOGIT_CLOCK_REALTIME            0  /* Unix epoch ns; jumps if the wall clock is set */
+#define LOGIT_CLOCK_MONOTONIC           1  /* since boot; NEVER backwards. Subtract this one. */
+#define LOGIT_CLOCK_PROCESS_CPUTIME_ID  2  /* CPU consumed by this process (user+sys) */
+#define LOGIT_CLOCK_THREAD_CPUTIME_ID   3
+#define LOGIT_CLOCK_MONOTONIC_RAW       4  /* unclamped source reading -- diagnostics only */
+#define LOGIT_CLOCK_BOOTTIME            7  /* == MONOTONIC (LogitOS never suspends) */
+
+/* POSIX layout exactly: mini-libc's struct timespec is `long tv_sec; long
+ * tv_nsec`, and both sides are LP64, so the kernel can fill a user timespec
+ * without a conversion step. */
+struct logit_timespec { long tv_sec; long tv_nsec; };
+
+/* Filled by SYS_CLOCK_INFO. This is the machine-readable form of the line the
+ * kernel prints at boot; when time is wrong on unfamiliar hardware, `source`
+ * and `hz` are the entire diagnosis.
+ *
+ * `set_source` (the second syscall argument, not a field) switches the live
+ * clocksource: 0 = TSC, 1 = PIT, <0 = do not switch. The monotonic clock is
+ * continuous across the switch, which is what makes it safe to exercise the
+ * fallback on a running system instead of trusting that it would work. */
+struct logit_clockinfo {
+    int      source;             /* 0 = tsc, 1 = pit */
+    int      nsources;
+    unsigned long long hz;       /* calibrated frequency of the live source */
+    unsigned long long res_ns;   /* smallest step it can report */
+    unsigned long long mono_ns;
+    unsigned long long real_ns;
+    unsigned long long reads;        /* monotonic reads since boot */
+    unsigned long long backsteps;    /* times the cross-core clamp had to intervene */
+    unsigned long long backstep_max_ns;
+    unsigned long long timers_queued;
+    unsigned long long timers_fired;
+    unsigned int       cores_seen;   /* bitmap of cores that have read the clock */
+    char               name[16];     /* "tsc" / "pit" */
+};
+
+/* ---- M29: audio ------------------------------------------------------------
+ *
+ * The shape of this ABI is set by its first real consumer, which is not a GUI
+ * app but a DECODER: something that produces PCM in bursts, at whatever rate
+ * the file happens to be in, and must never stall the machine while it waits
+ * for the card to drain. So:
+ *
+ *   - You declare YOUR format at open time, not the card's. The kernel
+ *     converts and resamples (see c/kernel/audio/pcm.c). A decoder that emits
+ *     44100 Hz mono float never has to know the card is running 48000 Hz
+ *     stereo s16, and never has to carry a resampler of its own.
+ *   - SYS_SND_WRITE takes what fits and TELLS YOU HOW MUCH. It is a short-write
+ *     interface, like a socket, because that is the only shape that lets a
+ *     decoder stay in control of its own loop. By default a write with no room
+ *     PARKS the calling thread on a wait queue until the card drains a period
+ *     (it does not spin, and it does not hold the machine); open with
+ *     SND_F_NONBLOCK and it returns 0 instead.
+ *   - SYS_SND_AVAIL is the "how much room" query, so a decoder can decode
+ *     exactly as much as it can place and no more.
+ *
+ * The canonical decoder loop:
+ *
+ *      int h = snd(SYS_SND_OPEN, &fmt);
+ *      while (decode_frame(&pcm, &len)) {
+ *          int off = 0;
+ *          while (off < len) {
+ *              int k = snd(SYS_SND_WRITE, h, pcm + off, len - off);
+ *              if (k < 0) goto fail;          // device went away
+ *              off += k;                      // k==0 only if SND_F_NONBLOCK
+ *          }
+ *      }
+ *      snd(SYS_SND_CLOSE, h, 1);              // 1 = drain what is queued
+ *
+ * More than one stream may be open at once; the kernel mixes them. Closing one
+ * does not disturb the others. */
+#define SYS_SND_INFO   86 /* (struct logit_sndinfo*) -> 1 if a card is present, 0 if none */
+#define SYS_SND_OPEN   87 /* (struct logit_sndfmt*) -> stream handle >= 0, or SND_E_* */
+#define SYS_SND_WRITE  88 /* (h, buf, bytes) -> bytes ACCEPTED (may be short), or SND_E_* */
+#define SYS_SND_AVAIL  89 /* (h) -> bytes of room in the stream's ring right now, or SND_E_* */
+#define SYS_SND_CLOSE  90 /* (h, drain) -> 0; drain != 0 plays out what is queued first */
+#define SYS_SND_STATE  91 /* (h, struct logit_sndstate*) -> 0, or SND_E_* */
+
+/* Sample formats. S16 is the one every path supports and the one a decoder
+ * should emit unless it has a reason not to; the rest are converted on write. */
+#define SND_FMT_S16  0   /* signed 16-bit little-endian (native everywhere) */
+#define SND_FMT_U8   1   /* unsigned 8-bit, 0x80 = silence */
+#define SND_FMT_S32  2   /* signed 32-bit little-endian */
+#define SND_FMT_F32  3   /* IEEE float, nominal -1.0 .. +1.0, clamped */
+
+#define SND_F_NONBLOCK 1u  /* SYS_SND_WRITE returns 0 rather than parking */
+
+/* Negative returns. Distinct values because "no card" and "bad format" call for
+ * completely different behaviour in a player, and collapsing them to -1 is how
+ * a decoder ends up reporting a missing speaker as a corrupt file. */
+#define SND_E_NODEV   -1  /* no sound card was found at boot */
+#define SND_E_FORMAT  -2  /* rate/channels/format cannot be served */
+#define SND_E_NOMEM   -3  /* no free stream slot, or the ring would not fit */
+#define SND_E_BADH    -4  /* not an open handle of this process */
+#define SND_E_FAULT   -5  /* the buffer pointer is not mapped in this process */
+
+/* Stream states (logit_sndstate.state). */
+#define SND_S_RUNNING 0
+#define SND_S_DRAINING 1
+#define SND_S_CLOSED  2
+
+struct logit_sndfmt {
+    unsigned int   rate;       /* Hz, any value 4000..192000; resampled to the card's */
+    unsigned short channels;   /* 1 = mono (fanned to every output channel), 2 = stereo */
+    unsigned short format;     /* SND_FMT_* */
+    unsigned int   buffer_ms;  /* wanted ring size in ms; 0 = default. Clamped, see info */
+    unsigned int   flags;      /* SND_F_* */
+};
+
+/* What the machine actually has. This is the machine-readable form of the line
+ * the kernel prints at boot -- on unfamiliar hardware that line is the whole
+ * diagnosis, so it names the driver, the codec the card reported, and the exact
+ * buffering, not just "audio ok". */
+struct logit_sndinfo {
+    char           driver[16];      /* "hda", "ac97", or "" when there is no card */
+    char           codec[32];       /* what the card reported about itself */
+    unsigned int   rate;            /* the rate the DMA engine is actually running */
+    unsigned short channels;
+    unsigned short format;          /* SND_FMT_* the hardware consumes natively */
+    unsigned int   period_bytes;    /* DMA period: the granularity of one refill */
+    unsigned int   periods;         /* periods in the hardware ring */
+    unsigned int   streams_max;     /* how many mixer streams can coexist */
+    unsigned int   streams_open;
+    unsigned int   underruns;       /* device-wide: periods that went out silent */
+    unsigned int   irq_mode;        /* 0 none/polled, 1 intx, 2 msi, 3 msi-x */
+};
+
+struct logit_sndstate {
+    unsigned long long frames_written;  /* frames this stream has handed the kernel */
+    unsigned long long frames_played;   /* frames the card has consumed of them */
+    unsigned int       avail_bytes;     /* room right now, in YOUR format's bytes */
+    unsigned int       ring_bytes;      /* total ring, in YOUR format's bytes */
+    unsigned int       underruns;       /* times this stream ran dry while running */
+    unsigned int       state;           /* SND_S_* */
+};
+
 #endif /* LOGIT_ABI_H */

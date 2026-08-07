@@ -162,4 +162,78 @@ static inline int screen_w(void)  { return screen_info(SCREEN_W); }
 static inline int screen_h(void)  { return screen_info(SCREEN_H); }
 static inline int ui_scale(void)  { return screen_info(SCREEN_SCALE); }
 
+/* --- M28 time -------------------------------------------------------------
+ * monotonic_ms() above still steps in 10 ms because its ABI says so. These read
+ * the real clock: nanoseconds, from a calibrated TSC when the machine has one.
+ *
+ * Which id to pass:
+ *   LOGIT_CLOCK_MONOTONIC   intervals, timeouts, frame pacing. Never backwards.
+ *   LOGIT_CLOCK_REALTIME    "what time is it", file stamps, certificate `now`.
+ *                           Jumps when the wall clock is set -- do not subtract.
+ *   LOGIT_CLOCK_*_CPUTIME_ID  CPU actually consumed, not elapsed. Sampled at the
+ *                           tick, so it is 10 ms granular; the others are not. */
+static inline int clock_gettime_ns(int clock_id, struct logit_timespec *ts)
+{ return (int)_sys(SYS_CLOCK_GETTIME, clock_id, (long)ts, 0); }
+
+static inline unsigned long long monotonic_ns(void)
+{ struct logit_timespec ts = { 0, 0 };
+  if (clock_gettime_ns(LOGIT_CLOCK_MONOTONIC, &ts) < 0) return 0;
+  return (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec; }
+
+/* Sleep. Really sleeps: the core idles and every other thread runs, instead of
+ * the poll-the-clock-and-yield loop /bin/sleep has to do today. */
+static inline int sys_nanosleep(long sec, long nsec)
+{ struct logit_timespec req = { sec, nsec }; return (int)_sys(SYS_NANOSLEEP, (long)&req, 0, 0); }
+static inline int sys_sleep_ms(long ms)
+{ return sys_nanosleep(ms / 1000, (ms % 1000) * 1000000L); }
+
+/* Which clocksource is live, how fast it was calibrated, and how often the
+ * cross-core monotonicity clamp had to intervene. `set_source` switches it
+ * (0 = tsc, 1 = pit, -1 = query only). */
+static inline int clock_info(struct logit_clockinfo *ci, int set_source)
+{ return (int)_sys(SYS_CLOCK_INFO, (long)ci, set_source, 0); }
+
+/* --- M29 audio -------------------------------------------------------------
+ * See the long note in include/abi/logit_abi.h for the shape and why. In brief:
+ * declare the format YOU have, write short, and let the kernel resample, mix
+ * and clock it out.
+ *
+ * snd_info() first: it returns 0 on a machine with no sound card, and a program
+ * that checks it degrades to silence instead of treating SND_E_NODEV as an
+ * error worth dying over. */
+static inline int snd_info(struct logit_sndinfo *si)
+{ return (int)_sys(SYS_SND_INFO, (long)si, 0, 0); }
+
+static inline int snd_open(struct logit_sndfmt *f)
+{ return (int)_sys(SYS_SND_OPEN, (long)f, 0, 0); }
+
+/* Convenience: the common case, s16 interleaved, kernel-default buffering. */
+static inline int snd_open_s16(unsigned rate, unsigned channels)
+{ struct logit_sndfmt f;
+  f.rate = rate; f.channels = (unsigned short)channels;
+  f.format = SND_FMT_S16; f.buffer_ms = 0; f.flags = 0;
+  return snd_open(&f); }
+
+/* Bytes ACCEPTED, which may be less than `bytes`. Parks the thread when the
+ * ring is full unless the stream was opened SND_F_NONBLOCK. */
+static inline int snd_write(int h, const void *buf, int bytes)
+{ return (int)_sys(SYS_SND_WRITE, h, (long)buf, bytes); }
+
+static inline int snd_avail(int h) { return (int)_sys(SYS_SND_AVAIL, h, 0, 0); }
+static inline int snd_close(int h, int drain) { return (int)_sys(SYS_SND_CLOSE, h, drain, 0); }
+static inline int snd_state(int h, struct logit_sndstate *st)
+{ return (int)_sys(SYS_SND_STATE, h, (long)st, 0); }
+
+/* Write it all, however many short writes that takes. Returns bytes written,
+ * or the negative SND_E_* that stopped it. */
+static inline int snd_write_all(int h, const void *buf, int bytes)
+{ const char *p = (const char *)buf; int off = 0;
+  while (off < bytes) {
+      int k = snd_write(h, p + off, bytes - off);
+      if (k < 0) return k;
+      if (k == 0) { sys_sleep_ms(2); continue; }   /* only when SND_F_NONBLOCK */
+      off += k;
+  }
+  return off; }
+
 #endif /* LOGIT_USERLIB_H */
