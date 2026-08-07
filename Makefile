@@ -522,7 +522,14 @@ $(FONTS):
 	@echo "missing tracked runtime font '$@'; run 'make regen-fonts'" >&2
 	@false
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex tools/mkfs.py
+# The rich-terminal pixel test needs an image whose colour appears nowhere else
+# on the screen. Generated rather than committed: .gitignore excludes *.png, the
+# same reason the wallpaper is generated.
+$(BUILD)/dot.png: tests/unit/dot_gen.py
+	@mkdir -p $(BUILD)
+	@python3 tests/unit/dot_gen.py $@ 60 40
+
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
@@ -537,7 +544,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
-	    tests/fixtures/img/dot.png:/media/dot.png \
+	    $(BUILD)/dot.png:/media/dot.png \
 	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
 	    tests/fixtures/audio/sample.flac:/media/sample.flac \
 	    tests/fixtures/audio/sample.wav:/media/sample.wav \

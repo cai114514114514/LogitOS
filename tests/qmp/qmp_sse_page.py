@@ -93,6 +93,38 @@ if (typeof EventSource !== 'function') {
   es.onerror = function () { console.log('SSE-ERROR state=' + es.readyState); };
 }
 
+/* Cookies, end to end on the real machine. The host tests drive document.cookie
+   against a synthetic document object; here it is js_dom.c's real one, which is
+   the only place the accessor pair can actually be wrong. */
+if (typeof fetch === 'function') {
+  fetch('/setcookie').then(function (r) { return r.text(); }).then(function () {
+    console.log('COOKIE-JS ' + document.cookie);
+    return fetch('/whatcookie').then(function (r) { return r.text(); });
+  }).then(function (t) {
+    console.log('COOKIE-WIRE ' + t);
+    document.cookie = 'fromjs=42; Path=/';
+    return fetch('/whatcookie').then(function (r) { return r.text(); });
+  }).then(function (t) {
+    console.log('COOKIE-WIRE2 ' + t);
+  }).catch(function (e) { console.log('COOKIE-FAIL ' + e); });
+}
+
+/* CORS, enforced on the device and not merely in a unit test. __ALT__ is a
+   SECOND server on a different port: same machine, different origin. Two
+   fetches, and the pair is the point -- if only the refusal were checked, an
+   unreachable host would pass it. The allowed one proves the origin is
+   reachable, so the refusal is attributable to CORS and not to the network. */
+if (typeof fetch === 'function') {
+  fetch('http://__ALT__/nocors')
+    .then(function (r) { return r.text(); })
+    .then(function (t) { console.log('CORS-LEAKED ' + t); },
+          function (e) { console.log('CORS-REFUSED ' + e.name); });
+  fetch('http://__ALT__/withcors')
+    .then(function (r) { return r.text(); })
+    .then(function (t) { console.log('CORS-ALLOWED ' + t); },
+          function (e) { console.log('CORS-ALLOWED-FAIL ' + e.name); });
+}
+
 /* The same stream read through fetch + a reader, so the ReadableStream half is
    exercised on the device too rather than only in the host tests. */
 if (typeof fetch === 'function') {
@@ -166,8 +198,28 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/stream"):
             self._sse("stream")
             return
+        if self.path.startswith("/setcookie"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            # One readable, one HttpOnly: document.cookie must see the first and
+            # not the second, and the WIRE must carry both.
+            self.send_header("Set-Cookie", "sid=on-device; Path=/")
+            self.send_header("Set-Cookie", "hidden=secret; Path=/; HttpOnly")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
+        if self.path.startswith("/whatcookie"):
+            seen = self.headers.get("Cookie", "<none>")
+            raw = seen.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if self.path.startswith("/page"):
-            raw = PAGE.encode()
+            raw = PAGE.replace("__ALT__", "10.0.2.2:%d" % ALT_PORT).encode()
             ctype = "text/html"
             code = 200
         else:
@@ -186,6 +238,40 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_a):
         pass
 
+
+# The SECOND origin. Same machine, different port -- which is a different origin
+# by the only definition that matters (scheme, host, port), and reachable, which
+# is what makes a refusal attributable to CORS rather than to the network.
+alt_requested = []
+
+
+class AltOrigin(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def do_GET(self):
+        alt_requested.append(self.path)
+        if self.path.startswith("/withcors"):
+            raw, extra = b"CROSSORIGINALLOWED", [("Access-Control-Allow-Origin", "*")]
+        else:
+            raw, extra = b"CROSSORIGINSECRET", []      # deliberately no ACAO
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        for k, v in extra:
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        try:
+            self.wfile.write(raw)
+        except OSError:
+            pass
+
+    def log_message(self, *_a):
+        pass
+
+
+alt = http.server.ThreadingHTTPServer(("0.0.0.0", 0), AltOrigin)
+ALT_PORT = alt.server_port
+threading.Thread(target=alt.serve_forever, daemon=True).start()
 
 srv = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Fixture)
 PORT = srv.server_port
@@ -382,6 +468,40 @@ try:
            % (baseline, mid))
 
     # ---- let it finish -------------------------------------------------
+    # ---- cookies + CORS on the real machine ---------------------------
+    ck(wait_serial("COOKIE-JS ", 60, "document.cookie"),
+       "document.cookie is readable on js_dom's real document object")
+    cj = line_after("COOKIE-JS ")
+    ck(cj and "sid=on-device" in cj,
+       "...and it shows the cookie the response set (%s)" % cj)
+    ck(cj and "hidden" not in cj,
+       "...and NOT the HttpOnly one (%s)" % cj)
+
+    ck(wait_serial("COOKIE-WIRE ", 60, "the Cookie header"), "a later request carried Cookie")
+    cw = line_after("COOKIE-WIRE ")
+    ck(cw and "sid=on-device" in cw and "hidden=secret" in cw,
+       "...with BOTH cookies -- the network may see HttpOnly (%s)" % cw)
+
+    ck(wait_serial("COOKIE-WIRE2 ", 60, "the document.cookie write"),
+       "document.cookie can be written")
+    cw2 = line_after("COOKIE-WIRE2 ")
+    ck(cw2 and "fromjs=42" in cw2,
+       "...and the write reached the wire on the next request (%s)" % cw2)
+
+    ck(wait_serial("CORS-ALLOWED ", 60, "the allowed cross-origin fetch"),
+       "the second origin is reachable from the guest")
+    ck(line_after("CORS-ALLOWED ") == "CROSSORIGINALLOWED",
+       "...and a cross-origin response that DOES send Allow-Origin is readable")
+    ck(wait_serial("CORS-REFUSED ", 60, "the refused cross-origin fetch"),
+       "the cross-origin fetch without Allow-Origin settled")
+    ck("CORS-LEAKED" not in serial(),
+       "CORS IS ENFORCED ON THE DEVICE: a cross-origin response with no "
+       "Access-Control-Allow-Origin did not reach script")
+    ck(line_after("CORS-REFUSED ") == "TypeError",
+       "...it was refused with a TypeError, as fetch specifies")
+    ck(any("/nocors" in r for r in alt_requested),
+       "...and the request really WAS made -- the refusal is CORS, not the network")
+
     ck(wait_serial("SSE-OPEN", 120, "the SSE connection"),
        "EventSource connected and its onopen fired")
     ck(wait_serial("SSE-DONE", 120, "the end of the stream"),
