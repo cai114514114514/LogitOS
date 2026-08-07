@@ -23,15 +23,31 @@
  *      TLD supercookie.
  *   2. A Domain= attribute naming an entry of a small built-in table of common
  *      two-label public suffixes (co.uk, com.au, ...) is rejected.
- *   3. Everything else with >= 2 labels is accepted if it domain-matches the
+ *   3. A two-label Domain= whose TLD is a two-letter ccTLD and whose left
+ *      label is a known registry label (com, net, org, co, ac, gov, ...) is
+ *      rejected, whether or not the pair is in the table.  This is what closes
+ *      `Domain=com.xx` for the ccTLDs nobody listed.
+ *   4. Everything else with >= 2 labels is accepted if it domain-matches the
  *      request host, as the RFC requires.
  *
- * The residual risk is exactly step 3 for a two-label public suffix outside
- * the table (say `Domain=com.xx` for some ccTLD we did not list).  It is a
- * real gap and it is stated here rather than hidden; closing it means shipping
- * the PSL, which is a data-vendoring decision, not a code one.  Note the
- * common case is unaffected: a cookie with NO Domain attribute is host-only
- * and never widens, and that is the majority of real cookies.
+ * Rule 3 knowingly OVER-rejects: `com.de` and `co.com` style names really are
+ * registrable in a few registries, and a site there loses cross-subdomain
+ * cookies (its host-only cookies still work).  That is the intended direction
+ * of the error -- over-rejecting costs a session cookie, over-accepting costs
+ * the session.
+ *
+ * The residual risk is now a public suffix with THREE or more labels, or a
+ * two-label one under a long TLD, that nothing above catches.  Closing that
+ * means shipping the PSL, which is a data-vendoring decision (a ~10k-entry
+ * file in a 2.8 MB .aex), not a code one, and it is stated here rather than
+ * hidden.  Note the common case is unaffected: a cookie with NO Domain
+ * attribute is host-only and never widens, and that is the majority of real
+ * cookies.
+ *
+ * SameSite is enforced on the way OUT, in cookie_header_ex: a request whose
+ * site differs from the document's sends only SameSite=None cookies.  That is
+ * the rule that stops a cross-site fetch from riding the user's session, and
+ * it is why js_webapi.c must pass CK_REQ_CROSS_SITE and not the default.
  */
 
 #include <stdint.h>
@@ -177,6 +193,46 @@ static const char *const public_suffix2[] = {
     NULL
 };
 
+/* Rule 3: the generic ccTLD rule, which closes the gap the header names.
+ *
+ * The residual hole in rules 1-2 was `Domain=com.xx` for a ccTLD not in the
+ * table -- a supercookie for every registrant under it.  There is no way to
+ * enumerate those without the PSL, but there IS a pattern: a two-label domain
+ * whose TLD is a two-letter ccTLD and whose left label is one of the registry
+ * labels below is, in almost every ccTLD that uses them, a public suffix.
+ *
+ * This deliberately OVER-rejects.  `com.de` is a real registrable domain (the
+ * PSL says so) and this rule refuses to let it be a Domain= value; a site
+ * there loses a cross-subdomain cookie and keeps its host-only ones.  That is
+ * the trade this file already chose in its header: over-rejecting costs a
+ * session cookie, over-accepting costs the session. */
+static const char *const registry_labels[] = {
+    "com", "net", "org", "edu", "gov", "mil", "int", "co", "ac", "or", "ne",
+    "go", "gr", "id", "in", "info", "biz", "name", "sch", "nom", "gob", "gouv",
+    "asso", "web", "pp", "priv", "plc", "ltd", "firm", "store", "art", "res",
+    "lg", "police", "nhs", "mod", "gen", "tm", "per", "k12", "abo", "adm",
+    NULL
+};
+
+static int is_cctld_registry_pair(const char *domain)
+{
+    const char *dot = strchr(domain, '.');
+    if (!dot || strchr(dot + 1, '.')) return 0;          /* not exactly 2 labels */
+    const char *tld = dot + 1;
+    int tl = (int)strlen(tld);
+    if (tl != 2) return 0;                               /* only two-letter ccTLDs */
+    for (int i = 0; i < 2; i++) {
+        int c = lc((unsigned char)tld[i]);
+        if (c < 'a' || c > 'z') return 0;
+    }
+    int ll = (int)(dot - domain);
+    for (int i = 0; registry_labels[i]; i++) {
+        int n = (int)strlen(registry_labels[i]);
+        if (n == ll && strncmp_ci(domain, registry_labels[i], n) == 0) return 1;
+    }
+    return 0;
+}
+
 int cookie_domain_is_public_suffix(const char *domain)
 {
     if (!domain || !*domain) return 1;
@@ -185,7 +241,46 @@ int cookie_domain_is_public_suffix(const char *domain)
     /* Rule 2: the built-in two-label table. */
     for (int i = 0; public_suffix2[i]; i++)
         if (ci_eq(domain, public_suffix2[i])) return 1;
+    /* Rule 3: com.<cc> and friends, for any ccTLD. */
+    return is_cctld_registry_pair(domain);
+}
+
+/* The registrable domain: the shortest suffix of `host` that is NOT a public
+ * suffix by the rules above.  Used only to answer "same site?", so an IP
+ * literal is its own site and a name we cannot reduce is returned whole. */
+static int registrable_domain(const char *host, char *out, int outmax)
+{
+    char h[CK_DOMAIN_MAX];
+    if (cookie_canon_host(host, h, (int)sizeof h) != 0) return -1;
+    if (is_ip_literal(h)) {
+        if ((int)strlen(h) >= outmax) return -1;
+        memcpy(out, h, strlen(h) + 1);
+        return 0;
+    }
+    /* Walk the suffixes longest-first: s0 = host, s1 = host past its first
+     * dot, ...  The registrable domain is the suffix immediately BEFORE the
+     * first one that is a public suffix ("a.example.co.uk" -> s2 = "co.uk" is
+     * public, so s1 = "example.co.uk" is registrable). */
+    const char *prev = h, *cur = h;
+    while (cur && *cur) {
+        if (cookie_domain_is_public_suffix(cur)) break;
+        prev = cur;
+        const char *dot = strchr(cur, '.');
+        cur = dot ? dot + 1 : NULL;
+    }
+    const char *best = (cur == h) ? h : prev;    /* the host itself is a suffix */
+    if ((int)strlen(best) >= outmax) return -1;
+    memcpy(out, best, strlen(best) + 1);
     return 0;
+}
+
+int cookie_same_site(const char *host_a, const char *host_b)
+{
+    if (!host_a || !host_b) return 0;
+    char a[CK_DOMAIN_MAX], b[CK_DOMAIN_MAX];
+    if (registrable_domain(host_a, a, (int)sizeof a) != 0) return 0;
+    if (registrable_domain(host_b, b, (int)sizeof b) != 0) return 0;
+    return ci_eq(a, b);
 }
 
 /* ---- RFC 6265 5.1.1 cookie-date --------------------------------------- */
@@ -619,9 +714,14 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
 /* ---- Cookie: header ---------------------------------------------------- */
 
 static int cookie_applies(const struct cookie *c, const char *host,
-                          const char *path, const struct cookie_ctx *ctx, int64_t now)
+                          const char *path, const struct cookie_ctx *ctx,
+                          int cross_site, int64_t now)
 {
     if (cookie_expired(c, now)) return 0;
+    /* SameSite.  A fetch/XHR is never a top-level navigation, so Lax gets no
+     * relaxation here and behaves as Strict; an absent attribute IS Lax per
+     * 6265bis.  Only SameSite=None rides a cross-site request. */
+    if (cross_site && c->samesite != CK_SS_NONE) return 0;
     if (c->host_only) { if (!ci_eq(c->domain, host)) return 0; }
     else if (!cookie_domain_match(host, c->domain)) return 0;
     if (!cookie_path_match(path, c->path)) return 0;
@@ -634,6 +734,10 @@ static int cookie_applies(const struct cookie *c, const char *host,
 
 int cookie_header(struct cookie_jar *j, const struct cookie_ctx *ctx,
                   int64_t now, char *out, int outmax)
+{ return cookie_header_ex(j, ctx, CK_REQ_SAME_SITE, now, out, outmax); }
+
+int cookie_header_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
+                     int cross_site, int64_t now, char *out, int outmax)
 {
     if (!j || !ctx || !ctx->host || !ctx->path || !out || outmax <= 0) return -1;
     char host[CK_DOMAIN_MAX];
@@ -658,7 +762,7 @@ int cookie_header(struct cookie_jar *j, const struct cookie_ctx *ctx,
     if (!idx) return -1;
     int m = 0;
     for (int i = 0; i < j->n; i++)
-        if (cookie_applies(&j->v[i], host, path, ctx, now)) idx[m++] = i;
+        if (cookie_applies(&j->v[i], host, path, ctx, cross_site, now)) idx[m++] = i;
 
     for (int i = 1; i < m; i++) {                 /* insertion sort: m is tiny */
         int k = idx[i], p = i - 1;

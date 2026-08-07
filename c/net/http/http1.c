@@ -346,11 +346,34 @@ void h1_response_free(struct h1_response *r)
 void h1_response_reset(struct h1_response *r)
 {
     int bm = r->body_max, head = r->head_request;
+    h1_body_sink sk = r->sink; void *sc = r->sink_ctx;
     h1_response_free(r);
     h1_response_init(r);
     r->body_max = bm;
     r->head_request = head;
+    r->sink = sk; r->sink_ctx = sc;
 }
+
+void h1_response_sink(struct h1_response *r, h1_body_sink cb, void *ctx)
+{
+    if (!r) return;
+    r->sink = cb; r->sink_ctx = ctx;
+}
+
+/* "The headers are final" is exactly "the parser has left the header states".
+ * H1_ST_STATUS/H1_ST_HEADER mean it is still reading them; a 1xx interim
+ * response rewinds to H1_ST_STATUS, so this cannot report an interim's headers
+ * as the real ones. */
+int h1_response_headers_done(const struct h1_response *r)
+{
+    if (!r) return 0;
+    switch (r->state) {
+    case H1_ST_STATUS: case H1_ST_HEADER: case H1_ST_ERROR: return 0;
+    default: return r->code != 0;
+    }
+}
+
+int h1_response_streaming(const struct h1_response *r) { return r && r->streaming; }
 
 void h1_response_limit(struct h1_response *r, int body_max)
 {
@@ -385,6 +408,13 @@ static int fail(struct h1_response *r, int err)
 static int body_push(struct h1_response *r, const uint8_t *p, int n)
 {
     if (n <= 0) return H1_OK;
+    r->body_seen += n;
+    /* Streaming: the bytes leave immediately and nothing accumulates, so the
+     * body cap -- which exists to bound OUR allocation -- does not apply.  An
+     * SSE conversation legitimately outlives 8 MiB; what bounds memory on this
+     * path is the consumer, and the caller applies backpressure by declining
+     * to pump while its queue is full. */
+    if (r->streaming) return r->sink(r->sink_ctx, p, n);
     if (n > r->body_max - r->body_len) return H1_E_TOOLARGE;
     if (r->body_len + n + 1 > r->body_cap) {
         int nc = r->body_cap ? r->body_cap : 4096;
@@ -608,6 +638,16 @@ static int begin_body(struct h1_response *r)
     r->chunked = chunked;
     r->clen = cl_present ? cl : -1;
 
+    /* Incremental delivery, decided here because this is the first moment the
+     * answer is knowable and the last moment before a body byte can arrive.
+     * A Content-Encoding we have to undo needs the whole body (the inflater is
+     * one-shot), so those responses keep buffering. */
+    if (r->sink) {
+        const char *ce = h1_headers_get(&r->hdr, "content-encoding");
+        while (ce && is_ws((unsigned char)*ce)) ce++;
+        r->streaming = (!ce || !*ce || ci_eq(ce, "identity"));
+    }
+
     if (r->head_request || r->code == 204 || r->code == 304 || r->code == 101) {
         r->no_body = 1;
         if (r->code == 101) { r->keep_alive = 0; r->must_close = 1; }
@@ -631,7 +671,7 @@ static int begin_body(struct h1_response *r)
         return H1_OK;
     }
     if (cl_present) {
-        if (cl > (int64_t)r->body_max) return H1_E_TOOLARGE;
+        if (!r->streaming && cl > (int64_t)r->body_max) return H1_E_TOOLARGE;
         r->remain = cl;
         r->state = cl ? H1_ST_BODY_LEN : H1_ST_DONE;
         return H1_OK;
@@ -668,7 +708,9 @@ static int parse_chunk_size(struct h1_response *r)
         if (i < n && s[i] != ';') return H1_E_SYNTAX;
     }
     if (v > (uint64_t)0x7FFFFFFFFFFFFFFFULL) return H1_E_SYNTAX;
-    if (v > (uint64_t)(r->body_max - r->body_len)) return H1_E_TOOLARGE;
+    /* The cap bounds what we ALLOCATE. A streamed chunk is never allocated, so
+     * it is bounded by the consumer instead -- see body_push. */
+    if (!r->streaming && v > (uint64_t)(r->body_max - r->body_len)) return H1_E_TOOLARGE;
     r->remain = (int64_t)v;
     r->state = v ? H1_ST_CHUNK_DATA : H1_ST_TRAILER;
     return H1_OK;

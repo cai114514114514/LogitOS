@@ -83,6 +83,28 @@ int  cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
 int  cookie_header(struct cookie_jar *j, const struct cookie_ctx *ctx,
                    int64_t now, char *out, int outmax);
 
+/* Same, for a request whose SITE differs from the document's.
+ *
+ * SameSite is a property of the REQUEST, not of the jar, and it is not in
+ * struct cookie_ctx on purpose: two existing callers build that struct field
+ * by field, so a new member would be read uninitialized rather than default to
+ * the safe value.  A parameter cannot be forgotten.
+ *
+ * cross_site == CK_REQ_CROSS_SITE suppresses every cookie whose SameSite is
+ * Strict, Lax, or absent -- absent is Lax per 6265bis, and a fetch is never a
+ * top-level navigation, which is the only thing Lax relaxes for.  Only an
+ * explicit SameSite=None (which cookies.c already requires to be Secure) is
+ * sent.  That is the rule that makes a cross-site fetch unable to ride on the
+ * user's session. */
+enum { CK_REQ_SAME_SITE = 0, CK_REQ_CROSS_SITE = 1 };
+int  cookie_header_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
+                      int cross_site, int64_t now, char *out, int outmax);
+
+/* 1 if two hosts belong to the same site -- equal registrable domains, by the
+ * same approximate suffix rule as cookie_domain_is_public_suffix.  IP literals
+ * are the same site only when identical. */
+int  cookie_same_site(const char *host_a, const char *host_b);
+
 /* ---- the matching rules, exported so they can be tested directly ---- */
 
 /* RFC 6265 5.1.3. Both arguments must already be canonical (lowercase). */

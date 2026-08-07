@@ -131,6 +131,26 @@ int  h1_request_build(const struct h1_request *q, char **out, int *outlen);
 
 /* ---- response -------------------------------------------------------- */
 
+/* A body sink: bytes are handed up AS THEY ARRIVE instead of being buffered
+ * until the message is complete.  Return H1_OK to accept, or a negative H1_E_*
+ * to fail the response.
+ *
+ * WHY THIS EXISTS.  Server-Sent Events is an HTTP response that never ends:
+ * a chat model emits a token, flushes, and emits the next one seconds later.
+ * Buffer-then-deliver turns that into "hang until the server gives up", so a
+ * streaming endpoint is unusable even though every byte arrives.  With a sink
+ * registered, h1_response_feed calls it from inside the same parse that
+ * consumed the bytes -- there is no queue and no extra copy, and chunked
+ * framing is undone on the way through, so the sink sees the entity body and
+ * never a chunk header.
+ *
+ * A sink only takes effect when the body needs no whole-message transform.
+ * Content-Encoding does (our inflater is one-shot), so a gzip response falls
+ * back to buffering and is delivered complete: correct, just not incremental.
+ * h1_response_streaming() reports which happened, and it is only meaningful
+ * after h1_response_headers_done(). */
+typedef int (*h1_body_sink)(void *ctx, const uint8_t *data, int len);
+
 enum {
     H1_ST_STATUS = 0,   /* awaiting the status line */
     H1_ST_HEADER,       /* awaiting a header line (or the blank line) */
@@ -170,6 +190,12 @@ struct h1_response {
     /* limits (h1_response_limit) */
     int      body_max;
 
+    /* incremental delivery (h1_response_sink) */
+    h1_body_sink sink;
+    void        *sink_ctx;
+    int          streaming;         /* decided at headers-complete */
+    int64_t      body_seen;         /* entity bytes seen, retained or not */
+
     /* line accumulator */
     char    *line;
     int      line_len, line_cap, have_line;
@@ -183,6 +209,16 @@ void h1_response_reset(struct h1_response *r);
 void h1_response_limit(struct h1_response *r, int body_max);
 /* Tell the parser the request method was HEAD, before feeding any bytes. */
 void h1_response_head(struct h1_response *r, int is_head);
+/* Register a body sink, before feeding any bytes. cb == NULL restores
+ * buffering. Survives h1_response_reset (a pooled connection keeps its sink). */
+void h1_response_sink(struct h1_response *r, h1_body_sink cb, void *ctx);
+/* 1 once the status line and the header section have been parsed -- i.e. code,
+ * reason and hdr are final and the body (if any) is what remains. This is the
+ * point at which fetch() is specified to resolve. */
+int  h1_response_headers_done(const struct h1_response *r);
+/* 1 if body bytes are going to the sink instead of r->body. Meaningful only
+ * after h1_response_headers_done(). */
+int  h1_response_streaming(const struct h1_response *r);
 
 /* Feed network bytes. Returns how many were CONSUMED (which is < len exactly
  * when the message ended inside the buffer -- the remainder belongs to the
