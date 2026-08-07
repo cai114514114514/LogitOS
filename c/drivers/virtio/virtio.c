@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "virtio.h"
 #include "pci.h"
+#include "driver.h"
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
@@ -38,47 +39,45 @@ static inline void barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
 volatile int g_virtio_busy = 0;
 int virtio_busy(void) { return g_virtio_busy; }
 
-/* Map the 64-bit MMIO BAR `barn` of a PCI device, return its base (identity). */
-static uint64_t map_bar(uint8_t slot, int barn)
-{
-    uint32_t lo = pci_cfg_read(0, slot, 0, 0x10 + barn * 4);
-    if (lo == 0 || lo == 0xFFFFFFFF || (lo & 0x1)) return 0;   /* absent or I/O BAR */
-    uint64_t base = lo & ~(uint64_t)0xF;
-    if ((lo & 0x6) == 0x4)        /* 64-bit BAR: high dword in the next slot */
-        base |= (uint64_t)pci_cfg_read(0, slot, 0, 0x10 + (barn + 1) * 4) << 32;
-    if (!base) return 0;
-    vmm_map_range(base, base, 0x8000, VMM_WRITABLE | VMM_NOCACHE);
-    return base;
-}
-
 int virtio_init(uint16_t devid, struct virtio_dev *vd, uint32_t want_lo)
 {
-    struct pci_dev dev;
-    if (pci_find(VIRTIO_VENDOR, devid, &dev) != 0) return -1;
-    vd->bus = dev.bus; vd->slot = dev.slot; vd->func = dev.func;
+    /* Off the device registry rather than a bus-0 slot scan: the model has
+     * already sized every BAR, so the capability offsets below can be bounds-
+     * checked against the BAR's REAL size instead of the 0x8000 this used to
+     * assume, and a virtio device behind a bridge is found like any other. */
+    struct device *dev = dev_find_id(VIRTIO_VENDOR, devid, NULL);
+    if (!dev) return -1;
+    dev_enable(dev, 1);                         /* MMIO + I/O + bus master */
+
+    vd->bus = dev->bus; vd->slot = dev->slot; vd->func = dev->func;
     vd->common = vd->notify_base = vd->isr = vd->device = NULL;
     vd->notify_mult = 0;
 
-    /* Walk the vendor (0x09) capabilities to locate the modern cfg structures. */
-    uint8_t cap = (uint8_t)(pci_cfg_read(0, dev.slot, 0, 0x34) & 0xFF);
-    for (int g = 0; cap && g < 48; g++) {
-        uint32_t d0 = pci_cfg_read(0, dev.slot, 0, cap);
-        uint8_t vndr = d0 & 0xFF, next = (d0 >> 8) & 0xFF, type = (d0 >> 24) & 0xFF;
-        if (vndr == 0x09) {
-            uint8_t barn = pci_cfg_read(0, dev.slot, 0, cap + 4) & 0xFF;
-            uint32_t off = pci_cfg_read(0, dev.slot, 0, cap + 8);
-            uint64_t base = map_bar(dev.slot, barn);
-            if (base && off < 0x8000) {              /* skip invalid BAR / out-of-map offset */
-                volatile uint8_t *p = (volatile uint8_t *)(base + off);
-                switch (type) {
-                case 1: vd->common = p; break;
-                case 2: vd->notify_base = p; vd->notify_mult = pci_cfg_read(0, dev.slot, 0, cap + 16); break;
-                case 3: vd->isr = p; break;
-                case 4: vd->device = p; break;
-                }
-            }
+    /* Each modern virtio config structure is described by its own vendor (0x09)
+     * capability: cap+3 = type, cap+4 = BAR index, cap+8 = offset in that BAR. */
+    for (uint8_t cap = pci_cap_next(dev->bus, dev->slot, dev->func, PCI_CAP_VENDOR, 0);
+         cap;
+         cap = pci_cap_next(dev->bus, dev->slot, dev->func, PCI_CAP_VENDOR, cap)) {
+        uint32_t d0   = pci_cfg_read(dev->bus, dev->slot, dev->func, cap);
+        uint8_t  type = (uint8_t)((d0 >> 24) & 0xFF);
+        int      barn = (int)(pci_cfg_read(dev->bus, dev->slot, dev->func, (uint16_t)(cap + 4)) & 0xFF);
+        uint32_t off  = pci_cfg_read(dev->bus, dev->slot, dev->func, (uint16_t)(cap + 8));
+        uint32_t len  = pci_cfg_read(dev->bus, dev->slot, dev->func, (uint16_t)(cap + 12));
+
+        if (barn < 0 || barn >= DEV_NRES) continue;
+        uint64_t base = dev_bar_map(dev, barn);
+        if (!base) continue;
+        if ((uint64_t)off + len > dev->res[barn].size) continue;   /* outside its BAR */
+
+        volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)(base + off);
+        switch (type) {
+        case 1: vd->common = p; break;
+        case 2: vd->notify_base = p;
+                vd->notify_mult = pci_cfg_read(dev->bus, dev->slot, dev->func, (uint16_t)(cap + 16));
+                break;
+        case 3: vd->isr = p; break;
+        case 4: vd->device = p; break;
         }
-        cap = next;
     }
     if (!vd->common || !vd->notify_base) { kprintf("[virtio] %x: missing caps\n", devid); return -1; }
 
@@ -106,7 +105,7 @@ int virtio_init(uint16_t devid, struct virtio_dev *vd, uint32_t want_lo)
         kprintf("[virtio] %x: FEATURES_OK rejected\n", devid);
         return -1;
     }
-    kprintf("[virtio] %x up (slot %d, %d queues)\n", devid, dev.slot, r16(vd->common, C_NUM_QUEUES));
+    kprintf("[virtio] %x up (%s, %d queues)\n", devid, dev->name, r16(vd->common, C_NUM_QUEUES));
     return 0;
 }
 

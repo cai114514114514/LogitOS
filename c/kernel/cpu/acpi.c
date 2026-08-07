@@ -1,7 +1,13 @@
-/* Minimal ACPI: find the RSDP, walk the (X)SDT to the MADT, and read out the
- * Local APIC IDs (the CPUs) + the LAPIC MMIO base. Enough to bring up SMP.
+/* Minimal ACPI: find the RSDP, walk the (X)SDT, and read out the tables the
+ * kernel needs -- the MADT (Local APIC IDs, LAPIC/IOAPIC bases, interrupt source
+ * overrides) and the MCFG (the PCIe ECAM window, used by c/kernel/pci).
  * Tables live in low RAM (< 512 MiB on our QEMU), which boot.asm identity-maps,
- * so physical == virtual here. */
+ * so physical == virtual here.
+ *
+ * The (X)SDT walk is split out of acpi_init() into acpi_find_table() because
+ * the PCI bus driver needs the MCFG *before* smp_init() runs -- enumeration has
+ * to happen early, SMP does not. acpi_tables_init() is idempotent, so whoever
+ * gets there first pays for the RSDP search. */
 #include <stdint.h>
 #include <stddef.h>
 #include "acpi.h"
@@ -100,31 +106,83 @@ static void parse_madt(const struct sdt_header *madt)
     }
 }
 
-int acpi_init(void)
+/* ------------------------------------------------------ (X)SDT table walk -- */
+static const struct sdt_header *g_xsdt;   /* 64-bit entry table (ACPI 2.0+) */
+static const struct sdt_header *g_rsdt;   /* 32-bit entry table (ACPI 1.0)  */
+static int g_tables_done;
+
+int acpi_tables_init(void)
 {
+    if (g_tables_done) return (g_xsdt || g_rsdt) ? 0 : -1;
+    g_tables_done = 1;
+
     struct rsdp *r = find_rsdp();
     if (!r) { serial_puts("[acpi] no RSDP\n"); return -1; }
 
-    const struct sdt_header *madt = NULL;
-    if (r->revision >= 2 && r->xsdt_addr) {              /* ACPI 2.0+: 64-bit XSDT */
-        const struct sdt_header *xsdt = (const struct sdt_header *)r->xsdt_addr;
-        if (xsdt->length < sizeof *xsdt) { serial_puts("[acpi] bad XSDT length\n"); return -1; }
-        int n = (xsdt->length - sizeof *xsdt) / 8;
-        const uint64_t *ent = (const uint64_t *)((const uint8_t *)xsdt + sizeof *xsdt);
+    if (r->revision >= 2 && r->xsdt_addr) {
+        const struct sdt_header *x = (const struct sdt_header *)r->xsdt_addr;
+        if (x->length < sizeof *x) { serial_puts("[acpi] bad XSDT length\n"); return -1; }
+        g_xsdt = x;
+    } else if (r->rsdt_addr) {
+        const struct sdt_header *t = (const struct sdt_header *)(uint64_t)r->rsdt_addr;
+        if (t->length < sizeof *t) { serial_puts("[acpi] bad RSDT length\n"); return -1; }
+        g_rsdt = t;
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+const void *acpi_find_table(const char *sig)
+{
+    if (acpi_tables_init() != 0) return NULL;
+    if (g_xsdt) {
+        int n = (int)((g_xsdt->length - sizeof *g_xsdt) / 8);
+        const uint8_t *e = (const uint8_t *)g_xsdt + sizeof *g_xsdt;
         for (int i = 0; i < n; i++) {
-            const struct sdt_header *h = (const struct sdt_header *)ent[i];
-            if (memcmp(h->sig, "APIC", 4) == 0) { madt = h; break; }
+            uint64_t a;                     /* the XSDT entry array is only
+                                             * 4-byte aligned in practice */
+            const uint8_t *p = e + i * 8;
+            a = 0; for (int b = 0; b < 8; b++) a |= (uint64_t)p[b] << (b * 8);
+            const struct sdt_header *h = (const struct sdt_header *)a;
+            if (h && memcmp(h->sig, sig, 4) == 0) return h;
         }
-    } else {                                             /* ACPI 1.0: 32-bit RSDT */
-        const struct sdt_header *rsdt = (const struct sdt_header *)(uint64_t)r->rsdt_addr;
-        if (rsdt->length < sizeof *rsdt) { serial_puts("[acpi] bad RSDT length\n"); return -1; }
-        int n = (rsdt->length - sizeof *rsdt) / 4;
-        const uint32_t *ent = (const uint32_t *)((const uint8_t *)rsdt + sizeof *rsdt);
+    } else if (g_rsdt) {
+        int n = (int)((g_rsdt->length - sizeof *g_rsdt) / 4);
+        const uint32_t *ent = (const uint32_t *)((const uint8_t *)g_rsdt + sizeof *g_rsdt);
         for (int i = 0; i < n; i++) {
             const struct sdt_header *h = (const struct sdt_header *)(uint64_t)ent[i];
-            if (memcmp(h->sig, "APIC", 4) == 0) { madt = h; break; }
+            if (h && memcmp(h->sig, sig, 4) == 0) return h;
         }
     }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ MCFG --
+ * "PCI Express Memory Mapped Configuration" table: a 44-byte header (36-byte
+ * SDT header + 8 reserved) followed by 16-byte allocation entries
+ *   u64 base, u16 segment, u8 bus_start, u8 bus_end, u32 reserved
+ * Each entry is one ECAM window. We report them by index; the PCI bus driver
+ * takes segment 0 and maps it. */
+int acpi_mcfg_entry(int idx, uint64_t *base, uint16_t *seg, uint8_t *bus_lo, uint8_t *bus_hi)
+{
+    const struct sdt_header *h = acpi_find_table("MCFG");
+    if (!h || h->length < 44 || idx < 0) return -1;
+    int n = (int)((h->length - 44) / 16);
+    if (idx >= n) return -1;
+    const uint8_t *p = (const uint8_t *)h + 44 + idx * 16;
+    uint64_t b = 0; for (int i = 0; i < 8; i++) b |= (uint64_t)p[i] << (i * 8);
+    if (base)   *base   = b;
+    if (seg)    *seg    = (uint16_t)(p[8] | (p[9] << 8));
+    if (bus_lo) *bus_lo = p[10];
+    if (bus_hi) *bus_hi = p[11];
+    return 0;
+}
+
+int acpi_init(void)
+{
+    if (acpi_tables_init() != 0) return -1;
+    const struct sdt_header *madt = acpi_find_table("APIC");
     if (!madt) { serial_puts("[acpi] no MADT\n"); return -1; }
 
     parse_madt(madt);

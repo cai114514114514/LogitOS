@@ -1428,6 +1428,35 @@ test-h264-units:
 	    c/lib/video/h264_deblock.c -Ic/lib/video
 	@$(BUILD)/h264_deblock_test
 
+# --- device model / PCI (c/drivers/core + c/kernel/pci) ---------------------
+# Host tests run the bus driver's pure logic against a synthetic configuration
+# space (tests/unit/pcistub stubs out port I/O, vmm and kprintf), which is how
+# BAR sizing, capability-chain walking and bridge recursion get tested without
+# hardware. -DLOGIT_HOST_TEST drops the linker-section driver registry, which
+# only exists in the kernel link.
+.PHONY: test-pci test-devmodel test-devmodel-a test-devmodel-b
+PCI_HOST_INC := -Ic/drivers/core -Ic/kernel/pci -Itests/unit/pcistub
+test-pci: $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_HOST_TEST \
+	    -o $(BUILD)/pci_test tests/unit/pci_test.c c/kernel/pci/pci.c \
+	    c/drivers/core/device.c $(PCI_HOST_INC)
+	@$(BUILD)/pci_test
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_HOST_TEST \
+	    -o $(BUILD)/devmodel_test tests/unit/devmodel_test.c \
+	    c/drivers/core/device.c $(PCI_HOST_INC)
+	@$(BUILD)/devmodel_test
+
+# Two DIFFERENT QEMU machines and device sets against the same kernel: set 'a'
+# is i440fx with an e1000 + QEMU's `edu` device (asserts an MSI and a legacy
+# INTx actually reached a handler); set 'b' is q35 with ECAM, an rtl8139
+# instead of the e1000, an AHCI controller, and an xHCI behind a PCIe root
+# port -- i.e. on a bus a bus-0-only scan cannot reach.
+test-devmodel-a: $(ISO) $(DISK)
+	@SET=a bash tests/boot/run-devmodel-test.sh $(ISO) $(DISK)
+test-devmodel-b: $(ISO) $(DISK)
+	@SET=b bash tests/boot/run-devmodel-test.sh $(ISO) $(DISK)
+test-devmodel: test-devmodel-a test-devmodel-b
+
 clean:
 	rm -rf $(BUILD)
 

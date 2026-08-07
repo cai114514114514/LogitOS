@@ -18,6 +18,8 @@
 #include "file.h"
 #include "virtio_blk.h"
 #include "nvme.h"
+#include "pci.h"
+#include "driver.h"
 
 /* TIMER_HZ now lives in pit.h: SYS_MONOTONIC_MS divides by it, so the tick rate
  * is part of a userland-visible answer and cannot be a private constant here. */
@@ -40,6 +42,12 @@ void kernel_main(uint64_t mb_info)
     pit_init(TIMER_HZ);
     pmm_init(mb_info);
     serial_puts("[logitos] interrupts + memory + gdt/tss online\n");
+
+    /* Enumerate PCI before any driver runs: everything below -- including the
+     * legacy pci_find() the NVMe/e1000/virtio drivers still call -- answers out
+     * of the device registry this builds. Binding happens later (dev_probe_all,
+     * after smp_init), because wiring an interrupt needs a live LAPIC. */
+    pci_init();
     serial_puts(rust_png_selftest() == 0 ? "[rust] png selftest OK\n"
                                           : "[rust] png selftest FAIL\n");
 
@@ -69,6 +77,13 @@ void kernel_main(uint64_t mb_info)
     serial_puts("[logitos] desktop up; mouse + keyboard armed\n");
 
     smp_init();   /* detect + bring up the other CPUs */
+
+    /* Now that the LAPIC and I/O APIC are live, run the probe/bind pass and
+     * print the device table -- one line per PCI function, with its class name
+     * and the driver that claimed it. On unfamiliar hardware this log is the
+     * first debugging tool anyone has. */
+    dev_probe_all();
+    dev_dump();
 
     if (fs_ok)
         serial_puts("\n" BOOT_OK_MARKER "\n");
