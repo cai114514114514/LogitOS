@@ -29,46 +29,73 @@
 #include "cpufeat.h"
 #include "crypto.h"
 #include "kprintf.h"
+#include "serial.h"
 #include "pit.h"
+
+/* The report runs before kernel_main, so it goes out over the UART directly
+ * rather than through kprintf (which also drives VGA and the klog ring,
+ * neither of which exists yet). That costs a couple of formatting helpers;
+ * it buys a feature module that no other subsystem has to remember to call. */
+static void put(const char *s) { serial_puts(s); }
+
+static void put_u(uint64_t v)
+{
+    char b[24];
+    int i = 0;
+    if (!v) { put("0"); return; }
+    while (v) { b[i++] = (char)('0' + (v % 10)); v /= 10; }
+    while (i--) { char c[2] = { b[i], 0 }; put(c); }
+}
+
+static void put_hex(uint64_t v)
+{
+    static const char d[] = "0123456789abcdef";
+    char b[17];
+    int i = 0;
+    if (!v) { put("0"); return; }
+    while (v) { b[i++] = d[v & 0xf]; v >>= 4; }
+    while (i--) { char c[2] = { b[i], 0 }; put(c); }
+}
 
 void cpu_early_init(void)
 {
+    static int done;
+    if (done) return;
+    done = 1;
+
     cpu_features_init();
     crypto_simd_init();
-}
 
-void cpu_boot_report(void)
-{
-    cpu_early_init();                    /* idempotent; also covers a caller that skipped long.asm */
+    serial_init();                       /* idempotent; kernel_main repeats it */
 
     const struct cpu_features *c = cpu_features();
     static char list[640];
     int n = cpu_features_str(list, (int)sizeof list);
 
-    if (c->brand[0])
-        kprintf("[cpu] %s -- %s\n", c->vendor, c->brand);
-    else
-        kprintf("[cpu] %s (no brand string)\n", c->vendor);
-
-    kprintf("[cpu] %d/%d known features present: %s\n", n, (int)CPU_FEAT_COUNT, list);
+    put("[cpu] "); put(c->vendor);
+    if (c->brand[0]) { put(" -- "); put(c->brand); }
+    put("\n[cpu] "); put_u((uint64_t)n); put("/"); put_u((uint64_t)CPU_FEAT_COUNT);
+    put(" known features present: "); put(list); put("\n");
 
     /* Print the XSAVE geometry even though we do not use it: it is exactly the
      * number a future AVX migration needs (how big the XSAVE area must be),
      * and printing it at boot is cheaper than someone guessing 512 or 832. */
-    if (cpu_has(CPU_XSAVE))
-        kprintf("[cpu] xsave: %u B holds every supported state, xcr0 mask %x%x, "
-                "osxsave=%d (AVX deliberately off -- see boot/long.asm)\n",
-                (unsigned)c->xsave_max_size,
-                (unsigned)(c->xcr0_supported >> 32), (unsigned)c->xcr0_supported,
-                cpu_has(CPU_OSXSAVE));
-    else
-        kprintf("[cpu] xsave: not supported\n");
+    if (cpu_has(CPU_XSAVE)) {
+        put("[cpu] xsave: "); put_u(c->xsave_max_size);
+        put(" B holds every supported state, xcr0 mask 0x");
+        put_hex(c->xcr0_supported);
+        put(", osxsave="); put_u((uint64_t)cpu_has(CPU_OSXSAVE));
+        put(" (AVX deliberately off -- see boot/long.asm)\n");
+    } else {
+        put("[cpu] xsave: not supported\n");
+    }
 
-    kprintf("[cpu] aes-gcm backend: %s (%s); rdrand=%d rdseed=%d\n",
-            crypto_simd_backend_name(),
-            crypto_simd_constant_time() ? "constant-time"
-                                        : "table-driven, NOT constant-time",
-            cpu_has(CPU_RDRAND), cpu_has(CPU_RDSEED));
+    put("[cpu] aes-gcm backend: "); put(crypto_simd_backend_name());
+    put(crypto_simd_constant_time() ? " (constant-time)"
+                                    : " (table-driven, NOT constant-time)");
+    put("; rdrand="); put_u((uint64_t)cpu_has(CPU_RDRAND));
+    put(" rdseed="); put_u((uint64_t)cpu_has(CPU_RDSEED));
+    put("\n");
 }
 
 /* --- the XMM register-file probe ----------------------------------------

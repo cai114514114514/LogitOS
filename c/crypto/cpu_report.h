@@ -12,21 +12,23 @@
  * host CRYPTO_SRC glob (aead/hash/pubkey), so no host test drags it in.
  *
  * Call order on the boot path:
- *   cpu_early_init()   -- from boot/long.asm, before kernel_main. Pure CPUID +
- *                         a pointer assignment; safe before serial, the heap,
- *                         the IDT or the timer exist.
- *   cpu_boot_report()  -- once serial is up. Prints what was detected.
+ *   cpu_early_init()   -- from boot/long.asm, before kernel_main. Detects,
+ *                         selects the backends, and prints the report.
  *   cpu_simd_selftest()-- once the PIT is ticking. Needs IF=0 on entry.
- * Nothing depends on the last two having been called: every query path
- * initialises lazily. */
+ * Nothing depends on either having been called: every query path initialises
+ * lazily, so a caller that skips the boot path still gets real answers. */
 
-/* Detect CPU features and select the crypto backends. Idempotent.
- * Called from boot/long.asm -- keep the name stable. */
+/* Detect CPU features, select the crypto backends, and print vendor/brand,
+ * the present feature list, the XSAVE geometry and the chosen AES-GCM
+ * backend. Idempotent. Called from boot/long.asm -- keep the name stable.
+ *
+ * It prints through serial_init/serial_puts rather than kprintf because it
+ * runs BEFORE kernel_main: kprintf also drives VGA and the klog ring, neither
+ * of which is up yet, whereas the UART is pure port I/O and serial_init is
+ * idempotent (kernel_main calls it again a few instructions later). Doing the
+ * report here rather than from kernel_main keeps the whole feature module
+ * self-contained -- no other subsystem has to remember to call it. */
 void cpu_early_init(void);
-
-/* Print vendor/brand, the present feature list, the XSAVE geometry and which
- * AES-GCM backend was selected. Needs serial (or VGA) to be up. */
-void cpu_boot_report(void);
 
 /* Cross-check the selected SIMD backend against the portable reference WHILE
  * interrupts are being taken, and verify the XMM register file survives those
