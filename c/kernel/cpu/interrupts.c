@@ -20,6 +20,7 @@
 #include "spinlock.h"
 #include "mm.h"        /* mm_fault(): the page faults that are work, not errors */
 #include "work.h"        /* M27: softirq_run_pending() on the kernel-exit path */
+#include "kbench.h"      /* entry/exit accounting, off by default */
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -49,6 +50,17 @@ void interrupt_handler(struct registers *r)
 {
     if (r->vector == 255)          /* LAPIC spurious: no BKL, no EOI, just return */
         return;
+
+    /* ENTRY/EXIT ACCOUNTING (kbench.h). What one trip into the kernel costs,
+     * by class, measured on the real workload rather than a synthetic loop --
+     * because a synthetic loop cannot reproduce four cores queueing on the BKL,
+     * which is most of what a kernel entry costs here. Disabled by default: one
+     * load of a global and a predicted-not-taken branch. Deliberately spans the
+     * WHOLE handler including the BKL acquire and release, since from ring 3's
+     * point of view that queueing IS the syscall. Not counted: entries that
+     * never return here (proc_exit -> thread_exit), which is the right
+     * direction to lose samples in -- a dying process is not a hot path. */
+    uint64_t kb_t0 = g_kb_stat ? kb_rdtsc() : 0;
 
     /* BKL: acquire on every kernel entry (P0: at most one core in the kernel at a
      * time; ring 3 runs in parallel). `in_kernel` makes the deliberate `sti`
@@ -197,4 +209,20 @@ done:
      * irqrestore won't re-enable it here; the final iretq restores the caller's IF. */
     __asm__ volatile ("cli");
     if (!nested && !bkl_free) { this_cpu()->in_kernel = 0; spin_unlock_irqrestore(&g_bkl, bf); }
+
+    if (__builtin_expect(kb_t0 != 0, 0)) {
+        int cls = (r->vector == 128) ? KB_C_SYSCALL
+                : (r->vector == 32)  ? KB_C_TIMER
+                : (r->vector < 32)   ? KB_C_FAULT
+                : (r->vector == 240 || r->vector == 241) ? KB_C_IPI
+                : KB_C_IRQ;
+        /* this_cpu() and not the entry-time `me`: schedule() may have resumed
+         * this thread on a different core, and charging another core's counters
+         * would put the cost where the work did not happen. */
+        int idx = this_cpu()->index;
+        if (idx >= 0 && idx < KB_MAXCPU) {
+            g_kb[idx].n[cls]++;
+            g_kb[idx].cyc[cls] += kb_rdtsc() - kb_t0;
+        }
+    }
 }

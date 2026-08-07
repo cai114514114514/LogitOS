@@ -96,5 +96,8 @@ void sched_timer_expire(void);
 unsigned long sched_slices_of(struct thread *t);  /* dispatches: the sleep-vs-spin metric */
 int  sched_thread_id(struct thread *t);
 unsigned long sched_blocked_count(void);          /* threads currently parked */
+/* Passes through bkl_hlt_wait(): the count of times some thread POLLED instead
+ * of blocking. The number M27 exists to drive to zero; see sched.c. */
+unsigned long sched_hlt_waits(void);
 
 #endif /* LOGIT_SCHED_H */

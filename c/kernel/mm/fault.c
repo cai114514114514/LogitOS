@@ -42,6 +42,33 @@ void *memcpy(void *, const void *, size_t);
 static int g_cow_on = MM_COW_DEFAULT;
 static uint64_t g_cow_copies, g_cow_reuse, g_anon, g_declined;
 
+/* WHAT A FAULT COSTS. Demand paging and copy-on-write moved work OFF fork and
+ * ONTO the page fault -- fork of /bin/sh went from 258 pages copied to 0. That
+ * is only a win if the faults that replaced them are cheaper than the copies
+ * they saved, and nothing in the tree could say. So the fault path times
+ * itself, per class, and mm_report() prints it.
+ *
+ * rdtsc rather than the ns clock for the same reason proc.c uses it: a fault is
+ * microseconds and the 100 Hz tick cannot see one. Local rather than kbench.h's
+ * because this file is also compiled for the host test, which puts neither
+ * c/kernel/sched nor an x86 on the include path. */
+#ifdef MM_HOSTTEST
+static inline uint64_t fault_cyc(void) { return 0; }
+#else
+static inline uint64_t fault_cyc(void)
+{ uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | lo; }
+#endif
+static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon;
+
+void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc);
+void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc)
+{
+    if (copy_cyc)  *copy_cyc  = g_cyc_copy;
+    if (reuse_cyc) *reuse_cyc = g_cyc_reuse;
+    if (anon_cyc)  *anon_cyc  = g_cyc_anon;
+}
+
 void mm_set_cow(int on) { g_cow_on = on ? 1 : 0; }
 int  mm_cow_enabled(void) { return g_cow_on; }
 
@@ -160,12 +187,23 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     uint32_t prot = vma_prot_at(cr3, page);
     int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF));
 
+    uint64_t t0 = fault_cyc();
     switch (mm_fault_classify(va, err, present, cow, user, (int)prot)) {
-    case MM_FAULT_COW:
-        if (do_cow(cr3, page, pte, active)) return 1;
+    case MM_FAULT_COW: {
+        uint64_t before = g_cow_copies;
+        if (do_cow(cr3, page, pte, active)) {
+            /* Split by outcome, not by class: the sole-owner case is a PTE
+             * write and the shared case is a 4 KiB memcpy plus an allocation.
+             * Averaging them together would hide which one the workload
+             * actually hits, which is the only interesting thing about them. */
+            if (g_cow_copies != before) g_cyc_copy  += fault_cyc() - t0;
+            else                        g_cyc_reuse += fault_cyc() - t0;
+            return 1;
+        }
         break;
+    }
     case MM_FAULT_ANON:
-        if (do_anon(cr3, page, prot, active)) return 1;
+        if (do_anon(cr3, page, prot, active)) { g_cyc_anon += fault_cyc() - t0; return 1; }
         break;
     default:
         break;
@@ -190,4 +228,10 @@ void mm_report(const char *tag)
             g_cow_on ? "on" : "off (page-fault hook not wired -- see c/kernel/mm/mm.h)",
             (int)g_mm_cow_pages, (int)g_cow_copies, (int)g_cow_reuse,
             (int)g_anon, (int)g_declined, vma_spaces_live());
+    kprintf("[mm] %s: fault cost (kcycles total / cycles each): "
+            "cow-copy %d/%d, cow-reuse %d/%d, anon %d/%d\n",
+            tag ? tag : "-",
+            (int)(g_cyc_copy / 1000),  (int)(g_cow_copies ? g_cyc_copy / g_cow_copies : 0),
+            (int)(g_cyc_reuse / 1000), (int)(g_cow_reuse  ? g_cyc_reuse / g_cow_reuse : 0),
+            (int)(g_cyc_anon / 1000),  (int)(g_anon       ? g_cyc_anon / g_anon : 0));
 }

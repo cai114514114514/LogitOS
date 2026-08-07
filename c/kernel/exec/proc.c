@@ -9,6 +9,9 @@
 #include "pit.h"
 #include "kprintf.h"
 #include "spinlock.h"
+/* Path-qualified: see the note in syscall.c -- mini-libc's sys/wait.h sorts
+ * first in INCDIRS and silently wins the bare form. */
+#include "kernel/core/wait.h"   /* M27: a parent waits for a child, it does not poll */
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
 /* net/core/sock.c: release the non-blocking sockets this process owns. Weak so
@@ -27,6 +30,38 @@ static spinlock_t g_proc_lock = SPINLOCK_INIT;
 
 static struct proc procs[NPROC];
 static int next_pid = 1;
+
+/* Where a parent waits for a child to die.
+ *
+ * One queue for every waiter, not one per process: the predicate ("a child of
+ * MINE is a zombie") is per-waiter and has to be re-tested on every wake
+ * regardless, so a shared queue costs a spurious scan of a 32-slot table and
+ * saves a struct per PCB plus the question of which queue an exiting orphan
+ * should signal. NPROC is 32 and waiters are single digits.
+ *
+ * Lock order: g_child_wq.lock -> g_proc_lock, because the predicate is
+ * evaluated inside wait_event() with the queue lock held. proc_exit() therefore
+ * RELEASES g_proc_lock before it wakes -- the waker never holds both, so the
+ * order can never reverse. */
+static struct waitq g_child_wq = WAITQ_INIT;
+
+/* Does `ppid` have a reapable child matching `want` (-1 = any)? The predicate,
+ * split out so wait_event() can re-evaluate it and proc_waitpid's claim loop
+ * stays the single place that mutates anything. */
+static int have_zombie(int ppid, int want)
+{
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    int yes = 0;
+    for (int i = 0; i < NPROC; i++) {
+        struct proc *c = &procs[i];
+        if (c->state != PROC_ZOMBIE || c->ppid != ppid) continue;
+        if (want != -1 && c->pid != want) continue;
+        yes = 1;
+        break;
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return yes;
+}
 
 /* --- fork accounting ------------------------------------------------------
  * "fork is faster now" is not a claim anybody can check; "fork of the shell
@@ -266,6 +301,14 @@ void proc_exit(int code)
         p->exit_code = code;
         p->state = PROC_ZOMBIE;
         spin_unlock_irqrestore(&g_proc_lock, fl);
+        /* AFTER the unlock, and before thread_exit() (which never returns).
+         * Outside the lock because the waiter holds g_child_wq.lock while it
+         * takes g_proc_lock, so a waker holding g_proc_lock here would close an
+         * AB-BA cycle. The waiter cannot miss this: it is enqueued under
+         * g_child_wq.lock and stays enqueued until it is parked, so a wake that
+         * arrives in that window blocks on the queue lock rather than being
+         * lost. */
+        waitq_wake_all(&g_child_wq);
     }
     wm_app_exit();        /* if this proc owns a window, mark it dead (no-op otherwise) */
     thread_exit();        /* leaves the ring; never returns. Address space freed by
@@ -301,7 +344,24 @@ long proc_waitpid(int pid, int *status)
             return rpid;
         }
         if (!have_child) return -1;
-        bkl_hlt_wait();    /* let the child run, then re-check (outside the lock) */
+        /* PARK, do not poll. bkl_hlt_wait() re-dispatched this thread on every
+         * interrupt -- ~100 times a second for the whole life of every command
+         * /bin/sh runs -- and each pass re-acquired the global kernel lock (which
+         * on four cores means spinning with interrupts off if somebody else has
+         * it) only to walk a 32-slot table and halt again. Parked, the thread is
+         * off the run ring and takes the BKL zero times until the child exits.
+         *
+         * The timeout is a backstop, not the mechanism: proc_exit() wakes this
+         * queue directly, so 200 ms is what a MISSED wake would cost rather than
+         * what a normal one does. A wait that can only be ended by a wake is one
+         * bug away from a hung shell, and this shell is the machine's console. */
+#ifdef KBENCH_NEGCTL
+        bkl_hlt_wait();      /* the old poll; tests/boot/run-kbench.sh must FAIL */
+#else
+        int woke = 0;
+        wait_event_timeout(&g_child_wq, have_zombie(self->pid, pid), 200, woke);
+        (void)woke;
+#endif
     }
 }
 

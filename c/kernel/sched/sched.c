@@ -11,6 +11,7 @@
 #include "pit.h"          /* timer_ticks() -- deadline sleeps */
 #include "work.h"         /* work_init(): the kworker thread (deferred work) */
 #include "wait_selftest.h"
+#include "kbench.h"       /* kbench_start(): what the kernel's primitives cost */
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -195,6 +196,11 @@ void sched_init(void)
      * spliced onto the ring; the caller (wm_run) continues immediately. */
     work_init();
     wait_selftest_start();
+    /* Arms the BKL/entry counters NOW (so the accounted window starts at the
+     * first kernel entry, which is where the contention is) and spawns the
+     * benchmark thread, which sleeps until the desktop is live before it
+     * measures anything. */
+    kbench_start();
 }
 
 extern void kthread_bootstrap(void);   /* sched.c: releases g_sched_lock, calls entry, exits */
@@ -692,8 +698,19 @@ __attribute__((noreturn)) void kthread_bootstrap(void)
  * Same release/re-acquire protocol as the WM idle loop and tty_read: BOTH
  * windows must run with IF=0 or a nested IRQ re-acquires the BKL this core
  * still holds (self-deadlock). */
+/* Every call is one pass of a POLL: a thread that had nothing to do was
+ * re-dispatched anyway, took the global lock, re-tested a condition and halted.
+ * Counted because that is the number the M27 blocking core exists to drive to
+ * zero -- the wait-queue line measured a 200 ms wait going from 117 dispatches
+ * to 0, and this counter is the same measurement for the rest of the kernel.
+ * A build where the pipe and the waitpid still polled through here reaches the
+ * thousands over a shell session; one where they park does not. */
+unsigned long g_bkl_hlt_waits;
+unsigned long sched_hlt_waits(void) { return g_bkl_hlt_waits; }
+
 void bkl_hlt_wait(void)
 {
+    g_bkl_hlt_waits++;
     __asm__ volatile ("cli");
     this_cpu()->in_kernel = 0;
     spin_unlock(&g_bkl);

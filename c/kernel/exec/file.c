@@ -8,8 +8,40 @@
 #include "logit_abi.h"   /* O_*, SEEK_* */
 #include "percpu.h"     /* this_cpu (SMP: drop BKL while blocked on input) */
 #include "spinlock.h"   /* g_bkl */
+#include "kbench.h"     /* kb_rdtsc: what the console wait actually costs */
+/* Path-qualified: mini-libc ships c/apps/libc/include/sys/wait.h and that
+ * directory sorts before c/kernel/core in INCDIRS, so the bare form resolves to
+ * the userland header. Same note as syscall.c, same build failure. */
+#include "kernel/core/wait.h"   /* M27: a pipe waits, it does not poll */
 
 void *memcpy(void *, const void *, size_t);
+
+/* --------------------------------------------------------------------------
+ * WHAT THE CONSOLE WAIT COSTS.
+ *
+ * The sampling profiler reported ~25% of an IDLE four-core machine's samples in
+ * `file_read+0x13c` and ~25% in `wm_run+0xe9`, which reads as two busy-waits
+ * eating half the machine. Both of those addresses are the instruction after a
+ * `hlt`. The sampler is an ordinary interrupt: when it fires on a halted core
+ * the CPU wakes to take it and the RIP it records is whatever follows the halt,
+ * so a core that is doing nothing at all is indistinguishable from a core in a
+ * tight loop -- they both report as "in the function containing the hlt".
+ *
+ * That is an interpretation trap, not a bug in either file, and refuting it
+ * needs a number rather than an argument. So this loop counts its own wakes and
+ * the cycles it is actually AWAKE (BKL re-acquire plus the UART poll), which is
+ * the only part of it that costs the machine anything. Two rdtsc per wake, on a
+ * path that wakes at interrupt rate at worst: unmeasurable against what it
+ * measures, and always on, because the question recurs.
+ * -------------------------------------------------------------------------- */
+static uint64_t g_tty_wakes, g_tty_awake_cyc;
+
+void tty_wait_stats(uint64_t *wakes, uint64_t *awake_cyc);
+void tty_wait_stats(uint64_t *wakes, uint64_t *awake_cyc)
+{
+    if (wakes)     *wakes     = g_tty_wakes;
+    if (awake_cyc) *awake_cyc = g_tty_awake_cyc;
+}
 
 /* --- F_TTY backend: the serial console. Single shared device; fd 0/1/2 of the
  *     shell point at one F_TTY file (dup'd). Reads block (yield) for one key,
@@ -27,7 +59,12 @@ static long tty_read(struct file *f, void *vbuf, long len)
      * shell sat at its prompt. Instead drop the BKL and idle until the next
      * interrupt (timer 100Hz / serial), exactly like the WM idle loop, so the
      * other cores keep running while we wait. */
+    uint64_t woke_at = 0;
     while ((c = serial_getc()) < 0) {
+        /* Charge the previous wake with everything from `hlt` returning to here:
+         * the BKL re-acquire (which may spin) and the UART poll. Nothing else in
+         * this loop executes while the core is not halted. */
+        if (woke_at) g_tty_awake_cyc += kb_rdtsc() - woke_at;
         /* BOTH the release window (in_kernel=0 .. spin_unlock) and the re-acquire
          * window (spin_lock .. in_kernel=1) must run with IF=0: a nested IRQ in
          * either gap reads nested=0 and re-acquires the BKL this core holds ->
@@ -36,9 +73,12 @@ static long tty_read(struct file *f, void *vbuf, long len)
         this_cpu()->in_kernel = 0;
         spin_unlock(&g_bkl);
         __asm__ volatile ("sti\n\thlt\n\tcli");
+        woke_at = kb_rdtsc();
         spin_lock(&g_bkl);
         this_cpu()->in_kernel = 1;
+        g_tty_wakes++;
     }
+    if (woke_at) g_tty_awake_cyc += kb_rdtsc() - woke_at;
     if (c == '\r') c = '\n';
     if (c == '\n')      { serial_putc('\r'); serial_putc('\n'); out[0] = '\n'; }
     else if (c == 127 || c == 8) { serial_putc(8); serial_putc(' '); serial_putc(8); out[0] = 8; }
@@ -64,28 +104,50 @@ struct file *file_open_tty(void)
 /* A pipe: an in-kernel ring buffer with a read end and a write end. Each end is
  * a separate struct file sharing this buffer; readers/writers are 1 while that
  * end's file is open (refcount > 0), 0 once fully closed. EOF = no writers. */
+/* A PIPE IS THE ONE WAIT IN THIS FILE THAT HAS A REAL EVENT TO WAIT ON.
+ *
+ * The console has no serial receive interrupt, so a read of the tty has nothing
+ * to be woken BY and can only poll; a pipe's event is another thread in this
+ * same kernel calling write(), which can wake the reader directly. It was
+ * nevertheless a poll: bkl_hlt_wait() re-dispatched the blocked thread on every
+ * interrupt -- ~100 times a second per blocked end, each time re-acquiring the
+ * global lock (spinning with interrupts off if another core held it), re-testing
+ * a counter, and halting again. The GUI Terminal's shell sits in exactly this
+ * loop for the whole life of every command it runs.
+ *
+ * With a waitqueue the blocked thread is UNLINKED from the run ring: it costs
+ * the scheduler's pick loop nothing, it takes the BKL zero times while waiting,
+ * and it wakes on the write itself rather than up to 10 ms later. That is the
+ * measurement the wait-queue line quoted -- a 200 ms wait going from 117
+ * dispatches to 0 -- applied to the place the shell actually waits.
+ *
+ * The queue serves both directions (readers waiting for data, writers waiting
+ * for room, and both waiting for the other end to close). wait_event() re-tests
+ * under the queue's own lock and loops on spurious wakes, so one queue for
+ * several predicates is exactly what it is built for. */
 #define PIPE_SZ 8192
 struct pipe {
     char buf[PIPE_SZ];
     int  head, tail, count;
     int  readers, writers;
+    struct waitq wq;
 };
 
 static long pipe_read(struct file *f, void *vbuf, long len)
 {
     struct pipe *p = (struct pipe *)f->backing;
     char *out = (char *)vbuf;
-    while (p->count == 0) {
-        if (p->writers == 0) return 0;     /* EOF: all write ends closed */
-        if (f->flags & O_NONBLOCK) return EAGAIN_RC;   /* would block */
-        bkl_hlt_wait();                    /* wait for a writer WITHOUT hogging the BKL */
-    }
+    if (!(f->flags & O_NONBLOCK))
+        wait_event(&p->wq, p->count > 0 || p->writers == 0);
+    if (p->count == 0)
+        return p->writers == 0 ? 0 : EAGAIN_RC;   /* EOF, or "would block" */
     long n = 0;
     while (n < len && p->count > 0) {
         out[n++] = p->buf[p->tail];
         p->tail = (p->tail + 1) % PIPE_SZ;
         p->count--;
     }
+    waitq_wake_all(&p->wq);                       /* there is room now */
     return n;
 }
 
@@ -95,17 +157,19 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
     const char *in = (const char *)vbuf;
     long n = 0;
     while (n < len) {
-        while (p->count == PIPE_SZ) {
-            if (p->readers == 0) return n > 0 ? n : -1;   /* broken pipe */
-            if (f->flags & O_NONBLOCK) return n > 0 ? n : EAGAIN_RC;  /* would block */
-            bkl_hlt_wait();                /* wait for a reader WITHOUT hogging the BKL */
+        if (p->readers == 0) return n > 0 ? n : -1;          /* broken pipe */
+        if (p->count == PIPE_SZ) {
+            if (f->flags & O_NONBLOCK) return n > 0 ? n : EAGAIN_RC;
+            wait_event(&p->wq, p->count < PIPE_SZ || p->readers == 0);
+            continue;
         }
-        if (p->readers == 0) return n > 0 ? n : -1;
+        long before = n;
         while (n < len && p->count < PIPE_SZ) {
             p->buf[p->head] = in[n++];
             p->head = (p->head + 1) % PIPE_SZ;
             p->count++;
         }
+        if (n > before) waitq_wake_all(&p->wq);              /* there is data now */
     }
     return n;
 }
@@ -308,6 +372,7 @@ int file_pipe(struct file **rd, struct file **wr)
     struct pipe *p = (struct pipe *)kmalloc(sizeof *p);
     if (!p) return -1;
     p->head = p->tail = p->count = 0; p->readers = 1; p->writers = 1;
+    waitq_init(&p->wq);
     struct file *r = file_alloc();
     struct file *w = file_alloc();
     if (!r || !w) {
@@ -361,7 +426,13 @@ void file_close(struct file *f)
             if (is_write) p->writers--; else p->readers--;
             int free_pipe = (p->readers == 0 && p->writers == 0);
             spin_unlock_irqrestore(&g_file_lock, fl2);
+            /* THE WAKE THAT MAKES CLOSING AN END VISIBLE. The old poll re-tested
+             * `writers` every 10 ms, so it noticed EOF whether or not anyone
+             * announced it; a parked reader is woken by events or not at all,
+             * and "the last writer went away" is the event that turns its wait
+             * into a 0-byte return. Omitting this is a hang, not a slowdown. */
             if (free_pipe) kfree(p);
+            else           waitq_wake_all(&p->wq);
         }
     }
 }
