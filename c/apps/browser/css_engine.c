@@ -574,6 +574,70 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl, bool q
     return s;
 }
 
+/* ---------------- the author stylesheet, parsed ONCE ----------------
+ *
+ * css_apply and css_apply_scoped both used to make_sheet(page_css) on entry
+ * and css_stylesheet_destroy it on exit. For a page load that is one parse per
+ * sheet set, which is honest work. For a LIVE page it is a full LibCSS parse
+ * of the entire stylesheet on every single DOM mutation -- and the scoped
+ * invalidation that made the selection cheap left this in front of it.
+ *
+ * Measured host-side (tests/unit/css_bench.c, `make bench-css`), re-styling one
+ * leaf plus its following siblings:
+ *
+ *              scoped re-style   of which the actual selection   sheet parse
+ *   deepseek        4.47 ms                0.11 ms                ~1.4 ms
+ *   wikipedia       8.09 ms                0.01 ms                ~5.0 ms
+ *
+ * So the parse is cached against the exact bytes it was produced from. The
+ * browser hands back the same expanded buffer on every mutation, so the common
+ * case is one memcmp (microseconds on 224 KB) and a pointer return. A genuinely
+ * new sheet set -- external stylesheets arriving, a <style> a script wrote,
+ * a different var() expansion -- differs in those bytes and re-parses exactly
+ * as it did before, so this cannot serve a stale stylesheet.
+ *
+ * The comparison is against a private COPY rather than the caller's pointer:
+ * callers reuse one buffer and rewrite it in place, so pointer identity says
+ * nothing about content identity. It is a full memcmp rather than a hash
+ * because a hash collision here does not fail loudly, it renders the previous
+ * page's CSS.
+ *
+ * The cache holds one parsed sheet and one copy of its source for the life of
+ * the process. That is reachable from a static root, so it is not a leak (the
+ * LeakSanitizer gate in `make test-css-asan` agrees); the previous code's peak
+ * was the same parsed sheet plus the caller's buffer anyway. */
+static css_stylesheet *g_author_sheet;
+static char           *g_author_src;
+static size_t          g_author_srclen;
+static bool            g_author_quirks;
+static int             g_author_parses;   /* test seam; see css_sheet_parses() */
+
+int css_sheet_parses(void) { return g_author_parses; }
+
+static css_stylesheet *author_sheet(const char *data, size_t len, bool quirks)
+{
+    if (g_author_sheet && g_author_quirks == quirks && g_author_srclen == len &&
+        (len == 0 || memcmp(g_author_src, data, len) == 0))
+        return g_author_sheet;
+
+    /* Content differs: drop the old parse before building the new one, so the
+     * cache never holds two whole stylesheets at once. */
+    if (g_author_sheet) { css_stylesheet_destroy(g_author_sheet); g_author_sheet = NULL; }
+    if (g_author_src)   { kfree(g_author_src); g_author_src = NULL; }
+    g_author_srclen = 0;
+
+    g_author_parses++;
+    css_stylesheet *s = make_sheet(data, len, false, quirks);
+    if (!s) return NULL;
+    /* Without the source copy we cannot answer "is this the same sheet?" next
+     * time, so a failed copy means: use this parse, but do not cache it. */
+    char *cp = (char *)kmalloc(len ? len : 1);
+    if (!cp) { css_stylesheet_destroy(s); return make_sheet(data, len, false, quirks); }
+    if (len) memcpy(cp, data, len);
+    g_author_sheet = s; g_author_src = cp; g_author_srclen = len; g_author_quirks = quirks;
+    return s;
+}
+
 /* dom.c owns node->computed but must not know what a css_computed_style is
  * (dom.c links without LibCSS in the standalone host tests), so it calls back
  * through a registered releaser. */
@@ -664,6 +728,7 @@ int css_media_matches(const char *query, int len)
 }
 
 int css_media_width(void) { return g_vw ? g_vw : 760; }
+int css_media_height(void) { return g_vh ? g_vh : 540; }
 static int vw_px(void) { return g_vw ? g_vw : 760; }
 static int vh_px(void) { return g_vh ? g_vh : 540; }
 
@@ -1668,7 +1733,7 @@ void css_apply(struct node *root, const char *page_css, int page_len)
 
     css_stylesheet *author = NULL;
     if (page_css && page_len > 0) {
-        author = make_sheet(page_css, (size_t)page_len, false, g_allow_quirks);
+        author = author_sheet(page_css, (size_t)page_len, g_allow_quirks);
         if (author) css_select_ctx_append_sheet(g_ctx, author, CSS_ORIGIN_AUTHOR, NULL);
     }
 
@@ -1687,10 +1752,9 @@ void css_apply(struct node *root, const char *page_css, int page_len)
     nd_reset();
     g_unit.root_style = NULL;
 
-    if (author) {
-        css_select_ctx_remove_sheet(g_ctx, author);
-        css_stylesheet_destroy(author);
-    }
+    /* Removed from the selection context but NOT destroyed: the parse belongs
+     * to the cache now, and the next pass over the same bytes reuses it. */
+    if (author) css_select_ctx_remove_sheet(g_ctx, author);
 }
 
 /* ======================================================================
@@ -1829,7 +1893,7 @@ int css_apply_scoped(struct node *n, int siblings, const char *page_css, int pag
 
     css_stylesheet *author = NULL;
     if (page_css && page_len > 0) {
-        author = make_sheet(page_css, (size_t)page_len, false, g_allow_quirks);
+        author = author_sheet(page_css, (size_t)page_len, g_allow_quirks);
         if (author) css_select_ctx_append_sheet(g_ctx, author, CSS_ORIGIN_AUTHOR, NULL);
     }
 
@@ -1853,10 +1917,7 @@ int css_apply_scoped(struct node *n, int siblings, const char *page_css, int pag
     nd_reset();
     g_unit.root_style = NULL;
 
-    if (author) {
-        css_select_ctx_remove_sheet(g_ctx, author);
-        css_stylesheet_destroy(author);
-    }
+    if (author) css_select_ctx_remove_sheet(g_ctx, author);   /* cached; see author_sheet */
 
     /* css_extra's patches belong to the style being measured, so they land
      * before the diff, not after it. */

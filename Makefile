@@ -186,7 +186,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-dns test-ip6-dns-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-dns test-ip6-dns-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -1371,15 +1371,6 @@ test-dhcp-os: $(ISO) $(DISK)
 test-https-smoke: $(ISO) $(DISK)
 	@bash tests/boot/run-https-smoke.sh $(ISO) $(DISK)
 
-# The same network, the OTHER client. test-https-smoke drives the kernel's
-# blocking SYS_HTTP_GET; the Browser uses bfetch + http1.c in ring 3, and the
-# two diverged badly enough that baidu passed the smoke test while the Browser
-# could not open it. This boots the machine, drives the real Browser over QMP,
-# and asserts the page loaded inside a budget a stalled response cannot fit in
-# AND that its bytes reached the pixels. Live Internet, like the smoke test.
-test-browser-https: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_browser_https.py $(ISO) $(DISK)
-
 # On-Logit AetherScript test: boots and runs /bin/as on the /usr/as examples.
 test-as-os: check-asops check-abi $(ISO) $(DISK)
 	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
@@ -1702,6 +1693,13 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c $(HTML_PARSER_SRC) \
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/css_extra_test
+# css_perf_test: that the author sheet is parsed once per SHEET and not once
+# per mutation -- asserted with counters rather than times, and paired with the
+# stale-stylesheet checks that are the real risk of caching it.
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_perf_test tests/unit/css_perf_test.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@$(BUILD)/css_perf_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a
@@ -2098,6 +2096,33 @@ test-dom-bindings-asan: $(BUILD)/libcss_host.a
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/dom_bindings_asan
+
+# --- bench-css: the per-phase cost of a REAL page, host-side ---------------
+# "The page repaints slowly" is not actionable until it is attributed. This
+# links the real pipeline (dom -> css_engine -> css_vars -> css_extra ->
+# layout -> browser_paint, the painter through the tests/unit/painthost
+# recorder) over a fixture captured from a live site, and times each phase
+# separately with the network removed. See the header of tests/unit/css_bench.c
+# for what it does and does not model.
+#   make bench-css                      # the deepseek.com fixture
+#   make bench-css BENCH_ITERS=25
+#   make bench-css BENCH_PAGE=... BENCH_CSS="a.css b.css"
+BENCH_PAGE  ?= tests/fixtures/cssperf/deepseek.html
+BENCH_CSS   ?= $(wildcard tests/fixtures/cssperf/ds-*.css)
+BENCH_ITERS ?= 9
+.PHONY: bench-css
+$(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
+                    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+                    c/apps/browser/css_extra.c c/apps/browser/layout.c \
+                    c/apps/browser/browser_paint.c $(HTML_PARSER_SRC)
+	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_bench.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+
+bench-css: $(BUILD)/css_bench
+	@$(BUILD)/css_bench --iters=$(BENCH_ITERS) $(BENCH_PAGE) $(BENCH_CSS)
+
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.

@@ -192,6 +192,11 @@ void css_init(void);                            /* build the UA default styleshe
 void css_viewport(int w, int h);
 /* Current viewport width in px. */
 int  css_media_width(void);
+/* Current viewport height in px. Together with css_media_width and
+ * css_color_scheme these are every input an @media verdict depends on, which
+ * is what lets css_extra.c cache a compiled sheet and know when to throw it
+ * away. */
+int  css_media_height(void);
 
 /* ---------------- the ONE media-query evaluator ----------------
  *
@@ -226,6 +231,22 @@ int  css_color_scheme(void);
  * author sheet's simple selectors + inline style= attrs and patches node->style
  * after css_apply. */
 void css_extra_apply(struct node *root, const char *page_css, int page_len);
+/* Test seam: rules in the last COMPILED sheet (see css_extra.c), or -1 if the
+ * compile fell back to scanning the text. */
+int  css_extra_rules(void);
+/* Test seams for the two "do this once per sheet, not once per mutation"
+ * caches: how many times the author stylesheet has been handed to LibCSS to
+ * PARSE, and how many times css_extra has COMPILED it. Both are cumulative for
+ * the life of the process.
+ *
+ * These exist because the alternative way to test a cache is to time it, and a
+ * timing assertion on a shared machine is a flaky test rather than a strict
+ * one. A counter says exactly what the optimisation claims -- that a re-style
+ * over an unchanged sheet does no sheet work -- and it says it deterministically.
+ * They are equally the guard on the dangerous direction: if a CHANGED sheet did
+ * not bump these, the engine would be rendering the previous page's CSS. */
+int  css_sheet_parses(void);
+int  css_extra_compiles(void);
 /* Compute and attach a `struct cstyle*` to every node of `root` (in node->style),
  * cascading UA defaults + `page_css` (page_len bytes from <style>) + inline style=. */
 void css_apply(struct node *root, const char *page_css, int page_len);

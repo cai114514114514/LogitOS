@@ -238,54 +238,93 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     p->trans_op = decls_trans_op(d, dlen);
 }
 
-/* Match ONE compound selector (no combinators): [tag][#id][.cls][.cls]... */
-static int match_compound(struct node *n, const char *s, int len)
+/* ONE compound selector (no combinators) taken apart: [tag][#id][.cls][.cls].
+ *
+ * This used to be parsed out of the selector TEXT once per node visited. A
+ * rule is matched against every element in the document, so a 19-rule sheet
+ * over wikipedia's 5604 elements re-parsed 106,000 selectors to patch a
+ * handful of boxes -- 5.8 ms of a 26.8 ms load. The text is parsed once now,
+ * at sheet-compile time, and the walk only compares. */
+struct xcomp {
+    char tag[32]; int has_tag;
+    char id[64];  int has_id;
+    char cls[2][64]; int ncls;
+    int  bad;                              /* unparseable: matches nothing */
+};
+
+static void parse_compound(const char *s, int len, struct xcomp *c)
 {
-    int i = 0, classes = 0, idok = 1, tagok = 1;
-    char cls[2][64]; int ncls = 0;
-    char id[64]; int has_id = 0;
-    char tag[32]; int has_tag = 0;
-    while (i < len && ncls < 2) {
+    int i = 0;
+    c->has_tag = c->has_id = c->ncls = c->bad = 0;
+    while (i < len && c->ncls < 2) {
         if (s[i] == '.') {
             i++; int o = 0;
-            while (i < len && !spc(s[i]) && s[i] != '.' && s[i] != '#' && o < 63) cls[ncls][o++] = s[i++];
-            cls[ncls][o] = 0; if (!o) return 0; ncls++;
+            while (i < len && !spc(s[i]) && s[i] != '.' && s[i] != '#' && o < 63) c->cls[c->ncls][o++] = s[i++];
+            c->cls[c->ncls][o] = 0; if (!o) { c->bad = 1; return; } c->ncls++;
         } else if (s[i] == '#') {
             i++; int o = 0;
-            while (i < len && !spc(s[i]) && s[i] != '.' && s[i] != '#' && o < 63) id[o++] = s[i++];
-            id[o] = 0; if (!o) return 0; has_id = 1;
+            while (i < len && !spc(s[i]) && s[i] != '.' && s[i] != '#' && o < 63) c->id[o++] = s[i++];
+            c->id[o] = 0; if (!o) { c->bad = 1; return; } c->has_id = 1;
         } else if (!spc(s[i])) {
             int o = 0;
-            while (i < len && !spc(s[i]) && s[i] != '.' && s[i] != '#' && o < 31) tag[o++] = s[i++];
-            tag[o] = 0; if (!o) return 0; has_tag = 1;
+            while (i < len && !spc(s[i]) && s[i] != '.' && s[i] != '#' && o < 31) c->tag[o++] = s[i++];
+            c->tag[o] = 0; if (!o) { c->bad = 1; return; } c->has_tag = 1;
         } else break;
     }
-    (void)classes;
-    if (has_tag) {
-        int k = 0; for (; tag[k]; k++) if (n->tag[k] != tag[k]) { tagok = 0; break; }
-        if (tagok && n->tag[k]) tagok = 0;
-        if (!tagok) return 0;
+}
+
+static int match_xcomp(struct node *n, const struct xcomp *c)
+{
+    if (c->bad) return 0;
+    if (c->has_tag) {
+        int k = 0;
+        for (; c->tag[k]; k++) if (n->tag[k] != c->tag[k]) return 0;
+        if (n->tag[k]) return 0;
     }
-    if (has_id) {
+    if (c->has_id) {
         const char *nid = dom_attr(n, "id");
-        if (!nid || strcmp(nid, id)) idok = 0;
-        if (!idok) return 0;
+        if (!nid || strcmp(nid, c->id)) return 0;
     }
-    for (int c = 0; c < ncls; c++) {
+    if (c->ncls) {
         const char *nc = dom_attr(n, "class");
         if (!nc) return 0;
-        /* class attr is a space-separated list; require whole-token match */
-        int ok = 0, cl = (int)strlen(cls[c]);
-        for (const char *p = nc; *p; p++) {
-            if ((p == nc || spc(p[-1])) && !strncmp(p, cls[c], cl) && (!p[cl] || spc(p[cl]))) { ok = 1; break; }
+        for (int k = 0; k < c->ncls; k++) {
+            /* class attr is a space-separated list; require whole-token match */
+            int ok = 0, cl = (int)strlen(c->cls[k]);
+            for (const char *p = nc; *p; p++) {
+                if ((p == nc || spc(p[-1])) && !strncmp(p, c->cls[k], cl) &&
+                    (!p[cl] || spc(p[cl]))) { ok = 1; break; }
+            }
+            if (!ok) return 0;
         }
-        if (!ok) return 0;
     }
     return 1;
 }
 
-/* 1 if any comma-separated selector matches; for descendant selectors only the
- * last compound is matched (documented simplification). */
+/* Match ONE compound selector straight from text (the uncompiled fallback). */
+static int match_compound(struct node *n, const char *s, int len)
+{
+    struct xcomp c;
+    parse_compound(s, len, &c);
+    return match_xcomp(n, &c);
+}
+
+/* Reduce one comma-separated alternative [s,e) to the compound we actually
+ * match on: the LAST compound of a descendant chain, with pseudo-classes
+ * stripped (documented simplification -- `a b.c:hover` matches on `b.c`).
+ * Returns 0 if there is nothing left to match. */
+static int last_compound(const char *s, int start, int end, int *cs, int *ce)
+{
+    while (end > start && spc(s[end-1])) end--;
+    int c = end - 1;
+    while (c > start && !spc(s[c])) c--;
+    *cs = spc(s[c]) ? c + 1 : start;
+    *ce = end;
+    for (int k = *cs; k < *ce; k++) if (s[k] == ':') { *ce = k; break; }
+    return *ce > *cs;
+}
+
+/* 1 if any comma-separated selector matches (text path: the fallback only). */
 static int match_selector(struct node *n, const char *s, int len)
 {
     int i = 0;
@@ -293,17 +332,42 @@ static int match_selector(struct node *n, const char *s, int len)
         while (i < len && (spc(s[i]) || s[i] == ',')) i++;
         int start = i;
         while (i < len && s[i] != ',') i++;
-        int end = i; while (end > start && spc(s[end-1])) end--;
-        /* last compound of a descendant chain */
-        int c = end - 1;
-        while (c > start && !spc(s[c])) c--;
-        int cs = spc(s[c]) ? c + 1 : start;
-        /* strip pseudo-classes/elements (:hover etc.) -- we match the base */
-        int ce = end;
-        for (int k = cs; k < ce; k++) if (s[k] == ':') { ce = k; break; }
-        if (ce > cs && match_compound(n, s + cs, ce - cs)) return 1;
+        int cs, ce;
+        if (last_compound(s, start, i, &cs, &ce) && match_compound(n, s + cs, ce - cs)) return 1;
     }
     return 0;
+}
+
+/* A whole selector list, pre-parsed. Alternatives past XSEL_MAXALT keep their
+ * text and are matched the slow way, so a 60-selector comma list stays correct
+ * rather than silently losing its tail. */
+#define XSEL_MAXALT 6
+struct xsel {
+    struct xcomp alt[XSEL_MAXALT];
+    int nalt;
+    int spill;                             /* alternatives that did not fit */
+};
+
+static void compile_selector(const char *s, int len, struct xsel *x)
+{
+    int i = 0;
+    x->nalt = 0; x->spill = 0;
+    while (i < len) {
+        while (i < len && (spc(s[i]) || s[i] == ',')) i++;
+        int start = i;
+        while (i < len && s[i] != ',') i++;
+        int cs, ce;
+        if (!last_compound(s, start, i, &cs, &ce)) continue;
+        if (x->nalt >= XSEL_MAXALT) { x->spill = 1; continue; }
+        parse_compound(s + cs, ce - cs, &x->alt[x->nalt++]);
+    }
+}
+
+static int match_xsel(struct node *n, const struct xsel *x, const char *s, int len)
+{
+    for (int i = 0; i < x->nalt; i++)
+        if (match_xcomp(n, &x->alt[i])) return 1;
+    return x->spill ? match_selector(n, s, len) : 0;
 }
 
 static void apply_patch(struct node *n, const struct xpatch *p)
@@ -330,6 +394,14 @@ static void walk(struct node *n, const char *sel, int slen, const struct xpatch 
 {
     if (n->type == N_ELEM && match_selector(n, sel, slen)) apply_patch(n, p);
     for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, p);
+}
+
+/* The same walk against a pre-parsed selector -- the compiled path. */
+static void walk_x(struct node *n, const struct xsel *x, const char *sel, int slen,
+                   const struct xpatch *p)
+{
+    if (n->type == N_ELEM && match_xsel(n, x, sel, slen)) apply_patch(n, p);
+    for (struct node *c = n->first_child; c; c = c->next) walk_x(c, x, sel, slen, p);
 }
 
 /* opacity:0 + animation/opacity-transition -> the end state is visible (we
@@ -410,10 +482,114 @@ static int media_active_at(int s)
     return 1;
 }
 
-void css_extra_apply(struct node *root, const char *css, int len)
+/* ---------------- the sheet, COMPILED once ----------------
+ *
+ * Everything above this line -- media_scan, the rule loop, parse_decls with its
+ * dozen linear searches per declaration block -- reads the stylesheet TEXT and
+ * nothing else. None of it depends on the tree being patched. Yet
+ * css_extra_apply ran all of it on every call, and css_apply_scoped calls it
+ * once per node in scope, so one DOM mutation re-scanned the whole stylesheet
+ * once per element in the invalidation scope.
+ *
+ * Measured host-side (`make bench-css`), one css_extra_apply over a single leaf:
+ * 0.71 ms on deepseek's 56 KB expanded sheet, 1.52 ms on wikipedia's 224 KB --
+ * for a call whose actual work is matching one element. Times the number of
+ * nodes in scope, that was two thirds of every repaint.
+ *
+ * So the text half is compiled once into the rules that can actually patch
+ * something, and only the tree walk runs per call. The rule list is a small
+ * subset of the sheet: only border-radius / grid / gap / animation /
+ * visually-hidden rules survive, which is tens of rules out of thousands.
+ *
+ * Cache key is the sheet bytes PLUS the three inputs an @media verdict depends
+ * on (viewport width, viewport height, colour scheme) -- media gating is
+ * resolved at compile time, so a rule list compiled for one viewport must not
+ * be reused at another. A private copy of the source is kept because the
+ * selector spans point into it and the caller rewrites its buffer in place. */
+struct xrule { int sel, slen; struct xsel x; struct xpatch p; };
+static char        *g_src;
+static int          g_srclen;
+static struct xrule *g_rules;
+static int          g_nrules, g_rulecap;
+static int          g_compiled;
+static int          g_key_vw, g_key_vh, g_key_dark;
+static int          g_compiles;            /* test seam; see css_extra_compiles() */
+
+int css_extra_compiles(void) { return g_compiles; }
+
+void *kmalloc(unsigned long);
+void  kfree(void *);
+
+static void compile_drop(void)
 {
-    if (!root) return;
-    if (!css || len <= 0) { walk_inline(root); walk_anim(root); return; }
+    if (g_src)   { kfree(g_src);   g_src = 0; }
+    if (g_rules) { kfree(g_rules); g_rules = 0; }
+    g_srclen = g_nrules = g_rulecap = g_compiled = 0;
+}
+
+static int rules_push(int sel, int slen, const struct xpatch *p)
+{
+    if (g_nrules == g_rulecap) {
+        int cap = g_rulecap ? g_rulecap * 2 : 64;
+        struct xrule *nr = (struct xrule *)kmalloc((unsigned long)cap * sizeof *nr);
+        if (!nr) return 0;
+        for (int i = 0; i < g_nrules; i++) nr[i] = g_rules[i];
+        if (g_rules) kfree(g_rules);
+        g_rules = nr; g_rulecap = cap;
+    }
+    g_rules[g_nrules].sel = sel;
+    g_rules[g_nrules].slen = slen;
+    g_rules[g_nrules].p = *p;
+    compile_selector(g_src + sel, slen, &g_rules[g_nrules].x);
+    g_nrules++;
+    return 1;
+}
+
+/* Scan [css,len) for the rules that can patch something, storing them against a
+ * private copy. Returns 1 if g_rules is usable, 0 if the caller must fall back
+ * to scanning the text itself (only on allocation failure). */
+static int compile_sheet(const char *css, int len)
+{
+    int vw = css_media_width(), vh = css_media_height(), dark = css_color_scheme();
+    if (g_compiled && g_srclen == len && g_key_vw == vw && g_key_vh == vh &&
+        g_key_dark == dark && memcmp(g_src, css, (unsigned)len) == 0)
+        return 1;
+
+    compile_drop();
+    g_compiles++;
+    char *cp = (char *)kmalloc((unsigned long)(len ? len : 1));
+    if (!cp) return 0;
+    memcpy(cp, css, (unsigned)len);
+    g_src = cp; g_srclen = len;
+    g_key_vw = vw; g_key_vh = vh; g_key_dark = dark;
+
+    media_scan(g_src, len);
+    int i = 0;
+    while (i < len) {
+        while (i < len && (spc(g_src[i]) || g_src[i] == '}')) i++;
+        if (i >= len) break;
+        if (g_src[i] == '@') { while (i < len && g_src[i] != '{') i++; if (i < len) i++; continue; }
+        int s = i;
+        while (i < len && g_src[i] != '{') i++;
+        if (i >= len) break;
+        int slen = i - s;
+        i++;
+        int d = i, depth = 1;
+        while (i < len && depth) { if (g_src[i] == '{') depth++; else if (g_src[i] == '}') depth--; i++; }
+        int dlen = i - 1 - d;
+        if (dlen <= 0 || !media_active_at(s)) continue;
+        struct xpatch p;
+        parse_decls(g_src + d, dlen, &p);
+        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op)
+            if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
+    }
+    g_compiled = 1;
+    return 1;
+}
+
+/* The pre-cache path, kept verbatim as the allocation-failure fallback. */
+static void apply_uncompiled(struct node *root, const char *css, int len)
+{
     media_scan(css, len);
     int i = 0;
     while (i < len) {
@@ -442,6 +618,23 @@ void css_extra_apply(struct node *root, const char *css, int len)
         if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op)
             walk(root, css + s, slen, &p);
     }
+}
+
+/* Test seam (same shape as css_vars_count): how many rules of the last
+ * compiled sheet can actually patch something. Asserting on it is how a test
+ * tells "the compiled cache was used" from "the fallback scan happened to
+ * produce the same pixels". */
+int css_extra_rules(void) { return g_compiled ? g_nrules : -1; }
+
+void css_extra_apply(struct node *root, const char *css, int len)
+{
+    if (!root) return;
+    if (!css || len <= 0) { walk_inline(root); walk_anim(root); return; }
+    if (compile_sheet(css, len))
+        for (int r = 0; r < g_nrules; r++)
+            walk_x(root, &g_rules[r].x, g_src + g_rules[r].sel, g_rules[r].slen, &g_rules[r].p);
+    else
+        apply_uncompiled(root, css, len);       /* out of memory: scan as before */
     walk_inline(root);
     walk_anim(root);
 }

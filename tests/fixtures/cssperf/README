@@ -1,0 +1,40 @@
+Real-page fixtures for `make bench-css` (tests/unit/css_bench.c).
+
+WHY THEY ARE COMMITTED RATHER THAN FETCHED
+The benchmark exists to attribute a render cost per phase, and a phase table is
+only comparable against itself. A fixture fetched at run time changes under the
+measurement -- the site ships new CSS, the CDN serves a different bundle -- and
+then a "regression" is just a different page. These are the exact bytes the
+before/after numbers in the commit message were measured on. They also take the
+network out of the timing entirely, which is the point: the fetching half of a
+slow page load belongs to the HTTP layer, not to the renderer.
+
+PROVENANCE (captured 2026-08-08, unmodified)
+
+  deepseek.html          https://www.deepseek.com/
+  ds-551fa65412a4f225.css  } the three stylesheets that page <link>s, from
+  ds-1a1e18ce2de5eec1.css  } /_next/static/css/<hash>.css
+  ds-cd0188618266f1d3.css  }
+
+  wikipedia.html         https://en.wikipedia.org/wiki/Operating_system
+  wp-1.css               its load.php?...&only=styles bundle (the big one)
+  wp-2.css               its load.php?modules=site.styles bundle
+
+WHY THESE TWO, THEY ARE DIFFERENT SHAPES
+  deepseek  is the page in the bug report, and a JS-built SPA: 98 KiB of HTML
+            that contains only 314 elements, with 66 KiB of CSS carrying 306
+            custom properties. It stresses the STYLESHEET side.
+  wikipedia is server-rendered: 654 KiB of HTML, 5604 elements, 217 KiB of CSS.
+            It stresses the TREE side -- cascade over thousands of elements and
+            a 7695-item display list.
+An optimisation that helps one and not the other is visible immediately, which
+is why both are here.
+
+RE-FETCHING (if they ever need refreshing -- the numbers must be re-measured)
+  curl -A 'Mozilla/5.0' https://www.deepseek.com/ -o deepseek.html
+  grep -o '<link[^>]*stylesheet[^>]*>' deepseek.html   # -> the current hashes
+  curl -A 'Mozilla/5.0' "https://en.wikipedia.org/wiki/Operating_system" -o wikipedia.html
+
+These are third-party pages kept verbatim as test input only. deepseek.com's
+content is (c) DeepSeek; the Wikipedia article text is CC BY-SA 4.0 and its
+MediaWiki stylesheets are GPL-2.0-or-later.
