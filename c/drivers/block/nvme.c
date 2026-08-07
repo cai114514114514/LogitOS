@@ -319,3 +319,14 @@ static int nvme_io(int write, uint64_t lba, uint32_t count, void *buf)
 
 int nvme_read(uint32_t lba, uint8_t count, void *buf)        { return nvme_io(0, lba, count, buf); }
 int nvme_write(uint32_t lba, uint8_t count, const void *buf) { return nvme_io(1, lba, count, (void *)buf); }
+
+/* The same commands without the `uint8_t count` the two above impose.
+ *
+ * nvme_io has ALWAYS been able to do this -- it loops, it caps at the
+ * controller's MDTS, and it builds a PRP list for anything past two pages. The
+ * 255-sector ceiling was in the public signature and nowhere else, so a
+ * 512 KiB read arrived here as four commands that the hardware would have taken
+ * as one. That mattered as soon as the filesystem started asking for runs
+ * (blkdev.h: a device round trip costs ~80 us whatever its size). */
+int nvme_read_n(uint64_t lba, uint32_t count, void *buf)        { return nvme_io(0, lba, count, buf); }
+int nvme_write_n(uint64_t lba, uint32_t count, const void *buf) { return nvme_io(1, lba, count, (void *)buf); }

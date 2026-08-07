@@ -11,6 +11,11 @@ int nvme_present(void);
 int nvme_busy(void);
 int nvme_read(uint32_t lba, uint8_t count, void *buf);
 int nvme_write(uint32_t lba, uint8_t count, const void *buf);
+/* The wide forms. The driver's internals were never limited to 255 sectors --
+ * nvme_io loops, caps at MDTS and builds a PRP list -- so these are the same
+ * code with the ceiling taken off the signature, which is where it was. */
+int nvme_read_n(uint64_t lba, uint32_t count, void *buf);
+int nvme_write_n(uint64_t lba, uint32_t count, const void *buf);
 int nvme_flush(void);                     /* commit the controller write cache to media */
 /* Namespace capacity in 512-byte sectors (0 if not present). The block layer
  * bounds every request with this, so it comes from Identify Namespace and never

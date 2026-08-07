@@ -182,8 +182,11 @@ static int narrow_rw(int (*rd)(uint32_t, uint8_t, void *),
     return 0;
 }
 
-static int nvme_r(void *c, uint64_t lba, uint32_t n, void *b)        { (void)c; return narrow_rw(nvme_read, 0, lba, n, b); }
-static int nvme_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; return narrow_rw(0, nvme_write, lba, n, (void *)b); }
+/* NVMe needs no chunking here: its own request builder already loops, caps at
+ * the controller's MDTS and builds a PRP list, so the wide entry points hand it
+ * a 512 KiB read as ONE command. Only legacy ATA PIO is genuinely narrow. */
+static int nvme_r(void *c, uint64_t lba, uint32_t n, void *b)        { (void)c; return n ? nvme_read_n(lba, n, b) : -1; }
+static int nvme_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; return n ? nvme_write_n(lba, n, b) : -1; }
 static int nvme_f(void *c)                                           { (void)c; return nvme_flush(); }
 static const struct blk_ops nvme_bops = { nvme_r, nvme_w, nvme_f };
 

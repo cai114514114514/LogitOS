@@ -234,7 +234,47 @@ static void port_recover(struct ahci_port *p)
  * flag c/kernel/cpu/interrupts.c already consults to skip schedule() for exactly
  * this reason (ata_busy()); AHCI shares it rather than adding a second one,
  * because it is the same claim -- an ATA-family transfer is in flight -- and
- * because interrupts.c is not this change's to edit. */
+ * because interrupts.c is not this change's to edit.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS STILL A POLL, AFTER THE WAIT QUEUES LANDED
+ *
+ * c/kernel/core/wait.h gives a driver everything it needs to stop spinning:
+ * sem_wait_timeout() in the command thread, sem_post() from a completion ISR,
+ * and dev_irq_request() (c/drivers/core/driver.h) to wire the interrupt --
+ * whose own documentation uses `ahci_isr` as its worked example. So the
+ * question was not whether it could be done here, but what it would buy and
+ * what it would cost. Both were measured (make bench-fs BENCH_BLK=ahci):
+ *
+ *   AHCI, polled, per command:    8 sectors 110 us | 255 sectors 122 us
+ *                              1024 sectors 159 us | 2048 sectors 288 us
+ *   virtio-blk, same host:        8 sectors  86 us | 1024 sectors 148 us
+ *
+ * The poll is about 30% dearer than the paravirtual device and, crucially, it
+ * is FLAT in the size of the transfer, exactly like virtio's. Polling is not
+ * where the time went. The COMMAND COUNT was: reading the 3 MB browser.aex used
+ * to issue 745 commands and spend 97.6 ms of BKL-held, non-preemptible time on
+ * this port. It now issues 9 and spends 1.35 ms. That is 98.6% of the stolen
+ * CPU returned to the rest of the machine by asking the device fewer times --
+ * which is the same thing a blocking wait would have been trying to achieve,
+ * arrived at without touching the scheduler.
+ *
+ * What converting the remaining 1.35 ms would require, and why it is NOT a
+ * local change to this file: a sleeping wait DROPS THE BKL across the switch.
+ * c/fs/logitfs.c states the invariant it relies on in as many words --
+ *
+ *     "every op runs under the kernel BKL and the shared static staging buffers
+ *      above (blk_buf/ind_buf/dind_buf/namebuf) carry no lock of their own.
+ *      Correctness relies on the BKL never being dropped mid-operation."
+ *
+ * -- and every call that reaches this driver comes through those buffers. Park
+ * inside a command and a second thread walks straight into a filesystem holding
+ * half-built state in file-static memory. So the ORDER is: a sleeping mutex
+ * around the filesystem's entry points first, then the driver's wait. Doing the
+ * driver half alone would trade 1.35 ms of spin for a data-corruption race, and
+ * the previous scheduler change that got this wrong froze the whole machine
+ * (see ff910e6 and bkl_hlt_wait()).
+ * ------------------------------------------------------------------------- */
 static int ahci_cmd_once(struct ahci_port *p, int write, uint8_t command,
                          uint64_t lba, uint32_t sectors, void *buf, uint32_t bytes)
 {

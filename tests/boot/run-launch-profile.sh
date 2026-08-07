@@ -132,9 +132,20 @@ for line in rep.splitlines():
     agg[base] = agg.get(base, 0) + hits
     tot += hits
 
+# A sample taken while a core sits in a `hlt` loop is a sample of the machine
+# being IDLE, not of work. Three sites in this kernel are exactly that, and they
+# dominate any window wider than the thing being measured -- so they are named,
+# because reporting "wm_run 23%" as if it were CPU spent launching an app would
+# be the profiler lying in the direction the reader expects.
+IDLE = {"wm_run", "file_read", "tty_read", "bkl_hlt_wait", "schedule"}
+
 print()
-print("%-34s %8s %7s" % ("symbol", "hits", "share"))
+print("%-34s %8s %7s  %s" % ("symbol", "hits", "share", "note"))
+work = sum(h for n, h in agg.items() if n not in IDLE)
 for name, hits in sorted(agg.items(), key=lambda kv: -kv[1])[:25]:
-    print("%-34s %8d %6.1f%%" % (name, hits, 100.0 * hits / tot if tot else 0))
+    note = "hlt/idle loop -- not work" if name in IDLE else ""
+    print("%-34s %8d %6.1f%%  %s" % (name, hits, 100.0 * hits / tot if tot else 0, note))
+print()
+print("non-idle samples: %d of %d (%.1f%%)" % (work, tot, 100.0 * work / tot if tot else 0))
 PY
 echo "================================="
