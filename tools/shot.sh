@@ -26,7 +26,7 @@ trap cleanup EXIT
 
 # -snapshot so a diagnostic run can never modify the disk image.
 "$QEMU" -cdrom build/logit.iso \
-    -drive file=build/disk.img,format=raw,if=none,id=hd0 \
+    -drive file=build/disk.img,format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -cpu "${QEMU_CPU_MODEL:-max}" \
     -rtc base=localtime \

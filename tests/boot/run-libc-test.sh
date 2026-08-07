@@ -11,7 +11,7 @@ cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] &
 trap cleanup EXIT
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 { sleep 5; printf '/bin/libctest\n'; sleep 5; printf 'exit\n'; sleep 2; } | \
-  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
+  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 for _ in $(seq 1 300); do

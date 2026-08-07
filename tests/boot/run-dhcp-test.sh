@@ -52,7 +52,7 @@ PORT="$(cat "$PORTFILE")"
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 { sleep 12; printf 'net get http://10.0.2.2:%s/probe.bin\n' "$PORT"; sleep 10; } | \
-  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 \
+  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot -m 512M -smp 4 \
     -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET \
     -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &

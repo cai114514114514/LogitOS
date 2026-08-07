@@ -16,7 +16,7 @@ trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 { sleep 4; printf 'as /usr/as/examples/hello.as\nas /usr/as/examples/fib.as\nas /usr/as/examples/ptr.as\nas /usr/as/examples/sys.as\nas /usr/as/examples/use_mod.as\nas /usr/as/examples/dict.as\nas /usr/as/examples/closure.as\nas /usr/as/examples/gc.as\nas /usr/as/examples/classes.as\nas /usr/as/examples/exc.as\nas /usr/as/examples/stdlib.as\nas /usr/as/examples/strings.as\nas /usr/as/examples/sysdemo.as\nas /usr/as/examples/selfhost.as\nas /usr/as/examples/guidemo.as &\nexit\n'; sleep 12; } | \
-  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
+  "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 
