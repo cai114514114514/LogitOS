@@ -236,14 +236,27 @@ static void handle_mouse(struct hid_dev *h, const uint8_t *rep, int len)
     if (h->mx > w - 1) h->mx = w - 1;
     if (h->my > ht - 1) h->my = ht - 1;
 
-    /* Buttons are LEVELS, which is what wm_mouse_event() documents wanting: the
+    /* THE WHEEL IS NEGATED, and this is not a guess. HID Usage(Wheel) is
+     * positive for rotation AWAY from the user, i.e. scrolling up (Usage Tables
+     * 1.12, 4.2). EV_WHEEL is positive for scrolling DOWN -- that is what the
+     * PS/2 path produces, what tests/qmp/qmp_input.py pins down, and what the
+     * DOM's deltaY means, and browser.aex reads it as deltaY. The two
+     * conventions genuinely disagree, so somebody has to flip, and it is the
+     * driver whose protocol disagrees with the ABI.
+     *
+     * Caught by measurement, not by reading: the first version passed this
+     * value through, and the harness's original assertion ("some notch is
+     * positive and some is negative") was satisfied by the inverted result.
+     * The assertion now checks WHICH direction produced which sign.
+     *
+     * Buttons are LEVELS, which is what wm_mouse_event() documents wanting: the
      * window manager derives press and release from the previous level, because
      * only it knows which window owns a press. */
     wm_mouse_event(h->mx, h->my,
                    (ms.buttons & 1) ? 1 : 0,
                    (ms.buttons & 2) ? 1 : 0,
                    (ms.buttons & 4) ? 1 : 0,
-                   ms.wheel);
+                   -ms.wheel);
     usb_motion_total++;
 }
 
