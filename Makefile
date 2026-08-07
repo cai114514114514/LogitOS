@@ -145,7 +145,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-klog test-klog-control test-panic test-panic-log
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log
 
 all: $(ISO)
 
@@ -243,7 +243,7 @@ APPS := clock textedit monitor terminal widgets files preview studio
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
@@ -252,7 +252,8 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
 
-CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest
+CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
+       show dir chart prog
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -297,7 +298,7 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
-                c/net/http/http1.c c/net/http/hpool.c \
+                c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
@@ -376,7 +377,7 @@ $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 # the common CLI base via crt0_cli. (Host-native testing is awkward: string.c
 # defines memcpy/etc. which clash with the host libc -- so we test on Logit.)
 LIBC_OBJS := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
-$(BUILD)/asobj/tests/unit/libctest_main.o: tests/unit/libctest_main.c
+$(BUILD)/asobj/tests/unit/libctest_main.o: tests/unit/libctest_main.c tests/unit/libctest_more.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/libctest.elf: $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
@@ -478,6 +479,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
+	    tests/fixtures/img/dot.png:/media/dot.png \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
@@ -497,20 +499,6 @@ QEMU_SMP  ?= -smp 4 -accel tcg,thread=multi
 # hardware-RNG flags so HTTPS works. Overridable: `make run QEMU_CPU="-cpu qemu64"`.
 QEMU_CPU  ?= -cpu max
 QEMU_RTC  := -rtc base=localtime    # show the host's local wall-clock time
-# Modern GPU; the kernel drives the scanout. xres/yres set the EDID preferred
-# mode, which the driver reads once at boot. This used to be a CAGE: without a
-# scale factor the desktop's geometry was measured in raw device pixels, so
-# 1280x800 was simultaneously the resolution AND the layout, and any other number
-# either shrank every control or pushed windows off-screen. Now it is only a
-# DEFAULT. The kernel treats app geometry as points and picks a backing scale
-# from the mode (fb.c pick_scale), holding the logical desktop at >= 1280x800 and
-# spending the surplus pixels on density -- so 1920x1200 is the same desk space
-# at 1.5x, drawn with 2.25x the pixels, and text/icons are re-rasterized rather
-# than magnified. Override freely; the UI follows:
-#   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=2560,yres=1600"   # 2x
-#   make run QEMU_GPU="-vga none -device virtio-gpu-pci,xres=1280,yres=800"    # 1x
-# (A not-yet-realized QEMU window still reports 640x480; virtio_gpu.c refuses
-# that and programs the default rather than locking the desktop to it.)
 # Modern GPU; the kernel drives the scanout. xres/yres set the EDID preferred
 # mode, which the driver reads once at boot. This used to be a CAGE: without a
 # scale factor the desktop's geometry was measured in raw device pixels, so
@@ -720,6 +708,7 @@ test-ahci: $(ISO) $(DISK)
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) raw
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) mbr
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) gpt
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) two
 
 test-ahci-raw: $(ISO) $(DISK)
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) raw
@@ -727,6 +716,8 @@ test-ahci-mbr: $(ISO) $(DISK)
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) mbr
 test-ahci-gpt: $(ISO) $(DISK)
 	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) gpt
+test-ahci-two: $(ISO) $(DISK)
+	@bash tests/boot/run-ahci-test.sh $(ISO) $(DISK) two
 
 
 test-shell: $(ISO) $(DISK)
@@ -861,12 +852,30 @@ test-hugefile: $(ISO) $(DISK)
 test-fsreplay: $(ISO) $(DISK)
 	@bash tests/boot/run-fsreplay-test.sh $(ISO) $(DISK)
 
-# Host unit test for TCP out-of-order reassembly (white-box: #includes tcp.c).
+# Host unit test for the TCP state machines (white-box: #includes tcp.c).
 # Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).
+# Covers reassembly, option negotiation (window scale / SACK / timestamps, and
+# the fallback when the peer refuses each), PAWS, Nagle, delayed ACK, PMTU, and
+# the RFC 5681 congestion window driven against a synthetic loss pattern.
 test-tcp-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Ic/net/transport
 	@./$(BUILD)/tcp_test
+
+# The negative control for the congestion-control assertions. Builds the SAME
+# test with the controller's response to loss neutralised (in the test file --
+# tcp.c carries no test hooks) and REQUIRES the run to fail. A cwnd test that
+# still passes with the window reduction removed is not testing anything.
+test-tcp-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DTCP_NEGATIVE_CONTROL -o $(BUILD)/tcp_test_negctl tests/unit/tcp_test.c \
+		-Itests/unit/tcpstub -Ic/net/transport
+	@if ./$(BUILD)/tcp_test_negctl >$(BUILD)/tcp_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes without congestion control"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/tcp_negctl.log) checks fail without the loss response"; \
+	fi
 
 # Host protocol tests for IPv4 validation/reassembly, UDP checksums, ICMP
 # echo matching and error routing, and the DNS waiter's error path.
@@ -877,7 +886,7 @@ test-net-proto:
 		-Ic/drivers/timer -Ic/kernel/core
 	@./$(BUILD)/net_proto_test
 
-test-net: test-tcp-host test-net-proto test-dhcp-host
+test-net: test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host
 
 test-dhcp-host: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
@@ -1274,7 +1283,8 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # chunked bodies, concurrent requests) is exercised without QEMU.
 # -DWEBAPI_HOST keeps logit.h's `int 0x80` wrappers out of the host binary.
 WEBAPI_TEST_SRC := tests/unit/webapi_test.c c/apps/browser/js_webapi.c \
-                   c/net/http/http1.c c/net/http/url.c tests/unit/rust_host_shim.c
+                   c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
+                   tests/unit/rust_host_shim.c
 test-webapi: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
@@ -1371,6 +1381,22 @@ test-css-asan: $(BUILD)/libcss_host.a
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/css_engine_asan >/dev/null
 	@echo "css_engine_test: ASan + UBSan + LeakSanitizer clean"
+# The custom-property scanner walks attacker-controlled stylesheet bytes with
+# raw index arithmetic (it looks BACKWARDS from a declaration start, trims
+# spans, and skips comments and strings that may run off the end of the
+# buffer). A wrong answer is what css_vars_test measures; an out-of-bounds read
+# is what these two measure.
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_asan tests/unit/css_vars_test.c \
+	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/css_vars_asan >/dev/null
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_fuzz tests/unit/css_vars_fuzz.c \
+	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/css_vars_fuzz $(FUZZ_N)
+	@echo "css_vars: ASan + UBSan clean over the unit cases and the fuzz corpus"
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_asan tests/unit/layout_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
@@ -1610,6 +1636,52 @@ test-devmodel-b: $(ISO) $(DISK)
 	@SET=b bash tests/boot/run-devmodel-test.sh $(ISO) $(DISK)
 test-devmodel: test-devmodel-a test-devmodel-b
 
+
+# ---- M28 time subsystem -----------------------------------------------------
+# test-time-host  the isolable logic: the timer heap under insert/cancel/expiry
+#                 (including 64 timers on ONE deadline), the ns arithmetic, a
+#                 32-bit counter WRAPPING, the cross-core monotonicity clamp,
+#                 and the 2x-tick negative control. Compiles the real
+#                 c/kernel/core/ktime.c with a settable fake cycle counter --
+#                 a test of a copy of the code proves things about the copy.
+# test-time-negctl  the same suite with the cross-check's tolerance removed.
+#                 REQUIRED TO FAIL: it is the proof that test-time-host's 2x
+#                 assertions can fail at all.
+test-time-host:
+	@mkdir -p $(BUILD)
+	@$(CC) -DLOGIT_TIME_HOST -O1 -g -Wall -Wextra -o $(BUILD)/time_test \
+	    tests/unit/time_test.c c/kernel/core/ktime.c -Ic/kernel/core -Iinclude/abi
+	@$(BUILD)/time_test
+
+test-time-negctl:
+	@mkdir -p $(BUILD)/negctl
+	@sed 's|int64_t tol = 250 + 20 / (int64_t)(rtc_seconds ? rtc_seconds : 1);|int64_t tol = 1000000;|' \
+	    c/kernel/core/ktime.c > $(BUILD)/negctl/ktime.c
+	@cp c/kernel/core/ktime.h $(BUILD)/negctl/
+	@$(CC) -DLOGIT_TIME_HOST -O1 -o $(BUILD)/time_negctl tests/unit/time_test.c \
+	    $(BUILD)/negctl/ktime.c -I$(BUILD)/negctl -Iinclude/abi
+	@if $(BUILD)/time_negctl >$(BUILD)/negctl/out.txt 2>&1; then \
+	    echo "FAIL: with the cross-check guard disabled the suite still PASSED --"; \
+	    echo "      the 2x assertions cannot fail, so they prove nothing."; \
+	    exit 1; \
+	 else \
+	    echo "PASS (negative control): guard disabled -> the 2x assertions failed, as required"; \
+	    grep 'FAIL' $(BUILD)/negctl/out.txt | sed 's/^/       /'; \
+	 fi
+
+# On device. test-time asserts the five claims the kernel prints on every boot
+# (source chosen + calibrated, cross-checked against the RTC *and* the PIT
+# interrupt count, the 2x guard rejecting, the PIT fallback actually switched
+# onto and back off again, timers firing with a reported distribution).
+test-time: $(ISO) $(DISK)
+	@bash tests/boot/run-time-test.sh $(ISO) $(DISK)
+
+# The monotonic clock across cores: one probe thread per core, and a read on one
+# core after a read on another must never be smaller. Also covers -smp 1.
+test-time-smp: $(ISO) $(DISK)
+	@bash tests/boot/run-time-smp-test.sh $(ISO) $(DISK)
+
+
 clean:
 	rm -rf $(BUILD)
 
@@ -1617,6 +1689,17 @@ clean:
 # object compiled against an old struct layout is memory corruption at runtime.
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
+# NIC driver test targets (test-nic, test-nic-drv, test-nic-e1000/virtio/
+# rtl8139, test-nic-none). Kept in their own fragment so they could be added
+# while several agents were editing this file concurrently.
+-include tests/nic.mk
+
 # Audio test targets (test-audio, test-audio-pcm, test-audio-wav/mix/underrun/
 # none) and /bin/sndtest. Same reason, same shape.
 -include tests/audio.mk
+
+# USB test targets (test-usb, test-usb-host/ring/desc/hid, test-usb-os,
+# test-usb-none, test-usb-negctl). Same reason, same shape. The DRIVER needs no
+# Makefile change at all -- C_SRC globs c/drivers and it registers itself
+# through the device model's linker section.
+-include tests/usb.mk

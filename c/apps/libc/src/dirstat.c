@@ -23,6 +23,11 @@ static long sys(long n, long a, long b, long c)
 /* ---------------------------------------------------------------------- */
 /* stat                                                                    */
 /* ---------------------------------------------------------------------- */
+/* The caller's buffer is filled ONLY on success. POSIX leaves its contents
+ * unspecified after a failure, but "unspecified" in practice means callers do
+ * `stat(a,&st); if (stat(b,&st) == 0) ...` and expect a's result to survive a
+ * failed second call -- zeroing it first turned that into a silent wrong
+ * answer. Nothing is written until the answer is known. */
 static void fill_common(struct stat *st)
 {
     memset(st, 0, sizeof *st);
@@ -33,11 +38,11 @@ static void fill_common(struct stat *st)
 int stat(const char *path, struct stat *st)
 {
     if (!path || !st) { errno = EINVAL; return -1; }
-    fill_common(st);
     /* A directory is a path SYS_DIR_COUNT accepts; the kernel returns -1 for
      * anything that is not one, which is also how we tell "missing" apart. */
     long n = sys(SYS_DIR_COUNT, (long)path, 0, 0);
     if (n >= 0) {
+        fill_common(st);
         st->st_mode = S_IFDIR | 0755;
         st->st_size = n;                /* entry count: the only size a dir has here */
         return 0;
@@ -47,6 +52,7 @@ int stat(const char *path, struct stat *st)
     long sz = lseek(fd, 0, SEEK_END);
     close(fd);
     if (sz < 0) sz = 0;
+    fill_common(st);
     st->st_mode = S_IFREG | 0644;
     st->st_size = sz;
     st->st_blocks = (sz + 511) / 512;
@@ -57,12 +63,12 @@ int lstat(const char *path, struct stat *st) { return stat(path, st); }  /* no s
 int fstat(int fd, struct stat *st)
 {
     if (!st) { errno = EINVAL; return -1; }
-    fill_common(st);
     long cur = lseek(fd, 0, SEEK_CUR);
     if (cur < 0) { errno = EBADF; return -1; }
     long sz = lseek(fd, 0, SEEK_END);
     lseek(fd, cur, SEEK_SET);
     if (sz < 0) sz = 0;
+    fill_common(st);
     /* An fd can be a pipe or the tty, where seeking fails; those report as a
      * FIFO / character device rather than as a zero-length regular file, so
      * `isatty`-style checks over fstat behave. */
