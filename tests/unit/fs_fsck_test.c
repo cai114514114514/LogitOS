@@ -422,6 +422,71 @@ int main(void)
         fsstub_clock -= 3600;
     }
 
+    /* --- 15. the double-indirect tree ---------------------------------------
+     * Every case above fits in direct + single indirect, so walk_inode's second
+     * level -- and inode_write's, and the truncation that has to trim inside an
+     * L2 block -- is untouched by all of them. In the kernel that path is
+     * reached only by tests/boot/run-hugefile-test.sh, which is two QEMU boots
+     * and several minutes; here it is a bigger simulated disk and a moment.
+     * A file past NDIRECT + PPB blocks is ~4.2 MB, so this runs on its own
+     * image rather than enlarging every other case. */
+    free(snap);
+    sim_close();
+    {
+        const int huge = (LFS_NDIRECT + LFS_PPB + 40) * LFS_BS;   /* 1076 blocks */
+        sim_open_n(LFS_NDIRECT + LFS_PPB + 200);                  /* ~4.9 MB disk */
+        snap = malloc((size_t)sim_nblocks * LFS_BS);
+        uint8_t *big = malloc((size_t)huge);
+        uint8_t *back = malloc((size_t)huge);
+        if (!snap || !big || !back) return 2;
+        sim_read_super(&SB);
+
+        fs_ok(logitfs.mount() == 0, "double indirect: mount the larger image");
+        for (int i = 0; i < huge; i++) big[i] = (uint8_t)(i * 7 + (i >> 11) * 3);
+        fs_ok(logitfs.write("/huge", big, huge) == huge,
+              "double indirect: a %d-block file writes", huge / LFS_BS);
+        fs_ok(logitfs.read("/huge", back, huge) == huge && !memcmp(big, back, (size_t)huge),
+              "double indirect: and reads back byte-for-byte");
+        logitfs_unmount();
+        blk_flush();
+        memcpy(snap, sim_media, (size_t)sim_nblocks * LFS_BS);
+
+        fs_ok(check(&r, 0) == 0 && r.problems == 0,
+              "double indirect: fsck walks the two-level tree and finds it clean "
+              "(%d problem(s))", r.problems);
+
+        /* Break a pointer INSIDE the second level: the L2 entry for a block well
+         * past the single-indirect ceiling. Only the double-indirect walk can
+         * see this, and only the double-indirect trim can repair it. */
+        struct lfs_dinode *in = minode(ino_of("huge"));
+        uint32_t l1blk = in->double_indirect;
+        uint8_t l1[LFS_BS];
+        memcpy(l1, mblk(l1blk), LFS_BS);
+        uint32_t l2blk = ((uint32_t *)(void *)l1)[0];
+        ((uint32_t *)(void *)mblk(l2blk))[10] = SB.total_blocks + 5;   /* off the image */
+
+        check(&r, 0);
+        fs_ok(r.bad_blockptr >= 1,
+              "double indirect: a bad pointer in an L2 block is found (%d)", r.bad_blockptr);
+        fs_ok(check(&r, 1) == 0, "double indirect: repaired by truncating inside the tree");
+        fs_ok(check(&r, 0) == 0 && r.problems == 0,
+              "double indirect: a second pass is clean (%d left)", r.problems);
+
+        /* And the surviving prefix still reads: the repair truncated, it did not
+         * scramble. */
+        fs_ok(logitfs.mount() == 0, "double indirect: mounts after the repair");
+        int sz = logitfs.size("/huge");
+        fs_ok(sz > 0 && sz < huge, "double indirect: /huge was truncated, not lost (%d bytes)", sz);
+        if (sz > 0 && sz <= huge) {
+            memset(back, 0, (size_t)sz);
+            fs_ok(logitfs.read("/huge", back, sz) == sz && !memcmp(big, back, (size_t)sz),
+                  "double indirect: the surviving prefix is byte-for-byte the original");
+        }
+        logitfs_unmount();
+
+        free(big); free(back);
+    }
+
     free(snap);
     sim_close();
     return fs_verdict("fs_fsck_test");

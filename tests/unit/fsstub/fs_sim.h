@@ -144,7 +144,7 @@ static void sim_power_cut(uint32_t seed, int allow_tear)
 
 /* --- image ---------------------------------------------------------------- */
 
-#define SIM_TOTAL_BLOCKS 512
+#define SIM_TOTAL_BLOCKS 512      /* default: 2 MiB, enough for direct + single indirect */
 #define SIM_INODE_COUNT  64
 #define SIM_LOG_BLOCKS   16
 
@@ -155,13 +155,13 @@ static void sim_mkfs(void)
 {
     memset(sim_media, 0, (size_t)sim_nblocks * LFS_BS);
     uint32_t bitmap_start  = 1;
-    uint32_t bitmap_blocks = (SIM_TOTAL_BLOCKS + 8 * LFS_BS - 1) / (8 * LFS_BS);
+    uint32_t bitmap_blocks = (sim_nblocks + 8 * LFS_BS - 1) / (8 * LFS_BS);
     uint32_t inode_start   = bitmap_start + bitmap_blocks;
     uint32_t inode_blocks  = (SIM_INODE_COUNT * LFS_INODE_SIZE + LFS_BS - 1) / LFS_BS;
     uint32_t log_start     = inode_start + inode_blocks;
     uint32_t data_start    = log_start + SIM_LOG_BLOCKS;
 
-    uint32_t sbw[13] = { LFS_MAGIC, LFS_VERSION, LFS_BS, SIM_TOTAL_BLOCKS,
+    uint32_t sbw[13] = { LFS_MAGIC, LFS_VERSION, LFS_BS, sim_nblocks,
                          SIM_INODE_COUNT, bitmap_start, bitmap_blocks,
                          inode_start, inode_blocks, data_start, 0,
                          log_start, SIM_LOG_BLOCKS };
@@ -180,14 +180,19 @@ static void sim_mkfs(void)
     sim_npend = 0;
 }
 
-static void sim_open(void)
+/* `nblocks` = 0 uses SIM_TOTAL_BLOCKS. A test that needs the DOUBLE-INDIRECT
+ * tree must pass more than NDIRECT + PPB + overhead blocks (~1100), because
+ * nothing below that reaches the second level at all. */
+static void sim_open_n(uint32_t nblocks)
 {
-    sim_nblocks = SIM_TOTAL_BLOCKS;
+    sim_nblocks = nblocks ? nblocks : SIM_TOTAL_BLOCKS;
     sim_media = calloc(sim_nblocks, LFS_BS);
     sim_pend  = calloc(SIM_MAX_PENDING, sizeof *sim_pend);
     if (!sim_media || !sim_pend) { fprintf(stderr, "sim: out of memory\n"); abort(); }
     sim_mkfs();
 }
+
+static void sim_open(void) { sim_open_n(0); }
 
 static void sim_close(void) { free(sim_media); free(sim_pend); sim_media = 0; sim_pend = 0; }
 
