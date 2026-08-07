@@ -20,6 +20,7 @@ void text_init(void);                 /* load /fonts/ui.ttf + /fonts/mono.ttf */
 int  text_draw(int x, int y, const char *utf8, uint32_t color);
 int  text_draw_sz(int x, int y, const char *utf8, int px, uint32_t color);
 int  text_draw_mono(int x, int y, const char *utf8, int cell_w, uint32_t color);
+int  text_draw_mono_sz(int x, int y, const char *utf8, int px, int cell_w, uint32_t color);
 int  text_width(const char *utf8);
 int  text_width_sz(const char *utf8, int px);
 int  text_measure(const char *s, int len, int px, int mono);  /* length-delimited run */

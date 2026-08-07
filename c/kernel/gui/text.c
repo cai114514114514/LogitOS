@@ -113,6 +113,10 @@ static int measure(const char *utf8, int prefer, int px, int cell)
 int text_draw_sz(int x, int y, const char *utf8, int px, uint32_t color){ return draw(x,y,utf8,F_UI,px,0,color); }
 int text_draw(int x, int y, const char *utf8, uint32_t color){ return draw(x,y,utf8,F_UI,TEXT_UI_PX,0,color); }
 int text_draw_mono(int x, int y, const char *utf8, int cell_w, uint32_t color){ return draw(x,y,utf8,F_MONO,TEXT_UI_PX,cell_w,color); }
+/* Same, at an explicit pixel size. The Terminal picks its cell width in points
+ * and the WM scales BOTH the cell and the glyph size, so a 2x display draws
+ * genuinely larger glyphs rather than the same glyphs in wider cells. */
+int text_draw_mono_sz(int x, int y, const char *utf8, int px, int cell_w, uint32_t color){ return draw(x,y,utf8,F_MONO,px,cell_w,color); }
 int text_width_sz(const char *utf8, int px){ return measure(utf8,F_UI,px,0); }
 int text_width(const char *utf8){ return measure(utf8,F_UI,TEXT_UI_PX,0); }
 
