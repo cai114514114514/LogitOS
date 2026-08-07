@@ -228,6 +228,7 @@ struct ip6_stats {
     uint32_t rx, tx, rx_bad;
     uint32_t ra, ns_rx, na_rx, ns_tx, na_tx, rs_tx;
     uint32_t dad_pass, dad_fail;
+    uint32_t icmp6_err;     /* ICMPv6 errors accepted as being about OUR traffic */
 };
 extern struct ip6_stats ip6_stats;
 

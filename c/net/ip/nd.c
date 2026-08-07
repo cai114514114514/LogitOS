@@ -39,12 +39,20 @@
 #include "eth.h"
 #include "net.h"
 #include "pit.h"
+#include "tcp.h"
 #include "kprintf.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
 /* ---- message and option types ------------------------------------------- */
+
+/* RFC 4443 s3: the error messages. Types below 128 are errors, 128 and above
+ * are informational -- that split is the type field's high bit. */
+#define ICMP6_DST_UNREACH   1
+#define ICMP6_PKT_TOO_BIG   2
+#define ICMP6_TIME_EXCEEDED 3
+#define ICMP6_PARAM_PROBLEM 4
 
 #define ICMP6_ECHO_REQUEST  128
 #define ICMP6_ECHO_REPLY    129
@@ -682,6 +690,85 @@ static void handle_echo(const ip6_addr *src, const ip6_addr *dst,
     ip6_output(&from, src, IP6_NH_ICMP6, r, len);
 }
 
+/* ---- ICMPv6 errors -------------------------------------------------------
+ *
+ * These matter more in IPv6 than their v4 counterparts do, because IPv6 took
+ * away the alternative. No router on the path may fragment (RFC 8200 s4.5) and
+ * there is no DF bit to set, so Packet Too Big is not one way to learn the path
+ * MTU -- it is the ONLY way. A stack that ignores it works perfectly until it
+ * meets a tunnel, and then large segments vanish with no error the application
+ * can see.
+ *
+ * The delivery point is c/net/transport/tcp.c, which belongs to another line
+ * and today has only the IPv4 tcp_error(). The hook below is declared WEAK for
+ * exactly the reason ip6_send() was: it links as NULL until they define it, the
+ * call is guarded, and nothing here waits on their edit. What we do on this
+ * side -- parse, validate, and refuse to pass on anything unsafe -- is done and
+ * tested (tests/unit/nd_test.c).
+ *
+ * `remote` is the destination of the packet that provoked the error, i.e. the
+ * far end of the connection; `type`/`code` are the RAW ICMPv6 values, not
+ * translated into their v4 near-equivalents (Packet Too Big is its own type in
+ * v6 and a Destination Unreachable code in v4, so translating would lose the
+ * distinction); `mtu` is meaningful only for ICMP6_PKT_TOO_BIG, where RFC 4443
+ * s3.2 makes it mandatory -- unlike ICMPv4 frag-needed, whose MTU field older
+ * routers leave zero, so the v4 side has to guess with pmtu_next_lower() and
+ * the v6 side does not have to guess at all. */
+#ifdef TCP_AF_INET6
+void tcp_error_af(const struct tcp_addr *remote, uint16_t lport, uint16_t rport,
+                  int type, int code, uint32_t mtu) __attribute__((weak));
+#endif
+
+static void handle_icmp6_error(const ip6_addr *src, const uint8_t *m, uint16_t len)
+{
+    /* type(0) code(1) checksum(2..3), four bytes of type-specific data, then as
+     * much of the invoking packet as fits in the minimum MTU. To identify a
+     * connection we need its IPv6 header plus the first four bytes of the
+     * transport header -- the port pair. */
+    if (len < 8 + IP6_HDR_LEN + 4) { ip6_stats.rx_bad++; return; }
+    const uint8_t *q = m + 8;                   /* the quoted packet */
+    if ((q[0] >> 4) != 6) { ip6_stats.rx_bad++; return; }
+
+    ip6_addr qsrc, qdst;
+    memcpy(qsrc.b, q + 8, 16);
+    memcpy(qdst.b, q + 24, 16);
+
+    /* THE CHECK THAT MAKES THIS SAFE. The quoted packet must be one WE sent.
+     * Without it, anyone who can reach this host can shrink any connection's
+     * path MTU to 1280, or tear the connection down outright, by quoting a
+     * packet they invented -- and an ICMPv6 error is not covered by the
+     * hop-limit-255 rule (a real one comes from a router, so it cannot be),
+     * which is precisely why the check has to be on the contents instead. */
+    if (!ip6_addr_is_ours(&qsrc)) { ip6_stats.rx_bad++; return; }
+
+    /* Only TCP acts on these. An extension header between the IPv6 header and
+     * the transport header would move the ports, and we originate none, so a
+     * quote that does not start with TCP is not a packet of ours to act on. */
+    if (q[6] != IP6_NH_TCP) return;
+
+    ip6_stats.icmp6_err++;
+    (void)src;
+
+#ifdef TCP_AF_INET6
+    if (!tcp_error_af) return;                  /* not linked yet: see above */
+    uint32_t mtu = ((uint32_t)m[4] << 24) | ((uint32_t)m[5] << 16) |
+                   ((uint32_t)m[6] << 8) | m[7];
+    /* RFC 8200: no path may advertise less than the IPv6 minimum, and a router
+     * claiming otherwise is either broken or trying to make us send tiny
+     * segments forever. Clamped rather than dropped, because the rest of the
+     * message is still a legitimate signal that something was too big. */
+    if (m[0] == ICMP6_PKT_TOO_BIG && mtu < IP6_MIN_MTU) mtu = IP6_MIN_MTU;
+    if (m[0] != ICMP6_PKT_TOO_BIG) mtu = 0;
+
+    struct tcp_addr r;
+    r.af = TCP_AF_INET6;
+    memcpy(r.a.v6, qdst.b, 16);
+    uint16_t lport = (uint16_t)(((uint16_t)q[IP6_HDR_LEN] << 8) | q[IP6_HDR_LEN + 1]);
+    uint16_t rport = (uint16_t)(((uint16_t)q[IP6_HDR_LEN + 2] << 8) | q[IP6_HDR_LEN + 3]);
+    tcp_error_af(&r, lport, rport, m[0], m[1], mtu);
+#endif
+}
+
 void icmp6_input(const ip6_addr *src, const ip6_addr *dst,
                  const uint8_t *data, uint16_t len, uint8_t hlim)
 {
@@ -714,7 +801,16 @@ void icmp6_input(const ip6_addr *src, const ip6_addr *dst,
     case ICMP6_ECHO_REPLY:   echo_seen++; break;
     case ICMP6_RS:  break;                  /* we are not a router */
     case ICMP6_REDIRECT: break;             /* single router; nothing to redirect to */
-    default: break;                         /* errors: no action beyond counting */
+    case ICMP6_DST_UNREACH:
+    case ICMP6_PKT_TOO_BIG:
+    case ICMP6_TIME_EXCEEDED:
+    case ICMP6_PARAM_PROBLEM:
+        /* Note these are deliberately NOT subject to the hop-limit-255 rule
+         * above: an error comes from a router, which by definition decremented
+         * it. The forgery defence for errors is the quoted packet instead. */
+        handle_icmp6_error(src, data, len);
+        break;
+    default: break;
     }
 }
 

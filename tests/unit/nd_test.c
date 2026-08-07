@@ -85,6 +85,22 @@ static int tcp_calls;
 void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
                   const uint8_t *data, uint16_t len)
 { (void)src; (void)dst; (void)data; (void)len; tcp_calls++; }
+
+/* The hook nd.c declares weak. Defining it here is what turns "we parse the
+ * error" into "we hand the right connection and the right MTU to TCP". */
+static int      err_calls;
+static ip6_addr err_remote;
+static uint16_t err_lport, err_rport;
+static int      err_type, err_code;
+static uint32_t err_mtu;
+void tcp_error_af(const struct tcp_addr *remote, uint16_t lport, uint16_t rport,
+                  int type, int code, uint32_t mtu)
+{
+    err_calls++;
+    memcpy(err_remote.b, remote->a.v6, 16);
+    err_lport = lport; err_rport = rport;
+    err_type = type; err_code = code; err_mtu = mtu;
+}
 #endif
 
 static int passed, failed;
@@ -794,6 +810,111 @@ static void test_output(void)
           "with no router and no global address, output fails cleanly");
 }
 
+/* ---- ICMPv6 errors -------------------------------------------------------- */
+
+#ifdef TCP_AF_INET6
+/* Build an ICMPv6 error of `type`/`code` quoting a TCP packet we supposedly
+ * sent from `qsrc`:`lport` to `qdst`:`rport`. `mtu` fills the type-specific
+ * word (meaningful for Packet Too Big). `quote_len` lets a test truncate the
+ * quoted packet to less than a stack needs to identify anything. */
+static int build_icmp6_err(uint8_t *m, int type, int code, uint32_t mtu,
+                           const ip6_addr *qsrc, const ip6_addr *qdst,
+                           uint16_t lport, uint16_t rport, int nh, int quote_len)
+{
+    memset(m, 0, 96);
+    m[0] = (uint8_t)type; m[1] = (uint8_t)code;
+    m[4] = (uint8_t)(mtu >> 24); m[5] = (uint8_t)(mtu >> 16);
+    m[6] = (uint8_t)(mtu >> 8);  m[7] = (uint8_t)mtu;
+    uint8_t *q = m + 8;
+    q[0] = 0x60;
+    q[4] = 0; q[5] = 20;                        /* quoted payload length */
+    q[6] = (uint8_t)nh; q[7] = 64;
+    memcpy(q + 8, qsrc->b, 16);
+    memcpy(q + 24, qdst->b, 16);
+    q[40] = (uint8_t)(lport >> 8); q[41] = (uint8_t)lport;
+    q[42] = (uint8_t)(rport >> 8); q[43] = (uint8_t)rport;
+    return quote_len ? 8 + quote_len : 8 + 40 + 20;
+}
+
+static void test_icmp6_errors(void)
+{
+    bring_up_with_ra("2001:db8:1::", 86400, 14400, 0);
+    advance(120);
+    ip6_addr ours = A("2001:db8:1::5054:ff:fe12:3456");
+    ip6_addr peer = A("2606:2800::1");
+    ip6_addr rtr  = A("fe80::2");
+    uint8_t m[128];
+    int n;
+
+    /* Packet Too Big. IPv6 routers never fragment, so this is the ONLY path-MTU
+     * signal there is -- and unlike ICMPv4 frag-needed it always carries the
+     * MTU, so nothing has to be guessed. */
+    err_calls = 0;
+    n = build_icmp6_err(m, 2, 0, 1400, &ours, &peer, 40000, 443, IP6_NH_TCP, 0);
+    rx_icmp6(&rtr, &ours, m, n, 64);            /* hop limit 64: from a router */
+    CHECK(err_calls == 1, "Packet Too Big is delivered to TCP (%d calls)", err_calls);
+    if (err_calls) {
+        CHECK(ip6_equal(&err_remote, &peer), "with the connection's REMOTE address (%s)",
+              F(&err_remote));
+        CHECK(err_lport == 40000 && err_rport == 443, "and its port pair (%u,%u)",
+              err_lport, err_rport);
+        CHECK(err_type == 2 && err_code == 0, "raw ICMPv6 type/code, not translated");
+        CHECK(err_mtu == 1400, "and the MTU the router reported (%u)", err_mtu);
+    }
+
+    /* An MTU below the IPv6 minimum is clamped, not obeyed: a router may not
+     * advertise less than 1280, and honouring 68 would mean sending tiny
+     * segments forever on one attacker's say-so. */
+    err_calls = 0;
+    n = build_icmp6_err(m, 2, 0, 68, &ours, &peer, 40000, 443, IP6_NH_TCP, 0);
+    rx_icmp6(&rtr, &ours, m, n, 64);
+    CHECK(err_calls == 1 && err_mtu == IP6_MIN_MTU,
+          "an MTU below 1280 is clamped to 1280 (got %u)", err_mtu);
+
+    /* Destination Unreachable, and the MTU word must NOT be passed through as
+     * an MTU -- for this type those four bytes are unused and a stack that read
+     * them anyway would clamp the path on a message that says nothing about it. */
+    err_calls = 0;
+    n = build_icmp6_err(m, 1, 4, 0xDEADBEEF, &ours, &peer, 40000, 443, IP6_NH_TCP, 0);
+    rx_icmp6(&rtr, &ours, m, n, 64);
+    CHECK(err_calls == 1 && err_mtu == 0 && err_type == 1 && err_code == 4,
+          "Destination Unreachable carries no MTU (got %u)", err_mtu);
+
+    /* THE ONE THAT MATTERS. An error quoting a packet we did NOT send is a
+     * forgery: ICMPv6 errors legitimately arrive from off-link, so the hop
+     * limit cannot vouch for them and the quoted source address is the only
+     * thing that can. Acting on this would let anyone who can reach the host
+     * reset any connection, or pin its path MTU at 1280. */
+    err_calls = 0;
+    uint32_t bad0 = ip6_stats.rx_bad;
+    ip6_addr notus = A("2001:db8:1::dead");
+    n = build_icmp6_err(m, 2, 0, 1280, &notus, &peer, 40000, 443, IP6_NH_TCP, 0);
+    rx_icmp6(&rtr, &ours, m, n, 64);
+    CHECK(err_calls == 0, "an error quoting someone else's packet is refused");
+    CHECK(ip6_stats.rx_bad > bad0, "and counted as bad");
+
+    /* A quote too short to contain the port pair identifies nothing. */
+    err_calls = 0;
+    n = build_icmp6_err(m, 2, 0, 1400, &ours, &peer, 40000, 443, IP6_NH_TCP, 40);
+    rx_icmp6(&rtr, &ours, m, n, 64);
+    CHECK(err_calls == 0, "a quote without the transport ports is refused");
+
+    /* A quoted protocol that is not TCP is not ours to act on. */
+    err_calls = 0;
+    n = build_icmp6_err(m, 1, 4, 0, &ours, &peer, 40000, 443, IP6_NH_UDP, 0);
+    rx_icmp6(&rtr, &ours, m, n, 64);
+    CHECK(err_calls == 0, "an error quoting a non-TCP packet is not delivered to TCP");
+
+    /* And an error is NOT subject to the hop-limit-255 rule -- it comes from a
+     * router, which decremented it. Requiring 255 here would silently discard
+     * every path-MTU message the stack will ever receive. */
+    err_calls = 0;
+    n = build_icmp6_err(m, 2, 0, 1300, &ours, &peer, 1234, 80, IP6_NH_TCP, 0);
+    rx_icmp6(&rtr, &ours, m, n, 3);             /* nearly expired: still valid */
+    CHECK(err_calls == 1, "an error with a low hop limit is still accepted");
+}
+#endif
+
 int main(void)
 {
     test_bringup_dad();
@@ -809,6 +930,9 @@ int main(void)
     test_input_validation();
     test_echo();
     test_output();
+#ifdef TCP_AF_INET6
+    test_icmp6_errors();
+#endif
     printf("nd: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
