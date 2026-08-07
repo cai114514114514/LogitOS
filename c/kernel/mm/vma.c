@@ -169,6 +169,30 @@ out:
     return got;
 }
 
+int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot)
+{
+    uint64_t a, b;
+    if (vma_range(start, len, &a, &b) < 0) return -1;   /* also bounds it to the user region */
+
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    int ret = -1;
+    if (!s) goto out;
+    if (overlaps(s, a, b)) goto out;                    /* never evict: see the header */
+    for (int j = 0; j < VMA_MAXAREA; j++)
+        if (!s->v[j].used) {
+            s->v[j].start = a;
+            s->v[j].end   = b;
+            s->v[j].prot  = prot ? prot : VMA_READ;
+            s->v[j].used  = 1;
+            ret = 0;
+            break;
+        }
+out:
+    spin_unlock_irqrestore(&vma_lock, fl);
+    return ret;
+}
+
 int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
 {
     uint64_t start, end;

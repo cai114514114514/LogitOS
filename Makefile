@@ -2584,6 +2584,10 @@ clean:
 # primitive costs, the gate and its two controls. Own fragment; see the file.
 -include tests/tlsperf.mk
 
+# Kernel primitive costs: syscall entry, context switch, frame allocation, page
+# fault, and how much of four cores the big kernel lock eats. Own fragment.
+-include tests/kbench.mk
+
 # Network measurement: the instrumented Ethernet wire (netwire.py), the paired
 # A/B and driver comparisons that run over it, and test-net-rx -- which asserts
 # WHERE the receive path runs. Own fragment; start at tests/boot/netwire.py's

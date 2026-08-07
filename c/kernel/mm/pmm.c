@@ -154,7 +154,16 @@ static void poison_check(uint64_t frame)
         return;                     /* never poisoned (boot-time release, or poison off) */
     pz_clear(frame);
     uint64_t n = poison_bytes();
-    if (!n) return;                 /* level changed since the free: nothing to compare */
+    /* n is the CURRENT level's extent, and the frame was filled at whatever the
+     * level was when it was freed. Raising the level therefore used to compare
+     * bytes that were never written and report every previously-freed frame as
+     * a use-after-free -- an accusation of corruption produced by turning the
+     * corruption detector up, which is the worst possible failure mode for a
+     * guardrail. pmm_set_poison() now invalidates the whole poison map on a
+     * change, so by the time control reaches here the fill and the check agree
+     * by construction. The `!n` case (level dropped to 0) is kept because the
+     * map is not consulted at all then. */
+    if (!n) return;
     uint64_t *p = (uint64_t *)mm_p2v(frame * FRAME_SIZE);
     for (uint64_t i = 0; i < n / 8; i++) {
         if (p[i] != poison_word(frame, i)) {
@@ -447,8 +456,18 @@ unsigned pmm_refcount(uint64_t phys_addr)
 
 void pmm_set_poison(int level)
 {
+    int want = (level < 0) ? 0 : (level > 2 ? 2 : level);
     uint64_t fl = spin_lock_irqsave(&pmm_lock);
-    poison_level = (level < 0) ? 0 : (level > 2 ? 2 : level);
+    if (want != poison_level) {
+        /* Every currently-free frame holds a pattern of the OLD extent. Under
+         * the new one it would be compared against bytes nobody wrote, so drop
+         * the validity map: those frames are simply "not poisoned" until they
+         * are freed again. One 16 KiB memset on a call that happens a handful
+         * of times in a boot, in exchange for the detector never lying. */
+        poison_level = want;
+        if (poison_bm && total_frames)
+            memset(poison_bm, 0, (size_t)((((total_frames + 7) / 8) + 7) & ~(uint64_t)7));
+    }
     spin_unlock_irqrestore(&pmm_lock, fl);
 }
 

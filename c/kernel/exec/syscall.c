@@ -30,6 +30,7 @@
 #include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
 #include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO */
+#include "kbench.h"      /* per-syscall accounting, off by default */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -63,7 +64,22 @@ static long kheap_stress(long iters, int size, unsigned long seed)
     return bad;
 }
 
+static void syscall_do(struct registers *r);
+
+/* The dispatcher proper is wrapped so the per-number accounting has exactly one
+ * place to live, instead of being repeated at the ~60 `return`s below. When the
+ * counters are disarmed this is a load of a global, a branch, and a tail call. */
 void syscall_dispatch(struct registers *r)
+{
+    if (__builtin_expect(!g_kb_stat, 1)) { syscall_do(r); return; }
+    uint64_t n = r->rax, t0 = kb_rdtsc();
+    syscall_do(r);
+    /* r->rax is the RESULT by now, so the number has to be the one saved above.
+     * execve rewrites the whole frame; it is still the right number to charge. */
+    if (n < KB_NSYS) { g_kb_sys_n[n]++; g_kb_sys_cyc[n] += kb_rdtsc() - t0; }
+}
+
+static void syscall_do(struct registers *r)
 {
     switch (r->rax) {
     case SYS_WRITE: {
@@ -235,9 +251,38 @@ void syscall_dispatch(struct registers *r)
         return;
     }
     case SYS_GET_TIME: {
+        /* MEASURED: 402,175 of these in a 14-second boot -- 16% of every
+         * syscall the machine made -- at 5.4 us each, because rtc_now() walks
+         * the CMOS index/data ports with a double-read agreement loop. 2.18
+         * SECONDS of CPU, all of it under the big kernel lock, so it is also
+         * 2.18 seconds that every other core spent waiting.
+         *
+         * The caller is a clock face polling for the time it should display.
+         * The RTC's answer changes once a second. Serving it from a cache that
+         * is at most 100 ms old is therefore not an approximation of the old
+         * behaviour -- it is the same value, ten times finer than the source's
+         * own resolution, for 1/40000 of the port traffic.
+         *
+         * timer_ticks() and not time_mono_ns() as the cache clock: the tick is
+         * 15 ns to read and the ns clock is 73 ns (kbench), and a 100 ms window
+         * has no use for nanoseconds. Ten ticks = 100 ms.
+         *
+         * Statics, not per-process: this is one hardware clock and every reader
+         * wants the same answer. Reached only with the BKL held (int 0x80 is
+         * not in syscall_is_bkl_free), so no lock of its own. */
         if (!user_range_ok((void *)r->rdi, sizeof(struct rtc_time), 1)) { r->rax = (uint64_t)-1; return; }
-        struct rtc_time t; rtc_now(&t);
-        user_copy_to((void *)r->rdi, &t, sizeof t);
+        static struct rtc_time cached;
+#ifdef KBENCH_NEGCTL
+        rtc_now(&cached);                          /* the old behaviour: the CMOS, every time */
+#else
+        static uint64_t cached_at;                 /* timer_ticks(); 0 = never read */
+        uint64_t now = timer_ticks();
+        if (!cached_at || now - cached_at >= 10) {
+            rtc_now(&cached);
+            cached_at = now ? now : 1;             /* 0 means "never", so never store 0 */
+        }
+#endif
+        user_copy_to((void *)r->rdi, &cached, sizeof cached);
         r->rax = 0;
         return;
     }

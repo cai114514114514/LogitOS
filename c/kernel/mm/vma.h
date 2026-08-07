@@ -46,6 +46,15 @@ uint32_t vma_prot_at(uint64_t cr3, uint64_t va);
  * first touch. */
 uint64_t vma_reserve(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot);
 
+/* Reserve an EXACT range, anywhere in the private user region rather than only
+ * inside the mmap window. For the kernel's own placements -- a program's
+ * initial stack, which exec puts at an address derived from the image's link
+ * base and which is nowhere near MM_MMAP_BASE. Refuses to overlap an existing
+ * area, so it still cannot be used to take memory away from anything; that
+ * refusal, and not the address window, is what makes reservation safe. Returns
+ * 0, or -1 (bad range / no free slot / already occupied). */
+int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot);
+
 /* Release [addr, addr+len). Returns 0, or -1 if the range is not a subset of
  * reserved space. Splits an area when the range is punched out of its middle. */
 int vma_release(uint64_t cr3, uint64_t addr, uint64_t len);

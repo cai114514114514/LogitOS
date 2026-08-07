@@ -6,6 +6,7 @@
 #include "file.h"
 #include "vmm.h"
 #include "pmm.h"
+#include "vma.h"         /* the CLI stack is a RESERVATION, faulted in on touch */
 #include "aex.h"
 #include "vfs.h"
 #include "kheap.h"
@@ -18,6 +19,34 @@ void *memcpy(void *, const void *, size_t);
 #define MAXARG          48
 #define ARGBUFSZ        4096          /* total bytes for all argv + envp strings */
 #define CLI_STACK_PAGES 256           /* 1 MiB user stack for a CLI program */
+
+/* WHAT AN EXEC COSTS, split so the answer is actionable.
+ *
+ * /bin/sh fork+execs for every command, so exec is on the interactive path, and
+ * "exec is slow" is not a finding -- "exec spends N% of itself allocating a
+ * megabyte of stack the program will never touch" is. Same instrument as
+ * proc.c's fork accounting (rdtsc, reported as cycles) for the same reason: a
+ * whole exec rounds to 0 or 1 of the 100 Hz ticks. */
+static uint64_t g_execs, g_exec_cyc, g_exec_stack_cyc, g_exec_load_cyc;
+
+static inline uint64_t exec_rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+#define EXEC_REPORT_EVERY 8
+
+static void exec_report(void)
+{
+    if (!g_execs || (g_execs % EXEC_REPORT_EVERY)) return;
+    kprintf("[exec] %d execs, %d kcycles each: %d in aex_load, %d in the "
+            "%d-page user stack\n",
+            (int)g_execs, (int)(g_exec_cyc / g_execs / 1000),
+            (int)(g_exec_load_cyc / g_execs / 1000),
+            (int)(g_exec_stack_cyc / g_execs / 1000), CLI_STACK_PAGES);
+}
 
 static int kstrlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 static void scopy(char *d, const char *s, int max)
@@ -42,14 +71,68 @@ static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int
     return n;
 }
 
+/* How much of the stack is mapped up front. Everything the kernel itself writes
+ * has to be there before the program starts, because those writes happen with
+ * the target space active but no faulting thread to resolve them cheaply:
+ * the argv/envp strings (bounded by ARGBUFSZ) plus the pointer vector
+ * (1 + MAXARG + 1 + MAXARG + 1 slots) plus two 16-byte alignments. Everything
+ * above that is the PROGRAM's stack, and the program faults its own pages in.
+ *
+ * Kept at the true minimum rather than padded, for a reason that is about
+ * evidence and not about memory: with a generous eager window /bin/sh never
+ * touches an unmapped page, the demand-paging path never executes, and the
+ * first program with a deep call chain would be the one to discover whether it
+ * works. At two pages the ordinary shell faults its own stack in on every boot,
+ * so `[mm] ... anon` is nonzero in every log and the path is exercised
+ * continuously instead of being trusted. */
+#define CLI_STACK_HEAD  (ARGBUFSZ + (2 * MAXARG + 3) * 8 + 32)
+#define CLI_STACK_EAGER 2
+/* If the head ever outgrows the eager window, exec would write into an unmapped
+ * page from kernel context with the wrong CR3 semantics -- so it is a build
+ * error, not a runtime surprise. */
+_Static_assert(CLI_STACK_HEAD <= CLI_STACK_EAGER * 4096,
+               "the SysV initial stack no longer fits the eagerly mapped pages");
+
 /* Map a CLI user stack above the program image and build the SysV initial stack
- * (argc, argv[], NULL, envp[], NULL, strings). The target space MUST be active.
- * Returns the user rsp (points at argc, 16-aligned), or 0 on OOM. */
-static uint64_t setup_cli_stack(uint64_t entry, char **argv, int argc, char **envp, int envc)
+ * (argc, argv[], NULL, envp[], NULL, strings). The target space MUST be active,
+ * and `cr3` must name it (the VMA table is indexed by address space, and
+ * proc_spawn builds a stack in a space that is active but is not p->cr3 yet).
+ * Returns the user rsp (points at argc, 16-aligned), or 0 on OOM.
+ *
+ * WHY THIS IS NOT 256 EAGER PAGES ANY MORE.
+ * Measured, before: 708 kcycles per execve, of which 522 kcycles -- 74% -- was
+ * this function allocating, zeroing-by-poison-check and mapping a megabyte of
+ * stack. /bin/sh touches a few kilobytes of it. The megabyte is a RESERVATION,
+ * which is exactly what a VMA is for, and demand paging has been able to
+ * materialise one on first touch since the fault hook was wired: the pages that
+ * are used cost a fault each and the pages that are not cost nothing at all.
+ *
+ * The reservation is not optional. Without it mm_fault_classify() sees an
+ * address no VMA covers, returns MM_FAULT_NONE, and the process dies on its
+ * first deep call -- so a failed reservation falls back to mapping eagerly
+ * rather than handing out a stack that faults. */
+static uint64_t setup_cli_stack(uint64_t cr3, uint64_t entry, char **argv, int argc,
+                                char **envp, int envc)
 {
     uint64_t base = entry & ~(uint64_t)0xFFFFF;
     uint64_t top = base + 0x4000000;                 /* 64 MiB above base */
-    for (int i = 1; i <= CLI_STACK_PAGES; i++) {
+    uint64_t bottom = top - (uint64_t)CLI_STACK_PAGES * 0x1000;
+
+#ifdef KBENCH_NEGCTL
+    /* The negative control (tests/kbench.mk): map the whole megabyte up front,
+     * the way this did before. tests/boot/run-kbench.sh must FAIL against it --
+     * on the cost of exec, on the pages a fork then has to share, and on the
+     * anonymous-fault count, which goes to zero because nothing is ever
+     * missing. */
+    int eager = CLI_STACK_PAGES;
+    (void)bottom;
+#else
+    int reserved = (vma_reserve_fixed(cr3, bottom, (uint64_t)CLI_STACK_PAGES * 0x1000,
+                                      VMA_READ | VMA_WRITE) == 0);
+    int eager = reserved ? CLI_STACK_EAGER : CLI_STACK_PAGES;
+#endif
+
+    for (int i = 1; i <= eager; i++) {
         uint64_t frame = pmm_alloc();
         if (!frame) return 0;
         vmm_map_page(top - (uint64_t)i * 0x1000, frame, VMM_WRITABLE | VMM_USER);
@@ -109,15 +192,25 @@ long proc_execve(struct registers *r)
 
     /* 3. Point of no return: swap the user address space. */
     kprintf("[execve] pid %d: %s loading\n", p->pid, abs);   /* DIAG: reached = child alive */
+    uint64_t t_exec = exec_rdtsc();
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
     uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext, NULL);  /* maps into the active (p->cr3) space */
     kfree(img);
+    uint64_t t_load = exec_rdtsc();
     if (!entry) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
 
     /* 4+5. Fresh user stack with the SysV argc/argv/envp layout. */
-    uint64_t sp = setup_cli_stack(entry, argv, argc, envp, envc);
+    uint64_t sp = setup_cli_stack(cr3, entry, argv, argc, envp, envc);
     if (!sp) { kprintf("[execve] %s: stack setup failed\n", abs); proc_exit(127); }
+    {
+        uint64_t t_end = exec_rdtsc();
+        g_execs++;
+        g_exec_cyc       += t_end  - t_exec;
+        g_exec_load_cyc  += t_load - t_exec;
+        g_exec_stack_cyc += t_end  - t_load;
+        exec_report();
+    }
 
     /* 6. Rewrite the syscall-return frame to land in the new program. */
     scopy(p->name, nm, sizeof p->name);
@@ -152,7 +245,7 @@ int proc_spawn(const char *path, char **argv)
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
     uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext, NULL);
-    uint64_t sp = entry ? setup_cli_stack(entry, argv, argc, 0, 0) : 0;
+    uint64_t sp = entry ? setup_cli_stack(space, entry, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
     kfree(img);
