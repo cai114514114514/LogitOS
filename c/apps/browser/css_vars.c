@@ -256,7 +256,7 @@ static int has_var(const char *s){ for (; s[0]; s++) if (s[0]=='v'&&s[1]=='a'&&s
 
 #define AT_DEPTH 24
 
-/* Skip a /*...*(/ comment or a quoted string starting at *i. 1 if it consumed
+/* Skip a CSS comment or a quoted string starting at *i. 1 if it consumed
  * anything. Both must be skipped by the scanner or a ':' inside a url() or a
  * '{' inside a content:"{" string derails the whole parse. */
 static int skip_noise(const char *s, int n, int *i)

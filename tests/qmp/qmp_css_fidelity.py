@@ -48,6 +48,39 @@ A second fixture covers the PAINTER-side properties, which have the same
                text must return to the left edge below it. Before, float was
                read into the cstyle and ignored.
 
+A third fixture covers CUSTOM PROPERTIES, where the failure was not a missing
+box but a wrong COLOUR -- so the assertions are colours, and the wrong answer
+paints a different, equally findable one:
+
+  theme        `--card` is #01fe02 at :root and #fa0102 inside
+               `@media (prefers-color-scheme: dark)`, and `--page-bg` likewise.
+               Before, the var() pre-pass could not see @media at all and took
+               the last declaration in the file, so EVERY page rendered in its
+               dark theme. Measured on the pre-change browser: the card painted
+               #fa0102 at 240x120 and the viewport painted #050403 at 1180x572;
+               with the fix the same two boxes are #01fe02 and #fefdfc and
+               neither dark colour appears anywhere on screen.
+
+  switch       `--sw` is #01fafa at :root and #fa01fa on `html.theme-night`,
+               which this document does not carry. The night value is both more
+               specific and later, so the cascade alone picks it -- and did:
+               the pre-change browser painted #fa01fa. A class/id/attribute-
+               gated declaration is a switch nobody threw, and must lose.
+
+  late         `--late` is declared AFTER two @counter-style blocks, whose
+               bodies hold bare descriptors rather than nested rules. This one
+               guards the REPLACEMENT scanner rather than the old one: it used
+               to swallow such a block's closing brace without leaving the
+               at-rule and then collect nothing from the rest of the sheet (5
+               custom properties out of wikipedia's 193). If that regresses,
+               `--late` is never collected and the box paints its var()
+               fallback #123456, a colour the correct render never produces.
+
+Every fixture colour is unique across all three pages, and the third fixture
+first asserts that the second fixture's float is GONE: nearly every check below
+is "colour X is absent", which a navigation that silently failed would satisfy
+all at once.
+
 The screendumps are kept in the temp directory named at the end so a failure can
 be looked at rather than guessed at.
 """
@@ -140,6 +173,60 @@ p.d { margin: 0; font-size: 24px; }
 </body></html>
 """ % WORDS
 
+# ---- third fixture: custom properties, in the pixels ----
+#
+# The reported bug was a COLOUR, so the assertion has to be a colour. Every box
+# here is painted through a var() whose value the cascade has to choose between
+# two candidates, and the wrong choice paints a different, equally findable
+# colour -- so a failure says WHICH rule won, not merely that something is off.
+#
+#   theme    `--card` is #01fe02 at :root and #fa0102 inside
+#            `@media (prefers-color-scheme: dark)`. The browser renders for
+#            light, so the card must be green and #fa0102 must appear NOWHERE.
+#            Before, the pre-pass could not see @media and took the last
+#            declaration in the file: the card was red and the page black.
+#
+#   switch   `--sw` is #01fafa at :root and #fa01fa on `html.theme-night`,
+#            which this document does not carry. The night value is more
+#            specific and later, so the cascade alone would pick it; it must
+#            still lose, because a class-gated declaration is a switch nobody
+#            threw. This is wikipedia's second disguise of the same bug.
+#
+#   late     `--late` is declared AFTER two @counter-style blocks, whose bodies
+#            hold bare descriptors rather than nested rules. The scanner used to
+#            swallow their closing brace without leaving the at-rule, and
+#            collected nothing from the rest of the sheet -- five custom
+#            properties out of wikipedia's 193. If that happens here `--late` is
+#            never collected and the box paints its var() FALLBACK, #123456,
+#            which is a colour the correct render never produces.
+LIGHT_CARD = (1, 254, 2)        # #01fe02  the light theme's card
+DARK_CARD = (250, 1, 2)         # #fa0102  the dark theme's -- must not appear
+LIGHT_BG = (254, 253, 252)      # #fefdfc  the light page background
+DARK_BG = (5, 4, 3)             # #050403  the dark one -- must not appear
+SWITCH_BASE = (1, 250, 250)     # #01fafa  base value of --sw
+SWITCH_NIGHT = (250, 1, 250)    # #fa01fa  the class-gated override
+LATE_OK = (250, 250, 2)         # #fafa02  a var declared after the at-rules
+LATE_FALLBACK = (18, 52, 86)    # #123456  the var() fallback = "never collected"
+
+PAGE3 = """<!doctype html>
+<html><head><title>varfid</title><style>
+:root { --page-bg: #fefdfc; --card: #01fe02; --sw: #01fafa; }
+@media (prefers-color-scheme: dark) {
+  :root { --page-bg: #050403; --card: #fa0102; }
+}
+html.theme-night { --sw: #fa01fa; }
+@counter-style fidone { system: numeric; symbols: '0' '1'; }
+@counter-style fidtwo { system: numeric; symbols: '2' '3'; }
+:root { --late: #fafa02; }
+html, body { background: var(--page-bg); margin: 0; padding: 0; }
+#card { background: var(--card); width: 240px; height: 120px; }
+#sw   { background: var(--sw);   width: 240px; height: 60px;  }
+#late { background: var(--late, #123456); width: 240px; height: 60px; }
+</style></head><body>
+<div id="card"></div><div id="sw"></div><div id="late"></div>
+</body></html>
+"""
+
 tmp = tempfile.mkdtemp(prefix="qmp_cssfid_")
 qmp_path = os.path.join(tmp, "qmp.sock")
 serial_path = os.path.join(tmp, "serial.log")
@@ -149,7 +236,10 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
 
     def do_GET(self):
-        raw = (PAGE2 if "paint" in self.path else PAGE).encode()
+        if "var" in self.path:
+            raw = PAGE3.encode()
+        else:
+            raw = (PAGE2 if "paint" in self.path else PAGE).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(raw)))
@@ -399,6 +489,55 @@ try:
        "text returns to the block's left edge below the float")
     ck(below is not None and beside is not None and beside - below > 100,
        "the two measures differ by the float's width, i.e. the lines really narrowed")
+
+    # ================= third fixture: custom properties =================
+    ui.click_at(420, 175)                  # address bar
+    for _ in range(80):
+        ui.key("backspace")
+    ui.typ("http://10.0.2.2:%d/var.html" % PORT)
+    ui.key("ret")
+    time.sleep(10)
+    shot3 = os.path.join(tmp, "var.ppm")
+    ui.screendump(shot3)
+    img = PPM(shot3)
+
+    # Prove we are looking at THIS page before reading anything off it. Almost
+    # every assertion below is "colour X is absent", and a navigation that
+    # silently failed would leave the previous fixture on screen and satisfy all
+    # of them at once. The float block is the previous fixture's most
+    # distinctive mark; it must be gone.
+    ck(img.find_color(FLOAT_C) is None,
+       "the var fixture really loaded (the previous fixture's float is gone)")
+
+    card = block(img, LIGHT_CARD, "light-theme card")
+    cw = card[2] - card[0] + 1
+    chh = card[3] - card[1] + 1
+    print("card %s (%dx%d)  sample inside %s" % (card, cw, chh,
+                                                 img.at(card[0] + 4, card[1] + 4)))
+    ck(abs(cw - 240) <= 2 and abs(chh - 120) <= 2,
+       "the card painted at its declared 240x120 through var(--card)")
+    # The decisive pair. Neither colour appears in the correct render by
+    # accident: #fa0102 and #050403 exist only inside the dark @media block.
+    ck(img.find_color(DARK_CARD) is None,
+       "NEGATIVE CONTROL: the dark @media block's card colour is nowhere on screen")
+    ck(img.find_color(DARK_BG) is None,
+       "...and neither is its page background")
+    ck(img.find_color(LIGHT_BG) is not None,
+       "the LIGHT page background is what got painted")
+
+    sw = block(img, SWITCH_BASE, "theme-switch box")
+    print("switch box %s  sample %s" % (sw, img.at(sw[0] + 4, sw[1] + 4)))
+    ck(img.find_color(SWITCH_NIGHT) is None,
+       "a class-gated (html.theme-night) override the document does not carry "
+       "loses to the base value, despite being more specific and later")
+
+    late = block(img, LATE_OK, "post-at-rule variable")
+    print("late box %s  sample %s" % (late, img.at(late[0] + 4, late[1] + 4)))
+    ck(img.find_color(LATE_FALLBACK) is None,
+       "a variable declared AFTER two @counter-style blocks was still collected "
+       "(the var() fallback never had to be used)")
+    ck(abs((late[2] - late[0] + 1) - 240) <= 2,
+       "...and it painted the full 240px box")
 
     print("\nALL PASS -- artefacts in %s" % tmp)
 finally:
