@@ -81,7 +81,15 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
 # inflate_raw/zlib_decompress + png_register/png_detect/png_decode) -- the hybrid
 # C+Rust modules. The .c files are deleted, so the filter-out is a defensive guard.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c,$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+#
+# c/lib/video is excluded because the H.264 decoder is a RING-3 library, not a
+# kernel one: it allocates with malloc/free, and the find below was dragging it
+# into the kernel link, where those names do not exist (kmalloc/kfree do) --
+# which broke `make` outright. It stays out on purpose. An image is decoded
+# once, so the image codecs can sit behind SYS_IMG_DECODE; a video is decoded
+# thirty times a second, holds megabytes of reference frames, and would run
+# under the BKL. See the VID_OBJ rules further down for who does link it.
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -94,7 +102,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
+.PHONY: all run debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-as-os test-smp test-net test-net-os test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz
 
 all: $(ISO)
 
@@ -166,7 +174,8 @@ $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 $(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
-$(eval $(call APP_RULE,preview, 0x48000000,Preview,-,P,200,150,110))
+# Preview is NOT built by APP_RULE -- it links the H.264 decoder and mini-libc,
+# so its rule lives with the VID_OBJ definitions further down.
 # Code Studio links the AetherScript completion engine (complete.o) for IntelliSense.
 $(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
@@ -311,6 +320,46 @@ $(BUILD)/libctest.elf: $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS) $(
 $(BUILD)/libctest.aex: $(BUILD)/libctest.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/libctest.elf $@ libctest - '?' 150 150 150
 
+# --- H.264 decoder, built for the target ---------------------------------
+# c/lib/video is plain C99 over malloc/memset, so the same sources that the
+# host gate proves bit-exact against ffmpeg compile straight for x86_64-elf
+# against mini-libc. It links into ring-3 consumers, NOT into the kernel: the
+# image codecs live behind SYS_IMG_DECODE because a picture is decoded once,
+# but a video is decoded thirty times a second and carries megabytes of
+# reference frames, and this is exactly the direction M17 moved the browser's
+# render pipeline. Keeping a media parser out of ring 0 is the other half.
+VID_SRC  := $(wildcard c/lib/video/*.c)
+VID_HDRS := $(wildcard c/lib/video/*.h)
+VID_OBJ  := $(patsubst %.c,$(BUILD)/vidobj/%.o,$(VID_SRC))
+
+$(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+# /bin/vidcheck -- decodes a stream on-device and prints the same CRC32 the
+# host driver prints, which is what turns "it also works on LogitOS" into a
+# comparison rather than a claim. Driven by tests/boot/run-video-test.sh.
+$(BUILD)/vidcheck.elf: $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidcheck.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/vidcheck.crt0c.o \
+	    $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(LIBC_OBJS)
+$(BUILD)/vidcheck.aex: $(BUILD)/vidcheck.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/vidcheck.elf $@ vidcheck - 'V' 150 150 150
+
+# Preview: the windowed half. Same link base and the same GUI crt0 as any other
+# app, but it links VID_OBJ + mini-libc instead of going through APP_RULE --
+# the browser already proves logit.h and mini-libc coexist in one .aex. It
+# claims the h264 extension so the Finder opens streams with it; images still
+# arrive through the png/gif case in wm.c's launch_for_ext.
+$(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) $(BUILD)/apps/crt0.o $(VID_OBJ) $(LIBC_OBJS)
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
+	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
+	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(LIBC_OBJS) --end-group
+$(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/preview.elf $@ Preview h264 'P' 200 150 110
+
 # Redistributable OFL font subsets are checked in, so a normal build never
 # consults host fonts or the network. Regeneration is explicit and reproducible
 # from the vendored source fonts. See third_party/fonts/README.md.
@@ -330,7 +379,7 @@ $(FONTS):
 	@echo "missing tracked runtime font '$@'; run 'make regen-fonts'" >&2
 	@false
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex tools/mkfs.py
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
@@ -342,6 +391,8 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
+	    $(BUILD)/vidcheck.aex:/bin/vidcheck \
+	    tests/fixtures/video/sample.h264:/media/sample.h264 \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
@@ -410,6 +461,14 @@ test-nvme: $(ISO) $(DISK)
 
 test-shell: $(ISO) $(DISK)
 	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
+
+# Does the H.264 decoder work on LogitOS, not just on the host? make test-h264
+# proves it bit-exact against ffmpeg, but that is a glibc build on Linux. This
+# boots the OS, runs /bin/vidcheck on the stream packed into the disk image,
+# and requires the CRC32 to match the pinned one -- so mini-libc's malloc, the
+# 24 MiB arena, boot-time SSE and LogitFS are all in the loop.
+test-video: $(ISO) $(DISK)
+	@bash tests/boot/run-video-test.sh $(ISO) $(DISK)
 
 # Does the filesystem store data? Every other boot harness passes -snapshot,
 # which discards the disk on exit -- deterministic, and it means nothing here has
