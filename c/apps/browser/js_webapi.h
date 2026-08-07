@@ -24,12 +24,26 @@
  * repainting.  The old SYS_HTTP_GET path did the whole transaction inside one
  * ring-0 syscall, which is why loading a page froze the machine.
  *
- * WHAT IS DELIBERATELY NOT HERE: no CORS (there is no origin boundary to
- * enforce in this browser -- everything a page fetches, it could fetch), no
- * streaming bodies (a Response's body is complete before the promise
- * resolves), no AbortController, no FormData/Blob, no sync XHR, and no
- * connection reuse (one socket per request; c/net/http/hpool.c exists and is
- * the obvious next step). */
+ * STREAMING IS REAL, AND IT IS WHY THE REST WORKS.  fetch() resolves when the
+ * HEADERS arrive, as the spec says, and Response.body is a ReadableStream that
+ * the network fills afterwards -- so a text/event-stream endpoint delivers its
+ * first token to script while the response is still open.  That is not a
+ * refinement: Kimi and DeepSeek both answer as SSE, token by token, and a
+ * buffer-until-complete fetch cannot show a chat reply at all.  EventSource is
+ * here too, with the framing and the reconnection.
+ *
+ * COOKIES AND CORS ARE ENFORCED, NOT IGNORED.  Requests carry Cookie: from
+ * c/net/http/cookies.c, responses may set cookies, and document.cookie reads
+ * and writes the same jar minus HttpOnly.  Once a page can hold a session, a
+ * browser that ignores CORS is not more capable -- it is one where any page the
+ * user visits can read their mail.  So cross-origin requests are classified,
+ * preflighted when they are not simple, and REFUSED when the server does not
+ * opt in.  See the CORS section of js_webapi.c for exactly which cases fail.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: no FormData/Blob, no sync XHR, no WebSocket,
+ * no Service Worker, no connection reuse on this path (one socket per request:
+ * c/net/http/hpool.c is behind bfetch, whose interface is GET-only -- see the
+ * note at fetch_send_request), and no backpressure beyond a queue-depth stall. */
 
 /* Declared weak for js_page.c only -- see the header comment. js_webapi.c
  * itself includes this without the macro and so defines them strongly. */
@@ -59,6 +73,12 @@ struct webapi_net {
     int  (*recv)(int fd, void *buf, int max);
     void (*close)(int fd);
     unsigned long long (*now_ms)(void);
+    /* Unix seconds. now_ms is monotonic and cannot answer "has this cookie
+     * expired"; a cookie jar without a wall clock either keeps everything for
+     * ever or throws it all away. May be NULL: cookies then behave as though
+     * the epoch never advances, which expires nothing and is stated rather
+     * than silently wrong. */
+    long long (*now_unix)(void);
 };
 WEBAPI_FN void js_webapi_set_net(const struct webapi_net *n);   /* NULL = default */
 

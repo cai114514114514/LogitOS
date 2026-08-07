@@ -25,6 +25,7 @@
 #include "quickjs.h"
 #include "js_webapi.h"
 #include "http1.h"
+#include "cookies.h"
 #include "url.h"
 #include "logit_abi.h"          /* SOCK_F_* / SOCK_P_* -- pure #defines */
 #include <string.h>
@@ -50,14 +51,33 @@ static int  d_send(int fd, const void *b, int n) { return sock_send(fd, b, n); }
 static int  d_recv(int fd, void *b, int n) { return sock_recv(fd, b, n); }
 static void d_close(int fd) { sock_close(fd); }
 static unsigned long long d_now(void) { return monotonic_ms(); }
-static const struct webapi_net g_default_net = { d_open, d_poll, d_send, d_recv, d_close, d_now };
+/* The wall clock, for cookie expiry. SYS_GET_TIME answers whole seconds off
+ * the CMOS RTC in UTC; the civil-date arithmetic is Hinnant's, the same one
+ * cookies.c uses to parse a date, so a round trip through both agrees. */
+static long long d_now_unix(void)
+{
+    struct logit_time t;
+    get_time(&t);
+    long long y = t.year, m = t.month, d = t.day;
+    if (y < 1970 || m < 1 || m > 12 || d < 1 || d > 31) return 0;
+    y -= (m <= 2);
+    long long era = (y >= 0 ? y : y - 399) / 400;
+    long long yoe = y - era * 400;
+    long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long long days = era * 146097 + doe - 719468;
+    return ((days * 24 + t.hour) * 60 + t.minute) * 60 + t.second;
+}
+static const struct webapi_net g_default_net =
+    { d_open, d_poll, d_send, d_recv, d_close, d_now, d_now_unix };
 #else
-static const struct webapi_net g_default_net = { 0, 0, 0, 0, 0, 0 };
+static const struct webapi_net g_default_net = { 0, 0, 0, 0, 0, 0, 0 };
 #endif
 
 static const struct webapi_net *g_net = &g_default_net;
 void js_webapi_set_net(const struct webapi_net *n) { g_net = n ? n : &g_default_net; }
 static unsigned long long now_ms(void) { return g_net && g_net->now_ms ? g_net->now_ms() : 0; }
+static long long now_unix(void) { return g_net && g_net->now_unix ? g_net->now_unix() : 0; }
 
 /* ---- URLs -------------------------------------------------------------
  * Parsing goes through c/net/http/url.c, which is the parser the loader and
@@ -367,14 +387,241 @@ static JSValue g_viewport_changed = JS_UNDEFINED;
 
 static int g_vw = 1180, g_vh = 572;            /* browser.c: WINW, WINH-BARH-18 */
 
+/* ---- small string helpers used by the cookie and CORS rules ----------- */
+
+static int lc_c(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+static int ci_streq(const char *a, const char *b)
+{
+    if (!a || !b) return 0;
+    while (*a && *b) { if (lc_c((unsigned char)*a) != lc_c((unsigned char)*b)) return 0; a++; b++; }
+    return *a == 0 && *b == 0;
+}
+static int ci_strneq(const char *a, const char *b, int n)
+{
+    for (int i = 0; i < n; i++) {
+        int x = lc_c((unsigned char)a[i]), y = lc_c((unsigned char)b[i]);
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+    return 1;
+}
+
+/* Does a comma-separated list contain `tok` (case-insensitively)? */
+static int list_has(const char *list, const char *tok)
+{
+    if (!list || !tok || !*tok) return 0;
+    int tl = (int)strlen(tok), len = (int)strlen(list), b = 0;
+    while (b <= len) {
+        int e = b;
+        while (e < len && list[e] != ',') e++;
+        int tb = b, te = e;
+        while (tb < te && (list[tb] == ' ' || list[tb] == '\t')) tb++;
+        while (te > tb && (list[te-1] == ' ' || list[te-1] == '\t')) te--;
+        if (te - tb == tl && ci_strneq(list + tb, tok, tl)) return 1;
+        if (e >= len) break;
+        b = e + 1;
+    }
+    return 0;
+}
+
+static int same_origin(const struct wurl *a, const struct wurl *b)
+{ return a->https == b->https && a->port == b->port && ci_streq(a->host, b->host); }
+
+/* ---- the cookie jar ---------------------------------------------------
+ * c/net/http/cookies.c has been in this tree, tested and unreachable: nothing
+ * built a request that could carry a Cookie header.  This is the wiring.  It
+ * is a single process-wide jar, deliberately outliving js_page_close() for the
+ * same reason Storage does -- a session that evaporated on every navigation
+ * would not be a session.
+ *
+ * NOT PERSISTED TO DISK, for the reason given at Storage: LogitFS has a known
+ * cross-boot write-durability bug and every harness boots with -snapshot.  So
+ * cookies live as long as the browser process.  Persistent cookies still honour
+ * their Expires/Max-Age within that lifetime; they just do not survive a
+ * reboot.  Stated because "we have cookies" would otherwise imply more.
+ *
+ * WHO MAY SET WHAT is cookies.c's problem and it is solved there (RFC 6265
+ * 5.1.3/5.1.4 domain- and path-match, the 6265bis Secure/HttpOnly/prefix
+ * rules, and an approximate public-suffix rule that over-rejects on purpose).
+ * What is decided HERE is the two things cookies.c cannot see: whether a
+ * request is same-site (SameSite) and whether it is allowed to carry
+ * credentials at all (CORS). */
+
+static struct cookie_jar g_jar;
+static int g_jar_ready;
+
+static struct cookie_jar *jar(void)
+{
+    if (!g_jar_ready) { cookie_jar_init(&g_jar); g_jar_ready = 1; }
+    return &g_jar;
+}
+
+static void ck_ctx(struct cookie_ctx *c, const struct wurl *u, int http_api)
+{
+    c->host = u->host;
+    c->path = u->pathname[0] ? u->pathname : "/";
+    c->secure = u->https;
+    c->http_api = http_api;
+}
+
+/* ---- CORS -------------------------------------------------------------
+ * The previous version of this file said there was "no origin boundary to
+ * enforce in this browser -- everything a page fetches, it could fetch".  That
+ * stopped being true the moment the line above wired up cookies: a request now
+ * carries the user's session, so "any page may read any origin's response" is
+ * "any page may read the user's mail".  A browser that ignores CORS is not more
+ * capable than one that enforces it; it is one whose users have no security
+ * boundary at all.
+ *
+ * So the real model, and the real refusals:
+ *
+ *   - A SIMPLE cross-origin request (GET/HEAD/POST, only CORS-safelisted
+ *     author headers) goes straight out with an Origin header.  Its RESPONSE
+ *     is refused unless Access-Control-Allow-Origin names our origin or is
+ *     `*`.  Refused means the promise rejects and NOT ONE BODY BYTE reaches
+ *     script -- the check runs at headers-done, before the stream exists.
+ *   - Anything else (PUT/DELETE/PATCH, a custom header, a JSON content-type)
+ *     is PREFLIGHTED: an OPTIONS carrying Access-Control-Request-Method and
+ *     -Headers, whose answer must allow both.  Only then is the real request
+ *     sent, on a fresh connection.  A successful preflight is cached per
+ *     (origin, method, credentials) for Access-Control-Max-Age.
+ *   - CREDENTIALS (cookies) go cross-origin only in `credentials: 'include'`
+ *     mode, and then Access-Control-Allow-Credentials must be `true` AND
+ *     Access-Control-Allow-Origin must name the origin exactly -- `*` is
+ *     refused, because `*` means "any origin may read this" and combining that
+ *     with a session cookie is the exact hole the spec closes.
+ *   - RESPONSE HEADERS are filtered to the CORS-safelisted set plus whatever
+ *     Access-Control-Expose-Headers names.  Set-Cookie is never exposed.
+ *   - `mode: 'no-cors'` yields an OPAQUE response: status 0, no headers, no
+ *     body.  It is honest rather than useful, which is what opaque means.
+ *   - A cross-origin REDIRECT taints the request: every later hop sends
+ *     `Origin: null`, and each hop's response is checked on its own.
+ *
+ * WHAT THIS IS NOT: there is no CORS on the page-loading path (browser.c's
+ * bfetch), because that is a navigation and navigations are not CORS requests.
+ * There is no Timing-Allow-Origin, and preflights do not vary the cache on the
+ * request headers beyond a subset test. */
+
+enum { WF_MODE_CORS = 0, WF_MODE_SAME_ORIGIN, WF_MODE_NO_CORS };
+enum { WF_CRED_SAME_ORIGIN = 0, WF_CRED_OMIT, WF_CRED_INCLUDE };
+
+/* fetch spec, "CORS-safelisted request-header".  Range is deliberately absent:
+ * its safelisting carries value-syntax conditions, and a header wrongly called
+ * safe is a request that skips the preflight it needed. */
+static int cors_safe_req_header(const char *name, const char *value)
+{
+    if (ci_streq(name, "accept") || ci_streq(name, "accept-language") ||
+        ci_streq(name, "content-language")) return 1;
+    if (ci_streq(name, "content-type")) {
+        char t[64]; int o = 0;
+        for (const char *p = value; *p && *p != ';' && o < (int)sizeof t - 1; p++) {
+            if (*p == ' ' || *p == '\t') continue;
+            t[o++] = (char)lc_c((unsigned char)*p);
+        }
+        t[o] = 0;
+        return !strcmp(t, "application/x-www-form-urlencoded") ||
+               !strcmp(t, "multipart/form-data") || !strcmp(t, "text/plain");
+    }
+    return 0;
+}
+
+/* Header names script may not set at all: the ones the user agent owns, and
+ * the ones that would let a page forge its own identity.  `Cookie` is in here,
+ * which is the point -- the jar decides what rides, not the page. */
+static int forbidden_req_header(const char *n)
+{
+    static const char *const f[] = {
+        "accept-charset", "accept-encoding", "access-control-request-headers",
+        "access-control-request-method", "connection", "content-length", "cookie",
+        "cookie2", "date", "dnt", "expect", "host", "keep-alive", "origin",
+        "referer", "set-cookie", "te", "trailer", "transfer-encoding", "upgrade",
+        "via", 0
+    };
+    for (int i = 0; f[i]; i++) if (ci_streq(n, f[i])) return 1;
+    return ci_strneq(n, "proxy-", 6) || ci_strneq(n, "sec-", 4);
+}
+
+/* fetch spec, "CORS-safelisted response-header". */
+static int cors_safe_resp_header(const char *n)
+{
+    return ci_streq(n, "cache-control") || ci_streq(n, "content-language") ||
+           ci_streq(n, "content-length") || ci_streq(n, "content-type") ||
+           ci_streq(n, "expires") || ci_streq(n, "last-modified") ||
+           ci_streq(n, "pragma");
+}
+
+/* The preflight cache.  Without it a React app that PATCHes on every keystroke
+ * pays two round trips per keystroke. */
+#define PFC_MAX 16
+struct pfcache {
+    int  used, creds;
+    char origin[URL_HOST_MAX + 16];
+    char method[H1_METHOD_MAX];
+    char headers[256];                  /* lowercase comma list the server allowed */
+    unsigned long long expires_ms;
+};
+static struct pfcache g_pfc[PFC_MAX];
+
+static void pfc_store(const char *origin, const char *method, int creds,
+                      const char *allow_hdrs, int max_age_s)
+{
+    if (max_age_s <= 0) return;
+    if (max_age_s > 86400) max_age_s = 86400;         /* the spec's own ceiling */
+    struct pfcache *slot = 0;
+    for (int i = 0; i < PFC_MAX; i++) {
+        struct pfcache *p = &g_pfc[i];
+        if (p->used && p->creds == creds && ci_streq(p->origin, origin) &&
+            ci_streq(p->method, method)) { slot = p; break; }
+    }
+    if (!slot) for (int i = 0; i < PFC_MAX; i++) if (!g_pfc[i].used) { slot = &g_pfc[i]; break; }
+    if (!slot) slot = &g_pfc[0];                      /* evict slot 0; the table is a cache */
+    memset(slot, 0, sizeof *slot);
+    slot->used = 1; slot->creds = creds;
+    scopy(slot->origin, origin, (int)sizeof slot->origin);
+    scopy(slot->method, method, (int)sizeof slot->method);
+    scopy(slot->headers, allow_hdrs ? allow_hdrs : "", (int)sizeof slot->headers);
+    slot->expires_ms = now_ms() + (unsigned long long)max_age_s * 1000ull;
+}
+
+/* 1 if a live cache entry covers this exact request. */
+static int pfc_hit(const char *origin, const char *method, int creds,
+                   const struct h1_headers *author)
+{
+    for (int i = 0; i < PFC_MAX; i++) {
+        struct pfcache *p = &g_pfc[i];
+        if (!p->used || p->creds != creds) continue;
+        if (!ci_streq(p->origin, origin) || !ci_streq(p->method, method)) continue;
+        if (now_ms() > p->expires_ms) { p->used = 0; continue; }
+        if (list_has(p->headers, "*")) return 1;
+        for (int k = 0; k < author->n; k++) {
+            if (cors_safe_req_header(author->v[k].name, author->v[k].value)) continue;
+            if (!list_has(p->headers, author->v[k].name)) return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- fetch ------------------------------------------------------------ */
 
 #define WF_MAX        8            /* concurrent requests; TCP has 32 slots total */
 #define WF_HOPS       10
 #define WF_TIMEOUT 30000ull        /* ms per hop, connect included */
 #define WF_STEPS      8            /* h1_conn_pump calls per frame: 8 x 4 KiB */
+/* An SSE response never completes, so there is no "finished" moment at which
+ * to stop reading -- the only thing that keeps a fast producer from growing the
+ * JS queue without bound is refusing to read more while the page is behind.
+ * Declining to pump lets the socket buffer fill and the TCP window close, which
+ * is backpressure that reaches the server rather than a counter that does not. */
+#define WF_HIGHWATER (512*1024)
 
 enum { WF_FREE = 0, WF_DIAL, WF_XFER };
+enum { WF_PH_ACTUAL = 0, WF_PH_PREFLIGHT };
+/* What to do with body bytes arriving right now.  UNKNOWN can only hold for
+ * the remainder of ONE h1_conn_pump: fetch_step inspects the headers after
+ * every single pump, so `hold` never needs more than one read's worth. */
+enum { WF_DEL_UNKNOWN = 0, WF_DEL_JS, WF_DEL_DROP };
 
 struct wfetch {
     int   state;
@@ -388,6 +635,19 @@ struct wfetch {
     int   hops, redirected;
     unsigned long long deadline;
     JSValue resolve, reject;
+    JSContext *ctx;                /* the sink runs inside js_webapi_pump(ctx) */
+
+    int   gen;                     /* an abort handle is (slot, generation) */
+    int   mode, creds;
+    int   cross;                   /* THIS hop is cross-origin */
+    int   tainted;                 /* a cross-origin redirect happened */
+    int   phase;                   /* WF_PH_* */
+    int   deliver;                 /* WF_DEL_* */
+    int   resolved;                /* the promise has settled with a Response */
+    JSValue push, fin, fail;       /* the stream controller mkResponse handed back */
+    long  queued;                  /* bytes the JS queue is holding */
+    uint8_t hold[4096];
+    int   hold_len;
 };
 static struct wfetch g_fetch[WF_MAX];
 static int g_fetch_live;
@@ -411,6 +671,39 @@ static int tr_write(void *c, const void *buf, int len)
     return H1_TERR;
 }
 
+/* Hand `n` bytes to the page's ReadableStream and remember how deep its queue
+ * got, which is the number backpressure is decided on. */
+static int wf_push(struct wfetch *f, const uint8_t *p, int n)
+{
+    JSContext *ctx = f->ctx;
+    if (!ctx || !JS_IsFunction(ctx, f->push)) return H1_OK;
+    JSValue ab = JS_NewArrayBufferCopy(ctx, p, (size_t)n);
+    JSValue r = JS_Call(ctx, f->push, JS_UNDEFINED, 1, (JSValueConst *)&ab);
+    JS_FreeValue(ctx, ab);
+    if (JS_IsException(r)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, r);
+        return H1_OK;              /* a throwing consumer is not a protocol error */
+    }
+    int32_t q = 0;
+    JS_ToInt32(ctx, &q, r);
+    JS_FreeValue(ctx, r);
+    f->queued = q;
+    return H1_OK;
+}
+
+/* http1's body sink: called from inside the parse that consumed the bytes. */
+static int wf_sink(void *ctx, const uint8_t *p, int n)
+{
+    struct wfetch *f = (struct wfetch *)ctx;
+    if (f->deliver == WF_DEL_DROP) return H1_OK;
+    if (f->deliver == WF_DEL_JS) return wf_push(f, p, n);
+    if (n > (int)sizeof f->hold - f->hold_len) return H1_E_TOOLARGE;
+    memcpy(f->hold + f->hold_len, p, (size_t)n);
+    f->hold_len += n;
+    return H1_OK;
+}
+
 static void fetch_release(JSContext *ctx, struct wfetch *f)
 {
     if (f->fd >= 0) { g_net->close(f->fd); f->fd = -1; }
@@ -423,13 +716,24 @@ static void fetch_release(JSContext *ctx, struct wfetch *f)
     if (ctx) {
         JS_FreeValue(ctx, f->resolve);
         JS_FreeValue(ctx, f->reject);
+        JS_FreeValue(ctx, f->push);
+        JS_FreeValue(ctx, f->fin);
+        JS_FreeValue(ctx, f->fail);
     }
-    f->resolve = JS_UNDEFINED; f->reject = JS_UNDEFINED;
+    f->resolve = f->reject = JS_UNDEFINED;
+    f->push = f->fin = f->fail = JS_UNDEFINED;
+    f->resolved = 0; f->hold_len = 0; f->queued = 0;
+    f->deliver = WF_DEL_UNKNOWN;
     f->state = WF_FREE;
+    f->gen++;                      /* any abort handle still held is now stale */
     if (g_fetch_live > 0) g_fetch_live--;
 }
 
-static void fetch_reject(JSContext *ctx, struct wfetch *f, const char *msg)
+/* Fail the request.  Before the promise settled that is a rejection; after it
+ * settled (streaming) the promise is long gone and the failure belongs to the
+ * body stream, which is exactly what a browser does when a connection dies
+ * mid-download. */
+static void fetch_fail(JSContext *ctx, struct wfetch *f, const char *msg, const char *name)
 {
     char full[256];
     int o = 0;
@@ -438,8 +742,19 @@ static void fetch_reject(JSContext *ctx, struct wfetch *f, const char *msg)
     for (const char *p = msg; *p && o < (int)sizeof full - 1; p++) full[o++] = *p;
     full[o] = 0;
     printf("[webapi] %s\n", full);
+
+    if (f->resolved) {
+        if (JS_IsFunction(ctx, f->fail)) {
+            JSValue a = JS_NewString(ctx, full);
+            JSValue r = JS_Call(ctx, f->fail, JS_UNDEFINED, 1, (JSValueConst *)&a);
+            if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
+            JS_FreeValue(ctx, r); JS_FreeValue(ctx, a);
+        }
+        fetch_release(ctx, f);
+        return;
+    }
     JSValue err = JS_NewError(ctx);
-    JS_SetPropertyStr(ctx, err, "name", JS_NewString(ctx, "TypeError"));
+    JS_SetPropertyStr(ctx, err, "name", JS_NewString(ctx, name ? name : "TypeError"));
     JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, full));
     JSValue r = JS_Call(ctx, f->reject, JS_UNDEFINED, 1, (JSValueConst *)&err);
     JS_FreeValue(ctx, r);
@@ -447,14 +762,53 @@ static void fetch_reject(JSContext *ctx, struct wfetch *f, const char *msg)
     fetch_release(ctx, f);
 }
 
-/* Serialize the current request and hand it to a fresh h1_conn. */
+static void fetch_reject(JSContext *ctx, struct wfetch *f, const char *msg)
+{ fetch_fail(ctx, f, msg, "TypeError"); }
+
+/* The document's origin as an Origin header value. */
+static void doc_origin(char *out, int max)
+{
+    if (g_loc_valid) wurl_origin(&g_loc, out, max);
+    else scopy(out, "null", max);
+}
+
+/* 1 if this request may carry the user's credentials. */
+static int wf_creds(const struct wfetch *f)
+{
+    if (f->creds == WF_CRED_OMIT) return 0;
+    if (f->creds == WF_CRED_INCLUDE) return 1;
+    return !f->cross;                       /* 'same-origin', the default */
+}
+
+/* Does the request need an OPTIONS preflight before it may be sent? */
+static int wf_needs_preflight(const struct wfetch *f)
+{
+    if (!f->cross || f->mode != WF_MODE_CORS) return 0;
+    if (!ci_streq(f->method, "GET") && !ci_streq(f->method, "HEAD") &&
+        !ci_streq(f->method, "POST")) return 1;
+    for (int i = 0; i < f->hdr.n; i++)
+        if (!cors_safe_req_header(f->hdr.v[i].name, f->hdr.v[i].value)) return 1;
+    return 0;
+}
+
+/* Serialize the current request and hand it to a fresh h1_conn.
+ *
+ * NOTE ON POOLING.  Every request here opens its own socket and says
+ * `Connection: close`.  c/net/hpool.c does pool, and browser_rt.c's bfetch
+ * rides it (one wikipedia page went 14 handshakes to 4) -- but bfetch's
+ * interface is a GET and a URL.  For fetch() to share that pool bfetch would
+ * have to grow a method, a request header list, a request body, access to the
+ * response headers, and a body SINK so a streamed response is not buffered
+ * into its cache.  That is bfetch's file and its call; it is written here so
+ * the next person does not conclude the pool was forgotten. */
 static int fetch_send_request(JSContext *ctx, struct wfetch *f)
 {
     (void)ctx;
     struct h1_request q;
     char target[URL_PATH_MAX + WQ_MAX];
     wurl_target(&f->url, target, (int)sizeof target);
-    if (h1_request_init(&q, f->method, target) != H1_OK) return -1;
+    int preflight = (f->phase == WF_PH_PREFLIGHT);
+    if (h1_request_init(&q, preflight ? "OPTIONS" : f->method, target) != H1_OK) return -1;
 
     char hostport[URL_HOST_MAX + 8];
     scopy(hostport, f->url.host, (int)sizeof hostport);
@@ -468,12 +822,55 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
     h1_request_set_header(&q, "User-Agent", "Mozilla/5.0 (LogitOS) Logit/1.0");
     h1_request_set_header(&q, "Accept", "*/*");
     h1_request_set_header(&q, "Accept-Encoding", h1_accept_encoding());
-    /* One socket per request -- there is no pool on this path yet, and a
-     * connection the server keeps open would just sit in the table. */
     h1_request_set_header(&q, "Connection", "close");
-    for (int i = 0; i < f->hdr.n; i++)
-        h1_request_add_header(&q, f->hdr.v[i].name, f->hdr.v[i].value);
-    if (f->body && f->body_len > 0) h1_request_set_body(&q, f->body, f->body_len);
+
+    /* Origin.  Sent on every cross-origin request, and on any same-origin
+     * request that is not a simple read -- that is what browsers do, and a
+     * server's CSRF check depends on it.  A cross-origin redirect taints the
+     * request and the value becomes `null`, so a server cannot be told the
+     * request came from somewhere it did not. */
+    char origin[URL_HOST_MAX + 16];
+    doc_origin(origin, (int)sizeof origin);
+    int send_origin = f->cross || preflight ||
+                      (!ci_streq(f->method, "GET") && !ci_streq(f->method, "HEAD"));
+    if (send_origin)
+        h1_request_set_header(&q, "Origin", f->tainted ? "null" : origin);
+
+    if (preflight) {
+        h1_request_set_header(&q, "Access-Control-Request-Method", f->method);
+        char names[512]; int o = 0;
+        for (int i = 0; i < f->hdr.n; i++) {
+            if (cors_safe_req_header(f->hdr.v[i].name, f->hdr.v[i].value)) continue;
+            const char *nm = f->hdr.v[i].name;
+            int nl = (int)strlen(nm);
+            if (o + nl + 2 >= (int)sizeof names) break;
+            if (o) { names[o++] = ','; }
+            for (int k = 0; k < nl; k++) names[o++] = (char)lc_c((unsigned char)nm[k]);
+        }
+        names[o] = 0;
+        if (o) h1_request_set_header(&q, "Access-Control-Request-Headers", names);
+        h1_request_set_header(&q, "Accept", "*/*");
+    } else {
+        /* Cookies.  cookies.c decides which entries match the host and path;
+         * the two things it cannot see are decided here: whether this request
+         * is allowed credentials at all (CORS), and whether it is same-site
+         * (SameSite).  A fetch is never a top-level navigation, so a Lax or
+         * unattributed cookie does not ride a cross-site one. */
+        if (wf_creds(f)) {
+            struct cookie_ctx cc;
+            ck_ctx(&cc, &f->url, 1);
+            int cross_site = g_loc_valid ? !cookie_same_site(g_loc.host, f->url.host)
+                                         : CK_REQ_CROSS_SITE;
+            char cookie[2048];
+            int n = cookie_header_ex(jar(), &cc, cross_site ? CK_REQ_CROSS_SITE
+                                                            : CK_REQ_SAME_SITE,
+                                     now_unix(), cookie, (int)sizeof cookie);
+            if (n > 0) h1_request_set_header(&q, "Cookie", cookie);
+        }
+        for (int i = 0; i < f->hdr.n; i++)
+            h1_request_add_header(&q, f->hdr.v[i].name, f->hdr.v[i].value);
+        if (f->body && f->body_len > 0) h1_request_set_body(&q, f->body, f->body_len);
+    }
 
     char *raw = 0; int rawlen = 0;
     int rc = h1_request_build(&q, &raw, &rawlen);
@@ -483,6 +880,10 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
     struct h1_transport t = { tr_read, tr_write, 0, (void *)(long)f->fd };
     if (h1_conn_start(&f->conn, &t, raw, rawlen) != H1_OK) { free(raw); return -1; }
     f->started = 1;                       /* the conn owns `raw` from here */
+    h1_response_head(&f->conn.resp, !preflight && ci_streq(f->method, "HEAD"));
+    h1_response_sink(&f->conn.resp, wf_sink, f);
+    f->deliver = preflight ? WF_DEL_DROP : WF_DEL_UNKNOWN;
+    f->hold_len = 0;
     return 0;
 }
 
@@ -490,6 +891,7 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
 static int fetch_dial(struct wfetch *f)
 {
     if (!g_net || !g_net->open) return -1;
+    f->cross = g_loc_valid ? !same_origin(&f->url, &g_loc) : 1;
     f->fd = g_net->open(f->url.host, f->url.port, f->url.https);
     if (f->fd < 0) return -1;
     f->state = WF_DIAL;
@@ -498,50 +900,215 @@ static int fetch_dial(struct wfetch *f)
     return 0;
 }
 
-/* Build the Response and settle the promise. 1 if a JS callback ran. */
-static int fetch_resolve(JSContext *ctx, struct wfetch *f)
+/* Store whatever Set-Cookie headers this response carried.  Only a request
+ * that was allowed to SEND credentials may SET them -- otherwise a page could
+ * plant a cookie in a third-party origin's jar without that origin's opt-in. */
+static void fetch_take_cookies(struct wfetch *f)
+{
+    if (!wf_creds(f)) return;
+    struct h1_response *r = &f->conn.resp;
+    struct cookie_ctx cc;
+    ck_ctx(&cc, &f->url, 1);
+    long long now = now_unix();
+    int n = h1_headers_count(&r->hdr, "set-cookie");
+    for (int i = 0; i < n; i++) {
+        const char *v = h1_headers_nth(&r->hdr, "set-cookie", i);
+        if (v) cookie_set(jar(), &cc, v, now);
+    }
+}
+
+/* The CORS check on a response.  Returns NULL if the response may be used, or
+ * the reason it may not.  Runs at headers-done, BEFORE the body stream exists,
+ * so a refusal cannot have leaked a byte. */
+static const char *cors_check_response(struct wfetch *f)
+{
+    if (!f->cross || f->mode != WF_MODE_CORS) return 0;
+    struct h1_response *r = &f->conn.resp;
+    char origin[URL_HOST_MAX + 16];
+    doc_origin(origin, (int)sizeof origin);
+
+    if (h1_headers_count(&r->hdr, "access-control-allow-origin") > 1)
+        return "the server sent several Access-Control-Allow-Origin headers";
+    const char *acao = h1_headers_get(&r->hdr, "access-control-allow-origin");
+    if (!acao || !*acao)
+        return "cross-origin request blocked: no Access-Control-Allow-Origin";
+
+    int creds = wf_creds(f);
+    if (creds) {
+        const char *acac = h1_headers_get(&r->hdr, "access-control-allow-credentials");
+        if (!acac || !ci_streq(acac, "true"))
+            return "credentialed cross-origin request blocked: "
+                   "Access-Control-Allow-Credentials is not true";
+        /* `*` plus credentials is the combination the spec forbids outright:
+         * it would mean "any origin may read this response", said about a
+         * response that was generated with the user's session. */
+        if (!strcmp(acao, "*"))
+            return "credentialed cross-origin request blocked: "
+                   "Access-Control-Allow-Origin is '*'";
+    }
+    if (strcmp(acao, "*") != 0 && !ci_streq(acao, origin))
+        return "cross-origin request blocked: Access-Control-Allow-Origin "
+               "does not name this origin";
+    return 0;
+}
+
+/* The CORS check on a PREFLIGHT response.  Same origin rules, plus the method
+ * and header allowances the preflight exists to ask about. */
+static const char *cors_check_preflight(struct wfetch *f)
 {
     struct h1_response *r = &f->conn.resp;
-    if (h1_decode_body(r) != H1_OK) {
-        fetch_reject(ctx, f, "response body could not be decoded (Content-Encoding)");
-        return 1;
+    const char *why = cors_check_response(f);
+    if (why) return why;
+    if (r->code < 200 || r->code > 299) return "the CORS preflight was not successful";
+
+    int creds = wf_creds(f);
+
+    /* The method.  `*` is a wildcard only for an uncredentialed request; the
+     * three CORS-safelisted methods need no naming.  Anything else must be
+     * listed, which is the whole reason a DELETE is preflighted. */
+    const char *acam = h1_headers_get(&r->hdr, "access-control-allow-methods");
+    if (!acam) acam = "";
+    int m_safelisted = ci_streq(f->method, "GET") || ci_streq(f->method, "HEAD") ||
+                       ci_streq(f->method, "POST");
+    if (!m_safelisted && !list_has(acam, f->method) && !(list_has(acam, "*") && !creds))
+        return "the CORS preflight did not allow this method";
+
+    /* Every non-safelisted author header must be named (or wildcarded, again
+     * only without credentials). */
+    const char *acah = h1_headers_get(&r->hdr, "access-control-allow-headers");
+    if (!acah) acah = "";
+    int star = list_has(acah, "*") && !creds;
+    for (int i = 0; i < f->hdr.n; i++) {
+        if (cors_safe_req_header(f->hdr.v[i].name, f->hdr.v[i].value)) continue;
+        if (star) continue;
+        if (!list_has(acah, f->hdr.v[i].name))
+            return "the CORS preflight did not allow a request header";
     }
 
+    char origin[URL_HOST_MAX + 16];
+    wurl_origin(&f->url, origin, (int)sizeof origin);
+    const char *ma = h1_headers_get(&r->hdr, "access-control-max-age");
+    int secs = 0;
+    if (ma) { for (const char *p = ma; *p >= '0' && *p <= '9'; p++) secs = secs * 10 + (*p - '0'); }
+    pfc_store(origin, f->method, creds, acah, secs);
+    return 0;
+}
+
+/* May script see this response header? */
+static int header_visible(struct wfetch *f, const char *name, const char *expose)
+{
+    /* Set-Cookie is never readable, at any origin -- that is what HttpOnly is
+     * for and Headers.get() joining duplicates would break it anyway. */
+    if (ci_streq(name, "set-cookie") || ci_streq(name, "set-cookie2")) return 0;
+    if (!f->cross || f->mode != WF_MODE_CORS) return 1;
+    if (cors_safe_resp_header(name)) return 1;
+    if (!expose) return 0;
+    if (list_has(expose, "*") && !wf_creds(f)) return 1;
+    return list_has(expose, name);
+}
+
+/* Headers are complete: settle the promise with a Response whose body is a
+ * stream the network has not finished filling.  This is the point the fetch
+ * spec resolves at, and the reason a token-by-token endpoint works at all. */
+static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
+{
+    struct h1_response *r = &f->conn.resp;
+
+    fetch_take_cookies(f);
+
+    const char *why = cors_check_response(f);
+    if (why) { f->deliver = WF_DEL_DROP; fetch_reject(ctx, f, why); return 1; }
+
+    int opaque = (f->cross && f->mode == WF_MODE_NO_CORS);
+    const char *expose = h1_headers_get(&r->hdr, "access-control-expose-headers");
+
     JSValue pairs = JS_NewArray(ctx);
-    for (int i = 0; i < r->hdr.n; i++) {
-        JSValue p = JS_NewArray(ctx);
-        JS_SetPropertyUint32(ctx, p, 0, JS_NewString(ctx, r->hdr.v[i].name));
-        JS_SetPropertyUint32(ctx, p, 1, JS_NewString(ctx, r->hdr.v[i].value));
-        JS_SetPropertyUint32(ctx, pairs, (uint32_t)i, p);
+    uint32_t np = 0;
+    if (!opaque) {
+        for (int i = 0; i < r->hdr.n; i++) {
+            if (!header_visible(f, r->hdr.v[i].name, expose)) continue;
+            JSValue p = JS_NewArray(ctx);
+            JS_SetPropertyUint32(ctx, p, 0, JS_NewString(ctx, r->hdr.v[i].name));
+            JS_SetPropertyUint32(ctx, p, 1, JS_NewString(ctx, r->hdr.v[i].value));
+            JS_SetPropertyUint32(ctx, pairs, np++, p);
+        }
     }
-    static const uint8_t empty[1] = { 0 };
-    JSValue buf = JS_NewArrayBufferCopy(ctx, r->body && r->body_len > 0 ? r->body : empty,
-                                        r->body_len > 0 ? (size_t)r->body_len : 0);
+
     char href[WURL_MAX];
     wurl_href(&f->url, href, (int)sizeof href);
 
-    JSValue argv[6];
-    argv[0] = JS_NewInt32(ctx, r->code);
-    argv[1] = JS_NewString(ctx, r->reason);
+    JSValue argv[7];
+    argv[0] = JS_NewInt32(ctx, opaque ? 0 : r->code);
+    argv[1] = JS_NewString(ctx, opaque ? "" : r->reason);
     argv[2] = pairs;
-    argv[3] = buf;
-    argv[4] = JS_NewString(ctx, href);
-    argv[5] = JS_NewBool(ctx, f->redirected);
-
-    JSValue resp = JS_Call(ctx, g_mk_response, JS_UNDEFINED, 6, (JSValueConst *)argv);
-    for (int i = 0; i < 6; i++) JS_FreeValue(ctx, argv[i]);
-    if (JS_IsException(resp)) {
-        JS_FreeValue(ctx, resp);
-        JSValue e = JS_GetException(ctx);
-        JS_FreeValue(ctx, e);
+    argv[3] = JS_NewString(ctx, opaque ? "" : href);
+    argv[4] = JS_NewBool(ctx, f->redirected);
+    argv[5] = JS_NewString(ctx, opaque ? "opaque" : (f->cross ? "cors" : "basic"));
+    argv[6] = JS_NewBool(ctx, opaque || r->no_body);
+    JSValue hooks = JS_Call(ctx, g_mk_response, JS_UNDEFINED, 7, (JSValueConst *)argv);
+    for (int i = 0; i < 7; i++) JS_FreeValue(ctx, argv[i]);
+    if (JS_IsException(hooks)) {
+        JS_FreeValue(ctx, hooks);
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        f->deliver = WF_DEL_DROP;
         fetch_reject(ctx, f, "could not build the Response");
         return 1;
     }
+
+    JSValue resp = JS_GetPropertyStr(ctx, hooks, "r");
+    f->push = JS_GetPropertyStr(ctx, hooks, "push");
+    f->fin  = JS_GetPropertyStr(ctx, hooks, "close");
+    f->fail = JS_GetPropertyStr(ctx, hooks, "error");
+    JS_FreeValue(ctx, hooks);
+
+    f->resolved = 1;
+    f->deliver = opaque ? WF_DEL_DROP : WF_DEL_JS;
+
+    /* Whatever the same read already parsed out of the body. */
+    if (f->hold_len && f->deliver == WF_DEL_JS) wf_push(f, f->hold, f->hold_len);
+    f->hold_len = 0;
+
     JSValue rv = JS_Call(ctx, f->resolve, JS_UNDEFINED, 1, (JSValueConst *)&resp);
+    if (JS_IsException(rv)) JS_FreeValue(ctx, JS_GetException(ctx));
     JS_FreeValue(ctx, rv);
     JS_FreeValue(ctx, resp);
+    return 1;
+}
+
+/* The message finished.  A streamed body is already in the page's hands and
+ * only needs closing; a buffered one (Content-Encoding: gzip, which cannot be
+ * inflated incrementally) is decoded and handed over in one piece here. */
+static int fetch_finish(JSContext *ctx, struct wfetch *f)
+{
+    struct h1_response *r = &f->conn.resp;
+    if (!h1_response_streaming(r) && f->deliver == WF_DEL_JS) {
+        if (h1_decode_body(r) != H1_OK) {
+            fetch_fail(ctx, f, "response body could not be decoded (Content-Encoding)",
+                       "TypeError");
+            return 1;
+        }
+        if (r->body && r->body_len > 0) wf_push(f, r->body, r->body_len);
+    }
+    if (JS_IsFunction(ctx, f->fin)) {
+        JSValue v = JS_Call(ctx, f->fin, JS_UNDEFINED, 0, 0);
+        if (JS_IsException(v)) JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, v);
+    }
     fetch_release(ctx, f);
     return 1;
+}
+
+/* Re-dial for the next hop (a redirect, or the real request after a
+ * preflight). 0 ok. */
+static int fetch_redial(struct wfetch *f)
+{
+    g_net->close(f->fd); f->fd = -1;
+    h1_conn_free(&f->conn);
+    memset(&f->conn, 0, sizeof f->conn);
+    f->started = 0;
+    f->hold_len = 0;
+    f->deliver = WF_DEL_UNKNOWN;
+    return fetch_dial(f);
 }
 
 /* A 3xx with a Location: re-target and re-dial. 1 if the request continues. */
@@ -554,6 +1121,15 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
     struct wurl next;
     if (wurl_parse(loc, &f->url, &next) != 0) return 0;
 
+    /* A redirect that leaves the origin taints the request: from here on the
+     * server is told `Origin: null`, so it cannot be led to believe the
+     * request came from the origin it started at. */
+    if (!same_origin(&next, &f->url)) f->tainted = 1;
+    if (f->mode == WF_MODE_SAME_ORIGIN && g_loc_valid && !same_origin(&next, &g_loc)) {
+        fetch_reject(ctx, f, "mode 'same-origin' forbids a cross-origin redirect");
+        return 1;
+    }
+
     char m[H1_METHOD_MAX]; int drop = 0;
     if (h1_redirect_method(r->code, f->method, m, (int)sizeof m, &drop) != H1_OK) return 0;
     scopy(f->method, m, H1_METHOD_MAX);
@@ -563,24 +1139,32 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
         h1_headers_remove(&f->hdr, "content-length");
     }
 
-    g_net->close(f->fd); f->fd = -1;
-    h1_conn_free(&f->conn);
-    memset(&f->conn, 0, sizeof f->conn);
-    f->started = 0;
     f->url = next;
     f->hops++;
     f->redirected = 1;
-    if (fetch_dial(f) != 0) { fetch_reject(ctx, f, "redirect target could not be opened"); return 1; }
+    f->phase = WF_PH_ACTUAL;
+    if (fetch_redial(f) != 0) { fetch_reject(ctx, f, "redirect target could not be opened"); return 1; }
+    /* The new hop may be cross-origin even though the first was not. */
+    if (wf_needs_preflight(f) ) {
+        char origin[URL_HOST_MAX + 16];
+        wurl_origin(&f->url, origin, (int)sizeof origin);
+        if (!pfc_hit(origin, f->method, wf_creds(f), &f->hdr)) f->phase = WF_PH_PREFLIGHT;
+    }
     return 1;
 }
 
 /* One frame's work for one request. Returns 1 if a JS callback ran. */
 static int fetch_step(JSContext *ctx, struct wfetch *f)
 {
-    if (now_ms() > f->deadline) { fetch_reject(ctx, f, "timed out"); return 1; }
+    f->ctx = ctx;
+    if (now_ms() > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
+
+    /* Backpressure: while the page is behind, stop reading.  The socket buffer
+     * fills, the window closes, and the producer slows down. */
+    if (f->resolved && f->queued > WF_HIGHWATER) return 0;
 
     int bits = g_net->poll(f->fd);
-    if (bits < 0 || (bits & SOCK_P_ERROR)) { fetch_reject(ctx, f, "connection failed"); return 1; }
+    if (bits < 0 || (bits & SOCK_P_ERROR)) { fetch_fail(ctx, f, "connection failed", "TypeError"); return 1; }
     if (!(bits & SOCK_P_CONNECTED)) return 0;             /* DNS/TCP/TLS still running */
 
     if (!f->started) {
@@ -589,14 +1173,45 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
     }
 
     for (int i = 0; i < WF_STEPS; i++) {
+        if (f->state == WF_FREE) return 1;    /* released underneath us */
         int st = h1_conn_pump(&f->conn);
         if (st == H1_C_ERROR) {
-            fetch_reject(ctx, f, h1_strerror(f->conn.err));
+            fetch_fail(ctx, f, h1_strerror(f->conn.err), "TypeError");
             return 1;
         }
+
+        /* Inspect the headers the moment they are complete -- and after EVERY
+         * pump, which is what bounds `hold` to one read's worth. */
+        if (f->phase == WF_PH_ACTUAL && !f->resolved && f->deliver == WF_DEL_UNKNOWN &&
+            h1_response_headers_done(&f->conn.resp)) {
+            struct h1_response *r = &f->conn.resp;
+            int will_redirect = h1_is_redirect(r->code) &&
+                                h1_headers_get(&r->hdr, "location") && f->hops < WF_HOPS;
+            if (will_redirect) {
+                fetch_take_cookies(f);       /* a login redirect sets its cookie here */
+                f->deliver = WF_DEL_DROP;    /* the 3xx body is not the answer */
+                f->hold_len = 0;
+            } else if (fetch_deliver_headers(ctx, f)) {
+                if (f->state == WF_FREE) return 1;      /* rejected and released */
+            }
+        }
+
         if (st == H1_C_DONE) {
-            if (h1_is_redirect(f->conn.resp.code) && fetch_redirect(ctx, f)) return 0;
-            return fetch_resolve(ctx, f);
+            if (f->phase == WF_PH_PREFLIGHT) {
+                const char *why = cors_check_preflight(f);
+                if (why) { fetch_reject(ctx, f, why); return 1; }
+                f->phase = WF_PH_ACTUAL;
+                if (fetch_redial(f) != 0) { fetch_reject(ctx, f, "could not reopen after the preflight"); return 1; }
+                return 0;
+            }
+            if (h1_is_redirect(f->conn.resp.code) && fetch_redirect(ctx, f))
+                return f->state == WF_FREE ? 1 : 0;
+            if (!f->resolved) {
+                /* No body state was ever entered (a bodyless status we did not
+                 * catch above): deliver now. */
+                if (fetch_deliver_headers(ctx, f) && f->state == WF_FREE) return 1;
+            }
+            return fetch_finish(ctx, f);
         }
     }
     return 0;
@@ -614,7 +1229,13 @@ static uint8_t *ab_bytes(JSContext *ctx, JSValueConst v, size_t *len)
     return p;
 }
 
-/* __fetchStart(url, method, headerPairs, body) -> Promise */
+/* An abort handle names both the slot and the generation that occupied it, so
+ * a handle held past the request's death cannot cancel whatever took the slot
+ * next. */
+static int wf_handle(const struct wfetch *f)
+{ return (int)((f - g_fetch) * 4096 + (f->gen & 4095)); }
+
+/* __fetchStart(url, method, headerPairs, body, opts) -> { p: Promise, h: id } */
 static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
@@ -634,9 +1255,13 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
     else if (wurl_parse(us, g_loc_valid ? &g_loc : 0, &u) != 0) msg = "invalid URL";
 
     if (!msg) {
+        int gen = f->gen;                    /* the generation must survive the wipe */
         memset(f, 0, sizeof *f);
+        f->gen = gen;
         f->fd = -1;
         f->url = u;
+        f->resolve = f->reject = JS_UNDEFINED;
+        f->push = f->fin = f->fail = JS_UNDEFINED;
         h1_headers_init(&f->hdr);
         scopy(f->method, "GET", H1_METHOD_MAX);
         if (argc > 1) {
@@ -654,8 +1279,11 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
                 JSValue vv = JS_GetPropertyUint32(ctx, p, 1);
                 const char *k = JS_ToCString(ctx, kv), *v = JS_ToCString(ctx, vv);
                 /* h1_headers_add rejects a non-token name or a value with CR/LF,
-                 * so header injection from a page's init dies here. */
-                if (k && v) h1_headers_add(&f->hdr, k, -1, v, -1);
+                 * so header injection from a page's init dies here.  A FORBIDDEN
+                 * name is dropped on top of that: the user agent owns Cookie,
+                 * Host and Origin, and a page that could set them could forge
+                 * its own identity to the server. */
+                if (k && v && !forbidden_req_header(k)) h1_headers_add(&f->hdr, k, -1, v, -1);
                 if (k) JS_FreeCString(ctx, k);
                 if (v) JS_FreeCString(ctx, v);
                 JS_FreeValue(ctx, kv); JS_FreeValue(ctx, vv); JS_FreeValue(ctx, p);
@@ -677,10 +1305,42 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
                 if (s) JS_FreeCString(ctx, s);
             }
         }
+        /* mode + credentials.  Unrecognised values fall back to the defaults
+         * the spec gives them, which are the strict ones. */
+        f->mode = WF_MODE_CORS; f->creds = WF_CRED_SAME_ORIGIN;
+        if (argc > 4 && JS_IsObject(argv[4])) {
+            JSValue mv = JS_GetPropertyStr(ctx, argv[4], "mode");
+            const char *m = JS_IsUndefined(mv) ? 0 : JS_ToCString(ctx, mv);
+            if (m) {
+                if (!strcmp(m, "same-origin")) f->mode = WF_MODE_SAME_ORIGIN;
+                else if (!strcmp(m, "no-cors")) f->mode = WF_MODE_NO_CORS;
+                JS_FreeCString(ctx, m);
+            }
+            JS_FreeValue(ctx, mv);
+            JSValue cv = JS_GetPropertyStr(ctx, argv[4], "credentials");
+            const char *c = JS_IsUndefined(cv) ? 0 : JS_ToCString(ctx, cv);
+            if (c) {
+                if (!strcmp(c, "include")) f->creds = WF_CRED_INCLUDE;
+                else if (!strcmp(c, "omit")) f->creds = WF_CRED_OMIT;
+                JS_FreeCString(ctx, c);
+            }
+            JS_FreeValue(ctx, cv);
+        }
         if (fetch_dial(f) != 0) { h1_headers_free(&f->hdr); free(f->body); f->body = 0; msg = "could not open a socket"; }
+        else if (f->mode == WF_MODE_SAME_ORIGIN && f->cross) {
+            g_net->close(f->fd); f->fd = -1;
+            h1_headers_free(&f->hdr); free(f->body); f->body = 0;
+            msg = "mode 'same-origin' forbids a cross-origin request";
+        } else if (wf_needs_preflight(f)) {
+            char origin[URL_HOST_MAX + 16];
+            wurl_origin(&f->url, origin, (int)sizeof origin);
+            if (!pfc_hit(origin, f->method, wf_creds(f), &f->hdr))
+                f->phase = WF_PH_PREFLIGHT;
+        }
     }
     if (us) JS_FreeCString(ctx, us);
 
+    JSValue out = JS_NewObject(ctx);
     if (msg) {
         /* A rejected promise, not a throw: fetch() rejects, it does not raise. */
         JSValue err = JS_NewError(ctx);
@@ -690,13 +1350,134 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
         JS_FreeValue(ctx, r); JS_FreeValue(ctx, err);
         JS_FreeValue(ctx, rf[0]); JS_FreeValue(ctx, rf[1]);
         if (f) f->state = WF_FREE;
-        return promise;
+        JS_SetPropertyStr(ctx, out, "p", promise);
+        JS_SetPropertyStr(ctx, out, "h", JS_NewInt32(ctx, -1));
+        return out;
     }
 
     f->resolve = rf[0];
     f->reject  = rf[1];
+    f->ctx = ctx;
     g_fetch_live++;
-    return promise;
+    JS_SetPropertyStr(ctx, out, "p", promise);
+    JS_SetPropertyStr(ctx, out, "h", JS_NewInt32(ctx, wf_handle(f)));
+    return out;
+}
+
+/* __fetchAbort(handle) -- a REAL cancellation.  bd1f53d gave the socket ABI a
+ * close, so this closes the connection rather than merely refusing to look at
+ * what arrives: the transfer stops on the wire and the slot is freed. */
+static JSValue js_fetch_abort(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    int32_t h = -1;
+    if (argc > 0) JS_ToInt32(ctx, &h, argv[0]);
+    if (h < 0) return JS_FALSE;
+    int slot = h / 4096, gen = h % 4096;
+    if (slot < 0 || slot >= WF_MAX) return JS_FALSE;
+    struct wfetch *f = &g_fetch[slot];
+    if (f->state == WF_FREE || (f->gen & 4095) != gen) return JS_FALSE;
+    f->ctx = ctx;
+    fetch_fail(ctx, f, "aborted", "AbortError");
+    return JS_TRUE;
+}
+
+/* ---- a delay the pump owns --------------------------------------------
+ * EventSource has to wait `retry` milliseconds before reconnecting, and it has
+ * to do so in the host unit tests too -- where js_page.c (and therefore
+ * setTimeout) is not linked at all.  This is NOT a second event loop: the queue
+ * is drained from js_webapi_pump, on the same clock the sockets are stepped
+ * with, so a delay cannot fire between two steps of anything. */
+#define WT_MAX 8
+struct wtimer { int used; unsigned long long due; JSValue fn; };
+static struct wtimer g_timers[WT_MAX];
+
+static JSValue js_later(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 2 || !JS_IsFunction(ctx, argv[1])) return JS_NewInt32(ctx, -1);
+    int32_t ms = 0;
+    JS_ToInt32(ctx, &ms, argv[0]);
+    if (ms < 0) ms = 0;
+    for (int i = 0; i < WT_MAX; i++) {
+        if (g_timers[i].used) continue;
+        g_timers[i].used = 1;
+        g_timers[i].due = now_ms() + (unsigned long long)ms;
+        g_timers[i].fn = JS_DupValue(ctx, argv[1]);
+        return JS_NewInt32(ctx, i);
+    }
+    return JS_NewInt32(ctx, -1);
+}
+
+static JSValue js_cancel_later(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    int32_t id = -1;
+    if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+    if (id < 0 || id >= WT_MAX || !g_timers[id].used) return JS_FALSE;
+    g_timers[id].used = 0;
+    JS_FreeValue(ctx, g_timers[id].fn);
+    g_timers[id].fn = JS_UNDEFINED;
+    return JS_TRUE;
+}
+
+static int timers_run(JSContext *ctx)
+{
+    int ran = 0;
+    unsigned long long t = now_ms();
+    for (int i = 0; i < WT_MAX; i++) {
+        if (!g_timers[i].used || g_timers[i].due > t) continue;
+        JSValue fn = g_timers[i].fn;
+        g_timers[i].used = 0;
+        g_timers[i].fn = JS_UNDEFINED;
+        JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 0, 0);
+        if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, r);
+        JS_FreeValue(ctx, fn);
+        ran++;
+    }
+    return ran;
+}
+
+static int timers_live(void)
+{ for (int i = 0; i < WT_MAX; i++) if (g_timers[i].used) return 1; return 0; }
+
+static void timers_clear(JSContext *ctx)
+{
+    for (int i = 0; i < WT_MAX; i++) {
+        if (!g_timers[i].used) continue;
+        g_timers[i].used = 0;
+        if (ctx) JS_FreeValue(ctx, g_timers[i].fn);
+        g_timers[i].fn = JS_UNDEFINED;
+    }
+}
+
+/* ---- document.cookie ---------------------------------------------------
+ * The same jar the network uses, minus HttpOnly -- which is the whole point of
+ * HttpOnly, and is enforced inside cookies.c by the http_api flag rather than
+ * by filtering afterwards here. */
+static JSValue js_cookie_get(JSContext *ctx, JSValueConst t)
+{
+    (void)t;
+    if (!g_loc_valid) return JS_NewString(ctx, "");
+    struct cookie_ctx cc;
+    ck_ctx(&cc, &g_loc, 0);
+    char buf[4096];
+    int n = cookie_header(jar(), &cc, now_unix(), buf, (int)sizeof buf);
+    return JS_NewString(ctx, n > 0 ? buf : "");
+}
+
+static JSValue js_cookie_set(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    (void)t;
+    if (!g_loc_valid) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (!s) return JS_EXCEPTION;
+    struct cookie_ctx cc;
+    ck_ctx(&cc, &g_loc, 0);
+    cookie_set(jar(), &cc, s, now_unix());   /* a refusal is the normal outcome */
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
 }
 
 /* __utf8(arrayBuffer) -> string */
@@ -1182,7 +1963,7 @@ static const JSCFunctionListEntry hist_funcs[] = {
  * `__fetchStart` is not something script should be able to see or replace.
  * It returns the hooks C needs to call back into. */
 static const char *PRELUDE =
-"(function (__fetchStart, __utf8, __urlParse, __mediaMatch) {\n"
+"(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later, __cancelLater) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 
@@ -1218,37 +1999,299 @@ static const char *PRELUDE =
 "};\n"
 "G.Headers.prototype[Symbol.iterator] = G.Headers.prototype.entries;\n"
 
-/* ---- Response ---- */
+/* ---- streams ----
+ * A real ReadableStream, because Response.body has to be one and because a
+ * chat reply is a stream before it is a string. The queue is a plain array and
+ * a byte count; the byte count is what C reads back from push() to decide
+ * whether to keep reading the socket, so it is load-bearing rather than
+ * decorative. */
+"function chLen(c) { return c == null ? 0 : (c.byteLength !== undefined ? c.byteLength : (c.length || 0)); }\n"
+"function rsPut(s, ch) {\n"
+"  if (s._st !== 'readable') return;\n"
+"  if (s._w.length) { s._w.shift()[0]({ value: ch, done: false }); return; }\n"
+"  s._q.push(ch); s._qb += chLen(ch);\n"
+"}\n"
+"function rsEnd(s) {\n"
+"  if (s._st !== 'readable') return;\n"
+"  s._st = 'closed';\n"
+"  while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
+"}\n"
+"function rsErr(s, e) {\n"
+"  if (s._st !== 'readable') { return; }\n"
+"  s._st = 'errored'; s._e = e;\n"
+"  while (s._w.length) s._w.shift()[1](e);\n"
+"  s._q = []; s._qb = 0;\n"
+"}\n"
+"function rsPull(s) { if (typeof s._src.pull === 'function') { try { s._src.pull(s._c); } catch (e) { rsErr(s, e); } } }\n"
+"function rsRead(s) {\n"
+"  if (s._q.length) { var c = s._q.shift(); s._qb -= chLen(c); if (s._qb < 0) s._qb = 0;\n"
+"    rsPull(s); return Promise.resolve({ value: c, done: false }); }\n"
+"  if (s._st === 'closed') return Promise.resolve({ value: undefined, done: true });\n"
+"  if (s._st === 'errored') return Promise.reject(s._e);\n"
+"  return new Promise(function (res, rej) { s._w.push([res, rej]); rsPull(s); });\n"
+"}\n"
+"function rsCancel(s, reason) {\n"
+"  if (s._st === 'readable') { s._st = 'closed';\n"
+"    while (s._w.length) s._w.shift()[0]({ value: undefined, done: true }); }\n"
+"  s._q = []; s._qb = 0;\n"
+"  if (typeof s._src.cancel === 'function') { try { s._src.cancel(reason); } catch (e) {} }\n"
+"  return Promise.resolve();\n"
+"}\n"
+"G.ReadableStream = function ReadableStream(src) {\n"
+"  var s = this;\n"
+"  s._src = src || {}; s._q = []; s._qb = 0; s._st = 'readable'; s._e = undefined;\n"
+"  s._w = []; s._locked = false;\n"
+"  s._c = {\n"
+"    enqueue: function (ch) { rsPut(s, ch); },\n"
+"    close: function () { rsEnd(s); },\n"
+"    error: function (e) { rsErr(s, e); },\n"
+"    bytes: function () { return s._qb; },\n"
+"    get desiredSize() { return 65536 - s._qb; }\n"
+"  };\n"
+"  if (typeof s._src.start === 'function') s._src.start(s._c);\n"
+"};\n"
+"G.ReadableStream.prototype = {\n"
+"  constructor: G.ReadableStream,\n"
+"  get locked() { return this._locked; },\n"
+"  getReader: function () {\n"
+"    if (this._locked) throw new TypeError('ReadableStream is locked');\n"
+"    var s = this; s._locked = true;\n"
+"    return {\n"
+"      read: function () { return rsRead(s); },\n"
+"      cancel: function (r) { s._locked = false; return rsCancel(s, r); },\n"
+"      releaseLock: function () { s._locked = false; },\n"
+"      closed: new Promise(function () {})\n"
+"    };\n"
+"  },\n"
+"  cancel: function (r) { return rsCancel(this, r); },\n"
+"  tee: function () {\n"
+"    var cs = [null, null];\n"
+"    var out = [new G.ReadableStream({ start: function (c) { cs[0] = c; } }),\n"
+"               new G.ReadableStream({ start: function (c) { cs[1] = c; } })];\n"
+"    var rd = this.getReader();\n"
+"    (function loop() {\n"
+"      rd.read().then(function (r) {\n"
+"        if (r.done) { cs[0].close(); cs[1].close(); return; }\n"
+"        cs[0].enqueue(r.value); cs[1].enqueue(r.value); loop();\n"
+"      }, function (e) { cs[0].error(e); cs[1].error(e); });\n"
+"    })();\n"
+"    return out;\n"
+"  },\n"
+"  pipeTo: function (w) {\n"
+"    var rd = this.getReader(), wr = w.getWriter();\n"
+"    return new Promise(function (res, rej) {\n"
+"      (function loop() {\n"
+"        rd.read().then(function (r) {\n"
+"          if (r.done) { Promise.resolve(wr.close()).then(res, rej); return; }\n"
+"          Promise.resolve(wr.write(r.value)).then(loop, rej);\n"
+"        }, function (e) { try { wr.abort(e); } catch (x) {} rej(e); });\n"
+"      })();\n"
+"    });\n"
+"  },\n"
+"  pipeThrough: function (t) { this.pipeTo(t.writable); return t.readable; }\n"
+"};\n"
+"if (typeof Symbol !== 'undefined' && Symbol.asyncIterator) {\n"
+"  G.ReadableStream.prototype[Symbol.asyncIterator] = function () {\n"
+"    var rd = this.getReader();\n"
+"    return { next: function () { return rd.read(); },\n"
+"             'return': function () { rd.cancel(); return Promise.resolve({ done: true }); },\n"
+"             '@@asyncIterator': function () { return this; } };\n"
+"  };\n"
+"}\n"
+"G.WritableStream = function WritableStream(sink) { this._sink = sink || {}; this._locked = false; };\n"
+"G.WritableStream.prototype = {\n"
+"  constructor: G.WritableStream,\n"
+"  get locked() { return this._locked; },\n"
+"  getWriter: function () {\n"
+"    var s = this; s._locked = true;\n"
+"    return {\n"
+"      write: function (c) { return Promise.resolve(s._sink.write ? s._sink.write(c) : undefined); },\n"
+"      close: function () { return Promise.resolve(s._sink.close ? s._sink.close() : undefined); },\n"
+"      abort: function (e) { return Promise.resolve(s._sink.abort ? s._sink.abort(e) : undefined); },\n"
+"      releaseLock: function () { s._locked = false; },\n"
+"      ready: Promise.resolve(), closed: Promise.resolve()\n"
+"    };\n"
+"  }\n"
+"};\n"
+"G.TransformStream = function TransformStream(t) {\n"
+"  t = t || {};\n"
+"  var rc = null;\n"
+"  this.readable = new G.ReadableStream({ start: function (c) { rc = c; } });\n"
+"  var tc = { enqueue: function (c) { rc.enqueue(c); },\n"
+"             terminate: function () { rc.close(); },\n"
+"             error: function (e) { rc.error(e); } };\n"
+"  this.writable = new G.WritableStream({\n"
+"    write: function (chunk) { return Promise.resolve(t.transform ? t.transform(chunk, tc) : tc.enqueue(chunk)); },\n"
+"    close: function () { return Promise.resolve(t.flush ? t.flush(tc) : undefined).then(function () { rc.close(); }); },\n"
+"    abort: function (e) { rc.error(e); }\n"
+"  });\n"
+"  if (typeof t.start === 'function') t.start(tc);\n"
+"};\n"
+
+/* ---- bytes <-> text ----
+ * TextDecoder is INCREMENTAL, and that is not a nicety: a UTF-8 sequence split
+ * across two TCP reads is the normal case for a token stream, and a decoder
+ * that does not carry the tail turns a Chinese reply into replacement
+ * characters at every read boundary. The actual decode is __utf8 (QuickJS's
+ * own UTF-8 reader); what is written here is only the part that decides which
+ * trailing bytes are not a whole character yet. */
+"function toU8(x) {\n"
+"  if (x === null || x === undefined) return new Uint8Array(0);\n"
+"  if (x instanceof Uint8Array) return x;\n"
+"  if (x instanceof ArrayBuffer) return new Uint8Array(x);\n"
+"  if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);\n"
+"  if (typeof x === 'string') return new G.TextEncoder().encode(x);\n"
+"  return new Uint8Array(0);\n"
+"}\n"
+"function u8ab(u) { return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }\n"
+"function joinParts(parts) {\n"
+"  var a = [], n = 0, i;\n"
+"  for (i = 0; i < parts.length; i++) { a.push(toU8(parts[i])); n += a[i].length; }\n"
+"  var out = new Uint8Array(n), o = 0;\n"
+"  for (i = 0; i < a.length; i++) { out.set(a[i], o); o += a[i].length; }\n"
+"  return out.buffer;\n"
+"}\n"
+/* How many trailing bytes of `b` are an incomplete UTF-8 sequence? */
+"function utf8Tail(b) {\n"
+"  var n = b.length, i, need;\n"
+"  for (i = 1; i <= 4 && i <= n; i++) {\n"
+"    var c = b[n - i];\n"
+"    if (c < 0x80) return 0;\n"
+"    if ((c & 0xC0) === 0x80) continue;\n"
+"    if ((c & 0xE0) === 0xC0) need = 2;\n"
+"    else if ((c & 0xF0) === 0xE0) need = 3;\n"
+"    else if ((c & 0xF8) === 0xF0) need = 4;\n"
+"    else return 0;\n"
+"    return i < need ? i : 0;\n"
+"  }\n"
+"  return 0;\n"
+"}\n"
+"G.TextEncoder = function TextEncoder() { this.encoding = 'utf-8'; };\n"
+"G.TextEncoder.prototype.encode = function (s) {\n"
+"  s = String(s === undefined ? '' : s);\n"
+"  var out = [], i, c, d;\n"
+"  for (i = 0; i < s.length; i++) {\n"
+"    c = s.charCodeAt(i);\n"
+"    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {\n"
+"      d = s.charCodeAt(i + 1);\n"
+"      if (d >= 0xDC00 && d <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00); i++; }\n"
+"    }\n"
+"    if (c < 0x80) out.push(c);\n"
+"    else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));\n"
+"    else if (c < 0x10000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n"
+"    else out.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n"
+"  }\n"
+"  return new Uint8Array(out);\n"
+"};\n"
+"G.TextDecoder = function TextDecoder(enc) { this.encoding = 'utf-8'; this._t = null; };\n"
+"G.TextDecoder.prototype.decode = function (input, opts) {\n"
+"  var stream = !!(opts && opts.stream);\n"
+"  var b = toU8(input);\n"
+"  if (this._t && this._t.length) {\n"
+"    var m = new Uint8Array(this._t.length + b.length);\n"
+"    m.set(this._t, 0); m.set(b, this._t.length); b = m; this._t = null;\n"
+"  }\n"
+"  var keep = stream ? utf8Tail(b) : 0;\n"
+"  if (keep) { this._t = b.slice(b.length - keep); b = b.subarray(0, b.length - keep); }\n"
+"  if (!b.length) return '';\n"
+"  return __utf8(u8ab(b));\n"
+"};\n"
+"G.TextDecoderStream = function TextDecoderStream() {\n"
+"  var dec = new G.TextDecoder();\n"
+"  var t = new G.TransformStream({\n"
+"    transform: function (chunk, c) { var s = dec.decode(chunk, { stream: true }); if (s) c.enqueue(s); },\n"
+"    flush: function (c) { var s = dec.decode(new Uint8Array(0)); if (s) c.enqueue(s); }\n"
+"  });\n"
+"  this.readable = t.readable; this.writable = t.writable;\n"
+"};\n"
+"G.TextEncoderStream = function TextEncoderStream() {\n"
+"  var enc = new G.TextEncoder();\n"
+"  var t = new G.TransformStream({\n"
+"    transform: function (chunk, c) { c.enqueue(enc.encode(chunk)); }\n"
+"  });\n"
+"  this.readable = t.readable; this.writable = t.writable;\n"
+"};\n"
+
+/* ---- AbortController ----
+ * A real cancellation now that the socket ABI has a close: abort() shuts the
+ * connection, it does not merely stop looking at what arrives. */
+"function abortError() { var e = new Error('The operation was aborted.'); e.name = 'AbortError'; return e; }\n"
+"G.AbortSignal = function AbortSignal() { this.aborted = false; this.reason = undefined;\n"
+"  this.onabort = null; this._l = []; };\n"
+"G.AbortSignal.prototype = {\n"
+"  constructor: G.AbortSignal,\n"
+"  addEventListener: function (t, f) { if (t === 'abort' && typeof f === 'function') this._l.push(f); },\n"
+"  removeEventListener: function (t, f) { var i = this._l.indexOf(f); if (i >= 0) this._l.splice(i, 1); },\n"
+"  throwIfAborted: function () { if (this.aborted) throw this.reason; },\n"
+"  dispatchEvent: function () { return true; }\n"
+"};\n"
+"G.AbortController = function AbortController() { this.signal = new G.AbortSignal(); };\n"
+"G.AbortController.prototype.abort = function (reason) {\n"
+"  var s = this.signal;\n"
+"  if (s.aborted) return;\n"
+"  s.aborted = true;\n"
+"  s.reason = reason !== undefined ? reason : abortError();\n"
+"  var e = { type: 'abort', target: s };\n"
+"  if (typeof s.onabort === 'function') s.onabort(e);\n"
+"  s._l.slice().forEach(function (f) { f.call(s, e); });\n"
+"};\n"
+
+/* ---- Response ----
+ * The body is a ReadableStream in every case, including the one where C
+ * already had all the bytes: one shape means text()/json() cannot accidentally
+ * work only for buffered responses. */
+"function rsOf(chunk) { return new G.ReadableStream({ start: function (c) { c.enqueue(chunk); c.close(); } }); }\n"
 "G.Response = function Response(body, init) {\n"
 "  init = init || {};\n"
-"  this._b = body === undefined ? null : body;\n"
 "  this.status = init.status === undefined ? 200 : init.status | 0;\n"
 "  this.statusText = init.statusText === undefined ? '' : String(init.statusText);\n"
 "  this.headers = init.headers instanceof G.Headers ? init.headers : new G.Headers(init.headers);\n"
 "  this.url = init.url || '';\n"
 "  this.redirected = !!init.redirected;\n"
-"  this.type = 'basic';\n"
+"  this.type = init.type || 'basic';\n"
 "  this.ok = this.status >= 200 && this.status < 300;\n"
 "  this.bodyUsed = false;\n"
+"  if (body === undefined || body === null) this.body = null;\n"
+"  else if (body instanceof G.ReadableStream) this.body = body;\n"
+"  else this.body = rsOf(toU8(body));\n"
 "};\n"
 "G.Response.prototype = {\n"
 "  constructor: G.Response,\n"
-"  _take: function () { if (this.bodyUsed) throw new TypeError('body already read'); this.bodyUsed = true; return this._b; },\n"
-"  text: function () { var b; try { b = this._take(); } catch (e) { return Promise.reject(e); }\n"
-"    return Promise.resolve(b === null ? '' : (typeof b === 'string' ? b : __utf8(b))); },\n"
+"  _drain: function () {\n"
+"    if (this.bodyUsed) return Promise.reject(new TypeError('body already read'));\n"
+"    this.bodyUsed = true;\n"
+"    var b = this.body;\n"
+"    if (!b) return Promise.resolve([]);\n"
+"    var rd = b.getReader(), parts = [];\n"
+"    return new Promise(function (res, rej) {\n"
+"      (function loop() {\n"
+"        rd.read().then(function (r) {\n"
+"          if (r.done) { res(parts); return; }\n"
+"          parts.push(r.value); loop();\n"
+"        }, rej);\n"
+"      })();\n"
+"    });\n"
+"  },\n"
+"  arrayBuffer: function () { return this._drain().then(joinParts); },\n"
+"  text: function () { return this._drain().then(function (p) {\n"
+"    var ab = joinParts(p); return ab.byteLength ? __utf8(ab) : ''; }); },\n"
 "  json: function () { return this.text().then(function (t) { return JSON.parse(t); }); },\n"
-"  arrayBuffer: function () { var b; try { b = this._take(); } catch (e) { return Promise.reject(e); }\n"
-"    if (b === null) return Promise.resolve(new ArrayBuffer(0));\n"
-"    if (typeof b === 'string') { var a = new Uint8Array(b.length);\n"
-"      for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i) & 255; return Promise.resolve(a.buffer); }\n"
-"    return Promise.resolve(b); },\n"
 "  blob: function () { return this.arrayBuffer(); },\n"
-"  clone: function () { var r = new G.Response(this._b, { status: this.status, statusText: this.statusText,\n"
-"    headers: this.headers, url: this.url, redirected: this.redirected }); return r; }\n"
+"  clone: function () {\n"
+"    if (this.bodyUsed) throw new TypeError('body already read');\n"
+"    var t = this.body ? this.body.tee() : [null, null];\n"
+"    this.body = t[0];\n"
+"    return new G.Response(t[1], { status: this.status, statusText: this.statusText,\n"
+"      headers: this.headers, url: this.url, redirected: this.redirected, type: this.type });\n"
+"  }\n"
 "};\n"
 "G.Response.error = function () { var r = new G.Response(null, { status: 0 }); r.type = 'error'; return r; };\n"
+"G.Response.json = function (v, init) { init = init || {};\n"
+"  var h = new G.Headers(init.headers); if (!h.has('content-type')) h.set('content-type', 'application/json');\n"
+"  return new G.Response(JSON.stringify(v), { status: init.status, statusText: init.statusText, headers: h }); };\n"
 
 /* ---- fetch ---- */
+"function pairsOf(o) { var p = [], k; for (k in o) p.push([k, o[k]]); return p; }\n"
 "G.fetch = function fetch(input, init) {\n"
 "  init = init || {};\n"
 "  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
@@ -1266,9 +2309,148 @@ static const char *PRELUDE =
 "    }\n"
 "  } else body = null;\n"
 "  var pairs = []; hs.forEach(function (v, k) { pairs.push([k, v]); });\n"
-"  return __fetchStart(url, method, pairs, body);\n"
+"  var opts = { mode: init.mode, credentials: init.credentials };\n"
+"  var st = __fetchStart(url, method, pairs, body, opts);\n"
+"  var sig = init.signal || (input && input.signal);\n"
+"  if (sig && typeof sig === 'object') {\n"
+"    if (sig.aborted) { __fetchAbort(st.h); return Promise.reject(sig.reason || abortError()); }\n"
+"    if (typeof sig.addEventListener === 'function')\n"
+"      sig.addEventListener('abort', function () { __fetchAbort(st.h); });\n"
+"  }\n"
+"  return st.p;\n"
+"};\n"
+"G.Request = function Request(input, init) {\n"
+"  init = init || {};\n"
+"  this.url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
+"  this.method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
+"  this.headers = new G.Headers(init.headers || (input && input.headers));\n"
+"  this.body = init.body === undefined ? null : init.body;\n"
+"  this.mode = init.mode || 'cors'; this.credentials = init.credentials || 'same-origin';\n"
+"  this.signal = init.signal || null;\n"
 "};\n"
 
+/* ---- EventSource + the text/event-stream framing ----
+ * This is the reason the whole streaming path exists. The framing is small and
+ * every one of its rules is one that a naive split-on-newline implementation
+ * gets wrong: a field split across two reads, a `data:` with no space, several
+ * data lines joined with \n rather than concatenated, the blank line being the
+ * only thing that dispatches, and an event with an empty data buffer being
+ * dropped rather than delivered. The parser therefore buffers across feeds and
+ * holds a trailing CR back, because a CR at the end of a read may still turn
+ * out to be the first half of a CRLF. */
+"function sseParser(onEvent, es) {\n"
+"  var buf = '', data = '', type = '', id = '';\n"
+"  function endLine(l) {\n"
+"    if (l === '') {\n"
+"      if (es) es._lastId = id;\n"
+"      if (data === '') { type = ''; return; }\n"
+"      if (data.charAt(data.length - 1) === '\\n') data = data.slice(0, -1);\n"
+"      onEvent({ type: type || 'message', data: data, lastEventId: id });\n"
+"      data = ''; type = '';\n"
+"      return;\n"
+"    }\n"
+"    if (l.charAt(0) === ':') return;\n"
+"    var i = l.indexOf(':'), f, v;\n"
+"    if (i < 0) { f = l; v = ''; }\n"
+"    else { f = l.slice(0, i); v = l.slice(i + 1); if (v.charAt(0) === ' ') v = v.slice(1); }\n"
+"    if (f === 'data') data += v + '\\n';\n"
+"    else if (f === 'event') type = v;\n"
+"    else if (f === 'id') { if (v.indexOf('\\u0000') < 0) id = v; }\n"
+"    else if (f === 'retry') { if (/^[0-9]+$/.test(v) && es) es._retry = parseInt(v, 10); }\n"
+"  }\n"
+"  return { feed: function (text) {\n"
+"    buf += text;\n"
+"    for (;;) {\n"
+"      var i = -1, j, ch;\n"
+"      for (j = 0; j < buf.length; j++) { ch = buf.charAt(j); if (ch === '\\n' || ch === '\\r') { i = j; break; } }\n"
+"      if (i < 0) break;\n"
+"      var adv = 1;\n"
+"      if (buf.charAt(i) === '\\r') {\n"
+"        if (i + 1 >= buf.length) return;\n"
+"        if (buf.charAt(i + 1) === '\\n') adv = 2;\n"
+"      }\n"
+"      var l = buf.slice(0, i);\n"
+"      buf = buf.slice(i + adv);\n"
+"      endLine(l);\n"
+"    }\n"
+"  } };\n"
+"}\n"
+"G.EventSource = function EventSource(url, cfg) {\n"
+"  cfg = cfg || {};\n"
+"  this.url = String(url);\n"
+"  this.withCredentials = !!cfg.withCredentials;\n"
+"  this.readyState = 0;\n"
+"  this.onopen = null; this.onmessage = null; this.onerror = null;\n"
+"  this._l = {}; this._retry = 3000; this._lastId = ''; this._h = -1; this._timer = -1;\n"
+"  this._closed = false;\n"
+"  this._connect();\n"
+"};\n"
+"G.EventSource.CONNECTING = 0; G.EventSource.OPEN = 1; G.EventSource.CLOSED = 2;\n"
+"G.EventSource.prototype = {\n"
+"  constructor: G.EventSource,\n"
+"  addEventListener: function (t, f) { if (typeof f === 'function') (this._l[t] = this._l[t] || []).push(f); },\n"
+"  removeEventListener: function (t, f) { var l = this._l[t]; if (!l) return;\n"
+"    var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },\n"
+"  dispatchEvent: function () { return true; },\n"
+"  close: function () {\n"
+"    this._closed = true; this.readyState = 2;\n"
+"    if (this._h >= 0) { __fetchAbort(this._h); this._h = -1; }\n"
+"    if (this._timer >= 0) { __cancelLater(this._timer); this._timer = -1; }\n"
+"  },\n"
+"  _emit: function (type, ev) {\n"
+"    ev.type = type; ev.target = this; ev.currentTarget = this;\n"
+"    var h = this['on' + type];\n"
+"    if (typeof h === 'function') h.call(this, ev);\n"
+"    (this._l[type] || []).slice().forEach(function (f) { f.call(this, ev); }, this);\n"
+"  },\n"
+   /* A dropped connection is not a failure: the spec says reconnect after the
+      server's `retry` interval, carrying Last-Event-ID so the stream resumes
+      where it stopped. A wrong content-type or a non-2xx IS a failure and
+      must not retry, or a 404 becomes an infinite request loop. */
+"  _retryLater: function () {\n"
+"    if (this._closed) return;\n"
+"    this.readyState = 0;\n"
+"    this._emit('error', {});\n"
+"    var self = this;\n"
+"    this._timer = __later(this._retry, function () {\n"
+"      self._timer = -1; if (!self._closed) self._connect(); });\n"
+"  },\n"
+"  _fatal: function () {\n"
+"    this.readyState = 2; this._closed = true; this._h = -1;\n"
+"    this._emit('error', {});\n"
+"  },\n"
+"  _connect: function () {\n"
+"    var self = this;\n"
+"    var hs = { 'Accept': 'text/event-stream' };\n"
+"    if (this._lastId) hs['Last-Event-ID'] = this._lastId;\n"
+"    var st = __fetchStart(this.url, 'GET', pairsOf(hs), null,\n"
+"                          { credentials: this.withCredentials ? 'include' : 'same-origin' });\n"
+"    this._h = st.h;\n"
+"    st.p.then(function (r) {\n"
+"      if (self._closed) return;\n"
+"      var ct = String(r.headers.get('content-type') || '').toLowerCase();\n"
+"      if (!r.ok || ct.indexOf('text/event-stream') < 0) { self._fatal(); return; }\n"
+"      self.readyState = 1;\n"
+"      self._emit('open', {});\n"
+"      var origin = '';\n"
+"      try { origin = new G.URL(self.url, G.location && G.location.href).origin; } catch (e) {}\n"
+"      var parser = sseParser(function (ev) {\n"
+"        self._lastId = ev.lastEventId;\n"
+"        self._emit(ev.type, { data: ev.data, lastEventId: ev.lastEventId, origin: origin });\n"
+"      }, self);\n"
+"      if (!r.body) { self._h = -1; self._retryLater(); return; }\n"
+"      var rd = r.body.getReader(), dec = new G.TextDecoder();\n"
+"      (function loop() {\n"
+"        rd.read().then(function (c) {\n"
+"          if (self._closed) return;\n"
+"          if (c.done) { self._h = -1; self._retryLater(); return; }\n"
+"          parser.feed(dec.decode(c.value, { stream: true }));\n"
+"          loop();\n"
+"        }, function () { if (!self._closed) { self._h = -1; self._retryLater(); } });\n"
+"      })();\n"
+"    }, function () { if (!self._closed) { self._h = -1; self._retryLater(); } });\n"
+"  }\n"
+"};\n"
 /* ---- URLSearchParams ----
  * Kept as a serialize/parse pair over ONE string so that a params object taken
  * from a URL and the URL's own .search can never drift apart: every read
@@ -1358,18 +2540,19 @@ static const char *PRELUDE =
 "Object.defineProperty(G.URL.prototype, 'searchParams', { get: function () { return this._sp; } });\n"
 
 /* ---- XMLHttpRequest, over fetch ----
- * Async only. abort() stops the response being delivered but does not cancel
- * the transfer -- there is no cancellation in the socket ABI yet, and
- * pretending otherwise would be the kind of lie this file is trying not to
- * tell. There are no progress events for the same reason: the body is complete
- * before the promise resolves. */
+ * Async only. abort() is now a REAL abort: it aborts the AbortController the
+ * send() started with, which closes the socket, so the transfer stops on the
+ * wire rather than merely stopping being delivered. And because the body now
+ * arrives in pieces, readyState 3 and `progress` are real events with real
+ * partial responseText behind them, not a pair fired back to back once
+ * everything had already been buffered. */
 "G.XMLHttpRequest = function XMLHttpRequest() {\n"
 "  this.readyState = 0; this.status = 0; this.statusText = ''; this.responseText = '';\n"
 "  this.response = ''; this.responseType = ''; this.responseURL = ''; this.timeout = 0;\n"
 "  this.withCredentials = false; this.upload = {};\n"
 "  this.onreadystatechange = null; this.onload = null; this.onerror = null;\n"
 "  this.onloadend = null; this.onabort = null; this.ontimeout = null; this.onprogress = null;\n"
-"  this._h = []; this._hdr = null; this._ev = {}; this._aborted = false;\n"
+"  this._h = []; this._hdr = null; this._ev = {}; this._aborted = false; this._ac = null;\n"
 "};\n"
 "G.XMLHttpRequest.UNSENT = 0; G.XMLHttpRequest.OPENED = 1; G.XMLHttpRequest.HEADERS_RECEIVED = 2;\n"
 "G.XMLHttpRequest.LOADING = 3; G.XMLHttpRequest.DONE = 4;\n"
@@ -1384,26 +2567,47 @@ static const char *PRELUDE =
 "  addEventListener: function (t, f) { (this._ev[t] = this._ev[t] || []).push(f); },\n"
 "  removeEventListener: function (t, f) { var l = this._ev[t]; if (!l) return;\n"
 "    var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },\n"
-"  abort: function () { this._aborted = true; this.readyState = 0; this._fire('abort'); },\n"
+"  abort: function () { this._aborted = true;\n"
+"    if (this._ac) { try { this._ac.abort(); } catch (e) {} }\n"
+"    this.readyState = 0; this._fire('abort'); this._fire('loadend'); },\n"
 "  _fire: function (t) { var e = { type: t, target: this, currentTarget: this };\n"
 "    var h = this['on' + t]; if (typeof h === 'function') h.call(this, e);\n"
 "    (this._ev[t] || []).slice().forEach(function (f) { f.call(this, e); }, this); },\n"
 "  _rs: function (s) { this.readyState = s; this._fire('readystatechange'); },\n"
 "  send: function (body) {\n"
 "    var self = this;\n"
-"    G.fetch(this._u, { method: this._m || 'GET', headers: this._h, body: body })\n"
+"    self._ac = new G.AbortController();\n"
+"    G.fetch(this._u, { method: this._m || 'GET', headers: this._h, body: body,\n"
+"                       signal: self._ac.signal,\n"
+"                       credentials: this.withCredentials ? 'include' : 'same-origin' })\n"
 "      .then(function (r) {\n"
 "        if (self._aborted) return null;\n"
 "        self._hdr = r.headers; self.status = r.status; self.statusText = r.statusText;\n"
 "        self.responseURL = r.url; self._rs(2);\n"
-"        return r.text();\n"
+"        if (!r.body) return '';\n"
+"        var rd = r.body.getReader(), dec = new G.TextDecoder(), text = '';\n"
+"        return new Promise(function (res, rej) {\n"
+"          (function loop() {\n"
+"            rd.read().then(function (c) {\n"
+"              if (self._aborted) { res(null); return; }\n"
+"              if (c.done) { text += dec.decode(new Uint8Array(0)); res(text); return; }\n"
+"              text += dec.decode(c.value, { stream: true });\n"
+"              self.responseText = text;\n"
+"              if (self.responseType !== 'json') self.response = text;\n"
+"              if (self.readyState !== 3) self._rs(3);\n"
+"              self._fire('progress');\n"
+"              loop();\n"
+"            }, rej);\n"
+"          })();\n"
+"        });\n"
 "      })\n"
 "      .then(function (t) {\n"
 "        if (self._aborted || t === null) return;\n"
 "        self.responseText = t;\n"
 "        if (self.responseType === 'json') { try { self.response = JSON.parse(t); } catch (e) { self.response = null; } }\n"
 "        else self.response = t;\n"
-"        self._rs(3); self._rs(4);\n"
+"        if (self.readyState !== 3) self._rs(3);\n"
+"        self._rs(4);\n"
 "        self._fire('load'); self._fire('loadend');\n"
 "      })\n"
 "      .catch(function (e) {\n"
@@ -1412,7 +2616,6 @@ static const char *PRELUDE =
 "      });\n"
 "  }\n"
 "};\n"
-
 /* ---- matchMedia ---- */
 "var mqls = [];\n"
 "G.matchMedia = function matchMedia(q) {\n"
@@ -1431,9 +2634,19 @@ static const char *PRELUDE =
 
 /* The hooks C calls back through. */
 "return {\n"
-"  mkResponse: function (status, statusText, pairs, buf, url, redirected) {\n"
-"    return new G.Response(buf, { status: status, statusText: statusText, headers: pairs,\n"
-"                                 url: url, redirected: redirected });\n"
+   /* Called when the HEADERS arrive, not when the body does. C keeps the
+      three functions handed back and drives the body through them, which is
+      what makes the response a stream the page can read from while the
+      network is still writing to it. */
+"  mkResponse: function (status, statusText, pairs, url, redirected, type, nobody) {\n"
+"    var ctrl = null;\n"
+"    var stream = new G.ReadableStream({ start: function (c) { ctrl = c; } });\n"
+"    var r = new G.Response(nobody ? null : stream, { status: status, statusText: statusText,\n"
+"      headers: pairs, url: url, redirected: redirected, type: type });\n"
+"    return { r: r,\n"
+"      push: function (buf) { ctrl.enqueue(new Uint8Array(buf)); return ctrl.bytes(); },\n"
+"      close: function () { ctrl.close(); },\n"
+"      error: function (m) { ctrl.error(new TypeError(m)); } };\n"
 "  },\n"
 "  viewportChanged: function () {\n"
 "    mqls.forEach(function (m) {\n"
@@ -1507,7 +2720,20 @@ void js_webapi_install(JSContext *ctx, const char *url)
     {   /* document.location is the same object; document belongs to js_dom.c,
          * which has already installed it by the time we run. */
         JSValue doc = JS_GetPropertyStr(ctx, g, "document");
-        if (JS_IsObject(doc)) JS_SetPropertyStr(ctx, doc, "location", JS_DupValue(ctx, loc));
+        if (JS_IsObject(doc)) {
+            JS_SetPropertyStr(ctx, doc, "location", JS_DupValue(ctx, loc));
+            /* document.cookie: the same jar the network uses, minus HttpOnly.
+             * An accessor pair rather than a data property, because a page
+             * writes it as `document.cookie = "a=1"` and expects the write to
+             * ADD to the jar, not replace the string. */
+            JSAtom a = JS_NewAtom(ctx, "cookie");
+            JSValue get = JS_NewCFunction2(ctx, (JSCFunction *)js_cookie_get, "get cookie",
+                                           0, JS_CFUNC_getter, 0);
+            JSValue set = JS_NewCFunction2(ctx, (JSCFunction *)js_cookie_set, "set cookie",
+                                           1, JS_CFUNC_setter, 0);
+            JS_DefinePropertyGetSet(ctx, doc, a, get, set, JS_PROP_CONFIGURABLE);
+            JS_FreeAtom(ctx, a);
+        }
         JS_FreeValue(ctx, doc);
     }
     JS_FreeValue(ctx, loc);
@@ -1572,13 +2798,16 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, g);
         return;
     }
-    JSValue args[4];
-    args[0] = JS_NewCFunction(ctx, js_fetch_start, "__fetchStart", 4);
+    JSValue args[7];
+    args[0] = JS_NewCFunction(ctx, js_fetch_start, "__fetchStart", 5);
     args[1] = JS_NewCFunction(ctx, js_utf8, "__utf8", 1);
     args[2] = JS_NewCFunction(ctx, js_url_parse, "__urlParse", 2);
     args[3] = JS_NewCFunction(ctx, js_media_match, "__mediaMatch", 1);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 4, (JSValueConst *)args);
-    for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
+    args[4] = JS_NewCFunction(ctx, js_fetch_abort, "__fetchAbort", 1);
+    args[5] = JS_NewCFunction(ctx, js_later, "__later", 2);
+    args[6] = JS_NewCFunction(ctx, js_cancel_later, "__cancelLater", 1);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 7, (JSValueConst *)args);
+    for (int i = 0; i < 7; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
@@ -1602,6 +2831,10 @@ void js_webapi_close(JSContext *ctx)
     for (int i = 0; i < WF_MAX; i++)
         if (g_fetch[i].state != WF_FREE) fetch_release(ctx, &g_fetch[i]);
     g_fetch_live = 0;
+    timers_clear(ctx);
+    /* The cookie jar and the preflight cache are NOT cleared: both outlive the
+     * page for the same reason Storage does. A session that evaporated on
+     * every navigation would not be a session. */
     hist_reset(ctx, "");
     if (ctx) {
         JS_FreeValue(ctx, g_popstate_state);
@@ -1616,7 +2849,8 @@ void js_webapi_close(JSContext *ctx)
 }
 
 int js_webapi_pending(void)
-{ return g_fetch_live > 0 || g_popstate_queued || g_hashchange_queued || g_vp_dirty; }
+{ return g_fetch_live > 0 || g_popstate_queued || g_hashchange_queued || g_vp_dirty ||
+         timers_live(); }
 
 int js_webapi_pump(JSContext *ctx)
 {
@@ -1661,5 +2895,9 @@ int js_webapi_pump(JSContext *ctx)
 
     for (int i = 0; i < WF_MAX; i++)
         if (g_fetch[i].state != WF_FREE) ran += fetch_step(ctx, &g_fetch[i]);
+
+    /* EventSource's reconnect delay. Last, so a reconnection scheduled by a
+     * stream that ended during THIS pump waits at least one more frame. */
+    ran += timers_run(ctx);
     return ran;
 }

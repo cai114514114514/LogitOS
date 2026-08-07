@@ -139,9 +139,15 @@ static void rsp_add(struct fakesock *s, const char *txt)
 static void rsp_body(struct fakesock *s, int code, const char *reason,
                      const char *ctype, const char *body)
 {
+    /* Access-Control-Allow-Origin: two routes here are deliberately on another
+     * origin than the document (/redirect-abs's target, and a.example:8080),
+     * and CORS is now ENFORCED -- without the server opting in, those two
+     * responses are refused, which is correct and is not what those two tests
+     * are about. The refusals themselves are asserted in tests/unit/cookie_cors_test.c. */
     char hdr[512];
     snprintf(hdr, sizeof hdr,
              "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nX-Trace: one\r\nX-Trace: two\r\n"
+             "Access-Control-Allow-Origin: *\r\n"
              "Content-Length: %d\r\n\r\n", code, reason, ctype, (int)strlen(body));
     rsp_add(s, hdr);
     rsp_add(s, body);

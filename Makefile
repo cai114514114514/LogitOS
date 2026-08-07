@@ -1616,3 +1616,7 @@ clean:
 # Header-dependency fragments emitted by -MMD (kernel AND app objects). A stale
 # object compiled against an old struct layout is memory corruption at runtime.
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
+
+# Audio test targets (test-audio, test-audio-pcm, test-audio-wav/mix/underrun/
+# none) and /bin/sndtest. Same reason, same shape.
+-include tests/audio.mk
