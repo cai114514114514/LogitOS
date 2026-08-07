@@ -2475,3 +2475,8 @@ clean:
 # H.265/HEVC decoder test targets (test-h265, test-h265-units, test-h265-diff,
 # test-video265). Same reason, same shape as the fragments above.
 -include tests/h265.mk
+
+# The profiler: test-prof (on device), test-prof-host / test-prof-negctl
+# (host), test-prof-control (the -DKPROF_DISABLE negative control). Same reason,
+# same shape as the fragments above.
+-include tests/prof.mk
