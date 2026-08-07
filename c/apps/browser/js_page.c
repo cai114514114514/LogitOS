@@ -8,6 +8,11 @@
 #include "dom.h"
 #include "js_dom.h"
 #include "js_page.h"
+/* fetch/Storage/history/URL live in js_webapi.c, which the browser links and
+ * the host tests of THIS file do not. Every entry point is weak, so a build
+ * without it links and simply has no network API -- see js_webapi.h. */
+#define JS_WEBAPI_OPTIONAL
+#include "js_webapi.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -105,7 +110,13 @@ static void timer_unlink(struct jstimer *t)
         if (*pp == t) { *pp = t->next; return; }
 }
 
-int js_page_pending(void) { return g_timers != 0; }
+int js_page_pending(void)
+{
+    if (g_timers) return 1;
+    /* A fetch in flight also needs the loop to call js_page_run_due(), which is
+     * where its socket is stepped. */
+    return js_webapi_pending && js_webapi_pending();
+}
 
 long long js_page_next_due(void)
 {
@@ -119,14 +130,26 @@ int js_page_pump(void) { return js_dom_run_jobs(g_ctx); }
 
 int js_page_run_due(void)
 {
-    if (!g_ctx || !g_timers) return 0;
+    if (!g_ctx) return 0;
+    int ran = 0;
+
+    /* In-flight fetches first: they are the thing that must make progress on
+     * EVERY pass of the loop, timers or no timers. A resolved promise queues
+     * its reactions, so drain the microtask queue before returning -- the
+     * embedder repaints on a non-zero return and the .then() that writes the
+     * DOM has to have run by then. */
+    if (js_webapi_pump) {
+        int n = js_webapi_pump(g_ctx);
+        if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
+    }
+    if (!g_timers) return ran;
+
     unsigned long long now = now_ms();
     /* Snapshot the sequence counter: a callback that schedules another timer for
      * "now" must wait for the next pass. Without this, `setTimeout(f, 0)` calling
      * itself would spin inside this loop and the browser would never repaint.
      * (A re-armed setInterval takes a fresh seq for the same reason.) */
     unsigned long long limit = g_seq;
-    int ran = 0;
 
     for (;;) {
         struct jstimer *best = 0;
@@ -342,11 +365,30 @@ int js_page_open(struct node *root)
     JS_SetPropertyStr(g_ctx, perf, "now", JS_NewCFunction(g_ctx, js_perf_now, "now", 0));
     JS_SetPropertyStr(g_ctx, g, "performance", perf);
 
-    JSValue loc = JS_NewObject(g_ctx);
-    JS_SetPropertyStr(g_ctx, loc, "href", JS_NewString(g_ctx, g_location));
-    JS_SetPropertyStr(g_ctx, g, "location", loc);
+    /* `location` normally comes from js_webapi_install below, parsed into
+     * components and writable. This href-only stand-in is what a build without
+     * js_webapi.c gets -- the surface it had before -- so dropping that file
+     * from a link takes away fetch, not the page's own address. */
+    if (!js_webapi_install) {
+        JSValue loc = JS_NewObject(g_ctx);
+        JS_SetPropertyStr(g_ctx, loc, "href", JS_NewString(g_ctx, g_location));
+        JS_SetPropertyStr(g_ctx, g, "location", loc);
+    }
     JSValue nav = JS_NewObject(g_ctx);
-    JS_SetPropertyStr(g_ctx, nav, "userAgent", JS_NewString(g_ctx, "LogitOS/1.0 (Browser)"));
+    /* A Mozilla/5.0 prefix because a startling amount of shipped JS branches on
+     * it before it will render anything at all. The rest is truthful. */
+    JS_SetPropertyStr(g_ctx, nav, "userAgent",
+                      JS_NewString(g_ctx, "Mozilla/5.0 (LogitOS; x86_64) Logit/1.0"));
+    JS_SetPropertyStr(g_ctx, nav, "appName", JS_NewString(g_ctx, "Netscape"));
+    JS_SetPropertyStr(g_ctx, nav, "platform", JS_NewString(g_ctx, "LogitOS x86_64"));
+    JS_SetPropertyStr(g_ctx, nav, "language", JS_NewString(g_ctx, "en-US"));
+    { JSValue langs = JS_NewArray(g_ctx);
+      JS_SetPropertyUint32(g_ctx, langs, 0, JS_NewString(g_ctx, "en-US"));
+      JS_SetPropertyStr(g_ctx, nav, "languages", langs); }
+    JS_SetPropertyStr(g_ctx, nav, "onLine", JS_NewBool(g_ctx, 1));
+    JS_SetPropertyStr(g_ctx, nav, "cookieEnabled", JS_NewBool(g_ctx, 0));   /* no jar on this path */
+    JS_SetPropertyStr(g_ctx, nav, "hardwareConcurrency", JS_NewInt32(g_ctx, 1));
+    JS_SetPropertyStr(g_ctx, nav, "maxTouchPoints", JS_NewInt32(g_ctx, 0));
     JS_SetPropertyStr(g_ctx, g, "navigator", nav);
 
     /* `window === globalThis`, so `window.foo = 1; foo` works and the mountain
@@ -357,6 +399,9 @@ int js_page_open(struct node *root)
     js_dom_set_note(note);
     js_dom_init(g_ctx, root);            /* installs document + Element + Event */
     js_dom_bind_event_target(g_ctx, g);  /* window.addEventListener + window.on* */
+    /* AFTER the DOM: js_webapi publishes document.location and dispatches
+     * popstate through window.dispatchEvent, both of which js_dom.c owns. */
+    if (js_webapi_install) js_webapi_install(g_ctx, g_location);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
@@ -369,6 +414,7 @@ void js_page_close(void)
      * also clears the DOM's weak wrapper slots, so no node is left pointing at
      * a JSObject in a runtime that is about to stop existing. */
     timers_clear(g_ctx);
+    if (js_webapi_close) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
     JS_FreeContext(g_ctx);

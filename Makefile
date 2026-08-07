@@ -113,7 +113,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-png test-jpeg test-svg test-crypto test-crypto-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes
 
 all: $(ISO)
 
@@ -221,6 +221,10 @@ $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $(BUILD)/as.aex
+# Which browser goes on the disk. Overridable so a test can pack a deliberately
+# crippled build instead -- see test-webapi-page-control, which is how "this
+# assertion fails without the change" is demonstrated rather than asserted.
+BROWSER_AEX ?= $(BUILD)/browser.aex
 
 # --- QuickJS engine + musl libm + mini-libc, shared by the JS app and Browser ---
 QJS_SRC    := third_party/quickjs/quickjs.c third_party/quickjs/cutils.c \
@@ -434,7 +438,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
 	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
-	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BUILD)/browser.aex:browser.aex \
+	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BROWSER_AEX):browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
@@ -975,6 +979,62 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/hpool_test tests/unit/hpool_test.c c/net/http/hpool.c
 	@$(BUILD)/hpool_test
 	@echo "test-browser: ALL PASS"
+
+# --- test-webapi: the Web API surface outside the DOM, host-side ----------
+# fetch/XHR/Storage/history/location/URL/URLSearchParams/matchMedia. It links
+# the REAL js_webapi.c, the real HTTP/1.1 parser and the real URL parser, and
+# injects an in-memory server through the transport vtable -- so the whole
+# request/response state machine (short writes, 7-byte reads, redirects,
+# chunked bodies, concurrent requests) is exercised without QEMU.
+# -DWEBAPI_HOST keeps logit.h's `int 0x80` wrappers out of the host binary.
+WEBAPI_TEST_SRC := tests/unit/webapi_test.c c/apps/browser/js_webapi.c \
+                   c/net/http/http1.c c/net/http/url.c tests/unit/rust_host_shim.c
+test-webapi: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
+	    -o $(BUILD)/webapi_test $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm
+	@$(BUILD)/webapi_test
+
+# Same, under ASan/UBSan with the leak checker on. Every fetch holds two
+# promise resolvers, a request buffer and a parsed response; the failure mode
+# for all of it is a leak or a use-after-free on the abandon path, neither of
+# which shows up as a wrong answer.
+test-webapi-asan: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
+	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
+	    -o $(BUILD)/webapi_asan $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/webapi_asan
+
+# --- test-webapi-page: the on-device proof that fetch() reaches the pixels --
+# Boots the OS, loads a fixture page from a host server, and requires the text
+# a fetch() wrote into the DOM to appear in a screendump -- plus location, URL,
+# Storage, history/popstate and matchMedia over the serial log.
+test-webapi-page: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_webapi_page.py $(ISO) $(DISK)
+
+# The negative control: the SAME harness against a browser.aex linked without
+# js_webapi.o (the weak declarations in js_page.c make that link cleanly and
+# come up with no fetch at all). It asserts the positive run's assertions all
+# fail. If this ever passes the positive checks, test-webapi-page is measuring
+# something other than this change.
+NOFETCH_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ))
+$(BUILD)/browser-nofetch.elf: $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-nofetch.aex: $(BUILD)/browser-nofetch.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/browser-nofetch.elf $@ Browser - 'B' 120 130 240
+
+test-webapi-page-control: $(ISO) $(BUILD)/browser-nofetch.aex
+	@$(MAKE) DISK=$(BUILD)/disk-nofetch.img BROWSER_AEX=$(BUILD)/browser-nofetch.aex $(BUILD)/disk-nofetch.img
+	python3 tests/qmp/qmp_webapi_page.py $(ISO) $(BUILD)/disk-nofetch.img --expect-no-webapi
+
+# --- test-fetch-ui: is the desktop still responsive DURING a page's fetch? --
+# The same instrument as test-sock-ui, pointed at the browser: real clicks are
+# injected while a page's fetch() is mid-transfer and timed to a ring-3 app,
+# with the old blocking SYS_HTTP_GET run through the identical instrument as
+# the control.
+test-fetch-ui: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_fetch_ui.py $(ISO) $(DISK)
 
 # --- test-http-fuzz: ASan+UBSan fuzz for the ring-3 HTTP client -----------
 # The layer this replaces (c/net/http/http.c) parses attacker-chosen bytes in
