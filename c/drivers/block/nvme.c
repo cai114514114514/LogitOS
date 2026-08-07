@@ -70,6 +70,7 @@ static int g_ready = 0;
 volatile int g_nvme_busy = 0;          /* interrupts.c: don't preempt mid-poll */
 int nvme_busy(void)    { return g_nvme_busy; }
 int nvme_present(void) { return g_ready; }
+uint64_t nvme_capacity(void) { return g_ready ? g_cap : 0; }
 
 static uint64_t map_bar0(uint8_t slot)
 {

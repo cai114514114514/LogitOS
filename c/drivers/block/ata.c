@@ -137,3 +137,59 @@ int ata_write(uint32_t lba, uint8_t count, const void *buf)
 {
     return ata_guarded(1, lba, count, (void *)buf);
 }
+
+#define CMD_IDENTIFY 0xEC
+
+/* IDENTIFY DEVICE. Reports whether there is a drive here at all, and how big it
+ * is -- the block layer needs both: without the first it registers an ata0 on
+ * every machine with no IDE controller (and then the partition scanner reads
+ * 0xFF sectors off a floating bus), and without the second it has no length to
+ * bound partitions against.
+ *
+ * "No drive" is a status register of 0 after the command: a floating ISA bus
+ * reads back 0xFF, and a populated one that is idle reads a status with BSY
+ * clear -- so 0 is the one value that means nothing is driving the bus. */
+int ata_identify(uint64_t *sectors, char model[41])
+{
+    if (sectors) *sectors = 0;
+    if (model) model[0] = 0;
+
+    uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    g_ata_busy++;
+    __asm__ volatile ("sti");
+
+    int rc = -1;
+    uint16_t id[256];
+    do {
+        /* A floating ISA bus reads back 0xFF, which has BSY set -- so without
+         * this check a machine with no IDE controller at all (increasingly the
+         * normal case, and the reason AHCI exists) spends the full BSY timeout
+         * here on every boot before concluding what one inb already said. */
+        if (inb(ATA_STATUS) == 0xFF) break;
+        if (wait_not_busy()) break;
+        outb(ATA_DRIVE, 0xA0);              /* primary master, CHS/LBA-agnostic select */
+        for (int i = 0; i < 4; i++) (void)inb(ATA_CTRL);
+        outb(ATA_SECCOUNT, 0);
+        outb(ATA_LBA0, 0); outb(ATA_LBA1, 0); outb(ATA_LBA2, 0);
+        outb(ATA_CMD, CMD_IDENTIFY);
+        if (inb(ATA_STATUS) == 0) break;    /* nothing on this bus */
+        if (wait_drq()) break;
+        for (int i = 0; i < 256; i++) id[i] = inw(ATA_DATA);
+        rc = 0;
+    } while (0);
+
+    if (!(fl & 0x200)) __asm__ volatile ("cli");
+    g_ata_busy--;
+    if (rc != 0) return -1;
+
+    if (sectors) *sectors = (uint64_t)id[60] | ((uint64_t)id[61] << 16);   /* LBA28 capacity */
+    if (model) {
+        for (int i = 0; i < 20; i++) {      /* words 27..46, ASCII, big-endian per word */
+            model[i * 2]     = (char)(id[27 + i] >> 8);
+            model[i * 2 + 1] = (char)(id[27 + i] & 0xFF);
+        }
+        model[40] = 0;
+        for (int i = 39; i >= 0 && (model[i] == ' ' || model[i] == 0); i--) model[i] = 0;
+    }
+    return (sectors && *sectors == 0) ? -1 : 0;
+}

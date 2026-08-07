@@ -38,6 +38,16 @@ int virtio_blk_init(void)
 
 int virtio_blk_present(void) { return blk_ready; }
 
+/* virtio-blk device config, field 0: capacity in 512-byte sectors. Read as two
+ * 32-bit MMIO loads because the config region is device memory and a 64-bit
+ * load across it is not guaranteed to be a single transaction. */
+uint64_t virtio_blk_capacity(void)
+{
+    if (!blk_ready || !blkdev.device) return 0;
+    volatile uint32_t *cfg = (volatile uint32_t *)(void *)blkdev.device;
+    return (uint64_t)cfg[0] | ((uint64_t)cfg[1] << 32);
+}
+
 static int blk_rw(int write, uint64_t lba, uint32_t count, void *buf)
 {
     if (!blk_ready) return -1;

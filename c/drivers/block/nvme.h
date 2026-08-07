@@ -12,5 +12,9 @@ int nvme_busy(void);
 int nvme_read(uint32_t lba, uint8_t count, void *buf);
 int nvme_write(uint32_t lba, uint8_t count, const void *buf);
 int nvme_flush(void);                     /* commit the controller write cache to media */
+/* Namespace capacity in 512-byte sectors (0 if not present). The block layer
+ * bounds every request with this, so it comes from Identify Namespace and never
+ * from a partition table. */
+uint64_t nvme_capacity(void);
 
 #endif /* LOGIT_NVME_H */
