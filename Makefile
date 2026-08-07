@@ -2214,6 +2214,22 @@ $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
 bench-css: $(BUILD)/css_bench
 	@$(BUILD)/css_bench --iters=$(BENCH_ITERS) $(BENCH_PAGE) $(BENCH_CSS)
 
+# --- bench-repaint: what a repaint costs ON THE MACHINE ---------------------
+# bench-css measures the render phases on the host, where a paint is a recorder
+# and a text run is a stub. This boots the OS, serves a fixture carrying
+# deepseek.com's real 66 KiB stylesheet, and has the PAGE time itself: a chained
+# setTimeout mutates one leaf per tick, so each tick is a separate scoped
+# re-style + layout + paint, and Date.now() around them is guest wall-clock for
+# a repaint with nothing else in it.
+#   make bench-repaint                              # 40 timed repaints
+#   make bench-repaint CSSPERF_PAGE=wikipedia.html  # real page, load + picture
+# The host is shared, so run it several times and read the median; interleave
+# the two builds you are comparing rather than running one set then the other.
+.PHONY: bench-repaint
+bench-repaint: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_css_repaint.py $(ISO) $(DISK) $(or $(TAG),run)
+
+
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
 test-png: $(RUST_LIB_HOST)
