@@ -57,6 +57,10 @@ static int unhex(const char *h, uint8_t *o)
 
 static int eq(const uint8_t *a, const uint8_t *b, int n) { return !memcmp(a, b, n); }
 
+/* How many AES-GCM backends this machine can run: 2 when the CPU has AES-NI
+ * (accelerated + portable), 1 otherwise. Set in main(). */
+static int g_backends = 1;
+
 #define NOPS 9
 static const char *opnames[NOPS] =
     { "emul", "rexp", "x255", "gcm", "aead", "hash", "hmac", "hkdf", "exlb" };
@@ -113,18 +117,46 @@ static void run_aead(int idx, long lineno, char **t, int which)
             fail_op(idx, lineno, "flipped tag not rejected"); return;
         }
     } else {
-        aes128_gcm_seal(key, nonce, aadp, al, ptp, pl, got, got_tag);
-        if (!eq(got, ct, cl) || !eq(got_tag, tag, 16)) {
-            fail_op(idx, lineno, "seal ct/tag mismatch"); return;
+        /* Every AES-GCM vector is replayed through EVERY available backend
+         * (the accelerated one and the portable reference), and each must
+         * match the Python reference independently -- which crosses the two
+         * implementations against each other as well as against the oracle.
+         * `g_backends` is 1 when the host has no AES-NI, so the same binary is
+         * meaningful on either kind of machine.
+         *
+         * Doing it here rather than in a separate differential means the
+         * accelerated path sees all 128k randomized cases, including the
+         * awkward lengths (empty AAD, empty plaintext, non-multiples of 16)
+         * that a hand-written cross-check would not think to generate. */
+        uint8_t first_ct[MAXB], first_tag[16];
+        int first = 1;
+        for (int b = 0; b < g_backends; b++) {
+            crypto_simd_force_baseline(b);          /* 0 = selected, 1 = portable */
+            aes128_gcm_seal(key, nonce, aadp, al, ptp, pl, got, got_tag);
+            if (!eq(got, ct, cl) || !eq(got_tag, tag, 16)) {
+                crypto_simd_force_baseline(0);
+                fail_op(idx, lineno, "seal ct/tag mismatch"); return;
+            }
+            if (first) {
+                if (cl) memcpy(first_ct, got, (size_t)cl);
+                memcpy(first_tag, got_tag, 16);
+                first = 0;
+            } else if ((cl && !eq(first_ct, got, cl)) || !eq(first_tag, got_tag, 16)) {
+                crypto_simd_force_baseline(0);
+                fail_op(idx, lineno, "backends disagree"); return;
+            }
+            if (aes128_gcm_open(key, nonce, aadp, al, ctp, cl, tag, out) != 0 ||
+                !eq(out, pt, pl)) {
+                crypto_simd_force_baseline(0);
+                fail_op(idx, lineno, "open roundtrip failed"); return;
+            }
+            memcpy(badtag, tag, 16); badtag[0] ^= 1;
+            if (aes128_gcm_open(key, nonce, aadp, al, ctp, cl, badtag, out) != -1) {
+                crypto_simd_force_baseline(0);
+                fail_op(idx, lineno, "flipped tag not rejected"); return;
+            }
         }
-        if (aes128_gcm_open(key, nonce, aadp, al, ctp, cl, tag, out) != 0 ||
-            !eq(out, pt, pl)) {
-            fail_op(idx, lineno, "open roundtrip failed"); return;
-        }
-        memcpy(badtag, tag, 16); badtag[0] ^= 1;
-        if (aes128_gcm_open(key, nonce, aadp, al, ctp, cl, badtag, out) != -1) {
-            fail_op(idx, lineno, "flipped tag not rejected"); return;
-        }
+        crypto_simd_force_baseline(0);
     }
     opass[idx]++;
 }
@@ -225,6 +257,16 @@ static void run_line(long lineno, char **t, int nt)
 int main(int argc, char **argv)
 {
     if (argc != 2) { fprintf(stderr, "usage: crypto_diff_test <vector-file>\n"); return 2; }
+
+    crypto_simd_init();
+    const char *sel = crypto_simd_backend_name();
+    crypto_simd_force_baseline(1);
+    const char *base = crypto_simd_backend_name();
+    crypto_simd_force_baseline(0);
+    g_backends = strcmp(sel, base) ? 2 : 1;
+    printf("aes-gcm backends exercised: %d (selected=%s, baseline=%s)\n",
+           g_backends, sel, base);
+
     FILE *f = fopen(argv[1], "r");
     if (!f) { perror(argv[1]); return 2; }
     long lineno = 0;

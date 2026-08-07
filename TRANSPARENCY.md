@@ -125,15 +125,47 @@ Known limitations and boundaries include:
   output). If RDSEED/RDRAND is unavailable, seeding falls back to
   timing-based weak entropy; the TLS client refuses to handshake in that
   mode rather than keying sessions from a predictable seed.
-- The AES-128 implementation is byte-oriented with a secret-indexed S-box
-  and is not constant-time (a cache-timing side channel). This is an
-  accepted limitation for a QEMU/TCG demo TLS client, not a claim of
-  side-channel resistance.
+- **Constant-time behaviour now depends on the CPU**, so the answer has to be
+  given per primitive and per machine. AES-GCM has two interchangeable
+  implementations, selected once at boot from CPUID
+  (`c/crypto/aead/aes_dispatch.c`); the boot log says which one is running
+  (`[cpu] aes-gcm backend: ...`).
+  - On a CPU with **both AES-NI and PCLMULQDQ**, AES-GCM runs on
+    `c/crypto/aead/aes_ni.c`: AESENC/AESENCLAST/AESKEYGENASSIST for the block
+    cipher and key schedule, PCLMULQDQ for the GHASH multiply. These
+    instructions make no data-dependent memory access and take no
+    data-dependent branch, so the key-schedule and cache-timing channel
+    described below is not present on that path. Half-acceleration is refused
+    on purpose: if PCLMULQDQ is missing, the portable path is used for the
+    whole of AES-GCM rather than leaving GHASH leaking.
+  - On any other CPU, AES-GCM falls back to the portable implementation in
+    `c/crypto/aead/aesgcm.c`, which is byte-oriented with a secret-indexed
+    S-box and a bit-serial GF(2^128) multiply that branches on the
+    accumulator. That path is **not constant-time** (cache- and
+    branch-timing side channels) and is not a claim of side-channel
+    resistance.
+  - Nothing else has been made constant-time by this change. ChaCha20-Poly1305,
+    SHA-2, HMAC/HKDF, X25519, the P-256/P-384 and RSA code, and the tag
+    comparison in AES-GCM are unchanged; the RSA and EC implementations in
+    particular are not hardened against timing or fault attacks. The AEAD tag
+    comparison is a constant-time OR-accumulate, as it always was.
+  - AVX/AVX2 are detected and reported but deliberately **not enabled**: the
+    interrupt path saves FP state with FXSAVE, which does not cover the upper
+    halves of YMM registers, so enabling AVX without first migrating
+    `c/boot/isr.asm` to XSAVE/XRSTOR would silently corrupt vector state under
+    preemption. See the comment block in `c/boot/long.asm`.
 - Cryptographic correctness claims are backed by host-side evidence, not
-  external review: `make test-crypto` runs 169 known-answer and negative
-  vectors plus the ecdsa/rsa/rng batteries, and `make test-crypto-diff`
-  replays 128,714 randomized differential cases against a self-checked
-  pure-Python reference (all byte-identical at the time of writing).
+  external review: `make test-crypto` runs 186 known-answer and negative
+  vectors plus the ecdsa/rsa/rng/cpufeat/aes-ni batteries, and
+  `make test-crypto-diff` replays 128,714 randomized differential cases
+  against a self-checked pure-Python reference (all byte-identical at the time
+  of writing). Where two implementations of the same primitive exist, every
+  vector is replayed through each of them and they are required to agree with
+  the reference and with each other; `make test-aes-ni` adds 20,000 randomized
+  primitive comparisons and 4,000 full AES-GCM comparisons between the
+  accelerated and portable paths. No performance claim is made for the
+  accelerated path: development runs under QEMU/TCG, where these instructions
+  are emulated, and no measurement on real hardware has been published here.
 - The browser implements a small portion of modern web standards and has no origin
   or JavaScript sandbox suitable for adversarial pages.
 - AetherScript deliberately exposes raw-memory and direct-syscall operations; it

@@ -13,6 +13,20 @@ static inline void crypto_wipe(void *p, size_t n)
     while (n--) *v++ = 0;
 }
 
+/* --- runtime SIMD dispatch (c/crypto/aead/aes_dispatch.c) ---
+ * AES-GCM has a portable backend and an AES-NI + PCLMULQDQ one; which runs is
+ * decided once from CPUID. Callers of aes*_gcm_* need none of this -- it is
+ * here so the boot path can select and report, and so tests can pin a
+ * backend. */
+void        crypto_simd_init(void);            /* select once; idempotent */
+const char *crypto_simd_backend_name(void);    /* "c" | "aesni" */
+int         crypto_simd_constant_time(void);   /* 1 if AES-GCM is constant-time here */
+void        crypto_simd_force_baseline(int on);/* pin the portable path (tests) */
+/* 0 when the selected backend agrees with the portable one on the key
+ * schedule, the block cipher and the GF multiply; else the 1-based index of
+ * the first check that disagreed. */
+int         crypto_simd_selftest(void);
+
 /* --- SHA-256 --- */
 #define SHA256_BLOCK 64
 #define SHA256_LEN   32

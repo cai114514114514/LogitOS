@@ -1,13 +1,22 @@
 #include "crypto.h"
+#include "aes_backend.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
+/* AES-GCM: the MODE lives here and is shared by every backend; the three
+ * primitives it is built from (key schedule, block encrypt, GF(2^128)
+ * multiply) come from aes_current_backend(). See aes_backend.h for why the
+ * split is where it is. The portable implementations below are the reference
+ * backend -- they are what runs on a CPU without AES-NI and what the
+ * accelerated path is differentially tested against, so they stay. */
+
 /* --- AES-128 (FIPS-197) ---
  * Byte-oriented S-box implementation. NOTE: the sbox is indexed by secret
- * state, so this is NOT constant-time (cache-timing side channel) -- an
- * accepted, documented limitation for a TLS client under QEMU/TCG with no
- * cache-sharing tenants; see TRANSPARENCY.md. */
+ * state, so this is NOT constant-time (cache-timing side channel). On a CPU
+ * with AES-NI + PCLMULQDQ this code is not the one that runs -- see
+ * c/crypto/aead/aes_ni.c -- but it is still the fallback, and the caveat is
+ * live wherever that fallback is selected; see TRANSPARENCY.md. */
 static const uint8_t sbox[256] = {
 0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
 0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -38,7 +47,7 @@ static uint8_t xtime(uint8_t x) { return (uint8_t)((x << 1) ^ ((x >> 7) * 0x1b))
 
 static int aes_rounds(int keylen) { return keylen == 32 ? 14 : 10; }
 
-static void key_expand(const uint8_t *key, int keylen, uint8_t *rk)
+static void c_key_expand(const uint8_t *key, int keylen, uint8_t *rk)
 {
     int nk = keylen / 4;                        /* key words: 4 (AES-128) or 8 */
     int total = 4 * (nk + 6 + 1) * 4;           /* bytes of expanded key */
@@ -62,7 +71,7 @@ static void key_expand(const uint8_t *key, int keylen, uint8_t *rk)
     }
 }
 
-static void aes_encrypt(const uint8_t *rk, int nr, const uint8_t in[16], uint8_t out[16])
+static void c_encrypt(const uint8_t *rk, int nr, const uint8_t in[16], uint8_t out[16])
 {
     uint8_t s[16]; memcpy(s, in, 16);
     for (int i = 0; i < 16; i++) s[i] ^= rk[i];
@@ -88,8 +97,11 @@ static void aes_encrypt(const uint8_t *rk, int nr, const uint8_t in[16], uint8_t
     memcpy(out, s, 16);
 }
 
-/* --- GHASH over GF(2^128) --- */
-static void gf_mul(uint8_t x[16], const uint8_t y[16])
+/* --- GHASH over GF(2^128) ---
+ * Bit-serial: branches on the bits of the accumulator, which is derived from
+ * the secret H, so this leaks through the branch predictor as well as the
+ * cache. The PCLMULQDQ backend does not. */
+static void c_gf_mul(uint8_t x[16], const uint8_t y[16])
 {
     uint8_t z[16]; memset(z, 0, 16);
     uint8_t v[16]; memcpy(v, y, 16);
@@ -104,36 +116,47 @@ static void gf_mul(uint8_t x[16], const uint8_t y[16])
     memcpy(x, z, 16);
 }
 
-static void ghash(const uint8_t H[16], const uint8_t *aad, int aadlen,
+/* The reference backend. Exported (rather than left as three statics) so the
+ * dispatcher can name it, the AES-NI path can be differentially tested against
+ * it, and crypto_simd_force_baseline() can put it back. */
+static const struct aes_backend c_backend = {
+    "c", c_key_expand, c_encrypt, c_gf_mul, 0
+};
+
+const struct aes_backend *aes_backend_c(void) { return &c_backend; }
+
+static void ghash(const struct aes_backend *be, const uint8_t H[16],
+                  const uint8_t *aad, int aadlen,
                   const uint8_t *ct, int ctlen, uint8_t out[16])
 {
     uint8_t y[16]; memset(y, 0, 16);
     for (int off = 0; off < aadlen; off += 16) {
         int n = aadlen - off; if (n > 16) n = 16;
         for (int i = 0; i < n; i++) y[i] ^= aad[off+i];
-        gf_mul(y, H);
+        be->gf_mul(y, H);
     }
     for (int off = 0; off < ctlen; off += 16) {
         int n = ctlen - off; if (n > 16) n = 16;
         for (int i = 0; i < n; i++) y[i] ^= ct[off+i];
-        gf_mul(y, H);
+        be->gf_mul(y, H);
     }
     uint8_t L[16]; memset(L, 0, 16);
     uint64_t ab = (uint64_t)aadlen * 8, cb = (uint64_t)ctlen * 8;
     for (int i = 0; i < 8; i++) L[i]   = (uint8_t)(ab >> (56 - 8*i));
     for (int i = 0; i < 8; i++) L[8+i] = (uint8_t)(cb >> (56 - 8*i));
     for (int i = 0; i < 16; i++) y[i] ^= L[i];
-    gf_mul(y, H);
+    be->gf_mul(y, H);
     memcpy(out, y, 16);
 }
 
-static void gctr(const uint8_t *rk, int nr, const uint8_t icb[16],
+static void gctr(const struct aes_backend *be, const uint8_t *rk, int nr,
+                 const uint8_t icb[16],
                  const uint8_t *in, int len, uint8_t *out)
 {
     uint8_t ctr[16]; memcpy(ctr, icb, 16);
     uint8_t ks[16];
     for (int off = 0; off < len; off += 16) {
-        aes_encrypt(rk, nr, ctr, ks);
+        be->encrypt(rk, nr, ctr, ks);
         int n = len - off; if (n > 16) n = 16;
         for (int i = 0; i < n; i++) out[off+i] = in[off+i] ^ ks[i];
         for (int i = 15; i >= 12; i--) { if (++ctr[i]) break; }   /* inc low 32 bits */
@@ -145,16 +168,17 @@ static void gcm_core(const uint8_t *key, int keylen, const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen, const uint8_t *in, int len,
                      uint8_t *out, uint8_t tag[16])
 {
+    const struct aes_backend *be = aes_current_backend();
     int nr = aes_rounds(keylen);
-    uint8_t rk[AES_RK_MAX]; key_expand(key, keylen, rk);
+    uint8_t rk[AES_RK_MAX]; be->key_expand(key, keylen, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
-    aes_encrypt(rk, nr, zero, H);
+    be->encrypt(rk, nr, zero, H);
     uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
     uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
     for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0): counter starts at 2 */
-    gctr(rk, nr, ctr1, in, len, out);           /* encrypt/decrypt with counter from 2 */
-    uint8_t S[16]; ghash(H, aad, aadlen, out, len, S);
-    uint8_t ej0[16]; aes_encrypt(rk, nr, j0, ej0);
+    gctr(be, rk, nr, ctr1, in, len, out);       /* encrypt/decrypt with counter from 2 */
+    uint8_t S[16]; ghash(be, H, aad, aadlen, out, len, S);
+    uint8_t ej0[16]; be->encrypt(rk, nr, j0, ej0);
     for (int i = 0; i < 16; i++) tag[i] = S[i] ^ ej0[i];
     crypto_wipe(rk, sizeof rk);              /* expanded key */
     crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
@@ -168,13 +192,14 @@ static int gcm_open(const uint8_t *key, int keylen, const uint8_t nonce[12],
     /* GHASH is over the ciphertext, so compute the tag from ct, then decrypt.
      * Decryption happens only after the tags compare equal -- handing back
      * unauthenticated plaintext is the classic GCM footgun. */
+    const struct aes_backend *be = aes_current_backend();
     int nr = aes_rounds(keylen);
-    uint8_t rk[AES_RK_MAX]; key_expand(key, keylen, rk);
+    uint8_t rk[AES_RK_MAX]; be->key_expand(key, keylen, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
-    aes_encrypt(rk, nr, zero, H);
+    be->encrypt(rk, nr, zero, H);
     uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
-    uint8_t S[16]; ghash(H, aad, aadlen, ct, len, S);
-    uint8_t ej0[16]; aes_encrypt(rk, nr, j0, ej0);
+    uint8_t S[16]; ghash(be, H, aad, aadlen, ct, len, S);
+    uint8_t ej0[16]; be->encrypt(rk, nr, j0, ej0);
     uint8_t t[16]; for (int i = 0; i < 16; i++) t[i] = S[i] ^ ej0[i];
     int diff = 0; for (int i = 0; i < 16; i++) diff |= t[i] ^ tag[i];
     if (diff) {
@@ -184,7 +209,7 @@ static int gcm_open(const uint8_t *key, int keylen, const uint8_t nonce[12],
     }
     uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
     for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0) */
-    gctr(rk, nr, ctr1, ct, len, pt);
+    gctr(be, rk, nr, ctr1, ct, len, pt);
     crypto_wipe(rk, sizeof rk);
     crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
     return 0;

@@ -3,6 +3,7 @@
 #include "rng.h"
 #include "pit.h"
 #include "crypto.h"
+#include "cpufeat.h"
 #include "spinlock.h"
 #include "kprintf.h"
 
@@ -43,29 +44,15 @@ static uint64_t rdtsc(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
-static void cpuid(uint32_t leaf, uint32_t subleaf,
-                  uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
-{
-    __asm__ volatile ("cpuid"
-                      : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
-                      : "a"(leaf), "c"(subleaf));
-}
-
-static int cpu_has_rdrand(void)
-{
-    uint32_t a, b, c, d;
-    cpuid(1, 0, &a, &b, &c, &d);
-    return (c & (1u << 30)) != 0;
-}
-
-static int cpu_has_rdseed(void)
-{
-    uint32_t a, b, c, d;
-    cpuid(0, 0, &a, &b, &c, &d);
-    if (a < 7) return 0;
-    cpuid(7, 0, &a, &b, &c, &d);
-    return (b & (1u << 18)) != 0;
-}
+/* RDRAND/RDSEED availability now comes from the shared CPUID decode in
+ * c/kernel/cpu/cpufeat.c rather than a private copy of the leaf-1/leaf-7
+ * query that used to live here. Same answers -- the leaf-7-only-if-max-leaf>=7
+ * guard that made the old rdseed check correct is the general rule there --
+ * but they are now cached, so rng_gather() no longer executes two CPUIDs (a
+ * serialising instruction) per reseed, and there is one place to look when a
+ * feature bit is wrong. */
+#define cpu_has_rdrand() cpu_has(CPU_RDRAND)
+#define cpu_has_rdseed() cpu_has(CPU_RDSEED)
 
 /* 1 when a hardware entropy source (RDSEED/RDRAND) is available, 0 when the
  * DRBG would fall back to rdtsc-only seeding. TLS refuses to handshake on 0:
