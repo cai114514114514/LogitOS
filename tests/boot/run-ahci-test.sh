@@ -48,8 +48,20 @@ case "$MODE" in
         WANT_PART="\[part\] ahci0: GPT (protective MBR)"
         WANT_ROOT="root = ahci0p1 "
         ;;
+    two)
+        # TWO controllers. A machine with a chipset AHCI and an add-in SATA card
+        # has two, and a driver that takes the first and stops makes the disks on
+        # the other one not exist -- which, on a box that boots off the add-in
+        # card, means it does not boot. The second disk here is deliberately
+        # blank, so the assertion is that it is FOUND and named, not that it is
+        # bootable: root must still land on ahci0.
+        cp "$FSIMG" "$IMG"
+        LAYOUT="two ich9-ahci controllers: a filesystem on the first, a blank disk on the second"
+        WANT_PART="no partition table"
+        WANT_ROOT="root = ahci0 "
+        ;;
     *)
-        echo "unknown mode '$MODE' (want raw|mbr|gpt)" >&2; exit 2 ;;
+        echo "unknown mode '$MODE' (want raw|mbr|gpt|two)" >&2; exit 2 ;;
 esac
 
 echo "--- AHCI $MODE: $LAYOUT"
@@ -58,6 +70,12 @@ echo "--- AHCI $MODE: $LAYOUT"
 # ide-hd on bus ahci0.0, which is a SATA port as far as the guest is concerned.
 # Nothing here names a vendor:device ID -- the driver has to find it by class.
 AHCI="-device ich9-ahci,id=ahci0 -drive file=$IMG,format=raw,if=none,id=hd0,file.locking=off -device ide-hd,drive=hd0,bus=ahci0.0"
+if [ "$MODE" = two ]; then
+    IMG2="$(mktemp)"
+    trap 'rm -f "$IMG2"; [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; rm -f "$LOG" "$IMG"' EXIT
+    dd if=/dev/zero of="$IMG2" bs=1M count=8 2>/dev/null
+    AHCI="$AHCI -device ich9-ahci,id=ahci1 -drive file=$IMG2,format=raw,if=none,id=hd1,file.locking=off -device ide-hd,drive=hd1,bus=ahci1.0"
+fi
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 GPU="-vga none -device virtio-gpu-pci"
 
@@ -94,6 +112,18 @@ grep -aq "$WANT_ROOT"                   "$LOG" || fail "root device is not the e
 grep -aq "LOGIT_BOOT_OK"                "$LOG" || fail "filesystem did not mount off the AHCI disk"
 [ "$pass" = 1 ]                                || fail "file content '$MARK' not read back through the shell"
 
-echo "PASS ($MODE): AHCI controller + SATA port + $( [ "$MODE" = raw ] && echo 'raw device' || echo 'partition table' ) -> logitfs mounted and a file read back byte-correct"
+if [ "$MODE" = two ]; then
+    n=$(grep -ac '\[ahci\] .* abar=' "$LOG")
+    [ "$n" = 2 ]                          || fail "expected 2 AHCI controllers in the log, saw $n"
+    grep -aq '\[blk\] ahci1: AHCI SATA disk' "$LOG" \
+        || fail "the disk on the SECOND controller was never registered"
+fi
+
+case "$MODE" in
+    raw) WHAT="raw device" ;;
+    two) WHAT="two controllers, both disks found" ;;
+    *)   WHAT="partition table" ;;
+esac
+echo "PASS ($MODE): AHCI controller + SATA port + $WHAT -> logitfs mounted and a file read back byte-correct"
 grep -a -e '^\[ahci\]' -e '^\[part\]' -e '^\[blk\]' -e '^\[ata\]' "$LOG" | sed 's/^/    /'
 exit 0

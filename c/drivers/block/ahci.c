@@ -122,6 +122,7 @@ void *memset(void *, int, size_t);
 
 #define AHCI_MAX_PORTS  32
 #define AHCI_MAX_DISKS  8
+#define AHCI_MAX_HBA    4               /* controllers brought up; a box has 1-2 */
 #define AHCI_PRDT       8               /* 8 x 4 MiB = 32 MiB per command */
 #define AHCI_PRD_MAX    0x400000u       /* DBC is 22 bits: 4 MiB per PRD entry */
 
@@ -405,17 +406,20 @@ struct ahci_hba {
 
 #ifdef AHCI_DEVICE_MODEL
 
-static int ahci_find(struct ahci_hba *out)
+/* Select the `nth` matching controller (counting matches, not successes, so the
+ * index stays stable when one of them turns out to have no usable ABAR). Sets
+ * out->abar to 0 in that case rather than skipping, so the caller can say which
+ * controller it declined and why. Returns -1 when there is no nth match. */
+static int ahci_find(struct ahci_hba *out, int nth)
 {
     for (struct device *d = dev_find_class(AHCI_CLASS, AHCI_SUBCLASS, NULL); d;
          d = dev_find_class(AHCI_CLASS, AHCI_SUBCLASS, d)) {
         if (d->prog_if != AHCI_PROGIF) continue;
+        if (nth-- > 0) continue;
         dev_enable(d, 1);                       /* MEM decode + bus master, for DMA */
-        uint64_t abar = dev_bar_map(d, 5);      /* ABAR is BAR5, always */
-        if (!abar) continue;
         out->vendor = d->vendor; out->device = d->device;
         out->bus = d->bus; out->slot = d->slot; out->func = d->func;
-        out->abar = abar;
+        out->abar = dev_bar_map(d, 5);          /* ABAR is BAR5, always */
         return 0;
     }
     return -1;
@@ -429,7 +433,7 @@ static int ahci_find(struct ahci_hba *out)
  * Bus 0 only -- a controller behind a PCI-to-PCI bridge needs the bridge
  * traversal the device model does, which is the other reason this branch is
  * the one that goes away. */
-static int ahci_find(struct ahci_hba *out)
+static int ahci_find(struct ahci_hba *out, int nth)
 {
     for (uint8_t slot = 0; slot < 32; slot++) {
         uint32_t id0 = pci_cfg_read(0, slot, 0, 0x00);
@@ -441,11 +445,14 @@ static int ahci_find(struct ahci_hba *out)
             if ((id & 0xFFFF) == 0xFFFF) continue;
             uint32_t cls = pci_cfg_read(0, slot, func, 0x08) >> 8;
             if (cls != ((AHCI_CLASS << 16) | (AHCI_SUBCLASS << 8) | AHCI_PROGIF)) continue;
+            if (nth-- > 0) continue;
             uint32_t bar5 = pci_cfg_read(0, slot, func, 0x24) & ~(uint32_t)0xF;
-            if (!bar5 || bar5 == 0xFFFFFFF0u) continue;
-            uint32_t cmd = pci_cfg_read(0, slot, func, 0x04);
-            pci_cfg_write(0, slot, func, 0x04, cmd | 0x02 | 0x04);   /* MEM space + bus master */
-            vmm_map_range(bar5, bar5, 0x2000, VMM_WRITABLE | VMM_NOCACHE);
+            if (bar5 == 0xFFFFFFF0u) bar5 = 0;
+            if (bar5) {
+                uint32_t cmd = pci_cfg_read(0, slot, func, 0x04);
+                pci_cfg_write(0, slot, func, 0x04, cmd | 0x02 | 0x04);   /* MEM + bus master */
+                vmm_map_range(bar5, bar5, 0x2000, VMM_WRITABLE | VMM_NOCACHE);
+            }
             out->bus = 0; out->slot = slot; out->func = func;
             out->vendor = id & 0xFFFF; out->device = id >> 16;
             out->abar = bar5;
@@ -495,39 +502,41 @@ static const char *sig_name(uint32_t sig)
     }
 }
 
-int ahci_init(void)
+/* Bring up one controller: BIOS handoff, AHCI enable, then every implemented
+ * port. Returns the number of SATA disks registered off it. */
+static int ahci_bring_up(const struct ahci_hba *dev)
 {
-    struct ahci_hba dev;
-    if (ahci_find(&dev) != 0) return 0;                 /* no controller: not an error */
-    g_abar = (volatile uint8_t *)(uintptr_t)dev.abar;
+    volatile uint8_t *abar = (volatile uint8_t *)(uintptr_t)dev->abar;
+    g_abar = abar;
 
     /* BIOS/OS handoff: on real firmware the BIOS owns the controller until we
-     * ask for it. Skipped silently when the capability is absent (QEMU). */
-    if (r32(g_abar, HBA_CAP2) & 1u) {
-        w32(g_abar, HBA_BOHC, r32(g_abar, HBA_BOHC) | BOHC_OOS);
-        (void)wait_clear(g_abar, HBA_BOHC, BOHC_BOS, SPIN_INIT, 2000);
-        (void)wait_clear(g_abar, HBA_BOHC, BOHC_BB,  SPIN_INIT, 2000);
+     * ask for it, and touching GHC before it lets go is how a machine hangs at
+     * this exact line. Skipped silently when the capability is absent (QEMU). */
+    if (r32(abar, HBA_CAP2) & 1u) {
+        w32(abar, HBA_BOHC, r32(abar, HBA_BOHC) | BOHC_OOS);
+        (void)wait_clear(abar, HBA_BOHC, BOHC_BOS, SPIN_INIT, 2000);
+        (void)wait_clear(abar, HBA_BOHC, BOHC_BB,  SPIN_INIT, 2000);
     }
 
-    w32(g_abar, HBA_GHC, r32(g_abar, HBA_GHC) | GHC_AE);
-    w32(g_abar, HBA_GHC, r32(g_abar, HBA_GHC) & ~GHC_IE);   /* we poll; no HBA interrupts */
+    w32(abar, HBA_GHC, r32(abar, HBA_GHC) | GHC_AE);
+    w32(abar, HBA_GHC, r32(abar, HBA_GHC) & ~GHC_IE);   /* we poll; no HBA interrupts */
 
-    uint32_t cap = r32(g_abar, HBA_CAP);
-    uint32_t pi  = r32(g_abar, HBA_PI);
-    uint32_t vs  = r32(g_abar, HBA_VS);
+    uint32_t cap = r32(abar, HBA_CAP);
+    uint32_t pi  = r32(abar, HBA_PI);
+    uint32_t vs  = r32(abar, HBA_VS);
     int nports = (int)(cap & 0x1F) + 1;
     int ncs    = (int)((cap >> 8) & 0x1F) + 1;
 
     kprintf("[ahci] %x:%x at %02x:%02x.%d abar=%x ver=%d.%d ports=%d impl=%x slots=%d addr64=%s\n",
-            dev.vendor, dev.device, (int)dev.bus, (int)dev.slot, (int)dev.func,
-            (unsigned)dev.abar,
+            dev->vendor, dev->device, (int)dev->bus, (int)dev->slot, (int)dev->func,
+            (unsigned)dev->abar,
             (int)(vs >> 16), (int)((vs >> 8) & 0xFF), nports, pi, ncs,
             (cap & CAP_S64A) ? "yes" : "no");
 
     int found = 0;
     for (int i = 0; i < AHCI_MAX_PORTS && i < 32; i++) {
         if (!(pi & (1u << i))) continue;                /* not implemented */
-        volatile uint8_t *pr = g_abar + 0x100 + i * 0x80;
+        volatile uint8_t *pr = abar + 0x100 + i * 0x80;
 
         /* Staggered spin-up: on hardware that supports it a port can be dark
          * until asked. Costs nothing where it is not needed. */
@@ -596,4 +605,27 @@ int ahci_init(void)
 
     if (!found) kprintf("[ahci] controller up, no SATA disks attached\n");
     return found;
+}
+
+/* Every AHCI controller, not just the first.
+ *
+ * A machine with a chipset AHCI and an add-in SATA card has two, and taking the
+ * first and stopping means the disks on the other one do not exist -- which on
+ * a box that boots off the add-in card means the OS does not boot. There is no
+ * cost to the loop: on a machine with one controller the second lookup simply
+ * finds nothing. */
+int ahci_init(void)
+{
+    int total = 0;
+    for (int nth = 0; nth < AHCI_MAX_HBA; nth++) {
+        struct ahci_hba dev;
+        if (ahci_find(&dev, nth) != 0) break;           /* no more: not an error */
+        if (!dev.abar) {
+            kprintf("[ahci] %x:%x at %02x:%02x.%d has no usable ABAR -- skipped\n",
+                    dev.vendor, dev.device, (int)dev.bus, (int)dev.slot, (int)dev.func);
+            continue;
+        }
+        total += ahci_bring_up(&dev);
+    }
+    return total;
 }
