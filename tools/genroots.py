@@ -125,10 +125,27 @@ def carr(name, data):
     lines.append("};")
     return "\n".join(lines)
 
+def _order(p):
+    """Sort key for the root PEMs. It must be a TOTAL order.
+
+    It used to return a bare 999 for every root not in LABELS, which is not an
+    order at all -- 100+ roots compared equal, so Python's stable sort left them
+    in whatever sequence glob returned, i.e. **filesystem order**. That is
+    alphabetical on NTFS and arbitrary on ext4, so `make check-roots` passed in
+    the Windows worktree and failed in every /tmp clone with "roots_bundle.inc
+    is stale" -- which is where agents do their clean verification runs, so the
+    bundle looked perpetually stale to everyone who checked it properly.
+
+    Falling back to the slug makes the key total, so the generated bundle is a
+    function of its inputs and nothing else.
+    """
+    slug = os.path.splitext(os.path.basename(p))[0]
+    order = list(LABELS)
+    return (order.index(slug) if slug in LABELS else len(order), slug)
+
+
 def main():
-    paths = sorted(glob.glob(os.path.join(ROOTS, "*.pem")),
-                   key=lambda p: list(LABELS).index(os.path.splitext(os.path.basename(p))[0])
-                                 if os.path.splitext(os.path.basename(p))[0] in LABELS else 999)
+    paths = sorted(glob.glob(os.path.join(ROOTS, "*.pem")), key=_order)
     arrays, rows = [], []
     skipped = []
     for idx, p in enumerate(paths):
