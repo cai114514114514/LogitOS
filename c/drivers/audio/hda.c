@@ -171,7 +171,7 @@ struct hda {
 };
 
 static struct hda g_hda;
-static int g_hda_dbg;   /* TEMP: first-8-commands trace */
+static int g_hda_dbg;   /* bounds the codec-timeout trace to its first 8 lines */
 
 /* ------------------------------------------------------------- accessors -- */
 static inline uint8_t  r8 (struct hda *h, unsigned o) { return *(volatile uint8_t  *)(h->mmio + o); }
@@ -295,16 +295,21 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
             h->rirb_rp = (h->rirb_rp + 1) % 256;
             if (resp) *resp = (uint32_t)(h->rirb[h->rirb_rp] & 0xFFFFFFFFu);
             w8(h, RIRBSTS, 0x05);          /* ack response + overrun */
-            if (g_hda_dbg < 8)
-                kprintf("[hda.dbg] cmd %x -> rirb[%u]=%x%x (wp %u)\n", val,
-                        h->rirb_rp, (unsigned)(h->rirb[h->rirb_rp] >> 32),
-                        (unsigned)(h->rirb[h->rirb_rp] & 0xFFFFFFFFu), rwp);
-            g_hda_dbg++;
+            /* The success path used to trace its first eight commands. That
+             * was scaffolding for bringing the codec up and it has done its
+             * job: the enumeration it was printing is now summarised by the
+             * [hda] widget lines and the [snd] boot report. A verbose driver
+             * makes the ONE line that matters harder to find. The failure path
+             * below keeps its trace, because there the detail is the
+             * diagnosis. */
             return 0;
         }
         if (hda_ms() > deadline) {
+            /* Bounded, not silenced: a codec that has stopped answering will
+             * time out on every command, and eight lines is a diagnosis while
+             * hundreds is a flood that pushes the rest of the boot log out. */
             if (g_hda_dbg < 8)
-                kprintf("[hda.dbg] cmd %x TIMEOUT rirbwp=%u rp=%u corbwp=%u corbrp=%u ctl=%x/%x\n",
+                kprintf("[hda] cmd %x TIMEOUT rirbwp=%u rp=%u corbwp=%u corbrp=%u ctl=%x/%x\n",
                         val, rwp, h->rirb_rp, (unsigned)r16(h, CORBWP),
                         (unsigned)r16(h, CORBRP), (unsigned)r8(h, CORBCTL),
                         (unsigned)r8(h, RIRBCTL));
