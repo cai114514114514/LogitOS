@@ -131,7 +131,8 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # it cannot be excluded by directory; the find below was dragging it into the
 # kernel link, where it failed with six undefined symbols. Its consumers link it
 # with LIBC_OBJS, like the video decoder does.
-RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c
+RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
+             c/net/http/hpack.c c/net/http/http2.c
 C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
@@ -145,7 +146,7 @@ RUST_BIN  := $(shell rustup which cargo 2>/dev/null | xargs dirname)
 RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-dhcp-host test-dhcp-os test-https-smoke test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -411,7 +412,8 @@ $(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
 # with the REAL freestanding flags rather than only under the host compiler,
 # which is where a stray <stdio.h> or a long-long division helper would hide.
 R3NET_SRC  := $(RING3_NET)
-R3NET_HDRS := c/net/http/http1.h c/net/http/cookies.h c/net/http/hpool.h
+R3NET_HDRS := c/net/http/http1.h c/net/http/cookies.h c/net/http/hpool.h \
+              c/net/http/hpack.h c/net/http/http2.h
 R3NET_OBJ  := $(patsubst %.c,$(BUILD)/r3netobj/%.o,$(R3NET_SRC))
 
 $(BUILD)/r3netobj/%.o: %.c $(R3NET_HDRS)
@@ -419,7 +421,25 @@ $(BUILD)/r3netobj/%.o: %.c $(R3NET_HDRS)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
 check-ring3-net: $(R3NET_OBJ)
-	@echo "check-ring3-net: http1/cookies/hpool build freestanding"
+	@echo "check-ring3-net: http1/cookies/hpool/hpack/http2 build freestanding"
+
+# /bin/h2check -- HTTP/2 against a real server, on the device, with the
+# before/after numbers. It links the REAL clients of both protocols (http2.c +
+# hpack.c and http1.c + hpool.c) against mini-libc, exactly the way the browser
+# will, so the comparison it prints is between two real implementations rather
+# than one real one and a strawman. Driven by tests/boot/run-h2-smoke.sh.
+$(BUILD)/r3netobj/c/apps/net/h2check.o: c/apps/net/h2check.c $(R3NET_HDRS) $(APPDIR)/logit.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/h2check.elf: $(BUILD)/r3netobj/c/apps/net/h2check.o $(R3NET_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/h2check.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
+	    $(BUILD)/apps/h2check.crt0c.o $(BUILD)/r3netobj/c/apps/net/h2check.o \
+	    $(R3NET_OBJ) $(LIBC_OBJS) --end-group
+$(BUILD)/h2check.aex: $(BUILD)/h2check.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/h2check.elf $@ h2check - 'H' 90 140 200
 
 # /bin/vidcheck -- decodes a stream on-device and prints the same CRC32 the
 # host driver prints, which is what turns "it also works on LogitOS" into a
@@ -464,7 +484,7 @@ $(FONTS):
 	@echo "missing tracked runtime font '$@'; run 'make regen-fonts'" >&2
 	@false
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex tools/mkfs.py
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/h2check.aex tools/mkfs.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
@@ -476,7 +496,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(RELEASE_NOTICES) $(AEX) 
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BROWSER_AEX):browser.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
-	    $(BUILD)/vidcheck.aex:/bin/vidcheck \
+	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
@@ -877,6 +897,71 @@ test-hugefile: $(ISO) $(DISK)
 test-fsreplay: $(ISO) $(DISK)
 	@bash tests/boot/run-fsreplay-test.sh $(ISO) $(DISK)
 
+# --- LogitFS host tests -----------------------------------------------------
+# These compile the REAL c/fs sources against a simulated device (fs_sim.h in
+# tests/unit/fsstub) whose defining feature is a volatile write cache: a write
+# is accepted but not on media until blk_flush(), and a power cut lands an
+# arbitrary subset of what was pending. A stub that wrote straight through would
+# make every barrier a no-op and every one of these tests vacuous.
+FS_STUB   := -Itests/unit/fsstub -Ic/fs -Ic/drivers/block
+FS_CORE   := c/fs/logitfs.c c/fs/bcache.c c/fs/fsck.c c/drivers/block/crc32.c
+FS_CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-function -Wno-type-limits              -fsanitize=address,undefined -fno-omit-frame-pointer
+
+# The buffer cache's contract: reads are served without a device round trip,
+# writes are deferred, a dirty buffer evicted is WRITTEN not dropped, and after
+# a sync everything written before it is on media and a barrier was issued.
+test-fs-cache:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_cache_test tests/unit/fs_cache_test.c c/fs/bcache.c $(FS_STUB)
+	@$(BUILD)/fs_cache_test
+
+# The commit record's framing and the replay rules: a complete record replays
+# idempotently, a torn one (every possible sector prefix) does not, a record
+# standing over a LATER transaction's bodies does not, and a forged target is
+# refused. Carries the negative control: the pre-checksum rule accepted that
+# stale record, and installing what it pointed at destroyed live data.
+test-fs-journal:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_journal_test tests/unit/fs_journal_test.c 	    c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
+	@$(BUILD)/fs_journal_test
+
+# Crash injection at EVERY device write of write/mkdir/delete/rename/overwrite,
+# three loss patterns each, plus the repeated-clean-boot regression from
+# CLAUDE.md and the fsync evidence. After every cut: mounts, fsck-clean,
+# bystanders byte-for-byte, interrupted file whole-or-absent, and no block
+# handed out twice. `-q` is the fast subset.
+test-fs-crash:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_crash_test tests/unit/fs_crash_test.c $(FS_CORE) $(FS_STUB)
+	@$(BUILD)/fs_crash_test
+
+# fsck against deliberately damaged images: torn and stale journals, a bitmap
+# disagreeing with the inodes in both directions, a directory loop, both kinds
+# of bad link count, dangling dirents, a block claimed twice (must REFUSE), an
+# unusable superblock, a root that is not a directory. Every case also asserts
+# that the files it did not aim at are still byte-for-byte correct afterwards.
+test-fsck:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_fsck_test tests/unit/fs_fsck_test.c $(FS_CORE) $(FS_STUB)
+	@$(BUILD)/fs_fsck_test
+
+# The on-disk format has a C definition (c/fs/logitfs_fmt.h) and a Python one
+# (tools/mkfs.py). This reads the REAL image the kernel boots with the C one and
+# asserts every offset, so a field that moved on one side is caught here rather
+# than by a kernel reading inodes at the wrong offsets.
+test-fs-format: $(DISK)
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_format_test tests/unit/fs_format_test.c 	    c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
+	@$(BUILD)/fs_format_test $(DISK)
+
+test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format
+
+# Every mount now runs a read-only fsck, so this boots twice WITHOUT -snapshot
+# and demands the kernel's own checker say "clean" both times -- once on the
+# image mkfs built, and once on an image the kernel has written to and rebooted.
+test-fsmount: $(ISO) $(DISK)
+	@bash tests/boot/run-fsmount-test.sh $(ISO) $(DISK)
+
 # Host unit test for the TCP state machines (white-box: #includes tcp.c).
 # Stub headers in tests/unit/tcpstub let tcp.c compile on the host (no x86 asm).
 # Covers reassembly, option negotiation (window scale / SACK / timestamps, and
@@ -901,6 +986,15 @@ test-tcp-negctl:
 	else \
 		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/tcp_negctl.log) checks fail without the loss response"; \
 	fi
+
+# TCP receive throughput over SLIRP. A MEASUREMENT, not a gate: it prints a
+# number and always exits 0 if the fetch completed. Not in `make test` -- the
+# useful form is running it against two builds of c/net/transport/tcp.c on the
+# same host and comparing, and any single number it prints is a TCG number
+# (the bottleneck is the host CPU emulating x86, not the link). The script
+# documents what SLIRP structurally cannot measure.
+test-tcp-throughput: $(ISO) $(DISK)
+	@bash tests/boot/run-tcp-throughput.sh $(ISO) $(DISK) $(if $(REPS),$(REPS),5) $(if $(BYTES),$(BYTES),917504)
 
 # Host protocol tests for IPv4 validation/reassembly, UDP checksums, ICMP
 # echo matching and error routing, and the DNS waiter's error path.
@@ -1500,6 +1594,61 @@ test-http-fuzz: $(RUST_LIB_HOST)
 	    tests/unit/rust_host_shim.c $(RUST_LIB_HOST)
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/http1_fuzz $(SCALE) $(SEED)
 
+# --- HTTP/2 -------------------------------------------------------------
+# test-h2       host: HPACK against the RFC 7541 vectors, then the frame layer
+#               and the stream state machine against an in-memory server.
+# test-h2-fuzz  the same two modules under ASan+UBSan with -fno-sanitize-recover.
+# test-h2-os    on the device, against real HTTP/2 servers on the Internet.
+#
+# Both host targets are built with the sanitizers ON even for the plain run:
+# HPACK is a decompressor whose output is LARGER than its input (a Huffman
+# string expands by up to 8/5), so "reserve the encoded length" is a heap
+# overflow that produces perfectly correct-looking headers right up until it
+# corrupts something else. A silent -O2 pass would not notice.
+H2_SAN := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+test-h2:
+	@mkdir -p $(BUILD)
+	@$(CC) $(H2_SAN) -w $(BTEST_INC) -o $(BUILD)/hpack_test \
+	    tests/unit/hpack_test.c c/net/http/hpack.c
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/hpack_test
+	@$(CC) $(H2_SAN) -w $(BTEST_INC) -o $(BUILD)/h2_test \
+	    tests/unit/h2_test.c c/net/http/http2.c c/net/http/hpack.c c/net/http/hpool.c
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/h2_test
+	@echo "test-h2: ALL PASS"
+
+# `make test-h2-fuzz SCALE=300 SEED=0x1234` goes deeper; scale 6 is ~1 s.
+test-h2-fuzz:
+	@mkdir -p $(BUILD)
+	@$(CC) $(H2_SAN) -w $(BTEST_INC) -o $(BUILD)/hpack_fuzz \
+	    tests/unit/hpack_fuzz.c c/net/http/hpack.c c/net/http/http2.c
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/hpack_fuzz $(SCALE) $(SEED)
+
+# The negative control for test-h2: the same host suite built against an HPACK
+# whose dynamic table evicts the NEWEST entry instead of the oldest. Every
+# header still decodes to a real string, every length still checks out, and
+# nothing crashes -- the tables simply drift apart from the peer's. If
+# test-h2 cannot tell that apart from a correct implementation then it is not
+# testing the thing that actually breaks, so this target must FAIL.
+test-h2-control:
+	@mkdir -p $(BUILD)
+	@sed 's/int k = (t->head + t->count - 1) % HPACK_MAX_ENTRIES;/int k = t->head;/' \
+	    c/net/http/hpack.c > $(BUILD)/hpack_sabotage.c
+	@cmp -s c/net/http/hpack.c $(BUILD)/hpack_sabotage.c && \
+	    { echo "test-h2-control: the sabotage did not apply -- the control is vacuous"; exit 1; } || true
+	@$(CC) -O1 -g -w $(BTEST_INC) -o $(BUILD)/hpack_test_ctl \
+	    tests/unit/hpack_test.c $(BUILD)/hpack_sabotage.c
+	@if $(BUILD)/hpack_test_ctl >$(BUILD)/hpack_ctl.log 2>&1; then \
+	    echo "test-h2-control: FAIL -- the suite passed with a broken eviction rule"; \
+	    exit 1; \
+	else \
+	    echo "test-h2-control: PASS -- evicting the wrong end is caught:"; \
+	    grep -m3 '^FAIL' $(BUILD)/hpack_ctl.log || true; \
+	fi
+
+# On-device, against the live Internet. Needs outbound access from the host.
+test-h2-os: $(ISO) $(DISK)
+	@bash tests/boot/run-h2-smoke.sh $(ISO) $(DISK)
+
 # Same test under ASan+UBSan. The event system is where a JSValue can outlive its
 # runtime and a listener can outlive its node, and neither of those shows up as a
 # wrong answer -- only as corrupted memory some events later. So it gets its own
@@ -1684,6 +1833,127 @@ test-svg: $(RUST_LIB_HOST)
 	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
 	    -Ic/lib/image -Ic/kernel/mm
 	@$(BUILD)/svg_test
+
+# ============================================================================
+# Font parsing (c/lib/text + the rasterizer). Two references, because a font
+# bug does not look like a crash: a subtly wrong charstring interpreter draws a
+# letter that is still a letter and still wrong, so "it rendered something"
+# proves nothing.
+#
+#   test-font          every glyph's OUTLINE compared integer-for-integer with
+#                      fontTools' own interpreter, plus the rasterized coverage
+#                      compared with FreeType to a stated tolerance. This is the
+#                      H.264 bar applied to fonts: the path is exactly specified
+#                      arithmetic, so any disagreement there is our bug. The
+#                      coverage is not exactly specified (FreeType computes exact
+#                      area on a 26.6 grid, we sample 16 sub-scanlines on a 24.8
+#                      one), so it gets a tolerance and the tolerance is stated.
+#   test-font-otl      GSUB/GPOS/GDEF/kern access against fontTools' decompiler.
+#                      This API is a shaping line's interface, so the questions
+#                      are the ones a shaper asks.
+#   test-font-color    COLR/CPAL layers (enumerated AND composited), CBDT/CBLC
+#                      and sbix image location.
+#   test-font-fuzz     ASan/UBSan over truncated + mutated real fonts, plus named
+#                      rejection cases. A font is untrusted input the moment a
+#                      page uses @font-face.
+#   test-font-control  the NEGATIVE CONTROL. Two crippled builds that must FAIL.
+#
+# Needs python3 with fontTools and freetype-py (pip install freetype-py). The
+# fixtures under tests/fixtures/fonts/ are real, redistributable fonts; see the
+# README there for provenance.
+FONT_SRC   := c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/otlayout.c \
+              c/lib/text/fontcolor.c
+FONT_INC   := -Ic/lib/text -Ic/kernel/gui
+FONT_FIX   := tests/fixtures/fonts
+# The committed fixtures plus the fonts we actually ship on the disk image --
+# a regression that only shows up in ui.ttf is still a regression.
+FONT_CASES := $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
+              $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/kern-subset.ttf \
+              fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+FONT_OTL_CASES := $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
+                  $(FONT_FIX)/kern-subset.ttf $(FONT_FIX)/colr-emoji-subset.ttf
+
+test-font:
+	@mkdir -p $(BUILD)/fontref
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/font_cff_test tests/unit/font_cff_test.c \
+	    $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	@rc=0; for f in $(FONT_CASES); do \
+	    b=`basename $$f`; \
+	    python3 tests/unit/font_ref_gen.py $$f $(BUILD)/fontref/$$b.ref --px 32 --bitmaps 64 \
+	        >/dev/null || { echo "ref gen failed for $$f"; exit 1; }; \
+	    $(BUILD)/font_cff_test $$f $(BUILD)/fontref/$$b.ref || rc=1; \
+	done; exit $$rc
+
+test-font-otl:
+	@mkdir -p $(BUILD)/fontref
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/font_otl_test tests/unit/font_otl_test.c \
+	    $(FONT_SRC) $(FONT_INC)
+	@rc=0; for f in $(FONT_OTL_CASES); do \
+	    b=`basename $$f`; \
+	    python3 tests/unit/font_otl_ref.py $$f $(BUILD)/fontref/$$b.otl 2>/dev/null \
+	        || { echo "ref gen failed for $$f"; exit 1; }; \
+	    $(BUILD)/font_otl_test $$f $(BUILD)/fontref/$$b.otl || rc=1; \
+	done; exit $$rc
+
+# The sbix fixture is SYNTHESISED rather than committed: the only widely used
+# sbix font is Apple Color Emoji, which is not redistributable. The generator
+# grafts a real sbix table (two strikes of hand-built PNGs plus a 'dupe' record)
+# onto kern-subset.ttf, which reaches every branch of sbix_lookup.
+test-font-color:
+	@mkdir -p $(BUILD)/fontref
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/font_color_test tests/unit/font_color_test.c \
+	    $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	@python3 tests/unit/font_color_ref.py --make-sbix $(BUILD)/fontref/sbix-synth.ttf \
+	    $(FONT_FIX)/kern-subset.ttf 2>/dev/null
+	@rc=0; for f in $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/cbdt-emoji-subset.ttf \
+	                $(BUILD)/fontref/sbix-synth.ttf; do \
+	    b=`basename $$f`; \
+	    python3 tests/unit/font_color_ref.py $$f $(BUILD)/fontref/$$b.clr 2>/dev/null \
+	        || { echo "ref gen failed for $$f"; exit 1; }; \
+	    $(BUILD)/font_color_test $$f $(BUILD)/fontref/$$b.clr --px 48 || rc=1; \
+	done; exit $$rc
+
+# Long-running; not part of `make test`. `make test-font-fuzz SCALE=10` goes deeper.
+test-font-fuzz:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/font_fuzz tests/unit/font_fuzz.c $(FONT_SRC) $(FONT_INC)
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/font_fuzz \
+	    $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
+	    $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/cbdt-emoji-subset.ttf \
+	    $(FONT_FIX)/kern-subset.ttf fsroot/fonts/mono.ttf
+
+# NEGATIVE CONTROL. Two builds, each with one deliberate bug of the kind this
+# suite exists to catch -- a CFF hv/vhcurveto that drops its optional trailing
+# coordinate, and a glyf contour that drops the on-curve point implied between
+# two off-curve points. Both still draw letters. Both MUST make test-font fail;
+# if either passes, the exact path comparison is comparing nothing.
+test-font-control:
+	@mkdir -p $(BUILD)/fontref
+	@python3 tests/unit/font_ref_gen.py $(FONT_FIX)/SourceSans3-Regular.otf \
+	    $(BUILD)/fontref/control-cff.ref --px 32 --bitmaps 32 >/dev/null
+	@python3 tests/unit/font_ref_gen.py fsroot/fonts/ui.ttf \
+	    $(BUILD)/fontref/control-glyf.ref --px 32 --bitmaps 32 >/dev/null
+	@$(CC) -O2 -w -DFONT_CONTROL_HV_LAST -o $(BUILD)/font_ctl_cff \
+	    tests/unit/font_cff_test.c $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	@$(CC) -O2 -w -DFONT_CONTROL_NO_MIDPOINT -o $(BUILD)/font_ctl_glyf \
+	    tests/unit/font_cff_test.c $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	@if $(BUILD)/font_ctl_cff $(FONT_FIX)/SourceSans3-Regular.otf \
+	       $(BUILD)/fontref/control-cff.ref > $(BUILD)/fontref/ctl-cff.log 2>&1; then \
+	    echo "CONTROL FAILED: the crippled CFF interpreter PASSED -- the path comparison is vacuous"; \
+	    exit 1; \
+	else \
+	    echo "control ok: hv/vhcurveto sabotage is caught:"; \
+	    grep '^FAIL' $(BUILD)/fontref/ctl-cff.log | head -3; \
+	fi
+	@if $(BUILD)/font_ctl_glyf fsroot/fonts/ui.ttf \
+	       $(BUILD)/fontref/control-glyf.ref > $(BUILD)/fontref/ctl-glyf.log 2>&1; then \
+	    echo "CONTROL FAILED: the crippled glyf reader PASSED -- the path comparison is vacuous"; \
+	    exit 1; \
+	else \
+	    echo "control ok: implied-midpoint sabotage is caught:"; \
+	    grep '^FAIL' $(BUILD)/fontref/ctl-glyf.log | head -3; \
+	fi
 
 # H.264 baseline decoder host test: tools/genvideo.sh generates the stream
 # matrix with ffmpeg/libx264 and the reference YUV with ffmpeg's own decoder.
