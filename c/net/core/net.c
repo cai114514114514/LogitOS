@@ -159,10 +159,38 @@ void net_poll(void)
 /* Idle the CPU until the next interrupt, between net_poll()s in the blocking
  * fetch loops (dns/tcp/tls). They used to busy-spin, which under QEMU TCG pegs
  * the *host* CPU and makes the whole desktop crawl during a page load. `sti;hlt`
- * halts until an interrupt wakes us -- the e1000 RX IRQ (or, failing that, the
- * 100 Hz timer) -- so the loop re-polls promptly without burning host cycles.
- * (SYS_HTTP_GET already runs with IF=1, so the hlt can actually wake.) */
+ * halts until an interrupt wakes us -- the NIC RX IRQ (or, failing that, the
+ * timer) -- so the loop re-polls promptly without burning host cycles.
+ * (SYS_HTTP_GET already runs with IF=1, so the hlt can actually wake.)
+ *
+ * DO NOT SLEEP ON WORK THAT HAS ALREADY ARRIVED. Every blocking caller is a
+ * loop of the shape "pump the network, test a condition, wait" -- and the TLS
+ * one tests BEFORE it pumps:
+ *
+ *     for (;;) { rc = tls_step(id); if done -> return; net_poll(); net_idle(); }
+ *
+ * so the bytes net_poll() just delivered are bytes tls_step has not seen. An
+ * unconditional halt there parks the machine until some unrelated interrupt
+ * happens along, and adds up to a whole wake period to every round trip --
+ * measured from the guest, a wake period of 9.87 ms mean before the NIC
+ * interrupt was made to fire at all (it is the 100 Hz tick, exactly) and
+ * 1.99 ms after. Against a peer on the same host, whose replies come back in
+ * a third of a millisecond, that is the entire latency.
+ *
+ * So: if the receive path has delivered anything since the last time we were
+ * here, return without halting and let the caller look again. This cannot
+ * become a spin -- a second skip requires a second frame -- and it needs no
+ * cooperation from the callers, which is the point: tls.c, dns.c, arp.c and
+ * tcp.c belong to other lines. */
 void net_idle(void)
 {
+    static uint32_t seen;
+    if (rx_frames != seen) {        /* the network answered; go look at it */
+        seen = rx_frames;
+        return;
+    }
     __asm__ volatile ("sti\n\thlt");
+    /* Deliberately NOT resyncing `seen` here: frames delivered by the interrupt
+     * that just woke us have not reached the caller's condition yet, so the
+     * next call must also decline to halt and give the caller one more look. */
 }
