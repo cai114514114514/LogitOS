@@ -70,6 +70,7 @@ void *memcpy(void *, const void *, size_t);
 
 #define RX_DESC 64      /* deeper RX ring: absorb a full receive-window burst
                         * (~45 frames for 64 KiB) before the guest drains it */
+#define RX_REFILL 16    /* descriptors returned per RDT write -- see e1000_rx_drain */
 #define TX_DESC 8
 #define BUF_SIZE 2048
 
@@ -192,14 +193,38 @@ static int e1000_rx_drain(net_rx_cb cb)
 {
     if (!mmio) return 0;
     uint64_t f = net_lock();                     /* exclude the RX IRQ + mainline tcp_recv */
+    /* ACK FIRST, THEN DRAIN -- and ack HERE, not only in the ISR.
+     *
+     * Reading ICR is what DEASSERTS the card's INTx line, and smp.c routes the
+     * NIC's I/O APIC entry EDGE-triggered on purpose (a level RTE's remote-IRR
+     * is never cleared by QEMU's TCG IOAPIC, which storms). An edge-triggered
+     * line that is already asserted produces no further edges: once nobody
+     * clears ICR, the NIC interrupt is dead for the rest of the boot.
+     *
+     * That is exactly what was happening. net_init() unmasks RXT0 before
+     * smp_init() routes the line; DHCP arrives in that window and asserts INTx;
+     * the routing then goes in behind an already-low line. Measured, with the
+     * ISR as the only reader of ICR: `[net] rx path: frames 520 irq 0` -- the
+     * card raised ZERO interrupts across a whole boot and a 900 KiB fetch, and
+     * every frame came in on the net_poll backstop. The card looked
+     * interrupt-driven and was not.
+     *
+     * Putting the ack in the drain fixes it for good, because the drain is the
+     * one thing that always runs: the net_poll backstop reaches it even when no
+     * interrupt can. Acking BEFORE consuming descriptors is also what makes a
+     * frame that arrives mid-drain deassert-then-reassert and raise a fresh
+     * edge, rather than being silently folded into the cause we just cleared. */
+    reg_read(REG_ICR);
     int n = 0;
-    /* Bounded drain: each iteration hands the buffer straight back to the NIC
-     * (RDT write), so under a sustained RX flood the NIC re-posts DD as fast as
-     * we clear it -- an unbounded loop here never exits, and when the caller is
-     * the NIC IRQ (vector 65, IF=0, BKL held) that hard-freezes the machine.
-     * One ring's worth per call is guaranteed progress; the rest is picked up
-     * by the next RXT0 IRQ or the net_poll backstop. */
+    /* Bounded drain: the buffers are handed back to the NIC as we go, so under a
+     * sustained RX flood the NIC re-posts DD as fast as we clear it -- an
+     * unbounded loop here never exits, and when the caller is the NIC IRQ
+     * (vector 65, IF=0, BKL held) that hard-freezes the machine. One ring's
+     * worth per call is guaranteed progress; the rest is picked up by the next
+     * RXT0 IRQ or the net_poll backstop. */
     int budget = RX_DESC;
+    uint32_t tail = 0;
+    int owed = 0;                                /* descriptors consumed since the last RDT */
     while (budget-- > 0 && (rx_ring[rx_cur].status & RXD_STA_DD)) {
         uint16_t len = rx_ring[rx_cur].length;
         /* length/errors/EOP come from the NIC: only hand the stack frames that
@@ -208,10 +233,19 @@ static int e1000_rx_drain(net_rx_cb cb)
             (rx_ring[rx_cur].status & RXD_STA_EOP))
             cb(rx_buf[rx_cur], len);
         rx_ring[rx_cur].status = 0;
-        reg_write(REG_RDT, rx_cur);              /* hand the buffer back to the NIC */
+        tail = rx_cur;
         rx_cur = ring_next(rx_cur, RX_DESC);
         n++;
+        /* The receive tail is a DOORBELL, not a per-descriptor obligation: RDT
+         * says "everything up to here is yours again", so one write hands back
+         * a whole batch. It used to be written once per frame, and under
+         * emulation that is the single most expensive thing in the drain --
+         * every store traps into QEMU's e1000 model, which re-runs its RX-queue
+         * flush. Batching by RX_REFILL keeps the NIC supplied (a quarter of the
+         * ring is always in flight) at a sixteenth of the register traffic. */
+        if (++owed >= RX_REFILL) { reg_write(REG_RDT, tail); owed = 0; }
     }
+    if (owed) reg_write(REG_RDT, tail);
     net_unlock(f);
     return n;
 }
@@ -232,12 +266,15 @@ static void e1000_irq_on(net_rx_cb cb)
     reg_write(REG_IMS, ICR_RXT0);                /* unmask receive interrupts */
 }
 
-/* Called from the NIC IRQ handler: ack causes + drain RX into the stack. */
+/* Called from the NIC IRQ handler. Ack the device and hand the drain to
+ * SOFTIRQ_NET -- see the receive-path comment in c/net/core/net.c for why the
+ * protocol work no longer happens here, and for the one case (a NIC interrupt
+ * nested inside a kernel sti window) where net_rx_schedule drains inline. */
 static void e1000_isr(void)
 {
     if (!mmio) return;
     reg_read(REG_ICR);                           /* read-to-clear the causes */
-    if (g_rxcb) e1000_rx_drain(g_rxcb);
+    if (g_rxcb) net_rx_schedule();
 }
 
 static struct netdev e1000_dev = {

@@ -148,7 +148,8 @@ static void rtl_isr(void)
                                                    * arriving mid-drain still raises
                                                    * a fresh edge */
     if (isr & (ISR_RXOVW | ISR_FOVW)) rx_reset();
-    if (g_rxcb) rtl_rx_poll(g_rxcb);
+    /* Ack here, drain on SOFTIRQ_NET -- see c/net/core/net.c. */
+    if (g_rxcb) net_rx_schedule();
 }
 
 static struct netdev rtl_dev = {

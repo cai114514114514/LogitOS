@@ -1,8 +1,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "net.h"
-#include "e1000.h"
+#include "netdev.h"
 #include "eth.h"
+#include "work.h"
 #include "kprintf.h"
 
 void *memcpy(void *, const void *, size_t);
@@ -30,13 +31,91 @@ int net_up(void) { return up; }
 int  dhcp_run(int timeout_ticks) __attribute__((weak));
 void dhcp_poll(void) __attribute__((weak));
 
+/* ---------------------------------------------------------------------------
+ * The receive path.
+ *
+ * A NIC ISR used to drain the whole ring itself: eth_input -> ip_input ->
+ * tcp_input, for up to a ring's worth of frames, INSIDE the interrupt and
+ * BEFORE the EOI. On a 900 KiB fetch that is ~630 frames of protocol work done
+ * at the highest priority in the machine, with the NIC's vector held the whole
+ * time.
+ *
+ * Now the ISR does only what an ISR must: ack the device, and say that a drain
+ * is owed. The drain runs on SOFTIRQ_NET, which interrupts.c runs at the tail
+ * of the same interrupt -- after the EOI, so the NIC is free to re-assert while
+ * we work, and coalesced, because softirq_raise() is idempotent and several
+ * arrivals collapse into one drain.
+ *
+ * WHY NOT THE WORKQUEUE TIER, which is the one that may sleep: nothing in
+ * eth/ip/tcp/udp input blocks -- they take net_lock (cli) and return -- so a
+ * thread hand-off would buy nothing and cost a context switch per burst, plus
+ * the receive latency of getting kworker scheduled. The tier is chosen by what
+ * the work needs, and this work needs "soon and bounded", not "may wait".
+ *
+ * THE ONE CASE THE SOFTIRQ CANNOT COVER, and why the inline fallback exists.
+ * interrupts.c runs softirqs only when the entry OWNS the BKL (`!nested`). A
+ * NIC interrupt that lands inside a kernel `sti` window -- SYS_HTTP_GET runs
+ * with IF=1 on purpose, see the M11 note -- is nested, so its tail does not run
+ * softirqs and the raise sits pending until the outer entry finishes. The ring
+ * is 64 descriptors, about 3 ms of a saturated receive, so "pending until the
+ * syscall returns" would be an overflow, not a delay. So: if a drain is still
+ * owed when the next interrupt arrives, the previous raise demonstrably did not
+ * run, and this one drains inline instead of queueing a second promise behind
+ * the first.
+ * ------------------------------------------------------------------------- */
+static volatile uint32_t rx_owed;      /* a raise is outstanding */
+static uint32_t rx_n_softirq, rx_n_inline, rx_n_poll, rx_n_irq, rx_frames;
+static uint32_t rx_next_report = 512;
+
+/* Counts drains that actually DELIVERED something. net_poll runs ~100x/s and
+ * mostly finds an empty ring; counting those would drown the comparison this
+ * exists to make ("which context is the receive path?") in idle polls. */
+static void net_rx_drain(uint32_t *counter)
+{
+    rx_owed = 0;                       /* whoever drains discharges the debt */
+    int n = netdev_rx_poll(eth_input);
+    if (n > 0) { (*counter)++; rx_frames += (uint32_t)n; }
+}
+
+/* SOFTIRQ_NET handler: the receive path proper. */
+static void net_rx_softirq(void)
+{
+    net_rx_drain(&rx_n_softirq);
+}
+
+/* Called by every NIC ISR once it has acked its device. Interrupt context. */
+void net_rx_schedule(void)
+{
+    if (!up) return;
+    rx_n_irq++;
+    if (rx_owed) {                     /* the last raise never ran -- see above */
+        net_rx_drain(&rx_n_inline);
+        return;
+    }
+    rx_owed = 1;
+    softirq_raise(SOFTIRQ_NET);
+}
+
+/* One line, only under real traffic. A desktop boot receives a couple of dozen
+ * frames (DHCP, ARP), so this stays silent unless something actually moved
+ * bytes -- which keeps it out of every other line's serial expectations while
+ * still being the thing tests/boot/run-net-rx-test.sh reads. */
+static void rx_report(void)
+{
+    if (rx_frames < rx_next_report) return;
+    rx_next_report = rx_frames + 4096;
+    kprintf("[net] rx path: frames %u irq %u softirq %u inline %u poll %u\n",
+            rx_frames, rx_n_irq, rx_n_softirq, rx_n_inline, rx_n_poll);
+}
+
 int net_init(void)
 {
-    if (e1000_init() != 0)
+    if (netdev_init() != 0)
         return -1;
-    memcpy(net_cfg.mac, e1000_mac(), 6);
+    memcpy(net_cfg.mac, netdev_mac(), 6);
     up = 1;
-    e1000_irq_enable(eth_input);    /* IRQ-driven RX (RXT0 only -- see e1000.c; net_poll still backstops) */
+    softirq_register(SOFTIRQ_NET, net_rx_softirq);
+    netdev_irq_enable(eth_input);   /* IRQ-driven RX; net_poll still backstops */
     /* Unconfigured while negotiating: DHCPDISCOVER leaves from 0.0.0.0, and
      * only broadcast UDP can come back in until we own an address. */
     if (!dhcp_run || dhcp_run(300) != 0)    /* ~3 s */
@@ -59,7 +138,11 @@ volatile int g_net_busy = 0;
 void net_poll(void)
 {
     if (up) {
-        e1000_rx_poll(eth_input);
+        /* Still the backstop, and still first: a polled-only card has no other
+         * receive path at all, and even an IRQ-driven one can have a raise
+         * pending from a nested entry (see net_rx_schedule). */
+        net_rx_drain(&rx_n_poll);
+        rx_report();
         if (tcp_poll) tcp_poll();
         if (ip_poll) ip_poll();
         if (dhcp_poll) dhcp_poll();

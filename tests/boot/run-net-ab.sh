@@ -146,7 +146,12 @@ echo -n "  booting"
 # together have taken over two minutes.
 deadline=$(( $(date +%s) + 150 + 90 * ${#NAMES[@]} ))
 for i in "${!NAMES[@]}"; do
-    while ! grep -aq "LogitOS shell" "${LOGS[$i]}" 2>/dev/null; do
+    # Two markers, because the serial console is shared by several threads and
+    # they interleave WITHIN a line: one run printed "[sched] first-run tid 5
+    # (FiLnder)" -- the shell's banner landing in the middle of the scheduler's
+    # word -- and a single-marker wait sat there until it timed out on a guest
+    # that had been up for four minutes.
+    while ! grep -aqE "LogitOS shell|first-run tid [0-9]+ \(sh\)" "${LOGS[$i]}" 2>/dev/null; do
         [ "$(date +%s)" -gt "$deadline" ] && { echo; echo "FAIL: ${NAMES[$i]} never reached a shell"; tail -20 "${LOGS[$i]}"; exit 1; }
         sleep 0.5
     done

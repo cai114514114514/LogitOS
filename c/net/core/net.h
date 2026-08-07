@@ -33,6 +33,11 @@ int  net_up(void);                  /* 1 if a NIC initialised successfully */
 
 /* Pump the receive path (called from the WM main loop). */
 void net_poll(void);
+
+/* Called by a NIC ISR once it has acked its device: the drain is handed to
+ * SOFTIRQ_NET rather than run inside the interrupt. Safe from interrupt
+ * context; see the receive-path comment in net.c for the whole story. */
+void net_rx_schedule(void);
 void net_idle(void);                /* sti;hlt -- yield the host CPU while a blocking fetch waits */
 extern volatile int g_net_busy;     /* 1 while a blocking fetch owns the network */
 

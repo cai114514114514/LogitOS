@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include "eth.h"
 #include "net.h"
-#include "e1000.h"
+#include "netdev.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -28,7 +28,7 @@ int eth_send(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
     memcpy(h->src, net_cfg.mac, ETH_ALEN);
     h->ethertype = htons(ethertype);
     memcpy(frame + sizeof *h, payload, len);
-    return e1000_tx(frame, (uint16_t)(sizeof *h + len));
+    return netdev_tx(frame, (uint16_t)(sizeof *h + len));
 }
 
 void eth_input(const uint8_t *frame, uint16_t len)

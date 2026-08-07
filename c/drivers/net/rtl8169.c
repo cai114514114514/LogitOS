@@ -145,7 +145,8 @@ static void rtl_isr(void)
     if (!ready) return;
     uint16_t isr = r16(R_ISR);
     w16(R_ISR, isr);                              /* ack before draining */
-    if (g_rxcb) rtl_rx_poll(g_rxcb);
+    /* Ack here, drain on SOFTIRQ_NET -- see c/net/core/net.c. */
+    if (g_rxcb) net_rx_schedule();
 }
 
 static struct netdev rtl_dev = {

@@ -11,7 +11,15 @@
 # peer is one emulated hop away at sub-millisecond RTT), and what topology this
 # uses instead.
 
-.PHONY: test-net-bench test-net-ab test-net-drivers netwire-selftest
+.PHONY: test-net-rx test-net-bench test-net-ab test-net-drivers netwire-selftest
+
+# --- the gate ------------------------------------------------------------
+# Where the receive path runs, asserted rather than assumed. Fails on any build
+# whose NIC interrupt is not actually firing, which is how the stuck-INTx bug
+# was found: the card looked interrupt-driven and every frame arrived on the
+# net_poll backstop.
+test-net-rx: $(ISO) $(DISK)
+	@bash tests/boot/run-net-rx-test.sh $(ISO) $(DISK) $(if $(NIC),$(NIC),e1000)
 
 # --- the instruments -----------------------------------------------------
 # What the host-side wire can carry, before believing any number measured

@@ -146,7 +146,8 @@ static void vnet_isr(void)
     /* Read-to-clear the ISR status byte: until this read the device holds its
      * interrupt asserted and will not raise a new one. */
     if (vnet.isr) (void)*vnet.isr;
-    if (g_rxcb) vnet_rx_poll(g_rxcb);
+    /* Ack here, drain on SOFTIRQ_NET -- see c/net/core/net.c. */
+    if (g_rxcb) net_rx_schedule();
 }
 
 static struct netdev vnet_dev = {

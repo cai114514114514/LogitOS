@@ -133,22 +133,20 @@ void netdev_irq(void)
  * Legacy facade.
  *
  * `c/net/link/eth.c`, `c/net/core/net.c`, `c/kernel/cpu/interrupts.c` and
- * `c/kernel/cpu/smp.c` all call the NIC by the name `e1000_*` -- that is the
- * seam this whole file exists to generalise, and those four files are owned by
- * other people. So the e1000_* symbols stay, and now mean "the bound NIC,
- * whatever it is". They are pure forwarding; nothing below knows about Intel.
+ * `c/kernel/cpu/smp.c` all called the NIC by the name `e1000_*` -- that is the
+ * seam this whole file exists to generalise. So the e1000_* symbols stay, and
+ * now mean "the bound NIC, whatever it is". They are pure forwarding; nothing
+ * below knows about Intel.
  *
- * The rename those callers want, when someone owns them:
- *     e1000_init()        -> netdev_init()
- *     e1000_mac()         -> netdev_mac()
- *     e1000_tx()          -> netdev_tx()
- *     e1000_rx_poll()     -> netdev_rx_poll()
- *     e1000_irq_enable()  -> netdev_irq_enable()
+ * The two NET files have since been converted (eth.c -> netdev_tx, net.c ->
+ * netdev_init/netdev_mac/netdev_irq_enable/netdev_rx_poll). What is left is
+ * `c/kernel/cpu/interrupts.c` (vector 65 -> e1000_irq) and `c/kernel/cpu/smp.c`
+ * (e1000_irq_line for the I/O APIC entry), which belong to the kernel lines.
+ * When someone owns those two files:
  *     e1000_irq_line()    -> netdev_irq_line()
  *     e1000_irq()         -> netdev_irq()
- * plus `#include "e1000.h"` -> `#include "netdev.h"`. It is a mechanical
- * substitution in five lines of eth.c/net.c and two of interrupts.c/smp.c;
- * this block can then be deleted.
+ * plus `#include "e1000.h"` -> `#include "netdev.h"`. Two lines each; this
+ * block can then be deleted.
  * ------------------------------------------------------------------------ */
 
 int  e1000_init(void)                 { return netdev_init(); }
