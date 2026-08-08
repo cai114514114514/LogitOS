@@ -38,12 +38,12 @@
 #include "clib.h"
 
 #define REQ_MAX  2048
-#define BODY_MAX 65536
+#define BODY_MAX 8192    /* a streaming chunk, not a file size */
 
 static char  g_req[REQ_MAX];
 static char  g_body[BODY_MAX];
 static char  g_path[256];
-static char  g_out[BODY_MAX + 512];
+static char  g_out[1024];        /* one response head */
 
 /* Everything this program says goes to fd 2, so it cannot be confused with the
  * bytes it is serving even when both land on the same serial console. */
@@ -117,7 +117,11 @@ static int safe_path(const char *root, const char *req, char *out, int max)
     }
     int n = 0;
     for (int i = 0; root[i] && n < max - 1; i++) out[n++] = root[i];
-    while (n > 1 && out[n - 1] == '/') n--;              /* no double slash */
+    /* Strip EVERY trailing slash, including the last one -- the request path
+     * supplies its own leading '/'. A docroot of "/" must become "" and not
+     * "/", or every path served from the volume root is "//licenses/..." and
+     * the whole server 404s while looking like it works. */
+    while (n > 0 && out[n - 1] == '/') n--;
     const char *r = req;
     if (c_streq(req, "/")) r = "/index.html";            /* the directory index */
     for (int i = 0; r[i] && n < max - 1; i++) out[n++] = r[i];
@@ -233,10 +237,32 @@ static void serve(int fd, const char *root, const struct logit_sockaddr *peer)
         return;
     }
 
-    int n = read_file(g_path, g_body, BODY_MAX);
-    if (n < 0) {
+    /* THE FILE IS STREAMED THROUGH AN ORDINARY DESCRIPTOR, not slurped.
+     *
+     * The first version of this used SYS_READ_FILE, which is the whole-file
+     * call the GUI apps use -- and it returns -1 from a CLI process, which
+     * cost an afternoon to find because NO OTHER COREUTIL CALLS IT: ls, cat
+     * and wc all go through sys_open/sys_read, so the path was simply never
+     * exercised from a program without a window. Using the ordinary fd path
+     * is what the rest of userland does, it streams instead of demanding a
+     * buffer as large as the file, and it removes the size cap entirely.
+     *
+     * Content-Length comes from a seek to the end and back, because HTTP/1.0
+     * has no chunked encoding: without a length the only way to delimit a
+     * body is to close the connection, and then a truncated transfer is
+     * indistinguishable from a complete one to the client. */
+    int ffd = sys_open(g_path, O_RDONLY);
+    if (ffd < 0) {
         send_status(fd, 404, "Not Found", "not found\n");
         log_s(" -> 404 ("); log_s(g_path); log_s(")\n");
+        sys_close(fd);
+        return;
+    }
+    long size = sys_lseek(ffd, 0, SEEK_END);
+    if (size < 0 || sys_lseek(ffd, 0, SEEK_SET) != 0) {
+        sys_close(ffd);
+        send_status(fd, 500, "Internal Server Error", "cannot seek\n");
+        log_s(" -> 500 (seek)\n");
         sys_close(fd);
         return;
     }
@@ -245,21 +271,24 @@ static void serve(int fd, const char *root, const struct logit_sockaddr *peer)
     at = append(g_out, at, "HTTP/1.0 200 OK\r\nContent-Type: ");
     at = append(g_out, at, mime_of(g_path));
     at = append(g_out, at, "\r\nContent-Length: ");
-    at = append_n(g_out, at, n);
+    at = append_n(g_out, at, size);
     at = append(g_out, at, "\r\nConnection: close\r\n\r\n");
-    if (!head_only) {
-        for (int k = 0; k < n; k++) g_out[at + k] = g_body[k];
-        at += n;
-    }
     int rc = write_all(fd, g_out, at);
+    long sent = 0;
+    if (rc == 0 && !head_only) {
+        int r;
+        while ((r = sys_read(ffd, g_body, (int)sizeof g_body)) > 0) {
+            if (write_all(fd, g_body, r) != 0) { rc = -1; break; }
+            sent += r;
+        }
+    }
+    sys_close(ffd);
     log_s(rc == 0 ? " -> 200 " : " -> 200 (SHORT) ");
-    log_n(n);
-    log_s(" bytes\n");
+    log_n(head_only ? size : sent);
+    log_s(" of "); log_n(size); log_s(" bytes\n");
 
     /* Half-close before closing: the FIN says "the body ends here" while the
-     * connection stays up long enough for the peer's own FIN to arrive. A bare
-     * close would also work here, but this is the call that exists for it and
-     * exercising it is the point of shipping it. */
+     * connection stays up long enough for the peer to finish. */
     sys_shutdown(fd, LOGIT_SHUT_WR);
     sys_close(fd);
 }
