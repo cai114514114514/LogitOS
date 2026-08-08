@@ -4284,9 +4284,47 @@ static int canon_scale(lexed *lx, buf *b)
 	return 0;
 }
 
+static const char *const fsa_props[] = { "font-size-adjust", NULL };
+
 static const char *const transform_props[] = {
 	"rotate", "translate", "scale", "perspective", NULL
 };
+
+/* font-size-adjust = none | [ ex-height | cap-height | ch-width | ic-width |
+ *                              ic-height ]? [ from-font | <number> ]
+ *
+ * `ex-height` is the default metric and disappears; the number is
+ * non-negative as a LITERAL and unrestricted as a calc, the same asymmetry
+ * as everywhere else in this file. A metric on its own is not a value, and
+ * neither is `<metric> none`. */
+static const char *const fsa_metrics[] = {
+	"ex-height", "cap-height", "ch-width", "ic-width", "ic-height", NULL
+};
+
+static int canon_font_size_adjust(lexed *lx, buf *b)
+{
+	const char *m = tab_lookup(cur(lx), fsa_metrics);
+	const tok *t;
+
+	if (m != NULL) {
+		adv(lx);
+		if (strcmp(m, "ex-height") != 0) { bput(b, m, -1); bputc(b, ' '); }
+	}
+	if (at_end(lx)) return -1;		/* a metric alone is not a value */
+	t = cur(lx);
+	if (tok_is_ident(t, "from-font")) {
+		bput(b, "from-font", 9);
+		adv(lx);
+	} else if (t->kind == T_NUM) {
+		if (t->num < 0) return -1;
+		if (emit_token(lx, b, 1) != 0) return -1;
+	} else if (t->kind == T_FUNC) {
+		if (calc_channel(lx, b, 0, 0, NULL, 0, NULL) != 0) return -1;
+	} else {
+		return -1;
+	}
+	return at_end(lx) ? 0 : -1;
+}
 
 /* The grid properties this file claims. LibCSS has no grid at all, so these
  * are not values it refuses -- they are properties it has never heard of, and
@@ -4678,7 +4716,7 @@ static const char *const single_props[] = {
 static const char *const *const canon_prop_tables[] = {
 	inset_props, size_props, margin_props, single_props,
 	color_props, grid_props, shape_props, filter_props,
-	transform_props, NULL
+	transform_props, fsa_props, NULL
 };
 
 int css_canon_knows_property(const char *prop, int plen)
@@ -4879,6 +4917,14 @@ int css_canon_decl(const char *prop, int plen,
 		else
 			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, fsa_props)) {
+		if (lx.n == 1 && tok_is_ident(&lx.t[0], "none")) {
+			bput(&b, "none", 4);
+			rc = CSS_CANON_OK;
+		} else {
+			rc = canon_font_size_adjust(&lx, &b) == 0
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		}
 	} else if (in_tab(prop, plen, transform_props)) {
 		if (lx.n == 1 && tok_is_ident(&lx.t[0], "none")) {
 			bput(&b, "none", 4);

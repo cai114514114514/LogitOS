@@ -1733,6 +1733,28 @@ static void t_shapes(void)
 	chk("offset-path", "ray(closest-side)", NULL);
 	chk_rt("shape-outside", "circle(50%)", "circle(50%)");
 
+	group("font-size-adjust");
+
+	/* `ex-height` is the default metric and disappears. A metric on its
+	 * own is not a value, and neither is `<metric> none`. */
+	chk_rt("font-size-adjust", "none", "none");
+	chk_rt("font-size-adjust", "0.5", "0.5");
+	chk("font-size-adjust", "ex-height 0.5", "0.5");
+	chk_rt("font-size-adjust", "cap-height 0.8", "cap-height 0.8");
+	chk_rt("font-size-adjust", "from-font", "from-font");
+	chk("font-size-adjust", "ex-height from-font", "from-font");
+	chk("font-size-adjust", "cap-height calc(0.5 + 1)",
+	    "cap-height calc(1.5)");
+	/* A literal is non-negative; a calc is not restricted. */
+	chk("font-size-adjust", "-10", NULL);
+	chk_rt("font-size-adjust", "cap-height calc(-0.5)",
+	    "cap-height calc(-0.5)");
+	chk("font-size-adjust", "auto", NULL);
+	chk("font-size-adjust", "0.5 ex-height", NULL);
+	chk("font-size-adjust", "ch 0.5", NULL);
+	chk("font-size-adjust", "ex-height", NULL);
+	chk("font-size-adjust", "cap-height none", NULL);
+
 	group("transform-longhands");
 
 	/* NOT <transform-list> -- that is `transform` and css_interp.c's.
