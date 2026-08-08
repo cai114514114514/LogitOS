@@ -65,7 +65,18 @@ QEMU        := qemu-system-x86_64
 #     undeclared function 'sched_sleep_ms'` -- on some machines and not others,
 #     from identical sources. Nothing includes those headers by bare name; all
 #     nine uses in the tree are already <sys/...>.
-INCDIRS := $(addprefix -I,$(filter-out %/include/sys,$(sort $(shell find c include -type d))))
+#
+#  3. SECOND OCCURRENCE (2026-08): c/apps/libc/include/sched.h collided with
+#     c/kernel/sched/sched.h the exact same way -- but sched.h cannot be
+#     reached as <sched.h> through a subdirectory the way <sys/wait.h> is
+#     (POSIX requires it be the bare name), so the (2) fix does not apply
+#     directly. It now lives in c/apps/libc/include/uonly/, filtered out of
+#     this flat scan below and added back ONLY to UCFLAGS (userland), so the
+#     kernel's own sched.h is the only one any kernel file's bare
+#     `#include "sched.h"` can ever see. Put any FUTURE userland-only header
+#     whose basename collides with a kernel header here, not at the top level
+#     of c/apps/libc/include -- see UCFLAGS below for the matching -I.
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
@@ -136,10 +147,19 @@ LDFLAGS := -n -nostdlib -T linker.ld
 # behaving exactly as it did before that header changed (notably the ~320
 # asserts in third_party/{quickjs,css}). Drop it from one rule to build that
 # component with its assertions live.
+# -Ic/apps/libc/include/uonly: userland-only headers that would shadow a
+# kernel header of the same bare name if they sat in the flat INCDIRS scan
+# (today: <sched.h> vs c/kernel/sched/sched.h) -- see the INCDIRS comment
+# above. CFLAGS (kernel) deliberately does NOT get this -I. IT MUST COME
+# BEFORE $(INCDIRS): clang's angle-bracket search is left-to-right priority
+# order, and INCDIRS already contains -Ic/kernel/sched -- appended after it,
+# this -I would never be reached (sched.c would silently get the KERNEL's
+# sched.h instead, which is exactly what happened the first time this line
+# was written with the order the other way around).
 UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
            -mno-red-zone -mno-mmx -msse -msse2 -DNDEBUG \
-           -std=c11 -Wall -Wextra -O2 -MMD -MP $(INCDIRS)
+           -std=c11 -Wall -Wextra -O2 -MMD -MP -Ic/apps/libc/include/uonly $(INCDIRS)
 
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
@@ -311,13 +331,6 @@ APPS := clock textedit monitor terminal widgets files preview studio
 # icon every existing driver clicks. (NAPPS there still has to go 9 -> 10: the
 # dock is centred, so one more app shifts every icon.)
 GALLERY_AEX := $(BUILD)/gallery.aex
-# Settings goes AFTER gallery for the identical reason, one slot further along:
-# appending `settings` to APPS would insert it before browser AND before
-# gallery, moving two icons that two existing QMP drivers click by index.
-# Packed last, BROWSER_SLOT stays 8 and GALLERY_SLOT stays 9; the new app is
-# SETTINGS_SLOT 10 and NAPPS goes 10 -> 11 in tests/qmp/qmp_ui.py, which every
-# driver recomputes its x from because the dock is centred.
-SETTINGS_AEX := $(BUILD)/settings.aex
 
 # Which Activity Monitor goes on the disk. Overridable for the same reason
 # BROWSER_AEX is: test-monitor-negctl packs a deliberately crippled build (one
@@ -327,6 +340,13 @@ SETTINGS_AEX := $(BUILD)/settings.aex
 # land in the LogitFS root, and tests/qmp/qmp_monitor.py's MONITOR_SLOT names
 # its index, so it is substituted in place rather than appended.
 MONITOR_AEX := $(BUILD)/monitor.aex
+# Settings goes AFTER gallery for the identical reason, one slot further along:
+# appending `settings` to APPS would insert it before browser AND before
+# gallery, moving two icons that two existing QMP drivers click by index.
+# Packed last, BROWSER_SLOT stays 8 and GALLERY_SLOT stays 9; the new app is
+# SETTINGS_SLOT 10 and NAPPS goes 10 -> 11 in tests/qmp/qmp_ui.py, which every
+# driver recomputes its x from because the dock is centred.
+SETTINGS_AEX := $(BUILD)/settings.aex
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
@@ -389,6 +409,7 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/tabs.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
+                c/net/http/http2.c c/net/http/hpack.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
                 c/lib/image/exif.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
@@ -1773,7 +1794,7 @@ test-libc: $(ISO) $(DISK)
 LIBCDIFF_SRC  := $(filter-out c/apps/libc/src/malloc.c c/apps/libc/src/io.c c/apps/libc/src/runtime.c,\
                    $(wildcard c/apps/libc/src/*.c))
 LIBCDIFF_INC  := -nostdinc -isystem $(shell $(CC) -print-resource-dir)/include \
-                 -Ic/apps/libc/include -Ic/apps/libc/src -Iinclude/abi
+                 -Ic/apps/libc/include -Ic/apps/libc/include/uonly -Ic/apps/libc/src -Iinclude/abi
 LIBCDIFF_SAN  := -fsanitize=address,undefined -fno-sanitize-recover=all -g
 LIBCDIFF_OBJ  := $(patsubst %.c,$(BUILD)/libcdiff/%.o,$(LIBCDIFF_SRC))
 LIBCDIFF_SOBJ := $(patsubst %.c,$(BUILD)/libcdiff-sab/%.o,$(LIBCDIFF_SRC))
@@ -2941,25 +2962,12 @@ clean:
 # worked on by several people at once and a whole-file Makefile edit from a
 # concurrent line cannot delete it.
 -include tests/demux.mk
-
-# Media Source Extensions: MediaSource/SourceBuffer, the <video> element and
-# the DASH-segment path that finally makes c/lib/{media,video,audio} reachable
-# from a web page. ONE line, and it has to be HERE and not next to the browser
-# rule at the top: tests/mse.mk adds $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) to the
-# browser link, and a PREREQUISITE list expands where it is written. Included
-# before those three exist it would expand to nothing, the objects would never
-# be built, and the link line would still name them -- so the build would
-# succeed or fail depending on what else had been built first, which is worse
-# than a clean failure and far harder to diagnose. MED_OBJ comes from
-# tests/demux.mk immediately above; VID_OBJ and AUD_OBJ are defined up by
-# Preview. Same reason Preview's own rule "lives with the VID_OBJ definitions
-# further down".
 -include tests/mse.mk
 
 # Preview's on-device format gate (test-preview, test-preview-timing,
-# test-preview-negctl) and the fixtures + measurement binaries it puts on the
-# disk. Own fragment for the same reason as the others -- and it must come
-# AFTER tests/demux.mk, which is where $(MED_OBJ) is defined.
+# test-preview-negctl) and the two media fixtures it puts on the disk. Own
+# fragment for the same reason as the others -- and it must come AFTER
+# tests/demux.mk, which is where $(MED_OBJ) is defined.
 -include tests/preview.mk
 
 # Ring-3 memory protection: W^X, NX, SMEP/SMAP and syscall pointer validation,
@@ -2978,9 +2986,8 @@ clean:
 -include tests/loader.mk
 
 # The ring-3 heap's COST: test-arena (the .bss/commit-bound gate plus its two
-# negative controls), bench-arena (per-page heap over the cssweb corpus) and
-# bench-arena-js (a whole code-split app in one runtime). Own fragment for the
-# same reason as every other one above.
+# negative controls) and bench-arena (per-page heap over the cssweb corpus).
+# Own fragment for the same reason as every other one above.
 -include tests/mem.mk
 
 # --- aui widget toolkit ------------------------------------------------------
@@ -3096,10 +3103,16 @@ bench-aui: $(ISO) $(DISK)
 # reason as every other one above.
 -include tests/clip.mk
 
-# Window management: resize, zoom, minimise, system shortcuts.
--include tests/window.mk
+# Is a half-drawn window ever on screen? (test-flash + its negative control).
+# A window has ONE canvas, so an app that runs ahead of the compositor gets its
+# erased canvas composited -- the "one click and it does a reload-refresh" the
+# machine's user reported. Own fragment for the same reason as every other one
+# above.
+-include tests/flash.mk
 
 # The framework corpus (React/Next/Vue/Angular/Svelte/Vite/webpack): which
 # framework runtimes this browser cannot run, ranked by cause. Own fragment,
 # see the header of tests/frameworks.mk.
 -include tests/frameworks.mk
+
+-include tests/http2.mk

@@ -27,6 +27,10 @@
 #include "http1.h"
 #include "cookies.h"
 #include "url.h"
+/* bxfer_*: the transport beneath this file, which chooses HTTP/1.1 or HTTP/2
+ * from what ALPN returned. Drop-in for h1_conn_start/pump/free plus the socket
+ * open/close; see bfetch.h. Under -DWEBAPI_HOST they are the h1_conn calls. */
+#include "bfetch.h"
 #include "logit_abi.h"          /* SOCK_F_* / SOCK_P_* -- pure #defines */
 #include <string.h>
 #include <stdlib.h>
@@ -44,12 +48,17 @@ int printf(const char *, ...);
 /* ---- the transport ---------------------------------------------------- */
 
 #ifndef WEBAPI_HOST
-static int  d_open(const char *h, int p, int tls)
-{ return sock_open(h, p, tls ? (SOCK_F_TLS | SOCK_F_ALPN_HTTP11) : 0); }
+/* The dial and the release go through bxfer, not straight to the socket ABI,
+ * because HTTP/2 makes a connection a property of the ORIGIN rather than of a
+ * request: concurrent fetches to one host share one socket and many streams,
+ * so the handle is refcounted and is not this file's to close. bxfer_open is
+ * also where "h2,http/1.1" is offered -- the protocol is chosen in the TLS
+ * handshake, before anyone here has a socket to have an opinion about. */
+static int  d_open(const char *h, int p, int tls) { return bxfer_open(h, p, tls); }
 static int  d_poll(int fd) { return sock_poll(fd); }
 static int  d_send(int fd, const void *b, int n) { return sock_send(fd, b, n); }
 static int  d_recv(int fd, void *b, int n) { return sock_recv(fd, b, n); }
-static void d_close(int fd) { sock_close(fd); }
+static void d_close(int fd) { bxfer_close(fd); }
 static unsigned long long d_now(void) { return monotonic_ms(); }
 /* The wall clock, for cookie expiry. SYS_GET_TIME answers whole seconds off
  * the CMOS RTC in UTC; the civil-date arithmetic is Hinnant's, the same one
@@ -734,7 +743,7 @@ static int wf_sink(void *ctx, const uint8_t *p, int n)
 static void fetch_release(JSContext *ctx, struct wfetch *f)
 {
     if (f->fd >= 0) { g_net->close(f->fd); f->fd = -1; }
-    if (f->started) h1_conn_free(&f->conn);
+    if (f->started) bxfer_free(&f->conn);
     else free(f->conn.out);
     memset(&f->conn, 0, sizeof f->conn);
     f->started = 0;
@@ -907,7 +916,12 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
     if (rc != H1_OK || !raw) { free(raw); return -1; }
 
     struct h1_transport t = { tr_read, tr_write, 0, (void *)(long)f->fd };
-    if (h1_conn_start(&f->conn, &t, raw, rawlen) != H1_OK) { free(raw); return -1; }
+    /* bxfer picks the protocol from ALPN and may REPLACE f->fd: a request that
+     * joined an origin's connection speculatively, before the handshake said
+     * which protocol it was, has to be given its own socket if the answer
+     * turns out to be HTTP/1.1. Hence the fd by pointer. */
+    if (bxfer_start(&f->conn, &t, raw, rawlen, &f->fd,
+                    f->url.host, f->url.port, f->url.https) != H1_OK) { free(raw); return -1; }
     f->started = 1;                       /* the conn owns `raw` from here */
     h1_response_head(&f->conn.resp, !preflight && ci_streq(f->method, "HEAD"));
     if (WEBAPI_STREAMING) h1_response_sink(&f->conn.resp, wf_sink, f);
@@ -1133,7 +1147,7 @@ static int fetch_finish(JSContext *ctx, struct wfetch *f)
 static int fetch_redial(struct wfetch *f)
 {
     g_net->close(f->fd); f->fd = -1;
-    h1_conn_free(&f->conn);
+    bxfer_free(&f->conn);
     memset(&f->conn, 0, sizeof f->conn);
     f->started = 0;
     f->hold_len = 0;
@@ -1214,7 +1228,7 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
     for (int i = 0; i < WF_STEPS; i++) {
         if (f->state == WF_FREE) return 1;    /* released underneath us */
         int64_t before = f->conn.resp.body_seen + f->conn.resp.hdr_bytes;
-        int st = h1_conn_pump(&f->conn);
+        int st = bxfer_pump(&f->conn);
         /* Any progress re-arms the idle timeout. */
         if (f->conn.resp.body_seen + f->conn.resp.hdr_bytes != before)
             f->deadline = now_ms() + WF_TIMEOUT;

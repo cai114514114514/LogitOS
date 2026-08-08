@@ -17,6 +17,8 @@
 #include "img.h"
 #include "url.h"
 #include "http1.h"
+#include "http2.h"
+#include "hpack.h"
 #include "hpool.h"
 #include "bfetch.h"
 
@@ -735,6 +737,532 @@ static int cache_take(const char *abs, unsigned char **out, int *outlen)
         return 0;
     }
     return -1;
+}
+
+/* ===================== bxfer: HTTP/2 beneath the fetch ====================
+ *
+ * See bfetch.h for the contract and for why the protocol choice lives here
+ * rather than in the fetch state machine. This half is the implementation:
+ * a table of connections keyed by socket handle, an HPACK re-encoding of the
+ * serialized HTTP/1.1 request, and the materialisation of an HTTP/2 stream
+ * into the `struct h1_response` the caller already knows how to read.
+ *
+ * THE ONE STRUCTURAL DIFFERENCE from HTTP/1.1, and the reason this is not
+ * just a parser swap: on HTTP/1.1 a connection belongs to one exchange, so
+ * "open a socket" and "start a request" are the same event. On HTTP/2 a
+ * connection belongs to the ORIGIN and carries every request to it at once.
+ * So the socket outlives the exchange, is refcounted rather than owned, and
+ * bxfer_open hands the same handle to every concurrent caller. That is the
+ * whole of multiplexing, and it is why the fd had to come under this file's
+ * control -- a caller that dials its own socket has already lost.
+ *
+ * -DBXFER_H1_ONLY is the negative control: h2 is never offered in ALPN and
+ * bx_start_h2 is never reached, so the multiplexing measurement must collapse
+ * to one connection per request while every HTTP/1.1 path is untouched. */
+
+#define BX_MAXSESS 8            /* distinct connections bxfer may hold */
+#define BX_MAXBIND 12           /* concurrent exchanges (fetch has WF_MAX = 8) */
+#define BX_H2_BODY_MAX (32 * 1024 * 1024)
+
+struct bx_sess {
+    int   used;
+    char  host[URL_HOST_MAX];
+    int   port, tls;
+    int   fd;
+    int   proto;                /* HP_PROTO_H1 / H2 / PENDING */
+    int   refs;                 /* outstanding bxfer_open handles */
+    int   h1_taken;             /* an HTTP/1.1 exchange owns this socket */
+    int   h2_live;              /* h2_conn_start has run */
+    int   pslot;                /* hpool slot, or -1 */
+    struct h2_conn c;
+};
+
+/* One exchange. `owner` is the caller's h1_conn, which is the only handle the
+ * fetch state machine has -- so the binding is a side table keyed by that
+ * pointer rather than a field, which keeps `struct h1_conn` http1.c's. */
+struct bx_bind {
+    struct h1_conn *owner;      /* NULL = free slot */
+    int      sess;              /* index into g_sess, -1 = plain HTTP/1.1 */
+    uint32_t sid;               /* our stream on that connection */
+    int      hdr_done;
+};
+
+static struct bx_sess g_sess[BX_MAXSESS];
+static struct bx_bind g_bind[BX_MAXBIND];
+static int g_bx_conns, g_bx_h2conns, g_bx_streams, g_bx_peak;
+
+void bxfer_stats(int *conns, int *h2conns, int *streams, int *peak)
+{
+    if (conns)   *conns   = g_bx_conns;
+    if (h2conns) *h2conns = g_bx_h2conns;
+    if (streams) *streams = g_bx_streams;
+    if (peak)    *peak    = g_bx_peak;
+}
+void bxfer_reset_stats(void) { g_bx_conns = g_bx_h2conns = g_bx_streams = g_bx_peak = 0; }
+
+static struct bx_sess *bx_sess_of(int fd)
+{
+    if (fd < 0) return 0;
+    for (int i = 0; i < BX_MAXSESS; i++)
+        if (g_sess[i].used && g_sess[i].fd == fd) return &g_sess[i];
+    return 0;
+}
+
+static struct bx_bind *bx_bind_of(struct h1_conn *c)
+{
+    for (int i = 0; i < BX_MAXBIND; i++) if (g_bind[i].owner == c) return &g_bind[i];
+    return 0;
+}
+
+/* ---- the h2 transport: the same three return values http1.c uses ---- */
+
+static int bx_read(void *ctx, void *buf, int len)
+{
+    int fd = (int)(long)ctx;
+    int bits = sock_poll(fd);
+    if (bits < 0 || (bits & SOCK_P_ERROR)) return H2_TERR;
+    int n = sock_recv(fd, buf, len);
+    if (n > 0) return n;
+    if (n < 0) return H2_EOF;
+    if (bits & SOCK_P_EOF) return H2_EOF;
+    return H2_AGAIN;
+}
+
+static int bx_write(void *ctx, const void *buf, int len)
+{
+    int fd = (int)(long)ctx;
+    int bits = sock_poll(fd);
+    if (bits < 0 || (bits & SOCK_P_ERROR)) return H2_TERR;
+    if (!(bits & SOCK_P_CONNECTED)) return H2_AGAIN;   /* still handshaking */
+    return sock_send(fd, buf, len);                     /* 0 = queue full = AGAIN */
+}
+
+/* ---- connections ---- */
+
+static void bx_sess_drop(struct bx_sess *ss)
+{
+    if (!ss || !ss->used) return;
+    if (ss->h2_live) {
+        /* The line the device harness greps for. A multiplexed connection that
+         * silently serialised would print streams=N peak=1, which is the whole
+         * difference and is invisible from anywhere above this. */
+        printf("[bxfer] h2 %s:%d closed: streams=%d peak=%d frames=%d/%d hpack_in=%lld\n",
+               ss->host, ss->port, ss->c.streams_opened, ss->c.max_concurrent_seen,
+               ss->c.frames_in, ss->c.frames_out, (long long)ss->c.bytes_in);
+        h2_conn_free(&ss->c);
+        ss->h2_live = 0;
+    }
+    if (ss->pslot >= 0) { hpool_drop(&g_pool, ss->pslot); ss->pslot = -1; ss->fd = -1; }
+    if (ss->fd >= 0) sock_close(ss->fd);
+    memset(ss, 0, sizeof *ss);
+}
+
+void bxfer_close_all(void)
+{
+    for (int i = 0; i < BX_MAXBIND; i++) memset(&g_bind[i], 0, sizeof g_bind[i]);
+    for (int i = 0; i < BX_MAXSESS; i++) bx_sess_drop(&g_sess[i]);
+}
+
+int bxfer_open(const char *host, int port, int tls)
+{
+    if (!g_pool_ready) bfetch_init();
+    if (!host || !host[0]) return -1;
+
+#ifndef BXFER_H1_ONLY
+    /* Join an existing connection to this origin if it is speaking HTTP/2, or
+     * if its handshake has not reported yet and still might. The second case
+     * is the one that matters: N fetches start in the same frame, long before
+     * any ALPN answer exists, and a client that dials on each of them has six
+     * connections to an origin that wanted one. The cost is a fallback if the
+     * guess is wrong, which bxfer_start implements. */
+    if (tls) {
+        for (int i = 0; i < BX_MAXSESS; i++) {
+            struct bx_sess *ss = &g_sess[i];
+            if (!ss->used || ss->refs <= 0 || ss->port != port || ss->tls != tls) continue;
+            if (strcmp(ss->host, host) != 0) continue;
+            if (ss->proto == HP_PROTO_H1) continue;      /* one exchange at a time */
+            if (ss->proto == HP_PROTO_H2 && !h2_conn_usable(&ss->c)) continue;
+            int bits = sock_poll(ss->fd);
+            if (bits < 0 || (bits & (SOCK_P_EOF | SOCK_P_ERROR))) continue;
+            if (ss->pslot >= 0) hpool_acquire_mux(&g_pool, host, port, tls,
+                                                  (int64_t)monotonic_ms());
+            ss->refs++;
+            return ss->fd;
+        }
+    }
+#endif
+
+    struct bx_sess *ss = 0;
+    for (int i = 0; i < BX_MAXSESS; i++) if (!g_sess[i].used) { ss = &g_sess[i]; break; }
+    if (!ss) return -1;
+
+    int flags = 0;
+    if (tls) {
+        flags = SOCK_F_TLS | SOCK_F_ALPN_HTTP11;
+#ifndef BXFER_H1_ONLY
+        flags |= SOCK_F_ALPN_H2;        /* h2 is chosen HERE, in the handshake */
+#endif
+    }
+    int fd = sock_open(host, port, flags);
+    if (fd < 0) return -1;
+
+    memset(ss, 0, sizeof *ss);
+    ss->used = 1;
+    ss->fd = fd;
+    ss->port = port;
+    ss->tls = tls;
+    ss->refs = 1;
+    /* Not yet known, and it cannot be until the handshake finishes. A plain
+     * http:// socket has no ALPN at all, so it is HTTP/1.1 by construction. */
+    ss->proto = tls ? HP_PROTO_PENDING : HP_PROTO_H1;
+    int n = 0; while (host[n] && n < URL_HOST_MAX - 1) { ss->host[n] = host[n]; n++; }
+    ss->host[n] = 0;
+    /* Register with the shared pool so h1 sub-resource loading and h2 fetches
+     * draw on ONE connection budget, and so the pool's own h2 counters are
+     * real. A pool that will not take it is not a reason to fail the request. */
+    ss->pslot = hpool_admit_proto(&g_pool, host, port, tls, fd, 0, ss->proto,
+                                  (int64_t)monotonic_ms());
+    g_bx_conns++;
+    return fd;
+}
+
+void bxfer_close(int fd)
+{
+    struct bx_sess *ss = bx_sess_of(fd);
+    if (!ss) { if (fd >= 0) sock_close(fd); return; }
+    if (ss->refs > 0) ss->refs--;
+    if (ss->refs > 0) {
+        /* Other streams are still running on this connection: the socket is
+         * emphatically not ours to close. This is the line that separates a
+         * multiplexed connection from six serialised ones. */
+        if (ss->pslot >= 0) hpool_release(&g_pool, ss->pslot, 1, (int64_t)monotonic_ms());
+        return;
+    }
+    bx_sess_drop(ss);
+}
+
+/* ---- what ALPN said ---- */
+
+static void bx_resolve_alpn(struct bx_sess *ss)
+{
+    if (ss->proto != HP_PROTO_PENDING) return;
+    char a[24];
+    int n = sock_alpn(ss->fd, a, (int)sizeof a - 1);
+    if (n < 0) n = 0;
+    if (n >= (int)sizeof a) n = (int)sizeof a - 1;
+    a[n] = 0;
+    ss->proto = (n == 2 && a[0] == 'h' && a[1] == '2') ? HP_PROTO_H2 : HP_PROTO_H1;
+    if (ss->pslot >= 0) hpool_set_proto(&g_pool, ss->pslot, ss->proto);
+    if (ss->proto == HP_PROTO_H2) g_bx_h2conns++;
+}
+
+/* ---- re-encoding the serialized request as HPACK ----
+ *
+ * fetch_send_request builds a complete HTTP/1.1 request -- method, target,
+ * cookies, CORS headers, body -- and that assembly is where the Web-API
+ * semantics live. Re-deriving any of it here would be a second implementation
+ * of the same rules that could disagree with the first, so instead the bytes
+ * are taken apart again: it is our own output, its shape is known exactly, and
+ * the result is that h2 and h1 send provably the same request.
+ *
+ * The body is NOT copied. It is used in place out of `req`, which the
+ * h1_conn owns until bxfer_free -- which is also exactly as long as http2.c
+ * requires a borrowed request body to stay valid. */
+static int bx_start_h2(struct bx_sess *ss, struct bx_bind *b, struct h1_conn *c,
+                       char *req, int reqlen, const char *host, int port, int tls)
+{
+    (void)port;
+    const char *p = req, *end = req + reqlen;
+
+    /* request-line: METHOD SP target SP HTTP/1.1 CRLF */
+    const char *sp1 = 0, *sp2 = 0, *eol = 0;
+    for (const char *q = p; q + 1 < end; q++)
+        if (q[0] == '\r' && q[1] == '\n') { eol = q; break; }
+    if (!eol) return H1_E_SYNTAX;
+    for (const char *q = p; q < eol; q++) if (*q == ' ') { sp1 = q; break; }
+    if (!sp1) return H1_E_SYNTAX;
+    for (const char *q = sp1 + 1; q < eol; q++) if (*q == ' ') { sp2 = q; break; }
+    if (!sp2) return H1_E_SYNTAX;
+
+    char method[H1_METHOD_MAX];
+    int ml = (int)(sp1 - p);
+    if (ml <= 0 || ml >= (int)sizeof method) return H1_E_SYNTAX;
+    memcpy(method, p, (size_t)ml); method[ml] = 0;
+
+    const char *path = sp1 + 1;
+    int pl = (int)(sp2 - path);
+    if (pl <= 0) return H1_E_SYNTAX;
+
+    struct hpack_list extra;
+    hpack_list_init(&extra);
+    char authority[URL_HOST_MAX + 8];
+    authority[0] = 0;
+
+    int rc = H1_OK;
+    const char *ln = eol + 2;
+    while (ln + 1 < end) {
+        if (ln[0] == '\r' && ln[1] == '\n') { ln += 2; break; }     /* end of headers */
+        const char *le = 0;
+        for (const char *q = ln; q + 1 < end; q++)
+            if (q[0] == '\r' && q[1] == '\n') { le = q; break; }
+        if (!le) { rc = H1_E_SYNTAX; break; }
+        const char *colon = 0;
+        for (const char *q = ln; q < le; q++) if (*q == ':') { colon = q; break; }
+        if (!colon) { rc = H1_E_SYNTAX; break; }
+        int nl = (int)(colon - ln);
+        const char *v = colon + 1;
+        while (v < le && (*v == ' ' || *v == '\t')) v++;
+        int vl = (int)(le - v);
+
+        char nm[96];
+        if (nl > 0 && nl < (int)sizeof nm) {
+            for (int k = 0; k < nl; k++) {
+                char ch = ln[k];
+                nm[k] = (ch >= 'A' && ch <= 'Z') ? (char)(ch - 'A' + 'a') : ch;
+            }
+            nm[nl] = 0;
+            /* :authority replaces Host; the rest of these have no meaning in
+             * HTTP/2 and a server must reject a request carrying them. */
+            if (!strcmp(nm, "host")) {
+                int k = 0; while (k < vl && k < (int)sizeof authority - 1) { authority[k] = v[k]; k++; }
+                authority[k] = 0;
+            } else if (strcmp(nm, "connection") && strcmp(nm, "keep-alive") &&
+                       strcmp(nm, "proxy-connection") && strcmp(nm, "transfer-encoding") &&
+                       strcmp(nm, "upgrade")) {
+                /* content-length is deliberately KEPT: it is legal in HTTP/2
+                 * and it is the byte count the caller computed for a binary
+                 * body, which is exactly the thing under test. */
+                if (hpack_list_add(&extra, nm, nl, v, vl, 0) != HPACK_OK) { rc = H1_E_NOMEM; break; }
+            }
+        }
+        ln = le + 2;
+    }
+    if (rc != H1_OK) { hpack_list_free(&extra); return rc; }
+
+    if (!authority[0]) {
+        int k = 0; while (host[k] && k < (int)sizeof authority - 1) { authority[k] = host[k]; k++; }
+        authority[k] = 0;
+    }
+
+    const uint8_t *body = (const uint8_t *)ln;
+    int blen = (int)(end - ln);
+    if (blen < 0) blen = 0;
+
+    if (!ss->h2_live) {
+        struct h2_transport t;
+        t.read = bx_read; t.write = bx_write; t.poll = 0; t.ctx = (void *)(long)ss->fd;
+        if (h2_conn_start(&ss->c, &t) != H2_OK) { hpack_list_free(&extra); return H1_E_NOMEM; }
+        ss->h2_live = 1;
+    }
+
+    /* :path must be NUL-terminated and is not, in `req`. The request line has
+     * already been parsed, so the space before "HTTP/1.1" is free to take. */
+    ((char *)path)[pl] = 0;
+
+    int id = h2_request(&ss->c, method, tls ? "https" : "http", authority, path,
+                        &extra, blen ? body : 0, blen);
+    hpack_list_free(&extra);
+    if (id < 0) return (id == H2_E_NOSLOT || id == H2_E_GOAWAY) ? H1_E_TRANSPORT : H1_E_NOMEM;
+
+    b->sess = (int)(ss - g_sess);
+    b->sid = (uint32_t)id;
+    b->hdr_done = 0;
+    h2_stream_limit(&ss->c, b->sid, BX_H2_BODY_MAX);
+
+    c->out = req; c->out_len = reqlen; c->out_off = 0;   /* freed by bxfer_free */
+    h1_response_init(&c->resp);
+    c->state = H1_C_SEND;
+    c->err = 0;
+
+    g_bx_streams++;
+    int live = h2_conn_active_streams(&ss->c);
+    if (live > g_bx_peak) g_bx_peak = live;
+    return H1_OK;
+}
+
+int bxfer_start(struct h1_conn *c, const struct h1_transport *t,
+                char *req, int reqlen, int *fd,
+                const char *host, int port, int tls)
+{
+    if (!c || !t || !req || reqlen <= 0 || !fd) return H1_E_ARG;
+
+    struct bx_bind *b = bx_bind_of(c);
+    if (!b) for (int i = 0; i < BX_MAXBIND; i++) if (!g_bind[i].owner) { b = &g_bind[i]; break; }
+    if (!b) return H1_E_NOMEM;
+    memset(b, 0, sizeof *b);
+    b->owner = c;
+    b->sess = -1;
+
+    struct bx_sess *ss = bx_sess_of(*fd);
+    if (ss) {
+        bx_resolve_alpn(ss);
+#ifndef BXFER_H1_ONLY
+        if (ss->proto == HP_PROTO_H2)
+            return bx_start_h2(ss, b, c, req, reqlen, host, port, tls);
+#endif
+        /* HTTP/1.1 after all. A connection carries one exchange at a time, so
+         * a request that joined this socket speculatively has to be given its
+         * own -- the alternative is two requests interleaved on one stream,
+         * which is not a slow page, it is a corrupt one. */
+        if (ss->h1_taken) {
+            int nfd = bxfer_open(host, port, tls);
+            if (nfd < 0) { b->owner = 0; return H1_E_TRANSPORT; }
+            bxfer_close(*fd);
+            *fd = nfd;
+            ss = bx_sess_of(nfd);
+            if (ss) ss->proto = HP_PROTO_H1;   /* it is a re-dial for h1; do not share it */
+        }
+        if (ss) ss->h1_taken = 1;
+    }
+
+    /* The transport the caller gave us names the fd it was built with, which
+     * the re-dial above may have replaced. */
+    struct h1_transport ht = *t;
+    ht.ctx = (void *)(long)*fd;
+    int rc = h1_conn_start(c, &ht, req, reqlen);
+    if (rc != H1_OK) b->owner = 0;
+    return rc;
+}
+
+/* ---- an HTTP/2 stream, seen as an h1_response ---- */
+
+static int bx_err_map(int h2err)
+{
+    switch (h2err) {
+    case H2_E_PROTO: case H2_E_COMPRESS: case H2_E_FRAMESIZE: return H1_E_SYNTAX;
+    case H2_E_TOOLARGE:                                       return H1_E_TOOLARGE;
+    case H2_E_NOMEM:                                          return H1_E_NOMEM;
+    case H2_E_CLOSED: case H2_E_RESET: case H2_E_REFUSED:     return H1_E_TRUNC;
+    default:                                                  return H1_E_TRANSPORT;
+    }
+}
+
+static void bx_take_headers(struct bx_bind *b, struct bx_sess *ss, struct h1_conn *c)
+{
+    struct h2_stream *s = h2_stream_get(&ss->c, b->sid);
+    if (!s || !s->headers_done || b->hdr_done) return;
+    struct h1_response *r = &c->resp;
+
+    r->code = s->status;
+    r->minor = 1;
+    for (int i = 0; i < s->hdr.n; i++) {
+        const struct hpack_hdr *h = &s->hdr.v[i];
+        if (h->nlen && h->name[0] == ':') continue;    /* pseudo-fields are framing */
+        h1_headers_add(&r->hdr, h->name, h->nlen, h->value, h->vlen);
+        r->hdr_bytes += h->nlen + h->vlen + 4;
+    }
+    /* An HTTP/2 connection outlives every stream on it: there is no
+     * `Connection: close` to honour and nothing here forces a socket shut. */
+    r->keep_alive = 1;
+    r->must_close = 0;
+    r->clen = -1;
+    r->no_body = r->head_request || r->code == 204 || r->code == 304;
+
+    /* Mirror http1.c's rule exactly: a sink only takes effect when the body
+     * needs no whole-message transform, because our inflater is one-shot. A
+     * gzip response is therefore buffered and delivered complete -- correct,
+     * just not incremental -- and h1_response_streaming() reports which. */
+    const char *ce = h1_headers_get(&r->hdr, "content-encoding");
+    int transform = ce && ce[0] && strcmp(ce, "identity") != 0;
+    r->streaming = (r->sink && !transform && !r->no_body) ? 1 : 0;
+
+    /* Any state but STATUS/HEADER/ERROR makes h1_response_headers_done() true,
+     * which is the moment fetch() is specified to resolve. The body runs until
+     * the stream ends, which is what BODY_EOF means. */
+    r->state = H1_ST_BODY_EOF;
+    b->hdr_done = 1;
+}
+
+/* Hand over whatever DATA landed in this pump.  Taking the buffer each time is
+ * what makes delivery incremental: http2.c accumulates a stream's body, and
+ * draining it every pump means a token that arrived in this frame's DATA frame
+ * reaches the page in this frame -- not when the stream closes, which for a
+ * chat response is never. */
+static int bx_drain(struct bx_bind *b, struct bx_sess *ss, struct h1_conn *c)
+{
+    struct h2_stream *s = h2_stream_get(&ss->c, b->sid);
+    if (!s || s->body_len <= 0) return H1_OK;
+    int n = 0;
+    uint8_t *p = h2_stream_take_body(&ss->c, b->sid, &n);
+    if (!p) return H1_OK;
+    if (n <= 0) { free(p); return H1_OK; }
+
+    struct h1_response *r = &c->resp;
+    r->body_seen += n;
+    int rc = H1_OK;
+    if (r->streaming && r->sink) {
+        rc = r->sink(r->sink_ctx, p, n);
+        free(p);
+        return rc;
+    }
+    if (r->body_len + n < 0) { free(p); return H1_E_TOOLARGE; }
+    int need = r->body_len + n + 1;
+    if (need > r->body_cap) {
+        int cap = r->body_cap ? r->body_cap : 4096;
+        while (cap < need) cap *= 2;
+        uint8_t *nb = (uint8_t *)realloc(r->body, (size_t)cap);
+        if (!nb) { free(p); return H1_E_NOMEM; }
+        r->body = nb; r->body_cap = cap;
+    }
+    memcpy(r->body + r->body_len, p, (size_t)n);
+    r->body_len += n;
+    r->body[r->body_len] = 0;      /* http1.c's callers rely on this */
+    free(p);
+    return rc;
+}
+
+int bxfer_pump(struct h1_conn *c)
+{
+    struct bx_bind *b = bx_bind_of(c);
+    if (!b || b->sess < 0) return h1_conn_pump(c);
+    if (c->state == H1_C_DONE || c->state == H1_C_ERROR) return c->state;
+
+    struct bx_sess *ss = &g_sess[b->sess];
+    if (!ss->used || !ss->h2_live) { c->state = H1_C_ERROR; c->err = H1_E_TRANSPORT; return c->state; }
+
+    /* Pumping the CONNECTION, not the stream: every stream on it advances,
+     * whichever one the caller happens to be stepping. */
+    h2_conn_pump(&ss->c, (int64_t)monotonic_ms());
+
+    bx_take_headers(b, ss, c);
+    int rc = bx_drain(b, ss, c);
+    if (rc != H1_OK) { c->state = H1_C_ERROR; c->err = rc < 0 ? rc : H1_E_NOMEM; return c->state; }
+
+    struct h2_stream *s = h2_stream_get(&ss->c, b->sid);
+    if (!s) { c->state = H1_C_ERROR; c->err = H1_E_TRUNC; return c->state; }
+
+    if (s->done) {
+        if (s->err) { c->state = H1_C_ERROR; c->err = bx_err_map(s->err); return c->state; }
+        if (!b->hdr_done) { c->state = H1_C_ERROR; c->err = H1_E_TRUNC; return c->state; }
+        c->resp.state = H1_ST_DONE;
+        c->state = H1_C_DONE;
+        return c->state;
+    }
+    /* A connection-level failure kills every stream on it, and a stream that
+     * has not been told yet would otherwise wait for the idle timeout. */
+    if (h2_conn_state(&ss->c) == H2_C_ERROR || h2_conn_state(&ss->c) == H2_C_CLOSED) {
+        c->state = H1_C_ERROR;
+        c->err = bx_err_map(ss->c.err);
+        return c->state;
+    }
+    c->state = b->hdr_done ? H1_C_RECV : H1_C_SEND;
+    return c->state;
+}
+
+void bxfer_free(struct h1_conn *c)
+{
+    struct bx_bind *b = bx_bind_of(c);
+    if (b && b->sess >= 0) {
+        struct bx_sess *ss = &g_sess[b->sess];
+        if (ss->used && ss->h2_live) h2_stream_release(&ss->c, b->sid);
+        memset(b, 0, sizeof *b);
+        /* c->out is the serialized request the stream borrowed its body from;
+         * releasing the stream above is what makes it safe to free now. */
+        h1_conn_free(c);
+        return;
+    }
+    if (b) memset(b, 0, sizeof *b);
+    h1_conn_free(c);
 }
 
 /* Sub-resource (image) fetch, the name net/layout.c calls.
