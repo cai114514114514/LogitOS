@@ -493,7 +493,7 @@ $(BUILD)/browserobj/malloc_big.o: c/apps/libc/src/malloc.c
 	$(CC) $(UCFLAGS) -DARENA_SIZE=402653184u -DARENA_COMMIT=335544320u -c $< -o $@
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
+	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
 # --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
@@ -737,7 +737,7 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 # the host tests do -- a guest-only fixture would compare two different files.
 IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
 IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES)
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
@@ -756,6 +756,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
 	    $(BUILD)/imgcheck.aex:/bin/imgcheck \
+	    $(BUILD)/asnative.aex:/bin/asnative \
 	    $(IMG_FIXTURES_ON_DISK) \
 	    $(JSBENCH_PACK) \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \

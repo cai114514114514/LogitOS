@@ -36,10 +36,17 @@ def read(path):
     d = open(path, "rb").read()
     if len(d) < 64 or d[:4] != b"AEX1":
         return None
-    e = d[64:]
+    # The ELF starts where the header says it does. v1 had no hdr_size field
+    # (those twelve bytes were `pad`), so v1 means 64 and reading the field
+    # would be reading padding -- the same rule c/kernel/exec/aex.c follows.
+    ver = struct.unpack_from("<H", d, 4)[0]
+    hdr_size = 64 if ver < 2 else struct.unpack_from("<H", d, 52)[0]
+    if not 64 <= hdr_size <= len(d):
+        return None
+    e = d[hdr_size:]
     if e[:4] != b"\x7fELF":
         return None
-    name = e[8:40] if False else d[8:40].split(b"\0")[0].decode("utf-8", "replace")
+    name = d[8:40].split(b"\0")[0].decode("utf-8", "replace")
     entry, phoff = struct.unpack_from("<QQ", e, 24)
     phentsize, phnum = struct.unpack_from("<HH", e, 54)
     base, top = None, 0

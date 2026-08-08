@@ -6,12 +6,24 @@
  * has to hold to the same standard. This is how that is checked rather than
  * asserted.
  *
- * The corpus is the REAL binaries this tree builds (their .aex bytes), plus a
- * hand-built reference image, and the mutations are the ones that matter for a
- * header parser: smash a field to a random 64-bit value, flip bits, truncate.
- * A field smash is worth far more than a bit flip here, because the dangerous
- * values are not near the valid ones -- 0xFFFFFFFFFFFFFFF0 as a p_offset is one
- * mutation away from correct and a billion bit-flips away.
+ * The corpus is the REAL binaries this tree builds (their .aex bytes), and the
+ * mutations are the ones that matter for a header parser: smash a field to a
+ * random 64-bit value, flip bits, truncate, and -- the one that earns its keep
+ * -- reach INTO the program-header table and smash a chosen field of a chosen
+ * segment. A value smash is worth far more than a bit flip here, because the
+ * dangerous values are not near the valid ones: 0xFFFFFFFFFFFFF000 as a p_memsz
+ * is one mutation away from correct and a billion bit-flips away.
+ *
+ * Two things this had to learn the hard way, both recorded at the code:
+ *   - the v2 container's CRC means any mutation inside the ELF is refused
+ *     before the ELF parser runs, so the CRC is RE-STAMPED on three iterations
+ *     in four. Without that, 40000 iterations reached the ring-0 parser 147
+ *     times.
+ *   - blind mutation could not re-find the bug this fuzzer originally found,
+ *     because that bug needs two coordinated values in one program header.
+ *     Hence the structure-aware case. The negative control is what measured
+ *     both: a fuzzer that survives the loader it was written against is not
+ *     running.
  *
  * FOUR invariants, checked after EVERY iteration:
  *   1. it returns. No crash, no hang, no infinite loop.
@@ -32,6 +44,7 @@
 #include "space.h"
 #include "elf.h"
 #include "aex.h"
+#include "crc32.h"
 
 static uint64_t rs;
 static uint64_t rnd(void)
@@ -95,7 +108,7 @@ int main(int argc, char **argv)
 
         int nmut = 1 + (int)rrange(4);
         for (int m = 0; m < nmut; m++) {
-            switch (rrange(5)) {
+            switch (rrange(7)) {
             case 0: {                                   /* smash an aligned u64 */
                 long off = (long)rrange((uint64_t)len);
                 off &= ~7L;
@@ -131,6 +144,88 @@ int main(int argc, char **argv)
             case 4:                                     /* truncate */
                 len = (long)rrange((uint64_t)len + 1);
                 break;
+
+            case 5: case 6: {
+                /* STRUCTURE-AWARE: find the ELF, pick a program header, and
+                 * smash one of ITS fields. Twice as likely as the others
+                 * because it is worth far more.
+                 *
+                 * A blind byte mutator reaches a program header roughly in
+                 * proportion to how much of the file the table is, which for a
+                 * 100 KiB binary is well under one percent -- and the bug this
+                 * fuzzer found needs TWO coordinated values in the same header
+                 * (p_memsz = -0x1000 AND a p_vaddr that is not page aligned).
+                 * Blind, that is a coincidence; here it is one iteration in a
+                 * few hundred. The measurement that forced this: with the v2
+                 * container in place the negative control -- the loader with
+                 * the old overflow check -- SURVIVED 40000 blind iterations. A
+                 * fuzzer that cannot re-find the bug it found is not a
+                 * regression test for it. */
+                long hs = 64;
+                if (len >= 64 && !memcmp(work, "AEX1", 4)) {
+                    uint16_t ver = (uint16_t)(work[4] | (work[5] << 8));
+                    hs = (ver >= 2) ? (work[52] | (work[53] << 8)) : 64;
+                }
+                if (hs < 0 || hs + 64 > len) break;
+                uint8_t *e = work + hs;
+                uint64_t phoff; uint16_t phentsize, phnum;
+                memcpy(&phoff, e + 32, 8);
+                memcpy(&phentsize, e + 54, 2);
+                memcpy(&phnum, e + 56, 2);
+                if (phentsize != 56 || phnum == 0 || phnum > 64) break;
+                if (phoff > (uint64_t)(len - hs) ||
+                    (uint64_t)phnum * 56 > (uint64_t)(len - hs) - phoff) break;
+                uint8_t *ph = e + phoff + (rrange(phnum) * 56);
+                switch (rrange(7)) {
+                case 0: { uint32_t v = (uint32_t)rnd(); memcpy(ph + 0, &v, 4); break; }   /* p_type  */
+                case 1: { uint32_t v = (uint32_t)rrange(8); memcpy(ph + 4, &v, 4); break; } /* p_flags */
+                case 2: { uint64_t v = nasty[rrange(NNASTY)]; memcpy(ph + 8, &v, 8); break; }  /* p_offset */
+                case 3: { uint64_t v; memcpy(&v, ph + 16, 8);
+                          v += rrange(0x2000) - 0x1000; memcpy(ph + 16, &v, 8); break; }  /* p_vaddr nudge */
+                case 4: { uint64_t v = nasty[rrange(NNASTY)]; memcpy(ph + 32, &v, 8); break; } /* p_filesz */
+                case 5: { uint64_t v = nasty[rrange(NNASTY)]; memcpy(ph + 40, &v, 8); break; } /* p_memsz */
+                case 6: { uint64_t v = nasty[rrange(NNASTY)]; memcpy(ph + 48, &v, 8); break; } /* p_align */
+                }
+                break;
+            }
+            }
+        }
+
+        /* RE-STAMP THE CRC, most of the time -- and this is the difference
+         * between a fuzz run that means something and one that does not.
+         *
+         * The v2 container carries a CRC-32 of the ELF image, so after any
+         * mutation inside the ELF the container refuses the file and the ELF
+         * PARSER IS NEVER REACHED. Measured, the first time this ran against a
+         * v2 corpus: 40000 iterations, 147 accepted, ZERO ELF-level refusals.
+         * The parser that runs in ring 0 had stopped being fuzzed at all, and
+         * the only sign of it was that the refusal-reason count collapsed.
+         *
+         * The CRC guards against a disk that lost bytes, not against a hostile
+         * producer -- anything that can write a .aex can write a correct CRC --
+         * so re-stamping it is not weakening the test, it is the threat model.
+         * One iteration in four is left un-stamped so the container's own
+         * validation keeps getting hit too. */
+        int restamp = (rnd() & 3) != 0;
+        if (restamp && len >= 64 && !memcmp(work, "AEX1", 4)) {
+            uint16_t ver = (uint16_t)(work[4] | (work[5] << 8));
+            uint16_t hs  = (uint16_t)(work[52] | (work[53] << 8));
+            uint32_t es;
+            memcpy(&es, work + 60, 4);
+            if (ver == 2 && hs >= 64 && hs <= 4096 && !(hs & 7) &&
+                (long)hs <= len && (uint64_t)es <= (uint64_t)(len - hs)) {
+                for (uint32_t o = 64; o + 8 <= hs; ) {
+                    uint32_t tag, tl;
+                    memcpy(&tag, work + o, 4);
+                    memcpy(&tl, work + o + 4, 4);
+                    if (tl > hs - o - 8) break;
+                    if (tag == 0x43524341u && tl == 4) {           /* "ACRC" */
+                        uint32_t c = crc32(work + hs, es);
+                        memcpy(work + o + 8, &c, 4);
+                        break;
+                    }
+                    o += (8 + tl + 7u) & ~7u;
+                }
             }
         }
 
@@ -143,10 +238,19 @@ int main(int argc, char **argv)
         struct elf_image img;
         const void *elf = 0; uint64_t elfsz = 0;
         if (aex_elf_range(work, (uint64_t)len, &elf, &elfsz) != 0) {
-            /* The container refused before the ELF parser was reached. That is
-             * a legitimate outcome and nothing can be mapped, so there is
-             * nothing more to check this iteration. */
+            /* The container refused before the ELF parser was reached. Nothing
+             * can have been mapped, but the refusal is held to the same rule as
+             * the ELF parser's: it has to have said why. */
             container_refused++;
+            if (space_msgs() == 0) {
+                printf("FAIL: iteration %ld: the container refused silently\n", it);
+                return 1;
+            }
+            if (space_pages_mapped() != 0) {
+                printf("FAIL: iteration %ld: the container refused but pages were "
+                       "mapped anyway\n", it);
+                return 1;
+            }
             continue;
         }
 #ifdef FUZZ_DUMP_LAST

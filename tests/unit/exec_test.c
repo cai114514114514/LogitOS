@@ -591,8 +591,208 @@ static void header_behaviour(void)
        "an unknown program header is ignored AND recorded");
 }
 
+/* ================= part 4: the AEX container ============================== */
+static uint8_t *g_v2;  static long g_v2n;
+
+/* Copy the reference v2 file, hand the copy to a mutator, and require the given
+ * code. Everything about the container is tested this way -- against a REAL
+ * file the build produced, not a synthetic one -- because the thing most worth
+ * catching is a disagreement between tools/mkaex.py and c/kernel/exec/aex.c,
+ * and two hand-written structures cannot disagree with each other. */
+typedef void (*mutate)(uint8_t *p, long *n);
+
+static void aex_case(mutate f, int want, const char *what)
+{
+    uint8_t *c = malloc((size_t)g_v2n + 64);
+    memcpy(c, g_v2, (size_t)g_v2n);
+    long n = g_v2n;
+    if (f) f(c, &n);
+    space_quiet(1);
+    space_msgs_reset();
+    struct aex_info in;
+    int rc = aex_parse(c, (uint64_t)n, &in);
+    int msgs = space_msgs();
+    char last[512];
+    snprintf(last, sizeof last, "%s", space_last_msg());
+    space_quiet(0);
+    free(c);
+    g_checks++;
+    if (rc != want) { g_fails++; printf("FAIL: %s -- got %d, want %d (%s)\n", what, rc, want, last); return; }
+    if (want != AEX_OK && msgs == 0) { g_fails++; printf("FAIL: %s -- refused silently\n", what); return; }
+    if (want == AEX_OK) printf("ok: %s\n", what);
+    else {
+        size_t l = strlen(last);
+        while (l && (last[l-1] == '\n' || last[l-1] == '\r')) last[--l] = 0;
+        printf("ok: %s -> %s\n", what, last);
+    }
+}
+
+static void m_trunc32(uint8_t *p, long *n)   { (void)p; *n = 32; }
+static void m_magic(uint8_t *p, long *n)     { (void)n; p[2] = 'Z'; }
+static void m_ver0(uint8_t *p, long *n)      { (void)n; p[4] = 0; p[5] = 0; }
+static void m_verfuture(uint8_t *p, long *n) { (void)n; p[4] = 3; p[5] = 0; }
+static void m_verwild(uint8_t *p, long *n)   { (void)n; p[4] = 0xFF; p[5] = 0xFF; }
+static void m_flags(uint8_t *p, long *n)     { (void)n; p[6] = 0; p[7] = 0x80; }
+static void m_arch(uint8_t *p, long *n)      { (void)n; p[56] = 2; }
+static void m_abi(uint8_t *p, long *n)       { (void)n; p[57] = 7; }
+static void m_hdrsmall(uint8_t *p, long *n)  { (void)n; p[52] = 60; p[53] = 0; }
+static void m_hdrbig(uint8_t *p, long *n)    { (void)n; p[52] = 0x08; p[53] = 0x10; }
+static void m_hdrodd(uint8_t *p, long *n)    { (void)n; p[52] = 68 + 1; p[53] = 0; }
+/* hdr_size 3840 with only 100 bytes of file: past the END, which is a different
+ * check from past the CAP. */
+static void m_hdrpast(uint8_t *p, long *n)   { *n = 100; p[52] = 0x00; p[53] = 0x0F; }
+static void m_elfzero(uint8_t *p, long *n)   { (void)n; p[60] = p[61] = p[62] = p[63] = 0; }
+static void m_elfbig(uint8_t *p, long *n)
+{ (void)n; p[60] = 0; p[61] = 0; p[62] = 0xFF; p[63] = 0xFF; }
+static void m_crcbit(uint8_t *p, long *n)
+{ uint16_t h = (uint16_t)(p[52] | (p[53] << 8)); p[h + 0x100] ^= 0x01; (void)n; }
+static void m_tlvpast(uint8_t *p, long *n)   { (void)n; p[64 + 4] = 0xF0; p[64 + 5] = 0x0F; }
+static void m_tlvcrclen(uint8_t *p, long *n) { (void)n; p[64 + 4] = 5; }
+/* The metadata region is [CRC: 8+4 -> padded to 16][APPID: 8+len -> padded].
+ * So the second record starts at 64 + 16 = 80. */
+#define T2 (64 + 16)
+static void m_unknown_tag(uint8_t *p, long *n)
+{ (void)n; p[T2 + 0] = 'Z'; p[T2 + 1] = 'Z'; p[T2 + 2] = 'Z'; p[T2 + 3] = 'Z'; }
+static void m_appid_nonul(uint8_t *p, long *n)
+{
+    (void)n;
+    uint32_t len = (uint32_t)p[T2 + 4] | ((uint32_t)p[T2 + 5] << 8);
+    p[T2 + 8 + len - 1] = 'x';            /* clobber the terminator */
+}
+static void m_nocrc(uint8_t *p, long *n)
+{ (void)n; p[64] = 'Z'; p[65] = 'Z'; p[66] = 'Z'; p[67] = 'Z'; }  /* CRC -> unknown tag */
+
+static void container(void)
+{
+    printf("\n-- part 4: the AEX container --\n");
+    const char *v2 = getenv("EXEC_V2");
+    const char *v1 = getenv("EXEC_V1");
+    const char *em = getenv("EXEC_EMIT");
+    if (!v2) { printf("(EXEC_V2 unset -- container tests skipped)\n"); return; }
+    g_v2 = slurp(v2, &g_v2n);
+    if (!g_v2) { printf("FAIL: cannot read %s\n", v2); g_fails++; return; }
+
+    /* The reference file, and what it says. This is also the assertion that
+     * tools/mkaex.py and c/kernel/exec/aex.c agree about the layout: the CRC
+     * python computed over the ELF has to be the CRC the kernel computes. */
+    struct aex_info in;
+    space_quiet(1);
+    int rc = aex_parse(g_v2, (uint64_t)g_v2n, &in);
+    space_quiet(0);
+    ck(rc == AEX_OK, "a v2 file the build produced parses");
+    if (rc == AEX_OK) {
+        ck(in.version == 2, "it says version 2");
+        ck(in.arch == AEX_ARCH_X86_64 && in.abi == AEX_ABI_LOGIT1,
+           "it names its machine and its syscall ABI");
+        ck(in.hdr_size > AEX_HDR_SIZE, "it carries a metadata region");
+        ck(in.elf_size == (uint32_t)(g_v2n - in.hdr_size),
+           "elf_size accounts for every byte after the header");
+        ck(in.crc32 != 0, "the CRC-32 the kernel computed matches the one mkaex.py wrote");
+        ck(in.app_id && in.app_id[0], "it carries a stable app id");
+        ck((in.flags & (AEX_F_GUI | AEX_F_CLI)) != 0, "it says whether it is a GUI or CLI program");
+        printf("    (id=%s flags=0x%x cat=%u hdr=%u elf=%u crc=0x%08x)\n",
+               in.app_id, in.flags, in.category, in.hdr_size, in.elf_size, in.crc32);
+    }
+
+    aex_case(0,             AEX_OK,         "the unmutated reference file");
+    aex_case(m_trunc32,     AEX_E_SHORT,    "a truncated header");
+    aex_case(m_magic,       AEX_E_MAGIC,    "a bad magic");
+    aex_case(m_ver0,        AEX_E_VERSION,  "version 0");
+    aex_case(m_verfuture,   AEX_E_VERSION,  "a version from the future");
+    aex_case(m_verwild,     AEX_E_VERSION,  "version 65535");
+    aex_case(m_flags,       AEX_E_FLAGS,    "a flag bit this loader does not know");
+    aex_case(m_arch,        AEX_E_ARCH,     "built for another machine");
+    aex_case(m_abi,         AEX_E_ARCH,     "built against another syscall ABI");
+    aex_case(m_hdrsmall,    AEX_E_HDRSIZE,  "hdr_size below the fixed header");
+    aex_case(m_hdrbig,      AEX_E_HDRSIZE,  "hdr_size past the cap");
+    aex_case(m_hdrodd,      AEX_E_HDRSIZE,  "hdr_size not 8-aligned");
+    aex_case(m_hdrpast,     AEX_E_HDRSIZE,  "hdr_size past the end of the file");
+    aex_case(m_elfzero,     AEX_E_ELFSIZE,  "elf_size of 0");
+    aex_case(m_elfbig,      AEX_E_ELFSIZE,  "elf_size larger than the file");
+    aex_case(m_crcbit,      AEX_E_CRC,      "one bit flipped inside the ELF");
+    aex_case(m_tlvpast,     AEX_E_TLV,      "a metadata record running past the header");
+    aex_case(m_tlvcrclen,   AEX_E_TLV,      "a CRC record that is not 4 bytes");
+    aex_case(m_appid_nonul, AEX_E_TLV,      "an app id with no NUL terminator");
+    aex_case(m_nocrc,       AEX_E_NOCRC,    "a v2 file with no integrity record");
+    aex_case(m_unknown_tag, AEX_OK,         "an unknown metadata tag is ignored, not refused");
+
+    /* THE NEGATIVE CONTROL FOR THE FORMAT CHANGE. An old-format file must be
+     * refused or migrated DELIBERATELY, never silently mis-loaded. It is
+     * migrated: accepted with v1 rules, and the loader says on the log that it
+     * has no integrity record. The message is the deliberate part, so the
+     * message is what is asserted -- not just the return code. */
+    if (v1) {
+        long n = 0;
+        uint8_t *f = slurp(v1, &n);
+        if (!f) { printf("FAIL: cannot read %s\n", v1); g_fails++; }
+        else {
+            space_quiet(1);
+            struct aex_info i1;
+            uint32_t before = aex_v1_images();
+            int r1 = aex_parse(f, (uint64_t)n, &i1);
+            uint32_t after = aex_v1_images();
+            space_quiet(0);
+            ck(r1 == AEX_OK, "a v1 file still loads");
+            ck(i1.version == 1 && i1.hdr_size == AEX_HDR_SIZE,
+               "... under v1 rules: a 64-byte header and the ELF at +64");
+            ck(i1.crc32 == 0 && i1.elf_size == (uint32_t)(n - 64),
+               "... with no integrity record, and elf_size taken as the rest of the file");
+            /* The deliberate part of the migration is that the loader NOTICES.
+             * Asserted on the counter rather than on the log line, because the
+             * line is printed once per boot on purpose (a disk full of v1 files
+             * would otherwise bury everything else on the serial log) and part 1
+             * has already loaded this very file. A counter is order-independent,
+             * which a "did it print" check is not. */
+            ck(after == before + 1,
+               "... and the loader COUNTED it as a v1 image, which is what makes "
+               "this a migration and not a silent mis-load");
+            { uint32_t b2 = aex_v1_images();
+              space_quiet(1); aex_parse(g_v2, (uint64_t)g_v2n, 0); space_quiet(0);
+              ck(aex_v1_images() == b2, "... and a v2 file does not count as one"); }
+            /* Same bytes, v1 header, but nothing after it. */
+            space_quiet(1);
+            int r2 = aex_parse(f, 64, 0);
+            space_quiet(0);
+            ck(r2 == AEX_E_ELFSIZE, "a v1 header with no ELF behind it is refused");
+            free(f);
+        }
+    }
+
+    /* A .aex a compiler could have emitted: no linker was involved. */
+    if (em) {
+        long n = 0;
+        uint8_t *f = slurp(em, &n);
+        if (!f) { printf("FAIL: cannot read %s\n", em); g_fails++; }
+        else {
+            space_quiet(1);
+            struct elf_image img;
+            space_reset(); space_set_nx(1);
+            int r = aex_load_image(f, (uint64_t)n, 0, 0, &img);
+            space_quiet(0);
+            ck(r == 0, "a .aex built by mkaex --emit from a FLAT binary loads");
+            if (r == 0) {
+                ck(img.entry == 0x50000000, "its entry point is the base it was told to use");
+                ck(!space_writable(0x50000000), "its text is not writable");
+                ck(space_nx(0x50000000) == 0, "its text IS executable");
+                ck(img.phdr_va != 0 && img.random_va != 0,
+                   "it gets the same auxv material as a linked binary");
+                ck((img.stack_flags & PF_X) == 0, "its PT_GNU_STACK is non-executable");
+            }
+            space_reset(); space_set_nx(0);
+            free(f);
+        }
+    }
+    free(g_v2);
+}
+
 int main(int argc, char **argv)
 {
+    /* Line-buffered even when stdout is a file. This test is capable of
+     * CRASHING -- that is what the overflow negative control does, because the
+     * harness maps with the real MMU and a write the loader never mapped is a
+     * real fault -- and a fully buffered stdout throws away everything printed
+     * before the crash, which is precisely the part that says how far it got. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
     printf("-- part 1: every built binary loads --\n");
     int n = 0;
     for (int i = 1; i < argc; i++) {
@@ -607,6 +807,7 @@ int main(int argc, char **argv)
 
     rejection_matrix();
     header_behaviour();
+    container();
 
     printf("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

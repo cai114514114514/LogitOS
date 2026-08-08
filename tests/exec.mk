@@ -26,8 +26,9 @@
 .PHONY: test-exec test-exec-fuzz test-exec-negctl test-exec-asan test-exec-os \
         test-exec-bases
 
-EXEC_SRC  := tests/unit/exechost/space.c c/kernel/exec/elf.c c/kernel/exec/aex.c
-EXEC_INC  := -Itests/unit/exechost -Ic/kernel/exec -DLOGIT_HOSTTEST
+EXEC_SRC  := tests/unit/exechost/space.c c/kernel/exec/elf.c c/kernel/exec/aex.c \
+             c/drivers/block/crc32.c
+EXEC_INC  := -Itests/unit/exechost -Ic/kernel/exec -Ic/drivers/block -DLOGIT_HOSTTEST
 EXEC_WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 # Every .aex the build produces, including the deliberately crippled variants a
 # test packs instead of the real app -- those are built by the same rules and
@@ -37,6 +38,36 @@ EXEC_BINS  = $(wildcard $(BUILD)/*.aex)
 # a GUI app and a mini-libc program so the segment shapes differ.
 EXEC_SEEDS = $(BUILD)/echo.aex $(BUILD)/true.aex $(BUILD)/sh.aex \
              $(BUILD)/clock.aex $(BUILD)/ls.aex $(BUILD)/settings.aex
+
+# --- the two files the container tests need, which no app build produces -----
+#
+# exec_v1.aex is the OLD FORMAT: the 64-byte v1 wrapper with an ELF at a
+# hardcoded +64, no size, no architecture and no integrity record. It is the
+# negative control for the format change -- an old file must be refused or
+# migrated DELIBERATELY, and the deliberate part is that the loader says so on
+# the log. Nothing but this rule builds one.
+$(BUILD)/exec_v1.aex: $(BUILD)/echo.aex tools/mkaex.py $(BUILD)/echo.elf
+	@python3 tools/mkaex.py --v1 $(BUILD)/echo.elf $@ echo - '*' 150 150 150 > /dev/null
+
+# asnative.aex is a .aex a COMPILER could have emitted: nasm produces a FLAT
+# binary -- no ELF, no sections, no symbols, just bytes and an entry offset,
+# which is what a code generator has -- and `mkaex.py --emit` builds the ELF64
+# and the container around it. This is the answer to "design the format so a
+# compiler can emit it, not only a linker", and it is checked twice: host-side
+# by test-exec, and by actually running it on the machine in test-exec-os.
+$(BUILD)/asnative.bin: tests/unit/asnative.asm
+	@mkdir -p $(BUILD)
+	@$(ASM) -f bin tests/unit/asnative.asm -o $@
+$(BUILD)/asnative.aex: $(BUILD)/asnative.bin tools/mkaex.py
+	@python3 tools/mkaex.py --emit $@ asnative - '*' --cli --category test \
+	    --base 0x50000000 --text $(BUILD)/asnative.bin --id os.logit.asnative > /dev/null
+
+EXEC_FIXTURES := $(BUILD)/exec_v1.aex $(BUILD)/asnative.aex
+# The container tests reach these by name rather than by argv position: the
+# binary list is a glob, and a fixture that has to be argv[1] is a fixture one
+# `ls` away from testing the wrong file.
+EXEC_ENV = EXEC_V1=$(BUILD)/exec_v1.aex EXEC_V2=$(BUILD)/echo.aex \
+           EXEC_EMIT=$(BUILD)/asnative.aex
 
 $(BUILD)/exec_test: tests/unit/exec_test.c $(EXEC_SRC) tests/unit/exechost/space.h \
                     c/kernel/exec/elf.h c/kernel/exec/aex.h
@@ -49,8 +80,8 @@ $(BUILD)/exec_fuzz: tests/unit/exec_fuzz.c $(EXEC_SRC) tests/unit/exechost/space
 # --- test-exec -------------------------------------------------------------
 # $(AEX) is a prerequisite so the binaries exist; the test then globs the build
 # directory, which also picks up the crippled variants other tests pack.
-test-exec: $(BUILD)/exec_test $(AEX)
-	@$(BUILD)/exec_test $(EXEC_BINS)
+test-exec: $(BUILD)/exec_test $(AEX) $(EXEC_FIXTURES)
+	@$(EXEC_ENV) $(BUILD)/exec_test $(EXEC_BINS)
 
 # --- test-exec-fuzz --------------------------------------------------------
 # Three fixed seeds rather than a random one: a fuzz target whose corpus changes
@@ -65,12 +96,17 @@ test-exec-fuzz: $(BUILD)/exec_fuzz $(AEX)
 # CONTROL 1: the overflow check as it was written before the fuzzer got to it
 # (`end < start`). p_memsz = -0x1000 with an unaligned p_vaddr makes the rounded
 # end EQUAL start, so that check passes, nothing is mapped, and the loader
-# memcpys to an unmapped address. Two requirements, and both matter:
-#   - the unit test must FAIL, and on that one named case (if it failed on
-#     something else, the case is not the thing being measured);
-#   - the FUZZER must not finish cleanly. It is allowed to crash -- that is the
-#     bug -- but it may not pass. A fuzz target that passes against the bug it
-#     was written for is a fuzz target that is not running.
+# memcpys to an unmapped address.
+#
+# WHAT THE CONTROL ACTUALLY DOES, because it is not "prints FAIL": it takes the
+# fault. The harness maps with the host MMU, so a write to an address the loader
+# never mapped is a real SIGSEGV -- which is exactly what it would be in ring 0,
+# and is the reason this is worth a control at all. So the assertion is shaped
+# to that: the run must not pass, it must have REACHED the case (the check
+# immediately before it passed), and it must not have got through it.
+#
+# The FUZZER must also not finish cleanly. A fuzz target that passes against the
+# bug it found is a fuzz target that is not running.
 #
 # CONTROL 2: p_flags ignored, every page mapped writable, i.e. the loader before
 # 37a0849. The unit test must fail on the per-segment permission checks.
@@ -80,8 +116,10 @@ test-exec-negctl: $(AEX)
 	@if $(BUILD)/exec_test_ovf $(BUILD)/echo.aex > $(BUILD)/exec_negctl_ovf.log 2>&1; then \
 	    echo "FAIL: the overflow negative control PASSED -- the unit test does not measure the fix"; \
 	    exit 1; fi
-	@grep -q 'FAIL: p_memsz = -0x1000' $(BUILD)/exec_negctl_ovf.log || \
-	    { echo "FAIL: the control failed, but not on the overflow case"; exit 1; }
+	@grep -q 'ok: p_vaddr + p_memsz overflowing' $(BUILD)/exec_negctl_ovf.log || \
+	    { echo "FAIL: the control never reached the overflow case"; exit 1; }
+	@if grep -q 'ok: p_memsz = -0x1000' $(BUILD)/exec_negctl_ovf.log; then \
+	    echo "FAIL: the control survived the very case it is supposed to fail on"; exit 1; fi
 	@grep -q 'ok: the reference image loads' $(BUILD)/exec_negctl_ovf.log || \
 	    { echo "FAIL: the control broke the loader outright, not just the overflow check"; exit 1; }
 	@$(CC) -O1 -g -w $(EXEC_INC) -DELF_NEGCTL_OVERFLOW -o $(BUILD)/exec_fuzz_ovf \

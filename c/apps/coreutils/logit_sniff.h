@@ -187,7 +187,13 @@ static inline int sniff_id(const unsigned char *b, int n)
 
     /* --- executables and archives ---------------------------------------- */
     if (sn_eq(b, n, 0, "\x7f" "ELF", 4)) return SN_ELF;
-    if (sn_eq(b, n, 0, "AEX1", 4) || sn_eq(b, n, 0, "LAEX", 4)) return SN_AEX;
+    /* "AEX1" and nothing else. This used to also accept "LAEX", which nothing
+     * has ever produced and no loader has ever accepted -- a magic number with
+     * no writer and no reader, which is a claim the sniffer cannot back. The
+     * one real magic is the one c/kernel/exec/aex.c checks; the four bytes are
+     * the same in v1 and v2, and the version that follows them is the loader's
+     * business, not the sniffer's. */
+    if (sn_eq(b, n, 0, "AEX1", 4)) return SN_AEX;
     if (sn_eq(b, n, 0, "PK\x03\x04", 4)) return SN_ZIP;
     if (n >= 2 && b[0] == 0x1F && b[1] == 0x8B) return SN_GZIP;
     if (sn_eq(b, n, 0, "%PDF-", 5)) return SN_PDF;

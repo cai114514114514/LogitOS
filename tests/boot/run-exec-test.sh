@@ -43,6 +43,7 @@ head /docs/readme.txt | wc
 true && echo EXECPROBE-true
 false || echo EXECPROBE-false
 /bin/as /usr/as/examples/hello.as
+/bin/asnative
 EXECPROBE-END
 exit
 '
@@ -74,7 +75,11 @@ need() {
 
 echo "exec: what the machine did with the programs the loader built"
 need "EXECINFO ok"                  "/bin/execinfo validated its own auxv from ring 3"
-need "EXECINFO AT_PHDR = 0x4"       "AT_PHDR is a user-region address"
+# /bin/execinfo is a CLI program, so it links at 0x50000000 and its info page --
+# which the loader puts directly above the image -- is at 0x500xxxxx. Anchoring
+# on the real address rather than on "nonzero" is the difference between
+# checking AT_PHDR and checking that a number was printed.
+need "EXECINFO AT_PHDR = 0x500"     "AT_PHDR is inside this program's own image, above its segments"
 need "EXECINFO ok: AT_PHDR points at readable memory" "AT_PHDR was dereferenced without faulting"
 need "EXECINFO ok: AT_RANDOM"       "AT_RANDOM carried 16 real bytes"
 need "EXECINFO ok: the ELF header sits directly in front of AT_PHDR" \
@@ -84,6 +89,10 @@ need "EXECPROBE-echo"               "echo ran"
 need "EXECPROBE-true"               "true ran and exited 0"
 need "EXECPROBE-false"              "false ran and exited 1"
 need "hello"                        "/bin/as ran a script (mini-libc program, 0x50000000)"
+# The AetherScript §P4 claim, executed rather than argued: this .aex was built
+# by mkaex --emit out of a flat nasm binary. No linker produced it, no ELF ever
+# existed on disk before the tool made one, and the kernel loaded and ran it.
+need "ASNATIVE-OK"                  "/bin/asnative ran -- a .aex a compiler emitted, not a linker"
 
 # A refusal from the loader during this boot means something on the disk stopped
 # loading -- the exact regression this whole test exists to catch.
