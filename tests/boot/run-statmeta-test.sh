@@ -59,16 +59,35 @@ reap() {
 # One boot against the persistent copy. $1 = what to type, $2 = log, $3 = settle
 # seconds after typing (writes go straight through virtio-blk with no cache, so
 # this is settle time, not a race we are trying to win).
+#
+# TWO TIMING RULES, both learned the hard way rather than guessed:
+#
+#  1. WAIT FOR THE SHELL. Bytes written to the serial line before /bin/sh is
+#     running are DROPPED -- nothing is reading the port yet. The other
+#     durability harnesses sleep 5, which was enough when they were written;
+#     this kernel now runs kbench and the clock self-tests before init and does
+#     not reach a prompt for about 25 seconds. BOOT_WAIT is generous on purpose:
+#     the cost of overshooting is a few idle seconds, and the cost of
+#     undershooting is a harness that reports a durability failure when what
+#     actually happened is that nobody typed anything.
+#  2. ONE LINE AT A TIME. The console input path is small (CLAUDE.md says as
+#     much about PS/2 key injection); a whole script shoved in at once can
+#     overrun it. A short pause between lines costs nothing here.
+BOOT_WAIT="${BOOT_WAIT:-30}"
+type_lines() {
+    local line
+    while IFS= read -r line; do printf '%s\n' "$line"; sleep 0.4; done <<< "$1"
+}
 boot() {
     local cmds="$1" log="$2" settle="$3"
-    { sleep 5; printf '%s' "$cmds"; sleep "$settle"; } | \
+    { sleep "$BOOT_WAIT"; type_lines "$cmds"; sleep "$settle"; } | \
       "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
         -drive file="$DISKC",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 \
         -boot d -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci \
         $NET -serial stdio -display none -no-reboot >"$log" 2>/dev/null &
     QPID=$!
     local waited=0
-    while kill -0 "$QPID" 2>/dev/null && [ "$waited" -lt 150 ]; do sleep 1; waited=$((waited + 1)); done
+    while kill -0 "$QPID" 2>/dev/null && [ "$waited" -lt 220 ]; do sleep 1; waited=$((waited + 1)); done
     reap
     tr -d '\r' <"$log" >"$log.n" && mv "$log.n" "$log"   # serial is CRLF
 }
