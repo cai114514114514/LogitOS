@@ -1608,7 +1608,15 @@ test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-form
 # them all. `make test-fs` is host + boot, i.e. the whole answer to "does the
 # disk keep what it is given".
 test-fs-boot: test-fsmount test-durability test-fscrash test-fsreplay \
-              test-hugefile test-barrier
+              test-hugefile test-barrier test-statmeta-os
+
+# The metadata half of durability, on the real machine: 4 boots, NO -snapshot,
+# a mode + owner + directory mode + chmod 000 set in boot 1 and read back in
+# boots 2/3/4 with allocate-free churn between. Contents surviving a reboot was
+# already proved by test-durability; this is the claim that the MODE does, which
+# until logitfs grew getattr/setattr was false and documented as false.
+test-statmeta-os: $(ISO) $(DISK)
+	@bash tests/boot/run-statmeta-test.sh $(ISO) $(DISK)
 
 test-fs: test-fs-host test-fs-boot
 
