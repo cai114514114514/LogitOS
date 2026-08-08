@@ -676,6 +676,22 @@ int main(int argc, char **argv)
     printf("     A pass that survives deleting the test's stylesheet is not\n"
            "     evidence about CSS or layout. Quote this rate, not the one above.\n");
 
+    /* Is the discrimination check itself alive? It is negative control 2 folded
+     * into the ordinary run, so it needs the same guarantee the comparator does:
+     * a check that never fires is indistinguishable from a check that is not
+     * there. Both directions have to be non-empty -- all-discriminating would
+     * mean the CSS-stripped re-render is not happening, all-non-discriminating
+     * would mean nothing we do depends on CSS. The gate greps for SUSPECT. */
+    if (!opt_nocss && !opt_always_equal && ok > 200) {
+        if (nondisc_pass == 0 || real_ok == 0)
+            printf("\nDISCRIMINATION CHECK: SUSPECT -- %ld non-discriminating, %ld "
+                   "discriminating of %ld passes.\n  One side is empty, which means the "
+                   "check is not measuring anything.\n", nondisc_pass, real_ok, ok);
+        else
+            printf("\nDISCRIMINATION CHECK: alive -- %ld non-discriminating, %ld "
+                   "discriminating.\n", nondisc_pass, real_ok);
+    }
+
     printf("\n---- ranked failure causes (heuristic: first feature marker in the source) ----\n");
     qsort(bk, (size_t)nbk, sizeof *bk, cmp_bk);
     for (int i = 0; i < nbk && i < 25; i++)

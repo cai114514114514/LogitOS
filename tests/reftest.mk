@@ -30,8 +30,15 @@
 #   make reftest-baseline     rewrite the expected-failure list from this run
 #   make reftest-manifest     rebuild the cached test list
 #   make test-reftest-ahem    CAN WE RENDER AHEM AT ALL -- seconds, run it first
-#   make test-reftest-negctl  the always-equal comparator, full corpus
-#   make test-reftest-negctl-css   CSS withheld from the test, full corpus
+#   make test-reftest-negctl       the always-equal comparator, full corpus
+#   make test-reftest-css-negctl   CSS withheld, full corpus, both readings
+#
+# Both control targets end in -negctl, which is how tools/audit_tests.py's CI
+# discovery knows to skip them -- they are slow and they are expected to report
+# strange numbers. The guarantees they provide are NOT left outside CI for that
+# reason: the always-equal control also runs inline at the top of test-reftest,
+# and the discrimination check (control 2, folded per-test) is asserted there
+# too, so the gate cannot print a rate without both having fired.
 #
 # THE NUMBER TO KNOW, and it is not the one a normal reftest harness prints.
 # On the first 400 tests this reports 142 exact matches -- 35.77% -- and then
@@ -49,7 +56,7 @@
 
 .PHONY: test-reftest reftest reftest-one reftest-diff reftest-rank \
         reftest-baseline reftest-manifest test-reftest-ahem \
-        test-reftest-negctl test-reftest-negctl-css reftest-ahem-fetch
+        test-reftest-negctl test-reftest-css-negctl reftest-ahem-fetch
 
 WPT_ROOT      ?= third_party/wpt
 REFT_BIN      := $(BUILD)/reftest/reftest
@@ -181,8 +188,17 @@ test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
 	    exit 1; \
 	 fi; echo "  ok: always-equal scores $$rate% -- the comparator is load-bearing"
 	@echo
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
-	    --baseline $(REFT_BASELINE) --ahem $(REFT_AHEM)
+	@rc=0; \
+	 $(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	    --baseline $(REFT_BASELINE) --ahem $(REFT_AHEM) \
+	    > $(BUILD)/reftest/gate.log 2>&1 || rc=$$?; \
+	 cat $(BUILD)/reftest/gate.log; \
+	 if grep -q 'DISCRIMINATION CHECK: SUSPECT' $(BUILD)/reftest/gate.log; then \
+	    echo; echo "CONTROL BROKEN: the discrimination check measured nothing."; \
+	    echo "  It is negative control 2 folded into the ordinary run, and a"; \
+	    echo "  check that never fires is a check that is not there."; \
+	    exit 1; \
+	 fi; exit $$rc
 
 # The same measurement with no gate, for a tree that is already broken.
 reftest: $(REFT_BIN) $(REFT_MANIFEST)
@@ -233,7 +249,7 @@ test-reftest-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 # 77% on the first 300, which is what turned the control into the per-test
 # discrimination measurement the gate now prints. This target records the
 # corpus-wide figure for both.
-test-reftest-negctl-css: $(REFT_BIN) $(REFT_MANIFEST)
+test-reftest-css-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 	@echo "--- CSS withheld from the TEST only ---"
 	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --no-css-test 2>/dev/null | grep -E 'PASS RATE|DISCRIMINATING' || true
