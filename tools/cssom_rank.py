@@ -28,7 +28,13 @@ def read_rows(path):
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             fields = line.rstrip("\n").split("\t")
-            if len(fields) >= 4 and fields[0] == "HARNESS":
+            # HARNESS = started and threw. NOTSTARTED = loaded, testharness
+            # installed, and no test() was ever registered. Two labels, one
+            # category for this table's purpose: the file contributed nothing
+            # to the denominator. Reading only HARNESS hides the single
+            # largest population in the corpus (<body onload>), which is the
+            # mistake this table exists to correct.
+            if len(fields) >= 4 and fields[0] in ("HARNESS", "NOTSTARTED"):
                 rows.append((fields[1], fields[3]))
     return rows
 
@@ -49,7 +55,7 @@ KNOWN_APIS = {
 def classify(why):
     if "referenced script" in why:
         return "support script missing from the vendored checkout"
-    if "zero subtests" in why:
+    if "zero subtests" in why or "registered no tests" in why:
         return "ZERO SUBTESTS -- harness completed, no test() ever registered"
     if why.startswith("watchdog"):
         return "watchdog -- script never stopped running"

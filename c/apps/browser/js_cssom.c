@@ -22,9 +22,13 @@
  *             and the file timed out empty. Once it IS called it immediately
  *             needs offsetWidth, offsetTop, clientWidth, scrollWidth and
  *             getBoundingClientRect -- and of those, only the last existed.
- *    ~90  a CSSOM API missing outright: `CSS is not defined`,
- *          `cannot read property 'cssRules' of undefined`,
- *          `cannot read property 'ready' of undefined` (document.fonts).
+ *     57  `CSS is not defined` -- no CSS namespace object at all, so a
+ *          feature detect (`CSS.supports(...)`) threw on line one.
+ *     10  `cannot read property 'cssRules' of undefined` -- document.styleSheets.
+ *
+ * (The ranking at the time also had 165 files on `document.fonts.ready`. The
+ * web-API line fixed that one concurrently; see the note on SHIM_FONTS. It is
+ * not in this file's numbers.)
  *
  * WHAT IS HONEST ABOUT THE GEOMETRY, said before the code and not after.
  * layout.c produces a FLAT display list, not a box tree. An element's border
@@ -1317,9 +1321,18 @@ static const char *SHIM_BODY_HANDLERS =
 
 /* document.fonts (CSS Font Loading) and FontFace.
  *
- * 165 files in the corpus die on `document.fonts.ready` alone -- almost always
- * as `document.fonts.ready.then(() => { ...the actual test... })`, i.e. the
- * property is a GATE in front of the test rather than the thing under test.
+ * CREDIT WHERE IT IS DUE, because the numbers in this file's header would
+ * otherwise claim it: 165 corpus files died on `document.fonts.ready` when the
+ * ranking that motivated this file was taken, and the web-API line landed a
+ * document.fonts in js_webapi.c (a413491) while this was being written. Theirs
+ * is the one the browser gets -- this shim installs ONLY if the property is
+ * absent, which in the shipping build it is not. It is not dead code: the CSS
+ * host tests and any runner that links js_cssom.c without js_webapi.c get
+ * theirs from here. But this line did not fix those 165 files and does not
+ * count them.
+ *
+ * The shape either way: `document.fonts.ready.then(() => { ...the test... })`
+ * is a GATE in front of the test, not the thing under test.
  *
  * Everything here resolves immediately and reports loaded, which is the truth
  * for this engine: fonts come off the LogitFS disk at text_init() and there is
