@@ -140,3 +140,15 @@ test-css-web-negctl: $(BUILD)/libcss_host.a
 	 fi
 
 .PHONY: audit-css audit-css-before test-css-modern test-css-web-negctl
+
+# --- test-css-modern-os: the same constructs, ON THE MACHINE ---------------
+# test-css-modern asserts on `struct cstyle` and audit-css on the display list.
+# This boots LogitOS, serves a fixture whose whole stylesheet is inside @layer
+# (with a @supports nested in it) and a second one carrying a 208-byte custom
+# property, and asserts on the SCREENDUMP -- three boxes with three different
+# left edges and one shared top, which a block fallback cannot produce.
+# See the docstring in tests/qmp/qmp_css_modern.py.
+test-css-modern-os: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_css_modern.py $(ISO) $(DISK)
+
+.PHONY: test-css-modern-os
