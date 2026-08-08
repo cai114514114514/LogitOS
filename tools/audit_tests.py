@@ -219,6 +219,32 @@ def classify(targets, name):
     return "host"
 
 
+def find_duplicate_includes(texts):
+    """The same fragment pulled in twice.
+
+    Make does not warn about the include itself -- it warns about every target
+    inside it ("overriding recipe for target ..."), dozens of lines of noise
+    that scroll past every build, and it silently keeps the LAST definition.
+    Two lines each added `-include tests/cssweb.mk` without seeing the other's,
+    which is the predictable cost of the fragment convention and worth a lint
+    rather than a habit."""
+    dup = []
+    for name, text in texts.items():
+        seen = {}
+        for i, line in enumerate(text.split("\n"), 1):
+            m = re.match(r"^-?include\s+(\S+)\s*$", line.strip())
+            if not m:
+                continue
+            f = m.group(1)
+            if "$(" in f or "*" in f:
+                continue                   # computed/globbed: not a duplicate
+            if f in seen:
+                dup.append((name, f, seen[f], i))
+            else:
+                seen[f] = i
+    return dup
+
+
 def main():
     texts = makefile_texts()
     targets = collect_targets(texts)
@@ -263,6 +289,14 @@ def main():
         for t in orphan:
             print("  %s" % t)
         bad += len(orphan)
+    dup = find_duplicate_includes(texts)
+    if dup:
+        print("\nDUPLICATE INCLUDE -- make keeps the last one and warns about "
+              "every target in it (%d):" % len(dup))
+        for name, f, first, second in dup:
+            print("  %s includes %s at line %d and again at line %d"
+                  % (name, f, first, second))
+        bad += len(dup)
 
     if bad:
         print("\naudit: %d finding(s)" % bad)

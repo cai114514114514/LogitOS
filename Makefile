@@ -2927,12 +2927,6 @@ test-aui-negctl: $(ISO)
 bench-aui: $(ISO) $(DISK)
 	bash tests/boot/run-aui-bench.sh $(ISO) $(DISK)
 
-# The CSS engine corpus audit, its before/after build, and the modern-CSS
-# tests. Own fragment for the same reason as every other one above: written
-# straight into this file, a whole-file overwrite from a concurrent line
-# deleted it within the hour.
--include tests/cssweb.mk
-
 # The CI this repository did not have: `make test-audit` (tests that cannot
 # fail) and `make ci` (build from a clean clone of HEAD, then the suites). Own
 # fragment for the same reason as every other one above.
