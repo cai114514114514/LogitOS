@@ -460,6 +460,45 @@ static void test_css_object(void)
        "the one-argument condition form");
     CK(eq("CSS.supports('(color: banana-fritter)')", "false"),
        "... which refuses the same bad value");
+
+    /* The compound forms. Answering all of these `false` is SAFE and still
+     * wrong: it sends a page whose detect is `(display: block) or (display:
+     * banana)` down its baseline path, and that page would have rendered. */
+    CK(eq("CSS.supports('(color: red) and (display: block)')", "true"),
+       "and: both sides real");
+    CK(eq("CSS.supports('(color: red) and (color: banana-fritter)')", "false"),
+       "and: one bad side loses");
+    CK(eq("CSS.supports('(color: banana-fritter) or (display: block)')", "true"),
+       "or: one real side wins");
+    CK(eq("CSS.supports('(color: banana-fritter) or (color: also-bad)')", "false"),
+       "or: neither side");
+    CK(eq("CSS.supports('not (color: banana-fritter)')", "true"),
+       "not: inverts");
+    CK(eq("CSS.supports('not (color: red)')", "false"), "... in both directions");
+    CK(eq("CSS.supports('(color: red) and (not (color: banana-fritter))')", "true"),
+       "a NESTED condition inside parens, which is where a colon-first parse breaks");
+    CK(eq("CSS.supports('((color: red))')", "true"), "redundant nesting");
+    CK(eq("CSS.supports('(color: red) and ((display: block) or (color: bad))')", "true"),
+       "and over a parenthesised or");
+
+    /* Mixing them at one level is a SYNTAX ERROR, not a precedence question --
+     * css-conditional makes you parenthesise. Answering it as though there
+     * were a precedence would be inventing a language. */
+    CK(eq("CSS.supports('(color: red) and (display: block) or (color: bad)')", "false"),
+       "mixing and/or unparenthesised is a syntax error, so: false");
+    CK(eq("CSS.supports('(color: red')", "false"), "an unclosed paren is not a condition");
+    CK(eq("CSS.supports('color: red')", "false"),
+       "the one-argument form needs the parens -- a bare declaration is not a condition");
+
+    /* <general-enclosed>: a function or blob we do not recognise is false,
+     * which is both what the spec says and the only honest answer. */
+    CK(eq("CSS.supports('(width >= 100px)')", "false"),
+       "an unrecognised feature is general-enclosed, hence false");
+    CK(eq("CSS.supports('futureFeature(x)')", "false"), "and so is an unknown function");
+
+    CK(eq("CSS.supports('selector(div)')", "true"), "selector(): a selector we parse");
+    CK(eq("CSS.supports('selector(div > p.cls)')", "true"), "... including a complex one");
+    CK(eq("CSS.supports('selector(<<<)')", "false"), "and one we do not is false");
     CK(eq("CSS.supports('--x', 'anything at all')", "true"),
        "a custom property takes any balanced value, by definition");
 

@@ -538,6 +538,182 @@ static JSValue el_getClientRects(JSContext *ctx, JSValueConst t, int argc, JSVal
  * The CSS namespace object
  * ========================================================================== */
 
+/* ---- <supports-condition>, the one-argument form ----
+ *
+ * `CSS.supports("(display: flex) and (not (display: grid))")`. A page's first
+ * line is often a feature detect, and the branch it takes is decided here, so
+ * the grammar is worth having in full rather than answering everything
+ * compound with `false`: `false` sends the page down its baseline path, which
+ * is safe, but it also sends `(display: block) or (display: banana)` down it,
+ * and that page would have rendered.
+ *
+ * The grammar (css-conditional-3):
+ *
+ *   condition   = not <in-parens> | <in-parens> [ and <in-parens> ]*
+ *                                 | <in-parens> [ or  <in-parens> ]*
+ *   in-parens   = ( condition ) | ( declaration ) | selector( <selector> )
+ *                               | <general-enclosed>
+ *
+ * MIXING `and` WITH `or` AT ONE LEVEL IS A SYNTAX ERROR, not a precedence
+ * question -- the spec makes you parenthesise. Answering it as if there were
+ * a precedence would be inventing a language.
+ *
+ * <general-enclosed> -- a function or a parenthesised blob this engine does
+ * not recognise -- is FALSE, which is what the spec says and is also the only
+ * honest answer: an unrecognised feature is one we do not have.
+ */
+
+static int sup_cond(JSContext *ctx, const char *p, const char *e);
+
+static void sup_ws(const char **p, const char *e)
+{ while (*p < e && (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r' || **p == '\f')) (*p)++; }
+
+/* The ')' matching the '(' at *p, or NULL. Strings are skipped whole so a
+ * paren inside one cannot close the block. */
+static const char *sup_close(const char *p, const char *e)
+{
+    int depth = 0;
+    for (const char *q = p; q < e; q++) {
+        if (*q == '"' || *q == '\'') {
+            char c = *q; q++;
+            while (q < e && *q != c) { if (*q == '\\' && q + 1 < e) q++; q++; }
+            continue;
+        }
+        if (*q == '(') depth++;
+        else if (*q == ')') { depth--; if (!depth) return q; }
+    }
+    return 0;
+}
+
+/* An ASCII-case-insensitive keyword followed by whitespace or '('. */
+static int sup_kw(const char **p, const char *e, const char *kw)
+{
+    int L = 0;
+    while (kw[L]) L++;
+    if (e - *p < L) return 0;
+    for (int i = 0; i < L; i++)
+        if (((*p)[i] | 32) != kw[i]) return 0;
+    const char *after = *p + L;
+    if (after < e && *after != ' ' && *after != '\t' && *after != '\n' &&
+        *after != '(' && *after != '\r' && *after != '\f') return 0;
+    *p = after;
+    return 1;
+}
+
+/* `selector(S)`: valid if the selector parses. Asked of the engine's own
+ * selector parser through document.querySelector rather than by inspecting
+ * the string, for the same reason CSS.supports asks LibCSS about a
+ * declaration -- a second opinion about what parses is a second opinion. */
+static int sup_selector(JSContext *ctx, const char *sel, int n)
+{
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue doc = JS_GetPropertyStr(ctx, g, "document");
+    JSValue f = JS_GetPropertyStr(ctx, doc, "querySelector");
+    int ok = 0;
+    if (JS_IsFunction(ctx, f)) {
+        JSValue arg = JS_NewStringLen(ctx, sel, (size_t)n);
+        JSValueConst a[1]; a[0] = arg;
+        JSValue r = JS_Call(ctx, f, doc, 1, a);
+        if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
+        else { ok = 1; JS_FreeValue(ctx, r); }
+        JS_FreeValue(ctx, arg);
+    }
+    JS_FreeValue(ctx, f);
+    JS_FreeValue(ctx, doc);
+    JS_FreeValue(ctx, g);
+    return ok;
+}
+
+/* One <in-parens>. Advances *p past it; returns 0/1, or -1 on a syntax error
+ * (which the caller turns into `false` for the whole condition). */
+static int sup_in_parens(JSContext *ctx, const char **p, const char *e)
+{
+    sup_ws(p, e);
+    if (*p >= e) return -1;
+
+    /* selector(...) and every other function: a function is general-enclosed
+     * unless it is one we know. */
+    if (**p != '(') {
+        const char *q = *p;
+        while (q < e && *q != '(' && *q != ' ' && *q != '\t' && *q != '\n') q++;
+        if (q >= e || *q != '(') return -1;
+        int nlen = (int)(q - *p);
+        const char *close = sup_close(q, e);
+        if (!close) return -1;
+        int is_sel = (nlen == 8);
+        if (is_sel) {
+            static const char SEL[] = "selector";
+            for (int i = 0; i < 8; i++)
+                if (((*p)[i] | 32) != SEL[i]) { is_sel = 0; break; }
+        }
+        int r = is_sel ? sup_selector(ctx, q + 1, (int)(close - q - 1)) : 0;
+        *p = close + 1;
+        return r;                          /* unknown function: general-enclosed, false */
+    }
+
+    const char *close = sup_close(*p, e);
+    if (!close) return -1;
+    const char *b = *p + 1, *be = close;
+    *p = close + 1;
+
+    /* Inside: either a nested condition or a declaration. A nested condition
+     * starts with `(`, `not`, or a function; a declaration is `name: value`
+     * with the colon at depth 0. Checking for the colon FIRST is wrong --
+     * `(not (color: red))` has one -- so nesting is decided first. */
+    const char *q = b;
+    sup_ws(&q, be);
+    const char *probe = q;
+    if (q < be && (*q == '(' || sup_kw(&probe, be, "not")))
+        return sup_cond(ctx, b, be);
+
+    int depth = 0;
+    const char *colon = 0;
+    for (const char *r = b; r < be; r++) {
+        if (*r == '(') depth++;
+        else if (*r == ')') depth--;
+        else if (*r == ':' && depth == 0 && !colon) colon = r;
+    }
+    if (!colon) {
+        /* No colon and not a nested condition: general-enclosed. */
+        return 0;
+    }
+    return css_supports_decl(b, (int)(colon - b), colon + 1, (int)(be - colon - 1)) ? 1 : 0;
+}
+
+static int sup_cond(JSContext *ctx, const char *p, const char *e)
+{
+    sup_ws(&p, e);
+    if (p >= e) return -1;
+
+    if (sup_kw(&p, e, "not")) {
+        int v = sup_in_parens(ctx, &p, e);
+        if (v < 0) return -1;
+        sup_ws(&p, e);
+        if (p != e) return -1;
+        return !v;
+    }
+
+    int acc = sup_in_parens(ctx, &p, e);
+    if (acc < 0) return -1;
+    int op = 0;                             /* 0 none, 1 and, 2 or */
+    for (;;) {
+        sup_ws(&p, e);
+        if (p >= e) return acc;
+        int here;
+        if (sup_kw(&p, e, "and")) here = 1;
+        else if (sup_kw(&p, e, "or")) here = 2;
+        else return -1;
+        /* `A and B or C` is a SYNTAX ERROR, not a precedence question. */
+        if (op && here != op) return -1;
+        op = here;
+        int v = sup_in_parens(ctx, &p, e);
+        if (v < 0) return -1;
+        /* No short-circuit: `(a: b) and (junk` must still be a syntax error
+         * even when the left side already decided the answer. */
+        acc = (op == 1) ? (acc && v) : (acc || v);
+    }
+}
+
 static JSValue js_CSS_supports(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
@@ -550,37 +726,12 @@ static JSValue js_CSS_supports(JSContext *ctx, JSValueConst t, int argc, JSValue
         if (v) JS_FreeCString(ctx, v);
         return JS_NewBool(ctx, ok);
     }
-    /* The one-argument form takes a <supports-condition>: a parenthesised
-     * declaration, or several joined by and/or/not. Only the single
-     * parenthesised declaration is answered; a compound condition answers
-     * false rather than guessing, and false is the direction that makes a page
-     * take its baseline branch instead of one this engine cannot render. */
-    const char *s = JS_ToCString(ctx, argv[0]);
+    size_t n = 0;
+    const char *s = JS_ToCStringLen(ctx, &n, argv[0]);
     if (!s) return JS_FALSE;
-    const char *p = s;
-    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
-    int ok = 0;
-    if (*p == '(') {
-        const char *e = p + strlen(p);
-        while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\n')) e--;
-        if (e > p && e[-1] == ')') {
-            const char *body = p + 1, *end = e - 1;
-            /* A nested '(' at depth 0 of the body means this is a compound
-             * condition, not one declaration: `(a:b) and (c:d)`. */
-            int depth = 0, compound = 0;
-            const char *colon = 0;
-            for (const char *q = body; q < end; q++) {
-                if (*q == '(') { if (depth == 0) compound = 1; depth++; }
-                else if (*q == ')') depth--;
-                else if (*q == ':' && depth == 0 && !colon) colon = q;
-            }
-            if (colon && !compound)
-                ok = css_supports_decl(body, (int)(colon - body),
-                                       colon + 1, (int)(end - colon - 1));
-        }
-    }
+    int r = sup_cond(ctx, s, s + n);
     JS_FreeCString(ctx, s);
-    return JS_NewBool(ctx, ok);
+    return JS_NewBool(ctx, r == 1);
 }
 
 /* CSS.escape(), CSSOM "serialize an identifier", byte for byte. Its whole
