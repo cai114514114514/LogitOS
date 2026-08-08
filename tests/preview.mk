@@ -13,12 +13,17 @@
 # actually carries) and pcm.mov is BIG-ENDIAN PCM in ISO-BMFF -- the two audio
 # framings Preview repacks rather than decoding a second way. Neither was on
 # the disk, so neither was reachable from the machine.
-PREVIEW_FX := tests/fixtures/media/aac.m4a tests/fixtures/media/pcm.mov
+PREVIEW_FX := tests/fixtures/media/aac.m4a tests/fixtures/media/pcm.mov \
+              tests/fixtures/media/h265.mp4 tests/fixtures/media/mp3.mka
+PREVIEW_AS := $(sort $(wildcard tests/fixtures/preview/*.as))
 FS_FILES += tests/fixtures/media/aac.m4a:/media/aac.m4a \
             tests/fixtures/media/pcm.mov:/media/pcm.mov \
+            tests/fixtures/media/h265.mp4:/media/clip-h265.mp4 \
+            tests/fixtures/media/mp3.mka:/media/clip-audio.mka \
+            $(foreach s,$(PREVIEW_AS),$(s):/usr/as/$(notdir $(s))) \
             $(BUILD)/previewplay.aex:/bin/previewplay \
             $(BUILD)/previewnegctl.aex:/bin/previewnegctl
-$(DISK): $(PREVIEW_FX) $(BUILD)/previewplay.aex $(BUILD)/previewnegctl.aex
+$(DISK): $(PREVIEW_FX) $(PREVIEW_AS) $(BUILD)/previewplay.aex $(BUILD)/previewnegctl.aex
 
 # --- the reference decode the screen is compared against --------------------
 # See the header of tests/unit/img_dump.c for why the ANIMATED cases cannot use
@@ -92,10 +97,25 @@ $(BUILD)/previewnegctl.elf: $(PREVIEW_CLI_DEPS)
 $(BUILD)/previewnegctl.aex: $(BUILD)/previewnegctl.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewnegctl.elf $@ previewnegctl - 'P' 200 150 110
 
-test-preview-timing: $(ISO) $(DISK)
-	@bash tests/boot/run-preview-timing.sh $(ISO) $(DISK) play
+# THE POSITIVE MEASUREMENT RUNS ON THE SHIPPED GUI BUILD, over QMP, because
+# that is the player a user gets. The serial harness below cannot currently run
+# it: a shell-spawned process that owns a window and then yields or sleeps never
+# runs again on this kernel (see the note in tests/boot/run-preview-timing.sh --
+# it is handed to the scheduler line, not worked around here). The NEGATIVE
+# control is unaffected, because the build it exercises never waits at all,
+# which is the whole point of it.
+test-preview-timing: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
+	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) \
+	    --ref $(BUILD)/previewref --timing-only
 
 test-preview-negctl: $(ISO) $(DISK)
 	@bash tests/boot/run-preview-timing.sh $(ISO) $(DISK) negctl
 
-.PHONY: test-preview test-preview-timing test-preview-negctl
+# THE ASSOCIATION, from the other end. test-preview drives Preview's own list;
+# this drives the route a user takes -- SYS_OPEN_PATH, which is all a Finder
+# double-click is -- for one file of each family, and asserts the app was
+# launched, was handed the path as its ARGUMENT, and decoded it.
+test-preview-assoc: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) --assoc
+
+.PHONY: test-preview test-preview-timing test-preview-negctl test-preview-assoc

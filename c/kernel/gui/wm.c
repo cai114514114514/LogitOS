@@ -1062,6 +1062,55 @@ static int sniff_opens_in_preview(const unsigned char *b, int n)
     }
 }
 
+/* THERE IS NO PARTIAL READ IN THIS VFS, and that is why the head of the file
+ * arrives the expensive way. `vfs_read(path, buf, max)` means "read the WHOLE
+ * file if it fits": logitfs's inode_read() returns -1 when size > max rather
+ * than filling what it can (c/fs/logitfs.c). So the obvious form of this
+ * function --
+ *      unsigned char b[64]; int n = vfs_read(path, b, sizeof b);
+ * -- returns -1 for every file longer than 64 bytes, i.e. every real one, and
+ * the sniff silently answers "no" for everything. It did, for a day: every
+ * double-click landed in the Terminal, which is what a user sees as "MP4 will
+ * not open in Preview" and "WebM says there is no such format" (that message
+ * was the Terminal's).
+ *
+ * So: read the file, look at its first bytes, free it. Bounded by
+ * SNIFF_READ_MAX because this runs under the big lock on every double-click,
+ * and above that bound the launcher falls back to the file's NAME. That
+ * fallback is the honest shape of the compromise -- sniff when we can afford
+ * to, and when we cannot, believe the extension, which is what every other
+ * system does all the time. A partial-read primitive would remove the bound
+ * entirely and has been handed to the filesystem line. */
+#define SNIFF_READ_MAX (4u << 20)
+
+static int ext_opens_in_preview(const char *ext)
+{
+    static const char *k[] = {
+        "png", "apng", "gif", "jpg", "jpeg", "bmp", "dib", "ico", "cur",
+        "webp", "svg", "h264", "264", "h265", "265", "hevc", "mp4", "m4v",
+        "mov", "m4a", "mkv", "webm", "mka", "wav", "flac", "mp3", "aac", 0
+    };
+    for (int i = 0; k[i]; i++) if (streq(k[i], ext)) return 1;
+    return 0;
+}
+
+static int sniff_opens_in_preview(const unsigned char *b, int n)
+{
+    switch (sniff_id(b, n < SNIFF_PREFIX ? n : SNIFF_PREFIX)) {
+    case SN_PNG: case SN_JPEG: case SN_GIF: case SN_BMP: case SN_SVG:
+    case SN_WEBP: case SN_H264: case SN_H265: case SN_MP4: case SN_MKV:
+    case SN_WAV: case SN_FLAC: case SN_MP3: case SN_OGG:
+        return 1;
+    default:
+        /* ICO/CUR -- 00 00 01|02 00 <count> -- is the one format in Preview's
+         * set that logit_sniff.h has no id for, and its first three bytes read
+         * as an Annex B start code. Named here rather than edited into that
+         * header, which belongs to another line. */
+        return n >= 6 && !b[0] && !b[1] && (b[2] == 1 || b[2] == 2) && !b[3]
+               && (b[4] | b[5]);
+    }
+}
+
 static int opens_in_preview(const char *path, const char *ext)
 {
     int sz = vfs_size(path);

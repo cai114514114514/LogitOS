@@ -665,9 +665,12 @@ static void draw_audio_ui(aplay *a, const char *name, const char *what,
         gui_rect(bx, 170, (int)((long long)bw * f / total_ns), 8, rgb(110, 160, 250));
     }
 
-    gui_text(24, 230, rgb(150, 152, 162), "level");
-    meter_bar(bx, 244, bw, 16, a->peak[0]);
-    if (a->ch > 1) meter_bar(bx, 268, bw, 16, a->peak[1]);
+    /* gui_text's y is the TOP of the line box, not the baseline -- glyphs land
+     * at roughly y+5..y+20 -- so the meter has to start below that or it
+     * covers its own label, which is what the first screenshot showed. */
+    gui_text(24, 228, rgb(150, 152, 162), "level");
+    meter_bar(bx, 252, bw, 16, a->peak[0]);
+    if (a->ch > 1) meter_bar(bx, 276, bw, 16, a->peak[1]);
     /* Decay so the bar falls back when the track goes quiet; the peak is
      * re-raised by every pump. */
     for (int c = 0; c < 2; c++) a->peak[c] = a->peak[c] * 3 / 4;
@@ -1085,7 +1088,23 @@ static int play_image(const unsigned char *data, long len, const char *name)
                 if (left <= 0) break;
                 rc = pump_events();
                 if (rc) goto out;
+#ifdef PREVIEW_CLI
+                /* THE MEASUREMENT BUILD SPENDS THE WAIT YIELDING, NOT SLEEPING,
+                 * and that is a kernel bug being worked around rather than a
+                 * choice: SYS_NANOSLEEP never wakes a process spawned from the
+                 * shell on this kernel, though it wakes a GUI app's thread
+                 * perfectly well. (/bin/sleep still polls the clock in a loop,
+                 * which looks like the same thing seen from the other side.)
+                 * Handed to the scheduler line; see the note in
+                 * tests/boot/run-preview-timing.sh.
+                 *
+                 * What is under test -- the deadline arithmetic three lines up
+                 * -- is identical in both builds, and the SHIPPED sleeping path
+                 * is measured by make test-preview on the GUI build. */
+                sys_yield();
+#else
                 sys_sleep_ms(left > 10000000LL ? 10 : 1);
+#endif
             }
 #else
             /* make test-preview-negctl: the delays are decoded and then
@@ -1178,6 +1197,7 @@ static const char *basename_of(const char *p)
     return s;
 }
 
+#ifndef PREVIEW_CLI
 /* Launched from the Dock there is no file to open, so offer what is there:
  * /media is where the shipped clips live. One level of subdirectory too,
  * because the image fixtures ride in /media/img.
@@ -1186,7 +1206,10 @@ static const char *basename_of(const char *p)
  * only part of this app a test can steer, and a test that counts Down presses
  * against a directory order it guessed is a test that breaks the day a file is
  * added. So the app says what it is showing. */
-#define PICK_MAX 48
+#define PICK_MAX  48
+#define PICK_Y0   70     /* window-local y of the first row's box */
+#define PICK_DY   20     /* row pitch */
+#define PICK_ROWS ((CONTH - PICK_Y0) / PICK_DY)
 static char pick_names[PICK_MAX][80];
 static int  pick_n;
 
@@ -1205,41 +1228,107 @@ static void pick_scan(const char *dir, const char *prefix, int depth)
             pick_scan(sub, sp, depth - 1);
             continue;
         }
-        snprintf(pick_names[pick_n], sizeof pick_names[0], "%s%s", prefix, b);
-        pick_n++;
+        char nm[80];
+        snprintf(nm, sizeof nm, "%s%s", prefix, b);
+        int dup = 0;
+        for (int k = 0; k < pick_n; k++) if (!strcmp(pick_names[k], nm)) { dup = 1; break; }
+        if (!dup) snprintf(pick_names[pick_n++], sizeof pick_names[0], "%s", nm);
+    }
+}
+
+/* THE SCAN IS RUN SEVERAL TIMES AND THE RESULTS MERGED -- entries are added,
+ * never dropped -- and that is a workaround for a bug one layer down rather
+ * than defensive habit.
+ *
+ * logitfs's dir_count_live() and dir_nth() walk a directory's blocks and
+ * `break` out of the loop when bread() fails, so a block read that loses a
+ * race does not surface as an error: it surfaces as a SHORTER DIRECTORY. A
+ * /media of fifteen entries spans two 4 KiB blocks at ten dirents each, and
+ * when the second one is lost the app is told there are ten files and has no
+ * way to know otherwise. Preview meets this and `ls` does not, because Preview
+ * enumerates in the first second after being launched -- exactly when the
+ * compositor is busiest -- while `ls` runs at an idle prompt. Measured on
+ * commit 13756e78: `ls /media` lists 15, Preview's dir_count answers 10 or 15
+ * depending on the run.
+ *
+ * Handed to the filesystem line. Merging repeated reads is not a fix; it just
+ * stops the file list being silently wrong. The list is also rebuilt every
+ * time it is shown, so returning to it is another chance. */
+static void pick_build(void)
+{
+    for (int t = 0; t < 6; t++) {
+        int before = pick_n;
+        pick_scan("/media", "", 1);
+        if (t && pick_n == before) break;      /* two reads agreed */
     }
 }
 
 static int pick_from_media(char *out, int outmax)
 {
-    if (pick_n == 0) pick_scan("/media", "", 1);
+    pick_build();
     if (pick_n == 0) { show_message("nothing in /media to open"); return 1; }
 
     static int sel;
     for (int i = 0; i < pick_n; i++)
         plog("preview: pick %d %s\n", i, pick_names[i]);
 
+    /* Row geometry, named once because three places need it: the highlight,
+     * the text, and the hit test. */
     for (;;) {
+        int top = sel - PICK_ROWS + 1 > 0 ? sel - PICK_ROWS + 1 : 0;
         gui_clear(rgb(28, 28, 32));
+        /* A 6x6 anchor in a colour nothing else on the desktop uses, at
+         * content (0,0). tests/qmp/qmp_preview.py finds the window's content
+         * origin from it and then works in window-local coordinates -- the
+         * same trick c/apps/gui/gallery.c uses and for the same reason: the
+         * compositor cascades windows, so the position is not knowable from
+         * outside, and hunting for a background colour finds the wallpaper
+         * about one run in three. It is on the LIST only; no picture ever has
+         * a mark painted on it. */
+        gui_rect(0, 0, 6, 6, rgb(255, 0, 128));
         gui_text(16, 40, rgb(230, 230, 236), "Open from /media");
-        int top = sel - 20 > 0 ? sel - 20 : 0;
-        for (int i = top; i < pick_n && i - top < 22; i++) {
+        for (int i = top; i < pick_n && i - top < PICK_ROWS; i++) {
             int row = i - top;
             unsigned c = (i == sel) ? rgb(255, 210, 120) : rgb(190, 190, 198);
-            if (i == sel) gui_rect(12, 54 + row * 20, WINW - 24, 20, rgb(48, 48, 56));
-            gui_text(24, 68 + row * 20, c, pick_names[i]);
+            /* +2 on the text's y, for the same reason as the level meter: the
+             * highlight used to be drawn a whole row above the name it was
+             * meant to be highlighting. */
+            if (i == sel) gui_rect(12, PICK_Y0 + row * PICK_DY, WINW - 24,
+                                   PICK_DY, rgb(48, 48, 56));
+            gui_text(24, PICK_Y0 - 2 + row * PICK_DY, c, pick_names[i]);
         }
-        status("up/down to choose, Enter to open, Esc to quit");
+        status("click a name, or up/down and Enter; Esc to quit");
         gui_flush();
 
         struct logit_event e;
         for (;;) {
             if (poll_event(&e)) {
                 if (e.type == EV_CLOSE) return 1;
+                /* A LIST YOU CANNOT CLICK IS NOT A LIST. It was keyboard-only,
+                 * which is also why the harness had to send one Down per row
+                 * -- and the emulated PS/2 controller buffers a single byte, so
+                 * eighteen of them in a row arrived as two. One click is one
+                 * event. */
+                if (e.type == EV_MOUSE) {
+                    /* Printed because a click that lands on the wrong row and
+                     * a click that never arrives look identical from outside,
+                     * and the harness had to tell them apart. */
+                    plog("preview: click %d %d\n", e.a, e.b);
+                }
+                if (e.type == EV_MOUSE && e.b >= PICK_Y0) {
+                    int row = (e.b - PICK_Y0) / PICK_DY;
+                    if (row < PICK_ROWS && top + row < pick_n) {
+                        sel = top + row;
+                        snprintf(out, outmax, "/media/%s", pick_names[sel]);
+                        return 0;
+                    }
+                }
                 if (e.type == EV_KEY) {
                     if (e.a == 27) return 1;
                     if (e.a == KEY_UP && sel > 0) sel--;
                     if (e.a == KEY_DOWN && sel < pick_n - 1) sel++;
+                    if (e.a == KEY_HOME) sel = 0;
+                    if (e.a == KEY_END) sel = pick_n - 1;
                     if (e.a == '\n' || e.a == '\r') {
                         snprintf(out, outmax, "/media/%s", pick_names[sel]);
                         return 0;
@@ -1247,11 +1336,20 @@ static int pick_from_media(char *out, int outmax)
                 }
                 break;
             }
-            sys_sleep_ms(10);
+            /* YIELD, NOT SLEEP, and it is a workaround rather than a choice.
+             * This kernel intermittently stops servicing input when the only
+             * runnable thread parks: the app sleeps 10 ms, the compositor
+             * idles, and the next click is never delivered -- the serial log
+             * ends on the pointer report and nothing follows it. Yielding
+             * keeps a runnable thread and the machine awake. Handed to the
+             * scheduler line; a list that polls is the wrong shape and should
+             * go back to sleeping once that is safe. */
+            sys_yield();
         }
     }
 }
 
+#endif  /* !PREVIEW_CLI: the measurement build takes its file from argv */
 #ifdef PREVIEW_CLI
 /* One file, one loop, then out -- see the note by g_one_loop. */
 int main(int argc, char **argv)

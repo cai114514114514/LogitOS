@@ -23,8 +23,25 @@
 #                 what keeps "the player is correct" and "the machine is slow"
 #                 as separate statements.
 #
+# A KERNEL BUG SITS ACROSS THE POSITIVE HALF OF THIS, AND IS WORTH KNOWING
+# A process spawned from the SHELL that owns a window and then waits -- by
+# sys_nanosleep OR by sys_yield -- never runs again on this kernel. The same
+# player launched from the Dock waits and wakes perfectly well, and /bin/sleep
+# (no window) yields and wakes perfectly well, so it is the combination. It is
+# handed to the scheduler line rather than worked around here.
+#
+# What that costs: `play` below, which measures the SHIPPED wait, cannot run
+# yet. That measurement lives in `make test-preview-timing` instead, which
+# drives the GUI build over QMP and reads the same declared/elapsed/paint line.
+# `negctl` is unaffected -- the build it exercises never waits at all, which is
+# exactly what makes it the control -- so the pair still says what it has to
+# say: with the wait, one loop of anim.gif takes its declared 1490 ms; with the
+# wait compiled out, 148 ms.
+#
 # Usage: run-preview-timing.sh <iso> <disk.img> [play|negctl]
-#   play    /bin/previewplay    -- the shipped loop; the bounds must HOLD
+#   play    /bin/previewplay    -- the shipped loop; the bounds must HOLD.
+#                                  Blocked by the bug above; kept because it is
+#                                  the check that should run once it is fixed.
 #   negctl  /bin/previewnegctl  -- built -DPREVIEW_NO_ANIM_TIMING, i.e. the same
 #                                  player with the wait removed; the bounds must
 #                                  FAIL, or they were never measuring anything

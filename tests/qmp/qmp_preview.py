@@ -59,7 +59,11 @@ HOW IT STEERS THE APP
 Preview's list prints itself, with indices, on the console (`preview: pick N
 <name>`). A test that counted Down presses against a directory order it had
 guessed would break the day a file was added to /media; reading the app's own
-list means the file is found by NAME.
+list means the file is found by NAME and its row is CLICKED. Clicking is not
+a stylistic preference: the emulated PS/2 controller buffers one byte, so
+eighteen arrow keys in a row arrive as two, silently, and every assertion
+afterwards is then about the wrong file. One click is one event, and the
+pointer is confirmed on the pixel before the button goes down.
 
 Usage: qmp_preview.py [--iso X] [--disk X] [--out DIR] [--only NAME,NAME]
                       [--timing-only] [--napps N] [--slot N] [--keep]
@@ -84,6 +88,10 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 WINW, WINH = 760, 560
 CONTH = WINH - 30
 IMG_BG = (28, 28, 32)          # gui_clear() behind a still or an animation
+# The 6x6 anchor Preview paints at content (0,0) on its LIST screen, in a
+# colour nothing else on the desktop uses. Everything below works in
+# window-local coordinates measured from it. Same device gallery.c uses.
+PICK_PROBE = (255, 0, 128)
 
 # The dock, as qmp_ui models it. Preview is the 7th *.aex at the LogitFS root
 # in scan_apps order: clock textedit monitor terminal widgets files preview.
@@ -109,6 +117,26 @@ CASES = [
     ("clip.mp4",       "MP4 h264+mp3",       "container", {"codec": "h264", "drift_ms": 300}),
     ("clip.mkv",       "Matroska h264+flac", "container", {"codec": "h264", "drift_ms": 300}),
     ("clip.webm",      "WebM vp9+opus",      "refuse",    {"says": ["vp9", "opus"]}),
+]
+
+# --- the association ---------------------------------------------------------
+# What a double-click in the Finder actually is: SYS_OPEN_PATH, which sniffs the
+# file, picks an app and hands it the path as its launch ARGUMENT. That is a
+# different entry into Preview from the /media list -- get_arg() rather than the
+# picker -- and it is the one a user takes, so it is tested separately.
+# tests/fixtures/preview/open-*.as issue exactly that syscall and nothing else.
+ASSOC = [
+    ("open-audio", "sample.mp3",  "MP3 audio",  r"preview: audio sample\.mp3 fmt=mp3"),
+    ("open-flac",  "sample.flac", "FLAC audio", r"preview: audio sample\.flac fmt=flac"),
+    ("open-wav",   "sample.wav",  "WAV audio",  r"preview: audio sample\.wav fmt=wav"),
+    ("open-mp4",   "clip.mp4",    "MP4",        r"preview: container clip\.mp4 kind=mp4"),
+    ("open-mkv",   "clip.mkv",    "Matroska",   r"preview: container clip\.mkv kind=matroska"),
+    # WebM is Matroska: the container is understood perfectly and it is the
+    # CODECS inside that have no decoder here, so the refusal has to name vp9
+    # and opus rather than the file format. "No such format" would be a lie
+    # about the file.
+    ("open-webm",  "clip.webm",   "WebM",       r"preview: container clip\.webm kind=matroska"),
+    ("open-image", "still.webp",  "WebP",       r"preview: image still\.webp"),
 ]
 
 FIXTURE_FOR = {
@@ -221,26 +249,37 @@ def compare_image(ppm, origin, img, tol=0):
         checked - bad, checked, ("  [%s]" % first) if first else "")
 
 
-def content_origin(ppm):
-    """The window's content origin, found from the picture area's own colour.
+# Every gui_clear() colour c/apps/gui/preview.c uses: the picture/list screens,
+# the audio screen and the video screen each pick their own.
+BACKGROUNDS = [IMG_BG, (18, 18, 22), (18, 18, 20)]
 
-    A run of >= 600 pixels of the gui_clear() background on one row can only be
-    the window: the wallpaper is a gradient and the dock is glass. The first
-    such run, scanning top-down, is the top-left of the content canvas -- which
-    is how this avoids hard-coding the compositor's window cascade."""
-    target = bytes(IMG_BG)
-    probe = target * 200
+
+def content_origin(ppm):
+    """The window's content origin, found from the screen's own background.
+
+    A run of >= 600 pixels of one of Preview's gui_clear() colours on a single
+    row can only be the window: the wallpaper is a gradient and the dock is
+    glass. The first such run, scanning top-down, is the top-left of the
+    content canvas -- which is how this avoids hard-coding the compositor's
+    window cascade, and it survives the cascade moving when another app opens
+    first."""
     row = ppm.w * 3
-    for yy in range(ppm.h):
-        base = yy * row
-        k = ppm.px.find(probe, base, base + row)
-        if k < 0 or (k - base) % 3:
-            continue
-        # walk back to the true left edge of the run
-        while k - 3 >= base and ppm.px[k - 3:k] == target:
-            k -= 3
-        return ((k - base) // 3, yy)
-    return None
+    best = None
+    for bg in BACKGROUNDS:
+        target = bytes(bg)
+        probe = target * 200
+        for yy in range(ppm.h):
+            base = yy * row
+            k = ppm.px.find(probe, base, base + row)
+            if k < 0 or (k - base) % 3:
+                continue
+            while k - 3 >= base and ppm.px[k - 3:k] == target:
+                k -= 3
+            hit = ((k - base) // 3, yy)
+            if best is None or hit[1] < best[1]:
+                best = hit
+            break
+    return best
 
 
 def distinct_colours(ppm, origin, w, h):
@@ -282,7 +321,7 @@ def main(argv):
     disk = os.environ.get("LOGIT_DISK", os.path.join(ROOT, "build", "disk.img"))
     outdir = os.path.join(ROOT, "build", "preview-shots")
     refdir = os.path.join(ROOT, "build", "previewref")
-    only, keep, timing_only = None, False, False
+    only, keep, timing_only, assoc_only = None, False, False, False
     napps, slot = NAPPS, PREVIEW_SLOT
     i = 1
     while i < len(argv):
@@ -293,6 +332,7 @@ def main(argv):
         elif a == "--out":          outdir = argv[i + 1]; i += 2
         elif a == "--only":         only = set(argv[i + 1].split(",")); i += 2
         elif a == "--timing-only":  timing_only = True; i += 1
+        elif a == "--assoc":        assoc_only = True; i += 1
         elif a == "--napps":        napps = int(argv[i + 1]); i += 2
         elif a == "--slot":         slot = int(argv[i + 1]); i += 2
         elif a == "--keep":         keep = True; i += 1
@@ -348,6 +388,10 @@ def main(argv):
         if not cond:
             fails.append(what)
 
+    # The console is stdio with a PIPE on stdin, not a plain file: the
+    # association cases have to TYPE at the shell (see ASSOC above), and the
+    # log is the same stream either way.
+    serial_fh = open(serial, "wb")
     qemu = subprocess.Popen(
         ["qemu-system-x86_64",
          "-cdrom", iso,
@@ -362,9 +406,14 @@ def main(argv):
          "-audiodev", "wav,id=snd0,path=%s,out.frequency=48000,out.channels=2,"
                       "out.format=s16" % wav,
          "-device", "intel-hda", "-device", "hda-output,audiodev=snd0",
-         "-serial", "file:" + serial, "-no-reboot",
+         "-serial", "stdio", "-no-reboot",
          "-display", "none", "-qmp", "unix:%s,server,nowait" % sock],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdin=subprocess.PIPE, stdout=serial_fh, stderr=subprocess.DEVNULL)
+
+    def shell(cmd):
+        """Type a line at the serial shell."""
+        qemu.stdin.write((cmd + "\n").encode())
+        qemu.stdin.flush()
 
     def wait_for(pattern, mark, timeout):
         """Poll the console for a regex. Returns the match, or None."""
@@ -394,6 +443,63 @@ def main(argv):
         probe = os.path.join(tmp, "probe.ppm")
         shot = os.path.join(tmp, "s.ppm")
 
+        # --- the association ------------------------------------------------
+        if assoc_only:
+            for n, (script, base, label, want) in enumerate(ASSOC):
+                mark = len(read(serial))
+                shell("as /usr/as/%s.as" % script)
+                launched = wait_for(r"\[wm\] launched Preview", mark, 60)
+                ck(launched is not None,
+                   "%s (%s): a double-click launches Preview" % (base, label),
+                   "no [wm] launched line" if launched is None else "launched")
+                opened = wait_for(r"preview: open %s bytes=(\d+)" % re.escape(base),
+                                  mark, 60)
+                ck(opened is not None,
+                   "%s: Preview received it as its launch argument" % base,
+                   opened.group(0).strip() if opened else "no console line")
+                # THE FILE HAS TO BE BIGGER THAN THE PEEK BUFFER, and that is
+                # the assertion rather than a note. The bug this gates was
+                # `vfs_read(path, b, 64)` on a VFS with no partial read: it
+                # failed for every file longer than 64 bytes and succeeded for
+                # every file shorter, so a test built on a tiny fixture would
+                # have passed against the broken code and proved nothing.
+                if opened is not None:
+                    ck(int(opened.group(1)) > 64,
+                       "%s: is larger than the 64-byte peek that used to fail"
+                       % base, "%s bytes" % opened.group(1))
+                got = wait_for(want, mark, 90)
+                ck(got is not None, "%s (%s): decoded, not refused" % (base, label),
+                   got.group(0).strip() if got else "no line matching %r" % want)
+
+                # A picture, because a claim about a viewer that is not a
+                # screenshot is not a claim.
+                origin = None
+                for _ in range(15):
+                    ui.screendump(shot, settle=0.8)
+                    origin = content_origin(PPM(shot))
+                    if origin is not None:
+                        break
+                png = os.path.join(outdir, "assoc-%02d-%s.png" % (n + 1, base))
+                ppm_to_png(shot, png)
+                if origin is not None:
+                    cols = distinct_colours(PPM(shot), origin, WINW, CONTH)
+                    ck(cols > 3, "%s: the window has something in it" % base,
+                       "%d distinct colours" % cols)
+                else:
+                    ck(False, "%s: Preview's window was found" % base, "not on screen")
+
+                # Preview is SINGLE INSTANCE: a second SYS_OPEN_PATH while it is
+                # alive only focuses the window, so each case has to close it.
+                ui.key("esc", settle=0.4)
+                time.sleep(3)
+            if fails:
+                print("\n%d FAILED:" % len(fails))
+                for f in fails:
+                    print("  " + f)
+                return 1
+            print("\nPASS: every association opened in Preview and decoded")
+            return 0
+
         # --- open Preview from the Dock -----------------------------------
         ui.click_at_confirmed(probe, *dock_icon(slot, napps))
         m = wait_for(r"preview: pick 0 ", 0, 90)
@@ -407,44 +513,108 @@ def main(argv):
             return 1
         print("     list: " + ", ".join(sorted(picks)))
 
-        ui.screendump(shot, settle=1.0)
-        origin = content_origin(PPM(shot))
+        # The list is PRINTED before it is PAINTED, and on a busy TCG guest the
+        # gap is seconds -- a screendump taken on the log line alone catches the
+        # window still filled with its initial white. Wait for the anchor.
+        origin = None
+        for _ in range(20):
+            ui.screendump(shot, settle=0.8)
+            box = PPM(shot).find_color(PICK_PROBE)
+            if box is not None:
+                origin = (box[0], box[1])
+                break
         ck(origin is not None, "found Preview's content origin", str(origin))
         if origin is None:
             ppm_to_png(shot, os.path.join(outdir, "no-origin.png"))
             return 1
         ppm_to_png(shot, os.path.join(outdir, "00-list.png"))
 
-        sel = 0                       # the picker's own selection, mirrored
 
-        def goto_entry(idx):
-            nonlocal sel
-            while sel < idx:
-                ui.key("down", settle=0.10); sel += 1
-            while sel > idx:
-                ui.key("up", settle=0.10); sel -= 1
+        def click_row(idx):
+            """Click list row `idx`, aiming at the ROW rather than the pixel.
+
+            The pointer arrives a few pixels off: QEMU's `rel` events go through
+            an emulated PS/2 mouse whose packets are dropped when the guest is
+            busy, so a move to y=568 settles at 579. Insisting on the exact
+            pixel (click_at_confirmed) then never converges, and dead reckoning
+            silently picks the next row down -- which is how a click meant for
+            dot.png opened sample.mp3.
+
+            A row is 20 px tall, so exactness is not needed and is not the
+            question: what matters is which row the pointer is IN. Ask the
+            guest where it ended up (`[wm] ptr`), work out the row from that,
+            and re-aim until it is the right one."""
+            tx = origin[0] + pt(200)
+            ty = origin[1] + pt(70 + idx * 20 + 10)
+            for _ in range(6):
+                ui.goto(tx, ty, 0.35)
+                got = ui.guest_pointer()
+                if got is None:
+                    break                    # no report: trust the reckoning
+                ui.cur = [got[0], got[1]]
+                if (got[1] - origin[1] - pt(70)) // pt(20) == idx:
+                    break
+                # aim at the row's centre from where we actually are
+                ty += (origin[1] + pt(70 + idx * 20 + 10)) - got[1]
+            ui.click()
             time.sleep(0.4)
 
+        def open_entry(name):
+            """Click `name` in the list. Returns (log mark, the console line).
+
+            ONE CLICK, NOT ONE KEYSTROKE PER ROW. The emulated PS/2 controller
+            buffers a single byte, so a run of arrow keys is lossy in a way
+            nothing reports: eighteen Downs to reach row 18 arrived as two, the
+            selection sat on row 2, and every assertion after that was about
+            the wrong file. Pointer motion has no such problem -- it is
+            coalesced, and the driver confirms the pointer landed before it
+            clicks -- so the list is clicked, which is also how a person would
+            use it. A retry is still here because a click can miss while the
+            guest is repainting."""
+            base = os.path.basename(name)
+            idx = picks[name]
+            for _ in range(3):
+                mark = len(read(serial))
+                # PICK_Y0 + row*PICK_DY + half a row, in c/apps/gui/preview.c.
+                # The list never scrolls here: it fits PICK_ROWS entries.
+                click_row(idx)
+                got = wait_for(r"preview: open (\S+) ", mark, 40)
+                if got is not None and got.group(1) == base:
+                    return mark, got
+                if got is not None:
+                    back_to_list()
+            return mark, None
+
         def back_to_list():
+            """Backspace until the LIST is back, proved by its anchor.
+
+            The anchor is what makes this decisive: every screen clears to one
+            of three near-black colours, so "the background is there" cannot
+            tell a picture from the list, and the driver used to carry on
+            clicking at a window that was still showing the last file."""
             for _ in range(8):
                 ui.key("backspace", settle=0.4)
                 time.sleep(1.5)
                 ui.screendump(shot, settle=0.4)
-                if content_origin(PPM(shot)) == origin:
-                    p = PPM(shot)
-                    # the list screen has the highlight bar; the picture screens
-                    # fill the same area, so confirm with the app's own log
+                box = PPM(shot).find_color(PICK_PROBE)
+                if box is not None and (box[0], box[1]) == origin:
                     return True
             return False
 
         def refresh_picks():
-            """Merge every printing of the list seen so far.
+            """Re-read the app's list from its MOST RECENT printing.
 
-            The app reprints its list each time the picker is entered, and this
-            merges across all of them: the serial port carries the kernel's log
-            too, and although a line is written in one syscall, a name that did
-            come back mangled once will be clean in another printing."""
-            for mm in re.finditer(r"preview: pick (\d+) (\S+)", read(serial)):
+            The app rebuilds and reprints the list every time the picker is
+            shown -- a directory read on this kernel can come back short, so a
+            later showing may hold entries an earlier one missed -- which means
+            the indices move. Only the last printing is authoritative, so this
+            starts from the last `pick 0` and takes what follows."""
+            log = read(serial)
+            i = log.rfind("preview: pick 0 ")
+            if i < 0:
+                return
+            picks.clear()
+            for mm in re.finditer(r"preview: pick (\d+) (\S+)", log[i:]):
                 picks[mm.group(2)] = int(mm.group(1))
 
         for n, (name, label, kind, opt) in enumerate(cases):
@@ -452,12 +622,7 @@ def main(argv):
             if name not in picks:
                 ck(False, "%s (%s) is in Preview's list" % (name, label), "absent")
                 continue
-            mark = len(read(serial))
-            goto_entry(picks[name])
-            ui.key("ret", settle=0.3)
-
-            opened = wait_for(r"preview: open %s " % re.escape(os.path.basename(name)),
-                              mark, 40)
+            mark, opened = open_entry(name)
             ck(opened is not None, "%s (%s): opened" % (name, label),
                opened.group(0).strip() if opened else "no console line")
 
