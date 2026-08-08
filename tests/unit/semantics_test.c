@@ -432,6 +432,30 @@ int main(void)
     ckjs("(function(){var b=document.createElement('button');b.disabled=true;"
          "var n=0;b.addEventListener('click',function(){n++;});b.click();return n===0;})()",
          "click() on a disabled control does nothing");
+    /* The half of click() that happens BEFORE the event. */
+    ckjs("(function(){var c=document.createElement('input');c.type='checkbox';"
+         "document.body.appendChild(c);var seen=null;"
+         "c.addEventListener('click',function(){seen=c.checked;});"
+         "c.click();var after=c.checked;c.remove();"
+         "return seen===true && after===true;})()",
+         "a checkbox is already checked by the time its own click handler runs");
+    ckjs("(function(){var c=document.createElement('input');c.type='checkbox';"
+         "document.body.appendChild(c);"
+         "c.addEventListener('click',function(e){e.preventDefault();});"
+         "c.click();var still=c.checked;c.remove();return still===false;})()",
+         "... and a canceled click puts the checkedness back");
+    ckjs("(function(){var f=document.createElement('form');"
+         "var a=document.createElement('input'),b=document.createElement('input');"
+         "a.type=b.type='radio';a.name=b.name='g';a.checked=true;"
+         "f.appendChild(a);f.appendChild(b);document.body.appendChild(f);"
+         "b.click();var ok=b.checked && !a.checked;f.remove();return ok;})()",
+         "clicking a radio clears the rest of its group");
+    ckjs("(function(){var c=document.createElement('input');c.type='checkbox';"
+         "document.body.appendChild(c);var order=[];"
+         "c.addEventListener('input',function(){order.push('input');});"
+         "c.addEventListener('change',function(){order.push('change');});"
+         "c.click();c.remove();return order.join(',')==='input,change';})()",
+         "and it fires input then change, in that order");
 
     /* ---- <dialog> ---- */
     ckjs("typeof $('dlg').show === 'function' && typeof $('dlg').showModal === 'function' && "

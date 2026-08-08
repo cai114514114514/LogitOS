@@ -893,12 +893,75 @@ static const char *SEMANTICS_PRELUDE =
 "    return;\n"
 "  }\n"
 "}\n"
+/* THE PRE-CLICK ACTIVATION STEPS, which are the half of click() that is easy
+ * to forget because they happen BEFORE the event.
+ *
+ * A checkbox is checked by the time its own click handler runs -- that is what
+ * `if (this.checked)` inside an onclick reads, and it is why the state is set
+ * first and RESTORED if the event turns out to be canceled, rather than set
+ * afterwards. The corpus catches the difference directly:
+ * html/semantics/selectors/pseudo-classes/checked.html asserts that `:checked`
+ * matches a checkbox that was clicked, and a click() that only dispatches an
+ * event leaves it unmatched.
+ *
+ * A radio additionally clears the rest of its group, and neither ever
+ * UNchecks: clicking a checked radio is a no-op on its state. */
+"function preClickActivation(el) {\n"
+"  if (tagOf(el) !== 'input') return null;\n"
+"  var ty = lc(el.getAttribute('type') || '');\n"
+"  if (ty === 'checkbox') {\n"
+"    var was = !!el.checked, wasInd = !!el.indeterminate;\n"
+"    try { el.indeterminate = false; } catch (e) {}\n"
+"    try { el.checked = !was; } catch (e) {}\n"
+"    return { kind: 'checkbox', el: el, checked: was, indeterminate: wasInd,\n"
+"             moved: true };\n"
+"  }\n"
+"  if (ty === 'radio') {\n"
+"    var prev = radioGroup(el), before = [], moved = !el.checked;\n"
+"    for (var i = 0; i < prev.length; i++) before.push(!!prev[i].checked);\n"
+"    for (var j = 0; j < prev.length; j++) {\n"
+"      try { prev[j].checked = (prev[j] === el); } catch (e) {}\n"
+"    }\n"
+"    return { kind: 'radio', group: prev, before: before, moved: moved };\n"
+"  }\n"
+"  return null;\n"
+"}\n"
+/* The legacy-canceled-activation behaviour: a canceled click puts the state
+ * back. It has to, because the state was set BEFORE the event -- that is the
+ * whole point of doing it first -- so without this a preventDefault()ed click
+ * on a checkbox leaves it toggled, which is the visible bug every page that
+ * validates a checkbox in its own handler would hit. */
+"function undoPreClick(st) {\n"
+"  if (!st) return;\n"
+"  if (st.kind === 'checkbox') {\n"
+"    try { st.el.checked = st.checked; } catch (e) {}\n"
+"    try { st.el.indeterminate = st.indeterminate; } catch (e) {}\n"
+"    return;\n"
+"  }\n"
+"  if (st.kind === 'radio')\n"
+"    for (var i = 0; i < st.group.length; i++) {\n"
+"      try { st.group[i].checked = st.before[i]; } catch (e) {}\n"
+"    }\n"
+"}\n"
+"function radioGroup(el) {\n"
+"  var nm = el.getAttribute('name');\n"
+"  if (!nm) return [el];\n"
+"  var scope = formOwner(el) || rootOf(el), all = [], out = [];\n"
+"  descendants(scope && scope.nodeType ? scope : doc, { input: 1 }, all);\n"
+"  for (var i = 0; i < all.length; i++)\n"
+"    if (lc(all[i].getAttribute('type') || '') === 'radio' &&\n"
+"        all[i].getAttribute('name') === nm &&\n"
+"        (formOwner(all[i]) === formOwner(el))) out.push(all[i]);\n"
+"  return out.length ? out : [el];\n"
+"}\n"
 "var clicking = new WeakMap();\n"
 "meth(EP, 'click', function () {\n"
 "  var el = this;\n"
 "  if (isDisabledCtl(el)) return;\n"
 "  if (clicking.get(el)) return;\n"
 "  clicking.set(el, true);\n"
+"  var pre = null;\n"
+"  try { pre = preClickActivation(el); } catch (e) {}\n"
 "  try {\n"
 "    var C = G.PointerEvent || G.MouseEvent || G.Event;\n"
 "    var e;\n"
@@ -906,7 +969,16 @@ static const char *SEMANTICS_PRELUDE =
 "                               detail: 1, view: G }); }\n"
 "    catch (q) { e = new G.Event('click', { bubbles: true, cancelable: true, composed: true }); }\n"
 "    var notCanceled = el.dispatchEvent(e);\n"
-"    if (notCanceled) activationBehaviour(el);\n"
+"    if (notCanceled) {\n"
+"      if (pre && pre.moved) {\n"
+         /* input then change, in that order, and only for a state that really
+          * moved -- clicking an already-checked radio changes nothing and must
+          * fire nothing. */
+"        fireEvent(el, null, 'input', { bubbles: true, cancelable: false });\n"
+"        fireEvent(el, null, 'change', { bubbles: true, cancelable: false });\n"
+"      }\n"
+"      activationBehaviour(el);\n"
+"    } else undoPreClick(pre);\n"
 "  } finally { clicking.delete(el); }\n"
 "});\n"
 
