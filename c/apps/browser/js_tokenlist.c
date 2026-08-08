@@ -56,8 +56,24 @@ static const char *TOKENLIST_PRELUDE =
 "if (G.__logit_tokenlist) return;\n"
 "var doc = G.document;\n"
 "if (!doc || typeof doc.createElement !== 'function') return;\n"
+/* Element.prototype, and NOT Object.getPrototypeOf(createElement('div')).
+ *
+ * That shortcut was right for years and stopped being right when the interface
+ * hierarchy landed (7fc2bec): a div's immediate prototype is now
+ * HTMLDivElement.prototype, five links below Element.prototype, so defining
+ * `classList` there would have given it to <div> and to nothing else --
+ * silently, because every test that reaches for classList reaches for it on a
+ * div. iface_install publishes `Element` as a global constructor, so ask for
+ * the prototype by name and fall back to the walk only if it is missing. */
 "var probe = doc.createElement('div');\n"
-"var EP = probe && Object.getPrototypeOf(probe);\n"
+"var EP = null;\n"
+"if (typeof G.Element === 'function' && G.Element.prototype) EP = G.Element.prototype;\n"
+"if (!EP && probe) {\n"
+"  for (var pp = Object.getPrototypeOf(probe); pp && pp !== Object.prototype;\n"
+"       pp = Object.getPrototypeOf(pp))\n"
+"    if (Object.getOwnPropertyDescriptor(pp, 'classList')) { EP = pp; break; }\n"
+"  if (!EP) EP = Object.getPrototypeOf(probe);\n"
+"}\n"
 "if (!EP) return;\n"
 
 /* The DOM's ASCII whitespace: TAB LF FF CR SPACE. Not \s -- that also matches
@@ -343,10 +359,6 @@ static const char *TOKENLIST_PRELUDE =
 "} catch (e) { throw new Error('classList accessor is not replaceable: ' + e); }\n"
 
 "G.__logit_tokenlist = 1;\n"
-"try { G.__tlEP = EP;\n"
-"  var __c = Object.getOwnPropertyDescriptor(EP, 'classList');\n"
-"  G.__tlChk = __c ? (__c.set ? 'get+set' : 'getonly') : 'none';\n"
-"} catch (e) { G.__tlChk = 'threw ' + e; }\n"
 "})\n";
 
 void js_tokenlist_install(JSContext *ctx)

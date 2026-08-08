@@ -92,11 +92,28 @@ static const char *SELECT_PRELUDE =
 "var G = globalThis;\n"
 "var doc = G.document;\n"
 "if (!doc || typeof doc.createElement !== 'function') return;\n"
-/* The element prototype is not reachable as a global: js_dom.c registers the
- * class but publishes no `Element` constructor. One throwaway element is the
- * only way to get at the prototype every element shares. */
+/* THE ELEMENT PROTOTYPE IS `Element.prototype`, and this file used to take
+ * `Object.getPrototypeOf(document.createElement('div'))` instead. When that
+ * was written js_dom.c had ONE shared element prototype and the two were the
+ * same object; since the interface hierarchy landed (7fc2bec) they are not --
+ * a div's immediate prototype is HTMLDivElement.prototype, and every method
+ * installed there belongs to <div> alone.
+ *
+ * That is invisible in ordinary use and invisible in most of the corpus,
+ * because a test that wants an element reaches for a div. It is not invisible
+ * in `svg.querySelector(...)`, `input.matches(...)` or `td.closest(...)`,
+ * which is most of what these methods are for. iface_install publishes
+ * `Element` as a global, so ask by name; the walk is the fallback for a build
+ * that has not got there. */
 "var probe = doc.createElement('div');\n"
-"var EP = Object.getPrototypeOf(probe);\n"
+"var EP = null;\n"
+"if (typeof G.Element === 'function' && G.Element.prototype) EP = G.Element.prototype;\n"
+"if (!EP && probe) {\n"
+"  for (var pp = Object.getPrototypeOf(probe); pp && pp !== Object.prototype;\n"
+"       pp = Object.getPrototypeOf(pp))\n"
+"    if (Object.getOwnPropertyDescriptor(pp, 'getAttribute')) { EP = pp; break; }\n"
+"  if (!EP) EP = Object.getPrototypeOf(probe);\n"
+"}\n"
 "if (!EP) return;\n"
 
 "var HTMLNS = 'http://www.w3.org/1999/xhtml';\n"
