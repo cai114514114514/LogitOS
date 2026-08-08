@@ -130,7 +130,9 @@ static void test_create(void)
     CK(streq_eval("[t.nodeType, c.nodeType, f.nodeType, e.nodeType, document.nodeType,"
                   " document.body.nodeType].join(',')", "3,8,11,1,9,1"),
        "nodeType: TEXT=3 COMMENT=8 FRAGMENT=11 ELEMENT=1 DOCUMENT=9");
-    CK(streq_eval("[t.nodeName, c.nodeName, e.nodeName].join(',')", "#text,#comment,span"),
+    CK(streq_eval("[t.nodeName, c.nodeName, e.nodeName].join(',')", "#text,#comment,SPAN"),
+       /* An HTML element name comes back UPPERCASE as of the interface-hierarchy
+        * work; "#text" / "#comment" do not, which is the half worth asserting. */
        "nodeName of text / comment / element");
     CK(streq_eval("t.nodeValue", "hello"), "createTextNode's data reads back through nodeValue");
     CK(streq_eval("t.data", "hello"), "and through .data (CharacterData's spelling)");
@@ -147,7 +149,9 @@ static void test_create(void)
        "and reports the SVG namespace");
     CK(streq_eval("e.namespaceURI", "http://www.w3.org/1999/xhtml"),
        "createElement is in the HTML namespace");
-    CK(streq_eval("document.createElementNS('http://www.w3.org/1999/xhtml','DIV').tagName", "div"),
+    CK(streq_eval("document.createElementNS('http://www.w3.org/1999/xhtml','DIV').localName", "div"),
+       /* Read through localName, because tagName now uppercases an HTML name
+        * back again -- the STORED name being lowercase is the property. */
        "an HTML-namespace createElementNS still lowercases");
     CK(streq_eval("document.createElementNS('http://www.w3.org/2000/svg','svg:rect').tagName", "rect"),
        "a qualified name's prefix is dropped, the local name kept");
@@ -311,7 +315,7 @@ static void test_insertion(void)
     CK(streq_eval("q.children.length", "3"), "the parent has three element children...");
     CK(streq_eval("f.childNodes.length", "0"), "...and the fragment is now empty, as the DOM says");
     CK(streq_eval("Array.prototype.map.call(q.children,function(c){return c.tagName;}).join(',')",
-                  "b,b,b"),
+                  "B,B,B"),
        "the fragment itself did NOT become a child (no '#document-fragment' in the tree)");
     CK(js_dom_inval_level() == INVAL_LAYOUT && js_dom_inval_roots() == 1
        && js_dom_inval_root(0, 0) == q,
@@ -446,12 +450,12 @@ static void test_attributes(void)
 /* ------------------------------------------------------------------ */
 static void test_head(void)
 {
-    CK(streq_eval("document.head.tagName", "head"), "document.head");
+    CK(streq_eval("document.head.tagName", "HEAD"), "document.head");
     CK(streq_eval("document.head.parentNode === document.documentElement", "true"),
        "and it is the document element's child");
     CK(run("var st = document.createElement('style'); document.head.appendChild(st);"),
        "appending to document.head works (this is how a CSS-in-JS runtime installs styles)");
-    CK(streq_eval("document.head.lastElementChild.tagName", "style"),
+    CK(streq_eval("document.head.lastElementChild.tagName", "STYLE"),
        "the style element is in the head");
 }
 
