@@ -104,6 +104,25 @@ static const struct item *item_for(struct node *n)
 static void typ(struct node *n, const char *s)
 { for (; *s; s++) fc_edit_insert(n, s, 1); }
 
+/* browser_paint.c's hit test, minus the framebuffer it needs to link: the LAST
+ * item in the display list covering the point (parent boxes are emitted before
+ * their children, so the last one is the innermost), climbed to an element
+ * because a DOM event target cannot be a text node. Kept in step with
+ * browser_hittest_node() by hand; section 15 is the reason it exists. */
+static struct node *hittest_like_browser(int x, int y)
+{
+    const struct item *it = layout_items();
+    for (int i = layout_count() - 1; i >= 0; i--) {
+        const struct item *e = &it[i];
+        if (e->hidden) continue;
+        if (!(x >= e->x && x < e->x + e->w && y >= e->y && y < e->y + e->h)) continue;
+        struct node *p = e->node;
+        while (p && p->type != N_ELEM && p->type != N_DOCUMENT) p = p->parent;
+        return p;
+    }
+    return 0;
+}
+
 int main(void)
 {
     fc_set_dispatch(rec);
@@ -628,6 +647,77 @@ int main(void)
         CHECK(strcmp(fc_value(b, &len), "") == 0 && len == 0,
               "14. a NEW control in the recycled slot starts empty -- the serial "
               "check is what stops it inheriting the old one's text");
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* =============================================================== 15 ==
+     * THE LABEL IS CLICKABLE, which is a LAYOUT question and not a forms one.
+     *
+     * Found by the device test, not by this file: on the machine, clicking the
+     * word TICKBOX ticked nothing, and no `click` listener on the <label> ever
+     * fired -- so the failure was upstream of everything section 11 checks.
+     * fc_label_target() was right the whole time; the hit test never reached
+     * the label, because layout emitted its text with no box to hit.
+     *
+     * The hit test itself lives in browser_paint.c, which needs a GUI to link,
+     * so what is reproduced here is its RULE (the last item covering the point,
+     * climbed to an element) over the same display list. That is the part that
+     * was wrong, and it is testable without a framebuffer. */
+    {
+        /* The device page, verbatim -- the label follows a block-level <form>
+         * with margins, which the first version of this section left out and
+         * which is exactly where the difference turned out to be. */
+        const char *html =
+            "<body>"
+            "<div id='anchor'>ANCHOR</div>"
+            "<form id='f' action='/search' method='get'>"
+            "<input id='q' name='q'><br>"
+            "<input id='q2' name='r'><br>"
+            "</form>"
+            "<label id='lab' for='cb'>TICKBOX</label>"
+            "<input id='cb' type='checkbox' name='cb'>"
+            "</body>";
+        const char *page_css =
+            "html, body { background:#ffffff; margin:0; padding:0; color:#000000; }"
+            "#anchor { background:#fe01fe; width:240px; height:30px; }"
+            "#q  { font-size:24px; width:300px; border:3px solid #01fe02; }"
+            "#q2 { font-size:24px; width:200px; border:3px solid #fe0102; }"
+            "form { display:block; margin:12px 0; }"
+            "label { font-size:20px; }";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, page_css, (int)strlen(page_css));
+        layout_page(root, 600);
+
+        struct node *lab = by_id(root, "lab");
+        struct node *cb = by_id(root, "cb");
+
+        /* Find the text box that carries the label's own text. */
+        const struct item *it = layout_items();
+        const struct item *txt = 0;
+        for (int i = 0; i < layout_count(); i++)
+            if (it[i].type == IT_TEXT && it[i].text &&
+                strncmp(it[i].text, "TICKBOX", 7) == 0) txt = &it[i];
+        CHECK(txt != 0, "15. the label's text is laid out");
+
+        if (txt) {
+            /* The device clicked the first dark pixel of the glyph, so aim at
+             * the top-left of the text box -- the exact spot that failed. */
+            int px = txt->x + 2, py = txt->y + 2;
+            struct node *hit = hittest_like_browser(px, py);
+            CHECK(hit != 0, "15. a click on the label's first glyph hits SOMETHING");
+            CHECK(hit == lab,
+                  "15. and that something is the <label> -- the click that "
+                  "ticks a checkbox on every real page");
+            CHECK(fc_label_target(hit) == cb,
+                  "15. so the label resolves to the control it labels");
+            /* And the far end of the word, which is a different box column. */
+            struct node *hit2 = hittest_like_browser(txt->x + txt->w - 2,
+                                                    txt->y + txt->h / 2);
+            CHECK(hit2 == lab, "15. and so does a click at the end of the word");
+        }
+        focus_reset();
+        layout_free();
         fc_reset();
         dom_free(root);
     }

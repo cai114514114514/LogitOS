@@ -82,7 +82,8 @@ label { font-size: 20px; }
   <input id="q" name="q" autocomplete="off"><br>
   <input id="q2" name="r"><br>
 </form>
-<label id="lab" for="cb">TICKBOX</label><input id="cb" type="checkbox" name="cb">
+<label id="lab" for="cb">TICKBOX</label><input id="cb" type="checkbox" name="cb" form="f">
+<input type="hidden" name="nope" value="x">
 <script>
 var q = document.getElementById('q');
 var q2 = document.getElementById('q2');
@@ -93,8 +94,20 @@ q.addEventListener('focus', function () {
 q.addEventListener('input', function () { console.log('FORMS-INPUT ' + q.value); });
 q2.addEventListener('focus', function () { console.log('FORMS-FOCUS2 ' + q2.id); });
 cb.addEventListener('change', function () { console.log('FORMS-CHECK ' + cb.checked); });
-/* Two diagnostics, so a failure says WHICH stage broke: whether the click
-   reached the <label> at all, and whether the checkbox saw it. */
+/* Diagnostics, so a failure says WHICH stage broke rather than only that the
+   checkbox did not tick. The label failure was chased for a whole QEMU cycle
+   on the strength of "no FORMS-CHECK"; with these three lines the run says
+   whether the pointer produced a mousedown, whether it produced a mouseup, and
+   whether the two agreed enough to make a click -- which is where it broke. */
+document.addEventListener('mousedown', function (e) {
+  console.log('FORMS-MD ' + (e.target ? (e.target.id || e.target.tagName) : '?'));
+});
+document.addEventListener('mouseup', function (e) {
+  console.log('FORMS-MU ' + (e.target ? (e.target.id || e.target.tagName) : '?'));
+});
+document.addEventListener('click', function (e) {
+  console.log('FORMS-CLICK ' + (e.target ? (e.target.id || e.target.tagName) : '?'));
+});
 document.getElementById('lab').addEventListener('click', function () {
   console.log('FORMS-LABCLICK');
 });
@@ -221,6 +234,41 @@ def interior(box, inset=6):
     return (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
 
 
+def dark_bbox(p, box, thresh=90):
+    """The bounding box of every dark pixel in `box`, or None.
+
+    first_dark() gives the FIRST such pixel, which for a word of text is the
+    top-left tip of its first glyph -- and that is the wrong thing to click.
+    See the note at the label click for what it cost."""
+    x0, y0, x1, y1 = box
+    lx = ly = 1 << 30
+    hx = hy = -1
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b = p.at(x, y)
+            if (r + g + b) / 3 < thresh:
+                if x < lx: lx = x
+                if x > hx: hx = x
+                if y < ly: ly = y
+                if y > hy: hy = y
+    return None if hx < 0 else (lx, ly, hx, hy)
+
+
+def browser_frame():
+    """The Browser window's frame, from the guest's own report on serial.
+
+    Needed because the WM grabs a RESIZE at the window's edge and never passes
+    that press to the app, so a click a couple of pixels inside the frame is
+    swallowed -- silently, and looking exactly like an app that ignores the
+    mouse."""
+    m = None
+    for line in serial().splitlines():
+        g = re.match(r"\[wm\] win \d+ frame (\d+) (\d+) (\d+) (\d+).*Browser", line)
+        if g:
+            m = tuple(int(v) for v in g.groups())
+    return m
+
+
 try:
     if not wait_serial("LOGIT_BOOT_OK", 180, "boot"):
         die("kernel never printed LOGIT_BOOT_OK")
@@ -336,11 +384,30 @@ try:
     # second field's own painted box is the only way to be sure the click lands
     # on the label -- a harness that clicks the wrong thing reports a product
     # bug that does not exist.
+    #
+    # AND AIM AT THE MIDDLE OF THE WORD, not at its first dark pixel. The label
+    # sits at page x=0, i.e. flush against the browser window's left edge, and
+    # the WM claims a band a few pixels wide there as a RESIZE GRAB: a press
+    # inside it is consumed by the compositor and never delivered to the app,
+    # while the RELEASE still is (by design -- see the note above the release
+    # loop in wm.c). The guest therefore saw a mouseup with no mousedown, made
+    # no `click` out of the pair, and the checkbox did not tick. That is a
+    # harness aiming at the frame, and it cost a full QEMU cycle to tell apart
+    # from a browser that ignores clicks. The bbox centre is inside the word;
+    # the assertion below refuses to run at all if it is not inside the window.
     b2 = p2.find_color(BOX2_EDGE) or field
     lab_band = (b2[0], b2[3] + 8, b2[0] + 300, b2[3] + 90)
-    hit = p2.first_dark(lab_band)
-    if hit:
-        ui.click_at(hit[0] + 1, hit[1] + 2)
+    bb = dark_bbox(p2, lab_band)
+    hit = None
+    if bb:
+        hit = ((bb[0] + bb[2]) // 2, (bb[1] + bb[3]) // 2)
+        fr = browser_frame()
+        if fr:
+            ck(hit[0] > fr[0] + 8 and hit[0] < fr[0] + fr[2] - 8,
+               "the label click lands in the window's CONTENT, clear of the "
+               "resize band (x=%d, window x=%d..%d)" % (hit[0], fr[0], fr[0] + fr[2]))
+        print("   label ink %r -> clicking %r" % (bb, hit))
+        ui.click_at(hit[0], hit[1])
         time.sleep(1.2)
     if CONTROL:
         ck("FORMS-CHECK" not in serial(), "CONTROL: clicking the label ticked nothing")
@@ -373,8 +440,18 @@ try:
        "to the form's action, with a query string (method=get)")
     ck("q=" + TYPED in got,
        "carrying the typed value under the field's name (q=%s)" % TYPED)
+    # FORM ASSOCIATION, both directions, and the first version of this test got
+    # it backwards. The checkbox lives OUTSIDE <form id=f> and is submitted only
+    # because it carries form="f"; the hidden input beside it carries no such
+    # attribute and must therefore be absent, however ordinary it looks. An
+    # earlier run demanded cb=on from a checkbox with no association at all and
+    # read the browser's correct refusal as a bug.
     ck("cb=on" in got,
-       "and the ticked checkbox, as the HTML default value 'on'")
+       "and the ticked checkbox -- which is OUTSIDE the form and reaches it "
+       "only through form=\"f\" -- as the HTML default value 'on'")
+    ck("nope=" not in got,
+       "while the control outside the form with NO form= attribute is not "
+       "submitted at all")
     ck("r=" in got, "and the empty second field, which a form still submits")
 
     time.sleep(3)
