@@ -97,19 +97,60 @@ $(BUILD)/previewnegctl.elf: $(PREVIEW_CLI_DEPS)
 $(BUILD)/previewnegctl.aex: $(BUILD)/previewnegctl.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewnegctl.elf $@ previewnegctl - 'P' 200 150 110
 
-# THE POSITIVE MEASUREMENT RUNS ON THE SHIPPED GUI BUILD, over QMP, because
-# that is the player a user gets. The serial harness below cannot currently run
-# it: a shell-spawned process that owns a window and then yields or sleeps never
-# runs again on this kernel (see the note in tests/boot/run-preview-timing.sh --
-# it is handed to the scheduler line, not worked around here). The NEGATIVE
-# control is unaffected, because the build it exercises never waits at all,
-# which is the whole point of it.
+# BOTH HALVES RUN ON THE SHIPPED GUI BUILD, over QMP, because that is the
+# player a user gets -- and because the serial harness above cannot be relied
+# on: a shell-spawned process that owns a window and then waits intermittently
+# never runs again on this kernel (see the note in
+# tests/boot/run-preview-timing.sh; handed to the scheduler line, not worked
+# around here). That script is kept, and is the check to run once it is fixed,
+# but no target depends on it.
+#
+# So the negative control needs the SABOTAGED player at the LogitFS root as
+# preview.aex, on a disk otherwise identical to the real one. Rather than keep
+# a second copy of the $(DISK) recipe -- which would rot the first time another
+# line added a file -- the recipe is asked for itself with `make -n` and one
+# argument is substituted. It cannot drift.
+$(BUILD)/previewneg.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
+                         c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
+                         $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
+                         $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS)
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview.c \
+	    -o $(BUILD)/apps/previewneg.o
+	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
+	    $(BUILD)/apps/crt0.o $(BUILD)/apps/previewneg.o $(VID_OBJ) $(MED_OBJ) \
+	    $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
+$(BUILD)/previewneg.aex: $(BUILD)/previewneg.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/previewneg.elf $@ Preview h264 'P' 200 150 110
+
+$(BUILD)/disk-prevneg.img: $(DISK) $(BUILD)/previewneg.aex
+	@$(MAKE) --no-print-directory -n -W tools/mkfs.py $(DISK) \
+	    | sed -n '/tools\/mkfs.py/,$$p' \
+	    | sed -e '1s|tools/mkfs.py $(DISK)|tools/mkfs.py $@|' \
+	          -e 's|$(BUILD)/preview.aex:preview.aex|$(BUILD)/previewneg.aex:preview.aex|' \
+	    > $(BUILD)/mkfs-prevneg.sh
+	@grep -q 'previewneg.aex:preview.aex' $(BUILD)/mkfs-prevneg.sh || \
+	    { echo "FAIL: the disk recipe no longer packs preview.aex the same way"; exit 1; }
+	@sh $(BUILD)/mkfs-prevneg.sh
+
 test-preview-timing: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
 	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) \
 	    --ref $(BUILD)/previewref --timing-only
 
-test-preview-negctl: $(ISO) $(DISK)
-	@bash tests/boot/run-preview-timing.sh $(ISO) $(DISK) negctl
+test-preview-negctl: $(ISO) $(BUILD)/disk-prevneg.img $(BUILD)/previewref/.stamp
+	@echo "negative control: the frame-delay wait is compiled out"
+	@if python3 tests/qmp/qmp_preview.py --iso $(ISO) \
+	        --disk $(BUILD)/disk-prevneg.img --ref $(BUILD)/previewref \
+	        --timing-only --out $(BUILD)/preview-shots-negctl \
+	        >$(BUILD)/preview-negctl.log 2>&1; then \
+	    echo "FAIL: with the frame-delay wait removed, test-preview-timing still"; \
+	    echo "      PASSED -- it is not measuring the player."; \
+	    sed 's/^/       /' $(BUILD)/preview-negctl.log; \
+	    exit 1; \
+	 else \
+	    echo "PASS (negative control): the wait is gone -> the loop finishes early"; \
+	    grep -aE 'declared|elapsed|^FAIL' $(BUILD)/preview-negctl.log | sed 's/^/       /'; \
+	 fi
 
 # THE ASSOCIATION, from the other end. test-preview drives Preview's own list;
 # this drives the route a user takes -- SYS_OPEN_PATH, which is all a Finder

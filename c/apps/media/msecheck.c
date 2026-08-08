@@ -179,7 +179,7 @@ int main(int argc, char **argv)
     for (int step = 0; step < 2000000 && !mel_ended(el); step++) {
         unsigned long long el_ns = monotonic_ns() - t0;
         int want = (int)(el_ns / 400000000ULL) + 1;
-        while (!drained && nv < want && nv < 16) {
+        while (nv < want && nv < 16) {
             long n = 0;
             snprintf(path, sizeof path, "%s/video-%d.m4s", dir, nv + 1);
             unsigned char *b = slurp(path, &n);
@@ -188,7 +188,7 @@ int main(int argc, char **argv)
             free(b);
             nv++;
         }
-        while (!drained && na < want && na < 16) {
+        while (na < want && na < 16) {
             long n = 0;
             snprintf(path, sizeof path, "%s/audio-%d.m4s", dir, na + 1);
             unsigned char *b = slurp(path, &n);

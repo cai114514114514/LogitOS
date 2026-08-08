@@ -914,10 +914,10 @@ test-p521-control: $(BUILD)
 # invisible to `openssl s_server` -- it resumes happily with an
 # obfuscated_ticket_age ten times too small, and it never issues enough tickets
 # at once for a one-per-host cache to matter. They showed up against a real
-# production server (www.kimi.com: eight tickets per handshake), where two of
-# three pooled connections were refused. The only signal interop gets is
-# "resumed or not", and a lenient server resumes either way -- so these are
-# asserted on the bytes we emit and on the state of the cache instead.
+# production server (www.kimi.com: eight tickets per handshake, single-use),
+# where two of three pooled connections were refused. The only signal interop
+# gets is "resumed or not", and a lenient server resumes either way -- so these
+# are asserted on the bytes we emit and the state of the cache instead.
 PSK_TEST_SRC := tests/unit/tls_psk_test.c c/net/tls/tls_psk.c \
                 c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c
 PSK_TEST_INC := -Ic/crypto -Ic/net/tls -Ic/drivers/timer -Ic/kernel/core
