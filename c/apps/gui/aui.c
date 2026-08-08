@@ -62,7 +62,8 @@
  * are absent, not empty. */
 #ifdef AUI_COST
 static unsigned long long ck_clear, ck_text, ck_shape, ck_other, ck_frames;
-static unsigned long long ck_t0;
+static unsigned long long ck_t0, ck_fstart, ck_wall;
+static int ck_miss0;
 static unsigned ck_last;
 static void t0_(void) { ck_t0 = monotonic_ns(); }
 static void t1_(unsigned long long *b) { *b += monotonic_ns() - ck_t0; }
@@ -790,6 +791,11 @@ void aui_begin(unsigned bg)
     tip_text = 0;
     gui_clip(0, 0, 0, 0);
     gui_clear(bg);
+#ifdef AUI_COST
+    /* The frame's wall clock starts AFTER the theme probe so the residual below
+     * is drawing, not startup. */
+    ck_fstart = monotonic_ns();
+#endif
 }
 
 /* Popups and tooltips are drawn LAST so they sit over everything, and they are
@@ -813,6 +819,21 @@ static void ck_report(void)
     unsigned long long clear_us = ck_clear / 1000 / n;
     unsigned long long text_us = ck_text / 1000 / n;
     unsigned long long other_us = ck_other / 1000 / n;
+    /* THE NUMBER THAT IS ACTUALLY THE ENGINE. The four buckets above are time
+     * spent INSIDE syscalls -- the compositor filling pixels and the kernel
+     * rasterizing glyphs -- and none of it is Open Logit. The engine runs in
+     * ring 3 between those calls, so its cost is the residual: frame wall time
+     * minus everything the kernel was doing. It also includes aui's own widget
+     * and layout logic, which is why it is labelled `app`, not `raster`. The
+     * mask-cache MISS count is the sharper instrument: a miss is one corner
+     * tile actually rasterized, and it is what the residual is made of. */
+    unsigned long long sys = ck_clear + ck_text + ck_shape + ck_other;
+    unsigned long long app_us = (ck_wall > sys ? ck_wall - sys : 0) / 1000 / n;
+    unsigned long long wall_us = ck_wall / 1000 / n;
+    int hits = 0, misses = 0;
+    gfx_mask_stats(&hits, &misses);
+    int dmiss = misses - ck_miss0;
+    ck_miss0 = misses;
     char b[160]; int q = 0;
     const char *k;
     char t[24];
@@ -827,11 +848,14 @@ static void ck_report(void)
     PUT(" text_us=");  NUM(text_us);
     PUT(" shape_us="); NUM(shape_us);
     PUT(" other_us="); NUM(other_us);
+    PUT(" app_us=");   NUM(app_us);
+    PUT(" wall_us=");  NUM(wall_us);
+    PUT(" tiles=");    NUM((unsigned)(dmiss < 0 ? 0 : dmiss));
     b[q++] = '\n';
     #undef PUT
     #undef NUM
     sys_write(1, b, q);
-    ck_clear = ck_text = ck_shape = ck_other = ck_frames = 0;
+    ck_clear = ck_text = ck_shape = ck_other = ck_frames = ck_wall = 0;
 }
 #endif
 
@@ -847,6 +871,7 @@ void aui_end(void)
     rg_lo = rg_lo_a; rg_hi = rg_hi_a;      /* the radio range this frame observed */
     gui_flush();
 #ifdef AUI_COST
+    ck_wall += monotonic_ns() - ck_fstart;
     ck_report();
 #endif
 }

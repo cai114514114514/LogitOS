@@ -4,13 +4,20 @@
 qmp_aui_bench.py answers "what does a frame cost". This answers the question
 that matters for a rendering engine: HOW MUCH OF IT IS THE ENGINE. The gallery
 is built against an aui.c compiled with -DAUI_COST, which brackets every drawing
-syscall with CLOCK_MONOTONIC and sorts the time into four buckets --
+syscall with CLOCK_MONOTONIC and sorts the frame's wall time into five buckets --
 
-    clear    aui_begin()'s unconditional gui_clear of the whole window
-    text     gui_text_run + text_measure_px (the kernel's glyph rasterizer)
-    shape    gui_rect / gui_blit / gui_rrect / gui_glass / gui_icon, i.e. every
-             call Open Logit's masks and bands go out through
-    other    gui_clip + gui_flush
+    clear    aui_begin()'s unconditional gui_clear of the whole window   [kernel]
+    text     gui_text_run + text_measure_px, the M14 glyph rasterizer    [kernel]
+    shape    gui_rect / gui_blit / gui_rrect / gui_glass / gui_icon --   [kernel]
+             the compositor FILLING pixels. Open Logit's masks and bands
+             go out through these calls but this is not the engine's own
+             time, it is the cost of putting them on the screen.
+    other    gui_clip + gui_flush                                        [kernel]
+    app      THE RESIDUAL: frame wall minus all of the above, i.e. the
+             only part that runs in ring 3 -- Open Logit's rasterizer,
+             its mask expansion, and aui's widget/layout logic. The
+             corner-tile count printed beside it is the sharper
+             instrument: a tile is one cache MISS, one arc rasterized.
 
 -- and prints them on the serial console. The point of the split is on the
 record: the toolkit line measured 24-27 ms for a full-window repaint and found
@@ -107,44 +114,65 @@ def run_one(iso, disk, xres, yres):
         print("FAIL the guest never reported a cost split")
         return None
 
-    tot = {k: 0 for k in ("frames", "clear_us", "text_us", "shape_us", "other_us")}
+    # Each row is one ~2 s report window. The us fields are already per-frame
+    # MEANS, so they are re-weighted by that window's frame count; `tiles` is a
+    # window TOTAL and must not be (weighting a total by n and then dividing by
+    # sum(n) yields the mean window total, which reads as a per-frame figure
+    # roughly 40x too large -- it did, in the first run of this).
+    MEANS = ("clear_us", "text_us", "shape_us", "other_us", "app_us", "wall_us")
+    tot = {k: 0 for k in MEANS}
+    tot["frames"] = 0
+    tot["tiles"] = 0
     for d in rows:
         n = d["frames"]
         tot["frames"] += n
-        for k in ("clear_us", "text_us", "shape_us", "other_us"):
-            tot[k] += d.get(k, 0) * n          # each row is already a per-frame mean
+        tot["tiles"] += d.get("tiles", 0)
+        for k in MEANS:
+            tot[k] += d.get(k, 0) * n
     n = max(1, tot["frames"])
-    per = {k: tot[k] / float(n) for k in ("clear_us", "text_us", "shape_us", "other_us")}
-    total = sum(per.values())
-    print("  %-12s %10s %8s" % ("bucket", "us/frame", "share"))
-    for k, name in (("clear_us", "gui_clear"), ("text_us", "text"),
-                    ("shape_us", "shapes (engine)"), ("other_us", "clip+flush")):
-        print("  %-12s %10.0f %7.1f%%"
-              % (name, per[k], 100.0 * per[k] / max(1.0, total)))
-    print("  %-12s %10.0f          over %d frames" % ("TOTAL", total, tot["frames"]))
+    per = {k: tot[k] / float(n) for k in MEANS}
+    per["tiles"] = tot["tiles"] / float(n)
+    wall = max(1.0, per["wall_us"])
+    print("  %-22s %10s %8s" % ("bucket", "us/frame", "share"))
+    for k, name in (("clear_us", "gui_clear (kernel)"),
+                    ("text_us", "text (kernel)"),
+                    ("shape_us", "rect+blit (kernel)"),
+                    ("other_us", "clip+flush (kernel)"),
+                    ("app_us", "ENGINE + toolkit (r3)")):
+        print("  %-22s %10.0f %7.1f%%" % (name, per[k], 100.0 * per[k] / wall))
+    print("  %-22s %10.0f          over %d frames, %.1f corner tiles rasterized/frame"
+          % ("FRAME WALL", per["wall_us"], tot["frames"], per["tiles"]))
     return per
 
 
 def main(argv):
+    argv = [a for a in argv]
+    modes = MODES
+    for a in list(argv):
+        if a.startswith("--mode="):        # e.g. --mode=1280x800, for a quick pass
+            w, h = a.split("=", 1)[1].split("x")
+            modes = [(int(w), int(h))]
+            argv.remove(a)
     iso = argv[1] if len(argv) > 1 else os.path.join(ROOT, "build", "logit.iso")
     disk = argv[2] if len(argv) > 2 else os.path.join(ROOT, "build", "disk.img")
     print("=== Open Logit: where a frame's time actually goes ===")
     print("(instrumented build: one extra syscall per draw call, so read the")
     print(" SHARES, not the absolute total -- `make bench-aui` gives that)")
     out = []
-    for xres, yres in MODES:
+    for xres, yres in modes:
         r = run_one(iso, disk, xres, yres)
         if r is None:
             return 1
         out.append(((xres, yres), r))
 
-    print("\n=== summary: the engine's share against the frame ===")
-    print("%-12s %10s %10s %10s %10s" % ("mode", "clear", "text", "shapes", "shape %"))
+    print("\n=== summary: what a frame is made of (us), and the engine's share ===")
+    print("%-12s %8s %8s %10s %8s %8s %8s"
+          % ("mode", "clear", "text", "rect+blit", "engine", "wall", "engine%"))
     for (xres, yres), r in out:
-        t = sum(r.values())
-        print("%-12s %10.0f %10.0f %10.0f %9.1f%%"
+        w = max(1.0, r["wall_us"])
+        print("%-12s %8.0f %8.0f %10.0f %8.0f %8.0f %7.1f%%"
               % ("%dx%d" % (xres, yres), r["clear_us"], r["text_us"],
-                 r["shape_us"], 100.0 * r["shape_us"] / max(1.0, t)))
+                 r["shape_us"], r["app_us"], r["wall_us"], 100.0 * r["app_us"] / w))
     return 0
 
 

@@ -582,6 +582,98 @@ uninstalled transaction, replayed deterministically) · `test-hugefile` ·
 hands one block to two files produces a file of exactly the right length holding
 someone else's data, which a length check cannot see.
 
+## Open Logit: the 2D rendering engine (`c/lib/gfx`)
+
+**It exists because there were three coverage/paint paths and every new app
+started from `gui_rect`.** The kernel's M14 glyph rasterizer (`c/kernel/gui/
+raster.c`, 285 lines) does glyphs and stays; a SECOND coverage rasterizer lived
+in the widget toolkit (`c/apps/gui/aui.c`); a THIRD hand-rolled paint path lived
+in the browser (`c/apps/browser/browser_paint.c` -- an integer square root and a
+per-row band loop). Open Logit is the one engine the last two are now built on,
+and **both of their rasterizers are deleted**, which was the point: an engine
+that coexists with what it replaced is a fourth path.
+
+**Ring 3, and filtered out of `C_SRC` on purpose.** It sits beside `c/lib/text`
+and `c/lib/image` and CONSUMES them -- it rasterizes no glyph and decodes no
+image. Nothing in the kernel fills a path, and linking a rasterizer for
+attacker-shaped geometry (a page's `border-radius`, an SVG's path data) into
+ring 0 under the BKL would serve no ring-0 caller.
+
+**Phase 1 is FILL ONLY**: paths (move/line/quad/cubic/close), nonzero + evenodd,
+a scanline coverage rasterizer, four paints (solid / linear gradient / radial
+gradient / image), Porter-Duff src-over, an **affine transform applied to
+PATHS** (which is what CSS `transform` needs -- `translate(-50%,-50%)` centring
+is reached by 14 of 15 real pages), and a rectangle clip. **Stroke and path
+clipping are phase 2 and do not exist**; what they will cost is written at the
+bottom of `gfx.h`, including the trap already on record -- a stroked corner's
+inner ellipse shares the outer's CENTRE and differs only in radii, and insetting
+the centre pinches the arc to nothing before it meets the straight edges.
+
+**Construction** (deliberately the glyph rasterizer's, so a shape and the type
+on it are antialiased by the same rule at the same size): 4 sub-scanlines per
+pixel row with EXACT fractional horizontal coverage along each. Horizontal
+coverage is analytic and free, vertical costs a pass -- so buy accuracy where it
+is cheap. Integer only, 24.8 coordinates and 16.16 matrices. **No libc and no
+allocator**: six GUI apps link crt0 + aui + this and nothing else, path storage
+is the caller's, and every bulk clear goes through `gfx_zero()`, whose volatile
+pointer is what forbids `-O2` rewriting it into a call to `memset`.
+
+**Three techniques carried over from the toolkit, because they are why it is
+cheap enough to run a desktop on.** Masks are generated at DEVICE resolution and
+blitted into a POINT rect of the same device size, so the compositor's
+nearest-neighbour rescale is the identity and antialiasing survives 150%/200%.
+Only what CURVES is rasterized -- a rounded rect is a 9-slice (three bands +
+four `r x r` corner tiles), so **O(r^2), not O(w*h)**: 0.144 us against 6.96 us
+to rasterize the same 200x40 r=8 shape whole, and zero on the second card. Masks
+are cached by exact device geometry.
+
+**The bar is a number against an INDEPENDENT reference**, because 2D coverage
+has no ffmpeg to diff against but is exactly computable, so the oracle is built:
+every filled shape against a 16x16 supersampled evaluation of its own analytic
+predicate, every blend against Porter-Duff recomputed in double. Worst pixel
+error: circles r=3..48 **0.091**, ellipses 0.087, rounded rects 0.047, triangles
+0.119, corner tiles 0.078, ring tiles 0.078; src-over over 175 alpha/coverage
+combinations **1/255**. `make test-aui-mask` still passes unchanged -- it has its
+own, independently written reference, so the engine is checked against TWO
+oracles sharing no code.
+
+**A real bug found by building the reference first**: `gfx_over` truncated
+`da*(255-a)/255`, which at a=1, da=1 floors the destination's surviving alpha to
+ZERO -- the destination colour leaves the average and the result is the source at
+full strength, 17/255 off the definition. Rounding both divisions takes it to
+1/255. Everything faint over something faint was wrong that way.
+
+**Cost, measured on the machine and SPLIT**, because a frame total credits the
+engine with work it does not do. `-DAUI_COST` brackets every drawing syscall and
+reports the residual (`make bench-gfx-frame`, us/frame, TCG):
+
+```
+mode          clear    text  rect+blit  ENGINE   wall   engine%   tiles/frame
+1280x800        153    1124       2146     677   4128     16.4%       8.0
+1920x1200       391    1702       3882     755   6781     11.1%       8.2
+2560x1600       715    2230       5580     585   9136      6.4%       7.6
+```
+
+The engine's share FALLS as the display grows: the compositor's fill and the
+kernel's glyph work scale with pixels, the corner tiles do not. Uninstrumented
+(`make bench-aui`, 1920x1200): 6.3 ms for a normal page, 10.4 ms for the
+pathological all-geometry one.
+
+**Negative control**: `-DGFX_NO_AA` drops the rasterizer to one centre sample
+per row with binary horizontal coverage. Every shape still draws and still looks
+broadly right -- what breaks is the agreement with the reference, 67 assertions
+fail, and `make test-gfx-negctl` succeeds when the test fails. On device
+`test-aui-negctl` is the same shape one layer up.
+
+**Nothing was asked of the kernel and nothing taken.** `fb.c`, `raster.c` and
+`wm.c` are untouched; the engine reaches the screen through `SYS_GUI_BLIT`, the
+one existing entry point with per-pixel alpha. Consequence worth knowing:
+`browser_paint.c`'s opaque rounded boxes no longer call `SYS_GUI_RRECT`, whose
+corner test is the boolean `dx*dx + dy*dy <= r*r`, so **a page's `border-radius`
+stopped being a staircase**.
+
+  `make test-gfx` `test-gfx-negctl` `test-aui-mask` `bench-gfx` `bench-gfx-frame`
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
