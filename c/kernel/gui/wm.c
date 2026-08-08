@@ -115,13 +115,145 @@ static volatile int dirty = 1;           /* the next frame needs a full recompos
 static uint32_t *back, *bg;
 static int W, H;
 
-/* Mark the screen for a full recomposite. Dirty-rectangle tracking was removed:
- * with the virtio-gpu DMA present a full frame is cheap, so every frame
- * composites the whole screen + cursor into `back` and presents it once. The old
- * partial-render + cursor save-under path left stale regions in `back` that the
- * cursor restore smeared into on-screen garbage. */
-static void dirty_full(void) { dirty = 1; }
-static void dirty_rect(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; dirty = 1; }
+/* ---- damage ---------------------------------------------------------------
+ *
+ * A compositor that redraws the whole screen for a keystroke is not slow
+ * because compositing is slow. It is slow because it does 4.1 M pixels of work
+ * for a 200 x 20 change, and no amount of making the wallpaper copy faster
+ * fixes an argument about WHAT to redraw.
+ *
+ * Dirty rectangles were here once and were removed on purpose; the reason was
+ * written down at this spot and half of it is now obsolete. The obsolete half:
+ * the pointer used to be pixels in the frame, the old partial path saved and
+ * restored what was under it, and a restore over a region that had never been
+ * recomposited smeared stale pixels across the screen. The pointer is a display
+ * plane now -- there is no save-under, and nothing to restore.
+ *
+ * The half that is NOT obsolete is the hard half, and it is why this is a
+ * correctness change wearing a performance change's clothes: `dirty_rect` used
+ * to DISCARD ALL FOUR of its arguments, so no caller in this file was ever held
+ * to reporting the true extent of what it changed. Every one of them is now.
+ * A caller that under-reports leaves pixels on screen that no longer belong
+ * there, and they stay until something else happens to cover them -- there is
+ * deliberately no periodic full repaint to paper over that, because a bug that
+ * heals itself twice a second is a bug no test can see. tests/qmp/qmp_damage.py
+ * is that test, and its negative control makes exactly this mistake on purpose
+ * and must fail.
+ *
+ * THE INVARIANT everything rests on: when wm_render returns, `back` holds a
+ * correct composite of the WHOLE screen. A frame re-lays each damage rectangle
+ * from the wallpaper up and draws every layer clipped to it, so every pixel it
+ * writes was reset first. That is what keeps the read-modify-write chrome --
+ * drop shadows, hairlines, the frosted panels -- idempotent from frame to frame
+ * instead of accumulating onto itself.
+ *
+ * Two primitives read a NEIGHBOURHOOD instead of their own pixel: fb_blur_rect
+ * and fb_liquid_glass. Those cannot be clipped to a sub-rectangle and still be
+ * right, because the backdrop they would sample outside the clip is last
+ * frame's output -- already frosted. So a damage rectangle that touches a glass
+ * panel is grown to contain the WHOLE panel (dmg_expand), which restores the
+ * property that the panel's entire backdrop was re-laid this frame. */
+#define NDMG 6                                 /* rectangles; past this, merged */
+struct drect { int x0, y0, x1, y1; };          /* half-open, DEVICE pixels */
+static struct drect dmg[NDMG];
+static int ndmg;
+static int dirty_all = 1;                      /* next frame is the whole screen */
+
+static int rect_hit(const struct drect *a, const struct drect *b)
+{ return a->x0 < b->x1 && b->x0 < a->x1 && a->y0 < b->y1 && b->y0 < a->y1; }
+static int rect_in(const struct drect *inner, const struct drect *outer)
+{ return inner->x0 >= outer->x0 && inner->y0 >= outer->y0 &&
+         inner->x1 <= outer->x1 && inner->y1 <= outer->y1; }
+static void rect_or(struct drect *a, const struct drect *b)
+{
+    if (b->x0 < a->x0) a->x0 = b->x0;
+    if (b->y0 < a->y0) a->y0 = b->y0;
+    if (b->x1 > a->x1) a->x1 = b->x1;
+    if (b->y1 > a->y1) a->y1 = b->y1;
+}
+static long rect_area(const struct drect *r)
+{ return (long)(r->x1 - r->x0) * (long)(r->y1 - r->y0); }
+
+static void dirty_full(void) { dirty_all = 1; ndmg = 0; dirty = 1; }
+
+/* Fold a rectangle into the list. Ones that touch are unioned -- and unioning
+ * two can bring the result into contact with a third, hence the loop. When the
+ * list is full the pair whose union wastes the least area is merged rather than
+ * the newest rectangle dropped: DROPPING DAMAGE IS HOW STALE PIXELS HAPPEN, and
+ * an over-large rectangle is only slow. */
+static void dmg_add(struct drect n)
+{
+    if (dirty_all) return;
+    for (;;) {
+        int merged = 0;
+        for (int i = 0; i < ndmg; i++)
+            if (rect_hit(&n, &dmg[i])) { rect_or(&n, &dmg[i]); dmg[i] = dmg[--ndmg]; merged = 1; break; }
+        if (merged) continue;
+        if (ndmg < NDMG) break;
+        int best = 0; long bestcost = -1;
+        for (int i = 0; i < ndmg; i++) {
+            struct drect u = n; rect_or(&u, &dmg[i]);
+            long cost = rect_area(&u) - rect_area(&n) - rect_area(&dmg[i]);
+            if (bestcost < 0 || cost < bestcost) { bestcost = cost; best = i; }
+        }
+        rect_or(&n, &dmg[best]);
+        dmg[best] = dmg[--ndmg];
+    }
+    dmg[ndmg++] = n;
+    /* Past three quarters of the screen the rectangles are no longer telling
+     * the truth about being small, and the per-region bookkeeping costs more
+     * than it saves. Say so, rather than pretending. */
+    long total = 0;
+    for (int i = 0; i < ndmg; i++) total += rect_area(&dmg[i]);
+    if (total * 4 > (long)W * (long)H * 3) dirty_full();
+}
+
+static void dirty_rect(int x, int y, int w, int h)
+{
+    if (dirty_all) { dirty = 1; return; }
+    struct drect r = { x, y, x + w, y + h };
+    if (r.x0 < 0) r.x0 = 0;
+    if (r.y0 < 0) r.y0 = 0;
+    if (r.x1 > W) r.x1 = W;
+    if (r.y1 > H) r.y1 = H;
+    /* Nothing on screen changed, so do not ask for a frame. Setting `dirty`
+     * here and then adding no rectangle would leave wm_render with an empty
+     * damage list, which it can only read as "repaint everything" -- a window
+     * dragged entirely off the left edge would have cost a full screen. */
+    if (r.x0 >= r.x1 || r.y0 >= r.y1) return;
+    dirty = 1;
+    dmg_add(r);
+}
+
+/* A window's real footprint: its rectangle PLUS the drop-shadow bands
+ * draw_frame lays around it (the widest is S(8)). Damage that stops at the
+ * window's own edge leaves the old shadow standing when the window moves --
+ * a thin dark ghost of the previous position, which is exactly the kind of
+ * artefact that makes people distrust a partial-render path. */
+static void win_box(const struct win *w, struct drect *r)
+{
+    int t = S(8) + 1;
+    r->x0 = w->x - t;            r->y0 = w->y - t;
+    r->x1 = w->x + w->w + t;     r->y1 = w->y + w->h + t;
+}
+/* THE NEGATIVE CONTROL. Set to 1 -- tests/qmp/qmp_damage.py --negative flips
+ * this exact line in a throwaway copy of the tree -- a window reports only its
+ * top-left quarter as damaged. That is precisely the mistake the whole change
+ * is exposed to, made on purpose, and the pixel checks in that driver MUST fail
+ * against it. Without it, "no stale pixels" is a claim about a test that has
+ * never once failed, which is not evidence of anything. */
+#define WM_DAMAGE_LIE 0
+
+static void dirty_win(const struct win *w)
+{
+    struct drect r; win_box(w, &r);
+#if WM_DAMAGE_LIE
+    r.x1 = r.x0 + (r.x1 - r.x0) / 2;
+    r.y1 = r.y0 + (r.y1 - r.y0) / 2;
+#endif
+    dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+}
+
 static int next_app_id = 1;
 
 /* ---- compositor cost, measured on the machine ------------------------------
@@ -144,6 +276,22 @@ static int next_app_id = 1;
 static uint64_t perf_composites, perf_comp_ns, perf_comp_ns_max;
 static uint64_t perf_motions;                  /* pointer-motion samples processed */
 static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor updates */
+/* ---- and WHAT a frame touched ---------------------------------------------
+ *
+ * A composite count answers "how often", never "how much", and those are the
+ * two independent halves of the lag: motion moved the first one to ~zero and
+ * left the second at the whole screen. So a frame is also priced in PIXELS:
+ *
+ *   perf_cpx  pixels recomposited (drawn into `back`)
+ *   fb_present_px()  pixels pushed to the display -- the RAM copy + the DMA
+ *   perf_present_ns  the part of a frame spent doing that pushing
+ *   perf_full/perf_rects  frames that were the whole screen, and how many
+ *                    rectangles the rest were split into
+ *
+ * perf_present_ns is what says whether flushing a sub-rectangle is worth
+ * anything ON ITS OWN, separately from compositing less -- a question the
+ * composite total cannot answer and which was asked directly. */
+static uint64_t perf_cpx, perf_present_ns, perf_full, perf_rects;
 
 /* System light/dark theme. The kernel-drawn chrome (menu bar, dock, window
  * frames) reads this directly; ring-3 apps query it via SYS_UI_DARK and follow. */
@@ -577,8 +725,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         return 0;
     }
     case SYS_GUI_FLUSH: {
-        struct win *w = app_window(ap);          /* repaint just this app's window */
-        if (w) dirty_rect(w->x, w->y, w->w, w->h); else dirty_full();
+        /* Repaint just this app's window -- its rectangle plus its drop shadow.
+         * There is no sub-window damage on this call and deliberately no plan
+         * for one: the flush carries no rectangle, so the smallest honest
+         * extent an app can be held to is its whole canvas. That is the floor
+         * on an app repaint, and it is an ABI limit, not a compositor one. */
+        struct win *w = app_window(ap);
+        if (w) dirty_win(w); else dirty_full();
         return 0;
     }
     case SYS_POLL_EVENT: {
@@ -853,7 +1006,10 @@ static void wm_set_dark(int on)
     g_ui_dark = on;
     for (int i = 0; i < MAXWIN; i++)
         if (wins[i].used && wins[i].kind == WK_APP) enqueue(&wins[i], EV_THEME, 0, 0);
-    dirty = 1;
+    /* Every pixel of chrome changes colour and every app is about to repaint:
+     * a full-screen repaint is the CORRECT answer here, and this is the case
+     * the damage tracking has to be shown still producing one. */
+    dirty_full();
 }
 
 /* ---------- reaping dead apps ---------- */
@@ -996,6 +1152,12 @@ static void draw_background(void)
 /* Frosted menu bar, composited per-frame on top of the windows: real-time blur
  * of whatever is behind it (wallpaper or a window slid up under it). */
 static void draw_clock(void);
+/* The menu bar is a GLASS PANEL: it frosts whatever is behind it, so it is one
+ * of the two things a damage rectangle may not cut in half (see dmg_expand). */
+static void menubar_box(struct drect *r) { r->x0 = 0; r->y0 = 0; r->x1 = W; r->y1 = MBH; }
+/* The clock is the only thing on an idle desktop that changes, and it changes
+ * twice a second. That used to be a full-screen recomposite; it is now this. */
+static void dirty_menubar(void) { dirty_rect(0, 0, W, MBH); }
 static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
 /* menu_tog_* are DEVICE pixels: they are written here and read by the click
  * handler, which sees device mouse coordinates. Keeping the stored rect in the
@@ -1030,6 +1192,72 @@ static void draw_menubar(void)
 #define DOCK_ISZ_PT 50
 #define DOCK_GAP_PT 14
 static int dock_x0, dock_y0, dock_isz = DOCK_ISZ_PT, dock_gap = DOCK_GAP_PT;
+
+/* The dock's geometry, derived rather than remembered.
+ *
+ * draw_dock used to be the only thing that knew where the dock was, and it
+ * published its answer into the globals above on the way past. That is fine
+ * while the dock is drawn every frame; it stops being fine the moment a frame
+ * may skip it, because the DAMAGE path has to know where the dock is in order
+ * to decide whether this frame touches it -- and asking a global that the
+ * skipped draw would have written is a loop. One function computes it. */
+static int dock_hover_at(int x, int y);         /* body below, with the drawing */
+static void dock_geom(int *x0, int *y0, int *dw, int *dh)
+{
+    int n = nreg < 1 ? 1 : nreg;
+    int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
+    *dw = gap + n * (isz + gap);
+    *dh = isz + S(20);
+    *x0 = (W - *dw) / 2;
+    *y0 = H - *dh - S(12);
+}
+
+/* The GLASS PANEL: the rounded slab whose frost samples the live backdrop. This
+ * is the rectangle a damage rectangle may not cut in half (see dmg_expand); the
+ * rest of the dock's footprint is ordinary read-modify-write drawing that clips
+ * exactly and needs no such promise. */
+static void dock_panel_box(struct drect *r)
+{
+    int x0, y0, dw, dh;
+    dock_geom(&x0, &y0, &dw, &dh);
+    r->x0 = x0 - S(2);       r->y0 = y0;
+    r->x1 = x0 + dw + S(2);  r->y1 = y0 + dh + S(10);   /* + the drop shadow below */
+}
+
+/* The dock's whole footprint, for a given hovered icon (-1 = none): the panel,
+ * plus the launch bounce that lifts an icon S(14) out of the top, plus the
+ * magnified hover tile, plus the tooltip above it.
+ *
+ * The tooltip is centred on the icon and as wide as the app's NAME, so it can
+ * overhang the panel -- but its extent is EXACTLY KNOWABLE, and asking for it
+ * is worth the four lines. The first version damaged the full screen width to
+ * cover it, and because the Terminal's window reaches down into the dock, every
+ * repaint of that window then grew to a full-width band: 82% of the screen for
+ * a keystroke. Being vague about damage is not free; it is paid for by every
+ * unrelated rectangle that happens to touch the vague one. */
+static void dock_box_hov(int hov, struct drect *r)
+{
+    int x0, y0, dw, dh;
+    dock_geom(&x0, &y0, &dw, &dh);
+    dock_panel_box(r);
+    if (y0 - S(16) < r->y0) r->y0 = y0 - S(16);        /* bounce + 1.3x hover tile */
+    if (hov >= 0 && hov < nreg) {
+        int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
+        int ccx = x0 + gap + hov * (isz + gap) + isz / 2;
+        int tw = fb_text_width(reg[hov].name);
+        struct drect t = { ccx - tw / 2 - S(10), y0 - S(30),
+                           ccx + tw / 2 + tw % 2 + S(10), y0 };
+        rect_or(r, &t);
+    }
+}
+static void dock_box(struct drect *r) { dock_box_hov(dock_hover_at(mx, my), r); }
+
+/* Damage the dock as it is about to be drawn. A hover CHANGE has to damage the
+ * outgoing tooltip as well -- the icon the pointer just left still has one on
+ * screen, and it is nowhere near the icon it moved to. */
+static void dirty_dock_hov(int hov)
+{ struct drect r; dock_box_hov(hov, &r); dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); }
+static void dirty_dock(void) { dirty_dock_hov(dock_hover_at(mx, my)); }
 
 /* Draw one dock tile of side `sz` centered at (cx,cy): glossy gradient + sheen +
  * the app's vector icon (or its letter). Used at base size and, for the hovered
@@ -1082,10 +1310,9 @@ static int dock_hover_at(int x, int y)
 
 static void draw_dock(void)
 {
-    int n = nreg < 1 ? 1 : nreg;
+    int dw, dh;
     dock_isz = S(DOCK_ISZ_PT); dock_gap = S(DOCK_GAP_PT);   /* device px, for the click path */
-    int dw = dock_gap + n * (dock_isz + dock_gap), dh = dock_isz + S(20);
-    dock_x0 = (W - dw) / 2; dock_y0 = H - dh - S(12);
+    dock_geom(&dock_x0, &dock_y0, &dw, &dh);
     fb_blend_round_rect(dock_x0 - S(1), dock_y0 + S(7), dw + S(2), dh, S(28), 0, 0, 0, 50);   /* soft drop shadow */
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
     if (g_ui_dark) fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 26, 26, 34, 104);
@@ -1114,7 +1341,7 @@ static void draw_dock(void)
         fb_blend_round_rect(tx - S(9), dock_y0 - S(28), tw + S(18), S(23), S(7), 28, 28, 34, 225);
         fb_text(tx, dock_y0 - S(25), nm, rgb(244, 244, 248));
     }
-    if (animating) dirty = 1;                              /* keep compositing while a bounce runs */
+    if (animating) dirty_dock();                           /* keep compositing while a bounce runs */
 }
 
 static int fmt2(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; return 2; }
@@ -1201,6 +1428,13 @@ static const char *cursor_bmp[] = {
 };
 #define CURSOR_W 16
 #define CURSOR_H 20
+
+/* Without a cursor plane the arrow is pixels in the frame, so moving it damages
+ * where it was and where it now is -- two small rectangles instead of a screen.
+ * This is the LFB fallback path; on virtio-gpu the pointer is not in the frame
+ * at all and neither of these is ever called. */
+static void dirty_cursor(int x, int y)
+{ dirty_rect(x, y, S(CURSOR_W) + 1, S(CURSOR_H) + 1); }
 
 /* The cursor is composited into `back` on top of everything else, then presented
  * with the rest of the frame -- no save-under overlay (that restored a stale
@@ -1289,22 +1523,71 @@ static int win_open_scale(struct win *w)
     return 216 + (256 - 216) * eased / 256;            /* 0.84x -> 1.0x over ~0.16s */
 }
 
-/* Composite the whole screen -- background + menu-bar clock + every window + the
- * cursor -- into `back`, then present it in one shot. No dirty-rect / partial
- * path: the virtio-gpu present is a cheap DMA, and a single full composite each
- * frame keeps `back` always-valid. */
-void wm_render(void)
+/* Grow each damage rectangle until every GLASS PANEL it touches is contained
+ * whole, then re-merge.
+ *
+ * This is the price of frosted chrome, and it is not optional. fb_liquid_glass
+ * blurs and refracts the live backdrop UNDER the panel: to compute one output
+ * pixel it samples up to ~24 px around it. Inside a damage rectangle that
+ * backdrop was just re-laid from the wallpaper; outside it, `back` holds last
+ * frame's finished composite -- which already has the glass in it. Frosting a
+ * frosted pixel is visibly different from frosting the backdrop, so a panel cut
+ * by a damage rectangle grows a seam along the cut. Containing the panel
+ * removes the possibility rather than hiding it.
+ *
+ * The re-merge afterwards is not tidiness either: two rectangles that both grew
+ * to contain the dock would each draw the dock, and the second would do it over
+ * pixels the first had already presented. */
+static int dmg_expand(struct drect *r, int n)
+{
+    int grew = 1;
+    for (int pass = 0; pass < 8 && grew; pass++) {
+        grew = 0;
+        for (int i = 0; i < n; i++) {
+            struct drect p;
+            menubar_box(&p);
+            if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            dock_panel_box(&p);          /* the SLAB, not the whole footprint */
+            if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
+                struct win *w = &wins[order[k]];
+                if (!w->used) continue;
+                p.x0 = w->x; p.y0 = w->y;
+                p.x1 = w->x + w->w; p.y1 = w->y + TBH + S(10);
+                if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            }
+        }
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; )
+                if (rect_hit(&r[i], &r[j])) { rect_or(&r[i], &r[j]); r[j] = r[--n]; grew = 1; }
+                else j++;
+    }
+    /* Still growing after eight passes means the expansion did not converge,
+     * and a panel is probably still cut. Say "whole screen" rather than ship a
+     * seam: the fallback has to be the SAFE answer, not the fast one. */
+    return grew ? -1 : n;
+}
+
+/* Composite ONE damage rectangle: wallpaper, every window that reaches into it,
+ * the frosted chrome that overlaps it, and (without a cursor plane) the arrow --
+ * all clipped to it -- then push exactly that rectangle to the display.
+ *
+ * Every layer is drawn in the same order it always was, and the rectangle is
+ * re-laid from the wallpaper up: that is what makes a partial frame produce the
+ * same pixels a full one would. Returns 1 if an animation wants another frame. */
+static int render_region(const struct drect *R)
 {
     int animating = 0;
-    reap();
+    int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     fb_target(NULL);
-    if (!back || !bg) return;              /* wm_init OOM fallback: nothing to composite into */
-    uint64_t t_start = time_mono_ns();
-    for (int y = 0; y < H; y++)            /* wallpaper (baked in bg) */
-        blit(back + y * W, bg + y * W, W);
+    fb_set_clip(R->x0, R->y0, rw, rh);
+    for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
+        blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
         struct win *w = &wins[order[i]];
         if (!w->used) continue;
+        struct drect b; win_box(w, &b);
+        if (!rect_hit(&b, R)) continue;    /* nothing of this window is in the rect */
         int focused = (i == norder - 1);
         int s = win_open_scale(w);         /* open pop in progress? */
         if (s) {
@@ -1326,15 +1609,64 @@ void wm_render(void)
         if (w->surf.px)
             fb_blit_surface(w->x, w->y + TBH, &w->surf);
     }
-    draw_menubar();                        /* frosted chrome ON TOP: real-time */
-    draw_dock();                           /* vibrancy frosts the live windows  */
+    { struct drect p; menubar_box(&p);                  /* frosted chrome ON TOP: */
+      if (rect_hit(&p, R)) draw_menubar(); }            /* real-time vibrancy      */
+    { struct drect p; dock_box(&p);
+      if (rect_hit(&p, R)) draw_dock(); }
     if (!hw_cursor) draw_cursor_back(mx, my);   /* no plane: arrow into the composite */
-    fb_present();                          /* full back -> framebuffer + virtio flush */
-    if (animating) dirty = 1;              /* keep compositing until the pop settles */
+    fb_clear_clip();
+
+    uint64_t t_pres = time_mono_ns();
+    fb_present_rect(R->x0, R->y0, rw, rh);
+    perf_present_ns += time_mono_ns() - t_pres;
+    perf_cpx += (uint64_t)rw * (uint64_t)rh;
+    return animating;
+}
+
+/* Composite the damage -- background + windows + frosted chrome + the cursor --
+ * into `back`, then present it. A frame is one pass per damage rectangle, or a
+ * single whole-screen pass when the damage is a full repaint (a theme flip, a
+ * new window, a z-order change) or has grown past three quarters of the screen.
+ *
+ * `back` is a correct composite of the ENTIRE screen when this returns -- see
+ * the invariant at the top of the file. Nothing else in here is allowed to be
+ * true only sometimes. */
+void wm_render(void)
+{
+    reap();
+    fb_target(NULL);
+    if (!back || !bg) return;              /* wm_init OOM fallback: nothing to composite into */
+
+    /* An open "pop" rescales a whole window every frame and mutates its own
+     * animation state as it reads it; one whole-screen pass per frame is both
+     * cheaper than tracking that and impossible to get subtly wrong. It lasts
+     * about a sixth of a second. */
+    for (int i = 0; i < MAXWIN; i++)
+        if (wins[i].used && wins[i].open_t0) dirty_all = 1;
+
+    struct drect r[NDMG];
+    int nr = 0, full = dirty_all || ndmg == 0;
+    if (!full) {
+        for (int i = 0; i < ndmg; i++) r[i] = dmg[i];
+        nr = dmg_expand(r, ndmg);
+        if (nr < 0) full = 1;
+    }
+    if (full) { r[0].x0 = 0; r[0].y0 = 0; r[0].x1 = W; r[0].y1 = H; nr = 1; }
+    /* Clear BEFORE drawing: damage recorded from here on (a dock bounce still
+     * running, an app flushing from another thread) belongs to the NEXT frame,
+     * not to the one being composited. */
+    dirty_all = 0; ndmg = 0;
+
+    uint64_t t_start = time_mono_ns();
+    int animating = 0;
+    for (int k = 0; k < nr; k++) animating |= render_region(&r[k]);
+    if (animating) dirty_full();           /* keep compositing until the pop settles */
 
     uint64_t dt = time_mono_ns() - t_start;
     perf_composites++;
     perf_comp_ns += dt;
+    perf_rects += (uint64_t)nr;
+    if (full) perf_full++;
     if (dt > perf_comp_ns_max) perf_comp_ns_max = dt;
 }
 
@@ -1351,7 +1683,7 @@ static void wm_process_key(int c, int mods)
          * terminal habit lives on that mapping and TextEdit reads it. `mods` is
          * additional information, not a replacement encoding. */
         enqueue_input(w, EV_KEY, c, 0, mods, EV_BTN_NONE, 0);
-        dirty_rect(w->x, w->y, w->w, w->h);
+        dirty_win(w);
     }
 }
 
@@ -1374,18 +1706,17 @@ static void wm_process_mouse(const struct inev *in)
     int x = in->x, y = in->y, left = in->l, right = in->r, middle = in->m;
     int mods = in->mods;
     int moved = (x != mx || y != my);
-    int content = 0;                       /* did anything other than the cursor change? */
     int old_hov = dock_hover_at(mx, my);   /* before the pointer moves */
+    int omx = mx, omy = my;                /* ...and where the arrow was */
     mx = x; my = y;
     if (moved) perf_motions++;
 
     if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
         wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
-        mleft = left; mright = right; mmiddle = middle; dirty = 1;
+        mleft = left; mright = right; mmiddle = middle;
         return;
     }
     if (left && !mleft) {
-        content = 1;
         /* The dock is chrome drawn ON TOP of every window (hover tooltip already
          * resolves it regardless of overlap), so it must win the click too:
          * checking windows first lets a tall window (e.g. Code Studio, whose
@@ -1394,7 +1725,11 @@ static void wm_process_mouse(const struct inev *in)
         int docked = 0;
         for (int i = 0; i < nreg; i++) {
             int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
-            if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) { wm_launch(reg[i].file, ""); docked = 1; break; }
+            if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) {
+                wm_launch(reg[i].file, "");
+                dirty_dock();            /* the launch bounce starts in the dock */
+                docked = 1; break;
+            }
         }
         if (!docked) {
         int hitorder = -1;
@@ -1405,7 +1740,15 @@ static void wm_process_mouse(const struct inev *in)
         if (hitorder >= 0) {
             int wi = order[hitorder];
             struct win *w = &wins[wi];
+            /* Raising repaints BOTH windows, and forgetting the second one is
+             * the classic partial-render bug: the window that just lost focus
+             * still shows its coloured traffic lights, in its own titlebar,
+             * nowhere near the rectangle that was damaged. */
+            int prev_top = norder ? order[norder - 1] : -1;
             raise_win(wi);
+            dirty_win(w);
+            if (prev_top >= 0 && prev_top != wi && wins[prev_top].used)
+                dirty_win(&wins[prev_top]);
             int cx = x - w->x, cy = y - w->y;
             if (cy < TBH) {
                 if ((cx - S(16)) * (cx - S(16)) + (cy - S(15)) * (cy - S(15)) <= S(8) * S(8)) {
@@ -1426,10 +1769,13 @@ static void wm_process_mouse(const struct inev *in)
             if (!w->used || !in_rect(x, y, w->x, w->y, w->w, w->h)) continue;
             int cx = x - w->x, cy = y - w->y;
             if (cy >= TBH && w->kind == WK_APP) {
+                int prev_top = norder ? order[norder - 1] : -1;
                 raise_win(order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
+                dirty_win(w);
+                if (prev_top >= 0 && prev_top != order[i] && wins[prev_top].used)
+                    dirty_win(&wins[prev_top]);
                 enqueue_input(w, EV_MOUSE_R, PT(cx), PT(cy - TBH), mods, EV_BTN_RIGHT, 0);
                 mouse_capture = order[i];
-                content = 1;
             }
             break;
         }
@@ -1444,7 +1790,9 @@ static void wm_process_mouse(const struct inev *in)
             struct win *w = &wins[wi];
             enqueue_input(w, EV_MOUSE, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_MIDDLE, 0);
             mouse_capture = wi;
-            content = 1;
+            /* No damage: a middle press deliberately does not raise, so the WM
+             * changed nothing. Whatever the app does about it arrives as its
+             * own SYS_GUI_FLUSH, which is the honest report of that change. */
         }
     }
 
@@ -1466,13 +1814,21 @@ static void wm_process_mouse(const struct inev *in)
             if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) continue;
             struct win *w = &wins[wi];
             enqueue_input(w, EV_MOUSE_UP, PT(x - w->x), PT(y - w->y - TBH), mods, id[k], 0);
-            content = 1;
         }
     }
     if (!left && !right && !middle) mouse_capture = -1;   /* all buttons up: release the pointer */
 
     if (!left) dragging = -1;
-    if (dragging >= 0 && left) { wins[dragging].x = x - drag_dx; wins[dragging].y = y - drag_dy; content = 1; }
+    /* A drag changes TWO regions: where the window was and where it now is.
+     * Reporting only the destination is what leaves a window-shaped hole
+     * trailing behind the drag, and it is the single most visible way to get
+     * damage tracking wrong. */
+    if (dragging >= 0 && left) {
+        struct win *w = &wins[dragging];
+        dirty_win(w);
+        w->x = x - drag_dx; w->y = y - drag_dy;
+        dirty_win(w);
+    }
 
     /* Motion. Goes to the capture target while a button is held, else to
      * whatever window is visibly under the pointer -- including an unfocused
@@ -1501,14 +1857,13 @@ static void wm_process_mouse(const struct inev *in)
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
             enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE, in->wheel);
-            content = 1;
+            /* Same as the middle press: the scroll is the app's to draw. */
         }
     }
 
     mleft = left;
     mright = right;
     mmiddle = middle;
-    if (content) dirty = 1;
 
     /* THE POINT OF THIS WORK.
      *
@@ -1526,8 +1881,11 @@ static void wm_process_mouse(const struct inev *in)
      * `content`. Without a plane (LFB fallback) the arrow is still in the frame,
      * so motion still means a recomposite -- the old behaviour, unchanged. */
     if (moved) {
-        if (!hw_cursor) dirty = 1;
-        else if (dock_hover_at(x, y) != old_hov) dirty = 1;
+        if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+        else {
+            int hov = dock_hover_at(x, y);
+            if (hov != old_hov) { dirty_dock_hov(old_hov); dirty_dock_hov(hov); }
+        }
     }
 }
 
@@ -1662,11 +2020,15 @@ static void wm_perf_report(void)
     uint64_t dc = perf_composites - last_comp, dm = perf_motions - last_mot;
     last_comp = perf_composites; last_mot = perf_motions;
     if (dm == 0 && dc <= 20) return;                 /* idle: the clock strip only */
-    kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu curns=%lu\n",
+    kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu "
+            "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu\n",
             (unsigned long)ms, (unsigned long)perf_composites,
             (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
             (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
-            (unsigned long)perf_cursor_ns);
+            (unsigned long)perf_cursor_ns,
+            (unsigned long)perf_full, (unsigned long)perf_rects,
+            (unsigned long)perf_cpx, (unsigned long)fb_present_px(),
+            (unsigned long)perf_present_ns);
 }
 
 void wm_run(void)
@@ -1733,11 +2095,15 @@ void wm_run(void)
         }
         if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
         uint64_t now = timer_ticks();
-        /* Composite on change: a full frame only when geometry changed; an app's
-         * flush repaints just its window rect. Else ~2 Hz refresh of the menu-bar
-         * clock (a small strip). Pure cursor motion is a cheap overlay. */
-        if (dirty || now - last >= 50) {   /* on any change, else ~2 Hz for the menu clock */
-            dirty = 0; last = now;
+        /* Composite on DAMAGE, and on nothing else. The ~2 Hz tick no longer
+         * asks for a frame -- it says what changed (the clock, in the menu bar)
+         * and lets the same path handle it as everything else. An idle desktop
+         * therefore repaints a 24-point strip twice a second instead of the
+         * whole screen, and there is no periodic full repaint left to quietly
+         * cover for a caller that under-reported its damage. */
+        if (now - last >= 50) { last = now; dirty_menubar(); }
+        if (dirty) {
+            dirty = 0;
             wm_render();
         }
         wm_perf_report();
