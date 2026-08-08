@@ -29,6 +29,7 @@
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
 void  img_register(void *d) { (void)d; }
+void  img_register_anim(void *a, void *b, void *c) { (void)a; (void)b; (void)c; }
 
 /* ---- the harness ------------------------------------------------------ */
 
@@ -774,6 +775,59 @@ static void test_media(void)
     ckjs("mq.matches === true && fired.length === 4", "and again on the way back");
 }
 
+/* ---- 8. data: URLs ----------------------------------------------------
+ * A fetch of a data: URL must never reach the socket. Before this it went
+ * through the URL parser, came out with a "hostname" of `text/plain;base64,..`
+ * and failed DNS -- a confusing way to say "this URL contains its own answer".
+ *
+ * It is not a curiosity: URL.createObjectURL (js_platform.c) returns a data:
+ * URL precisely so that what it hands back can be dereferenced, and every
+ * inline <img src="data:..."> and every CSS-in-JS sprite is one of these.
+ *
+ * The assertions below are all things a naive `atob`-shaped implementation
+ * gets wrong: the RFC 2397 default type when the header is empty, %-decoding
+ * that has to happen BEFORE UTF-8 encoding (so %C3%A9 is one character and two
+ * bytes), base64 that is not a multiple of four, and the response being a real
+ * streamed Response rather than a special object .text() happens to work on. */
+static void test_data_urls(void)
+{
+    printf("\n-- data: URLs --\n");
+    run("var dres = {};");
+    run("fetch('data:text/plain;base64,aGVsbG8=').then(function (r) {"
+        "  dres.status = r.status; dres.type = r.headers.get('content-type');"
+        "  dres.ok = r.ok; return r.text(); }).then(function (t) { dres.text = t; });");
+    settle(2);
+    ckjs("dres.status === 200 && dres.ok === true", "a data: URL resolves 200");
+    ckjs("dres.type === 'text/plain'", "the declared media type comes back");
+    ckjs("dres.text === 'hello'", "base64 payload decodes");
+
+    run("var d2 = null; fetch('data:,hello%20%C3%A9').then(function (r) { return r.text(); })"
+        "  .then(function (t) { d2 = t; });");
+    settle(2);
+    ckjs("d2 === 'hello \\u00e9'", "percent-decoding happens before UTF-8 encoding");
+
+    run("var d3 = null; fetch('data:,plain').then(function (r) { d3 = r.headers.get('content-type'); });");
+    settle(2);
+    ckjs("d3 === 'text/plain;charset=US-ASCII'", "an omitted type is RFC 2397's default");
+
+    /* Byte-exactness, not string-exactness: an upload boundary computed from a
+     * Blob length is wrong the moment a decode returns characters. */
+    run("var d4 = null; fetch('data:application/octet-stream;base64,AAECA/8=')"
+        "  .then(function (r) { return r.arrayBuffer(); })"
+        "  .then(function (b) { var u = new Uint8Array(b); d4 = Array.from(u).join(','); });");
+    settle(2);
+    ckjs("d4 === '0,1,2,3,255'", "binary payloads survive as bytes");
+
+    run("var d5 = 'unset'; fetch('data:this-has-no-comma').then(function () { d5 = 'resolved'; },"
+        "  function (e) { d5 = e.name; });");
+    settle(2);
+    ckjs("d5 === 'TypeError'", "a malformed data: URL rejects rather than hanging");
+
+    /* And the socket was never touched: a data: fetch that dialled would show
+     * up here, and on the machine it would be a DNS lookup for a MIME type. */
+    ck(!js_webapi_pending(), "no request is left in flight after five data: fetches");
+}
+
 /* ---- main ------------------------------------------------------------- */
 
 int main(void)
@@ -791,6 +845,7 @@ int main(void)
     test_location();
     test_history();
     test_media();
+    test_data_urls();
     test_storage_survives_navigation();
 
     close_ctx();

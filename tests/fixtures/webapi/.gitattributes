@@ -1,0 +1,10 @@
+# These are captured third-party bytes, and their BYTES are the point.
+#
+# core.autocrlf is true in this checkout, so without this every .html and .js
+# below would be stored with LF and written back out with CRLF. That is not a
+# cosmetic difference here: the corpus is the input to a MEASUREMENT
+# (tests/unit/webapi_probe.c), the probe reports byte offsets and script
+# lengths, and a page whose script bodies silently grew a byte per line is no
+# longer the page that was captured. -text makes git leave them exactly as
+# capture.py wrote them, on every platform.
+* -text

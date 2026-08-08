@@ -1,0 +1,1 @@
+/w/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector-2022	s001.js

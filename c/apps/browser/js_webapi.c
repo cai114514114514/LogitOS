@@ -2336,9 +2336,64 @@ static const char *PRELUDE =
 
 /* ---- fetch ---- */
 "function pairsOf(o) { var p = [], k; for (k in o) p.push([k, o[k]]); return p; }\n"
+/* data: URLs. A fetch of one must never reach the socket: there is no host to
+ * connect to, and before this it went through url parsing, came out as a
+ * hostname of "text/plain;base64,..." and failed DNS -- which is a confusing
+ * way to say "this URL contains its own answer".
+ *
+ * It matters beyond neatness because it is the transport for
+ * URL.createObjectURL (js_platform.c): that returns a data: URL rather than a
+ * blob: one precisely so that the thing it returns can be dereferenced, and a
+ * fetch that could not read one would make that a lie.
+ *
+ * The response is a real Response, built through the same ReadableStream path
+ * as a network one -- so `await (await fetch(u)).text()` behaves identically --
+ * with status 200 and the declared Content-Type. RFC 2397: an omitted type is
+ * text/plain;charset=US-ASCII, and ;base64 is the only supported encoding. */
+"function dataURL(url) {\n"
+"  var comma = url.indexOf(',');\n"
+"  if (comma < 0) return null;\n"
+"  var meta = url.slice(5, comma), payload = url.slice(comma + 1);\n"
+"  var b64 = false;\n"
+"  if (/;base64$/i.test(meta)) { b64 = true; meta = meta.slice(0, -7); }\n"
+"  var type = meta || 'text/plain;charset=US-ASCII';\n"
+"  var bytes;\n"
+"  if (b64) {\n"
+"    var tbl = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n"
+"    var clean = payload.replace(/[^A-Za-z0-9+/]/g, ''), out = [], i, n, k;\n"
+"    for (i = 0; i + 1 < clean.length; i += 4) {\n"
+"      n = 0; k = 0;\n"
+"      for (var j = 0; j < 4 && i + j < clean.length; j++) { n = (n << 6) | tbl.indexOf(clean[i + j]); k++; }\n"
+"      n <<= (4 - k) * 6;\n"
+"      out.push((n >> 16) & 255);\n"
+"      if (k > 2) out.push((n >> 8) & 255);\n"
+"      if (k > 3) out.push(n & 255);\n"
+"    }\n"
+"    bytes = new Uint8Array(out);\n"
+"  } else {\n"
+     /* percent-decoding then UTF-8 encoding, so a %C3%A9 in the payload is one
+        character and two bytes, not two characters. */
+"    var s;\n"
+"    try { s = decodeURIComponent(payload); } catch (e) { s = payload; }\n"
+"    bytes = new G.TextEncoder().encode(s);\n"
+"  }\n"
+"  var ctrl = null;\n"
+"  var stream = new G.ReadableStream({ start: function (c) { ctrl = c; } });\n"
+"  var r = new G.Response(stream, { status: 200, statusText: 'OK',\n"
+"    headers: [['content-type', type], ['content-length', String(bytes.length)]],\n"
+"    url: url, redirected: false, type: 'basic' });\n"
+"  ctrl.enqueue(bytes);\n"
+"  ctrl.close();\n"
+"  return r;\n"
+"}\n"
 "G.fetch = function fetch(input, init) {\n"
 "  init = init || {};\n"
 "  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
+"  if (url.slice(0, 5).toLowerCase() === 'data:') {\n"
+"    var dr = dataURL(url);\n"
+"    return dr ? Promise.resolve(dr)\n"
+"              : Promise.reject(new TypeError('Failed to fetch: malformed data: URL'));\n"
+"  }\n"
 "  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
 "  var hs = new G.Headers(init.headers || (input && input.headers));\n"
 "  var body = init.body;\n"

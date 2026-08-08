@@ -13,6 +13,10 @@
  * without it links and simply has no network API -- see js_webapi.h. */
 #define JS_WEBAPI_OPTIONAL
 #include "js_webapi.h"
+/* Timing, the document lifecycle, message queues, the observers -- js_platform.c,
+ * weak for the same reason: the host tests of THIS file link without it. */
+#define JS_PLATFORM_OPTIONAL
+#include "js_platform.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -402,6 +406,12 @@ int js_page_open(struct node *root)
     /* AFTER the DOM: js_webapi publishes document.location and dispatches
      * popstate through window.dispatchEvent, both of which js_dom.c owns. */
     if (js_webapi_install) js_webapi_install(g_ctx, g_location);
+    /* LAST. js_platform.c fills gaps in what the two above publish (document,
+     * navigator, performance, localStorage) and every one of its installs is
+     * conditional on the property being absent -- which only means anything
+     * once everyone who owns one has had their turn. */
+    if (js_select_install) js_select_install(g_ctx);
+    if (js_platform_install) js_platform_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
@@ -414,6 +424,7 @@ void js_page_close(void)
      * also clears the DOM's weak wrapper slots, so no node is left pointing at
      * a JSObject in a runtime that is about to stop existing. */
     timers_clear(g_ctx);
+    if (js_platform_close) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
     if (js_webapi_close) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);

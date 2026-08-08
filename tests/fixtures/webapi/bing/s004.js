@@ -1,0 +1,1 @@
+var Button;!function(t){"u">typeof WireUp&&WireUp.init("button_init",function(t){var n=t.getAttribute("data-appns"),o=t.getAttribute("data-k");sj_be(t,"click",function(){Log.Log("Click","Button","",!1,"AppNS",n,"K",o,"Category","CommonControls")})})}(Button||(Button={}));

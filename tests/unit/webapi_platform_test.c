@@ -1,0 +1,398 @@
+/* Host unit tests for c/apps/browser/js_platform.c and js_select.c -- the web
+ * platform outside the DOM tree and outside the network.
+ *
+ *     make test-platform          the tests
+ *     make test-platform-control  the SAME file against a browser built without
+ *                                 either module: every check below must FAIL
+ *
+ * WHY THE CONTROL EXISTS. Almost everything under test here is installed into
+ * the JS runtime by a prelude, and a prelude that silently did nothing would
+ * still let this file link, run and print "ok" for anything that a plain
+ * QuickJS happens to satisfy. The control build (-DPLATFORM_CONTROL, which
+ * links neither js_platform.o nor js_select.o) is how "this assertion fails
+ * without the change" is demonstrated rather than asserted: it runs the exact
+ * same checks and requires them to fail.
+ *
+ * The tests run against a REAL parsed document -- html_parse over a fixture
+ * string, then js_page_open, which is the same call the browser makes -- so
+ * document.readyState, the selector engine and the MutationObserver wrappers
+ * are exercised over the same bindings a page gets, not over a mock.
+ *
+ * WHAT IS NOT ASSERTED, ON PURPOSE. Nothing here checks that a missing global
+ * is missing... except the four that MUST stay missing (ActiveXObject,
+ * documentMode, indexedDB, crypto.subtle). Those have their own checks,
+ * because they are the ones a well-meaning future change would add. */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "quickjs.h"
+#include "dom.h"
+#include "js_dom.h"
+#include "js_page.h"
+
+void *kmalloc(unsigned long n) { return malloc(n); }
+void  kfree(void *p) { free(p); }
+void  img_register(void *d) { (void)d; }
+void  img_register_anim(void *a, void *b, void *c) { (void)a; (void)b; (void)c; }
+
+/* ---- harness ---------------------------------------------------------- */
+static JSContext *ctx;
+static int checks, failures, inverted;
+
+/* In the control build every check is expected to FAIL. `inverted` flips the
+ * verdict so the control run is a pass/fail test in its own right rather than
+ * a wall of red someone has to read. */
+static void ck(int cond, const char *name)
+{
+    checks++;
+    int good = inverted ? !cond : cond;
+    if (!good) { failures++; printf("FAIL: %s%s\n", name, inverted ? "  (control: should NOT have worked)" : ""); }
+    else printf("ok  : %s\n", name);
+}
+
+static JSValue eval(const char *src)
+{
+    JSValue v = JS_Eval(ctx, src, strlen(src), "<test>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(v)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        if (!inverted) printf("      [js exception] %s\n         while evaluating: %s\n",
+                              m ? m : "?", src);
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+    }
+    return v;
+}
+
+static void ckjs(const char *expr, const char *name)
+{
+    char buf[8192];
+    snprintf(buf, sizeof buf, "(function(){ try { return (%s); } catch (e) { return 'threw: ' + e; } })()", expr);
+    JSValue v = eval(buf);
+    int ok = !JS_IsException(v) && JS_ToBool(ctx, v) && !JS_IsString(v);
+    if (!ok && !JS_IsException(v) && !inverted) {
+        const char *s = JS_ToCString(ctx, v);
+        printf("      value was: %s\n", s ? s : "?");
+        if (s) JS_FreeCString(ctx, s);
+    }
+    JS_FreeValue(ctx, v);
+    ck(ok, name);
+}
+
+/* Evaluate, then drain the microtask queue -- js_page_eval does this for a
+ * page and the tests must see the same world a page does. */
+static void run(const char *src) { JS_FreeValue(ctx, eval(src)); js_page_pump(); }
+
+/* The page runtime drains its own microtask queue on eval; this is for the
+ * setTimeout-driven parts (MessageChannel, the observers, rIC). */
+static unsigned long long g_now;
+static unsigned long long clock_fn(void) { return g_now; }
+static void tick(int ms) { g_now += (unsigned long long)ms; js_page_run_due(); js_page_pump(); }
+
+static const char *PAGE =
+"<!doctype html><html><head><title>t</title></head><body id='b'>"
+"<div id='wrap' class='box outer' data-role='panel'>"
+"  <p class='lead'>one</p>"
+"  <p class='lead special'>two</p>"
+"  <span class='lead'>three</span>"
+"  <a href='/x' id='lnk'>link</a>"
+"</div>"
+"<div id='second' class='box'><p class='lead'>four</p></div>"
+"<script id='s1'>var ran = 1;</script>"
+"</body></html>";
+
+int main(int argc, char **argv)
+{
+    (void)argc;
+    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--control")) inverted = 1;
+
+    struct node *root = dom_parse(PAGE, (int)strlen(PAGE));
+    if (!root) { printf("FAIL: fixture did not parse\n"); return 1; }
+
+    js_page_set_clock(clock_fn);
+    js_page_set_location("http://fixture.test/dir/page.html?a=1");
+    if (!js_page_open(root)) { printf("FAIL: js_page_open\n"); return 1; }
+    ctx = js_page_ctx();
+
+    /* ==== performance ==================================================
+     * MEASURED on bing (performance.timing) and bing+wikipedia
+     * (performance.mark). The duration check is the one that matters: a
+     * mark/measure pair that returns 0 passes a "does it exist" test and fails
+     * the page, which compares the number. */
+    ckjs("typeof performance.mark === 'function'", "performance.mark exists");
+    run("performance.mark('a');");
+    run("__t0 = performance.now();");
+    tick(40);
+    run("performance.mark('b'); __m = performance.measure('span', 'a', 'b');");
+    ckjs("__m.entryType === 'measure' && __m.name === 'span'", "measure returns a PerformanceMeasure");
+    ckjs("__m.duration >= 39 && __m.duration <= 41", "measure duration is the real elapsed time");
+    ckjs("performance.getEntriesByName('a').length === 1", "getEntriesByName finds the mark");
+    ckjs("performance.getEntriesByType('mark').length === 2", "getEntriesByType filters");
+    ckjs("performance.getEntries().length === 3", "getEntries returns marks and measures");
+    run("performance.clearMarks('a');");
+    ckjs("performance.getEntriesByName('a').length === 0", "clearMarks removes one by name");
+    ckjs("(function(){ try { performance.measure('x','nope'); return false; } catch (e) { return e instanceof SyntaxError; } })()",
+         "measure from a missing mark throws SyntaxError");
+    /* The legacy interface bing's telemetry bundle dies on. */
+    ckjs("typeof performance.timing.navigationStart === 'number' && performance.timing.navigationStart > 0",
+         "performance.timing.navigationStart is a real epoch time");
+    ckjs("performance.timing.responseEnd >= performance.timing.navigationStart",
+         "timing phases are ordered, not zero (a 0 makes every duration negative)");
+    ckjs("typeof performance.timeOrigin === 'number'", "performance.timeOrigin");
+    ckjs("performance.navigation.type === 0", "performance.navigation");
+
+    /* ==== document lifecycle ============================================
+     * MEASURED on bing and deepseek -- the most-wanted property in the corpus.
+     * It must be 'loading' while script runs, or a page skips its own
+     * DOMContentLoaded registration and never initialises. */
+    ckjs("document.readyState === 'loading'", "readyState is 'loading' during script");
+    run("__rs = []; document.addEventListener('readystatechange', function(){ __rs.push(document.readyState); });");
+    {
+        struct js_event_init li;
+        memset(&li, 0, sizeof li);
+        li.bubbles = 1;
+        js_dom_dispatch(js_dom_root(), "DOMContentLoaded", &li);
+    }
+    ckjs("document.readyState === 'interactive'", "DOMContentLoaded moves readyState to 'interactive'");
+    {
+        struct js_event_init li;
+        memset(&li, 0, sizeof li);
+        js_dom_dispatch(js_dom_root(), "load", &li);
+    }
+    ckjs("document.readyState === 'complete'", "load moves readyState to 'complete'");
+    ckjs("__rs.length === 2 && __rs[0] === 'interactive' && __rs[1] === 'complete'",
+         "readystatechange fires once per transition, in order");
+    ckjs("performance.timing.domContentLoadedEventEnd >= performance.timing.navigationStart",
+         "the lifecycle fills in Navigation Timing as it happens");
+    ckjs("document.visibilityState === 'visible' && document.hidden === false", "visibilityState");
+
+    /* ==== task queues ==================================================== */
+    ckjs("typeof queueMicrotask === 'function'", "queueMicrotask exists");
+    JS_FreeValue(ctx, eval("__mt = []; queueMicrotask(function(){ __mt.push('micro'); }); __mt.push('sync');"));
+    ckjs("__mt.length === 1", "the microtask has NOT run while the script is still running");
+    js_page_pump();
+    ckjs("__mt.length === 2 && __mt[0] === 'sync' && __mt[1] === 'micro'",
+         "queueMicrotask runs AFTER the current script, not during it");
+    ckjs("typeof reportError === 'function'", "reportError exists");
+
+    ckjs("typeof MessageChannel === 'function'", "MessageChannel exists");
+    run("__mc = new MessageChannel(); __got = []; __mc.port2.onmessage = function(e){ __got.push(e.data); };"
+        "__mc.port1.postMessage('one'); __mc.port1.postMessage('two');");
+    ckjs("__got.length === 0", "MessagePort delivery is asynchronous");
+    tick(1);
+    ckjs("__got.length === 2 && __got[0] === 'one' && __got[1] === 'two'",
+         "MessagePort delivers in order (React's scheduler depends on FIFO)");
+    /* A port that only used addEventListener stays silent until start(). Code
+     * that forgets start() must behave here as it does in a browser. */
+    run("__mc2 = new MessageChannel(); __g2 = []; __mc2.port2.addEventListener('message', function(e){ __g2.push(e.data); });"
+        "__mc2.port1.postMessage('held');");
+    tick(1);
+    ckjs("__g2.length === 0", "a port with only addEventListener is not started");
+    run("__mc2.port2.start();");
+    tick(1);
+    ckjs("__g2.length === 1 && __g2[0] === 'held'", "start() flushes what was held");
+
+    run("__pm = null; window.onmessage = function(e){ __pm = e; }; postMessage({n:7}, '*');");
+    tick(1);
+    ckjs("__pm && __pm.data.n === 7 && __pm.type === 'message'", "window.postMessage to self");
+
+    ckjs("typeof requestIdleCallback === 'function'", "requestIdleCallback exists");
+    run("__idle = null; requestIdleCallback(function(d){ __idle = d; });");
+    tick(2);
+    ckjs("__idle && typeof __idle.timeRemaining === 'function'", "rIC delivers a deadline");
+    /* A constant timeRemaining() would hang any page that loops on it. */
+    run("__tr0 = __idle.timeRemaining();");
+    tick(60);
+    ckjs("__idle.timeRemaining() < __tr0 && __idle.timeRemaining() === 0",
+         "the idle deadline actually counts down to zero");
+
+    /* ==== errors ========================================================= */
+    ckjs("typeof DOMException === 'function'", "DOMException exists");
+    ckjs("(function(){ var e = new DOMException('no', 'AbortError');"
+         " return e instanceof Error && e.name === 'AbortError' && e.code === 20 && e.message === 'no'; })()",
+         "DOMException carries name, message and the legacy code");
+    ckjs("typeof PromiseRejectionEvent === 'function'", "PromiseRejectionEvent exists");
+    run("__rej = null; window.onunhandledrejection = function(e){ __rej = e; e.preventDefault(); };"
+        "Promise.reject(new Error('boom'));");
+    tick(1);
+    ckjs("__rej && String(__rej.reason).indexOf('boom') >= 0",
+         "an unhandled rejection reaches window.onunhandledrejection");
+
+    /* ==== Storage named properties ======================================
+     * MEASURED on bing: localStorage.eventLogQueue_Offline. */
+    run("localStorage.clear(); localStorage.setItem('a', '1'); localStorage.q = 'named';");
+    ckjs("localStorage.a === '1'", "localStorage.<name> reads through getItem");
+    ckjs("localStorage.getItem('q') === 'named'", "localStorage.<name> = v writes through setItem");
+    ckjs("localStorage.length === 2", "named writes count towards length");
+    /* Every check below reads a key that was written through setItem, so a
+     * build without the wrapper -- where `localStorage.q = v` merely made a JS
+     * property -- answers differently. A check that passed either way would
+     * make the control meaningless. */
+    ckjs("('a' in localStorage) && !('zz' in localStorage)",
+         "`in` consults the store, not just own properties");
+    ckjs("localStorage.a === '1' && localStorage.zz === undefined",
+         "a name written through setItem reads back; a missing one is undefined");
+    run("delete localStorage.a;");
+    ckjs("localStorage.getItem('a') === null && localStorage.length === 1",
+         "delete localStorage.<name> removes it from the store");
+    ckjs("typeof localStorage.setItem === 'function' && localStorage.getItem('q') === 'named'",
+         "the real methods still work through the wrapper");
+
+    /* ==== navigator / window ============================================ */
+    ckjs("navigator.scheduling.isInputPending() === false", "navigator.scheduling.isInputPending");
+    ckjs("window.top === window && window.parent === window",
+         "an unframed document is its own top (the frame-buster line)");
+
+    /* ==== crypto ========================================================= */
+    ckjs("typeof crypto.getRandomValues === 'function'", "crypto.getRandomValues exists");
+    ckjs("(function(){ var a = new Uint8Array(32); crypto.getRandomValues(a);"
+         " var b = new Uint8Array(32); crypto.getRandomValues(b);"
+         " var same = 0; for (var i = 0; i < 32; i++) if (a[i] === b[i]) same++;"
+         " var zero = 0; for (var j = 0; j < 32; j++) if (a[j] === 0) zero++;"
+         " return same < 24 && zero < 8; })()",
+         "getRandomValues fills with bytes that differ between calls");
+    ckjs("crypto.getRandomValues(new Uint8Array(4)) instanceof Uint8Array", "it returns the view");
+    ckjs("/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(crypto.randomUUID())",
+         "randomUUID is a well-formed v4 UUID");
+
+    /* ==== structuredClone =============================================== */
+    ckjs("typeof structuredClone === 'function'", "structuredClone exists");
+    ckjs("(function(){ var o = { d: new Date(5), m: new Map([['k',[1,2]]]), s: new Set([3]),"
+         "                       u: new Uint8Array([1,2,3]) }; o.self = o;"
+         " var c = structuredClone(o);"
+         " return c !== o && c.self === c && c.d instanceof Date && c.d.getTime() === 5"
+         "     && c.m.get('k')[1] === 2 && c.m.get('k') !== o.m.get('k')"
+         "     && c.s.has(3) && c.u[2] === 3; })()",
+         "structuredClone handles Date/Map/Set/TypedArray and cycles");
+    ckjs("(function(){ try { structuredClone({ f: function(){} }); return false; }"
+         " catch (e) { return e.name === 'DataCloneError'; } })()",
+         "cloning a function throws DataCloneError, as the spec says");
+
+    /* ==== Blob / FormData =============================================== */
+    ckjs("new Blob(['abc']).size === 3 && new Blob([new Uint8Array([1,2])]).size === 2",
+         "Blob sizes are BYTES, not characters");
+    ckjs("new Blob(['\\u00e9']).size === 2", "a two-byte character counts as two bytes");
+    ckjs("new Blob(['hello'], {type:'text/plain'}).type === 'text/plain'", "Blob type");
+    run("__bt = null; new Blob(['hi']).text().then(function(t){ __bt = t; });");
+    tick(1);
+    ckjs("__bt === 'hi'", "Blob.text() round-trips");
+    ckjs("(function(){ var f = new FormData(); f.append('a','1'); f.append('a','2'); f.append('b','3');"
+         " return f.getAll('a').length === 2 && f.get('a') === '1'"
+         "     && Array.from(f.keys()).join(',') === 'a,a,b'; })()",
+         "FormData keeps duplicate names in insertion order");
+    ckjs("(function(){ var f = new FormData(); f.append('a','1'); f.append('a','2'); f.set('a','9');"
+         " return f.getAll('a').length === 1 && f.get('a') === '9'; })()",
+         "FormData.set collapses duplicates");
+    ckjs("URL.createObjectURL(new Blob(['hi'], {type:'text/plain'})) === 'data:text/plain;base64,aGk='",
+         "createObjectURL produces a data: URL fetch can actually dereference");
+    /* ... and it really can. This is the half of that claim that would
+     * otherwise be a comment: fetch() of the URL createObjectURL just returned
+     * must resolve to the bytes that went in, with no socket involved. */
+    run("__d1 = null; fetch(URL.createObjectURL(new Blob(['hi'], {type:'text/plain'})))"
+        "  .then(function(r){ __d1 = [r.status, r.headers.get('content-type')]; return r.text(); })"
+        "  .then(function(t){ __d1.push(t); });");
+    tick(1);
+    ckjs("__d1 && __d1[0] === 200 && __d1[1] === 'text/plain' && __d1[2] === 'hi'",
+         "fetch() of a createObjectURL data: URL resolves to the original bytes");
+    /* The data: scheme itself belongs to js_webapi.c and is asserted there
+     * (tests/unit/webapi_test.c), which has its own control. What is asserted
+     * HERE is only the half this file owns: that what createObjectURL returns
+     * is something fetch resolves. */
+
+    /* ==== observers ====================================================== */
+    ckjs("typeof IntersectionObserver === 'function' && typeof ResizeObserver === 'function'"
+         " && typeof MutationObserver === 'function'", "the three observers exist");
+    run("__io = []; var io = new IntersectionObserver(function(rs){ __io = __io.concat(rs); });"
+        "io.observe(document.getElementById('wrap'));");
+    tick(1);
+    ckjs("__io.length === 1 && __io[0].target.id === 'wrap' && typeof __io[0].intersectionRatio === 'number'",
+         "IntersectionObserver delivers an initial entry for its target");
+    run("__mu = []; var mo = new MutationObserver(function(rs){ __mu = __mu.concat(rs); });"
+        "mo.observe(document.getElementById('wrap'), { childList: true, attributes: true, subtree: true });"
+        "var d = document.createElement('em'); document.getElementById('wrap').appendChild(d);"
+        "document.getElementById('lnk').setAttribute('href', '/y');");
+    tick(1);
+    ckjs("__mu.length === 2", "MutationObserver batches both mutations into one callback");
+    ckjs("__mu[0].type === 'childList' && __mu[0].addedNodes.length === 1", "childList record");
+    ckjs("__mu[1].type === 'attributes' && __mu[1].attributeName === 'href' && __mu[1].oldValue === '/x'",
+         "attributes record carries the old value");
+    run("__mu2 = []; var mo2 = new MutationObserver(function(rs){ __mu2 = __mu2.concat(rs); });"
+        "mo2.observe(document.getElementById('second'), { childList: true });"
+        "document.getElementById('wrap').appendChild(document.createElement('i'));");
+    tick(1);
+    /* mo still watches #wrap and so picks up this third mutation; mo2 watches
+     * #second and must see none of it. Asserting BOTH halves is what makes the
+     * check discriminating -- "mo2 saw nothing" is also true of a build with no
+     * MutationObserver at all. */
+    ckjs("__mu2.length === 0 && __mu.length === 3",
+         "an observer sees only its own subtree (and the other one did see this)");
+
+    /* ==== selectors (js_select.c) ======================================
+     * MEASURED on bing: document.querySelectorAll and getElementsByTagName,
+     * two references each, and they were the last two things killing its
+     * scripts once performance and the lifecycle were filled in. */
+    ckjs("typeof document.querySelectorAll === 'function'", "document.querySelectorAll exists");
+    ckjs("document.querySelectorAll('p.lead').length === 3", "type + class");
+    ckjs("document.querySelectorAll('.lead').length === 4", "class alone matches the span too");
+    ckjs("document.querySelectorAll('#wrap .lead').length === 3", "descendant combinator");
+    ckjs("document.querySelectorAll('#wrap > p').length === 2", "child combinator");
+    ckjs("document.querySelectorAll('p.lead + p').length === 1", "adjacent sibling");
+    ckjs("document.querySelectorAll('p.lead ~ span').length === 1", "general sibling");
+    ckjs("document.querySelectorAll('p, span').length === 4", "selector list");
+    ckjs("document.querySelectorAll('[data-role]').length === 1", "attribute presence");
+    ckjs("document.querySelectorAll('[data-role=\"panel\"]').length === 1", "attribute equality");
+    ckjs("document.querySelectorAll('[href^=\"/\"]').length === 1", "attribute prefix");
+    ckjs("document.querySelectorAll('p.lead:not(.special)').length === 2", ":not()");
+    ckjs("document.querySelectorAll('div.box').length === 2", "compound type + class");
+    ckjs("document.getElementById('wrap').querySelector('p.lead').textContent.indexOf('one') >= 0",
+         "querySelector takes the first match in document order");
+    /* A pseudo-class we cannot evaluate matches NOTHING. Matching everything
+     * would style or click elements the page never selected. */
+    ckjs("document.querySelectorAll('p:hover').length === 0", "an unevaluable pseudo-class matches nothing");
+    /* An unparsable selector must throw, not return []. An empty result is
+     * indistinguishable from "no matches" and hides the bug for a month. */
+    ckjs("(function(){ try { document.querySelectorAll('<<'); return false; } catch (e) { return e instanceof SyntaxError; } })()",
+         "a bad selector throws SyntaxError rather than returning nothing");
+    ckjs("document.getElementsByTagName('p').length === 3", "getElementsByTagName");
+    ckjs("document.getElementsByTagName('*').length > 8", "getElementsByTagName('*')");
+    ckjs("document.getElementsByClassName('lead special').length === 1", "getElementsByClassName is AND");
+    ckjs("document.getElementById('wrap').querySelectorAll('p').length === 2",
+         "element.querySelectorAll is scoped to descendants");
+    ckjs("document.getElementById('wrap').getElementsByTagName('p').length === 2",
+         "element.getElementsByTagName is scoped");
+    ckjs("document.getElementById('lnk').matches('a[href]')", "Element.matches");
+    ckjs("!document.getElementById('lnk').matches('p')", "Element.matches says no");
+    ckjs("document.getElementById('lnk').closest('.box').id === 'wrap'", "Element.closest walks up");
+    ckjs("document.scripts.length === 1 && document.links.length === 1", "document.scripts / links");
+    ckjs("typeof document.querySelectorAll('p').item === 'function'"
+         " && document.querySelectorAll('p').item(9) === null", "the result is collection-shaped");
+    ckjs("Array.from(document.querySelectorAll('p')).length === 3", "the result is iterable");
+
+    /* ==== the misses that MUST STAY misses ===============================
+     * These are how a page detects Internet Explorer or a feature it should
+     * take the false branch on. The probe reports them as misses; defining any
+     * of them would send a page down a path we cannot follow. This block is
+     * here so a future well-meaning change to "reduce the miss list" fails a
+     * test instead of a page. NOT inverted in the control run -- they are true
+     * in both builds, which is the point. */
+    int save = inverted;
+    inverted = 0;
+    ckjs("typeof window.ActiveXObject === 'undefined'", "window.ActiveXObject stays absent (IE detection)");
+    ckjs("typeof document.documentMode === 'undefined'", "document.documentMode stays absent (IE detection)");
+    ckjs("typeof window.indexedDB === 'undefined'", "window.indexedDB stays absent (we have no store)");
+    ckjs("typeof window.MSApp === 'undefined'", "window.MSApp stays absent");
+    ckjs("!(typeof crypto === 'object' && crypto && crypto.subtle)",
+         "crypto.subtle stays absent (a stub would get something encrypted with it)");
+    inverted = save;
+
+    js_page_close();
+    dom_free(root);
+
+    printf("\n%s: %d checks, %d failures\n", inverted ? "test-platform-control" : "test-platform",
+           checks, failures);
+    if (failures) { printf("FAILED\n"); return 1; }
+    printf("%s: ALL PASS\n", inverted ? "test-platform-control" : "test-platform");
+    return 0;
+}
