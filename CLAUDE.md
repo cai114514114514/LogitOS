@@ -31,10 +31,31 @@ make debug  # QEMU frozen with gdb stub on :1234
 
 ## Source layout
 
-All source lives under `c/`, headers **colocated** with their `.c`. Header
-names are unique, so the Makefile's `INCDIRS := $(shell find c include -type d)`
-makes every `#include "foo.h"` resolve without path qualifiers. `include/` keeps
+All source lives under `c/`, headers **colocated** with their `.c`. The
+Makefile's `INCDIRS` is one flat list built from `find c include -type d`, so
+every `#include "foo.h"` resolves without a path qualifier. `include/` keeps
 only the cross-cutting kernel↔user ABI (`include/abi/logit_abi.h`).
+
+**That flat list assumes header basenames are unique, and they are not.** The
+assumption has been broken twice, both times by mini-libc growing a POSIX header
+whose name the kernel already used, and both times the symptom was the same and
+badly misleading: the list is sorted, `c/apps/libc/include` sorts before
+`c/kernel/...`, so **kernel** files including `"foo.h"` silently got the
+**userland** one and failed on undeclared kernel functions in files nobody had
+edited. A clean clone was immune while the header stayed untracked, which is how
+both survived a while.
+
+- `sys/wait.h` — fixed by excluding one directory:
+  `INCDIRS := $(addprefix -I,$(filter-out %/include/sys,$(sort $(shell find ...))))`
+- `sched.h` — fixed by moving it to `c/apps/libc/include/uonly/`, excluding that
+  directory from the shared scan, and adding `-Ic/apps/libc/include/uonly` to
+  **`UCFLAGS` only**. Note the ordering trap: it must come **before**
+  `$(INCDIRS)`, or the kernel's header wins anyway.
+
+`uonly/` is the place for a userland header whose basename the kernel also uses.
+Before adding a header to `c/apps/libc/include`, check its basename against
+`c/kernel`, `c/drivers`, `c/net`, `c/fs` and `c/lib` — a collision does not fail
+at the collision, it fails somewhere else entirely.
 
 Tests live under **`tests/`** (moved out of `tools/` in the 2026-06-09 declutter):
 `tests/unit/` = host unit/fuzz tests (`make test-tcp-host`/`test-as`/`test-png`/…)
