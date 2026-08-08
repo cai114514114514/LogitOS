@@ -98,15 +98,24 @@ struct arp_pkt {
  *
  * FAILED_HOLD is a NEGATIVE cache, and it is the rate limit that matters. An
  * address nobody answers for -- a host that is off, a typo, a scan -- used to
- * cost one broadcast per call to arp_resolve, forever. Holding the failure for
- * 20 s bounds that to three requests per 20 s per address no matter how hard
+ * cost one broadcast per call to arp_resolve, forever. Holding the failure
+ * bounds that to three requests per hold per address no matter how hard
  * anything above retries, which is the difference between a quiet segment and
  * a machine that broadcasts at whatever rate TCP happens to retransmit.
+ *
+ * FIVE seconds and not longer, because the hold is also a black hole: while it
+ * lasts, every send to that address fails immediately. The failure it is most
+ * likely to be caching is a TRANSIENT -- a next hop that has not finished
+ * booting, a link that came up a moment ago -- and a long hold turns a
+ * two-second outage into a twenty-second one for no benefit. At 5 s the
+ * broadcast cost is already down to 0.6 requests per second per address from
+ * unbounded, which is the whole point; going longer buys almost nothing and
+ * delays recovery fourfold.
  *
  * STALE_GC is what makes the table finite in the right way: an entry nobody has
  * used for two minutes is not evidence of anything and should not be occupying
  * a slot that an active peer wants. */
-#define FAILED_HOLD        2000     /* 20 s */
+#define FAILED_HOLD         500     /*  5 s */
 #define STALE_GC          12000     /* 120 s */
 
 /* The states themselves are in arp.h, so a test can name a transition rather
@@ -597,8 +606,13 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
             return -1;
         case ARP_FAILED:
             /* Negative cache. Answering -1 without transmitting is the whole
-             * point; it expires by itself in arp_poll. */
-            stats.resolve_fail++;
+             * point; it expires by itself in arp_poll.
+             *
+             * Deliberately NOT counting resolve_fail here. That counter means
+             * "addresses that never answered", and arp_poll increments it once
+             * when the address actually gives up; incrementing again per call
+             * would make the number a measure of how hard the caller retried
+             * instead, which is a different quantity wearing the same name. */
             net_unlock(f);
             return -1;
         }
