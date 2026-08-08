@@ -22,7 +22,12 @@ enum { FWRAP_NOWRAP, FWRAP_WRAP, FWRAP_WRAP_REV };
 enum { JC_START, JC_END, JC_CENTER, JC_BETWEEN, JC_AROUND, JC_EVENLY };
 /* align-items / align-self / align-content share this vocabulary. AL_AUTO is
  * only ever an align-self value ("use the container's align-items"). */
-enum { AL_STRETCH, AL_START, AL_END, AL_CENTER, AL_BASELINE, AL_AUTO };
+enum { AL_STRETCH, AL_START, AL_END, AL_CENTER, AL_BASELINE, AL_AUTO,
+/* align-content only. APPENDED, not inserted: layout.c and the grid and
+ * flex modules all switch on these, and renumbering AL_STRETCH..AL_AUTO
+ * would change the meaning of every stored byte in a way no compiler
+ * would complain about. */
+       AL_BETWEEN, AL_AROUND, AL_EVENLY };
 
 enum { POS_STATIC, POS_RELATIVE, POS_ABSOLUTE, POS_FIXED, POS_STICKY };
 enum { FLT_NONE, FLT_LEFT, FLT_RIGHT };
@@ -49,6 +54,32 @@ enum { LST_NONE, LST_DISC, LST_CIRCLE, LST_SQUARE, LST_DECIMAL, LST_DECIMAL_ZERO
  * element and a 10k-element page keeps all of them live at once, so the
  * property count added here would otherwise cost ~1.5 MB of the browser's
  * ring-3 arena for nothing. */
+/* ---------------- inline direction, and the text properties ----------------
+ *
+ * `direction` is the one three lines were waiting on: it is what `text-align:
+ * start`/`end` resolve against, what grid's `start`/`end` alignment means,
+ * what the flex main axis reverses on, and the whole of css-writing-modes.
+ *
+ * THE TEXT PROPERTIES CARRY layout_text.h's OWN VALUES, deliberately. The text
+ * line's `struct ltx_style`/`ltx_env` already decided these shapes, so their
+ * consumption is an assignment and not a translation -- a second numbering
+ * here would be a mapping table nobody owns, and mapping tables between two
+ * enums for one property are how the two quietly stop agreeing.
+ *
+ * NOT EVERY ONE OF THEM HAS A PRODUCER YET, and which is which is stated
+ * rather than left to be discovered: LibCSS knows direction, writing-mode,
+ * text-indent, letter-spacing, word-spacing, text-transform and white-space,
+ * and knows NOTHING about tab-size, word-break, overflow-wrap, line-break,
+ * hyphens, text-align-last, text-justify, white-space-collapse or text-wrap --
+ * they are not in its property table at all, so no amount of work in
+ * css_engine.c can produce them. Those fields hold their CSS initial value and
+ * the route to filling them is css_extra.c's raw-declaration pass or a
+ * property added to the vendored parser; see the note above convert(). A field
+ * at its initial value is the correct answer for every page that does not set
+ * the property, which is nearly all of them. */
+enum { DIR_LTR = 0, DIR_RTL };
+enum { WM_HORIZ_TB = 0, WM_VERT_RL, WM_VERT_LR };
+
 struct cstyle {
     int display;
     uint32_t color;                 /* 0xRRGGBB (text) */
@@ -96,7 +127,10 @@ struct cstyle {
     unsigned char align_self;
     int flex_grow;                  /* flex-grow as css_fixed (1.0 = 1024); 0 = don't grow */
     int flex_shrink;                /* flex-shrink as css_fixed; default 1.0 */
-    int flex_basis, fb_pct, fb_off, has_fb;     /* flex-basis (auto/content = !has_fb) */
+    int flex_basis, fb_pct, fb_off, has_fb;     /* flex-basis; !has_fb = auto or content */
+    unsigned char fb_content;       /* flex-basis: content -- NOT auto. `auto`
+                                     * defers to the item's width property,
+                                     * `content` ignores it. */
     int order;                      /* flex `order`, items sorted ascending (stable) */
     int grid_cols;                  /* >0: grid container with this many columns (css_extra) */
     int grid_tracks[GRID_MAXCOL];   /* per column: >0 = px width, <0 = fr weight (-v) */
@@ -107,6 +141,29 @@ struct cstyle {
     int trans_op;                   /* transition declares opacity/all (css_extra); same
                                      * end-state approximation as anim (scroll-reveal) */
     int inherited_from_ua;          /* internal bookkeeping (unused by callers) */
+
+    /* ---- inline direction ---- */
+    unsigned char direction;        /* DIR_* -- see the note above */
+    unsigned char writing_mode;     /* WM_*  */
+
+    /* ---- text (values are layout_text.h's LTX_*) ---- */
+    int text_indent;                /* px, or a percentage when ti_pct */
+    unsigned char ti_pct;
+    unsigned char ti_each_line;     /* text-indent: ... each-line   (no producer) */
+    unsigned char ti_hanging;       /* text-indent: ... hanging     (no producer) */
+    int letter_spacing;             /* px, may be negative; 0 = normal */
+    int word_spacing;               /* px, may be negative; 0 = normal */
+    unsigned char text_transform;   /* LTX_TT_*    */
+    unsigned char wsc;              /* LTX_WSC_*, derived from white_space */
+    unsigned char text_wrap;        /* LTX_WRAP_*, derived from white_space */
+    unsigned char word_break;       /* LTX_WB_*    (no producer) */
+    unsigned char overflow_wrap;    /* LTX_OW_*    (no producer) */
+    unsigned char line_break;       /* LTX_LB_*    (no producer) */
+    unsigned char hyphens;          /* LTX_HY_*    (no producer) */
+    unsigned char text_align_last;  /* LTX_ALAST_* (no producer) */
+    unsigned char text_justify;     /* LTX_TJ_*    (no producer) */
+    int tab_size;                   /* `space` advances, or px when tab_px */
+    unsigned char tab_px;           /*             (no producer; initial 8)  */
 };
 
 /* ---------------- CSSOM: the property surface ----------------

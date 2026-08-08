@@ -3,6 +3,7 @@
  * so it is a drop-in replacement for net/css.c. */
 #include "dom.h"
 #include "css.h"
+#include "layout_text.h"   /* the LTX_* vocabulary the text fields carry */
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -916,6 +917,77 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     default:                       o->white_space = WS_NORMAL; break;
     }
 
+    /* ---- inline direction, and the text properties ----
+     *
+     * The values stored are layout_text.h's own LTX_*, so the text engine
+     * consumes them by assignment; see the note above `enum { DIR_LTR ... }`
+     * in css.h for why a second numbering here would be a liability rather
+     * than an abstraction.
+     *
+     * WHAT LibCSS CAN AND CANNOT PRODUCE, because the difference is not
+     * discoverable from the field list: direction, writing-mode, text-indent,
+     * letter-spacing, word-spacing, text-transform and white-space are in its
+     * property table; tab-size, word-break, overflow-wrap, line-break,
+     * hyphens, text-align-last, text-justify, white-space-collapse and
+     * text-wrap are NOT IN IT AT ALL, so they cannot be read here by any
+     * means. Those keep their CSS initial value -- which is the right answer
+     * for every page that does not set them -- and closing them needs either
+     * css_extra.c's raw-declaration pass or the properties added to the
+     * vendored parser, which is the CSS line's file. Saying so here beats
+     * leaving a reader to conclude the field was forgotten. */
+    o->direction = (css_computed_direction(cs) == CSS_DIRECTION_RTL)
+                   ? DIR_RTL : DIR_LTR;
+    switch (css_computed_writing_mode(cs)) {
+    case CSS_WRITING_MODE_VERTICAL_RL: o->writing_mode = WM_VERT_RL; break;
+    case CSS_WRITING_MODE_VERTICAL_LR: o->writing_mode = WM_VERT_LR; break;
+    default:                           o->writing_mode = WM_HORIZ_TB; break;
+    }
+
+    if (css_computed_text_indent(cs, &len, &unit) == CSS_TEXT_INDENT_SET) {
+        int pct;
+        o->text_indent = clamp_px(len_px(len, unit, fp, &pct));
+        o->ti_pct = (unsigned char)(pct ? 1 : 0);
+    }
+    /* `normal` is zero here, not a sentinel: a spacing of exactly 0 and
+     * `normal` are the same used value for both properties, so there is
+     * nothing for a sentinel to distinguish. */
+    if (css_computed_letter_spacing(cs, &len, &unit) == CSS_LETTER_SPACING_SET)
+        o->letter_spacing = clamp_px(len_px(len, unit, fp, NULL));
+    if (css_computed_word_spacing(cs, &len, &unit) == CSS_WORD_SPACING_SET)
+        o->word_spacing = clamp_px(len_px(len, unit, fp, NULL));
+
+    switch (css_computed_text_transform(cs)) {
+    case CSS_TEXT_TRANSFORM_CAPITALIZE: o->text_transform = LTX_TT_CAPITALIZE; break;
+    case CSS_TEXT_TRANSFORM_UPPERCASE:  o->text_transform = LTX_TT_UPPERCASE; break;
+    case CSS_TEXT_TRANSFORM_LOWERCASE:  o->text_transform = LTX_TT_LOWERCASE; break;
+    default:                            o->text_transform = LTX_TT_NONE; break;
+    }
+
+    /* white-space is ONE property in LibCSS and TWO longhands in the text
+     * engine. Deriving both from it is exact -- css-text-4 defines the
+     * shorthand's five values as precisely these pairs -- and it is the only
+     * way to have the longhands at all until the parser learns them. */
+    switch (o->white_space) {
+    case WS_PRE:      o->wsc = LTX_WSC_PRESERVE;        o->text_wrap = LTX_WRAP_NOWRAP; break;
+    case WS_NOWRAP:   o->wsc = LTX_WSC_COLLAPSE;        o->text_wrap = LTX_WRAP_NOWRAP; break;
+    case WS_PRE_WRAP: o->wsc = LTX_WSC_PRESERVE;        o->text_wrap = LTX_WRAP_WRAP; break;
+    case WS_PRE_LINE: o->wsc = LTX_WSC_PRESERVE_BREAKS; o->text_wrap = LTX_WRAP_WRAP; break;
+    default:          o->wsc = LTX_WSC_COLLAPSE;        o->text_wrap = LTX_WRAP_WRAP; break;
+    }
+
+    /* The initial values of the nine LibCSS knows nothing about. Written
+     * explicitly rather than left to the caller's zeroing: LTX_HY_NONE is 0
+     * but hyphens' initial value is `manual`, and tab-size's is 8, so two of
+     * these are NOT the zero the struct arrives with. */
+    o->word_break      = LTX_WB_NORMAL;
+    o->overflow_wrap   = LTX_OW_NORMAL;
+    o->line_break      = LTX_LB_AUTO;
+    o->hyphens         = LTX_HY_MANUAL;
+    o->text_align_last = LTX_ALAST_AUTO;
+    o->text_justify    = LTX_TJ_AUTO;
+    o->tab_size        = 8;
+    o->tab_px          = 0;
+
     switch (css_computed_text_align(cs)) {
     case CSS_TEXT_ALIGN_CENTER:
     case CSS_TEXT_ALIGN_LIBCSS_CENTER: o->text_align = ALIGN_CENTER; break;
@@ -1048,9 +1120,21 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     case CSS_ALIGN_CONTENT_FLEX_START:    o->align_content = AL_START; break;
     case CSS_ALIGN_CONTENT_FLEX_END:      o->align_content = AL_END; break;
     case CSS_ALIGN_CONTENT_CENTER:        o->align_content = AL_CENTER; break;
-    /* space-between/around/evenly only differ from stretch when the container
-     * has spare cross space, which for our auto-height containers it never
-     * has; they fold onto stretch rather than pretending. */
+    /* The three space-* values are DISTINCT now.
+     *
+     * They used to fold onto stretch, on the argument that they only differ
+     * when the container has spare cross space and our auto-height containers
+     * never do. That argument was true of the flex containers this engine
+     * could build when it was written and is not true of the ones it builds
+     * now: a container with an explicit height, or a grid, has spare cross
+     * space routinely -- and folding three values onto a fourth is invisible
+     * in the style and shows up as a layout that is merely wrong. The cost of
+     * carrying them is one byte per element that layout may still choose to
+     * treat as stretch; the cost of NOT carrying them is that layout cannot
+     * choose at all. */
+    case CSS_ALIGN_CONTENT_SPACE_BETWEEN: o->align_content = AL_BETWEEN; break;
+    case CSS_ALIGN_CONTENT_SPACE_AROUND:  o->align_content = AL_AROUND; break;
+    case CSS_ALIGN_CONTENT_SPACE_EVENLY:  o->align_content = AL_EVENLY; break;
     default:                              o->align_content = AL_STRETCH; break;
     }
 #undef ALIGN_CONVERT
@@ -1060,9 +1144,34 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     { css_fixed fs = F_1;               /* flex-shrink's initial value is 1 */
       if (css_computed_flex_shrink(cs, &fs) != CSS_FLEX_SHRINK_SET) fs = F_1;
       o->flex_shrink = fs < 0 ? 0 : fs; }
-    if (css_computed_flex_basis(cs, &len, &unit) == CSS_FLEX_BASIS_SET) {
+    { uint8_t fbt = css_computed_flex_basis(cs, &len, &unit);
+      if (fbt == CSS_FLEX_BASIS_SET) {
         int pct; o->flex_basis = clamp_px(len_px(len, unit, fp, &pct));
         o->has_fb = 1; o->fb_pct = pct;
+        /* fb_off IS ZERO, AND THAT IS NOT AN OVERSIGHT ANY MORE.
+         *
+         * layout.c reads it, so a reader is entitled to know why it never
+         * moves. `width` gets a px addend out of calc() through a two-probe
+         * trick against css_computed_width_px() -- a calc() is linear in the
+         * available width, so two evaluations recover slope and intercept
+         * exactly. That accessor exists for `width` and for NOTHING ELSE:
+         * LibCSS stores only width as css_fixed_or_calc, so a calc() on
+         * flex-basis is not partially lost here, it is rejected by the parser
+         * before this function ever sees it, and flex-basis stays `auto`.
+         *
+         * So this cannot be closed from our side. It needs
+         * css_computed_flex_basis_px() (and min/max-width equivalents) in the
+         * vendored parser -- third_party/css, which is another line's file.
+         * Writing an addend here from anything else would be inventing a
+         * number. Same story for min_w_pct/max_w_pct, which have no _off field
+         * for exactly this reason. */
+        o->fb_off = 0;
+      } else if (fbt == CSS_FLEX_BASIS_CONTENT) {
+        /* `content` is not `auto`: auto defers to the item's width property,
+         * content ignores it and sizes to the content regardless. Folding
+         * them together silently gives a width-bearing item the wrong basis. */
+        o->has_fb = 0; o->fb_content = 1;
+      }
     }
     { int32_t ord;
       if (css_computed_order(cs, &ord) == CSS_ORDER_SET)
