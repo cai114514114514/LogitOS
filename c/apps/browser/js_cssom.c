@@ -1332,6 +1332,7 @@ static const char *SHIM_BODY_HANDLERS =
 "  var held  = Object.create(null);   /* ty -> the current handler, or null */\n"
 "  var owned = Object.create(null);   /* ty -> we took over window.on<ty>   */\n"
 "  var ran   = Object.create(null);   /* ty -> the handler has run          */\n"
+"  var roots = [];                    /* see the note on rooting, below      */\n"
 "\n"
 "  function body() { var d = G.document; return d && (d.body || d.documentElement); }\n"
 "\n"
@@ -1360,8 +1361,19 @@ static const char *SHIM_BODY_HANDLERS =
 /* The body's on<ty> IDL attribute IS the Window's -- same handler, two names.
  * Reading document.body.onload had to answer something other than null, and
  * aliasing is both what the spec says and the only way the two cannot drift. */
+/* AND THE WRAPPER HAS TO BE ROOTED, which is not a detail. js_dom.c caches one
+ * JS wrapper per node in the node's *weak* `jsw` slot, so an element object
+ * nobody holds is collected and REBUILT on the next `document.body` -- and the
+ * rebuilt one does not carry the property we just defined on the instance.
+ * The symptom is a property that reads back correctly for a while and then
+ * silently becomes undefined, which reads as an event bug rather than a GC
+ * one. Pushing the wrapper into a closure array keeps the identity stable for
+ * the life of the page, which is exactly as long as the attribute lives. */
 "    var b = body();\n"
-"    if (b) { try { Object.defineProperty(b, 'on' + ty, desc); } catch (e) {} }\n"
+"    if (b) {\n"
+"      roots.push(b);\n"
+"      try { Object.defineProperty(b, 'on' + ty, desc); } catch (e) {}\n"
+"    }\n"
 /* ONE delegating listener, registered once, that calls whatever is currently
  * held. Registered here rather than re-registered on assignment so the
  * handler keeps the position it was first set at, which is what the spec
@@ -1402,7 +1414,12 @@ static const char *SHIM_BODY_HANDLERS =
 "      return f.call(G, event);\n"
 "    };\n"
 "    handler.toString = function () {\n"
-"      return 'function on' + ty + '(event) {\n' + src + '\n}';\n"
+/* `\\n`, not `\n`. A `\n` here is consumed by the C compiler and reaches JS
+ * as a literal newline INSIDE a single-quoted JS string, which is a
+ * SyntaxError -- and it took the whole shim down with it, silently until
+ * run_shim started reporting. That is the trap in every one of these C-string
+ * shims: two escape levels, one file. */
+"      return 'function on' + ty + '(event) {\\n' + src + '\\n}';\n"
 "    };\n"
 "    if (!own(ty)) return false;\n"
 "    held[ty] = handler;\n"
@@ -1410,15 +1427,30 @@ static const char *SHIM_BODY_HANDLERS =
 "  }\n"
 "\n"
 "  TYPES.forEach(function (ty) {\n"
+/* EVERY Windows event handler is an IDL attribute, whether or not the body
+ * carries the content attribute for it: `window.onhashchange` on a page that
+ * never mentions hashchange reads NULL, not undefined. That distinction is
+ * load-bearing for feature detection -- `'onhashchange' in window` is the
+ * canonical test for it, and answering undefined makes the page take the
+ * no-history branch. So own() runs for all of them, and reflect() only decides
+ * whether there is anything to put in the slot. */
+"    own(ty);\n"
 /* The normal case: the body is parsed by the time this installs, so the
  * handler is on the window BEFORE any page script runs -- which is what makes
  * `window.onload` readable, replaceable and chainable at all. */
 "    reflect(ty);\n"
-/* The late case: a body (or the attribute) that arrived after install. Reflect
- * at event time and invoke by hand -- a listener added during dispatch does
- * not get called for the event that is dispatching. */
+/* The late case: a body (or the attribute) that arrived after install -- a
+ * document still being parsed, or one built by script. Reflect at event time
+ * and invoke by hand, because a listener added DURING dispatch does not get
+ * called for the event that is dispatching.
+ *
+ * Two conditions, and both are needed. `held[ty]` non-null means the slot is
+ * already occupied -- by the install-time reflect, or, more importantly, by
+ * the page's own `window.onload = ...`; re-reflecting over that would throw
+ * the page's assignment away. `ran[ty]` means the body's handler has already
+ * fired through the delegating listener. */
 "    G.addEventListener(ty, function (ev) {\n"
-"      if (owned[ty]) return;\n"
+"      if (held[ty] || ran[ty]) return;\n"
 "      if (!reflect(ty)) return;\n"
 "      var h = held[ty];\n"
 "      if (typeof h === 'function') h.call(G, ev);\n"
