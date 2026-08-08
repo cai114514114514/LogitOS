@@ -1317,7 +1317,18 @@ static const char *SEMANTICS_PRELUDE =
 "  acc(OPT, 'selected', function () {\n"
 "    var s = optSelected.get(this);\n"
 "    return s === undefined ? this.hasAttribute('selected') : s;\n"
-"  }, function (v) { optSelected.set(this, !!v); });\n"
+/* Selecting an option in a SINGLE select deselects the others -- the spec's
+ * "ask for a reset", and the reason `:checked` on a <select> whose markup put
+ * `selected` on option1 must stop matching option1 the moment a script selects
+ * option2. Without it both match, which is a state no select can be in. */
+"  }, function (v) {\n"
+"    optSelected.set(this, !!v);\n"
+"    if (!v) return;\n"
+"    var sel = ownerSelect(this);\n"
+"    if (!sel || sel.hasAttribute('multiple')) return;\n"
+"    var o = []; selectOptions(sel, o);\n"
+"    for (var i = 0; i < o.length; i++) if (o[i] !== this) optSelected.set(o[i], false);\n"
+"  });\n"
 "  acc(OPT, 'index', function () {\n"
 "    var sel = ownerSelect(this);\n"
 "    if (!sel) return 0;\n"

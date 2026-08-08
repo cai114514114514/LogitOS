@@ -687,7 +687,15 @@ static const char *SELECT_PRELUDE =
 "    case 'disabled': return CAN_DISABLE[localOf(el)] === 1 && isDisabled(el);\n"
 "    case 'checked': {\n"
 "      var t2 = localOf(el);\n"
-"      if (t2 === 'option') return !!el.selected || attrOf(el, 'selected', 1) !== null;\n"
+/* An <option>'s selectedness, NOT its `selected` attribute -- and the two
+ * differ the moment anything selects a different option, because the attribute
+ * stays where the markup put it. This used to be `selected || attr` because
+ * nothing modelled selectedness and the attribute was the only signal there
+ * was; js_semantics.c models it now, so the attribute is the FALLBACK for a
+ * link without that file rather than an additional way to match. */
+"      if (t2 === 'option')\n"
+"        return el.selected !== undefined ? !!el.selected\n"
+"                                         : attrOf(el, 'selected', 1) !== null;\n"
 "      if (t2 !== 'input') return false;\n"
 "      var ty = lower(attrOf(el, 'type', 1) || '');\n"
 "      if (ty !== 'checkbox' && ty !== 'radio') return false;\n"
