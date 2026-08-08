@@ -47,9 +47,38 @@ WPT_ROOT ?= third_party/wpt
 WPT_BASELINE := tests/unit/wpt_expected_fail.txt
 
 # ===========================================================================
-# THE LINK MUST MATCH browser.aex's, OR EVERY NUMBER IS OF A BROWSER THAT DOES
-# NOT EXIST.
+# THE RUNNER MUST BE browser.aex, OR EVERY NUMBER IS OF A BROWSER THAT DOES
+# NOT EXIST. There are TWO halves to that and they fail independently.
 # ===========================================================================
+# HALF ONE -- THE SOURCE LIST -- is below, as a subtraction from the
+# Makefile's own variables.
+#
+# HALF TWO -- THE CALL SEQUENCE -- is in tests/unit/wpt_test.c, and it went
+# wrong on its own after half one was fixed. LINKING A TRANSLATION UNIT IS NOT
+# RUNNING IT: the runner linked css_extra.c and layout.c and then never called
+# css_apply(), css_extra_apply() or layout_page(). `make test-wpt
+# ONLY=css/css-grid` read 531/11152 with AND without the grid implementation,
+# because with no cascade cstyle::grid_raw is never populated and grid_spec()
+# returns -1 before doing anything -- 11,152 subtests structurally
+# unreachable, and the line shipping grid unable to tell its work from a
+# no-op. css_extra is also the sole producer of the logical properties,
+# border-radius and the animation end-state.
+#
+# A comment cannot hold that. tests/unit/refhost/refrender.c had one -- the
+# right one, naming 12d33d6 -- and this runner drifted anyway, because a
+# comment in one harness is not a check in another. So the sequence is
+# ASSERTED, in the self-check that `make test-wpt-harness` runs in seconds:
+# a styled box must have its width (the cascade or layout stopped entirely),
+# and a box with margin-inline-start must be offset by it (css_extra_apply
+# specifically -- a logical property is one css_extra alone produces, so it is
+# the narrowest available probe for that single call).
+#
+# THE RULE, for whoever is here next: if browser.c gains a step between
+# dom_parse and the first paint, it belongs in run_one AND it needs a case in
+# SELFCHECK that fails when it is missing. A step nothing asserts is a step
+# that will be silently dropped, and the subset that goes quiet will not look
+# like a harness bug for weeks.
+
 # THE INVARIANT, in one sentence, because a hand-kept copy of another list is
 # the thing that failed three times:
 #
