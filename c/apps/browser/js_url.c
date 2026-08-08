@@ -1844,6 +1844,16 @@ void usp_sort(usplist *l)
 
 #include "quickjs.h"
 
+/* js_urlbind.c binds this parser to the DOM: document.baseURI, the eleven
+ * HTMLHyperlinkElementUtils members on <a>/<area>, and the entry points that
+ * must refuse a URL that will not parse. OPTIONAL, hence weak: six .mk
+ * fragments hand-list the browser's sources and none of them has to gain a
+ * line for this file to keep linking -- they simply keep the older behaviour.
+ * Called from the bottom of js_url_install because it REPLACES accessors
+ * js_reflect.c installed, and a replacement runs after what it replaces. */
+#define JS_URLBIND_OPTIONAL
+#include "js_urlbind.h"
+
 static JSClassID g_url_class;
 static JSClassID g_usp_class;
 static JSClassID g_uspit_class;
@@ -2578,6 +2588,10 @@ void js_url_install(JSContext *ctx)
     JS_FreeValue(ctx, old_url);
     JS_SetPropertyStr(ctx, g, "URL", ctor);
     JS_FreeValue(ctx, g);
+
+    /* LAST of the last: everything js_urlbind.c installs is built on the two
+     * globals above, and its JS half calls `new URL(...)` directly. */
+    if (js_urlbind_install) js_urlbind_install(ctx);
 }
 
 #endif /* URL_CORE_ONLY */
