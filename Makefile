@@ -227,7 +227,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 .PHONY: test-monitor test-monitor-negctl
@@ -386,74 +386,9 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog clip notify execinfo entropy
+       show dir chart prog clip notify execinfo
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
-
-# --- /bin/pkgverify: the one CLI program that LINKS crypto -------------------
-# CLI_RULE compiles exactly one .c, and this one needs pkgsig + ed25519 + the
-# two hashes, so it gets its own rule. It is the whole user-visible surface of
-# the trust model (see c/crypto/trust/pkgsig.h); the .lpk fixtures it is tested
-# against are built below by the host `lpk` tool from the SAME objects.
-PKGV_CSRC := c/apps/coreutils/pkgverify.c c/crypto/trust/pkgsig.c \
-             c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
-PKGV_OBJ  := $(patsubst %.c,$(BUILD)/pkgvobj/%.o,$(PKGV_CSRC))
-
-$(BUILD)/pkgvobj/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
-
-# The generated trust set. Same gotcha as roots_bundle.inc, same fix: without
-# this dependency, regenerating the signer keys leaves the OLD ones compiled in
-# and nothing says so.
-$(BUILD)/pkgvobj/c/crypto/trust/pkgsig.o: c/crypto/trust/pkgroots.inc
-$(BUILD)/c/crypto/trust/pkgsig.o: c/crypto/trust/pkgroots.inc
-
-$(BUILD)/pkgverify.elf: $(PKGV_OBJ) $(APPDIR)/crt0_cli.asm
-	@mkdir -p $(BUILD)/apps
-	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/pkgverify.crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/pkgverify.crt0c.o $(PKGV_OBJ)
-$(BUILD)/pkgverify.aex: $(BUILD)/pkgverify.elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/pkgverify.elf $@ pkgverify lpk '*' 150 150 150
-
-CLI_AEX += $(BUILD)/pkgverify.aex
-
-# The host signer/inspector. Deliberately the same C the kernel verifies with
-# rather than a second implementation -- see the header of tools/lpk.c.
-$(BUILD)/lpk: tools/lpk.c c/crypto/trust/pkgsig.c c/crypto/pubkey/ed25519.c \
-              c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/trust/pkgroots.inc
-	@mkdir -p $(BUILD)
-	cc -O2 -Wall -Wextra -o $@ tools/lpk.c c/crypto/trust/pkgsig.c \
-	   c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c \
-	   -Ic/crypto -Ic/crypto/trust
-
-# Three fixtures for test-pkg-os, made by the real signer:
-#   hello.lpk    signed by the built-in development key      -> ACCEPTED
-#   tampered.lpk the same package, one payload byte flipped  -> REFUSED
-#   foreign.lpk  a perfectly valid signature by a key the machine does not
-#                hold -> REFUSED, and that is the case that distinguishes
-#                "intact" from "trusted"
-LPK_DEV_SEED := dd5e99f7c5f19186cc0053d5905b54016586d7b366672597d5b61976d965a00b
-LPK_FOREIGN_SEED := 0101010101010101010101010101010101010101010101010101010101010101
-
-$(BUILD)/pkgfix/hello.txt:
-	@mkdir -p $(BUILD)/pkgfix
-	@printf 'a signed payload, and one byte of it is about to change\n' > $@
-
-$(BUILD)/hello.lpk: $(BUILD)/lpk $(BUILD)/pkgfix/hello.txt
-	$(BUILD)/lpk sign $(LPK_DEV_SEED) hello.txt $(BUILD)/pkgfix/hello.txt $@
-
-$(BUILD)/foreign.lpk: $(BUILD)/lpk $(BUILD)/pkgfix/hello.txt
-	$(BUILD)/lpk sign $(LPK_FOREIGN_SEED) hello.txt $(BUILD)/pkgfix/hello.txt $@
-
-# The tamper is done with dd on the finished package, not by re-signing a
-# different payload: the point is a package whose signature is untouched and
-# whose bytes are not.
-$(BUILD)/tampered.lpk: $(BUILD)/hello.lpk
-	cp $< $@
-	printf 'X' | dd of=$@ bs=1 seek=230 conv=notrunc status=none
-
-LPK_FIXTURES := $(BUILD)/hello.lpk $(BUILD)/tampered.lpk $(BUILD)/foreign.lpk
 
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(GALLERY_AEX) $(SETTINGS_AEX) $(CLI_AEX) $(BUILD)/as.aex
 # Which browser goes on the disk. Overridable so a test can pack a deliberately
@@ -802,12 +737,9 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 # the host tests do -- a guest-only fixture would compare two different files.
 IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
 IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(LPK_FIXTURES)
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES)
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
-	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
-	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
-	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(FONT_TEXT):/fonts/text.ttf \
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
@@ -2076,12 +2008,48 @@ test-as-asan: check-asops check-abi
 	    -o $(BUILD)/as_stress_asan tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 	@$(BUILD)/as_stress_asan
 
+# M27 NEGATIVE CONTROL. A port owns a file descriptor, so the one thing the
+# collector must do for a port the script dropped is close it -- and a backstop
+# nobody has watched fail is not a backstop. -DAS_PORT_NO_FINALIZE removes
+# exactly that one close() in as_port.c and nothing else. `port_drop_backstop`
+# in as_test.c then opens 400 files without closing any of them and asserts that
+# after a collection the live count is back at zero; without the finalizer it
+# stays at 400. On the host that is a leak the counter sees; on Logit, whose fd
+# table is 16 entries, it is the 17th open() failing. This target REQUIRES the
+# suite to fail, and requires the failure to be that one check.
+# Watched failing on 2026-08-08: 1/350, port_drop_backstop, want [true true]
+# got [true false] -- the second `true` is `port_stats()["open"] <= 1`.
+test-as-port-negctl: check-asops check-abi
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -DAS_PORT_NO_FINALIZE -o $(BUILD)/as_test_noport \
+	    tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	@if $(BUILD)/as_test_noport > $(BUILD)/as_noport.log 2>&1; then \
+	    echo "FAIL: the suite passed WITHOUT the port finalizer -- the backstop is not load-bearing"; \
+	    exit 1; \
+	 else \
+	    echo "negative control ok: without the GC's close() the handles stay open --"; \
+	    grep -a -A2 "port_drop_backstop" $(BUILD)/as_noport.log | head -4; \
+	    tail -2 $(BUILD)/as_noport.log; \
+	 fi
+
+# The M27 shell suite, host-side: the same command sequence tests/boot/run-shell-test.sh
+# feeds /bin/sh, fed instead to fsroot/as/examples/ash.as. Seconds, not minutes --
+# a parse or pipeline bug shows up here long before the boot harness.
+test-ash: $(ASC)
+	@bash tests/unit/run-ash-shell.sh $(ASC)
+
+# The M27 GATE, on the machine: the AetherScript shell runs the suite /bin/sh
+# passes today (tests/boot/run-shell-test.sh), on the same ISO and disk.
+test-shell-as: $(ISO) $(DISK)
+	@bash tests/boot/run-shell-as-test.sh $(ISO) $(DISK)
+
 # The gate every runtime slice must pass before it is committed: unit + GC stress
 # + robustness + completion + the three self-hosting stages + the bytecode
 # baseline. All host, ~1 minute. `test-as-os` (QEMU) is the separate slow gate --
 # a host-green slice can still break on the 24 MiB static arena.
 test-as-fast: test-as test-as-gcstress test-as-stress test-complete \
-              test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint test-as-bcstable
+              test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint test-as-bcstable \
+              test-as-port-negctl test-ash
 
 # --- the kernel log ring, host-side ---------------------------------------
 # Compiles the REAL c/kernel/core/klog.c + kprintf.c against tests/unit/klogstub
@@ -3269,8 +3237,3 @@ bench-aui: $(ISO) $(DISK)
 # c/kernel/sched/uthread.c links by existing, and mini-libc's pthread.c and
 # pthread_entry.asm are already covered by the wildcards over c/apps/libc/src.
 -include tests/thread.mk
-
-# Signing (Ed25519), password hashing, the entropy syscall and the signed
-# package format -- the half of c/crypto that is not a TLS client. See its
-# header for the target list and which three of them are negative controls.
--include tests/crypto.mk

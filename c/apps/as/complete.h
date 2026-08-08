@@ -37,7 +37,8 @@ typedef struct {
     int in_string;   /* caret inside a plain string / f-string TEXT -> suppress popup */
     int recv_str;    /* receiver is a string LITERAL ("ab".<caret>) -> string methods */
 } CmpCtx;
-enum { TY_UNKNOWN, TY_LIST, TY_DICT, TY_STR, TY_INT, TY_FLOAT, TY_INSTANCE };
+enum { TY_UNKNOWN, TY_LIST, TY_DICT, TY_STR, TY_INT, TY_FLOAT, TY_INSTANCE,
+       TY_PORT, TY_PROC };   /* M27 ports */
 
 #ifdef AS_COMPLETE_TEST
 /* test-only hooks into the internals */

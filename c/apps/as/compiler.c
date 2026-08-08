@@ -12,7 +12,12 @@ static int    P;          /* current index */
 static int    had_error;
 static ObjModule *g_module;   /* module being compiled; stamped onto every ObjFn */
 
-typedef struct { const char *name; int len; int depth; int is_captured; } Local;
+/* is_with marks a local introduced by `with NAME = ...:`. Every place that pops
+ * a local -- end_scope, and pop_locals_to for break/continue -- emits OP_WITH_END
+ * first, so the resource is released on EVERY way out of the block and not only
+ * the one that runs to the bottom. (return and a raised exception are handled by
+ * the VM, which unwinds the same stack.) */
+typedef struct { const char *name; int len; int depth; int is_captured; int is_with; } Local;
 typedef struct { uint8_t is_local; uint8_t index; } Upvalue;
 
 typedef struct Compiler {
@@ -94,6 +99,7 @@ static int add_local(const char *name, int len)   /* returns the slot, or -1 on 
     current->locals[slot].len = len;
     current->locals[slot].depth = current->scope_depth;
     current->locals[slot].is_captured = 0;
+    current->locals[slot].is_with = 0;
     current->local_count++;
     return slot;
 }
@@ -127,6 +133,7 @@ static void end_scope(void)
 {
     current->scope_depth--;
     while (current->local_count > 0 && current->locals[current->local_count - 1].depth > current->scope_depth) {
+        if (current->locals[current->local_count - 1].is_with) emit(OP_WITH_END);
         if (current->locals[current->local_count - 1].is_captured) emit(OP_CLOSE_UPVALUE);
         else emit(OP_POP);
         current->local_count--;
@@ -150,8 +157,10 @@ static int loop_depth = 0;      /* active loops in the CURRENT function */
 
 static void pop_locals_to(int base)   /* emit runtime pops down to `base`; does NOT change local_count */
 {
-    for (int i = current->local_count - 1; i >= base; i--)
+    for (int i = current->local_count - 1; i >= base; i--) {
+        if (current->locals[i].is_with) emit(OP_WITH_END);   /* break/continue out of a `with` still releases */
         emit(current->locals[i].is_captured ? OP_CLOSE_UPVALUE : OP_POP);
+    }
 }
 static LoopCtx *loop_begin(int break_base, int cont_base)
 {
@@ -168,6 +177,7 @@ static void loop_finish(void) { if (loop_depth > 0) loop_depth--; }
 typedef enum {
     PREC_NONE,
     PREC_TERNARY,                                 /* a if c else b (M23; lowest expr level) */
+    PREC_PIPE,                                    /* M27: |> -> <- (left-assoc, binds loosest) */
     PREC_OR, PREC_AND, PREC_EQ, PREC_CMP,
     PREC_BOR, PREC_BXOR, PREC_BAND, PREC_SHIFT,   /* | ^ & <<>> (Python order, below +/-) */
     PREC_TERM, PREC_FACTOR, PREC_UNARY,
@@ -565,6 +575,25 @@ static void binary(void)
     }
 }
 
+/* M27: `a |> b`, `p -> path`, `p <- path`.
+ *
+ * These are operators and not library calls because the composition has to
+ * happen while BOTH stages are still unstarted -- the fds between them are wired
+ * in one fork/dup2/exec pass, which is impossible once either side has run. The
+ * price of a function here would be an evaluation order that has already thrown
+ * the wiring away. Left-associative, so `a |> b |> c -> "f"` folds head-first and
+ * the redirect lands on the tail. */
+static void pipeline_(void)
+{
+    TokType op = tk_prev().type;
+    parse_precedence((Prec)(PREC_PIPE + 1));
+    switch (op) {
+    case T_PIPEOP: emit(OP_PIPE); break;
+    case T_ARROW:  emit(OP_REDIR_OUT); break;
+    default:       emit(OP_REDIR_IN); break;
+    }
+}
+
 static void and_(void)
 {
     int end = emitJump(OP_JUMP_IF_FALSE);
@@ -630,6 +659,9 @@ static void init_rules(void)
     rules[T_LAMBDA]  = (ParseRule){ lambda_, 0, PREC_NONE };
     rules[T_SUPER]   = (ParseRule){ super_, 0, PREC_NONE };
     rules[T_IF]      = (ParseRule){ 0, ternary_, PREC_TERNARY };   /* a if c else b */
+    rules[T_PIPEOP]  = (ParseRule){ 0, pipeline_, PREC_PIPE };     /* M27: |> */
+    rules[T_ARROW]   = (ParseRule){ 0, pipeline_, PREC_PIPE };     /* M27: -> */
+    rules[T_LARROW]  = (ParseRule){ 0, pipeline_, PREC_PIPE };     /* M27: <- */
     rules_ready = 1;
 }
 static ParseRule *get_rule(TokType t) { return &rules[t]; }
@@ -924,6 +956,33 @@ static void for_statement(void)
     loop_finish();
 }
 
+/* with NAME = <resource>: BODY
+ *
+ * The point is DETERMINISTIC release. A GC-timed close is not good enough for a
+ * file descriptor: the table is small, a collection may never happen, and the
+ * failure ("too many open files", far from the leak) is the one that costs the
+ * most to diagnose. So the resource becomes a marked local and the scope exit
+ * emits OP_WITH_END -- and because every exit path funnels through end_scope or
+ * pop_locals_to, `break`, `continue` and falling off the bottom all release it.
+ * `return` and a raised exception unwind the VM's own with-stack (vm.c). The
+ * collector's finalizer stays, as the backstop for a value that was never
+ * scoped at all. */
+static void with_statement(void)
+{
+    begin_scope();
+    consume(T_IDENT, "expected a name after 'with'");
+    Token var = tk_prev();
+    consume(T_ASSIGN, "expected '=' after the name in 'with'");
+    expression();
+    int slot = add_local(var.start, var.len);
+    if (slot < 0) { end_scope(); return; }
+    current->locals[slot].is_with = 1;
+    emit2(OP_WITH_BEGIN, (uint8_t)slot);
+    consume(T_COLON, "expected ':' after the 'with' resource");
+    block();
+    end_scope();                     /* emits OP_WITH_END then the local's OP_POP */
+}
+
 static void import_statement(void)   /* import NAME */
 {
     consume(T_IDENT, "expected a module name after 'import'");
@@ -1211,9 +1270,38 @@ static void statement(void)
     else if (match(T_IMPORT)) import_statement();
     else if (match(T_FROM)) from_statement();
     else if (match(T_TRY)) try_statement();
+    else if (match(T_WITH)) with_statement();
     else if (match(T_RAISE)) raise_statement();
     else if (assign_ahead()) { assignment(); consume_stmt_end(); }
-    else { expression(); emit(OP_POP); consume_stmt_end(); }
+    else {
+        /* A COMMAND STATEMENT. If the outermost thing this expression did was
+         * `|>`, `->` or `<-`, the value is a pipeline nobody is going to hold --
+         * and a statement that silently builds a command and drops it is the
+         * worst kind of quiet. So it gets the same scope `with` would give it:
+         * started here, waited for at the end of the statement. Everything else
+         * is an ordinary discarded value.
+         *
+         * Detected from the emitted bytecode rather than from a parser flag,
+         * because that is exactly the question being asked -- "was the last
+         * operation a composition" -- and it stays true if the Pratt table moves.
+         * `run(x)` on its own is still a VALUE: it names a command, and
+         * `.wait()` / `.out()` / `with` are how you ask for it to happen. */
+        int before = current->fn->count;
+        expression();
+        uint8_t last = current->fn->count > before ? current->fn->code[current->fn->count - 1] : OP_NIL;
+        if (last == OP_PIPE || last == OP_REDIR_OUT || last == OP_REDIR_IN) {
+            begin_scope();
+            int slot = add_local("", 0);
+            if (slot >= 0) {
+                current->locals[slot].is_with = 1;
+                emit2(OP_WITH_BEGIN, (uint8_t)slot);
+            }
+            end_scope();                    /* OP_WITH_END + OP_POP */
+        } else {
+            emit(OP_POP);
+        }
+        consume_stmt_end();
+    }
 }
 
 static void declaration(void)

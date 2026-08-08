@@ -73,8 +73,13 @@ T_SLASHEQ = 62
 T_PERCENTEQ = 63
 T_SEMI = 64
 T_FSTR = 65
-T_EOF = 66
-T_ERROR = 67
+# M27 ports: |>  ->  <-  and the `with` keyword.
+T_PIPEOP = 66
+T_ARROW = 67
+T_LARROW = 68
+T_WITH = 69
+T_EOF = 70
+T_ERROR = 71
 
 KEYWORDS = {"if": T_IF, "or": T_OR, "in": T_IN, "def": T_DEF, "and": T_AND,
             "not": T_NOT, "for": T_FOR, "nil": T_NIL, "try": T_TRY,
@@ -82,7 +87,7 @@ KEYWORDS = {"if": T_IF, "or": T_OR, "in": T_IN, "def": T_DEF, "and": T_AND,
             "while": T_WHILE, "false": T_FALSE, "class": T_CLASS,
             "super": T_SUPER, "break": T_BREAK, "raise": T_RAISE,
             "return": T_RETURN, "import": T_IMPORT, "lambda": T_LAMBDA,
-            "except": T_EXCEPT, "continue": T_CONTINUE}
+            "except": T_EXCEPT, "with": T_WITH, "continue": T_CONTINUE}
 
 def is_digit(c):
     return c >= 48 and c <= 57
@@ -277,6 +282,9 @@ class Lexer:
                     if n2 == 61:
                         self.i += 1
                         self.emit(T_MINUSEQ, "-=")
+                    elif n2 == 62:
+                        self.i += 1
+                        self.emit(T_ARROW, "->")
                     else:
                         self.emit(T_MINUS, "-")
                 elif c == 42:
@@ -303,7 +311,11 @@ class Lexer:
                 elif c == 38:
                     self.emit(T_AMP, "&")
                 elif c == 124:
-                    self.emit(T_PIPE, "|")
+                    if n2 == 62:
+                        self.i += 1
+                        self.emit(T_PIPEOP, "|>")
+                    else:
+                        self.emit(T_PIPE, "|")
                 elif c == 94:
                     self.emit(T_CARET, "^")
                 elif c == 126:
@@ -327,6 +339,9 @@ class Lexer:
                     elif n2 == 60:
                         self.i += 1
                         self.emit(T_SHL, "<<")
+                    elif n2 == 45:
+                        self.i += 1
+                        self.emit(T_LARROW, "<-")
                     else:
                         self.emit(T_LT, "<")
                 elif c == 62:

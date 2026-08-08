@@ -72,8 +72,14 @@ OP_BNOT = 54
 OP_SHL = 55
 OP_SHR = 56
 OP_POW = 57
+# M27 ports -- appended, never inserted: the order IS the .la ABI.
+OP_PIPE = 58
+OP_REDIR_OUT = 59
+OP_REDIR_IN = 60
+OP_WITH_BEGIN = 61
+OP_WITH_END = 62
 
-AS_BC_VERSION = 3
+AS_BC_VERSION = 4
 
 # constant tags (mirror as_bc.c K_*)
 K_NIL = 0
@@ -150,25 +156,30 @@ T_SLASHEQ = 62
 T_PERCENTEQ = 63
 T_SEMI = 64
 T_FSTR = 65
-T_EOF = 66
+T_PIPEOP = 66
+T_ARROW = 67
+T_LARROW = 68
+T_WITH = 69
+T_EOF = 70
 
 # precedence levels (mirror compiler.c Prec enum)
 P_NONE = 0
 P_TERNARY = 1
-P_OR = 2
-P_AND = 3
-P_EQ = 4
-P_CMP = 5
-P_BOR = 6
-P_BXOR = 7
-P_BAND = 8
-P_SHIFT = 9
-P_TERM = 10
-P_FACTOR = 11
-P_UNARY = 12
-P_POW = 13
-P_CALL = 14
-P_PRIMARY = 15
+P_PIPE = 2          # M27: |>  ->  <-   (binds looser than everything but ternary)
+P_OR = 3
+P_AND = 4
+P_EQ = 5
+P_CMP = 6
+P_BOR = 7
+P_BXOR = 8
+P_BAND = 9
+P_SHIFT = 10
+P_TERM = 11
+P_FACTOR = 12
+P_UNARY = 13
+P_POW = 14
+P_CALL = 15
+P_PRIMARY = 16
 
 # ---- little-endian byte emitters into a list of ints ----
 def u32(out, v):
@@ -289,6 +300,9 @@ class Parser:
         r[T_LAMBDA] = [self.lambda_, nil, P_NONE]
         r[T_SUPER] = [self.super_, nil, P_NONE]
         r[T_IF] = [nil, self.ternary_, P_TERNARY]
+        r[T_PIPEOP] = [nil, self.pipeline_, P_PIPE]
+        r[T_ARROW] = [nil, self.pipeline_, P_PIPE]
+        r[T_LARROW] = [nil, self.pipeline_, P_PIPE]
 
     # ---- cursor ----
     def cur_t(self):
@@ -375,7 +389,7 @@ class Parser:
     def add_local(self, name):
         if len(self.cur.locals) >= 256:
             self.err("too many locals in one function")
-        self.cur.locals.append([name, self.cur.scope_depth, false])
+        self.cur.locals.append([name, self.cur.scope_depth, false, false])
         return len(self.cur.locals) - 1
 
     def add_upvalue(self, c, index, is_local):
@@ -407,6 +421,8 @@ class Parser:
     def end_scope(self):
         self.cur.scope_depth = self.cur.scope_depth - 1
         while len(self.cur.locals) > 0 and self.cur.locals[len(self.cur.locals) - 1][1] > self.cur.scope_depth:
+            if self.cur.locals[len(self.cur.locals) - 1][3]:
+                self.emit(OP_WITH_END)
             if self.cur.locals[len(self.cur.locals) - 1][2]:
                 self.emit(OP_CLOSE_UPVALUE)
             else:
@@ -422,6 +438,8 @@ class Parser:
     def pop_locals_to(self, base):
         i = len(self.cur.locals) - 1
         while i >= base:
+            if self.cur.locals[i][3]:
+                self.emit(OP_WITH_END)
             if self.cur.locals[i][2]:
                 self.emit(OP_CLOSE_UPVALUE)
             else:
@@ -652,7 +670,7 @@ class Parser:
 
     def compile_comprehension(self, forp):
         comp = Comp(self.cur, "<listcomp>", 0)
-        comp.locals.append(["", 0, false])
+        comp.locals.append(["", 0, false, false])
         self.cur = comp
         self.emit2(OP_MAKE_LIST, 0)
         acc = self.add_local("")
@@ -800,6 +818,18 @@ class Parser:
             self.emit(OP_NOT)
         elif op == T_TILDE:
             self.emit(OP_BNOT)
+
+    # M27: a |> b, p -> path, p <- path. Left-associative; see compiler.c
+    # pipeline_() for why these are operators and not calls.
+    def pipeline_(self):
+        op = self.prev_t()[0]
+        self.parse_prec(P_PIPE + 1)
+        if op == T_PIPEOP:
+            self.emit(OP_PIPE)
+        elif op == T_ARROW:
+            self.emit(OP_REDIR_OUT)
+        else:
+            self.emit(OP_REDIR_IN)
 
     def binary(self):
         op = self.prev_t()[0]
@@ -1236,7 +1266,7 @@ class Parser:
         if is_method:
             self.consume(T_LPAREN, "expected '(' after the method name")
             self.consume(T_IDENT, "expected 'self' as the first method parameter")
-            comp.locals.append([self.prev_t()[1], 0, false])
+            comp.locals.append([self.prev_t()[1], 0, false, false])
             while self.match(T_COMMA):
                 self.consume(T_IDENT, "expected a parameter name")
                 self.bump_arity(comp)
@@ -1247,7 +1277,7 @@ class Parser:
             self.emit(OP_NIL)
             self.emit(OP_RET)
         elif is_lambda:
-            comp.locals.append(["", 0, false])
+            comp.locals.append(["", 0, false, false])
             if not self.check(T_COLON):
                 self.consume(T_IDENT, "expected a parameter name")
                 self.bump_arity(comp)
@@ -1260,7 +1290,7 @@ class Parser:
             self.expression()
             self.emit(OP_RET)
         else:
-            comp.locals.append(["", 0, false])
+            comp.locals.append(["", 0, false, false])
             self.consume(T_LPAREN, "expected '(' after the function name")
             if not self.check(T_RPAREN):
                 self.consume(T_IDENT, "expected a parameter name")
@@ -1360,6 +1390,21 @@ class Parser:
         self.cls_has_super = saved_super
         self.cls_active = saved_active
 
+    # with NAME = <resource>: BODY -- deterministic release, mirroring
+    # compiler.c with_statement().
+    def with_statement(self):
+        self.begin_scope()
+        self.consume(T_IDENT, "expected a name after 'with'")
+        var = self.prev_t()
+        self.consume(T_ASSIGN, "expected '=' after the name in 'with'")
+        self.expression()
+        slot = self.add_local(var[1])
+        self.cur.locals[slot][3] = true
+        self.emit2(OP_WITH_BEGIN, slot)
+        self.consume(T_COLON, "expected ':' after the 'with' resource")
+        self.block()
+        self.end_scope()
+
     def statement(self):
         if self.match(T_IF):
             self.if_statement()
@@ -1379,14 +1424,29 @@ class Parser:
             self.from_statement()
         elif self.match(T_TRY):
             self.try_statement()
+        elif self.match(T_WITH):
+            self.with_statement()
         elif self.match(T_RAISE):
             self.raise_statement()
         elif self.assign_ahead():
             self.assignment()
             self.consume_stmt_end()
         else:
+            # A command statement: if the outermost operation was |>, -> or <-,
+            # the pipeline gets the scope `with` would have given it (started
+            # here, waited for at the end of the statement) instead of being
+            # silently dropped. Mirrors compiler.c statement().
+            before = self.code_len()
             self.expression()
-            self.emit(OP_POP)
+            last = self.cur.fn["code"][self.code_len() - 1] if self.code_len() > before else OP_NIL
+            if last == OP_PIPE or last == OP_REDIR_OUT or last == OP_REDIR_IN:
+                self.begin_scope()
+                slot = self.add_local("")
+                self.cur.locals[slot][3] = true
+                self.emit2(OP_WITH_BEGIN, slot)
+                self.end_scope()
+            else:
+                self.emit(OP_POP)
             self.consume_stmt_end()
 
     def declaration(self):
@@ -1399,7 +1459,7 @@ class Parser:
 
     def compile_module(self):
         top = Comp(nil, "", 0)
-        top.locals.append(["", 0, false])
+        top.locals.append(["", 0, false, false])
         self.cur = top
         while not self.check(T_EOF):
             if self.match(T_NEWLINE):

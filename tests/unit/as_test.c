@@ -252,6 +252,166 @@ static char *slurp_file(const char *path)
     return buf;
 }
 
+
+/* ---------------------------------------------------------------- M27 ports --
+ * These run REAL processes. as_port.c is plain POSIX (mini-libc on Logit, the
+ * host libc here), so fork/exec/pipe/redirect are exercised host-side without
+ * QEMU -- which is the only reason a pipeline bug shows up in seconds instead of
+ * in a boot harness.
+ *
+ * The external commands are the ones every POSIX host has and LogitOS also
+ * ships: echo, cat, wc, grep, sh, true, false. */
+static void port_tests(void)
+{
+    /* -- a port is a value that knows what it is -- */
+    ok("port_borrow", "p = port(1)\nprint(p.fd(), p.kind(), p.closed())\n", "1 tty false\n");
+    ok("port_print",  "print(port(0))\n", "<tty port fd 0 borrowed>\n");
+    /* A borrowed handle is NOT close(2)d: closing detaches. If this were wrong,
+     * the test process would lose its own stdout and the next check would fail
+     * in a way nothing could report. */
+    ok("port_borrow_close", "p = port(1)\np.close()\nprint(p.closed())\nprint(\"still alive\")\n",
+                            "true\nstill alive\n");
+
+    /* -- files -- */
+    ok("port_write_read",
+       "f = open(\"/tmp/as_port_1.txt\", \"w\")\nprint(f.write(\"alpha\\nbeta\\n\"))\nf.close()\n"
+       "g = open(\"/tmp/as_port_1.txt\")\nprint(g.readall())\ng.close()\n",
+       "11\nalpha\nbeta\n\n");
+    ok("port_missing", "print(open(\"/no/such/file/at/all\") == nil)\n", "true\n");
+    ok("port_close_twice", "f = open(\"/tmp/as_port_1.txt\")\nf.close()\nf.close()\nprint(f.closed(), f.fd())\n",
+                           "true -1\n");
+    err("port_write_closed", "f = open(\"/tmp/as_port_1.txt\")\nf.close()\nf.write(\"x\")\n");
+
+    /* -- a port is its own cursor: iteration is a stream, not a list -- */
+    ok("port_iter",
+       "f = open(\"/tmp/as_port_1.txt\", \"w\")\nf.write(\"one\\ntwo\\nthree\\n\")\nf.close()\n"
+       "n = 0\nwith g = open(\"/tmp/as_port_1.txt\"):\n    for line in g:\n        n += 1\n        print(n, line)\n",
+       "1 one\n2 two\n3 three\n");
+    /* A final line with no newline still counts. */
+    ok("port_iter_nonl",
+       "f = open(\"/tmp/as_port_2.txt\", \"w\")\nf.write(\"a\\nb\")\nf.close()\n"
+       "with g = open(\"/tmp/as_port_2.txt\"):\n    for line in g:\n        print(f\"[{line}]\")\n",
+       "[a]\n[b]\n");
+    /* CRLF is stripped: a serial console delivers it, and a shell that kept the
+     * CR would try to exec a command whose name ends in one. */
+    ok("port_iter_crlf",
+       "f = open(\"/tmp/as_port_3.txt\", \"w\")\nf.write(\"x\\r\\ny\\r\\n\")\nf.close()\n"
+       "with g = open(\"/tmp/as_port_3.txt\"):\n    for line in g:\n        print(len(line), line)\n",
+       "1 x\n1 y\n");
+    /* Iterating twice CONTINUES; it does not restart. That is the truth about a
+     * stream and the thing a list-shaped iterator would get wrong. */
+    ok("port_iter_once",
+       "f = open(\"/tmp/as_port_1.txt\")\nfor a in f:\n    break\nk = 0\nfor b in f:\n    k += 1\nprint(k)\nf.close()\n",
+       "2\n");
+    /* len() refuses a port even though the for-loop's OP_LEN answers one: the
+     * loop asks "is there another", len() asks "how big". */
+    err("port_len_refused", "f = open(\"/tmp/as_port_1.txt\")\nprint(len(f))\n");
+
+    /* -- processes: run() builds, it does not start -- */
+    ok("proc_lazy",  "c = run(\"echo\", \"never-printed\")\nprint(c.pid())\n", "-1\n");
+    ok("proc_wait",  "print(run(\"true\").wait())\n", "0\n");
+    ok("proc_fail",  "print(run(\"false\").wait() == 0)\n", "false\n");
+    ok("proc_out",   "print(run(\"echo\", \"captured\").out())\n", "captured\n\n");
+    ok("proc_argv",  "print(run([\"echo\", \"list-form\"]).out())\n", "list-form\n\n");
+    ok("proc_print", "print(run(\"echo\", \"x\"))\n", "<cmd echo>\n");
+    err("proc_empty", "run([])\n");
+    err("proc_nonstr", "run([1, 2])\n");
+
+    /* -- |> wires the fds before either stage runs -- */
+    ok("pipe_two",
+       "print((run(\"sh\", \"-c\", \"printf 'a\\\\nb\\\\nc\\\\n'\") |> run(\"grep\", \"b\")).out())\n",
+       "b\n\n");
+    ok("pipe_three",
+       "p = run(\"sh\", \"-c\", \"printf 'x\\\\ny\\\\nz\\\\n'\") |> run(\"grep\", \"-v\", \"y\") |> run(\"wc\", \"-l\")\n"
+       "print(p.out().strip())\n", "2\n");
+    ok("pipe_print", "print(run(\"a\") |> run(\"b\") |> run(\"c\"))\n", "<cmd a |> x2>\n");
+    err("pipe_self",   "c = run(\"echo\")\nc |> c\n");
+    err("pipe_twice",  "b = run(\"cat\")\na = run(\"echo\") |> b\nd = run(\"echo\") |> b\n");
+    err("pipe_types",  "run(\"echo\") |> 7\n");
+
+    /* -- redirection -- */
+    ok("redir_out",
+       "c = run(\"echo\", \"to-a-file\") -> \"/tmp/as_port_4.txt\"\nc.wait()\n"
+       "with g = open(\"/tmp/as_port_4.txt\"):\n    print(g.line())\n",
+       "to-a-file\n");
+    ok("redir_in",
+       "f = open(\"/tmp/as_port_5.txt\", \"w\")\nf.write(\"1\\n2\\n3\\n\")\nf.close()\n"
+       "print((run(\"wc\", \"-l\") <- \"/tmp/as_port_5.txt\").out().strip())\n", "3\n");
+    ok("redir_both",
+       "c = run(\"cat\") <- \"/tmp/as_port_5.txt\" -> \"/tmp/as_port_6.txt\"\nc.wait()\n"
+       "with g = open(\"/tmp/as_port_6.txt\"):\n    for l in g:\n        print(l)\n", "1\n2\n3\n");
+    err("redir_type", "run(\"echo\") -> 7\n");
+    err("redir_twice","run(\"echo\") -> \"/tmp/a\" -> \"/tmp/b\"\n");
+
+    /* A statement whose outermost operator is a composition RUNS -- otherwise
+     * the spec's own `run(..) |> run(..) -> "out"` line would build a pipeline
+     * and silently drop it. `run(x)` on its own stays a value. */
+    ok("command_statement",
+       "run(\"sh\", \"-c\", \"printf 'k\\\\nkk\\\\n'\") |> run(\"grep\", \"kk\") -> \"/tmp/as_port_7.txt\"\n"
+       "with g = open(\"/tmp/as_port_7.txt\"):\n    print(g.line())\n", "kk\n");
+
+    /* -- `with`: deterministic release on EVERY exit path -- */
+    ok("with_closes",
+       "f = open(\"/tmp/as_port_1.txt\")\nwith g = f:\n    print(g.closed())\nprint(f.closed())\n",
+       "false\ntrue\n");
+    ok("with_break",
+       "f = open(\"/tmp/as_port_1.txt\")\nwhile true:\n    with g = f:\n        break\nprint(f.closed())\n",
+       "true\n");
+    ok("with_continue",
+       "f = open(\"/tmp/as_port_1.txt\")\nfor i in range(1):\n    with g = f:\n        continue\nprint(f.closed())\n",
+       "true\n");
+    ok("with_return",
+       "def go(f):\n    with g = f:\n        return 1\nf = open(\"/tmp/as_port_1.txt\")\ngo(f)\nprint(f.closed())\n",
+       "true\n");
+    ok("with_raise",
+       "f = open(\"/tmp/as_port_1.txt\")\ntry:\n    with g = f:\n        raise \"boom\"\nexcept e:\n    print(e)\nprint(f.closed())\n",
+       "boom\ntrue\n");
+    /* A `with` that CONTAINS the try must survive the exception. */
+    ok("with_outlives_try",
+       "f = open(\"/tmp/as_port_1.txt\")\nwith g = f:\n    try:\n        raise \"x\"\n    except e:\n        print(g.closed())\nprint(f.closed())\n",
+       "false\ntrue\n");
+    ok("with_nested",
+       "a = open(\"/tmp/as_port_1.txt\")\nb = open(\"/tmp/as_port_2.txt\")\nwith x = a:\n    with y = b:\n        print(x.closed(), y.closed())\n    print(a.closed(), b.closed())\nprint(a.closed(), b.closed())\n",
+       "false false\nfalse true\ntrue true\n");
+    /* `with` on a command ACQUIRES it: started at entry, waited for at exit. */
+    ok("with_proc",
+       "c = run(\"true\")\nwith p = c:\n    print(p.pid() > 0)\nprint(c.status())\n", "true\n0\n");
+    err("with_plain",  "with x = 5:\n    print(x)\n");
+    err("with_syntax", "with 5:\n    print(1)\n");
+
+    /* -- GC pressure: a port dropped without being closed --
+     * This is where a new object type holding an OS handle leaks or double-frees.
+     * The rule is stated and then asserted: the collector's finalizer is a
+     * BACKSTOP, it closes the handle, it counts every time it had to, and it
+     * never touches a borrowed one. 400 ports are opened and none is closed; a
+     * collection must bring the live count back to zero. Without the finalizer
+     * it stays at 400 -- a leak here, and the 17th open() failing on Logit,
+     * whose fd table is 16 entries. -DAS_PORT_NO_FINALIZE removes exactly that
+     * close(); `make test-as-port-negctl` REQUIRES this check to fail then. */
+    ok("port_drop_backstop",
+       "for i in range(400):\n    f = open(\"/tmp/as_port_1.txt\")\n    if f == nil:\n        print(\"open failed at\", i)\n        break\n"
+       "gc()\ns = port_stats()\nprint(s[\"finalized\"] > 0, s[\"open\"] <= 1)\n",
+       "true true\n");
+    /* Closed explicitly -> nothing for the collector to do. */
+    ok("port_no_drop",
+       "for i in range(50):\n    f = open(\"/tmp/as_port_1.txt\")\n    f.close()\ngc()\nprint(port_stats()[\"finalized\"], port_stats()[\"open\"])\n",
+       "0 0\n");
+    /* `with` is the deterministic path; the backstop must stay idle. */
+    ok("port_with_no_drop",
+       "for i in range(50):\n    with f = open(\"/tmp/as_port_1.txt\"):\n        x = f.line()\ngc()\nprint(port_stats()[\"finalized\"], port_stats()[\"open\"])\n",
+       "0 0\n");
+    /* A borrowed port dropped unclosed must NOT be counted or closed -- closing
+     * fd 1 here would take this test process's own stdout with it. */
+    ok("port_borrow_no_drop",
+       "for i in range(50):\n    p = port(1)\ngc()\nprint(port_stats()[\"finalized\"])\nprint(\"stdout survived\")\n",
+       "0\nstdout survived\n");
+    /* A pipeline held only through ->next must keep every stage alive across a
+     * collection: losing a downstream stage loses the pid that reaps it. */
+    ok("proc_chain_survives_gc",
+       "p = run(\"sh\", \"-c\", \"printf 'q\\\\n'\") |> run(\"cat\") |> run(\"cat\")\n"
+       "for i in range(200):\n    junk = [i, i, i]\ngc()\nprint(p.out())\n", "q\n\n");
+}
+
 int main(void)
 {
     as_add_module_source("mathx", MATHX);
@@ -1109,6 +1269,9 @@ int main(void)
     ok("prop_index_set", "class C:\n    def init(self):\n        self.d = {}\n        self.xs = [0, 0]\n    def go(self):\n        self.d[\"k\"] = 7\n        self.xs[1] = 9\n        return self.d[\"k\"] + self.xs[1]\nprint(C().go())\n", "16\n");
     ok("prop_compound", "class P:\n    def init(self):\n        self.i = 10\n    def bump(self):\n        self.i += 5\n        self.i *= 2\n        self.i -= 4\np = P()\np.bump()\nprint(p.i)\n", "26\n");
     ok("args_host",  "a = args()\nprint(a == nil or len(a) >= 0)\n", "true\n");
+
+    /* ---- M27 ports ---- */
+    port_tests();
 
     /* ---- M21 phase 3: .la bytecode serialize/deserialize round-trip ---- */
     bc_tests();

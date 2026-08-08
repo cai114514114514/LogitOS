@@ -25,6 +25,27 @@ static ObjUpvalue *open_upvalues;   /* live captured locals, sorted by stack add
 typedef struct { uint8_t *handler_ip; Value *sp; int frame_index; } Handler;
 static Handler handler_stack[FRAMES_MAX];
 static int     handler_count;
+
+/* M27 `with`: the live scoped resources, innermost last. An entry names the
+ * STACK SLOT the resource lives in, not the value -- so every unwind path can
+ * find the ones it is about to discard by comparing addresses, whether it is a
+ * frame going away (OP_RET), an exception jumping to a handler, or a `break`
+ * leaving the block. The slots are ordinary stack slots and therefore already
+ * GC roots; this table adds no marking of its own. */
+#define WITH_MAX 256
+typedef struct { Value *slot; int frame_index; } WithEntry;
+static WithEntry with_stack[WITH_MAX];
+static int       with_count;
+
+/* Release every scoped resource whose slot is at or above `floor_slot`. Used by
+ * OP_RET (frame->slots) and by the exception path (the handler's sp). */
+static void with_unwind_to(Value *floor_slot)
+{
+    while (with_count > 0 && with_stack[with_count - 1].slot >= floor_slot) {
+        with_count--;
+        as_value_release(*with_stack[with_count].slot);
+    }
+}
 static Value   g_exc;       /* the pending thrown value (valid iff g_has_exc) */
 static int     g_has_exc;   /* 1 while an exception is propagating */
 
@@ -100,7 +121,7 @@ static char trace_buf[512];
 static int  trace_len;
 
 static void reset_stack(void) { sp = stack; frame_count = 0; open_upvalues = NULL;
-                                handler_count = 0; g_has_exc = 0; g_exc = NIL_VAL; g_native_err = 0;
+                                handler_count = 0; with_count = 0; g_has_exc = 0; g_exc = NIL_VAL; g_native_err = 0;
                                 g_stack_overflow = 0; g_oom = 0;
                                 trace_buf[0] = 0; trace_len = 0; }
 
@@ -402,6 +423,11 @@ static Value native_len(int argc, Value *args)
     if (IS_DICT(args[0]))  return INT_VAL(AS_DICT(args[0])->live);
     if (IS_RANGE(args[0])) return INT_VAL(AS_RANGE(args[0])->count);
     if (IS_BUF(args[0]))   return INT_VAL(AS_BUF(args[0])->nbytes);
+    /* Deliberately NOT the horizon OP_LEN reports for a port: a for-loop asks
+     * "is there another item", which a stream can answer; `len(p)` asks "how big
+     * is it", which it cannot, and answering with the cursor position would be a
+     * number that looks like a size and is not one. */
+    if (IS_PORT(args[0]))  return as_native_fail("len(): a port is a stream, not a sized value -- iterate it");
     return as_native_fail("len() needs a list, string, or dict");
 }
 /* ---- M21-P3 self-hosting natives: byte/char primitives + portable file I/O.
@@ -799,6 +825,7 @@ static int run_until(int floor)
         &&op_GET_PROPERTY, &&op_SET_PROPERTY, &&op_GET_SUPER,
         &&op_SETUP_TRY, &&op_POP_TRY, &&op_RAISE,
         &&op_BAND, &&op_BOR, &&op_BXOR, &&op_BNOT, &&op_SHL, &&op_SHR, &&op_POW,
+        &&op_PIPE, &&op_REDIR_OUT, &&op_REDIR_IN, &&op_WITH_BEGIN, &&op_WITH_END,
     };
     uint8_t op;
 #define DISPATCH() do { \
@@ -970,6 +997,9 @@ static int run_until(int floor)
             /* Constructor (init) returns self (slots[0]) rather than init's computed value,
              * so that `Name(args)` evaluates to the new instance. */
             if (frame->is_init) result = frame->slots[0];
+            /* `return` from inside a `with`: release before the slots go away.
+             * Runs before close_upvalues so the slot still holds the resource. */
+            with_unwind_to(frame->slots);
             close_upvalues(frame->slots);     /* close this fn's captured locals before unwinding */
             /* return-from-inside-try: discard handlers registered in this frame,
              * else a dead frame's handler would dangle and mis-catch later. */
@@ -1048,6 +1078,13 @@ static int run_until(int floor)
                 ObjRange *r = AS_RANGE(obj); int64_t i = AS_INT(idx); if (i < 0) i += r->count;
                 if (i < 0 || i >= r->count) { runtime_error("list index out of range"); goto err; }
                 push(INT_VAL(RANGE_AT(r, i)));
+            } else if (IS_PORT(obj)) {
+                /* A stream serves each index once, in order. Anything else is a
+                 * random access into something that has already gone past. */
+                Value out;
+                if (!IS_INT(idx)) { runtime_error("a port is indexed by its cursor position"); goto err; }
+                if (!as_port_at(AS_PORT(obj), AS_INT(idx), &out)) { runtime_error("a port cannot be re-read at index %lld", (long long)AS_INT(idx)); goto err; }
+                push(out);
             } else if (IS_STR(obj)) {
                 if (!IS_INT(idx)) { runtime_error("string index must be an integer"); goto err; }
                 ObjStr *s = AS_STR(obj); int64_t i = AS_INT(idx); if (i < 0) i += s->len;
@@ -1088,6 +1125,16 @@ static int run_until(int floor)
             else if (IS_DICT(v))  push(INT_VAL(AS_DICT(v)->live));
             else if (IS_RANGE(v)) push(INT_VAL(AS_RANGE(v)->count));
             else if (IS_BUF(v))   push(INT_VAL(AS_BUF(v)->nbytes));
+            /* M27: a port has no length, it has a horizon. This answers "how
+             * many items are known to exist", pulling at most one more line --
+             * which is exactly what the for-loop's `idx < len` test is asking.
+             * The `len()` BUILTIN still refuses a port (native_len): the loop
+             * asks a question a stream can answer, `len(p)` asks one it cannot. */
+            else if (IS_PORT(v)) {
+                int64_t n;
+                if (!as_port_avail(AS_PORT(v), &n)) { char m[192]; snprintf(m, sizeof m, "%s", as_err); runtime_error("%s", m); goto err; }
+                push(INT_VAL(n));
+            }
             else { runtime_error("object has no length"); goto err; }
             DISPATCH();
         }
@@ -1280,6 +1327,15 @@ static int run_until(int floor)
                     if (call_closure(AS_CLOSURE(m), argc)) goto err;
                     frame = &frames[frame_count - 1];
                 }
+            } else if (IS_PORT(recv) || IS_PROC(recv)) {
+                /* M27. Receiver + args stay on the stack (rooted) for the whole
+                 * call -- a method here can fork, read, and allocate strings --
+                 * and sp only moves once the result exists. */
+                Value out = NIL_VAL;
+                int r = as_port_invoke(recv, name, argc, sp - argc, &out);
+                if (r == 0) { runtime_error("%s has no method '%.*s'", IS_PORT(recv) ? "a port" : "a process", name->len, name->chars); goto err; }
+                if (r < 0) goto err;                    /* as_native_fail / as_err already armed */
+                sp -= argc + 1; push(out);
             } else { runtime_error("'%.*s' is not a method of this type", name->len, name->chars); goto err; }
             DISPATCH();
         }
@@ -1404,6 +1460,11 @@ static int run_until(int floor)
 
         op_ITER: {
             if (IS_DICT(peek(0))) { ObjList *ks = as_dict_keys(AS_DICT(peek(0))); sp[-1] = OBJ_VAL(ks); }
+            /* M27: a port iterates AS ITSELF -- a stream is its own cursor. The
+             * rebase reconciles the loop's index, which starts at 0 every time,
+             * with a stream that does not: a second `for` over the same port
+             * continues where the first one stopped. */
+            else if (IS_PORT(peek(0))) as_port_iter_begin(AS_PORT(peek(0)));
             DISPATCH();   /* list/range/string: iterate as-is */
         }
 
@@ -1480,6 +1541,49 @@ static int run_until(int floor)
             sp[-2] = sp[-1]; sp--;            /* drop the class beneath the new bound method */
             DISPATCH();
         }
+        /* ---- M27 ports ------------------------------------------------------
+         * The three composition ops act on UNSTARTED stages, which is the whole
+         * reason they are ops: by the time a function could have run, the fds
+         * that had to be wired between the stages no longer exist to wire. */
+        op_PIPE: {
+            Value b = peek(0), a = peek(1);            /* keep both rooted while linking */
+            if (!IS_PROC(a) || !IS_PROC(b)) { runtime_error("'|>' needs a command on each side"); goto err; }
+            if (!as_proc_pipe(AS_PROC(a), AS_PROC(b))) { char m[192]; snprintf(m, sizeof m, "%s", as_err); runtime_error("%s", m); goto err; }
+            sp -= 2; push(a);                          /* the pipeline IS its head stage */
+            DISPATCH();
+        }
+        op_REDIR_OUT:
+        op_REDIR_IN: {
+            int outward = (OpCode)op == OP_REDIR_OUT;
+            Value path = peek(0), p = peek(1);
+            if (!IS_PROC(p)) { runtime_error("'%s' needs a command on the left", outward ? "->" : "<-"); goto err; }
+            if (!IS_STR(path)) { runtime_error("'%s' needs a path string on the right", outward ? "->" : "<-"); goto err; }
+            if (!as_proc_redirect(AS_PROC(p), AS_STR(path), outward)) { char m[192]; snprintf(m, sizeof m, "%s", as_err); runtime_error("%s", m); goto err; }
+            sp -= 2; push(p);
+            DISPATCH();
+        }
+        /* The resource is already the local at `s`; recording the SLOT rather
+         * than the value is what lets every unwind path (return, exception,
+         * break) find it again by comparing stack addresses. */
+        op_WITH_BEGIN: {
+            uint8_t s = READ_BYTE();
+            Value v = frame->slots[s];
+            if (!IS_PORT(v) && !IS_PROC(v)) { runtime_error("'with' needs a port or a process, got %s",
+                                                            IS_OBJ(v) ? as_obj_type_name(AS_OBJ(v)) : "a plain value"); goto err; }
+            if (with_count >= WITH_MAX) { runtime_error("too many nested 'with' scopes"); goto err; }
+            /* Acquire. A port arrives already open; a command is started here,
+             * so `with` means the same thing for both: held for the block,
+             * released (closed / waited for) when it ends. */
+            if (IS_PROC(v) && !as_proc_launch(AS_PROC(v))) { char m[192]; snprintf(m, sizeof m, "%s", as_err); runtime_error("%s", m); goto err; }
+            with_stack[with_count].slot = frame->slots + s;
+            with_stack[with_count].frame_index = frame_count;
+            with_count++;
+            DISPATCH();
+        }
+        op_WITH_END: {
+            if (with_count > 0) { with_count--; as_value_release(*with_stack[with_count].slot); }
+            DISPATCH();
+        }
         op_BAD: runtime_error("bad opcode %d", op); goto err;
     }
     {
@@ -1493,6 +1597,9 @@ static int run_until(int floor)
             handler_count--;
         if (handler_count > 0 && handler_stack[handler_count - 1].frame_index > floor) {
             Handler *h = &handler_stack[--handler_count];   /* pop the handler we'll use */
+            /* A `with` inside the try body is being abandoned: release it. One
+             * that CONTAINS the try lives below h->sp and is left alone. */
+            with_unwind_to(h->sp);
             close_upvalues(h->sp);                          /* close captives above the try's sp */
             frame_count = h->frame_index;
             frame = &frames[frame_count - 1];
@@ -1509,6 +1616,12 @@ static int run_until(int floor)
         /* uncaught: record where it happened while frames[] is still intact,
          * then finalize as_err for the caller and abort. */
         capture_trace();
+        /* Nothing will catch this, so every `with` this invocation opened is
+         * abandoned here. Release them while their slots are still valid: an
+         * embedder that keeps running (the REPL, a module load that raised)
+         * would otherwise leak exactly the handles `with` exists to protect. */
+        while (with_count > 0 && with_stack[with_count - 1].frame_index > floor)
+            { with_count--; as_value_release(*with_stack[with_count].slot); }
         if (IS_STR(g_exc)) {
             ObjStr *s = AS_STR(g_exc);
             int n = s->len < (int)sizeof(as_err) - 1 ? s->len : (int)sizeof(as_err) - 1;
@@ -1547,6 +1660,7 @@ int as_run(ObjFn *script)
     as_define_native("gc_stats", native_gc_stats);
     as_define_native("gc", native_gc);
     as_install_indirection();          /* addr/peek/poke/iNptr/syscall + SYS_* */
+    as_install_ports();                /* M27: open/port/pipe/run/port_stats */
     if (script->module) { modules[nmodules++] = script->module; script->module->state = 1; }
     as_gc_pop_disable();               /* run_module pushes `script` first -> rooted before any GC */
     return run_module(script);

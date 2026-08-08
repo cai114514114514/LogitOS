@@ -26,17 +26,19 @@ static int has_dot(const char *s, int n){ for (int i=0;i<n;i++) if (s[i]=='.') r
 static const char *const KEYWORDS[] = {
     "def","return","if","elif","else","class","super","try","except","raise",
     "while","for","in","and","or","not","lambda","import","from",
-    "true","false","nil","break","continue", 0
+    "true","false","nil","break","continue","with", 0
 };
-/* Mirrors the as_define_native() calls in vm.c + as_native.c. `make check-asops`
- * (tools/gen_as_opcodes.py) asserts this list stays complete -- it had silently
- * missed the seven M21-P3 self-hosting natives since they landed. */
+/* Mirrors the as_define_native() calls in vm.c + as_native.c + as_port.c.
+ * `make check-asops` (tools/gen_as_opcodes.py) asserts this list stays complete
+ * -- it had silently missed the seven M21-P3 self-hosting natives since they
+ * landed. */
 static const char *const BUILTINS[] = {
     "print","len","range","str","gc","gc_stats","buffer","layout",
     "chr","ord","f64bits","parse_float","file_read","file_write","args",
     "addr","syscall","alloc","dealloc","mem2str","mem2cstr",
     "peek8","peek16","peek32","peek64",
-    "poke8","poke16","poke32","poke64","i8ptr","i16ptr","i32ptr","i64ptr", 0
+    "poke8","poke16","poke32","poke64","i8ptr","i16ptr","i32ptr","i64ptr",
+    "open","port","pipe","run","port_stats", 0
 };
 /* the M23.5 system surface (mirrors as_native.c) -- prefix-typed (SYS_/EV_), so
  * they only surface when the user starts typing one */
@@ -61,6 +63,9 @@ static const char *const SYSCONSTS[] = {
 static const char *const LIST_METHODS[] = { "append", 0 };
 static const char *const DICT_METHODS[] = { "get","has","keys","values","remove", 0 };
 static const char *const STR_METHODS[]  = { "join","split","strip","upper","lower","replace","find","sub", 0 };
+/* M27 ports (mirrors as_port.c's port_method/proc_method). */
+static const char *const PORT_METHODS[] = { "read","readall","line","lines","write","close","closed","fd","kind", 0 };
+static const char *const PROC_METHODS[] = { "start","wait","out","pid","status","argv", 0 };
 
 static int is_kw(const char *s, int n){
     for (int i=0; KEYWORDS[i]; i++) if (c_neq(s, KEYWORDS[i], n)) return 1;
@@ -288,6 +293,13 @@ static int type_of(const Tok *t, int nt, const char *src, int caret, const char 
         else if (r->kind==TK_IDENT && c_neq(src+r->start,"str",r->len)
                  && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='(') ty=TY_STR;
         else if (r->kind==TK_NUM) ty = has_dot(src+r->start, r->len) ? TY_FLOAT : TY_INT;
+        /* M27: `p = open(...)` / `port(...)` is a port, `c = run(...)` a process.
+         * Same shape as the `str(...)` rule above -- a builtin name followed by
+         * '(' -- which is as much inference as this engine does anywhere. */
+        else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
+                 && (c_neq(src+r->start,"open",r->len) || c_neq(src+r->start,"port",r->len))) ty=TY_PORT;
+        else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
+                 && c_neq(src+r->start,"run",r->len)) ty=TY_PROC;
         else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
                  && is_class(t,nt,src,src+r->start,r->len)) {
             ty=TY_INSTANCE;
@@ -366,6 +378,8 @@ int as_complete(const char *src, int len, int caret, Completion *out, int max){
         if (ty==TY_LIST)          for (int i=0;LIST_METHODS[i]&&na<512;i++) put(all,&na,512,LIST_METHODS[i],c_slen(LIST_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_DICT)     for (int i=0;DICT_METHODS[i]&&na<512;i++) put(all,&na,512,DICT_METHODS[i],c_slen(DICT_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_STR)      for (int i=0;STR_METHODS[i]&&na<512;i++) put(all,&na,512,STR_METHODS[i],c_slen(STR_METHODS[i]),CMP_METHOD,90);
+        else if (ty==TY_PORT)     for (int i=0;PORT_METHODS[i]&&na<512;i++) put(all,&na,512,PORT_METHODS[i],c_slen(PORT_METHODS[i]),CMP_METHOD,90);
+        else if (ty==TY_PROC)     for (int i=0;PROC_METHODS[i]&&na<512;i++) put(all,&na,512,PROC_METHODS[i],c_slen(PROC_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_INSTANCE) na = collect_class(toks,nt,src,cls,c_slen(cls),all,512);
         goto rank;
     }

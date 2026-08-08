@@ -33,7 +33,8 @@ static TokType keyword(const char *s, int n)
             if (!memcmp(s, "for", 3)) return T_FOR;
             if (!memcmp(s, "nil", 3)) return T_NIL;
             if (!memcmp(s, "try", 3)) return T_TRY; break;
-    case 4: if (!memcmp(s, "elif", 4)) return T_ELIF;
+    case 4: if (!memcmp(s, "with", 4)) return T_WITH;
+            if (!memcmp(s, "elif", 4)) return T_ELIF;
             if (!memcmp(s, "else", 4)) return T_ELSE;
             if (!memcmp(s, "from", 4)) return T_FROM;
             if (!memcmp(s, "true", 4)) return T_TRUE; break;
@@ -163,20 +164,25 @@ Token *as_lex(const char *src, int *count)
                 case ';': push(&b, T_SEMI, s, 1, line); break;
                 case '.': push(&b, T_DOT, s, 1, line); break;
                 case '+': if (*p == '=') { p++; push(&b, T_PLUSEQ, s, 2, line); } else push(&b, T_PLUS, s, 1, line); break;
-                case '-': if (*p == '=') { p++; push(&b, T_MINUSEQ, s, 2, line); } else push(&b, T_MINUS, s, 1, line); break;
+                case '-': if (*p == '=') { p++; push(&b, T_MINUSEQ, s, 2, line); }
+                          else if (*p == '>') { p++; push(&b, T_ARROW, s, 2, line); }   /* M27 redirect */
+                          else push(&b, T_MINUS, s, 1, line); break;
                 case '*': if (*p == '*') { p++; push(&b, T_POW, s, 2, line); }
                           else if (*p == '=') { p++; push(&b, T_STAREQ, s, 2, line); } else push(&b, T_STAR, s, 1, line); break;
                 case '/': if (*p == '=') { p++; push(&b, T_SLASHEQ, s, 2, line); } else push(&b, T_SLASH, s, 1, line); break;
                 case '%': if (*p == '=') { p++; push(&b, T_PERCENTEQ, s, 2, line); } else push(&b, T_PERCENT, s, 1, line); break;
                 case '&': push(&b, T_AMP, s, 1, line); break;
-                case '|': push(&b, T_PIPE, s, 1, line); break;
+                case '|': if (*p == '>') { p++; push(&b, T_PIPEOP, s, 2, line); }        /* M27 pipeline */
+                          else push(&b, T_PIPE, s, 1, line); break;
                 case '^': push(&b, T_CARET, s, 1, line); break;
                 case '~': push(&b, T_TILDE, s, 1, line); break;
                 case '=': if (*p == '=') { p++; push(&b, T_EQ, s, 2, line); } else push(&b, T_ASSIGN, s, 1, line); break;
                 case '!': if (*p == '=') { p++; push(&b, T_NE, s, 2, line); }
                           else { snprintf(as_err, sizeof as_err, "unexpected '!' (line %d)", line); err = 1; } break;
                 case '<': if (*p == '=') { p++; push(&b, T_LE, s, 2, line); }
-                          else if (*p == '<') { p++; push(&b, T_SHL, s, 2, line); } else push(&b, T_LT, s, 1, line); break;
+                          else if (*p == '<') { p++; push(&b, T_SHL, s, 2, line); }
+                          else if (*p == '-') { p++; push(&b, T_LARROW, s, 2, line); }  /* M27 redirect in */
+                          else push(&b, T_LT, s, 1, line); break;
                 case '>': if (*p == '=') { p++; push(&b, T_GE, s, 2, line); }
                           else if (*p == '>') { p++; push(&b, T_SHR, s, 2, line); } else push(&b, T_GT, s, 1, line); break;
                 default:  snprintf(as_err, sizeof as_err, "unexpected character '%c' (line %d)", c, line); err = 1; break;

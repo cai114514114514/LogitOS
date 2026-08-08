@@ -11,6 +11,7 @@ Three separate implementations carry copies of the same numbers:
   c/apps/as/lexer.h  TokType    fsroot/as/lib/aslex.as T_*  + asc.as T_*
   c/apps/as/lexer.c  keywords   fsroot/as/lib/aslex.as KEYWORDS
   c/apps/as/vm.c + as_native.c  c/apps/as/complete.c   BUILTINS / SYSCONSTS / *_METHODS
+  c/apps/as/as_port.c (M27)     c/apps/as/complete.c   BUILTINS / PORT_ / PROC_METHODS
 
 A mismatch in the first four is a *silent* miscompile: the self-hosted compiler
 emits bytecode the C VM reads as a different instruction. Nothing in the build
@@ -141,6 +142,7 @@ def main():
     vm_c = read("c/apps/as/vm.c")
     native_c = read("c/apps/as/as_native.c")
     complete_c = read("c/apps/as/complete.c")
+    port_c = read("c/apps/as/as_port.c")
     asc_as = read("fsroot/as/lib/asc.as")
     aslex_as = read("fsroot/as/lib/aslex.as")
 
@@ -191,6 +193,7 @@ def main():
     # 7. builtins registered at runtime vs. what the IDE offers.
     natives = set(re.findall(r'as_define_native\("([^"]+)"', vm_c))
     natives |= set(re.findall(r'as_define_native\("([^"]+)"', native_c))
+    natives |= set(re.findall(r'as_define_native\("([^"]+)"', port_c))
     builtins_complete = c_string_list(complete_c, "BUILTINS")
     if builtins_complete is not None:
         cmp_set("builtins", natives, builtins_complete, "vm.c+as_native.c", "complete.c")
@@ -203,8 +206,11 @@ def main():
 
     # 9. method names dispatched by OP_INVOKE vs. the IDE's per-type tables.
     methods = set(re.findall(r'name_eq\(name,\s*"([^"]+)"', vm_c))
+    # M27: port/proc methods are dispatched in as_port.c, through name_is().
+    methods |= set(re.findall(r'name_is\(name,\s*"([^"]+)"', port_c))
     mir = []
-    for var in ("LIST_METHODS", "DICT_METHODS", "STR_METHODS"):
+    for var in ("LIST_METHODS", "DICT_METHODS", "STR_METHODS",
+                "PORT_METHODS", "PROC_METHODS"):
         got = c_string_list(complete_c, var)
         if got:
             mir += got

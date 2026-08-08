@@ -279,10 +279,12 @@ static int verify_fn(ObjFn *fn, int depth, int is_top)
         case OP_CLOSE_UPVALUE:
         case OP_INHERIT: case OP_RAISE:
         case OP_BAND: case OP_BOR: case OP_BXOR: case OP_BNOT: case OP_SHL: case OP_SHR: case OP_POW:
+        case OP_PIPE: case OP_REDIR_OUT: case OP_REDIR_IN: case OP_WITH_END:
             break;
         /* 1-byte operand */
         case OP_GET_LOCAL: case OP_SET_LOCAL:
         case OP_CALL: case OP_MAKE_LIST: case OP_MAKE_DICT:
+        case OP_WITH_BEGIN:
             if (ip + 1 > n) return 1;
             ip += 1;
             break;
@@ -384,6 +386,7 @@ static const char *const OPNAMES[] = {
     "GET_PROPERTY", "SET_PROPERTY", "GET_SUPER",
     "SETUP_TRY", "POP_TRY", "RAISE",
     "BAND", "BOR", "BXOR", "BNOT", "SHL", "SHR", "POW",
+    "PIPE", "REDIR_OUT", "REDIR_IN", "WITH_BEGIN", "WITH_END",
 };
 #define N_OPNAMES ((int)(sizeof OPNAMES / sizeof OPNAMES[0]))
 
@@ -547,7 +550,7 @@ static void dis_fn(ObjFn *fn, int depth)
         }
         /* 1-byte operand */
         case OP_GET_LOCAL: case OP_SET_LOCAL: case OP_CALL:
-        case OP_MAKE_LIST: case OP_MAKE_DICT:
+        case OP_MAKE_LIST: case OP_MAKE_DICT: case OP_WITH_BEGIN:
         case OP_GET_UPVALUE: case OP_SET_UPVALUE: {
             OPERAND();
             if (ip + 1 > n) { dis_emit("  <truncated>\n"); return; }

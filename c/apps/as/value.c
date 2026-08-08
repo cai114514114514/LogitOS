@@ -202,6 +202,26 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
         put(k, ")", 1);
         return;
     }
+    /* M27. A port prints what it IS and whether it is still live -- the two
+     * facts a fd printed as an integer never carried. */
+    case O_PORT: {
+        ObjPort *p = AS_PORT(v);
+        const char *kind = p->kind == PK_PIPE ? "pipe" : p->kind == PK_TTY ? "tty" : "file";
+        int n = p->closed ? snprintf(tmp, sizeof tmp, "<%s port closed>", kind)
+                          : snprintf(tmp, sizeof tmp, "<%s port fd %d%s>", kind, p->fd, p->owns ? "" : " borrowed");
+        put(k, tmp, n < (int)sizeof tmp ? n : (int)sizeof tmp - 1);
+        return;
+    }
+    case O_PROC: {
+        ObjProc *p = AS_PROC(v);
+        int stages = 1; for (ObjProc *s = p; s->next; s = s->next) stages++;
+        putz(k, "<cmd ");
+        if (p->argv && p->argv->count > 0 && IS_STR(p->argv->items[0])) putstr(k, AS_STR(p->argv->items[0]));
+        if (stages > 1) { int n = snprintf(tmp, sizeof tmp, " |> x%d", stages - 1); put(k, tmp, n); }
+        if (p->started) { int n = snprintf(tmp, sizeof tmp, " pid %d", p->pid); put(k, tmp, n); }
+        put(k, ">", 1);
+        return;
+    }
     case O__COUNT:       break;   /* not a type; listed so -Wswitch still catches real ones */
     }
     putz(k, "<obj>");

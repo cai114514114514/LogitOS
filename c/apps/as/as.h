@@ -58,6 +58,7 @@ typedef struct {
 /* --- objects --- */
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
                O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE, O_SHAPE, O_BUF,
+               O_PORT, O_PROC,                 /* M27 ports: OS endpoints as values */
                O__COUNT } ObjType;   /* sentinel: sizes the descriptor table in object.c */
 /* Two bytes, where an intrusive allocation list cost sixteen. The `next` pointer
  * moved out into a contiguous registry (object.c): sweeping a dense array beats
@@ -234,6 +235,68 @@ typedef struct { Obj obj; uint64_t addr; int width; int is_signed; } ObjPtr;
  * fail, as they do for a string. */
 typedef struct { Obj obj; int64_t start, step, count; } ObjRange;
 
+/* --- M27 ports: an OS endpoint as a first-class, owned, typed value ---------
+ *
+ * Unix said "everything is a file" and handed the program an integer; every other
+ * scripting language then has to reach the kernel through whatever that integer
+ * means on the platform it was ported to. We own both sides of the call, so a
+ * port is not a wrapper around an fd -- it IS the endpoint, and it knows three
+ * things an fd does not:
+ *
+ *   - its KIND (PK_*), so a diagnostic can say "pipe" and not "fd 7";
+ *   - whether it OWNS the handle. fd 0/1/2 arrive already open from the process
+ *     that spawned us; a port over one of them must never close(2) it. That is
+ *     not a nicety: CLAUDE.md records the wm_launch fd 0/1/2 collision as a
+ *     known hazard of this very system, and `owns` is where the language
+ *     refuses to repeat it.
+ *   - its own CURSOR. A port is its own iterator, because a byte stream is
+ *     consumed exactly once: `for line in p:` twice does not restart it, it
+ *     continues, which is the truth about a stream and a lie about a list.
+ *
+ * The cursor is what makes `for line in p:` work with the EXISTING for-loop
+ * codegen (OP_ITER -> OP_LEN + OP_INDEX_GET) instead of a new iterator
+ * protocol. OP_LEN on a port means "how many items are known to exist": it
+ * pulls at most ONE more line and answers nread + (a line is pending). The loop
+ * tests idx < len each turn, so that is exactly "is there another line", and
+ * OP_INDEX_GET(nread) hands the pending one over. Memory is O(one line), not
+ * O(file). See op_LEN / op_INDEX_GET in vm.c. */
+enum { PK_FILE = 0, PK_PIPE = 1, PK_TTY = 2, PK_PROC = 3 };
+typedef struct {
+    Obj obj;
+    int fd;                     /* the kernel handle; -1 once closed */
+    uint8_t kind;               /* PK_* */
+    uint8_t owns;               /* 0 = borrowed (fd 0/1/2): close() detaches, never close(2) */
+    uint8_t closed;
+    uint8_t eof;                /* the underlying handle reported end of stream */
+    char   *rbuf;               /* read-ahead; lines are cut out of here */
+    int     rlen, rcap, rpos;
+    ObjStr *pending;            /* the next line, already cut, or NULL */
+    int64_t nread;              /* items the cursor has produced, ever */
+    int64_t iter_base;          /* nread when the current `for` began. The loop
+                                 * counts from 0 every time; a stream does not.
+                                 * OP_ITER rebases, so a SECOND loop over the same
+                                 * port CONTINUES instead of asking for a line
+                                 * that has already gone past. */
+    ObjStr *path;               /* what it was opened as, for diagnostics */
+} ObjPort;
+
+/* A process, or -- following ->next -- a pipeline. `run("ls","/usr")` builds one
+ * of these WITHOUT starting it, which is the whole reason `|>` can be an
+ * operator: both stages must exist before either runs, or there is nothing to
+ * wire the fds between. A pipeline is executed in one fork/dup2/exec pass by
+ * as_proc_start(), never by evaluating the stages one at a time. */
+typedef struct ObjProc {
+    Obj obj;
+    ObjList *argv;              /* strings; argv[0] is the program */
+    struct ObjProc *next;       /* downstream stage: our stdout is its stdin */
+    ObjStr *in_path;            /* `<- path` on the head stage */
+    ObjStr *out_path;           /* `-> path` on the tail stage */
+    int pid;                    /* -1 until started */
+    int status;                 /* exit status, once waited */
+    uint8_t started, waited;
+    uint8_t linked;             /* already the downstream of some stage: refuses reuse */
+} ObjProc;
+
 /* A module: a name -> value namespace populated by running a .as file's top
  * level. `mod.x` reads `vars`; functions defined in it resolve globals here. */
 typedef struct { ObjStr *name; Value val; } NameVal;
@@ -271,6 +334,10 @@ typedef struct ObjModule {
 #define RANGE_AT(r, i)     ((r)->start + (r)->step * (i))
 #define IS_BOUND_METHOD(v) ((v).tag == OBJ_TAG(O_BOUND_METHOD))
 #define AS_BOUND_METHOD(v) ((ObjBoundMethod *)AS_OBJ(v))
+#define IS_PORT(v)         ((v).tag == OBJ_TAG(O_PORT))
+#define AS_PORT(v)         ((ObjPort *)AS_OBJ(v))
+#define IS_PROC(v)         ((v).tag == OBJ_TAG(O_PROC))
+#define AS_PROC(v)         ((ObjProc *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -288,11 +355,16 @@ typedef enum {
     OP_GET_PROPERTY, OP_SET_PROPERTY, OP_GET_SUPER,
     OP_SETUP_TRY, OP_POP_TRY, OP_RAISE,                         /* M22.4 exceptions */
     OP_BAND, OP_BOR, OP_BXOR, OP_BNOT, OP_SHL, OP_SHR, OP_POW,  /* M23: bitwise / shift / power */
+    /* M27 ports. Appended, never inserted: the enum order IS the .la ABI. */
+    OP_PIPE,                                   /* a |> b   : chain two unstarted stages */
+    OP_REDIR_OUT, OP_REDIR_IN,                 /* p -> path / p <- path */
+    OP_WITH_BEGIN, OP_WITH_END,                /* deterministic release of a scoped resource */
 } OpCode;
 
 /* .la compiled-bytecode format version. Bump on ANY opcode add/reorder or any
- * change to the .la byte layout -- as_load rejects a mismatching version. */
-#define AS_BC_VERSION 3u
+ * change to the .la byte layout -- as_load rejects a mismatching version.
+ * 3 -> 4: M27 appended the five port opcodes (OP_PIPE .. OP_WITH_END). */
+#define AS_BC_VERSION 4u
 
 /* --- compile + run --- */
 ObjFn *as_compile(const char *src);                       /* compile into a throwaway module */
@@ -343,6 +415,10 @@ ObjList  *as_dict_keys(ObjDict *d);
 ObjList  *as_dict_values(ObjDict *d);
 ObjPtr   *as_ptr_new(uint64_t addr, int width, int is_signed);
 ObjRange *as_range_new(int64_t start, int64_t step, int64_t count);
+/* M27 (object.c allocates; as_port.c gives them behaviour). as_port_new adopts
+ * `fd`: with owns=1 the collector will close it even if the script never does. */
+ObjPort  *as_port_new(int fd, int kind, int owns, ObjStr *path);
+ObjProc  *as_proc_new(ObjList *argv);
 /* Instance fields, by shape. as_instance_get returns 0 if the field is absent;
  * as_instance_set adds it (transitioning the shape) and returns 0 only on OOM. */
 int  as_shape_find(Shape *s, ObjStr *name);        /* slot index, or -1 */
@@ -369,6 +445,9 @@ const char *as_obj_type_name(Obj *o);
 
 /* mark-sweep GC (object.c + vm.c) */
 void gc_collect(void);
+/* Charge/refund heap bytes an object owns outside its own allocation (a port's
+ * read-ahead). Positive on growth, negative in the finalizer. */
+void as_gc_account(long delta);
 void gc_mark_obj(Obj *o);          /* mark + push to the gray worklist */
 void gc_mark_value(Value v);
 void as_vm_mark_roots(void);      /* mark the VM roots (implemented in vm.c) */
@@ -405,6 +484,42 @@ void      as_define_native(const char *name, NativeFn fn);
 void      as_define_int(const char *name, int64_t v);
 Value     as_native_fail(const char *msg);  /* a native aborts the run with this message */
 void      as_install_indirection(void);     /* registers peek/poke/addr/iNptr/syscall + SYS_* */
+
+/* --- M27 ports (as_port.c) -------------------------------------------------
+ * Everything here is plain POSIX over mini-libc on Logit and over the host libc
+ * on the build machine, which is why ports are testable without QEMU: the same
+ * open/pipe/fork/execve/waitpid calls run in `make test-as`. */
+void as_install_ports(void);                /* registers open/pipe/port/run/port_stats */
+/* One method call on a port or a process. 1 = handled (*out set), 0 = no such
+ * method, -1 = the call failed (as_native_fail already armed). Args stay on the
+ * VM stack (rooted) while this runs; the caller adjusts sp only afterwards. */
+int  as_port_invoke(Value recv, ObjStr *name, int argc, Value *args, Value *out);
+/* The iteration cursor, used by OP_LEN / OP_INDEX_GET. as_port_avail answers
+ * "how many items are known to exist" (see the ObjPort comment) and returns 0
+ * with as_err set on a read failure; as_port_at hands over item i, returning 0
+ * for an index a stream cursor cannot serve. */
+void as_port_iter_begin(ObjPort *p);   /* OP_ITER: rebase the cursor for a new loop */
+int  as_port_avail(ObjPort *p, int64_t *n);
+int  as_port_at(ObjPort *p, int64_t i, Value *out);
+/* `a |> b` and `p -> path` / `p <- path`. 0 = refused, with as_err set. */
+int  as_proc_pipe(ObjProc *a, ObjProc *b);
+int  as_proc_redirect(ObjProc *p, ObjStr *path, int outward);
+/* Start a pipeline that has not started (the acquire half of `with`). */
+int  as_proc_launch(ObjProc *p);
+void as_port_close(ObjPort *p);             /* idempotent; honours `owns` */
+/* The collector's side of the same two operations. Called from the finalizers
+ * for a resource the script dropped without releasing it: the handle is closed
+ * (a port) or reaped without blocking (a process), and the event is counted. */
+void as_port_drop(ObjPort *p);
+void as_proc_drop(ObjProc *p);
+/* Release a `with`-scoped value: a port closes, a process is waited for.
+ * Returns 0 for a value that is not a resource (the compiler rejects those, so
+ * this only fires on a corrupt .la). */
+int  as_value_release(Value v);
+/* Ports/processes the collector had to clean up because the script did not.
+ * A backstop that never fires is indistinguishable from one that does not
+ * exist, so it is counted and the count is readable from script (port_stats). */
+void as_port_stats(long *open_now, long *finalized, long *orphans);
 
 /* low-level bridge (as_ll.c): raw memory + the int 0x80 syscall (asm on Logit). */
 uint64_t  as_ll_peek(uint64_t addr, int width);

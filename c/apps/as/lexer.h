@@ -22,6 +22,11 @@ typedef enum {
     T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ, /* compound assignment */
     T_SEMI,                                                /* ';' statement separator */
     T_FSTR,                                                /* M23 f-string: raw interior, holes intact */
+    /* M27 ports. `<-` wins over `<` `-`: `x <-1` now lexes as x <- 1, so a
+     * comparison against a negative literal must be written `x < -1`. Checked
+     * against the whole in-tree .as corpus before taking the token. */
+    T_PIPEOP, T_ARROW, T_LARROW,                           /* |>   ->   <- */
+    T_WITH,                                                /* with NAME = port: */
     T_EOF, T_ERROR
 } TokType;
 

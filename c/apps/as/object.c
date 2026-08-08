@@ -58,6 +58,12 @@ static void gc_account(long delta)
     }
 }
 
+/* A side allocation an object owns but did not make at alloc_obj time -- a
+ * port's read-ahead is the only one so far. It must be charged when it grows and
+ * given back by the finalizer, or heap_bytes drifts and the collection trigger
+ * drifts with it (a drift the 24 MiB arena on Logit would eventually notice). */
+void as_gc_account(long delta) { gc_account(delta); }
+
 /* Temporary GC roots: objects that exist but are not reachable from the VM yet.
  * The alternative -- and what this replaces at every runtime site -- was to turn
  * the collector OFF for the duration, which means the heap grows without bound
@@ -195,6 +201,23 @@ static void tr_bound(Obj *o)
     gc_mark_value(bm->receiver);
     gc_mark_obj((Obj *)bm->method);
 }
+static void tr_port(Obj *o)
+{
+    ObjPort *p = (ObjPort *)o;
+    gc_mark_obj((Obj *)p->pending);
+    gc_mark_obj((Obj *)p->path);
+}
+static void tr_proc(Obj *o)
+{
+    /* ->next is a strong edge: holding the head of a pipeline must keep every
+     * downstream stage alive, or the collector would free a stage whose child
+     * is still running and lose the pid that reaps it. */
+    ObjProc *p = (ObjProc *)o;
+    gc_mark_obj((Obj *)p->argv);
+    gc_mark_obj((Obj *)p->next);
+    gc_mark_obj((Obj *)p->in_path);
+    gc_mark_obj((Obj *)p->out_path);
+}
 
 /* Each finalizer gives back exactly what its allocation site charged, so
  * heap_bytes stays honest across a collection. gcache is deliberately not
@@ -249,6 +272,19 @@ static void fin_buf(Obj *o)
     gc_account(-(long)b->nbytes);
     free(b->raw);
 }
+/* A port and a process are the only objects here that own something the process
+ * as a whole can run out of -- a file descriptor and a child. The collector is
+ * the BACKSTOP for those, never the plan: `with` releases deterministically and
+ * this only fires when the script dropped the value. Both drops are counted, so
+ * "the backstop works" is an assertion a test can make rather than a belief. */
+static void fin_port(Obj *o)
+{
+    ObjPort *p = (ObjPort *)o;
+    as_port_drop(p);
+    gc_account(-(long)p->rcap);
+    free(p->rbuf);
+}
+static void fin_proc(Obj *o) { as_proc_drop((ObjProc *)o); }
 static void fin_closure(Obj *o)
 {
     ObjClosure *c = (ObjClosure *)o;
@@ -274,6 +310,8 @@ static const ObjInfo OBJ_INFO[] = {
     [O_RANGE]        = { "range",        sizeof(ObjRange),       NULL,        NULL        },
     [O_SHAPE]        = { "shape",        sizeof(Shape),          tr_shape,    fin_shape   },
     [O_BUF]          = { "buffer",       sizeof(ObjBuf),         tr_buf,      fin_buf     },
+    [O_PORT]         = { "port",         sizeof(ObjPort),        tr_port,     fin_port    },
+    [O_PROC]         = { "process",      sizeof(ObjProc),        tr_proc,     fin_proc    },
 };
 /* A type added to the enum without a row here would read a zeroed descriptor:
  * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). With
@@ -807,6 +845,28 @@ ObjRange *as_range_new(int64_t start, int64_t step, int64_t count)
     if (!r) return NULL;
     r->start = start; r->step = step; r->count = count;
     return r;
+}
+
+/* M27. The fd is ADOPTED here, not duplicated: from this point the object's
+ * lifetime is the handle's lifetime, which is the whole claim a port makes. */
+ObjPort *as_port_new(int fd, int kind, int owns, ObjStr *path)
+{
+    ObjPort *p = (ObjPort *)alloc_obj(O_PORT);
+    if (!p) return NULL;
+    p->fd = fd; p->kind = (uint8_t)kind; p->owns = (uint8_t)(owns != 0);
+    p->closed = 0; p->eof = 0;
+    p->rbuf = NULL; p->rlen = 0; p->rcap = 0; p->rpos = 0;
+    p->pending = NULL; p->nread = 0; p->iter_base = 0; p->path = path;
+    return p;
+}
+
+ObjProc *as_proc_new(ObjList *argv)
+{
+    ObjProc *p = (ObjProc *)alloc_obj(O_PROC);
+    if (!p) return NULL;
+    p->argv = argv; p->next = NULL; p->in_path = NULL; p->out_path = NULL;
+    p->pid = -1; p->status = -1; p->started = 0; p->waited = 0; p->linked = 0;
+    return p;
 }
 
 void as_chunk_write(ObjFn *fn, uint8_t b)
