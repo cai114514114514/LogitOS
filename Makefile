@@ -3260,3 +3260,14 @@ bench-aui: $(ISO) $(DISK)
 # the three-phase dispatcher in js_dom.c. Reuses the WPT runner's source list
 # from tests/wpt.mk, but does NOT assume it was read first -- see its header.
 -include tests/events.mk
+
+# The SITE SCOREBOARD: `make scoreboard`, `scoreboard-quick`, `scoreboard-1
+# SITE=<name>`, `scoreboard-diff FROM=... TO=...`. Eighteen live sites, one
+# whole QEMU boot each, one machine-readable verdict each, committed as a dated
+# snapshot under tests/scoreboard/ so today's answer can be subtracted from
+# tomorrow's. Not part of `make test`: the corpus is the live web.
+#
+# Own fragment for the reason every other one here gives. It also has an entry
+# point that needs no Makefile at all -- `bash tests/boot/run-sites.sh` -- for
+# the afternoons when this file is being overwritten by three lines at once.
+-include tests/sites.mk

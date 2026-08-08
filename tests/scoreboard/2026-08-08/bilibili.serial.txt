@@ -1,0 +1,116 @@
+[wm] perf t=18478 composites=182 ns=2213670156 max=39384066 motions=18 curmoves=11 curns=479449 full=140 rects=182 cpx=62278692 fpx=62278692 presns=127890392 torn=0 defer=81 late=0 drawmax=26
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.38
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[tls] ticket stored for www.bilibili.com (240 bytes, lifetime 1800s, 1 cached)
+[tls] ticket stored for www.bilibili.com (240 bytes, lifetime 1800s, 2 cached)
+[wm] perf t=19486 composites=225 ns=2656514582 max=49439864 motions=18 curmoves=11 curns=479449 full=182 rects=225 cpx=73573412 fpx=73573412 presns=155323688 torn=0 defer=112 late=0 drawmax=27
+[mm] low: 114180 frames free (446 MiB), 16857 used, 0 shared, 0 bugs
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.69
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 4 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (208 bytes, lifetime 259200s, 3 cached)
+[tls] ticket stored for s1.hdslb.com (208 bytes, lifetime 259200s, 4 cached)
+[net] rx path: frames 73 irq 76 softirq 25 inline 12 poll 2 idle 0/0 halt/skip
+[mm] low: 113924 frames free (445 MiB), 17113 used, 0 shared, 0 bugs
+[mm] low: 113668 frames free (444 MiB), 17369 used, 0 shared, 0 bugs
+[mm] low: 113412 frames free (443 MiB), 17625 used, 0 shared, 0 bugs
+[wm] perf t=20495 composites=232 ns=2741699646 max=49439864 motions=18 curmoves=11 curns=479449 full=187 rects=232 cpx=75682852 fpx=75682852 presns=159979410 torn=0 defer=115 late=0 drawmax=55
+[mm] low: 113156 frames free (442 MiB), 17881 used, 0 shared, 0 bugs
+[browser] heap peak 8421K
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i0.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for i1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i1.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i0.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ticket stored for i2.hdslb.com (224 bytes, lifetime 7200s, 5 cached)
+[tls] ticket stored for i2.hdslb.com (224 bytes, lifetime 7200s, 6 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 6000s, 7 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 6000s, 8 cached)
+[tls] chain of 4 verified for i1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i1.hdslb.com)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 7200s, 9 cached)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 7200s, 10 cached)
+[tls] ticket stored for i2.hdslb.com (224 bytes, lifetime 7200s, 11 cached)
+[tls] ticket stored for i2.hdslb.com (224 bytes, lifetime 7200s, 12 cached)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 7200s, 13 cached)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 7200s, 14 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 6000s, 15 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 6000s, 16 cached)
+[mm] low: 112900 frames free (441 MiB), 18137 used, 0 shared, 0 bugs
+[mm] low: 112644 frames free (440 MiB), 18393 used, 0 shared, 0 bugs
+[mm] low: 112388 frames free (439 MiB), 18649 used, 0 shared, 0 bugs
+[mm] low: 112132 frames free (438 MiB), 18905 used, 0 shared, 0 bugs
+[mm] low: 111876 frames free (437 MiB), 19161 used, 0 shared, 0 bugs
+[mm] low: 111620 frames free (436 MiB), 19417 used, 0 shared, 0 bugs
+[mm] low: 111364 frames free (435 MiB), 19673 used, 0 shared, 0 bugs
+[tls] ticket for s1.hdslb.com not accepted -- full handshake
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 4 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ticket for s1.hdslb.com not accepted -- full handshake
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 4 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] resumed session for www.bilibili.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (208 bytes, lifetime 259200s, 14 cached)
+[tls] ticket stored for s1.hdslb.com (208 bytes, lifetime 259200s, 15 cached)
+[tls] ticket stored for s1.hdslb.com (208 bytes, lifetime 259200s, 16 cached)
+[tls] ticket stored for s1.hdslb.com (208 bytes, lifetime 259200s, 16 cached)
+[tls] ticket stored for www.bilibili.com (240 bytes, lifetime 1800s, 16 cached)
+[net] rx path: frames 590 irq 335 softirq 85 inline 73 poll 2 idle 0/0 halt/skip
+[mm] low: 111108 frames free (434 MiB), 19929 used, 0 shared, 0 bugs
+[mm] low: 110852 frames free (433 MiB), 20185 used, 0 shared, 0 bugs
+[mm] low: 110596 frames free (432 MiB), 20441 used, 0 shared, 0 bugs
+[mm] low: 110340 frames free (431 MiB), 20697 used, 0 shared, 0 bugs
+[mm] low: 110084 frames free (430 MiB), 20953 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'split' of undefined
+TypeError: cannot read property 'split' of undefined
+    at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at call (native)
+    at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)
+[mm] low: 109828 frames free (429 MiB), 21209 used, 0 shared, 0 bugs
+[mm] low: 109572 frames free (428 MiB), 21465 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 109316 frames free (427 MiB), 21721 used, 0 shared, 0 bugs
+[mm] low: 109060 frames free (426 MiB), 21977 used, 0 shared, 0 bugs
+[mm] low: 108804 frames free (425 MiB), 22233 used, 0 shared, 0 bugs
+[mm] low: 108548 frames free (424 MiB), 22489 used, 0 shared, 0 bugs
+[mm] low: 108292 frames free (423 MiB), 22745 used, 0 shared, 0 bugs
+[mm] low: 108036 frames free (422 MiB), 23001 used, 0 shared, 0 bugs
+[mm] low: 107780 frames free (421 MiB), 23257 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) ReferenceError: 'SVGElement' is not defined
+    at Gv (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js:48)
+
+[error] Uncaught (in promise) ReferenceError: 'SVGElement' is not defined
+    at Gv (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js:48)
+
+[browser] module rejected https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js: ReferenceError: 'SVGElement' is not defined
+[browser] load done: 15 requests, 11 connections dialled, 4 reused, 0 modules loaded (0 failed)
+[browser] pool: 4 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[wm] perf t=25505 composites=258 ns=3214555458 max=49439864 motions=18 curmoves=11 curns=479449 full=203 rects=258 cpx=88278052 fpx=88278052 presns=189777049 torn=0 defer=119 late=0 drawmax=59

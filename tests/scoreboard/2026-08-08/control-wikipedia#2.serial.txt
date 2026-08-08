@@ -1,0 +1,49 @@
+[wm] perf t=18496 composites=255 ns=2565194090 max=44143881 motions=18 curmoves=11 curns=673784 full=213 rects=255 cpx=69495392 fpx=69495392 presns=151266083 torn=0 defer=147 late=0 drawmax=25
+[wm] perf t=19519 composites=351 ns=3195728633 max=44143881 motions=18 curmoves=11 curns=673784 full=309 rects=351 cpx=88951392 fpx=88951392 presns=187326117 torn=0 defer=224 late=0 drawmax=25
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=20519 composites=415 ns=3678534782 max=48503761 motions=18 curmoves=11 curns=673784 full=372 rects=415 cpx=102294112 fpx=102294112 presns=216013186 torn=0 defer=274 late=0 drawmax=27
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for en.wikipedia.org, alpn=http/1.1
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 1 cached)
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 2 cached)
+[net] rx path: frames 68 irq 55 softirq 27 inline 0 poll 4 idle 0/0 halt/skip
+[mm] low: 114180 frames free (446 MiB), 16857 used, 0 shared, 0 bugs
+[mm] low: 113924 frames free (445 MiB), 17113 used, 0 shared, 0 bugs
+[mm] low: 113668 frames free (444 MiB), 17369 used, 0 shared, 0 bugs
+[mm] low: 113412 frames free (443 MiB), 17625 used, 0 shared, 0 bugs
+[mm] low: 113156 frames free (442 MiB), 17881 used, 0 shared, 0 bugs
+[mm] low: 112900 frames free (441 MiB), 18137 used, 0 shared, 0 bugs
+[mm] low: 112644 frames free (440 MiB), 18393 used, 0 shared, 0 bugs
+[mm] low: 112388 frames free (439 MiB), 18649 used, 0 shared, 0 bugs
+[mm] low: 112132 frames free (438 MiB), 18905 used, 0 shared, 0 bugs
+[mm] low: 111876 frames free (437 MiB), 19161 used, 0 shared, 0 bugs
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
+[wm] perf t=22521 composites=426 ns=3724481536 max=48503761 motions=18 curmoves=11 curns=673784 full=380 rects=426 cpx=103410272 fpx=103410272 presns=218620306 torn=0 defer=281 late=0 drawmax=27
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] resumed session for en.wikipedia.org (no chain, no signature), alpn=http/1.1
+[bfetch] retrying on a fresh connection: https://en.wikipedia.org/w/load.php?lang=en&modules=ext.cite.parsoid.styles%7Cext.cite.styles%7Cext.imagemap.styles%7Cext.uls.interlanguage%7Cext.visualEditor.desktopArticleTarget.noscript%7Cext.wikimediaBadges%7Cext.wikimediaBadges.ulsV2%7Cext.wikimediamessages.styles%7Cjquery.makeCollapsible.styles%7Cmediawiki.skinning.content.parsoid%7Cskins.vector.icons%2Cstyles%7Cskins.vector.search.codex.styles%7Cwikibase.client.init&only=styles&skin=vector-2022
+[mm] low: 111620 frames free (436 MiB), 19417 used, 0 shared, 0 bugs
+[mm] low: 111364 frames free (435 MiB), 19673 used, 0 shared, 0 bugs
+[mm] low: 111108 frames free (434 MiB), 19929 used, 0 shared, 0 bugs
+[browser] heap peak 14636K
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[wm] perf t=55629 composites=511 ns=4430076779 max=48503761 motions=18 curmoves=11 curns=673784 full=399 rects=511 cpx=118749792 fpx=118749792 presns=253055696 torn=0 defer=287 late=0 drawmax=30
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 2 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 3 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 4 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 5 cached)
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] skipping <script type="application/ld+json"> (not executable)
+[mm] low: 110852 frames free (433 MiB), 20185 used, 0 shared, 0 bugs
+[browser] load done: 16 requests, 4 connections dialled, 13 reused, 0 modules loaded (0 failed)
+[browser] pool: 13 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 7 from network (tab 2 of 3)
+[mm] low: 110596 frames free (432 MiB), 20441 used, 0 shared, 0 bugs
+[mm] low: 110340 frames free (431 MiB), 20697 used, 0 shared, 0 bugs

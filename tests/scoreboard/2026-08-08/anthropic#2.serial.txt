@@ -1,0 +1,67 @@
+[wm] perf t=18527 composites=205 ns=2978884597 max=54327277 motions=18 curmoves=11 curns=496585 full=159 rects=205 cpx=69734048 fpx=69734048 presns=162271106 torn=0 defer=93 late=0 drawmax=28
+[sock] connected www.anthropic.com via ipv4 ::ffff:198.18.0.35
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
+[wm] perf t=19602 composites=237 ns=3345344079 max=54327277 motions=18 curmoves=11 curns=496585 full=190 rects=237 cpx=81028768 fpx=81028768 presns=180797116 torn=0 defer=113 late=0 drawmax=28
+[mm] low: 114180 frames free (446 MiB), 16857 used, 0 shared, 0 bugs
+[mm] low: 113924 frames free (445 MiB), 17113 used, 0 shared, 0 bugs
+[wm] perf t=20604 composites=240 ns=3356643346 max=54327277 motions=18 curmoves=11 curns=496585 full=191 rects=240 cpx=81090208 fpx=81090208 presns=181172462 torn=0 defer=114 late=0 drawmax=28
+[sock] connected cdn.prod.website-files.com via ipv4 ::ffff:198.18.0.65
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[net] rx path: frames 64 irq 53 softirq 17 inline 7 poll 2 idle 0/0 halt/skip
+[wm] perf t=21606 composites=246 ns=3399107276 max=54327277 motions=18 curmoves=11 curns=496585 full=195 rects=246 cpx=82175648 fpx=82175648 presns=183628214 torn=0 defer=117 late=0 drawmax=28
+[mm] low: 113668 frames free (444 MiB), 17369 used, 0 shared, 0 bugs
+[browser] heap peak 7185K
+[mm] low: 113412 frames free (443 MiB), 17625 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=http/1.1
+[mm] low: 113156 frames free (442 MiB), 17881 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for d3e54v103j8qbb.cloudfront.net, alpn=http/1.1
+[tls] OCSP staple: good (d3e54v103j8qbb.cloudfront.net)
+[tls] ticket stored for d3e54v103j8qbb.cloudfront.net (138 bytes, lifetime 49919s, 1 cached)
+[mm] low: 112900 frames free (441 MiB), 18137 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'createHTMLDocument' of undefined
+TypeError: cannot read property 'createHTMLDocument' of undefined
+    at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <eval> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52:2)
+[mm] low: 112644 frames free (440 MiB), 18393 used, 0 shared, 0 bugs
+[mm] low: 112388 frames free (439 MiB), 18649 used, 0 shared, 0 bugs
+[mm] low: 112132 frames free (438 MiB), 18905 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[mm] low: 111876 frames free (437 MiB), 19161 used, 0 shared, 0 bugs
+[mm] low: 111620 frames free (436 MiB), 19417 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at 3949 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at 9461 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at 316 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <eval> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+[browser] load done: 12 requests, 5 connections dialled, 7 reused, 0 modules loaded (0 failed)
+[browser] pool: 7 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 11 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: not a function
+[mm] low: 111364 frames free (435 MiB), 19673 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=h2
+[bxfer] h2 www.anthropic.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=248
+[error] Uncaught (in promise) ReferenceError: 'CustomEvent' is not defined
+    at <anonymous> (https://www.anthropic.com/scripts/webflow-privacy-banner.js:496)
+
+[wm] perf t=28625 composites=274 ns=3927557415 max=54327277 motions=18 curmoves=11 curns=496585 full=211 rects=274 cpx=96880288 fpx=96880288 presns=211282479 torn=0 defer=119 late=0 drawmax=76
+[bxfer] h2 hubspotonwebflow.com:443 closed: streams=1 peak=1 frames=9/5 hpack_in=23683

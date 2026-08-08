@@ -1,0 +1,78 @@
+{
+ "name": "bilibili",
+ "url": "https://www.bilibili.com/",
+ "started": "2026-08-08T19:58:08",
+ "verdict": "ERRORS",
+ "why": "rendered 184860 changed px in 5.5s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bilibili.com/index.html",
+  "bytes": 12805,
+  "redirects": [
+   "302 -> https://www.bilibili.com/index.html"
+  ],
+  "script_tags": 16,
+  "script_src": 8,
+  "img_tags": 0,
+  "elapsed": 0.2
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'split' of undefined",
+    "stack": [
+     "at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at call (native)",
+     "at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js: ReferenceError: 'SVGElement' is not defined"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 15,
+  "dials": 11,
+  "reused": 4,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 8421,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 5.5,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 184860,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 6350,
+  "ink_px_blank": 1154,
+  "colours": 691,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/bilibili.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/bilibili.serial.txt",
+ "finished": "2026-08-08T19:58:49"
+}

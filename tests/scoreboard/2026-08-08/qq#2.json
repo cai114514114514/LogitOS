@@ -1,0 +1,77 @@
+{
+ "name": "qq#2",
+ "url": "https://www.qq.com/",
+ "started": "2026-08-08T20:01:31",
+ "verdict": "ERRORS",
+ "why": "rendered 70548 changed px in 7.9s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.qq.com/",
+  "bytes": 129110,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 7,
+  "img_tags": 17,
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'charAt' of undefined",
+    "stack": [
+     "at n (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at ../../node_modules/.pnpm/@tencent+qn-request@6.0.1_@tencent+qn-storage@4.0.3/node_modules/@tencent/qn-request/es/request.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at call (native)",
+     "at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at ../../node_modules/.pnpm/@tencent+qn-ad-basic@3.1.6_@tencent+qn-storage@4.0.3_@tencent+qn-utils@5.0.4/node_modules/@tencent/qn-ad-basic/pc/index.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at call (native)",
+     "at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:774)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at <eval> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [
+   "timer: TypeError: cannot read property 'slice' of undefined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 11,
+  "dials": 5,
+  "reused": 6,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 7670,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 7.9,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 70548,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 14597,
+  "ink_px_blank": 1154,
+  "colours": 656,
+  "rich_tiles_proxy": 30
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/qq#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/qq#2.serial.txt",
+ "finished": "2026-08-08T20:02:15"
+}

@@ -1,0 +1,82 @@
+{
+ "name": "qwen",
+ "url": "https://chat.qwen.ai/",
+ "started": "2026-08-08T19:59:27",
+ "verdict": "ERRORS",
+ "why": "rendered 614896 changed px in 21.1s but 4 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://chat.qwen.ai/",
+  "bytes": 247418,
+  "redirects": [],
+  "script_tags": 18,
+  "script_src": 3,
+  "img_tags": 8,
+  "elapsed": 0.4
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'bind' of undefined",
+    "stack": [
+     "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at aeyaNG (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: cannot read property 'setAttribute' of null",
+    "stack": [
+     "at <anonymous> (https://chat.qwen.ai/#inline-script-6)",
+     "at <eval> (https://chat.qwen.ai/#inline-script-6)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <eval> (https://chat.qwen.ai/#inline-script-13:1)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/main.js: SyntaxError: invalid escape sequence in regular expression"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 24,
+  "dials": 7,
+  "reused": 17,
+  "modules": 15,
+  "modules_failed": 1,
+  "heap_peak_k": 14658,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 21.1,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 614896,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 509245,
+  "ink_px_blank": 1154,
+  "colours": 551,
+  "rich_tiles_proxy": 2
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/qwen.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/qwen.serial.txt",
+ "finished": "2026-08-08T20:00:24"
+}

@@ -1,0 +1,57 @@
+{
+ "name": "stripe#2",
+ "url": "https://stripe.com/",
+ "started": "2026-08-08T20:02:15",
+ "verdict": "OK",
+ "why": "rendered 32768 changed px in 24.1s, no JS exceptions",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/jp",
+  "bytes": 735671,
+  "redirects": [
+   "307 -> https://stripe.com/jp"
+  ],
+  "script_tags": 77,
+  "script_src": 74,
+  "img_tags": 30,
+  "elapsed": 2.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 80,
+  "dials": 4,
+  "reused": 77,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 13108,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 24.1,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 32768,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 11244,
+  "ink_px_blank": 1154,
+  "colours": 585,
+  "rich_tiles_proxy": 3
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/stripe#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/stripe#2.serial.txt",
+ "finished": "2026-08-08T20:03:15"
+}

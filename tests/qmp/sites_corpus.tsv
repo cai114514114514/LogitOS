@@ -1,0 +1,35 @@
+# The site scoreboard corpus.
+#
+# name<TAB>url<TAB>what was reported by hand, before this file existed
+#
+# The first eighteen rows are the user's own observations from their own machine
+# -- their words, not a guess at what might break. Two of the eighteen were
+# reported without a name ("a site", "a search site") and are therefore NOT in
+# this file: a corpus entry has to be a URL somebody can re-run, and inventing
+# one would produce a row that proves nothing about the observation it claims to
+# cover. They are carried in the report as unreproduced-by-name instead.
+#
+# The last two rows are CONTROLS and are not part of the eighteen. They exist so
+# that a snapshot in which everything fails can be told apart from a snapshot in
+# which the harness, the network or the build is broken. If a control fails, no
+# other row in that snapshot means anything.
+
+baidu	https://www.baidu.com/	opens but unusable; a redirect works host-side and not on the machine
+deepseek	https://www.deepseek.com/	blank; needs Worker
+doubao	https://www.doubao.com/	TypeError charAt of undefined, localised to webpack module 3454
+bing	https://www.bing.com/	ReferenceError: w is not defined; renders "一坨黑黑的"
+2345	https://www.2345.com/	TypeError toString of undefined
+jd	https://www.jd.com/	jQuery is not defined
+anthropic	https://www.anthropic.com/	"is not a function"
+openai	https://openai.com/	an icon and nothing else
+bilibili	https://www.bilibili.com/	TypeError split of undefined
+douyin	https://www.douyin.com/	nothing renders at all
+github	https://github.com/	"很奇怪"
+qq	https://www.qq.com/	Uncaught (in promise) undefined
+weixin	https://weixin.qq.com/	same as douyin -- nothing renders
+apple	https://www.apple.com/	0 images; TypeError split of undefined
+stripe	https://stripe.com/	73 scripts, extremely slow
+qwen	https://chat.qwen.ai/	hangs
+
+control-example	http://example.com/	CONTROL: the simplest page on the web, no JS, no CSS worth the name
+control-wikipedia	https://en.wikipedia.org/wiki/Operating_system	CONTROL: known to render since M13

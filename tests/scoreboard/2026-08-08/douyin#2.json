@@ -1,0 +1,55 @@
+{
+ "name": "douyin#2",
+ "url": "https://www.douyin.com/",
+ "started": "2026-08-08T20:01:22",
+ "verdict": "BLANK",
+ "why": "loaded in 0.7s and painted 2324 changed pixels (0 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.douyin.com/",
+  "bytes": 72914,
+  "redirects": [],
+  "script_tags": 2,
+  "script_src": 0,
+  "img_tags": 0,
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 1,
+  "dials": 1,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 0.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2324,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 1154,
+  "ink_px_blank": 1154,
+  "colours": 217,
+  "rich_tiles_proxy": 1
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/douyin#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/douyin#2.serial.txt",
+ "finished": "2026-08-08T20:01:59"
+}

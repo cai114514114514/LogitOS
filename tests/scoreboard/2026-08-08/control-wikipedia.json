@@ -1,0 +1,60 @@
+{
+ "name": "control-wikipedia",
+ "url": "https://en.wikipedia.org/wiki/Operating_system",
+ "started": "2026-08-08T19:59:37",
+ "verdict": "OK",
+ "why": "rendered 12580 changed px in 9.1s, no JS exceptions",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+  "bytes": 670621,
+  "redirects": [],
+  "script_tags": 5,
+  "script_src": 1,
+  "img_tags": 26,
+  "elapsed": 1.4
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 16,
+  "dials": 4,
+  "reused": 12,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14636,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 9.1,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 12580,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 6480,
+  "ink_px_blank": 1154,
+  "colours": 309,
+  "rich_tiles_proxy": 1
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/control-wikipedia.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/control-wikipedia.serial.txt",
+ "finished": "2026-08-08T20:00:23"
+}

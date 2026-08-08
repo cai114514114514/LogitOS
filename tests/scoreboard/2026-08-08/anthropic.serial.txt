@@ -1,0 +1,66 @@
+[wm] perf t=18447 composites=181 ns=2241390421 max=45178548 motions=18 curmoves=11 curns=965436 full=139 rects=181 cpx=63274208 fpx=63274208 presns=128428641 torn=0 defer=79 late=0 drawmax=23
+[sock] connected www.anthropic.com via ipv4 ::ffff:198.18.0.35
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19456 composites=223 ns=2729363769 max=50424715 motions=18 curmoves=11 curns=965436 full=181 rects=223 cpx=77610208 fpx=77610208 presns=156283371 torn=0 defer=107 late=0 drawmax=26
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
+[mm] low: 114180 frames free (446 MiB), 16857 used, 0 shared, 0 bugs
+[mm] low: 113924 frames free (445 MiB), 17113 used, 0 shared, 0 bugs
+[sock] connected cdn.prod.website-files.com via ipv4 ::ffff:198.18.0.65
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[net] rx path: frames 64 irq 68 softirq 26 inline 7 poll 2 idle 0/0 halt/skip
+[wm] perf t=21466 composites=230 ns=2781006895 max=50424715 motions=18 curmoves=11 curns=965436 full=184 rects=230 cpx=78757088 fpx=78757088 presns=158786452 torn=0 defer=109 late=0 drawmax=26
+[mm] low: 113668 frames free (444 MiB), 17369 used, 0 shared, 0 bugs
+[browser] heap peak 7185K
+[mm] low: 113412 frames free (443 MiB), 17625 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for d3e54v103j8qbb.cloudfront.net, alpn=http/1.1
+[tls] OCSP staple: good (d3e54v103j8qbb.cloudfront.net)
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=http/1.1
+[tls] ticket stored for d3e54v103j8qbb.cloudfront.net (138 bytes, lifetime 60886s, 1 cached)
+[mm] low: 113156 frames free (442 MiB), 17881 used, 0 shared, 0 bugs
+[mm] low: 112900 frames free (441 MiB), 18137 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'createHTMLDocument' of undefined
+TypeError: cannot read property 'createHTMLDocument' of undefined
+    at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <eval> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52:2)
+[mm] low: 112644 frames free (440 MiB), 18393 used, 0 shared, 0 bugs
+[mm] low: 112388 frames free (439 MiB), 18649 used, 0 shared, 0 bugs
+[mm] low: 112132 frames free (438 MiB), 18905 used, 0 shared, 0 bugs
+[mm] low: 111876 frames free (437 MiB), 19161 used, 0 shared, 0 bugs
+[mm] low: 111620 frames free (436 MiB), 19417 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at 3949 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at 9461 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at 316 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <eval> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+[browser] load done: 12 requests, 5 connections dialled, 7 reused, 0 modules loaded (0 failed)
+[browser] pool: 7 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 11 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[js] uncaught in event listener: TypeError: not a function
+[mm] low: 111364 frames free (435 MiB), 19673 used, 0 shared, 0 bugs
+[wm] perf t=28515 composites=260 ns=3379571215 max=50424715 motions=18 curmoves=11 curns=965436 full=200 rects=260 cpx=93523168 fpx=93523168 presns=194917142 torn=0 defer=111 late=0 drawmax=33
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=h2
+[bxfer] h2 www.anthropic.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=247
+[error] Uncaught (in promise) ReferenceError: 'CustomEvent' is not defined
+    at <anonymous> (https://www.anthropic.com/scripts/webflow-privacy-banner.js:496)
+
+[bxfer] h2 hubspotonwebflow.com:443 closed: streams=1 peak=1 frames=9/5 hpack_in=23683

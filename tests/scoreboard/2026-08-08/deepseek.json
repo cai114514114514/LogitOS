@@ -1,0 +1,55 @@
+{
+ "name": "deepseek",
+ "url": "https://www.deepseek.com/",
+ "started": "2026-08-08T19:57:26",
+ "verdict": "OK",
+ "why": "rendered 13508 changed px in 3.7s, no JS exceptions",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.deepseek.com/",
+  "bytes": 100365,
+  "redirects": [],
+  "script_tags": 31,
+  "script_src": 12,
+  "img_tags": 0,
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 15,
+  "dials": 2,
+  "reused": 13,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 37873,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 3.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 13508,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 3100,
+  "ink_px_blank": 1154,
+  "colours": 597,
+  "rich_tiles_proxy": 14
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/deepseek.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/deepseek.serial.txt",
+ "finished": "2026-08-08T19:58:06"
+}

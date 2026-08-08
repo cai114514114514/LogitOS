@@ -1,0 +1,63 @@
+{
+ "name": "github#2",
+ "url": "https://github.com/",
+ "started": "2026-08-08T20:01:25",
+ "verdict": "BLANK",
+ "why": "loaded in 88.9s and painted 2136 changed pixels (6 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://github.com/",
+  "bytes": 572807,
+  "redirects": [],
+  "script_tags": 15,
+  "script_src": 9,
+  "img_tags": 24,
+  "elapsed": 1.4
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: ReferenceError: 'CustomEvent' is not defined",
+   "event listener: TypeError: cannot read property 'querySelectorAll' of null",
+   "timer: TypeError: not a function"
+  ],
+  "module_exceptions": [
+   "https://github.githubassets.com/assets/environment-5f4275945f5d6a48.js: TypeError: not a function",
+   "https://github.githubassets.com/assets/github-elements-a35dbed8604aab1b.js: TypeError: cannot read property 'appendChild' of undefined",
+   "https://github.githubassets.com/assets/behaviors-8b278a81bec0e9d2.js: TypeError: not an object"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 6,
+  "requests": 98,
+  "dials": 5,
+  "reused": 93,
+  "modules": 62,
+  "modules_failed": 0,
+  "heap_peak_k": 31570,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 88.9,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2136,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 1154,
+  "ink_px_blank": 1154,
+  "colours": 217,
+  "rich_tiles_proxy": 1
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08/github#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08/github#2.serial.txt",
+ "finished": "2026-08-08T20:03:30"
+}

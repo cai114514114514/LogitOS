@@ -1,0 +1,141 @@
+[wm] perf t=18512 composites=181 ns=2346296501 max=56234191 motions=18 curmoves=10 curns=606255 full=143 rects=181 cpx=54803120 fpx=54803120 presns=127172771 torn=0 defer=91 late=0 drawmax=32
+[sock] connected www.jd.com via ipv4 ::ffff:198.18.0.36
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 2 verified for www.jd.com, alpn=http/1.1
+[tls] ticket stored for www.jd.com (240 bytes, lifetime 86400s, 1 cached)
+[tls] ticket stored for www.jd.com (240 bytes, lifetime 86400s, 2 cached)
+[net] rx path: frames 64 irq 35 softirq 13 inline 4 poll 3 idle 0/0 halt/skip
+[mm] low: 114180 frames free (446 MiB), 16857 used, 0 shared, 0 bugs
+[sock] connected storage.360buyimg.com via ipv4 ::ffff:198.18.0.60
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for storage.360buyimg.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for storage.360buyimg.com, alpn=http/1.1
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 14400s, 3 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 14400s, 4 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 14400s, 5 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 14400s, 6 cached)
+[mm] low: 113924 frames free (445 MiB), 17113 used, 0 shared, 0 bugs
+[mm] low: 113668 frames free (444 MiB), 17369 used, 0 shared, 0 bugs
+[wm] perf t=19518 composites=205 ns=2695232519 max=56234191 motions=18 curmoves=10 curns=606255 full=167 rects=205 cpx=62995120 fpx=62995120 presns=145973468 torn=0 defer=107 late=0 drawmax=55
+[mm] low: 113412 frames free (443 MiB), 17625 used, 0 shared, 0 bugs
+[mm] low: 113156 frames free (442 MiB), 17881 used, 0 shared, 0 bugs
+[mm] low: 112900 frames free (441 MiB), 18137 used, 0 shared, 0 bugs
+[mm] low: 112644 frames free (440 MiB), 18393 used, 0 shared, 0 bugs
+[mm] low: 112388 frames free (439 MiB), 18649 used, 0 shared, 0 bugs
+[browser] heap peak 12376K
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 2 verified for gias.jd.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for wl.jd.com, alpn=http/1.1
+[browser] fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed
+[browser] fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: connect failed
+[net] rx path: frames 598 irq 172 softirq 50 inline 31 poll 3 idle 0/0 halt/skip
+[tls] ticket stored for wl.jd.com (208 bytes, lifetime 21600s, 7 cached)
+[tls] ticket stored for wl.jd.com (208 bytes, lifetime 21600s, 8 cached)
+[tls] ticket stored for gias.jd.com (240 bytes, lifetime 86400s, 9 cached)
+[tls] ticket stored for gias.jd.com (240 bytes, lifetime 86400s, 10 cached)
+[mm] low: 112132 frames free (438 MiB), 18905 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 3 rejected for static.360buyimg.com: no path to a trusted root (-3)
+[browser] fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: connect failed
+[mm] low: 111876 frames free (437 MiB), 19161 used, 0 shared, 0 bugs
+[mm] low: 111620 frames free (436 MiB), 19417 used, 0 shared, 0 bugs
+[net] rx path: frames 1126 irq 281 softirq 79 inline 57 poll 3 idle 0/0 halt/skip
+[mm] low: 111364 frames free (435 MiB), 19673 used, 0 shared, 0 bugs
+[mm] low: 111108 frames free (434 MiB), 19929 used, 0 shared, 0 bugs
+[mm] low: 110852 frames free (433 MiB), 20185 used, 0 shared, 0 bugs
+[mm] low: 110596 frames free (432 MiB), 20441 used, 0 shared, 0 bugs
+[browser] JS exception: ReferenceError: 'jQuery' is not defined
+ReferenceError: 'jQuery' is not defined
+    at <eval> (https://wl.jd.com/wl.js:2)
+[wm] perf t=22525 composites=225 ns=3045438347 max=56234191 motions=18 curmoves=10 curns=606255 full=181 rects=225 cpx=72395440 fpx=72395440 presns=168224845 torn=0 defer=112 late=0 drawmax=55
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at clickReport (https://www.jd.com/#inline-script-16:3)
+    at <eval> (https://www.jd.com/#inline-script-16:18)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at getClstagPrefix (https://www.jd.com/#inline-script-17:4)
+    at footerRender (https://www.jd.com/#inline-script-17:20)
+    at <eval> (https://www.jd.com/#inline-script-17:24)
+Error
+Error
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 2 verified for jra.jd.com, alpn=h2
+[mm] low: 110340 frames free (431 MiB), 20697 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1303, group x25519
+[tls] chain of 2 verified for api.m.jd.com, alpn=h2
+[mm] low: 110084 frames free (430 MiB), 20953 used, 0 shared, 0 bugs
+[mm] low: 109828 frames free (429 MiB), 21209 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'length' of undefined
+TypeError: cannot read property 'length' of undefined
+    at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)
+    at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)
+    at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)
+    at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www.jd.com/#inline-script-20:31)
+    at <eval> (https://www.jd.com/#inline-script-20:32)
+[mm] low: 109572 frames free (428 MiB), 21465 used, 0 shared, 0 bugs
+[mm] low: 109316 frames free (427 MiB), 21721 used, 0 shared, 0 bugs
+[mm] low: 109060 frames free (426 MiB), 21977 used, 0 shared, 0 bugs
+[mm] low: 108804 frames free (425 MiB), 22233 used, 0 shared, 0 bugs
+[mm] low: 108548 frames free (424 MiB), 22489 used, 0 shared, 0 bugs
+[mm] low: 108292 frames free (423 MiB), 22745 used, 0 shared, 0 bugs
+[mm] low: 108036 frames free (422 MiB), 23001 used, 0 shared, 0 bugs
+[mm] low: 107780 frames free (421 MiB), 23257 used, 0 shared, 0 bugs
+[mm] low: 107524 frames free (420 MiB), 23513 used, 0 shared, 0 bugs
+[mm] low: 107268 frames free (419 MiB), 23769 used, 0 shared, 0 bugs
+[mm] low: 107012 frames free (418 MiB), 24025 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'indexOf' of undefined
+TypeError: cannot read property 'indexOf' of undefined
+    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)
+    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
+    at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
+[mm] low: 106756 frames free (417 MiB), 24281 used, 0 shared, 0 bugs
+[mm] low: 106500 frames free (416 MiB), 24537 used, 0 shared, 0 bugs
+[mm] low: 106244 frames free (415 MiB), 24793 used, 0 shared, 0 bugs
+[mm] low: 105988 frames free (414 MiB), 25049 used, 0 shared, 0 bugs
+[mm] low: 105732 frames free (413 MiB), 25305 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'charAt' of undefined
+TypeError: cannot read property 'charAt' of undefined
+    at resolveURL (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at standardBrowserEnv (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at zuR4 (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at vDqi (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at 6OU5 (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at zPjE (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at yEBl (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at pLYI (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at checkDeferredModules (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at webpackJsonpCallback (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)
+    at <eval> (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
+[browser] load done: 16 requests, 8 connections dialled, 8 reused, 0 modules loaded (0 failed)
+[browser] pool: 8 hits, 1 evicted, 5 closed
+[browser] resources: 0 from tab, 12 from network (tab 2 of 3)
+[tls] ticket stored for jra.jd.com (224 bytes, lifetime 86400s, 11 cached)
+[tls] ticket stored for jra.jd.com (224 bytes, lifetime 86400s, 12 cached)
+[tls] ticket stored for api.m.jd.com (224 bytes, lifetime 86400s, 13 cached)
+[tls] ticket stored for api.m.jd.com (224 bytes, lifetime 86400s, 14 cached)
+[bxfer] h2 jra.jd.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=304
+[bxfer] h2 api.m.jd.com:443 closed: streams=3 peak=2 frames=10/10 hpack_in=358
+[wm] perf t=27525 composites=239 ns=3120233847 max=56234191 motions=18 curmoves=10 curns=606255 full=185 rects=239 cpx=73726640 fpx=73726640 presns=171869669 torn=0 defer=115 late=0 drawmax=55

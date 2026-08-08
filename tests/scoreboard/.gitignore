@@ -1,0 +1,11 @@
+# The screenshots are the artefact you look at; they are not the artefact you
+# diff. A full pass writes two PNGs per site per run -- ~10 MB a day, none of it
+# reviewable in a patch -- so they stay out of the history and the JSON, the
+# table and the per-site serial logs (which ARE diffable, and are what a claim
+# gets argued from) stay in.
+#
+# Re-run the pass if you need the pictures back:
+#   make scoreboard-1 SITE=<name>
+*.png
+*.ppm
+net.pcap

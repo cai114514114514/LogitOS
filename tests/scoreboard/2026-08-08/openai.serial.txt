@@ -1,0 +1,11 @@
+[wm] perf t=18511 composites=180 ns=2223941351 max=39910003 motions=18 curmoves=11 curns=515299 full=138 rects=180 cpx=62240100 fpx=62240100 presns=127736646 torn=0 defer=79 late=0 drawmax=27
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.37
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301, group x25519
+[tls] chain of 3 verified for openai.com, alpn=http/1.1
+[wm] perf t=19516 composites=204 ns=2466516704 max=39910003 motions=18 curmoves=11 curns=515299 full=161 rects=204 cpx=69438820 fpx=69438820 presns=141682038 torn=0 defer=95 late=0 drawmax=27
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: cannot read property 'document' of undefined
+[wm] perf t=20516 composites=210 ns=2541250063 max=39910003 motions=18 curmoves=11 curns=515299 full=166 rects=210 cpx=71517540 fpx=71517540 presns=146742896 torn=0 defer=98 late=0 drawmax=27
