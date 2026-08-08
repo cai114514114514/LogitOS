@@ -1,0 +1,12 @@
+https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js	s001.js
+https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js	s002.js
+http://pss.bdstatic.com/r/www/cache/static/bundles/es6-polyfill_388d059.js	s003.js
+http://pss.bdstatic.com/r/www/cache/static/bundles/polyfill_9354efa.js	s004.js
+http://pss.bdstatic.com/r/www/cache/static/global/js/instant_search_newi_e1a452c.js	s005.js
+http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js	s006.js
+https://pss.bdstatic.com/static/superman/js/polyfill-ie8-30f98ab294.js	s007.js
+https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js	s008.js
+https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js	s009.js
+https://pss.bdstatic.com/static/superman/js/min_super-2cd511c04a.js	s010.js
+https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js	s011.js
+//hectorstatic.baidu.com/cd37ed75a9387c5b.js	s012.js
