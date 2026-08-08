@@ -1746,6 +1746,10 @@ static JSValue cssd_getPropertyPriority(JSContext *ctx, JSValueConst t, int argc
     return JS_NewString(ctx, (got && imp) ? "important" : "");
 }
 
+/* Defined with the property enumeration it belongs to, below: does canon.c
+ * call this declaration INVALID? */
+static int cssd_refuses(const char *name, const char *value);
+
 static JSValue cssd_setProperty(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     int computed = 0;
@@ -1758,7 +1762,17 @@ static JSValue cssd_setProperty(JSContext *ctx, JSValueConst t, int argc, JSValu
     const char *nm = JS_ToCString(ctx, argv[0]);
     const char *vl = argc > 1 ? JS_ToCString(ctx, argv[1]) : 0;
     const char *pr = argc > 2 ? JS_ToCString(ctx, argv[2]) : 0;
-    if (nm) style_set(n, nm, vl, pr && (pr[0] == 'i' || pr[0] == 'I'));
+    /* The same refusal as the named setters, for the same reason -- see
+     * cssd_refuses(). js_cssom.c's setProperty wrapper already refuses an
+     * INVALID declaration before it reaches here, so in the browser this is a
+     * second opinion agreeing with the first; it is here so the invariant "no
+     * declaration canon.c calls INVALID enters the style attribute through the
+     * CSSOM" holds in this file alone, for the host tests that build js_dom.c
+     * without that shim. Re-checking a value the wrapper already canonicalised
+     * is safe because canon.c round-trips: tests/unit/cssparse_test.c asserts
+     * exactly that for every accepted value in the suite. */
+    if (nm && vl && cssd_refuses(nm, vl)) { /* dropped */ }
+    else if (nm) style_set(n, nm, vl, pr && (pr[0] == 'i' || pr[0] == 'I'));
     if (nm) JS_FreeCString(ctx, nm);
     if (vl) JS_FreeCString(ctx, vl);
     if (pr) JS_FreeCString(ctx, pr);
@@ -1850,63 +1864,37 @@ static JSValue cssd_set_cssText(JSContext *ctx, JSValueConst t, JSValueConst v)
  * `cssd_item`/`cssd_get_length` deliberately stay on CSSP_*: enumerating a
  * COMPUTED declaration is the question "what can this engine resolve", which is
  * the enum and not the parser's vocabulary. Two sets, two questions. */
-/* THE SECOND HALF OF THE PROPERTY UNIVERSE, and the reason it is a list here.
+/* THE SECOND HALF OF THE PROPERTY UNIVERSE, and it is no longer a list here.
  *
  * css_known_prop_at() reads LibCSS's own stringmap, which is the right source
  * and is not the whole source: the CSS line's canonicaliser
  * (third_party/css/libcss/src/parse/canon.c) handles a set of modern properties
- * that never entered that stringmap -- position-area, the anchor family, and the
- * logical box properties. Sourcing only from the stringmap leaves exactly those
+ * that never entered that stringmap -- position-area, the anchor family, the
+ * logical box properties, and the grid track properties, of which LibCSS has
+ * literally none. Sourcing only from the stringmap leaves exactly those
  * unsettable, which is the defect this change exists to fix, so it would have
  * fixed nothing.
  *
- * canon.c publishes `css_canon_knows_property()` -- a PREDICATE. There is no
- * enumeration, and the tables behind it (inset_props, size_props, margin_props,
- * color_props) are static to that file, which is third_party and not this
- * line's. So the names are restated here, transcribed from those tables.
+ * WHAT USED TO BE HERE: ~50 property names transcribed by hand from canon.c's
+ * static tables, because that file published `css_canon_knows_property()` -- a
+ * PREDICATE, which answers "is this one of yours?" and cannot answer "what are
+ * yours?". This comment named the fix and called the copy a drift hazard:
+ * "one function in canon.h beside the predicate -- a count and an index,
+ * exactly the shape css_known_prop_count/at already has -- and then this array
+ * deletes itself."
  *
- * THAT IS A SECOND COPY AND IT CAN DRIFT, which is the thing this whole change
- * was meant to end, so it is named rather than hidden: the fix that ends it is
- * one function in canon.h beside the predicate -- a count and an index, exactly
- * the shape css_known_prop_count/at already has -- and then this array deletes
- * itself. Until then the drift is bounded in the safe direction: a name that
- * canon.c stops handling still reflects as text through the style attribute
- * (which is what every unknown property in a `style=` does), while a name it
- * GAINS is unsettable until it is added here. */
-static const char *const CSSD_EXTRA[] = {
-    /* anchor positioning */
-    "anchor-name", "position-anchor", "position-area",
-    /* logical sizing */
-    "block-size", "inline-size",
-    "min-block-size", "max-block-size", "min-inline-size", "max-inline-size",
-    /* logical insets */
-    "inset", "inset-block", "inset-inline",
-    "inset-block-start", "inset-block-end",
-    "inset-inline-start", "inset-inline-end",
-    /* logical margins */
-    "margin-block", "margin-inline",
-    "margin-block-start", "margin-block-end",
-    "margin-inline-start", "margin-inline-end",
-    /* logical padding */
-    "padding-block", "padding-inline",
-    "padding-block-start", "padding-block-end",
-    "padding-inline-start", "padding-inline-end",
-    /* logical borders */
-    "border-block", "border-inline",
-    "border-block-start", "border-block-end",
-    "border-inline-start", "border-inline-end",
-    "border-block-width", "border-inline-width",
-    "border-block-style", "border-inline-style",
-    "border-block-color", "border-inline-color",
-    "border-block-start-color", "border-block-end-color",
-    "border-inline-start-color", "border-inline-end-color",
-    /* the colour properties canon.c claims that the stringmap may not carry */
-    "text-emphasis-color", "caret-color", "column-rule-color", "accent-color",
-    "fill", "stroke", "stop-color", "flood-color", "lighting-color",
-};
-#define CSSD_NEXTRA ((int)(sizeof CSSD_EXTRA / sizeof CSSD_EXTRA[0]))
-/* Magic above this is an index into CSSD_EXTRA. 4096 is far above any
- * plausible LibCSS property count and is checked at install time. */
+ * That pair now exists (css_canon_prop_count/at, forwarded through css.h), the
+ * array has deleted itself, and the drift it warned about had already
+ * happened: the four grid track properties landed in canon.c with a full
+ * <track-list> parser and were unsettable from script, so a correct serializer
+ * measured as exactly nothing.
+ *
+ * ADOPTING THE ENUMERATION IS ONLY HALF THE CHANGE, and the other half is in
+ * cssd_refuses() below. Read that before assuming this alone is the fix -- on
+ * its own it makes the corpus worse in one direction while better in the
+ * other. */
+/* Magic at or above this is an index into canon.c's enumeration. 4096 is far
+ * above any plausible LibCSS property count and is checked at install time. */
 #define CSSD_EXTRA_BASE 4096
 
 static const char *cssd_prop_of(int magic)
@@ -1916,11 +1904,69 @@ static const char *cssd_prop_of(int magic)
      * See tests/reflect.mk's test-cssprops-negctl for why this switch exists. */
     return css_prop_name(magic);
 #else
-    if (magic >= CSSD_EXTRA_BASE) {
-        int i = magic - CSSD_EXTRA_BASE;
-        return (i >= 0 && i < CSSD_NEXTRA) ? CSSD_EXTRA[i] : 0;
-    }
+    if (magic >= CSSD_EXTRA_BASE)
+        return css_canon_prop_at(magic - CSSD_EXTRA_BASE);
     return css_known_prop_at(magic, 0);
+#endif
+}
+
+/* THE OTHER HALF: a setter that refuses what canon.c calls INVALID.
+ *
+ * The CSSOM's setter has a validity step -- "if value is not a valid value for
+ * property, return" -- and for a property LibCSS OWNS this file already gets
+ * that step for free: the value goes through css_supports_decl() in
+ * js_cssom.c's setProperty wrapper, and the cascade drops what it cannot
+ * parse. For a property LibCSS has never heard of there is no such step
+ * anywhere: the declaration is spliced into the style attribute unconditionally
+ * and canonicalised only on the way back OUT, so `grid-template-columns: -10px`
+ * is stored, read back as the raw bytes, and every "-invalid" subtest that
+ * asserts the property stays unset goes red.
+ *
+ * Those subtests were passing before the enumeration landed, and they were
+ * passing VACUOUSLY -- there was no named accessor, so nothing was stored, so
+ * "should not set the property value" was true for a reason that had nothing
+ * to do with validity. Publishing the accessors converts a vacuous pass into a
+ * real failure, which is why the two changes have to arrive together.
+ *
+ * THE THREE-WAY ANSWER IS THE SAFETY ARGUMENT, and CSS_SPEC_PASS is the case
+ * to be careful with:
+ *
+ *   CSS_SPEC_OK       canon.c parsed it. Store it -- and note this function
+ *                     does NOT rewrite the value to the canonical spelling;
+ *                     the read path (js_cssom.c's getPropertyValue wrapper)
+ *                     canonicalises, and doing it in both places would be two
+ *                     spellings of one answer.
+ *   CSS_SPEC_INVALID  NEITHER canon.c NOR LibCSS can take it. Refuse. Such a
+ *                     declaration is already dropped by the cascade and
+ *                     renders nothing, so refusing to remember it costs no
+ *                     rendering behaviour.
+ *   CSS_SPEC_PASS     not canon.c's property at all -- which is most of CSS.
+ *                     BEHAVE EXACTLY AS BEFORE. Anything else would put a
+ *                     second validity opinion in front of every declaration
+ *                     this browser already honours, including the handful
+ *                     css_extra.c honours behind LibCSS's back.
+ *
+ * An empty value is a REMOVAL and removal is never invalid, so it never
+ * reaches the check. */
+static int cssd_refuses(const char *name, const char *value)
+{
+#ifdef CSSD_NO_CANON_REFUSE
+    /* The negative control: adopt the enumeration and skip this half, which is
+     * the obvious half-implementation. See tests/cssom.mk's
+     * test-cssom-canon-negctl. */
+    (void)name; (void)value;
+    return 0;
+#else
+    char buf[1024];
+    int len = 0;
+    if (!name || !*name || !value) return 0;
+    for (const char *p = value; *p; p++)
+        if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
+            return css_specified_canon(name, -1, value, (int)strlen(value),
+                                       buf, (int)sizeof buf, &len)
+                   == CSS_SPEC_INVALID;
+        }
+    return 0;                                   /* whitespace only: a removal */
 #endif
 }
 
@@ -1940,7 +1986,10 @@ static JSValue cssd_prop_set(JSContext *ctx, JSValueConst t, JSValueConst v, int
     const char *nm = cssd_prop_of(magic);
     if (!n || computed || !nm) return JS_UNDEFINED;
     const char *s = JS_ToCString(ctx, v);
-    if (s) { style_set(n, nm, s, 0); JS_FreeCString(ctx, s); }
+    if (s) {
+        if (!cssd_refuses(nm, s)) style_set(n, nm, s, 0);
+        JS_FreeCString(ctx, s);
+    }
     return JS_UNDEFINED;
 }
 
@@ -2001,8 +2050,9 @@ static void install_one_css_prop(JSContext *ctx, JSValueConst proto,
         if (pass && (!has_camel || !*cam)) break;
         JSAtom a = JS_NewAtom(ctx, nm);
         /* Never redefine: the LibCSS set goes in first and owns any name it
-         * carries, so an entry in CSSD_EXTRA that has since entered the
-         * stringmap is a duplicate and not a conflict. */
+         * carries, so a name canon.c's enumeration also claims -- `margin`,
+         * `color`, `width` are all in both -- is a duplicate and not a
+         * conflict. */
         JSPropertyDescriptor dsc;
         if (JS_GetOwnProperty(ctx, &dsc, proto, a) > 0) {
             JS_FreeValue(ctx, dsc.value); JS_FreeValue(ctx, dsc.getter);
@@ -2041,8 +2091,14 @@ static void install_css_props(JSContext *ctx, JSValueConst proto)
         if (!strcmp(d, "float")) float_idx = p;
         install_one_css_prop(ctx, proto, d, p);
     }
-    for (int i = 0; i < CSSD_NEXTRA; i++)
-        install_one_css_prop(ctx, proto, CSSD_EXTRA[i], CSSD_EXTRA_BASE + i);
+    /* and the properties canon.c claims that never entered that stringmap,
+     * enumerated from canon.c itself rather than transcribed -- a name it
+     * gains is settable in the same commit that adds its serializer. */
+    int ne = css_canon_prop_count();
+    for (int i = 0; i < ne; i++) {
+        const char *e = css_canon_prop_at(i);
+        if (e && *e) install_one_css_prop(ctx, proto, e, CSSD_EXTRA_BASE + i);
+    }
     /* `float` was a reserved word when the CSSOM was written, so the IDL name
      * is cssFloat -- and both spellings are in use to this day. */
     if (float_idx >= 0) {

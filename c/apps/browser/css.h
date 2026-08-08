@@ -360,6 +360,32 @@ int  css_value_serialize(const char *value, int vlen, char *out, int outmax);
 int  css_specified_canon(const char *prop, int plen, const char *value, int vlen,
                          char *out, int outcap, int *outlen);
 
+/* THE SECOND HALF OF THE PROPERTY UNIVERSE: every property canon.c claims.
+ *
+ * css_known_prop_at() reads LibCSS's own string table, which is the right
+ * source and is not the whole source -- canon.c handles a set of properties
+ * that never entered that table (the anchor family, position-area, the logical
+ * box properties, and the grid track properties, of which LibCSS has literally
+ * none: `grep -i grid` over its propstrings finds the `grid` value of
+ * `display` and nothing else). A CSSStyleDeclaration must publish an IDL
+ * attribute for those too, or their serializer is unreachable from script and
+ * measures as zero however correct it is.
+ *
+ * These two are declared here rather than forwarded through css_engine.c the
+ * way css_specified_canon is, because unlike that one they need no forwarding:
+ * neither signature mentions a LibCSS type, so a plain declaration resolves at
+ * link time against canon.o, which every target that links the CSS engine
+ * already carries. The declarations are token-for-token the ones in
+ * `third_party/css/libcss/include/libcss/canon.h`, so the one TU that sees
+ * both headers (css_engine.c) sees one declaration twice and not two.
+ *
+ * Order and index are canon.c's and stable for one build only, exactly like
+ * css_known_prop_at's. The two sets OVERLAP -- `margin`, `color` and `width`
+ * are in both -- so a caller concatenating them has to tolerate a name
+ * arriving twice; the LibCSS half goes first and owns any name it carries. */
+int         css_canon_prop_count(void);
+const char *css_canon_prop_at(int idx);
+
 void css_init(void);                            /* build the UA default stylesheet */
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */
