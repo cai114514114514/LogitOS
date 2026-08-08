@@ -3256,6 +3256,10 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * likewise protected -- named_define skips any name the global already
      * owns, and js_select/js_platform/js_media/js_events all install with
      * plain defines that overwrite, so a later `window.location` wins too. */
+    /* BEFORE named_scan, which is the whole point of it: the rule that a real
+     * global beats a named element can only protect a property that exists, and
+     * `window.parent` did not. See named_install_window in js_dom_iface.inc. */
+    named_install_window(ctx, g);
     named_scan(ctx, root);
     JS_FreeValue(ctx, g);
     maybe_install_console(ctx);

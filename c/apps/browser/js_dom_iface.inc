@@ -1658,6 +1658,79 @@ static JSValue named_set(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     return JS_UNDEFINED;
 }
 
+/* THE WINDOW PROPERTIES NAMED ACCESS CAN SHADOW, defined so it cannot.
+ *
+ * This is the correction to a regression this file caused, and the shape of it
+ * is worth keeping because the same trap is waiting for the next window member
+ * anyone forgets.
+ *
+ * The rule above -- "a real global wins, always" -- is the spec's, and it is
+ * implemented correctly. It only protects properties that EXIST. `window.parent`
+ * did not exist, so `<div id=parent>` was free to claim the name, and
+ * testharness.js opens every file with
+ *
+ *     while (w != w.parent) w = w.parent;      // walk to the top window
+ *
+ * With `w.parent` answering a <div>, that walk leaves the window objects
+ * entirely and throws before a single subtest registers -- so the file dies at
+ * HARNESS level and reports nothing, which is a worse outcome than any number of
+ * failing assertions. 220 files in the corpus carry an id in this set, 186 of
+ * them in css/, and the serialization line pinned it to the hour: a runner built
+ * before the named-access commit completes cssom/serialize-values.html and one
+ * built after does not.
+ *
+ * The fix is not to weaken named access -- that mechanism took ~480 files that
+ * were dying on `ReferenceError: target is not defined`. It is to give the rule
+ * something to protect. A frameless top-level window IS its own parent, top,
+ * self and frames; it has no child browsing contexts (length 0), it is not
+ * closed, it was not opened by anyone, and its name and status are empty. Every
+ * value here is the correct one for this browser and not a placeholder.
+ *
+ * NOT `location`, `history` or `document`: js_webapi.c and this file's own init
+ * publish those, and a stub would be a wrong answer where a right one is
+ * already coming. They are safe from shadowing for a different reason --
+ * named_define runs at init and both are defined over the top of it afterwards.
+ *
+ * Writable and configurable, so a page's own `var name = ...` or an assignment
+ * to window.name still works; enumerable, because window's own properties are. */
+static void named_install_window(JSContext *ctx, JSValueConst g)
+{
+    static const char *const SELFREF[] = { "window", "self", "parent", "top", "frames" };
+    for (unsigned i = 0; i < countof(SELFREF); i++) {
+        JSAtom a = JS_NewAtom(ctx, SELFREF[i]);
+        JSPropertyDescriptor d;
+        if (JS_GetOwnProperty(ctx, &d, g, a) > 0) {
+            JS_FreeValue(ctx, d.value); JS_FreeValue(ctx, d.getter);
+            JS_FreeValue(ctx, d.setter);
+        } else {
+            JS_DefinePropertyValue(ctx, g, a, JS_DupValue(ctx, g), JS_PROP_C_W_E);
+        }
+        JS_FreeAtom(ctx, a);
+    }
+    static const struct { const char *nm; int kind; } SCALARS[] = {
+        { "length", 0 },        /* child browsing contexts: none */
+        { "closed", 1 },        /* false */
+        { "opener", 2 },        /* null */
+        { "name",   3 },        /* "" */
+        { "status", 3 },        /* "" */
+    };
+    for (unsigned i = 0; i < countof(SCALARS); i++) {
+        JSAtom a = JS_NewAtom(ctx, SCALARS[i].nm);
+        JSPropertyDescriptor d;
+        if (JS_GetOwnProperty(ctx, &d, g, a) > 0) {
+            JS_FreeValue(ctx, d.value); JS_FreeValue(ctx, d.getter);
+            JS_FreeValue(ctx, d.setter);
+        } else {
+            JSValue v = SCALARS[i].kind == 0 ? JS_NewInt32(ctx, 0)
+                      : SCALARS[i].kind == 1 ? JS_FALSE
+                      : SCALARS[i].kind == 2 ? JS_NULL
+                                             : JS_NewString(ctx, "");
+            JS_DefinePropertyValue(ctx, g, a, v, JS_PROP_C_W_E);
+        }
+        JS_FreeAtom(ctx, a);
+    }
+}
+
 static void named_define(JSContext *ctx, JSValueConst g, const char *nm)
 {
     if (!nm || !*nm || g_named_count >= NAMED_MAX) return;
