@@ -3389,3 +3389,10 @@ bench-aui: $(ISO) $(DISK)
 # Measured against the corpus's OWN data (urltestdata.json, setters_tests.json)
 # rather than through the WPT runner. See the fragment header.
 -include tests/url.mk
+
+# The CSS specified-value parser: `make test-cssparse` / `-asan` / `-negctl`.
+# third_party/css/libcss/src/parse/canon.c -- parse a declaration as a
+# SPECIFIED value and spell it canonically, which LibCSS has no form for. The
+# CSSOM surface (`el.style.foo`) is defined in terms of that spelling and WPT
+# compares its bytes. See the fragment header.
+-include tests/cssparse.mk

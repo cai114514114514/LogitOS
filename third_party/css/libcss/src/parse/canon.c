@@ -619,7 +619,6 @@ static int kw_index(const tok *t, const char *const *tab)
 
 #define CANON_MAXDEPTH 32
 
-static int emit_value(lexed *lx, buf *b, int depth, int stop_at_comma);
 static int emit_function(lexed *lx, buf *b, int depth);
 static int anchor_fn(lexed *lx, buf *b, int depth, int which);
 
@@ -728,26 +727,6 @@ static int emit_function(lexed *lx, buf *b, int depth)
 	adv(lx);
 	bputc(b, ')');
 	return 0;
-}
-
-/* Emit a whole value: a sequence of component values, space separated. When
- * `stop_at_comma`, a top-level comma ends it (used for argument lists). */
-static int emit_value(lexed *lx, buf *b, int depth, int stop_at_comma)
-{
-	int first = 1;
-
-	if (depth >= CANON_MAXDEPTH) return -1;
-	while (!at_end(lx)) {
-		const tok *t = cur(lx);
-		if (t->kind == T_RPAREN) break;
-		if (t->kind == T_COMMA && stop_at_comma) break;
-		if (t->kind == T_COMMA) { bcomma(b); adv(lx); first = 1;
-			continue; }
-		if (!first) bputc(b, ' ');
-		if (emit_token(lx, b, depth + 1) != 0) return -1;
-		first = 0;
-	}
-	return first ? -1 : 0;	/* an empty value is not a value */
 }
 
 /* ====================================================================
