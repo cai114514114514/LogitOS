@@ -316,9 +316,21 @@ static const char *SEMANTICS_PRELUDE =
 "  if (!ELP) return;\n"
 "  var orig = ELP[name];\n"
 "  if (typeof orig !== 'function' || orig.__logit_sem) return;\n"
+/* THIS WRAPPER IS ON THE HOT PATH -- every setAttribute a page makes goes
+ * through it -- so it does no work it does not have to. Attribute names are
+ * already lowercase in essentially all real code, so the fast path is two
+ * hash lookups on the string as given; lc() (a regex replace) runs only when
+ * the cheap check misses AND the name actually contains an uppercase letter. */
 "  var wrapped = function (a) {\n"
-"    var an = arguments.length ? lc(a) : '';\n"
-"    if (an && TRACKED_ATTR[an]) clearExplicit(this, an);\n"
+"    var an = arguments.length ? a : '';\n"
+"    if (typeof an !== 'string') an = String(an);\n"
+"    var hit = TRACKED_ATTR[an] === 1 || an === 'open';\n"
+"    if (!hit) {\n"
+"      var l = lc(an);\n"
+"      if (l !== an) { an = l; hit = TRACKED_ATTR[an] === 1 || an === 'open'; }\n"
+"    }\n"
+"    if (!hit) return orig.apply(this, arguments);\n"
+"    if (TRACKED_ATTR[an] === 1) clearExplicit(this, an);\n"
 "    var r = orig.apply(this, arguments);\n"
        /* The exclusive-accordion rule. `<details name=x>` is the one attribute
         * change in HTML that reaches OTHER elements, so it has to be observed
