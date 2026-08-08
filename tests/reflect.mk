@@ -106,3 +106,32 @@ test-reflect-table:
 # Regenerate in place. Not named test-* on purpose: it changes the tree.
 reflect-table:
 	@python3 tools/gen_reflect.py
+
+# ---------------------------------------------------------------------------
+# The CSSOM NAMED-PROPERTY SET, which is a different question from reflection
+# and shares this fragment only because both are IDL attributes over js_dom.c.
+#
+# A property with no named accessor cannot be set from script, so its parser is
+# unreachable and every test of it fails on "property should be set" without the
+# parser running. js_dom.c took that set from css.h's CSSP_* enum -- the ~60
+# properties the CASCADE resolves -- when the right set is every property the
+# PARSER knows. The CSS line implemented position-area in full, 2,598 checks,
+# and gained zero for exactly this reason.
+#
+# The control restores the enum-sourced set and nothing else, so a red run names
+# the source of the list rather than a broken accessor.
+.PHONY: test-cssprops test-cssprops-negctl
+
+CSSPROPS_SRC := tests/unit/cssprops_test.c c/apps/browser/js_dom.c                 c/apps/browser/js_reflect.c c/apps/browser/css_engine.c                 c/apps/browser/css_vars.c
+
+$(BUILD)/cssprops_test: $(CSSPROPS_SRC) $(BUILD)/libcss_host.a
+	@mkdir -p $(BUILD)
+	@$(CC) $(REFLECT_CF) -o $@ $(CSSPROPS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) 	    $(BUILD)/libcss_host.a -lm
+
+test-cssprops: $(BUILD)/cssprops_test
+	@$(BUILD)/cssprops_test
+
+test-cssprops-negctl: $(BUILD)/libcss_host.a
+	@mkdir -p $(BUILD)
+	@$(CC) $(REFLECT_CF) -DCSSD_PROPS_FROM_ENUM -o $(BUILD)/cssprops_negctl 	    $(CSSPROPS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	@if $(BUILD)/cssprops_negctl > $(BUILD)/cssprops_negctl.log 2>&1; then 	    echo "test-cssprops-negctl: FAILED -- cssprops_test passed with the"; 	    echo "  named-property set taken from the cascade enum again, so it is"; 	    echo "  not measuring which properties are settable."; 	    exit 1; 	 else 	    n=$$(grep -c '^FAIL' $(BUILD)/cssprops_negctl.log); 	    echo "test-cssprops-negctl: ok -- the suite catches the enum-sourced set"; 	    echo "  ($$n assertions went red). The first few:"; 	    grep '^FAIL' $(BUILD)/cssprops_negctl.log | head -4 | sed 's/^/    /'; 	 fi

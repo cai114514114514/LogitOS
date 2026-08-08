@@ -1828,12 +1828,107 @@ static JSValue cssd_set_cssText(JSContext *ctx, JSValueConst t, JSValueConst v)
 }
 
 /* The named accessors (el.style.backgroundColor, getComputedStyle(el).display).
- * `magic` is the CSSP_* id, so one getter/setter pair serves all of them. */
+ *
+ * `magic` INDEXES LIBCSS'S OWN PROPERTY TABLE, not css.h's CSSP_* enum, and
+ * that is the fix to a defect that cost more than any missing feature here:
+ *
+ * CSSP_* names the ~60 properties this engine's cascade RESOLVES. The set a
+ * CSSStyleDeclaration must expose as IDL attributes is a different and much
+ * larger one -- every property the parser knows -- and it was being taken from
+ * the enum. So `div.style['position-area'] = x` did nothing: no named property,
+ * no store, and every test of that property failed on "property should be set"
+ * before its parser was ever reached. The CSS line implemented position-area in
+ * full, 2,598 checks, and gained ZERO for exactly this reason; the same cause
+ * accounted for 4,310 more in css-anchor-position and 507 in css-fonts.
+ *
+ * css_known_prop_at() reads LibCSS's string table, which is also what
+ * css_supports_decl() answers from -- so the two can no longer disagree, and a
+ * property added to the vendored parser becomes settable and becomes supported
+ * in the same commit. WPT's CSS-supports-CSSStyleDeclaration.html is 1,495
+ * subtests asserting precisely that agreement.
+ *
+ * `cssd_item`/`cssd_get_length` deliberately stay on CSSP_*: enumerating a
+ * COMPUTED declaration is the question "what can this engine resolve", which is
+ * the enum and not the parser's vocabulary. Two sets, two questions. */
+/* THE SECOND HALF OF THE PROPERTY UNIVERSE, and the reason it is a list here.
+ *
+ * css_known_prop_at() reads LibCSS's own stringmap, which is the right source
+ * and is not the whole source: the CSS line's canonicaliser
+ * (third_party/css/libcss/src/parse/canon.c) handles a set of modern properties
+ * that never entered that stringmap -- position-area, the anchor family, and the
+ * logical box properties. Sourcing only from the stringmap leaves exactly those
+ * unsettable, which is the defect this change exists to fix, so it would have
+ * fixed nothing.
+ *
+ * canon.c publishes `css_canon_knows_property()` -- a PREDICATE. There is no
+ * enumeration, and the tables behind it (inset_props, size_props, margin_props,
+ * color_props) are static to that file, which is third_party and not this
+ * line's. So the names are restated here, transcribed from those tables.
+ *
+ * THAT IS A SECOND COPY AND IT CAN DRIFT, which is the thing this whole change
+ * was meant to end, so it is named rather than hidden: the fix that ends it is
+ * one function in canon.h beside the predicate -- a count and an index, exactly
+ * the shape css_known_prop_count/at already has -- and then this array deletes
+ * itself. Until then the drift is bounded in the safe direction: a name that
+ * canon.c stops handling still reflects as text through the style attribute
+ * (which is what every unknown property in a `style=` does), while a name it
+ * GAINS is unsettable until it is added here. */
+static const char *const CSSD_EXTRA[] = {
+    /* anchor positioning */
+    "anchor-name", "position-anchor", "position-area",
+    /* logical sizing */
+    "block-size", "inline-size",
+    "min-block-size", "max-block-size", "min-inline-size", "max-inline-size",
+    /* logical insets */
+    "inset", "inset-block", "inset-inline",
+    "inset-block-start", "inset-block-end",
+    "inset-inline-start", "inset-inline-end",
+    /* logical margins */
+    "margin-block", "margin-inline",
+    "margin-block-start", "margin-block-end",
+    "margin-inline-start", "margin-inline-end",
+    /* logical padding */
+    "padding-block", "padding-inline",
+    "padding-block-start", "padding-block-end",
+    "padding-inline-start", "padding-inline-end",
+    /* logical borders */
+    "border-block", "border-inline",
+    "border-block-start", "border-block-end",
+    "border-inline-start", "border-inline-end",
+    "border-block-width", "border-inline-width",
+    "border-block-style", "border-inline-style",
+    "border-block-color", "border-inline-color",
+    "border-block-start-color", "border-block-end-color",
+    "border-inline-start-color", "border-inline-end-color",
+    /* the colour properties canon.c claims that the stringmap may not carry */
+    "text-emphasis-color", "caret-color", "column-rule-color", "accent-color",
+    "fill", "stroke", "stop-color", "flood-color", "lighting-color",
+};
+#define CSSD_NEXTRA ((int)(sizeof CSSD_EXTRA / sizeof CSSD_EXTRA[0]))
+/* Magic above this is an index into CSSD_EXTRA. 4096 is far above any
+ * plausible LibCSS property count and is checked at install time. */
+#define CSSD_EXTRA_BASE 4096
+
+static const char *cssd_prop_of(int magic)
+{
+#ifdef CSSD_PROPS_FROM_ENUM
+    /* The negative control: the set as it was, taken from the cascade's enum.
+     * See tests/reflect.mk's test-cssprops-negctl for why this switch exists. */
+    return css_prop_name(magic);
+#else
+    if (magic >= CSSD_EXTRA_BASE) {
+        int i = magic - CSSD_EXTRA_BASE;
+        return (i >= 0 && i < CSSD_NEXTRA) ? CSSD_EXTRA[i] : 0;
+    }
+    return css_known_prop_at(magic, 0);
+#endif
+}
+
 static JSValue cssd_prop_get(JSContext *ctx, JSValueConst t, int magic)
 {
     int computed = 0;
     struct node *n = cssd_node(t, &computed);
-    const char *nm = css_prop_name(magic);
+    const char *nm = cssd_prop_of(magic);
     if (!n || !nm) return JS_NewString(ctx, "");
     return cssd_read(ctx, n, computed, nm);
 }
@@ -1842,7 +1937,7 @@ static JSValue cssd_prop_set(JSContext *ctx, JSValueConst t, JSValueConst v, int
 {
     int computed = 0;
     struct node *n = cssd_node(t, &computed);
-    const char *nm = css_prop_name(magic);
+    const char *nm = cssd_prop_of(magic);
     if (!n || computed || !nm) return JS_UNDEFINED;
     const char *s = JS_ToCString(ctx, v);
     if (s) { style_set(n, nm, s, 0); JS_FreeCString(ctx, s); }
@@ -1862,12 +1957,20 @@ static const JSCFunctionListEntry cssd_proto[] = {
 static JSClassDef cssd_class = { "CSSStyleDeclaration", cssd_finalizer };
 
 /* The IDL spelling of a dashed CSS name: "background-color" -> backgroundColor.
- * Returns 0 if the name had no dashes (the two spellings coincide). */
+ * Returns 0 if the name had no dashes (the two spellings coincide).
+ *
+ * A LEADING dash is the vendor-prefix case and takes the CSSOM's other rule:
+ * "-webkit-box" is `webkitBox`, not `WebkitBox`. The prefix is dropped and the
+ * rest camel-cased with a lowercase first letter -- and getting that wrong
+ * would publish a property under a name nothing looks for while leaving the
+ * name everything looks for undefined. */
 static int camel_of(const char *dashed, char *out, size_t cap)
 {
     size_t o = 0;
     int had = 0;
-    for (const char *p = dashed; *p; p++) {
+    const char *p = dashed;
+    if (*p == '-') { p++; had = 1; }            /* vendor prefix: drop the dash */
+    for (; *p; p++) {
         if (o + 2 >= cap) return 0;
         if (*p == '-') { p++; if (!*p) break; had = 1;
                          out[o++] = (char)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p); continue; }
@@ -1877,39 +1980,81 @@ static int camel_of(const char *dashed, char *out, size_t cap)
     return had;
 }
 
-/* Install a getter/setter for every property in the table, under BOTH the
+/* Install a getter/setter for every property THE PARSER KNOWS, under BOTH the
  * dashed name and the IDL camelCase name -- pages use both, and the CSSOM
- * defines both. Built at runtime rather than as a hand-written table of ~130
- * JSCFunctionListEntry lines that could drift from css.h's enum. */
+ * defines both.
+ *
+ * The list is LibCSS's, read at runtime. It used to be css.h's CSSP_* enum,
+ * which is the ~60 properties the CASCADE resolves, and the gap between the two
+ * sets was the largest single blocker in the CSS corpus: a property the parser
+ * handles perfectly is unreachable from script if `el.style` has no name for
+ * it, and every test of it fails on "property should be set" without the parser
+ * ever running. Sourcing both this and css_supports_decl() from the same table
+ * is what stops the two answers drifting apart again. */
+static void install_one_css_prop(JSContext *ctx, JSValueConst proto,
+                                 const char *d, int magic)
+{
+    char cam[96];
+    int has_camel = camel_of(d, cam, sizeof cam);
+    for (int pass = 0; pass < 2; pass++) {
+        const char *nm = pass ? cam : d;
+        if (pass && (!has_camel || !*cam)) break;
+        JSAtom a = JS_NewAtom(ctx, nm);
+        /* Never redefine: the LibCSS set goes in first and owns any name it
+         * carries, so an entry in CSSD_EXTRA that has since entered the
+         * stringmap is a duplicate and not a conflict. */
+        JSPropertyDescriptor dsc;
+        if (JS_GetOwnProperty(ctx, &dsc, proto, a) > 0) {
+            JS_FreeValue(ctx, dsc.value); JS_FreeValue(ctx, dsc.getter);
+            JS_FreeValue(ctx, dsc.setter);
+            JS_FreeAtom(ctx, a);
+            continue;
+        }
+        JSValue g = JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_get, nm, 0,
+                                     JS_CFUNC_getter_magic, magic);
+        JSValue s = JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_set, nm, 1,
+                                     JS_CFUNC_setter_magic, magic);
+        JS_DefinePropertyGetSet(ctx, proto, a, g, s, JS_PROP_CONFIGURABLE);
+        JS_FreeAtom(ctx, a);
+    }
+}
+
 static void install_css_props(JSContext *ctx, JSValueConst proto)
 {
+#ifdef CSSD_PROPS_FROM_ENUM
     for (int p = 0; p < CSSP__COUNT; p++) {
         const char *d = css_prop_name(p);
-        if (!d) continue;
-        char cam[64];
-        int has_camel = camel_of(d, cam, sizeof cam);
-        for (int pass = 0; pass < 2; pass++) {
-            const char *nm = pass ? cam : d;
-            if (pass && !has_camel) break;
-            JSAtom a = JS_NewAtom(ctx, nm);
-            JSValue g = JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_get, nm, 0,
-                                         JS_CFUNC_getter_magic, p);
-            JSValue s = JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_set, nm, 1,
-                                         JS_CFUNC_setter_magic, p);
-            JS_DefinePropertyGetSet(ctx, proto, a, g, s, JS_PROP_CONFIGURABLE);
-            JS_FreeAtom(ctx, a);
-        }
+        if (d && *d) install_one_css_prop(ctx, proto, d, p);
     }
+    install_one_css_prop(ctx, proto, "cssFloat", CSSP_FLOAT);
+    return;
+#endif
+    int n = css_known_prop_count();
+    int float_idx = -1;
+    /* If LibCSS ever carries more properties than the extra-table base, the two
+     * magic ranges would overlap and every name past the base would read the
+     * wrong property. Fail loudly at that point rather than silently. */
+    if (n > CSSD_EXTRA_BASE) n = CSSD_EXTRA_BASE;
+    for (int p = 0; p < n; p++) {
+        const char *d = css_known_prop_at(p, 0);
+        if (!d || !*d) continue;
+        if (!strcmp(d, "float")) float_idx = p;
+        install_one_css_prop(ctx, proto, d, p);
+    }
+    for (int i = 0; i < CSSD_NEXTRA; i++)
+        install_one_css_prop(ctx, proto, CSSD_EXTRA[i], CSSD_EXTRA_BASE + i);
     /* `float` was a reserved word when the CSSOM was written, so the IDL name
      * is cssFloat -- and both spellings are in use to this day. */
-    JSAtom a = JS_NewAtom(ctx, "cssFloat");
-    JS_DefinePropertyGetSet(ctx, proto, a,
-        JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_get, "cssFloat", 0,
-                         JS_CFUNC_getter_magic, CSSP_FLOAT),
-        JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_set, "cssFloat", 1,
-                         JS_CFUNC_setter_magic, CSSP_FLOAT),
-        JS_PROP_CONFIGURABLE);
-    JS_FreeAtom(ctx, a);
+    if (float_idx >= 0) {
+        JSAtom a = JS_NewAtom(ctx, "cssFloat");
+        JS_DefinePropertyGetSet(ctx, proto, a,
+            JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_get, "cssFloat", 0,
+                             JS_CFUNC_getter_magic, float_idx),
+            JS_NewCFunction2(ctx, (JSCFunction *)cssd_prop_set, "cssFloat", 1,
+                             JS_CFUNC_setter_magic, float_idx),
+            JS_PROP_CONFIGURABLE);
+        JS_FreeAtom(ctx, a);
+    }
 }
 
 static JSValue el_get_style(JSContext *ctx, JSValueConst t)
