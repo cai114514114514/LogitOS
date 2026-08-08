@@ -28,6 +28,11 @@
 #         @bash tests/boot/run-mm-test.sh $(ISO) $(DISK)
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-mm-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-mm-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
@@ -44,7 +49,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 batch() { i=0; while [ $i -lt 80 ]; do printf 'true\n'; i=$((i+1)); done; }
 
 {
-  sleep 6
+  logit_wait_for_shell "$LOG" 150
   batch;  printf 'echo MM_MARK1\n'; sleep 26
   batch;  printf 'echo MM_MARK2\n'; sleep 26
   batch;  printf 'echo MM_MARK3\n'; sleep 26

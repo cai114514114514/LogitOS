@@ -56,6 +56,11 @@
 # Usage: run-swap-test.sh <iso> <disk.img> [swap|noswap] [ram-MiB] [size-name]
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-swap-test.sh <iso> <disk.img> [swap|noswap] [ram] [size]}"
 DISK="${2:?usage: run-swap-test.sh <iso> <disk.img> [swap|noswap] [ram] [size]}"
 MODE="${3:-swap}"
@@ -75,6 +80,14 @@ case "$SIZE" in
     huge)  WAIT=900 ;;
     *)     WAIT=300 ;;
 esac
+# ...but the numbers above are a HOST speed as much as a workload size. The
+# fill phase is a ring-3 bytecode interpreter writing a pattern into every word
+# of every page under TCG, and on a slow machine `mid` does not reach the
+# watermark inside 300 s -- which fails as "the workload did not finish",
+# indistinguishable at a glance from reclaim being broken. It is not the same
+# thing at all, so the budget is overridable rather than something to discover
+# by reading this file: SWAP_WAIT=900 make test-swap.
+WAIT="${SWAP_WAIT:-$WAIT}"
 
 QEMU="${QEMU:-qemu-system-x86_64}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -121,7 +134,7 @@ echo "=== mode=$MODE  ram=${RAM}MiB  workload=$SIZE  swap=${SWAPMIB}MiB ==="
 # audits, so the assertions below are about numbers the kernel keeps rather than
 # about the absence of a crash.
 {
-  sleep 8
+  logit_wait_for_shell "$LOG" 150
   printf 'echo MEM_BEFORE\n';                                     sleep 1
   printf 'as /usr/as/examples/mempress.as %s\n' "$SIZE";           sleep "$WAIT"
   printf 'echo MEM_AFTER\n';                                      sleep 2
