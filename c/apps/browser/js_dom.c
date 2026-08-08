@@ -1893,9 +1893,44 @@ static JSValue cssd_set_cssText(JSContext *ctx, JSValueConst t, JSValueConst v)
  * cssd_refuses() below. Read that before assuming this alone is the fix -- on
  * its own it makes the corpus worse in one direction while better in the
  * other. */
-/* Magic at or above this is an index into canon.c's enumeration. 4096 is far
+/* THE SIXTEEN NAMES THAT WERE NOT canon.c's AFTER ALL, and the reason this is
+ * a list and not a bug.
+ *
+ * The old array was described as a transcription of canon.c's tables. Sixteen
+ * of its entries were in NEITHER canon.c's tables NOR LibCSS's -- the logical
+ * PADDING family and the logical BORDER shorthands, of which canon.c claims
+ * only the `-color` ones. Swapping the array for the enumeration therefore
+ * deleted them, and `make test-cssprops` caught it: `el.style.paddingInlineEnd`
+ * read `undefined`, which is the exact shape of the defect that whole file
+ * exists to prevent.
+ *
+ * So they stay, under a name that says what they are. There is no parser and
+ * no serializer for these on either side; publishing them only gives
+ * `el.style` an IDL attribute that reflects the author's text, which is what a
+ * `style=` attribute does with any unknown property anyway. Nothing here can be
+ * refused (cssd_refuses asks canon.c, canon.c PASSES on all sixteen) and
+ * nothing here can drift into a second copy of somebody's table: the install
+ * skips a name either real source already carries, and cssdcanon_test asserts
+ * that this list is DISJOINT from both -- so the day canon.c claims
+ * `padding-inline`, the test says to delete the entry rather than the entry
+ * quietly shadowing a real serializer. */
+static const char *const CSSD_TEXT_ONLY[] = {
+    "padding-block", "padding-inline",
+    "padding-block-start", "padding-block-end",
+    "padding-inline-start", "padding-inline-end",
+    "border-block", "border-inline",
+    "border-block-start", "border-block-end",
+    "border-inline-start", "border-inline-end",
+    "border-block-width", "border-inline-width",
+    "border-block-style", "border-inline-style",
+};
+#define CSSD_NTEXT ((int)(sizeof CSSD_TEXT_ONLY / sizeof CSSD_TEXT_ONLY[0]))
+
+/* Magic at or above CSSD_EXTRA_BASE is an index into canon.c's enumeration,
+ * and at or above CSSD_TEXT_BASE an index into the list above. 4096 is far
  * above any plausible LibCSS property count and is checked at install time. */
 #define CSSD_EXTRA_BASE 4096
+#define CSSD_TEXT_BASE  8192
 
 static const char *cssd_prop_of(int magic)
 {
@@ -1904,10 +1939,22 @@ static const char *cssd_prop_of(int magic)
      * See tests/reflect.mk's test-cssprops-negctl for why this switch exists. */
     return css_prop_name(magic);
 #else
+    if (magic >= CSSD_TEXT_BASE) {
+        int i = magic - CSSD_TEXT_BASE;
+        return (i >= 0 && i < CSSD_NTEXT) ? CSSD_TEXT_ONLY[i] : 0;
+    }
     if (magic >= CSSD_EXTRA_BASE)
         return css_canon_prop_at(magic - CSSD_EXTRA_BASE);
     return css_known_prop_at(magic, 0);
 #endif
+}
+
+/* The list above, for the test that keeps it disjoint from the two real
+ * sources. Not part of any CSSOM surface. */
+int js_dom_text_only_props(const char *const **out)
+{
+    if (out) *out = CSSD_TEXT_ONLY;
+    return CSSD_NTEXT;
 }
 
 /* THE OTHER HALF: a setter that refuses what canon.c calls INVALID.
@@ -2095,10 +2142,15 @@ static void install_css_props(JSContext *ctx, JSValueConst proto)
      * enumerated from canon.c itself rather than transcribed -- a name it
      * gains is settable in the same commit that adds its serializer. */
     int ne = css_canon_prop_count();
+    if (ne > CSSD_TEXT_BASE - CSSD_EXTRA_BASE) ne = CSSD_TEXT_BASE - CSSD_EXTRA_BASE;
     for (int i = 0; i < ne; i++) {
         const char *e = css_canon_prop_at(i);
         if (e && *e) install_one_css_prop(ctx, proto, e, CSSD_EXTRA_BASE + i);
     }
+    /* and last, the sixteen neither source knows -- text-only, and skipped
+     * outright if either of the two real sources has since claimed one. */
+    for (int i = 0; i < CSSD_NTEXT; i++)
+        install_one_css_prop(ctx, proto, CSSD_TEXT_ONLY[i], CSSD_TEXT_BASE + i);
     /* `float` was a reserved word when the CSSOM was written, so the IDL name
      * is cssFloat -- and both spellings are in use to this day. */
     if (float_idx >= 0) {

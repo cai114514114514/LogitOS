@@ -58,6 +58,11 @@
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
 
+/* js_dom.c's test seam for the sixteen properties neither LibCSS nor canon.c
+ * knows. Declared here rather than in js_dom.h: it is not a CSSOM surface and
+ * nothing but this file has any business calling it. */
+int js_dom_text_only_props(const char *const **out);
+
 static int g_fails;
 static int g_checks;
 
@@ -143,6 +148,51 @@ int main(void)
     }
     g_checks++;
     if (missing) { fail("%s%d enumerated properties have no named accessor", "", missing); }
+
+    /* THE SIXTEEN NEITHER SOURCE KNOWS. The old hand-written array was
+     * described as a transcription of canon.c's tables, and sixteen of its
+     * entries were in neither canon.c's nor LibCSS's -- the logical padding
+     * family and the logical border shorthands. Swapping the array for the
+     * enumeration deleted them and `el.style.paddingInlineEnd` read
+     * `undefined`; js_dom.c keeps them as CSSD_TEXT_ONLY, a list with no
+     * parser behind it on either side.
+     *
+     * The assertion that keeps that list from growing back into a second copy
+     * of somebody's table is DISJOINTNESS: nothing in it may be a name either
+     * real source carries. The day canon.c claims `padding-inline`, this goes
+     * red and the entry gets deleted, rather than quietly shadowing a real
+     * serializer -- which is the drift running the other way. */
+    const char *const *tonly = 0;
+    int nt = js_dom_text_only_props(&tonly);
+    int overlap = 0;
+    for (int i = 0; i < nt; i++) {
+        for (int j = 0; j < nc; j++) {
+            const char *p = css_canon_prop_at(j);
+            if (p && !strcmp(p, tonly[i])) {
+                printf("  FAIL '%s' is text-only here and canon.c now claims it"
+                       " -- delete the entry\n", tonly[i]);
+                overlap++;
+            }
+        }
+        for (int j = 0; j < css_known_prop_count(); j++) {
+            const char *p = css_known_prop_at(j, 0);
+            if (p && !strcmp(p, tonly[i])) {
+                printf("  FAIL '%s' is text-only here and LibCSS now carries it"
+                       " -- delete the entry\n", tonly[i]);
+                overlap++;
+            }
+        }
+    }
+    g_checks++;
+    if (overlap) fail("the text-only list overlaps a real source in %s%d place(s)", "", overlap);
+    chk(ctx, "var t = document.createElement('div');"
+             "t.style.paddingInlineEnd = '3px'; t.style.paddingInlineEnd", "3px");
+    chk(ctx, "t.style['border-block-style'] = 'dashed'; t.style.borderBlockStyle",
+             "dashed");
+    /* ...and nothing in that list may be refused: canon.c PASSES on all of
+     * them, so an unparseable value reflects as text exactly as it does in a
+     * `style=` attribute, which is the whole behaviour they have. */
+    chk(ctx, "t.style.paddingInline = 'banana'; t.style.paddingInline", "banana");
 
     /* ...and they are settable, in both spellings. */
     chk(ctx, "var e = document.createElement('div');"
