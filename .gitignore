@@ -37,3 +37,9 @@ rust/target/
 
 # API tokens / credentials -- never commit
 .env
+
+# Per-line scratch build trees. `build/` was ignored; `build-wm/`, `build-set/`
+# and `build-clip/` were not, so three agents left 4,767 files and 159 MB in
+# `git status` -- where the real signal (a staged deletion, an uncommitted
+# test) has to be found among them.
+build-*/
