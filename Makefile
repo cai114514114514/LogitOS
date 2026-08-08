@@ -3361,3 +3361,9 @@ bench-aui: $(ISO) $(DISK)
 # HTML*Element leaves, the prototype chain under them, and the constructors on
 # globalThis. Includes its own negative control. See the fragment header.
 -include tests/domiface.mk
+
+# CSS Flexbox: `make test-flex` / `test-flex-negctl`. The flex sizing algorithm
+# (c/apps/browser/layout_flex.c) checked against the numbers CSS Flexbox § 9
+# names, with no renderer involved. Not yet wired into layout.c -- see the
+# fragment header for why that is a separate change.
+-include tests/flex.mk
