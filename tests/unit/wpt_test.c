@@ -66,6 +66,27 @@ __attribute__((__weak__)) void img_register(void *d) { (void)d; }
 __attribute__((__weak__)) void img_register_anim(void *a, void *b, void *c)
 { (void)a; (void)b; (void)c; }
 
+/* layout.c is linked (see tests/wpt.mk for why that was a decision and not an
+ * accident), and it asks the embedder for two things the browser answers with
+ * syscalls: how wide a run of text is, and the bytes of a subresource.
+ *
+ * text_measure is a MONOSPACE APPROXIMATION here, and that is a stated limit
+ * rather than a bug: the real one rasterises a TrueType face through
+ * SYS_TEXT_MEASURE, which a host process cannot call. Every geometry assertion
+ * in the corpus that depends on real glyph advances is therefore measuring this
+ * approximation -- but every geometry assertion that depends on the box model,
+ * which is nearly all of them, is measuring layout.c. The alternative was
+ * linking no layout at all, and then every one of them fails on a 0x0 box.
+ *
+ * res_fetch returns -1: a subresource is not on the disk under a corpus path in
+ * any form layout can use, and an image that fails to load has defined layout
+ * behaviour (its intrinsic size is 0 unless width/height say otherwise), so
+ * this is a real answer rather than a stub that lies. */
+int text_measure(const char *s, int len, int px, int mono)
+{ (void)s; (void)mono; return len * (px / 2); }
+int res_fetch(const char *u, unsigned char **b, int *l)
+{ (void)u; (void)b; (void)l; return -1; }
+
 /* js_module.c -- the REAL module loader -- is in this link rather than
  * reimplemented, so `<script type=module>` and dynamic import are resolved and
  * linked by the code the browser ships. All it needs under it is a fetch, and
@@ -576,7 +597,7 @@ static const char *HOOKUP =
  * any of the file's programs sets it. `needs_driver` is the stronger signal
  * where it is available -- the file asked for /resources/testdriver.js by name. */
 struct outcome {
-    int completed, harness_missing, threw, needs_driver;
+    int completed, harness_missing, threw, needs_driver, onload_attr;
     char why[512], stack[512];
 };
 
@@ -760,6 +781,19 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
     }
     free(c.s);
     oc->needs_driver = c.needs_driver;
+    /* Does the document start its own tests from a `<body onload=...>` content
+     * attribute? 846 of the 1153 files that register nothing do, and that is
+     * NOT a missing harness capability -- per HTML, `onload` on <body> sets the
+     * handler on WINDOW, and a browser that never compiles the attribute into a
+     * function leaves those pages inert. Isolated and reproduced: the attribute
+     * is in the DOM, `typeof window.onload` and `typeof document.body.onload`
+     * are both "object". Distinguishing this from the testdriver files is the
+     * difference between a work item and an impossibility. */
+    {
+        struct node *b = root && root->doc ? dom_doc_body(root->doc) : 0;
+        const char *ol = b ? dom_attr(b, "onload") : 0;
+        oc->onload_attr = ol && *ol;
+    }
     if (c.missing && !oc->why[0])
         snprintf(oc->why, sizeof oc->why,
                  "%d referenced script(s) could not be resolved in the checkout",
@@ -779,46 +813,96 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
          * js_dom_dispatch delivers to the document. Firing on the document
          * changed nothing at all -- A/B'd, 81/308 both ways -- which is how
          * this was found. browser.c has the same shape and the same gap. */
+        /* ONE DISPATCH PER EVENT. The first version called dispatchEvent AND
+         * then target['on'+t] by hand, "in case" the on-property was not wired
+         * to the listener list -- and it dispatched `load` at document and
+         * again at globalThis. js_dom.c makes window and document the SAME
+         * EventTarget, so the net effect was window.onload running FOUR times
+         * and addEventListener('load') twice, against browser.c's single call.
+         *
+         * That inflates a rate in a way that is invisible in the percentage,
+         * because numerator and denominator inflate together: css/css-align
+         * went 3,308 -> 9,296 subtests on nothing but this. Worse, it forced
+         * the shipping <body onload> implementation to carry a fired-already
+         * guard on all 19 window handler types just to survive the harness --
+         * and that guard makes a repeating handler like <body onscroll> fire
+         * once for three scrolls, so a real page updates once and looks frozen.
+         * A test harness that changes the product to accommodate its own bug is
+         * the worst outcome available here.
+         *
+         * So: dispatchEvent only, and the on-property only as a FALLBACK when
+         * the target has no dispatchEvent at all. The self-check counts. */
         static const char *LIFECYCLE =
             "(function(){\n"
             "  function fire(t, target, bub) {\n"
             "    try {\n"
             "      var e = new Event(t, { bubbles: !!bub });\n"
-            "      if (target && typeof target.dispatchEvent === 'function') target.dispatchEvent(e);\n"
-            "      var h = target ? target['on' + t] : null;\n"
-            "      if (typeof h === 'function') h.call(target, e);\n"
+            "      if (target && typeof target.dispatchEvent === 'function') {\n"
+            "        target.dispatchEvent(e);\n"
+            "      } else {\n"
+            "        var h = target ? target['on' + t] : null;\n"
+            "        if (typeof h === 'function') h.call(target, e);\n"
+            "      }\n"
             "    } catch (x) { __wpt.lifecycle_error = String(x); }\n"
             "  }\n"
             "  fire('DOMContentLoaded', globalThis.document, 1);\n"
             "  fire('readystatechange', globalThis.document, 0);\n"
+            /* `load` goes to the GLOBAL only. Dispatching at document as well
+             * would double it, because they are one EventTarget here. */
+#ifdef WPT_DOUBLE_FIRE
+            /* The control for the once-only assertion, kept rather than done by
+             * hand: this restores exactly what the runner did before -- a second
+             * dispatch at document, which is the same EventTarget as the global.
+             * `make test-wpt-fire-negctl` requires the self-check to FAIL with
+             * it. Without a control this assertion is one I merely believe. */
             "  fire('load', globalThis.document, 0);\n"
+#endif
             "  fire('load', globalThis, 0);\n"
             "})();\n";
         EVAL(LIFECYCLE, strlen(LIFECYCLE), "<wpt lifecycle>");
         js_page_pump();
     }
 
-    /* Drain: microtasks, then timers, advancing a virtual clock. An async_test
-     * that never resolves would spin forever on a real clock; here the clock is
-     * ours, so "the harness did not finish in 30 virtual seconds" is a bounded,
-     * deterministic verdict. */
+    /* Drain: work first, THEN time.
+     *
+     * THE RULE, and getting it backwards was a systematic measurement error:
+     * the virtual clock is only allowed to move when nothing else can make
+     * progress. The first version jumped straight to the next TIMER deadline
+     * every pass. A transfer in flight has no entry in that queue -- http1.c
+     * moves 4096 bytes per js_webapi_pump() and schedules nothing -- so the
+     * very first jump landed on testharness's own 10-second timeout and the
+     * fetch lost the race after ONE pump. Observable and exact: 540 bytes
+     * passed, 267 KB timed out, nothing else different.
+     *
+     * The bias that produces is the dangerous part. It is not noise: the
+     * BIGGER a test's resources, the more likely it failed for a reason that
+     * has nothing to do with this browser. url/url-constructor.any.js is one
+     * red line in the report and 1,004 URL cases that never executed -- a URL
+     * parser reading 21.7% because it was never asked.
+     *
+     * So: pump the network and run due timers; drain microtasks; and if
+     * anything at all ran, go round again WITHOUT touching the clock. Only a
+     * pass where nothing ran is allowed to advance it, and then only to the
+     * next real deadline. That is also what a browser does -- the network is
+     * concurrent with the clock, not scheduled by it. */
     js_page_pump();
-    for (int i = 0; i < 4000; i++) {
+    for (int i = 0; i < 200000; i++) {
         JSValue d = JS_Eval(ctx, "__wpt.done", 10, "<drain>", JS_EVAL_TYPE_GLOBAL);
         int done = JS_ToBool(ctx, d);
         JS_FreeValue(ctx, d);
         if (done) break;
-        if (!js_page_pending()) {
-            /* nothing scheduled and not done: give the harness its own
-             * completion path one more microtask turn, then stop */
-            if (!js_page_pump()) break;
-            continue;
+
+        int ran = js_page_run_due();     /* steps in-flight fetches FIRST */
+        ran += js_page_pump();
+        if (ran) {
+            if (g_interrupt_budget <= 0) break;
+            continue;                    /* progress: the clock stays put */
         }
+        if (!js_page_pending()) break;   /* nothing running, nothing scheduled */
+
         long long due = js_page_next_due();
         if (due > (long long)g_now) g_now = (unsigned long long)due;
-        else g_now += 1;
-        js_page_run_due();
-        js_page_pump();
+        else g_now += 1;                 /* no timer, only a transfer: nudge */
         if (g_now > 30000) break;
         if (g_interrupt_budget <= 0) {           /* watchdog tripped: stop */
             if (!oc->why[0]) snprintf(oc->why, sizeof oc->why,
@@ -1026,6 +1110,25 @@ static const char *SELFCHECK =
 "    assert_true(true); }), 50); }, 'async_test resolves through the timer queue');\n"
 "promise_test(function(){ return Promise.resolve().then(function(){\n"
 "    assert_equals('a', 'a'); }); }, 'promise_test resolves through microtasks');\n"
+/* THE LOAD EVENT FIRES EXACTLY ONCE, asserted rather than assumed.
+ *
+ * The runner used to dispatch it four times over -- dispatchEvent plus a manual
+ * on-property call, at document and again at the global, which js_dom.c makes
+ * the same EventTarget. Nothing failed. The rate went UP, because a doubled
+ * handler doubles numerator and denominator together, and the only visible sign
+ * was a subtest count that had grown for no reason anyone could name. It also
+ * pushed a fired-already guard into the shipping browser, which broke repeating
+ * handlers like <body onscroll>.
+ *
+ * A miscount that makes the product look better is the one a suite must be
+ * able to catch by itself, so it is counted here on both channels. */
+"var __lc = 0, __ll = 0;\n"
+"addEventListener('load', function(){ __lc++; });\n"
+"onload = function(){ __ll++; };\n"
+"async_test(function(t){ setTimeout(t.step_func_done(function(){\n"
+"    assert_equals(__lc, 1, 'addEventListener(load) ran ' + __lc + ' times');\n"
+"    assert_equals(__ll, 1, 'window.onload ran ' + __ll + ' times');\n"
+"  }), 10); }, 'the load event fires exactly once, on both channels');\n"
 "</script>\n";
 
 static int selfcheck(void)
@@ -1053,6 +1156,7 @@ static int selfcheck(void)
         { "a failing assert reports FAIL", 1 },
         { "async_test resolves through the timer queue", 0 },
         { "promise_test resolves through microtasks", 0 },
+        { "the load event fires exactly once, on both channels", 0 },
     };
     for (unsigned i = 0; i < sizeof want / sizeof *want; i++) {
         int found = -1;
@@ -1133,7 +1237,7 @@ int main(int argc, char **argv)
     struct baseline failures = { 0, 0, 0 };
 
     long tot_pass = 0, tot_fail = 0, tot_files = 0, tot_broken = 0;
-    long tot_ref = 0, tot_other = 0, tot_never = 0, tot_driver = 0;
+    long tot_ref = 0, tot_other = 0, tot_never = 0, tot_driver = 0, tot_onload = 0;
     int shown = 0;
 
     for (int si = 0; si < subsets.n; si++) {
@@ -1146,7 +1250,7 @@ int main(int argc, char **argv)
         qsort(files.p, (size_t)files.n, sizeof *files.p, cmpstr);
 
         long spass = 0, sfail = 0, sbroken = 0, sref = 0, sother = 0;
-        long snever = 0, sdriver = 0;
+        long snever = 0, sdriver = 0, sonload = 0;
         for (int fi = 0; fi < files.n; fi++) {
             if (g_listonly) { printf("%s\n", files.p[fi]); continue; }
             int kind = classify(files.p[fi]);
@@ -1181,7 +1285,11 @@ int main(int argc, char **argv)
                 if (never_started) {
                     snever++; tot_never++;
                     snprintf(id, sizeof id, "%s::[NOTRUN]", files.p[fi]);
-                    w = oc.needs_driver
+                    w = oc.onload_attr
+                        ? "registered no tests: starts from <body onload=...>, and an"
+                          " event-handler CONTENT ATTRIBUTE is never compiled into a"
+                          " handler (window.onload stays null)"
+                        : oc.needs_driver
                         ? "registered no tests: needs testdriver.js (synthetic input)"
                         : "registered no tests and raised nothing (waiting on an event)";
                 } else {
@@ -1199,7 +1307,8 @@ int main(int argc, char **argv)
                     for (const char *s = oc.stack; *s; s++) fputc(*s == '\t' || *s == '\n' ? ' ' : *s, g_repf);
                     fputc('\n', g_repf);
                 }
-                if (oc.needs_driver) { sdriver++; tot_driver++; }
+                if (never_started && oc.onload_attr) { sonload++; tot_onload++; }
+                else if (oc.needs_driver) { sdriver++; tot_driver++; }
                 if (g_verbose && shown < g_vmax && !blh_has(&eh, id) && !never_started) {
                     shown++;
                     printf("  HARNESS %s\n     %s\n", files.p[fi], w);
@@ -1248,11 +1357,11 @@ int main(int argc, char **argv)
         if (!g_listonly) {
             if (g_progress) fprintf(stderr, "\r%100s\r", "");
             printf("  %-22s %6ld/%-6ld subtests | %4ld files | died %ld,"
-                   " never started %ld (%ld want testdriver) | not run:"
+                   " never started %ld (%ld <body onload>, %ld testdriver) | not run:"
                    " %ld reftest, %ld other\n",
                    subsets.p[si], spass, spass + sfail,
-                   (long)files.n - sref - sother, sbroken, snever, sdriver,
-                   sref, sother);
+                   (long)files.n - sref - sother, sbroken, snever, sonload,
+                   sdriver, sref, sother);
         }
         for (int i = 0; i < files.n; i++) free(files.p[i]);
         free(files.p);
@@ -1264,12 +1373,18 @@ int main(int argc, char **argv)
            tot_pass, tot, tot ? 100.0 * (double)tot_pass / (double)tot : 0.0,
            tot_files);
     printf("     %ld files DIED -- threw part-way. Fixable, and the work order.\n"
-           "     %ld files NEVER STARTED -- loaded clean, registered no test(),\n"
-           "        waiting on input nobody can send. %ld ask for testdriver.js by\n"
-           "        name. That is a missing capability in the HARNESS, not a browser\n"
-           "        defect: no DOM or CSS work moves them. Tokened ::[NOTRUN] so they\n"
-           "        cannot pollute the ratchet.\n",
-           tot_broken, tot_never, tot_driver);
+           "     %ld files NEVER STARTED -- loaded clean, registered no test().\n"
+           "        Split, because the two halves are not the same finding:\n"
+           "          %ld start from <body onload=...>. An event-handler CONTENT\n"
+           "            ATTRIBUTE is never compiled into a handler here: the\n"
+           "            attribute is in the DOM and window.onload stays null, so\n"
+           "            the page is inert. ONE browser behaviour, and FIXABLE.\n"
+           "          %ld want testdriver.js -- synthetic click/touch/wheel/scroll\n"
+           "            only a test driver can send. A missing capability in the\n"
+           "            HARNESS, not a browser defect; no DOM or CSS work moves\n"
+           "            them.\n"
+           "        Both tokened ::[NOTRUN] so neither pollutes the ratchet.\n",
+           tot_broken, tot_never, tot_onload, tot_driver);
     printf("     NOT RUN: %ld reftests -- judged by pixels against a reference render,\n"
            "        and there is no reftest harness here, so LAYOUT correctness is\n"
            "        essentially UNMEASURED by the rate above. %ld other files.\n",

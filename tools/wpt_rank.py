@@ -306,18 +306,29 @@ def main():
 
     total = len(rows)
     bystatus = collections.Counter(r[0] for r in rows)
+    # NOTSTARTED is deliberately NOT in `ran`. Those files loaded clean and
+    # registered nothing because they are waiting on synthetic input -- a
+    # missing capability in the harness, not a browser defect. Counted as
+    # failures they would put a large immovable number at the top of a work
+    # order; counted at all they would distort the rate. They get their own
+    # section below and their own baseline token.
     ran = [r for r in rows if r[0] in ("PASS", "FAIL", "TIMEOUT", "NOTRUN",
                                        "PRECONDITION_FAILED", "HARNESS")]
     failed = [r for r in ran if r[0] != "PASS"]
+    notstarted = [r for r in rows if r[0] == "NOTSTARTED"]
 
     print("=" * 100)
     print("WPT ranked causes -- the work order")
     print("=" * 100)
     print("results: %d total rows" % total)
-    for k in ("PASS", "FAIL", "HARNESS", "TIMEOUT", "NOTRUN", "PRECONDITION_FAILED",
-              "REFTEST", "NOHARNESS"):
+    for k in ("PASS", "FAIL", "HARNESS", "NOTSTARTED", "TIMEOUT", "NOTRUN",
+              "PRECONDITION_FAILED", "REFTEST", "NOHARNESS"):
         if bystatus.get(k):
             note = ""
+            if k == "HARNESS":
+                note = "   files that DIED part-way -- the work order"
+            if k == "NOTSTARTED":
+                note = "   files that never started -- want synthetic input, NOT a browser defect"
             if k == "REFTEST":
                 note = "   NOT RUN: needs pixel comparison against a reference render"
             if k == "NOHARNESS":
@@ -370,9 +381,42 @@ def main():
     # The count here is FILES BLOCKED. The number of subtests each unblocks is
     # deliberately not estimated -- it is not observable until the file runs,
     # and a made-up figure would be the most quotable number in this report.
+    # The other half of the split, first, because it is the half that changes
+    # what anyone should do next.
+    if notstarted:
+        drv = sum(1 for r in notstarted if "testdriver" in r[3])
+        onl = sum(1 for r in notstarted if "body onload" in r[3])
+        other = len(notstarted) - drv - onl
+        print("\nfiles that NEVER STARTED: %d -- loaded clean, threw nothing,"
+              " registered no test()." % len(notstarted))
+        print("These are NOT all the same finding, and the split is what decides"
+              " whether anyone")
+        print("can do anything about them:")
+        print("  %5d  start from <body onload=...>. An event-handler CONTENT"
+              " ATTRIBUTE is never" % onl)
+        print("         compiled into a handler: the attribute is in the DOM and"
+              " window.onload")
+        print("         stays null, so the page is inert. ONE browser behaviour,"
+              " FIXABLE, and the")
+        print("         largest single item in this whole report after the"
+              " reflection gap.")
+        print("  %5d  want testdriver.js -- synthetic click/touch/wheel/scroll."
+              " A missing" % drv)
+        print("         capability in the HARNESS, not a browser defect. The"
+              " bounded piece of work")
+        print("         is a testdriver shim over the QMP input path"
+              " (tests/qmp/ already drives")
+        print("         mouse and keyboard); nothing in the DOM or CSS layer"
+              " moves them.")
+        print("  %5d  neither -- waiting on some other event." % other)
+        bydir = collections.Counter("/".join(r[1].split("/")[:2]) for r in notstarted)
+        print("  by directory:")
+        for d, n in bydir.most_common(10):
+            print("    %-40s %5d files" % (d, n))
+
     deaths = [r for r in failed if r[0] == "HARNESS"]
-    print("\nharness deaths: %d files never completed. Grouped by cause,"
-          " ranked by files blocked." % len(deaths))
+    print("\nfiles that DIED: %d threw part-way. Grouped by cause, ranked by"
+          " files blocked." % len(deaths))
     print("(each of these hides every subtest in its file, so they are absent"
           " from the denominator too)")
     dcause = collections.Counter()

@@ -46,22 +46,87 @@
 WPT_ROOT ?= third_party/wpt
 WPT_BASELINE := tests/unit/wpt_expected_fail.txt
 
-# The runner links the SHIPPING files -- js_page.c, js_dom.c, js_webapi.c,
-# js_platform.c, js_select.c, js_intl.c, js_module.c and the real HTML parser --
-# for the same reason webapi_platform_test.c does: a runner over stubs measures
-# the stubs. css_engine/css_vars come along because js_page.c's style paths
-# call into them, and http1/url/cookies because js_webapi.c's fetch and URL do.
-WPT_TEST_SRC := tests/unit/wpt_test.c c/apps/browser/js_page.c c/apps/browser/js_dom.c
-WPT_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
-WPT_TEST_SRC += c/apps/browser/js_webapi.c c/apps/browser/js_platform.c
-WPT_TEST_SRC += c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c
+# THE LINK MUST MATCH browser.aex's, OR EVERY NUMBER IS OF A BROWSER THAT DOES
+# NOT EXIST. This list was hand-written and drifted twice in one night:
+# js_events.c and then js_cssom.c were committed, the runner did not link
+# either, and the suite went on reporting the bugs they fixed as still broken --
+# 841 dead `<body onload>` files reported as a browser defect when the fix was
+# sitting in the tree. That is worse than a missing test: it is a measurement
+# that actively misinforms.
+#
+# So the JS side is a WILDCARD, exactly as the Makefile's BROWSER_JS_SRC is, and
+# for the reason its comment gives: "the JS/DOM side is being extended by
+# several parallel lines at once and a hand-kept list makes this one line the
+# thing they all have to edit". browser.c itself is excluded -- it is the app
+# shell (window, event loop, address bar) and draws through logit.h's `int 0x80`
+# wrappers a host process cannot execute.
+WPT_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/browser/js_*.c)))
+
+# The pipeline, tracked against BROWSER_PIPE. What is IN, and why:
+#   dom/html_tokenizer/html_tree/dom_serialize  the DOM and its parser
+#   layout.c                                    see the note below -- this one
+#                                               was a real decision
+#   forms.c focus.c                             form control state and focus:
+#                                               html/semantics/forms is a whole
+#                                               subset and "typing into a page"
+#                                               is the user-visible complaint
+#   css_engine/css_vars/css_extra               the cascade LibCSS drives
+#   url/http1/cookies                           fetch, URL and document.cookie
+#   lib/image/*                                 img decode, reached from
+#                                               js_dom's <img> and from layout
+#
+# LINKING layout.c IS A DELIBERATE CHOICE AND THE ALTERNATIVE WAS REAL. Without
+# it every box is 0x0, so getBoundingClientRect, offsetWidth and the whole
+# check-layout-th.js family fail on geometry for a reason that has nothing to do
+# with the layout engine -- hundreds of css/ files that can never pass, sitting
+# in the baseline forever as noise a reader has to learn to ignore. A ratchet
+# whose entries are permanently unfixable is the thing this project already
+# learned not to build. The cost is that the runner is bigger and slower than a
+# DOM-only harness; that is the cheaper of the two.
+#
+# What is deliberately OUT, and why -- each of these is a claim, so each gets a
+# reason rather than an omission:
+#   browser.c browser_rt.c browser_paint.c tabs.c   the app shell: window
+#       management, painting and the tab strip, all through `int 0x80` GUI
+#       wrappers. Nothing in this corpus asks about them. browser_rt.c also
+#       owns bfetch_*, which tests/unit/wpt_test.c supplies itself against the
+#       checkout -- linking both would be two definitions of the fetch.
+#   http2.c hpack.c hpool.c   transport. The host build answers requests out of
+#       WEBAPI_FILE_ROOT through h1_conn, so no socket and no h2 is reached.
+WPT_TEST_SRC := tests/unit/wpt_test.c $(WPT_JS_SRC)
+WPT_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c
+WPT_TEST_SRC += c/apps/browser/layout.c c/apps/browser/forms.c c/apps/browser/focus.c
 WPT_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
+WPT_TEST_SRC += c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c
+WPT_TEST_SRC += c/lib/image/svg.c c/lib/image/exif.c
+# js_media.c / js_media_src.c publish HTMLMediaElement, Audio and MediaSource,
+# and the interface tests in the corpus DO ask for those -- so they are linked,
+# and linking them drags in the demuxer and every codec behind it. That is the
+# price of a link that matches the browser's; the alternative was a named
+# exception, and a named exception is how the first drift started.
+WPT_TEST_SRC += $(wildcard c/lib/media/*.c) $(wildcard c/lib/video/*.c)
+WPT_TEST_SRC += $(wildcard c/lib/audio/*.c)
 WPT_TEST_SRC += tests/unit/rust_host_shim.c
+
+# The drift check, as a target rather than a habit: every c/apps/browser/js_*.c
+# the browser links must be in this runner's list. It is a wildcard on both
+# sides now, so this can only fire if someone hand-edits one of them -- which is
+# exactly when it needs to fire.
+.PHONY: test-wpt-link
+test-wpt-link:
+	@miss=""; for f in $(sort $(wildcard c/apps/browser/js_*.c)); do \
+	    case " $(WPT_TEST_SRC) c/apps/browser/browser.c " in *" $$f "*) ;; \
+	    *) miss="$$miss $$f";; esac; done; \
+	if [ -n "$$miss" ]; then \
+	    echo "test-wpt-link: FAIL -- the browser links these and the runner does not:"; \
+	    for f in $$miss; do echo "    $$f"; done; \
+	    echo "  Every measurement is then of a browser that does not exist."; exit 1; \
+	 else echo "test-wpt-link: ok -- runner links every c/apps/browser/js_*.c"; fi
 # -Ic/apps is here and not in BTEST_INC because js_platform.c includes
 # "logit.h" (the ring-3 syscall wrappers) unconditionally for its getrandom
 # path. On the host those wrappers are never called -- the file's own fallback
 # is -- but the header still has to resolve.
-WPT_CF := $(BTEST_INC) -Ic/apps $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+WPT_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/lib/video $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 $(BUILD)/wpt_test: $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
@@ -71,24 +136,38 @@ $(BUILD)/wpt_test: $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(R
 WPT_ARGS = --root $(WPT_ROOT) -b $(WPT_BASELINE) $(if $(V),-v $(V),) \
            $(if $(ONLY),--only $(ONLY),) $(if $(SUBSET),--subset $(SUBSET),)
 
+# A large part of WPT is DATA-DRIVEN: the test file's first act is to fetch its
+# own JSON and everything after that depends on it. Without a net installed,
+# every one of those fetches fails with "could not open a socket" and the file
+# reports one red line -- url/url-constructor.any.js is exactly that, one
+# subtest in the report standing over 1,004 URL cases that never executed. It
+# was not a URL parser scoring 21.7%; it was a URL parser that was never asked.
+#
+# js_webapi.c's host build answers GETs out of WEBAPI_FILE_ROOT when the
+# variable is set, and it does so through the REAL h1_conn parser rather than
+# around it -- so the corpus still exercises response parsing, headers, CORS
+# and the streaming sink instead of having them bypassed by the harness meant
+# to find bugs in them. Unset, nothing changes for any other host test.
+WPT_ENV = WEBAPI_FILE_ROOT=$(WPT_ROOT)
+
 # THE GATE. tools/audit_tests.py classifies any `test-*` with a recipe as a
 # host suite and `make ci` runs it, so this needs no wiring beyond the name --
 # which is the point of that design and the reason 217 targets were once
 # orphans.
 test-wpt: $(BUILD)/wpt_test
-	@$(BUILD)/wpt_test $(WPT_ARGS) --strict
+	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS) --strict
 
 # The same numbers with the gate off, for a tree that is already red for some
 # other reason. Not named test-* on purpose: a target that cannot fail must not
 # be counted as a test, which is exactly what test-audit looks for.
 wpt: $(BUILD)/wpt_test
-	@$(BUILD)/wpt_test $(WPT_ARGS)
+	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS)
 
 wpt-baseline: $(BUILD)/wpt_test
-	@$(BUILD)/wpt_test $(WPT_ARGS) --write-baseline
+	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS) --write-baseline
 
 wpt-list: $(BUILD)/wpt_test
-	@$(BUILD)/wpt_test $(WPT_ARGS) --list
+	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS) --list
 
 # --- test-wpt-harness: does testharness.js RUN? -----------------------------
 # Finding number one, kept as a target because it is the load-bearing
@@ -99,7 +178,34 @@ wpt-list: $(BUILD)/wpt_test
 # async_test resolves through the timer queue, and the completion callback
 # fires with the statuses testharness defines.
 test-wpt-harness: $(BUILD)/wpt_test
-	@$(BUILD)/wpt_test --root $(WPT_ROOT) --subset _selfcheck -b /dev/null
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) --subset _selfcheck -b /dev/null
+
+# --- test-wpt-fire-negctl: the load event fires ONCE -------------------------
+# The runner used to dispatch `load` four times over -- dispatchEvent plus a
+# manual on-property call, at document and again at the global, which js_dom.c
+# makes the same EventTarget. Nothing failed and the rate went UP, because a
+# doubled handler doubles numerator and denominator together; css/css-align
+# read 9,296 subtests where it should read 3,308. It also pushed a
+# fired-already guard into the shipping browser, which breaks repeating
+# handlers like <body onscroll>.
+#
+# So the self-check counts the load event on both channels, and this proves
+# that count can fail: -DWPT_DOUBLE_FIRE restores the second dispatch and the
+# self-check must go red.
+.PHONY: test-wpt-fire-negctl
+test-wpt-fire-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(WPT_CF) -DWPT_DOUBLE_FIRE -o $(BUILD)/wpt_fire2 \
+	    $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@if $(WPT_ENV) $(BUILD)/wpt_fire2 --root $(WPT_ROOT) --subset _selfcheck \
+	       -b /dev/null > $(BUILD)/wpt_fire2.log 2>&1; then \
+	    echo "test-wpt-fire-negctl: FAILED -- the self-check passed with the load"; \
+	    echo "  event dispatched twice, so it is not counting anything."; exit 1; \
+	 else \
+	    echo "test-wpt-fire-negctl: ok -- the self-check catches a doubled load:"; \
+	    grep -E 'FAIL' $(BUILD)/wpt_fire2.log | head -3; \
+	 fi
 
 # --- test-wpt-negctl: the negative control ----------------------------------
 # An assertion nobody has watched fail is not a known-failing assertion, and
@@ -127,10 +233,10 @@ test-wpt-negctl: $(BUILD)/wpt_test $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(WPT_CF) -DWPT_NEGCTL \
 	    -o $(BUILD)/wpt_negctl $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@$(BUILD)/wpt_test --root $(WPT_ROOT) --subset dom \
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) --subset dom \
 	    --write-baseline -b $(BUILD)/wpt_negctl_base.txt > $(BUILD)/wpt_negctl_base.log 2>&1
 	@grep -E '^WPT:' $(BUILD)/wpt_negctl_base.log | sed 's/^/  reference: /'
-	@if $(BUILD)/wpt_negctl --root $(WPT_ROOT) --subset dom --strict \
+	@if $(WPT_ENV) $(BUILD)/wpt_negctl --root $(WPT_ROOT) --subset dom --strict \
 	       -b $(BUILD)/wpt_negctl_base.txt > $(BUILD)/wpt_negctl.log 2>&1; then \
 	    echo "test-wpt-negctl: FAILED -- the suite stayed green with"; \
 	    echo "  document.createElement deleted, so the ratchet is not measuring"; \
@@ -147,7 +253,7 @@ test-wpt-negctl: $(BUILD)/wpt_test $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # a wrong return -- and ranks the causes by how many subtests each one takes
 # out. That ranking is the thing this layer has never had.
 wpt-rank: $(BUILD)/wpt_test
-	@$(BUILD)/wpt_test $(WPT_ARGS) --write-baseline -b $(BUILD)/wpt_rank.txt > $(BUILD)/wpt_rank.log 2>&1 || true
+	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS) --write-baseline -b $(BUILD)/wpt_rank.txt > $(BUILD)/wpt_rank.log 2>&1 || true
 	@python3 tools/wpt_rank.py $(BUILD)/wpt_rank.txt $(BUILD)/wpt_rank.log
 
 # --- wpt-fetch: vendor the corpus -------------------------------------------
