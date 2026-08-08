@@ -62,4 +62,11 @@ void js_cssom_set_reflow(void (*fn)(void));
  * the process. */
 int  js_cssom_layouts(void);
 
+/* How many CSS properties were published as IDL attributes on
+ * CSSStyleDeclaration. The number the agreement with CSS.supports is measured
+ * on: it must equal the count of names css_supports_decl() accepts, because
+ * both come from the same filter over the same table (see css.h's
+ * css_known_prop_at). 0 means the surface never installed. */
+int  js_cssom_decl_props(void);
+
 #endif /* LOGIT_JS_CSSOM_H */

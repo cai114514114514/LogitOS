@@ -277,6 +277,175 @@ static void test_serialization(void)
        "and its width carries px");
 }
 
+/* ------------------------------ 4b. specified values, and what they SAY */
+/* The half of serialisation that the computed tests above cannot reach.
+ * `el.style.foo` is backed by the style CONTENT ATTRIBUTE -- the author's own
+ * bytes -- so it is where "everything works and nothing says the right thing"
+ * lives: `color: #0000ff` paints blue whichever way it reads back, and WPT
+ * compares only the way it reads back. css/CSS2/syntax/colors-007.html is
+ * 1,192 subtests of exactly this and nothing else.
+ *
+ * Written through the element rather than against css_value_serialize()
+ * directly on purpose: the C function being right is not the claim, the claim
+ * is that the JS surface a page touches gives these bytes. */
+static void test_specified_values(void)
+{
+    printf("4b. el.style hands back the CSSOM's bytes, not the author's\n");
+    CK(evalstr("window.E = document.createElement('div'), 1") != 0, "a fresh element");
+
+#define SET(prop, val) "(E.style.setProperty('" prop "', " val "), " \
+                       "E.style.getPropertyValue('" prop "'))"
+
+    CK(eq(SET("color", "'#0000ff'"), "rgb(0, 0, 255)"),
+       "a six-digit hex colour is rgb(r, g, b)");
+    CK(eq(SET("color", "'#00F'"), "rgb(0, 0, 255)"),
+       "a three-digit hex expands by DOUBLING the nibble, and case does not matter");
+    CK(eq(SET("color", "'#001'"), "rgb(0, 0, 17)"),
+       "... which is 0x11 and not 0x01 -- the digit-doubling rule, stated");
+    CK(eq(SET("color", "'#0000ffff'"), "rgb(0, 0, 255)"),
+       "an eight-digit hex whose alpha is ff is rgb(), not rgba(x, y, z, 1)");
+    CK(eq(SET("color", "'#1000'"), "rgba(17, 0, 0, 0)"),
+       "and a four-digit one keeps its alpha");
+    CK(eq(SET("color", "'rgb(+0%, +0%, +0%)'"), "rgb(0, 0, 0)"),
+       "percentages and a leading + both normalise away");
+    CK(eq(SET("color", "'rgb( 1 ,2,  3 )'"), "rgb(1, 2, 3)"),
+       "one comma, one space, whatever the author spaced it as");
+    CK(eq(SET("color", "'rgba(5, 7, 10, 0.5)'"), "rgba(5, 7, 10, 0.5)"),
+       "a real alpha keeps rgba() and its value");
+    CK(eq(SET("color", "'hsl(0, 100%, 50%)'"), "rgb(255, 0, 0)"),
+       "hsl() serialises as the rgb() it means");
+
+    /* THE ALPHA RULE, which is the one place a plausible implementation
+     * quietly differs from every browser: the shortest decimal that
+     * round-trips through the 8-bit alpha it came from. A fixed number of
+     * places gives 0.501961 where the answer is 0.502. */
+    CK(eq(SET("color", "'#00000080'"), "rgba(0, 0, 0, 0.502)"),
+       "alpha 0x80 is 0.502 -- shortest decimal that round-trips the byte");
+
+    CK(eq(SET("letter-spacing", "'.5em'"), "0.5em"),
+       "a bare fraction gains its leading zero");
+    CK(eq(SET("letter-spacing", "'-0px'"), "0px"),
+       "-0 is 0, and the UNIT SURVIVES -- `0px` must not helpfully become `0`");
+    CK(eq(SET("letter-spacing", "'1.50em'"), "1.5em"),
+       "trailing zeros go");
+    CK(eq(SET("background-image", "'url(http://localhost/)'"), "url(\"http://localhost/\")"),
+       "a <url> is quoted whether or not the author quoted it");
+
+    /* IDEMPOTENCE. WPT does not merely check the first answer -- it assigns
+     * the value it read back and requires the second read to equal the first.
+     * It is also what lets ONE serialiser serve the specified and computed
+     * sides, which have no way to tell each other apart from JS. */
+    CK(eq("(E.style.setProperty('color', '#0000ff'),"
+          " E.style.setProperty('color', E.style.getPropertyValue('color')),"
+          " E.style.getPropertyValue('color'))", "rgb(0, 0, 255)"),
+       "and it round-trips: re-assigning what came out changes nothing");
+
+    /* REJECTION. The CSSOM says an unparseable declaration is discarded, and
+     * the answer to "is it parseable" has to be the cascade's own or the two
+     * will differ on some value nobody thought to test. */
+    /* `red` stays `red`: a NAMED colour serialises as its keyword in a
+     * specified value, which is what cssom/serialize-values.html expects and
+     * the one case where the hex/rgb() rule does not apply. */
+    CK(eq("(E.style.setProperty('color', 'red'),"
+          " E.style.setProperty('color', '#00000'),"
+          " E.style.getPropertyValue('color'))", "red"),
+       "a five-digit hex is not a colour: the declaration is refused outright");
+    CK(eq("(E.style.setProperty('color', 'red'),"
+          " E.style.setProperty('color', 'invalidValue'),"
+          " E.style.getPropertyValue('color'))", "red"),
+       "and so is a keyword that is not one -- the old store kept both");
+
+    /* The other direction, and it is the expensive one to get wrong.
+     * css_extra.c honours a handful of properties BEHIND LibCSS's back;
+     * LibCSS drops all of them, so a setter that read "LibCSS dropped it" as
+     * "invalid" would throw every one of those declarations away from script
+     * and the page would silently lose its rounded corners. */
+    CK(eq(SET("border-radius", "'5px'"), "5px"),
+       "a property LibCSS does not know is STORED, not refused (css_extra owns it)");
+
+    CK(eq("(E.style.setProperty('color', 'red'),"
+          " E.style.removeProperty('color'),"
+          " E.style.getPropertyValue('color'))", ""),
+       "removeProperty still removes");
+#undef SET
+}
+
+/* ------------------------------- 4c. which properties have a name at all */
+/* One assertion, standing for 1,495 WPT subtests.
+ *
+ * css-conditional/js/CSS-supports-CSSStyleDeclaration.html asks, ~600 times,
+ * whether CSS.supports(prop, "inherit") agrees with `camelCase(prop) in
+ * element.style`. It is an AGREEMENT test: it does not care how much CSS this
+ * engine implements, it cares that those two answers come from one set. So
+ * the loop below asks it of every property name LibCSS knows -- if the two
+ * ever came from different lists, this fails on the first one that drifted. */
+static void test_idl_surface(void)
+{
+    printf("4c. the IDL attributes ARE the supported properties\n");
+    int n = css_known_prop_count();
+    CK(n > 100, "the property universe is LibCSS's own table, and it is populated");
+    CK(js_cssom_decl_props() > 100 && js_cssom_decl_props() <= n,
+       "and the CSSOM published one attribute per supported name, no more");
+
+    int disagree = 0, published = 0;
+    char first[256];
+    first[0] = 0;
+    for (int i = 0; i < n; i++) {
+        int L = 0;
+        const char *p = css_known_prop_at(i, &L);
+        if (!p || L <= 0 || L > 64) continue;
+        /* camelCase, the same transform the WPT file applies */
+        char camel[80], expr[512], raw[80];
+        int o = 0, up = 0;
+        for (int k = 0; k < L; k++) {
+            if (p[k] == '-') { up = 1; continue; }
+            char c = p[k];
+            if (up) { up = 0; if (c >= 'a' && c <= 'z') c = (char)(c - 32); }
+            camel[o++] = c;
+        }
+        camel[o] = 0;
+        memcpy(raw, p, (size_t)L);
+        raw[L] = 0;
+        int sup = css_supports_decl(p, L, "inherit", 7);
+        if (sup) published++;
+        snprintf(expr, sizeof expr, "('%s' in E.style)", camel);
+        char *got = evalstr(expr);
+        int have = got && !strcmp(got, "true");
+        free(got);
+        if (have != sup) {
+            disagree++;
+            if (!first[0])
+                snprintf(first, sizeof first, "%s: supports=%d, in style=%d",
+                         raw, sup, have);
+        }
+    }
+    if (disagree) printf("       first disagreement: %s\n", first);
+    CK(disagree == 0, "CSS.supports and `in element.style` agree on every name");
+    CK(published > 100, "and the published set is the whole parser, not a sample");
+
+    /* The dashed spelling is a THIRD IDL attribute of the same property, not a
+     * fallback: WPT tests it separately. */
+    CK(eq("('background-color' in E.style)", "true"),
+       "the dashed spelling is reachable too");
+    CK(eq("(E.style['background-color'] = '#00ff00', E.style.backgroundColor)",
+          "rgb(0, 255, 0)"),
+       "and it is the SAME property -- one write, both spellings see it");
+
+    /* A property nothing here implements must be absent from BOTH answers.
+     * Publishing it would be the easy way to pass half this file and fail the
+     * other half. */
+    CK(eq("CSS.supports('alignment-baseline', 'inherit')", "false"),
+       "an unimplemented property is not supported");
+    CK(eq("('alignmentBaseline' in E.style)", "false"),
+       "... and therefore has no IDL attribute either");
+
+    /* The lowercase-first spelling exists for -webkit- and nothing else; WPT
+     * asserts the absence for every other prefix. LibCSS carries no prefixed
+     * property today, so the correct answer here is that there are none. */
+    CK(eq("('mozBoxAlign' in E.style)", "false"),
+       "no -moz- IDL attribute, because no -moz- property is supported");
+}
+
 /* ------------------------------------------------------ 5. the CSS object */
 static void test_css_object(void)
 {
@@ -463,6 +632,8 @@ int main(void)
 
     test_body_onload();
     test_serialization();
+    test_specified_values();
+    test_idl_surface();
     test_css_object();
     test_stylesheets();
     test_matchmedia();

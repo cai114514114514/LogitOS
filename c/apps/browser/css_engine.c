@@ -2133,43 +2133,66 @@ static void vsb_int(struct vsb *b, int v)
     while (k) vsb_ch(b, t[--k]);
 }
 
-/* The alpha channel, as the SHORTEST decimal that round-trips through the
- * 8-bit value it came from. That rule is not decoration: an alpha printed to a
- * fixed number of places gives `rgba(0, 0, 0, 0.501961)` where every browser
- * gives `0.502`. Trying 1..6 places and stopping at the first that maps back
- * to the same byte is that rule stated directly. */
-static void vsb_alphav(struct vsb *b, int a255)
+/* The alpha channel, in THOUSANDTHS, trailing zeros trimmed.
+ *
+ * The unit matters and it is the whole of what was wrong with the first
+ * version, which quantised alpha to a byte and printed the shortest decimal
+ * that round-tripped through it. That gives `rgba(0, 0, 0, 0.5)` for
+ * `#00000080`, because 0.5 * 255 rounds back to 128 -- and every browser
+ * prints `0.502` there, while still printing `0.5` for an authored
+ * `rgba(5, 7, 10, 0.5)`. Both are true at once only if alpha is NOT a byte:
+ * a hex alpha is 128/255 = 0.50196..., an authored one is exactly what was
+ * written, and three decimal places tells them apart. So alpha travels as
+ * 0..1000 from wherever it was read, and the byte is only ever an input.
+ *
+ * The expected bytes here are transcribed from what browsers produce, not
+ * derived -- which is the only way to get a serialization rule right, because
+ * the rule is defined by what WPT's expectations were recorded against. */
+static void vsb_alphav(struct vsb *b, int a1000)
 {
-    if (a255 >= 255) { vsb_ch(b, '1'); return; }
-    if (a255 <= 0)   { vsb_ch(b, '0'); return; }
-    for (int places = 1; places <= 6; places++) {
-        int scale = 1;
-        for (int i = 0; i < places; i++) scale *= 10;
-        int num  = (a255 * scale * 2 + 255) / (255 * 2);      /* nearest decimal */
-        int back = (num * 255 * 2 + scale) / (scale * 2);     /* ... and back    */
-        if (back != a255) continue;
-        int at = b->len;
-        vsb_ch(b, '0'); vsb_ch(b, '.');
-        for (int d = scale / 10; d >= 1; d /= 10)
-            vsb_ch(b, (char)('0' + (num / d) % 10));
-        while (b->len > at + 2 && b->p[b->len - 1] == '0') b->len--;
-        return;
-    }
-    vsb_ch(b, '1');
+    if (a1000 >= 1000) { vsb_ch(b, '1'); return; }
+    if (a1000 <= 0)    { vsb_ch(b, '0'); return; }
+    int at = b->len;
+    vsb_ch(b, '0'); vsb_ch(b, '.');
+    vsb_ch(b, (char)('0' + (a1000 / 100) % 10));
+    vsb_ch(b, (char)('0' + (a1000 / 10) % 10));
+    vsb_ch(b, (char)('0' + a1000 % 10));
+    while (b->len > at + 2 && b->p[b->len - 1] == '0') b->len--;
 }
 
-static void vsb_colour(struct vsb *b, int r, int g, int bl, int a255)
+static void vsb_colour(struct vsb *b, int r, int g, int bl, int a1000)
 {
-    int alpha = (a255 < 0) ? 255 : a255;
+    int alpha = (a1000 < 0) ? 1000 : a1000;
+#ifdef CSSOM_NEGCTL_SERIALIZE
+    /* The other end of the negative control in tests/cssom.mk. ob_color()
+     * above sabotages the COMPUTED serialisation; this sabotages the
+     * SPECIFIED one. They are separate code paths reached by separate calls,
+     * so a control that covered only the computed half would sail straight
+     * past an el.style that hands the author's hex back unchanged -- which is
+     * exactly the bug this whole file exists to have fixed. */
+    {
+        static const char HEXD[] = "0123456789abcdef";
+        int v[3];
+        v[0] = r; v[1] = g; v[2] = bl;
+        vsb_ch(b, '#');
+        for (int i = 0; i < 3; i++) {
+            int c = v[i] < 0 ? 0 : (v[i] > 255 ? 255 : v[i]);
+            vsb_ch(b, HEXD[(c >> 4) & 0xF]);
+            vsb_ch(b, HEXD[c & 0xF]);
+        }
+        (void)alpha;
+        return;
+    }
+#endif
     if (r < 0) r = 0; if (r > 255) r = 255;
     if (g < 0) g = 0; if (g > 255) g = 255;
     if (bl < 0) bl = 0; if (bl > 255) bl = 255;
-    if (alpha >= 255) vsb_str(b, "rgb(", 4);
-    else              vsb_str(b, "rgba(", 5);
+    if (alpha >= 1000) vsb_str(b, "rgb(", 4);
+    else               vsb_str(b, "rgba(", 5);
     vsb_int(b, r); vsb_str(b, ", ", 2);
     vsb_int(b, g); vsb_str(b, ", ", 2);
     vsb_int(b, bl);
-    if (alpha < 255) { vsb_str(b, ", ", 2); vsb_alphav(b, alpha); }
+    if (alpha < 1000) { vsb_str(b, ", ", 2); vsb_alphav(b, alpha); }
     vsb_ch(b, ')');
 }
 
@@ -2242,7 +2265,14 @@ static int vs_channel(const char *s, int n, int pct_scale, int *out)
     return i;
 }
 
-/* hsl -> rgb: h in degrees, s and l in 0..100. */
+/* hsl -> rgb: h in degrees, s and l in 0..100.
+ *
+ * Integer, at 100x -- 0..25500 rather than 0..255. The obvious version works
+ * in bytes and gets `hsl(0, 100%, 50%)` wrong by ONE: lightness 50% is 127.5,
+ * which truncates to 127, and the answer comes out rgb(254, 0, 0) instead of
+ * rgb(255, 0, 0). One off by one in a colour is invisible on screen and a
+ * failed byte comparison in every test that reads it back, which is the whole
+ * hazard this file was written for. */
 static void vs_hsl_rgb(int h, int sp, int lp, int *r, int *g, int *b)
 {
     h = ((h % 360) + 360) % 360;
@@ -2250,22 +2280,26 @@ static void vs_hsl_rgb(int h, int sp, int lp, int *r, int *g, int *b)
     if (sp > 100) sp = 100;
     if (lp < 0) lp = 0;
     if (lp > 100) lp = 100;
-    int l = lp * 255 / 100, s = sp * 255 / 100;
-    if (s == 0) { *r = *g = *b = l; return; }
-    int c2 = (l < 128) ? (l * (255 + s) / 255) : (l + s - l * s / 255);
+    const int FULL = 25500;                       /* 255 * 100 */
+    int l = lp * 255, s = sp * 255;
+    int *o[3];
+    o[0] = r; o[1] = g; o[2] = b;
+    if (s == 0) { *r = *g = *b = (l + 50) / 100; return; }
+    int c2 = (l < FULL / 2) ? (int)((long long)l * (FULL + s) / FULL)
+                            : (int)(l + s - (long long)l * s / FULL);
     int c1 = 2 * l - c2;
     int t[3];
     t[0] = h + 120; t[1] = h; t[2] = h - 120;
-    int *o[3];
-    o[0] = r; o[1] = g; o[2] = b;
     for (int i = 0; i < 3; i++) {
         int tt = ((t[i] % 360) + 360) % 360;
         int v;
-        if (tt < 60)       v = c1 + (c2 - c1) * tt / 60;
+        if (tt < 60)       v = c1 + (int)((long long)(c2 - c1) * tt / 60);
         else if (tt < 180) v = c2;
-        else if (tt < 240) v = c1 + (c2 - c1) * (240 - tt) / 60;
+        else if (tt < 240) v = c1 + (int)((long long)(c2 - c1) * (240 - tt) / 60);
         else               v = c1;
-        *o[i] = v;
+        if (v < 0) v = 0;
+        if (v > FULL) v = FULL;
+        *o[i] = (v + 50) / 100;
     }
 }
 
@@ -2290,7 +2324,8 @@ static int vs_hex_colour(struct vsb *b, const char *s, int n)
     } else {
         for (int i = 0; i < d / 2; i++) v[i] = vs_hexv(h[i * 2]) * 16 + vs_hexv(h[i * 2 + 1]);
     }
-    vsb_colour(b, v[0], v[1], v[2], v[3]);
+    /* the byte is an input, not the representation: 0x80 is 0.502, not 0.5 */
+    vsb_colour(b, v[0], v[1], v[2], (v[3] * 1000 + 127) / 255);
     return k;
 }
 
@@ -2392,7 +2427,11 @@ int css_value_serialize(const char *val, int vlen, char *out, int outmax)
                 if (i < vlen && val[i] == '%') { vsb_ch(&b, '%'); i++; }
                 else while (i < vlen && (vs_alpha(val[i]) || vs_dig(val[i]) ||
                                          val[i] == '_' || val[i] == '-')) {
-                    vsb_ch(&b, val[i]); i++;
+#ifndef CSSOM_NEGCTL_SERIALIZE
+                    vsb_ch(&b, val[i]);   /* the control's second half drops
+                                           * the unit: `10px` reads back `10` */
+#endif
+                    i++;
                 }
                 continue;
             }
@@ -2430,7 +2469,7 @@ int css_value_serialize(const char *val, int vlen, char *out, int outmax)
             int is_rgb = vs_is_func(id, vlen - i, "rgb") || vs_is_func(id, vlen - i, "rgba");
             int is_hsl = vs_is_func(id, vlen - i, "hsl") || vs_is_func(id, vlen - i, "hsla");
             if ((is_rgb || is_hsl) && close > 0) {
-                int p = 0, ch[3], a255 = 255, ok = 1;
+                int p = 0, ch[3], a1000 = 1000, ok = 1;
                 ch[0] = ch[1] = ch[2] = 0;
                 for (int q = 0; q < 3; q++) {
                     int used = vs_channel(arg + p, argn - p,
@@ -2464,7 +2503,7 @@ int css_value_serialize(const char *val, int vlen, char *out, int outmax)
                             f *= sign;
                             if (f < 0) f = 0;
                             if (f > 1) f = 1;
-                            a255 = (int)(f * 255.0 + 0.5);
+                            a1000 = (int)(f * 1000.0 + 0.5);
                             p = q;
                         }
                     }
@@ -2472,7 +2511,7 @@ int css_value_serialize(const char *val, int vlen, char *out, int outmax)
                     if (p >= argn) {
                         int r = ch[0], g = ch[1], bl = ch[2];
                         if (is_hsl) vs_hsl_rgb(ch[0], ch[1], ch[2], &r, &g, &bl);
-                        vsb_colour(&b, r, g, bl, a255);
+                        vsb_colour(&b, r, g, bl, a1000);
                         i = close + 1;
                         continue;
                     }
