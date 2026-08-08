@@ -893,6 +893,32 @@ test-mm:
 test-mm-os: $(ISO) $(DISK)
 	@bash tests/boot/run-mm-test.sh $(ISO) $(DISK)
 
+# --- leak hunting: does opening and closing apps give the memory back? ------
+# test-mm/test-mm-os cover fork+exec, and they are clean -- 240 shell commands
+# with zero frame drift. The workload they do NOT cover is the one the machine
+# is used for: opening and closing windowed apps, which allocates a multi-MB
+# .aex load buffer and a cw*ch*4 window surface per launch through the KERNEL
+# HEAP. kheap takes frames from the PMM and never gives them back, so a heap
+# that cannot reuse what it frees consumes physical memory forever while every
+# PMM invariant holds and pmm_audit() stays clean. That is a leak no frame-level
+# test can see, and these two are where it is measured.
+#
+#   test-leak     host, under ASan/UBSan: the real c/kernel/mm/kheap.c driven
+#                 through app open/close cycles, asserting the arena stops
+#                 growing -- plus TWO negative controls, each a compiled build
+#                 with one half of the fix removed, both required to FAIL.
+#   test-leak-os  the same question on the machine, driven by the WM's own
+#                 churn stress. REQUIRES A CHURN BUILD:
+#                     make CHURN=1 && make CHURN=1 build/disk.img && make test-leak-os
+#                 (the harness fails loudly, not silently, if the driver is absent)
+LEAK_SECS ?= 120
+
+test-leak:
+	@sh tests/unit/leak_run.sh $(BUILD)
+
+test-leak-os: $(ISO) $(DISK)
+	@bash tests/boot/run-leak-apps.sh $(ISO) $(DISK) $(LEAK_SECS)
+
 # The same under ASan/UBSan. The parser reads attacker-shaped sector images into
 # fixed buffers with offsets taken from those same images, so an out-of-bounds
 # read is the failure mode to look for, and it is invisible without this.

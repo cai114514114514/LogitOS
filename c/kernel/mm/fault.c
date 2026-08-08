@@ -6,6 +6,9 @@
 #include "pmm.h"
 #include "mmhost.h"
 #include "kprintf.h"
+#ifndef MM_HOSTTEST
+#include "kheap.h"
+#endif
 
 /* The page-fault half of memory management: what a #PF MEANS.
  *
@@ -222,6 +225,16 @@ int mm_fault(uint64_t cr2, uint64_t err, uint64_t rip)
 void mm_report(const char *tag)
 {
     pmm_report(tag);
+    /* The kernel heap is a different allocator with a different failure mode:
+     * it takes frames from the PMM and never gives them back, so it can hold
+     * megabytes while every PMM invariant is intact. A memory report that shows
+     * only frames cannot tell those two apart.
+     * Not in the host tests: mm_run.sh links pmm/vmm/fault/vma without kheap.c
+     * (that script belongs to another line), and this report is about a running
+     * machine anyway. tests/unit/leak_kheap_test.c covers kheap on the host. */
+#ifndef MM_HOSTTEST
+    kheap_report(tag);
+#endif
     kprintf("[mm] %s: cow=%s, %d pages shared copy-on-write; faults: %d copied, "
             "%d reused, %d anon, %d declined; %d address spaces with areas\n",
             tag ? tag : "-",
