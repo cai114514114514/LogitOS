@@ -33,7 +33,9 @@
 #include "settings.h"    /* settings_syscall: SYS_SETTING_* */
 #include "clipboard.h"   /* clip_syscall:   SYS_CLIP_SET / _GET / _INFO */
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
+#include "rng.h"         /* rng_syscall:    SYS_GETRANDOM */
 #include "kbench.h"      /* per-syscall accounting, off by default */
+#include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -99,6 +101,15 @@ void syscall_dispatch(struct registers *r)
      * microseconds, and only for a process calling the BKL-free stress call. */
     if (__builtin_expect(proc_kill_armed(), 0) && !syscall_is_bkl_free((int)r->rax))
         proc_kill_check();
+
+    /* M30: and a thread whose PROCESS is exiting dies here too, for exactly the
+     * reasons above. One thread called exit() (or was killed); its siblings are
+     * marked and each ends itself at its own next kernel entry, on its own
+     * stack, rather than being torn down from the exiting thread's context.
+     * Same gate discipline: one load of a global and a never-taken branch on a
+     * machine where nothing is exiting. */
+    if (__builtin_expect(uthread_exit_armed(), 0) && !syscall_is_bkl_free((int)r->rax))
+        uthread_exit_check();
 
     if (__builtin_expect(!g_kb_stat, 1)) { syscall_do(r); return; }
     uint64_t n = r->rax, t0 = kb_rdtsc();
@@ -421,9 +432,37 @@ static void syscall_do(struct registers *r)
     case SYS_FORK:
         r->rax = (uint64_t)proc_fork(r);
         return;
-    case SYS_EXECVE:
-        r->rax = (uint64_t)proc_execve(r);   /* on success, rewrites r and "returns" into the new program */
+    case SYS_EXECVE: {
+        /* M30: REFUSED from a multi-threaded process, rather than done wrong.
+         * POSIX says the other threads must vanish; making that safe means
+         * stopping threads that may be anywhere -- parked on a futex, mid-write
+         * in another syscall -- and this kernel has no mechanism for that (see
+         * the long comment above proc_kill(): a thread is only ever torn down
+         * BY ITSELF, at a kernel entry). Replacing the address space while a
+         * sibling still runs in it is not a race, it is a certainty.
+         *
+         * The alternative shape -- mark, then spin here until the siblings
+         * notice -- deadlocks against a sibling that never enters the kernel,
+         * which is precisely the case proc_kill() already documents as open.
+         * So it is a refusal, and it is a loud one. Nothing in the tree does
+         * this today: /bin/sh forks single-threaded and execs in the child. */
+        struct proc *ep = proc_current();
+        if (ep && uthread_proc_live(ep->pid) > 1) {
+            kprintf("[execve] pid %d: refused, %d threads live\n",
+                    ep->pid, uthread_proc_live(ep->pid));
+            r->rax = (uint64_t)(long)THR_E_INVAL;
+            return;
+        }
+        long rc = proc_execve(r);
+        /* On success the user image is gone and with it whatever the TLS
+         * pointer used to name. Leaving IA32_FS_BASE loaded would hand the new
+         * program a %fs pointing into memory that is no longer its own -- and
+         * because the descriptor would still agree with the hardware, no later
+         * context switch would ever correct it. */
+        if (rc == 0) sched_set_fsbase(0);
+        else r->rax = (uint64_t)rc;
         return;
+    }
     case SYS_PIPE: {
         struct proc *p = proc_current();
         int *ufds = (int *)r->rdi;
@@ -615,6 +654,24 @@ static void syscall_do(struct registers *r)
                                       (long)r->rsi, (long)r->rdx);
         return;
 
+    /* M30 threads. Forwarded whole to c/kernel/sched/uthread.c for the reason
+     * mm_syscall() and proc_syscall() give: which argument is a user pointer
+     * and what it means are facts about threads, and they belong beside the
+     * table that knows them. Handled here rather than in wm_gui_syscall for the
+     * same reason the socket calls are: a thread is a process-level service and
+     * a CLI program has no window. */
+    case SYS_THREAD_CREATE:
+    case SYS_THREAD_EXIT:
+    case SYS_THREAD_JOIN:
+    case SYS_THREAD_DETACH:
+    case SYS_THREAD_SELF:
+    case SYS_SET_TLS:
+    case SYS_FUTEX:
+    case SYS_THREAD_INFO:
+        r->rax = (uint64_t)uthread_syscall((long)r->rax, (long)r->rdi,
+                                           (long)r->rsi, (long)r->rdx);
+        return;
+
     case SYS_PROCS:
     case SYS_KILL:
         r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
@@ -655,6 +712,16 @@ static void syscall_do(struct registers *r)
     case SYS_NOTIFY:
         r->rax = (uint64_t)notify_syscall((long)r->rax, (long)r->rdi,
                                           (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* Entropy. Routed here rather than through wm_gui_syscall for the same
+     * reason the clipboard is: a CLI process -- /bin/sh, an .as script, the
+     * package verifier -- has every right to ask the kernel for random bytes
+     * and has no window for the WM to resolve it through. The number and the
+     * GRND_* flags were arbitrated in include/abi/logit_abi.h; the back end is
+     * c/kernel/core/rng.c, which is also what TLS has always used. */
+    case SYS_GETRANDOM:
+        r->rax = (uint64_t)rng_syscall((long)r->rdi, (long)r->rsi, (long)r->rdx);
         return;
 
     default:

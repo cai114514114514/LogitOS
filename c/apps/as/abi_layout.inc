@@ -461,3 +461,30 @@ _Static_assert(offsetof(struct logit_setting, hi) == 260,
                "abi.as is stale: logit_setting.hi moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_setting *)0)->hi) == 4,
                "abi.as is stale: logit_setting.hi changed width -- run tools/gen_abi.py --write");
+
+_Static_assert(sizeof(struct logit_thread_spec) == 48,
+               "abi.as is stale: sizeof(struct logit_thread_spec) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_thread_spec, entry) == 0,
+               "abi.as is stale: logit_thread_spec.entry moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_thread_spec *)0)->entry) == 8,
+               "abi.as is stale: logit_thread_spec.entry changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_thread_spec, stack_top) == 8,
+               "abi.as is stale: logit_thread_spec.stack_top moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_thread_spec *)0)->stack_top) == 8,
+               "abi.as is stale: logit_thread_spec.stack_top changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_thread_spec, stack_base) == 16,
+               "abi.as is stale: logit_thread_spec.stack_base moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_thread_spec *)0)->stack_base) == 8,
+               "abi.as is stale: logit_thread_spec.stack_base changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_thread_spec, stack_len) == 24,
+               "abi.as is stale: logit_thread_spec.stack_len moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_thread_spec *)0)->stack_len) == 8,
+               "abi.as is stale: logit_thread_spec.stack_len changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_thread_spec, tls) == 32,
+               "abi.as is stale: logit_thread_spec.tls moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_thread_spec *)0)->tls) == 8,
+               "abi.as is stale: logit_thread_spec.tls changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_thread_spec, arg) == 40,
+               "abi.as is stale: logit_thread_spec.arg moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_thread_spec *)0)->arg) == 8,
+               "abi.as is stale: logit_thread_spec.arg changed width -- run tools/gen_abi.py --write");

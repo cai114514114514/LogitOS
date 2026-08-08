@@ -14,6 +14,7 @@
 /* Path-qualified: see the note in syscall.c -- mini-libc's sys/wait.h sorts
  * first in INCDIRS and silently wins the bare form. */
 #include "kernel/core/wait.h"   /* M27: a parent waits for a child, it does not poll */
+#include "uthread.h"            /* M30: a process is a set of threads */
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
 /* net/core/sock.c: release the non-blocking sockets this process owns. Weak so
@@ -288,6 +289,21 @@ long proc_fork(struct registers *r)
         if (child->fd[i]) file_dup(child->fd[i]);
     }
 
+    /* M30, and this is POSIX's rule rather than a shortcut: ONLY THE CALLING
+     * THREAD EXISTS IN THE CHILD. thread_fork() builds exactly one thread, and
+     * the child's descriptor table starts empty -- uthread_self() adopts that
+     * thread the first time the child asks a thread question, so a child that
+     * never threads costs nothing.
+     *
+     * THE HAZARD, said out loud because it is real and it is not fixable here:
+     * a lock held by a thread that did NOT survive the fork is locked forever
+     * in the child, with no owner to release it. That includes mini-libc's
+     * malloc lock (c/apps/libc/src/malloc.c). It is why POSIX limits a forked
+     * child of a threaded parent to async-signal-safe calls until it execs, and
+     * that limit applies here unchanged. The one thing this kernel does do
+     * about it is refuse execve from a multi-threaded process outright (see the
+     * SYS_EXECVE case in syscall.c), so the surviving path is fork-then-exec
+     * from a single-threaded process, which is what /bin/sh does. */
     child->tid = thread_fork(child->name, r, child, space);
     if (child->tid < 0) {                    /* OOM building the child kstack/thread */
         kprintf("[fork] thread_fork failed\n");
@@ -306,6 +322,43 @@ void proc_exit(int code)
 {
     struct proc *p = proc_current();
     if (p) {
+        /* ===================================================================
+         * M30: a process is a SET of threads now, so "exit" has two halves.
+         *
+         * The old body below is the second half -- close the fds, release the
+         * sockets, become a zombie, wake the parent -- and every line of it is
+         * wrong to run while a sibling thread is still executing in this
+         * address space: it would close fds out from under it and hand its page
+         * tables to proc_waitpid() to free.
+         *
+         * So the rule is THE LAST THREAD OUT DOES THE TEARDOWN, and it is
+         * derived rather than assumed -- not "the main thread", because POSIX
+         * says a process ends when its last thread does, whichever that is.
+         *
+         *   1. uthread_proc_kill() marks the process and wakes its parked
+         *      threads. A sibling dies at its next kernel entry, through
+         *      uthread_exit_check() at the syscall gate. That is the SAME
+         *      mark-and-check shape proc_kill() uses, for the same reason it
+         *      gives: a thread may be anywhere, and tearing it down from
+         *      another thread's context pulls the stack out from under it.
+         *   2. This thread releases its own descriptor (waking any joiner).
+         *   3. If a sibling is still live, this thread simply LEAVES. The
+         *      process stays alive, holding its address space, until the last
+         *      one arrives here.
+         *
+         * WHAT THIS COSTS, stated rather than hidden: a sibling in a pure
+         * compute loop that never enters the kernel keeps the process alive
+         * until it does. Closing that needs the same check on the timer
+         * interrupt's return-to-ring-3 path, in c/kernel/cpu/interrupts.c,
+         * which is another line's file -- exactly the gap proc_kill() already
+         * documents for a killed process, now reachable one more way.
+         * =================================================================== */
+        code = uthread_proc_kill(p->pid, code);
+        uthread_release_self(0);
+        if (uthread_proc_live(p->pid) > 0)
+            thread_exit();               /* a sibling lives on; never returns */
+        uthread_proc_reap(p->pid);       /* free this process's descriptors + its mark */
+
         /* Close fds BEFORE marking zombie (file_close takes g_file_lock/kheap, which
          * must not nest under g_proc_lock). While still RUNNING with no fds, a waiter
          * sees RUNNING and keeps waiting -- no premature reap. */

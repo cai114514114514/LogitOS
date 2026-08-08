@@ -43,7 +43,40 @@ struct thread {
     int    on_timer;         /* 1 while linked into the deadline list */
     uint64_t deadline;       /* timer_ticks() value at which to force a wake */
     int    timed_out;        /* set by sched_timer_expire when it did the waking */
+
+    /* --- M30 threads ---------------------------------------------------
+     * fsbase: this thread's IA32_FS_BASE, i.e. where its thread-local storage
+     * lives. Kernel threads carry 0, which is both correct (they have none) and
+     * useful (leaving a user TLS pointer loaded while ring 0 runs is exactly the
+     * kind of stale state that turns one bug into two).
+     *
+     * THE INVARIANT: on every core, the hardware IA32_FS_BASE equals
+     * this_cpu()->current->fsbase. It is maintained at the three places a core
+     * changes `current` -- schedule(), block_self() and thread_exit() -- and at
+     * sched_set_fsbase(), which writes both. Because the invariant holds for
+     * `prev` on entry, comparing prev->fsbase with next->fsbase is enough to
+     * decide whether the MSR needs writing, and it is correct across migration:
+     * a core that has never run this thread before still knows what IT has
+     * loaded, which is what the comparison is about.
+     *
+     * all_next: EVERY live thread, in creation order, whether or not it is on
+     * the run ring. The ring is not a directory -- a parked thread is UNLINKED
+     * from it (see ring_unlink) -- so a thread waiting on a futex is exactly the
+     * thread the ring cannot find, and waking one by id is the whole job. */
+    uint64_t fsbase;
+    struct thread *all_next;
 };
+
+/* IA32_FS_BASE. See the SYS_SET_TLS note in include/abi/logit_abi.h for why
+ * this and not `wrfsbase`. */
+#define MSR_FS_BASE 0xC0000100u
+
+static inline void fsbase_load(uint64_t v)
+{
+    __asm__ volatile ("wrmsr" :: "c"(MSR_FS_BASE),
+                                 "a"((uint32_t)v),
+                                 "d"((uint32_t)(v >> 32)));
+}
 
 extern void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
 extern void ring3_bootstrap(void);     /* boot/enter_user.asm */
@@ -64,6 +97,21 @@ static spinlock_t g_sched_lock = SPINLOCK_INIT;
 static struct thread *g_timer_wait = NULL;
 static volatile unsigned long g_blocked = 0;
 
+/* M30: every live thread, on the ring or not. Guarded by g_sched_lock. */
+static struct thread *g_all = NULL;
+
+/* Both under g_sched_lock. all_unlink() runs in thread_exit() BEFORE the thread
+ * joins dead_threads, so nothing can look up a struct that schedule() is about
+ * to kfree -- which is the whole reason lookups go by INTEGER id and not by a
+ * pointer somebody stashed. */
+static void all_link(struct thread *t)   { t->all_next = g_all; g_all = t; }
+static void all_unlink(struct thread *t)
+{
+    struct thread **pp = &g_all;
+    while (*pp) { if (*pp == t) { *pp = t->all_next; break; } pp = &(*pp)->all_next; }
+    t->all_next = NULL;
+}
+
 static void name_set(struct thread *t, const char *n)
 {
     int i = 0;
@@ -82,6 +130,8 @@ static void block_fields_init(struct thread *t, int on_ring)
     t->on_timer  = 0;
     t->deadline  = 0;
     t->timed_out = 0;
+    t->fsbase    = 0;
+    t->all_next  = NULL;
 }
 
 /* --- run-ring membership. Both callers hold g_sched_lock. ---
@@ -147,6 +197,7 @@ void sched_init(void)
     main->prev = main;
     block_fields_init(main, 1);
     g_ring = main;
+    all_link(main);
     this_cpu()->current = main;     /* BSP (this_cpu falls back to g_cpus[0]) */
 
     /* The BSP gets a dedicated idle thread too (separate from the WM) so
@@ -188,6 +239,7 @@ void sched_init(void)
                       * sti after taking g_bkl; ring3: the iretq's RFLAGS). */
         bi->rsp = (uint64_t)sp;
     }
+    all_link(bi);
     g_cpus[0].idle = bi;
 
     /* M27: the run ring exists, so kernel threads can be created. Start the
@@ -259,6 +311,7 @@ void thread_create(void (*entry)(void), const char *name)
     t->prev = g_ring;
     t->next->prev = t;
     g_ring->next = t;
+    all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
 }
 
@@ -306,6 +359,7 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     t->prev = g_ring;
     t->next->prev = t;
     g_ring->next = t;
+    all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return t->id;
 }
@@ -332,6 +386,18 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     t->cr3 = cr3 ? cr3 : vmm_kernel_cr3();
     t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
     block_fields_init(t, 1);
+    /* M30: the child inherits the forking thread's TLS pointer. It has to. fork
+     * clones the address space, so the TLS block is at the SAME user address in
+     * the child, and the child resumes at the parent's instruction -- which,
+     * for anything linked against mini-libc, is inside a function whose next
+     * `%fs:`-relative access assumes the pointer is still there. Leaving it 0
+     * (what block_fields_init sets) makes fork() from a program that has ever
+     * called pthread_self() or malloc() fault in the child, on the first TLS
+     * read, with nothing in the trace to say why. */
+    {
+        struct thread *me = this_cpu()->current;
+        t->fsbase = me ? me->fsbase : 0;
+    }
 
     /* Copy of the parent's full register frame at the top of the child kstack,
      * with rax = 0 (the value fork returns in the child). */
@@ -356,6 +422,7 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     t->prev = g_ring;
     t->next->prev = t;
     g_ring->next = t;
+    all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return t->id;
 }
@@ -417,6 +484,10 @@ __attribute__((noinline)) void schedule(void)
             percpu_tss_set_rsp0(next->kstack_top);
         if (next->cr3 && next->cr3 != prev->cr3)
             vmm_switch(next->cr3);          /* enter the next thread's address space */
+        /* M30: the TLS pointer. Note this is NOT covered by the cr3 check above
+         * and must not be folded into it -- two threads of one process have the
+         * SAME cr3 and DIFFERENT TLS, which is the entire case this exists for. */
+        if (next->fsbase != prev->fsbase) fsbase_load(next->fsbase);
 
         /* BKL hand-off (drop-before / re-acquire-after). The CORE drops the BKL
          * just before the switch and the INCOMING thread re-acquires it just
@@ -472,6 +543,7 @@ void thread_exit(void)
     timerlist_remove(dead);
     dead->running = 0;
     dead->alive = 0;
+    all_unlink(dead);
     dead->next = dead_threads;
     dead_threads = dead;
 
@@ -483,6 +555,7 @@ void thread_exit(void)
         percpu_tss_set_rsp0(next->kstack_top);
     if (next->cr3 && next->cr3 != dead->cr3)
         vmm_switch(next->cr3);          /* leave the dying app's space */
+    if (next->fsbase != dead->fsbase) fsbase_load(next->fsbase);
     /* Drop the BKL before the switch (the dead thread never resumes to release it);
      * the incoming thread re-acquires it (schedule tail / kthread_bootstrap) or
      * runs ring3 without it (ring3_bootstrap/fork_ret). Same model as schedule(). */
@@ -575,6 +648,7 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
         percpu_tss_set_rsp0(next->kstack_top);
     if (next->cr3 && next->cr3 != self->cr3)
         vmm_switch(next->cr3);
+    if (next->fsbase != self->fsbase) fsbase_load(next->fsbase);
 
     /* Same BKL hand-off as schedule(): drop before the switch, the incoming
      * thread re-acquires after. IF stays 0 across the whole window. */
@@ -604,23 +678,94 @@ int sched_block_self_unlock_until(spinlock_t *outer, uint64_t flags, uint64_t de
     return !to;
 }
 
+/* Caller holds g_sched_lock. */
+static int wake_locked(struct thread *t)
+{
+    if (!t || !t->alive || t->state != THREAD_BLOCKED) return 0;
+    t->state = THREAD_READY;
+    timerlist_remove(t);
+    ring_link(t);
+    if (g_blocked) g_blocked--;
+    return 1;
+}
+
 /* Make `t` runnable. Callable from any core and from interrupt context; takes
  * only g_sched_lock, so the lock order is always <caller's lock> -> g_sched_lock
  * and never the reverse. Returns 1 iff this call did the unparking. */
 int sched_wake(struct thread *t)
 {
-    int did = 0;
+    int did;
     if (!t) return 0;
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
-    if (t->alive && t->state == THREAD_BLOCKED) {
-        t->state = THREAD_READY;
-        timerlist_remove(t);
-        ring_link(t);
-        if (g_blocked) g_blocked--;
-        did = 1;
-    }
+    did = wake_locked(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return did;
+}
+
+/* ==========================================================================
+ * M30: reaching a thread by id.
+ *
+ * sched_wake() takes a `struct thread *`, and nothing outside this file can
+ * obtain one -- proc.c says so in the comment above proc_kill(), which is why a
+ * killed process parked on a wait queue was left un-woken. A THREAD id is the
+ * handle userland already has (SYS_THREAD_CREATE returns one), so the lookup and
+ * the wake happen inside ONE hold of g_sched_lock. That is not a convenience: a
+ * two-step "find the pointer, then wake it" is a use-after-free, because
+ * schedule() kfree()s an exited thread's struct on the next pass through the
+ * dead list, and nothing stops that pass from landing between the two steps.
+ * ========================================================================== */
+
+/* Caller holds g_sched_lock. Walks g_all, not the ring: the thread being looked
+ * for is usually PARKED, and a parked thread is off the ring. */
+static struct thread *by_id_locked(int id)
+{
+    for (struct thread *t = g_all; t; t = t->all_next)
+        if (t->id == id && t->alive) return t;
+    return NULL;
+}
+
+int sched_wake_id(int id)
+{
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    int did = wake_locked(by_id_locked(id));
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return did;
+}
+
+int sched_thread_alive(int id)
+{
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    int yes = by_id_locked(id) != NULL;
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return yes;
+}
+
+int sched_current_tid(void)
+{
+    struct thread *t = this_cpu()->current;
+    return t ? t->id : -1;
+}
+
+uint64_t sched_current_fsbase(void)
+{
+    struct thread *t = this_cpu()->current;
+    return t ? t->fsbase : 0;
+}
+
+/* Set the CALLING thread's TLS pointer. Writes the descriptor and the MSR
+ * together, with interrupts off, so the two can never be seen to disagree --
+ * the invariant documented on struct thread::fsbase is "hardware equals
+ * current->fsbase", and a preemption between the two stores would break it in
+ * the one direction nothing later repairs (the switch back compares fsbase
+ * fields, finds them equal, and leaves the wrong value loaded). */
+void sched_set_fsbase(uint64_t v)
+{
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
+    struct thread *t = this_cpu()->current;
+    if (t) t->fsbase = v;
+    fsbase_load(v);
+    if (fl & 0x200) __asm__ volatile ("sti");
 }
 
 /* Deadline expiry, driven from the timer IRQ BEFORE the BKL is acquired (see
@@ -665,9 +810,18 @@ void sched_timer_expire(void)
 void sched_unlock_new_thread(void)
 {
     /* DIAG: one line per ring-3/forked thread at its first dispatch -- proves a
-     * forked child (e.g. the terminal's /bin/sh) actually got a time slice. */
+     * forked child (e.g. the terminal's /bin/sh) actually got a time slice.
+     *
+     * RATE-LIMITED SINCE M30, and the reason is a measurement rather than
+     * tidiness: a thread is now something a program creates in a loop, and the
+     * leak check runs thousands of create/join cycles. At one serial line each
+     * -- serial being a byte-at-a-time device -- the diagnostic became the
+     * dominant cost of the thing it was watching. The first 64 keep every case
+     * this line was written for (boot, the shell, the terminal's child), and
+     * every 512th after that keeps a trail without setting the pace. */
     struct thread *t = this_cpu()->current;
-    if (t) kprintf("[sched] first-run tid %d (%s)\n", t->id, t->name[0] ? t->name : "?");
+    if (t && (t->id < 64 || (t->id % 512) == 0))
+        kprintf("[sched] first-run tid %d (%s)\n", t->id, t->name[0] ? t->name : "?");
     spin_unlock(&g_sched_lock);
 }
 
@@ -743,6 +897,7 @@ void thread_create_idle(int idx)
     block_fields_init(t, 0);
 
     g_cpus[idx].idle = t;
+    all_link(t);
     g_cpus[idx].current = t;
 }
 

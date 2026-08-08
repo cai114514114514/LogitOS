@@ -885,4 +885,209 @@ struct logit_setting {
     int  lo, hi;         /* bounds for INT/COLOR; 0,0 otherwise */
 };
 
+/* ===========================================================================
+ * M30 THREADS -- two ring-3 execution flows inside ONE address space.
+ *
+ * Until now "concurrent" here meant PROCESSES: fork() gave you a second flow and
+ * a second address space, and SYS_SPAWN gave you a child that shared nothing.
+ * That is why c/apps/libc/include/pthread.h was a stub whose whole body was
+ * `return 0` -- there was nothing under it. CPython 3.7 removed
+ * --without-threads, so every CPython since REQUIRES a working threading
+ * implementation, and this block is that requirement met.
+ *
+ * The five pieces, and why each one is a syscall rather than a library trick:
+ *
+ *   THE THREAD ITSELF (SYS_THREAD_CREATE/_EXIT/_JOIN/_DETACH/_SELF).
+ *      c/kernel/sched/sched.c has been able to build a ring-3 thread since M6
+ *      (thread_create_user) and schedule() has set TSS rsp0 per thread since
+ *      SMP landed. What did not exist was a door from ring 3, and the
+ *      per-thread lifecycle a threading library needs: an exit that ends ONE
+ *      flow instead of the process, a join that delivers the return value, and
+ *      a detach that releases the stack with nobody waiting.
+ *
+ *   THREAD-LOCAL STORAGE (SYS_SET_TLS). `__thread` on x86-64 is `%fs`-relative
+ *      addressing, and ring 3 cannot set its own %fs base on this machine --
+ *      see the long note on SYS_SET_TLS below for why the MSR and not
+ *      `wrfsbase`. CPython uses `__thread` extensively, so this is not optional.
+ *
+ *   WAITING (SYS_FUTEX). One kernel primitive under mutex, condition variable,
+ *      semaphore, once, join and rwlock. See SYS_FUTEX.
+ *
+ * WHAT A THREAD IS, precisely: a scheduler thread whose ->data points at the
+ * SAME struct proc as its siblings. So all of pid, cwd, and the fd table are
+ * shared, which is what POSIX means by a thread, and every existing syscall
+ * that resolves the caller through proc_current() keeps working unchanged.
+ * =========================================================================== */
+
+/* (struct logit_thread_spec *) -> new tid (>0), or a THR_E_*. */
+#define SYS_THREAD_CREATE 107
+/* (retval) -> never returns. Ends THIS thread; the process survives while any
+ * sibling lives. The LAST thread out runs the ordinary proc_exit() teardown. */
+#define SYS_THREAD_EXIT   108
+/* (tid, unsigned long *retval) -> 0, or a THR_E_*. Parks until the thread ends.
+ * Refuses a detached thread, a thread of another process, and self-join. */
+#define SYS_THREAD_JOIN   109
+/* (tid) -> 0, or a THR_E_*. After this nobody may join; the stack and the
+ * descriptor are released when the thread ends. */
+#define SYS_THREAD_DETACH 110
+/* () -> the calling thread's tid. Stable for the life of the thread. */
+#define SYS_THREAD_SELF   111
+
+/* (fsbase) -> 0, or -1. Set the calling thread's %fs base -- the TLS pointer
+ * `__thread` and every pthread_getspecific() resolve against.
+ *
+ * WHY THE MSR (IA32_FS_BASE, 0xC0000100) AND NOT `wrfsbase`.
+ * cpufeat.c does detect `fsgsbase` and the boot log does list it as present, so
+ * the instruction exists on this machine. It is not used, for two reasons and
+ * the second is the decisive one:
+ *
+ *   1. `wrfsbase` FAULTS (#UD) unless CR4.FSGSBASE (bit 16) is set, and it is
+ *      not set here -- c/boot/long.asm sets OSFXSR/OSXMMEXCPT/SMEP and stops.
+ *      Turning it on means editing the BSP's long-mode entry AND every AP's
+ *      bring-up, in files this line does not own, to gain an instruction only
+ *      userland would use.
+ *
+ *   2. Even with CR4.FSGSBASE on, the kernel would still have to reload the FS
+ *      base at every context switch, because two threads of one process have
+ *      DIFFERENT TLS blocks and the same CR3 -- so nothing about the address
+ *      space switch distinguishes them. The write has to happen in sched.c
+ *      either way. Given that, `wrfsbase` would save one wrmsr per switch on
+ *      the switches where the base actually changes, and cost a CR4 change on
+ *      every core. The kernel skips the write entirely when prev and next carry
+ *      the same base (kernel threads carry 0), which is the case that is
+ *      actually hot.
+ *
+ * So ring 3 asks and the kernel writes, exactly as Linux's arch_prctl(ARCH_SET_FS)
+ * did before FSGSBASE, and switching to `wrfsbase` later is a two-line change
+ * inside sched.c with no ABI consequence. */
+#define SYS_SET_TLS       112
+
+/* (uaddr, (timeout_ms<<32)|val, op) -> per-op; see FUTEX_* below.
+ *
+ * WHY A FUTEX AND NOT A KERNEL MUTEX SYSCALL.
+ * The competing design is "SYS_MUTEX_LOCK / SYS_MUTEX_UNLOCK", and it is wrong
+ * here for a reason specific to this kernel: THERE IS A BIG KERNEL LOCK. Every
+ * syscall that is not in syscall_is_bkl_free() serialises the whole machine for
+ * its duration. A lock design whose UNCONTENDED path enters the kernel would
+ * therefore turn every `with lock:` in a Python program into a global
+ * serialisation point -- the exact cost the futex was invented to remove, on a
+ * machine where it is far more expensive than on Linux.
+ *
+ * With a futex the uncontended lock and unlock are one atomic compare-exchange
+ * in ring 3 and no syscall at all. The kernel is entered only when a thread
+ * genuinely has to WAIT, which is the only case where a context switch was
+ * going to happen anyway.
+ *
+ * The second reason is arithmetic: mutex, condition variable, semaphore,
+ * pthread_once, rwlock and join are SIX primitives, and all six are built in
+ * c/apps/libc/src/pthread.c out of this one call. The alternative is six
+ * syscall families, six kernel-side lifetime problems, and six chances to get
+ * the lost-wakeup ordering wrong instead of one.
+ *
+ * The kernel side is c/kernel/sched/uthread.c and it does not invent a sleep:
+ * it parks on c/kernel/core/wait.c's sched_block_self_unlock(), whose
+ * lost-wakeup argument (sched.h) is the one this depends on. */
+#define SYS_FUTEX         113
+
+/* (buf, len, flags) -> bytes written, or -1.  buf == NULL -> 1 if the DRBG has
+ * a hardware entropy source behind it (RDSEED/RDRAND), 0 if it fell back.
+ *
+ * ARBITRATED FOR THE CRYPTO LINE, not needed by threads. The kernel has had a
+ * real SHA-256 Hash_DRBG in c/kernel/core/rng.c, seeded from RDSEED/RDRAND
+ * where the CPU has it, since the TLS work -- and ring 3 could not reach it, so
+ * c/apps/browser/js_platform.c says in capital letters that
+ * crypto.getRandomValues is a lie. This is the door; the back end is
+ * rng_syscall() in that file, which owns the semantics.
+ *
+ * Blocking is not a behaviour here: the DRBG is seeded before ring 3 exists, so
+ * GRND_NONBLOCK is accepted and changes nothing, and this call never parks. */
+#define SYS_GETRANDOM     114
+
+/* (what, 0, 0) -> one THRINFO_* count, or -1. Diagnostics -- the leak check in
+ * tests/unit needs to see descriptors returning to the free pool across
+ * thousands of create/join cycles, and "it did not crash" is not that. */
+#define SYS_THREAD_INFO   115
+
+/* What ring 3 hands SYS_THREAD_CREATE. `unsigned long` throughout rather than a
+ * pointer type so tools/gen_abi.py can lay it out (it refuses typedefs on
+ * purpose) and so AetherScript can build one. */
+struct logit_thread_spec {
+    unsigned long entry;       /* ring-3 address to start at. Entered by IRETQ, so
+                                * see stack_top below -- the alignment is the ABI. */
+    unsigned long stack_top;   /* one past the highest byte of the thread's stack */
+    unsigned long stack_base;  /* SYS_MMAP base the kernel should SYS_MUNMAP when the
+                                * thread ends; 0 = the caller owns the stack and the
+                                * kernel must not touch it */
+    unsigned long stack_len;   /* bytes at stack_base (0 with stack_base 0) */
+    unsigned long tls;         /* initial %fs base; 0 = leave it at 0 */
+    unsigned long arg;         /* stored at the new thread's [rsp]; the ring-3
+                                * trampoline reads it from there. Not passed in a
+                                * register because the register state at the IRETQ
+                                * belongs to c/boot/enter_user.asm, which this line
+                                * does not own. */
+};
+
+/* THE STACK, and what it costs.
+ *
+ * A CLI program's stack is CLI_STACK_PAGES = 256 pages = 1 MiB (c/kernel/exec/
+ * exec.c), of which TWO are mapped eagerly and the rest is a VMA reservation
+ * faulted in on touch. A thread's stack is the same kind of object -- ordinary
+ * SYS_MMAP anonymous memory, demand-paged by c/kernel/mm/fault.c -- so the
+ * DEFAULT below is a reservation, not an allocation: a thread that uses 8 KiB
+ * of it costs 8 KiB of physical memory plus two page-table pages, whatever the
+ * number says.
+ *
+ * 8 MiB, and not 1 MiB, because that is what CPython assumes. Its evaluator
+ * recurses per Python frame and its default THREAD_STACK_SIZE on Linux is
+ * derived from the platform's 8 MiB; a Python thread that blows a 1 MiB stack
+ * does not raise RecursionError, it takes a page fault the kernel turns into a
+ * dead process. Since the pages are not committed until touched, matching Linux
+ * costs address space -- of which a 64-bit process has plenty -- rather than RAM.
+ *
+ * MIN is 16 KiB because below that the guard page and the initial frame are most
+ * of it. MAX is a sanity bound, not a policy. */
+#define LOGIT_THREAD_STACK_DEFAULT (8ul * 1024 * 1024)
+#define LOGIT_THREAD_STACK_MIN     (16ul * 1024)
+#define LOGIT_THREAD_STACK_MAX     (256ul * 1024 * 1024)
+
+/* How many threads one process may have at once (c/kernel/sched/uthread.c). */
+#define LOGIT_THREADS_MAX 64
+
+/* SYS_THREAD_* results. Distinct codes for the same reason the settings block
+ * gives: "-1" for both "no such thread" and "the table is full" costs somebody
+ * an afternoon. */
+#define THR_E_ARG      (-1)   /* a malformed spec, or a stack outside the bounds above */
+#define THR_E_NOMEM    (-2)   /* kernel could not build the thread */
+#define THR_E_FULL     (-3)   /* LOGIT_THREADS_MAX reached in this process */
+#define THR_E_SRCH     (-4)   /* no such tid in this process */
+#define THR_E_INVAL    (-5)   /* detached, already being joined, or self-join */
+#define THR_E_DEADLK   (-6)   /* the join would deadlock */
+
+/* SYS_FUTEX ops. */
+#define FUTEX_WAIT  0   /* if *uaddr == val, park. -> 0 woken, FUTEX_E_AGAIN if the
+                         * value had already changed, FUTEX_E_TIMEDOUT on timeout.
+                         * timeout_ms 0 = wait forever. SPURIOUS WAKES HAPPEN: every
+                         * caller is a `while (!cond)` loop, exactly as the kernel's
+                         * own sleepers are (c/kernel/core/wait.h rule 2). */
+#define FUTEX_WAKE  1   /* wake up to `val` waiters on uaddr -> the number woken.
+                         * val = INT32_MAX is the broadcast. */
+
+#define FUTEX_E_AGAIN    (-1)   /* *uaddr != val; the caller must re-test and retry */
+#define FUTEX_E_TIMEDOUT (-2)
+#define FUTEX_E_ARG      (-3)   /* unaligned address, bad op, or memory not the caller's */
+
+/* SYS_GETRANDOM flags. Both are accepted and neither changes anything -- said
+ * out loud rather than left for a caller to discover: the DRBG is seeded before
+ * ring 3 exists, so there is no "not ready yet" state to block on or refuse. */
+#define GRND_NONBLOCK 0x0001
+#define GRND_RANDOM   0x0002
+#define GRND_MAX      4096      /* bytes per call; more is a short read, not an error */
+
+/* SYS_THREAD_INFO selectors. */
+#define THRINFO_LIVE      0   /* threads of the calling process running right now */
+#define THRINFO_SLOTS     1   /* descriptors in use machine-wide */
+#define THRINFO_SLOTS_MAX 2   /* the table size, so a test can assert it went back down */
+#define THRINFO_CREATED   3   /* threads created since boot (monotonic) */
+#define THRINFO_REAPED    4   /* descriptors returned to the pool since boot */
+
 #endif /* LOGIT_ABI_H */

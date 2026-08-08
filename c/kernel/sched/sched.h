@@ -93,6 +93,24 @@ int  sched_wake(struct thread *t);
  * behind a BKL held by a thread that is itself waiting for that deadline. */
 void sched_timer_expire(void);
 
+/* ------------------------------------------------------------------------
+ * M30 threads: reaching a thread by ID, and the per-thread TLS pointer.
+ *
+ * `struct thread` is opaque outside sched.c and there was no way to name one
+ * from anywhere else -- proc.c's kill path says exactly that, as the reason a
+ * process parked on a wait queue could not be woken. An integer id can cross
+ * the file boundary and cannot dangle, so these take one and do the lookup
+ * INSIDE the lock; see the comment above by_id_locked() for why splitting that
+ * into "find" then "use" would be a use-after-free.
+ */
+int  sched_wake_id(int tid);        /* 1 if this call unparked it, else 0 */
+int  sched_thread_alive(int tid);
+int  sched_current_tid(void);
+uint64_t sched_current_fsbase(void);
+/* Set the CALLING thread's %fs base (its thread-local storage pointer) in both
+ * the descriptor and the MSR. See struct thread::fsbase in sched.c. */
+void sched_set_fsbase(uint64_t fsbase);
+
 unsigned long sched_slices_of(struct thread *t);  /* dispatches: the sleep-vs-spin metric */
 int  sched_thread_id(struct thread *t);
 unsigned long sched_blocked_count(void);          /* threads currently parked */

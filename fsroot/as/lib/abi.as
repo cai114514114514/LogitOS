@@ -164,6 +164,15 @@ Setting = layout("logit_setting", 264, [
     ["hi", 260, 4, "i"]
 ])
 
+Thread_spec = layout("logit_thread_spec", 48, [
+    ["entry", 0, 8, "u"],
+    ["stack_top", 8, 8, "u"],
+    ["stack_base", 16, 8, "u"],
+    ["stack_len", 24, 8, "u"],
+    ["tls", 32, 8, "u"],
+    ["arg", 40, 8, "u"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):
@@ -354,6 +363,33 @@ def cpu_index():
 
 def kheap_stress(iters, size, seed):
     return syscall(SYS_KHEAP_STRESS, iters, size, seed)
+
+def thread_create(spec):
+    return syscall(SYS_THREAD_CREATE, addr(spec))
+
+def thread_exit(retval):
+    return syscall(SYS_THREAD_EXIT, retval)
+
+def thread_join(tid, retval):
+    return syscall(SYS_THREAD_JOIN, tid, addr(retval))
+
+def thread_detach(tid):
+    return syscall(SYS_THREAD_DETACH, tid)
+
+def thread_self():
+    return syscall(SYS_THREAD_SELF)
+
+def set_tls(fsbase):
+    return syscall(SYS_SET_TLS, fsbase)
+
+def futex(addr, timeout, val, op):
+    return syscall(SYS_FUTEX, addr(addr), ((timeout & 0xFFFFFFFF) << 32) | ((val & 0xFFFFFFFF)), op)
+
+def thread_info(what):
+    return syscall(SYS_THREAD_INFO, what)
+
+def getrandom(b, len, flags):
+    return syscall(SYS_GETRANDOM, addr(b), len, flags)
 
 # ---- waiting ----
 # Logit exposes these as start + poll: there is no in-kernel wait queue for them,

@@ -116,6 +116,24 @@ call img_decode     SYS_IMG_DECODE     buf(req)
 call cpu_index      SYS_CPU_INDEX
 call kheap_stress   SYS_KHEAP_STRESS   int(iters) int(size) int(seed)
 
+# ---- M30 threads ----
+# The thread calls take a spec struct or a plain integer, so only the futex needs
+# a convention written down. It packs because it has four arguments and the
+# kernel takes three: the address must be its own (it is the identity of the
+# queue), and op must be its own (it selects what the other two MEAN), which
+# leaves val and the timeout to share. Both are 32-bit by nature -- val is a
+# 32-bit futex word or a wake count, and a timeout in milliseconds that does not
+# fit 32 bits is 49 days.
+call thread_create  SYS_THREAD_CREATE  buf(spec)
+call thread_exit    SYS_THREAD_EXIT    int(retval)
+call thread_join    SYS_THREAD_JOIN    int(tid) buf(retval)
+call thread_detach  SYS_THREAD_DETACH  int(tid)
+call thread_self    SYS_THREAD_SELF
+call set_tls        SYS_SET_TLS        int(fsbase)
+call futex          SYS_FUTEX          buf(addr) pack(timeout:32:32, val:0:32) int(op)
+call thread_info    SYS_THREAD_INFO    int(what)
+call getrandom      SYS_GETRANDOM      buf(b) int(len) int(flags)
+
 # ---- operations you have to wait for ----
 #   wait <name> <START> <POLL> <arg>... pending(<pred>) [fail(eq:<value>)]
 #                                                     [fail(lt:0)]

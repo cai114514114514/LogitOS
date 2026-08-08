@@ -88,4 +88,8 @@
 #define LOGIT_TEXT_MEASURE_C_PX(v) ((int)(((unsigned long long)(v) >> 1) & 0x7FFFFFFFULL))
 #define LOGIT_TEXT_MEASURE_C_MONO(v) ((int)(((unsigned long long)(v) >> 0) & 0x1ULL))
 
+/* SYS_FUTEX arg b: timeout<<32 | val */
+#define LOGIT_FUTEX_B_TIMEOUT(v) ((int)(((unsigned long long)(v) >> 32) & 0xFFFFFFFFULL))
+#define LOGIT_FUTEX_B_VAL(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFFFFFULL))
+
 #endif /* LOGIT_PACK_H */
