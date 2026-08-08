@@ -22,7 +22,8 @@
 # but is a tautology in a test that defines them.
 
 .PHONY: test-link test-link-host test-arp-host test-arp-negctl test-eth-host \
-        test-eth-negctl test-link-os test-link-nics
+        test-eth-negctl test-link-os test-link-nics \
+        test-ip-arp-host test-ip-arp-negctl
 
 LINK_INC := -Ic/net/core -Ic/net/link -Ic/drivers/net -Ic/drivers/core \
             -Ic/drivers/timer -Ic/kernel/core -Ic/kernel/pci
@@ -92,6 +93,34 @@ test-link-nics: $(ISO) $(DISK)
 	@bash tests/boot/run-link-test.sh $(ISO) $(DISK) virtio-net-pci
 	@bash tests/boot/run-link-test.sh $(ISO) $(DISK) rtl8139
 
-test-link-host: test-eth-host test-eth-negctl test-arp-host test-arp-negctl
+# The CALL SITE. arp_output has been built, tested and documented since the
+# link-layer rewrite and ip.c did not call it -- it dropped the datagram on a
+# miss, so the first packet to every cold next hop was destroyed on every boot.
+# This links ip.c on top of the real arp.c and asserts the held datagram comes
+# out byte for byte when the reply lands. It belongs in this fragment and not
+# with the IP tests because what it is testing is the neighbour queue.
+test-ip-arp-host:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_NET_HOST \
+		-o $(BUILD)/ip_arp_test tests/unit/ip_arp_test.c $(LINK_INC) -Ic/net/ip
+	@./$(BUILD)/ip_arp_test
+
+# Negative control: IP_NEGCTL_ARP_DROP restores the old `if (arp_resolve(...)
+# != 0) return -1;`, and the suite MUST fail. Five checks go red, and the one
+# to read is "the held datagram is sent on the ARP reply" -- under the old code
+# there is nothing left to send.
+test-ip-arp-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w -DLOGIT_NET_HOST -DIP_NEGCTL_ARP_DROP \
+		-o $(BUILD)/ip_arp_negctl tests/unit/ip_arp_test.c $(LINK_INC) -Ic/net/ip
+	@if ./$(BUILD)/ip_arp_negctl >$(BUILD)/ip_arp_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes while ip.c drops on an ARP miss"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/ip_arp_negctl.log) checks fail without the queue"; \
+	fi
+
+test-link-host: test-eth-host test-eth-negctl test-arp-host test-arp-negctl \
+                test-ip-arp-host test-ip-arp-negctl
 
 test-link: test-link-host test-link-nics

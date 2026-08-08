@@ -44,17 +44,17 @@ static uint16_t ip_id;
 
 int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len)
 {
-    uint8_t mac[ETH_ALEN];
-    if (ip_is_broadcast(dst)) {
-        /* Broadcasts are not ARP'd: there is no single next hop to resolve. */
-        memcpy(mac, eth_broadcast, ETH_ALEN);
-    } else {
-        /* Next hop: the destination if it shares our subnet, else the gateway. */
-        uint32_t nexthop = ((dst & net_cfg.mask) == (net_cfg.ip & net_cfg.mask))
-                           ? dst : net_cfg.gw;
-        if (arp_resolve(nexthop, mac) != 0)
-            return -1;                          /* ARP pending; caller retries */
-    }
+    /* Broadcasts are not ARP'd: there is no single next hop to resolve.
+     * Everything else goes out through arp_output, which either sends now or
+     * HOLDS the datagram until the solicitation is answered.
+     *
+     * The header has to be built before the decision, not after: arp_output
+     * queues a finished frame payload. That is the only structural change --
+     * a resolved next hop takes exactly the path it took before. */
+    int bcast = ip_is_broadcast(dst);
+    uint32_t nexthop = bcast ? 0
+        : (((dst & net_cfg.mask) == (net_cfg.ip & net_cfg.mask)) ? dst : net_cfg.gw);
+
     uint8_t pkt[1500];
     if (sizeof(struct ip_hdr) + len > sizeof pkt)
         return -1;
@@ -71,7 +71,26 @@ int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len)
     h->dst = htonl(dst);
     h->checksum = htons(ip_checksum(h, sizeof *h));
     memcpy(pkt + sizeof *h, payload, len);
-    return eth_send(mac, ETHERTYPE_IP, pkt, (uint16_t)(sizeof *h + len));
+
+    uint16_t total = (uint16_t)(sizeof *h + len);
+    if (bcast)
+        return eth_send(eth_broadcast, ETHERTYPE_IP, pkt, total);
+#ifdef IP_NEGCTL_ARP_DROP
+    /* Negative control (tests/link.mk test-ip-arp-negctl): exactly what this
+     * file did before -- drop the datagram on a miss and make it the caller's
+     * problem. The suite MUST fail with this defined. */
+    {
+        uint8_t mac[ETH_ALEN];
+        if (arp_resolve(nexthop, mac) != 0) return -1;
+        return eth_send(mac, ETHERTYPE_IP, pkt, total);
+    }
+#endif
+    /* Was: `if (arp_resolve(nexthop, mac) != 0) return -1;` before the header
+     * was built -- which threw the FIRST datagram to every cold next hop away
+     * and made every caller's retry policy the substitute for a neighbour
+     * queue. arp_output returns 0 for "sent OR accepted for later delivery",
+     * so a cold cache now costs latency instead of a lost packet. */
+    return arp_output(nexthop, ETHERTYPE_IP, pkt, total);
 }
 
 void ip_input(const uint8_t *frame, uint16_t len)
