@@ -26,12 +26,29 @@
 #                       test must FAIL against it. If it passes, the device test
 #                       is not measuring the focus model.
 #
-#   test-wpt-forms      the WPT corpus for html/semantics/forms, run against a
-#                       runner that ALSO links js_forms.c. See the note on the
-#                       target: the shipping runner in tests/wpt.mk does not
-#                       link it, and that file belongs to another line.
+# THERE IS NO test-wpt-forms, AND THERE MUST NOT BE. This fragment used to
+# build a second WPT runner with forms.c/focus.c/js_forms.c added, on the
+# premise that tests/wpt.mk's runner did not link them. It does: WPT_JS_SRC is
+# a wildcard over c/apps/browser/js_*.c and WPT_TEST_SRC names forms.c and
+# focus.c outright. So the second runner measured the same browser twice and
+# could not even link -- tests/unit/wpt_test.c already defines text_measure,
+# which is the one symbol the deleted shim supplied.
+#
+# The measurement is therefore the shipping one, which is also what the brief
+# asks for (both sides of an A/B pinned to the same binary):
+#
+#     make wpt ONLY=html/semantics/forms
+#
+# Measured 2026-08-08: 569/4258 subtests (13.4%) over 414 harness files.
+#
+# Note for whoever runs it next: that runner's wildcard sweeps up UNTRACKED
+# js_*.c from other lines, and a half-written one fails the build for reasons
+# that have nothing to do with what is being measured. Pin it to the committed
+# set when that happens:
+#
+#     make wpt ONLY=... WPT_JS_SRC="$(git ls-files c/apps/browser/js_*.c)"
 
-.PHONY: test-forms test-forms-device test-forms-negctl test-wpt-forms
+.PHONY: test-forms test-forms-asan test-forms-device test-forms-negctl
 
 FORMS_SRC := tests/unit/forms_test.c \
              c/apps/browser/forms.c c/apps/browser/focus.c \
@@ -67,14 +84,22 @@ test-forms-device: $(ISO) $(DISK)
 # reused. browser.o is compiled with -DBROWSER_NO_FOCUS (the routing compiled
 # out, keys back to <body>) and js_forms.o is dropped, so the control is exactly
 # "the tree as it was" and not an approximation of it.
-NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/browser.o                                $(BUILD)/jsobj/c/apps/browser/js_forms.o,$(BROWSER_JS_OBJ))                   $(BUILD)/nofocus/browser.o
+NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/browser.o \
+                               $(BUILD)/jsobj/c/apps/browser/js_forms.o, \
+                               $(BROWSER_JS_OBJ)) \
+                  $(BUILD)/nofocus/browser.o
 
 $(BUILD)/nofocus/browser.o: c/apps/browser/browser.c
 	@mkdir -p $(dir $@)
 	$(CC) $(JS_CF) -DBROWSER_NO_FOCUS -c $< -o $@
 
-$(BUILD)/browser-nofocus.elf: $(ENGINE_OBJ) $(NOFOCUS_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ)                               $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o 	    $(ENGINE_OBJ) $(NOFOCUS_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) 	    $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-nofocus.elf: $(ENGINE_OBJ) $(NOFOCUS_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) \
+                              $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o \
+                              $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group \
+	    $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOFOCUS_JS_OBJ) $(BROWSER_OBJ) \
+	    $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o \
+	    --end-group
 
 $(BUILD)/browser-nofocus.aex: $(BUILD)/browser-nofocus.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nofocus.elf $@ Browser - 'B' 120 130 240
@@ -83,26 +108,4 @@ test-forms-negctl: $(ISO) $(BUILD)/browser-nofocus.aex
 	@$(MAKE) DISK=$(BUILD)/disk-nofocus.img BROWSER_AEX=$(BUILD)/browser-nofocus.aex $(BUILD)/disk-nofocus.img
 	python3 tests/qmp/qmp_forms.py $(ISO) $(BUILD)/disk-nofocus.img --expect-no-focus
 
-# --- WPT --------------------------------------------------------------------
-# The shipping runner (tests/wpt.mk) links js_page/js_dom/js_webapi/js_platform
-# and NOT js_forms.c, so `make test-wpt` cannot see anything this change did.
-# That file belongs to the WPT line and is not edited here; this target builds
-# the same runner with the three sources added, which is the honest measurement
-# of what these bindings are worth against the corpus.
-#
-# DEFERRED (`=`, not `:=`) on purpose: this fragment is included BEFORE
-# tests/wpt.mk, so WPT_TEST_SRC does not exist yet at this line. With `:=` the
-# link came out as three files and a rust archive and failed on undefined
-# kmalloc -- which looks like a missing stub and is actually an include order.
-WPT_FORMS_SRC = $(WPT_TEST_SRC) c/apps/browser/js_forms.c \
-                c/apps/browser/forms.c c/apps/browser/focus.c \
-                tests/unit/forms_wpt_shim.c
-
-$(BUILD)/wpt_forms_test: $(WPT_FORMS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(WPT_CF) -o $@ $(WPT_FORMS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-
-test-wpt-forms: $(BUILD)/wpt_forms_test
-	@$(BUILD)/wpt_forms_test --root $(WPT_ROOT) -b $(WPT_BASELINE) \
-	    --only html/semantics/forms $(if $(V),-v $(V),)
+# --- WPT: see the header. The shipping runner already links these files. ------
