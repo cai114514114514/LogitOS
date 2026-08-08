@@ -34,6 +34,12 @@ ssize_t read(int fd, void *buf, size_t n)
      * is a different thing from an error and from EOF; a caller polling a pipe
      * has to be able to tell all three apart. */
     if (r == EAGAIN_RC) { errno = EAGAIN; return -1; }
+    /* EINTR. A blocking read cut short by a delivered signal is NOT an error of
+     * the read and must not be reported as one -- a program that retries on
+     * EINTR and gives up on EBADF has to be able to tell them apart. The kernel
+     * says so with its own value rather than with -1, because -1 already means
+     * "bad descriptor" here; see SIG_E_INTR in include/abi/logit_abi.h. */
+    if (r == SIG_E_INTR) { errno = EINTR; return -1; }
     if (r < 0) errno = EBADF;
     return r;
 }
@@ -41,6 +47,7 @@ ssize_t write(int fd, const void *buf, size_t n)
 {
     long r = sys(SYS_WRITE, fd, (long)buf, (long)n);
     if (r == EAGAIN_RC) { errno = EAGAIN; return -1; }
+    if (r == SIG_E_INTR) { errno = EINTR; return -1; }
     if (r < 0) errno = EBADF;
     return r;
 }
@@ -136,7 +143,13 @@ char *getcwd(char *buf, size_t size)
 int fchdir(int fd) { (void)fd; errno = ENOSYS; return -1; }   /* no fd-to-path mapping */
 
 pid_t waitpid(pid_t pid, int *status, int opts)
-{ return (int)fail(sys(SYS_WAITPID, pid, (long)status, opts), ECHILD); }
+{
+    long r = sys(SYS_WAITPID, pid, (long)status, opts);
+    /* Interrupted by a signal, not "no such child". A shell that cannot tell
+     * those apart either exits on Ctrl+C or loops forever on a reaped child. */
+    if (r == SIG_E_INTR) { errno = EINTR; return -1; }
+    return (int)fail(r, ECHILD);
+}
 pid_t wait(int *status) { return waitpid(-1, status, 0); }
 
 /* There is no parent-pid syscall; a process that needs its parent must have

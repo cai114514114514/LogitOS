@@ -60,6 +60,13 @@ void abort(void)
 {
     __libc_flush_all();
     printf("\n[libc] abort()\n");
+    /* Through the signal, now that there is one. POSIX: abort() raises SIGABRT,
+     * so a program that installed a handler to dump its own state before dying
+     * gets that one last look -- which is the entire reason abort is specified
+     * in terms of a signal rather than as an exit. And if the handler RETURNS
+     * (or the signal was ignored, or blocked), abort must still terminate, so
+     * the exit below is not a fallback, it is the specified behaviour. */
+    raise(SIGABRT);
     sys(SYS_EXIT, 134, 0, 0);
     for (;;) {}
 }

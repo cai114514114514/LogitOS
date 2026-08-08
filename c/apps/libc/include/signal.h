@@ -1,30 +1,43 @@
 #ifndef _SIGNAL_H
 #define _SIGNAL_H
 
-/* SIGNALS ON LOGITOS -- READ THIS BEFORE RELYING ON ANY OF IT.
+/* SIGNALS ON LOGITOS -- what is real, and what is still not.
  *
- * The kernel has no signal delivery. There is no mechanism by which a timer,
- * another process, or a fault can cause a handler registered here to run. What
- * this header gives you is exactly two things, and they are honest ones:
+ * This header used to open by saying the kernel had no signal delivery, and
+ * that was true: nothing could cause a handler registered here to run.
+ * c/kernel/exec/ksignal.c and ksigframe.c are that mechanism now. A handler
+ * installed here really is entered on a frame the kernel pushes onto this
+ * process's stack, with the interrupted registers AND the FPU/SSE state saved,
+ * and sigreturn restores them exactly. So:
  *
- *   1. Every C program that MENTIONS signals compiles and links. That is most
- *      of the interesting ones: a `signal(SIGPIPE, SIG_IGN)` at the top of
- *      main, a SIGINT handler that sets a flag, an atexit-style cleanup path.
+ *   - a SIGSEGV/SIGBUS/SIGFPE/SIGILL handler runs on a real ring-3 fault
+ *     (default action is still terminate, so a program that installs nothing
+ *     dies exactly as it did);
+ *   - kill() reaches another process;
+ *   - SIGCHLD arrives when a child exits, SIGPIPE when a write finds no
+ *     reader, SIGALRM from alarm(), SIGINT from Ctrl+C on the console;
+ *   - sigprocmask really blocks, sigpending really reports, sigsuspend really
+ *     waits;
+ *   - a blocking syscall interrupted by a delivered handler returns EINTR, or
+ *     is restarted if the handler was installed with SA_RESTART.
  *
- *   2. raise() genuinely works, because raise() is synchronous -- C defines it
- *      as sending the signal to the executing program, and a direct call to the
- *      installed handler is a correct implementation of that. abort() goes
- *      through raise(SIGABRT), so a program that installs a SIGABRT handler to
- *      dump state before dying gets it.
+ * WHAT IS STILL NOT HERE, stated so that nobody has to find out by testing:
  *
- * What does NOT happen: nothing arrives asynchronously. A handler installed for
- * SIGSEGV never runs -- a ring-3 fault kills the process in the kernel (see
- * c/kernel/interrupts.c) without consulting this table. kill() to another
- * process returns -1/ENOSYS rather than pretending. sigprocmask and the
- * sigset_t operations manipulate a mask that nothing consults; they return
- * success because there is nothing that could fail, and because code that
- * blocks signals around a critical section is already correct on a system with
- * no signals. Each is marked at its definition in signal.c. */
+ *   - NO SIGINFO. SA_SIGINFO is accepted and ignored: a three-argument handler
+ *     is called with a NULL siginfo_t* and a `struct logit_sigctx *` as its
+ *     third argument, so it can read the machine state but not si_code or
+ *     si_addr. There is no sigqueue().
+ *   - NO ALTERNATE STACK. sigaltstack() does not exist, so a SIGSEGV caused by
+ *     stack exhaustion cannot be handled -- there is nowhere to put the frame.
+ *   - NO PER-THREAD MASKS AND NO THREAD-DIRECTED SIGNALS. One pending set and
+ *     one mask per PROCESS; a pending signal is taken by whichever thread next
+ *     returns to ring 3, which POSIX permits for a process-directed signal.
+ *     pthread_kill() still returns ENOSYS.
+ *   - NO JOB CONTROL. There are no sessions and no process groups, so
+ *     kill(0, sig) and kill(-pgid, sig) are not process-group sends, and the
+ *     tty has one foreground pid (whoever last read it) rather than a
+ *     foreground group. SIGSTOP/SIGCONT do stop and continue a process.
+ *   - NO SIGCHLD DETAIL. It says a child changed state; waitpid() says which. */
 
 typedef int sig_atomic_t;
 typedef unsigned long sigset_t;
@@ -105,6 +118,8 @@ int sigaddset(sigset_t *, int);
 int sigdelset(sigset_t *, int);
 int sigismember(const sigset_t *, int);
 int sigprocmask(int, const sigset_t *, sigset_t *);
+int sigpending(sigset_t *);
+int sigsuspend(const sigset_t *);
 unsigned alarm(unsigned);
 
 #endif /* _SIGNAL_H */
