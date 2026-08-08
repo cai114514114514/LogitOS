@@ -177,7 +177,7 @@ static urlrec *hl_url(JSContext *ctx, JSValueConst this_val,
     return u;
 }
 
-static JSValue hl_get(JSContext *ctx, JSValueConst this_val, int magic)
+static JSValue hl_get_spec(JSContext *ctx, JSValueConst this_val, int magic)
 {
     const char *v = 0;
     int vlen = 0;
@@ -201,8 +201,8 @@ static JSValue hl_get(JSContext *ctx, JSValueConst this_val, int magic)
     return out;
 }
 
-static JSValue hl_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
-                      int magic)
+static JSValue hl_set_spec(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+                           int magic)
 {
     struct node *n = 0;
     const char *v = 0;
@@ -238,6 +238,260 @@ static JSValue hl_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
     JS_FreeCString(ctx, s);
     url_free_w(u);
     return JS_UNDEFINED;
+}
+
+/* ======================================================================
+ * THE NEGATIVE CONTROL -- -DURLELEM_SPLITTER
+ * ======================================================================
+ *
+ * An eleven-property surface that answers correctly for every URL a human
+ * types is not evidence of a URL parser, and the only way to show that the
+ * test below is measuring one is to build the thing that ISN'T and watch the
+ * test go red. So: split the href on ':', '/', '?' and '#', and put it back
+ * together by concatenation. That is the implementation almost everyone
+ * writes first, and it is not a straw man -- the URL line built the same
+ * control for `URL` itself and it scored 251/891 on urltestdata.json, which
+ * is to say it is right about three quarters of the way through the corpus
+ * and wrong about everything that makes a URL parser hard:
+ *
+ *   normalization      "http://EXAMPLE.com/a/../b" stays exactly as typed
+ *   default ports      ":80" is not dropped, so host and origin are wrong
+ *   dot segments       "/a/./b/../c" is a path with five segments
+ *   encoding sets      a space in the query is a space in the query
+ *   backslashes        "http:\\\\host" is not a special-scheme authority
+ *   failure            there is no such thing; everything "parses"
+ *
+ * That last one is the important one, and it is why the control also has to
+ * exist for the ELEMENT surface and not only for `URL`: a splitter can never
+ * report `protocol === ":"`, so every failure case in the corpus goes from
+ * passing to failing, which is exactly the 266 subtests this file was written
+ * for. `make test-urlelem-negctl` requires this build to FAIL.
+ *
+ * It is compiled only under the flag: dead code that ships is a second
+ * implementation waiting to be called by mistake. */
+#ifdef URLELEM_SPLITTER
+
+/* The base, as a string, cut back to its last '/' -- naive relative
+ * resolution by concatenation, which is the whole point. */
+static char *split_base_dir(JSContext *ctx)
+{
+    char *b = js_urlbind_base_href(ctx);
+    if (!b) return 0;
+    char *slash = strrchr(b, '/');
+    if (slash) slash[1] = 0;
+    return b;
+}
+
+/* Concatenate the href onto the base unless it already has a "scheme:". */
+static char *split_absolutize(JSContext *ctx, const char *v, int vlen)
+{
+    int has_scheme = 0;
+    for (int i = 0; i < vlen; i++) {
+        char c = v[i];
+        if (c == ':') { has_scheme = i > 0; break; }
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.')) break;
+    }
+    if (has_scheme) {
+        char *out = (char *)malloc((size_t)vlen + 1);
+        if (out) { memcpy(out, v, (size_t)vlen); out[vlen] = 0; }
+        return out;
+    }
+    char *base = split_base_dir(ctx);
+    int bl = base ? (int)strlen(base) : 0;
+    char *out = (char *)malloc((size_t)(bl + vlen + 1));
+    if (out) {
+        if (bl) memcpy(out, base, (size_t)bl);
+        memcpy(out + bl, v, (size_t)vlen);
+        out[bl + vlen] = 0;
+    }
+    free(base);
+    return out;
+}
+
+/* Cut `s` into the pieces the four delimiters suggest. Every field points into
+ * `s`; nothing is decoded, normalized, lowercased or defaulted. */
+struct sparts {
+    const char *scheme; int slen;      /* without the ':' */
+    const char *user;   int ulen;
+    const char *pass;   int plen;
+    const char *host;   int hlen;      /* without the port */
+    const char *port;   int portlen;
+    const char *path;   int pathlen;
+    const char *query;  int qlen;      /* without the '?' */
+    const char *frag;   int flen;      /* without the '#' */
+};
+
+static void split_parse(const char *s, struct sparts *p)
+{
+    memset(p, 0, sizeof *p);
+    int n = (int)strlen(s);
+    int i = 0;
+    while (i < n && s[i] != ':' && s[i] != '/' && s[i] != '?' && s[i] != '#') i++;
+    if (i < n && s[i] == ':') { p->scheme = s; p->slen = i; i++; }
+    if (i + 1 < n && s[i] == '/' && s[i + 1] == '/') {
+        i += 2;
+        int a = i;
+        while (i < n && s[i] != '/' && s[i] != '?' && s[i] != '#') i++;
+        int aend = i, at = -1;
+        for (int j = a; j < aend; j++) if (s[j] == '@') at = j;
+        int hstart = a;
+        if (at >= 0) {
+            int colon = -1;
+            for (int j = a; j < at; j++) if (s[j] == ':') { colon = j; break; }
+            p->user = s + a; p->ulen = (colon >= 0 ? colon : at) - a;
+            if (colon >= 0) { p->pass = s + colon + 1; p->plen = at - colon - 1; }
+            hstart = at + 1;
+        }
+        int pcolon = -1;
+        for (int j = hstart; j < aend; j++) if (s[j] == ':') pcolon = j;
+        p->host = s + hstart;
+        p->hlen = (pcolon >= 0 ? pcolon : aend) - hstart;
+        if (pcolon >= 0) { p->port = s + pcolon + 1; p->portlen = aend - pcolon - 1; }
+    }
+    int pstart = i;
+    while (i < n && s[i] != '?' && s[i] != '#') i++;
+    p->path = s + pstart; p->pathlen = i - pstart;
+    if (i < n && s[i] == '?') {
+        int q = ++i;
+        while (i < n && s[i] != '#') i++;
+        p->query = s + q; p->qlen = i - q;
+    }
+    if (i < n && s[i] == '#') { p->frag = s + i + 1; p->flen = n - i - 1; }
+}
+
+static JSValue split_str(JSContext *ctx, const char *s, int n)
+{ return JS_NewStringLen(ctx, s ? s : "", (size_t)(s && n > 0 ? n : 0)); }
+
+static JSValue hl_get_split(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    struct node *n = js_dom_node_from(this_val);
+    if (!n || n->type != N_ELEM) return JS_NewString(ctx, "");
+    int vlen = 0;
+    const char *v = js_dom_attr_len(n, "href", &vlen);
+    if (!v) return JS_NewString(ctx, "");
+
+    char *abs = split_absolutize(ctx, v, vlen);
+    if (!abs) return JS_NewString(ctx, "");
+    struct sparts p;
+    split_parse(abs, &p);
+
+    JSValue out;
+    char buf[1024];
+    switch (magic) {
+    case URLC_HREF:     out = JS_NewString(ctx, abs); break;
+    case URLC_PROTOCOL:
+        snprintf(buf, sizeof buf, "%.*s:", p.slen, p.scheme ? p.scheme : "");
+        out = JS_NewString(ctx, buf); break;
+    case URLC_USERNAME: out = split_str(ctx, p.user, p.ulen); break;
+    case URLC_PASSWORD: out = split_str(ctx, p.pass, p.plen); break;
+    case URLC_HOST:
+        if (p.port) snprintf(buf, sizeof buf, "%.*s:%.*s", p.hlen, p.host, p.portlen, p.port);
+        else        snprintf(buf, sizeof buf, "%.*s", p.hlen, p.host ? p.host : "");
+        out = JS_NewString(ctx, buf); break;
+    case URLC_HOSTNAME: out = split_str(ctx, p.host, p.hlen); break;
+    case URLC_PORT:     out = split_str(ctx, p.port, p.portlen); break;
+    case URLC_PATHNAME: out = split_str(ctx, p.path, p.pathlen); break;
+    case URLC_SEARCH:
+        if (!p.query || p.qlen <= 0) { out = JS_NewString(ctx, ""); break; }
+        snprintf(buf, sizeof buf, "?%.*s", p.qlen, p.query);
+        out = JS_NewString(ctx, buf); break;
+    case URLC_HASH:
+        if (!p.frag || p.flen <= 0) { out = JS_NewString(ctx, ""); break; }
+        snprintf(buf, sizeof buf, "#%.*s", p.flen, p.frag);
+        out = JS_NewString(ctx, buf); break;
+    default:
+        snprintf(buf, sizeof buf, "%.*s://%.*s", p.slen, p.scheme ? p.scheme : "",
+                 p.hlen, p.host ? p.host : "");
+        out = JS_NewString(ctx, buf); break;
+    }
+    free(abs);
+    return out;
+}
+
+/* Reassembly by concatenation: rebuild the string with one piece swapped. */
+static JSValue hl_set_split(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+                            int magic)
+{
+    struct node *n = js_dom_node_from(this_val);
+    if (!n || n->type != N_ELEM || magic == URLC_ORIGIN) return JS_UNDEFINED;
+    size_t slen = 0;
+    const char *s = JS_ToCStringLen(ctx, &slen, val);
+    if (!s) return JS_EXCEPTION;
+    if (magic == URLC_HREF) {
+        js_dom_attr_write(ctx, n, "href", s, (int)slen);
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
+    int vlen = 0;
+    const char *v = js_dom_attr_len(n, "href", &vlen);
+    char *abs = v ? split_absolutize(ctx, v, vlen) : 0;
+    if (!abs) { JS_FreeCString(ctx, s); return JS_UNDEFINED; }
+    struct sparts p;
+    split_parse(abs, &p);
+
+#define PC(field, len) (magic == want ? s : (p.field ? p.field : "")), \
+                       (magic == want ? (int)slen : p.len)
+    char out[2048];
+    const char *sc = p.scheme ? p.scheme : ""; int scl = p.slen;
+    const char *us = p.user   ? p.user   : ""; int usl = p.ulen;
+    const char *pw = p.pass   ? p.pass   : ""; int pwl = p.plen;
+    const char *ho = p.host   ? p.host   : ""; int hol = p.hlen;
+    const char *po = p.port   ? p.port   : ""; int pol = p.portlen;
+    const char *pa = p.path   ? p.path   : ""; int pal = p.pathlen;
+    const char *qu = p.query  ? p.query  : ""; int qul = p.qlen;
+    const char *fr = p.frag   ? p.frag   : ""; int frl = p.flen;
+    switch (magic) {
+    case URLC_PROTOCOL: sc = s; scl = (int)slen; break;
+    case URLC_USERNAME: us = s; usl = (int)slen; break;
+    case URLC_PASSWORD: pw = s; pwl = (int)slen; break;
+    case URLC_HOSTNAME: ho = s; hol = (int)slen; break;
+    case URLC_HOST:     ho = s; hol = (int)slen; po = ""; pol = 0; break;
+    case URLC_PORT:     po = s; pol = (int)slen; break;
+    case URLC_PATHNAME: pa = s; pal = (int)slen; break;
+    case URLC_SEARCH:   qu = s; qul = (int)slen; break;
+    case URLC_HASH:     fr = s; frl = (int)slen; break;
+    }
+#undef PC
+    int o = snprintf(out, sizeof out, "%.*s://", scl, sc);
+    if (usl > 0 || pwl > 0) {
+        o += snprintf(out + o, sizeof out - (size_t)o, "%.*s", usl, us);
+        if (pwl > 0) o += snprintf(out + o, sizeof out - (size_t)o, ":%.*s", pwl, pw);
+        o += snprintf(out + o, sizeof out - (size_t)o, "@");
+    }
+    o += snprintf(out + o, sizeof out - (size_t)o, "%.*s", hol, ho);
+    if (pol > 0) o += snprintf(out + o, sizeof out - (size_t)o, ":%.*s", pol, po);
+    o += snprintf(out + o, sizeof out - (size_t)o, "%.*s", pal, pa);
+    if (qul > 0) o += snprintf(out + o, sizeof out - (size_t)o, "?%.*s", qul, qu);
+    if (frl > 0) o += snprintf(out + o, sizeof out - (size_t)o, "#%.*s", frl, fr);
+    js_dom_attr_write(ctx, n, "href", out, o);
+
+    free(abs);
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+#endif /* URLELEM_SPLITTER */
+
+/* The one seam the control switches. Everything else in this file -- the base
+ * URL, the install, the three refusing entry points -- is identical in both
+ * builds, so a red run names the decomposition and nothing else. */
+static JSValue hl_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+#ifdef URLELEM_SPLITTER
+    return hl_get_split(ctx, this_val, magic);
+#else
+    return hl_get_spec(ctx, this_val, magic);
+#endif
+}
+
+static JSValue hl_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+                      int magic)
+{
+#ifdef URLELEM_SPLITTER
+    return hl_set_split(ctx, this_val, val, magic);
+#else
+    return hl_set_spec(ctx, this_val, val, magic);
+#endif
 }
 
 /* The IDL order, which is also js_url.h's URLC_* order -- so `magic` is the

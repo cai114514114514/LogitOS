@@ -3465,12 +3465,6 @@ bench-aui: $(ISO) $(DISK)
 # globalThis. Includes its own negative control. See the fragment header.
 -include tests/domiface.mk
 
-# The HTML element interfaces (js_semantics.c): <dialog>, <table>, <select>,
-# the popover and command/commandfor invokers, HTMLElement.click().
-# `make test-semantics` + its static-collection control, and `semantics-rank`,
-# which reproduces the html/semantics work order the file was written from.
--include tests/semantics.mk
-
 # The query-side selector engine (js_select.c) and DOMTokenList
 # (js_tokenlist.c): make test-selectors + its case-sensitivity control.
 -include tests/selectors.mk
@@ -3497,6 +3491,14 @@ bench-aui: $(ISO) $(DISK)
 # Measured against the corpus's OWN data (urltestdata.json, setters_tests.json)
 # rather than through the WPT runner. See the fragment header.
 -include tests/url.mk
+
+# <a>/<area> URL decomposition: `make test-urlelem` / `test-urlelem-negctl`.
+# c/apps/browser/js_urlbind.c -- the document base URL, the eleven
+# HTMLHyperlinkElementUtils members on <a> and <area>, and the entry points
+# that must refuse a URL they cannot parse. url.mk above measures the ALGORITHM
+# at 100%; this measures the surface built on it, which was wrong in three
+# places while that number said so. See the fragment header.
+-include tests/domsub.mk
 
 # The CSS specified-value parser: `make test-cssparse` / `-asan` / `-negctl`.
 # third_party/css/libcss/src/parse/canon.c -- parse a declaration as a
