@@ -2942,6 +2942,20 @@ clean:
 # concurrent line cannot delete it.
 -include tests/demux.mk
 
+# Media Source Extensions: MediaSource/SourceBuffer, the <video> element and
+# the DASH-segment path that finally makes c/lib/{media,video,audio} reachable
+# from a web page. ONE line, and it has to be HERE and not next to the browser
+# rule at the top: tests/mse.mk adds $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) to the
+# browser link, and a PREREQUISITE list expands where it is written. Included
+# before those three exist it would expand to nothing, the objects would never
+# be built, and the link line would still name them -- so the build would
+# succeed or fail depending on what else had been built first, which is worse
+# than a clean failure and far harder to diagnose. MED_OBJ comes from
+# tests/demux.mk immediately above; VID_OBJ and AUD_OBJ are defined up by
+# Preview. Same reason Preview's own rule "lives with the VID_OBJ definitions
+# further down".
+-include tests/mse.mk
+
 # Preview's on-device format gate (test-preview, test-preview-timing,
 # test-preview-negctl) and the fixtures + measurement binaries it puts on the
 # disk. Own fragment for the same reason as the others -- and it must come
