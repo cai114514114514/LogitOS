@@ -290,62 +290,75 @@ def slot_of(files, name):
     return -1
 
 
-def app_survey(ui, serial, P, shot, ck, slow, pt_, note, app_files, napps):
-    """Grow every app's window and report what lands in the new space.
+def app_survey(ui, serial, P, shot, note, slow, pt_, app_files, napps):
+    """Shrink every app's window and grow it back, and report what lands in the
+    space it reoccupies.
 
-    This is an INVENTORY, not a gate. Those apps belong to other lines, and the
-    finding they need is not "it failed" but "here is what your window looks
-    like at a size it was not written for".
+    An INVENTORY, not a gate. These apps belong to other lines, and the finding
+    they need is not "it failed" but "here is what your window looks like at a
+    size it was not written for".
 
-    The measure is the number of distinct colours in the strip the window just
-    grew INTO. An app that laid its content out once, at the size it passed to
-    gui_create, leaves that strip as the flat fill the compositor put there --
-    one colour. An app that reflowed puts structure in it. The count is reported
-    rather than thresholded into a verdict, because "2" and "40" need different
-    sentences and neither of them is "FAIL"."""
+    THE WINDOW IS IDENTIFIED BY SLOT, not by title. The first version asked for
+    "the first window that reports a frame", which is always the Finder --
+    open since boot -- so every row measured the Finder and the numbers were
+    meaningless while looking perfectly plausible. The slot that appears after
+    the dock click is the app's, and nothing else is.
+
+    SHRINK THEN GROW, rather than grow. Several of these windows open close
+    enough to the screen edge that there is no room to grow into, and a drag
+    aimed off-screen stops at the edge and measures nothing. Shrinking first
+    always has room, and the band the window then re-covers is the region an
+    app must have reflowed into.
+
+    The measure is the number of distinct colours in that band. An app that laid
+    its content out once, at the size it passed to gui_create, leaves it as the
+    flat fill the compositor put there -- one colour, or two with a border. An
+    app that reflowed puts structure in it. Reported as a number rather than
+    thresholded into a verdict, because 2 and 112 need different sentences and
+    neither of them is "FAIL"."""
     for slot, name in enumerate(app_files):
+        before = set(windows(serial).keys())
         try:
             ui.settle_pointer(P, *dock_icon(slot, napps))
             ui.click()
         except Exception as exc:                      # noqa: BLE001
-            note("%-9s could not be opened (%s)" % (name, exc))
+            note("%-13s could not be opened (%s)" % (name, exc))
             continue
-        time.sleep(10 * slow)
-        w = win_by_title(serial, "")
-        wins_now = [v for v in windows(serial).values() if not v["min"]]
-        target = None
-        for v in wins_now:
-            if v["title"].lower().startswith(name.lower()[:5]):
-                target = v
-        if target is None and wins_now:
-            target = wins_now[-1]
-        if target is None:
-            note("%-9s never reported a window" % name)
+        time.sleep(12 * slow)
+        now = windows(serial)
+        fresh = [k for k in now if k not in before and not now[k]["min"]]
+        if not fresh:
+            note("%-13s opened no window" % name)
             continue
-        f = frame_of(target)
+        wi = fresh[-1]
+        f = frame_of(now[wi])
+        d = (pt_(140), pt_(100))
         gx, gy = f[0] + f[2], f[1] + f[3]
-        dx, dy = pt_(170), pt_(120)
         try:
-            drag(ui, P, gx, gy, gx + dx, gy + dy)
+            drag(ui, P, gx, gy, gx - d[0], gy - d[1])       # shrink
+            time.sleep(3.0 * slow)
+            small = frame_of(windows(serial).get(wi))
+            sx, sy = small[0] + small[2], small[1] + small[3]
+            drag(ui, P, sx, sy, sx + d[0], sy + d[1])       # ...and back
         except AssertionError as exc:
-            note("%-9s could not be grabbed (%s)" % (name, exc))
+            note("%-13s could not be grabbed (%s)" % (name, exc))
+            cmd_key(ui, "w", settle=1.5)
+            time.sleep(3.0 * slow)
             continue
-        time.sleep(4.0 * slow)
-        g = frame_of(win_by_title(serial, ""))
-        img = shot("app-" + name.lower())
-        # The strip that is new: the vertical band between the old right edge
-        # and the new one, inside the content area.
-        x0, x1 = f[0] + f[2], min(g[0] + g[2], img.w) if g else f[0] + f[2]
-        y0, y1 = f[1] + pt_(40), min(f[1] + f[3], img.h)
+        time.sleep(5.0 * slow)
+        g = frame_of(windows(serial).get(wi))
+        img = shot("app-" + name.replace(".aex", ""))
         seen = set()
-        if x1 > x0 and y1 > y0:
+        if small and g:
+            x0, x1 = small[0] + small[2], min(g[0] + g[2], img.w)
+            y0, y1 = g[1] + pt_(40), min(small[1] + small[3], img.h)
             for y in range(y0, y1, 3):
                 for x in range(x0, x1, 2):
                     seen.add(img.at(x, y))
-        note("%-9s frame %r -> %r, %d distinct colour(s) in the new strip"
-             % (name, f, g, len(seen)))
+        note("%-13s %r -> %r -> %r   %d colour(s) in the reoccupied band"
+             % (name, f, small, g, len(seen)))
         cmd_key(ui, "w", settle=1.5)
-        time.sleep(3.0 * slow)
+        time.sleep(4.0 * slow)
 
 
 def main(argv):
@@ -426,8 +439,8 @@ def main(argv):
         if apps:
             print("\n=== every GUI app, grown by hand ===")
             print("     (an inventory, not a gate -- these apps have owners)\n")
-            app_survey(ui, serial, P, shot, ck, slow, pt,
-                       lambda s: print("     " + s), app_files, napps)
+            app_survey(ui, serial, P, shot,
+                       lambda s: print("     " + s), slow, pt, app_files, napps)
             print("\n     screenshots: %s" % shots)
             return 0
 
