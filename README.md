@@ -8,7 +8,8 @@ in this repository, alongside explicitly identified ports and adapted code.
 
 In its tested QEMU configuration it boots to a frosted-glass desktop, fetches and
 renders selected public HTTP and HTTPS pages through a from-scratch HTML5 parser
-with **live** pages (event handlers, timers, promises), plays H.264 video, runs a
+with **live** pages (event handlers, timers, promises), decodes H.264 and H.265
+video and MP3/FLAC/AAC/Vorbis audio out of MP4 and Matroska containers, runs a
 POSIX-inspired shell with `fork`/`exec`/pipes, and ships **AetherScript**, a
 project language with a standard library and a small IDE. It is a research and
 learning system, not a production OS, security product, or standards-complete web
@@ -16,8 +17,12 @@ browser.
 
 Where a claim here can be measured, it is, and the number is the claim: the HTML
 tokenizer passes **7032/7032** of the shared html5lib corpus and tree construction
-**1723/1818**; the H.264 decoder is byte-identical to ffmpeg across eleven streams.
-Where something does not work, this file says so rather than omitting it.
+**1723/1818**; the H.264 decoder reproduces a real 1080p bilibili stream
+**byte for byte across 254 frames**; the H.265 decoder matches the ITU conformance
+package's own MD5 on a Main 10 stream; the AAC decoder scores inside the MPEG
+full-accuracy bound on **30 of 41** ISO conformance bitstreams. Where something
+does not work, this file says so rather than omitting it — see
+[What does not work](#what-does-not-work).
 
 Development has been heavily assisted by Claude and other coding agents. That
 does not change the license, but it is part of the project's provenance. See
@@ -30,12 +35,15 @@ and the [Security Policy](SECURITY.md).
   Dock, draggable/focusable windows with traffic-light controls, a compositor with
   alpha blending, a PS/2 mouse cursor, and a real wall clock from the CMOS RTC.
 - **Browses selected real sites** — `http://` and **`https://`** pages over project
-  implementations of TCP, HTTP, TLS 1.3, and a limited X.509 verifier backed by a
-  **130-root** trust store. The TLS client negotiates x25519, P-256 and P-384 and
-  handles **HelloRetryRequest**, so a server that wants a curve we did not offer
-  first is reachable rather than impossible. It is **TLS 1.3 only** — servers that
-  speak only 1.2 (sectigo.com among them) cannot be opened yet. The implemented and
-  missing protocol pieces are listed in the [network support matrix](docs/NETWORK.md).
+  implementations of TCP, HTTP/1.1 **and HTTP/2** (frames + HPACK), a connection
+  pool, a cookie jar, **TLS 1.3 and TLS 1.2**, and a limited X.509 verifier backed
+  by a **130-root** trust store. The TLS client negotiates x25519, P-256, P-384 and
+  **P-521**, handles **HelloRetryRequest**, and does **session resumption** (PSK +
+  tickets, `psk_dhe_ke` only — never bare `psk_ke`, which would trade forward secrecy
+  for a scalar multiplication). Interop is checked against a real `openssl s_server`
+  across **48 cases**. **IPv6** with neighbour discovery, DHCP, and a link layer with
+  RFC 4861-shaped ARP are present. The implemented and missing protocol pieces are
+  listed in the [network support matrix](docs/NETWORK.md).
 - **A from-scratch HTML5 parser** — a spec tokenizer and tree construction,
   including the **adoption agency algorithm** and foster parenting, which is what
   makes real-world malformed markup produce the right tree instead of a quietly
@@ -50,13 +58,32 @@ and the [Security Policy](SECURITY.md).
   `preventDefault()` prevents it. Plus a **CSSOM**: `element.style`,
   `getComputedStyle`, and scoped invalidation — a class toggle on a leaf re-styles
   2 elements instead of the whole document.
-- **Plays H.264 video** — a from-scratch baseline decoder (CAVLC, I/P slices,
-  multiple references, weighted prediction, deblocking) that is **byte-identical to
-  ffmpeg** across eleven test streams. It runs in ring 3, not the kernel: a video is
-  decoded thirty times a second and holds megabytes of reference frames.
-- **Anti-aliased Unicode text** — a project TrueType parser + integer-only AA
-  rasterizer (the kernel is `-mno-sse` in places) with a glyph cache, font fallback,
-  and CJK support; the whole UI is anti-aliased.
+- **Decodes real video** — from-scratch **H.264 High profile** (CABAC, B slices with
+  a 4-deep pyramid, 8×8 transform, implicit weighted bi-prediction, scaling matrices)
+  and **H.265 Main / Main 10** (CTU quadtree, 35 intra modes, merge/AMVP, SAO, tiles,
+  wavefronts). Held to byte-identity with ffmpeg rather than to a tolerance, because
+  reconstruction is exactly specified integer arithmetic and any mismatch is a bug and
+  not a rounding difference: a real 1080p bilibili stream decodes **byte for byte
+  across 254 frames**, and an ITU Main 10 conformance stream matches the package's own
+  MD5 over 256 pictures. Both run in ring 3, not the kernel — a video is decoded thirty
+  times a second and holds megabytes of reference frames. **HEVC B slices are not yet
+  bit-exact; see [What does not work](#what-does-not-work).**
+- **Decodes real audio** — WAV, FLAC (bit-exact), MP3, **AAC-LC** and **Vorbis**, with
+  MP4/fMP4 and Matroska/WebM demuxing and an A/V sync clock. AAC is scored against the
+  **ISO conformance package's own reference waveforms**, not against another decoder.
+- **Reads the image formats the web uses** — PNG, JPEG, GIF including **animation with
+  real frame timing and disposal**, WebP (VP8L), APNG, ICO/CUR, BMP, and **EXIF
+  orientation** — each verified byte-exact against an independent reference.
+- **Anti-aliased Unicode text** — a project TrueType parser and integer-only AA
+  rasterizer with a glyph cache, font fallback, CJK support, plus CFF outlines,
+  colour fonts, script detection, **bidi** and OpenType shaping; the whole UI is
+  anti-aliased.
+- **Keeps what you give it** — LogitFS gained a **write-ahead log** (`data=ordered`),
+  barriers actually issued to the device and counted by the kernel, record checksums,
+  and an `fsck` that runs read-only at every mount. Proven rather than asserted: five
+  real boots against one image **with no `-snapshot`**, three files verified byte for
+  byte, a 4.4 MB double-indirect file surviving a clean reboot, and **1744 host checks
+  that cut power at every single device write**.
 - **Runs real processes** — a POSIX-ish model (`fork`/`execve`/`waitpid`, file
   descriptors, pipes, a TTY) with `/bin/sh` (pipes, redirects, job control) and
   coreutils (`ls cat echo wc head mkdir rm …`). The GUI Terminal is a real terminal
@@ -66,15 +93,39 @@ and the [Security Policy](SECURITY.md).
   bytecode, libraries, and OS integration. It has raw-memory and direct-syscall
   facilities and is not a sandbox. See [Third-Party Software and Data](THIRD_PARTY.md)
   for the lineage and upstream notice.
-- **Runs JavaScript** — a ported QuickJS as a ring-3 app, on a project
-  freestanding mini-libc + musl libm. What is missing is the platform, not the
-  language: there is no `fetch`, no `XMLHttpRequest`, no `localStorage`, and
-  `querySelectorAll` does not exist (`querySelector` handles only `#id`, `.class`
-  and a bare tag). A modern single-page app does not run here.
+- **Runs JavaScript, with a platform under it** — a ported QuickJS as a ring-3 app on
+  a project freestanding mini-libc + musl libm, now with `fetch` (streaming response
+  bodies, binary `Uint8Array` request bodies), `XMLHttpRequest`, `localStorage` and
+  `sessionStorage`, a selector engine, `performance`, `queueMicrotask`,
+  `MessageChannel`, `requestIdleCallback`, `DOMException`, the three observers,
+  `structuredClone`, `TextEncoder`, `Intl`, ES modules with dynamic `import()`, and
+  `data:` URLs. The platform is measured by an instrument, not guessed at: a probe
+  records every global lookup that misses across a corpus of real pages, and
+  `test-platform` asserts that things which **must stay absent** (`ActiveXObject`,
+  `documentMode`, …) remain absent, so a future "reduce the miss list" change fails a
+  test instead of a page. A modern single-page app still does not run here — see
+  [What does not work](#what-does-not-work).
 - **Multi-core** — an SMP scheduler: AP bring-up (ACPI + LAPIC + trampoline), a
   big-kernel-lock model with ring-3 parallelism, and parallel framebuffer present.
-- **Modern devices** — a virtio 1.0 PCI stack (virtio-blk disk, virtio-gpu display
-  with DMA present), plus legacy ATA / e1000 / VGA fallbacks, and an NVMe driver.
+  The scheduler and the kernel heap have been **peeled out from under the BKL**, and
+  the proof required is wall-clock speedup, not absence of corruption: N children must
+  finish in well under N×T1, because a syscall still holding the lock would serialise
+  them.
+- **Memory that survives being full** — per-frame **reverse mapping**, page reclaim
+  with a clock hand, pinning enforced structurally rather than by a list, and **swap**.
+  On a deliberately small (192 MiB) machine running the real desktop plus a program
+  mapping more memory than exists, 14,218–38,400 frames are evicted per run with zero
+  allocation failures, where previously the process simply died.
+- **Modern devices** — a virtio 1.0 PCI stack (virtio-blk, virtio-gpu with DMA
+  present, virtio-net), **AHCI** and **NVMe** storage, **xHCI with USB HID**, Intel
+  **HDA audio**, Realtek **RTL8169**/8139 and Intel e1000 networking, plus legacy
+  ATA / PS/2 / VGA fallbacks.
+- **A boundary between ring 3 and the kernel** — **SMEP** enabled, **W^X** enforced
+  (ELF segments map as the file asks; a W+X segment is refused outright), POSIX file
+  permissions checked on every VFS path, and every pointer crossing `int 0x80`
+  validated with the USER bit required at *every* level of the page walk. Verified by
+  an exploit suite, not by assertions: `/bin/secprobe` runs one attack per process and
+  `make test-sec` fails on the parent commit and passes now.
 
 ## Status — the road so far
 
@@ -109,11 +160,29 @@ the **Aqua → LogitOS** rename · a system-wide security/bug-hunt pass.
 schedule) and ring-3 fault containment — an app fault kills only that app; the
 kernel and desktop survive.
 
-**H.264 video:** a from-scratch baseline decoder in `c/lib/video/`, held to
-byte-identity with ffmpeg rather than to a tolerance — H.264 reconstruction is
-exactly specified integer arithmetic, so any mismatch is a bug and not a rounding
-difference. `make test-video` boots LogitOS and requires the CRC32 the guest
-computes to equal the host's.
+**Beyond the roadmap:** IPv6 + neighbour discovery, DHCP, HTTP/2 with HPACK, TLS 1.2
+and session resumption · a journalled filesystem with `fsck` and a crash-tested
+recovery path · AHCI, NVMe, xHCI/USB-HID, Intel HDA audio, virtio-net and RTL8169 ·
+H.264 High profile and H.265 Main 10 · AAC and Vorbis · MP4/Matroska demuxing with
+A/V sync · WebP, APNG, ICO, BMP, animated GIF and EXIF · text shaping and bidi ·
+reverse mapping, page reclaim and swap · SMEP and W^X · damage-tracked compositing
+(a dock hover recomposites 7% of the screen instead of 100%) · a widget toolkit with
+real layout, focus and keyboard navigation · and a CI that can tell the difference
+between a passing test and a test that cannot fail.
+
+**Video:** from-scratch H.264 and H.265 decoders in `c/lib/video/`, held to
+byte-identity with ffmpeg rather than to a tolerance — reconstruction is exactly
+specified integer arithmetic, so any mismatch is a bug and not a rounding difference.
+H.264 began as Baseline and now covers **High profile**, which is what real sites
+actually serve: bilibili's ladder advertises `avc1.640033`, and both its 640×360 and
+1920×1080 renditions decode byte for byte. `make test-video` boots LogitOS and
+requires the CRC32 the guest computes to equal the host's, so the decoder is held to
+the same bar on the target as on the host.
+
+One number is worth keeping for its own sake: on that real 1080p stream, **53 of 104
+frames come out of decode order.** Pairing timestamps with a decode-order queue — which
+is exactly what the player did before B-frames existed — would have silently mis-timed
+half of them.
 
 **The browser rewritten around a real HTML5 parser:** the 279-line tag-soup scanner
 was replaced by a spec tokenizer and tree construction, and the DOM data model with
@@ -124,21 +193,73 @@ scoped invalidation, roughly 45 CSS properties read from LibCSS instead of 19 (t
 rest were being computed and thrown away), floats, overflow clipping and true alpha
 compositing.
 
-**Networking, in progress:** HTTP is moving out of the kernel. Today a fetch runs
-the whole of DNS + TCP + TLS + HTTP synchronously inside a ring-0 syscall, so the
-UI freezes for the duration and only one request can ever be in flight. A ring-3
-HTTP/1.1 client with a real header list, a cookie jar, a connection pool and gzip is
-written and tested; the async socket layer beneath it is in progress.
+**Networking, out of the kernel:** the fetch that used to run all of DNS + TCP + TLS
++ HTTP synchronously inside a ring-0 syscall — freezing the UI, one request ever in
+flight — is gone. HTTP/1.1 and HTTP/2 now run in ring 3 over an async socket layer,
+with a header list, a cookie jar, a connection pool and content encoding. The pooling
+is measured rather than claimed: one real page loads 15 requests with **13 reused
+connections**.
+
+**Media, and what "correct" means here:** every codec in `c/lib/{video,audio,image}`
+is held to the strictest bar its format actually defines, and the difference is stated
+rather than blurred. H.264 and H.265 reconstruction is exactly specified, so the bar is
+**byte-identity with ffmpeg**. AAC and MP3 are defined by a conformance *tolerance*, so
+the bar is ISO's own reference waveforms and the published bound — and the README does
+not call that "bit-exact". Vorbis defines no numeric bound and Xiph publishes no
+conformance suite, so it gets a differential and an explicit note that **there is
+nothing to pass**.
+
+**Things that could not fail, made able to fail:** an audit of the test suite found
+**26 dead harnesses, 15 that printed a verdict and exited 0 either way, and 217
+`test-` targets wired into no suite at all** — including the five-boot durability
+proof, which belonged to nothing and had apparently never run. `make ci` now
+clean-clone-builds HEAD and asserts the artifacts exist rather than trusting make's
+exit status, and `make test-audit` fails the build when a harness cannot fail. Its
+suite list is **derived from the Makefile**, because a hand-written list is precisely
+what rotted into 217 orphans.
 
 Each milestone follows **spec → plan → implement**; specs live in
 `docs/superpowers/specs/`.
 
+## What does not work
+
+Kept deliberately, and kept specific.
+
+- **No Media Source Extensions**, so a `<video>` on a real site does not play. Every
+  decoder above exists and a web page cannot reach any of them: sites serve separate
+  audio and video fMP4 segments, and feeding those to one element is MSE or nothing.
+- **A large single-page application still does not load.** kimi.com is **12.77 MB of
+  JavaScript across 134 files**; QuickJS compiles eagerly with no pre-parse, and one
+  runtime holding all of it measures **32 MB resident for 9 MB of source**. It fits,
+  but the compile cost has not been made acceptable.
+- **HEVC B slices are not bit-exact**, at either bit depth. The failure is localized to
+  the residual path of one AMP CU in a B slice, with a two-picture reproduction; real
+  streaming content is B-heavy, so treat "HEVC works" as a claim about I/P material.
+  HEVC scaling lists are likewise not bit-exact.
+- **NX is written, tested and inert.** `c/kernel/mm` converts PTEs to frames with a
+  mask that clears the low flag bits and keeps bit 63, so an NX page reaches the frame
+  allocator as a corrupt physical address. Until ~26 masks change, a ring-3 program can
+  execute any data it can write. **SMAP** is likewise off, with the 38 sites that would
+  have to route through `user_copy_*` first enumerated rather than estimated.
+- **File permissions do not survive a reboot** — contents are durable, the mode bits
+  are in RAM.
+- **No AV1, no VP8/VP9, no Opus**, no progressive JPEG, no lossy or animated WebP.
+- **No input method**, so CJK text can be displayed but not typed.
+- **No window resize, no maximize, no cross-application clipboard, no notifications,
+  and nothing is remembered between boots.** The desktop's whole verb vocabulary is
+  drag and close.
+- **1080p video does not fit on the device** — the decoder's peak working set is about
+  62 MB against mini-libc's arena bound.
+- **There is one big kernel lock.** SMP is real and two subsystems are out from under
+  it; everything else still serialises.
+
 ## Build & run
 
-Primary development host: macOS / Apple Silicon (arm64). The remediation snapshot
-documented in `docs/CODE_AUDIT.md` was also built under WSL/Ubuntu 26.04. The
-Makefile expects a POSIX shell and Unix utilities; direct PowerShell builds are not
-documented. Target: x86_64.
+The Makefile expects a POSIX shell and Unix utilities; direct PowerShell builds are
+not supported. Target: x86_64. The project has been built on macOS / Apple Silicon
+(arm64) and under WSL/Ubuntu — on Windows, **build inside WSL**, and note that Git
+Bash's `/tmp` and WSL's `/tmp` are different directories, so a clean-clone check that
+clones on one side and builds on the other verifies nothing.
 
 Required tools include LLVM/Clang + LLD, NASM, Rustup with the
 `x86_64-unknown-none` target, Python 3, GNU Make and Unix utilities, QEMU, xorriso,
@@ -164,6 +285,9 @@ make clean
 Tests (headless, asserted over serial unless noted):
 
 ```sh
+make ci              # clean-clone-build HEAD and run the suites; asserts the artifacts exist
+make test-audit      # fails the build on a harness that cannot fail (no target, no non-zero exit)
+
 make test            # boot smoke test (asserts the kernel prints LOGIT_BOOT_OK)
 make test-shell      # fork/exec + pipes + coreutils via /bin/sh
 make test-as         # AetherScript language core (host unit tests, no QEMU)
@@ -182,7 +306,24 @@ make test-video        # on device: decodes H.264 and requires the guest CRC to 
 make test-tls-interop  # the real TLS client against a real openssl s_server, with a throwaway CA
 make test-https-smoke  # live network: per-site handshake and reachability
 make test-http-fuzz    # the ring-3 HTTP parser under ASan/UBSan, ~1.4M iterations
+
+make test-h264         # byte-identity vs ffmpeg, incl. a real 1080p bilibili stream
+make test-h265         # the same bar for HEVC; test-h265-diff prints per-case wrong-byte totals
+make test-aac-conformance  # ISO's own bitstreams against ISO's own reference waveforms
+make test-demux-diff   # container sample boundaries, timestamps and extradata vs ffmpeg
+make test-img-anim     # animated GIF/APNG: composited canvas, per-frame delay, loop count
+make test-durability   # five real boots, NO -snapshot, three files verified byte for byte
+make test-fscrash      # SIGKILL mid-write: the victim is whole or absent, never torn
+make test-barrier      # barriers actually reach the device, counted by the kernel
+make test-sec          # /bin/secprobe: one attack per process; fails on the parent commit
+make test-swap         # reclaim + swap on a deliberately small machine
 ```
+
+Several of these carry a **negative control** — the same test against a build with the
+fix compiled out, which is *required to fail*. `make test-js-syntax-control`,
+`test-loader-negctl`, `test-aui-negctl`, `test-img-fuzz-negctl`, `test-p521-control`,
+`test-arena` and others exist for one reason: an assertion nobody has watched fail is
+not a known-failing assertion.
 
 Two of these deserve a note, because both encode a lesson that cost real time:
 
@@ -208,14 +349,16 @@ names are unique, so every `#include "foo.h"` resolves via the Makefile's `INCDI
 
 ```text
 c/boot/                                       Multiboot2 + long-mode entry, ISR stubs, ring-3 entry (nasm)
-c/kernel/{core,cpu,mm,sched,exec,gui,pci}/    kernel by subsystem (incl. wm = window manager + GUI syscalls, SMP)
-c/drivers/{char,timer,block,net,virtio}/      device drivers (PS/2, PIT/RTC, ATA/NVMe/virtio-blk, e1000, virtio-gpu)
-c/fs/                                          VFS + LogitFS (hierarchical read-write inode FS)
-c/net/{link,ip,transport,core,dns,http,tls}/  network stack: eth/arp/ip/icmp/udp/dns/tcp/http + TLS 1.3 + x509
+c/kernel/{core,cpu,mm,sched,exec,gui,pci,audio}/  kernel by subsystem (wm = window manager + GUI syscalls, SMP, reclaim/swap/rmap)
+c/drivers/{char,timer,block,net,virtio,usb,audio,core}/  PS/2, PIT/RTC, ATA/AHCI/NVMe/virtio-blk, e1000/rtl8169/virtio-net, virtio-gpu, xHCI+HID, Intel HDA
+c/fs/                                          VFS + LogitFS (journalled read-write inode FS) + fsck, bcache, ramfs, credentials
+c/net/{link,ip,transport,core,dns,http,tls}/  eth/arp/ip4/ip6+ND/icmp/udp/dns/tcp/dhcp + HTTP/1.1 + HTTP/2 + TLS 1.3/1.2 + x509
 c/crypto/{hash,aead,pubkey,trust}/            project crypto code (SHA, HMAC/HKDF, ChaCha20-Poly1305, AES-GCM, X25519, ECDSA, RSA, roots)
-c/lib/{image,text}/                            shared libs (inflate/png/gif, utf8, TrueType raster)
+c/lib/{image,text,video,audio,media}/          shared ring-3 libs: png/jpeg/gif/webp/bmp/ico/exif · utf8/TrueType/CFF/shaping/bidi ·
+                                                 H.264 + H.265 · WAV/FLAC/MP3/AAC/Vorbis · MP4/MKV demux + A/V clock
 c/apps/                                        ring-3 apps + shared logit.h / clib.h / crt0
-c/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Code Studio + the aui toolkit
+c/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Preview, Gallery,
+                                                 Network, Code Studio + the aui widget toolkit
 c/apps/coreutils/                              /bin/sh + coreutils
 c/apps/as/                                     AetherScript: /bin/as (lexer, compiler, VM)
 c/apps/browser/                                browser + render engine (dom, layout, css_engine, paint, js_dom) + QuickJS
