@@ -48,12 +48,66 @@
  * is absent the runner says so and exits 0 -- deleting the data must not delete
  * the capability, and a build that cannot find a corpus is not a regression in
  * the code under test.
+ *
+ * ------------------------------------------------------------------------
+ * ONE FILE, ONE PROCESS
+ * ------------------------------------------------------------------------
+ * Every test file runs in a FORKED CHILD, and this single mechanism answers
+ * two separate problems that both made this suite unable to produce a number.
+ *
+ * 1. A CRASH COSTS ONE FILE, NOT THE RUN. `make test-wpt` used to die with
+ *    exit 139 part-way through css/, and so did html/semantics -- the two
+ *    largest and weakest subsets. A segfault in the engine took the whole
+ *    process with it, so the largest half of the corpus had no denominator at
+ *    all and the project's stated 60% target could not even be stated over the
+ *    full set. A crash is now a RESULT: the child dies, the parent records
+ *    "<path>::[CRASH]" for the file that was running, and moves to the next
+ *    one. That is the same shape tests/sites.mk uses for the site scoreboard
+ *    (one site per QEMU boot, CRASH a verdict beside BLANK/ERRORS/PAINTED),
+ *    and it is what every real WPT runner does with worker processes.
+ *
+ *    A hung file is the same category and gets the same treatment: the child
+ *    arms alarm(--file-timeout), so a native loop the JS interrupt handler
+ *    cannot see costs one file rather than the run.
+ *
+ * 2. STATE CANNOT LEAK BETWEEN FILES, which is the bigger finding. The crash
+ *    was reported as "cumulative and state-dependent across files" -- no
+ *    single file reproduced it alone, which is why per-file bisection came
+ *    back empty. Verified here: css/css-anchor-position/anchor-size-writing-
+ *    modes-001.html is where the process died in a full css run, and run on
+ *    its own it completes with 0/24. Something outlived a file.
+ *
+ *    That is not only a debugging problem. If state survives a file, a file's
+ *    RESULT can depend on which files ran before it, and every percentage
+ *    this project has quoted is one sample from an unknown distribution. A
+ *    real WPT run gives each file a fresh browsing context; a fresh PROCESS is
+ *    strictly stronger than a fresh JSContext and costs about a millisecond,
+ *    against ~10 ms to run a file. It also needs no audit of which statics in
+ *    js_dom.c, libcss or the image codecs are per-page and which are not --
+ *    the address space goes away.
+ *
+ * THE ACCEPTANCE TEST IS `make test-wpt-order`: the same corpus twice, in two
+ * different random file orders (--shuffle), and the two baselines must be
+ * IDENTICAL as sets. That one assertion proves all three of: it does not
+ * crash, isolation holds, and the number is reproducible. Until it passes,
+ * every rate here is unfalsifiable.
+ *
+ * --jobs N runs N children at once. Results are still consumed in FILE ORDER,
+ * so the report and the baseline are byte-identical to a -j1 run; parallelism
+ * buys wall time and changes no number. --no-isolate runs everything in one
+ * process, which is how the old runner behaved and is kept only so the cost
+ * and the difference can be measured.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
 
 #include "quickjs.h"
 #include "dom.h"
@@ -105,6 +159,13 @@ static const char *g_only;          /* substring filter on the test path */
  * --report writes a TSV of every result with its message for tools/wpt_rank.py. */
 static const char *g_report;
 static FILE *g_repf;
+/* One file, one process -- see the header. Isolation is the DEFAULT and
+ * --no-isolate is the escape hatch, not the other way round: a runner whose
+ * safe mode is opt-in is a runner that will be run unsafely. */
+static int g_isolate = 1;
+static int g_jobs = 1;
+static unsigned g_file_timeout = 120;   /* seconds, per file, in the child */
+static unsigned long g_shuffle;          /* 0 = sorted; else PRNG seed */
 
 /* ------------------------------------------------------------ helpers -- */
 static char *xread(const char *path, long *len)
@@ -596,8 +657,15 @@ static const char *HOOKUP =
  * `threw` is the discriminator and it is mechanical: any uncaught exception in
  * any of the file's programs sets it. `needs_driver` is the stronger signal
  * where it is available -- the file asked for /resources/testdriver.js by name. */
+/* `crashed` is a THIRD category beside "died" and "never started", and it has
+ * to be its own: a file that threw a JS exception is a browser defect somebody
+ * can go and fix from the message, and a file that took the whole process down
+ * with a signal is a different and more serious thing that no amount of reading
+ * the exception text will find. Rolling them together would bury the second in
+ * the first -- and the second is what stopped this suite producing a number. */
 struct outcome {
     int completed, harness_missing, threw, needs_driver, onload_attr;
+    int crashed;
     char why[512], stack[512];
 };
 
@@ -975,6 +1043,210 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
     dom_free(root);
 }
 
+/* ==========================================================================
+ * ONE FILE, ONE PROCESS
+ * ==========================================================================
+ * The child runs run_one() and ships the whole verdict back over a pipe; the
+ * parent never runs a test itself, so its address space stays pristine and
+ * every child forks from the same image. That is what makes a run reproducible
+ * regardless of the order the files are visited in.
+ *
+ * THE FRAMING IS THE CRASH DETECTOR. The child builds the entire payload in
+ * memory and writes it in one go, prefixed by a magic word and a length. A
+ * child that dies part-way through a test has written nothing, so the parent
+ * reads EOF; a child that dies mid-write leaves a short frame. Both are the
+ * same verdict -- CRASH -- and neither can be mistaken for a file that legally
+ * produced no subtests, which is a real and different outcome the report
+ * already separates.
+ *
+ * The parent drains the pipe to EOF BEFORE waitpid(). The other order
+ * deadlocks the moment a file's results exceed the 64 KiB pipe buffer, and
+ * dom/nodes/Element-classlist.html alone reports 1,420 subtests. */
+#define WPT_WIRE_MAGIC 0x57505431u      /* "WPT1" */
+
+static void w_u32(struct buf *b, uint32_t v)
+{ unsigned char t[4] = { (unsigned char)v, (unsigned char)(v>>8),
+                         (unsigned char)(v>>16), (unsigned char)(v>>24) };
+  bput(b, (const char *)t, 4); }
+static void w_str(struct buf *b, const char *s)
+{ uint32_t l = s ? (uint32_t)strlen(s) : 0; w_u32(b, l); if (l) bput(b, s, l); }
+
+struct rd { const unsigned char *p; size_t n, off; int bad; };
+static uint32_t r_u32(struct rd *r)
+{
+    if (r->bad || r->off + 4 > r->n) { r->bad = 1; return 0; }
+    const unsigned char *q = r->p + r->off; r->off += 4;
+    return (uint32_t)q[0] | ((uint32_t)q[1] << 8) | ((uint32_t)q[2] << 16)
+         | ((uint32_t)q[3] << 24);
+}
+/* Returns a pointer into the frame plus a length -- the payload is not NUL
+ * terminated and a subtest name may legitimately contain any byte. */
+static const char *r_str(struct rd *r, uint32_t *len)
+{
+    uint32_t l = r_u32(r);
+    if (r->bad || r->off + l > r->n) { r->bad = 1; *len = 0; return ""; }
+    const char *s = (const char *)r->p + r->off;
+    r->off += l; *len = l;
+    return s;
+}
+
+static void encode_verdict(struct buf *b, const struct res *r,
+                           const struct outcome *oc)
+{
+    w_u32(b, (uint32_t)oc->completed);
+    w_u32(b, (uint32_t)oc->harness_missing);
+    w_u32(b, (uint32_t)oc->threw);
+    w_u32(b, (uint32_t)oc->needs_driver);
+    w_u32(b, (uint32_t)oc->onload_attr);
+    w_str(b, oc->why);
+    w_str(b, oc->stack);
+    w_u32(b, (uint32_t)r->n);
+    for (int i = 0; i < r->n; i++) {
+        w_u32(b, (uint32_t)r->status[i]);
+        w_str(b, r->id[i]); w_str(b, r->msg[i]); w_str(b, r->stack[i]);
+    }
+}
+
+/* res_add takes NUL-terminated strings and the wire carries counted ones, so
+ * the copy through a temporary is not avoidable without changing struct res.
+ * It is also the only place a hostile length could bite, hence the cap. */
+static char *dupn(const char *s, uint32_t n)
+{ char *o = malloc(n + 1); memcpy(o, s, n); o[n] = 0; return o; }
+
+static int decode_verdict(const unsigned char *p, size_t n,
+                          struct res *out, struct outcome *oc)
+{
+    struct rd r = { p, n, 0, 0 };
+    memset(oc, 0, sizeof *oc);
+    oc->completed       = (int)r_u32(&r);
+    oc->harness_missing = (int)r_u32(&r);
+    oc->threw           = (int)r_u32(&r);
+    oc->needs_driver    = (int)r_u32(&r);
+    oc->onload_attr     = (int)r_u32(&r);
+    uint32_t l;
+    const char *s = r_str(&r, &l);
+    if (l >= sizeof oc->why) l = sizeof oc->why - 1;
+    memcpy(oc->why, s, l); oc->why[l] = 0;
+    s = r_str(&r, &l);
+    if (l >= sizeof oc->stack) l = sizeof oc->stack - 1;
+    memcpy(oc->stack, s, l); oc->stack[l] = 0;
+    uint32_t cnt = r_u32(&r);
+    if (r.bad) return 0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        int st = (int)r_u32(&r);
+        uint32_t ln, lm, ls;
+        const char *nm = r_str(&r, &ln);
+        const char *ms = r_str(&r, &lm);
+        const char *sk = r_str(&r, &ls);
+        if (r.bad) return 0;
+        char *a = dupn(nm, ln), *b2 = dupn(ms, lm), *c2 = dupn(sk, ls);
+        res_add(out, a, b2, c2, st);
+        free(a); free(b2); free(c2);
+    }
+    return !r.bad;
+}
+
+static void write_all(int fd, const void *buf, size_t n)
+{
+    const char *p = (const char *)buf;
+    while (n) {
+        ssize_t w = write(fd, p, n);
+        if (w < 0) { if (errno == EINTR) continue; return; }
+        if (w == 0) return;
+        p += w; n -= (size_t)w;
+    }
+}
+
+/* A running child. `idx` is the file's position in the subset list, and the
+ * parent consumes slots in that order -- so -j8 and -j1 produce byte-identical
+ * reports and the parallelism buys nothing but wall time. */
+struct kid { pid_t pid; int fd; int used; struct buf b; };
+
+static void kid_spawn(struct kid *k, const char *relpath)
+{
+    int fd[2];
+    k->used = 1; k->pid = -1; k->fd = -1; k->b.p = 0; k->b.n = k->b.cap = 0;
+    if (pipe(fd) != 0) { k->pid = -2; return; }        /* -2: run inline later */
+    /* The parent's stdio buffers must be empty across the fork, or every child
+     * inherits a copy and re-emits it. */
+    fflush(stdout); fflush(stderr); if (g_repf) fflush(g_repf);
+    pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); k->pid = -2; return; }
+    if (pid == 0) {
+        close(fd[0]);
+        /* A file that hangs in NATIVE code is invisible to the JS interrupt
+         * budget -- the watchdog in run_one only counts JS opcodes. This is
+         * the backstop, and it lands in the same CRASH bucket by design. */
+        alarm(g_file_timeout);
+        struct res r = { 0, 0, 0, 0, 0, 0 };
+        struct outcome o;
+        run_one(relpath, &r, &o);
+        struct buf b = { 0, 0, 0 };
+        w_u32(&b, WPT_WIRE_MAGIC);
+        w_u32(&b, 0);                              /* length, patched below */
+        encode_verdict(&b, &r, &o);
+        uint32_t body = (uint32_t)(b.n - 8);
+        b.p[4] = (char)(body & 0xff);       b.p[5] = (char)((body >> 8) & 0xff);
+        b.p[6] = (char)((body >> 16) & 0xff); b.p[7] = (char)((body >> 24) & 0xff);
+        write_all(fd[1], b.p, b.n);
+        close(fd[1]);
+        fflush(stdout); fflush(stderr);   /* _exit does not; -v/--dump print */
+        _exit(0);
+    }
+    close(fd[1]);
+    k->pid = pid; k->fd = fd[0];
+}
+
+/* Drain the slot and turn it into a verdict. Anything other than a complete
+ * frame from a child that exited 0 is a CRASH, named by its signal. */
+static void kid_reap(struct kid *k, const char *relpath,
+                     struct res *out, struct outcome *oc)
+{
+    if (k->pid == -2) { run_one(relpath, out, oc); k->used = 0; return; }
+    for (;;) {
+        char tmp[65536];
+        ssize_t got = read(k->fd, tmp, sizeof tmp);
+        if (got < 0) { if (errno == EINTR) continue; break; }
+        if (got == 0) break;
+        bput(&k->b, tmp, (size_t)got);
+    }
+    close(k->fd);
+    int st = 0;
+    while (waitpid(k->pid, &st, 0) < 0 && errno == EINTR) { }
+
+    int ok = 0;
+    if (k->b.n >= 8) {
+        struct rd hdr = { (const unsigned char *)k->b.p, k->b.n, 0, 0 };
+        uint32_t magic = r_u32(&hdr), body = r_u32(&hdr);
+        if (magic == WPT_WIRE_MAGIC && (size_t)body + 8 == k->b.n)
+            ok = decode_verdict((const unsigned char *)k->b.p + 8, body, out, oc);
+    }
+    if (!ok) {
+        memset(oc, 0, sizeof *oc);
+        oc->crashed = 1;
+        if (WIFSIGNALED(st)) {
+            int s = WTERMSIG(st);
+            if (s == SIGALRM)
+                snprintf(oc->why, sizeof oc->why,
+                         "the runner process did not finish this file within %us"
+                         " -- a loop the JS watchdog cannot see", g_file_timeout);
+            else
+                snprintf(oc->why, sizeof oc->why,
+                         "the runner process died on signal %d (%s) in this file",
+                         s, strsignal(s) ? strsignal(s) : "?");
+        } else if (WIFEXITED(st) && WEXITSTATUS(st) != 0) {
+            snprintf(oc->why, sizeof oc->why,
+                     "the runner process exited %d in this file", WEXITSTATUS(st));
+        } else {
+            snprintf(oc->why, sizeof oc->why,
+                     "the runner process produced a truncated verdict (%zu bytes)"
+                     " for this file", k->b.n);
+        }
+    }
+    bfree(&k->b);
+    k->used = 0;
+}
+
 /* ------------------------------------------------ what kind of test is it -- */
 /* WPT holds three kinds of file and only one of them can run here.
  *
@@ -1201,6 +1473,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--progress")) g_progress = 1;
         else if (!strcmp(argv[i], "--no-lifecycle")) g_no_lifecycle = 1;
         else if (!strcmp(argv[i], "--budget") && i + 1 < argc) g_budget = atoll(argv[++i]);
+        else if (!strcmp(argv[i], "--no-isolate")) g_isolate = 0;
+        else if (!strcmp(argv[i], "--jobs") && i + 1 < argc) g_jobs = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--file-timeout") && i + 1 < argc) g_file_timeout = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--shuffle") && i + 1 < argc) g_shuffle = strtoul(argv[++i], 0, 10);
         else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
         else if (!strcmp(argv[i], "--report") && i + 1 < argc) g_report = argv[++i];
         else if (!strcmp(argv[i], "--root") && i + 1 < argc) g_root = argv[++i];
@@ -1238,6 +1514,7 @@ int main(int argc, char **argv)
 
     long tot_pass = 0, tot_fail = 0, tot_files = 0, tot_broken = 0;
     long tot_ref = 0, tot_other = 0, tot_never = 0, tot_driver = 0, tot_onload = 0;
+    long tot_crash = 0;
     int shown = 0;
 
     for (int si = 0; si < subsets.n; si++) {
@@ -1248,9 +1525,27 @@ int main(int argc, char **argv)
         struct list files = { 0, 0, 0 };
         walk(g_root, subsets.p[si], &files);
         qsort(files.p, (size_t)files.n, sizeof *files.p, cmpstr);
+        /* --shuffle is the whole acceptance test for isolation: run the same
+         * corpus in two different orders and require identical numbers. The
+         * sort above is what makes that meaningful -- the shuffle permutes a
+         * canonical order, so a seed names a permutation rather than whatever
+         * readdir() happened to return. */
+        if (g_shuffle) {
+            unsigned long s = g_shuffle * 6364136223846793005UL + 1442695040888963407UL;
+            for (int i = files.n - 1; i > 0; i--) {
+                s = s * 6364136223846793005UL + 1442695040888963407UL;
+                int j = (int)((s >> 33) % (unsigned long)(i + 1));
+                char *t = files.p[i]; files.p[i] = files.p[j]; files.p[j] = t;
+            }
+        }
 
         long spass = 0, sfail = 0, sbroken = 0, sref = 0, sother = 0;
-        long snever = 0, sdriver = 0, sonload = 0;
+        long snever = 0, sdriver = 0, sonload = 0, scrash = 0;
+
+        /* Pass 1: classify. Reftests and support pages never reach a child --
+         * forking to decide a file is a reference document would double the
+         * cost of the two thirds of css/ that is exactly that. */
+        struct list run = { 0, 0, 0 };
         for (int fi = 0; fi < files.n; fi++) {
             if (g_listonly) { printf("%s\n", files.p[fi]); continue; }
             int kind = classify(files.p[fi]);
@@ -1260,10 +1555,29 @@ int main(int argc, char **argv)
             if (kind == K_NEITHER) { sother++; tot_other++;
                 if (g_repf) fprintf(g_repf, "NOHARNESS\t%s\t[NOT RUN]\tnot a testharness test (reference, manual or support page)\n", files.p[fi]);
                 continue; }
-            if (g_progress) fprintf(stderr, "\r%-100.100s", files.p[fi]), fflush(stderr);
+            l_add(&run, files.p[fi]);
+        }
+
+        /* Pass 2: run them, one child each, consuming the slots IN ORDER so
+         * the report does not depend on which child finished first. */
+        int nj = g_isolate ? (g_jobs < 1 ? 1 : g_jobs) : 1;
+        struct kid *pool = calloc((size_t)nj, sizeof *pool);
+        int next = 0;
+        /* Prime the pool. A slot is only refilled AFTER it is reaped, which is
+         * why the fill and the refill are written separately -- spawning into
+         * slot `fi % nj` before reaping it would orphan the child in it. */
+        if (g_isolate)
+            for (; next < run.n && next < nj; next++) kid_spawn(&pool[next % nj], run.p[next]);
+        for (int fi = 0; fi < run.n; fi++) {
+            if (g_progress) fprintf(stderr, "\r%-100.100s", run.p[fi]), fflush(stderr);
             struct res r = { 0, 0, 0, 0, 0, 0 };
             struct outcome oc;
-            run_one(files.p[fi], &r, &oc);
+            if (g_isolate) {
+                kid_reap(&pool[fi % nj], run.p[fi], &r, &oc);
+                if (next < run.n) { kid_spawn(&pool[next % nj], run.p[next]); next++; }
+            } else {
+                run_one(run.p[fi], &r, &oc);
+            }
             tot_files++;
 
             /* Zero subtests counts as a harness failure, not as a clean file.
@@ -1275,16 +1589,23 @@ int main(int argc, char **argv)
             long fpass = 0;
 
             if (!oc.completed || r.n == 0) {
-                /* DIED vs NEVER STARTED -- see `struct outcome`. A file that
-                 * threw is category 1 and belongs in the work order. A file
-                 * that ran clean and registered nothing is category 2: it is
-                 * waiting on synthetic input, and no DOM or CSS work moves it. */
-                int never_started = (!oc.threw && r.n == 0);
+                /* CRASHED vs DIED vs NEVER STARTED -- see `struct outcome`.
+                 * A file that threw is category 1 and belongs in the work
+                 * order. A file that ran clean and registered nothing is
+                 * category 2: it is waiting on synthetic input, and no DOM or
+                 * CSS work moves it. A file that took the process down with a
+                 * signal is category 3, and it is the one this runner used to
+                 * be unable to report at all -- it ended the run instead. */
+                int never_started = (!oc.threw && !oc.crashed && r.n == 0);
                 char id[2048];
                 const char *w;
-                if (never_started) {
+                if (oc.crashed) {
+                    scrash++; tot_crash++;
+                    snprintf(id, sizeof id, "%s::[CRASH]", run.p[fi]);
+                    w = oc.why[0] ? oc.why : "the runner process died in this file";
+                } else if (never_started) {
                     snever++; tot_never++;
-                    snprintf(id, sizeof id, "%s::[NOTRUN]", files.p[fi]);
+                    snprintf(id, sizeof id, "%s::[NOTRUN]", run.p[fi]);
                     w = oc.onload_attr
                         ? "registered no tests: starts from <body onload=...>, and an"
                           " event-handler CONTENT ATTRIBUTE is never compiled into a"
@@ -1294,14 +1615,15 @@ int main(int argc, char **argv)
                         : "registered no tests and raised nothing (waiting on an event)";
                 } else {
                     sbroken++; tot_broken++;
-                    snprintf(id, sizeof id, "%s::[HARNESS]", files.p[fi]);
+                    snprintf(id, sizeof id, "%s::[HARNESS]", run.p[fi]);
                     w = oc.why[0] ? oc.why : "stopped part-way with no message";
                 }
                 bl_add(&ffail, id);
                 if (g_repf) {
                     fprintf(g_repf, "%s\t%s\t%s\t",
-                            never_started ? "NOTSTARTED" : "HARNESS", files.p[fi],
-                            never_started ? "[NOTRUN]" : "[HARNESS]");
+                            oc.crashed ? "CRASH" : never_started ? "NOTSTARTED" : "HARNESS",
+                            run.p[fi],
+                            oc.crashed ? "[CRASH]" : never_started ? "[NOTRUN]" : "[HARNESS]");
                     for (const char *s = w; *s; s++) fputc(*s == '\t' || *s == '\n' ? ' ' : *s, g_repf);
                     fputc('\t', g_repf);
                     for (const char *s = oc.stack; *s; s++) fputc(*s == '\t' || *s == '\n' ? ' ' : *s, g_repf);
@@ -1309,21 +1631,26 @@ int main(int argc, char **argv)
                 }
                 if (never_started && oc.onload_attr) { sonload++; tot_onload++; }
                 else if (oc.needs_driver) { sdriver++; tot_driver++; }
-                if (g_verbose && shown < g_vmax && !blh_has(&eh, id) && !never_started) {
+                if (oc.crashed && !blh_has(&eh, id)) {
+                    /* A NEW crash is printed unconditionally, not behind -v.
+                     * It is the one outcome that used to be unreportable, and
+                     * a reader must not have to ask for it. */
+                    printf("  CRASH %s\n     %s\n", run.p[fi], w);
+                } else if (g_verbose && shown < g_vmax && !blh_has(&eh, id) && !never_started) {
                     shown++;
-                    printf("  HARNESS %s\n     %s\n", files.p[fi], w);
+                    printf("  HARNESS %s\n     %s\n", run.p[fi], w);
                 }
             }
             for (int i = 0; i < r.n; i++) {
                 /* testharness status: 0 PASS, 1 FAIL, 2 TIMEOUT, 3 NOTRUN,
                  * 4 PRECONDITION_FAILED. Only 0 counts. */
                 char id[2048];
-                snprintf(id, sizeof id, "%s::%s", files.p[fi], r.id[i]);
+                snprintf(id, sizeof id, "%s::%s", run.p[fi], r.id[i]);
                 if (g_repf) {
                     static const char *SN[] = { "PASS", "FAIL", "TIMEOUT",
                                                 "NOTRUN", "PRECONDITION_FAILED" };
                     int s = r.status[i];
-                    fprintf(g_repf, "%s\t%s\t", (s >= 0 && s < 5) ? SN[s] : "?", files.p[fi]);
+                    fprintf(g_repf, "%s\t%s\t", (s >= 0 && s < 5) ? SN[s] : "?", run.p[fi]);
                     for (const char *p = r.id[i]; *p; p++) fputc(*p == '\t' || *p == '\n' ? ' ' : *p, g_repf);
                     fputc('\t', g_repf);
                     for (const char *p = r.msg[i]; *p; p++) fputc(*p == '\t' || *p == '\n' ? ' ' : *p, g_repf);
@@ -1346,7 +1673,7 @@ int main(int argc, char **argv)
 
             if (ffail.n && fpass == 0) {
                 char wild[2048];
-                snprintf(wild, sizeof wild, "%s::*", files.p[fi]);
+                snprintf(wild, sizeof wild, "%s::*", run.p[fi]);
                 bl_add(&failures, wild);
             } else {
                 for (int i = 0; i < ffail.n; i++) bl_add(&failures, ffail.id[i]);
@@ -1354,15 +1681,18 @@ int main(int argc, char **argv)
             for (int i = 0; i < ffail.n; i++) free(ffail.id[i]);
             free(ffail.id);
         }
+        free(pool);
         if (!g_listonly) {
             if (g_progress) fprintf(stderr, "\r%100s\r", "");
             printf("  %-22s %6ld/%-6ld subtests | %4ld files | died %ld,"
-                   " never started %ld (%ld <body onload>, %ld testdriver) | not run:"
-                   " %ld reftest, %ld other\n",
+                   " crashed %ld, never started %ld (%ld <body onload>, %ld testdriver)"
+                   " | not run: %ld reftest, %ld other\n",
                    subsets.p[si], spass, spass + sfail,
-                   (long)files.n - sref - sother, sbroken, snever, sonload,
+                   (long)run.n, sbroken, scrash, snever, sonload,
                    sdriver, sref, sother);
         }
+        for (int i = 0; i < run.n; i++) free(run.p[i]);
+        free(run.p);
         for (int i = 0; i < files.n; i++) free(files.p[i]);
         free(files.p);
     }
@@ -1372,6 +1702,14 @@ int main(int argc, char **argv)
     printf("\nWPT: %ld/%ld subtests passed (%.1f%%) over %ld harness files.\n",
            tot_pass, tot, tot ? 100.0 * (double)tot_pass / (double)tot : 0.0,
            tot_files);
+    printf("     %ld files CRASHED -- the runner PROCESS died (signal, or the\n"
+           "        per-file timeout) while running them. Each cost one file and\n"
+           "        nothing else: without the one-file-one-process split a single\n"
+           "        one of these ended the run and css/ and html/semantics had no\n"
+           "        denominator at all. Tokened ::[CRASH] so the ratchet catches a\n"
+           "        new one, and they are NOT counted as failing subtests -- a\n"
+           "        crashed file contributes nothing to the rate in either direction.\n",
+           tot_crash);
     printf("     %ld files DIED -- threw part-way. Fixable, and the work order.\n"
            "     %ld files NEVER STARTED -- loaded clean, registered no test().\n"
            "        Split, because the two halves are not the same finding:\n"
