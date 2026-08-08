@@ -18,6 +18,21 @@
 #include "bfetch.h"
 #include "loader_fakebfetch.h"
 
+/* The Rust staticlib is in the loader test's link for http1.c's inflate_raw
+ * (gzip/deflate Content-Encoding), and its image decoders register themselves
+ * at startup. No fixture in loader_test.c is an image, so registration is a
+ * no-op rather than a link of all of c/lib/image.
+ *
+ * They live in THIS file, which does not include img.h, precisely so the stubs
+ * do not have to track the registry's function-pointer typedefs -- img.h has
+ * grown img_anim_fn since, and a stub written against the header of the day
+ * stops compiling the next time a codec kind is added. */
+void img_register(void *detect, void *decode);
+void img_register(void *detect, void *decode) { (void)detect; (void)decode; }
+void img_register_anim(void *detect, void *decode, void *anim);
+void img_register_anim(void *detect, void *decode, void *anim)
+{ (void)detect; (void)decode; (void)anim; }
+
 #define NREQ  64
 #define NROUTE 32
 

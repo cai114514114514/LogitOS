@@ -68,14 +68,9 @@ void img_free(struct image *o) { (void)o; }
 int img_decode(const uint8_t *p, int n, struct image *out)
 { (void)p; (void)n; (void)out; return -1; }
 void img_init(void) { }
-/* The Rust staticlib is in the link for http1.c's inflate_raw (gzip/deflate
- * Content-Encoding); its image decoders register themselves against these. No
- * fixture here is an image, so registration is a no-op rather than a link of
- * c/lib/image. */
-void img_register(img_detect_fn detect, img_decode_fn decode)
-{ (void)detect; (void)decode; }
-void img_register_anim(img_detect_fn detect, img_decode_fn decode, img_anim_fn anim)
-{ (void)detect; (void)decode; (void)anim; }
+/* img_register / img_register_anim are stubbed in loader_fakebfetch.c, not
+ * here: that TU does not include img.h, so the stubs do not have to track the
+ * codec registry's evolving function-pointer typedefs. */
 
 void browser_load(const char *u);        /* browser.c's seam */
 
