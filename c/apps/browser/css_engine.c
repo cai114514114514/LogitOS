@@ -6,6 +6,7 @@
 #include "layout_text.h"   /* the LTX_* vocabulary the text fields carry */
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -1247,6 +1248,46 @@ const char *css_prop_name(int i)
  * name and let the caller's string either supply the '-' or the capital.
  * `cssFloat` is spelled out separately -- `float` was a reserved word when the
  * IDL was written, and pages still use both. */
+/* ---- which property names does this engine turn away? ----
+ *
+ * A histogram behind an env var, and it exists because the STATIC way of
+ * asking this question is wrong in a way that is easy to miss. Attributing a
+ * failing subtest to a property by reading its TITLE credited 1,398 gradient
+ * subtests to `background-image`, because the words appear in their names --
+ * an overcount of 4x on the property that looked like the biggest single win.
+ * Dropping the loose match left 11,928 of 12,563 rows unattributable, which is
+ * not an answer either.
+ *
+ * The name is right here, at the one place an unresolvable property is turned
+ * away, so ask here. LOGIT_CSS_PROP_MISS=<path> writes "<count>\t<name>" per
+ * line at exit, and that is a work order rather than an inference.
+ *
+ * Off unless the variable is set: no allocation, no table, one predictable
+ * branch. It is a measurement seam, not a feature, and it is in this file
+ * rather than the runner because the runner belongs to the WPT line. */
+/* One APPEND per miss, not a table dumped at exit, and the reason is the
+ * runner's shape: tests/unit/wpt_test.c runs one file per PROCESS, so a
+ * histogram accumulated in memory dies with each child and an atexit dump
+ * either never runs or has every child overwrite the same path. Appending a
+ * line and aggregating with sort|uniq -c afterwards is the version that
+ * survives fork, _exit, and a crashed file. */
+static int g_pmiss_on = -1;
+
+static void pmiss_note(const char *name, int len)
+{
+    static const char *path;
+    if (g_pmiss_on < 0) {
+        path = getenv("LOGIT_CSS_PROP_MISS");
+        g_pmiss_on = path ? 1 : 0;
+    }
+    if (!g_pmiss_on || len <= 0 || len > 64) return;
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fwrite(name, 1, (size_t)len, f);
+    fputc('\n', f);
+    fclose(f);
+}
+
 int css_prop_lookup(const char *name, int len)
 {
     if (!name) return -1;
@@ -1271,6 +1312,7 @@ int css_prop_lookup(const char *name, int len)
         }
         if (ok && j == len) return p;
     }
+    pmiss_note(name, len);
     return -1;
 }
 
