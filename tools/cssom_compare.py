@@ -27,12 +27,20 @@ def read(path):
             if len(fields) < 3:
                 continue
             kind, p = fields[0], fields[1]
-            if kind == "HARNESS":
+            # The runner splits a file that never completed into two labels:
+            # HARNESS (it started and threw) and NOTSTARTED (it loaded, the
+            # harness installed, and no test() was ever registered -- the
+            # <body onload> case). Both are "no subtests reached the
+            # denominator", which is the thing being counted here, so both are
+            # dead. Counting only HARNESS undercounted the revived files by
+            # 807 the first time this was run against the split labels.
+            if kind in ("HARNESS", "NOTSTARTED"):
                 out[p] = ("dead", fields[3] if len(fields) > 3 else "")
             elif kind == "NOHARNESS":
                 out[p] = ("notrun", "")
-            else:
-                # PASS / FAIL rows: one per subtest. Presence is what matters.
+            elif kind in ("PASS", "FAIL", "TIMEOUT", "NOTRUN"):
+                # One row per subtest. Presence of any is what matters: the
+                # file got far enough to register something.
                 prev = out.get(p)
                 if prev is None or prev[0] == "dead":
                     out[p] = ("ok", "")
@@ -77,12 +85,22 @@ def main():
     ap, at = subtest_counts(sys.argv[2])
     print()
     print("subtests:  %d/%d passing before  ->  %d/%d after" % (bp, bt, ap, at))
-    print("  denominator grew by %d -- those are the subtests the dead files hid."
+    print("  denominator grew by %+d -- those are the subtests the dead files hid."
           % (at - bt))
     print("  passes moved %+d." % (ap - bp))
-    if at > bt and ap - bp < at - bt:
-        print("  So the RATE fell while the measurement got more honest. Both numbers,")
-        print("  always: quoting either alone misrepresents the change.")
+    br = 100.0 * bp / bt if bt else 0.0
+    ar = 100.0 * ap / at if at else 0.0
+    print("  rate %.1f%% -> %.1f%%" % (br, ar))
+    # Say which way it actually went. The rate is the number that gets quoted
+    # and it is the one that can move EITHER way for a good reason: reviving a
+    # file adds its subtests to the denominator, most of them failing at first.
+    if ar < br:
+        print("  The rate FELL while the measurement got more honest -- the revived")
+        print("  files brought failing subtests that were never counted before.")
+    else:
+        print("  The rate rose AND the denominator grew, so this is not the")
+        print("  denominator moving underneath the ratio.")
+    print("  Quote both, always: either alone misrepresents the change.")
 
     if still:
         print()
