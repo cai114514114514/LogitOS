@@ -1360,6 +1360,195 @@ static int has_block_child(struct node *n)
 static int content_width(struct node *n, int px, int mono, int depth);      /* fwd */
 static int min_content_width(struct node *n, int px, int mono, int depth);  /* fwd */
 
+/* ---- vertical margin collapsing (CSS2 §8.3.1) --------------------------
+ *
+ * READ THE SPEC, NOT THIS COMMENT, before changing any of it. What follows is
+ * what the code does and why, not a restatement of the rules.
+ *
+ * A collapsed margin is a SET, not a number: adjoining margins collapse to the
+ * MOST POSITIVE PLUS THE MOST NEGATIVE. That is neither max() nor a sum, and it
+ * is why struct mset exists rather than an int -- 20px and -30px adjoining give
+ * -10px, and 20px and 30px give 30px, and no single accumulator does both.
+ *
+ * Before this, layout added `mt > 0 ? mt : 0` before a box and `mb > 0 ? mb : 0`
+ * after it. So two 20px-margined paragraphs sat 40px apart instead of 20, every
+ * negative margin was discarded outright, and a heading's margin inside an
+ * unpadded container pushed the container's content down instead of escaping
+ * through its top edge.
+ *
+ * THREE ADJOINING RELATIONSHIPS ARE IMPLEMENTED, and they are the whole of
+ * §8.3.1 except clearance:
+ *
+ *   siblings   a box's bottom margin with the next in-flow sibling's top
+ *              margin. Local to layout_flow's loop: `pend` carries the set
+ *              across the gap and `cy` stays at the position BEFORE it.
+ *
+ *   parent/first child   HOISTED. The parent's flow applies mtop_of(child) --
+ *              which recurses into the child's own first in-flow child for as
+ *              long as nothing separates them -- and the child's flow then adds
+ *              NOTHING for that first child, because the margin has already
+ *              been spent above the child's border box. Both sides decide with
+ *              the SAME predicate (m_top_open), which is what keeps them from
+ *              disagreeing; and the parent tells the child what it did through
+ *              the `hoist` argument rather than the child re-deriving it,
+ *              because a flex item or a table cell reaches layout_flow having
+ *              had nothing hoisted at all.
+ *
+ *   parent/last child    PROTRUDES, the mirror image: the child's flow leaves
+ *              its last in-flow child's bottom margin unapplied, and the
+ *              parent adds mbot_of(child) after the box.
+ *
+ * An EMPTY block collapses through itself -- its own top and bottom margins are
+ * adjoining -- which is what m_self_collapse decides and what lets a margin
+ * cross a `<div></div>` sitting between two paragraphs.
+ *
+ * NOT DONE: clearance (a cleared box's margin stops collapsing), and the
+ * root element's margins are collapsed like any other box's. */
+struct mset { int pos, neg; };
+
+/* `auto` on a vertical margin computes to zero. css_engine spells auto as -1,
+ * which makes a genuine -1px margin-top indistinguishable from it -- a 1px
+ * error in a case no test in the corpus exercises, against the alternative of
+ * a new cstyle field, and cstyle belongs to the CSSOM line. */
+static int vmargin(int v) { return v == -1 ? 0 : v; }
+
+static void mset_add(struct mset *m, int v)
+{
+    if (v > m->pos) m->pos = v;
+    if (v < m->neg) m->neg = v;
+}
+static int mset_val(const struct mset *m) { return m->pos + m->neg; }
+
+static int blank_text(const struct node *c)
+{
+    for (int i = 0; i < c->textlen; i++) if (!sp((unsigned char)c->text[i])) return 0;
+    return 1;
+}
+
+/* A replaced box has no children for a margin to collapse with, and its
+ * content edge is not a place a descendant margin can reach through. */
+static int m_replaced(struct node *n)
+{
+    if (!n || n->type != N_ELEM) return 1;
+    if (fc_kind(n) != FC_NONE) return 1;
+    return tag_eq(n->tag, "img") || tag_eq(n->tag, "svg") || tag_eq(n->tag, "video") ||
+           tag_eq(n->tag, "audio") || tag_eq(n->tag, "br") || tag_eq(n->tag, "table") ||
+           tag_eq(n->tag, "hr") || tag_eq(n->tag, "input") || tag_eq(n->tag, "iframe");
+}
+
+/* Is this box's TOP margin adjoining its first in-flow child's? */
+static int m_top_open(struct node *n, const struct cstyle *st)
+{
+    if (!st || m_replaced(n)) return 0;
+    if (is_bfc_root(n, st)) return 0;
+    if (st->border_w[0] || st->pt) return 0;
+    return 1;
+}
+
+/* Is this box's BOTTOM margin adjoining its last in-flow child's? A definite
+ * height separates them: the child's bottom margin then falls inside a box
+ * whose size is already decided. */
+static int m_bot_open(struct node *n, const struct cstyle *st)
+{
+    if (!st || m_replaced(n)) return 0;
+    if (is_bfc_root(n, st)) return 0;
+    if (st->border_w[2] || st->pb) return 0;
+    if (st->has_h) return 0;
+    if (st->has_min_h && st->min_h > 0) return 0;
+    return 1;
+}
+
+/* Does this box have no in-flow content at all, so that its own top and bottom
+ * margins are adjoining and a margin passes straight through it? Floats and
+ * absolutely-positioned children are out of flow and do not count; a child that
+ * itself collapses through does not count either. */
+static int m_self_collapse(struct node *n, int depth)
+{
+    struct cstyle *st = n->style;
+    if (!st || depth > 12 || m_replaced(n)) return 0;
+    if (is_bfc_root(n, st)) return 0;
+    if (any_border(st) || st->pt || st->pb) return 0;
+    if (st->has_h && st->height != 0) return 0;
+    if (st->has_min_h && st->min_h > 0) return 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (skipped(c) || floated(c)) continue;
+        if (c->type == N_TEXT) { if (!blank_text(c)) return 0; continue; }
+        if (c->type != N_ELEM) continue;
+        if (!blockish(c)) return 0;                       /* inline content */
+        if (!m_self_collapse(c, depth + 1)) return 0;
+    }
+    return 1;
+}
+
+/* The margins adjoining `n`'s TOP edge, gathered into `m`. */
+static void mtop_of(struct node *n, struct mset *m, int depth)
+{
+    struct cstyle *st = n->style;
+    if (!st || depth > 16) return;
+    mset_add(m, vmargin(st->mt));
+    if (!m_top_open(n, st)) return;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (skipped(c) || floated(c)) continue;
+        if (c->type == N_TEXT) { if (blank_text(c)) continue; return; }
+        if (c->type != N_ELEM) continue;
+        if (!blockish(c)) return;                         /* inline content separates */
+        mtop_of(c, m, depth + 1);
+        if (!m_self_collapse(c, 0)) return;
+        mset_add(m, vmargin(c->style ? ((struct cstyle *)c->style)->mb : 0));
+    }
+    /* Ran out of in-flow children: nothing separates n's own two margins. */
+    if (m_self_collapse(n, 0)) mset_add(m, vmargin(st->mb));
+}
+
+/* The margins adjoining `n`'s BOTTOM edge. The mirror of mtop_of, walking the
+ * LAST in-flow child. `struct node` is singly linked, so "last" is a scan. */
+static void mbot_of(struct node *n, struct mset *m, int depth)
+{
+    struct cstyle *st = n->style;
+    if (!st || depth > 16) return;
+    mset_add(m, vmargin(st->mb));
+    if (!m_bot_open(n, st)) return;
+    if (m_self_collapse(n, 0)) { mset_add(m, vmargin(st->mt)); return; }
+    struct node *last = 0;
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (skipped(c) || floated(c)) continue;
+        /* Inline content AFTER the last block child separates the two margins,
+         * so this cannot stop at the first thing it sees -- it has to reach the
+         * end and find out what the last in-flow child actually is. */
+        if (c->type == N_TEXT) { if (!blank_text(c)) last = 0; continue; }
+        if (c->type != N_ELEM) continue;
+        last = blockish(c) ? c : 0;
+    }
+    if (last) mbot_of(last, m, depth + 1);
+}
+
+/* The collapsed number a caller adds, for each of the two edges. */
+static int mtop_px(struct node *n) { struct mset m = {0,0}; mtop_of(n, &m, 0); return mset_val(&m); }
+
+/* Is `c` the last in-flow child of its parent? Must agree exactly with the
+ * child mbot_of() walks to, or a bottom margin is applied twice or never. */
+static int m_is_last_inflow(struct node *c)
+{
+    for (struct node *s = c->next; s; s = s->next) {
+        if (skipped(s) || floated(s)) continue;
+        if (s->type == N_TEXT) { if (!blank_text(s)) return 0; continue; }
+        if (s->type == N_ELEM) return 0;
+    }
+    return 1;
+}
+
+/* Set by layout_flow immediately before it descends into a block child, read
+ * once by layout_block. Bit 0: this box's collapsed TOP margin chain has
+ * already been applied above its border box, so its own flow must add nothing
+ * for its first in-flow child. Bit 1: its last in-flow child's bottom margin
+ * PROTRUDES and the caller will add it, so its own flow must leave it off.
+ *
+ * A global rather than a derived fact because the other routes into a block --
+ * a flex item, a grid item, a table cell, a float, an absolutely positioned
+ * box, the page root -- hoist nothing, and a box that re-derived "my parent
+ * probably hoisted this" would drop a margin nobody ever applied. */
+static int g_mhoist;
+
 /* Border-box width of a floated box. A float is never auto-width in the block
  * sense: with no specified width it SHRINKS TO FIT, which CSS defines as
  * min(max(min-content, available), max-content). */
@@ -1490,7 +1679,7 @@ static void clip_push(const struct cstyle *st, int x, int y, int w)
     g_clipx = px0; g_clipy = py0; g_clipw = px1 - px0; g_cliph = py1 - py0;
 }
 
-static int layout_flow(struct node *n, int x, int y, int w);   /* fwd */
+static int layout_flow(struct node *n, int x, int y, int w, int hoist);   /* fwd */
 
 /* Lay out the children of block `n` whose content box starts at (x,y) with
  * content width w; returns the bottom y.
@@ -1502,6 +1691,7 @@ static int layout_flow(struct node *n, int x, int y, int w);   /* fwd */
 static int layout_block(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
+    int hoist = g_mhoist; g_mhoist = 0;     /* consumed here, never inherited */
     int nsave = g_nfloat, bsave = g_fbase, bfc = is_bfc_root(n, nst);
     int con = g_clip_on, cx0 = g_clipx, cy0 = g_clipy, cw0 = g_clipw, ch0 = g_cliph;
     if (bfc) g_fbase = g_nfloat;
@@ -1515,9 +1705,9 @@ static int layout_block(struct node *n, int x, int y, int w)
          * declaration text was not retained, and then the old summary path is
          * still better than laying a grid out as a block stack. */
         if (grid_spec(n, x, y, w, &cy) != 0)
-            cy = nst->grid_cols > 0 ? layout_grid(n, x, y, w) : layout_flow(n, x, y, w);
+            cy = nst->grid_cols > 0 ? layout_grid(n, x, y, w) : layout_flow(n, x, y, w, hoist);
     }
-    else                                                        cy = layout_flow(n, x, y, w);
+    else                                                        cy = layout_flow(n, x, y, w, hoist);
 
     if (bfc) {
         int b = float_max_bottom(nsave);
@@ -1528,7 +1718,7 @@ static int layout_block(struct node *n, int x, int y, int w)
     return cy;
 }
 
-static int layout_flow(struct node *n, int x, int y, int w)
+static int layout_flow(struct node *n, int x, int y, int w, int hoist)
 {
     struct cstyle *nst = n->style;
     int al = nst ? nst->text_align : ALIGN_LEFT;
@@ -1543,6 +1733,16 @@ static int layout_flow(struct node *n, int x, int y, int w)
         newline2(&f, 1);
         return f.y;
     }
+    /* The set of margins adjoining the flow position. `cy` stands BEFORE it:
+     * nothing is committed until content is actually placed, which is what lets
+     * a run of margins collapse instead of accumulating. See the block comment
+     * on struct mset above. */
+    struct mset pend = { 0, 0 };
+    /* Still looking at the first in-flow child, which is the one whose top
+     * margin the caller may already have spent (hoist bit 0). A box that
+     * collapses THROUGH does not end the run -- mtop_of walks past it too, and
+     * these two must agree. */
+    int first_inflow = 1;
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *st = c->style;
         if (st && st->pos_abs && blockish(c)) {
@@ -1589,7 +1789,12 @@ static int layout_flow(struct node *n, int x, int y, int w)
             /* `clear` drops the box below the floats on the named side(s). It
              * applies before the top margin is added, which is why it is here
              * and not folded into the cy += mt below. */
-            if (st->clr != CLR_NONE) cy = float_clear_y(st->clr, cy);
+            if (st->clr != CLR_NONE) {
+                /* Clearance ends the collapsing run: the margins above are
+                 * committed and THEN the box drops past the floats. */
+                cy += mset_val(&pend); pend.pos = pend.neg = 0;
+                cy = float_clear_y(st->clr, cy);
+            }
             /* A control that reached the BLOCK path -- `display:block` on an
              * <input>, or `inline-block`, which is_block() also routes here.
              * Same rule as the <img> case below it: a replaced element is not
@@ -1603,7 +1808,9 @@ static int layout_flow(struct node *n, int x, int y, int w)
                     int ml2 = st->ml < 0 ? 0 : st->ml;
                     ctl_metrics(c, st, kind, w, &cw, &chh, &cfont, &cmono);
                     if (cw > w - ml2 && w - ml2 > 0) cw = w - ml2;
-                    cy += st->mt > 0 ? st->mt : 0;
+                    mset_add(&pend, vmargin(st->mt));
+                    cy += mset_val(&pend); pend.pos = pend.neg = 0;
+                    first_inflow = 0;
                     struct item *it = additem(IT_CONTROL, c);
                     if (it) {
                         it->x = x + ml2; it->y = cy; it->w = cw; it->h = chh;
@@ -1644,7 +1851,8 @@ static int layout_flow(struct node *n, int x, int y, int w)
                         flow_children(&bf, c, 0);
                         newline2(&bf, 1);
                     }
-                    cy += chh + (st->mb > 0 ? st->mb : 0);
+                    cy += chh;
+                    mset_add(&pend, vmargin(st->mb));
                     continue;
                 }
             }
@@ -1668,20 +1876,29 @@ static int layout_flow(struct node *n, int x, int y, int w)
                 { int cw = clamp_w(st, iw, w);
                   if (cw != iw) { if (iw > 0 && ih > 0 && !h_auto) ih = ih * cw / iw; iw = cw; } }
                 if (ih <= 0) ih = iw;
-                cy += st->mt > 0 ? st->mt : 0;
+                mset_add(&pend, vmargin(st->mt));
+                cy += mset_val(&pend); pend.pos = pend.neg = 0;
+                first_inflow = 0;
                 struct item *it = additem(IT_IMAGE, c);
                 if (it) { it->x = x + ml; it->y = cy; it->w = iw; it->h = ih;
                           it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
                           if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");
                           it->hidden = st->hidden; it->opacity = st->opacity; }
-                cy += ih + (st->mb > 0 ? st->mb : 0);
+                cy += ih;
+                mset_add(&pend, vmargin(st->mb));
                 continue;
             }
             int ml = st->ml<0?0:st->ml;
             int bx = x + ml;
             int bw = block_width(st, w);
             if (st->ml < 0 && st->mr < 0) bx = x + (w - bw)/2;   /* margin:auto center */
-            cy += st->mt > 0 ? st->mt : 0;
+            /* ---- margin collapsing, the in-flow block case ---- */
+            int selfc = m_self_collapse(c, 0);
+            if (!(first_inflow && (hoist & 1))) mtop_of(c, &pend, 0);
+            /* A box that collapses through has no border box for the margin to
+             * sit above: the set goes on accumulating and the box takes the
+             * still-uncommitted position with zero height. */
+            if (!selfc) { cy += mset_val(&pend); pend.pos = pend.neg = 0; }
             int top = cy;
             int mark = nitem;                       /* for position:relative below */
             int zsave = g_z;
@@ -1693,12 +1910,20 @@ static int layout_flow(struct node *n, int x, int y, int w)
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, top, bw); }
             }
             int inw = bw - hextra(st); if (inw < 0) inw = 0;
+            int lastc = m_is_last_inflow(c);
+            /* Tell the child what has already been spent on its behalf. Both
+             * bits are decided by the SAME predicates mtop_of/mbot_of used a
+             * few lines up, which is the whole of why the two cannot disagree. */
+            g_mhoist = (m_top_open(c, st) ? 1 : 0) |
+                       ((lastc && m_bot_open(c, st)) ? 2 : 0);
             int inner = tag_eq(c->tag, "table")
                 ? layout_table(c, bx + cx_off(st), top + cy_off(st), inw)
                 : layout_block(c, bx + cx_off(st), top + cy_off(st), inw);
+            g_mhoist = 0;
             int ch = (inner - top) + st->pb + st->border_w[2];
             ch = block_height(st, ch, -1);
-            if (ch < st->font_px) ch = st->font_px;          /* min line */
+            if (ch < st->font_px && !selfc) ch = st->font_px;   /* min line */
+            if (selfc) ch = 0;                  /* collapses through: no height */
             if (bgidx >= 0) items[bgidx].h = ch;
             /* position:relative (and sticky, which is relative until scrolled
              * to) offsets the painted box without changing the space it
@@ -1709,11 +1934,17 @@ static int layout_flow(struct node *n, int x, int y, int w)
                 shift_items(mark, nitem, dx, dy);
             }
             g_z = zsave;
-            cy = top + ch + (st->mb > 0 ? st->mb : 0);
+            cy = top + ch;
+            if (!selfc) {
+                first_inflow = 0;
+                if (!(lastc && (hoist & 2))) mbot_of(c, &pend, 0);
+            }
         } else {
             /* Run of inline siblings: gather until the next block. A FLOATED
              * sibling does not end the run -- flow_node takes it out of flow
              * and the rest of the run wraps beside it. */
+            cy += mset_val(&pend); pend.pos = pend.neg = 0;
+            first_inflow = 0;
             struct iflow f;
             iflow_init(&f, x, w, cy, al, style_lineh(nst));
             while (c && (!blockish(c) || floated(c))) {
@@ -1726,7 +1957,10 @@ static int layout_flow(struct node *n, int x, int y, int w)
             cy = f.y;
         }
     }
-    return cy;
+    /* Whatever is still pending belongs to this box's content height, unless
+     * the caller undertook to add it (bit 1) -- in which case the loop above
+     * never put the last child's bottom margin into the set at all. */
+    return cy + mset_val(&pend);
 }
 
 /* Word-wise width of one text node as a single unwrapped line. */
@@ -2991,7 +3225,20 @@ void layout_page(struct node *root, int canvas_w)
     if (hst && hst->has_bg)      { page_has_bg = 1; page_bg = hst->background; }
     else if (bst && bst->has_bg) { page_has_bg = 1; page_bg = bst->background; }
 
-    doc_h = layout_block(start, mx, bst&&bst->mt>0?bst->mt:8, canvas_w - 2*mx);
+    /* The page's own top margin, collapsed with whatever is adjoining it.
+     *
+     * This used to read `bst->mt > 0 ? bst->mt : 8`, which forced 8px onto a
+     * page that had asked for `body { margin: 0 }` -- and asked for it in the
+     * same rule that set the LEFT margin, which the line above honours. Two
+     * edges of one declaration disagreeing is not a default, it is a bug; the
+     * 8px belongs to the UA sheet and is the fallback only when there is no
+     * computed style at all. */
+    int mtop = bst ? vmargin(bst->mt) : 8;
+    /* mtop_px walked into `start`'s first in-flow child, so its flow must not
+     * apply that margin a second time -- exactly the contract every other
+     * block-child placement uses. */
+    g_mhoist = 0;
+    doc_h = layout_block(start, mx, mtop, canvas_w - 2*mx);
     /* The initial containing block contains its floats too: a page whose last
      * content is a tall float must still scroll far enough to see it. */
     { int b = float_max_bottom(0); if (b > doc_h) doc_h = b; }
