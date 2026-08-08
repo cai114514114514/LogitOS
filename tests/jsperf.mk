@@ -80,8 +80,20 @@ $(BUILD)/js_syntax_test: tests/unit/js_syntax_test.c $(QJS_SRC)
 	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/unit/js_syntax_test.c $(QJS_SRC) -lm
 
-test-js-syntax: $(BUILD)/js_syntax_test
+test-js-syntax: $(BUILD)/js_syntax_test $(BUILD)/js_hash_test
 	@$(BUILD)/js_syntax_test $(JSPERF_DIR)/baidu-polyfill.js
+	@$(BUILD)/js_hash_test
+
+# The atom-hash patch must compute bit-for-bit the number the code it replaced
+# computed -- a merely-as-good hash would split the atom table between the
+# narrow and wide string paths and fail nothing until much later. Includes
+# quickjs.c directly because hash_string8 is static.
+$(BUILD)/js_hash_test: tests/unit/js_hash_test.c third_party/quickjs/quickjs.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
+	    tests/unit/js_hash_test.c third_party/quickjs/cutils.c \
+	    third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c \
+	    third_party/quickjs/libbf.c -lm
 
 # THE NEGATIVE CONTROL. Rebuilds the same gate against a quickjs.c with the
 # hex-literal patch mechanically reverted -- one sed, restoring exactly the

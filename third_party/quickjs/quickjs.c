@@ -2463,12 +2463,42 @@ static inline BOOL is_num_string(uint32_t *pval, const JSString *p)
     }
 }
 
-/* XXX: could use faster version ? */
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * Upstream's own note here was "XXX: could use faster version ?". This is
+ * that faster version, and it computes the IDENTICAL value -- required, not
+ * merely nice: the hash is stored in every JSString and compared against
+ * hash_string16's result for the same characters, so a hash function that
+ * merely "hashes as well" would silently split the atom table in two.
+ *
+ * Why it matters: interning identifiers is ~12% of compiling a real bundle
+ * (JS_NewAtomLen + __JS_NewAtom + the frees), and this loop runs over every
+ * character of every identifier, property name and string literal -- about
+ * one million calls per megabyte of source. Upstream's form is one multiply
+ * per character with each iteration waiting on the previous multiply's
+ * 3-cycle latency, plus a loop test per character.
+ *
+ * The four-at-a-time form is the same polynomial expanded:
+ *     h4 = h*263^4 + c0*263^3 + c1*263^2 + c2*263 + c3
+ * with 263^2 = 69169, 263^3 = 18191447 and 263^4 = 4784350561, which is
+ * 489383265 modulo 2^32 -- and uint32 arithmetic is exactly mod 2^32, so the
+ * truncation is the identity we want rather than an approximation of it. The
+ * four multiplies are independent, and the loop test runs a quarter as often,
+ * which is what helps under TCG where every instruction is emulated.
+ *
+ * hash_string16 is deliberately NOT changed: it must keep agreeing with this
+ * one, and the simplest way to be sure of that is to leave the definition
+ * that this one was derived from in place.
+ * RE-APPLYING AFTER A QUICKJS UPDATE: this function only.
+ * ----------------------------------------------------------------------- */
 static inline uint32_t hash_string8(const uint8_t *str, size_t len, uint32_t h)
 {
-    size_t i;
+    size_t i = 0;
 
-    for(i = 0; i < len; i++)
+    for (; i + 4 <= len; i += 4)
+        h = h * 489383265u + (uint32_t)str[i] * 18191447u +
+            (uint32_t)str[i + 1] * 69169u + (uint32_t)str[i + 2] * 263u +
+            (uint32_t)str[i + 3];
+    for (; i < len; i++)
         h = h * 263 + str[i];
     return h;
 }
@@ -2862,6 +2892,36 @@ static JSAtom __JS_NewAtomInit(JSRuntime *rt, const char *str, int len,
     return __JS_NewAtom(rt, p, atom_type);
 }
 
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * Equality-only compare for narrow strings, eight bytes at a time.
+ *
+ * __JS_FindAtom is the atom table's lookup and it runs once per identifier,
+ * property name and string literal in the source: 219,000 memcmp calls to
+ * compile the 1.55 MB kimi.com bundle, mean length 8.7 bytes. On a glibc host
+ * that is a call into a SIMD memcmp. On LogitOS it is a call into mini-libc's
+ * memcmp, which is a BYTE LOOP -- roughly sixty emulated instructions where
+ * this is about ten -- and the guest is where the number matters.
+ *
+ * Only equality is needed here, never ordering, so whole 64-bit words can be
+ * compared and the tail done byte-wise; both reads stay inside `len` bytes.
+ * get_u64 is QuickJS's own packed-struct unaligned load -- NOT a
+ * constant-length memcpy, which with the kernel's -ffreestanding flags clang
+ * leaves as a real call to memcpy (we looked at the disassembly, and the
+ * first version of this helper was slower than the memcmp it replaced).
+ * RE-APPLYING AFTER A QUICKJS UPDATE: this helper plus its single use below.
+ * ----------------------------------------------------------------------- */
+static inline BOOL js_str8_equal(const uint8_t *a, const uint8_t *b, size_t len)
+{
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8)
+        if (get_u64(a + i) != get_u64(b + i))
+            return FALSE;
+    for (; i < len; i++)
+        if (a[i] != b[i])
+            return FALSE;
+    return TRUE;
+}
+
 static JSAtom __JS_FindAtom(JSRuntime *rt, const char *str, size_t len,
                             int atom_type)
 {
@@ -2878,7 +2938,7 @@ static JSAtom __JS_FindAtom(JSRuntime *rt, const char *str, size_t len,
             p->atom_type == JS_ATOM_TYPE_STRING &&
             p->len == len &&
             p->is_wide_char == 0 &&
-            memcmp(p->u.str8, str, len) == 0) {
+            js_str8_equal(p->u.str8, (const uint8_t *)str, len)) {   /* LOGIT PATCH: was memcmp(...)==0 */
             if (!__JS_AtomIsConst(i))
                 p->header.ref_count++;
             return i;
@@ -3856,9 +3916,26 @@ static JSValue string_buffer_end(StringBuffer *s)
         s->str = NULL;
         return JS_AtomToString(s->ctx, JS_ATOM_empty_string);
     }
-    if (s->len < s->size) {
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) -------------------
+     * This is upstream's own "XXX: should add some slack to avoid unnecessary
+     * calls", done. Every string the engine builds ends here, and a
+     * StringBuffer starts at 32 characters and grows geometrically, so for the
+     * short strings that dominate a compile -- identifiers, property names,
+     * string literals -- the shrink reclaimed a couple of dozen bytes at the
+     * cost of a realloc. Compiling the 1.55 MB kimi.com bundle made 220,000
+     * realloc calls, and this is where most of them came from.
+     *
+     * Nothing reads a JSString's allocated size, only its len: js_free_string
+     * hands the pointer back to the allocator, which knows the true size, and
+     * JS_ConcatStringInPlace asks js_malloc_usable_size -- which the slack
+     * makes MORE likely to succeed, not less. So the only cost is the slack
+     * itself, and it is bounded at 32 bytes per string by the test below
+     * rather than left proportional.
+     * RE-APPLYING AFTER A QUICKJS UPDATE: the `waste > 32` guard.
+     * -------------------------------------------------------------------- */
+    if (s->len < s->size &&
+        (size_t)((s->size - s->len) << s->is_wide_char) > 32) {
         /* smaller size so js_realloc should not fail, but OK if it does */
-        /* XXX: should add some slack to avoid unnecessary calls */
         /* XXX: might need to use malloc+free to ensure smaller size */
         str = js_realloc_rt(s->ctx->rt, str, sizeof(JSString) +
                             (s->len << s->is_wide_char) + 1 - s->is_wide_char);

@@ -140,8 +140,41 @@ int dbuf_put(DynBuf *s, const uint8_t *data, size_t len)
         if (dbuf_realloc(s, s->size + len))
             return -1;
     }
-    memcpy(s->buf + s->size, data, len);
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) -------------------
+     * This is the bytecode emitter's inner loop: emit_op/emit_u8/emit_u16/
+     * emit_u32/emit_atom all land here, so compiling a 1.55 MB bundle calls
+     * it millions of times, and nearly every call copies ONE, TWO or FOUR
+     * bytes. Upstream hands all of them to memcpy() with a runtime length,
+     * which cannot be inlined away.
+     *
+     * On a glibc host that is a call into an AVX2 memcpy to move one byte --
+     * wasteful but fast. On LogitOS it is a call into mini-libc's memcpy,
+     * which tests co-alignment and then copies 8 bytes at a time, and under
+     * TCG every one of those instructions is emulated. That asymmetry is
+     * part of why the guest costs ~14x the host to compile the same bundle
+     * when raw integer work costs only ~8.5x.
+     *
+     * Splitting out the sizes that actually occur turns each into a single
+     * store; the default arm is byte-identical to what upstream did.
+     *
+     * These use QuickJS's own packed-struct accessors rather than a
+     * constant-length memcpy, and that is load-bearing: with the kernel's
+     * -ffreestanding flags clang does NOT expand `memcpy(p, data, 4)` into a
+     * MOV, it merges the arms and calls memcpy with a register length -- we
+     * looked at the disassembly. get_u32/put_u32 are what the rest of the
+     * engine already uses for unaligned access, so they are also the idiom a
+     * future maintainer will recognise.
+     * RE-APPLYING AFTER A QUICKJS UPDATE: the switch, nothing else.
+     * -------------------------------------------------------------------- */
+    uint8_t *p = s->buf + s->size;
     s->size += len;
+    switch (len) {
+    case 1: p[0] = data[0]; break;
+    case 2: put_u16(p, get_u16(data)); break;
+    case 4: put_u32(p, get_u32(data)); break;
+    case 8: put_u64(p, get_u64(data)); break;
+    default: memcpy(p, data, len); break;
+    }
     return 0;
 }
 
@@ -158,7 +191,15 @@ int dbuf_put_self(DynBuf *s, size_t offset, size_t len)
 
 int dbuf_putc(DynBuf *s, uint8_t c)
 {
-    return dbuf_put(s, &c, 1);
+    /* LOGIT PATCH: was `return dbuf_put(s, &c, 1);` -- a call, a spill of the
+     * byte to the stack so it has an address, and then a memcpy of length 1.
+     * See the comment in dbuf_put. */
+    if (unlikely((s->size + 1) > s->allocated_size)) {
+        if (dbuf_realloc(s, s->size + 1))
+            return -1;
+    }
+    s->buf[s->size++] = c;
+    return 0;
 }
 
 int dbuf_putstr(DynBuf *s, const char *str)

@@ -17,6 +17,25 @@
  *      the only point at which import.meta can be populated, because after
  *      evaluation the module body has already read it.
  *
+ *      WHAT COMPILE_ONLY DOES NOT DO -- measured, 2026-08-08, and worth
+ *      knowing before reading a profile of a module page. It does not stop at
+ *      compiling. js_parse_program calls js_resolve_module unconditionally
+ *      (upstream's own comment there is "Could add a flag to avoid resolution
+ *      if necessary"), so the JS_Eval below RECURSIVELY LOADS the entire
+ *      static import graph before it returns: this loader re-enters itself,
+ *      once per dependency, depth first, inside a single JS_Eval call. That
+ *      is why a module page appears to freeze in one call rather than
+ *      progressing chunk by chunk, and why the import.meta of a dependency is
+ *      set after its own children have already been fetched (harmless --
+ *      import.meta is read at evaluation, not at compile).
+ *
+ *      It costs nothing today because bfetch_sync is synchronous either way.
+ *      It becomes the thing to fix the moment fetching can overlap: the graph
+ *      is discovered one edge at a time inside the compiler, so no two of a
+ *      page's chunks can ever be in flight at once. tests/unit/js_bench.c has
+ *      to install a stub loader for exactly this reason -- without one, a real
+ *      1.55 MB module fixture cannot be compiled at all.
+ *
  *   3. BARE SPECIFIERS ARE REFUSED, LOUDLY. `import "react"` has no meaning
  *      without an import map, and resolving it as a relative path would turn a
  *      diagnosable "bare specifier" into an undiagnosable 404 three hops into
