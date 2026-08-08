@@ -2671,3 +2671,9 @@ clean:
 # WHERE the receive path runs. Own fragment; start at tests/boot/netwire.py's
 # header for why `-netdev user` cannot measure a TCP window.
 -include tests/netperf.mk
+
+# Ring-3 memory protection: W^X, NX, SMEP/SMAP and syscall pointer validation,
+# plus /bin/secprobe -- the hostile ring-3 program the gate drives. Own fragment
+# for the same reason as the others: a whole-file Makefile overwrite from a
+# concurrent line cannot delete it.
+-include tests/sec.mk
