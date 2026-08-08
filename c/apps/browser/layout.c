@@ -1,5 +1,25 @@
 #include "layout.h"
 #include "css.h"
+/* The flex sizing algorithm, as a pure function over numbers (CSS Flexbox § 9).
+ * layout.c owns the DOM, the display list and the measurement; layout_flex.c
+ * owns the arithmetic. See flex_row_spec() below for the whole of the seam.
+ *
+ * THE .c IS INCLUDED, NOT LINKED, AND THAT IS DELIBERATE. Fourteen Makefile
+ * rules across five fragments list layout.c in a source list, and two of them
+ * -- tests/reftest.mk and tests/wpt.mk -- are the harnesses that MEASURE this
+ * file. A source list is exactly the thing a measured line must not be able to
+ * edit: "the link must match browser.aex's" is tests/reftest.mk's own header,
+ * and a build where the engine under test quietly added a translation unit to
+ * its own scoreboard is the failure that header exists to prevent. Making the
+ * two files one translation unit keeps every one of those links working
+ * UNCHANGED, and leaves layout_flex.c independently compilable so `make
+ * test-flex` still builds it on its own against the spec's numbers.
+ *
+ * The only cost is a shared file scope, and it cost exactly one rename:
+ * layout.c's own per-item flex record is `struct flexslot`, because
+ * layout_flex.c's is `struct fitem`. No static function name collides. */
+#include "layout_flex.h"
+#include "layout_flex.c"
 /* forms.h for fc_kind() and the padding constants ONLY. It is a header of
  * inline functions over the DOM plus declarations; nothing layout.c calls from
  * it lives in forms.c, so this file gains no link dependency and the eight host
@@ -1692,7 +1712,7 @@ static int flex_run(struct node *first, struct node **end, int px, int mono)
  * Bare text / inline siblings participate as anonymous flex items, exactly as
  * CSS says (a <button>Platform<svg/></button> must not lose "Platform"). */
 
-struct fitem {
+struct flexslot {
     struct node *n;        /* element item, or the first node of an inline run */
     struct node *end;      /* anonymous run: one past its last node; else NULL */
     struct cstyle *st;     /* n->style for an element item, else NULL */
@@ -1709,7 +1729,7 @@ struct fitem {
 };
 
 /* The container's effective align value for one item. */
-static int flex_align_of(const struct cstyle *nst, const struct fitem *fi)
+static int flex_align_of(const struct cstyle *nst, const struct flexslot *fi)
 {
     int a = fi->st ? fi->st->align_self : AL_AUTO;
     if (a == AL_AUTO) a = nst ? nst->align_items : AL_STRETCH;
@@ -1722,7 +1742,7 @@ static int flex_align_of(const struct cstyle *nst, const struct fitem *fi)
 /* Gather the container's flex items in document order, then stable-sort by
  * `order`. `cap` is the child count, which is an upper bound on the item count
  * (an anonymous run always swallows at least one child). */
-static int flex_collect(struct node *n, struct fitem *fi, int cap, int fpx, int fmono)
+static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, int fmono)
 {
     int cnt = 0;
     struct node *c = n->first_child;
@@ -1732,7 +1752,7 @@ static int flex_collect(struct node *n, struct fitem *fi, int cap, int fpx, int 
             int rw = flex_run(c, &end, fpx, fmono);
             if (end == c) { c = c->next; continue; }   /* nothing consumable */
             if (rw > 0) {
-                struct fitem *f = &fi[cnt++];
+                struct flexslot *f = &fi[cnt++];
                 memset(f, 0, sizeof *f);
                 f->n = c; f->end = end; f->base = rw;
                 f->shrink = 1024; f->bgidx = -1;
@@ -1741,7 +1761,7 @@ static int flex_collect(struct node *n, struct fitem *fi, int cap, int fpx, int 
             continue;
         }
         if (skipped(c)) { c = c->next; continue; }
-        struct fitem *f = &fi[cnt++];
+        struct flexslot *f = &fi[cnt++];
         memset(f, 0, sizeof *f);
         f->n = c; f->st = c->style; f->bgidx = -1;
         f->order = f->st ? f->st->order : 0;
@@ -1752,7 +1772,7 @@ static int flex_collect(struct node *n, struct fitem *fi, int cap, int fpx, int 
     /* Insertion sort: stable, and `order` is almost always all-zero so this is
      * a single comparison pass in practice. */
     for (int i = 1; i < cnt; i++) {
-        struct fitem key = fi[i];
+        struct flexslot key = fi[i];
         int j = i - 1;
         while (j >= 0 && fi[j].order > key.order) { fi[j + 1] = fi[j]; j--; }
         fi[j + 1] = key;
@@ -1762,7 +1782,7 @@ static int flex_collect(struct node *n, struct fitem *fi, int cap, int fpx, int 
 
 /* Lay one flex item out at (px,py) with border-box main/cross sizes, recording
  * the display-list range and background index. Returns its border-box height. */
-static int flex_place(struct fitem *f, int px, int py, int iw, int forced_h, int fpx, int fmono)
+static int flex_place(struct flexslot *f, int px, int py, int iw, int forced_h, int fpx, int fmono)
 {
     f->lo = nitem;
     if (!f->st) {                                    /* anonymous inline run */
@@ -1810,7 +1830,7 @@ static int flex_place(struct fitem *f, int px, int py, int iw, int forced_h, int
  * space goes to flex-grow, negative to flex-shrink scaled by the base size --
  * which is why an over-full row of default (shrink:1) items compresses in
  * proportion to how big each one wanted to be. */
-static void flex_resolve(struct fitem *fi, int lo, int hi, int freesp, int mainw)
+static void flex_resolve(struct flexslot *fi, int lo, int hi, int freesp, int mainw)
 {
     long gsum = 0, ssum = 0;
     for (int i = lo; i < hi; i++) {
@@ -1858,6 +1878,144 @@ static void flex_justify(int mode, int slack, int count, int *lead, int *between
     }
 }
 
+/* ---- the seam to layout_flex.c ------------------------------------------
+ *
+ * layout_flex.c is CSS Flexbox § 9 as a pure function over numbers: no DOM, no
+ * display list, no font backend. Everything it cannot do for itself arrives
+ * through this file -- one `struct flex_item_in` per collected item, and a
+ * `cross` callback that lays an item out at a resolved main size and reports
+ * the cross size that produces. What comes back is, per item, a border box
+ * relative to the container's content-box origin, which flex_place then draws
+ * into.
+ *
+ * ROWS ONLY, and that is a real boundary rather than an unfinished edge. In a
+ * row the main axis is the inline axis, so an item's max-content main size is
+ * a width -- content_width() answers that without laying anything out, which
+ * is what makes the § 9.2 flex base size computable before any layout runs. In
+ * a COLUMN the main axis is the block axis and the max-content main size is a
+ * HEIGHT, which this engine cannot produce without first knowing the item's
+ * width -- and the width, in the column case, is the cross size the algorithm
+ * has not resolved yet. Feeding layout_flex_run() a guessed height would make
+ * every number downstream of it a guess too, so the column keeps the stacking
+ * path below, whose approximation is at least stated. */
+
+/* Content-box cross size of one flex item, from a TRIAL layout that is then
+ * rolled back. The display list is an append-only array, so "roll back" is
+ * restoring `nitem`; the float array and the stacking level are saved the same
+ * way. Floats are hidden from the trial (g_fbase = g_nfloat) because a flex
+ * item is a block formatting context of its own -- the same scoping flex_place
+ * does for the real pass, and without it a measurement at x=0 would be narrowed
+ * by exclusions belonging to somebody else's coordinates. */
+static int flex_measure_cross(struct flexslot *f, int inner_w, int fpx, int fmono)
+{
+    int save_n = nitem, save_z = g_z, nsave = g_nfloat, bsave = g_fbase;
+    int h;
+    if (inner_w < 0) inner_w = 0;
+    g_fbase = g_nfloat;
+    if (!f->st) {                                     /* anonymous inline run */
+        struct iflow fl;
+        iflow_init(&fl, 0, inner_w > 0 ? inner_w : 1, 0, ALIGN_LEFT, fpx * 5 / 4);
+        for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
+        newline2(&fl, 1);
+        h = fl.y;
+        (void)fmono;
+    } else {
+        h = layout_block(f->n, 0, 0, inner_w);
+        { int b = float_max_bottom(nsave); if (b > h) h = b; }
+    }
+    nitem = save_n; g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
+    return h < 0 ? 0 : h;
+}
+
+struct flexbridge { int fpx, fmono; };
+
+static int flexb_cross(void *ref, int main_inner, void *ctx)
+{
+    struct flexbridge *b = (struct flexbridge *)ctx;
+    return flex_measure_cross((struct flexslot *)ref, main_inner, b->fpx, b->fmono);
+}
+
+/* Run § 9 over an already-collected row and draw the result. Returns 0 and
+ * writes the container's content bottom to *out_bottom; -1 means "could not
+ * allocate", and the caller falls back to the path below rather than dropping
+ * the container. */
+static int flex_row_spec(struct node *n, int x, int y, int w,
+                         struct flexslot *fi, int cnt, int fpx, int fmono,
+                         int *out_bottom)
+{
+    struct cstyle *nst = n->style;
+    struct flex_item_in *in = kmalloc(sizeof(struct flex_item_in) * (unsigned long)cnt);
+    if (!in) return -1;
+    memset(in, 0, sizeof(struct flex_item_in) * (unsigned long)cnt);
+
+    for (int i = 0; i < cnt; i++) {
+        struct flexslot *f = &fi[i];
+        in[i].ref = f;
+        in[i].st = f->st;
+        in[i].basis = FLEX_FB_FROM_STYLE;
+        if (!f->st) {
+            /* An anonymous item generated from a run of inline content: its
+             * max-content main size is the run measured unwrapped (flex_run
+             * already did that, INCLUDING the form-control branch that makes an
+             * <input size=20> contribute its box rather than its text), and its
+             * minimum is the widest token in it. */
+            int mn = 0;
+            for (struct node *r = f->n; r && r != f->end; r = r->next) {
+                int v = min_content_width(r, fpx, fmono, 0);
+                if (v > mn) mn = v;
+            }
+            in[i].min_content_main = mn;
+            in[i].max_content_main = f->base;
+            continue;
+        }
+        /* content_width/min_content_width answer in BORDER-box px; § 9.2 wants
+         * content-box contributions, so the border and padding come off here. */
+        int ex = hextra(f->st);
+        int mx = content_width(f->n, fpx, fmono, 0) - ex;
+        int mnv = min_content_width(f->n, fpx, fmono, 0) - ex;
+        in[i].max_content_main = mx < 0 ? 0 : mx;
+        in[i].min_content_main = mnv < 0 ? 0 : mnv;
+        if (tag_eq(f->n->tag, "img") || tag_eq(f->n->tag, "svg") ||
+            tag_eq(f->n->tag, "video") || tag_eq(f->n->tag, "canvas"))
+            in[i].replaced = 1;
+    }
+
+    struct flex_in cin;
+    memset(&cin, 0, sizeof cin);
+    cin.st = nst;
+    cin.avail_main = w;
+    { int sh = spec_h(nst, -1);
+      cin.avail_cross = sh > 0 ? sh - vextra(nst) : FLEX_INDEFINITE;
+      if (cin.avail_cross != FLEX_INDEFINITE && cin.avail_cross < 0) cin.avail_cross = 0; }
+    cin.wm = FLEX_WM_HORIZ_TB;
+    cin.rtl = 0;
+    cin.align_content_space = -1;
+
+    struct flexbridge br; br.fpx = fpx; br.fmono = fmono;
+    struct flex_metrics fm; fm.cross = flexb_cross; fm.baseline = 0; fm.ctx = &br;
+
+    struct flex_out fo;
+    if (layout_flex_run(&cin, in, cnt, &fm, &fo) != 0) { kfree(in); return -1; }
+
+    int bot = y;
+    for (int i = 0; i < fo.nitems; i++) {
+        struct flex_item_out *o = &fo.items[i];
+        struct flexslot *f = (struct flexslot *)o->ref;
+        f->used = o->w; f->cross = o->h;
+        int ch = flex_place(f, x + o->x, y + o->y, o->w, o->h, fpx, fmono);
+        if (y + o->y + ch > bot) bot = y + o->y + ch;
+    }
+    int bottom = y + fo.cross_size;
+    /* A definite cross size is the answer even when something overflows it;
+     * only a content-sized container grows to what it actually drew. */
+    if (cin.avail_cross == FLEX_INDEFINITE && bot > bottom) bottom = bot;
+
+    layout_flex_free(&fo);
+    kfree(in);
+    *out_bottom = bottom;
+    return 0;
+}
+
 static int layout_flex(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
@@ -1880,13 +2038,23 @@ static int layout_flex(struct node *n, int x, int y, int w)
     int nkids = 0;
     for (struct node *k = n->first_child; k; k = k->next) nkids++;
     if (!nkids) return y;
-    struct fitem *fi = kmalloc(sizeof(struct fitem) * (unsigned long)nkids +
+    struct flexslot *fi = kmalloc(sizeof(struct flexslot) * (unsigned long)nkids +
                                sizeof(int) * (unsigned long)nkids * 4);
     if (!fi) return y;
     int *lstart = (int *)(fi + nkids);
     int *lend = lstart + nkids, *ytop = lend + nkids, *yhgt = ytop + nkids;
     int cnt = flex_collect(n, fi, nkids, fpx, fmono);
     if (!cnt) { kfree(fi); return y; }
+
+    /* A row goes through CSS Flexbox § 9 proper (layout_flex.c). Only a failed
+     * allocation falls through to the single-pass approximation below. */
+    if (row) {
+        int bottom;
+        if (flex_row_spec(n, x, y, w, fi, cnt, fpx, fmono, &bottom) == 0) {
+            kfree(fi);
+            return bottom;
+        }
+    }
 
     if (!row) {
         /* ---- column ----
@@ -1899,7 +2067,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
         int container_h = spec_h(nst, -1);
         int cy = y, first = 1;
         for (int k = 0; k < cnt; k++) {
-            struct fitem *f = &fi[rev ? cnt - 1 - k : k];
+            struct flexslot *f = &fi[rev ? cnt - 1 - k : k];
             struct cstyle *st = f->st;
             f->cms = st && st->ml > 0 ? st->ml : 0;
             f->cme = st && st->mr > 0 ? st->mr : 0;
@@ -1938,7 +2106,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
                  * move down, but the text stays at the top of the box. */
                 int run = 0;
                 for (int k = 0; k < cnt; k++) {
-                    struct fitem *f = &fi[rev ? cnt - 1 - k : k];
+                    struct flexslot *f = &fi[rev ? cnt - 1 - k : k];
                     shift_items(f->lo, f->hi, 0, run);
                     int d = (int)((long)slack * f->grow / gsum);
                     if (f->bgidx >= 0) items[f->bgidx].h += d;
@@ -1950,7 +2118,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
                 flex_justify(nst ? nst->justify : JC_START, slack, cnt, &lead, &between);
                 int run = lead;
                 for (int k = 0; k < cnt; k++) {
-                    struct fitem *f = &fi[rev ? cnt - 1 - k : k];
+                    struct flexslot *f = &fi[rev ? cnt - 1 - k : k];
                     shift_items(f->lo, f->hi, 0, run);
                     run += between;
                 }
@@ -1963,7 +2131,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
 
     /* ---- row: measure hypothetical main sizes ---- */
     for (int i = 0; i < cnt; i++) {
-        struct fitem *f = &fi[i];
+        struct flexslot *f = &fi[i];
         struct cstyle *st = f->st;
         if (!st) {
             /* Anonymous run: base is its unwrapped width, and its minimum is
@@ -2034,7 +2202,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
 
         int cx = x + lead, linetop = cy, linecross = 0;
         for (int k = 0; k < ncell; k++) {
-            struct fitem *f = &fi[rev ? hi - 1 - k : lo + k];
+            struct flexslot *f = &fi[rev ? hi - 1 - k : lo + k];
             cx += f->ms;
             int top = cy + f->cms;
             int ch = flex_place(f, cx, top, f->used, 0, fpx, fmono);
@@ -2045,7 +2213,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
         /* Cross-axis alignment, applied by translating each item's finished
          * range now that the line's cross size is known. */
         for (int i = lo; i < hi; i++) {
-            struct fitem *f = &fi[i];
+            struct flexslot *f = &fi[i];
             int align = flex_align_of(nst, f);
             int space = linecross - (f->cms + f->cross + f->cme);
             if (align == AL_STRETCH) {
