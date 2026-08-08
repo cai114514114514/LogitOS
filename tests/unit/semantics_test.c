@@ -522,6 +522,13 @@ int main(void)
          "var ok=document.activeElement===i;i.remove();return ok;})()",
          "... and on a fresh <input type=checkbox>");
 
+    ckjs("(function(){var w=document.createElement('div');"
+         "w.style.display='none';var b=document.createElement('button');"
+         "w.appendChild(b);document.body.appendChild(w);"
+         "b.focus();var moved=document.activeElement===b;w.remove();"
+         "return !moved;})()",
+         "focus() refuses an element inside a display:none subtree");
+
     /* ---- :heading ---- */
     ckjs("$('h2').matches(':heading') && !$('p1').matches(':heading')",
          ":heading matches h1-h6 and nothing else");

@@ -1031,10 +1031,46 @@ static const char *SEMANTICS_PRELUDE =
  * real browser fc_set_dispatch IS wired, the native path moves activeElement,
  * and every line below is skipped. It only runs where the alternative is
  * nothing happening at all. */
+/* AN ELEMENT THAT IS NOT RENDERED IS NOT FOCUSABLE, and this is the check the
+ * fallback below has no other way to make. focus.c's own predicate walks the
+ * ancestor chain looking at each node's computed style, and the fallback runs
+ * precisely when focus.c's answer never arrived -- so the same question has to
+ * be asked from JS. Three subtests in css/css-contain/content-visibility ask
+ * it directly: focusing into a `display: none` or `content-visibility: hidden`
+ * subtree must NOT work, and a fallback that focuses anything focusable-shaped
+ * makes it work. */
+"function isRenderedEl(el) {\n"
+"  for (var q = el; q && q.nodeType === 1; q = q.parentNode) {\n"
+       /* The INLINE style first, and separately, because it is exact and needs
+        * no cascade: a host link that never ran the selector engine still has
+        * `el.style.display`, and `getComputedStyle` there answers ''. */
+"    var isty = q.style;\n"
+"    if (isty) {\n"
+"      if (isty.display === 'none') return false;\n"
+"      if (isty.visibility === 'hidden' || isty.visibility === 'collapse') return false;\n"
+"    }\n"
+"  }\n"
+"  if (typeof G.getComputedStyle !== 'function') return true;\n"
+"  for (var p = el; p && p.nodeType === 1; p = p.parentNode) {\n"
+"    var st = null;\n"
+"    try { st = G.getComputedStyle(p); } catch (e) { return true; }\n"
+"    if (!st) return true;\n"
+"    if (st.display === 'none') return false;\n"
+"    if (st.visibility === 'hidden' || st.visibility === 'collapse') return false;\n"
+"    var cv = null;\n"
+"    try { cv = st.getPropertyValue ? st.getPropertyValue('content-visibility') : null; }\n"
+"    catch (e2) { cv = null; }\n"
+       /* `content-visibility: auto` skips its contents only while off-screen,
+        * which nothing here can know, so only `hidden` counts. */
+"    if (cv === 'hidden') return false;\n"
+"  }\n"
+"  return true;\n"
+"}\n"
 "function isFocusable(el) {\n"
 "  if (!el || el.nodeType !== 1 || !el.isConnected) return false;\n"
 "  if (isDisabledCtl(el)) return false;\n"
 "  if (el.hasAttribute('hidden')) return false;\n"
+"  if (!isRenderedEl(el)) return false;\n"
 "  if (el.hasAttribute('tabindex')) return true;\n"
 "  var t = tagOf(el);\n"
 "  if (t === 'input') return lc(el.getAttribute('type') || '') !== 'hidden';\n"
