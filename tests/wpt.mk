@@ -343,6 +343,8 @@ test-wpt-depth: $(BUILD)/wpt_test
 test-wpt-order: $(BUILD)/wpt_test
 	@if [ ! -d "$(WPT_ROOT)" ]; then \
 	    echo "test-wpt-order: no corpus at $(WPT_ROOT) -- nothing to measure."; exit 0; fi
+	@$(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) --list \
+	    | sort > $(BUILD)/wpt_order_files_before.txt
 	@echo "test-wpt-order: run 1 of 2 (order seed 20260809)"
 	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) \
 	    --jobs $(if $(J),$(J),8) --shuffle 20260809 \
@@ -355,6 +357,25 @@ test-wpt-order: $(BUILD)/wpt_test
 	@grep -E '^WPT: ' $(BUILD)/wpt_order_b.log | sed 's/^/  order B: /'
 	@grep -v '^#' $(BUILD)/wpt_order_a.txt | sort > $(BUILD)/wpt_order_a.set
 	@grep -v '^#' $(BUILD)/wpt_order_b.txt | sort > $(BUILD)/wpt_order_b.set
+# DID THE CORPUS HOLD STILL? Asked FIRST, because otherwise its answer is
+# delivered as the other question's. It happened on the first full green run:
+# the two orders differed by exactly one entry,
+# css/css-text/zzprobe2.html::*, which was a probe file another line wrote
+# into third_party/wpt between the runs and deleted afterwards. The corpus
+# moved; isolation did not fail. Reported as "identical numbers except one"
+# that is a confusing near-miss on the headline assertion of this suite, and
+# somebody would have gone looking in the runner for a day.
+	@$(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) --list \
+	    | sort > $(BUILD)/wpt_order_files_after.txt
+	@if ! diff -q $(BUILD)/wpt_order_files_before.txt \
+	              $(BUILD)/wpt_order_files_after.txt > /dev/null; then \
+	    echo "test-wpt-order: INCONCLUSIVE -- the corpus changed while the two runs"; \
+	    echo "  were in flight, so the two orders were not asked the same question."; \
+	    echo "  This is not an isolation failure and not a result. Files that came"; \
+	    echo "  or went (a stray probe written into $(WPT_ROOT) is the usual cause):"; \
+	    diff $(BUILD)/wpt_order_files_before.txt $(BUILD)/wpt_order_files_after.txt | head -10; \
+	    exit 1; \
+	 fi
 	@if ! diff -q $(BUILD)/wpt_order_a.set $(BUILD)/wpt_order_b.set > /dev/null; then \
 	    echo "test-wpt-order: FAILED -- the same corpus in two orders is not the"; \
 	    echo "  same result. Every percentage this suite prints is then one sample"; \
