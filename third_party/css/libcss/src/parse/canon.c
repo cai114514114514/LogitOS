@@ -958,181 +958,1220 @@ static int anchor_fn(lexed *lx, buf *b, int depth, int which)
 }
 
 /* ====================================================================
- * CSS Color 4: color()
+ * CSS Color 4/5: a <color> value model, and its SPECIFIED serialization
  *
- *   color( <colorspace> [<number>|<percentage>|none]{3} [/ <alpha>]? )
+ * WHAT CHANGED HERE, AND WHY IT HAD TO. The first version of this section
+ * spelled exactly one function -- color() -- and handed every other Color 4/5
+ * function back with its whitespace normalised and nothing else touched. That
+ * was the right first move (the alternative, dropping the declaration, was a
+ * measured 2,687-subtest regression) but it is not a serializer, and the
+ * corpus says so: 929 subtests of relative colour, 418 of color-mix(), 96 of
+ * lab()/lch()/oklab()/oklch() all compare BYTES against a spelling this file
+ * was not producing.
  *
- * The serialization rules are the test, and they are not guessable:
+ * THE ONE RULE THAT ORGANISES EVERYTHING BELOW: a specified <color> is
+ * serialized by RESOLVING it as far as the colour space it was written in
+ * allows, and NO FURTHER. Concretely, and every one of these is transcribed
+ * from the corpus rather than derived:
  *
- *   - A PERCENTAGE CHANNEL BECOMES A NUMBER, divided by 100.
- *     `color(srgb 10% 10% 10%)` is `color(srgb 0.1 0.1 0.1)`.
- *   - CHANNELS ARE NOT CLAMPED. `color(srgb 400% 0 10)` is
- *     `color(srgb 4 0 10)`, and -200 stays -200. Clamping "into gamut" here
- *     is the obvious thing to do and destroys the value.
- *   - ALPHA IS CLAMPED, to [0,1], and then DISAPPEARS IF IT IS 1. So
- *     `/ 110%`, `/ 300%` and `/ 1` all serialize to nothing at all, while
- *     `/ -10%` serializes as `/ 0`.
- *   - `none` is a channel value, not a missing channel, and survives.
- *   - `xyz` is an ALIAS: it serializes as `xyz-d65`.
+ *   - rgb()/rgba(), and hsl()/hwb() whose channels are all real numbers,
+ *     resolve to sRGB and come out as the LEGACY form: `rgb(r, g, b)` with
+ *     integer channels, or `rgba(r, g, b, a)` when alpha is not 1.
+ *     `hsl(120 30% 50%)` is `rgb(89, 166, 89)`.
+ *   - hsl()/hwb() with a `none` channel CANNOT resolve -- `none` is a real
+ *     value, not a missing one, and the legacy form has no spelling for it --
+ *     so they stay in their own space with the percent signs dropped:
+ *     `hsl(120 80% none)` is `hsl(120 80 none)`.
+ *   - rgb() is the exception and it is not derivable: `none` there resolves to
+ *     zero. `rgb(none none none / none)` is `rgba(0, 0, 0, 0)`.
+ *   - lab()/lch()/oklab()/oklch() NEVER resolve. They keep their own space and
+ *     their percentages become numbers on that space's scale, which differs
+ *     per function and per channel: lab's a/b are 125 to the 100%, oklab's are
+ *     0.4, lch's C is 150, oklch's is 0.4.
+ *   - color() never resolves either, and its percentage channels become
+ *     numbers divided by 100.
+ *   - a keyword -- `red`, `currentcolor`, `ActiveText` -- stays a keyword,
+ *     lowercased. This is why relative colour can say
+ *     `rgb(from rebeccapurple r g b)` and get the name back verbatim.
+ *   - relative colour and color-mix() are NOT resolved at all: they are
+ *     structures whose *arguments* are serialized by these same rules.
+ *     `rgb(from rgb(20%, 40%, 60%, 80%) r g b)` is
+ *     `rgb(from rgba(51, 102, 153, 0.8) r g b)` -- the origin canonicalised,
+ *     the channel expressions left as written.
  *
- * Three channels exactly. Two is invalid, four is invalid, and a channel with
- * a unit (`0deg`) is invalid -- which is a token-level question again, since
- * `0deg` is a dimension and not a number.
+ * NUMBERS ARE ROUNDED TO SIX SIGNIFICANT DIGITS, and that is a finding rather
+ * than a taste. `lch(10 20 1.28rad)` is `lch(10 20 73.3386)`, not
+ * `lch(10 20 73.33859777674537)`; `oklch(20% 60% 10)` is `oklch(0.2 0.24 10)`
+ * even though 0.6 * 0.4 is 0.24000000000000002 in a double. The shortest
+ * round-tripping decimal that num_str() produces -- correct everywhere else in
+ * this file -- is WRONG here, and only comparing bytes shows it.
+ *
+ * WHAT THIS STILL DOES NOT DO, said plainly: it does not evaluate calc(). A
+ * channel that is a math function is normalised and kept, so
+ * `lab(200 calc(50%) 0.5)` comes out as `lab(100 calc(50%) 0.5)` -- the
+ * neighbours resolve, the calc does not. The corpus rows that expect
+ * `calc(50 * 3)` to become `calc(150)` fail here exactly as they failed
+ * before; nothing regressed and the simplification is honestly not done.
+ * A calc anywhere in an hsl()/hwb()/rgb() also blocks the resolve to sRGB,
+ * because the value genuinely is not known yet.
  * ==================================================================== */
 
+/* The named colours. Values are deliberately ABSENT: a named colour's
+ * specified serialization is its own name, so nothing here ever needs to know
+ * what colour `rebeccapurple` is. What this table is for is REFUSAL --
+ * `rgb(from banana r g b)` has to be invalid, and without a list of the names
+ * that are colours there is no way to say so. */
+static const char *const named_colors[] = {
+	"aliceblue", "antiquewhite", "aqua", "aquamarine", "azure", "beige",
+	"bisque", "black", "blanchedalmond", "blue", "blueviolet", "brown",
+	"burlywood", "cadetblue", "chartreuse", "chocolate", "coral",
+	"cornflowerblue", "cornsilk", "crimson", "cyan", "darkblue",
+	"darkcyan", "darkgoldenrod", "darkgray", "darkgreen", "darkgrey",
+	"darkkhaki", "darkmagenta", "darkolivegreen", "darkorange",
+	"darkorchid", "darkred", "darksalmon", "darkseagreen",
+	"darkslateblue", "darkslategray", "darkslategrey", "darkturquoise",
+	"darkviolet", "deeppink", "deepskyblue", "dimgray", "dimgrey",
+	"dodgerblue", "firebrick", "floralwhite", "forestgreen", "fuchsia",
+	"gainsboro", "ghostwhite", "gold", "goldenrod", "gray", "green",
+	"greenyellow", "grey", "honeydew", "hotpink", "indianred", "indigo",
+	"ivory", "khaki", "lavender", "lavenderblush", "lawngreen",
+	"lemonchiffon", "lightblue", "lightcoral", "lightcyan",
+	"lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey",
+	"lightpink", "lightsalmon", "lightseagreen", "lightskyblue",
+	"lightslategray", "lightslategrey", "lightsteelblue", "lightyellow",
+	"lime", "limegreen", "linen", "magenta", "maroon",
+	"mediumaquamarine", "mediumblue", "mediumorchid", "mediumpurple",
+	"mediumseagreen", "mediumslateblue", "mediumspringgreen",
+	"mediumturquoise", "mediumvioletred", "midnightblue", "mintcream",
+	"mistyrose", "moccasin", "navajowhite", "navy", "oldlace", "olive",
+	"olivedrab", "orange", "orangered", "orchid", "palegoldenrod",
+	"palegreen", "paleturquoise", "palevioletred", "papayawhip",
+	"peachpuff", "peru", "pink", "plum", "powderblue", "purple",
+	"rebeccapurple", "red", "rosybrown", "royalblue", "saddlebrown",
+	"salmon", "sandybrown", "seagreen", "seashell", "sienna", "silver",
+	"skyblue", "slateblue", "slategray", "slategrey", "snow",
+	"springgreen", "steelblue", "tan", "teal", "thistle", "tomato",
+	"turquoise", "violet", "wheat", "white", "whitesmoke", "yellow",
+	"yellowgreen", NULL
+};
+
+/* The CSS Color 4 system colours. LibCSS predates every one of them, which is
+ * why `el.style.color = 'Canvas'` does not stick today -- 19 subtests of
+ * color-valid-system-color.html, all of them the same one failure. They
+ * serialize LOWERCASED, which is the whole of what the file checks. */
+static const char *const system_colors[] = {
+	"accentcolor", "accentcolortext", "activetext", "buttonborder",
+	"buttonface", "buttontext", "canvas", "canvastext", "field",
+	"fieldtext", "graytext", "highlight", "highlighttext", "linktext",
+	"mark", "marktext", "selecteditem", "selecteditemtext",
+	"visitedtext", NULL
+};
+
+/* `currentcolor` and `transparent` are colours too, and neither is in either
+ * list above. Kept separate because they are the two a caller is most likely
+ * to want to special-case. */
+static const char *const special_colors[] = {
+	"currentcolor", "transparent", NULL
+};
+
+static const char *tab_lookup(const tok *t, const char *const *tab)
+{
+	int i;
+	if (t->kind != T_IDENT) return NULL;
+	for (i = 0; tab[i] != NULL; i++)
+		if (ieq(t->s, t->len, tab[i])) return tab[i];
+	return NULL;
+}
+
+/* The canonical lowercase spelling of a colour KEYWORD, or NULL. */
+static const char *color_keyword(const tok *t)
+{
+	const char *k;
+	if ((k = tab_lookup(t, special_colors)) != NULL) return k;
+	if ((k = tab_lookup(t, named_colors)) != NULL) return k;
+	if ((k = tab_lookup(t, system_colors)) != NULL) return k;
+	return NULL;
+}
+
+/* ---- numbers ------------------------------------------------------------
+ *
+ * Six significant digits, then the shortest decimal that round-trips through
+ * THAT. Rounding first is the point: it is what turns 0.24000000000000002
+ * into 0.24 without also turning 0.1 into 0.100000. */
+static double sig6(double v)
+{
+	double e, f, s;
+
+	if (v == 0 || isnan(v) || isinf(v)) return v;
+	e = floor(log10(fabs(v)));
+	if (e > 14 || e < -14) return v;	/* out of the range CSS writes */
+	f = pow(10.0, 5.0 - e);
+	s = v * f;
+	return (s < 0 ? -floor(-s + 0.5) : floor(s + 0.5)) / f;
+}
+
+static void bnum6(buf *b, double v) { bnum(b, sig6(v)); }
+
+static void bint(buf *b, int v)
+{
+	char t[24];
+	snprintf(t, sizeof t, "%d", v);
+	bput(b, t, -1);
+}
+
+/* An sRGB channel on the 0..255 scale, as the legacy form spells it.
+ *
+ * Half rounds UP, and the corpus tests exactly that: hwb(320deg 30% 40%) has
+ * a blue channel of precisely 127.5 and must come out 128. Truncating is the
+ * obvious implementation and is wrong by one on the case that was written to
+ * catch it -- which is why CANON_NEGCTL truncates. */
+/* The epsilon is not decoration and it is not slop. hwb(120 30% 50%) has a
+ * green channel that is exactly 0.5 in arithmetic and 0.49999999999999994 in
+ * a double, because `1 - 0.3 - 0.5` cannot be represented; scaled to 255 that
+ * is 127.49999999999999 and rounds DOWN, giving 127 where every engine says
+ * 128. Real browsers do not hit this because they carry colour channels as
+ * FLOAT, whose 24-bit mantissa swallows the error. Nudging by 1e-9 -- four
+ * hundred times the largest error a double accumulates over these
+ * conversions, and still nowhere near a value a stylesheet could write -- is
+ * the same fix without changing the type of everything. */
+#define CHAN_EPS 1e-9
+
+static int chan255(double v)
+{
+	double r;
+	if (isnan(v)) return 0;
+#if defined(CANON_NEGCTL) || defined(CANON_NEGCTL_ROUND)
+	r = floor(v + CHAN_EPS);
+#else
+	r = floor(v + 0.5 + CHAN_EPS);
+#endif
+	if (!(r > 0)) return 0;
+	if (r > 255) return 255;
+	return (int)r;
+}
+
+/* Legacy alpha: thousandths, trailing zeros trimmed. NOT a byte -- a hex
+ * alpha of 0x80 is 128/255 = 0.50196 and every engine prints `0.502` there,
+ * while an authored `rgba(2, 3, 4, 0.5)` prints `0.5`. Both are true at once
+ * only if the quantum is a thousandth. */
+static void balpha_legacy(buf *b, double a)
+{
+	int m, at;
+	if (isnan(a)) a = 0;
+	if (a >= 1) { bputc(b, '1'); return; }
+	if (a <= 0) { bputc(b, '0'); return; }
+	m = (int)floor(a * 1000.0 + 0.5);
+	if (m >= 1000) { bputc(b, '1'); return; }
+	if (m <= 0) { bputc(b, '0'); return; }
+	at = b->len;
+	bputc(b, '0');
+	bputc(b, '.');
+	bputc(b, (char)('0' + (m / 100) % 10));
+	bputc(b, (char)('0' + (m / 10) % 10));
+	bputc(b, (char)('0' + m % 10));
+	while (b->len > at + 2 && b->p[b->len - 1] == '0') {
+		b->len--;
+		b->p[b->len] = 0;
+	}
+}
+
+/* ---- angles ---- */
+static int angle_deg(const tok *t, double *out)
+{
+	if (ieq(t->s, t->len, "deg")) *out = t->num;
+	else if (ieq(t->s, t->len, "grad")) *out = t->num * 0.9;
+	else if (ieq(t->s, t->len, "rad"))
+		*out = t->num * (180.0 / 3.14159265358979323846);
+	else if (ieq(t->s, t->len, "turn")) *out = t->num * 360.0;
+	else return -1;
+	return 0;
+}
+
+static double norm_hue(double h)
+{
+	if (isnan(h) || isinf(h)) return h;
+	h = fmod(h, 360.0);
+	if (h < 0) h += 360.0;
+	return h;
+}
+
+/* ---- colour-space conversion ----
+ *
+ * Only the two that a specified value ever has to perform: hsl -> sRGB and
+ * hwb -> sRGB. Everything else in Color 4 keeps its own space in a specified
+ * serialization, so the matrices those conversions would need are not
+ * reachable from here and are deliberately absent. */
+static double hsl_f(double n, double h, double s, double l)
+{
+	double k = fmod(n + h / 30.0, 12.0);
+	double a = s * (l < 1.0 - l ? l : 1.0 - l);
+	double q = (k - 3.0 < 9.0 - k) ? k - 3.0 : 9.0 - k;
+	if (q > 1.0) q = 1.0;
+	if (q < -1.0) q = -1.0;
+	return l - a * q;
+}
+
+static void hsl_to_rgb(double h, double s, double l, double *o)
+{
+	h = norm_hue(h);
+	o[0] = hsl_f(0.0, h, s, l);
+	o[1] = hsl_f(8.0, h, s, l);
+	o[2] = hsl_f(4.0, h, s, l);
+}
+
+static void hwb_to_rgb(double h, double w, double bk, double *o)
+{
+	int i;
+	if (w + bk >= 1.0) {
+		double g = (w + bk) > 0 ? w / (w + bk) : 0.0;
+		o[0] = o[1] = o[2] = g;
+		return;
+	}
+	hsl_to_rgb(h, 1.0, 0.5, o);
+	for (i = 0; i < 3; i++) o[i] = o[i] * (1.0 - w - bk) + w;
+}
+
+/* ====================================================================
+ * One parsed absolute colour
+ * ==================================================================== */
+
+#define CTEXT 200
+
+enum {
+	K_NUM = 0, K_PCT, K_ANG, K_NONE, K_IDENT, K_TEXT
+};
+
+typedef struct {
+	int kind;
+	double num;		/* K_ANG: already in degrees */
+	char text[CTEXT];	/* K_IDENT (lowercased) / K_TEXT (serialized) */
+} comp;
+
+/* Read ONE component of a colour function. Every kind the grammar can contain
+ * is recognised here; deciding which of them a given channel ALLOWS is the
+ * caller's job, and that split is what makes `rgb(0, 0, 0deg)` invalid while
+ * `hwb(0deg 0% 0%)` is fine. */
+static int read_comp(lexed *lx, comp *c)
+{
+	const tok *t = cur(lx);
+
+	c->kind = K_NUM;
+	c->num = 0;
+	c->text[0] = 0;
+
+	switch (t->kind) {
+	case T_NUM:
+		c->kind = K_NUM;
+		c->num = t->num;
+		adv(lx);
+		return 0;
+	case T_PCT:
+		c->kind = K_PCT;
+		c->num = t->num;
+		adv(lx);
+		return 0;
+	case T_DIM:
+		if (angle_deg(t, &c->num) != 0) return -1;
+		c->kind = K_ANG;
+		adv(lx);
+		return 0;
+	case T_IDENT: {
+		int i;
+		if (ieq(t->s, t->len, "none")) { c->kind = K_NONE; adv(lx); return 0; }
+		if (t->len >= CTEXT) return -1;
+		for (i = 0; i < t->len; i++) {
+			char ch = t->s[i];
+			c->text[i] = (ch >= 'A' && ch <= 'Z') ? (char)(ch + 32) : ch;
+		}
+		c->text[t->len] = 0;
+		c->kind = K_IDENT;
+		adv(lx);
+		return 0;
+	}
+	case T_FUNC: {
+		buf tb;
+		tb.p = c->text;
+		tb.len = 0;
+		tb.cap = CTEXT;
+		tb.ovf = 0;
+		if (emit_function(lx, &tb, 1) != 0) return -1;
+		if (tb.ovf) return -1;
+		c->kind = K_TEXT;
+		return 0;
+	}
+	default:
+		return -1;
+	}
+}
+
+enum {
+	CF_RGB = 0, CF_HSL, CF_HWB, CF_LAB, CF_LCH, CF_OKLAB, CF_OKLCH,
+	CF_COLORFN
+};
+
+typedef struct {
+	int form;
+	const char *space;	/* CF_COLORFN only */
+	double v[3];
+	int none[3];
+	char text[3][CTEXT];	/* non-empty: an unevaluated math function */
+	double alpha;
+	int anone;
+	int ahas;
+	char atext[CTEXT];
+} ccol;
+
+static int ccol_has_text(const ccol *c)
+{
+	return c->text[0][0] || c->text[1][0] || c->text[2][0] || c->atext[0];
+}
+
+static void bchan(buf *b, const ccol *c, int i)
+{
+	if (c->text[i][0]) { bput(b, c->text[i], -1); return; }
+	if (c->none[i]) { bput(b, "none", 4); return; }
+	bnum6(b, c->v[i]);
+}
+
+/* The `/ <alpha>` tail of a modern-syntax colour. An alpha of exactly 1 is
+ * the default and disappears -- but only when it is a plain number: `none`
+ * and an unevaluated calc() are values in their own right and stay. */
+static void balpha_modern(buf *b, const ccol *c)
+{
+	if (!c->ahas) return;
+	if (c->atext[0]) { bput(b, " / ", 3); bput(b, c->atext, -1); return; }
+	if (c->anone) { bput(b, " / none", 7); return; }
+	if (c->alpha == 1) return;
+	bput(b, " / ", 3);
+	bnum6(b, c->alpha);
+}
+
+static void emit_legacy_rgb(buf *b, const double *rgb255, const ccol *c)
+{
+	double a = c->ahas ? (c->anone ? 0.0 : c->alpha) : 1.0;
+	int with_alpha = !(a >= 1.0);
+
+	bput(b, with_alpha ? "rgba(" : "rgb(", -1);
+	bint(b, chan255(rgb255[0]));
+	bcomma(b);
+	bint(b, chan255(rgb255[1]));
+	bcomma(b);
+	bint(b, chan255(rgb255[2]));
+	if (with_alpha) { bcomma(b); balpha_legacy(b, a); }
+	bputc(b, ')');
+}
+
+static const char *const lab_fn_names[] = { "lab", "lch", "oklab", "oklch" };
+
+static void emit_ccol(buf *b, const ccol *c)
+{
+	double rgb[3];
+	int i;
+
+	switch (c->form) {
+	case CF_RGB:
+		if (!ccol_has_text(c)) {
+			rgb[0] = c->v[0]; rgb[1] = c->v[1]; rgb[2] = c->v[2];
+			emit_legacy_rgb(b, rgb, c);
+			return;
+		}
+		/* An unevaluated channel blocks the resolve, and the fallback
+		 * spelling is the MODERN one -- `rgb(calc(...) 255 0 / 0.5)`,
+		 * space separated, channels on the 0..255 scale. */
+		bput(b, "rgb(", 4);
+		for (i = 0; i < 3; i++) {
+			if (i) bputc(b, ' ');
+			if (c->text[i][0]) bput(b, c->text[i], -1);
+			else bint(b, chan255(c->v[i]));
+		}
+		balpha_modern(b, c);
+		bputc(b, ')');
+		return;
+
+	case CF_HSL:
+	case CF_HWB:
+		if (!ccol_has_text(c) && !c->none[0] && !c->none[1] &&
+		    !c->none[2] && !c->anone) {
+			if (c->form == CF_HSL)
+				hsl_to_rgb(c->v[0], c->v[1] / 100.0,
+					   c->v[2] / 100.0, rgb);
+			else
+				hwb_to_rgb(c->v[0], c->v[1] / 100.0,
+					   c->v[2] / 100.0, rgb);
+			for (i = 0; i < 3; i++) rgb[i] *= 255.0;
+			emit_legacy_rgb(b, rgb, c);
+			return;
+		}
+		bput(b, c->form == CF_HSL ? "hsl(" : "hwb(", 4);
+		for (i = 0; i < 3; i++) { if (i) bputc(b, ' '); bchan(b, c, i); }
+		balpha_modern(b, c);
+		bputc(b, ')');
+		return;
+
+	case CF_COLORFN:
+		bput(b, "color(", 6);
+		bput(b, c->space, -1);
+		for (i = 0; i < 3; i++) { bputc(b, ' '); bchan(b, c, i); }
+		balpha_modern(b, c);
+		bputc(b, ')');
+		return;
+
+	default:
+		bput(b, lab_fn_names[c->form - CF_LAB], -1);
+		bputc(b, '(');
+		for (i = 0; i < 3; i++) { if (i) bputc(b, ' '); bchan(b, c, i); }
+		balpha_modern(b, c);
+		bputc(b, ')');
+		return;
+	}
+}
+
+/* ====================================================================
+ * Parsing the absolute forms
+ * ==================================================================== */
+
+static int set_alpha(ccol *c, const comp *a)
+{
+	switch (a->kind) {
+	case K_NUM: c->alpha = a->num; break;
+	case K_PCT: c->alpha = a->num / 100.0; break;
+	case K_NONE: c->anone = 1; c->alpha = 0; return 0;
+	case K_TEXT: memcpy(c->atext, a->text, sizeof c->atext); return 0;
+	default: return -1;		/* an ident, an angle */
+	}
+	if (isnan(c->alpha)) c->alpha = 0;
+	if (c->alpha < 0) c->alpha = 0;
+	if (c->alpha > 1) c->alpha = 1;
+	return 0;
+}
+
+static void set_chan(ccol *c, int i, const comp *k, double scale)
+{
+	switch (k->kind) {
+	case K_NUM: c->v[i] = k->num; break;
+	case K_PCT: c->v[i] = k->num * scale / 100.0; break;
+	case K_ANG: c->v[i] = k->num; break;
+	case K_NONE: c->none[i] = 1; c->v[i] = 0; break;
+	case K_TEXT: memcpy(c->text[i], k->text, sizeof c->text[i]); break;
+	default: break;
+	}
+}
+
+static double clampd(double v, double lo, double hi)
+{
+	if (isnan(v)) return lo;
+	if (v < lo) return lo;
+	if (v > hi) return hi;
+	return v;
+}
+
+/* Read the three channels, the optional alpha and the `)`, for a function
+ * that uses the MODERN space-separated syntax only. */
+static int read_modern_body(lexed *lx, comp k[3], comp *al, int *have_alpha)
+{
+	int i;
+	*have_alpha = 0;
+	for (i = 0; i < 3; i++)
+		if (read_comp(lx, &k[i]) != 0) return -1;
+	if (!at_end(lx) && cur(lx)->kind == T_DELIM && cur(lx)->delim == '/') {
+		adv(lx);
+		if (read_comp(lx, al) != 0) return -1;
+		*have_alpha = 1;
+	}
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+	return 0;
+}
+
+/* rgb() / rgba(). The cursor is ON the function token.
+ *
+ * Both syntaxes live here because telling them apart needs a token of
+ * lookahead past the first component, and because the LEGACY one is where all
+ * the refusals are: no `none`, no angles, no keywords, and the three channels
+ * must be all numbers or all percentages. color-invalid-rgb.html is 30
+ * subtests of nothing but those. */
+static int parse_rgb(lexed *lx, ccol *c)
+{
+	comp k[3], al;
+	int i, legacy = 0, npct = 0, nnum = 0, have_alpha = 0;
+
+	memset(c, 0, sizeof *c);
+	c->form = CF_RGB;
+	adv(lx);
+
+	if (read_comp(lx, &k[0]) != 0) return -1;
+	if (!at_end(lx) && cur(lx)->kind == T_COMMA) legacy = 1;
+	for (i = 1; i < 3; i++) {
+		if (legacy) {
+			if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+			adv(lx);
+		}
+		if (read_comp(lx, &k[i]) != 0) return -1;
+	}
+	if (legacy) {
+		if (!at_end(lx) && cur(lx)->kind == T_COMMA) {
+			adv(lx);
+			if (read_comp(lx, &al) != 0) return -1;
+			have_alpha = 1;
+		}
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+	} else {
+		if (!at_end(lx) && cur(lx)->kind == T_DELIM &&
+		    cur(lx)->delim == '/') {
+			adv(lx);
+			if (read_comp(lx, &al) != 0) return -1;
+			have_alpha = 1;
+		}
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+	}
+
+	for (i = 0; i < 3; i++) {
+		if (k[i].kind == K_IDENT || k[i].kind == K_ANG) return -1;
+		if (legacy && k[i].kind == K_NONE) return -1;
+		if (k[i].kind == K_PCT) npct++;
+		else if (k[i].kind == K_NUM) nnum++;
+	}
+	if (legacy && npct && nnum) return -1;
+	if (have_alpha) {
+		if (al.kind == K_IDENT || al.kind == K_ANG) return -1;
+		if (legacy && al.kind == K_NONE) return -1;
+	}
+
+	for (i = 0; i < 3; i++) set_chan(c, i, &k[i], 255.0);
+	c->ahas = have_alpha;
+	if (have_alpha && set_alpha(c, &al) != 0) return -1;
+	return 0;
+}
+
+/* hsl() / hsla() / hwb().
+ *
+ * hwb has no legacy comma form at all ("HWB syntax does not have the hwba
+ * function" is a sibling refusal in the same file), so `is_hwb` also means
+ * "commas are a parse error here". */
+static int parse_hsl_hwb(lexed *lx, ccol *c, int is_hwb)
+{
+	comp k[3], al;
+	int i, legacy = 0, have_alpha = 0;
+
+	memset(c, 0, sizeof *c);
+	c->form = is_hwb ? CF_HWB : CF_HSL;
+	adv(lx);
+
+	if (read_comp(lx, &k[0]) != 0) return -1;
+	if (!at_end(lx) && cur(lx)->kind == T_COMMA) {
+		if (is_hwb) return -1;
+		legacy = 1;
+	}
+	for (i = 1; i < 3; i++) {
+		if (legacy) {
+			if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+			adv(lx);
+		}
+		if (read_comp(lx, &k[i]) != 0) return -1;
+	}
+	if (legacy) {
+		if (!at_end(lx) && cur(lx)->kind == T_COMMA) {
+			adv(lx);
+			if (read_comp(lx, &al) != 0) return -1;
+			have_alpha = 1;
+		}
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+	} else {
+		if (!at_end(lx) && cur(lx)->kind == T_DELIM &&
+		    cur(lx)->delim == '/') {
+			adv(lx);
+			if (read_comp(lx, &al) != 0) return -1;
+			have_alpha = 1;
+		}
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+	}
+
+	/* The hue is a number or an angle -- never a percentage, which is the
+	 * whole of `hsl(50%, 50%, 0%)` being invalid. */
+	if (k[0].kind == K_PCT || k[0].kind == K_IDENT) return -1;
+	if (legacy && k[0].kind == K_NONE) return -1;
+	for (i = 1; i < 3; i++) {
+		if (k[i].kind == K_IDENT || k[i].kind == K_ANG) return -1;
+		/* Legacy hsl() demands percentages for saturation and
+		 * lightness: `hsl(0, 50, 30%)` is invalid. */
+		if (legacy && k[i].kind != K_PCT) return -1;
+	}
+	if (have_alpha) {
+		if (al.kind == K_IDENT || al.kind == K_ANG) return -1;
+		if (legacy && al.kind == K_NONE) return -1;
+	}
+
+	set_chan(c, 0, &k[0], 1.0);
+	if (!c->none[0] && !c->text[0][0]) c->v[0] = norm_hue(c->v[0]);
+	for (i = 1; i < 3; i++) {
+		set_chan(c, i, &k[i], 100.0);
+		if (!c->none[i] && !c->text[i][0])
+			c->v[i] = clampd(c->v[i], 0.0, 100.0);
+	}
+	c->ahas = have_alpha;
+	if (have_alpha && set_alpha(c, &al) != 0) return -1;
+	return 0;
+}
+
+/* lab() / lch() / oklab() / oklch().
+ *
+ * The scales are the reason this is one function with a table rather than
+ * four: every channel of every one of them is "a number, or a percentage of
+ * THIS much", and the four functions disagree about `this much` on every
+ * channel. lab's a/b run to 125 at 100%, oklab's to 0.4; lch's C to 150,
+ * oklch's to 0.4; lab/lch lightness to 100, oklab/oklch to 1. */
+static int parse_lab_family(lexed *lx, ccol *c, int form)
+{
+	comp k[3], al;
+	int have_alpha = 0;
+	int polar = (form == CF_LCH || form == CF_OKLCH);
+	int ok = (form == CF_OKLAB || form == CF_OKLCH);
+	double lmax = ok ? 1.0 : 100.0;
+	double ab = ok ? 0.4 : 125.0;
+	double cmax = ok ? 0.4 : 150.0;
+
+	memset(c, 0, sizeof *c);
+	c->form = form;
+	adv(lx);
+
+	if (read_modern_body(lx, k, &al, &have_alpha) != 0) return -1;
+
+	if (k[0].kind == K_IDENT || k[0].kind == K_ANG) return -1;
+	if (k[1].kind == K_IDENT || k[1].kind == K_ANG) return -1;
+	if (k[2].kind == K_IDENT) return -1;
+	if (!polar && k[2].kind == K_ANG) return -1;
+	if (polar && k[2].kind == K_PCT) return -1;
+	if (have_alpha && (al.kind == K_IDENT || al.kind == K_ANG)) return -1;
+
+	set_chan(c, 0, &k[0], lmax);
+	if (!c->none[0] && !c->text[0][0])
+		c->v[0] = clampd(c->v[0], 0.0, lmax);
+
+	set_chan(c, 1, &k[1], polar ? cmax : ab);
+	if (polar && !c->none[1] && !c->text[1][0] && c->v[1] < 0)
+		c->v[1] = 0;
+
+	set_chan(c, 2, &k[2], ab);
+	if (polar && !c->none[2] && !c->text[2][0])
+		c->v[2] = norm_hue(c->v[2]);
+
+	c->ahas = have_alpha;
+	if (have_alpha && set_alpha(c, &al) != 0) return -1;
+	return 0;
+}
+
+/* The colour spaces color() accepts. `xyz` is an alias that serializes as
+ * `xyz-d65`, which is why the table is consulted rather than the author's
+ * bytes echoed. */
 static const char *const color_spaces[] = {
 	"srgb", "srgb-linear", "display-p3", "display-p3-linear",
 	"a98-rgb", "prophoto-rgb", "rec2020",
 	"xyz", "xyz-d50", "xyz-d65", NULL
 };
 
-/* One channel. `alpha` selects the alpha rules: scaled, clamped, and with the
- * caller deciding whether the result can be dropped. Returns 0 on success and
- * reports through *val/*kind what was emitted, because the caller has to know
- * whether an alpha of exactly 1 came out as a plain number (droppable) or as
- * `none`/`calc()` (not droppable). */
-enum { CH_NUM = 0, CH_NONE, CH_CALC };
-
-static int color_channel(lexed *lx, buf *b, int alpha, int *kind, double *val)
+static int parse_color_fn(lexed *lx, ccol *c)
 {
-	const tok *t = cur(lx);
+	comp k[3], al;
+	int i, have_alpha = 0;
+	const char *space;
 
-	*kind = CH_NUM;
-	*val = 0;
+	memset(c, 0, sizeof *c);
+	c->form = CF_COLORFN;
+	adv(lx);
 
-	if (tok_is_ident(t, "none")) {
-		adv(lx);
-		*kind = CH_NONE;
-		bput(b, "none", 4);
-		return 0;
-	}
-	if (t->kind == T_FUNC) {
-		/* A math function is kept as written (normalized). This file
-		 * does not evaluate calc arithmetic, so the rows the corpus
-		 * writes as `calc(0.5 + 1)` -> `calc(1.5)` are accepted and
-		 * spelled un-simplified. They fail on bytes, exactly as they
-		 * do today; nothing regresses and the simplification is
-		 * honestly not done. */
-		*kind = CH_CALC;
-		return emit_function(lx, b, 1);
-	}
-	if (t->kind == T_NUM) {
-		*val = t->num;
-		adv(lx);
-	} else if (t->kind == T_PCT) {
-		*val = t->num / 100.0;
-		adv(lx);
-	} else {
-		return -1;	/* a dimension (`0deg`), a string, a hash... */
-	}
+	space = tab_lookup(cur(lx), color_spaces);
+	if (space == NULL) return -1;
+	if (strcmp(space, "xyz") == 0) space = "xyz-d65";
+	c->space = space;
+	adv(lx);
 
-	if (alpha) {
-		if (*val < 0) *val = 0;
-		if (*val > 1) *val = 1;
-	}
-	bnum(b, *val);
+	if (read_modern_body(lx, k, &al, &have_alpha) != 0) return -1;
+
+	for (i = 0; i < 3; i++)
+		if (k[i].kind == K_IDENT || k[i].kind == K_ANG) return -1;
+	if (have_alpha && (al.kind == K_IDENT || al.kind == K_ANG)) return -1;
+
+	/* Channels are NOT clamped -- `color(srgb 400% 0 10)` is
+	 * `color(srgb 4 0 10)` and -200 stays -200. Clamping "into gamut"
+	 * here is the obvious thing to do and destroys the value. */
+	for (i = 0; i < 3; i++) set_chan(c, i, &k[i], 1.0);
+	c->ahas = have_alpha;
+	if (have_alpha && set_alpha(c, &al) != 0) return -1;
 	return 0;
 }
 
-static int canon_color_fn(lexed *lx, buf *b)
+/* #rgb / #rgba / #rrggbb / #rrggbbaa */
+static int parse_hex(const tok *t, ccol *c)
+{
+	int i, v[4] = { 0, 0, 0, 255 }, n;
+
+	if (t->kind != T_HASH) return -1;
+	n = t->len;
+	if (n != 3 && n != 4 && n != 6 && n != 8) return -1;
+	for (i = 0; i < n; i++) if (!is_hex((unsigned char)t->s[i])) return -1;
+
+	memset(c, 0, sizeof *c);
+	c->form = CF_RGB;
+
+#define HEXV(ch) ((ch) <= '9' ? (ch) - '0' : (((ch) | 32) - 'a' + 10))
+	if (n <= 4) {
+		for (i = 0; i < n; i++) {
+			int d = HEXV((unsigned char)t->s[i]);
+			v[i] = d * 16 + d;
+		}
+	} else {
+		for (i = 0; i < n / 2; i++)
+			v[i] = HEXV((unsigned char)t->s[i * 2]) * 16 +
+			       HEXV((unsigned char)t->s[i * 2 + 1]);
+	}
+#undef HEXV
+	for (i = 0; i < 3; i++) c->v[i] = v[i];
+	if (n == 4 || n == 8) {
+		c->ahas = 1;
+		c->alpha = v[3] / 255.0;
+	}
+	return 0;
+}
+
+/* ====================================================================
+ * The structural forms: relative colour, color-mix(), color-layers(),
+ * light-dark(). None of these RESOLVES; each serializes its arguments.
+ * ==================================================================== */
+
+#define CANON_COLOR_MAXDEPTH 8
+#define MIX_MAXCOLORS 8
+
+static int canon_color(lexed *lx, buf *b, int depth);
+
+/* The channel keywords each relative form exposes, plus the index of the
+ * channel that may carry an ANGLE. Getting these tables wrong in either
+ * direction is visible: `rgb(from rebeccapurple h g b)` must be refused and
+ * `hwb(from rebeccapurple 0deg 0% 0%)` must be accepted. */
+struct rel_kind {
+	const char *fn;		/* canonical function name */
+	const char *ch[4];	/* the three channels + "alpha" */
+	int hue;		/* index of the angle-bearing channel, or -1 */
+};
+
+static const struct rel_kind rel_kinds[] = {
+	{ "rgb",   { "r", "g", "b", "alpha" }, -1 },
+	{ "hsl",   { "h", "s", "l", "alpha" },  0 },
+	{ "hwb",   { "h", "w", "b", "alpha" },  0 },
+	{ "lab",   { "l", "a", "b", "alpha" }, -1 },
+	{ "lch",   { "l", "c", "h", "alpha" },  2 },
+	{ "oklab", { "l", "a", "b", "alpha" }, -1 },
+	{ "oklch", { "l", "c", "h", "alpha" },  2 },
+	{ "color", { "r", "g", "b", "alpha" }, -1 },
+	{ NULL,    { NULL, NULL, NULL, NULL },  -1 }
+};
+
+/* The relative form of an alias: `rgba(from ...)` is `rgb(from ...)`. */
+static const struct rel_kind *rel_lookup(const tok *t)
+{
+	int i;
+	if (t->kind != T_FUNC) return NULL;
+	if (ieq(t->s, t->len, "rgba")) return &rel_kinds[0];
+	if (ieq(t->s, t->len, "hsla")) return &rel_kinds[1];
+	for (i = 0; rel_kinds[i].fn != NULL; i++)
+		if (ieq(t->s, t->len, rel_kinds[i].fn)) return &rel_kinds[i];
+	return NULL;
+}
+
+/* One channel expression of a relative colour: a channel keyword, `none`, a
+ * number, a percentage, an angle where the space has one, or a math function.
+ * Emitted as written (normalised), because a relative colour is not resolved
+ * and its channels are an expression, not a value. */
+static int rel_channel(lexed *lx, buf *b, const struct rel_kind *k,
+		int is_hue, int is_alpha)
 {
 	const tok *t = cur(lx);
-	const char *space = NULL;
-	int i, kind = CH_NUM;
-	double val = 0;
-	/* The alpha is serialized into a side buffer because whether it is
-	 * emitted at all depends on its VALUE, which is only known after
-	 * parsing it. */
-	char alphastore[256];
-	buf ab;
-	int have_alpha = 0;
+	int i;
 
-	if (t->kind != T_FUNC || !ieq(t->s, t->len, "color")) return -1;
-	adv(lx);
+	switch (t->kind) {
+	case T_IDENT:
+		if (ieq(t->s, t->len, "none")) { bput(b, "none", 4); adv(lx); return 0; }
+		for (i = 0; i < 4; i++)
+			if (ieq(t->s, t->len, k->ch[i])) {
+				bput(b, k->ch[i], -1);
+				adv(lx);
+				return 0;
+			}
+		/* An xyz colour space exposes x/y/z rather than r/g/b. */
+		if (k->ch[0][0] == 'r' &&
+		    (ieq(t->s, t->len, "x") || ieq(t->s, t->len, "y") ||
+		     ieq(t->s, t->len, "z"))) {
+			bput(b, t->s, t->len);
+			adv(lx);
+			return 0;
+		}
+		return -1;
+	case T_NUM:
+	case T_PCT:
+		if (is_hue && t->kind == T_PCT) return -1;
+		return emit_token(lx, b, 1);
+	case T_DIM: {
+		double d;
+		if (!is_hue || is_alpha) return -1;
+		if (angle_deg(t, &d) != 0) return -1;
+		(void)d;
+		return emit_token(lx, b, 1);
+	}
+	case T_FUNC:
+		return emit_function(lx, b, 1);
+	default:
+		return -1;
+	}
+}
 
-	t = cur(lx);
-	if (t->kind != T_IDENT) return -1;
-	for (i = 0; color_spaces[i] != NULL; i++)
-		if (ieq(t->s, t->len, color_spaces[i])) { space = color_spaces[i];
-			break; }
-	if (space == NULL) return -1;
-	if (strcmp(space, "xyz") == 0) space = "xyz-d65";	/* an alias */
-	adv(lx);
+/* `<fn>( from <color> [<space>]? <c> <c> <c> [/ <a>]? )`. The cursor is on
+ * the function token and the token after it is known to be `from`. */
+static int canon_relative(lexed *lx, buf *b, int depth)
+{
+	const struct rel_kind *k = rel_lookup(cur(lx));
+	int i;
 
-	bput(b, "color(", 6);
-	bput(b, space, -1);
+	if (k == NULL) return -1;
+	if (depth >= CANON_COLOR_MAXDEPTH) return -1;
+
+	bput(b, k->fn, -1);
+	bput(b, "(from ", 6);
+	adv(lx);			/* the function */
+	adv(lx);			/* `from` */
+
+	if (canon_color(lx, b, depth + 1) != 0) return -1;
+
+	if (strcmp(k->fn, "color") == 0) {
+		const char *space = tab_lookup(cur(lx), color_spaces);
+		if (space == NULL) return -1;
+		if (strcmp(space, "xyz") == 0) space = "xyz-d65";
+		bputc(b, ' ');
+		bput(b, space, -1);
+		adv(lx);
+	}
 
 	for (i = 0; i < 3; i++) {
 		bputc(b, ' ');
-		if (color_channel(lx, b, 0, &kind, &val) != 0) return -1;
+		if (rel_channel(lx, b, k, i == k->hue, 0) != 0) return -1;
 	}
-
 	if (!at_end(lx) && cur(lx)->kind == T_DELIM && cur(lx)->delim == '/') {
 		adv(lx);
-		ab.p = alphastore;
-		ab.len = 0;
-		ab.cap = (int)sizeof alphastore;
-		ab.ovf = 0;
-		if (color_channel(lx, &ab, 1, &kind, &val) != 0) return -1;
-		if (ab.ovf) return -1;
-		/* An alpha of exactly 1 is the default and is dropped -- but
-		 * only when it is a plain number. `none` and an unevaluated
-		 * calc() have to stay. */
-		if (!(kind == CH_NUM && val == 1)) {
-			bput(b, " / ", 3);
-			bput(b, ab.p, ab.len);
-		}
-		have_alpha = 1;
+		bput(b, " / ", 3);
+		if (rel_channel(lx, b, k, 0, 1) != 0) return -1;
 	}
-	(void)have_alpha;
-
 	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
 	adv(lx);
 	bputc(b, ')');
 	return 0;
 }
 
-/* ---- the rest of the CSS Color 4/5 function set ---------------------------
+/* Step the cursor past one <color> without serializing it. Used by the
+ * color-mix() percentage pass, which has to see EVERY percentage before it
+ * can spell ANY of them. */
+static int skip_color(lexed *lx)
+{
+	const tok *t = cur(lx);
+	int depth;
+
+	if (t->kind == T_IDENT || t->kind == T_HASH) { adv(lx); return 0; }
+	if (t->kind != T_FUNC) return -1;
+	depth = 0;
+	while (!at_end(lx)) {
+		t = cur(lx);
+		if (t->kind == T_FUNC) depth++;
+		else if (t->kind == T_RPAREN) {
+			depth--;
+			if (depth == 0) { adv(lx); return 0; }
+		}
+		adv(lx);
+	}
+	return -1;
+}
+
+/* A colour-mix percentage: a literal, or a math function kept as text. */
+struct mixpct {
+	int kind;		/* 0 absent, 1 literal, 2 text */
+	double val;
+	char text[CTEXT];
+};
+
+static int read_mixpct(lexed *lx, struct mixpct *p)
+{
+	const tok *t = cur(lx);
+
+	p->kind = 0;
+	p->val = 0;
+	p->text[0] = 0;
+	if (t->kind == T_PCT) {
+		p->kind = 1;
+		p->val = t->num;
+		adv(lx);
+		/* A weight outside [0,100] is a parse error, not a clamp:
+		 * color-invalid-color-mix-function.html is 141 subtests and
+		 * more than half of them are exactly this. */
+		if (p->val < 0 || p->val > 100) return -1;
+		return 0;
+	}
+	if (t->kind == T_FUNC) {
+		buf tb;
+		tb.p = p->text;
+		tb.len = 0;
+		tb.cap = CTEXT;
+		tb.ovf = 0;
+		if (emit_function(lx, &tb, 1) != 0) return -1;
+		if (tb.ovf) return -1;
+		p->kind = 2;
+		return 0;
+	}
+	return -1;
+}
+
+/* Is this token the start of a percentage rather than of a colour? A bare
+ * percentage obviously is; a math function is one too, and nothing else can
+ * be, because no colour function shares a name with a math function. */
+static int starts_pct(lexed *lx)
+{
+	const tok *t = cur(lx);
+	int i;
+	if (t->kind == T_PCT) return 1;
+	if (t->kind != T_FUNC) return 0;
+	for (i = 0; math_fns[i] != NULL; i++)
+		if (ieq(t->s, t->len, math_fns[i])) return 1;
+	return 0;
+}
+
+static const char *const mix_spaces[] = {
+	"srgb", "srgb-linear", "display-p3", "display-p3-linear",
+	"a98-rgb", "prophoto-rgb", "rec2020", "lab", "oklab",
+	"xyz", "xyz-d50", "xyz-d65",
+	"hsl", "hwb", "lch", "oklch", NULL
+};
+
+static const char *const hue_methods[] = {
+	"shorter", "longer", "increasing", "decreasing", NULL
+};
+
+static int space_is_polar(const char *s)
+{
+	return strcmp(s, "hsl") == 0 || strcmp(s, "hwb") == 0 ||
+	       strcmp(s, "lch") == 0 || strcmp(s, "oklch") == 0;
+}
+
+/*
+ * color-mix( [ in <space> [<hue-method> hue]? , ]? <color> <pct>?
+ *            [ , <color> <pct>? ]* )
  *
- * These are NOT canonically serialized here -- their serialization rules are
- * exacting (colour-space conversion, channel resolution, gamut mapping) and
- * doing them wrong is worse than not doing them. What this list is for is
- * narrower and, since the CSSOM started consulting this file, urgent:
+ * THE PERCENTAGE NORMALISATION IS THE WHOLE TEST, and it is not a clamp:
  *
- * A caller that asks this parser and then falls back to LibCSS for a PASS gets
- * the wrong answer on every one of these, because LibCSS predates all of them
- * and rejects them -- so `el.style.color = 'color-mix(in srgb, red, blue)'`
- * stops sticking at all. That is a REGRESSION in CSSOM behaviour, not a
- * serialization imperfection: the value is valid CSS, a script can set it, and
- * refusing to store it is a worse answer than storing it unprettified.
- * Measured: 2,687 `property should be set` failures across css-color.
+ *   - a missing weight is filled in so the weights sum to 100, shared equally
+ *     among however many are missing. `red 50%, green, blue` is
+ *     `red 50%, green 25%, blue 25%`.
+ *   - if, after that, every weight is exactly 100/n, they ALL disappear.
+ *     `red 50%, blue 50%` is `red, blue`; `red 100%` is `red`.
+ *   - if any weight is a calc(), NOTHING is normalised: the ones that were
+ *     written are kept and the ones that were not stay missing.
+ *   - `shorter hue` is the default and disappears; the other three stay.
  *
- * So these are recognised, structurally checked, and returned with a
- * whitespace-normalized spelling. The byte comparison still fails exactly
- * where it fails today -- nothing is claimed that is not delivered -- but the
- * value survives, which is the half of the CSSOM contract that was broken.
+ * Two passes over the same tokens, because rule two cannot be decided until
+ * every weight has been seen and the colours must be emitted in order.
  */
-static const char *const color_fns[] = {
-	"hwb", "lab", "lch", "oklab", "oklch", "color-mix", "alpha",
-	"contrast-color", "light-dark", "device-cmyk", NULL
+static int canon_color_mix(lexed *lx, buf *b, int depth)
+{
+	struct mixpct pct[MIX_MAXCOLORS];
+	int start[MIX_MAXCOLORS];
+	int n = 0, i, after = 0, any_text = 0, any_given = 0, missing = 0;
+	int have_space = 0, polar = 0;
+	const char *space = NULL, *method = NULL;
+	double sum = 0, share;
+
+	if (depth >= CANON_COLOR_MAXDEPTH) return -1;
+	adv(lx);			/* color-mix( */
+
+	if (tok_is_ident(cur(lx), "in")) {
+		adv(lx);
+		space = tab_lookup(cur(lx), mix_spaces);
+		if (space == NULL) return -1;
+		if (strcmp(space, "xyz") == 0) space = "xyz-d65";
+		polar = space_is_polar(space);
+		adv(lx);
+		have_space = 1;
+		if (!at_end(lx) && cur(lx)->kind == T_IDENT) {
+			method = tab_lookup(cur(lx), hue_methods);
+			if (method == NULL) return -1;
+			if (!polar) return -1;	/* no hue on a rectangular space */
+			adv(lx);
+			if (!tok_is_ident(cur(lx), "hue")) return -1;
+			adv(lx);
+		}
+		if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+	}
+
+	/* Pass one: weights only. */
+	for (;;) {
+		struct mixpct lead;
+		if (n >= MIX_MAXCOLORS) return -1;
+		start[n] = lx->i;
+		lead.kind = 0;
+		if (starts_pct(lx) && read_mixpct(lx, &lead) != 0) return -1;
+		if (skip_color(lx) != 0) return -1;
+		pct[n] = lead;
+		if (!at_end(lx) && cur(lx)->kind != T_COMMA &&
+		    cur(lx)->kind != T_RPAREN) {
+			if (lead.kind != 0) return -1;	/* a weight on both sides */
+			if (read_mixpct(lx, &pct[n]) != 0) return -1;
+		}
+		n++;
+		if (at_end(lx)) return -1;
+		if (cur(lx)->kind == T_RPAREN) { adv(lx); after = lx->i; break; }
+		if (cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+	}
+	if (n == 0) return -1;
+
+	for (i = 0; i < n; i++) {
+		if (pct[i].kind == 2) any_text = 1;
+		else if (pct[i].kind == 1) { any_given = 1; sum += pct[i].val; }
+		else missing++;
+	}
+
+	if (!any_text && any_given) {
+		if (missing > 0) {
+			share = (100.0 - sum) / missing;
+			for (i = 0; i < n; i++)
+				if (pct[i].kind == 0) {
+					pct[i].kind = 1;
+					pct[i].val = share;
+				}
+		}
+		/* Every weight equal to its fair share means no weight at
+		 * all: that is what turns `red 50%, blue 50%` into
+		 * `red, blue` and `red 100%` into `red`. */
+		share = 100.0 / n;
+		for (i = 0; i < n; i++)
+			if (fabs(pct[i].val - share) > 1e-9) break;
+		if (i == n) for (i = 0; i < n; i++) pct[i].kind = 0;
+	}
+
+	/* Pass two. */
+	bput(b, "color-mix(", 10);
+	if (have_space) {
+		bput(b, "in ", 3);
+		bput(b, space, -1);
+#ifdef CANON_NEGCTL
+		if (method != NULL) {
+#else
+		if (method != NULL && strcmp(method, "shorter") != 0) {
+#endif
+			bputc(b, ' ');
+			bput(b, method, -1);
+			bput(b, " hue", 4);
+		}
+		bcomma(b);
+	}
+	for (i = 0; i < n; i++) {
+		if (i) bcomma(b);
+		lx->i = start[i];
+		if (starts_pct(lx)) {
+			struct mixpct skip;
+			if (read_mixpct(lx, &skip) != 0) return -1;
+		}
+		if (canon_color(lx, b, depth + 1) != 0) return -1;
+		if (pct[i].kind == 1) {
+			bputc(b, ' ');
+			bnum6(b, pct[i].val);
+			bputc(b, '%');
+		} else if (pct[i].kind == 2) {
+			bputc(b, ' ');
+			bput(b, pct[i].text, -1);
+		}
+	}
+	bputc(b, ')');
+	/* Pass two rewound the cursor once per colour; pass one already knew
+	 * where the function ends, so that is where it goes back to. Getting
+	 * this wrong is invisible at the top level and breaks the moment a
+	 * color-mix() is nested inside anything. */
+	lx->i = after;
+	return 0;
+}
+
+/* color-layers( [<blend-mode> ,]? <color># ). `normal` is the initial value
+ * and disappears; every other mode stays. */
+static const char *const blend_modes[] = {
+	"normal", "multiply", "screen", "overlay", "darken", "lighten",
+	"color-dodge", "color-burn", "hard-light", "soft-light",
+	"difference", "exclusion", "hue", "saturation", "color",
+	"luminosity", NULL
 };
 
-/* rgb()/hsl() and their -a forms are the exception, and the distinction is
- * exactly "can LibCSS already do it". The legacy forms it can, and those must
- * keep passing through untouched -- claiming them would change the spelling of
- * ordinary colours on every page for no gain. The RELATIVE form,
- * `rgb(from red r g b)`, it cannot, and that one has to be kept here for the
- * same reason as the rest of the list. The `from` keyword is what separates
- * them, and it is the first argument or it is not relative colour syntax. */
-static const char *const color_fns_legacy[] = {
-	"rgb", "rgba", "hsl", "hsla", NULL
+static int canon_color_layers(lexed *lx, buf *b, int depth)
+{
+	const char *mode = NULL;
+	int n = 0;
+
+	if (depth >= CANON_COLOR_MAXDEPTH) return -1;
+	adv(lx);
+
+	/* The mode is an identifier followed by a comma. No blend mode is
+	 * also a colour keyword, so there is nothing to disambiguate. */
+	if (cur(lx)->kind == T_IDENT && pk(lx, 1)->kind == T_COMMA) {
+		mode = tab_lookup(cur(lx), blend_modes);
+		if (mode == NULL) return -1;
+		adv(lx);
+		adv(lx);
+	}
+
+	bput(b, "color-layers(", 13);
+	if (mode != NULL && strcmp(mode, "normal") != 0) {
+		bput(b, mode, -1);
+		bcomma(b);
+	}
+	for (;;) {
+		if (n) bcomma(b);
+		if (canon_color(lx, b, depth + 1) != 0) return -1;
+		n++;
+		if (at_end(lx)) return -1;
+		if (cur(lx)->kind == T_RPAREN) { adv(lx); break; }
+		if (cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+	}
+	if (n == 0) return -1;
+	bputc(b, ')');
+	return 0;
+}
+
+/* light-dark(<color>, <color>) */
+static int canon_light_dark(lexed *lx, buf *b, int depth)
+{
+	if (depth >= CANON_COLOR_MAXDEPTH) return -1;
+	adv(lx);
+	bput(b, "light-dark(", 11);
+	if (canon_color(lx, b, depth + 1) != 0) return -1;
+	if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+	adv(lx);
+	bcomma(b);
+	if (canon_color(lx, b, depth + 1) != 0) return -1;
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+	bputc(b, ')');
+	return 0;
+}
+
+/* The Color 4/5 functions this file recognises but does not spell: their
+ * serialization needs colour-space conversion or gamut mapping that a
+ * specified value does not otherwise require, and doing it wrong is worse
+ * than not doing it. They are still parsed structurally and emitted with
+ * their whitespace normalised, because DROPPING them is the worse bug -- see
+ * the note on the caller. */
+static const char *const raw_color_fns[] = {
+	"contrast-color", "device-cmyk", "alpha", NULL
 };
 
-/* A structural check, not a grammar. It exists so that recognising a name
- * does not become "accept anything with that name in front of it": the
- * argument list must be non-empty and made only of the token kinds a colour
- * function can contain. `color-mix(` with nothing in it, or with a string or a
- * stray brace, is still refused. */
+/* A structural check, not a grammar: the argument list must be non-empty and
+ * made only of the token kinds a colour function can contain. */
 static int color_fn_body_ok(lexed *lx, int start)
 {
 	int i, depth = 0, ntok = 0;
@@ -1145,11 +2184,7 @@ static int color_fn_body_ok(lexed *lx, int start)
 			ntok++;
 			break;
 		case T_RPAREN:
-			if (depth == 0) {
-				/* the closer for the outer function: it must
-				 * be the last token */
-				return ntok > 0 && i == lx->n - 1;
-			}
+			if (depth == 0) return ntok > 0 && i == lx->n - 1;
 			depth--;
 			break;
 		case T_IDENT: case T_NUM: case T_PCT: case T_DIM:
@@ -1157,8 +2192,6 @@ static int color_fn_body_ok(lexed *lx, int start)
 			ntok++;
 			break;
 		case T_DELIM:
-			/* `/` separates alpha; `+`/`-`/`*` appear inside a
-			 * calc a channel may contain. Nothing else. */
 			if (t->delim != '/' && t->delim != '+' &&
 			    t->delim != '-' && t->delim != '*' &&
 			    t->delim != '.')
@@ -1166,15 +2199,13 @@ static int color_fn_body_ok(lexed *lx, int start)
 			ntok++;
 			break;
 		default:
-			return 0;	/* a string, an unterminated anything */
+			return 0;
 		}
 	}
-	return 0;			/* never closed */
+	return 0;
 }
 
-/* Emit the function with its whitespace normalized and nothing else changed.
- * Deliberately separate from emit_function(), which refuses names it does not
- * know -- that refusal is right for the anchor grammar and wrong here. */
+/* Emit the function with its whitespace normalized and nothing else changed. */
 static int emit_color_fn_raw(lexed *lx, buf *b, const char *name)
 {
 	int first = 1, depth = 0;
@@ -1208,17 +2239,93 @@ static int emit_color_fn_raw(lexed *lx, buf *b, const char *name)
 			first = 0;
 			continue;
 		}
-		if (emit_token(lx, b, CANON_MAXDEPTH - 1) != 0) {
-			/* emit_token dispatches functions through
-			 * emit_function, which is not wanted here; every other
-			 * kind is a plain token and cannot fail. */
-			return -1;
-		}
+		if (emit_token(lx, b, CANON_MAXDEPTH - 1) != 0) return -1;
 		first = 0;
 	}
 	bputc(b, ')');
 	return 0;
 }
+
+/* ====================================================================
+ * canon_color -- ONE <color>, parsed and spelled. The recursion point.
+ * ==================================================================== */
+
+static int canon_color(lexed *lx, buf *b, int depth)
+{
+	const tok *t;
+	ccol c;
+
+	if (depth >= CANON_COLOR_MAXDEPTH) return -1;
+	if (at_end(lx)) return -1;
+	t = cur(lx);
+
+	if (t->kind == T_HASH) {
+		if (parse_hex(t, &c) != 0) return -1;
+		adv(lx);
+		emit_ccol(b, &c);
+		return 0;
+	}
+	if (t->kind == T_IDENT) {
+		const char *kw = color_keyword(t);
+		if (kw == NULL) return -1;
+		bput(b, kw, -1);
+		adv(lx);
+		return 0;
+	}
+	if (t->kind != T_FUNC) return -1;
+
+	/* The functions this file recognises but does not spell come FIRST,
+	 * because one of them -- alpha() -- takes a `from` of its own and
+	 * would otherwise be mistaken for relative colour syntax. */
+	{
+		int i;
+		for (i = 0; raw_color_fns[i] != NULL; i++)
+			if (ieq(t->s, t->len, raw_color_fns[i]))
+				return emit_color_fn_raw(lx, b,
+						raw_color_fns[i]);
+	}
+
+	/* Relative colour syntax is signalled by `from` and nothing else. */
+	if (tok_is_ident(pk(lx, 1), "from")) return canon_relative(lx, b, depth);
+
+	if (ieq(t->s, t->len, "color-mix")) return canon_color_mix(lx, b, depth);
+	if (ieq(t->s, t->len, "color-layers"))
+		return canon_color_layers(lx, b, depth);
+	if (ieq(t->s, t->len, "light-dark"))
+		return canon_light_dark(lx, b, depth);
+
+	if (ieq(t->s, t->len, "rgb") || ieq(t->s, t->len, "rgba")) {
+		if (parse_rgb(lx, &c) != 0) return -1;
+	} else if (ieq(t->s, t->len, "hsl") || ieq(t->s, t->len, "hsla")) {
+		if (parse_hsl_hwb(lx, &c, 0) != 0) return -1;
+	} else if (ieq(t->s, t->len, "hwb")) {
+		if (parse_hsl_hwb(lx, &c, 1) != 0) return -1;
+	} else if (ieq(t->s, t->len, "lab")) {
+		if (parse_lab_family(lx, &c, CF_LAB) != 0) return -1;
+	} else if (ieq(t->s, t->len, "lch")) {
+		if (parse_lab_family(lx, &c, CF_LCH) != 0) return -1;
+	} else if (ieq(t->s, t->len, "oklab")) {
+		if (parse_lab_family(lx, &c, CF_OKLAB) != 0) return -1;
+	} else if (ieq(t->s, t->len, "oklch")) {
+		if (parse_lab_family(lx, &c, CF_OKLCH) != 0) return -1;
+	} else if (ieq(t->s, t->len, "color")) {
+		if (parse_color_fn(lx, &c) != 0) return -1;
+	} else {
+		return -1;
+	}
+	emit_ccol(b, &c);
+	return 0;
+}
+
+/* Does this file claim the VALUE in front of it? A colour property whose
+ * value is a bare keyword, a hex literal or anything else LibCSS already
+ * spells correctly is left alone -- claiming a property is not claiming every
+ * value of it, and rerouting a value that works today through a second
+ * serializer buys nothing and risks a regression. */
+static const char *const claimed_color_fns[] = {
+	"rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch",
+	"color", "color-mix", "color-layers", "light-dark", NULL
+};
 
 /* The properties whose value is a <color>. Claiming `color()` needs a
  * property that actually takes one: `width: color(srgb 0 0 0)` is invalid, not
@@ -1765,30 +2872,60 @@ int css_canon_decl(const char *prop, int plen,
 			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
 	} else if (in_tab(prop, plen, color_props)) {
-		/* Only `color()` is ours. `red`, `#fff` and `rgb(...)` are
-		 * LibCSS's and must keep behaving exactly as they do -- this
-		 * file has no specified serializer for them and claiming the
-		 * property is not claiming every value of it. */
-		if (lx.t[0].kind == T_FUNC &&
-		    ieq(lx.t[0].s, lx.t[0].len, "color")) {
-			rc = canon_color_fn(&lx, &b) == 0 && at_end(&lx)
-				? CSS_CANON_OK : CSS_CANON_INVALID;
+		/* WHICH VALUES OF A COLOUR PROPERTY ARE OURS.
+		 *
+		 * The FUNCTIONS are, because their specified spelling is
+		 * defined and LibCSS has none for any of them. A bare keyword
+		 * (`red`, `#fff`, `inherit`) is NOT: LibCSS already reads it
+		 * back correctly and rerouting a value that works today
+		 * through a second serializer buys nothing and risks a
+		 * regression -- claiming a property is not claiming every
+		 * value of it. The one keyword exception is a SYSTEM colour,
+		 * which LibCSS predates entirely and therefore drops.
+		 *
+		 * border-color and its logical siblings take ONE TO FOUR
+		 * colours. Parsing exactly one there and calling the rest a
+		 * syntax error would delete `border-color: rgb(1,2,3) red`
+		 * from every page that has one -- a value that sticks today. */
+		int maxc = (ieq(prop, plen, "border-color") ||
+			    ieq(prop, plen, "border-block-color") ||
+			    ieq(prop, plen, "border-inline-color")) ? 4 : 1;
+		const char *sysk = (lx.n == 1)
+			? tab_lookup(&lx.t[0], system_colors) : NULL;
+
+		if (sysk != NULL) {
+			bput(&b, sysk, -1);
+			rc = CSS_CANON_OK;
 		} else if (lx.t[0].kind == T_FUNC &&
-			   (in_tab(lx.t[0].s, lx.t[0].len, color_fns) ||
-			    (in_tab(lx.t[0].s, lx.t[0].len, color_fns_legacy) &&
+			   (in_tab(lx.t[0].s, lx.t[0].len, claimed_color_fns) ||
+			    (rel_lookup(&lx.t[0]) != NULL &&
 			     tok_is_ident(&lx.t[1], "from")))) {
-			/* A CSS Color 4/5 function this file does not spell
-			 * canonically but must not let the caller drop. See
-			 * the comment on color_fns[]. */
+			int nc = 0;
+			rc = CSS_CANON_OK;
+			while (!at_end(&lx)) {
+				if (nc >= maxc) { rc = CSS_CANON_INVALID; break; }
+				if (nc) bputc(&b, ' ');
+				if (canon_color(&lx, &b, 0) != 0) {
+					rc = CSS_CANON_INVALID;
+					break;
+				}
+				nc++;
+			}
+			if (rc == CSS_CANON_OK && nc == 0) rc = CSS_CANON_INVALID;
+		} else if (lx.t[0].kind == T_FUNC &&
+			   in_tab(lx.t[0].s, lx.t[0].len, raw_color_fns)) {
+			/* A Color 4/5 function this file recognises but does
+			 * not spell canonically. Emitted with its whitespace
+			 * normalised, because DROPPING it is the worse bug:
+			 * the value is valid CSS, a script can set it, and
+			 * refusing to store it costs more than storing it
+			 * unprettified. Measured, when this file first
+			 * consumed CSS_CANON_PASS: 2,687 subtests. */
 			const char *nm = NULL;
 			int i;
-			for (i = 0; color_fns[i] != NULL; i++)
-				if (ieq(lx.t[0].s, lx.t[0].len, color_fns[i]))
-					nm = color_fns[i];
-			for (i = 0; nm == NULL && color_fns_legacy[i] != NULL; i++)
-				if (ieq(lx.t[0].s, lx.t[0].len,
-						color_fns_legacy[i]))
-					nm = color_fns_legacy[i];
+			for (i = 0; raw_color_fns[i] != NULL; i++)
+				if (ieq(lx.t[0].s, lx.t[0].len, raw_color_fns[i]))
+					nm = raw_color_fns[i];
 			rc = (nm != NULL && color_fn_body_ok(&lx, 1) &&
 			      emit_color_fn_raw(&lx, &b, nm) == 0 &&
 			      at_end(&lx))

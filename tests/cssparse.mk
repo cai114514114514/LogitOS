@@ -67,11 +67,22 @@ test-cssparse-asan:
 #
 # -DCANON_NEGCTL instead attacks SERIALIZATION while leaving parsing intact.
 # The build accepts exactly the same values, rejects exactly the same invalid
-# ones, and then spells the result plausibly rather than canonically: the
-# anchor operands come out in the order the author wrote them (the obvious
-# choice, and the wrong one -- the spec fixes name-first), a comma separator
-# loses its space, and the typed zero stays untyped. Nothing throws and nothing
-# is missing.
+# ones, and then spells the result plausibly rather than canonically. FIVE
+# sabotages, each of which reads as a defensible choice in isolation:
+#
+#   - the anchor operands come out in the order the author wrote them (the
+#     obvious choice, and the wrong one -- the spec fixes name-first)
+#   - a comma separator loses its space, `a,b` rather than `a, b`
+#   - the typed zero stays untyped, `0` rather than `0px`
+#   - an sRGB channel is TRUNCATED rather than rounded half-up. Worth reading
+#     twice: it is wrong only when a channel lands exactly on .5, the corpus
+#     contains such a case on purpose (hwb(320deg 30% 40%) has a blue channel
+#     of precisely 127.5), and every other colour comes out identical. A
+#     serializer with this bug renders every page correctly.
+#   - `shorter hue` is kept in a color-mix() rather than dropped as the
+#     default. Also invisible: the value means the same thing either way.
+#
+# Nothing throws and nothing is missing.
 #
 # That is the exact failure a careful-looking implementation ships with, and
 # the only thing that catches it is comparing BYTES -- which is what WPT does
@@ -96,10 +107,34 @@ test-cssparse-negctl:
 	        | sed 's/^/    /'; \
 	 fi
 
+# THE ROUNDING SABOTAGE ON ITS OWN, because a compound control proves only
+# that the compound is caught -- and the compound above changes commas, which
+# every colour in the suite contains, so it would go red even if the digits
+# were never compared. -DCANON_NEGCTL_ROUND changes ONE character of
+# behaviour, floor() instead of floor(+0.5) on an sRGB channel, and leaves
+# every comma, keyword order and typed zero exactly as the real build spells
+# them. If this target ever goes green, the suite has stopped checking the
+# digits and is only checking the punctuation.
+.PHONY: test-cssparse-round-negctl
+test-cssparse-round-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DCANON_NEGCTL_ROUND $(CSSPARSE_INC) \
+	    -o $(BUILD)/cssparse_rneg $(CSSPARSE_SRC) -lm
+	@if $(BUILD)/cssparse_rneg > $(BUILD)/cssparse_rneg.log 2>&1; then \
+	    echo "test-cssparse-round-negctl: FAILED -- the suite passed against a"; \
+	    echo "  build that truncates an sRGB channel instead of rounding it."; \
+	    echo "  Every colour whose channel lands on .5 is then off by one and"; \
+	    echo "  nothing notices."; exit 1; \
+	 else \
+	    echo "test-cssparse-round-negctl: ok -- caught by:"; \
+	    grep -A2 'FAIL' $(BUILD)/cssparse_rneg.log | head -6 | sed 's/^/    /'; \
+	 fi
+
 # Wired into the aggregate the audit reads, the same way tests/url.mk does it.
 # tools/audit_tests.py calls a test- target "unwired" unless it is reachable as
 # a PREREQUISITE from one of the named suites, and separately derives the CI
 # host list from each recipe -- so this line covers the audit and the
 # classification covers `make ci`. 217 targets were once orphans for want of
 # exactly this.
-ci-host: test-cssparse test-cssparse-asan test-cssparse-negctl
+ci-host: test-cssparse test-cssparse-asan test-cssparse-negctl \
+         test-cssparse-round-negctl

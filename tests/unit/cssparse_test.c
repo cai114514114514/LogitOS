@@ -686,6 +686,412 @@ static void t_font_family(void)
 	chk("font-family", "simple \"a\"", NULL);
 }
 
+/* ====================================================================
+ * <color>: the specified-value serializer
+ *
+ * EVERY EXPECTED STRING BELOW IS TRANSCRIBED, not derived. They come from
+ * css/css-color/parsing/{color-valid-*,color-invalid-*}.html in the corpus,
+ * which is where the answer actually lives -- three lines of work on this
+ * grammar in one night all found the same thing, that deriving a
+ * serialization from the prose gets it subtly wrong and copying it from the
+ * tests gets it right.
+ *
+ * The rules being checked, each of which a careful implementation gets wrong
+ * in a different way:
+ *
+ *   1. rgb()/rgba() and a fully-numeric hsl()/hwb() RESOLVE to sRGB and are
+ *      spelled in the LEGACY form, integer channels, `, ` separated.
+ *   2. hsl()/hwb() with a `none` anywhere -- including in the alpha -- CANNOT
+ *      resolve and stay in their own space with the percent signs dropped.
+ *   3. rgb() is the exception: `none` there resolves to zero.
+ *   4. lab()/lch()/oklab()/oklch() never resolve, and each has its OWN
+ *      percentage scale per channel.
+ *   5. Rounding of an sRGB channel is half-UP, and the corpus has a case at
+ *      exactly .5 to catch a truncation.
+ *   6. Numbers are six significant digits.
+ *   7. Relative colour canonicalises its ORIGIN and leaves its channel
+ *      expressions alone.
+ *   8. color-mix() normalises weights, and drops them entirely when they are
+ *      all equal to the fair share.
+ * ==================================================================== */
+static void t_color_value(void)
+{
+	group("color/rgb");
+
+	/* Rule 1: the legacy form, and both syntaxes reaching it. */
+	chk_rt("color", "rgb(2, 3, 4)", "rgb(2, 3, 4)");
+	chk_rt("color", "rgb(2 3 4)", "rgb(2, 3, 4)");
+	chk_rt("color", "rgb(100%, 0%, 0%)", "rgb(255, 0, 0)");
+	chk_rt("color", "rgba(2, 3, 4, 0.5)", "rgba(2, 3, 4, 0.5)");
+	chk("color", "rgba(2, 3, 4, 50%)", "rgba(2, 3, 4, 0.5)");
+	chk("color", "rgb(-2, 3, 4)", "rgb(0, 3, 4)");
+	chk("color", "rgb(100, 200, 300)", "rgb(100, 200, 255)");
+	chk("color", "rgb(20, 10, 0, -10)", "rgba(20, 10, 0, 0)");
+	chk("color", "rgb(100%, 200%, 300%)", "rgb(255, 255, 255)");
+	chk("color", "rgb(500, 0, 0)", "rgb(255, 0, 0)");
+
+	/* Rule 3: `none` in rgb() is zero, and the -a alias is not part of
+	 * the canonical spelling. */
+	chk("color", "rgb(none none none)", "rgb(0, 0, 0)");
+	chk("color", "rgb(none none none / none)", "rgba(0, 0, 0, 0)");
+	chk("color", "rgb(128 none none)", "rgb(128, 0, 0)");
+	chk("color", "rgb(128 none none / none)", "rgba(128, 0, 0, 0)");
+	chk("color", "rgb(none none none / .5)", "rgba(0, 0, 0, 0.5)");
+	chk("color", "rgb(20% none none)", "rgb(51, 0, 0)");
+	chk("color", "rgba(none none none)", "rgb(0, 0, 0)");
+	chk("color", "rgba(250% 20% 40%)", "rgb(255, 51, 102)");
+
+	/* Modern syntax may mix numbers and percentages; legacy may not. */
+	chk("color", "rgb(250% 51 40%)", "rgb(255, 51, 102)");
+	chk("color", "rgb(255 20% 102)", "rgb(255, 51, 102)");
+	chk("color", "rgb(10%, 50%, 0)", NULL);
+	chk("color", "rgb(255, 50%, 0%)", NULL);
+
+	/* The legacy refusals, one per line because each is a distinct rule
+	 * and a parser can pass all but one of them. */
+	chk("color", "rgb(none, none, none)", NULL);
+	chk("color", "rgba(none, none, none, none)", NULL);
+	chk("color", "rgb(128, 0, none)", NULL);
+	chk("color", "rgb(255, 255, 255, none)", NULL);
+	chk("color", "rgb(0, 0 0)", NULL);
+	chk("color", "rgb(0 0, 0)", NULL);
+	chk("color", "rgb(,0, 0, 0)", NULL);
+	chk("color", "rgb(0, 0, 0,)", NULL);
+	chk("color", "rgb(0, 0,, 0)", NULL);
+	chk("color", "rgb(0, 0, 0deg)", NULL);
+	chk("color", "rgb(0, 0, light)", NULL);
+	chk("color", "rgb()", NULL);
+	chk("color", "rgb(0)", NULL);
+	chk("color", "rgb(0, 0)", NULL);
+	chk("color", "rgba(0, 0, 0, 0, 0)", NULL);
+	chk("color", "rgb(257, 0, 5 / 0)", NULL);
+	/* A channel keyword outside relative colour syntax. */
+	chk("color", "rgb(0 0 0 / alpha)", NULL);
+
+	group("color/hsl");
+
+	/* Rule 1 again, through a conversion this time. */
+	chk_rt("color", "hsl(120 30% 50%)", "rgb(89, 166, 89)");
+	chk("color", "hsl(120 30% 50% / 0.5)", "rgba(89, 166, 89, 0.5)");
+	chk("color", "hsl(120, 100%, 50%)", "rgb(0, 255, 0)");
+	chk("color", "hsla(120, 100%, 50%, 0.25)", "rgba(0, 255, 0, 0.25)");
+	chk("color", "hsl(120 30 50)", "rgb(89, 166, 89)");
+	chk("color", "hsl(120 30% 50)", "rgb(89, 166, 89)");
+	chk("color", "hsl(120 30 50%)", "rgb(89, 166, 89)");
+	/* Saturation is clamped at zero at parse time. */
+	chk("color", "hsl(0 -50% 40%)", "rgb(102, 102, 102)");
+	chk("color", "hsl(30 -50 60)", "rgb(153, 153, 153)");
+
+	/* Rule 2: a `none` anywhere keeps the hsl() spelling, and the percent
+	 * signs come off. */
+	chk_rt("color", "hsl(none none none)", "hsl(none none none)");
+	chk_rt("color", "hsl(none none none / none)",
+	    "hsl(none none none / none)");
+	chk("color", "hsla(none none none)", "hsl(none none none)");
+	chk_rt("color", "hsl(120 none none)", "hsl(120 none none)");
+	chk("color", "hsl(120 80% none)", "hsl(120 80 none)");
+	chk("color", "hsl(120 none 50%)", "hsl(120 none 50)");
+	chk("color", "hsl(120 100% 50% / none)", "hsl(120 100 50 / none)");
+	chk("color", "hsl(none 100% 50%)", "hsl(none 100 50)");
+	chk("color", "hsl(120 none 50 / 0.5)", "hsl(120 none 50 / 0.5)");
+	chk("color", "hsl(120 30 none / 0.5)", "hsl(120 30 none / 0.5)");
+	chk("color", "hsl(120 30 50 / none)", "hsl(120 30 50 / none)");
+	/* Alpha of exactly 0 is not the same as no alpha. */
+	chk("color", "hsl(0 0% 0% / 0)", "rgba(0, 0, 0, 0)");
+
+	chk("color", "hsl(none, none, none)", NULL);
+	chk("color", "hsl(none, 100%, 50%)", NULL);
+	chk("color", "hsla(120, 100%, 50%, none)", NULL);
+	chk("color", "hsl(10, 50%, 0)", NULL);
+	chk("color", "hsl(50%, 50%, 0%)", NULL);
+	chk("color", "hsl(0, 0% 0%)", NULL);
+	chk("color", "hsl(0, 0%, light)", NULL);
+	chk("color", "hsl()", NULL);
+	chk("color", "hsl(0)", NULL);
+	chk("color", "hsl(0, 0%)", NULL);
+	chk("color", "hsl(0, 50, 30%)", NULL);
+	chk("color", "hsl(0, 50%, 30)", NULL);
+	chk("color", "hsla(0, 0%, 0%, 1, 0%)", NULL);
+
+	group("color/hwb");
+
+	chk_rt("color", "hwb(120 30% 50%)", "rgb(77, 128, 77)");
+	chk("color", "hwb(120 30% 50% / 0.5)", "rgba(77, 128, 77, 0.5)");
+	chk("color", "hwb(0 0% 0%)", "rgb(255, 0, 0)");
+	chk("color", "hwb(120 0% 0%)", "rgb(0, 255, 0)");
+	chk("color", "hwb(120 80% 0%)", "rgb(204, 255, 204)");
+	chk("color", "hwb(120 0% 50%)", "rgb(0, 128, 0)");
+	chk("color", "hwb(0 100% 50% / 0)", "rgba(170, 170, 170, 0)");
+	chk("color", "hwb(120 30 50)", "rgb(77, 128, 77)");
+
+	/* RULE 5, and it is the single most valuable line in this function:
+	 * hwb(320deg 30% 40%) has a blue channel of EXACTLY 127.5 and must
+	 * round UP to 128. Truncating gives 127 and looks entirely
+	 * reasonable, which is why CANON_NEGCTL truncates and why this row
+	 * exists. */
+	chk("color", "hwb(320deg 30% 40%)", "rgb(153, 77, 128)");
+
+	chk_rt("color", "hwb(none none none)", "hwb(none none none)");
+	chk("color", "hwb(120 80% none)", "hwb(120 80 none)");
+	chk("color", "hwb(120 none 50%)", "hwb(120 none 50)");
+	chk("color", "hwb(120 30% 50% / none)", "hwb(120 30 50 / none)");
+	chk("color", "hwb(none 100% 50% / none)", "hwb(none 100 50 / none)");
+
+	/* hwb() has no comma form at all, which is a REFUSAL this file owns.
+	 * `hwba()` is a different case and the answer is PASS, for the reason
+	 * the color() group spells out at length: an unrecognised colour
+	 * function might be one a newer LibCSS accepts, and INVALID here
+	 * means "neither parser can take it". The corpus still sees that
+	 * declaration dropped, because LibCSS does refuse it. */
+	chk("color", "hwb(90deg, 50%, 50%)", NULL);
+	chk("color", "hwb(90, 50%, 50%, 0.2)", NULL);
+	chk("color", "hwba(120 30% 50%)", PASS_);
+
+	group("color/lab");
+
+	/* Rule 4. lab lightness runs to 100, a/b to 125 at 100%. */
+	chk_rt("color", "lab(0 0 0)", "lab(0 0 0)");
+	chk("color", "lab(0 0 0 / 1)", "lab(0 0 0)");
+	chk_rt("color", "lab(0 0 0 / 0.5)", "lab(0 0 0 / 0.5)");
+	chk("color", "lab(20 0 10/50%)", "lab(20 0 10 / 0.5)");
+	chk("color", "lab(400 0 10/50%)", "lab(100 0 10 / 0.5)");
+	chk("color", "lab(-40 0 0)", "lab(0 0 0)");
+	chk("color", "lab(50 -200 200)", "lab(50 -200 200)");
+	chk("color", "lab(50% 50% -20%)", "lab(50 62.5 -25)");
+	chk("color", "lab(50 -20% -20%)", "lab(50 -25 -25)");
+	chk("color", "lab(20% -50% 90%/0.5)", "lab(20 -62.5 112.5 / 0.5)");
+	chk("color", "lab(0 0 0 / -10%)", "lab(0 0 0 / 0)");
+	chk("color", "lab(0 0 0 / 300%)", "lab(0 0 0)");
+	chk_rt("color", "lab(none none none / none)",
+	    "lab(none none none / none)");
+	chk("color", "lab(20 none none / none)", "lab(20 none none / none)");
+
+	/* oklab is the same grammar with different scales: lightness to 1,
+	 * a/b to 0.4 at 100%. A serializer that shares one scale between them
+	 * passes lab and fails oklab, which is why both are here. */
+	chk_rt("color", "oklab(0 0 0)", "oklab(0 0 0)");
+	chk("color", "oklab(4 0 0.1/50%)", "oklab(1 0 0.1 / 0.5)");
+	chk("color", "oklab(-0.4 0 0)", "oklab(0 0 0)");
+	chk("color", "oklab(50% 50% -20%)", "oklab(0.5 0.2 -0.08)");
+	chk("color", "oklab(0.5 -20% -20%)", "oklab(0.5 -0.08 -0.08)");
+	/* RULE 6: 0.7 * 0.4 is 0.27999999999999997 in a double, and the
+	 * shortest round-tripping decimal of THAT is not `0.28`. */
+	chk("color", "oklab(20% 70% -80%/0.5)", "oklab(0.2 0.28 -0.32 / 0.5)");
+
+	/* lch: chroma to 150 at 100% and clamped at zero, hue is an angle
+	 * normalised into [0, 360). */
+	chk_rt("color", "lch(0 0 0)", "lch(0 0 0)");
+	chk("color", "lch(0 0 0deg)", "lch(0 0 0)");
+	chk("color", "lch(100 230 0deg / 0.5)", "lch(100 230 0 / 0.5)");
+	chk("color", "lch(10 20 380deg)", "lch(10 20 20)");
+	chk("color", "lch(10 20 -340deg)", "lch(10 20 20)");
+	chk("color", "lch(10 20 740deg)", "lch(10 20 20)");
+	chk("color", "lch(10 20 -700)", "lch(10 20 20)");
+	chk("color", "lch(20 -20 0)", "lch(20 0 0)");
+	chk("color", "lch(50% 50% 20)", "lch(50 75 20)");
+	chk("color", "lch(0.5 -20% -20)", "lch(0.5 0 340)");
+	chk("color", "lch(20% 80% 10/0.5)", "lch(20 120 10 / 0.5)");
+	/* RULE 6 again, from the other direction: 1.28rad is
+	 * 73.33859777674537 degrees and serializes to six figures. */
+	chk("color", "lch(10 20 1.28rad)", "lch(10 20 73.3386)");
+
+	chk_rt("color", "oklch(0 0 0)", "oklch(0 0 0)");
+	chk("color", "oklch(1 2.3 0deg / 0.5)", "oklch(1 2.3 0 / 0.5)");
+	chk("color", "oklch(0.1 0.2 1.28rad)", "oklch(0.1 0.2 73.3386)");
+	chk("color", "oklch(-4 0 0)", "oklch(0 0 0)");
+	chk("color", "oklch(0.2 -0.2 0)", "oklch(0.2 0 0)");
+	chk("color", "oklch(50% 50% 20)", "oklch(0.5 0.2 20)");
+	chk("color", "oklch(0.5 -20% -20)", "oklch(0.5 0 340)");
+	chk("color", "oklch(20% 60% 10/0.5)", "oklch(0.2 0.24 10 / 0.5)");
+
+	/* A fourth component without a slash, and an angle where the space
+	 * has no hue. */
+	chk("color", "lab(0% 0 0 1)", NULL);
+	chk("color", "lab(0% 0 0 10%)", NULL);
+	chk("color", "lab(0% 0 0deg)", NULL);
+	chk("color", "lab(40% 0 0deg)", NULL);
+	chk("color", "oklab(0% 0% 0deg)", NULL);
+	chk("color", "lch(20% 10 10deg 10)", NULL);
+	chk("color", "oklch(20% 10 10deg 10 / 0.5)", NULL);
+	/* lch's hue is an angle, never a percentage. */
+	chk("color", "lch(20 10 10%)", NULL);
+
+	group("color/keyword");
+
+	/* A system colour is this file's, because LibCSS predates all of them
+	 * and drops the declaration entirely. It serializes lowercased. */
+	chk_rt("color", "ActiveText", "activetext");
+	chk("color", "Canvas", "canvas");
+	chk("color", "AccentColorText", "accentcolortext");
+	chk("color", "SelectedItemText", "selecteditemtext");
+	/* A named colour is not: LibCSS already reads it back correctly. */
+	chk("color", "rebeccapurple", PASS_);
+	chk("color", "activetextt", PASS_);
+
+	group("color/relative");
+
+	/* RULE 7. The origin is canonicalised by every rule above; the
+	 * channel expressions are left exactly as written. */
+	chk_rt("color", "rgb(from rebeccapurple r g b)",
+	    "rgb(from rebeccapurple r g b)");
+	chk("color", "rgb(from rgb(20%, 40%, 60%, 80%) r g b / alpha)",
+	    "rgb(from rgba(51, 102, 153, 0.8) r g b / alpha)");
+	chk("color", "hsl(from hsl(120deg 20% 50% / .5) h s l)",
+	    "hsl(from rgba(102, 153, 102, 0.5) h s l)");
+	chk("color", "rgb(from rgb(none none none) r g b)",
+	    "rgb(from rgb(0, 0, 0) r g b)");
+	chk("color", "hwb(from hwb(120deg 20% 50% / .5) h w b)",
+	    "hwb(from rgba(51, 128, 51, 0.5) h w b)");
+	chk("color", "hwb(from currentColor h w b)",
+	    "hwb(from currentcolor h w b)");
+	chk_rt("color", "rgb(from rebeccapurple g b r)",
+	    "rgb(from rebeccapurple g b r)");
+	chk_rt("color", "rgb(from rebeccapurple r 20% 10)",
+	    "rgb(from rebeccapurple r 20% 10)");
+	chk_rt("color", "hwb(from rebeccapurple 0deg 0% 0%)",
+	    "hwb(from rebeccapurple 0deg 0% 0%)");
+	chk_rt("color", "lab(from lab(25 20 50) l a b / alpha)",
+	    "lab(from lab(25 20 50) l a b / alpha)");
+	chk("color", "lab(from lab(200 300 400 / 500%) l a b / alpha)",
+	    "lab(from lab(100 300 400) l a b / alpha)");
+	chk_rt("color", "color(from color(srgb 0.7 0.5 0.3) srgb r g b)",
+	    "color(from color(srgb 0.7 0.5 0.3) srgb r g b)");
+	chk_rt("color", "rgb(from rgb(from rebeccapurple r g b) r g b)",
+	    "rgb(from rgb(from rebeccapurple r g b) r g b)");
+	chk_rt("color", "hsl(from color-mix(in srgb, red, red) h s l / alpha)",
+	    "hsl(from color-mix(in srgb, red, red) h s l / alpha)");
+
+	/* The channel keywords belong to the TARGET space, and an angle is
+	 * only legal where the space has a hue. */
+	chk("color", "rgb(from rebeccapurple r 10deg 10)", NULL);
+	chk("color", "rgb(from rebeccapurple 10deg g b)", NULL);
+	chk("color", "rgb(from rebeccapurple red g b)", NULL);
+	chk("color", "rgb(from rebeccapurple l g b)", NULL);
+	chk("color", "rgb(from rebeccapurple h g b)", NULL);
+	chk("color", "hsl(from rebeccapurple 10% s l)", NULL);
+	chk("color", "hsl(from rebeccapurple hue s l)", NULL);
+	chk("color", "hsl(from rebeccapurple x s l)", NULL);
+	chk("color", "hwb(from rebeccapurple 10% w b)", NULL);
+	chk("color", "lch(from lch(.7 45 30) l 10deg h)", NULL);
+	chk("color", "lch(from lch(.7 45 30) l c 10%)", NULL);
+	chk("color", "lch(from lch(.7 45 30) lightness c h)", NULL);
+	/* Commas are not a separator here. */
+	chk("color", "rgb(from rebeccapurple, r, g, b)", NULL);
+	/* An origin that is not a colour at all. */
+	chk("color", "rgb(from banana r g b)", NULL);
+
+	group("color/mix");
+
+	/* RULE 8. Weights are filled in to sum to 100 and then vanish if all
+	 * of them equal the fair share -- which is what makes
+	 * `red 50%, blue` and `red, blue` the same value. */
+	chk_rt("color", "color-mix(in srgb, red, blue)",
+	    "color-mix(in srgb, red, blue)");
+	chk("color", "color-mix(in srgb, 70% red, 50% blue)",
+	    "color-mix(in srgb, red 70%, blue 50%)");
+	chk("color", "color-mix(in hsl, red 50%, blue)",
+	    "color-mix(in hsl, red, blue)");
+	chk("color", "color-mix(in hsl, red, blue 50%)",
+	    "color-mix(in hsl, red, blue)");
+	chk("color", "color-mix(in srgb, red 10%, blue)",
+	    "color-mix(in srgb, red 10%, blue 90%)");
+	chk("color", "color-mix(in srgb, red, blue 90%)",
+	    "color-mix(in srgb, red 10%, blue 90%)");
+	chk("color", "color-mix(in srgb, red 30%, blue 40%)",
+	    "color-mix(in srgb, red 30%, blue 40%)");
+	chk("color", "color-mix(in srgb, red 0%, blue 0%)",
+	    "color-mix(in srgb, red 0%, blue 0%)");
+	chk("color", "color-mix(in srgb, red 100%)", "color-mix(in srgb, red)");
+	chk("color", "color-mix(in srgb, red 50%)",
+	    "color-mix(in srgb, red 50%)");
+	chk("color", "color-mix(in srgb, red 50%, green, blue)",
+	    "color-mix(in srgb, red 50%, green 25%, blue 25%)");
+	chk("color", "color-mix(in srgb, red, green, blue)",
+	    "color-mix(in srgb, red, green, blue)");
+	/* A calc() weight suspends normalisation entirely: nothing is filled
+	 * in and nothing is dropped. */
+	chk("color", "color-mix(in srgb, red calc(50%), blue)",
+	    "color-mix(in srgb, red calc(50%), blue)");
+	chk("color", "color-mix(in srgb, red calc(10%), blue 50%)",
+	    "color-mix(in srgb, red calc(10%), blue 50%)");
+
+	/* `shorter hue` is the default and disappears; the other three stay.
+	 * The colours inside are canonicalised like any other. */
+	chk("color", "color-mix(in hsl shorter hue, hsl(40deg 50% 50%),"
+	    " hsl(60deg 50% 50%))",
+	    "color-mix(in hsl, rgb(191, 149, 64), rgb(191, 191, 64))");
+	chk("color", "color-mix(in hsl longer hue, hsl(40deg 50% 50%),"
+	    " hsl(60deg 50% 50%))",
+	    "color-mix(in hsl longer hue, rgb(191, 149, 64),"
+	    " rgb(191, 191, 64))");
+	chk("color", "color-mix(in lch decreasing hue, red,"
+	    " hsl(120, 100%, 50%))",
+	    "color-mix(in lch decreasing hue, red, rgb(0, 255, 0))");
+	/* The interpolation method is optional. */
+	chk_rt("color", "color-mix(color(srgb 0.1 0.2 0.3),"
+	    " color(srgb 0.5 0.6 0.7))",
+	    "color-mix(color(srgb 0.1 0.2 0.3), color(srgb 0.5 0.6 0.7))");
+
+	/* A weight outside [0, 100] is a parse error, not a clamp. */
+	chk("color", "color-mix(in hsl, hsl(120deg 10% 20%) -10%,"
+	    " hsl(30deg 30% 40%))", NULL);
+	chk("color", "color-mix(in hsl, hsl(120deg 10% 20%) 150%,"
+	    " hsl(30deg 30% 40%))", NULL);
+	chk("color", "color-mix(in hsl hue, red, blue)", NULL);
+	chk("color", "color-mix(in hsl shorter, red, blue)", NULL);
+	chk("color", "color-mix(in hsl foo, red, blue)", NULL);
+	chk("color", "color-mix(in hsl red, blue)", NULL);
+	chk("color", "color-mix(in hsl, red blue)", NULL);
+	chk("color", "color-mix(red, blue, in hsl)", NULL);
+	chk("color", "color-mix(in srgb, red, blue blue)", NULL);
+	/* A hue method on a rectangular space. */
+	chk("color", "color-mix(in lab longer hue, red, blue)", NULL);
+	chk("color", "color-mix(in srgb longer hue, red, blue)", NULL);
+
+	group("color/layers");
+
+	/* `normal` is the initial blend mode and disappears; every other one
+	 * stays, and the colours are canonicalised as usual. */
+	chk_rt("color", "color-layers(red)", "color-layers(red)");
+	chk("color", "color-layers(normal, red, blue)",
+	    "color-layers(red, blue)");
+	chk_rt("color", "color-layers(multiply, red, blue)",
+	    "color-layers(multiply, red, blue)");
+	chk("color", "color-layers(screen, hsl(120, 100%, 50%), blue)",
+	    "color-layers(screen, rgb(0, 255, 0), blue)");
+	chk_rt("color", "color-layers(color-mix(in srgb, red, blue), blue)",
+	    "color-layers(color-mix(in srgb, red, blue), blue)");
+	chk_rt("color", "color-layers(rgb(from black r g b / 0.5), green)",
+	    "color-layers(rgb(from black r g b / 0.5), green)");
+
+	chk("color", "color-layers()", NULL);
+	chk("color", "color-layers(normal)", NULL);
+	chk("color", "color-layers(multiply)", NULL);
+	chk("color", "color-layers(red blue)", NULL);
+	chk("color", "color-layers(red, blue, )", NULL);
+	chk("color", "color-layers(plus-lighter, red, blue)", NULL);
+	chk("color", "color-layers(foo-bar, red, blue)", NULL);
+
+	group("color/multi");
+
+	/* border-color takes ONE TO FOUR colours. Parsing exactly one and
+	 * calling the rest a syntax error would delete a value that sticks
+	 * today, which is a regression dressed as a fix. */
+	chk_rt("border-color", "rgb(1, 2, 3)", "rgb(1, 2, 3)");
+	chk("border-color", "rgb(1,2,3) hsl(120, 100%, 50%)",
+	    "rgb(1, 2, 3) rgb(0, 255, 0)");
+	chk("border-color", "rgb(1,2,3) rgb(4,5,6) rgb(7,8,9) rgb(0,0,0)",
+	    "rgb(1, 2, 3) rgb(4, 5, 6) rgb(7, 8, 9) rgb(0, 0, 0)");
+	chk("border-color", "rgb(1,2,3) rgb(4,5,6) rgb(7,8,9) rgb(0,0,0)"
+	    " rgb(1,1,1)", NULL);
+	/* And a property that takes exactly one still takes exactly one. */
+	chk("color", "rgb(1,2,3) rgb(4,5,6)", NULL);
+	/* A colour function is not a value for a property that takes no
+	 * colour. */
+	chk("width", "rgb(1, 2, 3)", PASS_);
+	chk("width", "color-mix(in srgb, red, blue)", PASS_);
+}
+
 /* css/css-color/parsing/color-valid-color-function.html and its -invalid
  * sibling, run over the same colour-space list the corpus iterates.
  *
@@ -819,32 +1225,36 @@ static void t_color_function(void)
 
 	group("color()/color-4-5");
 
-	/* The CSS Color 4/5 functions. These are NOT canonically serialized --
-	 * see the comment on color_fns[] -- so what is asserted is exactly
-	 * what is delivered: the value survives, whitespace-normalized, and
-	 * round-trips. Asserting a canonical spelling here would be asserting
-	 * something this file does not do.
-	 *
-	 * They are kept rather than passed on because a caller that falls back
-	 * to LibCSS for a PASS drops every one of them: LibCSS predates them
-	 * all. A valid value a script sets and cannot read back is a broken
-	 * CSSOM, which is a worse failure than an unprettified spelling. */
+	/* The CSS Color 4/5 functions, canonically spelled. What each of
+	 * these asserts is a SEPARATE rule, and every one of them is a way a
+	 * plausible implementation is wrong -- see the header comment on the
+	 * colour section of canon.c for where each rule comes from. */
 	chk_rt("color", "color-mix(in srgb, red, blue)",
 	    "color-mix(in srgb, red, blue)");
 	chk("color", "color-mix(in srgb,red,blue)",
 	    "color-mix(in srgb, red, blue)");
 	chk_rt("color", "rgb(from red r g b)", "rgb(from red r g b)");
+	/* contrast-color()/device-cmyk()/alpha() are still recognised but not
+	 * spelled: their serialization needs gamut mapping a specified value
+	 * does not otherwise require, and doing it wrong is worse than not
+	 * doing it. They survive whitespace-normalized, which is the half of
+	 * the CSSOM contract that matters. */
 	chk_rt("color", "alpha(from red / 0.5)", "alpha(from red / 0.5)");
 	chk_rt("color", "alpha(from currentcolor / calc(alpha * 0.5))",
 	    "alpha(from currentcolor / calc(alpha * 0.5))");
 	chk_rt("color", "lab(50 20 -30)", "lab(50 20 -30)");
 	chk_rt("color", "oklch(0.5 0.2 120)", "oklch(0.5 0.2 120)");
-	/* The legacy forms stay LibCSS's; only the RELATIVE form is kept
-	 * here. `from` as the first argument is the whole distinction. */
-	chk("color", "hsl(120deg 50% 50%)", PASS_);
+	/* An hsl() whose channels are all real numbers RESOLVES to sRGB and
+	 * comes out in the legacy form. This is the single rule that the
+	 * previous version of this file got most visibly wrong: it answered
+	 * PASS and left the spelling to a serializer that had never seen the
+	 * modern syntax. */
+	chk_rt("color", "hsl(120deg 50% 50%)", "rgb(64, 191, 64)");
 	chk_rt("color", "hsl(from red h s l)", "hsl(from red h s l)");
-	chk_rt("color", "rgba(from red r g b / 0.5)",
-	    "rgba(from red r g b / 0.5)");
+	/* `rgba(from ...)` is spelled `rgb(from ...)`: the -a alias is not
+	 * part of the canonical form. */
+	chk("color", "rgba(from red r g b / 0.5)",
+	    "rgb(from red r g b / 0.5)");
 	chk_rt("color", "light-dark(white, black)", "light-dark(white, black)");
 	chk_rt("color", "alpha(from color(display-p3 1 0 0) / 0.5)",
 	    "alpha(from color(display-p3 1 0 0) / 0.5)");
@@ -858,15 +1268,21 @@ static void t_color_function(void)
 	chk("color", "oklch(1 2 3))", NULL);
 	chk("color", "color-mix(in srgb, red, blue) extra", NULL);
 
-	/* THE SAFETY PROPERTY for colours: everything else on these
-	 * properties is LibCSS's and must be untouched. */
+	/* THE SAFETY PROPERTY for colours, and it has MOVED, so it is spelled
+	 * out rather than left implicit. The colour FUNCTIONS are this file's
+	 * now, because their specified spelling is defined and LibCSS has
+	 * none. A bare keyword or a hex literal is still LibCSS's: it already
+	 * reads back correctly there, and rerouting a value that works today
+	 * through a second serializer buys nothing and risks a regression. */
+	chk("color", "rgb(1, 2, 3)", "rgb(1, 2, 3)");
+	chk("color", "rgba(1,2,3,.5)", "rgba(1, 2, 3, 0.5)");
 	chk("color", "red", PASS_);
 	chk("color", "#fff", PASS_);
-	chk("color", "rgb(1, 2, 3)", PASS_);
-	chk("color", "rgba(1,2,3,.5)", PASS_);
 	chk("color", "currentColor", PASS_);
 	chk("color", "inherit", PASS_);
 	chk("background-color", "transparent", PASS_);
+
+	t_color_value();
 }
 
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
