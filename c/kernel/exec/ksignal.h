@@ -108,6 +108,12 @@ int  ksig_tty_getc(void);
 /* The tty's single foreground pid -- see the honest note about sessions in
  * include/abi/logit_abi.h. Set by whoever reads the console. */
 void ksig_tty_set_fg(int pid);
+/* "The caller is now the foreground process." Resolves proc_current() HERE
+ * rather than at the call site so that c/kernel/exec/file.c needs no new
+ * include: it is linked into host test binaries, and pulling proc.h (and
+ * through it interrupts.h) into it would be a build-shape change for the sake
+ * of one field read. */
+void ksig_tty_claim_fg(void);
 
 /* --- syscalls ------------------------------------------------------------ */
 long ksig_syscall(long num, long a, long b, long c);

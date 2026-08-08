@@ -14,6 +14,7 @@
  * directory sorts before c/kernel/core in INCDIRS, so the bare form resolves to
  * the userland header. Same note as syscall.c, same build failure. */
 #include "kernel/core/wait.h"   /* M27: a pipe waits, it does not poll */
+#include "ksignal.h"    /* signals: ^C on the console, SIGPIPE, EINTR */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -69,8 +70,26 @@ static long tty_read(struct file *f, void *vbuf, long len)
      * shell sat at its prompt. Instead drop the BKL and idle until the next
      * interrupt (timer 100Hz / serial), exactly like the WM idle loop, so the
      * other cores keep running while we wait. */
+    /* THE FOREGROUND PID. Whoever is blocking on the console IS the foreground
+     * process, as far as this machine can tell -- there are no sessions and no
+     * process groups here (no SYS_SETSID, no SYS_GETPGID), and half a job
+     * control layer would be worse than none. So the tty holds one pid and the
+     * timer's ^C goes to it. It gets the shell right, which is the case that
+     * matters; it does not reach the shell's child, so `sleep 100` is not
+     * interruptible until /bin/sh forwards the signal. Said out loud in
+     * include/abi/logit_abi.h as well, because it is a limit and not a detail. */
+    ksig_tty_claim_fg();
     uint64_t woke_at = 0;
-    while ((c = serial_getc()) < 0) {
+    /* ksig_tty_getc(), not serial_getc(): the timer drains the UART now, so
+     * that a ^C is seen while a child is running rather than sitting in the
+     * receive register until the shell next asks for a line. This takes bytes
+     * from the queue the timer fills. */
+    while ((c = ksig_tty_getc()) < 0) {
+        /* EINTR. A read of the console cut short by a signal has to return
+         * something distinguishable from a byte and from EOF -- otherwise a
+         * SIGINT handler that longjmps back to the prompt has no way to be
+         * reached, because this loop would simply resume waiting. */
+        if (ksig_interrupted()) return SIG_E_INTR;
         /* Charge the previous wake with everything from `hlt` returning to here:
          * the BKL re-acquire (which may spin) and the UART poll. Nothing else in
          * this loop executes while the core is not halted. */
@@ -147,8 +166,18 @@ static long pipe_read(struct file *f, void *vbuf, long len)
 {
     struct pipe *p = (struct pipe *)f->backing;
     char *out = (char *)vbuf;
-    if (!(f->flags & O_NONBLOCK))
-        wait_event(&p->wq, p->count > 0 || p->writers == 0);
+    if (!(f->flags & O_NONBLOCK)) {
+        /* ksig_interrupted() is in the PREDICATE, not tested after the wait,
+         * and that is the only place it works: a signal's wake is spurious as
+         * far as "there is data" goes, so a wait_event() that did not know
+         * about it would simply re-park and the check after the loop would
+         * never be reached. It is deliberately lock-free for this -- it is
+         * evaluated under the waitqueue's own lock, and taking g_sig_lock there
+         * would invert the lock order this kernel is built on. */
+        wait_event(&p->wq, p->count > 0 || p->writers == 0 || ksig_interrupted());
+        if (p->count == 0 && p->writers != 0 && ksig_interrupted())
+            return SIG_E_INTR;
+    }
     if (p->count == 0)
         return p->writers == 0 ? 0 : EAGAIN_RC;   /* EOF, or "would block" */
     long n = 0;
@@ -167,10 +196,26 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
     const char *in = (const char *)vbuf;
     long n = 0;
     while (n < len) {
-        if (p->readers == 0) return n > 0 ? n : -1;          /* broken pipe */
+        if (p->readers == 0) {
+            /* SIGPIPE. The condition was already detected here -- the pipe has
+             * refcounted its readers since M18 -- and all that could be done
+             * with it was to return an error the caller was free to ignore.
+             * That is why a shell pipeline whose head keeps writing after the
+             * tail exits never died: `yes | head -1` ran forever.
+             *
+             * Its default action is terminate, so posting it is what makes the
+             * writer stop; a program that has asked to handle it (or ignored
+             * it, as every server does) still gets its -1/EPIPE here. Posted
+             * before the return so that delivery happens at this syscall's own
+             * exit to ring 3, not at some later one. */
+            ksig_post_current(LOGIT_SIGPIPE);
+            return n > 0 ? n : -1;                           /* broken pipe */
+        }
         if (p->count == PIPE_SZ) {
             if (f->flags & O_NONBLOCK) return n > 0 ? n : EAGAIN_RC;
-            wait_event(&p->wq, p->count < PIPE_SZ || p->readers == 0);
+            wait_event(&p->wq, p->count < PIPE_SZ || p->readers == 0 || ksig_interrupted());
+            if (p->count == PIPE_SZ && p->readers != 0 && ksig_interrupted())
+                return n > 0 ? n : SIG_E_INTR;
             continue;
         }
         long before = n;

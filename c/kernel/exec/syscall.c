@@ -36,6 +36,7 @@
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
 #include "kbench.h"      /* per-syscall accounting, off by default */
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
+#include "ksignal.h"     /* signals: SYS_SIGACTION..SYS_SIGQUERY, execve reset */
 #include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
@@ -480,7 +481,18 @@ static void syscall_do(struct registers *r)
          * program a %fs pointing into memory that is no longer its own -- and
          * because the descriptor would still agree with the hardware, no later
          * context switch would ever correct it. */
-        if (rc == 0) sched_set_fsbase(0);
+        if (rc == 0) {
+            sched_set_fsbase(0);
+            /* Signals across exec, and the distinction is POSIX's rather than a
+             * shortcut: a CAUGHT signal goes back to SIG_DFL, because the
+             * handler's address is in an image that no longer exists and
+             * keeping it would be a jump into whatever the new program put
+             * there; an IGNORED signal STAYS ignored, which is what lets a
+             * shell start a child with SIGINT already ignored. The blocked mask
+             * is inherited unchanged. `ep` is still the same struct proc --
+             * execve replaces the address space, not the process. */
+            if (ep) ksig_proc_exec(ep->pid);
+        }
         else r->rax = (uint64_t)rc;
         return;
     }
@@ -828,6 +840,30 @@ static void syscall_do(struct registers *r)
     case SYS_PROCS:
     case SYS_KILL:
         r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
+                                        (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* Signals (130-136). Forwarded whole to c/kernel/exec/ksignal.c for the
+     * reason mm_syscall() and uthread_syscall() give: which argument is a user
+     * pointer and what it means are facts about signals, and they belong beside
+     * the table that knows them. Proc-level and not GUI: /bin/sh, the coreutils
+     * and every .as script have every right to a SIGINT handler and no window
+     * for the WM to resolve them through.
+     *
+     * SYS_SIGRETURN is NOT in this list, and cannot be. Restoring a frame means
+     * writing the register set that is about to be iretq'd and the FXSAVE area
+     * c/boot/isr.asm will FXRSTOR; a syscall body reaches neither, so it is
+     * intercepted in interrupt_handler ahead of this dispatcher. Reaching
+     * ksignal.c's SYS_SIGRETURN case at all means somebody called it by hand,
+     * and it answers SIG_E_ARG. */
+    case SYS_SIGACTION:
+    case SYS_SIGPROCMASK:
+    case SYS_SIGRETURN:
+    case SYS_SIGPENDING:
+    case SYS_ALARM:
+    case SYS_SIGSUSPEND:
+    case SYS_SIGQUERY:
+        r->rax = (uint64_t)ksig_syscall((long)r->rax, (long)r->rdi,
                                         (long)r->rsi, (long)r->rdx);
         return;
 

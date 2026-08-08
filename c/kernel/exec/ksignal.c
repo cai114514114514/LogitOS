@@ -323,6 +323,12 @@ static volatile int  g_tty_fg;
 
 void ksig_tty_set_fg(int pid) { g_tty_fg = pid; }
 
+void ksig_tty_claim_fg(void)
+{
+    struct proc *p = proc_current();
+    if (p) g_tty_fg = p->pid;
+}
+
 static void ttyq_push(char c)
 {
     int nh = (g_ttyq_head + 1) % TTYQ_SZ;

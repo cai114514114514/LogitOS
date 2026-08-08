@@ -15,6 +15,7 @@
  * first in INCDIRS and silently wins the bare form. */
 #include "kernel/core/wait.h"   /* M27: a parent waits for a child, it does not poll */
 #include "uthread.h"            /* M30: a process is a set of threads */
+#include "ksignal.h"            /* M31: signals -- lifecycle, SIGCHLD, EINTR, kill */
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
 /* net/core/sock.c: release the non-blocking sockets this process owns. Weak so
@@ -191,6 +192,12 @@ static struct proc *alloc_proc(void)
             break;
         }
     spin_unlock_irqrestore(&g_proc_lock, fl);
+    /* M31: give the new pid a clean signal state -- every disposition SIG_DFL,
+     * nothing pending, nothing blocked. Here rather than inside the critical
+     * section because it takes g_sig_lock, and this is the one place a slot is
+     * claimed, so a recycled pid can no more inherit the previous tenant's
+     * handlers than it can inherit its kill mark. */
+    if (ret) ksig_proc_init(ret->pid);
     return ret;
 }
 
@@ -284,6 +291,11 @@ long proc_fork(struct registers *r)
     child->gui  = NULL;                      /* a forked child has no window */
     scopy(child->name, parent->name, sizeof child->name);
     scopy(child->cwd, parent->cwd, sizeof child->cwd);
+    /* POSIX: the child inherits the dispositions and the blocked mask, and
+     * inherits NOTHING pending -- a signal raised at the parent was raised at
+     * the parent, and duplicating it would mean a Ctrl+C during a fork killing
+     * two processes. */
+    ksig_proc_fork(child->pid, parent->pid);
     for (int i = 0; i < NFD; i++) {
         child->fd[i] = parent->fd[i];
         if (child->fd[i]) file_dup(child->fd[i]);
@@ -373,7 +385,28 @@ void proc_exit(int code)
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         p->exit_code = code;
         p->state = PROC_ZOMBIE;
+        int ppid = p->ppid;
         spin_unlock_irqrestore(&g_proc_lock, fl);
+
+        /* M31: SIGCHLD. AFTER the zombie is visible, so a parent whose handler
+         * calls waitpid() finds the child already reapable rather than racing
+         * the state change it was told about.
+         *
+         * Its default action is IGNORE, which is why this can be unconditional:
+         * a parent that has not asked for SIGCHLD sees no change at all, and
+         * the existing waitpid() path is untouched. A parent that HAS asked can
+         * now reap asynchronously instead of blocking or polling, which is the
+         * thing a shell could not do before.
+         *
+         * ppid 0 (a GUI app, whose "parent" is the window manager, which is a
+         * kernel thread and not a process) posts to nobody; ksig_post answers
+         * SIG_E_SRCH and nothing happens. */
+        if (ppid > 0) ksig_post(ppid, LOGIT_SIGCHLD);
+
+        /* This process will never run again, so its signal state is dead with
+         * it -- released here rather than at reap, so that a pid recycled
+         * before the zombie is collected cannot find the old handlers. */
+        ksig_proc_free(p->pid);
         /* AFTER the unlock, and before thread_exit() (which never returns).
          * Outside the lock because the waiter holds g_child_wq.lock while it
          * takes g_proc_lock, so a waker holding g_proc_lock here would close an
@@ -417,6 +450,19 @@ long proc_waitpid(int pid, int *status)
             return rpid;
         }
         if (!have_child) return -1;
+        /* M31: EINTR, and this is the first place in the kernel that has one.
+         *
+         * A blocking wait cut short by a signal must be distinguishable from
+         * one that failed, or a shell cannot tell "the user pressed Ctrl+C"
+         * from "there is no such child" -- and -1 already means the latter
+         * here. So it returns SIG_E_INTR, which mini-libc turns into errno
+         * EINTR, and a handler with SA_RESTART gets the call re-issued instead
+         * (the restart is done to the SAVED context; see ksigframe.c).
+         *
+         * Tested BEFORE the park, not after: the wake that a signal causes is
+         * spurious as far as this predicate goes, so the loop would re-park and
+         * the check would never be reached if it were on the other side. */
+        if (ksig_interrupted()) return SIG_E_INTR;
         /* PARK, do not poll. bkl_hlt_wait() re-dispatched this thread on every
          * interrupt -- ~100 times a second for the whole life of every command
          * /bin/sh runs -- and each pass re-acquired the global kernel lock (which
@@ -658,6 +704,20 @@ long proc_syscall(long num, long a, long b, long c)
         return proc_list(buf, max);
     }
     case SYS_KILL:
+        /* M31: two calls behind one number, split by a FLAG in the third
+         * argument rather than by a value in the second.
+         *
+         * Without the flag this is the historical call and it is bit-for-bit
+         * what it always was: (pid, ignored, 0) = destroy that process, through
+         * the deferred mark below. c/apps/gui/monitor.c passes exactly that and
+         * is untouched.
+         *
+         * With LOGIT_KILL_SIGNAL it is POSIX kill(2): `b` is the signal number,
+         * and 0 is the existence probe rather than "no signal". A flag and not
+         * "sig != 0 means signal" precisely because sig 0 has its own meaning
+         * and the task manager's zero must not be mistaken for it. */
+        if ((c & LOGIT_KILL_SIGNAL))
+            return ksig_kill((int)a, (int)b);
         return proc_kill((int)a);
     default:
         return -1;
