@@ -237,7 +237,27 @@ static const char *SELECT_PRELUDE =
 "  synErr('unterminated string in selector');\n"
 "}\n"
 
-"function skipWS(s, i) { while (i < s.length && WSCH.test(s[i])) i++; return i; }\n"
+/* Whitespace AND comments. A CSS comment is removed by the tokenizer, so
+ * `[foo='bar' i] /* note *\x2f` is a perfectly valid selector -- and the
+ * attribute-case corpus writes every one of its cases that way, which is why a
+ * parser that stops at the slash reports fourteen valid selectors as syntax
+ * errors. Treating a comment as whitespace is a hair looser than the spec
+ * (which would make `a/*x*\x2fb` two adjacent type selectors, i.e. invalid,
+ * where this reads a descendant combinator); no real selector writes that, and
+ * the alternative -- deleting the comment and joining the text -- turns it into
+ * one ident `ab`, which is wrong in a way that silently MATCHES something. */
+"function skipWS(s, i) {\n"
+"  var n = s.length;\n"
+"  for (;;) {\n"
+"    while (i < n && WSCH.test(s[i])) i++;\n"
+"    if (s[i] === '/' && s[i + 1] === '*') {\n"
+"      var e = s.indexOf('*/', i + 2);\n"
+"      if (e < 0) synErr('unterminated comment in selector');\n"
+"      i = e + 2; continue;\n"
+"    }\n"
+"    return i;\n"
+"  }\n"
+"}\n"
 
 /* The 44 attributes whose VALUES an HTML element in an HTML document matches
  * ASCII-case-insensitively with no flag at all. From HTML's "case-sensitivity
