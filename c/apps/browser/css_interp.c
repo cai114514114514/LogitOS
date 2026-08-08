@@ -32,7 +32,18 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
+
+/* NO atof, NO strtod, NO pow, NO log10 -- and that is a link constraint, not
+ * taste. This TU is in BROWSER_PIPE, so it is linked into the ring-3
+ * browser.aex against mini-libc, where <stdlib.h> DECLARES atof and nothing
+ * defines it; the failure would be an undefined symbol at the browser link,
+ * hours after the host suite went green. The four are replaced below by a
+ * decimal scanner and a power-of-ten helper, both of which this file wants
+ * anyway: the scanner has to agree with the CSS number grammar rather than
+ * with C's, and pow10() is exact for the exponents that occur here.
+ *
+ * sin/cos/tan/acos/sqrt/fabs/floor DO come from third_party/libm, which the
+ * browser already links for QuickJS. */
 
 #ifndef CI_PI
 #define CI_PI 3.14159265358979323846
@@ -41,6 +52,32 @@
 static int ci_ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 
 static int ci_lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+/* 10^k. Exact in a double for |k| <= 22, which covers every exponent a CSS
+ * number can carry after the fractional digits are folded in; beyond that the
+ * repeated multiply is as good as anything short of a full strtod. */
+static double ci_pow10(int k)
+{
+    static const double P[23] = {
+        1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+        1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22
+    };
+    int neg = k < 0;
+    if (neg) k = -k;
+    double r;
+    if (k <= 22) r = P[k];
+    else { r = P[22]; for (int i = 22; i < k; i++) r *= 10.0; }
+    return neg ? 1.0 / r : r;
+}
+
+/* The magnitude of a nonzero value: floor(log10(|v|)), without log10. */
+static int ci_mag(double a)
+{
+    int mag = 0;
+    if (a >= 1.0) { while (a >= 10.0) { a /= 10.0; mag++; } }
+    else { while (a < 1.0 && mag > -320) { a *= 10.0; mag--; } }
+    return mag;
+}
 
 /* ======================================================================
  * Number serialisation
@@ -70,13 +107,13 @@ int ci_num_text(double v, char *out, int outmax)
         snprintf(out, (size_t)outmax, "%g", v);
         return (int)strlen(out);
     }
-    int mag = (int)floor(log10(a));
+    int mag = ci_mag(a);
     int dec = 5 - mag;                       /* six significant digits */
     if (dec < 0) {
         /* Above a million there are no decimals left to drop, and printing
          * "%.0f" would keep every digit -- 123456789 instead of 123457000.
          * Six SIGNIFICANT digits means rounding the integer part too. */
-        double f = pow(10.0, (double)(-dec));
+        double f = ci_pow10(-dec);
         v = (v < 0 ? -1.0 : 1.0) * floor(fabs(v) / f + 0.5) * f;
         dec = 0;
     }
@@ -235,31 +272,54 @@ struct ci_scan { const char *s; int n, i; };
 
 static void sk_ws(struct ci_scan *k) { while (k->i < k->n && ci_ws(k->s[k->i])) k->i++; }
 
+/* A CSS <number>, scanned and converted in one pass. Deliberately NOT strtod:
+ * the CSS grammar is a subset (no hex, no inf/nan, no leading whitespace once
+ * the caller has skipped it) and accepting more than the grammar here would
+ * make ci_transform_parse say yes to a declaration the cascade must drop. */
 static int sk_num(struct ci_scan *k, double *out)
 {
     sk_ws(k);
-    int st = k->i, seen = 0;
-    if (k->i < k->n && (k->s[k->i] == '+' || k->s[k->i] == '-')) k->i++;
-    while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') { k->i++; seen = 1; }
+    int st = k->i, seen = 0, neg = 0;
+    double mant = 0.0;
+    int dexp = 0;
+
+    if (k->i < k->n && (k->s[k->i] == '+' || k->s[k->i] == '-')) {
+        neg = (k->s[k->i] == '-');
+        k->i++;
+    }
+    while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') {
+        mant = mant * 10.0 + (k->s[k->i] - '0');
+        k->i++; seen = 1;
+    }
     if (k->i < k->n && k->s[k->i] == '.') {
         k->i++;
-        while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') { k->i++; seen = 1; }
+        while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') {
+            mant = mant * 10.0 + (k->s[k->i] - '0');
+            dexp--; k->i++; seen = 1;
+        }
     }
     if (!seen) { k->i = st; return 0; }
+
     if (k->i < k->n && (k->s[k->i] == 'e' || k->s[k->i] == 'E')) {
         int save = k->i;
         k->i++;
-        if (k->i < k->n && (k->s[k->i] == '+' || k->s[k->i] == '-')) k->i++;
-        int d = 0;
-        while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') { k->i++; d = 1; }
+        int eneg = 0, e = 0, d = 0;
+        if (k->i < k->n && (k->s[k->i] == '+' || k->s[k->i] == '-')) {
+            eneg = (k->s[k->i] == '-'); k->i++;
+        }
+        while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') {
+            if (e < 10000) e = e * 10 + (k->s[k->i] - '0');
+            k->i++; d = 1;
+        }
+        /* `1e` with no digits is not an exponent -- the `e` belongs to the
+         * unit that follows (`1em`), so the scan backs up rather than
+         * swallowing it. */
         if (!d) k->i = save;
+        else dexp += eneg ? -e : e;
     }
-    char buf[64];
-    int L = k->i - st;
-    if (L >= (int)sizeof buf) L = (int)sizeof buf - 1;
-    memcpy(buf, k->s + st, (size_t)L);
-    buf[L] = 0;
-    *out = atof(buf);
+
+    double v = (dexp == 0) ? mant : mant * ci_pow10(dexp);
+    *out = neg ? -v : v;
     return 1;
 }
 

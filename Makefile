@@ -497,7 +497,8 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/forms.c c/apps/browser/focus.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/tabs.c \
-                c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
+                c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
+                c/apps/browser/css_interp.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
                 c/net/http/http2.c c/net/http/hpack.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
@@ -3367,6 +3368,7 @@ bench-aui: $(ISO) $(DISK)
 # against the spec's own numeric outcomes rather than against a picture. Own
 # fragment for the same reason as every other one above.
 -include tests/grid.mk
+-include tests/interp.mk
 
 # The CI this repository did not have: `make test-audit` (tests that cannot
 # fail) and `make ci` (build from a clean clone of HEAD, then the suites). Own

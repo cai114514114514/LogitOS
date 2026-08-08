@@ -188,27 +188,27 @@ struct trip { const char *from, *to; double at; const char *expect; double tol; 
 /* transform-interpolation-001.html, transcribed. */
 static const struct trip TRIPS[] = {
     /* rotate: matched lists, angle interpolation, past both ends */
-    { "rotate(30deg)",  "rotate(330deg)", -1,   "rotate(-270deg)" },
-    { "rotate(30deg)",  "rotate(330deg)",  0,   "rotate(30deg)"   },
-    { "rotate(30deg)",  "rotate(330deg)",  0.25,"rotate(105deg)"  },
-    { "rotate(30deg)",  "rotate(330deg)",  0.75,"rotate(255deg)"  },
-    { "rotate(30deg)",  "rotate(330deg)",  1,   "rotate(330deg)"  },
-    { "rotate(30deg)",  "rotate(330deg)",  2,   "rotate(630deg)"  },
-    { "rotateX(0deg)",  "rotateX(700deg)", 0.25,"rotateX(175deg)" },
-    { "rotateY(0deg)",  "rotateY(800deg)", 0.75,"rotateY(600deg)" },
-    { "rotateZ(0deg)",  "rotateZ(900deg)", 0.25,"rotateZ(225deg)" },
+    { "rotate(30deg)",  "rotate(330deg)", -1,   "rotate(-270deg)", 0 },
+    { "rotate(30deg)",  "rotate(330deg)",  0,   "rotate(30deg)",   0 },
+    { "rotate(30deg)",  "rotate(330deg)",  0.25,"rotate(105deg)",  0 },
+    { "rotate(30deg)",  "rotate(330deg)",  0.75,"rotate(255deg)",  0 },
+    { "rotate(30deg)",  "rotate(330deg)",  1,   "rotate(330deg)",  0 },
+    { "rotate(30deg)",  "rotate(330deg)",  2,   "rotate(630deg)",  0 },
+    { "rotateX(0deg)",  "rotateX(700deg)", 0.25,"rotateX(175deg)", 0 },
+    { "rotateY(0deg)",  "rotateY(800deg)", 0.75,"rotateY(600deg)", 0 },
+    { "rotateZ(0deg)",  "rotateZ(900deg)", 0.25,"rotateZ(225deg)", 0 },
 
     /* a common axis when EITHER endpoint's angle is zero -- the axis of the
      * zero rotation carries no information and is taken from the other end */
-    { "rotateX(0deg)",  "rotateY(900deg)", 0.25,"rotateY(225deg)" },
-    { "rotateX(0deg)",  "rotateY(900deg)", -1,  "rotateY(-900deg)" },
-    { "rotateY(900deg)","rotateZ(0deg)",   0.75,"rotateY(225deg)" },
+    { "rotateX(0deg)",  "rotateY(900deg)", 0.25,"rotateY(225deg)", 0 },
+    { "rotateX(0deg)",  "rotateY(900deg)", -1,  "rotateY(-900deg)", 0 },
+    { "rotateY(900deg)","rotateZ(0deg)",   0.75,"rotateY(225deg)", 0 },
 
     /* rotate3d: same axis */
-    { "rotate3d(7, 8, 9, 100deg)", "rotate3d(7, 8, 9, 260deg)", 0.25, "rotate3d(7, 8, 9, 140deg)" },
-    { "rotate3d(7, 8, 9, 100deg)", "rotate3d(7, 8, 9, 260deg)", -1,   "rotate3d(7, 8, 9, -60deg)" },
+    { "rotate3d(7, 8, 9, 100deg)", "rotate3d(7, 8, 9, 260deg)", 0.25, "rotate3d(7, 8, 9, 140deg)", 0 },
+    { "rotate3d(7, 8, 9, 100deg)", "rotate3d(7, 8, 9, 260deg)", -1,   "rotate3d(7, 8, 9, -60deg)", 0 },
     /* colinear but not equal axes count as the same axis */
-    { "rotate3d(0, 1, 0, 0deg)",   "rotate3d(0, 2, 0, 450deg)", 0.25, "rotate3d(0, 1, 0, 112.5deg)" },
+    { "rotate3d(0, 1, 0, 0deg)",   "rotate3d(0, 2, 0, 450deg)", 0.25, "rotate3d(0, 1, 0, 112.5deg)", 0 },
     /* NOT colinear: quaternion slerp */
     { "rotate3d(1, 1, 0, 90deg)",  "rotate3d(0, 1, 1, 180deg)", 0.25,
       "rotate3d(0.524083, 0.804261, 0.280178, 106.91deg)", 3e-3 },
@@ -216,36 +216,36 @@ static const struct trip TRIPS[] = {
       "rotate3d(0.163027, 0.774382, 0.611354, 153.99deg)", 3e-3 },
 
     /* `none` is the identity of whatever the other side is */
-    { "none",          "rotate(90deg)", 0.25, "rotate(22.5deg)" },
-    { "rotate(90deg)", "none",          0.25, "rotate(67.5deg)" },
-    { "none",          "rotate(90deg)", 2,    "rotate(180deg)"  },
+    { "none",          "rotate(90deg)", 0.25, "rotate(22.5deg)", 0 },
+    { "rotate(90deg)", "none",          0.25, "rotate(67.5deg)", 0 },
+    { "none",          "rotate(90deg)", 2,    "rotate(180deg)",  0 },
 
     /* a matched multi-function list interpolates item by item */
     { "rotateX(0deg) rotateY(0deg) rotateZ(0deg)",
       "rotateX(700deg) rotateY(800deg) rotateZ(900deg)", 0.25,
-      "rotateX(175deg) rotateY(200deg) rotateZ(225deg)" },
+      "rotateX(175deg) rotateY(200deg) rotateZ(225deg)", 0 },
 
     /* perspective interpolates its RECIPROCAL. WPT computes these with
      *   1 / ((1 - p) / from + p / to)
      * and the two below are that helper evaluated at 0.25 and 0.75 for
      * (400, 500):  1/(0.75/400 + 0.25/500) = 421.052631578..
      *              1/(0.25/400 + 0.75/500) = 470.588235294.. */
-    { "perspective(400px)", "perspective(500px)", 0.25, "perspective(421.0526315789474px)" },
-    { "perspective(400px)", "perspective(500px)", 0.75, "perspective(470.5882352941176px)" },
+    { "perspective(400px)", "perspective(500px)", 0.25, "perspective(421.0526315789474px)", 0 },
+    { "perspective(400px)", "perspective(500px)", 0.75, "perspective(470.5882352941176px)", 0 },
     /* perspective(none) is the identity: 1/inf == 0 */
-    { "perspective(none)",  "perspective(500px)", 0.5,  "perspective(1000px)" },
-    { "perspective(none)",  "perspective(500px)", 2,    "perspective(250px)"  },
-    { "scaleZ(2)", "scaleZ(2) perspective(500px)", 0.5, "scaleZ(2) perspective(1000px)" },
+    { "perspective(none)",  "perspective(500px)", 0.5,  "perspective(1000px)", 0 },
+    { "perspective(none)",  "perspective(500px)", 2,    "perspective(250px)",  0 },
+    { "scaleZ(2)", "scaleZ(2) perspective(500px)", 0.5, "scaleZ(2) perspective(1000px)", 0 },
 
     /* skew and a trailing perspective, both matched */
     { "skewX(10rad) perspective(400px)", "skewX(20rad) perspective(500px)", 0.25,
-      "skewX(12.5rad) perspective(421.0526315789474px)" },
+      "skewX(12.5rad) perspective(421.0526315789474px)", 0 },
 
     /* translate/scale families reduce to a common primitive */
     { "translateX(0px)", "translate3d(100px, 200px, 300px)", 0.5,
-      "translate3d(50px, 100px, 150px)" },
-    { "scaleX(1)",       "scale3d(3, 5, 7)", 0.5, "scale3d(2, 3, 4)" },
-    { "scale(2)",        "scaleY(4)",        0.5, "scale(1.5, 3)"    },
+      "translate3d(50px, 100px, 150px)", 0 },
+    { "scaleX(1)",       "scale3d(3, 5, 7)", 0.5, "scale3d(2, 3, 4)", 0 },
+    { "scale(2)",        "scaleY(4)",        0.5, "scale(1.5, 3)",    0 },
 };
 
 static int matrices_tol(const double a[16], const double b[16], double tol)
