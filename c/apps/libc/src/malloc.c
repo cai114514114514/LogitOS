@@ -485,7 +485,7 @@ static struct hdr *bin_scan(unsigned c, uint32_t need, unsigned cap, int *corrup
     return NULL;
 }
 
-void *malloc(size_t n)
+static void *malloc_nl(size_t n)
 {
     if (!inited) heap_init();
     if (broken) return NULL;
@@ -559,7 +559,7 @@ static struct hdr *hdr_of(void *p)
     return h;
 }
 
-void free(void *p)
+static void free_nl(void *p)
 {
     if (!p || broken) return;
     struct hdr *h = hdr_of(p);
@@ -593,7 +593,7 @@ void free(void *p)
     bin_push(h);
 }
 
-size_t malloc_usable_size(void *p)
+static size_t malloc_usable_size_nl(void *p)
 {
     if (!p) return 0;
     struct hdr *h = hdr_of(p);
@@ -603,10 +603,10 @@ size_t malloc_usable_size(void *p)
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
-void *realloc(void *p, size_t n)
+static void *realloc_nl(void *p, size_t n)
 {
-    if (!p) return malloc(n);
-    if (n == 0) { free(p); return NULL; }
+    if (!p) return malloc_nl(n);
+    if (n == 0) { free_nl(p); return NULL; }
     if (n > arena_size) return NULL;
 
     struct hdr *h = hdr_of(p);
@@ -643,16 +643,69 @@ void *realloc(void *p, size_t n)
     }
 
     uint32_t old = h->size;
-    void *np = malloc(n);
-    if (np) { memcpy(np, p, old); free(p); }
+    void *np = malloc_nl(n);
+    if (np) { memcpy(np, p, old); free_nl(p); }
     return np;
 }
 
-void *calloc(size_t a, size_t b)
+static void *calloc_nl(size_t a, size_t b)
 {
     size_t n = a * b;
     if (a && n / a != b) return NULL;                  /* overflow */
-    void *p = malloc(n);
+    void *p = malloc_nl(n);
     if (p) memset(p, 0, n);
     return p;
 }
+
+/* =========================================================================
+ * THREAD SAFETY (M30).
+ *
+ * Everything above this line is the allocator, and none of it is reentrant: a
+ * bin head, a binmap bit and two boundary tags are updated as a group, and two
+ * threads doing that at once hand one block to both of them. That was fine
+ * while a process was one flow of control. It is not fine now, and the failure
+ * mode is the worst kind -- not a crash at the allocation, but two live objects
+ * at one address, discovered later somewhere unrelated.
+ *
+ * ONE LOCK OVER THE WHOLE ARENA, not per-bin and not a per-thread cache. The
+ * cost of contention here is real but it is bounded by what this allocator is
+ * for; the cost of getting a lock-free freelist wrong is a corruption nobody
+ * can reproduce. If allocation ever becomes the bottleneck in a threaded
+ * program, the answer is per-thread magazines in front of this, not finer
+ * locking inside it.
+ *
+ * THE LOCK IS A WEAK SYMBOL, and that is what keeps this file buildable
+ * everywhere it is built today. __libc_lock lives in pthread.c; a link that
+ * does not include pthread.c -- the host allocator test (make test-malloc),
+ * which compiles this file on its own, and any program that never threads --
+ * resolves it to 0 and takes the branch that does nothing. Single-threaded
+ * behaviour, byte for byte, with no #ifdef and no second build of this file.
+ *
+ * It is also why the bodies above were renamed rather than wrapped in-place:
+ * realloc() calls malloc() and free(), and a lock taken at the public entry
+ * would deadlock on the first realloc that had to move a block. The public
+ * functions lock once; the _nl bodies call each other.
+ * ========================================================================= */
+
+void __libc_lock(volatile int *v)   __attribute__((weak));
+void __libc_unlock(volatile int *v) __attribute__((weak));
+
+static volatile int heap_lock;
+
+static inline void hlock(void)   { if (__libc_lock)   __libc_lock(&heap_lock); }
+static inline void hunlock(void) { if (__libc_unlock) __libc_unlock(&heap_lock); }
+
+void *malloc(size_t n)
+{ hlock(); void *r = malloc_nl(n); hunlock(); return r; }
+
+void free(void *p)
+{ hlock(); free_nl(p); hunlock(); }
+
+void *realloc(void *p, size_t n)
+{ hlock(); void *r = realloc_nl(p, n); hunlock(); return r; }
+
+void *calloc(size_t a, size_t b)
+{ hlock(); void *r = calloc_nl(a, b); hunlock(); return r; }
+
+size_t malloc_usable_size(void *p)
+{ hlock(); size_t r = malloc_usable_size_nl(p); hunlock(); return r; }

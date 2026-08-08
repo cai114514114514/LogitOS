@@ -20,6 +20,12 @@ struct tm {
 };
 struct timespec { time_t tv_sec; long tv_nsec; };
 
+/* POSIX's name for a CLOCK_* selector. The functions below take a plain `int`
+ * and always did; this is the spelling every portable caller uses in its own
+ * prototypes -- pthread_condattr_setclock() and sem_clockwait() among them --
+ * so it has to exist somewhere, and <time.h> is where POSIX puts it. */
+typedef int clockid_t;
+
 time_t time(time_t *);
 clock_t clock(void);
 double difftime(time_t, time_t);

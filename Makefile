@@ -3187,3 +3187,10 @@ bench-aui: $(ISO) $(DISK)
 # mini-libc -> real libc gates (fnmatch/glob/regex/inet/pwd/grp/uname/mman/
 # sched/poll/select/resource/syslog/termios/netdb/socket). See its header.
 -include tests/libc.mk
+
+# M30 threads: /bin/thrtest (the gate) and its four negative controls. Its own
+# fragment for the reason every other one here is -- several lines edit this
+# file at once. The kernel side needs no rule at all: C_SRC globs c/kernel, so
+# c/kernel/sched/uthread.c links by existing, and mini-libc's pthread.c and
+# pthread_entry.asm are already covered by the wildcards over c/apps/libc/src.
+-include tests/thread.mk
