@@ -9,6 +9,7 @@
 #include <stdbool.h>
 
 #include <libcss/libcss.h>
+#include <libcss/canon.h>
 /* css__computed_style_ref lives in LibCSS's internal header; CSS_INC already
  * puts libcss/src on the include path (css_engine.c is LibCSS's adapter, not a
  * client of its public API alone). Needed to keep a reference to each node's
@@ -2037,4 +2038,495 @@ int css_supports_decl(const char *prop, int plen, const char *value, int vlen)
     if (s) css_stylesheet_destroy(s);
     if (decl != stackbuf) kfree(decl);
     return g_sup_seen && g_sup_ok;
+}
+
+/* ======================================================================
+ * THE PROPERTY UNIVERSE -- every property NAME this engine's parser knows.
+ *
+ * The CSSOM says a CSSStyleDeclaration exposes one IDL attribute per
+ * *supported CSS property*, and WPT holds that to the letter: the whole of
+ * css-conditional/js/CSS-supports-CSSStyleDeclaration.html does nothing but
+ * assert, for ~600 property names, that
+ *
+ *     CSS.supports(prop, "inherit")  ==  camelCase(prop) in element.style
+ *
+ * -- an AGREEMENT test. It does not care how much CSS we implement; it cares
+ * that the two answers come from the same set. Answering it from a hand-kept
+ * list would be answering it from a THIRD source, which is how the two get to
+ * disagree again the first time LibCSS gains a property.
+ *
+ * So the list is LibCSS's own. `stringmap` is the parser's string table and
+ * FIRST_PROP..LAST_PROP is exactly the property-name span of it, both out of
+ * the vendored headers -- so a property added to the parser (the css-color and
+ * anchor-position work in flight is doing precisely that) shows up here, and
+ * on every CSSStyleDeclaration, with no edit to this file.
+ *
+ * `stringmap` is not declared in propstrings.h -- it is a plain global in
+ * propstrings.c. The extern below restates its element type, and the
+ * compile-time check under it is what stops that restatement from rotting.
+ * ====================================================================== */
+
+#include "parse/propstrings.h"
+
+struct css_smap_entry { const char *data; size_t len; };
+extern const struct css_smap_entry stringmap[];
+
+int css_known_prop_count(void)
+{
+    return (int)(LAST_PROP - FIRST_PROP + 1);
+}
+
+const char *css_known_prop_at(int i, int *len)
+{
+    if (i < 0 || i >= css_known_prop_count()) { if (len) *len = 0; return 0; }
+    const struct css_smap_entry *e = &stringmap[FIRST_PROP + i];
+    if (len) *len = (int)e->len;
+    return e->data;
+}
+
+/* ======================================================================
+ * "Serialize a CSS value" -- CSSOM 6.7.2. The BYTES, not the meaning.
+ *
+ * WPT compares strings. A correctly computed value emitted in the wrong form
+ * is a failure, and this is the class of bug an implementation ships with
+ * because everything WORKS -- `color: #0000ff` paints blue whichever way it
+ * reads back out. css/CSS2/syntax/colors-007.html is 1,192 subtests of
+ * exactly this and nothing else.
+ *
+ * WHAT THIS IS NOT. It is not a parser and must not become one: css.h is
+ * emphatic that a second CSS scanner is how this engine ends up with two
+ * answers to one question, and css_supports_decl() exists so VALIDITY has
+ * exactly one source (LibCSS's own value handlers). This function decides
+ * FORM, never validity -- when it does not recognise the shape in front of
+ * it, it copies it through untouched. There is no input for which it answers
+ * "invalid"; a caller that needs that asks css_supports_decl().
+ *
+ * It is IDEMPOTENT by construction, which is what lets one function serve
+ * both the specified value (`el.style.color`, source bytes) and the computed
+ * one (`getComputedStyle(el).color`, already canonical out of
+ * css_computed_text) without the caller having to say which it is holding.
+ * WPT checks that directly: test_valid_value re-assigns the value it read
+ * back and requires the second read to equal the first.
+ * ====================================================================== */
+
+static int vs_ws(char c)  { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+static int vs_dig(char c) { return c >= '0' && c <= '9'; }
+static int vs_alpha(char c) { char l = (char)(c | 32); return l >= 'a' && l <= 'z'; }
+static int vs_hex(char c)
+{ return vs_dig(c) || ((c | 32) >= 'a' && (c | 32) <= 'f'); }
+static int vs_hexv(char c)
+{ return vs_dig(c) ? c - '0' : (c | 32) - 'a' + 10; }
+
+struct vsb { char *p; int len, cap; };
+
+static void vsb_ch(struct vsb *b, char c)
+{ if (b->len < b->cap - 1) b->p[b->len++] = c; }
+
+static void vsb_str(struct vsb *b, const char *s, int n)
+{ for (int i = 0; i < n; i++) vsb_ch(b, s[i]); }
+
+static void vsb_int(struct vsb *b, int v)
+{
+    char t[16]; int k = 0;
+    if (v < 0) { vsb_ch(b, '-'); v = -v; }
+    do { t[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (k) vsb_ch(b, t[--k]);
+}
+
+/* The alpha channel, as the SHORTEST decimal that round-trips through the
+ * 8-bit value it came from. That rule is not decoration: an alpha printed to a
+ * fixed number of places gives `rgba(0, 0, 0, 0.501961)` where every browser
+ * gives `0.502`. Trying 1..6 places and stopping at the first that maps back
+ * to the same byte is that rule stated directly. */
+static void vsb_alphav(struct vsb *b, int a255)
+{
+    if (a255 >= 255) { vsb_ch(b, '1'); return; }
+    if (a255 <= 0)   { vsb_ch(b, '0'); return; }
+    for (int places = 1; places <= 6; places++) {
+        int scale = 1;
+        for (int i = 0; i < places; i++) scale *= 10;
+        int num  = (a255 * scale * 2 + 255) / (255 * 2);      /* nearest decimal */
+        int back = (num * 255 * 2 + scale) / (scale * 2);     /* ... and back    */
+        if (back != a255) continue;
+        int at = b->len;
+        vsb_ch(b, '0'); vsb_ch(b, '.');
+        for (int d = scale / 10; d >= 1; d /= 10)
+            vsb_ch(b, (char)('0' + (num / d) % 10));
+        while (b->len > at + 2 && b->p[b->len - 1] == '0') b->len--;
+        return;
+    }
+    vsb_ch(b, '1');
+}
+
+static void vsb_colour(struct vsb *b, int r, int g, int bl, int a255)
+{
+    int alpha = (a255 < 0) ? 255 : a255;
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (bl < 0) bl = 0; if (bl > 255) bl = 255;
+    if (alpha >= 255) vsb_str(b, "rgb(", 4);
+    else              vsb_str(b, "rgba(", 5);
+    vsb_int(b, r); vsb_str(b, ", ", 2);
+    vsb_int(b, g); vsb_str(b, ", ", 2);
+    vsb_int(b, bl);
+    if (alpha < 255) { vsb_str(b, ", ", 2); vsb_alphav(b, alpha); }
+    vsb_ch(b, ')');
+}
+
+/* ---- numbers ----
+ *
+ * `.5` -> `0.5`, `+0` -> `0`, `1.0` -> `1`, `-0px` -> `0px`. The UNIT is never
+ * touched and never dropped: CSSOM keeps `0px` as `0px` in a specified value,
+ * and a serializer that helpfully shortened it to `0` would fail
+ * cssom/serialize-values.html on the one case it looks most obviously right.
+ *
+ * Returns input bytes consumed, 0 if this is not a number. */
+static int vs_number(struct vsb *b, const char *s, int n)
+{
+    int i = 0, neg = 0;
+    if (i < n && (s[i] == '+' || s[i] == '-')) { neg = (s[i] == '-'); i++; }
+    int int0 = i;
+    while (i < n && vs_dig(s[i])) i++;
+    int int1 = i, frac0 = i, frac1 = i;
+    if (i < n && s[i] == '.' && i + 1 < n && vs_dig(s[i + 1])) {
+        i++; frac0 = i;
+        while (i < n && vs_dig(s[i])) i++;
+        frac1 = i;
+    }
+    if (int1 == int0 && frac1 == frac0) return 0;        /* not a number at all */
+
+    /* an exponent, kept verbatim -- rare enough in CSS that reformatting it
+     * would be inventing a rule nothing tests */
+    int exp0 = i, exp1 = i;
+    if (i < n && (s[i] | 32) == 'e') {
+        int j = i + 1;
+        if (j < n && (s[j] == '+' || s[j] == '-')) j++;
+        if (j < n && vs_dig(s[j])) { while (j < n && vs_dig(s[j])) j++; exp1 = j; i = j; }
+    }
+
+    while (int0 < int1 - 1 && s[int0] == '0') int0++;     /* 007 -> 7  */
+    while (frac1 > frac0 && s[frac1 - 1] == '0') frac1--; /* 1.500 -> 1.5 */
+
+    int izero = (int1 <= int0) || (int1 - int0 == 1 && s[int0] == '0');
+    if (neg && izero && frac1 == frac0) neg = 0;          /* -0 -> 0, but not -0.5 */
+
+    if (neg) vsb_ch(b, '-');
+    if (int1 > int0) vsb_str(b, s + int0, int1 - int0);
+    else vsb_ch(b, '0');                                  /* .5 -> 0.5 */
+    if (frac1 > frac0) { vsb_ch(b, '.'); vsb_str(b, s + frac0, frac1 - frac0); }
+    if (exp1 > exp0) vsb_str(b, s + exp0, exp1 - exp0);
+    return i;
+}
+
+/* One rgb()/hsl() channel: a number, optionally a percent. `pct_scale` is what
+ * 100% means here. Returns bytes consumed, 0 if there is no number. */
+static int vs_channel(const char *s, int n, int pct_scale, int *out)
+{
+    int i = 0;
+    while (i < n && vs_ws(s[i])) i++;
+    int sign = 1;
+    if (i < n && (s[i] == '+' || s[i] == '-')) { sign = (s[i] == '-') ? -1 : 1; i++; }
+    int start = i;
+    double v = 0;
+    while (i < n && vs_dig(s[i])) { v = v * 10 + (s[i] - '0'); i++; }
+    if (i < n && s[i] == '.') {
+        i++;
+        double f = 0.1;
+        while (i < n && vs_dig(s[i])) { v += (s[i] - '0') * f; f *= 0.1; i++; }
+    }
+    if (i == start) return 0;
+    if (i < n && s[i] == '%') { i++; v = v * pct_scale / 100.0; }
+    v *= sign;
+    *out = (int)(v < 0 ? v - 0.5 : v + 0.5);
+    while (i < n && vs_ws(s[i])) i++;
+    return i;
+}
+
+/* hsl -> rgb: h in degrees, s and l in 0..100. */
+static void vs_hsl_rgb(int h, int sp, int lp, int *r, int *g, int *b)
+{
+    h = ((h % 360) + 360) % 360;
+    if (sp < 0) sp = 0;
+    if (sp > 100) sp = 100;
+    if (lp < 0) lp = 0;
+    if (lp > 100) lp = 100;
+    int l = lp * 255 / 100, s = sp * 255 / 100;
+    if (s == 0) { *r = *g = *b = l; return; }
+    int c2 = (l < 128) ? (l * (255 + s) / 255) : (l + s - l * s / 255);
+    int c1 = 2 * l - c2;
+    int t[3];
+    t[0] = h + 120; t[1] = h; t[2] = h - 120;
+    int *o[3];
+    o[0] = r; o[1] = g; o[2] = b;
+    for (int i = 0; i < 3; i++) {
+        int tt = ((t[i] % 360) + 360) % 360;
+        int v;
+        if (tt < 60)       v = c1 + (c2 - c1) * tt / 60;
+        else if (tt < 180) v = c2;
+        else if (tt < 240) v = c1 + (c2 - c1) * (240 - tt) / 60;
+        else               v = c1;
+        *o[i] = v;
+    }
+}
+
+/* A hex colour: `#rgb` `#rgba` `#rrggbb` `#rrggbbaa`. Returns bytes consumed
+ * including the '#', or 0 if the run of hex digits is not one of those four
+ * lengths -- `#00000` is not a colour, and it must reach the output UNCHANGED
+ * so that a caller asking about validity still gets LibCSS's answer and not
+ * one this function invented. */
+static int vs_hex_colour(struct vsb *b, const char *s, int n)
+{
+    if (n < 1 || s[0] != '#') return 0;
+    int k = 1;
+    while (k < n && vs_hex(s[k])) k++;
+    int d = k - 1;
+    if (k < n && (vs_alpha(s[k]) || vs_dig(s[k]) || s[k] == '_' || s[k] == '-')) return 0;
+    if (d != 3 && d != 4 && d != 6 && d != 8) return 0;
+    const char *h = s + 1;
+    int v[4];
+    v[0] = v[1] = v[2] = 0; v[3] = 255;
+    if (d <= 4) {
+        for (int i = 0; i < d; i++) v[i] = vs_hexv(h[i]) * 17;
+    } else {
+        for (int i = 0; i < d / 2; i++) v[i] = vs_hexv(h[i * 2]) * 16 + vs_hexv(h[i * 2 + 1]);
+    }
+    vsb_colour(b, v[0], v[1], v[2], v[3]);
+    return k;
+}
+
+/* ASCII-case-insensitive `name(`, matched at s. */
+static int vs_is_func(const char *s, int n, const char *name)
+{
+    int L = (int)strlen(name);
+    if (n < L + 1 || s[L] != '(') return 0;
+    for (int i = 0; i < L; i++)
+        if ((s[i] | 32) != name[i]) return 0;
+    return 1;
+}
+
+/* The ')' closing the '(' at s[at], honouring nesting and strings. */
+static int vs_close(const char *s, int n, int at)
+{
+    int depth = 0;
+    for (int i = at; i < n; i++) {
+        char c = s[i];
+        if (c == '"' || c == '\'') {
+            char q = c; i++;
+            while (i < n && s[i] != q) { if (s[i] == '\\' && i + 1 < n) i++; i++; }
+            continue;
+        }
+        if (c == '(') depth++;
+        else if (c == ')') { depth--; if (depth == 0) return i; }
+    }
+    return -1;
+}
+
+static void vsb_quoted(struct vsb *b, const char *s, int n)
+{
+    vsb_ch(b, '"');
+    for (int i = 0; i < n; i++) {
+        if (s[i] == '"' || s[i] == '\\') vsb_ch(b, '\\');
+        vsb_ch(b, s[i]);
+    }
+    vsb_ch(b, '"');
+}
+
+int css_value_serialize(const char *val, int vlen, char *out, int outmax)
+{
+    if (!out || outmax <= 0) return 0;
+    out[0] = 0;
+    if (!val) return 0;
+    if (vlen < 0) vlen = (int)strlen(val);
+    while (vlen && vs_ws(val[0])) { val++; vlen--; }
+    while (vlen && vs_ws(val[vlen - 1])) vlen--;
+    if (vlen <= 0) return 0;
+
+    struct vsb b;
+    b.p = out; b.len = 0; b.cap = outmax;
+    int i = 0;
+    int pending_ws = 0;                 /* whitespace seen, not yet emitted */
+
+    while (i < vlen) {
+        char c = val[i];
+
+        if (vs_ws(c)) { pending_ws = 1; i++; continue; }
+
+        /* A comma eats the space before it and always has one after it:
+         * `rgb(1 , 2,3)` and `rgb(1, 2, 3)` are one serialization. */
+        if (c == ',') {
+            while (b.len && b.p[b.len - 1] == ' ') b.len--;
+            vsb_ch(&b, ','); vsb_ch(&b, ' ');
+            pending_ws = 0; i++;
+            continue;
+        }
+        if (b.len && pending_ws && b.p[b.len - 1] != ' ' && b.p[b.len - 1] != '(')
+            vsb_ch(&b, ' ');
+        pending_ws = 0;
+
+        if (c == '(') { vsb_ch(&b, '('); i++; continue; }
+        if (c == ')') {
+            while (b.len && b.p[b.len - 1] == ' ') b.len--;
+            vsb_ch(&b, ')'); i++;
+            continue;
+        }
+
+        if (c == '#') {
+            int k = vs_hex_colour(&b, val + i, vlen - i);
+            if (k) { i += k; continue; }
+        }
+
+        if (c == '"' || c == '\'') {
+            int j = i + 1;
+            while (j < vlen && val[j] != c) { if (val[j] == '\\' && j + 1 < vlen) j++; j++; }
+            /* A string serializes double-quoted whichever quote the author
+             * used. */
+            vsb_quoted(&b, val + i + 1, j - i - 1);
+            i = (j < vlen) ? j + 1 : vlen;
+            continue;
+        }
+
+        if (c == '+' || c == '-' || c == '.' || vs_dig(c)) {
+            int k = vs_number(&b, val + i, vlen - i);
+            if (k) {
+                i += k;
+                if (i < vlen && val[i] == '%') { vsb_ch(&b, '%'); i++; }
+                else while (i < vlen && (vs_alpha(val[i]) || vs_dig(val[i]) ||
+                                         val[i] == '_' || val[i] == '-')) {
+                    vsb_ch(&b, val[i]); i++;
+                }
+                continue;
+            }
+        }
+
+        /* an identifier, possibly a function name */
+        int j = i;
+        while (j < vlen && (vs_alpha(val[j]) || vs_dig(val[j]) || val[j] == '-' ||
+                            val[j] == '_' || (unsigned char)val[j] >= 0x80))
+            j++;
+        if (j == i) { vsb_ch(&b, c); i++; continue; }
+
+        const char *id = val + i;
+        int idn = j - i;
+        if (j < vlen && val[j] == '(') {
+            int close = vs_close(val, vlen, j);
+            int argn  = (close < 0 ? vlen : close) - (j + 1);
+            const char *arg = val + j + 1;
+
+            /* url(): the target is a <url> and serializes as a quoted string
+             * whether or not the author quoted it. */
+            if (vs_is_func(id, vlen - i, "url")) {
+                int a0 = 0, a1 = argn;
+                while (a0 < a1 && vs_ws(arg[a0])) a0++;
+                while (a1 > a0 && vs_ws(arg[a1 - 1])) a1--;
+                if (a1 - a0 >= 2 && (arg[a0] == '"' || arg[a0] == '\'') &&
+                    arg[a1 - 1] == arg[a0]) { a0++; a1--; }
+                vsb_str(&b, "url(", 4);
+                vsb_quoted(&b, arg + a0, a1 - a0);
+                vsb_ch(&b, ')');
+                i = (close < 0) ? vlen : close + 1;
+                continue;
+            }
+
+            int is_rgb = vs_is_func(id, vlen - i, "rgb") || vs_is_func(id, vlen - i, "rgba");
+            int is_hsl = vs_is_func(id, vlen - i, "hsl") || vs_is_func(id, vlen - i, "hsla");
+            if ((is_rgb || is_hsl) && close > 0) {
+                int p = 0, ch[3], a255 = 255, ok = 1;
+                ch[0] = ch[1] = ch[2] = 0;
+                for (int q = 0; q < 3; q++) {
+                    int used = vs_channel(arg + p, argn - p,
+                                          is_rgb ? 255 : (q == 0 ? 360 : 100), &ch[q]);
+                    if (!used) { ok = 0; break; }
+                    p += used;
+                    if (q < 2) {
+                        while (p < argn && vs_ws(arg[p])) p++;
+                        if (p < argn && (arg[p] == ',' || arg[p] == '/')) p++;
+                    }
+                }
+                if (ok) {
+                    while (p < argn && vs_ws(arg[p])) p++;
+                    if (p < argn && (arg[p] == ',' || arg[p] == '/')) {
+                        p++;
+                        /* alpha is 0..1, so vs_channel's integer answer is no
+                         * use -- read it here, in the small. */
+                        double f = 0;
+                        int q = p, sign = 1, seen = 0;
+                        while (q < argn && vs_ws(arg[q])) q++;
+                        if (q < argn && (arg[q] == '+' || arg[q] == '-'))
+                            { sign = (arg[q] == '-') ? -1 : 1; q++; }
+                        while (q < argn && vs_dig(arg[q])) { f = f * 10 + (arg[q] - '0'); q++; seen = 1; }
+                        if (q < argn && arg[q] == '.') {
+                            q++;
+                            double m = 0.1;
+                            while (q < argn && vs_dig(arg[q])) { f += (arg[q] - '0') * m; m *= 0.1; q++; seen = 1; }
+                        }
+                        if (seen) {
+                            if (q < argn && arg[q] == '%') { f /= 100.0; q++; }
+                            f *= sign;
+                            if (f < 0) f = 0;
+                            if (f > 1) f = 1;
+                            a255 = (int)(f * 255.0 + 0.5);
+                            p = q;
+                        }
+                    }
+                    while (p < argn && vs_ws(arg[p])) p++;
+                    if (p >= argn) {
+                        int r = ch[0], g = ch[1], bl = ch[2];
+                        if (is_hsl) vs_hsl_rgb(ch[0], ch[1], ch[2], &r, &g, &bl);
+                        vsb_colour(&b, r, g, bl, a255);
+                        i = close + 1;
+                        continue;
+                    }
+                }
+            }
+            /* every other function: the name, then the arguments through this
+             * same pass, so a colour nested inside one is still normalised */
+            vsb_str(&b, id, idn);
+            vsb_ch(&b, '(');
+            if (argn > 0) {
+                char tmp[512];
+                int tn = css_value_serialize(arg, argn, tmp, (int)sizeof tmp);
+                if (tn > 0) vsb_str(&b, tmp, tn);
+                else vsb_str(&b, arg, argn);
+            }
+            vsb_ch(&b, ')');
+            i = (close < 0) ? vlen : close + 1;
+            continue;
+        }
+
+        vsb_str(&b, id, idn);
+        i = j;
+    }
+
+    while (b.len && b.p[b.len - 1] == ' ') b.len--;
+    b.p[b.len] = 0;
+    return b.len;
+}
+
+/* ======================================================================
+ * The specified-value canonicaliser, forwarded.
+ *
+ * `third_party/css/libcss/include/libcss/canon.h` is the CSS line's
+ * specified-value parser: a third entry point into LibCSS's grammar that
+ * answers "what did the author write, spelled canonically?" for the
+ * properties it claims (the inset/size/margin family and css-anchor-position),
+ * and PASSES on everything else.
+ *
+ * It is forwarded through css.h rather than included directly by the CSSOM
+ * because the browser's js_*.c objects build with JS_CF, which carries no
+ * CSS_INC -- css_engine.c is the one TU on this side that sees LibCSS's
+ * headers, and keeping it that way is the reason every other caller in the
+ * app can say `#include "css.h"` and stop.
+ *
+ * WHY IT IS CALLED AT ALL, rather than letting css_value_serialize() have the
+ * whole surface: two serializers over one surface is precisely the failure
+ * css.h warns about everywhere else -- they do not fail by being approximate,
+ * they fail by DISAGREEING, and the disagreement shows up as a value that
+ * changes spelling depending on which path read it. The properties canon.c
+ * claims are its answer; everything it passes on is ours. The two sets do not
+ * overlap, and this call is what keeps them from starting to.
+ * ====================================================================== */
+int css_specified_canon(const char *prop, int plen, const char *value, int vlen,
+                        char *out, int outcap, int *outlen)
+{
+    return css_canon_decl(prop, plen, value, vlen, out, outcap, outlen);
 }

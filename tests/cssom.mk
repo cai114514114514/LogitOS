@@ -38,7 +38,8 @@ CSSOM_TEST_SRC := tests/unit/cssom_test.c \
                   c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                   c/apps/browser/css_extra.c \
                   c/apps/browser/layout.c \
-                  c/apps/browser/js_select.c
+                  c/apps/browser/js_select.c \
+                  c/apps/browser/js_tokenlist.c
 
 $(CSSOM_DIR)/cssom_test: $(CSSOM_TEST_SRC) $(HTML_PARSER_SRC) \
                          $(BUILD)/libcss_host.a
@@ -103,7 +104,15 @@ test-cssom-negctl: $(BUILD)/libcss_host.a
 # immediate assignment here captured them EMPTY when wpt.mk had not been read
 # yet, and the failure was a compile with no include path at all -- which
 # reads as a missing header rather than as a missing variable.
-CSSOM_WPT_SRC = $(WPT_TEST_SRC) $(CSSOM_SRC)
+#
+# DEDUPED, and the `filter-out` is not defensive tidying. tests/wpt.mk globs
+# c/apps/browser/js_*.c into WPT_TEST_SRC, so js_cssom.c is in it now and
+# listing it again put the same TU on the link line twice: five "multiple
+# definition of js_cssom_install" errors and no runner. The `after` column and
+# `make test-wpt` are therefore now the SAME binary's numbers -- which is the
+# right outcome and worth saying, because this fragment was written when they
+# were not.
+CSSOM_WPT_SRC = $(WPT_TEST_SRC) $(filter-out $(WPT_TEST_SRC),$(CSSOM_SRC))
 CSSOM_WPT_CF  = $(WPT_CF)
 
 $(CSSOM_DIR)/wpt_cssom: $(CSSOM_WPT_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)

@@ -1532,6 +1532,331 @@ static const char *SHIM_FONTS =
 "})(globalThis);\n";
 
 /* ==========================================================================
+ * CSSStyleDeclaration: the IDL attributes, and the bytes values read back as
+ *
+ * TWO THINGS, and they are one thing.
+ *
+ * (1) WHICH properties are reachable as JS properties. The CSSOM says a
+ *     CSSStyleDeclaration carries one IDL attribute per *supported CSS
+ *     property*, in three spellings -- camelCased (`backgroundColor`), dashed
+ *     (`el.style['background-color']`), and, for `-webkit-` only, the
+ *     lowercase-first form (`webkitBoxAlign`). WPT's
+ *     css-conditional/js/CSS-supports-CSSStyleDeclaration.html is 1,495
+ *     subtests that assert nothing except
+ *
+ *         CSS.supports(prop, "inherit")  ==  camelCase(prop) in element.style
+ *
+ *     for ~600 property names. It is an AGREEMENT test: it does not care how
+ *     much CSS we implement, it cares that those two answers come from one
+ *     set. So the set is LibCSS's own property table (css_known_prop_at),
+ *     filtered by the same css_supports_decl() that answers CSS.supports --
+ *     literally the same call, not a list that has to be kept level with it.
+ *     js_dom.c publishes ~60 of these from its CSSP_* enum, which is the set
+ *     it can COMPUTE; that is a different and smaller question, and the 116
+ *     subtests that failed here were every property LibCSS parses and CSSP_*
+ *     does not name.
+ *
+ * (2) WHAT those attributes return. `el.style.color = '#0000ff'` must read
+ *     back `rgb(0, 0, 255)`, not `#0000ff`. js_dom.c's inline declaration is
+ *     backed by the style CONTENT ATTRIBUTE and hands back the author's bytes,
+ *     which is the right storage and the wrong answer. So every read goes
+ *     through css_value_serialize() on the way out and every write through it
+ *     on the way in.
+ *
+ * WHY IT IS HERE AND NOT IN js_dom.c. js_dom.c is another line's file. This
+ * installs last and defines over the same prototype, which is the same
+ * mechanism this file already uses for getBoundingClientRect and matchMedia.
+ * The wrappers CALL the originals rather than reimplementing them, so the
+ * style attribute stays the single source of truth and inline-declaration
+ * cascade priority is untouched.
+ * ========================================================================== */
+
+/* The originals live on the prototype under these names so the wrappers can
+ * reach them with `this` intact. Non-enumerable, but reachable -- hiding them
+ * behind a C static would mean one set of pointers for what can be several
+ * contexts. */
+#define ORIG_GPV "__cssomGetPropertyValue"
+#define ORIG_SP  "__cssomSetProperty"
+
+/* camelCase per CSSOM's "CSS property to IDL attribute". `lower_first` strips
+ * the leading '-' first, which is how `-webkit-box-align` becomes
+ * `webkitBoxAlign` rather than `WebkitBoxAlign`. */
+static int prop_to_idl(const char *p, int n, int lower_first, char *out, int outmax)
+{
+    int o = 0, up = 0, i = 0;
+    if (lower_first) { if (n < 1 || p[0] != '-') return 0; i = 1; }
+    for (; i < n && o < outmax - 1; i++) {
+        char c = p[i];
+        if (c == '-') { up = 1; continue; }
+        if (up) { up = 0; if (c >= 'a' && c <= 'z') c = (char)(c - 32); }
+        out[o++] = c;
+    }
+    out[o] = 0;
+    return o;
+}
+
+/* Is this a property LibCSS knows the NAME of? The distinction decides whether
+ * a rejected value is a rejection or an ignorance, and getting it backwards is
+ * expensive in one direction: css_extra.c honours a handful of properties
+ * behind LibCSS's back (border-radius, the grid track shorthands,
+ * transform/transition end-state), LibCSS drops all of them, and a setter that
+ * treated "LibCSS dropped it" as "invalid" would throw away every one of those
+ * declarations from script. So an UNKNOWN name is stored unvalidated -- what
+ * the cascade does with it afterwards is the cascade's business -- and only a
+ * name LibCSS owns gets its value checked. */
+static int prop_is_known(const char *name, int nlen)
+{
+    int n = css_known_prop_count();
+    for (int i = 0; i < n; i++) {
+        int L = 0;
+        const char *k = css_known_prop_at(i, &L);
+        if (!k || L != nlen) continue;
+        int j = 0;
+        for (; j < L; j++) if ((k[j] | 32) != (name[j] | 32)) break;
+        if (j == L) return 1;
+    }
+    return 0;
+}
+
+/* getPropertyValue, wrapped: the original's answer, serialized.
+ *
+ * Serialization runs on BOTH modes on purpose. A computed value comes out of
+ * css_computed_text already canonical, and css_value_serialize is idempotent,
+ * so this needs no way to tell an inline declaration from a computed one --
+ * which is just as well, because from JS there isn't one. */
+static JSValue decl_gpv_wrap(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    JSValue orig = JS_GetPropertyStr(ctx, t, ORIG_GPV);
+    if (!JS_IsFunction(ctx, orig)) { JS_FreeValue(ctx, orig); return JS_NewString(ctx, ""); }
+    JSValue raw = JS_Call(ctx, orig, t, argc, (JSValueConst *)argv);
+    JS_FreeValue(ctx, orig);
+    if (JS_IsException(raw)) return raw;
+    size_t n = 0;
+    const char *s = JS_ToCStringLen(ctx, &n, raw);
+    if (!s || !n) { if (s) JS_FreeCString(ctx, s); return raw; }
+    char buf[1024];
+    int len = 0;
+
+    /* The same order as the setter, for the same reason. A value that reached
+     * the style attribute through setAttribute() never met the setter, so the
+     * read path cannot assume it is already canonical. */
+    if (argc >= 1) {
+        size_t nn = 0;
+        const char *pn = JS_ToCStringLen(ctx, &nn, argv[0]);
+        if (pn) {
+            int cl = 0;
+            if (css_specified_canon(pn, (int)nn, s, (int)n, buf, (int)sizeof buf, &cl)
+                    == CSS_SPEC_OK)
+                len = cl;
+            JS_FreeCString(ctx, pn);
+        }
+    }
+    if (len <= 0) len = css_value_serialize(s, (int)n, buf, (int)sizeof buf);
+    JSValue out = (len > 0) ? JS_NewStringLen(ctx, buf, (size_t)len) : JS_DupValue(ctx, raw);
+    JS_FreeCString(ctx, s);
+    JS_FreeValue(ctx, raw);
+    return out;
+}
+
+/* setProperty, wrapped: reject what the cascade would reject, and store what
+ * it will read back as.
+ *
+ * The rejection is the CSSOM's own step ("if value is not a valid value for
+ * property, return"), and WPT tests it directly -- 274 subtests of
+ * colors-007.html set `#00000` and require the property to stay unset. Doing
+ * it by asking css_supports_decl() means the answer is LibCSS's, the same one
+ * CSS.supports() gives and the same one the cascade will act on; a hand-rolled
+ * check here would be the second parser css.h exists to prevent. */
+static JSValue decl_sp_wrap(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    JSValue orig = JS_GetPropertyStr(ctx, t, ORIG_SP);
+    if (!JS_IsFunction(ctx, orig)) { JS_FreeValue(ctx, orig); return JS_UNDEFINED; }
+    if (argc < 1) { JS_FreeValue(ctx, orig); return JS_UNDEFINED; }
+
+    size_t nl = 0, vl = 0;
+    const char *nm = JS_ToCStringLen(ctx, &nl, argv[0]);
+    const char *vv = (argc > 1) ? JS_ToCStringLen(ctx, &vl, argv[1]) : 0;
+    JSValue r = JS_UNDEFINED;
+    char buf[1024];
+
+    if (!nm) { JS_FreeValue(ctx, orig); if (vv) JS_FreeCString(ctx, vv); return JS_UNDEFINED; }
+
+    /* An empty value is a removal, and removal is never invalid. */
+    int empty = 1;
+    if (vv) for (size_t i = 0; i < vl; i++)
+        if (vv[i] != ' ' && vv[i] != '\t' && vv[i] != '\n' && vv[i] != '\r') { empty = 0; break; }
+
+    /* canon.c FIRST, for the properties it claims -- see css_specified_canon
+     * in css.h for why the order is the whole point of the call. */
+    int accept = 1, canon_len = 0;
+    if (!empty && vv) {
+        int st = css_specified_canon(nm, (int)nl, vv, (int)vl,
+                                     buf, (int)sizeof buf, &canon_len);
+        if (st == CSS_SPEC_INVALID) accept = 0;
+        else if (st != CSS_SPEC_OK) canon_len = 0;
+    }
+    if (accept && !canon_len && !empty && prop_is_known(nm, (int)nl))
+        accept = css_supports_decl(nm, (int)nl, vv, (int)vl);
+
+    if (accept) {
+        JSValueConst a[3];
+        a[0] = argv[0];
+        JSValue ser = JS_UNDEFINED;
+        if (canon_len > 0) {
+            ser = JS_NewStringLen(ctx, buf, (size_t)canon_len);
+        } else if (!empty && vv) {
+            int len = css_value_serialize(vv, (int)vl, buf, (int)sizeof buf);
+            ser = (len > 0) ? JS_NewStringLen(ctx, buf, (size_t)len)
+                            : JS_NewStringLen(ctx, vv, vl);
+        } else {
+            ser = JS_NewString(ctx, "");
+        }
+        a[1] = ser;
+        a[2] = (argc > 2) ? argv[2] : JS_UNDEFINED;
+        r = JS_Call(ctx, orig, t, 3, a);
+        JS_FreeValue(ctx, ser);
+    }
+
+    JS_FreeValue(ctx, orig);
+    JS_FreeCString(ctx, nm);
+    if (vv) JS_FreeCString(ctx, vv);
+    if (JS_IsException(r)) return r;
+    JS_FreeValue(ctx, r);
+    return JS_UNDEFINED;
+}
+
+/* The named accessors. One getter/setter pair for every spelling of every
+ * property, with `magic` the index into the property universe -- so the three
+ * spellings of one property are three definitions sharing one implementation
+ * and can never drift from each other. They go through the object's OWN
+ * getPropertyValue/setProperty rather than the C helpers directly, so an
+ * override further down the prototype chain still wins. */
+static JSValue decl_named_get(JSContext *ctx, JSValueConst t, int magic)
+{
+    int L = 0;
+    const char *nm = css_known_prop_at(magic, &L);
+    if (!nm) return JS_NewString(ctx, "");
+    JSValue f = JS_GetPropertyStr(ctx, t, "getPropertyValue");
+    if (!JS_IsFunction(ctx, f)) { JS_FreeValue(ctx, f); return JS_NewString(ctx, ""); }
+    JSValue arg = JS_NewStringLen(ctx, nm, (size_t)L);
+    JSValueConst a[1]; a[0] = arg;
+    JSValue r = JS_Call(ctx, f, t, 1, a);
+    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx, f);
+    return r;
+}
+
+static JSValue decl_named_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic)
+{
+    int L = 0;
+    const char *nm = css_known_prop_at(magic, &L);
+    if (!nm) return JS_UNDEFINED;
+    JSValue f = JS_GetPropertyStr(ctx, t, "setProperty");
+    if (!JS_IsFunction(ctx, f)) { JS_FreeValue(ctx, f); return JS_UNDEFINED; }
+    JSValue arg = JS_NewStringLen(ctx, nm, (size_t)L);
+    JSValueConst a[2]; a[0] = arg; a[1] = v;
+    JSValue r = JS_Call(ctx, f, t, 2, a);
+    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx, f);
+    if (JS_IsException(r)) return r;
+    JS_FreeValue(ctx, r);
+    return JS_UNDEFINED;
+}
+
+static void def_prop_accessor(JSContext *ctx, JSValueConst proto,
+                              const char *name, int magic)
+{
+    JSAtom a = JS_NewAtom(ctx, name);
+    JS_DefinePropertyGetSet(ctx, proto, a,
+        JS_NewCFunction2(ctx, (JSCFunction *)decl_named_get, name, 0,
+                         JS_CFUNC_getter_magic, magic),
+        JS_NewCFunction2(ctx, (JSCFunction *)decl_named_set, name, 1,
+                         JS_CFUNC_setter_magic, magic),
+        JS_PROP_CONFIGURABLE);
+    JS_FreeAtom(ctx, a);
+}
+
+/* How many IDL attributes were published. A test seam, and the number the
+ * agreement with CSS.supports is measured on. */
+static int g_decl_props;
+int js_cssom_decl_props(void) { return g_decl_props; }
+
+static void install_style_decl(JSContext *ctx)
+{
+    /* The CSSStyleDeclaration prototype, reached the only way that does not
+     * assume js_dom.c published a constructor: through an instance. */
+    static const char *GETPROTO =
+        "Object.getPrototypeOf(document.createElement('div').style)";
+    JSValue proto = JS_Eval(ctx, GETPROTO, strlen(GETPROTO), "<cssom decl>",
+                            JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(proto)) { JS_FreeValue(ctx, JS_GetException(ctx)); return; }
+    if (!JS_IsObject(proto)) { JS_FreeValue(ctx, proto); return; }
+
+    /* Wrap, once. A second install would stack a wrapper on a wrapper and the
+     * inner one would be the wrapper itself -- infinite recursion on the first
+     * read, which is a stack overflow rather than a wrong answer. */
+    JSValue already = JS_GetPropertyStr(ctx, proto, ORIG_GPV);
+    int wrapped = JS_IsFunction(ctx, already);
+    JS_FreeValue(ctx, already);
+    if (!wrapped) {
+        JSValue gpv = JS_GetPropertyStr(ctx, proto, "getPropertyValue");
+        JSValue sp  = JS_GetPropertyStr(ctx, proto, "setProperty");
+        if (JS_IsFunction(ctx, gpv) && JS_IsFunction(ctx, sp)) {
+            JS_DefinePropertyValueStr(ctx, proto, ORIG_GPV, gpv, JS_PROP_CONFIGURABLE);
+            JS_DefinePropertyValueStr(ctx, proto, ORIG_SP,  sp,  JS_PROP_CONFIGURABLE);
+            JS_SetPropertyStr(ctx, proto, "getPropertyValue",
+                JS_NewCFunction(ctx, decl_gpv_wrap, "getPropertyValue", 1));
+            JS_SetPropertyStr(ctx, proto, "setProperty",
+                JS_NewCFunction(ctx, decl_sp_wrap, "setProperty", 3));
+        } else {
+            JS_FreeValue(ctx, gpv);
+            JS_FreeValue(ctx, sp);
+            JS_FreeValue(ctx, proto);
+            return;
+        }
+    }
+
+    g_decl_props = 0;
+    int n = css_known_prop_count();
+    for (int i = 0; i < n; i++) {
+        int L = 0;
+        const char *p = css_known_prop_at(i, &L);
+        if (!p || L <= 0 || L > 96) continue;
+        /* THE FILTER IS CSS.supports ITSELF. `inherit` is a valid value for
+         * every real property, so a name the parser refuses it for is a name
+         * in the string table that is not a property (LibCSS interns a few
+         * such) -- and refusing to publish exactly those is what keeps the two
+         * answers one answer. */
+        if (!css_supports_decl(p, L, "inherit", 7)) continue;
+        g_decl_props++;
+
+        char idl[128];
+        if (prop_to_idl(p, L, 0, idl, (int)sizeof idl) > 0)
+            def_prop_accessor(ctx, proto, idl, i);
+
+        /* the dashed spelling, for `el.style['background-color']` */
+        int dashed = 0;
+        for (int k = 0; k < L; k++) if (p[k] == '-') { dashed = 1; break; }
+        if (dashed) {
+            char raw[128];
+            memcpy(raw, p, (size_t)L); raw[L] = 0;
+            def_prop_accessor(ctx, proto, raw, i);
+        }
+        /* and the lowercase-first spelling, which exists for `-webkit-` and
+         * ONLY for `-webkit-`: WPT asserts the absence for every other
+         * prefix. LibCSS carries no prefixed property today, so this loop
+         * publishes none -- it is here so that when the vendored parser gains
+         * one, the spelling comes with it. */
+        if (L > 8 && p[0] == '-' && !strncmp(p, "-webkit-", 8)) {
+            char lf[128];
+            if (prop_to_idl(p, L, 1, lf, (int)sizeof lf) > 0)
+                def_prop_accessor(ctx, proto, lf, i);
+        }
+    }
+    JS_FreeValue(ctx, proto);
+}
+
+/* ==========================================================================
  * Install
  * ========================================================================== */
 
@@ -1668,6 +1993,10 @@ void js_cssom_install(JSContext *ctx)
     }
     JS_FreeValue(ctx, doc);
     JS_FreeValue(ctx, g);
+
+    /* Last, and after the Element prototype above: it takes js_dom.c's
+     * CSSStyleDeclaration and both widens and re-answers it. */
+    install_style_decl(ctx);
 
     run_shim(ctx, SHIM_FONTS, "<cssom fonts>");
     run_shim(ctx, SHIM_BODY_HANDLERS, "<cssom body handlers>");

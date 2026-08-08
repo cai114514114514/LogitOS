@@ -193,6 +193,55 @@ int  css_computed_text(struct node *n, int prop, char *out, int outmax);
  * it deliberately under-reports. `plen`/`vlen` < 0 mean NUL-terminated. */
 int  css_supports_decl(const char *prop, int plen, const char *value, int vlen);
 
+/* ---------------- the property universe ----------------
+ *
+ * Every property NAME this engine's parser knows, read straight out of
+ * LibCSS's own string table. It is the set a CSSStyleDeclaration must expose
+ * as IDL attributes, and it has to be the SAME set css_supports_decl() answers
+ * `true` for -- WPT's CSS-supports-CSSStyleDeclaration.html is 1,495 subtests
+ * asserting exactly that agreement and nothing else. Taking the list from
+ * LibCSS rather than keeping one here is what makes the agreement structural:
+ * a property added to the vendored parser appears in both answers at once.
+ *
+ * Order is LibCSS's (alphabetical); the index is stable for one build only,
+ * which is all any caller needs it for. */
+int         css_known_prop_count(void);
+const char *css_known_prop_at(int i, int *len);   /* NUL-terminated; len optional */
+
+/* ---------------- "serialize a CSS value" (CSSOM 6.7.2) ----------------
+ *
+ * The BYTES a value reads back as: `#0000ff` -> `rgb(0, 0, 255)`, `.5%` ->
+ * `0.5%`, `-0px` -> `0px`, `url(x)` -> `url("x")`, commas spaced, runs of
+ * whitespace collapsed. Writes at most `outmax` bytes including the NUL and
+ * returns the length written.
+ *
+ * IT NEVER JUDGES VALIDITY. A shape it does not recognise is copied through
+ * unchanged, so this cannot become the second CSS parser css.h warns about --
+ * `css_supports_decl()` remains the only thing that decides whether a
+ * declaration is real. It is also idempotent, so the same call serves a
+ * specified value (source bytes) and a computed one (already canonical). */
+int  css_value_serialize(const char *value, int vlen, char *out, int outmax);
+
+/* ---------------- the specified-value canonicaliser ----------------
+ *
+ * The CSS line's `libcss/canon.h`, forwarded (js_*.c builds without CSS_INC;
+ * css_engine.c is the one TU on this side that sees LibCSS's headers).
+ *
+ *   -1 CSS_CANON_INVALID  neither that parser nor LibCSS can take it. The
+ *                         CSSOM stores nothing and getPropertyValue answers "".
+ *    0 CSS_CANON_OK       `out` holds the canonical specified serialization.
+ *    1 CSS_CANON_PASS     not that parser's property. `out` is untouched, and
+ *                         css_value_serialize() is what spells it.
+ *
+ * The two serializers claim disjoint sets -- canon.c takes the inset/size/
+ * margin family and css-anchor-position, this file's takes the rest -- and
+ * calling this FIRST is what keeps them disjoint instead of merely different. */
+#define CSS_SPEC_INVALID (-1)
+#define CSS_SPEC_OK      0
+#define CSS_SPEC_PASS    1
+int  css_specified_canon(const char *prop, int plen, const char *value, int vlen,
+                         char *out, int outcap, int *outlen);
+
 void css_init(void);                            /* build the UA default stylesheet */
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */
