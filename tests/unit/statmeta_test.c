@@ -26,7 +26,12 @@
 #include "logitfs.h"
 #include "bcache.h"
 
-#define BOOT_TIME 1750000000LL      /* what a defaulting stat would invent */
+/* What a defaulting stat would invent for a timestamp. DELIBERATELY NOT
+ * fsstub_clock (1750000000), which is the instant the simulated RTC stamps real
+ * inodes with: if the two matched, "mtime is the file's own and not a boot
+ * constant" would be true in both builds and the assertion would be measuring
+ * nothing. Two distinct constants are what make the negative control visible. */
+#define BOOT_TIME 1700000000LL
 
 static uint8_t buf[64 * 1024];
 

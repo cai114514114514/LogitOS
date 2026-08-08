@@ -1565,8 +1565,40 @@ test-bulkread-negctl:
 	    grep -E "COALESCING|carried|BYPASS" $(BUILD)/negctl.log || true; \
 	 fi
 
+# FILE METADATA: does a mode survive, or does it only look right?
+#
+# Every assertion that counts in this suite happens across a REMOUNT, and one
+# across a simulated power cut, because a mode read back inside one boot proves
+# nothing -- the RAM store this replaced passed that for as long as it existed.
+.PHONY: test-statmeta test-statmeta-negctl test-statmeta-os
+test-statmeta:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/statmeta_test tests/unit/statmeta_test.c $(FS_CORE) $(FS_STUB)
+	@$(BUILD)/statmeta_test
+
+# THE NEGATIVE CONTROL, and it is the one this line needed most. Not "remove
+# stat" -- the same suite against a build where logitfs registers neither hook
+# and stat returns a PLAUSIBLE DEFAULT: mode 0644, size correct, times set to a
+# boot constant. Everything works. `ls -l` looks entirely right. Nothing durable
+# is read. Only the cross-remount assertions fail, and this target succeeds when
+# they do. A suite that cannot tell those two builds apart is not testing
+# durability, it is testing that the machine did not crash.
+test-statmeta-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -DLOGITFS_NO_ATTR -o $(BUILD)/statmeta_negctl \
+	    tests/unit/statmeta_test.c $(FS_CORE) $(FS_STUB)
+	@if $(BUILD)/statmeta_negctl > $(BUILD)/statmeta_negctl.log 2>&1; then \
+	    echo "CONTROL FAILED: a build that stores no mode on the medium PASSED the suite"; \
+	    cat $(BUILD)/statmeta_negctl.log; exit 1; \
+	 else \
+	    echo "negative control OK -- with a plausible default and nothing stored, these fail:"; \
+	    grep FAIL $(BUILD)/statmeta_negctl.log | head -8; \
+	    tail -1 $(BUILD)/statmeta_negctl.log; \
+	 fi
+
 test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format \
-              test-bulkread test-bulkread-negctl
+              test-bulkread test-bulkread-negctl \
+              test-statmeta test-statmeta-negctl
 
 # The durability harnesses as ONE name. Each of these was written as its own
 # target with a comment explaining that it is slow and therefore belongs to no
