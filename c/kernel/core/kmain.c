@@ -21,6 +21,7 @@
 #include "nvme.h"
 #include "klog.h"
 #include "kdiag.h"
+#include "cpu_report.h"   /* cpu_simd_selftest -- see the call below pit_init */
 #include "blkdev.h"
 #include "pci.h"
 #include "driver.h"
@@ -51,6 +52,24 @@ void kernel_main(uint64_t mb_info)
     gdt_init();
     pic_remap();
     pit_init(TIMER_HZ);
+
+    /* The SIMD self-test. It was written, documented down to its call order
+     * ("once the PIT is ticking, needs IF=0 on entry") and then never called
+     * from anywhere -- so nothing it checks was being checked on any machine.
+     *
+     * What it checks cannot be checked host-side, which is why it exists: that
+     * the XMM register file survives a real timer interrupt (the FXSAVE/FXRSTOR
+     * in isr_common), and that the selected AES backend agrees with the
+     * portable one WHILE interrupts are landing inside the instruction stream.
+     * A host test runs neither of those.
+     *
+     * Here, unconditionally, for the reason the mount-time fsck is: it makes
+     * every boot harness in the tree assert it, including the ones written for
+     * something else entirely. It costs ~120 ms and it manages its own IF
+     * (xmm_probe brackets its spin with sti/cli under pushfq/popfq), so IF is
+     * 0 on both sides of this call. */
+    cpu_simd_selftest();
+
     pmm_init(mb_info);
     kprintf("[logitos] interrupts + memory + gdt/tss online\n");
 

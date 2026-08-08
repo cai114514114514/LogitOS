@@ -22,7 +22,31 @@
 # deletes targets written straight into it, which is how two of these
 # fragments came to exist in the first place.
 
-.PHONY: test-audit test-audit-list ci ci-boot ci-all ci-here
+.PHONY: test-audit test-audit-list ci ci-boot ci-all ci-here test-simd-os
+
+# cpu_simd_selftest() was written, documented down to its call order, and never
+# called from anywhere -- the same shape of dead test the audit above looks
+# for, one level down in C rather than in the Makefile. It now runs from
+# kernel_main on every boot; this is the target that turns its output into an
+# assertion instead of a line nobody reads.
+#
+# What it proves cannot be proved host-side: that the XMM register file
+# survives a real timer interrupt (isr_common's FXSAVE/FXRSTOR) and that the
+# selected AES backend agrees with the portable one while interrupts are
+# landing inside the instruction stream.
+test-simd-os: $(ISO) $(DISK)
+	@out=$$(timeout 90 qemu-system-x86_64 -cdrom $(ISO) \
+	    -drive file=$(DISK),format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0 \
+	    -vga none -device virtio-gpu-pci -m 512M -display none -serial stdio -snapshot 2>&1); \
+	echo "$$out" | grep -F '[cpu] simd selftest:' || true; \
+	if echo "$$out" | grep -q '^CPU_SIMD_SELFTEST_OK'; then \
+	    echo "test-simd-os: PASS"; \
+	else \
+	    echo "test-simd-os: FAIL -- no CPU_SIMD_SELFTEST_OK on serial"; \
+	    echo "$$out" | grep -iE 'simd|xmm' || echo "  (the selftest produced no output at all)"; \
+	    exit 1; \
+	fi
+	@echo "test-simd-os: ok"
 
 # The audit gates. It exits non-zero on any finding, so it can be a
 # prerequisite of anything that wants the guarantee.
