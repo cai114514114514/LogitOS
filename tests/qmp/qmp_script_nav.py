@@ -230,12 +230,43 @@ def wait_req(frag, secs):
     return False
 
 
-def goto(ui, path):
-    ui.click_at(420, 145)
-    for _ in range(80):
-        ui.key("backspace", settle=0.02)
-    ui.typ("http://10.0.2.2:%d%s" % (PORT, path))
-    ui.key("ret")
+# WHERE THE ADDRESS BAR ACTUALLY IS.
+#
+# The other browser drivers click (420, 145) and get away with it, because they
+# navigate exactly once and the Browser comes up with `editing` ALREADY TRUE --
+# the first URL you type needs no click at all. 145 is the window's TITLE bar;
+# clicking it starts a window drag and leaves `editing` false, so the second
+# navigation in a session types into nothing and issues no request. That is
+# indistinguishable from "the browser refused to navigate", which is the thing
+# under test, so it is worth being exact: browser.c draws the URL field at
+# window-local y 5..25 (BARH is 30) and the window's client area starts ~34 px
+# below the title bar's top edge.
+BAR_X, BAR_Y = 420, 175
+
+
+def goto(ui, path, secs=60, tries=3):
+    """Type a URL into the address bar and CONFIRM the guest asked for it.
+
+    The PS/2 keyboard has a one-byte buffer, so on a loaded host (this machine
+    runs several agents' QEMUs at once) injected keys are dropped -- and a
+    dropped key does not produce a wrong page, it produces an unparseable URL
+    and therefore NO REQUEST AT ALL. That is indistinguishable from "the
+    browser ignored the navigation", which is the very thing under test here.
+
+    So the server's own log is the acknowledgement: type, press Enter, and if
+    the request never arrives, clear the bar and type it again. Same shape as
+    the dock-click retry above, and for the same reason."""
+    for attempt in range(tries):
+        ui.click_at(BAR_X, BAR_Y)
+        for _ in range(80):
+            ui.key("backspace", settle=0.03)
+        ui.typ("http://10.0.2.2:%d%s" % (PORT, path))
+        ui.key("ret")
+        if wait_req(path, secs):
+            return True
+        ui.screendump(shot("retype-%s-%d" % (path.strip("/."), attempt)))
+        print("   (no request for %s; retyping)" % path)
+    return False
 
 
 try:
@@ -258,7 +289,7 @@ try:
     # ---- 1. the control FIRST -----------------------------------------------
     # Run it before the subject so that "the browser navigates on its own" can
     # never be explained by state the subject left behind.
-    goto(ui, "/inert.html")
+    ck(goto(ui, "/inert.html"), "CONTROL: the address bar loaded the control page")
     ck(wait_serial("NAV-INERT-SCRIPT-RAN", 60, "control page load"),
        "CONTROL: a page whose script does NOT call location.replace loaded")
     time.sleep(4.0)
@@ -270,8 +301,7 @@ try:
 
     # ---- 2. the subject: baidu's own stub -----------------------------------
     n_before = len(requested)
-    goto(ui, "/stub.html")
-    ck(wait_req("stub.html", 60), "the stub page was fetched")
+    ck(goto(ui, "/stub.html"), "the stub page was fetched")
     ck(wait_req("real.html", 60),
        "location.replace() NAVIGATED: the destination was fetched")
     ck(wait_serial("NAV-ARRIVED-AT-DESTINATION", 60, "destination script"),
@@ -300,15 +330,14 @@ try:
     # Two pages that bounce to each other must be STOPPED, and the browser must
     # still be alive afterwards -- a guard that wedges the app is not a guard.
     n_pp = len(requested)
-    goto(ui, "/ping.html")
-    ck(wait_req("ping.html", 60), "the first of the bouncing pages was fetched")
+    ck(goto(ui, "/ping.html"), "the first of the bouncing pages was fetched")
     ck(wait_req("pong.html", 60),
        "and it navigated -- so the guard is what ends this, not a failure to navigate")
     time.sleep(20.0)
     hits = sum(1 for r in requested[n_pp:] if "ping.html" in r or "pong.html" in r)
     ck(hits <= 24,
        "the redirect loop was STOPPED after %d fetches, not spun for ever" % hits)
-    goto(ui, "/real.html")
+    ck(goto(ui, "/real.html"), "the address bar still works after the loop guard fired")
     ck(wait_serial("NAV-ARRIVED-AT-DESTINATION", 60, "post-loop load"),
        "and the browser is still answering afterwards")
 
