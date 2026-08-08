@@ -442,7 +442,7 @@ def emit(rows, out, sources):
             flags = " | ".join(r.flags) if r.flags else "0"
             kw = kw_index.get(tuple(r.keywords), 0) if r.keywords else 0
             can = can_index.get(tuple(r.noncanon), 0) if r.noncanon else 0
-            w("    { %s, %s, %s, %d, %s, %d, %s, %s, %s, %s, %d,%d, %s },\n"
+            w("    { %s, %s, %s, %d, %s, %d, %s, %s, %s, %s, %d,%d, %s, RTGT_SELF },\n"
               % (cstr(r.idl), cstr(r.attr), r.type,
                  len(r.keywords), ("RFL_KW + %d" % kw) if r.keywords else "0",
                  len(r.noncanon),

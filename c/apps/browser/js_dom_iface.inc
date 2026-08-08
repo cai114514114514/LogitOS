@@ -951,7 +951,35 @@ static JSValue docx_get_docel(JSContext *ctx, JSValueConst t)
     return wrap(ctx, h);
 }
 
+/* document.URL / document.documentURI -- the document's ADDRESS.
+ *
+ * Two names for one value in the DOM Standard, and they were both missing. That
+ * is not only a gap in the surface: `form.action` and `input`/`button`
+ * .formAction read as the document's URL when the content attribute is absent,
+ * so html/dom/reflection-forms.html asserts them against `document.URL` and got
+ * `undefined` for its own expectation -- twelve subtests that no amount of
+ * correctness in the reflection could pass.
+ *
+ * The address comes from `location.href`, which js_webapi.c owns, and NOT from
+ * baseURI: `<base href>` moves the base for relative URLs and never moves the
+ * document's address. A build with no location object answers "about:blank",
+ * which is what a document with no address has. */
+static JSValue docx_get_url(JSContext *ctx, JSValueConst t)
+{
+    (void)t;
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue loc = JS_GetPropertyStr(ctx, g, "location");
+    JSValue href = JS_IsObject(loc) ? JS_GetPropertyStr(ctx, loc, "href") : JS_UNDEFINED;
+    JS_FreeValue(ctx, loc);
+    JS_FreeValue(ctx, g);
+    if (JS_IsString(href)) return href;
+    JS_FreeValue(ctx, href);
+    return JS_NewString(ctx, "about:blank");
+}
+
 static const JSCFunctionListEntry document_extra_funcs[] = {
+    JS_CGETSET_DEF("URL", docx_get_url, NULL),
+    JS_CGETSET_DEF("documentURI", docx_get_url, NULL),
     JS_CGETSET_DEF("implementation", doc_get_implementation, NULL),
     JS_CGETSET_DEF("body", docx_get_body, NULL),
     JS_CGETSET_DEF("head", docx_get_head, NULL),

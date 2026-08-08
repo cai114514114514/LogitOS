@@ -85,7 +85,13 @@ struct refl_attr {
     double dnum;             /* numeric: the attribute's own default */
     int vmin, vmax;          /* clamped unsigned long */
     unsigned flags;
+    /* WHICH element the attribute lives on. 0 -- every generated row -- is
+     * "this one". The two others exist because `document.bgColor` reflects the
+     * BODY's bgcolor and `document.dir` reflects the DOCUMENT ELEMENT's dir:
+     * the IDL attribute and the content attribute are on different nodes. */
+    unsigned char target;
 };
+enum { RTGT_SELF = 0, RTGT_DOCEL, RTGT_BODY };
 
 struct refl_elem { const char *tag; short first; short n; };
 
@@ -114,22 +120,72 @@ struct refl_elem { const char *tag; short first; short n; };
 static const char *const KW_DIR[] = { "ltr", "rtl", "auto" };
 
 static const struct refl_attr RFL_GLOBAL[] = {
-    { "title",     "title",     RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0 },
-    { "lang",      "lang",      RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0 },
-    { "dir",       "dir",       RT_ENUM,   3,KW_DIR, 0,0, "", "", 0.0, 0,0, 0 },
-    { "autofocus", "autofocus", RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0 },
-    { "hidden",    "hidden",    RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0 },
-    { "accessKey", "accesskey", RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0 },
-    { "tabIndex",  "tabindex",  RT_LONG,   0,0, 0,0, 0, 0, 0.0, 0,0, RF_DEFNULL },
+    { "title",     "title",     RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    { "lang",      "lang",      RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    { "dir",       "dir",       RT_ENUM,   3,KW_DIR, 0,0, "", "", 0.0, 0,0, 0, RTGT_SELF },
+    { "autofocus", "autofocus", RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    { "hidden",    "hidden",    RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    { "accessKey", "accesskey", RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    { "tabIndex",  "tabindex",  RT_LONG,   0,0, 0,0, 0, 0, 0.0, 0,0, RF_DEFNULL, RTGT_SELF },
 };
 #define RFL_NGLOBAL ((int)(sizeof RFL_GLOBAL / sizeof RFL_GLOBAL[0]))
+
+/* ---- the reflections that live on Document -----------------------------
+ *
+ * The IDL attribute is `document`'s and the content attribute is somebody
+ * else's: document.dir is the DOCUMENT ELEMENT's dir, and the five colour
+ * attributes are the BODY's. They are the last of the pre-HTML5 document
+ * surface that is still specified and still shipped, and the corpus tests them
+ * (elements-sections.js's extraTests) exactly like any other reflection.
+ *
+ * treatNullAsEmptyString on the colours is not decoration: `document.bgColor =
+ * null` writes the empty string, not "null". */
+static const struct refl_attr RFL_DOCUMENT[] = {
+    { "dir",        "dir",     RT_ENUM,   3,KW_DIR, 0,0, "", "", 0.0, 0,0, 0, RTGT_DOCEL },
+    { "fgColor",    "text",    RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, RF_NULLEMPTY, RTGT_BODY },
+    { "linkColor",  "link",    RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, RF_NULLEMPTY, RTGT_BODY },
+    { "vlinkColor", "vlink",   RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, RF_NULLEMPTY, RTGT_BODY },
+    { "alinkColor", "alink",   RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, RF_NULLEMPTY, RTGT_BODY },
+    { "bgColor",    "bgcolor", RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, RF_NULLEMPTY, RTGT_BODY },
+};
+#define RFL_NDOC ((int)(sizeof RFL_DOCUMENT / sizeof RFL_DOCUMENT[0]))
+
+/* Magic is one flat index over the three tables, so one accessor pair serves
+ * all of them and QuickJS carries no per-property closure. */
+#define MAGIC_GLOBAL RFL_NATTRS
+#define MAGIC_DOC    (MAGIC_GLOBAL + RFL_NGLOBAL)
+#define MAGIC_END    (MAGIC_DOC + RFL_NDOC)
 
 static const struct refl_attr *row_at(int magic)
 {
     if (magic < 0) return 0;
     if (magic < RFL_NATTRS) return &RFL_ATTRS[magic];
-    magic -= RFL_NATTRS;
-    return (magic < RFL_NGLOBAL) ? &RFL_GLOBAL[magic] : 0;
+    if (magic < MAGIC_DOC)  return &RFL_GLOBAL[magic - MAGIC_GLOBAL];
+    if (magic < MAGIC_END)  return &RFL_DOCUMENT[magic - MAGIC_DOC];
+    return 0;
+}
+
+/* THE NEGATIVE CONTROL, and the reason it is HERE and not "remove reflection".
+ *
+ * Deleting the file would prove that a missing feature is missing, which nobody
+ * doubted. The failure this code can actually have is subtler and it is the one
+ * a reviewer cannot see: reflection that WORKS and is untyped. Every property
+ * exists, every prototype is right, every attribute round-trips, `el.title` and
+ * `el.id` behave, a real page renders -- and the enumerated invalid-value
+ * defaults, the integer parsing rules, the range clamping, the throwing setters
+ * and the URL resolution are all gone.
+ *
+ * So the control leaves the plumbing entirely intact and attacks ONLY the
+ * coercion: every attribute becomes a plain DOMString pass-through.
+ * tests/reflect.mk builds it and requires tests/unit/reflect_test.c to go red. */
+static unsigned char eff_type(const struct refl_attr *r)
+{
+#ifdef REFLECT_NEGCTL
+    (void)r;
+    return RT_STRING;
+#else
+    return r->type;
+#endif
 }
 
 /* ---- the HTML parsing rules, ported from the spec ----------------------
@@ -283,13 +339,12 @@ static const char *get_attr(const struct node *n, const char *name, int *len)
  * belong to other lines. When there is no URL constructor (a build without the
  * web-API layer) the literal is returned, which is the same answer the spec
  * gives for an unparseable URL. */
-static JSValue resolve_url(JSContext *ctx, const char *v, int len)
+static JSValue url_object(JSContext *ctx, const char *v, int len)
 {
-    if (len <= 0) return JS_NewString(ctx, "");
-    JSValue lit = JS_NewStringLen(ctx, v, (size_t)len);
+    JSValue lit = JS_NewStringLen(ctx, v ? v : "", (size_t)(len > 0 ? len : 0));
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue ctor = JS_GetPropertyStr(ctx, g, "URL");
-    JSValue out = JS_UNDEFINED;
+    JSValue u = JS_UNDEFINED;
     if (JS_IsFunction(ctx, ctor)) {
         JSValue base = JS_UNDEFINED;
         JSValue doc = JS_GetPropertyStr(ctx, g, "document");
@@ -302,21 +357,33 @@ static JSValue resolve_url(JSContext *ctx, const char *v, int len)
             JS_FreeValue(ctx, loc);
         }
         JSValueConst argv[2] = { lit, base };
-        JSValue u = JS_CallConstructor(ctx, ctor, JS_IsString(base) ? 2 : 1, argv);
+        u = JS_CallConstructor(ctx, ctor, JS_IsString(base) ? 2 : 1, argv);
         if (JS_IsException(u)) {
             JS_FreeValue(ctx, JS_GetException(ctx));       /* unparseable */
-        } else if (JS_IsObject(u)) {
-            JSValue href = JS_GetPropertyStr(ctx, u, "href");
-            if (JS_IsString(href)) out = href; else JS_FreeValue(ctx, href);
+            u = JS_UNDEFINED;
         }
-        JS_FreeValue(ctx, u);
         JS_FreeValue(ctx, base);
     }
     JS_FreeValue(ctx, ctor);
     JS_FreeValue(ctx, g);
-    if (JS_IsUndefined(out)) return lit;
     JS_FreeValue(ctx, lit);
-    return out;
+    return u;
+}
+
+static JSValue resolve_url(JSContext *ctx, const char *v, int len)
+{
+    JSValue u = url_object(ctx, v, len);
+    if (JS_IsObject(u)) {
+        JSValue href = JS_GetPropertyStr(ctx, u, "href");
+        JS_FreeValue(ctx, u);
+        if (JS_IsString(href)) return href;
+        JS_FreeValue(ctx, href);
+    } else {
+        JS_FreeValue(ctx, u);
+    }
+    /* Parsing failed (or there is no URL implementation in this build): the
+     * spec says return the content attribute as it stands. */
+    return JS_NewStringLen(ctx, v ? v : "", (size_t)(len > 0 ? len : 0));
 }
 
 /* ---- enumerated: content value -> IDL value ----------------------------- */
@@ -361,23 +428,62 @@ static int tab_focusable(const char *tag)
     return 0;
 }
 
+/* The node whose content attribute this IDL attribute is a view of -- itself,
+ * unless it is one of the six on Document. Reached through the wrapper's own
+ * `documentElement` / `body` properties rather than through the DOM, so this
+ * file inherits js_dom.c's answer to "which <body> counts" instead of holding a
+ * second opinion about it. */
+static struct node *target_node(JSContext *ctx, JSValueConst this_val,
+                                const struct refl_attr *r)
+{
+    if (r->target == RTGT_SELF) return js_dom_node_from(this_val);
+    JSValue v = JS_GetPropertyStr(ctx, this_val,
+                                  r->target == RTGT_DOCEL ? "documentElement" : "body");
+    struct node *n = js_dom_node_from(v);
+    JS_FreeValue(ctx, v);       /* the wrapper is cached on the node; this only
+                                 * drops our reference to it */
+    return n;
+}
+
+/* `form.action` and `input`/`button.formAction` read as the DOCUMENT's URL when
+ * the content attribute is absent, not as the empty string every other
+ * reflected URL gives. It is a genuine per-attribute rule in HTML (the form
+ * submits to the current document), reflection.js carries it as its own
+ * "Hard-coded special case", and resolving the empty string against the base is
+ * exactly what produces it. */
+static int url_defaults_to_document(const struct refl_attr *r)
+{
+    return !strcmp(r->attr, "action") || !strcmp(r->attr, "formaction");
+}
+
 static JSValue refl_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
     const struct refl_attr *r = row_at(magic);
     if (!r) return JS_UNDEFINED;
-    struct node *n = js_dom_node_from(this_val);
-    if (!n) return JS_UNDEFINED;
+    struct node *n = target_node(ctx, this_val, r);
     int len = 0;
-    const char *v = get_attr(n, r->attr, &len);
+    const char *v = n ? get_attr(n, r->attr, &len) : 0;
     double num, dflt = type_default(r);
+    if (!n && r->target != RTGT_SELF) {
+        /* No <body> / no document element: every one of these is a DOMString,
+         * and an absent element is not different from an absent attribute. */
+        return JS_NewString(ctx, "");
+    }
+    if (!n) return JS_UNDEFINED;
 
-    switch (r->type) {
+    switch (eff_type(r)) {
     case RT_STRING:
     case RT_TOKENLIST:
         return JS_NewStringLen(ctx, v ? v : "", v ? (size_t)len : 0);
 
     case RT_URL:
-        return v ? resolve_url(ctx, v, len) : JS_NewString(ctx, "");
+        if (!v) {
+            if (!url_defaults_to_document(r)) return JS_NewString(ctx, "");
+            v = ""; len = 0;
+        }
+        /* An attribute that is PRESENT and empty is not absent: it parses to
+         * the document's own URL. Only an absent one is "". */
+        return resolve_url(ctx, v, len);
 
     case RT_ENUM:
         return enum_get(ctx, r, v, len);
@@ -466,10 +572,10 @@ static JSValue refl_set(JSContext *ctx, JSValueConst this_val, JSValueConst v,
 {
     const struct refl_attr *r = row_at(magic);
     if (!r) return JS_UNDEFINED;
-    struct node *n = js_dom_node_from(this_val);
+    struct node *n = target_node(ctx, this_val, r);
     if (!n || n->type != N_ELEM) return JS_UNDEFINED;
 
-    switch (r->type) {
+    switch (eff_type(r)) {
     case RT_STRING:
     case RT_URL:
     case RT_TOKENLIST:
@@ -552,6 +658,77 @@ static JSValue refl_set(JSContext *ctx, JSValueConst this_val, JSValueConst v,
     return JS_UNDEFINED;
 }
 
+/* ---- HTMLHyperlinkElementUtils ------------------------------------------
+ *
+ * `a.protocol`, `.host`, `.pathname`, `.search`, `.hash` and the rest: the same
+ * URL the href reflection resolves, taken apart. They belong here rather than
+ * beside href in the table because they are not reflections -- there is no
+ * `protocol` content attribute; they are a VIEW of one attribute through nine
+ * names, and a write to any of them writes back through href.
+ *
+ * They are also the reason the url-typed subtests can pass at all. WPT's
+ * reflection.js does not carry expected URLs; it computes each one by creating
+ * an <a>, assigning the input to `.href`, and reading
+ *   el.protocol + "//" + el.host + el.pathname + el.search + el.hash
+ * back off it. With those members missing the expectation for EVERY url subtest
+ * in the corpus was the literal string "undefined//undefinedundefinedundefined"
+ * -- a number no implementation of href can reach. The oracle is our own
+ * decomposition, so what the corpus actually asks is that href and the
+ * components agree. Routing both through one URL object makes that structural
+ * rather than a coincidence.
+ *
+ * The write direction is the ordinary one: rebuild the URL with the component
+ * replaced and store its href back in the content attribute. */
+static const char *const HL_NAMES[] = {
+    "protocol", "username", "password", "host", "hostname",
+    "port", "pathname", "search", "hash", "origin"
+};
+#define HL_COUNT ((int)(sizeof HL_NAMES / sizeof HL_NAMES[0]))
+#define HL_ORIGIN (HL_COUNT - 1)              /* read-only */
+
+/* Which element gets them. The spec's list is <a> and <area> -- and NOT <link>,
+ * whose href is a plain reflected URL with no decomposition. */
+static const char *const HL_TAGS[] = { "a", "area" };
+
+static JSValue hlink_url(JSContext *ctx, JSValueConst this_val)
+{
+    struct node *n = js_dom_node_from(this_val);
+    if (!n || n->type != N_ELEM) return JS_UNDEFINED;
+    int len = 0;
+    const char *v = js_dom_attr_len(n, "href", &len);
+    if (!v) return JS_UNDEFINED;              /* no href: every part is "" */
+    return url_object(ctx, v, len);
+}
+
+static JSValue hlink_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    JSValue u = hlink_url(ctx, this_val);
+    if (!JS_IsObject(u)) { JS_FreeValue(ctx, u); return JS_NewString(ctx, ""); }
+    JSValue out = JS_GetPropertyStr(ctx, u, HL_NAMES[magic]);
+    JS_FreeValue(ctx, u);
+    if (!JS_IsString(out)) { JS_FreeValue(ctx, out); return JS_NewString(ctx, ""); }
+    return out;
+}
+
+static JSValue hlink_set(JSContext *ctx, JSValueConst this_val, JSValueConst v,
+                         int magic)
+{
+    struct node *n = js_dom_node_from(this_val);
+    if (!n || n->type != N_ELEM || magic == HL_ORIGIN) return JS_UNDEFINED;
+    JSValue u = hlink_url(ctx, this_val);
+    if (!JS_IsObject(u)) { JS_FreeValue(ctx, u); return JS_UNDEFINED; }
+    JS_SetPropertyStr(ctx, u, HL_NAMES[magic], JS_DupValue(ctx, v));
+    JSValue href = JS_GetPropertyStr(ctx, u, "href");
+    JS_FreeValue(ctx, u);
+    if (JS_IsString(href)) {
+        size_t len = 0;
+        const char *s = JS_ToCStringLen(ctx, &len, href);
+        if (s) { js_dom_attr_write(ctx, n, "href", s, (int)len); JS_FreeCString(ctx, s); }
+    }
+    JS_FreeValue(ctx, href);
+    return JS_UNDEFINED;
+}
+
 /* ---- installation ------------------------------------------------------- */
 
 static int g_installed;
@@ -590,13 +767,51 @@ static void define_one(JSContext *ctx, JSValueConst proto, int magic)
     g_installed++;
 }
 
+/* The nine URL components, on one prototype. Same never-clobber rule. */
+static void define_hlink(JSContext *ctx, JSValueConst proto)
+{
+    for (int i = 0; i < HL_COUNT; i++) {
+        JSAtom a = JS_NewAtom(ctx, HL_NAMES[i]);
+        JSPropertyDescriptor d;
+        if (JS_GetOwnProperty(ctx, &d, proto, a) > 0) {
+            JS_FreeValue(ctx, d.value); JS_FreeValue(ctx, d.getter);
+            JS_FreeValue(ctx, d.setter); JS_FreeAtom(ctx, a);
+            continue;
+        }
+        JSValue get = JS_NewCFunctionMagic(ctx, (JSCFunctionMagic *)hlink_get,
+                                           HL_NAMES[i], 0, JS_CFUNC_getter_magic, i);
+        JSValue set = (i == HL_ORIGIN) ? JS_UNDEFINED
+            : JS_NewCFunctionMagic(ctx, (JSCFunctionMagic *)hlink_set,
+                                   HL_NAMES[i], 1, JS_CFUNC_setter_magic, i);
+        JS_DefinePropertyGetSet(ctx, proto, a, get, set,
+                                JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE);
+        JS_FreeAtom(ctx, a);
+        g_installed++;
+    }
+}
+
 void js_reflect_install(JSContext *ctx, JSValueConst html_proto,
                         js_reflect_proto_fn proto_for, void *ud)
 {
     g_installed = 0;
     if (JS_IsObject(html_proto))
         for (int i = 0; i < RFL_NGLOBAL; i++)
-            define_one(ctx, html_proto, RFL_NATTRS + i);
+            define_one(ctx, html_proto, MAGIC_GLOBAL + i);
+
+    /* Document's six go on the document object itself. `document` is a Node
+     * wrapper now (js_dom.c wraps the #document node), so this is the same kind
+     * of accessor as every other one here -- it just reads its attribute off a
+     * different node. */
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue doc = JS_GetPropertyStr(ctx, g, "document");
+    if (JS_IsObject(doc)) {
+        JSValue dp = JS_GetPrototype(ctx, doc);
+        JSValueConst on = JS_IsObject(dp) ? dp : doc;
+        for (int i = 0; i < RFL_NDOC; i++) define_one(ctx, on, MAGIC_DOC + i);
+        JS_FreeValue(ctx, dp);
+    }
+    JS_FreeValue(ctx, doc);
+    JS_FreeValue(ctx, g);
 
     if (!proto_for) return;
     for (int e = 0; e < RFL_NELEMS; e++) {
@@ -604,5 +819,9 @@ void js_reflect_install(JSContext *ctx, JSValueConst html_proto,
         if (!JS_IsObject(proto)) continue;
         for (int k = 0; k < RFL_ELEMS[e].n; k++)
             define_one(ctx, proto, RFL_ELEMS[e].first + k);
+    }
+    for (unsigned t = 0; t < sizeof HL_TAGS / sizeof HL_TAGS[0]; t++) {
+        JSValueConst proto = proto_for(ud, HL_TAGS[t]);
+        if (JS_IsObject(proto)) define_hlink(ctx, proto);
     }
 }

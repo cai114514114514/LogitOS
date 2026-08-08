@@ -3375,6 +3375,13 @@ bench-aui: $(ISO) $(DISK)
 # html5lib shape one layer up. See its header.
 -include tests/wpt.mk
 
+# IDL attribute reflection: `el.title` is a VIEW of the `title` content
+# attribute, through a coercion HTML specifies exactly, for ~380 attribute/
+# element pairs generated from the corpus's own tables. The COERCIONS are what
+# can silently be wrong, so that is what the suite and its negative control
+# attack. See tests/reflect.mk.
+-include tests/reflect.mk
+
 # WPT REFTESTS -- the pixel half of the same corpus, and the first measurement
 # of LAYOUT correctness this project has had. Renders the test and its reference
 # through the real pipeline plus the real kernel rasterizer, and compares them

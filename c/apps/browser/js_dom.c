@@ -991,24 +991,32 @@ static JSValue el_hasAttribute(JSContext *ctx, JSValueConst t, int argc, JSValue
 /* Defined with the DOMTokenList below: one writer for the class attribute, so
  * className= and classList.add() cannot disagree about the no-op check or the
  * invalidation tier. */
-static void class_write(struct node *n, const char *text);
+static void class_write(struct node *n, const char *text, int len);
 
 /* className. React sets it on essentially every element it renders, and
  * classList -- which is all we had -- cannot express "replace the whole list"
  * in one call the way React needs. It goes through class_write(), so the
- * no-op check and the invalidation tier are shared with classList. */
+ * no-op check and the invalidation tier are shared with classList.
+ *
+ * It is length-carrying for the same reason getAttribute is (see attr_val_len
+ * above): `class` is an ordinary attribute and "a\0b" is an ordinary value for
+ * it. A class token can never CONTAIN a NUL -- the tokeniser splits on ASCII
+ * whitespace and NUL is not whitespace, so the NUL simply lives inside one
+ * token -- but className must still hand back what was put in. */
 static JSValue el_get_className(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t);
-    const char *v = (n && n->type == N_ELEM) ? dom_attr(n, "class") : 0;
-    return JS_NewString(ctx, v ? v : "");
+    int len = 0;
+    const char *v = (n && n->type == N_ELEM) ? attr_val_len(n, "class", &len) : 0;
+    return JS_NewStringLen(ctx, v ? v : "", v ? (size_t)len : 0);
 }
 static JSValue el_set_className(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     struct node *n = node_of(t);
     if (!n || n->type != N_ELEM) return JS_UNDEFINED;
-    const char *s = JS_ToCString(ctx, v);
-    if (s) { class_write(n, s); JS_FreeCString(ctx, s); }
+    size_t len = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, v);
+    if (s) { class_write(n, s, (int)len); JS_FreeCString(ctx, s); }
     return JS_UNDEFINED;
 }
 
@@ -1244,12 +1252,13 @@ static int tok_count(const char *cls)
  * old one), and a script that re-adds a class it already has in a rAF loop
  * would grow the arena forever. Skipping the write also keeps the invalidation
  * record honest -- a no-op does not dirty the page. */
-static void class_write(struct node *n, const char *text)
+static void class_write(struct node *n, const char *text, int len)
 {
-    const char *cur = dom_attr(n, "class");
-    if (cur && strcmp(cur, text) == 0) return;
-    if (!cur && !text[0]) return;
-    if (dom_set_attr(n, "class", text)) mark_self(n, INVAL_STYLE);
+    int cl = 0;
+    const char *cur = attr_val_len(n, "class", &cl);
+    if (cur && cl == len && memcmp(cur, text, (size_t)len) == 0) return;
+    if (!cur && len == 0) return;
+    if (dom_set_attr_raw(n, "class", 5, text, len)) mark_self(n, INVAL_STYLE);
 }
 
 /* The class attribute with `drop` removed (drop == NULL keeps everything) and
@@ -1284,7 +1293,7 @@ static void class_rebuild(struct node *n, const char *drop, const char *add)
         if (b.len) sb_push(&b, " ", 1);
         sb_push(&b, add, strlen(add));
     }
-    class_write(n, b.p ? b.p : "");
+    class_write(n, b.p ? b.p : "", (int)b.len);
     free(b.p);
 }
 
@@ -1381,8 +1390,9 @@ static JSValue cl_set_value(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     struct node *n = token_node(t);
     if (!n) return JS_UNDEFINED;
-    const char *s = JS_ToCString(ctx, v);
-    if (s) { class_write(n, s); JS_FreeCString(ctx, s); }
+    size_t len = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, v);
+    if (s) { class_write(n, s, (int)len); JS_FreeCString(ctx, s); }
     return JS_UNDEFINED;
 }
 static JSValue cl_toString(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
