@@ -126,7 +126,29 @@ def chk(cond, msg):
         fails.append(msg)
 
 json.loads(f.readline()); cmd({"execute":"qmp_capabilities"})
-goto(576,753); click(); time.sleep(1.5)        # launch Terminal from the Dock (icon 3 of 9)
+
+# The dock is CENTRED on its icon count, so every icon moves the day somebody
+# adds an app -- a hardcoded (576,753) silently clicks a gap and every later
+# assertion fails for the wrong reason. The guest says `[wm] launched Terminal`
+# on the serial console, so the launch is checked, and the geometry is retried
+# across plausible icon counts. Terminal is index 3 of the dock order.
+def dock_x(i, n):
+    isz, gap = 48, 16
+    return (1280 - (gap + n * (isz + gap))) // 2 + gap + i * (isz + gap) + isz // 2
+
+
+launched = False
+for count in (9, 10, 11, 12, 8):
+    goto(dock_x(3, count), 753); click(); time.sleep(2.5)
+    if b"launched Terminal" in log:
+        launched = True
+        break
+chk(launched, "the Terminal launched from the dock")
+if not launched:
+    print("FAIL: no Terminal, nothing below would mean anything")
+    cmd({"execute":"screendump","arguments":{"filename":out}})
+    proc.kill(); sys.exit(1)
+time.sleep(1.5)
 for line in ["uname\n","ls /bin | wc\n","echo logit-os-is-real > /hi.txt\n"]:
     send(line); time.sleep(2.0)
 time.sleep(1.5)

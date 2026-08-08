@@ -248,8 +248,39 @@ def shot(tag):
 
 
 print("launching the Terminal from the dock")
-s.click_at(*dock_icon(TERMINAL_SLOT))
-time.sleep(2.5)
+
+
+def launch_terminal():
+    """Click the Terminal's dock icon, and CHECK that it launched.
+
+    The dock is centred on the icon count, so every icon moves the day somebody
+    adds an app -- which is exactly what happened: a tenth icon shifted the
+    whole row 32 px left, the click landed in a gap, and nineteen pixel
+    assertions failed one after another saying nothing about the terminal. The
+    guest announces `[wm] launched Terminal` on the serial console, so the
+    launch is verifiable rather than assumed; if the first geometry misses, try
+    the neighbouring icon counts."""
+    for n in (qmp_ui.NAPPS, qmp_ui.NAPPS + 1, qmp_ui.NAPPS + 2,
+              qmp_ui.NAPPS + 3, qmp_ui.NAPPS - 1):
+        s.click_at(*dock_icon(TERMINAL_SLOT, n))
+        time.sleep(2.5)
+        if b"launched Terminal" in log:
+            if n != qmp_ui.NAPPS:
+                print(f"  (the dock holds {n} icons, not qmp_ui.NAPPS={qmp_ui.NAPPS})")
+            return True
+    return False
+
+
+if not launch_terminal():
+    print("FAIL: the Terminal never launched -- everything below would be noise")
+    s.screendump(OUT.replace(".ppm", ".nolaunch.ppm"), settle=0.5)
+    try:
+        s.cmd({"execute": "quit"})
+    except Exception:
+        pass
+    proc.kill()
+    sys.exit(1)
+time.sleep(1.5)
 
 # ------------------------------------------------- 1. an inline image -------
 print("1. an image displayed inline, at the size it was asked for")
