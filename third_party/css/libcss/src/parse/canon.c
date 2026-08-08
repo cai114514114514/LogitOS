@@ -3513,6 +3513,35 @@ static const char *const grid_props[] = {
  * becomes the used track sizes in px on a grid container -- needs the
  * cascade to carry the value, and the cascade is not this file's.
  *
+ * READ THIS BEFORE ADOPTING css_canon_prop_at() FOR THESE NAMES.
+ *
+ * Adding the four grid properties to the CSSOM's settable set is NOT enough,
+ * and doing only that makes the corpus WORSE in one direction while making it
+ * better in the other. Measured, with the names added to js_dom.c's
+ * CSSD_EXTRA and nothing else changed:
+ *
+ *   grid-template-columns-valid      0/34 -> 34/34     the serializer works
+ *   grid-template-rows-valid         0/34 -> 34/34
+ *   grid-auto-columns-valid          0/30 -> 30/30
+ *   grid-auto-rows-valid             0/30 -> 30/30
+ *   grid-template-columns-invalid   42/42 -> 0/42      EVERY refusal lost
+ *   grid-auto-columns-invalid       16/16 -> 0/16
+ *   css-grid/parsing               318    -> 357       net, +39
+ *
+ * The refusals collapse because for a property LibCSS has never heard of, the
+ * CSSOM stores the author's text unconditionally and only canonicalises it on
+ * the way back OUT -- so `grid-template-columns: -10px` is written to the
+ * style attribute, this file answers CSS_CANON_INVALID when the value is
+ * read, and the reader treats that as "no opinion" and hands back the raw
+ * bytes. Before this commit those subtests passed VACUOUSLY: nothing was
+ * stored, so "should not set the property value" was true for a reason that
+ * had nothing to do with validity.
+ *
+ * So the adoption is two changes, not one: the settable set AND a setter that
+ * refuses a declaration this file calls INVALID. Both are in
+ * c/apps/browser/js_dom.c and js_cssom.c, which is why they are named here
+ * rather than done here.
+ *
  * THE GRAMMAR, and every refusal below is a line of
  * grid-template-columns-invalid.html:
  *
