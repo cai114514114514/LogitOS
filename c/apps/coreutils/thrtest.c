@@ -273,11 +273,28 @@ int main(void)
 {
     printf("thrtest: start\n");
 
-    /* --- 1. concurrency, by wall clock ---------------------------------- */
+    /* --- 1. concurrency, by wall clock ----------------------------------
+     *
+     * THE BASELINE IS RE-TAKEN UNTIL IT IS LONG ENOUGH, and that is a fix for a
+     * failure the negative controls found in this test rather than in the
+     * kernel. calibrate() times one run and extrapolates; under a loaded host
+     * the calibration run can be slower than the batch that follows it, so T1
+     * came out under the floor and the run stopped at "baseline long enough"
+     * -- BEFORE reaching the check it was supposed to be exercising. Three of
+     * the four controls "failed" that way, which the harness would have counted
+     * as four passes if it were only looking for failure rather than for the
+     * RIGHT failure. Doubling and re-measuring costs a second and removes the
+     * dependence on the calibration run and the measured run seeing the same
+     * machine. */
     calibrate();
-    printf("thrtest: calibrated to %lu rounds/thread\n", spin_rounds);
-    long t1 = timed_batch(1);
-    long t4 = timed_batch(4);
+    long t1 = 0, t4 = 0;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        printf("thrtest: calibrated to %lu rounds/thread\n", spin_rounds);
+        t1 = timed_batch(1);
+        if (t1 > 400) break;
+        spin_rounds *= 3;
+    }
+    t4 = timed_batch(4);
     printf("thrtest: T1=%ldms T4=%ldms sink=%lu\n", t1, t4, spin_sink);
     check(t1 > 400, "baseline long enough to time (>400ms, i.e. tens of ticks)");
     /* Four threads on four cores. Require T4 < 2*T1 -- a wide margin against

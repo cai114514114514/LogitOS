@@ -54,19 +54,43 @@ for _ in $(seq 1 10000); do
     sleep 0.1
 done
 
+# WHICH CHECK EACH CONTROL MUST FAIL ON. "It failed" is not enough and this is
+# not a hypothetical: the first run of this script reported four passes when
+# three of the controls had actually stopped at an EARLIER, unrelated check (a
+# too-short timing baseline) and never reached the assertion they exist to
+# disable. A control that fails for the wrong reason is a control that is
+# testing nothing, and it looks exactly like one that works.
+expected_for() {
+    case "$1" in
+        serial) echo "genuine parallelism" ;;
+        tls)    echo "each thread read back its own value" ;;
+        nolock) echo "counter is exact" ;;
+        leak)   echo "freed their descriptors with no join" ;;
+    esac
+}
+
 rc=0
 for c in $CTRLS; do
+    want=$(expected_for "$c")
     # The slice of the log belonging to this control.
     seg=$(awk "/NEGCTL-BEGIN-$c/{f=1;next} /NEGCTL-END-$c/{f=0} f" "$LOG")
-    if printf '%s' "$seg" | grep -aq "THREAD_TEST_FAIL"; then
-        echo "PASS(control): thrtest-$c failed, as it must"
-        printf '%s' "$seg" | grep -a -E "^FAIL|THREAD_TEST_FAIL" | head -3
-    elif printf '%s' "$seg" | grep -aq "THREAD_TEST_OK"; then
+    got=$(printf '%s' "$seg" | grep -a "^FAIL " | head -1)
+
+    if printf '%s' "$seg" | grep -aq "THREAD_TEST_OK"; then
         echo "FAIL(control): thrtest-$c PASSED -- the assertion it removes is not testing anything"
         rc=1
-    else
+    elif ! printf '%s' "$seg" | grep -aq "THREAD_TEST_FAIL"; then
         echo "FAIL(control): thrtest-$c produced no verdict (did it run? did it hang?)"
         printf '%s' "$seg" | tail -20
+        rc=1
+    elif printf '%s' "$got" | grep -aqF "$want"; then
+        echo "PASS(control): thrtest-$c failed on its own check -- $got"
+    else
+        echo "FAIL(control): thrtest-$c failed, but on the WRONG check."
+        echo "   expected the first failure to mention: $want"
+        echo "   got: ${got:-<no FAIL line at all>}"
+        echo "   -- so the assertion this control disables was never reached, and"
+        echo "      this control is currently proving nothing."
         rc=1
     fi
 done

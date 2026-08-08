@@ -1065,7 +1065,22 @@ struct logit_thread_spec {
 #define LOGIT_THREAD_STACK_MIN     (16ul * 1024)
 #define LOGIT_THREAD_STACK_MAX     (256ul * 1024 * 1024)
 
-/* How many threads one process may have at once (c/kernel/sched/uthread.c). */
+/* How many threads one process may have at once, as far as the THREAD TABLE is
+ * concerned (c/kernel/sched/uthread.c).
+ *
+ * IT IS NOT THE BINDING LIMIT, and the real one is lower and elsewhere: every
+ * thread's stack is one mmap, and c/kernel/mm/vma.h caps an address space at
+ * VMA_MAXAREA = 16 areas -- of which the program image's own stack and libc's
+ * malloc arena already take some. So the practical ceiling is around THIRTEEN
+ * concurrent threads per process, and a program that asks for more does not get
+ * a thread-table error, it gets pthread_create returning EAGAIN partway through
+ * a loop.
+ *
+ * Written here rather than left to be discovered because the number a caller
+ * reads in a header is the number it will size its worker pool by. Raising it
+ * means raising VMA_MAXAREA (a fixed table, deliberately not allocated, because
+ * it is consulted from the page-fault path) or giving thread stacks a different
+ * kind of reservation -- both in c/kernel/mm/, neither this line's to do. */
 #define LOGIT_THREADS_MAX 64
 
 /* SYS_THREAD_* results. Distinct codes for the same reason the settings block
