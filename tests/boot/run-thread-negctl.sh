@@ -36,7 +36,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
   sleep 11
   for c in $CTRLS; do
       printf 'echo NEGCTL-BEGIN-%s\n' "$c"; sleep 2
-      printf '/bin/thrtest-%s\n' "$c";      sleep 150
+      printf '/bin/thrtest-%s\n' "$c";      sleep 200
       printf 'echo NEGCTL-END-%s\n' "$c";   sleep 2
   done
   printf 'exit\n'; sleep 2
@@ -48,7 +48,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 QPID=$!
 
 # Wait for the last marker, or for QEMU to go away.
-for _ in $(seq 1 7000); do
+for _ in $(seq 1 10000); do
     grep -aq "NEGCTL-END-leak" "$LOG" && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.1

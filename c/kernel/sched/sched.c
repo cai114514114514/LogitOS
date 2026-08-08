@@ -587,6 +587,12 @@ __attribute__((noinline)) void schedule(void)
         me->in_kernel = 1;
         if (flags & 0x200) __asm__ volatile ("sti");
     } else {
+        /* NO switch this time -- but this is still the per-tick visit every
+         * core makes through schedule(), and it is what gives the generation
+         * counter its bound. A core running one thread flat out never changes
+         * `current`, so without this line it would never notice an unmap at
+         * all. With it, every core is at most one timer tick behind. */
+        tlb_gen_sync(me, 0);
         spin_unlock_irqrestore(&g_sched_lock, flags);
     }
 }

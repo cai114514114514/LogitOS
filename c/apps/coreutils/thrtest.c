@@ -56,11 +56,33 @@ static long mono_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+#if defined(THR_NEGCTL_SERIAL) || defined(THR_NEGCTL_TLS) || \
+    defined(THR_NEGCTL_NOLOCK)  || defined(THR_NEGCTL_LEAK)
+#define THR_IS_NEGCTL 1
+#endif
+
 static int fails;
 static void check(int ok, const char *what)
 {
     printf("%s %s\n", ok ? "ok  " : "FAIL", what);
     if (!ok) fails++;
+#ifdef THR_IS_NEGCTL
+    /* A negative control has exactly one thing to demonstrate: that the check
+     * its -D disables comes out FALSE. Once that has happened there is nothing
+     * left to learn from it, and running the remaining sections -- 2000
+     * create/join cycles among them -- costs minutes of QEMU per control, four
+     * times over. So a control stops at its first failure. The real build has
+     * no THR_IS_NEGCTL and runs every check to the end, which is the opposite
+     * behaviour and the right one there: a gate should report all of what is
+     * broken, not only the first thing.
+     *
+     * This is also what makes each control test ITS OWN assertion: if a
+     * control stopped somewhere earlier than the check it disables, the harness
+     * would still see THREAD_TEST_FAIL and call it a pass -- so the harness
+     * prints the failing line, and it is the failing line that has to be the
+     * expected one. */
+    if (!ok) { printf("THREAD_TEST_FAIL: negative control failed as required\n"); _exit(1); }
+#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -106,7 +128,9 @@ static void calibrate(void)
         long t0 = mono_ms();
         spin_sink += burn_n(n, 1);
         long dt = mono_ms() - t0;
-        if (dt >= 200) { spin_rounds = n * 1000ul / (unsigned long)dt; return; }
+        /* Aim for ~600 ms: sixty ticks, so the 10 ms quantum is noise, and
+         * short enough that two batches are not most of the test. */
+        if (dt >= 200) { spin_rounds = n * 600ul / (unsigned long)dt; return; }
         if (n > (1ul << 34)) { spin_rounds = n; return; }   /* absurdly fast host */
         n *= 4;
     }

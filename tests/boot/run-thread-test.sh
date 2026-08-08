@@ -26,7 +26,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # Boot to the serial shell (~11s), type the command (serial input is byte-
 # buffered and slow), then give the program its window: the two timed batches
 # plus 2000 create/join cycles take a while under TCG.
-{ sleep 11; printf '/bin/thrtest\n'; sleep 150; printf 'exit\n'; sleep 2; } | \
+{ sleep 11; printf '/bin/thrtest\n'; sleep 420; printf 'exit\n'; sleep 2; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
@@ -34,7 +34,7 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
     $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!
 
-for _ in $(seq 1 1800); do
+for _ in $(seq 1 5000); do
     if grep -aq "THREAD_TEST_OK" "$LOG"; then
         echo "PASS: thrtest -- threads are concurrent, TLS is per-thread, the mutex excludes, join/detach do not leak"
         grep -a -E "^(ok  |FAIL)|thrtest:" "$LOG"

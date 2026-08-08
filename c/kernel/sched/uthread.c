@@ -8,8 +8,6 @@
 #include "vmm.h"
 #include "mm.h"           /* mm_syscall(SYS_MUNMAP, ...): a thread stack is an mmap */
 #include "pit.h"
-#include "percpu.h"        /* the BKL drop around the TLB shootdown */
-#include "tlb.h"           /* tlb_flush_all(): threads made cross-core unmap ordinary */
 #include "kprintf.h"
 #include "logit_abi.h"
 /* Path-qualified for the reason spelled out at the top of c/kernel/exec/
@@ -159,7 +157,7 @@ int uthread_self(void)
  *
  * This was reproduced, not anticipated. thrtest's detach section faulted at
  * -smp 4 and did not at -smp 1, on a read of %fs:16 that returned 0 from a page
- * whose contents had definitely been written. The mechanism:
+ * whose contents had definitely been written:
  *
  *   1. a thread ends; the kernel unmaps its stack region and the VMA allocator
  *      hands the SAME virtual range back to the very next pthread_create,
@@ -167,60 +165,41 @@ int uthread_self(void)
  *   2. the new thread's control block is written there by the creating thread,
  *      on ITS core, through a fresh fault -- a NEW physical frame;
  *   3. the new thread is dispatched onto a core that still holds the OLD
- *      translation for that address in its TLB, and reads the OLD frame.
+ *      translation for that address, and reads the frame that was freed.
  *
  * Nothing about that is new; what is new is that it can HAPPEN. Before threads,
  * an address space had exactly one thread, so nobody could be running in a
  * space while it was being unmapped from. The mm line reached the same
  * conclusion from the other direction -- reclaim was the first thing that could
- * unmap a page from a process running on another core, and its answer was to
- * SKIP such pages, which is available to reclaim and not to a thread exiting.
+ * unmap a page from a process running on another core -- and answered it by
+ * SKIPPING such pages, which is available to reclaim and not to a thread that
+ * is exiting.
  *
- * WHY THE BIG KERNEL LOCK IS DROPPED AROUND THE SHOOTDOWN, which looks alarming
- * and is mandatory: c/kernel/cpu/tlb.h states the constraint outright -- a core
- * spinning for the BKL does so with IF=0 and CANNOT service the shootdown IPI,
- * so an initiator holding the BKL waits for an acknowledgement that can never
- * come. Dropping it is what makes every other core able to answer. The window
- * is safe here because by this point this thread's descriptor is already in its
- * final state (EXITED with the return value stored, or freed) -- there is no
- * half-updated structure for another core to observe, and this thread is never
- * going back to ring 3.
+ * WHY NOT tlb_flush_all(), WHICH IS RIGHT THERE. It was used here first, and
+ * taken out again for two measured reasons:
  *
- * WHAT THIS DOES NOT CLOSE, stated rather than left to be discovered: the
- * frames are released by vmm_unmap_range_in BEFORE this runs, so there is a
- * window -- from the BKL being dropped to the last acknowledgement -- in which
- * a freed frame could be reallocated while a stale translation to it still
- * exists on some core. It is microseconds wide and needs a specific
- * interleaving, against a failure that was previously deterministic. Closing it
- * properly means flushing inside munmap, before the frames go back to the PMM,
- * which is c/kernel/mm/'s to do and not this line's. Reported, not patched from
- * the outside.
+ *   - it CANNOT be called holding the BKL (c/kernel/cpu/tlb.h: a core spinning
+ *     for the BKL does so with IF=0 and can never acknowledge the IPI), so it
+ *     needs the BKL dropped and re-taken around it -- a window in the middle of
+ *     a thread teardown, bought for a guarantee it does not give;
+ *   - it GIVES UP SILENTLY after a bounded spin of fifty million pauses. On a
+ *     core that does not answer, that spin is the dominant cost of ending a
+ *     thread -- it made 2000 create/join cycles take longer than the whole rest
+ *     of the test -- and at the end of it the stale entry is still there.
+ *
+ * So the generation counter in c/kernel/sched/sched.c does the whole job
+ * instead: bump it here, and every core reloads CR3 the next time it goes
+ * through schedule() -- which, because the timer calls schedule() on every tick
+ * whether or not it switches threads, is at most one tick away on every core.
+ * No IPI to lose, no BKL window, no spin, and a bound in milliseconds rather
+ * than a hope.
+ *
+ * WHAT IS STILL OPEN, and it belongs to munmap rather than to this file: within
+ * that one tick, a core running user code can still read through a stale entry,
+ * and the frames have already gone back to the PMM. Closing it means flushing
+ * inside vmm_unmap_range_in BEFORE the frames are released, in c/kernel/mm/.
+ * Reported, not patched from the outside.
  * ========================================================================== */
-static void tlb_shootdown_after_unmap(void)
-{
-    uint64_t fl;
-    /* THIS core keeps IF=0 for the whole window, which is the same discipline
-     * bkl_hlt_wait() uses and for the same reason: with the BKL released and
-     * in_kernel cleared, a nested interrupt here would find this core not in
-     * the kernel and try to acquire a lock we are between states on. It is the
-     * OTHER cores that need to be able to take the IPI, and dropping the BKL is
-     * precisely what frees them to -- a core spinning for it does so with IF=0
-     * and would never acknowledge. */
-    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
-    this_cpu()->in_kernel = 0;
-    spin_unlock(&g_bkl);
-
-    tlb_flush_all();
-    /* And the lazy half, which is the one that cannot be lost: tlb_flush_all()
-     * abandons an unacknowledged core, and two threads of one process share a
-     * cr3 so the context switch would not otherwise reload it. See the
-     * g_tlb_gen block in c/kernel/sched/sched.c. */
-    sched_tlb_gen_bump();
-
-    spin_lock(&g_bkl);
-    this_cpu()->in_kernel = 1;
-    if (fl & 0x200) __asm__ volatile ("sti");
-}
 
 /* --- exit ---------------------------------------------------------------- */
 
@@ -257,7 +236,9 @@ void uthread_release_self(uint64_t retval)
      * everything, and taking it under a leaf lock is how the orders reverse. */
     if (base && len) {
         mm_syscall(SYS_MUNMAP, (long)base, (long)len, 0);
-        tlb_shootdown_after_unmap();
+        /* Every core reloads CR3 at its next pass through schedule(). See the
+         * long comment above, and g_tlb_gen in c/kernel/sched/sched.c. */
+        sched_tlb_gen_bump();
     }
 
     /* Outside the lock for the reason the g_join_wq comment gives: the joiner
