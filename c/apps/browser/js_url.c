@@ -154,7 +154,15 @@ static unsigned utf8_next(const unsigned char *s, int n, int *i)
         if ((cc & 0xC0) != 0x80) { *i = p + 1; return 0xFFFD; }
         cp = (cp << 6) | (int)(cc & 0x3F);
     }
-    if (cp < lo || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) { *i = p + 1; return 0xFFFD; }
+    /* A lone surrogate arrives here as a WELL-FORMED three-byte sequence:
+     * QuickJS's JS_ToCStringLen emits WTF-8, so "\uD835" is ED A0 B5. It is
+     * not a scalar value, so it becomes U+FFFD -- but ONE U+FFFD over all
+     * three bytes, not one per byte. Consuming a single byte here yields
+     * three replacement characters and fails the three WPT subtests that
+     * spell a key with an unpaired surrogate. An OVERLONG sequence is a
+     * different error and does resynchronise one byte at a time. */
+    if (cp >= 0xD800 && cp <= 0xDFFF) { *i = p + need + 1; return 0xFFFD; }
+    if (cp < lo || cp > 0x10FFFF) { *i = p + 1; return 0xFFFD; }
     *i = p + need + 1;
     return (unsigned)cp;
 }
@@ -1838,6 +1846,7 @@ void usp_sort(usplist *l)
 
 static JSClassID g_url_class;
 static JSClassID g_usp_class;
+static JSClassID g_uspit_class;
 
 /* A URL and its searchParams share one record. The link is TWO-WAY and both
  * directions are here, because a one-directional one looks right in a demo:
@@ -1890,6 +1899,36 @@ static void usp_gc_mark(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
 static JSClassDef url_class_def = { "URL", .finalizer = url_finalizer, .gc_mark = url_gc_mark };
 static JSClassDef usp_class_def = { "URLSearchParams", .finalizer = usp_finalizer, .gc_mark = usp_gc_mark };
 
+/* THE ITERATOR IS LIVE, AND THAT IS NOT A DETAIL.
+ * It holds an INDEX into the params object, not a snapshot of it, so a
+ * mutation during iteration is observable -- which is exactly what four WPT
+ * subtests assert: deleting the parameter after the current one skips it,
+ * deleting the current one shifts the next into its slot and that slot is
+ * skipped, and assigning to the URL's `search` mid-loop makes the remaining
+ * iterations come from the NEW list. Materialising an array up front passes
+ * every ordinary for..of and fails all four; it is the same shape of mistake
+ * as serializing "/." from the path serializer -- correct on everything a
+ * person would write, wrong on the corpus. */
+typedef struct uspiter { JSValue obj; int idx; int kind; } uspiter;
+
+static void uspit_finalizer(JSRuntime *rt, JSValue val)
+{
+    uspiter *it = (uspiter *)JS_GetOpaque(val, g_uspit_class);
+    if (!it) return;
+    JS_FreeValueRT(rt, it->obj);
+    free(it);
+}
+
+static void uspit_gc_mark(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
+{
+    uspiter *it = (uspiter *)JS_GetOpaque(val, g_uspit_class);
+    if (it) JS_MarkValue(rt, it->obj, mark_func);
+}
+
+static JSClassDef uspit_class_def = {
+    "URLSearchParams Iterator", .finalizer = uspit_finalizer, .gc_mark = uspit_gc_mark
+};
+
 static JSValue str_take(JSContext *ctx, char *s)
 {
     JSValue v = JS_NewString(ctx, s ? s : "");
@@ -1905,9 +1944,14 @@ static char *js_str(JSContext *ctx, JSValueConst v, int *len)
     size_t n = 0;
     const char *p = JS_ToCStringLen(ctx, &n, v);
     if (!p) { *len = 0; return 0; }
-    char *d = xstrndup(p, (int)n);
+    /* Every string in these two interfaces is a USVString, so the conversion
+     * that replaces a lone surrogate with U+FFFD happens HERE, at the one
+     * boundary, rather than in each consumer. It has to: two record keys that
+     * differ only in which unpaired surrogate they contain are the SAME key
+     * after conversion, and the deduplication that depends on that compares
+     * the stored bytes. */
+    char *d = utf8_sanitize(p, (int)n, len);
     JS_FreeCString(ctx, p);
-    *len = (int)n;
     return d;
 }
 
@@ -1940,68 +1984,102 @@ static jsusp *usp_self(JSContext *ctx, JSValueConst v)
     return (jsusp *)JS_GetOpaque2(ctx, v, g_usp_class);
 }
 
+/* Symbol.iterator, looked up once per call. */
+static JSAtom sym_iterator(JSContext *ctx)
+{
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue symbol = JS_GetPropertyStr(ctx, g, "Symbol");
+    JS_FreeValue(ctx, g);
+    JSAtom a = JS_ATOM_NULL;
+    if (JS_IsObject(symbol)) {
+        JSValue it = JS_GetPropertyStr(ctx, symbol, "iterator");
+        a = JS_ValueToAtom(ctx, it);
+        JS_FreeValue(ctx, it);
+    }
+    JS_FreeValue(ctx, symbol);
+    return a;
+}
+
+/* Drain an iterable into a caller-supplied array. Returns -1 with an exception
+ * pending. */
+static int drain_iterable(JSContext *ctx, JSValueConst obj, JSValueConst itf,
+                          JSValue *out, int max, int *count)
+{
+    *count = 0;
+    JSValue it = JS_Call(ctx, itf, obj, 0, 0);
+    if (JS_IsException(it)) return -1;
+    JSValue nextf = JS_GetPropertyStr(ctx, it, "next");
+    int rc = 0;
+    for (;;) {
+        JSValue r = JS_Call(ctx, nextf, it, 0, 0);
+        if (JS_IsException(r)) { rc = -1; break; }
+        JSValue d = JS_GetPropertyStr(ctx, r, "done");
+        int done = JS_ToBool(ctx, d);
+        JS_FreeValue(ctx, d);
+        if (done) { JS_FreeValue(ctx, r); break; }
+        JSValue v = JS_GetPropertyStr(ctx, r, "value");
+        JS_FreeValue(ctx, r);
+        if (*count >= max) { JS_FreeValue(ctx, v); rc = -1; JS_ThrowRangeError(ctx, "too many"); break; }
+        out[(*count)++] = v;
+    }
+    JS_FreeValue(ctx, nextf);
+    JS_FreeValue(ctx, it);
+    return rc;
+}
+
 static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
 {
     if (JS_IsUndefined(init) || JS_IsNull(init)) return 0;
 
-    /* another URLSearchParams */
-    jsusp *other = (jsusp *)JS_GetOpaque(init, g_usp_class);
-    if (other) {
-        for (int i = 0; i < other->list.n; i++)
-            usp_append(&j->list, other->list.v[i].name, other->list.v[i].nlen,
-                       other->list.v[i].value, other->list.v[i].vlen);
-        return 0;
-    }
     if (JS_IsObject(init)) {
-        /* a sequence if it has Symbol.iterator, else a record */
+        /* A SEQUENCE if it has a callable Symbol.iterator, else a record.
+         * There is deliberately NO fast path for "init is a URLSearchParams":
+         * the IDL union has no URLSearchParams member, so another params
+         * object is converted as a sequence THROUGH ITS ITERATOR -- which is
+         * what makes `params[Symbol.iterator] = function*(){...}` observable,
+         * and a fast path on the class id makes that test unfixable. */
+        JSAtom sym = sym_iterator(ctx);
         JSValue itf = JS_UNDEFINED;
-        JSAtom sym = JS_ATOM_NULL;
-        {
-            JSValue g = JS_GetGlobalObject(ctx);
-            JSValue symbol = JS_GetPropertyStr(ctx, g, "Symbol");
-            JS_FreeValue(ctx, g);
-            if (JS_IsObject(symbol)) {
-                JSValue it = JS_GetPropertyStr(ctx, symbol, "iterator");
-                sym = JS_ValueToAtom(ctx, it);
-                JS_FreeValue(ctx, it);
-            }
-            JS_FreeValue(ctx, symbol);
-        }
-        if (sym != JS_ATOM_NULL) {
-            itf = JS_GetProperty(ctx, init, sym);
-            JS_FreeAtom(ctx, sym);
-        }
+        if (sym != JS_ATOM_NULL) { itf = JS_GetProperty(ctx, init, sym); JS_FreeAtom(ctx, sym); }
         if (JS_IsFunction(ctx, itf)) {
+            JSValue items[4096];
+            int n = 0;
+            int rc = drain_iterable(ctx, init, itf, items, 4096, &n);
             JS_FreeValue(ctx, itf);
-            /* iterate as a sequence of 2-element sequences */
-            JSValue len = JS_GetPropertyStr(ctx, init, "length");
-            uint32_t n = 0;
-            if (!JS_IsUndefined(len)) JS_ToUint32(ctx, &n, len);
-            JS_FreeValue(ctx, len);
-            for (uint32_t i = 0; i < n; i++) {
-                JSValue pair = JS_GetPropertyUint32(ctx, init, i);
-                JSValue a = JS_GetPropertyUint32(ctx, pair, 0);
-                JSValue b = JS_GetPropertyUint32(ctx, pair, 1);
-                JSValue c = JS_GetPropertyStr(ctx, pair, "length");
-                uint32_t pl = 0;
-                if (!JS_IsUndefined(c)) JS_ToUint32(ctx, &pl, c);
-                JS_FreeValue(ctx, c);
-                if (pl != 2) {
-                    JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); JS_FreeValue(ctx, pair);
-                    JS_ThrowTypeError(ctx, "URLSearchParams: each element must be a pair");
+            if (rc < 0) { for (int i = 0; i < n; i++) JS_FreeValue(ctx, items[i]); return -1; }
+            for (int i = 0; i < n; i++) {
+                JSAtom s2 = sym_iterator(ctx);
+                JSValue pf = JS_UNDEFINED;
+                if (s2 != JS_ATOM_NULL) { pf = JS_GetProperty(ctx, items[i], s2); JS_FreeAtom(ctx, s2); }
+                JSValue pair[8];
+                int pn = 0, prc = -1;
+                if (JS_IsFunction(ctx, pf))
+                    prc = drain_iterable(ctx, items[i], pf, pair, 8, &pn);
+                JS_FreeValue(ctx, pf);
+                if (prc < 0 || pn != 2) {
+                    for (int k = 0; k < pn; k++) JS_FreeValue(ctx, pair[k]);
+                    for (int k = i; k < n; k++) JS_FreeValue(ctx, items[k]);
+                    if (prc >= 0)
+                        JS_ThrowTypeError(ctx, "URLSearchParams: each element must be a pair");
                     return -1;
                 }
                 int la = 0, lb = 0;
-                char *sa = js_str(ctx, a, &la);
-                char *sb = js_str(ctx, b, &lb);
+                char *sa = js_str(ctx, pair[0], &la);
+                char *sb = js_str(ctx, pair[1], &lb);
                 usp_append(&j->list, sa ? sa : "", la, sb ? sb : "", lb);
                 free(sa); free(sb);
-                JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); JS_FreeValue(ctx, pair);
+                JS_FreeValue(ctx, pair[0]); JS_FreeValue(ctx, pair[1]);
+                JS_FreeValue(ctx, items[i]);
             }
             return 0;
         }
         JS_FreeValue(ctx, itf);
-        /* a record */
+
+        /* A RECORD, which is a MAP and not a list: two JS keys that convert to
+         * the same USVString are one entry, at the position of the first and
+         * with the value of the last. Two corpus cases spell three keys with
+         * unpaired surrogates that all collapse to the same string and expect
+         * exactly one entry back. */
         JSPropertyEnum *tab = 0;
         uint32_t cnt = 0;
         if (JS_GetOwnPropertyNames(ctx, &tab, &cnt, init, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
@@ -2011,7 +2089,15 @@ static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
                 int lk = 0, lv = 0;
                 char *k = js_str(ctx, kv, &lk);
                 char *sv = js_str(ctx, v, &lv);
-                usp_append(&j->list, k ? k : "", lk, sv ? sv : "", lv);
+                int at = -1;
+                for (int q = 0; q < j->list.n; q++)
+                    if (j->list.v[q].nlen == lk && !memcmp(j->list.v[q].name, k ? k : "", (size_t)lk))
+                        { at = q; break; }
+                if (at >= 0) {
+                    free(j->list.v[at].value);
+                    j->list.v[at].value = xstrndup(sv ? sv : "", lv);
+                    j->list.v[at].vlen = lv;
+                } else usp_append(&j->list, k ? k : "", lk, sv ? sv : "", lv);
                 free(k); free(sv);
                 JS_FreeValue(ctx, kv);
                 JS_FreeValue(ctx, v);
@@ -2021,6 +2107,7 @@ static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
         }
         return 0;
     }
+
     /* a string */
     {
         int n = 0;
@@ -2053,6 +2140,51 @@ static JSValue usp_ctor(JSContext *ctx, JSValueConst new_target, int argc, JSVal
 
 enum { USP_APPEND, USP_DELETE, USP_GET, USP_GETALL, USP_HAS, USP_SET,
        USP_SORT, USP_TOSTRING, USP_FOREACH, USP_KEYS, USP_VALUES, USP_ENTRIES };
+
+static JSValue uspit_new(JSContext *ctx, JSValueConst params, int kind)
+{
+    JSValue obj = JS_NewObjectClass(ctx, g_uspit_class);
+    if (JS_IsException(obj)) return obj;
+    uspiter *it = (uspiter *)xalloc((int)sizeof(uspiter));
+    if (!it) { JS_FreeValue(ctx, obj); return JS_ThrowOutOfMemory(ctx); }
+    it->obj = JS_DupValue(ctx, params);
+    it->idx = 0;
+    it->kind = kind;
+    JS_SetOpaque(obj, it);
+    return obj;
+}
+
+static JSValue uspit_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    uspiter *it = (uspiter *)JS_GetOpaque2(ctx, this_val, g_uspit_class);
+    if (!it) return JS_EXCEPTION;
+    jsusp *j = (jsusp *)JS_GetOpaque(it->obj, g_usp_class);
+    JSValue r = JS_NewObject(ctx);
+    if (!j || it->idx >= j->list.n) {
+        JS_SetPropertyStr(ctx, r, "value", JS_UNDEFINED);
+        JS_SetPropertyStr(ctx, r, "done", JS_NewBool(ctx, 1));
+        return r;
+    }
+    int i = it->idx++;
+    JSValue nm = JS_NewStringLen(ctx, j->list.v[i].name, (size_t)j->list.v[i].nlen);
+    JSValue vl = JS_NewStringLen(ctx, j->list.v[i].value, (size_t)j->list.v[i].vlen);
+    JSValue item;
+    if (it->kind == USP_KEYS) { item = nm; JS_FreeValue(ctx, vl); }
+    else if (it->kind == USP_VALUES) { item = vl; JS_FreeValue(ctx, nm); }
+    else {
+        item = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, item, 0, nm);
+        JS_SetPropertyUint32(ctx, item, 1, vl);
+    }
+    JS_SetPropertyStr(ctx, r, "value", item);
+    JS_SetPropertyStr(ctx, r, "done", JS_NewBool(ctx, 0));
+    return r;
+}
+
+static JSValue uspit_self(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    return JS_DupValue(ctx, this_val);
+}
 
 static JSValue usp_method(JSContext *ctx, JSValueConst this_val, int argc,
                           JSValueConst *argv, int magic)
@@ -2160,29 +2292,9 @@ static JSValue usp_method(JSContext *ctx, JSValueConst this_val, int argc,
             JS_FreeValue(ctx, r);
         }
         break; }
-    case USP_KEYS: case USP_VALUES: case USP_ENTRIES: {
-        /* Materialise into an array and hand back its iterator. The observable
-         * difference from a live iterator is mutation DURING iteration, which
-         * the corpus does test -- see the note in tests/url.mk. */
-        JSValue arr = JS_NewArray(ctx);
-        for (int i = 0; i < j->list.n; i++) {
-            JSValue item;
-            JSValue nm = JS_NewStringLen(ctx, j->list.v[i].name, (size_t)j->list.v[i].nlen);
-            JSValue vl = JS_NewStringLen(ctx, j->list.v[i].value, (size_t)j->list.v[i].vlen);
-            if (magic == USP_KEYS) { item = nm; JS_FreeValue(ctx, vl); }
-            else if (magic == USP_VALUES) { item = vl; JS_FreeValue(ctx, nm); }
-            else {
-                item = JS_NewArray(ctx);
-                JS_SetPropertyUint32(ctx, item, 0, nm);
-                JS_SetPropertyUint32(ctx, item, 1, vl);
-            }
-            JS_SetPropertyUint32(ctx, arr, (uint32_t)i, item);
-        }
-        JSValue vf = JS_GetPropertyStr(ctx, arr, "values");
-        ret = JS_Call(ctx, vf, arr, 0, 0);
-        JS_FreeValue(ctx, vf);
-        JS_FreeValue(ctx, arr);
-        break; }
+    case USP_KEYS: case USP_VALUES: case USP_ENTRIES:
+        ret = uspit_new(ctx, this_val, magic);
+        break;
     }
 
     free(a);
@@ -2386,6 +2498,19 @@ void js_url_install(JSContext *ctx)
     JS_NewClass(rt, g_url_class, &url_class_def);
     JS_NewClassID(&g_usp_class);
     JS_NewClass(rt, g_usp_class, &usp_class_def);
+    JS_NewClassID(&g_uspit_class);
+    JS_NewClass(rt, g_uspit_class, &uspit_class_def);
+    {
+        JSValue ip = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ip, "next", JS_NewCFunction(ctx, uspit_next, "next", 0));
+        JSAtom a = sym_iterator(ctx);
+        if (a != JS_ATOM_NULL) {
+            JS_SetProperty(ctx, ip, a,
+                           JS_NewCFunction(ctx, uspit_self, "[Symbol.iterator]", 0));
+            JS_FreeAtom(ctx, a);
+        }
+        JS_SetClassProto(ctx, g_uspit_class, ip);
+    }
 
     /* URLSearchParams first: URL's searchParams getter looks the constructor
      * up on the global to find its prototype. */
@@ -2397,16 +2522,8 @@ void js_url_install(JSContext *ctx)
     /* Symbol.iterator === entries, so `for (const [k,v] of params)` works. */
     {
         JSValue ent = JS_GetPropertyStr(ctx, up, "entries");
-        JSValue sym = JS_GetGlobalObject(ctx);
-        JSValue symbol = JS_GetPropertyStr(ctx, sym, "Symbol");
-        JS_FreeValue(ctx, sym);
-        if (JS_IsObject(symbol)) {
-            JSValue it = JS_GetPropertyStr(ctx, symbol, "iterator");
-            JSAtom a = JS_ValueToAtom(ctx, it);
-            JS_FreeValue(ctx, it);
-            if (a != JS_ATOM_NULL) { JS_SetProperty(ctx, up, a, JS_DupValue(ctx, ent)); JS_FreeAtom(ctx, a); }
-        }
-        JS_FreeValue(ctx, symbol);
+        JSAtom a = sym_iterator(ctx);
+        if (a != JS_ATOM_NULL) { JS_SetProperty(ctx, up, a, JS_DupValue(ctx, ent)); JS_FreeAtom(ctx, a); }
         JS_FreeValue(ctx, ent);
     }
     JS_FreeValue(ctx, up);

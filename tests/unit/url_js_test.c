@@ -164,6 +164,58 @@ int main(void)
       "p.forEach(function(v,n,o){ seen = [v,n,o === p].join(','); });"
       "return seen === '1,a,true';");
 
+    /* ---- the iterator is LIVE, not a snapshot ----
+     * Four WPT subtests in urlsearchparams-foreach.any.js turn on this and a
+     * materialised array passes none of them. */
+    T("iterator: deleting the NEXT param skips it",
+      "var u = new URL('http://a/?p0=0&p1=1&p2=2'), sp = u.searchParams, seen = [];"
+      "for (var e of sp) { if (e[0] === 'p0') sp.delete('p1'); seen.push(e[0]); }"
+      "return seen.join(',') === 'p0,p2';");
+    T("iterator: deleting the CURRENT param shifts the next in",
+      "var u = new URL('http://a/?p0=0&p1=1&p2=2'), sp = u.searchParams, seen = [];"
+      "for (var e of sp) { if (e[0] === 'p0') sp.delete('p0'); else seen.push(e[0]); }"
+      "return seen.join(',') === 'p2';");
+    T("iterator: deleting every param seen leaves the odd ones",
+      "var u = new URL('http://a/?p0=0&p1=1&p2=2'), sp = u.searchParams, seen = [];"
+      "for (var e of sp) { seen.push(e[0]); sp.delete(e[0]); }"
+      "return seen.join(',') === 'p0,p2' && String(sp) === 'p1=1';");
+    T("iterator: assigning to url.search mid-loop is seen",
+      "var u = new URL('http://a/?a=1&b=2&c=3&d=4'), sp = u.searchParams, c = [];"
+      "for (var i of sp) { u.search = 'x=1&y=2&z=3'; c.push(i.join(':')); }"
+      "return c.join(',') === 'a:1,y:2,z:3';");
+    T("iterator: an empty list yields nothing",
+      "var n = 0; for (var e of new URL('http://a/').searchParams) n++;"
+      "return n === 0;");
+
+    /* ---- the sequence conversion goes through the ITERATOR ----
+     * There is no URLSearchParams member in the IDL union, so another params
+     * object is drained through its Symbol.iterator like any other iterable --
+     * which is why replacing that method is observable. */
+    T("sequence init uses a custom [Symbol.iterator]",
+      "var p = new URLSearchParams();"
+      "p[Symbol.iterator] = function*(){ yield ['a','b']; };"
+      "return new URLSearchParams(p).get('a') === 'b';");
+    T("a 1- or 3-element sub-sequence throws",
+      "var n = 0;"
+      "try { new URLSearchParams([[1]]); } catch (e) { if (e instanceof TypeError) n++; }"
+      "try { new URLSearchParams([[1,2,3]]); } catch (e) { if (e instanceof TypeError) n++; }"
+      "return n === 2;");
+    T("a Map is a valid sequence source",
+      "return new URLSearchParams(new Map([['a','1'],['b','2']])).toString() === 'a=1&b=2';");
+
+    /* ---- a record is a MAP: duplicate converted keys collapse ---- */
+    T("record: unpaired surrogates collapse to one U+FFFD",
+      "var p = new URLSearchParams({'\\uD835x':'1', 'xx':'2', '\\uD83Dx':'3'});"
+      "var out = Array.from(p).map(function(e){return e.join(':');}).join(',');"
+      "return out === '\\uFFFDx:3,xx:2';");
+    T("record: three keys collapsing to one",
+      "var p = new URLSearchParams({'x\\uDC53':'1','x\\uDC5C':'2','x\\uDC65':'3'});"
+      "var out = Array.from(p).map(function(e){return e.join(':');}).join(',');"
+      "return out === 'x\\uFFFD:3';");
+    T("a lone surrogate is ONE U+FFFD, not three",
+      "return new URLSearchParams('a=1').constructor === URLSearchParams"
+      "  && new URL('http://a/?x=\\uD835').search === '?x=%EF%BF%BD';");
+
     /* ---- THE LIVE LINK, both directions ---- */
     T("searchParams is the same object each time",
       "var u = new URL('http://a/?x=1');"
