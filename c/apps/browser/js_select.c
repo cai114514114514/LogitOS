@@ -74,6 +74,15 @@
 
 int printf(const char *, ...);
 
+/* WEAK, and this is not a style choice. Four host suites (tests/cssom.mk,
+ * domiface.mk, webapi_platform.mk and this file's own) name their sources by
+ * hand rather than by wildcard, so a hard call into a NEW translation unit
+ * breaks every one of them at the linker the moment it is added -- which is
+ * exactly what happened to test-dom-iface. js_page.c already installs every
+ * optional module this way; doing the same here means a link list that has not
+ * heard of js_tokenlist.c still links, and simply has no DOMTokenList. */
+extern void js_tokenlist_install(JSContext *ctx) __attribute__((__weak__));
+
 /* Quirks mode, from the document that actually parsed. It is not reachable
  * from JS -- nothing publishes document.compatMode -- and it decides whether
  * `.Foo` matches class="foo", so guessing it is not an option. The prelude
@@ -1143,5 +1152,5 @@ void js_select_install(JSContext *ctx)
      * exactly the same precondition this file does (js_dom_init has run, so
      * Element.prototype exists) and nothing more, and js_page.c is edited by
      * several lines at once. */
-    js_tokenlist_install(ctx);
+    if (js_tokenlist_install) js_tokenlist_install(ctx);
 }
