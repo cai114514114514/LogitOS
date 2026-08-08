@@ -68,6 +68,7 @@
 #define HS_CERTIFICATE    11
 #define HS_SERVER_KX      12                 /* TLS 1.2 ServerKeyExchange */
 #define HS_CERT_REQUEST   13                 /* TLS 1.2 CertificateRequest */
+#define HS_CERT_STATUS    22                 /* TLS 1.2 stapled OCSP, RFC 6066 8 */
 #define HS_SERVER_DONE    14                 /* TLS 1.2 ServerHelloDone */
 #define HS_CERT_VERIFY    15
 #define HS_CLIENT_KX      16                 /* TLS 1.2 ClientKeyExchange */
@@ -83,6 +84,7 @@
 
 /* extensions */
 #define EXT_SNI            0
+#define EXT_STATUS_REQUEST 5                 /* OCSP stapling, RFC 6066 8 */
 #define EXT_SUPPORTED_GRPS 10
 #define EXT_EC_FORMATS     11
 #define EXT_SIG_ALGS       13
@@ -280,6 +282,13 @@ const char *tls_group_name(int grp);
 /* Chain verification + the "say WHY it was refused" logging, shared by both
  * versions. 0 = fully trusted, TLS_E_CERT otherwise. */
 int  tls_check_chain(struct tls_sess *s, const struct cert *chain, int ncert);
+
+/* The stapled-OCSP decision, shared by both versions. `staple` may be NULL
+ * (most servers do not staple), which is not an error -- see ocsp.h for the
+ * policy and tls.c for the one case that is neither good nor bad. 0 = proceed,
+ * TLS_E_CERT = the staple said, or implied, no. */
+int  tls_check_staple(struct tls_sess *s, const struct cert *chain, int ncert,
+                      const uint8_t *staple, int staplelen);
 
 void tls_log_alert(const uint8_t *body, int blen);
 

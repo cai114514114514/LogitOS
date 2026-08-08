@@ -15,6 +15,12 @@ struct cert {
     const uint8_t *pub; int publen;             /* EC point 04||X||Y */
     const uint8_t *rsa_n; int rsa_nlen;         /* RSA modulus (big-endian, minimal) */
     const uint8_t *rsa_e; int rsa_elen;         /* RSA exponent (big-endian, minimal) */
+    const uint8_t *serial; int seriallen;       /* serialNumber INTEGER content (OCSP CertID) */
+    const uint8_t *spki_key; int spki_keylen;   /* subjectPublicKey BIT STRING contents,
+                                                 * unused-bits octet stripped. This is the
+                                                 * exact preimage RFC 6960 4.1.1 hashes for
+                                                 * issuerKeyHash -- NOT the whole SPKI. */
+    int   eku_ocsp_signing;                     /* extKeyUsage contains id-kp-OCSPSigning */
     const uint8_t *subject; int subjectlen;     /* raw DER of Subject Name */
     const uint8_t *issuer; int issuerlen;       /* raw DER of Issuer Name */
     const char *cn; int cnlen;                  /* leaf CN (for name check) */

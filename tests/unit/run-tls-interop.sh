@@ -83,6 +83,28 @@ mkca   ca521 "LogitOS Interop P-521 CA" secp521r1
 cp "$TMP/ca521.pem" "$TMP/roots/interop_ca521.pem"
 mkleaf p521 ec521 localhost             ca521
 
+# --- OCSP staples about the `ec` leaf, from a real `openssl ocsp` responder --
+# Two of them: one saying good, one saying revoked. The revoked one is the
+# point of the whole exercise -- before stapling, a revoked certificate
+# verified exactly as well as a good one, and there was no test that could tell
+# the difference because there was no difference.
+#
+# index.txt is written by hand rather than grown with `openssl ca`, because the
+# leaves here are made with `x509 -req` and never touch a CA database. The
+# responder only looks up the SERIAL; the expiry column is a far-future
+# constant and the DN column is not consulted at all.
+EC_SERIAL="$("$OPENSSL" x509 -in "$TMP/ec.pem" -noout -serial | cut -d= -f2)"
+printf 'V	351231235959Z		%s	unknown	/CN=localhost
+' "$EC_SERIAL" > "$TMP/ocsp_index_good.txt"
+printf 'R	351231235959Z	250101000000Z	%s	unknown	/CN=localhost
+' "$EC_SERIAL" > "$TMP/ocsp_index_rev.txt"
+"$OPENSSL" ocsp -issuer "$TMP/ca.pem" -cert "$TMP/ec.pem" -reqout "$TMP/ocsp_req.der" -no_nonce >/dev/null 2>&1
+for v in good rev; do
+    "$OPENSSL" ocsp -index "$TMP/ocsp_index_$v.txt" -CA "$TMP/ca.pem"         -rsigner "$TMP/ca.pem" -rkey "$TMP/ca.key" -reqin "$TMP/ocsp_req.der"         -respout "$TMP/staple_$v.der" -no_nonce -ndays 2 >/dev/null 2>&1
+done
+HAVE_STAPLE=0
+[ -s "$TMP/staple_good.der" ] && [ -s "$TMP/staple_rev.der" ] && HAVE_STAPLE=1
+
 # ------------------------------------------------------ build the test client
 # Trust: a bundle holding exactly the throwaway CA. roots.c reaches its bundle
 # with a quoted #include, and a quoted include resolves against the INCLUDING
@@ -104,7 +126,7 @@ INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
       -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
       -I$ROOT/c/kernel/cpu"
 SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c $ROOT/c/net/tls/tls_psk.c \
-     $ROOT/c/net/tls/x509.c $TMP/roots_test.c $ROOT/c/kernel/cpu/cpufeat.c \
+     $ROOT/c/net/tls/x509.c $ROOT/c/net/tls/ocsp.c $TMP/roots_test.c $ROOT/c/kernel/cpu/cpufeat.c \
      $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" -name '*.c')"
 # ASan+UBSan: this binary parses adversarial-shaped input (certificates, records)
 # with the same code the kernel runs, so it is the cheapest place to catch a
@@ -266,6 +288,34 @@ echo
 # and we failed at CertificateVerify -- so these two cases FAIL on the parent
 # commit and pass here. That is the whole claim, and it is checkable by running
 # this block against the previous build.
+# --- OCSP stapling ---------------------------------------------------------
+# The reachability proof for c/net/tls/ocsp.c: the unit test feeds it DER
+# directly, and these two prove the TLS wiring around it -- that the
+# status_request extension makes openssl staple at all, that the response is
+# found in the CertificateEntry extension where TLS 1.3 puts it, and that its
+# verdict reaches the handshake result. Without the second case the first one
+# passes on a client that ignores the staple completely.
+SECTION="ocsp"
+echo "-- OCSP stapling --"
+if [ "$HAVE_STAPLE" = 1 ]; then
+    # shellcheck disable=SC2086
+    case_run "OCSP staple: good"     0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519              -status_file "$TMP/staple_good.der" --
+    # shellcheck disable=SC2086
+    case_run "OCSP staple: REVOKED is refused" 0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519              -status_file "$TMP/staple_rev.der" -- --expect-fail
+    # A staple whose bytes were changed: the signature must notice, and a
+    # response we cannot verify must be fatal rather than treated as absent.
+    head -c 400 "$TMP/staple_good.der" > "$TMP/staple_trunc.der" 2>/dev/null
+    dd if="$TMP/staple_good.der" of="$TMP/staple_bad.der" status=none 2>/dev/null
+    printf 'X' | dd of="$TMP/staple_bad.der" bs=1 seek=60 conv=notrunc status=none 2>/dev/null
+    # shellcheck disable=SC2086
+    case_run "OCSP staple: tampered is refused" 0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519              -status_file "$TMP/staple_bad.der" -- --expect-fail
+    # and no staple at all is still fine -- see the policy in ocsp.h
+    # shellcheck disable=SC2086
+    case_run "no OCSP staple still connects" 0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519 --
+else
+    echo "SKIP: this openssl could not produce an OCSP response"
+fi
+
 SECTION="p521"
 echo
 echo "-- P-521 certificates --"

@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "tls.h"
 #include "tls_int.h"
+#include "ocsp.h"
 #include "tcp.h"
 #include "net.h"
 #include "pit.h"
@@ -414,6 +415,26 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
      * and some 1.2 servers do enforce that. */
     n += put_u16(ch + n, EXT_EC_FORMATS); n += put_u16(ch + n, 2);
     ch[n++] = 1; ch[n++] = 0;
+
+    /* status_request (RFC 6066 8) -- "staple me an OCSP response".
+     *
+     * CertificateStatusRequest = status_type(1) = ocsp,
+     *                            responder_id_list(2) = empty,
+     *                            request_extensions(2) = empty.
+     * Both lists are empty because both are meaningless to a client that does
+     * not run its own OCSP query: naming a responder would only let a server
+     * decline, and the one extension worth sending (a nonce) cannot be used
+     * with a STAPLED response, which is by construction pre-fetched and shared
+     * between connections.
+     *
+     * Sending this costs 9 bytes and changes nothing when the server does not
+     * staple. What it buys is in verify_flight: a revoked certificate now fails
+     * the handshake instead of being trusted. See c/net/tls/ocsp.h for the
+     * policy, including why a MISSING staple is still accepted. */
+    n += put_u16(ch + n, EXT_STATUS_REQUEST); n += put_u16(ch + n, 5);
+    ch[n++] = 1;                                        /* status_type = ocsp */
+    n += put_u16(ch + n, 0);                            /* responder_id_list */
+    n += put_u16(ch + n, 0);                            /* request_extensions */
 
     /* extended_master_secret (RFC 7627), empty. In TLS 1.2 the plain master
      * secret is derived from the two randoms only, which lets an attacker who
@@ -896,6 +917,52 @@ int tls_check_chain(struct tls_sess *s, const struct cert *chain, int ncert)
     return 0;
 }
 
+/* The stapled-OCSP decision, shared by both protocol versions (TLS 1.3 carries
+ * the response in a CertificateEntry extension, TLS 1.2 in a CertificateStatus
+ * message; the bytes and the verdict are identical).
+ *
+ * Read c/net/tls/ocsp.h for the policy. The asymmetry implemented here is the
+ * whole of it: a MISSING staple is fine, a PRESENT one that does not check out
+ * is fatal. Anything else lets an attacker turn "revoked" into "absent" by
+ * corrupting a byte.
+ *
+ * The one case that is neither: a flight with no issuer certificate in it. An
+ * OCSP CertID is hashes of the ISSUER's name and key, so without the issuer
+ * there is nothing to match against -- we cannot say the response is good and
+ * we cannot say it is bad. That is logged and the handshake continues, which is
+ * the same treatment as no staple at all, because it is the same amount of
+ * information. It happens only for a leaf signed directly by a root, which no
+ * public CA does. */
+int tls_check_staple(struct tls_sess *s, const struct cert *chain, int ncert,
+                     const uint8_t *staple, int staplelen)
+{
+#ifdef LOGIT_OCSP_BREAK_IGNORE
+    /* NEGATIVE CONTROL (test-ocsp-control). Accept whatever was stapled without
+     * looking at it -- which is not a strawman, it is what this stack did up to
+     * now and what a client that merely SENDS status_request does. Every other
+     * test in the tree is blind to it: the chain still verifies, the handshake
+     * still completes, the site still loads. The only case that can see it is
+     * the one where the response says REVOKED, which is why that case exists. */
+    (void)chain; (void)ncert; (void)staple; (void)staplelen;
+    return 0;
+#endif
+    if (!staple || staplelen <= 0) return 0;          /* no staple: proceed */
+    if (ncert < 2) {
+        kprintf("[tls] %s stapled an OCSP response but sent no issuer -- not checked\n", s->host);
+        return 0;
+    }
+    /* 300 s of skew: this machine's clock is a CMOS RTC read at boot, and a
+     * response that is five minutes out of step is a clock problem, not a
+     * revocation. */
+    int rc = ocsp_check(staple, staplelen, &chain[0], &chain[1], s->now, 300);
+    if (rc == OCSP_OK) {
+        kprintf("[tls] OCSP staple: good (%s)\n", s->host);
+        return 0;
+    }
+    kprintf("[tls] OCSP staple REFUSED for %s: %s (%d)\n", s->host, ocsp_strerror(rc), rc);
+    return TLS_E_CERT;
+}
+
 /* Walk the buffered flight and verify it. 0 ok, negative TLS_E_*. */
 static int verify_flight(struct tls_sess *s)
 {
@@ -905,6 +972,9 @@ static int verify_flight(struct tls_sess *s)
      * finish inside one tls_step() call and never yields. */
     static struct cert chain[8];
     int ncert = 0;
+    /* The stapled OCSP response, if the server sent one. It points INTO
+     * s->hsbuf, which outlives this function's use of it. */
+    const uint8_t *staple = 0; int staplelen = 0;
     /* Hash through Certificate. Zeroed so that a CertificateVerify arriving
      * before any Certificate fails verification rather than reading garbage. */
     uint8_t th_cert[32] = { 0 };
@@ -945,6 +1015,7 @@ static int verify_flight(struct tls_sess *s)
             int listlen = (mb[cp] << 16) | (mb[cp+1] << 8) | mb[cp+2]; cp += 3;
             int cend = cp + listlen;
             if (cend > ml) return TLS_E_PROTO;
+            int entry = 0;
             while (cp + 3 <= cend && ncert < 8) {
                 int clen = (mb[cp] << 16) | (mb[cp+1] << 8) | mb[cp+2]; cp += 3;
                 if (cp + clen + 2 > cend) return TLS_E_PROTO;
@@ -955,7 +1026,34 @@ static int verify_flight(struct tls_sess *s)
                 cp += clen;
                 int extl = (mb[cp] << 8) | mb[cp+1]; cp += 2;
                 if (cp + extl > cend) return TLS_E_PROTO;
+                /* CertificateEntry extensions. TLS 1.3 moved the stapled OCSP
+                 * response HERE, per-certificate (RFC 8446 4.4.2.1), rather
+                 * than into the separate CertificateStatus message TLS 1.2
+                 * uses -- so a 1.3 client that only knows the 1.2 shape sees no
+                 * staple on any connection and never notices. Only the FIRST
+                 * entry's is read: a response about an intermediate says
+                 * nothing about whether the leaf's key was stolen, and the leaf
+                 * is the certificate whose revocation matters. */
+                if (entry == 0 && extl >= 4) {
+                    int ep = cp, eend = cp + extl;
+                    while (ep + 4 <= eend) {
+                        int et = (mb[ep] << 8) | mb[ep+1];
+                        int el = (mb[ep+2] << 8) | mb[ep+3];
+                        ep += 4;
+                        if (ep + el > eend) break;
+                        /* CertificateStatus: status_type(1) + response<1..2^24-1> */
+                        if (et == EXT_STATUS_REQUEST && el >= 4 && mb[ep] == 1) {
+                            int rl = (mb[ep+1] << 16) | (mb[ep+2] << 8) | mb[ep+3];
+                            if (rl > 0 && 4 + rl <= el) {
+                                staple = mb + ep + 4;
+                                staplelen = rl;
+                            }
+                        }
+                        ep += el;
+                    }
+                }
                 cp += extl;
+                entry++;
             }
             transcript_hash(&s->th, th_cert);
         } else if (mt == HS_CERT_VERIFY) {
@@ -1050,7 +1148,11 @@ static int verify_flight(struct tls_sess *s)
         return 0;
     }
 
-    return tls_check_chain(s, chain, ncert);
+    {
+        int cr = tls_check_chain(s, chain, ncert);
+        if (cr != 0) return cr;
+    }
+    return tls_check_staple(s, chain, ncert, staple, staplelen);
 }
 
 /* Does the buffered flight end with a complete Finished? */

@@ -370,6 +370,7 @@ static int process_flight(struct tls_sess *s)
     static struct cert chain[8];
     int ncert = 0;
     const uint8_t *ske = 0; int skelen = 0;
+    const uint8_t *staple = 0; int staplelen = 0;
     const uint8_t *flight = s->hsbuf;
     int flen = s->hslen, q = 0;
 
@@ -397,6 +398,14 @@ static int process_flight(struct tls_sess *s)
                 if (pr == 0) ncert++;
                 cp += clen;
             }
+        } else if (mt == HS_CERT_STATUS) {
+            /* TLS 1.2 puts the stapled OCSP response in its OWN handshake
+             * message (RFC 6066 8) rather than in a certificate extension the
+             * way 1.3 does. Same DER, same verdict -- see tls_check_staple. */
+            if (ml >= 4 && mb[0] == 1) {
+                int rl = (mb[1] << 16) | (mb[2] << 8) | mb[3];
+                if (rl > 0 && 4 + rl <= ml) { staple = mb + 4; staplelen = rl; }
+            }
         } else if (mt == HS_SERVER_KX) {
             ske = mb; skelen = ml;
         } else if (mt == HS_CERT_REQUEST) {
@@ -412,6 +421,8 @@ static int process_flight(struct tls_sess *s)
 
     /* --- the certificate chain --- */
     int cr = tls_check_chain(s, chain, ncert);
+    if (cr) return cr;
+    cr = tls_check_staple(s, chain, ncert, staple, staplelen);
     if (cr) return cr;
     if (sp.need_ecdsa_cert && chain[0].key_type != KEY_EC) {
         /* ECDHE_ECDSA with an RSA leaf (or vice versa) is a server contradicting

@@ -63,6 +63,10 @@ int x509_ec_flen(int curve) { return (curve + 7) / 8; }
 static const uint8_t OID_CN[]           = {0x55,0x04,0x03};
 static const uint8_t OID_SAN[]          = {0x55,0x1d,0x11};
 static const uint8_t OID_BC[]           = {0x55,0x1d,0x13};     /* basicConstraints */
+static const uint8_t OID_EKU[]          = {0x55,0x1d,0x25};     /* extKeyUsage 2.5.29.37 */
+/* id-kp-OCSPSigning 1.3.6.1.5.5.7.3.9 -- the ONLY thing that lets a certificate
+ * other than the issuer itself answer for the issuer's revocations. */
+static const uint8_t OID_KP_OCSP[]      = {0x2b,0x06,0x01,0x05,0x05,0x07,0x03,0x09};
 
 static int oid_eq(const uint8_t *o, int olen, const uint8_t *want, int wlen)
 { return olen == wlen && memcmp(o, want, wlen) == 0; }
@@ -119,6 +123,9 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
     out->cn = 0; out->cnlen = 0; out->san = 0; out->sanlen = 0;
     out->san_err = 0; out->tbs_sig_alg = 0; out->tbs_sig_alglen = 0;
     out->is_ca = 0;                                      /* BasicConstraints cA (default FALSE) */
+    out->serial = 0; out->seriallen = 0;
+    out->spki_key = 0; out->spki_keylen = 0;
+    out->eku_ocsp_signing = 0;
 
     struct der top, cert;
     top.p = der; top.end = der + len;
@@ -134,6 +141,11 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
     int tag, clen; const uint8_t *c;
     if (tbs.p < tbs.end && tbs.p[0] == 0xA0) { if (der_tlv(&tbs,&tag,&c,&clen)) return X509_E_PARSE; } /* version */
     if (der_tlv(&tbs,&tag,&c,&clen)) return X509_E_PARSE;        /* serial */
+    /* The serial's CONTENT bytes, exactly as encoded -- leading zero and all.
+     * OCSP CertID compares serialNumber as a DER INTEGER, so stripping a
+     * leading 0x00 here would make a positive serial with a high top bit fail
+     * to match its own response. */
+    out->serial = c; out->seriallen = clen;
     /* signature algorithm (inside tbs): keep the raw TLV so the outer
      * signatureAlgorithm can be required to match it (RFC 5280 4.1.1.2) */
     { struct der sa; struct der t=tbs; const uint8_t *s = t.p;
@@ -175,10 +187,12 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
           const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE; /* BIT STRING */
           if (bl < 2 || bs[0] != 0) return X509_E_PARSE;         /* 0 unused bits */
           out->pub = bs + 1; out->publen = bl - 1;               /* 04||X||Y */
+          out->spki_key = bs + 1; out->spki_keylen = bl - 1;
       } else if (oid_eq(oc,ol,OID_RSA_ENC,sizeof OID_RSA_ENC)) {
           out->key_type = KEY_RSA;
           const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE; /* BIT STRING */
           if (bl < 2 || bs[0] != 0) return X509_E_PARSE;         /* 0 unused bits */
+          out->spki_key = bs + 1; out->spki_keylen = bl - 1;
           struct der pk; pk.p = bs + 1; pk.end = bs + bl;        /* RSAPublicKey */
           struct der rsa; if (der_enter(&pk,0x30,&rsa)) return X509_E_PARSE;
           const uint8_t *nc; int nl; if (der_tlv(&rsa,&g,&nc,&nl)) return X509_E_PARSE;  /* modulus */
@@ -210,6 +224,24 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
                       if (ex.p < ex.end && ex.p[0]==0x01) { if (der_tlv(&ex,&vg,&vo,&vl)) { out->san_err = 1; break; } }
                       if (der_tlv(&ex,&vg,&vo,&vl)) { out->san_err = 1; break; }  /* OCTET STRING value */
                       if (oid_eq(eo,eol,OID_SAN,sizeof OID_SAN)) { out->san=vo; out->sanlen=vl; }
+                      if (oid_eq(eo,eol,OID_EKU,sizeof OID_EKU)) {
+                          /* extKeyUsage ::= SEQUENCE OF KeyPurposeId. Only one
+                           * purpose is read here: a DELEGATED OCSP responder
+                           * must carry id-kp-OCSPSigning (RFC 6960 4.2.2.2), and
+                           * without that check any certificate the CA ever
+                           * issued -- including an ordinary server leaf -- could
+                           * sign "good" for a revoked sibling. */
+                          struct der ekd; ekd.p = vo; ekd.end = vo + vl;
+                          struct der ek;
+                          if (der_enter(&ekd, 0x30, &ek) == 0) {
+                              while (ek.p < ek.end) {
+                                  int g4; const uint8_t *ko; int kl;
+                                  if (der_tlv(&ek,&g4,&ko,&kl)) break;
+                                  if (g4 == 0x06 && oid_eq(ko,kl,OID_KP_OCSP,sizeof OID_KP_OCSP))
+                                      out->eku_ocsp_signing = 1;
+                              }
+                          }
+                      }
                       if (oid_eq(eo,eol,OID_BC,sizeof OID_BC)) {
                           /* BasicConstraints: SEQ { cA BOOLEAN DEFAULT FALSE, pathLen INTEGER OPT } */
                           struct der bcd; bcd.p = vo; bcd.end = vo + vl;
