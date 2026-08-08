@@ -649,7 +649,8 @@ static void syscall_do(struct registers *r)
         struct logit_sockaddr a;
         if (!f || !user_range_ok((const void *)r->rsi, sizeof a, 0))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        memcpy(&a, (const void *)r->rsi, sizeof a);
+        a = *(const struct logit_sockaddr *)r->rsi;   /* struct assignment: no
+                                     * libc memcpy is declared in this TU */
         r->rax = (uint64_t)(long)lsock_bind(f, &a);
         return;
     }
@@ -677,7 +678,7 @@ static void syscall_do(struct registers *r)
          * thing the caller cannot clean up itself. */
         int fd = proc_fd_alloc(p, cf);
         if (fd < 0) { file_close(cf); r->rax = (uint64_t)(long)LSK_E_FULL; return; }
-        if (want_peer) memcpy((void *)r->rsi, &peer, sizeof peer);
+        if (want_peer) *(struct logit_sockaddr *)r->rsi = peer;
         r->rax = (uint64_t)(long)fd;
         return;
     }
@@ -688,7 +689,7 @@ static void syscall_do(struct registers *r)
         if (!f || !user_range_ok((void *)r->rsi, sizeof a, 1))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         int rc = lsock_getsockname(f, &a);
-        if (rc == 0) memcpy((void *)r->rsi, &a, sizeof a);
+        if (rc == 0) *(struct logit_sockaddr *)r->rsi = a;
         r->rax = (uint64_t)(long)rc;
         return;
     }
@@ -716,20 +717,28 @@ static void syscall_do(struct registers *r)
         /* recvfrom writes the sender back into the caller's struct; sendto only
          * reads it. Checking for write access on both would refuse a sendto
          * from a read-only mapping, which is legal. */
-        if (!f || !user_range_ok((void *)r->rsi, sizeof d, n == SYS_RECVFROM))
+        if (!f || !user_range_ok((void *)r->rsi, sizeof d, r->rax == SYS_RECVFROM))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        memcpy(&d, (const void *)r->rsi, sizeof d);
+        d = *(const struct logit_dgram *)r->rsi;
         if (d.len < 0 || d.flags != 0)
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        int writing = (n == SYS_RECVFROM);
+        int writing = (r->rax == SYS_RECVFROM);
         if (d.len > 0 && !user_range_ok(d.buf, (uint64_t)d.len, writing))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        /* struct logit_dgram carries the address flattened (gen_abi.py lays out
+         * scalars only); lsock takes it as a struct logit_sockaddr. Same three
+         * fields, converted here so exactly one of the two shapes is public. */
+        struct logit_sockaddr sa;
+        sa.family = d.family; sa.port = d.port; sa.addr = d.addr;
         long rc;
-        if (n == SYS_RECVFROM) {
-            rc = lsock_recvfrom(f, d.buf, d.len, &d.addr);
-            if (rc > 0) memcpy((void *)r->rsi, &d, sizeof d);   /* the sender */
+        if (r->rax == SYS_RECVFROM) {
+            rc = lsock_recvfrom(f, d.buf, d.len, &sa);
+            if (rc > 0) {                                       /* the sender */
+                d.family = sa.family; d.port = sa.port; d.addr = sa.addr;
+                *(struct logit_dgram *)r->rsi = d;
+            }
         } else {
-            rc = lsock_sendto(f, d.buf, d.len, &d.addr);
+            rc = lsock_sendto(f, d.buf, d.len, &sa);
         }
         r->rax = (uint64_t)rc;
         return;

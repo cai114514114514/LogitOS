@@ -1594,10 +1594,20 @@ struct logit_sockaddr {
  * registers because the kernel takes at most three arguments after the call
  * number and a datagram needs buffer, length and address. */
 struct logit_dgram {
-    void                 *buf;
-    int                   len;      /* capacity on recv, byte count on send */
-    int                   flags;    /* reserved, must be 0 */
-    struct logit_sockaddr addr;     /* filled on recv, the destination on send */
+    /* `unsigned char *` rather than `void *`: tools/gen_abi.py parses this
+     * header to generate AetherScript's view of it and refuses a type it cannot
+     * lay out rather than guessing. A byte pointer is what the buffer is. */
+    unsigned char *buf;
+    int            len;         /* capacity on recv, byte count on send */
+    int            flags;       /* reserved, must be 0 */
+    /* The peer, spelled out rather than an embedded struct logit_sockaddr --
+     * same three fields at the same offsets, but gen_abi.py lays out scalars
+     * and byte arrays only and refuses a nested struct rather than guessing at
+     * its padding. Flattening is the change that costs a caller nothing. */
+    unsigned short family;      /* LOGIT_AF_INET */
+    unsigned short port;        /* host order; the sender on recv, the
+                                 * destination on send */
+    unsigned int   addr;        /* host order */
 };
 
 /* setsockopt levels and options. */

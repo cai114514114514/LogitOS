@@ -5,7 +5,10 @@
 #include "net.h"
 #include "pit.h"
 #include "rng.h"
-#include "wait.h"   /* M27 wait queues: how a blocking accept() parks. The host
+/* Path-qualified for the reason c/kernel/exec/file.c documents: mini-libc
+ * ships a sys/wait.h whose directory sorts earlier in INCDIRS, so the bare
+ * form resolves to the userland header and fails somewhere else entirely. */
+#include "kernel/core/wait.h"   /* M27 wait queues: how a blocking accept() parks. The host
                      * unit test resolves this to tests/unit/tcpstub/wait.h,
                      * which has no scheduler to park on and no need for one. */
 
@@ -226,6 +229,23 @@ static struct tcp_listener listeners[NLISTEN];
  * the limit fired instead of asserting the machine did not crash. */
 static uint32_t st_syn_recv, st_accepted, st_refused_backlog,
                 st_refused_slots, st_refused_noport;
+
+/* ONE wait queue for "something moved on some connection", not one per
+ * connection, and the honest description of what it is:
+ *
+ * A blocked reader's condition -- rx_len, peer_fin, used -- lives under
+ * net_lock, not under this queue's lock, so this does NOT satisfy rule 2 in
+ * c/kernel/core/wait.h and a wake CAN in principle be missed. THE DEADLINE IS
+ * THE CORRECTNESS MECHANISM AND THE WAKE IS THE FAST PATH: every wait here is a
+ * wait_event_timeout, so a missed wake costs latency, bounded and small, and
+ * can never hang a thread. Doing it the other way round -- moving the receive
+ * state under this lock -- would mean the RX softirq taking a second lock on
+ * every segment, on the path that has to keep up with the wire.
+ *
+ * Global rather than per-connection because a conn slot is already ~161 KiB and
+ * because the herd it can wake is bounded by the thread ceiling this ABI
+ * documents (about thirteen per process), not by NCONN. */
+static struct waitq rx_wq = WAITQ_INIT;
 
 struct tcp_hdr {
     uint16_t sport, dport;
@@ -1058,6 +1078,10 @@ static void conn_closed(struct tcp_conn *c)
      * is closed. */
     if (!c->in_backlog)
         c->used = 0;
+    /* A connection dying is exactly as much an event to a blocked reader as a
+     * byte arriving: without this it would sit out its whole deadline before
+     * noticing the peer is gone. */
+    waitq_wake_all(&rx_wq);
 }
 
 /* ------------------------------------------------------------ passive open */
@@ -1513,6 +1537,12 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
     }
 
     if (c->used) tcp_output(c);
+
+    /* Whatever just happened -- bytes delivered, a FIN, an ACK that freed send
+     * ring space, a connection dying -- is the event some thread parked in
+     * read() or write() is waiting for. One wake for all of them; each re-tests
+     * its own condition and goes back to sleep if it was not the one. */
+    waitq_wake_all(&rx_wq);
 }
 
 void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
@@ -2085,6 +2115,34 @@ void tcp_shutdown_write(int id)
         tcp_output(c);
     }
     net_unlock(f);
+}
+
+/* Park until this connection has bytes to read (or has finished), or `ms`
+ * elapses. Returns what tcp_available() would: >0 readable, 0 nothing yet,
+ * -1 finished. See rx_wq above for why the deadline, not the wake, is what
+ * makes this correct. */
+int tcp_wait_readable(int id, unsigned ms)
+{
+    int ok = 0;
+    wait_event_timeout(&rx_wq, tcp_available(id) != 0, ms, ok);
+    (void)ok;
+    return tcp_available(id);
+}
+
+/* The same for the other direction: park until the send ring has room. A
+ * server writing a response bigger than SNDBUF blocks here rather than
+ * spinning on a short write, and what wakes it is the peer's ACK. Returns 1 if
+ * there is room, 0 on timeout, -1 if the connection cannot take data at all. */
+int tcp_wait_writable(int id, unsigned ms)
+{
+    if (id < 0 || id >= NCONN) return -1;
+    struct tcp_conn *c = &conns[id];
+    int ok = 0;
+    wait_event_timeout(&rx_wq,
+        !c->used || (c->state != ESTABLISHED && c->state != CLOSE_WAIT) ||
+        (c->snd_end - c->snd_una) < (uint32_t)SNDBUF, ms, ok);
+    if (!c->used || (c->state != ESTABLISHED && c->state != CLOSE_WAIT)) return -1;
+    return (c->snd_end - c->snd_una) < (uint32_t)SNDBUF ? 1 : 0;
 }
 
 void tcp_server_stats(struct tcp_server_stats *s)

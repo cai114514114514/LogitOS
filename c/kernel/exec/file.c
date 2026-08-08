@@ -17,6 +17,15 @@
 
 void *memcpy(void *, const void *, size_t);
 
+/* The F_SOCK backend lives in c/net/core/lsock.c. WEAK on purpose: file.c is
+ * linked into host test binaries that have no network stack at all, and a hard
+ * reference would make every one of them fail to link over a type they never
+ * create. NULL here means "this build has no sockets", which read/write already
+ * report as -1. */
+long lsock_file_read(struct file *f, void *buf, long len) __attribute__((weak));
+long lsock_file_write(struct file *f, const void *buf, long len) __attribute__((weak));
+void lsock_file_release_backing(void *backing) __attribute__((weak));
+
 /* --------------------------------------------------------------------------
  * WHAT THE CONSOLE WAIT COSTS.
  *
@@ -236,7 +245,7 @@ struct file *file_alloc(void)
         }
     }
     if (inuse > g_file_hiwater) g_file_hiwater = inuse;
-    int census_vfs = 0, census_pipe = 0, census_tty = 0, census_other = 0;
+    int census_vfs = 0, census_pipe = 0, census_tty = 0, census_sock = 0, census_other = 0;
     long nth = 0;
     if (!f) {
         /* The table is full. Say WHAT is in it: a leak and honest load are
@@ -250,6 +259,7 @@ struct file *file_alloc(void)
             case F_VFS:  census_vfs++;   break;
             case F_PIPE: census_pipe++;  break;
             case F_TTY:  census_tty++;   break;
+            case F_SOCK: census_sock++;  break;
             default:     census_other++; break;
             }
         }
@@ -258,8 +268,8 @@ struct file *file_alloc(void)
 
     if (!f && (nth & (nth - 1)) == 0)        /* 1, 2, 4, 8, ... */
         kprintf("[file] table exhausted (%ld total): %d/%d used -- "
-                "vfs=%d pipe=%d tty=%d free-but-typed=%d\n",
-                nth, NFILE, NFILE, census_vfs, census_pipe, census_tty, census_other);
+                "vfs=%d pipe=%d tty=%d sock=%d free-but-typed=%d\n",
+                nth, NFILE, NFILE, census_vfs, census_pipe, census_tty, census_sock, census_other);
     return f;
 }
 
@@ -376,6 +386,7 @@ long file_read(struct file *f, void *buf, long len)
     }
     if (f->type == F_PIPE) return pipe_read(f, buf, len);
     if (f->type == F_TTY)  return tty_read(f, buf, len);
+    if (f->type == F_SOCK) return lsock_file_read ? lsock_file_read(f, buf, len) : -1;
     return -1;
 }
 
@@ -395,6 +406,7 @@ long file_write(struct file *f, const void *buf, long len)
     }
     if (f->type == F_PIPE) return pipe_write(f, buf, len);
     if (f->type == F_TTY)  return tty_write(f, buf, len);
+    if (f->type == F_SOCK) return lsock_file_write ? lsock_file_write(f, buf, len) : -1;
     return -1;
 }
 
@@ -481,6 +493,12 @@ void file_close(struct file *f)
         if (dirty && path[0])
             vfs_write(path, backing ? backing : "", (int)size);
         if (backing) kfree(backing);
+    } else if (type == F_SOCK) {
+        /* The socket state is lsock.c's, and the LAST close is what releases the
+         * listener/connection underneath -- so a dup'd or forked socket fd stays
+         * live until every copy is gone, exactly like every other type here.
+         * f->backing was cleared above, hence the local copy. */
+        if (lsock_file_release_backing) lsock_file_release_backing(backing);
     } else if (type == F_PIPE) {
         struct pipe *p = (struct pipe *)backing;
         if (p) {

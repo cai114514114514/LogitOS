@@ -145,6 +145,15 @@ void tcp_listen_close_owner(int pid);
 /* Peer address/port of an accepted connection (getpeername). 0 on success. */
 int  tcp_peer(int id, uint32_t *ip, uint16_t *port);
 
+/* Park the calling thread until the connection is readable/writable, or `ms`
+ * elapses. tcp_wait_readable returns what tcp_available() would; the write side
+ * returns 1 room / 0 timeout / -1 dead. Both are wait-queue parks, not spins --
+ * but the deadline, not the wake, is what makes them correct (the receive state
+ * lives under net_lock, not under the queue's lock), so a missed wake costs
+ * bounded latency and never a hang. */
+int  tcp_wait_readable(int id, unsigned ms);
+int  tcp_wait_writable(int id, unsigned ms);
+
 /* shutdown(fd, SHUT_WR): send the FIN, keep receiving. Unlike tcp_close this
  * does not give the connection up -- the peer's reply still arrives. */
 void tcp_shutdown_write(int id);

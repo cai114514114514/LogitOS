@@ -242,6 +242,21 @@ Sigctx = layout("logit_sigctx", 192, [
     ["fpstate", 184, 8, "u"]
 ])
 
+Sockaddr = layout("logit_sockaddr", 8, [
+    ["family", 0, 2, "u"],
+    ["port", 2, 2, "u"],
+    ["addr", 4, 4, "u"]
+])
+
+Dgram = layout("logit_dgram", 24, [
+    ["buf", 0, 8, "p"],
+    ["len", 8, 4, "i"],
+    ["flags", 12, 4, "i"],
+    ["family", 16, 2, "u"],
+    ["port", 18, 2, "u"],
+    ["addr", 20, 4, "u"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):

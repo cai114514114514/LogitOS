@@ -8,11 +8,18 @@
  *   F_VFS  -- a regular file; `backing` holds the whole file in a kmalloc buffer
  *             with an offset cursor (P2). Avoids touching logitfs block logic.
  *   F_PIPE -- an in-kernel ring buffer with two ends (P3).
- *   F_TTY  -- the serial console (P5).                                       */
+ *   F_TTY  -- the serial console (P5).
+ *   F_SOCK -- a network socket; `backing` is owned by c/net/core/lsock.c and
+ *             read/write/close dispatch into it. It is a type here, rather than
+ *             a separate handle table like the client sockets in
+ *             c/net/core/sock.c, because the point of an ACCEPTED connection is
+ *             being able to hand it to something: dup2 it onto a child's stdin,
+ *             inherit it across fork, pass it to a function that takes an fd.  */
 #define F_NONE 0
 #define F_VFS  1
 #define F_PIPE 2
 #define F_TTY  3
+#define F_SOCK 4
 
 struct file {
     int   type;

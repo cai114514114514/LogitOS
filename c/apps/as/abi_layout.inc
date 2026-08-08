@@ -719,3 +719,45 @@ _Static_assert(offsetof(struct logit_sigctx, fpstate) == 184,
                "abi.as is stale: logit_sigctx.fpstate moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_sigctx *)0)->fpstate) == 8,
                "abi.as is stale: logit_sigctx.fpstate changed width -- run tools/gen_abi.py --write");
+
+_Static_assert(sizeof(struct logit_sockaddr) == 8,
+               "abi.as is stale: sizeof(struct logit_sockaddr) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_sockaddr, family) == 0,
+               "abi.as is stale: logit_sockaddr.family moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_sockaddr *)0)->family) == 2,
+               "abi.as is stale: logit_sockaddr.family changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_sockaddr, port) == 2,
+               "abi.as is stale: logit_sockaddr.port moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_sockaddr *)0)->port) == 2,
+               "abi.as is stale: logit_sockaddr.port changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_sockaddr, addr) == 4,
+               "abi.as is stale: logit_sockaddr.addr moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_sockaddr *)0)->addr) == 4,
+               "abi.as is stale: logit_sockaddr.addr changed width -- run tools/gen_abi.py --write");
+
+_Static_assert(sizeof(struct logit_dgram) == 24,
+               "abi.as is stale: sizeof(struct logit_dgram) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_dgram, buf) == 0,
+               "abi.as is stale: logit_dgram.buf moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_dgram *)0)->buf) == 8,
+               "abi.as is stale: logit_dgram.buf changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_dgram, len) == 8,
+               "abi.as is stale: logit_dgram.len moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_dgram *)0)->len) == 4,
+               "abi.as is stale: logit_dgram.len changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_dgram, flags) == 12,
+               "abi.as is stale: logit_dgram.flags moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_dgram *)0)->flags) == 4,
+               "abi.as is stale: logit_dgram.flags changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_dgram, family) == 16,
+               "abi.as is stale: logit_dgram.family moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_dgram *)0)->family) == 2,
+               "abi.as is stale: logit_dgram.family changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_dgram, port) == 18,
+               "abi.as is stale: logit_dgram.port moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_dgram *)0)->port) == 2,
+               "abi.as is stale: logit_dgram.port changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_dgram, addr) == 20,
+               "abi.as is stale: logit_dgram.addr moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_dgram *)0)->addr) == 4,
+               "abi.as is stale: logit_dgram.addr changed width -- run tools/gen_abi.py --write");
