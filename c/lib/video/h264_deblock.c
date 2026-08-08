@@ -123,6 +123,54 @@ static int nz_raster(const mbinfo_t *m, int raster)
     return m->nz[to_z[raster & 15]];
 }
 
+/* Do two motion vectors differ by a whole luma sample or more in either
+ * component? That is the "greater than or equal to 4 in units of quarter luma
+ * samples" of 8.7.2.1. */
+static int mv_far(const int16_t *a, const int16_t *b)
+{
+    return iabs(a[0] - b[0]) >= 4 || iabs(a[1] - b[1]) >= 4;
+}
+
+/* The motion half of the bS derivation (8.7.2.1), for two 4x4 blocks that are
+ * both inter coded and both free of nonzero coefficients. Returns 1 or 0.
+ *
+ * P slices only ever get here with one motion vector per side, where the rule
+ * is the obvious one. B slices are where it stops being obvious: the spec
+ * compares the SET of reference pictures, not the pair of list indices, and
+ * when both sides predict from the same picture in BOTH lists it requires the
+ * two possible pairings to disagree before raising the strength -- a block
+ * whose L0 and L1 motion happen to be swapped relative to its neighbour is not
+ * a discontinuity. Testing only the like-for-like pairing filters edges that
+ * should be left alone, which is invisible except as a handful of wrong bytes
+ * along 4x4 boundaries in B frames. */
+static int bs_motion(const mbinfo_t *mp, int bp, const mbinfo_t *mq, int bq)
+{
+    int qp_ = region_of(bp & 3, bp >> 2), qq = region_of(bq & 3, bq >> 2);
+    int rp0 = mp->ref_pic[0][qp_], rp1 = mp->ref_pic[1][qp_];
+    int rq0 = mq->ref_pic[0][qq],  rq1 = mq->ref_pic[1][qq];
+    int np = (rp0 >= 0) + (rp1 >= 0), nq = (rq0 >= 0) + (rq1 >= 0);
+
+    if (np != nq) return 1;
+    if (np == 0) return 0;
+    if (np == 1) {
+        int lp = rp0 >= 0 ? 0 : 1, lq = rq0 >= 0 ? 0 : 1;
+        if ((lp ? rp1 : rp0) != (lq ? rq1 : rq0)) return 1;
+        return mv_far(mp->mv[lp][bp], mq->mv[lq][bq]) ? 1 : 0;
+    }
+    if (!((rp0 == rq0 && rp1 == rq1) || (rp0 == rq1 && rp1 == rq0)))
+        return 1;                       /* different pair of pictures */
+    if (rp0 != rp1) {                   /* two distinct pictures: pair them up */
+        const int16_t *q0 = (rp0 == rq0) ? mq->mv[0][bq] : mq->mv[1][bq];
+        const int16_t *q1 = (rp0 == rq0) ? mq->mv[1][bq] : mq->mv[0][bq];
+        return (mv_far(mp->mv[0][bp], q0) || mv_far(mp->mv[1][bp], q1)) ? 1 : 0;
+    }
+    /* the same picture in both lists on both sides: both pairings must differ */
+    return (mv_far(mp->mv[0][bp], mq->mv[0][bq]) ||
+            mv_far(mp->mv[1][bp], mq->mv[1][bq])) &&
+           (mv_far(mp->mv[0][bp], mq->mv[1][bq]) ||
+            mv_far(mp->mv[1][bp], mq->mv[0][bq])) ? 1 : 0;
+}
+
 /* --------------------------------------------------- bS derivation ------- */
 /* Derive the four segment boundary strengths of one luma edge of the current
  * MB (spec derivation of the content dependent boundary filtering strength).
@@ -151,16 +199,10 @@ static void luma_bs_vert(const mbinfo_t *mc, const mbinfo_t *mn,
             mp = mc; bp = i * 4 + (edge - 1);
             mq = mc; bq = i * 4 + edge;
         }
-        if (nz_raster(mp, bp) > 0 || nz_raster(mq, bq) > 0) {
+        if (nz_raster(mp, bp) > 0 || nz_raster(mq, bq) > 0)
             bs[i] = 2;
-        } else if (mp->ref_pic[region_of(bp & 3, bp >> 2)] !=
-                   mq->ref_pic[region_of(bq & 3, bq >> 2)] ||
-                   iabs(mp->mv[bp][0] - mq->mv[bq][0]) >= 4 ||
-                   iabs(mp->mv[bp][1] - mq->mv[bq][1]) >= 4) {
-            bs[i] = 1;
-        } else {
-            bs[i] = 0;
-        }
+        else
+            bs[i] = (uint8_t)bs_motion(mp, bp, mq, bq);
     }
 }
 
@@ -185,16 +227,10 @@ static void luma_bs_horz(const mbinfo_t *mc, const mbinfo_t *mn,
             mp = mc; bp = (edge - 1) * 4 + i;
             mq = mc; bq = edge * 4 + i;
         }
-        if (nz_raster(mp, bp) > 0 || nz_raster(mq, bq) > 0) {
+        if (nz_raster(mp, bp) > 0 || nz_raster(mq, bq) > 0)
             bs[i] = 2;
-        } else if (mp->ref_pic[region_of(bp & 3, bp >> 2)] !=
-                   mq->ref_pic[region_of(bq & 3, bq >> 2)] ||
-                   iabs(mp->mv[bp][0] - mq->mv[bq][0]) >= 4 ||
-                   iabs(mp->mv[bp][1] - mq->mv[bq][1]) >= 4) {
-            bs[i] = 1;
-        } else {
-            bs[i] = 0;
-        }
+        else
+            bs[i] = (uint8_t)bs_motion(mp, bp, mq, bq);
     }
 }
 
@@ -399,8 +435,16 @@ void h264_deblock_frame(uint8_t *y, uint8_t *u, uint8_t *v,
             int qpc_cr_cur = chroma_qp_tab[clip3(0, 51, qp_cur + c_off_cr)];
             uint8_t bs[4];
 
-            /* ---- four vertical edges: left boundary, then x = 4, 8, 12 -- */
-            for (int e = 0; e < 4; e++) {
+            /* A macroblock coded with the 8x8 transform has no transform
+             * boundary at x/y = 4 or 12, so those internal edges are not
+             * filtered at all (8.7, filterInternalEdgesFlag). Filtering them
+             * anyway smooths across the inside of an 8x8 transform block --
+             * every High-profile frame, every 8x8 macroblock, a small error
+             * everywhere rather than a large one somewhere. */
+            int step = mc->transform8x8 ? 2 : 1;
+
+            /* ---- vertical edges: left boundary, then x = 4, 8, 12 -- */
+            for (int e = 0; e < 4; e += step) {
                 int qp_e, qpc_cb, qpc_cr;
                 if (e == 0) {
                     const mbinfo_t *mn;
@@ -435,8 +479,8 @@ void h264_deblock_frame(uint8_t *y, uint8_t *u, uint8_t *v,
                 }
             }
 
-            /* ------ four horizontal edges: top boundary, then y = 4, 8, 12  */
-            for (int e = 0; e < 4; e++) {
+            /* ------ horizontal edges: top boundary, then y = 4, 8, 12  */
+            for (int e = 0; e < 4; e += step) {
                 int qp_e, qpc_cb, qpc_cr;
                 if (e == 0) {
                     const mbinfo_t *mn;

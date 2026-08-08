@@ -44,10 +44,74 @@ static uint8_t *read_all(const char *path, long *len)
     return b;
 }
 
+/* --pts: check that a caller value handed in with a picture comes back on
+ * that picture, however far out of decode order it is emitted. Each call into
+ * the decoder consumes at most one picture, so numbering the calls numbers the
+ * pictures in DECODE order; frames come out in DISPLAY order, so for a stream
+ * with B pictures the returned sequence must NOT be monotonic -- and every
+ * value handed in must come back exactly once. Pairing timestamps with a
+ * decode-order FIFO passes the second half of that and fails the first, which
+ * is precisely the bug this API replaces. */
+static int run_pts_check(const char *path)
+{
+    long len;
+    uint8_t *data = read_all(path, &len);
+    h264dec *d = h264_open();
+    long pos = 0;
+    int64_t call = 0;
+    static int64_t got[8192];
+    int n = 0, inversions = 0;
+    h264frame f;
+
+    for (;;) {
+        int gotf = 0, r;
+        if (pos < len) {
+            r = h264_decode_pts(d, data + pos, (int)(len - pos), call++, &f, &gotf);
+            if (r < 0) {
+                fprintf(stderr, "H264-PTS-FAIL: decode error %d\n", r);
+                return 1;
+            }
+            if (r == 0 && !gotf) break;
+            pos += r;
+        } else {
+            r = h264_flush(d, &f);
+            if (r <= 0) break;
+            gotf = 1;
+        }
+        if (!gotf) continue;
+        if (n >= (int)(sizeof got / sizeof got[0])) break;
+        if (f.pts == H264_NOPTS) {
+            fprintf(stderr, "H264-PTS-FAIL: frame %d carries no timestamp\n", n);
+            return 1;
+        }
+        if (n > 0 && f.pts < got[n - 1]) inversions++;
+        got[n++] = f.pts;
+    }
+    h264_close(d);
+    free(data);
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (got[i] == got[j]) {
+                fprintf(stderr, "H264-PTS-FAIL: value %ld returned twice\n",
+                        (long)got[i]);
+                return 1;
+            }
+        }
+    }
+    printf("H264-PTS-OK %d frames, %d emitted out of decode order (%s)\n",
+           n, inversions, path);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && strcmp(argv[1], "--pts") == 0) {
+        crc_init();
+        return run_pts_check(argv[2]);
+    }
     if (argc < 2 || argc > 3) {
-        fprintf(stderr, "usage: h264_test <stream.h264> [ref.yuv]\n");
+        fprintf(stderr, "usage: h264_test [--pts] <stream.h264> [ref.yuv]\n");
         return 1;
     }
     crc_init();

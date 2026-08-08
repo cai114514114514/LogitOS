@@ -250,6 +250,54 @@ void h264_mc_block(uint8_t *dst, int dst_stride,
     }
 }
 
+/* ------------------------------------------------------ bi-prediction --- */
+/* 8.4.2.3.1, the default: the rounded average of the two single-list
+ * predictions. Both inputs are already interpolated blocks, so this is the
+ * only place the two lists meet. */
+void h264_mc_bi_avg(uint8_t *dst, int dst_stride,
+                    const uint8_t *a, int as, const uint8_t *b, int bs,
+                    int w, int h)
+{
+    int r, c;
+    if (!dst || !a || !b) return;
+    if (!valid_size(w) || !valid_size(h)) return;
+    for (r = 0; r < h; r++)
+        for (c = 0; c < w; c++)
+            dst[r * dst_stride + c] =
+                (uint8_t)((a[r * as + c] + b[r * bs + c] + 1) >> 1);
+}
+
+/* 8.4.2.3.2 for the bi-predicted case. Explicit and implicit weighting differ
+ * only in where w0/w1/o0/o1 came from -- implicit derives them from the
+ * picture order counts and always uses logWD 5 with zero offsets -- so both
+ * land here.
+ *
+ * The shift is logWD + 1, not logWD: the two weights each carry a full
+ * denominator and the sum carries two. Using the single-list shift here is a
+ * factor-of-two error that a decoder still renders as a picture, just a
+ * blown-out one, and only on bi-predicted blocks. */
+void h264_mc_bi_weight(uint8_t *dst, int dst_stride,
+                       const uint8_t *a, int as, const uint8_t *b, int bs,
+                       int w, int h, int log2w,
+                       int w0, int w1, int o0, int o1)
+{
+    int r, c;
+    if (!dst || !a || !b) return;
+    if (!valid_size(w) || !valid_size(h)) return;
+    if (log2w < 0) log2w = 0; else if (log2w > 7) log2w = 7;
+    if (w0 < -128) w0 = -128; else if (w0 > 128) w0 = 128;
+    if (w1 < -128) w1 = -128; else if (w1 > 128) w1 = 128;
+    if (o0 < -255) o0 = -255; else if (o0 > 255) o0 = 255;
+    if (o1 < -255) o1 = -255; else if (o1 > 255) o1 = 255;
+
+    for (r = 0; r < h; r++)
+        for (c = 0; c < w; c++) {
+            int v = ((a[r * as + c] * w0 + b[r * bs + c] * w1
+                      + (1 << log2w)) >> (log2w + 1)) + ((o0 + o1 + 1) >> 1);
+            dst[r * dst_stride + c] = (uint8_t)clip1y(v);
+        }
+}
+
 void h264_mc_weight(uint8_t *dst, int stride, int w, int h,
                     int log2w, int weight, int offset)
 {

@@ -118,10 +118,10 @@ static int ref_bs(const mbinfo_t *mp, const mbinfo_t *mq, int boundary,
         /* Spec 8.7.2.1 compares the reference PICTURES, and its note says the
          * index position in the list must not be considered -- weighted
          * prediction deliberately puts one picture at several indices. */
-        if (mp->ref_pic[rp] != mq->ref_pic[rq])
+        if (mp->ref_pic[0][rp] != mq->ref_pic[0][rq])
             return 1;
-        if (riabs(mp->mv[bp][0] - mq->mv[bq][0]) >= 4 ||
-            riabs(mp->mv[bp][1] - mq->mv[bq][1]) >= 4)
+        if (riabs(mp->mv[0][bp][0] - mq->mv[0][bq][0]) >= 4 ||
+            riabs(mp->mv[0][bp][1] - mq->mv[0][bq][1]) >= 4)
             return 1;
     }
     return 0;
@@ -471,7 +471,7 @@ static void test_alpha_beta_pins(void)
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
     for (int i = 0; i < 2; i++) {
-        f.mb[i].type = i ? MB_I4x4 : MB_P_L0;   /* right intra -> bS 4 */
+        f.mb[i].type = i ? MB_I4x4 : MB_INTER;   /* right intra -> bS 4 */
         f.mb[i].qp = 26;
     }
     /* line 0: |p0-q0| = 14 < alpha(15) -> filtered, small branch:
@@ -514,7 +514,7 @@ static void test_tc0_pins(void)
         frame_alloc(&f, 2, 1, 8, 8);
         fill_plane_y(&f, 0, 128);
         for (int i = 0; i < 2; i++) {
-            f.mb[i].type = MB_P_L0;
+            f.mb[i].type = MB_INTER;
             f.mb[i].qp = (int8_t)cases[c].qp;
         }
         f.mb[1].nz[0] = 5;                    /* right MB, left column -> bS 2 */
@@ -539,9 +539,9 @@ static void test_bs1_mv(void)
     frame_t f;
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
-    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 40; }
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_INTER; f.mb[i].qp = 40; }
     /* left MB mv (0,0), right MB mv (4,0) on all blocks -> |dmvx| = 4 */
-    for (int k = 0; k < 16; k++) { f.mb[1].mv[k][0] = 4; }
+    for (int k = 0; k < 16; k++) { f.mb[1].mv[0][k][0] = 4; }
     /* qp 40: alpha 50, beta 11, tc0(40,1) = 4.
      * delta_raw = (80 + (98-122) + 4)>>3 = 7 -> clipped to 4 */
     set_vline(&f, 0, 0, 85, 85, 98, 100, 120, 122, 135, 135);
@@ -558,8 +558,10 @@ static void test_bs1_ref(void)
     frame_t f;
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
-    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 40; }
-    for (int r = 0; r < 4; r++) { f.mb[0].ref_pic[r] = 0; f.mb[1].ref_pic[r] = 1; }
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_INTER; f.mb[i].qp = 40; }
+    for (int r = 0; r < 4; r++) { f.mb[0].ref_pic[0][r] = 0; f.mb[1].ref_pic[0][r] = 1;
+        f.mb[0].ref_pic[1][r] = f.mb[1].ref_pic[1][r] = -1;
+        f.mb[0].ref_idx[1][r] = f.mb[1].ref_idx[1][r] = -1; }
     set_vline(&f, 0, 0, 85, 85, 98, 100, 120, 122, 135, 135);
     run_module(&f, NULL, 0);
     CHECK(get_y(&f, 0, 15, 0) == 104 && get_y(&f, 0, 16, 0) == 116,
@@ -577,10 +579,12 @@ static void test_bs0_same_pic_different_idx(void)
     frame_t f;
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
-    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 40; }
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_INTER; f.mb[i].qp = 40; }
     for (int r = 0; r < 4; r++) {
-        f.mb[0].ref_idx[r] = 0; f.mb[0].ref_pic[r] = 7;
-        f.mb[1].ref_idx[r] = 2; f.mb[1].ref_pic[r] = 7;
+        f.mb[0].ref_idx[0][r] = 0; f.mb[0].ref_pic[0][r] = 7;
+        f.mb[1].ref_idx[0][r] = 2; f.mb[1].ref_pic[0][r] = 7;
+        f.mb[0].ref_pic[1][r] = f.mb[1].ref_pic[1][r] = -1;
+        f.mb[0].ref_idx[1][r] = f.mb[1].ref_idx[1][r] = -1;
     }
     set_vline(&f, 0, 0, 85, 85, 98, 100, 120, 122, 135, 135);
     run_module(&f, NULL, 0);
@@ -601,7 +605,7 @@ static void test_bs0_noop(void)
             set_y(&f, 0, x, r, (x * 7 + r * 13) & 0xFF);
     fill_plane_c(f.u[0], f.sc, 16, 8, 90);
     fill_plane_c(f.v[0], f.sc, 16, 8, 160);
-    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 38; }
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_INTER; f.mb[i].qp = 38; }
     memcpy(f.y[1], f.y[0], f.ysz);
     memcpy(f.u[1], f.u[0], f.csz);
     memcpy(f.v[1], f.v[0], f.csz);
@@ -659,7 +663,7 @@ static void test_bs4_strong(void)
     frame_t f;
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
-    f.mb[0].type = MB_P_L0; f.mb[0].qp = 40;
+    f.mb[0].type = MB_INTER; f.mb[0].qp = 40;
     f.mb[1].type = MB_I16x16; f.mb[1].qp = 40;
     set_vline(&f, 0, 0, 90, 95, 98, 100, 110, 112, 115, 120);
     run_module(&f, NULL, 0);
@@ -682,7 +686,7 @@ static void test_tc_increment(void)
     frame_t f;
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
-    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 46; }
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_INTER; f.mb[i].qp = 46; }
     f.mb[1].nz[0] = 5;
     /* p2 = 60 -> ap = |60-50| = 10 < beta(16): p1 filtered AND tc incremented */
     set_vline(&f, 0, 0, 60, 60, 45, 50, 150, 155, 170, 170);
@@ -705,7 +709,7 @@ static void test_chroma_normal(void)
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_c(f.u[0], f.sc, 16, 8, 128);
     fill_plane_c(f.v[0], f.sc, 16, 8, 128);
-    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_P_L0; f.mb[i].qp = 30; }
+    for (int i = 0; i < 2; i++) { f.mb[i].type = MB_INTER; f.mb[i].qp = 30; }
     f.mb[1].nz[0] = 3;
     for (int r = 0; r < 8; r++) {
         set_c(f.u[0], f.sc, 6, r, 97);  set_c(f.u[0], f.sc, 7, r, 100);
@@ -726,7 +730,7 @@ static void test_chroma_strong(void)
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_c(f.u[0], f.sc, 16, 8, 128);
     for (int i = 0; i < 2; i++) { f.mb[i].qp = 30; }
-    f.mb[0].type = MB_P_L0;
+    f.mb[0].type = MB_INTER;
     f.mb[1].type = MB_I4x4;
     for (int r = 0; r < 8; r++) {
         set_c(f.u[0], f.sc, 6, r, 98);  set_c(f.u[0], f.sc, 7, r, 100);
@@ -749,7 +753,7 @@ static void test_idc2_vertical(void)
     int sfm[2] = { 0, 1 };
     frame_alloc(&f, 2, 1, 8, 8);
     fill_plane_y(&f, 0, 128);
-    f.mb[0].type = MB_P_L0; f.mb[0].qp = 40;
+    f.mb[0].type = MB_INTER; f.mb[0].qp = 40;
     f.mb[1].type = MB_I4x4; f.mb[1].qp = 40;
     f.sl.disable_deblocking_filter_idc = 2;
     /* boundary line that WOULD be strongly filtered with idc == 0 */
@@ -784,7 +788,7 @@ static void test_idc2_horizontal(void)
     int sfm[2] = { 0, 1 };
     frame_alloc(&f, 1, 2, 8, 8);
     fill_plane_y(&f, 0, 128);
-    f.mb[0].type = MB_P_L0; f.mb[0].qp = 40;
+    f.mb[0].type = MB_INTER; f.mb[0].qp = 40;
     f.mb[1].type = MB_I4x4; f.mb[1].qp = 40;
     f.sl.disable_deblocking_filter_idc = 2;
     /* horizontal boundary line at y = 15|16, column 0 */
@@ -810,7 +814,7 @@ static void test_idc1_noop(void)
     for (int r = 0; r < 16; r++)
         for (int x = 0; x < 32; x++)
             set_y(&f, 0, x, r, x < 16 ? 30 : 220);
-    f.mb[0].type = MB_P_L0; f.mb[0].qp = 51;
+    f.mb[0].type = MB_INTER; f.mb[0].qp = 51;
     f.mb[1].type = MB_I4x4; f.mb[1].qp = 51;
     f.sl.disable_deblocking_filter_idc = 1;
     memcpy(f.y[1], f.y[0], f.ysz);
@@ -827,7 +831,7 @@ static void test_bs4_horizontal(void)
     frame_t f;
     frame_alloc(&f, 1, 2, 8, 8);
     fill_plane_y(&f, 0, 128);
-    f.mb[0].type = MB_P_L0; f.mb[0].qp = 40;
+    f.mb[0].type = MB_INTER; f.mb[0].qp = 40;
     f.mb[1].type = MB_I16x16; f.mb[1].qp = 40;
     for (int x = 0; x < 16; x++) {
         set_y(&f, 0, x, 12, 90);  set_y(&f, 0, x, 13, 95);
@@ -851,8 +855,8 @@ static void test_bs4_horizontal(void)
 static void random_mb(frame_t *f, int idx, uint32_t flavor)
 {
     mbinfo_t *m = &f->mb[idx];
-    static const int types[] = { MB_I4x4, MB_I4x4, MB_I16x16, MB_P_L0,
-                                 MB_P_L0, MB_P_L0, MB_P_SKIP };
+    static const int types[] = { MB_I4x4, MB_I4x4, MB_I16x16, MB_INTER,
+                                 MB_INTER, MB_INTER, MB_SKIP };
     m->type = (uint8_t)types[rnd() % 7];
     m->qp = (int8_t)(rnd() % 52);
     m->cbp = (uint8_t)rnd();
@@ -866,15 +870,22 @@ static void random_mb(frame_t *f, int idx, uint32_t flavor)
      * real stream but not equal, and drawing them together would let a
      * decoder that compares indices pass this test by accident. */
     for (int r = 0; r < 4; r++) {
-        m->ref_idx[r] = (uint8_t)(rnd() % 3);
-        m->ref_pic[r] = (uint8_t)(rnd() % 3);
+        m->ref_idx[0][r] = (int8_t)(rnd() % 3);
+        m->ref_pic[0][r] = (int8_t)(rnd() % 3);
+        /* This generator drives L0 only, so L1 has to say so explicitly.
+         * mbinfo uses -1 for "this list is not used by this partition", and a
+         * zeroed struct means "index 0 of list 1", which is a DIFFERENT
+         * macroblock: 8.7.2.1 counts the motion vectors before it compares
+         * them, so leaving the zeros in makes every block look bi-predicted. */
+        m->ref_idx[1][r] = -1;
+        m->ref_pic[1][r] = -1;
     }
     for (int k = 0; k < 16; k++) {
-        m->mv[k][0] = (int16_t)((int)(rnd() % 25) - 12);
-        m->mv[k][1] = (int16_t)((int)(rnd() % 25) - 12);
+        m->mv[0][k][0] = (int16_t)((int)(rnd() % 25) - 12);
+        m->mv[0][k][1] = (int16_t)((int)(rnd() % 25) - 12);
         if ((flavor & 1) && k > 0) {        /* clustered mvs: more bS 0/1 */
-            m->mv[k][0] = m->mv[0][0] + (int16_t)(rnd() % 3);
-            m->mv[k][1] = m->mv[0][1] + (int16_t)(rnd() % 3);
+            m->mv[0][k][0] = m->mv[0][0][0] + (int16_t)(rnd() % 3);
+            m->mv[0][k][1] = m->mv[0][0][1] + (int16_t)(rnd() % 3);
         }
     }
 }
@@ -966,13 +977,13 @@ static void test_differential(int trials)
             for (int i = 0; i < n_mb; i++) {
                 mbinfo_t *m = &f.mb[i];
                 printf("  MB%d type=%d qp=%d ref=[%d %d %d %d] nz=",
-                       i, m->type, m->qp, m->ref_idx[0], m->ref_idx[1],
-                       m->ref_idx[2], m->ref_idx[3]);
+                       i, m->type, m->qp, m->ref_idx[0][0], m->ref_idx[0][1],
+                       m->ref_idx[0][2], m->ref_idx[0][3]);
                 for (int k = 0; k < 16; k++)
                     if (m->nz[k]) printf("%d:%d ", k, m->nz[k]);
                 printf(" mv0=(%d,%d) mv5=(%d,%d) mv15=(%d,%d)\n",
-                       m->mv[0][0], m->mv[0][1], m->mv[5][0], m->mv[5][1],
-                       m->mv[15][0], m->mv[15][1]);
+                       m->mv[0][0][0], m->mv[0][0][1], m->mv[0][5][0], m->mv[0][5][1],
+                       m->mv[0][15][0], m->mv[0][15][1]);
             }
             printf("  sfm =");
             for (int i = 0; i < ns; i++) printf(" %d", sfm_buf[i]);

@@ -165,7 +165,9 @@ int cavlc_decode(bs_t *bs, int nC, int max, int coef[16])
 
     memset(coef, 0, 16 * sizeof(coef[0]));
 
+#ifdef H264_TRACE
     int ct_start = bs->bitpos;
+#endif
     if (decode_coeff_token(bs, nC, &tc, &t1) < 0) {
 #ifdef H264_TRACE
         fprintf(stderr, "coeff_token FAIL nC=%d max=%d start=%d bits=", nC, max, ct_start);

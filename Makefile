@@ -2688,72 +2688,8 @@ test-font-control:
 	    grep '^FAIL' $(BUILD)/fontref/ctl-glyf.log | head -3; \
 	fi
 
-# H.264 baseline decoder host test: tools/genvideo.sh generates the stream
-# matrix with ffmpeg/libx264 and the reference YUV with ffmpeg's own decoder.
-# H.264 reconstruction is exactly specified integer arithmetic, so a correct
-# decoder matches ffmpeg byte-for-byte -- any mismatch is our bug, reported
-# with frame/plane/pixel. Needs ffmpeg. (genvideo.sh is idempotent; rerun it
-# by hand to refresh the matrix.)
-H264_SRC := c/lib/video/h264.c c/lib/video/h264_nal.c c/lib/video/h264_cavlc.c \
-            c/lib/video/h264_pred.c c/lib/video/h264_mc.c c/lib/video/h264_deblock.c
-test-h264:
-	@mkdir -p $(BUILD)/h264ref
-	@bash tools/genvideo.sh $(BUILD)/h264ref
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_test tests/unit/h264test.c $(H264_SRC) -Ic/lib/video
-	@for f in $(BUILD)/h264ref/*.h264; do \
-	    $(BUILD)/h264_test $$f $${f%.h264}.ref.yuv || exit 1; \
-	done
-	@echo "all H.264 host cases bit-exact"
-	@# The committed fixture, checked against a CRC pinned in the tree. The
-	@# generated matrix above re-encodes with whatever x264 is installed, so it
-	@# is not a fixed target; this one is, and it is also the only stream we
-	@# have that quantises finely enough to reach a chroma qP below 6. The same
-	@# CRC is what the on-device check prints, which is how a decode inside
-	@# LogitOS gets compared with a decode on the host.
-	@crc=`$(BUILD)/h264_test tests/fixtures/video/sample.h264 | awk '{print $$2}'`; \
-	 want=`cat tests/fixtures/video/sample.crc32`; \
-	 if [ "$$crc" != "$$want" ]; then \
-	     echo "H264-FIXTURE-FAIL crc $$crc want $$want"; exit 1; fi; \
-	 echo "H264-OK fixture crc $$crc (tests/fixtures/video/sample.h264)"
-
-# Per-case byte counts over the WHOLE stream instead of stopping at the first
-# bad pixel. "the first mismatch moved" says nothing about whether a change
-# helped; a total does, and it is what makes bisecting the decoder possible.
-test-h264-diff:
-	@mkdir -p $(BUILD)/h264ref
-	@bash tools/genvideo.sh $(BUILD)/h264ref
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_diff tests/unit/h264_diff.c $(H264_SRC) -Ic/lib/video
-	@rc=0; for f in $(BUILD)/h264ref/*.h264; do \
-	    printf '%-24s ' "$$(basename $$f .h264)"; \
-	    $(BUILD)/h264_diff $$f $${f%.h264}.ref.yuv | tail -1 || rc=1; \
-	done; exit $$rc
-
-# The module unit tests. These existed but were wired to nothing, so they had
-# never run -- and two of their expectations disagreed with the spec (intra 4x4
-# vertical-left indexed p[x+y] instead of p[x+(y>>1)]; chroma DC averaged both
-# edges in all four quadrants). Both were corrected against 8.3.1.2.8 / 8.3.4.1
-# and then confirmed the honest way: with the decoder fixed to match, a real
-# stream decodes byte-identically to ffmpeg.
-#
-# h264_cavlc_test is NOT here on purpose. Its roundtrip section encodes with a
-# CAVLC *encoder* written inside the test, and that encoder disagrees with the
-# decoder about level coding. The decoder is the one that is right: it decodes
-# i-only-160x120 bit-exactly for all 60 frames, which exercises coeff_token,
-# level escapes, total_zeros and run_before across thousands of blocks. Fixing
-# the test's encoder is its own task; wiring a known-wrong test into a gate
-# would only teach people to ignore the gate.
-test-h264-units:
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_pred_test tests/unit/h264_pred_test.c \
-	    c/lib/video/h264_pred.c -Ic/lib/video
-	@$(BUILD)/h264_pred_test
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_mc_test tests/unit/h264_mc_test.c \
-	    c/lib/video/h264_mc.c -Ic/lib/video
-	@$(BUILD)/h264_mc_test
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_deblock_test tests/unit/h264_deblock_test.c \
-	    c/lib/video/h264_deblock.c -Ic/lib/video
-	@$(BUILD)/h264_deblock_test
-
+# The H.264 decoder gates live in tests/h264.mk (see the note at its top);
+# the include sits with the other test-suite includes further down.
 
 # --- device model / PCI (c/drivers/core + c/kernel/pci) ---------------------
 # Host tests run the bus driver's pure logic against a synthetic configuration
@@ -2872,6 +2808,8 @@ clean:
 
 # H.265/HEVC decoder test targets (test-h265, test-h265-units, test-h265-diff,
 # test-video265). Same reason, same shape as the fragments above.
+-include tests/h264.mk
+
 -include tests/h265.mk
 
 # Full-system test, the commit gate and the test-liveness audit

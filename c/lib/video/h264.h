@@ -29,6 +29,9 @@
 
 typedef struct h264dec h264dec;
 
+/* "no timestamp": what a frame carries when the caller never supplied one. */
+#define H264_NOPTS ((int64_t)(-0x7fffffffffffffffLL - 1))
+
 /* One decoded picture, YUV 4:2:0 planar, 8 bits. Rows are `stride*` bytes;
  * visible area is width x height (SPS crop already accounted for: the planes
  * are macroblock-aligned, the caller displays from (0,0) with w/h). */
@@ -37,6 +40,15 @@ typedef struct {
     int stride_y, stride_c;
     const uint8_t *y, *u, *v;
     int32_t poc;                  /* presentation order (display order) */
+    /* The value the caller handed in with this picture's bytes, carried
+     * through the decoder untouched. H264_NOPTS if none was given.
+     *
+     * This exists because B slices make decode order stop being display
+     * order. Pairing frames with timestamps through a decode-order FIFO is
+     * correct for a stream with no reordering and silently wrong for one with
+     * B pictures -- and it fails in the way that is hardest to notice, since
+     * every frame is present and only their times are shuffled. */
+    int64_t pts;
 } h264frame;
 
 h264dec *h264_open(void);
@@ -49,6 +61,20 @@ void     h264_close(h264dec *d);
  * undefined -- close it. */
 int h264_decode(h264dec *d, const uint8_t *data, int len,
                 h264frame *out, int *got_frame);
+
+/* As h264_decode, but attaches `pts` to the picture whose data starts in this
+ * call, and hands it back on that picture's h264frame however far out of
+ * decode order it comes. Feed one access unit per call and the pairing is
+ * exact; feed a larger run and every picture that starts inside it takes the
+ * same value, which is the same contract a packet-based decoder API gives.
+ *
+ * `pts` is opaque: the decoder only stores and returns it. A caller that needs
+ * more than a timestamp can pass an index into its own table.
+ *
+ * h264_decode is this with pts = H264_NOPTS, so existing callers keep working
+ * and pick up the field when they are ready to supply it. */
+int h264_decode_pts(h264dec *d, const uint8_t *data, int len, int64_t pts,
+                    h264frame *out, int *got_frame);
 
 /* End of stream: output whatever the DPB still holds. Returns 1 and fills
  * `out` per remaining picture (call until it returns 0). Negative on error. */

@@ -14,6 +14,27 @@
 #include <stdint.h>
 #include "h264_int.h"
 
+/* LevelScale4x4 for the FLAT default scaling list, by qP%6 and raster
+ * position -- what h264_nal.c precomputes for a stream that carries no
+ * scaling matrix. Passing it here keeps every expectation in this file the
+ * one the old hardcoded "coefficient * v << qP/6" arithmetic produced. */
+static const int flat_v[6][3] = {
+    { 10, 16, 13 }, { 11, 18, 14 }, { 13, 20, 16 },
+    { 14, 23, 18 }, { 16, 25, 20 }, { 18, 29, 23 }
+};
+static const int *flat_ls(int qp)
+{
+    static int ls[16];
+    int m = ((qp % 6) + 6) % 6;
+    for (int r = 0; r < 16; r++) {
+        int i = r >> 2, j = r & 3;
+        int k = ((i & 1) == 0 && (j & 1) == 0) ? 0 : (((i & 1) && (j & 1)) ? 1 : 2);
+        ls[r] = 16 * flat_v[m][k];
+    }
+    return ls;
+}
+
+
 static int fails, checks;
 #define CHECK(cond, ...) do { \
     checks++; \
@@ -39,7 +60,7 @@ static void test_idct_dc_qp0(void)
     uint8_t dst[4 * 4];
     coef[0] = 1;
     memset(dst, 100, sizeof dst);
-    h264_dequant_idct_add(coef, 0, dst, 4);
+    h264_dequant_idct_add(coef, 0, flat_ls(0), dst, 4);
     for (int i = 0; i < 16; i++)
         CHECK(dst[i] == 100, "idct_dc_qp0[%d] = %d want 100", i, dst[i]);
 }
@@ -52,7 +73,7 @@ static void test_idct_dc_qp51(void)
     uint8_t dst[4 * 4];
     coef[0] = 1;
     memset(dst, 40, sizeof dst);
-    h264_dequant_idct_add(coef, 51, dst, 4);
+    h264_dequant_idct_add(coef, 51, flat_ls(51), dst, 4);
     for (int i = 0; i < 16; i++)
         CHECK(dst[i] == 96, "idct_dc_qp51[%d] = %d want 96", i, dst[i]);
 }
@@ -65,7 +86,7 @@ static void test_idct_dc_qp26(void)
     uint8_t dst[4 * 4];
     coef[0] = 3;
     memset(dst, 10, sizeof dst);
-    h264_dequant_idct_add(coef, 26, dst, 4);
+    h264_dequant_idct_add(coef, 26, flat_ls(26), dst, 4);
     for (int i = 0; i < 16; i++)
         CHECK(dst[i] == 20, "idct_dc_qp26[%d] = %d want 20", i, dst[i]);
 }
@@ -94,7 +115,7 @@ static void test_idct_mixed(void)
     };
     coef[0] = 10; coef[1] = 10; coef[2] = -11; coef[3] = 20;
     memset(dst, 50, sizeof dst);
-    h264_dequant_idct_add(coef, 0, dst, 5);
+    h264_dequant_idct_add(coef, 0, flat_ls(0), dst, 5);
     CHECK(eq_block(dst, 5, want, 4), "idct_mixed block mismatch");
     /* untouched column 4 must still hold the prediction */
     for (int y = 0; y < 4; y++)
@@ -109,7 +130,7 @@ static void test_idct_clip_low(void)
     uint8_t dst[4 * 4];
     coef[0] = -100;
     memset(dst, 10, sizeof dst);
-    h264_dequant_idct_add(coef, 0, dst, 4);
+    h264_dequant_idct_add(coef, 0, flat_ls(0), dst, 4);
     for (int i = 0; i < 16; i++)
         CHECK(dst[i] == 0, "idct_clip_low[%d] = %d want 0", i, dst[i]);
 }
@@ -442,9 +463,9 @@ static void test_robust(void)
     uint8_t nb[16];
 
     for (int i = 0; i < 16; i++) { coef[i] = (i & 1) ? 0x7FFFFFFF : -0x7FFFFFFF; }
-    h264_dequant_idct_add(coef, -5, dst, 17);
-    h264_dequant_idct_add(coef, 100, dst, 17);
-    h264_dequant_idct_add(coef, 51, dst, 17);
+    h264_dequant_idct_add(coef, -5, flat_ls(-5), dst, 17);
+    h264_dequant_idct_add(coef, 100, flat_ls(100), dst, 17);
+    h264_dequant_idct_add(coef, 51, flat_ls(51), dst, 17);
     for (int i = 0; i < 16; i++) dc[i] = 0x7FFFFFFF - i;
     h264_dc16_transform(dc);
     for (int i = 0; i < 4; i++) dc4[i] = -0x7FFFFFFF;
