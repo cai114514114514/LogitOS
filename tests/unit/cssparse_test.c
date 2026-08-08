@@ -1733,6 +1733,41 @@ static void t_shapes(void)
 	chk("offset-path", "ray(closest-side)", NULL);
 	chk_rt("shape-outside", "circle(50%)", "circle(50%)");
 
+	group("transform-longhands");
+
+	/* NOT <transform-list> -- that is `transform` and css_interp.c's.
+	 * These four are their own much smaller grammars, and the axis comes
+	 * out FIRST however it was written. */
+	chk_rt("rotate", "none", "none");
+	chk_rt("rotate", "0deg", "0deg");
+	chk("rotate", "400grad 100 200 300", "100 200 300 400grad");
+	chk("rotate", "400grad x", "x 400grad");
+	/* A direction vector along an axis becomes the LETTER, and z is the
+	 * default axis so it disappears entirely. */
+	chk("rotate", "0.5 0 0 400grad", "x 400grad");
+	chk("rotate", "0 0 1 45deg", "45deg");
+	/* A bare number is not an angle. */
+	chk("rotate", "45", NULL);
+
+	chk_rt("translate", "100%", "100%");
+	/* A trailing zero is the initial value and disappears. */
+	chk("translate", "100px 0px", "100px");
+	chk("translate", "100px 0.1px", "100px 0.1px");
+	chk_rt("translate", "1px 2px 3px", "1px 2px 3px");
+	/* The third component is a LENGTH: a percentage z has nothing to
+	 * resolve against. */
+	chk("translate", "1px 2px 3%", NULL);
+
+	chk("scale", "1%", "0.01");
+	chk("scale", "100%", "1");
+	/* A z of 1 disappears, and then a y equal to x disappears after it. */
+	chk("scale", "100 100", "100");
+	chk_rt("scale", "1 2 3", "1 2 3");
+
+	chk_rt("perspective", "10px", "10px");
+	chk("perspective", "-10px", NULL);
+	chk("perspective", "10", NULL);
+
 	group("filter");
 	chk_rt("filter", "none", "none");
 	chk("filter", "blur(0)", "blur(0px)");

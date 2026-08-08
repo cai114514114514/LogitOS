@@ -4126,6 +4126,168 @@ static int canon_ray(lexed *lx, buf *b)
 	return 0;
 }
 
+/* ====================================================================
+ * The CSS Transforms 2 longhands: rotate, translate, scale, perspective.
+ *
+ * NOT the same grammar as `transform`, which is a <transform-list> and is
+ * css_interp.c's (ci_transform_parse, already routed). These four are
+ * independent properties with their own much smaller grammars, and LibCSS has
+ * none of them -- so CSS.supports() denies all four and their interpolation
+ * files never start.
+ *
+ *   rotate      = none | <angle> | [ x | y | z | <number>{3} ] && <angle>
+ *   translate   = none | <length-percentage> [ <length-percentage> <length>? ]?
+ *   scale       = none | [ <number> | <percentage> ]{1,3}
+ *   perspective = none | <length [0,inf]>
+ *
+ * The axis comes out FIRST however it was written, and a direction vector
+ * that points along an axis becomes the LETTER: `0.5 0 0 400grad` is
+ * `x 400grad`. Trailing components that repeat the default disappear --
+ * `translate: 100px 0px` is `100px`, `scale: 100 100` is `100`.
+ * ==================================================================== */
+
+static int tx_angle(lexed *lx, buf *b)
+{
+	const tok *t = cur(lx);
+	double d;
+
+	if (t->kind == T_NUM && t->num == 0) { bput(b, "0deg", 4); adv(lx); return 0; }
+	if (t->kind == T_DIM && angle_deg(t, &d) == 0) return emit_token(lx, b, 1);
+	if (t->kind == T_FUNC) return calc_channel(lx, b, 0, 1, NULL, 0, NULL);
+	return -1;
+}
+
+static int canon_rotate(lexed *lx, buf *b)
+{
+	char ang[128];
+	buf ab;
+	const char *axis = NULL;
+	double v[3];
+	int nv = 0, have_angle = 0;
+
+	ab.p = ang; ab.len = 0; ab.cap = (int)sizeof ang; ab.ovf = 0;
+
+	while (!at_end(lx)) {
+		const tok *t = cur(lx);
+		if (t->kind == T_IDENT) {
+			if (axis != NULL || nv) return -1;
+			if (ieq(t->s, t->len, "x")) axis = "x";
+			else if (ieq(t->s, t->len, "y")) axis = "y";
+			else if (ieq(t->s, t->len, "z")) axis = "z";
+			else return -1;
+			adv(lx);
+			continue;
+		}
+		if (t->kind == T_NUM && !(t->kind == T_DIM)) {
+			/* A bare number is part of the direction vector; an
+			 * angle is the rotation. `0` is ambiguous and the
+			 * corpus resolves it as a vector component when three
+			 * are being collected and as an angle otherwise. */
+			if (axis != NULL || nv >= 3) {
+				if (have_angle) return -1;
+				if (tx_angle(lx, &ab) != 0) return -1;
+				have_angle = 1;
+				continue;
+			}
+			v[nv++] = t->num;
+			adv(lx);
+			continue;
+		}
+		if (have_angle) return -1;
+		if (tx_angle(lx, &ab) != 0) return -1;
+		have_angle = 1;
+	}
+	if (ab.ovf) return -1;
+	/* Three collected numbers and no angle means the last one WAS the
+	 * angle -- but a bare number is not an angle unless it is zero. */
+	if (!have_angle) {
+		if (nv != 1 || v[0] != 0) return -1;
+		bput(&ab, "0deg", 4);
+		have_angle = 1;
+		nv = 0;
+	}
+	if (nv != 0 && nv != 3) return -1;
+	if (nv == 3) {
+		/* A vector along an axis is spelled with the letter. */
+		if (v[0] > 0 && v[1] == 0 && v[2] == 0) axis = "x";
+		else if (v[0] == 0 && v[1] > 0 && v[2] == 0) axis = "y";
+		else if (v[0] == 0 && v[1] == 0 && v[2] > 0) axis = NULL; /* z is the default */
+		else {
+			int i;
+			for (i = 0; i < 3; i++) { if (i) bputc(b, ' '); bnum6(b, v[i]); }
+			bputc(b, ' ');
+			bput(b, ab.p, ab.len);
+			return 0;
+		}
+	}
+	if (axis != NULL && strcmp(axis, "z") != 0) {
+		bput(b, axis, -1);
+		bputc(b, ' ');
+	}
+	bput(b, ab.p, ab.len);
+	return 0;
+}
+
+static int canon_translate(lexed *lx, buf *b)
+{
+	char c[3][96];
+	buf cb;
+	int n = 0, i;
+
+	while (!at_end(lx) && n < 3) {
+		cb.p = c[n]; cb.len = 0; cb.cap = (int)sizeof c[n]; cb.ovf = 0;
+		/* The third component is a LENGTH: a percentage z has nothing
+		 * to resolve against. */
+		if (lp_value(lx, &cb, 0, n < 2) != 0 || cb.ovf) return -1;
+		n++;
+	}
+	if (n == 0 || !at_end(lx)) return -1;
+	/* Trailing zeros are the initial value and disappear. */
+	while (n > 1 && strcmp(c[n - 1], "0px") == 0) n--;
+	for (i = 0; i < n; i++) { if (i) bputc(b, ' '); bput(b, c[i], -1); }
+	return 0;
+}
+
+static int canon_scale(lexed *lx, buf *b)
+{
+	double v[3];
+	int n = 0, i;
+	char txt[3][96];
+	int istext[3];
+
+	while (!at_end(lx) && n < 3) {
+		const tok *t = cur(lx);
+		istext[n] = 0;
+		if (t->kind == T_NUM) { v[n] = t->num; adv(lx); }
+		else if (t->kind == T_PCT) { v[n] = t->num / 100.0; adv(lx); }
+		else if (t->kind == T_FUNC) {
+			buf tb;
+			tb.p = txt[n]; tb.len = 0; tb.cap = (int)sizeof txt[n]; tb.ovf = 0;
+			if (calc_channel(lx, &tb, 1, 0, NULL, 0, NULL) != 0 || tb.ovf)
+				return -1;
+			istext[n] = 1;
+			v[n] = 0;
+		} else {
+			return -1;
+		}
+		n++;
+	}
+	if (n == 0 || !at_end(lx)) return -1;
+	/* A z of 1 disappears, and a y equal to x disappears after it. */
+	if (n == 3 && !istext[2] && v[2] == 1) n = 2;
+	if (n == 2 && !istext[0] && !istext[1] && v[0] == v[1]) n = 1;
+	for (i = 0; i < n; i++) {
+		if (i) bputc(b, ' ');
+		if (istext[i]) bput(b, txt[i], -1);
+		else bnum6(b, v[i]);
+	}
+	return 0;
+}
+
+static const char *const transform_props[] = {
+	"rotate", "translate", "scale", "perspective", NULL
+};
+
 /* The grid properties this file claims. LibCSS has no grid at all, so these
  * are not values it refuses -- they are properties it has never heard of, and
  * without this the declaration is dropped and `el.style.gridTemplateColumns`
@@ -4515,7 +4677,8 @@ static const char *const single_props[] = {
  * that is correct returns nothing measurable. */
 static const char *const *const canon_prop_tables[] = {
 	inset_props, size_props, margin_props, single_props,
-	color_props, grid_props, shape_props, filter_props, NULL
+	color_props, grid_props, shape_props, filter_props,
+	transform_props, NULL
 };
 
 int css_canon_knows_property(const char *prop, int plen)
@@ -4716,6 +4879,24 @@ int css_canon_decl(const char *prop, int plen,
 		else
 			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, transform_props)) {
+		if (lx.n == 1 && tok_is_ident(&lx.t[0], "none")) {
+			bput(&b, "none", 4);
+			rc = CSS_CANON_OK;
+		} else if (ieq(prop, plen, "rotate")) {
+			rc = (canon_rotate(&lx, &b) == 0 && at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		} else if (ieq(prop, plen, "translate")) {
+			rc = canon_translate(&lx, &b) == 0
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		} else if (ieq(prop, plen, "scale")) {
+			rc = canon_scale(&lx, &b) == 0
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		} else {
+			/* perspective: a non-negative length, and `none`. */
+			rc = (lp_value(&lx, &b, 1, 0) == 0 && at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		}
 	} else if (in_tab(prop, plen, filter_props)) {
 		/* `none` is the initial value and is a keyword, not a list. */
 		if (lx.n == 1 && tok_is_ident(&lx.t[0], "none")) {
