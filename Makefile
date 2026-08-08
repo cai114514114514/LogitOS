@@ -173,7 +173,16 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # exist in the kernel. In ring 0 it would hold the BKL for the duration of
 # playback and put a parser of attacker-chosen bytes at the highest privilege
 # in the machine. See the AUD_OBJ rules further down for who does link it.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+#
+# c/lib/media is excluded for the same reason, and more so. It is the container
+# demuxers (ISO-BMFF/MP4 including fragmented, and Matroska/WebM). A container
+# is the most attacker-shaped input in this system: it comes off the network,
+# and it is a tree of nested lengths -- every one of them written by a stranger
+# -- that a parser walks with a pointer, turning those numbers into allocation
+# sizes and raw file offsets. It allocates continuously with malloc/realloc/free
+# as it builds a sample index. Putting that in ring 0 under the BKL is not a
+# thing to do. See MED_OBJ in tests/demux.mk for who does link it.
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -2677,3 +2686,10 @@ clean:
 # for the same reason as the others: a whole-file Makefile overwrite from a
 # concurrent line cannot delete it.
 -include tests/sec.mk
+
+# Container demuxer test targets (test-demux and its parts: -units, -diff,
+# -lacing, -fuzz, -negctl, test-avsync, test-demux-os) plus MED_OBJ and
+# /bin/demuxcheck. Own fragment for the same reason as the others: this tree is
+# worked on by several people at once and a whole-file Makefile edit from a
+# concurrent line cannot delete it.
+-include tests/demux.mk

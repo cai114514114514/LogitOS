@@ -1,0 +1,33 @@
+MEDIA container=mp4 fragmented=0 duration_ns=2025056689 tracks=2
+TRACK 0 video h264 64x48 rate=0 ch=0 timescale=15360 nsamples=30 framing=1 nls=4 extradata=40/b784066e data=1fabb150 stamps=8701b04f
+TRACK 1 audio mp3 0x0 rate=44100 ch=1 timescale=44100 nsamples=78 framing=0 nls=0 extradata=0/00000000 data=e99c8ad6 stamps=1922b1ee
+ORDER samples=108 crc=8b3e4bc3
+DEMUX-CRC 09715571 108 samples
+MEDIA-DECODE h264 64x48 frames=30 crc=16a20716
+MEDIA-AUDIO mp3 rate=44100 ch=1 frames=89856 crc=59847c7c
+MEDIA container=matroska fragmented=0 duration_ns=2000000000 tracks=2
+TRACK 0 video h264 64x48 rate=0 ch=0 timescale=1000 nsamples=30 framing=1 nls=4 extradata=40/b784066e data=1fabb150 stamps=d9f819b0
+TRACK 1 audio flac 0x0 rate=44100 ch=1 timescale=1000 nsamples=20 framing=0 nls=0 extradata=42/61b3fcc5 data=319e9017 stamps=0517cf6e
+ORDER samples=50 crc=3491ef26
+DEMUX-CRC 11553b49 50 samples
+MEDIA-DECODE h264 64x48 frames=30 crc=16a20716
+MEDIA-AUDIO flac rate=44100 ch=1 frames=88200 crc=82cee987
+MEDIA container=mp4 fragmented=1 duration_ns=2119705215 tracks=2
+TRACK 0 video h264 64x48 rate=0 ch=0 timescale=15360 nsamples=30 framing=1 nls=4 extradata=41/d9bf47ad data=d72f36de stamps=7471790b
+TRACK 1 audio mp3 0x0 rate=44100 ch=1 timescale=44100 nsamples=78 framing=0 nls=0 extradata=0/00000000 data=e99c8ad6 stamps=a1214fb6
+ORDER samples=108 crc=70404d51
+DEMUX-CRC 33655db0 108 samples
+MEDIA container=mp4 fragmented=0 duration_ns=2066666666 tracks=2
+TRACK 0 video h264 64x48 rate=0 ch=0 timescale=15360 nsamples=30 framing=1 nls=4 extradata=41/d9bf47ad data=d72f36de stamps=b58a80a4
+TRACK 1 audio mp3 0x0 rate=44100 ch=1 timescale=44100 nsamples=78 framing=0 nls=0 extradata=0/00000000 data=e99c8ad6 stamps=1922b1ee
+ORDER samples=108 crc=b1309e37
+DEMUX-CRC 9063545c 108 samples
+MEDIA container=matroska fragmented=0 duration_ns=1000000000 tracks=1
+TRACK 0 audio pcm_s16le 0x0 rate=8000 ch=1 timescale=1000 nsamples=10 framing=0 nls=0 extradata=0/00000000 data=4973f6b7 stamps=aeac0802
+ORDER samples=10 crc=187c7a2b
+DEMUX-CRC 280f55ce 10 samples
+MEDIA container=matroska fragmented=0 duration_ns=2008000000 tracks=2
+TRACK 0 video vp9 64x48 rate=0 ch=0 timescale=1000 nsamples=30 framing=0 nls=0 extradata=0/00000000 data=ca470dad stamps=ef246100
+TRACK 1 audio opus 0x0 rate=48000 ch=1 timescale=1000 nsamples=101 framing=0 nls=0 extradata=19/016adf29 data=bb2d2df5 stamps=7eeed02a
+ORDER samples=131 crc=13fb1bad
+DEMUX-CRC ce9f58bf 131 samples
