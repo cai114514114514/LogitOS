@@ -1092,6 +1092,134 @@ static int canon_color_fn(lexed *lx, buf *b)
 	return 0;
 }
 
+/* ---- the rest of the CSS Color 4/5 function set ---------------------------
+ *
+ * These are NOT canonically serialized here -- their serialization rules are
+ * exacting (colour-space conversion, channel resolution, gamut mapping) and
+ * doing them wrong is worse than not doing them. What this list is for is
+ * narrower and, since the CSSOM started consulting this file, urgent:
+ *
+ * A caller that asks this parser and then falls back to LibCSS for a PASS gets
+ * the wrong answer on every one of these, because LibCSS predates all of them
+ * and rejects them -- so `el.style.color = 'color-mix(in srgb, red, blue)'`
+ * stops sticking at all. That is a REGRESSION in CSSOM behaviour, not a
+ * serialization imperfection: the value is valid CSS, a script can set it, and
+ * refusing to store it is a worse answer than storing it unprettified.
+ * Measured: 2,687 `property should be set` failures across css-color.
+ *
+ * So these are recognised, structurally checked, and returned with a
+ * whitespace-normalized spelling. The byte comparison still fails exactly
+ * where it fails today -- nothing is claimed that is not delivered -- but the
+ * value survives, which is the half of the CSSOM contract that was broken.
+ */
+static const char *const color_fns[] = {
+	"hwb", "lab", "lch", "oklab", "oklch", "color-mix", "alpha",
+	"contrast-color", "light-dark", "device-cmyk", NULL
+};
+
+/* rgb()/hsl() and their -a forms are the exception, and the distinction is
+ * exactly "can LibCSS already do it". The legacy forms it can, and those must
+ * keep passing through untouched -- claiming them would change the spelling of
+ * ordinary colours on every page for no gain. The RELATIVE form,
+ * `rgb(from red r g b)`, it cannot, and that one has to be kept here for the
+ * same reason as the rest of the list. The `from` keyword is what separates
+ * them, and it is the first argument or it is not relative colour syntax. */
+static const char *const color_fns_legacy[] = {
+	"rgb", "rgba", "hsl", "hsla", NULL
+};
+
+/* A structural check, not a grammar. It exists so that recognising a name
+ * does not become "accept anything with that name in front of it": the
+ * argument list must be non-empty and made only of the token kinds a colour
+ * function can contain. `color-mix(` with nothing in it, or with a string or a
+ * stray brace, is still refused. */
+static int color_fn_body_ok(lexed *lx, int start)
+{
+	int i, depth = 0, ntok = 0;
+
+	for (i = start; i < lx->n; i++) {
+		const tok *t = &lx->t[i];
+		switch (t->kind) {
+		case T_FUNC:
+			depth++;
+			ntok++;
+			break;
+		case T_RPAREN:
+			if (depth == 0) {
+				/* the closer for the outer function: it must
+				 * be the last token */
+				return ntok > 0 && i == lx->n - 1;
+			}
+			depth--;
+			break;
+		case T_IDENT: case T_NUM: case T_PCT: case T_DIM:
+		case T_HASH: case T_COMMA:
+			ntok++;
+			break;
+		case T_DELIM:
+			/* `/` separates alpha; `+`/`-`/`*` appear inside a
+			 * calc a channel may contain. Nothing else. */
+			if (t->delim != '/' && t->delim != '+' &&
+			    t->delim != '-' && t->delim != '*' &&
+			    t->delim != '.')
+				return 0;
+			ntok++;
+			break;
+		default:
+			return 0;	/* a string, an unterminated anything */
+		}
+	}
+	return 0;			/* never closed */
+}
+
+/* Emit the function with its whitespace normalized and nothing else changed.
+ * Deliberately separate from emit_function(), which refuses names it does not
+ * know -- that refusal is right for the anchor grammar and wrong here. */
+static int emit_color_fn_raw(lexed *lx, buf *b, const char *name)
+{
+	int first = 1, depth = 0;
+
+	bput(b, name, -1);
+	bputc(b, '(');
+	adv(lx);
+	while (!at_end(lx)) {
+		const tok *t = cur(lx);
+
+		if (t->kind == T_RPAREN && depth == 0) { adv(lx); break; }
+		if (t->kind == T_COMMA) {
+			bcomma(b);
+			adv(lx);
+			first = 1;
+			continue;
+		}
+		if (!first && t->wsbefore) bputc(b, ' ');
+		if (t->kind == T_FUNC) {
+			bident(b, t->s, t->len);
+			bputc(b, '(');
+			depth++;
+			adv(lx);
+			first = 1;
+			continue;
+		}
+		if (t->kind == T_RPAREN) {
+			bputc(b, ')');
+			depth--;
+			adv(lx);
+			first = 0;
+			continue;
+		}
+		if (emit_token(lx, b, CANON_MAXDEPTH - 1) != 0) {
+			/* emit_token dispatches functions through
+			 * emit_function, which is not wanted here; every other
+			 * kind is a plain token and cannot fail. */
+			return -1;
+		}
+		first = 0;
+	}
+	bputc(b, ')');
+	return 0;
+}
+
 /* The properties whose value is a <color>. Claiming `color()` needs a
  * property that actually takes one: `width: color(srgb 0 0 0)` is invalid, not
  * a colour. */
@@ -1642,11 +1770,32 @@ int css_canon_decl(const char *prop, int plen,
 		 * file has no specified serializer for them and claiming the
 		 * property is not claiming every value of it. */
 		if (lx.t[0].kind == T_FUNC &&
-		    ieq(lx.t[0].s, lx.t[0].len, "color"))
+		    ieq(lx.t[0].s, lx.t[0].len, "color")) {
 			rc = canon_color_fn(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
-		else
+		} else if (lx.t[0].kind == T_FUNC &&
+			   (in_tab(lx.t[0].s, lx.t[0].len, color_fns) ||
+			    (in_tab(lx.t[0].s, lx.t[0].len, color_fns_legacy) &&
+			     tok_is_ident(&lx.t[1], "from")))) {
+			/* A CSS Color 4/5 function this file does not spell
+			 * canonically but must not let the caller drop. See
+			 * the comment on color_fns[]. */
+			const char *nm = NULL;
+			int i;
+			for (i = 0; color_fns[i] != NULL; i++)
+				if (ieq(lx.t[0].s, lx.t[0].len, color_fns[i]))
+					nm = color_fns[i];
+			for (i = 0; nm == NULL && color_fns_legacy[i] != NULL; i++)
+				if (ieq(lx.t[0].s, lx.t[0].len,
+						color_fns_legacy[i]))
+					nm = color_fns_legacy[i];
+			rc = (nm != NULL && color_fn_body_ok(&lx, 1) &&
+			      emit_color_fn_raw(&lx, &b, nm) == 0 &&
+			      at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		} else {
 			rc = CSS_CANON_PASS;
+		}
 	} else if (mentions_anchor(&lx)) {
 		int anchor_ok = in_tab(prop, plen, inset_props);
 		int size_ok = anchor_ok || in_tab(prop, plen, size_props) ||

@@ -817,6 +817,47 @@ static void t_color_function(void)
 	chk("border-top-color", "color(xyz 0 0 0)", "color(xyz-d65 0 0 0)");
 	chk("width", "color(srgb 0 0 0)", PASS_);
 
+	group("color()/color-4-5");
+
+	/* The CSS Color 4/5 functions. These are NOT canonically serialized --
+	 * see the comment on color_fns[] -- so what is asserted is exactly
+	 * what is delivered: the value survives, whitespace-normalized, and
+	 * round-trips. Asserting a canonical spelling here would be asserting
+	 * something this file does not do.
+	 *
+	 * They are kept rather than passed on because a caller that falls back
+	 * to LibCSS for a PASS drops every one of them: LibCSS predates them
+	 * all. A valid value a script sets and cannot read back is a broken
+	 * CSSOM, which is a worse failure than an unprettified spelling. */
+	chk_rt("color", "color-mix(in srgb, red, blue)",
+	    "color-mix(in srgb, red, blue)");
+	chk("color", "color-mix(in srgb,red,blue)",
+	    "color-mix(in srgb, red, blue)");
+	chk_rt("color", "rgb(from red r g b)", "rgb(from red r g b)");
+	chk_rt("color", "alpha(from red / 0.5)", "alpha(from red / 0.5)");
+	chk_rt("color", "alpha(from currentcolor / calc(alpha * 0.5))",
+	    "alpha(from currentcolor / calc(alpha * 0.5))");
+	chk_rt("color", "lab(50 20 -30)", "lab(50 20 -30)");
+	chk_rt("color", "oklch(0.5 0.2 120)", "oklch(0.5 0.2 120)");
+	/* The legacy forms stay LibCSS's; only the RELATIVE form is kept
+	 * here. `from` as the first argument is the whole distinction. */
+	chk("color", "hsl(120deg 50% 50%)", PASS_);
+	chk_rt("color", "hsl(from red h s l)", "hsl(from red h s l)");
+	chk_rt("color", "rgba(from red r g b / 0.5)",
+	    "rgba(from red r g b / 0.5)");
+	chk_rt("color", "light-dark(white, black)", "light-dark(white, black)");
+	chk_rt("color", "alpha(from color(display-p3 1 0 0) / 0.5)",
+	    "alpha(from color(display-p3 1 0 0) / 0.5)");
+	chk_rt("color", "rgb(from alpha(from currentcolor / 0.5) r g b)",
+	    "rgb(from alpha(from currentcolor / 0.5) r g b)");
+
+	/* Recognising the NAME is not accepting anything behind it. */
+	chk("color", "color-mix()", NULL);
+	chk("color", "color-mix(", NULL);
+	chk("color", "lab(\"x\")", NULL);
+	chk("color", "oklch(1 2 3))", NULL);
+	chk("color", "color-mix(in srgb, red, blue) extra", NULL);
+
 	/* THE SAFETY PROPERTY for colours: everything else on these
 	 * properties is LibCSS's and must be untouched. */
 	chk("color", "red", PASS_);
