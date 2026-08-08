@@ -3335,6 +3335,14 @@ bench-aui: $(ISO) $(DISK)
 # html5lib shape one layer up. See its header.
 -include tests/wpt.mk
 
+# WPT REFTESTS -- the pixel half of the same corpus, and the first measurement
+# of LAYOUT correctness this project has had. Renders the test and its reference
+# through the real pipeline plus the real kernel rasterizer, and compares them
+# exactly. Read the fragment header for the number, which is not the one a
+# normal reftest harness prints: passes that survive deleting the test own
+# stylesheet are counted separately and are almost all of them.
+-include tests/reftest.mk
+
 # Signing (Ed25519), password hashing, the entropy syscall and the signed
 # package format -- the half of c/crypto that is not a TLS client. See its
 # header for the target list and which five of them are negative controls.
