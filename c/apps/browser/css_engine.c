@@ -1915,6 +1915,24 @@ int css_computed_text(struct node *n, int prop, char *out, int outmax)
         case CSS_TEXT_ALIGN_RIGHT:
         case CSS_TEXT_ALIGN_LIBCSS_RIGHT:  ob_s(&b, "right"); break;
         case CSS_TEXT_ALIGN_JUSTIFY:       ob_s(&b, "justify"); break;
+        /* `start`, not `left`, and the two are different LibCSS values that
+         * were being folded together by the default branch.
+         *
+         * CSS_TEXT_ALIGN_DEFAULT (0x6) is LibCSS's name for the INITIAL value
+         * of text-align, and the initial value is `start` -- which is what
+         * every browser reports and therefore what WPT recorded. Reporting
+         * `left` for it is right only in a left-to-right document and is
+         * indistinguishable from an author who actually wrote `text-align:
+         * left`, which is the distinction a computed value exists to make.
+         * css/css-text/inheritance.html asserts it directly:
+         *
+         *     Property text-align has initial value start
+         *       expected "start" but got "left"
+         *
+         * CSS_TEXT_ALIGN_LEFT and CSS_TEXT_ALIGN_LIBCSS_LEFT stay `left`; they
+         * are an authored keyword and the quirks-mode alignment respectively,
+         * and both really are left. */
+        case CSS_TEXT_ALIGN_DEFAULT:       ob_s(&b, "start"); break;
         default:                           ob_s(&b, "left"); break;
         }
         break;
