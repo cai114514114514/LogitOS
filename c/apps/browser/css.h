@@ -411,6 +411,29 @@ int  css_extra_compiles(void);
  * cascading UA defaults + `page_css` (page_len bytes from <style>) + inline style=. */
 void css_apply(struct node *root, const char *page_css, int page_len);
 
+/* "Update style" for `n`'s document, the way CSSOM requires before a resolved
+ * value is read. Idempotent and cheap when nothing has been mutated.
+ *
+ * css_computed_text() calls this itself, so the CSSOM bindings need do nothing
+ * -- which is deliberate: the defect it fixes was that getComputedStyle
+ * answered "" for every property of every element whenever the cascade had not
+ * been run by an embedder's render loop, and a fix that had to be REMEMBERED at
+ * each call site is a fix that gets forgotten at the next one. See the long
+ * note above the definition in css_engine.c for the measurement.
+ *
+ * When the document has never been styled at all, the author CSS is collected
+ * from its own <style> elements. External <link> stylesheets are NOT fetched:
+ * that is the embedder's job, and once the embedder has called css_apply once
+ * its sheet set is the one re-used here. */
+void css_ensure_styled(struct node *n);
+
+/* Test seam: how many times css_ensure_styled has actually re-run the cascade.
+ * Asserting on this is how a test tells "the flush happened" from "the value
+ * happened to be right already", and it is the guard on the expensive
+ * direction -- a flush per read on an unmutated document would show up here as
+ * a count that tracks the number of reads. */
+int  css_style_flushes(void);
+
 /* What a re-style actually moved, as a bitmask. CSS_CHANGED_NONE is the answer
  * that pays for this whole mechanism: a class toggle whose class carries no
  * matching rule changes nothing, and the caller can then skip layout AND the

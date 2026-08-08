@@ -1425,7 +1425,13 @@ int css_computed_text(struct node *n, int prop, char *out, int outmax)
 {
     if (!out || outmax <= 0) return 0;
     out[0] = 0;
-    if (!n || n->type != N_ELEM || !n->computed || prop < 0 || prop >= CSSP__COUNT) return 0;
+    if (!n || n->type != N_ELEM || prop < 0 || prop >= CSSP__COUNT) return 0;
+    /* CSSOM: reading a resolved value updates style first. Before this, an
+     * embedder that never ran the cascade -- or a script that wrote a style
+     * and read it back in the same turn -- got "" from the line below for
+     * EVERY property, including the most ordinary ones. */
+    css_ensure_styled(n);
+    if (!n->computed) return 0;
     const css_computed_style *cs = (const css_computed_style *)n->computed;
 
     struct obuf b = { out, 0, outmax };
@@ -1846,6 +1852,16 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
     if (inl) css_stylesheet_destroy(inl);
 }
 
+/* The sheet set and the document the last full cascade ran over. Read by
+ * css_ensure_styled below, which is the only reason they exist -- see the long
+ * note there for why re-styling with the WRONG sheet set is the failure mode
+ * this records against. */
+static struct node *g_auto_root;
+static const char  *g_auto_css;
+static int          g_auto_len;
+static char        *g_auto_owned;      /* CSS we collected ourselves, if any */
+static int          g_auto_ready;
+
 void css_apply(struct node *root, const char *page_css, int page_len)
 {
     if (!g_ctx) css_init();
@@ -1882,7 +1898,164 @@ void css_apply(struct node *root, const char *page_css, int page_len)
     /* Removed from the selection context but NOT destroyed: the parse belongs
      * to the cache now, and the next pass over the same bytes reuses it. */
     if (author) css_select_ctx_remove_sheet(g_ctx, author);
+
+    /* Remember the sheet set THIS document was styled against, so a computed
+     * read that has to flush (see css_ensure_styled) re-runs the cascade over
+     * the same CSS instead of a subset of it. The embedder's text outlives the
+     * call -- browser.c's css_expanded is a static -- and when we collected it
+     * ourselves g_auto_owned holds it. */
+    g_auto_root = root;
+    g_auto_css  = page_css;
+    g_auto_len  = (page_css && page_len > 0) ? page_len : 0;
+    g_auto_ready = 1;
 }
+
+/* ======================================================================
+ * "Update style" before a computed value is read
+ *
+ * THE MEASUREMENT THAT PRODUCED THIS, because it is not what it looks like.
+ * getComputedStyle() answered "" for 10,196 css/ subtests, and the obvious
+ * reading -- 63 of LibCSS's 239 computed accessors are wired up, so ~176
+ * properties have no getter -- is WRONG, and building 176 getters would have
+ * gained nothing. A probe asking for `display` on a plain <div>, which is one
+ * of the 63 and about as wired as a property gets, also answered "":
+ *
+ *     display= color= float= fs=          ('float' in gCS == true, length == 62)
+ *
+ * The property table was never the problem. `node->computed` was NULL, for
+ * every node in the document, because NOTHING HAD RUN THE CASCADE. css_apply
+ * is called from browser.c's render loop and from nowhere else, so any
+ * embedder that is not that loop -- the WPT runner is one, and so is any
+ * script reading a computed value in the same turn it wrote a style -- reads
+ * back a document that was never styled. One missing call, not 176 missing
+ * getters.
+ *
+ * So this is the flush CSSOM requires and names: getComputedStyle returns a
+ * *live* resolved-value declaration, and reading from it must first "update
+ * style" for the element. js_cssom.c already does the layout half of exactly
+ * this (flush_layout, via the reflow hook); this is the style half, and it is
+ * needed in the real browser too -- `el.style.color = 'red'` followed by
+ * `getComputedStyle(el).color` in the same tick read the PREVIOUS frame's
+ * cascade before this existed.
+ *
+ * TWO CASES, and the difference between them is who owns the author CSS:
+ *
+ *   the embedder has styled this document already -- css_apply recorded its
+ *   page_css above, so re-running the cascade uses THE SAME sheet set. This
+ *   matters more than it looks: browser.c's text includes external <link>
+ *   stylesheets it fetched, and re-applying with only the inline <style> text
+ *   would silently un-style every page that keeps its CSS in a file.
+ *
+ *   nobody has styled it -- then there is no recorded sheet set and we collect
+ *   one from the document's own <style> elements, which is what browser.c's
+ *   collect_style does, and expand var() through the same css_expand_vars it
+ *   uses. External sheets are NOT fetched here: fetching is the embedder's job
+ *   and doing it from a property read would turn a getter into a network call.
+ *
+ * The dirty signal is js_dom.c's, read WEAKLY and never cleared. Not clearing
+ * it is deliberate: the embedder's render loop clears it to decide whether to
+ * re-LAYOUT, and a flush that consumed the flag would leave the browser
+ * painting a stale frame. The cost of not clearing is that a burst of reads
+ * after one mutation re-styles once per read; the scope is the marked subtree,
+ * which is what makes that affordable.
+ * ====================================================================== */
+
+/* js_dom.c is not linked into the CSS host tests, so every one of these is
+ * weak and guarded. Spelled __attribute__((__weak__)) rather than the lowercase
+ * `weak` macro on purpose -- c/apps/libc/include/features.h defines that name,
+ * and it has already cost this tree three bugs. */
+extern int          js_dom_dirty(void)                    __attribute__((__weak__));
+extern int          js_dom_inval_roots(void)              __attribute__((__weak__));
+extern struct node *js_dom_inval_root(int i, int *sibs)   __attribute__((__weak__));
+
+static int g_auto_flushes;      /* test seam: how many flushes actually ran */
+
+static int collect_inline_sheets(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && n->tag &&
+        n->tag[0] == 's' && n->tag[1] == 't' && n->tag[2] == 'y' &&
+        n->tag[3] == 'l' && n->tag[4] == 'e' && n->tag[5] == 0) {
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text)
+                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+        if (o < max - 1) out[o++] = '\n';
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_inline_sheets(c, out, o, max);
+    return o;
+}
+
+/* Gather the document's own <style> text and expand var(). Returns a malloc'd
+ * NUL-terminated buffer (ownership passes to g_auto_owned) and the length, or
+ * NULL when the document has no inline CSS at all -- which is not a failure:
+ * the UA sheet plus the inline style= attributes still produce a real computed
+ * style, and that is exactly the case the probe above was in. */
+static char *build_author_css(struct node *root, int *out_len)
+{
+    *out_len = 0;
+    int raw_cap = (int)dom_doc_bytes(root->doc) + 1024;
+    if (raw_cap < 4096) raw_cap = 4096;
+    char *raw = malloc((size_t)raw_cap);
+    if (!raw) return NULL;
+    int raw_len = collect_inline_sheets(root, raw, 0, raw_cap);
+    raw[raw_len] = 0;
+    if (raw_len <= 0) { free(raw); return NULL; }
+
+    /* var() substitution can only grow the text, and by an amount bounded by
+     * the declarations it is substituting FROM -- which are in the same text.
+     * 4x plus a floor is the same shape of headroom browser.c's static gives,
+     * sized to the input instead of to the largest page imagined. */
+    int exp_cap = raw_len * 4 + 4096;
+    char *exp = malloc((size_t)exp_cap);
+    if (!exp) { *out_len = raw_len; return raw; }
+    int exp_len = css_expand_vars(raw, raw_len, exp, exp_cap);
+    if (exp_len <= 0) { free(exp); *out_len = raw_len; return raw; }
+    free(raw);
+    exp[exp_len < exp_cap ? exp_len : exp_cap - 1] = 0;
+    *out_len = exp_len;
+    return exp;
+}
+
+void css_ensure_styled(struct node *n)
+{
+    if (!n || !n->doc) return;
+    struct node *root = n;
+    while (root->parent) root = root->parent;
+
+    int fresh = (g_auto_ready && g_auto_root == root);
+    int dirty = (&js_dom_dirty != 0) ? js_dom_dirty() : 0;
+    if (fresh && !dirty) return;
+
+    if (!fresh) {
+        /* First style pass for this document, and nobody supplied the CSS. */
+        if (g_auto_owned) { free(g_auto_owned); g_auto_owned = NULL; }
+        int len = 0;
+        g_auto_owned = build_author_css(root, &len);
+        g_auto_flushes++;
+        css_apply(root, g_auto_owned, len);      /* records g_auto_* */
+        return;
+    }
+
+    /* Styled once, and something has been mutated since the embedder last
+     * looked. Re-run the cascade over the marked scopes when js_dom named
+     * them, and over the document when it could not. */
+    g_auto_flushes++;
+    int nroots = (&js_dom_inval_roots != 0) ? js_dom_inval_roots() : 0;
+    if (nroots > 0 && &js_dom_inval_root != 0) {
+        int all = 0;
+        for (int i = 0; i < nroots; i++) {
+            int sibs = 0;
+            struct node *r = js_dom_inval_root(i, &sibs);
+            if (!r) { all = 1; break; }          /* destroyed: scope is unknown */
+            css_apply_scoped(r, sibs, g_auto_css, g_auto_len);
+        }
+        if (!all) return;
+    }
+    css_apply(root, g_auto_css, g_auto_len);
+}
+
+int css_style_flushes(void) { return g_auto_flushes; }
 
 /* ======================================================================
  * Scoped re-style
