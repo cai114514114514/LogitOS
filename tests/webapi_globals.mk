@@ -125,10 +125,17 @@ test-encoding-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 test-eventloop: $(BUILD)/wpt_test wg-local-root
 	@if [ ! -e $(WG_LOCAL)/resources/testharness.js ]; then \
 	    echo "test-eventloop: no corpus at $(WG_ROOT) -- skipped"; exit 0; fi; \
-	 $(BUILD)/wpt_test --root $(WG_LOCAL) --only platform/event-loop-order \
-	    -b /dev/null -v 20 2>&1 | grep -vE '^\s*(dom|html|encoding|url|console|css|platform) ' ; \
-	 $(BUILD)/wpt_test --root $(WG_LOCAL) --only platform/event-loop-order -b /dev/null 2>/dev/null \
+	 $(BUILD)/wpt_test --root $(WG_LOCAL) --subset platform \
+	    --only platform/event-loop-order -b /dev/null -v 20 2>&1 \
+	    | grep -E '^  (FAIL|HARNESS)' || true; \
+	 $(BUILD)/wpt_test --root $(WG_LOCAL) --subset platform \
+	    --only platform/event-loop-order -b /dev/null 2>/dev/null \
 	    | sed -n 's/^WPT: \([0-9]*\)\/\([0-9]*\).*/\1 \2/p' | { read got tot; \
-	      if [ -z "$$got" ] || [ "$$got" != "$$tot" ]; then \
+	      if [ -z "$$tot" ] || [ "$$tot" -eq 0 ]; then \
+	        echo "test-eventloop: FAILED -- ZERO subtests ran. 0/0 is not a pass:"; \
+	        echo "  --only filters within the runner's default subset list, so a"; \
+	        echo "  local root needs --subset too or it silently matches nothing."; \
+	        exit 1; \
+	      elif [ "$$got" != "$$tot" ]; then \
 	        echo "test-eventloop: FAILED -- $$got/$$tot"; exit 1; \
 	      else echo "test-eventloop: ok -- $$got/$$tot"; fi; }
