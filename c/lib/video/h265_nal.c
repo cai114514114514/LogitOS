@@ -359,6 +359,13 @@ int h265_parse_sps(h265dec *d, bs_t *bs)
      * profile we have never heard of while using only tools we implement.
      * parse_ptl() therefore still only skips the profile_tier_level bits.
      *
+     * This is not hypothetical, and here is the case that settles it: encode
+     * anything 10-bit intra-only with x265 and it writes "Main 10 Intra",
+     * whose general_profile_idc is a RANGE EXTENSIONS value (4) -- ffprobe
+     * reports the stream as profile "Rext". The bitstream uses nothing but
+     * Main 10 tools and decodes here bit-exactly. A profile whitelist would
+     * have rejected it, and every 10-bit HEIC still on the planet with it.
+     *
      * Luma and chroma are allowed to differ in the syntax; nothing below
      * assumes they are equal, every path takes the depth of the component it
      * is working on. 12-bit and above are refused because the residual and

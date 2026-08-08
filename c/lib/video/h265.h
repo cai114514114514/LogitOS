@@ -25,6 +25,38 @@
  *
  * B slices decode but are NOT bit-exact at either depth; they are gated
  * separately (`make test-h265-b`) rather than counted in `make test-h265`.
+ * Since real streaming content is B-heavy, treat "HEVC works" as a claim about
+ * I/P material only until that is fixed. The Main 10 conformance stream this
+ * tree gates on (WP_A_MAIN10_Toshiba_3) is 1 I + 255 P and does NOT cover it.
+ *
+ * ===================== MEMORY: READ THIS BEFORE 1080p =====================
+ * Samples are 16 bits at every depth, and a reference picture carries a
+ * H265_PAD = 80 sample border on all four sides. Per DECODED PICTURE:
+ *
+ *      416x240   ~0.6 MB        1280x720  ~4.0 MB
+ *      832x480   ~1.8 MB        1920x1080 ~7.9 MB
+ *
+ * and the DPB holds up to sps_max_dec_pic_buffering of them at once (16 + the
+ * current picture in the worst case). Measured peak RSS decoding 1080p is
+ * 62 MB at BOTH 8 and 10 bits.
+ *
+ * mini-libc's malloc arena is 24 MiB (c/apps/libc/src/malloc.c, ARENA_SIZE).
+ * So 1080p DOES NOT FIT ON THE DEVICE at either bit depth, and did not fit
+ * before the 10-bit work either -- widening did not cause this, it only made
+ * it about 80% worse (34.5 MB -> 62.2 MB peak for the same 1080p 8-bit
+ * stream). Anything on LogitOS that decodes video must either stay at or
+ * below roughly 720p with a shallow DPB, or grow the arena first.
+ *
+ * Cheapest real saving, if someone needs it: H265_PAD is 80 and only exists
+ * so that ordinary motion vectors can read past the picture edge without
+ * taking the emulate() path. At 1080p that border is 24% of the luma plane.
+ * Dropping it to 16 saves about 20% of the whole DPB (7.9 -> 6.3 MB per
+ * picture) and costs only SPEED: h265_mc.c already clamps every out-of-range
+ * fetch through emulate(), which is bit-exact with the padded read, so
+ * correctness does not depend on the border at all -- it would just be taken
+ * more often. Halving again would mean storing 8-bit streams in 8 bits, which
+ * re-introduces the dual sample type this decoder deliberately does not have.
+ * ==========================================================================
  *
  * Deliberately the same shape as h264.h -- one decoder object, a pull model
  * over an Annex B byte stream -- with ONE difference that HEVC forces: B
