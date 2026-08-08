@@ -535,6 +535,46 @@ static const char EVENTS_JS[] =
 "  return fresh;\n"
 "}\n"
 "\n"
+/* ---- the dispatch depth bound -------------------------------------------
+ *
+ * dispatchEvent is a NATIVE TRAMPOLINE: JS calls it, it calls into C, and the
+ * C dispatcher calls the listeners back in JS. Any listener that dispatches
+ * again re-enters, so a page can drive unbounded recursion through a path that
+ * is only partly made of JS frames. Real browsers bound this; nothing here did
+ * -- there was no depth or re-entrancy counter anywhere in this file.
+ *
+ * WHY 64, measured rather than picked. A probe that recurses dispatchEvent on
+ * one element in this engine reaches depth 450 and then QuickJS's own limit
+ * (js_page.c: JS_SetMaxStackSize(2 MiB), against a host thread stack of 8 MiB)
+ * throws a catchable stack-overflow, so 450 is the measured floor for the
+ * CHEAPEST possible dispatch path. A real one is heavier: the listener does
+ * work, the C dispatcher builds a propagation path, a handler may reach into
+ * layout. 64 sits about seven times below that floor, which leaves room for a
+ * path whose native frames cost several times what the probe's do, and it is
+ * still one to two orders of magnitude above anything a page or a conformance
+ * test legitimately nests -- re-entrant dispatch in the corpus is two or three
+ * deep, not sixty.
+ *
+ * The point is not the exact number. It is that exceeding it becomes a
+ * THROWN, CATCHABLE error -- one failing subtest, or one broken handler on a
+ * page -- instead of a SIGSEGV that takes the whole process down with no
+ * exception anywhere to explain it. That trade is worth making at any limit
+ * comfortably above real use, which is why it is set low rather than as close
+ * to the measured ceiling as it could be.
+ *
+ * RangeError, and not a DOMException, deliberately: this is the same category
+ * as "Maximum call stack size exceeded", not a spec-defined dispatch error, and
+ * a test asserting InvalidStateError must not accidentally be satisfied by it.
+ * The counter is decremented in the `finally` of both dispatchers, so a
+ * listener that throws cannot leak depth and wedge every later dispatch. */
+"var MAX_DISPATCH_DEPTH = 64, dispatchDepth = 0;\n"
+"function enterDispatch() {\n"
+"  if (dispatchDepth >= MAX_DISPATCH_DEPTH)\n"
+"    throw new RangeError('dispatchEvent: maximum event dispatch depth ('\n"
+"                         + MAX_DISPATCH_DEPTH + ') exceeded');\n"
+"  dispatchDepth++;\n"
+"}\n"
+"\n"
 /* An event that came out of createEvent and was never initialised must not
  * dispatch, and neither must one that is already mid-dispatch. */
 "function checkDispatchable(ev) {\n"
@@ -601,6 +641,9 @@ static const char EVENTS_JS[] =
  *     instead, which is one line off in the spec and the whole of
  *     Event-propagation.html -- so the suppressed case is handled here and
  *     never reaches C. */
+/*     Before anything is mutated: enterDispatch() throws on the way IN, so a
+ *     refused dispatch must not have left `dispatching` set on the event. */
+"      enterDispatch();\n"
 "      var pre = !!x.cancelBubble;\n"
 "      x.cancelBubble = false; x.stopImm = false; x.dispatching = true;\n"
 "      try {\n"
@@ -619,7 +662,8 @@ static const char EVENTS_JS[] =
 "          shadow(ev, 'defaultPrevented', use.defaultPrevented);\n"
 "        }\n"
 "        return r;\n"
-"      } finally { x.dispatching = false; x.cancelBubble = false; x.stopImm = false; }\n"
+"      } finally { dispatchDepth--;\n"
+"                  x.dispatching = false; x.cancelBubble = false; x.stopImm = false; }\n"
 "    };\n"
 "    defv(obj, 'dispatchEvent', named(disp, 'dispatchEvent', 1));\n"
 "  }\n"
@@ -693,6 +737,7 @@ static const char EVENTS_JS[] =
 "}, 'removeEventListener', 2);\n"
 "ET.prototype.dispatchEvent = named(function (ev) {\n"
 "  checkDispatchable(ev);\n"
+"  enterDispatch();\n"
 "  var x = xof(ev);\n"
 "  var list = etOf(this, false);\n"
 "  var snap = list ? list.slice() : [];\n"
@@ -722,6 +767,7 @@ static const char EVENTS_JS[] =
 "      }\n"
 "    }\n"
 "  } finally {\n"
+"    dispatchDepth--;\n"
 "    x.dispatching = false;\n"
 "    shadow(ev, 'currentTarget', null);\n"
 "    shadow(ev, 'eventPhase', 0);\n"

@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>dispatchEvent is bounded, and exceeding the bound throws</title>
+<!--
+  A LOCAL test, not an upstream one, because it asserts an IMPLEMENTATION
+  bound rather than a spec behaviour -- no browser is required to stop at any
+  particular depth, and upstream WPT rightly does not test one.
+
+  What it is for. dispatchEvent is a native trampoline: JS -> C dispatcher ->
+  JS listener. A listener that dispatches again re-enters, so the recursion is
+  only partly made of JS frames and js_events.c had no depth or re-entrancy
+  counter at all. Unbounded native recursion is a SIGSEGV, and a segfault has
+  no exception, no stack and no failing subtest -- it takes the process down.
+  js_events.c now stops at MAX_DISPATCH_DEPTH = 64.
+
+  THIS TEST IS ITS OWN NEGATIVE CONTROL. It asserts the depth reached is
+  EXACTLY 64, not merely "bounded". Delete the guard and the number becomes
+  450 -- measured, that being where QuickJS's own 2 MiB stack limit trips on
+  the cheapest possible dispatch path -- and the first assertion goes red. A
+  test that only asked "did it throw?" would stay green with the guard gone.
+-->
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id=log></div>
+<div id=t></div>
+
+<script>
+var el = document.getElementById("t");
+
+test(function () {
+  var depth = 0, max = 0, err = null;
+  el.addEventListener("deep", function () {
+    depth++; if (depth > max) max = depth;
+    try { el.dispatchEvent(new Event("deep")); }
+    catch (e) { if (!err) err = e; }
+    depth--;
+  });
+  el.dispatchEvent(new Event("deep"));
+
+  assert_equals(max, 64, "handlers ran to depth " + max + ", expected the bound");
+  assert_true(err instanceof RangeError,
+              "exceeding the bound must throw a RangeError, got " + err);
+  assert_regexp_match(String(err), /dispatch depth/,
+                      "the error has to say what it is: " + err);
+}, "unbounded re-entrant dispatch stops at the bound and throws");
+
+test(function () {
+  /* The bound must not leak. A refused dispatch unwinds through the same
+   * finally as a successful one, so an ordinary dispatch after a rejected
+   * deep one still works -- otherwise the first runaway on a page wedges
+   * every event after it, which is worse than the crash it replaced. */
+  var seen = 0;
+  el.addEventListener("plain", function () { seen++; });
+  el.dispatchEvent(new Event("plain"));
+  assert_equals(seen, 1, "a plain dispatch after a refused deep one");
+}, "the depth counter unwinds -- a refused dispatch leaks no depth");
+
+test(function () {
+  /* Nesting a handful deep is legal and common: a listener that dispatches a
+   * synthetic event is ordinary page code. The bound has to be far enough
+   * above real use that it is never the thing a page hits. */
+  var depth = 0, reached = 0;
+  el.addEventListener("nest", function () {
+    depth++; reached = depth;
+    if (depth < 8) el.dispatchEvent(new Event("nest"));
+    depth--;
+  });
+  el.dispatchEvent(new Event("nest"));
+  assert_equals(reached, 8, "eight levels of ordinary nesting must be fine");
+}, "ordinary nested dispatch is well below the bound");
+</script>

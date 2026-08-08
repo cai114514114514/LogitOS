@@ -54,7 +54,8 @@ EVENTS_NEED = @if [ -z "$(strip $(WPT_TEST_SRC))" ]; then \
 $(BUILD)/wpt_events: $$(WPT_TEST_SRC) $$(HTML_PARSER_SRC) $(EVENTS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	$(EVENTS_NEED)
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(WPT_CF) -o $@ $(WPT_TEST_SRC) $(EVENTS_SRC) $(HTML_PARSER_SRC) \
+	@$(CC) -O2 -w $(WPT_CF) -o $@ $(filter-out $(EVENTS_SRC),$(WPT_TEST_SRC)) \
+	    $(EVENTS_SRC) $(HTML_PARSER_SRC) \
 	    $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
 # The same runner with the propagation walk removed. See the JS_EVENTS_NEGCTL
@@ -62,7 +63,8 @@ $(BUILD)/wpt_events: $$(WPT_TEST_SRC) $$(HTML_PARSER_SRC) $(EVENTS_SRC) $(BUILD)
 $(BUILD)/wpt_events_negctl: $$(WPT_TEST_SRC) $$(HTML_PARSER_SRC) $(EVENTS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	$(EVENTS_NEED)
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(WPT_CF) -DJS_EVENTS_NEGCTL -o $@ $(WPT_TEST_SRC) $(EVENTS_SRC) \
+	@$(CC) -O2 -w $(WPT_CF) -DJS_EVENTS_NEGCTL -o $@ \
+	    $(filter-out $(EVENTS_SRC),$(WPT_TEST_SRC)) $(EVENTS_SRC) \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
 # The ordering suite is served out of a staged root rather than a committed

@@ -46,44 +46,57 @@
 WPT_ROOT ?= third_party/wpt
 WPT_BASELINE := tests/unit/wpt_expected_fail.txt
 
+# ===========================================================================
 # THE LINK MUST MATCH browser.aex's, OR EVERY NUMBER IS OF A BROWSER THAT DOES
-# NOT EXIST. This list was hand-written and drifted twice in one night:
-# js_events.c and then js_cssom.c were committed, the runner did not link
-# either, and the suite went on reporting the bugs they fixed as still broken --
-# 841 dead `<body onload>` files reported as a browser defect when the fix was
-# sitting in the tree. That is worse than a missing test: it is a measurement
-# that actively misinforms.
+# NOT EXIST.
+# ===========================================================================
+# THE INVARIANT, in one sentence, because a hand-kept copy of another list is
+# the thing that failed three times:
 #
-# So the JS side is a WILDCARD, exactly as the Makefile's BROWSER_JS_SRC is, and
-# for the reason its comment gives: "the JS/DOM side is being extended by
-# several parallel lines at once and a hand-kept list makes this one line the
-# thing they all have to edit". browser.c itself is excluded -- it is the app
-# shell (window, event loop, address bar) and draws through logit.h's `int 0x80`
-# wrappers a host process cannot execute.
-WPT_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/browser/js_*.c)))
+#   The runner links exactly what the browser links, MINUS the files named in
+#   WPT_BROWSER_OUT below, each with a reason. Nothing here re-states a file
+#   the browser already names.
+#
+# It is written as a SUBTRACTION from the Makefile's own variables --
+# $(BROWSER_PIPE) and $(BROWSER_JS_SRC), the same ones $(BUILD)/browser.elf is
+# built from -- rather than as a parallel list, because a parallel list has now
+# drifted three times and each time the suite reported a browser that did not
+# exist:
+#
+#   1. js_events.c committed, runner did not link it.
+#   2. js_cssom.c committed, runner did not link it -- and the suite went on
+#      reporting 841 dead `<body onload>` files as a browser defect while the
+#      fix sat in the tree (commit 12d33d6, "the runner was measuring a browser
+#      that does not exist").
+#   3. TONIGHT, while this fragment was being edited: layout.c grew a call to
+#      layout_flex_run() and the runner's hand-written pipeline list did not
+#      have layout_flex.c, so `make test-wpt` stopped LINKING. That one was
+#      loud. The first two were silent, which is the worse failure and the
+#      reason a link check has to be structural rather than a habit.
+#
+# A subtraction cannot drift: a file added to the browser is in this runner the
+# same minute, and a file the runner must NOT have has to be named here, once,
+# with its reason. test-wpt-link then only has to check that every name in
+# WPT_BROWSER_OUT is still a file the browser actually links -- i.e. that no
+# exclusion has gone stale and is silently keeping nothing out.
+#
+# js_*.c is ALSO taken as a wildcard on top of the subtraction, belt and
+# braces: BROWSER_JS_SRC is that same wildcard today, and if a line ever
+# replaces it with a hand-written list this fragment does not follow it down.
+#
+# NOTHING ELSE IS WILDCARDED, and the third drift is the reason. The obvious
+# reflex on hitting it was `$(wildcard c/apps/browser/layout_*.c)` -- take the
+# whole layout family so the runner is never behind. That is WRONG here and
+# fails loudly: layout.c integrates layout_flex.c with `#include
+# "layout_flex.c"` (line 22), so the wildcard produces duplicate definitions of
+# layout_flex_run. BROWSER_PIPE knew that and the wildcard did not. Which is
+# the argument for the subtraction restated: the browser's own list is the only
+# thing that knows how the browser is built, so ASK IT rather than guess
+# alongside it.
+ifeq ($(strip $(BROWSER_PIPE)),)
+WPT_LINK_ERR := tests/wpt.mk: BROWSER_PIPE is empty -- this fragment must be included from the Makefile, AFTER it. Refusing to link a runner from a partial source list.
+endif
 
-# The pipeline, tracked against BROWSER_PIPE. What is IN, and why:
-#   dom/html_tokenizer/html_tree/dom_serialize  the DOM and its parser
-#   layout.c                                    see the note below -- this one
-#                                               was a real decision
-#   forms.c focus.c                             form control state and focus:
-#                                               html/semantics/forms is a whole
-#                                               subset and "typing into a page"
-#                                               is the user-visible complaint
-#   css_engine/css_vars/css_extra               the cascade LibCSS drives
-#   url/http1/cookies                           fetch, URL and document.cookie
-#   lib/image/*                                 img decode, reached from
-#                                               js_dom's <img> and from layout
-#
-# LINKING layout.c IS A DELIBERATE CHOICE AND THE ALTERNATIVE WAS REAL. Without
-# it every box is 0x0, so getBoundingClientRect, offsetWidth and the whole
-# check-layout-th.js family fail on geometry for a reason that has nothing to do
-# with the layout engine -- hundreds of css/ files that can never pass, sitting
-# in the baseline forever as noise a reader has to learn to ignore. A ratchet
-# whose entries are permanently unfixable is the thing this project already
-# learned not to build. The cost is that the runner is bigger and slower than a
-# DOM-only harness; that is the cheaper of the two.
-#
 # What is deliberately OUT, and why -- each of these is a claim, so each gets a
 # reason rather than an omission:
 #   browser.c browser_rt.c browser_paint.c tabs.c   the app shell: window
@@ -93,12 +106,33 @@ WPT_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/bro
 #       checkout -- linking both would be two definitions of the fetch.
 #   http2.c hpack.c hpool.c   transport. The host build answers requests out of
 #       WEBAPI_FILE_ROOT through h1_conn, so no socket and no h2 is reached.
-WPT_TEST_SRC := tests/unit/wpt_test.c $(WPT_JS_SRC)
-WPT_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c
-WPT_TEST_SRC += c/apps/browser/layout.c c/apps/browser/forms.c c/apps/browser/focus.c
-WPT_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
-WPT_TEST_SRC += c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c
-WPT_TEST_SRC += c/lib/image/svg.c c/lib/image/exif.c
+WPT_BROWSER_OUT := c/apps/browser/browser.c c/apps/browser/browser_rt.c \
+                   c/apps/browser/browser_paint.c c/apps/browser/tabs.c \
+                   c/net/http/http2.c c/net/http/hpack.c c/net/http/hpool.c
+
+# $(HTML_PARSER_SRC) is subtracted only because the link line passes it
+# separately (it is shared with test-html5lib and the dom tests); it is IN the
+# runner, twice would be duplicate symbols.
+WPT_FROM_BROWSER := $(filter-out $(WPT_BROWSER_OUT) $(HTML_PARSER_SRC),\
+    $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) c/apps/browser/css_engine.c \
+           $(wildcard c/apps/browser/js_*.c)))
+WPT_JS_SRC := $(filter c/apps/browser/js_%,$(WPT_FROM_BROWSER))
+
+# LINKING layout.c IS A DELIBERATE CHOICE AND THE ALTERNATIVE WAS REAL, and it
+# was re-put and re-decided the same way. Without it every box is 0x0, so
+# getBoundingClientRect, offsetWidth and the whole check-layout-th.js family
+# fail on geometry for a reason that has nothing to do with the layout engine --
+# hundreds of css/ files that can never pass, sitting in the baseline forever as
+# noise a reader has to learn to ignore. A ratchet whose entries are
+# permanently unfixable is the thing this project already learned not to build,
+# and css/ is the subset the 60% target turns on. The cost is that the runner
+# is bigger and slower than a DOM-only harness, and that its text metric is a
+# monospace approximation rather than a rasterised TrueType advance (see
+# text_measure in the runner) -- so glyph-advance geometry is measured against
+# an approximation while BOX-MODEL geometry, which is nearly all of it, is
+# measured against layout.c. That is the cheaper of the two errors by a wide
+# margin, and the expensive one is the one that cannot ever be repaired.
+WPT_TEST_SRC := tests/unit/wpt_test.c $(WPT_FROM_BROWSER)
 # js_media.c / js_media_src.c publish HTMLMediaElement, Audio and MediaSource,
 # and the interface tests in the corpus DO ask for those -- so they are linked,
 # and linking them drags in the demuxer and every codec behind it. That is the
@@ -108,20 +142,40 @@ WPT_TEST_SRC += $(wildcard c/lib/media/*.c) $(wildcard c/lib/video/*.c)
 WPT_TEST_SRC += $(wildcard c/lib/audio/*.c)
 WPT_TEST_SRC += tests/unit/rust_host_shim.c
 
-# The drift check, as a target rather than a habit: every c/apps/browser/js_*.c
-# the browser links must be in this runner's list. It is a wildcard on both
-# sides now, so this can only fire if someone hand-edits one of them -- which is
-# exactly when it needs to fire.
+# The drift check, as a target rather than a habit. Two questions, and after
+# the subtraction above they are the only two left that can go wrong:
+#
+#   1. Is every browser TU either linked here or NAMED in WPT_BROWSER_OUT?
+#      (Structurally yes -- unless someone rewrites the derivation by hand,
+#      which is exactly when this has to fire.)
+#   2. Is every name in WPT_BROWSER_OUT still a file the browser links? A
+#      stale exclusion excludes nothing and quietly stops being a decision;
+#      worse, a RENAMED file leaves its old name here and its new one linked,
+#      which reads as if the exclusion still holds.
 .PHONY: test-wpt-link
 test-wpt-link:
-	@miss=""; for f in $(sort $(wildcard c/apps/browser/js_*.c)); do \
-	    case " $(WPT_TEST_SRC) c/apps/browser/browser.c " in *" $$f "*) ;; \
+	@if [ -n "$(WPT_LINK_ERR)" ]; then echo "$(WPT_LINK_ERR)"; exit 1; fi
+	@miss=""; for f in $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) $(wildcard c/apps/browser/js_*.c)); do \
+	    case " $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(WPT_BROWSER_OUT) " in *" $$f "*) ;; \
 	    *) miss="$$miss $$f";; esac; done; \
 	if [ -n "$$miss" ]; then \
-	    echo "test-wpt-link: FAIL -- the browser links these and the runner does not:"; \
+	    echo "test-wpt-link: FAIL -- the browser links these, and the runner neither"; \
+	    echo "  links them nor names them in WPT_BROWSER_OUT:"; \
 	    for f in $$miss; do echo "    $$f"; done; \
 	    echo "  Every measurement is then of a browser that does not exist."; exit 1; \
-	 else echo "test-wpt-link: ok -- runner links every c/apps/browser/js_*.c"; fi
+	 fi; \
+	stale=""; for f in $(WPT_BROWSER_OUT); do \
+	    case " $(BROWSER_PIPE) $(BROWSER_JS_SRC) " in *" $$f "*) ;; \
+	    *) stale="$$stale $$f";; esac; done; \
+	if [ -n "$$stale" ]; then \
+	    echo "test-wpt-link: FAIL -- WPT_BROWSER_OUT names files the browser does"; \
+	    echo "  not link. The exclusion excludes nothing, so it has stopped being"; \
+	    echo "  a decision -- and if the file was RENAMED, its new name is linked"; \
+	    echo "  here while this reads as if it were still out:"; \
+	    for f in $$stale; do echo "    $$f"; done; exit 1; \
+	 fi; \
+	echo "test-wpt-link: ok -- runner = browser minus $(words $(WPT_BROWSER_OUT)) named files;"; \
+	echo "  $(words $(WPT_FROM_BROWSER)) shared TUs, every exclusion still real."
 # -Ic/apps is here and not in BTEST_INC because js_platform.c includes
 # "logit.h" (the ring-3 syscall wrappers) unconditionally for its getrandom
 # path. On the host those wrappers are never called -- the file's own fallback
@@ -130,11 +184,16 @@ WPT_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/li
 
 $(BUILD)/wpt_test: $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
+	@if [ -n "$(WPT_LINK_ERR)" ]; then echo "$(WPT_LINK_ERR)"; exit 1; fi
 	@$(CC) -O2 -w $(WPT_CF) -o $@ $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
+# J= the number of files run at once. Isolation is per-file and results are
+# consumed in file order, so J changes wall time and no number; a full corpus
+# pass is hours at J=1 and well under one at J=8. ORDER= seeds the shuffle.
 WPT_ARGS = --root $(WPT_ROOT) -b $(WPT_BASELINE) $(if $(V),-v $(V),) \
-           $(if $(ONLY),--only $(ONLY),) $(if $(SUBSET),--subset $(SUBSET),)
+           $(if $(ONLY),--only $(ONLY),) $(if $(SUBSET),--subset $(SUBSET),) \
+           --jobs $(if $(J),$(J),8) $(if $(ORDER),--shuffle $(ORDER),)
 
 # A large part of WPT is DATA-DRIVEN: the test file's first act is to fetch its
 # own JSON and everything after that depends on it. Without a net installed,
@@ -206,6 +265,83 @@ test-wpt-fire-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    echo "test-wpt-fire-negctl: ok -- the self-check catches a doubled load:"; \
 	    grep -E 'FAIL' $(BUILD)/wpt_fire2.log | head -3; \
 	 fi
+
+# --- test-wpt-depth: dispatchEvent is bounded -------------------------------
+# js_events.c's dispatchEvent is a native trampoline (JS -> C dispatcher -> JS
+# listener), so a listener that dispatches again recurses through frames that
+# are only partly JS. There was no depth counter in that file at all, and
+# unbounded native recursion is a SIGSEGV -- no exception, no stack, no failing
+# subtest, just a dead process. It is now bounded at 64, and the test asserts
+# the bound EXACTLY rather than "it threw": with the guard removed the depth
+# reached is 450 (where QuickJS's own 2 MiB limit trips on the cheapest
+# dispatch path), so the first assertion is its own negative control. See the
+# comment above MAX_DISPATCH_DEPTH in c/apps/browser/js_events.c for why 64.
+.PHONY: test-wpt-depth
+test-wpt-depth: $(BUILD)/wpt_test
+	@if [ ! -d "$(WPT_ROOT)/resources" ]; then \
+	    echo "test-wpt-depth: no corpus at $(WPT_ROOT) -- testharness.js is upstream's."; \
+	    echo "  Not a regression; point WPT_ROOT at a checkout."; exit 0; fi
+	@ln -sfn "$(abspath $(WPT_ROOT))/resources" tests/wpt-local/resources
+	@$(BUILD)/wpt_test --root tests/wpt-local --subset platform \
+	    --only event-dispatch-depth -b /dev/null > $(BUILD)/wpt_depth.log 2>&1; \
+	 line=$$(grep -E '^WPT: ' $(BUILD)/wpt_depth.log); \
+	 echo "test-wpt-depth: $$line"; \
+	 case "$$line" in \
+	   "WPT: 3/3 subtests passed"*) echo "test-wpt-depth: ok -- dispatch stops at 64 and throws";; \
+	   *) echo "test-wpt-depth: FAILED -- the dispatch bound is not what it says:"; \
+	      grep -E 'FAIL|CRASH|HARNESS' $(BUILD)/wpt_depth.log | head -6; exit 1;; \
+	 esac
+
+# --- test-wpt-order: the same corpus, two orders, identical numbers ---------
+# THE ACCEPTANCE TEST FOR ISOLATION, and it is one line: run the corpus twice
+# in two different random file orders and require the two baselines to be
+# identical as SETS.
+#
+# That single assertion covers all three of the things this runner was rebuilt
+# for. It cannot pass if a file crashes the process, because the run would not
+# finish. It cannot pass if state leaks between files, because a leak makes a
+# file's result depend on what ran before it and the orders differ. And it
+# cannot pass if the numbers are not reproducible, which is what "97.5%" and
+# every other percentage this project has quoted silently assumed.
+#
+# Compared as sorted sets, not as files: the baseline is written in file order,
+# so a shuffled run writes the same entries in a different order by
+# construction and diffing raw would fail on nothing.
+#
+# SUBSET= scopes it (default: the whole corpus, which is the point). Two seeds
+# rather than sorted-vs-shuffled, so neither run is the "normal" one.
+.PHONY: test-wpt-order
+test-wpt-order: $(BUILD)/wpt_test
+	@if [ ! -d "$(WPT_ROOT)" ]; then \
+	    echo "test-wpt-order: no corpus at $(WPT_ROOT) -- nothing to measure."; exit 0; fi
+	@echo "test-wpt-order: run 1 of 2 (order seed 20260809)"
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) \
+	    --jobs $(if $(J),$(J),8) --shuffle 20260809 \
+	    --write-baseline -b $(BUILD)/wpt_order_a.txt > $(BUILD)/wpt_order_a.log 2>&1 || true
+	@echo "test-wpt-order: run 2 of 2 (order seed 77)"
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) \
+	    --jobs $(if $(J),$(J),8) --shuffle 77 \
+	    --write-baseline -b $(BUILD)/wpt_order_b.txt > $(BUILD)/wpt_order_b.log 2>&1 || true
+	@grep -E '^WPT: ' $(BUILD)/wpt_order_a.log | sed 's/^/  order A: /'
+	@grep -E '^WPT: ' $(BUILD)/wpt_order_b.log | sed 's/^/  order B: /'
+	@grep -v '^#' $(BUILD)/wpt_order_a.txt | sort > $(BUILD)/wpt_order_a.set
+	@grep -v '^#' $(BUILD)/wpt_order_b.txt | sort > $(BUILD)/wpt_order_b.set
+	@if ! diff -q $(BUILD)/wpt_order_a.set $(BUILD)/wpt_order_b.set > /dev/null; then \
+	    echo "test-wpt-order: FAILED -- the same corpus in two orders is not the"; \
+	    echo "  same result. Every percentage this suite prints is then one sample"; \
+	    echo "  from an unknown distribution. Entries that differ:"; \
+	    diff $(BUILD)/wpt_order_a.set $(BUILD)/wpt_order_b.set | head -20; \
+	    echo "  ($$(diff $(BUILD)/wpt_order_a.set $(BUILD)/wpt_order_b.set | grep -c '^[<>]') lines)"; \
+	    exit 1; \
+	 fi
+	@grep -E '^WPT: |subtests \|' $(BUILD)/wpt_order_a.log > $(BUILD)/wpt_order_a.sum
+	@grep -E '^WPT: |subtests \|' $(BUILD)/wpt_order_b.log > $(BUILD)/wpt_order_b.sum
+	@if ! diff -q $(BUILD)/wpt_order_a.sum $(BUILD)/wpt_order_b.sum > /dev/null; then \
+	    echo "test-wpt-order: FAILED -- identical failure SETS but different counts."; \
+	    diff $(BUILD)/wpt_order_a.sum $(BUILD)/wpt_order_b.sum; exit 1; \
+	 fi
+	@echo "test-wpt-order: ok -- two random orders, identical per-subtest results"
+	@echo "  ($$(grep -vc '^#' $(BUILD)/wpt_order_a.set) failure entries, byte-identical as sets)"
 
 # --- test-wpt-negctl: the negative control ----------------------------------
 # An assertion nobody has watched fail is not a known-failing assertion, and
