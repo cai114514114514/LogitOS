@@ -1,0 +1,100 @@
+{
+ "name": "apple",
+ "url": "https://www.apple.com/",
+ "started": "2026-08-08T20:58:57",
+ "verdict": "ERRORS",
+ "why": "painted 595556 changed px in 9.7s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.apple.com/",
+  "bytes": 254160,
+  "redirects": [],
+  "script_tags": 18,
+  "script_src": 13,
+  "img_tags": 99,
+  "inventory": {
+   "stylesheets": 9,
+   "script_src": 13,
+   "inline_scripts": 1,
+   "images": 42,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 23
+  },
+  "elapsed": 0.0
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'split' of undefined",
+    "stack": [
+     "at <anonymous> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at forEach (native)",
+     "at _findCountryMatches (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at _getLocaleCode (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at _setUserLangLocale (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at <anonymous> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at <anonymous> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at call (native)",
+     "at i (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at e (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+     "at <eval> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [
+   "timer: TypeError: cannot read property 'replace' of undefined"
+  ],
+  "module_exceptions": [
+   "https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function"
+  ],
+  "fetch_failed": [
+   "fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 4,
+  "requests": 45,
+  "dials": 4,
+  "reused": 41,
+  "modules": 6,
+  "modules_failed": 0,
+  "heap_peak_k": 11863,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 9.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 595556,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 514610,
+  "ink_px_blank": 1154,
+  "colours": 218,
+  "rich_tiles_proxy": 1
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/apple.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/apple.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 9,
+   "script_src": 13,
+   "inline_scripts": 1,
+   "images": 42,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 23
+  },
+  "gap": null
+ },
+ "finished": "2026-08-08T20:59:43"
+}

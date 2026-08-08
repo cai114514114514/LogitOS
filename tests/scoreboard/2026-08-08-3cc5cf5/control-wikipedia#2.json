@@ -1,0 +1,58 @@
+{
+ "name": "control-wikipedia#2",
+ "url": "https://en.wikipedia.org/wiki/Operating_system",
+ "started": "2026-08-08T21:02:59",
+ "verdict": "PAINTED",
+ "why": "painted 12372 changed px in 11.5s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": false,
+  "error": "TimeoutError: The read operation timed out",
+  "elapsed": 48.6
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/3/39/IBM_system_360-50_console_-_MfK_Bern.jpg/250px-IBM_system_360-50_console_-_MfK_Bern.jpg?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 16,
+  "dials": 4,
+  "reused": 12,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14635,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 11.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 12372,
+  "changed_bbox": [
+   152,
+   16,
+   1256,
+   764
+  ],
+  "ink_px": 6480,
+  "ink_px_blank": 1154,
+  "colours": 309,
+  "rich_tiles_proxy": 1
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/control-wikipedia#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/control-wikipedia#2.serial.txt",
+ "subresources": {
+  "host_inventory": null,
+  "gap": null
+ },
+ "finished": "2026-08-08T21:03:48"
+}

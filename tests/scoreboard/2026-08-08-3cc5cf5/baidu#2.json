@@ -1,0 +1,114 @@
+{
+ "name": "baidu#2",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-08T21:00:16",
+ "verdict": "ERRORS",
+ "why": "painted 19968 changed px in 0.7s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 227,
+  "redirects": [],
+  "script_tags": 1,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 1,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: not an HTMLMediaElement",
+    "stack": [
+     "at keyOf (<media>:76)",
+     "at <anonymous> (<media>)",
+     "at createScript (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:32)",
+     "at load (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)",
+     "at loadModule (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:16)",
+     "at <anonymous> (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)",
+     "at each (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)",
+     "at nativeAsyncRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)",
+     "at req (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:26)",
+     "at globalRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:3)",
+     "at t (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2083)",
+     "at <anonymous> (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2091)",
+     "at <eval> (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2091)"
+    ],
+    "count": 3
+   },
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+     "at apply (native)",
+     "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+     "at ready (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:84)",
+     "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+     "at call (native)",
+     "at forEach (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+     "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:92)",
+     "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+     "at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [
+   "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6, @baidu/ubc-report-sdk/dist/ubc-web-sdk.umd.min)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 15,
+  "dials": 7,
+  "reused": 8,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9034,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 0.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 19968,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 9858,
+  "ink_px_blank": 1154,
+  "colours": 445,
+  "rich_tiles_proxy": 5
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/baidu#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/baidu#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 1,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "gap": null
+ },
+ "finished": "2026-08-08T21:00:52"
+}

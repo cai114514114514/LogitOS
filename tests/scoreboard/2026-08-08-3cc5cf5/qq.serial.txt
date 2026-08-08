@@ -1,0 +1,90 @@
+[wm] perf t=18458 composites=153 ns=1979674219 max=45661376 motions=18 curmoves=11 curns=516177 full=112 rects=153 cpx=54954088 fpx=54954088 presns=109406142 torn=0 defer=60 late=0 drawmax=24
+[sock] connected www.qq.com via ipv4 ::ffff:198.18.0.40
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for www.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wm] perf t=19466 composites=196 ns=2483935446 max=45661376 motions=18 curmoves=11 curns=516177 full=155 rects=196 cpx=71338088 fpx=71338088 presns=139662442 torn=0 defer=87 late=0 drawmax=24
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[sock] connected mat1.gtimg.com via ipv4 ::ffff:198.18.0.75
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 95 irq 58 softirq 19 inline 7 poll 2 idle 0/0 halt/skip
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[browser] heap peak 7671K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[wm] perf t=20466 composites=207 ns=2658293337 max=45661376 motions=18 curmoves=11 curns=516177 full=164 rects=207 cpx=76519528 fpx=76519528 presns=149102837 torn=0 defer=91 late=0 drawmax=82
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[net] rx path: frames 608 irq 188 softirq 53 inline 34 poll 2 idle 0/0 halt/skip
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+[js] uncaught in event listener: TypeError: cannot read property 'slice' of undefined
+[error] Uncaught (in promise) undefined
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs
+[mm] low: 109827 frames free (429 MiB), 21210 used, 0 shared, 0 bugs
+[mm] low: 109571 frames free (428 MiB), 21466 used, 0 shared, 0 bugs
+[mm] low: 109315 frames free (427 MiB), 21722 used, 0 shared, 0 bugs
+[mm] low: 109059 frames free (426 MiB), 21978 used, 0 shared, 0 bugs
+[mm] low: 108803 frames free (425 MiB), 22234 used, 0 shared, 0 bugs
+[mm] low: 108547 frames free (424 MiB), 22490 used, 0 shared, 0 bugs
+[mm] low: 108291 frames free (423 MiB), 22746 used, 0 shared, 0 bugs
+[mm] low: 108035 frames free (422 MiB), 23002 used, 0 shared, 0 bugs
+[mm] low: 107779 frames free (421 MiB), 23258 used, 0 shared, 0 bugs
+[mm] low: 107523 frames free (420 MiB), 23514 used, 0 shared, 0 bugs
+[mm] low: 107267 frames free (419 MiB), 23770 used, 0 shared, 0 bugs
+[mm] low: 107011 frames free (418 MiB), 24026 used, 0 shared, 0 bugs
+[mm] low: 106755 frames free (417 MiB), 24282 used, 0 shared, 0 bugs
+[mm] low: 106499 frames free (416 MiB), 24538 used, 0 shared, 0 bugs
+[mm] low: 106243 frames free (415 MiB), 24794 used, 0 shared, 0 bugs
+[mm] low: 105987 frames free (414 MiB), 25050 used, 0 shared, 0 bugs
+[mm] low: 105731 frames free (413 MiB), 25306 used, 0 shared, 0 bugs
+[mm] low: 105475 frames free (412 MiB), 25562 used, 0 shared, 0 bugs
+[mm] low: 105219 frames free (411 MiB), 25818 used, 0 shared, 0 bugs
+[mm] low: 104963 frames free (410 MiB), 26074 used, 0 shared, 0 bugs
+[mm] low: 104707 frames free (409 MiB), 26330 used, 0 shared, 0 bugs
+[mm] low: 104451 frames free (408 MiB), 26586 used, 0 shared, 0 bugs
+[mm] low: 104195 frames free (407 MiB), 26842 used, 0 shared, 0 bugs
+[mm] low: 103939 frames free (406 MiB), 27098 used, 0 shared, 0 bugs
+[mm] low: 103683 frames free (405 MiB), 27354 used, 0 shared, 0 bugs
+[mm] low: 103427 frames free (404 MiB), 27610 used, 0 shared, 0 bugs
+[mm] low: 103171 frames free (403 MiB), 27866 used, 0 shared, 0 bugs
+[mm] low: 102915 frames free (402 MiB), 28122 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'charAt' of undefined
+TypeError: cannot read property 'charAt' of undefined
+    at n (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at ../../node_modules/.pnpm/@tencent+qn-request@6.0.1_@tencent+qn-storage@4.0.3/node_modules/@tencent/qn-request/es/request.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at call (native)
+    at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at ../../node_modules/.pnpm/@tencent+qn-ad-basic@3.1.6_@tencent+qn-storage@4.0.3_@tencent+qn-utils@5.0.4/node_modules/@tencent/qn-ad-basic/pc/index.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at call (native)
+    at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:774)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at <eval> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+[browser] load done: 11 requests, 5 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
+[js] uncaught in timer: TypeError: cannot read property 'slice' of undefined
+[wm] perf t=27495 composites=235 ns=3093605148 max=45661376 motions=18 curmoves=11 curns=516177 full=178 rects=235 cpx=88213608 fpx=88213608 presns=174946224 torn=0 defer=94 late=0 drawmax=82
+[warn] emonitorIns send TypeError: cannot read property 'slice' of undefined

@@ -65,6 +65,23 @@ MEASUREMENT, AND WHY EACH ONE IS THE ONE CHOSEN
   here; a message alone ("cannot read property 'charAt' of undefined") names the
   operation and nothing else.
 
+WHAT THE VERDICTS MEAN, AND WHAT THE TOP ONE DOES NOT
+=====================================================
+CRASH, HARNESS, TIMEOUT, FETCH-FAIL, BLANK, ERRORS, GAP, FLAKY, NETWORK,
+PAINTED -- worst first, and that is the order the table prints in.
+
+The top verdict is PAINTED and it used to be called OK. OK was wrong, and the
+user said so about their own machine: deepseek painted, and painted WRONG, and
+was published as OK for it. PAINTED means exactly three measured things -- more
+than BLANK_MAX pixels changed against an empty tab, no script threw, and the
+guest requested everything the document requires. It does NOT mean the right
+pixels changed. Nothing on this machine checks that; reftests do, and none of
+WPT's run here.
+
+GAP is the verdict for a page that painted and threw nothing and still never
+asked for part of itself. See the comment above inventory() for why that class
+was invisible until it had its own verdict.
+
 HONEST ABOUT THE NETWORK
 ========================
 These are live sites over QEMU SLIRP. They rate-limit, they A/B, they go down.
@@ -325,6 +342,106 @@ def parse_serial(text):
     return out
 
 
+# ------------------------------------- what the document asked a browser to get
+#
+# THE HOLE THIS CLOSES, stated plainly because the instrument shipped with it.
+#
+# The first baseline scored stripe.com as its top verdict. Its record said 80
+# requests, zero failed fetches, 585 colours. The user then opened the same page
+# themselves and counted SEVENTY-TWO STYLESHEETS, none of them applied. Both
+# observations were true: the guest issued 80 requests against 74 script srcs
+# plus the document, and there is no room in that number for 72 stylesheets. The
+# browser never asked for them. `fetch_failed` was empty because A REQUEST THAT
+# IS NEVER MADE CANNOT FAIL, and an instrument built out of failure counters is
+# blind to that whole class by construction -- silently, and in favour of the
+# browser.
+#
+# So the document is inventoried here and compared with the number of requests
+# the guest actually issued. The comparison is deliberately ONE-SIDED: it fires
+# only when the guest issued FEWER requests than the document's mandatory
+# synchronous set, which no amount of deduplication, caching or capping can
+# explain away. A page that requests more than the inventory (its own dynamic
+# loader, images, redirects) produces no gap, and a gap that is real but smaller
+# than the slack is missed. False negatives, never false positives -- the same
+# trade the rest of this file makes.
+
+_ATTR = r'\b%s\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))'
+
+
+def _attr(tag, name):
+    m = re.search(_ATTR % name, tag, re.I)
+    if not m:
+        return None
+    return m.group(1) or m.group(2) or m.group(3) or ""
+
+
+# js_module.c's JavaScript-MIME whitelist. Anything else is a data block that a
+# browser must NOT execute or fetch as script (importmap, application/json,
+# text/template), so counting it would invent a gap that is not there.
+JS_TYPES = ("text/javascript", "application/javascript", "application/x-javascript",
+            "text/ecmascript", "application/ecmascript", "text/jscript",
+            "text/javascript1.5", "text/x-javascript", "javascript")
+# browser.c collect_css_links() drops these on purpose: they are inactive
+# accessibility override themes, and skipping them is a correctness filter, not
+# a budget. Mirrored here so they are not counted as missing.
+CSS_SKIP = ("high_contrast", "colorblind", "tritanopia")
+
+
+def inventory(body):
+    """The subresources the document asks for, filtered the way browser.c filters
+    them, deduplicated the way browser.c deduplicates them (by the raw attribute
+    value). Anything this over-counts becomes a false gap, so every filter here
+    exists to match a filter in the loader."""
+    sheets, scripts, preloads, fonts, imgs = set(), set(), set(), set(), set()
+    inline_scripts = 0
+
+    for tag in re.findall(r"<link\b[^>]*>", body, re.I):
+        href = _attr(tag, "href") or ""
+        rel = (_attr(tag, "rel") or "").lower()
+        if not href or href.lower().startswith("data:"):
+            continue
+        low = href.lower()
+        if any(s in low for s in CSS_SKIP):
+            continue
+        if "stylesheet" in rel:
+            sheets.add(href)
+        elif "preload" in rel or "prefetch" in rel or "modulepreload" in rel:
+            (fonts if (_attr(tag, "as") or "").lower() == "font" else preloads).add(href)
+
+    for m in re.finditer(r"<script\b([^>]*)>", body, re.I):
+        tag = "<script" + m.group(1) + ">"
+        typ = (_attr(tag, "type") or "").strip().lower().split(";")[0]
+        module = typ == "module"
+        if typ and not module and typ not in JS_TYPES:
+            continue                                     # a data block, not code
+        if not module and re.search(r"\bnomodule\b", m.group(1), re.I):
+            continue                                     # a fallback we do not need
+        src = _attr(tag, "src")
+        if src:
+            if src.lower().startswith(("data:", "javascript:")):
+                continue
+            scripts.add(src)
+        else:
+            inline_scripts += 1
+
+    for tag in re.findall(r"<img\b[^>]*>", body, re.I):
+        src = _attr(tag, "src") or ""
+        if src and not src.lower().startswith("data:"):
+            imgs.add(src)
+
+    inv = {"stylesheets": len(sheets), "script_src": len(scripts),
+           "inline_scripts": inline_scripts, "images": len(imgs),
+           "preloads": len(preloads), "fonts": len(fonts)}
+    # THE MANDATORY SET: the document itself, every external classic/module
+    # script, and every stylesheet. browser.c fetches all three unconditionally
+    # and before it paints. Images are excluded because the loader caps them
+    # (res_add stops at 16), and preloads because they are a hint a browser is
+    # allowed to ignore -- counting either would produce a gap the loader is
+    # entitled to.
+    inv["mandatory"] = 1 + len(scripts) + len(sheets)
+    return inv
+
+
 # ------------------------------------------------------------- the host probe
 
 def host_probe(url, result):
@@ -365,11 +482,12 @@ def host_probe(url, result):
                 script_tags=len(re.findall(r"<script\b", body, re.I)),
                 script_src=len(re.findall(r"<script\b[^>]*\bsrc=", body, re.I)),
                 img_tags=len(re.findall(r"<img\b", body, re.I)),
+                inventory=inventory(body),
                 elapsed=round(time.time() - t0, 1))
     except urllib.error.HTTPError as e:
         result.update(ok=True, status=e.code, final_url=url, bytes=0,
                       redirects=chain, script_tags=0, script_src=0, img_tags=0,
-                      elapsed=round(time.time() - t0, 1))
+                      inventory=None, elapsed=round(time.time() - t0, 1))
     except Exception as e:                                        # noqa: BLE001
         result.update(ok=False, error="%s: %s" % (type(e).__name__, e),
                       elapsed=round(time.time() - t0, 1))
@@ -668,6 +786,19 @@ def main():
         nexc = (len(g["exceptions"]) + len(g["timer_exceptions"])
                 + len(g["module_exceptions"]))
 
+        # THE SUBRESOURCE GAP. See the comment above inventory(): one-sided, so
+        # a positive number is a claim that the guest issued fewer requests than
+        # the document's mandatory set, which nothing legitimate explains.
+        inv = probe.get("inventory")
+        gap = None
+        if inv and g.get("requests") is not None and loaded:
+            short = inv["mandatory"] - g["requests"]
+            if short > 0:
+                gap = {"mandatory": inv["mandatory"], "requested": g["requests"],
+                       "short_by": short, "stylesheets": inv["stylesheets"],
+                       "script_src": inv["script_src"]}
+        rec["subresources"] = {"host_inventory": inv, "gap": gap}
+
         # ---- the verdict ----
         if g["panic"]:
             finish("CRASH", "the kernel panicked")
@@ -685,14 +816,32 @@ def main():
                                   "either (%s)" % (LOAD_BUDGET, probe.get("error", "?")))
             finish("TIMEOUT", "no `load done` in %.0fs (host fetched it in %.1fs)"
                    % (LOAD_BUDGET, probe.get("elapsed", -1)))
+        gaptext = ""
+        if gap:
+            gaptext = (" -- and the document asked for %d subresources (%d "
+                       "stylesheets, %d script srcs) against %d requests issued, "
+                       "short by %d" %
+                       (gap["mandatory"], gap["stylesheets"], gap["script_src"],
+                        gap["requested"], gap["short_by"]))
         if changed <= BLANK_MAX:
             finish("BLANK", "loaded in %.1fs and painted %d changed pixels "
-                            "(%d exceptions)" % (load_s, changed, nexc))
+                            "(%d exceptions)%s" % (load_s, changed, nexc, gaptext))
         if nexc:
-            finish("ERRORS", "rendered %d changed px in %.1fs but %d JS exception(s)"
-                   % (changed, load_s, nexc))
-        finish("OK", "rendered %d changed px in %.1fs, no JS exceptions"
-               % (changed, load_s))
+            finish("ERRORS", "painted %d changed px in %.1fs but %d JS exception(s)%s"
+                   % (changed, load_s, nexc, gaptext))
+        if gap:
+            finish("GAP", "painted %d changed px in %.1fs and threw nothing, but "
+                          "never requested %d of the %d subresources the document "
+                          "asks for (%d stylesheets in the document)"
+                   % (changed, load_s, gap["short_by"], gap["mandatory"],
+                      gap["stylesheets"]))
+        # PAINTED, not OK. The word `OK` promises correctness this instrument
+        # cannot check: it measures that pixels changed and that nothing threw.
+        # deepseek painted, and painted WRONG, and was called OK for it. Nothing
+        # here looks at whether the right pixels changed -- reftests do that, and
+        # none run on this machine.
+        finish("PAINTED", "painted %d changed px in %.1fs, no JS exceptions, no "
+                          "subresource gap" % (changed, load_s))
 
     except SystemExit:
         raise

@@ -1,0 +1,91 @@
+[wm] perf t=18449 composites=246 ns=2501452372 max=38778383 motions=18 curmoves=13 curns=668449 full=205 rects=246 cpx=71386788 fpx=71386788 presns=138428989 torn=0 defer=137 late=0 drawmax=31
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.38
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[wm] perf t=19451 composites=307 ns=3002100880 max=38778383 motions=18 curmoves=13 curns=668449 full=265 rects=307 cpx=86777508 fpx=86777508 presns=168695083 torn=0 defer=182 late=0 drawmax=31
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.69
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (s1.hdslb.com)
+[net] rx path: frames 66 irq 67 softirq 33 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[browser] heap peak 8422K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i1.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=http/1.1
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 2 cached)
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 4 cached)
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (s1.hdslb.com)
+[net] rx path: frames 608 irq 287 softirq 143 inline 0 poll 10 idle 0/0 halt/skip
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'split' of undefined
+TypeError: cannot read property 'split' of undefined
+    at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at call (native)
+    at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)
+[mm] low: 109827 frames free (429 MiB), 21210 used, 0 shared, 0 bugs
+[mm] low: 109571 frames free (428 MiB), 21466 used, 0 shared, 0 bugs
+[mm] low: 109315 frames free (427 MiB), 21722 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 109059 frames free (426 MiB), 21978 used, 0 shared, 0 bugs
+[mm] low: 108803 frames free (425 MiB), 22234 used, 0 shared, 0 bugs
+[mm] low: 108547 frames free (424 MiB), 22490 used, 0 shared, 0 bugs
+[mm] low: 108291 frames free (423 MiB), 22746 used, 0 shared, 0 bugs
+[mm] low: 108035 frames free (422 MiB), 23002 used, 0 shared, 0 bugs
+[mm] low: 107779 frames free (421 MiB), 23258 used, 0 shared, 0 bugs
+[mm] low: 107523 frames free (420 MiB), 23514 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) ReferenceError: 'SVGElement' is not defined
+    at Gv (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js:48)
+
+[error] Uncaught (in promise) ReferenceError: 'SVGElement' is not defined
+    at Gv (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js:48)
+
+[browser] module rejected https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js: ReferenceError: 'SVGElement' is not defined
+[browser] load done: 15 requests, 9 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 3 evicted, 4 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)

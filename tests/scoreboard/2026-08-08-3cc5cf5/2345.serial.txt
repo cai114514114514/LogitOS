@@ -1,0 +1,120 @@
+[wm] perf t=18512 composites=164 ns=2038995763 max=51541355 motions=18 curmoves=10 curns=493957 full=122 rects=164 cpx=50965992 fpx=50965992 presns=112363178 torn=0 defer=74 late=0 drawmax=28
+[sock] connected www.2345.com via ipv4 ::ffff:198.18.0.31
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.2345.com, alpn=http/1.1
+[tls] OCSP staple: good (www.2345.com)
+[wm] perf t=19512 composites=214 ns=2567080111 max=51541355 motions=18 curmoves=10 curns=493957 full=172 rects=214 cpx=66325992 fpx=66325992 presns=143372720 torn=0 defer=109 late=0 drawmax=28
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 2 cached)
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[sock] connected www-stream.2345cdn.net via ipv4 ::ffff:198.18.0.52
+[net] rx path: frames 68 irq 57 softirq 22 inline 7 poll 2 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 6 cached)
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[wm] perf t=20516 composites=225 ns=2800489493 max=51541355 motions=18 curmoves=10 curns=493957 full=181 rects=225 cpx=73555432 fpx=73555432 presns=156367898 torn=0 defer=111 late=0 drawmax=47
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[browser] heap peak 9856K
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 7 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 8 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 9 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 10 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for passport-plugin.hao184.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cpro.baidustatic.com, alpn=http/1.1
+[wm] perf t=21544 composites=238 ns=3126007242 max=51541355 motions=18 curmoves=10 curns=493957 full=193 rects=238 cpx=82802152 fpx=82802152 presns=177683811 torn=0 defer=114 late=0 drawmax=47
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 10 cached)
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 11 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 898s, 12 cached)
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[net] rx path: frames 640 irq 362 softirq 87 inline 92 poll 2 idle 0/0 halt/skip
+[browser] JS exception: TypeError: cannot read property 'toString' of undefined
+TypeError: cannot read property 'toString' of undefined
+    at <anonymous> (https://www.2345.com/#inline-script-1:29)
+    at <eval> (https://www.2345.com/#inline-script-1:52)
+[browser] JS exception: SyntaxError: unexpected token in expression: '<'
+SyntaxError: unexpected token in expression: '<'
+    at https://www.2345.com/:1
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[wm] perf t=22545 composites=251 ns=3453384275 max=51541355 motions=18 curmoves=10 curns=493957 full=204 rects=251 cpx=92079592 fpx=92079592 presns=197471188 torn=0 defer=116 late=0 drawmax=70
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs
+[mm] low: 109827 frames free (429 MiB), 21210 used, 0 shared, 0 bugs
+[mm] low: 109571 frames free (428 MiB), 21466 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'charAt' of undefined
+TypeError: cannot read property 'charAt' of undefined
+    at o (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at OTTw (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at tQ2B (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at JEQr (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at xAGQ (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at UnBK (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at CgaS (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at zuR4 (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at vDqi (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at DG18 (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at 7Qib (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at Aeqt (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at n (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)
+    at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js:2)
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www.2345.com/#inline-script-4:7)
+    at <eval> (https://www.2345.com/#inline-script-4:8)
+[browser] load done: 32 requests, 8 connections dialled, 24 reused, 0 modules loaded (0 failed)
+[browser] pool: 24 hits, 2 evicted, 3 closed
+[browser] resources: 0 from tab, 31 from network (tab 2 of 3)
+[wm] perf t=25545 composites=261 ns=3509371421 max=51541355 motions=18 curmoves=10 curns=493957 full=208 rects=261 cpx=93287912 fpx=93287912 presns=200996261 torn=0 defer=119 late=0 drawmax=70

@@ -1,0 +1,62 @@
+{
+ "name": "openai#2",
+ "url": "https://openai.com/",
+ "started": "2026-08-08T21:01:16",
+ "verdict": "BLANK",
+ "why": "loaded in 4.3s and painted 2924 changed pixels (1 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 403,
+  "final_url": "https://openai.com/",
+  "bytes": 0,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": null,
+  "elapsed": 3.5
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'document' of undefined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 1,
+  "dials": 1,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 4.3,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2924,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 1939,
+  "ink_px_blank": 1154,
+  "colours": 218,
+  "rich_tiles_proxy": 1
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/openai#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/openai#2.serial.txt",
+ "subresources": {
+  "host_inventory": null,
+  "gap": null
+ },
+ "finished": "2026-08-08T21:01:56"
+}

@@ -1,0 +1,47 @@
+[wm] perf t=18502 composites=262 ns=2666332974 max=46501656 motions=18 curmoves=11 curns=459731 full=223 rects=262 cpx=75362540 fpx=75362540 presns=157663312 torn=0 defer=151 late=0 drawmax=27
+[wm] perf t=19521 composites=349 ns=3306051241 max=46501656 motions=18 curmoves=11 curns=459731 full=309 rects=349 cpx=95873260 fpx=95873260 presns=195730971 torn=0 defer=217 late=0 drawmax=27
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=20522 composites=407 ns=3782270401 max=46501656 motions=18 curmoves=11 curns=459731 full=366 rects=407 cpx=111263980 fpx=111263980 presns=225608701 torn=0 defer=259 late=0 drawmax=27
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for en.wikipedia.org, alpn=http/1.1
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 1 cached)
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 2 cached)
+[net] rx path: frames 82 irq 43 softirq 20 inline 0 poll 4 idle 0/0 halt/skip
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for en.wikipedia.org (no chain, no signature), alpn=http/1.1
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[browser] heap peak 14635K
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 2 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 3 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 4 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 5 cached)
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/3/39/IBM_system_360-50_console_-_MfK_Bern.jpg/250px-IBM_system_360-50_console_-_MfK_Bern.jpg?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] skipping <script type="application/ld+json"> (not executable)
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[browser] load done: 16 requests, 4 connections dialled, 12 reused, 0 modules loaded (0 failed)
+[browser] pool: 12 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 7 from network (tab 2 of 3)
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs

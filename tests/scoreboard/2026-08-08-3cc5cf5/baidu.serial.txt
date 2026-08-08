@@ -1,0 +1,151 @@
+[wm] perf t=18512 composites=222 ns=2155681050 max=54815325 motions=18 curmoves=11 curns=401958 full=184 rects=222 cpx=53799336 fpx=53799336 presns=121546112 torn=0 defer=133 late=0 drawmax=28
+[wm] perf t=19524 composites=319 ns=2781831813 max=54815325 motions=18 curmoves=11 curns=401958 full=281 rects=319 cpx=72231336 fpx=72231336 presns=157241339 torn=0 defer=212 late=0 drawmax=28
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.32
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[webapi] navigation requested: http://www.baidu.com/ (the loader does not consume this yet)
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.32
+[net] rx path: frames 89 irq 50 softirq 25 inline 0 poll 2 idle 0/0 halt/skip
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[browser] heap peak 9034K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[wm] perf t=21526 composites=350 ns=3053722130 max=54815325 motions=18 curmoves=11 curns=401958 full=308 rects=350 cpx=79522216 fpx=79522216 presns=172608767 torn=0 defer=232 late=0 drawmax=37
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[wm] perf t=22527 composites=364 ns=3229691314 max=54815325 motions=18 curmoves=11 curns=401958 full=320 rects=364 cpx=84703656 fpx=84703656 presns=181684217 torn=0 defer=239 late=0 drawmax=37
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+无畏是青春的态度，热AI是时代的脉搏。
+各位新同学正以无畏的姿态奔赴通用人工智能的星辰大海！
+作为引领AI时代浪潮的主力军，广阔舞台，待你大展身手。
+乘风破浪，勇往直前，未来百度将与你一起，创造无限可能！
+
+%c百度2027校园招聘简历投递：https://talent.baidu.com/jobs/list color:red
+[browser] JS exception: TypeError: not an HTMLMediaElement
+TypeError: not an HTMLMediaElement
+    at keyOf (<media>:76)
+    at <anonymous> (<media>)
+    at createScript (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:32)
+    at load (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at loadModule (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:16)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at each (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at nativeAsyncRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at req (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:26)
+    at globalRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:3)
+    at t (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2083)
+    at <anonymous> (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2091)
+    at <eval> (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2091)
+[browser] JS exception: TypeError: not an HTMLMediaElement
+TypeError: not an HTMLMediaElement
+    at keyOf (<media>:76)
+    at <anonymous> (<media>)
+    at createScript (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:32)
+    at load (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at loadModule (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:16)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at each (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at nativeAsyncRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at req (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:26)
+    at globalRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:3)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:151)
+    at forEach (native)
+    at execute (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:151)
+    at init (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at apply (native)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at apply (native)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at call (native)
+    at forEach (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at ready (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:85)
+    at define (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:86)
+    at lazyLoad (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at call (native)
+    at forEach (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:92)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:95)
+    at <eval> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:152)
+[browser] JS exception: TypeError: not an HTMLMediaElement
+TypeError: not an HTMLMediaElement
+    at keyOf (<media>:76)
+    at <anonymous> (<media>)
+    at createScript (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:32)
+    at load (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at loadModule (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:16)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at each (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at nativeAsyncRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at req (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:26)
+    at globalRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:3)
+    at Ubc (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:17)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:114)
+    at apply (native)
+    at tryFinishRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at nativeAsyncRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at apply (native)
+    at tryFinishRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at modDefined (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at invokeFactory (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:12)
+    at modTryInvokeFactory (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:13)
+    at modAutoDefine (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)
+    at req (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:26)
+    at globalRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:3)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:115)
+    at call (native)
+    at ready (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:85)
+    at define (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:86)
+    at lazyLoad (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at call (native)
+    at forEach (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:92)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <eval> (https://pss.bdstatic.com/static/superman/js/min_super-2cd511c04a.js:29)
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at apply (native)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at ready (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:84)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at call (native)
+    at forEach (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:92)
+    at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)
+    at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs
+Error
+[browser] load done: 15 requests, 7 connections dialled, 8 reused, 0 modules loaded (0 failed)
+[browser] pool: 8 hits, 1 evicted, 3 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[js] uncaught in timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6, @baidu/ubc-report-sdk/dist/ubc-web-sdk.umd.min)

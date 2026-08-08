@@ -1,0 +1,1870 @@
+{
+ "date": "2026-08-08-3cc5cf5",
+ "generated": "2026-08-08T21:04:17",
+ "iso": "/tmp/sbbuild2/build/logit.iso",
+ "iso_sha256_16": "6fdd2a991522eda2",
+ "commit": "3cc5cf5",
+ "wall_seconds": 404.6,
+ "repeat": 2,
+ "sites": [
+  {
+   "name": "baidu",
+   "url": "https://www.baidu.com/",
+   "started": "2026-08-08T20:57:33",
+   "verdict": "ERRORS",
+   "why": "painted 20036 changed px in 0.7s but 3 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.baidu.com/",
+    "bytes": 227,
+    "redirects": [],
+    "script_tags": 1,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 1,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: not an HTMLMediaElement",
+      "stack": [
+       "at keyOf (<media>:76)",
+       "at <anonymous> (<media>)",
+       "at createScript (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:32)",
+       "at load (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)",
+       "at loadModule (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:16)",
+       "at <anonymous> (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)",
+       "at each (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js)",
+       "at nativeAsyncRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:15)",
+       "at req (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:26)",
+       "at globalRequire (https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js:3)",
+       "at t (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2083)",
+       "at <anonymous> (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2091)",
+       "at <eval> (http://pss.bdstatic.com/r/www/cache/static/global/js/all_async_search_f9d4473.js:2091)"
+      ],
+      "count": 3
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+       "at apply (native)",
+       "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+       "at ready (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:84)",
+       "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+       "at call (native)",
+       "at forEach (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+       "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:92)",
+       "at <anonymous> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js)",
+       "at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [
+     "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6, @baidu/ubc-report-sdk/dist/ubc-web-sdk.umd.min)"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 5,
+    "requests": 15,
+    "dials": 7,
+    "reused": 8,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 9034,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 0.7,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 20036,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 9858,
+    "ink_px_blank": 1154,
+    "colours": 445,
+    "rich_tiles_proxy": 5
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/baidu.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/baidu.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 1,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:10",
+   "reported": "opens but unusable; a redirect works host-side and not on the machine",
+   "wall_seconds": 37.4,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "deepseek",
+   "url": "https://www.deepseek.com/",
+   "started": "2026-08-08T20:57:33",
+   "verdict": "PAINTED",
+   "why": "painted 13480 changed px in 3.7s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.deepseek.com/",
+    "bytes": 100365,
+    "redirects": [],
+    "script_tags": 31,
+    "script_src": 12,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 11,
+     "inline_scripts": 19,
+     "images": 0,
+     "preloads": 1,
+     "fonts": 1,
+     "mandatory": 15
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 15,
+    "dials": 2,
+    "reused": 13,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 37873,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 3.7,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 13480,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 3100,
+    "ink_px_blank": 1154,
+    "colours": 597,
+    "rich_tiles_proxy": 14
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/deepseek.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/deepseek.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 11,
+     "inline_scripts": 19,
+     "images": 0,
+     "preloads": 1,
+     "fonts": 1,
+     "mandatory": 15
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:13",
+   "reported": "blank; needs Worker",
+   "wall_seconds": 40.4,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "doubao",
+   "url": "https://www.doubao.com/",
+   "started": "2026-08-08T20:57:33",
+   "verdict": "BLANK",
+   "why": "loaded in 6.7s and painted 3116 changed pixels (1 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.doubao.com/chat/",
+    "bytes": 395997,
+    "redirects": [
+     "302 -> https://www.doubao.com/chat/"
+    ],
+    "script_tags": 15,
+    "script_src": 4,
+    "img_tags": 1,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 1.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'charAt' of undefined",
+      "stack": [
+       "at r (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/3454.aa210245.js)",
+       "at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/3454.aa210245.js)",
+       "at 821336 (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/3454.aa210245.js)",
+       "at call (native)",
+       "at g (https://www.doubao.com/chat/#inline-script-6)",
+       "at 421128 (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/chat.e2f17740.js)",
+       "at call (native)",
+       "at g (https://www.doubao.com/chat/#inline-script-6)",
+       "at 164925 (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/chat.e2f17740.js:110)",
+       "at call (native)",
+       "at g (https://www.doubao.com/chat/#inline-script-6)",
+       "at 228485 (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/3454.aa210245.js)",
+       "at call (native)",
+       "at g (https://www.doubao.com/chat/#inline-script-6)",
+       "at n (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/chat.e2f17740.js)",
+       "at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/chat.e2f17740.js)",
+       "at <anonymous> (https://www.doubao.com/chat/#inline-script-6)",
+       "at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/chat.e2f17740.js)",
+       "at r (https://www.doubao.com/chat/#inline-script-6)",
+       "at <eval> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/chat.e2f17740.js:136)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 2,
+    "requests": 6,
+    "dials": 3,
+    "reused": 4,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 7559,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 6.7,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 3116,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 1154,
+    "ink_px_blank": 1154,
+    "colours": 217,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/doubao.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/doubao.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:15",
+   "reported": "TypeError charAt of undefined, localised to webpack module 3454",
+   "wall_seconds": 42.9,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "bing",
+   "url": "https://www.bing.com/",
+   "started": "2026-08-08T20:57:33",
+   "verdict": "ERRORS",
+   "why": "painted 625300 changed px in 2.5s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://cn.bing.com/",
+    "bytes": 184232,
+    "redirects": [
+     "302 -> https://cn.bing.com/"
+    ],
+    "script_tags": 22,
+    "script_src": 4,
+    "img_tags": 3,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 0.5
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "ReferenceError: '_w' is not defined",
+      "stack": [
+       "at <eval> (https://cn.bing.com/#inline-script-2:2)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 9,
+    "requests": 6,
+    "dials": 4,
+    "reused": 3,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 5402,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 2.5,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 625300,
+    "changed_bbox": [
+     140,
+     12,
+     1260,
+     764
+    ],
+    "ink_px": 514610,
+    "ink_px_blank": 1154,
+    "colours": 217,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/bing.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/bing.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:11",
+   "reported": "ReferenceError: w is not defined; renders \"一坨黑黑的\"",
+   "wall_seconds": 38.9,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "2345",
+   "url": "https://www.2345.com/",
+   "started": "2026-08-08T20:57:33",
+   "verdict": "ERRORS",
+   "why": "painted 6528 changed px in 6.1s but 4 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.2345.com/",
+    "bytes": 170264,
+    "redirects": [],
+    "script_tags": 19,
+    "script_src": 12,
+    "img_tags": 14,
+    "inventory": {
+     "stylesheets": 6,
+     "script_src": 11,
+     "inline_scripts": 8,
+     "images": 14,
+     "preloads": 80,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'toString' of undefined",
+      "stack": [
+       "at <anonymous> (https://www.2345.com/#inline-script-1:29)",
+       "at <eval> (https://www.2345.com/#inline-script-1:52)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "SyntaxError: unexpected token in expression: '<'",
+      "stack": [
+       "at https://www.2345.com/:1"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'charAt' of undefined",
+      "stack": [
+       "at o (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at OTTw (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at tQ2B (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at JEQr (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at xAGQ (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at UnBK (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at CgaS (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at zuR4 (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at vDqi (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at DG18 (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at 7Qib (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at Aeqt (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at n (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+       "at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://www.2345.com/#inline-script-4:7)",
+       "at <eval> (https://www.2345.com/#inline-script-4:8)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 32,
+    "dials": 8,
+    "reused": 24,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 9856,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 6.1,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 6528,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 2350,
+    "ink_px_blank": 1154,
+    "colours": 347,
+    "rich_tiles_proxy": 4
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/2345.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/2345.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 6,
+     "script_src": 11,
+     "inline_scripts": 8,
+     "images": 14,
+     "preloads": 80,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:15",
+   "reported": "TypeError toString of undefined",
+   "wall_seconds": 42.9,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "jd",
+   "url": "https://www.jd.com/",
+   "started": "2026-08-08T20:58:10",
+   "verdict": "ERRORS",
+   "why": "painted 11136 changed px in 7.3s but 7 JS exception(s) -- and the document asked for 18 subresources (3 stylesheets, 14 script srcs) against 16 requests issued, short by 2",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.jd.com/",
+    "bytes": 193466,
+    "redirects": [],
+    "script_tags": 35,
+    "script_src": 14,
+    "img_tags": 12,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 14,
+     "inline_scripts": 21,
+     "images": 12,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "ReferenceError: 'jQuery' is not defined",
+      "stack": [
+       "at <eval> (https://wl.jd.com/wl.js:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at clickReport (https://www.jd.com/#inline-script-16:3)",
+       "at <eval> (https://www.jd.com/#inline-script-16:18)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at getClstagPrefix (https://www.jd.com/#inline-script-17:4)",
+       "at footerRender (https://www.jd.com/#inline-script-17:20)",
+       "at <eval> (https://www.jd.com/#inline-script-17:24)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'length' of undefined",
+      "stack": [
+       "at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)",
+       "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)",
+       "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)",
+       "at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://www.jd.com/#inline-script-20:31)",
+       "at <eval> (https://www.jd.com/#inline-script-20:32)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'indexOf' of undefined",
+      "stack": [
+       "at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)",
+       "at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)",
+       "at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'charAt' of undefined",
+      "stack": [
+       "at resolveURL (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at standardBrowserEnv (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at zuR4 (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at vDqi (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at 6OU5 (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at zPjE (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at yEBl (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at pLYI (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at checkDeferredModules (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at webpackJsonpCallback (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+       "at <eval> (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [
+     "fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed",
+     "fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: connect failed",
+     "fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: connect failed"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 16,
+    "dials": 8,
+    "reused": 8,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 12380,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 7.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 11136,
+    "changed_bbox": [
+     140,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 3626,
+    "ink_px_blank": 1154,
+    "colours": 260,
+    "rich_tiles_proxy": 2
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/jd.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/jd.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 14,
+     "inline_scripts": 21,
+     "images": 12,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "gap": {
+     "mandatory": 18,
+     "requested": 16,
+     "short_by": 2,
+     "stylesheets": 3,
+     "script_src": 14
+    }
+   },
+   "finished": "2026-08-08T20:58:54",
+   "reported": "jQuery is not defined",
+   "wall_seconds": 44.0,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "anthropic",
+   "url": "https://www.anthropic.com/",
+   "started": "2026-08-08T20:58:12",
+   "verdict": "ERRORS",
+   "why": "painted 6028 changed px in 8.5s but 2 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.anthropic.com/",
+    "bytes": 181969,
+    "redirects": [],
+    "script_tags": 19,
+    "script_src": 10,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 10,
+     "inline_scripts": 9,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 12
+    },
+    "elapsed": 2.6
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'createHTMLDocument' of undefined",
+      "stack": [
+       "at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)",
+       "at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)",
+       "at <eval> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at 3949 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at call (native)",
+       "at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at 9461 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at call (native)",
+       "at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at 316 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at call (native)",
+       "at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)",
+       "at <eval> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 12,
+    "dials": 6,
+    "reused": 6,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 7185,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 8.5,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 6028,
+    "changed_bbox": [
+     148,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 2075,
+    "ink_px_blank": 1154,
+    "colours": 385,
+    "rich_tiles_proxy": 2
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/anthropic.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/anthropic.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 10,
+     "inline_scripts": 9,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 12
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:56",
+   "reported": "\"is not a function\"",
+   "wall_seconds": 45.0,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "openai",
+   "url": "https://openai.com/",
+   "started": "2026-08-08T21:01:16",
+   "verdict": "FLAKY",
+   "why": "verdicts disagreed across 2 runs: PAINTED, BLANK",
+   "host": {
+    "ok": true,
+    "status": 403,
+    "final_url": "https://openai.com/",
+    "bytes": 0,
+    "redirects": [],
+    "script_tags": 0,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": null,
+    "elapsed": 3.5
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "event listener: TypeError: cannot read property 'document' of undefined"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 4.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2924,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 1939,
+    "ink_px_blank": 1154,
+    "colours": 218,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/openai#2.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/openai#2.serial.txt",
+   "subresources": {
+    "host_inventory": null,
+    "gap": null
+   },
+   "finished": "2026-08-08T21:01:56",
+   "reported": "an icon and nothing else",
+   "wall_seconds": 41.0,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "bilibili",
+   "url": "https://www.bilibili.com/",
+   "started": "2026-08-08T20:58:16",
+   "verdict": "ERRORS",
+   "why": "painted 181612 changed px in 4.9s but 2 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.bilibili.com/",
+    "bytes": 119444,
+    "redirects": [],
+    "script_tags": 21,
+    "script_src": 8,
+    "img_tags": 14,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 13,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 0.3
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'split' of undefined",
+      "stack": [
+       "at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at call (native)",
+       "at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+       "at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [
+     "https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js: ReferenceError: 'SVGElement' is not defined"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 15,
+    "dials": 9,
+    "reused": 6,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8424,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 4.9,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 181612,
+    "changed_bbox": [
+     140,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 5719,
+    "ink_px_blank": 1154,
+    "colours": 669,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/bilibili.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/bilibili.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 13,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:57",
+   "reported": "TypeError split of undefined",
+   "wall_seconds": 41.4,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "douyin",
+   "url": "https://www.douyin.com/",
+   "started": "2026-08-08T20:58:16",
+   "verdict": "BLANK",
+   "why": "loaded in 0.7s and painted 2292 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.douyin.com/",
+    "bytes": 72914,
+    "redirects": [],
+    "script_tags": 2,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 2,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 0.7,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2292,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 1154,
+    "ink_px_blank": 1154,
+    "colours": 217,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/douyin.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/douyin.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 2,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:58:53",
+   "reported": "nothing renders at all",
+   "wall_seconds": 37.4,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "github",
+   "url": "https://github.com/",
+   "started": "2026-08-08T20:58:53",
+   "verdict": "BLANK",
+   "why": "loaded in 101.5s and painted 2232 changed pixels (5 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://github.com/",
+    "bytes": 572807,
+    "redirects": [],
+    "script_tags": 15,
+    "script_src": 9,
+    "img_tags": 24,
+    "inventory": {
+     "stylesheets": 19,
+     "script_src": 9,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 80,
+     "fonts": 1,
+     "mandatory": 29
+    },
+    "elapsed": 2.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "event listener: TypeError: cannot read property 'querySelectorAll' of null",
+     "timer: TypeError: not a function"
+    ],
+    "module_exceptions": [
+     "https://github.githubassets.com/assets/environment-5f4275945f5d6a48.js: TypeError: not a function",
+     "https://github.githubassets.com/assets/github-elements-a35dbed8604aab1b.js: TypeError: cannot read property 'appendChild' of undefined",
+     "https://github.githubassets.com/assets/behaviors-8b278a81bec0e9d2.js: TypeError: not an object"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 6,
+    "requests": 98,
+    "dials": 5,
+    "reused": 93,
+    "modules": 62,
+    "modules_failed": 0,
+    "heap_peak_k": 31570,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 101.5,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2232,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 1154,
+    "ink_px_blank": 1154,
+    "colours": 217,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/github.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/github.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 19,
+     "script_src": 9,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 80,
+     "fonts": 1,
+     "mandatory": 29
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T21:01:11",
+   "reported": "\"很奇怪\"",
+   "wall_seconds": 137.6,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "qq",
+   "url": "https://www.qq.com/",
+   "started": "2026-08-08T20:58:54",
+   "verdict": "ERRORS",
+   "why": "painted 70760 changed px in 7.3s but 3 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.qq.com/",
+    "bytes": 129680,
+    "redirects": [],
+    "script_tags": 13,
+    "script_src": 7,
+    "img_tags": 17,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'charAt' of undefined",
+      "stack": [
+       "at n (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at ../../node_modules/.pnpm/@tencent+qn-request@6.0.1_@tencent+qn-storage@4.0.3/node_modules/@tencent/qn-request/es/request.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at call (native)",
+       "at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at ../../node_modules/.pnpm/@tencent+qn-ad-basic@3.1.6_@tencent+qn-storage@4.0.3_@tencent+qn-utils@5.0.4/node_modules/@tencent/qn-ad-basic/pc/index.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at call (native)",
+       "at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:774)",
+       "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+       "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+       "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+       "at <eval> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [
+     "event listener: TypeError: cannot read property 'slice' of undefined",
+     "timer: TypeError: cannot read property 'slice' of undefined"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 11,
+    "dials": 5,
+    "reused": 6,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 7671,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 7.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 70760,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 14890,
+    "ink_px_blank": 1154,
+    "colours": 656,
+    "rich_tiles_proxy": 29
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/qq.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/qq.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:59:38",
+   "reported": "Uncaught (in promise) undefined",
+   "wall_seconds": 44.0,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "weixin",
+   "url": "https://weixin.qq.com/",
+   "started": "2026-08-08T20:58:57",
+   "verdict": "BLANK",
+   "why": "loaded in 1.9s and painted 2632 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://weixin.qq.com/",
+    "bytes": 112935,
+    "redirects": [],
+    "script_tags": 10,
+    "script_src": 5,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 3,
+     "inline_scripts": 3,
+     "images": 0,
+     "preloads": 5,
+     "fonts": 0,
+     "mandatory": 5
+    },
+    "elapsed": 0.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 5,
+    "dials": 3,
+    "reused": 2,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 5067,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 1.9,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2632,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 1154,
+    "ink_px_blank": 1154,
+    "colours": 225,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/weixin.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/weixin.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 3,
+     "inline_scripts": 3,
+     "images": 0,
+     "preloads": 5,
+     "fonts": 0,
+     "mandatory": 5
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:59:35",
+   "reported": "same as douyin -- nothing renders",
+   "wall_seconds": 38.5,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "apple",
+   "url": "https://www.apple.com/",
+   "started": "2026-08-08T20:58:57",
+   "verdict": "ERRORS",
+   "why": "painted 595556 changed px in 9.7s but 3 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.apple.com/",
+    "bytes": 254160,
+    "redirects": [],
+    "script_tags": 18,
+    "script_src": 13,
+    "img_tags": 99,
+    "inventory": {
+     "stylesheets": 9,
+     "script_src": 13,
+     "inline_scripts": 1,
+     "images": 42,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 23
+    },
+    "elapsed": 0.0
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'split' of undefined",
+      "stack": [
+       "at <anonymous> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at forEach (native)",
+       "at _findCountryMatches (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at _getLocaleCode (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at _setUserLangLocale (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at <anonymous> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at <anonymous> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at call (native)",
+       "at i (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at e (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)",
+       "at <eval> (https://www.apple.com/ac/localeswitcher/4/en_US/scripts/localeswitcher.built.js)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [
+     "timer: TypeError: cannot read property 'replace' of undefined"
+    ],
+    "module_exceptions": [
+     "https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function"
+    ],
+    "fetch_failed": [
+     "fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 4,
+    "requests": 45,
+    "dials": 4,
+    "reused": 41,
+    "modules": 6,
+    "modules_failed": 0,
+    "heap_peak_k": 11863,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 9.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 595556,
+    "changed_bbox": [
+     140,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 514610,
+    "ink_px_blank": 1154,
+    "colours": 218,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/apple.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/apple.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 9,
+     "script_src": 13,
+     "inline_scripts": 1,
+     "images": 42,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 23
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T20:59:43",
+   "reported": "0 images; TypeError split of undefined",
+   "wall_seconds": 46.5,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "stripe",
+   "url": "https://stripe.com/",
+   "started": "2026-08-08T20:59:35",
+   "verdict": "PAINTED",
+   "why": "painted 32884 changed px in 55.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://stripe.com/jp",
+    "bytes": 735671,
+    "redirects": [
+     "307 -> https://stripe.com/jp"
+    ],
+    "script_tags": 77,
+    "script_src": 74,
+    "img_tags": 30,
+    "inventory": {
+     "stylesheets": 5,
+     "script_src": 73,
+     "inline_scripts": 0,
+     "images": 30,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 79
+    },
+    "elapsed": 2.9
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 3,
+    "requests": 80,
+    "dials": 5,
+    "reused": 77,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 13108,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 55.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 32884,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 11244,
+    "ink_px_blank": 1154,
+    "colours": 585,
+    "rich_tiles_proxy": 3
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/stripe.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/stripe.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 5,
+     "script_src": 73,
+     "inline_scripts": 0,
+     "images": 30,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 79
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T21:01:06",
+   "reported": "73 scripts, extremely slow",
+   "wall_seconds": 91.6,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "qwen",
+   "url": "https://chat.qwen.ai/",
+   "started": "2026-08-08T20:59:38",
+   "verdict": "ERRORS",
+   "why": "painted 614872 changed px in 15.7s but 4 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://chat.qwen.ai/",
+    "bytes": 247129,
+    "redirects": [],
+    "script_tags": 18,
+    "script_src": 3,
+    "img_tags": 8,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 15,
+     "images": 8,
+     "preloads": 10,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 0.3
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'bind' of undefined",
+      "stack": [
+       "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at aeyaNG (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'setAttribute' of null",
+      "stack": [
+       "at <anonymous> (https://chat.qwen.ai/#inline-script-6)",
+       "at <eval> (https://chat.qwen.ai/#inline-script-6)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <eval> (https://chat.qwen.ai/#inline-script-13:1)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [
+     "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/main.js: SyntaxError: invalid escape sequence in regular expression"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 24,
+    "dials": 7,
+    "reused": 17,
+    "modules": 15,
+    "modules_failed": 1,
+    "heap_peak_k": 14658,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 15.7,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 614872,
+    "changed_bbox": [
+     140,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 509245,
+    "ink_px_blank": 1154,
+    "colours": 554,
+    "rich_tiles_proxy": 2
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/qwen.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/qwen.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 15,
+     "images": 8,
+     "preloads": 10,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T21:00:30",
+   "reported": "hangs",
+   "wall_seconds": 52.0,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "control-example",
+   "url": "http://example.com/",
+   "started": "2026-08-08T20:59:39",
+   "verdict": "PAINTED",
+   "why": "painted 8448 changed px in 0.7s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "http://example.com/",
+    "bytes": 559,
+    "redirects": [],
+    "script_tags": 0,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 0.7
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 0.7,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 8448,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 5566,
+    "ink_px_blank": 1154,
+    "colours": 409,
+    "rich_tiles_proxy": 2
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/control-example.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/control-example.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T21:00:15",
+   "reported": "CONTROL: the simplest page on the web, no JS, no CSS worth the name",
+   "wall_seconds": 37.0,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "control-wikipedia",
+   "url": "https://en.wikipedia.org/wiki/Operating_system",
+   "started": "2026-08-08T20:59:44",
+   "verdict": "PAINTED",
+   "why": "painted 12348 changed px in 10.9s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+    "bytes": 670621,
+    "redirects": [],
+    "script_tags": 5,
+    "script_src": 1,
+    "img_tags": 26,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "elapsed": 1.5
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/3/39/IBM_system_360-50_console_-_MfK_Bern.jpg/250px-IBM_system_360-50_console_-_MfK_Bern.jpg?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 16,
+    "dials": 4,
+    "reused": 12,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 14635,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 10.9,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 12348,
+    "changed_bbox": [
+     152,
+     16,
+     1256,
+     764
+    ],
+    "ink_px": 6480,
+    "ink_px_blank": 1154,
+    "colours": 309,
+    "rich_tiles_proxy": 1
+   },
+   "shot": "tests/scoreboard/2026-08-08-3cc5cf5/control-wikipedia.png",
+   "serial_log": "tests/scoreboard/2026-08-08-3cc5cf5/control-wikipedia.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "gap": null
+   },
+   "finished": "2026-08-08T21:00:32",
+   "reported": "CONTROL: known to render since M13",
+   "wall_seconds": 48.5,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  }
+ ]
+}

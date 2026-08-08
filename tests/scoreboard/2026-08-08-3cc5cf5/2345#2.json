@@ -1,0 +1,149 @@
+{
+ "name": "2345#2",
+ "url": "https://www.2345.com/",
+ "started": "2026-08-08T21:01:07",
+ "verdict": "ERRORS",
+ "why": "painted 6464 changed px in 6.1s but 4 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.2345.com/",
+  "bytes": 170271,
+  "redirects": [],
+  "script_tags": 19,
+  "script_src": 12,
+  "img_tags": 14,
+  "inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 80,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'toString' of undefined",
+    "stack": [
+     "at <anonymous> (https://www.2345.com/#inline-script-1:29)",
+     "at <eval> (https://www.2345.com/#inline-script-1:52)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "SyntaxError: unexpected token in expression: '<'",
+    "stack": [
+     "at https://www.2345.com/:1"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: cannot read property 'charAt' of undefined",
+    "stack": [
+     "at o (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at OTTw (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at tQ2B (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at JEQr (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at xAGQ (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at UnBK (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at CgaS (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at zuR4 (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at vDqi (https://www-stream.2345cdn.net/s/new2345/js/dll.3f102e04.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at DG18 (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at 7Qib (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at Aeqt (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at n (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js)",
+     "at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.412a8dd4.js:2)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <anonymous> (https://www.2345.com/#inline-script-4:7)",
+     "at <eval> (https://www.2345.com/#inline-script-4:8)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 32,
+  "dials": 8,
+  "reused": 24,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9856,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 6.1,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 6464,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 2350,
+  "ink_px_blank": 1154,
+  "colours": 347,
+  "rich_tiles_proxy": 4
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/2345#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/2345#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 80,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "gap": null
+ },
+ "finished": "2026-08-08T21:01:49"
+}

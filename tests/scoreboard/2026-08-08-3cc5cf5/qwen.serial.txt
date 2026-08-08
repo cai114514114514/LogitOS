@@ -1,0 +1,179 @@
+[wm] perf t=18455 composites=251 ns=2448679797 max=40946680 motions=18 curmoves=13 curns=573783 full=207 rects=251 cpx=68571424 fpx=68571424 presns=141053956 torn=0 defer=142 late=0 drawmax=23
+[sock] connected chat.qwen.ai via ipv4 ::ffff:198.18.0.44
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for chat.qwen.ai, alpn=http/1.1
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 1 cached)
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 2 cached)
+[wm] perf t=19457 composites=306 ns=2847629672 max=40946680 motions=18 curmoves=13 curns=573783 full=260 rects=306 cpx=79896864 fpx=79896864 presns=163309007 torn=0 defer=184 late=0 drawmax=23
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[net] rx path: frames 64 irq 103 softirq 51 inline 0 poll 3 idle 0/0 halt/skip
+[sock] connected assets.alicdn.com via ipv4 ::ffff:198.18.0.82
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for assets.alicdn.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for assets.alicdn.com, alpn=http/1.1
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[wm] perf t=21460 composites=319 ns=2962744737 max=40946680 motions=18 curmoves=13 curns=573783 full=269 rects=319 cpx=83091744 fpx=83091744 presns=170123714 torn=0 defer=190 late=0 drawmax=25
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[browser] heap peak 14658K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for img.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (img.alicdn.com)
+[tls] chain of 3 verified for img.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (img.alicdn.com)
+[net] rx path: frames 578 irq 197 softirq 99 inline 0 poll 12 idle 0/0 halt/skip
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[net] rx path: frames 1107 irq 235 softirq 118 inline 0 poll 12 idle 0/0 halt/skip
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[net] rx path: frames 1645 irq 279 softirq 143 inline 0 poll 14 idle 0/0 halt/skip
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs
+[mm] low: 109827 frames free (429 MiB), 21210 used, 0 shared, 0 bugs
+[mm] low: 109571 frames free (428 MiB), 21466 used, 0 shared, 0 bugs
+[mm] low: 109315 frames free (427 MiB), 21722 used, 0 shared, 0 bugs
+[mm] low: 109059 frames free (426 MiB), 21978 used, 0 shared, 0 bugs
+[mm] low: 108803 frames free (425 MiB), 22234 used, 0 shared, 0 bugs
+[mm] low: 108547 frames free (424 MiB), 22490 used, 0 shared, 0 bugs
+[mm] low: 108291 frames free (423 MiB), 22746 used, 0 shared, 0 bugs
+[mm] low: 108035 frames free (422 MiB), 23002 used, 0 shared, 0 bugs
+[mm] low: 107779 frames free (421 MiB), 23258 used, 0 shared, 0 bugs
+[mm] low: 107523 frames free (420 MiB), 23514 used, 0 shared, 0 bugs
+[mm] low: 107267 frames free (419 MiB), 23770 used, 0 shared, 0 bugs
+[mm] low: 107011 frames free (418 MiB), 24026 used, 0 shared, 0 bugs
+[mm] low: 106755 frames free (417 MiB), 24282 used, 0 shared, 0 bugs
+[mm] low: 106499 frames free (416 MiB), 24538 used, 0 shared, 0 bugs
+[mm] low: 106243 frames free (415 MiB), 24794 used, 0 shared, 0 bugs
+[mm] low: 105987 frames free (414 MiB), 25050 used, 0 shared, 0 bugs
+[mm] low: 105731 frames free (413 MiB), 25306 used, 0 shared, 0 bugs
+[mm] low: 105475 frames free (412 MiB), 25562 used, 0 shared, 0 bugs
+[mm] low: 105219 frames free (411 MiB), 25818 used, 0 shared, 0 bugs
+[mm] low: 104963 frames free (410 MiB), 26074 used, 0 shared, 0 bugs
+[mm] low: 104707 frames free (409 MiB), 26330 used, 0 shared, 0 bugs
+[mm] low: 104451 frames free (408 MiB), 26586 used, 0 shared, 0 bugs
+[mm] low: 104195 frames free (407 MiB), 26842 used, 0 shared, 0 bugs
+[mm] low: 103939 frames free (406 MiB), 27098 used, 0 shared, 0 bugs
+[mm] low: 103683 frames free (405 MiB), 27354 used, 0 shared, 0 bugs
+[mm] low: 103427 frames free (404 MiB), 27610 used, 0 shared, 0 bugs
+[mm] low: 103171 frames free (403 MiB), 27866 used, 0 shared, 0 bugs
+[mm] low: 102915 frames free (402 MiB), 28122 used, 0 shared, 0 bugs
+[mm] low: 102659 frames free (401 MiB), 28378 used, 0 shared, 0 bugs
+[mm] low: 102403 frames free (400 MiB), 28634 used, 0 shared, 0 bugs
+[mm] low: 102147 frames free (399 MiB), 28890 used, 0 shared, 0 bugs
+[mm] low: 101891 frames free (398 MiB), 29146 used, 0 shared, 0 bugs
+[mm] low: 101635 frames free (397 MiB), 29402 used, 0 shared, 0 bugs
+[mm] low: 101379 frames free (396 MiB), 29658 used, 0 shared, 0 bugs
+[mm] low: 101123 frames free (395 MiB), 29914 used, 0 shared, 0 bugs
+[mm] low: 100867 frames free (394 MiB), 30170 used, 0 shared, 0 bugs
+[mm] low: 100611 frames free (393 MiB), 30426 used, 0 shared, 0 bugs
+[mm] low: 100355 frames free (392 MiB), 30682 used, 0 shared, 0 bugs
+[mm] low: 100099 frames free (391 MiB), 30938 used, 0 shared, 0 bugs
+[mm] low: 99843 frames free (390 MiB), 31194 used, 0 shared, 0 bugs
+[mm] low: 99587 frames free (389 MiB), 31450 used, 0 shared, 0 bugs
+[mm] low: 99331 frames free (388 MiB), 31706 used, 0 shared, 0 bugs
+[mm] low: 99075 frames free (387 MiB), 31962 used, 0 shared, 0 bugs
+[mm] low: 98819 frames free (386 MiB), 32218 used, 0 shared, 0 bugs
+[mm] low: 98563 frames free (385 MiB), 32474 used, 0 shared, 0 bugs
+[mm] low: 98307 frames free (384 MiB), 32730 used, 0 shared, 0 bugs
+[mm] low: 98051 frames free (383 MiB), 32986 used, 0 shared, 0 bugs
+[mm] low: 97795 frames free (382 MiB), 33242 used, 0 shared, 0 bugs
+[mm] low: 97539 frames free (381 MiB), 33498 used, 0 shared, 0 bugs
+[mm] low: 97283 frames free (380 MiB), 33754 used, 0 shared, 0 bugs
+[mm] low: 97027 frames free (379 MiB), 34010 used, 0 shared, 0 bugs
+[mm] low: 96771 frames free (378 MiB), 34266 used, 0 shared, 0 bugs
+[mm] low: 96515 frames free (377 MiB), 34522 used, 0 shared, 0 bugs
+[mm] low: 96259 frames free (376 MiB), 34778 used, 0 shared, 0 bugs
+[mm] low: 96003 frames free (375 MiB), 35034 used, 0 shared, 0 bugs
+[mm] low: 95747 frames free (374 MiB), 35290 used, 0 shared, 0 bugs
+[mm] low: 95491 frames free (373 MiB), 35546 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for o.alicdn.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.googletagmanager.com, alpn=http/1.1
+[net] rx path: frames 2161 irq 340 softirq 178 inline 0 poll 17 idle 0/0 halt/skip
+[mm] low: 95235 frames free (372 MiB), 35802 used, 0 shared, 0 bugs
+[net] rx path: frames 2676 irq 435 softirq 226 inline 0 poll 20 idle 0/0 halt/skip
+[browser] JS exception: TypeError: cannot read property 'bind' of undefined
+TypeError: cannot read property 'bind' of undefined
+    at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at aeyaNG (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+[browser] JS exception: TypeError: cannot read property 'setAttribute' of null
+TypeError: cannot read property 'setAttribute' of null
+    at <anonymous> (https://chat.qwen.ai/#inline-script-6)
+    at <eval> (https://chat.qwen.ai/#inline-script-6)
+Browser detection: [object Object]
+Modern features support: true
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <eval> (https://chat.qwen.ai/#inline-script-13:1)
+[mm] low: 94979 frames free (371 MiB), 36058 used, 0 shared, 0 bugs
+[mm] low: 94723 frames free (370 MiB), 36314 used, 0 shared, 0 bugs
+[mm] low: 94467 frames free (369 MiB), 36570 used, 0 shared, 0 bugs
+[mm] low: 94211 frames free (368 MiB), 36826 used, 0 shared, 0 bugs
+[mm] low: 93955 frames free (367 MiB), 37082 used, 0 shared, 0 bugs
+[mm] low: 93699 frames free (366 MiB), 37338 used, 0 shared, 0 bugs
+[js] module loaded 9129 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/react-vendor.js
+[js] module loaded 182575 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/react-dom-vendor.js
+[mm] low: 93443 frames free (365 MiB), 37594 used, 0 shared, 0 bugs
+[js] module loaded 872472 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/antd-vendor.js
+[js] module loaded 17127 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/dayjs-vendor.js
+[js] module loaded 69376 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/i18next-vendor.js
+[js] module loaded 1341 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/vite-helpers.js
+[js] module loaded 55939 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/lodash-vendor.js
+[net] rx path: frames 3197 irq 558 softirq 301 inline 0 poll 26 idle 0/0 halt/skip
+[mm] low: 93187 frames free (364 MiB), 37850 used, 0 shared, 0 bugs
+[mm] low: 92931 frames free (363 MiB), 38106 used, 0 shared, 0 bugs
+[mm] low: 92675 frames free (362 MiB), 38362 used, 0 shared, 0 bugs
+[js] module loaded 3016913 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/mermaid-vendor.js
+[mm] low: 92419 frames free (361 MiB), 38618 used, 0 shared, 0 bugs
+[mm] low: 92163 frames free (360 MiB), 38874 used, 0 shared, 0 bugs
+[mm] low: 91907 frames free (359 MiB), 39130 used, 0 shared, 0 bugs
+[mm] low: 91651 frames free (358 MiB), 39386 used, 0 shared, 0 bugs
+[mm] low: 91395 frames free (357 MiB), 39642 used, 0 shared, 0 bugs
+[mm] low: 91139 frames free (356 MiB), 39898 used, 0 shared, 0 bugs
+[mm] low: 90883 frames free (355 MiB), 40154 used, 0 shared, 0 bugs
+[mm] low: 90627 frames free (354 MiB), 40410 used, 0 shared, 0 bugs
+[mm] low: 90371 frames free (353 MiB), 40666 used, 0 shared, 0 bugs
+[mm] low: 90115 frames free (352 MiB), 40922 used, 0 shared, 0 bugs
+[mm] low: 89859 frames free (351 MiB), 41178 used, 0 shared, 0 bugs
+[mm] low: 89603 frames free (350 MiB), 41434 used, 0 shared, 0 bugs
+[mm] low: 89347 frames free (349 MiB), 41690 used, 0 shared, 0 bugs
+[mm] low: 89091 frames free (348 MiB), 41946 used, 0 shared, 0 bugs
+[mm] low: 88835 frames free (347 MiB), 42202 used, 0 shared, 0 bugs
+[mm] low: 88579 frames free (346 MiB), 42458 used, 0 shared, 0 bugs
+[mm] low: 88323 frames free (345 MiB), 42714 used, 0 shared, 0 bugs
+[mm] low: 88067 frames free (344 MiB), 42970 used, 0 shared, 0 bugs
+[mm] low: 87811 frames free (343 MiB), 43226 used, 0 shared, 0 bugs
+[mm] low: 87555 frames free (342 MiB), 43482 used, 0 shared, 0 bugs
+[mm] low: 87299 frames free (341 MiB), 43738 used, 0 shared, 0 bugs
+[js] module loaded 28899 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/dompurify-vendor.js
+[js] module loaded 9456 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/es-toolkit-vendor.js
+[js] module loaded 41303 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/marked-vendor.js
+[net] rx path: frames 3720 irq 635 softirq 347 inline 0 poll 31 idle 0/0 halt/skip
+[js] module loaded 37199 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/axios-vendor.js
+[js] module loaded 18439 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/router-vendor.js
+[js] module loaded 47990 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/dnd-vendor.js
+[net] rx path: frames 4252 irq 711 softirq 397 inline 0 poll 35 idle 0/0 halt/skip
+[mm] low: 87043 frames free (340 MiB), 43994 used, 0 shared, 0 bugs
+[mm] low: 86787 frames free (339 MiB), 44250 used, 0 shared, 0 bugs
+[mm] low: 86531 frames free (338 MiB), 44506 used, 0 shared, 0 bugs
+[js] module loaded 3854316 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/monaco-vendor.js
+[browser] module exception in https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/main.js: SyntaxError: invalid escape sequence in regular expression
+SyntaxError: invalid escape sequence in regular expression
+    at https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.83/js/monaco-vendor.js:1
+
+[browser] load done: 24 requests, 7 connections dialled, 17 reused, 15 modules loaded (1 failed)
+[browser] pool: 17 hits, 1 evicted, 2 closed
+[browser] resources: 0 from tab, 8 from network (tab 2 of 3)

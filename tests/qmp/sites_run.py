@@ -43,8 +43,31 @@ CORPUS = os.path.join(HERE, "sites_corpus.tsv")
 
 # Ordered worst-to-best, which is the order the table is printed in: the whole
 # point is that the top of the table is the work.
-ORDER = ["CRASH", "HARNESS", "TIMEOUT", "FETCH-FAIL", "BLANK", "ERRORS",
-         "FLAKY", "NETWORK", "OK"]
+#
+# THE TOP VERDICT IS `PAINTED`, AND IT USED TO BE `OK`. That rename is not
+# cosmetic. `OK` promised correctness the instrument cannot check -- it measures
+# that pixels changed against a blank tab and that no script threw, and neither
+# says the right pixels changed. deepseek painted, painted WRONG, and was
+# published as OK for it. `PAINTED` says exactly what was observed and nothing
+# more. `GAP` sits directly below it for a page that painted and threw nothing
+# but never asked for part of what its document requires.
+ORDER = ["CRASH", "HARNESS", "TIMEOUT", "FETCH-FAIL", "BLANK", "ERRORS", "GAP",
+         "FLAKY", "NETWORK", "PAINTED"]
+
+# What the table's header has to say about itself, because a limit the
+# instrument states is worth more than one the user discovers.
+LIMITS = """\
+WHAT THIS TABLE IS NOT. `changed px` counts pixels that differ from an empty tab
+photographed in the same boot. It cannot tell a rendered page from a flat dark
+block: bing scores 625,312 changed pixels and is exactly the "一坨黑黑的" that was
+reported by hand. Nothing here checks whether the RIGHT pixels changed -- that is
+what reftests are for, and none of WPT's 17,155 of them run on this machine. The
+top verdict is `PAINTED`, which means pixels changed, no script threw, and the
+guest asked for everything the document requires. It does not mean correct.
+
+The two `control-` rows are NOT results. They exist to prove the harness, the
+network and the build were working during the pass; if either fails, no other row
+in the snapshot means anything. They say nothing about the browser."""
 
 
 def load_corpus(path, only=None):
@@ -152,28 +175,55 @@ def merge_repeats(name, url, reported, recs):
     return out
 
 
+HEAD = "| %-18s | %-10s | %6s | %5s | %8s | %3s | %10s | %-8s |"
+RULE = ("|%s|%s|%s|%s|%s|%s|%s|%s|"
+        % ("-" * 20, "-" * 12, "-" * 8, "-" * 7, "-" * 10, "-" * 5, "-" * 12,
+           "-" * 10))
+
+
+def _row(r):
+    g = r.get("guest", {}) or {}
+    p = r.get("pixels", {}) or {}
+    h = r.get("host", {}) or {}
+    s = r.get("subresources", {}) or {}
+    nexc = (len(g.get("exceptions", [])) + len(g.get("timer_exceptions", []))
+            + len(g.get("module_exceptions", [])))
+    host = ("HTTP %s" % h["status"]) if h.get("ok") else "unreachable"
+    # `asked/got`: the document's mandatory subresource set against the requests
+    # the guest issued. This is the column that would have caught stripe.
+    inv = (s.get("host_inventory") or {})
+    asked = inv.get("mandatory")
+    got = g.get("requests")
+    gap = s.get("gap")
+    cell = "-" if asked is None or got is None else (
+        "%d/%d%s" % (asked, got, " !" if gap else ""))
+    return HEAD % (r["name"], r["verdict"], g.get("load_seconds", "-"),
+                   got if got is not None else "-", cell,
+                   nexc if g else "-", p.get("changed_px", "-"), host)
+
+
+def _sorted(rows):
+    return sorted(rows, key=lambda r: (ORDER.index(r["verdict"])
+                                       if r["verdict"] in ORDER else 0, r["name"]))
+
+
 def render_table(snap):
-    rows = sorted(snap["sites"],
-                  key=lambda r: (ORDER.index(r["verdict"]) if r["verdict"] in ORDER
-                                 else 0, r["name"]))
-    w = ["site", "verdict", "load s", "reqs", "exc", "changed px", "host"]
-    lines = []
-    lines.append("| %-18s | %-10s | %6s | %5s | %3s | %10s | %-8s |"
-                 % tuple(w))
-    lines.append("|%s|%s|%s|%s|%s|%s|%s|"
-                 % ("-" * 20, "-" * 12, "-" * 8, "-" * 7, "-" * 5, "-" * 12, "-" * 10))
-    for r in rows:
-        g = r.get("guest", {}) or {}
-        p = r.get("pixels", {}) or {}
-        h = r.get("host", {}) or {}
-        nexc = (len(g.get("exceptions", [])) + len(g.get("timer_exceptions", []))
-                + len(g.get("module_exceptions", [])))
-        host = ("HTTP %s" % h["status"]) if h.get("ok") else "unreachable"
-        lines.append("| %-18s | %-10s | %6s | %5s | %3s | %10s | %-8s |" % (
-            r["name"], r["verdict"],
-            g.get("load_seconds", "-"), g.get("requests", "-"),
-            nexc if g else "-", p.get("changed_px", "-"), host))
-    return "\n".join(lines)
+    """Two tables, never one. The controls prove the harness ran; folding them in
+    with the corpus lets four rows read as 'four sites work' when two of them are
+    a page with no CSS and a Wikipedia article nobody reported a problem with."""
+    corpus = [r for r in snap["sites"] if not r["name"].startswith("control-")]
+    ctrl = [r for r in snap["sites"] if r["name"].startswith("control-")]
+    out = [HEAD % ("site", "verdict", "load s", "reqs", "asked/got", "exc",
+                   "changed px", "host"), RULE]
+    out += [_row(r) for r in _sorted(corpus)]
+    if ctrl:
+        out.append("")
+        out.append("CONTROLS -- harness health, not results:")
+        out.append(HEAD % ("control", "verdict", "load s", "reqs", "asked/got",
+                           "exc", "changed px", "host"))
+        out.append(RULE)
+        out += [_row(r) for r in _sorted(ctrl)]
+    return "\n".join(out)
 
 
 def render_detail(snap):
@@ -199,6 +249,20 @@ def render_detail(snap):
                           if h.get("redirects") else ""))
         elif h:
             out.append("host:     UNREACHABLE (%s)" % h.get("error"))
+        s = r.get("subresources") or {}
+        inv = s.get("host_inventory")
+        if inv:
+            out.append("document: %d stylesheets, %d script src, %d inline script, "
+                       "%d img, %d preload, %d font -> %d mandatory subresources"
+                       % (inv["stylesheets"], inv["script_src"],
+                          inv["inline_scripts"], inv["images"], inv["preloads"],
+                          inv["fonts"], inv["mandatory"]))
+        if s.get("gap"):
+            gp = s["gap"]
+            out.append("GAP:      the guest issued %d requests against %d mandatory "
+                       "-- SHORT BY %d. A request never made cannot appear in "
+                       "fetch_failed; this is the only column that sees it."
+                       % (gp["requested"], gp["mandatory"], gp["short_by"]))
         p = r.get("pixels", {}) or {}
         if p:
             out.append("pixels:   changed %s (blank control ink %s), ink %s, "
@@ -233,29 +297,102 @@ def render_detail(snap):
     return "\n".join(out)
 
 
+# A verdict that was RENAMED, not changed. The 2026-08-08 snapshot at fc0c38a is
+# kept byte-identical -- it is the honest starting line -- and it says `OK` where
+# every later snapshot says `PAINTED`. Without this the first diff across the
+# rename would report every previously-passing site as having moved, which is
+# exactly the kind of false movement this tool exists to make impossible.
+ALIAS = {"OK": "PAINTED"}
+
+
 def do_diff(a_path, b_path):
     a = json.load(open(a_path, encoding="utf-8"))
     b = json.load(open(b_path, encoding="utf-8"))
     av = {r["name"]: r for r in a["sites"]}
     bv = {r["name"]: r for r in b["sites"]}
     print("%s -> %s" % (a.get("date", a_path), b.get("date", b_path)))
+    if any(r["verdict"] in ALIAS for r in a["sites"] + b["sites"]):
+        print("  (note: `OK` in an older snapshot is read as `PAINTED` -- the "
+              "verdict was renamed, not re-measured)")
     moved = 0
     for name in sorted(set(av) | set(bv)):
-        x = av.get(name, {}).get("verdict", "(absent)")
-        y = bv.get(name, {}).get("verdict", "(absent)")
+        x = ALIAS.get(av.get(name, {}).get("verdict", "(absent)"),
+                      av.get(name, {}).get("verdict", "(absent)"))
+        y = ALIAS.get(bv.get(name, {}).get("verdict", "(absent)"),
+                      bv.get(name, {}).get("verdict", "(absent)"))
         if x != y:
             moved += 1
             print("  %-18s %-11s -> %-11s   %s"
                   % (name, x, y, bv.get(name, {}).get("why", "")))
     if not moved:
         print("  no verdict changed")
+
+    # THE VERDICT IS NOT THE ONLY THING THAT MOVES, and reporting only the
+    # verdict was hiding real work. The first diff this tool ever produced said
+    # "no verdict changed" across nine commits -- while github had lost
+    # `CustomEvent is not defined` outright and anthropic had lost an exception.
+    # A site four bugs from rendering does not change verdict when one of the
+    # four is fixed, and that fix is exactly what somebody wants to see.
+    print("  exceptions, and the messages that appeared or went away:")
+    quiet = True
+    for name in sorted(set(av) | set(bv)):
+        ra, rb = av.get(name, {}), bv.get(name, {})
+        if name.startswith("control-"):
+            continue
+
+        def msgs(r):
+            g = r.get("guest") or {}
+            return set([e["message"] for e in g.get("exceptions", [])]
+                       + list(g.get("timer_exceptions", []))
+                       + list(g.get("module_exceptions", [])))
+        ma, mb = msgs(ra), msgs(rb)
+        gone, new = sorted(ma - mb), sorted(mb - ma)
+        if not gone and not new:
+            continue
+        quiet = False
+        print("    %s: %d -> %d" % (name, len(ma), len(mb)))
+        for m in gone:
+            print("      GONE %s" % m[:150])
+        for m in new:
+            print("      NEW  %s" % m[:150])
+    if quiet:
+        print("    nothing appeared and nothing went away")
+
+    # And the subresource gap, which is the column a failure counter cannot see.
+    # Only compared when BOTH snapshots measured it: the column was added after
+    # the first baseline, and "absent" is not "zero" -- reporting it as a move
+    # would invent a regression on every site the older run predates.
+    have_a = any("subresources" in r for r in a["sites"])
+    have_b = any("subresources" in r for r in b["sites"])
+    if not (have_a and have_b):
+        print("  (subresource gap not comparable: the %s snapshot predates the "
+              "column)" % ("before" if not have_a else "after"))
+    else:
+        for name in sorted(set(av) | set(bv)):
+            def short(r):
+                return ((r.get("subresources") or {}).get("gap") or {}).get("short_by")
+            sa, sb = short(av.get(name, {})), short(bv.get(name, {}))
+            if sa != sb:
+                print("  subresource gap %-16s %s -> %s" % (name, sa, sb))
     def tally(s):
+        # Controls excluded: they are harness health, and counting them here
+        # would let "the harness still works" pad the score.
         t = {}
         for r in s["sites"]:
-            t[r["verdict"]] = t.get(r["verdict"], 0) + 1
+            if r["name"].startswith("control-"):
+                continue
+            v = ALIAS.get(r["verdict"], r["verdict"])
+            t[v] = t.get(v, 0) + 1
         return t
     print("  before: %s" % tally(a))
     print("  after:  %s" % tally(b))
+    for s, lbl in ((a, "before"), (b, "after")):
+        bad = [r["name"] for r in s["sites"]
+               if r["name"].startswith("control-")
+               and ALIAS.get(r["verdict"], r["verdict"]) != "PAINTED"]
+        if bad:
+            print("  WARNING (%s): control(s) did not pass: %s -- no row in that "
+                  "snapshot means anything" % (lbl, ", ".join(bad)))
     return 0
 
 
@@ -338,14 +475,17 @@ def main():
     table = render_table(snap)
     detail = render_detail(snap)
     md_path = os.path.join(ROOT, "tests", "scoreboard", "%s.md" % args.label)
-    tally = {}
+    scored = {}
     for r in sites:
-        tally[r["verdict"]] = tally.get(r["verdict"], 0) + 1
-    header = ("# Site scoreboard %s\n\ncommit %s, ISO %s (sha256:%s), %d sites, "
-              "%d run(s) each, %.0f s wall\n\n%s\n" %
-              (args.label, snap["commit"], src_iso, iso_sha, len(sites), args.repeat,
-               snap["wall_seconds"],
-               ", ".join("%s %d" % (k, tally[k]) for k in ORDER if k in tally)))
+        if not r["name"].startswith("control-"):
+            scored[r["verdict"]] = scored.get(r["verdict"], 0) + 1
+    header = ("# Site scoreboard %s\n\ncommit %s, ISO %s (sha256:%s), %d sites "
+              "(+%d controls), %d run(s) each, %.0f s wall\n\n%s\n\n%s\n" %
+              (args.label, snap["commit"], src_iso, iso_sha,
+               sum(scored.values()), len(sites) - sum(scored.values()),
+               args.repeat, snap["wall_seconds"],
+               ", ".join("%s %d" % (k, scored[k]) for k in ORDER if k in scored),
+               LIMITS))
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write(header + "\n" + table + "\n\n## Detail\n" + detail + "\n")
 

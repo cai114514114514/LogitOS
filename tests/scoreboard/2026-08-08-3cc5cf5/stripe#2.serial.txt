@@ -1,0 +1,84 @@
+[wm] perf t=18481 composites=222 ns=2593302632 max=58397024 motions=18 curmoves=12 curns=643100 full=184 rects=222 cpx=69149228 fpx=69149228 presns=150224565 torn=0 defer=118 late=0 drawmax=29
+[sock] connected stripe.com via ipv4 ::ffff:198.18.0.43
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19481 composites=285 ns=3112318098 max=58397024 motions=18 curmoves=12 curns=643100 full=245 rects=285 cpx=85594668 fpx=85594668 presns=179656624 torn=0 defer=163 late=0 drawmax=29
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for stripe.com, alpn=http/1.1
+[net] rx path: frames 73 irq 53 softirq 28 inline 0 poll 2 idle 0/0 halt/skip
+[mm] low: 114179 frames free (446 MiB), 16858 used, 0 shared, 0 bugs
+[mm] low: 113923 frames free (445 MiB), 17114 used, 0 shared, 0 bugs
+[mm] low: 113667 frames free (444 MiB), 17370 used, 0 shared, 0 bugs
+[mm] low: 113411 frames free (443 MiB), 17626 used, 0 shared, 0 bugs
+[mm] low: 113155 frames free (442 MiB), 17882 used, 0 shared, 0 bugs
+[sock] connected b.stripecdn.com via ipv4 ::ffff:198.18.0.79
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[mm] low: 112899 frames free (441 MiB), 18138 used, 0 shared, 0 bugs
+[mm] low: 112643 frames free (440 MiB), 18394 used, 0 shared, 0 bugs
+[mm] low: 112387 frames free (439 MiB), 18650 used, 0 shared, 0 bugs
+[mm] low: 112131 frames free (438 MiB), 18906 used, 0 shared, 0 bugs
+[browser] heap peak 13108K
+[wm] perf t=27565 composites=315 ns=3447904057 max=58397024 motions=18 curmoves=12 curns=643100 full=260 rects=315 cpx=94247468 fpx=94247468 presns=198605646 torn=0 defer=170 late=0 drawmax=62
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for images.stripeassets.com, alpn=http/1.1
+[tls] OCSP staple: good (images.stripeassets.com)
+[tls] ticket stored for images.stripeassets.com (138 bytes, lifetime 57020s, 1 cached)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="text/comment"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[wm] perf t=30581 composites=343 ns=3825963759 max=58397024 motions=18 curmoves=12 curns=643100 full=283 rects=343 cpx=105665068 fpx=105665068 presns=222213061 torn=0 defer=182 late=0 drawmax=62
+[wm] perf t=33581 composites=365 ns=4153183090 max=58397024 motions=18 curmoves=12 curns=643100 full=299 rects=365 cpx=115065388 fpx=115065388 presns=241262477 torn=0 defer=189 late=0 drawmax=62
+[net] rx path: frames 611 irq 455 softirq 225 inline 0 poll 13 idle 0/0 halt/skip
+[mm] low: 111875 frames free (437 MiB), 19162 used, 0 shared, 0 bugs
+[mm] low: 111619 frames free (436 MiB), 19418 used, 0 shared, 0 bugs
+[mm] low: 111363 frames free (435 MiB), 19674 used, 0 shared, 0 bugs
+[mm] low: 111107 frames free (434 MiB), 19930 used, 0 shared, 0 bugs
+[mm] low: 110851 frames free (433 MiB), 20186 used, 0 shared, 0 bugs
+[mm] low: 110595 frames free (432 MiB), 20442 used, 0 shared, 0 bugs
+[net] rx path: frames 1125 irq 590 softirq 316 inline 0 poll 22 idle 0/0 halt/skip
+[mm] low: 110339 frames free (431 MiB), 20698 used, 0 shared, 0 bugs
+[mm] low: 110083 frames free (430 MiB), 20954 used, 0 shared, 0 bugs
+[net] rx path: frames 1647 irq 907 softirq 468 inline 0 poll 31 idle 0/0 halt/skip
+[mm] low: 109827 frames free (429 MiB), 21210 used, 0 shared, 0 bugs
+[mm] low: 109571 frames free (428 MiB), 21466 used, 0 shared, 0 bugs
+[mm] low: 109315 frames free (427 MiB), 21722 used, 0 shared, 0 bugs
+[mm] low: 109059 frames free (426 MiB), 21978 used, 0 shared, 0 bugs
+[mm] low: 108803 frames free (425 MiB), 22234 used, 0 shared, 0 bugs
+[mm] low: 108547 frames free (424 MiB), 22490 used, 0 shared, 0 bugs
+[mm] low: 108291 frames free (423 MiB), 22746 used, 0 shared, 0 bugs
+[mm] low: 108035 frames free (422 MiB), 23002 used, 0 shared, 0 bugs
+[mm] low: 107779 frames free (421 MiB), 23258 used, 0 shared, 0 bugs
+[mm] low: 107523 frames free (420 MiB), 23514 used, 0 shared, 0 bugs
+[mm] low: 107267 frames free (419 MiB), 23770 used, 0 shared, 0 bugs
+[mm] low: 107011 frames free (418 MiB), 24026 used, 0 shared, 0 bugs
+[mm] low: 106755 frames free (417 MiB), 24282 used, 0 shared, 0 bugs
+[mm] low: 106499 frames free (416 MiB), 24538 used, 0 shared, 0 bugs
+[mm] low: 106243 frames free (415 MiB), 24794 used, 0 shared, 0 bugs
+[mm] low: 105987 frames free (414 MiB), 25050 used, 0 shared, 0 bugs
+[mm] low: 105731 frames free (413 MiB), 25306 used, 0 shared, 0 bugs
+[mm] low: 105475 frames free (412 MiB), 25562 used, 0 shared, 0 bugs
+[mm] low: 105219 frames free (411 MiB), 25818 used, 0 shared, 0 bugs
+[mm] low: 104963 frames free (410 MiB), 26074 used, 0 shared, 0 bugs
+[mm] low: 104707 frames free (409 MiB), 26330 used, 0 shared, 0 bugs
+[mm] low: 104451 frames free (408 MiB), 26586 used, 0 shared, 0 bugs
+[mm] low: 104195 frames free (407 MiB), 26842 used, 0 shared, 0 bugs
+[mm] low: 103939 frames free (406 MiB), 27098 used, 0 shared, 0 bugs
+[mm] low: 103683 frames free (405 MiB), 27354 used, 0 shared, 0 bugs
+[mm] low: 103427 frames free (404 MiB), 27610 used, 0 shared, 0 bugs
+[mm] low: 103171 frames free (403 MiB), 27866 used, 0 shared, 0 bugs
+[mm] low: 102915 frames free (402 MiB), 28122 used, 0 shared, 0 bugs
+[mm] low: 102659 frames free (401 MiB), 28378 used, 0 shared, 0 bugs
+[mm] low: 102403 frames free (400 MiB), 28634 used, 0 shared, 0 bugs
+[mm] low: 102147 frames free (399 MiB), 28890 used, 0 shared, 0 bugs
+[mm] low: 101891 frames free (398 MiB), 29146 used, 0 shared, 0 bugs
+[mm] low: 101635 frames free (397 MiB), 29402 used, 0 shared, 0 bugs
+[mm] low: 101379 frames free (396 MiB), 29658 used, 0 shared, 0 bugs
+[mm] low: 101123 frames free (395 MiB), 29914 used, 0 shared, 0 bugs
+[mm] low: 100867 frames free (394 MiB), 30170 used, 0 shared, 0 bugs
+[browser] load done: 80 requests, 4 connections dialled, 77 reused, 0 modules loaded (0 failed)
+[browser] pool: 77 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 79 from network (tab 2 of 3)

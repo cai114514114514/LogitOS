@@ -1,0 +1,78 @@
+{
+ "name": "stripe",
+ "url": "https://stripe.com/",
+ "started": "2026-08-08T20:59:35",
+ "verdict": "PAINTED",
+ "why": "painted 32884 changed px in 55.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/jp",
+  "bytes": 735671,
+  "redirects": [
+   "307 -> https://stripe.com/jp"
+  ],
+  "script_tags": 77,
+  "script_src": 74,
+  "img_tags": 30,
+  "inventory": {
+   "stylesheets": 5,
+   "script_src": 73,
+   "inline_scripts": 0,
+   "images": 30,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 79
+  },
+  "elapsed": 2.9
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 80,
+  "dials": 5,
+  "reused": 77,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 13108,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 55.3,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 32884,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 11244,
+  "ink_px_blank": 1154,
+  "colours": 585,
+  "rich_tiles_proxy": 3
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/stripe.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-08-3cc5cf5/stripe.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 5,
+   "script_src": 73,
+   "inline_scripts": 0,
+   "images": 30,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 79
+  },
+  "gap": null
+ },
+ "finished": "2026-08-08T21:01:06"
+}
