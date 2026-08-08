@@ -57,7 +57,14 @@
 # tests/wpt.mk gives at length: a hand-kept list drifted twice in one night and
 # the suite went on reporting bugs that were already fixed. browser.c is out --
 # it is the app shell and draws through `int 0x80`.
-SEM_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/browser/js_*.c)))
+# css_interp.c is NOT js_*.c and the glob cannot see it, but js_anim.c calls
+# ci_value_interp and ci_transform_parse STRONGLY -- Element.prototype.animate
+# is the interpolation engine's only consumer. Named rather than globbed wider:
+# the glob's whole point is that a new js_*.c joins without an edit, and
+# widening it to c/apps/browser/*.c would drag in layout, paint and the app
+# shell. If a second non-js file becomes a hard dependency, add it here too.
+SEM_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/browser/js_*.c))) \
+              c/apps/browser/css_interp.c
 SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
            c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
            c/apps/browser/css_extra.c c/apps/browser/layout.c \

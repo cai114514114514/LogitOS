@@ -57,7 +57,7 @@ FORMS_SRC := tests/unit/forms_test.c \
 
 test-forms: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/forms_test \
-	    $(FORMS_SRC) $(BUILD)/libcss_host.a
+	    $(FORMS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/forms_test
 
 # ASan/UBSan over the same test. forms.c allocates per control and frees the
@@ -66,7 +66,7 @@ test-forms: $(BUILD)/libcss_host.a
 test-forms-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/forms_test_asan \
-	    $(FORMS_SRC) $(BUILD)/libcss_host.a
+	    $(FORMS_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/forms_test_asan
 
 # --- the device test --------------------------------------------------------
