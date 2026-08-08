@@ -118,23 +118,20 @@ static int dial(const char *host, const char *port)
 
 /* ------------------------------------------------------------------- driver */
 
-int main(int argc, char **argv)
+/* One connection, start to finish. Split out of main() so a resumption case
+ * can run TWO of them in the SAME process: the ticket cache is process-global
+ * static state in tls_psk.c, exactly as it is in the kernel, so resumption can
+ * only be observed across connections that share an address space. Running the
+ * second handshake in a fresh process would prove nothing -- it would take the
+ * full-handshake path every time and still pass a naive check.
+ *
+ * `want_resume`: 0 = do not care, 1 = MUST resume, -1 = MUST NOT resume.
+ * Returns 0 on success. */
+static int run_one(const char *host, const char *port, const char *sni,
+                   const char *alpn, const char *want_alpn,
+                   int expect_fail, int blocking, int want_version,
+                   int want_resume, const char *tag)
 {
-    if (argc < 4) { fprintf(stderr, "usage: %s host port sni [opts]\n", argv[0]); return 2; }
-    const char *host = argv[1], *port = argv[2], *sni = argv[3];
-    const char *alpn = 0, *want_alpn = 0;
-    int expect_fail = 0, blocking = 0, want_version = 0;
-    for (int i = 4; i < argc; i++) {
-        if (!strcmp(argv[i], "--alpn") && i + 1 < argc)             alpn = argv[++i];
-        else if (!strcmp(argv[i], "--expect-alpn") && i + 1 < argc) want_alpn = argv[++i];
-        else if (!strcmp(argv[i], "--expect-fail"))                 expect_fail = 1;
-        else if (!strcmp(argv[i], "--blocking"))                    blocking = 1;
-        else if (!strcmp(argv[i], "--expect-version") && i + 1 < argc) {
-            /* "12" / "13" on the command line; the wire values differ by one. */
-            want_version = atoi(argv[++i]) == 12 ? TLS_VER_12 : TLS_VER_13;
-        }
-    }
-
     g_fd = dial(host, port);
     if (g_fd < 0) { printf("RESULT: FAIL (connect)\n"); return 1; }
 
@@ -171,6 +168,22 @@ int main(int argc, char **argv)
 
     if (expect_fail) {
         printf("RESULT: FAIL (handshake succeeded but should not have)\n");
+        tls_close(id); return 1;
+    }
+
+    /* Whether this handshake was resumed is asserted, not just printed. The
+     * MUST-NOT direction matters as much as the MUST: it is what proves a
+     * ticket is scoped to the host that issued it, and what would catch a
+     * cache that hands any ticket to any connection. */
+    int res = tls_resumed(id);
+    printf("%sRESUMED: %s (tickets cached: %d)\n", tag ? tag : "",
+           res == 1 ? "yes" : "no", tls_tickets_count());
+    if (want_resume == 1 && res != 1) {
+        printf("RESULT: FAIL (expected a RESUMED handshake, got a full one)\n");
+        tls_close(id); return 1;
+    }
+    if (want_resume == -1 && res != 0) {
+        printf("RESULT: FAIL (expected a FULL handshake, got a resumed one)\n");
         tls_close(id); return 1;
     }
 
@@ -219,6 +232,67 @@ int main(int argc, char **argv)
 
     printf("BYTES: %d\n", total);
     if (!sawhttp || total <= 0) { printf("RESULT: FAIL (no HTTP response)\n"); return 1; }
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 4) { fprintf(stderr, "usage: %s host port sni [opts]\n", argv[0]); return 2; }
+    const char *host = argv[1], *port = argv[2], *sni = argv[3];
+    const char *alpn = 0, *want_alpn = 0, *sni2 = 0;
+    int expect_fail = 0, blocking = 0, want_version = 0;
+    int resume = 0, want_resume = 0;
+    for (int i = 4; i < argc; i++) {
+        if (!strcmp(argv[i], "--alpn") && i + 1 < argc)             alpn = argv[++i];
+        else if (!strcmp(argv[i], "--expect-alpn") && i + 1 < argc) want_alpn = argv[++i];
+        else if (!strcmp(argv[i], "--expect-fail"))                 expect_fail = 1;
+        else if (!strcmp(argv[i], "--blocking"))                    blocking = 1;
+        /* --resume: run two handshakes in this process. The second is the one
+         * under test. --expect-resume / --expect-no-resume assert what the
+         * SECOND one must be. */
+        else if (!strcmp(argv[i], "--resume"))                      resume = 1;
+        else if (!strcmp(argv[i], "--expect-resume"))               { resume = 1; want_resume = 1; }
+        else if (!strcmp(argv[i], "--expect-no-resume"))            { resume = 1; want_resume = -1; }
+        /* Second connection uses a DIFFERENT SNI: the ticket-scoping test. */
+        else if (!strcmp(argv[i], "--sni2") && i + 1 < argc)        sni2 = argv[++i];
+        else if (!strcmp(argv[i], "--expect-version") && i + 1 < argc) {
+            /* "12" / "13" on the command line; the wire values differ by one. */
+            want_version = atoi(argv[++i]) == 12 ? TLS_VER_12 : TLS_VER_13;
+        }
+    }
+
+    if (!resume)
+        return run_one(host, port, sni, alpn, want_alpn, expect_fail, blocking,
+                       want_version, 0, 0) ? 1 : (printf("RESULT: PASS\n"), 0);
+
+    /* --- connection 1: must be a FULL handshake and must leave a ticket ---
+     * Asserting "full" here is not decoration. If the cache leaked across runs
+     * or the first connection somehow resumed, the second one's "resumed"
+     * would prove nothing about the code path we care about. */
+    printf("--- connection 1 (expect full handshake + NewSessionTicket) ---\n");
+    int rc1 = run_one(host, port, sni, alpn, 0, 0, blocking, want_version, -1, "1st ");
+    /* Close connection 1 before dialling connection 2. `openssl s_server` is
+     * single-threaded and serves one connection at a time: leaving this socket
+     * open leaves the server in that connection, so the second ClientHello sits
+     * unread in the accept backlog and the client times out waiting for a
+     * ServerHello nobody is going to write. That failure looks exactly like a
+     * broken resumption -- it was in fact the harness holding the server
+     * hostage, and it hit the no-resumption control case identically, which is
+     * how it was told apart from a protocol bug. */
+    if (g_fd >= 0) { close(g_fd); g_fd = -1; }
+    if (rc1) return 1;
+    /* Only demanded when the case expects the second handshake to resume. The
+     * "server issues no tickets" case deliberately ends connection 1 with an
+     * empty cache -- that IS its premise. */
+    if (want_resume == 1 && tls_tickets_count() < 1) {
+        printf("RESULT: FAIL (no NewSessionTicket cached after connection 1)\n");
+        return 1;
+    }
+
+    printf("--- connection 2 (the case under test) ---\n");
+    if (run_one(host, port, sni2 ? sni2 : sni, alpn, want_alpn, expect_fail,
+                blocking, want_version, want_resume, "2nd "))
+        return 1;
     printf("RESULT: PASS\n");
     return 0;
 }

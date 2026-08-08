@@ -88,10 +88,18 @@
 #define EXT_SIG_ALGS       13
 #define EXT_ALPN           16
 #define EXT_EMS            23                /* extended_master_secret, RFC 7627 */
+#define EXT_PSK            41                /* pre_shared_key, MUST be last */
 #define EXT_SUPPORTED_VERS 43
 #define EXT_COOKIE         44
+#define EXT_PSK_MODES      45                /* psk_key_exchange_modes */
 #define EXT_KEY_SHARE      51
 #define EXT_RENEG_INFO     0xff01            /* RFC 5746, empty */
+
+/* psk_key_exchange_modes (RFC 8446 4.2.9). We only ever offer psk_dhe_ke:
+ * resuming without a fresh ECDHE (psk_ke) gives up forward secrecy, which is
+ * the property the rest of this stack exists to provide. */
+#define PSK_KE             0
+#define PSK_DHE_KE         1
 
 #define HLEN 32                              /* SHA-256 transcript/HKDF (TLS 1.3) */
 
@@ -187,6 +195,18 @@ struct tls_sess {
     struct hs_secrets sec;                   /* TLS 1.3 */
     struct aead cr, cw;                      /* read (server) / write (client) keys */
 
+    /* --- TLS 1.3 session resumption (RFC 8446 2.2 / 4.6.1), see tls_psk.c ---
+     * psk_offered says a pre_shared_key extension went out; psk_accepted says
+     * the ServerHello came back naming it. The two are separate because a
+     * server is free to ignore the offer and do a full handshake, and that
+     * path must still work -- it is the common case the first time we meet a
+     * host, and the fallback whenever a ticket has gone stale. */
+    int     psk_offered, psk_accepted;
+    int     psk_suite;                       /* the suite the ticket was issued under */
+    uint8_t psk[HLEN];                       /* the resumption PSK we offered */
+    uint8_t res_master[HLEN];                /* resumption_master_secret, once derived */
+    int     res_valid;                       /* res_master holds a real secret */
+
     /* --- TLS 1.2 --- */
     uint8_t srandom[32];                     /* ServerHello.random */
     uint8_t master[48];                      /* master secret */
@@ -251,6 +271,38 @@ void tls_log_alert(const uint8_t *body, int blen);
 /* Record the server's ALPN choice from an ALPN extension body. TLS 1.3 carries
  * it in EncryptedExtensions, TLS 1.2 in the ServerHello; same encoding. */
 void tls_take_alpn(struct tls_sess *s, const uint8_t *ext, int el);
+
+/* --- provided by tls_psk.c (TLS 1.3 session resumption) ------------------ */
+
+/* Load a cached PSK for s->host into s->psk. 1 = armed, 0 = full handshake. */
+int  tls_psk_arm(struct tls_sess *s);
+
+/* Extension builders. modes_ext is unconditional whenever a PSK is offered;
+ * psk_ext must be written LAST in the ClientHello and reports where the binder
+ * transcript ends (*trunc) and where the binder value sits (*binder), both
+ * relative to `p`. Both return bytes written, or -1 if they would not fit. */
+int  tls_psk_modes_ext(uint8_t *p, int max);
+int  tls_psk_ext(struct tls_sess *s, uint8_t *p, int max, int *trunc, int *binder);
+
+/* Patch the binder into a built ClientHello. `th` is the transcript BEFORE
+ * this ClientHello (empty on a first flight, post-HRR state after a retry);
+ * `trunc_len` and `binder_off` are offsets into `ch`. */
+void tls_psk_binder(struct tls_sess *s, const struct sha256 *th,
+                    uint8_t *ch, int trunc_len, int binder_off);
+
+/* Cache a NewSessionTicket. Returns 0 stored, -1 refused (bad shape, dead
+ * lifetime, unusable suite). */
+int  tls_psk_store(const char *host, int suite, const uint8_t *res_master,
+                   const uint8_t *nonce, int noncelen,
+                   const uint8_t *blob, int bloblen,
+                   uint32_t lifetime, uint32_t age_add, int64_t now);
+
+/* Drop a host's ticket -- called when the server refuses our binder. */
+void tls_psk_forget(const char *host);
+
+/* Diagnostics / tests. */
+int  tls_psk_count(void);
+void tls_psk_clear_all(void);
 
 /* --- provided by tls12.c ------------------------------------------------- */
 

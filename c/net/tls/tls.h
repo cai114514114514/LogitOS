@@ -100,6 +100,21 @@ int  tls_version(int id);
 #define TLS_VER_12 0x0303
 #define TLS_VER_13 0x0304
 
+/* 1 if this session was RESUMED from a cached ticket (TLS 1.3 PSK), 0 if it
+ * was a full handshake, negative for a bad id. This is the only externally
+ * visible difference between the two, and it is deliberately observable: a
+ * resumption that silently never happens looks exactly like one that works,
+ * because the fallback is a perfectly good full handshake. Anything measuring
+ * handshake cost has to be able to tell them apart. */
+int  tls_resumed(int id);
+
+/* Forget every cached ticket. For tests and for a "clear browsing data" style
+ * reset -- a ticket is linkable state a server can use to recognise us. */
+void tls_tickets_clear(void);
+
+/* Live cached tickets, for tests and diagnostics. */
+int  tls_tickets_count(void);
+
 /* Decrypted application bytes already buffered and returnable without touching
  * the transport. A readiness poll that only watched the socket would miss the
  * case where a whole record has been decrypted into the session while the wire

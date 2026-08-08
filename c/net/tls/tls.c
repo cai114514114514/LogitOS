@@ -347,10 +347,15 @@ static int put_alpn(struct tls_sess *s, uint8_t *p, int room)
 /* Build the ClientHello. Called for CH1 and again for CH2 after a
  * HelloRetryRequest: everything except the key_share (and the added cookie) is
  * byte-identical, which RFC 8446 4.1.2 requires -- the server hashes both. */
-static int build_ch(struct tls_sess *s, uint8_t *ch, int max)
+/* Build a ClientHello. On return *binder_off is 0 for a full handshake, or the
+ * offset of the PSK binder that step_send_ch must still fill in, with
+ * *trunc_len giving the length of the prefix the binder is computed over. */
+static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
+                    int *trunc_len, int *binder_off)
 {
     int hl = 0; while (s->host[hl]) hl++;
     int n = 0;
+    *trunc_len = 0; *binder_off = 0;
     /* Everything up to the ALPN extension is fixed-size apart from the host
      * name, so one check here covers all of it; the two variable-length
      * extensions after it (ALPN, cookie, key_share) check themselves. */
@@ -450,6 +455,15 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max)
         memcpy(ch + n, s->cookie, (size_t)s->cookielen); n += s->cookielen;
     }
 
+    /* psk_key_exchange_modes. Must accompany pre_shared_key, and is written
+     * here (not next to it) only because it has no ordering requirement -- the
+     * one extension that does is handled below. */
+    if (s->psk_offered) {
+        int ml = tls_psk_modes_ext(ch + n, max - n);
+        if (ml < 0) return -1;
+        n += ml;
+    }
+
     /* key_share: exactly one entry, for the group we hold a key for. Offering
      * only x25519 up front (rather than pre-generating a NIST share too) keeps
      * the common handshake cheap -- a P-256 keygen on this bignum is far more
@@ -460,6 +474,25 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max)
     n += put_u16(ch + n, s->publen + 4);
     n += put_u16(ch + n, s->group); n += put_u16(ch + n, s->publen);
     memcpy(ch + n, s->pub, (size_t)s->publen); n += s->publen;
+
+    /* pre_shared_key -- RFC 8446 4.2.11 requires it to be the LAST extension,
+     * because the binder is an HMAC over the ClientHello truncated at exactly
+     * this point. Nothing may be appended after it. */
+    if (s->psk_offered) {
+        int tr = 0, bo = 0;
+        int pl = tls_psk_ext(s, ch + n, max - n, &tr, &bo);
+        if (pl < 0) {
+            /* No room, or the ticket expired between arming and building.
+             * Drop the offer rather than send a pre_shared_key we cannot
+             * bind: a malformed one is a handshake failure, a missing one is
+             * just a full handshake. */
+            s->psk_offered = 0;
+        } else {
+            *trunc_len  = n + tr;            /* prefix the binder covers */
+            *binder_off = n + bo;
+            n += pl;
+        }
+    }
 
     put_u16(ch + extlenpos, n - extlenpos - 2);
     ch[lenpos] = 0;
@@ -472,9 +505,18 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max)
 
 static int step_send_ch(struct tls_sess *s)
 {
-    uint8_t ch[1600];
-    int n = build_ch(s, ch, (int)sizeof ch);
+    uint8_t ch[2048];
+    int trunc_len = 0, binder_off = 0;
+    int n = build_ch(s, ch, (int)sizeof ch, &trunc_len, &binder_off);
     if (n < 0) return fail(s, TLS_E_PROTO);
+
+    /* The binder is computed AFTER the message is complete, because it covers
+     * the ClientHello's own length headers -- which build_ch only back-fills
+     * once it knows the total. It is also computed against the transcript as it
+     * stands BEFORE this message: empty for a first flight, and the synthetic
+     * message_hash||HelloRetryRequest state for a retry, which is why a resumed
+     * handshake survives an HRR instead of replaying a now-wrong binder. */
+    if (binder_off) tls_psk_binder(s, &s->th, ch, trunc_len, binder_off);
 
     /* The single dummy CCS of RFC 8446 D.4 goes immediately before our second
      * flight -- which is ClientHello2 when there was a retry, and the Finished
@@ -532,6 +574,7 @@ struct sh_info {
     int retry_group;                         /* HelloRetryRequest key_share */
     int ems;                                 /* server echoed extended_master_secret */
     const uint8_t *alpn; int alpnlen;        /* TLS 1.2 puts ALPN here, not in EE */
+    int psk_selected;                        /* pre_shared_key present: identity index */
 };
 
 /* Parse a ServerHello / HelloRetryRequest body into *out. `is_hrr` selects how
@@ -575,6 +618,15 @@ static int parse_sh(struct tls_sess *s, const uint8_t *body, int shend,
             if (cl != el - 2 || cl > (int)sizeof s->cookie) return -1;
             memcpy(s->cookie, body + p + 2, (size_t)cl);
             s->cookielen = cl;
+        } else if (et == EXT_PSK && !is_hrr) {
+            /* pre_shared_key in a ServerHello is a bare selected_identity
+             * (RFC 8446 4.2.11). We only ever offer ONE identity, so anything
+             * other than index 0 is a server selecting an offer we did not
+             * make -- refuse rather than resume against the wrong PSK. */
+            if (el != 2) return -1;
+            int idx = (body[p] << 8) | body[p+1];
+            if (idx != 0) return -1;
+            out->psk_selected = 1;
         } else if (et == EXT_EMS && el == 0) {
             out->ems = 1;
         } else if (et == EXT_ALPN) {
@@ -736,6 +788,41 @@ static int step_recv_sh(struct tls_sess *s)
     if (!spub || splen < 1) return fail(s, TLS_E_PROTO);
     if (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256)
         return fail(s, TLS_E_PROTO);
+
+    /* --- did the server take our ticket? (RFC 8446 4.2.11) ---
+     * Three cases, and only the first two are legal:
+     *   offered + selected -> resume; the key schedule starts from the PSK.
+     *   offered + ignored  -> full handshake. Normal, and the reason resumption
+     *                         can never be a reachability regression: a server
+     *                         that rotated its ticket key just does not answer.
+     *   NOT offered + selected -> the server is answering an offer we never
+     *                         made. Refuse: continuing would mean deriving keys
+     *                         from a PSK slot that holds zeros. */
+    if (sh.psk_selected && !s->psk_offered) {
+        kprintf("[tls] ServerHello selected a PSK we did not offer -- aborting\n");
+        return fail(s, TLS_E_PROTO);
+    }
+    s->psk_accepted = sh.psk_selected && s->psk_offered;
+    if (s->psk_accepted) {
+        /* RFC 8446 4.2.11: the selected suite MUST have the same hash as the
+         * one the ticket was issued under. Both our 1.3 suites are SHA-256, so
+         * this can only trip on a server confusing itself -- but the failure it
+         * would otherwise cause (a Finished MAC mismatch 300 lines later) is
+         * not one anybody would trace back to here. */
+        if (s->psk_suite != suite &&
+            !(s->psk_suite == TLS_AES_128_GCM_SHA256 ||
+              s->psk_suite == TLS_CHACHA20_POLY1305_SHA256)) {
+            kprintf("[tls] resumption suite mismatch -- aborting\n");
+            return fail(s, TLS_E_PROTO);
+        }
+    } else if (s->psk_offered) {
+        /* The binder was refused or the ticket was stale. Drop it: re-offering
+         * it on every future connection to this host costs a rejected binder
+         * each time and never starts working again. */
+        kprintf("[tls] ticket for %s not accepted -- full handshake\n", s->host);
+        tls_psk_forget(s->host);
+        crypto_wipe(s->psk, sizeof s->psk);
+    }
     s->suite = suite;
 
     /* Copy the peer's share out before rec_drop() compacts the receive buffer:
@@ -757,7 +844,13 @@ static int step_recv_sh(struct tls_sess *s)
     TLSPROF_BEGIN(tls_sched13);
     uint8_t zeros[32]; memset(zeros, 0, 32);
     uint8_t early[32], derived[32], emptyhash[32];
-    hkdf_extract(HLEN, 0, 0, zeros, 32, early);
+    /* The early secret is the ONLY place resumption changes the key schedule:
+     * HKDF-Extract over the PSK instead of over zeros (RFC 8446 7.1). Every
+     * derivation below is byte-identical either way -- which is why a resumed
+     * handshake that got this one line wrong fails at the server's Finished
+     * MAC and nowhere earlier. */
+    if (s->psk_accepted) hkdf_extract(HLEN, 0, 0, s->psk, HLEN, early);
+    else                 hkdf_extract(HLEN, 0, 0, zeros, 32, early);
     sha256("", 0, emptyhash);
     derive_secret(early, "derived", emptyhash, derived);
     hkdf_extract(HLEN, derived, HLEN, shared, sharedlen, s->sec.hs);
@@ -919,6 +1012,31 @@ static int verify_flight(struct tls_sess *s)
         q += 4 + ml;
     }
 
+    /* --- who authenticated this server? ---
+     * On a full handshake it is the certificate chain, and tls_check_chain is
+     * the whole of our trust decision. On a RESUMED handshake there is no
+     * chain: the server proved it holds the PSK by accepting our binder and
+     * then producing a Finished under keys derived from it, and that PSK came
+     * out of a previous handshake whose chain WAS verified. So the check is
+     * skipped -- but only because s->psk_accepted was set by a ServerHello
+     * that echoed an identity we ourselves offered.
+     *
+     * The strict half matters as much: a resumed handshake MUST NOT carry a
+     * Certificate (RFC 8446 4.4.2). Accepting one would create a second,
+     * unverified way for a server to present itself, which is precisely the
+     * kind of "extra path that skips the check" this file exists to not have.
+     * A full handshake with no certificate is caught by tls_check_chain's own
+     * ncert < 1 refusal, so both directions are covered. */
+    if (s->psk_accepted) {
+        if (ncert > 0) {
+            kprintf("[tls] resumed handshake sent a Certificate -- aborting\n");
+            return TLS_E_PROTO;
+        }
+        kprintf("[tls] resumed session for %s (no chain, no signature)%s%s\n", s->host,
+                s->alpn_sel[0] ? ", alpn=" : "", s->alpn_sel[0] ? s->alpn_sel : "");
+        return 0;
+    }
+
     return tls_check_chain(s, chain, ncert);
 }
 
@@ -993,6 +1111,33 @@ static int step_recv_flight(struct tls_sess *s)
     derive_secret(master, "s ap traffic", th_full, s_ap);
     traffic_keys(c_ap, s->suite, &s->cw);
     traffic_keys(s_ap, s->suite, &s->cr);
+
+    /* --- resumption_master_secret (RFC 8446 7.1) ---
+     * Note the transcript: the application traffic secrets above are keyed on
+     * ClientHello..server Finished, but res master is keyed on
+     * ClientHello..CLIENT Finished -- one message further. So the client
+     * Finished has to go into the transcript first, and the two hashes are
+     * genuinely different values. Deriving res master from th_full instead
+     * produces a PSK the server will never agree with, and the only symptom is
+     * that every resumption attempt quietly falls back to a full handshake --
+     * i.e. it looks exactly like not having implemented this at all. */
+#ifdef LOGIT_PSK_BREAK_TRANSCRIPT
+    /* NEGATIVE CONTROL (never defined in a real build; see the
+     * test-tls-resume-control target). Derive res master from the transcript
+     * WITHOUT the client Finished -- the single most plausible way to get this
+     * wrong. The handshake still completes, the ticket is still stored, and
+     * every existing test still passes; only the resumption assertions notice.
+     * If the suite goes green with this defined, the resumption tests are not
+     * testing resumption. */
+    tls_th_update(s, fin, (int)sizeof fin);
+    derive_secret(master, "res master", th_full, s->res_master);
+#else
+    tls_th_update(s, fin, (int)sizeof fin);
+    uint8_t th_res[32]; transcript_hash(&s->th, th_res);
+    derive_secret(master, "res master", th_res, s->res_master);
+#endif
+    s->res_valid = 1;
+
     crypto_wipe(derived2, sizeof derived2); crypto_wipe(master, sizeof master);
     crypto_wipe(c_ap, sizeof c_ap); crypto_wipe(s_ap, sizeof s_ap);
     /* the handshake secrets have done their job; only the traffic keys remain */
@@ -1064,6 +1209,11 @@ int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now)
     s->hashlen = 32;
     sha256_init(&s->th);
     sha384_init(&s->th384);
+    /* Arm resumption last, after the transcript is initialised: tls_psk_arm
+     * only loads the PSK, but build_ch computes the binder against s->th and
+     * an uninitialised transcript would produce a binder the server rejects.
+     * A miss here is not an error -- it is the first visit to this host. */
+    tls_psk_arm(s);
     return id;
 }
 
@@ -1141,6 +1291,57 @@ int tls_send(int id, const void *buf, int len)
     return n;
 }
 
+/* Cache any NewSessionTicket messages in a decrypted post-handshake record.
+ *
+ * One record can hold several concatenated handshake messages, and servers do
+ * batch tickets (openssl sends two by default, Google sends two), so this
+ * walks the whole buffer rather than looking at the first message. Anything
+ * that is not a NewSessionTicket is skipped, and a malformed one stops the
+ * walk without failing the connection: a ticket we cannot parse costs us a
+ * future full handshake, which is not a reason to drop a working session.
+ *
+ * Every length below is bounded against `len` before it is used. This parses
+ * attacker-controlled bytes in ring 0, so "the server would not do that" is
+ * not an argument that appears anywhere in it.
+ */
+static void take_tickets(struct tls_sess *s, const uint8_t *p, int len)
+{
+    if (!s->res_valid) return;               /* no resumption secret to key from */
+    int q = 0;
+    while (q + 4 <= len) {
+        int mt = p[q];
+        int ml = (p[q+1] << 16) | (p[q+2] << 8) | p[q+3];
+        if (ml < 0 || q + 4 + ml > len) return;          /* truncated: stop */
+        if (mt != HS_NEW_TICKET) { q += 4 + ml; continue; }
+
+        const uint8_t *b = p + q + 4;
+        int i = 0;
+        if (ml < 4 + 4 + 1) return;
+        uint32_t lifetime = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                            ((uint32_t)b[2] << 8)  |  (uint32_t)b[3];
+        uint32_t age_add  = ((uint32_t)b[4] << 24) | ((uint32_t)b[5] << 16) |
+                            ((uint32_t)b[6] << 8)  |  (uint32_t)b[7];
+        i = 8;
+        int nl = b[i++];                                 /* ticket_nonce<0..255> */
+        if (i + nl > ml) return;
+        const uint8_t *nonce = b + i; i += nl;
+        if (i + 2 > ml) return;
+        int tl = (b[i] << 8) | b[i+1]; i += 2;           /* ticket<1..2^16-1> */
+        if (tl < 1 || i + tl > ml) return;
+        const uint8_t *blob = b + i; i += tl;
+        /* extensions<0..2^16-2>: the only one defined for a ticket is
+         * early_data, which we neither offer nor accept (see the 0-RTT note in
+         * tls.h), so the block is bounds-checked and skipped. */
+        if (i + 2 > ml) return;
+        int xl = (b[i] << 8) | b[i+1]; i += 2;
+        if (i + xl > ml) return;
+
+        tls_psk_store(s->host, s->suite, s->res_master, nonce, nl,
+                      blob, tl, lifetime, age_add, s->now);
+        q += 4 + ml;
+    }
+}
+
 int tls_recv(int id, void *buf, int max)
 {
     struct tls_sess *s = sess_of(id);
@@ -1205,14 +1406,15 @@ int tls_recv(int id, void *buf, int max)
         if (dl < 0) return -1;
         if (it == REC_ALERT) return -1;                  /* close_notify etc */
         if (it == REC_HANDSHAKE) {
-            /* Post-handshake messages. NewSessionTicket is safe to drop (we do
-             * not do resumption yet). KeyUpdate is NOT: ignoring it would leave
-             * us decrypting with keys the peer has already rotated, i.e. silent
-             * corruption -- so fail loudly instead. */
+            /* Post-handshake messages. KeyUpdate is fatal: ignoring it would
+             * leave us decrypting with keys the peer has already rotated, i.e.
+             * silent corruption -- so fail loudly instead. NewSessionTicket is
+             * now what resumption is built on and is cached. */
             if (dl >= 1 && s->app[0] == HS_KEY_UPDATE) {
                 kprintf("[tls] KeyUpdate not supported -- closing\n");
                 return -1;
             }
+            take_tickets(s, s->app, dl);
             continue;
         }
         if (it != REC_APPDATA) continue;
@@ -1228,6 +1430,15 @@ int tls_version(int id)
     struct tls_sess *s = sess_of(id);
     return s ? s->version : 0;
 }
+
+int tls_resumed(int id)
+{
+    struct tls_sess *s = sess_of(id);
+    return s ? s->psk_accepted : -1;
+}
+
+void tls_tickets_clear(void) { tls_psk_clear_all(); }
+int  tls_tickets_count(void) { return tls_psk_count(); }
 
 int tls_pending(int id)
 {

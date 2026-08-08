@@ -46,15 +46,17 @@ mkca() {     # mkca <name> <cn>
         -out "$TMP/$nm.pem" 2>/dev/null
 }
 
-mkleaf() {   # mkleaf <name> <keytype> <cn> <ca>
-    local nm="$1" kt="$2" cn="$3" ca="$4"
+mkleaf() {   # mkleaf <name> <keytype> <cn> <ca> [extra-SAN-dns]
+    local nm="$1" kt="$2" cn="$3" ca="$4" alt="${5:-}"
     if [ "$kt" = ec ]; then
         "$OPENSSL" ecparam -name prime256v1 -genkey -noout -out "$TMP/$nm.key" 2>/dev/null
     else
         "$OPENSSL" genrsa -out "$TMP/$nm.key" 2048 2>/dev/null
     fi
     "$OPENSSL" req -new -key "$TMP/$nm.key" -subj "/CN=$cn" -out "$TMP/$nm.csr" 2>/dev/null
-    printf 'subjectAltName=DNS:%s\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' "$cn" > "$TMP/$nm.ext"
+    local san="DNS:$cn"
+    [ -n "$alt" ] && san="$san,DNS:$alt"
+    printf 'subjectAltName=%s\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' "$san" > "$TMP/$nm.ext"
     "$OPENSSL" x509 -req -in "$TMP/$nm.csr" -CA "$TMP/$ca.pem" -CAkey "$TMP/$ca.key" \
         -CAcreateserial -days 3 -sha256 -extfile "$TMP/$nm.ext" -out "$TMP/$nm.pem" 2>/dev/null
 }
@@ -66,6 +68,9 @@ mkleaf ec    ec  localhost              ca
 mkleaf rsa   rsa localhost              ca
 mkleaf bad   ec  not-localhost.example  ca
 mkleaf rogue_leaf ec localhost          rogue
+# Valid for BOTH names, so the ticket-scoping case can change SNI between the
+# two connections without the change being masked by a certificate rejection.
+mkleaf multi ec  localhost              ca   alt.localhost
 
 # ------------------------------------------------------ build the test client
 # Trust: a bundle holding exactly the throwaway CA. roots.c reaches its bundle
@@ -87,15 +92,24 @@ INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
       -I$ROOT/c/net/tls -I$ROOT/c/net/core \
       -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
       -I$ROOT/c/kernel/cpu"
-SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c \
+SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c $ROOT/c/net/tls/tls_psk.c \
      $ROOT/c/net/tls/x509.c $TMP/roots_test.c $ROOT/c/kernel/cpu/cpufeat.c \
      $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" -name '*.c')"
 # ASan+UBSan: this binary parses adversarial-shaped input (certificates, records)
 # with the same code the kernel runs, so it is the cheapest place to catch a
 # bounds bug in it.
 SAN="${TLS_INTEROP_SAN:--fsanitize=address,undefined -fno-sanitize-recover=all}"
+# TLS_INTEROP_BREAK is the negative control: it compiles a deliberate defect
+# into the client and the verdict at the bottom is INVERTED, so the run passes
+# only if the suite notices. See test-tls-resume-control in the Makefile.
+BREAK="${TLS_INTEROP_BREAK:-}"
+BREAKDEF=""
+[ -n "$BREAK" ] && BREAKDEF="-D$BREAK"
+# TLS_INTEROP_ONLY=resume restricts the run to the resumption block, which is
+# all the control needs and keeps it to a few seconds.
+ONLY="${TLS_INTEROP_ONLY:-}"
 # shellcheck disable=SC2086
-$CC -O1 -g -Wall -Wextra $SAN -o "$BUILD/tls_interop_test" $SRC $INCS || {
+$CC -O1 -g -Wall -Wextra $SAN $BREAKDEF -o "$BUILD/tls_interop_test" $SRC $INCS || {
     echo "FAIL: could not build tls_interop_test"; exit 1; }
 
 # ------------------------------------------------------------------ harness --
@@ -117,8 +131,12 @@ start_server() {   # start_server <chain.pem> <key> [extra openssl args...]
 stop_server() { [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null; SRVPID=""; }
 
 # case <label> <expect-hrr:0|1> <chain> <key> <server-args...> -- <client-args...>
+SECTION="core"                   # which block the following cases belong to
 case_run() {
     local label="$1" want_hrr="$2" chain="$3" key="$4"; shift 4
+    # TLS_INTEROP_ONLY restricts the run to one block; a skipped case is not
+    # counted either way, so it cannot turn a failure into a pass.
+    if [ -n "$ONLY" ] && [ "$ONLY" != "$SECTION" ]; then return; fi
     local sargs=() cargs=()
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do sargs+=("$1"); shift; done
     [ $# -gt 0 ] && shift
@@ -216,12 +234,63 @@ case_run "rejects untrusted anchor" 0 "$TMP/rogue_leaf.pem" "$TMP/rogue_leaf.key
 case_run "1.3 still wins when offered" 0 "$TMP/ec.pem" "$TMP/ec.key" \
     $CHAIN -groups X25519 -- --expect-version 13
 
+# ------------------------------------------------- session resumption (PSK) --
+# Every case here runs TWO handshakes inside ONE client process, because the
+# ticket cache is process-global static state (as it is in the kernel) and
+# resumption is by definition a property of the second connection. The client
+# asserts what the second handshake WAS -- resumed or full -- rather than
+# printing it, so a case cannot pass by doing the wrong thing quietly.
+#
+# This is the part where "it should work" is not good enough: a client whose
+# binder is wrong, whose obfuscated_ticket_age is wrong, or whose
+# resumption_master_secret is keyed on the wrong transcript does not fail. The
+# server just ignores the pre_shared_key extension and does a full handshake,
+# which looks identical in every log except the RESUMED line.
+echo
+SECTION="resume"
+echo "-- TLS 1.3 session resumption --"
+
+# shellcheck disable=SC2086
+case_run "resumes (aes128-gcm)"     0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -groups X25519 -ciphersuites TLS_AES_128_GCM_SHA256 -- --expect-resume
+# The PSK binder is keyed on the suite's hash, so the other suite is a
+# genuinely different code path through the same schedule.
+# shellcheck disable=SC2086
+case_run "resumes (chacha20)"       0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -groups X25519 -ciphersuites TLS_CHACHA20_POLY1305_SHA256 -- --expect-resume
+# An RSA leaf changes nothing about resumption -- and that is the point: the
+# resumed handshake has NO certificate at all, so the case proves the chain
+# verification really was skipped rather than silently re-run.
+# shellcheck disable=SC2086
+case_run "resumes (RSA leaf)"       0 "$TMP/rsa.pem" "$TMP/rsa.key" $CHAIN -groups X25519 -- --expect-resume
+# Resumption across a HelloRetryRequest. The binder must be recomputed over the
+# post-retry transcript (message_hash || HRR || truncated CH2); a client that
+# reuses the first binder is rejected and falls back. Both connections here
+# take the retry, so this asserts the recomputation, not just that HRR works.
+# shellcheck disable=SC2086
+case_run "resumes across HRR"       1 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups P-256 -- --expect-resume
+
+# --- the negatives, which are the reason to trust the positives above ---
+# A ticket belongs to the host that issued it. Connection 1 is localhost,
+# connection 2 is alt.localhost on a certificate valid for both -- so nothing
+# but the cache key can decide the outcome, and it must decide "full".
+# shellcheck disable=SC2086
+case_run "ticket is scoped to host" 0 "$TMP/multi.pem" "$TMP/multi.key" \
+    $CHAIN -groups X25519 -- --sni2 alt.localhost --expect-no-resume
+# A server that issues no tickets must produce no resumption. Without this the
+# suite could not tell "we resume correctly" from "we claim to resume whenever
+# we feel like it" -- the client would have nothing to offer and must say so.
+# shellcheck disable=SC2086
+case_run "no ticket -> no resume"   0 "$TMP/ec.pem" "$TMP/ec.key" \
+    $CHAIN -groups X25519 -num_tickets 0 -- --expect-no-resume
+
 # ============================================================== TLS 1.2 ======
 # Everything below talks to a server pinned to -tls1_2, which is what
 # sectigo.com / www.mas.gov.sg / www.cbuae.gov.ae actually are. Every case
 # asserts the negotiated VERSION explicitly: a 1.2 case that silently completed
 # over 1.3 would look identical in the pass column and prove nothing.
 echo
+SECTION="core"
 echo "-- TLS 1.2 --"
 SRV_VER="-tls1_2"
 
@@ -299,6 +368,7 @@ case_run "1.2 rejects untrusted anchor" 0 "$TMP/rogue_leaf.pem" "$TMP/rogue_leaf
 PROXY_PORT=$((PORT + 1))
 tamper_case() {   # tamper_case <label> <mode> [want-log-line]
     local label="$1" mode="$2" want="${3:-ServerKeyExchange signature rejected}"
+    if [ -n "$ONLY" ] && [ "$ONLY" != "$SECTION" ]; then return; fi
     if ! start_server "$TMP/ec.pem" "$TMP/ec.key" -cert_chain "$TMP/ca.pem" -groups X25519; then
         echo "FAIL $label (server did not start)"; fail=$((fail+1)); return
     fi
@@ -333,5 +403,22 @@ tamper_case "1.2 rejects over-long ECDHE point"  pointlen "ServerKeyExchange mal
 
 echo
 echo "$pass passed, $fail failed"
+
+# --- the verdict ---
+if [ -n "$BREAK" ]; then
+    # Negative control. The client was built with a deliberate defect, so the
+    # ONLY acceptable outcome is that this suite caught it. A control that
+    # "passes" by going green is not a control, it is a second way to be wrong.
+    if [ "$fail" -gt 0 ]; then
+        echo "PASS: negative control -- $BREAK was detected by $fail case(s)"
+        exit 0
+    fi
+    echo "FAIL: negative control -- $BREAK changed nothing, so these tests"
+    echo "      do not actually test what they claim to."
+    exit 1
+fi
 [ "$fail" -eq 0 ] || exit 1
+# A run that executed no cases at all must not report success -- that is how a
+# broken filter turns into a green build.
+[ "$pass" -gt 0 ] || { echo "FAIL: no cases ran"; exit 1; }
 echo "PASS: TLS interop"
