@@ -958,6 +958,200 @@ static int anchor_fn(lexed *lx, buf *b, int depth, int which)
 }
 
 /* ====================================================================
+ * position-area
+ *
+ * A grid cell named by one or two keywords. What makes it a real parse rather
+ * than a keyword lookup is that the two keywords are an UNORDERED pair drawn
+ * from paired axes, and the serialization is ordered -- so `top left` and
+ * `left top` are the same value and only one spelling is correct.
+ *
+ * Three rules, all read off position-area-parsing.html:
+ *
+ *  1. AXIS ORDER. The pair is emitted in a fixed slot order regardless of how
+ *     it was written: horizontal before vertical, block before inline, and
+ *     self-block before self-inline. `top left` serializes `left top`.
+ *
+ *  2. `span-all` IS THE DEFAULT AND DISAPPEARS. `left span-all` is `left`.
+ *     But only where the other keyword names an axis -- see rule 3.
+ *
+ *  3. THE AMBIGUOUS GROUPS DO NEITHER. `start`/`end`/`span-start`/`span-end`
+ *     (and their self- forms) do not say which axis they are on, so nothing
+ *     can be reordered and nothing can be dropped: `start span-all` keeps its
+ *     span-all and `center start` keeps its order, while the otherwise
+ *     identical `center left` becomes `left center`. Getting this wrong is
+ *     invisible in a spot check and is 200-odd subtests.
+ *
+ * Pairs must come from the SAME group: `left inline-start` mixes a physical
+ * axis with a logical one and is invalid, as is any pair on the same axis
+ * (`left right`), except within an ambiguous group where `start end` is fine.
+ * ==================================================================== */
+
+enum {
+	PA_XY = 0,	/* physical: left/right x top/bottom */
+	PA_BI,		/* logical: block x inline */
+	PA_SBI,		/* logical, self-relative: self-block x self-inline */
+	PA_SE,		/* start/end -- axis-ambiguous */
+	PA_SSE,		/* self-start/self-end -- axis-ambiguous */
+	PA_UNIV		/* center / span-all -- any axis */
+};
+
+struct pa_kw {
+	const char *name;
+	unsigned char group;
+	unsigned char axis;	/* 0 or 1 within the group; 0 for the rest */
+};
+
+static const struct pa_kw pa_kws[] = {
+	/* horizontal (axis 0 of PA_XY) */
+	{ "left", PA_XY, 0 }, { "right", PA_XY, 0 },
+	{ "span-left", PA_XY, 0 }, { "span-right", PA_XY, 0 },
+	{ "x-start", PA_XY, 0 }, { "x-end", PA_XY, 0 },
+	{ "span-x-start", PA_XY, 0 }, { "span-x-end", PA_XY, 0 },
+	{ "self-x-start", PA_XY, 0 }, { "self-x-end", PA_XY, 0 },
+	{ "span-self-x-start", PA_XY, 0 }, { "span-self-x-end", PA_XY, 0 },
+	/* vertical (axis 1 of PA_XY) */
+	{ "top", PA_XY, 1 }, { "bottom", PA_XY, 1 },
+	{ "span-top", PA_XY, 1 }, { "span-bottom", PA_XY, 1 },
+	{ "y-start", PA_XY, 1 }, { "y-end", PA_XY, 1 },
+	{ "span-y-start", PA_XY, 1 }, { "span-y-end", PA_XY, 1 },
+	{ "self-y-start", PA_XY, 1 }, { "self-y-end", PA_XY, 1 },
+	{ "span-self-y-start", PA_XY, 1 }, { "span-self-y-end", PA_XY, 1 },
+	/* block (axis 0 of PA_BI) -- block sorts BEFORE inline */
+	{ "block-start", PA_BI, 0 }, { "block-end", PA_BI, 0 },
+	{ "span-block-start", PA_BI, 0 }, { "span-block-end", PA_BI, 0 },
+	/* inline (axis 1 of PA_BI) */
+	{ "inline-start", PA_BI, 1 }, { "inline-end", PA_BI, 1 },
+	{ "span-inline-start", PA_BI, 1 }, { "span-inline-end", PA_BI, 1 },
+	/* self-block (axis 0 of PA_SBI) */
+	{ "self-block-start", PA_SBI, 0 }, { "self-block-end", PA_SBI, 0 },
+	{ "span-self-block-start", PA_SBI, 0 },
+	{ "span-self-block-end", PA_SBI, 0 },
+	/* self-inline (axis 1 of PA_SBI) */
+	{ "self-inline-start", PA_SBI, 1 }, { "self-inline-end", PA_SBI, 1 },
+	{ "span-self-inline-start", PA_SBI, 1 },
+	{ "span-self-inline-end", PA_SBI, 1 },
+	/* axis-ambiguous */
+	{ "start", PA_SE, 0 }, { "end", PA_SE, 0 },
+	{ "span-start", PA_SE, 0 }, { "span-end", PA_SE, 0 },
+	{ "self-start", PA_SSE, 0 }, { "self-end", PA_SSE, 0 },
+	{ "span-self-start", PA_SSE, 0 }, { "span-self-end", PA_SSE, 0 },
+	/* any axis */
+	{ "center", PA_UNIV, 0 }, { "span-all", PA_UNIV, 0 },
+	{ NULL, 0, 0 }
+};
+
+static const struct pa_kw *pa_lookup(const tok *t)
+{
+	int i;
+	if (t->kind != T_IDENT) return NULL;
+	for (i = 0; pa_kws[i].name != NULL; i++)
+		if (ieq(t->s, t->len, pa_kws[i].name)) return &pa_kws[i];
+	return NULL;
+}
+
+static int pa_is_span_all(const struct pa_kw *k)
+{
+	return k->group == PA_UNIV && strcmp(k->name, "span-all") == 0;
+}
+
+static int canon_position_area(lexed *lx, buf *b)
+{
+	const struct pa_kw *a, *c;
+
+	if (tok_is_ident(cur(lx), "none")) {
+		adv(lx);
+		if (!at_end(lx)) return -1;	/* `none none`, `none start` */
+		bput(b, "none", 4);
+		return 0;
+	}
+
+	a = pa_lookup(cur(lx));
+	if (a == NULL) return -1;
+	adv(lx);
+
+	if (at_end(lx)) {			/* one keyword */
+		bput(b, a->name, -1);
+		return 0;
+	}
+
+	c = pa_lookup(cur(lx));
+	if (c == NULL) return -1;
+	adv(lx);
+	if (!at_end(lx)) return -1;		/* `top left top` */
+
+	/* Both universal: `center center` and `span-all span-all` collapse,
+	 * anything else keeps the order it was written in. */
+	if (a->group == PA_UNIV && c->group == PA_UNIV) {
+		bput(b, a->name, -1);
+		if (a != c) { bputc(b, ' '); bput(b, c->name, -1); }
+		return 0;
+	}
+
+	/* One universal. For an axis-ambiguous partner nothing can be inferred,
+	 * so the pair is emitted exactly as written -- span-all included. */
+	if (a->group == PA_UNIV || c->group == PA_UNIV) {
+		const struct pa_kw *u = (a->group == PA_UNIV) ? a : c;
+		const struct pa_kw *o = (a->group == PA_UNIV) ? c : a;
+
+		if (o->group == PA_SE || o->group == PA_SSE) {
+			bput(b, a->name, -1);
+			bputc(b, ' ');
+			bput(b, c->name, -1);
+			return 0;
+		}
+		if (pa_is_span_all(u)) {	/* the default: drop it */
+			bput(b, o->name, -1);
+			return 0;
+		}
+		/* `center` fills the axis the named keyword left empty, and
+		 * the pair is emitted in slot order. */
+		if (o->axis == 0) {
+			bput(b, o->name, -1);
+			bputc(b, ' ');
+			bput(b, u->name, -1);
+		} else {
+			bput(b, u->name, -1);
+			bputc(b, ' ');
+			bput(b, o->name, -1);
+		}
+		return 0;
+	}
+
+	/* Two named keywords: they must belong to the same group. */
+	if (a->group != c->group) return -1;
+
+	/* An ambiguous group can pair with itself in either order; identical
+	 * keywords collapse to one. */
+	if (a->group == PA_SE || a->group == PA_SSE) {
+		bput(b, a->name, -1);
+		if (a != c) { bputc(b, ' '); bput(b, c->name, -1); }
+		return 0;
+	}
+
+	if (a->axis == c->axis) return -1;	/* `left right`, `left left` */
+	if (!CANON_NAME_FIRST) {
+		/* The negative control again: emit the pair in the order the
+		 * author wrote it. Every value is still accepted and every
+		 * invalid one still refused; only the spelling of `top left`
+		 * changes, and only a byte comparison notices. */
+		bput(b, a->name, -1);
+		bputc(b, ' ');
+		bput(b, c->name, -1);
+		return 0;
+	}
+	if (a->axis == 0) {
+		bput(b, a->name, -1);
+		bputc(b, ' ');
+		bput(b, c->name, -1);
+	} else {
+		bput(b, c->name, -1);
+		bputc(b, ' ');
+		bput(b, a->name, -1);
+	}
+	return 0;
+}
+
+/* ====================================================================
  * Property tables
  * ==================================================================== */
 
@@ -1016,6 +1210,7 @@ int css_canon_knows_property(const char *prop, int plen)
 	if (in_tab(prop, plen, margin_props)) return 1;
 	if (ieq(prop, plen, "anchor-name")) return 1;
 	if (ieq(prop, plen, "position-anchor")) return 1;
+	if (ieq(prop, plen, "position-area")) return 1;
 	return 0;
 }
 
@@ -1171,6 +1366,9 @@ int css_canon_decl(const char *prop, int plen,
 			? CSS_CANON_OK : CSS_CANON_INVALID;
 	} else if (ieq(prop, plen, "position-anchor")) {
 		rc = canon_position_anchor(&lx, &b) == 0
+			? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (ieq(prop, plen, "position-area")) {
+		rc = canon_position_area(&lx, &b) == 0
 			? CSS_CANON_OK : CSS_CANON_INVALID;
 	} else if (mentions_anchor(&lx)) {
 		int anchor_ok = in_tab(prop, plen, inset_props);

@@ -332,6 +332,219 @@ static void t_anchor_name(void)
 	chk("position-anchor", "none", NULL);
 }
 
+/* css/css-anchor-position/position-area-parsing.html
+ *
+ * The same cross products the corpus generates, from the same keyword lists.
+ * Three rules interact here and each one is a separate way to be wrong:
+ * slot order, `span-all` being the droppable default, and the axis-ambiguous
+ * groups doing NEITHER of those. */
+static const char *const pa_horizontal[] = {
+	"left", "right", "span-left", "span-right", "x-start", "x-end",
+	"span-x-start", "span-x-end", "self-x-start", "self-x-end",
+	"span-self-x-start", "span-self-x-end", NULL
+};
+static const char *const pa_vertical[] = {
+	"top", "bottom", "span-top", "span-bottom", "y-start", "y-end",
+	"span-y-start", "span-y-end", "self-y-start", "self-y-end",
+	"span-self-y-start", "span-self-y-end", NULL
+};
+static const char *const pa_inline[] = {
+	"inline-start", "inline-end", "span-inline-start",
+	"span-inline-end", NULL
+};
+static const char *const pa_block[] = {
+	"block-start", "block-end", "span-block-start",
+	"span-block-end", NULL
+};
+static const char *const pa_self_inline[] = {
+	"self-inline-start", "self-inline-end", "span-self-inline-start",
+	"span-self-inline-end", NULL
+};
+static const char *const pa_self_block[] = {
+	"self-block-start", "self-block-end", "span-self-block-start",
+	"span-self-block-end", NULL
+};
+static const char *const pa_start_end[] = {
+	"start", "end", "span-start", "span-end", NULL
+};
+static const char *const pa_self_start_end[] = {
+	"self-start", "self-end", "span-self-start", "span-self-end", NULL
+};
+
+/* Mirrors test_valid_position_area_value_pairs(): `flip` means the pair
+ * serializes in the opposite order from the way it is written. */
+static void pa_pairs(const char *const *k1, const char *const *k2, int flip)
+{
+	int i, j;
+	for (i = 0; k1[i] != NULL; i++) {
+		for (j = 0; k2[j] != NULL; j++) {
+			char in[128], exp[128];
+			snprintf(in, sizeof in, "%s %s", k1[i], k2[j]);
+			if (strcmp(k1[i], k2[j]) == 0)
+				snprintf(exp, sizeof exp, "%s", k1[i]);
+			else if (flip)
+				snprintf(exp, sizeof exp, "%s %s", k2[j], k1[i]);
+			else
+				snprintf(exp, sizeof exp, "%s %s", k1[i], k2[j]);
+			chk_rt("position-area", in, exp);
+		}
+	}
+}
+
+/* Mirrors test_valid_position_area_value_pairs_with_span_all_center(). */
+static void pa_universal(const char *const *kws, int flip)
+{
+	int i;
+	for (i = 0; kws[i] != NULL; i++) {
+		char in[128], exp[128];
+
+		snprintf(exp, sizeof exp, flip ? "center %s" : "%s center",
+			kws[i]);
+		snprintf(in, sizeof in, "%s center", kws[i]);
+		chk("position-area", in, exp);
+		snprintf(in, sizeof in, "center %s", kws[i]);
+		chk("position-area", in, exp);
+
+		/* span-all is the default and disappears. */
+		snprintf(in, sizeof in, "%s span-all", kws[i]);
+		chk("position-area", in, kws[i]);
+		snprintf(in, sizeof in, "span-all %s", kws[i]);
+		chk("position-area", in, kws[i]);
+	}
+}
+
+/* Mirrors the START/END variant: axis-ambiguous keywords can neither be
+ * reordered nor have span-all dropped, so everything stays as written. */
+static void pa_universal_ambiguous(const char *const *kws)
+{
+	int i;
+	for (i = 0; kws[i] != NULL; i++) {
+		char in[128];
+		snprintf(in, sizeof in, "%s center", kws[i]);
+		chk_rt("position-area", in, in);
+		snprintf(in, sizeof in, "center %s", kws[i]);
+		chk_rt("position-area", in, in);
+		snprintf(in, sizeof in, "%s span-all", kws[i]);
+		chk_rt("position-area", in, in);
+		snprintf(in, sizeof in, "span-all %s", kws[i]);
+		chk_rt("position-area", in, in);
+	}
+}
+
+static void pa_bad_pairs(const char *const *k1, const char *const *k2)
+{
+	int i, j;
+	for (i = 0; k1[i] != NULL; i++) {
+		for (j = 0; k2[j] != NULL; j++) {
+			char in[128];
+			snprintf(in, sizeof in, "%s %s", k1[i], k2[j]);
+			chk("position-area", in, NULL);
+			snprintf(in, sizeof in, "%s %s", k2[j], k1[i]);
+			chk("position-area", in, NULL);
+		}
+	}
+}
+
+static void t_position_area(void)
+{
+	static const char *const *const singles[] = {
+		pa_horizontal, pa_vertical, pa_inline, pa_block,
+		pa_self_inline, pa_self_block, pa_start_end,
+		pa_self_start_end, NULL
+	};
+	int g, i;
+
+	group("position-area");
+
+	chk_rt("position-area", "none", "none");
+	chk("position-area", "none none", NULL);
+	chk("position-area", "start none", NULL);
+	chk("position-area", "none start", NULL);
+	chk("position-area", "top left top", NULL);
+
+	chk_rt("position-area", "center", "center");
+	chk("position-area", "center center", "center");
+	chk_rt("position-area", "span-all", "span-all");
+	chk("position-area", "span-all span-all", "span-all");
+	chk_rt("position-area", "center span-all", "center span-all");
+	chk_rt("position-area", "span-all center", "span-all center");
+
+	for (g = 0; singles[g] != NULL; g++)
+		for (i = 0; singles[g][i] != NULL; i++)
+			chk_rt("position-area", singles[g][i], singles[g][i]);
+
+	/* Valid combinations, both orders. Horizontal, block and self-block
+	 * take the first slot. */
+	pa_pairs(pa_horizontal, pa_vertical, 0);
+	pa_pairs(pa_vertical, pa_horizontal, 1);
+	pa_pairs(pa_block, pa_inline, 0);
+	pa_pairs(pa_inline, pa_block, 1);
+	pa_pairs(pa_self_block, pa_self_inline, 0);
+	pa_pairs(pa_self_inline, pa_self_block, 1);
+	pa_pairs(pa_start_end, pa_start_end, 0);
+	pa_pairs(pa_self_start_end, pa_self_start_end, 0);
+
+	pa_universal(pa_horizontal, 0);
+	pa_universal(pa_vertical, 1);
+	pa_universal(pa_block, 0);
+	pa_universal(pa_inline, 1);
+	pa_universal(pa_self_block, 0);
+	pa_universal(pa_self_inline, 1);
+	pa_universal_ambiguous(pa_start_end);
+	pa_universal_ambiguous(pa_self_start_end);
+
+	group("position-area/invalid");
+
+	/* Incompatible axes, both orders. */
+	pa_bad_pairs(pa_horizontal, pa_inline);
+	pa_bad_pairs(pa_horizontal, pa_block);
+	pa_bad_pairs(pa_horizontal, pa_self_inline);
+	pa_bad_pairs(pa_horizontal, pa_self_block);
+	pa_bad_pairs(pa_horizontal, pa_start_end);
+	pa_bad_pairs(pa_horizontal, pa_self_start_end);
+	pa_bad_pairs(pa_vertical, pa_inline);
+	pa_bad_pairs(pa_vertical, pa_block);
+	pa_bad_pairs(pa_vertical, pa_self_inline);
+	pa_bad_pairs(pa_vertical, pa_self_block);
+	pa_bad_pairs(pa_vertical, pa_start_end);
+	pa_bad_pairs(pa_vertical, pa_self_start_end);
+	pa_bad_pairs(pa_inline, pa_self_inline);
+	pa_bad_pairs(pa_inline, pa_self_block);
+	pa_bad_pairs(pa_inline, pa_start_end);
+	pa_bad_pairs(pa_inline, pa_self_start_end);
+	pa_bad_pairs(pa_block, pa_self_inline);
+	pa_bad_pairs(pa_block, pa_self_block);
+	pa_bad_pairs(pa_block, pa_start_end);
+	pa_bad_pairs(pa_block, pa_self_start_end);
+	pa_bad_pairs(pa_start_end, pa_self_start_end);
+
+	/* Same axis twice. */
+	for (g = 0; g < 6; g++)
+		for (i = 0; singles[g][i] != NULL; i++) {
+			char in[128];
+			snprintf(in, sizeof in, "%s %s",
+				singles[g][i], singles[g][i]);
+			chk("position-area", in, NULL);
+		}
+
+	chk("position-area", "foobar", NULL);
+	chk("position-area", "visible", NULL);
+	chk("position-area", "hidden", NULL);
+	chk("position-area", "start foobar", NULL);
+	chk("position-area", "end visible", NULL);
+	chk("position-area", "block-start hidden", NULL);
+	chk("position-area", "hidden inline-end", NULL);
+	chk("position-area", "foo bar", NULL);
+	chk("position-area", "visible hidden", NULL);
+	chk("position-area", "hidden visible", NULL);
+
+	/* Case folding, and the value is keywords only. */
+	chk("position-area", "TOP LEFT", "left top");
+	chk("position-area", "left  top", "left top");
+	chk("position-area", "left 10px", NULL);
+	chk("position-area", "\"left\"", NULL);
+}
+
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
  * wiring this into el.style would reroute ordinary CSS through a parser that
  * does not implement it. */
@@ -461,6 +674,7 @@ int main(void)
 	t_anchor();
 	t_anchor_invalid();
 	t_anchor_name();
+	t_position_area();
 	t_passthrough();
 	t_fuzz();
 
