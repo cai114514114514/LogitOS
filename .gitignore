@@ -43,3 +43,10 @@ rust/target/
 # `git status` -- where the real signal (a staged deletion, an uncommitted
 # test) has to be found among them.
 build-*/
+
+# The vendored conformance corpora are DATA, and the global *.png above
+# (a build-output rule) swallowed 2,235 of WPT's image fixtures -- the ones
+# Document-contentType, the <img> reflection tests and much of css/ load. A
+# corpus missing its fixtures still runs; it just fails for a reason that is
+# not the browser's fault, which is the worst kind of number.
+!third_party/wpt/**

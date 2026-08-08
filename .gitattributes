@@ -9,3 +9,12 @@
 # -text = never convert, in either direction.
 third_party/wpt/** -text
 third_party/html5lib-tests/** -text
+
+# Not a line-ending rule, but it belongs beside them because it is the same
+# class of mistake: .gitignore has a global `*.png` (build output), and it
+# silently swallowed 2,235 corpus files -- the image fixtures that
+# Document-contentType, the <img> reflection tests and much of css/ load. A
+# corpus missing its fixtures is not a smaller corpus, it is a corpus whose
+# tests fail for a reason that is not the browser's fault. The un-ignore lives
+# in .gitignore itself (git has no attribute for this); this note is here so
+# the next person adding a corpus checks for it.
