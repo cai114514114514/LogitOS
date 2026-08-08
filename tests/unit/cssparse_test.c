@@ -1476,6 +1476,182 @@ static void t_color_function(void)
 	t_color_value();
 }
 
+/* The enumeration checks are the only ones in this file that are not a
+ * serialization comparison, so they need a way to record a failure that
+ * chk() does not give them. */
+static void gfail(const char *got, const char *want)
+{
+	g_fail++;
+	printf("  FAIL [%s] %s: expected %s\n", g_group, got, want);
+}
+
+/* ====================================================================
+ * css-grid: <track-list>
+ *
+ * Transcribed from css/css-grid/parsing/grid-template-columns-{valid,invalid}
+ * and grid-auto-columns-valid. LibCSS has no grid AT ALL -- not a parser, not
+ * a property string -- so every row here is a declaration it has never heard
+ * of rather than one it refuses.
+ * ==================================================================== */
+static void t_grid(void)
+{
+	group("grid/track-size");
+
+	chk_rt("grid-template-columns", "none", "none");
+	chk_rt("grid-template-columns", "10px", "10px");
+	chk("grid-template-columns", "20%", "20%");
+	chk("grid-template-columns", "5fr", "5fr");
+	chk("grid-template-columns", "min-content", "min-content");
+	chk("grid-template-columns", "max-content", "max-content");
+	chk("grid-template-columns", "auto", "auto");
+
+	/* A NEGATIVE LITERAL IS A PARSE ERROR AND A NEGATIVE calc() IS NOT:
+	 * whether a calc is negative is a used-value question and the parser
+	 * does not get to pre-empt it. The corpus has both, adjacent, and an
+	 * implementation that treats them alike fails one of them whichever
+	 * way it goes. */
+	chk("grid-template-columns", "-10px", NULL);
+	chk("grid-template-columns", "-20%", NULL);
+	chk("grid-template-columns", "-5fr", NULL);
+	chk_rt("grid-template-columns", "calc(-0.5em + 10px)",
+	    "calc(-0.5em + 10px)");
+	chk("grid-template-columns", "calc(0.5em + 10px)", "calc(0.5em + 10px)");
+
+	/* A percentage IS a length here and is NOT one in a colour channel.
+	 * Same calculation tree, one context flag. */
+	chk("grid-template-columns", "calc(30% + 40vw)", "calc(30% + 40vw)");
+	chk("grid-auto-columns", "calc(2em + 3ex)", "calc(2em + 3ex)");
+	/* ... and a bare number is still not a track size. */
+	chk("grid-template-columns", "calc(2)", NULL);
+
+	chk_rt("grid-template-columns", "minmax(10px, auto)",
+	    "minmax(10px, auto)");
+	chk("grid-template-columns", "minmax(min-content, 20%)",
+	    "minmax(min-content, 20%)");
+	chk("grid-template-columns", "minmax(auto, calc(0.5em + 10px))",
+	    "minmax(auto, calc(0.5em + 10px))");
+	/* minmax()'s first argument is an <inflexible-breadth>: no fr. That
+	 * asymmetry is the whole reason the grammar has two names for one
+	 * thing, and it is one row of the invalid file. */
+	chk("grid-template-columns", "minmax(5fr, calc(0.5em + 10px))", NULL);
+	chk("grid-template-columns", "minmax(-10px, auto)", NULL);
+	chk("grid-template-columns", "minmax(min-content, -20%)", NULL);
+
+	chk_rt("grid-template-columns", "fit-content(10px)", "fit-content(10px)");
+	chk("grid-template-columns", "fit-content(calc(30% + 40vw))",
+	    "fit-content(calc(30% + 40vw))");
+	chk("grid-template-columns", "fit-content(-10px)", NULL);
+	chk("grid-template-columns", "fit-content(auto)", NULL);
+	chk("grid-template-columns", "fit-content", NULL);
+
+	group("grid/line-names");
+
+	/* An EMPTY line-name block names nothing and is dropped -- but it was
+	 * still a block for the adjacency rule, which is why the check runs
+	 * on the block as written and the emission on what it produced. */
+	chk("grid-template-columns", "repeat(1, [] 10px [])", "repeat(1, 10px)");
+	chk("grid-template-columns", "[] 150px [] 1fr []", "150px 1fr");
+	chk_rt("grid-template-columns", "[one two] 20%", "[one two] 20%");
+	chk("grid-template-columns", "[one] 10px [two] [three]", NULL);
+	chk("grid-template-columns", "[one]", NULL);
+	/* `auto` and `span` are reserved and cannot be line names. */
+	chk("grid-template-columns", "[auto] 1px", NULL);
+	chk("grid-template-columns", "[span] 1px", NULL);
+
+	group("grid/repeat");
+
+	chk_rt("grid-template-columns", "repeat(2, minmax(10px, auto))",
+	    "repeat(2, minmax(10px, auto))");
+	chk_rt("grid-template-columns",
+	    "repeat(2, fit-content(20%) [three four] 30px 40px [five six])",
+	    "repeat(2, fit-content(20%) [three four] 30px 40px [five six])");
+	chk("grid-template-columns", "min-content repeat(5, minmax(10px, auto))",
+	    "min-content repeat(5, minmax(10px, auto))");
+	chk("grid-template-columns", "repeat(20%)", NULL);
+	chk("grid-template-columns", "repeat(0, 10px)", NULL);
+
+	chk_rt("grid-template-columns", "repeat(auto-fill, 10px)",
+	    "repeat(auto-fill, 10px)");
+	chk_rt("grid-template-columns", "repeat(auto-fit, [one] 20%)",
+	    "repeat(auto-fit, [one] 20%)");
+	chk("grid-template-columns", "repeat(auto-fill, minmax(30px, 5fr) [two])",
+	    "repeat(auto-fill, minmax(30px, 5fr) [two])");
+	chk("grid-template-columns",
+	    "repeat(auto-fit, [three] minmax(max-content, 6em) [four])",
+	    "repeat(auto-fit, [three] minmax(max-content, 6em) [four])");
+	/* An auto-repeat has to know how many times to repeat. */
+	chk("grid-template-columns", "repeat(auto-fill, -10px)", NULL);
+	chk("grid-template-columns", "repeat(auto-fill, auto)", NULL);
+	chk("grid-template-columns", "repeat(auto-fill, fit-content)", NULL);
+	chk("grid-template-columns",
+	    "repeat(auto-fill, 10px) repeat(auto-fit, 20%)", NULL);
+
+	/* FIXEDNESS IS A PROPERTY OF THE WHOLE LIST. Once an auto-repeat is
+	 * present, every other track -- including the ones inside an
+	 * unrelated repeat(5, ...) -- must have a definite size. There is no
+	 * per-track rule that gets these three right, which is why the count
+	 * is taken across the list and checked once at the end. */
+	chk("grid-template-columns", "auto repeat(auto-fill, auto) auto", NULL);
+	chk("grid-template-columns",
+	    "min-content repeat(auto-fill, min-content) repeat(5, min-content)",
+	    NULL);
+	chk("grid-template-columns",
+	    "fit-content(200px) repeat(auto-fill, auto) fit-content(200px)",
+	    NULL);
+	/* ... and the same list WITHOUT the auto-repeat is fine, which is the
+	 * half that proves the rule is about the auto-repeat and not about
+	 * `auto`. */
+	chk("grid-template-columns", "auto repeat(5, auto) auto",
+	    "auto repeat(5, auto) auto");
+
+	chk_rt("grid-template-columns",
+	    "[one] repeat(2, minmax(10px, auto)) [two] 30px [three]"
+	    " repeat(auto-fill, 10px) 40px [four five]"
+	    " repeat(2, minmax(10px, auto)) [six]",
+	    "[one] repeat(2, minmax(10px, auto)) [two] 30px [three]"
+	    " repeat(auto-fill, 10px) 40px [four five]"
+	    " repeat(2, minmax(10px, auto)) [six]");
+
+	group("grid/auto");
+
+	/* grid-auto-* is a bare <track-size>+: no line names, no repeat and
+	 * no `none`. One grammar shared with the template properties would
+	 * accept all three. */
+	chk_rt("grid-auto-columns", "1px", "1px");
+	chk("grid-auto-columns", "auto /**/", "auto");
+	chk("grid-auto-columns", "minmax(auto, 4%)", "minmax(auto, 4%)");
+	chk("grid-auto-rows", "0px 0% 0fr", "0px 0% 0fr");
+	chk("grid-auto-columns", "none", NULL);
+	chk("grid-auto-columns", "[one] 10px", NULL);
+	chk("grid-auto-columns", "repeat(2, 10px)", NULL);
+
+	group("grid/enumeration");
+
+	/* The predicate and the enumeration are now the same table, so a
+	 * property this file claims is reachable both ways. A caller that
+	 * BUILDS its settable-property set from the enumeration gets the grid
+	 * properties for free; one that transcribes names by hand does not,
+	 * and that is the drift this pair exists to end. */
+	{
+		int n = css_canon_prop_count(), i, seen = 0;
+
+		if (n <= 0) gfail("css_canon_prop_count()", "> 0");
+		for (i = 0; i < n; i++) {
+			const char *nm = css_canon_prop_at(i);
+			if (nm == NULL) { gfail("css_canon_prop_at(i)", "a name"); break; }
+			if (!css_canon_knows_property(nm, -1))
+				gfail(nm, "the predicate to know it");
+			if (strcmp(nm, "grid-template-columns") == 0) seen = 1;
+		}
+		if (!seen) gfail("grid-template-columns", "to be enumerated");
+		if (css_canon_prop_at(n) != NULL)
+			gfail("css_canon_prop_at(count)", "NULL");
+		if (css_canon_prop_at(-1) != NULL)
+			gfail("css_canon_prop_at(-1)", "NULL");
+		g_pass += 4;
+	}
+}
+
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
  * wiring this into el.style would reroute ordinary CSS through a parser that
  * does not implement it. */
@@ -1607,6 +1783,7 @@ int main(void)
 	t_position_area();
 	t_font_family();
 	t_color_function();
+	t_grid();
 	t_passthrough();
 	t_fuzz();
 

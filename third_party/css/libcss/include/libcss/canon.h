@@ -101,6 +101,26 @@ int css_canon_decl(const char *prop, int plen,
  */
 int css_canon_knows_property(const char *prop, int plen);
 
+/**
+ * Enumerate the properties this file claims: the count, and the name at an
+ * index. Names are static and NUL-terminated; the order is not meaningful.
+ *
+ * WHY BOTH THIS AND THE PREDICATE. A predicate answers "is this one of
+ * yours?" and cannot answer "what are yours?" -- and the second question is
+ * the one a CSSOM has to answer, because the set of properties a
+ * CSSStyleDeclaration will let a script assign to has to be BUILT. Without an
+ * enumeration the only way to build it is to transcribe these names by hand
+ * somewhere else, which c/apps/browser/js_dom.c does today and documents as a
+ * drift hazard in its own comment. This is the shape that ends it, and it
+ * matches css_known_prop_count/at so the two sources can be concatenated.
+ *
+ * The cost of NOT using it is silent and one-directional: a property this
+ * file gains is unsettable from script until the hand-written copy gains it
+ * too, so a correct new serializer measures as nothing at all.
+ */
+int css_canon_prop_count(void);
+const char *css_canon_prop_at(int idx);
+
 #ifdef __cplusplus
 }
 #endif

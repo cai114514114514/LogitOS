@@ -1391,9 +1391,16 @@ static int unit_cat(const char *u)
  * The corpus says no, and says it through relative colour: a channel keyword
  * is a <number>, and `rgb(from rebeccapurple calc(r + 1%) g b)` is invalid.
  * There is no version of this table that accepts that and still refuses it. */
-static int cat_combine(int a, int b)
+static int cat_combine(int a, int b, int lp)
 {
-	return (a == b) ? a : -1;
+	if (a == b) return a;
+	/* In a <length-percentage> context -- a grid track size, a width -- a
+	 * percentage IS a length and the two add: `calc(30% + 40vw)` is a
+	 * valid track size. In a colour channel it is not, and that is the
+	 * whole reason this takes a flag instead of being a table. */
+	if (lp && (a == U_LEN || a == U_PCT) && (b == U_LEN || b == U_PCT))
+		return U_LEN;
+	return -1;
 }
 
 typedef struct {
@@ -1524,12 +1531,12 @@ static int sum_div(csum *dst, const csum *a, const csum *b)
 	return 0;
 }
 
-static int sum_cat(const csum *s)
+static int sum_cat(const csum *s, int lp)
 {
 	int c = U_NUM, i;
 	for (i = 0; i < s->n; i++) {
 		int k = unit_cat(s->t[i].unit);
-		c = (i == 0) ? k : cat_combine(c, k);
+		c = (i == 0) ? k : cat_combine(c, k, lp);
 		if (c < 0) return -1;
 	}
 	return c;
@@ -1645,6 +1652,7 @@ struct calcres {
 
 struct calc_ctx {
 	int pct_ok;
+	int lp;			/* a <length-percentage> context */
 	const char *const *names;	/* NULL-terminated, or NULL */
 	int nnames;
 };
@@ -1688,7 +1696,7 @@ static int calc_check_args(lexed *lx, int f0, int fend,
 	for (;;) {
 		csum s;
 		if (calc_sum(&sub, &s, cx, depth + 1) != 0) return -1;
-		if ((d = sum_cat(&s)) < 0) return -1;
+		if ((d = sum_cat(&s, cx->lp)) < 0) return -1;
 		if (sub.i >= sub.n) break;
 		if (sub.t[sub.i].kind != T_COMMA) return -1;
 		sub.i++;
@@ -1826,7 +1834,7 @@ static int calc_sum(lexed *lx, csum *out, const struct calc_ctx *cx, int depth)
 		if (calc_product(lx, &rhs, cx, depth) != 0) return -1;
 		if (sum_add(&acc, &rhs, neg) != 0) return -1;
 	}
-	if (sum_cat(&acc) < 0) return -1;
+	if (sum_cat(&acc, cx->lp) < 0) return -1;
 
 	/* THE CONSTANT SORTS FIRST. `calc(l - 20)` serializes as
 	 * `calc(-20 + l)`, and `calc(50 + (10 * sign(1em - 10px)))` was
@@ -1857,8 +1865,9 @@ static int calc_sum(lexed *lx, csum *out, const struct calc_ctx *cx, int depth)
  * travels down, because a percentage with nothing to resolve against is
  * meaningless wherever it sits, not only at the top.
  */
-static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
-		const char *const *names, int nnames, struct calcres *out)
+static int calc_channel_lp(lexed *lx, buf *b, int pct_ok, int ang_ok,
+		const char *const *names, int nnames, struct calcres *out,
+		int lp)
 {
 	const tok *t = cur(lx);
 	struct calc_ctx cx;
@@ -1867,6 +1876,7 @@ static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
 
 	if (out != NULL) { out->resolved = 0; out->num = 0; out->unit[0] = 0; }
 	cx.pct_ok = pct_ok;
+	cx.lp = lp;
 	cx.names = names;
 	cx.nnames = nnames;
 
@@ -1888,11 +1898,17 @@ static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
 	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
 	adv(lx);
 
-	cat = sum_cat(&s);
+	cat = sum_cat(&s, lp);
 	if (cat < 0) return -1;
-	if (cat == U_PCT && !pct_ok) return -1;
-	if (cat == U_ANG && !ang_ok) return -1;
-	if (cat != U_NUM && cat != U_PCT && cat != U_ANG) return -1;
+	if (lp) {
+		/* A track size is a length or a percentage and never a bare
+		 * number: `calc(2)` is not a width. */
+		if (cat != U_LEN && cat != U_PCT) return -1;
+	} else {
+		if (cat == U_PCT && !pct_ok) return -1;
+		if (cat == U_ANG && !ang_ok) return -1;
+		if (cat != U_NUM && cat != U_PCT && cat != U_ANG) return -1;
+	}
 
 	/* A calc that came out as ONE plain number is RESOLVED, and the caller
 	 * may want the number rather than the text. rgb()/hsl()/hwb() do:
@@ -1910,6 +1926,18 @@ static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
 	bcsum(b, &s);
 	bputc(b, ')');
 	return b->ovf ? -1 : 0;
+}
+
+static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
+		const char *const *names, int nnames, struct calcres *out)
+{
+	return calc_channel_lp(lx, b, pct_ok, ang_ok, names, nnames, out, 0);
+}
+
+/* A math function in a <length-percentage> slot. */
+static int calc_lp(lexed *lx, buf *b)
+{
+	return calc_channel_lp(lx, b, 1, 0, NULL, 0, NULL, 1);
 }
 
 
@@ -3458,24 +3486,399 @@ static int in_tab(const char *p, int plen, const char *const *tab)
 	return 0;
 }
 
+/* The grid properties this file claims. LibCSS has no grid at all, so these
+ * are not values it refuses -- they are properties it has never heard of, and
+ * without this the declaration is dropped and `el.style.gridTemplateColumns`
+ * reads back "". */
+static const char *const grid_props[] = {
+	"grid-template-columns", "grid-template-rows",
+	"grid-auto-columns", "grid-auto-rows", NULL
+};
+
+/* ====================================================================
+ * css-grid: <track-list>, and the reason it is here rather than in LibCSS
+ *
+ * LibCSS HAS NO GRID AT ALL. Not a parser, not a computed field, not a
+ * property string -- `grep -i grid` over src/parse/propstrings.h finds one
+ * hit, the `grid` value of `display`. So `grid-template-columns: 1fr 2fr` is
+ * not a declaration LibCSS refuses; it is a declaration LibCSS has never
+ * heard of, which is why the whole css-grid parsing directory reads 318 of
+ * 1468 and why the grid engine in c/apps/browser parses declaration strings
+ * itself instead of reading a computed style.
+ *
+ * A specified-value serializer is the half of that this file can honestly
+ * do, and the corpus asks for exactly it: `-valid` compares the bytes that
+ * come back out of `el.style`. The other half -- a COMPUTED value, which for
+ * a track list keeps minmax()/repeat()/fr intact on a non-grid box and
+ * becomes the used track sizes in px on a grid container -- needs the
+ * cascade to carry the value, and the cascade is not this file's.
+ *
+ * THE GRAMMAR, and every refusal below is a line of
+ * grid-template-columns-invalid.html:
+ *
+ *   <track-breadth>      = <length-percentage [0,inf]> | <flex> |
+ *                          min-content | max-content | auto
+ *   <inflexible-breadth> = the same WITHOUT <flex>   -- `minmax(5fr, X)` is
+ *                          invalid, and that asymmetry is the whole point of
+ *                          having two names for one thing
+ *   <fixed-breadth>      = <length-percentage> only
+ *   <track-size>         = <track-breadth>
+ *                        | minmax( <inflexible-breadth> , <track-breadth> )
+ *                        | fit-content( <length-percentage> )
+ *   <fixed-size>         = a <track-size> guaranteed to have a definite
+ *                          size: a <fixed-breadth>, or a minmax() with one
+ *                          on either side
+ *   <line-names>         = '[' <custom-ident>* ']'
+ *
+ * A NEGATIVE LITERAL IS A PARSE ERROR AND A NEGATIVE calc() IS NOT.
+ * `-10px` is refused; `calc(-0.5em + 10px)` is accepted, because whether a
+ * calc is negative is a used-value question and the parser does not get to
+ * pre-empt it. Both are in the corpus, adjacent, and an implementation that
+ * treats them the same fails one of them whichever way it goes.
+ *
+ * FIXEDNESS IS A PROPERTY OF THE WHOLE LIST, not of a track. An auto-repeat
+ * needs to know how many times to repeat, so the list it sits in must have a
+ * definite size -- which means EVERY other track in that list must be fixed
+ * too, including the tracks inside an unrelated `repeat(5, ...)`.
+ * `auto repeat(auto-fill, auto) auto` is invalid, and so is
+ * `min-content repeat(auto-fill, min-content) repeat(5, min-content)`. So
+ * this counts non-fixed tracks across the entire list and checks the count
+ * at the end, rather than deciding track by track; there is no local rule
+ * that gets those two rows right.
+ *
+ * `[]` IS DROPPED. `repeat(1, [] 10px [])` is `repeat(1, 10px)` and
+ * `[] 150px [] 1fr []` is `150px 1fr` -- an empty line-name block names
+ * nothing. But two ADJACENT non-empty blocks are still a parse error
+ * (`[one] 10px [two] [three]`), so the adjacency check runs on the blocks as
+ * written, before the dropping.
+ * ==================================================================== */
+
+/* The line-name identifiers CSS reserves. `[auto] 1px` is invalid. */
+static const char *const grid_reserved_names[] = {
+	"span", "auto", NULL
+};
+
+/* Where a breadth may appear. The three differ only in what they exclude,
+ * which is why they are flags on one function rather than three functions. */
+enum { GB_TRACK = 0, GB_INFLEXIBLE, GB_FIXED };
+
+/* A <length-percentage> written as a math function. In a track list a
+ * percentage IS a length -- `calc(30% + 40vw)` is valid here and would be a
+ * type error in a colour channel -- so the calculation tree is told so. */
+static int grid_calc(lexed *lx, buf *b)
+{
+	return calc_lp(lx, b);
+}
+
+/* One breadth. Returns 0 on success; *fixed says whether it has a definite
+ * size, which the caller accumulates for the whole list. */
+static int grid_breadth(lexed *lx, buf *b, int kind, int *fixed)
+{
+	const tok *t = cur(lx);
+
+	*fixed = 0;
+	if (t->kind == T_IDENT) {
+		if (kind == GB_FIXED) return -1;
+		if (ieq(t->s, t->len, "auto")) { bput(b, "auto", 4); adv(lx); return 0; }
+		if (ieq(t->s, t->len, "min-content")) {
+			bput(b, "min-content", 11); adv(lx); return 0;
+		}
+		if (ieq(t->s, t->len, "max-content")) {
+			bput(b, "max-content", 11); adv(lx); return 0;
+		}
+		return -1;
+	}
+	if (t->kind == T_PCT) {
+		if (t->num < 0) return -1;
+		*fixed = 1;
+		return emit_token(lx, b, 1);
+	}
+	if (t->kind == T_DIM) {
+		char u[24];
+		int n = t->len;
+		if (n >= (int)sizeof u) return -1;
+		memcpy(u, t->s, (size_t)n);
+		u[n] = 0;
+		if (t->num < 0) return -1;
+		if (ieq(u, n, "fr")) {
+			/* <flex> is a breadth but never an inflexible or a
+			 * fixed one: `minmax(5fr, ...)` is invalid. */
+			if (kind != GB_TRACK) return -1;
+			return emit_token(lx, b, 1);
+		}
+		if (unit_cat(u) != U_LEN) return -1;
+		*fixed = 1;
+		return emit_token(lx, b, 1);
+	}
+	if (t->kind == T_FUNC) {
+		/* A math function is a <length-percentage>, and its SIGN is
+		 * not the parser's business -- `calc(-0.5em + 10px)` is valid
+		 * where `-10px` is not. */
+		*fixed = 1;
+		return grid_calc(lx, b);
+	}
+	return -1;
+}
+
+static int grid_track_size(lexed *lx, buf *b, int *fixed)
+{
+	const tok *t = cur(lx);
+	int f1 = 0, f2 = 0;
+
+	*fixed = 0;
+	if (t->kind == T_FUNC && ieq(t->s, t->len, "minmax")) {
+		adv(lx);
+		bput(b, "minmax(", 7);
+		if (grid_breadth(lx, b, GB_INFLEXIBLE, &f1) != 0) return -1;
+		if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+		bcomma(b);
+		if (grid_breadth(lx, b, GB_TRACK, &f2) != 0) return -1;
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+		bputc(b, ')');
+		/* A minmax() is fixed when EITHER side is: one definite bound
+		 * is enough to size the track. */
+		*fixed = f1 || f2;
+		return 0;
+	}
+	if (t->kind == T_FUNC && ieq(t->s, t->len, "fit-content")) {
+		adv(lx);
+		bput(b, "fit-content(", 12);
+		if (grid_breadth(lx, b, GB_FIXED, &f1) != 0) return -1;
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+		bputc(b, ')');
+		*fixed = 0;	/* it depends on the content, so it is not */
+		return 0;
+	}
+	return grid_breadth(lx, b, GB_TRACK, fixed);
+}
+
+/* `[` <custom-ident>* `]`. Emits nothing at all for an empty block, and
+ * reports through *present that a block WAS there so the caller can refuse
+ * two in a row. */
+static int grid_line_names(lexed *lx, buf *b, int *present)
+{
+	int n = 0;
+
+	*present = 0;
+	if (at_end(lx) || cur(lx)->kind != T_DELIM || cur(lx)->delim != '[')
+		return 0;
+	adv(lx);
+	*present = 1;
+	for (;;) {
+		const tok *t = cur(lx);
+		if (at_end(lx)) return -1;		/* never closed */
+		if (t->kind == T_DELIM && t->delim == ']') { adv(lx); break; }
+		if (t->kind != T_IDENT) return -1;
+		if (in_tab(t->s, t->len, grid_reserved_names)) return -1;
+		if (n == 0) bputc(b, '[');
+		else bputc(b, ' ');
+		bident(b, t->s, t->len);
+		adv(lx);
+		n++;
+	}
+	if (n) bputc(b, ']');
+	return n;			/* 0 = emitted nothing */
+}
+
+/* State threaded through a whole list, because fixedness is a property of
+ * the list and not of a track. */
+struct gtl {
+	int ntrack;		/* tracks emitted */
+	int nonfixed;		/* tracks with no definite size, anywhere */
+	int autorep;		/* auto-fill / auto-fit repeats seen */
+	int wrote;		/* something has been emitted into b */
+};
+
+static void gsep(buf *b, struct gtl *g)
+{
+	if (g->wrote) bputc(b, ' ');
+	g->wrote = 1;
+}
+
+/* One `[line-names]? track-size` run. Shared by the top level and by the
+ * inside of a repeat(), because they are the same production and writing it
+ * twice is how the two drift. `stop` is the token kind that ends the run. */
+static int track_run(lexed *lx, buf *b, struct gtl *g, int allow_repeat,
+		int allow_names, int stop_at_rparen);
+
+static int grid_repeat(lexed *lx, buf *b, struct gtl *g)
+{
+	const tok *t;
+	struct gtl sub;
+	int isauto = 0;
+
+	adv(lx);			/* repeat( */
+	bput(b, "repeat(", 7);
+	t = cur(lx);
+	if (t->kind == T_IDENT && (ieq(t->s, t->len, "auto-fill") ||
+				   ieq(t->s, t->len, "auto-fit"))) {
+		bput(b, ieq(t->s, t->len, "auto-fill") ? "auto-fill" : "auto-fit", -1);
+		isauto = 1;
+		g->autorep++;
+		adv(lx);
+	} else if (t->kind == T_NUM && t->isint && t->num >= 1) {
+		bnum6(b, t->num);
+		adv(lx);
+	} else {
+		return -1;
+	}
+	if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+	adv(lx);
+	bcomma(b);
+
+	memset(&sub, 0, sizeof sub);
+	/* Line names ARE allowed inside a repeat() body even where the
+	 * property that contains it does not take them at the top level; a
+	 * nested repeat() is not. */
+	if (track_run(lx, b, &sub, 0, 1, 1) != 0) return -1;
+	if (sub.ntrack == 0) return -1;
+	g->ntrack += sub.ntrack;
+	g->nonfixed += sub.nonfixed;
+	/* An auto-repeat repeats until it fills the container, so it cannot
+	 * contain a track whose size depends on its content. */
+	if (isauto && sub.nonfixed) return -1;
+
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+	bputc(b, ')');
+	return 0;
+}
+
+static int track_run(lexed *lx, buf *b, struct gtl *g, int allow_repeat,
+		int allow_names, int stop_at_rparen)
+{
+	int names_prev = 0;
+
+	while (!at_end(lx)) {
+		const tok *t = cur(lx);
+		int fixed = 0;
+
+		if (stop_at_rparen && t->kind == T_RPAREN) break;
+
+		if (t->kind == T_DELIM && t->delim == '[') {
+			int present = 0, emitted;
+			if (!allow_names) return -1;
+			buf tmp;
+			char store[256];
+			if (names_prev) return -1;	/* two blocks in a row */
+			tmp.p = store;
+			tmp.len = 0;
+			tmp.cap = (int)sizeof store;
+			tmp.ovf = 0;
+			emitted = grid_line_names(lx, &tmp, &present);
+			if (emitted < 0 || tmp.ovf) return -1;
+			names_prev = 1;
+			/* An empty block names nothing and is DROPPED, but it
+			 * still counted as a block for the adjacency rule
+			 * above -- which is why the check runs on `present`
+			 * and the emission on `emitted`. */
+			if (emitted > 0) { gsep(b, g); bput(b, tmp.p, tmp.len); }
+			continue;
+		}
+		names_prev = 0;
+
+		gsep(b, g);
+		if (allow_repeat && t->kind == T_FUNC &&
+		    ieq(t->s, t->len, "repeat")) {
+			if (grid_repeat(lx, b, g) != 0) return -1;
+			continue;
+		}
+		if (grid_track_size(lx, b, &fixed) != 0) return -1;
+		g->ntrack++;
+		if (!fixed) g->nonfixed++;
+	}
+	return 0;
+}
+
+static int canon_track_list(lexed *lx, buf *b, int allow_repeat,
+		int allow_none)
+{
+	struct gtl g;
+
+	memset(&g, 0, sizeof g);
+
+	if (allow_none && tok_is_ident(cur(lx), "none") && lx->n == 1) {
+		bput(b, "none", 4);
+		adv(lx);
+		return 0;
+	}
+	/* The template properties take line names and repeat(); the auto-
+	 * ones take neither, and one shared flag would have let
+	 * `grid-auto-columns: [one] 10px` through. */
+	if (track_run(lx, b, &g, allow_repeat, allow_repeat, 0) != 0) return -1;
+
+	/* Line names and no tracks is not a track list. */
+	if (g.ntrack == 0) return -1;
+	/* At most one auto-repeat, and its presence makes the WHOLE list have
+	 * to be definite -- including the tracks inside an unrelated
+	 * repeat(5, ...). No per-track rule gets that right, which is why
+	 * this is counted across the list and checked once, here. */
+	if (g.autorep > 1) return -1;
+	if (g.autorep == 1 && g.nonfixed > 0) return -1;
+	return 0;
+}
+
 /* ====================================================================
  * Entry points
  * ==================================================================== */
 
+/* The properties that are not part of a family. */
+static const char *const single_props[] = {
+	"anchor-name", "position-anchor", "position-area", "font-family", NULL
+};
+
+/* EVERY property this file claims, as one list of lists.
+ *
+ * The predicate and the ENUMERATION are now the same table, which is the
+ * point. c/apps/browser/js_dom.c carries a second, hand-transcribed copy of
+ * these names -- the set a CSSStyleDeclaration will let a script assign to --
+ * because until now this file published a predicate and no way to iterate.
+ * Its own comment names the fix: "one function in canon.h beside the
+ * predicate -- a count and an index, exactly the shape css_known_prop_count/at
+ * already has -- and then this array deletes itself."
+ *
+ * This is that function. Until that array is deleted the drift is still
+ * there, and it is not theoretical: the grid properties added in this commit
+ * are unsettable from script until js_dom.c reads this list, so a serializer
+ * that is correct returns nothing measurable. */
+static const char *const *const canon_prop_tables[] = {
+	inset_props, size_props, margin_props, single_props,
+	color_props, grid_props, NULL
+};
+
 int css_canon_knows_property(const char *prop, int plen)
 {
+	int i;
+
 	if (prop == NULL) return 0;
 	if (plen < 0) plen = (int)strlen(prop);
 	if (plen <= 0) return 0;
-	if (in_tab(prop, plen, inset_props)) return 1;
-	if (in_tab(prop, plen, size_props)) return 1;
-	if (in_tab(prop, plen, margin_props)) return 1;
-	if (ieq(prop, plen, "anchor-name")) return 1;
-	if (ieq(prop, plen, "position-anchor")) return 1;
-	if (ieq(prop, plen, "position-area")) return 1;
-	if (ieq(prop, plen, "font-family")) return 1;
-	if (in_tab(prop, plen, color_props)) return 1;
+	for (i = 0; canon_prop_tables[i] != NULL; i++)
+		if (in_tab(prop, plen, canon_prop_tables[i])) return 1;
 	return 0;
+}
+
+int css_canon_prop_count(void)
+{
+	int i, j, n = 0;
+
+	for (i = 0; canon_prop_tables[i] != NULL; i++)
+		for (j = 0; canon_prop_tables[i][j] != NULL; j++) n++;
+	return n;
+}
+
+const char *css_canon_prop_at(int idx)
+{
+	int i, j;
+
+	if (idx < 0) return NULL;
+	for (i = 0; canon_prop_tables[i] != NULL; i++)
+		for (j = 0; canon_prop_tables[i][j] != NULL; j++)
+			if (idx-- == 0) return canon_prop_tables[i][j];
+	return NULL;
 }
 
 /* anchor-name: none | <dashed-ident># */
@@ -3644,6 +4047,14 @@ int css_canon_decl(const char *prop, int plen,
 		else
 			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, grid_props)) {
+		/* The template properties take line names and repeat() and
+		 * accept `none`; the auto- ones are a bare <track-size>+ and
+		 * accept neither. */
+		int tmpl = ieq(prop, plen, "grid-template-columns") ||
+			   ieq(prop, plen, "grid-template-rows");
+		rc = (canon_track_list(&lx, &b, tmpl, tmpl) == 0 && at_end(&lx))
+			? CSS_CANON_OK : CSS_CANON_INVALID;
 	} else if (in_tab(prop, plen, color_props)) {
 		/* WHICH VALUES OF A COLOUR PROPERTY ARE OURS.
 		 *
