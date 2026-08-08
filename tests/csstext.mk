@@ -32,12 +32,27 @@ UCD ?= /usr/share/unicode
 CSSTEXT_SRC := tests/unit/csstext_test.c c/apps/browser/layout_text.c
 CSSTEXT_INC := -Ic/apps/browser
 
-.PHONY: test-csstext test-csstext-negctl test-csstext-all regen-linebreak-tables
+.PHONY: test-csstext test-csstext-negctl test-csstext-asan test-csstext-all
+.PHONY: regen-linebreak-tables
 
-# Both halves. A gate without its control is half a measurement -- the gate says
+# All three. A gate without its control is half a measurement -- the gate says
 # the suite passes, the control says the suite could have failed.
-test-csstext-all: test-csstext test-csstext-negctl
+test-csstext-all: test-csstext test-csstext-asan test-csstext-negctl
 	@echo "test-csstext-all: gate green, negative control red (as required)"
+
+# The same suite under the sanitisers, which is what makes the fuzz sweep at
+# the end of it worth running. Every string this module sees came off the
+# network: truncated UTF-8, lone continuation bytes, a megabyte of soft
+# hyphens. The conformance corpus is all WELL-FORMED by construction and
+# therefore asks none of those questions. Without a sanitiser "it did not
+# crash" is a weak claim about 4,000 random inputs; with one it is a check on
+# every access those inputs caused.
+test-csstext-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -Wall -Wextra -Wno-unused-function -o $(BUILD)/csstext_test_asan \
+	    $(CSSTEXT_SRC) $(CSSTEXT_INC)
+	@$(BUILD)/csstext_test_asan $(UCD) 20000
 
 test-csstext:
 	@mkdir -p $(BUILD)

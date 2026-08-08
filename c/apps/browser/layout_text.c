@@ -947,9 +947,21 @@ static int emit_line(struct build *b, int from, int to, int y, int x0,
         int q = p;
         if (lh > h) h = lh;
         while (q < end) {
-            int cut = q;
+            int cut;
+            /* A tab is a position, not a glyph.  It has to be consumed here,
+             * BEFORE a fragment starts, or a tab at the start of one -- which
+             * is every indented line of every <pre> on the web, and every line
+             * after a break inside one -- ends up inside the fragment's text
+             * and gets handed to the font, which draws a missing-glyph box. */
+            if (preserve && b->text[q] == '\t') {
+                int tw = tab_width(b, st);
+                x = x0 + ((x - x0) / tw + 1) * tw;
+                q++;
+                continue;
+            }
+            cut = q;
             while (cut < end) {
-                if (preserve && b->text[cut] == '\t' && cut > q) break;
+                if (preserve && b->text[cut] == '\t') break;
                 if (cut > q && split == SPLIT_CHAR &&
                     b->brk[cut] == LTX_BRK_ALLOWED) break;
                 if (cut > q && split == SPLIT_WORD &&
@@ -966,12 +978,8 @@ static int emit_line(struct build *b, int from, int to, int y, int x0,
                 x += f.w;
                 if (push_frag(b, &f) < 0) return -1;
             }
-            if (cut < end && preserve && b->text[cut] == '\t') {
-                int tw = tab_width(b, st);
-                x = x0 + ((x - x0) / tw + 1) * tw;
-                cut++;
-            }
-            q = cut;
+            q = cut;    /* a tab stops the fragment; the top of the loop
+                         * consumes it on the next pass */
         }
         p = end;
     }

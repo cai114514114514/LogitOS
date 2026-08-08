@@ -581,6 +581,22 @@ static void test_lines(void)
         CHECK(0, "tab produced %d fragments", l.nfrag);
     ltx_layout_free(&l);
 
+    /* A tab at the START of a line -- every indented line of every <pre> --
+     * must advance the pen, not be handed to the font.  Two tabs in a row
+     * reach the second stop rather than the first twice. */
+    CHECK(lay("\tb", &st, &e, &l) == 0, "leading tab ok");
+    CHECK(l.nfrag == 1 && l.frags[0].x == 80 && l.frags[0].len == 1,
+          "a leading tab advances and is not drawn (frags=%d x=%d len=%d)",
+          l.nfrag, l.nfrag ? l.frags[0].x : -1, l.nfrag ? l.frags[0].len : -1);
+    ltx_layout_free(&l);
+    e.avail = 400;
+    CHECK(lay("\t\tb", &st, &e, &l) == 0, "double tab ok");
+    CHECK(l.nfrag == 1 && l.frags[0].x == 160,
+          "two tabs reach the second stop (x=%d want 160)",
+          l.nfrag ? l.frags[0].x : -1);
+    ltx_layout_free(&l);
+    e.avail = 100;
+
     /* tab-size in px rather than in space advances. */
     st.tab_px = 1; st.tab_size = 25;
     CHECK(lay("a\tb", &st, &e, &l) == 0, "px tab layout ok");
@@ -733,6 +749,137 @@ static void test_lines(void)
     }
 }
 
+/* ------------------------------------------------------- 6. the fuzz ----- */
+
+/* Every string this module sees comes off the network, most of it from people
+ * who did not intend it to be well formed.  The corpus above is all VALID
+ * UTF-8 by construction, so it never once asks what happens to a truncated
+ * three-byte sequence, a lone continuation byte, or a 200 KB run of U+00AD.
+ *
+ * Deterministic on purpose (xorshift, fixed seed): a fuzz that finds a crash
+ * on Tuesday and cannot reproduce it on Wednesday is a rumour.  Run it under
+ * -fsanitize=address,undefined -- `make test-csstext-asan` -- where "it did
+ * not crash" stops being a weak assertion, because the sanitiser is checking
+ * every access rather than waiting for one to land somewhere fatal. */
+static uint32_t rng_state = 0x1234567u;
+static uint32_t rnd(void)
+{
+    rng_state ^= rng_state << 13;
+    rng_state ^= rng_state >> 17;
+    rng_state ^= rng_state << 5;
+    return rng_state;
+}
+
+static void test_fuzz(int iters)
+{
+    static const char *seeds[] = {
+        "", " ", "\n", "\t\t\t", "\xC2", "\xE4\xB8", "\x80\x80", "\xF0\x9F",
+        "a", "中", "\xC2\xAD", "\xE2\x80\x8B", "\xEF\xBB\xBF", "\xE2\x80\xA8",
+        "\r\n", "-", "1.5", "\"", "\xC2\xA0", "\xF0\x9F\x87\xA6",
+    };
+    struct ltx_env e;
+    struct ltx_style st;
+    struct ltx_layout l;
+    char buf[512];
+    int it;
+
+    base_env(&e, 0);
+    for (it = 0; it < iters; it++) {
+        int n = 0, k, pieces = (int)(rnd() % 24);
+        unsigned char *b;
+        struct ltx_lbopt opt;
+
+        for (k = 0; k < pieces; k++) {
+            const char *s;
+            int sl;
+            if (rnd() & 3) {
+                s = seeds[rnd() % (sizeof seeds / sizeof seeds[0])];
+                sl = (int)strlen(s);
+            } else {
+                static char one[2];
+                one[0] = (char)(rnd() & 0xFF); one[1] = 0;
+                s = one; sl = 1;
+            }
+            if (n + sl >= (int)sizeof buf - 1) break;
+            memcpy(buf + n, s, (size_t)sl);
+            n += sl;
+        }
+        buf[n] = 0;
+
+        memset(&opt, 0, sizeof opt);
+        opt.line_break    = (unsigned char)(rnd() % 5);
+        opt.word_break    = (unsigned char)(rnd() % 4);
+        opt.overflow_wrap = (unsigned char)(rnd() % 3);
+        opt.ai_is_id      = (unsigned char)(rnd() & 1);
+        opt.hyphens_none  = (unsigned char)(rnd() & 1);
+
+        b = malloc((size_t)n + 2);
+        ltx_break_utf8(buf, n, &opt, b);
+        free(b);
+
+        {   /* collapse in every mode, into a buffer that is exactly big enough */
+            char outb[512];
+            struct ltx_wsstate wss;
+            int mode;
+            for (mode = LTX_WSC_COLLAPSE; mode <= LTX_WSC_BREAK_SPACES; mode++) {
+                memset(&wss, 0, sizeof wss);
+                wss.ea_segbreak = (unsigned char)(rnd() & 1);
+                ltx_collapse(buf, n, mode, &wss, outb, (int)sizeof outb);
+            }
+        }
+        {   /* transform, where the output can be three times the input */
+            char outb[2048];
+            int tt, wstart = 1;
+            for (tt = LTX_TT_NONE; tt <= LTX_TT_FULL_SIZE_KANA; tt++)
+                ltx_text_transform(buf, n, tt, &wstart, outb, (int)sizeof outb);
+        }
+
+        base_style(&st);
+        st.wsc            = (unsigned char)(rnd() % 5);
+        st.wrap           = (unsigned char)(rnd() % 5);
+        st.word_break     = opt.word_break;
+        st.overflow_wrap  = opt.overflow_wrap;
+        st.line_break     = opt.line_break;
+        st.text_transform = (unsigned char)(rnd() % 6);
+        st.letter_spacing = (int)(rnd() % 7) - 3;
+        st.word_spacing   = (int)(rnd() % 7) - 3;
+        st.tab_size       = (int)(rnd() % 9);
+        st.tab_px         = (unsigned char)(rnd() & 1);
+        e.avail           = (int)(rnd() % 140) - 4;   /* including 0 and negative */
+        e.align           = (unsigned char)(rnd() % 6);
+        e.align_last      = (unsigned char)(rnd() % 7);
+        e.justify         = (unsigned char)(rnd() % 4);
+        e.indent          = (int)(rnd() % 40) - 10;
+        e.indent_each     = (unsigned char)(rnd() & 1);
+        e.indent_hanging  = (unsigned char)(rnd() & 1);
+        e.rtl             = (unsigned char)(rnd() & 1);
+
+        if (lay(buf, &st, &e, &l) == 0) {
+            int f;
+            /* Not just "it returned": every fragment must point INSIDE the
+             * text this module owns, or a painter would read past it. */
+            for (f = 0; f < l.nfrag; f++) {
+                if (l.frags[f].off < 0 || l.frags[f].len < 0 ||
+                    l.frags[f].off + l.frags[f].len > l.text_len) {
+                    CHECK(0, "fuzz iter %d: fragment %d out of range (%d+%d "
+                             "of %d)", it, f, l.frags[f].off, l.frags[f].len,
+                          l.text_len);
+                    break;
+                }
+            }
+            for (f = 0; f < l.nline; f++) {
+                if (l.lines[f].frag0 < 0 ||
+                    l.lines[f].frag0 + l.lines[f].nfrag > l.nfrag) {
+                    CHECK(0, "fuzz iter %d: line %d spans bad fragments", it, f);
+                    break;
+                }
+            }
+            ltx_layout_free(&l);
+        }
+    }
+    checks++;   /* one check for "the whole sweep completed" */
+}
+
 /* --------------------------------------------------------------- main ---- */
 
 int main(int argc, char **argv)
@@ -747,6 +894,7 @@ int main(int argc, char **argv)
     test_transform();
     test_measure();
     test_lines();
+    test_fuzz(argc > 2 ? atoi(argv[2]) : 4000);
 
     printf("  %d checks, %d failures\n", checks, failures);
     if (conf < 0) {
