@@ -958,6 +958,157 @@ static int anchor_fn(lexed *lx, buf *b, int depth, int which)
 }
 
 /* ====================================================================
+ * CSS Color 4: color()
+ *
+ *   color( <colorspace> [<number>|<percentage>|none]{3} [/ <alpha>]? )
+ *
+ * The serialization rules are the test, and they are not guessable:
+ *
+ *   - A PERCENTAGE CHANNEL BECOMES A NUMBER, divided by 100.
+ *     `color(srgb 10% 10% 10%)` is `color(srgb 0.1 0.1 0.1)`.
+ *   - CHANNELS ARE NOT CLAMPED. `color(srgb 400% 0 10)` is
+ *     `color(srgb 4 0 10)`, and -200 stays -200. Clamping "into gamut" here
+ *     is the obvious thing to do and destroys the value.
+ *   - ALPHA IS CLAMPED, to [0,1], and then DISAPPEARS IF IT IS 1. So
+ *     `/ 110%`, `/ 300%` and `/ 1` all serialize to nothing at all, while
+ *     `/ -10%` serializes as `/ 0`.
+ *   - `none` is a channel value, not a missing channel, and survives.
+ *   - `xyz` is an ALIAS: it serializes as `xyz-d65`.
+ *
+ * Three channels exactly. Two is invalid, four is invalid, and a channel with
+ * a unit (`0deg`) is invalid -- which is a token-level question again, since
+ * `0deg` is a dimension and not a number.
+ * ==================================================================== */
+
+static const char *const color_spaces[] = {
+	"srgb", "srgb-linear", "display-p3", "display-p3-linear",
+	"a98-rgb", "prophoto-rgb", "rec2020",
+	"xyz", "xyz-d50", "xyz-d65", NULL
+};
+
+/* One channel. `alpha` selects the alpha rules: scaled, clamped, and with the
+ * caller deciding whether the result can be dropped. Returns 0 on success and
+ * reports through *val/*kind what was emitted, because the caller has to know
+ * whether an alpha of exactly 1 came out as a plain number (droppable) or as
+ * `none`/`calc()` (not droppable). */
+enum { CH_NUM = 0, CH_NONE, CH_CALC };
+
+static int color_channel(lexed *lx, buf *b, int alpha, int *kind, double *val)
+{
+	const tok *t = cur(lx);
+
+	*kind = CH_NUM;
+	*val = 0;
+
+	if (tok_is_ident(t, "none")) {
+		adv(lx);
+		*kind = CH_NONE;
+		bput(b, "none", 4);
+		return 0;
+	}
+	if (t->kind == T_FUNC) {
+		/* A math function is kept as written (normalized). This file
+		 * does not evaluate calc arithmetic, so the rows the corpus
+		 * writes as `calc(0.5 + 1)` -> `calc(1.5)` are accepted and
+		 * spelled un-simplified. They fail on bytes, exactly as they
+		 * do today; nothing regresses and the simplification is
+		 * honestly not done. */
+		*kind = CH_CALC;
+		return emit_function(lx, b, 1);
+	}
+	if (t->kind == T_NUM) {
+		*val = t->num;
+		adv(lx);
+	} else if (t->kind == T_PCT) {
+		*val = t->num / 100.0;
+		adv(lx);
+	} else {
+		return -1;	/* a dimension (`0deg`), a string, a hash... */
+	}
+
+	if (alpha) {
+		if (*val < 0) *val = 0;
+		if (*val > 1) *val = 1;
+	}
+	bnum(b, *val);
+	return 0;
+}
+
+static int canon_color_fn(lexed *lx, buf *b)
+{
+	const tok *t = cur(lx);
+	const char *space = NULL;
+	int i, kind = CH_NUM;
+	double val = 0;
+	/* The alpha is serialized into a side buffer because whether it is
+	 * emitted at all depends on its VALUE, which is only known after
+	 * parsing it. */
+	char alphastore[256];
+	buf ab;
+	int have_alpha = 0;
+
+	if (t->kind != T_FUNC || !ieq(t->s, t->len, "color")) return -1;
+	adv(lx);
+
+	t = cur(lx);
+	if (t->kind != T_IDENT) return -1;
+	for (i = 0; color_spaces[i] != NULL; i++)
+		if (ieq(t->s, t->len, color_spaces[i])) { space = color_spaces[i];
+			break; }
+	if (space == NULL) return -1;
+	if (strcmp(space, "xyz") == 0) space = "xyz-d65";	/* an alias */
+	adv(lx);
+
+	bput(b, "color(", 6);
+	bput(b, space, -1);
+
+	for (i = 0; i < 3; i++) {
+		bputc(b, ' ');
+		if (color_channel(lx, b, 0, &kind, &val) != 0) return -1;
+	}
+
+	if (!at_end(lx) && cur(lx)->kind == T_DELIM && cur(lx)->delim == '/') {
+		adv(lx);
+		ab.p = alphastore;
+		ab.len = 0;
+		ab.cap = (int)sizeof alphastore;
+		ab.ovf = 0;
+		if (color_channel(lx, &ab, 1, &kind, &val) != 0) return -1;
+		if (ab.ovf) return -1;
+		/* An alpha of exactly 1 is the default and is dropped -- but
+		 * only when it is a plain number. `none` and an unevaluated
+		 * calc() have to stay. */
+		if (!(kind == CH_NUM && val == 1)) {
+			bput(b, " / ", 3);
+			bput(b, ab.p, ab.len);
+		}
+		have_alpha = 1;
+	}
+	(void)have_alpha;
+
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+	bputc(b, ')');
+	return 0;
+}
+
+/* The properties whose value is a <color>. Claiming `color()` needs a
+ * property that actually takes one: `width: color(srgb 0 0 0)` is invalid, not
+ * a colour. */
+static const char *const color_props[] = {
+	"color", "background-color", "border-color",
+	"border-top-color", "border-right-color",
+	"border-bottom-color", "border-left-color",
+	"border-block-color", "border-inline-color",
+	"border-block-start-color", "border-block-end-color",
+	"border-inline-start-color", "border-inline-end-color",
+	"outline-color", "text-decoration-color", "text-emphasis-color",
+	"caret-color", "column-rule-color", "accent-color",
+	"fill", "stroke", "stop-color", "flood-color", "lighting-color",
+	NULL
+};
+
+/* ====================================================================
  * font-family
  *
  *   font-family: <family-name>#
@@ -1315,6 +1466,7 @@ int css_canon_knows_property(const char *prop, int plen)
 	if (ieq(prop, plen, "position-anchor")) return 1;
 	if (ieq(prop, plen, "position-area")) return 1;
 	if (ieq(prop, plen, "font-family")) return 1;
+	if (in_tab(prop, plen, color_props)) return 1;
 	return 0;
 }
 
@@ -1484,6 +1636,17 @@ int css_canon_decl(const char *prop, int plen,
 		else
 			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, color_props)) {
+		/* Only `color()` is ours. `red`, `#fff` and `rgb(...)` are
+		 * LibCSS's and must keep behaving exactly as they do -- this
+		 * file has no specified serializer for them and claiming the
+		 * property is not claiming every value of it. */
+		if (lx.t[0].kind == T_FUNC &&
+		    ieq(lx.t[0].s, lx.t[0].len, "color"))
+			rc = canon_color_fn(&lx, &b) == 0 && at_end(&lx)
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		else
+			rc = CSS_CANON_PASS;
 	} else if (mentions_anchor(&lx)) {
 		int anchor_ok = in_tab(prop, plen, inset_props);
 		int size_ok = anchor_ok || in_tab(prop, plen, size_props) ||

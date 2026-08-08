@@ -686,6 +686,148 @@ static void t_font_family(void)
 	chk("font-family", "simple \"a\"", NULL);
 }
 
+/* css/css-color/parsing/color-valid-color-function.html and its -invalid
+ * sibling, run over the same colour-space list the corpus iterates.
+ *
+ * None of these serialization rules is guessable, and each is a separate way
+ * for a plausible implementation to be wrong: percentages become numbers,
+ * channels are NOT clamped, alpha IS clamped and then vanishes when it is 1,
+ * `none` survives, and `xyz` is spelled `xyz-d65` on the way out. */
+static void t_color_function(void)
+{
+	static const char *const spaces[] = {
+		"srgb", "srgb-linear", "a98-rgb", "rec2020", "prophoto-rgb",
+		"display-p3", "display-p3-linear", "xyz", "xyz-d50",
+		"xyz-d65", NULL
+	};
+	int i;
+
+	group("color()");
+
+	for (i = 0; spaces[i] != NULL; i++) {
+		const char *s = spaces[i];
+		/* `xyz` is an alias and serializes as `xyz-d65`. */
+		const char *r = strcmp(s, "xyz") == 0 ? "xyz-d65" : s;
+		char in[256], exp[256];
+
+		/* The channel text goes in as an ARGUMENT, never spliced into
+		 * the format string: these values are full of `%` and a
+		 * concatenated literal turns each one into a conversion
+		 * specifier reading off the end of the varargs. That is not a
+		 * hypothetical -- the first version of this file did exactly
+		 * that and segfaulted the suite. */
+#define CC(sin, sexp) do { \
+	snprintf(in, sizeof in, "color(%s %s)", s, sin); \
+	snprintf(exp, sizeof exp, "color(%s %s)", r, sexp); \
+	chk_rt("color", in, exp); \
+} while (0)
+
+		CC("0% 0% 0%",            "0 0 0");
+		CC("10% 10% 10%",         "0.1 0.1 0.1");
+		CC(".2 .2 25%",           "0.2 0.2 0.25");
+		CC("0 0 0 / 1",           "0 0 0");
+		CC("0% 0 0 / 0.5",        "0 0 0 / 0.5");
+		CC("20% 0 10/0.5",        "0.2 0 10 / 0.5");
+		CC("20% 0 10/50%",        "0.2 0 10 / 0.5");
+		CC("400% 0 10/50%",       "4 0 10 / 0.5");
+		CC("50% -160 160",        "0.5 -160 160");
+		CC("50% -200 200",        "0.5 -200 200");
+		CC("0 0 0 / -10%",        "0 0 0 / 0");
+		CC("0 0 0 / 110%",        "0 0 0");
+		CC("0 0 0 / 300%",        "0 0 0");
+		CC("200 200 200",         "200 200 200");
+		CC("200 200 200 / 200",   "200 200 200");
+		CC("-200 -200 -200",      "-200 -200 -200");
+		CC("-200 -200 -200 / -200", "-200 -200 -200 / 0");
+		CC("200% 200% 200%",      "2 2 2");
+		CC("200% 200% 200% / 200%", "2 2 2");
+		CC("-200% -200% -200% / -200%", "-2 -2 -2 / 0");
+		CC("none none none / none", "none none none / none");
+		CC("none none none",      "none none none");
+		CC("10% none none / none", "0.1 none none / none");
+		CC("none none none / 0.5", "none none none / 0.5");
+		CC("0 0 0 / none",        "0 0 0 / none");
+#undef CC
+
+		/* Invalid: wrong channel count, a bare fourth component, a
+		 * dimension where a number belongs, a missing channel before
+		 * the slash. */
+#define CBAD(sin) do { \
+	snprintf(in, sizeof in, "color(%s%s)", s, sin); \
+	chk("color", in, NULL); \
+} while (0)
+		CBAD("");
+		CBAD(" 1");
+		CBAD(" 1 1");
+		CBAD(" 50%");
+		CBAD(" 50% -200");
+		CBAD(" 0 0 0 0");
+		CBAD(" 0deg 0% 0");
+		CBAD(" 0% 0 0 1");
+		CBAD(" 0% 0 0 10%");
+		CBAD(" 0% 0 0deg");
+		CBAD(" 0% 0% 0deg");
+		CBAD(" 40% 0 0deg");
+		CBAD(" 1 / 0.5");
+		CBAD(" 1 1 / .5");
+		CBAD(" 50% / 0.5");
+		CBAD(" 50% -200 / 0.5");
+		CBAD(" / 0.5");
+		CBAD(" / 50%");
+#undef CBAD
+
+		/* WHERE THIS FILE'S AUTHORITY STOPS, and it is worth being
+		 * exact about because the corpus and this API disagree here
+		 * for a good reason.
+		 *
+		 * The corpus says `srgb(0 0 0)` is INVALID -- there is no
+		 * `srgb()` function -- and it is right. But CSS_CANON_INVALID
+		 * means "NEITHER this parser NOR LibCSS can take it", and from
+		 * inside this file the second half of that is unknowable: an
+		 * unrecognised colour function might be `lab()`, `oklch()`,
+		 * `color-mix()` or `light-dark()`, all of them real values
+		 * that a newer LibCSS could accept. Answering INVALID for
+		 * every function this file does not personally implement would
+		 * make the CSSOM refuse valid CSS the cascade honours, which
+		 * is a far worse failure than the one it fixes.
+		 *
+		 * So the answer is PASS, and the verdict is LibCSS's to give
+		 * at the call site. Asserting INVALID here would be asserting
+		 * what this author thinks the answer should be rather than
+		 * what this API is for -- a test that ratifies the
+		 * implementation instead of checking it. */
+		snprintf(in, sizeof in, "%s(0 0 0)", s);
+		chk("color", in, PASS_);
+	}
+
+	group("color()/other");
+
+	/* An unknown colour space is not a colour. */
+	chk("color", "color(bogus 0 0 0)", NULL);
+	chk("color", "color(--custom 0 0 0)", NULL);
+
+	/* Case folding: the space name and the function are ASCII
+	 * case-insensitive, and both serialize lowercase. */
+	chk("color", "COLOR(SRGB 0 0 0)", "color(srgb 0 0 0)");
+	chk("color", "color(  srgb   0   0   0  )", "color(srgb 0 0 0)");
+
+	/* It applies to every property that takes a <color>, and to none that
+	 * does not. */
+	chk("background-color", "color(srgb 10% 0 0)", "color(srgb 0.1 0 0)");
+	chk("border-top-color", "color(xyz 0 0 0)", "color(xyz-d65 0 0 0)");
+	chk("width", "color(srgb 0 0 0)", PASS_);
+
+	/* THE SAFETY PROPERTY for colours: everything else on these
+	 * properties is LibCSS's and must be untouched. */
+	chk("color", "red", PASS_);
+	chk("color", "#fff", PASS_);
+	chk("color", "rgb(1, 2, 3)", PASS_);
+	chk("color", "rgba(1,2,3,.5)", PASS_);
+	chk("color", "currentColor", PASS_);
+	chk("color", "inherit", PASS_);
+	chk("background-color", "transparent", PASS_);
+}
+
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
  * wiring this into el.style would reroute ordinary CSS through a parser that
  * does not implement it. */
@@ -816,6 +958,7 @@ int main(void)
 	t_anchor_name();
 	t_position_area();
 	t_font_family();
+	t_color_function();
 	t_passthrough();
 	t_fuzz();
 
