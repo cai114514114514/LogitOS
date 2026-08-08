@@ -1,4 +1,5 @@
 #include "aui.h"
+#include "hidden.h"
 
 /* Logit Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
  *
@@ -43,6 +44,51 @@ static int  shift_down, ctrl_down;
 static int  last_click_row = -1, last_click_frame = -1, frame_no;
 static int  info_open;
 static char info_text[256];
+static int  show_hidden;            /* Ctrl+H; per-session, deliberately not persisted */
+
+/* --- the visible view of cwd -------------------------------------------------
+ * Every row index the UI deals with -- selection, scroll, hit-test, clipboard --
+ * is an index into THIS, not into the kernel's listing. vis_map takes it back.
+ * Rebuilt once per frame (refresh_vis) because a rebuild costs one dir_name per
+ * entry, which is what a single draw pass already spends: no new cost class.
+ *
+ * Rebuilding per frame rather than on navigation is not laziness. Entries appear
+ * and vanish underneath this app -- another process writes a file, a paste lands,
+ * a delete shifts everything down one -- and a map refreshed only on cd would
+ * hand a stale raw index to sys_rename. The bug that costs you a wrong file is
+ * cheaper to prevent than to find. */
+static short vis_map[N];
+static int   vis_n;
+
+static int entry_visible(const char *nm, int is_dir)
+{
+    if (show_hidden) return 1;
+    if (hidden_dotfile(nm)) return 0;
+    if (hidden_system(cwd, nm, is_dir)) return 0;
+    return 1;
+}
+
+static void refresh_vis(void)
+{
+    vis_n = 0;
+    int n = dir_count(cwd);
+    for (int i = 0; i < n && vis_n < N; i++) {
+        char nm[64]; nm[0] = 0;
+        long sz = dir_name(cwd, i, nm);
+        if (sz == -1 || !nm[0]) continue;
+        if (!entry_visible(nm, sz == -2)) continue;
+        vis_map[vis_n++] = (short)i;
+    }
+}
+
+/* dir_name for a VISIBLE row. Same return convention: size, -2 for a directory,
+ * -1 for no such row. */
+static long vis_name(int row, char *nm)
+{
+    nm[0] = 0;
+    if (row < 0 || row >= vis_n) return -1;
+    return dir_name(cwd, vis_map[row], nm);
+}
 
 /* --- tiny helpers --- */
 static int  slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
@@ -159,7 +205,7 @@ static void select_range(int from, int to)
 static int row_path(int i, char *out, int max, int *is_dir_out)
 {
     char nm[64];
-    int sz = dir_name(cwd, i, nm);
+    long sz = vis_name(i, nm);
     if (sz == -1 || !nm[0]) return -1;
     pjoin(out, cwd, nm, max);
     if (is_dir_out) *is_dir_out = (sz == -2);
@@ -195,7 +241,7 @@ static void do_open(int row)
 {
     char path[PMAX]; int isd;
     if (row_path(row, path, PMAX, &isd) < 0) return;
-    if (isd) { char nm[64]; if (dir_name(cwd, row, nm) == -1) return; enter_dir(nm); }
+    if (isd) { char nm[64]; if (vis_name(row, nm) == -1) return; enter_dir(nm); }
     else sys_open_path(path);
 }
 
@@ -256,7 +302,7 @@ static void start_rename(void)
 {
     if (sel_count != 1) return;
     char nm[64];
-    if (dir_name(cwd, sel[0], nm) == -1) return;
+    if (vis_name(sel[0], nm) == -1) return;
     scpy(editbuf, nm, sizeof editbuf);
     rename_mode = 1; newfolder_mode = 0; info_open = 0;
 }
@@ -286,7 +332,7 @@ static void do_get_info(void)
     if (sel_count != 1) { info_open = 0; return; }
     char path[PMAX]; int isd;
     if (row_path(sel[0], path, PMAX, &isd) < 0) { info_open = 0; return; }
-    char nm[64]; nm[0] = 0; long sz = dir_name(cwd, sel[0], nm);
+    char nm[64]; nm[0] = 0; long sz = vis_name(sel[0], nm);
     char num[24];
     char *o = info_text; int oi = 0;
     const char *seg;
@@ -370,7 +416,7 @@ static int side_y(int i) { return 14 + i * 28; }
 /* --- view geometry --- */
 static int grid_cols(void) { int c = (CWID - 16) / GW; return c < 1 ? 1 : c; }
 static int grid_x0(void) { int c = grid_cols(); return CX + 8 + ((CWID - 16) - c * GW) / 2; }
-static int total_items(void) { int t = dir_count(cwd); return t < 0 ? 0 : t; }
+static int total_items(void) { return vis_n; }
 static int item_rows(void) { return view_mode ? total_items() : (total_items() + grid_cols() - 1) / grid_cols(); }
 static int visible_rows(void) { return view_mode ? (CHGT - 8) / LH : CHGT / GH; }
 
@@ -447,7 +493,7 @@ static void draw_grid(void)
     for (int idx = 0; idx < total; idx++) {
         int cr = idx / cols, cc = idx % cols;
         if (cr < scroll || cr >= scroll + visible_rows() + 1) continue;
-        char nm[64]; nm[0] = 0; long sz = dir_name(cwd, idx, nm); int isd = (sz == -2);
+        char nm[64]; nm[0] = 0; long sz = vis_name(idx, nm); int isd = (sz == -2);
         int cellx = gx0 + cc * GW, celly = CY + 6 + (cr - scroll) * GH;
         if (in_sel(idx)) gui_rect(cellx + 6, celly, GW - 12, GH - 8, selbg);
         unsigned col; int icon = ext_icon(nm, isd, &col);
@@ -466,7 +512,7 @@ static void draw_list(void)
     gui_clip(CX, CY, CWID, CHGT);
     int y = CY + 4;
     for (int r = scroll; r < total && r < scroll + visible_rows() + 1; r++, y += LH) {
-        char nm[64]; nm[0] = 0; long sz = dir_name(cwd, r, nm); int isd = (sz == -2);
+        char nm[64]; nm[0] = 0; long sz = vis_name(r, nm); int isd = (sz == -2);
         if (in_sel(r)) gui_rect(CX + 4, y - 2, CWID - 8, LH, selbg);
         unsigned col; int icon = ext_icon(nm, isd, &col);
         gui_icon(icon, CX + 10, y, 20, col);
@@ -480,6 +526,12 @@ static void draw_list(void)
 
 static void frame(void)
 {
+    /* Rebuild the visible view here, and ONLY here. handle_click runs before
+     * the next frame(), so its hit-test resolves against the map that was
+     * actually drawn -- the user clicks the row they can see, not the row the
+     * directory has drifted to since. Refreshing inside the click handler
+     * instead would be the subtle version of the same bug. */
+    refresh_vis();
     aui_begin(AUI_BG);
     /* Content first, then the glass sidebar + toolbar composited ON TOP of it
      * (so the chrome frosts the app's own content). Toolbar/sidebar actions are
@@ -610,6 +662,13 @@ void app_main(void)
             else if (k == KEY_UP) { if (scroll > 0) scroll--; }
             else if (k == KEY_DOWN) scroll++;
             else if (k == 27) { menu_open = 0; info_open = 0; rename_mode = 0; newfolder_mode = 0; }
+            /* Ctrl+H reveals what hidden.h filters. Selection is dropped: the
+             * row indices it holds are indices into a listing that just changed
+             * length, and keeping them would point at different files. */
+            else if (ctrl_down && (k == 'h' || k == 'H' || k == 8)) {
+                show_hidden = !show_hidden;
+                clear_sel(); anchor = -1; scroll = 0; info_open = 0;
+            }
             aui_feed(&e); frame(); aui_feed_done();
             continue;
         }
