@@ -186,6 +186,13 @@ int  css_prop_paint_only(int prop);
  */
 int  css_computed_text(struct node *n, int prop, char *out, int outmax);
 
+/* CSS.supports(): 1 if `prop: value` is a declaration THIS engine's cascade
+ * would take. Answered by handing it to LibCSS's own value handlers, not by a
+ * name table -- see the comment above css_supports_decl() in css_engine.c for
+ * why that distinction is the whole point, and for the one direction in which
+ * it deliberately under-reports. `plen`/`vlen` < 0 mean NUL-terminated. */
+int  css_supports_decl(const char *prop, int plen, const char *value, int vlen);
+
 void css_init(void);                            /* build the UA default stylesheet */
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */

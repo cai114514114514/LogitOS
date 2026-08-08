@@ -1222,6 +1222,21 @@ static void ob_fixed(struct obuf *b, css_fixed v)
 static void ob_color(struct obuf *b, css_color c)
 {
     unsigned a = (c >> 24) & 0xFF;
+#ifdef CSSOM_NEGCTL_SERIALIZE
+    /* THE NEGATIVE CONTROL (tests/cssom.mk). Serialisation is exactly where a
+     * wrong CSSOM passes a weak test: every property is present, every call
+     * returns a plausible string, and only the BYTES are wrong -- which is all
+     * WPT ever compares. This emits the hex form a hand-rolled serialiser
+     * naturally produces. `make test-cssom-negctl` requires the suite to fail
+     * against it; if it passes, the suite is not measuring serialisation. */
+    static const char HEXD[] = "0123456789abcdef";
+    ob_ch(b, '#');
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        ob_ch(b, HEXD[(c >> (sh + 4)) & 0xF]);
+        ob_ch(b, HEXD[(c >> sh) & 0xF]);
+    }
+    return;
+#endif
     ob_s(b, a == 0xFF ? "rgb(" : "rgba(");
     ob_i(b, (int)((c >> 16) & 0xFF)); ob_s(b, ", ");
     ob_i(b, (int)((c >> 8) & 0xFF));  ob_s(b, ", ");
@@ -1236,7 +1251,9 @@ static void ob_len(struct obuf *b, css_fixed val, css_unit unit, int fp)
 {
     if (unit == CSS_UNIT_PCT) { ob_fixed(b, val); ob_ch(b, '%'); return; }
     ob_i(b, len_px(val, unit, fp, 0));
+#ifndef CSSOM_NEGCTL_SERIALIZE
     ob_s(b, "px");
+#endif    /* the other half of the serialisation control: a bare number */
 }
 
 static const char *border_style_name(uint8_t s)
@@ -1938,4 +1955,86 @@ int css_apply_scoped(struct node *n, int siblings, const char *page_css, int pag
         if (changed & CSS_CHANGED_LAYOUT) break;      /* nothing coarser to learn */
     }
     return changed;
+}
+
+/* ======================================================================
+ * CSS.supports() -- the CONDITION, answered by the parser that would have to
+ * honour it.
+ *
+ * WPT feature-detects with this constantly, and a page's first line is often
+ * `if (!CSS.supports('...')) return;`. The temptation is to answer it from a
+ * property-name table, which is wrong in the direction that hurts most: a
+ * table says `width: banana` is supported, because the NAME is in it, and a
+ * page that feature-detects a VALUE then takes a branch this engine cannot
+ * render.
+ *
+ * So the question is put to LibCSS itself: parse the declaration as a
+ * one-declaration inline sheet and watch the drop hook the parser already
+ * carries (`css__parse_drop_report`, third_party/css/.../parse/language.h).
+ * CSS_DROP_ACCEPTED means the value handler took it. That is the same code
+ * path the cascade runs, so supports() and the cascade cannot disagree --
+ * which is the whole point, and the reason this lives here next to make_sheet
+ * rather than in the JS bindings.
+ *
+ * The hook is a global, so this saves and restores whatever was installed
+ * (css_audit.c installs its own reporter over the same slot).
+ *
+ * KNOWN UNDER-REPORT, and it is the honest direction: the handful of
+ * properties css_extra.c honours BEHIND LibCSS's back (border-radius, the
+ * grid track shorthands, animation/transition end-state) are answered `false`
+ * here, because LibCSS drops them and the drop is what this reads. Saying
+ * "no" about something partially supported costs a page its enhanced branch;
+ * saying "yes" about something unparseable costs it the whole layout. If
+ * css_extra's set ever stops being a handful, the fix is to teach LibCSS the
+ * property (patch the vendored parser), not to special-case the list here --
+ * that is what keeps supports() and the cascade the same answer.
+ * ====================================================================== */
+
+extern void (*css__parse_drop_report)(const char *name, size_t nlen, int reason);
+
+static int g_sup_seen;          /* a declaration reached the reporter at all */
+static int g_sup_ok;            /* ... and was ACCEPTED */
+
+static void sup_report(const char *name, size_t nlen, int reason)
+{
+    (void)name; (void)nlen;
+    g_sup_seen = 1;
+    if (reason == 3 /* CSS_DROP_ACCEPTED */) g_sup_ok = 1;
+}
+
+int css_supports_decl(const char *prop, int plen, const char *value, int vlen)
+{
+    if (!prop || !value) return 0;
+    if (plen < 0) plen = (int)strlen(prop);
+    if (vlen < 0) vlen = (int)strlen(value);
+    while (plen && (prop[0] == ' ' || prop[0] == '\t' || prop[0] == '\n')) { prop++; plen--; }
+    while (plen && (prop[plen-1] == ' ' || prop[plen-1] == '\t' || prop[plen-1] == '\n')) plen--;
+    while (vlen && (value[0] == ' ' || value[0] == '\t' || value[0] == '\n')) { value++; vlen--; }
+    while (vlen && (value[vlen-1] == ' ' || value[vlen-1] == '\t' || value[vlen-1] == '\n')) vlen--;
+    if (plen <= 0 || vlen <= 0) return 0;
+    /* A custom property is supported by definition: --x takes any value that
+     * is a balanced token stream, and the cascade stores it verbatim. */
+    if (plen >= 2 && prop[0] == '-' && prop[1] == '-') return 1;
+    /* An empty value, or one that is only whitespace/`!important`, is not a
+     * declaration. Reject before the parser sees it: LibCSS would report
+     * nothing at all and "nothing reported" is our not-supported answer, but
+     * being explicit here keeps the two reasons distinguishable. */
+
+    int need = plen + vlen + 2;
+    char stackbuf[256];
+    char *decl = (need <= (int)sizeof stackbuf) ? stackbuf : (char *)kmalloc((size_t)need);
+    if (!decl) return 0;
+    memcpy(decl, prop, (size_t)plen);
+    decl[plen] = ':';
+    memcpy(decl + plen + 1, value, (size_t)vlen);
+    decl[plen + 1 + vlen] = 0;
+
+    void (*saved)(const char *, size_t, int) = css__parse_drop_report;
+    g_sup_seen = 0; g_sup_ok = 0;
+    css__parse_drop_report = sup_report;
+    css_stylesheet *s = make_sheet(decl, (size_t)(plen + 1 + vlen), true, false);
+    css__parse_drop_report = saved;
+    if (s) css_stylesheet_destroy(s);
+    if (decl != stackbuf) kfree(decl);
+    return g_sup_seen && g_sup_ok;
 }

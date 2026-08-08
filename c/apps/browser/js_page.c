@@ -22,6 +22,10 @@
  * simply come up with no media. */
 #define JS_MEDIA_OPTIONAL
 #include "js_media.h"
+/* CSSOM-View geometry, document.styleSheets, the CSS namespace object --
+ * js_cssom.c, weak for the same reason as the three above. */
+#define JS_CSSOM_OPTIONAL
+#include "js_cssom.h"
 /* The Event constructor hierarchy, a constructible EventTarget and the rest of
  * addEventListener's options surface -- js_events.c, layered over the native
  * dispatcher js_dom.c owns. Weak for the same reason as the three above. */
@@ -528,6 +532,13 @@ int js_page_open(struct node *root)
      * HTMLMediaElement members are installed on the element prototype. */
     if (js_media_install) js_media_install(g_ctx);
     if (js_platform_install) js_platform_install(g_ctx);
+    /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
+     * takes the Element prototype js_dom.c published, and it deliberately
+     * REPLACES two bindings older files install: getBoundingClientRect (its
+     * version flushes a pending layout first) and matchMedia (its version is
+     * the cascade's own media evaluator, which closes the divergence css.h
+     * names). Installing it earlier means those two get overwritten again. */
+    if (js_cssom_install) js_cssom_install(g_ctx);
     /* LAST of the last. The event layer needs js_dom.c's native Event classes
      * to wrap, js_webapi.c's AbortSignal for the `signal` option, and it
      * deliberately REPLACES two placeholders js_platform.c installs when
@@ -550,6 +561,7 @@ void js_page_close(void)
     if (js_platform_close) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
     if (js_webapi_close) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
     if (js_media_close) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
+    if (js_cssom_close) js_cssom_close(g_ctx);     /* drops the node lookup cache */
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
     JS_FreeContext(g_ctx);

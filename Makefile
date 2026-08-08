@@ -3047,6 +3047,12 @@ clean:
 # whole-file Makefile overwrite from a concurrent line cannot delete them).
 -include tests/cssweb.mk
 
+# The CSSOM: CSSOM-View geometry, document.styleSheets, the CSS object,
+# matchMedia (test-cssom, its two negative controls, and the wpt-cssom
+# before/after that counts REVIVED harness files rather than a pass rate).
+# Own fragment for the same reason as every fragment above it.
+-include tests/cssom.mk
+
 # The JavaScript engine's measurement + language-coverage targets (bench-js,
 # bench-js-os, test-js-syntax and its negative control). Own fragment for the
 # same reason as the others: a whole-file Makefile overwrite from a concurrent
