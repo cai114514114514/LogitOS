@@ -13,7 +13,7 @@
 
 struct root_ca {
     int type;                       /* ROOT_EC / ROOT_RSA */
-    int curve;                      /* EC: 256 / 384 */
+    int curve;                      /* EC: 256 / 384 / 521 */
     const uint8_t *ec;  int eclen;  /* EC: point X||Y */
     const uint8_t *n;   int nlen;   /* RSA: modulus (big-endian) */
     const uint8_t *e;   int elen;   /* RSA: public exponent (big-endian) */

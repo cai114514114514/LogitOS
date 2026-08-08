@@ -234,10 +234,23 @@ int main(void)
         memset(d, 0, 32); d[31] = 7;
         ok("P-256 rejects peer X >= p", ecdh_shared(256, d, 1, bad, 65, out) != 0);
     }
-    /* An unknown curve id is not silently treated as P-256. */
+    /* An unknown curve id is not silently treated as P-256.
+     *
+     * This case used 521 as its "obviously unsupported" sentinel, and P-521 is
+     * now a real curve (ecdsa.c gained it so that the ecdsa_secp521r1_sha512 we
+     * have always advertised can actually be verified), so the sentinel had to
+     * move. The assertion it makes is unchanged; only the id that stands for
+     * "not a curve" is different. 999 is not in the IANA named-group registry
+     * and is not a NIST curve size, so nothing can quietly make it real later. */
     {
         uint8_t d[32] = {0}, out[97]; d[31] = 5;
-        ok("unknown curve id refused", ecdh_keygen(521, d, 1, out) != 0);
+        ok("unknown curve id refused", ecdh_keygen(999, d, 1, out) != 0);
+    }
+    /* ...and the curve that just stopped being unknown is asserted to BE known,
+     * so the line above cannot pass by P-521 having quietly gone away again. */
+    {
+        uint8_t d[66] = {0}, out[133]; d[65] = 5;
+        ok("P-521 curve id accepted", ecdh_keygen(521, d, 1, out) == 0);
     }
 
     printf("\n%d checks, %d failed\n", checks, fails);

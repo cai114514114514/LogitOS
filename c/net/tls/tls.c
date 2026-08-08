@@ -973,13 +973,26 @@ static int verify_flight(struct tls_sess *s)
             memcpy(signed_data + sd, th_cert, 32); sd += 32;
             int okv = 0;
             TLSPROF_BEGIN(tls_certverify);
-            if (ncert > 0 && (sigalg == 0x0403 || sigalg == 0x0503)) {
-                int curve = (sigalg == 0x0403) ? 256 : 384;
-                int flen2 = curve / 8;
-                uint8_t hash[48]; int hh;
-                if (curve == 256) { sha256(signed_data, sd, hash); hh = 32; }
-                else { sha384(signed_data, sd, hash); hh = 48; }
-                uint8_t rs[96];
+            /* ecdsa_secp521r1_sha512 (0x0603) is handled here because we OFFER
+             * it in signature_algorithms. It used to be advertised and not
+             * implemented, so a server with a P-521 certificate took us at our
+             * word, signed with it, and the handshake died right here -- the
+             * site was unreachable and it looked like the server's fault. */
+#ifdef LOGIT_P521_BREAK_FLEN
+            /* NEGATIVE CONTROL (see test-p521-control). Use curve/8 for the
+             * field length instead of ceil(curve/8). It is right for P-256 and
+             * P-384 and wrong only for P-521, by one byte -- the exact mistake
+             * this curve invites, and one that changes nothing anywhere else. */
+#           define x509_ec_flen(c) ((c) / 8)
+#endif
+            if (ncert > 0 && (sigalg == 0x0403 || sigalg == 0x0503 || sigalg == 0x0603)) {
+                int curve = (sigalg == 0x0403) ? 256 : (sigalg == 0x0503) ? 384 : 521;
+                int flen2 = x509_ec_flen(curve);      /* 66 for P-521, not 65 */
+                uint8_t hash[64]; int hh;
+                if (curve == 256)      { sha256(signed_data, sd, hash); hh = 32; }
+                else if (curve == 384) { sha384(signed_data, sd, hash); hh = 48; }
+                else                   { sha512(signed_data, sd, hash); hh = 64; }
+                uint8_t rs[132];
                 if (chain[0].key_type == KEY_EC && x509_der_sig_to_rs(sig, siglen, rs, flen2) == 0 &&
                     chain[0].publen == 1 + 2*flen2 && chain[0].pub[0] == 0x04 &&
                     ecdsa_verify(curve, chain[0].pub + 1, rs, hash, hh)) okv = 1;

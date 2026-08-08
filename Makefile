@@ -196,7 +196,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 
@@ -808,6 +808,31 @@ test-tls-interop: $(BUILD)
 # only when the resumption cases go red.
 test-tls-resume-control: $(BUILD)
 	@TLS_INTEROP_BREAK=LOGIT_PSK_BREAK_TRANSCRIPT TLS_INTEROP_ONLY=resume \
+	  bash tests/unit/run-tls-interop.sh
+
+# --- ECDSA over P-521 -------------------------------------------------------
+# Two independent sources, because our own generator agreeing with our own
+# verifier would prove only self-consistency:
+#   RFC 6979 A.2.7  -- an IETF-published P-521/SHA-512 vector, compiled in.
+#   openssl         -- fresh keys and signatures over random messages, made by
+#                      tests/unit/p521_gen.sh, which we only get to check.
+# Plus the rejections (r=0, s=0, r=n, s=n, tampered r/s, swapped r/s, wrong
+# message, off-curve key, (0,0) key, and the same signature offered under the
+# wrong curve id) -- a verifier that returns 1 unconditionally passes every
+# positive case above and none of these.
+test-p521: $(BUILD)
+	@bash tests/unit/p521_gen.sh $(BUILD)/p521_vectors.txt 12
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/p521_test tests/unit/ecdsa_p521_test.c \
+	  c/crypto/pubkey/ecdsa.c c/crypto/hash/sha384.c -Ic/crypto
+	$(BUILD)/p521_test $(BUILD)/p521_vectors.txt
+
+# The control for the P-521 WIRING (the unit test above covers the arithmetic).
+# LOGIT_P521_BREAK_FLEN makes tls.c compute the field length as curve/8 rather
+# than ceil(curve/8): correct for P-256 and P-384, one byte short for P-521.
+# Nothing else in the tree changes behaviour, and the P-521 interop cases must
+# go red -- if they do not, they are not testing the curve they name.
+test-p521-control: $(BUILD)
+	@TLS_INTEROP_BREAK=LOGIT_P521_BREAK_FLEN TLS_INTEROP_ONLY=p521 \
 	  bash tests/unit/run-tls-interop.sh
 
 # Randomized differential tests: a self-checked pure-Python reference

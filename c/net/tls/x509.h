@@ -48,6 +48,10 @@ int x509_verify_signed_by(const struct cert *child, const struct cert *issuer);
  * r||s (flen bytes each, big-endian). 0 ok, -1 malformed. Shared with tls.c. */
 int x509_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen);
 
+/* Bytes in one coordinate of an EC curve: ceil(bits/8). P-521 is 66, not 65 --
+ * the one place where the obvious `curve/8` is wrong, and wrong silently. */
+int x509_ec_flen(int curve);
+
 /* Verify a chain certs[0..n-1] (leaf first): each signed by the next, the top
  * signed by (or equal to) a built-in trusted root, plus host-name and validity
  * checks against `host` and `now` (unix seconds). Returns 0 if fully trusted,

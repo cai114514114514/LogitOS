@@ -54,6 +54,12 @@ static const uint8_t OID_EC_PUBKEY[]    = {0x2a,0x86,0x48,0xce,0x3d,0x02,0x01};
 static const uint8_t OID_RSA_ENC[]      = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01};
 static const uint8_t OID_P256[]         = {0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07};
 static const uint8_t OID_P384[]         = {0x2b,0x81,0x04,0x00,0x22};
+static const uint8_t OID_P521[]         = {0x2b,0x81,0x04,0x00,0x23};   /* 1.3.132.0.35 */
+
+/* Bytes in one coordinate of `curve`. This is ceil(bits/8), NOT bits/8: P-521
+ * is the one curve where they differ (66 vs 65) and every buffer size, every
+ * signature split and every point-length check in this file depends on it. */
+int x509_ec_flen(int curve) { return (curve + 7) / 8; }
 static const uint8_t OID_CN[]           = {0x55,0x04,0x03};
 static const uint8_t OID_SAN[]          = {0x55,0x1d,0x11};
 static const uint8_t OID_BC[]           = {0x55,0x1d,0x13};     /* basicConstraints */
@@ -164,7 +170,8 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
           const uint8_t *cc; int cl; if (der_tlv(&alg,&g,&cc,&cl)) return X509_E_PARSE;   /* curve OID */
           out->key_type = KEY_EC;
           out->key_curve = oid_eq(cc,cl,OID_P256,sizeof OID_P256) ? 256 :
-                           oid_eq(cc,cl,OID_P384,sizeof OID_P384) ? 384 : 0;
+                           oid_eq(cc,cl,OID_P384,sizeof OID_P384) ? 384 :
+                           oid_eq(cc,cl,OID_P521,sizeof OID_P521) ? 521 : 0;
           const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE; /* BIT STRING */
           if (bl < 2 || bs[0] != 0) return X509_E_PARSE;         /* 0 unused bits */
           out->pub = bs + 1; out->publen = bl - 1;               /* 04||X||Y */
@@ -293,9 +300,14 @@ static int verify_with_key(const struct cert *child, int issuer_type, int issuer
         return pss ? rsa_pss_verify  (n, nlen, e, elen, child->sig, child->siglen, hash, hlen)
                    : rsa_pkcs1_verify(n, nlen, e, elen, child->sig, child->siglen, hash, hlen);
     }
-    if (issuer_type != KEY_EC || (issuer_curve != 256 && issuer_curve != 384)) return 0;
-    int flen = issuer_curve / 8;
-    uint8_t rs[96];
+    if (issuer_type != KEY_EC ||
+        (issuer_curve != 256 && issuer_curve != 384 && issuer_curve != 521)) return 0;
+    /* NOT issuer_curve/8. P-521's field elements are 66 bytes, not 65: the
+     * prime is 2^521-1, so a coordinate needs ceil(521/8) bytes and the top one
+     * carries a single bit. Dividing by 8 gives 65 and shifts every subsequent
+     * byte, which does not fail loudly -- it just never verifies. */
+    int flen = x509_ec_flen(issuer_curve);
+    uint8_t rs[132];                    /* 2 * 66, the P-521 case */
     if (x509_der_sig_to_rs(child->sig, child->siglen, rs, flen)) return 0;
     if (eclen < 2*flen) return 0;
     return ecdsa_verify(issuer_curve, ec, rs, hash, hlen);

@@ -3,12 +3,20 @@
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
-/* Generic big-integer mod arithmetic for NIST P-256 / P-384 ECDSA *verification*
- * (not constant-time; we only check signatures on public data). Numbers are
- * fixed-width arrays of 32-bit limbs, little-endian limb order. Max 384 bits =
- * 12 limbs; we use 13 limbs of headroom for intermediate sums. */
+/* Generic big-integer mod arithmetic for NIST P-256 / P-384 / P-521 ECDSA
+ * *verification* (not constant-time; we only check signatures on public data).
+ * Numbers are fixed-width arrays of 32-bit limbs, little-endian limb order.
+ *
+ * P-521 is the widest: 521 bits needs 17 limbs (the top limb carries 9 bits),
+ * so NL is 18 with one limb of headroom for intermediate sums. It costs the
+ * narrower curves something -- bn_add/bn_sub/bn_cmp and the fixed-width Barrett
+ * helpers all run 18 limbs wide instead of 13 -- and that cost was measured
+ * rather than assumed; see tests/unit/crypto_bench.c and the note in
+ * curves_init(). The hot loop (mod_mul) is sized by the MODULUS, not by NL, so
+ * the widening does not touch it at all, which is why the measured effect is
+ * small. */
 
-#define NL 13                       /* limbs (enough for 384b + carry headroom) */
+#define NL 18                       /* limbs (enough for 521b + carry headroom) */
 typedef uint32_t bn[NL];
 
 static void bn_zero(bn a) { for (int i=0;i<NL;i++) a[i]=0; }
@@ -55,9 +63,10 @@ struct curve {
     int nbytes, nlimbs;
     bn p, n, a, b, gx, gy;          /* prime, order, a, b, base point */
 };
-static struct curve P256, P384;
+static struct curve P256, P384, P521;
 static int curves_ready;
 static void barrett_make(const uint32_t *m);    /* fwd: Barrett reciprocal setup */
+static struct curve *curve_by_id(int curve);    /* fwd: 256/384/521 -> params, or NULL */
 
 static void set_bn(bn o, const char *hex)      /* hex big-endian */
 {
@@ -92,8 +101,27 @@ static void curves_init(void)
     set_bn(P384.b,"b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef");
     set_bn(P384.gx,"aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7");
     set_bn(P384.gy,"3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f");
+    /* secp521r1 (FIPS 186-4 / SEC 2). p = 2^521 - 1, which is why the modulus
+     * is 66 bytes with only 9 significant bits in the top one -- every buffer
+     * here is 66 bytes and the leading byte is 0x00 or 0x01, never more.
+     *
+     * This curve exists in this file because the ClientHello has always
+     * advertised ecdsa_secp521r1_sha512 (0x0603) while nothing could verify it.
+     * Offering a signature algorithm we cannot check is worse than not offering
+     * it: a server holding a P-521 certificate takes us at our word, signs with
+     * it, and the handshake then fails at CertificateVerify -- so the site was
+     * unreachable in a way that looked like the server's fault. */
+    P521.nbytes=66; P521.nlimbs=17;
+    set_bn(P521.p, "01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    set_bn(P521.n, "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409");
+    set_bn(P521.a, "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc");
+    set_bn(P521.b, "0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f00");
+    set_bn(P521.gx,"00c6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66");
+    set_bn(P521.gy,"011839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650");
+
     barrett_make(P256.p); barrett_make(P256.n);     /* precompute Barrett reciprocals */
     barrett_make(P384.p); barrett_make(P384.n);
+    barrett_make(P521.p); barrett_make(P521.n);
     curves_ready=1;
 }
 
@@ -118,7 +146,7 @@ static void mod_sub(bn o, const bn a, const bn b, const bn m)
  * every caller -- mod p and mod n -- speeds up with no other change. */
 #define BW (2*NL + 4)
 struct barrett { uint32_t m[NL]; uint32_t mu[NL+2]; int k; };
-static struct barrett btab[4]; static int nbar;
+static struct barrett btab[8]; static int nbar;   /* 2 moduli (p,n) x 3 curves; 8 for headroom */
 
 static void w_shl1(uint32_t *a){ uint32_t c=0; for(int i=0;i<BW;i++){ uint32_t nc=a[i]>>31; a[i]=(a[i]<<1)|c; c=nc; } }
 
@@ -133,6 +161,17 @@ static void w_shl1(uint32_t *a){ uint32_t c=0; for(int i=0;i<BW;i++){ uint32_t n
  * on the theory that it "should" help. The same narrowing IS a 3x win in
  * rsa.c, where the equivalent loop runs 2048 times per verify rather than
  * three, which is why the two files disagree about it on purpose. */
+/* P-521 RE-RAN THAT EXPERIMENT AND IT LOST AGAIN, HARDER. Adding the curve
+ * takes NL from 13 to 18, so BW goes 30 -> 40 and these loops now spend HALF
+ * their limbs on zeros for P-256 rather than a third -- which is exactly the
+ * condition under which narrowing "should" finally pay. It was tried: give
+ * w_cmp/w_subeq/w_mul an explicit width of 2k+4 (still a per-call constant, so
+ * only the trip count varies, not the shape). Measured, host, P-256 verify:
+ *      1306 us baseline -> 1377 us fixed-width at NL=18 -> 1588 us narrowed.
+ * Narrowing cost another 15% on top of the widening it was meant to undo. The
+ * vectorisation explanation above survives the stronger test, so the fixed
+ * width stays and the widening is simply paid for. Do not try this a third
+ * time without reading these two numbers first. */
 static int  w_cmp(const uint32_t *a,const uint32_t *b){ for(int i=BW-1;i>=0;i--){ if(a[i]<b[i])return -1; if(a[i]>b[i])return 1; } return 0; }
 static void w_subeq(uint32_t *a,const uint32_t *b){ uint64_t br=0; for(int i=0;i<BW;i++){ uint64_t d=(uint64_t)a[i]-b[i]-br; a[i]=(uint32_t)d; br=(d>>63)&1; } }
 static void w_mul(uint32_t *o,const uint32_t *a,int al,const uint32_t *b,int bl){
@@ -144,7 +183,7 @@ static void w_mul(uint32_t *o,const uint32_t *a,int al,const uint32_t *b,int bl)
 }
 /* register modulus m with mu = floor(2^(64k)/m) (one-time long division). */
 static void barrett_make(const uint32_t *m){
-    if(nbar>=4) return;
+    if(nbar>=8) return;
     struct barrett *B=&btab[nbar++];
     int k=NL; while(k>0 && m[k-1]==0) k--; B->k=k;
     for(int i=0;i<NL;i++) B->m[i]=m[i];
@@ -380,8 +419,10 @@ static int point_on_curve(const bn qx, const bn qy, const struct curve *c)
 int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
                  const uint8_t *hash, int hlen)
 {
-    curves_init();
-    struct curve *c = (curve == 256) ? &P256 : &P384;
+    /* An unknown curve id used to fall through to P-384 rather than be refused,
+     * which would verify a signature against the wrong group. Refuse instead. */
+    struct curve *c = curve_by_id(curve);
+    if (!c) return 0;
     int fl = c->nbytes;
 
     bn r, s, e, u1, u2;
@@ -463,6 +504,7 @@ static struct curve *curve_by_id(int curve)
     curves_init();
     if (curve == 256) return &P256;
     if (curve == 384) return &P384;
+    if (curve == 521) return &P521;
     return 0;
 }
 

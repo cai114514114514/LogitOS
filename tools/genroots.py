@@ -19,6 +19,7 @@ OID_RSA = bytes([0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01])
 OID_EC  = bytes([0x2a,0x86,0x48,0xce,0x3d,0x02,0x01])
 OID_P256= bytes([0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07])
 OID_P384= bytes([0x2b,0x81,0x04,0x00,0x22])
+OID_P521= bytes([0x2b,0x81,0x04,0x00,0x23])     # 1.3.132.0.35, secp521r1
 
 # Human-friendly order/labels (slug -> comment). Anything in tools/roots not
 # listed still gets emitted, labelled by filename.
@@ -88,9 +89,15 @@ def parse_root(der):
     bs = bs[1:]
     if oid == OID_EC:
         curve_oid = der[algkids[1][1]:algkids[1][2]]
-        curve = 256 if curve_oid == OID_P256 else 384 if curve_oid == OID_P384 else 0
+        curve = (256 if curve_oid == OID_P256 else
+                 384 if curve_oid == OID_P384 else
+                 521 if curve_oid == OID_P521 else 0)
         if curve == 0:
-            raise ValueError("unknown EC curve")
+            # Still the honest failure mode for anything we cannot verify --
+            # Ed25519 and Ed448 land here. The caller records the name in the
+            # skip list, which is compiled in and printed by the kernel, so a
+            # dropped root is visible rather than a silent gap in the store.
+            raise ValueError("unsupported EC curve %s" % curve_oid.hex())
         if bs[0] != 0x04:
             raise ValueError("EC point not uncompressed")
         return ("EC", curve, bs[1:])             # X||Y

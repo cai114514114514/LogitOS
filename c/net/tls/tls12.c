@@ -320,10 +320,10 @@ static int verify_ske_signature(const struct cert *leaf, int sighash, int sigalg
          * with SHA-256 is legal and common. */
         if (leaf->key_type != KEY_EC) return 0;
         int curve = leaf->key_curve;
-        if (curve != 256 && curve != 384) return 0;
-        int flen = curve / 8;
+        if (curve != 256 && curve != 384 && curve != 521) return 0;
+        int flen = x509_ec_flen(curve);          /* 66 for P-521, not 65 */
         if (leaf->publen != 1 + 2 * flen || leaf->pub[0] != 0x04) return 0;
-        uint8_t rs[96];
+        uint8_t rs[132];
         if (x509_der_sig_to_rs(sig, siglen, rs, flen) != 0) return 0;
         return ecdsa_verify(curve, leaf->pub + 1, rs, hash, hlen);
     }

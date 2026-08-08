@@ -37,28 +37,33 @@ mkdir -p "$BUILD" "$TMP/roots"
 # ---------------------------------------------------------------- test PKI ---
 # One CA, two leaves (EC and RSA) so both CertificateVerify paths are covered,
 # plus a leaf for the wrong name so the host-name check is exercised for real.
-mkca() {     # mkca <name> <cn>
-    local nm="$1" cn="$2"
-    "$OPENSSL" ecparam -name prime256v1 -genkey -noout -out "$TMP/$nm.key" 2>/dev/null
+mkca() {     # mkca <name> <cn> [curve]
+    local nm="$1" cn="$2" cv="${3:-prime256v1}"
+    "$OPENSSL" ecparam -name "$cv" -genkey -noout -out "$TMP/$nm.key" 2>/dev/null
     "$OPENSSL" req -x509 -new -key "$TMP/$nm.key" -sha256 -days 3 -subj "/CN=$cn" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -out "$TMP/$nm.pem" 2>/dev/null
 }
 
-mkleaf() {   # mkleaf <name> <keytype> <cn> <ca> [extra-SAN-dns]
+mkleaf() {   # mkleaf <name> <keytype: ec|rsa|ec521> <cn> <ca> [extra-SAN-dns]
     local nm="$1" kt="$2" cn="$3" ca="$4" alt="${5:-}"
-    if [ "$kt" = ec ]; then
-        "$OPENSSL" ecparam -name prime256v1 -genkey -noout -out "$TMP/$nm.key" 2>/dev/null
-    else
-        "$OPENSSL" genrsa -out "$TMP/$nm.key" 2048 2>/dev/null
-    fi
+    local md="-sha256"
+    case "$kt" in
+      ec)    "$OPENSSL" ecparam -name prime256v1 -genkey -noout -out "$TMP/$nm.key" 2>/dev/null ;;
+      # A P-521 leaf, signed with SHA-512 by a P-521 CA. This is the certificate
+      # that made a server unreachable: we advertise ecdsa_secp521r1_sha512, the
+      # server obliges, and before this work nothing could check the result.
+      ec521) "$OPENSSL" ecparam -name secp521r1 -genkey -noout -out "$TMP/$nm.key" 2>/dev/null
+             md="-sha512" ;;
+      *)     "$OPENSSL" genrsa -out "$TMP/$nm.key" 2048 2>/dev/null ;;
+    esac
     "$OPENSSL" req -new -key "$TMP/$nm.key" -subj "/CN=$cn" -out "$TMP/$nm.csr" 2>/dev/null
     local san="DNS:$cn"
     [ -n "$alt" ] && san="$san,DNS:$alt"
     printf 'subjectAltName=%s\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' "$san" > "$TMP/$nm.ext"
     "$OPENSSL" x509 -req -in "$TMP/$nm.csr" -CA "$TMP/$ca.pem" -CAkey "$TMP/$ca.key" \
-        -CAcreateserial -days 3 -sha256 -extfile "$TMP/$nm.ext" -out "$TMP/$nm.pem" 2>/dev/null
+        -CAcreateserial -days 3 $md -extfile "$TMP/$nm.ext" -out "$TMP/$nm.pem" 2>/dev/null
 }
 
 mkca ca    "LogitOS Interop Test CA"
@@ -71,6 +76,12 @@ mkleaf rogue_leaf ec localhost          rogue
 # Valid for BOTH names, so the ticket-scoping case can change SNI between the
 # two connections without the change being masked by a certificate rejection.
 mkleaf multi ec  localhost              ca   alt.localhost
+# A whole P-521 PKI: P-521 root, P-521 leaf, SHA-512 signatures throughout. The
+# CA is a separate anchor so BOTH the chain signature (x509.c) and the
+# CertificateVerify (tls.c / tls12.c) run over P-521, not just one of them.
+mkca   ca521 "LogitOS Interop P-521 CA" secp521r1
+cp "$TMP/ca521.pem" "$TMP/roots/interop_ca521.pem"
+mkleaf p521 ec521 localhost             ca521
 
 # ------------------------------------------------------ build the test client
 # Trust: a bundle holding exactly the throwaway CA. roots.c reaches its bundle
@@ -247,6 +258,55 @@ case_run "1.3 still wins when offered" 0 "$TMP/ec.pem" "$TMP/ec.key" \
 # server just ignores the pre_shared_key extension and does a full handshake,
 # which looks identical in every log except the RESUMED line.
 echo
+# --------------------------------------------------------------- P-521 ------
+# THE REACHABILITY CASES. Every ClientHello this client has ever sent listed
+# ecdsa_secp521r1_sha512 (0x0603) in signature_algorithms, and nothing could
+# verify it: ecdsa_verify mapped every curve id that was not 256 to P-384. A
+# server holding a P-521 certificate therefore took the offer, signed with it,
+# and we failed at CertificateVerify -- so these two cases FAIL on the parent
+# commit and pass here. That is the whole claim, and it is checkable by running
+# this block against the previous build.
+SECTION="p521"
+echo
+echo "-- P-521 certificates --"
+# shellcheck disable=SC2086
+case_run "P-521 leaf + P-521 CA (1.3)"  0 "$TMP/p521.pem" "$TMP/p521.key" \
+    -cert_chain "$TMP/ca521.pem" -groups X25519 -- --expect-version 13
+# TLS 1.2 + a P-521 certificate is a DOCUMENTED LIMITATION, asserted here so it
+# cannot quietly be believed to work. It is not a bug in the verification code
+# this commit added -- that code is exercised by the 1.3 cases above.
+#
+# RFC 4492 5.1.1 makes supported_groups constrain the server's CERTIFICATE curve
+# in TLS 1.2, not just the ECDHE group. We advertise x25519/P-256/P-384, so an
+# openssl server holding a P-521 certificate refuses with handshake_failure
+# before any signature is checked. This was verified to be the server's policy
+# and not our parsing: openssl's OWN s_client, given
+#     -tls1_2 -groups X25519:P-256:P-384
+# against the same server, fails with the same alert 40, and succeeds the moment
+# P-521 is added to that list. Our client is behaving exactly as openssl's does.
+#
+# Making it pass means advertising secp521r1 in supported_groups, which means
+# supporting P-521 ECDHE -- struct tls_sess's priv[48]/pub[97]/speer[97] all
+# have to grow to 66/133/133, on every one of 16 sessions. That is a separate
+# change with its own memory and performance argument, and it is deliberately
+# not smuggled in here. TLS 1.3 does not have this coupling (signature_algorithms
+# alone decides), which is why the cases above pass and this one does not.
+SRV_VER="-tls1_2"
+# shellcheck disable=SC2086
+case_run "P-521 cert unreachable on 1.2 (RFC 4492)" 0 "$TMP/p521.pem" "$TMP/p521.key" \
+    -cert_chain "$TMP/ca521.pem" -groups X25519 -- --expect-fail
+SRV_VER="-tls1_3"
+# The anchor held but not sent in band, so signed_by_root() does the P-521
+# signature check rather than the in-band chain walk.
+case_run "P-521 anchor held, not sent"  0 "$TMP/p521.pem" "$TMP/p521.key" \
+    -groups X25519 -- --expect-version 13
+# A P-521 chain whose leaf name is wrong must still be refused: gaining a curve
+# must not gain a way past the host-name check.
+mkleaf p521bad ec521 not-localhost.example ca521
+# shellcheck disable=SC2086
+case_run "P-521 rejects wrong host name" 0 "$TMP/p521bad.pem" "$TMP/p521bad.key" \
+    -cert_chain "$TMP/ca521.pem" -groups X25519 -- --expect-fail
+
 SECTION="resume"
 echo "-- TLS 1.3 session resumption --"
 
