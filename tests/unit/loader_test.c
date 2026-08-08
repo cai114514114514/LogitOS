@@ -340,6 +340,8 @@ static void part2_navigation(void)
  */
 
 #include "tabs.h"
+#include "js_page.h"                /* js_page_eval: the mutation goes through
+                                     * the real bindings, not a shortcut */
 
 void browser_tab_switch(int i);
 void browser_res_split(int *from_tab, int *from_net);
@@ -395,6 +397,41 @@ static const char PAGE_B[] =
 static const char A_CSS[] = "h1 { color: #101010; }";
 static const char B_CSS[] = "h1 { color: #202020; }";
 static const char B_JS[]  = "var beta = 1;";
+
+/* A page whose only box is as wide as the canvas, so the display list reports
+ * the layout width directly. The <div> has an id because the mutation below has
+ * to name something. */
+static const char WIDE[] =
+    "<!doctype html><html><head><title>WIDE</title></head>"
+    "<body style=\"margin:0\">"
+    "<div id=\"w\" style=\"width:100%;height:20px;background:#123456\">w</div>"
+    "</body></html>";
+
+/* The right-most edge anything was laid out to. This is the LAYOUT's own
+ * answer -- a width browser.c reported about itself would agree with the bug
+ * being tested for. */
+static int layout_right_edge(void)
+{
+    int n = layout_count(), right = 0;
+    const struct item *it = layout_items();
+    for (int i = 0; i < n; i++)
+        if (it[i].x + it[i].w > right) right = it[i].x + it[i].w;
+    return right;
+}
+
+/* Run a line of the page's own JavaScript, the way an event handler would.
+ *
+ * The length is strlen and NOT -1. js_page_eval takes an explicit byte count
+ * (QuickJS needs one; the source is not required to be NUL-terminated), and a
+ * -1 sails straight past every prototype as a size_t of 2^64-1. The engine then
+ * reported `SyntaxError: unexpected end of string`, the mutation never
+ * happened, the DOM was never dirty, restyle() never ran -- and every
+ * assertion after it PASSED, because the display list still held the correct
+ * answer from the resize. That is what a vacuous test looks like from the
+ * outside, which is why the settle's return value is checked at the call
+ * site. */
+static int mutate(const char *js)
+{ return js_page_eval(js, (int)strlen(js), "http://fixture.test/wide.html"); }
 
 static char *g_real_html;              /* the 697 KB fixture, for the size numbers */
 
@@ -574,6 +611,77 @@ static void part3_tabs(void)
               "the tab strip costs at most 4 draw ops per extra tab -- a "
               "rounding error against a page repaint, which is what a repaint "
               "with no damage rectangle can afford");
+    }
+
+    /* (d3) THE WINDOW SIZE -- and the layout path that used to ignore it.
+     *
+     * THE BUG, stated so the test cannot be weakened into passing: three of the
+     * four layout_page() call sites in browser.c passed the LIVE window width
+     * and one passed WINW, the born-at constant. The one that did not was
+     * restyle() -- the CSS invalidation path -- which does not run on load. It
+     * runs when a script mutates the DOM. So a resized window laid out
+     * correctly right up until the page changed anything, and then snapped back
+     * to 1180 px and stayed there, because every subsequent mutation did it
+     * again. Any real application mutates constantly.
+     *
+     * A TEST THAT ONLY RESIZES PASSES AGAINST THE BROKEN CODE. The mutation is
+     * the whole test. It goes through js_page_eval and browser_settle -- the
+     * real bindings and the real settle path the event loop uses after every
+     * handler -- rather than calling restyle() directly, because "the function
+     * I called used the right width" is not the claim; "the browser lays out at
+     * the window's width after a page changes itself" is.
+     *
+     * Measured off the DISPLAY LIST, not off a variable browser.c reports about
+     * itself: a self-reported width would agree with the bug. */
+    {
+        void browser_resize(int w, int h);
+        int  browser_settle(void);
+
+        tabs_init();
+        tabsite_up();
+        fake_site_add("http://fixture.test/wide.html", WIDE);
+        open_tab("http://fixture.test/wide.html");
+
+        int born = layout_right_edge();
+        browser_resize(900, 500);
+        int resized = layout_right_edge();
+        printf("   layout right edge: %d at the born-at 1180, %d after a resize to 900\n",
+               born, resized);
+        CHECK(born > resized && resized <= 900,
+              "a resize re-lays the page out at the NEW width");
+
+        /* Now let the page change itself, which is what a real one does.
+         *
+         * The settle's return value is CHECKED, and that check is load-bearing:
+         * if the mutation did not reach the invalidation path, restyle() never
+         * lays out, the display list is still the one the resize produced, and
+         * every assertion below passes while measuring nothing. A vacuous pass
+         * here is exactly how this bug survived a resize handler in the first
+         * place. */
+        int ev = mutate("document.getElementById('w').textContent = 'mutated';");
+        int settled = browser_settle();
+        printf("   mutation: eval rc=%d, settle re-laid-out=%d\n", ev, settled);
+        CHECK(settled == 1,
+              "the mutation REACHED the invalidation path and forced a "
+              "re-layout (without this the checks below measure nothing)");
+        int mutated = layout_right_edge();
+        printf("   after a DOM mutation: %d (must stay %d, must not snap back to %d)\n",
+               mutated, resized, born);
+        CHECK(mutated != born,
+              "A DOM MUTATION DOES NOT SNAP THE LAYOUT BACK to the window's "
+              "born-at width -- the invalidation path lays out at the LIVE "
+              "width like every other path");
+        CHECK(mutated == resized,
+              "and it lays out at exactly the width the resize established");
+
+        /* And once more, because the reported symptom was that it happened
+         * repeatedly: a second mutation must not undo the first answer. */
+        mutate("document.getElementById('w').textContent = 'again';");
+        browser_settle();
+        CHECK(layout_right_edge() == resized,
+              "and stays there across further mutations");
+
+        browser_resize(1180, 620);          /* leave the window as we found it */
     }
 
     /* (e) THE SESSION, across a restart of the app.

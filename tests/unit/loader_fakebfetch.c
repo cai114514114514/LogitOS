@@ -18,19 +18,31 @@
 #include "bfetch.h"
 #include "loader_fakebfetch.h"
 
-/* The Rust staticlib is in the loader test's link for http1.c's inflate_raw
- * (gzip/deflate Content-Encoding), and its image decoders register themselves
- * at startup. No fixture in loader_test.c is an image, so registration is a
- * no-op rather than a link of all of c/lib/image.
+/* The image-decoder registration callbacks, WEAK.
  *
- * They live in THIS file, which does not include img.h, precisely so the stubs
- * do not have to track the registry's function-pointer typedefs -- img.h has
- * grown img_anim_fn since, and a stub written against the header of the day
- * stops compiling the next time a codec kind is added. */
-void img_register(void *detect, void *decode);
-void img_register(void *detect, void *decode) { (void)detect; (void)decode; }
-void img_register_anim(void *detect, void *decode, void *anim);
-void img_register_anim(void *detect, void *decode, void *anim)
+ * The Rust staticlib is one codegen unit, so a test that wants only the
+ * inflater (http1.c's Content-Encoding) still drags png_register, bmp_register
+ * and ico_register into the link, and therefore needs whatever they call. No
+ * fixture here is an image, so recording a decoder is a no-op.
+ *
+ * WEAK, and that is the whole point of this comment. Which of these
+ * tests/unit/rust_host_shim.c supplies has changed three times in one
+ * afternoon, in both directions: with the shim silent this link failed on
+ * `undefined reference to img_register`, and with the shim supplying it the
+ * same link failed on `multiple definition of img_register`. Both failures are
+ * in a file this test does not own and cannot pin. A weak definition is right
+ * whichever way that lands -- the shim's strong one wins when it exists, this
+ * one fills in when it does not -- so the loader test stops being collateral in
+ * someone else's ABI.
+ *
+ * Signatures match c/lib/image/img.h so a real prototype in scope would agree,
+ * even though this TU deliberately does not include it (img.h grows codec kinds
+ * and a stub written against the header of the day stops compiling). */
+__attribute__((weak)) void img_register(void *detect, void *decode);
+__attribute__((weak)) void img_register(void *detect, void *decode)
+{ (void)detect; (void)decode; }
+__attribute__((weak)) void img_register_anim(void *detect, void *decode, void *anim);
+__attribute__((weak)) void img_register_anim(void *detect, void *decode, void *anim)
 { (void)detect; (void)decode; (void)anim; }
 
 #define NREQ  64

@@ -156,13 +156,87 @@ static void win_query_size(void)
 #endif
 }
 
+/* The smallest window the browser will accept. Used by win_set_min() (which
+ * tells the WM) and by pick_born_size() (which clamps to it), so it is defined
+ * before both rather than repeated in either. */
+#define WIN_MIN_W 480
+#define WIN_MIN_H 320
+
 static void win_set_min(void)
 {
 #if !defined(LOADERHOST_LOGIT_H) && defined(SYS_GUI_WIN_MIN)
     /* Below this the tab strip cannot show a tab AND its close button, and the
      * address bar cannot show a URL. A floor is the honest answer to "lay out
      * at any width" -- the layout is fluid down to here and refuses below it. */
-    _sys(SYS_GUI_WIN_MIN, ((long)480 << 16) | 320, 0, 0);
+    _sys(SYS_GUI_WIN_MIN, ((long)WIN_MIN_W << 16) | WIN_MIN_H, 0, 0);
+#endif
+}
+
+/* ---- how big the window is BORN --------------------------------------------
+ *
+ * WINW/WINH used to be the answer, full stop: 1180x620, whatever the display.
+ * On the 1280x800 test screen that fills most of it and looks deliberate; on
+ * 2560x1600 it is a small box in a corner, which is what "the browser window is
+ * too small" was about.
+ *
+ * TWO RULES, in this order, and the order is the design decision:
+ *
+ *   1. WHAT THE USER CHOSE WINS. If they have resized the window before, that
+ *      size is what they meant, and no proportion of the screen is a better
+ *      guess than an explicit one. This is the whole reason a machine has a
+ *      settings store -- and the store is the machine's, not a second one built
+ *      here: two small integers are precisely what SET_VALLEN's 80 bytes and
+ *      SET_MAXKV's 64 keys are FOR, which is the same measurement that said the
+ *      tab session could not live there.
+ *   2. OTHERWISE, PROPORTIONAL. A first run should use the display it is on.
+ *      88% of the width and 80% of the height leaves the menu bar and the dock
+ *      visible without this app having to model either -- it does not place its
+ *      own window, the WM does, so it only picks a size and leaves room.
+ *
+ * Clamped both ways: never below the floor win_set_min() enforces (a smaller
+ * window is one the WM will refuse anyway), and never so large that the frame
+ * cannot fit on the desktop. On 1280x800 this yields 1126x640, which is within
+ * a few percent of the old constants -- so nothing about the existing screens
+ * or screenshots moves, and 2560x1600 gets 2252x1280 instead of a corner box.
+ */
+static void pick_born_size(void)
+{
+#ifndef LOADERHOST_LOGIT_H
+    int sw = screen_w(), sh = screen_h();
+    if (sw < WIN_MIN_W || sh < WIN_MIN_H) return;    /* no usable answer: keep WINW/WINH */
+    int w = setting_int("browser.win.w", 0);
+    int h = setting_int("browser.win.h", 0);
+    if (w < WIN_MIN_W || h < WIN_MIN_H) {            /* nothing remembered */
+        w = sw * 88 / 100;
+        h = sh * 80 / 100;
+    }
+    if (w > sw - 40)  w = sw - 40;                   /* leave the frame somewhere to be */
+    if (h > sh - 120) h = sh - 120;                  /* menu bar + title bar + dock */
+    if (w < WIN_MIN_W) w = WIN_MIN_W;
+    if (h < WIN_MIN_H) h = WIN_MIN_H;
+    win_w = w; win_h = h;
+#endif
+}
+
+/* Remember a size the user chose. RAM only (commit = 0): a resize drag produces
+ * a stream of sizes and each commit is a whole-file LogitFS write, so the
+ * setting is updated on every one and written ONCE, at close. The cost of that
+ * choice is bounded and worth naming: a machine that loses power mid-session
+ * forgets the window size. It does not forget the tabs -- those are saved
+ * eagerly, because losing them is the loss that matters. */
+static void remember_size(void)
+{
+#ifndef LOADERHOST_LOGIT_H
+    char b[16];
+    int v[2] = { win_w, win_h };
+    const char *k[2] = { "browser.win.w", "browser.win.h" };
+    for (int i = 0; i < 2; i++) {
+        int p = 0, n = v[i] < 0 ? 0 : v[i], d = 1;
+        while (n / d >= 10) d *= 10;
+        while (d) { b[p++] = (char)('0' + (n / d) % 10); d /= 10; }
+        b[p] = 0;
+        setting_set(k[i], b, 0);
+    }
 #endif
 }
 
@@ -1133,6 +1207,12 @@ void browser_tab_switch(int i) { tab_switch_to(i); }
 /* One full repaint, for the test that counts what the tab strip costs. */
 void browser_redraw_now(void);
 void browser_redraw_now(void) { redraw(0); }
+/* What the event loop does after a script has run: take the DOM's invalidation
+ * record through the cascade and layout. The seam exists because THAT is the
+ * path that laid out at the wrong width, and a test that only resizes cannot
+ * reach it. */
+int browser_settle(void);
+int browser_settle(void) { return settle_dom(); }
 int  browser_view_h(void);
 int  browser_view_h(void) { return VIEW_H; }
 /* How many resources the last load took from the tab's own bytes, and how many
@@ -1188,8 +1268,23 @@ static int restyle(void)
     /* CSS_CHANGED_PAINT still rebuilds the display list: layout_page is what
      * fills in every painted colour, so there is no cheaper path to take until
      * layout grows one. The tier is already carried this far, so adding it is
-     * a change on the layout side alone. */
-    layout_page(g_root, WINW);
+     * a change on the layout side alone.
+     *
+     * `win_w`, NOT `WINW`. This was the last call site still laying out at the
+     * born-at constant, and it is the worst one to miss: it is the INVALIDATION
+     * path, so it does not run on load -- it runs when a script mutates the DOM.
+     * A resized window therefore laid out correctly until the page changed
+     * anything, and then snapped back to 1180 px and stayed there, because every
+     * subsequent mutation did it again. Any real application mutates
+     * constantly, so on a resized window this fired immediately and repeatedly
+     * and looked like "the sizing adaptation is wrong" rather than like a
+     * layout width.
+     *
+     * A resize handler that re-lays-out is not enough on its own: EVERY path
+     * that lays out has to agree about the width, and the one that does not is
+     * invisible to any test that resizes without mutating. See the test in
+     * tests/unit/loader_test.c part 3 (f), which mutates on purpose. */
+    layout_page(g_root, win_w);
     ph = layout_height();
     return 1;
 }
@@ -1422,6 +1517,38 @@ static void draw_panel(void)
                  g_panel == PANEL_HISTORY ? "nothing matches" : "nothing here yet");
 }
 
+/* The window changed size.
+ *
+ * A FUNCTION and not four lines inside the event switch, for one reason: the
+ * bug this file just carried was a second layout path that disagreed about the
+ * width, and the way to stop that recurring is for there to be one place that
+ * answers "the window is now this big" -- reachable by the test, so the test
+ * drives the shipped code rather than a copy of it.
+ *
+ * EV_RESIZE is NOT ADVISORY: the canvas behind the window has already been
+ * reallocated when it arrives, and the compositor is showing a STRETCHED copy
+ * of the old one until we paint. An app that ignores it does not keep its old
+ * layout -- it shows a magnified one for ever.
+ *
+ * The cascade re-runs before layout because @media, vw and vh are all functions
+ * of the viewport: laying out again without re-styling would move the boxes and
+ * leave every width:50vw box at its old size. */
+void browser_resize(int w, int h);
+void browser_resize(int w, int h)
+{
+    if (w > 100 && h > 100) { win_w = w; win_h = h; remember_size(); }
+    css_viewport(win_w, win_h);
+    if (g_root) {
+        css_apply(g_root, css_expanded, css_exlen);
+        css_extra_apply(g_root, css_expanded, css_exlen);
+        layout_page(g_root, win_w);
+        ph = layout_height();
+    }
+    int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
+    if (scroll > maxs) scroll = maxs;
+    sync_scroll();
+}
+
 static void redraw(int editing)
 {
     gui_clear(rgb(252, 252, 253));
@@ -1519,9 +1646,15 @@ void app_main(void)
     css_set_post_pass(css_extra_apply);
     img_init();             /* register PNG + GIF decoders */
     js_page_set_clock(clock_ms);
-    gui_create("Browser", WINW, WINH);
+    /* The size is chosen BEFORE the window exists, and the cascade is told
+     * about it again afterwards: css_viewport was called above with the
+     * placeholder, and @media/vw/vh would otherwise evaluate against a window
+     * that never existed. */
+    pick_born_size();
+    gui_create("Browser", win_w, win_h);
     win_set_min();
-    win_query_size();
+    win_query_size();       /* the WM may have clamped what we asked for */
+    css_viewport(win_w, win_h);
 
     /* ---- the session, before the first paint ----
      *
@@ -1587,24 +1720,15 @@ void app_main(void)
                  * ended it. */
                 { struct tab *t = tab_cur(); if (t) t->scroll = scroll; }
                 session_save(); history_save(); bookmarks_save();
+                /* The window size the user settled on. Set in RAM by every
+                 * resize; this is the one write to disk. */
+#ifndef LOADERHOST_LOGIT_H
+                remember_size(); setting_commit();
+#endif
                 js_page_close(); bfetch_close_all(); app_exit(0);
             }
             if (e.type == EV_RESIZE) {
-                /* NOT ADVISORY: the canvas behind the window has already been
-                 * reallocated and the compositor is showing a stretched copy of
-                 * the old one until we paint. Re-layout at the new width, since
-                 * a web page's line breaking is a function of it. */
-                if (e.a > 100 && e.b > 100) { win_w = e.a; win_h = e.b; }
-                css_viewport(win_w, win_h);
-                if (g_root) {
-                    css_apply(g_root, css_expanded, css_exlen);
-                    css_extra_apply(g_root, css_expanded, css_exlen);
-                    layout_page(g_root, win_w);
-                    ph = layout_height();
-                }
-                int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
-                if (scroll > maxs) scroll = maxs;
-                sync_scroll();
+                browser_resize(e.a, e.b);
                 need = 1;
                 continue;
             }
