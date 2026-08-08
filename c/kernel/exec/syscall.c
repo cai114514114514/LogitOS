@@ -114,6 +114,22 @@ void syscall_dispatch(struct registers *r)
     if (__builtin_expect(uthread_exit_armed(), 0) && !syscall_is_bkl_free((int)r->rax))
         uthread_exit_check();
 
+    /* M30: make this core's TLB current before the call runs.
+     *
+     * A thread stack that was just unmapped can have its address handed
+     * straight back by the next mmap, and a core still holding the old
+     * translation would write through it into a FREED FRAME without faulting --
+     * the write silently misses the new mapping, and the next reader takes an
+     * ordinary fault and gets a zero page. That is not hypothetical; it is what
+     * the threads gate caught, twice, and the second time from the writer's
+     * side rather than the reader's.
+     *
+     * Step two of that sequence is a syscall, and there is no way to reach a
+     * recycled mapping without one -- so this is not an approximation of the
+     * right place, it is the right place. Costs one relaxed load and a
+     * not-taken branch on a machine where nothing is being unmapped. */
+    sched_tlb_gen_check();
+
     if (__builtin_expect(!g_kb_stat, 1)) { syscall_do(r); return; }
     uint64_t n = r->rax, t0 = kb_rdtsc();
     syscall_do(r);

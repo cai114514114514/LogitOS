@@ -152,6 +152,53 @@ void sched_tlb_gen_bump(void)
     __atomic_add_fetch(&g_tlb_gen, 1, __ATOMIC_SEQ_CST);
 }
 
+/* Resync THIS core now, from anywhere -- no scheduler lock, no context switch.
+ *
+ * WHY THE SWITCH SITES ARE NOT ENOUGH, which took a second failure to see. The
+ * first diagnosis had the stale entry on the READING side: a new thread
+ * dispatched onto a core that still had the old translation. The switch sites
+ * cover that. But the actual sequence is the other way round, and the stale
+ * entry is on the WRITER:
+ *
+ *   1. a thread ends on core X; its stack is unmapped and the frames go back;
+ *   2. the creating thread, on core Y, calls mmap and is handed the SAME range;
+ *   3. it writes the new thread's control block -- and core Y still has the OLD
+ *      translation cached, so THE WRITE DOES NOT FAULT. It lands in the frame
+ *      that was just freed;
+ *   4. the new thread reads the address through the real page tables, faults,
+ *      gets a fresh zero page from do_anon, and finds a control block full of
+ *      zeroes.
+ *
+ * That whole sequence happens inside one pass of a create loop -- far inside a
+ * single 10 ms timer tick -- so a scheme that resyncs "at the next context
+ * switch" is orders of magnitude too slow. But step 2 is a SYSCALL, and there
+ * is no way to obtain a recycled address without one. So the syscall gate is
+ * not an approximation of the right place, it is exactly the right place: a
+ * core cannot act on a reused mapping without passing through it first.
+ *
+ * Cost when nothing has been unmapped: one relaxed load, one compare, one
+ * not-taken branch. IF is already 0 on the int-0x80 path; saved and restored
+ * anyway so this is callable from anywhere. */
+void sched_tlb_gen_check(void)
+{
+    unsigned long gen = __atomic_load_n(&g_tlb_gen, __ATOMIC_ACQUIRE);
+    uint64_t fl;
+    int idx;
+
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
+    idx = this_cpu()->index;
+    /* Only this core ever writes its own slot, and only with IF off, so the
+     * slot needs no lock -- unlike the switch-site path, which happens to hold
+     * g_sched_lock for other reasons. */
+    if (idx >= 0 && idx < PERCPU_MAXCPU && g_cpu_tlb_gen[idx] != gen) {
+        uint64_t cr3;
+        __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+        g_cpu_tlb_gen[idx] = gen;
+    }
+    if (fl & 0x200) __asm__ volatile ("sti");
+}
+
 /* Called at every switch site with `reloaded` set if CR3 was just written
  * anyway (an address-space change already flushes). Caller holds g_sched_lock
  * with IF off, so the per-core slot needs no lock of its own. */

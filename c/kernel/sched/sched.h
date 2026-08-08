@@ -117,6 +117,12 @@ void sched_set_fsbase(uint64_t fsbase);
  * half (tlb_flush_all) is not sufficient on its own now that two threads can
  * share a cr3 and therefore skip the reload that used to clean up after it. */
 void sched_tlb_gen_bump(void);
+/* Resync THIS core immediately. Called from the syscall gate, which is where it
+ * has to be: a core cannot obtain a recycled mapping without a syscall, and the
+ * whole reuse-then-write sequence happens inside one pass of a create loop --
+ * far inside a single timer tick, so the context-switch sites alone are orders
+ * of magnitude too slow. See sched_tlb_gen_check() in sched.c. */
+void sched_tlb_gen_check(void);
 
 unsigned long sched_slices_of(struct thread *t);  /* dispatches: the sleep-vs-spin metric */
 int  sched_thread_id(struct thread *t);
