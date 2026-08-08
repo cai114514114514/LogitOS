@@ -1,0 +1,154 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>MSE end to end</title>
+<style>
+  body { background: #101014; color: #e0e0e8; font-family: sans-serif; margin: 16px; }
+  video { display: block; background: #000; border: 2px solid #46a; }
+  #log { font-size: 13px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h2>Media Source Extensions</h2>
+<video id="v" width="320" height="240"></video>
+<div id="log"></div>
+<script>
+/* The page a real DASH player is a bigger version of.
+ *
+ * It does exactly what the bilibili player was measured doing: create a
+ * MediaSource, hang it off a <video> through an object URL, add ONE SOURCE
+ * BUFFER PER TRACK (video/mp4 and audio/mp4 separately -- that is the thing
+ * only MSE can do), then fetch an init segment and a numbered run of .m4s
+ * media segments and append them one after another as they arrive.
+ *
+ * Everything it prints goes to console.log, which this browser routes to the
+ * serial console -- so tests/qmp/qmp_mse_page.py reads the numbers back rather
+ * than judging a screenshot. */
+(function () {
+  var out = document.getElementById('log');
+  function log(s) {
+    console.log('MSEPAGE ' + s);
+    out.textContent = (out.textContent || '') + s + '\n';
+  }
+
+  /* --- 1. the codec answer, from the page's point of view ---------------
+   * This is the call a real player makes to choose a representation. The
+   * assertions below are the ones that matter commercially: yes to the H.264
+   * High string bilibili offers, no to the AV1 string it offers alongside. */
+  var YES = ['video/mp4; codecs="avc1.640033"',
+             'video/mp4; codecs="avc1.4d401e"',
+             'video/mp4; codecs="hvc1.1.6.L120.90"',
+             'audio/mp4; codecs="mp4a.40.2"'];
+  var NO  = ['video/mp4; codecs="av01.0.08M.08.0.110.01.01.01.0"',
+             'video/mp4; codecs="vp09.00.10.08"',
+             'video/webm; codecs="vp9,opus"',
+             'audio/mp4; codecs="opus"',
+             'audio/mp4; codecs="mp4a.40.5"'];
+  if (typeof MediaSource === 'undefined') { log('FAIL no MediaSource'); return; }
+  var bad = 0;
+  for (var i = 0; i < YES.length; i++)
+    if (!MediaSource.isTypeSupported(YES[i])) { log('FAIL yes ' + YES[i]); bad++; }
+  for (var j = 0; j < NO.length; j++)
+    if (MediaSource.isTypeSupported(NO[j])) { log('FAIL no ' + NO[j]); bad++; }
+  log('TYPES ok=' + (bad === 0 ? 1 : 0) + ' yes=' + YES.length + ' no=' + NO.length);
+
+  /* The representation a player would pick given those answers. */
+  var chosen = MediaSource.isTypeSupported('video/mp4; codecs="av01.0.08M.08.0.110.01.01.01.0"')
+             ? 'av01' : 'avc1';
+  log('CHOSE ' + chosen);
+
+  /* --- 2. the MediaSource ------------------------------------------------ */
+  var v = document.getElementById('v');
+  var ms = new MediaSource();
+  var url = URL.createObjectURL(ms);
+  log('OBJURL ' + url + ' state=' + ms.readyState);
+
+  var vsb = null, asb = null;
+  var vq = ['init-video.mp4', 'video-1.m4s', 'video-2.m4s', 'video-3.m4s', 'video-4.m4s'];
+  var aq = ['init-audio.mp4', 'audio-1.m4s', 'audio-2.m4s', 'audio-3.m4s',
+            'audio-4.m4s', 'audio-5.m4s'];
+  var vi = 0, ai = 0, appended = 0, done = 0, reported = 0;
+
+  function pump(sb, list, which) {
+    /* One segment in flight per buffer, chained on updateend -- which is how a
+     * real player does it, and the reason updateend has to be asynchronous:
+     * this handler appends the NEXT segment, and firing it inside appendBuffer
+     * would recurse into the middle of the append it came from. */
+    if (sb.updating) return;
+    var i = which === 'v' ? vi : ai;
+    if (i >= list.length) { maybeEnd(); return; }
+    if (which === 'v') vi++; else ai++;
+    fetch(list[i]).then(function (r) {
+      if (!r.ok) { log('FAIL fetch ' + list[i] + ' ' + r.status); return null; }
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      if (!buf) return;
+      try { sb.appendBuffer(new Uint8Array(buf)); appended++; }
+      catch (e) { log('FAIL append ' + list[i] + ' ' + e); }
+    })['catch'](function (e) { log('FAIL fetch ' + list[i] + ' ' + e); });
+  }
+
+  function maybeEnd() {
+    if (vi >= vq.length && ai >= aq.length && !vsb.updating && !asb.updating &&
+        ms.readyState === 'open') {
+      ms.endOfStream();
+      log('ENDOFSTREAM state=' + ms.readyState + ' appended=' + appended);
+    }
+  }
+
+  ms.addEventListener('sourceopen', function () {
+    log('SOURCEOPEN state=' + ms.readyState);
+    try {
+      vsb = ms.addSourceBuffer('video/mp4; codecs="avc1.640033"');
+      asb = ms.addSourceBuffer('audio/mp4; codecs="mp4a.40.2"');
+    } catch (e) { log('FAIL addSourceBuffer ' + e); return; }
+    log('SOURCEBUFFERS n=' + ms.sourceBuffers.length + ' mode=' + vsb.mode);
+
+    /* The refusal, from the page. A player that got a "yes" here would append
+     * AV1 and never see a picture. */
+    var refused = 0;
+    try { ms.addSourceBuffer('video/mp4; codecs="av01.0.08M.08.0.110.01.01.01.0"'); }
+    catch (e) { refused = 1; }
+    log('AV1REFUSED ' + refused);
+
+    vsb.addEventListener('updateend', function () { pump(vsb, vq, 'v'); });
+    asb.addEventListener('updateend', function () { pump(asb, aq, 'a'); });
+    pump(vsb, vq, 'v');
+    pump(asb, aq, 'a');
+    v.play();
+  });
+
+  v.addEventListener('loadedmetadata', function () {
+    log('LOADEDMETADATA ' + v.videoWidth + 'x' + v.videoHeight +
+        ' readyState=' + v.readyState);
+  });
+  v.addEventListener('timeupdate', function () {
+    if (v.currentTime > 0 && !reported) {
+      reported = 1;
+      log('FIRSTFRAME t=' + v.currentTime.toFixed(3));
+    }
+  });
+  v.addEventListener('ended', function () { finish('ended'); });
+
+  function finish(why) {
+    if (done) return;
+    done = 1;
+    var s = v.__mediaStats ? v.__mediaStats() : {};
+    var b = v.buffered;
+    log('BUFFERED n=' + b.length + (b.length ? ' end=' + b.end(b.length - 1).toFixed(3) : ''));
+    log('STATS why=' + why +
+        ' decoded=' + s.framesDecoded + ' shown=' + s.framesShown +
+        ' dropped=' + s.framesDropped + ' resyncs=' + s.resyncs +
+        ' driftMeanMs=' + (s.driftMeanMs === undefined ? 'na' : s.driftMeanMs.toFixed(1)) +
+        ' audioFrames=' + s.audioFrames + ' appends=' + s.appends +
+        ' bytes=' + s.bytesAppended + ' reparses=' + s.reparses);
+    log('DONE t=' + v.currentTime.toFixed(3) + ' duration=' + v.duration +
+        ' paused=' + v.paused + ' ended=' + v.ended);
+  }
+
+  /* A backstop, so a stalled run reports its numbers instead of reporting
+   * nothing -- "it hung" and "it played 12 of 60 frames" are different bugs. */
+  setTimeout(function () { finish('timeout'); }, 120000);
+})();
+</script>
+</body>
+</html>

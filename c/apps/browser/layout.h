@@ -5,8 +5,14 @@
 #include "dom.h"
 #include "img.h"
 
-/* Layout produces a flat display list (painted in order; hit-tested back-to-front). */
-enum { IT_RECT, IT_TEXT, IT_IMAGE };
+/* Layout produces a flat display list (painted in order; hit-tested back-to-front).
+ *
+ * IT_VIDEO is a <video>/<audio> box. It carries no pixels of its own: layout
+ * reserves the border box and browser_paint.c hands it to the media engine
+ * (c/apps/browser/js_media*.c), which owns the decoded frame. It is a separate
+ * type rather than an IT_IMAGE with a magic `img` because a video frame changes
+ * thirty times a second and must never be freed by layout_free(). */
+enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO };
 struct item {
     int type, x, y, w, h;
     struct node *node;                /* DOM node this box came from (NULL only

@@ -17,6 +17,11 @@
  * weak for the same reason: the host tests of THIS file link without it. */
 #define JS_PLATFORM_OPTIONAL
 #include "js_platform.h"
+/* MediaSource / SourceBuffer / HTMLMediaElement -- js_media.c, weak for the
+ * same reason as the two above: the host tests of THIS file link without it and
+ * simply come up with no media. */
+#define JS_MEDIA_OPTIONAL
+#include "js_media.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -428,6 +433,10 @@ int js_page_open(struct node *root)
      * once everyone who owns one has had their turn. */
     if (js_select_install) js_select_install(g_ctx);
     if (js_intl_install) js_intl_install(g_ctx);
+    /* AFTER js_dom_init (it takes the Element prototype) and after the platform
+     * fills in `document`; MediaSource has no dependency on either, but the
+     * HTMLMediaElement members are installed on the element prototype. */
+    if (js_media_install) js_media_install(g_ctx);
     if (js_platform_install) js_platform_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
@@ -443,6 +452,7 @@ void js_page_close(void)
     timers_clear(g_ctx);
     if (js_platform_close) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
     if (js_webapi_close) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
+    if (js_media_close) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
     JS_FreeContext(g_ctx);

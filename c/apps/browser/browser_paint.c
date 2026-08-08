@@ -11,6 +11,16 @@
 #include "layout.h"
 #include "browser_paint.h"
 
+/* The media engine, weakly: a <video> box is painted by whoever owns the
+ * decoded frame (c/apps/browser/js_media.c), and this file must keep linking in
+ * the host paint/layout tests, which link neither the engine nor QuickJS.
+ * Spelled `__weak__` and not `weak`, because mini-libc's features.h is
+ * force-included into every browser TU and #defines the plain spelling. */
+struct node;
+extern void media_paint_box(struct node *node, int x, int y, int w, int h,
+                            int clip_x, int clip_y, int clip_w, int clip_h)
+    __attribute__((__weak__));
+
 /* css_border_style_e, mirrored rather than included: layout stores LibCSS's raw
  * value in `border_style`, and pulling <libcss/properties.h> into the painter
  * would drag the whole selection engine's headers in for ten integers. The
@@ -332,6 +342,18 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             if (e->overline)  fill(sx, sy, e->w, th, col, 255);
             if (e->strike)    fill(sx, uy - e->font_px * 30 / 100, e->w, th, col, 255);
             if (e->underline) fill(sx, uy, e->w, th, col, 255);
+        } else if (e->type == IT_VIDEO) {
+            /* A <video>'s pixels are not layout's to own -- they are one frame
+             * out of a decoder that will produce the next one in 33 ms. So the
+             * painter hands the media engine the border box and the clip and
+             * lets it blit; with no engine linked, the box paints black, which
+             * is what a <video> with no source looks like anyway. Weak, so the
+             * host layout/paint tests link without any of it. */
+            if (media_paint_box)
+                media_paint_box(e->node, sx, sy, e->w, e->h, cl_x0, cl_y0,
+                                cl_x1 - cl_x0, cl_y1 - cl_y0);
+            else
+                fill(sx, sy, e->w, e->h, 0x000000, op);
         } else if (e->type == IT_IMAGE && e->img) {
             gui_blit(sx, sy, e->w, e->h, e->img->rgba, e->img->w, e->img->h);
             /* An image cannot have its own alpha modulated without copying the

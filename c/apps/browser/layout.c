@@ -642,6 +642,39 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         return;
     }
 
+    /* <video> / <audio>: a replaced element like <img>, and placed BEFORE the
+     * is_block test for the same reason <svg> is -- every player stylesheet in
+     * existence sets `video { display: block }`, and the empty-block path would
+     * reserve a box the media engine never hears about.
+     *
+     * The intrinsic size is CSS's own default for a media element, 300x150,
+     * which is what a <video> with no attributes and no stylesheet occupies in
+     * every browser. Priority: CSS width/height > the width/height attributes >
+     * that default. An <audio> element gets a box only if it is asked for one:
+     * with no controls to draw, a silent 300x150 hole in the page would be a
+     * bug the page cannot see. */
+    if (tag_eq(c->tag, "video") || tag_eq(c->tag, "audio")) {
+        int is_audio = tag_eq(c->tag, "audio");
+        int iw = 0, ih = 0;
+        if (st && st->has_w && !st->w_pct) iw = st->width;
+        if (st && st->has_h && !st->h_pct) ih = st->height;
+        if (st && st->has_w && st->w_pct) iw = (f->x1 - f->x0) * st->width / 100;
+        if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
+        if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
+        if (is_audio && iw <= 0 && ih <= 0) return;     /* nothing to draw */
+        if (iw <= 0) iw = 300;
+        if (ih <= 0) ih = 150;
+        if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih * s2 / iw; iw = s2; }
+        if (f->line_started && f->x + iw > f->x1) newline(f);
+        struct item *it = additem(IT_VIDEO, c);
+        if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
+                  it->href = h2;
+                  it->hidden = st ? st->hidden : 0;
+                  it->opacity = st ? st->opacity : 255; }
+        f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
+        return;
+    }
+
     /* A block box inside an inline context breaks the inline flow (CSS splits
      * the surrounding inline into anonymous block boxes). Custom elements
      * (<react-partial>, <turbo-frame>, ...) default to display:inline, so
