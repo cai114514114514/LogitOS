@@ -445,6 +445,124 @@ int main(int argc, char **argv)
     ckjs("document.firstChild === document.documentElement", "document.firstChild");
     ckjs("document.contains(document.getElementById('wrap'))", "document.contains");
 
+    /* ==== dataset =======================================================
+     * Top of the Chrome differential: deepseek's React reads
+     * `link.dataset.precedence` in its commit phase and MDN writes
+     * `documentElement.dataset.theme` in its first inline script. Chrome
+     * throws on neither. Read AND write AND delete are asserted separately
+     * because a getter-only shim satisfies deepseek and silently loses MDN's
+     * write, which is the failure that produced no exception at all. */
+    run("var __d = document.getElementById('wrap');"
+         "__d.setAttribute('data-precedence', 'high');"
+         "__d.setAttribute('data-two-words', 'x');");
+    ckjs("__d.dataset.precedence === 'high'", "dataset: read data-precedence");
+    ckjs("__d.dataset.twoWords === 'x'", "dataset: data-two-words -> twoWords");
+    ckjs("__d.dataset.nope === undefined", "dataset: absent key is undefined");
+    ckjs("('precedence' in __d.dataset) && !('nope' in __d.dataset)", "dataset: `in`");
+    run("__d.dataset.theme = 'dark';");
+    ckjs("__d.getAttribute('data-theme') === 'dark'", "dataset: WRITE reaches the attribute");
+    /* The write and the delete are ONE expression on purpose. Split in two,
+     * the delete check passed in the control build for the wrong reason: with
+     * no dataset at all the write never happened, so the attribute was already
+     * null and "delete removed it" looked true. An assertion that is satisfied
+     * by the feature being absent is not an assertion. */
+    ckjs("(function(){ __d.dataset.theme = 'dark';"
+         " var a = __d.getAttribute('data-theme'); delete __d.dataset.theme;"
+         " return a === 'dark' && __d.getAttribute('data-theme') === null; })()",
+         "dataset: delete removes the attribute the write created");
+    ckjs("(function(){ __d.setAttribute('data-live','1');"
+         " return __d.dataset.live === '1'; })()", "dataset: is live, not a snapshot");
+
+    /* ==== TreeWalker + NodeFilter ========================================
+     * lit-html walks for comment nodes with whatToShow=128. The SKIP/REJECT
+     * distinction is asserted directly because getting it backwards returns
+     * an empty walk with no error -- the component renders nothing and
+     * nothing says why. */
+    ckjs("typeof document.createTreeWalker === 'function'", "document.createTreeWalker exists");
+    ckjs("NodeFilter.SHOW_COMMENT === 128 && NodeFilter.FILTER_REJECT === 2",
+         "NodeFilter constants");
+    run("var __wrap = document.getElementById('wrap');");
+    ckjs("(function () {"
+         "  var w = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);"
+         "  var n = 0; while (w.nextNode()) n++; return n > 2;"
+         "})()", "TreeWalker: walks elements in pre-order");
+    /* The load-bearing one: every element is SKIPPED by a comment walker, and
+     * skip must still descend. A walker that treated skip as reject would
+     * return 0 here. */
+    ckjs("(function () {"
+         "  var d = document.createElement('div');"
+         "  d.innerHTML = '<span><!--a--></span><!--b-->';"
+         "  var w = document.createTreeWalker(d, NodeFilter.SHOW_COMMENT);"
+         "  var n = 0; while (w.nextNode()) n++; return n === 2;"
+         "})()", "TreeWalker: SKIP still descends (the lit-html case)");
+    ckjs("(function () {"
+         "  var d = document.createElement('div');"
+         "  d.innerHTML = '<span><i></i></span><b></b>';"
+         "  var w = document.createTreeWalker(d, NodeFilter.SHOW_ELEMENT, function (n) {"
+         "    return n.tagName.toLowerCase() === 'span' ? NodeFilter.FILTER_REJECT"
+         "                                              : NodeFilter.FILTER_ACCEPT; });"
+         "  var out = []; var n; while ((n = w.nextNode())) out.push(n.tagName.toLowerCase());"
+         "  return out.join(',') === 'b';"
+         "})()", "TreeWalker: REJECT prunes the subtree");
+
+    /* ==== the interface objects ==========================================
+     * MDN's `'closedBy' in HTMLDialogElement.prototype` is a module-body
+     * feature test, so a ReferenceError there rejects the whole module. */
+    ckjs("typeof HTMLElement === 'function' && typeof HTMLDialogElement === 'function'",
+         "HTMLElement / HTMLDialogElement exist");
+    ckjs("document.createElement('div') instanceof HTMLElement",
+         "instanceof HTMLElement is true for an element");
+    /* The one js_select.c's façades got WRONG: one prototype for every name
+     * made this true, and a page branching on it takes a path it must not. */
+    ckjs("!(document.createElement('div') instanceof HTMLInputElement)",
+         "instanceof HTMLInputElement is FALSE for a div");
+    ckjs("document.createElement('input') instanceof HTMLInputElement",
+         "instanceof HTMLInputElement is true for an input");
+    ckjs("!('closedBy' in HTMLDialogElement.prototype)",
+         "HTMLDialogElement.prototype answers a feature test (falsely, correctly)");
+
+    /* ==== customElements =================================================
+     * A REAL upgrade: the node already in the document becomes `this` inside
+     * the component's constructor. The identity check is the whole assertion
+     * -- a registry that merely remembered the class would pass a `typeof
+     * customElements.define === 'function'` test and fail this one. */
+    ckjs("typeof customElements === 'object' && typeof customElements.define === 'function'",
+         "customElements.define exists");
+    run("var __seen = null, __conn = 0, __attr = null;"
+         "class XProbe extends HTMLElement {"
+         "  static get observedAttributes() { return ['label']; }"
+         "  constructor() { super(); __seen = this; this.built = 1; }"
+         "  connectedCallback() { __conn++; }"
+         "  attributeChangedCallback(n, o, v) { __attr = n + '=' + v; }"
+         "}"
+         "var __host = document.getElementById('wrap');"
+         "var __ce = document.createElement('x-probe');"
+         "__ce.setAttribute('label', 'hi');"
+         "__host.appendChild(__ce);"
+         "customElements.define('x-probe', XProbe);");
+    ckjs("__seen === __ce",
+         "customElements: the EXISTING node is the constructor's `this`");
+    ckjs("__ce.built === 1", "customElements: constructor fields land on the node");
+    ckjs("__ce instanceof XProbe", "customElements: instanceof the component class");
+    ckjs("__conn === 1", "customElements: connectedCallback fired once");
+    ckjs("__attr === 'label=hi'", "customElements: attributeChangedCallback for a present attribute");
+    ckjs("customElements.get('x-probe') === XProbe", "customElements.get");
+    run("var __later = null; customElements.whenDefined('x-later').then(function (c) { __later = c; });"
+         "class XLater extends HTMLElement {} customElements.define('x-later', XLater);");
+    js_page_pump();
+    ckjs("__later === XLater", "customElements.whenDefined resolves on define");
+    /* Upgrade on INSERTION, not only on define: a component created after its
+     * definition is the other half and has its own code path. */
+    run("var __post = document.createElement('x-probe'); __host.appendChild(__post);");
+    ckjs("__post instanceof XProbe && __post.built === 1",
+         "customElements: a node inserted after define is upgraded too");
+
+    /* Non-special URL schemes -- `new URL(s, 'x:/')`, the webpack 5 asset-module
+     * idiom -- are asserted in tests/unit/webapi_test.c and NOT here. That fix
+     * is in js_webapi.c, which the control build still links, so a check here
+     * would pass in both builds and prove nothing. It has its own compile-time
+     * control instead: make test-webapi-url-negctl. */
+
     /* ==== the misses that MUST STAY misses ===============================
      * These are how a page detects Internet Explorer or a feature it should
      * take the false branch on. The probe reports them as misses; defining any
@@ -460,6 +578,18 @@ int main(int argc, char **argv)
     ckjs("typeof window.MSApp === 'undefined'", "window.MSApp stays absent");
     ckjs("!(typeof crypto === 'object' && crypto && crypto.subtle)",
          "crypto.subtle stays absent (a stub would get something encrypted with it)");
+    /* Element.attachShadow, added to this list after the Chrome differential
+     * left it as the LAST thing on the corpus we throw on and Chrome does not
+     * -- MDN's eight remaining exceptions are all this one call, from lit's
+     * createRenderRoot. It is on the absent list rather than implemented for
+     * the same reason as crypto.subtle: a light-DOM stand-in that returned the
+     * element itself would make every component render with NO STYLE
+     * ENCAPSULATION, and a page cannot detect that its shadow root does not
+     * encapsulate. A real one needs a shadow tree in js_dom.c, which is the
+     * DOM line's file. Absent and loud beats present and wrong. */
+    ckjs("typeof document.createElement('div').attachShadow === 'undefined'",
+         "Element.attachShadow stays absent (a light-DOM stand-in would silently "
+         "drop style encapsulation -- needs a shadow tree in js_dom.c)");
     inverted = save;
 
     js_page_close();

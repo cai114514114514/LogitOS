@@ -1535,6 +1535,113 @@ static JSValue js_utf8(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
     return JS_NewStringLen(ctx, (const char *)p, len);
 }
 
+/* ---- non-special schemes ------------------------------------------------
+ *
+ * `struct wurl` carries `https` as a BOOL, so it can express http and https
+ * and nothing else, and `new URL(x, "x:/")` therefore threw. That is not a
+ * corner case -- it is in the runtime of every webpack 5 bundle that has an
+ * asset module:
+ *
+ *     var u = new URL(s, "x:/"), a = {}; ... a.pathname = ...
+ *
+ * an idiom that uses a deliberately meaningless scheme to normalise a path
+ * without a document base. MEASURED on the MDN fixture: five of its twelve
+ * remaining exceptions were this one call, one per lazily-imported Web
+ * Component, each reported by the page as "couldn't load code for <switch>".
+ * Real Chrome throws nothing.
+ *
+ * The URL CONSTRUCTOR gains the general case; fetch does not, and must not.
+ * A non-special URL has no host, no port and an opaque origin, so there is
+ * nothing for a socket to connect to -- keeping this out of struct wurl is
+ * what stops `fetch("x:/whatever")` from becoming reachable. */
+static int scheme_of(const char *s, char *out, int max)
+{
+    int i = 0;
+    if (!((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z'))) return 0;
+    while ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') ||
+           (s[i] >= '0' && s[i] <= '9') || s[i] == '+' || s[i] == '-' || s[i] == '.') i++;
+    if (s[i] != ':' || i >= max) return 0;
+    for (int k = 0; k < i; k++) out[k] = (char)lc_c((unsigned char)s[k]);
+    out[i] = 0;
+    return i;
+}
+
+static int is_special_scheme(const char *sc)
+{ return ci_streq(sc, "http") || ci_streq(sc, "https") || ci_streq(sc, "ftp") ||
+         ci_streq(sc, "ws")   || ci_streq(sc, "wss")   || ci_streq(sc, "file"); }
+
+/* Build the JS object for a non-special URL. Everything host-shaped is empty
+ * and the origin is the string "null", which is what the platform reports for
+ * an opaque origin -- not the empty string, and not the base's. */
+static JSValue nonspecial_url(JSContext *ctx, const char *scheme, const char *rest)
+{
+    char path[WURL_MAX], search[WQ_MAX], hash[WH_MAX];
+    search[0] = hash[0] = 0;
+    const char *q = 0, *f = 0;
+    for (const char *p = rest; *p; p++) {
+        if (*p == '?' && !q && !f) q = p;
+        else if (*p == '#' && !f) { f = p; break; }
+    }
+    const char *pend = q ? q : (f ? f : rest + strlen(rest));
+    int n = (int)(pend - rest);
+    if (n >= WURL_MAX) n = WURL_MAX - 1;
+    memcpy(path, rest, (size_t)n); path[n] = 0;
+    if (q) { const char *qe = f ? f : rest + strlen(rest);
+             int qn = (int)(qe - q); if (qn >= WQ_MAX) qn = WQ_MAX - 1;
+             memcpy(search, q, (size_t)qn); search[qn] = 0; }
+    if (f) scopy(hash, f, WH_MAX);
+    if (path[0] == '/') remove_dot_segments(path);
+
+    char href[WURL_MAX];
+    int o = 0;
+    for (const char *s = scheme; *s && o < WURL_MAX - 2; s++) href[o++] = *s;
+    href[o++] = ':';
+    for (const char *s = path;   *s && o < WURL_MAX - 1; s++) href[o++] = *s;
+    for (const char *s = search; *s && o < WURL_MAX - 1; s++) href[o++] = *s;
+    for (const char *s = hash;   *s && o < WURL_MAX - 1; s++) href[o++] = *s;
+    href[o] = 0;
+
+    char proto[24];
+    o = 0;
+    for (const char *s = scheme; *s && o < 22; s++) proto[o++] = *s;
+    proto[o++] = ':'; proto[o] = 0;
+
+    JSValue ob = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, ob, "href", JS_NewString(ctx, href));
+    JS_SetPropertyStr(ctx, ob, "protocol", JS_NewString(ctx, proto));
+    JS_SetPropertyStr(ctx, ob, "origin", JS_NewString(ctx, "null"));
+    JS_SetPropertyStr(ctx, ob, "host", JS_NewString(ctx, ""));
+    JS_SetPropertyStr(ctx, ob, "hostname", JS_NewString(ctx, ""));
+    JS_SetPropertyStr(ctx, ob, "port", JS_NewString(ctx, ""));
+    JS_SetPropertyStr(ctx, ob, "pathname", JS_NewString(ctx, path));
+    JS_SetPropertyStr(ctx, ob, "search", JS_NewString(ctx, search));
+    JS_SetPropertyStr(ctx, ob, "hash", JS_NewString(ctx, hash));
+    return ob;
+}
+
+/* Merge `ref` onto a non-special base path, RFC 3986 section 5.3. */
+static JSValue nonspecial_resolve(JSContext *ctx, const char *scheme,
+                                  const char *basepath, const char *ref)
+{
+    char merged[WURL_MAX];
+    if (ref[0] == '/' || !basepath[0]) {
+        scopy(merged, ref, WURL_MAX);
+    } else if (!ref[0] || ref[0] == '?' || ref[0] == '#') {
+        int o = 0;
+        for (const char *s = basepath; *s && o < WURL_MAX - 1; s++) merged[o++] = *s;
+        for (const char *s = ref;      *s && o < WURL_MAX - 1; s++) merged[o++] = *s;
+        merged[o] = 0;
+    } else {
+        int keep = (int)strlen(basepath);
+        while (keep > 0 && basepath[keep - 1] != '/') keep--;
+        int o = 0;
+        for (int i = 0; i < keep && o < WURL_MAX - 1; i++) merged[o++] = basepath[i];
+        for (const char *s = ref; *s && o < WURL_MAX - 1; s++) merged[o++] = *s;
+        merged[o] = 0;
+    }
+    return nonspecial_url(ctx, scheme, merged);
+}
+
 /* __urlParse(input, base|undefined) -> {href, protocol, ...} or null */
 static JSValue js_url_parse(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
@@ -1542,6 +1649,40 @@ static JSValue js_url_parse(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     if (argc < 1) return JS_NULL;
     const char *in = JS_ToCString(ctx, argv[0]);
     if (!in) return JS_NULL;
+
+    /* Non-special schemes are decided BEFORE wurl_parse, on the input's own
+     * scheme when it has one and otherwise on the base's, because that is the
+     * order the URL standard resolves them in. */
+    /* The negative control, and the only reason this knob exists. Built with
+     * -DWEBAPI_NO_NONSPECIAL_URL the constructor behaves exactly as it did
+     * before -- `new URL(x, "x:/")` throws -- and
+     * tests/unit/webapi_test.c's four non-special assertions must FAIL.
+     * `make test-webapi-url-negctl`. */
+#ifndef WEBAPI_NO_NONSPECIAL_URL
+    {
+        char sc[24];
+        if (scheme_of(in, sc, sizeof sc) && !is_special_scheme(sc)) {
+            JSValue r = nonspecial_url(ctx, sc, in + strlen(sc) + 1);
+            JS_FreeCString(ctx, in);
+            return r;
+        }
+        if (argc > 1 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+            const char *b = JS_ToCString(ctx, argv[1]);
+            char bsc[24];
+            if (b && scheme_of(b, bsc, sizeof bsc) && !is_special_scheme(bsc)) {
+                /* strip the base's own query/fragment before merging */
+                char bp[WURL_MAX];
+                scopy(bp, b + strlen(bsc) + 1, WURL_MAX);
+                for (char *p = bp; *p; p++) if (*p == '?' || *p == '#') { *p = 0; break; }
+                JSValue r = nonspecial_resolve(ctx, bsc, bp, in);
+                JS_FreeCString(ctx, b);
+                JS_FreeCString(ctx, in);
+                return r;
+            }
+            if (b) JS_FreeCString(ctx, b);
+        }
+    }
+#endif
 
     struct wurl base, out;
     const struct wurl *bp = 0;
@@ -1830,6 +1971,16 @@ static const JSCFunctionListEntry loc_funcs[] = {
 
 static JSClassID storage_cid;
 static JSClassDef storage_class = { "Storage", 0, 0, 0, 0 };
+
+/* `new Storage()` is a TypeError on the platform: the interface object exists
+ * to be referenced and to be the right-hand side of `instanceof`, not to be
+ * constructed. Throwing is the behaviour, and it also means a page cannot make
+ * an object that answers to `instanceof Storage` and is not one. */
+static JSValue storage_illegal_ctor(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    return JS_ThrowTypeError(ctx, "Illegal constructor");
+}
 
 static struct store *store_of(JSContext *ctx, JSValueConst t)
 {
@@ -2905,9 +3056,31 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JSValue proto = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, proto, storage_proto,
                                    (int)(sizeof storage_proto / sizeof storage_proto[0]));
-        JS_SetClassProto(ctx, storage_cid, proto);
+        JS_SetClassProto(ctx, storage_cid, JS_DupValue(ctx, proto));
         JS_SetPropertyStr(ctx, g, "localStorage", make_storage(ctx, origin, 0));
         JS_SetPropertyStr(ctx, g, "sessionStorage", make_storage(ctx, origin, 1));
+
+        /* window.Storage, the INTERFACE OBJECT.  Two working stores and no
+         * constructor is not a small omission -- it is how kimi.com stops.
+         *
+         * MEASURED (tests/unit/webapi_probe.c over the captured fixture, with
+         * the module graph walked): kimi's entry module rejects with
+         * `ReferenceError: 'Storage' is not defined`, thrown from useStorage
+         * inside its framework chunk -- VueUse's useLocalStorage, whose
+         * availability check is a bare reference to the interface. Real
+         * headless Chrome throws nothing at all on the same bytes, so this was
+         * ours and only ours. The whole application failed to boot over a name
+         * that was never published.
+         *
+         * The prototype is the same object the instances already share, so
+         * `localStorage instanceof Storage` is true -- which is the other half
+         * of what feature detection does with it. Calling it throws, as every
+         * interface object must: `new Storage()` is illegal on the platform. */
+        JSValue ctor = JS_NewCFunction2(ctx, storage_illegal_ctor, "Storage", 0,
+                                        JS_CFUNC_constructor, 0);
+        JS_SetConstructor(ctx, ctor, proto);
+        JS_SetPropertyStr(ctx, g, "Storage", ctor);
+        JS_FreeValue(ctx, proto);
     }
 
     /* Viewport metrics, only if nothing else claimed them. */

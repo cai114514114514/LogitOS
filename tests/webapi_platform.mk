@@ -7,7 +7,27 @@
 # file is silently ignored, so losing the one line in the Makefile costs the
 # targets and breaks nothing.
 .PHONY: probe-webapi test-platform test-platform-control test-platform-asan
-.PHONY: test-platform-page test-platform-page-control
+.PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
+
+# --- test-webapi-url-negctl ------------------------------------------------
+# The negative control for the non-special URL scheme support in js_webapi.c.
+# It cannot live in test-platform-control: that build drops js_platform.o and
+# js_select.o and still links js_webapi.o, so a URL assertion would pass in
+# both builds and prove nothing. This one is a COMPILE-TIME control instead --
+# -DWEBAPI_NO_NONSPECIAL_URL restores the old constructor exactly -- and it
+# requires tests/unit/webapi_test.c to FAIL.
+test-webapi-url-negctl: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' \
+	    -DWEBAPI_HOST -DWEBAPI_NO_NONSPECIAL_URL \
+	    -o $(BUILD)/webapi_urlnegctl $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm
+	@if $(BUILD)/webapi_urlnegctl > $(BUILD)/webapi_urlnegctl.log 2>&1; then \
+	    echo "test-webapi-url-negctl: FAILED -- the suite PASSED without the fix,"; \
+	    echo "  so its URL assertions are not measuring it."; exit 1; \
+	 else \
+	    echo "test-webapi-url-negctl: ok -- the suite fails without the fix:"; \
+	    grep '^FAIL' $(BUILD)/webapi_urlnegctl.log | head -6; \
+	 fi
 
 # --- probe-webapi: WHICH globals do real pages miss? -----------------------
 # Not a test -- an INSTRUMENT. It parses the committed corpus in

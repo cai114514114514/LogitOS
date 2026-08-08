@@ -331,10 +331,26 @@ static const char *SELECT_PRELUDE =
 "  return null;\n"
 "});\n"
 
-/* `x instanceof HTMLElement` is how a lot of code checks an argument. The
- * constructors are façades over the prototype js_dom.c actually uses, so the
- * instanceof answer is the true one even though `new Element()` is not a thing
- * a page may do (and throws if it tries, as in a browser). */
+/* NodeList and HTMLCollection only. THE ELEMENT INTERFACES MOVED to
+ * js_platform.c's installInterfaces, and the move fixed two things that this
+ * block got wrong -- both of which it got wrong invisibly, which is why they
+ * survived:
+ *
+ *   - every per-tag name was a façade over the ONE shared element prototype,
+ *     so `document.createElement('div') instanceof HTMLInputElement` was true.
+ *     A page that branches on that takes a path it must not take, and nothing
+ *     reports it. The replacement gives each per-tag interface its own
+ *     prototype and a Symbol.hasInstance that tests tagName.
+ *   - `HTMLElement` here threw unconditionally, which is right for `new
+ *     HTMLElement()` and fatal for `class X extends HTMLElement`: a custom
+ *     element's super() call has to hand back the element being upgraded.
+ *     MEASURED -- with customElements implemented and this block still in
+ *     place, MDN produced 163 `TypeError: Illegal constructor`, every one of
+ *     them from THIS constructor, because js_select.c installs before
+ *     js_platform.c and first definition wins.
+ *
+ * The collections stay because they are this file's own: the arrays returned
+ * by querySelectorAll and getElementsByTagName are built here. */
 "(function () {\n"
 "  var mkClass = function (name, proto) {\n"
 "    var C = function () { throw new TypeError('Illegal constructor'); };\n"
@@ -342,13 +358,7 @@ static const char *SELECT_PRELUDE =
 "    try { Object.defineProperty(C, 'name', { value: name }); } catch (e) {}\n"
 "    return C;\n"
 "  };\n"
-"  ['Node', 'Element', 'HTMLElement', 'HTMLDivElement', 'HTMLIFrameElement',\n"
-"   'HTMLInputElement', 'HTMLAnchorElement', 'HTMLImageElement', 'HTMLScriptElement',\n"
-"   'CharacterData', 'Text'].forEach(function (n) {\n"
-"    if (!(n in G)) { try { G[n] = mkClass(n, EP); } catch (e) {} }\n"
-"  });\n"
-"  var nl = mkClass('NodeList', Array.prototype);\n"
-"  if (!('NodeList' in G)) G.NodeList = nl;\n"
+"  if (!('NodeList' in G)) G.NodeList = mkClass('NodeList', Array.prototype);\n"
 "  if (!('HTMLCollection' in G)) G.HTMLCollection = mkClass('HTMLCollection', Array.prototype);\n"
 "})();\n"
 

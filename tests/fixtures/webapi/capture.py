@@ -124,10 +124,63 @@ def attrs(blob):
     return out
 
 
+def add_urls(name, urls):
+    """Append already-known absolute URLs to an existing fixture.
+
+    WHY A SECOND ENTRY POINT. A webpack bundle does not name its lazy chunks in
+    source: the specifier is `import("./" + chunkId + "." + hash + ".js")`, built
+    from a table at run time, so no amount of static analysis over the bytes
+    will find them -- measured on MDN, whose entire Web Components layer loads
+    that way and whose static closure is four files.
+
+    They ARE named at run time, and both instruments already report them: the
+    probe prints every module URL the fixture could not answer, and
+    tests/chrome/webapi_chromediff.mjs logs every request its server 404s. So
+    the corpus is completed from the measurement rather than from a parser:
+
+        make probe-webapi PROBE=--json | grep '\tfetch\t' | cut -f5 \\
+          | xargs python3 capture.py mdn --add
+
+    which is a closed loop -- run, see what was missing, fetch exactly that."""
+    out = os.path.join(HERE, name)
+    if not os.path.isdir(out):
+        print("no such fixture: %s" % out)
+        return 1
+    mpath = os.path.join(out, "manifest.txt")
+    man = open(mpath).read().rstrip("\n").split("\n") if os.path.exists(mpath) else []
+    man = [l for l in man if l.strip()]
+    have = set(l.split("\t")[0] for l in man)
+    n = max([int(l.split("\t")[1][1:4]) for l in man if l.split("\t")[1].startswith("s")] or [0])
+    added = 0
+    for u in urls:
+        u = u.strip()
+        if not u or u in have or not u.startswith("http"):
+            continue
+        body = curl(u, UA)
+        if body is None:
+            print("   (fetch failed) %s" % u[:90])
+            continue
+        n += 1
+        fn = "s%03d.js" % n
+        open(os.path.join(out, fn), "wb").write(body)
+        man.append("%s\t%s" % (u, fn))
+        have.add(u)
+        added += 1
+        print("   %-12s %8d bytes  %s" % (fn, len(body), u[:90]))
+    open(mpath, "w").write("\n".join(man) + "\n")
+    print("%s: +%d files, %d total" % (name, added, len(man)))
+    return 0
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
+    if sys.argv[2] == "--add":
+        urls = sys.argv[3:]
+        if not urls:
+            urls = [l for l in sys.stdin.read().split()]
+        return add_urls(sys.argv[1], urls)
     name, url = sys.argv[1], sys.argv[2]
     ua = UA
     # 4 MiB. The old default of 512 KiB silently dropped kimi's 1.55 MB entry

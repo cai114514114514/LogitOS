@@ -336,6 +336,26 @@ static void test_url(void)
     ckjs("u.hash === '#frag'", "URL.hash includes the '#'");
     ckjs("u.origin === 'http://a.example:8080'", "URL.origin");
     ckjs("u.href === 'http://a.example:8080/p/q?x=1&y=2#frag'", "URL.href round-trips");
+
+    /* ---- non-special schemes ----
+     * `new URL(s, "x:/")` is in the RUNTIME of every webpack 5 bundle that has
+     * an asset module -- it uses a deliberately meaningless scheme to normalise
+     * a path with no document base. struct wurl carries the scheme as a bool
+     * (http or https and nothing else), so this threw, and MEASURED on the MDN
+     * fixture it was five of twelve remaining exceptions, one per lazily
+     * imported Web Component, each surfacing as "couldn't load code for
+     * <switch>". Real Chrome throws none of them.
+     *
+     * Negative control: make test-webapi-url-negctl builds js_webapi.c with
+     * -DWEBAPI_NO_NONSPECIAL_URL and requires these four to FAIL. */
+    ckjs("new URL('/static/a.svg', 'x:/').href === 'x:/static/a.svg'",
+         "URL: relative resolved against a non-special base");
+    ckjs("new URL('/static/a.svg', 'x:/').pathname === '/static/a.svg'",
+         "URL: pathname from a non-special base");
+    ckjs("new URL('/a.svg', 'x:/').origin === 'null'",
+         "URL: a non-special URL has an opaque origin");
+    ckjs("new URL('sub/b.svg', 'x:/dir/a').href === 'x:/dir/sub/b.svg'",
+         "URL: a relative path merges onto a non-special base path");
     ckjs("String(u) === u.href", "URL.toString");
 
     run("var d = new URL('https://b.example/x');");

@@ -923,6 +923,472 @@ static const char *PLATFORM_PRELUDE =
 "  }\n"
 "}\n"
 
+/* ==== HTMLElement.dataset ================================================
+ * THE TOP OF THE CHROME DIFFERENTIAL, and the only entry on it that two
+ * different pages hit for two entirely different reasons:
+ *
+ *   deepseek  React 19's stylesheet hoisting reads `o.dataset.precedence` on
+ *             every <link data-precedence> it finds, and dies with
+ *             `cannot read property 'precedence' of undefined` inside its own
+ *             commit phase -- so the page's React never finishes mounting.
+ *   mdn       `document.documentElement.dataset.theme = ...` in the very
+ *             first inline script, which the page wraps in a try/catch and
+ *             reports as `Unable to set theme`. No exception escapes, which is
+ *             exactly why a probe that counts only uncaught exceptions could
+ *             not see it: the page degrades silently and renders in the wrong
+ *             theme for ever.
+ *
+ * Real headless Chrome throws neither on the same committed bytes.
+ *
+ * A Proxy rather than a snapshot object, because dataset is LIVE in both
+ * directions: `el.dataset.x = 1` must write the attribute, `delete
+ * el.dataset.x` must remove it, and a setAttribute done elsewhere must show
+ * through. A plain object built at first access would satisfy the read in
+ * deepseek and silently drop the write in mdn.
+ *
+ * The name mapping is the spec's: data-foo-bar <-> fooBar, and an uppercase
+ * letter in the JS name is illegal rather than silently lowercased. */
+"function installDataset(proto) {\n"
+"  if (!proto || proto.__dsWrapped) return;\n"
+"  try { Object.defineProperty(proto, '__dsWrapped', { value: true, enumerable: false }); } catch (e) { return; }\n"
+"  var toAttr = function (k) {\n"
+"    if (/-[a-z]/.test(k)) return null;\n"        /* data-foo is not reachable as .data-foo */
+"    return 'data-' + k.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); });\n"
+"  };\n"
+"  var toProp = function (a) {\n"
+"    return a.slice(5).replace(/-([a-z])/g, function (m, c) { return c.toUpperCase(); });\n"
+"  };\n"
+"  try {\n"
+"    Object.defineProperty(proto, 'dataset', {\n"
+"      configurable: true,\n"
+"      get: function () {\n"
+"        var el = this;\n"
+"        if (el.__ds) return el.__ds;\n"
+"        var d = new Proxy({}, {\n"
+"          get: function (t, k) {\n"
+"            if (typeof k !== 'string') return undefined;\n"
+"            var a = toAttr(k); if (!a) return undefined;\n"
+"            var v = el.getAttribute(a);\n"
+"            return v === null ? undefined : v;\n"
+"          },\n"
+"          set: function (t, k, v) {\n"
+"            if (typeof k !== 'string') return true;\n"
+"            var a = toAttr(k);\n"
+"            if (a) el.setAttribute(a, String(v));\n"
+"            return true;\n"
+"          },\n"
+"          has: function (t, k) {\n"
+"            if (typeof k !== 'string') return false;\n"
+"            var a = toAttr(k);\n"
+"            return !!a && el.getAttribute(a) !== null;\n"
+"          },\n"
+"          deleteProperty: function (t, k) {\n"
+"            var a = typeof k === 'string' ? toAttr(k) : null;\n"
+"            if (a && el.removeAttribute) el.removeAttribute(a);\n"
+"            return true;\n"
+"          },\n"
+             /* ENUMERATION IS A NAMED GAP, not an oversight. Object.keys(
+                el.dataset) needs the element's attribute NAMES, and js_dom.c
+                publishes getAttribute/setAttribute/hasAttribute and no way to
+                list them -- no `attributes`, no `getAttributeNames`. That file
+                belongs to the DOM line, so the primitive is an ask, not an
+                edit: one getAttributeNames() and this starts working, which is
+                why the call is already here rather than the list being
+                hardcoded empty. Neither page on the differential enumerates;
+                both read and write by name, which does work. */
+"          ownKeys: function () {\n"
+"            var out = [];\n"
+"            try {\n"
+"              var names = el.getAttributeNames ? el.getAttributeNames() : [];\n"
+"              for (var i = 0; i < names.length; i++)\n"
+"                if (names[i].indexOf('data-') === 0) out.push(toProp(names[i]));\n"
+"            } catch (e) {}\n"
+"            return out;\n"
+"          },\n"
+"          getOwnPropertyDescriptor: function (t, k) {\n"
+"            if (typeof k !== 'string') return undefined;\n"
+"            var a = toAttr(k); if (!a) return undefined;\n"
+"            var v = el.getAttribute(a);\n"
+"            if (v === null) return undefined;\n"
+"            return { value: v, writable: true, enumerable: true, configurable: true };\n"
+"          }\n"
+"        });\n"
+"        try { Object.defineProperty(el, '__ds', { value: d, enumerable: false }); } catch (e) {}\n"
+"        return d;\n"
+"      }\n"
+"    });\n"
+"  } catch (e) {}\n"
+"}\n"
+
+/* ==== NodeFilter + document.createTreeWalker =============================
+ * lit-html. MEASURED on the MDN fixture, whose four modules are a lit
+ * application: `new TreeWalker` is created once at module scope
+ * (`p.createTreeWalker(p, 129)`) and again for every template instantiation,
+ * and with createTreeWalker absent the call returns undefined and the next
+ * line -- `d.nextNode()` -- is `TypeError: not a function`. Chrome throws
+ * nothing. One missing method takes out every page built on lit or on any
+ * other library that walks the tree that way, which is most Web Components.
+ *
+ * Implemented over firstChild/nextSibling/parentNode/nodeType, which js_dom.c
+ * already publishes, so this is a real pre-order walk and not a flattened
+ * snapshot: a filter that rejects a node must still descend into it, and code
+ * that mutates the tree between nextNode() calls must see the new shape.
+ * currentNode is writable, because lit sets it. */
+"function installTreeWalker() {\n"
+"  if (G.NodeFilter) return;\n"
+"  var NF = {\n"
+"    FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3,\n"
+"    SHOW_ALL: 0xFFFFFFFF, SHOW_ELEMENT: 1, SHOW_ATTRIBUTE: 2, SHOW_TEXT: 4,\n"
+"    SHOW_CDATA_SECTION: 8, SHOW_PROCESSING_INSTRUCTION: 64, SHOW_COMMENT: 128,\n"
+"    SHOW_DOCUMENT: 256, SHOW_DOCUMENT_TYPE: 512, SHOW_DOCUMENT_FRAGMENT: 1024\n"
+"  };\n"
+"  def(G, 'NodeFilter', NF);\n"
+"  var shows = function (n, what) {\n"
+"    var t = n.nodeType;\n"
+"    if (!t) return false;\n"
+       /* whatToShow is a bitmask over (nodeType - 1), which is the detail that
+          makes SHOW_COMMENT 128 line up with nodeType 8. */
+"    return !!(what & (1 << (t - 1)));\n"
+"  };\n"
+"  var accept = function (w, n) {\n"
+"    if (!shows(n, w.whatToShow)) return NF.FILTER_SKIP;\n"
+"    var f = w.filter;\n"
+"    if (!f) return NF.FILTER_ACCEPT;\n"
+"    var r;\n"
+"    try { r = typeof f === 'function' ? f(n) : f.acceptNode(n); } catch (e) { throw e; }\n"
+"    return r === undefined ? NF.FILTER_ACCEPT : r;\n"
+"  };\n"
+"  function TreeWalker(root, whatToShow, filter) {\n"
+"    this.root = root; this.currentNode = root;\n"
+"    this.whatToShow = whatToShow === undefined ? NF.SHOW_ALL : (whatToShow >>> 0);\n"
+"    this.filter = filter || null;\n"
+"  }\n"
+   /* Pre-order, with the one distinction that is easy to get backwards and
+      changes the answer completely: FILTER_REJECT prunes the whole subtree,
+      FILTER_SKIP rejects only the node and still descends into its children.
+      A comment walker (lit's, whatToShow=128) SKIPS every element, so a
+      version that treated skip as reject would return nothing at all and lit
+      would render an empty template with no error. */
+"  TreeWalker.prototype.nextNode = function () {\n"
+"    var n = this.currentNode, res = NF.FILTER_ACCEPT;\n"
+"    for (;;) {\n"
+"      while (res !== NF.FILTER_REJECT && n.firstChild) {\n"
+"        n = n.firstChild;\n"
+"        res = accept(this, n);\n"
+"        if (res === NF.FILTER_ACCEPT) { this.currentNode = n; return n; }\n"
+"      }\n"
+"      var sib = null, up = n;\n"
+"      while (up && up !== this.root) { sib = up.nextSibling; if (sib) break; up = up.parentNode; }\n"
+"      if (!sib) return null;\n"
+"      n = sib;\n"
+"      res = accept(this, n);\n"
+"      if (res === NF.FILTER_ACCEPT) { this.currentNode = n; return n; }\n"
+"    }\n"
+"  };\n"
+"  TreeWalker.prototype.parentNode = function () {\n"
+"    var n = this.currentNode;\n"
+"    while (n && n !== this.root) {\n"
+"      n = n.parentNode;\n"
+"      if (n && accept(this, n) === NF.FILTER_ACCEPT) { this.currentNode = n; return n; }\n"
+"    }\n"
+"    return null;\n"
+"  };\n"
+"  TreeWalker.prototype.firstChild = function () {\n"
+"    var c = this.currentNode && this.currentNode.firstChild;\n"
+"    while (c) {\n"
+"      if (accept(this, c) === NF.FILTER_ACCEPT) { this.currentNode = c; return c; }\n"
+"      c = c.nextSibling;\n"
+"    }\n"
+"    return null;\n"
+"  };\n"
+"  TreeWalker.prototype.nextSibling = function () {\n"
+"    var s = this.currentNode && this.currentNode.nextSibling;\n"
+"    while (s) {\n"
+"      if (accept(this, s) === NF.FILTER_ACCEPT) { this.currentNode = s; return s; }\n"
+"      s = s.nextSibling;\n"
+"    }\n"
+"    return null;\n"
+"  };\n"
+"  def(G, 'TreeWalker', TreeWalker);\n"
+"  if (G.document && !G.document.createTreeWalker) {\n"
+"    try {\n"
+"      G.document.createTreeWalker = function (root, whatToShow, filter) {\n"
+"        return new TreeWalker(root, whatToShow, filter);\n"
+"      };\n"
+"    } catch (e) {}\n"
+"  }\n"
+"}\n"
+/* ==== the interface objects =============================================
+ * `Node`, `Element`, `HTMLElement`, `HTMLDialogElement` and the rest exist on
+ * the platform as NAMES as much as as types, and a page that reaches one it
+ * cannot find stops there. This is the general case of the same bug that took
+ * kimi out over `Storage`:
+ *
+ *   mdn      `'closedBy' in HTMLDialogElement.prototype` -- a feature test in
+ *            a module's top-level body, so a ReferenceError rejects the whole
+ *            module and the application does not mount. It appeared only AFTER
+ *            createTreeWalker landed, because before that the module died
+ *            earlier. Chrome throws nothing.
+ *   corpus   HTMLElement is referenced 47 times across the seven fixtures,
+ *            more than any other interface name.
+ *
+ * WHAT THE PROTOTYPES ACTUALLY ARE, stated because it is a real deviation.
+ * js_dom.c has ONE element class with ONE shared prototype -- there is no
+ * per-tag class to hand out. So Element.prototype and HTMLElement.prototype
+ * ARE that shared object (which makes `el instanceof HTMLElement` correctly
+ * true for every element), and each per-tag interface gets a FRESH prototype
+ * object inheriting from it. Two consequences, both deliberate:
+ *
+ *   - `el instanceof HTMLInputElement` must not be true for a <div>, and with
+ *     a shared prototype it would be. So each per-tag interface carries a
+ *     Symbol.hasInstance that tests tagName. Publishing them all over one
+ *     prototype would answer `instanceof` wrongly, which is worse than not
+ *     publishing them: a page would take a branch it must not take.
+ *   - a page that PATCHES `HTMLDialogElement.prototype.showModal` patches an
+ *     object no live element has in its chain, so the patch does not take
+ *     effect. Feature DETECTION -- which is what the corpus does, and what the
+ *     name is overwhelmingly used for -- is answered correctly; monkey
+ *     patching a per-tag prototype is not. Fixing that properly needs per-tag
+ *     classes in js_dom.c, which is the DOM line's file. */
+"function installInterfaces() {\n"
+"  var EP = null;\n"
+"  try { EP = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
+"  if (!EP) return;\n"
+"  var mk = function (name, proto, tags) {\n"
+"    if (name in G) return G[name];\n"
+"    var C = function () { throw new TypeError('Illegal constructor'); };\n"
+"    try {\n"
+"      Object.defineProperty(C, 'name', { value: name, configurable: true });\n"
+"      C.prototype = proto;\n"
+"      Object.defineProperty(proto, 'constructor',\n"
+"        { value: C, writable: true, configurable: true });\n"
+"      if (tags) Object.defineProperty(C, Symbol.hasInstance, {\n"
+"        value: function (o) {\n"
+"          if (!o || o.nodeType !== 1 || !o.tagName) return false;\n"
+"          return tags.indexOf(String(o.tagName).toLowerCase()) >= 0;\n"
+"        }, configurable: true });\n"
+"      G[name] = C;\n"
+"    } catch (e) {}\n"
+"    return G[name];\n"
+"  };\n"
+   /* The shared chain. Node and Element and HTMLElement all resolve to the one
+      prototype our DOM has; that is the truthful mapping, not a shortcut. */
+"  mk('EventTarget', EP, null);\n"
+"  mk('Node', EP, null);\n"
+"  mk('Element', EP, null);\n"
+"  mk('CharacterData', EP, null);\n"
+"  mk('Text', EP, null);\n"
+"  mk('Comment', EP, null);\n"
+"  mk('DocumentFragment', EP, null);\n"
+   /* HTMLElement is NOT a plain throwing constructor, because it is the one a
+      custom element's `class X extends HTMLElement` calls through super().
+      See installCustomElements: during an upgrade it returns the element being
+      upgraded, and a base constructor that returns an object makes that object
+      the derived constructor's `this`. That single language rule is what makes
+      a real upgrade possible from JS. */
+"  if (!('HTMLElement' in G)) {\n"
+"    var HE = function () {\n"
+"      if (G.__ceUpgrading) { var e = G.__ceUpgrading; G.__ceUpgrading = null; return e; }\n"
+"      throw new TypeError('Illegal constructor');\n"
+"    };\n"
+"    try {\n"
+"      Object.defineProperty(HE, 'name', { value: 'HTMLElement', configurable: true });\n"
+"      HE.prototype = EP;\n"
+"      Object.defineProperty(EP, 'constructor', { value: HE, writable: true, configurable: true });\n"
+"      G.HTMLElement = HE;\n"
+"    } catch (e) {}\n"
+"  }\n"
+"  var per = {\n"
+"    HTMLAnchorElement: ['a'], HTMLAreaElement: ['area'], HTMLBRElement: ['br'],\n"
+"    HTMLButtonElement: ['button'], HTMLCanvasElement: ['canvas'],\n"
+"    HTMLDataListElement: ['datalist'], HTMLDetailsElement: ['details'],\n"
+"    HTMLDialogElement: ['dialog'], HTMLDivElement: ['div'],\n"
+"    HTMLEmbedElement: ['embed'], HTMLFormElement: ['form'],\n"
+"    HTMLHeadingElement: ['h1','h2','h3','h4','h5','h6'],\n"
+"    HTMLIFrameElement: ['iframe'], HTMLImageElement: ['img'],\n"
+"    HTMLInputElement: ['input'], HTMLLabelElement: ['label'],\n"
+"    HTMLLIElement: ['li'], HTMLLinkElement: ['link'], HTMLMetaElement: ['meta'],\n"
+"    HTMLObjectElement: ['object'], HTMLOListElement: ['ol'],\n"
+"    HTMLOptionElement: ['option'], HTMLParagraphElement: ['p'],\n"
+"    HTMLPreElement: ['pre'], HTMLScriptElement: ['script'],\n"
+"    HTMLSelectElement: ['select'], HTMLSlotElement: ['slot'],\n"
+"    HTMLSpanElement: ['span'], HTMLStyleElement: ['style'],\n"
+"    HTMLTableElement: ['table'], HTMLTemplateElement: ['template'],\n"
+"    HTMLTextAreaElement: ['textarea'], HTMLUListElement: ['ul'],\n"
+"    HTMLVideoElement: ['video'], HTMLAudioElement: ['audio'],\n"
+"    HTMLMediaElement: ['video','audio'], HTMLUnknownElement: []\n"
+"  };\n"
+"  for (var k in per) {\n"
+"    if (k in G) continue;\n"
+"    var p = Object.create(EP);\n"
+"    mk(k, p, per[k]);\n"
+"  }\n"
+"}\n"
+/* ==== customElements =====================================================
+ * MEASURED: after dataset, createTreeWalker, the interface objects and the
+ * non-special URL landed, ELEVEN of MDN's twelve remaining exceptions were
+ * this one name, once per Web Component on the page -- `couldn't load code
+ * for <switch>: ReferenceError: 'customElements' is not defined`. Chrome
+ * throws none of them. It is also the whole Web Components web: lit, Stencil,
+ * FAST, and every design system built on them.
+ *
+ * THIS IS A REAL UPGRADE, NOT A REGISTRY THAT REMEMBERS NAMES. That
+ * distinction is the reason this took thought rather than ten lines, and a
+ * `define()` that recorded the class and did nothing else would have been the
+ * `crypto.subtle` mistake in a new place: every page would believe its
+ * components were registered and render nothing, silently, with no error to
+ * find.
+ *
+ * How an upgrade is possible at all from JS. A custom element is
+ * `class X extends HTMLElement`, and the element the browser upgrades has to
+ * BECOME the `this` inside X's constructor. `super()` performs
+ * Construct(HTMLElement, [], X), and a BASE constructor that returns an object
+ * has that object become the derived constructor's `this` -- so HTMLElement
+ * above returns the element currently being upgraded, and X's constructor then
+ * initialises the real node. Reflect.construct(X, [], X) drives it. Nothing is
+ * copied and no wrapper is interposed: the node in the tree is the node the
+ * component's code holds.
+ *
+ * The prototype is swapped first (Object.setPrototypeOf(el, X.prototype)),
+ * which is what makes the component's methods reachable on the node and what
+ * `instanceof X` answers on.
+ *
+ * WHEN UPGRADES HAPPEN. On define(), over every matching element already in
+ * the document -- which is the case that matters for server-rendered markup,
+ * and MDN's entire page is that. And on insertion, through the same
+ * appendChild/insertBefore/replaceChild wrappers the MutationObserver support
+ * already installs, so a component created after its definition also upgrades.
+ *
+ * WHAT IS NOT HERE, named rather than approximated:
+ *   - attachShadow. There is no shadow tree in js_dom.c and inventing one from
+ *     JS would produce encapsulation that does not encapsulate -- styles would
+ *     leak and a page would be wrong in a way nothing reports. A component
+ *     that calls it still fails, loudly, and the DOM line owns the primitive.
+ *   - `is=` customised built-ins, which no engine but Chrome ships.
+ *   - disconnectedCallback fires from removeChild only; a node dropped by an
+ *     innerHTML rewrite of its parent does not get one. */
+"function installCustomElements() {\n"
+"  if (G.customElements) return;\n"
+"  var defs = {}, waiting = {};\n"
+"  var validName = function (n) {\n"
+"    return typeof n === 'string' && /^[a-z][a-z0-9._]*-[a-z0-9._-]*$/.test(n);\n"
+"  };\n"
+"  var upgradeOne = function (el, d) {\n"
+"    if (!el || el.__ceState) return;\n"
+"    el.__ceState = 'upgrading';\n"
+"    try {\n"
+"      Object.setPrototypeOf(el, d.ctor.prototype);\n"
+"      G.__ceUpgrading = el;\n"
+"      Reflect.construct(d.ctor, [], d.ctor);\n"
+"    } catch (e) { G.__ceUpgrading = null; el.__ceState = 'failed'; G.reportError(e); return; }\n"
+"    G.__ceUpgrading = null;\n"
+"    el.__ceState = 'upgraded';\n"
+       /* Observed attributes already present are delivered before
+          connectedCallback, as the spec orders them: a component that reads a
+          value in attributeChangedCallback must not see connectedCallback
+          first and render with a default. */
+"    var obs = d.ctor.observedAttributes;\n"
+"    if (obs && obs.length && typeof el.attributeChangedCallback === 'function') {\n"
+"      for (var i = 0; i < obs.length; i++) {\n"
+"        var v = null;\n"
+"        try { v = el.getAttribute(obs[i]); } catch (e) {}\n"
+"        if (v !== null) { try { el.attributeChangedCallback(obs[i], null, v); } catch (e) { G.reportError(e); } }\n"
+"      }\n"
+"    }\n"
+"    if (typeof el.connectedCallback === 'function' && inDocument(el))\n"
+"      { try { el.connectedCallback(); } catch (e) { G.reportError(e); } }\n"
+"  };\n"
+"  var inDocument = function (n) {\n"
+"    for (var p = n; p; p = p.parentNode) if (p === G.document || p === G.document.documentElement) return true;\n"
+"    return false;\n"
+"  };\n"
+"  var walk = function (root, fn) {\n"
+"    if (!root) return;\n"
+"    if (root.nodeType === 1) fn(root);\n"
+"    var c = root.firstChild;\n"
+"    while (c) { walk(c, fn); c = c.nextSibling; }\n"
+"  };\n"
+"  var upgradeTree = function (root) {\n"
+"    walk(root, function (el) {\n"
+"      var d = defs[String(el.tagName || '').toLowerCase()];\n"
+"      if (d) upgradeOne(el, d);\n"
+"    });\n"
+"  };\n"
+"  var CE = {\n"
+"    define: function (name, ctor, options) {\n"
+"      if (typeof ctor !== 'function')\n"
+"        throw new TypeError('customElements.define: constructor is not a function');\n"
+"      if (!validName(name))\n"
+"        throw new G.DOMException(\"'\" + name + \"' is not a valid custom element name\",\n"
+"                                 'SyntaxError');\n"
+"      name = String(name).toLowerCase();\n"
+"      if (defs[name])\n"
+"        throw new G.DOMException(\"'\" + name + \"' has already been defined\", 'NotSupportedError');\n"
+"      if (options && options.extends)\n"
+"        throw new G.DOMException('customised built-in elements are not supported',\n"
+"                                 'NotSupportedError');\n"
+"      defs[name] = { ctor: ctor, name: name };\n"
+"      try { upgradeTree(G.document.documentElement || G.document); } catch (e) {}\n"
+"      var w = waiting[name];\n"
+"      if (w) { delete waiting[name]; w.forEach(function (r) { try { r(ctor); } catch (e) {} }); }\n"
+"    },\n"
+"    get: function (name) { var d = defs[String(name).toLowerCase()]; return d ? d.ctor : undefined; },\n"
+"    getName: function (ctor) {\n"
+"      for (var k in defs) if (defs[k].ctor === ctor) return k;\n"
+"      return null;\n"
+"    },\n"
+"    upgrade: function (root) { try { upgradeTree(root); } catch (e) {} },\n"
+"    whenDefined: function (name) {\n"
+"      name = String(name).toLowerCase();\n"
+"      if (defs[name]) return Promise.resolve(defs[name].ctor);\n"
+"      if (!validName(name))\n"
+"        return Promise.reject(new G.DOMException(\"'\" + name + \"' is not a valid custom element name\",\n"
+"                                                 'SyntaxError'));\n"
+"      return new Promise(function (res) {\n"
+"        (waiting[name] = waiting[name] || []).push(res);\n"
+"      });\n"
+"    }\n"
+"  };\n"
+"  def(G, 'customElements', CE);\n"
+   /* Insertion upgrades. The same three methods the MutationObserver support
+      wraps, wrapped once more here -- order does not matter because each
+      wrapper calls through, and doing it here rather than there keeps the two
+      features independent. */
+"  var EP2 = null;\n"
+"  try { EP2 = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
+"  if (EP2 && !EP2.__ceWrapped) {\n"
+"    try {\n"
+"      Object.defineProperty(EP2, '__ceWrapped', { value: true, enumerable: false });\n"
+"      ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {\n"
+"        var orig = EP2[m];\n"
+"        if (typeof orig !== 'function') return;\n"
+"        EP2[m] = function () {\n"
+"          var r = orig.apply(this, arguments);\n"
+"          try { upgradeTree(arguments[0]); } catch (e) {}\n"
+"          return r;\n"
+"        };\n"
+"      });\n"
+"      var rm = EP2.removeChild;\n"
+"      if (typeof rm === 'function') {\n"
+"        EP2.removeChild = function (n) {\n"
+"          var r = rm.apply(this, arguments);\n"
+"          try {\n"
+"            walk(n, function (el) {\n"
+"              if (el.__ceState === 'upgraded' && typeof el.disconnectedCallback === 'function')\n"
+"                { try { el.disconnectedCallback(); } catch (e) { G.reportError(e); } }\n"
+"            });\n"
+"          } catch (e) {}\n"
+"          return r;\n"
+"        };\n"
+"      }\n"
+"    } catch (e) {}\n"
+"  }\n"
+"}\n"
+"installTreeWalker();\n"
+"installInterfaces();\n"
+"installCustomElements();\n"
+"try { installDataset(Object.getPrototypeOf(G.document.createElement('div'))); } catch (e) {}\n"
+
 /* The hook the C rejection tracker calls. It is returned rather than published
  * as a global, so a page cannot fake an unhandled rejection. */
 "return {\n"
@@ -934,7 +1400,24 @@ static const char *PLATFORM_PRELUDE =
 "    }\n"
 "    try { if (G.dispatchEvent) G.dispatchEvent(ev); } catch (e) {}\n"
 "    if (!ev._prevented) {\n"
-"      try { console.error('Uncaught (in promise) ' + (reason && reason.stack ? reason.stack : String(reason))); } catch (e) {}\n"
+       /* String(reason) FIRST, then the stack.
+        *
+        * This used to print `reason.stack` alone, which is right in V8 --
+        * there the stack's first line IS "TypeError: message". QuickJS omits
+        * it, so every unhandled rejection on every page arrived as a bare
+        * backtrace with no error in it: deepseek's read as
+        *   [error]     at cv (s001.js)
+        * and the actual failure, `cannot read property 'precedence' of
+        * undefined`, was nowhere on the console. That one line of formatting
+        * is the difference between a diagnosable page and a guess. The stack
+        * is still appended, and the prefix test means this stays correct if
+        * the engine's .stack ever grows the message line. */
+"      try {\n"
+"        var s = reason && reason.stack ? String(reason.stack) : '';\n"
+"        var head = String(reason);\n"
+"        console.error('Uncaught (in promise) ' +\n"
+"                      (s && s.indexOf(head) === 0 ? s : (s ? head + '\\n' + s : head)));\n"
+"      } catch (e) {}\n"
 "    }\n"
 "  }\n"
 "};\n"
