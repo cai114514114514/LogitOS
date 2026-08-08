@@ -940,6 +940,23 @@ static void t_color_value(void)
 	    "hsl(from rgba(102, 153, 102, 0.5) h s l)");
 	chk("color", "rgb(from rgb(none none none) r g b)",
 	    "rgb(from rgb(0, 0, 0) r g b)");
+	/* A `none` in the ORIGIN of a relative colour resolves to zero rather
+	 * than blocking the conversion -- the one place in Color 4 where it
+	 * does, and the corpus carries a FIXME next to the rows that say so. */
+	chk("color", "hsl(from hsl(none none none) h s l)",
+	    "hsl(from rgb(0, 0, 0) h s l)");
+	chk("color", "hsl(from hsl(none none none / none) h s l / alpha)",
+	    "hsl(from rgba(0, 0, 0, 0) h s l / alpha)");
+	chk("color", "hsl(from hsl(120deg none 50% / .5) h s l)",
+	    "hsl(from rgba(128, 128, 128, 0.5) h s l)");
+	chk("color", "hsl(from hsl(none 20% 50% / .5) h s l / alpha)",
+	    "hsl(from rgba(153, 102, 102, 0.5) h s l / alpha)");
+	chk("color", "hwb(from hwb(none none none) h w b)",
+	    "hwb(from rgb(255, 0, 0) h w b)");
+	chk("color", "hwb(from hwb(120deg 20% 50% / none) h w b / alpha)",
+	    "hwb(from rgba(51, 128, 51, 0) h w b / alpha)");
+	/* ... and NOT anywhere else: a top-level hsl() keeps its `none`. */
+	chk("color", "hsl(none none none)", "hsl(none none none)");
 	chk("color", "hwb(from hwb(120deg 20% 50% / .5) h w b)",
 	    "hwb(from rgba(51, 128, 51, 0.5) h w b)");
 	chk("color", "hwb(from currentColor h w b)",

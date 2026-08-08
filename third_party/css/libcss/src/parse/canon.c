@@ -1771,6 +1771,7 @@ static int parse_hex(const tok *t, ccol *c)
 #define CANON_COLOR_MAXDEPTH 8
 #define MIX_MAXCOLORS 8
 
+static int canon_color_ctx(lexed *lx, buf *b, int depth, int origin);
 static int canon_color(lexed *lx, buf *b, int depth);
 
 /* The channel keywords each relative form exposes, plus the index of the
@@ -1887,7 +1888,7 @@ static int canon_relative(lexed *lx, buf *b, int depth)
 	adv(lx);			/* the function */
 	adv(lx);			/* `from` */
 
-	if (canon_color(lx, b, depth + 1) != 0) return -1;
+	if (canon_color_ctx(lx, b, depth + 1, 1) != 0) return -1;
 
 	if (strcmp(k->fn, "color") == 0) {
 		const char *space = tab_lookup(cur(lx), color_spaces);
@@ -2301,7 +2302,17 @@ static int emit_color_fn_raw(lexed *lx, buf *b, const char *name)
  * canon_color -- ONE <color>, parsed and spelled. The recursion point.
  * ==================================================================== */
 
-static int canon_color(lexed *lx, buf *b, int depth)
+/* `origin` marks the ORIGIN slot of a relative colour, and it changes exactly
+ * one thing: a `none` in an hsl()/hwb() there RESOLVES TO ZERO instead of
+ * blocking the conversion to sRGB. `hsl(from hsl(none none none) h s l)` is
+ * `hsl(from rgb(0, 0, 0) h s l)`, not `hsl(from hsl(none none none) h s l)`.
+ *
+ * That is not a rule anyone would derive -- everywhere else in Color 4 a
+ * `none` is a value that survives, and the corpus itself carries a "FIXME:
+ * Clarify with spec editors if 'none' should pass through to the constants"
+ * next to these rows. It is what browsers do, so it is what is transcribed;
+ * 30 subtests of color-valid-relative-color.html turn on it. */
+static int canon_color_ctx(lexed *lx, buf *b, int depth, int origin)
 {
 	const tok *t;
 	ccol c;
@@ -2373,8 +2384,18 @@ static int canon_color(lexed *lx, buf *b, int depth)
 	} else {
 		return -1;
 	}
+	if (origin && (c.form == CF_HSL || c.form == CF_HWB)) {
+		int i;
+		for (i = 0; i < 3; i++) c.none[i] = 0;
+		c.anone = 0;
+	}
 	emit_ccol(b, &c);
 	return 0;
+}
+
+static int canon_color(lexed *lx, buf *b, int depth)
+{
+	return canon_color_ctx(lx, b, depth, 0);
 }
 
 /* Does this file claim the VALUE in front of it? A colour property whose
