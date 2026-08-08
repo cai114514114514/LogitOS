@@ -3116,3 +3116,7 @@ bench-aui: $(ISO) $(DISK)
 -include tests/frameworks.mk
 
 -include tests/http2.mk
+
+# mini-libc -> real libc gates (fnmatch/glob/regex/inet/pwd/grp/uname/mman/
+# sched/poll/select/resource/syslog/termios/netdb/socket). See its header.
+-include tests/libc.mk
