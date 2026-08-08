@@ -208,6 +208,40 @@ Dirreq = layout("logit_dirreq", 32, [
     ["pad", 28, 4, "i"]
 ])
 
+Sigaction = layout("logit_sigaction", 32, [
+    ["handler", 0, 8, "u"],
+    ["mask", 8, 8, "u"],
+    ["flags", 16, 8, "u"],
+    ["restorer", 24, 8, "u"]
+])
+
+Sigctx = layout("logit_sigctx", 192, [
+    ["r15", 0, 8, "u"],
+    ["r14", 8, 8, "u"],
+    ["r13", 16, 8, "u"],
+    ["r12", 24, 8, "u"],
+    ["r11", 32, 8, "u"],
+    ["r10", 40, 8, "u"],
+    ["r9", 48, 8, "u"],
+    ["r8", 56, 8, "u"],
+    ["rbp", 64, 8, "u"],
+    ["rdi", 72, 8, "u"],
+    ["rsi", 80, 8, "u"],
+    ["rdx", 88, 8, "u"],
+    ["rcx", 96, 8, "u"],
+    ["rbx", 104, 8, "u"],
+    ["rax", 112, 8, "u"],
+    ["rip", 120, 8, "u"],
+    ["rflags", 128, 8, "u"],
+    ["rsp", 136, 8, "u"],
+    ["oldmask", 144, 8, "u"],
+    ["signo", 152, 8, "u"],
+    ["err", 160, 8, "u"],
+    ["trapno", 168, 8, "u"],
+    ["cr2", 176, 8, "u"],
+    ["fpstate", 184, 8, "u"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):

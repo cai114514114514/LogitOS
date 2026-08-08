@@ -1241,4 +1241,409 @@ struct logit_dirreq {
     int            pad;
 };
 
+/* ===========================================================================
+ * M31 -- SIGNALS. A second entry into user code, forced by the kernel.
+ *
+ * WHAT WAS HERE BEFORE, and why it was not signals. c/kernel/exec/proc.c had
+ * `g_killmark[]`: one bit per process meaning "you have been killed and do not
+ * know it yet". No number, no handler, no delivery -- SYS_KILL meant DESTROY.
+ * So there was no Ctrl+C, a ring-3 fault killed the process without userland
+ * ever learning why, a shell could not be told a child had died, and nothing
+ * could ever be asked to exit cleanly.
+ *
+ * A signal is not a syscall. Delivery means: at a moment when the kernel is
+ * about to return to ring 3, pick a pending unblocked signal; push a frame on
+ * the USER stack holding the interrupted register state, the FPU/SSE state and
+ * the old mask; point rip at the handler; and when the handler returns, restore
+ * every bit of that exactly. The three numbers below (SIGACTION / SIGPROCMASK /
+ * SIGRETURN) are the doors; the mechanism is c/kernel/exec/ksignal.c.
+ *
+ * THE FPU/SSE STATE IS PART OF THE FRAME, and this is the piece that is easy to
+ * omit and impossible to notice. c/boot/isr.asm FXSAVEs on every kernel entry
+ * precisely because the kernel is built with SSE; a handler is ordinary ring-3
+ * C that may touch a double, so without the 512-byte FXSAVE area in the frame a
+ * signal landing mid-computation silently changes the answer. Every simple
+ * handler still works, `kill -TERM` still works, the shell still works. See
+ * tests/unit/signal_test.c and the SIGNAL_NO_FPU negative control.
+ *
+ * THREADS, said plainly rather than half-built. Signals here are
+ * PROCESS-DIRECTED ONLY: one pending set and one blocked mask per process, and
+ * a pending signal is taken by whichever of the process's threads next reaches
+ * a return-to-ring-3 boundary. POSIX permits exactly that for a process-
+ * directed signal ("delivered to one thread that does not block it"). What is
+ * NOT here: per-thread masks, thread-directed signals (pthread_kill still
+ * returns ENOSYS), sigqueue/siginfo payloads, and alternate signal stacks
+ * (sigaltstack). A synchronous fault signal is the one exception and is
+ * necessarily thread-directed: it is delivered on the faulting thread's own
+ * frame, which is the only frame that describes the fault.
+ *
+ * SESSIONS, likewise. There are no process groups and no sessions -- SYS_SETSID
+ * and SYS_GETPGID do not exist and are not added here. The tty therefore holds
+ * ONE foreground pid, set by the last process to read the console, and Ctrl+C
+ * sends SIGINT to it and to its children. That is less than job control and it
+ * is said out loud rather than dressed up as it.
+ * =========================================================================== */
+
+/* (signo, const struct logit_sigaction *act, struct logit_sigaction *old)
+ * -> 0, or a SIG_E_*. Either pointer may be NULL. SIGKILL and SIGSTOP are
+ * refused (SIG_E_ARG) because they must remain uncatchable. */
+#define SYS_SIGACTION   130
+
+/* (how, const unsigned long *set, unsigned long *old) -> 0, or SIG_E_ARG.
+ * `how` is a SIG_BLOCK/SIG_UNBLOCK/SIG_SETMASK below. SIGKILL and SIGSTOP
+ * cannot be blocked and are silently dropped from any set, exactly as on Linux
+ * -- refusing the call instead would break every program that does sigfillset()
+ * before a critical section. */
+#define SYS_SIGPROCMASK 131
+
+/* () -> does not return normally. Restores the frame the kernel pushed: all
+ * GPRs, rip, rflags, rsp, the FPU/SSE state and the pre-handler mask. Only
+ * meaningful from the restorer the kernel pushed as the handler's return
+ * address; called anywhere else it fails and returns SIG_E_ARG. */
+#define SYS_SIGRETURN   132
+
+/* (unsigned long *out) -> 0, or SIG_E_ARG. Signals raised but blocked. */
+#define SYS_SIGPENDING  133
+
+/* (seconds) -> whole seconds left on the previous alarm (0 if none). 0 cancels.
+ * SIGALRM is posted from the timer tick, so the resolution is the 100 Hz tick
+ * and a one-second alarm is accurate to 10 ms, not to the second. */
+#define SYS_ALARM       134
+
+/* (const unsigned long *mask) -> SIG_E_INTR, always. Installs `mask`, waits
+ * until a signal that is NOT in it is delivered, then restores the old mask.
+ * The one call in this family whose ONLY successful outcome is an error, which
+ * is what POSIX specifies. */
+#define SYS_SIGSUSPEND  135
+
+/* (what, 0, 0) -> one SIGQ_* counter, or -1. Diagnostics: a test that asserts
+ * "the handler ran" is asserting about ring 3; these let it also assert that
+ * the KERNEL delivered exactly once, which is what catches a double push. */
+#define SYS_SIGQUERY    136
+
+/* 137-139 reserved for this line. */
+
+/* --- SYS_KILL 96, extended -------------------------------------------------
+ * The old call is (pid, 0, 0) and means DESTROY THAT PROCESS -- no number, no
+ * handler, straight to the deferred-teardown mark. c/apps/gui/monitor.c (the
+ * task manager) is its only caller and it still works BIT FOR BIT, because the
+ * signal meaning is behind a flag in the THIRD argument rather than a value in
+ * the second:
+ *
+ *   (pid, sig, LOGIT_KILL_SIGNAL)   POSIX kill(2). sig 0 = existence probe.
+ *   (pid, anything, 0)              the historical destroy. Unchanged.
+ *
+ * A flag and not "sig != 0 means signal" because POSIX gives sig == 0 a
+ * meaning of its own, and a task manager passing 0 must not be reinterpreted as
+ * a program probing for existence. */
+#define LOGIT_KILL_SIGNAL 1
+
+/* Signal numbers. Linux/x86-64, for the same reason <errno.h> is: a ported
+ * program's own tables are written against them. c/apps/libc/include/signal.h
+ * carries the identical list and the two are checked against each other by
+ * tests/unit/signal_test.c. */
+#define LOGIT_SIGHUP     1
+#define LOGIT_SIGINT     2
+#define LOGIT_SIGQUIT    3
+#define LOGIT_SIGILL     4
+#define LOGIT_SIGTRAP    5
+#define LOGIT_SIGABRT    6
+#define LOGIT_SIGBUS     7
+#define LOGIT_SIGFPE     8
+#define LOGIT_SIGKILL    9
+#define LOGIT_SIGUSR1   10
+#define LOGIT_SIGSEGV   11
+#define LOGIT_SIGUSR2   12
+#define LOGIT_SIGPIPE   13
+#define LOGIT_SIGALRM   14
+#define LOGIT_SIGTERM   15
+#define LOGIT_SIGCHLD   17
+#define LOGIT_SIGCONT   18
+#define LOGIT_SIGSTOP   19
+#define LOGIT_SIGTSTP   20
+#define LOGIT_SIGTTIN   21
+#define LOGIT_SIGTTOU   22
+#define LOGIT_SIGURG    23
+#define LOGIT_SIGWINCH  28
+#define LOGIT_NSIG      32      /* signals are 1..31; the mask is one uint64 */
+
+/* sigprocmask `how`. Same values as the libc header. */
+#define LOGIT_SIG_BLOCK   0
+#define LOGIT_SIG_UNBLOCK 1
+#define LOGIT_SIG_SETMASK 2
+
+/* sa_flags. Only the three that change kernel behaviour are honoured; the rest
+ * are accepted and ignored, and which is which is stated here rather than left
+ * to be discovered.
+ *
+ * HONOURED: SA_RESETHAND (reset to SIG_DFL before the handler runs -- this is
+ * what signal() is specified with), SA_NODEFER (do not add the signal itself to
+ * the mask for the duration), SA_RESTART (a syscall interrupted by this handler
+ * is restarted rather than returning EINTR -- see the note on SIG_E_INTR).
+ *
+ * IGNORED: SA_SIGINFO (there is no siginfo_t here; a three-argument handler is
+ * called with rsi = 0 and rdx = the struct logit_sigctx, so it can read the
+ * machine state but not a siginfo), SA_NOCLDSTOP and SA_NOCLDWAIT (there is no
+ * job control to report and zombies are always reapable). */
+#define LOGIT_SA_NOCLDSTOP 0x00000001
+#define LOGIT_SA_NOCLDWAIT 0x00000002
+#define LOGIT_SA_SIGINFO   0x00000004
+#define LOGIT_SA_RESTART   0x10000000
+#define LOGIT_SA_NODEFER   0x40000000
+#define LOGIT_SA_RESETHAND 0x80000000
+
+/* SYS_SIG* results. */
+#define SIG_E_ARG    (-1)   /* bad signal number, bad `how`, or an unusable pointer */
+#define SIG_E_SRCH   (-2)   /* no such process */
+#define SIG_E_PERM   (-3)   /* refused: the protected console process */
+#define SIG_E_NOSYS  (-5)   /* the call exists but this case is not implemented */
+
+/* THE INTERRUPTED-SYSCALL RETURN, and it is deliberately not -1.
+ *
+ * A blocking call that is cut short by a delivered signal must be
+ * distinguishable from one that failed, or a shell cannot tell "Ctrl+C" from
+ * "no such child" -- and -1 already means the latter everywhere in this ABI. So
+ * interrupted returns its own value, and mini-libc turns it into errno EINTR.
+ * The numeric value is -EINTR with EINTR = 4, so a reader who knows the errno
+ * table can recognise it on sight. */
+#define SIG_E_INTR   (-4)
+
+/* SYS_SIGQUERY selectors. */
+#define SIGQ_DELIVERED 0   /* frames pushed onto a user stack since boot */
+#define SIGQ_RETURNED  1   /* SYS_SIGRETURNs that restored one; must equal the above
+                            * once every handler has returned -- a leak of one is a
+                            * frame that was pushed and never unwound */
+#define SIGQ_POSTED    2   /* signals raised (delivered, ignored or defaulted) */
+#define SIGQ_DEFAULTED 3   /* signals that took their default action */
+#define SIGQ_DROPPED   4   /* refused for lack of user stack, or a bad frame */
+#define SIGQ_PENDING   5   /* the calling process's pending set right now */
+#define SIGQ_BLOCKED   6   /* the calling process's blocked mask right now */
+#define SIGQ_FPUSAVED  7   /* frames whose FXSAVE area was actually written.
+                            * The negative control (SIGNAL_NO_FPU) builds a kernel
+                            * that delivers correctly and leaves this at 0. */
+
+/* What ring 3 hands SYS_SIGACTION. `unsigned long` throughout so tools/gen_abi.py
+ * can lay it out and AetherScript can build one -- the same rule struct
+ * logit_thread_spec follows. */
+struct logit_sigaction {
+    unsigned long handler;   /* ring-3 address. 0 = SIG_DFL, 1 = SIG_IGN. */
+    unsigned long mask;      /* additionally blocked while the handler runs */
+    unsigned long flags;     /* LOGIT_SA_* */
+    unsigned long restorer;  /* REQUIRED, and 0 is refused. See below. */
+};
+
+/* WHY A RESTORER IS REQUIRED, rather than the kernel supplying a trampoline.
+ *
+ * A handler is an ordinary C function: it ends in `ret`, so something must be
+ * at [rsp] when it starts, and that something has to execute `int 0x80` with
+ * rax = SYS_SIGRETURN. On Linux that code lives in the VDSO. There is no VDSO
+ * here, and the two alternatives are both worse: writing the instructions into
+ * the frame means executing off the user stack, which is exactly what the NX
+ * bit on a data page exists to stop; and mapping a kernel-owned executable page
+ * into every address space is page-table work in c/kernel/mm/ for four
+ * instructions.
+ *
+ * So ring 3 supplies the four instructions, the same way Linux did with
+ * SA_RESTORER before the VDSO existed. mini-libc fills this in for every
+ * sigaction() and signal() call, so no ordinary program ever sees it; a raw
+ * SYS_SIGACTION with restorer 0 is refused with SIG_E_ARG rather than delivered
+ * to a handler that would return into nothing. */
+
+/* The machine state the kernel pushes, and SYS_SIGRETURN restores.
+ *
+ * LAYOUT ON THE USER STACK at the moment the handler starts:
+ *
+ *      rsp+0                     the restorer address (the handler's `ret` target)
+ *      rsp+8                     struct logit_sigctx      (16-byte aligned)
+ *      rsp+8+sizeof(sigctx)      512 bytes of FXSAVE area (16-byte aligned)
+ *
+ * rsp % 16 == 8 at handler entry, which is what the SysV ABI guarantees after a
+ * `call` -- a handler compiled with SSE will use `movaps` on its own locals and
+ * getting this wrong is a #GP inside the handler.
+ *
+ * The struct's size is a multiple of 16 on purpose, so the FXSAVE area that
+ * follows it lands aligned without padding arithmetic. rdi = the signal number,
+ * rsi = 0 (no siginfo), rdx = &this struct.
+ *
+ * Field order is the order c/boot/isr.asm pushes them, so the copy in and out is
+ * a straight loop rather than fifteen assignments that can be mistyped. */
+struct logit_sigctx {
+    unsigned long r15, r14, r13, r12, r11, r10, r9, r8;
+    unsigned long rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    unsigned long rip, rflags, rsp;
+    unsigned long oldmask;   /* the blocked mask to restore on sigreturn */
+    unsigned long signo;
+    unsigned long err;       /* the fault's error code, 0 for an async signal */
+    unsigned long trapno;    /* the CPU vector, or 0 */
+    unsigned long cr2;       /* the faulting address, or 0 */
+    unsigned long fpstate;   /* user address of the 512-byte FXSAVE area, or 0
+                              * in a build with the FPU state left out (which is
+                              * the negative control, and nothing else) */
+};
+
+
+/* ===========================================================================
+ * SERVER SOCKETS (140-149) -- answering a connection, not only making one.
+ *
+ * WHAT WAS MISSING, PLAINLY. Everything above this block that touches the
+ * network is a CLIENT. SYS_SOCK_OPEN takes a host name and a port and connects
+ * outward; SYS_HTTP_GET fetches; the TLS stack verifies a server's certificate
+ * against 130 roots. There was no listen, no accept, and no passive open
+ * anywhere in c/net/transport/tcp.c -- so a machine with DHCP, IPv6, four NIC
+ * drivers and HTTP/2 could not serve one byte to anybody. Not a web server, not
+ * a debug port, not a file share.
+ *
+ * THESE ARE BSD SOCKETS, ON PURPOSE. The names, the argument order and the
+ * error convention are the ones every piece of network software already
+ * assumes, because the point of this block is software that was NOT written for
+ * LogitOS. A private "listen API" would have been less work and would have made
+ * every future port a rewrite.
+ *
+ * AN ACCEPTED CONNECTION IS AN ORDINARY FILE DESCRIPTOR. SYS_ACCEPT returns an
+ * fd that SYS_READ, SYS_WRITE, SYS_CLOSE, SYS_DUP2 and SYS_SETNB all work on,
+ * and that a child inherits across SYS_FORK. That is the whole difference
+ * between a socket userland can hand to something else and a socket that needs
+ * its own I/O calls -- with the second kind, `cat </dev/tcp` and a CGI-style
+ * fork+exec are both impossible.
+ *
+ * THE BLOCKING MODEL, AND THE HONEST PART.
+ *
+ *   SYS_ACCEPT and a read() on a connected socket BLOCK by default: the calling
+ *   thread parks on a kernel wait queue, unlinked from the scheduler's run
+ *   ring, and is woken by the segment that completes the handshake or delivers
+ *   the data. It does not spin and it does not hold the big kernel lock.
+ *
+ *   SYS_SETNB on the fd makes both return LSK_E_AGAIN instead. That is the same
+ *   O_NONBLOCK a pipe already honours in c/kernel/exec/file.c -- deliberately
+ *   the same word and the same code, because a second convention for "would
+ *   block" is exactly the kind of thing that costs somebody an afternoon.
+ *
+ *   THERE IS NO select/poll/epoll IN THIS ABI, and this block does not add half
+ *   of one. So a server CANNOT wait on several connections at once. The model
+ *   that works today is a THREAD PER CONNECTION: SYS_THREAD_CREATE landed
+ *   before this did, an accept loop spawning a thread per accepted fd is the
+ *   shape /bin/httpd uses, and each thread blocks on its own descriptor. The
+ *   ceiling is real and is written down where it will be read: about thirteen
+ *   threads per process (see LOGIT_THREADS_MAX above -- VMA_MAXAREA, not the
+ *   thread table, is the binding limit), and eight connection slots reserved
+ *   for the client path out of thirty-two. A server that needs hundreds of
+ *   idle connections needs poll(), and poll() is not this block.
+ *
+ * THE OTHER CONSTRAINT, SAID BEFORE SOMEBODY DISCOVERS IT. Inbound segments are
+ * delivered by the NIC interrupt (c/net/core/net.c routes RX through
+ * SOFTIRQ_NET), so a SYN and a request arrive whether or not the window manager
+ * is running. But TCP's TIMERS -- retransmission, delayed-ACK flush, TIME_WAIT
+ * reaping, and the drain that pushes queued response bytes onto the wire when
+ * the window opens -- run in tcp_poll(), which is called only from net_poll(),
+ * which is called from the window manager's render loop. A response therefore
+ * moves at the WM's cadence (~100 Hz), and on a machine whose WM is wedged a
+ * server accepts connections and answers them slowly or not at all. That is a
+ * property of the whole network stack, not of this block, and fixing it means
+ * giving the network a timer of its own.
+ * ======================================================================== */
+
+#define SYS_SOCKET      140 /* (domain, type, protocol) -> fd, or LSK_E_*.
+                             * domain = AF_INET, type = SOCK_STREAM|SOCK_DGRAM,
+                             * protocol 0. No fd is bound to anything yet. */
+#define SYS_BIND        141 /* (fd, const struct logit_sockaddr *, len) -> 0 */
+#define SYS_LISTEN      142 /* (fd, backlog) -> 0. backlog is clamped to 8. */
+#define SYS_ACCEPT      143 /* (fd, struct logit_sockaddr *peer, timeout_ms)
+                             * -> a NEW connected fd, or LSK_E_*.
+                             * `peer` may be NULL. timeout_ms is the deadline
+                             * for the blocking form: 0 means "the default",
+                             * which is to wait indefinitely by re-parking; a
+                             * non-blocking fd (SYS_SETNB) ignores it and
+                             * returns LSK_E_AGAIN at once. */
+#define SYS_GETSOCKNAME 144 /* (fd, struct logit_sockaddr *out, 0) -> 0.
+                             * The local address+port -- which is how a caller
+                             * that bound port 0 learns what it actually got. */
+#define SYS_SETSOCKOPT  145 /* (fd, (level<<16)|optname, value) -> 0.
+                             * Value-in-a-register rather than the POSIX
+                             * pointer+length: every option here is one int, and
+                             * a pointer would be a copy-in for no gain. */
+#define SYS_SHUTDOWN    146 /* (fd, how) -> 0. how = SHUT_WR sends the FIN and
+                             * KEEPS RECEIVING -- an HTTP/1.0 server saying "the
+                             * body ends here" without discarding the peer's
+                             * reply. SHUT_RD/SHUT_RDWR are accepted. */
+#define SYS_RECVFROM    147 /* (fd, struct logit_dgram *) -> bytes, or LSK_E_*.
+                             * UDP only. Fills `addr` with the sender. */
+#define SYS_SENDTO      148 /* (fd, const struct logit_dgram *) -> bytes sent */
+#define SYS_SOCKSTAT    149 /* (what) -> one SOCKSTAT_* counter below, or -1.
+                             * Observability, and the reason a test can assert
+                             * that a limit FIRED rather than assert that the
+                             * machine did not crash. */
+
+/* Address families and socket types. Only what is implemented is defined: an
+ * AF_INET6 constant this kernel would refuse is worse than no constant. */
+#define LOGIT_AF_INET    2
+#define LOGIT_SOCK_STREAM 1
+#define LOGIT_SOCK_DGRAM  2
+
+/* An address. PORT AND ADDR ARE HOST ORDER, like every other IP in this ABI
+ * (see SYS_NET_PING and struct logit_netinfo) -- NOT network order as in
+ * <netinet/in.h>. That is a deliberate break with BSD: this ABI has used host
+ * order for an IPv4 address everywhere since M9, and one struct that disagreed
+ * would be a byte-swap bug in whichever direction the caller guessed. */
+struct logit_sockaddr {
+    unsigned short family;      /* LOGIT_AF_INET */
+    unsigned short port;        /* host order */
+    unsigned int   addr;        /* host order: a<<24|b<<16|c<<8|d, 0 = any */
+};
+
+/* One datagram, for SYS_RECVFROM / SYS_SENDTO. A struct rather than four
+ * registers because the kernel takes at most three arguments after the call
+ * number and a datagram needs buffer, length and address. */
+struct logit_dgram {
+    void                 *buf;
+    int                   len;      /* capacity on recv, byte count on send */
+    int                   flags;    /* reserved, must be 0 */
+    struct logit_sockaddr addr;     /* filled on recv, the destination on send */
+};
+
+/* setsockopt levels and options. */
+#define LOGIT_SOL_SOCKET  1
+#define LOGIT_SO_REUSEADDR 2   /* rebind a port a previous listener left behind.
+                                * On this stack a listener is torn down
+                                * synchronously and holds no TIME_WAIT of its
+                                * own, so this is accepted and recorded for
+                                * source compatibility and changes little; it
+                                * is NOT silently ignored -- SYS_SOCKSTAT
+                                * reports it, so a port that is genuinely in
+                                * use still fails loudly. */
+#define LOGIT_SO_RCVTIMEO 3    /* milliseconds; 0 = wait indefinitely */
+#define LOGIT_TCP_NODELAY 4    /* level LOGIT_SOL_SOCKET here too: this ABI has
+                                * one level, because IPPROTO_TCP as a second
+                                * one would buy a namespace nothing needs. */
+
+/* shutdown() directions, the POSIX numbers. */
+#define LOGIT_SHUT_RD   0
+#define LOGIT_SHUT_WR   1
+#define LOGIT_SHUT_RDWR 2
+
+/* SYS_SOCKSTAT selectors. Every one of these is a counter the TCP layer keeps
+ * anyway (c/net/transport/tcp.c tcp_server_stats); publishing them is what
+ * lets a test distinguish "the backlog limit refused this connection" from
+ * "the connection vanished". */
+#define SOCKSTAT_SYN_RECEIVED    0
+#define SOCKSTAT_ACCEPTED        1
+#define SOCKSTAT_REFUSED_BACKLOG 2   /* the listener's queue was full */
+#define SOCKSTAT_REFUSED_SLOTS   3   /* the client reserve stopped a passive open */
+#define SOCKSTAT_REFUSED_NOPORT  4   /* a SYN for a port nobody listens on */
+#define SOCKSTAT_FREE_CONNS      5   /* connection slots still available */
+#define SOCKSTAT_LISTENERS       6   /* listening ports right now */
+
+/* SYS_SOCKET..SYS_SENDTO results. Distinct codes, for the reason the settings
+ * and thread blocks both give: one "-1" covering "bad descriptor", "port taken"
+ * and "nothing to accept yet" makes the third indistinguishable from the first
+ * two, and the third is not even an error. */
+#define LSK_E_ARG    (-1)   /* bad fd, unsupported family/type, malformed address */
+#define LSK_E_AGAIN  (-2)   /* would block: nothing to accept, no datagram yet.
+                             * Same value SYS_READ uses on a non-blocking pipe. */
+#define LSK_E_INUSE  (-3)   /* that port is already bound */
+#define LSK_E_FULL   (-4)   /* no listener slot, no fd, or no connection slot */
+#define LSK_E_STATE  (-5)   /* listen on a connected socket, accept on an
+                             * unbound one, sendto on a stream -- the call is
+                             * fine, the socket is in the wrong state for it */
+#define LSK_E_NET    (-6)   /* no NIC is up */
+
 #endif /* LOGIT_ABI_H */
