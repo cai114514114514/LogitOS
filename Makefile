@@ -400,14 +400,29 @@ BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 
-# The shared libc arena (24 MiB, sized as a JS heap) ran dry while LibCSS parsed
-# github.com's ~3 MiB of stylesheets: malloc started returning NULL mid-sheet, the
-# tail of the CSS (incl. the marketing-header module) was silently dropped and the
-# page rendered unstyled. The browser is the only ENGINE_OBJ consumer, so it gets
-# its own malloc with a 96 MiB arena; every other app keeps the 24 MiB default.
+# The browser's heap. The shared libc arena (24 MiB, sized as a JS heap) ran dry
+# while LibCSS parsed github.com's ~3 MiB of stylesheets: malloc returned NULL
+# mid-sheet, the tail of the CSS was silently dropped and the page rendered
+# unstyled. That was answered by giving the browser its own malloc with a 96 MiB
+# arena -- and, because the arena was a .bss array and elf_load commits every
+# page of p_memsz, by making the machine hold 96 MiB of RAM for it from launch,
+# against a heap that actually peaks in the single-digit MiB on most pages.
+#
+# The arena is now SYS_MMAP'd, so these two numbers mean different things and
+# only the second one costs memory:
+#   ARENA_SIZE    address space reserved. Free until touched, so it is set by
+#                 what a page could conceivably need, not by what RAM allows.
+#                 The kernel's mmap window (MM_MMAP_BASE..MM_MMAP_TOP) is
+#                 496 MiB, so this is most of it and still leaves room.
+#   ARENA_COMMIT  the ceiling on what may actually be occupied. On a 512 MiB
+#                 machine the binding constraint is not this number but the live
+#                 free-RAM check in malloc.c (ARENA_RAM_RESERVE); this is the
+#                 backstop for a machine large enough that RAM never bites.
+# Every other app keeps the 24 MiB default, which is now also 24 MiB of reserved
+# address space rather than 24 MiB of resident RAM.
 $(BUILD)/browserobj/malloc_big.o: c/apps/libc/src/malloc.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -DARENA_SIZE=100663296u -c $< -o $@
+	$(CC) $(UCFLAGS) -DARENA_SIZE=402653184u -DARENA_COMMIT=335544320u -c $< -o $@
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240
@@ -2868,6 +2883,12 @@ clean:
 # targets were deleted by a whole-file overwrite from a concurrent line three
 # times in one afternoon, once by me.
 -include tests/loader.mk
+
+# The ring-3 heap's COST: test-arena (the .bss/commit-bound gate plus its two
+# negative controls), bench-arena (per-page heap over the cssweb corpus) and
+# bench-arena-js (a whole code-split app in one runtime). Own fragment for the
+# same reason as every other one above.
+-include tests/mem.mk
 
 # --- aui widget toolkit ------------------------------------------------------
 #
