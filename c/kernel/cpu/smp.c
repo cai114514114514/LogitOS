@@ -23,6 +23,7 @@
 #include "percpu.h"
 #include "sched.h"
 #include "spinlock.h"
+#include "prot.h"       /* cpu_prot_report: EFER/CR4 are per-core, so this is too */
 
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
@@ -165,6 +166,11 @@ static void ap_entry(void)
     lapic_timer_init(32, LAPIC_AP_TIMER_COUNT + (uint32_t)idx * (LAPIC_AP_TIMER_COUNT / 8));
     __atomic_add_fetch(&g_online, 1, __ATOMIC_SEQ_CST);
     kprintf("[smp] CPU %d apic_id=%d online\n", idx, (int)lapic_id());
+    /* EFER and CR4 are PER-CORE. An AP whose trampoline missed the NXE/SMEP
+     * writes would run ring-3 code with no NX and no SMEP while the BSP's boot
+     * line claimed both were on, and nothing would ever say so. Reported per
+     * core so the claim is made once per core that has to honour it. */
+    cpu_prot_report("ap");
     ap_ack = 1;
 
     /* Park until the BSP's sched_init() has built the global ring. The timer above

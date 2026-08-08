@@ -41,10 +41,38 @@ pm32:
     mov cr4, eax
     mov eax, [ARGS]                        ; kernel CR3 (PML4 phys, < 4 GiB)
     mov cr3, eax
+    ; EFER: LME, and NXE if this CPU has NX.
+    ;
+    ; NXE is set HERE -- before CR0.PG below -- and not later in lm64, because
+    ; the CR3 just loaded is the LIVE kernel PML4 and the BSP has already
+    ; launched user programs by the time smp_init() runs. Those page tables
+    ; already carry bit 63 on every non-executable user page. An AP that
+    ; enabled paging with NXE still clear would see bit 63 as RESERVED and take
+    ; a PF_RSVD fault on the first user page it touched -- on another core,
+    ; after boot, which is the worst possible place to discover an ordering
+    ; bug. There is no window here at all: the bit is on before paging is.
+    ;
+    ; CPUID-gated for the same reason as the BSP (long.asm): writing a reserved
+    ; EFER bit on a CPU without NX is a #GP.
+    mov eax, 0x80000000
+    cpuid
+    cmp eax, 0x80000001
+    jb .no_nx
+    mov eax, 0x80000001
+    cpuid
+    test edx, 1 << 20                      ; NX
+    jz .no_nx
+    mov ecx, 0xC0000080                    ; EFER
+    rdmsr
+    or  eax, (1 << 8) | (1 << 11)          ; LME | NXE
+    wrmsr
+    jmp .efer_done
+.no_nx:
     mov ecx, 0xC0000080                    ; EFER
     rdmsr
     or  eax, 1 << 8                        ; LME
     wrmsr
+.efer_done:
     mov eax, cr0
     or  eax, 1 << 31                       ; CR0.PG
     or  eax, 1 << 0                         ; keep PE
@@ -70,6 +98,24 @@ lm64:
     or  rax, (1 << 9)
     or  rax, (1 << 10)
     mov cr4, rax
+    ; SMEP, same as the BSP (long.asm). CR4 is PER-CORE, so an AP that skipped
+    ; this would run the whole kernel without the protection the BSP has -- and
+    ; would do it silently, since nothing reads CR4 back. c/kernel/cpu/prot.c's
+    ; boot report prints the bits as observed on each core for exactly that
+    ; reason. SMAP is deliberately left clear here too; see prot.c.
+    xor eax, eax
+    cpuid
+    cmp eax, 7
+    jb .no_smep
+    mov eax, 7
+    xor ecx, ecx
+    cpuid
+    test ebx, 1 << 7                       ; SMEP
+    jz .no_smep
+    mov rax, cr4
+    or  rax, (1 << 20)                     ; CR4.SMEP
+    mov cr4, rax
+.no_smep:
     fninit
     mov rsp, [ARGS + 8]                    ; this AP's stack
     sub rsp, 8

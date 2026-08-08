@@ -71,6 +71,62 @@ long_mode_start:
     ; does the migration.
     ; ----------------------------------------------------------------------
 
+    ; --- the ring-3 protection bits (EFER.NXE, CR4.SMEP) -------------------
+    ; Set HERE, in the same place as the other CPU-mode bits, and not from C,
+    ; for one reason: EFER.NXE must be on before ANY page-table entry carries
+    ; bit 63. With NXE clear, bit 63 is a RESERVED bit, and a PTE that sets it
+    ; faults with PF_RSVD -- which mm_fault_classify() correctly refuses to
+    ; handle, so the process dies with no diagnosis. Enabling the bit before
+    ; the first user page can exist makes that ordering unrepresentable rather
+    ; than merely observed to be true.
+    ;
+    ; Both are CPUID-gated. A CPU without NX (or QEMU's default `qemu64` model
+    ; with the feature masked off) must not have its EFER poked at a reserved
+    ; bit, and elf.c asks cpu_prot_nx() -- which reads the SAME CPUID bit --
+    ; before it sets bit 63 on anything. The two answers cannot disagree.
+    ;
+    ; CPUID clobbers eax/ebx/ecx/edx and leaves edi (the Multiboot2 info
+    ; pointer, still live for the kernel_main call below) untouched.
+
+    ; NX: CPUID.0x80000001:EDX bit 20 -> EFER.NXE (bit 11).
+    mov eax, 0x80000000
+    cpuid
+    cmp eax, 0x80000001         ; is the extended leaf implemented at all?
+    jb .no_nx
+    mov eax, 0x80000001
+    cpuid
+    test edx, 1 << 20           ; NX
+    jz .no_nx
+    mov ecx, 0xC0000080         ; EFER
+    rdmsr
+    or  eax, 1 << 11            ; EFER.NXE
+    wrmsr
+.no_nx:
+
+    ; SMEP: CPUID.7:EBX bit 7 -> CR4.SMEP (bit 20). Stops ring 0 executing any
+    ; page whose effective U/S is user. The kernel never does that on purpose,
+    ; so this bit costs nothing and turns "the kernel jumped into a user buffer"
+    ; from a silent full compromise into a fault.
+    ;
+    ; SMAP (CR4 bit 21) is deliberately NOT set here. It would fault the kernel
+    ; on every DIRECT read/write of a user pointer, and this kernel does that in
+    ; ~70 places across files this line does not own. See c/kernel/cpu/prot.c
+    ; for the audit and the reason it stays off.
+    xor eax, eax
+    cpuid
+    cmp eax, 7                  ; is leaf 7 implemented?
+    jb .no_smep
+    mov eax, 7
+    xor ecx, ecx
+    cpuid
+    test ebx, 1 << 7            ; SMEP
+    jz .no_smep
+    mov rax, cr4
+    or  rax, (1 << 20)          ; CR4.SMEP
+    mov cr4, rax
+.no_smep:
+    ; ----------------------------------------------------------------------
+
     ; Decode CPUID once, before anything can race, and pick the crypto
     ; backends. Pure CPUID + a pointer store: no serial, heap, IDT or timer
     ; needed, which is why it can run this early. Reporting happens later,
