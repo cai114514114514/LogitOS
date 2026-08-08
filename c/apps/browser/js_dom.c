@@ -3036,8 +3036,18 @@ static const JSCFunctionListEntry doc_funcs[] = {
  * they did not make. Weak, the same pattern js_page.c already uses for
  * js_webapi_install: a build without js_reflect.o links and simply has no
  * reflected attributes. The browser and tests/wpt.mk both glob js_*.c, so the
- * shipping browser and the measurement always have it. */
-__attribute__((weak)) void js_reflect_install(
+ * shipping browser and the measurement always have it.
+ *
+ * SPELLED `__weak__`, NOT `weak`. c/apps/libc/include/features.h:4 defines a
+ * lowercase `weak` as __attribute__((__weak__)) for musl's own sources, and the
+ * browser and QuickJS builds pull that header into every translation unit with
+ * -include -- so the plain spelling expands to
+ * __attribute__((__attribute__((__weak__)))) and the error points at this line
+ * with no mention of the macro. 49b5039 fixed the identical trap in
+ * c/apps/libc/src/pthread.c two hours before this hit, and its message is worth
+ * reading: the host test builds do not use that -include, so this compiles
+ * everywhere except the one target that ships. */
+__attribute__((__weak__)) void js_reflect_install(
     JSContext *ctx, JSValueConst html_proto,
     JSValueConst (*proto_for)(void *, const char *), void *ud);
 
