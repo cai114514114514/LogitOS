@@ -142,6 +142,17 @@ Meminfo = layout("logit_meminfo", 104, [
     ["mmap_reserved", 96, 8, "u"]
 ])
 
+Procinfo = layout("logit_procinfo", 184, [
+    ["pid", 0, 4, "i"],
+    ["ppid", 4, 4, "i"],
+    ["state", 8, 4, "i"],
+    ["tid", 12, 4, "i"],
+    ["flags", 16, 4, "i"],
+    ["nfds", 20, 4, "i"],
+    ["name", 24, 32, "s"],
+    ["cwd", 56, 128, "s"]
+])
+
 Setting = layout("logit_setting", 264, [
     ["key", 0, 48, "s"],
     ["label", 48, 40, "s"],

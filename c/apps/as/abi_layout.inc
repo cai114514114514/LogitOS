@@ -392,6 +392,41 @@ _Static_assert(offsetof(struct logit_meminfo, mmap_reserved) == 96,
 _Static_assert(sizeof(((struct logit_meminfo *)0)->mmap_reserved) == 8,
                "abi.as is stale: logit_meminfo.mmap_reserved changed width -- run tools/gen_abi.py --write");
 
+_Static_assert(sizeof(struct logit_procinfo) == 184,
+               "abi.as is stale: sizeof(struct logit_procinfo) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, pid) == 0,
+               "abi.as is stale: logit_procinfo.pid moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->pid) == 4,
+               "abi.as is stale: logit_procinfo.pid changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, ppid) == 4,
+               "abi.as is stale: logit_procinfo.ppid moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->ppid) == 4,
+               "abi.as is stale: logit_procinfo.ppid changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, state) == 8,
+               "abi.as is stale: logit_procinfo.state moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->state) == 4,
+               "abi.as is stale: logit_procinfo.state changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, tid) == 12,
+               "abi.as is stale: logit_procinfo.tid moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->tid) == 4,
+               "abi.as is stale: logit_procinfo.tid changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, flags) == 16,
+               "abi.as is stale: logit_procinfo.flags moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->flags) == 4,
+               "abi.as is stale: logit_procinfo.flags changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, nfds) == 20,
+               "abi.as is stale: logit_procinfo.nfds moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->nfds) == 4,
+               "abi.as is stale: logit_procinfo.nfds changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, name) == 24,
+               "abi.as is stale: logit_procinfo.name moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->name) == 32,
+               "abi.as is stale: logit_procinfo.name changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_procinfo, cwd) == 56,
+               "abi.as is stale: logit_procinfo.cwd moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_procinfo *)0)->cwd) == 128,
+               "abi.as is stale: logit_procinfo.cwd changed width -- run tools/gen_abi.py --write");
+
 _Static_assert(sizeof(struct logit_setting) == 264,
                "abi.as is stale: sizeof(struct logit_setting) changed -- run tools/gen_abi.py --write");
 _Static_assert(offsetof(struct logit_setting, key) == 0,

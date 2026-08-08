@@ -214,9 +214,13 @@
  * has ALREADY been reallocated at this size when the event is delivered -- see
  * the SYS_GUI_WIN_* block below. Repaint everything; nothing you drew survived.
  *
- * Coalesced like motion, and for the same reason: a drag produces a stream of
- * sizes and only the newest one is true. An app that polls once per painted
- * frame therefore sees one resize per frame, not one per pointer sample. */
+ * NOT coalesced -- unlike EV_MOUSE_MOVE, which the event ring merges onto an
+ * unread sample of its own type. It does not need to be: the window manager
+ * reallocates a canvas at most once every RESIZE_APPLY_MS during a drag (see
+ * wm.c), so a resize that lasts a second delivers about eight of these, not one
+ * per pointer packet. The throttle is upstream of the queue on purpose, because
+ * the expensive part is the reallocation, and a coalescing queue would have
+ * done the reallocations anyway and then thrown the events away. */
 #define EV_RESIZE     9
 
 /* Modifier keys held when the event was generated (struct logit_event.mods).
@@ -498,6 +502,36 @@ struct logit_meminfo {
     unsigned long long mmap_reserved;    /* bytes this process has reserved */
 };
 
+/* ---- the process table, and ending a process ------------------------------
+ * (struct logit_procinfo *buf, int max) -> entries filled, or -1.
+ *
+ * SYS_SYSINFO already prints a "process list", but it is formatted TEXT and it
+ * lists the window manager's GUI windows -- not the PCB table. A task manager
+ * cannot act on either of those: you cannot kill a line of prose, and a shell
+ * or a forked child has no window to be listed under. So this is the process
+ * table itself, as a struct.
+ *
+ * WHAT IS DELIBERATELY NOT IN THIS STRUCT, and why it is not an oversight:
+ * per-process CPU time, resident memory, disk bytes and network bytes. This
+ * kernel accounts NONE of the four per process today --
+ *   - the scheduler counts DISPATCHES per thread (sched.c `slices`), never time,
+ *     and offers no thread-by-id lookup, so a proc cannot even reach its own;
+ *   - pmm/rmap refcount every frame but nothing sums them per address space,
+ *     and the only per-cr3 memory number that exists (vma_reserved_bytes) counts
+ *     mmap reservations, which no GUI app makes -- it reads 0 for all of them;
+ *   - there is no I/O or per-socket byte accounting anywhere.
+ * Each gap is closable, and each closes in a file this change does not own. A
+ * column filled with a plausible-looking number nobody measured is worse than
+ * an absent column, so they are absent. See proc_list() in c/kernel/exec/proc.c.
+ */
+#define SYS_PROCS       95
+/* (pid) -> 0 on acceptance, else a negative LOGIT_KILL_* code. ASYNCHRONOUS:
+ * acceptance means the process is marked, not that it has already died. See the
+ * long comment above proc_kill() in c/kernel/exec/proc.c for why killing a
+ * thread from outside its own control flow is not safe here, and what the mark
+ * costs a process that is not being killed (one load and one branch). */
+#define SYS_KILL        96
+
 /* ---- window management: resize, zoom, minimise ----------------------------
  *
  * Until these, the entire verb vocabulary a user had over a window was DRAG and
@@ -534,6 +568,39 @@ struct logit_meminfo {
 #define WINS_MINIMIZED 3   /* -> 1 if hidden to the dock, else 0 */
 #define WINS_SET_ZOOM  4   /* arg: 0 restore, 1 maximize, -1 toggle -> new state */
 #define WINS_SET_MIN   5   /* arg: 1 minimise, 0 restore -> new state */
+
+/* logit_procinfo.state -- mirrors enum proc_state in c/kernel/exec/proc.h. */
+#define LOGIT_PROC_RUNNING   1
+#define LOGIT_PROC_ZOMBIE    2
+
+/* logit_procinfo.flags */
+#define LOGIT_PROC_GUI       0x01   /* owns a window (a GUI app, not a CLI proc) */
+#define LOGIT_PROC_DYING     0x02   /* a kill was accepted; it has not exited yet */
+#define LOGIT_PROC_SELF      0x04   /* this is the calling process */
+/* SYS_KILL would refuse this one. Published by the kernel rather than
+ * re-derived by the caller on purpose: the rule for "which process must not be
+ * killed" then exists in exactly one place, so a UI can grey the control out
+ * BEFORE the click and can never disagree with the answer it would get after
+ * it. Two copies of a safety rule is one copy too many. */
+#define LOGIT_PROC_PROTECTED 0x08
+
+/* proc_kill() results. Distinct codes, so a caller can say WHY it refused
+ * rather than just failing -- a task manager that says "no" without a reason is
+ * indistinguishable from one that is broken. */
+#define LOGIT_KILL_OK         0
+#define LOGIT_KILL_ENOENT    (-1)   /* no process with that pid */
+#define LOGIT_KILL_PROTECTED (-2)   /* pid <= 1: the console shell / the compositor */
+#define LOGIT_KILL_ZOMBIE    (-3)   /* already exited, waiting to be reaped */
+
+struct logit_procinfo {
+    int  pid, ppid;
+    int  state;        /* LOGIT_PROC_RUNNING / LOGIT_PROC_ZOMBIE */
+    int  tid;          /* scheduler thread backing it, -1 if none */
+    int  flags;        /* LOGIT_PROC_* */
+    int  nfds;         /* open file descriptors */
+    char name[32];
+    char cwd[128];
+};
 
 /* ---- the clipboard, and notifications -------------------------------------
  *
@@ -816,69 +883,6 @@ struct logit_setting {
     int  type;           /* LOGIT_SET_*  */
     int  group;          /* LOGIT_SETG_* */
     int  lo, hi;         /* bounds for INT/COLOR; 0,0 otherwise */
-};
-
-/* ---- the process table, and ending a process ------------------------------
- * (struct logit_procinfo *buf, int max) -> entries filled, or -1.
- *
- * SYS_SYSINFO already prints a "process list", but it is formatted TEXT and it
- * lists the window manager's GUI windows -- not the PCB table. A task manager
- * cannot act on either of those: you cannot kill a line of prose, and a shell
- * or a forked child has no window to be listed under. So this is the process
- * table itself, as a struct.
- *
- * WHAT IS DELIBERATELY NOT IN THIS STRUCT, and why it is not an oversight:
- * per-process CPU time, resident memory, disk bytes and network bytes. This
- * kernel accounts NONE of the four per process today --
- *   - the scheduler counts DISPATCHES per thread (sched.c `slices`), never time,
- *     and offers no thread-by-id lookup, so a proc cannot even reach its own;
- *   - pmm/rmap refcount every frame but nothing sums them per address space,
- *     and the only per-cr3 memory number that exists (vma_reserved_bytes) counts
- *     mmap reservations, which no GUI app makes -- it reads 0 for all of them;
- *   - there is no I/O or per-socket byte accounting anywhere.
- * Each gap is closable, and each closes in a file this change does not own. A
- * column filled with a plausible-looking number nobody measured is worse than
- * an absent column, so they are absent. See proc_list() in c/kernel/exec/proc.c.
- */
-#define SYS_PROCS       95
-/* (pid) -> 0 on acceptance, else a negative LOGIT_KILL_* code. ASYNCHRONOUS:
- * acceptance means the process is marked, not that it has already died. See the
- * long comment above proc_kill() in c/kernel/exec/proc.c for why killing a
- * thread from outside its own control flow is not safe here, and what the mark
- * costs a process that is not being killed (one load and one branch). */
-#define SYS_KILL        96
-
-/* logit_procinfo.state -- mirrors enum proc_state in c/kernel/exec/proc.h. */
-#define LOGIT_PROC_RUNNING   1
-#define LOGIT_PROC_ZOMBIE    2
-
-/* logit_procinfo.flags */
-#define LOGIT_PROC_GUI       0x01   /* owns a window (a GUI app, not a CLI proc) */
-#define LOGIT_PROC_DYING     0x02   /* a kill was accepted; it has not exited yet */
-#define LOGIT_PROC_SELF      0x04   /* this is the calling process */
-/* SYS_KILL would refuse this one. Published by the kernel rather than
- * re-derived by the caller on purpose: the rule for "which process must not be
- * killed" then exists in exactly one place, so a UI can grey the control out
- * BEFORE the click and can never disagree with the answer it would get after
- * it. Two copies of a safety rule is one copy too many. */
-#define LOGIT_PROC_PROTECTED 0x08
-
-/* proc_kill() results. Distinct codes, so a caller can say WHY it refused
- * rather than just failing -- a task manager that says "no" without a reason is
- * indistinguishable from one that is broken. */
-#define LOGIT_KILL_OK         0
-#define LOGIT_KILL_ENOENT    (-1)   /* no process with that pid */
-#define LOGIT_KILL_PROTECTED (-2)   /* pid <= 1: the console shell / the compositor */
-#define LOGIT_KILL_ZOMBIE    (-3)   /* already exited, waiting to be reaped */
-
-struct logit_procinfo {
-    int  pid, ppid;
-    int  state;        /* LOGIT_PROC_RUNNING / LOGIT_PROC_ZOMBIE */
-    int  tid;          /* scheduler thread backing it, -1 if none */
-    int  flags;        /* LOGIT_PROC_* */
-    int  nfds;         /* open file descriptors */
-    char name[32];
-    char cwd[128];
 };
 
 #endif /* LOGIT_ABI_H */

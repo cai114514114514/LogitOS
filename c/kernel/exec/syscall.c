@@ -615,6 +615,12 @@ static void syscall_do(struct registers *r)
                                       (long)r->rsi, (long)r->rdx);
         return;
 
+    case SYS_PROCS:
+    case SYS_KILL:
+        r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
+                                        (long)r->rsi, (long)r->rdx);
+        return;
+
     /* Settings. Handled here and not in wm_gui_syscall because a CLI process
      * -- a shell script, an .as program, a future `defaults` coreutil -- has
      * every right to read and write the machine's configuration and has no
@@ -625,12 +631,6 @@ static void syscall_do(struct registers *r)
     case SYS_SETTING_CTL:
         r->rax = (uint64_t)settings_syscall((long)r->rax, (long)r->rdi,
                                             (long)r->rsi, (long)r->rdx);
-        return;
-
-    case SYS_PROCS:
-    case SYS_KILL:
-        r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
-                                        (long)r->rsi, (long)r->rdx);
         return;
 
     /* The clipboard and notifications are kernel services, not window-manager
