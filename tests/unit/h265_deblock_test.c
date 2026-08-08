@@ -21,13 +21,13 @@
 #include "h265.h"
 #include "h265_int.h"
 
-void h265_deblock_luma4(uint8_t *base, int dstep, int lstep,
-                        int beta, int tc, int no_p, int no_q);
-void h265_deblock_chroma_n(uint8_t *base, int dstep, int lstep, int n,
-                           int tc, int no_p, int no_q);
+void h265_deblock_luma4(uint16_t *base, int dstep, int lstep,
+                        int beta, int tc, int no_p, int no_q, int bd);
+void h265_deblock_chroma_n(uint16_t *base, int dstep, int lstep, int n,
+                           int tc, int no_p, int no_q, int bd);
 int  h265_bs(const bi_t *p, const bi_t *q, int tu_edge);
 int  h265_sao_edge_idx(int cur, int a, int b);
-int  h265_sao_band_idx(int sample, int band_position);
+int  h265_sao_band_idx(int sample, int band_position, int bd);
 int  h265_chroma_qp(int qpi);
 
 static int fails, checks;
@@ -37,55 +37,55 @@ static int fails, checks;
 
 /* An 8-wide by 4-tall test edge: base points at q0 of line 0. */
 #define STRIDE 16
-static void mk(uint8_t *buf, const int *pv, const int *qv)
+static void mk(uint16_t *buf, const int *pv, const int *qv)
 {
-    memset(buf, 0, STRIDE * 8);
+    memset(buf, 0, STRIDE * 8 * sizeof *buf);
     for (int l = 0; l < 4; l++)
         for (int k = 0; k < 4; k++) {
-            buf[l * STRIDE + 4 - 1 - k] = (uint8_t)pv[k];   /* p3..p0 at 0..3 */
-            buf[l * STRIDE + 4 + k] = (uint8_t)qv[k];
+            buf[l * STRIDE + 4 - 1 - k] = (uint16_t)pv[k];   /* p3..p0 at 0..3 */
+            buf[l * STRIDE + 4 + k] = (uint16_t)qv[k];
         }
 }
 #define BASE(buf) ((buf) + 4)
 
-static void test_flat(void)
+static void test_flat(int bd)
 {
-    uint8_t buf[STRIDE * 8], ref[STRIDE * 8];
+    uint16_t buf[STRIDE * 8], ref[STRIDE * 8];
     int pv[4] = { 90, 90, 90, 90 }, qv[4] = { 90, 90, 90, 90 };
     mk(buf, pv, qv);
     memcpy(ref, buf, sizeof buf);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, 64, 24, 0, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, 64, 24, 0, 0, bd);
     CHECK(memcmp(buf, ref, sizeof buf) == 0,
           "a constant edge must survive the strong filter untouched");
 
-    h265_deblock_chroma_n(BASE(buf), 1, STRIDE, 4, 24, 0, 0);
+    h265_deblock_chroma_n(BASE(buf), 1, STRIDE, 4, 24, 0, 0, bd);
     CHECK(memcmp(buf, ref, sizeof buf) == 0,
           "a constant edge must survive the chroma filter untouched");
 }
 
-static void test_no_filter_when_d_ge_beta(void)
+static void test_no_filter_when_d_ge_beta(int bd)
 {
-    uint8_t buf[STRIDE * 8], ref[STRIDE * 8];
+    uint16_t buf[STRIDE * 8], ref[STRIDE * 8];
     /* A strong ripple on both sides makes d large; with beta small the whole
      * segment is left alone. */
     int pv[4] = { 10, 200, 10, 200 }, qv[4] = { 10, 200, 10, 200 };
     mk(buf, pv, qv);
     memcpy(ref, buf, sizeof buf);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, 6, 24, 0, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, 6, 24, 0, 0, bd);
     CHECK(memcmp(buf, ref, sizeof buf) == 0, "d >= beta must skip the segment");
 }
 
-static void test_strong(void)
+static void test_strong(int bd)
 {
     /* A clean step, flat on both sides: dpq is 0, |p3-p0| and |q0-q3| are 0,
      * and |p0-q0| is small enough, so the strong filter runs. Every output is
      * hand-computed from 8.7.2.5.7. */
-    uint8_t buf[STRIDE * 8];
+    uint16_t buf[STRIDE * 8];
     int pv[4] = { 100, 100, 100, 100 };     /* p0 p1 p2 p3 */
     int qv[4] = { 108, 108, 108, 108 };
     int beta = 64, tc = 24;
     mk(buf, pv, qv);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, tc, 0, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, tc, 0, 0, bd);
 
     int p0 = 100, p1 = 100, p2 = 100, p3 = 100;
     int q0 = 108, q1 = 108, q2 = 108, q3 = 108;
@@ -96,7 +96,7 @@ static void test_strong(void)
     int wq1 = h265_clip3(q1 - 2 * tc, q1 + 2 * tc, (p0 + q0 + q1 + q2 + 2) >> 2);
     int wq2 = h265_clip3(q2 - 2 * tc, q2 + 2 * tc, (p0 + q0 + q1 + 3 * q2 + 2 * q3 + 4) >> 3);
     for (int l = 0; l < 4; l++) {
-        const uint8_t *r = buf + l * STRIDE;
+        const uint16_t *r = buf + l * STRIDE;
         CHECK(r[3] == wp0 && r[2] == wp1 && r[1] == wp2,
               "strong p side line %d: %d %d %d, want %d %d %d",
               l, r[3], r[2], r[1], wp0, wp1, wp2);
@@ -108,9 +108,9 @@ static void test_strong(void)
 
     /* The same step with tc = 1 must be clamped to +-2 around the original. */
     mk(buf, pv, qv);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, 1, 0, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, 1, 0, 0, bd);
     for (int l = 0; l < 4; l++) {
-        const uint8_t *r = buf + l * STRIDE;
+        const uint16_t *r = buf + l * STRIDE;
         for (int k = 1; k <= 3; k++)
             CHECK(abs(r[4 - k] - 100) <= 2, "tc clamp on p%d", k - 1);
         for (int k = 0; k <= 2; k++)
@@ -118,16 +118,16 @@ static void test_strong(void)
     }
 }
 
-static void test_weak(void)
+static void test_weak(int bd)
 {
     /* A step too large for the strong decision (|p0-q0| >= (5*tc+1)>>1) but
      * with d < beta, so the weak filter runs. */
-    uint8_t buf[STRIDE * 8];
+    uint16_t buf[STRIDE * 8];
     int pv[4] = { 100, 100, 100, 100 };
     int qv[4] = { 130, 130, 130, 130 };
     int beta = 64, tc = 4;
     mk(buf, pv, qv);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, tc, 0, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, tc, 0, 0, bd);
 
     int p0 = 100, p1 = 100, p2 = 100, q0 = 130, q1 = 130, q2 = 130;
     int delta = (9 * (q0 - p0) - 3 * (q1 - p1) + 8) >> 4;
@@ -136,7 +136,7 @@ static void test_weak(void)
     int dp = h265_clip3(-(tc >> 1), tc >> 1, (((p2 + p0 + 1) >> 1) - p1 + delta) >> 1);
     int dq = h265_clip3(-(tc >> 1), tc >> 1, (((q2 + q0 + 1) >> 1) - q1 - delta) >> 1);
     for (int l = 0; l < 4; l++) {
-        const uint8_t *r = buf + l * STRIDE;
+        const uint16_t *r = buf + l * STRIDE;
         CHECK(r[3] == h265_clip_u8(p0 + delta), "weak p0 line %d = %d", l, r[3]);
         CHECK(r[4] == h265_clip_u8(q0 - delta), "weak q0 line %d = %d", l, r[4]);
         CHECK(r[2] == h265_clip_u8(p1 + dp), "weak p1 line %d", l);
@@ -146,21 +146,21 @@ static void test_weak(void)
 
     /* |delta| >= tc*10 aborts the whole line. tc = 1 gives a threshold of 10
      * while delta is about 17, so nothing may change. */
-    uint8_t ref[STRIDE * 8];
+    uint16_t ref[STRIDE * 8];
     mk(buf, pv, qv);
     memcpy(ref, buf, sizeof buf);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, 1, 0, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, beta, 1, 0, 0, bd);
     CHECK(memcmp(buf, ref, sizeof buf) == 0,
           "|delta| >= 10*tc must leave the line untouched");
 }
 
-static void test_sides_suppressed(void)
+static void test_sides_suppressed(int bd)
 {
-    uint8_t buf[STRIDE * 8], ref[STRIDE * 8];
+    uint16_t buf[STRIDE * 8], ref[STRIDE * 8];
     int pv[4] = { 100, 100, 100, 100 }, qv[4] = { 108, 108, 108, 108 };
     mk(buf, pv, qv);
     memcpy(ref, buf, sizeof buf);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, 64, 24, 1, 0);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, 64, 24, 1, 0, bd);
     for (int l = 0; l < 4; l++) {
         CHECK(memcmp(buf + l * STRIDE, ref + l * STRIDE, 4) == 0,
               "no_p must leave the whole p side alone (line %d)", l);
@@ -168,30 +168,30 @@ static void test_sides_suppressed(void)
               "... and must still filter the q side (line %d)", l);
     }
     mk(buf, pv, qv);
-    h265_deblock_luma4(BASE(buf), 1, STRIDE, 64, 24, 0, 1);
+    h265_deblock_luma4(BASE(buf), 1, STRIDE, 64, 24, 0, 1, bd);
     for (int l = 0; l < 4; l++)
         CHECK(memcmp(buf + l * STRIDE + 4, ref + l * STRIDE + 4, 4) == 0,
               "no_q must leave the whole q side alone (line %d)", l);
 }
 
-static void test_direction_symmetry(void)
+static void test_direction_symmetry(int bd)
 {
     /* The same edge filtered as a vertical one and as a horizontal one on the
      * transposed buffer must give transposed results. */
-    uint8_t a[STRIDE * 8], b[STRIDE * 8];
+    uint16_t a[STRIDE * 8], b[STRIDE * 8];
     unsigned s = 3;
     for (int i = 0; i < STRIDE * 8; i++) {
         s = s * 1103515245u + 12345u;
-        a[i] = (uint8_t)((s >> 16) & 63);
+        a[i] = (uint16_t)((s >> 16) & 63);
     }
     for (int l = 0; l < 4; l++)
-        for (int k = 0; k < 8; k++) a[l * STRIDE + k] = (uint8_t)(100 + (k >= 4 ? 9 : 0) + (l & 1));
+        for (int k = 0; k < 8; k++) a[l * STRIDE + k] = (uint16_t)(100 + (k >= 4 ? 9 : 0) + (l & 1));
     memset(b, 0, sizeof b);
     for (int l = 0; l < 4; l++)
         for (int k = 0; k < 8; k++) b[k * STRIDE + l] = a[l * STRIDE + k];
 
-    h265_deblock_luma4(a + 4, 1, STRIDE, 64, 10, 0, 0);
-    h265_deblock_luma4(b + 4 * STRIDE, STRIDE, 1, 64, 10, 0, 0);
+    h265_deblock_luma4(a + 4, 1, STRIDE, 64, 10, 0, 0, bd);
+    h265_deblock_luma4(b + 4 * STRIDE, STRIDE, 1, 64, 10, 0, 0, bd);
     int ok = 1;
     for (int l = 0; l < 4; l++)
         for (int k = 0; k < 8; k++)
@@ -199,13 +199,13 @@ static void test_direction_symmetry(void)
     CHECK(ok, "the two stride arguments must be a true transpose of each other");
 }
 
-static void test_chroma(void)
+static void test_chroma(int bd)
 {
-    uint8_t buf[STRIDE * 8];
+    uint16_t buf[STRIDE * 8];
     int pv[4] = { 80, 90, 0, 0 }, qv[4] = { 120, 110, 0, 0 };
     int tc = 6;
     mk(buf, pv, qv);
-    h265_deblock_chroma_n(BASE(buf), 1, STRIDE, 4, tc, 0, 0);
+    h265_deblock_chroma_n(BASE(buf), 1, STRIDE, 4, tc, 0, 0, bd);
     int p0 = 80, p1 = 90, q0 = 120, q1 = 110;
     int delta = h265_clip3(-tc, tc, ((((q0 - p0) << 2) + p1 - q1 + 4) >> 3));
     for (int l = 0; l < 4; l++) {
@@ -322,43 +322,57 @@ static void test_sao_edge(void)
     CHECK(h265_sao_edge_idx(10, 20, 5) == 0, "... in either direction");
 }
 
-static void test_sao_band(void)
+static void test_sao_band(int bd)
 {
-    /* Four consecutive bands of 8 starting at sao_band_position, wrapping at
-     * 32. Anything outside gets index 0 and is left alone. */
+    /* 8.7.3.2: bandIdx = sample >> (BitDepth - 5) -- 32 bands whatever the
+     * depth, so the shift is 3 at 8 bits and 5 at 10. A hardcoded >> 3 puts a
+     * 10-bit sample four bands too high, which only shows where the band
+     * offsets are non-zero: content-dependent, and invisible on most of it. */
+    int sh = bd - 5;
     for (int pos = 0; pos < 32; pos++)
-        for (int v = 0; v < 256; v++) {
-            int band = v >> 3;
+        for (int v = 0; v < (1 << bd); v++) {
+            int band = v >> sh;
             int k = band - pos;
             if (k < 0) k += 32;
             int want = (k < 4) ? k + 1 : 0;
-            int got = h265_sao_band_idx(v, pos);
+            int got = h265_sao_band_idx(v, pos, bd);
             if (got != want) {
-                CHECK(0, "band idx pos=%d v=%d: got %d want %d", pos, v, got, want);
+                CHECK(0, "bd%d band idx pos=%d v=%d: got %d want %d",
+                      bd, pos, v, got, want);
                 return;
             }
         }
     checks++;
     /* The wrap itself, spelled out: position 30 covers bands 30, 31, 0, 1. */
-    CHECK(h265_sao_band_idx(30 * 8, 30) == 1, "band wrap start");
-    CHECK(h265_sao_band_idx(31 * 8, 30) == 2, "band wrap +1");
-    CHECK(h265_sao_band_idx(0, 30) == 3, "band wrap around to 0");
-    CHECK(h265_sao_band_idx(1 * 8, 30) == 4, "band wrap around to 1");
-    CHECK(h265_sao_band_idx(2 * 8, 30) == 0, "just past the wrapped run");
+    int w = 1 << sh;                       /* one band's width in samples */
+    CHECK(h265_sao_band_idx(30 * w, 30, bd) == 1, "bd%d band wrap start", bd);
+    CHECK(h265_sao_band_idx(31 * w, 30, bd) == 2, "bd%d band wrap +1", bd);
+    CHECK(h265_sao_band_idx(0, 30, bd) == 3, "bd%d band wrap around to 0", bd);
+    CHECK(h265_sao_band_idx(1 * w, 30, bd) == 4, "bd%d band wrap around to 1", bd);
+    CHECK(h265_sao_band_idx(2 * w, 30, bd) == 0, "bd%d just past the wrapped run", bd);
+
+    /* The band count must be exactly 32 at every depth: the top sample must
+     * land in band 31, not off the end of it. A >> 3 left in place puts a
+     * 10-bit maximum in band 127. */
+    CHECK(h265_sao_band_idx((1 << bd) - 1, 31, bd) == 1,
+          "bd%d the maximum sample must be in band 31", bd);
 }
 
 int main(void)
 {
-    test_flat();
-    test_no_filter_when_d_ge_beta();
-    test_strong();
-    test_weak();
-    test_sides_suppressed();
-    test_direction_symmetry();
-    test_chroma();
+    for (int i = 0; i < 2; i++) {
+        int bd = i ? 10 : 8;
+        test_flat(bd);
+        test_no_filter_when_d_ge_beta(bd);
+        test_strong(bd);
+        test_weak(bd);
+        test_sides_suppressed(bd);
+        test_direction_symmetry(bd);
+        test_chroma(bd);
+        test_sao_band(bd);
+    }
     test_bs();
     test_sao_edge();
-    test_sao_band();
     printf("h265_deblock_test: %d checks, %d failures\n", checks, fails);
     return fails != 0;
 }

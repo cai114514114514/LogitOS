@@ -58,7 +58,7 @@ int h265_chroma_qp(int qpi)
 #define P(k, l) base[(long)(l) * lstep - (long)((k) + 1) * dstep]
 #define Q(k, l) base[(long)(l) * lstep + (long)(k) * dstep]
 
-static int strong_ok(const uint8_t *base, int dstep, int lstep, int l,
+static int strong_ok(const uint16_t *base, int dstep, int lstep, int l,
                      int beta, int tc, int dpq)
 {
     int a = P(3, l) - P(0, l); if (a < 0) a = -a;
@@ -70,8 +70,12 @@ static int strong_ok(const uint8_t *base, int dstep, int lstep, int l,
 
 /* One 4-line luma segment. no_p / no_q suppress writes on that side
  * (cu_transquant_bypass, or PCM with pcm_loop_filter_disabled). */
-void h265_deblock_luma4(uint8_t *base, int dstep, int lstep,
-                        int beta, int tc, int no_p, int no_q)
+/* `beta` and `tc` arrive ALREADY scaled to the sample depth by the caller
+ * (8.7.2.5.3: beta = beta' * (1 << (BitDepth - 8)), likewise tC), because they
+ * are derived per edge from a QP the caller owns. `bd` is here only for the
+ * Clip1Y at the end of the weak filter. */
+void h265_deblock_luma4(uint16_t *base, int dstep, int lstep,
+                        int beta, int tc, int no_p, int no_q, int bd)
 {
     if (tc <= 0 && beta <= 0) return;
     int dp0 = abs(P(2, 0) - 2 * P(1, 0) + P(0, 0));
@@ -93,52 +97,52 @@ void h265_deblock_luma4(uint8_t *base, int dstep, int lstep,
         int q0 = Q(0, l), q1 = Q(1, l), q2 = Q(2, l), q3 = Q(3, l);
         if (strong) {
             if (!no_p) {
-                P(0, l) = (uint8_t)h265_clip3(p0 - 2 * tc, p0 + 2 * tc,
+                P(0, l) = (uint16_t)h265_clip3(p0 - 2 * tc, p0 + 2 * tc,
                     (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
-                P(1, l) = (uint8_t)h265_clip3(p1 - 2 * tc, p1 + 2 * tc,
+                P(1, l) = (uint16_t)h265_clip3(p1 - 2 * tc, p1 + 2 * tc,
                     (p2 + p1 + p0 + q0 + 2) >> 2);
-                P(2, l) = (uint8_t)h265_clip3(p2 - 2 * tc, p2 + 2 * tc,
+                P(2, l) = (uint16_t)h265_clip3(p2 - 2 * tc, p2 + 2 * tc,
                     (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
             }
             if (!no_q) {
-                Q(0, l) = (uint8_t)h265_clip3(q0 - 2 * tc, q0 + 2 * tc,
+                Q(0, l) = (uint16_t)h265_clip3(q0 - 2 * tc, q0 + 2 * tc,
                     (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
-                Q(1, l) = (uint8_t)h265_clip3(q1 - 2 * tc, q1 + 2 * tc,
+                Q(1, l) = (uint16_t)h265_clip3(q1 - 2 * tc, q1 + 2 * tc,
                     (p0 + q0 + q1 + q2 + 2) >> 2);
-                Q(2, l) = (uint8_t)h265_clip3(q2 - 2 * tc, q2 + 2 * tc,
+                Q(2, l) = (uint16_t)h265_clip3(q2 - 2 * tc, q2 + 2 * tc,
                     (p0 + q0 + q1 + 3 * q2 + 2 * q3 + 4) >> 3);
             }
         } else {
             int delta = (9 * (q0 - p0) - 3 * (q1 - p1) + 8) >> 4;
             if (abs(delta) >= tc * 10) continue;
             delta = h265_clip3(-tc, tc, delta);
-            if (!no_p) P(0, l) = (uint8_t)h265_clip_u8(p0 + delta);
-            if (!no_q) Q(0, l) = (uint8_t)h265_clip_u8(q0 - delta);
+            if (!no_p) P(0, l) = (uint16_t)h265_clip_pix(p0 + delta, bd);
+            if (!no_q) Q(0, l) = (uint16_t)h265_clip_pix(q0 - delta, bd);
             if (dep && !no_p) {
                 int dpv = h265_clip3(-(tc >> 1), tc >> 1,
                                      (((p2 + p0 + 1) >> 1) - p1 + delta) >> 1);
-                P(1, l) = (uint8_t)h265_clip_u8(p1 + dpv);
+                P(1, l) = (uint16_t)h265_clip_pix(p1 + dpv, bd);
             }
             if (deq && !no_q) {
                 int dqv = h265_clip3(-(tc >> 1), tc >> 1,
                                      (((q2 + q0 + 1) >> 1) - q1 - delta) >> 1);
-                Q(1, l) = (uint8_t)h265_clip_u8(q1 + dqv);
+                Q(1, l) = (uint16_t)h265_clip_pix(q1 + dqv, bd);
             }
         }
     }
 }
 
 /* Chroma, 8.7.2.5.5: no strong/weak decision at all, one sample each side. */
-void h265_deblock_chroma_n(uint8_t *base, int dstep, int lstep, int n,
-                           int tc, int no_p, int no_q)
+void h265_deblock_chroma_n(uint16_t *base, int dstep, int lstep, int n,
+                           int tc, int no_p, int no_q, int bd)
 {
     for (int l = 0; l < n; l++) {
         int p0 = P(0, l), p1 = P(1, l), q0 = Q(0, l), q1 = Q(1, l);
         /* * 4 rather than << 2: q0 - p0 is signed and often negative, and a
          * left shift of a negative value is undefined in C. */
         int delta = h265_clip3(-tc, tc, (((q0 - p0) * 4 + p1 - q1 + 4) >> 3));
-        if (!no_p) P(0, l) = (uint8_t)h265_clip_u8(p0 + delta);
-        if (!no_q) Q(0, l) = (uint8_t)h265_clip_u8(q0 - delta);
+        if (!no_p) P(0, l) = (uint16_t)h265_clip_pix(p0 + delta, bd);
+        if (!no_q) Q(0, l) = (uint16_t)h265_clip_pix(q0 - delta, bd);
     }
 }
 #undef P
@@ -221,6 +225,8 @@ static void deblock_dir(h265dec *d, int vertical)
     const pps_t *pps = d->cur_pps;
     pic_t *pic = d->cur;
     int W = sps->width, H = sps->height;
+    int bdy = sps->bit_depth_luma, bdc = sps->bit_depth_chroma;
+    int qpbd_c = 6 * (bdc - 8);
 
     /* Luma edges sit on the 8x8 grid; chroma edges on the 16x16 luma grid. */
     for (int y = 0; y < H; y += 8) {
@@ -254,16 +260,20 @@ static void deblock_dir(h265dec *d, int vertical)
 
                 int qpl = (q2->qp + p2->qp + 1) >> 1;
                 int qb = h265_clip3(0, 51, qpl + d->ctb_beta[ctb]);
-                int beta = beta_tab[qb];
+                /* 8.7.2.5.3: the tabulated beta'/tC' are 8-bit values; both
+                 * scale by 1 << (BitDepth - 8). Leaving them unscaled at 10
+                 * bits makes the filter roughly four times too timid --
+                 * a picture that looks fine and is wrong on every edge. */
+                int beta = beta_tab[qb] << (bdy - 8);
                 int qt = h265_clip3(0, 53, qpl + 2 * (bs - 1) + d->ctb_tc[ctb]);
-                int tc = tc_tab[qt];
+                int tc = tc_tab[qt] << (bdy - 8);
                 int no_p = p2->bypass, no_q = q2->bypass;
 
-                uint8_t *base = pic->y + (long)sy * pic->stride_y + sx;
+                uint16_t *base = pic->y + (long)sy * pic->stride_y + sx;
                 if (tc > 0 || beta > 0)
                     h265_deblock_luma4(base, vertical ? 1 : pic->stride_y,
                                        vertical ? pic->stride_y : 1,
-                                       beta, tc, no_p, no_q);
+                                       beta, tc, no_p, no_q, bdy);
             }
 
             /* Chroma: bS must be 2, and only every other edge of the luma
@@ -281,15 +291,19 @@ static void deblock_dir(h265dec *d, int vertical)
                 int no_p = p2->bypass, no_q = q2->bypass;
                 for (int c = 0; c < 2; c++) {
                     int off = c ? pps->cr_qp_offset : pps->cb_qp_offset;
-                    int qpc = h265_chroma_qp(h265_clip3(0, 57, qpl + off));
+                    /* qPi may be NEGATIVE once QpBdOffsetC is non-zero, and it
+                     * must stay negative through Table 8-10 -- clamping it to
+                     * 0 here and only clamping again after the +2*(bS-1) term
+                     * gives a different tC index. */
+                    int qpc = h265_chroma_qp(h265_clip3(-qpbd_c, 57, qpl + off));
                     int qt = h265_clip3(0, 53, qpc + 2 + d->ctb_tc[ctb]);
-                    int tc = tc_tab[qt];
+                    int tc = tc_tab[qt] << (bdc - 8);
                     if (tc <= 0) continue;
-                    uint8_t *pl = c ? pic->v : pic->u;
-                    uint8_t *base = pl + (long)(sy / 2) * pic->stride_c + sx / 2;
+                    uint16_t *pl = c ? pic->v : pic->u;
+                    uint16_t *base = pl + (long)(sy / 2) * pic->stride_c + sx / 2;
                     h265_deblock_chroma_n(base, vertical ? 1 : pic->stride_c,
                                           vertical ? pic->stride_c : 1, 2,
-                                          tc, no_p, no_q);
+                                          tc, no_p, no_q, bdc);
                 }
             }
         }
@@ -317,9 +331,13 @@ int h265_sao_edge_idx(int cur, int a, int b)
     return e;
 }
 
-int h265_sao_band_idx(int sample, int band_position)
+/* 8.7.3.2: the band index is sample >> (BitDepth - 5) -- there are always 32
+ * bands, so the shift grows with the depth. A hardcoded >> 3 puts a 10-bit
+ * sample in a band four times too high, which only misbehaves where the band
+ * offsets are actually non-zero and is therefore content-dependent. */
+int h265_sao_band_idx(int sample, int band_position, int bd)
 {
-    int k = (sample >> 3) - band_position;
+    int k = (sample >> (bd - 5)) - band_position;
     if (k < 0) k += 32;
     return (k < 4) ? k + 1 : 0;
 }
@@ -353,12 +371,15 @@ void h265_sao_pic(h265dec *d)
      * edge classification. */
     int ysz = pic->stride_y * (sps->height + 2 * H265_PAD);
     int csz = pic->stride_c * (sps->height / 2 + 2 * H265_PAD);
-    uint8_t *src_y = d->sao_src;
-    uint8_t *src_u = src_y + ysz;
-    uint8_t *src_v = src_u + csz;
-    memcpy(src_y, pic->y - (long)H265_PAD * pic->stride_y - H265_PAD, (size_t)ysz);
-    memcpy(src_u, pic->u - (long)H265_PAD * pic->stride_c - H265_PAD, (size_t)csz);
-    memcpy(src_v, pic->v - (long)H265_PAD * pic->stride_c - H265_PAD, (size_t)csz);
+    uint16_t *src_y = d->sao_src;
+    uint16_t *src_u = src_y + ysz;
+    uint16_t *src_v = src_u + csz;
+    memcpy(src_y, pic->y - (long)H265_PAD * pic->stride_y - H265_PAD,
+           (size_t)ysz * sizeof *src_y);
+    memcpy(src_u, pic->u - (long)H265_PAD * pic->stride_c - H265_PAD,
+           (size_t)csz * sizeof *src_u);
+    memcpy(src_v, pic->v - (long)H265_PAD * pic->stride_c - H265_PAD,
+           (size_t)csz * sizeof *src_v);
     src_y += (long)H265_PAD * pic->stride_y + H265_PAD;
     src_u += (long)H265_PAD * pic->stride_c + H265_PAD;
     src_v += (long)H265_PAD * pic->stride_c + H265_PAD;
@@ -371,9 +392,10 @@ void h265_sao_pic(h265dec *d)
             int shift = c ? 1 : 0;
             int cw = c ? sps->width / 2 : sps->width;
             int ch = c ? sps->height / 2 : sps->height;
-            uint8_t *dst = c == 0 ? pic->y : c == 1 ? pic->u : pic->v;
-            const uint8_t *src = c == 0 ? src_y : c == 1 ? src_u : src_v;
+            uint16_t *dst = c == 0 ? pic->y : c == 1 ? pic->u : pic->v;
+            const uint16_t *src = c == 0 ? src_y : c == 1 ? src_u : src_v;
             int stride = c ? pic->stride_c : pic->stride_y;
+            int bd = c ? sps->bit_depth_chroma : sps->bit_depth_luma;
 
             int x0 = (rx << sps->log2_ctb) >> shift;
             int y0 = (ry << sps->log2_ctb) >> shift;
@@ -381,9 +403,14 @@ void h265_sao_pic(h265dec *d)
             if (x1 > cw) x1 = cw;
             if (y1 > ch) y1 = ch;
 
+            /* SaoOffsetVal = offset << (BitDepth - Min(BitDepth, 10)). That
+             * shift is 0 at 8 bits AND at 10, so Main 10 needs no scaling
+             * here; it only starts to bite at 12. Written out rather than
+             * assumed, because "it happens to be zero" is worth one line. */
+            int sao_shift = bd - (bd < 10 ? bd : 10);
             int off[5];
             off[0] = 0;
-            for (int i = 0; i < 4; i++) off[i + 1] = s->off[c][i];
+            for (int i = 0; i < 4; i++) off[i + 1] = s->off[c][i] << sao_shift;
 
             if (s->type[c] == SAO_BAND) {
                 for (int y = y0; y < y1; y++)
@@ -391,9 +418,9 @@ void h265_sao_pic(h265dec *d)
                         const bi_t *b = h265_bi(d, x << shift, y << shift);
                         if (b->bypass) continue;
                         int v = src[(long)y * stride + x];
-                        int k = h265_sao_band_idx(v, s->clsx[c]);
+                        int k = h265_sao_band_idx(v, s->clsx[c], bd);
                         if (k) dst[(long)y * stride + x] =
-                            (uint8_t)h265_clip_u8(v + off[k]);
+                            (uint16_t)h265_clip_pix(v + off[k], bd);
                     }
             } else {
                 int cls = s->clsx[c];
@@ -409,7 +436,7 @@ void h265_sao_pic(h265dec *d)
                         int k = h265_sao_edge_idx(v, src[(long)ay * stride + ax],
                                                      src[(long)by * stride + bx]);
                         if (k) dst[(long)y * stride + x] =
-                            (uint8_t)h265_clip_u8(v + off[k]);
+                            (uint16_t)h265_clip_pix(v + off[k], bd);
                     }
             }
         }

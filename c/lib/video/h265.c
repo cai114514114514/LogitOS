@@ -74,9 +74,13 @@ static int alloc_picture(h265dec *d)
 
     int ly = d->stride_y * (sps->height + 2 * H265_PAD);
     int lc = d->stride_c * (sps->height / 2 + 2 * H265_PAD);
-    uint8_t *base = (uint8_t *)malloc((size_t)(ly + 2 * lc));
+    /* Samples are uint16_t at EVERY bit depth, so one set of code paths
+     * serves 8 and 10 bits and the 8-bit gate exercises the same arithmetic
+     * the 10-bit streams take. The price is exactly one byte per sample of
+     * reference-frame memory; see the note on H265_PAD above. */
+    uint16_t *base = (uint16_t *)malloc((size_t)(ly + 2 * lc) * sizeof(uint16_t));
     if (!base) return H265_ERR_OOM;
-    memset(base, 0, (size_t)(ly + 2 * lc));
+    memset(base, 0, (size_t)(ly + 2 * lc) * sizeof(uint16_t));
 
     pic_t *p = &d->pics[slot];
     p->base = base;
@@ -100,17 +104,18 @@ static int alloc_picture(h265dec *d)
     return H265_OK;
 }
 
-static void border_pad_plane(uint8_t *vis, int stride, int w, int h)
+static void border_pad_plane(uint16_t *vis, int stride, int w, int h)
 {
     for (int r = 0; r < h; r++) {
-        uint8_t *row = vis + (long)r * stride;
+        uint16_t *row = vis + (long)r * stride;
         for (int i = 1; i <= H265_PAD; i++) { row[-i] = row[0]; row[w - 1 + i] = row[w - 1]; }
     }
     for (int i = 1; i <= H265_PAD; i++) {
         memcpy(vis - (long)i * stride - H265_PAD, vis - H265_PAD,
-               (size_t)(w + 2 * H265_PAD));
+               (size_t)(w + 2 * H265_PAD) * sizeof(uint16_t));
         memcpy(vis + (long)(h - 1 + i) * stride - H265_PAD,
-               vis + (long)(h - 1) * stride - H265_PAD, (size_t)(w + 2 * H265_PAD));
+               vis + (long)(h - 1) * stride - H265_PAD,
+               (size_t)(w + 2 * H265_PAD) * sizeof(uint16_t));
     }
 }
 
@@ -404,6 +409,54 @@ static void flush_all_output(h265dec *d)
     }
 }
 
+/* The 8-bit display view of h265frame. It exists so that widening the decoder
+ * to 10 bits does not change the type of a field an existing caller already
+ * reads, and so that a caller who wants exactness has to ask for y16 by name
+ * rather than get a quietly truncated picture and a passing test.
+ *
+ * At 8 bits this is a straight copy and is exact. Above 8 bits it is a rounded
+ * down-conversion and is LOSSY -- which is a renderer's business, never a
+ * decode result: nothing in the decoder ever reads these planes back, and no
+ * bit-exactness check in the test suite looks at them.
+ *
+ * One buffer, reused for every output picture, matching the documented "valid
+ * until the next call" lifetime of the 16-bit planes it shadows. */
+static int build_display(h265dec *d, h265frame *out)
+{
+    int sh = out->bit_depth - 8;
+    int rnd = sh ? (1 << (sh - 1)) : 0;
+    int hc = (out->height + 1) / 2;
+    long need = (long)out->stride_y * out->height +
+                2L * out->stride_c * hc;
+    if (need > d->disp_sz) {
+        free(d->disp);
+        d->disp = (uint8_t *)malloc((size_t)need);
+        if (!d->disp) { d->disp_sz = 0; return H265_ERR_OOM; }
+        d->disp_sz = need;
+    }
+    uint8_t *dy = d->disp;
+    uint8_t *du = dy + (long)out->stride_y * out->height;
+    uint8_t *dv = du + (long)out->stride_c * hc;
+
+    const uint16_t *sp[3] = { out->y16, out->u16, out->v16 };
+    uint8_t *dp[3] = { dy, du, dv };
+    int sw[3] = { out->width, (out->width + 1) / 2, (out->width + 1) / 2 };
+    int shh[3] = { out->height, hc, hc };
+    int st[3] = { out->stride_y, out->stride_c, out->stride_c };
+    for (int c = 0; c < 3; c++)
+        for (int y = 0; y < shh[c]; y++) {
+            const uint16_t *r = sp[c] + (long)y * st[c];
+            uint8_t *w = dp[c] + (long)y * st[c];
+            if (!sh) { for (int x = 0; x < sw[c]; x++) w[x] = (uint8_t)r[x]; }
+            else     { for (int x = 0; x < sw[c]; x++) {
+                           int v = (r[x] + rnd) >> sh;
+                           w[x] = (uint8_t)(v > 255 ? 255 : v);
+                       } }
+        }
+    out->y = dy; out->u = du; out->v = dv;
+    return H265_OK;
+}
+
 static int emit(h265dec *d, h265frame *out)
 {
     if (d->to_free >= 0) { release_pic(d, d->to_free); d->to_free = -1; }
@@ -419,10 +472,12 @@ static int emit(h265dec *d, h265frame *out)
     out->height = sps->height - ct - cb;
     out->stride_y = p->stride_y;
     out->stride_c = p->stride_c;
-    out->y = p->y + (long)ct * p->stride_y + cl;
-    out->u = p->u + (long)(ct / 2) * p->stride_c + cl / 2;
-    out->v = p->v + (long)(ct / 2) * p->stride_c + cl / 2;
+    out->bit_depth = sps->bit_depth_luma;
+    out->y16 = p->y + (long)ct * p->stride_y + cl;
+    out->u16 = p->u + (long)(ct / 2) * p->stride_c + cl / 2;
+    out->v16 = p->v + (long)(ct / 2) * p->stride_c + cl / 2;
     out->poc = p->poc;
+    if (build_display(d, out) != H265_OK) return H265_ERR_OOM;
     /* The slot may now be dead, but the caller is holding pointers into it;
      * the H.264 decoder makes the same promise -- valid until the next call. */
     if (!p->reference) d->to_free = slot;
@@ -486,8 +541,18 @@ static void parse_sao(h265dec *d, int rx, int ry)
         }
         if (s->type[c] == SAO_NOT_APPLIED) continue;
 
+        /* 9.3.3.2 with Table 9-38: sao_offset_abs is TR-binarised with
+         * cMax = (1 << (Min(bitDepth, 10) - 5)) - 1, i.e. 7 at 8 bits and 31
+         * at 10. This is the ONLY bit-depth dependency on the PARSE side of
+         * the whole decoder, and it is the expensive kind: too small a cMax
+         * stops reading bins early, so the arithmetic decoder desynchronises
+         * and everything after it in the slice is garbage. It shows up as a
+         * corrupt-stream error several pictures later rather than as a wrong
+         * pixel, which is why it is worth naming here. */
+        int bd = c ? sps->bit_depth_chroma : sps->bit_depth_luma;
+        int cmax = (1 << ((bd < 10 ? bd : 10) - 5)) - 1;
         int abs_off[4];
-        for (int i = 0; i < 4; i++) abs_off[i] = decode_tr_bypass(d, 7);
+        for (int i = 0; i < 4; i++) abs_off[i] = decode_tr_bypass(d, cmax);
         if (s->type[c] == SAO_BAND) {
             for (int i = 0; i < 4; i++) {
                 int sign = 0;
@@ -574,27 +639,37 @@ static void derive_qp(h265dec *d)
         qp_b = h265_bi(d, qg_x, qg_y - 1)->qp;
 
     int pred = (qp_a + qp_b + 1) >> 1;
-    d->qp_y = ((pred + d->cu_qp_delta + 52) % 52);
+    /* 8.6.1 in full:
+     *   QpY = ((qPY_PRED + CuQpDeltaVal + 52 + 2*QpBdOffsetY) % (52 + QpBdOffsetY))
+     *         - QpBdOffsetY
+     * The 8-bit code could write % 52 because QpBdOffsetY is 0 there. At 10
+     * bits QpBdOffsetY is 12, the modulus is 64, and QpY legitimately goes
+     * NEGATIVE -- which is why bi_t.qp is signed and why the chroma mapping
+     * below must not clamp at 0. */
+    int qpbd_y = 6 * (d->cur_sps->bit_depth_luma - 8);
+    d->qp_y = ((pred + d->cu_qp_delta + 52 + 2 * qpbd_y) % (52 + qpbd_y)) - qpbd_y;
     d->qp_y_last = d->qp_y;
 }
 
+/* Qp'C = QpC + QpBdOffsetC, i.e. what dequantisation actually wants. */
 static int chroma_qp_for(h265dec *d, int c)
 {
     int off = (c == 1 ? d->cur_pps->cb_qp_offset + d->sh.cb_qp_offset
                       : d->cur_pps->cr_qp_offset + d->sh.cr_qp_offset);
-    return h265_chroma_qp(h265_clip3(0, 57, d->qp_y + off));
+    int qpbd_c = 6 * (d->cur_sps->bit_depth_chroma - 8);
+    return h265_chroma_qp(h265_clip3(-qpbd_c, 57, d->qp_y + off)) + qpbd_c;
 }
 
 /* ======================= intra reference samples ======================== */
 /* Gather the 4*nTbS+1 neighbour samples in h265_pred.c's layout, marking each
  * available or not (6.4.1 plus constrained_intra_pred), then run the
  * substitution of 8.4.4.2.2. */
-static void gather_nb(h265dec *d, uint8_t *nb, int x0, int y0, int nbs, int c_idx)
+static void gather_nb(h265dec *d, uint16_t *nb, int x0, int y0, int nbs, int c_idx)
 {
     const pic_t *p = d->cur;
     int shift = c_idx ? 1 : 0;
     int stride = c_idx ? p->stride_c : p->stride_y;
-    const uint8_t *plane = c_idx == 0 ? p->y : c_idx == 1 ? p->u : p->v;
+    const uint16_t *plane = c_idx == 0 ? p->y : c_idx == 1 ? p->u : p->v;
     int cw = c_idx ? d->cur_sps->width / 2 : d->cur_sps->width;
     int chh = c_idx ? d->cur_sps->height / 2 : d->cur_sps->height;
     int xy = x0 << shift, yy = y0 << shift;
@@ -622,7 +697,13 @@ static void gather_nb(h265dec *d, uint8_t *nb, int x0, int y0, int nbs, int c_id
     }
 
     if (!any) {
-        memset(nb, 128, (size_t)n);
+        /* 8.4.4.2.2: with nothing available every reference sample is
+         * 1 << (BitDepth - 1) -- 128 at 8 bits, 512 at 10. A memset of 128
+         * would put a 10-bit picture's fallback prediction at a quarter
+         * brightness, and only on blocks with no neighbours at all. */
+        int bd = c_idx ? d->cur_sps->bit_depth_chroma : d->cur_sps->bit_depth_luma;
+        uint16_t mid = (uint16_t)(1 << (bd - 1));
+        for (int i = 0; i < n; i++) nb[i] = mid;
         return;
     }
     /* The substitution scans from p[-1][2N-1] up the left column, round the
@@ -638,15 +719,16 @@ static void gather_nb(h265dec *d, uint8_t *nb, int x0, int y0, int nbs, int c_id
 static void intra_pred_block(h265dec *d, int x0, int y0, int log2sz, int c_idx, int mode)
 {
     int nbs = 1 << log2sz;
-    uint8_t nb[4 * 32 + 1];
+    uint16_t nb[4 * 32 + 1];
     int shift = c_idx ? 1 : 0;
+    int bd = c_idx ? d->cur_sps->bit_depth_chroma : d->cur_sps->bit_depth_luma;
     gather_nb(d, nb, x0 >> shift, y0 >> shift, nbs, c_idx);
-    h265_intra_filter(nb, nbs, mode, c_idx, d->cur_sps->strong_intra_smoothing);
+    h265_intra_filter(nb, nbs, mode, c_idx, d->cur_sps->strong_intra_smoothing, bd);
     pic_t *p = d->cur;
     int stride = c_idx ? p->stride_c : p->stride_y;
-    uint8_t *dst = (c_idx == 0 ? p->y : c_idx == 1 ? p->u : p->v) +
+    uint16_t *dst = (c_idx == 0 ? p->y : c_idx == 1 ? p->u : p->v) +
                    (long)(y0 >> shift) * stride + (x0 >> shift);
-    h265_intra_pred(dst, stride, nb, nbs, mode, c_idx);
+    h265_intra_pred(dst, stride, nb, nbs, mode, c_idx, bd);
 }
 
 /* ============================ transform unit ============================ */
@@ -656,11 +738,14 @@ static void add_residual(h265dec *d, int x0, int y0, int log2sz, int c_idx,
     pic_t *p = d->cur;
     int shift = c_idx ? 1 : 0;
     int stride = c_idx ? p->stride_c : p->stride_y;
-    uint8_t *dst = (c_idx == 0 ? p->y : c_idx == 1 ? p->u : p->v) +
+    int bd = c_idx ? d->cur_sps->bit_depth_chroma : d->cur_sps->bit_depth_luma;
+    uint16_t *dst = (c_idx == 0 ? p->y : c_idx == 1 ? p->u : p->v) +
                    (long)(y0 >> shift) * stride + (x0 >> shift);
-    if (bypass) { h265_bypass_add(d->coeff, log2sz, dst, stride); return; }
+    if (bypass) { h265_bypass_add(d->coeff, log2sz, dst, stride, bd); return; }
 
-    int qp = c_idx ? chroma_qp_for(d, c_idx) : d->qp_y;
+    /* Dequantisation takes Qp' = Qp + QpBdOffset, not Qp. */
+    int qp = c_idx ? chroma_qp_for(d, c_idx)
+                   : d->qp_y + 6 * (d->cur_sps->bit_depth_luma - 8);
     const uint8_t *list = 0;
     int dc = 16;
     if (d->cur_sps->scaling_list_enabled && !(ts && log2sz > 2)) {
@@ -674,13 +759,13 @@ static void add_residual(h265dec *d, int x0, int y0, int log2sz, int c_idx,
         list = sl[size_id][mat];
         if (size_id > 1) dc = sd[size_id - 2][(is_intra ? 0 : 3) + c_idx];
     }
-    h265_dequant(d->coeff, 1 << log2sz, qp, log2sz, list, dc);
+    h265_dequant(d->coeff, 1 << log2sz, qp, log2sz, list, dc, bd);
 
     if (ts) {
-        h265_transform_skip_add(d->coeff, log2sz, dst, stride);
+        h265_transform_skip_add(d->coeff, log2sz, dst, stride, bd);
     } else {
         int tr = (is_intra && c_idx == 0 && log2sz == 2) ? 1 : 0;
-        h265_itransform_add(d->coeff, log2sz, tr, dst, stride);
+        h265_itransform_add(d->coeff, log2sz, tr, dst, stride, bd);
         (void)mode;
     }
 }
@@ -1164,27 +1249,28 @@ static void mc_pu(h265dec *d, int x, int y, int w, int h, const mvc_t *c)
         int bw = w >> shift, bh = h >> shift;
         int bx = x >> shift, by = y >> shift;
         int stride = comp ? dst->stride_c : dst->stride_y;
-        uint8_t *out = (comp == 0 ? dst->y : comp == 1 ? dst->u : dst->v) +
+        int bd = comp ? sps->bit_depth_chroma : sps->bit_depth_luma;
+        uint16_t *out = (comp == 0 ? dst->y : comp == 1 ? dst->u : dst->v) +
                        (long)by * stride + bx;
         int16_t *buf[2] = { d->tmp0, d->tmp1 };
 
         for (int l = 0; l < 2; l++) {
             if (!(c->pred_flag & (1 << l))) continue;
             pic_t *ref = d->ref_list[l][c->ref_idx[l]];
-            const uint8_t *rp = comp == 0 ? ref->y : comp == 1 ? ref->u : ref->v;
+            const uint16_t *rp = comp == 0 ? ref->y : comp == 1 ? ref->u : ref->v;
             int rs = comp ? ref->stride_c : ref->stride_y;
             if (comp == 0)
                 h265_mc_luma(buf[l], 64, rp, rs, cw, ch, bx, by, bw, bh,
-                             c->mv[l][0], c->mv[l][1], d->emu);
+                             c->mv[l][0], c->mv[l][1], d->emu, bd);
             else
                 h265_mc_chroma(buf[l], 64, rp, rs, cw, ch, bx, by, bw, bh,
-                               c->mv[l][0], c->mv[l][1], d->emu);
+                               c->mv[l][0], c->mv[l][1], d->emu, bd);
         }
 
         int l0 = (c->pred_flag & 1) ? 0 : 1;
         if (!wp) {
-            if (bi) h265_pred_bi(out, stride, buf[0], 64, buf[1], 64, bw, bh);
-            else    h265_pred_uni(out, stride, buf[l0], 64, bw, bh);
+            if (bi) h265_pred_bi(out, stride, buf[0], 64, buf[1], 64, bw, bh, bd);
+            else    h265_pred_uni(out, stride, buf[l0], 64, bw, bh, bd);
         } else {
             int denom = comp ? sl->chroma_log2_weight_denom : sl->luma_log2_weight_denom;
             if (bi) {
@@ -1197,13 +1283,13 @@ static void mc_pu(h265dec *d, int x, int y, int w, int h, const mvc_t *c)
                 int o1 = comp ? sl->chroma_offset[1][c->ref_idx[1]][comp - 1]
                               : sl->luma_offset[1][c->ref_idx[1]];
                 h265_pred_bi_w(out, stride, buf[0], 64, buf[1], 64, bw, bh,
-                               denom, w0, o0, w1, o1);
+                               denom, w0, o0, w1, o1, bd);
             } else {
                 int wt = comp ? sl->chroma_weight[l0][c->ref_idx[l0]][comp - 1]
                               : sl->luma_weight[l0][c->ref_idx[l0]];
                 int of = comp ? sl->chroma_offset[l0][c->ref_idx[l0]][comp - 1]
                               : sl->luma_offset[l0][c->ref_idx[l0]];
-                h265_pred_uni_w(out, stride, buf[l0], 64, bw, bh, denom, wt, of);
+                h265_pred_uni_w(out, stride, buf[l0], 64, bw, bh, denom, wt, of, bd);
             }
         }
     }
@@ -1613,7 +1699,7 @@ static int init_pic_state(h265dec *d)
         int need = d->stride_y * (sps->height + 2 * H265_PAD) +
                    2 * d->stride_c * (sps->height / 2 + 2 * H265_PAD);
         free(d->sao_src);
-        d->sao_src = (uint8_t *)malloc((size_t)need);
+        d->sao_src = (uint16_t *)malloc((size_t)need * sizeof(uint16_t));
         if (!d->sao_src) return H265_ERR_OOM;
     }
     return H265_OK;

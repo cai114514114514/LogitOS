@@ -7,7 +7,7 @@
 # already use.
 
 .PHONY: test-h265 test-h265-units test-h265-units-control test-h265-units-asan \
-        test-h265-diff test-h265-b test-video265
+        test-h265-diff test-h265-b test-video265 test-h265-m10
 
 H265_SRC := c/lib/video/h265.c c/lib/video/h265_nal.c c/lib/video/h265_cabac.c \
             c/lib/video/h265_pred.c c/lib/video/h265_mc.c c/lib/video/h265_deblock.c
@@ -20,6 +20,20 @@ H265_INC := -Ic/lib/video
 H265_GATE := i-only-160x120 i-only-322x242 i-nosao-160x120 i-raw-160x120 \
              i-ctb16-160x120 ip-320x240 ip-640x360 ip-refs4 ip-notmvp ip-amp \
              ip-longgop ip-tskip ip-wpp
+
+# The Main 10 half of the same list. Not a separate quality bar -- these are
+# gated by `make test-h265` exactly like the 8-bit cases, because 10 bits is
+# now a claimed feature rather than an experiment. Every one of them is
+# compared as 16-BIT SAMPLES against ffmpeg's yuv420p10le output.
+#
+# m10-bright / m10-bright-ip are the clamp cases: content pushed against the
+# top of the 10-bit range, where a Clip1 left at 255 stops being invisible.
+# m10-scaling is NOT here -- scaling lists are wrong at BOTH depths, see the
+# note on test-h265-scaling below.
+H265_GATE10 := m10-i-160x120 m10-i-qp12 m10-i-qp40 m10-i-322x242 \
+               m10-bright m10-bright-ip \
+               m10-ip-320x240 m10-ip-640x360 m10-ip-refs4 m10-ip-amp \
+               m10-tskip m10-wpp
 
 # --- whole-stream gate ------------------------------------------------------
 # Bit-exact against ffmpeg's own HEVC decoder, every byte of every picture.
@@ -39,6 +53,11 @@ test-h265: $(BUILD)/h265_test
 	 elif [ $$rc != 0 ]; then exit $$rc; \
 	 else \
 	    for c in $(H265_GATE); do \
+	        $(BUILD)/h265_test $(BUILD)/h265ref/$$c.h265 \
+	            $(BUILD)/h265ref/$$c.ref.yuv || exit 1; \
+	    done; \
+	    bash tools/genvideo265.sh $(BUILD)/h265ref m10 || exit 1; \
+	    for c in $(H265_GATE10); do \
 	        $(BUILD)/h265_test $(BUILD)/h265ref/$$c.h265 \
 	            $(BUILD)/h265ref/$$c.ref.yuv || exit 1; \
 	    done; \
@@ -135,6 +154,33 @@ test-h265-b: $(BUILD)/h265_test
 	    $(BUILD)/h265_test $(BUILD)/h265ref/$$c.h265 \
 	        $(BUILD)/h265ref/$$c.ref.yuv || exit 1; \
 	 done
+
+# --- Main 10 on its own -----------------------------------------------------
+# The same cases `make test-h265` already gates, runnable without the 8-bit
+# half when bisecting a bit-depth change.
+test-h265-m10: $(BUILD)/h265_test
+	@mkdir -p $(BUILD)/h265ref
+	@bash tools/genvideo265.sh $(BUILD)/h265ref m10
+	@for c in $(H265_GATE10); do \
+	    $(BUILD)/h265_test $(BUILD)/h265ref/$$c.h265 \
+	        $(BUILD)/h265ref/$$c.ref.yuv || exit 1; \
+	 done
+
+# --- scaling lists: a KNOWN break, at BOTH depths ---------------------------
+# h265.h lists scaling lists as a feature and the decoder parses them, but a
+# stream encoded with --scaling-list=default does not reconstruct bit-exactly
+# at 8 bits (about 126k wrong samples over 12 pictures, maxdelta 36) or at 10
+# (about 169k, maxdelta 144). This was invisible until now because NO case in
+# the 8-bit matrix used a non-flat scaling list -- the feature was claimed and
+# never measured. It is deliberately not in H265_GATE or H265_GATE10, and this
+# target exists so the failure has a name and a number instead of being a gap
+# in the matrix. It is NOT a Main 10 regression: the 8-bit control fails too.
+test-h265-scaling: $(BUILD)/h265_diff
+	@mkdir -p $(BUILD)/h265ref
+	@bash tools/genvideo265.sh $(BUILD)/h265ref m10 >/dev/null
+	@printf '%-18s ' m10-scaling
+	@$(BUILD)/h265_diff $(BUILD)/h265ref/m10-scaling.h265 \
+	    $(BUILD)/h265ref/m10-scaling.ref.yuv | tail -1 || true
 
 # --- per-module gates -------------------------------------------------------
 # A whole-stream test says something is wrong; a module test says what. Each of

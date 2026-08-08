@@ -353,8 +353,19 @@ int h265_parse_sps(h265dec *d, bs_t *bs)
 
     s.bit_depth_luma = (int)bs_ue(bs) + 8;
     s.bit_depth_chroma = (int)bs_ue(bs) + 8;
-    if (s.bit_depth_luma != 8 || s.bit_depth_chroma != 8)
-        return H265_ERR_UNSUPPORTED;          /* Main 8-bit only */
+    /* Main and Main 10. The gate is on the DECLARED SAMPLE DEPTH, deliberately
+     * not on general_profile_idc: a stream may advertise Main 10 and be 8-bit
+     * throughout (normal in an encoding ladder), and a stream may advertise a
+     * profile we have never heard of while using only tools we implement.
+     * parse_ptl() therefore still only skips the profile_tier_level bits.
+     *
+     * Luma and chroma are allowed to differ in the syntax; nothing below
+     * assumes they are equal, every path takes the depth of the component it
+     * is working on. 12-bit and above are refused because the residual and
+     * interpolation intermediates here are sized for <= 10. */
+    if (s.bit_depth_luma < 8 || s.bit_depth_luma > 10 ||
+        s.bit_depth_chroma < 8 || s.bit_depth_chroma > 10)
+        return H265_ERR_UNSUPPORTED;
 
     s.log2_max_poc_lsb = (int)bs_ue(bs) + 4;
     if (s.log2_max_poc_lsb > 16) return H265_ERR_CORRUPT;
@@ -732,7 +743,11 @@ int h265_parse_slice_header(h265dec *d, bs_t *bs, int nal_type,
 
     sl->qp_delta = (int)bs_se(bs);
     sl->qp = pps->init_qp + sl->qp_delta;
-    if (sl->qp < 0 || sl->qp > 51) return H265_ERR_CORRUPT;
+    /* 7.4.7.1: SliceQpY ranges over -QpBdOffsetY .. +51, so at 10 bits a
+     * perfectly legal slice header carries a NEGATIVE QP and the old
+     * `< 0 -> corrupt` test would reject the stream outright. */
+    if (sl->qp < -6 * (sps->bit_depth_luma - 8) || sl->qp > 51)
+        return H265_ERR_CORRUPT;
     if (pps->slice_chroma_qp_offsets_present) {
         sl->cb_qp_offset = (int)bs_se(bs);
         sl->cr_qp_offset = (int)bs_se(bs);

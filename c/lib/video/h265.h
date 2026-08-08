@@ -1,14 +1,14 @@
 /* c/lib/video/h265.h -- public API of the hand-written H.265/HEVC decoder.
  *
- * Main profile, 4:2:0, 8-bit: CABAC entropy, I/P/B slices, the full CTU
- * quadtree (CU 64..8, PU incl. AMP, TU quadtree), 35 intra modes, merge/AMVP
- * with temporal MV prediction, 8-tap luma / 4-tap chroma interpolation,
- * bi-prediction, explicit weighted prediction, transform skip, sign data
- * hiding, scaling lists, PCM, deblocking and SAO, tiles, wavefront entropy
- * sync and dependent slice segments.
+ * Main and Main 10, 4:2:0, 8 or 10 bits per sample: CABAC entropy, I/P/B
+ * slices, the full CTU quadtree (CU 64..8, PU incl. AMP, TU quadtree), 35
+ * intra modes, merge/AMVP with temporal MV prediction, 8-tap luma / 4-tap
+ * chroma interpolation, bi-prediction, explicit weighted prediction, transform
+ * skip, sign data hiding, scaling lists, deblocking and SAO, tiles, wavefront
+ * entropy sync and dependent slice segments.
  *
- * Everything outside that (Main10 and the rest of >8-bit, 4:2:2/4:4:4, the
- * range extensions, SCC, fields, multi-layer) is a clean H265_ERR_UNSUPPORTED,
+ * Everything outside that (12-bit and above, 4:2:2/4:4:4, PCM, the range
+ * extensions, SCC, fields, multi-layer) is a clean H265_ERR_UNSUPPORTED,
  * never a crash: every input byte is UNTRUSTED.
  *
  * Deliberately the same shape as h264.h -- one decoder object, a pull model
@@ -40,14 +40,40 @@
 
 typedef struct h265dec h265dec;
 
-/* One decoded picture, YUV 4:2:0 planar, 8 bits. Rows are `stride*` bytes;
- * the visible area is width x height with the SPS conformance window already
- * applied, so the caller displays from (0,0). */
+/* One decoded picture, YUV 4:2:0 planar. The visible area is width x height
+ * with the SPS conformance window already applied, so the caller displays from
+ * (0,0), and `stride_y`/`stride_c` are counted in SAMPLES -- which is the same
+ * number for both views below, so existing 8-bit indexing arithmetic is
+ * unchanged.
+ *
+ * TWO VIEWS OF THE SAME PICTURE:
+ *
+ *   y16/u16/v16  the decoder's own samples, at the stream's real precision.
+ *                ALWAYS non-NULL. `bit_depth` says how many of the 16 bits are
+ *                significant (8 or 10); values are 0..(1 << bit_depth) - 1.
+ *                THIS is the view to use for anything that must be exact --
+ *                a CRC, a comparison against a reference decoder, a re-encode.
+ *
+ *   y/u/v        an 8-bit DISPLAY view, always non-NULL, always populated.
+ *                When bit_depth == 8 it is the samples exactly. When
+ *                bit_depth > 8 it is a rounded down-conversion, which is
+ *                LOSSY and is a renderer's convenience, never a decode
+ *                result: nothing inside the decoder ever reads it back.
+ *
+ * The split is deliberate. Widening the decoder to 10 bits must not silently
+ * change what an existing 8-bit caller sees, and must not silently hand a
+ * bit-exactness test a truncated picture and let it pass. So the old fields
+ * keep their old type and their old meaning, and exactness moved to a new
+ * name that a caller has to opt into by typing it.
+ *
+ * Both views stay valid until the next h265_decode()/h265_flush() call. */
 typedef struct {
     int width, height;            /* visible (cropped) size */
-    int stride_y, stride_c;
-    const uint8_t *y, *u, *v;
+    int stride_y, stride_c;       /* in SAMPLES, valid for both views */
+    const uint8_t *y, *u, *v;     /* 8-bit display view (lossy if depth > 8) */
     int32_t poc;                  /* presentation order */
+    int bit_depth;                /* 8 or 10: significant bits in y16/u16/v16 */
+    const uint16_t *y16, *u16, *v16;   /* the decoder's real samples */
 } h265frame;
 
 h265dec *h265_open(void);

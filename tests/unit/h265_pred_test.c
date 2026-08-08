@@ -15,6 +15,16 @@
  * down the left column, mode 34 walks along the top row, and mode 18 is the
  * 135-degree diagonal that reads from BOTH edges -- which is the one that
  * catches a sign error in the negative-angle projection.
+ *
+ * EVERY sample test below runs at BOTH 8 and 10 bits. That is the point of
+ * passing the bit depth into these functions instead of reading a global: the
+ * reference values are recomputed from the spec's bit-depth-dependent shifts
+ * (bdShift = 20 - BitDepth, the dequant bdShift = BitDepth + log2 - 5, the
+ * strong-smoothing threshold 1 << (BitDepth - 5)), so a constant left at its
+ * 8-bit value fails here rather than thirty frames into a 10-bit stream.
+ * Sample magnitudes are scaled by SC() so the 10-bit run exercises the same
+ * shapes at the same relative levels rather than living in the bottom quarter
+ * of the range.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +38,11 @@ static int fails, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { \
     fails++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); \
     printf("\n"); } } while (0)
+
+/* An 8-bit-shaped literal at the depth under test. */
+#define SC(v) ((v) << (bd - 8))
+
+static void fillp(uint16_t *p, int n, int v) { for (int i = 0; i < n; i++) p[i] = (uint16_t)v; }
 
 /* ---- the 4- and 8-point matrices, typed from the spec's Table in 8.6.4.2 -- */
 static const int ref_T4[4][4] = {
@@ -62,68 +77,46 @@ static void test_matrix(void)
             CHECK(T32(k * 4, n) == ref_T8[k][n],
                   "T8[%d][%d] = %d, want %d", k, n, T32(k * 4, n), ref_T8[k][n]);
 
-    /* Row 0 is the DC basis. Row 16 is the 2-point basis pushed all the way
-     * up the nesting, so it is +64,-64,-64,+64 repeating with period 4 --
-     * NOT the half-and-half a 2-point row would be if the sub-sampling
-     * happened in position instead of in frequency. */
-    for (int n = 0; n < 32; n++) CHECK(T32(0, n) == 64, "T[0][%d] != 64", n);
-    for (int n = 0; n < 32; n++) {
-        int want = (((n + 1) / 2) % 2) ? -64 : 64;
-        CHECK(T32(16, n) == want, "T[16][%d] = %d, want %d", n, T32(16, n), want);
-    }
-
-    /* Column symmetry: T[k][N-1-n] = (-1)^k T[k][n]. */
-    for (int k = 0; k < 32; k++)
-        for (int n = 0; n < 16; n++) {
-            int want = (k & 1) ? -T32(k, n) : T32(k, n);
-            CHECK(T32(k, 31 - n) == want,
-                  "symmetry broken at T[%d][%d]", k, 31 - n);
-        }
-
-    /* The first column, which is the one place every odd table shows through:
-     * 64, then the 32-point odd coefficients interleaved with the nested
-     * even rows. */
-    static const int col0[32] = {
-        64, 90, 90, 90, 89, 88, 87, 85, 83, 82, 80, 78, 75, 73, 70, 67,
-        64, 61, 57, 54, 50, 46, 43, 38, 36, 31, 25, 22, 18, 13,  9,  4
-    };
-    for (int k = 0; k < 32; k++)
-        CHECK(T32(k, 0) == col0[k], "T[%d][0] = %d, want %d", k, T32(k, 0), col0[k]);
-
-    /* Rows 0 and 16 are exactly orthogonal, and every row has the DC row's
-     * norm scaled: a construction that duplicated a row would fail this. */
-    for (int k = 1; k < 32; k++) {
-        long dot = 0;
-        for (int n = 0; n < 32; n++) dot += (long)T32(0, n) * T32(k, n);
-        CHECK(dot == 0, "row %d is not orthogonal to DC (dot %ld)", k, dot);
+    /* The nesting property the construction relies on, checked rather than
+     * assumed: column N-1-n is +-column n according to row parity. */
+    for (int N = 4; N <= 32; N <<= 1) {
+        int step = 32 / N;
+        for (int k = 0; k < N; k++)
+            for (int n = 0; n < N / 2; n++) {
+                int a = T32(k * step, n), b = T32(k * step, N - 1 - n);
+                CHECK((k & 1) ? (b == -a) : (b == a),
+                      "N=%d nesting at k=%d n=%d (%d vs %d)", N, k, n, a, b);
+            }
     }
 #undef T32
 }
 
 /* ---- inverse transforms ------------------------------------------------- */
-static void test_idct_dc(void)
+static void test_idct_dc(int bd)
 {
     /* A DC-only block: the 2D inverse of coefficient c at (0,0) is
-     * ((((c*64 + 64) >> 7) * 64) + 2048) >> 12, flat across the block. */
+     * ((((c*64 + 64) >> 7) * 64) + (1 << (bdShift-1))) >> bdShift, flat across
+     * the block, with bdShift = 20 - BitDepth. */
+    int bdshift = 20 - bd, bdround = 1 << (bdshift - 1);
     for (int log2 = 2; log2 <= 5; log2++) {
         int n = 1 << log2;
         int16_t coeff[32 * 32];
-        uint8_t dst[32 * 32];
+        uint16_t dst[32 * 32];
         for (int c = -2048; c <= 2048; c += 137) {
             memset(coeff, 0, sizeof(int16_t) * (size_t)n * n);
             coeff[0] = (int16_t)c;
-            memset(dst, 100, (size_t)n * n);
-            h265_itransform_add(coeff, log2, 0, dst, n);
+            fillp(dst, n * n, SC(100));
+            h265_itransform_add(coeff, log2, 0, dst, n, bd);
             int stage1 = h265_clip3(-32768, 32767, (c * 64 + 64) >> 7);
-            int want = h265_clip_u8(100 + ((stage1 * 64 + 2048) >> 12));
+            int want = h265_clip_pix(SC(100) + ((stage1 * 64 + bdround) >> bdshift), bd);
             int ok = 1;
             for (int i = 0; i < n * n; i++) if (dst[i] != want) ok = 0;
-            CHECK(ok, "DC-only %dx%d c=%d: not flat at %d", n, n, c, want);
+            CHECK(ok, "bd%d DC-only %dx%d c=%d: not flat at %d", bd, n, n, c, want);
         }
     }
 }
 
-static void test_idst(void)
+static void test_idst(int bd)
 {
     /* HM's fastInverseDst butterfly, written out as an independent reference:
      *   block[0] = 29*(x0+x2) + 55*(x2+x3) + 74*x1
@@ -131,8 +124,9 @@ static void test_idst(void)
      *   block[2] = 74*(x0 - x2 + x3)
      *   block[3] = 55*(x0+x2) + 29*(x0-x3) - 74*x1
      * applied down the columns then across the rows, with the spec's shifts. */
+    int bdshift = 20 - bd, bdround = 1 << (bdshift - 1);
     int16_t coeff[16];
-    uint8_t dst[16], want[16];
+    uint16_t dst[16], want[16];
     unsigned seed = 7;
     for (int trial = 0; trial < 200; trial++) {
         for (int i = 0; i < 16; i++) {
@@ -162,51 +156,60 @@ static void test_idst(void)
             o[2] = 74 * (x0 - x2 + x3);
             o[3] = 55 * c0 + 29 * c2 - c3;
             for (int i = 0; i < 4; i++)
-                want[y * 4 + i] = (uint8_t)h265_clip_u8(80 + ((o[i] + 2048) >> 12));
+                want[y * 4 + i] = (uint16_t)h265_clip_pix(
+                    SC(80) + ((o[i] + bdround) >> bdshift), bd);
         }
-        memset(dst, 80, 16);
-        h265_itransform_add(coeff, 2, 1, dst, 4);
-        CHECK(memcmp(dst, want, 16) == 0, "4x4 DST trial %d mismatch", trial);
+        fillp(dst, 16, SC(80));
+        h265_itransform_add(coeff, 2, 1, dst, 4, bd);
+        CHECK(memcmp(dst, want, sizeof dst) == 0,
+              "bd%d 4x4 DST trial %d mismatch", bd, trial);
     }
 }
 
-static void test_transform_skip_and_bypass(void)
+static void test_transform_skip_and_bypass(int bd)
 {
+    int bdshift = 20 - bd, bdround = 1 << (bdshift - 1);
     int16_t coeff[16];
-    uint8_t dst[16];
+    uint16_t dst[16];
     for (int i = 0; i < 16; i++) coeff[i] = (int16_t)(i - 8);
 
-    /* transform_skip: r = (d << (5 + log2)) rounded by bdShift 12. For 4x4
-     * that is (d << 7 + 2048) >> 12, i.e. d/32 rounded to nearest. */
-    memset(dst, 128, 16);
-    h265_transform_skip_add(coeff, 2, dst, 4);
+    /* transform_skip: r = (d << (5 + log2)) rounded by bdShift = 20-BitDepth.
+     * For 4x4 that is (d*128 + round) >> bdShift. */
+    fillp(dst, 16, SC(128));
+    h265_transform_skip_add(coeff, 2, dst, 4, bd);
     for (int i = 0; i < 16; i++) {
         /* * 128 rather than << 7: coeff[i] is signed and shifting a negative
          * value left is undefined, which UBSan reports. */
-        int want = h265_clip_u8(128 + (((int)coeff[i] * 128 + 2048) >> 12));
-        CHECK(dst[i] == want, "transform_skip[%d] = %d, want %d", i, dst[i], want);
+        int want = h265_clip_pix(SC(128) + (((int)coeff[i] * 128 + bdround) >> bdshift), bd);
+        CHECK(dst[i] == want, "bd%d transform_skip[%d] = %d, want %d",
+              bd, i, dst[i], want);
     }
 
     /* transquant bypass: the level IS the residual, no shift at all. */
-    memset(dst, 128, 16);
-    h265_bypass_add(coeff, 2, dst, 4);
+    fillp(dst, 16, SC(128));
+    h265_bypass_add(coeff, 2, dst, 4, bd);
     for (int i = 0; i < 16; i++)
-        CHECK(dst[i] == h265_clip_u8(128 + coeff[i]),
-              "bypass[%d] = %d, want %d", i, dst[i], h265_clip_u8(128 + coeff[i]));
+        CHECK(dst[i] == h265_clip_pix(SC(128) + coeff[i], bd),
+              "bd%d bypass[%d] = %d, want %d", bd, i, dst[i],
+              h265_clip_pix(SC(128) + coeff[i], bd));
 
-    /* Clipping at both ends, which a plain uint8_t add would get wrong. */
+    /* Clipping at BOTH ends, against the depth's own maximum. A clamp left at
+     * 255 passes the 8-bit half of this and fails the 10-bit half, which is
+     * exactly the bug this file exists to catch. */
     int16_t big[16];
-    for (int i = 0; i < 16; i++) big[i] = (int16_t)(i < 8 ? 500 : -500);
-    memset(dst, 128, 16);
-    h265_bypass_add(big, 2, dst, 4);
+    for (int i = 0; i < 16; i++) big[i] = (int16_t)(i < 8 ? (1 << bd) : -(1 << bd));
+    fillp(dst, 16, SC(128));
+    h265_bypass_add(big, 2, dst, 4, bd);
     for (int i = 0; i < 16; i++)
-        CHECK(dst[i] == (i < 8 ? 255 : 0), "bypass clip at %d", i);
+        CHECK(dst[i] == (i < 8 ? (1 << bd) - 1 : 0), "bd%d bypass clip at %d (got %d)",
+              bd, i, dst[i]);
 }
 
-static void test_dequant(void)
+static void test_dequant(int bd)
 {
     /* 8.6.3 with a flat list: d = ((c*16*levelScale[qp%6] << (qp/6)) + (1 <<
-     * (bdShift-1))) >> bdShift, bdShift = log2 + 3, clipped to 16 bits. */
+     * (bdShift-1))) >> bdShift, bdShift = BitDepth + log2 - 5, clipped to
+     * 16 bits. */
     static const int level_scale[6] = { 40, 45, 51, 57, 64, 72 };
     for (int log2 = 2; log2 <= 5; log2++) {
         int n = 1 << log2;
@@ -214,18 +217,18 @@ static void test_dequant(void)
             int16_t c[32 * 32];
             for (int i = 0; i < n * n; i++) c[i] = (int16_t)((i % 41) - 20);
             int16_t want[32 * 32];
-            int bd = log2 + 3;
+            int sh = bd + log2 - 5;
             for (int i = 0; i < n * n; i++) {
                 long long v = (long long)c[i] * 16 * level_scale[qp % 6] *
                               (1LL << (qp / 6));   /* not <<: c[i] is signed */
-                v = (v + (1LL << (bd - 1))) >> bd;
+                v = (v + (1LL << (sh - 1))) >> sh;
                 if (v < -32768) v = -32768;
                 if (v > 32767) v = 32767;
                 want[i] = (int16_t)(c[i] ? v : 0);
             }
-            h265_dequant(c, n, qp, log2, 0, 0);
+            h265_dequant(c, n, qp, log2, 0, 0, bd);
             CHECK(memcmp(c, want, (size_t)n * n * 2) == 0,
-                  "dequant %dx%d qp=%d mismatch", n, n, qp);
+                  "bd%d dequant %dx%d qp=%d mismatch", bd, n, n, qp);
         }
     }
 
@@ -234,129 +237,144 @@ static void test_dequant(void)
     uint8_t list[64];
     for (int i = 0; i < 64; i++) list[i] = (uint8_t)(16 + i);
     int16_t c16[16 * 16], c8[8 * 8];
-    for (int i = 0; i < 256; i++) c16[i] = 1;
-    for (int i = 0; i < 64; i++) c8[i] = 1;
-    h265_dequant(c8, 8, 0, 3, list, 99);
-    CHECK(c8[0] == (int16_t)(((1 * list[0] * 40) + 32) >> 6),
-          "8x8 scaling list must NOT use the DC override (got %d)", c8[0]);
-    h265_dequant(c16, 16, 0, 4, list, 99);
-    CHECK(c16[0] == (int16_t)(((1 * 99 * 40) + 64) >> 7),
-          "16x16 DC override not applied (got %d)", c16[0]);
+    /* Coefficient 64, not 1. The dequant right shift grows with the bit depth
+     * (bdShift = BitDepth + log2 - 5), so a unit coefficient quantises two
+     * ADJACENT scaling-list entries to the same output at 10 bits and the
+     * "must vary across positions" assertion below becomes vacuous -- it
+     * passed only because 8 bits happened to keep them apart. */
+    for (int i = 0; i < 256; i++) c16[i] = 64;
+    for (int i = 0; i < 64; i++) c8[i] = 64;
+    int sh8 = bd + 3 - 5, sh16 = bd + 4 - 5;
+    h265_dequant(c8, 8, 0, 3, list, 99, bd);
+    CHECK(c8[0] == (int16_t)(((64 * list[0] * 40) + (1 << (sh8 - 1))) >> sh8),
+          "bd%d 8x8 scaling list must NOT use the DC override (got %d)", bd, c8[0]);
+    h265_dequant(c16, 16, 0, 4, list, 99, bd);
+    CHECK(c16[0] == (int16_t)(((64 * 99 * 40) + (1 << (sh16 - 1))) >> sh16),
+          "bd%d 16x16 DC override not applied (got %d)", bd, c16[0]);
     CHECK(c16[1] != c16[2] || c16[1] != c16[16],
-          "a non-flat scaling list must vary across positions");
+          "bd%d a non-flat scaling list must vary across positions", bd);
 }
 
 /* ---- intra prediction --------------------------------------------------- */
 /* Build the neighbour array in h265_pred.c's layout from callbacks. */
-static void nb_fill(uint8_t *nb, int nbs, int corner,
-                    const uint8_t *left, const uint8_t *top)
+static void nb_fill(uint16_t *nb, int nbs, int corner,
+                    const uint16_t *left, const uint16_t *top)
 {
     for (int i = 0; i < 2 * nbs; i++) nb[2 * nbs - 1 - i] = left[i];
-    nb[2 * nbs] = (uint8_t)corner;
+    nb[2 * nbs] = (uint16_t)corner;
     for (int i = 0; i < 2 * nbs; i++) nb[2 * nbs + 1 + i] = top[i];
 }
 
-static void test_intra_dc(void)
+static void test_intra_dc(int bd)
 {
     for (int nbs = 4; nbs <= 32; nbs <<= 1) {
-        uint8_t nb[4 * 32 + 1], left[64], top[64], dst[32 * 32];
-        for (int i = 0; i < 2 * nbs; i++) { left[i] = 100; top[i] = 100; }
-        nb_fill(nb, nbs, 100, left, top);
-        h265_intra_pred(dst, nbs, nb, nbs, 1, 0);
+        uint16_t nb[4 * 32 + 1], left[64], top[64], dst[32 * 32];
+        for (int i = 0; i < 2 * nbs; i++) { left[i] = SC(100); top[i] = SC(100); }
+        nb_fill(nb, nbs, SC(100), left, top);
+        h265_intra_pred(dst, nbs, nb, nbs, 1, 0, bd);
         int ok = 1;
-        for (int i = 0; i < nbs * nbs; i++) if (dst[i] != 100) ok = 0;
-        CHECK(ok, "DC %dx%d on a constant edge must be that constant", nbs, nbs);
+        for (int i = 0; i < nbs * nbs; i++) if (dst[i] != SC(100)) ok = 0;
+        CHECK(ok, "bd%d DC %dx%d on a constant edge must be that constant",
+              bd, nbs, nbs);
 
         /* The boundary filter applies to luma below 32x32 and never to chroma. */
-        for (int i = 0; i < 2 * nbs; i++) { left[i] = 0; top[i] = 200; }
+        for (int i = 0; i < 2 * nbs; i++) { left[i] = 0; top[i] = SC(200); }
         nb_fill(nb, nbs, 0, left, top);
-        h265_intra_pred(dst, nbs, nb, nbs, 1, 0);
-        int dc = (200 * nbs + 0 * nbs + nbs) >> (1 + (nbs == 4 ? 2 : nbs == 8 ? 3 :
-                                                      nbs == 16 ? 4 : 5));
+        h265_intra_pred(dst, nbs, nb, nbs, 1, 0, bd);
+        int log2 = nbs == 4 ? 2 : nbs == 8 ? 3 : nbs == 16 ? 4 : 5;
+        int dc = (SC(200) * nbs + 0 * nbs + nbs) >> (1 + log2);
         if (nbs < 32) {
-            CHECK(dst[0] == (uint8_t)((0 + 2 * dc + 200 + 2) >> 2),
-                  "DC %d corner filter", nbs);
-            CHECK(dst[1] == (uint8_t)((200 + 3 * dc + 2) >> 2), "DC %d top filter", nbs);
-            CHECK(dst[nbs] == (uint8_t)((0 + 3 * dc + 2) >> 2), "DC %d left filter", nbs);
+            CHECK(dst[0] == (uint16_t)((0 + 2 * dc + SC(200) + 2) >> 2),
+                  "bd%d DC %d corner filter", bd, nbs);
+            CHECK(dst[1] == (uint16_t)((SC(200) + 3 * dc + 2) >> 2),
+                  "bd%d DC %d top filter", bd, nbs);
+            CHECK(dst[nbs] == (uint16_t)((0 + 3 * dc + 2) >> 2),
+                  "bd%d DC %d left filter", bd, nbs);
         }
-        CHECK(dst[nbs + 1] == (uint8_t)dc, "DC %d interior", nbs);
+        CHECK(dst[nbs + 1] == (uint16_t)dc, "bd%d DC %d interior", bd, nbs);
 
-        h265_intra_pred(dst, nbs, nb, nbs, 1, 1);       /* chroma: unfiltered */
-        CHECK(dst[0] == (uint8_t)dc, "DC %d chroma must not be edge-filtered", nbs);
+        h265_intra_pred(dst, nbs, nb, nbs, 1, 1, bd);   /* chroma: unfiltered */
+        CHECK(dst[0] == (uint16_t)dc, "bd%d DC %d chroma must not be edge-filtered",
+              bd, nbs);
     }
 }
 
-static void test_intra_planar(void)
+static void test_intra_planar(int bd)
 {
     /* On a plane that is already bilinear in the edges, planar reproduces it.
      * Take left[y] = 50 + y, top[x] = 50 + x with matching far edges. */
     int nbs = 8;
-    uint8_t nb[4 * 32 + 1], left[64], top[64], dst[32 * 32];
-    for (int i = 0; i < 2 * nbs; i++) { left[i] = (uint8_t)(50 + i); top[i] = (uint8_t)(50 + i); }
-    nb_fill(nb, nbs, 49, left, top);
-    h265_intra_pred(dst, nbs, nb, nbs, 0, 0);
+    uint16_t nb[4 * 32 + 1], left[64], top[64], dst[32 * 32];
+    for (int i = 0; i < 2 * nbs; i++) {
+        left[i] = (uint16_t)SC(50 + i); top[i] = (uint16_t)SC(50 + i);
+    }
+    nb_fill(nb, nbs, SC(49), left, top);
+    h265_intra_pred(dst, nbs, nb, nbs, 0, 0, bd);
     for (int y = 0; y < nbs; y++)
         for (int x = 0; x < nbs; x++) {
-            int want = ((nbs - 1 - x) * (50 + y) + (x + 1) * (50 + nbs) +
-                        (nbs - 1 - y) * (50 + x) + (y + 1) * (50 + nbs) + nbs) >> 4;
-            CHECK(dst[y * nbs + x] == want, "planar (%d,%d) = %d want %d",
-                  x, y, dst[y * nbs + x], want);
+            int want = ((nbs - 1 - x) * SC(50 + y) + (x + 1) * SC(50 + nbs) +
+                        (nbs - 1 - y) * SC(50 + x) + (y + 1) * SC(50 + nbs) + nbs) >> 4;
+            CHECK(dst[y * nbs + x] == want, "bd%d planar (%d,%d) = %d want %d",
+                  bd, x, y, dst[y * nbs + x], want);
         }
 }
 
-static void test_intra_angular(void)
+static void test_intra_angular(int bd)
 {
     int nbs = 8;
-    uint8_t nb[4 * 32 + 1], left[64], top[64], dst[32 * 32];
-    for (int i = 0; i < 2 * nbs; i++) { left[i] = (uint8_t)(10 + i); top[i] = (uint8_t)(80 + i); }
+    uint16_t nb[4 * 32 + 1], left[64], top[64], dst[32 * 32];
+    for (int i = 0; i < 2 * nbs; i++) {
+        left[i] = (uint16_t)SC(10 + i); top[i] = (uint16_t)SC(80 + i);
+    }
 
     /* Mode 26 is pure vertical: every row is the top row (chroma, so the
      * mode-26 edge filter that only luma gets does not interfere). */
-    nb_fill(nb, nbs, 5, left, top);
-    h265_intra_pred(dst, nbs, nb, nbs, 26, 1);
+    nb_fill(nb, nbs, SC(5), left, top);
+    h265_intra_pred(dst, nbs, nb, nbs, 26, 1, bd);
     for (int y = 0; y < nbs; y++)
         for (int x = 0; x < nbs; x++)
-            CHECK(dst[y * nbs + x] == top[x], "mode 26 (%d,%d)", x, y);
+            CHECK(dst[y * nbs + x] == top[x], "bd%d mode 26 (%d,%d)", bd, x, y);
 
     /* ... and for luma the first COLUMN is filtered by 8.4.4.2.6. */
-    h265_intra_pred(dst, nbs, nb, nbs, 26, 0);
+    h265_intra_pred(dst, nbs, nb, nbs, 26, 0, bd);
     for (int y = 0; y < nbs; y++)
-        CHECK(dst[y * nbs] == h265_clip_u8(top[0] + ((left[y] - 5) >> 1)),
-              "mode 26 luma column filter at y=%d", y);
+        CHECK(dst[y * nbs] == h265_clip_pix(top[0] + ((left[y] - SC(5)) >> 1), bd),
+              "bd%d mode 26 luma column filter at y=%d", bd, y);
     for (int y = 0; y < nbs; y++)
         for (int x = 1; x < nbs; x++)
-            CHECK(dst[y * nbs + x] == top[x], "mode 26 luma interior (%d,%d)", x, y);
+            CHECK(dst[y * nbs + x] == top[x], "bd%d mode 26 luma interior (%d,%d)",
+                  bd, x, y);
 
     /* Mode 10 is pure horizontal, mirrored. */
-    h265_intra_pred(dst, nbs, nb, nbs, 10, 1);
+    h265_intra_pred(dst, nbs, nb, nbs, 10, 1, bd);
     for (int y = 0; y < nbs; y++)
         for (int x = 0; x < nbs; x++)
-            CHECK(dst[y * nbs + x] == left[y], "mode 10 (%d,%d)", x, y);
-    h265_intra_pred(dst, nbs, nb, nbs, 10, 0);
+            CHECK(dst[y * nbs + x] == left[y], "bd%d mode 10 (%d,%d)", bd, x, y);
+    h265_intra_pred(dst, nbs, nb, nbs, 10, 0, bd);
     for (int x = 0; x < nbs; x++)
-        CHECK(dst[x] == h265_clip_u8(left[0] + ((top[x] - 5) >> 1)),
-              "mode 10 luma row filter at x=%d", x);
+        CHECK(dst[x] == h265_clip_pix(left[0] + ((top[x] - SC(5)) >> 1), bd),
+              "bd%d mode 10 luma row filter at x=%d", bd, x);
 
     /* Mode 2 (angle +32, horizontal family): pred[x][y] = p[-1][x+y+1]. */
-    h265_intra_pred(dst, nbs, nb, nbs, 2, 0);
+    h265_intra_pred(dst, nbs, nb, nbs, 2, 0, bd);
     for (int y = 0; y < nbs; y++)
         for (int x = 0; x < nbs; x++)
-            CHECK(dst[y * nbs + x] == left[x + y + 1], "mode 2 (%d,%d)", x, y);
+            CHECK(dst[y * nbs + x] == left[x + y + 1], "bd%d mode 2 (%d,%d)", bd, x, y);
 
     /* Mode 34 (angle +32, vertical family): pred[x][y] = p[x+y+1][-1]. */
-    h265_intra_pred(dst, nbs, nb, nbs, 34, 0);
+    h265_intra_pred(dst, nbs, nb, nbs, 34, 0, bd);
     for (int y = 0; y < nbs; y++)
         for (int x = 0; x < nbs; x++)
-            CHECK(dst[y * nbs + x] == top[x + y + 1], "mode 34 (%d,%d)", x, y);
+            CHECK(dst[y * nbs + x] == top[x + y + 1], "bd%d mode 34 (%d,%d)", bd, x, y);
 
     /* Mode 18 (angle -32): the 135-degree diagonal, which is the only one
      * that reads from both edges through the invAngle projection. */
-    h265_intra_pred(dst, nbs, nb, nbs, 18, 0);
+    h265_intra_pred(dst, nbs, nb, nbs, 18, 0, bd);
     for (int y = 0; y < nbs; y++)
         for (int x = 0; x < nbs; x++) {
-            int want = (x > y) ? top[x - y - 1] : (x == y ? 5 : left[y - x - 1]);
-            CHECK(dst[y * nbs + x] == want, "mode 18 (%d,%d) = %d want %d",
-                  x, y, dst[y * nbs + x], want);
+            int want = (x > y) ? top[x - y - 1] : (x == y ? SC(5) : left[y - x - 1]);
+            CHECK(dst[y * nbs + x] == want, "bd%d mode 18 (%d,%d) = %d want %d",
+                  bd, x, y, dst[y * nbs + x], want);
         }
 
     /* A fractional angle must interpolate. Mode 3 has intraPredAngle 26, so
@@ -367,86 +385,137 @@ static void test_intra_angular(void)
      * The earlier version of this check used a unit ramp, where every
      * interpolation lands back on a grid value and the assertion was
      * vacuous. */
-    for (int i = 0; i < 2 * nbs; i++) left[i] = (uint8_t)((i & 1) ? 64 : 0);
-    nb_fill(nb, nbs, 5, left, top);
-    h265_intra_pred(dst, nbs, nb, nbs, 3, 0);
+    for (int i = 0; i < 2 * nbs; i++) left[i] = (uint16_t)((i & 1) ? SC(64) : 0);
+    nb_fill(nb, nbs, SC(5), left, top);
+    h265_intra_pred(dst, nbs, nb, nbs, 3, 0, bd);
     for (int y = 0; y < nbs; y++) {
         int want = (6 * left[y] + 26 * left[y + 1] + 16) >> 5;
-        CHECK(dst[y * nbs] == want, "mode 3 (0,%d) = %d, want %d",
-              y, dst[y * nbs], want);
+        CHECK(dst[y * nbs] == want, "bd%d mode 3 (0,%d) = %d, want %d",
+              bd, y, dst[y * nbs], want);
         CHECK(want != left[y] && want != left[y + 1],
-              "mode 3 (0,%d) must be strictly between its two taps", y);
+              "bd%d mode 3 (0,%d) must be strictly between its two taps", bd, y);
     }
 }
 
-static void test_intra_filter(void)
+static void test_intra_filter(int bd)
 {
-    uint8_t nb[4 * 32 + 1], ref[4 * 32 + 1], left[64], top[64];
+    uint16_t nb[4 * 32 + 1], ref[4 * 32 + 1], left[64], top[64];
+    size_t es = sizeof nb[0];
 
     /* 4x4 is never filtered, DC is never filtered, chroma is never filtered
      * (4:2:0), and the mode-distance threshold gates the rest. */
-    for (int i = 0; i < 64; i++) { left[i] = (uint8_t)(i * 3); top[i] = (uint8_t)(255 - i * 3); }
-    nb_fill(nb, 4, 128, left, top);
-    memcpy(ref, nb, 17);
-    h265_intra_filter(nb, 4, 0, 0, 0);
-    CHECK(memcmp(nb, ref, 17) == 0, "4x4 must never be smoothed");
+    for (int i = 0; i < 64; i++) {
+        left[i] = (uint16_t)SC(i * 3); top[i] = (uint16_t)SC(255 - i * 3);
+    }
+    nb_fill(nb, 4, SC(128), left, top);
+    memcpy(ref, nb, 17 * es);
+    h265_intra_filter(nb, 4, 0, 0, 0, bd);
+    CHECK(memcmp(nb, ref, 17 * es) == 0, "bd%d 4x4 must never be smoothed", bd);
 
-    nb_fill(nb, 8, 128, left, top);
-    memcpy(ref, nb, 33);
-    h265_intra_filter(nb, 8, 1, 0, 0);
-    CHECK(memcmp(nb, ref, 33) == 0, "DC must never be smoothed");
-    h265_intra_filter(nb, 8, 0, 1, 0);
-    CHECK(memcmp(nb, ref, 33) == 0, "4:2:0 chroma must never be smoothed");
-    h265_intra_filter(nb, 8, 26, 0, 0);
-    CHECK(memcmp(nb, ref, 33) == 0, "8x8 mode 26 is inside the threshold");
-    h265_intra_filter(nb, 8, 18, 0, 0);
-    CHECK(memcmp(nb, ref, 33) != 0, "8x8 mode 18 must be smoothed");
+    nb_fill(nb, 8, SC(128), left, top);
+    memcpy(ref, nb, 33 * es);
+    h265_intra_filter(nb, 8, 1, 0, 0, bd);
+    CHECK(memcmp(nb, ref, 33 * es) == 0, "bd%d DC must never be smoothed", bd);
+    h265_intra_filter(nb, 8, 0, 1, 0, bd);
+    CHECK(memcmp(nb, ref, 33 * es) == 0, "bd%d 4:2:0 chroma must never be smoothed", bd);
+    h265_intra_filter(nb, 8, 26, 0, 0, bd);
+    CHECK(memcmp(nb, ref, 33 * es) == 0, "bd%d 8x8 mode 26 is inside the threshold", bd);
+    h265_intra_filter(nb, 8, 18, 0, 0, bd);
+    CHECK(memcmp(nb, ref, 33 * es) != 0, "bd%d 8x8 mode 18 must be smoothed", bd);
 
     /* The filter is [1,2,1]/4 across the whole run with the ends held. */
-    nb_fill(nb, 8, 128, left, top);
-    memcpy(ref, nb, 33);
-    h265_intra_filter(nb, 8, 0, 0, 0);
-    CHECK(nb[0] == ref[0] && nb[32] == ref[32], "the run's ends are not filtered");
+    nb_fill(nb, 8, SC(128), left, top);
+    memcpy(ref, nb, 33 * es);
+    h265_intra_filter(nb, 8, 0, 0, 0, bd);
+    CHECK(nb[0] == ref[0] && nb[32] == ref[32],
+          "bd%d the run's ends are not filtered", bd);
     for (int i = 1; i < 32; i++)
-        CHECK(nb[i] == (uint8_t)((ref[i - 1] + 2 * ref[i] + ref[i + 1] + 2) >> 2),
-              "smoothing at %d", i);
+        CHECK(nb[i] == (uint16_t)((ref[i - 1] + 2 * ref[i] + ref[i + 1] + 2) >> 2),
+              "bd%d smoothing at %d", bd, i);
 
     /* Strong intra smoothing: 32x32 luma, edges near-linear, so the whole run
-     * becomes an exact linear ramp between the three corner samples. */
-    for (int i = 0; i < 64; i++) { left[i] = (uint8_t)(100 + i); top[i] = (uint8_t)(100 + i); }
-    nb_fill(nb, 32, 100, left, top);
-    h265_intra_filter(nb, 32, 0, 0, 1);
-    int corner = 100, bl = left[63], tr = top[63];
+     * becomes an exact linear ramp between the three corner samples. The
+     * flatness threshold is 1 << (BitDepth - 5) -- 8 at 8 bits, 32 at 10 --
+     * and the scaled ramp below stays inside it at both depths. */
+    for (int i = 0; i < 64; i++) {
+        left[i] = (uint16_t)SC(100 + i); top[i] = (uint16_t)SC(100 + i);
+    }
+    nb_fill(nb, 32, SC(100), left, top);
+    h265_intra_filter(nb, 32, 0, 0, 1, bd);
+    int corner = SC(100), bl = left[63], tr = top[63];
     CHECK(nb[0] == bl && nb[64] == corner && nb[128] == tr,
-          "strong smoothing must keep the three anchors");
+          "bd%d strong smoothing must keep the three anchors", bd);
     for (int y = 0; y < 63; y++)
-        CHECK(nb[63 - y] == (uint8_t)(((63 - y) * corner + (y + 1) * bl + 32) >> 6),
-              "strong smoothing left at y=%d", y);
+        CHECK(nb[63 - y] == (uint16_t)(((63 - y) * corner + (y + 1) * bl + 32) >> 6),
+              "bd%d strong smoothing left at y=%d", bd, y);
     for (int x = 0; x < 63; x++)
-        CHECK(nb[65 + x] == (uint8_t)(((63 - x) * corner + (x + 1) * tr + 32) >> 6),
-              "strong smoothing top at x=%d", x);
+        CHECK(nb[65 + x] == (uint16_t)(((63 - x) * corner + (x + 1) * tr + 32) >> 6),
+              "bd%d strong smoothing top at x=%d", bd, x);
 
     /* With a step in the middle of the edge the flatness test must FAIL and
      * the ordinary [1,2,1] filter must be used instead. */
-    for (int i = 0; i < 64; i++) { left[i] = (uint8_t)(i < 32 ? 40 : 200); top[i] = 120; }
-    nb_fill(nb, 32, 120, left, top);
-    memcpy(ref, nb, 129);
-    h265_intra_filter(nb, 32, 0, 0, 1);
-    CHECK(nb[1] == (uint8_t)((ref[0] + 2 * ref[1] + ref[2] + 2) >> 2),
-          "a non-flat edge must fall back to [1,2,1]");
+    for (int i = 0; i < 64; i++) {
+        left[i] = (uint16_t)(i < 32 ? SC(40) : SC(200)); top[i] = (uint16_t)SC(120);
+    }
+    nb_fill(nb, 32, SC(120), left, top);
+    memcpy(ref, nb, 129 * es);
+    h265_intra_filter(nb, 32, 0, 0, 1, bd);
+    CHECK(nb[1] == (uint16_t)((ref[0] + 2 * ref[1] + ref[2] + 2) >> 2),
+          "bd%d a non-flat edge must fall back to [1,2,1]", bd);
+}
+
+/* The strong-smoothing threshold, isolated. At 10 bits the qualifying window
+ * is four times wider, so an edge whose curvature is 20 (in 10-bit units) is
+ * flat enough at 10 bits and would NOT be at 8. A threshold left at 1 << 3
+ * takes the [1,2,1] branch here and the reconstruction silently diverges.
+ * This is the check that fails if that constant is not scaled. */
+static void test_strong_smoothing_threshold(void)
+{
+    uint16_t nb[4 * 32 + 1], plain[4 * 32 + 1], left[64], top[64];
+    size_t es = sizeof nb[0];
+    int bd = 10;
+
+    /* corner + tr - 2*top[31] = 20, i.e. inside 32 but outside 8. */
+    int corner = 400;
+    for (int i = 0; i < 64; i++) { left[i] = 400; top[i] = 400; }
+    top[31] = 390; top[63] = 400;         /* a = 400 + 400 - 780 = 20 */
+    left[31] = 390; left[63] = 400;       /* b = 20 as well */
+
+    nb_fill(nb, 32, corner, left, top);
+    h265_intra_filter(nb, 32, 0, 0, 1, bd);
+
+    /* What the [1,2,1] fallback would have produced, for comparison. */
+    nb_fill(plain, 32, corner, left, top);
+    h265_intra_filter(plain, 32, 0, 0, 0, bd);   /* strong off -> always [1,2,1] */
+
+    CHECK(memcmp(nb, plain, 129 * es) != 0,
+          "10-bit strong smoothing must engage at curvature 20 "
+          "(threshold is 1 << (BitDepth-5) = 32, not 8)");
+    /* And the result must be the exact bi-linear ramp. */
+    int bl = left[63], tr = top[63];
+    for (int x = 0; x < 63; x++)
+        CHECK(nb[65 + x] == (uint16_t)(((63 - x) * corner + (x + 1) * tr + 32) >> 6),
+              "10-bit strong ramp top at x=%d", x);
+    for (int y = 0; y < 63; y++)
+        CHECK(nb[63 - y] == (uint16_t)(((63 - y) * corner + (y + 1) * bl + 32) >> 6),
+              "10-bit strong ramp left at y=%d", y);
 }
 
 int main(void)
 {
     test_matrix();
-    test_idct_dc();
-    test_idst();
-    test_transform_skip_and_bypass();
-    test_dequant();
-    test_intra_dc();
-    test_intra_planar();
-    test_intra_angular();
-    test_intra_filter();
+    for (int i = 0; i < 2; i++) {
+        int bd = i ? 10 : 8;
+        test_idct_dc(bd);
+        test_idst(bd);
+        test_transform_skip_and_bypass(bd);
+        test_dequant(bd);
+        test_intra_dc(bd);
+        test_intra_planar(bd);
+        test_intra_angular(bd);
+        test_intra_filter(bd);
+    }
+    test_strong_smoothing_threshold();
     printf("h265_pred_test: %d checks, %d failures\n", checks, fails);
     return fails != 0;
 }

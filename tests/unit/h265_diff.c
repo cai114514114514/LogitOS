@@ -7,6 +7,12 @@
  * Same shape as h264_diff.c next door. Also prints the per-picture profile of
  * the first few bad pictures, because "picture 0 is wrong" and "picture 0 is
  * right and picture 1 is wrong" are different bugs (intra/transform vs inter).
+ *
+ * Counts SAMPLES, not bytes, and compares at the stream's own precision: an
+ * 8-bit stream against yuv420p, a 10-bit one against yuv420p10le. maxdelta is
+ * therefore in units of the stream's depth -- a delta of 6 at 10 bits is a
+ * quarter of the error a delta of 6 at 8 bits is, and reading it as the same
+ * number would flatter a 10-bit regression.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,13 +29,16 @@ static uint8_t *slurp(const char *p, long *n)
     fclose(f); return b;
 }
 
-static long cmp_plane(const uint8_t *got, int stride, const uint8_t *want,
-                      int w, int h, long *first, int *maxdelta)
+/* `want` is `ss` bytes per sample, little-endian when ss == 2. */
+static long cmp_plane(const uint16_t *got, int stride, const uint8_t *want,
+                      int w, int h, int ss, long *first, int *maxdelta)
 {
     long bad = 0;
-    for (int y = 0; y < h; y++)
+    for (int y = 0; y < h; y++) {
+        const uint8_t *wr = want + (long)y * w * ss;
         for (int x = 0; x < w; x++) {
-            int g = got[(long)y * stride + x], r = want[(long)y * w + x];
+            int g = got[(long)y * stride + x];
+            int r = ss == 2 ? (wr[2 * x] | (wr[2 * x + 1] << 8)) : wr[x];
             if (g != r) {
                 if (!bad && first) *first = (long)y * w + x;
                 int dd = g > r ? g - r : r - g;
@@ -37,6 +46,7 @@ static long cmp_plane(const uint8_t *got, int stride, const uint8_t *want,
                 bad++;
             }
         }
+    }
     return bad;
 }
 
@@ -49,7 +59,7 @@ int main(int argc, char **argv)
     h265dec *d = h265_open();
     long off = 0, roff = 0;
     long bad_y = 0, bad_u = 0, bad_v = 0;
-    int frames = 0, badframes = 0, maxdelta = 0;
+    int frames = 0, badframes = 0, maxdelta = 0, depth = 8;
 
     for (;;) {
         h265frame f; int got = 0, n;
@@ -63,12 +73,16 @@ int main(int argc, char **argv)
         if (!got) { if (h265_flush(d, &f) != 1) break; }
 
         int W = f.width, H = f.height, CW = (W + 1) / 2, CH = (H + 1) / 2;
-        long need = (long)W * H + 2L * CW * CH;
+        int ss = f.bit_depth > 8 ? 2 : 1;
+        depth = f.bit_depth;
+        long need = ((long)W * H + 2L * CW * CH) * ss;
         if (roff + need > rlen) { printf("  ref exhausted at picture %d\n", frames); break; }
-        long by = cmp_plane(f.y, f.stride_y, ref + roff, W, H, 0, &maxdelta);
-        long bu = cmp_plane(f.u, f.stride_c, ref + roff + (long)W * H, CW, CH, 0, &maxdelta);
-        long bv = cmp_plane(f.v, f.stride_c, ref + roff + (long)W * H + (long)CW * CH,
-                            CW, CH, 0, &maxdelta);
+        long by = cmp_plane(f.y16, f.stride_y, ref + roff, W, H, ss, 0, &maxdelta);
+        long bu = cmp_plane(f.u16, f.stride_c, ref + roff + (long)W * H * ss,
+                            CW, CH, ss, 0, &maxdelta);
+        long bv = cmp_plane(f.v16, f.stride_c,
+                            ref + roff + ((long)W * H + (long)CW * CH) * ss,
+                            CW, CH, ss, 0, &maxdelta);
         if (by | bu | bv) {
             badframes++;
             if (badframes <= 3)
@@ -79,8 +93,10 @@ int main(int argc, char **argv)
         roff += need;
         frames++;
     }
-    printf("  pictures %d, bad %d, bytes wrong: Y %ld  U %ld  V %ld  total %ld  maxdelta %d\n",
-           frames, badframes, bad_y, bad_u, bad_v, bad_y + bad_u + bad_v, maxdelta);
+    printf("  pictures %d, bad %d, samples wrong: Y %ld  U %ld  V %ld  total %ld  "
+           "maxdelta %d (%d-bit)\n",
+           frames, badframes, bad_y, bad_u, bad_v, bad_y + bad_u + bad_v,
+           maxdelta, depth);
     h265_close(d);
     free(s);
     free(ref);

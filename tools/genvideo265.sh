@@ -8,8 +8,15 @@
 # Usage: genvideo265.sh <outdir> [group]
 #   group = "core"  (default) the I/P subset the decoder is gated on
 #           "b"     the B-slice / reordering subset
-#           "all"   both
+#           "m10"   the Main 10 subset (10 bits per sample)
+#           "all"   all three
 # Produces <outdir>/<case>.h265 and <outdir>/<case>.ref.yuv for each case.
+#
+# NOTE ON THE REFERENCE FORMAT: the .ref.yuv of an 8-bit case is yuv420p, one
+# byte per sample; of a 10-bit case it is yuv420p10le, TWO bytes per sample.
+# h265_test derives which to expect from the stream's own SPS rather than from
+# the file name, so a 10-bit decode can never be "checked" against an 8-bit
+# reference by reading half of it.
 #
 # NOTE ON DETERMINISM: libx265's default rate control is threaded and its
 # lookahead is not reproducible across builds, so every case pins
@@ -48,8 +55,26 @@ case_gen() {
     echo "  $name: $(stat -c%s "$OUT/$name.h265") bytes"
 }
 
+# The same, at 10 bits per sample. Separate function rather than a pix_fmt
+# argument so that the reference is ALWAYS written in the matching format --
+# the one mistake that would make a 10-bit case silently meaningless.
+case_gen10() {
+    local name="$1" input="$2" dur="$3"; shift 3
+    local params="$*"
+    ffmpeg -v error -f lavfi -i "$input" -t "$dur" \
+        -c:v libx265 -pix_fmt yuv420p10le -preset medium \
+        -x265-params "$params" -f hevc "$OUT/$name.h265" -y
+    ffmpeg -v error -i "$OUT/$name.h265" -f rawvideo -pix_fmt yuv420p10le \
+        "$OUT/$name.ref.yuv" -y
+    echo "  $name: $(stat -c%s "$OUT/$name.h265") bytes (10-bit)"
+}
+
 TS="testsrc2=rate=30"
 MV="mandelbrot=rate=30"
+# Squeeze the whole picture into the TOP of the 10-bit range and let it reach
+# the maximum: every Clip1 in the decoder is (1 << BitDepth) - 1, and a clamp
+# left at 255 costs nothing on mid-range content and everything here.
+TOP="format=yuv420p10le,lutyuv=y=val*0.3+716"
 
 if [ "$GROUP" = core ] || [ "$GROUP" = all ]; then
     # --- I only. Intra prediction (35 modes), the DST-VII 4x4, the DCT-II
@@ -111,6 +136,75 @@ if [ "$GROUP" = b ] || [ "$GROUP" = all ]; then
              "$BDET:bframes=4:b-adapt=0:b-pyramid=1:qp=27"
     case_gen b-weighted      "$MV:size=320x240,fade=t=out:st=0:d=1" 1.0 \
              "$BDET:bframes=3:b-adapt=0:qp=27:weightb=1"
+fi
+
+if [ "$GROUP" = m10 ] || [ "$GROUP" = all ]; then
+    # ---------------------------------------------------------------- Main 10
+    # 10 bits per sample. Everything the 8-bit matrix covers has a bit-depth
+    # dependency somewhere behind it -- the dequant and transform bdShifts,
+    # the interpolation's shift1/shift3, the deblocking beta/tC scaling, the
+    # SAO band shift and the SAO offset's cMax -- so this is not "the same
+    # tests again", it is the same tools down a different arithmetic path.
+    #
+    # x265 reports these as profile "Main 10" (or "Main 10 Intra", whose
+    # profile_idc is a RANGE EXTENSIONS value). The decoder gates on the
+    # coded bit depth, never on the profile byte, which is exactly why the
+    # intra cases below decode at all.
+    M10="pools=none:frame-threads=1:wpp=0:rc-lookahead=0"
+
+    # Intra only, three QPs. Low QP means large coefficients and the
+    # transform's bdShift = 20 - BitDepth doing real work; high QP means the
+    # dequant bdShift = BitDepth + log2 - 5 doing it.
+    case_gen10 m10-i-160x120  "$TS:size=160x120" 0.4 "$M10:keyint=1:bframes=0:qp=27"
+    case_gen10 m10-i-qp12     "$TS:size=160x120" 0.3 "$M10:keyint=1:bframes=0:qp=12"
+    case_gen10 m10-i-qp40     "$TS:size=160x120" 0.3 "$M10:keyint=1:bframes=0:qp=40"
+    # Not a multiple of the CTB: the crop path at 10 bits.
+    case_gen10 m10-i-322x242  "$TS:size=322x242" 0.3 "$M10:keyint=1:bframes=0:qp=27"
+
+    # THE CLAMP CASE. Content pushed hard against the top of the 10-bit range,
+    # because every Clip1Y/Clip1C in the decoder is (1 << BitDepth) - 1 and a
+    # clamp left at 255 is INVISIBLE on ordinary mid-range content and wrong
+    # on bright content. Deblocking, SAO and the weighted/bi prediction
+    # rounding all overshoot near white, which is where they get caught.
+    case_gen10 m10-bright     "$TS:size=160x120,$TOP" 0.4 "$M10:keyint=1:bframes=0:qp=24"
+    case_gen10 m10-bright-ip  "$TS:size=160x120,$TOP" 0.7 "$M10:bframes=0:qp=24"
+
+    # Inter at 10 bits: the interpolation intermediate is 14 bits at EVERY
+    # depth, so the filter sums shift by BitDepth - 8 and the full-pel copy by
+    # 14 - BitDepth. Getting either wrong is wrong on every fractional vector.
+    case_gen10 m10-ip-320x240 "$TS:size=320x240" 0.7 "$M10:bframes=0:qp=27"
+    case_gen10 m10-ip-640x360 "$MV:size=640x360" 0.5 "$M10:bframes=0:qp=27"
+    case_gen10 m10-ip-refs4   "$MV:size=320x240" 0.7 "$M10:bframes=0:qp=27:ref=4"
+    case_gen10 m10-ip-amp     "$MV:size=320x240" 0.5 "$M10:bframes=0:qp=27:amp=1:rect=1"
+
+    # Transform skip + sign data hiding at 10 bits: transform skip goes
+    # through the same bdShift and is the path with no transform to hide a
+    # wrong shift behind.
+    case_gen10 m10-tskip      "$TS:size=160x120" 0.5 \
+               "$M10:bframes=0:qp=32:tskip=1:signhide=1"
+    # Scaling lists at 10 bits (the dequant bdShift again, with m[x][y] != 16).
+    case_gen10 m10-scaling    "$TS:size=160x120" 0.4 \
+               "$M10:keyint=1:bframes=0:qp=27:scaling-list=default"
+    # Wavefronts at 10 bits: entry points and CABAC context save/restore.
+    case_gen10 m10-wpp        "$TS:size=320x240" 0.5 \
+               "pools=none:frame-threads=1:rc-lookahead=0:bframes=0:qp=27:wpp=1"
+
+    # NO 10-bit TILES case, deliberately: x265 does not implement tiles at
+    # all (there is no --tiles), and no encoder available here emits them, so
+    # the 8-bit matrix has no tiles case either. Tiles ARE implemented in the
+    # decoder (column/row boundaries, the tile-scan tables, per-tile CABAC
+    # re-init) and are therefore UNVERIFIED at both depths. Saying so is
+    # better than a case that measures the encoder's refusal.
+
+    # B slices at 10 bits, kept in the m10 group but gated separately for the
+    # same reason the 8-bit ones are: they are not bit-exact yet at EITHER
+    # depth. See tests/h265.mk.
+    BM10="pools=none:frame-threads=1:wpp=0:rc-lookahead=8"
+    case_gen10 m10-b-320x240  "$TS:size=320x240" 0.7 "$BM10:bframes=3:b-adapt=0:qp=27"
+    case_gen10 m10-b-pyramid  "$MV:size=320x240" 0.7 \
+               "$BM10:bframes=4:b-adapt=0:b-pyramid=1:qp=27"
+    case_gen10 m10-b-weighted "$MV:size=320x240,fade=t=out:st=0:d=1" 0.7 \
+               "$BM10:bframes=3:b-adapt=0:qp=27:weightb=1"
 fi
 
 echo "genvideo265: matrix ($GROUP) generated in $OUT"

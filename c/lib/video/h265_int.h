@@ -241,9 +241,9 @@ typedef struct {
 } colmv_t;
 
 typedef struct {
-    uint8_t *y, *u, *v;
-    uint8_t *base;
-    int stride_y, stride_c;
+    uint16_t *y, *u, *v;
+    uint16_t *base;
+    int stride_y, stride_c;        /* in SAMPLES */
     int used;
     int reference;         /* 0 none, 1 short-term, 2 long-term */
     int output;            /* still needs to be output */
@@ -347,22 +347,25 @@ int   h265_cabac_pos(const cabac_t *c);
 /* ------------------------------------------------------------ h265_pred -- */
 /* Inverse transform + dequant of one nTbS x nTbS block, adding into dst.
  * `coeff` is in raster order inside the block. trType 1 selects the 4x4 DST. */
+/* `bd` is the component's BitDepth (8 or 10). Every one of these is bit-depth
+ * dependent in the spec and takes it explicitly rather than reading a global,
+ * so tests/unit/h265_pred_test.c can drive the SAME function at both depths. */
 void h265_dequant(int16_t *coeff, int n, int qp, int log2_size,
-                  const uint8_t *scaling, int dc_scale);
+                  const uint8_t *scaling, int dc_scale, int bd);
 void h265_itransform_add(const int16_t *coeff, int log2_size, int tr_type,
-                         uint8_t *dst, int stride);
+                         uint16_t *dst, int stride, int bd);
 void h265_transform_skip_add(const int16_t *coeff, int log2_size,
-                             uint8_t *dst, int stride);
+                             uint16_t *dst, int stride, int bd);
 void h265_bypass_add(const int16_t *coeff, int log2_size,
-                     uint8_t *dst, int stride);
+                     uint16_t *dst, int stride, int bd);
 /* Intra prediction into dst. `nb` holds the 4*nTbS+1 reference samples in the
  * spec's layout: nb[0] = p[-1][2*nTbS-1] .. nb[2*nTbS-1] = p[-1][0],
  * nb[2*nTbS] = p[-1][-1], nb[2*nTbS+1] = p[0][-1] .. nb[4*nTbS] =
  * p[2*nTbS-1][-1]. h265_intra_filter() applies 8.4.4.2.3 in place. */
-void h265_intra_filter(uint8_t *nb, int nbs, int mode, int c_idx,
-                       int strong_smoothing);
-void h265_intra_pred(uint8_t *dst, int stride, const uint8_t *nb,
-                     int nbs, int mode, int c_idx);
+void h265_intra_filter(uint16_t *nb, int nbs, int mode, int c_idx,
+                       int strong_smoothing, int bd);
+void h265_intra_pred(uint16_t *dst, int stride, const uint16_t *nb,
+                     int nbs, int mode, int c_idx, int bd);
 
 /* -------------------------------------------------------------- h265_mc -- */
 /* One WxH block of inter prediction at 14-bit intermediate precision. `ref`
@@ -370,21 +373,25 @@ void h265_intra_pred(uint8_t *dst, int stride, const uint8_t *nb,
  * H265_PAD replicated border samples on every side. mv is in quarter-pel
  * (luma) units; chroma derives its eighth-pel phase from the same vector. */
 void h265_mc_luma(int16_t *dst, int dst_stride,
-                  const uint8_t *ref, int ref_stride, int pw, int ph,
-                  int x, int y, int w, int h, int mvx, int mvy, uint8_t *emu);
+                  const uint16_t *ref, int ref_stride, int pw, int ph,
+                  int x, int y, int w, int h, int mvx, int mvy, uint16_t *emu,
+                  int bd);
 void h265_mc_chroma(int16_t *dst, int dst_stride,
-                    const uint8_t *ref, int ref_stride, int pw, int ph,
-                    int x, int y, int w, int h, int mvx, int mvy, uint8_t *emu);
-/* 8.5.3.3.4 weighted sample prediction. */
-void h265_pred_uni(uint8_t *dst, int dst_stride, const int16_t *src, int src_stride,
-                   int w, int h);
-void h265_pred_bi(uint8_t *dst, int dst_stride, const int16_t *s0, int s0_stride,
-                  const int16_t *s1, int s1_stride, int w, int h);
-void h265_pred_uni_w(uint8_t *dst, int dst_stride, const int16_t *src, int src_stride,
-                     int w, int h, int denom, int weight, int offset);
-void h265_pred_bi_w(uint8_t *dst, int dst_stride, const int16_t *s0, int s0_stride,
+                    const uint16_t *ref, int ref_stride, int pw, int ph,
+                    int x, int y, int w, int h, int mvx, int mvy, uint16_t *emu,
+                    int bd);
+/* 8.5.3.3.4 weighted sample prediction. The `offset` arguments are the values
+ * as CODED in the slice header; scaling them by WpOffsetBdShift is these
+ * functions' job, not the caller's. */
+void h265_pred_uni(uint16_t *dst, int dst_stride, const int16_t *src, int src_stride,
+                   int w, int h, int bd);
+void h265_pred_bi(uint16_t *dst, int dst_stride, const int16_t *s0, int s0_stride,
+                  const int16_t *s1, int s1_stride, int w, int h, int bd);
+void h265_pred_uni_w(uint16_t *dst, int dst_stride, const int16_t *src, int src_stride,
+                     int w, int h, int denom, int weight, int offset, int bd);
+void h265_pred_bi_w(uint16_t *dst, int dst_stride, const int16_t *s0, int s0_stride,
                     const int16_t *s1, int s1_stride, int w, int h,
-                    int denom, int w0, int o0, int w1, int o1);
+                    int denom, int w0, int o0, int w1, int o1, int bd);
 
 /* --------------------------------------------------------- h265_deblock -- */
 struct h265dec;
@@ -484,10 +491,14 @@ typedef struct h265dec {
     int eos;
     int err;
     /* Edge-emulation scratch: a 64x64 PU plus the 8-tap filter's support. */
-    uint8_t emu[(64 + 8) * (64 + 8)];
+    uint16_t emu[(64 + 8) * (64 + 8)];
     int16_t tmp0[64 * 64], tmp1[64 * 64];
     int16_t coeff[32 * 32];
-    uint8_t *sao_src;                /* deblocked copy SAO reads from */
+    uint16_t *sao_src;               /* deblocked copy SAO reads from */
+    /* The 8-bit display shadow handed to callers through h265frame.y/u/v.
+     * One buffer, rebuilt per output picture; see build_display(). */
+    uint8_t *disp;
+    long     disp_sz;
 } h265dec;
 
 /* Shared small helpers. */
@@ -498,6 +509,16 @@ static inline int h265_clip3(int lo, int hi, int v)
 static inline int h265_clip_u8(int v)
 {
     return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+/* Clip1Y / Clip1C of 8.7 and friends: the upper bound is (1 << BitDepth) - 1,
+ * NOT 255. Every reconstruction path funnels through this one function on
+ * purpose -- a clamp that is right at 8 bits and left at 255 for 10 is
+ * invisible on ordinary content and wrong on bright content, which is exactly
+ * the failure this decoder is not allowed to have. */
+static inline int h265_clip_pix(int v, int bd)
+{
+    int hi = (1 << bd) - 1;
+    return v < 0 ? 0 : (v > hi ? hi : v);
 }
 
 /* Per-4x4 state accessor. Callers guarantee the coordinates are inside the

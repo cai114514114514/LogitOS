@@ -136,10 +136,10 @@ static int scaling_factor(const uint8_t *list, int dc, int log2_size, int x, int
 }
 
 void h265_dequant(int16_t *coeff, int n, int qp, int log2_size,
-                  const uint8_t *scaling, int dc_scale)
+                  const uint8_t *scaling, int dc_scale, int bd)
 {
     if (!tables_built) build_tables();
-    int bd_shift = log2_size + 3;          /* BitDepth 8: 8 + log2 + 10 - 15 */
+    int bd_shift = bd + log2_size - 5;     /* 8.6.3: BitDepth + log2 + 10 - 15 */
     int64_t add = (int64_t)1 << (bd_shift - 1);
     int ls = level_scale[qp % 6];
     int sh = qp / 6;
@@ -165,11 +165,16 @@ void h265_dequant(int16_t *coeff, int n, int qp, int log2_size,
 
 /* ----------------------------------------------------- inverse transform -- */
 void h265_itransform_add(const int16_t *coeff, int log2_size, int tr_type,
-                         uint8_t *dst, int stride)
+                         uint16_t *dst, int stride, int bd)
 {
     if (!tables_built) build_tables();
     int n = 1 << log2_size;
     int32_t g[32 * 32];
+    /* 8.6.4.2: bdShift = 20 - BitDepth. Stage 1 is bit-depth independent (it
+     * always rounds to 16 bits); only the second stage, which lands on the
+     * sample grid, knows how many bits a sample has. */
+    int bdshift = 20 - bd;
+    int32_t bdround = (int32_t)1 << (bdshift - 1);
 
     /* stage 1: the vertical (column) transform, rounded to 16 bits */
     for (int x = 0; x < n; x++) {
@@ -199,33 +204,37 @@ void h265_itransform_add(const int16_t *coeff, int log2_size, int tr_type,
                     if (c) s += trow(n, k)[i] * c;
                 }
             }
-            s = (s + 2048) >> 12;          /* bdShift = 20 - BitDepth */
-            dst[y * stride + i] = (uint8_t)h265_clip_u8(dst[y * stride + i] + s);
+            s = (s + bdround) >> bdshift;
+            dst[y * stride + i] =
+                (uint16_t)h265_clip_pix(dst[y * stride + i] + s, bd);
         }
     }
 }
 
 void h265_transform_skip_add(const int16_t *coeff, int log2_size,
-                             uint8_t *dst, int stride)
+                             uint16_t *dst, int stride, int bd)
 {
     int n = 1 << log2_size;
     int ts_shift = 5 + log2_size;
+    int bdshift = 20 - bd;
+    int32_t bdround = (int32_t)1 << (bdshift - 1);
     for (int y = 0; y < n; y++)
         for (int x = 0; x < n; x++) {
             int32_t r = (int32_t)coeff[y * n + x] * (int32_t)(1 << ts_shift);
-            r = (r + 2048) >> 12;
-            dst[y * stride + x] = (uint8_t)h265_clip_u8(dst[y * stride + x] + r);
+            r = (r + bdround) >> bdshift;
+            dst[y * stride + x] =
+                (uint16_t)h265_clip_pix(dst[y * stride + x] + r, bd);
         }
 }
 
 void h265_bypass_add(const int16_t *coeff, int log2_size,
-                     uint8_t *dst, int stride)
+                     uint16_t *dst, int stride, int bd)
 {
     int n = 1 << log2_size;
     for (int y = 0; y < n; y++)
         for (int x = 0; x < n; x++)
             dst[y * stride + x] =
-                (uint8_t)h265_clip_u8(dst[y * stride + x] + coeff[y * n + x]);
+                (uint16_t)h265_clip_pix(dst[y * stride + x] + coeff[y * n + x], bd);
 }
 
 /* ======================================================= intra prediction = */
@@ -252,8 +261,8 @@ static const int16_t intra_inv_angle[35] = {
     0,0,0,0,0,0,0,0,0
 };
 
-void h265_intra_filter(uint8_t *nb, int nbs, int mode, int c_idx,
-                       int strong_smoothing)
+void h265_intra_filter(uint16_t *nb, int nbs, int mode, int c_idx,
+                       int strong_smoothing, int bd)
 {
     if (c_idx != 0) return;                      /* 4:2:0: chroma is never filtered */
     if (mode == 1 || nbs == 4) return;           /* DC and 4x4 are never filtered */
@@ -272,30 +281,35 @@ void h265_intra_filter(uint8_t *nb, int nbs, int mode, int c_idx,
         int b = corner + bl - 2 * (int)NB_LEFT(nb, nbs, nbs - 1);
         if (a < 0) a = -a;
         if (b < 0) b = -b;
-        if (a < (1 << 3) && b < (1 << 3)) {
-            uint8_t f[4 * 32 + 1];
-            f[0] = (uint8_t)bl;
-            f[2 * nbs] = (uint8_t)corner;
-            f[len - 1] = (uint8_t)tr;
+        /* 8.4.4.2.3: the bi-linear-substitution test is 1 << (BitDepthY - 5),
+         * i.e. 8 at 8 bits and 32 at 10. Leaving it at 8 does not corrupt a
+         * sample directly -- it just stops choosing the strong filter on
+         * gradients that qualify, so a 10-bit stream decodes with the WRONG
+         * filter on large flat 32x32 intra blocks and drifts from there. */
+        if (a < (1 << (bd - 5)) && b < (1 << (bd - 5))) {
+            uint16_t f[4 * 32 + 1];
+            f[0] = (uint16_t)bl;
+            f[2 * nbs] = (uint16_t)corner;
+            f[len - 1] = (uint16_t)tr;
             for (int y = 0; y < 63; y++)
                 f[2 * nbs - 1 - y] =
-                    (uint8_t)(((63 - y) * corner + (y + 1) * bl + 32) >> 6);
+                    (uint16_t)(((63 - y) * corner + (y + 1) * bl + 32) >> 6);
             for (int x = 0; x < 63; x++)
                 f[2 * nbs + 1 + x] =
-                    (uint8_t)(((63 - x) * corner + (x + 1) * tr + 32) >> 6);
-            memcpy(nb, f, (size_t)len);
+                    (uint16_t)(((63 - x) * corner + (x + 1) * tr + 32) >> 6);
+            memcpy(nb, f, (size_t)len * sizeof *f);
             return;
         }
     }
-    uint8_t f[4 * 32 + 1];
+    uint16_t f[4 * 32 + 1];
     f[0] = nb[0];
     f[len - 1] = nb[len - 1];
     for (int i = 1; i < len - 1; i++)
-        f[i] = (uint8_t)((nb[i - 1] + 2 * nb[i] + nb[i + 1] + 2) >> 2);
-    memcpy(nb, f, (size_t)len);
+        f[i] = (uint16_t)((nb[i - 1] + 2 * nb[i] + nb[i + 1] + 2) >> 2);
+    memcpy(nb, f, (size_t)len * sizeof *f);
 }
 
-static void pred_planar(uint8_t *dst, int stride, const uint8_t *nb, int nbs)
+static void pred_planar(uint16_t *dst, int stride, const uint16_t *nb, int nbs)
 {
     int sh = 0;
     while ((1 << sh) < nbs) sh++;
@@ -308,12 +322,12 @@ static void pred_planar(uint8_t *dst, int stride, const uint8_t *nb, int nbs)
             int t = NB_TOP(nb, nbs, x);
             int v = (nbs - 1 - x) * l + (x + 1) * right +
                     (nbs - 1 - y) * t + (y + 1) * below + nbs;
-            dst[y * stride + x] = (uint8_t)(v >> sh);
+            dst[y * stride + x] = (uint16_t)(v >> sh);
         }
     }
 }
 
-static void pred_dc(uint8_t *dst, int stride, const uint8_t *nb, int nbs, int c_idx)
+static void pred_dc(uint16_t *dst, int stride, const uint16_t *nb, int nbs, int c_idx)
 {
     int sh = 0;
     while ((1 << sh) < nbs) sh++;
@@ -321,18 +335,18 @@ static void pred_dc(uint8_t *dst, int stride, const uint8_t *nb, int nbs, int c_
     for (int i = 0; i < nbs; i++) sum += NB_TOP(nb, nbs, i) + NB_LEFT(nb, nbs, i);
     int dc = sum >> (sh + 1);
     for (int y = 0; y < nbs; y++)
-        for (int x = 0; x < nbs; x++) dst[y * stride + x] = (uint8_t)dc;
+        for (int x = 0; x < nbs; x++) dst[y * stride + x] = (uint16_t)dc;
     if (c_idx == 0 && nbs < 32) {
-        dst[0] = (uint8_t)((NB_LEFT(nb, nbs, 0) + 2 * dc + NB_TOP(nb, nbs, 0) + 2) >> 2);
+        dst[0] = (uint16_t)((NB_LEFT(nb, nbs, 0) + 2 * dc + NB_TOP(nb, nbs, 0) + 2) >> 2);
         for (int x = 1; x < nbs; x++)
-            dst[x] = (uint8_t)((NB_TOP(nb, nbs, x) + 3 * dc + 2) >> 2);
+            dst[x] = (uint16_t)((NB_TOP(nb, nbs, x) + 3 * dc + 2) >> 2);
         for (int y = 1; y < nbs; y++)
-            dst[y * stride] = (uint8_t)((NB_LEFT(nb, nbs, y) + 3 * dc + 2) >> 2);
+            dst[y * stride] = (uint16_t)((NB_LEFT(nb, nbs, y) + 3 * dc + 2) >> 2);
     }
 }
 
-static void pred_angular(uint8_t *dst, int stride, const uint8_t *nb,
-                         int nbs, int mode, int c_idx)
+static void pred_angular(uint16_t *dst, int stride, const uint16_t *nb,
+                         int nbs, int mode, int c_idx, int bd)
 {
     int angle = intra_angle[mode];
     int inv = intra_inv_angle[mode];
@@ -359,14 +373,14 @@ static void pred_angular(uint8_t *dst, int stride, const uint8_t *nb,
                     v = ((32 - fact) * ref[x + idx + 1] + fact * ref[x + idx + 2] + 16) >> 5;
                 else
                     v = ref[x + idx + 1];
-                dst[y * stride + x] = (uint8_t)v;
+                dst[y * stride + x] = (uint16_t)v;
             }
         }
         if (mode == 26 && c_idx == 0 && nbs < 32) {
             int corner = NB_CORNER(nb, nbs), t0 = NB_TOP(nb, nbs, 0);
             for (int y = 0; y < nbs; y++)
                 dst[y * stride] =
-                    (uint8_t)h265_clip_u8(t0 + ((NB_LEFT(nb, nbs, y) - corner) >> 1));
+                    (uint16_t)h265_clip_pix(t0 + ((NB_LEFT(nb, nbs, y) - corner) >> 1), bd);
         }
     } else {
         for (int x = 0; x <= nbs; x++) ref[x] = NB_LEFT(nb, nbs, x - 1);
@@ -387,23 +401,23 @@ static void pred_angular(uint8_t *dst, int stride, const uint8_t *nb,
                     v = ((32 - fact) * ref[y + idx + 1] + fact * ref[y + idx + 2] + 16) >> 5;
                 else
                     v = ref[y + idx + 1];
-                dst[y * stride + x] = (uint8_t)v;
+                dst[y * stride + x] = (uint16_t)v;
             }
         }
         if (mode == 10 && c_idx == 0 && nbs < 32) {
             int corner = NB_CORNER(nb, nbs), l0 = NB_LEFT(nb, nbs, 0);
             for (int x = 0; x < nbs; x++)
-                dst[x] = (uint8_t)h265_clip_u8(l0 + ((NB_TOP(nb, nbs, x) - corner) >> 1));
+                dst[x] = (uint16_t)h265_clip_pix(l0 + ((NB_TOP(nb, nbs, x) - corner) >> 1), bd);
         }
     }
 }
 
-void h265_intra_pred(uint8_t *dst, int stride, const uint8_t *nb,
-                     int nbs, int mode, int c_idx)
+void h265_intra_pred(uint16_t *dst, int stride, const uint16_t *nb,
+                     int nbs, int mode, int c_idx, int bd)
 {
     if (mode == 0)      pred_planar(dst, stride, nb, nbs);
     else if (mode == 1) pred_dc(dst, stride, nb, nbs, c_idx);
-    else                pred_angular(dst, stride, nb, nbs, mode, c_idx);
+    else                pred_angular(dst, stride, nb, nbs, mode, c_idx, bd);
 }
 
 /* The unit test reaches in for the built matrix; nothing else does. */

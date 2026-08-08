@@ -42,27 +42,28 @@ static const int ref_chroma[8][4] = {
 };
 
 /* ---- a padded plane, exactly as h265.c builds one ----------------------- */
-typedef struct { uint8_t *base, *vis; int stride, w, h; } plane_t;
+typedef struct { uint16_t *base, *vis; int stride, w, h; } plane_t;
 
 static void plane_alloc(plane_t *p, int w, int h)
 {
     p->w = w; p->h = h;
     p->stride = w + 2 * H265_PAD;
-    p->base = malloc((size_t)p->stride * (h + 2 * H265_PAD));
-    memset(p->base, 0, (size_t)p->stride * (h + 2 * H265_PAD));
+    p->base = malloc((size_t)p->stride * (h + 2 * H265_PAD) * sizeof(uint16_t));
+    memset(p->base, 0, (size_t)p->stride * (h + 2 * H265_PAD) * sizeof(uint16_t));
     p->vis = p->base + (long)H265_PAD * p->stride + H265_PAD;
 }
 static void plane_pad(plane_t *p)
 {
     for (int y = 0; y < p->h; y++) {
-        uint8_t *row = p->vis + (long)y * p->stride;
+        uint16_t *row = p->vis + (long)y * p->stride;
         for (int i = 1; i <= H265_PAD; i++) { row[-i] = row[0]; row[p->w - 1 + i] = row[p->w - 1]; }
     }
     for (int i = 1; i <= H265_PAD; i++) {
         memcpy(p->vis - (long)i * p->stride - H265_PAD,
-               p->vis - H265_PAD, (size_t)p->stride);
+               p->vis - H265_PAD, (size_t)p->stride * sizeof(uint16_t));
         memcpy(p->vis + (long)(p->h - 1 + i) * p->stride - H265_PAD,
-               p->vis + (long)(p->h - 1) * p->stride - H265_PAD, (size_t)p->stride);
+               p->vis + (long)(p->h - 1) * p->stride - H265_PAD,
+               (size_t)p->stride * sizeof(uint16_t));
     }
 }
 static void plane_free(plane_t *p) { free(p->base); }
@@ -75,30 +76,38 @@ static int sample(const plane_t *p, int x, int y)
 }
 
 /* ---- the reference, straight from 8.5.3.3.3.1 / .2 ---------------------- */
+/* shift1 = BitDepth - 8 on every filtered sum, shift3 = 14 - BitDepth on the
+ * full-pel copy: the intermediate is 14 bits at EVERY depth. Written out here
+ * from 8.5.3.3.3.1 rather than copied from the implementation, which is the
+ * only reason this file is evidence of anything. */
 static void ref_mc_luma(int16_t *dst, int ds, const plane_t *p,
-                        int x, int y, int w, int h, int mvx, int mvy)
+                        int x, int y, int w, int h, int mvx, int mvy, int bd)
 {
     int xi = x + (mvx >> 2), yi = y + (mvy >> 2);
     int xf = mvx & 3, yf = mvy & 3;
+    int shift1 = bd - 8, shift3 = 14 - bd;
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++) {
             int v;
             if (!xf && !yf) {
-                v = sample(p, xi + i, yi + j) << 6;
+                v = sample(p, xi + i, yi + j) << shift3;
             } else if (!yf) {
                 v = 0;
                 for (int k = 0; k < 8; k++)
                     v += ref_luma[xf][k] * sample(p, xi + i + k - 3, yi + j);
+                v >>= shift1;
             } else if (!xf) {
                 v = 0;
                 for (int k = 0; k < 8; k++)
                     v += ref_luma[yf][k] * sample(p, xi + i, yi + j + k - 3);
+                v >>= shift1;
             } else {
                 v = 0;
                 for (int k = 0; k < 8; k++) {
                     int t = 0;
                     for (int m = 0; m < 8; m++)
                         t += ref_luma[xf][m] * sample(p, xi + i + m - 3, yi + j + k - 3);
+                    t >>= shift1;
                     v += ref_luma[yf][k] * t;
                 }
                 v >>= 6;
@@ -108,29 +117,33 @@ static void ref_mc_luma(int16_t *dst, int ds, const plane_t *p,
 }
 
 static void ref_mc_chroma(int16_t *dst, int ds, const plane_t *p,
-                          int x, int y, int w, int h, int mvx, int mvy)
+                          int x, int y, int w, int h, int mvx, int mvy, int bd)
 {
     int xi = x + (mvx >> 3), yi = y + (mvy >> 3);
     int xf = mvx & 7, yf = mvy & 7;
+    int shift1 = bd - 8, shift3 = 14 - bd;
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++) {
             int v;
             if (!xf && !yf) {
-                v = sample(p, xi + i, yi + j) << 6;
+                v = sample(p, xi + i, yi + j) << shift3;
             } else if (!yf) {
                 v = 0;
                 for (int k = 0; k < 4; k++)
                     v += ref_chroma[xf][k] * sample(p, xi + i + k - 1, yi + j);
+                v >>= shift1;
             } else if (!xf) {
                 v = 0;
                 for (int k = 0; k < 4; k++)
                     v += ref_chroma[yf][k] * sample(p, xi + i, yi + j + k - 1);
+                v >>= shift1;
             } else {
                 v = 0;
                 for (int k = 0; k < 4; k++) {
                     int t = 0;
                     for (int m = 0; m < 4; m++)
                         t += ref_chroma[xf][m] * sample(p, xi + i + m - 1, yi + j + k - 1);
+                    t >>= shift1;
                     v += ref_chroma[yf][k] * t;
                 }
                 v >>= 6;
@@ -140,22 +153,25 @@ static void ref_mc_chroma(int16_t *dst, int ds, const plane_t *p,
 }
 
 /* ---- 1. impulse response ------------------------------------------------ */
-static void test_taps(void)
+static void test_taps(int bd)
 {
     plane_t p;
     plane_alloc(&p, 64, 64);
-    /* An isolated non-zero sample far from every edge. */
-    p.vis[32 * p.stride + 32] = 1;
+    /* An isolated non-zero sample far from every edge. Its amplitude is
+     * 1 << (BitDepth - 8) so that the filtered sum, which is brought down by
+     * shift1 = BitDepth - 8, lands back on the raw tap value at every depth
+     * and the expected values below stay the spec's own table. */
+    p.vis[32 * p.stride + 32] = (uint16_t)(1 << (bd - 8));
     plane_pad(&p);
 
     int16_t dst[64 * 64];
-    uint8_t emu[(64 + 8) * (64 + 8)];
+    uint16_t emu[(64 + 8) * (64 + 8)];
 
     for (int f = 1; f < 4; f++) {
         /* Horizontal only. dst[0][i] picks out ref_luma[f][32 - (24 + i) + 3]
          * = the tap whose source offset lands on the impulse. */
         h265_mc_luma(dst, 64, p.vis, p.stride, p.w, p.h,
-                     24, 32, 16, 1, f, 0, emu);
+                     24, 32, 16, 1, f, 0, emu, bd);
         for (int i = 0; i < 16; i++) {
             int k = 32 - (24 + i) + 3;
             int want = (k >= 0 && k < 8) ? ref_luma[f][k] : 0;
@@ -164,7 +180,7 @@ static void test_taps(void)
         }
         /* Vertical only. */
         h265_mc_luma(dst, 64, p.vis, p.stride, p.w, p.h,
-                     32, 24, 1, 16, 0, f, emu);
+                     32, 24, 1, 16, 0, f, emu, bd);
         for (int j = 0; j < 16; j++) {
             int k = 32 - (24 + j) + 3;
             int want = (k >= 0 && k < 8) ? ref_luma[f][k] : 0;
@@ -173,13 +189,13 @@ static void test_taps(void)
         }
     }
     /* Phase 0 must be a pure copy scaled by 2^6. */
-    h265_mc_luma(dst, 64, p.vis, p.stride, p.w, p.h, 24, 32, 16, 1, 0, 0, emu);
+    h265_mc_luma(dst, 64, p.vis, p.stride, p.w, p.h, 24, 32, 16, 1, 0, 0, emu, bd);
     for (int i = 0; i < 16; i++)
         CHECK(dst[i] == ((24 + i == 32) ? 64 : 0), "luma phase 0 at %d", i);
 
     for (int f = 1; f < 8; f++) {
         h265_mc_chroma(dst, 64, p.vis, p.stride, p.w, p.h,
-                       28, 32, 12, 1, f, 0, emu);
+                       28, 32, 12, 1, f, 0, emu, bd);
         for (int i = 0; i < 12; i++) {
             int k = 32 - (28 + i) + 1;
             int want = (k >= 0 && k < 4) ? ref_chroma[f][k] : 0;
@@ -187,7 +203,7 @@ static void test_taps(void)
                   f, k, dst[i], want);
         }
         h265_mc_chroma(dst, 64, p.vis, p.stride, p.w, p.h,
-                       32, 28, 1, 12, 0, f, emu);
+                       32, 28, 1, 12, 0, f, emu, bd);
         for (int j = 0; j < 12; j++) {
             int k = 32 - (28 + j) + 1;
             int want = (k >= 0 && k < 4) ? ref_chroma[f][k] : 0;
@@ -202,17 +218,17 @@ static void test_taps(void)
 static uint32_t seed = 99;
 static int rnd(int n) { seed = seed * 1103515245u + 12345u; return (int)((seed >> 9) % (unsigned)n); }
 
-static void test_vs_reference(void)
+static void test_vs_reference(int bd)
 {
     plane_t p;
     plane_alloc(&p, 96, 80);
     for (int y = 0; y < p.h; y++)
         for (int x = 0; x < p.w; x++)
-            p.vis[(long)y * p.stride + x] = (uint8_t)rnd(256);
+            p.vis[(long)y * p.stride + x] = (uint16_t)rnd(1 << bd);
     plane_pad(&p);
 
     int16_t got[64 * 64], want[64 * 64];
-    uint8_t emu[(64 + 8) * (64 + 8)];
+    uint16_t emu[(64 + 8) * (64 + 8)];
     static const int sizes[] = { 4, 8, 12, 16, 24, 32, 64 };
 
     int bad = 0;
@@ -232,8 +248,8 @@ static void test_vs_reference(void)
                     mvx = (rnd(4000) - 2000) * 4 + rnd(4);
                     mvy = (rnd(4000) - 2000) * 4 + rnd(4);
                 }
-                h265_mc_luma(got, 64, p.vis, p.stride, p.w, p.h, x, y, w, h, mvx, mvy, emu);
-                ref_mc_luma(want, 64, &p, x, y, w, h, mvx, mvy);
+                h265_mc_luma(got, 64, p.vis, p.stride, p.w, p.h, x, y, w, h, mvx, mvy, emu, bd);
+                ref_mc_luma(want, 64, &p, x, y, w, h, mvx, mvy, bd);
                 for (int j = 0; j < h && !bad; j++)
                     for (int i = 0; i < w; i++)
                         if (got[j * 64 + i] != want[j * 64 + i]) {
@@ -253,7 +269,7 @@ static void test_vs_reference(void)
     plane_alloc(&p, 48, 40);
     for (int y = 0; y < p.h; y++)
         for (int x = 0; x < p.w; x++)
-            p.vis[(long)y * p.stride + x] = (uint8_t)rnd(256);
+            p.vis[(long)y * p.stride + x] = (uint16_t)rnd(1 << bd);
     plane_pad(&p);
     bad = 0;
     static const int csizes[] = { 2, 4, 6, 8, 12, 16, 32 };
@@ -268,8 +284,8 @@ static void test_vs_reference(void)
                 else if (t < 20) { mvx = rnd(200) - 100; mvy = rnd(200) - 100; }
                 else { mvx = (rnd(2000) - 1000) * 8 + rnd(8);
                        mvy = (rnd(2000) - 1000) * 8 + rnd(8); }
-                h265_mc_chroma(got, 64, p.vis, p.stride, p.w, p.h, x, y, w, h, mvx, mvy, emu);
-                ref_mc_chroma(want, 64, &p, x, y, w, h, mvx, mvy);
+                h265_mc_chroma(got, 64, p.vis, p.stride, p.w, p.h, x, y, w, h, mvx, mvy, emu, bd);
+                ref_mc_chroma(want, 64, &p, x, y, w, h, mvx, mvy, bd);
                 for (int j = 0; j < h && !bad; j++)
                     for (int i = 0; i < w; i++)
                         if (got[j * 64 + i] != want[j * 64 + i]) {
@@ -288,98 +304,120 @@ static void test_vs_reference(void)
 }
 
 /* ---- 3. the DC-gain invariant ------------------------------------------- */
-static void test_constant_plane(void)
+static void test_constant_plane(int bd)
 {
     plane_t p;
     plane_alloc(&p, 40, 40);
-    memset(p.base, 0, (size_t)p.stride * (p.h + 2 * H265_PAD));
+    memset(p.base, 0, (size_t)p.stride * (p.h + 2 * H265_PAD) * sizeof(uint16_t));
+    int lvl = 173 << (bd - 8);
     for (int y = 0; y < p.h; y++)
-        memset(p.vis + (long)y * p.stride, 173, (size_t)p.w);
+        for (int x = 0; x < p.w; x++) p.vis[(long)y * p.stride + x] = (uint16_t)lvl;
     plane_pad(&p);
 
     int16_t dst[64 * 64];
-    uint8_t emu[(64 + 8) * (64 + 8)];
+    uint16_t emu[(64 + 8) * (64 + 8)];
     for (int fy = 0; fy < 4; fy++)
         for (int fx = 0; fx < 4; fx++) {
-            h265_mc_luma(dst, 64, p.vis, p.stride, p.w, p.h, 8, 8, 16, 16, fx, fy, emu);
+            h265_mc_luma(dst, 64, p.vis, p.stride, p.w, p.h, 8, 8, 16, 16, fx, fy, emu, bd);
             int ok = 1;
             for (int j = 0; j < 16; j++)
-                for (int i = 0; i < 16; i++) if (dst[j * 64 + i] != 173 * 64) ok = 0;
-            CHECK(ok, "luma phase (%d,%d) on a constant plane: got %d, want %d",
-                  fx, fy, dst[0], 173 * 64);
+                for (int i = 0; i < 16; i++)
+                    if (dst[j * 64 + i] != (lvl << (14 - bd))) ok = 0;
+            CHECK(ok, "bd%d luma phase (%d,%d) on a constant plane: got %d, want %d",
+                  bd, fx, fy, dst[0], lvl << (14 - bd));
         }
     for (int fy = 0; fy < 8; fy++)
         for (int fx = 0; fx < 8; fx++) {
-            h265_mc_chroma(dst, 64, p.vis, p.stride, p.w, p.h, 8, 8, 8, 8, fx, fy, emu);
+            h265_mc_chroma(dst, 64, p.vis, p.stride, p.w, p.h, 8, 8, 8, 8, fx, fy, emu, bd);
             int ok = 1;
             for (int j = 0; j < 8; j++)
-                for (int i = 0; i < 8; i++) if (dst[j * 64 + i] != 173 * 64) ok = 0;
-            CHECK(ok, "chroma phase (%d,%d) on a constant plane: got %d",
-                  fx, fy, dst[0]);
+                for (int i = 0; i < 8; i++)
+                    if (dst[j * 64 + i] != (lvl << (14 - bd))) ok = 0;
+            CHECK(ok, "bd%d chroma phase (%d,%d) on a constant plane: got %d",
+                  bd, fx, fy, dst[0]);
         }
     plane_free(&p);
 }
 
 /* ---- weighted sample prediction (8.5.3.3.4) ----------------------------- */
-static void test_weighting(void)
+/* Three bit-depth dependencies live in here and every one of them is a
+ * plausible thing to leave at its 8-bit value:
+ *   shift1 = 14 - BitDepth   (the default uni rounding)
+ *   shift2 = 15 - BitDepth   (the default bi rounding)
+ *   log2Wd = denom + shift1, and -- the one that is easiest to miss --
+ *   the CODED offset is scaled by WpOffsetBdShift = BitDepth - 8.
+ * The offsets below are deliberately non-zero and of both signs, because an
+ * unscaled offset is invisible whenever the offset is 0. */
+static void test_weighting(int bd)
 {
+    int shift1 = 14 - bd, shift2 = 15 - bd;
+    int off1 = 1 << (shift1 - 1), off2 = 1 << (shift2 - 1);
+    int wpbd = bd - 8;
     int16_t s0[16], s1[16];
-    uint8_t dst[16];
+    uint16_t dst[16];
     for (int i = 0; i < 16; i++) { s0[i] = (int16_t)(i * 700 - 3000); s1[i] = (int16_t)(8000 - i * 500); }
 
-    /* default uni: (v + 32) >> 6 */
-    h265_pred_uni(dst, 4, s0, 4, 4, 4);
+    /* default uni: (v + offset1) >> shift1 */
+    h265_pred_uni(dst, 4, s0, 4, 4, 4, bd);
     for (int i = 0; i < 16; i++)
-        CHECK(dst[i] == h265_clip_u8((s0[i] + 32) >> 6), "uni[%d]", i);
+        CHECK(dst[i] == h265_clip_pix((s0[i] + off1) >> shift1, bd), "bd%d uni[%d]", bd, i);
 
-    /* default bi: (v0 + v1 + 64) >> 7 */
-    h265_pred_bi(dst, 4, s0, 4, s1, 4, 4, 4);
+    /* default bi: (v0 + v1 + offset2) >> shift2 */
+    h265_pred_bi(dst, 4, s0, 4, s1, 4, 4, 4, bd);
     for (int i = 0; i < 16; i++)
-        CHECK(dst[i] == h265_clip_u8((s0[i] + s1[i] + 64) >> 7), "bi[%d]", i);
+        CHECK(dst[i] == h265_clip_pix((s0[i] + s1[i] + off2) >> shift2, bd),
+              "bd%d bi[%d]", bd, i);
 
-    /* explicit uni: log2Wd = denom + 6, always >= 1 for 8-bit */
+    /* explicit uni: log2Wd = denom + shift1, offset scaled by WpOffsetBdShift */
     for (int denom = 0; denom <= 7; denom++) {
         int wgt = (1 << denom) + 3, off = -7;
-        h265_pred_uni_w(dst, 4, s0, 4, 4, 4, denom, wgt, off);
-        int log2wd = denom + 6;
+        h265_pred_uni_w(dst, 4, s0, 4, 4, 4, denom, wgt, off, bd);
+        int log2wd = denom + shift1;
         for (int i = 0; i < 16; i++) {
-            int want = h265_clip_u8(((s0[i] * wgt + (1 << (log2wd - 1))) >> log2wd) + off);
-            CHECK(dst[i] == want, "uni_w denom=%d [%d] = %d want %d",
-                  denom, i, dst[i], want);
+            int want = h265_clip_pix(
+                ((s0[i] * wgt + (1 << (log2wd - 1))) >> log2wd) + (off << wpbd), bd);
+            CHECK(dst[i] == want, "bd%d uni_w denom=%d [%d] = %d want %d",
+                  bd, denom, i, dst[i], want);
         }
     }
 
     /* explicit bi */
     for (int denom = 0; denom <= 7; denom++) {
         int w0 = (1 << denom) - 2, o0 = 5, w1 = (1 << denom) + 1, o1 = -4;
-        h265_pred_bi_w(dst, 4, s0, 4, s1, 4, 4, 4, denom, w0, o0, w1, o1);
-        int log2wd = denom + 6;
+        h265_pred_bi_w(dst, 4, s0, 4, s1, 4, 4, 4, denom, w0, o0, w1, o1, bd);
+        int log2wd = denom + shift1;
         for (int i = 0; i < 16; i++) {
-            int v = s0[i] * w0 + s1[i] * w1 + ((o0 + o1 + 1) << log2wd);
-            CHECK(dst[i] == h265_clip_u8(v >> (log2wd + 1)),
-                  "bi_w denom=%d [%d]", denom, i);
+            int v = s0[i] * w0 + s1[i] * w1 +
+                    (((o0 << wpbd) + (o1 << wpbd) + 1) << log2wd);
+            CHECK(dst[i] == h265_clip_pix(v >> (log2wd + 1), bd),
+                  "bd%d bi_w denom=%d [%d]", bd, denom, i);
         }
     }
 
     /* A weight of 1<<denom with offset 0 must reproduce the default path --
      * the identity that says the two formulas are the same arithmetic. */
     for (int denom = 0; denom <= 7; denom++) {
-        uint8_t a[16], b[16];
-        h265_pred_uni(a, 4, s0, 4, 4, 4);
-        h265_pred_uni_w(b, 4, s0, 4, 4, 4, denom, 1 << denom, 0);
-        CHECK(memcmp(a, b, 16) == 0, "unit weight at denom %d must equal default uni", denom);
-        h265_pred_bi(a, 4, s0, 4, s1, 4, 4, 4);
-        h265_pred_bi_w(b, 4, s0, 4, s1, 4, 4, 4, denom, 1 << denom, 0, 1 << denom, 0);
-        CHECK(memcmp(a, b, 16) == 0, "unit weight at denom %d must equal default bi", denom);
+        uint16_t a[16], b[16];
+        h265_pred_uni(a, 4, s0, 4, 4, 4, bd);
+        h265_pred_uni_w(b, 4, s0, 4, 4, 4, denom, 1 << denom, 0, bd);
+        CHECK(memcmp(a, b, sizeof a) == 0,
+              "bd%d unit weight at denom %d must equal default uni", bd, denom);
+        h265_pred_bi(a, 4, s0, 4, s1, 4, 4, 4, bd);
+        h265_pred_bi_w(b, 4, s0, 4, s1, 4, 4, 4, denom, 1 << denom, 0, 1 << denom, 0, bd);
+        CHECK(memcmp(a, b, sizeof a) == 0,
+              "bd%d unit weight at denom %d must equal default bi", bd, denom);
     }
 }
 
 int main(void)
 {
-    test_taps();
-    test_constant_plane();
-    test_weighting();
-    test_vs_reference();
+    for (int i = 0; i < 2; i++) {
+        int bd = i ? 10 : 8;
+        test_taps(bd);
+        test_vs_reference(bd);
+        test_constant_plane(bd);
+        test_weighting(bd);
+    }
     printf("h265_mc_test: %d checks, %d failures\n", checks, fails);
     return fails != 0;
 }
