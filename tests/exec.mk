@@ -3,7 +3,7 @@
 #
 # The loader parses disk-controlled input in ring 0 and then decides what ring 3
 # is allowed to write and execute. Both of those make it worth testing at a
-# different standard from "the machine still boots", so there are four kinds of
+# different standard from "the machine still boots", so there are five kinds of
 # test here and they answer different questions:
 #
 #   test-exec          every binary this tree builds still loads, byte for byte,
@@ -80,6 +80,15 @@ $(BUILD)/exec_fuzz: tests/unit/exec_fuzz.c $(EXEC_SRC) tests/unit/exechost/space
 # --- test-exec -------------------------------------------------------------
 # $(AEX) is a prerequisite so the binaries exist; the test then globs the build
 # directory, which also picks up the crippled variants other tests pack.
+#
+# THE CONTROLS RUN WITH IT, as a prerequisite rather than as a recipe line.
+# tools/audit_tests.py deliberately excludes `test-*-negctl` from suite
+# discovery -- "negative controls that are RUN BY their parent" -- so a control
+# whose parent does not run it is reached by nothing at all, which is the exact
+# shape that audit exists to find. Written as a prerequisite for the reason
+# tests/loader.mk gives: a recipe line can be lost to a whole-file overwrite of
+# the Makefile, and a hook that can be lost is a hook that will be.
+test-exec: test-exec-negctl
 test-exec: $(BUILD)/exec_test $(AEX) $(EXEC_FIXTURES)
 	@$(EXEC_ENV) $(BUILD)/exec_test $(EXEC_BINS)
 
