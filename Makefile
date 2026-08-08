@@ -199,6 +199,7 @@ RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 .PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
+.PHONY: test-mm test-mm-os test-swap test-swap-negctl test-leak test-leak-os
 
 all: $(ISO)
 
@@ -1031,6 +1032,39 @@ test-mm:
 
 test-mm-os: $(ISO) $(DISK)
 	@bash tests/boot/run-mm-test.sh $(ISO) $(DISK)
+
+# --- reclaim + swap: surviving a machine that is too small ------------------
+# The mechanism that lets the kernel keep running when physical memory runs out:
+# find pages nobody is using, get them out of RAM, hand the frames back. The
+# host half is inside `test-mm` above (mm_rmap_test + mm_reclaim_test, plus two
+# negative-control builds that are REQUIRED to fail). These two are the on-device
+# half, and they exist because reclaim that has only ever run on a simulator is
+# not reclaim.
+#
+# There is nothing on this machine that is short of memory -- the full desktop
+# peaks at 229 MiB of 511 -- so the pressure is MANUFACTURED: the same kernel and
+# the same disk, booted with a fraction of the RAM, running a ring-3 program that
+# maps more than physically exists and writes a per-page pattern to all of it.
+# Then it reads every page back and requires it to be byte-identical.
+#
+#   test-swap         with a swap device: the workload must complete, every page
+#                     must come back unchanged, and the kernel's own counters
+#                     must show reclaim actually ran -- both tiers of it.
+#   test-swap-negctl  THE NEGATIVE CONTROL, same everything, no swap device. The
+#                     data pages hold data so the free drop-tier cannot take
+#                     them; the workload MUST fail. If it passes, the positive
+#                     run proved nothing, because the pressure was never real.
+#
+# Tunable: `make test-swap SWAP_RAM=128 SWAP_SIZE=huge`, and SWAPBUS=ahci to
+# exercise the slow polled path instead of NVMe.
+SWAP_RAM  ?= 192
+SWAP_SIZE ?= mid
+
+test-swap: $(ISO) $(DISK)
+	@bash tests/boot/run-swap-test.sh $(ISO) $(DISK) swap $(SWAP_RAM) $(SWAP_SIZE)
+
+test-swap-negctl: $(ISO) $(DISK)
+	@bash tests/boot/run-swap-test.sh $(ISO) $(DISK) noswap $(SWAP_RAM) $(SWAP_SIZE)
 
 # --- leak hunting: does opening and closing apps give the memory back? ------
 # test-mm/test-mm-os cover fork+exec, and they are clean -- 240 shell commands

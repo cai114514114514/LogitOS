@@ -25,7 +25,18 @@ SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 FLAGS="-std=c11 -O1 -g -Wall -Wextra -Werror -DMM_HOSTTEST $SAN $INC"
 
 MM="$ROOT/c/kernel/mm"
-SRC="$ROOT/tests/unit/leak_kheap_test.c $ROOT/tests/unit/mm_common.c $MM/kheap.c $MM/pmm.c"
+
+# pmm.c is no longer a leaf. It calls rmap_init() at the end of pmm_init and
+# reclaim_on_alloc() on every allocation, so the frame allocator now drags in
+# the reverse map and the reclaim path, which in turn need swap/vmm/vma/fault.
+# That is deliberate -- reclaim has to be reachable from the one place every
+# frame in the system is handed out -- but it means this suite stopped linking
+# the moment it landed, and a suite that does not build is a suite that cannot
+# fail. Same source set as tests/unit/mm_run.sh, for the same reason: the thing
+# under test is c/kernel/mm wired the way the kernel wires it.
+SRC="$ROOT/tests/unit/leak_kheap_test.c $ROOT/tests/unit/mm_common.c \
+     $MM/kheap.c $MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c \
+     $MM/rmap.c $MM/reclaim.c $MM/swap.c"
 
 fail=0
 
