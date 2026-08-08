@@ -13,6 +13,7 @@
 #include "usercopy.h"
 #include "logit_abi.h"
 #include "kprintf.h"
+#include "prot.h"        /* PTE_NX + cpu_prot_nx(): the user stack is data */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -132,10 +133,27 @@ static uint64_t setup_cli_stack(uint64_t cr3, uint64_t entry, char **argv, int a
     int eager = reserved ? CLI_STACK_EAGER : CLI_STACK_PAGES;
 #endif
 
+    /* NX on the stack: it is data, and without it the classic shape -- overflow
+     * a buffer, land the return address on the bytes you just pushed -- works
+     * exactly as written. The stack is the likeliest place for a program to be
+     * handed attacker-controlled input, so it is the page this most wants.
+     *
+     * Written, and currently INERT: cpu_prot_nx_usable() returns 0 because
+     * c/kernel/mm's PTE->frame masks keep bit 63 (prot.h has the full account,
+     * including the kernel #GP it produces). Left in this shape deliberately
+     * rather than deleted -- when that mask changes, one function starts
+     * returning 1 and the stack becomes no-execute with no edit here.
+     *
+     * Two further gaps that stay open even then, both outside this line:
+     *   - only the EAGER pages pass through here. The rest of the reservation
+     *     is faulted in by c/kernel/mm/fault.c's do_anon(), which maps from the
+     *     VMA protection and ignores VMA_EXEC.
+     *   - GUI apps get their stack from c/kernel/gui/wm.c, not from here. */
+    uint64_t stack_flags = VMM_WRITABLE | VMM_USER | (cpu_prot_nx_usable() ? PTE_NX : 0);
     for (int i = 1; i <= eager; i++) {
         uint64_t frame = pmm_alloc();
         if (!frame) return 0;
-        vmm_map_page(top - (uint64_t)i * 0x1000, frame, VMM_WRITABLE | VMM_USER);
+        vmm_map_page(top - (uint64_t)i * 0x1000, frame, stack_flags);
     }
     uint64_t sp = top, uargv[MAXARG], uenvp[MAXARG];
     for (int i = 0; i < argc; i++) { int l = kstrlen(argv[i]); sp -= l + 1; memcpy((void *)sp, argv[i], l + 1); uargv[i] = sp; }
