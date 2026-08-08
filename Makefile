@@ -596,15 +596,29 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 
 # Preview: the windowed half. Same link base and the same GUI crt0 as any other
 # app, but it links VID_OBJ + mini-libc instead of going through APP_RULE --
-# the browser already proves logit.h and mini-libc coexist in one .aex. It
-# claims the h264 extension so the Finder opens streams with it; images still
-# arrive through the png/gif case in wm.c's launch_for_ext.
-$(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) $(BUILD)/apps/crt0.o $(VID_OBJ) $(LIBC_OBJS)
+# the browser already proves logit.h and mini-libc coexist in one .aex.
+#
+# It also links the IMAGE codecs now ($(IMGCHK_OBJ) -- the ring-3 build of
+# c/lib/image that /bin/imgcheck already uses -- plus $(RUST_LIB) for PNG/APNG,
+# BMP, ICO and WebP). It used to decode stills through SYS_IMG_DECODE, which
+# hands back ONE canvas; an animation is a LIST of canvases with a delay each,
+# and img_decode_anim is the entry point that returns them. Widening the kernel
+# image ABI to carry an animation would have put a per-frame decode of
+# attacker-chosen bytes under the big lock; linking the same sources into the
+# app is what every other media path here already does.
+#
+# THE EXTENSION IT CLAIMS IS NOT HOW IT GETS FILES ANY MORE. `h264` is kept so
+# nothing that relied on the registry match regresses, but the association now
+# runs on content -- see opens_in_preview() in c/kernel/gui/wm.c.
+$(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
+                      c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
+                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) \
+                      $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
+	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(MED_OBJ) \
-	    $(AUD_OBJ) $(LIBC_OBJS) --end-group
+	    $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
 $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/preview.elf $@ Preview h264 'P' 200 150 110
 
@@ -2904,6 +2918,12 @@ clean:
 # worked on by several people at once and a whole-file Makefile edit from a
 # concurrent line cannot delete it.
 -include tests/demux.mk
+
+# Preview's on-device format gate (test-preview, test-preview-timing,
+# test-preview-negctl) and the fixtures + measurement binaries it puts on the
+# disk. Own fragment for the same reason as the others -- and it must come
+# AFTER tests/demux.mk, which is where $(MED_OBJ) is defined.
+-include tests/preview.mk
 
 # Ring-3 memory protection: W^X, NX, SMEP/SMAP and syscall pointer validation,
 # plus /bin/secprobe -- the hostile ring-3 program the gate drives. Own fragment
