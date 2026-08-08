@@ -168,30 +168,36 @@ static void vdec_close(vdec *v)
     if (v->d5) h265_close(v->d5);
     v->d4 = 0; v->d5 = 0;
 }
-/* Feed the whole of one access unit; returns 1 if a picture came out, 0 if
- * not, negative on a decode error. */
-static int vdec_feed(vdec *v, const unsigned char *p, long n)
+/* Decode from `p+*off`, advancing *off by whatever was consumed. Returns 1 when
+ * a picture came out, 0 when the decoder wants more input, negative on error.
+ *
+ * THE CALLER MUST KEEP CALLING UNTIL THE BUFFER IS EMPTY, and that is the whole
+ * reason this is shaped as a cursor rather than "feed one sample, get one
+ * picture". Both decoders emit a picture when they see the START of the NEXT
+ * one, so the call that hands over access unit N+1 typically returns picture N
+ * having consumed only the first few bytes -- and a loop that then moves on to
+ * sample N+2 throws away everything after them. It does not look like a bug:
+ * it plays, at half the frame rate, with the timestamps still perfectly paced.
+ * (It was one, until the on-device run showed 15 pictures out of 30.) */
+static int vdec_pump(vdec *v, const unsigned char *p, long n, long *off)
 {
-    long off = 0;
-    int got = 0;
-    while (off < n && !got) {
-        int used;
-        if (v->is265) {
-            h265frame f;
-            used = h265_decode(v->d5, p + off, (int)(n - off), &f, &got);
-            if (used < 0) return used;
-            if (got) { v->w = f.width; v->h = f.height; v->sy = f.stride_y;
-                       v->sc = f.stride_c; v->y = f.y; v->u = f.u; v->v = f.v; }
-        } else {
-            h264frame f;
-            used = h264_decode(v->d4, p + off, (int)(n - off), &f, &got);
-            if (used < 0) return used;
-            if (got) { v->w = f.width; v->h = f.height; v->sy = f.stride_y;
-                       v->sc = f.stride_c; v->y = f.y; v->u = f.u; v->v = f.v; }
-        }
-        if (used == 0) break;                  /* no progress: stop asking */
-        off += used;
+    int got = 0, used;
+    if (*off >= n) return 0;
+    if (v->is265) {
+        h265frame f;
+        used = h265_decode(v->d5, p + *off, (int)(n - *off), &f, &got);
+        if (used < 0) return used;
+        if (got) { v->w = f.width; v->h = f.height; v->sy = f.stride_y;
+                   v->sc = f.stride_c; v->y = f.y; v->u = f.u; v->v = f.v; }
+    } else {
+        h264frame f;
+        used = h264_decode(v->d4, p + *off, (int)(n - *off), &f, &got);
+        if (used < 0) return used;
+        if (got) { v->w = f.width; v->h = f.height; v->sy = f.stride_y;
+                   v->sc = f.stride_c; v->y = f.y; v->u = f.u; v->v = f.v; }
     }
+    if (used == 0 && !got) { *off = n; return 0; }   /* no progress: give up on it */
+    *off += used;
     return got;
 }
 static int vdec_flush(vdec *v)
@@ -343,21 +349,31 @@ static void play_container(unsigned char *data, long len, const char *name)
     avclock_init(&clk, au.handle >= 0);
 
     vdec v;
+    static unsigned char nalbuf[1 << 20];
+    long pend_len = 0, pend_off = 0;
+
     if (vt) {
         if (!vdec_open(&v, vt->codec == MEDIA_CODEC_H265)) die_with("out of memory");
         /* The parameter sets, once, before anything else: MP4 and Matroska
          * both hoist them out of the samples into the sample description. */
-        long hn = media_annexb_headers(m, vi, 0, 0);
-        if (hn > 0) {
-            unsigned char *hb = malloc((unsigned long)hn);
-            if (hb && media_annexb_headers(m, vi, hb, hn) == hn) vdec_feed(&v, hb, hn);
-            free(hb);
-        }
+        long hn = media_annexb_headers(m, vi, nalbuf, (long)sizeof nalbuf);
+        if (hn > 0) { pend_len = hn; pend_off = 0; }
     }
 
     long sample = 0, shown = 0;
     long long first_pts = -1;
-    static unsigned char nalbuf[1 << 20];
+
+    /* Presentation stamps, in DECODE order, waiting for the picture they
+     * belong to. Both decoders emit pictures a call or more after the access
+     * unit that started them, and neither carries a caller token through -- so
+     * the player has to remember. A FIFO is exactly right while decode order is
+     * display order, which is every stream these decoders accept today (H.264
+     * baseline has no B slices, and the HEVC fixtures here are bframes=0). The
+     * moment reordering arrives this has to become a per-picture opaque handed
+     * through the decoder; there is no way to do it from out here. */
+    long long ptsq[64];
+    int ptsq_head = 0, ptsq_n = 0;
+    long long cur_pts = 0;
 
     for (;;) {
         if (pump_events()) break;
@@ -376,35 +392,41 @@ static void play_container(unsigned char *data, long len, const char *name)
             continue;
         }
 
-        media_sample s;
         int got = 0;
-        if (media_get_sample(m, vi, sample, &s) == 1) {
-            long n = media_to_annexb(m, &s, nalbuf, (long)sizeof nalbuf);
-            sample++;
-            if (n < 0) {
-                snprintf(line, sizeof line, "%s: corrupt sample %ld", name, sample - 1);
-                die_with(line);
-            }
-            got = vdec_feed(&v, nalbuf, n);
+        if (pend_off < pend_len) {
+            got = vdec_pump(&v, nalbuf, pend_len, &pend_off);
             if (got < 0) {
                 snprintf(line, sizeof line,
                          "%s: the %s decoder refused this stream (%d) at sample %ld",
-                         name, vt->codec_name, got, sample - 1);
+                         name, vt->codec_name, got, sample);
                 die_with(line);
             }
-            if (!got) continue;                /* needs more input */
+            if (!got) continue;                /* consumed, no picture yet */
         } else {
+            media_sample s;
+            if (media_get_sample(m, vi, sample, &s) == 1) {
+                long n = media_to_annexb(m, &s, nalbuf, (long)sizeof nalbuf);
+                if (n < 0) {
+                    snprintf(line, sizeof line, "%s: corrupt sample %ld", name, sample);
+                    die_with(line);
+                }
+                pend_len = n; pend_off = 0;
+                if (ptsq_n < (int)(sizeof ptsq / sizeof ptsq[0]))
+                    ptsq[(ptsq_head + ptsq_n++) % (int)(sizeof ptsq / sizeof ptsq[0])] = s.pts_ns;
+                sample++;
+                continue;
+            }
             got = vdec_flush(&v);
             if (!got) break;                   /* end of stream */
         }
 
-        /* The picture's presentation time. The decoders emit in display order,
-         * so the container's pts for THIS sample is not necessarily this
-         * picture's -- for streams without reorder they agree, and for the
-         * rest the decode-order stamp is close enough to pace with and is
-         * what we have. (Carrying pts through the decoder needs an API it
-         * does not have; see the report.) */
-        long long pts = s.pts_ns;
+        /* The picture's presentation time, taken off the head of the queue. */
+        if (ptsq_n > 0) {
+            cur_pts = ptsq[ptsq_head];
+            ptsq_head = (ptsq_head + 1) % (int)(sizeof ptsq / sizeof ptsq[0]);
+            ptsq_n--;
+        }
+        long long pts = cur_pts;
         if (first_pts < 0) first_pts = pts;
 
         /* RULE ONE: audio never runs more than AV_LEAD_NS ahead of the picture. */
@@ -578,11 +600,11 @@ static void pick_from_media(char *out, int outmax)
 
     for (;;) {
         gui_clear(rgb(28, 28, 32));
-        gui_text(16, 30, rgb(230, 230, 236), "Open from /media");
+        gui_text(16, 44, rgb(230, 230, 236), "Open from /media");
         for (int i = 0; i < n; i++) {
             unsigned c = (i == sel) ? rgb(255, 210, 120) : rgb(190, 190, 198);
-            if (i == sel) gui_rect(12, 44 + i * 20, WINW - 24, 20, rgb(48, 48, 56));
-            gui_text(24, 58 + i * 20, c, names[i]);
+            if (i == sel) gui_rect(12, 58 + i * 20, WINW - 24, 20, rgb(48, 48, 56));
+            gui_text(24, 72 + i * 20, c, names[i]);
         }
         status("up/down to choose, Enter to open, Esc to quit");
         gui_flush();
