@@ -1066,7 +1066,17 @@ static void sheet_write_back(struct node *style, const char *text, size_t len)
     if (t) dom_append_child(style, t);
 }
 
-struct sheetref { struct node *style; };
+/* Which <style> a CSSStyleSheet object writes back to.
+ *
+ * The sheet object carries an INDEX into this table, not a node pointer --
+ * a JS property cannot hold one. So the table has to stay valid for as long as
+ * any sheet object a script kept a reference to, which is the whole page: it
+ * is appended to and never shrunk, and each entry carries the node's `serial`
+ * so a slot recycled out of the DOM's free list can never be written through a
+ * stale sheet object. (Rebuilding the table per read, which is what the first
+ * version did, made a held sheet's insertRule write into whichever <style>
+ * happened to land at its old index.) */
+struct sheetref { struct node *style; uint32_t serial; };
 static struct sheetref *g_sheets;
 static int g_nsheets;
 
@@ -1122,7 +1132,9 @@ static JSValue sheet_insertRule(JSContext *ctx, JSValueConst t, int argc, JSValu
     const char *ts = JS_ToCStringLen(ctx, &tl, txt);
     JSValue owner = JS_GetPropertyStr(ctx, t, "__sx");
     int32_t si = -1; JS_ToInt32(ctx, &si, owner); JS_FreeValue(ctx, owner);
-    if (ts && si >= 0 && si < g_nsheets) sheet_write_back(g_sheets[si].style, ts, tl);
+    if (ts && si >= 0 && si < g_nsheets &&
+        g_sheets[si].style && g_sheets[si].style->serial == g_sheets[si].serial)
+        sheet_write_back(g_sheets[si].style, ts, tl);
     if (ts) JS_FreeCString(ctx, ts);
     JS_FreeValue(ctx, txt);
     return JS_NewInt32(ctx, idx);
@@ -1150,7 +1162,9 @@ static JSValue sheet_deleteRule(JSContext *ctx, JSValueConst t, int argc, JSValu
     const char *ts = JS_ToCStringLen(ctx, &tl, txt);
     JSValue owner = JS_GetPropertyStr(ctx, t, "__sx");
     int32_t si = -1; JS_ToInt32(ctx, &si, owner); JS_FreeValue(ctx, owner);
-    if (ts && si >= 0 && si < g_nsheets) sheet_write_back(g_sheets[si].style, ts, tl);
+    if (ts && si >= 0 && si < g_nsheets &&
+        g_sheets[si].style && g_sheets[si].style->serial == g_sheets[si].serial)
+        sheet_write_back(g_sheets[si].style, ts, tl);
     if (ts) JS_FreeCString(ctx, ts);
     JS_FreeValue(ctx, txt);
     return JS_UNDEFINED;
@@ -1202,12 +1216,17 @@ static JSValue doc_styleSheets(JSContext *ctx, JSValueConst t)
     list = JS_NewArray(ctx);
     if (JS_IsException(list)) return list;
 
-    free(g_sheets);
-    g_sheets = cnt ? malloc((size_t)cnt * sizeof *g_sheets) : 0;
-    g_nsheets = g_sheets ? cnt : 0;
+    /* Appended to, never rebuilt -- see the note on struct sheetref. */
+    int base = g_nsheets;
+    if (cnt) {
+        struct sheetref *p = realloc(g_sheets, (size_t)(base + cnt) * sizeof *p);
+        if (p) { g_sheets = p; g_nsheets = base + cnt; }
+    }
 
     for (int i = 0; i < cnt; i++) {
-        if (g_sheets) g_sheets[i].style = found[i];
+        int sx = base + i;
+        if (g_sheets && sx < g_nsheets)
+            { g_sheets[sx].style = found[i]; g_sheets[sx].serial = found[i]->serial; }
         struct sbuf src = { 0, 0, 0 };
         collect_text(found[i], &src);
         JSValue sh = JS_NewObject(ctx);
@@ -1223,7 +1242,7 @@ static JSValue doc_styleSheets(JSContext *ctx, JSValueConst t)
         JS_SetPropertyStr(ctx, sh, "parentStyleSheet", JS_NULL);
         JS_SetPropertyStr(ctx, sh, "ownerRule", JS_NULL);
         JS_SetPropertyStr(ctx, sh, "ownerNode", wrapper_of(ctx, found[i]));
-        JS_SetPropertyStr(ctx, sh, "__sx", JS_NewInt32(ctx, i));
+        JS_SetPropertyStr(ctx, sh, "__sx", JS_NewInt32(ctx, sx));
         JS_SetPropertyStr(ctx, sh, "insertRule",
                           JS_NewCFunction(ctx, sheet_insertRule, "insertRule", 2));
         JS_SetPropertyStr(ctx, sh, "deleteRule",
