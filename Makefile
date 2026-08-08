@@ -3238,3 +3238,8 @@ bench-aui: $(ISO) $(DISK)
 # c/kernel/sched/uthread.c links by existing, and mini-libc's pthread.c and
 # pthread_entry.asm are already covered by the wildcards over c/apps/libc/src.
 -include tests/thread.mk
+
+# Web Platform Tests over the DOM + Web-API layer. Upstream data only, our
+# runner, a rate ratcheted against a committed expected-failure list -- the
+# html5lib shape one layer up. See its header.
+-include tests/wpt.mk
