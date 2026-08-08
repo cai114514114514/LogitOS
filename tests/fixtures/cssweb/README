@@ -1,0 +1,50 @@
+The CSS corpus: 15 real, high-traffic pages, captured verbatim.
+
+WHAT IT IS FOR
+This is the WORK ORDER for the CSS engine. `make audit-css` runs the real
+pipeline (dom_parse -> css_expand_vars -> css_apply -> css_extra_apply ->
+layout_page) over these bytes with a reporter installed inside LibCSS's
+parseProperty(), and ranks every declaration the cascade throws away and every
+layout mode the pages need. What gets implemented is decided by counting what
+these pages actually declare -- not by reading a spec, and never by counting
+supported properties.
+
+That distinction is not pedantry. This project has a documented case of an HTML
+conformance score going from 2/1643 to 1723/1818 while the browser still could
+not run one real site's JavaScript. A property count can rise while pages get
+no better; a page either lays out or it does not.
+
+WHY THEY ARE COMMITTED RATHER THAN FETCHED
+Same reason as tests/fixtures/cssperf: a corpus fetched at measure time changes
+under the measurement. These are the exact bytes the before/after numbers in
+the commit messages were measured on, and `make audit-css-before` re-measures
+them against a build with the changes disabled. Refetching invalidates both
+columns at once, so the numbers must be re-taken if anyone refreshes these.
+
+It is ~14 MB of HTML and CSS, which is not free. It buys the ability to say
+"tailwind.com went from 0 flex containers to 151" and have that be a fact about
+a specific artefact rather than about whatever the CDN served that afternoon.
+
+WHY THESE FIFTEEN -- the spread is the point
+  news        apnews, bbc          bbc is styled ENTIRELY from inline <style>
+  docs        mdn, pydocs, web-dev mdn is grid-heavy; pydocs is classic block flow
+  search      bing, ddg            server-rendered result lists
+  product     apple, tailwind      apple is var()-heavy; tailwind is @layer-only
+  app UI      github               Primer: 283 flex containers over 1998 elements
+  CN portal   163, baidu, qq, sina float-era layout, CJK text, few flex
+  control     hn                   a table-based page from 2007, no flex at all
+
+hn and pydocs are there deliberately as CONTROLS: a change that helps the
+modern pages must not move these, and if it does, something is being applied
+that the page never asked for.
+
+CAPTURE
+  ./capture.py <name> <url>
+fetches the page and every <link rel=stylesheet> it names (up to 26), writing
+index.html, sheet-N.css and a MANIFEST recording each source URL. It ignores
+`data-href` -- GitHub ships twelve inert theme <link>s that way and counting
+them would triple the corpus's CSS without adding a rule that ever applies.
+
+Captured 2026-08-08, unmodified. These are third-party pages kept verbatim as
+test input only; each remains the copyright of its publisher. MANIFEST in each
+directory records exactly where every byte came from.

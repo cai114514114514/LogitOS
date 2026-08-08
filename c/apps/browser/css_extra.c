@@ -201,6 +201,29 @@ static int decls_trans_op(const char *d, int dlen)
     return 0;
 }
 
+/* ---- CSS logical properties ----------------------------------------------
+ *
+ * `margin-inline-start`, `padding-block`, `inset` and the rest of that family
+ * are what a stylesheet written after about 2020 uses instead of the physical
+ * four. Our LibCSS predates all of them, so every one is an unknown property
+ * and the box simply does not get the margin. Measured over the
+ * tests/fixtures/cssweb corpus (`make audit-css`) they are declared 460+ times
+ * across 6 of the 15 pages -- and unlike a colour, a lost margin MOVES text.
+ *
+ * We render left-to-right, top-to-bottom only: there is no `direction:rtl` and
+ * no `writing-mode` in this engine (both are in the audit's "parsed but never
+ * read" list). So the mapping is the fixed LTR/horizontal-tb one --
+ * inline-start = left, block-start = top -- which is right for every page in
+ * the corpus and wrong in exactly the cases where the rest of the engine is
+ * already wrong. Doing it any other way would mean claiming a bidi capability
+ * that does not exist.
+ *
+ * The shorthands take 1 or 2 values (start then end); `inset` takes the full
+ * 1-to-4 physical shorthand order because that is what it is defined as. */
+enum { LGX_ML = 0, LGX_MR, LGX_MT, LGX_MB,
+       LGX_PL, LGX_PR, LGX_PT, LGX_PB,
+       LGX_LEFT, LGX_RIGHT, LGX_TOP, LGX_BOTTOM, LGX__COUNT };
+
 /* Everything we may want to patch from one declarations block. */
 struct xpatch {
     int do_none;                            /* visually-hidden -> display:none */
@@ -209,7 +232,104 @@ struct xpatch {
     int gx_set, gx, gy_set, gy;
     int anim;                               /* 0 = untouched, 1 = animated, -1 = none */
     int trans_op;                           /* transition declares opacity/all */
+    int lg_set[LGX__COUNT], lg[LGX__COUNT]; /* logical properties, resolved to physical */
 };
+
+/* One px length from `v`, advancing *i. Accepts a leading '-'; returns -1 and
+ * leaves *i alone for `auto`, a percentage or anything else we cannot turn
+ * into a pixel count here (the physical longhand, if any, still cascaded
+ * normally through LibCSS -- this pass only fills what LibCSS could not see). */
+static int one_px(const char *v, int len, int *i, int *out)
+{
+    int p = *i;
+    while (p < len && spc(v[p])) p++;
+    int neg = 0;
+    if (p < len && v[p] == '-') { neg = 1; p++; }
+    if (p >= len || v[p] < '0' || v[p] > '9') return -1;
+    int n = 0;
+    while (p < len && v[p] >= '0' && v[p] <= '9') {
+        if (n > 100000) break;
+        n = n * 10 + (v[p++] - '0');
+    }
+    if (p < len && v[p] == '.') { p++; while (p < len && v[p] >= '0' && v[p] <= '9') p++; }
+    /* Only bare px (or a unitless 0) is a pixel count we can trust here. */
+    if (p + 1 < len && v[p] == 'p' && v[p+1] == 'x') p += 2;
+    else if (p < len && (ident(v[p]) || v[p] == '%')) return -1;
+    *i = p;
+    *out = neg ? -n : n;
+    return 0;
+}
+
+/* `key: a [b]` -> phys_start/phys_end (a alone sets both). */
+static void logical_pair(const char *d, int dlen, const char *key,
+                         int s_idx, int e_idx, struct xpatch *p)
+{
+    int vs, ve, i = 0, a, b;
+    if (!find_decl(d, dlen, key, &vs, &ve)) return;
+    if (one_px(d + vs, ve - vs, &i, &a) != 0) return;
+    if (one_px(d + vs, ve - vs, &i, &b) != 0) b = a;
+    p->lg[s_idx] = a; p->lg_set[s_idx] = 1;
+    p->lg[e_idx] = b; p->lg_set[e_idx] = 1;
+}
+
+/* `key: v` -> one physical edge. */
+static void logical_one(const char *d, int dlen, const char *key, int idx,
+                        struct xpatch *p)
+{
+    int vs, ve, i = 0, a;
+    if (!find_decl(d, dlen, key, &vs, &ve)) return;
+    if (one_px(d + vs, ve - vs, &i, &a) != 0) return;
+    p->lg[idx] = a; p->lg_set[idx] = 1;
+}
+
+static int xpatch_has_logical(const struct xpatch *p)
+{
+    for (int i = 0; i < LGX__COUNT; i++) if (p->lg_set[i]) return 1;
+    return 0;
+}
+
+static void parse_logical(const char *d, int dlen, struct xpatch *p)
+{
+    logical_pair(d, dlen, "margin-inline",  LGX_ML, LGX_MR, p);
+    logical_pair(d, dlen, "margin-block",   LGX_MT, LGX_MB, p);
+    logical_pair(d, dlen, "padding-inline", LGX_PL, LGX_PR, p);
+    logical_pair(d, dlen, "padding-block",  LGX_PT, LGX_PB, p);
+    /* Longhands after the shorthands: `margin-inline: 0; margin-inline-start:
+     * 8px` must end at 0/8, which is source order for a real cascade and is
+     * what this ordering reproduces for the overwhelmingly common case. */
+    logical_one(d, dlen, "margin-inline-start",  LGX_ML, p);
+    logical_one(d, dlen, "margin-inline-end",    LGX_MR, p);
+    logical_one(d, dlen, "margin-block-start",   LGX_MT, p);
+    logical_one(d, dlen, "margin-block-end",     LGX_MB, p);
+    logical_one(d, dlen, "padding-inline-start", LGX_PL, p);
+    logical_one(d, dlen, "padding-inline-end",   LGX_PR, p);
+    logical_one(d, dlen, "padding-block-start",  LGX_PT, p);
+    logical_one(d, dlen, "padding-block-end",    LGX_PB, p);
+
+    /* inset: the physical 1-4 shorthand (top right bottom left). */
+    {
+        int vs, ve, i = 0, v[4], n = 0;
+        if (find_decl(d, dlen, "inset", &vs, &ve)) {
+            while (n < 4 && one_px(d + vs, ve - vs, &i, &v[n]) == 0) n++;
+            if (n > 0) {
+                int t = v[0];
+                int r = n > 1 ? v[1] : t;
+                int b = n > 2 ? v[2] : t;
+                int l = n > 3 ? v[3] : r;
+                p->lg[LGX_TOP] = t;    p->lg_set[LGX_TOP] = 1;
+                p->lg[LGX_RIGHT] = r;  p->lg_set[LGX_RIGHT] = 1;
+                p->lg[LGX_BOTTOM] = b; p->lg_set[LGX_BOTTOM] = 1;
+                p->lg[LGX_LEFT] = l;   p->lg_set[LGX_LEFT] = 1;
+            }
+        }
+    }
+    logical_pair(d, dlen, "inset-inline", LGX_LEFT, LGX_RIGHT, p);
+    logical_pair(d, dlen, "inset-block",  LGX_TOP,  LGX_BOTTOM, p);
+    logical_one(d, dlen, "inset-inline-start", LGX_LEFT, p);
+    logical_one(d, dlen, "inset-inline-end",   LGX_RIGHT, p);
+    logical_one(d, dlen, "inset-block-start",  LGX_TOP, p);
+    logical_one(d, dlen, "inset-block-end",    LGX_BOTTOM, p);
+}
 
 static void parse_decls(const char *d, int dlen, struct xpatch *p)
 {
@@ -234,6 +354,7 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
         if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gx = x; p->gx_set = 1; } }
     if (find_decl(d, dlen, "grid-row-gap", &vs, &ve)) { int x, y;
         if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gy = y; p->gy_set = 1; } }
+    parse_logical(d, dlen, p);
     p->anim = decls_anim(d, dlen);
     p->trans_op = decls_trans_op(d, dlen);
 }
@@ -385,6 +506,21 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     }
     if (p->gx_set) st->grid_gap_x = p->gx;
     if (p->gy_set) st->grid_gap_y = p->gy;
+    /* Logical properties, already resolved to physical edges by parse_logical.
+     * A box offset additionally has to set its has_* flag, or layout treats the
+     * value as "not specified" and the number is stored and never read. */
+    if (p->lg_set[LGX_ML]) st->ml = p->lg[LGX_ML];
+    if (p->lg_set[LGX_MR]) st->mr = p->lg[LGX_MR];
+    if (p->lg_set[LGX_MT]) st->mt = p->lg[LGX_MT];
+    if (p->lg_set[LGX_MB]) st->mb = p->lg[LGX_MB];
+    if (p->lg_set[LGX_PL]) st->pl = p->lg[LGX_PL];
+    if (p->lg_set[LGX_PR]) st->pr = p->lg[LGX_PR];
+    if (p->lg_set[LGX_PT]) st->pt = p->lg[LGX_PT];
+    if (p->lg_set[LGX_PB]) st->pb = p->lg[LGX_PB];
+    if (p->lg_set[LGX_LEFT])   { st->left = p->lg[LGX_LEFT];     st->has_left = 1; }
+    if (p->lg_set[LGX_RIGHT])  { st->right = p->lg[LGX_RIGHT];   st->has_right = 1; }
+    if (p->lg_set[LGX_TOP])    { st->top = p->lg[LGX_TOP];       st->has_top = 1; }
+    if (p->lg_set[LGX_BOTTOM]) { st->bottom = p->lg[LGX_BOTTOM]; st->has_bottom = 1; }
     if (p->anim > 0) st->anim = 1;
     else if (p->anim < 0) st->anim = 0;
     if (p->trans_op) st->trans_op = 1;
@@ -580,7 +716,8 @@ static int compile_sheet(const char *css, int len)
         if (dlen <= 0 || !media_active_at(s)) continue;
         struct xpatch p;
         parse_decls(g_src + d, dlen, &p);
-        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op)
+        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+            xpatch_has_logical(&p))
             if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
     }
     g_compiled = 1;
@@ -615,7 +752,8 @@ static void apply_uncompiled(struct node *root, const char *css, int len)
         if (dlen <= 0 || !media_active_at(s)) continue;
         struct xpatch p;
         parse_decls(css + d, dlen, &p);
-        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op)
+        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+            xpatch_has_logical(&p))
             walk(root, css + s, slen, &p);
     }
 }
