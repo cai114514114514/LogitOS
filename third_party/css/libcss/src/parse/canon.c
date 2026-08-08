@@ -958,6 +958,109 @@ static int anchor_fn(lexed *lx, buf *b, int depth, int which)
 }
 
 /* ====================================================================
+ * font-family
+ *
+ *   font-family: <family-name>#
+ *   <family-name> = <string> | <custom-ident>+
+ *
+ * The corner that makes this worth a parser rather than a pass-through is
+ * that ONE family name may be SEVERAL identifiers -- `quite simple` is a
+ * single family, not two -- while a quoted name is exactly one token. Mixing
+ * them in one slot is invalid, which is what makes
+ * `arial, helvetica, 'times' new roman, sans-serif` invalid even though every
+ * piece of it is individually fine. LibCSS accepts that today.
+ *
+ * The other corner is that an identifier is not the same thing as a word.
+ * `0simple` is a DIMENSION (the number 0 with the unit `simple`), which is why
+ * it cannot be a family name and why the check has to happen at the token
+ * level rather than by scanning characters. Same for `#simple` (a hash),
+ * `simple()` (a function) and `simple!` (a delimiter).
+ *
+ * Escapes are the third: `\073 imple` is the single identifier `simple` (a hex
+ * escape eats one following space), while `\s imple` is the TWO identifiers
+ * `s` and `imple` -- the same-looking input differing only in whether the
+ * escape was hex. Both are valid; they are different values. The scanner
+ * already decodes both, so this only has to spell the result back correctly,
+ * which is what bident() is for.
+ * ==================================================================== */
+
+/* Reserved in <family-name>. The two halves are NOT the same rule and the
+ * difference shows up on a one-word value:
+ *
+ *   - a CSS-wide keyword is a legal whole value (`font-family: inherit` means
+ *     inherit) and only a parse error INSIDE a list, where it would have to
+ *     be a family name;
+ *   - `default` is reserved in <family-name> and is not a CSS-wide keyword,
+ *     so it is a parse error in BOTH positions.
+ */
+static int ff_css_wide(const tok *t)
+{
+	return tok_is_ident(t, "initial") || tok_is_ident(t, "inherit") ||
+	       tok_is_ident(t, "unset") || tok_is_ident(t, "revert") ||
+	       tok_is_ident(t, "revert-layer");
+}
+
+static int ff_reserved(const tok *t)
+{
+	return ff_css_wide(t) || tok_is_ident(t, "default");
+}
+
+static int canon_font_family(lexed *lx, buf *b)
+{
+	int slot = 0;
+
+	for (;;) {
+		const tok *t = cur(lx);
+		int nid = 0;
+
+		if (slot > 0) bcomma(b);
+
+		if (t->kind == T_STR) {
+			/* A quoted name is the whole slot. `'times' new roman`
+			 * is invalid, not a name of three words. */
+			adv(lx);
+			if (!at_end(lx) && cur(lx)->kind != T_COMMA) return -1;
+#ifdef CANON_NEGCTL
+			/* The control: single quotes. Still a string, still
+			 * re-parses to itself, still the wrong bytes -- the
+			 * CSSOM says a string serializes with double quotes. */
+			bputc(b, '\'');
+			bput(b, t->s, t->len);
+			bputc(b, '\'');
+#else
+			bstring(b, t->s, t->len);
+#endif
+		} else if (t->kind == T_IDENT) {
+			const tok *first = t;
+
+			while (!at_end(lx) && cur(lx)->kind == T_IDENT) {
+				if (nid > 0) bputc(b, ' ');
+				bident(b, cur(lx)->s, cur(lx)->len);
+				adv(lx);
+				nid++;
+			}
+			/* A slot of exactly one identifier may not be a
+			 * reserved word; two or more may (`default bongo` is a
+			 * perfectly good family name). */
+			if (nid == 1 && ff_reserved(first)) return -1;
+			if (!at_end(lx) && cur(lx)->kind != T_COMMA) return -1;
+		} else {
+			/* A dimension (`0simple`), hash (`#simple`), function
+			 * (`simple()`), number or delimiter (`simple!`,
+			 * `quite@simple`). None of these is an identifier. */
+			return -1;
+		}
+
+		slot++;
+		if (at_end(lx)) break;
+		if (cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+		if (at_end(lx)) return -1;	/* trailing comma */
+	}
+	return slot > 0 ? 0 : -1;
+}
+
+/* ====================================================================
  * position-area
  *
  * A grid cell named by one or two keywords. What makes it a real parse rather
@@ -1211,6 +1314,7 @@ int css_canon_knows_property(const char *prop, int plen)
 	if (ieq(prop, plen, "anchor-name")) return 1;
 	if (ieq(prop, plen, "position-anchor")) return 1;
 	if (ieq(prop, plen, "position-area")) return 1;
+	if (ieq(prop, plen, "font-family")) return 1;
 	return 0;
 }
 
@@ -1370,6 +1474,16 @@ int css_canon_decl(const char *prop, int plen,
 	} else if (ieq(prop, plen, "position-area")) {
 		rc = canon_position_area(&lx, &b) == 0
 			? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (ieq(prop, plen, "font-family")) {
+		/* A CSS-wide keyword as the ENTIRE value is legal and is
+		 * LibCSS's to interpret; the same word inside a list is a
+		 * parse error. Splitting them here keeps `font-family:
+		 * inherit` behaving exactly as it does today. */
+		if (lx.n == 1 && ff_css_wide(&lx.t[0]))
+			rc = CSS_CANON_PASS;
+		else
+			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
+				? CSS_CANON_OK : CSS_CANON_INVALID;
 	} else if (mentions_anchor(&lx)) {
 		int anchor_ok = in_tab(prop, plen, inset_props);
 		int size_ok = anchor_ok || in_tab(prop, plen, size_props) ||

@@ -545,6 +545,147 @@ static void t_position_area(void)
 	chk("position-area", "\"left\"", NULL);
 }
 
+/* css/css-fonts/test_font_family_parsing.html
+ *
+ * Transcribed from that file's `testFontFamilyLists` table, including the
+ * rows it marks invalid. The three corners it is really about:
+ *
+ *   - one family name may be SEVERAL identifiers (`quite simple`), while a
+ *     quoted name is exactly one token -- so mixing them in one slot is
+ *     invalid, which is what makes `'times' new roman` invalid inside an
+ *     otherwise fine list;
+ *   - an identifier is not a word. `0simple` is a DIMENSION and `#simple` a
+ *     hash, so neither can be a family name;
+ *   - `\073 imple` is the ONE identifier `simple` (a hex escape eats one
+ *     following space) while `\s imple` is the TWO identifiers `s` and
+ *     `imple`. Same-looking input, different values.
+ */
+static void t_font_family(void)
+{
+	group("font-family");
+
+	/* basic syntax */
+	chk_rt("font-family", "simple", "simple");
+	chk("font-family", "'simple'", "\"simple\"");
+	chk_rt("font-family", "\"simple\"", "\"simple\"");
+	chk_rt("font-family", "-simple", "-simple");
+	chk_rt("font-family", "_simple", "_simple");
+	chk_rt("font-family", "quite simple", "quite simple");
+	chk_rt("font-family", "quite _simple", "quite _simple");
+	chk_rt("font-family", "quite -simple", "quite -simple");
+	chk("font-family", "0simple", NULL);
+	chk("font-family", "simple!", NULL);
+	chk("font-family", "simple()", NULL);
+	chk("font-family", "quite@simple", NULL);
+	chk("font-family", "#simple", NULL);
+	chk("font-family", "quite 0simple", NULL);
+
+	/* non-ASCII identifiers */
+	chk_rt("font-family", "\xE7\xB4\x8D\xE8\xB1\x86\xE5\xAB\x8C\xE3\x81\x84",
+	    "\xE7\xB4\x8D\xE8\xB1\x86\xE5\xAB\x8C\xE3\x81\x84");
+	chk_rt("font-family",
+	    "\xE7\xB4\x8D\xE8\xB1\x86\xE5\xAB\x8C\xE3\x81\x84, ick, patooey",
+	    "\xE7\xB4\x8D\xE8\xB1\x86\xE5\xAB\x8C\xE3\x81\x84, ick, patooey");
+	chk_rt("font-family", "\xC4\xB0simple", "\xC4\xB0simple");
+	chk_rt("font-family", "\xC3\x9Fsimple", "\xC3\x9Fsimple");
+
+	chk_rt("font-family", "arial, helvetica, sans-serif",
+	    "arial, helvetica, sans-serif");
+	chk("font-family", "arial,helvetica,sans-serif",
+	    "arial, helvetica, sans-serif");
+
+	/* A quoted name is the WHOLE slot. */
+	chk("font-family", "arial, helvetica, 'times' new roman, sans-serif", NULL);
+	chk("font-family", "arial, helvetica, \"times\" new roman, sans-serif", NULL);
+	chk("font-family", "arial, helvetica, times 'new' roman, sans-serif", NULL);
+	chk("font-family", "arial, helvetica, times \"new\" roman, sans-serif", NULL);
+
+	/* A quote inside a quoted name survives, re-quoted. */
+	chk("font-family", "arial, helvetica, '\\\"times new roman', sans-serif",
+	    "arial, helvetica, \"\\\"times new roman\", sans-serif");
+
+	/* escapes */
+	chk("font-family", "\\s imple", "s imple");
+	chk("font-family", "\\073 imple", "simple");
+	chk("font-family", "sim\\035 ple", "sim5ple");
+	chk("font-family", "\\1f4a9", "\xF0\x9F\x92\xA9");
+	/* A leading zero does not change the value: still six digits or
+	 * fewer, still U+1F4A9. */
+	chk("font-family", "\\01f4a9", "\xF0\x9F\x92\xA9");
+	/* THE SIX-DIGIT BOUNDARY, and it is not a corner case for its own
+	 * sake -- WPT lists this row next to the two above as if it were the
+	 * same character, and it is not. An escape takes AT MOST six hex
+	 * digits, so `\0001f4a9` is U+0001F4 followed by the literal name
+	 * characters `a`,`9`: the identifier is three characters long and
+	 * begins with a G-acute. A scanner that keeps consuming hex digits
+	 * gets a plausible pile of poo instead and nothing else in the suite
+	 * would notice. */
+	chk("font-family", "\\0001f4a9", "\xC7\xB4" "a9");
+	chk("font-family", "\\AbAb", "\xEA\xAE\xAB");
+
+	/* keywords that are ordinary family names */
+	chk_rt("font-family", "italic", "italic");
+	chk_rt("font-family", "bold", "bold");
+	chk_rt("font-family", "bold italic", "bold italic");
+	chk_rt("font-family", "italic bold", "italic bold");
+	chk_rt("font-family", "larger", "larger");
+	chk_rt("font-family", "smaller", "smaller");
+	chk_rt("font-family", "bolder", "bolder");
+	chk_rt("font-family", "lighter", "lighter");
+	chk_rt("font-family", "normal", "normal");
+	chk_rt("font-family", "caption", "caption");
+	chk_rt("font-family", "icon", "icon");
+	chk_rt("font-family", "menu", "menu");
+
+	/* A CSS-wide keyword as the WHOLE value is LibCSS's; the same word in a
+	 * list is a parse error; two or more identifiers make an ordinary
+	 * family name again. */
+	chk("font-family", "initial", PASS_);
+	chk("font-family", "inherit", PASS_);
+	chk("font-family", "unset", PASS_);
+	chk("font-family", "revert", PASS_);
+	chk("font-family", "default", NULL);
+
+	chk("font-family", "default, simple", NULL);
+	chk("font-family", "initial, simple", NULL);
+	chk("font-family", "inherit, simple", NULL);
+	chk("font-family", "unset, simple", NULL);
+	chk("font-family", "simple, default", NULL);
+	chk("font-family", "simple, initial", NULL);
+	chk("font-family", "simple, inherit", NULL);
+	chk("font-family", "simple, unset", NULL);
+
+	chk_rt("font-family", "normal, simple", "normal, simple");
+	chk_rt("font-family", "simple, normal", "simple, normal");
+	chk_rt("font-family", "simple, default bongo", "simple, default bongo");
+	chk_rt("font-family", "simple, initial bongo", "simple, initial bongo");
+	chk_rt("font-family", "simple, inherit bongo", "simple, inherit bongo");
+	chk_rt("font-family", "simple, bongo default", "simple, bongo default");
+	chk_rt("font-family", "simple, bongo initial", "simple, bongo initial");
+	chk_rt("font-family", "simple, bongo inherit", "simple, bongo inherit");
+	chk_rt("font-family", "simple, unset bongo", "simple, unset bongo");
+	chk_rt("font-family", "simple, bongo unset", "simple, bongo unset");
+	chk_rt("font-family", "simple default", "simple default");
+	chk_rt("font-family", "simple initial", "simple initial");
+	chk_rt("font-family", "simple inherit", "simple inherit");
+	chk_rt("font-family", "simple normal", "simple normal");
+	chk_rt("font-family", "simple unset", "simple unset");
+	chk_rt("font-family", "default simple", "default simple");
+	chk_rt("font-family", "initial simple", "initial simple");
+	chk_rt("font-family", "inherit simple", "inherit simple");
+	chk_rt("font-family", "normal simple", "normal simple");
+	chk_rt("font-family", "unset simple", "unset simple");
+
+	group("font-family/invalid");
+	chk("font-family", ",", NULL);
+	chk("font-family", "simple,", NULL);
+	chk("font-family", ",simple", NULL);
+	chk("font-family", "simple,,arial", NULL);
+	chk("font-family", "16px", NULL);
+	chk("font-family", "\"a\" \"b\"", NULL);
+	chk("font-family", "simple \"a\"", NULL);
+}
+
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
  * wiring this into el.style would reroute ordinary CSS through a parser that
  * does not implement it. */
@@ -565,7 +706,6 @@ static void t_passthrough(void)
 	/* Properties this file has never heard of stay someone else's. */
 	chk("color", "red", PASS_);
 	chk("display", "block", PASS_);
-	chk("font-family", "serif", PASS_);
 	chk("wibble", "anchor-size(--foo width)", PASS_);
 
 	/* A value with no anchor function in it is LibCSS's even on a
@@ -675,6 +815,7 @@ int main(void)
 	t_anchor_invalid();
 	t_anchor_name();
 	t_position_area();
+	t_font_family();
 	t_passthrough();
 	t_fuzz();
 
