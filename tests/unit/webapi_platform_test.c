@@ -520,6 +520,24 @@ int main(int argc, char **argv)
          "instanceof HTMLInputElement is true for an input");
     ckjs("!('closedBy' in HTMLDialogElement.prototype)",
          "HTMLDialogElement.prototype answers a feature test (falsely, correctly)");
+    /* Document has its own prototype in js_dom.c, so publishing it over the
+     * ELEMENT prototype would make `document instanceof Document` false and
+     * every <div> true. baidu's sniffer reaches the bare name. */
+    ckjs("typeof Document === 'function' && document instanceof Document",
+         "Document exists and document is one");
+    ckjs("!(document.createElement('div') instanceof Document)",
+         "an element is NOT a Document");
+
+    /* ==== navigator.mimeTypes / navigator.plugins =======================
+     * baidu's s006.js: `if (navigator.mimeTypes.length > 0)`. Empty is the
+     * truthful answer -- no plugins are installed -- so the page takes the
+     * branch that is correct for this browser instead of throwing. */
+    ckjs("navigator.mimeTypes && navigator.mimeTypes.length === 0",
+         "navigator.mimeTypes is an empty collection, not undefined");
+    ckjs("navigator.plugins && navigator.plugins.length === 0",
+         "navigator.plugins is an empty collection, not undefined");
+    ckjs("navigator.mimeTypes.item(0) === null && navigator.plugins.namedItem('x') === null",
+         "the collections answer item/namedItem");
 
     /* ==== customElements =================================================
      * A REAL upgrade: the node already in the document becomes `this` inside

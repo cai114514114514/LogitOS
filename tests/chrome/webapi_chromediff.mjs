@@ -370,6 +370,20 @@ async function main() {
         try { res = await runChrome(dir, waitMs); }
         catch (e) { console.log(`  ${site.padEnd(11)} CHROME FAILED: ${e.message}`); continue; }
 
+        /* CHROME FETCHING NOTHING IS NOT CHROME HAVING NO ERRORS, and the
+         * difference is the entire point of this tool. A navigation that fails
+         * -- wrong scheme, a dead profile, a port that did not come up --
+         * leaves an empty page, an empty exception set, and a diff in which
+         * every one of our exceptions is attributed to us. It has already
+         * happened twice here (TLS-only server vs an http:// fixture; the
+         * system proxy), both times reading as a clean result. So a run that
+         * served no document is REFUSED rather than reported. */
+        if (res.hits === 0) {
+            console.log(`  ${site.padEnd(11)} REFUSED: chrome fetched nothing ` +
+                        `(${res.misses.length} requests, all 404). The comparison would ` +
+                        `credit every one of our exceptions to us. Not counted.\n`);
+            continue;
+        }
         const cb = bucket(res.log);
         const pb = bucket(probe.get(site) || []);
         const onlyOurs = [...pb.keys()].filter(k => !cb.has(k));

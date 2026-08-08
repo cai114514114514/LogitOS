@@ -485,6 +485,32 @@ static const char *PLATFORM_PRELUDE =
 "  def(nav, 'sendBeacon', function () { return false; });\n"   /* honest: we send nothing */
 "  def(nav, 'vendor', '');\n"
 "  def(nav, 'product', 'Gecko');\n"
+   /* navigator.mimeTypes / navigator.plugins.
+    *
+    * MEASURED, and it is the LAST uncaught exception on the real baidu page
+    * once jQuery boots -- s006.js line 2128, inside baidu's browser sniffer:
+    *
+    *     !function () { if (navigator.mimeTypes.length > 0) { ... } }
+    *
+    * `cannot read property 'length' of undefined`. Chrome does not throw it.
+    *
+    * EMPTY IS THE TRUTHFUL ANSWER AND IS NOT A STUB. The question these two
+    * collections answer is "which plugins are installed", and the answer here
+    * is none -- so a page that tests `.length > 0` takes the no-plugin branch,
+    * which is the branch that is correct for this browser. That is the
+    * opposite of the crypto.subtle case: there, a stub would return something
+    * a page believes is encryption; here, the empty collection IS the fact.
+    * (Chrome ships a hardcoded five-entry PDF list for compatibility. Copying
+    * that would be claiming a PDF plugin we do not have.) */
+"  var emptyColl = function () {\n"
+"    var c = [];\n"
+"    c.item = function (i) { return this[i] || null; };\n"
+"    c.namedItem = function () { return null; };\n"
+"    c.refresh = function () {};\n"
+"    return c;\n"
+"  };\n"
+"  def(nav, 'mimeTypes', emptyColl());\n"
+"  def(nav, 'plugins', emptyColl());\n"
 "})();\n"
 
 /* ==== crypto =============================================================
@@ -1186,6 +1212,36 @@ static const char *PLATFORM_PRELUDE =
 "  mk('Text', EP, null);\n"
 "  mk('Comment', EP, null);\n"
 "  mk('DocumentFragment', EP, null);\n"
+   /* Document has its OWN prototype -- js_dom.c gives the document object a
+      different class from an element -- so it must not be published over EP,
+      or `document instanceof Document` would be false while every <div> was
+      true. MEASURED: after navigator.mimeTypes landed, baidu's s006.js moved
+      straight on to `ReferenceError: 'Document' is not defined`; its sniffer
+      walks a list of interface names testing which exist. */
+   /* The guard is load-bearing, and the assertion `an element is NOT a
+      Document` is what caught its absence: if the object's prototype turns
+      out to be Object.prototype -- which it is whenever the class puts its
+      methods on the instance rather than on a shared prototype -- then
+      publishing an interface over it makes EVERYTHING an instance of it, and
+      `div instanceof Document` comes back true. A distinct prototype object,
+      with hasInstance doing the real test, is the only safe shape. */
+"  var mkOver = function (name, obj, alt) {\n"
+"    if (name in G) return;\n"
+"    var P = null;\n"
+"    try { P = Object.getPrototypeOf(obj); } catch (e) { return; }\n"
+"    if (P && P !== Object.prototype && P !== EP) { mk(name, P, null); return; }\n"
+"    var C = function () { throw new TypeError('Illegal constructor'); };\n"
+"    try {\n"
+"      Object.defineProperty(C, 'name', { value: name, configurable: true });\n"
+"      C.prototype = Object.create(P || Object.prototype);\n"
+"      Object.defineProperty(C, Symbol.hasInstance,\n"
+"        { value: function (o) { return o === obj || (!!alt && o === alt); }, configurable: true });\n"
+"      G[name] = C;\n"
+"    } catch (e) {}\n"
+"  };\n"
+"  mkOver('Document', G.document, null);\n"
+"  mkOver('HTMLDocument', G.document, null);\n"
+"  mkOver('Window', G, null);\n"
    /* HTMLElement is NOT a plain throwing constructor, because it is the one a
       custom element's `class X extends HTMLElement` calls through super().
       See installCustomElements: during an upgrade it returns the element being
