@@ -221,6 +221,65 @@ int main(void)
     ckjs("$('b1').form === $('f') && $('ta').form === $('f')",
          "button.form and textarea.form");
 
+    /* ---- constraint validation ---- */
+    ckjs("'validity' in HTMLInputElement.prototype && "
+         "'willValidate' in HTMLSelectElement.prototype && "
+         "typeof HTMLTextAreaElement.prototype.checkValidity === 'function' && "
+         "typeof HTMLFormElement.prototype.reportValidity === 'function'",
+         "the constraint-validation API exists on every submittable element");
+    ckjs("(function(){var i=document.createElement('input');i.required=true;"
+         "document.body.appendChild(i);"
+         "var missing=i.validity.valueMissing && !i.validity.valid;"
+         "i.value='x';var okNow=i.validity.valid && !i.validity.valueMissing;"
+         "i.remove();return missing && okNow;})()",
+         "required + empty is valueMissing, and filling it clears it");
+    ckjs("(function(){var i=document.createElement('input');i.type='email';"
+         "document.body.appendChild(i);i.value='not-an-email';"
+         "var bad=i.validity.typeMismatch;i.value='a@b.co';"
+         "var good=!i.validity.typeMismatch;i.remove();return bad && good;})()",
+         "type=email drives typeMismatch");
+    ckjs("(function(){var i=document.createElement('input');"
+         "i.setAttribute('pattern','[0-9]+');document.body.appendChild(i);i.value='12a';"
+         "var bad=i.validity.patternMismatch;"
+         "i.value='123';var good=!i.validity.patternMismatch;i.remove();"
+         "return bad && good;})()",
+         "pattern drives patternMismatch and is anchored at both ends");
+    ckjs("(function(){var i=document.createElement('input');i.type='number';"
+         "i.setAttribute('min','5');i.setAttribute('max','10');"
+         "document.body.appendChild(i);i.value='3';var lo=i.validity.rangeUnderflow;"
+         "i.value='11';var hi=i.validity.rangeOverflow;i.value='7';"
+         "var ok=i.validity.valid;i.remove();return lo && hi && ok;})()",
+         "min/max drive rangeUnderflow and rangeOverflow");
+    ckjs("(function(){var i=document.createElement('input');"
+         "document.body.appendChild(i);i.setCustomValidity('nope');"
+         "var bad=i.validity.customError && i.validationMessage==='nope';"
+         "i.setCustomValidity('');var good=i.validity.valid;i.remove();"
+         "return bad && good;})()",
+         "setCustomValidity sets customError and the message, and '' clears it");
+    ckjs("(function(){var i=document.createElement('input');i.required=true;"
+         "document.body.appendChild(i);var n=0;"
+         "i.addEventListener('invalid',function(){n++;});"
+         "var r=i.checkValidity();i.remove();return r===false && n===1;})()",
+         "checkValidity fires exactly one invalid event and returns false");
+    ckjs("(function(){var i=document.createElement('input');i.required=true;"
+         "i.disabled=true;document.body.appendChild(i);"
+         "var barred=!i.willValidate && i.validity.valid && i.checkValidity();"
+         "i.remove();return barred;})()",
+         "a disabled control is barred from validation and is therefore valid");
+    ckjs("(function(){var f=document.createElement('form');"
+         "var a=document.createElement('input');a.required=true;"
+         "var b=document.createElement('input');b.value='ok';"
+         "f.appendChild(a);f.appendChild(b);document.body.appendChild(f);"
+         "var bad=f.checkValidity();a.value='x';var good=f.checkValidity();"
+         "f.remove();return bad===false && good===true;})()",
+         "form.checkValidity is the conjunction over its controls");
+
+    /* ---- <textarea> gets js_forms.c's value pair ---- */
+    ckjs("(function(){var t=document.createElement('textarea');"
+         "document.body.appendChild(t);t.value='typed';"
+         "var ok=t.value==='typed';t.remove();return ok;})()",
+         "textarea.value exists and round-trips");
+
     /* ---- <template> ---- */
     ckjs("(function(){var c=$('tpl').content;"
          "return c === $('tpl').content && c.nodeType === 11 && "

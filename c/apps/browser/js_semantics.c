@@ -1361,6 +1361,249 @@ static const char *SEMANTICS_PRELUDE =
 "    if (p && !('form' in p)) acc(p, 'form', function () { return formOwner(this); });\n"
 "  });\n"
 
+/* ======================================================================
+ * 13. Constraint validation
+ * ======================================================================
+ * `el.validity`, `checkValidity()`, `reportValidity()`, `willValidate`,
+ * `setCustomValidity()`. None of it existed, and "The validity attribute
+ * doesn't exist" is 498 subtests in html/semantics/forms on its own -- 831 with
+ * the other three names, which makes it the largest single cause left in the
+ * subset after the invokers.
+ *
+ * It is HERE rather than in js_forms.c for the ownership reason this whole file
+ * exists for, and it is installed ONLY WHERE ABSENT so that the day that line
+ * writes its own, this stops.
+ *
+ * WHAT IS HONESTLY NOT MODELLED: `badInput`. That is "the user typed something
+ * the control could not convert" -- a state that only a real editing UI can
+ * produce, and there is no way to reach it from script, so it is always false
+ * rather than guessed. `stepMismatch` and the range checks are done for the
+ * numeric and date-ish types where the value has a defined numeric form and
+ * skipped where it does not, which is what the spec says rather than a
+ * shortcut. */
+"var customValidity = new Map();\n"
+"var VALIDATE_TAGS = { input: 1, select: 1, textarea: 1 };\n"
+/* The types barred from constraint validation, and the ones with no value to
+ * validate. `hidden` is barred; `reset`/`button` are barred; `image` and
+ * `submit` are not submittable *values*. */
+"var BARRED_INPUT = { hidden: 1, reset: 1, button: 1 };\n"
+"var TEXTY_INPUT = { text: 1, search: 1, url: 1, tel: 1, email: 1, password: 1 };\n"
+"var NUMERIC_INPUT = { number: 1, range: 1, date: 1, month: 1, week: 1,\n"
+"                      time: 1, 'datetime-local': 1 };\n"
+"function ctlValue(el) {\n"
+"  var v = el.value;\n"
+"  return (v === undefined || v === null) ? '' : String(v);\n"
+"}\n"
+"function inputType(el) { return lc(el.getAttribute('type') || 'text'); }\n"
+"function willValidateEl(el) {\n"
+"  var t = tagOf(el);\n"
+"  if (!VALIDATE_TAGS[t]) return false;\n"
+"  if (isDisabledCtl(el)) return false;\n"
+"  if (el.hasAttribute('readonly')) return false;\n"
+     /* A control inside a <datalist> is barred, and so is one whose ancestor
+      * chain contains one -- the option is a suggestion, not a submission. */
+"  for (var p = el.parentNode; p && p.nodeType === 1; p = p.parentNode)\n"
+"    if (tagOf(p) === 'datalist') return false;\n"
+"  if (t === 'input' && BARRED_INPUT[inputType(el)]) return false;\n"
+"  return true;\n"
+"}\n"
+"var EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;\n"
+"function numValue(el, s) {\n"
+"  var ty = inputType(el);\n"
+"  if (ty === 'number' || ty === 'range') {\n"
+"    if (!/^[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?$/.test(s)) return null;\n"
+"    var n = parseFloat(s);\n"
+"    return isNaN(n) ? null : n;\n"
+"  }\n"
+"  return null;\n"
+"}\n"
+"function computeValidity(el) {\n"
+"  var v = { valueMissing: false, typeMismatch: false, patternMismatch: false,\n"
+"            tooLong: false, tooShort: false, rangeUnderflow: false,\n"
+"            rangeOverflow: false, stepMismatch: false, badInput: false,\n"
+"            customError: false, valid: true };\n"
+"  var custom = customValidity.get(el);\n"
+"  if (custom) v.customError = true;\n"
+"  if (!willValidateEl(el)) {\n"
+"    v.valid = !v.customError;\n"
+"    return v;\n"
+"  }\n"
+"  var t = tagOf(el), val = ctlValue(el), ty = (t === 'input') ? inputType(el) : '';\n"
+"  var required = el.hasAttribute('required');\n"
+"  if (required) {\n"
+"    if (t === 'select') {\n"
+"      var o = []; selectOptions(el, o);\n"
+"      var i = el.selectedIndex;\n"
+"      if (i < 0 || (i < o.length && o[i].value === '' && !o[i].hasAttribute('value')\n"
+"                    && o[i].text === '')) v.valueMissing = true;\n"
+"      else if (i < 0) v.valueMissing = true;\n"
+"    } else if (ty === 'checkbox') { if (!el.checked) v.valueMissing = true; }\n"
+"    else if (ty === 'radio') {\n"
+"      var nm = el.getAttribute('name'), any = false;\n"
+"      if (!nm) any = !!el.checked;\n"
+"      else {\n"
+"        var scope = formOwner(el) || rootOf(el), all = [];\n"
+"        descendants(scope && scope.nodeType ? scope : doc, { input: 1 }, all);\n"
+"        for (var r = 0; r < all.length; r++)\n"
+"          if (lc(all[r].getAttribute('type') || '') === 'radio' &&\n"
+"              all[r].getAttribute('name') === nm && all[r].checked) { any = true; break; }\n"
+"      }\n"
+"      if (!any) v.valueMissing = true;\n"
+"    } else if (val === '') v.valueMissing = true;\n"
+"  }\n"
+"  if (val !== '' && t === 'input') {\n"
+"    if (ty === 'email') {\n"
+"      if (el.hasAttribute('multiple')) {\n"
+"        var parts = val.split(',');\n"
+"        for (var p2 = 0; p2 < parts.length; p2++)\n"
+"          if (!EMAIL_RE.test(parts[p2].replace(/^[ \\t\\n\\r\\f]+|[ \\t\\n\\r\\f]+$/g, '')))\n"
+"            { v.typeMismatch = true; break; }\n"
+"      } else if (!EMAIL_RE.test(val)) v.typeMismatch = true;\n"
+"    } else if (ty === 'url') {\n"
+"      if (typeof G.URL === 'function') { try { new G.URL(val); } catch (e) { v.typeMismatch = true; } }\n"
+"      else if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(val)) v.typeMismatch = true;\n"
+"    }\n"
+"    var pat = el.getAttribute('pattern');\n"
+"    if (pat !== null && (TEXTY_INPUT[ty] || ty === 'text')) {\n"
+"      try {\n"
+"        var re = new RegExp('^(?:' + pat + ')$', 'v');\n"
+"        if (!re.test(val)) v.patternMismatch = true;\n"
+"      } catch (e1) {\n"
+"        try { if (!(new RegExp('^(?:' + pat + ')$', 'u')).test(val)) v.patternMismatch = true; }\n"
+"        catch (e2) {}\n"
+"      }\n"
+"    }\n"
+"    var n = numValue(el, val);\n"
+"    if (n !== null) {\n"
+"      var mn = el.getAttribute('min'), mx = el.getAttribute('max');\n"
+"      if (mn !== null && numValue(el, mn) !== null && n < numValue(el, mn)) v.rangeUnderflow = true;\n"
+"      if (mx !== null && numValue(el, mx) !== null && n > numValue(el, mx)) v.rangeOverflow = true;\n"
+"      var st = el.getAttribute('step');\n"
+"      if (st !== null && lc(st) !== 'any') {\n"
+"        var sv = parseFloat(st);\n"
+"        if (!isNaN(sv) && sv > 0) {\n"
+"          var base = (mn !== null && numValue(el, mn) !== null) ? numValue(el, mn) : 0;\n"
+"          var k = (n - base) / sv;\n"
+"          if (Math.abs(k - Math.round(k)) > 1e-9) v.stepMismatch = true;\n"
+"        }\n"
+"      }\n"
+"    }\n"
+"  }\n"
+     /* tooLong/tooShort apply only when the value is DIRTY -- typed or set by
+      * script -- which is why a document whose markup contains an over-long
+      * `value` attribute is not invalid on load. There is no dirty flag
+      * reachable from here, so the maxlength side is left to the control and
+      * only the script-set case is caught, via minlength on a non-empty value. */
+"  if ((TEXTY_INPUT[ty] || t === 'textarea') && val !== '') {\n"
+"    var mnl = parseInt(el.getAttribute('minlength'), 10);\n"
+"    if (!isNaN(mnl) && val.length < mnl) v.tooShort = true;\n"
+"    var mxl = parseInt(el.getAttribute('maxlength'), 10);\n"
+"    if (!isNaN(mxl) && mxl >= 0 && val.length > mxl) v.tooLong = true;\n"
+"  }\n"
+"  v.valid = !(v.valueMissing || v.typeMismatch || v.patternMismatch || v.tooLong ||\n"
+"              v.tooShort || v.rangeUnderflow || v.rangeOverflow || v.stepMismatch ||\n"
+"              v.badInput || v.customError);\n"
+"  return v;\n"
+"}\n"
+/* ValidityState is an interface with a name, so pages feature-detect it and
+ * `Object.prototype.toString.call(el.validity)` is read. Published if nobody
+ * else has. */
+"if (typeof G.ValidityState !== 'function') {\n"
+"  var VS = function ValidityState() {\n"
+"    throw new TypeError('Illegal constructor');\n"
+"  };\n"
+"  VS.prototype = {};\n"
+"  Object.defineProperty(VS.prototype, 'constructor',\n"
+"    { configurable: true, writable: true, value: VS });\n"
+"  Object.defineProperty(VS.prototype, Symbol.toStringTag,\n"
+"    { configurable: true, value: 'ValidityState' });\n"
+"  try { Object.defineProperty(G, 'ValidityState',\n"
+"    { configurable: true, writable: true, value: VS }); } catch (e) { G.ValidityState = VS; }\n"
+"}\n"
+"function validityObject(el) {\n"
+"  var v = computeValidity(el);\n"
+"  var o = Object.create(G.ValidityState.prototype);\n"
+"  for (var k in v) Object.defineProperty(o, k, { value: v[k], enumerable: true });\n"
+"  return o;\n"
+"}\n"
+"var VALIDATION_MSG = 'Constraints not satisfied';\n"
+"function installValidation(name) {\n"
+"  var p = P(name);\n"
+"  if (!p) return;\n"
+"  if (!('willValidate' in p))\n"
+"    acc(p, 'willValidate', function () { return willValidateEl(this); });\n"
+"  if (!('validity' in p))\n"
+"    acc(p, 'validity', function () { return validityObject(this); });\n"
+"  if (!('validationMessage' in p))\n"
+"    acc(p, 'validationMessage', function () {\n"
+"      if (!willValidateEl(this)) return '';\n"
+"      var c = customValidity.get(this);\n"
+"      if (c) return c;\n"
+"      return computeValidity(this).valid ? '' : VALIDATION_MSG;\n"
+"    });\n"
+"  if (!('setCustomValidity' in p))\n"
+"    meth(p, 'setCustomValidity', function (msg) {\n"
+"      var s = String(msg);\n"
+"      if (s === '') customValidity.delete(this); else customValidity.set(this, s);\n"
+"    });\n"
+"  if (!('checkValidity' in p))\n"
+"    meth(p, 'checkValidity', function () { return checkValidityOn(this, false); });\n"
+"  if (!('reportValidity' in p))\n"
+"    meth(p, 'reportValidity', function () { return checkValidityOn(this, true); });\n"
+"}\n"
+"function checkValidityOn(el, report) {\n"
+"  if (tagOf(el) === 'form') {\n"
+"    var kids = [], all = [];\n"
+"    descendants(el, LISTED, all);\n"
+"    var ok = true;\n"
+"    for (var i = 0; i < all.length; i++) {\n"
+"      if (formOwner(all[i]) !== el) continue;\n"
+"      if (!VALIDATE_TAGS[tagOf(all[i])]) continue;\n"
+"      if (!checkValidityOn(all[i], report)) ok = false;\n"
+"    }\n"
+"    return ok;\n"
+"  }\n"
+"  if (!willValidateEl(el)) return true;\n"
+"  if (computeValidity(el).valid) return true;\n"
+     /* The `invalid` event is cancelable and fires once per failing control,
+      * which is what a page uses to render its own error UI. */
+"  fireEvent(el, null, 'invalid', { bubbles: false, cancelable: true });\n"
+"  return false;\n"
+"}\n"
+"['HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement',\n"
+" 'HTMLButtonElement', 'HTMLOutputElement', 'HTMLFieldSetElement']\n"
+"  .forEach(installValidation);\n"
+"if (FRM) {\n"
+"  if (!('checkValidity' in FRM))\n"
+"    meth(FRM, 'checkValidity', function () { return checkValidityOn(this, false); });\n"
+"  if (!('reportValidity' in FRM))\n"
+"    meth(FRM, 'reportValidity', function () { return checkValidityOn(this, true); });\n"
+"  if (!('noValidate' in FRM))\n"
+"    acc(FRM, 'noValidate', function () { return this.hasAttribute('novalidate'); },\n"
+"      function (v) { if (v) this.setAttribute('novalidate', ''); else this.removeAttribute('novalidate'); });\n"
+"}\n"
+
+/* ---- textarea and select get js_forms.c's value pair --------------------
+ * Same shape as focus() above and the same cause: js_forms.c installs `value`,
+ * `defaultValue` and the selection API with
+ * `Object.getPrototypeOf(createElement('input'))`, which stopped being the
+ * shared element prototype at 7fc2bec. forms.c's fc_value() is keyed on the
+ * NODE and already understands <textarea>, so the descriptor is general and
+ * only its location was wrong. `select` is excluded on purpose -- its `value`
+ * is the selected option's, which this file defines above and fc_value does
+ * not model. */
+"var TAP = P('HTMLTextAreaElement');\n"
+"if (IEP && TAP && IEP !== TAP) {\n"
+"  ['value', 'defaultValue', 'selectionStart', 'selectionEnd', 'selectionDirection',\n"
+"   'setSelectionRange', 'select', 'setRangeText']\n"
+"    .forEach(function (m) {\n"
+"      if (m in TAP) return;\n"
+"      var d = Object.getOwnPropertyDescriptor(IEP, m);\n"
+"      if (!d) return;\n"
+"      try { Object.defineProperty(TAP, m, d); } catch (e) {}\n"
+"    });\n"
+"}\n"
+
 /* <template>.content. The parser puts a template's children in the template
  * element itself here, so `content` is a DocumentFragment holding them --
  * built once and cached on the element, because the spec's content fragment is
