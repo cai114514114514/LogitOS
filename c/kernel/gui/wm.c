@@ -15,6 +15,9 @@
 #include "aex.h"
 #include "blkdev.h"
 #include "img.h"
+/* The byte identifier /bin/show, the Terminal's output guard and Preview all
+ * already share. Pure inline, no libc, no allocation -- see its header. */
+#include "logit_sniff.h"
 #include "logit_abi.h"
 /* Generated from include/abi/logit_calls.abi, which is where the packed syscall
  * arguments are described. Unpacking them by hand here meant the convention was
@@ -465,12 +468,54 @@ void wm_launch(const char *aex_file, const char *arg)
     serial_puts("\n");
 }
 
+/* THE FILE ASSOCIATION, AND WHY IT ASKS THE BYTES.
+ *
+ * An .aex header carries ONE `ext` (aex.h), so an app that opens a dozen
+ * formats can register for exactly one of them and the other eleven land
+ * somewhere else. Preview is that app: it decodes PNG, APNG, GIF (animated),
+ * JPEG, BMP, ICO, WebP, SVG, H.264, H.265, MP4, fragmented MP4, Matroska,
+ * WebM, WAV, FLAC, MP3 and AAC, and it registered `h264`.
+ *
+ * Widening the header to a LIST of extensions would only move the lie. The
+ * extension is a claim made by whoever named the file, and this system already
+ * refuses to trust it in three places: Preview picks its decoder by sniffing,
+ * /bin/show picks its renderer by sniffing, and the Terminal guards its
+ * character grid by sniffing. So the launcher asks the same question they do,
+ * through the same table (c/apps/coreutils/logit_sniff.h).
+ *
+ * 64 bytes off the front, matched against magic numbers. This is deliberately
+ * NOT a parser: no length in the file is believed, nothing is allocated from
+ * it, and the only thing the answer decides is WHICH app receives the path.
+ * The app then re-sniffs the whole file with the real decoders and is the one
+ * that can refuse -- and says why when it does.
+ *
+ * A registered extension still wins, so an app that claims a type keeps it. */
+static int opens_in_preview(const char *path)
+{
+    unsigned char b[64];
+    int n = vfs_read(path, b, (int)sizeof b);
+    if (n <= 0) return 0;
+    switch (sniff_id(b, n)) {
+    case SN_PNG: case SN_JPEG: case SN_GIF: case SN_BMP: case SN_SVG:
+    case SN_WEBP: case SN_H264: case SN_H265: case SN_MP4: case SN_MKV:
+    case SN_WAV: case SN_FLAC: case SN_MP3: case SN_OGG:
+        return 1;
+    default:
+        /* ICO/CUR -- 00 00 01|02 00 <count> -- is the one format in Preview's
+         * set that logit_sniff.h has no id for, and its first three bytes read
+         * as an Annex B start code. Named here rather than edited into that
+         * header, which belongs to another line. */
+        return n >= 6 && !b[0] && !b[1] && (b[2] == 1 || b[2] == 2) && !b[3]
+               && (b[4] | b[5]);
+    }
+}
+
 static void launch_for_ext(const char *ext, const char *file)
 {
     for (int i = 0; i < nreg; i++)
         if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
-    /* Images open in the Preview viewer (the kernel decodes PNG/GIF). */
-    if (streq(ext, "png") || streq(ext, "gif")) { wm_launch("preview.aex", file); return; }
+    /* Anything Preview can decode opens in Preview, decided by content. */
+    if (opens_in_preview(file)) { wm_launch("preview.aex", file); return; }
     /* No registered handler -> open it in the Terminal (it runs `as <file>` for
      * .as scripts, else `cat`). Beats the old "no app handles that file type". */
     wm_launch("terminal.aex", file);
@@ -2054,9 +2099,12 @@ void wm_run(void)
      * below so a non-nested timer IRQ can schedule app threads. */
     __asm__ volatile ("sti");
 
-    /* auto-launch the clock so something is alive on screen at boot */
-    wm_launch("files.aex", "");      /* the Finder (unified file manager) -- desktop's always-open browser */
-    wm_launch("clock.aex", "");
+    /* One window at boot: the Finder. The comment that used to sit here said the
+     * clock was launched "so something is alive on screen", which stopped being
+     * a reason the moment the Finder was launched above it -- after that the
+     * clock was just a second window every user had to close. A desktop opens
+     * with the file manager and nothing else. */
+    wm_launch("files.aex", "");
 
     /* init: launch the shell on the serial console (stdin/stdout/stderr = tty) */
     { char *sh_argv[] = { "sh", 0 }; proc_spawn("/bin/sh", sh_argv); }
