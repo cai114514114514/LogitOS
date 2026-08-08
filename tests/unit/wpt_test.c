@@ -113,12 +113,17 @@
 #include "dom.h"
 #include "js_dom.h"
 #include "js_page.h"
+#include "css.h"
+#include "layout.h"
+#include "js_cssom.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
-__attribute__((__weak__)) void img_register(void *d) { (void)d; }
-__attribute__((__weak__)) void img_register_anim(void *a, void *b, void *c)
-{ (void)a; (void)b; (void)c; }
+/* The weak img_register/img_register_anim stubs that used to sit here are
+ * gone: c/lib/image/img.c is in the link (it always was -- it comes in with
+ * BROWSER_PIPE), so the real ones are present, and now that css.h drags in
+ * img.h the stubs' `void *` signatures are a conflicting declaration rather
+ * than a harmless fallback. */
 
 /* layout.c is linked (see tests/wpt.mk for why that was a decision and not an
  * accident), and it asks the embedder for two things the browser answers with
@@ -588,6 +593,172 @@ static void bl_load(struct baseline *b, const char *path)
     fclose(f);
 }
 
+/* ==========================================================================
+ * THE PIPELINE -- browser.c's CALL SEQUENCE, not just its source list
+ * ==========================================================================
+ * DRIFT #4, and it is a level above the other three. The link subtraction in
+ * tests/wpt.mk fixed WHICH FILES the runner is built from. This is the other
+ * half of the same invariant and nothing was checking it:
+ *
+ *   Linking a translation unit is not running it. The runner linked
+ *   css_extra.c and layout.c and then never called css_apply(),
+ *   css_extra_apply() or layout_page() at all -- there was no `css_` or
+ *   `layout_` token anywhere in this file.
+ *
+ * The cost was invisible in the rate and total. `make test-wpt
+ * ONLY=css/css-grid` read 531/11152 (4.8%) BOTH WITH AND WITHOUT the grid
+ * implementation commit -- identical numbers, because with no cascade
+ * cstyle::grid_raw is never populated, gr_have() is always false and
+ * grid_spec() returns -1 before doing anything. 11,152 subtests were
+ * structurally unreachable, and a line shipping grid could not tell its work
+ * from a no-op. That is the same failure mode as 12d33d6 ("the runner was
+ * measuring a browser that does not exist"), arrived at from a fourth
+ * direction.
+ *
+ * AND IT IS NOT ONLY GRID. css_extra.c is the sole producer of the logical
+ * properties (margin-inline, inset-block, padding-block, ...), border-radius,
+ * and the animation end-state. Every css/ test that reads one of those was
+ * measuring a browser without them.
+ *
+ * So the sequence below is browser.c:982-996 verbatim, in order, and
+ * tests/unit/refhost/refrender.c:154-177 already encodes the same one with
+ * the same warning next to it. THE ORDER IS LOad-BEARING, each step for its
+ * own reason:
+ *
+ *   css_init()          builds the UA default sheet. Without it every element
+ *                       is unstyled -- no block/inline, no default margins.
+ *   css_viewport(w,h)   @media, vw/vh and css_media_width() all read this.
+ *   css_set_post_pass   a SCOPED re-style (one element, from the CSSOM) has to
+ *                       run css_extra_apply before it decides whether anything
+ *                       changed; see css.h. Registering the initial pass is
+ *                       not enough.
+ *   collect_style/_links + css_expand_vars    LibCSS resolves var() at PARSE
+ *                       time and would drop the declaration, so custom
+ *                       properties are expanded before the cascade.
+ *   css_apply           the cascade.
+ *   css_extra_apply     the properties LibCSS does not carry into cstyle.
+ *   layout_page         boxes.
+ *
+ * js_cssom_set_reflow() closes the same gap on the far side: js_cssom.c's
+ * flush_layout() calls layout_page() alone unless the embedder registers a
+ * reflow, so a geometry read after a script mutation would re-lay-out the
+ * PREVIOUS cascade. The embedder is the only thing that knows the document's
+ * stylesheet set, which is why the hook exists at all.
+ */
+#define WPT_VIEW_W 800
+#define WPT_VIEW_H 600
+#define WPT_CSSMAX (4 * 1024 * 1024)
+
+/* Static, not automatic: these are megabytes and the child's stack is not. */
+static char *g_css_raw, *g_css_exp;
+static int   g_css_exlen;
+static struct node *g_page_root;
+
+static int collect_style(struct node *n, char *out, int o, int max)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && n->tag_id == TAG_STYLE) {
+        /* A <style> with a non-CSS type is a data block, exactly as a <script>
+         * with one is -- WPT uses both as fixture payloads. */
+        const char *ty = dom_attr(n, "type");
+        if (!ty || !*ty || !strcasecmp(ty, "text/css"))
+            for (struct node *c = n->first_child; c; c = c->next)
+                if (c->type == N_TEXT && c->text)
+                    for (int i = 0; i < c->textlen && o < max - 1; i++)
+                        out[o++] = c->text[i];
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_style(c, out, o, max);
+    return o;
+}
+
+/* case-insensitive "does rel contain the word stylesheet" -- rel may be
+ * "stylesheet", "alternate stylesheet", "preload stylesheet". */
+static int rel_is_sheet(const char *rel)
+{
+    if (!rel) return 0;
+    for (const char *p = rel; *p; p++)
+        if ((*p == 's' || *p == 'S') && !strncasecmp(p, "stylesheet", 10)) return 1;
+    return 0;
+}
+
+/* <link rel=stylesheet href=...>, read off the checkout. The corpus keeps
+ * these beside the test (support/*.css), so this is the same fetch the module
+ * loader and the <script src> path already use -- not a new capability, just
+ * the one browser.c performs over the network performed over the disk. */
+static int collect_links(struct node *n, const char *testdir,
+                         char *out, int o, int max, int *missing)
+{
+    if (!n) return o;
+    if (n->type == N_ELEM && n->tag_id == TAG_LINK &&
+        rel_is_sheet(dom_attr(n, "rel"))) {
+        const char *href = dom_attr(n, "href");
+        char path[1024];
+        if (href && *href && resolve_url(href, testdir, path, sizeof path)) {
+            long len = 0;
+            char *s = xread(path, &len);
+            if (s) {
+                for (long i = 0; i < len && o < max - 1; i++) out[o++] = s[i];
+                if (o < max - 1) out[o++] = '\n';
+                free(s);
+            } else if (missing) (*missing)++;
+        } else if (missing) (*missing)++;
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        o = collect_links(c, testdir, out, o, max, missing);
+    return o;
+}
+
+/* The embedder's reflow, registered with js_cssom_set_reflow: cascade, extra
+ * pass, layout -- the same three calls the initial pass makes, because a
+ * geometry read on a mutated document must see a cascade that matches it. */
+static void wpt_reflow(void)
+{
+    if (!g_page_root) return;
+    css_apply(g_page_root, g_css_exp, g_css_exlen);
+    css_extra_apply(g_page_root, g_css_exp, g_css_exlen);
+    int w = css_media_width();
+    layout_page(g_page_root, w > 0 ? w : WPT_VIEW_W);
+}
+
+/* Returns the number of <link rel=stylesheet> hrefs that were not in the
+ * checkout, which the caller reports the same way it reports a missing
+ * <script src> -- a failure caused by an unfetchable dependency has to be
+ * visible as that, not as an unexplained wrong colour. */
+static int wpt_style_page(struct node *root, const char *testdir)
+{
+    if (!g_css_raw) { g_css_raw = malloc(WPT_CSSMAX); g_css_exp = malloc(WPT_CSSMAX); }
+    if (!g_css_raw || !g_css_exp) return 0;
+
+    css_init();
+    css_viewport(WPT_VIEW_W, WPT_VIEW_H);
+    css_set_post_pass(css_extra_apply);
+
+    int missing = 0;
+    int clen = collect_style(root, g_css_raw, 0, WPT_CSSMAX);
+    clen = collect_links(root, testdir, g_css_raw, clen, WPT_CSSMAX, &missing);
+    g_css_raw[clen] = 0;
+    int ex = css_expand_vars(g_css_raw, clen, g_css_exp, WPT_CSSMAX);
+    if (ex < 0) ex = 0;
+    g_css_exp[ex] = 0;
+    g_css_exlen = ex;
+
+    g_page_root = root;
+    css_apply(root, g_css_exp, ex);
+    css_extra_apply(root, g_css_exp, ex);
+    layout_page(root, WPT_VIEW_W);
+    js_cssom_set_reflow(wpt_reflow);
+    return missing;
+}
+
+static void wpt_style_close(void)
+{
+    js_cssom_set_reflow(0);
+    g_page_root = 0;
+    g_css_exlen = 0;
+    layout_free();
+}
+
 /* ------------------------------------------------- the runner harness --- */
 static unsigned long long g_now;
 static unsigned long long clock_fn(void) { return g_now; }
@@ -725,6 +896,13 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
         free(fsrc); fsrc = 0;
     }
     if (!root) { snprintf(oc->why, sizeof oc->why, "no document"); free(h); return; }
+
+    /* THE PIPELINE, before any script runs -- browser.c's order. See the block
+     * comment above wpt_style_page(): linking layout.c and css_extra.c is not
+     * running them, and for four subsets' worth of tests the difference is the
+     * whole result. A .any.js file gets it too: its synthetic document is a
+     * document, and testharness.js appends to it. */
+    c.missing += wpt_style_page(root, testdir);
 
     g_now = 0;
     js_page_set_clock(clock_fn);
@@ -989,6 +1167,12 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
         JSValue s = JS_Eval(ctx, DS, strlen(DS), "<dump>", JS_EVAL_TYPE_GLOBAL);
         const char *m = JS_ToCString(ctx, s);
         printf("  [dump] %s  why=%s\n", m ? m : "?", oc->why[0] ? oc->why : "-");
+        /* The pipeline's own vital signs. A file whose geometry assertions all
+         * read 0 is either a layout bug or a layout that never ran, and those
+         * are not the same finding -- drift #4 was the second wearing the
+         * first's clothes for a whole subset. */
+        printf("  [pipe] css=%d bytes, layout items=%d, doc height=%d\n",
+               g_css_exlen, layout_count(), layout_height());
         if (m) JS_FreeCString(ctx, m);
         JS_FreeValue(ctx, s);
         const char *o = js_page_output();
@@ -1040,6 +1224,7 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
     JS_FreeValue(ctx, g);
 
     js_page_close();
+    wpt_style_close();
     dom_free(root);
 }
 
@@ -1375,6 +1560,44 @@ static const char *SELFCHECK =
 "<script src=\"/resources/testharness.js\"></script>\n"
 "<script src=\"/resources/testharnessreport.js\"></script>\n"
 "<div id=log></div>\n"
+/* THE PIPELINE IS ASSERTED, NOT COMMENTED. Drift #4 was that the runner
+ * linked layout.c and css_extra.c and never called css_apply(),
+ * css_extra_apply() or layout_page(). Nothing caught it for the same reason
+ * nothing catches a missing source file: a runner that does less does not
+ * fail, it just reports lower, and `css/css-grid` read exactly 531/11152 with
+ * AND without the grid implementation.
+ *
+ * These two cases are the mechanical guard. The first fails if the cascade or
+ * layout stops running at all; the second fails if and only if
+ * css_extra_apply stops running -- a logical property is one css_extra alone
+ * produces, so it is the narrowest possible probe for that one call. Both are
+ * measured as a DIFFERENCE against a control box, so the UA sheet's body
+ * margin cannot make them pass or fail for an unrelated reason. */
+/* THE BACKGROUND IS LOAD-BEARING, and finding that out is worth writing down.
+ * js_cssom.c derives an element's box from the flat PAINT display list, so an
+ * element that paints nothing -- no background, no border, no text -- has no
+ * entry and every geometry accessor on it answers 0. The first draft of this
+ * fixture used bare divs and read 0 with a cascade that was demonstrably
+ * running (getComputedStyle said 120px). That is a standing cap on what any
+ * geometry assertion in the corpus can measure here, and it is in js_cssom.c,
+ * not in this runner. */
+"<style>.pipebox{width:120px;height:20px;background:#ccc}\n"
+"       #pipe2{margin-inline-start:40px}</style>\n"
+"<div id=pipe1 class=pipebox></div>\n"
+"<div id=pipe2 class=pipebox></div>\n"
+"<script>\n"
+"test(function(){\n"
+"  assert_equals(document.getElementById('pipe1').offsetWidth, 120,\n"
+"                'a styled box has no width: the cascade or layout is not running');\n"
+"}, 'the cascade and layout ran');\n"
+"test(function(){\n"
+"  var a = document.getElementById('pipe1'), b = document.getElementById('pipe2');\n"
+"  assert_equals(b.offsetLeft - a.offsetLeft, 40,\n"
+"                'margin-inline-start did not reach layout: css_extra_apply is not'\n"
+"                + ' being called, and with it go the logical properties,'\n"
+"                + ' border-radius, the animation end-state and all of css-grid');\n"
+"}, 'css_extra_apply ran: a logical property reached layout');\n"
+"</script>\n"
 "<script>\n"
 "test(function(){ assert_equals(1+1, 2); }, 'sync test reports PASS');\n"
 "test(function(){ assert_equals(1, 2, 'deliberate'); }, 'a failing assert reports FAIL');\n"
@@ -1429,6 +1652,10 @@ static int selfcheck(void)
         { "async_test resolves through the timer queue", 0 },
         { "promise_test resolves through microtasks", 0 },
         { "the load event fires exactly once, on both channels", 0 },
+        /* Drift #4. Every css/ number rests on these two exactly as every
+         * number at all rests on testharness.js installing. */
+        { "the cascade and layout ran", 0 },
+        { "css_extra_apply ran: a logical property reached layout", 0 },
     };
     for (unsigned i = 0; i < sizeof want / sizeof *want; i++) {
         int found = -1;
