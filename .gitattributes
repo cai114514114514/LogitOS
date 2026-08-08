@@ -1,0 +1,11 @@
+# core.autocrlf is true in this repository, which means git rewrites line
+# endings on checkout for anything it considers text. That is fine for source.
+# It is NOT fine for a vendored conformance corpus: a test file's bytes ARE the
+# test. html5lib-tests holds cases whose expected output contains a bare \r, and
+# WPT holds encoding and parsing tests that assert on exact byte sequences -- a
+# corpus rewritten to CRLF measures the checkout instead of the browser, and
+# does it silently, as a plausible-looking wall of failures.
+#
+# -text = never convert, in either direction.
+third_party/wpt/** -text
+third_party/html5lib-tests/** -text
