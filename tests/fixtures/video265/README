@@ -19,3 +19,34 @@ The CRC was pinned from a decode verified BIT-EXACT against ffmpeg's own HEVC
 decoder -- h265_test sample.h265 sample.ref.yuv printed "21 pictures
 bit-exact" -- so it is a reference value, not a number this decoder recorded
 about itself.
+
+---------------------------------------------------------------------------
+main10.h265  The ITU/JCT-VC conformance bitstream WP_A_MAIN10_Toshiba_3, from
+             the official draft_conformance set. Main 10, 10-bit 4:2:0,
+             416x240, 256 pictures, weighted sample prediction for P slices
+             with plural reference indices. main10.txt is the description
+             file shipped in the conformance package, unmodified.
+main10.crc32 CRC32 of the concatenated visible samples of all 256 decoded
+             pictures at NATIVE PRECISION (two bytes per sample, little
+             endian) -- the "H265-CRC16" number h265test.c prints for a
+             stream deeper than 8 bits.
+
+This one is worth more than the generated matrix and more than sample.h265,
+for one reason: its decode was checked against the MD5 the conformance
+package ships, not against ffmpeg. Dumping our 256 decoded pictures in HM's
+raw layout gives
+
+    c48e853010a234786dc87790d053b03a
+
+which is byte for byte the value in WP_A_MAIN10_Toshiba_3_yuv.md5. Matching
+ffmpeg says two independent decoders agree; matching this says we agree with
+the reference decoder the format is defined by. The CRC32 pinned here is a
+hash of exactly those bytes, so gating on it is gating on that MD5 without
+committing a 200 MB YUV file.
+
+Three other Main 10 conformance streams were run and are NOT committed,
+because the decoder does not pass them and a fixture that is expected to fail
+is just a comment:
+  DBLK_A_MAIN10_VIXS_4     uses PCM, which this decoder refuses outright
+  INITQP_B_Main10_Sony_1   B slices
+  WPP_A_ericsson_MAIN10_2  B slices

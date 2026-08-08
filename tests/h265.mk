@@ -70,6 +70,19 @@ test-h265: $(BUILD)/h265_test
 	 if [ "$$crc" != "$$want" ]; then \
 	    echo "H265-FAIL fixture crc $$crc want $$want"; exit 1; fi; \
 	 echo "H265-OK fixture crc $$crc (tests/fixtures/video265/sample.h265)"
+	@# The Main 10 fixture, and the most valuable single case in this file:
+	@# the ITU conformance bitstream WP_A_MAIN10_Toshiba_3, 256 pictures,
+	@# whose decode was checked against the MD5 the CONFORMANCE PACKAGE
+	@# ships rather than against ffmpeg. Everything else here says "two
+	@# decoders agree"; this says "we agree with the reference decoder".
+	@# Needs no encoder and no network, so Main 10 stays gated on a real
+	@# stream on a machine with neither. See tests/fixtures/video265/README.
+	@crc=`$(BUILD)/h265_test tests/fixtures/video265/main10.h265 \
+	      | awk '/H265-CRC16/ {print $$2}'`; \
+	 want=`cat tests/fixtures/video265/main10.crc32`; \
+	 if [ "$$crc" != "$$want" ]; then \
+	    echo "H265-FAIL main10 fixture crc $$crc want $$want"; exit 1; fi; \
+	 echo "H265-OK main10 fixture crc $$crc (256 pictures, ITU WP_A_MAIN10_Toshiba_3)"
 
 $(BUILD)/h265_test: tests/unit/h265test.c $(H265_SRC) c/lib/video/h265.h \
                     c/lib/video/h265_int.h
