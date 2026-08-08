@@ -8,6 +8,7 @@
 #include "wav.h"
 #include "flac.h"
 #include "mp3.h"
+#include "aac.h"
 
 audio_format audio_sniff(const uint8_t *data, long len)
 {
@@ -16,6 +17,23 @@ audio_format audio_sniff(const uint8_t *data, long len)
         return AUDIO_FMT_WAV;
     if (len >= 4 && memcmp(data, "fLaC", 4) == 0)
         return AUDIO_FMT_FLAC;
+
+    /* ADTS has no magic either, but its header is far more constrained than
+     * MP3's: twelve sync bits, a layer field that must be zero, a sampling
+     * frequency index below 13, and a frame length that must land exactly on
+     * another header. Requiring the SECOND header is what keeps a random
+     * 0xFFF from being called AAC. */
+    for (long i = 0; i < 4096 && i + 7 <= len; i++) {
+        long fl = aac_adts_frame_len(data + i, len - i);
+        if (fl <= 0) continue;
+        if (i + fl + 2 <= len) {
+            if (aac_adts_frame_len(data + i + fl, len - i - fl) > 0)
+                return AUDIO_FMT_AAC;
+        } else if (i + fl == len) {
+            return AUDIO_FMT_AAC;                 /* single-frame file */
+        }
+        break;
+    }
 
     /* MP3 has no magic. An ID3v2 tag is a strong hint, and otherwise the only
      * honest test is that a frame header parses AND the frame it describes is
@@ -53,6 +71,7 @@ const char *audio_format_name(audio_format f)
     case AUDIO_FMT_WAV:  return "wav";
     case AUDIO_FMT_FLAC: return "flac";
     case AUDIO_FMT_MP3:  return "mp3";
+    case AUDIO_FMT_AAC:  return "aac";
     default:             return "unknown";
     }
 }
@@ -104,6 +123,12 @@ struct adec {
     long mpos;                 /* byte cursor */
     const float *mpcm;
     long mhave, mtaken;
+
+    /* AAC */
+    aacdec *ac;
+    long apos;
+    const float *apcm;
+    long ahave, ataken;
 };
 
 adec *adec_open(const uint8_t *data, long len, int *err)
@@ -154,6 +179,27 @@ adec *adec_open(const uint8_t *data, long len, int *err)
             mp3_close(probe);
             if (!d->rate) { e = AUDIO_ERR_CORRUPT; goto fail; }
         }
+    } else if (d->fmt == AUDIO_FMT_AAC) {
+        d->ac = aac_open();
+        if (!d->ac) { e = AUDIO_ERR_OOM; goto fail; }
+        /* Peek one frame for the geometry, exactly as the MP3 path does: the
+         * ADTS header alone gives the rate but not the channel count when
+         * channel_configuration is 0 and a PCE decides it. */
+        {
+            aacdec *probe = aac_open();
+            if (!probe) { e = AUDIO_ERR_OOM; goto fail; }
+            long q = 0;
+            while (q < len) {
+                aacframe f;
+                int got = 0;
+                int n = aac_decode(probe, data + q, len - q, &f, &got);
+                if (n <= 0) break;
+                q += n;
+                if (got) { d->rate = f.rate; d->channels = f.channels; break; }
+            }
+            aac_close(probe);
+            if (!d->rate) { e = AUDIO_ERR_CORRUPT; goto fail; }
+        }
     } else {
         e = AUDIO_ERR_UNSUPPORTED;
         goto fail;
@@ -173,6 +219,7 @@ void adec_close(adec *d)
     if (!d) return;
     if (d->fl) flac_close(d->fl);
     if (d->m3) mp3_close(d->m3);
+    if (d->ac) aac_close(d->ac);
     free(d);
 }
 
@@ -266,6 +313,43 @@ long adec_read(adec *d, int16_t *out, long maxframes)
                     audio_f32_to_s16(&v, &out[(done + i) * d->channels + c], 1);
                 }
             d->mtaken += take;
+            done += take;
+        }
+        return done;
+    }
+
+    if (d->fmt == AUDIO_FMT_AAC) {
+        long done = 0;
+        while (done < maxframes) {
+            if (d->ataken >= d->ahave) {
+                aacframe f;
+                long produced = 0;
+                while (d->apos < d->len) {
+                    int got = 0;
+                    int n = aac_decode(d->ac, d->data + d->apos, d->len - d->apos,
+                                       &f, &got);
+                    if (n == 0) { d->apos = d->len; break; }
+                    if (n < 0) {
+                        /* A damaged frame must not end the stream: step one
+                         * byte and resynchronise on the next syncword. */
+                        d->apos++;
+                        continue;
+                    }
+                    d->apos += n;
+                    if (got) { produced = f.nsamples; break; }
+                }
+                if (!produced) break;
+                d->apcm = f.pcm;
+                d->ahave = produced;
+                d->ataken = 0;
+                d->channels = f.channels;
+            }
+            long take = d->ahave - d->ataken;
+            if (take > maxframes - done) take = maxframes - done;
+            audio_f32_to_s16(d->apcm + d->ataken * d->channels,
+                             out + done * d->channels,
+                             take * d->channels);
+            d->ataken += take;
             done += take;
         }
         return done;

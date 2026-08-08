@@ -42,7 +42,8 @@
         test-audio-codec-negctl test-audio-codec-os test-wav test-flac test-mp3
 
 AUDIO_CODEC_SRC := c/lib/audio/audio.c c/lib/audio/wav.c c/lib/audio/flac.c \
-                   c/lib/audio/mp3.c c/lib/audio/amd5.c
+                   c/lib/audio/mp3.c c/lib/audio/amd5.c c/lib/audio/aac.c \
+                   c/lib/audio/afft.c c/lib/audio/amath.c
 AUDIO_REF       := $(BUILD)/audioref
 AUDIO_STAMP     := $(AUDIO_REF)/.stamp-v5
 
@@ -67,7 +68,7 @@ test-audio-codec-units:
 # frames at a time" are different code paths and a player only uses the second.
 test-wav: test-audio-codec-units $(AUDIO_STAMP)
 	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $(BUILD)/audio_test \
-	    tests/unit/audio_test.c $(AUDIO_CODEC_SRC)
+	    tests/unit/audio_test.c $(AUDIO_CODEC_SRC) -lm
 	@$(BUILD)/audio_test $(AUDIO_REF)
 
 test-flac: $(AUDIO_STAMP)
@@ -104,7 +105,7 @@ ASAN_ENV   := ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=0 \
 test-audio-codec-fuzz:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g $(ASAN_FLAGS) -w \
-	    -Ic/lib/audio -o $(BUILD)/audio_fuzz tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC)
+	    -Ic/lib/audio -o $(BUILD)/audio_fuzz tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC) -lm
 	@$(ASAN_ENV) $(BUILD)/audio_fuzz $(SCALE) $(SEED) tests/fixtures/audio
 
 # A soak run over several seeds. Not part of test-audio-codecs -- it takes
@@ -114,7 +115,7 @@ test-audio-codec-fuzz:
 test-audio-codec-fuzz-deep:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g $(ASAN_FLAGS) -w \
-	    -Ic/lib/audio -o $(BUILD)/audio_fuzz tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC)
+	    -Ic/lib/audio -o $(BUILD)/audio_fuzz tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC) -lm
 	@for s in 0x243F6A8885A308D3 0x13198A2E03707344 0xA4093822299F31D0 \
 	          0x082EFA98EC4E6C89 0x452821E638D01377; do \
 	    echo "--- seed $$s ---"; \
@@ -130,7 +131,7 @@ test-audio-codec-fuzz-deep:
 test-audio-codec-fuzz-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g $(ASAN_FLAGS) -w -DAUDIO_FUZZ_SABOTAGE=1 \
-	    -Ic/lib/audio -o $(BUILD)/audio_fuzz_neg tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC)
+	    -Ic/lib/audio -o $(BUILD)/audio_fuzz_neg tests/unit/audio_fuzz.c $(AUDIO_CODEC_SRC) -lm
 	@if $(ASAN_ENV) $(BUILD)/audio_fuzz_neg 2 $(SEED) tests/fixtures/audio \
 	        >$(BUILD)/audio_fuzz_neg.log 2>&1; then \
 	    echo "NEGCTL-FAIL: a deliberate out-of-bounds read in the WAV chunk walk"; \
@@ -171,8 +172,9 @@ test-audio-codec-negctl: $(AUDIO_STAMP)
 	 fi
 
 # Everything host-side, in one target.
-test-audio-codecs: test-wav test-flac test-mp3 test-audio-codec-fuzz \
-                   test-audio-codec-fuzz-negctl test-audio-codec-negctl
+test-audio-codecs: test-wav test-flac test-mp3 test-aac \
+                   test-audio-codec-fuzz test-audio-codec-fuzz-negctl \
+                   test-audio-codec-negctl test-aac-negctl
 
 # Does any of this work on LogitOS, or only under glibc? Boots the OS, runs
 # /bin/audiocheck on the wav/flac/mp3 packed into the disk image, and requires
@@ -188,3 +190,75 @@ $(BUILD)/audiocheck_host: c/apps/audio/audiocheck.c $(AUDIO_CODEC_SRC) \
 
 test-audio-codec-os: $(ISO) $(DISK) $(BUILD)/audiocheck_host
 	@bash tests/boot/run-audio-test.sh $(ISO) $(DISK) $(BUILD)/audiocheck_host
+
+# =============================================================================
+# AAC-LC (c/lib/audio/aac.c), added by the codec line that brings AAC, Vorbis
+# and Opus. Kept in this fragment rather than the Makefile for the reason at
+# the top of the file.
+#
+# THE BAR FOR AAC IS NOT THE BAR FOR FLAC, AND IT IS BETTER THAN THE ONE MP3
+# HAD TO SETTLE FOR.
+#
+#   AAC reconstructs through an IMDCT in floating point, so ISO/IEC 14496-3
+#   defines no bit pattern for its output, and claiming one would be claiming a
+#   property the format does not have. Conformance is a bound on the difference
+#   from a reference decoder.
+#
+#   Unlike MP3 -- where ISO publishes no usable 11172-4 package, as the MP3
+#   line recorded after downloading the HTML error page it gets instead -- ISO
+#   DOES publish the MPEG-4 audio conformance package, bitstreams and reference
+#   waveforms both, under Publicly Available Standards. So there are two gates
+#   here and they are not the same claim:
+#
+#     test-aac              a DIFFERENTIAL against ffmpeg float AAC over a
+#                           29-case corpus this build generates. Always
+#                           runnable and broad, but it only proves that two
+#                           implementations agree with each other.
+#
+#     test-aac-conformance  the OFFICIAL ISO/IEC 14496-4 bitstreams scored
+#                           against the OFFICIAL reference waveforms: the
+#                           standard's criterion against the standard's own
+#                           reference. It needs a download, so it is opt-in and
+#                           says what to run when the data is absent rather
+#                           than passing vacuously.
+
+.PHONY: test-aac test-aac-conformance test-aac-fetch test-aac-negctl
+
+AAC_SRC   := c/lib/audio/aac.c c/lib/audio/afft.c c/lib/audio/amath.c
+AAC_REF   := $(BUILD)/aacref
+AAC_STAMP := $(AAC_REF)/.stamp-aac-v1
+ISO_AAC   := $(BUILD)/isoaac
+ISO_AAC_N ?= 40
+
+$(AAC_STAMP): tests/unit/aac_gen.sh
+	@bash tests/unit/aac_gen.sh $(AAC_REF)
+
+test-aac: $(AAC_STAMP)
+	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $(BUILD)/aac_test \
+	    tests/unit/aac_test.c $(AAC_SRC) -lm
+	@$(BUILD)/aac_test $(AAC_REF)
+
+# Fetching is a separate target from running so that a network failure is
+# reported as a network failure and never as a conformance result.
+test-aac-fetch:
+	@bash tests/unit/aac_iso_fetch.sh $(ISO_AAC) $(ISO_AAC_N)
+
+test-aac-conformance:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $(BUILD)/aac_iso_test \
+	    tests/unit/aac_iso_test.c $(AAC_SRC) -lm
+	@$(BUILD)/aac_iso_test $(ISO_AAC)
+
+# NEGATIVE CONTROL. -DAUDIO_SABOTAGE=3 removes the TNS filter: the decoder
+# still produces music, every structural check still passes, and transients
+# smear into pre-echo -- audible on speech and invisible to any test that only
+# asks whether decoding succeeded. REQUIRED TO FAIL.
+test-aac-negctl: $(AAC_STAMP)
+	@$(CC) -O2 -w -DAUDIO_SABOTAGE=3 -Ic/lib/audio -o $(BUILD)/aac_sabotage \
+	    tests/unit/aac_test.c $(AAC_SRC) -lm
+	@if $(BUILD)/aac_sabotage $(AAC_REF) >$(BUILD)/aac_sabotage.log 2>&1; then \
+	    echo "NEGCTL-FAIL: the AAC gate passed a decoder with temporal noise"; \
+	    echo "  shaping removed, so it is not measuring the decoder."; exit 1; \
+	 else \
+	    echo "negctl: AAC without TNS is rejected ($$(grep -c '^FAIL' $(BUILD)/aac_sabotage.log) failing checks)"; \
+	 fi

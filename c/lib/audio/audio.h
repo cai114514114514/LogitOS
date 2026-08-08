@@ -1,7 +1,8 @@
 /* c/lib/audio/audio.h -- public API of the from-scratch audio decoders.
  *
  * Formats: WAV/PCM (exact), FLAC (lossless, bit-exact), MP3 (MPEG-1/2/2.5
- * Layer III). Every input byte is UNTRUSTED: a malformed file is an error
+ * Layer III), AAC-LC (ADTS here; a demuxer hands raw blocks straight to
+ * aac_open_asc). Every input byte is UNTRUSTED: a malformed file is an error
  * return, never a crash, never a read outside the buffer the caller handed in.
  *
  * WHY THIS IS A RING-3 LIBRARY, NOT A KERNEL ONE
@@ -53,7 +54,8 @@ typedef enum {
     AUDIO_FMT_UNKNOWN = 0,
     AUDIO_FMT_WAV,
     AUDIO_FMT_FLAC,
-    AUDIO_FMT_MP3
+    AUDIO_FMT_MP3,
+    AUDIO_FMT_AAC          /* raw ADTS; MP4-carried AAC comes via aac_open_asc */
 } audio_format;
 
 /* A decoded buffer. `s16` is always present; `f32` only when the decoder is

@@ -33,12 +33,31 @@ QEMU="${QEMU:-qemu-system-x86_64}"
 
 [ -x "$HOSTBIN" ] || { echo "FAIL: missing host reference binary $HOSTBIN"; exit 1; }
 
-FILES="sample.wav sample.flac sample.mp3"
+# host path  ->  guest path. The three original fixtures live under /media/;
+# sample.aac is packed from fsroot/ instead, and lands at the root, because the
+# disk image file list lives in the shared Makefile and that file had another
+# session's uncommitted work in it. fsroot/* is picked up by the existing
+# $(FS_FILES) wildcard, so a new fixture needs no shared edit at all.
+FILES="sample.wav sample.flac sample.mp3 sample.aac"
+
+guest_path() {
+    case "$1" in
+        sample.aac) echo "/$1" ;;
+        *)          echo "/media/$1" ;;
+    esac
+}
+
+host_path() {
+    case "$1" in
+        sample.aac) echo "fsroot/$1" ;;
+        *)          echo "tests/fixtures/audio/$1" ;;
+    esac
+}
 
 # Host reference values first: if these cannot be produced there is no test.
 declare -A WANT
 for f in $FILES; do
-    line="$("$HOSTBIN" "tests/fixtures/audio/$f" | grep '^AUDIO-CRC')"
+    line="$("$HOSTBIN" "$(host_path "$f")" | grep '^AUDIO-CRC')"
     crc="$(echo "$line" | awk '{print $2}')"
     if [ -z "$crc" ]; then
         echo "FAIL: host build produced no CRC for $f"
@@ -60,9 +79,9 @@ trap cleanup EXIT
 # Decoding under TCG is not fast; give it room before the shell input ends.
 {
     sleep 4
-    for f in $FILES; do printf '/bin/audiocheck /media/%s\n' "$f"; done
+    for f in $FILES; do printf '/bin/audiocheck %s\n' "$(guest_path "$f")"; done
     printf 'echo AUDIOCHECK-DONE\nexit\n'
-    sleep 90
+    sleep 150
 } | "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
       -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
       -device virtio-blk-pci,drive=hd0 \
@@ -71,7 +90,7 @@ trap cleanup EXIT
       >"$LOG" 2>/dev/null &
 QPID=$!
 
-for _ in $(seq 1 1400); do
+for _ in $(seq 1 2400); do
     if grep -aq "AUDIOCHECK-DONE" "$LOG" || grep -aq "AUDIO-ERR" "$LOG"; then
         break
     fi
@@ -120,5 +139,5 @@ if [ "$rc" != 0 ]; then
     exit 1
 fi
 
-echo "PASS: LogitOS decoded wav/flac/mp3 to the host's CRCs"
+echo "PASS: LogitOS decoded wav/flac/mp3/aac to the host's CRCs"
 exit 0

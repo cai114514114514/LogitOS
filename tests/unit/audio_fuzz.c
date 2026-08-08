@@ -34,6 +34,7 @@
 #include "wav.h"
 #include "flac.h"
 #include "mp3.h"
+#include "aac.h"
 
 static uint64_t rng_state;
 
@@ -141,6 +142,46 @@ static long run_decoders(const uint8_t *buf, long len, int check_props)
         flac_rewind(fl);
         flac_md5_ok(fl);
         flac_close(fl);
+    }
+
+    /* AAC, through both entry points. The ADTS one has to survive a frame
+     * length that lies and a syncword in the middle of a payload; the raw one
+     * is what a demuxer will call, and it gets handed the bytes with NO
+     * framing at all, which is the harder of the two. */
+    aacdec *ac = aac_open();
+    if (ac) {
+        long pos = 0;
+        for (int i = 0; i < 3000 && pos < len; i++) {
+            aacframe f;
+            int got = 0;
+            int n = aac_decode(ac, buf + pos, len - pos, &f, &got);
+            if (n == 0) break;
+            if (n < 0) { pos++; continue; }
+            pos += n;
+        }
+        aac_close(ac);
+    }
+    {
+        /* An AudioSpecificConfig built from the buffer itself, so the fuzzer
+         * reaches aac_open_asc's own validation as well as the block parser. */
+        int e2 = 0;
+        if (len >= 2) {
+            aacdec *ar = aac_open_asc(buf, len < 8 ? len : 8, &e2);
+            if (ar) {
+                aacframe f;
+                int got = 0;
+                aac_decode_raw(ar, buf, len, &f, &got);
+                aac_close(ar);
+            }
+        }
+        uint8_t asc[2] = { 0x12, 0x10 };            /* LC, 44100, stereo */
+        aacdec *ar2 = aac_open_asc(asc, 2, &e2);
+        if (ar2) {
+            aacframe f;
+            int got = 0;
+            aac_decode_raw(ar2, buf, len, &f, &got);
+            aac_close(ar2);
+        }
     }
 
     mp3dec *m = mp3_open();
@@ -281,6 +322,41 @@ static void phase_structured(int scale)
         f[3] = (uint8_t)rnd_below(256);
         if (rnd_below(2)) { f[4] = 0xFF; f[5] = 0xFF; }     /* main_data_begin max */
         run_decoders(f, (long)sizeof(f), 0);
+    }
+
+    /* ADTS headers with every field randomised: the frame length in
+     * particular, which is the field that turns into "how many bytes may I
+     * read" and is a stranger's claim. */
+    for (int it = 0; it < scale * 60; it++) {
+        uint8_t f[2048];
+        for (unsigned k = 0; k < sizeof(f); k++) f[k] = (uint8_t)rnd_below(256);
+        f[0] = 0xFF;
+        f[1] = (uint8_t)(0xF0 | rnd_below(16));
+        f[2] = (uint8_t)rnd_below(256);
+        f[3] = (uint8_t)rnd_below(256);
+        f[4] = (uint8_t)rnd_below(256);
+        f[5] = (uint8_t)rnd_below(256);
+        f[6] = (uint8_t)rnd_below(256);
+        run_decoders(f, (long)sizeof(f), 0);
+    }
+
+    /* Raw AAC blocks with a hostile first element: the three-bit element id
+     * and the four-bit instance tag decide which of six parsers runs, and a
+     * program_config_element in particular is a nest of counted lists. */
+    for (int it = 0; it < scale * 60; it++) {
+        uint8_t f[512];
+        for (unsigned k = 0; k < sizeof(f); k++) f[k] = (uint8_t)rnd_below(256);
+        uint8_t asc[2];
+        asc[0] = (uint8_t)(0x08 | (rnd_below(13) >> 1));
+        asc[1] = (uint8_t)(rnd_below(256) & 0xF8);
+        int e2 = 0;
+        aacdec *ar = aac_open_asc(asc, 2, &e2);
+        if (ar) {
+            aacframe fr;
+            int got = 0;
+            aac_decode_raw(ar, f, (long)sizeof(f), &fr, &got);
+            aac_close(ar);
+        }
     }
 }
 

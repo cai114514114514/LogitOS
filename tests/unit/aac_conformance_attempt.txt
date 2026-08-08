@@ -1,0 +1,78 @@
+tests/unit/aac_conformance_attempt.txt
+======================================
+
+What was tried to get the official conformance material for AAC, Vorbis and
+Opus, in the order it was tried, with what came back. This file exists because
+the MP3 line before this one set the precedent: when ISO's public download for
+ISO/IEC 11172-4 turned out to serve an HTML error page, it downloaded it,
+checked the bytes, wrote down that the suite was unobtainable, and labelled its
+gate a differential rather than a conformance run. The same discipline applies
+here -- and this time two of the three formats turned out to have their real
+suites available, so the record also says where the stronger claim comes from.
+
+
+AAC -- ISO/IEC 14496-4, OBTAINED
+--------------------------------
+
+  https://standards.iso.org/ittf/PubliclyAvailableStandards/
+      ISO_IEC_14496-4_2004_Conformance_Testing/audio_conformance/
+      mpeg4audio-conformance/
+
+ISO publishes the whole MPEG-4 audio conformance package under Publicly
+Available Standards: 180 AAC-LC bitstreams (the al* cases) in compressedMp4/
+and in compressedAss/, with the reference decoder's output waveforms in
+referencesWav/ as 24-bit PCM.
+
+So tests/unit/aac_iso_test.c is a real conformance run, not a differential. It
+decodes ISO's bitstreams and scores them against ISO's reference waveforms.
+
+Three practical notes, none of which change that:
+
+  * The normative streams are carried in MP4 and in LATM/LOAS. This decoder
+    reads ADTS and raw blocks with an AudioSpecificConfig, which is what a
+    demuxer hands over, so tests/unit/aac_iso_fetch.sh repackages the MP4 to
+    ADTS with `ffmpeg -c:a copy`. That rewrites container headers and does not
+    touch a byte of AAC payload; ffmpeg's own AAC decoder is not involved.
+
+  * The bound applied is the MPEG "full accuracy" limit (RMS of the difference
+    below 2^-15/sqrt(12), maximum absolute difference at or below 2^-15, full
+    scale 1.0). The TEXT of 14496-4 is not part of the public package -- only
+    the streams and the waveforms are -- so that limit is applied as the MPEG
+    full-accuracy limit, which is what 11172-4 states and what this project's
+    MP3 gate already uses. The test says so in its own output rather than
+    implying it quoted a clause it has not read.
+
+  * Nothing fetched is committed. The ISO licence permits use of the electronic
+    inserts in their original form; it does not permit redistribution.
+
+
+OPUS -- RFC 6716, OBTAINED
+--------------------------
+
+  https://opus-codec.org/static/testvectors/opus_testvectors.tar.gz
+  https://opus-codec.org/static/testvectors/opus_testvectors-rfc8251.tar.gz
+
+The RFC 6716 test vector suite is published and downloadable: twelve
+bitstreams with the reference decoder's output for each, plus the RFC 8251
+update. Opus is the one format of the three whose specification defines an
+actual pass/fail rather than a tolerance, via the opus_compare procedure, so
+this is the strongest criterion available anywhere in this library.
+
+  (A first attempt at https://opus-codec.org/docs/opus_testvectors-rfc6716-v2
+   .tar.gz returned an nginx 404 page, 146 bytes of HTML; the correct path is
+   under /static/testvectors/ and is linked from /testvectors/.)
+
+
+VORBIS -- NO CONFORMANCE SUITE EXISTS
+-------------------------------------
+
+There is nothing to obtain, and this is a property of the format rather than a
+failure to find it. The Vorbis I specification does not define a numeric
+conformance criterion for decoder output and Xiph ships no conformance
+bitstream suite: the format is specified by its decoding procedure, with the
+floor and residue reconstruction defined in floating point and no bound on the
+difference between two conformant decoders.
+
+So any number reported for Vorbis is a DIFFERENTIAL against another
+implementation and must be labelled as one. tests/unit/vorbis_test.c says this
+in its own output and does not quote a tolerance the standard does not define.
