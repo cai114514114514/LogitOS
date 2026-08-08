@@ -225,8 +225,14 @@ int  css_media_height(void);
  * rendered dark while LibCSS -- correctly -- had declined that very block.
  * Three answers to one question is two too many.
  *
- * KNOWN REMAINING DIVERGENCE, and it is not mine to close: js_webapi.c ships a
- * matchMedia() with its own evaluator. It should call this. */
+ * THAT DIVERGENCE IS NOW CLOSED. js_webapi.c shipped a matchMedia() with a
+ * scanner of its own; js_cssom.c installs one backed by THIS function, and it
+ * installs last, so its binding is the one a page gets. js_webapi.c's is still
+ * in the tree (it is another line's file and was not edited) but is no longer
+ * reachable from script -- worth knowing if you go looking for the code that
+ * answered a query and find the wrong one. tests/unit/cssom_test.c asserts the
+ * property that matters: matchMedia and an @media rule's own verdict agree,
+ * for the same query, because they are one evaluator. */
 int  css_media_matches(const char *query, int len);
 
 /* The colour scheme @media (prefers-color-scheme: ...) is evaluated against.

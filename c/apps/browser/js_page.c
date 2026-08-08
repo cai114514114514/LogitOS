@@ -532,13 +532,6 @@ int js_page_open(struct node *root)
      * HTMLMediaElement members are installed on the element prototype. */
     if (js_media_install) js_media_install(g_ctx);
     if (js_platform_install) js_platform_install(g_ctx);
-    /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
-     * takes the Element prototype js_dom.c published, and it deliberately
-     * REPLACES two bindings older files install: getBoundingClientRect (its
-     * version flushes a pending layout first) and matchMedia (its version is
-     * the cascade's own media evaluator, which closes the divergence css.h
-     * names). Installing it earlier means those two get overwritten again. */
-    if (js_cssom_install) js_cssom_install(g_ctx);
     /* LAST of the last. The event layer needs js_dom.c's native Event classes
      * to wrap, js_webapi.c's AbortSignal for the `signal` option, and it
      * deliberately REPLACES two placeholders js_platform.c installs when
@@ -546,6 +539,13 @@ int js_page_open(struct node *root)
      * js_platform.c's "only if absent" rule, this one has to run after the
      * placeholder exists in order to take it over. */
     if (js_events_install) js_events_install(g_ctx);
+    /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
+     * takes the Element prototype js_dom.c published, and it deliberately
+     * REPLACES two bindings older files install: getBoundingClientRect (its
+     * version flushes a pending layout first) and matchMedia (its version is
+     * the cascade's own media evaluator, which closes the divergence css.h
+     * names). Installing it earlier means those two get overwritten again. */
+    if (js_cssom_install) js_cssom_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
