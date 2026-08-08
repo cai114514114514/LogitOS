@@ -531,23 +531,82 @@ static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
     if (fdoc) dom_free(dom_doc_root(fdoc));
     return JS_UNDEFINED;
 }
+/* ---- attribute values are BYTE STRINGS, not C strings --------------------
+ *
+ * `struct dom_attr` has always carried a `vlen` and dom.c has always had
+ * `dom_set_attr_raw` for exactly this reason: an attribute value may contain
+ * U+0000, and dom.c stores it. The path through THIS file did not -- getAttribute
+ * built its result with JS_NewString and setAttribute took JS_ToCString, so an
+ * embedded NUL truncated the value on the way in and again on the way out.
+ *
+ * That is not a corner case in the corpus: html/dom/reflection-*.html sets
+ * every attribute it tests to " \0\x01...\x1f foo " and to "\0", and then
+ * requires getAttribute() to return exactly what was set. It is also the reason
+ * a keyword comparison has to compare LENGTHS (js_reflect.c does): with
+ * truncation, the enumerated value "text\0" would have matched the keyword
+ * "text" and read back as valid.
+ *
+ * dom_set_attr_raw takes the name VERBATIM, so the ASCII-lowercasing
+ * dom_set_attr would have done has to happen here. */
+static char *lower_dup(const char *s, size_t len)
+{
+    char *o = malloc(len + 1);
+    if (!o) return 0;
+    for (size_t i = 0; i < len; i++) o[i] = (char)lc((unsigned char)s[i]);
+    o[len] = 0;
+    return o;
+}
+
+/* The attribute's value AND its length, or NULL when absent. dom_attr() answers
+ * the pointer only, and the length lives one field over in the same struct. */
+static const char *attr_val_len(const struct node *n, const char *name, int *len)
+{
+    if (len) *len = 0;
+    if (!n || n->type != N_ELEM || !name) return 0;
+    for (int i = 0; i < n->nattr; i++) {
+        const char *an = dom_attr_name_at(n, i);
+        if (an && ieq(an, name)) {
+            if (len) *len = (int)n->attrs[i].vlen;
+            return n->attrs[i].value;
+        }
+    }
+    return 0;
+}
+
+/* Write an attribute with an explicit length, keeping every derived index in
+ * sync exactly as el_setattr does. One writer, so a reflected setter and
+ * setAttribute() cannot disagree about the invalidation tier. */
+static void attr_write(JSContext *ctx, struct node *n, const char *name,
+                       const char *val, int vlen)
+{
+    if (!n || n->type != N_ELEM || !name || !*name) return;
+    char *ln = lower_dup(name, strlen(name));
+    if (!ln) return;
+    if (dom_set_attr_raw(n, ln, (int)strlen(ln), val ? val : "", vlen)) {
+        mark_self(n, INVAL_STYLE);
+        named_note_attr(ctx, n, ln);
+    }
+    free(ln);
+}
+
 static JSValue el_getattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
     const char *nm = JS_ToCString(ctx, argv[0]); if (!nm) return JS_NULL;
-    const char *v = dom_attr(n, nm); JS_FreeCString(ctx, nm);
-    return v ? JS_NewString(ctx, v) : JS_NULL;
+    int len = 0;
+    const char *v = attr_val_len(n, nm, &len); JS_FreeCString(ctx, nm);
+    return v ? JS_NewStringLen(ctx, v, (size_t)len) : JS_NULL;
 }
 static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 2) return JS_UNDEFINED;
     const char *nm = JS_ToCString(ctx, argv[0]);
-    const char *vl = JS_ToCString(ctx, argv[1]);
+    size_t vlen = 0;
+    const char *vl = JS_ToCStringLen(ctx, &vlen, argv[1]);
     /* Any attribute at all, not just class/id/style: [data-state="on"] and
      * [href^="/"] are ordinary selectors, so there is no attribute whose value
      * provably cannot participate in the cascade. */
-    if (nm && vl) { dom_set_attr(n, nm, vl); mark_self(n, INVAL_STYLE);
-                    named_note_attr(ctx, n, nm); }
+    if (nm && vl) attr_write(ctx, n, nm, vl, (int)vlen);
     if (nm) JS_FreeCString(ctx, nm);
     if (vl) JS_FreeCString(ctx, vl);
     return JS_UNDEFINED;
@@ -2953,6 +3012,87 @@ static const JSCFunctionListEntry doc_funcs[] = {
  * below, which is exactly this spot. */
 #include "js_dom_iface.inc"
 
+/* ===================== IDL attribute reflection ==========================
+ *
+ * `el.title` is the `title` content attribute seen through a typed coercion,
+ * and there are several hundred such pairs. The machinery and the generated
+ * table live in js_reflect.c, which this file only has to CALL -- see that
+ * file's header for what the types are and why they are the point.
+ *
+ * THE REFERENCE IS WEAK, deliberately. tests/domiface.mk, tests/loader.mk,
+ * tests/cssom.mk, tests/webapi_platform.mk and eight Makefile rules list this
+ * directory's sources by hand, and three of those files belong to other lines.
+ * A hard reference would break their link the moment this landed, in a commit
+ * they did not make. Weak, the same pattern js_page.c already uses for
+ * js_webapi_install: a build without js_reflect.o links and simply has no
+ * reflected attributes. The browser and tests/wpt.mk both glob js_*.c, so the
+ * shipping browser and the measurement always have it. */
+__attribute__((weak)) void js_reflect_install(
+    JSContext *ctx, JSValueConst html_proto,
+    JSValueConst (*proto_for)(void *, const char *), void *ud);
+
+/* The prototype an element name's reflected attributes belong on.
+ *
+ * A tag with no dedicated interface answers HTMLElement.prototype rather than
+ * nothing. That is not a fallback, it is the right answer for the one tag in
+ * the table it applies to: html/dom/elements-misc.js describes `enterKeyHint`
+ * and `inputMode` on a made-up `<undefinedelement>` precisely because they are
+ * HTMLElement's, and it wants them tested somewhere that has no other
+ * attributes to confuse the result. */
+static JSValueConst reflect_proto_for(void *ud, const char *tag)
+{
+    (void)ud;
+    if (!g_iface_ready || !tag) return JS_UNDEFINED;
+    int i = itag_get(tag);
+    if (i <= 0) i = IF_HTMLELEMENT;
+    return g_iproto[i];
+}
+
+/* ---- what js_reflect.c needs from this file ---------------------------- */
+
+struct node *js_dom_node_from(JSValueConst v) { return node_of(v); }
+
+const char *js_dom_attr_len(const struct node *n, const char *name, int *len)
+{ return attr_val_len(n, name, len); }
+
+void js_dom_attr_write(JSContext *ctx, struct node *n, const char *name,
+                       const char *val, int vlen)
+{ attr_write(ctx, n, name, val, vlen); }
+
+int js_dom_attr_erase(JSContext *ctx, struct node *n, const char *name)
+{
+    if (!attr_remove(n, name)) return 0;
+    mark_self(n, INVAL_STYLE);
+    named_note_attr(ctx, n, name);
+    return 1;
+}
+
+/* Throw a real DOMException, built by the page's own constructor so that
+ * `e instanceof DOMException`, `e.name` and the legacy `e.code` all answer --
+ * which is exactly what assert_throws_dom checks. A build with no DOMException
+ * global falls back to a TypeError rather than to no exception at all: the
+ * caller's contract is "this operation throws". */
+JSValue js_dom_throw_dom(JSContext *ctx, const char *name, const char *msg)
+{
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue ctor = JS_GetPropertyStr(ctx, g, "DOMException");
+    JSValue exc = JS_UNDEFINED;
+    if (JS_IsFunction(ctx, ctor)) {
+        JSValue argv[2] = { JS_NewString(ctx, msg ? msg : ""),
+                            JS_NewString(ctx, name) };
+        exc = JS_CallConstructor(ctx, ctor, 2, (JSValueConst *)argv);
+        JS_FreeValue(ctx, argv[0]);
+        JS_FreeValue(ctx, argv[1]);
+    }
+    JS_FreeValue(ctx, ctor);
+    JS_FreeValue(ctx, g);
+    if (!JS_IsObject(exc)) {
+        JS_FreeValue(ctx, exc);
+        return JS_ThrowTypeError(ctx, "%s: %s", name, msg ? msg : "");
+    }
+    return JS_Throw(ctx, exc);
+}
+
 /* Register one event constructor and its prototype. `parent` chains the
  * prototypes so MouseEvent.prototype inherits Event.prototype's members and
  * `instanceof Event` is true for a MouseEvent. */
@@ -3021,6 +3161,11 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * cached in node->jsw and never rebuilt). */
     iface_install(ctx, g, token_proto_obj);
     JS_FreeValue(ctx, token_proto_obj);
+    /* Record what this file owns on HTMLDivElement.prototype before anything
+     * else can add to it -- section 6 of js_dom_iface.inc explains why the
+     * bridge needs to tell the two apart. Sealed again after reflection
+     * installs, which adds <div>'s own `align`. */
+    iface_seal_div(ctx);
 
     JS_NewClassID(&event_cid);
     if (JS_NewClass(rt, event_cid, &event_class) >= 0) {
@@ -3077,6 +3222,15 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * by js_dom_cleanup, alongside the event prototypes. */
     g_document = JS_DupValue(ctx, doc);
     JS_SetPropertyStr(ctx, g, "document", doc);
+    /* AFTER the prototypes exist and BEFORE any page script or any other
+     * installer runs. js_forms.c and js_platform.c both add reflected
+     * properties of their own and both refuse to clobber one that is already
+     * there, so being first is what lets the typed implementation win where the
+     * two overlap and lets theirs stand where they reach further. */
+    if (js_reflect_install) {
+        js_reflect_install(ctx, g_iproto[IF_HTMLELEMENT], reflect_proto_for, 0);
+        iface_seal_div(ctx);          /* <div>.align is now ours too */
+    }
     /* AFTER `document`: named access must never shadow a real global, and
      * `document` is one. Everything js_page.c installs after this point is
      * likewise protected -- named_define skips any name the global already

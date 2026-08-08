@@ -83,6 +83,22 @@ int  js_dom_listener_count(void);
  * where every page starts. js_dom_init resets it to 0 for the new page. */
 void js_dom_set_scroll(int x, int y);
 
+/* ---- what js_reflect.c reaches into this file for ----
+ *
+ * Four operations and one throw, which is the whole surface IDL attribute
+ * reflection needs: resolve a wrapper to its node, read an attribute WITH ITS
+ * LENGTH (a value may contain U+0000 and dom.c stores it; a `const char *`
+ * alone cannot say so), write one, remove one. Writing and removing go through
+ * the same path setAttribute()/removeAttribute() use, so a reflected setter and
+ * an explicit setAttribute cannot disagree about the id index, the class list
+ * or the invalidation tier. */
+struct node *js_dom_node_from(JSValueConst v);
+const char  *js_dom_attr_len(const struct node *n, const char *name, int *len);
+void         js_dom_attr_write(JSContext *ctx, struct node *n, const char *name,
+                               const char *val, int vlen);
+int          js_dom_attr_erase(JSContext *ctx, struct node *n, const char *name);
+JSValue      js_dom_throw_dom(JSContext *ctx, const char *name, const char *msg);
+
 /* Release listener + wrapper state; call before JS_FreeContext/JS_FreeRuntime. */
 void js_dom_cleanup(JSContext *ctx);
 

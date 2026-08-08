@@ -1336,8 +1336,11 @@ static void iface_install(JSContext *ctx, JSValueConst g, JSValueConst token_pro
 #endif
 }
 
+static void iface_seal_free(JSContext *ctx);   /* defined with the bridge */
+
 static void iface_cleanup(JSContext *ctx)
 {
+    iface_seal_free(ctx);
     for (int i = 0; i < IF__COUNT; i++) {
         JS_FreeValue(ctx, g_iproto[i]);
         g_iproto[i] = JS_UNDEFINED;
@@ -1404,6 +1407,54 @@ static void iface_cleanup(JSContext *ctx)
  * measurable. */
 #define BRIDGE_WRAPS 128
 
+/* WHAT THIS FILE PUT ON HTMLDivElement.prototype, recorded rather than listed.
+ *
+ * The bridge below moves everything on that prototype that "this file did not
+ * put there" down onto Element.prototype, and the rule used to need no
+ * bookkeeping because the answer was exactly {constructor, Symbol.toStringTag}.
+ * IDL attribute reflection ends that: <div> reflects `align`, so the DOM line's
+ * own accessor now sits there too, and moving it would give `align` to every
+ * element in the document -- a reflected attribute leaking off the one
+ * interface that declares it.
+ *
+ * So the set is SNAPSHOT instead of enumerated: iface_seal_div() runs at the end
+ * of js_dom_init, before any other installer can touch the object, and whatever
+ * is on it at that instant is ours by construction. That is self-maintaining --
+ * it stays correct as this file grows members -- and it needs no cross-file
+ * registry with js_reflect.c. */
+#define DIV_SEAL_MAX 64
+static JSAtom g_div_seal[DIV_SEAL_MAX];
+static int g_div_seal_n;
+
+static void iface_seal_div(JSContext *ctx)
+{
+    g_div_seal_n = 0;
+    if (!g_iface_ready || !JS_IsObject(g_iproto[IF_HTMLDIV])) return;
+    JSPropertyEnum *tab = 0;
+    uint32_t len = 0;
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, g_iproto[IF_HTMLDIV],
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) < 0)
+        return;
+    for (uint32_t i = 0; i < len; i++) {
+        if (g_div_seal_n < DIV_SEAL_MAX)
+            g_div_seal[g_div_seal_n++] = JS_DupAtom(ctx, tab[i].atom);
+        JS_FreeAtom(ctx, tab[i].atom);
+    }
+    js_free(ctx, tab);
+}
+
+static void iface_seal_free(JSContext *ctx)
+{
+    for (int i = 0; i < g_div_seal_n; i++) JS_FreeAtom(ctx, g_div_seal[i]);
+    g_div_seal_n = 0;
+}
+
+static int div_is_ours(JSAtom k)
+{
+    for (int i = 0; i < g_div_seal_n; i++) if (g_div_seal[i] == k) return 1;
+    return 0;
+}
+
 /* Move every own property of `from` that `to` does not already have, then
  * delete it from `from`. Descriptors are moved AS descriptors: half of what
  * arrives is an accessor pair and copying the VALUE would evaluate the getter
@@ -1420,7 +1471,7 @@ static int move_own_props(JSContext *ctx, JSValueConst from, JSValueConst to)
     JSAtom a_ctor = JS_NewAtom(ctx, "constructor");
     for (i = 0; i < len; i++) {
         JSAtom k = tab[i].atom;
-        if (k == a_ctor) continue;
+        if (k == a_ctor || div_is_ours(k)) continue;
         JSPropertyDescriptor d;
         int has = JS_GetOwnProperty(ctx, &d, from, k);
         if (has <= 0) continue;
