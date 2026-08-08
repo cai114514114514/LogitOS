@@ -13,6 +13,7 @@
 #   make bench-js-os            compile them ON THE MACHINE, over serial
 #   make test-js-syntax         the language gate (38 checks)
 #   make test-js-syntax-control the same gate against stock QuickJS: MUST FAIL
+#   make test-js-dynimport     dynamic import(), which is how a code-split app loads
 
 JSPERF_DIR := tests/fixtures/jsperf
 JSPERF_HOST_FIXTURES := $(sort $(wildcard $(JSPERF_DIR)/*.js) $(wildcard $(JSPERF_DIR)/*.mjs))
@@ -119,4 +120,17 @@ test-js-syntax-control: $(BUILD)/negctl/quickjs.c
 	    grep -c '^FAIL:' $(BUILD)/js_syntax_control.log | sed 's/^/  /;s/$$/ checks fail without the patch, including the real baidu polyfill/'; \
 	 fi
 
-.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control
+# --- test-js-dynimport: the half of ES modules a code-split app actually uses -
+# kimi.com is 12.77 MB of JavaScript in 134 files; its entry module makes 98
+# `import("./chunk.js")` calls and the page carries no import map. Static
+# `import` working and `import()` not would load the entry chunk and then
+# quietly do nothing. See the header of tests/unit/js_dynimport_test.c.
+$(BUILD)/js_dynimport_test: tests/unit/js_dynimport_test.c $(QJS_SRC)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
+	    tests/unit/js_dynimport_test.c $(QJS_SRC) -lm
+
+test-js-dynimport: $(BUILD)/js_dynimport_test
+	@$(BUILD)/js_dynimport_test
+
+.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport
