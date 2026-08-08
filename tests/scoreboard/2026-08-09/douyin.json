@@ -1,9 +1,9 @@
 {
  "name": "douyin",
  "url": "https://www.douyin.com/",
- "started": "2026-08-09T01:06:43",
+ "started": "2026-08-09T04:20:25",
  "verdict": "BLANK",
- "why": "loaded in 1.3s and painted 2352 changed pixels (0 exceptions)",
+ "why": "loaded in 1.3s and painted 2416 changed pixels (0 exceptions)",
  "host": {
   "ok": true,
   "status": 200,
@@ -42,11 +42,11 @@
   "app_fault": null,
   "panic": false,
   "load_seconds": 1.3,
-  "paint_seconds": 16.2,
+  "paint_seconds": 16.1,
   "settled": true
  },
  "pixels": {
-  "changed_px": 2352,
+  "changed_px": 2416,
   "changed_bbox": [
    152,
    12,
@@ -72,5 +72,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:07:21"
+ "finished": "2026-08-09T04:21:03"
 }

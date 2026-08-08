@@ -1,9 +1,9 @@
 {
  "name": "deepseek#2",
  "url": "https://www.deepseek.com/",
- "started": "2026-08-09T01:08:38",
+ "started": "2026-08-09T04:22:26",
  "verdict": "BLANK",
- "why": "loaded in 4.9s and painted 2872 changed pixels (0 exceptions)",
+ "why": "loaded in 4.9s and painted 2868 changed pixels (0 exceptions)",
  "host": {
   "ok": true,
   "status": 200,
@@ -36,7 +36,7 @@
   "reused": 13,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 267490,
+  "heap_peak_k": 316720,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
@@ -46,7 +46,7 @@
   "settled": true
  },
  "pixels": {
-  "changed_px": 2872,
+  "changed_px": 2868,
   "changed_bbox": [
    152,
    12,
@@ -72,5 +72,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:09:20"
+ "finished": "2026-08-09T04:23:07"
 }

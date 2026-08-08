@@ -1,22 +1,22 @@
-[wm] perf t=18630 composites=236 ns=2431563267 max=51243057 motions=18 curmoves=11 curns=677427 full=196 rects=237 cpx=65252896 fpx=65252896 presns=137400388 torn=0 defer=134 late=0 drawmax=27
 [sock] connected www.douyin.com via ipv4 ::ffff:198.18.0.39
 [tls] trust store: 130 roots, 0 skipped
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
-[wm] perf t=19652 composites=323 ns=2961490176 max=51243057 motions=18 curmoves=11 curns=677427 full=282 rects=324 cpx=78595616 fpx=78595616 presns=168924727 torn=0 defer=207 late=0 drawmax=28
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[wm] perf t=19626 composites=186 ns=2488187339 max=36169747 motions=18 curmoves=11 curns=560307 full=142 rects=186 cpx=80713324 fpx=80713324 presns=144557473 torn=0 defer=65 late=0 drawmax=22
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
 [browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
 [browser] pool: 0 hits, 0 evicted, 1 closed
 [browser] resources: 0 from tab, 0 from network (tab 2 of 3)
 [sock] connected www.douyin.com via ipv4 ::ffff:198.18.0.39
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
-[net] rx path: frames 65 irq 51 softirq 23 inline 0 poll 3 idle 0/0 halt/skip
+[net] rx path: frames 67 irq 50 softirq 19 inline 5 poll 2 idle 0/0 halt/skip
 [browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
 [browser] pool: 0 hits, 0 evicted, 2 closed
 [browser] resources: 0 from tab, 0 from network (tab 2 of 3)
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
 [browser] pool: 0 hits, 0 evicted, 3 closed
 [browser] resources: 0 from tab, 0 from network (tab 2 of 3)
@@ -60,4 +60,4 @@
 [browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
 [browser] pool: 0 hits, 0 evicted, 11 closed
 [browser] resources: 0 from tab, 0 from network (tab 2 of 3)
-[wm] perf t=27679 composites=363 ns=3878651689 max=51243057 motions=18 curmoves=11 curns=677427 full=308 rects=364 cpx=101553696 fpx=101553696 presns=219744159 torn=0 defer=211 late=0 drawmax=29
+[wm] perf t=27675 composites=227 ns=3216493523 max=36169747 motions=18 curmoves=11 curns=560307 full=167 rects=227 cpx=104756844 fpx=104756844 presns=185799298 torn=0 defer=67 late=0 drawmax=22

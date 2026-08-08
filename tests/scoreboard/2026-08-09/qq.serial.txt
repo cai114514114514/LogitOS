@@ -1,45 +1,42 @@
-[wm] perf t=18698 composites=243 ns=2661753250 max=50630312 motions=18 curmoves=12 curns=829005 full=187 rects=244 cpx=62535124 fpx=62535124 presns=145819517 torn=0 defer=129 late=0 drawmax=31
+[wm] perf t=18586 composites=150 ns=2196970036 max=34476039 motions=18 curmoves=10 curns=350124 full=105 rects=150 cpx=70611552 fpx=70611552 presns=126771085 torn=0 defer=38 late=0 drawmax=22
 [sock] connected www.qq.com via ipv4 ::ffff:198.18.0.40
 [tls] trust store: 130 roots, 0 skipped
 [tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [tls] chain of 2 verified for www.qq.com, alpn=http/1.1
 [tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[wm] perf t=19586 composites=193 ns=2683273431 max=34476039 motions=18 curmoves=10 curns=350124 full=147 rects=193 cpx=88050272 fpx=88050272 presns=155628811 torn=0 defer=63 late=0 drawmax=22
 [sock] connected mat1.gtimg.com via ipv4 ::ffff:198.18.0.75
 [tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
 [tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
-[net] rx path: frames 91 irq 48 softirq 26 inline 0 poll 2 idle 0/0 halt/skip
-[wm] perf t=19700 composites=287 ns=3185661946 max=50630312 motions=18 curmoves=12 curns=829005 full=230 rects=288 cpx=75877844 fpx=75877844 presns=177053028 torn=0 defer=159 late=0 drawmax=39
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[browser] heap peak 7949K
-[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
-[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
-[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[net] rx path: frames 91 irq 54 softirq 19 inline 7 poll 2 idle 0/0 halt/skip
 [mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[browser] heap peak 7925K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
 [mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
-[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
-[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
-[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wm] perf t=20595 composites=210 ns=2836652331 max=34476039 motions=18 curmoves=10 curns=350124 full=163 rects=210 cpx=93200992 fpx=93200992 presns=163608385 torn=0 defer=74 late=0 drawmax=74
 [mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
 [mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
-[net] rx path: frames 629 irq 139 softirq 70 inline 0 poll 5 idle 0/0 halt/skip
 [mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
 [mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
 [mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
 [mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[net] rx path: frames 611 irq 173 softirq 49 inline 33 poll 2 idle 0/0 halt/skip
 [mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
 [mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
-[error] Uncaught (in promise) undefined
 [mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
 [mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
 [mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
 [mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) undefined
 [mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
 [mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
 [mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
@@ -65,7 +62,12 @@
 [mm] low: 103155 frames free (402 MiB), 27882 used, 0 shared, 0 bugs
 [mm] low: 102899 frames free (401 MiB), 28138 used, 0 shared, 0 bugs
 [mm] low: 102643 frames free (400 MiB), 28394 used, 0 shared, 0 bugs
+[mm] low: 102387 frames free (399 MiB), 28650 used, 0 shared, 0 bugs
+[mm] low: 102131 frames free (398 MiB), 28906 used, 0 shared, 0 bugs
+[mm] low: 101875 frames free (397 MiB), 29162 used, 0 shared, 0 bugs
+[mm] low: 101619 frames free (396 MiB), 29418 used, 0 shared, 0 bugs
 [error] TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [browser] JS exception: TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
 TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
     at createObjectURL (native)
@@ -89,16 +91,16 @@ TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
     at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
     at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
     at <eval> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
-[browser] load done: 11 requests, 5 connections dialled, 6 reused, 0 modules loaded (0 failed)
-[browser] pool: 6 hits, 2 evicted, 3 closed
-[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
 [tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [tls] chain of 3 verified for i.news.qq.com, alpn=h2
 [tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
-[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
 [tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
-[bxfer] h2 i.news.qq.com:443 closed: streams=2 peak=2 frames=28/7 hpack_in=22603
+[browser] load done: 11 requests, 5 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 2 evicted, 3 closed
+[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
+[bxfer] h2 i.news.qq.com:443 closed: streams=2 peak=2 frames=38/7 hpack_in=22912
+[wm] perf t=28595 composites=238 ns=3178203817 max=36266713 motions=18 curmoves=10 curns=350124 full=175 rects=238 cpx=102908512 fpx=102908512 presns=185262505 torn=0 defer=77 late=0 drawmax=74
 [error] Uncaught (in promise) [object Object]
 [tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [tls] chain of 3 verified for i.news.qq.com, alpn=h2
@@ -107,11 +109,11 @@ TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
 [tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
 [tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
 [bxfer] h2 i.news.qq.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=198
-[bxfer] h2 otheve.beacon.qq.com:443 closed: streams=4 peak=2 frames=15/13 hpack_in=308
 [tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
 [tls] chain of 3 verified for i.news.qq.com, alpn=h2
 [tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
-[bxfer] h2 i.news.qq.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=1046
+[bxfer] h2 otheve.beacon.qq.com:443 closed: streams=4 peak=2 frames=15/13 hpack_in=308
+[bxfer] h2 i.news.qq.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=1049
 [webapi] fetch: connection failed
 [error] Uncaught (in promise) AxiosError: Network Error
 Error

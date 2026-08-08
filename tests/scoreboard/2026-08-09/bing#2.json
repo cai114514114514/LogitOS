@@ -1,14 +1,14 @@
 {
  "name": "bing#2",
  "url": "https://www.bing.com/",
- "started": "2026-08-09T01:08:42",
+ "started": "2026-08-09T04:22:44",
  "verdict": "ERRORS",
- "why": "painted 625204 changed px in 2.5s but 1 JS exception(s)",
+ "why": "painted 625220 changed px in 2.5s but 1 JS exception(s)",
  "host": {
   "ok": true,
   "status": 200,
   "final_url": "https://cn.bing.com/",
-  "bytes": 185600,
+  "bytes": 185572,
   "redirects": [
    "302 -> https://cn.bing.com/"
   ],
@@ -46,7 +46,7 @@
   "reused": 3,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 5646,
+  "heap_peak_k": 5887,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
@@ -56,17 +56,17 @@
   "settled": true
  },
  "pixels": {
-  "changed_px": 625204,
+  "changed_px": 625220,
   "changed_bbox": [
    140,
    16,
-   1264,
+   1260,
    764
   ],
-  "ink_px": 515257,
+  "ink_px": 515815,
   "ink_px_blank": 2359,
-  "colours": 616,
-  "rich_tiles_proxy": 15
+  "colours": 555,
+  "rich_tiles_proxy": 14
  },
  "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/bing#2.png",
  "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/bing#2.serial.txt",
@@ -82,5 +82,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:09:21"
+ "finished": "2026-08-09T04:23:23"
 }

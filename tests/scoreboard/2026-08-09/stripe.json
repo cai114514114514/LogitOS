@@ -1,9 +1,9 @@
 {
  "name": "stripe",
  "url": "https://stripe.com/",
- "started": "2026-08-09T01:07:31",
+ "started": "2026-08-09T04:21:10",
  "verdict": "BLANK",
- "why": "loaded in 33.7s and painted 2600 changed pixels (0 exceptions)",
+ "why": "loaded in 21.1s and painted 2636 changed pixels (0 exceptions)",
  "host": {
   "ok": true,
   "status": 200,
@@ -24,7 +24,7 @@
    "fonts": 2,
    "mandatory": 79
   },
-  "elapsed": 2.7
+  "elapsed": 1.7
  },
  "guest": {
   "exceptions": [],
@@ -33,25 +33,25 @@
   "fetch_failed": [],
   "cannot_fetch": [],
   "skipped_scripts": 3,
-  "requests": 80,
-  "dials": 4,
+  "requests": 79,
+  "dials": 3,
   "reused": 77,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 14097,
+  "heap_peak_k": 14195,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
   "panic": false,
-  "load_seconds": 33.7,
-  "paint_seconds": 16.2,
+  "load_seconds": 21.1,
+  "paint_seconds": 16.1,
   "settled": true
  },
  "pixels": {
-  "changed_px": 2600,
+  "changed_px": 2636,
   "changed_bbox": [
    152,
-   16,
+   12,
    1264,
    764
   ],
@@ -74,5 +74,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:08:41"
+ "finished": "2026-08-09T04:22:07"
 }

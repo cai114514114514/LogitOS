@@ -1,36 +1,36 @@
-[wm] perf t=19675 composites=200 ns=2651677124 max=49833765 motions=18 curmoves=10 curns=444887 full=156 rects=200 cpx=74579432 fpx=74579432 presns=159937811 torn=0 defer=85 late=0 drawmax=24
-[wm] perf t=20676 composites=244 ns=3215042707 max=49833765 motions=18 curmoves=10 curns=444887 full=200 rects=244 cpx=93011432 fpx=93011432 presns=196556917 torn=0 defer=111 late=0 drawmax=24
+[wm] perf t=19668 composites=181 ns=2630807694 max=36816096 motions=18 curmoves=11 curns=856242 full=120 rects=181 cpx=74984596 fpx=74984596 presns=149059370 torn=0 defer=50 late=0 drawmax=25
+[wm] perf t=20697 composites=213 ns=3258201337 max=36816096 motions=18 curmoves=11 curns=856242 full=151 rects=213 cpx=96519316 fpx=96519316 presns=188165903 torn=0 defer=60 late=0 drawmax=25
 [sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
 [tls] trust store: 130 roots, 0 skipped
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 4 verified for en.wikipedia.org, alpn=http/1.1
-[wm] perf t=21774 composites=259 ns=3420789839 max=49833765 motions=18 curmoves=10 curns=444887 full=213 rects=259 cpx=99216872 fpx=99216872 presns=208950606 torn=0 defer=118 late=0 drawmax=24
+[wm] perf t=21705 composites=231 ns=3434077479 max=42851161 motions=18 curmoves=11 curns=856242 full=168 rects=231 cpx=101670036 fpx=101670036 presns=198221740 torn=0 defer=72 late=0 drawmax=25
 [tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 1 cached)
 [tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 2 cached)
-[net] rx path: frames 64 irq 51 softirq 20 inline 5 poll 2 idle 0/0 halt/skip
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[net] rx path: frames 64 irq 66 softirq 28 inline 6 poll 3 idle 0/0 halt/skip
 [mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
 [mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
 [mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
 [mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
 [mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
-[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
-[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] resumed session for en.wikipedia.org (no chain, no signature), alpn=http/1.1
 [mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
 [mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
 [mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
 [mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
-[browser] heap peak 15713K
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.45
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for en.wikipedia.org (no chain, no signature), alpn=http/1.1
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
+[browser] heap peak 15714K
+[wm] perf t=24705 composites=244 ns=3598922103 max=42851161 motions=18 curmoves=11 curns=856242 full=176 rects=244 cpx=106943636 fpx=106943636 presns=207161131 torn=0 defer=75 late=0 drawmax=26
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
-[wm] perf t=26785 composites=278 ns=3611186613 max=49833765 motions=18 curmoves=10 curns=444887 full=222 rects=278 cpx=104644072 fpx=104644072 presns=220487823 torn=0 defer=122 late=0 drawmax=24
 [tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 2 cached)
 [tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 3 cached)
 [tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 4 cached)
@@ -39,13 +39,13 @@
 [browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
 [browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
 [browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
-[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
 [browser] skipping <script type="application/ld+json"> (not executable)
-[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
-[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
 [browser] load done: 16 requests, 4 connections dialled, 12 reused, 0 modules loaded (0 failed)
 [browser] pool: 12 hits, 0 evicted, 1 closed
 [browser] resources: 0 from tab, 7 from network (tab 2 of 3)
-[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
-[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
-[wm] perf t=30785 composites=300 ns=3997866377 max=49833765 motions=18 curmoves=10 curns=444887 full=236 rects=300 cpx=117177832 fpx=117177832 presns=244777527 torn=0 defer=124 late=0 drawmax=24
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs

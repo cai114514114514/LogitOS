@@ -1,52 +1,50 @@
-[wm] perf t=18736 composites=154 ns=2021072150 max=53952630 motions=18 curmoves=11 curns=522573 full=112 rects=154 cpx=51912808 fpx=51912808 presns=122953312 torn=0 defer=63 late=0 drawmax=25
+[wm] perf t=18604 composites=213 ns=2176502023 max=36685959 motions=18 curmoves=12 curns=544014 full=170 rects=214 cpx=68504348 fpx=68504348 presns=122637948 torn=0 defer=105 late=0 drawmax=23
 [sock] connected www.jd.com via ipv4 ::ffff:198.18.0.36
 [tls] trust store: 130 roots, 0 skipped
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 2 verified for www.jd.com, alpn=http/1.1
-[wm] perf t=19736 composites=198 ns=2555037215 max=53952630 motions=18 curmoves=11 curns=522573 full=156 rects=198 cpx=68296808 fpx=68296808 presns=157044350 torn=0 defer=91 late=0 drawmax=25
-[net] rx path: frames 65 irq 41 softirq 17 inline 5 poll 2 idle 0/0 halt/skip
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[net] rx path: frames 64 irq 56 softirq 28 inline 0 poll 2 idle 0/0 halt/skip
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[wm] perf t=19604 composites=276 ns=2661046272 max=36685959 motions=18 curmoves=12 curns=544014 full=233 rects=277 cpx=84888348 fpx=84888348 presns=152655280 torn=0 defer=152 late=0 drawmax=46
 [sock] connected storage.360buyimg.com via ipv4 ::ffff:198.18.0.60
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 3 verified for storage.360buyimg.com, alpn=http/1.1
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for storage.360buyimg.com, alpn=http/1.1
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
-[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
-[wm] perf t=20736 composites=208 ns=2696229874 max=53952630 motions=18 curmoves=11 curns=522573 full=164 rects=208 cpx=72454248 fpx=72454248 presns=166230139 torn=0 defer=95 late=0 drawmax=41
-[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[tls] chain of 3 verified for storage.360buyimg.com, alpn=http/1.1
 [mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
 [mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
 [mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
-[browser] heap peak 12758K
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[browser] heap peak 12710K
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for gias.jd.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 3 verified for wl.jd.com, alpn=http/1.1
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
-[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
+[browser] fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: connect failed
+[browser] fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed
+[net] rx path: frames 616 irq 156 softirq 80 inline 0 poll 5 idle 0/0 halt/skip
 [tls] ticket stored for wl.jd.com (208 bytes, lifetime 21600s, 1 cached)
 [tls] ticket stored for wl.jd.com (208 bytes, lifetime 21600s, 2 cached)
-[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 2 verified for gias.jd.com, alpn=http/1.1
-[browser] fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed
-[browser] fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: connect failed
-[net] rx path: frames 647 irq 212 softirq 49 inline 51 poll 2 idle 0/0 halt/skip
-[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 rejected for static.360buyimg.com: no path to a trusted root (-3)
 [browser] fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: connect failed
-[wm] perf t=22746 composites=221 ns=2930718832 max=53952630 motions=18 curmoves=11 curns=522573 full=173 rects=221 cpx=78721128 fpx=78721128 presns=180496764 torn=0 defer=98 late=0 drawmax=41
-[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
-[net] rx path: frames 1176 irq 263 softirq 66 inline 57 poll 2 idle 0/0 halt/skip
-[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
-[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
-[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
-[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
 [mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[net] rx path: frames 1143 irq 209 softirq 109 inline 0 poll 5 idle 0/0 halt/skip
 [mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
+[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
 [browser] JS exception: ReferenceError: 'jQuery' is not defined
 ReferenceError: 'jQuery' is not defined
     at <eval> (https://wl.jd.com/wl.js:2)
@@ -59,14 +57,15 @@ ReferenceError: '$' is not defined
     at getClstagPrefix (https://www.jd.com/#inline-script-17:4)
     at footerRender (https://www.jd.com/#inline-script-17:20)
     at <eval> (https://www.jd.com/#inline-script-17:24)
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
 Error
 Error
-[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
-[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 2 verified for api.m.jd.com, alpn=h2
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 2 verified for jra.jd.com, alpn=h2
-[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for api.m.jd.com, alpn=h2
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
 [browser] JS exception: TypeError: cannot read property 'length' of undefined
 TypeError: cannot read property 'length' of undefined
     at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)
@@ -77,27 +76,27 @@ TypeError: cannot read property 'length' of undefined
 TypeError: not a function
     at <anonymous> (https://www.jd.com/#inline-script-20:31)
     at <eval> (https://www.jd.com/#inline-script-20:32)
-[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
-[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
-[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
-[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
-[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
 [mm] low: 107763 frames free (420 MiB), 23274 used, 0 shared, 0 bugs
 [mm] low: 107507 frames free (419 MiB), 23530 used, 0 shared, 0 bugs
 [mm] low: 107251 frames free (418 MiB), 23786 used, 0 shared, 0 bugs
 [mm] low: 106995 frames free (417 MiB), 24042 used, 0 shared, 0 bugs
 [mm] low: 106739 frames free (416 MiB), 24298 used, 0 shared, 0 bugs
 [mm] low: 106483 frames free (415 MiB), 24554 used, 0 shared, 0 bugs
-[browser] JS exception: TypeError: cannot read property 'indexOf' of undefined
-TypeError: cannot read property 'indexOf' of undefined
-    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)
-    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
-    at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
 [mm] low: 106227 frames free (414 MiB), 24810 used, 0 shared, 0 bugs
 [mm] low: 105971 frames free (413 MiB), 25066 used, 0 shared, 0 bugs
 [mm] low: 105715 frames free (412 MiB), 25322 used, 0 shared, 0 bugs
 [mm] low: 105459 frames free (411 MiB), 25578 used, 0 shared, 0 bugs
 [mm] low: 105203 frames free (410 MiB), 25834 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'indexOf' of undefined
+TypeError: cannot read property 'indexOf' of undefined
+    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)
+    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
+    at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
+[mm] low: 104947 frames free (409 MiB), 26090 used, 0 shared, 0 bugs
+[mm] low: 104691 frames free (408 MiB), 26346 used, 0 shared, 0 bugs
+[mm] low: 104435 frames free (407 MiB), 26602 used, 0 shared, 0 bugs
+[mm] low: 104179 frames free (406 MiB), 26858 used, 0 shared, 0 bugs
+[mm] low: 103923 frames free (405 MiB), 27114 used, 0 shared, 0 bugs
 [browser] JS exception: TypeError: cannot read property 'indexOf' of undefined
 TypeError: cannot read property 'indexOf' of undefined
     at appendPassportDomain (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)
@@ -141,5 +140,7 @@ TypeError: cannot read property 'indexOf' of undefined
 [browser] pool: 8 hits, 1 evicted, 5 closed
 [browser] resources: 0 from tab, 12 from network (tab 2 of 3)
 [bxfer] h2 jra.jd.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=304
-[bxfer] h2 api.m.jd.com:443 closed: streams=3 peak=2 frames=10/10 hpack_in=358
-[wm] perf t=29765 composites=241 ns=3103420553 max=53952630 motions=18 curmoves=11 curns=522573 full=179 rects=241 cpx=82223208 fpx=82223208 presns=189893787 torn=0 defer=101 late=0 drawmax=41
+[bxfer] h2 api.m.jd.com:443 closed: streams=2 peak=2 frames=7/7 hpack_in=259
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for api.m.jd.com, alpn=h2
+[bxfer] h2 api.m.jd.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=99

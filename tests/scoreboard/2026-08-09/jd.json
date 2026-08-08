@@ -1,14 +1,14 @@
 {
  "name": "jd",
  "url": "https://www.jd.com/",
- "started": "2026-08-09T01:05:58",
+ "started": "2026-08-09T04:20:19",
  "verdict": "ERRORS",
- "why": "painted 11152 changed px in 8.5s but 7 JS exception(s) -- and the document asked for 18 subresources (3 stylesheets, 14 script srcs) against 16 requests issued, short by 2",
+ "why": "painted 11216 changed px in 7.9s but 7 JS exception(s) -- and the document asked for 18 subresources (3 stylesheets, 14 script srcs) against 16 requests issued, short by 2",
  "host": {
   "ok": true,
   "status": 200,
   "final_url": "https://www.jd.com/",
-  "bytes": 191229,
+  "bytes": 192000,
   "redirects": [],
   "script_tags": 35,
   "script_src": 14,
@@ -124,8 +124,8 @@
   "timer_exceptions": [],
   "module_exceptions": [],
   "fetch_failed": [
-   "fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed",
    "fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: connect failed",
+   "fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed",
    "fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: connect failed"
   ],
   "cannot_fetch": [],
@@ -135,17 +135,17 @@
   "reused": 8,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 12758,
+  "heap_peak_k": 12710,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
   "panic": false,
-  "load_seconds": 8.5,
+  "load_seconds": 7.9,
   "paint_seconds": 16.2,
   "settled": true
  },
  "pixels": {
-  "changed_px": 11152,
+  "changed_px": 11216,
   "changed_bbox": [
    140,
    12,
@@ -154,7 +154,7 @@
   ],
   "ink_px": 4831,
   "ink_px_blank": 2359,
-  "colours": 598,
+  "colours": 605,
   "rich_tiles_proxy": 15
  },
  "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/jd.png",
@@ -177,5 +177,5 @@
    "script_src": 14
   }
  },
- "finished": "2026-08-09T01:06:43"
+ "finished": "2026-08-09T04:21:03"
 }

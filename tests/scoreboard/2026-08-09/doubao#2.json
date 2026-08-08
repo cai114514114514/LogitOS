@@ -1,14 +1,14 @@
 {
  "name": "doubao#2",
  "url": "https://www.doubao.com/",
- "started": "2026-08-09T01:08:41",
+ "started": "2026-08-09T04:22:34",
  "verdict": "BLANK",
- "why": "loaded in 7.3s and painted 3092 changed pixels (0 exceptions)",
+ "why": "loaded in 6.7s and painted 3088 changed pixels (0 exceptions)",
  "host": {
   "ok": true,
   "status": 200,
   "final_url": "https://www.doubao.com/chat/",
-  "bytes": 393763,
+  "bytes": 395647,
   "redirects": [
    "302 -> https://www.doubao.com/chat/"
   ],
@@ -24,7 +24,7 @@
    "fonts": 0,
    "mandatory": 6
   },
-  "elapsed": 1.1
+  "elapsed": 1.0
  },
  "guest": {
   "exceptions": [],
@@ -38,21 +38,21 @@
   "reused": 4,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 7709,
+  "heap_peak_k": 7703,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
   "panic": false,
-  "load_seconds": 7.3,
-  "paint_seconds": 16.2,
+  "load_seconds": 6.7,
+  "paint_seconds": 16.1,
   "settled": true
  },
  "pixels": {
-  "changed_px": 3092,
+  "changed_px": 3088,
   "changed_bbox": [
    152,
-   20,
-   1260,
+   12,
+   1264,
    764
   ],
   "ink_px": 2359,
@@ -74,5 +74,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:09:25"
+ "finished": "2026-08-09T04:23:17"
 }

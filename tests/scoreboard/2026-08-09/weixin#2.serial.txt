@@ -1,113 +1,27 @@
-[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
-[cpu] 48/56 known features present: fpu tsc msr cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
-[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0 (AVX deliberately off -- see boot/long.asm)
-[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
-[cpu] aes-gcm 16 KiB: aesni=2949806 cycles, c=25235246 cycles, speedup x8.55
-
-[logitos] long mode, C kernel running
-[rust] inflate selftest OK
-[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
-[time] source=tsc 3417.605 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
-[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
-[time] calib samples(Hz) 3420754075 3417579964 3417605927 -> median chosen
-[cpu] simd selftest: backend=aesni xmm_corrupt=0 (7 ticks) crypto_mismatch=0 kat=0 (1039 rounds, 6 ticks)
-CPU_SIMD_SELFTEST_OK
-[mm] boot: 131037 frames total (511 MiB), 127988 free, 3049 used, 0 shared, 3049 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
-[mm] boot: metadata 415 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
-[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
-[mm] low: 127987 frames free (499 MiB), 3050 used, 0 shared, 0 bugs
-[mm] low: 127731 frames free (498 MiB), 3306 used, 0 shared, 0 bugs
-[mm] low: 127475 frames free (497 MiB), 3562 used, 0 shared, 0 bugs
-[rmap] 131037 frames, 196555 nodes (2831 KiB total: 511 KiB heads + 2303 KiB nodes)
-[logitos] interrupts + memory + gdt/tss online
-[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
-[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
-[pci] 7 function(s) enumerated across all buses
-[mm] low: 127219 frames free (496 MiB), 3818 used, 0 shared, 0 bugs
-[mm] low: 126963 frames free (495 MiB), 4074 used, 0 shared, 0 bugs
-[mm] low: 126707 frames free (494 MiB), 4330 used, 0 shared, 0 bugs
-[mm] low: 126451 frames free (493 MiB), 4586 used, 0 shared, 0 bugs
-[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
-[rust] png selftest OK
-[virtio] 1050 up (0000:00:03.0, 2 queues)
-[mm] low: 126195 frames free (492 MiB), 4842 used, 0 shared, 0 bugs
-[mm] low: 125939 frames free (491 MiB), 5098 used, 0 shared, 0 bugs
-[mm] low: 125683 frames free (490 MiB), 5354 used, 0 shared, 0 bugs
-[mm] low: 125427 frames free (489 MiB), 5610 used, 0 shared, 0 bugs
-[virtio-gpu] 1280x800, RAM fb @ 0x12b5000, cursor plane yes
-[virtio] 1001 up (0000:00:02.0, 4 queues)
-[virtio-blk] ready, cache=writeback (barriers REQUIRED)
-[blk] vblk0: virtio-blk, 131072 sectors (64.0 MiB)
-[part] vblk0: no partition table (raw filesystem image)
-[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
-[fsck] mount check: clean
-[fs] mounted
-[set] /etc/settings.conf: 0 keys, none stored (defaults)
-SETTINGS_READY diag=1 keys=0
-SETTINGS_SELFTEST offsets=655 failures=0
-[net] e1000: found 8086:100e at 0000:00:04.0
-[mm] low: 125171 frames free (488 MiB), 5866 used, 0 shared, 0 bugs
-[e1000] up: mmio=0xfeb80000
-[net] NIC bound: e1000  MAC 52:54:0:12:34:56  irq=11
-[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
-[ip6] dad ok fe80::5054:ff:fe12:3456/64
-[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
-[ip6] router fe80::2 lifetime 1800s
-[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
-[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
-[eth] rx 5 (1990 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
-[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
-[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
-[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
-[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
-[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
-[text] /fonts/mono.ttf: 97 glyphs, upem=1000
-[mm] low: 124915 frames free (487 MiB), 6122 used, 0 shared, 0 bugs
-[mm] low: 124659 frames free (486 MiB), 6378 used, 0 shared, 0 bugs
-[mm] low: 124403 frames free (485 MiB), 6634 used, 0 shared, 0 bugs
-[mm] low: 124147 frames free (484 MiB), 6890 used, 0 shared, 0 bugs
-[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 3499 KiB, free 4692 KiB, over-allocated 0 KiB
-[text] /fonts/text.ttf: 6253 glyphs, upem=2048
-[mm] low: 123891 frames free (483 MiB), 7146 used, 0 shared, 0 bugs
-[mm] low: 123635 frames free (482 MiB), 7402 used, 0 shared, 0 bugs
-[mm] low: 123379 frames free (481 MiB), 7658 used, 0 shared, 0 bugs
-[mm] low: 123123 frames free (480 MiB), 7914 used, 0 shared, 0 bugs
-[mm] low: 122867 frames free (479 MiB), 8170 used, 0 shared, 0 bugs
-[mm] low: 122611 frames free (478 MiB), 8426 used, 0 shared, 0 bugs
-[mm] low: 122355 frames free (477 MiB), 8682 used, 0 shared, 0 bugs
-[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
-[wm] pointer: display cursor plane (motion does not composite)
-[mm] low: 122099 frames free (476 MiB), 8938 used, 0 shared, 0 bugs
-[mm] low: 121843 frames free (475 MiB), 9194 used, 0 shared, 0 bugs
-[mm] low: 121587 frames free (474 MiB), 9450 used, 0 shared, 0 bugs
-[mm] low: 121331 frames free (473 MiB), 9706 used, 0 shared, 0 bugs
-[kheap] grow #3: +4096 KiB -> arena 12288 KiB, live 4241 KiB, free 8046 KiB, over-allocated 0 KiB
-[wm] dock 11 apps: clock.aex textedit.aex monitor.aex terminal.aex widgets.aex files.aex preview.aex studio.aex browser.aex gallery.aex settings.aex
-[mm] low: 121075 frames free (472 MiB), 9962 used, 0 shared, 0 bugs
-[mm] low: 120819 frames free (471 MiB), 10218 used, 0 shared, 0 bugs
-[mm] low: 120563 frames free (470 MiB), 10474 used, 0 shared, 0 bugs
-[mm] low: 120307 frames free (469 MiB), 10730 used, 0 shared, 0 bugs
-[kheap] grow #4: +4096 KiB -> arena 16384 KiB, live 8909 KiB, free 7474 KiB, over-allocated 0 KiB
-[logitos] desktop up; mouse + keyboard armed
-[smp] 4 CPU(s) detected, BSP apic_id=0
-[ioapic] device IRQs routed via I/O APIC (NIC gsi=11)
-[smp] CPU 1 apic_id=1 online
-[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
-[smp] CPU 2 apic_id=2 online
-[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
-[smp] CPU 3 apic_id=3 online
-[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
-[smp] 4/4 CPUs online
-[smp] parallel present on 4 cores (IPI 241)
-[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
-[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
-[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
-[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
-[dev] 0000:00:02.0 1af4:1001 class=01.00.00 scsi         driver=- caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfeba0000/0x1000 bar4=0xfebf8000/0x4000
-[dev] 0000:00:03.0 1af4:1050 class=03.80.00 display      driver=- caps=msix,vndr, bar1=0xfeba1000/0x1000 bar4=0xfebfc000/0x4000
-[dev] 0000:00:04.0 8086:100e class=02.00.00 ethernet     driver=e1000 bar0=0xfeb80000/0x20000 bar1=io:0xc080/0x40
-[dev] 7 device(s), 1 bound, 6 unclaimed
-
-LOGIT_BOOT_OK
-
-[wm] desktop live; launching apps as ring-3 processes
+[wm] perf t=18648 composites=161 ns=2148132410 max=32395732 motions=18 curmoves=10 curns=415550 full=113 rects=162 cpx=67721240 fpx=67721240 presns=123746921 torn=0 defer=49 late=0 drawmax=22
+[sock] connected weixin.qq.com via ipv4 ::ffff:198.18.0.41
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for weixin.qq.com, alpn=http/1.1
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[wm] perf t=19656 composites=197 ns=2641019470 max=32395732 motions=18 curmoves=10 curns=415550 full=147 rects=198 cpx=85190680 fpx=85190680 presns=152188944 torn=0 defer=66 late=0 drawmax=22
+[net] rx path: frames 65 irq 65 softirq 29 inline 3 poll 2 idle 0/0 halt/skip
+[sock] connected res.wxqcloud.qq.com.cn via ipv4 ::ffff:198.18.0.77
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for res.wxqcloud.qq.com.cn, alpn=http/1.1
+[browser] heap peak 5887K
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for res.wxqcloud.qq.com.cn, alpn=http/1.1
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[wm] perf t=20656 composites=213 ns=2823375049 max=32395732 motions=18 curmoves=10 curns=415550 full=161 rects=214 cpx=91396120 fpx=91396120 presns=162611535 torn=0 defer=74 late=0 drawmax=29
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://weixin.qq.com/#inline-module-1) -- no import map, so this cannot be resolved
+[browser] load done: 5 requests, 3 connections dialled, 2 reused, 0 modules loaded (0 failed)
+[browser] pool: 2 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 4 from network (tab 2 of 3)
+[wm] perf t=21665 composites=219 ns=2861111680 max=32395732 motions=18 curmoves=10 curns=415550 full=165 rects=220 cpx=92481560 fpx=92481560 presns=164452373 torn=0 defer=77 late=0 drawmax=29

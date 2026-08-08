@@ -1,76 +1,62 @@
 {
  "name": "openai",
  "url": "https://openai.com/",
- "started": "2026-08-09T01:06:03",
- "verdict": "PAINTED",
- "why": "painted 5776 changed px in 79.9s, no JS exceptions, no subresource gap",
+ "started": "2026-08-09T04:20:24",
+ "verdict": "BLANK",
+ "why": "loaded in 1.3s and painted 3076 changed pixels (1 exceptions)",
  "host": {
   "ok": true,
-  "status": 200,
+  "status": 403,
   "final_url": "https://openai.com/",
-  "bytes": 1750434,
+  "bytes": 0,
   "redirects": [],
-  "script_tags": 163,
-  "script_src": 78,
-  "img_tags": 19,
-  "inventory": {
-   "stylesheets": 15,
-   "script_src": 77,
-   "inline_scripts": 85,
-   "images": 18,
-   "preloads": 3,
-   "fonts": 0,
-   "mandatory": 93
-  },
-  "elapsed": 1.6
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": null,
+  "elapsed": 0.7
  },
  "guest": {
   "exceptions": [],
-  "timer_exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'document' of undefined"
+  ],
   "module_exceptions": [],
   "fetch_failed": [],
   "cannot_fetch": [],
   "skipped_scripts": 0,
-  "requests": 93,
-  "dials": 2,
-  "reused": 91,
+  "requests": 1,
+  "dials": 1,
+  "reused": 0,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 15097,
+  "heap_peak_k": null,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
   "panic": false,
-  "load_seconds": 79.9,
+  "load_seconds": 1.3,
   "paint_seconds": 16.2,
   "settled": true
  },
  "pixels": {
-  "changed_px": 5776,
+  "changed_px": 3076,
   "changed_bbox": [
-   148,
-   16,
+   152,
+   12,
    1264,
    764
   ],
-  "ink_px": 4970,
+  "ink_px": 3144,
   "ink_px_blank": 2359,
-  "colours": 715,
-  "rich_tiles_proxy": 19
+  "colours": 556,
+  "rich_tiles_proxy": 14
  },
  "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/openai.png",
  "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/openai.serial.txt",
  "subresources": {
-  "host_inventory": {
-   "stylesheets": 15,
-   "script_src": 77,
-   "inline_scripts": 85,
-   "images": 18,
-   "preloads": 3,
-   "fonts": 0,
-   "mandatory": 93
-  },
+  "host_inventory": null,
   "gap": null
  },
- "finished": "2026-08-09T01:07:59"
+ "finished": "2026-08-09T04:21:01"
 }

@@ -1,36 +1,39 @@
-[wm] perf t=19639 composites=209 ns=2609228529 max=45183228 motions=18 curmoves=10 curns=527163 full=165 rects=209 cpx=69518240 fpx=69518240 presns=158972312 torn=0 defer=99 late=0 drawmax=26
+[wm] perf t=18627 composites=173 ns=2342091037 max=32914588 motions=18 curmoves=11 curns=568323 full=130 rects=174 cpx=76734940 fpx=76734940 presns=137257640 torn=0 defer=57 late=0 drawmax=22
+[wm] perf t=19654 composites=222 ns=3001655964 max=32914588 motions=18 curmoves=11 curns=568323 full=178 rects=223 cpx=100317660 fpx=100317660 presns=175039320 torn=0 defer=82 late=0 drawmax=22
 [sock] connected www.anthropic.com via ipv4 ::ffff:198.18.0.35
 [tls] trust store: 130 roots, 0 skipped
-[wm] perf t=20646 composites=229 ns=2798741896 max=45183228 motions=18 curmoves=10 curns=527163 full=183 rects=229 cpx=74699680 fpx=74699680 presns=169823312 torn=0 defer=112 late=0 drawmax=26
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [sock] connected cdn.prod.website-files.com via ipv4 ::ffff:198.18.0.65
-[wm] perf t=21648 composites=235 ns=2806786184 max=45183228 motions=18 curmoves=10 curns=527163 full=187 rects=235 cpx=74761120 fpx=74761120 presns=170350497 torn=0 defer=116 late=0 drawmax=27
+[wm] perf t=20655 composites=228 ns=3038904016 max=32914588 motions=18 curmoves=11 curns=568323 full=182 rects=229 cpx=101403100 fpx=101403100 presns=177536568 torn=0 defer=85 late=0 drawmax=22
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
-[net] rx path: frames 69 irq 61 softirq 25 inline 5 poll 2 idle 0/0 halt/skip
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
-[browser] heap peak 7499K
-[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[net] rx path: frames 64 irq 68 softirq 28 inline 5 poll 2 idle 0/0 halt/skip
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[browser] heap peak 7505K
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 3 verified for d3e54v103j8qbb.cloudfront.net, alpn=http/1.1
 [tls] OCSP staple: good (d3e54v103j8qbb.cloudfront.net)
-[tls] ticket stored for d3e54v103j8qbb.cloudfront.net (138 bytes, lifetime 63813s, 1 cached)
-[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 3 verified for hubspotonwebflow.com, alpn=http/1.1
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[tls] ticket stored for d3e54v103j8qbb.cloudfront.net (138 bytes, lifetime 41384s, 1 cached)
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
-[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
-[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
-[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
-[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=http/1.1
 [mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
 [mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
 [browser] JS exception: TypeError: not a function
 TypeError: not a function
     at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.schunk.f2efb3c5440a81cf.js)
@@ -53,15 +56,16 @@ TypeError: not a function
 [browser] load done: 12 requests, 6 connections dialled, 6 reused, 0 modules loaded (0 failed)
 [browser] pool: 6 hits, 0 evicted, 1 closed
 [browser] resources: 0 from tab, 11 from network (tab 2 of 3)
+[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=h2
 [error] Uncaught (in promise) TypeError: not a function
     at <anonymous> (https://www.anthropic.com/#inline-module-1)
     at forEach (native)
     at Ue (https://www.anthropic.com/#inline-module-1)
     at lt (https://www.anthropic.com/#inline-module-1)
 
-[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[wm] perf t=29694 composites=261 ns=3505525329 max=34577149 motions=18 curmoves=11 curns=568323 full=197 rects=262 cpx=115268060 fpx=115268060 presns=205312617 torn=0 defer=87 late=0 drawmax=95
 [warn] jQuery.Deferred exception: cannot read property 'pageYOffset' of undefined TypeError: cannot read property 'pageYOffset' of undefined
     at offset (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
     at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
@@ -78,8 +82,11 @@ TypeError: not a function
     at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
  undefined
 [js] uncaught in timer: TypeError: cannot read property 'pageYOffset' of undefined
-[bxfer] h2 www.anthropic.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=248
+[bxfer] h2 www.anthropic.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=247
+[bxfer] h2 hubspotonwebflow.com:443 closed: streams=1 peak=1 frames=10/5 hpack_in=23683
 [js] uncaught in timer: TypeError: cannot read property 'pageYOffset' of undefined
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
 [warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
 [warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
 [warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
@@ -97,9 +104,4 @@ TypeError: not a function
 [warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
 [warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
 [warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
-[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 3 verified for hubspotonwebflow.com, alpn=h2
-[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 4 verified for www.anthropic.com, alpn=h2
 [bxfer] h2 www.anthropic.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=42
-[bxfer] h2 hubspotonwebflow.com:443 closed: streams=1 peak=1 frames=10/5 hpack_in=23683

@@ -1,14 +1,14 @@
 {
  "name": "qwen",
  "url": "https://chat.qwen.ai/",
- "started": "2026-08-09T01:07:35",
+ "started": "2026-08-09T04:21:43",
  "verdict": "ERRORS",
- "why": "painted 611928 changed px in 16.3s but 2 JS exception(s)",
+ "why": "painted 620908 changed px in 13.9s but 2 JS exception(s)",
  "host": {
   "ok": true,
   "status": 200,
   "final_url": "https://chat.qwen.ai/",
-  "bytes": 244805,
+  "bytes": 247159,
   "redirects": [],
   "script_tags": 18,
   "script_src": 3,
@@ -22,7 +22,7 @@
    "fonts": 0,
    "mandatory": 6
   },
-  "elapsed": 0.5
+  "elapsed": 0.3
  },
  "guest": {
   "exceptions": [
@@ -48,27 +48,27 @@
   "reused": 17,
   "modules": 15,
   "modules_failed": 1,
-  "heap_peak_k": 123713,
+  "heap_peak_k": 123652,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
   "panic": false,
-  "load_seconds": 16.3,
+  "load_seconds": 13.9,
   "paint_seconds": 16.1,
   "settled": true
  },
  "pixels": {
-  "changed_px": 611928,
+  "changed_px": 620908,
   "changed_bbox": [
    140,
-   16,
+   12,
    1264,
    764
   ],
-  "ink_px": 507269,
+  "ink_px": 507523,
   "ink_px_blank": 2359,
-  "colours": 885,
-  "rich_tiles_proxy": 17
+  "colours": 894,
+  "rich_tiles_proxy": 16
  },
  "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/qwen.png",
  "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/qwen.serial.txt",
@@ -84,5 +84,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:08:28"
+ "finished": "2026-08-09T04:22:34"
 }

@@ -1,9 +1,9 @@
 {
  "name": "baidu",
  "url": "https://www.baidu.com/",
- "started": "2026-08-09T01:05:20",
+ "started": "2026-08-09T04:19:42",
  "verdict": "ERRORS",
- "why": "painted 21704 changed px in 0.7s but 1 JS exception(s)",
+ "why": "painted 33232 changed px in 0.7s but 1 JS exception(s)",
  "host": {
   "ok": true,
   "status": 200,
@@ -38,7 +38,7 @@
   "reused": 8,
   "modules": 0,
   "modules_failed": 0,
-  "heap_peak_k": 9392,
+  "heap_peak_k": 9368,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
@@ -48,17 +48,17 @@
   "settled": true
  },
  "pixels": {
-  "changed_px": 21704,
+  "changed_px": 33232,
   "changed_bbox": [
    152,
-   16,
+   12,
    1264,
    764
   ],
-  "ink_px": 11073,
+  "ink_px": 9209,
   "ink_px_blank": 2359,
-  "colours": 814,
-  "rich_tiles_proxy": 19
+  "colours": 834,
+  "rich_tiles_proxy": 18
  },
  "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/baidu.png",
  "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/baidu.serial.txt",
@@ -74,5 +74,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:05:58"
+ "finished": "2026-08-09T04:20:19"
 }

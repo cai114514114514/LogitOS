@@ -1,25 +1,27 @@
-[wm] perf t=18653 composites=260 ns=2572279450 max=45671244 motions=18 curmoves=11 curns=550432 full=218 rects=261 cpx=65440220 fpx=65440220 presns=151697360 torn=0 defer=156 late=0 drawmax=23
-[wm] perf t=19654 composites=332 ns=3039026445 max=45671244 motions=18 curmoves=11 curns=550432 full=290 rects=333 cpx=77728220 fpx=77728220 presns=178576327 torn=0 defer=216 late=0 drawmax=23
+[wm] perf t=18624 composites=160 ns=2220267006 max=34504972 motions=18 curmoves=11 curns=552846 full=113 rects=160 cpx=70798876 fpx=70798876 presns=121927352 torn=0 defer=46 late=0 drawmax=20
 [sock] connected weixin.qq.com via ipv4 ::ffff:198.18.0.41
 [tls] trust store: 130 roots, 0 skipped
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 2 verified for weixin.qq.com, alpn=http/1.1
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
-[net] rx path: frames 65 irq 62 softirq 33 inline 0 poll 2 idle 0/0 halt/skip
+[wm] perf t=19626 composites=203 ns=2752953358 max=34504972 motions=18 curmoves=11 curns=552846 full=155 rects=203 cpx=89261596 fpx=89261596 presns=155866285 torn=0 defer=70 late=0 drawmax=21
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[net] rx path: frames 65 irq 64 softirq 27 inline 4 poll 2 idle 0/0 halt/skip
+[wm] perf t=20636 composites=209 ns=2791472109 max=34504972 motions=18 curmoves=11 curns=552846 full=159 rects=209 cpx=90347036 fpx=90347036 presns=157969126 torn=0 defer=73 late=0 drawmax=33
 [sock] connected res.wxqcloud.qq.com.cn via ipv4 ::ffff:198.18.0.77
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for res.wxqcloud.qq.com.cn, alpn=http/1.1
-[browser] heap peak 5478K
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[browser] heap peak 5887K
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [browser] skipping <script type="application/json"> (not executable)
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for res.wxqcloud.qq.com.cn, alpn=http/1.1
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[wm] perf t=21656 composites=348 ns=3308785053 max=45671244 motions=18 curmoves=11 curns=550432 full=302 rects=349 cpx=85019100 fpx=85019100 presns=195718588 torn=0 defer=221 late=0 drawmax=32
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
-[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
-[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
 [js] bare module specifier '_' (imported from https://weixin.qq.com/#inline-module-1) -- no import map, so this cannot be resolved
 [browser] load done: 5 requests, 3 connections dialled, 2 reused, 0 modules loaded (0 failed)
 [browser] pool: 2 hits, 0 evicted, 1 closed
 [browser] resources: 0 from tab, 4 from network (tab 2 of 3)
+[wm] perf t=22655 composites=222 ns=2993493746 max=34504972 motions=18 curmoves=11 curns=552846 full=168 rects=222 cpx=96613916 fpx=96613916 presns=170976874 torn=0 defer=76 late=0 drawmax=39

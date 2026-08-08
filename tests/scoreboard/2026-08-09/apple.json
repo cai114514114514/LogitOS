@@ -1,9 +1,9 @@
 {
  "name": "apple",
  "url": "https://www.apple.com/",
- "started": "2026-08-09T01:07:21",
+ "started": "2026-08-09T04:21:05",
  "verdict": "ERRORS",
- "why": "painted 60280 changed px in 17.5s but 2 JS exception(s)",
+ "why": "painted 59772 changed px in 16.3s but 2 JS exception(s)",
  "host": {
   "ok": true,
   "status": 200,
@@ -22,7 +22,7 @@
    "fonts": 0,
    "mandatory": 23
   },
-  "elapsed": 0.4
+  "elapsed": 0.3
  },
  "guest": {
   "exceptions": [],
@@ -42,26 +42,26 @@
   "reused": 41,
   "modules": 6,
   "modules_failed": 0,
-  "heap_peak_k": 12249,
+  "heap_peak_k": 12225,
   "load_done": true,
   "page_fetch_failed": null,
   "app_fault": null,
   "panic": false,
-  "load_seconds": 17.5,
+  "load_seconds": 16.3,
   "paint_seconds": 16.2,
   "settled": true
  },
  "pixels": {
-  "changed_px": 60280,
+  "changed_px": 59772,
   "changed_bbox": [
    140,
-   12,
+   20,
    1264,
    764
   ],
-  "ink_px": 54171,
+  "ink_px": 45059,
   "ink_px_blank": 2359,
-  "colours": 748,
+  "colours": 716,
   "rich_tiles_proxy": 15
  },
  "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/apple.png",
@@ -78,5 +78,5 @@
   },
   "gap": null
  },
- "finished": "2026-08-09T01:08:16"
+ "finished": "2026-08-09T04:21:58"
 }

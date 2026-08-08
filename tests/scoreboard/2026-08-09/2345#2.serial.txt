@@ -1,4 +1,4 @@
-[wm] perf t=19668 composites=218 ns=3023840854 max=52863193 motions=18 curmoves=10 curns=499206 full=153 rects=218 cpx=75330760 fpx=75330760 presns=167012493 torn=0 defer=83 late=0 drawmax=28
+[wm] perf t=18647 composites=148 ns=2043644231 max=35365355 motions=18 curmoves=12 curns=463094 full=108 rects=148 cpx=66138668 fpx=66138668 presns=119986924 torn=0 defer=45 late=0 drawmax=21
 [sock] connected www.2345.com via ipv4 ::ffff:198.18.0.31
 [tls] trust store: 130 roots, 0 skipped
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
@@ -6,9 +6,10 @@
 [tls] OCSP staple: good (www.2345.com)
 [tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 1 cached)
 [tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 2 cached)
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
-[net] rx path: frames 89 irq 59 softirq 16 inline 13 poll 2 idle 0/0 halt/skip
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[wm] perf t=19655 composites=180 ns=2520837640 max=35365355 motions=18 curmoves=12 curns=463094 full=140 rects=180 cpx=82522668 fpx=82522668 presns=148775652 torn=0 defer=61 late=0 drawmax=21
+[net] rx path: frames 90 irq 71 softirq 20 inline 16 poll 2 idle 0/0 halt/skip
 [sock] connected www-stream.2345cdn.net via ipv4 ::ffff:198.18.0.52
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
@@ -18,12 +19,12 @@
 [tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 4 cached)
 [tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 5 cached)
 [tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 6 cached)
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[wm] perf t=20675 composites=232 ns=3328504052 max=52863193 motions=18 curmoves=10 curns=499206 full=165 rects=232 cpx=84608200 fpx=84608200 presns=185316013 torn=0 defer=86 late=0 drawmax=35
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
-[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
-[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
-[browser] heap peak 10223K
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[browser] heap peak 10175K
+[wm] perf t=20660 composites=191 ns=2741097408 max=35365355 motions=18 curmoves=12 curns=463094 full=149 rects=191 cpx=89752108 fpx=89752108 presns=162538403 torn=0 defer=63 late=0 drawmax=49
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
@@ -32,34 +33,37 @@
 [tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 8 cached)
 [tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 9 cached)
 [tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 10 cached)
-[wm] perf t=21675 composites=244 ns=3597809429 max=52863193 motions=18 curmoves=10 curns=499206 full=176 rects=244 cpx=92830920 fpx=92830920 presns=200997202 torn=0 defer=89 late=0 drawmax=35
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
 [tls] chain of 3 verified for passport-plugin.hao184.com, alpn=http/1.1
+[tls] ticket for www-stream.2345cdn.net not accepted -- full handshake
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for cpro.baidustatic.com, alpn=http/1.1
-[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 10 cached)
-[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 11 cached)
-[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 898s, 12 cached)
-[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
-[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
-[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
-[net] rx path: frames 648 irq 317 softirq 81 inline 72 poll 4 idle 0/0 halt/skip
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 7 cached)
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 8 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 9 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 10 cached)
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[wm] perf t=21661 composites=210 ns=3063347669 max=35365355 motions=18 curmoves=12 curns=463094 full=166 rects=210 cpx=101077548 fpx=101077548 presns=180530412 torn=0 defer=69 late=0 drawmax=67
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[net] rx path: frames 660 irq 330 softirq 93 inline 69 poll 4 idle 0/0 halt/skip
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
 [browser] JS exception: SyntaxError: unexpected token in expression: '<'
 SyntaxError: unexpected token in expression: '<'
     at https://www.2345.com/:1
-[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
-[wm] perf t=22675 composites=257 ns=3908979622 max=52863193 motions=18 curmoves=10 curns=499206 full=187 rects=257 cpx=102108360 fpx=102108360 presns=216508281 torn=0 defer=91 late=0 drawmax=75
-[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
-[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
-[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
-[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
 [mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
 [mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[wm] perf t=22665 composites=219 ns=3217177210 max=35365355 motions=18 curmoves=12 curns=463094 full=173 rects=219 cpx=106258988 fpx=106258988 presns=189481447 torn=0 defer=71 late=0 drawmax=67
 [mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
 [mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
 [mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
 [browser] JS exception: ReferenceError: 'DOMParser' is not defined
 ReferenceError: 'DOMParser' is not defined
     at h (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
@@ -90,6 +94,6 @@ TypeError: not a function
 [browser] load done: 32 requests, 8 connections dialled, 24 reused, 0 modules loaded (0 failed)
 [browser] pool: 24 hits, 2 evicted, 3 closed
 [browser] resources: 0 from tab, 31 from network (tab 2 of 3)
-[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
 [error] Failed to calculate load time: TypeError: cannot read property 'loadEventEnd' of undefined
 [error] Failed to calculate resource size: TypeError: cannot read property 'transferSize' of undefined
+[wm] perf t=25675 composites=229 ns=3296297891 max=35365355 motions=18 curmoves=12 curns=463094 full=177 rects=229 cpx=108491308 fpx=108491308 presns=193653644 torn=0 defer=73 late=0 drawmax=67

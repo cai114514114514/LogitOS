@@ -1,14 +1,10 @@
-[wm] perf t=18667 composites=174 ns=2383703226 max=50403530 motions=18 curmoves=10 curns=700730 full=132 rects=174 cpx=52030424 fpx=52030424 presns=128054504 torn=0 defer=83 late=0 drawmax=31
+[wm] perf t=18599 composites=204 ns=2226168537 max=42030286 motions=18 curmoves=11 curns=437781 full=162 rects=204 cpx=66356316 fpx=66356316 presns=138620859 torn=0 defer=99 late=0 drawmax=28
+[wm] perf t=19599 composites=281 ns=2852518679 max=42030286 motions=18 curmoves=11 curns=437781 full=238 rects=281 cpx=86867036 fpx=86867036 presns=176665240 torn=0 defer=155 late=0 drawmax=28
 [sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.34
 [tls] trust store: 130 roots, 0 skipped
-[wm] perf t=19681 composites=223 ns=2955900079 max=50403530 motions=18 curmoves=10 curns=700730 full=180 rects=223 cpx=66397144 fpx=66397144 presns=159449979 torn=0 defer=117 late=0 drawmax=31
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for www.deepseek.com, alpn=http/1.1
 [tls] OCSP staple: good (www.deepseek.com)
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
 [mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
 [mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
@@ -37,16 +33,16 @@
 [mm] low: 106483 frames free (415 MiB), 24554 used, 0 shared, 0 bugs
 [mm] low: 106227 frames free (414 MiB), 24810 used, 0 shared, 0 bugs
 [mm] low: 105971 frames free (413 MiB), 25066 used, 0 shared, 0 bugs
-[sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.34
-[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
-[tls] chain of 3 verified for www.deepseek.com, alpn=http/1.1
-[tls] OCSP staple: good (www.deepseek.com)
-[net] rx path: frames 64 irq 58 softirq 15 inline 11 poll 2 idle 0/0 halt/skip
 [mm] low: 105715 frames free (412 MiB), 25322 used, 0 shared, 0 bugs
 [mm] low: 105459 frames free (411 MiB), 25578 used, 0 shared, 0 bugs
 [mm] low: 105203 frames free (410 MiB), 25834 used, 0 shared, 0 bugs
 [mm] low: 104947 frames free (409 MiB), 26090 used, 0 shared, 0 bugs
 [mm] low: 104691 frames free (408 MiB), 26346 used, 0 shared, 0 bugs
+[sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.34
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.deepseek.com, alpn=http/1.1
+[tls] OCSP staple: good (www.deepseek.com)
+[net] rx path: frames 66 irq 55 softirq 24 inline 0 poll 5 idle 0/0 halt/skip
 [mm] low: 104435 frames free (407 MiB), 26602 used, 0 shared, 0 bugs
 [mm] low: 104179 frames free (406 MiB), 26858 used, 0 shared, 0 bugs
 [mm] low: 103923 frames free (405 MiB), 27114 used, 0 shared, 0 bugs
@@ -59,7 +55,6 @@
 [mm] low: 102131 frames free (398 MiB), 28906 used, 0 shared, 0 bugs
 [mm] low: 101875 frames free (397 MiB), 29162 used, 0 shared, 0 bugs
 [mm] low: 101619 frames free (396 MiB), 29418 used, 0 shared, 0 bugs
-[wm] perf t=20686 composites=230 ns=3095999076 max=50403530 motions=18 curmoves=10 curns=700730 full=186 rects=230 cpx=70523864 fpx=70523864 presns=167540059 torn=0 defer=119 late=0 drawmax=45
 [mm] low: 101363 frames free (395 MiB), 29674 used, 0 shared, 0 bugs
 [mm] low: 101107 frames free (394 MiB), 29930 used, 0 shared, 0 bugs
 [mm] low: 100851 frames free (393 MiB), 30186 used, 0 shared, 0 bugs
@@ -268,7 +263,6 @@
 [mm] low: 48883 frames free (190 MiB), 82154 used, 0 shared, 0 bugs
 [mm] low: 48627 frames free (189 MiB), 82410 used, 0 shared, 0 bugs
 [mm] low: 48371 frames free (188 MiB), 82666 used, 0 shared, 0 bugs
-[browser] heap peak 267490K
 [mm] low: 48115 frames free (187 MiB), 82922 used, 0 shared, 0 bugs
 [mm] low: 47859 frames free (186 MiB), 83178 used, 0 shared, 0 bugs
 [mm] low: 47603 frames free (185 MiB), 83434 used, 0 shared, 0 bugs
@@ -277,9 +271,6 @@
 [mm] low: 46835 frames free (182 MiB), 84202 used, 0 shared, 0 bugs
 [mm] low: 46579 frames free (181 MiB), 84458 used, 0 shared, 0 bugs
 [mm] low: 46323 frames free (180 MiB), 84714 used, 0 shared, 0 bugs
-[browser] load done: 15 requests, 2 connections dialled, 13 reused, 0 modules loaded (0 failed)
-[browser] pool: 13 hits, 0 evicted, 1 closed
-[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
 [mm] low: 46067 frames free (179 MiB), 84970 used, 0 shared, 0 bugs
 [mm] low: 45811 frames free (178 MiB), 85226 used, 0 shared, 0 bugs
 [mm] low: 45555 frames free (177 MiB), 85482 used, 0 shared, 0 bugs
@@ -324,16 +315,24 @@
 [mm] low: 35571 frames free (138 MiB), 95466 used, 0 shared, 0 bugs
 [mm] low: 35315 frames free (137 MiB), 95722 used, 0 shared, 0 bugs
 [mm] low: 35059 frames free (136 MiB), 95978 used, 0 shared, 0 bugs
+[browser] heap peak 316720K
 [mm] low: 34803 frames free (135 MiB), 96234 used, 0 shared, 0 bugs
 [mm] low: 34547 frames free (134 MiB), 96490 used, 0 shared, 0 bugs
 [mm] low: 34291 frames free (133 MiB), 96746 used, 0 shared, 0 bugs
 [mm] low: 34035 frames free (132 MiB), 97002 used, 0 shared, 0 bugs
-[wm] perf t=25695 composites=252 ns=3563467205 max=50403530 motions=18 curmoves=10 curns=700730 full=199 rects=252 cpx=82064344 fpx=82064344 presns=195384836 torn=0 defer=121 late=0 drawmax=45
 [mm] low: 33779 frames free (131 MiB), 97258 used, 0 shared, 0 bugs
-%c[__pageVisit]:%c 访问页面 [/] [0]：4010ms color: blue;  [object Object] 
-%c[__tti]:%c / TTI 上报：4010ms color: blue;  [object Object] 
+[mm] low: 33523 frames free (130 MiB), 97514 used, 0 shared, 0 bugs
+[mm] low: 33267 frames free (129 MiB), 97770 used, 0 shared, 0 bugs
+[mm] low: 33011 frames free (128 MiB), 98026 used, 0 shared, 0 bugs
+[mm] low: 32755 frames free (127 MiB), 98282 used, 0 shared, 0 bugs
+[browser] load done: 15 requests, 2 connections dialled, 13 reused, 0 modules loaded (0 failed)
+[browser] pool: 13 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[mm] low: 32499 frames free (126 MiB), 98538 used, 0 shared, 0 bugs
+%c[__pageVisit]:%c 访问页面 [/] [0]：2960ms color: blue;  [object Object] 
+%c[__tti]:%c / TTI 上报：2960ms color: blue;  [object Object] 
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 3 verified for chat.deepseek.com, alpn=h2
-[mm] low: 33523 frames free (130 MiB), 97514 used, 0 shared, 0 bugs
+[mm] low: 32243 frames free (125 MiB), 98794 used, 0 shared, 0 bugs
 [error] InternalError: out of memory
 [bxfer] h2 chat.deepseek.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=101

@@ -1,53 +1,41 @@
-[wm] perf t=18717 composites=160 ns=2136600629 max=46488415 motions=18 curmoves=10 curns=609966 full=120 rects=160 cpx=51851368 fpx=51851368 presns=124013780 torn=0 defer=71 late=0 drawmax=29
 [sock] connected stripe.com via ipv4 ::ffff:198.18.0.43
 [tls] trust store: 130 roots, 0 skipped
-[wm] perf t=19725 composites=207 ns=2614825719 max=46685196 motions=18 curmoves=10 curns=609966 full=167 rects=207 cpx=65163368 fpx=65163368 presns=152740547 torn=0 defer=105 late=0 drawmax=29
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 2 verified for stripe.com, alpn=http/1.1
-[net] rx path: frames 96 irq 41 softirq 18 inline 3 poll 2 idle 0/0 halt/skip
-[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
-[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
-[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
-[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[wm] perf t=19664 composites=195 ns=2684850821 max=36843782 motions=18 curmoves=11 curns=524708 full=151 rects=196 cpx=83846368 fpx=83846368 presns=156613209 torn=0 defer=71 late=0 drawmax=24
+[net] rx path: frames 65 irq 65 softirq 27 inline 4 poll 2 idle 0/0 halt/skip
 [mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
-[sock] connected b.stripecdn.com via ipv4 ::ffff:198.18.0.79
-[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
-[tls] OCSP staple: good (b.stripecdn.com)
-[wm] perf t=22725 composites=217 ns=2688170849 max=46685196 motions=18 curmoves=10 curns=609966 full=172 rects=217 cpx=66340968 fpx=66340968 presns=157114471 torn=0 defer=109 late=0 drawmax=52
-[tls] ticket stored for b.stripecdn.com (138 bytes, lifetime 42116s, 1 cached)
-[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
-[tls] OCSP staple: good (b.stripecdn.com)
-[tls] ticket stored for b.stripecdn.com (138 bytes, lifetime 52916s, 2 cached)
 [mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
 [mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
 [mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
 [mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
-[browser] heap peak 14097K
+[sock] connected b.stripecdn.com via ipv4 ::ffff:198.18.0.79
 [tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
-[tls] chain of 3 verified for images.stripeassets.com, alpn=http/1.1
-[tls] OCSP staple: good (images.stripeassets.com)
-[tls] ticket stored for images.stripeassets.com (138 bytes, lifetime 52910s, 3 cached)
-[wm] perf t=28744 composites=238 ns=2989485561 max=46685196 motions=18 curmoves=10 curns=609966 full=181 rects=238 cpx=72853608 fpx=72853608 presns=173813373 torn=0 defer=112 late=0 drawmax=60
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[wm] perf t=21676 composites=210 ns=2859926798 max=36843782 motions=18 curmoves=11 curns=524708 full=162 rects=211 cpx=89089248 fpx=89089248 presns=165787975 torn=0 defer=77 late=0 drawmax=48
 [mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[browser] heap peak 14195K
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
 [browser] skipping <script type="application/ld+json"> (not executable)
 [browser] skipping <script type="text/comment"> (not executable)
 [browser] skipping <script type="application/json"> (not executable)
-[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
-[net] rx path: frames 612 irq 453 softirq 213 inline 14 poll 2 idle 0/0 halt/skip
-[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
-[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
-[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
-[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
 [mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[net] rx path: frames 593 irq 651 softirq 258 inline 64 poll 3 idle 0/0 halt/skip
 [mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
-[net] rx path: frames 1139 irq 707 softirq 331 inline 25 poll 3 idle 0/0 halt/skip
 [mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
 [mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
 [mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
 [mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
 [mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[net] rx path: frames 1109 irq 1091 softirq 454 inline 94 poll 3 idle 0/0 halt/skip
 [mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
 [mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
 [mm] low: 107763 frames free (420 MiB), 23274 used, 0 shared, 0 bugs
@@ -81,20 +69,23 @@
 [mm] low: 100595 frames free (392 MiB), 30442 used, 0 shared, 0 bugs
 [mm] low: 100339 frames free (391 MiB), 30698 used, 0 shared, 0 bugs
 [mm] low: 100083 frames free (390 MiB), 30954 used, 0 shared, 0 bugs
-[browser] load done: 80 requests, 4 connections dialled, 77 reused, 0 modules loaded (0 failed)
-[browser] pool: 77 hits, 0 evicted, 1 closed
-[browser] resources: 0 from tab, 79 from network (tab 2 of 3)
-[wm] perf t=65831 composites=392 ns=5921426629 max=46685196 motions=18 curmoves=10 curns=609966 full=261 rects=392 cpx=153974888 fpx=153974888 presns=353856868 torn=0 defer=115 late=0 drawmax=60
-EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
 [mm] low: 99827 frames free (389 MiB), 31210 used, 0 shared, 0 bugs
 [mm] low: 99571 frames free (388 MiB), 31466 used, 0 shared, 0 bugs
 [mm] low: 99315 frames free (387 MiB), 31722 used, 0 shared, 0 bugs
 [mm] low: 99059 frames free (386 MiB), 31978 used, 0 shared, 0 bugs
+[browser] load done: 79 requests, 3 connections dialled, 77 reused, 0 modules loaded (0 failed)
+[browser] pool: 77 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 78 from network (tab 2 of 3)
+EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
 [mm] low: 98803 frames free (385 MiB), 32234 used, 0 shared, 0 bugs
 [mm] low: 98547 frames free (384 MiB), 32490 used, 0 shared, 0 bugs
 [mm] low: 98291 frames free (383 MiB), 32746 used, 0 shared, 0 bugs
 [mm] low: 98035 frames free (382 MiB), 33002 used, 0 shared, 0 bugs
 [mm] low: 97779 frames free (381 MiB), 33258 used, 0 shared, 0 bugs
+[mm] low: 97523 frames free (380 MiB), 33514 used, 0 shared, 0 bugs
+[mm] low: 97267 frames free (379 MiB), 33770 used, 0 shared, 0 bugs
+[mm] low: 97011 frames free (378 MiB), 34026 used, 0 shared, 0 bugs
+[mm] low: 96755 frames free (377 MiB), 34282 used, 0 shared, 0 bugs
 [error] TypeError: not a function
 [error] TypeError: not a function
 [error] TypeError: not a function
@@ -108,14 +99,14 @@ EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/
     at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
     at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
     at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
-    at _deliver (<platform>:147)
-    at <anonymous> (<platform>:154)
+    at _deliver (<platform>:168)
+    at <anonymous> (<platform>:175)
 
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 2 verified for stripe.com, alpn=h2
 [error] SyntaxError: mark 'navigationStart' does not exist
 [error] SyntaxError: mark 'navigationStart' does not exist
-    at <anonymous> (<platform>:34)
+    at <anonymous> (<platform>:55)
     at ei (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/main-64c21da41e256517.js)
     at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/main-64c21da41e256517.js)
     at forEach (native)
@@ -128,9 +119,10 @@ EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/
     at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
     at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
     at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
-    at _deliver (<platform>:147)
-    at <anonymous> (<platform>:154)
+    at _deliver (<platform>:168)
+    at <anonymous> (<platform>:175)
 
+[mm] low: 96499 frames free (376 MiB), 34538 used, 0 shared, 0 bugs
 [bxfer] h2 stripe.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=15
 [tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
 [tls] chain of 2 verified for r.stripe.com, alpn=h2
