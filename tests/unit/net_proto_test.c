@@ -39,6 +39,20 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
 }
 int arp_warm(uint32_t ip, int timeout) { (void)ip; (void)timeout; return 0; }
 
+/* ip_send() now hands unicast datagrams to arp_output (resolve, or HOLD until
+ * resolution completes) instead of dropping them on a miss. This stub keeps
+ * the always-resolves behaviour the tests below were written against: it
+ * counts the call as a resolution and transmits immediately, so every
+ * assertion about IP framing still sees exactly the frame it did before.
+ * The queueing behaviour itself is tested in tests/unit/ip_arp_test.c against
+ * the REAL arp.c, which is where it belongs. */
+int arp_output(uint32_t nexthop, uint16_t ethertype, const void *payload, uint16_t len)
+{
+    uint8_t mac[ETH_ALEN];
+    (void)arp_resolve(nexthop, mac);
+    return eth_send(mac, ethertype, payload, len);
+}
+
 /* IPv6 reachability, stubbed to "no v6" so the v4 tests below mean what they
  * always meant. dns.c asks these two before it will send a AAAA query
  * (`want6 = (ip6_up() == 2)`), and the whole of ip6.c cannot come into this
