@@ -1188,9 +1188,19 @@ static int angle_deg(const tok *t, double *out)
 	return 0;
 }
 
+/* A hue, in degrees, brought into [0, 360).
+ *
+ * A NON-FINITE hue becomes zero, and that is transcribed rather than derived.
+ * The corpus asserts that `hsl(calc(infinity) 100% 50%)`,
+ * `hsl(calc(-infinity) 100% 50%)` and `hsl(calc(0 / 0) 100% 50%)` are ALL
+ * `rgb(255, 0, 0)`, with a comment saying infinity goes to the upper bound and
+ * -infinity and NaN to the lower one. A hue has no upper bound, but 360 and 0
+ * are the same hue, so all three land on red and zero is the one answer that
+ * produces it for all three. Letting the infinity through instead makes
+ * fmod() return NaN and paints the colour black. */
 static double norm_hue(double h)
 {
-	if (isnan(h) || isinf(h)) return h;
+	if (isnan(h) || isinf(h)) return 0.0;
 	h = fmod(h, 360.0);
 	if (h < 0) h += 360.0;
 	return h;
@@ -1248,27 +1258,610 @@ typedef struct {
 	char text[CTEXT];	/* K_IDENT (lowercased) / K_TEXT (serialized) */
 } comp;
 
-static int toks_mention_none(lexed *lx, int from, int to)
+/* ====================================================================
+ * calc(): the calculation tree, its unit algebra, and its serialization
+ *
+ * WHY THIS IS ONE PIECE OF WORK AND NOT TWO. Up to here a math function in a
+ * colour channel was kept VERBATIM, whitespace-normalised and otherwise
+ * untouched. That loses on both sides of the same coin:
+ *
+ *   - the serialization is wrong. `calc(50 * 3)` reads back as `calc(150)`,
+ *     `calc(g * 2)` as `calc(2 * g)`, `calc(c / 2)` as `calc(0.5 * c)`, and a
+ *     product inside a sum grows parentheses it was not written with.
+ *   - the REFUSALS are missing, and for exactly the same reason.
+ *     `rgb(sign(0% - 0px), 0, 0)` is invalid because a percentage and a
+ *     length do not combine, and `color(srgb calc(1px * sibling-index()) 0 0)`
+ *     because a colour channel is not a length. A serializer that keeps the
+ *     math as written cannot see either: it never computes a type.
+ *
+ * So the fix for the spelling and the fix for the validity are the same fix,
+ * and it is a tree.
+ *
+ * THE SHAPE. CSS Values 4 says a simplified calculation is a SUM OF PRODUCTS,
+ * and each product is one numeric coefficient times some number of opaque
+ * factors -- a channel keyword, a `sign()`, a `var()`. That is exactly the
+ * representation below (`cterm` and `csum`), and choosing it is what makes the
+ * serialization fall out rather than needing rules:
+ *
+ *   - a term with no factors is a plain number: `150`, `150%`, `40deg`.
+ *   - a term with factors prints its coefficient FIRST -- `2 * g`, never
+ *     `g * 2` -- because the coefficient is a field and the factors are a
+ *     list, so there is no other order available.
+ *   - a coefficient of exactly 1 on a unit-less term disappears, which is why
+ *     `calc(r)` stays `calc(r)` and does not become `calc(1 * r)`.
+ *   - division by a number is multiplication by its reciprocal, because that
+ *     is the only thing a coefficient can hold. `c / 2` is `0.5 * c` for the
+ *     same reason.
+ *   - inside a sum of more than one term, a term with more than one factor is
+ *     parenthesised: `calc((0.5 * g) + (0.5 * g))`.
+ *   - terms fold into each other only when they have no factors and the same
+ *     unit. `0.5 - 1` is `-0.5`; `1em - 10px` is still `1em - 10px`, because
+ *     nothing here knows how many pixels an em is; and `g * .5 + g * .5` stays
+ *     two terms, because folding them would change `(0.5 * g) + (0.5 * g)`
+ *     into `1 * g` and the corpus says it must not.
+ *
+ * THE UNIT ALGEBRA is small and strict. A product of two dimensions is refused
+ * outright (`0.56turn * -0.43turn` has no type), a sum requires every term to
+ * be the SAME category, and the finished expression must have a category the
+ * CHANNEL accepts -- number or percentage for an rgb channel, number or angle
+ * for a hue, and never a length, which is what refuses
+ * `color(srgb calc(1px * sibling-index()) 0 0)`.
+ *
+ * The tempting loosening is to let a number and a percentage add, on the
+ * grounds that in a colour channel a percentage IS a number once resolved.
+ * The corpus refuses it, and refuses it through relative colour: a channel
+ * keyword is a <number>, and `rgb(from rebeccapurple calc(r + 1%) g b)` is
+ * invalid. No table accepts that sum and still rejects this one.
+ *
+ * A PERCENTAGE THAT HAS NOTHING TO RESOLVE AGAINST is refused wherever it
+ * appears, not just at the top: `hsl(calc(sign(50%) * 1deg) 82% 43%)` is
+ * invalid even though `sign()` returns a number and number times angle is an
+ * angle. A hue is <number> | <angle> and never a percentage, so the 50% has
+ * no meaning to compute with. `pct_ok` therefore travels all the way down the
+ * expression rather than being checked on the result.
+ *
+ * WHAT IS STILL OPAQUE. `min()`, `clamp()`, `sign()`, `var()` and the rest are
+ * factors, not nodes: their arguments are PARSED (so the units inside them are
+ * checked -- that is what catches `sign(0% - 0px)`) and then re-emitted from
+ * the source tokens rather than from a tree, because their own serialization
+ * rules are not this one and guessing them would be a new class of wrong.
+ * var()/env()/attr() are not even parsed: their contents are an arbitrary
+ * token stream by definition.
+ * ==================================================================== */
+
+#define CALC_MAXTERM 16
+#define CALC_MAXFACT 4
+#define CALC_MAXDEPTH 12
+
+/* Unit CATEGORIES. Two dimensions add only if they are the same category;
+ * they never multiply. The list is what a colour value can plausibly contain
+ * plus the categories a wrong one lands in, because the point of naming
+ * lengths and times separately is to be able to REFUSE them. */
+enum {
+	U_NUM = 0, U_PCT, U_LEN, U_ANG, U_TIME, U_FREQ, U_RES, U_FLEX,
+	U_UNKNOWN
+};
+
+static const char *const u_len[] = {
+	"px", "em", "rem", "ex", "rex", "ch", "rch", "ic", "ric", "lh", "rlh",
+	"cap", "rcap", "vw", "vh", "vi", "vb", "vmin", "vmax",
+	"svw", "svh", "svi", "svb", "svmin", "svmax",
+	"lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax",
+	"dvw", "dvh", "dvi", "dvb", "dvmin", "dvmax",
+	"cm", "mm", "q", "in", "pt", "pc", NULL
+};
+static const char *const u_ang[] = { "deg", "grad", "rad", "turn", NULL };
+static const char *const u_time[] = { "s", "ms", NULL };
+static const char *const u_freq[] = { "hz", "khz", NULL };
+static const char *const u_res[] = { "dpi", "dpcm", "dppx", "x", NULL };
+
+static int str_in(const char *s, const char *const *tab)
 {
 	int i;
-	for (i = from; i < to && i < lx->n; i++) {
-		if (lx->t[i].kind != T_IDENT) continue;
-		/* `-none` is ONE identifier token, not a minus and a keyword:
-		 * a `-` followed by a name-start character begins an ident in
-		 * CSS Syntax 3. A check that only looked for `none` would let
-		 * `clamp(-none, 15, 20)` through, which the corpus tests. */
-		if (ieq(lx->t[i].s, lx->t[i].len, "none") ||
-		    ieq(lx->t[i].s, lx->t[i].len, "-none"))
-			return 1;
+	for (i = 0; tab[i] != NULL; i++)
+		if (ieq(s, (int)strlen(s), tab[i])) return 1;
+	return 0;
+}
+
+static int unit_cat(const char *u)
+{
+	if (u[0] == 0) return U_NUM;
+	if (u[0] == '%' && u[1] == 0) return U_PCT;
+	if (str_in(u, u_len)) return U_LEN;
+	if (str_in(u, u_ang)) return U_ANG;
+	if (str_in(u, u_time)) return U_TIME;
+	if (str_in(u, u_freq)) return U_FREQ;
+	if (str_in(u, u_res)) return U_RES;
+	if (ieq(u, (int)strlen(u), "fr")) return U_FLEX;
+	return U_UNKNOWN;
+}
+
+/* Which categories may share a sum: only their own.
+ *
+ * The tempting loosening is to let a NUMBER and a PERCENTAGE add, on the
+ * grounds that in a colour channel a percentage IS a number once resolved.
+ * The corpus says no, and says it through relative colour: a channel keyword
+ * is a <number>, and `rgb(from rebeccapurple calc(r + 1%) g b)` is invalid.
+ * There is no version of this table that accepts that and still refuses it. */
+static int cat_combine(int a, int b)
+{
+	return (a == b) ? a : -1;
+}
+
+typedef struct {
+	double coef;
+	char unit[24];
+	int nfact;
+	char fact[CALC_MAXFACT][CTEXT];
+} cterm;
+
+typedef struct {
+	int n;
+	cterm t[CALC_MAXTERM];
+} csum;
+
+static void term_num(cterm *t, double v, const char *unit)
+{
+	memset(t, 0, sizeof *t);
+	t->coef = v;
+	if (unit != NULL) {
+		size_t n = strlen(unit);
+		if (n >= sizeof t->unit) n = sizeof t->unit - 1;
+		memcpy(t->unit, unit, n);
+		t->unit[n] = 0;
+	}
+}
+
+static int term_mul(cterm *dst, const cterm *a, const cterm *b)
+{
+	int i;
+
+	/* A dimension times a dimension has no type CSS can express, and
+	 * `hsl(calc(0.56turn * -0.43turn), ...)` is in the corpus to say so. */
+	if (a->unit[0] && b->unit[0]) return -1;
+	if (a->nfact + b->nfact > CALC_MAXFACT) return -1;
+
+	memset(dst, 0, sizeof *dst);
+	dst->coef = a->coef * b->coef;
+	memcpy(dst->unit, a->unit[0] ? a->unit : b->unit, sizeof dst->unit);
+	for (i = 0; i < a->nfact; i++)
+		memcpy(dst->fact[dst->nfact++], a->fact[i], CTEXT);
+	for (i = 0; i < b->nfact; i++)
+		memcpy(dst->fact[dst->nfact++], b->fact[i], CTEXT);
+	return 0;
+}
+
+static int sum_one(csum *s, const cterm *t)
+{
+	if (s->n >= CALC_MAXTERM) return -1;
+	s->t[s->n++] = *t;
+	return 0;
+}
+
+/* Append `src` (optionally negated) to `dst`, folding a term into an existing
+ * one when both are plain numbers of the same unit. */
+static int sum_add(csum *dst, const csum *src, int neg)
+{
+	int i, j;
+
+	for (i = 0; i < src->n; i++) {
+		cterm t = src->t[i];
+		if (neg) t.coef = -t.coef;
+		if (t.nfact == 0) {
+			for (j = 0; j < dst->n; j++)
+				if (dst->t[j].nfact == 0 &&
+				    strcmp(dst->t[j].unit, t.unit) == 0)
+					break;
+			if (j < dst->n) { dst->t[j].coef += t.coef; continue; }
+		}
+		if (sum_one(dst, &t) != 0) return -1;
 	}
 	return 0;
+}
+
+/* A product of two sums is only linear when one of them is a single term --
+ * which is all CSS allows anyway. */
+static int sum_mul(csum *dst, const csum *a, const csum *b)
+{
+	const csum *many, *one;
+	int i;
+
+	if (a->n == 1) { one = a; many = b; }
+	else if (b->n == 1) { one = b; many = a; }
+	else return -1;
+
+	memset(dst, 0, sizeof *dst);
+	for (i = 0; i < many->n; i++) {
+		cterm t;
+		if (term_mul(&t, &many->t[i], &one->t[0]) != 0) return -1;
+		if (sum_one(dst, &t) != 0) return -1;
+	}
+	return 0;
+}
+
+static int sum_div(csum *dst, const csum *a, const csum *b)
+{
+	int i;
+
+	/* Only division BY a plain number: everything else is non-linear. */
+	if (b->n != 1 || b->t[0].nfact != 0 || b->t[0].unit[0]) return -1;
+	*dst = *a;
+	for (i = 0; i < dst->n; i++) dst->t[i].coef /= b->t[0].coef;
+	return 0;
+}
+
+static int sum_cat(const csum *s)
+{
+	int c = U_NUM, i;
+	for (i = 0; i < s->n; i++) {
+		int k = unit_cat(s->t[i].unit);
+		c = (i == 0) ? k : cat_combine(c, k);
+		if (c < 0) return -1;
+	}
+	return c;
+}
+
+/* ---- serialization ---- */
+
+static void bunit(buf *b, const char *u)
+{
+	int i;
+	for (i = 0; u[i]; i++) {
+		char c = u[i];
+		bputc(b, (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c);
+	}
+}
+
+/* Does this term print as more than one factor? That is exactly the condition
+ * for parenthesising it inside a sum. */
+static int term_compound(const cterm *t)
+{
+	if (t->nfact == 0) return 0;
+	if (t->nfact > 1) return 1;
+	return !(t->coef == 1.0 && t->unit[0] == 0);
+}
+
+static void bterm(buf *b, const cterm *t, int use_abs)
+{
+	double c = use_abs ? fabs(t->coef) : t->coef;
+	int shown = !(c == 1.0 && t->unit[0] == 0);
+	int i;
+
+	if (t->nfact == 0) {
+		bnum6(b, c);
+		bunit(b, t->unit);
+		return;
+	}
+#if defined(CANON_NEGCTL) || defined(CANON_NEGCTL_CALC)
+	/* THE CALC SABOTAGE: the product comes out in SOURCE order, so
+	 * `calc(g * 2)` reads back as `calc(g * 2)` rather than
+	 * `calc(2 * g)`. Every other byte of every other value is identical,
+	 * the arithmetic is the same arithmetic, the value means exactly what
+	 * it meant, and every page renders the same. It is the most
+	 * defensible-looking way to get this wrong, which is why it is the
+	 * control. */
+	for (i = 0; i < t->nfact; i++) {
+		if (i) bput(b, " * ", 3);
+		bput(b, t->fact[i], -1);
+	}
+	if (shown) {
+		bput(b, " * ", 3);
+		bnum6(b, c);
+		bunit(b, t->unit);
+	}
+#else
+	if (shown) {
+		bnum6(b, c);
+		bunit(b, t->unit);
+		bput(b, " * ", 3);
+	}
+	for (i = 0; i < t->nfact; i++) {
+		if (i) bput(b, " * ", 3);
+		bput(b, t->fact[i], -1);
+	}
+#endif
+}
+
+static void bcsum(buf *b, const csum *s)
+{
+	int i;
+
+	if (s->n == 0) { bputc(b, '0'); return; }
+	for (i = 0; i < s->n; i++) {
+		int par = (s->n > 1) && term_compound(&s->t[i]);
+		if (i > 0) {
+			/* The sign lives in the OPERATOR, not in the term:
+			 * `l - 0.2`, never `l + -0.2`. A NaN coefficient has
+			 * no sign to read, so it takes the `+` branch and
+			 * prints itself. */
+			bput(b, (s->t[i].coef < 0) ? " - " : " + ", 3);
+		}
+		if (par) bputc(b, '(');
+		bterm(b, &s->t[i], i > 0);
+		if (par) bputc(b, ')');
+	}
+}
+
+/* ---- parsing ----
+ *
+ * `names` is the set of bare identifiers this expression may contain beyond
+ * the numeric constants -- the channel keywords of a relative colour, or NULL
+ * where there are none. It is also what refuses `none` inside a calc: `none`
+ * is a channel VALUE and never a math term, and an identifier that is not in
+ * the allowed set has nowhere else to go. */
+/* What a resolved calc came out as, for a caller that can use the number. */
+struct calcres {
+	int resolved;
+	double num;
+	char unit[24];
+};
+
+struct calc_ctx {
+	int pct_ok;
+	const char *const *names;	/* NULL-terminated, or NULL */
+	int nnames;
+};
+
+static int calc_sum(lexed *lx, csum *out, const struct calc_ctx *cx, int depth);
+
+/* The numeric constants CSS Values 4 defines. `-infinity` arrives as ONE
+ * identifier token, for the same reason `-none` does. */
+static int calc_const(const tok *t, double *v)
+{
+	if (ieq(t->s, t->len, "e")) { *v = 2.718281828459045235; return 1; }
+	if (ieq(t->s, t->len, "pi")) { *v = 3.141592653589793238; return 1; }
+	if (ieq(t->s, t->len, "infinity")) { *v = INFINITY; return 1; }
+	if (ieq(t->s, t->len, "-infinity")) { *v = -INFINITY; return 1; }
+	if (ieq(t->s, t->len, "nan")) { *v = NAN; return 1; }
+	return 0;
+}
+
+/* The functions kept as opaque factors. Split from math_fns because these
+ * three take an arbitrary token stream and must NOT have their contents
+ * type-checked. */
+static int fn_is_substitution(const tok *t)
+{
+	return ieq(t->s, t->len, "var") || ieq(t->s, t->len, "env") ||
+	       ieq(t->s, t->len, "attr");
+}
+
+/* Validate the argument list of an opaque math function that has already been
+ * emitted. `f0` is the index of its T_FUNC token; the cursor has moved past
+ * its closing paren. A shallow copy of the token view is walked, so nothing
+ * here owns or frees anything. */
+static int calc_check_args(lexed *lx, int f0, int fend,
+		const struct calc_ctx *cx, int depth)
+{
+	lexed sub = *lx;
+	int d;
+
+	sub.i = f0 + 1;
+	sub.n = fend - 1;		/* stop before the closing paren */
+	if (sub.n <= sub.i) return 0;	/* an empty argument list */
+	for (;;) {
+		csum s;
+		if (calc_sum(&sub, &s, cx, depth + 1) != 0) return -1;
+		if ((d = sum_cat(&s)) < 0) return -1;
+		if (sub.i >= sub.n) break;
+		if (sub.t[sub.i].kind != T_COMMA) return -1;
+		sub.i++;
+	}
+	return 0;
+}
+
+static int calc_value(lexed *lx, csum *out, const struct calc_ctx *cx, int depth)
+{
+	const tok *t = cur(lx);
+	cterm term;
+	double v;
+
+	memset(out, 0, sizeof *out);
+	if (depth >= CALC_MAXDEPTH) return -1;
+
+	switch (t->kind) {
+	case T_NUM:
+		term_num(&term, t->num, "");
+		adv(lx);
+		return sum_one(out, &term);
+	case T_PCT:
+		if (!cx->pct_ok) return -1;
+		term_num(&term, t->num, "%");
+		adv(lx);
+		return sum_one(out, &term);
+	case T_DIM: {
+		char u[24];
+		int n = t->len;
+		if (n >= (int)sizeof u) return -1;
+		memcpy(u, t->s, (size_t)n);
+		u[n] = 0;
+		if (unit_cat(u) == U_UNKNOWN) return -1;
+		term_num(&term, t->num, u);
+		adv(lx);
+		return sum_one(out, &term);
+	}
+	case T_IDENT: {
+		int i;
+		if (calc_const(t, &v)) {
+			term_num(&term, v, "");
+			adv(lx);
+			return sum_one(out, &term);
+		}
+		if (cx->names == NULL) return -1;
+		for (i = 0; i < cx->nnames; i++)
+			if (cx->names[i] != NULL &&
+			    ieq(t->s, t->len, cx->names[i])) {
+				memset(&term, 0, sizeof term);
+				term.coef = 1;
+				term.nfact = 1;
+				snprintf(term.fact[0], CTEXT, "%s", cx->names[i]);
+				adv(lx);
+				return sum_one(out, &term);
+			}
+		return -1;
+	}
+	case T_DELIM:
+		if (t->delim != '(') return -1;
+		adv(lx);
+		if (calc_sum(lx, out, cx, depth + 1) != 0) return -1;
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+		return 0;
+	case T_FUNC: {
+		int f0 = lx->i, fend;
+		buf fb;
+
+		/* A nested calc() is just a group. */
+		if (ieq(t->s, t->len, "calc")) {
+			adv(lx);
+			if (calc_sum(lx, out, cx, depth + 1) != 0) return -1;
+			if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+			adv(lx);
+			return 0;
+		}
+		memset(&term, 0, sizeof term);
+		term.coef = 1;
+		term.nfact = 1;
+		fb.p = term.fact[0];
+		fb.len = 0;
+		fb.cap = CTEXT;
+		fb.ovf = 0;
+		if (emit_function(lx, &fb, depth + 1) != 0) return -1;
+		if (fb.ovf) return -1;
+		fend = lx->i;
+		if (!fn_is_substitution(&lx->t[f0]) &&
+		    calc_check_args(lx, f0, fend, cx, depth) != 0)
+			return -1;
+		return sum_one(out, &term);
+	}
+	default:
+		return -1;
+	}
+}
+
+static int calc_product(lexed *lx, csum *out, const struct calc_ctx *cx,
+		int depth)
+{
+	csum acc, rhs, tmp;
+
+	if (calc_value(lx, &acc, cx, depth) != 0) return -1;
+	for (;;) {
+		char op;
+		if (at_end(lx) || cur(lx)->kind != T_DELIM) break;
+		op = cur(lx)->delim;
+		if (op != '*' && op != '/') break;
+		adv(lx);
+		if (calc_value(lx, &rhs, cx, depth) != 0) return -1;
+		if (op == '*') {
+			if (sum_mul(&tmp, &acc, &rhs) != 0) return -1;
+		} else {
+			if (sum_div(&tmp, &acc, &rhs) != 0) return -1;
+		}
+		acc = tmp;
+	}
+	*out = acc;
+	return 0;
+}
+
+static int calc_sum(lexed *lx, csum *out, const struct calc_ctx *cx, int depth)
+{
+	csum acc, rhs;
+
+	if (depth >= CALC_MAXDEPTH) return -1;
+	memset(&acc, 0, sizeof acc);
+	if (calc_product(lx, &rhs, cx, depth) != 0) return -1;
+	if (sum_add(&acc, &rhs, 0) != 0) return -1;
+	for (;;) {
+		int neg;
+		if (at_end(lx) || cur(lx)->kind != T_DELIM) break;
+		if (cur(lx)->delim != '+' && cur(lx)->delim != '-') break;
+		neg = (cur(lx)->delim == '-');
+		adv(lx);
+		if (calc_product(lx, &rhs, cx, depth) != 0) return -1;
+		if (sum_add(&acc, &rhs, neg) != 0) return -1;
+	}
+	if (sum_cat(&acc) < 0) return -1;
+	*out = acc;
+	return 0;
+}
+
+/* THE ENTRY POINT for a channel whose value is a math function.
+ *
+ * `ang_ok` says the channel is a hue and may carry an angle; `pct_ok` says it
+ * may carry a percentage. Both are checked on the RESULT -- and pct_ok also
+ * travels down, because a percentage with nothing to resolve against is
+ * meaningless wherever it sits, not only at the top.
+ */
+static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
+		const char *const *names, int nnames, struct calcres *out)
+{
+	const tok *t = cur(lx);
+	struct calc_ctx cx;
+	csum s;
+	int cat;
+
+	if (out != NULL) { out->resolved = 0; out->num = 0; out->unit[0] = 0; }
+	cx.pct_ok = pct_ok;
+	cx.names = names;
+	cx.nnames = nnames;
+
+	if (t->kind != T_FUNC) return -1;
+
+	/* Only calc() is rebuilt from a tree. min()/clamp()/sign() and the
+	 * rest have their own serialization rules, so they are validated and
+	 * re-emitted from the source tokens; var() is not even validated. */
+	if (!ieq(t->s, t->len, "calc")) {
+		int f0 = lx->i, fend;
+		if (emit_function(lx, b, 1) != 0) return -1;
+		fend = lx->i;
+		if (fn_is_substitution(&lx->t[f0])) return 0;
+		return calc_check_args(lx, f0, fend, &cx, 0);
+	}
+
+	adv(lx);
+	if (calc_sum(lx, &s, &cx, 0) != 0) return -1;
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+
+	cat = sum_cat(&s);
+	if (cat < 0) return -1;
+	if (cat == U_PCT && !pct_ok) return -1;
+	if (cat == U_ANG && !ang_ok) return -1;
+	if (cat != U_NUM && cat != U_PCT && cat != U_ANG) return -1;
+
+	/* A calc that came out as ONE plain number is RESOLVED, and the caller
+	 * may want the number rather than the text. rgb()/hsl()/hwb() do:
+	 * their canonical form is the legacy one, which has no spelling for a
+	 * calc at all, so `rgb(calc(infinity), 0, 0)` has to become
+	 * `rgb(255, 0, 0)`. lab() and color() do not: their form CAN hold a
+	 * calc, and `lab(calc(infinity) 0 0)` keeps it. */
+	if (out != NULL && s.n == 1 && s.t[0].nfact == 0) {
+		out->resolved = 1;
+		out->num = s.t[0].coef;
+		memcpy(out->unit, s.t[0].unit, sizeof out->unit);
+	}
+
+	bput(b, "calc(", 5);
+	bcsum(b, &s);
+	bputc(b, ')');
+	return b->ovf ? -1 : 0;
+}
+
+
+/* An angle in whatever unit was written, in degrees. */
+static double unit_to_deg(double v, const char *u)
+{
+	if (ieq(u, (int)strlen(u), "grad")) return v * 0.9;
+	if (ieq(u, (int)strlen(u), "rad"))
+		return v * (180.0 / 3.14159265358979323846);
+	if (ieq(u, (int)strlen(u), "turn")) return v * 360.0;
+	return v;			/* deg, or a bare number */
 }
 
 /* Read ONE component of a colour function. Every kind the grammar can contain
  * is recognised here; deciding which of them a given channel ALLOWS is the
  * caller's job, and that split is what makes `rgb(0, 0, 0deg)` invalid while
  * `hwb(0deg 0% 0%)` is fine. */
-static int read_comp(lexed *lx, comp *c)
+static int read_comp(lexed *lx, comp *c, int pct_ok, int ang_ok, int fold)
 {
 	const tok *t = cur(lx);
 
@@ -1307,21 +1900,32 @@ static int read_comp(lexed *lx, comp *c)
 	}
 	case T_FUNC: {
 		buf tb;
-		int f0 = lx->i;
+		struct calcres cr;
 		tb.p = c->text;
 		tb.len = 0;
 		tb.cap = CTEXT;
 		tb.ovf = 0;
-		if (emit_function(lx, &tb, 1) != 0) return -1;
+		/* No channel keywords here: an absolute colour has no `r` to
+		 * refer to. That NULL is also what refuses `none` inside a
+		 * math function -- `rgb(clamp(10, none, 20) 0 0)` and
+		 * `abs(none)` and `-none` -- because an identifier that is
+		 * neither a numeric constant nor an allowed name has nowhere
+		 * to go. */
+		if (calc_channel(lx, &tb, pct_ok, ang_ok, NULL, 0, &cr) != 0)
+			return -1;
 		if (tb.ovf) return -1;
-		/* `none` is a CHANNEL value, never a math term.
-		 * `rgb(clamp(10, none, 20) 0 0)` is invalid, and so is
-		 * `abs(none)` and `-none`: css-values/clamp-color-invalid.html
-		 * is twelve subtests of nothing else. Checked on the token
-		 * range rather than on the emitted text, because the emitted
-		 * text would also match an identifier that merely CONTAINS
-		 * those four letters. */
-		if (toks_mention_none(lx, f0, lx->i)) return -1;
+		/* A RESOLVED calc becomes the number, where the caller's
+		 * canonical form has no way to hold a calc. */
+		if (fold && cr.resolved) {
+			int cat = unit_cat(cr.unit);
+			if (cat == U_NUM) { c->kind = K_NUM; c->num = cr.num; return 0; }
+			if (cat == U_PCT) { c->kind = K_PCT; c->num = cr.num; return 0; }
+			if (cat == U_ANG) {
+				c->kind = K_ANG;
+				c->num = unit_to_deg(cr.num, cr.unit);
+				return 0;
+			}
+		}
 		c->kind = K_TEXT;
 		return 0;
 	}
@@ -1493,15 +2097,20 @@ static double clampd(double v, double lo, double hi)
 
 /* Read the three channels, the optional alpha and the `)`, for a function
  * that uses the MODERN space-separated syntax only. */
-static int read_modern_body(lexed *lx, comp k[3], comp *al, int *have_alpha)
+static int read_modern_body(lexed *lx, comp k[3], comp *al, int *have_alpha,
+		int hue)
 {
 	int i;
 	*have_alpha = 0;
+	/* `hue` names the one channel that takes an angle and refuses a
+	 * percentage; -1 where the function has none. Nothing here FOLDS a
+	 * resolved calc, because every caller of this function serializes in
+	 * a form that can hold one. */
 	for (i = 0; i < 3; i++)
-		if (read_comp(lx, &k[i]) != 0) return -1;
+		if (read_comp(lx, &k[i], i != hue, i == hue, 0) != 0) return -1;
 	if (!at_end(lx) && cur(lx)->kind == T_DELIM && cur(lx)->delim == '/') {
 		adv(lx);
-		if (read_comp(lx, al) != 0) return -1;
+		if (read_comp(lx, al, 1, 0, 0) != 0) return -1;
 		*have_alpha = 1;
 	}
 	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
@@ -1525,19 +2134,19 @@ static int parse_rgb(lexed *lx, ccol *c)
 	c->form = CF_RGB;
 	adv(lx);
 
-	if (read_comp(lx, &k[0]) != 0) return -1;
+	if (read_comp(lx, &k[0], 1, 0, 1) != 0) return -1;
 	if (!at_end(lx) && cur(lx)->kind == T_COMMA) legacy = 1;
 	for (i = 1; i < 3; i++) {
 		if (legacy) {
 			if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
 			adv(lx);
 		}
-		if (read_comp(lx, &k[i]) != 0) return -1;
+		if (read_comp(lx, &k[i], 1, 0, 1) != 0) return -1;
 	}
 	if (legacy) {
 		if (!at_end(lx) && cur(lx)->kind == T_COMMA) {
 			adv(lx);
-			if (read_comp(lx, &al) != 0) return -1;
+			if (read_comp(lx, &al, 1, 0, 1) != 0) return -1;
 			have_alpha = 1;
 		}
 		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
@@ -1546,7 +2155,7 @@ static int parse_rgb(lexed *lx, ccol *c)
 		if (!at_end(lx) && cur(lx)->kind == T_DELIM &&
 		    cur(lx)->delim == '/') {
 			adv(lx);
-			if (read_comp(lx, &al) != 0) return -1;
+			if (read_comp(lx, &al, 1, 0, 1) != 0) return -1;
 			have_alpha = 1;
 		}
 		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
@@ -1585,7 +2194,7 @@ static int parse_hsl_hwb(lexed *lx, ccol *c, int is_hwb)
 	c->form = is_hwb ? CF_HWB : CF_HSL;
 	adv(lx);
 
-	if (read_comp(lx, &k[0]) != 0) return -1;
+	if (read_comp(lx, &k[0], 0, 1, 1) != 0) return -1;
 	if (!at_end(lx) && cur(lx)->kind == T_COMMA) {
 		if (is_hwb) return -1;
 		legacy = 1;
@@ -1595,12 +2204,12 @@ static int parse_hsl_hwb(lexed *lx, ccol *c, int is_hwb)
 			if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
 			adv(lx);
 		}
-		if (read_comp(lx, &k[i]) != 0) return -1;
+		if (read_comp(lx, &k[i], 1, 0, 1) != 0) return -1;
 	}
 	if (legacy) {
 		if (!at_end(lx) && cur(lx)->kind == T_COMMA) {
 			adv(lx);
-			if (read_comp(lx, &al) != 0) return -1;
+			if (read_comp(lx, &al, 1, 0, 1) != 0) return -1;
 			have_alpha = 1;
 		}
 		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
@@ -1609,7 +2218,7 @@ static int parse_hsl_hwb(lexed *lx, ccol *c, int is_hwb)
 		if (!at_end(lx) && cur(lx)->kind == T_DELIM &&
 		    cur(lx)->delim == '/') {
 			adv(lx);
-			if (read_comp(lx, &al) != 0) return -1;
+			if (read_comp(lx, &al, 1, 0, 1) != 0) return -1;
 			have_alpha = 1;
 		}
 		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
@@ -1664,7 +2273,8 @@ static int parse_lab_family(lexed *lx, ccol *c, int form)
 	c->form = form;
 	adv(lx);
 
-	if (read_modern_body(lx, k, &al, &have_alpha) != 0) return -1;
+	if (read_modern_body(lx, k, &al, &have_alpha, polar ? 2 : -1) != 0)
+		return -1;
 
 	if (k[0].kind == K_IDENT || k[0].kind == K_ANG) return -1;
 	if (k[1].kind == K_IDENT || k[1].kind == K_ANG) return -1;
@@ -1715,7 +2325,7 @@ static int parse_color_fn(lexed *lx, ccol *c)
 	c->space = space;
 	adv(lx);
 
-	if (read_modern_body(lx, k, &al, &have_alpha) != 0) return -1;
+	if (read_modern_body(lx, k, &al, &have_alpha, -1) != 0) return -1;
 
 	for (i = 0; i < 3; i++)
 		if (k[i].kind == K_IDENT || k[i].kind == K_ANG) return -1;
@@ -1843,31 +2453,18 @@ static int rel_channel(lexed *lx, buf *b, const struct rel_kind *k,
 		(void)d;
 		return emit_token(lx, b, 1);
 	}
-	case T_FUNC: {
-		int f0 = lx->i, j, names = 0, typed = 0;
-		if (emit_function(lx, b, 1) != 0) return -1;
-		if (toks_mention_none(lx, f0, lx->i)) return -1;
+	case T_FUNC:
 		/* A channel keyword inside a relative colour's calc() carries
-		 * the channel's OWN type -- `r` is a number, `h` is a number
-		 * too, not an angle -- so `calc(r + 1%)` and
-		 * `calc(h + 1deg)` mix types and are parse errors. Full type
-		 * inference through a math expression is not what this file
-		 * is; the cheap half of it, "a term that names a channel and
-		 * a term that carries a unit cannot both be in here", is what
-		 * the corpus actually tests. */
-		for (j = f0; j < lx->i && j < lx->n; j++) {
-			const tok *u = &lx->t[j];
-			if (u->kind == T_IDENT) {
-				int m;
-				for (m = 0; m < 4; m++)
-					if (ieq(u->s, u->len, k->ch[m])) names = 1;
-			} else if (u->kind == T_PCT || u->kind == T_DIM) {
-				typed = 1;
-			}
-		}
-		if (names && typed) return -1;
-		return 0;
-	}
+		 * the CHANNEL's type, and every one of them is a <number> --
+		 * `h` included, which is the surprising one. So `calc(r + 1%)`
+		 * and `calc(h + 1deg)` are sums whose terms do not combine,
+		 * and the unit algebra refuses them without needing a rule of
+		 * its own. This used to be a heuristic ("a term that names a
+		 * channel and a term that carries a unit cannot both be in
+		 * here"); it is now the same check every other expression
+		 * gets. */
+		return calc_channel(lx, b, !is_hue, is_hue && !is_alpha,
+				k->ch, 4, NULL);
 	default:
 		return -1;
 	}

@@ -67,7 +67,7 @@ test-cssparse-asan:
 #
 # -DCANON_NEGCTL instead attacks SERIALIZATION while leaving parsing intact.
 # The build accepts exactly the same values, rejects exactly the same invalid
-# ones, and then spells the result plausibly rather than canonically. FIVE
+# ones, and then spells the result plausibly rather than canonically. SIX
 # sabotages, each of which reads as a defensible choice in isolation:
 #
 #   - the anchor operands come out in the order the author wrote them (the
@@ -81,6 +81,8 @@ test-cssparse-asan:
 #     serializer with this bug renders every page correctly.
 #   - `shorter hue` is kept in a color-mix() rather than dropped as the
 #     default. Also invisible: the value means the same thing either way.
+#   - a calc() product comes out in source order, `calc(g * 2)` rather than
+#     `calc(2 * g)`. Same arithmetic, same rendering, wrong bytes.
 #
 # Nothing throws and nothing is missing.
 #
@@ -130,6 +132,28 @@ test-cssparse-round-negctl:
 	    grep -A2 'FAIL' $(BUILD)/cssparse_rneg.log | head -6 | sed 's/^/    /'; \
 	 fi
 
+# THE CALC SABOTAGE ON ITS OWN, for the same reason and against a different
+# half of the serializer. -DCANON_NEGCTL_CALC emits a product in SOURCE order,
+# so `calc(g * 2)` reads back as `calc(g * 2)` rather than `calc(2 * g)`. The
+# arithmetic is the same arithmetic, the value means exactly what it meant, and
+# every page renders identically -- which is precisely why a suite that did not
+# compare bytes would sail past it. Nothing else about the build changes: no
+# comma, no keyword order, no rounding.
+.PHONY: test-cssparse-calc-negctl
+test-cssparse-calc-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DCANON_NEGCTL_CALC $(CSSPARSE_INC) \
+	    -o $(BUILD)/cssparse_cneg $(CSSPARSE_SRC) -lm
+	@if $(BUILD)/cssparse_cneg > $(BUILD)/cssparse_cneg.log 2>&1; then \
+	    echo "test-cssparse-calc-negctl: FAILED -- the suite passed against a"; \
+	    echo "  build that serializes a calc() product in source order. The"; \
+	    echo "  calculation tree is then doing arithmetic nobody checks the"; \
+	    echo "  spelling of."; exit 1; \
+	 else \
+	    echo "test-cssparse-calc-negctl: ok -- caught by:"; \
+	    grep -A2 'FAIL' $(BUILD)/cssparse_cneg.log | head -6 | sed 's/^/    /'; \
+	 fi
+
 # Wired into the aggregate the audit reads, the same way tests/url.mk does it.
 # tools/audit_tests.py calls a test- target "unwired" unless it is reachable as
 # a PREREQUISITE from one of the named suites, and separately derives the CI
@@ -137,4 +161,4 @@ test-cssparse-round-negctl:
 # classification covers `make ci`. 217 targets were once orphans for want of
 # exactly this.
 ci-host: test-cssparse test-cssparse-asan test-cssparse-negctl \
-         test-cssparse-round-negctl
+         test-cssparse-round-negctl test-cssparse-calc-negctl

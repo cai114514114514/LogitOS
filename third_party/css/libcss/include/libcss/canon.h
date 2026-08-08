@@ -85,10 +85,19 @@ int css_canon_decl(const char *prop, int plen,
 /**
  * Whether this file claims the property at all, ignoring the value.
  *
- * The declaration hook in parse/language.c uses this to stay off properties
- * LibCSS owns: a `width` that LibCSS's own handler refused must still be
- * offered here (it may be `anchor-size(...)`), but there is no reason to run
- * this parser over a property it has never heard of.
+ * A caller uses this to stay off properties LibCSS owns: a `width` that
+ * LibCSS's own handler refused must still be offered here (it may be
+ * `anchor-size(...)`), but there is no reason to run this parser over a
+ * property it has never heard of.
+ *
+ * NOTE FOR THE NEXT READER: this comment used to say the hook lives in
+ * parse/language.c. IT DOES NOT, and never did -- `grep canon` over that file
+ * returns nothing. Nothing inside LibCSS calls into this file; the only caller
+ * is the CSSOM (c/apps/browser/js_cssom.c, via css_specified_canon in
+ * c/apps/browser/css.h), and the cascade is untouched by everything here.
+ * That distinction is the whole safety argument for CSS_CANON_INVALID, so a
+ * comment that misplaces it is worse than no comment: two separate lines have
+ * now read this file and believed the parser was wired into the cascade.
  */
 int css_canon_knows_property(const char *prop, int plen);
 

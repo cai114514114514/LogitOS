@@ -1002,8 +1002,8 @@ static void t_color_value(void)
 	 * standing alone as the whole value stays LibCSS's to resolve. */
 	chk_rt("color", "rgb(from var(--bg-color) r g b / 80%)",
 	    "rgb(from var(--bg-color) r g b / 80%)");
-	chk_rt("color", "lch(from var(--color) calc(l / 2) c h)",
-	    "lch(from var(--color) calc(l / 2) c h)");
+	chk("color", "lch(from var(--color) calc(l / 2) c h)",
+	    "lch(from var(--color) calc(0.5 * l) c h)");
 	chk("color", "var(--anything)", PASS_);
 
 	/* The channel keywords belong to the SPACE, not to color(): an xyz
@@ -1033,6 +1033,113 @@ static void t_color_value(void)
 	chk("color", "rgb(clamp(10, abs(none), 20) 0 0)", NULL);
 	chk("color", "rgb(clamp(10, sign(none + 1), 20) 0 0)", NULL);
 	chk("color", "oklch(calc(none) 0.2 180)", NULL);
+
+	group("color/calc");
+
+	/* THE CALCULATION TREE. Each of these is a separate rule of the
+	 * CSS Values 4 serialization, and a verbatim passthrough -- which is
+	 * what this file did until the tree landed -- fails every one. */
+
+	/* Constants fold. */
+	chk("color", "lab(calc(50 * 3) calc(0.5 - 1) calc(1.5)"
+	    " / calc(-0.5 + 1))",
+	    "lab(calc(150) calc(-0.5) calc(1.5) / calc(0.5))");
+	chk("color", "lab(calc(-50 * 3) calc(0.5 + 1) calc(-1.5)"
+	    " / calc(-0.5 * 2))",
+	    "lab(calc(-150) calc(1.5) calc(-1.5) / calc(-1))");
+	/* ... carrying the unit with them, and percentages are NOT divided
+	 * by 100 on the way through a calc. */
+	chk("color", "color(srgb calc(50% * 3) calc(-150% / 3) calc(50%)"
+	    " / calc(-50% * 3))",
+	    "color(srgb calc(150%) calc(-50%) calc(50%) / calc(-150%))");
+	chk("color", "lch(calc(50 * 3) calc(0.5 - 1) calc(20deg * 2)"
+	    " / calc(-0.5 + 1))",
+	    "lch(calc(150) calc(-0.5) calc(40deg) / calc(0.5))");
+	/* The numeric constants, and division by zero. */
+	chk_rt("color", "lab(calc(infinity) 0 0)", "lab(calc(infinity) 0 0)");
+	chk("color", "lab(calc(-infinity) 0 0)", "lab(calc(-infinity) 0 0)");
+	chk_rt("color", "lab(calc(NaN) 0 0)", "lab(calc(NaN) 0 0)");
+	chk("color", "lab(calc(0 / 0) 0 0)", "lab(calc(NaN) 0 0)");
+
+	/* A term with a factor prints its coefficient FIRST, and a division
+	 * by a number becomes a multiplication by its reciprocal. */
+	chk_rt("color", "rgb(from rebeccapurple calc(r) calc(g) calc(b))",
+	    "rgb(from rebeccapurple calc(r) calc(g) calc(b))");
+	chk("color", "rgb(from rebeccapurple r calc(g * 2) 10)",
+	    "rgb(from rebeccapurple r calc(2 * g) 10)");
+	chk("color", "rgb(from rebeccapurple b calc(r * .5) 10)",
+	    "rgb(from rebeccapurple b calc(0.5 * r) 10)");
+	chk("color", "lch(from lch(50 100 300) l calc(c / 2) h)",
+	    "lch(from lch(50 100 300) l calc(0.5 * c) h)");
+	/* A product inside a SUM grows parentheses it was not written with;
+	 * a product that is the whole expression does not. */
+	chk("color", "rgb(from rebeccapurple r calc(g * .5 + g * .5) 10)",
+	    "rgb(from rebeccapurple r calc((0.5 * g) + (0.5 * g)) 10)");
+	chk("color", "rgb(from rebeccapurple r calc(b * .5 - g * .5) 10)",
+	    "rgb(from rebeccapurple r calc((0.5 * b) - (0.5 * g)) 10)");
+	/* ... and two terms that BOTH name a channel do not fold into one,
+	 * even though their coefficients would add. */
+	chk("color", "lab(from lab(50 -30 40) calc(l - 20) a b)",
+	    "lab(from lab(50 -30 40) calc(l - 20) a b)");
+	chk("color", "lch(from lch(50 100 300) l c calc(h * 2.5))",
+	    "lch(from lch(50 100 300) l c calc(2.5 * h))");
+
+	/* An opaque function keeps its own spelling and the sign lives in the
+	 * operator, but the product around it is still reordered. */
+	chk("color", "lab(calc(50 + (sign(1em - 10px) * 10)) 30 50 / 50%)",
+	    "lab(calc(50 + (10 * sign(1em - 10px))) 30 50 / 0.5)");
+	chk("color", "lab(60 30 50 / calc(50% + (sign(1em - 10px) * 10%)))",
+	    "lab(60 30 50 / calc(50% + (10% * sign(1em - 10px))))");
+	chk("color", "hwb(calc(110deg + (sign(1em - 10px) * 10deg))"
+	    " 30% 50% / 50%)",
+	    "hwb(calc(110deg + (10deg * sign(1em - 10px))) 30 50 / 0.5)");
+	/* Different length units do NOT fold: nothing here knows how many
+	 * pixels an em is. */
+	chk("color", "rgb(calc(50 + (sign(1em - 10px) * 10)) 0 0 / 0.5)",
+	    "rgb(calc(50 + (10 * sign(1em - 10px))) 0 0 / 0.5)");
+
+	/* A RESOLVED calc becomes the number where the canonical form cannot
+	 * hold a calc -- and stays a calc where it can. Both halves, because
+	 * a fix that folded everywhere would pass the first alone. */
+	chk("color", "rgb(calc(infinity), 0, 0)", "rgb(255, 0, 0)");
+	chk("color", "rgb(calc(-infinity), 0, 0)", "rgb(0, 0, 0)");
+	chk("color", "rgb(calc(0 / 0), 0, 0)", "rgb(0, 0, 0)");
+	chk("color", "rgba(0, 0, 0, calc(infinity))", "rgb(0, 0, 0)");
+	chk("color", "rgba(0, 0, 0, calc(-infinity))", "rgba(0, 0, 0, 0)");
+	chk("color", "hsl(calc(infinity) 100% 50%)", "rgb(255, 0, 0)");
+	chk("color", "hsl(calc(-infinity) 100% 50%)", "rgb(255, 0, 0)");
+	chk("color", "hsl(calc(0 / 0) 100% 50%)", "rgb(255, 0, 0)");
+	chk("color", "hwb(calc(infinity) 20% 10%)", "rgb(230, 51, 51)");
+	chk("color", "hwb(90 20% 10% / calc(-infinity))",
+	    "rgba(140, 230, 51, 0)");
+	chk("color", "lab(calc(50%) 50% 0.5)", "lab(calc(50%) 62.5 0.5)");
+	chk("color", "color(srgb calc(50%) 50% 0.5)",
+	    "color(srgb calc(50%) 0.5 0.5)");
+
+	/* THE REFUSALS, which are the same work as the spelling: a serializer
+	 * that keeps the math verbatim never computes a type and so cannot
+	 * see any of these. */
+	/* A dimension times a dimension has no type. */
+	chk("color", "hsl(calc(0.56turn * -0.43turn), 47%, 4884.6%)", NULL);
+	/* A percentage and a length do not combine. */
+	chk("color", "rgb(sign(0% - 0px), 0, 0)", NULL);
+	chk("color", "rgb(calc(0% - 0px), 0, 0)", NULL);
+	/* A colour channel is not a length. */
+	chk("color", "color(srgb calc(1px * sibling-index()) 0 0)", NULL);
+	chk("color", "lab(calc(1px * 2) 0 0)", NULL);
+	/* A hue is <number> | <angle> and never a percentage, so a
+	 * percentage anywhere inside it has nothing to resolve against --
+	 * including inside a sign() that would return a number. */
+	chk("color", "hsl(calc(sign(50%) * 1deg) 82% 43%)", NULL);
+	chk("color", "hsl(calc(50%) 82% 43%)", NULL);
+	/* ... but the angle it does accept is fine, and folds. */
+	chk("color", "hsl(calc(60deg) 100% 50%)", "rgb(255, 255, 0)");
+	/* A number and an angle are not the same category. */
+	chk("color", "lch(50 20 calc(1 + 1deg))", NULL);
+	/* sibling-index() is a math function, not an unknown one: a channel
+	 * that contains one was being refused outright. */
+	chk_rt("color", "oklch(calc(0.1 * sibling-index()) 0.2 180)",
+	    "oklch(calc(0.1 * sibling-index()) 0.2 180)");
 
 	group("color/mix");
 
