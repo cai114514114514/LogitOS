@@ -422,7 +422,7 @@ static void run_idna(const char *root)
     if (!txt) return;
     J = txt;
     jv *arr = jparse();
-    int tot = 0, ok = 0;
+    int tot = 0, ok = 0, accepted = 0, rejected = 0, wrong = 0;
     for (int i = 0; i < arr->n; i++) {
         jv *e = arr->kids[i];
         if (e->type != 5) continue;
@@ -431,13 +431,25 @@ static void run_idna(const char *root)
         tot++;
         char *host = url_host_parse(in->s, in->slen, 0);
         int good;
-        if (out->type == 0 || (out->type == 1 && !out->b)) good = (host == NULL);
-        else if (out->type == 3) good = host && !strcmp(host, out->s);
-        else { tot--; free(host); continue; }
+        if (out->type == 0 || (out->type == 1 && !out->b)) {
+            good = (host == NULL);
+            if (!good) accepted++;            /* should have been a failure */
+        } else if (out->type == 3) {
+            good = host && !strcmp(host, out->s);
+            if (!good) { if (host) wrong++; else rejected++; }
+        } else { tot--; free(host); continue; }
         if (good) ok++;
         free(host);
     }
-    printf("  IdnaTestV2       %4d/%-4d  (host parsing only; NOT gated -- see js_url.c)\n", ok, tot);
+    /* The split is the whole value of this line. NOT gated, because it
+     * measures the part of js_url.c that is knowingly incomplete -- and the
+     * three numbers say WHICH incompleteness, which a single rate cannot:
+     *   accepted  a name a full UTS-46 table calls disallowed and this one
+     *             lets through -- the missing rows of IdnaMappingTable.txt
+     *   rejected  a name refused that should have parsed
+     *   wrong     parsed to the wrong ASCII -- mostly the absent NFC step */
+    printf("  IdnaTestV2       %4d/%-4d  (NOT gated: %d wrongly accepted, %d wrongly"
+           " rejected, %d wrong output)\n", ok, tot, accepted, rejected, wrong);
     jv_free(arr);
     free(txt);
 }

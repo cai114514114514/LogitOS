@@ -9,12 +9,13 @@
 #
 # WHY THE DATA AND NOT THE RUNNER. url/url-constructor.any.js is a twelve-line
 # loop over url/resources/urltestdata.json, and url/url-setters.any.js is the
-# same over setters_tests.json. Those two files hold 891 + 278 cases. Under the
-# WPT runner they are ONE red line each today, because the runner cannot finish
-# the 267 KB fetch that loads them (tests/wpt.mk's line owns that; this one
-# must not touch it). Driving the JSON directly measures the same property, in
-# a second, and does not go stale when the runner is fixed -- at which point
-# the two numbers should agree and any disagreement is a bug in one of them.
+# same over setters_tests.json. Those two files hold 891 + 278 cases, and until
+# tests/wpt.mk's line taught the host build to answer a fetch out of the
+# checkout they were ONE red line each -- 1,004 cases that had never executed.
+# Driving the JSON directly measures the same property in a second, with no
+# runner and no harness, and the two numbers now agree: 891/891 and 279/279
+# here, 893/893 and 279/279 through the corpus. A disagreement between them
+# would be a bug in one of the two and is worth knowing about.
 #
 # What the JSON CANNOT measure is the JS surface: that the getters are
 # accessors on the prototype, that the constructor throws a TypeError instead
@@ -99,4 +100,9 @@ test-url-all: test-url test-url-js test-url-negctl
 # is one of the roots that script treats as a suite; adding prerequisites to it
 # from a fragment is additive, so this does not collide with anyone else doing
 # the same.
-ci-host: test-url test-url-js test-url-negctl
+#
+# Through test-url-all rather than through its three members, so that the
+# aggregate is reachable too -- naming the members directly leaves
+# test-url-all itself an orphan, which is the finding this is here to avoid
+# rather than to relocate.
+ci-host: test-url-all
