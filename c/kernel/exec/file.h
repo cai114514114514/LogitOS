@@ -45,4 +45,8 @@ long          file_lseek(struct file *f, long off, int whence);
 int           file_fsync(struct file *f);   /* F_VFS: flush dirty data to disk now */
 int           file_pipe(struct file **rd, struct file **wr);  /* P3 */
 
+/* Peak simultaneous open descriptions since boot, and refused allocations.
+ * NFILE is a guess until it is checked against one of these. */
+void          file_watermark(int *peak, long *exhausted);
+
 #endif /* LOGIT_FILE_H */

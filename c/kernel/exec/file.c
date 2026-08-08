@@ -9,6 +9,7 @@
 #include "percpu.h"     /* this_cpu (SMP: drop BKL while blocked on input) */
 #include "spinlock.h"   /* g_bkl */
 #include "kbench.h"     /* kb_rdtsc: what the console wait actually costs */
+#include "kprintf.h"    /* the exhaustion census -- see file_alloc */
 /* Path-qualified: mini-libc ships c/apps/libc/include/sys/wait.h and that
  * directory sorts before c/kernel/core in INCDIRS, so the bare form resolves to
  * the userland header. Same note as syscall.c, same build failure. */
@@ -175,9 +176,32 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
 }
 
 /* Open-file-description pool. Every fd in every process points at one of these;
- * dup/fork bump refcount rather than copying. */
-#define NFILE 64
+ * dup/fork bump refcount rather than copying.
+ *
+ * WHY 512 AND NOT 64. The GUI Terminal fork+execve's /bin/sh over two pipes, so
+ * every launch takes four descriptions at once, and wm_launch gives each GUI
+ * app fd 0/1/2 = tty besides. 64 is therefore about sixteen concurrent
+ * terminals -- which nobody hit until a memory fix let the machine launch apps
+ * 2.6x faster, at which point a two-minute run produced 309 `[pipe] file_pipe
+ * failed`. Before that the launches were failing earlier for a different
+ * reason, so the table was never the binding constraint and its size had never
+ * been tested.
+ *
+ * struct file is ~176 bytes, so 512 is ~90 KiB of .bss -- bounded, static, and
+ * cheap against a 511 MiB machine.
+ *
+ * The number is still a guess, and a bigger guess is not a fix by itself.
+ * file_alloc therefore CENSUSES the table when it fails (below), because
+ * "raise the limit" and "find the leak" look identical from the outside and
+ * the census is what tells them apart. */
+#define NFILE 512
 static struct file files[NFILE];
+
+/* High-water mark and the exhaustion census. Neither is on the fast path: the
+ * mark is a compare in an already-held critical section, and the census only
+ * runs when an allocation has already failed. */
+static int  g_file_hiwater;
+static long g_file_exhausted;
 
 /* M25 P2: file lifecycle counters are peeled out from under the BKL so SYS_FORK
  * (which file_dup's the inherited fds) can run BKL-free concurrently. g_file_lock
@@ -196,18 +220,58 @@ struct file *file_alloc(void)
 {
     uint64_t fl = spin_lock_irqsave(&g_file_lock);
     struct file *f = 0;
+    int inuse = 0;
     for (int i = 0; i < NFILE; i++) {
         if (files[i].refcount == 0) {
-            f = &files[i];
-            f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;  /* claim under lock */
-            f->amode = 0;
-            f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
-            f->backing = 0; f->path[0] = 0;
-            break;
+            if (!f) {
+                f = &files[i];
+                f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;  /* claim under lock */
+                f->amode = 0;
+                f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
+                f->backing = 0; f->path[0] = 0;
+                inuse++;                     /* the one just claimed */
+            }
+        } else {
+            inuse++;
+        }
+    }
+    if (inuse > g_file_hiwater) g_file_hiwater = inuse;
+    int census_vfs = 0, census_pipe = 0, census_tty = 0, census_other = 0;
+    long nth = 0;
+    if (!f) {
+        /* The table is full. Say WHAT is in it: a leak and honest load are
+         * indistinguishable from "file_pipe failed", and this is the line that
+         * separates them. Rate-limited to powers of two so an exhausted
+         * machine reports the shape of the problem instead of drowning the
+         * serial console in it. */
+        nth = ++g_file_exhausted;
+        for (int i = 0; i < NFILE; i++) {
+            switch (files[i].type) {
+            case F_VFS:  census_vfs++;   break;
+            case F_PIPE: census_pipe++;  break;
+            case F_TTY:  census_tty++;   break;
+            default:     census_other++; break;
+            }
         }
     }
     spin_unlock_irqrestore(&g_file_lock, fl);
+
+    if (!f && (nth & (nth - 1)) == 0)        /* 1, 2, 4, 8, ... */
+        kprintf("[file] table exhausted (%ld total): %d/%d used -- "
+                "vfs=%d pipe=%d tty=%d free-but-typed=%d\n",
+                nth, NFILE, NFILE, census_vfs, census_pipe, census_tty, census_other);
     return f;
+}
+
+/* Peak simultaneous open descriptions since boot, and how many allocations
+ * have been refused. The point of exporting these is that NFILE can then be
+ * checked against a measurement instead of argued about. */
+void file_watermark(int *peak, long *exhausted)
+{
+    uint64_t fl = spin_lock_irqsave(&g_file_lock);
+    if (peak) *peak = g_file_hiwater;
+    if (exhausted) *exhausted = g_file_exhausted;
+    spin_unlock_irqrestore(&g_file_lock, fl);
 }
 
 void file_dup(struct file *f)
