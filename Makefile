@@ -3367,3 +3367,13 @@ bench-aui: $(ISO) $(DISK)
 # names, with no renderer involved. Not yet wired into layout.c -- see the
 # fragment header for why that is a separate change.
 -include tests/flex.mk
+
+# CSS TEXT: inline layout and line breaking -- `make test-csstext` and its
+# negative control. The subsystem every page depends on unconditionally: a page
+# with no grid and no flexbox still has text, and whether its lines break in the
+# right places decides whether it reads like a document or like garbage.
+#
+# The gate is the Unicode Consortium's own LineBreakTest.txt, all 16,672 cases,
+# so this line's correctness is measured against the specification's test data
+# rather than against its author's opinion. See the fragment header.
+-include tests/csstext.mk

@@ -1124,7 +1124,16 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
                 o.hyphens_none = (st->hyphens == LTX_HY_NONE);
                 cls[j] = (uint8_t)lb_resolve(lb_raw(cps[j]), &o);
             }
+#ifdef CSSTEXT_BREAK_ON_SPACE_ONLY
+            /* The negative control has to reach the LINE BUILDER too, not just
+             * the break API -- otherwise the layout assertions cannot tell the
+             * two implementations apart, and the control silently stops
+             * controlling for the thing that matters most. */
+            memset(nt, 0, (size_t)n + 1);
+            lb_naive(cps, n, cb);
+#else
             lb_engine(cps, cls, n, cb, nt);
+#endif
             /* Tailorings are per position, so they run once per run's style
              * over that run's positions only. */
             for (r = 0; r < nrun; r++) {
@@ -1135,6 +1144,9 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
                 o.line_break = st->line_break;
                 o.word_break = st->word_break;
                 o.hyphens_none = (st->hyphens == LTX_HY_NONE);
+#ifdef CSSTEXT_BREAK_ON_SPACE_ONLY
+                continue;
+#endif
                 if (!o.line_break && !o.word_break && !o.hyphens_none) continue;
                 while (j0 < n && offs[j0] < b.span[r].start) j0++;
                 j1 = j0;
