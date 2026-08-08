@@ -8,6 +8,10 @@
 
 /* US QWERTY, scancode set 1, unshifted. 0 = no printable character. */
 static const char scancode_map[128] = {
+    /* Escape. Not printable, but every app already treats key 27 as cancel:
+     * aui dismisses popups and modals on it, Finder closes its menu and Get
+     * Info. All of that was dead code -- the one scancode nobody had mapped. */
+    [0x01] = 27,
     [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5',
     [0x07] = '6', [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
     [0x0C] = '-', [0x0D] = '=', [0x0E] = '\b', [0x0F] = '\t',
@@ -24,6 +28,7 @@ static const char scancode_map[128] = {
 
 /* US QWERTY, scancode set 1, shifted layer (Shift held). */
 static const char scancode_map_shift[128] = {
+    [0x01] = 27,                       /* Shift+Esc is still Esc */
     [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$', [0x06] = '%',
     [0x07] = '^', [0x08] = '&', [0x09] = '*', [0x0A] = '(', [0x0B] = ')',
     [0x0C] = '_', [0x0D] = '+', [0x0E] = '\b', [0x0F] = '\t',
