@@ -53,6 +53,7 @@
  */
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -242,16 +243,41 @@ static const struct item *items(int *n)
  * union otherwise -- see the file header for why that second case is a known
  * wrong answer rather than an approximation. Returns 0 when the element
  * produced no box at all, which the CSSOM reports as zero everywhere. */
+/* HOW OFTEN DOES A GEOMETRY READ FIND NO BOX AT ALL?
+ *
+ * The file header calls the subtree-ink fallback "a known wrong answer rather
+ * than an approximation". This asks the question one step further out: how
+ * often is there not even an ink union, i.e. the element painted nothing and
+ * every accessor on it answers 0. A bare `<div style="width:120px">` is that
+ * case, and checkLayout() tests are full of them.
+ *
+ * Same shape as css_engine.c's LOGIT_CSS_PROP_MISS and for the same reason:
+ * one append per call rather than a histogram, because the runner runs one
+ * file per PROCESS and an in-memory table dies with each child. Aggregate with
+ * sort | uniq -c. Off unless LOGIT_CSSOM_BOX_MISS is set. */
+static void boxstat(const char *what, struct node *el)
+{
+    static const char *path;
+    static int on = -1;
+    if (on < 0) { path = getenv("LOGIT_CSSOM_BOX_MISS"); on = path ? 1 : 0; }
+    if (!on) return;
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "%s %s\n", what, (el && el->tag) ? el->tag : "?");
+    fclose(f);
+}
+
 static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
 {
     *ox = *oy = *ow = *oh = 0;
     if (!el) return 0;
     int n = 0;
     const struct item *it = items(&n);
-    if (!it) return 0;
+    if (!it) { boxstat("NOLIST", el); return 0; }
     for (int i = 0; i < n; i++)
         if (it[i].node == el && it[i].type == IT_RECT) {
             *ox = it[i].x; *oy = it[i].y; *ow = it[i].w; *oh = it[i].h;
+            boxstat("EXACT", el);
             return 1;
         }
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0, got = 0;
@@ -264,7 +290,8 @@ static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
         if (bx > x1) x1 = bx;
         if (by > y1) y1 = by;
     }
-    if (!got) return 0;
+    if (!got) { boxstat("NOBOX", el); return 0; }
+    boxstat("INKUNION", el);
     *ox = x0; *oy = y0; *ow = x1 - x0; *oh = y1 - y0;
     return 1;
 }
