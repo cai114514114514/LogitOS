@@ -73,4 +73,11 @@ static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgb
     }
 }
 
+/* The painter asks the compositor for the display's backing scale, because the
+ * coverage masks it blits have to be generated at DEVICE size or the
+ * compositor's rescale blurs them. On the host there is no display; 100 makes
+ * points and device pixels the same thing, which is what the recorded op
+ * geometry is asserted in. */
+static inline int ui_scale(void) { return 100; }
+
 #endif /* PAINTHOST_LOGIT_H */

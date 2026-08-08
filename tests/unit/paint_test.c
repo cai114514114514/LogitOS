@@ -154,11 +154,15 @@ int main(void)
       CHECK(r >= 120 && r <= 136,
             "white text at 50% over a black card fades toward the card, not the page"); }
 
-    /* A rounded box with a TRANSLUCENT background cannot go through gui_rrect
-     * (that syscall has no alpha), so the painter bands it: one blended strip
-     * per row of the two corner zones plus one for the straight middle. That is
-     * also the only exercise the corner arithmetic gets. border-radius comes
-     * from css_extra on real pages, so it is patched onto the cstyle here. */
+    /* A rounded box is a 9-SLICE through Open Logit (c/lib/gfx): three bands
+     * plus four antialiased corner tiles, whatever its alpha. It used to be
+     * gui_rrect when opaque -- a hard-edged staircase -- and 2*radius + 1
+     * blended strips when translucent, worked out by an integer square root in
+     * browser_paint.c itself. Both are gone; the engine owns the geometry now,
+     * so this asserts the SLICING (which is what the painter still decides) and
+     * tests/unit/gfx_raster_test.c asserts the coverage against a supersampled
+     * reference. border-radius comes from css_extra on real pages, so it is
+     * patched onto the cstyle here. */
     {
         const char *h = "<body><div class='r'>x</div></body>";
         const char *c = "body{background:#ffffff;margin:0}"
@@ -169,22 +173,26 @@ int main(void)
         layout_page(root, 400);
         paint_nops = 0;
         browser_paint(0, 0, 400, 600, 0);
-        int strips = 0, rr = 0, widest = 0, narrowest = 1 << 30;
+        int bands = 0, rr = 0, tiles = 0, widest = 0;
         for (int i = 0; i < paint_nops; i++) {
             const struct paintop *p = &paint_ops[i];
             if (p->kind == OP_RRECT) rr++;
-            if (p->kind != OP_BLIT || !p->solid) continue;
-            strips++;
-            if (p->w > widest) widest = p->w;
-            if (p->w < narrowest) narrowest = p->w;
+            if (p->kind != OP_BLIT) continue;
+            if (p->solid) {                       /* a 1x1 source = an alpha band */
+                bands++;
+                if (p->w > widest) widest = p->w;
+            } else if (p->w == 10 && p->h == 10) {
+                tiles++;                          /* an r x r coverage tile */
+            }
         }
-        CHECK(rr == 0, "a translucent rounded box never uses the opaque rounded-rect call");
-        CHECK(strips == 2 * 10 + 1,
-              "it is banded into 2*radius corner rows plus one middle strip");
-        CHECK(widest == 100, "the middle strip spans the full box width");
-        /* first corner row: inset = 10 - isqrt(100 - 81) = 10 - 4 = 6 each side */
-        CHECK(narrowest == 100 - 2 * 6,
-              "the outermost corner row is inset by the circle's own arithmetic");
+        CHECK(rr == 0, "a rounded box never uses the opaque hard-edged rounded-rect call");
+        CHECK(bands == 3, "it is three bands");
+        CHECK(tiles == 4, "plus four antialiased corner tiles, one per corner");
+        CHECK(widest == 100, "the middle band spans the full box width");
+        /* The cost claim, asserted rather than described: seven calls at r=10
+         * where the old translucent path took 21, and where it would take 61 at
+         * r=30. The slice count does not grow with the radius. */
+        CHECK(bands + tiles == 7, "seven calls, independent of the radius");
     }
 
     /* ---- text-decoration ----

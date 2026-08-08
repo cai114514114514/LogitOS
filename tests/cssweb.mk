@@ -25,7 +25,7 @@ $(BUILD)/css_audit: tests/unit/css_audit.c $(BUILD)/libcss_host.a \
                     c/apps/browser/browser_paint.c $(HTML_PARSER_SRC)
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_audit.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 
 audit-css: $(BUILD)/css_audit
@@ -69,7 +69,7 @@ $(NEGDIR)/css_audit_before: tests/unit/css_audit.c c/apps/browser/css_vars.c \
 	@ar r $(NEGDIR)/libcss_before.a $(NEGDIR)/language_before.o $(NEGDIR)/parse_before.o
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_audit.c \
 	    c/apps/browser/css_engine.c $(NEGDIR)/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(NEGDIR)/libcss_before.a
 
 # --- test-css-modern: the constructs a 2020s stylesheet is written in -------

@@ -1,12 +1,13 @@
 #include "aui.h"
+#include "gfx.h"
 
 /* ============================================================================
  * aui -- immediate-mode widgets over the gui_* syscalls.
  *
  * Layout of this file:
- *   1. small utilities (no libc: these apps link nothing but crt0 + logit.h)
+ *   1. small utilities (no libc: these apps link nothing but crt0 + gfx)
  *   2. theme tokens
- *   3. scale, and the coverage rasterizer that gives us anti-aliased shapes
+ *   3. scale, and the bridge from Open Logit's masks to SYS_GUI_BLIT
  *   4. drawing primitives built on it
  *   5. frame state: input, focus, clipping, translation, deferred popups
  *   6. layout stacks
@@ -16,7 +17,16 @@
  * per-pixel-alpha entry point is SYS_GUI_BLIT (fb_blit_rgba). So every smooth
  * thing in here -- rounded corners, rings, shadows, gradients, translucency --
  * is produced by rasterizing a small coverage mask in ring 3 and handing it to
- * that blit. Three consequences worth knowing before editing:
+ * that blit.
+ *
+ * WHERE THE RASTERIZER WENT. It used to be in this file. It is now
+ * c/lib/gfx -- Open Logit, the engine -- and this file is one of its clients,
+ * along with the browser's painter. There were three coverage/paint paths in
+ * this tree and a toolkit that could not be reused outside a window; the point
+ * of moving it was that there is now ONE, and that an app which needs a shape
+ * aui does not have can build a path and fill it instead of starting a fourth.
+ * The three properties the toolkit was built on are unchanged, because they are
+ * why it is cheap, and the engine inherited all three:
  *
  *   - Masks are rasterized in DEVICE pixels and blitted into a POINT rect whose
  *     device size is the same number, so the kernel's nearest-neighbour rescale
@@ -29,52 +39,66 @@
  *   - Masks are cached by their exact device geometry, so a screen full of
  *     controls that share a radius rasterizes one corner and reuses it.
  *
- * NO LIBC. Nothing here may call memset/memcpy -- clock.aex links crt0 + this
- * file and nothing else. Bulk clears go through zfill(), which writes through a
- * volatile pointer specifically so -O2's loop-idiom pass cannot rewrite it into
- * a memset call that would then fail to link.
+ * NO LIBC, still. Nothing here or in gfx may call memset/memcpy -- clock.aex
+ * links crt0 + this file + gfx and nothing else. Bulk clears go through
+ * gfx_zero(), which writes through a volatile pointer specifically so -O2's
+ * loop-idiom pass cannot rewrite it into a memset call that would then fail to
+ * link.
  * ========================================================================== */
+
+/* ------------------------------------------------- 0. cost instrumentation --
+ * -DAUI_COST (make bench-gfx-frame) puts a CLOCK_MONOTONIC bracket around every
+ * drawing syscall and sorts the time into three buckets, because the honest
+ * question about a rendering engine is not "what does a frame cost" but "what
+ * of the frame is the engine". The toolkit line already measured 24-27 ms for a
+ * full-window repaint and found the dominant cost was aui_begin()'s
+ * unconditional gui_clear plus text -- NOT the rasterized primitives. A number
+ * that does not separate those credits the engine with a cost it does not pay
+ * and hides one it does.
+ *
+ * The instrumentation itself costs a syscall per drawing call, so the buckets
+ * are to be read as a RATIO and the uninstrumented total comes from bench-aui.
+ * A build without AUI_COST compiles to exactly what it did before: the macros
+ * are absent, not empty. */
+#ifdef AUI_COST
+static unsigned long long ck_clear, ck_text, ck_shape, ck_other, ck_frames;
+static unsigned long long ck_t0;
+static unsigned ck_last;
+static void t0_(void) { ck_t0 = monotonic_ns(); }
+static void t1_(unsigned long long *b) { *b += monotonic_ns() - ck_t0; }
+/* The parenthesised callee suppresses the macro, so each of these wraps the
+ * real inline syscall rather than recursing. */
+static int tm_(const char *s, int n, int px, int mono)
+{ t0_(); int r = (text_measure_px)(s, n, px, mono); t1_(&ck_text); return r; }
+#define gui_clear(a)                 (t0_(), (gui_clear)(a), t1_(&ck_clear))
+#define gui_rect(a,b,c,d,e)          (t0_(), (gui_rect)(a,b,c,d,e), t1_(&ck_shape))
+#define gui_rrect(a,b,c,d,e,f)       (t0_(), (gui_rrect)(a,b,c,d,e,f), t1_(&ck_shape))
+#define gui_blit(a,b,c,d,e,f,g)      (t0_(), (gui_blit)(a,b,c,d,e,f,g), t1_(&ck_shape))
+#define gui_glass(a,b,c,d,e,f,g,h,i) (t0_(), (gui_glass)(a,b,c,d,e,f,g,h,i), t1_(&ck_shape))
+#define gui_icon(a,b,c,d,e)          (t0_(), (gui_icon)(a,b,c,d,e), t1_(&ck_shape))
+#define gui_text_run(a,b,c,d,e,f,g)  (t0_(), (gui_text_run)(a,b,c,d,e,f,g), t1_(&ck_text))
+#define gui_clip(a,b,c,d)            (t0_(), (gui_clip)(a,b,c,d), t1_(&ck_other))
+#define gui_flush()                  (t0_(), (gui_flush)(), t1_(&ck_other))
+#define text_measure_px(a,b,c,d)     tm_(a,b,c,d)
+#endif
 
 /* ------------------------------------------------------------ 1. utilities */
 
 static int slen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 
-static void zfill(unsigned char *p, int n)
-{
-    volatile unsigned char *q = (volatile unsigned char *)p;
-    while (n-- > 0) *q++ = 0;
-}
-
 static int imin(int a, int b) { return a < b ? a : b; }
 static int imax(int a, int b) { return a > b ? a : b; }
 static int iclamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-
-/* Integer square root of a 64-bit value (restoring, bit by bit). The rasterizer
- * runs entirely in 1/256-pixel fixed point; there is no FP anywhere in the
- * drawing path, matching the kernel's text rasterizer. */
-static unsigned long isqrt64(unsigned long long v)
-{
-    unsigned long long rem = v, root = 0, bit = 1ULL << 62;
-    while (bit > rem) bit >>= 2;
-    while (bit) {
-        if (rem >= root + bit) { rem -= root + bit; root = (root >> 1) + bit; }
-        else root >>= 1;
-        bit >>= 2;
-    }
-    return (unsigned long)root;
-}
 
 /* ---------------------------------------------------------------- 2. theme */
 
 static int theme_dark, theme_inited;
 struct aui_theme aui_t;
 
-unsigned aui_mix(unsigned a, unsigned b, int t)
-{
-    int ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
-    int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
-    return rgb(ar + (br - ar) * t / 255, ag + (bg - ag) * t / 255, ab + (bb - ab) * t / 255);
-}
+/* The channel lerp lives in the engine (gfx_mix): a gradient strip built by
+ * gfx and a two-tone token blended here have to land on the same byte, or a
+ * card's fill and the top of its own gradient differ by one and show a seam. */
+unsigned aui_mix(unsigned a, unsigned b, int t) { return gfx_mix(a, b, t); }
 
 unsigned aui_shade(unsigned c, int d)
 {
@@ -198,145 +222,22 @@ int aui_dev(int p)
  * at 150% instead of 7 and 8, and the missing column shows as a moving hairline. */
 static int devlen(int a, int len) { return aui_dev(a + len) - aui_dev(a); }
 
-/* ---- mask cache ----
- * Keyed by exact device geometry, so a frame full of AUI_R_MD controls
- * rasterizes one 8x8 quadrant and blits it 4*n times. */
-#define MASK_MAX  72                       /* largest tile edge, device px */
-/* Sized by what one FRAME asks for, not by what feels tidy. A page mixing
- * control radii, a stroked outline, badges and four elevations of shadow wants
- * a dozen distinct geometries; with eight slots the round-robin evicted a mask
- * that the same frame then asked for again, so every frame re-rasterized every
- * corner. Sixteen slots is 83 KB of BSS in an app that has megabytes. */
-#define NMASK     16
-#define MK_FILL   1                        /* filled corner quadrant       */
-#define MK_STROKE 2                        /* corner quadrant of a ring    */
-#define MK_SHADOW 3                        /* blurred corner of a shadow   */
-
-static unsigned char mdata[NMASK][MASK_MAX * MASK_MAX];
-static int mkind[NMASK], mkw[NMASK], mkh[NMASK], mkp[NMASK];
-static int mnext;
-
-/* Add `amt` of coverage over the half-open span [x0,x1), both in 1/256 px. */
-static void span_add(unsigned char *row, int n, long x0, long x1, int amt)
-{
-    long lim = (long)n * 256;
-    if (x0 < 0) x0 = 0;
-    if (x1 > lim) x1 = lim;
-    if (x1 <= x0) return;
-    int p0 = (int)(x0 >> 8), p1 = (int)((x1 - 1) >> 8);
-    if (p0 == p1) {
-        int v = row[p0] + amt * (int)(x1 - x0) / 256;
-        row[p0] = (unsigned char)(v > 255 ? 255 : v);
-        return;
-    }
-    int v = row[p0] + amt * (256 - (int)(x0 & 255)) / 256;
-    row[p0] = (unsigned char)(v > 255 ? 255 : v);
-    for (int p = p0 + 1; p < p1; p++) {
-        v = row[p] + amt;
-        row[p] = (unsigned char)(v > 255 ? 255 : v);
-    }
-    int tail = (int)(x1 & 255); if (!tail) tail = 256;
-    v = row[p1] + amt * tail / 256;
-    row[p1] = (unsigned char)(v > 255 ? 255 : v);
-}
-
-/* Left edge (1/256 px) of an ellipse quadrant with semi-axes (w,h) centred at
- * (w,h), at height y256 above the tile top. Returns w*256 when the sub-scanline
- * misses the ellipse entirely. */
-static long ellipse_left(int w, int h, long y256)
-{
-    long H = (long)h * 256;
-    long dy = H - y256;                       /* distance above the centre */
-    if (dy >= H) return (long)w * 256;        /* at or above the top: empty */
-    if (dy < 0) dy = 0;
-    long half = (long)isqrt64((unsigned long long)(H * H - dy * dy));
-    return (long)w * 256 - (long)w * half / (h ? h : 1);
-}
-
-/* Top-left quadrant of a filled rounded corner: 4x vertical oversampling, exact
- * fractional horizontal coverage. Same construction as the kernel's glyph
- * rasterizer -- which is the point: the corners and the type it sits next to are
- * then anti-aliased by the same rule and match at the same size. */
-static void raster_fill_corner(unsigned char *m, int w, int h)
-{
-    zfill(m, w * h);
-    for (int j = 0; j < h; j++) {
-        unsigned char *row = m + (long)j * w;
-        for (int k = 0; k < 4; k++) {
-            long y256 = (long)j * 256 + k * 64 + 32;
-            span_add(row, w, ellipse_left(w, h, y256), (long)w * 256, 64);
-        }
-    }
-}
-
-/* The same quadrant, hollowed by `t` device pixels: the coverage between the
- * outer ellipse (semi-axes w,h) and the inner one (w-t,h-t), both centred at
- * (w,h). Drawing a ring as "fill, then fill the inside with the background" is
- * what makes a stroked control show a seam over a gradient or glass. */
-static void raster_stroke_corner(unsigned char *m, int w, int h, int t)
-{
-    zfill(m, w * h);
-    if (t <= 0) return;
-    int iw = w - t, ih = h - t;
-    for (int j = 0; j < h; j++) {
-        unsigned char *row = m + (long)j * w;
-        for (int k = 0; k < 4; k++) {
-            long y256 = (long)j * 256 + k * 64 + 32;
-            long xo = ellipse_left(w, h, y256);
-            /* The inner ellipse is inset by t in BOTH axes, so its own tile
-             * frame starts t pixels down and t pixels right of this one. Both
-             * shifts are needed: shifting only x (which is the easy half to
-             * remember) leaves the ring measurably thin near the diagonal and
-             * pinched to nothing at the ends of the arc. */
-            long xi = (iw > 0 && ih > 0)
-                        ? ellipse_left(iw, ih, y256 - (long)t * 256) + (long)t * 256
-                        : (long)w * 256;
-            if (xi > (long)w * 256) xi = (long)w * 256;
-            span_add(row, w, xo, xi, 64);
-        }
-    }
-}
-
-static int falloff(long d256, long blur256)
-{
-    if (d256 <= 0) return 255;
-    if (blur256 <= 0 || d256 >= blur256) return 0;
-    long t = d256 * 256 / blur256;            /* 0..256 */
-    long u = 256 - t;
-    return (int)(255 * u * u / 65536);        /* quadratic ease-out */
-}
-
-/* Blurred top-left corner of a drop shadow. The tile is (blur+r) square, the
- * rect's rounded corner arc is centred at the tile's bottom-right with radius
- * `r`, and alpha falls off over `blur` outside it. */
-static void raster_shadow_corner(unsigned char *m, int w, int h, int r)
-{
-    long blur = (long)(w - r) * 256;
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            long dx = (long)w * 256 - ((long)i * 256 + 128);
-            long dy = (long)h * 256 - ((long)j * 256 + 128);
-            if (dx < 0) dx = 0;
-            if (dy < 0) dy = 0;
-            long d = (long)isqrt64((unsigned long long)(dx * dx + dy * dy)) - (long)r * 256;
-            m[(long)j * w + i] = (unsigned char)falloff(d, blur);
-        }
-    }
-}
-
-static const unsigned char *mask_get(int kind, int w, int h, int p)
-{
-    if (w <= 0 || h <= 0 || w > MASK_MAX || h > MASK_MAX) return 0;
-    for (int i = 0; i < NMASK; i++)
-        if (mkind[i] == kind && mkw[i] == w && mkh[i] == h && mkp[i] == p)
-            return mdata[i];
-    int s = mnext; mnext = (mnext + 1) % NMASK;
-    mkind[s] = kind; mkw[s] = w; mkh[s] = h; mkp[s] = p;
-    if (kind == MK_FILL)        raster_fill_corner(mdata[s], w, h);
-    else if (kind == MK_STROKE) raster_stroke_corner(mdata[s], w, h, p);
-    else                        raster_shadow_corner(mdata[s], w, h, p);
-    return mdata[s];
-}
+/* ---- the engine's masks, and how they reach the screen ----
+ *
+ * gfx_mask_corner() rasterizes and caches a corner tile keyed by its exact
+ * DEVICE geometry; the names below are the toolkit's local vocabulary for the
+ * engine's kinds. tests/unit/aui_mask_test.c reaches these directly -- it has
+ * its own, independently written 16x supersampled reference, so keeping it
+ * pointed at the toolkit's entry points means the engine is now checked against
+ * TWO references that share no code. */
+#define MASK_MAX             GFX_MASK_MAX
+#define MK_FILL              GFX_MASK_FILL
+#define MK_STROKE            GFX_MASK_RING
+#define MK_SHADOW            GFX_MASK_SHADOW
+#define raster_fill_corner   gfx_corner_fill
+#define raster_stroke_corner gfx_corner_ring
+#define raster_shadow_corner gfx_corner_shadow
+#define mask_get             gfx_mask_corner
 
 /* ---- getting a mask onto the screen ---- */
 static unsigned char rgba_buf[MASK_MAX * MASK_MAX * 4];
@@ -345,27 +246,15 @@ static unsigned char grad_buf[GRAD_MAX * 4];
 
 /* Blit a coverage tile into the point rect (x,y,w,h), optionally mirrored. The
  * source is generated at the rect's exact device size, so the kernel's rescale
- * is a no-op and the anti-aliasing survives at any backing scale. */
+ * is a no-op and the anti-aliasing survives at any backing scale. One
+ * rasterized quadrant serves all four corners, which is what the mirroring is
+ * for. */
 static void blit_mask(int x, int y, int w, int h, const unsigned char *cov,
                       int cw, int ch, unsigned color, int alpha, int fx, int fy)
 {
     if (!cov || cw <= 0 || ch <= 0 || w <= 0 || h <= 0) return;
     if ((long)cw * ch * 4 > (long)sizeof rgba_buf) return;
-    int r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255;
-    for (int j = 0; j < ch; j++) {
-        int sj = fy ? ch - 1 - j : j;
-        unsigned char *d = rgba_buf + (long)j * cw * 4;
-        const unsigned char *s = cov + (long)sj * cw;
-        for (int i = 0; i < cw; i++) {
-            int si = fx ? cw - 1 - i : i;
-            int a = s[si];
-            if (alpha < 255) a = a * alpha / 255;
-            d[i * 4 + 0] = (unsigned char)r;
-            d[i * 4 + 1] = (unsigned char)g;
-            d[i * 4 + 2] = (unsigned char)b;
-            d[i * 4 + 3] = (unsigned char)a;
-        }
-    }
+    gfx_mask_to_rgba(rgba_buf, cov, cw, ch, color, alpha, fx, fy);
     gui_blit(x, y, w, h, rgba_buf, cw, ch);
 }
 
@@ -570,13 +459,7 @@ void aui_vgrad(int x, int y, int w, int h, unsigned top, unsigned bot)
     int n = devlen(Y_(y), h);
     if (n <= 0) return;
     if (n > GRAD_MAX) n = GRAD_MAX;       /* subsample; the kernel rescales it back */
-    for (int j = 0; j < n; j++) {
-        unsigned c = aui_mix(top, bot, n > 1 ? j * 255 / (n - 1) : 0);
-        grad_buf[j * 4 + 0] = (unsigned char)((c >> 16) & 255);
-        grad_buf[j * 4 + 1] = (unsigned char)((c >> 8) & 255);
-        grad_buf[j * 4 + 2] = (unsigned char)(c & 255);
-        grad_buf[j * 4 + 3] = 255;
-    }
+    gfx_gradient_strip(grad_buf, n, top, bot, 255);
     gui_blit(X_(x), Y_(y), w, h, grad_buf, 1, n);   /* sw = 1: replicated across x */
 }
 
@@ -586,13 +469,7 @@ void aui_hgrad(int x, int y, int w, int h, unsigned l, unsigned r)
     int n = devlen(X_(x), w);
     if (n <= 0) return;
     if (n > GRAD_MAX) n = GRAD_MAX;
-    for (int i = 0; i < n; i++) {
-        unsigned c = aui_mix(l, r, n > 1 ? i * 255 / (n - 1) : 0);
-        grad_buf[i * 4 + 0] = (unsigned char)((c >> 16) & 255);
-        grad_buf[i * 4 + 1] = (unsigned char)((c >> 8) & 255);
-        grad_buf[i * 4 + 2] = (unsigned char)(c & 255);
-        grad_buf[i * 4 + 3] = 255;
-    }
+    gfx_gradient_strip(grad_buf, n, l, r, 255);
     gui_blit(X_(x), Y_(y), w, h, grad_buf, n, 1);
 }
 
@@ -642,7 +519,7 @@ static void shadow_edge(int x, int y, int w, int h, int n, int vertical,
     for (int k = 0; k < n; k++) {
         int kk = reverse ? k : n - 1 - k;            /* distance from the box edge */
         long d = (long)kk * 256 + 128;
-        int a = falloff(d, blur) * alpha / 255;
+        int a = gfx_shadow_falloff(d, blur) * alpha / 255;
         grad_buf[k * 4 + 0] = (unsigned char)((color >> 16) & 255);
         grad_buf[k * 4 + 1] = (unsigned char)((color >> 8) & 255);
         grad_buf[k * 4 + 2] = (unsigned char)(color & 255);
@@ -921,6 +798,43 @@ void aui_begin(unsigned bg)
 static void draw_popup(void);
 static void draw_tip(void);
 
+#ifdef AUI_COST
+/* Print the split on the serial console every two seconds, in the same shape
+ * gallery.c uses for its own frame total so one harness can read both. */
+static void ck_report(void)
+{
+    ck_frames++;
+    unsigned now = (unsigned)monotonic_ms();
+    if (!ck_last) { ck_last = now; return; }
+    if (now - ck_last < 2000) return;
+    ck_last = now;
+    unsigned long long n = ck_frames ? ck_frames : 1;
+    unsigned long long shape_us = ck_shape / 1000 / n;
+    unsigned long long clear_us = ck_clear / 1000 / n;
+    unsigned long long text_us = ck_text / 1000 / n;
+    unsigned long long other_us = ck_other / 1000 / n;
+    char b[160]; int q = 0;
+    const char *k;
+    char t[24];
+    #define PUT(str) do { k = (str); while (*k) b[q++] = *k++; } while (0)
+    #define NUM(v) do { unsigned long long _v = (v); int _i = 0; \
+                        if (!_v) t[_i++] = '0'; \
+                        while (_v) { t[_i++] = (char)('0' + _v % 10); _v /= 10; } \
+                        while (_i) b[q++] = t[--_i]; } while (0)
+    PUT("[gfx] w="); NUM((unsigned)win_w);
+    PUT(" frames=");  NUM(ck_frames);
+    PUT(" clear_us="); NUM(clear_us);
+    PUT(" text_us=");  NUM(text_us);
+    PUT(" shape_us="); NUM(shape_us);
+    PUT(" other_us="); NUM(other_us);
+    b[q++] = '\n';
+    #undef PUT
+    #undef NUM
+    sys_write(1, b, q);
+    ck_clear = ck_text = ck_shape = ck_other = ck_frames = 0;
+}
+#endif
+
 void aui_end(void)
 {
     ox_ = oy_ = 0; clipn = 0; gui_clip(0, 0, 0, 0);
@@ -932,6 +846,9 @@ void aui_end(void)
     wbb = wbb_next; wbb_any = wbb.w > 0;
     rg_lo = rg_lo_a; rg_hi = rg_hi_a;      /* the radio range this frame observed */
     gui_flush();
+#ifdef AUI_COST
+    ck_report();
+#endif
 }
 
 /* -------------------------------------------------------- 6. layout stacks */

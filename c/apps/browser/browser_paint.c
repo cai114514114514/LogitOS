@@ -6,8 +6,20 @@
  * the window surface back. That single constraint decides most of the design
  * below: alpha is done by blitting a 1x1 RGBA source (gui_blit is the only
  * primitive that blends), and group opacity on text is folded into the text
- * COLOUR against an estimated backdrop rather than composited. */
+ * COLOUR against an estimated backdrop rather than composited.
+ *
+ * GEOMETRY IS NOT THIS FILE'S JOB ANY MORE. Rounded corners used to be worked
+ * out here -- an integer square root and a per-row band loop, which made this
+ * the third coverage/paint path in the tree. They now come from c/lib/gfx
+ * (Open Logit), the same engine the widget toolkit draws with, so a page's
+ * border-radius and a button's corner are antialiased by the same rule at the
+ * same size. Two consequences worth knowing: border-radius is no longer a
+ * STAIRCASE (the opaque path went through gui_rrect, whose corner test is the
+ * boolean dx*dx + dy*dy <= r*r), and a rounded box now costs a fixed seven
+ * calls -- three bands plus four corner tiles -- instead of one for the opaque
+ * case and 2*radius+1 blended strips for the translucent one. */
 #include "logit.h"
+#include "gfx.h"
 #include "layout.h"
 #include "browser_paint.h"
 
@@ -40,14 +52,15 @@ static uint32_t pack_rgb(int r, int g, int b)
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
-/* `a` of `top` over `base`, a in 0..255. */
+/* `a` of `top` over `base`, a in 0..255. The channel lerp is the engine's, so
+ * a colour folded together here and one produced by a gfx gradient land on the
+ * same byte -- otherwise a card's flat fill and the top of its own gradient
+ * differ by one and show a seam. */
 static uint32_t mix(uint32_t base, uint32_t top, int a)
 {
     if (a >= 255) return top;
     if (a <= 0) return base;
-    return pack_rgb((chan_r(top) * a + chan_r(base) * (255 - a)) / 255,
-                    (chan_g(top) * a + chan_g(base) * (255 - a)) / 255,
-                    (chan_b(top) * a + chan_b(base) * (255 - a)) / 255);
+    return gfx_mix(base, top, a);
 }
 
 /* Lighten (pct > 0) or darken (pct < 0) toward white/black. This is how the
@@ -62,19 +75,34 @@ static uint32_t shade(uint32_t c, int pct)
     return pack_rgb(r + r * pct / 100, g + g * pct / 100, b + b * pct / 100);
 }
 
-static int isqrt_(int v)
+/* ---- points -> device pixels ----
+ * Everything the painter handles is in POINTS; the compositor multiplies by the
+ * display's backing scale. The engine's masks have to be generated at DEVICE
+ * size so the compositor's nearest-neighbour rescale of the blit is the
+ * identity -- a mask made at 1x and stretched to a 2x window is a blurry mask
+ * of a sharp shape, which is worse than the staircase it replaced. devlen()
+ * converts a SPAN as the difference of two converted edges rather than
+ * converting the length: two abutting 5-point columns must become 7 and 8
+ * device pixels at 150%, not 7 and 7, or the missing column shows as a moving
+ * hairline. */
+static int scale_pct;
+static int dev(int p)
 {
-    if (v <= 0) return 0;
-    /* Digit-by-digit binary square root. `bit` MUST start at a power of FOUR
-     * (2^30 here, not 2^31 or 2^15) or the restoring step is off by a shift. */
-    int r = 0, bit = 1 << 30;
-    while (bit > v) bit >>= 2;
-    while (bit) {
-        if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; }
-        else r >>= 1;
-        bit >>= 2;
-    }
-    return r;
+    if (!scale_pct) { scale_pct = ui_scale(); if (scale_pct < 100) scale_pct = 100; }
+    return p >= 0 ? p * scale_pct / 100 : -(((-p) * scale_pct + 99) / 100);
+}
+static int devlen(int a, int len) { return dev(a + len) - dev(a); }
+
+/* One corner tile, expanded to RGBA and blitted into a POINT rect of the same
+ * device size. One rasterized quadrant serves all four corners; the mirroring
+ * is what makes that true. */
+static unsigned char corner_rgba[GFX_MASK_MAX * GFX_MASK_MAX * 4];
+static void corner_blit(int x, int y, int r, const unsigned char *cov,
+                        int cw, int ch, uint32_t color, int alpha, int fx, int fy)
+{
+    if (!cov || cw <= 0 || ch <= 0 || r <= 0) return;
+    gfx_mask_to_rgba(corner_rgba, cov, cw, ch, color, alpha, fx, fy);
+    gui_blit(x, y, r, r, corner_rgba, cw, ch);
 }
 
 /* ---- the device clip ----
@@ -118,25 +146,34 @@ static void fill(int x, int y, int w, int h, uint32_t color, int alpha)
     gui_blit(x0, y0, x1 - x0, y1 - y0, px, 1, 1);
 }
 
-/* A rounded fill that can be translucent. The opaque case still goes through
- * gui_rrect (one syscall, and the kernel's own corner test); the translucent
- * case is banded -- one blended strip per row of the two corner zones plus a
- * single strip for the straight middle, i.e. 2*radius + 1 calls rather than
- * one per pixel row of the whole box. */
+/* A rounded fill, opaque or translucent, as a 9-SLICE: three bands that are
+ * ordinary rectangles plus four r x r corner tiles from the engine's cache. So
+ * it costs O(r^2) of rasterization and not O(w*h), and the second box on the
+ * page with the same radius rasterizes nothing at all.
+ *
+ * Both cases go this way now. The opaque one used to call gui_rrect, which is
+ * one syscall but whose corner test is the boolean `dx*dx + dy*dy <= r*r` -- a
+ * staircase, and on a page full of cards the loudest thing in the viewport.
+ * Seven calls for an antialiased corner is the right trade, and the translucent
+ * case got CHEAPER in the same move (it was 2*radius + 1 blended strips). */
 static void fill_round(int x, int y, int w, int h, int r, uint32_t color, int alpha)
 {
     if (w <= 0 || h <= 0 || alpha <= 0) return;
-    if (alpha >= 255) { gui_rrect(x, y, w, h, r, color); return; }
-    if (r <= 0) { fill(x, y, w, h, color, alpha); return; }
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
-    for (int j = 0; j < r; j++) {
-        int dy = r - 1 - j;                        /* rows above the corner centre */
-        int dx = r - isqrt_(r * r - dy * dy);
-        fill(x + dx, y + j, w - 2 * dx, 1, color, alpha);
-        fill(x + dx, y + h - 1 - j, w - 2 * dx, 1, color, alpha);
-    }
-    fill(x, y + r, w, h - 2 * r, color, alpha);
+    if (r <= 0) { fill(x, y, w, h, color, alpha); return; }
+    int cw = devlen(x, r), ch = devlen(y, r);
+    const unsigned char *cov = gfx_mask_corner(GFX_MASK_FILL, cw, ch, 0);
+    /* A radius past the cache's tile limit is still drawn, just square: a
+     * missing background is a worse answer than a sharp corner. */
+    if (!cov) { fill(x, y, w, h, color, alpha); return; }
+    fill(x + r, y,         w - 2 * r, r,         color, alpha);
+    fill(x,     y + r,     w,         h - 2 * r, color, alpha);
+    fill(x + r, y + h - r, w - 2 * r, r,         color, alpha);
+    corner_blit(x,         y,         r, cov, cw, ch, color, alpha, 0, 0);
+    corner_blit(x + w - r, y,         r, cov, cw, ch, color, alpha, 1, 0);
+    corner_blit(x,         y + h - r, r, cov, cw, ch, color, alpha, 0, 1);
+    corner_blit(x + w - r, y + h - r, r, cov, cw, ch, color, alpha, 1, 1);
 }
 
 /* ---- borders ----

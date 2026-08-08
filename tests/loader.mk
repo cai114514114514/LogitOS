@@ -35,7 +35,7 @@ LOADER_SRC := tests/unit/loader_test.c tests/unit/loader_fakebfetch.c \
               c/apps/browser/js_webapi.c c/apps/browser/js_module.c \
               c/apps/browser/tabs.c \
               c/net/http/url.c c/net/http/http1.c c/net/http/cookies.c \
-              tests/unit/rust_host_shim.c $(HTML_PARSER_SRC)
+              tests/unit/rust_host_shim.c $(GFX_SRC) $(HTML_PARSER_SRC)
 test-loader: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) \
 	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $(BUILD)/loader_test \

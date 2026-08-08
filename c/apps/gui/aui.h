@@ -31,17 +31,24 @@
  * aui_want_repaint() answers "did the last event actually change anything I
  * would draw", so an app can feed motion without repainting 100 times a second.
  *
- * WHY THERE IS A RASTERIZER IN HERE. The kernel's drawing surface has exactly
- * one anti-aliased primitive -- text (SYS_GUI_TEXT_RUN) -- plus vector icons.
- * Its rectangle calls are hard-edged: SYS_GUI_RRECT's corner test in
+ * WHY THE SHAPES ARE SMOOTH. The kernel's drawing surface has exactly one
+ * anti-aliased primitive -- text (SYS_GUI_TEXT_RUN) -- plus vector icons. Its
+ * rectangle calls are hard-edged: SYS_GUI_RRECT's corner test in
  * fb_round_rect() is a boolean `dx*dx + dy*dy <= r*r`, so a rounded corner is a
  * staircase, and that staircase is the single loudest thing that dates the UI.
  * What the kernel DOES give us is SYS_GUI_BLIT, which blends a straight-RGBA
- * bitmap into the window with per-pixel alpha. So aui carries its own small
- * coverage rasterizer (same idea as the M14 text rasterizer: 4x vertical
- * oversampling, fractional horizontal coverage, integer only) and reaches the
- * screen through that one blending primitive. Nothing here needs a kernel
- * change; see the cost notes on aui_round() for why it is not expensive.
+ * bitmap into the window with per-pixel alpha. So every smooth thing here is a
+ * coverage mask rasterized in ring 3 and handed to that one blending call.
+ * Nothing in this toolkit needs a kernel change; see the cost notes on
+ * aui_round() for why it is not expensive.
+ *
+ * THE RASTERIZER IS NOT IN HERE ANY MORE. It is `c/lib/gfx` -- Open Logit, the
+ * 2D engine -- and aui is one of its clients. An app that needs a shape the
+ * toolkit does not have should include "gfx.h", build a path and fill it,
+ * rather than starting a fourth rasterizer; the engine does paths (with
+ * quadratics and cubics), both fill rules, an affine transform, four paints
+ * (solid / linear gradient / radial gradient / image), src-over compositing and
+ * a rect clip. Stroke and path clipping are its phase 2 and do not exist yet.
  * ========================================================================== */
 
 /* ---------------------------------------------------------------- tokens --

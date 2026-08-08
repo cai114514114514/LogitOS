@@ -186,6 +186,17 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
              c/net/http/hpack.c c/net/http/http2.c
 #
+# c/lib/gfx -- Open Logit, the 2D rendering engine -- is excluded for the same
+# reason. It is a RING-3 library: the widget toolkit and the browser's painter
+# link it, and both run in ring 3, which is where the one per-pixel-alpha
+# primitive (SYS_GUI_BLIT) is reachable. Nothing in the kernel fills a path --
+# fb.c's shapes are hard-edged by design and its ONE antialiased primitive is
+# the M14 glyph rasterizer, a different and much narrower job. Linking the
+# engine into the kernel would put a rasterizer for attacker-shaped geometry
+# (a page's border-radius, an SVG's path data) at the highest privilege in the
+# machine, under the BKL, to serve no ring-0 caller. See GFX_OBJ below for who
+# does link it.
+#
 # c/lib/audio is excluded for exactly the reason c/lib/video is. An image is
 # decoded once, so the image codecs can sit behind SYS_IMG_DECODE; audio is
 # decoded continuously for the length of a track, holds hundreds of kilobytes
@@ -202,7 +213,7 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # sizes and raw file offsets. It allocates continuously with malloc/realloc/free
 # as it builds a sample index. Putting that in ring 0 under the BKL is not a
 # thing to do. See MED_OBJ in tests/demux.mk for who does link it.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/gfx/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -274,17 +285,30 @@ APPDIR := c/apps
 # GUIDIR = windowed apps (link logit.h + crt0.asm); CLIDIR = shell + coreutils (clib.h + crt0_cli.asm)
 GUIDIR := c/apps/gui
 CLIDIR := c/apps/coreutils
+# --- Open Logit: the 2D rendering engine (c/lib/gfx) ------------------------
+# Paths (line/quad/cubic), a scanline coverage rasterizer, both fill rules, an
+# affine transform, four paints and src-over compositing. RING 3 (see the
+# C_SRC note above), compiled once with UCFLAGS and linked into everything
+# that draws a shape: every GUI app through aui, plus the browser's painter.
+# It links no libc -- clock.aex is crt0 + aui + this and nothing else -- so it
+# has to stay that way; a stray memset would break six apps at link time.
+GFX_SRC := $(sort $(wildcard c/lib/gfx/*.c))
+GFX_OBJ := $(patsubst c/lib/gfx/%.c,$(BUILD)/apps/gfx_%.o,$(GFX_SRC))
+$(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c c/lib/gfx/gfx.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c $< -o $@
+
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
-$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h
+$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/gfx.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
 define APP_RULE
-$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
+$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
-	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o
+	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ '$(3)' $(4) '$(5)' $(6) $(7) $(8)
 endef
@@ -313,11 +337,11 @@ $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 $(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o c/apps/as/complete.h
+$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/complete.o c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(BUILD)/apps/complete.o
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/complete.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -441,8 +465,8 @@ $(BUILD)/cssobj/%.o: %.c
 BROWSER_JS_SRC := c/apps/browser/browser.c $(sort $(wildcard c/apps/browser/js_*.c))
 BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 
-$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 
 # The browser's heap. The shared libc arena (24 MiB, sized as a JS heap) ran dry
 # while LibCSS parsed github.com's ~3 MiB of stylesheets: malloc returned NULL
@@ -673,12 +697,12 @@ $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 # frames and an untrusted-input parser do not belong under the big lock.
 $(BUILD)/terminal.elf: $(GUIDIR)/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
                        $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(APPDIR)/crt0.asm \
-                       $(BUILD)/apps/aui.o $(VID_OBJ) $(LIBC_OBJS)
+                       $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/terminal.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal.c -o $(BUILD)/apps/terminal.o
 	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
-	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o \
+	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
 	    $(VID_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/terminal.aex: $(BUILD)/terminal.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/terminal.elf $@ Terminal - '>' 70 80 100
@@ -2070,7 +2094,11 @@ test-malloc:
 # The tests self-stub kmalloc/kfree/img_* so they link the real pipeline
 # sources (dom/css_engine/css_vars/layout/js_dom) on the host. LibCSS is
 # archived once per build tree (libcss_host.a) and shared by the CSS tests.
-BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text
+# -Ic/lib/gfx: browser_paint.c draws through Open Logit, so every host build
+# that links the painter needs the engine's header AND $(GFX_SRC) in its
+# source list. The two travel together -- adding the include without the
+# sources fails at link with five undefined gfx_* symbols.
+BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx
 # The painter draws through logit.h's `int 0x80` wrappers, which a host process
 # cannot execute. tests/unit/painthost/logit.h shadows them with recorders, so
 # paint_test links the REAL browser_paint.c and asserts on the draw ops. It must
@@ -2131,7 +2159,7 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    $(BUILD)/libcss_host.a
 	@$(BUILD)/layout_test
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_test tests/unit/paint_test.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(HTML_PARSER_SRC) \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
 	@$(BUILD)/paint_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
@@ -2432,7 +2460,7 @@ test-css-asan: $(BUILD)/libcss_host.a
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/layout_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_asan tests/unit/paint_test.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(HTML_PARSER_SRC) \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/paint_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
@@ -2547,7 +2575,7 @@ $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
                     c/apps/browser/browser_paint.c $(HTML_PARSER_SRC)
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_bench.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 
 bench-css: $(BUILD)/css_bench
@@ -3031,8 +3059,8 @@ clean:
 # right" that is cheap to get wrong and cheap to check.
 test-aui-mask:
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -Ic/apps/gui -Ic/apps -Iinclude -Iinclude/abi \
-	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c -lm
+	$(CC) -O1 -g -Wall -Wextra -Ic/apps/gui -Ic/apps -Ic/lib/gfx -Iinclude -Iinclude/abi \
+	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c $(GFX_SRC) -lm
 	$(BUILD)/aui_mask_test
 
 # --- the aui gallery is the toolkit's visual regression test -----------------
@@ -3052,17 +3080,17 @@ test-aui-mask:
 test-aui: $(ISO) $(DISK)
 	bash tests/boot/run-aui-test.sh $(ISO) $(DISK)
 
-$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h
+$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/gfx.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DAUI_NO_AA -c $(GUIDIR)/aui.c -o $@
 
 $(BUILD)/gallery_noaa.elf: $(GUIDIR)/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_noaa.o
+                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_noaa.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_noaa.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery.c -o $(BUILD)/apps/gallery_noaa.o
 	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_noaa.crt0.o \
-	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o
+	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o $(GFX_OBJ)
 $(BUILD)/gallery_noaa.aex: $(BUILD)/gallery_noaa.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery_noaa.elf $@ 'Gallery' - 'G' 120 140 250
 
@@ -3088,12 +3116,12 @@ test-monitor: $(ISO) $(DISK)
 # refused, so the refusal assertion and all three "it is gone" assertions fail.
 # The target succeeds when the test fails.
 $(BUILD)/monitor_negctl.elf: $(GUIDIR)/monitor.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                             $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
+                             $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/monitor_negctl.crt0.o
 	$(CC) $(UCFLAGS) -DMONITOR_NEGCTL -c $(GUIDIR)/monitor.c -o $(BUILD)/apps/monitor_negctl.o
 	$(LD) -nostdlib -e _start -Ttext=0x42000000 -o $@ $(BUILD)/apps/monitor_negctl.crt0.o \
-	    $(BUILD)/apps/monitor_negctl.o $(BUILD)/apps/aui.o
+	    $(BUILD)/apps/monitor_negctl.o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/monitor_negctl.aex: $(BUILD)/monitor_negctl.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/monitor_negctl.elf $@ 'Monitor' - 'M' 255 100 100
 
@@ -3125,6 +3153,12 @@ test-aui-negctl: $(ISO)
 # prints it on the serial console.
 bench-aui: $(ISO) $(DISK)
 	bash tests/boot/run-aui-bench.sh $(ISO) $(DISK)
+
+# Open Logit, the 2D rendering engine: accuracy against a 16x supersampled
+# reference, compositing against the Porter-Duff formula in double, the
+# negative control, and the cost. Own fragment for the same reason as every
+# other one above.
+-include tests/gfx.mk
 
 # The CI this repository did not have: `make test-audit` (tests that cannot
 # fail) and `make ci` (build from a clean clone of HEAD, then the suites). Own
