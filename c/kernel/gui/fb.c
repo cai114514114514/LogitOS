@@ -184,6 +184,50 @@ void fb_put(int x, int y, uint32_t color)
     s->px[y * s->w + x] = color;
 }
 
+/* ---- the clip as a LOOP BOUND, not a per-pixel test ------------------------
+ *
+ * fb_put has always tested the clip and dropped the pixel, which is correct and
+ * was cheap enough while the clip was only ever an app's own scissor. It stops
+ * being cheap the moment the COMPOSITOR draws the whole scene clipped to a
+ * damage rectangle: the work a damage rectangle exists to remove is precisely
+ * "iterate every pixel of a 1180x620 window and throw them away".
+ *
+ * So every rect-shaped primitive below asks for its surviving index range up
+ * front. i and j keep their original meaning -- they index the SHAPE, not the
+ * screen -- so a gradient row, a rounded corner or a glyph's coverage byte is
+ * computed from exactly the same j it always was; only the rows and columns
+ * that would have been discarded are never visited. Output is unchanged, which
+ * is the property tests/unit/fb_clip_test.c pins down.
+ *
+ * Returns 0 when nothing survives. */
+static int clip_ij(int x, int y, int w, int h, int *i0, int *j0, int *i1, int *j1)
+{
+    struct surface *s = T ? T : &screen;
+    if (!s->px || w <= 0 || h <= 0) return 0;
+    int cx0 = 0, cy0 = 0, cx1 = s->w, cy1 = s->h;
+    if (s->clip_on) {
+        if (s->clx0 > cx0) cx0 = s->clx0;
+        if (s->cly0 > cy0) cy0 = s->cly0;
+        if (s->clx1 < cx1) cx1 = s->clx1;
+        if (s->cly1 < cy1) cy1 = s->cly1;
+    }
+    *i0 = cx0 - x; if (*i0 < 0) *i0 = 0;
+    *j0 = cy0 - y; if (*j0 < 0) *j0 = 0;
+    *i1 = cx1 - x; if (*i1 > w) *i1 = w;
+    *j1 = cy1 - y; if (*j1 > h) *j1 = h;
+    return *i0 < *i1 && *j0 < *j1;
+}
+
+/* Is this pixel of the CURRENT TARGET writable? For the two primitives that
+ * write s->px straight (the blur and the glass, which read a neighbourhood and
+ * so cannot be expressed as a clamped loop over their own output). */
+static int clip_px(const struct surface *s, int x, int y)
+{
+    if (x < 0 || y < 0 || x >= s->w || y >= s->h) return 0;
+    if (s->clip_on && (x < s->clx0 || y < s->cly0 || x >= s->clx1 || y >= s->cly1)) return 0;
+    return 1;
+}
+
 static uint32_t fb_get(int x, int y)
 {
     struct surface *s = T ? T : &screen;
@@ -211,19 +255,22 @@ void fb_target(struct surface *s)
  * (bounds-clamped once), not per-pixel fb_put. The browser's 1180x620 surface
  * is ~700K pixels; per-pixel fb_put (call + bounds check each) cost ~60-100 ms
  * under TCG and dominated every frame -- this is several times faster. */
+/* HONOURS THE TARGET CLIP, which it did not before. That is what lets the
+ * compositor blit only the part of an app's canvas that lies inside the damage
+ * rectangle instead of copying the whole 1180x620 surface for a one-line
+ * repaint -- and, more importantly, it is what guarantees a partial frame
+ * cannot write a single pixel outside the region it is allowed to touch. The
+ * old version was unclipped because the only caller was a full composite. */
 void fb_blit_surface(int dx, int dy, const struct surface *src)
 {
     struct surface *t = T;
     if (!t || !t->px || !src->px) return;
-    for (int y = 0; y < src->h; y++) {
-        int ty = dy + y;
-        if (ty < 0 || ty >= t->h) continue;
-        int x0 = 0, x1 = src->w;
-        if (dx + x0 < 0) x0 = -dx;
-        if (dx + x1 > t->w) x1 = t->w - dx;
+    int i0, j0, i1, j1;
+    if (!clip_ij(dx, dy, src->w, src->h, &i0, &j0, &i1, &j1)) return;
+    for (int y = j0; y < j1; y++) {
         const uint32_t *srow = src->px + (uint32_t)y * src->w;
-        uint32_t *drow = t->px + (uint32_t)ty * t->w + dx;
-        for (int x = x0; x < x1; x++) drow[x] = srow[x];
+        uint32_t *drow = t->px + (uint32_t)(dy + y) * t->w + dx;
+        for (int x = i0; x < i1; x++) drow[x] = srow[x];
     }
 }
 
@@ -233,17 +280,14 @@ void fb_blit_surface_scaled(int dx, int dy, int dw, int dh, const struct surface
 {
     struct surface *t = T ? T : &screen;
     if (!t->px || !src->px || dw <= 0 || dh <= 0) return;
-    for (int j = 0; j < dh; j++) {
-        int ty = dy + j;
-        if (ty < 0 || ty >= t->h) continue;
-        int sy = j * src->h / dh;
+    int i0, j0, i1, j1;
+    if (!clip_ij(dx, dy, dw, dh, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
+        int sy = j * src->h / dh;               /* still against the FULL dest rect */
         const uint32_t *srow = src->px + (uint32_t)sy * src->w;
-        uint32_t *drow = t->px + (uint32_t)ty * t->w;
-        for (int i = 0; i < dw; i++) {
-            int tx = dx + i;
-            if (tx < 0 || tx >= t->w) continue;
-            drow[tx] = srow[i * src->w / dw];
-        }
+        uint32_t *drow = t->px + (uint32_t)(dy + j) * t->w;
+        for (int i = i0; i < i1; i++)
+            drow[dx + i] = srow[i * src->w / dw];
     }
 }
 
@@ -272,10 +316,29 @@ void fb_set_present_par(void (*fn)(int, int, int, int)) { g_par_present = fn; }
 
 void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
 
+/* Pixels actually pushed to the display since boot, and the number of pushes.
+ * Clamped, so a caller that hands in a rect hanging off the edge is charged for
+ * what was really copied and not for what it asked for. */
+static uint64_t present_px, present_calls;
+uint64_t fb_present_px(void)    { return present_px; }
+uint64_t fb_present_calls(void) { return present_calls; }
+
 /* Push one rectangle of the back buffer to the framebuffer. Big rects are split
- * across CPUs; small ones (cursor, clock strip) copy locally (no IPI overhead). */
+ * across CPUs; small ones (cursor, clock strip) copy locally (no IPI overhead).
+ *
+ * The clamp moved up here from fb_copy_rect: virtio_gpu_flush clamps again for
+ * itself, but the ACCOUNTING has to be done on the rect that was really pushed,
+ * and a compositor that presents a rect straddling the edge would otherwise be
+ * credited with pixels no one copied. */
 void fb_present_rect(int x, int y, int w, int h)
 {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)fb_w) w = (int)fb_w - x;
+    if (y + h > (int)fb_h) h = (int)fb_h - y;
+    if (w <= 0 || h <= 0) return;
+    present_px += (uint64_t)w * (uint64_t)h;
+    present_calls++;
     if (g_par_present && h >= 128) g_par_present(x, y, w, h);   /* RAM-to-RAM now (fast) */
     else fb_copy_rect(x, y, w, h);
     if (using_gpu) virtio_gpu_flush(x, y, w, h);               /* DMA the rect to the host */
@@ -350,22 +413,26 @@ int fb_text_width(const char *s) { return text_width_sz(s, fb_ui_px()); }
 void fb_clear(uint32_t color)
 {
     struct surface *s = T ? T : &screen;
-    for (int y = 0; y < s->h; y++)
-        for (int x = 0; x < s->w; x++)
-            fb_put(x, y, color);
+    fb_fill_rect(0, 0, s->w, s->h, color);
 }
 
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color)
 {
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            fb_put(x + i, y + j, color);
+    struct surface *s = T ? T : &screen;
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
+        uint32_t *row = s->px + (long)(y + j) * s->w + x;
+        for (int i = i0; i < i1; i++) row[i] = color;
+    }
 }
 
 void fb_fill_circle(int cx, int cy, int r, uint32_t color)
 {
-    for (int j = -r; j <= r; j++)
-        for (int i = -r; i <= r; i++)
+    int i0, j0, i1, j1;
+    if (!clip_ij(cx - r, cy - r, 2 * r + 1, 2 * r + 1, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0 - r; j < j1 - r; j++)
+        for (int i = i0 - r; i < i1 - r; i++)
             if (i * i + j * j <= r * r)
                 fb_put(cx + i, cy + j, color);
 }
@@ -383,8 +450,10 @@ static int inside_round(int i, int j, int w, int h, int rad)
 
 void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color)
 {
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++)
+        for (int i = i0; i < i1; i++)
             if (inside_round(i, j, w, h, radius))
                 fb_put(x + i, y + j, color);
 }
@@ -394,8 +463,10 @@ void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color)
 void fb_blit_glyph(int x, int y, const uint8_t *cov, int w, int h, uint32_t color)
 {
     int cr, cg, cb; unpack(color, &cr, &cg, &cb);
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
+        for (int i = i0; i < i1; i++) {
             int a = cov[j * w + i];
             if (!a) continue;
             if (a >= 255) { fb_put(x + i, y + j, color); continue; }
@@ -410,8 +481,10 @@ void fb_blit_glyph(int x, int y, const uint8_t *cov, int w, int h, uint32_t colo
 
 void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
+        for (int i = i0; i < i1; i++) {
             int br, bg, bb;
             unpack(fb_get(x + i, y + j), &br, &bg, &bb);
             int nr = (r * a + br * (255 - a)) / 255;
@@ -425,8 +498,10 @@ void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, 
 void fb_blend_round_rect(int x, int y, int w, int h, int radius,
                          uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
+        for (int i = i0; i < i1; i++) {
             if (!inside_round(i, j, w, h, radius))
                 continue;
             int br, bg, bb;
@@ -466,20 +541,24 @@ uint32_t fb_shade(uint32_t c, int delta)
 /* Vertical gradient fill: row j gets lerp(top..bottom). Integer, one lerp/row. */
 void fb_fill_vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bottom)
 {
-    if (h <= 0) return;
-    for (int j = 0; j < h; j++) {
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    struct surface *s = T ? T : &screen;
+    for (int j = j0; j < j1; j++) {
         uint32_t c = color_lerp(top, bottom, j, h > 1 ? h - 1 : 1);
-        for (int i = 0; i < w; i++) fb_put(x + i, y + j, c);
+        uint32_t *row = s->px + (long)(y + j) * s->w + x;
+        for (int i = i0; i < i1; i++) row[i] = c;
     }
 }
 
 /* Rounded-rect vertical gradient (corners cut by inside_round). */
 void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom)
 {
-    if (h <= 0) return;
-    for (int j = 0; j < h; j++) {
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
         uint32_t c = color_lerp(top, bottom, j, h > 1 ? h - 1 : 1);
-        for (int i = 0; i < w; i++)
+        for (int i = i0; i < i1; i++)
             if (inside_round(i, j, w, h, radius)) fb_put(x + i, y + j, c);
     }
 }
@@ -525,7 +604,13 @@ void fb_blur_rect(int x, int y, int w, int h, int radius, int corner)
         int sr = 0, sg = 0, sb = 0, cnt = 0, r, g, b;
         for (int k = 0; k <= radius && k < h; k++) { unpack(tmp[(long)k * w + i], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
         for (int j = 0; j < h; j++) {
-            if (corner <= 0 || inside_round(i, j, w, h, corner))
+            /* The clip bounds the WRITE only. This primitive reads a
+             * neighbourhood, so it cannot simply be run over a smaller
+             * rectangle: the pixels it samples outside the clip are still
+             * needed. wm.c's damage tracking therefore never hands it a
+             * partially-clipped panel -- see the glass-panel expansion there --
+             * and this check is the belt to that braces. */
+            if ((corner <= 0 || inside_round(i, j, w, h, corner)) && clip_px(s, x + i, y + j))
                 s->px[(long)(y + j) * s->w + (x + i)] = fb_rgb((uint8_t)(sr / cnt), (uint8_t)(sg / cnt), (uint8_t)(sb / cnt));
             int a = j + radius + 1; if (a < h)  { unpack(tmp[(long)a * w + i], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
             int d = j - radius;     if (d >= 0) { unpack(tmp[(long)d * w + i], &r, &g, &b); sr -= r; sg -= g; sb -= b; cnt--; }
@@ -612,6 +697,7 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
             int ins = qx > qy ? qx : qy; if (ins > 0) ins = 0;
             int sdf = outd + ins - radius;
             if (sdf >= 0) continue;                              /* outside the rounded rect */
+            if (!clip_px(s, x + i, y + j)) continue;             /* see the note in fb_blur_rect */
             int gx, gy;
             if (qxc > 0 || qyc > 0) { gx = (px < 0 ? -1 : 1) * qxc; gy = (py < 0 ? -1 : 1) * qyc; }
             else if (qx > qy)       { gx = (px < 0 ? -1 : 1); gy = 0; }
@@ -655,6 +741,12 @@ void fb_blit_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, i
     long j0 = dy < 0 ? -(long)dy : 0, j1 = dh;
     if (i1 > (long)t->w - dx) i1 = (long)t->w - dx;
     if (j1 > (long)t->h - dy) j1 = (long)t->h - dy;
+    if (t->clip_on) {                           /* clamp to the target's scissor too */
+        if (t->clx0 - dx > i0) i0 = t->clx0 - dx;
+        if (t->cly0 - dy > j0) j0 = t->cly0 - dy;
+        if (t->clx1 - dx < i1) i1 = t->clx1 - dx;
+        if (t->cly1 - dy < j1) j1 = t->cly1 - dy;
+    }
     if (i0 >= i1 || j0 >= j1) return;
     for (long j = j0; j < j1; j++) {
         int sy = (int)(j * sh / dh);

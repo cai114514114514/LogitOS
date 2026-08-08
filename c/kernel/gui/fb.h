@@ -49,6 +49,17 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 void fb_set_backbuffer(uint32_t *buf);
 void fb_present(void);
 void fb_present_rect(int x, int y, int w, int h);   /* push one rect back->framebuffer */
+
+/* How much of the display has actually been pushed since boot: the CLAMPED
+ * pixels of every fb_present_rect, and how many calls that took.
+ *
+ * Presenting is the half of a frame that has nothing to do with how the picture
+ * was drawn -- a RAM copy plus a device transfer, priced strictly by area -- so
+ * a compositor that recomposites less but still pushes the whole screen has
+ * fixed nothing here, and one that pushes less without recompositing less has
+ * fixed nothing there. Two counters, because they are two claims. */
+uint64_t fb_present_px(void);
+uint64_t fb_present_calls(void);
 void fb_copy_rect(int x, int y, int w, int h);      /* raw band copy (parallel workers) */
 void fb_set_present_par(void (*fn)(int, int, int, int));  /* register SMP parallel present */
 void fb_fb_put(int x, int y, uint32_t color);       /* write straight to the framebuffer */
