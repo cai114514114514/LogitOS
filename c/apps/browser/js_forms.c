@@ -260,9 +260,38 @@ static const JSCFunctionListEntry g_natives[] = {
 static const char SHIM[] =
 "(function(G){\n"
 "var doc = G.document; if (!doc || typeof doc.createElement !== 'function') return;\n"
-"var proto = Object.getPrototypeOf(doc.createElement('input'));\n"
-"if (!proto || proto.__fcInstalled) return;\n"
-"proto.__fcInstalled = true;\n"
+/* ONE PROTOTYPE PER TAG, and this file used to install onto exactly one of
+ * them. It took `Object.getPrototypeOf(doc.createElement('input'))` and put
+ * every member below on it, which was right while js_dom.c had ONE shared
+ * element prototype -- and every accessor here is written for that world: they
+ * are tag-guarded, `selectedIndex` answers undefined unless tag(this) is
+ * 'select', `htmlFor` is a <label>'s, `submit` is a <form>'s.
+ *
+ * 7fc2bec gave each tag its own prototype chained under HTMLElement. From that
+ * commit the whole file landed on HTMLInputElement.prototype and NOWHERE ELSE:
+ * select.value, textarea.value, textarea.selectionStart, button.value,
+ * select.selectedIndex, select.options, option.selected, label.htmlFor,
+ * el.form, form.elements, form.submit() and form.reset() all disappeared. A
+ * silent, total regression on every control that is not an <input>.
+ *
+ * js_dom_iface.inc names the seam the other outside-installers use for this
+ * (js_select.c, js_platform.c, js_media.c): install on the <div> prototype and
+ * iface_bridge() relocates it onto Element.prototype. That is right for a
+ * member EVERY element has and wrong for these -- putting `value`, `type` and
+ * `disabled` on Element.prototype would give them to <div> and <span>, and
+ * js_reflect.c's per-interface reflections exist precisely so that does not
+ * happen. So the members below go on each SERVED tag's own prototype, and only
+ * focus()/blur() -- which really are HTMLElement's, and which every element
+ * therefore needs -- take the div/bridge seam.
+ *
+ * A prototype is skipped when it IS HTMLElement.prototype: that is what a tag
+ * with no dedicated interface answers, and installing there is the clobber the
+ * paragraph above is avoiding. Every tag in TAGS has one today (the interface
+ * table in js_dom_iface.inc lists all twelve); the guard is for the day one is
+ * removed, because the failure without it is invisible. */
+"function protoOf(t){ try { var e = doc.createElement(t);\n"
+"    return e ? Object.getPrototypeOf(e) : null; } catch (x) { return null; } }\n"
+"var HTMLEP = (G.HTMLElement && G.HTMLElement.prototype) || null;\n"
 /* The integer key. Stamped lazily: an element nobody scripts costs nothing. */
 "function key(el){\n"
 "  var k = el.getAttribute && el.getAttribute('data-logit-fcid');\n"
@@ -305,6 +334,13 @@ static const char SHIM[] =
 "  if (get) d.get = get; if (set) d.set = set;\n"
 "  try { Object.defineProperty(o, name, d); } catch (e) {}\n"
 "}\n"
+/* Everything from here to the end of installOn() is per-served-tag. `proto` is
+ * the parameter, not a closure over one prototype, which is the whole change:
+ * `def`'s "if it already resolves, its owner keeps it" rule is now evaluated
+ * against the RIGHT chain -- <input> keeps js_reflect.c's reflected `type` and
+ * `defaultValue`, <select> keeps its own `name` and `multiple`, and each still
+ * gains the members reflection cannot produce. */
+"function installOn(proto){\n"
 /* ---- value / defaultValue ------------------------------------------------ */
 "function hasValue(el){ var t = tag(el);\n"
 "  return t==='input'||t==='select'||t==='textarea'||t==='button'||\n"
@@ -412,9 +448,9 @@ static const char SHIM[] =
 "  try { ev = new Event('select', { bubbles: true }); } catch (e) {}\n"
 "  if (ev && this.dispatchEvent) this.dispatchEvent(ev);\n"
 "};\n"
-/* ---- focus --------------------------------------------------------------- */
-"proto.focus = function(){ G.__fc_focus(key(this)); };\n"
-"proto.blur  = function(){ G.__fc_blur(key(this)); };\n"
+/* focus()/blur() are NOT here: they are HTMLElement's, every element needs
+ * them (an <a>, anything with tabindex), and they go on the div/bridge seam
+ * below so they reach Element.prototype. */
 /* ---- <select> ------------------------------------------------------------ */
 "def(proto, 'selectedIndex',\n"
 "  function(){ return tag(this)==='select' ? G.__fc_selidx(key(this)) : undefined; },\n"
@@ -461,6 +497,30 @@ static const char SHIM[] =
 "proto.requestSubmit = function(sub){ if (tag(this)==='form')\n"
 "                                       G.__fc_reqsubmit(key(this), sub ? key(sub) : 0); };\n"
 "proto.reset         = function(){ if (tag(this)==='form') G.__fc_formreset(key(this)); };\n"
+"}\n"
+/* The served tags. Not "every tag": each member above is guarded on tag(this),
+ * so a prototype that no guard can ever match would only carry dead accessors
+ * -- and, on a shared prototype, would shadow the reflected ones. */
+"var TAGS = ['input','select','textarea','button','option','optgroup',\n"
+"            'form','label','fieldset','output','datalist','legend'];\n"
+"for (var ti = 0; ti < TAGS.length; ti++) {\n"
+"  var p = protoOf(TAGS[ti]);\n"
+"  if (!p || p === HTMLEP || p.__fcInstalled) continue;\n"
+"  p.__fcInstalled = true;\n"
+"  installOn(p);\n"
+"}\n"
+/* focus()/blur() for EVERY element, through the seam js_dom_iface.inc
+ * documents: what lands on the <div> prototype is moved down to
+ * Element.prototype by iface_bridge() on the next wrapper the page makes.
+ * `def`, not assignment -- js_platform.c is another line's file and may have
+ * published a focus() of its own, and shadowing a working one is the failure
+ * the NEVER CLOBBER note above describes. */
+"var DP = protoOf('div');\n"
+"if (DP && DP !== HTMLEP && !DP.__fcFocus) {\n"
+"  DP.__fcFocus = true;\n"
+"  if (!('focus' in DP)) DP.focus = function(){ G.__fc_focus(key(this)); };\n"
+"  if (!('blur'  in DP)) DP.blur  = function(){ G.__fc_blur(key(this)); };\n"
+"}\n"
 /* ---- document.activeElement ---------------------------------------------
  * Tracked from the events focus.c already dispatches rather than asked for
  * natively -- so if activeElement is right, focusin/focusout are right, and one
