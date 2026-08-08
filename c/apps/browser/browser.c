@@ -474,14 +474,33 @@ static void status_from_js(const char *fallback)
  * longer takes the page's inline scripts down with it. Returns how many ran. */
 static int run_collected_scripts(const char *page_url)
 {
-    int ran = 0, inline_n = 0;
+    int ran = 0, inline_n = 0, classic_n = 0;
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < g_nres; i++) {
             struct resent *e = &g_res[i];
             if (e->module != pass) continue;            /* pass 0 classic, pass 1 module */
             if (!e->data || e->len <= 0) continue;
             if (!e->module) {
-                js_page_eval((const char *)e->data, e->len, e->url ? e->url : "<inline>");
+                /* A CLASSIC script's URL is not decoration either: it is the
+                 * base a dynamic import() inside it resolves against. An
+                 * inline classic script used to be handed the literal
+                 * "<inline>", which is not a URL, so `import('./x.js')` from
+                 * an inline <script> resolved against nothing and failed --
+                 * while the identical call in an external script, or in the
+                 * inline MODULE path ten lines below, worked. Same rule as the
+                 * module path: the document's URL with a discriminator. */
+                char cname[600];
+                const char *cnm = e->url;
+                if (!cnm) {
+                    int p = 0;
+                    for (const char *s = page_url; *s && p < 560; s++) cname[p++] = *s;
+                    const char *tag = "#inline-script-";
+                    for (const char *s = tag; *s && p < 590; s++) cname[p++] = *s;
+                    num_append(cname, &p, ++classic_n);
+                    cname[p] = 0;
+                    cnm = cname;
+                }
+                js_page_eval((const char *)e->data, e->len, cnm);
                 ran++;
                 continue;
             }
