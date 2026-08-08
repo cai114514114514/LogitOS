@@ -638,7 +638,7 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
      * make is "the ratchet goes red when a DOM capability that works today
      * stops working". Nothing in a passing run demonstrates that.
      *
-     * So: remove ONE method the corpus measures -- document.getElementById,
+     * So: remove ONE method the corpus measures -- document.createElement,
      * which exists and works today -- and require `--strict` to exit non-zero
      * and to name the subtests that regressed. It is deliberately a single
      * named method rather than a wholesale break: a control that removes half
@@ -649,8 +649,17 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
      * and the repairs are separable, and a control that requires editing the
      * thing under test cannot be run before the first fix exists. */
     {
-        static const char *NEG = "delete document.getElementById;";
+        static const char *NEG =
+            "delete document.createElement;"
+            "if (typeof document.createElement === 'function')"
+            "  document.createElement = undefined;"
+            "typeof document.createElement;";
         JSValue nv = JS_Eval(ctx, NEG, strlen(NEG), "<negctl>", JS_EVAL_TYPE_GLOBAL);
+        if (g_dump) {
+            const char *t = JS_ToCString(ctx, nv);
+            printf("  [negctl] document.createElement is now %s\n", t ? t : "?");
+            if (t) JS_FreeCString(ctx, t);
+        }
         JS_FreeValue(ctx, nv);
     }
 #endif

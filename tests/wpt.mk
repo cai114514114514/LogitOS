@@ -115,15 +115,25 @@ test-wpt-harness: $(BUILD)/wpt_test
 #
 # Scoped to dom/ so the control is minutes rather than a full corpus pass; the
 # ratchet logic is the same code either way.
-test-wpt-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+# The baseline it diffs against is generated HERE, by the un-doctored runner,
+# from the same working tree in the same minute -- NOT the committed one. That
+# is the whole difference between a control and a coincidence: against the
+# committed baseline any unrelated in-flight browser change also shows as new
+# failures, and the target would pass while measuring nothing. With a
+# same-tree baseline the ONLY difference between the two runs is the deleted
+# method, so every new failure is attributable to it.
+test-wpt-negctl: $(BUILD)/wpt_test $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(WPT_CF) -DWPT_NEGCTL \
 	    -o $(BUILD)/wpt_negctl $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@if $(BUILD)/wpt_negctl --root $(WPT_ROOT) -b $(WPT_BASELINE) --subset dom --strict \
-	       > $(BUILD)/wpt_negctl.log 2>&1; then \
+	@$(BUILD)/wpt_test --root $(WPT_ROOT) --subset dom \
+	    --write-baseline -b $(BUILD)/wpt_negctl_base.txt > $(BUILD)/wpt_negctl_base.log 2>&1
+	@grep -E '^WPT:' $(BUILD)/wpt_negctl_base.log | sed 's/^/  reference: /'
+	@if $(BUILD)/wpt_negctl --root $(WPT_ROOT) --subset dom --strict \
+	       -b $(BUILD)/wpt_negctl_base.txt > $(BUILD)/wpt_negctl.log 2>&1; then \
 	    echo "test-wpt-negctl: FAILED -- the suite stayed green with"; \
-	    echo "  document.getElementById deleted, so the ratchet is not measuring"; \
+	    echo "  document.createElement deleted, so the ratchet is not measuring"; \
 	    echo "  anything and test-wpt cannot catch a regression."; exit 1; \
 	 else \
 	    echo "test-wpt-negctl: ok -- the ratchet goes red and names the damage:"; \
