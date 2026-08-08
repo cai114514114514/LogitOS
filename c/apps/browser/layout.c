@@ -1,5 +1,13 @@
 #include "layout.h"
 #include "css.h"
+/* forms.h for fc_kind() and the padding constants ONLY. It is a header of
+ * inline functions over the DOM plus declarations; nothing layout.c calls from
+ * it lives in forms.c, so this file gains no link dependency and the eight host
+ * test binaries that link layout.c keep building unchanged. The option
+ * enumeration a <select> needs to size itself is re-implemented below for
+ * exactly that reason -- fifteen duplicated lines is the price of not making
+ * every one of those Makefile rules grow a source. */
+#include "forms.h"
 
 void *kmalloc(unsigned long);
 void  kfree(void *);
@@ -247,6 +255,167 @@ static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int 
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
 static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
 static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9'){ if(n>100000) break; n=n*10+(*s++-'0'); } return n; }
+
+/* ======================= form controls: the box only =======================
+ *
+ * Layout's whole job for a control is to reserve a box of the right size and
+ * say which control it is. Everything inside it -- the text, the caret, the
+ * tick -- is state that changes on every keystroke, and layout runs orders of
+ * magnitude less often than that; browser_paint.c asks forms.c at paint time.
+ *
+ * The sizes below are the ones every UA converged on and every page's CSS is
+ * written against: a text input is `size` characters of the '0' advance wide
+ * (20 by default), a checkbox is 13x13, a textarea is cols x rows. Author CSS
+ * overrides all of it through the normal width/height path. */
+
+/* An element's descendant text, for a button's label and an option's. Written
+ * here rather than called out of forms.c on purpose -- see the include note. */
+static int ctl_text(const struct node *n, char *buf, int max)
+{
+    int o = 0;
+    const struct node *stack[48];
+    int sp2 = 0;
+    if (!n) { if (max > 0) buf[0] = 0; return 0; }
+    stack[sp2++] = n->first_child;
+    while (sp2 > 0) {
+        const struct node *c = stack[--sp2];
+        while (c) {
+            if (c->type == N_TEXT && c->text) {
+                for (int i = 0; i < c->textlen && o < max - 1; i++) buf[o++] = c->text[i];
+            } else if (c->type == N_ELEM && c->first_child && sp2 < 47) {
+                stack[sp2++] = c->next;
+                c = c->first_child;
+                continue;
+            }
+            c = c->next;
+        }
+    }
+    /* Collapse the markup's indentation: a control label is one line. */
+    int a = 0, b = o;
+    while (a < b && sp(buf[a])) a++;
+    while (b > a && sp(buf[b - 1])) b--;
+    for (int i = a; i < b; i++) buf[i - a] = buf[i];
+    o = b - a;
+    if (max > 0) buf[o] = 0;
+    return o;
+}
+
+static int ctl_label(struct node *c, int kind, char *buf, int max)
+{
+    if (tag_eq(c->tag, "button")) return ctl_text(c, buf, max);
+    const char *v = dom_attr(c, "value");
+    if (!v) v = (kind == FC_SUBMIT) ? "Submit" :
+                (kind == FC_RESET)  ? "Reset"  :
+                (kind == FC_FILE)   ? "Choose File" : "";
+    int i = 0;
+    while (v[i] && i < max - 1) { buf[i] = v[i]; i++; }
+    buf[i] = 0;
+    return i;
+}
+
+/* The widest <option> label in a <select>, flattening <optgroup>. */
+static int ctl_widest_option(struct node *sel, int px, int mono)
+{
+    char buf[256];
+    int widest = 0;
+    for (struct node *g = sel->first_child; g; g = g->next) {
+        if (g->type != N_ELEM) continue;
+        struct node *first = tag_eq(g->tag, "optgroup") ? g->first_child : g;
+        for (struct node *o = first; o; o = o->next) {
+            if (o->type != N_ELEM || !tag_eq(o->tag, "option")) continue;
+            const char *l = dom_attr(o, "label");
+            int n;
+            if (l && l[0]) { n = 0; while (l[n] && n < 255) { buf[n] = l[n]; n++; } buf[n] = 0; }
+            else n = ctl_text(o, buf, (int)sizeof buf);
+            int w = text_measure(buf, n, px, mono);
+            if (w > widest) widest = w;
+            if (g == o) break;                    /* the non-optgroup case */
+        }
+        if (!tag_eq(g->tag, "optgroup")) continue;
+    }
+    return widest;
+}
+
+/* The control's intrinsic border-box size. `avail` is the containing block's
+ * content width, for the percentage cases. */
+static void ctl_metrics(struct node *c, struct cstyle *st, int kind, int avail,
+                        int *ow, int *oh, int *ofont, int *omono)
+{
+    int px = st && st->font_px > 0 ? st->font_px : 16;
+    int mono = st ? st->mono : 0;
+    int lh = px + px / 4;
+    int frame = 2 * FC_BORDER;
+    int adv = text_measure("0", 1, px, mono);
+    if (adv <= 0) adv = px / 2 + 1;
+    int w, h;
+
+    switch (kind) {
+    case FC_CHECKBOX:
+    case FC_RADIO:
+        w = h = 13;
+        break;
+    case FC_SUBMIT: case FC_RESET: case FC_BUTTON: case FC_IMAGEBTN: case FC_FILE: {
+        char lbl[256];
+        int l = ctl_label(c, kind, lbl, (int)sizeof lbl);
+        w = text_measure(lbl, l, px, mono) + 2 * (FC_PAD_X + 5) + frame;
+        h = lh + 2 * FC_PAD_Y + frame;
+        break;
+    }
+    case FC_SELECT: {
+        int widest = ctl_widest_option(c, px, mono);
+        /* 18px for the disclosure triangle and its breathing room. */
+        w = widest + 2 * FC_PAD_X + 18 + frame;
+        if (w < 48) w = 48;
+        h = lh + 2 * FC_PAD_Y + frame;
+        break;
+    }
+    case FC_TEXTAREA: {
+        const char *cs = dom_attr(c, "cols"), *rs = dom_attr(c, "rows");
+        int cols = cs ? atoi_(cs) : 0, rows = rs ? atoi_(rs) : 0;
+        if (cols <= 0) cols = 20;
+        if (rows <= 0) rows = 2;
+        w = cols * adv + 2 * FC_PAD_X + frame;
+        h = rows * lh + 2 * FC_PAD_Y + frame;
+        break;
+    }
+    case FC_RANGE:
+        w = 129; h = lh > 16 ? lh : 16;
+        break;
+    case FC_COLOR:
+        w = 44; h = lh + 2 * FC_PAD_Y + frame;
+        break;
+    default: {                                   /* every textual input */
+        const char *ss = dom_attr(c, "size");
+        int size = ss ? atoi_(ss) : 0;
+        if (size <= 0) size = 20;
+        w = size * adv + 2 * FC_PAD_X + frame;
+        h = lh + 2 * FC_PAD_Y + frame;
+        break;
+    }
+    }
+
+    /* Author CSS wins, through the normal width/height path. box-sizing is
+     * honoured because a control is exactly where `box-sizing: border-box` is
+     * set on every page that styles one. */
+    if (st && st->has_w) {
+        int cw = resolve_len(st->width, st->w_pct, st->w_off, avail);
+        w = st->box_sizing == BOX_BORDER ? cw : cw + st->pl + st->pr + st->border_w[1] + st->border_w[3];
+    }
+    if (st && st->has_h) {
+        int ch = resolve_len(st->height, st->h_pct, st->h_off, 0);
+        if (ch > 0)
+            h = st->box_sizing == BOX_BORDER ? ch : ch + st->pt + st->pb + st->border_w[0] + st->border_w[2];
+    }
+    if (st) {
+        int lo = st->has_min_w ? resolve_len(st->min_w, st->min_w_pct, 0, avail) : 0;
+        int hi = st->has_max_w ? resolve_len(st->max_w, st->max_w_pct, 0, avail) : 0;
+        if (lo > 0 && w < lo) w = lo;
+        if (hi > 0 && w > hi) w = hi;
+    }
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    *ow = w; *oh = h; *ofont = px; *omono = mono;
+}
 
 /* Extract the viewBox width/height from a raw svg source span (the spelling
  * must match what svg.c's parser accepts: exact case "viewBox"). Returns 1
@@ -602,6 +771,87 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
 
     const char *h2 = href;
     if (tag_eq(c->tag, "a")) { const char *u = dom_attr(c, "href"); if (u) h2 = u; }
+
+    /* ---- form controls ----
+     *
+     * Placed BEFORE the float and is_block tests, for the same reason <svg> is:
+     * a control is a replaced element whatever its `display` computes to, and
+     * routing an <input style="display:block"> down the block path would
+     * reserve an empty box and then lay out its (nonexistent) children in it.
+     * The line-breaking a block-level control needs is done explicitly below.
+     *
+     * NEVER DESCEND. A <select>'s <option>s are chrome, not page text -- letting
+     * flow_children reach them is why an unstyled <select> used to render its
+     * whole option list as a run of words next to the box. */
+    if (tag_eq(c->tag, "datalist")) return;      /* a completion source, never rendered */
+    {
+        int kind = fc_kind(c);
+        if (kind == FC_HIDDEN) return;           /* <input type=hidden>: no box at all */
+        if (kind != FC_NONE) {
+            int cw, ch, cfont, cmono;
+            ctl_metrics(c, st, kind, f->x1 - f->x0, &cw, &ch, &cfont, &cmono);
+            int band = f->x1 - f->x0;
+            if (cw > band && band > 0) cw = band;
+            int blocky = st && (st->display == DISP_BLOCK || st->display == DISP_FLEX ||
+                                st->display == DISP_GRID);
+            if (blocky) newline2(f, 1);
+            else if (f->line_started && f->x + cw > f->x1) newline(f);
+            struct item *it = additem(IT_CONTROL, c);
+            if (it) {
+                it->x = f->x; it->y = f->y; it->w = cw; it->h = ch;
+                it->ctl = (unsigned char)kind;
+                it->ctl_font = cfont;
+                it->ctl_mono = (unsigned char)cmono;
+                it->font_px = cfont;
+                it->mono = cmono;
+                it->color = st ? st->color : 0x000000u;
+                it->hidden = st ? st->hidden : 0;
+                it->opacity = st ? st->opacity : 255;
+                if (st) {
+                    it->bg = st->background; it->has_bg = st->has_bg;
+                    it->bg_alpha = st->bg_alpha;
+                    for (int bi = 0; bi < 4; bi++) {
+                        it->border_w[bi] = st->border_w[bi];
+                        it->border_color[bi] = st->border_color[bi];
+                        it->border_style[bi] = st->border_style[bi];
+                    }
+                    it->radius = st->radius; it->radius_pct = st->radius_pct;
+                }
+            }
+            /* A <button>'s CONTENT is real markup -- an icon, a <span>, a
+             * nested <svg> -- so it is laid out inside the box rather than
+             * flattened into a label the painter draws. (An <input
+             * type=submit> has no children at all; its label is the "value"
+             * attribute and fc_paint_state draws that.) The sub-flow's items
+             * land AFTER the control item in the display list, so they paint
+             * on top of its chrome. */
+            if (it && tag_eq(c->tag, "button")) {
+                struct iflow bf;
+                char lbl[256];
+                int ll = ctl_text(c, lbl, (int)sizeof lbl);
+                int lw = text_measure(lbl, ll, cfont, cmono);
+                int ix = it->x + FC_BORDER + FC_PAD_X;
+                int iw = cw - 2 * (FC_BORDER + FC_PAD_X);
+                /* Never narrower than the label. A button box clamped by
+                 * its containing block (a narrow flex band, say) would
+                 * otherwise WRAP its own label -- "Solutions" coming out
+                 * as "Solution" over "s" -- and a wrapped button label
+                 * reads as a layout bug rather than as the overflow it
+                 * is. Real UAs overflow here too. */
+                if (iw < lw) iw = lw;
+                if (iw < 1) iw = 1;
+                iflow_init(&bf, ix, iw, it->y + FC_BORDER + FC_PAD_Y,
+                           ALIGN_LEFT, cfont + cfont / 4);
+                flow_children(&bf, c, 0);
+                newline2(&bf, 1);
+            }
+            f->x += cw;
+            f->line_started = 1;
+            if (ch > f->lineh) f->lineh = ch;
+            if (blocky) newline2(f, 1);
+            return;
+        }
+    }
 
     /* Inline <svg>: a replaced element like <img>. Decode straight from the
      * verbatim source span the DOM parser recorded (keeps the viewBox case and
@@ -1116,6 +1366,64 @@ static int layout_flow(struct node *n, int x, int y, int w)
              * applies before the top margin is added, which is why it is here
              * and not folded into the cy += mt below. */
             if (st->clr != CLR_NONE) cy = float_clear_y(st->clr, cy);
+            /* A control that reached the BLOCK path -- `display:block` on an
+             * <input>, or `inline-block`, which is_block() also routes here.
+             * Same rule as the <img> case below it: a replaced element is not
+             * an empty block box, and descending into a <select> here is what
+             * would print its option list into the page. */
+            {
+                int kind = fc_kind(c);
+                if (kind == FC_HIDDEN) continue;
+                if (kind != FC_NONE) {
+                    int cw, chh, cfont, cmono;
+                    int ml2 = st->ml < 0 ? 0 : st->ml;
+                    ctl_metrics(c, st, kind, w, &cw, &chh, &cfont, &cmono);
+                    if (cw > w - ml2 && w - ml2 > 0) cw = w - ml2;
+                    cy += st->mt > 0 ? st->mt : 0;
+                    struct item *it = additem(IT_CONTROL, c);
+                    if (it) {
+                        it->x = x + ml2; it->y = cy; it->w = cw; it->h = chh;
+                        it->ctl = (unsigned char)kind;
+                        it->ctl_font = cfont;
+                        it->ctl_mono = (unsigned char)cmono;
+                        it->font_px = cfont;
+                        it->mono = cmono;
+                        it->color = st->color;
+                        it->hidden = st->hidden;
+                        it->opacity = st->opacity;
+                        it->bg = st->background; it->has_bg = st->has_bg;
+                        it->bg_alpha = st->bg_alpha;
+                        for (int bi = 0; bi < 4; bi++) {
+                            it->border_w[bi] = st->border_w[bi];
+                            it->border_color[bi] = st->border_color[bi];
+                            it->border_style[bi] = st->border_style[bi];
+                        }
+                        it->radius = st->radius; it->radius_pct = st->radius_pct;
+                    }
+                    if (it && tag_eq(c->tag, "button")) {
+                        struct iflow bf;
+                        char lbl[256];
+                        int ll = ctl_text(c, lbl, (int)sizeof lbl);
+                        int lw = text_measure(lbl, ll, cfont, cmono);
+                        int ix = it->x + FC_BORDER + FC_PAD_X;
+                        int iw = cw - 2 * (FC_BORDER + FC_PAD_X);
+                        /* Never narrower than the label. A button box clamped by
+                         * its containing block (a narrow flex band, say) would
+                         * otherwise WRAP its own label -- "Solutions" coming out
+                         * as "Solution" over "s" -- and a wrapped button label
+                         * reads as a layout bug rather than as the overflow it
+                         * is. Real UAs overflow here too. */
+                        if (iw < lw) iw = lw;
+                        if (iw < 1) iw = 1;
+                        iflow_init(&bf, ix, iw, it->y + FC_BORDER + FC_PAD_Y,
+                                   ALIGN_LEFT, cfont + cfont / 4);
+                        flow_children(&bf, c, 0);
+                        newline2(&bf, 1);
+                    }
+                    cy += chh + (st->mb > 0 ? st->mb : 0);
+                    continue;
+                }
+            }
             if (tag_eq(c->tag, "img")) {
                 /* Block-level <img> is a replaced element, not an empty block box
                  * (bilibili's blanket img{display:block} rule would otherwise eat
@@ -1335,6 +1643,22 @@ static int flex_run(struct node *first, struct node **end, int px, int mono)
             if (skipped(c)) continue;
             if (blockish(c)) break;
             if (tag_eq(c->tag, "svg")) { w += svg_attr_w(c, st); continue; }
+            /* A form control's max-content width is its BOX, not the width of
+             * the text inside it: a <button> is its label plus padding plus a
+             * frame, and an <input size=20> is twenty characters wide whether
+             * or not it contains any. Measuring the text alone made an
+             * anonymous run too narrow for the controls it holds, and the
+             * second control on the row wrapped to a line of its own. */
+            {
+                int ck = fc_kind(c);
+                if (ck == FC_HIDDEN) continue;
+                if (ck != FC_NONE) {
+                    int cw, chh, cf, cm;
+                    ctl_metrics(c, st, ck, 0, &cw, &chh, &cf, &cm);
+                    w += cw;
+                    continue;
+                }
+            }
             w += flex_text_width(c, px, mono);   /* inline element (button/svg icon etc.) */
             continue;
         }

@@ -11,6 +11,20 @@
  * in js_page.c -- otherwise that link breaks. */
 #define JS_WEBAPI_OPTIONAL
 #include "js_webapi.h"           /* script-initiated navigation (location.*) */
+/* THE NEGATIVE CONTROL, and it costs one #define because the control IS the
+ * behaviour that shipped yesterday. -DBROWSER_NO_FOCUS compiles the routing
+ * out: no element takes focus from a click, Tab does not move it, and a
+ * keystroke goes to <body> exactly as it did before this change. The device
+ * test (tests/qmp/qmp_forms.py --expect-no-focus) must FAIL against that build,
+ * and if it does not then it is not measuring the focus model. */
+#ifdef BROWSER_NO_FOCUS
+#define FOCUS_ROUTING 0
+#else
+#define FOCUS_ROUTING 1
+#endif
+
+#include "forms.h"               /* form control state + submission */
+#include "focus.h"               /* the focused element and Tab navigation */
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "tabs.h"                /* per-tab state, session, history, bookmarks */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
@@ -83,6 +97,12 @@ static void set_status(const char *s)
 { int i = 0; while (s[i] && i < (int)sizeof status - 1) { status[i] = s[i]; i++; } status[i] = 0; }
 
 static void redraw(int editing);
+/* The open <select>'s list. Drawn last, over everything, because the display
+ * list has no z-order above itself -- see the popup section further down. */
+static void draw_select_popup(void);
+/* Dismiss it. Called from the two teardown paths as well, which run long before
+ * the popup section itself. */
+static void popup_close(void);
 
 int printf(const char *, ...);
 unsigned long strlen(const char *);
@@ -838,6 +858,14 @@ static void load_once(const char *u)
      * finalizers walking nodes that no longer exist -- and freeing the runtime
      * first is what clears the wrapper slots. */
     js_page_close();
+    /* Focus and every control's state point INTO the document that is about to
+     * be freed. dom.c recycles node slots, so a pointer kept across this line
+     * would not merely dangle -- it would silently name a DIFFERENT element in
+     * the next document, which is the worse failure. Dropped BEFORE dom_free,
+     * on this path and on the tab-switch one, because both free the tree. */
+    popup_close();
+    focus_reset();
+    fc_reset();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
     res_reset();
@@ -1059,6 +1087,17 @@ static void load_once(const char *u)
     js_out_shown = 0;
     js_page_set_location(base);
     js_page_open(g_root);
+    /* The form/focus JS surface (element.value, .checked, form.submit(),
+     * document.activeElement) is installed by js_page_open() itself, alongside
+     * every other module's -- NOT from here.
+     *
+     * It was called from here first, to avoid touching js_page.c at all, and
+     * then ALSO from js_page.c so that the WPT runner (which links js_page.c
+     * and not browser.c) would see the bindings. Installing it twice into one
+     * context aborts the process during page load -- reproduced on the device,
+     * bisected to exactly that, and not diagnosed further because one install
+     * is the correct shape anyway and matches every other module here. Do not
+     * "helpfully" add a second call back. */
 
     /* Fetch every external script CONCURRENTLY, then run them in spec order.
      * Real sites ship huge minified bundles that assume a full browser env;
@@ -1158,6 +1197,14 @@ static void tab_dehydrate(void)
     /* Same teardown order as a navigation, and for the same reason: the runtime
      * holds {node, serial} handles into the DOM, so it dies first. */
     js_page_close();
+    /* Focus and every control's state point INTO the document that is about to
+     * be freed. dom.c recycles node slots, so a pointer kept across this line
+     * would not merely dangle -- it would silently name a DIFFERENT element in
+     * the next document, which is the worse failure. Dropped BEFORE dom_free,
+     * on this path and on the tab-switch one, because both free the tree. */
+    popup_close();
+    focus_reset();
+    fc_reset();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
     res_reset();
@@ -1562,6 +1609,7 @@ static void redraw(int editing)
     if (bookmark_find(url) >= 0) gui_text(win_w - 26, TABH + 7, rgb(240, 180, 60), "*");
     /* the page */
     browser_paint(0, VIEW_Y, win_w, VIEW_H, scroll);
+    draw_select_popup();
     if (g_panel) draw_panel();
     /* glass status line (frosts the bottom of the page) */
     gui_glass(0, win_h - 18, win_w, 18, 1, 255, 255, 255, 70);
@@ -1636,6 +1684,400 @@ static const char *key_name(int k, char *one)
 /* Returns 1 if the key was a chrome shortcut and has been handled. */
 static int is_cmd(const struct logit_event *e) { return (e->mods & EV_MOD_SUPER) != 0; }
 
+/* ======================= focus, form controls, submission ==================
+ *
+ * The piece that was missing. Until this block existed, browser.c line 1860
+ * routed every keystroke to <body> with the comment "No focus model yet", and
+ * the consequence -- stated the way it should have been stated then -- was that
+ * NO WEB PAGE ON THIS MACHINE COULD ACCEPT A SINGLE CHARACTER.
+ *
+ * Three seams meet here and nowhere else:
+ *
+ *   focus.c owns WHICH element has the keyboard, and knows nothing about the
+ *   window, the scroll or QuickJS.
+ *
+ *   forms.c owns WHAT a control holds and what a keystroke does to it, and
+ *   knows nothing about events beyond a function pointer.
+ *
+ *   this file owns the WINDOW: it installs that function pointer (so the DOM
+ *   events focus.c and forms.c raise are built by whoever owns event
+ *   construction), it decides what the default action is when a page does not
+ *   preventDefault it, and it is the only place that may navigate.
+ */
+
+/* The dispatcher focus.c and forms.c call through. `bubbles`/`cancelable` come
+ * from the caller because the spec assigns them per event type and the two
+ * files that raise them are the ones that know which type they are raising. */
+static int forms_dispatch(struct node *target, const char *type,
+                          int bubbles, int cancelable)
+{
+    struct js_event_init ji = { 0 };
+    ji.bubbles = bubbles;
+    ji.cancelable = cancelable;
+    /* `key` non-NULL is what makes js_dom_dispatch build a KeyboardEvent, and a
+     * focus or input event is not one -- so it is deliberately left unset and
+     * these arrive on the generic pointer-shaped prototype. The event line owns
+     * FocusEvent/InputEvent proper; this is the seam, not the shape. */
+    return js_dom_dispatch(target, type, &ji);
+}
+
+/* Is `n` inside the current document? Everything below refuses to act on a node
+ * that a script has already detached. */
+static struct node *doc_root_of(struct node *n)
+{
+    while (n && n->parent) n = n->parent;
+    return n;
+}
+
+/* The element a click at `n` should give focus to. A click on the TEXT of a
+ * <label> focuses (and toggles) the control the label is for, which is how a
+ * very large share of real checkboxes are actually operated -- and a click that
+ * lands on a non-focusable element must walk UP, because a <span> inside a
+ * <button> is what the hit test returns. */
+static struct node *focus_target_for_click(struct node *n, struct node **label_out)
+{
+    if (label_out) *label_out = 0;
+    for (struct node *p = n; p && p->type == N_ELEM; p = p->parent) {
+        if (fc_kind(p) != FC_NONE && focus_is_focusable(p)) return p;
+        if (p->tag[0] == 'l' && p->tag[1] == 'a' && p->tag[2] == 'b' &&
+            p->tag[3] == 'e' && p->tag[4] == 'l' && p->tag[5] == 0) {
+            struct node *t = fc_label_target(p);
+            if (t && focus_is_focusable(t)) { if (label_out) *label_out = p; return t; }
+        }
+        if (focus_is_focusable(p)) return p;
+    }
+    return 0;
+}
+
+/* Focus a control and remember its value, so `change` has something to compare
+ * against when focus leaves. */
+static void focus_control(struct node *n)
+{
+    struct node *old = focus_current();
+    if (old == n) return;
+    if (old && fc_kind(old) != FC_NONE) fc_commit(old);
+    focus_set(n);
+    if (n && fc_kind(n) != FC_NONE) fc_mark_focus(n);
+}
+
+/* ---- submission -------------------------------------------------------- */
+
+/* A form submission is a NAVIGATION, and this browser has exactly one of those
+ * (load() through bfetch). So a GET form is turned into a URL and handed to the
+ * same follow_link() a clicked <a> goes through -- no second network path, and
+ * therefore no second set of redirect, cookie and history rules to get wrong.
+ *
+ * POST IS NOT WIRED, and saying so is the honest answer rather than sending the
+ * fields as a query string and calling it done. bfetch (browser_rt.c, another
+ * line's file) builds a GET and only a GET; giving it a method and a body is a
+ * change to that file, not to this one. What IS here: the payload is built and
+ * unit-tested, the `submit` event fires and is cancelable, and a POST form says
+ * so in the status bar instead of silently navigating to the wrong URL. */
+static char g_submit_buf[8192];
+
+/* ---- the <select> popup ------------------------------------------------ */
+/* Drawn by browser.c and not by the painter, because it has to float above
+ * everything in the display list and the display list has no z-order above
+ * itself. The open list's geometry is recomputed from the control's box each
+ * frame, so a scroll or a re-layout can never leave it stranded. */
+static struct node *g_popup;             /* the open <select>, or NULL */
+static uint32_t     g_popup_serial;
+static int          g_popup_hi;          /* highlighted row */
+
+#define POPUP_ROW 22
+#define POPUP_MAXROWS 12
+
+static void popup_close(void)
+{ if (g_popup) fc_select_set_open(g_popup, 0); g_popup = 0; g_popup_serial = 0; }
+
+static struct node *popup_live(void)
+{
+    if (!g_popup) return 0;
+    if (g_popup->serial != g_popup_serial) { g_popup = 0; return 0; }
+    return g_popup;
+}
+
+/* The control's border box in DOCUMENT coordinates, from the display list.
+ * Returns 0 if the control has no box (display:none, or not laid out yet). */
+static int control_box(struct node *n, int *bx, int *by, int *bw, int *bh)
+{
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    for (int i = 0; i < cnt; i++) {
+        if (it[i].type != IT_CONTROL || it[i].node != n) continue;
+        *bx = it[i].x; *by = it[i].y; *bw = it[i].w; *bh = it[i].h;
+        return 1;
+    }
+    return 0;
+}
+
+/* 1 if the browser navigated (so the caller stops draining events).
+ *
+ * `fire_event` is 0 only for form.submit(), which the spec defines as NOT
+ * firing the submit event -- the difference between it and requestSubmit() is
+ * exactly that, and a page that calls submit() from inside its own submit
+ * handler would otherwise recurse. */
+static int form_submit_ex(struct node *form, struct node *submitter, int fire_event)
+{
+    if (!form) return 0;
+    /* `submit` fires AT THE FORM, bubbles and is cancelable -- and a page that
+     * cancels it and does its own fetch() is the single most common shape of
+     * form handling on the modern web, so honouring the cancel matters more
+     * than the navigation does. */
+    if (fire_event && !forms_dispatch(form, "submit", 1, 1)) {
+        set_status("submit cancelled by the page");
+        return 0;
+    }
+    int n = fc_encode(form, submitter, g_submit_buf, (int)sizeof g_submit_buf);
+    if (n < 0) { set_status("form is too large to submit"); return 0; }
+
+    char target[700];
+    int o = 0;
+    const char *act = fc_action(form);
+    if (act[0]) {
+        while (act[o] && o < 640) { target[o] = act[o]; o++; }
+    } else {
+        /* No action: this page. The existing query and fragment are dropped,
+         * which is what the spec's "URL record with the query replaced" means
+         * and what a search box on a results page depends on. */
+        for (int i = 0; url[i] && url[i] != '?' && url[i] != '#' && o < 640; i++)
+            target[o++] = url[i];
+    }
+    target[o] = 0;
+
+    if (fc_method_post(form)) {
+        /* Deliberately loud rather than silently wrong. See the comment above:
+         * the payload is built and correct, the network path is not this
+         * line's file. */
+        set_status("POST form: payload built, but POST is not wired yet");
+        printf("[browser] FORM-POST %s body=%s\n", target, g_submit_buf);
+        return 0;
+    }
+
+    int q = 0;
+    while (target[q] && target[q] != '?' && target[q] != '#') q++;
+    target[q] = 0;
+    if (n > 0 && q < 660) {
+        target[q++] = '?';
+        for (int i = 0; i < n && q < (int)sizeof target - 1; i++) target[q++] = g_submit_buf[i];
+    }
+    target[q] = 0;
+    printf("[browser] FORM-GET %s\n", target);
+    follow_link(target);
+    return 1;
+}
+
+static int form_submit(struct node *form, struct node *submitter)
+{ return form_submit_ex(form, submitter, 1); }
+
+/* The default form for an implicit submission (Enter in a text field), and the
+ * form a submit button belongs to. */
+static int implicit_submit(struct node *ctl)
+{
+    struct node *form = fc_form_of(ctl);
+    if (!form) return 0;
+    return form_submit(form, 0);
+}
+
+static void draw_select_popup(void)
+{
+    struct node *sel = popup_live();
+    if (!sel) return;
+    int bx, by, bw, bh;
+    if (!control_box(sel, &bx, &by, &bw, &bh)) { popup_close(); return; }
+    int n = fc_option_count(sel);
+    int rows = n > POPUP_MAXROWS ? POPUP_MAXROWS : n;
+    if (rows <= 0) { popup_close(); return; }
+    int px = bx, py = VIEW_Y + by - scroll + bh;
+    int pw = bw < 140 ? 140 : bw;
+    int ph2 = rows * POPUP_ROW + 8;
+    /* Flip above the control when there is no room below -- a dropdown that
+     * runs off the bottom of the window is a dropdown you cannot use. */
+    if (py + ph2 > win_h - 18) {
+        int above = VIEW_Y + by - scroll - ph2;
+        if (above > VIEW_Y) py = above;
+    }
+    gui_clip(0, VIEW_Y, win_w, VIEW_H);
+    gui_rrect(px, py, pw, ph2, 6, rgb(0xB0, 0xB4, 0xBA));
+    gui_rrect(px + 1, py + 1, pw - 2, ph2 - 2, 5, rgb(0xFF, 0xFF, 0xFF));
+    int cur = fc_selected_index(sel);
+    for (int i = 0; i < rows; i++) {
+        char lbl[128];
+        struct node *o = fc_option_at(sel, i);
+        int l = o ? fc_option_label(o, lbl, (int)sizeof lbl) : 0;
+        int ry = py + 4 + i * POPUP_ROW;
+        if (i == g_popup_hi || (g_popup_hi < 0 && i == cur))
+            gui_rrect(px + 3, ry, pw - 6, POPUP_ROW, 4, rgb(0x25, 0x63, 0xEB));
+        unsigned col = (i == g_popup_hi) ? rgb(255, 255, 255) : rgb(0x1D, 0x1D, 0x1F);
+        gui_text_run(px + 10, ry + 3, 14, 0, col, lbl, l);
+    }
+    if (n > rows) {
+        char more[32];
+        int p = 0;
+        const char *pre = "...";
+        while (*pre) more[p++] = *pre++;
+        more[p] = 0;
+        gui_text_run(px + 10, py + 4 + rows * POPUP_ROW - 12, 12, 0, rgb(150, 150, 158), more, p);
+    }
+    gui_clip(0, 0, 0, 0);
+}
+
+/* Activate a control the way a click or Space/Enter does. */
+static int control_activate(struct node *n, int *navigated)
+{
+    int k = fc_kind(n);
+    if (FC_IS_TOGGLE(k)) {
+        if (fc_disabled(n)) return 1;
+        if (k == FC_RADIO) fc_set_checked(n, 1);
+        else               fc_set_checked(n, !fc_checked(n));
+        forms_dispatch(n, "input", 1, 0);
+        forms_dispatch(n, "change", 1, 0);
+        return 1;
+    }
+    if (FC_IS_BUTTON(k)) {
+        if (fc_disabled(n)) return 1;
+        /* The button's own `click` has already been dispatched by the caller
+         * for a mouse click; for a keyboard activation it has not, so it is
+         * raised here and its cancellation suppresses the submit. */
+        if (k == FC_RESET) { fc_reset_form(fc_form_of(n)); return 1; }
+        if (k == FC_SUBMIT || k == FC_IMAGEBTN) {
+            struct node *form = fc_form_of(n);
+            if (form && form_submit(form, n)) { if (navigated) *navigated = 1; }
+        }
+        return 1;
+    }
+    if (k == FC_SELECT) {
+        if (fc_disabled(n)) return 1;
+        if (popup_live() == n) popup_close();
+        else { popup_close(); g_popup = n; g_popup_serial = n->serial;
+               g_popup_hi = fc_selected_index(n); fc_select_set_open(n, 1); }
+        return 1;
+    }
+    return 0;
+}
+
+/* Move the caret one visual line in a <textarea>. Kept here rather than in
+ * forms.c because "a line" is a wrapping question and forms.c does not lay
+ * anything out -- this is the HARD-BREAK version, which is right for a textarea
+ * whose content has explicit newlines and approximate for one relying on soft
+ * wrapping. Named as an approximation rather than hidden as one. */
+static int textarea_line_move(struct node *n, int down, int extend)
+{
+    int vl = 0;
+    const char *v = fc_value(n, &vl);
+    int s0, s1;
+    fc_selection(n, &s0, &s1);
+    int pos = down ? s1 : s0;
+    int ls = pos; while (ls > 0 && v[ls - 1] != '\n') ls--;
+    int col = pos - ls;
+    int np;
+    if (down) {
+        int le = pos; while (le < vl && v[le] != '\n') le++;
+        if (le >= vl) return 0;
+        int ns = le + 1, ne = ns;
+        while (ne < vl && v[ne] != '\n') ne++;
+        np = ns + col; if (np > ne) np = ne;
+    } else {
+        if (ls == 0) return 0;
+        int pe = ls - 1, ps = pe;
+        while (ps > 0 && v[ps - 1] != '\n') ps--;
+        np = ps + col; if (np > pe) np = pe;
+    }
+    if (extend) { int a = s0 == s1 ? pos : (down ? s0 : s1);
+                  fc_set_selection(n, np < a ? np : a, np < a ? a : np); }
+    else fc_set_selection(n, np, np);
+    return 1;
+}
+
+/* A keystroke that reached a focused control. Returns 1 if the control
+ * consumed it -- in which case the browser's own default action (scrolling,
+ * history) must NOT also happen, which is the whole point of a focus model. */
+static int control_key(struct node *n, int k, const struct logit_event *ev,
+                       int *navigated)
+{
+    int kind = fc_kind(n);
+    if (kind == FC_NONE) return 0;
+    int shift = (ev->mods & EV_MOD_SHIFT) != 0;
+    int ctrl  = (ev->mods & EV_MOD_CTRL) != 0 || (ev->mods & EV_MOD_SUPER) != 0;
+
+    if (kind == FC_SELECT) {
+        int cnt = fc_option_count(n), cur = fc_selected_index(n);
+        if (k == KEY_DOWN || k == KEY_UP) {
+            int nx = cur + (k == KEY_DOWN ? 1 : -1);
+            if (nx < 0) nx = 0;
+            if (nx >= cnt) nx = cnt - 1;
+            if (nx != cur && nx >= 0) {
+                fc_set_selected_index(n, nx);
+                g_popup_hi = nx;
+                forms_dispatch(n, "input", 1, 0);
+                forms_dispatch(n, "change", 1, 0);
+            }
+            return 1;
+        }
+        if (k == '\n' || k == ' ') { control_activate(n, navigated); return 1; }
+        if (k == 0x1b) { popup_close(); return 1; }
+        return 0;
+    }
+
+    if (FC_IS_TOGGLE(kind) || FC_IS_BUTTON(kind)) {
+        if (k == ' ' || (k == '\n' && FC_IS_BUTTON(kind))) {
+            /* A keyboard activation still raises `click`, and a page that
+             * preventDefaults it must not get the submit. */
+            struct js_event_init ji = { 0 };
+            ji.bubbles = 1; ji.cancelable = 1; ji.detail = 1;
+            if (!js_dom_dispatch(n, "click", &ji)) return 1;
+            control_activate(n, navigated);
+            return 1;
+        }
+        if (k == '\n' && FC_IS_TOGGLE(kind)) { if (implicit_submit(n)) *navigated = 1; return 1; }
+        return 0;
+    }
+
+    if (!FC_IS_TEXTUAL(kind)) return 0;
+
+    /* ---- a text field ---- */
+    if (k == '\n') {
+        if (kind == FC_TEXTAREA) return fc_edit_insert(n, "\n", 1) ? 1 : 1;
+        /* Enter in a single-line field COMMITS (fires `change`) and then
+         * implicitly submits the form -- which is exactly what a search box
+         * is, and the reason this whole line of work exists. */
+        fc_commit(n);
+        if (implicit_submit(n)) *navigated = 1;
+        return 1;
+    }
+    if (k == '\b') return fc_edit_backspace(n) ? 1 : 1;
+    if (k == 0x1b) { focus_control(0); return 1; }
+    if (k == KEY_LEFT)  { fc_edit_move(n, -1, ctrl, shift); return 1; }
+    if (k == KEY_RIGHT) { fc_edit_move(n, +1, ctrl, shift); return 1; }
+    if (k == KEY_HOME)  { fc_edit_home(n, shift); return 1; }
+    if (k == KEY_END)   { fc_edit_end(n, shift); return 1; }
+    if (k == KEY_UP || k == KEY_DOWN) {
+        if (kind != FC_TEXTAREA) return 0;      /* let the page scroll */
+        textarea_line_move(n, k == KEY_DOWN, shift);
+        return 1;
+    }
+    /* Ctrl+letter arrives folded to a control code (keyboard.c). The chrome's
+     * own shortcut table has already had its turn on these, so only the ones it
+     * does not claim reach here. */
+    if (k == 0x01) { fc_edit_select_all(n); return 1; }                 /* Ctrl+A */
+    if (k == 0x03 || k == 0x18) {                                       /* copy / cut */
+        int s0, s1, vl = 0;
+        fc_selection(n, &s0, &s1);
+        const char *v = fc_value(n, &vl);
+        if (s1 > s0) clip_set(CLIP_F_TEXT, v + s0, s1 - s0);
+        if (k == 0x18) fc_edit_insert(n, "", 0);
+        return 1;
+    }
+    if (k == 0x16) {                                                    /* Ctrl+V */
+        static char pb[4096];
+        int got = clip_get(CLIP_F_TEXT, pb, (int)sizeof pb);
+        if (got > 0) fc_edit_insert(n, pb, got);
+        return 1;
+    }
+    if (k >= ' ' && k < 0x7f) { char c = (char)k; fc_edit_insert(n, &c, 1); return 1; }
+    return 0;
+}
+
 void app_main(void)
 {
     css_init();             /* build the UA default stylesheet */
@@ -1646,6 +2088,17 @@ void app_main(void)
     css_set_post_pass(css_extra_apply);
     img_init();             /* register PNG + GIF decoders */
     js_page_set_clock(clock_ms);
+    /* focus.c and forms.c raise DOM events through a function pointer rather
+     * than including js_dom.h -- they are compiled into BROWSER_PIPE, which has
+     * no QuickJS include path. This is where that pointer is installed, and it
+     * is the ONLY coupling between the focus/forms model and the script engine:
+     * uninstalled (the host tests), focus still moves and typing still works,
+     * the page simply does not hear about it. */
+    fc_set_dispatch(forms_dispatch);
+    /* Submitting is a navigation and this file owns navigation, so forms.c and
+     * the JS bindings reach it through a pointer rather than the other way
+     * round. */
+    fc_set_submit(form_submit_ex);
     /* The size is chosen BEFORE the window exists, and the cascade is told
      * about it again afterwards: css_viewport was called above with the
      * placeholder, and @media/vw/vh would otherwise evaluate against a window
@@ -1849,6 +2302,7 @@ void app_main(void)
                  * focus the page never sees the keystroke -- otherwise a page
                  * could swallow the Enter that loads the next URL. */
                 int allow = 1;
+                struct node *fnode = 0;
                 if (!editing) {
                     char one[2];
                     struct js_event_init ji = { 0 };
@@ -1857,11 +2311,83 @@ void app_main(void)
                     ji.code = ji.key;
                     ji.key_code = (k >= ' ' && k < 0x7f) ? k : k & 0xFF;
                     mods_of(&e, &ji);
-                    /* No focus model yet, so keys go to <body> -- which is where
-                     * document-level listeners see them bubble past anyway. */
+                    /* THE KEYSTROKE GOES TO THE FOCUSED ELEMENT.
+                     *
+                     * This line used to read "No focus model yet, so keys go to
+                     * <body>", and that was the entire reason no web page on
+                     * this machine could be typed into. The fallback is kept
+                     * and is not a compromise: with nothing focused, <body> IS
+                     * the DOM's answer for activeElement, so a document-level
+                     * listener sees the key bubble past exactly as before. */
+                    fnode = FOCUS_ROUTING ? focus_current() : 0;
                     struct node *body = g_root ? dom_doc_body(g_root->doc) : 0;
-                    allow = js_dom_dispatch(body ? body : js_dom_root(), "keydown", &ji);
+                    struct node *tgt = fnode ? fnode : (body ? body : js_dom_root());
+                    allow = js_dom_dispatch(tgt, "keydown", &ji);
+                    /* A keydown handler is entitled to move focus, or to remove
+                     * the focused element outright. Re-read rather than trust
+                     * the pointer taken three lines ago. */
+                    fnode = FOCUS_ROUTING ? focus_current() : 0;
+                    if (allow && k >= ' ' && k < 0x7f) {
+                        /* keypress: legacy, but a very large amount of real
+                         * form code still cancels typing through it. */
+                        struct js_event_init jp = ji;
+                        allow = js_dom_dispatch(tgt, "keypress", &jp);
+                        fnode = FOCUS_ROUTING ? focus_current() : 0;
+                    }
                 }
+
+                /* Tab moves focus. Before the control's own handling, because a
+                 * text field must not eat the key that leaves it, and after the
+                 * page's keydown, because a focus trap cancels Tab. */
+                if (FOCUS_ROUTING && allow && !editing && k == '\t' && g_root) {
+                    popup_close();
+                    struct node *cur = focus_current();
+                    if (cur && fc_kind(cur) != FC_NONE) fc_commit(cur);
+                    if (focus_advance(g_root, (e.mods & EV_MOD_SHIFT) != 0)) {
+                        struct node *nf = focus_current();
+                        if (nf && fc_kind(nf) != FC_NONE) fc_mark_focus(nf);
+                        /* Scroll it into view: a Tab that focuses something off
+                         * screen is indistinguishable from a Tab that did
+                         * nothing. */
+                        int bx, by, bw, bh;
+                        if (nf && control_box(nf, &bx, &by, &bw, &bh)) {
+                            if (by < scroll + 8) scroll = by - 8;
+                            else if (by + bh > scroll + VIEW_H - 8) scroll = by + bh - VIEW_H + 8;
+                            if (scroll < 0) scroll = 0;
+                            if (scroll > maxs) scroll = maxs;
+                            sync_scroll();
+                        }
+                    }
+                    need = 1;
+                    allow = 0;
+                }
+
+                /* The open <select> owns the keyboard. */
+                if (FOCUS_ROUTING && allow && !editing && popup_live()) {
+                    struct node *sel = popup_live();
+                    int cnt = fc_option_count(sel);
+                    if (k == KEY_DOWN) { g_popup_hi++; if (g_popup_hi >= cnt) g_popup_hi = cnt - 1; allow = 0; }
+                    else if (k == KEY_UP) { g_popup_hi--; if (g_popup_hi < 0) g_popup_hi = 0; allow = 0; }
+                    else if (k == '\n' || k == ' ') {
+                        if (g_popup_hi >= 0 && g_popup_hi != fc_selected_index(sel)) {
+                            fc_set_selected_index(sel, g_popup_hi);
+                            forms_dispatch(sel, "input", 1, 0);
+                            forms_dispatch(sel, "change", 1, 0);
+                        }
+                        popup_close();
+                        allow = 0;
+                    } else if (k == 0x1b) { popup_close(); allow = 0; }
+                    if (!allow) need = 1;
+                }
+
+                /* The focused control gets first refusal on everything else. */
+                if (FOCUS_ROUTING && allow && !editing && fnode && fc_kind(fnode) != FC_NONE) {
+                    if (control_key(fnode, k, &e, &navigated)) {
+                        allow = 0;
+                        need = 1;
+                    }
+                }
+
                 if (allow) {
                     if      (k == KEY_DOWN) scroll += 40;
                     else if (k == KEY_UP)   scroll -= 40;
@@ -1941,6 +2467,35 @@ void app_main(void)
                 }
                 else if (my >= VIEW_Y && my < VIEW_Y + VIEW_H) {
                     editing = 0;
+                    /* An open <select> is modal over the viewport, exactly like
+                     * the library panel above: a click in the list picks a row,
+                     * a click outside it dismisses, and neither reaches the
+                     * page underneath. */
+                    struct node *pop = popup_live();
+                    if (pop) {
+                        int bx, by, bw, bh;
+                        if (control_box(pop, &bx, &by, &bw, &bh)) {
+                            int n2 = fc_option_count(pop);
+                            int rows = n2 > POPUP_MAXROWS ? POPUP_MAXROWS : n2;
+                            int px = bx, py = VIEW_Y + by - scroll + bh;
+                            int pw = bw < 120 ? 120 : bw;
+                            int ph2 = rows * POPUP_ROW + 8;
+                            if (mx >= px && mx < px + pw && my >= py && my < py + ph2) {
+                                int row = (my - py - 4) / POPUP_ROW;
+                                if (row >= 0 && row < rows) {
+                                    if (row != fc_selected_index(pop)) {
+                                        fc_set_selected_index(pop, row);
+                                        forms_dispatch(pop, "input", 1, 0);
+                                        forms_dispatch(pop, "change", 1, 0);
+                                    }
+                                }
+                            }
+                        }
+                        popup_close();
+                        press_node = 0;
+                        need = 1;
+                        continue;
+                    }
                     struct node *n = 0;
                     browser_hittest_node(mx, my - VIEW_Y, scroll, &n, 0, 0);
                     press_node = n;
@@ -1951,7 +2506,33 @@ void app_main(void)
                     ji.button = dom_button(e.button);
                     ji.buttons = 1 << ji.button;
                     mods_of(&e, &ji);
-                    js_dom_dispatch(n, e.type == EV_MOUSE_R ? "contextmenu" : "mousedown", &ji);
+                    int okdown = js_dom_dispatch(n, e.type == EV_MOUSE_R ? "contextmenu" : "mousedown", &ji);
+                    /* FOCUS FOLLOWS THE MOUSE DOWN, not the click -- that is
+                     * what makes click-and-drag inside a field select text in
+                     * every real browser, and what makes preventDefault() on
+                     * mousedown the documented way to stop a control taking
+                     * focus (every custom dropdown on the web relies on it). */
+                    if (FOCUS_ROUTING && okdown && e.type == EV_MOUSE && e.button == EV_BTN_LEFT) {
+                        struct node *lbl = 0;
+                        struct node *tgt = focus_target_for_click(n, &lbl);
+                        focus_control(tgt);
+                        if (tgt && FC_IS_TEXTUAL(fc_kind(tgt))) {
+                            /* Put the caret where the pointer is. */
+                            int bx, by, bw, bh;
+                            if (control_box(tgt, &bx, &by, &bw, &bh)) {
+                                const struct item *its = layout_items();
+                                int cnt = layout_count(), font = 14, mono = 0;
+                                for (int i = 0; i < cnt; i++)
+                                    if (its[i].type == IT_CONTROL && its[i].node == tgt) {
+                                        font = its[i].ctl_font ? its[i].ctl_font : its[i].font_px;
+                                        mono = its[i].ctl_mono; break;
+                                    }
+                                int relx = mx - (bx + FC_BORDER + FC_PAD_X);
+                                int off = fc_offset_at_px(tgt, relx, font, mono);
+                                fc_set_selection(tgt, off, off);
+                            }
+                        }
+                    }
                     need = 1;
                 }
             } else if (e.type == EV_MOUSE_UP) {
@@ -1977,7 +2558,20 @@ void app_main(void)
                          * when the click event survives the page's handlers. */
                         int go = js_dom_dispatch(n, "click", &ji);
                         if (settle_dom()) need = 1;
-                        if (go && href[0]) { follow_link(href); navigated = 1; }
+                        /* THE CONTROL'S DEFAULT ACTION. A checkbox toggles, a
+                         * submit button submits, a <select> opens -- and every
+                         * one of them is suppressed by preventDefault(), which
+                         * is what `go` carries. A click on a <label> activates
+                         * the control it labels, which is how most checkboxes
+                         * on the web are actually ticked. */
+                        if (FOCUS_ROUTING && go) {
+                            struct node *lbl = 0;
+                            struct node *tgt = focus_target_for_click(n, &lbl);
+                            if (tgt && fc_kind(tgt) != FC_NONE) {
+                                if (control_activate(tgt, &navigated)) need = 1;
+                            }
+                        }
+                        if (go && !navigated && href[0]) { follow_link(href); navigated = 1; }
                     }
                     press_node = 0;
                     need = 1;

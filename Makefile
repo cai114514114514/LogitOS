@@ -494,6 +494,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/html_tree.c c/apps/browser/dom_serialize.c \
                 c/apps/browser/layout.c \
+                c/apps/browser/forms.c c/apps/browser/focus.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/tabs.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
@@ -3318,6 +3319,11 @@ bench-aui: $(ISO) $(DISK)
 # c/kernel/sched/uthread.c links by existing, and mini-libc's pthread.c and
 # pthread_entry.asm are already covered by the wildcards over c/apps/libc/src.
 -include tests/thread.mk
+
+# The focus model and the form controls: the host state machine, the device
+# test that types into a real page, and the negative control that requires it
+# to fail without focus routing. See tests/forms.mk.
+-include tests/forms.mk
 
 # Web Platform Tests over the DOM + Web-API layer. Upstream data only, our
 # runner, a rate ratcheted against a committed expected-failure list -- the

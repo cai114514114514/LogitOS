@@ -12,7 +12,17 @@
  * (c/apps/browser/js_media*.c), which owns the decoded frame. It is a separate
  * type rather than an IT_IMAGE with a magic `img` because a video frame changes
  * thirty times a second and must never be freed by layout_free(). */
-enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO };
+/* IT_CONTROL is a form control's border box -- an <input>, <textarea>,
+ * <select> or <button>. Like IT_VIDEO it carries no content of its own: the
+ * text in a field, the tick in a checkbox and the caret are STATE, they change
+ * on every keystroke, and layout runs far less often than that. So layout
+ * reserves the box and records which control it is, and browser_paint.c asks
+ * forms.c what to draw inside it at paint time.
+ *
+ * That split is also what keeps layout.c free of any link dependency on
+ * forms.c: eight host test binaries link layout.c, and none of them would
+ * otherwise build. */
+enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO, IT_CONTROL };
 struct item {
     int type, x, y, w, h;
     struct node *node;                /* DOM node this box came from (NULL only
@@ -63,6 +73,14 @@ struct item {
     unsigned char is_float;           /* emitted by a floated box (or inside one):
                                        * out of flow, so the line-box shifting
                                        * that text-align does must skip it */
+    /* CONTROL */
+    unsigned char ctl;                /* FC_* kind (forms.h); 0 for everything else.
+                                       * An int rather than a re-derivation from
+                                       * `node` at paint time because the painter
+                                       * must not have to parse the `type`
+                                       * attribute per box per frame. */
+    unsigned char ctl_mono;           /* the field's font is monospace */
+    int ctl_font;                     /* font size inside the control (px) */
 };
 
 /* Lay out `root` (a parsed+styled DOM) into a display list at the given canvas

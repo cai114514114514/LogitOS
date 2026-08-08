@@ -22,6 +22,7 @@
 #include "gfx.h"
 #include "layout.h"
 #include "browser_paint.h"
+#include "forms.h"
 
 /* The media engine, weakly: a <video> box is painted by whoever owns the
  * decoded frame (c/apps/browser/js_media.c), and this file must keep linking in
@@ -32,6 +33,15 @@ struct node;
 extern void media_paint_box(struct node *node, int x, int y, int w, int h,
                             int clip_x, int clip_y, int clip_w, int clip_h)
     __attribute__((__weak__));
+
+/* forms.c, weakly, for exactly the same reason. layout.c reserves a control's
+ * box; what goes INSIDE it -- the value, the caret, the tick -- is state that
+ * changes on every keystroke and lives in forms.c. Weak because eight host test
+ * binaries link this painter without forms.c: with it absent every control
+ * still draws its chrome, just empty, which is a visible and honest
+ * degradation rather than a link error in someone else's test. */
+extern int fc_paint_state(struct node *n, int font_px, int mono, int content_w,
+                          struct fpaint *out) __attribute__((__weak__));
 
 /* css_border_style_e, mirrored rather than included: layout stores LibCSS's raw
  * value in `border_style`, and pulling <libcss/properties.h> into the painter
@@ -259,6 +269,266 @@ static void border_edge(int x, int y, int run, int thick, int vert,
     else      fill(x, y, run, thick, color, alpha);
 }
 
+/* ======================== form controls ====================================
+ *
+ * The chrome a control is drawn with, and where the value goes inside it.
+ *
+ * NOTHING HERE RASTERIZES. The tick in a checkbox, the dot in a radio and the
+ * disclosure triangle in a <select> are PATHS handed to Open Logit
+ * (c/lib/gfx), which is the same engine the widget toolkit and this file's
+ * rounded corners already go through -- so a checkbox on a web page and a
+ * checkbox in a native app are antialiased by the same rule at the same size.
+ * Writing a fourth coverage path here is precisely what that engine exists to
+ * stop, and a hand-drawn tick out of gui_rect would be the stair-stepped
+ * diagonal that gives the whole page away.
+ *
+ * The palette is the system one, not a per-control invention: a page that does
+ * not style its inputs gets the machine's look, and a page that DOES style them
+ * gets its own colours (see `authored` at the call site -- an author background
+ * or border switches the default chrome off entirely rather than being painted
+ * over it).
+ */
+#define CTL_FIELD_BG   0xFFFFFFu
+#define CTL_DIS_BG     0xF1F2F4u
+#define CTL_EDGE       0xB0B4BAu
+#define CTL_EDGE_FOCUS 0x2F6FEBu
+#define CTL_INK        0x1D1D1Fu
+#define CTL_INK_DIS    0x9AA0A6u
+#define CTL_PLACEHOLD  0x9AA0A6u
+#define CTL_BTN_BG     0xF6F7F8u
+#define CTL_ACCENT     0x2563EBu
+#define CTL_SELBG      0xB4D5FEu
+
+/* Largest shape tile, DEVICE px. A checkbox is 13 pt, so 48 covers 200% with
+ * room; past it the shape is skipped rather than overrunning the buffer, which
+ * costs a tick and never a corrupted heap. */
+#define CTL_SHAPE_MAX 48
+static unsigned char ctl_cov[CTL_SHAPE_MAX * CTL_SHAPE_MAX];
+static unsigned char ctl_rgba[CTL_SHAPE_MAX * CTL_SHAPE_MAX * 4];
+static int ctl_pt[128], ctl_sub[8];
+
+/* Rasterize a device-space path into a coverage tile and blit it into the POINT
+ * rect (x,y,wpt,hpt) whose device size is exactly (wdev,hdev) -- the mask
+ * discipline the engine's header spells out, so the compositor's rescale is the
+ * identity and the antialiasing survives at 150%. */
+static void shape_fill(struct gfx_path *p, int rule, int x, int y,
+                       int wpt, int hpt, int wdev, int hdev, uint32_t color, int alpha)
+{
+    if (wdev <= 0 || hdev <= 0 || wdev > CTL_SHAPE_MAX || hdev > CTL_SHAPE_MAX) return;
+    if (!gfx_fill_mask(p, rule, ctl_cov, wdev, hdev, 0, 0)) return;
+    gfx_mask_to_rgba(ctl_rgba, ctl_cov, wdev, hdev, color, alpha, 0, 0);
+    gui_blit(x, y, wpt, hpt, ctl_rgba, wdev, hdev);
+}
+
+/* A polygon given as N points in 1/1000ths of the tile, so one table describes
+ * a shape at every size. */
+static void poly_shape(const short *pts, int n, int x, int y, int wpt, int hpt,
+                       uint32_t color, int alpha)
+{
+    int wdev = devlen(x, wpt), hdev = devlen(y, hpt);
+    if (wdev <= 0 || hdev <= 0) return;
+    struct gfx_path p;
+    gfx_path_init(&p, ctl_pt, 128, ctl_sub, 8);
+    for (int i = 0; i < n; i++) {
+        int px = (int)((long)pts[i * 2] * wdev * GFX_ONE / 1000);
+        int py = (int)((long)pts[i * 2 + 1] * hdev * GFX_ONE / 1000);
+        if (i == 0) gfx_move_to(&p, px, py);
+        else        gfx_line_to(&p, px, py);
+    }
+    gfx_close(&p);
+    shape_fill(&p, GFX_NONZERO, x, y, wpt, hpt, wdev, hdev, color, alpha);
+}
+
+/* The tick. A filled polygon rather than a stroke, because Open Logit phase 1
+ * fills and does not stroke -- and a check mark is a shape with a thickness, so
+ * the outline IS the honest description of it. */
+static const short CTL_TICK[] = {
+    160, 520,  400, 762,  846, 250,  742, 168,  396, 566,  262, 436
+};
+/* The <select> disclosure triangle. */
+static const short CTL_ARROW[] = { 120, 360,  880, 360,  500, 760 };
+
+static void ctl_circle(int x, int y, int d, uint32_t color, int alpha)
+{
+    int dev_d = devlen(x, d);
+    if (dev_d <= 0) return;
+    struct gfx_path p;
+    gfx_path_init(&p, ctl_pt, 128, ctl_sub, 8);
+    gfx_path_circle(&p, dev_d * GFX_ONE / 2, dev_d * GFX_ONE / 2, dev_d * GFX_ONE / 2);
+    shape_fill(&p, GFX_NONZERO, x, y, d, d, dev_d, dev_d, color, alpha);
+}
+
+/* Border box + inner fill. `bw` is the border thickness in points. */
+static void ctl_frame(int x, int y, int w, int h, int r, uint32_t bg, uint32_t edge, int bw)
+{
+    if (w <= 0 || h <= 0) return;
+    if (bw > 0) {
+        fill_round(x, y, w, h, r, edge, 255);
+        fill_round(x + bw, y + bw, w - 2 * bw, h - 2 * bw, r > bw ? r - bw : 0, bg, 255);
+    } else {
+        fill_round(x, y, w, h, r, bg, 255);
+    }
+}
+
+/* Draw one control. `sx,sy` is its border box in window coordinates. */
+static void paint_control(const struct item *e, int sx, int sy)
+{
+    struct fpaint fp;
+    int have = 0;
+    int k = e->ctl;
+    int fw = e->w, fh = e->h;
+    int font = e->ctl_font > 0 ? e->ctl_font : e->font_px;
+    if (font <= 0) font = 14;
+    int content_w = fw - 2 * (FC_PAD_X + FC_BORDER);
+
+    if (fc_paint_state)
+        have = fc_paint_state(e->node, font, e->ctl_mono, content_w, &fp);
+    if (!have) {
+        /* forms.c is not linked (the host paint test). Draw the chrome with no
+         * state -- an empty control, which is what a control with no state IS. */
+        for (unsigned i = 0; i < sizeof fp; i++) ((unsigned char *)&fp)[i] = 0;
+        fp.kind = k; fp.caret_x = -1; fp.pad_x = FC_PAD_X; fp.pad_y = FC_PAD_Y;
+        fp.line_h = font + font / 4; fp.nline = 1;
+    }
+
+    /* Did the page style this control itself? If so its background and border
+     * are the truth and the system chrome must not be painted underneath --
+     * every design system in existence restyles its inputs, and drawing our
+     * frame first would show as a grey halo around theirs. */
+    int authored = e->has_bg;
+    for (int i = 0; i < 4; i++) if (e->border_w[i] > 0) authored = 1;
+
+    uint32_t ink = fp.disabled ? CTL_INK_DIS : (authored ? e->color : CTL_INK);
+    int radius = e->radius ? e->radius : (FC_IS_BUTTON(k) || k == FC_SELECT ? 5 : 4);
+
+    if (FC_IS_TOGGLE(k)) {
+        int d = fw < fh ? fw : fh;
+        if (d > 24) d = 24;                       /* a tick does not grow forever */
+        int bx = sx + (fw - d) / 2, by = sy + (fh - d) / 2;
+        uint32_t face = fp.checked ? CTL_ACCENT : (fp.disabled ? CTL_DIS_BG : CTL_FIELD_BG);
+        uint32_t edge = fp.focused ? CTL_EDGE_FOCUS : (fp.checked ? CTL_ACCENT : CTL_EDGE);
+        if (k == FC_CHECKBOX) {
+            ctl_frame(bx, by, d, d, 3, face, edge, fp.focused ? 2 : 1);
+            if (fp.checked) poly_shape(CTL_TICK, 6, bx, by, d, d, 0xFFFFFFu, 255);
+        } else {
+            ctl_circle(bx, by, d, edge, 255);
+            int inset = fp.focused ? 2 : 1;
+            ctl_circle(bx + inset, by + inset, d - 2 * inset, face, 255);
+            if (fp.checked) {
+                int dd = d / 2; if (dd < 3) dd = 3;
+                ctl_circle(bx + (d - dd) / 2, by + (d - dd) / 2, dd, 0xFFFFFFu, 255);
+            }
+        }
+        return;
+    }
+
+    /* --- the frame, shared by every remaining kind --- */
+    uint32_t face = fp.disabled ? CTL_DIS_BG
+                  : FC_IS_BUTTON(k) || k == FC_SELECT || k == FC_FILE ? CTL_BTN_BG
+                  : CTL_FIELD_BG;
+    if (authored) {
+        /* Author styling: reuse the IT_RECT path's colours exactly, so a styled
+         * input and a styled <div> beside it land on the same pixels.
+         *
+         * THE FOCUS RING GOES FIRST, and that is not a cosmetic ordering. It is
+         * drawn as a larger rounded rect that the border and background then
+         * cover, so what survives is a 2px halo OUTSIDE the author's border.
+         * Painting it afterwards -- which is what this did first -- washes
+         * translucent blue over the whole control, including the border the
+         * page chose, and the device test caught it by no longer being able to
+         * find the field's own colour on screen. */
+        if (fp.focused)
+            fill_round(sx - 2, sy - 2, fw + 4, fh + 4, radius + 2, CTL_EDGE_FOCUS, 110);
+        int bmax = 0;
+        for (int i = 0; i < 4; i++) if (e->border_w[i] > bmax) bmax = e->border_w[i];
+        if (e->has_bg && bmax > 0) {
+            fill_round(sx, sy, fw, fh, radius, e->border_color[0], 255);
+            fill_round(sx + bmax, sy + bmax, fw - 2 * bmax, fh - 2 * bmax,
+                       radius > bmax ? radius - bmax : 0, e->bg, e->bg_alpha ? e->bg_alpha : 255);
+        } else if (e->has_bg) {
+            fill_round(sx, sy, fw, fh, radius, e->bg, e->bg_alpha ? e->bg_alpha : 255);
+        } else if (bmax > 0) {
+            fill_round(sx, sy, fw, fh, radius, e->border_color[0], 255);
+            fill_round(sx + bmax, sy + bmax, fw - 2 * bmax, fh - 2 * bmax,
+                       radius > bmax ? radius - bmax : 0, CTL_FIELD_BG, 255);
+        }
+    } else {
+        ctl_frame(sx, sy, fw, fh, radius,
+                  face, fp.focused ? CTL_EDGE_FOCUS : CTL_EDGE, fp.focused ? 2 : 1);
+    }
+
+    if (k == FC_RANGE || k == FC_COLOR) {
+        /* Not built: a slider needs a thumb the user can drag and a colour
+         * field needs a picker. The box is drawn so the page's layout is right
+         * and the control is visibly present rather than missing. */
+        if (k == FC_RANGE) fill(sx + 4, sy + fh / 2 - 1, fw - 8, 3, CTL_EDGE, 255);
+        return;
+    }
+
+    /* --- the content --- */
+    int cx = sx + FC_BORDER + fp.pad_x;
+    int cy = sy + FC_BORDER + fp.pad_y;
+    int cw = fw - 2 * (FC_BORDER + fp.pad_x);
+    int chh = fh - 2 * (FC_BORDER + fp.pad_y);
+    if (k == FC_SELECT) cw -= 16;                 /* room for the triangle */
+    if (cw < 0) cw = 0;
+
+    /* Centre a single line vertically. gui_text_run's y is the top of the em
+     * box (it adds the ascent itself), so the em box is what is centred. */
+    int ty = cy;
+    if (k != FC_TEXTAREA && chh > font) ty = cy + (chh - font) / 2;
+
+    /* A button's and a select's label is centred / left-aligned respectively;
+     * a field's text is left-aligned and may be scrolled. */
+    int tx = cx;
+    if (FC_IS_BUTTON(k) || k == FC_FILE) {
+        int lw = fp.text_w;
+        if (lw < cw) tx = cx + (cw - lw) / 2;
+    } else {
+        tx = cx - fp.scroll_x;
+    }
+
+    /* Clip to the content box: a value longer than the field must not spill
+     * over the border and onto the page. */
+    int ox0 = cl_x0, oy0 = cl_y0, ox1 = cl_x1, oy1 = cl_y1;
+    int nx0 = cx > ox0 ? cx : ox0, ny0 = cy > oy0 ? cy : oy0;
+    int nx1 = cx + cw < ox1 ? cx + cw : ox1, ny1 = cy + chh < oy1 ? cy + chh : oy1;
+    if (nx1 > nx0 && ny1 > ny0) {
+        set_clip(nx0, ny0, nx1, ny1);
+        if (k == FC_TEXTAREA && fp.text && fp.len > 0) {
+            int ls = 0, line = 0;
+            for (int i = 0; i <= fp.len; i++) {
+                if (i == fp.len || fp.text[i] == '\n') {
+                    int yy = cy + line * fp.line_h;
+                    if (yy > cy + chh) break;
+                    if (i > ls)
+                        gui_text_run(tx, yy, font, e->ctl_mono,
+                                     fp.placeholder ? CTL_PLACEHOLD : ink, fp.text + ls, i - ls);
+                    ls = i + 1; line++;
+                }
+            }
+        } else if (fp.text && fp.len > 0) {
+            if (fp.sel_x1 > fp.sel_x0)
+                fill(cx - fp.scroll_x + fp.sel_x0, ty, fp.sel_x1 - fp.sel_x0,
+                     font + font / 5, CTL_SELBG, 255);
+            gui_text_run(tx, ty, font, e->ctl_mono,
+                         fp.placeholder ? CTL_PLACEHOLD : ink, fp.text, fp.len);
+        }
+        if (fp.caret_x >= 0 && !fp.disabled) {
+            int caret_y = (k == FC_TEXTAREA) ? cy + fp.caret_line * fp.line_h : ty;
+            int th = font >= 28 ? 2 : 1;
+            fill(cx - fp.scroll_x + fp.caret_x, caret_y - 1, th, font + 2, ink, 255);
+        }
+        set_clip(ox0, oy0, ox1, oy1);
+    }
+
+    if (k == FC_SELECT) {
+        int aw = 9, ah = 6;
+        poly_shape(CTL_ARROW, 3, sx + fw - FC_BORDER - FC_PAD_X - aw,
+                   sy + (fh - ah) / 2, aw, ah, fp.disabled ? CTL_INK_DIS : CTL_INK, 255);
+    }
+}
+
 /* ---- backdrop estimation ----
  *
  * Group opacity is defined against whatever is already painted underneath, and
@@ -391,6 +661,8 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
                                 cl_x1 - cl_x0, cl_y1 - cl_y0);
             else
                 fill(sx, sy, e->w, e->h, 0x000000, op);
+        } else if (e->type == IT_CONTROL) {
+            paint_control(e, sx, sy);
         } else if (e->type == IT_IMAGE && e->img) {
             gui_blit(sx, sy, e->w, e->h, e->img->rgba, e->img->w, e->img->h);
             /* An image cannot have its own alpha modulated without copying the
