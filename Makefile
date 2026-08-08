@@ -1389,7 +1389,7 @@ HTML_PARSER_SRC := c/apps/browser/dom.c c/apps/browser/html_tree.c \
 test-html5lib: $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/html5lib_test third_party/html5lib-tests/tree-construction \
 	    $(if $(V),-v $(V),) $(if $(BASELINE),--write-baseline,) $(if $(STRICT),--strict,)
 
@@ -1402,12 +1402,12 @@ test-html5lib-asan: $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_asan tests/unit/html5lib_test.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 	    $(BUILD)/html5lib_asan third_party/html5lib-tests/tree-construction --strict
 	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_fuzz tests/unit/html5lib_fuzz.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 	    $(BUILD)/html5lib_fuzz third_party/html5lib-tests/tree-construction
 
@@ -2296,13 +2296,13 @@ $(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
 	@ar rcs $@ $^
 
 test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/dom_test
-	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/dom_api_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/var_test tests/unit/var_test.c \
 	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/var_test
 # css_vars_test: the cascade half of the same file -- WHICH declaration wins,
 # rather than whether substitution happens. It links css_engine.c because the
@@ -2310,54 +2310,54 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # the entire point: there is one evaluator, not one per caller.
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_test tests/unit/css_vars_test.c \
 	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_vars_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/parse_fuzz tests/unit/parse_fuzz.c c/net/http/url.c c/lib/text/utf8.c
 	@$(BUILD)/parse_fuzz
 	@$(CC) -O2 -w $(HOST_INCDIRS) -o $(BUILD)/http_dechunk_test tests/unit/http_dechunk_test.c c/net/http/url.c
 	@$(BUILD)/http_dechunk_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_test tests/unit/css_engine_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_engine_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_extra_test tests/unit/css_extra_test.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c $(HTML_PARSER_SRC) \
-	    $(BUILD)/libcss_host.a
+	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_extra_test
 # css_perf_test: that the author sheet is parsed once per SHEET and not once
 # per mutation -- asserted with counters rather than times, and paired with the
 # stale-stylesheet checks that are the real risk of caching it.
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_perf_test tests/unit/css_perf_test.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    c/apps/browser/layout.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_perf_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    $(BUILD)/libcss_host.a
+	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/layout_test
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_test tests/unit/paint_test.c \
 	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/paint_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    $(BUILD)/libcss_host.a
+	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/page_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_test tests/unit/table_list_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    $(BUILD)/libcss_host.a
+	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/table_list_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/pipeline_stress tests/unit/pipeline_stress.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    $(BUILD)/libcss_host.a
+	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/pipeline_stress
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(IMG_HOST_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -Ic/kernel/mm
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm -Ic/kernel/mm
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
 	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
-	    c/apps/browser/css_engine.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/http1_test tests/unit/http1_test.c \
@@ -2595,7 +2595,7 @@ test-js-dom-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_asan \
 	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
-	    c/apps/browser/css_engine.c \
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_asan
 
@@ -2616,7 +2616,7 @@ test-js-dom-asan: $(BUILD)/libcss_host.a
 test-css-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_asan tests/unit/css_engine_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/css_engine_asan >/dev/null
 	@echo "css_engine_test: ASan + UBSan + LeakSanitizer clean"
 # The custom-property scanner walks attacker-controlled stylesheet bytes with
@@ -2627,33 +2627,33 @@ test-css-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_asan tests/unit/css_vars_test.c \
 	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/css_vars_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_fuzz tests/unit/css_vars_fuzz.c \
 	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/css_vars_fuzz $(FUZZ_N)
 	@echo "css_vars: ASan + UBSan clean over the unit cases and the fuzz corpus"
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_asan tests/unit/layout_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
-	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/layout_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_asan tests/unit/paint_test.c \
 	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/paint_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_asan tests/unit/table_list_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
-	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/table_list_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_asan tests/unit/page_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
-	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a
+	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/page_asan >/dev/null
 	@echo "test-css-asan: ALL PASS"
 
@@ -2758,7 +2758,7 @@ $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_bench.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
 	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) \
-	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 
 bench-css: $(BUILD)/css_bench
 	@$(BUILD)/css_bench --iters=$(BENCH_ITERS) $(BENCH_PAGE) $(BENCH_CSS)

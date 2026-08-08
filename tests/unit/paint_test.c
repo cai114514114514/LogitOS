@@ -231,19 +231,25 @@ int main(void)
     "body{background:#ffffff;margin:0}" \
     ".b{box-sizing:border-box;width:200px;height:40px;" rest "}"
 
+    /* The bands below start at y=0, and used to start at y=8. layout_page had
+     * `bst->mt > 0 ? bst->mt : 8`, which forced 8px of top margin onto the body
+     * whenever the cascade said 0 -- so `body{margin:0}` above was ignored and
+     * every one of these borders landed at y=8. This test was written against
+     * that. The margin bug is fixed; the band moved with it, and the counts --
+     * which are what the test is actually about -- are unchanged. */
     render("<body><div class='b'>x</div></body>", BORDER_CSS("border-top:2px solid #123456"));
-    CHECK(ops_in_band(8, 10) == 1, "a solid 2px top border is one fill");
+    CHECK(ops_in_band(0, 2) == 1, "a solid 2px top border is one fill");
 
     render("<body><div class='b'>x</div></body>", BORDER_CSS("border-top:2px dotted #123456"));
     /* dots are `thick` long with a `thick` gap: 200 / 4 = 50 */
-    CHECK(ops_in_band(8, 10) == 50, "a dotted 2px top border is 50 square dots over 200px");
+    CHECK(ops_in_band(0, 2) == 50, "a dotted 2px top border is 50 square dots over 200px");
 
     render("<body><div class='b'>x</div></body>", BORDER_CSS("border-top:2px dashed #123456"));
     /* dashes are 3*thick on, 2*thick off: ceil(200 / 10) = 20 */
-    CHECK(ops_in_band(8, 10) == 20, "a dashed 2px top border is 20 dashes over 200px");
+    CHECK(ops_in_band(0, 2) == 20, "a dashed 2px top border is 20 dashes over 200px");
 
     render("<body><div class='b'>x</div></body>", BORDER_CSS("border-top:6px double #123456"));
-    CHECK(ops_in_band(8, 14) == 2, "a double 6px top border is two 2px lines with a gap");
+    CHECK(ops_in_band(0, 6) == 2, "a double 6px top border is two 2px lines with a gap");
 
     /* The same patterns run along the OTHER axis on the left/right edges. */
     render("<body><div class='b'>x</div></body>", BORDER_CSS("border-left:6px double #123456"));
@@ -260,7 +266,9 @@ int main(void)
     unsigned g1 = 0, g2 = 0; int gn = 0;
     for (int i = 0; i < paint_nops; i++) {
         const struct paintop *p = &paint_ops[i];
-        if (p->kind != OP_RECT || p->y < 8 || p->y + p->h > 14 || p->w != 200) continue;
+        /* y 0..6, not 8..14 -- see the note above the solid-border checks: the
+         * body's 0 margin is honoured now, so the border starts at the top. */
+        if (p->kind != OP_RECT || p->y < 0 || p->y + p->h > 6 || p->w != 200) continue;
         if (gn == 0) g1 = p->color; else if (gn == 1) g2 = p->color;
         gn++;
     }

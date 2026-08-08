@@ -122,7 +122,14 @@ int main(void)
     }
     CHECK(py >= 0, "bare text inside flex button emitted");
     CHECK(sy >= 0, "second button text emitted");
-    CHECK(py >= 0 && sy >= 0 && py == sy, "both button labels share the flex row");
+    /* Same ROW, not the same y. A <button> is now a form control with a frame
+     * and padding (layout.c reserves an IT_CONTROL box and flows the button's
+     * children inside it), so its label sits a few pixels lower than a bare
+     * text run beside it -- which is what a button looks like in every
+     * browser. The assertion this replaced was `py == sy` exactly, and what it
+     * was pinning was the ABSENCE of button chrome. */
+    CHECK(py >= 0 && sy >= 0 && sy - py >= 0 && sy - py <= 8,
+          "both button labels share the flex row");
 
     /* A width:100% flex item must not starve its auto siblings (GitHub's
      * header nav vanished because the cta container's width:100% claimed the

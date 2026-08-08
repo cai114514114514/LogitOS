@@ -71,4 +71,29 @@ extern unsigned long long host_clock;
 static inline unsigned long long monotonic_ms(void) { return host_clock; }
 static inline void sys_yield(void) { }
 
+/* ---- the clipboard ----
+ * browser.c's text fields do cut/copy/paste through the clipboard syscalls, so
+ * the host build of that file needs them to resolve. An in-process buffer, not
+ * a no-op: a paste that silently produced nothing would make a clipboard bug
+ * invisible to a host test rather than merely untested. */
+#define CLIP_F_TEXT 0
+#define HOST_CLIP_MAX 4096
+extern char host_clip[HOST_CLIP_MAX];
+extern int  host_clip_len;
+static inline int clip_set(int flavour, const void *buf, int len)
+{
+    (void)flavour;
+    if (len < 0 || len > HOST_CLIP_MAX) return -2;
+    for (int i = 0; i < len; i++) host_clip[i] = ((const char *)buf)[i];
+    host_clip_len = len;
+    return len;
+}
+static inline int clip_get(int flavour, void *buf, int max)
+{
+    (void)flavour;
+    int n = host_clip_len < max ? host_clip_len : max;
+    for (int i = 0; i < n; i++) ((char *)buf)[i] = host_clip[i];
+    return n;
+}
+
 #endif /* LOADERHOST_LOGIT_H */

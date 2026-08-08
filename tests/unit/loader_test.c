@@ -55,6 +55,8 @@ int host_evq_head, host_evq_tail;
 jmp_buf host_exit_jmp;
 int host_exit_code, host_exited;
 unsigned long long host_clock;
+char host_clip[HOST_CLIP_MAX];
+int  host_clip_len;
 
 /* ---- stubs for the primitives the kernel normally provides ---- */
 size_t malloc_peak;                      /* browser.c prints it after a load */
