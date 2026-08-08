@@ -62,22 +62,112 @@ int css_media_matches(const char *query, int len);
  * a truncated `--shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px...`
  * expands to a syntactically broken declaration that LibCSS then discards
  * whole. Names run to ~40 chars in practice (--background-color-interactive-
- * subtle); values to ~180 (multi-layer shadows and gradients). */
+ * subtle).
+ *
+ * VALUES ARE NO LONGER A FIXED FIELD, and that is the single most consequential
+ * change this file has had. The measured reason (tests/unit/css_audit.c over
+ * the tests/fixtures/cssweb corpus): apple.com declares
+ *
+ *   --r-globalnav-flyout-group-delay: min( (var(--a) * 80ms) +
+ *       ((var(--b) - var(--c)) * 40ms), var(--d) * 80ms )
+ *
+ * which is 208 bytes. The old 192-byte field stored a PREFIX of it -- cut after
+ * `* 80ms` and before the closing `)`. Every later `calc(var(--r-globalnav-
+ * flyout-group-delay) + ...)` then expanded to text with one unclosed `(`, and
+ * an unclosed bracket does not lose one declaration: LibCSS's tokeniser stays
+ * inside it, so EVERY REMAINING BYTE OF EVERY REMAINING STYLESHEET is swallowed.
+ * apple.com's cascade saw 4% of its own declarations. The page was not missing
+ * a property; it was missing its stylesheet.
+ *
+ * So: values live in an arena at their true length, and -- the invariant that
+ * makes the class of bug impossible rather than merely rarer -- A VALUE THAT
+ * CANNOT BE STORED WHOLE, OR THAT IS NOT ITSELF BRACKET-BALANCED, IS NOT STORED
+ * AT ALL. It is marked unusable and var() referring to it falls back or expands
+ * to nothing. Since every substitution replaces a complete `var(...)` with a
+ * balanced string, the expansion can no longer unbalance the sheet, whatever
+ * the input. That property is what tests/unit/css_vars_test.c now asserts. */
 #define MAXVARS 2048
 #define VNAME   64
-#define VVAL    192
+/* A hard ceiling that exists only so a pathological sheet cannot exhaust the
+ * arena; real values top out around 300 bytes (multi-layer shadows, gradient
+ * stops, the nested min()/calc() above). Past it the value is unusable, never
+ * truncated. */
+#define VVAL_MAX 8192
 
 struct vent {
     char name[VNAME];
-    char val[VVAL];
+    char *val;                     /* arena-owned, NUL-terminated; never NULL */
+    int   vlen;
     unsigned spec;                 /* packed CSS specificity, a<<20|b<<10|c */
     unsigned char important;
     unsigned char gated;           /* the declaring selector is a THEME SWITCH:
                                     * every arm of it is qualified by a class,
                                     * id or attribute. See rank_beats(). */
+    unsigned char unusable;        /* too long, or not bracket-balanced: treat
+                                    * every var() naming it as undefined */
 };
 static struct vent vars_[MAXVARS];
 static int  nvars_;
+
+/* ---- the value arena ----
+ * A bump allocator over kmalloc'd chunks. Values are written once per
+ * expansion and read many times; the arena is rewound (not freed) at the start
+ * of every collect(), so a live page that re-expands on each mutation does not
+ * grow. Chunks are kept because mini-libc's malloc is first-fit over a walked
+ * header chain -- handing it back thousands of small blocks per re-style is
+ * exactly the crawl the DOM arena exists to avoid. */
+void *kmalloc(unsigned long);
+#define VARENA_CHUNK 65536
+struct vchunk { struct vchunk *next; int used; int cap; char buf[VARENA_CHUNK]; };
+static struct vchunk *g_arena;
+static char g_empty[1];
+
+static void arena_reset(void)
+{
+    for (struct vchunk *c = g_arena; c; c = c->next) c->used = 0;
+}
+
+static char *arena_alloc(int n)      /* n includes the NUL */
+{
+    if (n <= 0) return g_empty;
+    for (struct vchunk *c = g_arena; c; c = c->next)
+        if (c->cap - c->used >= n) { char *p = c->buf + c->used; c->used += n; return p; }
+    int cap = n > VARENA_CHUNK ? n : VARENA_CHUNK;
+    struct vchunk *c = (struct vchunk *)kmalloc(sizeof(struct vchunk) - VARENA_CHUNK + cap);
+    if (!c) return 0;
+    c->cap = cap; c->used = n; c->next = g_arena; g_arena = c;
+    return c->buf;
+}
+
+/* Is `s[0..n)` bracket-balanced, with every string closed and no comment left
+ * open? This is the gate every stored value passes, and the whole reason the
+ * expansion is safe: substitution only ever splices balanced text. */
+static int text_balanced(const char *s, int n)
+{
+    int par = 0, sq = 0, br = 0;
+    for (int i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '/' && i + 1 < n && s[i+1] == '*') {
+            i += 2;
+            while (i + 1 < n && !(s[i] == '*' && s[i+1] == '/')) i++;
+            if (i + 1 >= n) return 0;                 /* comment never closed */
+            i++; continue;
+        }
+        if (c == '"' || c == '\'') {
+            char q = c; i++;
+            while (i < n && s[i] != q) { if (s[i] == '\\' && i + 1 < n) i++; i++; }
+            if (i >= n) return 0;                     /* string never closed */
+            continue;
+        }
+        if (c == '(') par++;
+        else if (c == ')') { if (--par < 0) return 0; }
+        else if (c == '[') sq++;
+        else if (c == ']') { if (--sq < 0) return 0; }
+        else if (c == '{') br++;
+        else if (c == '}') { if (--br < 0) return 0; }
+    }
+    return par == 0 && sq == 0 && br == 0;
+}
 
 static int vid(int c){ return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'; }
 static int spc_(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
@@ -133,11 +223,18 @@ static int rank_beats(const struct vent *cur, unsigned spec, int important, int 
     return spec >= cur->spec;
 }
 
-/* Record `--name: value` as declared by a selector of specificity `spec`. */
+/* Record `--name: value` as declared by a selector of specificity `spec`.
+ *
+ * A value that does not fit, or that is not bracket-balanced on its own, is
+ * recorded as UNUSABLE rather than as a prefix. Storing a prefix is what turned
+ * one over-long apple.com declaration into a dead stylesheet -- see the header.
+ * The cascade bookkeeping still runs for it, because an unusable winner must
+ * still beat a lower-ranked usable declaration: pretending the losing one won
+ * would render a value the cascade did not choose. */
 static void var_set(const char *name, int nlen, const char *val, int vlen,
                     unsigned spec, int important, int gated){
     if (nlen <= 0 || nlen >= VNAME) return;
-    if (vlen >= VVAL) vlen = VVAL - 1; if (vlen < 0) vlen = 0;
+    if (vlen < 0) vlen = 0;
     int idx = var_find(name, nlen);
     if (idx < 0) {
         if (nvars_ >= MAXVARS) return;
@@ -147,11 +244,16 @@ static void var_set(const char *name, int nlen, const char *val, int vlen,
     } else if (!rank_beats(&vars_[idx], spec, important, gated)) {
         return;
     }
-    for (int k = 0; k < vlen; k++) vars_[idx].val[k] = val[k];
-    vars_[idx].val[vlen] = 0;
     vars_[idx].spec = spec;
     vars_[idx].important = (unsigned char)!!important;
     vars_[idx].gated = (unsigned char)!!gated;
+
+    char *dst = (vlen < VVAL_MAX && text_balanced(val, vlen))
+                    ? arena_alloc(vlen + 1) : 0;
+    if (!dst) { vars_[idx].val = g_empty; vars_[idx].vlen = 0; vars_[idx].unusable = 1; return; }
+    for (int k = 0; k < vlen; k++) dst[k] = val[k];
+    dst[vlen] = 0;
+    vars_[idx].val = dst; vars_[idx].vlen = vlen; vars_[idx].unusable = 0;
 }
 
 /* CSS specificity of a selector list: (#id, .class/[attr]/:pseudo-class,
@@ -235,9 +337,18 @@ static int var_subst(const char *s, int n, char *out, int omax, int depth){
                     else if (ch==',' && depth_==1 && fbs < 0) fbs = r + 1; r++; }
                 int close = r;                            /* s[close]==')' or n */
                 int idx = var_find(s + ns, ne - ns);
-                if (idx >= 0) { for (int k = 0; vars_[idx].val[k] && o < omax-1; k++) out[o++] = vars_[idx].val[k]; }
-                else if (fbs >= 0 && depth < VAR_MAX_DEPTH) { int fe = close; while (fbs < fe && s[fbs]==' ') fbs++;
-                                     o += var_subst(s + fbs, fe - fbs, out + o, omax - o, depth + 1); }  /* fallback may itself be var() */
+                if (idx >= 0 && vars_[idx].unusable) idx = -1;   /* treat as undefined */
+                /* A value that will not fit the remaining output must not be
+                 * spliced in part: a half-written `rgb(0 0` unbalances the
+                 * sheet exactly the way the truncated store used to. Emit
+                 * nothing instead -- the declaration loses its value, the sheet
+                 * keeps its structure. */
+                if (idx >= 0 && vars_[idx].vlen < omax - 1 - o) {
+                    for (int k = 0; k < vars_[idx].vlen; k++) out[o++] = vars_[idx].val[k];
+                } else if (idx < 0 && fbs >= 0 && depth < VAR_MAX_DEPTH) {
+                    int fe = close; while (fbs < fe && s[fbs]==' ') fbs++;
+                    o += var_subst(s + fbs, fe - fbs, out + o, omax - o, depth + 1);  /* fallback may itself be var() */
+                }
                 i = (close < n) ? close + 1 : n;
                 continue;
             }
@@ -355,6 +466,7 @@ static void collect(const char *s, int n)
     int active[AT_DEPTH];               /* per enclosing at-rule: collect inside? */
     int adepth = 0, i = 0;
     nvars_ = 0;
+    arena_reset();          /* values from the previous expansion are dead */
     while (i < n) {
         if (skip_noise(s, n, &i)) continue;
         if (spc_(s[i])) { i++; continue; }
@@ -433,15 +545,40 @@ static void collect(const char *s, int n)
     }
 }
 
+/* Scratch for the chain resolution below. It is VVAL_MAX+1 rather than a small
+ * fixed buffer for the same reason var_set no longer truncates: a `--a: var(--b)
+ * var(--c)` chain whose expansion overran the old 192-byte scratch was written
+ * back TRUNCATED, and an unbalanced variable is the failure the whole file is
+ * now built to make impossible. Static rather than on the stack because this
+ * runs in ring 3 on a 32 KiB thread stack. */
+static char g_chain[VVAL_MAX + 1];
+
 int css_expand_vars(const char *in, int inlen, char *out, int outmax){
     collect(in, inlen);
     for (int it = 0; it < 8; it++) {                   /* resolve var()-in-value chains */
-        int changed = 0; char tmp[VVAL];
+        int changed = 0;
         for (int i = 0; i < nvars_; i++) {
-            if (!has_var(vars_[i].val)) continue;
-            int tn = var_subst(vars_[i].val, (int)strlen(vars_[i].val), tmp, VVAL, 0);
-            int same = 1; for (int k = 0; k <= tn; k++) if (tmp[k] != vars_[i].val[k]) { same = 0; break; }
-            if (!same) { for (int k = 0; k <= tn; k++) vars_[i].val[k] = tmp[k]; changed = 1; }
+            if (vars_[i].unusable || !has_var(vars_[i].val)) continue;
+            int tn = var_subst(vars_[i].val, vars_[i].vlen, g_chain, VVAL_MAX + 1, 0);
+            if (tn == vars_[i].vlen) {
+                int same = 1;
+                for (int k = 0; k < tn; k++) if (g_chain[k] != vars_[i].val[k]) { same = 0; break; }
+                if (same) continue;
+            }
+            /* The result must clear the same gate a freshly-collected value
+             * does; an expansion that came back unbalanced (a referenced var
+             * was unusable and left a stray bracket behind) is dropped rather
+             * than stored. */
+            if (!text_balanced(g_chain, tn)) {
+                vars_[i].val = g_empty; vars_[i].vlen = 0; vars_[i].unusable = 1;
+                changed = 1; continue;
+            }
+            char *dst = arena_alloc(tn + 1);
+            if (!dst) { vars_[i].val = g_empty; vars_[i].vlen = 0; vars_[i].unusable = 1; changed = 1; continue; }
+            for (int k = 0; k < tn; k++) dst[k] = g_chain[k];
+            dst[tn] = 0;
+            vars_[i].val = dst; vars_[i].vlen = tn;
+            changed = 1;
         }
         if (!changed) break;
     }

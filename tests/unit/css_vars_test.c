@@ -280,6 +280,77 @@ int main(void)
            "...but only that arm: an `or` with a known true arm still matches");
     }
 
+    /* ---------------- the expansion must never unbalance the sheet ----------
+     *
+     * THIRD NEGATIVE CONTROL, and the one that pays for this whole file. It
+     * fails on the previous implementation, where a custom-property value was
+     * copied into a fixed 192-byte field and SILENTLY TRUNCATED if it did not
+     * fit. apple.com declares (208 bytes):
+     *
+     *   --r-globalnav-flyout-group-delay: min( (var(--a) * 80ms) +
+     *       ((var(--b) - var(--c)) * 40ms), var(--d) * 80ms )
+     *
+     * The stored prefix ended after `* 80ms` -- one `)` short. Every later
+     * `calc(var(--r-globalnav-flyout-group-delay) + ...)` then expanded to text
+     * with an unclosed bracket, and an unclosed bracket does not cost one
+     * declaration: LibCSS's tokeniser stays inside it, so every remaining byte
+     * of every remaining stylesheet is swallowed. Measured with
+     * `make audit-css`, apple.com's cascade saw 4% of its own declarations, and
+     * its page had 34 flex containers instead of 140.
+     *
+     * So the assertions are not "the long value survives" (a bigger buffer
+     * would pass that and break again at 8 KiB). They are the INVARIANT: the
+     * expanded sheet is bracket-balanced, whatever the input, and a rule placed
+     * AFTER the offending one still reaches the cascade. */
+    {
+        static const char LONG[] =
+            ":root{--group-delay: min( (var(--elevated-group-count) * 80ms) + "
+            "((var(--group-number) - var(--elevated-group-count)) * 40ms), "
+            "var(--group-number) * 80ms )}"
+            ".a{transition-delay:calc(var(--group-delay) + 80ms)}"
+            ".sentinel{display:flex}";
+        static char out[1 << 20];
+        int n = css_expand_vars(LONG, (int)strlen(LONG), out, (int)sizeof out);
+        int par = 0, ok = 1;
+        for (int i = 0; i < n; i++) {
+            if (out[i] == '(') par++;
+            else if (out[i] == ')' && --par < 0) { ok = 0; break; }
+        }
+        ck(ok && par == 0,
+           "a long nested-calc custom property expands to BALANCED parens");
+        ck(strstr(out, ".sentinel{display:flex}") != 0,
+           "...and a rule after it still reaches the sheet");
+
+        /* The direct form of the same invariant: a value that cannot be stored
+         * whole is not stored in part. Referencing it must contribute nothing
+         * rather than a fragment. */
+        static char big[16384];
+        int k = 0;
+        k += snprintf(big + k, sizeof big - k, ":root{--huge: calc(");
+        while (k < 12000) big[k++] = 'a';
+        k += snprintf(big + k, sizeof big - k, ")}.b{width:var(--huge)}.tail{display:grid}");
+        big[k] = 0;
+        n = css_expand_vars(big, k, out, (int)sizeof out);
+        par = 0; ok = 1;
+        for (int i = 0; i < n; i++) {
+            if (out[i] == '(') par++;
+            else if (out[i] == ')' && --par < 0) { ok = 0; break; }
+        }
+        ck(ok && par == 0, "an over-long custom property leaves the sheet balanced");
+        ck(strstr(out, ".tail{display:grid}") != 0,
+           "...and does not swallow the rules after it");
+
+        /* An UNBALANCED value is refused outright, so the splice cannot carry
+         * the imbalance into the sheet. */
+        static const char UNBAL[] =
+            ":root{--bad: rgb(0 0 0}"
+            ".c{color:var(--bad)}"
+            ".tail2{display:grid}";
+        n = css_expand_vars(UNBAL, (int)strlen(UNBAL), out, (int)sizeof out);
+        ck(strstr(out, ".tail2{display:grid}") != 0,
+           "an unbalanced custom property does not unbalance the sheet");
+    }
+
     printf("\ncss_vars_test: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
