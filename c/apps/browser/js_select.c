@@ -286,8 +286,8 @@ static const char *SELECT_PRELUDE =
 "var INERT_PSEUDO = {};\n"
 "('hover active visited focus-visible focus-within target-within local-link '\n"
 " + 'current past future playing paused seeking buffering stalled muted volume-locked '\n"
-" + 'user-invalid user-valid fullscreen modal picture-in-picture popover-open '\n"
-" + 'autofill open host host-context defined')\n"
+" + 'user-invalid user-valid fullscreen picture-in-picture '\n"
+" + 'autofill host host-context defined')\n"
 "  .split(' ').forEach(function (p) { INERT_PSEUDO[p] = 1; });\n"
 
 /* Functional pseudo-classes taking a selector LIST. :not/:is/:where/:has are
@@ -300,7 +300,8 @@ static const char *SELECT_PRELUDE =
 "var PLAIN_PSEUDO = {};\n"
 "('root empty first-child last-child only-child first-of-type last-of-type only-of-type '\n"
 " + 'scope link any-link enabled disabled checked required optional read-only read-write '\n"
-" + 'indeterminate default placeholder-shown target focus in-range out-of-range valid invalid')\n"
+" + 'indeterminate default placeholder-shown target focus in-range out-of-range valid invalid '\n"
+" + 'popover-open modal open heading')\n"
 "  .split(' ').forEach(function (p) { PLAIN_PSEUDO[p] = 1; });\n"
 /* Pseudo-ELEMENTS. Valid in a selector, but an element is never a pseudo
  * element, so the compound can never match. Both spellings, because the four
@@ -659,6 +660,29 @@ static const char *SELECT_PRELUDE =
 "      return String(el.id || '') === h.slice(1);\n"
 "    }\n"
 "    case 'focus': return doc.activeElement === el;\n"
+/* State this file does not own. `:popover-open`, `:modal` and `:open` describe
+ * the popover / dialog / details state machine, which lives in js_semantics.c
+ * -- so they are asked for rather than modelled here. The three used to sit in
+ * INERT_PSEUDO (parse, match nothing), which was the honest answer while
+ * NOTHING tracked the state; the hooks are absent in a link without that TU and
+ * the answer falls straight back to exactly that. */
+"    case 'popover-open':\n"
+"      return typeof G.__logit_popover_open === 'function' && !!G.__logit_popover_open(el);\n"
+"    case 'modal':\n"
+"      return typeof G.__logit_modal === 'function' && !!G.__logit_modal(el);\n"
+"    case 'open': {\n"
+"      var to = localOf(el);\n"
+"      if (to !== 'details' && to !== 'dialog') return false;\n"
+"      return attrOf(el, 'open', 1) !== null;\n"
+"    }\n"
+/* :heading is Selectors 4 and matches h1-h6. 81 subtests in
+ * html/semantics/sections died on "unknown pseudo-class ':heading'" -- a
+ * SYNTAX ERROR, which takes the whole file down rather than one selector. */
+"    case 'heading': {\n"
+"      var th = localOf(el);\n"
+"      return isHTML(el) && th.length === 2 && th.charAt(0) === 'h' &&\n"
+"             th.charAt(1) >= '1' && th.charAt(1) <= '6';\n"
+"    }\n"
 "    case 'enabled': return CAN_DISABLE[localOf(el)] === 1 && !isDisabled(el);\n"
 "    case 'disabled': return CAN_DISABLE[localOf(el)] === 1 && isDisabled(el);\n"
 "    case 'checked': {\n"

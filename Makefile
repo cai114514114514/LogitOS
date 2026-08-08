@@ -3465,6 +3465,12 @@ bench-aui: $(ISO) $(DISK)
 # globalThis. Includes its own negative control. See the fragment header.
 -include tests/domiface.mk
 
+# The HTML element interfaces (js_semantics.c): <dialog>, <table>, <select>,
+# the popover and command/commandfor invokers, HTMLElement.click().
+# `make test-semantics` + its static-collection control, and `semantics-rank`,
+# which reproduces the html/semantics work order the file was written from.
+-include tests/semantics.mk
+
 # The query-side selector engine (js_select.c) and DOMTokenList
 # (js_tokenlist.c): make test-selectors + its case-sensitivity control.
 -include tests/selectors.mk

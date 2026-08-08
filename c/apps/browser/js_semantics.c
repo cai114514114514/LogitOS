@@ -1,0 +1,1148 @@
+/* js_semantics.c -- the HTML *element* interfaces: the members that hang off
+ * HTMLDialogElement, HTMLTableElement, HTMLSelectElement and the rest, plus the
+ * two invoker mechanisms (popover and command/commandfor) that the modern HTML
+ * spec attaches to <button> and <input>.
+ *
+ * WHY THIS FILE EXISTS, measured rather than assumed. `html/semantics` is the
+ * largest subset in the vendored WPT corpus and almost none of it had been
+ * looked at. Ranking its failures by cause (see tests/semantics.mk for the
+ * table and how to reproduce it) put ONE mechanism on top by a factor of four
+ * over anything else:
+ *
+ *     html/semantics/popovers              1 / 2733   subtests
+ *     html/semantics/the-button-element    9 /  355   (346 of them command/commandfor)
+ *     html/semantics/interactive-elements 28 /  492   (466 of them <dialog>)
+ *
+ * That is 3,580 subtests, 98% of them failing, and they are not 3,580 bugs.
+ * js_dom_iface.inc already builds a real prototype hierarchy -- `HTMLDialogElement`
+ * exists, `Object.getPrototypeOf(dialog)` is its prototype -- and js_reflect.c
+ * already reflects 373 content attributes onto it. What is missing is the
+ * MEMBERS: `HTMLDialogElement.prototype` carried exactly one property (`open`,
+ * from reflection) and no `showModal`, `close` or `returnValue`;
+ * `HTMLTableElement.prototype` carried the nine legacy presentational
+ * attributes and no `rows`. And underneath all of it, `HTMLElement.prototype`
+ * had no `click()` AT ALL -- so every WPT file that activates a control
+ * synthetically (which is how the corpus tests activation behaviour without a
+ * test driver) died on `el.click is not a function` before reaching its
+ * assertion.
+ *
+ * THE SEAM. Nothing here edits js_dom.c. It installs from OUTSIDE, onto the
+ * prototypes js_dom_iface.inc publishes as globals -- the same seam js_media.c,
+ * js_forms.c and js_select.c use, and for the same reason. It asks for a
+ * prototype BY NAME (`HTMLTableElement.prototype`) rather than by walking up
+ * from `document.createElement('div')`, which is the trap js_select.c's header
+ * documents: since 7fc2bec a div's immediate prototype is HTMLDivElement's, so
+ * that walk lands a member on <div> and on nothing else.
+ *
+ * WHAT IS C AND WHAT IS JS. Almost all of it is JS, for the reason js_select.c
+ * gives: the DOM this builds on is already fully exposed to script
+ * (getAttribute, dispatchEvent, getRootNode, isConnected), so a native
+ * implementation would be the same algorithm with a marshalling layer added.
+ * The C in this file is two things only: the install entry point, and two
+ * predicate hooks published on globalThis for js_select.c to consult, because
+ * `:popover-open` and `:modal` are STATE this file owns and the selector engine
+ * has no other way to see it.
+ *
+ * ------------------------------------------------------------------------
+ * THE NEGATIVE CONTROL -- -DSEMANTICS_STATIC_COLLECTIONS
+ * ------------------------------------------------------------------------
+ * Every collection here (`table.rows`, `tbody.rows`, `tr.cells`,
+ * `select.options`, `form.elements`, `table.tBodies`) is a LIVE collection: the
+ * spec says it reflects the tree as it is now, not as it was when the property
+ * was read. A plausible wrong implementation returns a static snapshot -- and
+ * it works perfectly on any page that never mutates, which is most pages and
+ * most casual testing. The control build makes exactly that mistake: the first
+ * read of a collection is cached and returned forever. `make
+ * test-semantics-negctl` requires this file's suite to FAIL in that build. It
+ * is deliberately NOT "delete the collections": a control that removes the
+ * feature proves only that the test calls it.
+ */
+
+#include "quickjs.h"
+#include <string.h>
+
+int printf(const char *, ...);
+
+/* --------------------------------------------------------------------------
+ * The prelude.
+ *
+ * One IIFE, evaluated once per page, taking no native arguments -- everything
+ * it needs is already on the global object by the time js_page.c calls us
+ * (last, after js_forms_install; see the ordering comment there).
+ * ------------------------------------------------------------------------ */
+static const char *SEMANTICS_PRELUDE =
+"(function (STATIC_COLLECTIONS) {\n"
+"'use strict';\n"
+"var G = globalThis, doc = G.document;\n"
+"if (!doc || typeof doc.createElement !== 'function') return;\n"
+
+/* ASCII lowercase. Not toLowerCase(): every keyword comparison in HTML is
+ * ASCII case-insensitive, and toLowerCase folds U+0130 and the Turkish dotless
+ * i, which would make `popover="I"` a different answer in a Turkish locale. */
+"function lc(s) { return String(s).replace(/[A-Z]/g, function (c) {\n"
+"  return String.fromCharCode(c.charCodeAt(0) + 32); }); }\n"
+"function tagOf(el) { return (el && el.tagName) ? lc(el.tagName) : ''; }\n"
+
+/* A DOMException by name. js_platform.c publishes the constructor; the lookup
+ * is late (inside the function) because this prelude may run before it in some
+ * link, and a page's `catch (e) { e.name === 'InvalidStateError' }` and
+ * assert_throws_dom's `e.code` both need the real thing when it is there. */
+"function domErr(name, msg) {\n"
+"  var DE = G.DOMException;\n"
+"  if (typeof DE === 'function') { try { return new DE(msg || name, name); } catch (q) {} }\n"
+"  var e = new Error(msg || name); e.name = name; return e;\n"
+"}\n"
+"function throwDom(name, msg) { throw domErr(name, msg); }\n"
+
+/* Define an accessor pair on a prototype. Silent when the prototype is absent
+ * (a link without js_dom_iface.inc's globals) -- this file must never be the
+ * reason a page fails to load. */
+"function acc(p, name, get, set) {\n"
+"  if (!p) return;\n"
+"  try { Object.defineProperty(p, name, { configurable: true, enumerable: true,\n"
+"    get: get, set: set }); } catch (e) {}\n"
+"}\n"
+"function meth(p, name, fn) {\n"
+"  if (!p) return;\n"
+"  try { Object.defineProperty(p, name, { configurable: true, enumerable: true,\n"
+"    writable: true, value: fn }); } catch (e) {}\n"
+"}\n"
+"function P(name) {\n"
+"  var C = G[name];\n"
+"  return (typeof C === 'function' && C.prototype) ? C.prototype : null;\n"
+"}\n"
+"var EP = P('HTMLElement'), ELP = P('Element');\n"
+"if (!EP) return;\n"
+
+/* ======================================================================
+ * 1. Live collections
+ * ======================================================================
+ * The spec's HTMLCollection is live. Our js_dom.c publishes an array-like for
+ * `children`, so the shape to imitate is that one: indices, `length`, `item`,
+ * `namedItem`, and Array iteration. `filterFn` is re-run on every property
+ * access, which is what "live" means.
+ *
+ * THE NEGATIVE CONTROL LIVES HERE. With STATIC_COLLECTIONS set, `snapshot()`
+ * is computed once and frozen -- so a page that never mutates sees no
+ * difference at all, and every test that inserts a row or an option gets a
+ * stale answer that looks entirely plausible. */
+/* The identity of a collection is stable: `t.rows === t.rows` is required by
+ * the spec and asserted by the corpus, so the proxy is built once per
+ * (element, name) and kept. */
+"var COLL_KEY = Symbol('logitCollections');\n"
+"function cachedCollection(el, name, filterFn) {\n"
+"  var rec = el[COLL_KEY];\n"
+"  if (!rec) {\n"
+"    rec = {};\n"
+"    try { Object.defineProperty(el, COLL_KEY, { value: rec, configurable: true }); }\n"
+"    catch (e) { return collection(function () { return el; }, filterFn); }\n"
+"  }\n"
+"  if (!rec[name]) rec[name] = collection(function () { return el; }, filterFn);\n"
+"  return rec[name];\n"
+"}\n"
+"function collection(rootFn, filterFn) {\n"
+"  var frozen = null;\n"
+"  function snapshot() {\n"
+"    if (STATIC_COLLECTIONS && frozen) return frozen;\n"
+"    var out = [], root = rootFn();\n"
+"    if (root) filterFn(root, out);\n"
+"    if (STATIC_COLLECTIONS) frozen = out;\n"
+"    return out;\n"
+"  }\n"
+"  var HC = G.HTMLCollection;\n"
+"  var target = (typeof HC === 'function' && HC.prototype)\n"
+"    ? Object.create(HC.prototype) : {};\n"
+"  return new Proxy(target, {\n"
+"    get: function (t, k, r) {\n"
+"      if (k === 'length') return snapshot().length;\n"
+"      if (k === 'item') return function (i) {\n"
+"        i = i >>> 0; var a = snapshot(); return i < a.length ? a[i] : null; };\n"
+"      if (k === 'namedItem') return function (n) {\n"
+"        var a = snapshot(); n = String(n);\n"
+"        for (var i = 0; i < a.length; i++)\n"
+"          if (a[i].getAttribute && a[i].getAttribute('id') === n) return a[i];\n"
+"        for (var j = 0; j < a.length; j++)\n"
+"          if (a[j].getAttribute && a[j].getAttribute('name') === n) return a[j];\n"
+"        return null; };\n"
+"      if (k === Symbol.iterator) return function () {\n"
+"        return snapshot()[Symbol.iterator](); };\n"
+"      if (typeof k === 'string' && /^[0-9]+$/.test(k)) {\n"
+"        var a = snapshot(), i = +k; return i < a.length ? a[i] : undefined;\n"
+"      }\n"
+       /* A name that is not an index: HTMLCollection's named getter. Falls
+        * back to the prototype so `Array.prototype.slice.call(rows)` and
+        * `rows.constructor` still behave. */
+"      if (typeof k === 'string') {\n"
+"        var b = snapshot();\n"
+"        for (var m = 0; m < b.length; m++)\n"
+"          if (b[m].getAttribute && (b[m].getAttribute('id') === k ||\n"
+"                                    b[m].getAttribute('name') === k)) return b[m];\n"
+"      }\n"
+"      return Reflect.get(t, k, r);\n"
+"    },\n"
+"    has: function (t, k) {\n"
+"      if (k === 'length' || k === 'item' || k === 'namedItem') return true;\n"
+"      if (typeof k === 'string' && /^[0-9]+$/.test(k)) return +k < snapshot().length;\n"
+"      return Reflect.has(t, k);\n"
+"    },\n"
+"    ownKeys: function (t) {\n"
+"      var a = snapshot(), keys = [];\n"
+"      for (var i = 0; i < a.length; i++) keys.push(String(i));\n"
+"      keys.push('length');\n"
+"      return keys;\n"
+"    },\n"
+"    getOwnPropertyDescriptor: function (t, k) {\n"
+"      if (k === 'length') return { value: snapshot().length, writable: false,\n"
+"        enumerable: false, configurable: true };\n"
+"      if (typeof k === 'string' && /^[0-9]+$/.test(k)) {\n"
+"        var a = snapshot(), i = +k;\n"
+"        if (i < a.length) return { value: a[i], writable: false,\n"
+"          enumerable: true, configurable: true };\n"
+"        return undefined;\n"
+"      }\n"
+"      return Reflect.getOwnPropertyDescriptor(t, k);\n"
+"    }\n"
+"  });\n"
+"}\n"
+
+/* Element children of `n` whose tag is in `tags` (a lookup object). */
+"function childElems(n, tags, out) {\n"
+"  for (var c = n.firstChild; c; c = c.nextSibling) {\n"
+"    if (c.nodeType !== 1) continue;\n"
+"    if (!tags || tags[lc(c.tagName)]) out.push(c);\n"
+"  }\n"
+"}\n"
+"function descendants(n, want, out) {\n"
+"  for (var c = n.firstChild; c; c = c.nextSibling) {\n"
+"    if (c.nodeType !== 1) continue;\n"
+"    if (want[lc(c.tagName)]) out.push(c);\n"
+"    descendants(c, want, out);\n"
+"  }\n"
+"}\n"
+
+/* ======================================================================
+ * 2. Attribute-associated elements (popovertarget, commandfor)
+ * ======================================================================
+ * `button.popoverTargetElement = el` does NOT write an id: it records the
+ * element itself and sets the content attribute to the empty string. The
+ * getter then prefers that recorded element -- but only while it is in the
+ * same tree, which is what
+ *
+ *     assert_equals(invoker.popoverTargetElement, null,
+ *                   'targetElement should be null before the popover is in the document')
+ *
+ * is checking, and it is the assertion an id-only implementation gets wrong
+ * without noticing. Setting the content attribute by any other route clears
+ * the recorded element, so setAttribute/removeAttribute/toggleAttribute are
+ * wrapped below for exactly the two attribute names involved. */
+/* ==================================================================== state ==
+ * PER-ELEMENT STATE IS KEYED ON THE WRAPPER AND HELD *STRONGLY*, AND THAT IS
+ * NOT AN OVERSIGHT.
+ *
+ * js_dom.c caches one wrapper per node in the node's `jsw` slot and says so in
+ * its own comment: "The slot takes no reference: the finalizer clears it." So
+ * a wrapper that nothing in JS is holding is collected, and the next `wrap()`
+ * of the same node builds a NEW object. A WeakMap keyed on the wrapper
+ * therefore loses its entry at an arbitrary GC -- which is exactly the bug
+ * this file was written with and it is invisible in a single expression:
+ *
+ *     option.selected = true; select.selectedIndex     // 1, correct
+ *     ---- next script turn, a GC in between ----
+ *     select.selectedIndex                             // 0, silently wrong
+ *
+ * Holding the wrapper keeps `jsw` populated, so every later wrap() of that
+ * node returns the SAME object and the lookup holds. It is safe to hold:
+ * js_dom.c's handle carries a per-node serial and node_of() rejects a stale
+ * one, so a wrapper that outlives its node degrades to "no node", never to a
+ * dangling pointer.
+ *
+ * The cost is a bounded leak -- one wrapper per element that ACQUIRES state
+ * (a popover that was shown, a dialog that was opened, an option that was
+ * selected), not one per element in the document. `collCache` is the one that
+ * would not be bounded that way, so it is the exception: it hangs off a
+ * SYMBOL-keyed own property of the wrapper instead, which is invisible to
+ * getOwnPropertyNames/JSON and dies with the wrapper. A collection is cheap to
+ * rebuild, so losing its identity to a GC costs nothing but a fresh object --
+ * the same guarantee a page's own `el.foo = {}` expando has here.
+ */
+"var explicitEl = new Map();\n"
+"function setExplicit(el, attr, target) {\n"
+"  var rec = explicitEl.get(el);\n"
+"  if (!rec) { rec = {}; explicitEl.set(el, rec); }\n"
+"  rec[attr] = target;\n"
+"}\n"
+"function clearExplicit(el, attr) {\n"
+"  var rec = explicitEl.get(el);\n"
+"  if (rec) delete rec[attr];\n"
+"}\n"
+"function rootOf(n) {\n"
+"  if (n && typeof n.getRootNode === 'function') { try { return n.getRootNode(); } catch (e) {} }\n"
+"  return doc;\n"
+"}\n"
+"function attrElement(el, attr) {\n"
+"  var rec = explicitEl.get(el), ex = rec ? rec[attr] : undefined;\n"
+"  if (ex !== undefined) {\n"
+"    if (!ex || ex.nodeType !== 1) return null;\n"
+       /* Same tree, which for a connected invoker means "in the document". */
+"    return rootOf(el) === rootOf(ex) ? ex : null;\n"
+"  }\n"
+"  var id = el.getAttribute(attr);\n"
+"  if (id === null || id === '') return null;\n"
+"  var root = rootOf(el);\n"
+"  if (root && typeof root.getElementById === 'function') return root.getElementById(id) || null;\n"
+"  var out = [];\n"
+"  (function walk(n) {\n"
+"    for (var c = n.firstChild; c; c = c.nextSibling) {\n"
+"      if (c.nodeType !== 1) continue;\n"
+"      if (!out.length && c.getAttribute('id') === id) out.push(c);\n"
+"      if (!out.length) walk(c);\n"
+"    }\n"
+"  })(root || doc);\n"
+"  return out.length ? out[0] : null;\n"
+"}\n"
+/* ORDER MATTERS AND IT IS NOT OBVIOUS: setAttribute is wrapped below to clear
+ * the recorded element (any other route to the content attribute must), so
+ * recording first and writing second would erase what we just recorded. */
+"function setAttrElement(el, attr, v) {\n"
+"  if (v === null || v === undefined) { el.removeAttribute(attr); clearExplicit(el, attr); return; }\n"
+"  el.setAttribute(attr, '');\n"
+"  setExplicit(el, attr, v);\n"
+"}\n"
+/* The clearing wrappers. Two attribute names, checked case-insensitively, and
+ * everything else goes straight through -- this is on the hot path of every
+ * setAttribute a page makes, so it does no work it does not have to. */
+"var TRACKED_ATTR = { popovertarget: 1, commandfor: 1, interestfor: 1 };\n"
+"function wrapAttrWriter(name) {\n"
+"  if (!ELP) return;\n"
+"  var orig = ELP[name];\n"
+"  if (typeof orig !== 'function' || orig.__logit_sem) return;\n"
+"  var wrapped = function (a) {\n"
+"    if (arguments.length && TRACKED_ATTR[lc(a)]) clearExplicit(this, lc(a));\n"
+"    return orig.apply(this, arguments);\n"
+"  };\n"
+"  wrapped.__logit_sem = 1;\n"
+"  meth(ELP, name, wrapped);\n"
+"}\n"
+"wrapAttrWriter('setAttribute'); wrapAttrWriter('removeAttribute');\n"
+"wrapAttrWriter('toggleAttribute');\n"
+
+/* ======================================================================
+ * 3. Enumerated-attribute reflection this build did not have
+ * ======================================================================
+ * js_reflect.c generates its table from the corpus's own elements-*.js, and
+ * that data does not carry `popover`, `popovertargetaction` or `command` --
+ * they are typed `element` / a bespoke enum upstream, which the generator
+ * records as RT_SKIP. So they are written by hand, here, next to the behaviour
+ * that reads them. */
+"function enumAttr(p, prop, attr, keywords, missing, invalid) {\n"
+"  acc(p, prop, function () {\n"
+"    var v = this.getAttribute(attr);\n"
+"    if (v === null) return missing;\n"
+"    var k = keywords[lc(v)];\n"
+"    return k === undefined ? invalid : k;\n"
+"  }, function (v) {\n"
+       /* A nullable IDL attribute (`DOMString?`) removes on null AND on
+        * undefined -- WebIDL maps both to null for a nullable type. A
+        * non-nullable one stringifies, so `x.popoverTargetAction = null`
+        * really does write the four characters "null". */
+"    if (missing === null && (v === null || v === undefined)) { this.removeAttribute(attr); return; }\n"
+"    this.setAttribute(attr, String(v));\n"
+"  });\n"
+"}\n"
+
+/* --- the popover attribute, on every HTML element ----------------------- */
+"var POPOVER_KW = { '': 'auto', 'auto': 'auto', 'manual': 'manual', 'hint': 'hint' };\n"
+"enumAttr(EP, 'popover', 'popover', POPOVER_KW, null, 'manual');\n"
+
+/* --- the invoker attributes, on <button> and <input> -------------------- */
+"var PTA_KW = { 'toggle': 'toggle', 'show': 'show', 'hide': 'hide' };\n"
+"var INVOKERS = [P('HTMLButtonElement'), P('HTMLInputElement')];\n"
+"for (var iv = 0; iv < INVOKERS.length; iv++) {\n"
+"  var ip = INVOKERS[iv];\n"
+"  if (!ip) continue;\n"
+"  enumAttr(ip, 'popoverTargetAction', 'popovertargetaction', PTA_KW, 'toggle', 'toggle');\n"
+"  acc(ip, 'popoverTargetElement',\n"
+"      function () { return attrElement(this, 'popovertarget'); },\n"
+"      function (v) { setAttrElement(this, 'popovertarget', v); });\n"
+"}\n"
+
+/* --- command / commandfor, on <button> ---------------------------------- */
+/* `command` is a DOMString whose GETTER filters: a custom command (leading
+ * "--") comes back verbatim, a built-in comes back canonically lowercased, and
+ * anything else comes back as the empty string. The setter is a plain
+ * reflection -- which is why `button.command = 'nonsense'` leaves
+ * `getAttribute('command')` as "nonsense" while `button.command` reads "". */
+"var BUILTIN_COMMANDS = {};\n"
+"('toggle-popover show-popover hide-popover close request-close show-modal show-picker '\n"
+" + 'step-up step-down toggle-openable open-openable close-openable play-pause '\n"
+" + 'pause play toggle-muted')\n"
+"  .split(' ').forEach(function (c) { BUILTIN_COMMANDS[c] = 1; });\n"
+"var BTN = P('HTMLButtonElement');\n"
+"if (BTN) {\n"
+"  acc(BTN, 'command', function () {\n"
+"    var v = this.getAttribute('command');\n"
+"    if (v === null) return '';\n"
+"    if (v.slice(0, 2) === '--') return v;\n"
+"    var l = lc(v);\n"
+"    return BUILTIN_COMMANDS[l] ? l : '';\n"
+"  }, function (v) { this.setAttribute('command', String(v)); });\n"
+"  acc(BTN, 'commandForElement',\n"
+"      function () { return attrElement(this, 'commandfor'); },\n"
+"      function (v) { setAttrElement(this, 'commandfor', v); });\n"
+"}\n"
+
+/* ======================================================================
+ * 4. Event subclasses: ToggleEvent, CommandEvent
+ * ======================================================================
+ * Built over the native Event rather than beside it, so `e instanceof Event`
+ * holds, the native dispatcher accepts the object (it looks the event up by
+ * class id, not by prototype) and `preventDefault` is the real one. The
+ * constructor RETURNS the object, which is what makes `new ToggleEvent(...)`
+ * yield it despite the body not being a class. */
+"function eventSubclass(name, fields) {\n"
+"  var Base = G.Event;\n"
+"  if (typeof Base !== 'function' || G[name]) return G[name] || null;\n"
+"  var Ctor = function (type, init) {\n"
+"    if (arguments.length < 1)\n"
+"      throw new TypeError(\"Failed to construct '\" + name + \"': 1 argument required, but only 0 present.\");\n"
+"    init = (init === null || init === undefined) ? {} : init;\n"
+"    if (typeof init !== 'object')\n"
+"      throw new TypeError(\"Failed to construct '\" + name + \"': the provided value is not of type '\" + name + \"Init'.\");\n"
+"    var e = new Base(String(type), init);\n"
+"    try { Object.setPrototypeOf(e, Ctor.prototype); } catch (q) {}\n"
+"    for (var f in fields) {\n"
+"      var v = init[f];\n"
+"      Object.defineProperty(e, f, { configurable: true, enumerable: true,\n"
+"        value: fields[f](v) });\n"
+"    }\n"
+"    return e;\n"
+"  };\n"
+"  Ctor.prototype = Object.create(Base.prototype);\n"
+"  Object.defineProperty(Ctor.prototype, 'constructor',\n"
+"    { configurable: true, writable: true, value: Ctor });\n"
+"  Object.defineProperty(Ctor, 'name', { configurable: true, value: name });\n"
+"  try { Object.defineProperty(G, name, { configurable: true, writable: true, value: Ctor }); }\n"
+"  catch (q) { G[name] = Ctor; }\n"
+"  return Ctor;\n"
+"}\n"
+"function asStr(v) { return v === undefined ? '' : String(v); }\n"
+"function asEl(v) { return (v === undefined || v === null) ? null : v; }\n"
+"var ToggleEventCtor = eventSubclass('ToggleEvent', { oldState: asStr, newState: asStr });\n"
+"var CommandEventCtor = eventSubclass('CommandEvent', { command: asStr, source: asEl });\n"
+
+"function fireEvent(target, Ctor, type, init) {\n"
+"  var e;\n"
+"  if (Ctor) { e = new Ctor(type, init); }\n"
+"  else if (typeof G.Event === 'function') { e = new G.Event(type, init); }\n"
+"  else return true;\n"
+"  return target.dispatchEvent(e);\n"
+"}\n"
+/* The spec queues `toggle` as a TASK, not a microtask: a page that shows and
+ * hides in the same turn must see one toggle, and the coalescing is what the
+ * task boundary buys. setTimeout is that boundary here; queueMicrotask is the
+ * fallback for a link without timers. */
+"var pendingToggle = new WeakMap();\n"
+"function queueToggle(el, oldState, newState) {\n"
+"  var rec = pendingToggle.get(el);\n"
+"  if (rec) { rec.newState = newState; return; }\n"
+"  rec = { oldState: oldState, newState: newState };\n"
+"  pendingToggle.set(el, rec);\n"
+"  var run = function () {\n"
+"    pendingToggle.delete(el);\n"
+"    if (rec.oldState === rec.newState) return;\n"
+"    fireEvent(el, ToggleEventCtor, 'toggle',\n"
+"      { bubbles: false, cancelable: false, oldState: rec.oldState, newState: rec.newState });\n"
+"  };\n"
+"  if (typeof G.setTimeout === 'function') G.setTimeout(run, 0);\n"
+"  else if (typeof G.queueMicrotask === 'function') G.queueMicrotask(run);\n"
+"  else run();\n"
+"}\n"
+
+/* ======================================================================
+ * 5. The popover API
+ * ====================================================================== */
+"var showingPopovers = new Map();\n"   /* el -> true while in the top layer */
+"var topLayer = [];\n"
+
+"function popoverType(el) {\n"
+"  var v = el.getAttribute && el.getAttribute('popover');\n"
+"  if (v === null || v === undefined) return null;\n"
+"  var k = POPOVER_KW[lc(v)];\n"
+"  return k === undefined ? 'manual' : k;\n"
+"}\n"
+"function popoverIsShowing(el) { return !!showingPopovers.get(el); }\n"
+
+/* The spec's "check popover validity". `throwing` false makes it a predicate,
+ * which is what the re-check after the (cancelable) beforetoggle needs: a
+ * handler may have removed the element from the document, and that is not an
+ * error, it is a reason to stop. */
+"function checkPopoverValidity(el, expectShowing, throwing) {\n"
+"  if (popoverType(el) === null) {\n"
+"    if (throwing) throwDom('NotSupportedError', 'Not supported on element that does not have a valid value for the popover attribute.');\n"
+"    return false;\n"
+"  }\n"
+"  if (popoverIsShowing(el) !== expectShowing) {\n"
+"    if (throwing) throwDom('InvalidStateError', 'Invalid on popover' + (expectShowing ? ' not' : '') + ' being shown.');\n"
+"    return false;\n"
+"  }\n"
+"  if (!expectShowing && !el.isConnected) {\n"
+"    if (throwing) throwDom('InvalidStateError', 'Invalid on disconnected popover elements.');\n"
+"    return false;\n"
+"  }\n"
+"  if (tagOf(el) === 'dialog' && el.hasAttribute('open')) {\n"
+"    if (throwing) throwDom('InvalidStateError', 'Invalid on open dialog elements.');\n"
+"    return false;\n"
+"  }\n"
+"  return true;\n"
+"}\n"
+
+/* Showing an `auto` popover closes every other auto popover that is not one of
+ * its ancestors. `hint` closes other hints. `manual` closes nothing -- which is
+ * the whole difference between the two states the corpus parameterises over. */
+"function ancestorPopovers(el) {\n"
+"  var set = [];\n"
+"  for (var n = el; n; n = n.parentNode) {\n"
+"    if (n.nodeType === 1 && popoverType(n)) set.push(n);\n"
+"  }\n"
+"  return set;\n"
+"}\n"
+"function hideAllPopoversUntil(target, kinds) {\n"
+"  var keep = target ? ancestorPopovers(target) : [];\n"
+"  for (var i = topLayer.length - 1; i >= 0; i--) {\n"
+"    var p = topLayer[i];\n"
+"    if (!p) continue;\n"
+"    if (kinds.indexOf(popoverType(p)) < 0) continue;\n"
+"    if (p === target || keep.indexOf(p) >= 0) continue;\n"
+"    hidePopoverInternal(p, true);\n"
+"  }\n"
+"}\n"
+"function hidePopoverInternal(el, fireEvents) {\n"
+"  if (!popoverIsShowing(el)) return;\n"
+"  if (fireEvents)\n"
+"    fireEvent(el, ToggleEventCtor, 'beforetoggle',\n"
+"      { bubbles: false, cancelable: false, oldState: 'open', newState: 'closed' });\n"
+"  if (!popoverIsShowing(el)) return;\n"
+"  showingPopovers.delete(el);\n"
+"  var ix = topLayer.indexOf(el);\n"
+"  if (ix >= 0) topLayer.splice(ix, 1);\n"
+"  if (fireEvents) queueToggle(el, 'open', 'closed');\n"
+"}\n"
+
+"meth(EP, 'showPopover', function (options) {\n"
+"  var el = this;\n"
+"  checkPopoverValidity(el, false, true);\n"
+"  var kind = popoverType(el);\n"
+"  if (!fireEvent(el, ToggleEventCtor, 'beforetoggle',\n"
+"        { bubbles: false, cancelable: true, oldState: 'closed', newState: 'open' })) return;\n"
+"  if (!checkPopoverValidity(el, false, false)) return;\n"
+"  if (kind === 'auto') hideAllPopoversUntil(el, ['auto', 'hint']);\n"
+"  else if (kind === 'hint') hideAllPopoversUntil(el, ['hint']);\n"
+"  showingPopovers.set(el, true);\n"
+"  topLayer.push(el);\n"
+"  queueToggle(el, 'closed', 'open');\n"
+"});\n"
+"meth(EP, 'hidePopover', function () {\n"
+"  checkPopoverValidity(this, true, true);\n"
+"  hidePopoverInternal(this, true);\n"
+"});\n"
+"meth(EP, 'togglePopover', function (force) {\n"
+"  var want;\n"
+"  if (force === undefined || force === null) want = !popoverIsShowing(this);\n"
+"  else if (typeof force === 'object' && force !== null && 'force' in force) want = !!force.force;\n"
+"  else want = !!force;\n"
+"  if (want) { if (!popoverIsShowing(this)) this.showPopover(); }\n"
+"  else { if (popoverIsShowing(this)) this.hidePopover();\n"
+"         else checkPopoverValidity(this, false, true); }\n"
+"  return popoverIsShowing(this);\n"
+"});\n"
+
+/* ======================================================================
+ * 6. <dialog>
+ * ====================================================================== */
+"var modalDialogs = new Map();\n"
+"var dialogReturn = new Map();\n"
+"var DLG = P('HTMLDialogElement');\n"
+"if (DLG) {\n"
+"  acc(DLG, 'returnValue', function () {\n"
+"    var v = dialogReturn.get(this); return v === undefined ? '' : v;\n"
+"  }, function (v) { dialogReturn.set(this, String(v)); });\n"
+"  var CLOSEDBY_KW = { 'any': 'any', 'closerequest': 'closerequest', 'none': 'none' };\n"
+"  acc(DLG, 'closedBy', function () {\n"
+"    var v = this.getAttribute('closedby');\n"
+"    if (v === null) return modalDialogs.get(this) ? 'closerequest' : 'none';\n"
+"    var k = CLOSEDBY_KW[lc(v)];\n"
+"    return k === undefined ? (modalDialogs.get(this) ? 'closerequest' : 'none') : k;\n"
+"  }, function (v) { this.setAttribute('closedby', String(v)); });\n"
+"  meth(DLG, 'show', function () {\n"
+"    if (this.hasAttribute('open')) {\n"
+"      if (modalDialogs.get(this)) throwDom('InvalidStateError', 'The dialog is already open as a modal dialog.');\n"
+"      return;\n"
+"    }\n"
+"    this.setAttribute('open', '');\n"
+"    modalDialogs.delete(this);\n"
+"    dialogFocus(this);\n"
+"  });\n"
+"  meth(DLG, 'showModal', function () {\n"
+"    if (this.hasAttribute('open')) {\n"
+"      if (!modalDialogs.get(this)) throwDom('InvalidStateError', 'The dialog is already open as a non-modal dialog.');\n"
+"      return;\n"
+"    }\n"
+"    if (!this.isConnected) throwDom('InvalidStateError', 'The element is not in a Document.');\n"
+"    if (popoverIsShowing(this)) throwDom('InvalidStateError', 'The dialog is already open as a popover.');\n"
+"    this.setAttribute('open', '');\n"
+"    modalDialogs.set(this, true);\n"
+"    dialogFocus(this);\n"
+"  });\n"
+"  meth(DLG, 'close', function (rv) {\n"
+"    dialogCloseInternal(this, arguments.length ? String(rv) : undefined);\n"
+"  });\n"
+"  meth(DLG, 'requestClose', function (rv) {\n"
+"    if (!this.hasAttribute('open')) return;\n"
+"    if (!fireEvent(this, null, 'cancel', { bubbles: false, cancelable: true })) return;\n"
+"    dialogCloseInternal(this, arguments.length ? String(rv) : undefined);\n"
+"  });\n"
+"}\n"
+"function dialogCloseInternal(el, rv) {\n"
+"  if (!el.hasAttribute('open')) return;\n"
+"  el.removeAttribute('open');\n"
+"  modalDialogs.delete(el);\n"
+"  if (rv !== undefined) dialogReturn.set(el, rv);\n"
+"  fireEvent(el, null, 'close', { bubbles: false, cancelable: false });\n"
+"}\n"
+/* The dialog focusing steps, reduced to what is observable here: the first
+ * focusable descendant with `autofocus`, else the first focusable descendant,
+ * else the dialog itself. */
+"function dialogFocus(el) {\n"
+"  var cand = null;\n"
+"  try { cand = el.querySelector('[autofocus]'); } catch (e) {}\n"
+"  if (!cand) { try { cand = el.querySelector('input,select,textarea,button,a[href],[tabindex]'); } catch (e) {} }\n"
+"  var t = cand || el;\n"
+"  if (typeof t.focus === 'function') { try { t.focus(); } catch (e) {} }\n"
+"}\n"
+
+/* ======================================================================
+ * 7. <details> / <summary>
+ * ====================================================================== */
+"var DET = P('HTMLDetailsElement');\n"
+"function detailsSummary(d) {\n"
+"  for (var c = d.firstChild; c; c = c.nextSibling)\n"
+"    if (c.nodeType === 1 && tagOf(c) === 'summary') return c;\n"
+"  return null;\n"
+"}\n"
+"function detailsToggle(d) {\n"
+"  var open = d.hasAttribute('open');\n"
+"  if (!fireEvent(d, ToggleEventCtor, 'beforetoggle',\n"
+"        { bubbles: false, cancelable: true,\n"
+"          oldState: open ? 'open' : 'closed', newState: open ? 'closed' : 'open' })) return;\n"
+"  if (open) d.removeAttribute('open'); else d.setAttribute('open', '');\n"
+"  queueToggle(d, open ? 'open' : 'closed', open ? 'closed' : 'open');\n"
+"}\n"
+
+/* ======================================================================
+ * 8. click() and activation behaviour
+ * ======================================================================
+ * HTMLElement.prototype.click did not exist in this build at all, and the
+ * corpus reaches for it constantly -- it is how a test activates a control
+ * when there is no test driver. Its absence is why whole files in
+ * html/semantics died before their first assertion rather than failing one.
+ *
+ * The order is the DOM's: dispatch the event, and run the activation behaviour
+ * afterwards UNLESS the event was canceled. Only the activation behaviours this
+ * file owns are implemented -- the popover invoker, the command invoker and
+ * <summary> -- because a half-right form submission here would be a regression
+ * in a suite that already passes rather than a gain in one that does not. */
+"var INPUT_BUTTONISH = { button: 1, reset: 1, submit: 1, image: 1 };\n"
+"function isDisabledCtl(el) {\n"
+"  var t = tagOf(el);\n"
+"  if (t !== 'button' && t !== 'input' && t !== 'select' && t !== 'textarea' &&\n"
+"      t !== 'fieldset' && t !== 'optgroup' && t !== 'option') return false;\n"
+"  if (el.hasAttribute('disabled')) return true;\n"
+"  for (var p = el.parentNode; p && p.nodeType === 1; p = p.parentNode)\n"
+"    if (tagOf(p) === 'fieldset' && p.hasAttribute('disabled')) return true;\n"
+"  return false;\n"
+"}\n"
+"function canInvoke(el) {\n"
+"  var t = tagOf(el);\n"
+"  if (t === 'button') return !isDisabledCtl(el);\n"
+"  if (t === 'input') return !!INPUT_BUTTONISH[lc(el.getAttribute('type') || '')] && !isDisabledCtl(el);\n"
+"  return false;\n"
+"}\n"
+"function runPopoverAction(target, action) {\n"
+"  var showing = popoverIsShowing(target);\n"
+"  if (action === 'show') { if (!showing) { try { target.showPopover(); } catch (e) {} } }\n"
+"  else if (action === 'hide') { if (showing) { try { target.hidePopover(); } catch (e) {} } }\n"
+"  else { try { target.togglePopover(); } catch (e) {} }\n"
+"}\n"
+"function runCommand(invoker, target, command) {\n"
+"  var ev = CommandEventCtor\n"
+"    ? new CommandEventCtor('command', { bubbles: false, cancelable: true,\n"
+"                                        command: command, source: invoker })\n"
+"    : null;\n"
+"  if (ev && !target.dispatchEvent(ev)) return;\n"
+"  var t = tagOf(target), c = lc(command);\n"
+"  if (c.slice(0, 2) === '--') return;\n"       /* custom: the event IS the API */
+"  if (t === 'dialog') {\n"
+"    if (c === 'show-modal') { if (!target.hasAttribute('open')) target.showModal(); }\n"
+"    else if (c === 'close') { dialogCloseInternal(target, undefined); }\n"
+"    else if (c === 'request-close') { if (typeof target.requestClose === 'function') target.requestClose(); }\n"
+"    return;\n"
+"  }\n"
+"  if (popoverType(target) !== null) {\n"
+"    if (c === 'show-popover') runPopoverAction(target, 'show');\n"
+"    else if (c === 'hide-popover') runPopoverAction(target, 'hide');\n"
+"    else if (c === 'toggle-popover') runPopoverAction(target, 'toggle');\n"
+"  }\n"
+"}\n"
+"function activationBehaviour(el) {\n"
+"  var t = tagOf(el);\n"
+"  if (canInvoke(el)) {\n"
+       /* commandfor wins over popovertarget when both are present. */
+"    if (t === 'button') {\n"
+"      var cf = attrElement(el, 'commandfor');\n"
+"      var cmd = el.command;\n"
+"      if (cf && cmd) { runCommand(el, cf, cmd); return; }\n"
+"    }\n"
+"    var pt = attrElement(el, 'popovertarget');\n"
+"    if (pt && popoverType(pt) !== null) { runPopoverAction(pt, el.popoverTargetAction); return; }\n"
+"  }\n"
+"  if (t === 'summary') {\n"
+"    var d = el.parentNode;\n"
+"    if (d && d.nodeType === 1 && tagOf(d) === 'details' && detailsSummary(d) === el) detailsToggle(d);\n"
+"    return;\n"
+"  }\n"
+"}\n"
+"var clicking = new WeakMap();\n"
+"meth(EP, 'click', function () {\n"
+"  var el = this;\n"
+"  if (isDisabledCtl(el)) return;\n"
+"  if (clicking.get(el)) return;\n"
+"  clicking.set(el, true);\n"
+"  try {\n"
+"    var C = G.PointerEvent || G.MouseEvent || G.Event;\n"
+"    var e;\n"
+"    try { e = new C('click', { bubbles: true, cancelable: true, composed: true,\n"
+"                               detail: 1, view: G }); }\n"
+"    catch (q) { e = new G.Event('click', { bubbles: true, cancelable: true, composed: true }); }\n"
+"    var notCanceled = el.dispatchEvent(e);\n"
+"    if (notCanceled) activationBehaviour(el);\n"
+"  } finally { clicking.delete(el); }\n"
+"});\n"
+
+/* ======================================================================
+ * 9. focus()/blur() reach every element, not only <input>
+ * ======================================================================
+ * js_forms.c installs focus/blur with
+ * `Object.getPrototypeOf(document.createElement('input'))`, which was the ONE
+ * shared element prototype when it was written and is HTMLInputElement's since
+ * 7fc2bec. So a <button>, <select> or <dialog> has had no focus() at all --
+ * and `assert_equals(document.activeElement, invoker)` is in the middle of
+ * every invoker test in the corpus.
+ *
+ * The fix is to REUSE js_forms.c's own function rather than to write a second
+ * one: its closure already owns the element-key stamping and the native call.
+ * Copying the descriptor up to HTMLElement.prototype makes it general with no
+ * duplicated logic, and the `in` guard means that the day js_forms.c installs
+ * there itself, this does nothing. */
+"var IEP = P('HTMLInputElement');\n"
+"if (IEP && EP && IEP !== EP) {\n"
+"  ['focus', 'blur'].forEach(function (m) {\n"
+"    if (m in EP) return;\n"
+"    var d = Object.getOwnPropertyDescriptor(IEP, m);\n"
+"    if (!d) return;\n"
+"    try { Object.defineProperty(EP, m, d); } catch (e) {}\n"
+"  });\n"
+"}\n"
+
+/* ======================================================================
+ * 10. The selector hooks
+ * ======================================================================
+ * js_select.c models `:popover-open` and `:modal` as INERT -- they parse and
+ * match nothing, which was the honest answer while nothing tracked the state.
+ * The state exists now and lives here, so it is published as two predicates
+ * the selector engine consults. A build without this file leaves them
+ * undefined and js_select.c falls back to exactly its old answer. */
+"G.__logit_popover_open = function (el) { return popoverIsShowing(el); };\n"
+"G.__logit_modal = function (el) { return !!modalDialogs.get(el); };\n"
+
+/* ======================================================================
+ * 11. Table interfaces
+ * ====================================================================== */
+"var SECTION_TAGS = { thead: 1, tbody: 1, tfoot: 1 };\n"
+"var TBL = P('HTMLTableElement');\n"
+"function tableSections(t, out) { childElems(t, SECTION_TAGS, out); }\n"
+/* `table.rows` is the <tr> children of <thead>, then the table's own <tr>
+ * children and those of every <tbody>, then <tfoot> -- in that order, which is
+ * NOT tree order and is the reason this cannot be a querySelectorAll. */
+"function tableRows(t, out) {\n"
+"  var i, s, secs = [];\n"
+"  tableSections(t, secs);\n"
+"  for (i = 0; i < secs.length; i++) if (tagOf(secs[i]) === 'thead') childElems(secs[i], { tr: 1 }, out);\n"
+"  for (var c = t.firstChild; c; c = c.nextSibling) {\n"
+"    if (c.nodeType !== 1) continue;\n"
+"    var tg = lc(c.tagName);\n"
+"    if (tg === 'tr') out.push(c);\n"
+"    else if (tg === 'tbody') childElems(c, { tr: 1 }, out);\n"
+"  }\n"
+"  for (i = 0; i < secs.length; i++) if (tagOf(secs[i]) === 'tfoot') childElems(secs[i], { tr: 1 }, out);\n"
+"}\n"
+"if (TBL) {\n"
+"  acc(TBL, 'rows', function () { return cachedCollection(this, 'rows', tableRows); });\n"
+"  acc(TBL, 'tBodies', function () { return cachedCollection(this, 'tBodies',\n"
+"    function (n, out) { childElems(n, { tbody: 1 }, out); }); });\n"
+"  acc(TBL, 'caption', function () {\n"
+"    for (var c = this.firstChild; c; c = c.nextSibling)\n"
+"      if (c.nodeType === 1 && tagOf(c) === 'caption') return c;\n"
+"    return null;\n"
+"  }, function (v) {\n"
+"    var old = this.caption;\n"
+"    if (v === null || v === undefined) { if (old) old.parentNode.removeChild(old); return; }\n"
+"    if (tagOf(v) !== 'caption') throwDom('HierarchyRequestError', 'caption must be a <caption>');\n"
+"    if (old) old.parentNode.removeChild(old);\n"
+"    this.insertBefore(v, this.firstChild);\n"
+"  });\n"
+"  meth(TBL, 'createCaption', function () {\n"
+"    var c = this.caption;\n"
+"    if (c) return c;\n"
+"    c = doc.createElement('caption');\n"
+"    this.insertBefore(c, this.firstChild);\n"
+"    return c;\n"
+"  });\n"
+"  meth(TBL, 'deleteCaption', function () {\n"
+"    var c = this.caption; if (c) c.parentNode.removeChild(c);\n"
+"  });\n"
+"  ['tHead', 'tFoot'].forEach(function (prop) {\n"
+"    var want = lc(prop);\n"
+"    acc(TBL, prop, function () {\n"
+"      for (var c = this.firstChild; c; c = c.nextSibling)\n"
+"        if (c.nodeType === 1 && tagOf(c) === want) return c;\n"
+"      return null;\n"
+"    }, function (v) {\n"
+"      var old = this[prop];\n"
+"      if (v === null || v === undefined) { if (old) old.parentNode.removeChild(old); return; }\n"
+"      if (tagOf(v) !== want) throwDom('HierarchyRequestError', prop + ' must be a <' + want + '>');\n"
+"      if (old) old.parentNode.removeChild(old);\n"
+         /* <thead> goes before the first tbody/tr; <tfoot> goes at the end. */
+"      if (want === 'thead') {\n"
+"        var ref = null;\n"
+"        for (var c2 = this.firstChild; c2; c2 = c2.nextSibling) {\n"
+"          if (c2.nodeType !== 1) continue;\n"
+"          var t2 = lc(c2.tagName);\n"
+"          if (t2 !== 'caption' && t2 !== 'colgroup') { ref = c2; break; }\n"
+"        }\n"
+"        this.insertBefore(v, ref);\n"
+"      } else this.appendChild(v);\n"
+"    });\n"
+"  });\n"
+"  meth(TBL, 'createTHead', function () {\n"
+"    if (this.tHead) return this.tHead;\n"
+"    var h = doc.createElement('thead'); this.tHead = h; return h;\n"
+"  });\n"
+"  meth(TBL, 'deleteTHead', function () { var h = this.tHead; if (h) h.parentNode.removeChild(h); });\n"
+"  meth(TBL, 'createTFoot', function () {\n"
+"    if (this.tFoot) return this.tFoot;\n"
+"    var f = doc.createElement('tfoot'); this.tFoot = f; return f;\n"
+"  });\n"
+"  meth(TBL, 'deleteTFoot', function () { var f = this.tFoot; if (f) f.parentNode.removeChild(f); });\n"
+"  meth(TBL, 'createTBody', function () {\n"
+"    var b = doc.createElement('tbody');\n"
+       /* After the LAST tbody, not at the end -- a <tfoot> must stay last. */
+"    var last = null;\n"
+"    for (var c = this.firstChild; c; c = c.nextSibling)\n"
+"      if (c.nodeType === 1 && tagOf(c) === 'tbody') last = c;\n"
+"    this.insertBefore(b, last ? last.nextSibling : null);\n"
+"    return b;\n"
+"  });\n"
+"  meth(TBL, 'insertRow', function (index) {\n"
+"    index = (index === undefined) ? -1 : (index | 0);\n"
+"    var rows = []; tableRows(this, rows);\n"
+"    if (index < -1 || index > rows.length)\n"
+"      throwDom('IndexSizeError', 'The index is out of range.');\n"
+"    var tr = doc.createElement('tr');\n"
+"    if (!rows.length) {\n"
+"      var body = null;\n"
+"      for (var c = this.firstChild; c; c = c.nextSibling)\n"
+"        if (c.nodeType === 1 && tagOf(c) === 'tbody') body = c;\n"
+"      if (!body) { body = doc.createElement('tbody'); this.appendChild(body); }\n"
+"      body.appendChild(tr);\n"
+"    } else if (index === -1 || index === rows.length) {\n"
+"      var lastRow = rows[rows.length - 1];\n"
+"      lastRow.parentNode.appendChild(tr);\n"
+"    } else {\n"
+"      var ref = rows[index];\n"
+"      ref.parentNode.insertBefore(tr, ref);\n"
+"    }\n"
+"    return tr;\n"
+"  });\n"
+"  meth(TBL, 'deleteRow', function (index) {\n"
+"    index = index | 0;\n"
+"    var rows = []; tableRows(this, rows);\n"
+"    if (index === -1) { if (rows.length) rows[rows.length - 1].parentNode.removeChild(rows[rows.length - 1]); return; }\n"
+"    if (index < 0 || index >= rows.length)\n"
+"      throwDom('IndexSizeError', 'The index is out of range.');\n"
+"    rows[index].parentNode.removeChild(rows[index]);\n"
+"  });\n"
+"}\n"
+
+"var TSEC = P('HTMLTableSectionElement');\n"
+"if (TSEC) {\n"
+"  acc(TSEC, 'rows', function () { return cachedCollection(this, 'rows',\n"
+"    function (n, out) { childElems(n, { tr: 1 }, out); }); });\n"
+"  meth(TSEC, 'insertRow', function (index) {\n"
+"    index = (index === undefined) ? -1 : (index | 0);\n"
+"    var rows = []; childElems(this, { tr: 1 }, rows);\n"
+"    if (index < -1 || index > rows.length)\n"
+"      throwDom('IndexSizeError', 'The index is out of range.');\n"
+"    var tr = doc.createElement('tr');\n"
+"    if (index === -1 || index === rows.length) this.appendChild(tr);\n"
+"    else this.insertBefore(tr, rows[index]);\n"
+"    return tr;\n"
+"  });\n"
+"  meth(TSEC, 'deleteRow', function (index) {\n"
+"    index = index | 0;\n"
+"    var rows = []; childElems(this, { tr: 1 }, rows);\n"
+"    if (index === -1) { if (rows.length) this.removeChild(rows[rows.length - 1]); return; }\n"
+"    if (index < 0 || index >= rows.length)\n"
+"      throwDom('IndexSizeError', 'The index is out of range.');\n"
+"    this.removeChild(rows[index]);\n"
+"  });\n"
+"}\n"
+
+"var TROW = P('HTMLTableRowElement');\n"
+"if (TROW) {\n"
+"  acc(TROW, 'cells', function () { return cachedCollection(this, 'cells',\n"
+"    function (n, out) { childElems(n, { td: 1, th: 1 }, out); }); });\n"
+"  acc(TROW, 'rowIndex', function () {\n"
+"    var t = this.parentNode;\n"
+"    while (t && t.nodeType === 1 && tagOf(t) !== 'table') t = t.parentNode;\n"
+"    if (!t || t.nodeType !== 1 || tagOf(t) !== 'table') return -1;\n"
+"    var rows = []; tableRows(t, rows);\n"
+"    return rows.indexOf(this);\n"
+"  });\n"
+"  acc(TROW, 'sectionRowIndex', function () {\n"
+"    var p = this.parentNode;\n"
+"    if (!p || p.nodeType !== 1) return -1;\n"
+"    var tg = tagOf(p);\n"
+"    if (!SECTION_TAGS[tg] && tg !== 'table') return -1;\n"
+"    var rows = []; childElems(p, { tr: 1 }, rows);\n"
+"    return rows.indexOf(this);\n"
+"  });\n"
+"  meth(TROW, 'insertCell', function (index) {\n"
+"    index = (index === undefined) ? -1 : (index | 0);\n"
+"    var cells = []; childElems(this, { td: 1, th: 1 }, cells);\n"
+"    if (index < -1 || index > cells.length)\n"
+"      throwDom('IndexSizeError', 'The index is out of range.');\n"
+"    var td = doc.createElement('td');\n"
+"    if (index === -1 || index === cells.length) this.appendChild(td);\n"
+"    else this.insertBefore(td, cells[index]);\n"
+"    return td;\n"
+"  });\n"
+"  meth(TROW, 'deleteCell', function (index) {\n"
+"    index = index | 0;\n"
+"    var cells = []; childElems(this, { td: 1, th: 1 }, cells);\n"
+"    if (index === -1) { if (cells.length) this.removeChild(cells[cells.length - 1]); return; }\n"
+"    if (index < 0 || index >= cells.length)\n"
+"      throwDom('IndexSizeError', 'The index is out of range.');\n"
+"    this.removeChild(cells[index]);\n"
+"  });\n"
+"}\n"
+
+/* ======================================================================
+ * 12. <select>, <option>, <form>, <template>
+ * ====================================================================== */
+"var SEL = P('HTMLSelectElement'), OPT = P('HTMLOptionElement');\n"
+"function selectOptions(sel, out) {\n"
+"  for (var c = sel.firstChild; c; c = c.nextSibling) {\n"
+"    if (c.nodeType !== 1) continue;\n"
+"    var t = lc(c.tagName);\n"
+"    if (t === 'option') out.push(c);\n"
+"    else if (t === 'optgroup') childElems(c, { option: 1 }, out);\n"
+"  }\n"
+"}\n"
+"if (OPT) {\n"
+"  acc(OPT, 'selected', function () {\n"
+"    var s = optSelected.get(this);\n"
+"    return s === undefined ? this.hasAttribute('selected') : s;\n"
+"  }, function (v) { optSelected.set(this, !!v); });\n"
+"  acc(OPT, 'index', function () {\n"
+"    var sel = ownerSelect(this);\n"
+"    if (!sel) return 0;\n"
+"    var opts = []; selectOptions(sel, opts);\n"
+"    var i = opts.indexOf(this);\n"
+"    return i < 0 ? 0 : i;\n"
+"  });\n"
+"  acc(OPT, 'text', function () {\n"
+"    return String(this.textContent === undefined ? '' : this.textContent)\n"
+"      .replace(/[ \\t\\n\\f\\r]+/g, ' ').replace(/^ | $/g, '');\n"
+"  }, function (v) { this.textContent = String(v); });\n"
+"  acc(OPT, 'value', function () {\n"
+"    var v = this.getAttribute('value');\n"
+"    return v === null ? this.text : v;\n"
+"  }, function (v) { this.setAttribute('value', String(v)); });\n"
+"  acc(OPT, 'label', function () {\n"
+"    var v = this.getAttribute('label');\n"
+"    return v === null ? this.text : v;\n"
+"  }, function (v) { this.setAttribute('label', String(v)); });\n"
+"  acc(OPT, 'form', function () { var s = ownerSelect(this); return s ? formOwner(s) : formOwner(this); });\n"
+"}\n"
+"var optSelected = new Map();\n"
+"function ownerSelect(opt) {\n"
+"  for (var p = opt.parentNode; p && p.nodeType === 1; p = p.parentNode)\n"
+"    if (tagOf(p) === 'select') return p;\n"
+"  return null;\n"
+"}\n"
+"function formOwner(el) {\n"
+"  var id = el.getAttribute && el.getAttribute('form');\n"
+"  if (id !== null && id !== undefined && id !== '') {\n"
+"    var r = rootOf(el);\n"
+"    var f = (r && typeof r.getElementById === 'function') ? r.getElementById(id) : null;\n"
+"    return (f && tagOf(f) === 'form') ? f : null;\n"
+"  }\n"
+"  for (var p = el.parentNode; p && p.nodeType === 1; p = p.parentNode)\n"
+"    if (tagOf(p) === 'form') return p;\n"
+"  return null;\n"
+"}\n"
+"if (SEL) {\n"
+"  acc(SEL, 'options', function () { return cachedCollection(this, 'options', selectOptions); });\n"
+"  acc(SEL, 'length', function () { var o = []; selectOptions(this, o); return o.length; },\n"
+"    function (v) {\n"
+"      var o = []; selectOptions(this, o); var want = v >>> 0;\n"
+"      while (o.length > want) { var last = o.pop(); last.parentNode.removeChild(last); }\n"
+"      while (o.length < want) { this.appendChild(doc.createElement('option')); o.push(1); }\n"
+"    });\n"
+"  acc(SEL, 'selectedOptions', function () { return cachedCollection(this, 'selectedOptions',\n"
+"    function (n, out) {\n"
+"      var o = []; selectOptions(n, o);\n"
+"      for (var i = 0; i < o.length; i++) if (o[i].selected) out.push(o[i]);\n"
+"    }); });\n"
+"  acc(SEL, 'selectedIndex', function () {\n"
+"    var o = []; selectOptions(this, o);\n"
+"    for (var i = 0; i < o.length; i++) if (o[i].selected) return i;\n"
+       /* A single-select with nothing selected still has a selected option:
+        * the first non-disabled one. Only a `multiple` or sized select can
+        * genuinely have none. */
+"    if (!this.hasAttribute('multiple') && !o.length) return -1;\n"
+"    if (!this.hasAttribute('multiple')) {\n"
+"      for (var j = 0; j < o.length; j++) if (!o[j].hasAttribute('disabled')) return j;\n"
+"    }\n"
+"    return -1;\n"
+"  }, function (v) {\n"
+"    var o = []; selectOptions(this, o); var want = v | 0;\n"
+"    for (var i = 0; i < o.length; i++) optSelected.set(o[i], i === want);\n"
+"  });\n"
+"  acc(SEL, 'value', function () {\n"
+"    var i = this.selectedIndex; if (i < 0) return '';\n"
+"    var o = []; selectOptions(this, o);\n"
+"    return i < o.length ? o[i].value : '';\n"
+"  }, function (v) {\n"
+"    var o = []; selectOptions(this, o); v = String(v);\n"
+"    var hit = -1;\n"
+"    for (var i = 0; i < o.length; i++) if (o[i].value === v) { hit = i; break; }\n"
+"    for (var j = 0; j < o.length; j++) optSelected.set(o[j], j === hit);\n"
+"  });\n"
+"  acc(SEL, 'type', function () {\n"
+"    return this.hasAttribute('multiple') ? 'select-multiple' : 'select-one'; });\n"
+"  acc(SEL, 'form', function () { return formOwner(this); });\n"
+"  meth(SEL, 'item', function (i) { var o = []; selectOptions(this, o);\n"
+"    i = i >>> 0; return i < o.length ? o[i] : null; });\n"
+"  meth(SEL, 'namedItem', function (n) { var o = []; selectOptions(this, o); n = String(n);\n"
+"    for (var i = 0; i < o.length; i++)\n"
+"      if (o[i].getAttribute('id') === n || o[i].getAttribute('name') === n) return o[i];\n"
+"    return null; });\n"
+"  meth(SEL, 'add', function (el, before) {\n"
+"    if (before === undefined || before === null) { this.appendChild(el); return; }\n"
+"    if (typeof before === 'number') {\n"
+"      var o = []; selectOptions(this, o);\n"
+"      var ref = (before >= 0 && before < o.length) ? o[before] : null;\n"
+"      this.insertBefore(el, ref); return;\n"
+"    }\n"
+"    if (before.parentNode !== this) throwDom('NotFoundError', 'The before element is not a child.');\n"
+"    this.insertBefore(el, before);\n"
+"  });\n"
+"  meth(SEL, 'remove', function (i) {\n"
+"    if (arguments.length === 0) { if (this.parentNode) this.parentNode.removeChild(this); return; }\n"
+"    var o = []; selectOptions(this, o); i = i | 0;\n"
+"    if (i >= 0 && i < o.length) o[i].parentNode.removeChild(o[i]);\n"
+"  });\n"
+"}\n"
+
+"var FRM = P('HTMLFormElement');\n"
+"var LISTED = { button: 1, fieldset: 1, input: 1, object: 1, output: 1,\n"
+"               select: 1, textarea: 1 };\n"
+"if (FRM) {\n"
+"  acc(FRM, 'elements', function () { return cachedCollection(this, 'elements',\n"
+"    function (n, out) {\n"
+"      var all = []; descendants(n, LISTED, all);\n"
+"      for (var i = 0; i < all.length; i++) {\n"
+"        if (tagOf(all[i]) === 'input' && lc(all[i].getAttribute('type') || '') === 'image') continue;\n"
+"        if (formOwner(all[i]) !== n) continue;\n"
+"        out.push(all[i]);\n"
+"      }\n"
+"    }); });\n"
+"  acc(FRM, 'length', function () { return this.elements.length; });\n"
+"}\n"
+/* Every listed control has a `form` -- the nearest ancestor <form>, or the one
+ * its `form=` attribute names. `button.form` is read by half the forms corpus
+ * and by every framework that walks up from a submit button. */
+"['HTMLButtonElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLFieldSetElement',\n"
+" 'HTMLObjectElement', 'HTMLOutputElement', 'HTMLLabelElement']\n"
+"  .forEach(function (n) {\n"
+"    var p = P(n);\n"
+"    if (p && !('form' in p)) acc(p, 'form', function () { return formOwner(this); });\n"
+"  });\n"
+
+/* <template>.content. The parser puts a template's children in the template
+ * element itself here, so `content` is a DocumentFragment holding them --
+ * built once and cached on the element, because the spec's content fragment is
+ * a stable object identity (`t.content === t.content`). */
+"var TPL = P('HTMLTemplateElement');\n"
+"var tplContent = new Map();\n"
+"if (TPL) {\n"
+"  acc(TPL, 'content', function () {\n"
+"    var f = tplContent.get(this);\n"
+"    if (f) return f;\n"
+"    f = doc.createDocumentFragment();\n"
+"    var c = this.firstChild;\n"
+"    while (c) { var nx = c.nextSibling; f.appendChild(c); c = nx; }\n"
+"    tplContent.set(this, f);\n"
+"    return f;\n"
+"  });\n"
+"}\n"
+"})";
+
+/* --------------------------------------------------------------------------
+ * The install.
+ * ------------------------------------------------------------------------ */
+#ifdef SEMANTICS_STATIC_COLLECTIONS
+static const int SEM_STATIC = 1;   /* the negative control; see the header */
+#else
+static const int SEM_STATIC = 0;
+#endif
+
+void js_semantics_install(JSContext *ctx)
+{
+    JSValue fn = JS_Eval(ctx, SEMANTICS_PRELUDE, strlen(SEMANTICS_PRELUDE),
+                         "<semantics>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(fn)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        printf("js_semantics: prelude failed: %s\n", m ? m : "?");
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+        JS_FreeValue(ctx, fn);
+        return;
+    }
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue arg = JS_NewBool(ctx, SEM_STATIC);
+    JSValue r = JS_Call(ctx, fn, g, 1, (JSValueConst *)&arg);
+    if (JS_IsException(r)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        printf("js_semantics: install threw: %s\n", m ? m : "?");
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, r);
+    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx, g);
+    JS_FreeValue(ctx, fn);
+}

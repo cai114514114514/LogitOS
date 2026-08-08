@@ -35,6 +35,12 @@
  * through a header because it is one symbol; weak for the same reason as the
  * five above. */
 void js_forms_install(JSContext *ctx) __attribute__((__weak__));
+/* The HTML element interfaces -- js_semantics.c: <dialog>'s showModal/close,
+ * <table>'s rows/insertRow, <select>'s options, the popover and
+ * command/commandfor invokers, and HTMLElement.prototype.click. Weak for the
+ * same reason as the others; a build without that TU keeps today's behaviour
+ * exactly. */
+void js_semantics_install(JSContext *ctx) __attribute__((__weak__));
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -571,6 +577,13 @@ int js_page_open(struct node *root)
      * something means running after the thing that installed it. Weak, like
      * every install above, so a build without that TU keeps the old pair. */
     if (js_url_install) js_url_install(g_ctx);
+    /* AFTER js_forms_install, and that ordering is load-bearing in one place:
+     * js_forms.c installs focus()/blur() on HTMLInputElement.prototype only
+     * (its `Object.getPrototypeOf(createElement('input'))` was the ONE shared
+     * element prototype before 7fc2bec), and js_semantics.c copies that
+     * descriptor up to HTMLElement.prototype so a <button> or <dialog> can be
+     * focused. It can only copy a descriptor that already exists. */
+    if (js_semantics_install) js_semantics_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
