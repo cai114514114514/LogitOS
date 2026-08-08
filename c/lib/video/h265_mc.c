@@ -266,10 +266,16 @@ void h265_pred_bi_w(uint16_t *dst, int dst_stride, const int16_t *s0, int s0_str
 {
     int log2wd = denom + (14 - bd);
     int wo0 = o0 * (1 << (bd - 8)), wo1 = o1 * (1 << (bd - 8));
+    /* Multiply rather than shift: (o0 + o1 + 1) is signed and is negative
+     * whenever the two offsets pull the picture down, which is exactly what a
+     * fade to black does -- so this fires on real content, not on a corner
+     * case. Undefined in C, identical on every two's-complement target, and
+     * therefore only ever visible under UBSan. */
+    int wround = 1 << log2wd;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
             int v = s0[y * s0_stride + x] * w0 + s1[y * s1_stride + x] * w1 +
-                    ((wo0 + wo1 + 1) << log2wd);
+                    (wo0 + wo1 + 1) * wround;
             dst[y * dst_stride + x] = (uint16_t)h265_clip_pix(v >> (log2wd + 1), bd);
         }
 }

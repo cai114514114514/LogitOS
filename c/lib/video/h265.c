@@ -1930,6 +1930,7 @@ void h265_close(h265dec *d)
     free(d->ctb_tc);
     free(d->ctb_filt_across_slice);
     free(d->sao_src);
+    free(d->disp);
     free(d);
 }
 

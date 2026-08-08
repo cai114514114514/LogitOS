@@ -408,9 +408,17 @@ void h265_sao_pic(h265dec *d)
              * here; it only starts to bite at 12. Written out rather than
              * assumed, because "it happens to be zero" is worth one line. */
             int sao_shift = bd - (bd < 10 ? bd : 10);
+            /* Multiply rather than shift: SAO offsets are signed and routinely
+             * negative (the last two edge offsets always are), and a left
+             * shift of a negative value is undefined in C even when the shift
+             * count is zero -- which it is at both 8 and 10 bits, so this
+             * never produced a wrong sample and only ever showed up under
+             * UBSan. Same reasoning, and the same fix, as the `* 4` in
+             * h265_deblock_chroma_n above. */
+            int sao_mul = 1 << sao_shift;
             int off[5];
             off[0] = 0;
-            for (int i = 0; i < 4; i++) off[i + 1] = s->off[c][i] << sao_shift;
+            for (int i = 0; i < 4; i++) off[i + 1] = s->off[c][i] * sao_mul;
 
             if (s->type[c] == SAO_BAND) {
                 for (int y = y0; y < y1; y++)
