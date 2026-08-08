@@ -196,7 +196,8 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-loader test-loader-negctl test-loader-asan test-script-nav
-.PHONY: test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl
+.PHONY: probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
 
@@ -269,9 +270,16 @@ endef
 $(eval $(call APP_RULE,clock,   0x40000000,Clock,-,C,100,160,255))
 $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
-$(eval $(call APP_RULE,terminal,0x43000000,Terminal,-,>,70,80,100))
+# Terminal is NOT built by APP_RULE any more -- it links the H.264/H.265
+# decoders and mini-libc so a video frame can play inside the scrollback. Its
+# rule lives with the VID_OBJ definitions further down, next to Preview's.
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
+# Gallery: every aui widget in every state. It is the toolkit's demo AND its
+# regression test (tests/qmp/qmp_gallery.py asserts against its pixels), which is
+# why it ships on the disk rather than living behind a build flag -- a visual
+# test you have to opt into is a visual test nobody runs.
+$(eval $(call APP_RULE,gallery, 0x4A000000,Gallery,-,G,120,140,250))
 # Preview is NOT built by APP_RULE -- it links the H.264 decoder and mini-libc,
 # so its rule lives with the VID_OBJ definitions further down.
 # Code Studio links the AetherScript completion engine (complete.o) for IntelliSense.
@@ -289,12 +297,19 @@ $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 # (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
 APPS := clock textedit monitor terminal widgets files preview studio
+# Gallery is packed AFTER browser, not appended to APPS, and that placement is
+# load-bearing: the Dock's order is the order the .aex files land in the LogitFS
+# root, and tests/qmp/qmp_ui.py's BROWSER_SLOT names browser's index in it.
+# Appending to APPS would insert gallery BEFORE browser and silently move the
+# icon every existing driver clicks. (NAPPS there still has to go 9 -> 10: the
+# dock is centred, so one more app shifts every icon.)
+GALLERY_AEX := $(BUILD)/gallery.aex
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h $(CLIDIR)/logit_sniff.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
@@ -308,7 +323,7 @@ CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname ne
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
-AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(CLI_AEX) $(BUILD)/as.aex
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(GALLERY_AEX) $(CLI_AEX) $(BUILD)/as.aex
 # Which browser goes on the disk. Overridable so a test can pack a deliberately
 # crippled build instead -- see test-webapi-page-control, which is how "this
 # assertion fails without the change" is demonstrated rather than asserted.
@@ -350,7 +365,8 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
-                c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/img.c
+                c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
+                c/lib/image/exif.c c/lib/image/img.c
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
 # dom.c interns element and attribute names through libwapcaplet (LibCSS's own
@@ -541,9 +557,28 @@ $(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) $(BUILD)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
-	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(LIBC_OBJS) --end-group
+	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(MED_OBJ) \
+	    $(AUD_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/preview.elf $@ Preview h264 'P' 200 150 110
+
+# Terminal: same shape as Preview, and for the same reason. It links VID_OBJ +
+# mini-libc because an RT_T_VIDEO frame names a PATH and the terminal is what
+# decodes it -- there is no RGBA-over-the-wire path in LRT/1, and inventing one
+# would mean 300 KB per frame through a pipe with a 16 KiB payload limit. The
+# decode is ring-3 for the same reason Preview's is: megabytes of live reference
+# frames and an untrusted-input parser do not belong under the big lock.
+$(BUILD)/terminal.elf: $(GUIDIR)/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
+                       $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(APPDIR)/crt0.asm \
+                       $(BUILD)/apps/aui.o $(VID_OBJ) $(LIBC_OBJS)
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/terminal.crt0.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal.c -o $(BUILD)/apps/terminal.o
+	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
+	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o \
+	    $(VID_OBJ) $(LIBC_OBJS) --end-group
+$(BUILD)/terminal.aex: $(BUILD)/terminal.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/terminal.elf $@ Terminal - '>' 70 80 100
 
 # Redistributable OFL font subsets are checked in, so a normal build never
 # consults host fonts or the network. Regeneration is explicit and reproducible
@@ -584,9 +619,11 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
 	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BROWSER_AEX):browser.aex \
+	    $(GALLERY_AEX):gallery.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
+	    $(JSBENCH_PACK) \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
 	    $(BUILD)/dot.png:/media/dot.png \
 	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
@@ -720,6 +757,22 @@ check-roots: $(BUILD)
 # is the test that proves the reachability claims, so run it on any TLS change.
 test-tls-interop: $(BUILD)
 	@bash tests/unit/run-tls-interop.sh
+
+# --- test-tls-resume-control: the assertion that must FAIL without the fix ---
+# Rebuilds the interop client with LOGIT_PSK_BREAK_TRANSCRIPT, which derives
+# the resumption_master_secret from the transcript WITHOUT the client Finished.
+# That is not a strawman: it is the specific mistake RFC 8446 7.1 invites,
+# because every OTHER secret in the schedule really is keyed on the shorter
+# transcript. The defect is invisible to every other test in this tree -- the
+# handshake completes, the chain verifies, tickets are still issued and stored.
+# It is only visible as "resumption silently never happens", which is exactly
+# the failure mode the resumption cases exist to catch.
+#
+# The script INVERTS its verdict under TLS_INTEROP_BREAK, so this target passes
+# only when the resumption cases go red.
+test-tls-resume-control: $(BUILD)
+	@TLS_INTEROP_BREAK=LOGIT_PSK_BREAK_TRANSCRIPT TLS_INTEROP_ONLY=resume \
+	  bash tests/unit/run-tls-interop.sh
 
 # Randomized differential tests: a self-checked pure-Python reference
 # (tests/unit/crypto_diff_gen.py) emits ~127k random vectors; the C asserter
@@ -902,6 +955,32 @@ test-mm:
 
 test-mm-os: $(ISO) $(DISK)
 	@bash tests/boot/run-mm-test.sh $(ISO) $(DISK)
+
+# --- leak hunting: does opening and closing apps give the memory back? ------
+# test-mm/test-mm-os cover fork+exec, and they are clean -- 240 shell commands
+# with zero frame drift. The workload they do NOT cover is the one the machine
+# is used for: opening and closing windowed apps, which allocates a multi-MB
+# .aex load buffer and a cw*ch*4 window surface per launch through the KERNEL
+# HEAP. kheap takes frames from the PMM and never gives them back, so a heap
+# that cannot reuse what it frees consumes physical memory forever while every
+# PMM invariant holds and pmm_audit() stays clean. That is a leak no frame-level
+# test can see, and these two are where it is measured.
+#
+#   test-leak     host, under ASan/UBSan: the real c/kernel/mm/kheap.c driven
+#                 through app open/close cycles, asserting the arena stops
+#                 growing -- plus TWO negative controls, each a compiled build
+#                 with one half of the fix removed, both required to FAIL.
+#   test-leak-os  the same question on the machine, driven by the WM's own
+#                 churn stress. REQUIRES A CHURN BUILD:
+#                     make CHURN=1 && make CHURN=1 build/disk.img && make test-leak-os
+#                 (the harness fails loudly, not silently, if the driver is absent)
+LEAK_SECS ?= 120
+
+test-leak:
+	@sh tests/unit/leak_run.sh $(BUILD)
+
+test-leak-os: $(ISO) $(DISK)
+	@bash tests/boot/run-leak-apps.sh $(ISO) $(DISK) $(LEAK_SECS)
 
 # The same under ASan/UBSan. The parser reads attacker-shaped sector images into
 # fixed buffers with offsets taken from those same images, so an out-of-bounds
@@ -1424,13 +1503,45 @@ test-sh-negctl:
 		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sh_negctl.log) checks fail without the filter"; \
 	fi
 
-test-term-host: test-term-proto test-sh test-sh-negctl
+# The content sniffer (c/apps/coreutils/logit_sniff.h): magic identification for
+# every format this OS can be handed, the text-vs-binary judgement, and the
+# STREAM GUARD that is what stops `cat /fonts/mono.ttf` painting 2.2 MB of sfnt
+# onto the character grid. Includes the case that matters -- a binary whose
+# bytes contain the LRT/1 magic -- and the UTF-8 case, because a guard that
+# suppressed Chinese would be a worse bug than the one it fixes.
+test-sniff:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/sniff_test tests/unit/sniff_test.c \
+		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
+	@./$(BUILD)/sniff_test
+
+# Negative control: the SAME suite with the guard's latch compiled out
+# (-DSNIFF_NEGATIVE_CONTROL, i.e. the old "print whatever arrives" behaviour)
+# must FAIL. An assertion that passes either way is not testing the guard.
+test-sniff-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DSNIFF_NEGATIVE_CONTROL -o $(BUILD)/sniff_negctl tests/unit/sniff_test.c \
+		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
+	@if ./$(BUILD)/sniff_negctl >$(BUILD)/sniff_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes with the binary guard removed"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sniff_negctl.log) checks fail without the guard"; \
+	fi
+
+test-term-host: test-term-proto test-sh test-sh-negctl test-sniff test-sniff-negctl
 
 # On-device: rich output judged by PIXELS (an image at the right size, a drawn
 # progress bar, a ruled table) plus the compatibility claim -- the same commands
 # redirected to a file must leave a file with no protocol bytes in it.
 test-term-ui: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_rich_term.py $(ISO) $(DISK) $(BUILD)/richterm.ppm
+
+# The older GUI-terminal smoke test. It had no make target at all, which is
+# half of why nobody noticed it exited 0 whatever its verdict was; a test that
+# nothing runs cannot fail either.
+test-term-gui: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_term.py $(ISO) $(DISK) $(BUILD)/term.ppm
 
 test-dhcp-host: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
@@ -1824,7 +1935,7 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(BUILD)/pipeline_stress
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
 	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c \
+	    $(IMG_HOST_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -Ic/kernel/mm
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
@@ -1869,6 +1980,11 @@ test-webapi-asan: $(RUST_LIB_HOST)
 	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
 	    -o $(BUILD)/webapi_asan $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/webapi_asan
+
+# Web-platform targets: probe-webapi (the global-miss instrument over the
+# committed real-page corpus) and test-platform / -control / -asan for
+# js_platform.c + js_select.c. Own fragment; see the file.
+-include tests/webapi_platform.mk
 
 # --- test-webapi-page: the on-device proof that fetch() reaches the pixels --
 # Boots the OS, loads a fixture page from a host server, and requires the text
@@ -2317,14 +2433,21 @@ bench-repaint: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_css_repaint.py $(ISO) $(DISK) $(or $(TAG),run)
 
 
+# Every host image test links the same set: the C decoders that are still C,
+# the Rust staticlib (PNG/BMP/ICO/WebP), and the eh_personality shim. One
+# variable, because five copies of a source list is five chances for a newly
+# added decoder to be missing from the test that would have caught its bug.
+IMG_HOST_SRC := c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \
+                c/lib/image/svg.c c/lib/image/exif.c tests/unit/rust_host_shim.c
+IMG_HOST_INC := -Ic/lib/image -Ic/kernel/mm
+
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
 test-png: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/pngtest
 	@python3 tests/unit/png_gen.py $(BUILD)/pngtest
 	@$(CC) -O2 -o $(BUILD)/png_test tests/unit/png_test.c \
-	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
-	    -Ic/lib/image -Ic/kernel/mm
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@$(BUILD)/png_test $(BUILD)/pngtest
 
 # JPEG baseline decoder host test: PIL encodes baseline JPEGs (grayscale + colour,
@@ -2338,8 +2461,7 @@ test-jpeg: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/jpegtest
 	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest
 	@$(CC) -O2 -o $(BUILD)/jpeg_test tests/unit/jpeg_test.c \
-	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
-	    -Ic/lib/image -Ic/kernel/mm
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
 
 # SVG rasterizer host test: embedded cases (real GitHub octicon mark path,
@@ -2347,9 +2469,91 @@ test-jpeg: $(RUST_LIB_HOST)
 # sniffing) plus truncation/garbage robustness checks. No asset generation.
 test-svg: $(RUST_LIB_HOST)
 	@$(CC) -O2 -o $(BUILD)/svg_test tests/unit/svg_test.c \
-	    c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c tests/unit/rust_host_shim.c $(RUST_LIB_HOST) \
-	    -Ic/lib/image -Ic/kernel/mm
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@$(BUILD)/svg_test
+
+# Still-image decoders that are neither PNG nor JPEG: BMP, ICO and
+# WebP-lossless. All three are LOSSLESS, so the bar is byte-for-byte against
+# a reference decode of the identical file -- PIL for everything it can read
+# (its BMP/ICO readers and its libwebp binding are independent code), and for
+# the two variants PIL cannot read (RLE4; 32bpp BMP with a real alpha mask,
+# which PIL drops) a trivially-invertible encoder from known source pixels.
+# Which reference each case used is printed by the generator.
+test-img-still: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/imgstill
+	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill
+	@$(CC) -O2 -o $(BUILD)/img_still_test tests/unit/img_still_test.c \
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
+	@$(BUILD)/img_still_test $(BUILD)/imgstill
+
+# Animation: GIF and APNG. "It decoded N frames" is not the assertion -- the
+# per-frame DELAY and the DISPOSAL are, because disposal is where every naive
+# implementation is wrong and the symptom (frame 3 keeps frame 2's pixels in
+# the corner it should have cleared) survives any "it animates" eyeball test.
+# Reference: PIL seeks each frame and reports the composited canvas + info.
+test-img-anim: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/imganim
+	@python3 tests/unit/img_anim_gen.py $(BUILD)/imganim
+	@$(CC) -O2 -o $(BUILD)/img_anim_test tests/unit/img_anim_test.c \
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
+	@$(BUILD)/img_anim_test $(BUILD)/imganim
+
+# EXIF orientation. A phone photo is stored in the sensor's frame plus a tag
+# saying how to turn it upright; ignoring the tag is wrong on essentially
+# every portrait photo. Reference: PIL's ImageOps.exif_transpose, per case,
+# for all eight orientation values on a deliberately non-square image.
+test-img-exif: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/imgexif
+	@python3 tests/unit/img_exif_gen.py $(BUILD)/imgexif
+	@$(CC) -O2 -o $(BUILD)/img_exif_test tests/unit/img_exif_test.c \
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
+	@$(BUILD)/img_exif_test $(BUILD)/imgexif
+
+# Fuzz every image decoder under ASan+UBSan with -fno-sanitize-recover=all,
+# so undefined behaviour ABORTS instead of printing a line the run then
+# reports as clean. Seeds are the generated corpora; the harness mutates,
+# truncates and splices them. IMG_FUZZ_ITERS controls the budget.
+IMG_FUZZ_ITERS ?= 20000
+test-img-fuzz: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif
+	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill >/dev/null
+	@python3 tests/unit/img_anim_gen.py $(BUILD)/imganim >/dev/null
+	@python3 tests/unit/img_exif_gen.py $(BUILD)/imgexif >/dev/null
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+	    -o $(BUILD)/img_fuzz tests/unit/img_fuzz.c \
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
+	@ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+	    $(BUILD)/img_fuzz $(IMG_FUZZ_ITERS) $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif
+
+# The negative control for the fuzz harness ITSELF. A fuzz target that cannot
+# fail is a green light wired to nothing, so this compiles the same harness
+# with a deliberate bug and requires the run to FAIL.
+#
+# Two sabotages, because the harness has two halves that fail differently:
+#   1  kmalloc hands back a buffer one byte short, so every decoder overruns
+#      its own allocation -- ADDRESS sanitizer must abort.
+#   2  plain signed overflow -- UNDEFINED-behaviour sanitizer must abort. This
+#      is the one that silently passes when -fno-sanitize-recover=all is
+#      missing, because UBSan then prints the diagnostic, returns, and the
+#      process still exits 0 with the run reported clean.
+test-img-fuzz-negctl: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/imgstill
+	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill >/dev/null
+	@rc=0; for mode in 1 2; do \
+	    $(CC) -O1 -g -DIMG_SABOTAGE=$$mode -fsanitize=address,undefined -fno-sanitize-recover=all \
+	        -o $(BUILD)/img_fuzz_sab$$mode tests/unit/img_fuzz.c \
+	        $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC); \
+	    if ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+	          $(BUILD)/img_fuzz_sab$$mode 4000 $(BUILD)/imgstill >$(BUILD)/img_fuzz_sab$$mode.log 2>&1; then \
+	        echo "NEGATIVE CONTROL FAILED: sabotage $$mode fuzzed CLEAN"; rc=1; \
+	    else \
+	        echo "negative control $$mode ok: $$(grep -m1 -ohE 'runtime error: [a-z ]+|ERROR: [A-Za-z]+' $(BUILD)/img_fuzz_sab$$mode.log || echo aborted)"; \
+	    fi; \
+	done; exit $$rc
+
+# Everything above, in one go.
+test-img: test-png test-jpeg test-svg test-img-still test-img-anim test-img-exif \
+          test-img-fuzz test-img-fuzz-negctl
 
 # ============================================================================
 # Font parsing (c/lib/text + the rasterizer). Two references, because a font
@@ -2681,11 +2885,21 @@ clean:
 # header for why `-netdev user` cannot measure a TCP window.
 -include tests/netperf.mk
 
-# Ring-3 memory protection: W^X, NX, SMEP/SMAP and syscall pointer validation,
-# plus /bin/secprobe -- the hostile ring-3 program the gate drives. Own fragment
-# for the same reason as the others: a whole-file Makefile overwrite from a
-# concurrent line cannot delete it.
--include tests/sec.mk
+# The link layer: Ethernet framing/VLAN/loopback and the IPv4 neighbour cache,
+# each with a host suite and a negative control that restores the behaviour the
+# rewrite replaced. Own fragment for the same reason as the fragments above.
+-include tests/link.mk
+
+# The CSS engine corpus audit + fidelity targets (kept out of this file so a
+# whole-file Makefile overwrite from a concurrent line cannot delete them).
+-include tests/cssweb.mk
+
+# The JavaScript engine's measurement + language-coverage targets (bench-js,
+# bench-js-os, test-js-syntax and its negative control). Own fragment for the
+# same reason as the others: a whole-file Makefile overwrite from a concurrent
+# line cannot delete it. It also defines $(JSBENCH_PACK), used in the $(DISK)
+# recipe above.
+-include tests/jsperf.mk
 
 # Container demuxer test targets (test-demux and its parts: -units, -diff,
 # -lacing, -fuzz, -negctl, test-avsync, test-demux-os) plus MED_OBJ and
@@ -2693,3 +2907,9 @@ clean:
 # worked on by several people at once and a whole-file Makefile edit from a
 # concurrent line cannot delete it.
 -include tests/demux.mk
+
+# Ring-3 memory protection: W^X, NX, SMEP/SMAP and syscall pointer validation,
+# plus /bin/secprobe -- the hostile ring-3 program the gate drives. Own fragment
+# for the same reason as the others: a whole-file Makefile overwrite from a
+# concurrent line cannot delete it.
+-include tests/sec.mk

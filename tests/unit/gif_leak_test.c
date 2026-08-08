@@ -18,6 +18,9 @@ int gif_decode(const uint8_t *p, int n, struct image *out);
 
 /* registration plumbing is unused in this harness */
 void img_register(img_detect_fn d, img_decode_fn f) { (void)d; (void)f; }
+/* gif.c registers through the animated entry point now (frames + disposal). */
+void img_register_anim(img_detect_fn d, img_decode_fn f, img_anim_fn a)
+{ (void)d; (void)f; (void)a; }
 
 static int run_file(const char *path)
 {

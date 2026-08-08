@@ -10,8 +10,12 @@
 
 use core::panic::PanicInfo;
 
+mod bmp; // BMP/DIB decoder (also the DIB half of an .ico)
+mod ico; // ICO/CUR container -> png or bmp (favicons)
+mod imgbuf; // shared FFI types + an owning kmalloc buffer for the decoders
 mod inflate; // RFC 1951/1950 DEFLATE/zlib, ported to safe Rust (replaces inflate.c)
 mod png; // PNG decoder, ported to safe Rust (replaces png.c); calls inflate
+mod webp; // WebP: RIFF container, VP8L lossless, VP8 lossy key frames, ALPH
 
 // FFI discipline: this staticlib links into BOTH the C kernel AND the ring-3
 // browser (which has its own image pipeline and its own address space), so the
