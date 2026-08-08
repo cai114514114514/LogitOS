@@ -71,8 +71,6 @@ from qmp_repaint import CLOSE_RGB, boot, perf_samples       # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-TERMINAL_SLOT = 3
-TEXTEDIT_SLOT = 1
 
 
 # ---------------------------------------------------------------------------
@@ -265,15 +263,34 @@ def build_negative():
     return iso
 
 
-# Every *.aex at the LogitFS root, in scan_apps order -- the same list
-# qmp_ui.py's dock geometry is built from. Kept here as (slot, name) because the
-# app inventory below has to name what it opened.
-APPS = [(0, "Clock"), (1, "TextEdit"), (2, "Monitor"), (3, "Terminal"),
-        (4, "Widgets"), (5, "Finder"), (6, "Preview"), (7, "Studio"),
-        (8, "Browser"), (9, "Gallery")]
+DOCK_RE = re.compile(r"\[wm\] dock (\d+) apps:(.*)")
 
 
-def app_survey(ui, serial, P, shot, ck, slow, pt_, note):
+def dock_apps(serial):
+    """The dock's contents as the guest reports them: (count, [filenames]).
+
+    NOT a constant. qmp_ui.py carries NAPPS = 10 with a comment explaining that
+    the dock is centred, so one more app moves every icon half a slot and every
+    hard-coded coordinate lands on the wallpaper -- and then it went stale the
+    day an eleventh app was packed, which is exactly the failure the comment
+    describes. Asking the guest is the only version of this that stays true."""
+    with open(serial, errors="replace") as fh:
+        for line in fh:
+            m = DOCK_RE.search(line)
+            if m:
+                return int(m.group(1)), m.group(2).split()
+    return None, []
+
+
+def slot_of(files, name):
+    """The dock slot of an app by its .aex filename, or -1."""
+    for i, f in enumerate(files):
+        if f.startswith(name):
+            return i
+    return -1
+
+
+def app_survey(ui, serial, P, shot, ck, slow, pt_, note, app_files, napps):
     """Grow every app's window and report what lands in the new space.
 
     This is an INVENTORY, not a gate. Those apps belong to other lines, and the
@@ -286,9 +303,9 @@ def app_survey(ui, serial, P, shot, ck, slow, pt_, note):
     one colour. An app that reflowed puts structure in it. The count is reported
     rather than thresholded into a verdict, because "2" and "40" need different
     sentences and neither of them is "FAIL"."""
-    for slot, name in APPS:
+    for slot, name in enumerate(app_files):
         try:
-            ui.settle_pointer(P, *dock_icon(slot))
+            ui.settle_pointer(P, *dock_icon(slot, napps))
             ui.click()
         except Exception as exc:                      # noqa: BLE001
             note("%-9s could not be opened (%s)" % (name, exc))
@@ -388,6 +405,20 @@ def main(argv):
 
         P = os.path.join(tmp, "aim.ppm")
 
+        # THE DOCK, AS THE GUEST BUILT IT. Not qmp_ui.NAPPS, which is a constant
+        # that has to be edited every time an app is packed and was already one
+        # app stale (a settings app made it 11); the dock is centred, so being
+        # one out puts every click half an icon off and reads as the app simply
+        # not launching.
+        napps, app_files = dock_apps(serial)
+        if napps is None:
+            print("FAIL the guest never reported its dock"); return 1
+        print("     dock: %d apps -- %s" % (napps, " ".join(app_files)))
+        TEXTEDIT_SLOT = slot_of(app_files, "textedit")
+        TERMINAL_SLOT = slot_of(app_files, "terminal")
+        if TEXTEDIT_SLOT < 0 or TERMINAL_SLOT < 0:
+            print("FAIL textedit/terminal not on the dock"); return 1
+
         def click_at(x, y, hold=0.12):
             aim(ui, P, x, y)
             ui.click(hold=hold)
@@ -396,7 +427,7 @@ def main(argv):
             print("\n=== every GUI app, grown by hand ===")
             print("     (an inventory, not a gate -- these apps have owners)\n")
             app_survey(ui, serial, P, shot, ck, slow, pt,
-                       lambda s: print("     " + s))
+                       lambda s: print("     " + s), app_files, napps)
             print("\n     screenshots: %s" % shots)
             return 0
 
@@ -407,7 +438,7 @@ def main(argv):
             # was whatever the last check left behind. A measurement should
             # start from a known frame and nothing else.
             print("\n=== resize cost, from the compositor's own counters ===")
-            click_at(*dock_icon(TEXTEDIT_SLOT))
+            click_at(*dock_icon(TEXTEDIT_SLOT, napps))
             time.sleep(10 * slow)
             f = frame_of(win_by_title(serial, ""))
             if f is None:
@@ -441,7 +472,7 @@ def main(argv):
             shot("bench-%dx%d" % (xres, yres))
             return 0
 
-        click_at(*dock_icon(TEXTEDIT_SLOT))
+        click_at(*dock_icon(TEXTEDIT_SLOT, napps))
         time.sleep(8 * slow)
         w = win_by_title(serial, "")
         if not ck(w is not None, "a window is on screen and reports its frame"):
@@ -604,7 +635,7 @@ def main(argv):
 
         # -- 5. minimise ----------------------------------------------------
         print("\n=== 5. minimise ===")
-        click_at(*dock_icon(TERMINAL_SLOT))          # a second window
+        click_at(*dock_icon(TERMINAL_SLOT, napps))          # a second window
         time.sleep(14 * slow)
         term = win_by_title(serial, "Terminal")
         if ck(term is not None, "the Terminal opened"):
@@ -613,7 +644,7 @@ def main(argv):
             t2 = win_by_title(serial, "Terminal")
             ck(t2 and t2["min"] == 1, "Cmd+M minimises the focused window")
             shot("minimised")
-            click_at(*dock_icon(TERMINAL_SLOT))       # its dock icon brings it back
+            click_at(*dock_icon(TERMINAL_SLOT, napps))       # its dock icon brings it back
             time.sleep(3.0 * slow)
             t3 = win_by_title(serial, "Terminal")
             ck(t3 and t3["min"] == 0, "its dock icon brings it back")
@@ -643,7 +674,7 @@ def main(argv):
         # receive it; Cmd+W is, so the app must not. The Terminal echoes what it
         # is given into its input line, which is how "reached the app" is
         # observed rather than assumed.
-        click_at(*dock_icon(TERMINAL_SLOT))
+        click_at(*dock_icon(TERMINAL_SLOT, napps))
         time.sleep(4.0 * slow)
         if win_by_title(serial, "Terminal"):
             base = shot("term-idle")

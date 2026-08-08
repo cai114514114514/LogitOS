@@ -60,6 +60,63 @@
  * scaling at all -- every click lands at a fraction of where it was aimed -- so
  * every enqueue_input() below routes its window-local coordinates through PT().
  */
+/* ---- the mid-frame guard ---------------------------------------------------
+ *
+ * A window has ONE canvas. The app draws straight into the buffer the
+ * compositor blits from, and SYS_GUI_FLUSH swaps nothing -- it marks the window
+ * damaged and returns. So between an app's first draw of a frame (aui_begin ->
+ * gui_clear, which erases the whole canvas) and its flush, that buffer is not a
+ * picture; it is a picture being made. Compositing it in that interval puts a
+ * blank window on the display, and THAT is the "one click and it does a
+ * reload-refresh" the machine's user reported -- a VISIBLE defect, not a slow
+ * one. A frame counter cannot see it, because a torn frame and a correct frame
+ * are both one frame.
+ *
+ * Nothing ordered the two. The app runs ahead of the compositor whenever events
+ * arrive faster than it paints -- a scroll burst, or the press AND release of a
+ * single click, which are two repaints -- so the damage from frame N is still
+ * pending when the app starts erasing the canvas for frame N+1.
+ *
+ * 1 = the compositor HOLDS BACK a damage rectangle that overlaps a window whose
+ * canvas is half drawn, and composites it after the flush instead. This is
+ * nearly free because a rectangle that is not composited is also not presented
+ * -- fb_present_rect is called from exactly one place, render_region -- so the
+ * pixels already in `back`, the last complete composite, stay on the display
+ * untouched. No second buffer and no copy: the screen back buffer already IS
+ * the retained copy, which is the invariant stated at the top of this file.
+ *
+ * 0 IS THE NEGATIVE CONTROL: the old behaviour, in which the compositor blits
+ * whatever happens to be in the canvas at the moment it runs.
+ * tests/qmp/qmp_flash.py --negative builds with it and requires the pixel check
+ * to FAIL. `perf_torn` is counted either way, so both builds report the same
+ * quantity for the same thing.
+ */
+#ifndef WM_MIDFRAME_GUARD
+#define WM_MIDFRAME_GUARD 1
+#endif
+/* The hard bound: how long ONE FRAME of an app may hold its own rectangle off
+ * the display. Past this, the rectangle composites regardless -- one torn frame
+ * is a worse picture, a permanently frozen window is a worse machine.
+ *
+ * The clock starts at the app's first draw and is reset by its flush, so what
+ * this actually catches is an app that has stopped: one that drew and never
+ * flushed, or died holding a half-painted canvas. It deliberately does NOT
+ * catch an app that paints one frame after another without pause -- a fast
+ * scroll does exactly that. That window then shows its last COMPLETE frame for
+ * as long as the burst lasts, which is the right answer and the same answer a
+ * double-buffered compositor gives: there is no newer complete frame to show,
+ * and half of the next one is not a substitute for it. An earlier version also
+ * bounded how long the SCREEN could go without any composite at all, and that
+ * bound did nothing but re-introduce the defect once per interval during a long
+ * scroll -- 9 torn frames in a run that is otherwise 0.
+ *
+ * 400 ms is set against a measurement rather than a taste: `drawmax` in the
+ * perf line is the longest app frame the machine has actually produced, and
+ * under TCG the Finder's is 30-250 ms with a full browser repaint the slow one.
+ * Every time the deadline fires is counted (`late`), so "the deadline never
+ * fires" stays a reading rather than an assumption. */
+#define WM_MIDFRAME_MAX_MS 400
+
 #define S(v)       fb_pt(v)          /* points -> device pixels */
 #define PT(v)      fb_dev2pt(v)      /* device pixels -> points */
 #define MENUBAR_H  24                /* points */
@@ -152,12 +209,19 @@ struct win {
     int  zoomed;              /* filling the desktop (see zoom_rect) */
     int  minimized;           /* hidden: not composited, not hit-tested */
     int  sx, sy, sw, sh;      /* the frame to restore to; only valid while zoomed */
+    /* Pixels the canvas ALLOCATION holds, which is >= surf.w * surf.h. The
+     * canvas is reshaped inside this block whenever the new size fits, so a
+     * drag does not hand the kernel heap a differently-sized multi-megabyte
+     * request eight times a second -- see win_apply_size. */
+    int  surf_cap;
     /* Is this canvas half drawn RIGHT NOW? 1 from the app's first drawing
      * syscall after a flush until the next flush -- see the mid-frame guard
      * note near the top of this file. There is no ABI call that says "I am
      * starting a frame" and there does not need to be: the first draw after a
      * flush IS the start of one, which is true of every app in the tree and of
      * any app that has not been written yet. */
+    int  drawing;
+    uint64_t draw_t0;         /* time_mono_ms() when this frame's drawing began */
 };
 
 static struct app apps[MAXWIN];
@@ -379,6 +443,22 @@ static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor update
  * anything ON ITS OWN, separately from compositing less -- a question the
  * composite total cannot answer and which was asked directly. */
 static uint64_t perf_cpx, perf_present_ns, perf_full, perf_rects;
+/* ---- and whether a frame was a PICTURE ------------------------------------
+ *
+ * `torn` is the number of times the compositor has blitted a window whose
+ * canvas was half drawn -- the defect itself, as a number. It is counted
+ * whether or not the guard is compiled in, so the negative control reports the
+ * same quantity as the fix does.
+ *
+ * The other three are what keep "torn == 0" from being uninterpretable:
+ *   defer    rectangles the guard held back. Were this 0 while torn is 0, the
+ *            guard would simply never have fired and the run would prove
+ *            nothing about it.
+ *   late     frames in which a deadline expired and the guard gave up. Nonzero
+ *            means an app is painting slower than WM_MIDFRAME_MAX_MS.
+ *   drawmax  the longest app frame seen, in ms -- the number the deadline has
+ *            to be larger than, measured on the machine rather than guessed. */
+static uint64_t perf_torn, perf_defer, perf_late, perf_drawmax;
 
 /* System light/dark theme. The kernel-drawn chrome (menu bar, dock, window
  * frames) reads this directly; ring-3 apps query it via SYS_UI_DARK and follow. */
@@ -630,6 +710,19 @@ static int resize_hit(int x, int y, int *edge)
     return -1;
 }
 
+/* Everything of an (cw x ch) canvas that is NOT the (copy_w x copy_h) corner
+ * carried over from the previous size: the strip to the right, and the band
+ * below. Flat, in the window background colour -- the app repaints on the
+ * event, so this is only ever seen for the frame or two in between. */
+static void fill_new_area(uint32_t *px, int cw, int ch, int copy_w, int copy_h)
+{
+    uint32_t fill = g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252);
+    for (int y = 0; y < copy_h; y++)
+        for (int x = copy_w; x < cw; x++) px[(long)y * cw + x] = fill;
+    for (int y = copy_h; y < ch; y++)
+        for (int x = 0; x < cw; x++) px[(long)y * cw + x] = fill;
+}
+
 /* Reallocate a window's canvas to match its frame, and tell the app.
  *
  * THE ORDER MATTERS AND IT IS THE ABI: the surface is replaced FIRST and
@@ -657,20 +750,72 @@ static void win_apply_size(struct win *w)
      * nothing to resize and nobody to tell. */
     if (!w->surf.px) return;
     if (w->surf.w == cw && w->surf.h == ch) return;
+
+    /* GROW THE ALLOCATION IN STEPS; RESHAPE INSIDE IT EVERY TIME.
+     *
+     * The first version freed the old canvas and allocated a new one on every
+     * apply. During a drag that is a differently-sized multi-megabyte request
+     * eight times a second, and no allocator reuses those: at 1920x1200 the
+     * kernel heap grew through seven 8 MiB extensions to 40 MiB inside a single
+     * two-second resize, with `[mm] low:` warnings the whole way down. The
+     * pixels were not leaked -- every block was freed -- but a heap that has to
+     * be 40 MiB to satisfy a sequence of 4 MiB requests has been fragmented,
+     * and fragmentation is the failure that looks like a leak.
+     *
+     * So the allocation is a CAPACITY, grown by half again when it is exceeded
+     * and never shrunk while the window lives, and the canvas is reshaped
+     * within it. A drag past the first few steps allocates nothing at all. The
+     * ceiling is the screen, because win_set_frame already clamps the frame to
+     * it, so the capacity cannot run away. */
     uint64_t px = (uint64_t)cw * (uint64_t)ch;
-    uint32_t *nb = (uint32_t *)kmalloc((size_t)(px * 4));
-    if (!nb) { serial_puts("[wm] resize: canvas alloc failed; stretching\n"); return; }
-    uint32_t fill = g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252);
-    int copy_w = w->surf.w < cw ? w->surf.w : cw;
-    int copy_h = w->surf.h < ch ? w->surf.h : ch;
-    for (int y = 0; y < ch; y++) {
-        uint32_t *dst = nb + (long)y * cw;
-        int keep = (y < copy_h) ? copy_w : 0;
-        for (int x = 0; x < keep; x++) dst[x] = w->surf.px[(long)y * w->surf.w + x];
-        for (int x = keep; x < cw; x++) dst[x] = fill;
+    if ((int64_t)px > (int64_t)w->surf_cap) {
+        uint64_t want = px + px / 2;
+        uint64_t ceil_px = (uint64_t)W * (uint64_t)H;
+        if (want > ceil_px) want = ceil_px;
+        if (want < px) want = px;
+        uint32_t *nb = (uint32_t *)kmalloc((size_t)(want * 4));
+        if (!nb) {
+            /* Not a failed resize: the frame keeps its new size and the
+             * compositor goes on stretching the canvas it has, which is what
+             * it does mid-drag anyway. Refusing here would make a window's
+             * geometry depend on heap pressure. */
+            serial_puts("[wm] resize: canvas alloc failed; stretching\n");
+            return;
+        }
+        int copy_w = w->surf.w < cw ? w->surf.w : cw;
+        int copy_h = w->surf.h < ch ? w->surf.h : ch;
+        for (int y = 0; y < copy_h; y++)
+            for (int x = 0; x < copy_w; x++)
+                nb[(long)y * cw + x] = w->surf.px[(long)y * w->surf.w + x];
+        kfree(w->surf.px);
+        w->surf.px = nb;
+        w->surf_cap = (int)want;
+        /* Everything outside the copied corner is whatever kmalloc last had in
+         * that block. Nobody will look at it -- the app repaints on the event
+         * -- but a window that flashes a stranger's heap for one frame is a
+         * worse bug than one that flashes grey. */
+        fill_new_area(w->surf.px, cw, ch, copy_w, copy_h);
+    } else {
+        /* Reshape in place. The row stride changes, so rows have to be walked
+         * in the direction that never overwrites a row not yet read: down when
+         * the stride grows (each row moves to a HIGHER offset), up when it
+         * shrinks. Getting the direction wrong does not fault -- it silently
+         * smears the top of the window over the rest of it. */
+        int copy_w = w->surf.w < cw ? w->surf.w : cw;
+        int copy_h = w->surf.h < ch ? w->surf.h : ch;
+        int ow = w->surf.w;
+        uint32_t *p = w->surf.px;
+        if (cw > ow) {
+            for (int y = copy_h - 1; y >= 0; y--)
+                for (int x = copy_w - 1; x >= 0; x--)
+                    p[(long)y * cw + x] = p[(long)y * ow + x];
+        } else if (cw < ow) {
+            for (int y = 0; y < copy_h; y++)
+                for (int x = 0; x < copy_w; x++)
+                    p[(long)y * cw + x] = p[(long)y * ow + x];
+        }
+        fill_new_area(p, cw, ch, copy_w, copy_h);
     }
-    kfree(w->surf.px);
-    w->surf.px = nb;
     w->surf.w = cw;
     w->surf.h = ch;
     /* A clip belonging to the old canvas cannot mean anything on the new one,
@@ -710,6 +855,7 @@ static void blit_content(struct win *w, int dx, int dy, int cw, int ch)
     /* THE DEFECT, COUNTED -- here, at the blit, rather than where the fix is,
      * so the measurement is the same instrument in both builds. Every path that
      * puts an app's canvas on screen goes through this function. */
+    if (w->drawing) perf_torn++;
     if (w->surf.w == cw && w->surf.h == ch) fb_blit_surface(dx, dy, &w->surf);
     else fb_blit_surface_scaled(dx, dy, cw, ch, &w->surf);
 }
@@ -867,12 +1013,41 @@ void wm_launch(const char *aex_file, const char *arg)
  * that can refuse -- and says why when it does.
  *
  * A registered extension still wins, so an app that claims a type keeps it. */
-static int opens_in_preview(const char *path)
+/* THERE IS NO PARTIAL READ IN THIS VFS, and that is why the head of the file
+ * arrives the expensive way. `vfs_read(path, buf, max)` means "read the WHOLE
+ * file if it fits": logitfs's inode_read() returns -1 when size > max rather
+ * than filling what it can (c/fs/logitfs.c). So the obvious form of this
+ * function --
+ *      unsigned char b[64]; int n = vfs_read(path, b, sizeof b);
+ * -- returns -1 for every file longer than 64 bytes, i.e. every real one, and
+ * the sniff silently answers "no" for everything. It did, for a day: every
+ * double-click landed in the Terminal, which is what a user sees as "MP4 will
+ * not open in Preview" and "WebM says there is no such format" (that message
+ * was the Terminal's).
+ *
+ * So: read the file, look at its first bytes, free it. Bounded by
+ * SNIFF_READ_MAX because this runs under the big lock on every double-click,
+ * and above that bound the launcher falls back to the file's NAME. That
+ * fallback is the honest shape of the compromise -- sniff when we can afford
+ * to, and when we cannot, believe the extension, which is what every other
+ * system does all the time. A partial-read primitive would remove the bound
+ * entirely and has been handed to the filesystem line. */
+#define SNIFF_READ_MAX (4u << 20)
+
+static int ext_opens_in_preview(const char *ext)
 {
-    unsigned char b[64];
-    int n = vfs_read(path, b, (int)sizeof b);
-    if (n <= 0) return 0;
-    switch (sniff_id(b, n)) {
+    static const char *k[] = {
+        "png", "apng", "gif", "jpg", "jpeg", "bmp", "dib", "ico", "cur",
+        "webp", "svg", "h264", "264", "h265", "265", "hevc", "mp4", "m4v",
+        "mov", "m4a", "mkv", "webm", "mka", "wav", "flac", "mp3", "aac", 0
+    };
+    for (int i = 0; k[i]; i++) if (streq(k[i], ext)) return 1;
+    return 0;
+}
+
+static int sniff_opens_in_preview(const unsigned char *b, int n)
+{
+    switch (sniff_id(b, n < SNIFF_PREFIX ? n : SNIFF_PREFIX)) {
     case SN_PNG: case SN_JPEG: case SN_GIF: case SN_BMP: case SN_SVG:
     case SN_WEBP: case SN_H264: case SN_H265: case SN_MP4: case SN_MKV:
     case SN_WAV: case SN_FLAC: case SN_MP3: case SN_OGG:
@@ -887,12 +1062,25 @@ static int opens_in_preview(const char *path)
     }
 }
 
+static int opens_in_preview(const char *path, const char *ext)
+{
+    int sz = vfs_size(path);
+    if (sz <= 0) return 0;
+    if ((unsigned)sz > SNIFF_READ_MAX) return ext_opens_in_preview(ext);
+    unsigned char *b = kmalloc((unsigned)sz);
+    if (!b) return ext_opens_in_preview(ext);
+    int n = vfs_read(path, b, sz);
+    int yes = n > 0 ? sniff_opens_in_preview(b, n) : ext_opens_in_preview(ext);
+    kfree(b);
+    return yes;
+}
+
 static void launch_for_ext(const char *ext, const char *file)
 {
     for (int i = 0; i < nreg; i++)
         if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
     /* Anything Preview can decode opens in Preview, decided by content. */
-    if (opens_in_preview(file)) { wm_launch("preview.aex", file); return; }
+    if (opens_in_preview(file, ext)) { wm_launch("preview.aex", file); return; }
     /* No registered handler -> open it in the Terminal (it runs `as <file>` for
      * .as scripts, else `cat`). Beats the old "no app handles that file type". */
     wm_launch("terminal.aex", file);
@@ -994,6 +1182,24 @@ static struct app *cur_app(void)
     return p ? (struct app *)p->gui : NULL;
 }
 
+/* Does this syscall put pixels into the app's canvas?
+ *
+ * One list, in one place, rather than a line added to each of the nine cases:
+ * the flag is set by the FIRST such call in a frame, and a tenth drawing call
+ * gets added here. SYS_GUI_CLIP is deliberately absent -- it writes no pixels,
+ * and aui_begin issues it immediately before gui_clear, so counting it would
+ * start the frame one call early for nothing. */
+static int is_draw_call(long num)
+{
+    switch (num) {
+    case SYS_GUI_CLEAR: case SYS_GUI_RECT: case SYS_GUI_RRECT:
+    case SYS_GUI_TEXT:  case SYS_GUI_TEXT_MONO: case SYS_GUI_ICON:
+    case SYS_GUI_GLASS: case SYS_GUI_TEXT_RUN:  case SYS_GUI_BLIT:
+        return 1;
+    }
+    return 0;
+}
+
 long wm_gui_syscall(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
@@ -1021,6 +1227,26 @@ long wm_gui_syscall(long num, long a, long b, long c)
         scopy(ap->name, p->name, sizeof ap->name);
         ap->arg[0] = 0;
         p->gui = ap;
+    }
+
+    /* The frame boundary, observed from the kernel side. This runs before the
+     * switch and for EVERY call, so a window is marked mid-draw by whatever the
+     * app happens to draw first: there is no ordering an app has to obey and no
+     * ABI for it to get wrong. */
+    {
+        struct win *dw = app_window(ap);
+        if (dw) {
+            if (num == SYS_GUI_FLUSH) {
+                if (dw->drawing) {
+                    uint64_t d = time_mono_ms() - dw->draw_t0;
+                    if (d > perf_drawmax) perf_drawmax = d;
+                }
+                dw->drawing = 0;
+            } else if (is_draw_call(num) && !dw->drawing) {
+                dw->drawing = 1;
+                dw->draw_t0 = time_mono_ms();
+            }
+        }
     }
 
     switch (num) {
@@ -1059,7 +1285,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->surf.clip_on = 0;             /* fresh canvas: a reused slot must not inherit a clip */
         w->surf.px = kmalloc((size_t)(pxcount * 4));
         if (!w->surf.px) { w->used = 0; return -1; }
+        w->surf_cap = (int)pxcount;      /* the canvas grows in steps from here */
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
+        w->drawing = 0; w->draw_t0 = 0;   /* a fresh canvas is a finished picture */
         evq_reset(&w->ev); w->wants_close = 0;
         /* A REUSED SLOT MUST NOT INHERIT the previous tenant's window state.
          * `used` guards the readers, but zoomed/minimized/min_* are read the
@@ -1498,6 +1726,7 @@ static void reap(void)
                  * invariant local to the code that ends the surface's life. */
                 wins[wi].surf.px = 0;
                 wins[wi].surf.w = wins[wi].surf.h = 0;
+                wins[wi].surf_cap = 0;   /* ...and the capacity that block held */
                 wins[wi].used = 0;
                 remove_win(wi);
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
@@ -2152,6 +2381,36 @@ static int dmg_expand(struct drect *r, int n)
     return grew ? -1 : n;
 }
 
+/* Does this rectangle contain any part of a window that is HALF DRAWN?
+ *
+ * If it does, compositing it here and now would put an erased or partly
+ * repainted window on the display. The honest answer is not to draw the
+ * rectangle at all: `back` still holds the last complete composite of it, and a
+ * rectangle that is not composited is not presented either, so the display
+ * keeps the picture it already has until the app flushes.
+ *
+ * A minimized window is skipped for the same reason render_region skips it --
+ * its canvas is not on screen, so it cannot tear.
+ *
+ * `*late` is set when a window is over its deadline and is being let through
+ * anyway. It is an OUT-PARAMETER rather than a counter bumped in here because
+ * this runs once per damage rectangle per frame: counting inside would report
+ * how often the question was ASKED, which is a number nobody can act on. */
+#if WM_MIDFRAME_GUARD
+static int rect_blocked(const struct drect *R, uint64_t now, int *late)
+{
+    for (int i = 0; i < norder; i++) {
+        struct win *w = &wins[order[i]];
+        if (!w->used || w->minimized || !w->drawing || !w->surf.px) continue;
+        struct drect b; win_box(w, &b);
+        if (!rect_hit(&b, R)) continue;
+        if (now - w->draw_t0 >= WM_MIDFRAME_MAX_MS) { *late = 1; continue; }
+        return 1;
+    }
+    return 0;
+}
+#endif
+
 /* Composite ONE damage rectangle: wallpaper, every window that reaches into it,
  * the frosted chrome that overlaps it, and (without a cursor plane) the arrow --
  * all clipped to it -- then push exactly that rectangle to the display.
@@ -2251,8 +2510,33 @@ void wm_render(void)
 
     uint64_t t_start = time_mono_ns();
     int animating = 0;
-    for (int k = 0; k < nr; k++) animating |= render_region(&r[k]);
+#if WM_MIDFRAME_GUARD
+    struct drect defer[NDMG];
+    int ndef = 0, late = 0;
+    uint64_t now_ms = time_mono_ms();
+#endif
+    for (int k = 0; k < nr; k++) {
+#if WM_MIDFRAME_GUARD
+        if (rect_blocked(&r[k], now_ms, &late)) {
+            defer[ndef++] = r[k];
+            perf_defer++;
+            continue;
+        }
+#endif
+        animating |= render_region(&r[k]);
+    }
     if (animating) dirty_full();           /* keep compositing until the pop settles */
+#if WM_MIDFRAME_GUARD
+    if (late) perf_late++;
+    /* Put the held-back rectangles back on the list AFTER the frame, never
+     * before: DROPPING DAMAGE IS HOW STALE PIXELS HAPPEN, and this path obeys
+     * that rule exactly as hard as every other caller in this file. It re-arms
+     * `dirty`, so the WM loop comes straight back -- on the next timer tick at
+     * the latest -- by which time the app has usually flushed. */
+    for (int i = 0; i < ndef; i++)
+        dirty_rect(defer[i].x0, defer[i].y0,
+                   defer[i].x1 - defer[i].x0, defer[i].y1 - defer[i].y0);
+#endif
 
     uint64_t dt = time_mono_ns() - t_start;
     perf_composites++;
@@ -2792,6 +3076,22 @@ void wm_init(void)
                       : "composited into the frame (no cursor plane)");
 
     scan_apps();
+    /* The dock's contents, in the order they are drawn.
+     *
+     * The dock is CENTRED, so adding one app moves every icon half a slot and
+     * every hard-coded coordinate in every QMP driver lands on the wallpaper --
+     * which does nothing at all and looks exactly like the app failing to open.
+     * tests/qmp/qmp_ui.py warns about this in a comment and then carries the
+     * app count as a constant, which went stale the day a settings app was
+     * packed (10 -> 11) and silently broke the dock coordinates of every driver
+     * in the tree.
+     *
+     * A constant that has to be maintained in step with the disk image is not a
+     * fact, it is a hope. This is the fact, from the thing that scanned the
+     * disk, and a driver that reads it cannot rot. */
+    kprintf("[wm] dock %d apps:", nreg);
+    for (int i = 0; i < nreg; i++) kprintf(" %s", reg[i].file);
+    kprintf("\n");
 
     /* The Finder is now the ring-3 file-manager app, launched in wm_run(). */
     draw_background();          /* wallpaper -> bg; menu bar + dock are per-frame now */
@@ -2909,22 +3209,30 @@ static void wm_geom_report(void)
  * ran far above the idle 2 Hz floor. */
 static void wm_perf_report(void)
 {
-    static uint64_t next_ms, last_comp, last_mot;
+    static uint64_t next_ms, last_comp, last_mot, last_torn, last_def;
     uint64_t ms = time_mono_ms();
     if (ms < next_ms) return;
     next_ms = ms + 1000;
     uint64_t dc = perf_composites - last_comp, dm = perf_motions - last_mot;
     last_comp = perf_composites; last_mot = perf_motions;
-    if (dm == 0 && dc <= 20) return;                 /* idle: the clock strip only */
+    /* A torn frame or a held-back rectangle is activity too, and it is the
+     * activity this report exists for: the idle gate must not swallow the one
+     * line that says a window was composited half drawn. */
+    uint64_t dt_torn = perf_torn - last_torn, dt_def = perf_defer - last_def;
+    last_torn = perf_torn; last_def = perf_defer;
+    if (dm == 0 && dc <= 20 && dt_torn == 0 && dt_def == 0) return;   /* idle */
     kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu "
-            "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu\n",
+            "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu "
+            "torn=%lu defer=%lu late=%lu drawmax=%lu\n",
             (unsigned long)ms, (unsigned long)perf_composites,
             (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
             (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
             (unsigned long)perf_cursor_ns,
             (unsigned long)perf_full, (unsigned long)perf_rects,
             (unsigned long)perf_cpx, (unsigned long)fb_present_px(),
-            (unsigned long)perf_present_ns);
+            (unsigned long)perf_present_ns,
+            (unsigned long)perf_torn, (unsigned long)perf_defer,
+            (unsigned long)perf_late, (unsigned long)perf_drawmax);
 }
 
 void wm_run(void)
