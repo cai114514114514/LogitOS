@@ -40,9 +40,17 @@ struct cert {
 #define SIG_RSA_PSS_SHA256 7
 #define SIG_RSA_PSS_SHA384 8
 #define SIG_RSA_PSS_SHA512 9
+/* Ed25519 (RFC 8410). Unlike every entry above it, this one names no hash:
+ * PureEdDSA signs the message itself, so there is no digest to compute before
+ * verification and hash_tbs() must not be asked for one. */
+#define SIG_ED25519       10
 
 #define KEY_EC  1
 #define KEY_RSA 2
+/* An Ed25519 key is 32 raw bytes in `pub` with NO 0x04 prefix -- it is not a
+ * point encoding and must not be fed to the EC paths, which all assume the
+ * uncompressed-point framing. key_curve is 0. */
+#define KEY_ED25519 3
 
 /* Parse one DER certificate. Returns 0 on success. */
 int x509_parse(const uint8_t *der, int len, struct cert *out);

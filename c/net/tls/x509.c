@@ -55,6 +55,12 @@ static const uint8_t OID_RSA_ENC[]      = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x
 static const uint8_t OID_P256[]         = {0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07};
 static const uint8_t OID_P384[]         = {0x2b,0x81,0x04,0x00,0x22};
 static const uint8_t OID_P521[]         = {0x2b,0x81,0x04,0x00,0x23};   /* 1.3.132.0.35 */
+/* id-Ed25519, RFC 8410 3. It is BOTH the SPKI algorithm and the signature
+ * algorithm -- there is no separate "ed25519WithSHA512" OID, because the hash
+ * is part of the scheme rather than a parameter of it. The AlgorithmIdentifier
+ * MUST carry no parameters (RFC 8410 3), and a parameters field present is a
+ * reason to refuse rather than to ignore. */
+static const uint8_t OID_ED25519[]      = {0x2b,0x65,0x70};             /* 1.3.101.112 */
 
 /* Bytes in one coordinate of `curve`. This is ceil(bits/8), NOT bits/8: P-521
  * is the one curve where they differ (66 vs 65) and every buffer size, every
@@ -188,6 +194,18 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
           if (bl < 2 || bs[0] != 0) return X509_E_PARSE;         /* 0 unused bits */
           out->pub = bs + 1; out->publen = bl - 1;               /* 04||X||Y */
           out->spki_key = bs + 1; out->spki_keylen = bl - 1;
+      } else if (oid_eq(oc,ol,OID_ED25519,sizeof OID_ED25519)) {
+          /* RFC 8410 3: no parameters, and the BIT STRING holds the 32-byte
+           * public key raw -- no 0x04, no curve OID, nothing else. `alg` must
+           * therefore be exhausted; a parameters field here means the encoder
+           * and we disagree about the algorithm, so refuse. */
+          if (alg.p != alg.end) return X509_E_PARSE;
+          out->key_type = KEY_ED25519;
+          out->key_curve = 0;
+          const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE;
+          if (bl != 33 || bs[0] != 0) return X509_E_PARSE;       /* 0 unused bits + 32 */
+          out->pub = bs + 1; out->publen = 32;
+          out->spki_key = bs + 1; out->spki_keylen = 32;
       } else if (oid_eq(oc,ol,OID_RSA_ENC,sizeof OID_RSA_ENC)) {
           out->key_type = KEY_RSA;
           const uint8_t *bs; int bl; if (der_tlv(&spki,&g,&bs,&bl)) return X509_E_PARSE; /* BIT STRING */
@@ -274,6 +292,7 @@ int x509_parse(const uint8_t *der, int len, struct cert *out)
                      oid_eq(oc,ol,OID_RSA_SHA256,  sizeof OID_RSA_SHA256)   ? SIG_RSA_SHA256   :
                      oid_eq(oc,ol,OID_RSA_SHA384,  sizeof OID_RSA_SHA384)   ? SIG_RSA_SHA384   :
                      oid_eq(oc,ol,OID_RSA_SHA512,  sizeof OID_RSA_SHA512)   ? SIG_RSA_SHA512   :
+                     oid_eq(oc,ol,OID_ED25519,     sizeof OID_ED25519)     ? SIG_ED25519     :
                      oid_eq(oc,ol,OID_RSA_PSS,     sizeof OID_RSA_PSS)      ? pss_sigalg(&sa)  : 0; }
     { int g; const uint8_t *bs; int bl; if (der_tlv(&cert,&g,&bs,&bl)) return X509_E_PARSE;  /* BIT STRING sig */
       if (bl < 1) return X509_E_PARSE;
@@ -302,7 +321,11 @@ int x509_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen)
     return 0;
 }
 
-/* Hash `child`'s tbs per its signature algorithm. Returns hlen (32/48/64) or 0. */
+/* Hash `child`'s tbs per its signature algorithm. Returns hlen (32/48/64) or 0.
+ * SIG_ED25519 deliberately returns 0: PureEdDSA takes the MESSAGE, not a
+ * digest, and verify_with_key handles it before ever calling this. A
+ * pre-hashed Ed25519 verification is Ed25519ph, a different algorithm with a
+ * different OID, and it would silently fail every real certificate. */
 static int hash_tbs(const struct cert *child, uint8_t hash[64])
 {
     switch (child->sig_alg) {
@@ -322,6 +345,30 @@ static int verify_with_key(const struct cert *child, int issuer_type, int issuer
                            const uint8_t *ec, int eclen,
                            const uint8_t *n, int nlen, const uint8_t *e, int elen)
 {
+    /* Ed25519 first, before any hashing. The algorithm and the key type have to
+     * agree in BOTH directions: an Ed25519 signature offered against an EC or
+     * RSA issuer, or an EC/RSA signature offered against an Ed25519 issuer, are
+     * each a way of pairing a verifier with a key it was not made for, and both
+     * are refused here rather than left to fail inside a primitive. */
+    if (child->sig_alg == SIG_ED25519) {
+        if (issuer_type != KEY_ED25519 || eclen != 32 || !ec) return 0;
+        if (child->siglen != 64) return 0;      /* RFC 8032: R||S, fixed width */
+#ifdef LOGIT_ED25519_BREAK_PREHASH
+        /* NEGATIVE CONTROL (test-ed25519-x509-control). Verify over SHA-512 of
+         * the tbs instead of the tbs itself -- i.e. treat Ed25519 like every
+         * other entry in this dispatch, all of which pre-hash. That is the one
+         * mistake this branch exists to avoid: it is Ed25519ph, a different
+         * algorithm with a different OID, and it produces a verifier that
+         * rejects every real certificate while looking entirely reasonable.
+         * Nothing else in the tree changes behaviour under this define. */
+        { uint8_t ph[64]; sha512(child->tbs, (size_t)child->tbslen, ph);
+          return ed25519_verify(child->sig, ph, 64, ec); }
+#else
+        return ed25519_verify(child->sig, child->tbs, (size_t)child->tbslen, ec);
+#endif
+    }
+    if (issuer_type == KEY_ED25519) return 0;
+
     uint8_t hash[64]; int hlen = hash_tbs(child, hash);
     if (!hlen) return 0;
     int sa = child->sig_alg;
@@ -347,9 +394,18 @@ static int verify_with_key(const struct cert *child, int issuer_type, int issuer
 
 int x509_verify_signed_by(const struct cert *child, const struct cert *issuer)
 {
-    const uint8_t *ec = (issuer->publen >= 1 && issuer->pub && issuer->pub[0] == 0x04)
-                        ? issuer->pub + 1 : issuer->pub;
-    int eclen = issuer->publen > 0 ? issuer->publen - 1 : 0;
+    /* An EC public key arrives as 0x04||X||Y and the prefix is stripped here.
+     * An Ed25519 key is 32 raw bytes and has no prefix -- stripping one would
+     * hand verify_with_key 31 bytes of key and a length that no longer matches,
+     * which fails as "bad signature" and points nowhere near the cause. */
+    const uint8_t *ec; int eclen;
+    if (issuer->key_type == KEY_ED25519) {
+        ec = issuer->pub; eclen = issuer->publen;
+    } else {
+        ec = (issuer->publen >= 1 && issuer->pub && issuer->pub[0] == 0x04)
+             ? issuer->pub + 1 : issuer->pub;
+        eclen = issuer->publen > 0 ? issuer->publen - 1 : 0;
+    }
     TLSPROF_BEGIN(tls_chain_sig);
     int ok = verify_with_key(child, issuer->key_type, issuer->key_curve, ec, eclen,
                              issuer->rsa_n, issuer->rsa_nlen, issuer->rsa_e, issuer->rsa_elen);
@@ -368,6 +424,8 @@ static int is_pinned_root(const struct cert *c)
         if (r->type == ROOT_EC && c->key_type == KEY_EC && r->curve == c->key_curve) {
             if (c->publen == 1 + r->eclen && c->pub[0] == 0x04 &&
                 memcmp(c->pub + 1, r->ec, r->eclen) == 0) return 1;
+        } else if (r->type == ROOT_ED25519 && c->key_type == KEY_ED25519) {
+            if (c->publen == r->eclen && memcmp(c->pub, r->ec, r->eclen) == 0) return 1;
         } else if (r->type == ROOT_RSA && c->key_type == KEY_RSA) {
             if (c->rsa_nlen == r->nlen && memcmp(c->rsa_n, r->n, r->nlen) == 0 &&
                 c->rsa_elen == r->elen && memcmp(c->rsa_e, r->e, r->elen) == 0) return 1;
@@ -384,10 +442,14 @@ static int signed_by_root(const struct cert *top)
     int sa = top->sig_alg;
     int rsa = (sa == SIG_RSA_SHA256 || sa == SIG_RSA_SHA384 || sa == SIG_RSA_SHA512 ||
                sa == SIG_RSA_PSS_SHA256 || sa == SIG_RSA_PSS_SHA384 || sa == SIG_RSA_PSS_SHA512);
+    int ed  = (sa == SIG_ED25519);
     int found = 0;
     for (int i = 0; i < logit_nroots && !found; i++) {
         const struct root_ca *r = &logit_roots[i];
-        if (rsa) {
+        if (ed) {
+            if (r->type != ROOT_ED25519) continue;
+            if (verify_with_key(top, KEY_ED25519, 0, r->ec, r->eclen, 0, 0, 0, 0)) found = 1;
+        } else if (rsa) {
             if (r->type != ROOT_RSA) continue;
             if (verify_with_key(top, KEY_RSA, 0, 0, 0, r->n, r->nlen, r->e, r->elen)) found = 1;
         } else {

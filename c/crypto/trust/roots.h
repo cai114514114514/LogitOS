@@ -10,6 +10,11 @@
  * keys. */
 #define ROOT_EC  1
 #define ROOT_RSA 2
+/* Ed25519 (RFC 8410). It reuses the `ec` / `eclen` fields for the 32-byte raw
+ * public key -- NOT because it is an EC point (it is not, and it carries no
+ * 0x04 prefix) but because adding a fourth pointer to every row to hold the
+ * same thing under another name buys nothing. `curve` is 0. */
+#define ROOT_ED25519 3
 
 struct root_ca {
     int type;                       /* ROOT_EC / ROOT_RSA */
@@ -23,7 +28,8 @@ extern const struct root_ca logit_roots[];
 extern const int logit_nroots;
 
 /* Roots that exist as PEMs in tools/roots/ but were NOT compiled in, because
- * their key type is one this kernel cannot verify (P-521, Ed25519, ...). Each
+ * their key type is one this kernel cannot verify (Ed448, and anything not
+ * in the ROOT_* list above). Each
  * entry is "slug: reason"; the array is 0-terminated and logit_nroots_skipped
  * is the count. This is deliberately visible rather than a generator-time
  * aside: a silently dropped root makes the trust store smaller than its own

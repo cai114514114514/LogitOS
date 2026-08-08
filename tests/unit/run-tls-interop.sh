@@ -66,6 +66,20 @@ mkleaf() {   # mkleaf <name> <keytype: ec|rsa|ec521> <cn> <ca> [extra-SAN-dns]
         -CAcreateserial -days 3 $md -extfile "$TMP/$nm.ext" -out "$TMP/$nm.pem" 2>/dev/null
 }
 
+# An Ed25519 root. This is how Ed25519 realistically enters a PKI -- as the
+# ANCHOR over conventional leaves -- and it is exactly the path the x509.c work
+# added: the chain signature is Ed25519, the CertificateVerify is not. We do
+# not advertise ed25519 (0x0807) in signature_algorithms, so no server can
+# choose it for CertificateVerify and the "advertised but unimplemented" trap
+# the P-521 comment warns about is not reopened here.
+mked25519ca() {  # mked25519ca <name> <cn>
+    "$OPENSSL" genpkey -algorithm ED25519 -out "$TMP/$1.key" 2>/dev/null
+    "$OPENSSL" req -x509 -new -key "$TMP/$1.key" -days 3 -subj "/CN=$2" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -out "$TMP/$1.pem" 2>/dev/null
+}
+
 mkca ca    "LogitOS Interop Test CA"
 mkca rogue "LogitOS Rogue CA (never trusted)"
 cp "$TMP/ca.pem" "$TMP/roots/interop_ca.pem"      # only this one becomes an anchor
@@ -82,6 +96,15 @@ mkleaf multi ec  localhost              ca   alt.localhost
 mkca   ca521 "LogitOS Interop P-521 CA" secp521r1
 cp "$TMP/ca521.pem" "$TMP/roots/interop_ca521.pem"
 mkleaf p521 ec521 localhost             ca521
+
+# Ed25519 anchors: one trusted, one deliberately not. The second is what turns
+# "the signature verified" into "the signature verified AND we hold the key" --
+# without it, a chain that merely parses would look like a pass.
+mked25519ca ed25519ca  "LogitOS Interop Ed25519 CA"
+mked25519ca ed25519bad "LogitOS Rogue Ed25519 CA (never trusted)"
+cp "$TMP/ed25519ca.pem" "$TMP/roots/interop_ed25519_ca.pem"
+mkleaf edleaf    ec localhost ed25519ca
+mkleaf edleafbad ec localhost ed25519bad
 
 # --- OCSP staples about the `ec` leaf, from a real `openssl ocsp` responder --
 # Two of them: one saying good, one saying revoked. The revoked one is the
@@ -295,6 +318,47 @@ echo
 # found in the CertificateEntry extension where TLS 1.3 puts it, and that its
 # verdict reaches the handshake result. Without the second case the first one
 # passes on a client that ignores the staple completely.
+# --- Ed25519 chain signatures ----------------------------------------------
+# The reachability proof for the x509.c Ed25519 path. Both cases send the
+# Ed25519 CA in-band AND hold it as an anchor, so the chain exercises
+# x509_verify_signed_by (leaf signed by the Ed25519 CA) and the root match.
+SECTION="ed25519"
+echo "-- Ed25519 chain signatures --"
+# shellcheck disable=SC2086
+case_run "Ed25519 CA over an EC leaf"        0 "$TMP/edleaf.pem" "$TMP/edleaf.key" \
+         -cert_chain "$TMP/ed25519ca.pem" -groups X25519 --
+# shellcheck disable=SC2086
+case_run "Ed25519 CA over an EC leaf, TLS 1.3 (repeat under HRR)" 1 "$TMP/edleaf.pem" "$TMP/edleaf.key" \
+         -cert_chain "$TMP/ed25519ca.pem" -groups P-256 --
+# The same anchor over TLS 1.2. The chain check is the one thing the two
+# protocol versions genuinely share, and it is worth showing that the new key
+# type reaches it from both.
+SRV_VER="-tls1_2"
+# shellcheck disable=SC2086
+case_run "Ed25519 CA over an EC leaf, TLS 1.2" 0 "$TMP/edleaf.pem" "$TMP/edleaf.key" \
+         -cert_chain "$TMP/ed25519ca.pem" -groups X25519 --
+SRV_VER="-tls1_3"
+# An Ed25519 signature that verifies perfectly under a key we do not hold.
+# shellcheck disable=SC2086
+case_run "Ed25519 rejects an untrusted anchor" 0 "$TMP/edleafbad.pem" "$TMP/edleafbad.key" \
+         -cert_chain "$TMP/ed25519bad.pem" -groups X25519 -- --expect-fail
+
+# --- TLS_AES_256_GCM_SHA384 -------------------------------------------------
+# The whole risk of this suite is a 32 written where a hash length should have
+# been derived, and every such mistake surfaces as a Finished MAC failure. So
+# the case is simply: pin the server to it and complete a handshake.
+SECTION="gcm256"
+echo "-- TLS_AES_256_GCM_SHA384 --"
+# shellcheck disable=SC2086
+case_run "AES-256-GCM-SHA384"               0 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN \
+         -groups X25519 -ciphersuites TLS_AES_256_GCM_SHA384 --
+# shellcheck disable=SC2086
+case_run "AES-256-GCM-SHA384 via HRR"       1 "$TMP/ec.pem" "$TMP/ec.key" $CHAIN \
+         -groups P-384 -ciphersuites TLS_AES_256_GCM_SHA384 --
+# shellcheck disable=SC2086
+case_run "AES-256-GCM-SHA384, RSA leaf"     0 "$TMP/rsa.pem" "$TMP/rsa.key" $CHAIN \
+         -groups X25519 -ciphersuites TLS_AES_256_GCM_SHA384 --
+
 SECTION="ocsp"
 echo "-- OCSP stapling --"
 if [ "$HAVE_STAPLE" = 1 ]; then

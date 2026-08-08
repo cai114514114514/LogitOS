@@ -23,7 +23,18 @@
  * TLS 1.3 (RFC 8446): the AEAD and the hash, nothing else -- key exchange and
  * authentication are negotiated separately. */
 #define TLS_AES_128_GCM_SHA256       0x1301
+#define TLS_AES_256_GCM_SHA384       0x1302
 #define TLS_CHACHA20_POLY1305_SHA256 0x1303
+
+/* The transcript/HKDF hash a TLS 1.3 suite names, in bytes. This is the ONE
+ * place the mapping lives, because 0x1302 is the first 1.3 suite here that is
+ * not SHA-256 and the whole risk of adding it is a 32 written somewhere it
+ * should have been derived. A key length, a Finished length, an
+ * HKDF-Expand-Label output width or a transcript hash left at 32 does not fail
+ * where it is wrong -- it fails at the server's Finished MAC, which points at
+ * the key schedule in general and at nothing in particular. */
+static inline int tls13_suite_hash(int suite)
+{ return suite == TLS_AES_256_GCM_SHA384 ? 48 : 32; }
 
 /* TLS 1.2 (RFC 5289 / RFC 7905). ECDHE only, AEAD only.
  *
@@ -150,8 +161,12 @@ struct aead {
  * because the handshake is steppable -- it returns to the caller between
  * flights. Wiped the moment the application traffic keys are derived. */
 struct hs_secrets {
-    uint8_t hs[32];                          /* handshake secret */
-    uint8_t c_hs[32], s_hs[32];              /* client/server handshake traffic */
+    /* 48, not HLEN: TLS_AES_256_GCM_SHA384 runs the same schedule at SHA-384
+     * width. Every one of these holds exactly s->hashlen bytes; the extra 16
+     * are unused under a SHA-256 suite and are the price of one buffer size
+     * instead of two code paths. */
+    uint8_t hs[48];                          /* handshake secret */
+    uint8_t c_hs[48], s_hs[48];              /* client/server handshake traffic */
 };
 
 enum {
@@ -221,7 +236,10 @@ struct tls_sess {
     uint8_t  psk_id[TICKET_BLOB_MAX]; int psk_idlen;
     uint32_t psk_age_add;                    /* obfuscation addend, from the ticket */
     uint64_t psk_issued_ms;                  /* timer_ms() when it was received */
-    uint8_t res_master[HLEN];                /* resumption_master_secret, once derived */
+    uint8_t res_master[48];                  /* resumption_master_secret, once derived.
+                                              * 48 for the same reason hs_secrets is;
+                                              * only the SHA-256 case is ever STORED,
+                                              * see tls_psk_store. */
     int     res_valid;                       /* res_master holds a real secret */
 
     /* --- TLS 1.2 --- */

@@ -204,18 +204,32 @@ static int aead_open(struct aead *a, const uint8_t *body, int blen,
 /* --- key schedule helpers --- */
 /* Labels are all <=12-char literals and ctx is a 32-byte hash (or NULL), so
  * hkdf_expand_label()'s bounds are always satisfied and it cannot fail here. */
-static void derive_secret(const uint8_t *secret, const char *label,
+static void derive_secret(int hl, const uint8_t *secret, const char *label,
                           const uint8_t *thash, uint8_t *out)
-{ hkdf_expand_label(HLEN, secret, label, thash, HLEN, out, HLEN); }
+{ hkdf_expand_label(hl, secret, label, thash, hl, out, hl); }
+
+/* The empty-transcript hash the key schedule uses as `context` for the two
+ * "derived" steps. Hash-dependent, and a SHA-256 one under a SHA-384 suite is
+ * both the wrong value and the wrong length. */
+static void empty_hash(int hl, uint8_t *out)
+{ if (hl == 48) sha384("", 0, out); else sha256("", 0, out); }
 
 static void traffic_keys(const uint8_t *secret, int suite, struct aead *a)
 {
-    a->alg = (suite == TLS_CHACHA20_POLY1305_SHA256) ? AEAD_CHACHA20 : AEAD_AES_128_GCM;
-    a->keylen = (suite == TLS_CHACHA20_POLY1305_SHA256) ? 32 : 16;
+    /* Three independent things the suite decides, and they do not move
+     * together: 0x1302 is a 32-byte key like ChaCha20 but a SHA-384 schedule
+     * unlike it, and a 12-byte IV like both. Deriving each from the suite
+     * rather than from one another is what keeps that from becoming a table
+     * with a wrong row. */
+    int hl = tls13_suite_hash(suite);
+    a->alg = (suite == TLS_CHACHA20_POLY1305_SHA256) ? AEAD_CHACHA20
+           : (suite == TLS_AES_256_GCM_SHA384)       ? AEAD_AES_256_GCM
+                                                     : AEAD_AES_128_GCM;
+    a->keylen = (a->alg == AEAD_AES_128_GCM) ? 16 : 32;
     a->ivlen = 12;
     a->explicit_nonce = 0;                   /* TLS 1.3 has no explicit nonce */
-    hkdf_expand_label(HLEN, secret, "key", 0, 0, a->key, a->keylen);
-    hkdf_expand_label(HLEN, secret, "iv", 0, 0, a->iv, 12);
+    hkdf_expand_label(hl, secret, "key", 0, 0, a->key, a->keylen);
+    hkdf_expand_label(hl, secret, "iv", 0, 0, a->iv, 12);
     a->seq = 0;
 }
 
@@ -375,9 +389,13 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
      * because our AES is a byte-at-a-time software S-box while ChaCha20 is
      * add-rotate-xor; on this CPU-emulated target that difference is real.
      * See tls_int.h for why there is no static-RSA or CBC suite here. */
-    n += put_u16(ch + n, 16);
+    n += put_u16(ch + n, 18);
     n += put_u16(ch + n, TLS_AES_128_GCM_SHA256);
     n += put_u16(ch + n, TLS_CHACHA20_POLY1305_SHA256);
+    /* AES-256-GCM-SHA384 last of the three 1.3 suites, so what we negotiate by
+     * default does not change: it is here because some servers PREFER it and
+     * a client that never offers it takes whatever else they will accept. */
+    n += put_u16(ch + n, TLS_AES_256_GCM_SHA384);
     n += put_u16(ch + n, TLS_ECDHE_ECDSA_CHACHA20_SHA256);
     n += put_u16(ch + n, TLS_ECDHE_RSA_CHACHA20_SHA256);
     n += put_u16(ch + n, TLS_ECDHE_ECDSA_AES128_GCM_SHA256);
@@ -734,7 +752,8 @@ static int step_recv_sh(struct tls_sess *s)
             kprintf("[tls] HRR asked for group 0x%x (unusable) -- aborting\n", grp);
             return fail(s, TLS_E_PROTO);
         }
-        if (sh.suite != TLS_AES_128_GCM_SHA256 && sh.suite != TLS_CHACHA20_POLY1305_SHA256)
+        if (sh.suite != TLS_AES_128_GCM_SHA256 && sh.suite != TLS_CHACHA20_POLY1305_SHA256 &&
+            sh.suite != TLS_AES_256_GCM_SHA384)
             return fail(s, TLS_E_PROTO);
         kprintf("[tls] HelloRetryRequest: %s -> %s\n", group_name(s->group), group_name(grp));
         s->hrr_seen = 1;
@@ -807,8 +826,13 @@ static int step_recv_sh(struct tls_sess *s)
     int suite = sh.suite, splen = sh.splen;
     const uint8_t *spub = sh.spub;
     if (!spub || splen < 1) return fail(s, TLS_E_PROTO);
-    if (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256)
+    if (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256 &&
+        suite != TLS_AES_256_GCM_SHA384)
         return fail(s, TLS_E_PROTO);
+    /* BEFORE the key schedule and before tls_th_hash is called for the first
+     * time. Both transcripts have been running since the first ClientHello
+     * byte; this is what selects which one is the handshake's. */
+    s->hashlen = tls13_suite_hash(suite);
 
     /* --- did the server take our ticket? (RFC 8446 4.2.11) ---
      * Three cases, and only the first two are legal:
@@ -830,9 +854,13 @@ static int step_recv_sh(struct tls_sess *s)
          * this can only trip on a server confusing itself -- but the failure it
          * would otherwise cause (a Finished MAC mismatch 300 lines later) is
          * not one anybody would trace back to here. */
-        if (s->psk_suite != suite &&
-            !(s->psk_suite == TLS_AES_128_GCM_SHA256 ||
-              s->psk_suite == TLS_CHACHA20_POLY1305_SHA256)) {
+        /* Now a real comparison rather than a list of the two suites that
+         * happened to share a hash. The binder we sent is an HMAC at the
+         * TICKET's hash length, so a server selecting a suite with a different
+         * hash has already invalidated it -- and only SHA-256 tickets are ever
+         * stored (tls_psk_store refuses the rest), so a 0x1302 selection
+         * against an offered PSK lands here. */
+        if (tls13_suite_hash(s->psk_suite) != tls13_suite_hash(suite)) {
             kprintf("[tls] resumption suite mismatch -- aborting\n");
             return fail(s, TLS_E_PROTO);
         }
@@ -863,21 +891,32 @@ static int step_recv_sh(struct tls_sess *s)
         return fail(s, TLS_E_CRYPTO);
     }
     TLSPROF_BEGIN(tls_sched13);
-    uint8_t zeros[32]; memset(zeros, 0, 32);
-    uint8_t early[32], derived[32], emptyhash[32];
+#ifdef LOGIT_TLS13_BREAK_HASH32
+    /* NEGATIVE CONTROL (test-gcm256-control). Pin the key schedule at SHA-256
+     * width regardless of the suite -- the single most likely way to get
+     * TLS_AES_256_GCM_SHA384 wrong, and the reason tls13_suite_hash() exists.
+     * It is invisible to every AES-128 and ChaCha20 case (for those, 32 IS the
+     * answer); only a SHA-384 handshake notices, and it notices at the server's
+     * Finished MAC rather than anywhere near here. */
+    const int hl = 32;
+#else
+    const int hl = s->hashlen;
+#endif
+    uint8_t zeros[48]; memset(zeros, 0, sizeof zeros);
+    uint8_t early[48], derived[48], emptyhash[48];
     /* The early secret is the ONLY place resumption changes the key schedule:
      * HKDF-Extract over the PSK instead of over zeros (RFC 8446 7.1). Every
      * derivation below is byte-identical either way -- which is why a resumed
      * handshake that got this one line wrong fails at the server's Finished
      * MAC and nowhere earlier. */
-    if (s->psk_accepted) hkdf_extract(HLEN, 0, 0, s->psk, HLEN, early);
-    else                 hkdf_extract(HLEN, 0, 0, zeros, 32, early);
-    sha256("", 0, emptyhash);
-    derive_secret(early, "derived", emptyhash, derived);
-    hkdf_extract(HLEN, derived, HLEN, shared, sharedlen, s->sec.hs);
-    uint8_t th_chsh[32]; transcript_hash(&s->th, th_chsh);
-    derive_secret(s->sec.hs, "s hs traffic", th_chsh, s->sec.s_hs);
-    derive_secret(s->sec.hs, "c hs traffic", th_chsh, s->sec.c_hs);
+    if (s->psk_accepted) hkdf_extract(hl, 0, 0, s->psk, HLEN, early);
+    else                 hkdf_extract(hl, 0, 0, zeros, hl, early);
+    empty_hash(hl, emptyhash);
+    derive_secret(hl, early, "derived", emptyhash, derived);
+    hkdf_extract(hl, derived, hl, shared, sharedlen, s->sec.hs);
+    uint8_t th_chsh[48]; tls_th_hash(s, th_chsh);
+    derive_secret(hl, s->sec.hs, "s hs traffic", th_chsh, s->sec.s_hs);
+    derive_secret(hl, s->sec.hs, "c hs traffic", th_chsh, s->sec.c_hs);
     traffic_keys(s->sec.s_hs, suite, &s->cr);
     traffic_keys(s->sec.c_hs, suite, &s->cw);
     crypto_wipe(shared, sizeof shared);
@@ -885,8 +924,12 @@ static int step_recv_sh(struct tls_sess *s)
     crypto_wipe(derived, sizeof derived);
     TLSPROF_END(tls_sched13);
 
-    kprintf("[tls] ServerHello: TLS 1.3, suite 0x%x, group %s%s\n",
-            suite, group_name(s->group), s->hrr_seen ? " (after HRR)" : "");
+    kprintf("[tls] ServerHello: TLS 1.3, suite 0x%x (%s), group %s%s\n",
+            suite,
+            suite == TLS_AES_128_GCM_SHA256 ? "AES-128-GCM-SHA256"
+          : suite == TLS_AES_256_GCM_SHA384 ? "AES-256-GCM-SHA384"
+                                            : "CHACHA20-POLY1305-SHA256",
+            group_name(s->group), s->hrr_seen ? " (after HRR)" : "");
     s->state = TS_RECV_FLIGHT;
     /* Servers send the whole flight back-to-back, so EncryptedExtensions is
      * usually already in the buffer. Carry straight on instead of reporting
@@ -977,7 +1020,7 @@ static int verify_flight(struct tls_sess *s)
     const uint8_t *staple = 0; int staplelen = 0;
     /* Hash through Certificate. Zeroed so that a CertificateVerify arriving
      * before any Certificate fails verification rather than reading garbage. */
-    uint8_t th_cert[32] = { 0 };
+    uint8_t th_cert[48] = { 0 };
     const uint8_t *flight = s->hsbuf;
     int flen = s->hslen;
     int q = 0;
@@ -1055,7 +1098,7 @@ static int verify_flight(struct tls_sess *s)
                 cp += extl;
                 entry++;
             }
-            transcript_hash(&s->th, th_cert);
+            tls_th_hash(s, th_cert);
         } else if (mt == HS_CERT_VERIFY) {
             /* signature over 64*0x20 || "TLS 1.3, server CertificateVerify" || 0 || th_cert */
             if (ml < 4) return TLS_E_PROTO;
@@ -1063,12 +1106,12 @@ static int verify_flight(struct tls_sess *s)
             int siglen = (mb[2] << 8) | mb[3];
             if (4 + siglen > ml) return TLS_E_PROTO;
             const uint8_t *sig = mb + 4;
-            uint8_t signed_data[64 + 33 + 1 + 32]; int sd = 0;
+            uint8_t signed_data[64 + 33 + 1 + 48]; int sd = 0;
             for (int i = 0; i < 64; i++) signed_data[sd++] = 0x20;
             const char *ctx = "TLS 1.3, server CertificateVerify";
             for (int i = 0; ctx[i]; i++) signed_data[sd++] = (uint8_t)ctx[i];
             signed_data[sd++] = 0;
-            memcpy(signed_data + sd, th_cert, 32); sd += 32;
+            memcpy(signed_data + sd, th_cert, (size_t)s->hashlen); sd += s->hashlen;
             int okv = 0;
             TLSPROF_BEGIN(tls_certverify);
             /* ecdsa_secp521r1_sha512 (0x0603) is handled here because we OFFER
@@ -1111,11 +1154,12 @@ static int verify_flight(struct tls_sess *s)
             }
             tls_th_update(s, flight + q, 4 + ml);
         } else if (mt == HS_FINISHED) {
-            uint8_t th_cv[32]; transcript_hash(&s->th, th_cv);   /* through CertVerify */
-            uint8_t fk[32], expect[32];
-            hkdf_expand_label(HLEN, s->sec.s_hs, "finished", 0, 0, fk, 32);
-            hmac(HLEN, fk, 32, th_cv, 32, expect);
-            int bad = (ml != 32) || memcmp(expect, mb, 32) != 0;
+            const int hl = s->hashlen;
+            uint8_t th_cv[48]; tls_th_hash(s, th_cv);            /* through CertVerify */
+            uint8_t fk[48], expect[48];
+            hkdf_expand_label(hl, s->sec.s_hs, "finished", 0, 0, fk, hl);
+            hmac(hl, fk, hl, th_cv, hl, expect);
+            int bad = (ml != hl) || memcmp(expect, mb, (size_t)hl) != 0;
             crypto_wipe(fk, sizeof fk); crypto_wipe(expect, sizeof expect);
             if (bad) return TLS_E_CRYPTO;
             tls_th_update(s, flight + q, 4 + ml);
@@ -1198,13 +1242,14 @@ static int step_recv_flight(struct tls_sess *s)
     if (rc) return fail(s, rc);
 
     /* --- client Finished --- */
-    uint8_t th_full[32]; transcript_hash(&s->th, th_full);
-    uint8_t cfk[32], cverify[32];
-    hkdf_expand_label(HLEN, s->sec.c_hs, "finished", 0, 0, cfk, 32);
-    hmac(HLEN, cfk, 32, th_full, 32, cverify);
-    uint8_t fin[4 + 32];
-    fin[0] = HS_FINISHED; fin[1] = 0; fin[2] = 0; fin[3] = 32;
-    memcpy(fin + 4, cverify, 32);
+    const int hl = s->hashlen;
+    uint8_t th_full[48]; tls_th_hash(s, th_full);
+    uint8_t cfk[48], cverify[48];
+    hkdf_expand_label(hl, s->sec.c_hs, "finished", 0, 0, cfk, hl);
+    hmac(hl, cfk, hl, th_full, hl, cverify);
+    uint8_t fin[4 + 48]; int finlen = 4 + hl;
+    fin[0] = HS_FINISHED; fin[1] = 0; fin[2] = 0; fin[3] = (uint8_t)hl;
+    memcpy(fin + 4, cverify, (size_t)hl);
     crypto_wipe(cfk, sizeof cfk); crypto_wipe(cverify, sizeof cverify);
 
     if (!s->ccs_sent) {                                  /* RFC 8446 D.4, see step_send_ch */
@@ -1212,18 +1257,22 @@ static int step_recv_flight(struct tls_sess *s)
         if (tx_queue(s, REC_CCS, &ccs, 1)) return fail(s, TLS_E_PROTO);
         s->ccs_sent = 1;
     }
-    uint8_t finrec[64];
-    int frl = aead_seal(&s->cw, REC_HANDSHAKE, fin, (int)sizeof fin, finrec);
+    /* 96, not 64: a SHA-384 Finished is 52 bytes of handshake message and the
+     * sealed record adds the inner content type plus a 16-byte tag. At 64 the
+     * SHA-256 case fitted with 11 bytes to spare and the SHA-384 case would
+     * have overflowed a kernel stack buffer. */
+    uint8_t finrec[96];
+    int frl = aead_seal(&s->cw, REC_HANDSHAKE, fin, finlen, finrec);
     if (frl < 0 || tx_queue(s, REC_APPDATA, finrec, frl)) return fail(s, TLS_E_PROTO);
 
     /* --- application traffic secrets --- */
-    uint8_t emptyhash[32], derived2[32], master[32], c_ap[32], s_ap[32], zeros[32];
-    memset(zeros, 0, 32);
-    sha256("", 0, emptyhash);
-    derive_secret(s->sec.hs, "derived", emptyhash, derived2);
-    hkdf_extract(HLEN, derived2, HLEN, zeros, 32, master);
-    derive_secret(master, "c ap traffic", th_full, c_ap);
-    derive_secret(master, "s ap traffic", th_full, s_ap);
+    uint8_t emptyhash[48], derived2[48], master[48], c_ap[48], s_ap[48], zeros[48];
+    memset(zeros, 0, sizeof zeros);
+    empty_hash(hl, emptyhash);
+    derive_secret(hl, s->sec.hs, "derived", emptyhash, derived2);
+    hkdf_extract(hl, derived2, hl, zeros, hl, master);
+    derive_secret(hl, master, "c ap traffic", th_full, c_ap);
+    derive_secret(hl, master, "s ap traffic", th_full, s_ap);
     traffic_keys(c_ap, s->suite, &s->cw);
     traffic_keys(s_ap, s->suite, &s->cr);
 
@@ -1244,12 +1293,12 @@ static int step_recv_flight(struct tls_sess *s)
      * every existing test still passes; only the resumption assertions notice.
      * If the suite goes green with this defined, the resumption tests are not
      * testing resumption. */
-    tls_th_update(s, fin, (int)sizeof fin);
-    derive_secret(master, "res master", th_full, s->res_master);
+    tls_th_update(s, fin, finlen);
+    derive_secret(hl, master, "res master", th_full, s->res_master);
 #else
-    tls_th_update(s, fin, (int)sizeof fin);
-    uint8_t th_res[32]; transcript_hash(&s->th, th_res);
-    derive_secret(master, "res master", th_res, s->res_master);
+    tls_th_update(s, fin, finlen);
+    uint8_t th_res[48]; tls_th_hash(s, th_res);
+    derive_secret(hl, master, "res master", th_res, s->res_master);
 #endif
     s->res_valid = 1;
 

@@ -20,6 +20,10 @@ OID_EC  = bytes([0x2a,0x86,0x48,0xce,0x3d,0x02,0x01])
 OID_P256= bytes([0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07])
 OID_P384= bytes([0x2b,0x81,0x04,0x00,0x22])
 OID_P521= bytes([0x2b,0x81,0x04,0x00,0x23])     # 1.3.132.0.35, secp521r1
+OID_ED25519 = bytes([0x2b,0x65,0x70])           # 1.3.101.112, RFC 8410
+OID_ED448   = bytes([0x2b,0x65,0x71])           # 1.3.101.113 -- named so the
+                                                # skip message can say WHICH
+                                                # algorithm, not just "unknown"
 
 # Human-friendly order/labels (slug -> comment). Anything in tools/roots not
 # listed still gets emitted, labelled by filename.
@@ -93,14 +97,29 @@ def parse_root(der):
                  384 if curve_oid == OID_P384 else
                  521 if curve_oid == OID_P521 else 0)
         if curve == 0:
-            # Still the honest failure mode for anything we cannot verify --
-            # Ed25519 and Ed448 land here. The caller records the name in the
+            # The honest failure mode, and it is still doing real work. P-256,
+            # P-384 and P-521 are all verifiable now, so what lands here is a
+            # curve the kernel genuinely cannot check -- and the ONLY safe thing
+            # to do with a root whose signatures cannot be verified is to leave
+            # it out of the store and say so. The caller records the name in the
             # skip list, which is compiled in and printed by the kernel, so a
-            # dropped root is visible rather than a silent gap in the store.
+            # dropped root is visible rather than a silent gap.
             raise ValueError("unsupported EC curve %s" % curve_oid.hex())
         if bs[0] != 0x04:
             raise ValueError("EC point not uncompressed")
         return ("EC", curve, bs[1:])             # X||Y
+    elif oid == OID_ED25519:
+        # RFC 8410 3: no AlgorithmIdentifier parameters, and the BIT STRING is
+        # the 32-byte key raw -- no 0x04, no curve. Both are checked, because
+        # the failure mode of accepting 31 or 33 bytes is a root that is in the
+        # store and can never match anything.
+        if len(algkids) != 1:
+            raise ValueError("Ed25519 SPKI carries parameters (RFC 8410 forbids it)")
+        if len(bs) != 32:
+            raise ValueError("Ed25519 key is %d bytes, expected 32" % len(bs))
+        return ("ED25519", bs)
+    elif oid == OID_ED448:
+        raise ValueError("Ed448 (1.3.101.113) -- no verifier in this kernel")
     elif oid == OID_RSA:
         # bs = SEQ { INTEGER modulus, INTEGER exponent }
         _, vs, ve, _ = tlv(bs, 0)
@@ -161,9 +180,13 @@ def main():
         try:
             kind = parse_root(pem_to_der(p))
         except Exception as ex:
-            # Unsupported key (P-521 / Ed25519 / etc.) or malformed -- skip it
-            # rather than abort the whole bundle. The kernel only does RSA + EC
-            # P-256/P-384, so such a root could never verify a chain anyway.
+            # A key type this kernel cannot verify, or a malformed PEM: skip it
+            # rather than abort the whole bundle. What still lands here after
+            # the P-521 and Ed25519 work is Ed448 and anything unrecognised --
+            # and it MUST keep landing here. A root whose signatures nothing can
+            # check is not a weaker root, it is one that can never validate a
+            # chain, so emitting it would grow the store's advertised size
+            # without growing what it can actually trust.
             print(f"  SKIP {slug}: {ex}", file=sys.stderr)
             skipped.append((slug, str(ex)))
             continue
@@ -172,6 +195,13 @@ def main():
             arrays.append(carr(f"r{idx}_ec", pt))
             rows.append(f"    /* {label} */\n"
                         f"    {{ ROOT_EC, {curve}, r{idx}_ec, sizeof r{idx}_ec, 0, 0, 0, 0 }},")
+        elif kind[0] == "ED25519":
+            # Reuses the ec/eclen fields for the raw 32 bytes; curve stays 0.
+            # See the comment on ROOT_ED25519 in c/crypto/trust/roots.h.
+            _, pt = kind
+            arrays.append(carr(f"r{idx}_ed", pt))
+            rows.append(f"    /* {label} */\n"
+                        f"    {{ ROOT_ED25519, 0, r{idx}_ed, sizeof r{idx}_ed, 0, 0, 0, 0 }},")
         else:
             _, n, e = kind
             arrays.append(carr(f"r{idx}_n", n))
