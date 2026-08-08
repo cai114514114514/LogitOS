@@ -101,7 +101,9 @@ static const char *HTML =
 "#rel { position: relative; }\n"
 "@media (min-width: 50px) { #box { font-size: 20px; } }\n"
 "</style></head>\n"
-"<body id='b' onload=\"document.body.setAttribute('data-onload','ran')\">\n"
+"<body id='b' onload=\"document.body.setAttribute('data-onload','ran');\n"
+"  window.__thisWasWindow = (this === window);\n"
+"  window.__order = (window.__order || '') + 'body';\">\n"
 "<div id='box'>content</div>\n"
 "<div id='gone'>invisible</div>\n"
 "<div id='rel'><div id='kid' style='background:#00ff00;width:20px;height:8px'>k</div></div>\n"
@@ -114,19 +116,62 @@ static const char *HTML =
  * at all and timed out reporting nothing. */
 static void test_body_onload(void)
 {
-    printf("1. <body onload> is a window handler\n");
+    printf("1. <body onload> is a window handler, and a real IDL attribute\n");
     CK(eq("String(document.body.getAttribute('data-onload'))", "null"),
        "before the load event, the body's onload attribute has not run");
+
+    /* IT IS A PROPERTY, and that is not decoration. A handler ATTRIBUTE is an
+     * IDL attribute: readable, assignable, the same one under both names. The
+     * first version ran the attribute out of a window listener and published
+     * nothing, so window.onload read back null -- which is exactly what broke
+     * the chaining case below. */
+    CK(eq("typeof window.onload", "function"),
+       "window.onload reads back the compiled body attribute, not null");
+    CK(eq("document.body.onload === window.onload", "true"),
+       "document.body.onload is the SAME handler -- one attribute, two names");
+    CK(eq("String(window.onload).indexOf('data-onload') >= 0", "true"),
+       "and it stringifies to the attribute's own source");
+    CK(eq("String(window.onhashchange)", "null"),
+       "a Windows handler the body does NOT carry reads null, not undefined");
+
+    /* THE LEGACY CHAINING IDIOM, measured at ZERO executions before this.
+     *
+     * `var old = window.onload; window.onload = wrapper;` is everywhere on
+     * older sites. The old code bailed whenever it found a function in
+     * window.onload -- and the wrapper IS a function -- so the body's handler
+     * was silently dropped: no exception, no log, the page just did less. */
+    CK(evalstr("window.__chain = [];"
+               "var old = window.onload;"
+               "window.onload = function (e) {"
+               "  window.__order = (window.__order || '') + 'wrap';"
+               "  window.__chain.push('wrapper');"
+               "  if (old) old.call(this, e);"
+               "}; 1") != 0,
+       "a page can read the body handler out and wrap it");
+
     CK(evalstr("window.dispatchEvent(new Event('load')), 1") != 0,
        "window load dispatches");
+    CK(eq("window.__chain.join(',')", "wrapper"), "the wrapper ran");
     CK(eq("String(document.body.getAttribute('data-onload'))", "ran"),
-       "the body's onload= ran when the WINDOW got its load event");
+       "and the body's own handler ran THROUGH it -- chaining does not drop it");
+    CK(eq("window.__order", "wrapbody"),
+       "in that order: the wrapper is the handler, the body's is what it calls");
+
+    /* `this` is the Window. The body element is the obvious wrong answer, and
+     * it is the one the first version gave. */
+    CK(eq("String(window.__thisWasWindow)", "true"),
+       "`this` inside the handler is the Window, not the body element");
+
     /* Once, not twice. A second checkLayout() call is not a smaller bug than
-     * zero: WPT rejects a duplicate subtest name. */
+     * zero: WPT rejects a duplicate subtest name. See the guard's own comment
+     * in js_cssom.c for why it is still wider than it should be, and what it
+     * is waiting on. */
     CK(eq("(document.body.setAttribute('data-onload','x'),"
           " window.dispatchEvent(new Event('load')),"
           " document.body.getAttribute('data-onload'))", "x"),
        "and exactly once -- a second load event does not re-run it");
+    CK(eq("window.__chain.length", "2"),
+       "while the page's OWN wrapper is not once-guarded and runs again");
 }
 
 /* ------------------------------------------------------- 2. CSSOM-View */

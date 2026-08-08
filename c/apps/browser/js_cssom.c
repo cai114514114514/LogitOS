@@ -1284,37 +1284,144 @@ static JSValue doc_styleSheets(JSContext *ctx, JSValueConst t)
  * tests and timed out empty.
  *
  * It lives here rather than in js_dom.c because js_dom.c is another line's
- * file and this is purely additive: a window listener, registered at install
- * time (so before any page script's own), that pulls the attribute off the
- * body and runs it.
+ * file and this is purely additive.
  *
- * TWO GUARDS AGAINST DOUBLE-FIRING, because the DOM line may well implement
- * this properly later and two calls to checkLayout is not a smaller bug than
- * zero: it skips a type whose window handler is ALREADY a function (a real
- * implementation would have reflected it there), and it runs each type at most
- * once per page.
+ * NOTHING HERE KNOWS ABOUT checkLayout. The attribute is compiled with
+ * `new Function('event', src)` and there is no special case for the corpus
+ * anywhere in the path -- `<body onload="init()">` on an ordinary page runs
+ * exactly the same way. The checkLayout framing above is why the work was
+ * PRIORITISED, not what the code tests for; the events line confirmed that by
+ * measuring an ordinary page rather than by reading this comment, which is the
+ * right way round.
+ *
+ * IT IS A REAL IDL ATTRIBUTE, NOT A LISTENER IN DISGUISE. The first version
+ * ran the attribute from a window listener and never published it as
+ * `window.onload`, and that shortcut cost three things the events line
+ * measured on real-site shapes:
+ *
+ *   - `window.onload` and `document.body.onload` both read back null, when
+ *     the whole point of a handler ATTRIBUTE is that it is a property.
+ *   - `var old = window.onload; window.onload = wrapper;` -- the legacy
+ *     chaining idiom, which is everywhere on older sites -- dropped the body
+ *     handler entirely: the old code bailed when it saw a function in
+ *     window.onload, and the wrapper IS a function. Zero executions, no
+ *     exception, no log. Silently doing less is the worst failure available.
+ *   - `this` inside the handler was the body; the spec says the Window.
+ *
+ * So the handler is now HELD, window.on<type> and body.on<type> are accessors
+ * over the same slot (they are one attribute under two names), and a single
+ * delegating listener calls whatever is held at dispatch time. Assignment
+ * replaces, reading returns, chaining works because `old` is a real function.
+ * The "somebody else already reflects this" check survives, but only at
+ * install time -- before any page script has run, where a function can only be
+ * another implementation's and never the page's own wrapper.
+ *
+ * The once-per-page guard is unchanged and still too wide; see the comment on
+ * it inside the shim for what it is waiting on.
  */
 static const char *SHIM_BODY_HANDLERS =
-"(function(G){\n"
-"  var TYPES = ['load','unload','beforeunload','resize','scroll','error','blur',\n"
-"               'focus','hashchange','languagechange','message','offline','online',\n"
-"               'pagehide','pageshow','popstate','rejectionhandled','storage',\n"
-"               'unhandledrejection'];\n"
-"  var ran = Object.create(null);\n"
-"  TYPES.forEach(function (ty) {\n"
+"(function (G) {\n"
+/* HTML's Windows event handlers, all 22 of them. The first version had 19;
+ * afterprint/beforeprint/messageerror were missing, which the events line
+ * found by counting against the spec list rather than against this file. */
+"  var TYPES = ['load','unload','beforeunload','resize','scroll','error',\n"
+"               'blur','focus','hashchange','languagechange','message',\n"
+"               'messageerror','offline','online','pagehide','pageshow',\n"
+"               'popstate','rejectionhandled','storage','unhandledrejection',\n"
+"               'afterprint','beforeprint'];\n"
+"  var held  = Object.create(null);   /* ty -> the current handler, or null */\n"
+"  var owned = Object.create(null);   /* ty -> we took over window.on<ty>   */\n"
+"  var ran   = Object.create(null);   /* ty -> the handler has run          */\n"
+"\n"
+"  function body() { var d = G.document; return d && (d.body || d.documentElement); }\n"
+"\n"
+/* Take over window.on<ty> so it behaves like the IDL attribute it is:
+ * readable, assignable, and REPLACING rather than adding. Only ever called for
+ * a type the body actually carries an attribute for -- a type with nothing to
+ * reflect is left entirely alone, which keeps this out of js_dom.c's way for
+ * every on* property that is not a Windows event handler. */
+"  function own(ty) {\n"
+"    if (owned[ty]) return true;\n"
+"    var prev = null;\n"
+"    try { prev = G['on' + ty]; } catch (e) { prev = null; }\n"
+/* A function here, at INSTALL time, can only be another implementation's
+ * reflection: no page script has run yet. Leave theirs alone. (This check must
+ * NOT be applied at event time -- there a function is the page's own
+ * assignment, and bailing on it is what silently dropped the legacy
+ * `var old = window.onload; window.onload = wrapper` pattern.) */
+"    if (typeof prev === 'function') return false;\n"
+"    owned[ty] = true;\n"
+"    var desc = {\n"
+"      configurable: true,\n"
+"      get: function () { return held[ty] || null; },\n"
+"      set: function (v) { held[ty] = (typeof v === 'function') ? v : null; }\n"
+"    };\n"
+"    Object.defineProperty(G, 'on' + ty, desc);\n"
+/* The body's on<ty> IDL attribute IS the Window's -- same handler, two names.
+ * Reading document.body.onload had to answer something other than null, and
+ * aliasing is both what the spec says and the only way the two cannot drift. */
+"    var b = body();\n"
+"    if (b) { try { Object.defineProperty(b, 'on' + ty, desc); } catch (e) {} }\n"
+/* ONE delegating listener, registered once, that calls whatever is currently
+ * held. Registered here rather than re-registered on assignment so the
+ * handler keeps the position it was first set at, which is what the spec
+ * says and what decides ordering against a page's own addEventListener. */
 "    G.addEventListener(ty, function (ev) {\n"
+"      var h = held[ty];\n"
+"      if (typeof h === 'function') h.call(G, ev);\n"
+"    });\n"
+"    return true;\n"
+"  }\n"
+"\n"
+"  function reflect(ty) {\n"
+"    var b = body();\n"
+"    if (!b || !b.getAttribute) return false;\n"
+"    var src = b.getAttribute('on' + ty);\n"
+"    if (!src) return false;\n"
+"    var f;\n"
+"    try { f = new Function('event', src); }\n"
+"    catch (e) { return false; }\n"
+"    var handler = function (event) {\n"
+/* ===================================================================== *
+ * THE ONCE-PER-PAGE GUARD, and it is the ONLY place it lives.
+ *
+ * It is wrong for the repeating types -- <body onscroll=\"update()\"> runs
+ * once and the page then looks frozen -- and it is deliberately still here.
+ * tests/unit/wpt_test.c's fire() calls dispatchEvent AND target['on'+t]
+ * directly, and fires load at both document and globalThis while js_dom.c
+ * makes those one EventTarget: net 4 invocations per load in the corpus
+ * runner, against exactly 1 from browser.c. Narrowing this to the
+ * once-per-load types before that fire() is fixed would make the corpus
+ * numbers move for a reason that has nothing to do with this code.
+ *
+ * When it is fixed: delete these three lines. Nothing else changes.
+ * ===================================================================== */
 "      if (ran[ty]) return;\n"
-"      if (typeof G['on' + ty] === 'function') return;   /* someone reflected it */\n"
-"      var d = G.document;\n"
-"      var b = d && (d.body || d.documentElement);\n"
-"      if (!b || !b.getAttribute) return;\n"
-"      var src = b.getAttribute('on' + ty);\n"
-"      if (!src) return;\n"
 "      ran[ty] = true;\n"
-"      var f;\n"
-"      try { f = new Function('event', src); }\n"
-"      catch (e) { return; }\n"
-"      f.call(b, ev);\n"
+/* `this` is the WINDOW inside a Windows event handler, not the body. */
+"      return f.call(G, event);\n"
+"    };\n"
+"    handler.toString = function () {\n"
+"      return 'function on' + ty + '(event) {\n' + src + '\n}';\n"
+"    };\n"
+"    if (!own(ty)) return false;\n"
+"    held[ty] = handler;\n"
+"    return true;\n"
+"  }\n"
+"\n"
+"  TYPES.forEach(function (ty) {\n"
+/* The normal case: the body is parsed by the time this installs, so the
+ * handler is on the window BEFORE any page script runs -- which is what makes
+ * `window.onload` readable, replaceable and chainable at all. */
+"    reflect(ty);\n"
+/* The late case: a body (or the attribute) that arrived after install. Reflect
+ * at event time and invoke by hand -- a listener added during dispatch does
+ * not get called for the event that is dispatching. */
+"    G.addEventListener(ty, function (ev) {\n"
+"      if (owned[ty]) return;\n"
+"      if (!reflect(ty)) return;\n"
+"      var h = held[ty];\n"
+"      if (typeof h === 'function') h.call(G, ev);\n"
 "    });\n"
 "  });\n"
 "})(globalThis);\n";
@@ -1397,6 +1504,27 @@ static const char *SHIM_FONTS =
  * ========================================================================== */
 
 static int g_installed;
+
+/* Evaluate one shim and SAY SO if it throws.
+ *
+ * This used to swallow the exception. A shim that fails to install does not
+ * fail loudly -- the properties it was going to define simply are not there,
+ * and every symptom shows up somewhere else entirely: window.onload reads
+ * null, a body handler never runs, and the obvious suspect is the handler
+ * logic rather than a SyntaxError on line 40 of a C string literal. That cost
+ * a debugging session, so the swallow is gone. */
+static void run_shim(JSContext *ctx, const char *src, const char *name)
+{
+    JSValue r = JS_Eval(ctx, src, strlen(src), name, JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(r)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        printf("[cssom] %s failed to install: %s\n", name, m ? m : "?");
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, r);
+}
 
 static void def_getset(JSContext *ctx, JSValueConst proto, const char *name,
                        JSValue (*get)(JSContext *, JSValueConst, int),
@@ -1509,14 +1637,8 @@ void js_cssom_install(JSContext *ctx)
     JS_FreeValue(ctx, doc);
     JS_FreeValue(ctx, g);
 
-    JSValue r;
-    r = JS_Eval(ctx, SHIM_FONTS, strlen(SHIM_FONTS), "<cssom fonts>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
-    JS_FreeValue(ctx, r);
-    r = JS_Eval(ctx, SHIM_BODY_HANDLERS, strlen(SHIM_BODY_HANDLERS),
-                "<cssom body handlers>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
-    JS_FreeValue(ctx, r);
+    run_shim(ctx, SHIM_FONTS, "<cssom fonts>");
+    run_shim(ctx, SHIM_BODY_HANDLERS, "<cssom body handlers>");
 }
 
 void js_cssom_close(JSContext *ctx)
