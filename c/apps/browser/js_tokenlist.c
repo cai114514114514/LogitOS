@@ -92,10 +92,23 @@ static const char *TOKENLIST_PRELUDE =
 "  if (!e) { e = new Error(msg); e.name = name; }\n"
 "  throw e;\n"
 "}\n"
-"function checkToken(t) {\n"
-"  if (t === '') domThrow('SyntaxError', 'The token provided must not be empty.');\n"
-"  if (WS.test(t)) domThrow('InvalidCharacterError',\n"
-"    \"The token provided ('\" + t + \"') contains HTML space characters, which are not valid in tokens.\");\n"
+/* TWO PASSES OVER ALL THE TOKENS, NOT ONE PASS PER TOKEN, and the order is
+ * observable. The DOM says: first, if ANY token is empty, throw SyntaxError;
+ * THEN, if any token holds ASCII whitespace, throw InvalidCharacterError. So
+ * `classList.replace(' ', '')` -- whitespace in the first argument, empty in
+ * the second -- is a SyntaxError, because the empty-string pass runs over both
+ * arguments before the whitespace pass runs over either.
+ *
+ * Checking each token completely in turn gives InvalidCharacterError there,
+ * which is the wrong exception for the right reason and is exactly what a
+ * hand-written implementation produces. */
+"function checkTokens(a) {\n"
+"  var i;\n"
+"  for (i = 0; i < a.length; i++)\n"
+"    if (a[i] === '') domThrow('SyntaxError', 'The token provided must not be empty.');\n"
+"  for (i = 0; i < a.length; i++)\n"
+"    if (WS.test(a[i])) domThrow('InvalidCharacterError',\n"
+"      \"The token provided ('\" + a[i] + \"') contains HTML space characters, which are not valid in tokens.\");\n"
 "}\n"
 
 /* The ordered set parser. Deduplicating here is not an optimisation: length,
@@ -192,7 +205,7 @@ static const char *TOKENLIST_PRELUDE =
 "def(TLProto, 'add', function () {\n"
 "  var el = elemOf(this), a = [], i;\n"
 "  for (i = 0; i < arguments.length; i++) a.push(String(arguments[i]));\n"
-"  for (i = 0; i < a.length; i++) checkToken(a[i]);\n"
+"  checkTokens(a);\n"
 "  var set = tokensOf(el);\n"
 "  for (i = 0; i < a.length; i++) if (set.indexOf(a[i]) < 0) set.push(a[i]);\n"
 "  update(el, set);\n"
@@ -200,7 +213,7 @@ static const char *TOKENLIST_PRELUDE =
 "def(TLProto, 'remove', function () {\n"
 "  var el = elemOf(this), a = [], i, k;\n"
 "  for (i = 0; i < arguments.length; i++) a.push(String(arguments[i]));\n"
-"  for (i = 0; i < a.length; i++) checkToken(a[i]);\n"
+"  checkTokens(a);\n"
 "  var set = tokensOf(el);\n"
 "  for (i = 0; i < a.length; i++)\n"
 "    while ((k = set.indexOf(a[i])) >= 0) set.splice(k, 1);\n"
@@ -213,7 +226,7 @@ static const char *TOKENLIST_PRELUDE =
 "def(TLProto, 'toggle', function (token, force) {\n"
 "  var el = elemOf(this);\n"
 "  token = String(token);\n"
-"  checkToken(token);\n"
+"  checkTokens([token]);\n"
 "  var set = tokensOf(el), i = set.indexOf(token);\n"
 "  if (i >= 0) {\n"
 "    if (force === undefined || !force) { set.splice(i, 1); update(el, set); return false; }\n"
@@ -237,7 +250,7 @@ static const char *TOKENLIST_PRELUDE =
 "def(TLProto, 'replace', function (token, newToken) {\n"
 "  var el = elemOf(this);\n"
 "  token = String(token); newToken = String(newToken);\n"
-"  checkToken(token); checkToken(newToken);\n"
+"  checkTokens([token, newToken]);\n"
 "  var set = tokensOf(el);\n"
 "  if (set.indexOf(token) < 0) return false;\n"
 "  var out = [], placed = false;\n"
