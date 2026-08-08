@@ -162,6 +162,66 @@ static const char *PLATFORM_PRELUDE =
 "  try { Object.defineProperty(o, k, { get: get, configurable: true }); } catch (e) {}\n"
 "}\n"
 
+/* ---- WRAPPING A DOM METHOD, and why it may not be done on "the element
+ * prototype" any more.
+ *
+ * Until js_dom.c grew a real interface hierarchy there WAS one shared element
+ * prototype, and `Object.getPrototypeOf(document.createElement('div'))` was the
+ * only handle on it. It is now HTMLDivElement.prototype -- the bottom of a
+ * chain -- and a wrapper installed there is an own property of <div> and of
+ * nothing else. js_dom_iface.inc's iface_bridge() exists to rescue exactly
+ * that: it relocates own properties from HTMLDivElement.prototype onto
+ * Element.prototype after the installers have run.
+ *
+ * IT CANNOT RESCUE A WRAPPER OF A METHOD ELEMENT.PROTOTYPE ALREADY OWNS.
+ * move_own_props moves only what the destination does not already have -- it
+ * must, or it would clobber js_dom.c's own members with a probe element's
+ * copies -- so the moved property is DROPPED when the name collides. And the
+ * names that collide are precisely the ones worth wrapping:
+ *
+ *   appendChild  is owned by Node.prototype, so Element.prototype has no own
+ *                copy, so the wrapper moved and childList records worked.
+ *   setAttribute is owned by ELEMENT.prototype. The wrapper was dropped on
+ *                the floor, silently, and MutationObserver produced no
+ *                attribute record for anything -- for setAttribute, for
+ *                className, and for classList.add/remove/replace, which
+ *                js_tokenlist.c deliberately routes through setAttribute so
+ *                the records could not disagree. The API constructed, observed
+ *                and reported nothing; on a real page a render loop waiting on
+ *                one never advances.
+ *
+ * So: find the prototype that OWNS the method and wrap it there. That is right
+ * under any hierarchy, it needs no bridge, and it puts each wrapper where the
+ * standard puts the method -- appendChild on Node.prototype (so a Text node's
+ * insertion is seen too), setAttribute on Element.prototype.
+ *
+ * `tag` namespaces the once-only guard: two features here wrap the same
+ * methods and both must get their turn, so the guard is per feature AND per
+ * method rather than one flag on the object. Assignment rather than
+ * defineProperty is deliberate -- writing to an existing own property keeps
+ * its enumerability, and these are all non-enumerable natives. */
+"function ownerOf(name) {\n"
+"  var p = null;\n"
+"  try { p = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) { return null; }\n"
+"  while (p) {\n"
+"    if (Object.prototype.hasOwnProperty.call(p, name)) return p;\n"
+"    p = Object.getPrototypeOf(p);\n"
+"  }\n"
+"  return null;\n"
+"}\n"
+"function wrapMethod(tag, name, make) {\n"
+"  var P = ownerOf(name);\n"
+"  if (!P) return;\n"
+"  var orig = P[name];\n"
+"  if (typeof orig !== 'function') return;\n"
+"  var key = '__w_' + tag + '_' + name;\n"
+"  if (P[key]) return;\n"
+"  try {\n"
+"    Object.defineProperty(P, key, { value: true, enumerable: false, configurable: true });\n"
+"    P[name] = make(orig, name);\n"
+"  } catch (e) {}\n"
+"}\n"
+
 /* ==== performance ========================================================
  * MEASURED: performance.mark on bing and wikipedia (2 of 7 pages);
  * performance.timing on bing, where <inline 8> -- its whole client-telemetry
@@ -954,43 +1014,36 @@ static const char *PLATFORM_PRELUDE =
 "      });\n"
 "    });\n"
 "  };\n"
-   /* The element prototype, not `Element.prototype`: js_dom.c registers the
-      class without publishing a constructor, so the only handle on the shared
-      prototype is an element. (js_select.c publishes a `Element` façade, but
-      only if it ran first, and this must not depend on that.) */
-"  var proto = null;\n"
-"  try { proto = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
-"  if (proto && !proto.__moWrapped) {\n"
-"    try {\n"
-"      Object.defineProperty(proto, '__moWrapped', { value: true, enumerable: false });\n"
-"      ['appendChild', 'insertBefore', 'replaceChild', 'removeChild'].forEach(function (m) {\n"
-"        var orig = proto[m];\n"
-"        if (typeof orig !== 'function') return;\n"
-"        proto[m] = function () {\n"
-"          var r = orig.apply(this, arguments);\n"
-"          var added = [], removed = [];\n"
-"          if (m === 'removeChild') removed = [arguments[0]];\n"
-"          else if (m === 'replaceChild') { added = [arguments[0]]; removed = [arguments[1]]; }\n"
-"          else added = [arguments[0]];\n"
-"          if (mos.length) emit(this, { type: 'childList', addedNodes: added, removedNodes: removed,\n"
-"                                       attributeName: null, oldValue: null });\n"
-"          return r;\n"
-"        };\n"
-"      });\n"
-"      ['setAttribute', 'removeAttribute'].forEach(function (m) {\n"
-"        var orig = proto[m];\n"
-"        if (typeof orig !== 'function') return;\n"
-"        proto[m] = function (name) {\n"
-"          var old = null;\n"
-"          try { old = this.getAttribute(name); } catch (e) {}\n"
-"          var r = orig.apply(this, arguments);\n"
-"          if (mos.length) emit(this, { type: 'attributes', attributeName: String(name),\n"
-"                                       oldValue: old, addedNodes: [], removedNodes: [] });\n"
-"          return r;\n"
-"        };\n"
-"      });\n"
-"    } catch (e) {}\n"
-"  }\n"
+   /* Each method is wrapped on the prototype that OWNS it -- see wrapMethod at
+      the top of this file for what went wrong when they were all wrapped on
+      "the element prototype", and for why setAttribute was the one that
+      silently disappeared while appendChild survived. */
+"  ['appendChild', 'insertBefore', 'replaceChild', 'removeChild'].forEach(function (m) {\n"
+"    wrapMethod('mo', m, function (orig, name) {\n"
+"      return function () {\n"
+"        var r = orig.apply(this, arguments);\n"
+"        var added = [], removed = [];\n"
+"        if (name === 'removeChild') removed = [arguments[0]];\n"
+"        else if (name === 'replaceChild') { added = [arguments[0]]; removed = [arguments[1]]; }\n"
+"        else added = [arguments[0]];\n"
+"        if (mos.length) emit(this, { type: 'childList', addedNodes: added, removedNodes: removed,\n"
+"                                     attributeName: null, oldValue: null });\n"
+"        return r;\n"
+"      };\n"
+"    });\n"
+"  });\n"
+"  ['setAttribute', 'removeAttribute'].forEach(function (m) {\n"
+"    wrapMethod('mo', m, function (orig) {\n"
+"      return function (name) {\n"
+"        var old = null;\n"
+"        try { old = this.getAttribute(name); } catch (e) {}\n"
+"        var r = orig.apply(this, arguments);\n"
+"        if (mos.length) emit(this, { type: 'attributes', attributeName: String(name),\n"
+"                                     oldValue: old, addedNodes: [], removedNodes: [] });\n"
+"        return r;\n"
+"      };\n"
+"    });\n"
+"  });\n"
 "}\n"
 
 /* ==== HTMLElement.dataset ================================================
@@ -1202,24 +1255,22 @@ static const char *PLATFORM_PRELUDE =
  *   corpus   HTMLElement is referenced 47 times across the seven fixtures,
  *            more than any other interface name.
  *
- * WHAT THE PROTOTYPES ACTUALLY ARE, stated because it is a real deviation.
- * js_dom.c has ONE element class with ONE shared prototype -- there is no
- * per-tag class to hand out. So Element.prototype and HTMLElement.prototype
- * ARE that shared object (which makes `el instanceof HTMLElement` correctly
- * true for every element), and each per-tag interface gets a FRESH prototype
- * object inheriting from it. Two consequences, both deliberate:
+ * THIS WHOLE FUNCTION IS NOW A NO-OP ON A COMPLETE BUILD, and that is the
+ * outcome it asked for. Everything below is guarded by `if (name in G)
+ * return`, and js_dom.c's js_dom_iface.inc publishes all 68 interfaces as real
+ * constructors over a real prototype chain -- so every `mk()` here finds the
+ * name already taken and steps aside. It stays as the fallback for a link
+ * without that file, and because the guard is what makes it harmless.
  *
- *   - `el instanceof HTMLInputElement` must not be true for a <div>, and with
- *     a shared prototype it would be. So each per-tag interface carries a
- *     Symbol.hasInstance that tests tagName. Publishing them all over one
- *     prototype would answer `instanceof` wrongly, which is worse than not
- *     publishing them: a page would take a branch it must not take.
- *   - a page that PATCHES `HTMLDialogElement.prototype.showModal` patches an
- *     object no live element has in its chain, so the patch does not take
- *     effect. Feature DETECTION -- which is what the corpus does, and what the
- *     name is overwhelmingly used for -- is answered correctly; monkey
- *     patching a per-tag prototype is not. Fixing that properly needs per-tag
- *     classes in js_dom.c, which is the DOM line's file. */
+ * WHAT IT USED TO SAY, kept because the correction is the point: "js_dom.c has
+ * ONE element class with ONE shared prototype -- there is no per-tag class to
+ * hand out", so Element.prototype and HTMLElement.prototype WERE that one
+ * object and each per-tag name got a fresh empty prototype plus a
+ * Symbol.hasInstance that string-compared tagName. That has been false since
+ * the hierarchy landed, and believing it is how a wrapper installed on
+ * `Object.getPrototypeOf(createElement('div'))` -- which is HTMLDivElement's
+ * prototype now, not a shared one -- gets to reach <div> and nothing else.
+ * See wrapMethod at the top of this file for what that cost. */
 "function installInterfaces() {\n"
 "  var EP = null;\n"
 "  try { EP = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
@@ -1453,40 +1504,34 @@ static const char *PLATFORM_PRELUDE =
    /* Insertion upgrades. The same three methods the MutationObserver support
       wraps, wrapped once more here -- order does not matter because each
       wrapper calls through, and doing it here rather than there keeps the two
-      features independent. */
-"  var EP2 = null;\n"
-"  try { EP2 = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
-"  if (EP2 && !EP2.__ceWrapped) {\n"
-"    try {\n"
-"      Object.defineProperty(EP2, '__ceWrapped', { value: true, enumerable: false });\n"
-"      ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {\n"
-"        var orig = EP2[m];\n"
-"        if (typeof orig !== 'function') return;\n"
-"        EP2[m] = function () {\n"
-"          var r = orig.apply(this, arguments);\n"
-             /* Same reason as the MutationObserver guard: a node parked in
-                cloneNode's scratch container is not being inserted into the
-                document and must not be upgraded there. */
-"          if (!G.__domQuiet) { try { upgradeTree(arguments[0]); } catch (e) {} }\n"
-"          return r;\n"
-"        };\n"
-"      });\n"
-"      var rm = EP2.removeChild;\n"
-"      if (typeof rm === 'function') {\n"
-"        EP2.removeChild = function (n) {\n"
-"          var r = rm.apply(this, arguments);\n"
-"          if (G.__domQuiet) return r;\n"
-"          try {\n"
-"            walk(n, function (el) {\n"
-"              if (el.__ceState === 'upgraded' && typeof el.disconnectedCallback === 'function')\n"
-"                { try { el.disconnectedCallback(); } catch (e) { G.reportError(e); } }\n"
-"            });\n"
-"          } catch (e) {}\n"
-"          return r;\n"
-"        };\n"
-"      }\n"
-"    } catch (e) {}\n"
-"  }\n"
+      features independent. Both go through wrapMethod (see the top of the
+      file), which is what puts each wrapper on the prototype that owns the
+      method instead of on <div>'s. */
+"  ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {\n"
+"    wrapMethod('ce', m, function (orig) {\n"
+"      return function () {\n"
+"        var r = orig.apply(this, arguments);\n"
+           /* Same reason as the MutationObserver guard: a node parked in
+              cloneNode's scratch container is not being inserted into the
+              document and must not be upgraded there. */
+"        if (!G.__domQuiet) { try { upgradeTree(arguments[0]); } catch (e) {} }\n"
+"        return r;\n"
+"      };\n"
+"    });\n"
+"  });\n"
+"  wrapMethod('ce', 'removeChild', function (orig) {\n"
+"    return function (n) {\n"
+"      var r = orig.apply(this, arguments);\n"
+"      if (G.__domQuiet) return r;\n"
+"      try {\n"
+"        walk(n, function (el) {\n"
+"          if (el.__ceState === 'upgraded' && typeof el.disconnectedCallback === 'function')\n"
+"            { try { el.disconnectedCallback(); } catch (e) { G.reportError(e); } }\n"
+"        });\n"
+"      } catch (e) {}\n"
+"      return r;\n"
+"    };\n"
+"  });\n"
 "}\n"
 /* ==== Node.cloneNode =====================================================
  * THE SINGLE FAILURE THAT TAKES BAIDU DOWN, and it is one call.
