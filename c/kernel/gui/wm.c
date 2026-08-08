@@ -864,6 +864,18 @@ static void reap(void)
             int wi = apps[i].win;
             if (wi >= 0 && wins[wi].used) {
                 if (wins[wi].surf.px) kfree(wins[wi].surf.px);
+                /* Clear the pointer, do not merely free what it pointed at.
+                 * The slot is reused by the next SYS_GUI_CREATE, and until that
+                 * call installs a new buffer the field is a dangling pointer into
+                 * a block the heap has already handed to somebody else. Every
+                 * reader guards on `used` today, so nothing dereferences it -- but
+                 * "nothing does" is a property of several call sites that can
+                 * change, and a stale write of this kind is otherwise diagnosed
+                 * somewhere else entirely, later, which is precisely the failure
+                 * mode the frame poison map exists to stop. Two stores make the
+                 * invariant local to the code that ends the surface's life. */
+                wins[wi].surf.px = 0;
+                wins[wi].surf.w = wins[wi].surf.h = 0;
                 wins[wi].used = 0;
                 remove_win(wi);
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
