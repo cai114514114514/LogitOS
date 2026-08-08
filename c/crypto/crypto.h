@@ -137,4 +137,51 @@ int rsa_pkcs1_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
 int rsa_pss_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
                    const uint8_t *sig, int siglen, const uint8_t *mhash, int hlen);
 
+/* --- Ed25519 (RFC 8032) -- the first primitive here that SIGNS ---------------
+ * The private key is a 32-byte `seed`; the public key is derived from it, so
+ * there is no separate "private key format" to get wrong and no way to pair a
+ * seed with the wrong public key by accident (ed25519_sign takes `pub` only to
+ * avoid re-deriving it, and a mismatched one simply produces a signature that
+ * does not verify).
+ *
+ * CONSTANT TIME: ed25519_pubkey / ed25519_sign / ed25519_keypair are, with
+ * respect to the seed -- fixed-trip ladder, fe_cmov selection, no secret-indexed
+ * table. ed25519_verify is not claimed to be and does not need to be: every
+ * input to it is public. See the file header of ed25519.c. */
+void ed25519_pubkey(uint8_t pub[32], const uint8_t seed[32]);
+void ed25519_sign(uint8_t sig[64], const uint8_t *msg, size_t mlen,
+                  const uint8_t seed[32], const uint8_t pub[32]);
+int  ed25519_verify(const uint8_t sig[64], const uint8_t *msg, size_t mlen,
+                    const uint8_t pub[32]);
+/* Fresh key pair. `randbytes` is injected rather than called directly because
+ * this file is linked into the kernel (kernel_random_bytes), the host tests (a
+ * deterministic stub) and userland (SYS_GETRANDOM) -- three different sources,
+ * one implementation. Returns 0, or -1 if the source produced 32 zero bytes,
+ * which is what a dead entropy source looks like. */
+int  ed25519_keypair(uint8_t pub[32], uint8_t seed[32],
+                     void (*randbytes)(uint8_t *, int));
+/* Test hooks (see ed25519.c). */
+int  ed25519_point_valid(const uint8_t p[32]);
+int  ed25519_sc_reduce_selftest(void);
+
+/* --- PBKDF2-HMAC-SHA256 / SHA-512 (RFC 8018 5.2) ----------------------------
+ * Password -> key. `hlen` selects the PRF: 32 = HMAC-SHA-256, 48 = HMAC-SHA-384.
+ * `iters` must be >= 1. Writes exactly dklen bytes. See pbkdf2.c for why this
+ * and not scrypt/argon2, and for what it does and does not defend against. */
+void pbkdf2(int hlen, const uint8_t *pw, int pwlen,
+            const uint8_t *salt, int saltlen, uint32_t iters,
+            uint8_t *dk, int dklen);
+
+/* One-step password hashing for an account record: generates a salt, runs
+ * PBKDF2 and formats the result as a self-describing ASCII string
+ *   $pbkdf2-sha256$<iters>$<salt-b64>$<dk-b64>
+ * so the parameters travel with the hash and can be raised later without
+ * invalidating existing records. Returns the string length, or -1 if `out` is
+ * too small (128 bytes is always enough). */
+int  pwhash_make(char *out, int max, const char *password,
+                 uint32_t iters, void (*randbytes)(uint8_t *, int));
+/* 1 if `password` matches the stored record, 0 otherwise. The digest
+ * comparison is constant-time; the parameter parse is not (it is public). */
+int  pwhash_check(const char *record, const char *password);
+
 #endif /* LOGIT_CRYPTO_H */
