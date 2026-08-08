@@ -174,6 +174,12 @@ def gui_clip(x, y, w, h):
 def gui_flush():
     return syscall(SYS_GUI_FLUSH)
 
+def gui_win_min(w, h):
+    return syscall(SYS_GUI_WIN_MIN, ((w & 0xFFFF) << 16) | ((h & 0xFFFF)))
+
+def gui_win_state(what, arg):
+    return syscall(SYS_GUI_WIN_STATE, what, arg)
+
 def gui_poll_event(ev):
     return syscall(SYS_POLL_EVENT, addr(ev))
 

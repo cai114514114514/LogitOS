@@ -76,6 +76,10 @@
 #define LOGIT_GUI_CLIP_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_CLIP_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
+/* SYS_GUI_WIN_MIN arg a: w<<16 | h */
+#define LOGIT_GUI_WIN_MIN_A_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_WIN_MIN_A_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
 /* SYS_SOCK_OPEN arg b: port<<16 | flags */
 #define LOGIT_SOCK_OPEN_B_PORT(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_SOCK_OPEN_B_FLAGS(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))

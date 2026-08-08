@@ -42,6 +42,11 @@ call gui_rrect      SYS_GUI_RRECT      pack(x:16:16, y:0:16) pack(w:16:16, h:0:1
 call gui_glass      SYS_GUI_GLASS      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:32:8, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
 call gui_clip       SYS_GUI_CLIP       pack(x:16:16, y:0:16) pack(w:16:16, h:0:16)
 call gui_flush      SYS_GUI_FLUSH
+# The window's minimum CONTENT size, in points -- same packing as gui_create's,
+# because it is the same pair of numbers and a second convention for the same
+# fields is how the two drift.
+call gui_win_min    SYS_GUI_WIN_MIN    pack(w:16:16, h:0:16)
+call gui_win_state  SYS_GUI_WIN_STATE  int(what) int(arg)
 call gui_poll_event SYS_POLL_EVENT     buf(ev)
 call ui_dark_query  SYS_UI_DARK        lit(-1)
 call ui_dark_set    SYS_UI_DARK        int(on)

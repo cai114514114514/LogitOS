@@ -210,6 +210,14 @@
 #define EV_MOUSE_UP   6  /* a = x, b = y (window-local); `button` says which one came up */
 #define EV_MOUSE_MOVE 7  /* a = x, b = y (window-local); the pointer moved. Coalesced (see below) */
 #define EV_WHEEL      8  /* a = x, b = y (window-local); `wheel` = notches, + = scroll DOWN */
+/* a = new content WIDTH in points, b = new content HEIGHT. The window's canvas
+ * has ALREADY been reallocated at this size when the event is delivered -- see
+ * the SYS_GUI_WIN_* block below. Repaint everything; nothing you drew survived.
+ *
+ * Coalesced like motion, and for the same reason: a drag produces a stream of
+ * sizes and only the newest one is true. An app that polls once per painted
+ * frame therefore sees one resize per frame, not one per pointer sample. */
+#define EV_RESIZE     9
 
 /* Modifier keys held when the event was generated (struct logit_event.mods).
  * Sampled in the IRQ that produced the event, not when the app polls it -- a
@@ -218,6 +226,23 @@
 #define EV_MOD_SHIFT 0x01
 #define EV_MOD_CTRL  0x02
 #define EV_MOD_ALT   0x04
+/* The COMMAND key -- PS/2 set 1 `E0 5B` / `E0 5C`, what a PC keyboard calls the
+ * Windows key and what this desktop calls Cmd. It is the system modifier, and it
+ * is deliberately the one modifier no app in this tree had already spent:
+ * Ctrl+letter is folded into a control code by the keyboard driver (Ctrl+S
+ * arrives as 0x13 and TextEdit reads it there), and /bin/sh in the Terminal owns
+ * the whole of Ctrl by convention. Claiming Ctrl+W for the window manager would
+ * have taken ^W away from the shell.
+ *
+ * THE CLAIM RULE, which an app author needs in one sentence: the window manager
+ * intercepts a CLOSED, DOCUMENTED LIST of Cmd combinations before the focused
+ * app sees them (Cmd+W/Q/M/Tab/`, see wm.c) and forwards EVERYTHING else --
+ * every unmodified key, and every Cmd combination not on that list -- to the
+ * app with EV_MOD_SUPER set. An app cannot take a claimed one back; a shortcut
+ * any app can swallow is not a system shortcut, and the first text field to eat
+ * Cmd+W leaves a window that cannot be closed from the keyboard. The list is
+ * closed so that "which Cmd keys are mine" has an answer that can be read. */
+#define EV_MOD_SUPER 0x08
 
 /* Which button a press/release is about (struct logit_event.button); 0 on every
  * other event type. EV_MOUSE stays "a button went down" and EV_MOUSE_R stays
@@ -472,5 +497,42 @@ struct logit_meminfo {
     unsigned long long mm_bugs;          /* allocator invariant violations; must be 0 */
     unsigned long long mmap_reserved;    /* bytes this process has reserved */
 };
+
+/* ---- window management: resize, zoom, minimise ----------------------------
+ *
+ * Until these, the entire verb vocabulary a user had over a window was DRAG and
+ * CLOSE. A window was born at the size the app asked for and died at it.
+ *
+ * The window manager owns the geometry; an app never sets its own frame. What an
+ * app gets is (a) a floor it can raise -- SYS_GUI_WIN_MIN -- and (b) EV_RESIZE,
+ * which is the WM telling it the canvas it has been drawing into is now a
+ * different size. THAT EVENT IS NOT ADVISORY. The surface behind the window has
+ * already been reallocated when it arrives; anything the app painted before it
+ * is gone, and the compositor is showing a STRETCHED copy of the old canvas
+ * until the app paints a new one. An app that ignores EV_RESIZE therefore does
+ * not "keep its old layout" -- it shows a magnified one forever.
+ *
+ * Sizes here are POINTS and they are CONTENT sizes: the canvas below the
+ * titlebar, exactly the coordinate space gui_create() named and every gui_rect()
+ * draws into. The titlebar is not the app's and is not counted.
+ */
+#define SYS_GUI_WIN_MIN  101 /* ((w<<16)|h) points -> 0. The smallest content size
+                              * this window may be resized to. Clamped up to the
+                              * WM's own floor, so an app cannot make itself
+                              * ungrabbable. Sticky: set it once after create. */
+#define SYS_GUI_WIN_STATE 102 /* (what, arg) -> value, or -1. `what` is a WINS_*. */
+
+/* SYS_GUI_WIN_STATE selectors. The queries exist because an app that missed an
+ * EV_RESIZE (or wants its size before the first one) has no other way to ask,
+ * and re-deriving it from gui_create()'s argument is exactly the assumption
+ * resize invalidates. The commands exist so an app's own chrome can drive the
+ * same transitions the titlebar and the keyboard do -- one implementation of
+ * zoom, not two. */
+#define WINS_W         0   /* -> content width in points */
+#define WINS_H         1   /* -> content height in points */
+#define WINS_ZOOMED    2   /* -> 1 if maximized, else 0 */
+#define WINS_MINIMIZED 3   /* -> 1 if hidden to the dock, else 0 */
+#define WINS_SET_ZOOM  4   /* arg: 0 restore, 1 maximize, -1 toggle -> new state */
+#define WINS_SET_MIN   5   /* arg: 1 minimise, 0 restore -> new state */
 
 #endif /* LOGIT_ABI_H */
