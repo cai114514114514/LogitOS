@@ -275,6 +275,42 @@ int main(void)
     ckjs("(function(){var b=document.createElement('button');b.command='--custom';"
          "return b.command==='--custom';})()",
          "a custom command (leading --) passes through the getter");
+    /* The default that decides the activation behaviour, both directions. */
+    ckjs("(function(){var b=document.createElement('button');"
+         "var plain=b.type;b.setAttribute('command','show-modal');"
+         "var withCmd=b.type;b.setAttribute('type','nonsense');"
+         "var invalidWithCmd=b.type;"
+         "return plain==='submit' && withCmd==='button' && invalidWithCmd==='button';})()",
+         "a button that names a command defaults to type=button, not type=submit");
+    ckjs("(function(){var f=document.createElement('form');"
+         "var b=document.createElement('button');b.type='submit';f.appendChild(b);"
+         "document.body.appendChild(f);var n=0;"
+         "f.addEventListener('submit',function(e){e.preventDefault();n++;});"
+         "b.click();f.remove();return n===1;})()",
+         "clicking a type=submit button fires submit on its form");
+    ckjs("(function(){var f=document.createElement('form');"
+         "var b=document.createElement('button');b.type='reset';f.appendChild(b);"
+         "var d=document.createElement('div');d.setAttribute('popover','auto');"
+         "d.id='rp';document.body.appendChild(d);"
+         "b.setAttribute('popovertarget','rp');"
+         "document.body.appendChild(f);var n=0;"
+         "f.addEventListener('reset',function(e){e.preventDefault();n++;});"
+         "b.click();var open=d.matches(':popover-open');f.remove();d.remove();"
+         "return n===1 && !open;})()",
+         "type=reset resets its form and does NOT also toggle the popover it names");
+    ckjs("(function(){var d=$('dlg');var seen=null;"
+         "d.setAttribute('oncommand','seenCommand = event.command;');"
+         "var b=document.createElement('button');b.setAttribute('commandfor','dlg');"
+         "b.setAttribute('command','show-modal');document.body.appendChild(b);"
+         "globalThis.seenCommand=null;b.click();d.close();b.remove();"
+         "d.removeAttribute('oncommand');"
+         "return globalThis.seenCommand==='show-modal';})()",
+         "an oncommand CONTENT attribute is compiled and fires");
+    ckjs("(function(){var d=$('dlg'),composed=null;"
+         "var h=function(e){composed=e.composed;};d.addEventListener('command',h);"
+         "$('cinv').click();d.removeEventListener('command',h);d.close();"
+         "return composed===true;})()",
+         "the command event is composed");
 
     /* ---- the popover state machine ---- */
     ckjs("typeof HTMLElement.prototype.showPopover === 'function' && "

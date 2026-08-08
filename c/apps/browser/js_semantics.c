@@ -389,6 +389,22 @@ static const char *SEMANTICS_PRELUDE =
 "  acc(BTN, 'commandForElement',\n"
 "      function () { return attrElement(this, 'commandfor'); },\n"
 "      function (v) { setAttrElement(this, 'commandfor', v); });\n"
+/* `button.type` is a reflected enumerated attribute and js_reflect.c already
+ * has it -- with the OLD invalid/missing value default, "submit". The rule
+ * changed when command/commandfor arrived: a button that names a command has
+ * no business submitting a form by accident, so a missing or invalid `type` on
+ * such a button defaults to "button" instead. That one default decides the
+ * whole activation behaviour below, which is why it is here next to it and not
+ * in the generated table -- the generator's input (the corpus's
+ * elements-*.js) records `type` as a plain enum and cannot express it. */
+"  var BTYPE = { 'submit': 'submit', 'reset': 'reset', 'button': 'button' };\n"
+"  acc(BTN, 'type', function () {\n"
+"    var v = this.getAttribute('type');\n"
+"    var k = (v === null) ? undefined : BTYPE[lc(v)];\n"
+"    if (k) return k;\n"
+"    return (this.hasAttribute('command') || this.hasAttribute('commandfor'))\n"
+"           ? 'button' : 'submit';\n"
+"  }, function (v) { this.setAttribute('type', String(v)); });\n"
 "}\n"
 
 /* ======================================================================
@@ -430,7 +446,64 @@ static const char *SEMANTICS_PRELUDE =
 "var ToggleEventCtor = eventSubclass('ToggleEvent', { oldState: asStr, newState: asStr });\n"
 "var CommandEventCtor = eventSubclass('CommandEvent', { command: asStr, source: asEl });\n"
 
+/* ---- on<type> event-handler properties ---------------------------------
+ * js_dom.c installs the on* accessors from a fixed table, and the five event
+ * types this file introduces (`command`, `toggle`, `beforetoggle`, `close`,
+ * `cancel`) are not in it. Rather than grow another line's table, they are
+ * installed here, only where absent -- so the day that table grows, this stops
+ * doing anything.
+ *
+ * The CONTENT attribute is compiled lazily, on read, because there is no other
+ * moment to do it: an element with `oncommand="..."` may be created at any
+ * time. `primeOn` is the read that makes it happen before the event is fired,
+ * and it is called at each of the three dispatch sites -- without it the
+ * attribute form works only for a page that happened to read the property
+ * first. */
+"function onRecord(el, KEY) { return el[KEY]; }\n"
+"function setOn(el, KEY, type, fn) {\n"
+"  var rec = el[KEY];\n"
+"  if (rec) { try { el.removeEventListener(type, rec.wrap); } catch (e) {} }\n"
+"  if (typeof fn !== 'function') {\n"
+"    try { Object.defineProperty(el, KEY, { value: null, configurable: true, writable: true }); }\n"
+"    catch (e) {}\n"
+"    return;\n"
+"  }\n"
+"  var wrap = function (ev) {\n"
+"    var r = fn.call(el, ev);\n"
+       /* An on-handler returning exactly false cancels the event. */
+"    if (r === false && ev && typeof ev.preventDefault === 'function') ev.preventDefault();\n"
+"  };\n"
+"  try { Object.defineProperty(el, KEY, { value: { fn: fn, wrap: wrap },\n"
+"    configurable: true, writable: true }); } catch (e) { return; }\n"
+"  try { el.addEventListener(type, wrap); } catch (e) {}\n"
+"}\n"
+"var ON_KEYS = {};\n"
+"function installOnHandler(proto, type) {\n"
+"  var name = 'on' + type;\n"
+"  if (!proto || (name in proto)) return;\n"
+"  var KEY = Symbol(name);\n"
+"  ON_KEYS[type] = KEY;\n"
+"  acc(proto, name, function () {\n"
+"    var rec = onRecord(this, KEY);\n"
+"    if (rec !== undefined) return rec ? rec.fn : null;\n"
+"    var src = this.getAttribute ? this.getAttribute(name) : null;\n"
+"    if (src === null || src === undefined) return null;\n"
+"    var fn = null;\n"
+"    try { fn = new Function('event', src); } catch (e) { return null; }\n"
+"    setOn(this, KEY, type, fn);\n"
+"    return fn;\n"
+"  }, function (v) { setOn(this, KEY, type, (typeof v === 'function') ? v : null); });\n"
+"}\n"
+"['command', 'toggle', 'beforetoggle', 'close', 'cancel']\n"
+"  .forEach(function (t) { installOnHandler(EP, t); });\n"
+"function primeOn(el, type) {\n"
+"  var KEY = ON_KEYS[type];\n"
+"  if (!KEY || !el) return;\n"
+"  try { void el['on' + type]; } catch (e) {}\n"
+"}\n"
+
 "function fireEvent(target, Ctor, type, init) {\n"
+"  primeOn(target, type);\n"
 "  var e;\n"
 "  if (Ctor) { e = new Ctor(type, init); }\n"
 "  else if (typeof G.Event === 'function') { e = new G.Event(type, init); }\n"
@@ -674,8 +747,13 @@ static const char *SEMANTICS_PRELUDE =
 "  else { try { target.togglePopover(); } catch (e) {} }\n"
 "}\n"
 "function runCommand(invoker, target, command) {\n"
+"  primeOn(target, 'command');\n"
 "  var ev = CommandEventCtor\n"
+       /* composed: true. The event crosses shadow boundaries by definition --
+        * an invoker in a shadow tree commands a light-tree element -- and 24
+        * subtests in the-button-element assert exactly that flag. */
 "    ? new CommandEventCtor('command', { bubbles: false, cancelable: true,\n"
+"                                        composed: true,\n"
 "                                        command: command, source: invoker })\n"
 "    : null;\n"
 "  if (ev && !target.dispatchEvent(ev)) return;\n"
@@ -693,14 +771,66 @@ static const char *SEMANTICS_PRELUDE =
 "    else if (c === 'toggle-popover') runPopoverAction(target, 'toggle');\n"
 "  }\n"
 "}\n"
+/* A <form>'s reset: every control back to its default. js_forms.c owns control
+ * values, so this only puts the CONTENT attributes' defaults back where it can
+ * and leaves the rest to it. */
+"function resetForm(frm) {\n"
+"  var all = []; descendants(frm, LISTED, all);\n"
+"  for (var i = 0; i < all.length; i++) {\n"
+"    var el = all[i], t = tagOf(el);\n"
+"    if (t === 'input') {\n"
+"      var ty = lc(el.getAttribute('type') || '');\n"
+"      if (ty === 'checkbox' || ty === 'radio') {\n"
+"        try { el.checked = el.hasAttribute('checked'); } catch (e) {}\n"
+"      } else {\n"
+"        try { el.value = el.getAttribute('value') || ''; } catch (e) {}\n"
+"      }\n"
+"    } else if (t === 'select') {\n"
+"      var o = []; selectOptions(el, o);\n"
+"      for (var j = 0; j < o.length; j++) optSelected.set(o[j], o[j].hasAttribute('selected'));\n"
+"    } else if (t === 'textarea') {\n"
+"      try { el.value = el.textContent || ''; } catch (e) {}\n"
+"    }\n"
+"  }\n"
+"}\n"
+/* THE ORDER HERE IS THE SPEC'S AND IT IS NOT THE OBVIOUS ONE. A button's TYPE
+ * decides everything: type=submit submits its form and does NOT run the
+ * command, even when `commandfor` and `command` are both present and valid.
+ * That reads as a contradiction until you also have the `type` default above --
+ * a button that names a command and gives no valid type IS type=button, so the
+ * two rules together say "naming a command opts you out of submitting", which
+ * is what the corpus asserts from both directions. */
 "function activationBehaviour(el) {\n"
 "  var t = tagOf(el);\n"
+"  if (t === 'button' && !isDisabledCtl(el)) {\n"
+"    var bt = el.type, frm = formOwner(el);\n"
+"    if (frm && bt === 'submit') {\n"
+"      fireEvent(frm, null, 'submit', { bubbles: true, cancelable: true });\n"
+"      return;\n"
+"    }\n"
+"    if (frm && bt === 'reset') {\n"
+"      if (fireEvent(frm, null, 'reset', { bubbles: true, cancelable: true })) resetForm(frm);\n"
+"      return;\n"
+"    }\n"
+"  }\n"
+"  if (t === 'input' && !isDisabledCtl(el)) {\n"
+"    var it = lc(el.getAttribute('type') || ''), ifrm = formOwner(el);\n"
+"    if (ifrm && (it === 'submit' || it === 'image')) {\n"
+"      fireEvent(ifrm, null, 'submit', { bubbles: true, cancelable: true });\n"
+"      return;\n"
+"    }\n"
+"    if (ifrm && it === 'reset') {\n"
+"      if (fireEvent(ifrm, null, 'reset', { bubbles: true, cancelable: true })) resetForm(ifrm);\n"
+"      return;\n"
+"    }\n"
+"  }\n"
 "  if (canInvoke(el)) {\n"
        /* commandfor wins over popovertarget when both are present. */
 "    if (t === 'button') {\n"
 "      var cf = attrElement(el, 'commandfor');\n"
 "      var cmd = el.command;\n"
 "      if (cf && cmd) { runCommand(el, cf, cmd); return; }\n"
+"      if (cf || el.hasAttribute('command')) return;\n"
 "    }\n"
 "    var pt = attrElement(el, 'popovertarget');\n"
 "    if (pt && popoverType(pt) !== null) { runPopoverAction(pt, el.popoverTargetAction); return; }\n"
