@@ -20,6 +20,7 @@
  * already share. Pure inline, no libc, no allocation -- see its header. */
 #include "logit_sniff.h"
 #include "logit_abi.h"
+#include "prot.h"       /* cpu_prot_nx_usable() + PTE_NX for the app stack below */
 /* Generated from include/abi/logit_calls.abi, which is where the packed syscall
  * arguments are described. Unpacking them by hand here meant the convention was
  * stated once in a logit_abi.h comment, once in the caller's packing, and once
@@ -937,10 +938,21 @@ void wm_launch(const char *aex_file, const char *arg)
         ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
         uint64_t need = img_top + 0x400000 + (uint64_t)stk_pages * 0x1000;
         if (img_top && need > ustack_top) ustack_top = need;
+        /* NO-EXECUTE, the last of the three stack gaps exec.c predicted above
+         * setup_cli_stack: "GUI apps get their stack from c/kernel/gui/wm.c,
+         * not from here." A CLI program's stack has been non-exec since the
+         * mask fix; without this line a windowed app -- which is every app the
+         * user actually runs, including the browser -- kept a writable AND
+         * executable stack, so the boundary test would pass while the thing it
+         * protects stayed open. Conditional on cpu_prot_nx_usable() for the
+         * same reason every other site is: setting bit 63 without EFER.NXE is
+         * a reserved-bit fault, not a no-op. */
+        uint64_t stk_flags = VMM_WRITABLE | VMM_USER |
+                             (cpu_prot_nx_usable() ? PTE_NX : 0);
         for (int i = 1; i <= stk_pages; i++) {
             uint64_t frame = pmm_alloc();
             if (!frame) { entry = 0; break; }    /* OOM: fail the launch, don't run on a partial stack */
-            vmm_map_page(ustack_top - (uint64_t)i * 0x1000, frame, VMM_WRITABLE | VMM_USER);
+            vmm_map_page(ustack_top - (uint64_t)i * 0x1000, frame, stk_flags);
         }
     }
     vmm_switch(prev_cr3);
