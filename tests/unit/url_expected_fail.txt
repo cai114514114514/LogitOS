@@ -1,0 +1,12 @@
+# tests/unit/url_expected_fail.txt -- cases that are known to fail.
+#
+# Re-cut with `make url-baseline`. Everything NOT listed here is gated: a case
+# that starts failing turns test-url red. A case that starts PASSING is
+# reported and is not red, so a fix never has to be paired with an edit here
+# before the build will go green -- the same rule tests/wpt.mk's ratchet uses.
+#
+# It is empty, and that is a claim rather than an oversight: every case in
+# urltestdata.json (891), every case in setters_tests.json (278) and every
+# hand-written URLSearchParams and percent-encoding-set assertion passes.
+# IdnaTestV2 is NOT in the gated total -- it measures the part of this work
+# that is knowingly incomplete, and is printed separately for that reason.

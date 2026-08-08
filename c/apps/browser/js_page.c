@@ -31,6 +31,14 @@
  * dispatcher js_dom.c owns. Weak for the same reason as the three above. */
 #define JS_EVENTS_OPTIONAL
 #include "js_events.h"
+/* The form controls + focus model -- js_forms.c. Declared here rather than
+ * through a header because it is one symbol; weak for the same reason as the
+ * five above. */
+void js_forms_install(JSContext *ctx) __attribute__((__weak__));
+/* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
+ * reason as the six above. */
+#define JS_URL_OPTIONAL
+#include "js_url.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -546,6 +554,23 @@ int js_page_open(struct node *root)
      * the cascade's own media evaluator, which closes the divergence css.h
      * names). Installing it earlier means those two get overwritten again. */
     if (js_cssom_install) js_cssom_install(g_ctx);
+    /* The form controls and the focus model -- js_forms.c: element.value,
+     * .checked, .focus(), document.activeElement, form.submit(). LAST, and
+     * "only if absent" like js_platform.c: every property it defines is one an
+     * earlier file may already own, and a definition here that shadowed one of
+     * theirs would turn a working property into undefined for EVERY element
+     * rather than only for controls. Weak, like every other install above, so a
+     * build without that object (the focus negative control, and the host tests
+     * of this file) links and simply has no form bindings. */
+    if (js_forms_install) js_forms_install(g_ctx);
+    /* AFTER js_webapi_install, and that ordering is the point. js_webapi.c
+     * ships a URL / URLSearchParams built as a JS prelude over
+     * c/net/http/url.c -- the four-field parser the fetch needs, which has no
+     * userinfo, no non-special scheme and no percent-encoding. js_url.c
+     * REPLACES both globals with the standard's algorithm, and replacing
+     * something means running after the thing that installed it. Weak, like
+     * every install above, so a build without that TU keeps the old pair. */
+    if (js_url_install) js_url_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }

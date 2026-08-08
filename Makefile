@@ -3382,3 +3382,10 @@ bench-aui: $(ISO) $(DISK)
 # so this line's correctness is measured against the specification's test data
 # rather than against its author's opinion. See the fragment header.
 -include tests/csstext.mk
+
+# The WHATWG URL Standard: `make test-url` / `test-url-js` / `test-url-negctl`.
+# c/apps/browser/js_url.c -- the basic URL parser as the spec's state machine,
+# host parsing, all eleven setters, URLSearchParams and the two globals.
+# Measured against the corpus's OWN data (urltestdata.json, setters_tests.json)
+# rather than through the WPT runner. See the fragment header.
+-include tests/url.mk
