@@ -1,0 +1,12 @@
+# LogitOS development package-signing key -- Ed25519 public key, raw, hex.
+#
+# THIS IS A DEVELOPMENT KEY AND ITS PRIVATE HALF IS PUBLISHED IN THIS
+# REPOSITORY, on purpose, next to it in DEV-SIGNING-KEY.txt. It exists so that
+# `make test-pkg-os` can build a genuinely signed package and so that anyone
+# reading the tree can produce one and watch it be accepted. It is NOT a
+# security boundary and must never be the only key in a build anyone relies on.
+#
+# A real deployment: generate a key offline, put ONLY the public half here,
+# delete this file, re-run tools/genpkgroots.py, rebuild the ISO. The trust root
+# is the ISO -- see the long comment in c/crypto/trust/pkgsig.h.
+5ae6e10f769595eff79cf34d365f42fedbe92bc531953a6774e1e2eada3e714e

@@ -1,0 +1,36 @@
+THE PRIVATE HALF OF logitos-dev.pub. IT IS PUBLISHED ON PURPOSE.
+
+Ed25519 seed (32 bytes, hex):
+
+    dd5e99f7c5f19186cc0053d5905b54016586d7b366672597d5b61976d965a00b
+
+matching public key:
+
+    5ae6e10f769595eff79cf34d365f42fedbe92bc531953a6774e1e2eada3e714e
+
+Why a secret key is in a public repository, said plainly rather than left for
+someone to find:
+
+  * `make test-pkg-os` has to put a genuinely signed .lpk on the disk image and
+    watch /bin/pkgverify accept it. A test that signs with a key generated at
+    build time would be testing that the machine agrees with itself; a test
+    that ships a package signed by a key nobody can see is a test nobody can
+    reproduce or extend.
+  * Anyone reading this tree should be able to run
+        python3 tools/lpk.py sign --seed <the hex above> foo.bin foo.lpk
+    and see it accepted, and then change one byte and see it refused. That is
+    the whole point of the exercise being here.
+
+What this key is NOT: it is not an authority. A build that trusts only this key
+trusts everyone, because everyone has it. Before this machine accepts a package
+from anywhere but its own test suite:
+
+    openssl genpkey -algorithm ED25519 -out signer.pem          # keep offline
+    openssl pkey -in signer.pem -pubout -outform DER | tail -c 32 | xxd -p
+        -> put that in tools/pkgroots/<name>.pub
+    rm tools/pkgroots/logitos-dev.pub tools/pkgroots/DEV-SIGNING-KEY.txt
+    python3 tools/genpkgroots.py tools/pkgroots c/crypto/trust/pkgroots.inc
+    make                                                        # new ISO = new root
+
+The trust root is the ISO, not a file on the disk image. See the long comment
+at the top of c/crypto/trust/pkgsig.h for why.
