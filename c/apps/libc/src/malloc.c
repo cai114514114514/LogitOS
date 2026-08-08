@@ -687,8 +687,8 @@ static void *calloc_nl(size_t a, size_t b)
  * functions lock once; the _nl bodies call each other.
  * ========================================================================= */
 
-void __libc_lock(volatile int *v)   __attribute__((weak));
-void __libc_unlock(volatile int *v) __attribute__((weak));
+void __libc_lock(volatile int *v)   __attribute__((__weak__));
+void __libc_unlock(volatile int *v) __attribute__((__weak__));
 
 static volatile int heap_lock;
 

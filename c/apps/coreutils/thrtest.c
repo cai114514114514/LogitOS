@@ -72,15 +72,49 @@ static void check(int ok, const char *what)
  * deleted the work would produce a speedup ratio of "instant vs instant" and a
  * test that passes for the wrong reason.
  * ------------------------------------------------------------------------- */
-#define SPIN_ROUNDS 2200000u
-
+/* THE LOAD, and two things that had to be fixed about it before the number it
+ * produces meant anything.
+ *
+ * FIRST, the accumulator is VOLATILE. It was a plain local, and clang did
+ * something to it: 2.2M rounds took 20-30 ms and 120M rounds took 70, which is
+ * 54x the work for 2.5x the time. Whatever the optimiser did -- and it does not
+ * matter what -- the loop was no longer a fixed amount of arithmetic, so a
+ * ratio taken across it measured the optimiser. Volatile forces a load and a
+ * store per round: slower, and actually proportional to the round count.
+ *
+ * SECOND, the round count is CHOSEN AT RUNTIME. A hard-coded one has to be
+ * right on every machine the test ever runs on, and it was wrong on this one in
+ * the direction that matters: CLOCK_MONOTONIC here is the 100 Hz tick, so a
+ * 20 ms baseline is TWO TICKS, and "T4 < 2*T1" was a comparison between two
+ * quantisation errors. calibrate() finds the count that takes about a second,
+ * so the ratio is taken over a hundred-odd ticks whatever the host is doing. */
 static volatile unsigned long spin_sink;
+static unsigned long spin_rounds;
+
+static unsigned long burn_n(unsigned long n, unsigned long seed)
+{
+    volatile unsigned long acc = seed;
+    for (unsigned long i = 0; i < n; i++)
+        acc = acc * 6364136223846793005ul + 1442695040888963407ul;
+    return acc;
+}
+
+static void calibrate(void)
+{
+    unsigned long n = 200000;
+    for (;;) {
+        long t0 = mono_ms();
+        spin_sink += burn_n(n, 1);
+        long dt = mono_ms() - t0;
+        if (dt >= 200) { spin_rounds = n * 1000ul / (unsigned long)dt; return; }
+        if (n > (1ul << 34)) { spin_rounds = n; return; }   /* absurdly fast host */
+        n *= 4;
+    }
+}
 
 static void *burn(void *arg)
 {
-    unsigned long acc = (unsigned long)(long)arg;
-    for (unsigned i = 0; i < SPIN_ROUNDS; i++)
-        acc = acc * 6364136223846793005ul + 1442695040888963407ul;
+    unsigned long acc = burn_n(spin_rounds, (unsigned long)(long)arg);
     spin_sink += acc;
     return (void *)acc;
 }
@@ -89,6 +123,8 @@ static long timed_batch(int n)
 {
     pthread_t th[8];
     long t0 = mono_ms();
+    /* Default stack (8 MiB) on purpose here: this is the batch that proves the
+     * DEFAULT is usable, not just some small size chosen to fit. */
 #ifdef THR_NEGCTL_SERIAL
     /* THE NEGATIVE CONTROL: create and join one at a time. Everything else about
      * the program is identical -- same threads, same work, same joins -- and the
@@ -214,10 +250,12 @@ int main(void)
     printf("thrtest: start\n");
 
     /* --- 1. concurrency, by wall clock ---------------------------------- */
+    calibrate();
+    printf("thrtest: calibrated to %lu rounds/thread\n", spin_rounds);
     long t1 = timed_batch(1);
     long t4 = timed_batch(4);
     printf("thrtest: T1=%ldms T4=%ldms sink=%lu\n", t1, t4, spin_sink);
-    check(t1 > 150, "baseline long enough to time (>150ms)");
+    check(t1 > 400, "baseline long enough to time (>400ms, i.e. tens of ticks)");
     /* Four threads on four cores. Require T4 < 2*T1 -- a wide margin against
      * TCG jitter, and still impossible if they serialised (that is T4 ~= 4*T1). */
     check(t1 > 0 && t4 < 2 * t1, "4 threads finished in <2x the time of 1 (genuine parallelism)");
@@ -271,19 +309,33 @@ int main(void)
         check(ok, "join returned each thread's exit value");
     }
 
-    /* --- 4b. detach frees without a join ---------------------------------- */
+    /* --- 4b. detach frees without a join ----------------------------------
+     *
+     * EIGHT, not sixteen, and the number is a finding rather than a taste. Each
+     * thread stack is one mmap and c/kernel/mm/vma.h caps an address space at
+     * VMA_MAXAREA = 16 areas -- of which the program image's stack and libc's
+     * malloc arena already hold some. Sixteen concurrent threads does not fail
+     * as "too many threads", it fails as pthread_create returning EAGAIN partway
+     * through, which is exactly the sort of limit a test should be sized under
+     * and a report should name. Small stacks too: 128 KiB is plenty for a
+     * worker that increments a counter, and it also puts
+     * pthread_attr_setstacksize on the tested path. */
     {
         long before = sys(SYS_THREAD_INFO, THRINFO_SLOTS, 0, 0);
+        pthread_attr_t a;
+        pthread_attr_init(&a);
+        pthread_attr_setstacksize(&a, 128 * 1024);
         detached_done = 0;
         int made = 0;
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; i < 8; i++) {
             pthread_t t;
-            if (pthread_create(&t, 0, detached_worker, 0) != 0) break;
+            if (pthread_create(&t, &a, detached_worker, 0) != 0) break;
 #ifndef THR_NEGCTL_LEAK
             pthread_detach(t);
 #endif
             made++;
         }
+        pthread_attr_destroy(&a);
         /* Wait for them to finish, then let the last exits settle. */
         for (int i = 0; i < 500 && __atomic_load_n(&detached_done, __ATOMIC_SEQ_CST) < made; i++)
             usleep(10000);
@@ -291,20 +343,24 @@ int main(void)
         long after = sys(SYS_THREAD_INFO, THRINFO_SLOTS, 0, 0);
         printf("thrtest: detach slots %ld -> %ld (%d threads, %d ran)\n",
                before, after, made, detached_done);
-        check(made == 16 && detached_done == 16, "16 detached threads all ran");
+        check(made == 8 && detached_done == 8, "8 detached threads all ran");
         check(after <= before, "detached threads freed their descriptors with no join");
     }
 
     /* --- 4c. the leak check ----------------------------------------------- */
     {
         long slots0 = sys(SYS_THREAD_INFO, THRINFO_SLOTS, 0, 0);
+        pthread_attr_t a;
+        pthread_attr_init(&a);
+        pthread_attr_setstacksize(&a, 128 * 1024);
         const int CYCLES = 2000;
         int ok = 1;
         for (int i = 0; i < CYCLES; i++) {
             pthread_t t; void *r = 0;
-            if (pthread_create(&t, 0, ret_worker, (void *)(long)i) != 0) { ok = 0; break; }
+            if (pthread_create(&t, &a, ret_worker, (void *)(long)i) != 0) { ok = 0; break; }
             if (pthread_join(t, &r) != 0) { ok = 0; break; }
         }
+        pthread_attr_destroy(&a);
         long slots1 = sys(SYS_THREAD_INFO, THRINFO_SLOTS, 0, 0);
         long created = sys(SYS_THREAD_INFO, THRINFO_CREATED, 0, 0);
         long reaped  = sys(SYS_THREAD_INFO, THRINFO_REAPED, 0, 0);

@@ -8,6 +8,8 @@
 #include "vmm.h"
 #include "mm.h"           /* mm_syscall(SYS_MUNMAP, ...): a thread stack is an mmap */
 #include "pit.h"
+#include "percpu.h"        /* the BKL drop around the TLB shootdown */
+#include "tlb.h"           /* tlb_flush_all(): threads made cross-core unmap ordinary */
 #include "kprintf.h"
 #include "logit_abi.h"
 /* Path-qualified for the reason spelled out at the top of c/kernel/exec/
@@ -151,6 +153,75 @@ int uthread_self(void)
     return u ? tid : -1;
 }
 
+/* ===========================================================================
+ * THE THING THREADS MADE ORDINARY: unmapping a page from an address space that
+ * is LIVE ON ANOTHER CORE.
+ *
+ * This was reproduced, not anticipated. thrtest's detach section faulted at
+ * -smp 4 and did not at -smp 1, on a read of %fs:16 that returned 0 from a page
+ * whose contents had definitely been written. The mechanism:
+ *
+ *   1. a thread ends; the kernel unmaps its stack region and the VMA allocator
+ *      hands the SAME virtual range back to the very next pthread_create,
+ *      because vma_reserve() takes the first free gap;
+ *   2. the new thread's control block is written there by the creating thread,
+ *      on ITS core, through a fresh fault -- a NEW physical frame;
+ *   3. the new thread is dispatched onto a core that still holds the OLD
+ *      translation for that address in its TLB, and reads the OLD frame.
+ *
+ * Nothing about that is new; what is new is that it can HAPPEN. Before threads,
+ * an address space had exactly one thread, so nobody could be running in a
+ * space while it was being unmapped from. The mm line reached the same
+ * conclusion from the other direction -- reclaim was the first thing that could
+ * unmap a page from a process running on another core, and its answer was to
+ * SKIP such pages, which is available to reclaim and not to a thread exiting.
+ *
+ * WHY THE BIG KERNEL LOCK IS DROPPED AROUND THE SHOOTDOWN, which looks alarming
+ * and is mandatory: c/kernel/cpu/tlb.h states the constraint outright -- a core
+ * spinning for the BKL does so with IF=0 and CANNOT service the shootdown IPI,
+ * so an initiator holding the BKL waits for an acknowledgement that can never
+ * come. Dropping it is what makes every other core able to answer. The window
+ * is safe here because by this point this thread's descriptor is already in its
+ * final state (EXITED with the return value stored, or freed) -- there is no
+ * half-updated structure for another core to observe, and this thread is never
+ * going back to ring 3.
+ *
+ * WHAT THIS DOES NOT CLOSE, stated rather than left to be discovered: the
+ * frames are released by vmm_unmap_range_in BEFORE this runs, so there is a
+ * window -- from the BKL being dropped to the last acknowledgement -- in which
+ * a freed frame could be reallocated while a stale translation to it still
+ * exists on some core. It is microseconds wide and needs a specific
+ * interleaving, against a failure that was previously deterministic. Closing it
+ * properly means flushing inside munmap, before the frames go back to the PMM,
+ * which is c/kernel/mm/'s to do and not this line's. Reported, not patched from
+ * the outside.
+ * ========================================================================== */
+static void tlb_shootdown_after_unmap(void)
+{
+    uint64_t fl;
+    /* THIS core keeps IF=0 for the whole window, which is the same discipline
+     * bkl_hlt_wait() uses and for the same reason: with the BKL released and
+     * in_kernel cleared, a nested interrupt here would find this core not in
+     * the kernel and try to acquire a lock we are between states on. It is the
+     * OTHER cores that need to be able to take the IPI, and dropping the BKL is
+     * precisely what frees them to -- a core spinning for it does so with IF=0
+     * and would never acknowledge. */
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
+    this_cpu()->in_kernel = 0;
+    spin_unlock(&g_bkl);
+
+    tlb_flush_all();
+    /* And the lazy half, which is the one that cannot be lost: tlb_flush_all()
+     * abandons an unacknowledged core, and two threads of one process share a
+     * cr3 so the context switch would not otherwise reload it. See the
+     * g_tlb_gen block in c/kernel/sched/sched.c. */
+    sched_tlb_gen_bump();
+
+    spin_lock(&g_bkl);
+    this_cpu()->in_kernel = 1;
+    if (fl & 0x200) __asm__ volatile ("sti");
+}
+
 /* --- exit ---------------------------------------------------------------- */
 
 void uthread_release_self(uint64_t retval)
@@ -184,7 +255,10 @@ void uthread_release_self(uint64_t retval)
      * Outside the lock: mm_syscall walks and edits page tables, and g_ut_lock
      * is an irqsave spinlock -- the lock order in this kernel puts mm below
      * everything, and taking it under a leaf lock is how the orders reverse. */
-    if (base && len) mm_syscall(SYS_MUNMAP, (long)base, (long)len, 0);
+    if (base && len) {
+        mm_syscall(SYS_MUNMAP, (long)base, (long)len, 0);
+        tlb_shootdown_after_unmap();
+    }
 
     /* Outside the lock for the reason the g_join_wq comment gives: the joiner
      * holds g_join_wq.lock while it takes g_ut_lock, so waking with g_ut_lock
@@ -319,6 +393,22 @@ static long ut_create(const struct logit_thread_spec *uspec)
     uint64_t words[2] = { s.arg, s.tls };
     if (user_copy_to((void *)rsp, words, sizeof words) < 0) return THR_E_ARG;
 
+    /* g_ut_lock IS HELD ACROSS thread_create_user(), and that is not laziness.
+     *
+     * thread_create_user() splices the new thread onto the SHARED run ring, so
+     * another core can dispatch it before this function has returned -- and the
+     * new thread's very first kernel entry looks itself up BY TID. With the
+     * descriptor published before its tid is filled in, that lookup misses,
+     * uthread_self() concludes it is an unregistered main thread and allocates
+     * a SECOND descriptor for it, and the first one is left LIVE forever with a
+     * stack nobody will ever unmap. The process then never exits, because
+     * uthread_proc_live() keeps counting a thread that is already gone.
+     *
+     * Holding the lock across the create makes "the descriptor exists" and "the
+     * descriptor has its tid" the same event, which is what every reader
+     * assumes. Lock order stays g_ut_lock -> g_sched_lock -> g_kheap_lock (the
+     * kstack allocation), which is the direction everything else in the tree
+     * takes them; nothing takes them the other way. */
     uint64_t f = spin_lock_irqsave(&g_ut_lock);
     if (ut_proc_count_locked(p->pid, 0) >= LOGIT_THREADS_MAX) {
         spin_unlock_irqrestore(&g_ut_lock, f);
@@ -329,25 +419,18 @@ static long ut_create(const struct logit_thread_spec *uspec)
     u->pid = p->pid;
     u->stack_base = s.stack_base;
     u->stack_len  = s.stack_len;
-    spin_unlock_irqrestore(&g_ut_lock, f);
 
     /* Same struct proc, same cr3 -- that is what makes this a thread and not a
-     * process. thread_create_user() splices it onto the shared run ring, so it
-     * can be picked by ANY core, including one that is not this one; the
-     * descriptor is already in the table with its stack recorded, so a thread
-     * that starts and exits before this function returns still cleans up. */
+     * process. */
     int tid = thread_create_user(p->name, s.entry, rsp, p, p->cr3);
     if (tid < 0) {
-        uint64_t f2 = spin_lock_irqsave(&g_ut_lock);
         ut_free_locked(u);
-        spin_unlock_irqrestore(&g_ut_lock, f2);
+        spin_unlock_irqrestore(&g_ut_lock, f);
         return THR_E_NOMEM;
     }
-
-    uint64_t f3 = spin_lock_irqsave(&g_ut_lock);
     u->tid = tid;
     g_created++;
-    spin_unlock_irqrestore(&g_ut_lock, f3);
+    spin_unlock_irqrestore(&g_ut_lock, f);
     return tid;
 }
 
@@ -580,6 +663,11 @@ long uthread_syscall(long num, long a, long b, long c)
 
     case SYS_SET_TLS: {
         uint64_t v = (uint64_t)a;
+        /* The query. See the SYS_SET_TLS note in logit_abi.h: the ELF loader
+         * installs a thread pointer for a program's main thread and mini-libc
+         * installs one for every thread it creates, and the second must be able
+         * to find out whether the first already happened. */
+        if (a == -1) return (long)sched_current_fsbase();
         /* A base of 0 is "no TLS" and is always allowed (that is what every
          * thread starts with). Anything else must be memory the caller owns,
          * or a process could point %fs at the kernel and let the compiler's

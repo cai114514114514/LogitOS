@@ -935,6 +935,21 @@ struct logit_setting {
 
 /* (fsbase) -> 0, or -1. Set the calling thread's %fs base -- the TLS pointer
  * `__thread` and every pthread_getspecific() resolve against.
+ * (-1) -> QUERY: the base currently installed, or 0 if there is none.
+ *
+ * The query exists because there are now TWO things that can install a thread
+ * pointer and they must not fight. The ELF loader (c/kernel/exec/elf.c) lays
+ * out and installs one from PT_TLS for a program's MAIN thread -- it is the
+ * only thing that can, since only the loader has the image -- and mini-libc
+ * installs one for every thread it creates. A libc that could not ask would
+ * have to assume, and assuming "none" means overwriting the loader's block on
+ * the first pthread call, silently discarding any `__thread` value main() had
+ * already written. Ring 3 cannot read the base itself (RDFSBASE needs
+ * CR4.FSGSBASE, which is not set here), and reading %fs:0 to find out is not a
+ * test: if the base is 0 that is a load from linear address 0.
+ *
+ * Same "negative argument queries" shape as SYS_UI_DARK and SYS_CLOCK_INFO. -1
+ * is unambiguous: a thread pointer is a user address, so it can never be -1.
  *
  * WHY THE MSR (IA32_FS_BASE, 0xC0000100) AND NOT `wrfsbase`.
  * cpufeat.c does detect `fsgsbase` and the boot log does list it as present, so

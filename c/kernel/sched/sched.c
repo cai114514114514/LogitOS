@@ -100,6 +100,75 @@ static volatile unsigned long g_blocked = 0;
 /* M30: every live thread, on the ring or not. Guarded by g_sched_lock. */
 static struct thread *g_all = NULL;
 
+/* ==========================================================================
+ * M30: THE LAZY HALF OF THE TLB SHOOTDOWN.
+ *
+ * c/kernel/cpu/tlb.c's tlb_flush_all() is the eager half, and on its own it is
+ * NOT ENOUGH -- which was found by watching it fail rather than by reading it.
+ * Two reasons, and they compound:
+ *
+ *   1. It GIVES UP SILENTLY. It spins a bounded number of times for the other
+ *      cores' acknowledgements and then returns anyway, because an unbounded
+ *      wait would deadlock against a core spinning for the BKL with IF=0. Its
+ *      own comment says this is safe "since every current use pairs the
+ *      shootdown with a CR3 reload".
+ *
+ *   2. THAT PAIRING DOES NOT HOLD FOR THREADS. schedule() reloads CR3 only when
+ *      the incoming thread's address space DIFFERS from the outgoing one's --
+ *      and two threads of one process have the SAME cr3. So the one thing that
+ *      was supposed to clean up after an unacknowledged shootdown is precisely
+ *      the thing threads skip.
+ *
+ * The observed failure: a thread stack was unmapped, the VMA allocator handed
+ * the same range straight back to the next pthread_create, the creating thread
+ * wrote the new thread's control block into a fresh frame, and the new thread
+ * was dispatched onto a core still holding the old translation -- reading a
+ * frame that had been freed. Reproducible at -smp 4, never at -smp 1.
+ *
+ * So: a global generation counter, bumped after any unmap that could leave a
+ * stale entry on another core, and a per-core record of the generation that
+ * core has flushed at. A core whose record is behind reloads CR3 on its way
+ * into the next thread, whether or not the address space changed. That needs no
+ * IPI, cannot be lost, and costs one comparison per context switch on a machine
+ * where nothing is unmapping.
+ *
+ * The counter is GLOBAL rather than per-address-space, which over-flushes: an
+ * unmap in one process makes every core reload once. Unmaps of this kind happen
+ * when a thread ends, a CR3 reload is tens of cycles, and a per-space table
+ * would need a lifetime rule for space ids. Cheap and obviously correct beat
+ * precise and subtle here.
+ *
+ * WHAT IS STILL NOT COVERED, and it is the eager half's job: a thread ALREADY
+ * RUNNING in ring 3 on another core, which takes no context switch and so never
+ * consults this. tlb_flush_all() is what reaches that thread, and it is best
+ * effort. Closing it completely means flushing inside munmap before the frames
+ * go back to the PMM -- in c/kernel/mm/, not here.
+ * ========================================================================== */
+static volatile unsigned long g_tlb_gen;
+static unsigned long g_cpu_tlb_gen[PERCPU_MAXCPU];
+
+void sched_tlb_gen_bump(void)
+{
+    __atomic_add_fetch(&g_tlb_gen, 1, __ATOMIC_SEQ_CST);
+}
+
+/* Called at every switch site with `reloaded` set if CR3 was just written
+ * anyway (an address-space change already flushes). Caller holds g_sched_lock
+ * with IF off, so the per-core slot needs no lock of its own. */
+static inline void tlb_gen_sync(struct cpu *me, int reloaded)
+{
+    unsigned long gen = __atomic_load_n(&g_tlb_gen, __ATOMIC_ACQUIRE);
+    int idx = me->index;
+    if (idx < 0 || idx >= PERCPU_MAXCPU) return;
+    if (g_cpu_tlb_gen[idx] == gen) return;
+    if (!reloaded) {
+        uint64_t cr3;
+        __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    }
+    g_cpu_tlb_gen[idx] = gen;
+}
+
 /* Both under g_sched_lock. all_unlink() runs in thread_exit() BEFORE the thread
  * joins dead_threads, so nothing can look up a struct that schedule() is about
  * to kfree -- which is the whole reason lookups go by INTEGER id and not by a
@@ -482,8 +551,17 @@ __attribute__((noinline)) void schedule(void)
         switches++;
         if (next->kstack_top)
             percpu_tss_set_rsp0(next->kstack_top);
-        if (next->cr3 && next->cr3 != prev->cr3)
-            vmm_switch(next->cr3);          /* enter the next thread's address space */
+        {   /* M30: force a CR3 reload if this core is behind on unmaps -- see
+             * the g_tlb_gen block above. Two threads of one process share a
+             * cr3, so the reload below does NOT happen for them, and that is
+             * exactly the case that needs it. */
+            int reloaded = 0;
+            if (next->cr3 && next->cr3 != prev->cr3) {
+                vmm_switch(next->cr3);      /* enter the next thread's address space */
+                reloaded = 1;
+            }
+            tlb_gen_sync(me, reloaded);
+        }
         /* M30: the TLS pointer. Note this is NOT covered by the cr3 check above
          * and must not be folded into it -- two threads of one process have the
          * SAME cr3 and DIFFERENT TLS, which is the entire case this exists for. */
@@ -553,8 +631,14 @@ void thread_exit(void)
     switches++;
     if (next->kstack_top)
         percpu_tss_set_rsp0(next->kstack_top);
-    if (next->cr3 && next->cr3 != dead->cr3)
-        vmm_switch(next->cr3);          /* leave the dying app's space */
+    {
+        int reloaded = 0;
+        if (next->cr3 && next->cr3 != dead->cr3) {
+            vmm_switch(next->cr3);      /* leave the dying app's space */
+            reloaded = 1;
+        }
+        tlb_gen_sync(me, reloaded);
+    }
     if (next->fsbase != dead->fsbase) fsbase_load(next->fsbase);
     /* Drop the BKL before the switch (the dead thread never resumes to release it);
      * the incoming thread re-acquires it (schedule tail / kthread_bootstrap) or
@@ -646,8 +730,14 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
     switches++;
     if (next->kstack_top)
         percpu_tss_set_rsp0(next->kstack_top);
-    if (next->cr3 && next->cr3 != self->cr3)
-        vmm_switch(next->cr3);
+    {
+        int reloaded = 0;
+        if (next->cr3 && next->cr3 != self->cr3) {
+            vmm_switch(next->cr3);
+            reloaded = 1;
+        }
+        tlb_gen_sync(me, reloaded);
+    }
     if (next->fsbase != self->fsbase) fsbase_load(next->fsbase);
 
     /* Same BKL hand-off as schedule(): drop before the switch, the incoming

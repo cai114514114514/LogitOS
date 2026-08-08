@@ -111,6 +111,13 @@ uint64_t sched_current_fsbase(void);
  * the descriptor and the MSR. See struct thread::fsbase in sched.c. */
 void sched_set_fsbase(uint64_t fsbase);
 
+/* Tell the scheduler that a mapping was removed from SOME address space, so
+ * every core reloads CR3 on its way into the next thread. The lazy half of the
+ * TLB shootdown; the long comment above g_tlb_gen in sched.c says why the eager
+ * half (tlb_flush_all) is not sufficient on its own now that two threads can
+ * share a cr3 and therefore skip the reload that used to clean up after it. */
+void sched_tlb_gen_bump(void);
+
 unsigned long sched_slices_of(struct thread *t);  /* dispatches: the sleep-vs-spin metric */
 int  sched_thread_id(struct thread *t);
 unsigned long sched_blocked_count(void);          /* threads currently parked */

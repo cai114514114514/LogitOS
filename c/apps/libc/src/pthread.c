@@ -79,18 +79,42 @@ static inline int xchg(volatile int *p, int v)
  * `__thread` writes land inside the control block.
  * ------------------------------------------------------------------------- */
 
-/* __weak__, not `weak`. c/apps/libc/include/features.h line 4 defines a
- * lowercase macro `weak` as __attribute__((__weak__)), and the QuickJS/browser
- * build pulls that header into every TU with -include -- so the plain spelling
- * expands to __attribute__((__attribute__((__weak__)))) and does not compile.
- * The reserved spelling cannot be macro-expanded, which is what it is for. */
 extern char __logit_tls_start[] __attribute__((__weak__));
 extern char __logit_tdata_end[] __attribute__((__weak__));
 extern char __logit_tls_end[]   __attribute__((__weak__));
 
+/* WHAT SITS AT THE THREAD POINTER, and why libc's own state is not in it.
+ *
+ * The x86-64 psABI's variant-II layout puts a self-pointer at %fs:0 and a dtv
+ * slot at %fs:8, with thread-local data growing DOWNWARD from the thread
+ * pointer. c/kernel/exec/elf.c's loader builds exactly that for a program's
+ * main thread, from PT_TLS, and reserves TP_HEAD bytes above the thread pointer
+ * for a control block -- so the shape is not this file's to choose, it is a
+ * shape this file has to MATCH.
+ *
+ * libc's per-thread state does not fit in what the loader reserves and should
+ * not try to: it is 64 key slots plus bookkeeping, and growing it would mean
+ * growing a constant in a kernel file every time. So the thread pointer carries
+ * a POINTER to it, at %fs:16 -- the first slot after self and dtv, inside the
+ * area the loader already zeroes. One extra indirection on pthread_getspecific,
+ * and the two layouts stop being coupled.
+ *
+ * The consequence that makes this worth it: a program whose main thread got its
+ * thread pointer from the LOADER keeps it. Installing a second one would
+ * discard whatever `__thread` values main() had already written, at whatever
+ * moment the program first touched pthreads -- which is exactly the kind of bug
+ * that gets blamed on the program. */
+#define TP_HEAD 256              /* must match `tcb` in c/kernel/exec/elf.c */
+
+struct tcb;
+
+struct tp_head {
+    void       *self;            /* %fs:0  -- the psABI self-pointer */
+    void       *dtv;             /* %fs:8  -- nothing dynamic here */
+    struct tcb *ext;             /* %fs:16 -- libc's block, below */
+};
+
 struct tcb {
-    struct tcb   *self;          /* MUST be offset 0: %fs:0 is the self-pointer the
-                                  * compiler's own TLS sequence loads */
     unsigned long tid;
     void        *(*start)(void *);
     void         *arg;
@@ -99,11 +123,21 @@ struct tcb {
     void         *keys[PTHREAD_KEYS_MAX];
 };
 
+_Static_assert(sizeof(struct tp_head) <= TP_HEAD,
+               "the psABI head no longer fits the loader's reserved TCB area");
+
 static inline struct tcb *self_tcb(void)
 {
     struct tcb *t;
-    __asm__ volatile ("mov %%fs:0, %0" : "=r"(t));
+    __asm__ volatile ("mov %%fs:16, %0" : "=r"(t));
     return t;
+}
+
+static inline uintptr_t self_tp(void)
+{
+    uintptr_t tp;
+    __asm__ volatile ("mov %%fs:0, %0" : "=r"(tp));
+    return tp;
 }
 
 /* A sentinel `__thread` object owned by this file. Its job is not to hold a
@@ -124,43 +158,66 @@ static size_t tls_initsize(void)
     return (size_t)(__logit_tdata_end - __logit_tls_start);
 }
 
-/* Lay a TLS block + control block out inside [mem, mem+len) and return the
- * thread pointer. The thread pointer is the TOP of the TLS block, which is what
- * the negative displacements the compiler emitted are relative to; the
- * ALIGN(64) in the linker script is what makes "top of the block" equal
- * "block + size" without having to know PT_TLS's p_align. */
-static struct tcb *tls_layout(void *mem, size_t len, void **stack_top_out)
+/* Lay [TLS image][psABI head][libc block] out at the top of [mem, mem+len) and
+ * return the thread pointer. The thread pointer is the TOP of the TLS image,
+ * which is what the negative displacements the compiler emitted are relative
+ * to; the ALIGN(64) in the linker script is what makes "top of the image" equal
+ * "image + size" without having to know PT_TLS's p_align. Everything below the
+ * image is the thread's stack. Returns 0 if the region cannot hold it. */
+static uintptr_t tls_layout(void *mem, size_t len, void **stack_top_out,
+                            struct tcb **tcb_out)
 {
     uintptr_t hi  = (uintptr_t)mem + len;
-    uintptr_t tp  = (hi - sizeof(struct tcb)) & ~(uintptr_t)63;
+    uintptr_t ext = (hi - sizeof(struct tcb)) & ~(uintptr_t)63;
+    uintptr_t tp  = (ext - TP_HEAD) & ~(uintptr_t)63;
     size_t    tsz = tls_size();
-    uintptr_t lo  = tp - tsz;
+    uintptr_t lo;
 
-    if (lo <= (uintptr_t)mem) return NULL;            /* the region cannot hold it */
+    if (ext < (uintptr_t)mem || tp < (uintptr_t)mem || tsz > tp) return 0;
+    lo = tp - tsz;
+    if (lo <= (uintptr_t)mem) return 0;
 
     if (tsz) {
         memcpy((void *)lo, __logit_tls_start, tls_initsize());
         memset((void *)(lo + tls_initsize()), 0, tsz - tls_initsize());
     }
-    struct tcb *t = (struct tcb *)tp;
-    memset(t, 0, sizeof *t);
-    t->self = t;
+    memset((void *)tp, 0, TP_HEAD);
+    memset((void *)ext, 0, sizeof(struct tcb));
+    {
+        struct tp_head *h = (struct tp_head *)tp;
+        h->self = (void *)tp;
+        h->dtv  = 0;
+        h->ext  = (struct tcb *)ext;
+    }
     if (stack_top_out) *stack_top_out = (void *)(lo & ~(uintptr_t)15);
-    return t;
+    if (tcb_out)       *tcb_out = (struct tcb *)ext;
+    return tp;
 }
 
-static int  tls_ready;                     /* the main thread has a TCB */
-static char main_tls[4096 + sizeof(struct tcb) + 64];
+static int  tls_ready;                     /* this thread's libc block is reachable */
+static char main_tls[4096 + TP_HEAD + sizeof(struct tcb) + 64];
+static struct tcb main_ext;
 
-/* Give the MAIN thread a control block. Everything else in this file needs one
- * (pthread_self, the key table, errno-free bookkeeping), and the main thread
- * arrives from crt0 with %fs pointing at 0.
+/* Make the CALLING (main) thread's libc control block reachable through %fs:16.
  *
- * Out of a STATIC buffer rather than malloc, and that is not squeamishness: the
- * malloc lock below is a futex whose slow path calls into this file, so a
- * bootstrap that allocated would be one edit away from a cycle. 4 KiB of static
- * TLS is more than any program in this tree uses; a program needing more is
- * refused loudly here rather than silently corrupted.
+ * TWO CASES, and asking which one applies is the whole reason SYS_SET_TLS has a
+ * query:
+ *
+ *   THE LOADER ALREADY INSTALLED A THREAD POINTER. c/kernel/exec/elf.c builds
+ *   one from the program's PT_TLS and exec.c installs it, so a program launched
+ *   through execve arrives with `__thread` ALREADY WORKING. All this has to do
+ *   then is hang its own block off %fs:16, inside the area the loader reserved
+ *   and zeroed. Installing a SECOND thread pointer here would throw away the
+ *   loader's block along with anything main() had already written into it --
+ *   and would do it at whatever moment the program first touched pthreads.
+ *
+ *   THERE IS NO THREAD POINTER. A program with no PT_TLS, or one started down a
+ *   path that does not go through the loader's TLS pass, arrives with %fs at 0,
+ *   so libc lays a block out itself and installs it.
+ *
+ * Out of a STATIC buffer rather than malloc in the second case, and that is not
+ * squeamishness: the malloc lock below is a futex whose slow path is in this
+ * file, so a bootstrap that allocated would be one edit away from a cycle.
  *
  * Not thread-safe, and does not need to be: it runs before any thread exists.
  * Every entry point that can be the FIRST thing a program calls goes through
@@ -169,34 +226,44 @@ static int tls_init_main(void)
 {
     if (tls_ready) return 0;
 
-    if (tls_size() + sizeof(struct tcb) + 64 > sizeof main_tls) {
-        static const char msg[] =
-            "libc: this program's thread-local storage exceeds the built-in "
-            "main-thread block; raise main_tls in c/apps/libc/src/pthread.c\n";
-        write(2, msg, sizeof msg - 1);
-        return -1;
+    long cur = sys(SYS_SET_TLS, -1, 0, 0);        /* what is installed right now? */
+    if (cur > 0) {
+        ((struct tp_head *)(uintptr_t)cur)->ext = &main_ext;   /* adopt it */
+    } else {
+        if (tls_size() + TP_HEAD + sizeof(struct tcb) + 64 > sizeof main_tls) {
+            static const char msg[] =
+                "libc: this program's thread-local storage exceeds the built-in "
+                "main-thread block; raise main_tls in c/apps/libc/src/pthread.c\n";
+            write(2, msg, sizeof msg - 1);
+            return -1;
+        }
+        uintptr_t tp = tls_layout(main_tls, sizeof main_tls, NULL, NULL);
+        if (!tp) return -1;
+        if (sys(SYS_SET_TLS, (long)tp, 0, 0) != 0) return -1;
     }
-    struct tcb *t = tls_layout(main_tls, sizeof main_tls, NULL);
-    if (!t) return -1;
-    if (sys(SYS_SET_TLS, (long)t, 0, 0) != 0) return -1;
-    t->tid = (unsigned long)sys(SYS_THREAD_SELF, 0, 0, 0);
     tls_ready = 1;
+    self_tcb()->tid = (unsigned long)sys(SYS_THREAD_SELF, 0, 0, 0);
 
-    /* THE CHECK THE LINKER SCRIPT IS VERIFIED BY. `tls_sentinel` is a real
+    /* THE CHECK THAT THE TLS LAYOUT IS REAL. `tls_sentinel` is a genuine
      * `__thread` object, so its address is computed by the compiler from %fs
-     * and a displacement the LINKER chose. If that lands inside the block laid
-     * out above, the two agree. If the script was not linked, tls_size() is 0,
-     * the displacement is still negative, and the address lands in or below the
-     * TCB -- caught here, before anything writes through it.
+     * and a displacement the LINKER chose. Asking whether it lands below the
+     * thread pointer, and not implausibly far below it, tests whichever
+     * mechanism produced the block: the loader's layout if the loader made it,
+     * or the linker script plus this file's arithmetic if libc did.
+     *
+     * With neither -- no PT_TLS block from the loader AND no linker script --
+     * tls_size() is 0, the displacement is still negative, and the address
+     * lands below the thread pointer in nobody's memory. Caught here, before
+     * anything writes through it.
      *
      * Reported on stderr and NOT made fatal: a program that never touches a
-     * `__thread` variable is perfectly usable without the script, and killing
-     * it would be a worse trade than telling it. Everything else in this file
-     * lives in the TCB and keeps working either way. */
+     * `__thread` variable is perfectly usable either way, and killing it would
+     * be a worse trade than telling it. Everything else in this file lives in
+     * the block at %fs:16 and works regardless. */
     {
         uintptr_t p = (uintptr_t)&tls_sentinel;
-        uintptr_t tp = (uintptr_t)t;
-        if (!(p >= tp - tls_size() && p < tp)) {
+        uintptr_t tp = self_tp();
+        if (!(p < tp && tp - p <= 0x100000)) {
             static const char msg[] =
                 "libc: __thread is NOT usable -- link with -T c/apps/libc/logit_tls.ld "
                 "(pthread_getspecific and the rest of pthreads are unaffected)\n";
@@ -285,8 +352,9 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr,
     if (mem == MAP_FAILED) return EAGAIN;
 
     void *stack_top = NULL;
-    struct tcb *t = tls_layout(mem, len, &stack_top);
-    if (!t) { munmap(mem, len); return ENOMEM; }
+    struct tcb *t = NULL;
+    uintptr_t tp = tls_layout(mem, len, &stack_top, &t);
+    if (!tp) { munmap(mem, len); return ENOMEM; }
     t->start = start;
     t->arg   = arg;
     t->stack_base = mem;
@@ -297,7 +365,7 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr,
     spec.stack_top  = (unsigned long)(uintptr_t)stack_top;
     spec.stack_base = (unsigned long)(uintptr_t)mem;
     spec.stack_len  = (unsigned long)len;
-    spec.tls        = (unsigned long)(uintptr_t)t;
+    spec.tls        = (unsigned long)tp;
     spec.arg        = (unsigned long)(uintptr_t)arg;
 
     long tid = sys(SYS_THREAD_CREATE, (long)&spec, 0, 0);

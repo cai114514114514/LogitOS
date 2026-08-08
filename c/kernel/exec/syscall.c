@@ -33,7 +33,6 @@
 #include "settings.h"    /* settings_syscall: SYS_SETTING_* */
 #include "clipboard.h"   /* clip_syscall:   SYS_CLIP_SET / _GET / _INFO */
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
-#include "rng.h"         /* rng_syscall:    SYS_GETRANDOM */
 #include "kbench.h"      /* per-syscall accounting, off by default */
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
 
@@ -80,6 +79,10 @@ static void syscall_do(struct registers *r);
  * another process safe here (see the long comment above proc_kill()). Off, it
  * costs one load of a global and one never-taken branch per syscall. */
 long proc_syscall(long num, long a, long b, long c);
+/* The SYS_GETRANDOM back end, weak -- see the case for why. Prototyped here
+ * rather than by including c/kernel/core/rng.h so that the weakness is stated
+ * at the point that depends on it. */
+long rng_syscall(long ubuf, long len, long flags) __attribute__((weak));
 int  proc_kill_armed(void);
 void proc_kill_check(void);      /* does not return if THIS process is the victim */
 
@@ -721,7 +724,21 @@ static void syscall_do(struct registers *r)
      * GRND_* flags were arbitrated in include/abi/logit_abi.h; the back end is
      * c/kernel/core/rng.c, which is also what TLS has always used. */
     case SYS_GETRANDOM:
-        r->rax = (uint64_t)rng_syscall((long)r->rdi, (long)r->rsi, (long)r->rdx);
+        /* The NUMBER and the flags are published by this line in
+         * include/abi/logit_abi.h -- the crypto line asked for them and they
+         * were arbitrated here. The BACK END is theirs: rng_syscall() in
+         * c/kernel/core/rng.c, over the SHA-256 Hash_DRBG that has been in the
+         * kernel since the TLS work and that ring 3 could not reach.
+         *
+         * WEAK, for the reason proc.c's sock_close_owner is weak: the two
+         * halves are owned by different lines and land in different commits,
+         * and a dispatcher that hard-depends on a back end it does not own
+         * turns "their file is mid-edit" into "the kernel does not link". A
+         * build without it answers -1, which is what an unimplemented syscall
+         * answered before the number existed. */
+        r->rax = rng_syscall
+               ? (uint64_t)rng_syscall((long)r->rdi, (long)r->rsi, (long)r->rdx)
+               : (uint64_t)-1;
         return;
 
     default:
