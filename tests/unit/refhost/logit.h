@@ -1,220 +1,180 @@
-/* Host stand-in for c/apps/logit.h that RASTERIZES instead of recording.
- * Used only by tests/unit/reftest.c (the WPT reftest harness).
+/* Host stand-in for c/apps/logit.h that RASTERIZES, for the WPT reftest harness.
  *
- * WHY A SECOND SHIM. tests/unit/painthost/logit.h turns the five GUI syscalls
- * into a list of draw ops, which is what an assertion about "did the painter
- * choose alpha 128" wants. A reftest asks a different question -- are these two
- * documents the SAME PICTURE -- and that question only has an answer once the
- * ops have become pixels. So this header is the same trick with a different
- * sink: `#include "logit.h"` resolves here (via -Itests/unit/refhost, which must
- * come first on the include path) and the real c/apps/browser/browser_paint.c
- * is linked and run unmodified.
+ * WHY A SECOND SHIM (tests/unit/painthost already exists). painthost turns the
+ * five GUI syscalls into a list of draw ops, which is what an assertion about
+ * "did the painter choose alpha 128" wants. A reftest asks a different question
+ * -- are these two documents the SAME PICTURE -- and that only has an answer
+ * once the ops have become pixels. So this header is the same include-shadowing
+ * trick with a different sink: `#include "logit.h"` resolves here (via
+ * -Itests/unit/refhost, which MUST come first on the include path) and the real
+ * c/apps/browser/browser_paint.c is linked and run unmodified.
  *
- * WHAT IS SHARED WITH browser.aex AND WHAT IS NOT -- read this before believing
- * any number the harness prints:
+ * ============================================================================
+ * WHAT IS SHARED WITH browser.aex AND WHAT IS NOT.  Read this before believing
+ * any number this harness prints.  It is the credibility of every one of them.
+ * ============================================================================
  *
- *   SHARED (the real files, linked):  dom.c html_tokenizer.c html_tree.c
- *   dom_serialize.c css_engine.c css_vars.c css_extra.c layout.c
- *   browser_paint.c, LibCSS, and c/lib/gfx.
+ * The first draft of this file (commit 2b96998) MODELLED the bottom of the
+ * stack: it transcribed fb.c's four fill routines and substituted an analytic
+ * "Ahem model" for text, on the premise that neither the kernel framebuffer nor
+ * a font could be reached from a host process.  Both halves of that premise
+ * turned out to be false, and this file is the rewrite:
  *
- *   NOT SHARED (this header):  the last step, ops -> pixels. On the machine
- *   that step is the kernel's c/kernel/gui/fb.c under c/kernel/gui/wm.c's
- *   syscall cases. The four routines below are transcribed from those two
- *   files -- fb_fill_rect, fb_round_rect's boolean dx*dx+dy*dy <= r*r corner,
- *   and fb_blit_rgba's nearest-neighbour scale with src-over -- so the geometry
- *   rule is the same rule. They are a TRANSCRIPTION and not the code, and a
- *   divergence in fb.c would not be caught here.
+ *   - c/kernel/gui/fb.c COMPILES AND LINKS ON THE HOST unmodified.  Its only
+ *     undefined symbols are kmalloc/kfree, text_*, vmm_map_range and the
+ *     virtio_gpu_* probe -- and drawing into a `struct surface` via fb_target()
+ *     never touches the last two.  So the harness links the REAL painter
+ *     primitives instead of a transcription of them.
  *
- *   NOT SHARED (and this is the big one):  TEXT. On the machine a glyph comes
- *   from c/lib/text's TrueType rasterizer against /fonts/{ui,mono}.ttf, and
- *   text_measure is a syscall into the same metrics. Ring 3 cannot be linked to
- *   that here, and every existing host test in this tree already substitutes a
- *   metric stub (`len * (px/2)` in paint_test.c). This harness substitutes the
- *   AHEM model instead -- see ref_glyph below -- because that is what the WPT
- *   corpus is written against, not because it is what the browser does.
+ *   - c/kernel/gui/text.c AND c/lib/text/* LINK TOO, against a vfs_read() that
+ *     reads host files.  So glyph rasterization, shaping, bidi, the glyph cache
+ *     and -- the part layout actually depends on -- text_measure() are the real
+ *     code, not a stub.  Every other host test in this tree substitutes
+ *     `len * (px/2)` here (tests/unit/paint_test.c:30); this one does not, and
+ *     it must not, because a reftest is a claim about where text ENDED UP.
+ *
+ * SHARED (the real files, linked, byte for byte the same code browser.aex runs):
+ *     the pipeline   dom.c html_tokenizer.c html_tree.c dom_serialize.c
+ *                    css_engine.c css_vars.c css_extra.c layout.c
+ *                    browser_paint.c, LibCSS, c/lib/gfx
+ *     the raster     c/kernel/gui/fb.c      (fill/round-rect/blit/clip/glyph)
+ *                    c/kernel/gui/raster.c  (the AA coverage rasterizer)
+ *                    c/lib/text/*           (ttf, cff, shape, script, bidi)
+ *                    c/kernel/gui/text.c    (text_measure + text_draw_run)
+ *     the ABI        include/abi/logit_pack.h -- the SAME generated unpack
+ *                    macros c/kernel/gui/wm.c uses, so the 16-bit coordinate
+ *                    truncation below is not an imitation of the syscall
+ *                    convention, it IS the syscall convention.
+ *
+ * NOT SHARED (and this is now the whole list):
+ *   1. c/kernel/gui/wm.c's syscall CASES -- the ~6 lines per call that unpack,
+ *      scale and clamp before calling fb_*.  Each gui_* below is a transcription
+ *      of one of them; the case it mirrors is named above it.  A divergence in
+ *      wm.c would not be caught here.  They are short and they are quoted.
+ *   2. THE WINDOW.  On the machine the browser paints into a window surface
+ *      inside a desktop, and browser.c reserves a chrome strip (address bar,
+ *      status bar) that this harness does not draw.  reftest.c paints at
+ *      scroll 0 into a bare viewport, so document coordinates ARE device
+ *      coordinates.  Both sides of a comparison get the same treatment.
+ *   3. THE FONT FILE, and this is the one real substitution.  On the machine
+ *      /fonts/ui.ttf is a Noto Sans SC subset; the WPT corpus is written
+ *      against Ahem, and cstyle carries no font-family name at all (LibCSS's
+ *      family list is dropped in css_engine.c -- only the monospace BIT
+ *      survives), so the engine physically cannot select a family.  The
+ *      harness therefore MAPS the font files: --ahem loads Ahem.ttf as the UI
+ *      font.  The rasterizer, the shaper and the metrics are unchanged real
+ *      code; only which file they are pointed at differs.  reftest.c reports
+ *      the mode on every run, and `make test-reftest-realfont` measures the
+ *      same corpus through the shipping fonts so the size of the substitution
+ *      is a number rather than a footnote.
  */
 #ifndef REFHOST_LOGIT_H
 #define REFHOST_LOGIT_H
 
 #include <stdint.h>
+#include "logit_pack.h"          /* the kernel's own generated unpack macros */
 
-/* ------------------------------------------------------------- the canvas -- */
-struct refcanvas {
-    int w, h;
-    uint32_t *px;                    /* 0x00RRGGBB, row-major */
-    int clip_on, clx0, cly0, clx1, cly1;
-};
+/* The real primitives, forward-declared rather than via fb.h/text.h so that
+ * this header can be included by browser_paint.c without dragging the kernel's
+ * include tree into the app's translation unit. Signatures are copied from
+ * c/kernel/gui/fb.h and c/kernel/gui/text.h; a mismatch is a link error, not a
+ * silent divergence. */
+void fb_fill_rect(int x, int y, int w, int h, uint32_t color);
+void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color);
+void fb_blit_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh);
+void fb_set_clip(int x, int y, int w, int h);
+void fb_clear_clip(void);
+int  text_draw_run(int x, int y, const char *s, int len, int px, int mono, uint32_t color);
 
-extern struct refcanvas ref_cv;      /* defined in tests/unit/reftest.c */
+/* The surface reftest.c is painting into. Declared here (not fb.h's full
+ * struct) so the shim can clamp to it exactly as wm.c clamps to w->surf. */
+extern int refhost_surf_w, refhost_surf_h;
 
-/* Ahem is content-insensitive by design: nearly every glyph is the same filled
- * em box, so "PASS" and "FAIL" draw identically. That is right for the corpus
- * and wrong as a general renderer, so the alternative is selectable and the
- * harness measures the difference rather than asserting it does not matter.
- * 0 = Ahem model (default), 1 = a codepoint-dependent notch pattern. */
-extern int ref_glyph_mode;
+/* ------------------------------------------------------------------------ *
+ * The five calls. Each is `pack exactly as c/apps/logit.h packs` followed by
+ * `unpack and clamp exactly as the wm.c case unpacks and clamps`. The round
+ * trip is deliberate and it is not ceremony: LOGIT_GUI_RECT_A_X masks to 16
+ * UNSIGNED bits, so a painter that hands the kernel a negative coordinate --
+ * which the browser does, for anything scrolled above the viewport -- gets it
+ * back as ~65500 and draws nothing. Reproducing that is the difference between
+ * measuring the browser and measuring an idealisation of it.
+ *
+ * S() is the UI scale; on the host ui_scale() is 100, so S(v) == v and the
+ * scaling terms below collapse. They are written out anyway, in the same form
+ * wm.c writes them (the DIFFERENCE of two converted edges, never the converted
+ * width), so that turning the harness up to a 1.5x display later is a one-line
+ * change and not a re-derivation.
+ * ------------------------------------------------------------------------ */
+#define REFHOST_S(v) (v)                 /* ui_scale() == 100 */
 
-static inline void ref_put(int x, int y, uint32_t c)
-{
-    if (x < 0 || y < 0 || x >= ref_cv.w || y >= ref_cv.h) return;
-    if (ref_cv.clip_on && (x < ref_cv.clx0 || x >= ref_cv.clx1 ||
-                           y < ref_cv.cly0 || y >= ref_cv.cly1)) return;
-    ref_cv.px[(long)y * ref_cv.w + x] = c & 0xFFFFFFu;
-}
-
-static inline uint32_t ref_get(int x, int y)
-{
-    if (x < 0 || y < 0 || x >= ref_cv.w || y >= ref_cv.h) return 0;
-    return ref_cv.px[(long)y * ref_cv.w + x] & 0xFFFFFFu;
-}
-
-/* fb_fill_rect */
-static inline void ref_fill(int x, int y, int w, int h, uint32_t c)
-{
-    if (w <= 0 || h <= 0) return;
-    if (w > 1 << 20) w = 1 << 20;
-    if (h > 1 << 20) h = 1 << 20;
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++) ref_put(x + i, y + j, c);
-}
-
-/* ------------------------------------------------------- the five syscalls -- */
+/* --- wm.c case SYS_GUI_RECT --- */
 static inline void gui_rect(int x, int y, int w, int h, unsigned color)
-{ ref_fill(x, y, w, h, (uint32_t)color); }
-
-/* fb_round_rect: the corner test is boolean, exactly as the kernel's is -- the
- * antialiased path a page's border-radius takes now goes through gfx and
- * arrives here as a BLIT, not as this call. */
-static inline void gui_rrect(int x, int y, int w, int h, int r, unsigned color)
 {
-    if (w <= 0 || h <= 0) return;
-    if (r < 0) r = 0;
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            int dx = 0, dy = 0;
-            if (i < r) dx = r - i; else if (i >= w - r) dx = i - (w - r - 1);
-            if (j < r) dy = r - j; else if (j >= h - r) dy = j - (h - r - 1);
-            if (dx && dy && dx * dx + dy * dy > r * r) continue;
-            ref_put(x + i, y + j, (uint32_t)color);
-        }
-    }
+    long a = ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF);
+    long b = ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF);
+    int rx = REFHOST_S(LOGIT_GUI_RECT_A_X(a)), ry = REFHOST_S(LOGIT_GUI_RECT_A_Y(a));
+    int rw = REFHOST_S(LOGIT_GUI_RECT_A_X(a) + LOGIT_GUI_RECT_B_W(b)) - rx;
+    int rh = REFHOST_S(LOGIT_GUI_RECT_A_Y(a) + LOGIT_GUI_RECT_B_H(b)) - ry;
+    if (rw > refhost_surf_w - rx) rw = refhost_surf_w - rx;
+    if (rh > refhost_surf_h - ry) rh = refhost_surf_h - ry;
+    fb_fill_rect(rx, ry, rw, rh, (uint32_t)color);
 }
 
+/* --- wm.c case SYS_GUI_RRECT --- */
+static inline void gui_rrect(int x, int y, int w, int h, int radius, unsigned color)
+{
+    long a = ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF);
+    long b = ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF);
+    long c = ((long)(radius & 0xFF) << 24) | (color & 0xFFFFFF);
+    int rx = REFHOST_S(LOGIT_GUI_RRECT_A_X(a)), ry = REFHOST_S(LOGIT_GUI_RRECT_A_Y(a));
+    int rw = REFHOST_S(LOGIT_GUI_RRECT_A_X(a) + LOGIT_GUI_RRECT_B_W(b)) - rx;
+    int rh = REFHOST_S(LOGIT_GUI_RRECT_A_Y(a) + LOGIT_GUI_RRECT_B_H(b)) - ry;
+    int rr = REFHOST_S(LOGIT_GUI_RRECT_C_RADIUS(c));
+    if (rw > refhost_surf_w - rx) rw = refhost_surf_w - rx;
+    if (rh > refhost_surf_h - ry) rh = refhost_surf_h - ry;
+    fb_round_rect(rx, ry, rw, rh, rr, (uint32_t)LOGIT_GUI_RRECT_C_COLOR(c));
+}
+
+/* --- wm.c case SYS_GUI_CLIP ---
+ * The kernel treats a clip covering the whole surface as "no clip" (that is
+ * what fb_clear_clip is for); a zero/negative size clips everything away. */
 static inline void gui_clip(int x, int y, int w, int h)
 {
-    if (w <= 0 || h <= 0) { ref_cv.clip_on = 1; ref_cv.clx0 = ref_cv.cly0 = 0;
-                            ref_cv.clx1 = ref_cv.cly1 = 0; return; }
-    if (x <= 0 && y <= 0 && x + w >= ref_cv.w && y + h >= ref_cv.h) {
-        ref_cv.clip_on = 0; return;                 /* full-surface clip = none */
-    }
-    ref_cv.clip_on = 1;
-    ref_cv.clx0 = x; ref_cv.cly0 = y; ref_cv.clx1 = x + w; ref_cv.cly1 = y + h;
+    long a = ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF);
+    long b = ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF);
+    int cx = REFHOST_S(LOGIT_GUI_CLIP_A_X(a)), cy = REFHOST_S(LOGIT_GUI_CLIP_A_Y(a));
+    int cw = LOGIT_GUI_CLIP_B_W(b), ch = LOGIT_GUI_CLIP_B_H(b);
+    if (cw <= 0 || ch <= 0) { fb_set_clip(0, 0, 0, 0); return; }
+    if (cx <= 0 && cy <= 0 && cx + REFHOST_S(cw) >= refhost_surf_w &&
+        cy + REFHOST_S(ch) >= refhost_surf_h) { fb_clear_clip(); return; }
+    fb_set_clip(cx, cy, REFHOST_S(cx + cw) - cx, REFHOST_S(cy + ch) - cy);
 }
 
-/* fb_blit_rgba: nearest-neighbour scale of the source into the dest rect, with
- * per-pixel src-over. This is the primitive the painter uses for EVERY blended
- * fill (a 1x1 RGBA source stretched) and for every gfx coverage mask, so its
- * rounding is load-bearing: `(s*a + d*(255-a))/255`, truncating, same as fb.c. */
-static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba,
-                            int sw, int sh)
-{
-    if (!rgba || w <= 0 || h <= 0 || sw <= 0 || sh <= 0) return;
-    if (w > 1 << 20 || h > 1 << 20) return;
-    for (long j = 0; j < h; j++) {
-        int sy = (int)(j * sh / h);
-        for (long i = 0; i < w; i++) {
-            int sx = (int)(i * sw / w);
-            const unsigned char *p = rgba + ((long)(sy * sw + sx) * 4);
-            int a = p[3];
-            if (!a) continue;
-            int px = (int)(x + i), py = (int)(y + j);
-            if (a >= 255) { ref_put(px, py, ((uint32_t)p[0] << 16) |
-                                            ((uint32_t)p[1] << 8) | p[2]); continue; }
-            uint32_t d = ref_get(px, py);
-            int br = (int)((d >> 16) & 0xFF), bg = (int)((d >> 8) & 0xFF), bb = (int)(d & 0xFF);
-            int nr = (p[0] * a + br * (255 - a)) / 255;
-            int ng = (p[1] * a + bg * (255 - a)) / 255;
-            int nb = (p[2] * a + bb * (255 - a)) / 255;
-            ref_put(px, py, ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | (uint32_t)nb);
-        }
-    }
-}
-
-/* ------------------------------------------------------------------ text -- */
-/* THE AHEM MODEL, and why the harness ships it rather than a font.
- *
- * A large part of the WPT layout corpus sets `font: 25px/1 Ahem` precisely so
- * that font rendering cancels out of the comparison: Ahem's glyphs are exactly
- * specified filled rectangles, one em wide, from 0.8em above the baseline to
- * 0.2em below. A test that draws Ahem text and a reference that draws a plain
- * <div> of the same colour are then the same picture in every conforming
- * engine. third_party/wpt/fonts/ahem.ttf IS NOT IN THIS CHECKOUT (see the
- * report), so the choice was: render no glyph at all, or model the glyph.
- * Modelling it is the only option under which that whole class of reftest is
- * judgeable.
- *
- * The classes, from Ahem's own README:
- *   space, tab, newline           blank
- *   'p'                           the descender only  (0.8em .. 1.0em)
- *   0xC9 (E-acute)                the ascender only   (0.0em .. 0.8em)
- *   everything else               the full em box
- * gui_text_run's y is the TOP of the em box (browser_paint.c:476 says so), so
- * the full box is exactly (x, y, adv, px).
- *
- * Advance is one em per CODEPOINT, which is also what ref_text_measure returns
- * -- the two must agree or a line breaks in one place and paints in another. */
-static inline int ref_utf8_next(const char *s, int len, int *i)
-{
-    unsigned char c = (unsigned char)s[*i];
-    int cp, n;
-    if (c < 0x80)        { cp = c;          n = 1; }
-    else if (c < 0xE0)   { cp = c & 0x1F;   n = 2; }
-    else if (c < 0xF0)   { cp = c & 0x0F;   n = 3; }
-    else                 { cp = c & 0x07;   n = 4; }
-    if (*i + n > len) { (*i)++; return 0xFFFD; }
-    for (int k = 1; k < n; k++) cp = (cp << 6) | ((unsigned char)s[*i + k] & 0x3F);
-    *i += n;
-    return cp;
-}
-
+/* --- wm.c case SYS_GUI_TEXT_RUN ---
+ * USER_TEXT_MAX is the kernel's bounce-buffer size; a longer run is TRUNCATED
+ * on the machine, so it is truncated here. */
+#define REFHOST_USER_TEXT_MAX 4096
 static inline void gui_text_run(int x, int y, int px, int mono, unsigned color,
                                 const char *s, int len)
 {
-    (void)mono;
-    if (px < 1 || !s || len <= 0) return;
-    int i = 0;
-    while (i < len) {
-        int cp = ref_utf8_next(s, len, &i);
-        int adv = px;
-        int gy = y, gh = px;
-        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r') { x += adv; continue; }
-        if (cp == 'p') { gy = y + (px * 4) / 5; gh = px - (px * 4) / 5; }
-        else if (cp == 0xC9) { gh = (px * 4) / 5; }
-        ref_fill(x, gy, adv, gh, (uint32_t)color);
-        if (ref_glyph_mode) {
-            /* The control: punch a codepoint-dependent hole so that two runs of
-             * the same length but different text are different pictures. */
-            int q = px / 4; if (q < 1) q = 1;
-            for (int b = 0; b < 4; b++)
-                if ((cp >> b) & 1)
-                    ref_fill(x + (b & 1) * q * 2 + q / 2, gy + (b >> 1) * q + q / 4,
-                             q, q > gh ? gh : q, 0xFFFFFFu ^ (uint32_t)color);
-        }
-        x += adv;
-    }
+    if (px < 1 || px > 512) return;
+    if (len < 0) len = 0;
+    if (len > REFHOST_USER_TEXT_MAX - 1) len = REFHOST_USER_TEXT_MAX - 1;
+    text_draw_run(REFHOST_S(x), REFHOST_S(y), s, len, REFHOST_S(px), mono, color);
 }
 
-/* The metric half of the same model. reftest.c defines text_measure (which
- * layout.c calls) on top of this, so the two cannot drift. */
-static inline int ref_text_measure(const char *s, int len, int px)
+/* --- wm.c case SYS_GUI_BLIT --- */
+static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba,
+                            int sw, int sh)
 {
-    int i = 0, n = 0;
-    while (i < len) { ref_utf8_next(s, len, &i); n++; }
-    return n * px;
+    if (!rgba || sw <= 0 || sh <= 0 || sw > 4096 || sh > 4096) return;
+    if (w <= 0 || h <= 0) return;
+    int bx = REFHOST_S(x), by = REFHOST_S(y);
+    fb_blit_rgba(bx, by, REFHOST_S(x + w) - bx, REFHOST_S(y + h) - by, rgba, sw, sh);
 }
 
+/* The painter asks the compositor for the display's backing scale. 100 makes
+ * points and device pixels the same thing, which is what a reftest compares. */
 static inline int ui_scale(void) { return 100; }
 
 struct logit_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
