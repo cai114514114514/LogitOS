@@ -386,9 +386,74 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog clip notify execinfo
+       show dir chart prog clip notify execinfo entropy
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
+
+# --- /bin/pkgverify: the one CLI program that LINKS crypto -------------------
+# CLI_RULE compiles exactly one .c, and this one needs pkgsig + ed25519 + the
+# two hashes, so it gets its own rule. It is the whole user-visible surface of
+# the trust model (see c/crypto/trust/pkgsig.h); the .lpk fixtures it is tested
+# against are built below by the host `lpk` tool from the SAME objects.
+PKGV_CSRC := c/apps/coreutils/pkgverify.c c/crypto/trust/pkgsig.c \
+             c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
+PKGV_OBJ  := $(patsubst %.c,$(BUILD)/pkgvobj/%.o,$(PKGV_CSRC))
+
+$(BUILD)/pkgvobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+# The generated trust set. Same gotcha as roots_bundle.inc, same fix: without
+# this dependency, regenerating the signer keys leaves the OLD ones compiled in
+# and nothing says so.
+$(BUILD)/pkgvobj/c/crypto/trust/pkgsig.o: c/crypto/trust/pkgroots.inc
+$(BUILD)/c/crypto/trust/pkgsig.o: c/crypto/trust/pkgroots.inc
+
+$(BUILD)/pkgverify.elf: $(PKGV_OBJ) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/pkgverify.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/pkgverify.crt0c.o $(PKGV_OBJ)
+$(BUILD)/pkgverify.aex: $(BUILD)/pkgverify.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/pkgverify.elf $@ pkgverify lpk '*' 150 150 150
+
+CLI_AEX += $(BUILD)/pkgverify.aex
+
+# The host signer/inspector. Deliberately the same C the kernel verifies with
+# rather than a second implementation -- see the header of tools/lpk.c.
+$(BUILD)/lpk: tools/lpk.c c/crypto/trust/pkgsig.c c/crypto/pubkey/ed25519.c \
+              c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/trust/pkgroots.inc
+	@mkdir -p $(BUILD)
+	cc -O2 -Wall -Wextra -o $@ tools/lpk.c c/crypto/trust/pkgsig.c \
+	   c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c \
+	   -Ic/crypto -Ic/crypto/trust
+
+# Three fixtures for test-pkg-os, made by the real signer:
+#   hello.lpk    signed by the built-in development key      -> ACCEPTED
+#   tampered.lpk the same package, one payload byte flipped  -> REFUSED
+#   foreign.lpk  a perfectly valid signature by a key the machine does not
+#                hold -> REFUSED, and that is the case that distinguishes
+#                "intact" from "trusted"
+LPK_DEV_SEED := dd5e99f7c5f19186cc0053d5905b54016586d7b366672597d5b61976d965a00b
+LPK_FOREIGN_SEED := 0101010101010101010101010101010101010101010101010101010101010101
+
+$(BUILD)/pkgfix/hello.txt:
+	@mkdir -p $(BUILD)/pkgfix
+	@printf 'a signed payload, and one byte of it is about to change\n' > $@
+
+$(BUILD)/hello.lpk: $(BUILD)/lpk $(BUILD)/pkgfix/hello.txt
+	$(BUILD)/lpk sign $(LPK_DEV_SEED) hello.txt $(BUILD)/pkgfix/hello.txt $@
+
+$(BUILD)/foreign.lpk: $(BUILD)/lpk $(BUILD)/pkgfix/hello.txt
+	$(BUILD)/lpk sign $(LPK_FOREIGN_SEED) hello.txt $(BUILD)/pkgfix/hello.txt $@
+
+# The tamper is done with dd on the finished package, not by re-signing a
+# different payload: the point is a package whose signature is untouched and
+# whose bytes are not.
+$(BUILD)/tampered.lpk: $(BUILD)/hello.lpk
+	cp $< $@
+	printf 'X' | dd of=$@ bs=1 seek=230 conv=notrunc status=none
+
+LPK_FIXTURES := $(BUILD)/hello.lpk $(BUILD)/tampered.lpk $(BUILD)/foreign.lpk
 
 AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(GALLERY_AEX) $(SETTINGS_AEX) $(CLI_AEX) $(BUILD)/as.aex
 # Which browser goes on the disk. Overridable so a test can pack a deliberately
@@ -737,9 +802,12 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 # the host tests do -- a guest-only fixture would compare two different files.
 IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
 IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES)
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(LPK_FIXTURES)
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
+	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
+	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
+	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(FONT_TEXT):/fonts/text.ttf \
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
@@ -3201,3 +3269,8 @@ bench-aui: $(ISO) $(DISK)
 # c/kernel/sched/uthread.c links by existing, and mini-libc's pthread.c and
 # pthread_entry.asm are already covered by the wildcards over c/apps/libc/src.
 -include tests/thread.mk
+
+# Signing (Ed25519), password hashing, the entropy syscall and the signed
+# package format -- the half of c/crypto that is not a TLS client. See its
+# header for the target list and which three of them are negative controls.
+-include tests/crypto.mk
