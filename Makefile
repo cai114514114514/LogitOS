@@ -2932,3 +2932,8 @@ bench-aui: $(ISO) $(DISK)
 # straight into this file, a whole-file overwrite from a concurrent line
 # deleted it within the hour.
 -include tests/cssweb.mk
+
+# The CI this repository did not have: `make test-audit` (tests that cannot
+# fail) and `make ci` (build from a clean clone of HEAD, then the suites). Own
+# fragment for the same reason as every other one above.
+-include tests/ci.mk
