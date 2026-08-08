@@ -1,0 +1,82 @@
+{
+ "name": "apple#2",
+ "url": "https://www.apple.com/",
+ "started": "2026-08-09T01:10:29",
+ "verdict": "ERRORS",
+ "why": "painted 60284 changed px in 17.5s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.apple.com/",
+  "bytes": 254160,
+  "redirects": [],
+  "script_tags": 18,
+  "script_src": 13,
+  "img_tags": 99,
+  "inventory": {
+   "stylesheets": 9,
+   "script_src": 13,
+   "inline_scripts": 1,
+   "images": 42,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 23
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "timer: TypeError: not a function"
+  ],
+  "module_exceptions": [
+   "https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function"
+  ],
+  "fetch_failed": [
+   "fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 4,
+  "requests": 45,
+  "dials": 4,
+  "reused": 41,
+  "modules": 6,
+  "modules_failed": 0,
+  "heap_peak_k": 12249,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 17.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 60284,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 54171,
+  "ink_px_blank": 2359,
+  "colours": 748,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/apple#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/apple#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 9,
+   "script_src": 13,
+   "inline_scripts": 1,
+   "images": 42,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 23
+  },
+  "gap": null
+ },
+ "finished": "2026-08-09T01:11:23"
+}

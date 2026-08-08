@@ -1,0 +1,105 @@
+[wm] perf t=19639 composites=209 ns=2609228529 max=45183228 motions=18 curmoves=10 curns=527163 full=165 rects=209 cpx=69518240 fpx=69518240 presns=158972312 torn=0 defer=99 late=0 drawmax=26
+[sock] connected www.anthropic.com via ipv4 ::ffff:198.18.0.35
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=20646 composites=229 ns=2798741896 max=45183228 motions=18 curmoves=10 curns=527163 full=183 rects=229 cpx=74699680 fpx=74699680 presns=169823312 torn=0 defer=112 late=0 drawmax=26
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
+[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[sock] connected cdn.prod.website-files.com via ipv4 ::ffff:198.18.0.65
+[wm] perf t=21648 composites=235 ns=2806786184 max=45183228 motions=18 curmoves=10 curns=527163 full=187 rects=235 cpx=74761120 fpx=74761120 presns=170350497 torn=0 defer=116 late=0 drawmax=27
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[net] rx path: frames 69 irq 61 softirq 25 inline 5 poll 2 idle 0/0 halt/skip
+[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
+[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[browser] heap peak 7499K
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for d3e54v103j8qbb.cloudfront.net, alpn=http/1.1
+[tls] OCSP staple: good (d3e54v103j8qbb.cloudfront.net)
+[tls] ticket stored for d3e54v103j8qbb.cloudfront.net (138 bytes, lifetime 63813s, 1 cached)
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.schunk.f2efb3c5440a81cf.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.schunk.f2efb3c5440a81cf.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.schunk.f2efb3c5440a81cf.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.schunk.f2efb3c5440a81cf.js)
+    at 8724 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.schunk.f2efb3c5440a81cf.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at 2444 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at 316 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at call (native)
+    at n (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <eval> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+[browser] load done: 12 requests, 6 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 11 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[error] Uncaught (in promise) TypeError: not a function
+    at <anonymous> (https://www.anthropic.com/#inline-module-1)
+    at forEach (native)
+    at Ue (https://www.anthropic.com/#inline-module-1)
+    at lt (https://www.anthropic.com/#inline-module-1)
+
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[warn] jQuery.Deferred exception: cannot read property 'pageYOffset' of undefined TypeError: cannot read property 'pageYOffset' of undefined
+    at offset (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at forEach (native)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at g (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at S (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at forEach (native)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/67f55a9666b2ae2332f5f893.ant-brand.ddbc49dc.623aa35866c83dc9.js)
+    at apply (native)
+    at e (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+ undefined
+[js] uncaught in timer: TypeError: cannot read property 'pageYOffset' of undefined
+[bxfer] h2 www.anthropic.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=248
+[js] uncaught in timer: TypeError: cannot read property 'pageYOffset' of undefined
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[js] uncaught in timer: TypeError: not a function
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[bxfer] h2 www.anthropic.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=42
+[bxfer] h2 hubspotonwebflow.com:443 closed: streams=1 peak=1 frames=10/5 hpack_in=23683

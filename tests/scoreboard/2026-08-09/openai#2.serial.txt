@@ -1,0 +1,127 @@
+[wm] perf t=18658 composites=172 ns=2191075805 max=44568149 motions=18 curmoves=10 curns=482163 full=132 rects=172 cpx=58999152 fpx=58999152 presns=127838603 torn=0 defer=76 late=0 drawmax=27
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.37
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19665 composites=206 ns=2541065657 max=44568149 motions=18 curmoves=10 curns=482163 full=164 rects=206 cpx=69300592 fpx=69300592 presns=149601036 torn=0 defer=98 late=0 drawmax=27
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for openai.com, alpn=http/1.1
+[net] rx path: frames 68 irq 44 softirq 19 inline 4 poll 2 idle 0/0 halt/skip
+[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
+[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.37
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for openai.com, alpn=http/1.1
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[browser] heap peak 15097K
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[net] rx path: frames 581 irq 365 softirq 165 inline 16 poll 3 idle 0/0 halt/skip
+[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
+[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[net] rx path: frames 1093 irq 660 softirq 299 inline 29 poll 3 idle 0/0 halt/skip
+[browser] fetch failed (status 403) /_next/static/chunks/140p4r8mirfq8.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL: no error
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for openai.com, alpn=http/1.1
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[net] rx path: frames 1610 irq 863 softirq 394 inline 37 poll 3 idle 0/0 halt/skip
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
+[mm] low: 107763 frames free (420 MiB), 23274 used, 0 shared, 0 bugs
+[net] rx path: frames 2129 irq 1033 softirq 470 inline 46 poll 4 idle 0/0 halt/skip
+[mm] low: 107507 frames free (419 MiB), 23530 used, 0 shared, 0 bugs
+[mm] low: 107251 frames free (418 MiB), 23786 used, 0 shared, 0 bugs
+[mm] low: 106995 frames free (417 MiB), 24042 used, 0 shared, 0 bugs
+[mm] low: 106739 frames free (416 MiB), 24298 used, 0 shared, 0 bugs
+[mm] low: 106483 frames free (415 MiB), 24554 used, 0 shared, 0 bugs
+[net] rx path: frames 2650 irq 1191 softirq 553 inline 48 poll 4 idle 0/0 halt/skip
+[mm] low: 106227 frames free (414 MiB), 24810 used, 0 shared, 0 bugs
+[mm] low: 105971 frames free (413 MiB), 25066 used, 0 shared, 0 bugs
+[wm] perf t=48804 composites=356 ns=6244975499 max=52266979 motions=18 curmoves=10 curns=482163 full=257 rects=356 cpx=164235632 fpx=164235632 presns=370904114 torn=0 defer=100 late=0 drawmax=48
+[mm] low: 105715 frames free (412 MiB), 25322 used, 0 shared, 0 bugs
+[mm] low: 105459 frames free (411 MiB), 25578 used, 0 shared, 0 bugs
+[mm] low: 105203 frames free (410 MiB), 25834 used, 0 shared, 0 bugs
+[mm] low: 104947 frames free (409 MiB), 26090 used, 0 shared, 0 bugs
+[mm] low: 104691 frames free (408 MiB), 26346 used, 0 shared, 0 bugs
+[mm] low: 104435 frames free (407 MiB), 26602 used, 0 shared, 0 bugs
+[mm] low: 104179 frames free (406 MiB), 26858 used, 0 shared, 0 bugs
+[mm] low: 103923 frames free (405 MiB), 27114 used, 0 shared, 0 bugs
+[mm] low: 103667 frames free (404 MiB), 27370 used, 0 shared, 0 bugs
+[mm] low: 103411 frames free (403 MiB), 27626 used, 0 shared, 0 bugs
+[mm] low: 103155 frames free (402 MiB), 27882 used, 0 shared, 0 bugs
+[mm] low: 102899 frames free (401 MiB), 28138 used, 0 shared, 0 bugs
+[mm] low: 102643 frames free (400 MiB), 28394 used, 0 shared, 0 bugs
+[mm] low: 102387 frames free (399 MiB), 28650 used, 0 shared, 0 bugs
+[mm] low: 102131 frames free (398 MiB), 28906 used, 0 shared, 0 bugs
+[mm] low: 101875 frames free (397 MiB), 29162 used, 0 shared, 0 bugs
+[mm] low: 101619 frames free (396 MiB), 29418 used, 0 shared, 0 bugs
+[mm] low: 101363 frames free (395 MiB), 29674 used, 0 shared, 0 bugs
+[mm] low: 101107 frames free (394 MiB), 29930 used, 0 shared, 0 bugs
+[mm] low: 100851 frames free (393 MiB), 30186 used, 0 shared, 0 bugs
+[mm] low: 100595 frames free (392 MiB), 30442 used, 0 shared, 0 bugs
+[mm] low: 100339 frames free (391 MiB), 30698 used, 0 shared, 0 bugs
+[mm] low: 100083 frames free (390 MiB), 30954 used, 0 shared, 0 bugs
+[mm] low: 99827 frames free (389 MiB), 31210 used, 0 shared, 0 bugs
+[mm] low: 99571 frames free (388 MiB), 31466 used, 0 shared, 0 bugs
+[mm] low: 99315 frames free (387 MiB), 31722 used, 0 shared, 0 bugs
+[mm] low: 99059 frames free (386 MiB), 31978 used, 0 shared, 0 bugs
+[mm] low: 98803 frames free (385 MiB), 32234 used, 0 shared, 0 bugs
+[mm] low: 98547 frames free (384 MiB), 32490 used, 0 shared, 0 bugs
+[mm] low: 98291 frames free (383 MiB), 32746 used, 0 shared, 0 bugs
+[mm] low: 98035 frames free (382 MiB), 33002 used, 0 shared, 0 bugs
+[mm] low: 97779 frames free (381 MiB), 33258 used, 0 shared, 0 bugs
+[mm] low: 97523 frames free (380 MiB), 33514 used, 0 shared, 0 bugs
+[mm] low: 97267 frames free (379 MiB), 33770 used, 0 shared, 0 bugs
+[mm] low: 97011 frames free (378 MiB), 34026 used, 0 shared, 0 bugs
+[mm] low: 96755 frames free (377 MiB), 34282 used, 0 shared, 0 bugs
+[mm] low: 96499 frames free (376 MiB), 34538 used, 0 shared, 0 bugs
+[mm] low: 96243 frames free (375 MiB), 34794 used, 0 shared, 0 bugs
+[mm] low: 95987 frames free (374 MiB), 35050 used, 0 shared, 0 bugs
+[mm] low: 95731 frames free (373 MiB), 35306 used, 0 shared, 0 bugs
+[mm] low: 95475 frames free (372 MiB), 35562 used, 0 shared, 0 bugs
+[mm] low: 95219 frames free (371 MiB), 35818 used, 0 shared, 0 bugs
+[mm] low: 94963 frames free (370 MiB), 36074 used, 0 shared, 0 bugs
+[mm] low: 94707 frames free (369 MiB), 36330 used, 0 shared, 0 bugs
+[mm] low: 94451 frames free (368 MiB), 36586 used, 0 shared, 0 bugs
+[mm] low: 94195 frames free (367 MiB), 36842 used, 0 shared, 0 bugs
+[mm] low: 93939 frames free (366 MiB), 37098 used, 0 shared, 0 bugs
+[mm] low: 93683 frames free (365 MiB), 37354 used, 0 shared, 0 bugs
+[mm] low: 93427 frames free (364 MiB), 37610 used, 0 shared, 0 bugs
+[mm] low: 93171 frames free (363 MiB), 37866 used, 0 shared, 0 bugs
+[mm] low: 92915 frames free (362 MiB), 38122 used, 0 shared, 0 bugs
+[mm] low: 92659 frames free (361 MiB), 38378 used, 0 shared, 0 bugs
+[mm] low: 92403 frames free (360 MiB), 38634 used, 0 shared, 0 bugs
+[mm] low: 92147 frames free (359 MiB), 38890 used, 0 shared, 0 bugs
+[mm] low: 91891 frames free (358 MiB), 39146 used, 0 shared, 0 bugs
+[mm] low: 91635 frames free (357 MiB), 39402 used, 0 shared, 0 bugs
+[mm] low: 91379 frames free (356 MiB), 39658 used, 0 shared, 0 bugs
+[mm] low: 91123 frames free (355 MiB), 39914 used, 0 shared, 0 bugs
+[mm] low: 90867 frames free (354 MiB), 40170 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) InvariantError: Invariant: Expected document.currentScript to be a <script> element. Received null instead. This is a bug in Next.js.
+Error: Invariant: Expected document.currentScript to be a <script> element. Received null instead. This is a bug in Next.js.
+    at n (https://openai.com/_next/static/chunks/32f5grc7w18cx.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+    at l (https://openai.com/_next/static/chunks/2egv3mfmuw6hl.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+    at a (https://openai.com/_next/static/chunks/2egv3mfmuw6hl.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+    at module evaluation (https://openai.com/_next/static/chunks/2egv3mfmuw6hl.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+    at W (https://openai.com/_next/static/chunks/turbopack-3q06dayg7nnbe.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+    at <anonymous> (https://openai.com/_next/static/chunks/turbopack-3q06dayg7nnbe.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+    at registerChunk (https://openai.com/_next/static/chunks/turbopack-3q06dayg7nnbe.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL)
+
+[mm] low: 90611 frames free (353 MiB), 40426 used, 0 shared, 0 bugs
+[mm] low: 90355 frames free (352 MiB), 40682 used, 0 shared, 0 bugs
+[browser] load done: 93 requests, 3 connections dialled, 90 reused, 0 modules loaded (0 failed)
+[browser] pool: 90 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 91 from network (tab 2 of 3)
+[wm] perf t=81841 composites=430 ns=6792272843 max=52266979 motions=18 curmoves=10 curns=482163 full=265 rects=430 cpx=172407152 fpx=172407152 presns=401489008 torn=0 defer=102 late=0 drawmax=48

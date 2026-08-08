@@ -1,0 +1,104 @@
+{
+ "name": "qq",
+ "url": "https://www.qq.com/",
+ "started": "2026-08-09T01:06:48",
+ "verdict": "ERRORS",
+ "why": "painted 65588 changed px in 9.7s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.qq.com/",
+  "bytes": 124493,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 7,
+  "img_tags": 17,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)",
+    "stack": [
+     "at createObjectURL (native)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at Tj (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:179)",
+     "at unstable_runWithPriority (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react.production.min.js:24)",
+     "at Za (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:73)",
+     "at Ra (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)",
+     "at gf (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:161)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)",
+     "at unstable_runWithPriority (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react.production.min.js:24)",
+     "at Za (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:73)",
+     "at $g (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)",
+     "at ja (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)",
+     "at bi (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)",
+     "at zd (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:192)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)",
+     "at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)",
+     "at <eval> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 11,
+  "dials": 5,
+  "reused": 6,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 7949,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 9.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 65588,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 19026,
+  "ink_px_blank": 2359,
+  "colours": 936,
+  "rich_tiles_proxy": 65
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/qq.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/qq.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-09T01:07:34"
+}

@@ -1,0 +1,91 @@
+[wm] perf t=18714 composites=250 ns=2597025615 max=50740057 motions=18 curmoves=10 curns=471095 full=208 rects=250 cpx=57168800 fpx=57168800 presns=142734047 torn=0 defer=154 late=0 drawmax=28
+[sock] connected www.bing.com via ipv4 ::ffff:198.18.0.25
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for www.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (www.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=19715 composites=318 ns=3028333403 max=50740057 motions=18 curmoves=10 curns=471095 full=276 rects=318 cpx=67408800 fpx=67408800 presns=168963639 torn=0 defer=212 late=0 drawmax=28
+[sock] connected cn.bing.com via ipv4 ::ffff:198.18.0.26
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 66 irq 44 softirq 23 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=20716 composites=328 ns=3111531873 max=50740057 motions=18 curmoves=10 curns=471095 full=284 rects=328 cpx=69518240 fpx=69518240 presns=174498084 torn=0 defer=218 late=0 drawmax=28
+[browser] heap peak 5589K
+[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[browser] JS exception: ReferenceError: '_w' is not defined
+ReferenceError: '_w' is not defined
+    at <eval> (https://cn.bing.com/#inline-script-2:2)
+[browser] load done: 6 requests, 4 connections dialled, 3 reused, 0 modules loaded (0 failed)
+[browser] pool: 3 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)
+[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
+[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
+[mm] low: 107763 frames free (420 MiB), 23274 used, 0 shared, 0 bugs
+[mm] low: 107507 frames free (419 MiB), 23530 used, 0 shared, 0 bugs
+[mm] low: 107251 frames free (418 MiB), 23786 used, 0 shared, 0 bugs
+[mm] low: 106995 frames free (417 MiB), 24042 used, 0 shared, 0 bugs
+[mm] low: 106739 frames free (416 MiB), 24298 used, 0 shared, 0 bugs
+[mm] low: 106483 frames free (415 MiB), 24554 used, 0 shared, 0 bugs
+[mm] low: 106227 frames free (414 MiB), 24810 used, 0 shared, 0 bugs
+[mm] low: 105971 frames free (413 MiB), 25066 used, 0 shared, 0 bugs
+[mm] low: 105715 frames free (412 MiB), 25322 used, 0 shared, 0 bugs
+[mm] low: 105459 frames free (411 MiB), 25578 used, 0 shared, 0 bugs
+[mm] low: 105203 frames free (410 MiB), 25834 used, 0 shared, 0 bugs
+[mm] low: 104947 frames free (409 MiB), 26090 used, 0 shared, 0 bugs
+[mm] low: 104691 frames free (408 MiB), 26346 used, 0 shared, 0 bugs
+[mm] low: 104435 frames free (407 MiB), 26602 used, 0 shared, 0 bugs
+[mm] low: 104179 frames free (406 MiB), 26858 used, 0 shared, 0 bugs
+[mm] low: 103923 frames free (405 MiB), 27114 used, 0 shared, 0 bugs
+[mm] low: 103667 frames free (404 MiB), 27370 used, 0 shared, 0 bugs
+[mm] low: 103411 frames free (403 MiB), 27626 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=29 peak=6 frames=108/62 hpack_in=299549
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=538

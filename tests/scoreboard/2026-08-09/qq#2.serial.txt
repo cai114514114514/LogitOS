@@ -1,0 +1,124 @@
+[wm] perf t=18703 composites=210 ns=2472776740 max=50640283 motions=18 curmoves=10 curns=528021 full=154 rects=210 cpx=52098088 fpx=52098088 presns=133590050 torn=0 defer=106 late=0 drawmax=32
+[sock] connected www.qq.com via ipv4 ::ffff:198.18.0.40
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19703 composites=300 ns=3072295830 max=50640283 motions=18 curmoves=10 curns=528021 full=244 rects=300 cpx=67458088 fpx=67458088 presns=170751339 torn=0 defer=181 late=0 drawmax=32
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for www.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[sock] connected mat1.gtimg.com via ipv4 ::ffff:198.18.0.75
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 94 irq 49 softirq 25 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
+[browser] heap peak 7949K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wm] perf t=21707 composites=325 ns=3473661753 max=50640283 motions=18 curmoves=10 curns=528021 full=266 rects=325 cpx=77790248 fpx=77790248 presns=193867776 torn=0 defer=193 late=0 drawmax=77
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[net] rx path: frames 636 irq 125 softirq 59 inline 0 poll 10 idle 0/0 halt/skip
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) undefined
+[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
+[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
+[mm] low: 107763 frames free (420 MiB), 23274 used, 0 shared, 0 bugs
+[mm] low: 107507 frames free (419 MiB), 23530 used, 0 shared, 0 bugs
+[mm] low: 107251 frames free (418 MiB), 23786 used, 0 shared, 0 bugs
+[mm] low: 106995 frames free (417 MiB), 24042 used, 0 shared, 0 bugs
+[mm] low: 106739 frames free (416 MiB), 24298 used, 0 shared, 0 bugs
+[mm] low: 106483 frames free (415 MiB), 24554 used, 0 shared, 0 bugs
+[mm] low: 106227 frames free (414 MiB), 24810 used, 0 shared, 0 bugs
+[mm] low: 105971 frames free (413 MiB), 25066 used, 0 shared, 0 bugs
+[mm] low: 105715 frames free (412 MiB), 25322 used, 0 shared, 0 bugs
+[mm] low: 105459 frames free (411 MiB), 25578 used, 0 shared, 0 bugs
+[mm] low: 105203 frames free (410 MiB), 25834 used, 0 shared, 0 bugs
+[mm] low: 104947 frames free (409 MiB), 26090 used, 0 shared, 0 bugs
+[mm] low: 104691 frames free (408 MiB), 26346 used, 0 shared, 0 bugs
+[mm] low: 104435 frames free (407 MiB), 26602 used, 0 shared, 0 bugs
+[mm] low: 104179 frames free (406 MiB), 26858 used, 0 shared, 0 bugs
+[mm] low: 103923 frames free (405 MiB), 27114 used, 0 shared, 0 bugs
+[mm] low: 103667 frames free (404 MiB), 27370 used, 0 shared, 0 bugs
+[mm] low: 103411 frames free (403 MiB), 27626 used, 0 shared, 0 bugs
+[mm] low: 103155 frames free (402 MiB), 27882 used, 0 shared, 0 bugs
+[mm] low: 102899 frames free (401 MiB), 28138 used, 0 shared, 0 bugs
+[mm] low: 102643 frames free (400 MiB), 28394 used, 0 shared, 0 bugs
+[error] TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] JS exception: TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
+TypeError: createObjectURL: only a MediaSource is supported here (no Blob/File)
+    at createObjectURL (native)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at Tj (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:179)
+    at unstable_runWithPriority (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react.production.min.js:24)
+    at Za (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:73)
+    at Ra (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)
+    at gf (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:161)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)
+    at unstable_runWithPriority (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react.production.min.js:24)
+    at Za (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:73)
+    at $g (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)
+    at ja (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)
+    at bi (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)
+    at zd (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js:192)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/20240805160928/react-dom.production.min.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at <eval> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js:779)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for i.news.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 11 requests, 5 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 2 evicted, 3 closed
+[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
+[bxfer] h2 i.news.qq.com:443 closed: streams=2 peak=2 frames=58/7 hpack_in=23313
+[error] Uncaught (in promise) [object Object]
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for i.news.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[bxfer] h2 i.news.qq.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=198
+[bxfer] h2 otheve.beacon.qq.com:443 closed: streams=4 peak=2 frames=15/13 hpack_in=308[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+
+[tls] chain of 3 verified for i.news.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[bxfer] h2 i.news.qq.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=1049
+[webapi] fetch: connection failed
+[error] Uncaught (in promise) AxiosError: Network Error
+Error
+    at H (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202684201253/static/js/index.js)
+    at call (native)
+    at _fire (<webapi>:912)
+    at <anonymous> (<webapi>:953)
+

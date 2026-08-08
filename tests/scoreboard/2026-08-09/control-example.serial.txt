@@ -1,0 +1,6 @@
+[wm] perf t=18729 composites=175 ns=2427257721 max=46108604 motions=18 curmoves=11 curns=516580 full=111 rects=176 cpx=54773576 fpx=54773576 presns=132065228 torn=0 defer=61 late=0 drawmax=26
+[sock] connected example.com via ipv4 ::ffff:198.18.0.23
+[wm] perf t=19736 composites=218 ns=2965783540 max=46108604 motions=18 curmoves=11 curns=516580 full=153 rects=219 cpx=71188296 fpx=71188296 presns=165122307 torn=0 defer=87 late=0 drawmax=26
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)

@@ -1,0 +1,78 @@
+{
+ "name": "openai#2",
+ "url": "https://openai.com/",
+ "started": "2026-08-09T01:09:22",
+ "verdict": "PAINTED",
+ "why": "painted 5812 changed px in 61.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://openai.com/",
+  "bytes": 1750434,
+  "redirects": [],
+  "script_tags": 163,
+  "script_src": 78,
+  "img_tags": 19,
+  "inventory": {
+   "stylesheets": 15,
+   "script_src": 77,
+   "inline_scripts": 85,
+   "images": 18,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 93
+  },
+  "elapsed": 2.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 403) /_next/static/chunks/140p4r8mirfq8.js?dpl=dpl_773vLaHahz1MavsMTvuMWvGc7ETL: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 93,
+  "dials": 3,
+  "reused": 90,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 15097,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 61.3,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 5812,
+  "changed_bbox": [
+   148,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 4970,
+  "ink_px_blank": 2359,
+  "colours": 715,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/openai#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/openai#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 15,
+   "script_src": 77,
+   "inline_scripts": 85,
+   "images": 18,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 93
+  },
+  "gap": null
+ },
+ "finished": "2026-08-09T01:11:00"
+}

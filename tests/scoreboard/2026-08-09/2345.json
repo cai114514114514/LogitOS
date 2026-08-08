@@ -1,0 +1,32 @@
+{
+ "name": "2345",
+ "url": "https://www.2345.com/",
+ "started": "2026-08-09T01:05:20",
+ "verdict": "HARNESS",
+ "why": "the Dock never launched the Browser",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.2345.com/",
+  "bytes": 170549,
+  "redirects": [],
+  "script_tags": 19,
+  "script_src": 12,
+  "img_tags": 14,
+  "inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 80,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "elapsed": 0.2
+ },
+ "guest": {},
+ "pixels": {},
+ "shot": null,
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/2345.serial.txt",
+ "finished": "2026-08-09T01:06:45"
+}

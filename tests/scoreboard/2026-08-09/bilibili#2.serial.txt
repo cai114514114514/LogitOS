@@ -1,0 +1,318 @@
+[wm] perf t=18686 composites=211 ns=2314762025 max=54317700 motions=18 curmoves=12 curns=621354 full=170 rects=211 cpx=56016680 fpx=56016680 presns=140970953 torn=0 defer=117 late=0 drawmax=27
+[wm] perf t=19687 composites=300 ns=2901064423 max=60582865 motions=18 curmoves=12 curns=621354 full=259 rects=300 cpx=68304680 fpx=68304680 presns=175098974 torn=0 defer=194 late=0 drawmax=28
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.38
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[mm] low: 113907 frames free (444 MiB), 17130 used, 0 shared, 0 bugs
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.69
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for s1.hdslb.com, alpn=http/1.1
+[net] rx path: frames 70 irq 65 softirq 29 inline 0 poll 8 idle 0/0 halt/skip
+[mm] low: 113651 frames free (443 MiB), 17386 used, 0 shared, 0 bugs
+[wm] perf t=20687 composites=323 ns=3259222168 max=60582865 motions=18 curmoves=12 curns=621354 full=281 rects=323 cpx=77551400 fpx=77551400 presns=194887624 torn=0 defer=207 late=0 drawmax=64
+[mm] low: 113395 frames free (442 MiB), 17642 used, 0 shared, 0 bugs
+[mm] low: 113139 frames free (441 MiB), 17898 used, 0 shared, 0 bugs
+[browser] heap peak 8816K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i1.hdslb.com)
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i1.hdslb.com)
+[mm] low: 112883 frames free (440 MiB), 18154 used, 0 shared, 0 bugs
+[mm] low: 112627 frames free (439 MiB), 18410 used, 0 shared, 0 bugs
+[mm] low: 112371 frames free (438 MiB), 18666 used, 0 shared, 0 bugs
+[mm] low: 112115 frames free (437 MiB), 18922 used, 0 shared, 0 bugs
+[mm] low: 111859 frames free (436 MiB), 19178 used, 0 shared, 0 bugs
+[mm] low: 111603 frames free (435 MiB), 19434 used, 0 shared, 0 bugs
+[mm] low: 111347 frames free (434 MiB), 19690 used, 0 shared, 0 bugs
+[mm] low: 111091 frames free (433 MiB), 19946 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[mm] low: 110835 frames free (432 MiB), 20202 used, 0 shared, 0 bugs
+[net] rx path: frames 602 irq 182 softirq 84 inline 0 poll 13 idle 0/0 halt/skip
+[mm] low: 110579 frames free (431 MiB), 20458 used, 0 shared, 0 bugs
+[mm] low: 110323 frames free (430 MiB), 20714 used, 0 shared, 0 bugs
+[mm] low: 110067 frames free (429 MiB), 20970 used, 0 shared, 0 bugs
+[mm] low: 109811 frames free (428 MiB), 21226 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'split' of undefined
+TypeError: cannot read property 'split' of undefined
+    at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at call (native)
+    at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)
+[mm] low: 109555 frames free (427 MiB), 21482 used, 0 shared, 0 bugs
+[mm] low: 109299 frames free (426 MiB), 21738 used, 0 shared, 0 bugs
+[mm] low: 109043 frames free (425 MiB), 21994 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 108787 frames free (424 MiB), 22250 used, 0 shared, 0 bugs
+[mm] low: 108531 frames free (423 MiB), 22506 used, 0 shared, 0 bugs
+[mm] low: 108275 frames free (422 MiB), 22762 used, 0 shared, 0 bugs
+[mm] low: 108019 frames free (421 MiB), 23018 used, 0 shared, 0 bugs
+[mm] low: 107763 frames free (420 MiB), 23274 used, 0 shared, 0 bugs
+[mm] low: 107507 frames free (419 MiB), 23530 used, 0 shared, 0 bugs
+[mm] low: 107251 frames free (418 MiB), 23786 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[error] Hydration completed but contains mismatches.
+[mm] low: 106995 frames free (417 MiB), 24042 used, 0 shared, 0 bugs
+[mm] low: 106739 frames free (416 MiB), 24298 used, 0 shared, 0 bugs
+[mm] low: 106483 frames free (415 MiB), 24554 used, 0 shared, 0 bugs
+[mm] low: 106227 frames free (414 MiB), 24810 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=h2
+[mm] low: 105971 frames free (413 MiB), 25066 used, 0 shared, 0 bugs
+[mm] low: 105715 frames free (412 MiB), 25322 used, 0 shared, 0 bugs
+[browser] load done: 15 requests, 8 connections dialled, 7 reused, 0 modules loaded (0 failed)
+[browser] pool: 7 hits, 4 evicted, 5 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 900s, 2 cached)
+[bxfer] h2 api.bilibili.com:443 closed: streams=5 peak=5 frames=19/13 hpack_in=10414
+[bxfer] h2 i0.hdslb.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=18
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for i0.hdslb.com (no chain, no signature), alpn=h2
+[mm] low: 105459 frames free (411 MiB), 25578 used, 0 shared, 0 bugs
+[mm] low: 105203 frames free (410 MiB), 25834 used, 0 shared, 0 bugs
+[error] TypeError: cannot read property 'firstChild' of undefined
+[error] Uncaught (in promise) Error: [Mirror]: Manager instance required for enqueuing middleware task
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1134)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1134)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at emit (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at getUserState (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+
+[error] Uncaught (in promise) Error: [Mirror]: Manager instance required for enqueuing middleware task
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1134)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at emit (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at getUserState (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+
+[error] Uncaught (in promise) Error: [Mirror]: Manager instance required for enqueuing middleware task
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at emit (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at getUserState (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+
+[mm] low: 104947 frames free (409 MiB), 26090 used, 0 shared, 0 bugs
+[mm] low: 104691 frames free (408 MiB), 26346 used, 0 shared, 0 bugs
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 897s, 2 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[webapi] fetch: response exceeds limit
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC playdata_square_line 1 fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[mm] low: 104435 frames free (407 MiB), 26602 used, 0 shared, 0 bugs
+[bxfer] h2 cm.bilibili.com:443 closed: streams=1 peak=1 frames=5/4 hpack_in=0
+[bxfer] h2 api.bilibili.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=2745
+[net] rx path: frames 1114 irq 446 softirq 215 inline 0 poll 24 idle 0/0 halt/skip
+[webapi] fetch: response exceeds limit
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC danmu_square_line 1 fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[error] Uncaught (in promise) Error: [Mirror]: Manager instance required for enqueuing middleware task
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+
+[mm] low: 104179 frames free (406 MiB), 26858 used, 0 shared, 0 bugs
+[webapi] fetch: response exceeds limit
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC uploader_name_square_line 1 fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[error] global errorHandler:  TypeError: fetch: response exceeds limit
+[mm] low: 103923 frames free (405 MiB), 27114 used, 0 shared, 0 bugs
+[webapi] fetch: response exceeds limit
+[bxfer] h2 cm.bilibili.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=30
+[bxfer] h2 i0.hdslb.com:443 closed: streams=18 peak=6 frames=60/39 hpack_in=35715
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC arrow_refresh_line 2 fetch: response exceeds limit
+[tls] ticket for i0.hdslb.com not accepted -- full handshake
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[error] Uncaught (in promise) Error: [Mirror]: Manager instance required for enqueuing middleware task
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 900s, 2 cached)
+[bxfer] h2 api.bilibili.com:443 closed: streams=2 peak=2 frames=8/7 hpack_in=1411
+[mm] low: 103667 frames free (404 MiB), 27370 used, 0 shared, 0 bugs
+[webapi] fetch: response exceeds limit
+[bxfer] h2 cm.bilibili.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=30
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC headset_customer_line 2 fetch: response exceeds limit
+[webapi] fetch: response exceeds limit
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC danmu_flying_square_line 1 fetch: response exceeds limit
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.live.bilibili.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[bxfer] h2 i0.hdslb.com:443 closed: streams=13 peak=5 frames=47/29 hpack_in=31551
+[bxfer] h2 api.live.bilibili.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=4919
+[bxfer] h2 cm.bilibili.com:443 closed: streams=3 peak=3 frames=15/12 hpack_in=50
+[error] Uncaught (in promise) Error: [Mirror]: Manager instance required for enqueuing middleware task
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Promise (native)
+    at techReportPbForMiddleware (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at hn (https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js)
+    at Of (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at Cm (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at D (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-37875958.js)
+
+[tls] ticket for i0.hdslb.com not accepted -- full handshake
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=h2
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for i0.hdslb.com (224 bytes, lifetime 900s, 2 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[mm] low: 103411 frames free (403 MiB), 27626 used, 0 shared, 0 bugs
+[webapi] fetch: response exceeds limit
+[bxfer] h2 i0.hdslb.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=9372
+[error] global errorHandler:  Error: [SVGIconNext] fetch icon config failed: BDC uploader_name_square_line 1 fetch: response exceeds limit
+[bxfer] h2 cm.bilibili.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=10
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[bxfer] h2 cm.bilibili.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=10
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cm.bilibili.com, alpn=h2
+[mm] low: 103155 frames free (402 MiB), 27882 used, 0 shared, 0 bugs
+[bxfer] h2 cm.bilibili.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=30

@@ -1,0 +1,181 @@
+{
+ "name": "jd",
+ "url": "https://www.jd.com/",
+ "started": "2026-08-09T01:05:58",
+ "verdict": "ERRORS",
+ "why": "painted 11152 changed px in 8.5s but 7 JS exception(s) -- and the document asked for 18 subresources (3 stylesheets, 14 script srcs) against 16 requests issued, short by 2",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.jd.com/",
+  "bytes": 191229,
+  "redirects": [],
+  "script_tags": 35,
+  "script_src": 14,
+  "img_tags": 12,
+  "inventory": {
+   "stylesheets": 3,
+   "script_src": 14,
+   "inline_scripts": 21,
+   "images": 12,
+   "preloads": 4,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "ReferenceError: 'jQuery' is not defined",
+    "stack": [
+     "at <eval> (https://wl.jd.com/wl.js:2)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at clickReport (https://www.jd.com/#inline-script-16:3)",
+     "at <eval> (https://www.jd.com/#inline-script-16:18)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at getClstagPrefix (https://www.jd.com/#inline-script-17:4)",
+     "at footerRender (https://www.jd.com/#inline-script-17:20)",
+     "at <eval> (https://www.jd.com/#inline-script-17:24)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: cannot read property 'length' of undefined",
+    "stack": [
+     "at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)",
+     "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)",
+     "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)",
+     "at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <anonymous> (https://www.jd.com/#inline-script-20:31)",
+     "at <eval> (https://www.jd.com/#inline-script-20:32)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: cannot read property 'indexOf' of undefined",
+    "stack": [
+     "at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)",
+     "at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)",
+     "at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: cannot read property 'indexOf' of undefined",
+    "stack": [
+     "at appendPassportDomain (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at 8T6v (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at 7xuk (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at szSY (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at S+ax (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at Xs5U (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at Qpzn (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at /KoI (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at 6OU5 (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at zPjE (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at yEBl (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at pLYI (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)",
+     "at call (native)",
+     "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at checkDeferredModules (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at webpackJsonpCallback (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/runtime.js)",
+     "at <eval> (https://storage.360buyimg.com/channel2022/jd_home/0.0.183/static/js/index.chunk.js)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: connect failed",
+   "fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: connect failed",
+   "fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: connect failed"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 16,
+  "dials": 8,
+  "reused": 8,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 12758,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 8.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 11152,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 4831,
+  "ink_px_blank": 2359,
+  "colours": 598,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/jd.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/jd.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 3,
+   "script_src": 14,
+   "inline_scripts": 21,
+   "images": 12,
+   "preloads": 4,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "gap": {
+   "mandatory": 18,
+   "requested": 16,
+   "short_by": 2,
+   "stylesheets": 3,
+   "script_src": 14
+  }
+ },
+ "finished": "2026-08-09T01:06:43"
+}
