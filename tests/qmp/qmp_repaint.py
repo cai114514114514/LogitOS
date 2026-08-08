@@ -183,7 +183,10 @@ def focused_titlebar(ui, tmp):
 def w_drag(ui, geo, steps=180):
     """Grab the focused titlebar and walk the window back and forth."""
     tx, ty = geo["title"]
-    ui.goto(tx, ty, settle=0.2)
+    got = ui.settle_pointer(geo["ppm"], tx, ty)      # confirmed: see w_theme
+    if got != (tx, ty):
+        print("     warning: pointer would not settle on the titlebar (%r, wanted "
+              "%r) -- this row is not a measurement" % (got, (tx, ty)))
     ui._input([{"type": "btn", "data": {"button": "left", "down": True}}])
     time.sleep(0.05)
     d = pt(6)
@@ -203,7 +206,10 @@ def w_dock(ui, geo, steps=200):
     """Sweep the pointer along the dock row, crossing icon boundaries."""
     lo, row = dock_icon(0)
     hi = dock_icon(6)[0]
-    ui.goto(lo, row, settle=0.2)
+    got = ui.settle_pointer(geo["ppm"], lo, row)      # confirmed: see w_theme
+    if got != (lo, row):
+        print("     warning: pointer would not settle on the dock (%r, wanted "
+              "%r) -- this row is not a measurement" % (got, (lo, row)))
     x, d = lo, pt(6)
     for _ in range(steps):
         x += d
@@ -227,9 +233,20 @@ def w_type(ui, geo, steps=48):
 def w_theme(ui, geo, steps=10):
     """The menu-bar dark-mode switch. Every window must repaint: this is the
     workload where a FULL-SCREEN repaint is the correct answer, and it is here
-    to prove the damage tracking still produces one."""
+    to prove the damage tracking still produces one.
+
+    CONFIRMED against the guest's own pointer report, not dead-reckoned. The
+    switch is 38 x 18 points in the top-right corner and the pointer arrives
+    from wherever the previous workload left it, which on a large desktop is a
+    move long enough to lose PS/2 packets. A click two pixels off does nothing,
+    silently, and the row then reads as "the theme flip composites almost
+    nothing" -- which is a true statement about a click that never happened and
+    would have been reported as a result."""
     x, y = geo["toggle"]
-    ui.goto(x, y, settle=0.15)
+    got = ui.settle_pointer(geo["ppm"], x, y)
+    if got != (x, y):
+        print("     warning: pointer would not settle on the dark-mode switch "
+              "(%r, wanted %r) -- this row is not a measurement" % (got, (x, y)))
     for _ in range(steps):
         ui.click(hold=0.08)
         time.sleep(0.18)
@@ -239,7 +256,10 @@ def w_theme(ui, geo, steps=10):
 def w_scroll(ui, geo, steps=48):
     """Wheel notches over the Terminal's scrollback."""
     x, y = geo["content"]
-    ui.goto(x, y, settle=0.2)
+    got = ui.settle_pointer(geo["ppm"], x, y)         # confirmed: see w_theme
+    if got != (x, y):
+        print("     warning: pointer would not settle in the window (%r, wanted "
+              "%r) -- this row is not a measurement" % (got, (x, y)))
     for i in range(steps):
         btn = "wheel-up" if (i // 8) % 2 else "wheel-down"
         ui._input([{"type": "btn", "data": {"button": btn, "down": True}},
@@ -249,7 +269,7 @@ def w_scroll(ui, geo, steps=48):
 
 
 WORKLOADS = [
-    ("drag",   w_drag,   "a window dragged by its titlebar (the 900pt Terminal)"),
+    ("drag",   w_drag,   "a LARGE window (the 900pt Terminal) dragged by its titlebar"),
     ("dock",   w_dock,   "the pointer swept across the dock (hover magnifies)"),
     ("type",   w_type,   "keystrokes into TextEdit (app repaint + flush)"),
     ("theme",  w_theme,  "the dark-mode switch (every window repaints)"),
@@ -362,8 +382,8 @@ def main(argv):
             t = focused_titlebar(ui, tmp)
             if t:
                 measure("drag-small", w_drag,
-                        "a SMALL window (the Clock) dragged by its titlebar",
-                        {"title": t})
+                        "a SMALLER window (the 640pt Finder) dragged by its titlebar",
+                        {"title": t, "ppm": os.path.join(tmp, "aim.ppm")})
 
         # TextEdit, then the Terminal: two more windows, the Terminal focused.
         ui.click_at(*dock_icon(TEXTEDIT_SLOT))
@@ -380,6 +400,7 @@ def main(argv):
             "content": (title[0], title[1] + pt(120)),
             # menu_tog_* from draw_menubar() in c/kernel/gui/wm.c
             "toggle": (xres - pt(210) + pt(19), (pt(24) - pt(18)) // 2 + pt(9)),
+            "ppm": os.path.join(tmp, "aim.ppm"),
         }
         print("     focused titlebar at %r, toggle at %r" % (geo["title"], geo["toggle"]))
 
