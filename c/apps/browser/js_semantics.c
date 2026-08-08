@@ -744,12 +744,97 @@ static const char *SEMANTICS_PRELUDE =
  * duplicated logic, and the `in` guard means that the day js_forms.c installs
  * there itself, this does nothing. */
 "var IEP = P('HTMLInputElement');\n"
-"if (IEP && EP && IEP !== EP) {\n"
+"var nativeFocus = null, nativeBlur = null;\n"
+"if (IEP) {\n"
+"  var df = Object.getOwnPropertyDescriptor(IEP, 'focus');\n"
+"  var db = Object.getOwnPropertyDescriptor(IEP, 'blur');\n"
+"  if (df && typeof df.value === 'function') nativeFocus = df.value;\n"
+"  if (db && typeof db.value === 'function') nativeBlur = db.value;\n"
+"}\n"
+
+/* AND THEN THE EVENTS HAVE TO ARRIVE, WHICH IS A SECOND PROBLEM ENTIRELY.
+ *
+ * focus.c does not dispatch anything by itself: it calls through
+ * `fc_dispatch`, which is a NULL function pointer until somebody calls
+ * `fc_set_dispatch`, and the only caller in the tree is browser.c -- the app
+ * shell, which no host test links and which tests/wpt.mk excludes on purpose.
+ * So in every host link, `el.focus()` reached the native side, moved focus.c's
+ * internal pointer, and fired NOTHING; js_forms.c's `document.activeElement`
+ * is tracked from those events, so it stayed on <body> forever. That is 2,100
+ * subtests in html/semantics/popovers alone, all failing on
+ * `assert_equals(document.activeElement, invoker)`, and not one of them is a
+ * popover bug.
+ *
+ * So focus() finishes the job in JS when the native path did not: it checks
+ * whether focus actually landed, and if it did not, fires blur/focusout on the
+ * old element and focus/focusin on the new one -- the same four events, in the
+ * same order, that focus.c's focus_set() fires. js_forms.c's capture listeners
+ * on the document then record activeElement, so the whole model becomes
+ * consistent again from one place.
+ *
+ * WHY THIS IS NOT A WORKAROUND THAT DIVERGES IN THE BROWSER: the fallback is
+ * gated on `document.activeElement !== this` AFTER the native call. In the
+ * real browser fc_set_dispatch IS wired, the native path moves activeElement,
+ * and every line below is skipped. It only runs where the alternative is
+ * nothing happening at all. */
+"function isFocusable(el) {\n"
+"  if (!el || el.nodeType !== 1 || !el.isConnected) return false;\n"
+"  if (isDisabledCtl(el)) return false;\n"
+"  if (el.hasAttribute('hidden')) return false;\n"
+"  if (el.hasAttribute('tabindex')) return true;\n"
+"  var t = tagOf(el);\n"
+"  if (t === 'input') return lc(el.getAttribute('type') || '') !== 'hidden';\n"
+"  if (t === 'select' || t === 'textarea' || t === 'button' ||\n"
+"      t === 'iframe' || t === 'summary') return true;\n"
+"  if (t === 'a' || t === 'area') return el.hasAttribute('href');\n"
+"  if (t === 'audio' || t === 'video') return el.hasAttribute('controls');\n"
+"  if (t === 'dialog') return modalDialogs.get(el) === true;\n"
+"  var ce = el.getAttribute('contenteditable');\n"
+"  if (ce !== null && (ce === '' || lc(ce) === 'true')) return true;\n"
+"  return false;\n"
+"}\n"
+/* A FocusEvent if the constructor is there, an Event otherwise. `relatedTarget`
+ * is what a page reads to find where focus came from, so it is set when it can
+ * be. */
+"function fireFocusEvent(target, type, bubbles, related) {\n"
+"  var C = G.FocusEvent || G.UIEvent || G.Event;\n"
+"  var e;\n"
+"  try { e = new C(type, { bubbles: bubbles, cancelable: false, composed: true,\n"
+"                          relatedTarget: related || null, view: G }); }\n"
+"  catch (q) { try { e = new G.Event(type, { bubbles: bubbles, cancelable: false }); }\n"
+"              catch (q2) { return; } }\n"
+"  try { target.dispatchEvent(e); } catch (q3) {}\n"
+"}\n"
+"function focusFallback(el) {\n"
+"  var old = doc.activeElement;\n"
+"  if (old === el) return;\n"
+"  if (old && old !== doc.body && old !== doc.documentElement) {\n"
+"    fireFocusEvent(old, 'blur', false, el);\n"
+"    fireFocusEvent(old, 'focusout', true, el);\n"
+"  }\n"
+"  fireFocusEvent(el, 'focus', false, old || null);\n"
+"  fireFocusEvent(el, 'focusin', true, old || null);\n"
+"}\n"
+"meth(EP, 'focus', function () {\n"
+"  if (nativeFocus) { try { nativeFocus.call(this); } catch (e) {} }\n"
+"  if (doc.activeElement === this) return;\n"
+"  if (!isFocusable(this)) return;\n"
+"  focusFallback(this);\n"
+"});\n"
+"meth(EP, 'blur', function () {\n"
+"  if (nativeBlur) { try { nativeBlur.call(this); } catch (e) {} }\n"
+"  if (doc.activeElement !== this) return;\n"
+"  fireFocusEvent(this, 'blur', false, null);\n"
+"  fireFocusEvent(this, 'focusout', true, null);\n"
+"});\n"
+/* HTMLInputElement.prototype keeps js_forms.c's own pair as an OWN property,
+ * which would shadow the one above for the single most-tested element in the
+ * corpus. Deleting the shadow makes <input> inherit the same implementation as
+ * everything else; js_forms.c's function is still what runs first, because
+ * `nativeFocus` above is that function. */
+"if (IEP && IEP !== EP) {\n"
 "  ['focus', 'blur'].forEach(function (m) {\n"
-"    if (m in EP) return;\n"
-"    var d = Object.getOwnPropertyDescriptor(IEP, m);\n"
-"    if (!d) return;\n"
-"    try { Object.defineProperty(EP, m, d); } catch (e) {}\n"
+"    if (Object.getOwnPropertyDescriptor(IEP, m)) { try { delete IEP[m]; } catch (e) {} }\n"
 "  });\n"
 "}\n"
 

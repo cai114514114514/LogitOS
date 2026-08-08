@@ -68,7 +68,11 @@ static void ckjs(const char *expr, const char *what)
         JS_FreeValue(g_ctx, e);
         bad = 1;
     } else if (!JS_ToBool(g_ctx, v)) {
-        printf("FAIL %s\n     expr: %s\n", what, expr);
+        /* The VALUE, not just "false". Half of these expressions are
+         * conjunctions and the value is the whole diagnosis. */
+        const char *m = JS_ToCString(g_ctx, v);
+        printf("FAIL %s\n     got:  %s\n     expr: %s\n", what, m ? m : "?", expr);
+        if (m) JS_FreeCString(g_ctx, m);
         bad = 1;
     } else {
         printf("ok: %s\n", what);
@@ -370,6 +374,18 @@ int main(void)
     ckjs("typeof HTMLSelectElement.prototype.focus === 'function' && "
          "typeof HTMLButtonElement.prototype.focus === 'function'",
          "so <select> and <button> inherit it");
+    /* The one that matters, and it is not the same claim as "focus() exists":
+     * `assert_equals(document.activeElement, invoker)` is in the middle of
+     * every invoker test in the corpus, and a focus() that returns quietly
+     * without moving focus passes the two assertions above and fails 2,100
+     * subtests. */
+    ckjs("(function(){var b=document.createElement('button');document.body.appendChild(b);"
+         "b.focus();var ok=document.activeElement===b;b.remove();return ok;})()",
+         "focus() on a fresh <button> actually moves document.activeElement");
+    ckjs("(function(){var i=document.createElement('input');i.type='checkbox';"
+         "document.body.appendChild(i);i.focus();"
+         "var ok=document.activeElement===i;i.remove();return ok;})()",
+         "... and on a fresh <input type=checkbox>");
 
     /* ---- :heading ---- */
     ckjs("$('h2').matches(':heading') && !$('p1').matches(':heading')",
