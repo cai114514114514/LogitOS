@@ -22,5 +22,17 @@ void rust_eh_personality(void) {}
  * fills what the staticlib needs and nobody supplies, not everything it needs.
  *
  * Never called: registration only records a decoder, and no host test that
- * links this shim decodes an image. */
-void img_register_anim(void *d, void *f, void *a) { (void)d; (void)f; (void)a; }
+ * links this shim decodes an image.
+ *
+ * WEAK, which is the sentence above expressed in the linker instead of in a
+ * comment. "Fills what the staticlib needs and nobody supplies" cannot be
+ * maintained by hand: this file is in IMG_HOST_SRC, which ALSO contains the
+ * REAL c/lib/image/img.c, so a strong definition here is a `multiple
+ * definition of img_register_anim` in every test that decodes images --
+ * layout_svg_test among them, which is inside `make test-browser`. Adding the
+ * symbol fixed three links and broke four, and removing it swaps which four.
+ * A weak definition is right in both directions at once: the real img.c wins
+ * wherever it is linked, this fills in wherever it is not, and the next codec
+ * change cannot make the list wrong again. */
+__attribute__((weak)) void img_register_anim(void *d, void *f, void *a)
+{ (void)d; (void)f; (void)a; }
