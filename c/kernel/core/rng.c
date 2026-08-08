@@ -6,6 +6,7 @@
 #include "cpufeat.h"
 #include "spinlock.h"
 #include "kprintf.h"
+#include "usercopy.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -164,6 +165,77 @@ void kernel_random_bytes(uint8_t *out, int len)
         crypto_wipe(block, sizeof block);                    /* block is pre-image of nothing public */
     }
     spin_unlock_irqrestore(&rng_lock, fl);
+}
+
+/* --- SYS_GETRANDOM: the DRBG, reachable from ring 3 ------------------------
+ *
+ * Until this existed the kernel had a real Hash_DRBG and NOTHING in userland
+ * could reach it. There is no /dev/urandom here, no RDRAND wrapper in libc and
+ * no pool syscall, so `crypto.getRandomValues` in the browser was xorshift128+
+ * seeded from clocks and heap addresses -- and said so, in capitals, in
+ * c/apps/browser/js_platform.c. Every CSRF token, UUID and WebCrypto shim on
+ * every page was predictable from a few observations. This is the syscall that
+ * makes that excuse unnecessary.
+ *
+ * Contract. The NUMBER (SYS_GETRANDOM = 114) and the flag names were
+ * arbitrated by the threads line in include/abi/logit_abi.h; this is the back
+ * end behind it, and it implements what that header publishes:
+ *   getrandom(buf, len, flags)
+ *     buf != NULL : fills min(len, GRND_MAX) bytes and returns that count.
+ *                   -1 on a bad range or a negative len. GRND_NONBLOCK and
+ *                   GRND_RANDOM are accepted and change nothing -- the DRBG is
+ *                   seeded before ring 3 exists, so there is no "not ready"
+ *                   state to block on.
+ *     buf == NULL : returns 1 if a hardware entropy source (RDSEED/RDRAND) is
+ *                   backing the DRBG, 0 if it has fallen back to rdtsc. A
+ *                   caller about to generate a long-term key can refuse to; a
+ *                   caller that wants a request id does not care.
+ *
+ * THE SHORT READ, and what to do about it. The published ABI caps one call at
+ * GRND_MAX and returns the clamped count rather than an error -- the same shape
+ * as Linux's getrandom(), and the same footgun: the failure mode of ignoring
+ * the return value is a key with a zero tail, and it is invisible in testing
+ * because the truncation only bites above 4 KiB. The cap itself is right (one
+ * call must not hold the RNG lock for an unbounded time). The mitigation is
+ * that EVERY caller-side wrapper loops -- see the getrandom() wrapper in
+ * userland and js_platform.c's fill -- so no caller in this tree can observe a
+ * short count. A new caller that reads the return value as "success" is the
+ * bug this paragraph exists to make findable.
+ *
+ * The copy-out goes through a bounded kernel staging buffer rather than
+ * generating straight into the user page: kernel_random_bytes runs with the RNG
+ * spinlock held and IF off, and a user page can fault (copy-on-write, or an
+ * mmap'd page not yet materialised). user_range_ok resolves those faults BEFORE
+ * the lock is taken; the staging buffer means that even if it did not, the
+ * generator never touches a user address. */
+#define GETRANDOM_CHUNK 256
+#define GETRANDOM_MAX   4096                         /* == GRND_MAX in the ABI */
+
+long rng_syscall(long ubuf, long len, long flags)
+{
+    (void)flags;                                     /* GRND_* are all no-ops */
+    if (!ubuf) return rng_strong();                  /* the "is it strong?" query */
+    if (len < 0) return -1;
+    if (len > GETRANDOM_MAX) len = GETRANDOM_MAX;    /* clamp, per the ABI */
+    if (len == 0) return 0;
+    if (!user_range_ok((const void *)(uintptr_t)ubuf, (uint64_t)len, 1)) return -1;
+
+    uint8_t chunk[GETRANDOM_CHUNK];
+    long done = 0;
+    while (done < len) {
+        int n = (int)(len - done);
+        if (n > GETRANDOM_CHUNK) n = GETRANDOM_CHUNK;
+        kernel_random_bytes(chunk, n);
+        if (user_copy_to((void *)(uintptr_t)(ubuf + done), chunk, (uint64_t)n) != 0) {
+            crypto_wipe(chunk, sizeof chunk);
+            return -1;
+        }
+        done += n;
+    }
+    /* The staging buffer held generator output that the caller now owns; it
+     * must not stay legible in a kernel stack frame the next syscall reuses. */
+    crypto_wipe(chunk, sizeof chunk);
+    return done;
 }
 
 /* Test hooks (tests/unit/rng_test.c): let the host-side structural test peek
