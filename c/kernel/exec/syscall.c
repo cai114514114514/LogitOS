@@ -30,6 +30,7 @@
 #include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
 #include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO */
+#include "settings.h"    /* settings_syscall: SYS_SETTING_* */
 #include "clipboard.h"   /* clip_syscall:   SYS_CLIP_SET / _GET / _INFO */
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
 #include "kbench.h"      /* per-syscall accounting, off by default */
@@ -612,6 +613,18 @@ static void syscall_do(struct registers *r)
     case SYS_MEMINFO:
         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
                                       (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* Settings. Handled here and not in wm_gui_syscall because a CLI process
+     * -- a shell script, an .as program, a future `defaults` coreutil -- has
+     * every right to read and write the machine's configuration and has no
+     * window for the WM to resolve it through. */
+    case SYS_SETTING_GET:
+    case SYS_SETTING_SET:
+    case SYS_SETTING_ENUM:
+    case SYS_SETTING_CTL:
+        r->rax = (uint64_t)settings_syscall((long)r->rax, (long)r->rdi,
+                                            (long)r->rsi, (long)r->rdx);
         return;
 
     case SYS_PROCS:

@@ -11,6 +11,7 @@
 #include "serial.h"
 #include "sched.h"
 #include "vfs.h"
+#include "settings.h"   /* settings line: theme + wallpaper are persisted */
 #include "rtc.h"
 #include "aex.h"
 #include "blkdev.h"
@@ -1464,6 +1465,11 @@ static void wm_set_dark(int on)
     on = on ? 1 : 0;
     if (on == g_ui_dark) return;
     g_ui_dark = on;
+    /* --- settings line: remember it. Committed immediately (the 1), because
+     * the user flipping the theme is exactly the change they will expect to
+     * still be there after a power cut, and one whole-file write is one
+     * LogitFS transaction -- atomic, ~8 KiB, and it happens once per click. */
+    settings_set_int("ui.dark", on, 1);
     for (int i = 0; i < MAXWIN; i++)
         if (wins[i].used && wins[i].kind == WK_APP) enqueue(&wins[i], EV_THEME, 0, 0);
     /* Every pixel of chrome changes colour and every app is about to repaint:
@@ -1585,11 +1591,17 @@ static uint32_t bg_color(int x, int y)
  * the caller falls back to the gradient. */
 static int draw_wallpaper(void)
 {
-    int sz = vfs_size("/wallpaper.png");
+    /* --- settings line: the user's wallpaper, /wallpaper.png if they have not
+     * chosen one. A path naming a file that does not exist, or one that is not
+     * a decodable image, falls through to the gradient below exactly as a
+     * missing /wallpaper.png always did -- so there is no wallpaper setting
+     * that can produce a broken desktop, only a plain one. */
+    const char *wp = settings_get_str("ui.wallpaper", "/wallpaper.png");
+    int sz = vfs_size(wp);
     if (sz <= 0) return 0;
     uint8_t *file = (uint8_t *)kmalloc((unsigned)sz);
     if (!file) return 0;
-    int n = vfs_read("/wallpaper.png", file, sz);
+    int n = vfs_read(wp, file, sz);
     struct image im;
     int ok = (n > 0 && img_decode(file, n, &im) == 0);
     kfree(file);
@@ -2752,6 +2764,14 @@ void wm_init(void)
     }
     fb_set_backbuffer(back);
     mx = W / 2; my = H / 2;
+
+    /* --- settings line: the theme the user last chose ----------------------
+     * Set directly, not through wm_set_dark(): there are no windows yet to be
+     * nudged with EV_THEME and nothing has been composited, so the first frame
+     * is simply drawn in the right theme rather than drawn light and repainted.
+     * settings_get_int() range-checks, so a settings file saying `ui.dark =
+     * banana` lands on 0 here and says so on the serial log. */
+    g_ui_dark = settings_get_int("ui.dark", 0) ? 1 : 0;
     /* The one line that says what "the resolution" now means. A test that wants
      * to assert the scale reads this off the serial log; a human reading a
      * screenshot argument needs it to know whether 1920x1200 is four times the

@@ -31,6 +31,38 @@ int net_up(void) { return up; }
 int  dhcp_run(int timeout_ticks) __attribute__((weak));
 void dhcp_poll(void) __attribute__((weak));
 
+/* The settings store, weak for exactly the reason dhcp_run is: net.c is linked
+ * into host tests that have no filesystem to read a settings file from. On the
+ * machine these resolve; host-side they are NULL and the configuration is the
+ * DHCP-then-static path this file always had. */
+int      settings_get_int(const char *key, int def) __attribute__((weak));
+unsigned settings_get_ip(const char *key, unsigned def) __attribute__((weak));
+
+/* A user who has turned automatic configuration off. The addresses come from
+ * the store and are already validated -- settings_get_ip() returns the schema
+ * default for anything that is not a dotted quad, so `net.ip = 999.1.1.1` in a
+ * hand-edited file configures 10.0.2.15 and does not configure garbage.
+ *
+ * Returns 1 if a static configuration was applied, 0 to fall through to DHCP. */
+static int net_cfg_from_settings(void)
+{
+    if (!settings_get_int || !settings_get_ip) return 0;
+    if (settings_get_int("net.dhcp", 1)) return 0;      /* automatic: DHCP below */
+
+    net_cfg.ip   = settings_get_ip("net.ip",   IPV4(10, 0, 2, 15));
+    net_cfg.mask = settings_get_ip("net.mask", IPV4(255, 255, 255, 0));
+    net_cfg.gw   = settings_get_ip("net.gw",   IPV4(10, 0, 2, 2));
+    net_cfg.dns  = settings_get_ip("net.dns",  IPV4(10, 0, 2, 3));
+    kprintf("[net] static from settings: ip %u.%u.%u.%u gw %u.%u.%u.%u dns %u.%u.%u.%u\n",
+            (net_cfg.ip >> 24) & 255, (net_cfg.ip >> 16) & 255,
+            (net_cfg.ip >> 8) & 255, net_cfg.ip & 255,
+            (net_cfg.gw >> 24) & 255, (net_cfg.gw >> 16) & 255,
+            (net_cfg.gw >> 8) & 255, net_cfg.gw & 255,
+            (net_cfg.dns >> 24) & 255, (net_cfg.dns >> 16) & 255,
+            (net_cfg.dns >> 8) & 255, net_cfg.dns & 255);
+    return 1;
+}
+
 /* Link-layer hooks, weak for the same reason: net.c is linked into host tests
  * that have no NIC and no ARP. */
 void arp_announce(void) __attribute__((weak));
@@ -135,8 +167,9 @@ int net_init(void)
     netdev_irq_enable(eth_input);   /* IRQ-driven RX; net_poll still backstops */
     /* Unconfigured while negotiating: DHCPDISCOVER leaves from 0.0.0.0, and
      * only broadcast UDP can come back in until we own an address. */
-    if (!dhcp_run || dhcp_run(300) != 0)    /* ~3 s */
-        net_cfg_fallback();
+    if (!net_cfg_from_settings())
+        if (!dhcp_run || dhcp_run(300) != 0)    /* ~3 s */
+            net_cfg_fallback();
 
     /* RFC 5227 s3: announce the address we just took. Until now the machine
      * never announced at all -- nothing on the segment learned our binding

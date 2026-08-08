@@ -283,6 +283,10 @@ $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 # why it ships on the disk rather than living behind a build flag -- a visual
 # test you have to opt into is a visual test nobody runs.
 $(eval $(call APP_RULE,gallery, 0x4A000000,Gallery,-,G,120,140,250))
+# Settings: the window where the machine's memory of its user is editable.
+# Packed AFTER gallery for the same reason gallery is packed after browser --
+# see the APPS note below.
+$(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # Preview is NOT built by APP_RULE -- it links the H.264 decoder and mini-libc,
 # so its rule lives with the VID_OBJ definitions further down.
 # Code Studio links the AetherScript completion engine (complete.o) for IntelliSense.
@@ -307,6 +311,13 @@ APPS := clock textedit monitor terminal widgets files preview studio
 # icon every existing driver clicks. (NAPPS there still has to go 9 -> 10: the
 # dock is centred, so one more app shifts every icon.)
 GALLERY_AEX := $(BUILD)/gallery.aex
+# Settings goes AFTER gallery for the identical reason, one slot further along:
+# appending `settings` to APPS would insert it before browser AND before
+# gallery, moving two icons that two existing QMP drivers click by index.
+# Packed last, BROWSER_SLOT stays 8 and GALLERY_SLOT stays 9; the new app is
+# SETTINGS_SLOT 10 and NAPPS goes 10 -> 11 in tests/qmp/qmp_ui.py, which every
+# driver recomputes its x from because the dock is centred.
+SETTINGS_AEX := $(BUILD)/settings.aex
 
 # Which Activity Monitor goes on the disk. Overridable for the same reason
 # BROWSER_AEX is: test-monitor-negctl packs a deliberately crippled build (one
@@ -335,7 +346,7 @@ CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname ne
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
-AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(GALLERY_AEX) $(CLI_AEX) $(BUILD)/as.aex
+AEX  := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BUILD)/browser.aex $(GALLERY_AEX) $(SETTINGS_AEX) $(CLI_AEX) $(BUILD)/as.aex
 # Which browser goes on the disk. Overridable so a test can pack a deliberately
 # crippled build instead -- see test-webapi-page-control, which is how "this
 # assertion fails without the change" is demonstrated rather than asserted.
@@ -695,7 +706,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
 	    $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex) \
 	    $(BROWSER_AEX):browser.aex \
-	    $(GALLERY_AEX):gallery.aex \
+	    $(GALLERY_AEX):gallery.aex $(SETTINGS_AEX):settings.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
@@ -2942,6 +2953,8 @@ clean:
 # for the same reason as the others: a whole-file Makefile overwrite from a
 # concurrent line cannot delete it.
 -include tests/sec.mk
+# The settings store: does this machine remember anything about its user?
+-include tests/settings.mk
 
 # The browser LOADER test (test-loader), its negative control and the on-device
 # test-script-nav. Own fragment for the same reason as every other one above --

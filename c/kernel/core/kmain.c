@@ -10,6 +10,7 @@
 #include "wm.h"
 #include "mouse.h"
 #include "vfs.h"
+#include "settings.h"
 #include "logitfs.h"
 #include "net.h"
 #include "text.h"
@@ -106,6 +107,14 @@ void kernel_main(uint64_t mb_info)
     vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
     kprintf(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
+
+    /* Load what this machine remembers about its user. Between the mount and
+     * net_init/wm_init on purpose: the network configuration and the theme are
+     * both chosen from it, and both happen below. A damaged or absent file is
+     * NOT an error here -- settings_init() reports what it rejected and leaves
+     * every key at its default, which is why nothing after this line has to
+     * care whether it worked. */
+    if (fs_ok) settings_init();
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
 
