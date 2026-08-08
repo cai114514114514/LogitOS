@@ -1120,4 +1120,125 @@ struct logit_thread_spec {
 #define THRINFO_CREATED   3   /* threads created since boot (monotonic) */
 #define THRINFO_REAPED    4   /* descriptors returned to the pool since boot */
 
+/* ---- M31: file metadata ----------------------------------------------------
+ *
+ * WHAT RING 3 COULD ASK BEFORE THIS, IN FULL:
+ *
+ *   #define SYS_DIR_NAME 20  // (dir, i, buf<=64) -> size, -2 if dir, -1 if none
+ *
+ * That is the whole surface. A program that wants a file's size must find the
+ * file's PARENT, enumerate it by index, and match the name -- there was no way
+ * to ask about a path. `-2` overloads the size to mean "directory". Nothing
+ * could read a mode, an owner, a link count, an inode number or a timestamp,
+ * and a name longer than 63 bytes came back truncated with no way to tell.
+ *
+ * The data was already on the medium: LogitFS v4 inodes carry atime/mtime/ctime
+ * (c/fs/logitfs_fmt.h) and the VFS has kept modes, owners, link counts and
+ * symlink targets since the mount-table work (c/fs/vfs_meta.c). This block is
+ * the pipe between the two, not a new feature.
+ *
+ * WHY A LENGTH ARGUMENT. Every call below that fills a struct takes the buffer's
+ * size and the kernel fills min(that, what it knows), stamping `len` with what
+ * it actually wrote. An OLD binary calling a NEW kernel gets its own smaller
+ * struct filled; a NEW binary on an OLD kernel sees a smaller `len` and knows
+ * the tail is untouched rather than reading whatever was on its stack. That is
+ * cheap here and impossible to retrofit, which is the entire reason it is here.
+ *
+ * WHY `attr`. A stat that cannot say "this 0644 is the default, nobody ever set
+ * it" is a stat that lies quietly. Every field that can be a fallback is
+ * accompanied by a bit saying whether it was read from somewhere. See LSTA_*. */
+#define SYS_STAT      120 /* (path, struct logit_stat*, len) -> 0, or <0. Follows symlinks. */
+#define SYS_LSTAT     121 /* (path, struct logit_stat*, len) -> 0, or <0. Does NOT follow. */
+#define SYS_FSTAT     122 /* (fd,   struct logit_stat*, len) -> 0, or <0 */
+#define SYS_GETDENTS  123 /* (struct logit_dirreq*) -> entries written, 0 at end, <0 error */
+#define SYS_CHMOD     124 /* (path, mode) -> 0, or <0. Owner or root only. */
+#define SYS_UMASK     125 /* (mask) -> the PREVIOUS mask. mask < 0 = query only. */
+#define SYS_SYMLINK   126 /* (target, linkpath) -> 0, or <0 */
+#define SYS_READLINK  127 /* (path, buf, max) -> bytes written (no NUL), or <0 */
+#define SYS_LINK      128 /* (oldpath, newpath) -> 0, or <0 */
+#define SYS_CHOWN     129 /* (path, uid, gid) -> 0, or <0. Root only. */
+
+/* File type, in the high bits of logit_stat.mode. POSIX's numbering, so
+ * mini-libc's S_IFMT masks apply unchanged and there is no translation table to
+ * drift. The low 12 bits are the permission bits, also POSIX-numbered. */
+#define LST_IFMT   0170000
+#define LST_IFLNK  0120000
+#define LST_IFREG  0100000
+#define LST_IFDIR  0040000
+#define LST_IFCHR  0020000
+#define LST_IFIFO  0010000
+
+/* logit_stat.attr -- WHICH OF THE ANSWERS ABOVE ARE REAL.
+ *
+ * A caller that ignores this field gets today's behaviour and today's plausible
+ * defaults. A caller that reads it can tell a recorded 0600 from the 0644 that
+ * every unrecorded file reports, which is the difference between a permission
+ * model and a decoration. */
+#define LSTA_MODE_STORED   0x0001 /* mode/uid/gid are a RECORD, not the default */
+#define LSTA_MODE_DURABLE  0x0002 /* ...and that record is on the medium, so it
+                                   * survives a reboot. Without this bit the
+                                   * record is the VFS's RAM store and will not. */
+#define LSTA_TIMES         0x0004 /* atime/mtime/ctime came off the medium */
+#define LSTA_INO           0x0008 /* `ino` is a real inode number, not 0 */
+#define LSTA_NLINK_RAM     0x0010 /* nlink > 1 because of the VFS's RAM link
+                                   * store; the extra names do not survive a boot */
+
+struct logit_stat {
+    unsigned int       len;      /* bytes the kernel wrote (<= the len argument) */
+    unsigned int       version;  /* LOGIT_STAT_VERSION */
+    unsigned int       mode;     /* LST_IF* | permission bits */
+    unsigned int       attr;     /* LSTA_* -- read this before believing the rest */
+    unsigned int       uid;
+    unsigned int       gid;
+    unsigned int       nlink;
+    unsigned int       blksize;  /* the filesystem's block size */
+    unsigned long long ino;
+    unsigned long long dev;      /* mount index; two paths with the same (dev,ino)
+                                  * are the same file */
+    unsigned long long size;     /* bytes. For a directory: the entry count. */
+    unsigned long long blocks;   /* 512-byte units actually allocated */
+    long long          atime;    /* whole seconds, Unix epoch. 0 = unknown, which
+                                  * a caller must not read as 1970. */
+    long long          mtime;
+    long long          ctime;
+};
+#define LOGIT_STAT_VERSION 1
+
+/* SYS_GETDENTS: the directory read that SYS_DIR_NAME is not.
+ *
+ * Three things it fixes, in the order they bite: a name may be up to 255 bytes
+ * (SYS_DIR_NAME caps at 63 and cannot report that it truncated), the type is
+ * its own field instead of an overloaded return value, and one call returns
+ * MANY entries so listing a directory is not N syscalls.
+ *
+ * THE CURSOR, said exactly. `cursor` is opaque: pass 0 to start, then pass back
+ * whatever the kernel left in it. It is NOT an entry index and callers must not
+ * do arithmetic on it. The guarantee is: for a directory that is not modified
+ * between calls, resuming from the returned cursor visits every entry exactly
+ * once. If the directory IS modified mid-walk, an entry may be skipped or
+ * repeated -- the backends here enumerate by position, and a stronger promise
+ * would need an on-disk iterator the filesystem does not have. Stated rather
+ * than glossed, because "stable cursor" usually means the stronger thing.
+ *
+ * SYS_DIR_COUNT / SYS_DIR_NAME are unchanged and still work; several apps use
+ * them and none had to move. */
+struct logit_dirent {
+    unsigned int       reclen;   /* bytes of THIS record: always sizeof(struct
+                                  * logit_dirent) in version 1. Step by it, do
+                                  * not assume it. */
+    unsigned int       type;     /* LST_IFREG / LST_IFDIR / LST_IFLNK, 0 unknown */
+    unsigned long long ino;      /* 0 when the backend has no inode numbers */
+    unsigned long long size;     /* bytes; for a directory, 0 */
+    char               name[256];/* NUL-terminated */
+};
+
+struct logit_dirreq {
+    const char    *path;
+    unsigned char *buf;      /* receives an array of struct logit_dirent */
+    int            max;      /* bytes available at buf */
+    int            cursor;   /* IN: 0 to start / a previous OUT. OUT: where to resume */
+    int            count;    /* OUT: entries written */
+    int            pad;
+};
+
 #endif /* LOGIT_ABI_H */

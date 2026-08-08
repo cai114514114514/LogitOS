@@ -173,6 +173,41 @@ Thread_spec = layout("logit_thread_spec", 48, [
     ["arg", 40, 8, "u"]
 ])
 
+Stat = layout("logit_stat", 88, [
+    ["len", 0, 4, "u"],
+    ["version", 4, 4, "u"],
+    ["mode", 8, 4, "u"],
+    ["attr", 12, 4, "u"],
+    ["uid", 16, 4, "u"],
+    ["gid", 20, 4, "u"],
+    ["nlink", 24, 4, "u"],
+    ["blksize", 28, 4, "u"],
+    ["ino", 32, 8, "u"],
+    ["dev", 40, 8, "u"],
+    ["size", 48, 8, "u"],
+    ["blocks", 56, 8, "u"],
+    ["atime", 64, 8, "i"],
+    ["mtime", 72, 8, "i"],
+    ["ctime", 80, 8, "i"]
+])
+
+Dirent = layout("logit_dirent", 280, [
+    ["reclen", 0, 4, "u"],
+    ["type", 4, 4, "u"],
+    ["ino", 8, 8, "u"],
+    ["size", 16, 8, "u"],
+    ["name", 24, 256, "s"]
+])
+
+Dirreq = layout("logit_dirreq", 32, [
+    ["path", 0, 8, "p"],
+    ["buf", 8, 8, "p"],
+    ["max", 16, 4, "i"],
+    ["cursor", 20, 4, "i"],
+    ["count", 24, 4, "i"],
+    ["pad", 28, 4, "i"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):
