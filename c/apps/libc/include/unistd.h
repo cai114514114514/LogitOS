@@ -44,6 +44,16 @@ int     pipe(int fds[2]);
 int     isatty(int fd);
 int     access(const char *path, int mode);
 int     unlink(const char *path);
+
+/* Links and ownership. Real as of the file-metadata work (SYS_SYMLINK /
+ * SYS_LINK / SYS_READLINK / SYS_CHOWN); implemented in dirstat.c beside stat().
+ * WORTH KNOWING: symlink targets and hard-link groups are VFS records kept in
+ * RAM -- the link works, and it is gone after a reboot. A file's MODE and OWNER
+ * do survive, because those reach the inode. */
+int     symlink(const char *target, const char *linkpath);
+int     link(const char *oldpath, const char *newpath);
+ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+int     chown(const char *path, uid_t uid, gid_t gid);
 int     rmdir(const char *path);
 int     chdir(const char *path);
 int     fchdir(int fd);

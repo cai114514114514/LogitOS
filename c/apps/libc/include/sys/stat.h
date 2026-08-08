@@ -5,24 +5,30 @@
 
 /* WHAT LOGITFS ACTUALLY KNOWS, AND WHAT IT DOES NOT.
  *
- * There is no stat syscall: the kernel exposes a file's size (SYS_LSEEK to the
- * end, or SYS_DIR_NAME) and whether a path is a directory (SYS_DIR_COUNT
- * succeeds), and nothing else. So st_size, st_mode's file-type bits and
- * st_blocks are REAL, and the rest are honest constants:
+ * This block used to say "there is no stat syscall" and list which fields were
+ * honest constants. There is one now (SYS_STAT / SYS_LSTAT / SYS_FSTAT), and
+ * the list is much shorter:
  *
- *   st_mode permissions  0644 for files, 0755 for directories -- LogitFS has
- *                        no permission bits and no users to apply them to.
- *   st_uid / st_gid      0. There is one user.
- *   st_nlink             1. No hard links (LINK_MAX is 1).
- *   st_ino               0. LogitFS has inodes, but no syscall reports the
- *                        number, so this cannot be used to detect aliasing.
- *   st_atime/mtime/ctime 0. Nothing records file times.
- *   st_dev / st_rdev     0.
+ *   st_size, st_blocks   REAL, off the inode.
+ *   st_mode              REAL. Type bits from the backend; permission bits from
+ *                        the inode when somebody has set them, otherwise the
+ *                        0644 / 0755 default -- see the WARNING below.
+ *   st_uid / st_gid      REAL, off the inode, and they survive a reboot.
+ *   st_nlink             REAL, but hard links are VFS records kept in RAM, so a
+ *                        count above 1 does NOT survive a reboot.
+ *   st_ino               REAL on LogitFS. (st_dev, st_ino) identifies a file.
+ *   st_atime/mtime/ctime REAL, whole seconds from the RTC. ZERO means "never
+ *                        stamped" -- an image written before timestamps existed
+ *                        -- and must not be read as 1970.
+ *   st_dev               The mount index, 1-based. 0 = unknown.
+ *   st_rdev              0. There are no device nodes.
  *
- * The consequence worth knowing: a build system that decides what to rebuild by
- * comparing mtimes will see every file as equally old. That is a limitation of
- * the filesystem, not of this header, and it is better to see zeros than to see
- * a plausible-looking invented timestamp. */
+ * THE WARNING. struct stat has nowhere to record that a mode is the DEFAULT
+ * rather than a choice, so an unset 0644 and a chosen 0644 are the same six
+ * bytes here. If that distinction matters to you -- an installer, an archiver,
+ * anything that will write the mode back -- call logit_statx() below and read
+ * the LSTA_* bits. LSTA_MODE_STORED means somebody set it; LSTA_MODE_DURABLE
+ * means it is on the medium and will still be there after a reboot. */
 
 struct stat {
     dev_t     st_dev;
@@ -77,8 +83,14 @@ struct stat {
 #define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
 
 int stat(const char *path, struct stat *st);
-int lstat(const char *path, struct stat *st);   /* no symlinks: same as stat */
+int lstat(const char *path, struct stat *st);   /* does NOT follow a symlink */
 int fstat(int fd, struct stat *st);
+
+/* The kernel's own answer, with the LSTA_* provenance bits POSIX has no room
+ * for. `struct logit_stat` is in include/abi/logit_abi.h; a caller that does not
+ * need to know where a field came from should use stat() and ignore this. */
+struct logit_stat;
+int logit_statx(const char *path, struct logit_stat *out);
 int mkdir(const char *path, mode_t mode);
 int chmod(const char *path, mode_t mode);
 int fchmod(int fd, mode_t mode);

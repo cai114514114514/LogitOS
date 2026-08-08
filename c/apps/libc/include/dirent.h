@@ -2,15 +2,18 @@
 #define _DIRENT_H
 #include <sys/types.h>
 
-/* Directory reading over SYS_DIR_COUNT / SYS_DIR_NAME.
+/* Directory reading over SYS_GETDENTS.
  *
- * The kernel enumerates a directory by INDEX, not by an open handle, so a DIR
- * here is an index plus the directory's path. The consequence, stated because
- * it is observable: a directory modified while it is being read can make
- * readdir() skip or repeat an entry, where a real dirfd-based implementation
- * would give a stable snapshot. d_ino is 0 (the kernel does not report inode
- * numbers -- see <sys/stat.h>); d_type IS real, because SYS_DIR_NAME
- * distinguishes a directory from a file. */
+ * This used to be one SYS_DIR_NAME per entry, with names truncated at 63 bytes
+ * and no way to detect it, and d_ino always 0. All three are fixed: a batch of
+ * entries per syscall, names up to 255 bytes, and a real d_ino wherever the
+ * backend has inode numbers. d_type is real and now distinguishes a symlink
+ * from a regular file, which the old dir/file boolean could not.
+ *
+ * The one caveat that remains, stated because it is observable: the kernel's
+ * cursor is a POSITION in the directory, not a snapshot, so a directory
+ * modified between two readdir() calls can still make an entry repeat or
+ * vanish. A dirfd-based implementation would not; there is no dirfd here. */
 
 #define DT_UNKNOWN 0
 #define DT_FIFO    1

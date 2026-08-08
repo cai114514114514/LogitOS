@@ -14,6 +14,7 @@
 #include "icmp.h"
 #include "dns.h"
 #include "sock.h"
+#include "lsock.h"       /* SERVER sockets: SYS_SOCKET .. SYS_SOCKSTAT */
 #include "logit_pack.h"     /* generated: the port/flags unpack for SYS_SOCK_OPEN */
 #include "img.h"
 #include "kheap.h"
@@ -35,6 +36,7 @@
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
 #include "kbench.h"      /* per-syscall accounting, off by default */
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
+#include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -613,6 +615,129 @@ static void syscall_do(struct registers *r)
         return;
     }
 
+    /* --- SERVER SOCKETS (140-149) -------------------------------------------
+     * The other direction: connections this machine ANSWERS. See the long note
+     * above SYS_SOCKET in include/abi/logit_abi.h for the blocking model and
+     * for the net_poll constraint that shapes it.
+     *
+     * These sit here rather than in wm_gui_syscall for the same reason the
+     * SYS_SOCK_* block above gives -- a server is a process-level service and
+     * /bin/httpd has no window.
+     *
+     * ONE THING TO KNOW ABOUT THE BLOCKING ONES. int 0x80 is an interrupt gate,
+     * so a syscall body runs with IF=0. SYS_ACCEPT and a blocking read on a
+     * socket fd do NOT re-enable interrupts the way SYS_HTTP_GET does, and they
+     * do not need to: they PARK on a wait queue rather than spinning on a
+     * timeout loop, and sched_block_self_unlock switches away to a thread whose
+     * own saved flags have IF set. The trap SYS_HTTP_GET documents is a trap
+     * for code that waits by looping; this code waits by not running. */
+    case SYS_SOCKET: {
+        struct proc *p = proc_current();
+        if (!p) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        int err = 0;
+        struct file *f = lsock_create((int)r->rdi, (int)r->rsi, (int)r->rdx,
+                                      p->pid, &err);
+        if (!f) { r->rax = (uint64_t)(long)err; return; }
+        int fd = proc_fd_alloc(p, f);
+        if (fd < 0) { file_close(f); r->rax = (uint64_t)(long)LSK_E_FULL; return; }
+        r->rax = (uint64_t)(long)fd;
+        return;
+    }
+    case SYS_BIND: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct logit_sockaddr a;
+        if (!f || !user_range_ok((const void *)r->rsi, sizeof a, 0))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        memcpy(&a, (const void *)r->rsi, sizeof a);
+        r->rax = (uint64_t)(long)lsock_bind(f, &a);
+        return;
+    }
+    case SYS_LISTEN: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        r->rax = (uint64_t)(long)lsock_listen(f, (int)r->rsi);
+        return;
+    }
+    case SYS_ACCEPT: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        struct logit_sockaddr peer;
+        int want_peer = r->rsi != 0;
+        if (want_peer && !user_range_ok((void *)r->rsi, sizeof peer, 1))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        int err = 0;
+        struct file *cf = lsock_accept(f, want_peer ? &peer : NULL,
+                                       (unsigned)r->rdx, &err);
+        if (!cf) { r->rax = (uint64_t)(long)err; return; }
+        /* Install the fd BEFORE copying out: a failed copy-out with the fd
+         * already allocated is a leaked connection, and the fd table is the
+         * thing the caller cannot clean up itself. */
+        int fd = proc_fd_alloc(p, cf);
+        if (fd < 0) { file_close(cf); r->rax = (uint64_t)(long)LSK_E_FULL; return; }
+        if (want_peer) memcpy((void *)r->rsi, &peer, sizeof peer);
+        r->rax = (uint64_t)(long)fd;
+        return;
+    }
+    case SYS_GETSOCKNAME: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct logit_sockaddr a;
+        if (!f || !user_range_ok((void *)r->rsi, sizeof a, 1))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        int rc = lsock_getsockname(f, &a);
+        if (rc == 0) memcpy((void *)r->rsi, &a, sizeof a);
+        r->rax = (uint64_t)(long)rc;
+        return;
+    }
+    case SYS_SETSOCKOPT: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        int level = (int)((r->rsi >> 16) & 0xFFFF);
+        int opt   = (int)(r->rsi & 0xFFFF);
+        r->rax = (uint64_t)(long)lsock_setsockopt(f, level, opt, (long)r->rdx);
+        return;
+    }
+    case SYS_SHUTDOWN: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        r->rax = (uint64_t)(long)lsock_shutdown(f, (int)r->rsi);
+        return;
+    }
+    case SYS_RECVFROM:
+    case SYS_SENDTO: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct logit_dgram d;
+        /* recvfrom writes the sender back into the caller's struct; sendto only
+         * reads it. Checking for write access on both would refuse a sendto
+         * from a read-only mapping, which is legal. */
+        if (!f || !user_range_ok((void *)r->rsi, sizeof d, n == SYS_RECVFROM))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        memcpy(&d, (const void *)r->rsi, sizeof d);
+        if (d.len < 0 || d.flags != 0)
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        int writing = (n == SYS_RECVFROM);
+        if (d.len > 0 && !user_range_ok(d.buf, (uint64_t)d.len, writing))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        long rc;
+        if (n == SYS_RECVFROM) {
+            rc = lsock_recvfrom(f, d.buf, d.len, &d.addr);
+            if (rc > 0) memcpy((void *)r->rsi, &d, sizeof d);   /* the sender */
+        } else {
+            rc = lsock_sendto(f, d.buf, d.len, &d.addr);
+        }
+        r->rax = (uint64_t)rc;
+        return;
+    }
+    case SYS_SOCKSTAT:
+        r->rax = (uint64_t)lsock_stat((int)r->rdi);
+        return;
+
     case SYS_IMG_DECODE: {
         /* Decode an image file (PNG/GIF) in-kernel and hand the RGBA back to the
          * caller's buffer -- so the Preview app needs no codec/libc of its own. */
@@ -694,6 +819,24 @@ static void syscall_do(struct registers *r)
     case SYS_PROCS:
     case SYS_KILL:
         r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
+                                        (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* M31 file metadata (120-129). Forwarded whole to c/kernel/exec/meta.c for
+     * the reason mm_syscall() gives: which argument is a user pointer and what
+     * it means are facts about this subsystem. Proc-level, not GUI: a CLI
+     * program is the main caller and has no window. */
+    case SYS_STAT:
+    case SYS_LSTAT:
+    case SYS_FSTAT:
+    case SYS_GETDENTS:
+    case SYS_CHMOD:
+    case SYS_UMASK:
+    case SYS_SYMLINK:
+    case SYS_READLINK:
+    case SYS_LINK:
+    case SYS_CHOWN:
+        r->rax = (uint64_t)meta_syscall((long)r->rax, (long)r->rdi,
                                         (long)r->rsi, (long)r->rdx);
         return;
 
