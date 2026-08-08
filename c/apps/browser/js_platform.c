@@ -22,21 +22,34 @@ static int g_vw = 980, g_vh = 600;
 void js_platform_set_viewport(int w, int h) { if (w > 0) g_vw = w; if (h > 0) g_vh = h; }
 
 /* ---- entropy ------------------------------------------------------------
- * THIS IS NOT A CSPRNG AND THE NAME crypto.getRandomValues IS A LIE WE ARE
- * TELLING ON PURPOSE, so it is written down here rather than left for someone
- * to discover. LogitOS has no entropy source a ring-3 process can reach: no
- * /dev/urandom, no RDRAND wrapper, no kernel pool syscall. What pages actually
- * use getRandomValues for -- request ids, cache-busting nonces, React keys,
- * telemetry correlation ids -- needs unpredictability between calls, not
- * against an adversary, and a page that cannot get any at all simply throws.
+ * crypto.getRandomValues IS NOW TRUE. This comment used to say, in capital
+ * letters, that it was a lie: LogitOS had no entropy source a ring-3 process
+ * could reach -- no /dev/urandom, no RDRAND wrapper, no kernel pool syscall --
+ * so this was xorshift128+ seeded from the wall clock, the monotonic clock and
+ * two heap addresses. Every CSRF token, UUID and WebCrypto shim on every page
+ * was predictable from a handful of observations.
  *
- * So: xorshift128+, seeded from the wall clock, the monotonic clock and two
- * heap addresses (the allocator's layout differs per run and per page). It is
- * good enough to keep ids distinct and nowhere near good enough to generate a
- * key with. If this browser ever grows WebCrypto, the fix is a kernel entropy
- * syscall feeding this seed, not a better shuffle here. */
+ * SYS_GETRANDOM (include/abi/logit_abi.h) is that missing syscall: it is the
+ * kernel's SHA-256 Hash_DRBG in c/kernel/core/rng.c, seeded from RDSEED/RDRAND
+ * where the CPU has one, with state/output separation and periodic reseeding.
+ * getrandom_bytes() in c/apps/logit.h loops over the per-call cap, so this path
+ * either fills the whole buffer or fails.
+ *
+ * THE FALLBACK IS STILL HERE, and it is deliberate that it is now a FALLBACK
+ * rather than the implementation: if the syscall ever fails (an older kernel, a
+ * refused range) a page gets the old xorshift stream instead of an exception,
+ * because a browser that throws out of getRandomValues does not render. The
+ * distinction is observable -- __randomStrong() below reports which source is
+ * live -- so "it silently degraded" is a thing a test can catch rather than a
+ * thing someone discovers. */
+#include "logit.h"
 static unsigned long long g_s0, g_s1;
 static int g_seeded;
+/* -1 = no fill has happened yet, 1 = the last fill came from SYS_GETRANDOM,
+ * 0 = it came from the xorshift fallback. Reported to script as
+ * __randomStrong(), so a page (and tests/boot/run-entropy-test.sh) can tell
+ * the two apart instead of trusting the name of the function. */
+static int g_rng_kernel = -1;
 
 static void rng_seed(unsigned long long clock_hint)
 {
@@ -79,16 +92,37 @@ static JSValue js_random(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     if (argc > 1) JS_ToFloat64(ctx, &hint, argv[1]);
     if (n < 0) n = 0;
     if (n > 65536) n = 65536;
-    if (!g_seeded) rng_seed((unsigned long long)hint);
     unsigned char *buf = malloc((size_t)n + 1);
     if (!buf) return JS_ThrowOutOfMemory(ctx);
-    for (int i = 0; i < n; ) {
-        unsigned long long r = rng_next();
-        for (int k = 0; k < 8 && i < n; k++, i++) buf[i] = (unsigned char)(r >> (k * 8));
+    /* The kernel DRBG first; the old xorshift only if the syscall refuses. */
+    if (n == 0 || getrandom_bytes(buf, n) != 0) {
+        g_rng_kernel = 0;
+        if (!g_seeded) rng_seed((unsigned long long)hint);
+        for (int i = 0; i < n; ) {
+            unsigned long long r = rng_next();
+            for (int k = 0; k < 8 && i < n; k++, i++) buf[i] = (unsigned char)(r >> (k * 8));
+        }
+    } else {
+        g_rng_kernel = 1;
     }
     JSValue ab = JS_NewArrayBufferCopy(ctx, buf, (size_t)n);
     free(buf);
     return ab;
+}
+
+/* __randomStrong() -> which source the last fill actually used.
+ *   -1 nothing generated yet
+ *    0 the xorshift fallback ran (the syscall refused)
+ *    1 SYS_GETRANDOM, DRBG seeded from rdtsc only (no RDSEED/RDRAND on this CPU)
+ *    2 SYS_GETRANDOM, DRBG backed by a hardware entropy source
+ * This exists so "it silently fell back" is observable. A page will not read
+ * it; tests/boot/run-entropy-test.sh does, and so does anyone wondering
+ * whether the name on the tin is true today. */
+static JSValue js_random_strong(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    if (g_rng_kernel <= 0) return JS_NewInt32(ctx, g_rng_kernel);
+    return JS_NewInt32(ctx, getrandom_strong() ? 2 : 1);
 }
 
 /* ---- unhandled promise rejections --------------------------------------
@@ -117,7 +151,7 @@ static void rejection_tracker(JSContext *ctx, JSValueConst promise, JSValueConst
 
 /* ---- the prelude -------------------------------------------------------- */
 static const char *PLATFORM_PRELUDE =
-"(function (__random, __vw, __vh) {\n"
+"(function (__random, __vw, __vh, __randomStrong) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 /* The house rule for this whole file. Three lines are adding to this runtime
@@ -531,6 +565,10 @@ static const char *PLATFORM_PRELUDE =
 "    dst.set(bytes);\n"
 "    return view;\n"
 "  });\n"
+/* Which source the last getRandomValues actually used. Not a web API -- it is
+   the observable that keeps "getRandomValues is real now" from being a claim
+   nobody can check. See js_random_strong() in this file. */
+"  def(G, '__logitEntropySource', __randomStrong);\n"
 "  def(c, 'randomUUID', function () {\n"
 "    var b = new Uint8Array(__random(16, Date.now()));\n"
 "    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;\n"
@@ -1783,12 +1821,13 @@ void js_platform_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[3];
+    JSValue args[4];
     args[0] = JS_NewCFunction(ctx, js_random, "__random", 2);
     args[1] = JS_NewInt32(ctx, g_vw);
     args[2] = JS_NewInt32(ctx, g_vh);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 3, (JSValueConst *)args);
-    for (int i = 0; i < 3; i++) JS_FreeValue(ctx, args[i]);
+    args[3] = JS_NewCFunction(ctx, js_random_strong, "__randomStrong", 0);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 4, (JSValueConst *)args);
+    for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);

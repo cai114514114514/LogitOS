@@ -63,6 +63,34 @@ static inline long sys_kheap_stress(long iters, int size, unsigned long seed) { 
 static inline int  sys_waitpid(int pid, int *status) { return (int)_sys(SYS_WAITPID, pid, (long)status, 0); }
 static inline int  sys_execve(const char *p, char *const argv[], char *const envp[]) { return (int)_sys(SYS_EXECVE, (long)p, (long)argv, (long)envp); }
 
+/* --- entropy (SYS_GETRANDOM) ------------------------------------------------
+ * The kernel's SHA-256 Hash_DRBG, reachable from ring 3. Use this and nothing
+ * else for anything that must be unpredictable -- there is no /dev/urandom
+ * here, and every hand-rolled PRNG in this tree that was seeded from a clock
+ * was, in the end, predictable.
+ *
+ * THE LOOP IS THE POINT. The syscall clamps one call at GRND_MAX (4096) and
+ * returns the clamped count, exactly like Linux's getrandom(); a caller that
+ * treats the return value as success/failure gets a key with a zero tail above
+ * 4 KiB and does not find out until it matters. This wrapper never short-reads:
+ * it returns 0 for "buf is full" and -1 for "the kernel refused", and there is
+ * no third answer to mishandle. */
+static inline int getrandom_bytes(void *buf, int len)
+{
+    unsigned char *p = (unsigned char *)buf;
+    int done = 0;
+    while (done < len) {
+        long n = _sys(SYS_GETRANDOM, (long)(p + done), (long)(len - done), 0);
+        if (n <= 0) return -1;
+        done += (int)n;
+    }
+    return 0;
+}
+
+/* 1 if the DRBG is backed by RDSEED/RDRAND, 0 if it fell back to rdtsc. Ask
+ * before generating a LONG-TERM key; a request id does not care. */
+static inline int getrandom_strong(void) { return (int)_sys(SYS_GETRANDOM, 0, 0, 0); }
+
 /* --- M18: file descriptors --- */
 static inline int  sys_write(int fd, const void *buf, int len) { return (int)_sys(SYS_WRITE, fd, (long)buf, len); }
 static inline int  sys_read(int fd, void *buf, int len) { return (int)_sys(SYS_READ, fd, (long)buf, len); }
