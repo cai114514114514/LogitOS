@@ -2330,6 +2330,12 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # js_platform.c + js_select.c. Own fragment; see the file.
 -include tests/webapi_platform.mk
 
+# The platform globals: TextEncoder/TextDecoder against the WPT encoding
+# subset with its negative control, and the task/microtask/timer ordering
+# the whole harness rests on. Reuses tests/wpt.mk's runner and source list,
+# with deferred expansion so the -include order of the two does not matter.
+-include tests/webapi_globals.mk
+
 # --- test-webapi-page: the on-device proof that fetch() reaches the pixels --
 # Boots the OS, loads a fixture page from a host server, and requires the text
 # a fetch() wrote into the DOM to appear in a screendump -- plus location, URL,

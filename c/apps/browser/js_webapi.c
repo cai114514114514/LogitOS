@@ -81,10 +81,37 @@ static const struct webapi_net g_default_net =
     { d_open, d_poll, d_send, d_recv, d_close, d_now, d_now_unix };
 #else
 static const struct webapi_net g_default_net = { 0, 0, 0, 0, 0, 0, 0 };
+/* Serve GETs from a directory when WEBAPI_FILE_ROOT names one. Host only, and
+ * off unless that variable is set -- see the header of js_filenet.inc for what
+ * it is for and why it is not a fixture in a test file. */
+#include "js_filenet.inc"
 #endif
 
 static const struct webapi_net *g_net = &g_default_net;
-void js_webapi_set_net(const struct webapi_net *n) { g_net = n ? n : &g_default_net; }
+
+#ifdef WEBAPI_HOST
+/* Chosen once, on the first use, so that a harness which installs its own net
+ * before the first fetch still wins and nothing reads the environment twice. */
+static int g_net_env_checked;
+static void net_env_init(void)
+{
+    if (g_net_env_checked) return;
+    g_net_env_checked = 1;
+    if (g_net != &g_default_net) return;            /* someone installed one */
+    const char *root = getenv("WEBAPI_FILE_ROOT");
+    if (root && *root) { g_fnet_root = root; g_net = &g_fnet_net; }
+}
+#else
+#define net_env_init() ((void)0)
+#endif
+
+void js_webapi_set_net(const struct webapi_net *n)
+{
+#ifdef WEBAPI_HOST
+    g_net_env_checked = 1;                          /* an explicit net beats the env */
+#endif
+    g_net = n ? n : &g_default_net;
+}
 static unsigned long long now_ms(void) { return g_net && g_net->now_ms ? g_net->now_ms() : 0; }
 static long long now_unix(void) { return g_net && g_net->now_unix ? g_net->now_unix() : 0; }
 
@@ -933,6 +960,7 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
 /* Dial the socket for f->url and arm the deadline. 0 ok. */
 static int fetch_dial(struct wfetch *f)
 {
+    net_env_init();
     if (!g_net || !g_net->open) return -1;
     f->cross = g_loc_valid ? !same_origin(&f->url, &g_loc) : 1;
     f->fd = g_net->open(f->url.host, f->url.port, f->url.https);
@@ -1603,6 +1631,10 @@ static JSValue js_utf8(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
     return JS_NewStringLen(ctx, (const char *)p, len);
 }
 
+/* The Encoding Standard's label table and single-byte indexes, plus the two
+ * lookups the prelude's TextDecoder needs. Data, so it lives apart. */
+#include "js_encoding.inc"
+
 /* ---- non-special schemes ------------------------------------------------
  *
  * `struct wurl` carries `https` as a BOOL, so it can express http and https
@@ -2227,7 +2259,7 @@ static const JSCFunctionListEntry hist_funcs[] = {
  * It returns the hooks C needs to call back into. */
 static const char *PRELUDE =
 "(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
-"          __cancelLater, __fetchSlots) {\n"
+"          __cancelLater, __fetchSlots, __encLabel, __encIndex) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 
@@ -2392,89 +2424,19 @@ static const char *PRELUDE =
 "  if (typeof t.start === 'function') t.start(tc);\n"
 "};\n"
 
-/* ---- bytes <-> text ----
- * TextDecoder is INCREMENTAL, and that is not a nicety: a UTF-8 sequence split
- * across two TCP reads is the normal case for a token stream, and a decoder
- * that does not carry the tail turns a Chinese reply into replacement
- * characters at every read boundary. The actual decode is __utf8 (QuickJS's
- * own UTF-8 reader); what is written here is only the part that decides which
- * trailing bytes are not a whole character yet. */
-"function toU8(x) {\n"
-"  if (x === null || x === undefined) return new Uint8Array(0);\n"
-"  if (x instanceof Uint8Array) return x;\n"
-"  if (x instanceof ArrayBuffer) return new Uint8Array(x);\n"
-"  if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);\n"
-"  if (typeof x === 'string') return new G.TextEncoder().encode(x);\n"
-"  return new Uint8Array(0);\n"
-"}\n"
-"function u8ab(u) { return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }\n"
-"function joinParts(parts) {\n"
-"  var a = [], n = 0, i;\n"
-"  for (i = 0; i < parts.length; i++) { a.push(toU8(parts[i])); n += a[i].length; }\n"
-"  var out = new Uint8Array(n), o = 0;\n"
-"  for (i = 0; i < a.length; i++) { out.set(a[i], o); o += a[i].length; }\n"
-"  return out.buffer;\n"
-"}\n"
-/* How many trailing bytes of `b` are an incomplete UTF-8 sequence? */
-"function utf8Tail(b) {\n"
-"  var n = b.length, i, need;\n"
-"  for (i = 1; i <= 4 && i <= n; i++) {\n"
-"    var c = b[n - i];\n"
-"    if (c < 0x80) return 0;\n"
-"    if ((c & 0xC0) === 0x80) continue;\n"
-"    if ((c & 0xE0) === 0xC0) need = 2;\n"
-"    else if ((c & 0xF0) === 0xE0) need = 3;\n"
-"    else if ((c & 0xF8) === 0xF0) need = 4;\n"
-"    else return 0;\n"
-"    return i < need ? i : 0;\n"
-"  }\n"
-"  return 0;\n"
-"}\n"
-"G.TextEncoder = function TextEncoder() { this.encoding = 'utf-8'; };\n"
-"G.TextEncoder.prototype.encode = function (s) {\n"
-"  s = String(s === undefined ? '' : s);\n"
-"  var out = [], i, c, d;\n"
-"  for (i = 0; i < s.length; i++) {\n"
-"    c = s.charCodeAt(i);\n"
-"    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {\n"
-"      d = s.charCodeAt(i + 1);\n"
-"      if (d >= 0xDC00 && d <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00); i++; }\n"
-"    }\n"
-"    if (c < 0x80) out.push(c);\n"
-"    else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));\n"
-"    else if (c < 0x10000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n"
-"    else out.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n"
-"  }\n"
-"  return new Uint8Array(out);\n"
-"};\n"
-"G.TextDecoder = function TextDecoder(enc) { this.encoding = 'utf-8'; this._t = null; };\n"
-"G.TextDecoder.prototype.decode = function (input, opts) {\n"
-"  var stream = !!(opts && opts.stream);\n"
-"  var b = toU8(input);\n"
-"  if (this._t && this._t.length) {\n"
-"    var m = new Uint8Array(this._t.length + b.length);\n"
-"    m.set(this._t, 0); m.set(b, this._t.length); b = m; this._t = null;\n"
-"  }\n"
-"  var keep = stream ? utf8Tail(b) : 0;\n"
-"  if (keep) { this._t = b.slice(b.length - keep); b = b.subarray(0, b.length - keep); }\n"
-"  if (!b.length) return '';\n"
-"  return __utf8(u8ab(b));\n"
-"};\n"
-"G.TextDecoderStream = function TextDecoderStream() {\n"
-"  var dec = new G.TextDecoder();\n"
-"  var t = new G.TransformStream({\n"
-"    transform: function (chunk, c) { var s = dec.decode(chunk, { stream: true }); if (s) c.enqueue(s); },\n"
-"    flush: function (c) { var s = dec.decode(new Uint8Array(0)); if (s) c.enqueue(s); }\n"
-"  });\n"
-"  this.readable = t.readable; this.writable = t.writable;\n"
-"};\n"
-"G.TextEncoderStream = function TextEncoderStream() {\n"
-"  var enc = new G.TextEncoder();\n"
-"  var t = new G.TransformStream({\n"
-"    transform: function (chunk, c) { c.enqueue(enc.encode(chunk)); }\n"
-"  });\n"
-"  this.readable = t.readable; this.writable = t.writable;\n"
-"};\n"
+/* ---- bytes <-> text: TextEncoder / TextDecoder ----
+ * Four hundred lines of Encoding Standard, in its own file. The thirty that
+ * used to be here decoded UTF-8 and ignored the label argument entirely --
+ * see the header of js_encoding_prelude.inc for what that cost and for what
+ * is still not implemented. */
+#include "js_encoding_prelude.inc"
+
+/* ---- document.fonts ----
+ * Ranked second in the corpus by files killed (182), behind only `CSS`, and
+ * every one of them dies on `document.fonts.ready.then(...)` before its first
+ * assertion. See the file header for why a promise that resolves immediately
+ * is the true answer in this engine and not a stub. */
+#include "js_fontface_prelude.inc"
 
 /* ---- AbortController ----
  * A real cancellation now that the socket ABI has a close: abort() shuts the
@@ -3245,7 +3207,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, g);
         return;
     }
-    JSValue args[8];
+    JSValue args[10];
     args[0] = JS_NewCFunction(ctx, js_fetch_start, "__fetchStart", 5);
     args[1] = JS_NewCFunction(ctx, js_utf8, "__utf8", 1);
     args[2] = JS_NewCFunction(ctx, js_url_parse, "__urlParse", 2);
@@ -3254,8 +3216,10 @@ void js_webapi_install(JSContext *ctx, const char *url)
     args[5] = JS_NewCFunction(ctx, js_later, "__later", 2);
     args[6] = JS_NewCFunction(ctx, js_cancel_later, "__cancelLater", 1);
     args[7] = JS_NewCFunction(ctx, js_fetch_slots, "__fetchSlots", 0);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 8, (JSValueConst *)args);
-    for (int i = 0; i < 8; i++) JS_FreeValue(ctx, args[i]);
+    args[8] = JS_NewCFunction(ctx, js_enc_label, "__encLabel", 1);
+    args[9] = JS_NewCFunction(ctx, js_enc_index, "__encIndex", 1);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 10, (JSValueConst *)args);
+    for (int i = 0; i < 10; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
