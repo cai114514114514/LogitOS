@@ -63,7 +63,30 @@
  * a five-int-and-a-pointer struct to avoid pulling img.h in behind layout.h,
  * and it read the display list at the WRONG STRIDE -- the prefix was right and
  * sizeof was not, which is a class of bug a prefix declaration invites and
- * cannot be reviewed out of. */
+ * cannot be reviewed out of.
+ *
+ * AND THE SECOND WAY TO GET THE STRIDE WRONG, which is the one that shipped:
+ * `struct item` has a field called `hidden`, and c/apps/libc/include/features.h
+ * defines a lowercase `hidden` as __attribute__((__visibility__("hidden"))) for
+ * musl's sources. The Makefile force-included that header into every jsobj TU
+ * -- this file, js_dom.c and browser.c -- so `int hidden;` expanded to
+ * `int __attribute__((__visibility__("hidden")));`, an anonymous declaration
+ * with NO FIELD IN IT. The field vanished, sizeof(struct item) read 224 here
+ * against layout.c's 232, and every it[i] past i == 0 was a misaligned slice of
+ * its neighbours -- so it[i].node came back as 0x14, a non-null pointer the
+ * null check cannot catch, and in_subtree() page-faulted on n->parent.
+ *
+ * The fix is in the Makefile (the browser's own TUs no longer get musl's
+ * INTERNAL header force-included; the engine and mini-libc still do, they need
+ * it) and `make test-cssom-abi` is the gate that keeps it fixed. This #undef is
+ * the belt to that pair of braces: it makes THIS file's view of the display
+ * list correct under any flags, including a host test that force-includes
+ * features.h for its own reasons. 13751f1 is the same macro's loud twin --
+ * there it ate an attribute and the build broke; here it ate a field and the
+ * build was fine. */
+#ifdef hidden
+#undef hidden
+#endif
 #include "layout.h"
 #include "js_dom.h"
 #include "js_cssom.h"

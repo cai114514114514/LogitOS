@@ -531,6 +531,35 @@ $(BUILD)/cssobj/%.o: %.c
 BROWSER_JS_SRC := c/apps/browser/browser.c $(sort $(wildcard c/apps/browser/js_*.c))
 BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 
+# ...but WITHOUT `-include features.h`. That header is musl's INTERNAL one: it
+# defines lowercase `weak`, `hidden` and `weak_alias` so libm's own sources
+# compile, and QuickJS + mini-libc (the ENGINE_SRCS above) genuinely need it.
+# The browser's own TUs do not, and force-including it into them is how a
+# lowercase macro gets to collide with an ordinary identifier of ours.
+#
+# It already did, twice in one night. 13751f1 was the LOUD one: `weak` ate an
+# __attribute__ in js_dom.c and the build broke with an error naming neither the
+# macro nor the header. The silent one is worse and is what this line removes:
+# layout.h's `struct item` has a field called `hidden`, so `int hidden;` expanded
+# to `int __attribute__((__visibility__("hidden")));` -- an anonymous declaration
+# that declares no member at all. The field DISAPPEARED from every jsobj TU's
+# view of the struct, sizeof(struct item) was 224 in browser.c/js_dom.c/
+# js_cssom.c against layout.c's 232, and all three read the shared display list
+# at a stride 8 bytes short. Everything past items[0] was a misaligned slice of
+# its neighbours: getBoundingClientRect and offsetWidth walked `it[i].node`
+# values like 0x14 and 0x10000000d3, which are not NULL and so survive a null
+# check, and the browser page-faulted in ring 3 -- CRASH on seven of the sixteen
+# scoreboard sites on 2026-08-09, all with the same fingerprint because the
+# number being measured was the desktop showing through the dead window.
+#
+# A target-specific variable rather than a second pattern rule, so the rule at
+# $(BUILD)/jsobj/%.o stays the single place these objects are built and the glob
+# above stays the single list. `make test-cssom-abi` is the gate: it compiles
+# layout.h under both of the flag sets that meet on the display list and fails
+# if their sizeof(struct item) ever disagrees again.
+BROWSER_JS_CF := $(filter-out -include features.h,$(JS_CF))
+$(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
+
 $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 
