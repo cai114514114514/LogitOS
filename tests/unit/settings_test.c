@@ -477,6 +477,65 @@ static void t_rules(void)
         ok(all_keys_usable(&why), "a 300-byte key with a 900-byte value is survivable");
     }
 
+    /* A VALUE THAT DOES NOT FIT IS REFUSED, NOT TRUNCATED.
+     *
+     * This is the limit the browser-tabs line hit. The store is deliberately
+     * small -- it is one file written in one transaction, which is what the
+     * whole corruption design rests on -- so bulk belongs in files. But the
+     * refusal has to be LOUD: a silently shortened path is a corruption you
+     * discover somewhere else, later, and blame on the wrong thing. */
+    {
+        static char huge[SET_VALLEN + 64];
+        for (int i = 0; i < (int)sizeof huge - 1; i++) huge[i] = 'u';
+        huge[sizeof huge - 1] = 0;
+        fs_len = -1;
+        settings_load();
+        ok(settings_set_str("browser.url", huge, 0) == SET_E_TOOBIG,
+           "an over-long value is refused with SET_E_TOOBIG");
+        ok(settings_get_str("browser.url", "(unset)")[0] == '(',
+           "...and nothing at all was stored -- not a truncated prefix");
+
+        char fits[SET_VALLEN];
+        for (int i = 0; i < SET_VALLEN - 1; i++) fits[i] = 'f';
+        fits[SET_VALLEN - 1] = 0;
+        ok(settings_set_str("browser.url", fits, 0) == 0,
+           "a value of exactly the maximum length is accepted");
+        ok((int)strlen(settings_get_str("browser.url", "")) == SET_VALLEN - 1,
+           "...and comes back at full length");
+
+        /* The same rule on the way IN from a file: an over-long line is dropped
+         * whole and reported, never stored as a prefix of itself. */
+        static char line[SET_VALLEN + 96];
+        int o = sprintf(line, "browser.url = ");
+        for (int i = 0; i < SET_VALLEN + 20; i++) line[o++] = 'x';
+        line[o++] = '\n'; line[o] = 0;
+        fs_set(line);
+        settings_load();
+        ok(settings_get_str("browser.url", "(unset)")[0] == '(',
+           "an over-long line in the FILE is dropped, not truncated into the store");
+        ok(settings_diag() & SET_D_BADLINE, "...and reported as a bad line");
+    }
+
+    /* A full table refuses with a distinct code, not the same -1 as everything
+     * else. "The machine is full" and "your value is too long" need different
+     * answers or a caller cannot say which happened. */
+    {
+        fs_len = -1;
+        settings_load();
+        char k[24];
+        int rc = 0;
+        for (int i = 0; i < SET_MAXKV + 5; i++) {
+            sprintf(k, "fill.%d", i);
+            rc = settings_set_str(k, "1", 0);
+            if (rc < 0) break;
+        }
+        ok(rc == SET_E_FULL, "filling the table refuses with SET_E_FULL");
+        ok(settings_kv_count() == SET_MAXKV, "...at exactly SET_MAXKV keys");
+        ok(settings_set_str("", "x", 0) == SET_E_BADKEY, "an empty key is SET_E_BADKEY");
+        ok(settings_set_str("has space", "x", 0) == SET_E_BADKEY, "a key with a space is refused");
+        ok(settings_set_str("has=equals", "x", 0) == SET_E_BADKEY, "a key with '=' is refused");
+    }
+
     /* reset() is the same code path as a fresh machine -- there is no separate
      * "defaults" table to drift out of step with the schema. */
     fs_set("ui.dark = 1\n");

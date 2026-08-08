@@ -744,7 +744,44 @@ struct logit_meminfo {
 #define SETCTL_KVCOUNT   7   /* -> live keys in the store, schema or not */
 #define SETCTL_KVAT      8   /* (SETCTL_KVAT, buf, index) -> "key=value" length.
                               * How an app lists keys it has never heard of,
-                              * which is the point of preserving them. */
+                              * which is the point of preserving them. `buf`
+                              * must be at least LOGIT_SET_KVLINE bytes. */
+/* The buffer SETCTL_KVAT writes into: key + '=' + value + NUL. Allocate this,
+ * not a rounded-up guess -- every caller guessing independently is why raising
+ * the value limit once turned several safe buffers into overflows at the same
+ * moment. Mirrors SET_KVLINE in c/kernel/core/settings.h. */
+#define LOGIT_SET_KVLINE 210
+/* Buffer size for one value, INCLUDING the NUL (SETLIM_VALLEN is the usable
+ * count, one less). An app that reads a setting into a smaller buffer than this
+ * truncates it on the way in and then writes the truncation back out on save,
+ * which reintroduces from the app side exactly the silent corruption the store
+ * stopped doing. Mirrors SET_VALLEN. */
+#define LOGIT_SET_VALMAX 160
+#define SETCTL_LIMITS    9   /* (SETCTL_LIMITS, which) -> a SETLIM_* answer.
+                              * Ask the machine rather than reading a header. */
+
+/* SETCTL_LIMITS selectors. See the LIMITS block in c/kernel/core/settings.h for
+ * the policy: this store is for SETTINGS -- small, typed, human-repairable
+ * values -- because the whole store is one file written in one filesystem
+ * transaction, and that is the property the entire corruption design rests on.
+ * BULK DATA BELONGS IN FILES. A browsing history, a notification log or a
+ * clipboard ring should live under its own directory and keep only its ENABLE
+ * SWITCH and its preferences here. The caps below are what keep that true. */
+#define SETLIM_MAXKEYS   0   /* keys the whole machine may store */
+#define SETLIM_VALLEN    1   /* usable bytes in one value (excludes the NUL) */
+#define SETLIM_KEYLEN    2   /* usable bytes in one key */
+#define SETLIM_FREE      3   /* keys still unused right now */
+
+/* SYS_SETTING_SET results. Distinct codes, because "-1" for both "your value is
+ * too long" and "the machine is full" is the kind of error that costs somebody
+ * an afternoon. A value that does not fit is REFUSED, never truncated: a
+ * silently shortened path is a corruption you discover somewhere else, later,
+ * and blame on the wrong thing. */
+#define LOGIT_SET_OK        0
+#define LOGIT_SET_EBADKEY (-1)
+#define LOGIT_SET_ETOOBIG (-2)
+#define LOGIT_SET_EFULL   (-3)
+#define LOGIT_SET_EIO     (-4)
 
 /* logit_setting.type -- mirrors SET_T_* in c/kernel/core/settings.h */
 #define LOGIT_SET_BOOL   0

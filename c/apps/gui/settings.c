@@ -53,10 +53,11 @@ static int tab;
 /* ---- live values, loaded from the store at start ---- */
 static int  v_dark;
 static int  v_accent_h, v_accent_s, v_accent_l;   /* the accent, as HSL */
-static char v_wallpaper[80];
+static char v_wallpaper[LOGIT_SET_VALMAX];
 static int  v_restore;
 static int  v_dhcp;
-static char v_ip[80], v_mask[80], v_gw[80], v_dns[80];
+static char v_ip[LOGIT_SET_VALMAX], v_mask[LOGIT_SET_VALMAX],
+            v_gw[LOGIT_SET_VALMAX], v_dns[LOGIT_SET_VALMAX];
 
 static int  dirty;          /* an edit is pending a commit */
 static int  saved_flash;    /* ms timestamp: show "Saved" briefly after Apply */
@@ -79,7 +80,7 @@ static int  msg;
 static int  all_sel, all_scroll;
 #define MAXKV 64
 static char kv_key[MAXKV][48];
-static char kv_val[MAXKV][80];
+static char kv_val[MAXKV][LOGIT_SET_VALMAX];
 static const char *kv_src[MAXKV];
 static const char *kv_cell[MAXKV * 3];
 static int  nkv;
@@ -157,10 +158,10 @@ static void load_all(void)
     wp_sel = NWP - 1;
     for (int i = 0; i < NWP; i++) if (s_eq(wp_paths[i], v_wallpaper)) wp_sel = i;
 
-    if (setting_get("net.ip",   v_ip,   (int)sizeof v_ip)   <= 0) s_cpy(v_ip,   "10.0.2.15", 80);
-    if (setting_get("net.mask", v_mask, (int)sizeof v_mask) <= 0) s_cpy(v_mask, "255.255.255.0", 80);
-    if (setting_get("net.gw",   v_gw,   (int)sizeof v_gw)   <= 0) s_cpy(v_gw,   "10.0.2.2", 80);
-    if (setting_get("net.dns",  v_dns,  (int)sizeof v_dns)  <= 0) s_cpy(v_dns,  "10.0.2.3", 80);
+    if (setting_get("net.ip",   v_ip,   (int)sizeof v_ip)   <= 0) s_cpy(v_ip,   "10.0.2.15", LOGIT_SET_VALMAX);
+    if (setting_get("net.mask", v_mask, (int)sizeof v_mask) <= 0) s_cpy(v_mask, "255.255.255.0", LOGIT_SET_VALMAX);
+    if (setting_get("net.gw",   v_gw,   (int)sizeof v_gw)   <= 0) s_cpy(v_gw,   "10.0.2.2", LOGIT_SET_VALMAX);
+    if (setting_get("net.dns",  v_dns,  (int)sizeof v_dns)  <= 0) s_cpy(v_dns,  "10.0.2.3", LOGIT_SET_VALMAX);
 
     last_gen = setting_gen();
     dirty = 0;
@@ -174,7 +175,7 @@ static void kv_split(const char *line, char *k, char *v)
     int n = e < 47 ? e : 47;
     for (int i = 0; i < n; i++) k[i] = line[i];
     k[n] = 0;
-    s_cpy(v, line[e] ? line + e + 1 : "", 80);
+    s_cpy(v, line[e] ? line + e + 1 : "", LOGIT_SET_VALMAX);
 }
 
 /* The generated view. THREE columns, and the third is the one that earns the
@@ -198,20 +199,20 @@ static void load_kv(void)
 
         /* Is anything actually stored for this key, and what? */
         const char *src = "default";
-        char raw[80];
+        char raw[LOGIT_SET_VALMAX];
         raw[0] = 0;
         int stored = setting_kv_count();
         for (int j = 0; j < stored; j++) {
-            char line[140], k[48], v[80];
+            char line[LOGIT_SET_KVLINE], k[48], v[LOGIT_SET_VALMAX];
             if (setting_kv_at(j, line) < 0) break;
             kv_split(line, k, v);
-            if (s_eq(k, s.key)) { s_cpy(raw, v, 80); break; }
+            if (s_eq(k, s.key)) { s_cpy(raw, v, LOGIT_SET_VALMAX); break; }
         }
         if (raw[0]) {
-            s_cpy(kv_val[nkv], raw, 80);
+            s_cpy(kv_val[nkv], raw, LOGIT_SET_VALMAX);
             src = s_eq(raw, s.value) ? "stored" : "rejected";
         } else {
-            s_cpy(kv_val[nkv], s.value, 80);
+            s_cpy(kv_val[nkv], s.value, LOGIT_SET_VALMAX);
         }
         kv_src[nkv] = src;
         nkv++;
@@ -221,7 +222,7 @@ static void load_kv(void)
      * kept across rewrites precisely so it can live here. */
     int stored = setting_kv_count();
     for (int j = 0; j < stored && nkv < MAXKV; j++) {
-        char line[140], k[48], v[80];
+        char line[LOGIT_SET_KVLINE], k[48], v[LOGIT_SET_VALMAX];
         if (setting_kv_at(j, line) < 0) break;
         kv_split(line, k, v);
         int known = 0;
@@ -232,7 +233,7 @@ static void load_kv(void)
         }
         if (known) continue;
         s_cpy(kv_key[nkv], k, 48);
-        s_cpy(kv_val[nkv], v, 80);
+        s_cpy(kv_val[nkv], v, LOGIT_SET_VALMAX);
         kv_src[nkv] = "app";
         nkv++;
     }
@@ -419,7 +420,7 @@ static void page_network(struct aui_rect body)
     for (int i = 0; i < 4; i++) {
         r = aui_cut_top(&c, AUI_SP(9));
         aui_text_sz(r.x, r.y + 7, names[i], en ? AUI_TEXT : AUI_DISABLED_TX, AUI_FS_LABEL);
-        if (aui_textfield_ex(r.x + AUI_SP(26), r.y + 2, 180, bufs[i], 80, "0.0.0.0", en))
+        if (aui_textfield_ex(r.x + AUI_SP(26), r.y + 2, 180, bufs[i], LOGIT_SET_VALMAX, "0.0.0.0", en))
             dirty = 1;
     }
     aui_text_sz(c.x, c.y + AUI_SP(1),

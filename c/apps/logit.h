@@ -326,6 +326,11 @@ static inline int setting_kv_count(void) { return (int)_sys(SYS_SETTING_CTL, SET
 static inline int setting_kv_at(int i, char *buf)
 { return (int)_sys(SYS_SETTING_CTL, SETCTL_KVAT, (long)buf, i); }
 static inline int setting_selftest(void) { return (int)_sys(SYS_SETTING_CTL, SETCTL_SELFTEST, 0, 0); }
+/* What this store will accept, from the store itself. Worth calling before
+ * deciding your data belongs here: it is for SETTINGS, and bulk (a history, a
+ * log, a cache) belongs in files with only its switch kept here. */
+static inline int setting_limit(int which)
+{ return (int)_sys(SYS_SETTING_CTL, SETCTL_LIMITS, which, 0); }
 
 /* Typed convenience reads. Parsing here rather than in the kernel keeps the
  * syscall surface to strings, which is also what makes the file editable. */

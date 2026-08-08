@@ -149,11 +149,59 @@ struct setting_def {
     const char *choices;       /* ENUM: "a|b|c"                     */
 };
 
-/* ---- limits.  Sized, not guessed: 64 keys x 128 bytes = 8 KiB static. ---- */
+/* ---------------------------------------------------------------------------
+ * LIMITS, and the policy they encode.  The browser-tabs line hit these first
+ * and asked whether they are right, so the answer belongs here rather than in
+ * a reply: THE SPLIT THEY CHOSE IS THE INTENDED ONE, and these numbers are the
+ * mechanism that forces it.
+ *
+ * This store holds SETTINGS: values a human might type, that a human might
+ * want to repair in TextEdit, and that are cheap enough to rewrite whole. It is
+ * not a database and it must never become one, because the ENTIRE corruption
+ * argument rests on the whole store being one file written in one LogitFS
+ * transaction.  That property is bought with the size cap.  A 256-entry
+ * browsing history in here would mean rewriting -- and re-CRCing, and
+ * re-parsing at every boot -- tens of kilobytes every time somebody opens a
+ * page, and it would put a megabyte of churn in the path that also carries
+ * whether the desktop is dark.
+ *
+ * So: bulk data goes in FILES (the tabs line's /browser directory is right),
+ * and the settings store holds the SWITCH that says whether to read them --
+ * `browser.restore_session` is a perfect use of this store and the history is
+ * a perfect thing to keep out of it.
+ *
+ * What WAS wrong, and is fixed: an over-long value used to be silently
+ * TRUNCATED.  For a boolean that is harmless; for a consumer storing a path it
+ * is data corruption discovered much later and somewhere else.  A value that
+ * does not fit is now REFUSED with SET_E_TOOBIG, and the limits are queryable
+ * at runtime (SETCTL_LIMITS) so a caller can find out from the machine instead
+ * of from this comment.
+ *
+ * The numbers were raised once, from 80/64, so that an ordinary filesystem path
+ * fits comfortably; they were NOT raised to fit a URL, because a 600-byte URL
+ * is the case that should be a file.
+ *
+ * Cost: 96 x 208 = 19.5 KiB of static table, plus a 32 KiB serialisation
+ * buffer.  Static rather than kmalloc'd on purpose -- see the note on `buf`.
+ */
 #define SET_KEYLEN   48
-#define SET_VALLEN   80
-#define SET_MAXKV    64
+#define SET_VALLEN   160
+#define SET_MAXKV    96
 #define SET_PATH     "/etc/settings.conf"
+
+/* The buffer a SETCTL_KVAT caller must provide: "key" + '=' + "value" + NUL.
+ * Named rather than open-coded, because every caller had independently rounded
+ * a guess up and raising SET_VALLEN turned all of those guesses into overflows
+ * at once. */
+#define SET_KVLINE   (SET_KEYLEN + SET_VALLEN + 2)
+
+/* settings_set_* / SYS_SETTING_SET results.  Distinct, so a caller can say WHY
+ * it failed; "-1" for both "your value is too long" and "the machine is full"
+ * is the kind of error that costs somebody an afternoon. */
+#define SET_E_BADKEY  (-1)   /* empty, over-long, or contains '=' / '#' / space */
+#define SET_E_TOOBIG  (-2)   /* the VALUE exceeds SET_VALLEN-1 bytes */
+#define SET_E_FULL    (-3)   /* SET_MAXKV keys already stored */
+#define SET_E_IO      (-4)   /* the commit could not be written */
 
 /* ---- load findings (settings_diag(), and the boot log) ---- */
 #define SET_D_NOFILE     0x01   /* no settings file: a fresh machine        */

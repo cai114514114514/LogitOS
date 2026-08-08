@@ -47,10 +47,15 @@ static int           loaded;
  * needs to work is the moment the machine is under memory pressure.  A
  * persistence path that can fail because a heap allocation failed is a
  * persistence path that loses data exactly when losing it hurts.
- * SET_MAXKV * (SET_KEYLEN + SET_VALLEN + 4) = 8.4 KiB; 12 KiB covers that plus
+ * SET_MAXKV * (SET_KEYLEN + SET_VALLEN + 4) = 19.9 KiB; 32 KiB covers that plus
  * the header comment and the trailing CRC line with room to spare. */
-#define SET_BUFSZ 12288
+#define SET_BUFSZ 32768
 static char buf[SET_BUFSZ];
+
+/* The selftest's snapshot. Sized for the file the selftest BUILDS (the schema
+ * plus two rows, ~800 bytes), not for SET_BUFSZ -- a 32 KiB static array used
+ * once per boot to hold 800 bytes is waste with a straight face. */
+#define SET_SELFTEST_BUFSZ 4096
 
 /* ---------------------------------------------------------------- helpers --
  * Local, because the kernel has no string.h of its own and these are all
@@ -160,22 +165,39 @@ static struct kv *find(const char *key)
     return NULL;
 }
 
-/* Put without persisting.  Returns 0 on success, -1 if the table is full or
- * the key/value is unusable.  A too-long VALUE is truncated rather than
- * refused -- the schema range check on read will catch anything that matters,
- * and dropping a whole key because it was three bytes too long loses more. */
-static int put(const char *key, const char *val)
+/* Put without persisting.  0, or a SET_E_*.
+ *
+ * A too-long value is REFUSED, not truncated.  It used to be truncated, on the
+ * reasoning that the schema range check would catch anything that mattered --
+ * which is true for the typed keys and false for exactly the case that turned
+ * up: a consumer storing a path or a URL gets back something that is still a
+ * plausible string and is not what it stored.  Silent truncation of data is a
+ * corruption you discover somewhere else, later, and blame on the wrong thing.
+ *
+ * `from_file` distinguishes the two callers, because they want opposite
+ * behaviour.  A SET from a program is a request that must fail loudly if it
+ * cannot be honoured.  A line being LOADED from a damaged file must never
+ * abort the load -- it is dropped and noted, exactly like any other bad line,
+ * because the alternative is one over-long line costing every setting after
+ * it. */
+static int put_ex(const char *key, const char *val, int from_file)
 {
-    if (!key_ok(key)) return -1;
+    if (!key_ok(key)) return SET_E_BADKEY;
+    if (s_len(val) >= SET_VALLEN) {
+        if (from_file) diag |= SET_D_BADLINE;
+        return SET_E_TOOBIG;
+    }
     struct kv *e = find(key);
     if (!e) {
-        if (ntab >= SET_MAXKV) { diag |= SET_D_FULL; return -1; }
+        if (ntab >= SET_MAXKV) { diag |= SET_D_FULL; return SET_E_FULL; }
         e = &tab[ntab++];
         s_cpy(e->k, key, SET_KEYLEN);
     }
     s_cpy(e->v, val ? val : "", SET_VALLEN);
     return 0;
 }
+
+static int put(const char *key, const char *val) { return put_ex(key, val, 0); }
 
 /* ===========================================================================
  * THE PARSER -- the part that has to survive anything.
@@ -257,16 +279,26 @@ static void load_text(const char *text, int len)
         int vb = eq + 1;
         while (vb < end && is_space(text[vb])) vb++;
 
+        /* Measure BEFORE copying.  Copying `min(len, SET_VALLEN-1)` bytes and
+         * storing that is the silent truncation this store no longer does --
+         * on the way in from a file just as much as through set().  A line
+         * whose value does not fit is dropped whole and reported, so nothing
+         * downstream can read a value that is a prefix of what is on disk. */
+        if (ke - b >= SET_KEYLEN || end - vb >= SET_VALLEN) {
+            diag |= SET_D_BADLINE;
+            continue;
+        }
+
         char k[SET_KEYLEN], v[SET_VALLEN];
         int n = 0;
-        for (int p = b; p < ke && n < SET_KEYLEN - 1; p++) k[n++] = text[p];
+        for (int p = b; p < ke; p++) k[n++] = text[p];
         k[n] = 0;
         n = 0;
-        for (int p = vb; p < end && n < SET_VALLEN - 1; p++) v[n++] = text[p];
+        for (int p = vb; p < end; p++) v[n++] = text[p];
         v[n] = 0;
 
         if (!key_ok(k)) { diag |= SET_D_BADLINE; continue; }
-        if (put(k, v) < 0) diag |= SET_D_BADLINE;
+        if (put_ex(k, v, 1) < 0) diag |= SET_D_BADLINE;
     }
 
     /* The CRC is a DIAGNOSTIC.  It is checked, it is reported, and it never
@@ -342,7 +374,7 @@ int settings_commit(void)
      * and never a mixture.  There is no temp file here on purpose. */
     if (vfs_mkdir("/etc") < 0) { /* already exists: fine, and the write below tells us */ }
     int rc = vfs_write(SET_PATH, buf, n);
-    if (rc < 0) { kprintf("[set] commit FAILED (%d bytes)\n", n); return -1; }
+    if (rc < 0) { kprintf("[set] commit FAILED (%d bytes)\n", n); return SET_E_IO; }
     gen++;
     return 0;
 }
@@ -507,7 +539,8 @@ unsigned settings_get_ip(const char *key, unsigned def)
 int settings_set_str(const char *key, const char *val, int commit)
 {
     if (!loaded) settings_load();
-    if (put(key, val) < 0) return -1;
+    int rc = put(key, val);
+    if (rc < 0) return rc;                 /* SET_E_*, propagated verbatim */
     return commit ? settings_commit() : 0;
 }
 
@@ -653,7 +686,8 @@ int settings_selftest(void)
     put("notify.history", "3");     /* an unknown key: the preservation case */
     int len = serialise();
 
-    static char snap[SET_BUFSZ];
+    static char snap[SET_SELFTEST_BUFSZ];
+    if (len > SET_SELFTEST_BUFSZ - 1) len = SET_SELFTEST_BUFSZ - 1;
     for (int i = 0; i < len; i++) snap[i] = buf[i];
 
     /* The two answers a truncation is allowed to produce for any key: what the
@@ -825,17 +859,35 @@ long settings_syscall(long num, long a, long b, long c)
         case SETCTL_RELOAD:   return settings_load();
         case SETCTL_SELFTEST: return settings_selftest();
         case SETCTL_KVCOUNT:  return settings_kv_count();
+        /* The limits, from the machine rather than from a header. A consumer
+         * deciding whether its data belongs here should be able to ASK. */
+        case SETCTL_LIMITS:
+            switch ((int)b) {
+            case SETLIM_MAXKEYS: return SET_MAXKV;
+            case SETLIM_VALLEN:  return SET_VALLEN - 1;    /* usable bytes */
+            case SETLIM_KEYLEN:  return SET_KEYLEN - 1;
+            case SETLIM_FREE:    return SET_MAXKV - ntab;
+            default: return -1;
+            }
         case SETCTL_KVAT: {
-            /* (SETCTL_KVAT, index) with the buffer in `b`: "key=value". This is
-             * how the Settings app shows keys it has never heard of, which is
-             * the whole point of preserving them. */
+            /* (SETCTL_KVAT, buf, index) -> "key=value". How an app lists keys
+             * it has never heard of, which is the whole point of preserving
+             * them.
+             *
+             * ONE bound, SET_KVLINE, and it is the size the ABI tells callers
+             * to allocate. The previous version had two different and larger
+             * bounds -- the second one deliberately +8 past the first -- which
+             * happened to be safe only because SET_VALLEN was 80 and every
+             * caller had rounded up. Raising SET_VALLEN to 160 turned that into
+             * a write past the end of the Settings app's buffer, which is the
+             * kind of thing a limits change is supposed to be caught by. */
             const char *k, *v;
             char *out = (char *)b;
             if (settings_kv_at((int)c, &k, &v) < 0 || !out) return -1;
             int o = 0;
-            for (int i = 0; k[i] && o < SET_KEYLEN + SET_VALLEN; i++) out[o++] = k[i];
-            out[o++] = '=';
-            for (int i = 0; v[i] && o < SET_KEYLEN + SET_VALLEN + 8; i++) out[o++] = v[i];
+            for (int i = 0; k[i] && o < SET_KVLINE - 2; i++) out[o++] = k[i];
+            if (o < SET_KVLINE - 2) out[o++] = '=';
+            for (int i = 0; v[i] && o < SET_KVLINE - 1; i++) out[o++] = v[i];
             out[o] = 0;
             return o;
         }
