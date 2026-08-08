@@ -316,7 +316,7 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
  * it. What it does NOT do is deliver to the child, so `sleep 100` is not
  * interruptible by ^C until /bin/sh forwards it. Stated, not hidden.
  * ------------------------------------------------------------------------ */
-#define TTYQ_SZ 256
+#define TTYQ_SZ 1024
 static char          g_ttyq[TTYQ_SZ];
 static volatile int  g_ttyq_head, g_ttyq_tail;
 static volatile int  g_tty_fg;
@@ -329,12 +329,16 @@ void ksig_tty_claim_fg(void)
     if (p) g_tty_fg = p->pid;
 }
 
+static int ttyq_full(void)
+{
+    return ((g_ttyq_head + 1) % TTYQ_SZ) == g_ttyq_tail;
+}
+
 static void ttyq_push(char c)
 {
-    int nh = (g_ttyq_head + 1) % TTYQ_SZ;
-    if (nh == g_ttyq_tail) return;        /* full: drop, exactly as a UART does */
+    if (ttyq_full()) return;
     g_ttyq[g_ttyq_head] = c;
-    g_ttyq_head = nh;
+    g_ttyq_head = (g_ttyq_head + 1) % TTYQ_SZ;
 }
 
 int ksig_tty_getc(void)
@@ -358,8 +362,18 @@ int ksig_tty_getc(void)
 void ksig_tick(void)
 {
     /* Console first: it is unconditional (one UART status read) because the
-     * whole point is to see a ^C when nothing else is looking. */
-    for (int i = 0; i < 16; i++) {              /* bounded: never spin in an IRQ */
+     * whole point is to see a ^C when nothing else is looking.
+     *
+     * STOP AT A FULL QUEUE RATHER THAN DROPPING, and this is not a detail --
+     * it is a bug this drain caused and the mm harness found. Before this
+     * existed, unread input stayed in the UART, where the host side's own
+     * buffering held it until the guest asked. Draining it here unconditionally
+     * moves that backlog into a fixed ring, and a ring that fills starts
+     * throwing away bytes that the host believes it delivered -- which is a
+     * test harness typing a command that never arrives. Leaving the byte in the
+     * device is the flow control; the queue is only ever a place to put what
+     * has already been taken out. */
+    for (int i = 0; i < 16 && !ttyq_full(); i++) {   /* bounded: never spin in an IRQ */
         int c = serial_getc();
         if (c < 0) break;
         if (c == 3) {
