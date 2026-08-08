@@ -65,7 +65,7 @@ static void t_basic(void)
     int n = 0;
     for (rmap_begin(&it, f); rmap_next(&it, &gc, &gv); n++) { }
     mm_eqi(n, 1, "the chain has one entry");
-    mm_ok(gc == (cr3 & ~(uint64_t)0xFFF), "the entry names the right address space");
+    mm_ok(gc == (cr3 & MM_PTE_ADDR), "the entry names the right address space");
     mm_ok(gv == VA0, "the entry names the right virtual address");
 
     vmm_unmap_range_in(cr3, VA0, 4096);
@@ -152,7 +152,7 @@ static void t_cow_move(void)
           "the child's write is resolved by copy");
 
     uint64_t *cpte = vmm_pte(child, VA0);
-    uint64_t nf = *cpte & ~(uint64_t)0xFFF;
+    uint64_t nf = *cpte & MM_PTE_ADDR;
     mm_ok(nf != f, "the child is on a different frame");
     mm_eqi(rmap_count(f), 1, "the original frame is now mapped once");
     mm_eqi(rmap_count(nf), 1, "the copy is mapped once");
@@ -163,7 +163,7 @@ static void t_cow_move(void)
     uint64_t c = 0, v = 0;
     rmap_begin(&it, nf);
     mm_ok(rmap_next(&it, &c, &v), "the copy has a chain entry");
-    mm_ok(c == (child & ~(uint64_t)0xFFF), "the entry names the child");
+    mm_ok(c == (child & MM_PTE_ADDR), "the entry names the child");
     mm_ok(v == VA0, "at the right address");
 
     vmm_free_space(child);
@@ -216,10 +216,10 @@ static void t_kernel_memory_is_invisible(void)
     uint64_t f = pmm_alloc();
     vmm_map_page_in(cr3, VA0, f, VMM_USER | VMM_WRITABLE);
 
-    uint64_t *pml4 = (uint64_t *)mm_sim_ptr(cr3 & ~(uint64_t)0xFFF);
-    uint64_t pdpt = pml4[0] & ~(uint64_t)0xFFF;
+    uint64_t *pml4 = (uint64_t *)mm_sim_ptr(cr3 & MM_PTE_ADDR);
+    uint64_t pdpt = pml4[0] & MM_PTE_ADDR;
     uint64_t *pdptv = (uint64_t *)mm_sim_ptr(pdpt);
-    uint64_t pd = pdptv[1] & ~(uint64_t)0xFFF;
+    uint64_t pd = pdptv[1] & MM_PTE_ADDR;
 
     mm_ok(pmm_refcount(pdpt) >= 1, "the private PDPT frame is allocated");
     mm_eqi(rmap_count(pdpt), 0, "and is mapped by no user PTE");

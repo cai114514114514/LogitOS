@@ -36,6 +36,50 @@
 /* Flip to 1 in the same commit that adds the interrupts.c hook above. */
 #define MM_COW_DEFAULT 1
 
+/* --------------------------------------------------- PTE ADDRESS MASKING --
+ *
+ * THE ONE MASK, and the bug it closes.
+ *
+ * Every file under c/kernel/mm/ used to turn a page-table entry back into a
+ * physical frame with `e & ~(uint64_t)0xFFF`. That clears the twelve flag bits
+ * and KEEPS EVERYTHING ABOVE THE ADDRESS FIELD. The architectural address field
+ * of a 4 KiB PTE is bits 12..51; bits 52..62 are available-to-software and bit
+ * 63 is NX. So the old mask is correct only for as long as the kernel never
+ * sets any of those bits -- and the moment it sets NX, `e & ~0xFFF` yields
+ * 0x8000000000nnn000, a physical address eight exabytes up, which then reaches
+ * pmm_ref() / pmm_free() / pmm_refcount() (indexed by frame number) and
+ * rmap_add() / rmap_remove(). That is not a crash at the mask; it is a
+ * corrupted refcount table and a #GP several operations later, in a file
+ * nobody edited. It was measured before this change and it is exactly why
+ * cpu_prot_nx_usable() used to return 0.
+ *
+ * MM_PTE_ADDR is therefore the ONLY thing that may extract a frame from a PTE,
+ * and it is used for CR3 as well -- CR3's PML4 base is the same bits 12..51,
+ * and a mask that is right for one is right for the other.
+ *
+ * MM_PTE_FLAGS is its complement, and it exists for the other half of the bug:
+ * code that carries permissions from one entry to another (the copy-on-write
+ * copy in fault.c, the shared PTE the fork clone installs in the child) used
+ * `e & 0xFFF`, which SILENTLY DROPS NX. That direction does not corrupt
+ * anything -- it quietly re-opens the protection instead, which is worse to
+ * find. Carry flags with MM_PTE_FLAGS and both halves stay right.
+ *
+ * NOT for page-aligning a VIRTUAL address or a length: `va & ~0xFFF` is
+ * correct there and MM_PTE_ADDR would truncate a kernel-half address. Those
+ * sites are deliberately left alone. */
+#define MM_PTE_ADDR  0x000FFFFFFFFFF000ull
+#define MM_PTE_FLAGS (~MM_PTE_ADDR)
+
+/* Bit 63 of a leaf entry: no-execute. The same bit as c/kernel/cpu/prot.h's
+ * PTE_NX, spelled again here because c/kernel/mm/ is also compiled for the host
+ * test, which has no prot.h and no EFER -- so mm may never depend on that
+ * header. mm does not DECIDE whether NX is used (elf.c and exec.c do, through
+ * cpu_prot_nx_usable()); it only has to carry the bit correctly through fork,
+ * copy-on-write, eviction and swap-in, which is what the two masks above are
+ * for. The one place mm originates the bit is do_anon(), which honours the
+ * VMA's own VMA_EXEC. */
+#define MM_PTE_NX    (1ull << 63)
+
 /* The private user region (PML4[0]/PDPT[1]); see elf.c, which rejects any
  * program segment outside it. mm only ever claims faults inside this range. */
 #define MM_USER_BASE 0x40000000ull

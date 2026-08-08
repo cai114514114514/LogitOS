@@ -15,7 +15,8 @@
 #define PRESENT  0x1
 #define WRITABLE 0x2
 #define USER     0x4
-#define NX_BIT   (1ull << 63)
+/* NX is MM_PTE_NX (mm.h): one definition, because this file both PRESERVES it
+ * into a swap entry and restores it on the way back in. */
 
 void *memset(void *, int, size_t);
 
@@ -155,7 +156,7 @@ static int gather(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, in
         if (!rmap_next(&it, &cr3, &va)) break;
         uint64_t *pte = vmm_pte(cr3, va);
         if (!pte || !(*pte & PRESENT) || !(*pte & USER) ||
-            (*pte & ~(uint64_t)0xFFF) != phys) {
+            (*pte & MM_PTE_ADDR) != phys) {
             kprintf("[reclaim] BUG: rmap says cr3 %p va %p maps frame %p; "
                     "the page table says %p\n", (void *)cr3, (void *)va,
                     (void *)phys, (void *)(pte ? *pte : 0));
@@ -184,7 +185,7 @@ static int page_is_zero(uint64_t f)
 
 static void flush_if_active(uint64_t cr3, uint64_t va)
 {
-    if ((mm_read_cr3() & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF))
+    if ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR))
         mm_invlpg(va);
 }
 
@@ -216,11 +217,16 @@ static int try_drop(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, 
 /* --- TIER 2: swap out. ---------------------------------------------------- */
 static uint64_t swap_entry(uint64_t old, uint64_t slot)
 {
-    uint64_t e = VMM_PTE_SWAP | (slot << VMM_SWAP_SHIFT);
+    /* The other end of the bound documented in vmm.h: the slot field is 40
+     * bits, and the bits above it are not spare -- bit 63 is NX. Masking here
+     * and masking in vmm_pte_swap_slot() are the same statement made at both
+     * ends; try_swap() refuses a slot that would not survive the round trip,
+     * so the mask can never actually lose one. */
+    uint64_t e = VMM_PTE_SWAP | ((slot & VMM_SWAP_MAX) << VMM_SWAP_SHIFT);
     if (old & WRITABLE)     e |= VMM_SWAP_W;
     if (old & VMM_PTE_COW)  e |= VMM_SWAP_COW;
     if (old & VMM_PTE_ANON) e |= VMM_SWAP_ANON;
-    e |= (old & NX_BIT);                   /* left in place; see vmm.h */
+    e |= (old & MM_PTE_NX);                   /* left in place; see vmm.h */
     return e;
 }
 
@@ -255,6 +261,11 @@ static int try_swap(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, 
 
     uint64_t slot = swap_alloc_slot();
     if (slot == SWAP_NOSLOT) { c_noslot++; return 0; }
+    if (slot > VMM_SWAP_MAX) {                  /* cannot be encoded; see vmm.h */
+        swap_slot_put(slot);
+        c_noslot++;
+        return 0;
+    }
     for (int i = 1; i < n; i++) swap_slot_ref(slot);    /* one reference per PTE */
 
     uint64_t saved[RECLAIM_MAX_SHARERS];
@@ -483,9 +494,9 @@ int reclaim_swapin(uint64_t cr3, uint64_t va, uint64_t *pte, int active)
      * are right, the memory is not shared any more. */
     if (e & (VMM_SWAP_W | VMM_SWAP_COW)) flags |= WRITABLE;
     if (e & VMM_SWAP_ANON) flags |= VMM_PTE_ANON;
-    flags |= (e & NX_BIT);
+    flags |= (e & MM_PTE_NX);
 
-    *pte = (f & ~(uint64_t)0xFFF) | flags;
+    *pte = (f & MM_PTE_ADDR) | flags;
     rmap_add(f, cr3, va);
     swap_slot_put(slot);
     if (active) mm_invlpg(va);

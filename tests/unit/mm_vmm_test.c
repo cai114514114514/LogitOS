@@ -102,7 +102,7 @@ static int page_is(uint64_t cr3, uint64_t va, int byte)
 {
     uint64_t e = pte_of(cr3, va);
     if (!(e & PRESENT)) return 0;
-    const uint8_t *p = mm_sim_ptr(e & ~(uint64_t)0xFFF);
+    const uint8_t *p = mm_sim_ptr(e & MM_PTE_ADDR);
     for (int i = 0; i < 4096; i++) if (p[i] != (uint8_t)byte) return 0;
     return 1;
 }
@@ -202,12 +202,12 @@ static void test_cow(void)
     for (int k = 0; k < IMG_PAGES; k++) {
         uint64_t va = IMG_VA + (uint64_t)k * 4096;
         uint64_t pe = pte_of(parent, va), ce = pte_of(child, va);
-        mm_eqi(pe & ~(uint64_t)0xFFF, ce & ~(uint64_t)0xFFF, "both spaces map the same frame");
+        mm_eqi(pe & MM_PTE_ADDR, ce & MM_PTE_ADDR, "both spaces map the same frame");
         mm_ok(!(pe & WRITABLE), "parent PTE lost write permission");
         mm_ok(!(ce & WRITABLE), "child PTE is read-only");
         mm_ok(pe & VMM_PTE_COW, "parent PTE is marked copy-on-write");
         mm_ok(ce & VMM_PTE_COW, "child PTE is marked copy-on-write");
-        mm_eqi(pmm_refcount(pe & ~(uint64_t)0xFFF), 2, "the frame is referenced twice");
+        mm_eqi(pmm_refcount(pe & MM_PTE_ADDR), 2, "the frame is referenced twice");
         mm_ok(page_is(child, va, k + 1), "the child sees the parent's data");
     }
     mm_eqi(mm_cow_pages(), 2 * IMG_PAGES, "both sides' PTEs are counted as copy-on-write");
@@ -215,13 +215,13 @@ static void test_cow(void)
 
     /* --- the child writes page 3 ---------------------------------------- */
     uint64_t va3 = IMG_VA + 3 * 4096;
-    uint64_t frame_before = pte_of(child, va3) & ~(uint64_t)0xFFF;
+    uint64_t frame_before = pte_of(child, va3) & MM_PTE_ADDR;
     uint64_t freeb = pmm_free_frames();
     mm_host_cr3 = child;
     mm_eqi(mm_fault_in(child, va3 + 0x40, PF_P | PF_W | PF_U), 1, "the write fault was handled");
     mm_eqi(pmm_free_frames(), freeb - 1, "resolving it cost exactly one frame");
 
-    uint64_t frame_after = pte_of(child, va3) & ~(uint64_t)0xFFF;
+    uint64_t frame_after = pte_of(child, va3) & MM_PTE_ADDR;
     mm_ok(frame_after != frame_before, "the child got a different frame");
     mm_ok(pte_of(child, va3) & WRITABLE, "the child's page is writable now");
     mm_ok(!(pte_of(child, va3) & VMM_PTE_COW), "and no longer copy-on-write");
@@ -243,7 +243,7 @@ static void test_cow(void)
     mm_eqi(mm_cow_faults(), copies_before, "no copy was made");
     mm_eqi(mm_cow_reuse(), reuse_before + 1, "it was resolved by re-granting write access");
     mm_ok(pte_of(parent, va3) & WRITABLE, "the parent can write again");
-    mm_eqi(pte_of(parent, va3) & ~(uint64_t)0xFFF, frame_before, "on the same frame as before");
+    mm_eqi(pte_of(parent, va3) & MM_PTE_ADDR, frame_before, "on the same frame as before");
     audit_clean("after unsharing");
 
     /* --- tear both down: everything must come back ---------------------- */
@@ -285,10 +285,10 @@ static void test_eager_control(void)
 
     for (int k = 0; k < IMG_PAGES; k++) {
         uint64_t va = IMG_VA + (uint64_t)k * 4096;
-        mm_ok((pte_of(parent, va) & ~(uint64_t)0xFFF) != (pte_of(child, va) & ~(uint64_t)0xFFF),
+        mm_ok((pte_of(parent, va) & MM_PTE_ADDR) != (pte_of(child, va) & MM_PTE_ADDR),
               "eager fork gave the child its own frame");
         mm_ok(page_is(child, va, k + 1), "with the right contents");
-        mm_eqi(pmm_refcount(pte_of(child, va) & ~(uint64_t)0xFFF), 1, "each frame has one owner");
+        mm_eqi(pmm_refcount(pte_of(child, va) & MM_PTE_ADDR), 1, "each frame has one owner");
     }
 
     mm_host_cr3 = 0;
@@ -316,7 +316,7 @@ static void test_chain(void)
         s[i] = vmm_new_space();
         mm_ok(vmm_clone_user(s[i], s[i - 1]) == 0, "generation %d forked", i);
     }
-    uint64_t f0 = pte_of(s[0], IMG_VA) & ~(uint64_t)0xFFF;
+    uint64_t f0 = pte_of(s[0], IMG_VA) & MM_PTE_ADDR;
     mm_eqi(pmm_refcount(f0), 4, "one frame, four holders");
     for (int i = 0; i < 4; i++)
         mm_ok(pte_of(s[i], IMG_VA) & VMM_PTE_COW, "generation %d is copy-on-write", i);
@@ -439,7 +439,7 @@ static void test_usercopy_shape(void)
     mm_host_cr3 = child;
 
     uint64_t va = IMG_VA + 4096;                    /* page 1: filled with 0x02 */
-    uint64_t shared_frame = pte_of(child, va) & ~(uint64_t)0xFFF;
+    uint64_t shared_frame = pte_of(child, va) & MM_PTE_ADDR;
     mm_eqi(pmm_refcount(shared_frame), 2, "the page is shared");
 
     /* The pure check must say "not writable" -- that is exactly the trap. */
@@ -457,7 +457,7 @@ static void test_usercopy_shape(void)
     mm_eqi(pmm_refcount(shared_frame), 1, "the parent is the sole owner of the old frame");
 
     /* Now the kernel writes, as a syscall would. */
-    uint64_t priv = pte_of(child, va) & ~(uint64_t)0xFFF;
+    uint64_t priv = pte_of(child, va) & MM_PTE_ADDR;
     memset((uint8_t *)mm_sim_ptr(priv) + 100, 0x5A, 64);
     const uint8_t *pp = mm_sim_ptr(shared_frame);
     int parent_untouched = 1;

@@ -38,7 +38,7 @@ static uint64_t *next_table(uint64_t *table, int idx)
          * kernel-only pages (no USER on their final entry) stay protected. */
         table[idx] |= USER;
     }
-    return (uint64_t *)mm_p2v(table[idx] & ~(uint64_t)0xFFF);
+    return (uint64_t *)mm_p2v(table[idx] & MM_PTE_ADDR);
 }
 
 /* THE ONE PLACE A LEAF PTE CHANGES.
@@ -74,26 +74,26 @@ static void set_leaf(uint64_t cr3, uint64_t *pt, uint64_t virt, uint64_t entry)
     uint64_t old = *slotp;
 
     if ((old & (PRESENT | USER)) == (PRESENT | USER))
-        rmap_remove(old & ~(uint64_t)0xFFF, cr3, virt);
+        rmap_remove(old & MM_PTE_ADDR, cr3, virt);
     else if (vmm_pte_is_swap(old))
         swap_slot_put(vmm_pte_swap_slot(old));
 
     *slotp = entry;
 
     if ((entry & (PRESENT | USER)) == (PRESENT | USER))
-        rmap_add(entry & ~(uint64_t)0xFFF, cr3, virt);
+        rmap_add(entry & MM_PTE_ADDR, cr3, virt);
 }
 
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 {
     uint64_t cr3 = mm_read_cr3();
 
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
 
-    set_leaf(cr3, pt, virt, (phys & ~(uint64_t)0xFFF) | flags | PRESENT);
+    set_leaf(cr3, pt, virt, (phys & MM_PTE_ADDR) | flags | PRESENT);
     invlpg(virt);
 }
 
@@ -131,7 +131,7 @@ uint64_t vmm_kernel_cr3(void)
 {
     if (!g_kernel_cr3)
         g_kernel_cr3 = mm_read_cr3();
-    return g_kernel_cr3 & ~(uint64_t)0xFFF;
+    return g_kernel_cr3 & MM_PTE_ADDR;
 }
 
 /* ------------------------------------------------- WHO IS RUNNING WHAT --
@@ -183,7 +183,7 @@ void vmm_switch(uint64_t cr3)
     int i = this_cpu()->index;
     if (i >= 0 && i < PERCPU_MAXCPU) {
         g_cpu_prev[i] = g_cpu_cur[i];
-        g_cpu_cur[i]  = cr3 & ~(uint64_t)0xFFF;
+        g_cpu_cur[i]  = cr3 & MM_PTE_ADDR;
         __asm__ volatile ("" ::: "memory");
         mm_write_cr3(cr3);
         __asm__ volatile ("" ::: "memory");
@@ -195,7 +195,7 @@ void vmm_switch(uint64_t cr3)
 
 int vmm_space_busy_elsewhere(uint64_t cr3)
 {
-    uint64_t want = cr3 & ~(uint64_t)0xFFF;
+    uint64_t want = cr3 & MM_PTE_ADDR;
     if (!want) return 0;
     int me = this_cpu()->index;
     for (int i = 0; i < PERCPU_MAXCPU; i++) {
@@ -215,7 +215,7 @@ uint64_t vmm_new_space(void)
 {
     uint64_t kcr3 = vmm_kernel_cr3();
     uint64_t *kpml4 = (uint64_t *)mm_p2v(kcr3);
-    uint64_t *kpdpt = (uint64_t *)mm_p2v(kpml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t *kpdpt = (uint64_t *)mm_p2v(kpml4[USER_PML4_IDX] & MM_PTE_ADDR);
 
     uint64_t pml4 = pmm_alloc();
     uint64_t pdpt = pmm_alloc();
@@ -236,12 +236,12 @@ uint64_t vmm_new_space(void)
 /* Like next_table() but walks the table tree rooted at an explicit PML4. */
 void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
 
-    set_leaf(cr3, pt, virt, (phys & ~(uint64_t)0xFFF) | flags | PRESENT);
+    set_leaf(cr3, pt, virt, (phys & MM_PTE_ADDR) | flags | PRESENT);
     /* No invlpg: this space is not active while being populated. */
 }
 
@@ -250,7 +250,7 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
  * entries, and those have no frame to hand to vmm_map_page_in. */
 void vmm_map_raw_in(uint64_t cr3, uint64_t virt, uint64_t entry)
 {
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
@@ -262,13 +262,13 @@ void vmm_map_raw_in(uint64_t cr3, uint64_t virt, uint64_t entry)
  * absent, or if a level is a 2 MiB/1 GiB leaf (boot.asm's identity map). */
 uint64_t *vmm_pte(uint64_t cr3, uint64_t virt)
 {
-    uint64_t *t = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *t = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     int shift[3] = { 39, 30, 21 };
     for (int lvl = 0; lvl < 3; lvl++) {
         uint64_t e = t[(virt >> shift[lvl]) & 0x1FF];
         if (!(e & PRESENT)) return NULL;
         if (e & 0x80) return NULL;              /* large page: not a table */
-        t = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
+        t = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     }
     return &t[(virt >> 12) & 0x1FF];
 }
@@ -320,21 +320,21 @@ int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
 {
     g_clone_shared = g_clone_copied = 0;
 
-    uint64_t *spml4 = (uint64_t *)mm_p2v(src_cr3 & ~(uint64_t)0xFFF);
+    uint64_t *spml4 = (uint64_t *)mm_p2v(src_cr3 & MM_PTE_ADDR);
     if (!(spml4[USER_PML4_IDX] & PRESENT)) return 0;
-    uint64_t *spdpt = (uint64_t *)mm_p2v(spml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t *spdpt = (uint64_t *)mm_p2v(spml4[USER_PML4_IDX] & MM_PTE_ADDR);
     uint64_t pde = spdpt[USER_PDPT_IDX];
     if (!(pde & PRESENT)) return 0;
-    uint64_t *spd = (uint64_t *)mm_p2v(pde & ~(uint64_t)0xFFF);
+    uint64_t *spd = (uint64_t *)mm_p2v(pde & MM_PTE_ADDR);
 
     int cow = mm_cow_enabled();
-    int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (src_cr3 & ~(uint64_t)0xFFF));
+    int active = ((mm_read_cr3() & MM_PTE_ADDR) == (src_cr3 & MM_PTE_ADDR));
 
     vma_space_clone(dst_cr3, src_cr3);
 
     for (int i = 0; i < 512; i++) {
         if (!(spd[i] & PRESENT)) continue;
-        uint64_t *spt = (uint64_t *)mm_p2v(spd[i] & ~(uint64_t)0xFFF);
+        uint64_t *spt = (uint64_t *)mm_p2v(spd[i] & MM_PTE_ADDR);
         for (int j = 0; j < 512; j++) {
             uint64_t e = spt[j];
             uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
@@ -356,7 +356,7 @@ int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
             }
 
             if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
-            uint64_t frame = e & ~(uint64_t)0xFFF;
+            uint64_t frame = e & MM_PTE_ADDR;
 
             if (cow && pmm_ref(frame) == 0) {
                 /* Share. Drop WRITABLE in both and mark both copy-on-write, so
@@ -374,7 +374,18 @@ int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
                 } else if (e & VMM_PTE_COW) {
                     g_mm_cow_pages += 1;           /* src already counted; dst is new */
                 }
-                vmm_map_page_in(dst_cr3, va, shared_e, shared_e & 0xFFF);
+                /* The child's entry is the parent's entry, INSTALLED WHOLE.
+                 * This used to be vmm_map_page_in(dst, va, shared_e,
+                 * shared_e & 0xFFF) -- frame from the top, flags from the
+                 * bottom -- which worked only because the old ~0xFFF mask
+                 * carried bit 63 across inside the "frame". Now that the mask
+                 * is right, splitting the entry and re-assembling it would
+                 * drop NX (and every bit 52-62) on every forked page: a child
+                 * would silently get an executable stack its parent did not
+                 * have. Installing the entry verbatim cannot lose a bit, and
+                 * it is what the code meant -- shared_e already has PRESENT
+                 * (checked above), so the two are otherwise identical. */
+                vmm_map_raw_in(dst_cr3, va, shared_e);
                 g_clone_shared++;
                 continue;
             }
@@ -406,7 +417,7 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
     uint64_t start = virt & ~(uint64_t)0xFFF;
     if (len == 0 || start > ~(uint64_t)0 - len - 0xFFF) return 0;
     uint64_t end = (virt + len + 0xFFF) & ~(uint64_t)0xFFF;
-    int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF));
+    int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
     uint64_t n = 0;
     for (uint64_t a = start; a < end; a += 4096) {
         uint64_t *pte = vmm_pte(cr3, a);
@@ -425,8 +436,8 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
         if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
         if (e & VMM_PTE_COW) g_mm_cow_pages--;
         *pte = 0;
-        rmap_remove(e & ~(uint64_t)0xFFF, cr3, a);
-        pmm_free(e & ~(uint64_t)0xFFF);
+        rmap_remove(e & MM_PTE_ADDR, cr3, a);
+        pmm_free(e & MM_PTE_ADDR);
         if (active) invlpg(a);
         n++;
     }
@@ -444,15 +455,15 @@ void vmm_free_user(uint64_t cr3)
 {
     vma_space_clear(cr3);
 
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     if (!(pml4[USER_PML4_IDX] & PRESENT)) return;
-    uint64_t *pdpt = (uint64_t *)mm_p2v(pml4[USER_PML4_IDX] & ~(uint64_t)0xFFF);
+    uint64_t *pdpt = (uint64_t *)mm_p2v(pml4[USER_PML4_IDX] & MM_PTE_ADDR);
     uint64_t pde = pdpt[USER_PDPT_IDX];
     if (!(pde & PRESENT)) return;
-    uint64_t *pd = (uint64_t *)mm_p2v(pde & ~(uint64_t)0xFFF);
+    uint64_t *pd = (uint64_t *)mm_p2v(pde & MM_PTE_ADDR);
     for (int i = 0; i < 512; i++) {
         if (!(pd[i] & PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)mm_p2v(pd[i] & ~(uint64_t)0xFFF);
+        uint64_t *pt = (uint64_t *)mm_p2v(pd[i] & MM_PTE_ADDR);
         for (int j = 0; j < 512; j++) {
             uint64_t e = pt[j];
             uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
@@ -465,13 +476,13 @@ void vmm_free_user(uint64_t cr3)
             if ((e & (PRESENT | USER)) == (PRESENT | USER)) {
                 if (e & VMM_PTE_COW) g_mm_cow_pages--;
                 pt[j] = 0;
-                rmap_remove(e & ~(uint64_t)0xFFF, cr3, va);
-                pmm_free(e & ~(uint64_t)0xFFF);
+                rmap_remove(e & MM_PTE_ADDR, cr3, va);
+                pmm_free(e & MM_PTE_ADDR);
             }
         }
-        pmm_free(pd[i] & ~(uint64_t)0xFFF);     /* the PT frame */
+        pmm_free(pd[i] & MM_PTE_ADDR);     /* the PT frame */
     }
-    pmm_free(pde & ~(uint64_t)0xFFF);           /* the PD frame */
+    pmm_free(pde & MM_PTE_ADDR);           /* the PD frame */
     pdpt[USER_PDPT_IDX] = 0;
 
     /* If this tore down the ACTIVE user space (execve), stale TLB entries for the
@@ -480,7 +491,7 @@ void vmm_free_user(uint64_t cr3)
      * full flush available; vmm_free_space never runs on the active CR3, so it
      * correctly skips this. */
     uint64_t cur = mm_read_cr3();
-    if ((cur & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF))
+    if ((cur & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR))
         vmm_switch(cur);
 }
 
@@ -490,12 +501,12 @@ void vmm_free_user(uint64_t cr3)
 void vmm_free_space(uint64_t cr3)
 {
     if (!cr3) return;
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t pdpt_e = pml4[USER_PML4_IDX];
     vmm_free_user(cr3);
     vma_space_free(cr3);
-    if (pdpt_e & PRESENT) pmm_free(pdpt_e & ~(uint64_t)0xFFF);   /* private PDPT frame */
-    pmm_free(cr3 & ~(uint64_t)0xFFF);                            /* PML4 frame */
+    if (pdpt_e & PRESENT) pmm_free(pdpt_e & MM_PTE_ADDR);   /* private PDPT frame */
+    pmm_free(cr3 & MM_PTE_ADDR);                            /* PML4 frame */
     /* NB: NO tlb_flush_all() here. vmm_free_space runs under the BKL, and a core
      * spinning to acquire the BKL does so with IF=0 (spin_lock_irqsave) -- it
      * cannot service the shootdown IPI, so it never acks and the initiator (which
@@ -507,16 +518,16 @@ void vmm_free_space(uint64_t cr3)
 
 static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
 {
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t e = pml4[(virt >> 39) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
-    uint64_t *pdpt = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
+    uint64_t *pdpt = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     e = pdpt[(virt >> 30) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
-    uint64_t *pd = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
+    uint64_t *pd = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     e = pd[(virt >> 21) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
-    uint64_t *pt = (uint64_t *)mm_p2v(e & ~(uint64_t)0xFFF);
+    uint64_t *pt = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     e = pt[(virt >> 12) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
     if (write && !(e & WRITABLE)) return 0;

@@ -122,7 +122,7 @@ void rmap_add(uint64_t phys, uint64_t cr3, uint64_t va)
 {
     uint64_t f; uint32_t vpn;
     if (!usable(phys, va, &f, &vpn)) return;
-    uint32_t c = (uint32_t)((cr3 & ~(uint64_t)0xFFF) >> 12);
+    uint32_t c = (uint32_t)((cr3 & MM_PTE_ADDR) >> 12);
 
     uint64_t fl = spin_lock_irqsave(&rmap_lock);
 
@@ -162,7 +162,7 @@ void rmap_remove(uint64_t phys, uint64_t cr3, uint64_t va)
 {
     uint64_t f; uint32_t vpn;
     if (!usable(phys, va, &f, &vpn)) return;
-    uint32_t c = (uint32_t)((cr3 & ~(uint64_t)0xFFF) >> 12);
+    uint32_t c = (uint32_t)((cr3 & MM_PTE_ADDR) >> 12);
 
     uint64_t fl = spin_lock_irqsave(&rmap_lock);
     uint32_t prev = RMAP_NIL;

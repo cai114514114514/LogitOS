@@ -53,18 +53,32 @@
  *   bit  3    saved COW      )  so faulting it back in restores them. They
  *   bit  4    saved ANON     )  cannot stay in their normal positions: bit 1
  *                              (W) is the marker and bit 2 (U) would collide.
- *   bits 12+  slot number
- *   bit  63   NX       left exactly where it is, so it survives untouched */
+ *   bits 12-51 slot number   (40 bits: the same span a real PTE's address
+ *                             field occupies, which is what makes bit 63 free
+ *                             to keep meaning NX)
+ *   bit  63   NX       left exactly where it is, so it survives untouched
+ *
+ * THE SLOT FIELD IS BOUNDED, and it has to be. This used to read the slot as
+ * `e >> 12` with no mask, which is only correct while every bit above the slot
+ * is zero. It is not: the line directly above deliberately keeps NX in bit 63,
+ * so the moment a no-execute page was swapped out, its slot number came back
+ * with bit 51 set -- 2^51 -- and swap.c indexed its slot table with it. Found
+ * by tests/unit/mm_reclaim_test.c the first time an anonymous page was mapped
+ * NX, as an out-of-bounds pointer inside the simulated device. Two bits of one
+ * PTE meaning two things is fine; reading one of them without saying where it
+ * ends is not. */
 #define VMM_PTE_SWAP     (1ull << 1)
 #define VMM_SWAP_W       (1ull << 2)
 #define VMM_SWAP_COW     (1ull << 3)
 #define VMM_SWAP_ANON    (1ull << 4)
 #define VMM_SWAP_SHIFT   12
+#define VMM_SWAP_BITS    40
+#define VMM_SWAP_MAX     ((1ull << VMM_SWAP_BITS) - 1)
 
 static inline int vmm_pte_is_swap(uint64_t e)
 { return !(e & 1) && (e & VMM_PTE_SWAP) != 0; }
 static inline uint64_t vmm_pte_swap_slot(uint64_t e)
-{ return e >> VMM_SWAP_SHIFT; }
+{ return (e >> VMM_SWAP_SHIFT) & VMM_SWAP_MAX; }
 
 /* Map one 4 KiB page (`virt` -> `phys`) into the active address space,
  * allocating intermediate page tables from the PMM as needed. PRESENT is

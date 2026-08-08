@@ -23,7 +23,7 @@ static int space_overflow;        /* spaces that could not get a slot */
 
 static struct space *find(uint64_t cr3)
 {
-    cr3 &= ~(uint64_t)0xFFF;
+    cr3 &= MM_PTE_ADDR;
     if (!cr3) return NULL;
     for (int i = 0; i < VMA_MAXSPACE; i++)
         if (spaces[i].cr3 == cr3) return &spaces[i];
@@ -32,7 +32,7 @@ static struct space *find(uint64_t cr3)
 
 void vma_space_new(uint64_t cr3)
 {
-    cr3 &= ~(uint64_t)0xFFF;
+    cr3 &= MM_PTE_ADDR;
     if (!cr3) return;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
     /* A CR3 is a physical frame address, and a freed space's frame can be

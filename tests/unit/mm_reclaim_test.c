@@ -107,7 +107,7 @@ static uint64_t make_space(int n)
 static uint64_t frame_at(uint64_t cr3, uint64_t va)
 {
     uint64_t *p = vmm_pte(cr3, va);
-    return (p && (*p & PRESENT)) ? (*p & ~(uint64_t)0xFFF) : 0;
+    return (p && (*p & PRESENT)) ? (*p & MM_PTE_ADDR) : 0;
 }
 
 /* ======================================================================== */
@@ -327,7 +327,7 @@ static void t_pinning(void)
     for (int k = 0; k < 3; k++) {
         uint64_t *pte = vmm_pte(cr3, VA(pinned[k]));
         mm_ok(pte && (*pte & PRESENT), "pinned page %d is still mapped", pinned[k]);
-        mm_ok(pte && (*pte & ~(uint64_t)0xFFF) == pf[k],
+        mm_ok(pte && (*pte & MM_PTE_ADDR) == pf[k],
               "pinned page %d is still on its ORIGINAL frame", pinned[k]);
         int off = check_pattern(mm_sim_ptr(pf[k]), pinned[k]);
         mm_eqf(off, -1, "pinned page %d still holds its own bytes", pinned[k]);
@@ -552,7 +552,7 @@ static void t_write_failure(void)
     for (int i = 0; i < 6; i++) {
         uint64_t *pte = vmm_pte(cr3, VA(i));
         mm_ok(pte && (*pte & PRESENT), "page %d is still present", i);
-        mm_ok(pte && (*pte & ~(uint64_t)0xFFF) == frames[i],
+        mm_ok(pte && (*pte & MM_PTE_ADDR) == frames[i],
               "page %d is on its original frame", i);
         mm_eqf(check_pattern(mm_sim_ptr(frames[i]), 300 + i), -1,
                "page %d still holds its own bytes", i);

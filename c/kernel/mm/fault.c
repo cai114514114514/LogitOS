@@ -155,7 +155,7 @@ static uint64_t fault_frame(void);
 static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
 {
     uint64_t e = *pte;
-    uint64_t old = e & ~(uint64_t)0xFFF;
+    uint64_t old = e & MM_PTE_ADDR;
     unsigned rc = pmm_refcount(old);
 
     if (rc == 0) {
@@ -181,14 +181,21 @@ static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
                                      * pass: decline. The process dies, the
                                      * kernel does not. */
         memcpy(mm_p2v(nf), mm_p2v(old), 4096);
-        *pte = nf | ((e & 0xFFF) & ~VMM_PTE_COW) | PRESENT | WRITABLE;
+        /* MM_PTE_FLAGS, not 0xFFF. The permissions carried onto the copy
+         * include NX, which lives in bit 63; with `e & 0xFFF` a copy-on-write
+         * copy of a no-execute page came back EXECUTABLE, so every forked
+         * process would get its stack's execute permission back the first time
+         * it wrote to it. That is not a crash, it is the protection quietly
+         * coming undone, which is why it is spelled out here. */
+        *pte = nf | ((e & MM_PTE_FLAGS) & ~VMM_PTE_COW) | PRESENT | WRITABLE;
         /* This PTE now points somewhere else, so the reverse map has to be told
          * about BOTH ends of the move. Editing the PTE by hand here rather than
          * going through vmm.c's set_leaf() is why: a page-fault handler wants
          * the entry it already has a pointer to, not another four-level walk.
          * The price is these two lines, and rmap_audit() is what proves they
-         * are not forgotten. Note (e & 0xFFF) carries VMM_PTE_ANON across, so a
-         * copy of an anonymous page is still reclaimable by the drop tier. */
+         * are not forgotten. Note (e & MM_PTE_FLAGS) carries VMM_PTE_ANON
+         * across, so a copy of an anonymous page is still reclaimable by the
+         * drop tier. */
         rmap_remove(old, cr3, page);
         rmap_add(nf, cr3, page);
         pmm_free(old);              /* drop THIS space's reference, no more */
@@ -233,8 +240,23 @@ static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active)
      * and let this code make it again; without the mark it cannot tell a page
      * whose contents are reproducible from one whose contents came from a file
      * nothing re-reads. See vmm.h and reclaim.h. */
+    /* NX FROM THE VMA, which is the second of the two gaps c/kernel/exec/exec.c
+     * names above setup_cli_stack(): a CLI program's stack is a reservation
+     * whose first few pages exec maps eagerly (no-execute) and whose remaining
+     * ~250 pages arrive HERE. Mapping those without NX would make the deep part
+     * of every stack executable -- and the deep part is exactly where a
+     * recursive parser puts its buffers -- so a probe that jumps into a local
+     * array would be blocked or not depending on how far down the stack it ran.
+     * The reservation already carries the answer: mmap's PROT_EXEC becomes
+     * VMA_EXEC (mmsys.c) and exec reserves the stack VMA_READ|VMA_WRITE. Note
+     * this is the one place mm ORIGINATES bit 63 rather than carrying it, and
+     * it is safe to do unconditionally: with EFER.NXE clear bit 63 would be a
+     * reserved bit, but long.asm/ap_trampoline.asm set NXE before paging on
+     * every core, and the host test has no MMU to object. */
     vmm_map_page_in(cr3, page, f,
-                    VMM_USER | VMM_PTE_ANON | ((prot & VMA_WRITE) ? VMM_WRITABLE : 0));
+                    VMM_USER | VMM_PTE_ANON |
+                    ((prot & VMA_WRITE) ? VMM_WRITABLE : 0) |
+                    ((prot & VMA_EXEC)  ? 0 : MM_PTE_NX));
     if (active) mm_invlpg(page);
     g_anon++;
     return 1;
@@ -250,7 +272,7 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     int user    = pte && (*pte & USER);
     int swapped = pte && vmm_pte_is_swap(*pte);
     uint32_t prot = vma_prot_at(cr3, page);
-    int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF));
+    int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
 
     uint64_t t0 = fault_cyc();
     switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped)) {
@@ -302,7 +324,7 @@ int mm_fault(uint64_t cr2, uint64_t err, uint64_t rip)
      * layer swap_init() needs is enumerated and idle. */
     if (err & PF_U) reclaim_late_init();
 #endif
-    return mm_fault_in(mm_read_cr3() & ~(uint64_t)0xFFF, cr2, err);
+    return mm_fault_in(mm_read_cr3() & MM_PTE_ADDR, cr2, err);
 }
 
 /* ------------------------------------------------------------ report --- */
