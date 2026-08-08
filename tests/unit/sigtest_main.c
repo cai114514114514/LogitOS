@@ -44,6 +44,17 @@ static void cki(int cond, const char *what, long got, long want)
     g_fail++;
 }
 
+/* A marker before every section, flushed. Not decoration: when a signal test
+ * goes wrong the failure mode is usually a HANG -- a frame pushed to a bad rip,
+ * a wait that is never woken, a restart that never restarts -- and a hang
+ * prints nothing at all. With these, the last line on the console names the
+ * section, which is the difference between "it hung" and a bug report. */
+static void phase(const char *name)
+{
+    printf("sigtest: [%s]\n", name);
+    fflush(stdout);
+}
+
 static long sigq(long what)
 {
     long r;
@@ -58,19 +69,36 @@ static void simple(int s) { g_got = s; g_count++; }
 
 static void basic_delivery(void)
 {
+    struct sigaction sa, cur;
+    sa.sa_handler = simple; sa.sa_mask = 0; sa.sa_flags = 0; sa.sa_restorer = 0;
+
     g_got = 0; g_count = 0;
-    ck(signal(SIGUSR1, simple) != SIG_ERR, "signal(SIGUSR1) installs");
+    ck(sigaction(SIGUSR1, &sa, 0) == 0, "sigaction(SIGUSR1) installs");
     ck(raise(SIGUSR1) == 0, "raise(SIGUSR1) returns 0");
     cki(g_got == SIGUSR1, "handler ran with the right number", g_got, SIGUSR1);
     cki(g_count == 1, "handler ran exactly once", g_count, 1);
 
-    /* And control came BACK. A handler that runs but never returns correctly
-     * looks identical to one that works, right up to the next statement. */
-    g_got = 0;
+    /* And control came BACK, three times. A handler that runs but never returns
+     * correctly looks identical to one that works, right up to the next
+     * statement -- so the count has to keep going up. sigaction() and NOT
+     * signal() here: signal() is the one-shot interface (see below), and using
+     * it for a repeat test would be testing the wrong thing. */
+    raise(SIGUSR1);
+    raise(SIGUSR1);
+    cki(g_count == 3, "three handler runs, three returns", g_count, 3);
+
+    /* signal() IS different, and the difference is C's: the handler is reset to
+     * SIG_DFL before it runs. That is SA_RESETHAND, mini-libc asks for it
+     * explicitly, and a program that relies on the one-shot behaviour depends
+     * on it -- so check it rather than assume it. (This is also the bug this
+     * test found in its own first draft: two raises through signal(), the
+     * second of which correctly killed the process.) */
+    g_count = 0;
     ck(signal(SIGUSR2, simple) != SIG_ERR, "signal(SIGUSR2) installs");
     raise(SIGUSR2);
-    raise(SIGUSR2);
-    cki(g_count == 3, "three handler runs, three returns", g_count, 3);
+    cki(g_count == 1, "signal()'s handler ran once", g_count, 1);
+    ck(sigaction(SIGUSR2, 0, &cur) == 0, "read SIGUSR2's disposition back");
+    ck(cur.sa_handler == SIG_DFL, "signal() reset it to SIG_DFL, as C specifies");
 
     ck(signal(SIGKILL, simple) == SIG_ERR && errno == EINVAL, "SIGKILL is uncatchable");
     ck(signal(SIGSTOP, simple) == SIG_ERR && errno == EINVAL, "SIGSTOP is uncatchable");
@@ -234,7 +262,7 @@ static void kill_a_compute_loop(void)
 
     /* Give it a moment to actually be running in ring 3 rather than still in
      * the kernel finishing its fork. */
-    for (volatile int i = 0; i < 2000000; i++) { }
+    usleep(200000);
 
     ck(kill(pid, SIGTERM) == 0, "kill(child, SIGTERM)");
     int st = 0;
@@ -323,40 +351,53 @@ static void alarm_and_eintr(void)
     alarm(0);
 }
 
-/* ------------------------------------------------------------ 10. SA_RESTART */
+/* ------------------------------------------------------------ 10. SA_RESTART
+ *
+ * THE HANDLER IS THE WRITER, and that is the whole design of this test.
+ *
+ * The obvious shape -- fork a child, have it sleep and then write -- makes the
+ * result depend on two clocks agreeing under 4-core TCG, and the first version
+ * of this test did exactly that and hung: the restart was applied perfectly
+ * (verified at the kernel, rip rewound over the int and rax put back) and the
+ * child simply had not written yet inside the harness window. A test whose
+ * pass depends on how fast the emulator is that day is not a test.
+ *
+ * So: read a pipe that nobody has written; SIGALRM interrupts it; the HANDLER
+ * writes the byte; the restart re-issues the read and finds it. No second
+ * process, no sleep, and exactly one ordering, which the mechanism itself
+ * enforces -- if the read is NOT restarted it returns -1/EINTR and the check
+ * below fails immediately instead of hanging. */
+static int g_restart_fd = -1;
+static void alrm_writer(int s)
+{
+    (void)s;
+    g_alrm++;
+    if (g_restart_fd >= 0) write(g_restart_fd, "R", 1);
+}
+
 static void sa_restart_restarts(void)
 {
     int fds[2];
     struct sigaction sa;
-    sa.sa_handler = alrm_handler;
+    sa.sa_handler = alrm_writer;
     sa.sa_mask = 0;
     sa.sa_flags = SA_RESTART;
     sa.sa_restorer = 0;
     ck(sigaction(SIGALRM, &sa, 0) == 0, "sigaction(SIGALRM, SA_RESTART)");
     ck(pipe(fds) == 0, "pipe() for the SA_RESTART test");
 
-    int pid = fork();
-    if (pid == 0) {
-        close(fds[0]);
-        /* Long enough that the parent is certainly parked in read() and the
-         * alarm has certainly fired first. No sleep() dependency: a compute
-         * loop is the one timing primitive that needs nothing. */
-        for (volatile long i = 0; i < 120000000L; i++) { }
-        write(fds[1], "R", 1);
-        _exit(0);
-    }
-    close(fds[1]);
+    g_restart_fd = fds[1];
     g_alrm = 0;
     alarm(1);
     char b = 0;
     errno = 0;
     long n = read(fds[0], &b, 1);
     cki(n == 1, "SA_RESTART: the read completed instead of failing", n, 1);
-    cki(b == 'R', "and it returned the byte the child wrote", b, 'R');
-    cki(g_alrm >= 1, "the handler still ran", g_alrm, 1);
+    cki(b == 'R', "and it returned the byte the handler wrote", b, 'R');
+    cki(g_alrm >= 1, "the handler ran", g_alrm, 1);
     alarm(0);
-    close(fds[0]);
-    int st = 0; waitpid(pid, &st, 0);
+    g_restart_fd = -1;
+    close(fds[0]); close(fds[1]);
     signal(SIGALRM, SIG_DFL);
 }
 
@@ -366,16 +407,17 @@ int main(void)
 
     printf("sigtest: start (delivered=%ld returned=%ld)\n", d0, r0);
 
-    basic_delivery();
-    fpu_across_handler();
-    fault_to_signal();
-    fault_without_handler();
-    kill_a_compute_loop();
-    sigchld_arrives();
-    sigpipe_on_write();
-    mask_and_pending();
-    alarm_and_eintr();
-    sa_restart_restarts();
+    phase("basic");     basic_delivery();
+    phase("fpu");       fpu_across_handler();
+    phase("fault");     fault_to_signal();
+    phase("fault-dfl"); fault_without_handler();
+    phase("kill-loop"); kill_a_compute_loop();
+    phase("sigchld");   sigchld_arrives();
+    phase("sigpipe");   sigpipe_on_write();
+    phase("mask");      mask_and_pending();
+    phase("eintr");     alarm_and_eintr();
+    phase("restart");   sa_restart_restarts();
+    phase("done");
 
     long d1 = sigq(SIGQ_DELIVERED), r1 = sigq(SIGQ_RETURNED);
     /* Every frame pushed must have been unwound EXCEPT the one the SIGSEGV
