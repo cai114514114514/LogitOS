@@ -179,14 +179,16 @@ $(REFT_MANIFEST): $(REFT_BIN)
 # means the gate cannot report a rate without first proving its own comparator
 # is capable of saying no.
 test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
-	@echo "--- control: a comparator that always reports equal must score 100% ---"
-	@rate=$$($(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
-	          --always-equal 2>/dev/null | sed -n 's/^PASS RATE.*=  *\([0-9.]*\)%.*/\1/p'); \
-	 if [ "$$rate" != "100.00" ]; then \
-	    echo "CONTROL BROKEN: always-equal scored $$rate%, expected 100.00%"; \
-	    echo "  The suite must be able to go green when the comparator cannot fail."; \
+	@echo "--- control: with the comparator stubbed to equality, no rel=match test may fail ---"
+	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
+	    --always-equal > $(BUILD)/reftest/ctl.log 2>&1 || true
+	@n=$$(sed -n 's/^ALWAYS-EQUAL CONTROL: \([0-9]*\) match-type.*/\1/p' $(BUILD)/reftest/ctl.log); \
+	 if [ -z "$$n" ]; then echo "CONTROL BROKEN: no verdict line"; exit 1; fi; \
+	 if [ "$$n" != "0" ]; then \
+	    echo "CONTROL BROKEN: $$n match-type tests failed under an always-equal comparator"; \
+	    echo "  The suite must be able to go green when the comparator cannot say no."; \
 	    exit 1; \
-	 fi; echo "  ok: always-equal scores $$rate% -- the comparator is load-bearing"
+	 fi; echo "  ok: 0 match-type failures -- the comparator is load-bearing"
 	@echo
 	@rc=0; \
 	 $(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
@@ -236,11 +238,16 @@ reftest-baseline: $(REFT_BIN) $(REFT_MANIFEST)
 test-reftest-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --always-equal > $(BUILD)/reftest/negctl.log 2>&1 || true
-	@rate=$$(sed -n 's/^PASS RATE.*=  *\([0-9.]*\)%.*/\1/p' $(BUILD)/reftest/negctl.log); \
-	 echo "always-equal comparator: $$rate%"; \
-	 if [ "$$rate" != "100.00" ]; then \
-	    echo "NEGATIVE CONTROL FAILED: expected 100.00%, got $$rate%"; exit 1; \
-	 else echo "negative control ok: the suite goes green when the comparator cannot fail"; fi
+	@grep -E 'PASS RATE|ALWAYS-EQUAL CONTROL' $(BUILD)/reftest/negctl.log || true
+	@n=$$(sed -n 's/^ALWAYS-EQUAL CONTROL: \([0-9]*\) match-type.*/\1/p' $(BUILD)/reftest/negctl.log); \
+	 if [ "$$n" != "0" ]; then \
+	    echo "NEGATIVE CONTROL FAILED: $$n match-type tests failed under always-equal"; exit 1; \
+	 else \
+	    echo "negative control ok: every rel=match test goes green when the"; \
+	    echo "  comparator cannot say no. The corpus-wide rate is NOT 100% and"; \
+	    echo "  must not be: the 558 rel=mismatch tests require the two renderings"; \
+	    echo "  to DIFFER, so a comparator that always says equal fails all of them."; \
+	 fi
 
 # NEGATIVE CONTROL 2, and read tests/unit/reftest.c's opt_nocss comment before
 # changing it. Withholding CSS from BOTH sides does NOT collapse the rate -- it
