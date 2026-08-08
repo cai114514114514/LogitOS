@@ -12,15 +12,23 @@
  *     could rewrite its own code. A PT_LOAD that asks for W and X at once is
  *     refused outright.
  *
- * NX, the no-execute half -- CPU ENABLED, KERNEL NOT USING IT. Be precise
- *     about which of those is which.
+ * NX, the no-execute half -- ON.
  *     EFER.NXE is set in c/boot/long.asm before any page table can carry bit
  *     63, and in c/boot/ap_trampoline.asm before an AP even enables paging, so
- *     every core would honour the bit today. Nothing sets it, because
- *     c/kernel/mm masks page-table entries back to frames with ~0xFFF, which
- *     keeps bit 63 and feeds the frame allocator an address 8 EiB up. See
- *     cpu_prot_nx_usable() in prot.h for the measurement and the fix. Until
- *     then a program's data, stack and heap remain executable.
+ *     every core honours the bit. What used to be missing was the other end:
+ *     c/kernel/mm masked page-table entries back to frames with ~0xFFF, which
+ *     keeps bit 63 and fed the frame allocator an address 8 EiB up, so setting
+ *     NX booted the desktop and then killed the machine on the first
+ *     fork+exec. That mask is now MM_PTE_ADDR (c/kernel/mm/mm.h) at every one
+ *     of the 48 sites that converts an entry to a frame, and the two sites
+ *     that carried permissions with `& 0xFFF` -- the fork clone and the
+ *     copy-on-write copy, both of which SILENTLY DROPPED bit 63 rather than
+ *     corrupting anything -- carry MM_PTE_FLAGS instead.
+ *     So a program's text is executable and nothing else is: .rodata, .data,
+ *     .bss, the TLS block, the initial stack and every demand-paged page of a
+ *     stack or mmap reservation are all no-execute. The loaders decide that
+ *     (elf.c from p_flags, exec.c from PT_GNU_STACK, fault.c from VMA_EXEC);
+ *     this predicate only says the bit may be expressed at all.
  *
  * SMEP      -- ON (when the CPU has it).
  *     CR4.SMEP, set in the same two places. The kernel never intentionally
@@ -98,11 +106,12 @@ static inline uint64_t rd_cr4(void)
 
 int cpu_prot_nx(void)   { return (rd_efer() & EFER_NXE) ? 1 : 0; }
 
-/* See the long comment in prot.h. The CPU is ready; c/kernel/mm is not, because
- * its PTE->frame masks keep bit 63. One symbol, so that when those masks are
- * fixed this becomes `return cpu_prot_nx();` and every user of NX in the kernel
- * turns on at once. */
-int cpu_prot_nx_usable(void) { return 0; }
+/* See the long comment in prot.h. Both ends are ready now: the CPU (EFER.NXE,
+ * set on every core before paging) and c/kernel/mm (MM_PTE_ADDR everywhere a
+ * PTE becomes a frame). One symbol, so every user of NX in the kernel turns on
+ * together -- and so it can be turned back off in one place if a machine ever
+ * needs it, without touching a loader. */
+int cpu_prot_nx_usable(void) { return cpu_prot_nx(); }
 int cpu_prot_smep(void) { return (rd_cr4()  & CR4_SMEP) ? 1 : 0; }
 int cpu_prot_smap(void) { return (rd_cr4()  & CR4_SMAP) ? 1 : 0; }
 

@@ -24,19 +24,34 @@
 # attributed to a particular probe on a shared serial console, while the absence
 # of that probe's own PWNED marker can.
 #
-# WHY SOME CASES ARE EXPECTED TO BE PWNED
-# ---------------------------------------
-# nx and nxstack are expected to succeed today, and this script asserts that
-# they DO. That is deliberate. NX is not enabled -- c/kernel/cpu/prot.h has the
-# account: EFER.NXE is on, but c/kernel/mm masks page-table entries back to
-# frames with ~0xFFF, which keeps bit 63, so setting NX hands the frame
-# allocator an address 8 EiB up and the machine dies in memcpy on the first
-# fork+exec. A suite in which every case passes cannot tell you which
-# protections you have; this one names the hole and fails if the hole silently
-# changes shape in either direction. When the mm masks are fixed, move nx and
-# nxstack from EXPECT_PWNED to EXPECT_BLOCKED and nothing else here changes.
+# NX USED TO BE EXPECTED TO BE PWNED. IT IS NOT ANY MORE.
+# -------------------------------------------------------
+# For a long time this file asserted that nx and nxstack SUCCEEDED, because
+# they did: EFER.NXE was on, but c/kernel/mm masked page-table entries back to
+# frames with ~0xFFF, which keeps bit 63, so setting NX handed the frame
+# allocator an address 8 EiB up and the machine died in memcpy on the first
+# fork+exec. That expectation was not laziness -- a suite in which every case
+# passes cannot tell you which protections you have, so the hole was named and
+# the suite failed if it silently changed shape in EITHER direction.
+#
+# The mm masks are MM_PTE_ADDR now and cpu_prot_nx_usable() returns
+# cpu_prot_nx(), so both cases have moved to EXPECT_BLOCKED and EXPECT_PWNED is
+# empty. Keeping the variable, empty, on purpose: it is the place a future
+# known-open boundary gets named, and an empty list is a stronger statement
+# than no list.
+#
+# Note what "blocked" looks like for these two: there is no return value to
+# check -- the jump into the data page simply traps -- so the verdict is
+# BLOCKED(faulted), and the kernel's own "[fault] app exception" line is the
+# corroboration. The [prot] line printed above the table is the other half:
+# it must read `nx sup/ON`, not `efer-only`.
 
 set -u
+
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
 
 ISO="${1:?usage: run-sec-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-sec-test.sh <iso> <disk.img>}"
@@ -47,8 +62,8 @@ cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] &
 trap cleanup EXIT
 
 # The attacks that MUST be refused, and the ones that are known-open today.
-EXPECT_BLOCKED="wx rodata kptr kptrrw kread"
-EXPECT_PWNED="nx nxstack"
+EXPECT_BLOCKED="wx rodata nx nxstack kptr kptrrw kread"
+EXPECT_PWNED=""
 ALL="$EXPECT_BLOCKED $EXPECT_PWNED"
 
 # One `secprobe <name>` per line. The shell fork+execs each, so a probe that
@@ -59,7 +74,7 @@ CMDS="${CMDS}echo SEC-ALL-DONE\nexit\n"
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # -snapshot: ephemeral disk writes, so repeated runs are deterministic.
-{ sleep 6; printf "$CMDS"; sleep 8; } | \
+{ logit_wait_for_shell "$LOG" 120; printf "$CMDS"; sleep 8; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot \

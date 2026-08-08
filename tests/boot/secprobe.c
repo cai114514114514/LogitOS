@@ -25,12 +25,14 @@
  *
  * ONE ATTACK PER INVOCATION. `secprobe wx`, `secprobe nx`, and so on.
  *
- * The `nx` case is expected to print PWNED right now, and the harness expects
- * it to. That is not a broken test: NX is not on (c/kernel/cpu/prot.h explains
- * that it is blocked on c/kernel/mm's PTE->frame masks keeping bit 63), and a
- * test suite whose every case passes cannot tell you which protections you
- * actually have. When NX lands, that expectation flips in the harness and this
- * file does not change.
+ * The `nx` and `nxstack` cases used to be expected to print PWNED, and the
+ * harness asserted that they did -- NX was not on, because c/kernel/mm's
+ * PTE->frame masks kept bit 63 (c/kernel/cpu/prot.h has the account). That
+ * expectation has flipped: the masks are MM_PTE_ADDR now, cpu_prot_nx_usable()
+ * returns cpu_prot_nx(), and both cases are expected to be blocked by a fault.
+ * As promised at the time, THIS FILE DID NOT CHANGE -- only the expectation in
+ * tests/boot/run-sec-test.sh did, which is the point of keeping the attack and
+ * the verdict in separate files.
  */
 
 #include "logit.h"

@@ -42,38 +42,46 @@ int cpu_prot_nx(void);
 /* 1 if it is SAFE to put PTE_NX in a leaf entry of a USER page table.
  *
  * This is NOT the same question as cpu_prot_nx(), and the difference is the
- * whole reason the function exists. EFER.NXE is on; the CPU would honour bit
- * 63 today. What is not ready is c/kernel/mm: every place it converts a
- * page-table entry back into a physical frame does it with
+ * whole reason the function exists. EFER.NXE being on says the CPU will honour
+ * bit 63. It says nothing about whether the KERNEL can survive its own page
+ * tables carrying it -- and for a long time it could not.
+ *
+ * WHAT WAS WRONG, kept because it is the best available description of how a
+ * protection bit can be fatal three subsystems away. Every place c/kernel/mm
+ * converted a page-table entry back into a physical frame did it with
  *
  *     frame = e & ~(uint64_t)0xFFF;
  *
  * which clears the low 12 flag bits and KEEPS bit 63. The architectural
  * address field is bits 12..51, so the correct mask is 0x000FFFFFFFFFF000.
- * With NX set, that expression yields 0x8000000000nnnnnn -- a physical address
- * eight exabytes up -- and hands it to pmm_ref() (vmm.c, the fork path),
+ * With NX set, that expression yields 0x8000000000nnn000 -- a physical address
+ * eight exabytes up -- and handed it to pmm_ref() (vmm.c, the fork path),
  * pmm_free() (vmm.c, unmap and teardown) and pmm_refcount() (fault.c, the
  * copy-on-write path). The frame refcount table is indexed by frame number, so
- * this is an out-of-bounds access on every fork, every COW resolution and every
- * process exit.
+ * that was an out-of-bounds access on every fork, every COW resolution and
+ * every process exit.
  *
- * It is not theoretical. Setting NX with those masks in place boots the
- * desktop, launches Finder, Clock and /bin/sh, and then kills the machine with
- * a kernel #GP inside memcpy the first time the shell fork+execs a command --
- * the corrupted refcount table having produced a non-canonical pointer several
- * operations later. That is precisely the failure mode this work is supposed to
- * avoid: a protection bit turned on, the system seen to boot, and the damage
- * surfacing somewhere else entirely.
+ * It was not theoretical. Setting NX with those masks in place booted the
+ * desktop, launched Finder, Clock and /bin/sh, and then killed the machine
+ * with a kernel #GP inside memcpy the first time the shell fork+exec'd a
+ * command -- the corrupted refcount table having produced a non-canonical
+ * pointer several operations later.
  *
- * So this returns 0 and the loaders leave bit 63 alone. The read-only half of
- * W^X does not depend on NX and is enabled regardless -- a program's text is
- * already unwritable. The no-execute half waits on the memory line changing
- * ~10 masks in c/kernel/mm/{vmm,fault}.c from ~0xFFF to a PTE address mask.
- * When that lands, this function returns 1 and nothing else has to change.
+ * WHAT FIXED IT: MM_PTE_ADDR in c/kernel/mm/mm.h, at all 48 sites, each read
+ * and classified rather than swept (about fifteen other `& ~0xFFF` in those
+ * files page-align a VIRTUAL address, where the old mask is right). Two
+ * further sites did the opposite -- the fork clone and the copy-on-write copy
+ * rebuilt an entry's permissions from `e & 0xFFF`, which drops bit 63, so NX
+ * would have quietly come undone on the first write to any forked page rather
+ * than corrupting anything. Those carry MM_PTE_FLAGS now. And the swap entry,
+ * which keeps NX in bit 63 by design, read its slot number as `e >> 12` with
+ * no mask; the slot field is now stated to be 40 bits wide and masked at both
+ * ends.
  *
- * Deliberately a function and not an #ifdef: the condition is a property of
- * another subsystem, and it should be possible to flip it in one place and
- * have the whole kernel agree. */
+ * So this now returns cpu_prot_nx(). Deliberately still a function and not an
+ * #ifdef: the condition is a property of another subsystem, and it should be
+ * possible to flip it in one place and have the whole kernel agree -- which is
+ * also the fastest way to bisect a machine that misbehaves after this. */
 int cpu_prot_nx_usable(void);
 
 /* 1 if CR4.SMEP is set on the current core: ring 0 cannot execute a page whose
