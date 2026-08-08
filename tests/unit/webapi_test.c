@@ -28,8 +28,17 @@
  * are malloc and a no-op -- same self-stubbing as the other pipeline tests. */
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
-void  img_register(void *d) { (void)d; }
-void  img_register_anim(void *a, void *b, void *c) { (void)a; (void)b; (void)c; }
+/* WEAK, because whether this file is the one that defines them depends on
+ * somebody else's line in the Makefile. The Rust staticlib's codec registration
+ * calls back into an image registry that this test does not have, so a stub is
+ * needed -- but tests/unit/rust_host_shim.c also supplies one, and it was added
+ * to WEBAPI_TEST_SRC while this test was being extended, which turned a link
+ * that worked into `multiple definition of img_register`. Weak means the shim
+ * wins when it is in the link and these stand in when it is not, so neither
+ * side of that Makefile decision can break the other. */
+__attribute__((__weak__)) void img_register(void *d) { (void)d; }
+__attribute__((__weak__)) void img_register_anim(void *a, void *b, void *c)
+{ (void)a; (void)b; (void)c; }
 
 /* ---- the harness ------------------------------------------------------ */
 
@@ -210,6 +219,26 @@ static void fs_answer(struct fakesock *s)
             memcpy(s->rsp + s->rsp_len, sep, (size_t)blen);
             s->rsp_len += blen;
         }
+    } else if (!strncmp(target, "/slow", 5)) {
+        /* A response whose BODY LAGS ITS HEADERS, which is the condition the
+         * old queue test never created and the reason it passed against a bug
+         * that rejected 144 requests on a real page.
+         *
+         * fetch() settles when the headers arrive -- that is the spec -- but
+         * the transport slot stays occupied until the body is done. A route
+         * that answers headers and body in one go frees both at the same
+         * instant and can never tell the two accounting schemes apart. This
+         * one is 6 KB dribbled 7 bytes per recv, so the slot is held for
+         * hundreds of pumps after the promise has already resolved.
+         *
+         * The body still ENDS with the path so a response can be matched to
+         * its request when thirty are in flight and finishing out of order. */
+        char big[6300];
+        int o = 0;
+        while (o < (int)sizeof big - 64) big[o++] = 'x';
+        o += snprintf(big + o, sizeof big - (size_t)o, "%s", target);
+        big[o] = 0;
+        rsp_body(s, 200, "OK", "text/plain", big);
     } else if (!strncmp(target, "/q", 2)) {
         /* The queue test's route: the body is the path, so a response can be
          * matched to the request that asked for it even when twenty are in
@@ -919,6 +948,41 @@ static void test_fetch_queue(void)
                  fs_opened);
         ck(fs_opened >= 20, msg);
     }
+
+    /* ---- the case the twenty above cannot reach ----
+     *
+     * MEASURED on the real machine, kimi.com over the real network:
+     *   144 x Uncaught (in promise) TypeError: too many requests in flight
+     * with 30 sub-resources arriving out of 108 requests. The page painted its
+     * shell and none of its data. The queue above had been in place the whole
+     * time and its assertions passed.
+     *
+     * They passed because every route in this file answers headers and body in
+     * the same instant, and the bug is precisely the gap between the two:
+     * fetch() resolves at the HEADERS, so the queue released its permit and
+     * admitted the next request, while the C transport slot stayed occupied
+     * until the BODY finished. Permits were bounded at six; slots ran out at
+     * eight. /slow dribbles 6 KB at 7 bytes a recv, which opens that gap wide
+     * enough to walk through.
+     *
+     * Thirty, not twenty: it has to exceed WF_MAX (8) by enough that the
+     * over-admission compounds. */
+    printf("\n-- the request queue, with bodies that lag their headers --\n");
+    fs_reset();
+    run("var sres = [], serr = [];");
+    run("for (var i = 0; i < 30; i++) (function (n) {"
+        "  fetch('/slow' + n).then(function (r) { return r.text(); })"
+        "    .then(function (t) { sres.push(t.slice(-8)); },"
+        "          function (e) { serr.push(String(e)); });"
+        "})(i);");
+    settle(20000);
+    ckjs("serr.length === 0",
+         "not one of thirty slow responses was rejected for want of a slot");
+    ckjs("sres.length === 30", "all thirty resolved");
+    ckjs("(function(){ var s = {}; for (var i = 0; i < sres.length; i++) s[sres[i]] = 1;"
+         " return Object.keys(s).length === 30; })()",
+         "and each got its OWN body, not another request's");
+    ck(!js_webapi_pending(), "nothing left pending after the slow batch");
 }
 
 /* ---- 10. binary transport ----------------------------------------------

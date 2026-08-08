@@ -1675,10 +1675,62 @@ static const char *PLATFORM_PRELUDE =
 "    });\n"
 "  } catch (e) {}\n"
 "}\n"
+/* ==== the reflected URL properties: .src and .href =======================
+ * document.currentScript alone is necessary and not sufficient. Webpack's
+ * chunk loader reads
+ *
+ *     var s = document.currentScript; ... if (s) { u = s.src; }
+ *     if (!u || !/^http(s?):/.test(u)) throw ...
+ *
+ * and js_dom.c publishes getAttribute("src") and no `src` PROPERTY at all, so
+ * `s.src` is undefined and the loader throws even with currentScript working.
+ * The two are one fix from the page's point of view.
+ *
+ * THE PROPERTY IS ABSOLUTE, THE ATTRIBUTE IS NOT, and that is the whole
+ * difference between them: `<script src="/static/x.js">` has an attribute of
+ * "/static/x.js" and a .src of "https://host/static/x.js". Returning the
+ * attribute would satisfy `typeof s.src === 'string'` and still fail the
+ * /^http(s?):/ test, which is a worse outcome than absence because it looks
+ * like it worked.
+ *
+ * Only tags that HAVE the attribute in HTML get the property -- `div.src` is
+ * undefined in a browser and must stay undefined here, or feature detection
+ * that asks "is this an image" by testing for .src gets a yes for everything.
+ * Writing goes back through setAttribute, so the two stay one value. */
+"function installReflectedURLs() {\n"
+"  var EP = null;\n"
+"  try { EP = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
+"  if (!EP) return;\n"
+"  var abs = function (v) {\n"
+"    if (v === null || v === undefined) return '';\n"
+"    if (v === '') return '';\n"
+"    try { return new G.URL(String(v), G.document.baseURI || G.location.href).href; }\n"
+"    catch (e) { return String(v); }\n"
+"  };\n"
+"  var reflect = function (prop, attr, tags) {\n"
+"    if (prop in EP) return;\n"
+"    try {\n"
+"      Object.defineProperty(EP, prop, {\n"
+"        configurable: true,\n"
+"        get: function () {\n"
+"          var t = String(this.tagName || '').toLowerCase();\n"
+"          if (tags.indexOf(t) < 0) return undefined;\n"
+"          return abs(this.getAttribute(attr));\n"
+"        },\n"
+"        set: function (v) { try { this.setAttribute(attr, String(v)); } catch (e) {} }\n"
+"      });\n"
+"    } catch (e) {}\n"
+"  };\n"
+"  reflect('src', 'src', ['script','img','iframe','source','video','audio',\n"
+"                         'embed','track','input','frame']);\n"
+"  reflect('href', 'href', ['a','link','area','base']);\n"
+"  reflect('action', 'action', ['form']);\n"
+"}\n"
 "installTreeWalker();\n"
 "installInterfaces();\n"
 "installCloneNode();\n"
 "installCurrentScript();\n"
+"installReflectedURLs();\n"
 "installCustomElements();\n"
 "try { installDataset(Object.getPrototypeOf(G.document.createElement('div'))); } catch (e) {}\n"
 

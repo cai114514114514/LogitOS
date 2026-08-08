@@ -90,8 +90,13 @@ int printf(const char *fmt, ...)
 /* The Rust staticlib's png_register calls back into the image registry. The
  * probe decodes no images, so the registry is a sink -- linking c/lib/image/img.c
  * would drag in every codec for nothing. */
-void img_register(void *detect, void *decode) { (void)detect; (void)decode; }
-void img_register_anim(void *detect, void *decode, void *anim)
+/* WEAK: tests/unit/rust_host_shim.c supplies the same two stubs and is in this
+ * link too. Which file wins is somebody else's Makefile line, and a strong
+ * definition here turned a working link into `multiple definition of
+ * img_register` the moment that line changed. */
+__attribute__((__weak__)) void img_register(void *detect, void *decode)
+{ (void)detect; (void)decode; }
+__attribute__((__weak__)) void img_register_anim(void *detect, void *decode, void *anim)
 { (void)detect; (void)decode; (void)anim; }
 
 /* ---- the miss table ----------------------------------------------------

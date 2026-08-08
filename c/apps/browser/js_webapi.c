@@ -1293,23 +1293,77 @@ static uint8_t *ab_bytes(JSContext *ctx, JSValueConst v, size_t *len)
 static int wf_handle(const struct wfetch *f)
 { return (int)((f - g_fetch) * 4096 + (f->gen & 4095)); }
 
-/* __fetchStart(url, method, headerPairs, body, opts) -> { p: Promise, h: id } */
+/* How many `struct wfetch` slots are free RIGHT NOW.
+ *
+ * The JS request queue needs this because its own liveness counter measures
+ * something else. `__fetchStart`'s promise settles when the RESPONSE HEADERS
+ * arrive -- that is the spec, and it is what makes streaming work -- but the
+ * slot stays occupied until the BODY is finished. So the queue released a
+ * permit at header time while C was still holding the slot, admitted the next
+ * request, and eventually asked for a ninth slot out of eight.
+ *
+ * MEASURED on the real machine, kimi.com over the real network:
+ *   144 x [error] Uncaught (in promise) TypeError: too many requests in flight
+ * with 30 sub-resources arriving out of 108 requests. The page painted its
+ * shell and none of its data -- sidebar, logo and feature chips all need
+ * calls that were among the 144 thrown away. The incomplete render and the
+ * rejections were one bug.
+ *
+ * Admission gated on THIS number instead of on a JS-side count means the
+ * queue is bounded by the real scarce resource. */
+static JSValue js_fetch_slots(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+#ifdef WEBAPI_NO_SLOT_QUEUE
+    /* The negative control. Admission then depends only on the JS permit
+     * count, exactly as it did before -- and the permit is released at header
+     * time while the slot is still held, which is the bug. `make
+     * test-webapi-slots-negctl` builds this way and requires the queue
+     * assertions to FAIL. */
+    return JS_NewInt32(ctx, 1 << 20);
+#else
+    int n = 0;
+    for (int i = 0; i < WF_MAX; i++) if (g_fetch[i].state == WF_FREE) n++;
+    return JS_NewInt32(ctx, n);
+#endif
+}
+
+/* __fetchStart(url, method, headerPairs, body, opts) -> { p: Promise, h: id }
+ * or, when every slot is busy, { busy: 1 } and NO promise -- see below. */
 static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
-    JSValue rf[2];
-    JSValue promise = JS_NewPromiseCapability(ctx, rf);
-    if (JS_IsException(promise)) return promise;
 
     struct wfetch *f = 0;
     for (int i = 0; i < WF_MAX; i++) if (g_fetch[i].state == WF_FREE) { f = &g_fetch[i]; break; }
+
+    /* A FULL SLOT TABLE IS NOT A FAILED REQUEST, and returning a rejected
+     * promise for it was wrong in a way no page can work around: `fetch()`
+     * rejects with a TypeError only when the request could not be MADE, and
+     * application code treats that as a network error it has no retry for.
+     * Being busy is a "not yet". So this reports back to the queue, which
+     * re-queues, and nothing is ever rejected for want of a slot. */
+#ifndef WEBAPI_NO_SLOT_QUEUE
+    if (!f) {
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "busy", JS_NewInt32(ctx, 1));
+        return o;
+    }
+#endif
+
+    JSValue rf[2];
+    JSValue promise = JS_NewPromiseCapability(ctx, rf);
+    if (JS_IsException(promise)) return promise;
 
     const char *msg = 0;
     struct wurl u;
     const char *us = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0;
 
+#ifdef WEBAPI_NO_SLOT_QUEUE
     if (!f) msg = "too many requests in flight";
-    else if (!us) msg = "no URL";
+    else
+#endif
+    if (!us) msg = "no URL";
     else if (wurl_parse(us, g_loc_valid ? &g_loc : 0, &u) != 0) msg = "invalid URL";
 
     if (!msg) {
@@ -2172,7 +2226,8 @@ static const JSCFunctionListEntry hist_funcs[] = {
  * `__fetchStart` is not something script should be able to see or replace.
  * It returns the hooks C needs to call back into. */
 static const char *PRELUDE =
-"(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later, __cancelLater) {\n"
+"(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
+"          __cancelLater, __fetchSlots) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 
@@ -2568,11 +2623,59 @@ static const char *PRELUDE =
  *
  * The queue is FIFO, which is the only ordering a page can reason about; an
  * abort while queued rejects immediately and never dials. */
+/* THE QUEUE WAS RIGHT AND ITS PERMIT WAS MEASURING THE WRONG THING.
+ *
+ * MEASURED on the real machine, kimi.com over the real network: 144 x
+ * `Uncaught (in promise) TypeError: too many requests in flight`, with 30
+ * sub-resources arriving out of 108 requests -- the page painted its shell and
+ * none of its data, because the sidebar, the logo and the feature chips all
+ * come from calls that were among the 144. One bug, not two.
+ *
+ * The reason a queue with an UNBOUNDED array still rejected: `st.p` settles
+ * when the RESPONSE HEADERS arrive, which is what the spec says and what makes
+ * streaming work -- but the C-side `struct wfetch` slot stays occupied until
+ * the BODY finishes. So fqLive was released at header time, the queue admitted
+ * the next request, and with eight slots and bodies still draining it
+ * eventually asked for a ninth. fqLive counted permits; the slots were the
+ * resource.
+ *
+ * Three changes, and the third is the one that makes the failure impossible
+ * rather than unlikely:
+ *   - admission is gated on __fetchSlots(), the real free-slot count, as well
+ *     as on FQ_MAX;
+ *   - a full slot table reports `busy` instead of rejecting (see
+ *     js_fetch_start), and the entry goes back to the FRONT of the queue so
+ *     FIFO order survives a retry;
+ *   - the drain is re-armed on a timer while anything is waiting, because a
+ *     slot frees when a BODY completes and that is not an event the JS side
+ *     can otherwise observe. 16 ms, on the pump's own clock (__later), so it
+ *     cannot fire between two steps of a transfer.
+ *
+ * The queue's depth is bounded by memory, as it should be: a page may
+ * legitimately have hundreds of fetches outstanding, and kimi does. */
 "var FQ_MAX = 6;\n"
-"var fqLive = 0, fqQ = [];\n"
+"var fqLive = 0, fqQ = [], fqTimer = -1;\n"
+"function fqRearm() {\n"
+"  if (fqTimer >= 0 || !fqQ.length) return;\n"
+"  fqTimer = __later(16, function () { fqTimer = -1; fqDrain(); });\n"
+   /* __later has eight slots and EventSource reconnections can hold them. A
+      queue that failed to re-arm would stall until some other fetch finished,
+      and if none were live it would stall for ever -- so fall back to the
+      page's own timer when there is one. */
+"  if (fqTimer < 0 && typeof G.setTimeout === 'function')\n"
+"    G.setTimeout(function () { fqDrain(); }, 16);\n"
+"}\n"
+"function fqCanStart() {\n"
+"  if (fqLive >= FQ_MAX) return false;\n"
+"  return __fetchSlots() > 0;\n"
+"}\n"
 "function fqStart(e) {\n"
-"  fqLive++;\n"
 "  var st = __fetchStart(e.url, e.method, e.pairs, e.body, e.opts);\n"
+   /* Lost the race for the slot between fqCanStart and here, or called
+      without one. Put it back at the FRONT -- it was next -- and wait. */
+"  if (!st || !st.p) { fqQ.unshift(e); fqRearm(); return; }\n"
+"  e.started = true;\n"
+"  fqLive++;\n"
 "  if (e.sig && typeof e.sig.addEventListener === 'function')\n"
 "    e.sig.addEventListener('abort', function () { __fetchAbort(st.h); });\n"
 "  if (e.sig && e.sig.aborted) __fetchAbort(st.h);\n"
@@ -2580,24 +2683,32 @@ static const char *PRELUDE =
 "  st.p.then(function (v) { done(); e.res(v); }, function (x) { done(); e.rej(x); });\n"
 "}\n"
 "function fqDrain() {\n"
-"  while (fqQ.length && fqLive < FQ_MAX) {\n"
+"  while (fqQ.length && fqCanStart()) {\n"
 "    var e = fqQ.shift();\n"
 "    if (e.cancelled) continue;\n"
+"    var before = fqQ.length;\n"
 "    fqStart(e);\n"
+     /* fqStart put it back: no slot after all, so stop rather than spin. */
+"    if (fqQ.length > before) break;\n"
 "  }\n"
+"  fqRearm();\n"
 "}\n"
 "function fqEnqueue(url, method, pairs, body, opts, sig) {\n"
 "  return new Promise(function (res, rej) {\n"
 "    var e = { url: url, method: method, pairs: pairs, body: body, opts: opts,\n"
 "              sig: sig, res: res, rej: rej, cancelled: false };\n"
-"    if (fqLive < FQ_MAX) { fqStart(e); return; }\n"
+     /* The abort listener is attached whether or not the request starts
+        immediately: a queued entry that is aborted must reject now and never
+        dial, and one that started has its handle aborted in fqStart. */
 "    if (sig && typeof sig.addEventListener === 'function')\n"
 "      sig.addEventListener('abort', function () {\n"
-"        if (e.cancelled) return;\n"
+"        if (e.cancelled || e.started) return;\n"
 "        e.cancelled = true;\n"
 "        rej(sig.reason || abortError());\n"
 "      });\n"
+"    if (fqCanStart()) { fqStart(e); return; }\n"
 "    fqQ.push(e);\n"
+"    fqRearm();\n"
 "  });\n"
 "}\n"
 "G.fetch = function fetch(input, init) {\n"
@@ -3134,7 +3245,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, g);
         return;
     }
-    JSValue args[7];
+    JSValue args[8];
     args[0] = JS_NewCFunction(ctx, js_fetch_start, "__fetchStart", 5);
     args[1] = JS_NewCFunction(ctx, js_utf8, "__utf8", 1);
     args[2] = JS_NewCFunction(ctx, js_url_parse, "__urlParse", 2);
@@ -3142,8 +3253,9 @@ void js_webapi_install(JSContext *ctx, const char *url)
     args[4] = JS_NewCFunction(ctx, js_fetch_abort, "__fetchAbort", 1);
     args[5] = JS_NewCFunction(ctx, js_later, "__later", 2);
     args[6] = JS_NewCFunction(ctx, js_cancel_later, "__cancelLater", 1);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 7, (JSValueConst *)args);
-    for (int i = 0; i < 7; i++) JS_FreeValue(ctx, args[i]);
+    args[7] = JS_NewCFunction(ctx, js_fetch_slots, "__fetchSlots", 0);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 8, (JSValueConst *)args);
+    for (int i = 0; i < 8; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);

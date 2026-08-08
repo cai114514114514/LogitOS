@@ -8,6 +8,29 @@
 # targets and breaks nothing.
 .PHONY: probe-webapi test-platform test-platform-control test-platform-asan
 .PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
+.PHONY: test-webapi-slots-negctl
+
+# --- test-webapi-slots-negctl ----------------------------------------------
+# The negative control for admitting fetches against the REAL free-slot count.
+# -DWEBAPI_NO_SLOT_QUEUE restores what shipped: __fetchSlots answers "plenty",
+# so admission depends only on the JS permit -- and the permit is released when
+# the response HEADERS arrive while the transport slot is held until the BODY
+# finishes. That gap is the bug; on the real kimi.com it rejected 144 requests
+# with `TypeError: too many requests in flight` and left the page with 30 of
+# its sub-resources. The /slow route in webapi_test.c opens the same gap, so
+# these assertions must FAIL here.
+test-webapi-slots-negctl: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' \
+	    -DWEBAPI_HOST -DWEBAPI_NO_SLOT_QUEUE \
+	    -o $(BUILD)/webapi_slotnegctl $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm
+	@if $(BUILD)/webapi_slotnegctl > $(BUILD)/webapi_slotnegctl.log 2>&1; then \
+	    echo "test-webapi-slots-negctl: FAILED -- the suite PASSED without the fix,"; \
+	    echo "  so its queue assertions are not measuring it."; exit 1; \
+	 else \
+	    echo "test-webapi-slots-negctl: ok -- the suite fails without the fix:"; \
+	    grep '^FAIL' $(BUILD)/webapi_slotnegctl.log | head -6; \
+	 fi
 
 # --- test-webapi-url-negctl ------------------------------------------------
 # The negative control for the non-special URL scheme support in js_webapi.c.

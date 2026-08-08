@@ -34,8 +34,12 @@
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
-void  img_register(void *d) { (void)d; }
-void  img_register_anim(void *a, void *b, void *c) { (void)a; (void)b; (void)c; }
+/* WEAK: tests/unit/rust_host_shim.c supplies the same two stubs and is in this
+ * link too; which file defines them is somebody else's Makefile line, and a
+ * strong definition here breaks the build the moment that line changes. */
+__attribute__((__weak__)) void img_register(void *d) { (void)d; }
+__attribute__((__weak__)) void img_register_anim(void *a, void *b, void *c)
+{ (void)a; (void)b; (void)c; }
 
 /* ---- harness ---------------------------------------------------------- */
 static JSContext *ctx;
@@ -687,6 +691,28 @@ int main(int argc, char **argv)
      * null outside a classic script's own synchronous execution. The positive
      * case is covered on real documents by the probe, where nodejs.org goes
      * from 15 uncaught exceptions to 1. */
+    /* .src is the OTHER half of the webpack path and currentScript is not
+     * sufficient without it: the chunk loader does
+     *   if (s) u = s.src;  if (!u || !/^http(s?):/.test(u)) throw
+     * so the property has to exist AND be absolute. Returning the attribute
+     * would pass `typeof s.src === 'string'` and still fail the scheme test,
+     * which is worse than absence because it looks like it worked. */
+    run("var __sc = document.createElement('script'); __sc.setAttribute('src','/x/y.js');");
+    /* Each of these names the PROPERTY in the same expression that checks the
+     * rest of the claim. Split out, two of them passed in the control build for
+     * the wrong reason -- "the attribute stays relative" and "a div has no
+     * .src" are both trivially true when there is no .src at all, and a check
+     * satisfied by the feature being absent is not a check. */
+    ckjs("/^https?:/.test(__sc.src)", "script.src is ABSOLUTE, not the attribute");
+    ckjs("/^https?:/.test(__sc.src) && __sc.getAttribute('src') === '/x/y.js'",
+         "...and the attribute stays relative");
+    ckjs("(function(){ __sc.src = '/z.js'; return __sc.getAttribute('src') === '/z.js'; })()",
+         "writing .src goes back through setAttribute");
+    ckjs("/^https?:/.test(__sc.src) && document.createElement('div').src === undefined",
+         "a div has no .src (feature detection must not get a yes for everything)");
+    ckjs("(function(){ var a = document.createElement('a'); a.setAttribute('href','/p');"
+         " return /^https?:/.test(a.href); })()", "anchor.href is absolute too");
+
     ckjs("'currentScript' in document", "document.currentScript is defined");
     ckjs("document.currentScript === null",
          "document.currentScript is null outside a running classic script");
