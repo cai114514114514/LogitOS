@@ -28,9 +28,12 @@ import time
 # configure() first.
 DESIGN_W_PT, DESIGN_H_PT = 1280, 800  # fb.c: DESIGN_W_PT / DESIGN_H_PT
 DOCK_ISZ_PT, DOCK_GAP_PT = 50, 14     # wm.c: DOCK_ISZ_PT, DOCK_GAP_PT
-NAPPS = 9                             # *.aex at the LogitFS root, in scan_apps order:
+NAPPS = 10                            # *.aex at the LogitFS root, in scan_apps order:
 BROWSER_SLOT = 8                      # clock textedit monitor terminal widgets
-                                      # files preview studio browser
+GALLERY_SLOT = 9                      # files preview studio browser gallery
+# Gallery is packed LAST (Makefile: after $(BROWSER_AEX), not appended to APPS)
+# precisely so BROWSER_SLOT keeps its value. NAPPS still has to change, because
+# the dock is centred: one more app moves every icon 32 pt left.
 
 
 def pick_scale(dev_w, dev_h):

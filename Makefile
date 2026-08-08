@@ -198,7 +198,7 @@ RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
 .PHONY: probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
-.PHONY: test-aui-mask
+.PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 
 all: $(ISO)
 
@@ -2905,3 +2905,49 @@ test-aui-mask:
 	$(CC) -O1 -g -Wall -Wextra -Ic/apps/gui -Ic/apps -Iinclude -Iinclude/abi \
 	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c -lm
 	$(BUILD)/aui_mask_test
+
+# --- the aui gallery is the toolkit's visual regression test -----------------
+#
+# A toolkit change is a VISUAL change, so it is asserted against pixels: the
+# driver boots the desktop, opens Gallery, and measures the frame -- corner
+# anti-aliasing as a count of distinct tones along an arc, hover as a colour
+# that moves when the pointer does, focus as a ring that Tab relocates, a shadow
+# as a luminance ramp under a card.
+#
+# test-aui-negctl is the NEGATIVE CONTROL and it is meant to fail: it rebuilds
+# the gallery with -DAUI_NO_AA, which routes every rounded shape back through
+# the kernel's hard-edged SYS_GUI_RRECT and drops the alpha and shadow paths.
+# The same assertions then fail, which is how "these corners are really
+# anti-aliased" is demonstrated rather than asserted. The target succeeds when
+# the test fails.
+test-aui: $(ISO) $(DISK)
+	bash tests/boot/run-aui-test.sh $(ISO) $(DISK)
+
+$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -DAUI_NO_AA -c $(GUIDIR)/aui.c -o $@
+
+$(BUILD)/gallery_noaa.elf: $(GUIDIR)/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
+                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_noaa.o
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_noaa.crt0.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery.c -o $(BUILD)/apps/gallery_noaa.o
+	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_noaa.crt0.o \
+	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o
+$(BUILD)/gallery_noaa.aex: $(BUILD)/gallery_noaa.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/gallery_noaa.elf $@ 'Gallery' - 'G' 120 140 250
+
+test-aui-negctl: $(ISO)
+	$(MAKE) DISK=$(BUILD)/disk_noaa.img GALLERY_AEX=$(BUILD)/gallery_noaa.aex $(BUILD)/disk_noaa.img
+	@echo "--- negative control: the SAME assertions against a hard-edged build ---"
+	@if bash tests/boot/run-aui-test.sh $(ISO) $(BUILD)/disk_noaa.img; then \
+	    echo "NEGATIVE CONTROL FAILED: the AA assertions passed without the rasterizer"; exit 1; \
+	else \
+	    echo "negative control ok: without aui's rasterizer the gallery fails its own test"; \
+	fi
+
+# What one aui frame costs, measured on the machine at 1920x1200 under TCG
+# rather than estimated: Gallery times its own repaint with CLOCK_MONOTONIC and
+# prints it on the serial console.
+bench-aui: $(ISO) $(DISK)
+	bash tests/boot/run-aui-bench.sh $(ISO) $(DISK)
