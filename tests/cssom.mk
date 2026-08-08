@@ -243,3 +243,77 @@ test-cssom-abi:
 	 fi; \
 	 echo "test-cssom-abi: ok -- `tr '\n' ' ' < $(CSSOM_ABI_DIR)/writer.txt`(writer == readers);"; \
 	 echo "  control fired: with $(CSSOM_ABI_SABOTAGE) the readers say `tr '\n' ' ' < $(CSSOM_ABI_DIR)/sabotaged.txt`"
+
+# ---------------------------------------------------------------------------
+# THE SETTABLE-PROPERTY SET FROM canon.c, AND THE SETTER THAT REFUSES
+#
+#   make test-cssd-canon          the gate
+#   make test-cssd-canon-negctl   the two controls -- the suite MUST fail
+#
+# Appended to this fragment rather than given one of its own because the
+# question is the CSSOM's: WHICH properties a CSSStyleDeclaration lets a script
+# assign to, and what it does with a value none of the parsers can take. A new
+# fragment would have needed a line in the Makefile, and that file is the one
+# place in this tree where a stale whole-file snapshot has silently deleted
+# other lines' work.
+#
+# LINKS js_dom.c AND NOT js_cssom.c, deliberately. js_cssom.c's setProperty
+# wrapper refuses an INVALID declaration as well, so linking it would let this
+# suite pass with js_dom.c's own setter doing nothing at all -- and js_dom.c's
+# setter is the one the corpus reaches, because the wrapper's named accessors
+# cover only the properties LibCSS knows and every property tested here is one
+# LibCSS has never heard of.
+.PHONY: test-cssd-canon test-cssd-canon-negctl
+
+CSSDCANON_SRC := tests/unit/cssdcanon_test.c c/apps/browser/js_dom.c \
+                 c/apps/browser/js_reflect.c c/apps/browser/css_engine.c \
+                 c/apps/browser/css_vars.c
+CSSDCANON_CF   = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"'
+
+$(CSSOM_DIR)/cssdcanon_test: $(CSSDCANON_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	@mkdir -p $(CSSOM_DIR)
+	@$(CC) $(CSSDCANON_CF) -o $@ $(CSSDCANON_SRC) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+
+test-cssd-canon: $(CSSOM_DIR)/cssdcanon_test
+	@$(CSSOM_DIR)/cssdcanon_test
+
+# Two sabotages, because this landed as two changes and one control would only
+# cover one of them:
+#
+#   CSSD_NO_CANON_REFUSE   THE HALF-IMPLEMENTATION, and it is not a straw man:
+#                          adopt canon.c's enumeration and leave the setter
+#                          alone. That is the obvious way to do this and it is
+#                          what the numbers were measured against -- on
+#                          css/css-grid/parsing it is +128 valid subtests and
+#                          -115 refusals handed back, because a property LibCSS
+#                          never heard of had no validity step anywhere and the
+#                          "-invalid" files were passing vacuously.
+#   CSSD_PROPS_FROM_ENUM   the set taken from the cascade's CSSP_* enum, i.e.
+#                          the state before any of this. Shared with
+#                          tests/reflect.mk's test-cssprops-negctl, which is
+#                          the same switch asking a narrower question.
+#
+# The target succeeds when the suite FAILS against both, and reports how many
+# assertions went red so a control that fires for an unrelated reason (a link
+# error, an empty run) is visible rather than counted as success.
+CSSDCANON_NEGS := CSSD_NO_CANON_REFUSE CSSD_PROPS_FROM_ENUM
+
+test-cssd-canon-negctl: $(BUILD)/libcss_host.a
+	@mkdir -p $(CSSOM_DIR)
+	@bad=0; \
+	 for n in $(CSSDCANON_NEGS); do \
+	   $(CC) $(CSSDCANON_CF) -D$$n -o $(CSSOM_DIR)/cssdcanon_$$n \
+	       $(CSSDCANON_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
+	       $(BUILD)/libcss_host.a -lm || exit 1; \
+	   if $(CSSOM_DIR)/cssdcanon_$$n > $(CSSOM_DIR)/cssdcanon_$$n.log 2>&1; then \
+	     echo "test-cssd-canon-negctl: FAILED -- the suite PASSED with $$n set,"; \
+	     echo "  so its assertions are not measuring that half of the change."; \
+	     bad=1; \
+	   else \
+	     n_red=`grep -c '^  FAIL' $(CSSOM_DIR)/cssdcanon_$$n.log`; \
+	     echo "test-cssd-canon-negctl: ok -- $$n set, $$n_red assertions red:"; \
+	     grep -m3 '^  FAIL' $(CSSOM_DIR)/cssdcanon_$$n.log | sed 's/^/  /'; \
+	   fi; \
+	 done; \
+	 exit $$bad
