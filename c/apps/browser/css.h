@@ -43,6 +43,22 @@ enum { LST_NONE, LST_DISC, LST_CIRCLE, LST_SQUARE, LST_DECIMAL, LST_DECIMAL_ZERO
 
 #define GRID_MAXCOL 24
 
+/* The grid properties whose raw declaration text `struct cstyle` retains for
+ * layout_grid.c to parse. See the grid_raw[] comment at the bottom of the
+ * struct for why it is text and not values. APPEND ONLY -- css_extra.c indexes
+ * this table by name and layout.c by position. */
+/* Only the properties that have NO other producer are here. align-items,
+ * align-self, align-content and justify-content are in LibCSS's table and
+ * cascade properly into the typed fields above -- reading them from raw text
+ * as well would replace a real cascade with css_extra's source-order scan,
+ * which is a downgrade. justify-items and justify-self are not in the table at
+ * all, which is why those two are. */
+enum { GR_TEMPL_COLS = 0, GR_TEMPL_ROWS, GR_TEMPL_AREAS,
+       GR_AUTO_COLS, GR_AUTO_ROWS, GR_AUTO_FLOW,
+       GR_COL, GR_ROW, GR_AREA,
+       GR_JUSTIFY_ITEMS, GR_JUSTIFY_SELF,
+       GR__COUNT };
+
 /* Computed style for one node. Lengths are px unless a *_pct flag says percent.
  *
  * A length that came from calc() can be BOTH: `w_pct` set with `width` the
@@ -164,6 +180,31 @@ struct cstyle {
     unsigned char text_justify;     /* LTX_TJ_*    (no producer) */
     int tab_size;                   /* `space` advances, or px when tab_px */
     unsigned char tab_px;           /*             (no producer; initial 8)  */
+
+    /* ---- grid: the RAW DECLARATION TEXT ----
+     *
+     * Not a typed field per property, and that is the design rather than a
+     * shortcut. Our vendored LibCSS has no grid properties AT ALL beyond
+     * `display: grid` -- they are not in its property table, so nothing
+     * css_engine.c can do produces them. layout_grid.c anticipated exactly
+     * that: it ships its own parsers (grid_parse_template / _areas / _span2 /
+     * _area / _flow / _align), because a `<track-list>` is a recursive grammar
+     * (repeat(auto-fill, minmax(min-content, 1fr))) that no fixed set of ints
+     * can hold. So what the style layer owes it is the TEXT, and twelve typed
+     * fields would be twelve lossy summaries of the thing it wants.
+     *
+     * LIFETIME, which is the one thing to get right: these point into
+     * css_extra.c's PRIVATE COPY of the author sheet (`g_src`, kept for the
+     * rule cache), or into a node's own style="" attribute -- both owned by
+     * somebody else and both alive from css_extra_apply() until the sheet
+     * changes, which is strictly longer than the layout that reads them. They
+     * are NOT NUL-terminated; the length is beside them. Nothing frees them
+     * from here. css_extra's out-of-memory fallback path deliberately does not
+     * set them (it scans the caller's buffer, which the caller rewrites in
+     * place) -- so grid degrades to its old track list there rather than
+     * reading freed text. */
+    const char    *grid_raw[GR__COUNT];
+    unsigned short grid_rawlen[GR__COUNT];
 };
 
 /* ---------------- CSSOM: the property surface ----------------

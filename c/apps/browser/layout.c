@@ -20,6 +20,12 @@
  * layout_flex.c's is `struct fitem`. No static function name collides. */
 #include "layout_flex.h"
 #include "layout_flex.c"
+/* CSS Grid § 8-12: placement, both track-sizing passes and alignment, likewise
+ * as numbers. Included for the same reason as layout_flex.c above -- one
+ * translation unit, so no measurement harness's source list has to change.
+ * grid_spec() below is the whole of the seam. */
+#include "layout_grid.h"
+#include "layout_grid.c"
 /* forms.h for fc_kind() and the padding constants ONLY. It is a header of
  * inline functions over the DOM plus declarations; nothing layout.c calls from
  * it lives in forms.c, so this file gains no link dependency and the eight host
@@ -1064,6 +1070,7 @@ static int blockish(struct node *n)
 
 static int layout_flex(struct node *n, int x, int y, int w);   /* fwd: flex row */
 static int layout_grid(struct node *n, int x, int y, int w);   /* fwd: minimal grid */
+static int grid_spec(struct node *n, int x, int y, int w, int *out_bottom); /* fwd: CSS Grid */
 static int layout_table(struct node *t, int x, int y, int w);  /* fwd: minimal table */
 
 /* Render list item `idx` (1-based) in the marker alphabet `kind` into `buf`,
@@ -1312,7 +1319,13 @@ static int layout_block(struct node *n, int x, int y, int w)
 
     int cy;
     if (nst && nst->display == DISP_FLEX)                       cy = layout_flex(n, x, y, w);
-    else if (nst && nst->display == DISP_GRID && nst->grid_cols > 0) cy = layout_grid(n, x, y, w);
+    else if (nst && nst->display == DISP_GRID) {
+        /* CSS Grid proper first (layout_grid.c). It declines only when the
+         * declaration text was not retained, and then the old summary path is
+         * still better than laying a grid out as a block stack. */
+        if (grid_spec(n, x, y, w, &cy) != 0)
+            cy = nst->grid_cols > 0 ? layout_grid(n, x, y, w) : layout_flow(n, x, y, w);
+    }
     else                                                        cy = layout_flow(n, x, y, w);
 
     if (bfc) {
@@ -1906,25 +1919,33 @@ static void flex_justify(int mode, int slack, int count, int *lead, int *between
  * item is a block formatting context of its own -- the same scoping flex_place
  * does for the real pass, and without it a measurement at x=0 would be narrowed
  * by exclusions belonging to somebody else's coordinates. */
-static int flex_measure_cross(struct flexslot *f, int inner_w, int fpx, int fmono)
+static int trial_block_height(struct node *n, int inner_w)
 {
     int save_n = nitem, save_z = g_z, nsave = g_nfloat, bsave = g_fbase;
-    int h;
     if (inner_w < 0) inner_w = 0;
     g_fbase = g_nfloat;
-    if (!f->st) {                                     /* anonymous inline run */
+    int h = layout_block(n, 0, 0, inner_w);
+    { int b = float_max_bottom(nsave); if (b > h) h = b; }
+    nitem = save_n; g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
+    return h < 0 ? 0 : h;
+}
+
+static int flex_measure_cross(struct flexslot *f, int inner_w, int fpx, int fmono)
+{
+    if (f->st) return trial_block_height(f->n, inner_w);
+    {                                                 /* anonymous inline run */
+        int save_n = nitem, save_z = g_z, nsave = g_nfloat, bsave = g_fbase;
         struct iflow fl;
+        g_fbase = g_nfloat;
+        if (inner_w < 0) inner_w = 0;
         iflow_init(&fl, 0, inner_w > 0 ? inner_w : 1, 0, ALIGN_LEFT, fpx * 5 / 4);
         for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
         newline2(&fl, 1);
-        h = fl.y;
+        int h = fl.y;
+        nitem = save_n; g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
         (void)fmono;
-    } else {
-        h = layout_block(f->n, 0, 0, inner_w);
-        { int b = float_max_bottom(nsave); if (b > h) h = b; }
+        return h < 0 ? 0 : h;
     }
-    nitem = save_n; g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
-    return h < 0 ? 0 : h;
 }
 
 struct flexbridge { int fpx, fmono; };
@@ -2246,7 +2267,276 @@ static int layout_flex(struct node *n, int x, int y, int w)
     return cy;
 }
 
+/* ---- the seam to layout_grid.c ------------------------------------------
+ *
+ * layout_grid.c is CSS Grid §§ 8-12 over numbers: placement (including
+ * auto-placement, dense packing, named lines and grid-template-areas), the two
+ * track-sizing passes with their intrinsic and flexible phases, auto-repeat,
+ * and alignment. It knows nothing about the DOM. This function is everything
+ * that stands between it and a page.
+ *
+ * WHERE THE STYLE DATA COMES FROM, because it is the interesting part. Our
+ * vendored LibCSS has NO grid properties at all beyond `display: grid` -- they
+ * are not in its property table, so `struct cstyle` could only ever have held
+ * whatever css_extra.c's hand-rolled scanner summarised, which was
+ * `repeat(N, 1fr)` and a px gap. layout_grid.c anticipated that and ships its
+ * own parsers, so what the style layer owes it is the DECLARATION TEXT, and
+ * that is what css_extra.c now retains (cstyle::grid_raw, see the comment on
+ * the field for the lifetime rule). Twelve typed fields would have been twelve
+ * lossy summaries of a recursive grammar.
+ *
+ * The alignment properties are the exception, and deliberately: align-items,
+ * align-self, align-content and justify-content ARE in LibCSS's table and
+ * cascade properly, so they are read from the typed fields and mapped. Only
+ * justify-items and justify-self, which LibCSS does not know, come from raw
+ * text. Reading the other four from css_extra's source-order scan would have
+ * replaced a real cascade with a worse one.
+ *
+ * MEASUREMENT is one callback, the same trial-layout-and-roll-back shape the
+ * flex seam uses above. The two-pass order matters and the module's contract
+ * carries it: the column pass asks with GRID_INDEFINITE (no inline size is
+ * known yet, so the answer must be intrinsic), the row pass asks with the
+ * item's already-resolved inline size, which is what lets a paragraph report
+ * the height it actually takes at the width its column ended up. */
+
+static int gr_have(const struct cstyle *st, int g)
+{ return st && st->grid_raw[g] && st->grid_rawlen[g] > 0; }
+
+/* AL_* / JC_* (the cascade's vocabulary) -> GA_* (the grid module's). */
+static int grid_ga_from_al(int al)
+{
+    switch (al) {
+    case AL_START:    return GA_START;
+    case AL_END:      return GA_END;
+    case AL_CENTER:   return GA_CENTER;
+    case AL_BASELINE: return GA_BASELINE;
+    case AL_BETWEEN:  return GA_SPACE_BETWEEN;
+    case AL_AROUND:   return GA_SPACE_AROUND;
+    case AL_EVENLY:   return GA_SPACE_EVENLY;
+    case AL_AUTO:     return GA_AUTO;
+    default:          return GA_STRETCH;
+    }
+}
+/* JC_START -> GA_NORMAL, and this one line is worth its comment: it decides
+ * whether a grid's `auto` tracks FILL the container or shrink to their content.
+ * css_engine.c folds `normal`, `start` and `flex-start` onto JC_START (LibCSS's
+ * justify-content switch has them in one default arm), and `normal` is grid's
+ * INITIAL value, so JC_START is overwhelmingly "the author said nothing".
+ * § 12.8 stretches auto-max tracks only under `normal` or `stretch`, so
+ * mapping it to GA_START instead turns every unstyled grid into a
+ * shrink-to-fit one -- measured, that was 123 net reftest regressions in
+ * css/css-grid alone. GA_NORMAL positions identically to GA_START; the only
+ * thing that differs is the stretch, which is what the initial value asks for.
+ * An author who really wrote `justify-content: start` on a grid with auto
+ * tracks gets stretch they did not ask for; that is the rarer case and it is
+ * the one cstyle cannot currently express. */
+static int grid_ga_from_jc(int jc)
+{
+    switch (jc) {
+    case JC_END:     return GA_END;
+    case JC_CENTER:  return GA_CENTER;
+    case JC_BETWEEN: return GA_SPACE_BETWEEN;
+    case JC_AROUND:  return GA_SPACE_AROUND;
+    case JC_EVENLY:  return GA_SPACE_EVENLY;
+    default:         return GA_NORMAL;
+    }
+}
+
+/* ITEMS ARE COLLECTED BY flex_collect(), which is not a shortcut. CSS Grid
+ * SS 6 generates an anonymous grid item around each contiguous run of in-flow
+ * non-element content, in the same words CSS Flexbox SS 4 uses for anonymous
+ * flex items -- and a run that is only white space generates NOTHING. That is
+ * exactly what flex_collect already does, so `struct flexslot` is the item
+ * record for both and flex_place() draws both. Collecting only ELEMENT
+ * children instead is not a smaller grid: it silently DELETES every bare text
+ * node in a grid container from the display list, which is a much louder
+ * failure than a missing feature, and it cost this bridge its first
+ * measurement. */
+struct gridbridge { struct flexslot *fi; int n, fpx, fmono, avail_w; };
+
+static void grid_measure_cb(void *ctx, int i, int axis, int avail, struct gmeas *out)
+{
+    struct gridbridge *b = (struct gridbridge *)ctx;
+    if (i < 0 || i >= b->n) { out->minimum = out->min_content = out->max_content = 0; return; }
+    struct flexslot *f = &b->fi[i];
+    struct cstyle *st = f->st;
+    int mt = (st && st->mt > 0) ? st->mt : 0, mb = (st && st->mb > 0) ? st->mb : 0;
+    int ml = (st && st->ml > 0) ? st->ml : 0, mr = (st && st->mr > 0) ? st->mr : 0;
+
+    if (axis == GAX_COL) {
+        int mx, mn;
+        if (!st) {                                    /* anonymous grid item */
+            mx = f->base;                             /* the run, unwrapped */
+            mn = 0;
+            for (struct node *r = f->n; r && r != f->end; r = r->next) {
+                int v = min_content_width(r, b->fpx, b->fmono, 0);
+                if (v > mn) mn = v;
+            }
+        } else {
+            mx = content_width(f->n, b->fpx, b->fmono, 0);
+            mn = min_content_width(f->n, b->fpx, b->fmono, 0);
+        }
+        if (mn > mx) mx = mn;
+        out->max_content = mx + ml + mr;
+        out->min_content = mn + ml + mr;
+        /* The MINIMUM CONTRIBUTION (§ 12.5.1) is a separate number from the
+         * min-content contribution, and conflating them is the usual way
+         * `min-width: 0` stops working inside a grid. An explicit min-width
+         * replaces the automatic minimum outright. */
+        if (st && st->has_min_w) {
+            int m = to_border_w(st, resolve_len(st->min_w, st->min_w_pct, 0, b->avail_w));
+            out->minimum = (m < 0 ? 0 : m) + ml + mr;
+        } else {
+            out->minimum = out->min_content;
+        }
+        return;
+    }
+    /* GAX_ROW: `avail` is the item's resolved BORDER-box inline size. */
+    int inner = avail - hextra(st); if (inner < 0) inner = 0;
+    int h = flex_measure_cross(f, inner, b->fpx, b->fmono) + vextra(st);
+    h = block_height(st, h, -1);
+    out->max_content = out->min_content = out->minimum = h + mt + mb;
+}
+
+/* Run §§ 8-12 over one grid container and draw the result. 0 on success and
+ * *out_bottom is the content bottom; -1 means "not this path" -- no retained
+ * declaration text, or an allocation failed -- and the caller falls back to
+ * the minimal grid below rather than dropping the container. */
+static int grid_spec(struct node *n, int x, int y, int w, int *out_bottom)
+{
+    struct cstyle *nst = n->style;
+    if (!nst) return -1;
+    /* css_extra's old summary without the text it was summarised from means
+     * the raw-retention path did not run (its out-of-memory rescan clears the
+     * pointers on purpose). Use the summary rather than an empty grid. */
+    if (nst->grid_cols > 0 && !gr_have(nst, GR_TEMPL_COLS)) return -1;
+
+    int fpx = nst->font_px > 0 ? nst->font_px : 16, fmono = nst->mono;
+    /* The child count is an upper bound on the item count, not the item count:
+     * an anonymous item swallows at least one child, and a white-space-only
+     * run generates none at all. flex_collect() settles it. */
+    int nkids = 0;
+    for (struct node *k = n->first_child; k; k = k->next) nkids++;
+
+    struct gridcfg cfg;
+    struct gridareas areas;
+    struct gridout go;
+    struct gridbridge br;
+    struct griditem *gi = 0;
+    struct flexslot *fi = 0;
+    int nitems_g = 0;
+    int rc = -1, have_areas = 0;
+    memset(&cfg, 0, sizeof cfg);
+    memset(&areas, 0, sizeof areas);
+    memset(&go, 0, sizeof go);
+
+#define GRAW(g) nst->grid_raw[g], (int)nst->grid_rawlen[g]
+    if (gr_have(nst, GR_TEMPL_COLS)) grid_parse_template(GRAW(GR_TEMPL_COLS), fpx, &cfg.cols);
+    if (gr_have(nst, GR_TEMPL_ROWS)) grid_parse_template(GRAW(GR_TEMPL_ROWS), fpx, &cfg.rows);
+    if (gr_have(nst, GR_TEMPL_AREAS) &&
+        grid_parse_areas(GRAW(GR_TEMPL_AREAS), &areas) == 0 && areas.rows > 0) {
+        cfg.areas = &areas; have_areas = 1;
+    }
+    if (gr_have(nst, GR_AUTO_COLS)) grid_parse_tracklist(GRAW(GR_AUTO_COLS), fpx, &cfg.auto_cols);
+    if (gr_have(nst, GR_AUTO_ROWS)) grid_parse_tracklist(GRAW(GR_AUTO_ROWS), fpx, &cfg.auto_rows);
+    if (gr_have(nst, GR_AUTO_FLOW)) grid_parse_flow(GRAW(GR_AUTO_FLOW), &cfg.flow_col, &cfg.flow_dense);
+#undef GRAW
+
+    cfg.gap_x = nst->grid_gap_x > 0 ? nst->grid_gap_x : 0;
+    cfg.gap_y = nst->grid_gap_y > 0 ? nst->grid_gap_y : 0;
+    cfg.justify_content = (unsigned char)grid_ga_from_jc(nst->justify);
+    cfg.align_content   = (unsigned char)grid_ga_from_al(nst->align_content);
+    cfg.align_items     = (unsigned char)grid_ga_from_al(nst->align_items);
+    cfg.justify_items   = GA_NORMAL;
+    if (gr_have(nst, GR_JUSTIFY_ITEMS)) {
+        int a = grid_parse_align(nst->grid_raw[GR_JUSTIFY_ITEMS], nst->grid_rawlen[GR_JUSTIFY_ITEMS]);
+        if (a >= 0) cfg.justify_items = (unsigned char)a;
+    }
+    cfg.rtl = (unsigned char)(nst->direction == DIR_RTL);
+    cfg.avail_w = w;
+    { int sh = spec_h(nst, -1);
+      cfg.avail_h = sh > 0 ? sh - vextra(nst) : GRID_INDEFINITE;
+      if (cfg.avail_h != GRID_INDEFINITE && cfg.avail_h < 0) cfg.avail_h = 0; }
+    cfg.min_w = nst->has_min_w ? to_border_w(nst, resolve_len(nst->min_w, nst->min_w_pct, 0, w)) - hextra(nst)
+                               : GRID_INDEFINITE;
+    cfg.max_w = nst->has_max_w ? to_border_w(nst, resolve_len(nst->max_w, nst->max_w_pct, 0, w)) - hextra(nst)
+                               : GRID_INDEFINITE;
+    cfg.min_h = GRID_INDEFINITE;
+    cfg.max_h = GRID_INDEFINITE;
+
+    int nalloc = nkids > 0 ? nkids : 1;
+    gi = kmalloc(sizeof(struct griditem) * (unsigned long)nalloc);
+    fi = kmalloc(sizeof(struct flexslot) * (unsigned long)nalloc);
+    if (!gi || !fi) goto done;
+    memset(gi, 0, sizeof(struct griditem) * (unsigned long)nalloc);
+    nitems_g = nkids ? flex_collect(n, fi, nkids, fpx, fmono) : 0;
+
+    for (int i = 0; i < nitems_g; i++) {
+        struct cstyle *st = fi[i].st;
+        struct griditem *g = &gi[i];
+        g->order = st ? st->order : 0;
+        g->baseline = -1;
+        g->def_w = g->def_h = GRID_INDEFINITE;
+        g->justify_self = GA_AUTO;
+        g->align_self = (unsigned char)(st ? grid_ga_from_al(st->align_self) : GA_AUTO);
+        if (st && st->has_w)
+            g->def_w = clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, w)), w);
+        { int sh = spec_h(st, -1); if (sh > 0) g->def_h = sh; }
+        if (!st) continue;                            /* anonymous item: no style to read */
+        /* `margin: auto` is -1 out of css_engine (and only out of css_engine);
+         * grid gives auto margins the free space before self-alignment sees
+         * any of it, which is how a grid item centres itself. */
+        int m[4]; m[0] = st ? st->mt : 0; m[1] = st ? st->mr : 0;
+                  m[2] = st ? st->mb : 0; m[3] = st ? st->ml : 0;
+        for (int e = 0; e < 4; e++) {
+            g->m_auto[e] = (unsigned char)(m[e] == -1);
+            g->margin[e] = m[e] > 0 ? m[e] : 0;
+        }
+        if (gr_have(st, GR_AREA)) {
+            struct gline ln[4];
+            if (grid_parse_area(st->grid_raw[GR_AREA], st->grid_rawlen[GR_AREA], ln) == 0) {
+                g->rs = ln[0]; g->cs = ln[1]; g->re = ln[2]; g->ce = ln[3];
+            }
+        }
+        if (gr_have(st, GR_COL))
+            grid_parse_span2(st->grid_raw[GR_COL], st->grid_rawlen[GR_COL], &g->cs, &g->ce);
+        if (gr_have(st, GR_ROW))
+            grid_parse_span2(st->grid_raw[GR_ROW], st->grid_rawlen[GR_ROW], &g->rs, &g->re);
+        if (gr_have(st, GR_JUSTIFY_SELF)) {
+            int a = grid_parse_align(st->grid_raw[GR_JUSTIFY_SELF], st->grid_rawlen[GR_JUSTIFY_SELF]);
+            if (a >= 0) g->justify_self = (unsigned char)a;
+        }
+    }
+
+    br.fi = fi; br.n = nitems_g; br.fpx = fpx; br.fmono = fmono; br.avail_w = w;
+    if (grid_layout(&cfg, gi, nitems_g, grid_measure_cb, &br, &go) != 0) goto done;
+
+    int bot = y;
+    for (int i = 0; i < go.nitems && i < nitems_g; i++) {
+        struct gridpos *p = &go.items[i];
+        struct flexslot *f = &fi[i];
+        int ch = flex_place(f, x + p->x, y + p->y, p->w, p->h, fpx, fmono);
+        if (y + p->y + ch > bot) bot = y + p->y + ch;
+    }
+
+    *out_bottom = y + go.height;
+    if (cfg.avail_h == GRID_INDEFINITE && bot > *out_bottom) *out_bottom = bot;
+    rc = 0;
+done:
+    grid_out_free(&go);
+    grid_template_free(&cfg.cols);
+    grid_template_free(&cfg.rows);
+    grid_tracklist_free(&cfg.auto_cols);
+    grid_tracklist_free(&cfg.auto_rows);
+    if (have_areas) grid_areas_free(&areas);
+    if (gi) kfree(gi);
+    if (fi) kfree(fi);
+    return rc;
+}
+
 /* ---- minimal grid layout ----
+ * The fallback, kept for the one case grid_spec() above hands back: css_extra
+ * summarised a track list but could not retain the text it came from.
  * Only what css_extra parses: N equal/fr/px columns (repeat(N,1fr) etc.) with
  * px gaps. Children are placed in document order, left to right, wrapping
  * every N; each row is as tall as its tallest item; items lay out with their

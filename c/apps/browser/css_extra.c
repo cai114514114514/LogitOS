@@ -233,6 +233,16 @@ struct xpatch {
     int anim;                               /* 0 = untouched, 1 = animated, -1 = none */
     int trans_op;                           /* transition declares opacity/all */
     int lg_set[LGX__COUNT], lg[LGX__COUNT]; /* logical properties, resolved to physical */
+    /* The grid properties, kept as TEXT rather than values -- see the
+     * grid_raw[] comment in css.h for why, and for the lifetime rule these
+     * pointers depend on. They point straight into the declarations block
+     * parse_decls was handed, so they are only retained when that block is
+     * stable storage: the compiled sheet's private copy, or a node's own
+     * style="" attribute. gr_drop() clears them for the one caller whose
+     * buffer is not (the out-of-memory rescan). */
+    const char *gr[GR__COUNT];
+    int gr_len[GR__COUNT];
+    int gr_any;
 };
 
 /* One px length from `v`, advancing *i. Accepts a leading '-'; returns -1 and
@@ -331,9 +341,45 @@ static void parse_logical(const char *d, int dlen, struct xpatch *p)
     logical_one(d, dlen, "inset-block-end",    LGX_BOTTOM, p);
 }
 
+/* The grid properties, in GR_* order. Every one of them is absent from our
+ * vendored LibCSS's property table, so this scan is their ONLY producer.
+ * find_decl requires a ':' straight after the key, which is what keeps
+ * "grid-column" from matching "grid-column-gap" and "grid-template" (were it
+ * here) from matching "grid-template-columns". */
+static const char *const gr_names[GR__COUNT] = {
+    "grid-template-columns", "grid-template-rows", "grid-template-areas",
+    "grid-auto-columns", "grid-auto-rows", "grid-auto-flow",
+    "grid-column", "grid-row", "grid-area",
+    "justify-items", "justify-self"
+};
+
+static void parse_grid_raw(const char *d, int dlen, struct xpatch *p)
+{
+    for (int g = 0; g < GR__COUNT; g++) {
+        int vs, ve;
+        if (!find_decl(d, dlen, gr_names[g], &vs, &ve)) continue;
+        if (ve <= vs) continue;
+        p->gr[g] = d + vs;
+        p->gr_len[g] = ve - vs;
+        p->gr_any = 1;
+    }
+}
+
+/* The one caller whose declarations block is NOT stable storage: the
+ * out-of-memory rescan reads the buffer the CALLER owns and rewrites in place,
+ * so a retained pointer into it would be read long after it meant something.
+ * Grid falls back to its old track list on that path rather than reading text
+ * that has moved. */
+static void gr_drop(struct xpatch *p)
+{
+    for (int g = 0; g < GR__COUNT; g++) { p->gr[g] = 0; p->gr_len[g] = 0; }
+    p->gr_any = 0;
+}
+
 static void parse_decls(const char *d, int dlen, struct xpatch *p)
 {
     memset(p, 0, sizeof *p);
+    parse_grid_raw(d, dlen, p);
     if (decls_vish(d, dlen)) p->do_none = 1;
     if (decls_radius(d, dlen, &p->px, &p->pct)) p->do_radius = 1;
     int vs, ve;
@@ -503,6 +549,20 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     if (p->do_grid) {
         st->grid_cols = p->gcols;
         for (int i = 0; i < p->gcols && i < GRID_MAXCOL; i++) st->grid_tracks[i] = p->gtracks[i];
+    }
+    /* Grid's raw declaration text, merged PER PROPERTY rather than as a block:
+     * a node matching two rules that each set a different grid property must
+     * end up with both, and later rules win only the properties they name.
+     * That is what a cascade does, and copying the whole set would silently
+     * make the second rule delete the first one's answers. */
+    if (p->gr_any) {
+        for (int g = 0; g < GR__COUNT; g++) {
+            if (!p->gr[g]) continue;
+            int l = p->gr_len[g];
+            if (l > 0xffff) l = 0xffff;
+            st->grid_raw[g] = p->gr[g];
+            st->grid_rawlen[g] = (unsigned short)l;
+        }
     }
     if (p->gx_set) st->grid_gap_x = p->gx;
     if (p->gy_set) st->grid_gap_y = p->gy;
@@ -717,7 +777,7 @@ static int compile_sheet(const char *css, int len)
         struct xpatch p;
         parse_decls(g_src + d, dlen, &p);
         if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
-            xpatch_has_logical(&p))
+            p.gr_any || xpatch_has_logical(&p))
             if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
     }
     g_compiled = 1;
@@ -752,6 +812,7 @@ static void apply_uncompiled(struct node *root, const char *css, int len)
         if (dlen <= 0 || !media_active_at(s)) continue;
         struct xpatch p;
         parse_decls(css + d, dlen, &p);
+        gr_drop(&p);            /* the caller.s buffer moves; see gr_drop() */
         if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
             xpatch_has_logical(&p))
             walk(root, css + s, slen, &p);
