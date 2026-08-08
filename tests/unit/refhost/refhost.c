@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include "refhost.h"
 
 /* ---------------------------------------------------------- kernel stubs -- */
