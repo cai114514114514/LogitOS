@@ -317,11 +317,35 @@ static const char *SEMANTICS_PRELUDE =
 "  var orig = ELP[name];\n"
 "  if (typeof orig !== 'function' || orig.__logit_sem) return;\n"
 "  var wrapped = function (a) {\n"
-"    if (arguments.length && TRACKED_ATTR[lc(a)]) clearExplicit(this, lc(a));\n"
-"    return orig.apply(this, arguments);\n"
+"    var an = arguments.length ? lc(a) : '';\n"
+"    if (an && TRACKED_ATTR[an]) clearExplicit(this, an);\n"
+"    var r = orig.apply(this, arguments);\n"
+       /* The exclusive-accordion rule. `<details name=x>` is the one attribute
+        * change in HTML that reaches OTHER elements, so it has to be observed
+        * where the attribute is written rather than where `open` is read --
+        * and `details.open = true` is reflection, which lands right here. */
+"    if (an === 'open' && tagOf(this) === 'details') enforceDetailsName(this);\n"
+"    return r;\n"
 "  };\n"
 "  wrapped.__logit_sem = 1;\n"
 "  meth(ELP, name, wrapped);\n"
+"}\n"
+"function detailsName(d) {\n"
+"  var n = d.getAttribute ? d.getAttribute('name') : null;\n"
+"  return (n === null || n === '') ? null : n;\n"
+"}\n"
+"function enforceDetailsName(d) {\n"
+"  if (!d.hasAttribute('open')) return;\n"
+"  var nm = detailsName(d);\n"
+"  if (nm === null) return;\n"
+"  var root = rootOf(d), all = [];\n"
+"  descendants(root && root.nodeType ? root : doc, { details: 1 }, all);\n"
+"  for (var i = 0; i < all.length; i++) {\n"
+"    var o = all[i];\n"
+"    if (o === d || detailsName(o) !== nm || !o.hasAttribute('open')) continue;\n"
+"    o.removeAttribute('open');\n"
+"    queueToggle(o, 'open', 'closed');\n"
+"  }\n"
 "}\n"
 "wrapAttrWriter('setAttribute'); wrapAttrWriter('removeAttribute');\n"
 "wrapAttrWriter('toggleAttribute');\n"
@@ -697,6 +721,22 @@ static const char *SEMANTICS_PRELUDE =
  * 7. <details> / <summary>
  * ====================================================================== */
 "var DET = P('HTMLDetailsElement');\n"
+/* `details.open = true` has to go through here, not through js_reflect.c's
+ * generated boolean pair. Not because that pair is wrong -- it sets and clears
+ * the attribute correctly -- but because it does it in C, below the
+ * Element.prototype.setAttribute this file wraps, so the accordion rule would
+ * see the content-attribute path and miss the IDL one. Two entry points to the
+ * same state need the hook on both or the feature works only when written one
+ * particular way, which is worse than not working. */
+"if (DET) {\n"
+"  acc(DET, 'open', function () { return this.hasAttribute('open'); },\n"
+"    function (v) {\n"
+"      var was = this.hasAttribute('open');\n"
+"      if (v) { this.setAttribute('open', ''); enforceDetailsName(this); }\n"
+"      else this.removeAttribute('open');\n"
+"      if (!!v !== was) queueToggle(this, was ? 'open' : 'closed', v ? 'open' : 'closed');\n"
+"    });\n"
+"}\n"
 "function detailsSummary(d) {\n"
 "  for (var c = d.firstChild; c; c = c.nextSibling)\n"
 "    if (c.nodeType === 1 && tagOf(c) === 'summary') return c;\n"
@@ -978,6 +1018,22 @@ static const char *SEMANTICS_PRELUDE =
  * undefined and js_select.c falls back to exactly its old answer. */
 "G.__logit_popover_open = function (el) { return popoverIsShowing(el); };\n"
 "G.__logit_modal = function (el) { return !!modalDialogs.get(el); };\n"
+
+/* The parser can hand us a document that already breaks the accordion rule --
+ * three `<details name=x open>` in the source -- and the spec says only the
+ * FIRST stays open. That is a one-off sweep at install rather than part of
+ * enforceDetailsName, because the rule for a live mutation ("the one being
+ * opened wins") is the opposite of the rule at parse time ("the first wins"). */
+"(function () {\n"
+"  var all = [], seen = {};\n"
+"  descendants(doc, { details: 1 }, all);\n"
+"  for (var i = 0; i < all.length; i++) {\n"
+"    var d = all[i], nm = detailsName(d);\n"
+"    if (nm === null || !d.hasAttribute('open')) continue;\n"
+"    if (seen['n' + nm]) d.removeAttribute('open');\n"
+"    else seen['n' + nm] = 1;\n"
+"  }\n"
+"})();\n"
 
 /* ======================================================================
  * 11. Table interfaces

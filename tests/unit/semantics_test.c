@@ -404,6 +404,22 @@ int main(void)
          "$('det').removeAttribute('open');return r;})()",
          ":open follows the details open attribute");
 
+    ckjs("(function(){var w=document.createElement('div');document.body.appendChild(w);"
+         "w.innerHTML='<details name=g open id=g1><summary>a</summary></details>"
+         "<details name=g id=g2><summary>b</summary></details>';"
+         "var a=w.children[0],b=w.children[1];"
+         "b.open=true;var exclusive = b.open && !a.open;"
+         "a.open=true;var backAgain = a.open && !b.open;"
+         "w.remove();return exclusive && backAgain;})()",
+         "<details name> is an exclusive accordion: opening one closes its group");
+    ckjs("(function(){var w=document.createElement('div');"
+         "w.innerHTML='<details name=h open></details><details name=h open></details>"
+         "<details name=i open></details>';"
+         "document.body.appendChild(w);"
+         "var d=w.children;var only = d[0].hasAttribute('open') && d[2].hasAttribute('open');"
+         "w.remove();return only;})()",
+         "... and a <details name> without an open sibling keeps its own state");
+
     /* ---- focus reaches beyond <input> ---- */
     ckjs("typeof HTMLElement.prototype.focus === 'function'",
          "focus() is on HTMLElement, not only on HTMLInputElement");
