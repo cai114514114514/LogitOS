@@ -1,0 +1,161 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Event propagation ordering -- the assertion the negative control must break</title>
+<!--
+  This file exists to be FAILED by build/wpt_events_negctl, which stubs
+  dispatch to call the target's own listeners directly with no propagation
+  walk (see JS_EVENTS_NEGCTL in c/apps/browser/js_events.c).
+
+  Every assertion here is about ORDER or PHASE, never about "did the listener
+  run". A flat dispatcher runs the listener too -- that is exactly why a
+  count-based test passes by accident and this one does not.
+-->
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<div id="a"><div id="b"><div id="c"></div></div></div>
+<script>
+var a = document.getElementById('a');
+var b = document.getElementById('b');
+var c = document.getElementById('c');
+
+// Record (name, eventPhase, currentTarget-matches) for each call.
+function rig(log, opts) {
+  opts = opts || {};
+  function mk(node, name, capture) {
+    var h = function (ev) {
+      log.push(name + ':' + ev.eventPhase + (ev.currentTarget === node ? '' : '!CT'));
+      if (opts.stopAt === name) ev.stopPropagation();
+      if (opts.stopImmAt === name) ev.stopImmediatePropagation();
+    };
+    node.addEventListener('ordr', h, capture);
+    return h;
+  }
+  var hs = [];
+  hs.push([a, mk(a, 'aC', true)]);
+  hs.push([b, mk(b, 'bC', true)]);
+  hs.push([c, mk(c, 'c1', true)]);   // at target: capture flag set, still AT_TARGET
+  hs.push([c, mk(c, 'c2', false)]);  // at target: bubble flag, runs after c1
+  hs.push([b, mk(b, 'bB', false)]);
+  hs.push([a, mk(a, 'aB', false)]);
+  return function () {
+    for (var i = 0; i < hs.length; i++) {
+      hs[i][0].removeEventListener('ordr', hs[i][1], true);
+      hs[i][0].removeEventListener('ordr', hs[i][1], false);
+    }
+  };
+}
+
+function fire(log, opts, bubbles) {
+  var undo = rig(log, opts);
+  var ev = new Event('ordr', { bubbles: bubbles !== false, cancelable: true });
+  var ret = c.dispatchEvent(ev);
+  undo();
+  return ret;
+}
+
+// 1. The whole walk, in order, with the phase of every step.
+//    CAPTURING_PHASE=1 on the ancestors going down, AT_TARGET=2 on both of
+//    the target's own listeners, BUBBLING_PHASE=3 on the ancestors going up.
+test(function () {
+  var log = [];
+  fire(log, {}, true);
+  assert_array_equals(log, ['aC:1', 'bC:1', 'c1:2', 'c2:2', 'bB:3', 'aB:3']);
+}, 'capture descends, target runs both listeners at AT_TARGET, bubble ascends');
+
+// 2. The capture pass must reach the OUTER ancestor before the inner one.
+//    A flat dispatcher never calls them at all; a dispatcher that walks the
+//    ancestor chain in the wrong direction calls them backwards.
+test(function () {
+  var log = [];
+  fire(log, {}, true);
+  assert_less_than(log.indexOf('aC:1'), log.indexOf('bC:1'),
+                   'outer capture listener runs before inner capture listener');
+  assert_less_than(log.indexOf('bB:3'), log.indexOf('aB:3'),
+                   'inner bubble listener runs before outer bubble listener');
+  assert_less_than(log.indexOf('bC:1'), log.indexOf('c1:2'),
+                   'capture pass completes before the target');
+  assert_less_than(log.indexOf('c2:2'), log.indexOf('bB:3'),
+                   'the target completes before the bubble pass');
+}, 'ancestors run outside-in on capture and inside-out on bubble');
+
+// 3. currentTarget is the node whose listener is running, not the target.
+test(function () {
+  var log = [];
+  fire(log, {}, true);
+  for (var i = 0; i < log.length; i++)
+    assert_equals(log[i].indexOf('!CT'), -1, 'currentTarget wrong at step ' + i + ' (' + log[i] + ')');
+}, 'currentTarget tracks the node being visited');
+
+// 4. A non-bubbling event still captures, but does not bubble.
+test(function () {
+  var log = [];
+  fire(log, {}, false);
+  assert_array_equals(log, ['aC:1', 'bC:1', 'c1:2', 'c2:2']);
+}, 'bubbles:false suppresses the bubble pass but not the capture pass');
+
+// 5. stopPropagation during capture cancels the target and the bubble pass.
+test(function () {
+  var log = [];
+  fire(log, { stopAt: 'aC' }, true);
+  assert_array_equals(log, ['aC:1']);
+}, 'stopPropagation in the outermost capture listener stops everything after it');
+
+// 6. stopPropagation at the target still lets the target finish.
+test(function () {
+  var log = [];
+  fire(log, { stopAt: 'c1' }, true);
+  assert_array_equals(log, ['aC:1', 'bC:1', 'c1:2', 'c2:2']);
+}, 'stopPropagation at the target runs the rest of the target listeners, then stops');
+
+// 7. stopImmediatePropagation at the target skips the target's remaining ones.
+test(function () {
+  var log = [];
+  fire(log, { stopImmAt: 'c1' }, true);
+  assert_array_equals(log, ['aC:1', 'bC:1', 'c1:2']);
+}, 'stopImmediatePropagation skips the sibling listener on the same node');
+
+// 8. eventPhase is NONE before and after the dispatch.
+test(function () {
+  var ev = new Event('ordr', { bubbles: true });
+  assert_equals(ev.eventPhase, Event.NONE, 'before dispatch');
+  var seen = null;
+  var h = function (e) { seen = e.eventPhase; };
+  c.addEventListener('ordr', h);
+  c.dispatchEvent(ev);
+  c.removeEventListener('ordr', h);
+  assert_equals(seen, Event.AT_TARGET, 'during dispatch at the target');
+  assert_equals(ev.eventPhase, Event.NONE, 'after dispatch');
+  assert_equals(ev.currentTarget, null, 'currentTarget cleared after dispatch');
+  assert_equals(ev.target, c, 'target retained after dispatch');
+}, 'eventPhase is NONE outside a dispatch and the target survives it');
+
+// 9. composedPath is the whole ancestor chain, target first.
+test(function () {
+  var path = null;
+  var h = function (e) { path = e.composedPath(); };
+  c.addEventListener('ordr', h);
+  c.dispatchEvent(new Event('ordr', { bubbles: true }));
+  c.removeEventListener('ordr', h);
+  assert_true(Array.isArray(path), 'composedPath returns an array');
+  assert_equals(path[0], c, 'target first');
+  assert_equals(path[1], b, 'then its parent');
+  assert_equals(path[2], a, 'then its grandparent');
+}, 'composedPath walks target -> root');
+
+// 10. preventDefault during the CAPTURE pass is still visible at the target,
+//     and dispatchEvent reports it. A flat dispatcher never runs the capture
+//     listener, so the flag is never set.
+test(function () {
+  var seen = null;
+  var hc = function (e) { e.preventDefault(); };
+  var ht = function (e) { seen = e.defaultPrevented; };
+  a.addEventListener('ordr', hc, true);
+  c.addEventListener('ordr', ht);
+  var ret = c.dispatchEvent(new Event('ordr', { bubbles: true, cancelable: true }));
+  a.removeEventListener('ordr', hc, true);
+  c.removeEventListener('ordr', ht);
+  assert_equals(seen, true, 'defaultPrevented visible at the target');
+  assert_equals(ret, false, 'dispatchEvent returned false');
+}, 'preventDefault in an ancestor capture listener reaches the target');
+</script>

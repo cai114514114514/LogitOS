@@ -3243,3 +3243,9 @@ bench-aui: $(ISO) $(DISK)
 # runner, a rate ratcheted against a committed expected-failure list -- the
 # html5lib shape one layer up. See its header.
 -include tests/wpt.mk
+
+# The DOM event layer: the Event constructor hierarchy, a constructible
+# EventTarget and the rest of addEventListener's options surface, layered over
+# the three-phase dispatcher in js_dom.c. Reuses the WPT runner's source list
+# from tests/wpt.mk, but does NOT assume it was read first -- see its header.
+-include tests/events.mk

@@ -22,6 +22,11 @@
  * simply come up with no media. */
 #define JS_MEDIA_OPTIONAL
 #include "js_media.h"
+/* The Event constructor hierarchy, a constructible EventTarget and the rest of
+ * addEventListener's options surface -- js_events.c, layered over the native
+ * dispatcher js_dom.c owns. Weak for the same reason as the three above. */
+#define JS_EVENTS_OPTIONAL
+#include "js_events.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -523,6 +528,13 @@ int js_page_open(struct node *root)
      * HTMLMediaElement members are installed on the element prototype. */
     if (js_media_install) js_media_install(g_ctx);
     if (js_platform_install) js_platform_install(g_ctx);
+    /* LAST of the last. The event layer needs js_dom.c's native Event classes
+     * to wrap, js_webapi.c's AbortSignal for the `signal` option, and it
+     * deliberately REPLACES two placeholders js_platform.c installs when
+     * nobody better has (EventTarget, PromiseRejectionEvent) -- so unlike
+     * js_platform.c's "only if absent" rule, this one has to run after the
+     * placeholder exists in order to take it over. */
+    if (js_events_install) js_events_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
