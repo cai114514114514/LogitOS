@@ -43,6 +43,7 @@
 
 AUDIO_CODEC_SRC := c/lib/audio/audio.c c/lib/audio/wav.c c/lib/audio/flac.c \
                    c/lib/audio/mp3.c c/lib/audio/amd5.c c/lib/audio/aac.c \
+                   c/lib/audio/vorbis.c c/lib/audio/ogg.c \
                    c/lib/audio/afft.c c/lib/audio/amath.c
 AUDIO_REF       := $(BUILD)/audioref
 AUDIO_STAMP     := $(AUDIO_REF)/.stamp-v5
@@ -172,9 +173,10 @@ test-audio-codec-negctl: $(AUDIO_STAMP)
 	 fi
 
 # Everything host-side, in one target.
-test-audio-codecs: test-wav test-flac test-mp3 test-aac \
+test-audio-codecs: test-wav test-flac test-mp3 test-aac test-vorbis \
                    test-audio-codec-fuzz test-audio-codec-fuzz-negctl \
-                   test-audio-codec-negctl test-aac-negctl
+                   test-audio-codec-negctl test-aac-negctl \
+                   test-vorbis-negctl
 
 # Does any of this work on LogitOS, or only under glibc? Boots the OS, runs
 # /bin/audiocheck on the wav/flac/mp3 packed into the disk image, and requires
@@ -261,4 +263,55 @@ test-aac-negctl: $(AAC_STAMP)
 	    echo "  shaping removed, so it is not measuring the decoder."; exit 1; \
 	 else \
 	    echo "negctl: AAC without TNS is rejected ($$(grep -c '^FAIL' $(BUILD)/aac_sabotage.log) failing checks)"; \
+	 fi
+
+# =============================================================================
+# Vorbis I (c/lib/audio/vorbis.c + ogg.c).
+#
+# THE BAR HERE IS WEAKER THAN FOR ANY OTHER FORMAT IN THIS LIBRARY, AND THAT IS
+# A PROPERTY OF VORBIS, NOT A GAP IN THE TESTING.
+#
+#   WAV and FLAC are exactly specified: bit-exactness, asserted.
+#   MP3 and AAC are not, but ISO/IEC 11172-4 and 14496-4 each DEFINE a numeric
+#   bound on the difference from a reference decoder, so those gates measure
+#   against a published number -- and for AAC this project runs the official
+#   ISO bitstreams against the official reference waveforms.
+#
+#   Vorbis I defines NO numeric bound on decoder output and Xiph publishes NO
+#   conformance suite. There is nothing to pass and nothing official to pass it
+#   against. So test-vorbis reports a DIFFERENTIAL against ffmpeg -- with its
+#   full distribution -- and quotes no tolerance, because quoting one would be
+#   inventing a property the format does not have. What it ASSERTS instead are
+#   the things that genuinely are defined: every packet decodes, the sample
+#   count matches what the stream's granule positions imply, the decode is
+#   deterministic, the Ogg page CRC rejects a flipped bit, a truncated file is
+#   survivable, and the Ogg and raw-header (Matroska) entry points agree.
+
+.PHONY: test-vorbis test-vorbis-negctl
+
+VORBIS_SRC   := c/lib/audio/vorbis.c c/lib/audio/ogg.c c/lib/audio/afft.c \
+                c/lib/audio/amath.c
+VORBIS_REF   := $(BUILD)/vorbref
+VORBIS_STAMP := $(VORBIS_REF)/.stamp-vorbis-v1
+
+$(VORBIS_STAMP): tests/unit/vorbis_gen.sh
+	@bash tests/unit/vorbis_gen.sh $(VORBIS_REF)
+
+test-vorbis: $(VORBIS_STAMP)
+	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $(BUILD)/vorbis_test \
+	    tests/unit/vorbis_test.c $(VORBIS_SRC) -lm
+	@$(BUILD)/vorbis_test $(VORBIS_REF)
+
+# NEGATIVE CONTROL. -DAUDIO_SABOTAGE=4 sets floor 1's dB step to 0.5 instead of
+# 140/256 -- the wrong-but-plausible guess this decoder was in fact written
+# with first. The result still produces the music, with a tilted spectral
+# envelope and every sample wrong by a different amount. REQUIRED TO FAIL.
+test-vorbis-negctl: $(VORBIS_STAMP)
+	@$(CC) -O2 -w -DAUDIO_SABOTAGE=4 -Ic/lib/audio -o $(BUILD)/vorbis_sabotage \
+	    tests/unit/vorbis_test.c $(VORBIS_SRC) -lm
+	@if $(BUILD)/vorbis_sabotage $(VORBIS_REF) >$(BUILD)/vorbis_sabotage.log 2>&1; then \
+	    echo "NEGCTL-FAIL: the Vorbis gate passed a decoder whose floor dB step"; \
+	    echo "  is wrong, so it is not measuring the floor at all."; exit 1; \
+	 else \
+	    echo "negctl: Vorbis with a 0.5 dB floor step is rejected ($$(grep -c '^FAIL' $(BUILD)/vorbis_sabotage.log) failing checks)"; \
 	 fi

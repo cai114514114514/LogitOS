@@ -9,6 +9,8 @@
 #include "flac.h"
 #include "mp3.h"
 #include "aac.h"
+#include "vorbis.h"
+#include "ogg.h"
 
 audio_format audio_sniff(const uint8_t *data, long len)
 {
@@ -17,6 +19,24 @@ audio_format audio_sniff(const uint8_t *data, long len)
         return AUDIO_FMT_WAV;
     if (len >= 4 && memcmp(data, "fLaC", 4) == 0)
         return AUDIO_FMT_FLAC;
+    /* Ogg is a container, so the magic says only that much; the codec is
+     * decided by the first packet, and an Ogg holding Opus or FLAC is not
+     * Vorbis. Checking the packet header rather than the page keeps this from
+     * claiming files it cannot decode. */
+    if (ogg_sniff(data, len)) {
+        int e = 0;
+        oggreader *o = ogg_open(data, len, &e);
+        audio_format f = AUDIO_FMT_UNKNOWN;
+        if (o) {
+            const uint8_t *pk;
+            long pl;
+            if (ogg_packet(o, &pk, &pl) == 1 && pl >= 7 &&
+                pk[0] == 1 && memcmp(pk + 1, "vorbis", 6) == 0)
+                f = AUDIO_FMT_VORBIS;
+            ogg_close(o);
+        }
+        return f;
+    }
 
     /* ADTS has no magic either, but its header is far more constrained than
      * MP3's: twelve sync bits, a layer field that must be zero, a sampling
@@ -72,6 +92,7 @@ const char *audio_format_name(audio_format f)
     case AUDIO_FMT_FLAC: return "flac";
     case AUDIO_FMT_MP3:  return "mp3";
     case AUDIO_FMT_AAC:  return "aac";
+    case AUDIO_FMT_VORBIS: return "vorbis";
     default:             return "unknown";
     }
 }
@@ -129,6 +150,11 @@ struct adec {
     long apos;
     const float *apcm;
     long ahave, ataken;
+
+    /* Vorbis */
+    vorbisdec *vb;
+    const float *vpcm;
+    long vhave, vtaken;
 };
 
 adec *adec_open(const uint8_t *data, long len, int *err)
@@ -200,6 +226,10 @@ adec *adec_open(const uint8_t *data, long len, int *err)
             aac_close(probe);
             if (!d->rate) { e = AUDIO_ERR_CORRUPT; goto fail; }
         }
+    } else if (d->fmt == AUDIO_FMT_VORBIS) {
+        d->vb = vorbis_open(data, len, &e);
+        if (!d->vb) goto fail;
+        vorbis_info(d->vb, &d->rate, &d->channels);
     } else {
         e = AUDIO_ERR_UNSUPPORTED;
         goto fail;
@@ -220,6 +250,7 @@ void adec_close(adec *d)
     if (d->fl) flac_close(d->fl);
     if (d->m3) mp3_close(d->m3);
     if (d->ac) aac_close(d->ac);
+    if (d->vb) vorbis_close(d->vb);
     free(d);
 }
 
@@ -350,6 +381,34 @@ long adec_read(adec *d, int16_t *out, long maxframes)
                              out + done * d->channels,
                              take * d->channels);
             d->ataken += take;
+            done += take;
+        }
+        return done;
+    }
+
+    if (d->fmt == AUDIO_FMT_VORBIS) {
+        long done = 0;
+        while (done < maxframes) {
+            if (d->vtaken >= d->vhave) {
+                vorbisframe f;
+                long produced = 0;
+                for (;;) {
+                    int r = vorbis_decode(d->vb, &f);
+                    if (r <= 0) break;
+                    if (f.nsamples > 0) { produced = f.nsamples; break; }
+                }
+                if (!produced) break;
+                d->vpcm = f.pcm;
+                d->vhave = produced;
+                d->vtaken = 0;
+                d->channels = f.channels;
+            }
+            long take = d->vhave - d->vtaken;
+            if (take > maxframes - done) take = maxframes - done;
+            audio_f32_to_s16(d->vpcm + d->vtaken * d->channels,
+                             out + done * d->channels,
+                             take * d->channels);
+            d->vtaken += take;
             done += take;
         }
         return done;

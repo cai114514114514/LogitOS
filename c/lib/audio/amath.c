@@ -255,3 +255,74 @@ double a_cbrt(double x)
     for (int i = 0; i < 4; i++) r = r - (r - x / (r * r)) * (1.0 / 3.0);
     return neg ? -r : r;
 }
+
+/* atan by range reduction onto [0, tan(pi/12)] and the odd series there.
+ *   |x| > 1        -> pi/2 - atan(1/x)
+ *   x > tan(pi/12) -> pi/6 + atan((x*sqrt3 - 1)/(x + sqrt3))
+ * After both reductions |t| <= tan(pi/12) = 0.2679, where the series through
+ * t^25 is below one ulp. */
+double a_atan(double x)
+{
+    if (!(x == x)) return x;
+    int neg = x < 0;
+    if (neg) x = -x;
+
+    double add = 0.0;
+    if (x > 1.0) { x = 1.0 / x; add = A_PI / 2.0; neg = !neg ? neg : neg;
+                   /* the sign of the pi/2 term follows the original sign,
+                    * which is reapplied at the end, so it is added with the
+                    * reduced value subtracted rather than added */
+                   x = -x; }
+    if (add != 0.0) {
+        /* atan(y) = pi/2 - atan(1/y): x currently holds -1/y. */
+        double t = -x;
+        double s = 0.0;
+        if (t > 0.2679491924311227) {
+            const double SQ3 = 1.7320508075688772;
+            t = (t * SQ3 - 1.0) / (t + SQ3);
+            s = A_PI / 6.0;
+        }
+        double z = t * t;
+        double p = -1.0 / 27.0;
+        p = 1.0 / 25.0 + z * p;
+        p = -1.0 / 23.0 + z * p;
+        p = 1.0 / 21.0 + z * p;
+        p = -1.0 / 19.0 + z * p;
+        p = 1.0 / 17.0 + z * p;
+        p = -1.0 / 15.0 + z * p;
+        p = 1.0 / 13.0 + z * p;
+        p = -1.0 / 11.0 + z * p;
+        p = 1.0 / 9.0 + z * p;
+        p = -1.0 / 7.0 + z * p;
+        p = 1.0 / 5.0 + z * p;
+        p = -1.0 / 3.0 + z * p;
+        p = 1.0 + z * p;
+        double r = A_PI / 2.0 - (s + t * p);
+        return neg ? -r : r;
+    }
+
+    double t = x;
+    double s = 0.0;
+    if (t > 0.2679491924311227) {
+        const double SQ3 = 1.7320508075688772;
+        t = (t * SQ3 - 1.0) / (t + SQ3);
+        s = A_PI / 6.0;
+    }
+    double z = t * t;
+    double p = -1.0 / 27.0;
+    p = 1.0 / 25.0 + z * p;
+    p = -1.0 / 23.0 + z * p;
+    p = 1.0 / 21.0 + z * p;
+    p = -1.0 / 19.0 + z * p;
+    p = 1.0 / 17.0 + z * p;
+    p = -1.0 / 15.0 + z * p;
+    p = 1.0 / 13.0 + z * p;
+    p = -1.0 / 11.0 + z * p;
+    p = 1.0 / 9.0 + z * p;
+    p = -1.0 / 7.0 + z * p;
+    p = 1.0 / 5.0 + z * p;
+    p = -1.0 / 3.0 + z * p;
+    p = 1.0 + z * p;
+    double r = s + t * p;
+    return neg ? -r : r;
+}

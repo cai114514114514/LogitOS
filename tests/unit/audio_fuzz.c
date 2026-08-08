@@ -35,6 +35,8 @@
 #include "flac.h"
 #include "mp3.h"
 #include "aac.h"
+#include "vorbis.h"
+#include "ogg.h"
 
 static uint64_t rng_state;
 
@@ -181,6 +183,31 @@ static long run_decoders(const uint8_t *buf, long len, int check_props)
             int got = 0;
             aac_decode_raw(ar2, buf, len, &f, &got);
             aac_close(ar2);
+        }
+    }
+
+    /* Ogg framing on its own, then Vorbis on top of it. The segment table is
+     * the interesting surface: it is a stranger's claim about how long a
+     * packet is, and a packet that spans pages is assembled into a buffer this
+     * code allocates. */
+    {
+        int e2 = 0;
+        oggreader *o = ogg_open(buf, len, &e2);
+        if (o) {
+            for (int i = 0; i < 4000; i++) {
+                const uint8_t *pk;
+                long pl;
+                if (ogg_packet(o, &pk, &pl) != 1) break;
+            }
+            ogg_close(o);
+        }
+        vorbisdec *vd = vorbis_open(buf, len, &e2);
+        if (vd) {
+            for (int i = 0; i < 3000; i++) {
+                vorbisframe f;
+                if (vorbis_decode(vd, &f) <= 0) break;
+            }
+            vorbis_close(vd);
         }
     }
 
@@ -357,6 +384,19 @@ static void phase_structured(int scale)
             aac_decode_raw(ar, f, (long)sizeof(f), &fr, &got);
             aac_close(ar);
         }
+    }
+
+    /* Ogg pages whose segment table, granule position and CRC are all
+     * hostile. Almost none of these will pass the checksum, which is the
+     * point: the ones that do reach the packet assembler. */
+    for (int it = 0; it < scale * 60; it++) {
+        uint8_t f[1024];
+        for (unsigned k = 0; k < sizeof(f); k++) f[k] = (uint8_t)rnd_below(256);
+        memcpy(f, "OggS", 4);
+        f[4] = 0;
+        f[5] = (uint8_t)rnd_below(8);
+        f[26] = (uint8_t)rnd_below(256);             /* page_segments */
+        run_decoders(f, (long)sizeof(f), 0);
     }
 }
 

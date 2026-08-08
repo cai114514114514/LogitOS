@@ -38,18 +38,18 @@ QEMU="${QEMU:-qemu-system-x86_64}"
 # disk image file list lives in the shared Makefile and that file had another
 # session's uncommitted work in it. fsroot/* is picked up by the existing
 # $(FS_FILES) wildcard, so a new fixture needs no shared edit at all.
-FILES="sample.wav sample.flac sample.mp3 sample.aac"
+FILES="sample.wav sample.flac sample.mp3 sample.aac sample.ogg"
 
 guest_path() {
     case "$1" in
-        sample.aac) echo "/$1" ;;
+        sample.aac|sample.ogg) echo "/$1" ;;
         *)          echo "/media/$1" ;;
     esac
 }
 
 host_path() {
     case "$1" in
-        sample.aac) echo "fsroot/$1" ;;
+        sample.aac|sample.ogg) echo "fsroot/$1" ;;
         *)          echo "tests/fixtures/audio/$1" ;;
     esac
 }
@@ -139,5 +139,5 @@ if [ "$rc" != 0 ]; then
     exit 1
 fi
 
-echo "PASS: LogitOS decoded wav/flac/mp3/aac to the host's CRCs"
+echo "PASS: LogitOS decoded wav/flac/mp3/aac/vorbis to the host's CRCs"
 exit 0

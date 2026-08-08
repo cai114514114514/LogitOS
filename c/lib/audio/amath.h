@@ -53,6 +53,10 @@ double a_log(double x);
 double a_pow(double x, double y);   /* x >= 0 */
 double a_cbrt(double x);            /* signed cube root */
 
+/* atan, for the Bark scale in Vorbis's floor 0. Accurate to a couple of ulp
+ * over the whole real line. */
+double a_atan(double x);
+
 /* ldexp: x * 2^n, exactly, by exponent arithmetic. Used all over the codecs to
  * apply a power-of-two gain without going through pow(). */
 double a_ldexp(double x, int n);
