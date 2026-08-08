@@ -319,6 +319,26 @@ static void test_matchmedia(void)
     CK(eq("matchMedia('(min-width: 50px)').matches === "
           "document.styleSheets[0].cssRules[3].matches", "true"),
        "matchMedia and the @media rule agree, because they are one evaluator");
+
+    /* THE ONE THAT CRASHED. Wiring matchMedia to LibCSS's own parser means a
+     * SCRIPT can now hand that parser any string, where before it only ever
+     * saw @media preludes the tokeniser had produced. An empty query in a
+     * comma list ("," / ",," / a trailing comma) is legal input and a parse
+     * error, and mq_parse_media_query dereferenced the NULL peek --
+     * segfaulting the whole WPT run at
+     * css/mediaqueries/match-media-parsing.html and taking the 973 files
+     * after it down with it. Fixed in the vendored parser; asserted here,
+     * because "it does not crash" is not observable from a pass rate.
+     *
+     * The last entry is the empty string, and it is the ONE that matches: an
+     * empty media query list means `all`, which is true of every medium. That
+     * is not the same case as ",," (a list whose members are empty), and
+     * lumping them together is how a "harden it" change quietly makes every
+     * responsive page take its desktop branch. */
+    CK(eq("[',', ',,', '  ,  ,  ', ' foo,', '(', ')', '((', 'not', 'and', '']"
+          ".map(function (q) { return matchMedia(q).matches ? 1 : 0; }).join('')",
+          "0000000001"),
+       "a malformed query is `not all`; an EMPTY one is `all` -- different cases");
 }
 
 /* -------------------------------------------------------- 8. document.fonts */

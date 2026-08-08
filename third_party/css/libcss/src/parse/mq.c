@@ -978,6 +978,24 @@ static css_error mq_parse_media_query(lwc_string **strings,
 	consumeWhitespace(vector, ctx);
 
 	token = parserutils_vector_peek(vector, *ctx);
+	/* LOGIT: an EMPTY media query is a NULL peek, and this dereferenced it.
+	 *
+	 * `<media-query-list>` is comma separated, so "," or ",," or a trailing
+	 * comma each hand this function a query with no tokens in it at all --
+	 * legal input to the parser, and a parse ERROR per the grammar, which the
+	 * caller (css__mq_parse_media_list) already knows how to turn into `not
+	 * all`. tokenIsChar() is NULL-safe and the two iterate() calls below check
+	 * for NULL; only this peek did not, so the else-if read token->type
+	 * through a null pointer.
+	 *
+	 * It went unnoticed because until matchMedia() was wired to this parser
+	 * the only queries reaching it were @media preludes out of a stylesheet,
+	 * which the tokeniser never leaves empty. A script can pass any string,
+	 * and css/mediaqueries/match-media-parsing.html passes exactly this one --
+	 * where it segfaulted the whole WPT run, taking 973 later files with it. */
+	if (token == NULL) {
+		return CSS_INVALID;
+	}
 	if (tokenIsChar(token, '(')) {
 		is_condition = true;
 	} else if (token->type == CSS_TOKEN_IDENT &&
