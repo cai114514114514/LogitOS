@@ -79,6 +79,14 @@ int  ksig_interrupted(void);
  * back and rewinding rip over the two-byte `int $0x80`. */
 void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr);
 
+/* SYS_SIGRETURN. Intercepted in interrupt_handler AHEAD of the syscall
+ * dispatcher, and it has to be: restoring a frame means writing the register
+ * set that is about to be iretq'd and the FXSAVE area c/boot/isr.asm will
+ * FXRSTOR, and a syscall body can reach neither. Rewrites `r` and `fxarea` in
+ * place; on an unusable frame it terminates the process rather than returning
+ * to an address the process cannot have meant. */
+void ksig_sigreturn(struct registers *r, void *fxarea);
+
 /* A ring-3 fault. Returns 1 if a handler will take it (the caller must then
  * fall through to ksig_deliver), 0 if the process should die as it always did.
  * A BLOCKED synchronous fault returns 0 too: POSIX says the behaviour is

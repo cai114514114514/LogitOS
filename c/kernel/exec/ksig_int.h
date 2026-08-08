@@ -42,6 +42,14 @@ struct sigst {
     uint64_t alarm_at;                   /* timer_ms() deadline, 0 = no alarm */
     uint64_t suspend_mask;               /* sigsuspend's saved mask */
     int      in_suspend;
+
+    /* The fault that raised a synchronous signal, captured at ksig_fault()
+     * time and handed to the frame. NOT read from CR2 at delivery: the
+     * delivery path itself writes user memory, which on this kernel can
+     * demand-fault (usercopy resolves COW and anonymous pages), so by the time
+     * the frame is built CR2 may describe the signal machinery's own fault
+     * rather than the program's. */
+    uint64_t fault_cr2, fault_err, fault_trapno;
 };
 
 extern spinlock_t g_sig_lock;

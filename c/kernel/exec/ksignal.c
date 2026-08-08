@@ -120,6 +120,7 @@ static void reset_locked(struct sigst *s, int pid)
     if (s->alarm_at && g_alarm_armed) g_alarm_armed--;
     s->alarm_at = 0;
     s->suspend_mask = 0; s->in_suspend = 0;
+    s->fault_cr2 = 0; s->fault_err = 0; s->fault_trapno = 0;
     ksig_recalc_ignored(s);
 }
 
@@ -257,7 +258,6 @@ int ksig_interrupted(void)
  * ------------------------------------------------------------------------ */
 int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
 {
-    (void)cr2; (void)err; (void)vector;
     if (signo <= 0 || signo >= KSIG_NSIG) return 0;
 
     struct proc *p = proc_current();
@@ -279,6 +279,7 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
          * Getting this wrong in the permissive direction would not look like a
          * bug, it would look like the machine hanging. */
         if (s->handler[signo] > 1 && !(s->blocked & bit)) {
+            s->fault_cr2 = cr2; s->fault_err = err; s->fault_trapno = vector;
             ksig_set_pending(s, bit);
             take = 1;
         }
