@@ -366,6 +366,17 @@ int h265_parse_sps(h265dec *d, bs_t *bs)
     if (s.bit_depth_luma < 8 || s.bit_depth_luma > 10 ||
         s.bit_depth_chroma < 8 || s.bit_depth_chroma > 10)
         return H265_ERR_UNSUPPORTED;
+    /* UNEQUAL luma and chroma depths are legal Main 10 and are refused, not
+     * decoded. Every reconstruction path here already carries the depth of
+     * the component it is working on, so the stream decodes -- but it does
+     * not decode bit-exactly: the ITU conformance stream
+     * TSUNEQBD_A_MAIN10_Technicolor_2 (luma 10, chroma 9) comes out with the
+     * wrong MD5. Emitting a picture that is nearly right is worse than
+     * refusing, and it would be counted as a pass by anything measuring with
+     * a tolerance. ffmpeg's own HEVC decoder refuses the same stream
+     * ("Luma bit depth (10) is different from chroma bit depth (9), this is
+     * unsupported"), so nothing real depends on it. */
+    if (s.bit_depth_luma != s.bit_depth_chroma) return H265_ERR_UNSUPPORTED;
 
     s.log2_max_poc_lsb = (int)bs_ue(bs) + 4;
     if (s.log2_max_poc_lsb > 16) return H265_ERR_CORRUPT;
@@ -497,7 +508,14 @@ int h265_parse_pps(h265dec *d, bs_t *bs)
     p.tiles_enabled = (int)bs_u1(bs);
     p.entropy_coding_sync_enabled = (int)bs_u1(bs);
     if (bs_error(bs)) return H265_ERR_CORRUPT;
-    if (p.init_qp < 0 || p.init_qp > 51) return H265_ERR_CORRUPT;
+    /* 7.4.3.3.1: init_qp_minus26 ranges over -(26 + QpBdOffsetY) .. +25, so
+     * init_qp itself ranges over -QpBdOffsetY .. +51 and is NEGATIVE for a
+     * legal 10-bit stream. The ITU conformance stream INITQP_B_Main10_Sony_1
+     * exists precisely to carry init_qp_minus26 = -38, i.e. init_qp = -12,
+     * and the old `< 0 -> corrupt` test rejected the whole bitstream at its
+     * first PPS. */
+    if (p.init_qp < -6 * (sps->bit_depth_luma - 8) || p.init_qp > 51)
+        return H265_ERR_CORRUPT;
     if (p.diff_cu_qp_delta_depth > 3) return H265_ERR_CORRUPT;
 
     p.num_tile_columns = p.num_tile_rows = 1;
