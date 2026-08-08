@@ -321,7 +321,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog
+       show dir chart prog clip notify
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -3006,3 +3006,8 @@ bench-aui: $(ISO) $(DISK)
 # fail) and `make ci` (build from a clean clone of HEAD, then the suites). Own
 # fragment for the same reason as every other one above.
 -include tests/ci.mk
+
+# The clipboard (test-clip + its two negative controls) and notifications
+# (test-notify, test-notify-negctl, test-notify-cost). Own fragment for the same
+# reason as every other one above.
+-include tests/clip.mk

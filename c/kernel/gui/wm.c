@@ -28,6 +28,7 @@
 #include "logit_pack.h"
 #include "ktime.h"
 #include "evq.h"
+#include "notify.h"     /* WM-HOOK 1/6: the notification overlay (see notify.h) */
 #include "keyboard.h"
 #include "net.h"
 #include "http.h"
@@ -228,6 +229,13 @@ static void dirty_rect(int x, int y, int w, int h)
     dmg_add(r);
 }
 
+/* WM-HOOK 2/6 -- what kernel chrome living OUTSIDE this file needs in order to
+ * composite into this desktop (today: c/kernel/gui/notify.c). Declared in wm.h,
+ * documented there. Damage is in device pixels, and the honest-extent rule
+ * above applies to a caller in another file exactly as it applies to every
+ * caller in this one. */
+void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
+
 /* A window's real footprint: its rectangle PLUS the drop-shadow bands
  * draw_frame lays around it (the widest is S(8)). Damage that stops at the
  * window's own edge leaves the old shadow standing when the window moves --
@@ -299,6 +307,9 @@ static uint64_t perf_cpx, perf_present_ns, perf_full, perf_rects;
 /* System light/dark theme. The kernel-drawn chrome (menu bar, dock, window
  * frames) reads this directly; ring-3 apps query it via SYS_UI_DARK and follow. */
 static int g_ui_dark;
+/* WM-HOOK 3/6: so kernel chrome drawn from another file follows the system
+ * theme instead of carrying its own idea of it. Declared in wm.h. */
+int wm_dark(void) { return g_ui_dark; }
 static void wm_set_dark(int on);
 static int cascade;
 
@@ -1658,6 +1669,11 @@ static int render_region(const struct drect *R)
       if (rect_hit(&p, R)) draw_menubar(); }            /* real-time vibrancy      */
     { struct drect p; dock_box(&p);
       if (rect_hit(&p, R)) draw_dock(); }
+    /* WM-HOOK 4/6: the notification overlay -- above every window, below the
+     * pointer. No rect_hit guard: the fb clip is already this rectangle and
+     * every primitive notify_compose uses is clip-exact (it is deliberately not
+     * glass, so it needs no entry in dmg_expand). See notify.h. */
+    notify_compose();
     if (!hw_cursor) draw_cursor_back(mx, my);   /* no plane: arrow into the composite */
     fb_clear_clip();
 
@@ -1758,6 +1774,15 @@ static void wm_process_mouse(const struct inev *in)
 
     if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
         wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
+        mleft = left; mright = right; mmiddle = middle;
+        return;
+    }
+    /* WM-HOOK 6/6: a notification is chrome drawn on top of everything, so like
+     * the switch above it must win the click -- otherwise the window under it
+     * swallows the dismissal and the card cannot be got rid of. Same idiom as
+     * the dark-mode switch: consume the press, keep the button levels in step,
+     * return. See notify.h. */
+    if (left && !mleft && notify_click(x, y)) {
         mleft = left; mright = right; mmiddle = middle;
         return;
     }
@@ -2135,6 +2160,7 @@ void wm_run(void)
         wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
         wm_pointer_sync();            /* one cursor-plane command per loop, not per packet */
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */
+        notify_tick();                /* WM-HOOK 5/6: expire notifications (see notify.h) */
         /* net busy watchdog: a fetch legitimately blocks for seconds, but if its
          * thread died mid-fetch the flag is stuck -- expire it after 100 s. */
         if (g_net_busy && net_busy_t0 && timer_ticks() - net_busy_t0 > 10000) {

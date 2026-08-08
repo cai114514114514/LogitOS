@@ -24,4 +24,21 @@ void wm_launch(const char *aex_file, const char *arg);
 long wm_gui_syscall(long num, long a, long b, long c);
 void wm_app_exit(void);
 
+/* ---- what kernel chrome OUTSIDE wm.c needs from the compositor -------------
+ *
+ * The notification overlay (c/kernel/gui/notify.c) draws on top of every window
+ * but is not a window: it has no surface, no input queue and no place in the
+ * z-order. These two are the entire interface it needs, and they are the whole
+ * reason a second file can composite into this desktop without reaching into
+ * this one's statics. See the WM-HOOKS block in notify.h for the five call
+ * sites on the other side.
+ *
+ * wm_damage() is the important one. Damage rectangles are DEVICE PIXELS, and
+ * the rule is the same one every caller inside wm.c now lives under: report the
+ * TRUE extent of what changed. Under-reporting leaves pixels on screen that
+ * nothing will ever repaint -- there is deliberately no periodic full repaint
+ * left to cover for it. Over-reporting is only slow. */
+void wm_damage(int x, int y, int w, int h);
+int  wm_dark(void);                /* 1 if the system theme is dark */
+
 #endif /* LOGIT_WM_H */

@@ -256,4 +256,97 @@ static inline int sys_munmap(void *addr, unsigned long len)
 static inline int sys_meminfo(struct logit_meminfo *mi)
 { return (int)_sys(SYS_MEMINFO, (long)mi, 0, 0); }
 
+/* --- the clipboard --------------------------------------------------------
+ *
+ * The store is the kernel's and outlives every process, including the one that
+ * filled it. Read the comments above SYS_CLIP_SET in include/abi/logit_abi.h --
+ * particularly that a payload over clip_max() is REFUSED rather than truncated,
+ * and that clip_get never hands back a partial UTF-8 character. */
+static inline int clip_set(int flavour, const void *buf, int len)
+{ return (int)_sys(SYS_CLIP_SET, flavour & 0xFFFF, (long)buf, len); }
+
+/* Same, but adds this flavour to the CURRENT content instead of replacing it --
+ * how one copy publishes text and HTML for the same selection. */
+static inline int clip_add(int flavour, const void *buf, int len)
+{ return (int)_sys(SYS_CLIP_SET, (flavour & 0xFFFF) | (CLIP_SET_ADD << 16), (long)buf, len); }
+
+/* Copies at most `max` BYTES (no terminator is written; `max` is not a string
+ * size). Returns the count, or a negative CLIP_E_*. Compare with clip_len() to
+ * learn whether you got all of it. */
+static inline int clip_get(int flavour, void *buf, int max)
+{ return (int)_sys(SYS_CLIP_GET, flavour, (long)buf, max); }
+
+static inline int clip_flavours(void) { return (int)_sys(SYS_CLIP_INFO, CLIP_Q_FLAVOURS, 0, 0); }
+static inline int clip_len(int flavour) { return (int)_sys(SYS_CLIP_INFO, CLIP_Q_LEN, flavour, 0); }
+static inline int clip_serial(void)  { return (int)_sys(SYS_CLIP_INFO, CLIP_Q_SERIAL, 0, 0); }
+static inline int clip_owner(void)   { return (int)_sys(SYS_CLIP_INFO, CLIP_Q_OWNER, 0, 0); }
+static inline int clip_max(void)     { return (int)_sys(SYS_CLIP_INFO, CLIP_Q_MAX, 0, 0); }
+
+/* --- notifications --------------------------------------------------------
+ * Returns at once and always. It does not block, does not take focus and does
+ * not tell you whether anyone read it -- that is the difference between this
+ * and a dialog. -> the notification's id (>= 1), 0 if the ring is momentarily
+ * full, or -1 on a bad pointer. */
+static inline int notify(const char *title, const char *body, int level)
+{ return (int)_sys(SYS_NOTIFY, (long)title, (long)body, level); }
+
+/* --- settings -------------------------------------------------------------
+ * The machine's memory of its user. See the block above SYS_SETTING_GET in
+ * logit_abi.h, and c/kernel/core/settings.h for the format and the argument.
+ *
+ * Nothing here can fail in a way an app has to handle: a key that is missing,
+ * unparseable or out of range reads as its built-in default. setting_int()
+ * takes the default the CALLER wants for a key the kernel has no schema for --
+ * which is how another line stores its own state here without a kernel change.
+ *
+ * A set() does NOT go to disk unless you say so. Set several keys with commit
+ * = 0 and finish with setting_commit(): one whole-file write, one LogitFS
+ * transaction, one atomic replacement -- rather than N of them. */
+static inline int setting_get(const char *key, char *buf, int max)
+{ return (int)_sys(SYS_SETTING_GET, (long)key, (long)buf, max); }
+
+static inline int setting_set(const char *key, const char *val, int commit)
+{ return (int)_sys(SYS_SETTING_SET, (long)key, (long)val, commit ? 1 : 0); }
+
+static inline int setting_enum(int i, struct logit_setting *out)
+{ return (int)_sys(SYS_SETTING_ENUM, i, (long)out, 0); }
+
+static inline int setting_commit(void) { return (int)_sys(SYS_SETTING_CTL, SETCTL_COMMIT, 0, 0); }
+static inline int setting_reset(void)  { return (int)_sys(SYS_SETTING_CTL, SETCTL_RESET, 0, 0); }
+static inline int setting_count(void)  { return (int)_sys(SYS_SETTING_CTL, SETCTL_COUNT, 0, 0); }
+static inline int setting_diag(void)   { return (int)_sys(SYS_SETTING_CTL, SETCTL_DIAG, 0, 0); }
+static inline int setting_reload(void) { return (int)_sys(SYS_SETTING_CTL, SETCTL_RELOAD, 0, 0); }
+/* The change notification: a counter that bumps on every commit. Poll it once
+ * a frame -- it is one syscall returning one integer, which is cheaper for
+ * every app that does not care than an event broadcast would be. */
+static inline int setting_gen(void)    { return (int)_sys(SYS_SETTING_CTL, SETCTL_GEN, 0, 0); }
+static inline int setting_kv_count(void) { return (int)_sys(SYS_SETTING_CTL, SETCTL_KVCOUNT, 0, 0); }
+/* Fills `buf` with "key=value" for stored key `i`, INCLUDING keys the kernel
+ * has no schema for. Returns the length, or -1 past the end. */
+static inline int setting_kv_at(int i, char *buf)
+{ return (int)_sys(SYS_SETTING_CTL, SETCTL_KVAT, (long)buf, i); }
+static inline int setting_selftest(void) { return (int)_sys(SYS_SETTING_CTL, SETCTL_SELFTEST, 0, 0); }
+
+/* Typed convenience reads. Parsing here rather than in the kernel keeps the
+ * syscall surface to strings, which is also what makes the file editable. */
+static inline int setting_int(const char *key, int def)
+{
+    char b[80];
+    if (setting_get(key, b, (int)sizeof b) <= 0) return def;
+    int i = 0, neg = 0, base = 10, digits = 0;
+    long v = 0;
+    if (b[i] == '-') { neg = 1; i++; }
+    if (b[i] == '0' && (b[i + 1] == 'x' || b[i + 1] == 'X')) { base = 16; i += 2; }
+    for (; b[i]; i++) {
+        int d;
+        if (b[i] >= '0' && b[i] <= '9') d = b[i] - '0';
+        else if (base == 16 && b[i] >= 'a' && b[i] <= 'f') d = b[i] - 'a' + 10;
+        else if (base == 16 && b[i] >= 'A' && b[i] <= 'F') d = b[i] - 'A' + 10;
+        else return def;                 /* trailing garbage: the default */
+        v = v * base + d;
+        if (++digits > 18) return def;
+    }
+    return digits ? (int)(neg ? -v : v) : def;
+}
+
 #endif /* LOGIT_USERLIB_H */

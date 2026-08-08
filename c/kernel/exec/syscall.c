@@ -30,6 +30,8 @@
 #include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
 #include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO */
+#include "clipboard.h"   /* clip_syscall:   SYS_CLIP_SET / _GET / _INFO */
+#include "notify.h"      /* notify_syscall: SYS_NOTIFY */
 #include "kbench.h"      /* per-syscall accounting, off by default */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
@@ -584,6 +586,30 @@ static void syscall_do(struct registers *r)
     case SYS_MEMINFO:
         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
                                       (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* The clipboard and notifications are kernel services, not window-manager
+     * ones, so they are routed here rather than falling through to
+     * wm_gui_syscall: a CLI program with no window must be able to copy, paste
+     * and notify, and `default:` would hand it to a back end that resolves the
+     * caller through the WM's app table and finds nothing.
+     *
+     * The pid is looked up HERE and passed in, so c/kernel/gui/clipboard.c has
+     * no dependency on the process table and can be compiled on the host by
+     * tests/unit/clipboard_test.c. It is informational (CLIP_Q_OWNER); nothing
+     * about the clipboard's lifetime depends on it. */
+    case SYS_CLIP_SET:
+    case SYS_CLIP_GET:
+    case SYS_CLIP_INFO: {
+        struct proc *p = proc_current();
+        r->rax = (uint64_t)clip_syscall((long)r->rax, (long)r->rdi, (long)r->rsi,
+                                        (long)r->rdx, p ? p->pid : 0);
+        return;
+    }
+
+    case SYS_NOTIFY:
+        r->rax = (uint64_t)notify_syscall((long)r->rax, (long)r->rdi,
+                                          (long)r->rsi, (long)r->rdx);
         return;
 
     default:
