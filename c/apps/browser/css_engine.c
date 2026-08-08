@@ -1288,9 +1288,33 @@ static void pmiss_note(const char *name, int len)
     fclose(f);
 }
 
+/* The name behind the last CSSP_CUSTOM answer.
+ *
+ * A sentinel index cannot carry a name, and cssd_read() hands css_computed_text
+ * only the index. The two calls are adjacent and nothing runs between them --
+ * `prop = css_prop_lookup(name); ... css_computed_text(n, prop, ...)` -- so the
+ * name is passed in a static rather than by widening an ABI that four other
+ * callers share. It is a narrow coupling and it is written down here rather
+ * than left to be rediscovered: css_prop_lookup is the ONLY writer, and
+ * css_computed_text is the only reader, and it reads it only for CSSP_CUSTOM. */
+static char g_last_custom[128];
+
+const char *css_prop_last_custom(void) { return g_last_custom; }
+
 int css_prop_lookup(const char *name, int len)
 {
     if (!name) return -1;
+    {
+        int l = len;
+        if (l < 0) { l = 0; while (name[l]) l++; }
+        /* `--` alone is not a custom property; `--x` is. */
+        if (l > 2 && name[0] == '-' && name[1] == '-') {
+            if (l >= (int)sizeof g_last_custom) return -1;
+            memcpy(g_last_custom, name, (size_t)l);
+            g_last_custom[l] = 0;
+            return CSSP_CUSTOM;
+        }
+    }
     if (len < 0) { len = 0; while (name[len]) len++; }
     if (len <= 0) return -1;
     if (len == 8 && memcmp(name, "cssFloat", 8) == 0) return CSSP_FLOAT;
@@ -1510,11 +1534,95 @@ static int parent_font_of(struct node *n)
     return (p && p->style) ? ((struct cstyle *)p->style)->font_px : 16;
 }
 
+/* One declaration out of a `style=` block, by name. A narrow re-implementation
+ * of what js_dom.c's sty_find does, and narrow on purpose: this wants ONE
+ * custom property's value and nothing else, and reaching into that file's
+ * static would couple the CSS engine to the JS bindings for four lines. */
+static int cws(char c)
+{ return c == 0x20 || c == 0x09 || c == 0x0a || c == 0x0d || c == 0x0c; }
+
+static const char *inline_decl(struct node *e, const char *name, int nlen, int *vlen)
+{
+    const char *s = dom_attr(e, "style");
+    if (!s) return 0;
+    for (int i = 0; s[i]; ) {
+        while (s[i] && (cws(s[i]) || s[i] == ';')) i++;
+        if (!s[i]) break;
+        int d0 = i;
+        while (s[i] && s[i] != ';') i++;
+        int d1 = i, c = d0;
+        while (c < d1 && s[c] != ':') c++;
+        if (c >= d1) continue;
+        int n0 = d0, n1 = c;
+        while (n1 > n0 && cws(s[n1 - 1])) n1--;
+        /* Custom property names are CASE-SENSITIVE, unlike every other CSS
+         * property name. `--X` and `--x` are two different properties. */
+        if (n1 - n0 == nlen && memcmp(s + n0, name, (size_t)nlen) == 0) {
+            int v0 = c + 1, v1 = d1;
+            while (v0 < v1 && cws(s[v0])) v0++;
+            while (v1 > v0 && cws(s[v1 - 1])) v1--;
+            *vlen = v1 - v0;
+            return s + v0;
+        }
+    }
+    return 0;
+}
+
+/* The computed value of a custom property on `e`.
+ *
+ * Custom properties INHERIT, so the answer is the nearest ancestor-or-self
+ * that declares one. Two sources, in cascade order as far as this engine can
+ * see it:
+ *
+ *   the element's own `style=` block, walking up the tree -- which is where
+ *   `el.style.setProperty('--x', ...)` puts it, and the case WPT exercises
+ *   most.
+ *
+ *   the document's sheet table (css_vars.c), which is what `:root { --x: ... }`
+ *   lands in.
+ *
+ * KNOWN LIMIT, and it is css_vars.c's documented one, not a new one: that
+ * table is ONE table for the whole document, so a `--x` redefined on a subtree
+ * by a stylesheet rule reads document-wide. Inline declarations are per
+ * element and exact, which is why they are checked first rather than second.
+ * An undeclared custom property reads "", which is what a real browser
+ * answers for one that was never registered. */
+static int custom_text(struct node *e, const char *name, char *out, int outmax)
+{
+    int nlen = (int)strlen(name);
+    for (struct node *p = e; p; p = p->parent) {
+        if (p->type != N_ELEM) continue;
+        int vlen = 0;
+        const char *v = inline_decl(p, name, nlen, &vlen);
+        if (v) {
+            if (vlen > outmax - 1) vlen = outmax - 1;
+            memcpy(out, v, (size_t)vlen);
+            out[vlen] = 0;
+            return vlen;
+        }
+    }
+    const char *v = css_vars_value(name);
+    if (!v) return 0;
+    int vlen = (int)strlen(v);
+    if (vlen > outmax - 1) vlen = outmax - 1;
+    memcpy(out, v, (size_t)vlen);
+    out[vlen] = 0;
+    return vlen;
+}
+
 int css_computed_text(struct node *n, int prop, char *out, int outmax)
 {
     if (!out || outmax <= 0) return 0;
     out[0] = 0;
-    if (!n || n->type != N_ELEM || prop < 0 || prop >= CSSP__COUNT) return 0;
+    if (!n || n->type != N_ELEM) return 0;
+    if (prop == CSSP_CUSTOM) {
+        /* The cascade still has to be current: css_vars.c's table is filled by
+         * css_expand_vars on the way into the flush, so a document nobody
+         * styled has no table at all until this runs. */
+        css_ensure_styled(n);
+        return custom_text(n, css_prop_last_custom(), out, outmax);
+    }
+    if (prop < 0 || prop >= CSSP__COUNT) return 0;
     /* CSSOM: reading a resolved value updates style first. Before this, an
      * embedder that never ran the cascade -- or a script that wrote a style
      * and read it back in the same turn -- got "" from the line below for

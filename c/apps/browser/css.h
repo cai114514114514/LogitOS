@@ -242,7 +242,27 @@ enum {
     CSSP_TEXT_ALIGN, CSSP_LINE_HEIGHT, CSSP_TEXT_DECORATION,
     CSSP_BOX_SIZING, CSSP_WHITE_SPACE, CSSP_FLOAT, CSSP_CLEAR,
     CSSP_LIST_STYLE_TYPE,
-    CSSP__COUNT
+    CSSP__COUNT,
+
+    /* A CUSTOM PROPERTY (`--x`), which is not a member of the enum in any
+     * meaningful sense and is deliberately numbered past its end.
+     *
+     * It is here because there is no list to add it to. `--anything` is a
+     * valid property name, so the set is unbounded, and the property-miss
+     * histogram (LOGIT_CSS_PROP_MISS, css_engine.c) found custom properties to
+     * be the single largest thing getComputedStyle turns away -- 1,298 of
+     * 3,095 misses in css/css-values alone, spread over names like `--x`,
+     * `--prop`, `--unregistered` that no table could have anticipated.
+     *
+     * Numbered ABOVE CSSP__COUNT so nothing that enumerates the resolvable
+     * properties (cssd_item, cssd_get_length, g_prop_names) can reach it, and
+     * so css_prop_paint_only()'s switch takes its default -- "assume it moves
+     * boxes" -- which is the right answer for a custom property, since what
+     * reads it is unknowable from the name.
+     *
+     * css_computed_text() answers it from the NAME, which css_prop_lookup
+     * leaves in css_prop_last_custom(). */
+    CSSP_CUSTOM = CSSP__COUNT + 1
 };
 
 /* Dashed CSS name of property `i` ("background-color"), or NULL out of range. */

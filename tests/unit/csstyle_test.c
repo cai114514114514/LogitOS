@@ -223,6 +223,44 @@ static void test_write_then_read(void)
        "and a rule that now matches takes effect on the next read");
 }
 
+/* ------------------------------------------------ 3b. custom properties */
+/* The mechanism-shaped entry on the property-miss table. There is no list to
+ * add `--x` to -- any name is legal -- so it is answered from the NAME rather
+ * than from an enum, and it INHERITS, which is what makes it a tree walk and
+ * not a lookup. */
+static void test_custom_properties(void)
+{
+    printf("3b. custom properties\n");
+
+    CK(eq("getComputedStyle(document.getElementById('styled'))"
+          ".getPropertyValue('--ink')", "rgb(1, 2, 3)"),
+       "a custom property declared in a <style> rule reads back");
+
+    CK(eq("getComputedStyle(document.getElementById('varred'))"
+          ".getPropertyValue('--nope')", ""),
+       "one that was never declared reads \"\", not undefined");
+
+    CK(evalstr("document.getElementById('pct').style.setProperty('--own', '7px'), 1") != 0,
+       "setProperty writes a custom property");
+    CK(eq("getComputedStyle(document.getElementById('pct'))"
+          ".getPropertyValue('--own')", "7px"),
+       "and the computed read sees it in the same turn");
+
+    /* Case sensitivity is the one place custom properties differ from every
+     * other CSS property name, and getting it wrong is invisible until a page
+     * uses both spellings. */
+    CK(eq("getComputedStyle(document.getElementById('pct'))"
+          ".getPropertyValue('--OWN')", ""),
+       "custom property names are CASE-SENSITIVE, unlike every other property");
+
+    /* Inheritance: declared on an ancestor, read on a descendant. */
+    CK(evalstr("document.body.style.setProperty('--fromBody', 'inherited'), 1") != 0,
+       "a custom property is set on <body>");
+    CK(eq("getComputedStyle(document.getElementById('sp'))"
+          ".getPropertyValue('--fromBody')", "inherited"),
+       "and a descendant inherits it");
+}
+
 /* ------------------------------------------------- 4. the flush is cheap */
 /* The guard on the expensive direction. A flush that ran on every read would
  * re-cascade the document once per property a page asks for, and the only
@@ -263,6 +301,7 @@ int main(void)
     test_unstyled_document();
     test_canonical_bytes();
     test_write_then_read();
+    test_custom_properties();
     test_flush_is_cheap();
 
     js_page_close();
