@@ -16,12 +16,21 @@
 #include "http1.h"
 
 /* http1.c decodes gzip/deflate through the same safe-Rust inflater the PNG
- * path uses, so the test links rust/. That staticlib also carries png.rs,
- * which references the kernel allocator -- these stubs exist only to satisfy
- * the linker (same shape as tests/unit/png_test.c) and are never called. */
+ * path uses, so the test links rust/. rustc puts inflate.rs and png.rs in one
+ * codegen unit, so pulling the inflater in pulls png_register with it -- these
+ * stubs exist only to satisfy the linker (same shape as tests/unit/png_test.c)
+ * and are never called.
+ *
+ * img_register_anim is here because 4952ceb (APNG) changed png_register from
+ * img_register to img_register_anim. That commit updated the three OTHER host
+ * tests that link this staticlib (webapi_test.c, webapi_platform_test.c,
+ * webapi_probe.c) and missed this one, which is why `make test-browser` went
+ * red at a link step nobody had touched. Adding a decoder callback is an ABI
+ * change for every host link domain, not just the image one. */
 void *kmalloc(unsigned long n) { return malloc((size_t)n); }
 void  kfree(void *p) { free(p); }
 int   img_register(void *d) { (void)d; return 0; }
+void  img_register_anim(void *d, void *f, void *a) { (void)d; (void)f; (void)a; }
 
 static int fails;
 #define OK(cond) do { if (cond) printf("ok   %s\n", #cond); \
