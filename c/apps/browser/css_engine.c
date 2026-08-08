@@ -1327,6 +1327,53 @@ static void ob_fixed(struct obuf *b, css_fixed v)
     }
 }
 
+/* The alpha channel of a COMPUTED colour, which reaches us as one byte.
+ *
+ * `a/255` printed straight out is wrong, and wrong in a way that looks right:
+ * an authored `rgba(10, 20, 30, 0.5)` came back as `rgba(10, 20, 30, 0.497)`.
+ * Two errors compounded -- LibCSS quantises the author's alpha to 8 bits on
+ * the way in, and ob_fixed then truncated the 22:10 division on the way out.
+ *
+ * Browsers print the SHORTEST decimal that round-trips through the byte, which
+ * is the only rule that can give `0.5` back for an authored 0.5 while still
+ * giving `0.498` for a hex `#...7f` that genuinely is not a half. So: try one,
+ * two, then three decimal places and take the first whose value maps back onto
+ * the same byte. The round-trip is accepted under EITHER truncation or
+ * rounding because 0.5*255 is exactly 127.5 -- the one value where the two
+ * disagree, and the one value that matters most.
+ *
+ * This does not recover information LibCSS threw away; it stops adding a
+ * second error on top of it. The quantisation itself is inside the vendored
+ * parser and belongs to the CSS-value line, not this one.
+ *
+ * (The SPECIFIED-value serialiser has no such problem and must not be changed
+ * to match: vsb_alphav carries alpha in thousandths from wherever it was read,
+ * precisely so `rgba(5, 7, 10, 0.5)` and `#0000007f` can print differently.) */
+static void ob_alpha_byte(struct obuf *b, unsigned a)
+{
+    if (a >= 255) { ob_ch(b, '1'); return; }
+    if (a == 0)   { ob_ch(b, '0'); return; }
+    int scale = 10;
+    for (int digits = 1; digits <= 3; digits++, scale *= 10) {
+        /* the nearest `digits`-place decimal to a/255 */
+        int q = (int)(((long)a * scale * 2 + 255) / (255 * 2));
+        long back = (long)q * 255;
+        if ((int)(back / scale) == (int)a ||                  /* truncation */
+            (int)((back + scale / 2) / scale) == (int)a) {    /* rounding   */
+            ob_ch(b, '0'); ob_ch(b, '.');
+            for (int d = scale / 10; d > 0; d /= 10) ob_ch(b, (char)('0' + (q / d) % 10));
+            return;
+        }
+    }
+    /* Unreachable for a byte -- three places always round-trip 0..255 -- but a
+     * serialiser that can emit nothing is worse than one that emits a bound. */
+    ob_ch(b, '0'); ob_ch(b, '.');
+    {
+        int q = (int)(((long)a * 1000 * 2 + 255) / (255 * 2));
+        for (int d = 100; d > 0; d /= 10) ob_ch(b, (char)('0' + (q / d) % 10));
+    }
+}
+
 /* CSS Color 4 serialisation, as every browser reports it: opaque colours are
  * `rgb(r, g, b)` and anything else `rgba(r, g, b, a)` with a in 0..1. */
 static void ob_color(struct obuf *b, css_color c)
@@ -1351,7 +1398,7 @@ static void ob_color(struct obuf *b, css_color c)
     ob_i(b, (int)((c >> 16) & 0xFF)); ob_s(b, ", ");
     ob_i(b, (int)((c >> 8) & 0xFF));  ob_s(b, ", ");
     ob_i(b, (int)(c & 0xFF));
-    if (a != 0xFF) { ob_s(b, ", "); ob_fixed(b, FDIV(INTTOFIX((int)a), INTTOFIX(255))); }
+    if (a != 0xFF) { ob_s(b, ", "); ob_alpha_byte(b, a); }
     ob_ch(b, ')');
 }
 
@@ -1970,6 +2017,65 @@ extern struct node *js_dom_inval_root(int i, int *sibs)   __attribute__((__weak_
 
 static int g_auto_flushes;      /* test seam: how many flushes actually ran */
 
+/* WHY THERE IS A FINGERPRINT AND NOT JUST js_dom_dirty().
+ *
+ * The dirty flag is the EMBEDDER's, and clearing it here would leave the
+ * browser painting a stale frame -- the render loop reads it to decide whether
+ * to re-layout. So it stays set for the whole turn, and a page that reads
+ * twenty properties after one mutation would re-run the cascade twenty times.
+ * That is not a theoretical cost: the suite in tests/unit/csstyle_test.c
+ * measured exactly 20 flushes for 20 reads and failed on it.
+ *
+ * The fix is a signal of our own, and it has to be CONSERVATIVE in the one
+ * direction that matters: it may say "changed" when nothing did (a wasted
+ * cascade, invisible), and it must never say "unchanged" when something did (a
+ * stale value, which is the whole defect this file is fixing). So it is built
+ * only from things that provably move when a style-affecting mutation happens:
+ *
+ *   the arena high-water mark -- dom.c's attr_set arena_dup()s every non-empty
+ *   attribute value it stores, and never frees, so any attribute write that
+ *   carries text moves it. Node and text creation move it too.
+ *
+ *   the marked scope roots, by {node, serial} -- a mutation somewhere new
+ *   marks a new root, and a recycled node slot changes serial.
+ *
+ *   the ATTRIBUTES of those roots, by value pointer and length. This is the
+ *   one that closes the hole the other two leave: `el.style.color = ''` on a
+ *   block that becomes empty stores the literal "" and allocates nothing, so
+ *   the arena does not move and the same node is marked again. The value
+ *   POINTER still changes -- from an arena address to the literal -- so the
+ *   fingerprint does. Cheap because scope roots are capped at 8 and elements
+ *   carry a handful of attributes.
+ *
+ * When js_dom cannot name the scopes (js_dom_inval_roots() == 0 means "the
+ * whole document"), there is nothing to fingerprint attributes of, and the
+ * answer is always "changed". Conservative, and the case is rare. */
+static unsigned long g_auto_fp;
+
+static unsigned long inval_fingerprint(struct node *root)
+{
+    unsigned long h = 1469598103934665603UL;
+#define MIX(x) do { h ^= (unsigned long)(x); h *= 1099511628211UL; } while (0)
+    MIX(root->doc ? dom_doc_bytes(root->doc) : 0);
+    int nroots = (&js_dom_inval_roots != 0) ? js_dom_inval_roots() : 0;
+    MIX(nroots);
+    if (nroots <= 0) return 0;                 /* 0 = "unknown", never equal */
+    if (&js_dom_inval_root == 0) return 0;
+    for (int i = 0; i < nroots; i++) {
+        int sibs = 0;
+        struct node *r = js_dom_inval_root(i, &sibs);
+        if (!r) return 0;                      /* destroyed: scope unknown */
+        MIX((unsigned long)(size_t)r); MIX(r->serial); MIX(sibs);
+        MIX(r->nattr);
+        for (int a = 0; a < r->nattr; a++) {
+            MIX((unsigned long)(size_t)r->attrs[a].value);
+            MIX(r->attrs[a].vlen);
+        }
+    }
+#undef MIX
+    return h ? h : 1;                          /* 0 is reserved for "unknown" */
+}
+
 static int collect_inline_sheets(struct node *n, char *out, int o, int max)
 {
     if (!n) return o;
@@ -2019,6 +2125,19 @@ static char *build_author_css(struct node *root, int *out_len)
 
 void css_ensure_styled(struct node *n)
 {
+#ifdef CSS_NEGCTL_NOFLUSH
+    /* The negative control for THIS mechanism, in tests/csstyle.mk. The engine
+     * is otherwise whole -- every accessor is wired, every serialiser is
+     * canonical, nothing throws -- and every computed read answers "" because
+     * the cascade was never run. That is the state the tree was in, and a
+     * suite that cannot tell it from a working one is not measuring the fix.
+     *
+     * It is the SECOND control and not the only one: on its own it is
+     * "remove the getters", which any suite catches. The one that matters is
+     * CSSOM_NEGCTL_SERIALIZE -- flush intact, every property answering, and
+     * only the bytes wrong. */
+    (void)n; return;
+#else
     if (!n || !n->doc) return;
     struct node *root = n;
     while (root->parent) root = root->parent;
@@ -2027,6 +2146,16 @@ void css_ensure_styled(struct node *n)
     int dirty = (&js_dom_dirty != 0) ? js_dom_dirty() : 0;
     if (fresh && !dirty) return;
 
+    /* Dirty, but possibly dirty from a mutation we have already cascaded --
+     * the embedder owns the flag and has not cleared it yet. See the note
+     * above inval_fingerprint for why this may over-report and must never
+     * under-report. */
+    unsigned long fp = 0;
+    if (fresh) {
+        fp = inval_fingerprint(root);
+        if (fp && fp == g_auto_fp) return;
+    }
+
     if (!fresh) {
         /* First style pass for this document, and nobody supplied the CSS. */
         if (g_auto_owned) { free(g_auto_owned); g_auto_owned = NULL; }
@@ -2034,6 +2163,7 @@ void css_ensure_styled(struct node *n)
         g_auto_owned = build_author_css(root, &len);
         g_auto_flushes++;
         css_apply(root, g_auto_owned, len);      /* records g_auto_* */
+        g_auto_fp = inval_fingerprint(root);
         return;
     }
 
@@ -2041,6 +2171,7 @@ void css_ensure_styled(struct node *n)
      * looked. Re-run the cascade over the marked scopes when js_dom named
      * them, and over the document when it could not. */
     g_auto_flushes++;
+    g_auto_fp = fp;
     int nroots = (&js_dom_inval_roots != 0) ? js_dom_inval_roots() : 0;
     if (nroots > 0 && &js_dom_inval_root != 0) {
         int all = 0;
@@ -2053,6 +2184,7 @@ void css_ensure_styled(struct node *n)
         if (!all) return;
     }
     css_apply(root, g_auto_css, g_auto_len);
+#endif
 }
 
 int css_style_flushes(void) { return g_auto_flushes; }

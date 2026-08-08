@@ -3197,6 +3197,15 @@ clean:
 # Own fragment for the same reason as every fragment above it.
 -include tests/cssom.mk
 
+# The computed-style FLUSH: getComputedStyle answered "" for every property
+# of every element whenever no embedder had run the cascade -- which is the
+# state the host WPT runner is always in, and the state a script that writes
+# a style and reads it back in the same turn is in too. test-csstyle asserts
+# the computed values on a document nobody styled; its negative control
+# keeps the flush and breaks only the BYTES, which is all WPT compares.
+# Own fragment for the same reason as every fragment above it.
+-include tests/csstyle.mk
+
 # The JavaScript engine's measurement + language-coverage targets (bench-js,
 # bench-js-os, test-js-syntax and its negative control). Own fragment for the
 # same reason as the others: a whole-file Makefile overwrite from a concurrent
