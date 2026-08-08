@@ -291,6 +291,32 @@ static const char *SELECT_PRELUDE =
 "    return list(out);\n"
 "  } });\n"
 
+/* Document-object gaps the probe found only once the event loop ran and
+ * deepseek's React actually started rendering: it walks up from a node to find
+ * the root, and `document` is where that walk ends.
+ *   ownerDocument   null for the document itself -- React uses `node.
+ *                   ownerDocument || node` to normalise, and undefined there
+ *                   makes it treat the document as an element.
+ *   getRootNode()   returns the document, which is what ends the walk.
+ *   firstChild      the document element, since our tree's document node has
+ *                   exactly one element child.
+ *   activeElement   nothing has focus and there is no focus model, so it is
+ *                   body -- the spec's own fallback, not a stub. */
+"if (!('ownerDocument' in doc)) Object.defineProperty(doc, 'ownerDocument',\n"
+"  { configurable: true, get: function () { return null; } });\n"
+"def(doc, 'getRootNode', function () { return doc; });\n"
+"if (!('firstChild' in doc)) Object.defineProperty(doc, 'firstChild',\n"
+"  { configurable: true, get: function () { return doc.documentElement || null; } });\n"
+"if (!('lastChild' in doc)) Object.defineProperty(doc, 'lastChild',\n"
+"  { configurable: true, get: function () { return doc.documentElement || null; } });\n"
+"if (!('activeElement' in doc)) Object.defineProperty(doc, 'activeElement',\n"
+"  { configurable: true, get: function () { return doc.body || null; } });\n"
+"def(doc, 'contains', function (n) {\n"
+"  for (var p = n; p; p = p.parentNode) if (p === doc.documentElement) return true;\n"
+"  return false;\n"
+"});\n"
+"def(EP, 'getRootNode', function () { return doc; });\n"
+
 "def(EP, 'querySelectorAll', function (s) { return qsa(this, s); });\n"
 "def(EP, 'querySelector', function (s) { return qs1(this, s); });\n"
 "def(EP, 'getElementsByTagName', function (n) { return byTag(this, n); });\n"
@@ -316,12 +342,52 @@ static const char *SELECT_PRELUDE =
 "    try { Object.defineProperty(C, 'name', { value: name }); } catch (e) {}\n"
 "    return C;\n"
 "  };\n"
-"  ['Node', 'Element', 'HTMLElement', 'HTMLDivElement', 'CharacterData', 'Text'].forEach(function (n) {\n"
+"  ['Node', 'Element', 'HTMLElement', 'HTMLDivElement', 'HTMLIFrameElement',\n"
+"   'HTMLInputElement', 'HTMLAnchorElement', 'HTMLImageElement', 'HTMLScriptElement',\n"
+"   'CharacterData', 'Text'].forEach(function (n) {\n"
 "    if (!(n in G)) { try { G[n] = mkClass(n, EP); } catch (e) {} }\n"
 "  });\n"
 "  var nl = mkClass('NodeList', Array.prototype);\n"
 "  if (!('NodeList' in G)) G.NodeList = nl;\n"
 "  if (!('HTMLCollection' in G)) G.HTMLCollection = mkClass('HTMLCollection', Array.prototype);\n"
+"})();\n"
+
+/* `new Image()`. MEASURED, AND ONLY ON THE MACHINE: it does not appear in the
+ * host probe's table because bing reaches it from a setTimeout callback, and
+ * the probe found it only once tests/qmp/qmp_bing.py ran the page with an
+ * event loop turning (`uncaught in timer: ReferenceError: 'Image' is not
+ * defined`). It is the oldest idiom on the web -- `new Image().src = url` is
+ * how a page sends a beacon or preloads a sprite -- and it is not a class of
+ * its own: the spec says it constructs exactly the element createElement('img')
+ * makes, which is why this is three lines and not an image implementation.
+ * Audio and Option are the same shape and the same one-liner. */
+"(function () {\n"
+"  if (!('Image' in G)) {\n"
+"    G.Image = function Image(w, h) {\n"
+"      var el = doc.createElement('img');\n"
+"      if (w !== undefined) el.setAttribute('width', String(w));\n"
+"      if (h !== undefined) el.setAttribute('height', String(h));\n"
+"      return el;\n"
+"    };\n"
+"    G.Image.prototype = EP;\n"
+"  }\n"
+"  if (!('Audio' in G)) {\n"
+"    G.Audio = function Audio(src) {\n"
+"      var el = doc.createElement('audio');\n"
+"      if (src !== undefined) el.setAttribute('src', String(src));\n"
+"      return el;\n"
+"    };\n"
+"    G.Audio.prototype = EP;\n"
+"  }\n"
+"  if (!('Option' in G)) {\n"
+"    G.Option = function Option(text, value) {\n"
+"      var el = doc.createElement('option');\n"
+"      if (text !== undefined) el.textContent = String(text);\n"
+"      if (value !== undefined) el.setAttribute('value', String(value));\n"
+"      return el;\n"
+"    };\n"
+"    G.Option.prototype = EP;\n"
+"  }\n"
 "})();\n"
 "})\n";
 

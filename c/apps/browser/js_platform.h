@@ -67,4 +67,9 @@ PLATFORM_FN void js_platform_set_viewport(int w, int h);
  * deleted the day js_dom.c grows its own. Call after js_dom_init. */
 PLATFORM_FN void js_select_install(JSContext *ctx);
 
+/* Intl + SuppressedError -- js_intl.c. Its own file because it is its own
+ * thing: a monolingual English formatter wearing the Intl interface, which the
+ * header of that file explains rather than hides. */
+PLATFORM_FN void js_intl_install(JSContext *ctx);
+
 #endif /* LOGIT_JS_PLATFORM_H */

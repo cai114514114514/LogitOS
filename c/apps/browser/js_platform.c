@@ -518,6 +518,54 @@ static const char *PLATFORM_PRELUDE =
       and will encrypt something with whatever we return. */
 "})();\n"
 
+/* ==== base64 =============================================================
+ * MEASURED, AND ONLY ON THE MACHINE. btoa does not appear in the host probe's
+ * table at all, because the probe evaluates scripts and stops; bing reaches
+ * btoa from a setTimeout callback, which only runs once there is an event loop
+ * turning. tests/qmp/qmp_bing.py found it in the serial log as
+ * `[js] uncaught in timer: ReferenceError: 'btoa' is not defined`, and the
+ * probe now pumps its timers for exactly that reason. A host instrument that
+ * does not run the event loop cannot see a third of what a page does.
+ *
+ * These are the LATIN-1 pair, not the UTF-8 one: btoa throws on any code unit
+ * above 255, which is the behaviour every `btoa(unescape(encodeURIComponent(s)))`
+ * idiom on the web is written around. Encoding UTF-8 silently instead would
+ * make those idioms produce double-encoded output that decodes to mojibake. */
+"(function () {\n"
+"  var T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n"
+"  def(G, 'btoa', function (s) {\n"
+"    s = String(s);\n"
+"    var out = '', i, a, b, c;\n"
+"    for (i = 0; i < s.length; i++)\n"
+"      if (s.charCodeAt(i) > 255)\n"
+"        throw new G.DOMException('The string contains characters outside of the "
+"Latin1 range.', 'InvalidCharacterError');\n"
+"    for (i = 0; i < s.length; i += 3) {\n"
+"      a = s.charCodeAt(i);\n"
+"      b = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;\n"
+"      c = i + 2 < s.length ? s.charCodeAt(i + 2) : 0;\n"
+"      var n = (a << 16) | (b << 8) | c;\n"
+"      out += T[(n >> 18) & 63] + T[(n >> 12) & 63];\n"
+"      out += i + 1 < s.length ? T[(n >> 6) & 63] : '=';\n"
+"      out += i + 2 < s.length ? T[n & 63] : '=';\n"
+"    }\n"
+"    return out;\n"
+"  });\n"
+"  def(G, 'atob', function (s) {\n"
+"    s = String(s).replace(/[ \\t\\n\\f\\r]/g, '');\n"
+"    if (s.length % 4 === 0) s = s.replace(/==?$/, '');\n"
+"    if (s.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(s))\n"
+"      throw new G.DOMException('The string to be decoded is not correctly encoded.',\n"
+"                               'InvalidCharacterError');\n"
+"    var out = '', bits = 0, n = 0;\n"
+"    for (var i = 0; i < s.length; i++) {\n"
+"      n = (n << 6) | T.indexOf(s[i]); bits += 6;\n"
+"      if (bits >= 8) { bits -= 8; out += String.fromCharCode((n >> bits) & 255); }\n"
+"    }\n"
+"    return out;\n"
+"  });\n"
+"})();\n"
+
 /* ==== structuredClone ====================================================
  * REQUESTED, NOT MEASURED. A real deep clone with cycle handling, because the
  * one-line JSON round trip that usually stands in for it silently drops Map,

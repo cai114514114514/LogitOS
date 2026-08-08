@@ -370,6 +370,81 @@ int main(int argc, char **argv)
          " && document.querySelectorAll('p').item(9) === null", "the result is collection-shaped");
     ckjs("Array.from(document.querySelectorAll('p')).length === 3", "the result is iterable");
 
+    /* ==== base64 =========================================================
+     * MEASURED ONLY ON THE MACHINE. btoa is nowhere in the host probe's table,
+     * because bing reaches it from a setTimeout callback and the probe used to
+     * stop after evaluating scripts. tests/qmp/qmp_bing.py found it in the
+     * serial log; the probe now runs its event loop because of it. */
+    ckjs("btoa('hello') === 'aGVsbG8='", "btoa");
+    ckjs("btoa('a') === 'YQ==' && btoa('ab') === 'YWI=' && btoa('') === ''",
+         "btoa pads both partial-group lengths");
+    ckjs("atob('aGVsbG8=') === 'hello' && atob('YQ==') === 'a'", "atob round-trips");
+    /* The Latin-1 restriction is the behaviour every
+     * `btoa(unescape(encodeURIComponent(s)))` idiom is written around; silently
+     * UTF-8 encoding instead makes those idioms double-encode. */
+    ckjs("(function(){ try { btoa('\\u00e9\\u4e2d'); return false; }"
+         " catch (e) { return e.name === 'InvalidCharacterError'; } })()",
+         "btoa throws InvalidCharacterError above Latin-1, it does not UTF-8 encode");
+    ckjs("btoa('\\u00e9') === 'w6k=' ? false : btoa('\\u00e9') === '6Q=='",
+         "a Latin-1 character encodes as ONE byte");
+    ckjs("(function(){ try { atob('a'); return false; } catch (e) { return e.name === 'InvalidCharacterError'; } })()",
+         "atob rejects a length that cannot be base64");
+
+    /* ==== element constructors ==========================================
+     * MEASURED ONLY ON THE MACHINE, same story as btoa: `new Image()` is
+     * bing's beacon, reached from a timer. */
+    ckjs("new Image() && new Image().tagName.toLowerCase() === 'img'",
+         "new Image() constructs an <img> element");
+    ckjs("new Image(12, 34).getAttribute('width') === '12'", "...with its size attributes");
+    ckjs("new Option('label', 'v').getAttribute('value') === 'v'", "new Option()");
+
+    /* ==== Intl ===========================================================
+     * MEASURED on deepseek -- and only after MessageChannel let React's
+     * scheduler start, which is what got the app as far as formatting a
+     * number. It is English-only by construction (there is no locale data in
+     * this system); resolvedOptions is asserted to SAY so rather than to
+     * pretend otherwise. */
+    ckjs("typeof Intl === 'object' && typeof Intl.NumberFormat === 'function'", "Intl exists");
+    ckjs("new Intl.NumberFormat().format(1234567.891) === '1,234,567.891'",
+         "NumberFormat groups thousands");
+    ckjs("new Intl.NumberFormat('en', {minimumFractionDigits:2}).format(5) === '5.00'",
+         "minimumFractionDigits pads");
+    ckjs("new Intl.NumberFormat('en', {maximumFractionDigits:2}).format(1.005) === '1'"
+         " || new Intl.NumberFormat('en', {maximumFractionDigits:2}).format(1.005) === '1.01'",
+         "maximumFractionDigits rounds");
+    ckjs("new Intl.NumberFormat('en', {style:'percent'}).format(0.42) === '42%'", "percent style");
+    ckjs("new Intl.NumberFormat('en', {style:'currency',currency:'USD'}).format(3.5) === '$3.50'",
+         "currency style");
+    ckjs("new Intl.NumberFormat('en', {useGrouping:false}).format(1234) === '1234'",
+         "useGrouping:false");
+    ckjs("new Intl.NumberFormat().format(-1234.5) === '-1,234.5'", "negatives keep their sign");
+    ckjs("(1234.5).toLocaleString() === '1,234.5'",
+         "Number.prototype.toLocaleString routes through the same formatter");
+    run("__dt = new Intl.DateTimeFormat('en', {year:'numeric',month:'long',day:'numeric'})"
+        "        .format(new Date(2026, 7, 8));");
+    ckjs("__dt === 'August 8 2026' || __dt === 'August 8, 2026'",
+         "DateTimeFormat renders the month by name");
+    ckjs("new Intl.PluralRules().select(1) === 'one' && new Intl.PluralRules().select(2) === 'other'",
+         "PluralRules, English cardinal");
+    ckjs("new Intl.PluralRules('en',{type:'ordinal'}).select(21) === 'one'"
+         " && new Intl.PluralRules('en',{type:'ordinal'}).select(11) === 'other'",
+         "...and the ordinal 21st/11th rule");
+    ckjs("new Intl.ListFormat().format(['a','b','c']) === 'a, b, and c'", "ListFormat");
+    ckjs("new Intl.Collator().compare('a','b') < 0 && new Intl.Collator().compare('b','a') > 0",
+         "Collator compares");
+    /* The honesty check: a page that asks for Japanese is TOLD it got en-US. */
+    ckjs("new Intl.NumberFormat('ja-JP').resolvedOptions().locale === 'en-US'",
+         "resolvedOptions reports the locale it actually used, not the one asked for");
+    ckjs("typeof SuppressedError === 'function' && new SuppressedError(1,2,'m').name === 'SuppressedError'",
+         "SuppressedError (ES2024; bundlers feature-test it at module top level)");
+
+    /* ==== document gaps found by running the event loop ================== */
+    ckjs("document.ownerDocument === null", "document.ownerDocument is null, not undefined");
+    ckjs("document.getRootNode() === document", "document.getRootNode()");
+    ckjs("document.getElementById('wrap').getRootNode() === document", "Element.getRootNode()");
+    ckjs("document.firstChild === document.documentElement", "document.firstChild");
+    ckjs("document.contains(document.getElementById('wrap'))", "document.contains");
+
     /* ==== the misses that MUST STAY misses ===============================
      * These are how a page detects Internet Explorer or a feature it should
      * take the false branch on. The probe reports them as misses; defining any

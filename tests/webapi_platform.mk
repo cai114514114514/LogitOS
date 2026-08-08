@@ -23,7 +23,7 @@
 PROBE ?=
 WEBAPI_FIXTURES := $(sort $(dir $(wildcard tests/fixtures/webapi/*/index.html)))
 PROBE_SRC := tests/unit/webapi_probe.c c/apps/browser/js_page.c c/apps/browser/js_dom.c
-PROBE_SRC += c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c
+PROBE_SRC += c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
 PROBE_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
 PROBE_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c
 PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
@@ -46,7 +46,7 @@ PLATFORM_TEST_SRC += c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/
 # -- and a test that stubbed those would be testing the stub.
 PLATFORM_TEST_SRC += c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
 PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
-PLATFORM_MOD := c/apps/browser/js_platform.c c/apps/browser/js_select.c
+PLATFORM_MOD := c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
 PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 test-platform: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
@@ -70,4 +70,39 @@ test-platform-asan: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w $(PLATFORM_CF) -o $(BUILD)/platform_asan $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/platform_asan
+
+# --- test-platform-page: the on-device proof, in PIXELS --------------------
+# The host test above does not go through the .aex loader, the ring-3 heap, the
+# browser's event loop, layout or the framebuffer. This does. The fixture page
+# is built so the text on screen can only appear if a CHAIN of the new APIs all
+# worked -- mark/measure, queueMicrotask, a MessagePort macrotask, a named
+# Storage read and querySelectorAll -- so the before/after screendump measures
+# the chain rather than a typeof.
+test-platform-page: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_platform_page.py $(ISO) $(DISK)
+
+# The device negative control: the same harness against a browser.aex linked
+# without js_platform.o and js_select.o. Both entry points are weak in
+# js_page.c, so that build links cleanly and simply comes up with none of it.
+NOPLAT_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_platform.o $(BUILD)/jsobj/c/apps/browser/js_select.o $(BUILD)/jsobj/c/apps/browser/js_intl.o,$(BROWSER_JS_OBJ))
+$(BUILD)/browser-noplat.elf: $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-noplat.aex: $(BUILD)/browser-noplat.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/browser-noplat.elf $@ Browser - 'B' 120 130 240
+
+test-platform-page-control: $(ISO) $(BUILD)/browser-noplat.aex
+	@$(MAKE) DISK=$(BUILD)/disk-noplat.img BROWSER_AEX=$(BUILD)/browser-noplat.aex $(BUILD)/disk-noplat.img
+	python3 tests/qmp/qmp_platform_page.py $(ISO) $(BUILD)/disk-noplat.img --expect-none
+
+# --- test-bing: the acceptance case, from the page's own bytes -------------
+# bing.com is what the bug report was about. This serves the CAPTURED bing
+# document and its four scripts (tests/fixtures/webapi/bing, the same bytes the
+# probe measures) at the paths the document names, loads it on the machine, and
+# reports every JS exception the page produced plus a screendump. It is a
+# REPORT, not a pass/fail gate on the page rendering: bing's own <inline 2>
+# references `_w` 37 KiB before the script that defines it and throws in a real
+# browser too, so a green light there would be a lie. What it does assert is
+# that the number of scripts that die is the number the host probe predicts.
+test-bing: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_bing.py $(ISO) $(DISK)
 

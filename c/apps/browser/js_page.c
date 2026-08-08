@@ -411,6 +411,7 @@ int js_page_open(struct node *root)
      * conditional on the property being absent -- which only means anything
      * once everyone who owns one has had their turn. */
     if (js_select_install) js_select_install(g_ctx);
+    if (js_intl_install) js_intl_install(g_ctx);
     if (js_platform_install) js_platform_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;

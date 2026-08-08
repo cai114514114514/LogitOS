@@ -191,6 +191,30 @@ static void fs_answer(struct fakesock *s)
             memcpy(s->rsp + s->rsp_len, s->req, (size_t)s->req_len);
             s->rsp_len += s->req_len;
         }
+    } else if (!strcmp(target, "/binecho")) {
+        /* Echo the request BODY back verbatim, with a binary content type.
+         * Written byte-wise rather than through rsp_add, because the payload
+         * deliberately contains 0x00 and bytes that are not valid UTF-8 -- a
+         * strlen anywhere in this path would truncate exactly the case the
+         * test exists to check. */
+        const char *sep = 0;
+        for (int i = 0; i + 3 < s->req_len; i++)
+            if (!memcmp(s->req + i, "\r\n\r\n", 4)) { sep = s->req + i + 4; break; }
+        int blen = sep ? (int)(s->req + s->req_len - sep) : 0;
+        char hdr[160];
+        snprintf(hdr, sizeof hdr,
+                 "HTTP/1.1 200 OK\r\nContent-Type: application/grpc-web+proto\r\n"
+                 "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n", blen);
+        rsp_add(s, hdr);
+        if (blen > 0 && s->rsp_len + blen <= RSP_MAX) {
+            memcpy(s->rsp + s->rsp_len, sep, (size_t)blen);
+            s->rsp_len += blen;
+        }
+    } else if (!strncmp(target, "/q", 2)) {
+        /* The queue test's route: the body is the path, so a response can be
+         * matched to the request that asked for it even when twenty are in
+         * flight and finishing out of order. */
+        rsp_body(s, 200, "OK", "text/plain", target);
     } else if (!strcmp(target, "/host")) {
         const char *h = strstr(s->req, "Host: ");
         char v[160]; v[0] = 0;
@@ -828,6 +852,129 @@ static void test_data_urls(void)
     ck(!js_webapi_pending(), "no request is left in flight after five data: fetches");
 }
 
+/* ---- 9. the request queue ---------------------------------------------
+ * There are eight fetch slots. Before the queue, a ninth concurrent request
+ * was REJECTED -- `TypeError: too many requests in flight` -- and that is not
+ * a limit any page is written to respect. tests/qmp/qmp_bing.py is where it
+ * showed up: bing's own script loader fires a burst of a dozen, four of them
+ * failed, and the page had no code for that state.
+ *
+ * The assertions are about WAITING, not about capacity: every request must
+ * eventually resolve with the right body, and the requests past the limit must
+ * not have gone on the wire before a slot freed. A test that only counted
+ * successes would pass against an implementation that quietly raised WF_MAX
+ * and broke again at seventeen. */
+static void test_fetch_queue(void)
+{
+    printf("\n-- the request queue --\n");
+    fs_reset();
+    run("var qres = [], qerr = [];");
+    /* Twenty at once, against eight transport slots and a queue limit of six. */
+    run("for (var i = 0; i < 20; i++) (function (n) {"
+        "  fetch('/q' + n).then(function (r) { return r.text(); })"
+        "    .then(function (t) { qres.push(t); }, function (e) { qerr.push(String(e)); });"
+        "})(i);");
+    /* Nothing is rejected up front, and only the first batch has dialled: the
+     * other fourteen are WAITING, not failing and not on the wire. */
+    drain_jobs();
+    {
+        char msg[96];
+        snprintf(msg, sizeof msg,
+                 "only the first batch dialled; the rest are queued (%d sockets opened)",
+                 fs_opened);
+        ck(fs_opened <= 6, msg);
+    }
+    ckjs("qerr.length === 0 && qres.length === 0", "and none has failed or finished yet");
+    settle(600);
+    ckjs("qerr.length === 0",
+         "not one of the twenty was rejected for want of a slot");
+    ckjs("qres.length === 20", "all twenty resolved");
+    ckjs("qres.indexOf('/q0') >= 0 && qres.indexOf('/q19') >= 0",
+         "including the first and the twentieth");
+    ck(!js_webapi_pending(), "and nothing is left pending");
+    {
+        char msg[96];
+        snprintf(msg, sizeof msg,
+                 "every one of them really went to the network (%d sockets opened)",
+                 fs_opened);
+        ck(fs_opened >= 20, msg);
+    }
+}
+
+/* ---- 10. binary transport ----------------------------------------------
+ * WHY THIS EXISTS, AND WHY THE BYTES ARE THE ONES THEY ARE.
+ *
+ * A measurement from a real Chrome against a logged-in kimi.com says the chat
+ * transport is Connect RPC / gRPC-Web with protobuf, NOT Server-Sent Events:
+ * `POST /apiv2/kimi.gateway.account.v1.UserService/GetCurrentUser` and friends,
+ * with `application/grpc-web+proto` bodies. The protobuf codec ships in the
+ * page's own JavaScript, so this browser does not have to understand protobuf.
+ * It has to move BYTES faithfully, in both directions, incrementally.
+ *
+ * gRPC-Web frames are length-prefixed binary: a flag byte, a big-endian
+ * 32-bit length, then the message. So a payload here contains 0x00 (which
+ * truncates anything that goes through a C string), 0xFF, and a lone 0xC3 --
+ * a UTF-8 lead byte with no continuation, which any accidental decode/encode
+ * round trip replaces with U+FFFD and cannot put back. If these assertions
+ * pass, no such round trip happened.
+ *
+ * WHAT THIS DOES NOT PROVE, and it is the open half of the requirement: these
+ * calls go out over HTTP/1.1. c/net/http/http2.c and hpack.c exist and hpool.c
+ * counts h2 connections, but js_webapi.c's fetch is built on h1_conn only and
+ * has no h2 path at all. Connect RPC and gRPC-Web are both specified over
+ * HTTP/1.1 as well, so h1 is not necessarily fatal -- but "fetch can use h2"
+ * is false today and this test cannot make it true. */
+static void test_binary_transport(void)
+{
+    printf("\n-- binary bodies and binary streams --\n");
+    fs_reset();
+    /* A gRPC-Web frame, by hand: flags 0x00, length 0x00000005, then five
+     * bytes chosen to break a UTF-8 round trip. */
+    run("var frame = new Uint8Array([0,0,0,0,5, 0xC3, 0x00, 0xFF, 0x41, 0x80]);");
+    run("var bres = {};");
+    run("fetch('/binecho', { method: 'POST', body: frame,"
+        "                    headers: { 'content-type': 'application/grpc-web+proto' } })"
+        "  .then(function (r) { bres.type = r.headers.get('content-type'); return r.arrayBuffer(); })"
+        "  .then(function (b) { bres.out = Array.from(new Uint8Array(b)).join(','); });");
+    settle(40);
+    ckjs("bres.out === '0,0,0,0,5,195,0,255,65,128'",
+         "a Uint8Array body reached the server and came back byte-for-byte "
+         "(0x00, 0xFF and a lone 0xC3 all survive)");
+    ckjs("bres.type === 'application/grpc-web+proto'", "the binary content type comes back");
+    /* Content-Length must be the BYTE count. A string-shaped body path would
+     * send 10 characters as some other number of bytes here. */
+    ck(strstr(last_req, "Content-Length: 10") != 0,
+       "Content-Length is the byte length of the binary body");
+    ck(strstr(last_req, "POST /binecho") != 0, "and it really was a POST");
+
+    /* The incremental half: read the body through the stream reader rather
+     * than arrayBuffer(), and require Uint8Array chunks whose bytes are
+     * unmodified. This is the path a Connect-ES client uses to decode a frame
+     * before the response has finished. */
+    fs_reset();
+    run("var sres = { chunks: 0, bytes: [], ctor: '' };");
+    run("fetch('/binecho', { method: 'POST', body: new Uint8Array([0,0,0,0,3,0xF0,0x9F,0x00]) })"
+        "  .then(function (r) {"
+        "    var rd = r.body.getReader();"
+        "    function step() {"
+        "      return rd.read().then(function (res) {"
+        "        if (res.done) return;"
+        "        sres.chunks++;"
+        "        sres.ctor = Object.prototype.toString.call(res.value);"
+        "        for (var i = 0; i < res.value.length; i++) sres.bytes.push(res.value[i]);"
+        "        return step();"
+        "      });"
+        "    }"
+        "    return step();"
+        "  });");
+    settle(60);
+    ckjs("sres.chunks >= 1", "the body stream delivered at least one chunk");
+    ckjs("sres.ctor === '[object Uint8Array]'",
+         "chunks are Uint8Array, not strings");
+    ckjs("sres.bytes.join(',') === '0,0,0,0,3,240,159,0'",
+         "and the bytes through the reader are unmodified");
+}
+
 /* ---- main ------------------------------------------------------------- */
 
 int main(void)
@@ -846,6 +993,8 @@ int main(void)
     test_history();
     test_media();
     test_data_urls();
+    test_fetch_queue();
+    test_binary_transport();
     test_storage_survives_navigation();
 
     close_ctx();

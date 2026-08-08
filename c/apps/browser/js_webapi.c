@@ -2386,6 +2386,55 @@ static const char *PRELUDE =
 "  ctrl.close();\n"
 "  return r;\n"
 "}\n"
+/* ---- the request queue ----
+ * WHY: WF_MAX is 8, and before this a ninth concurrent fetch was REJECTED with
+ * `TypeError: too many requests in flight`. That is not what a browser does
+ * and it is not a limit a page can be expected to respect -- bing's own script
+ * loader fires a burst of a dozen, and eight of them arriving and four failing
+ * leaves the page in a state it has no code for. tests/qmp/qmp_bing.py is
+ * where that showed up: the fixture served 13 resources and the serial log
+ * filled with the rejection.
+ *
+ * So requests past the limit WAIT instead. The limit is 6 rather than WF_MAX
+ * so a slot is always left for something the browser itself needs (a
+ * stylesheet, an image) rather than a page's telemetry burst taking all of
+ * them -- and because the kernel's socket table is the real scarce resource
+ * underneath.
+ *
+ * The queue is FIFO, which is the only ordering a page can reason about; an
+ * abort while queued rejects immediately and never dials. */
+"var FQ_MAX = 6;\n"
+"var fqLive = 0, fqQ = [];\n"
+"function fqStart(e) {\n"
+"  fqLive++;\n"
+"  var st = __fetchStart(e.url, e.method, e.pairs, e.body, e.opts);\n"
+"  if (e.sig && typeof e.sig.addEventListener === 'function')\n"
+"    e.sig.addEventListener('abort', function () { __fetchAbort(st.h); });\n"
+"  if (e.sig && e.sig.aborted) __fetchAbort(st.h);\n"
+"  var done = function () { fqLive--; fqDrain(); };\n"
+"  st.p.then(function (v) { done(); e.res(v); }, function (x) { done(); e.rej(x); });\n"
+"}\n"
+"function fqDrain() {\n"
+"  while (fqQ.length && fqLive < FQ_MAX) {\n"
+"    var e = fqQ.shift();\n"
+"    if (e.cancelled) continue;\n"
+"    fqStart(e);\n"
+"  }\n"
+"}\n"
+"function fqEnqueue(url, method, pairs, body, opts, sig) {\n"
+"  return new Promise(function (res, rej) {\n"
+"    var e = { url: url, method: method, pairs: pairs, body: body, opts: opts,\n"
+"              sig: sig, res: res, rej: rej, cancelled: false };\n"
+"    if (fqLive < FQ_MAX) { fqStart(e); return; }\n"
+"    if (sig && typeof sig.addEventListener === 'function')\n"
+"      sig.addEventListener('abort', function () {\n"
+"        if (e.cancelled) return;\n"
+"        e.cancelled = true;\n"
+"        rej(sig.reason || abortError());\n"
+"      });\n"
+"    fqQ.push(e);\n"
+"  });\n"
+"}\n"
 "G.fetch = function fetch(input, init) {\n"
 "  init = init || {};\n"
 "  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
@@ -2409,14 +2458,10 @@ static const char *PRELUDE =
 "  } else body = null;\n"
 "  var pairs = []; hs.forEach(function (v, k) { pairs.push([k, v]); });\n"
 "  var opts = { mode: init.mode, credentials: init.credentials };\n"
-"  var st = __fetchStart(url, method, pairs, body, opts);\n"
 "  var sig = init.signal || (input && input.signal);\n"
-"  if (sig && typeof sig === 'object') {\n"
-"    if (sig.aborted) { __fetchAbort(st.h); return Promise.reject(sig.reason || abortError()); }\n"
-"    if (typeof sig.addEventListener === 'function')\n"
-"      sig.addEventListener('abort', function () { __fetchAbort(st.h); });\n"
-"  }\n"
-"  return st.p;\n"
+"  if (sig && typeof sig === 'object' && sig.aborted)\n"
+"    return Promise.reject(sig.reason || abortError());\n"
+"  return fqEnqueue(url, method, pairs, body, opts, sig);\n"
 "};\n"
 "G.Request = function Request(input, init) {\n"
 "  init = init || {};\n"

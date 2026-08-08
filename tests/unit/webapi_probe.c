@@ -340,6 +340,43 @@ static void collect(struct node *n, const char *dir)
 static unsigned long long g_now;
 static unsigned long long clock_fn(void) { return g_now += 4; }
 
+/* THE PROBE'S OWN BLIND SPOT, FIXED AFTER THE MACHINE FOUND IT.
+ *
+ * The first version of this file evaluated each script and stopped. That
+ * measures what a page does while it is LOADING and nothing it does
+ * afterwards, and a modern page defers most of itself: bing reaches `Image`
+ * and `btoa` from setTimeout callbacks, and neither name appeared anywhere in
+ * this table. tests/qmp/qmp_bing.py found them on the real machine as
+ * `uncaught in timer: ReferenceError`, because the machine has an event loop
+ * and this did not.
+ *
+ * So the probe now turns the loop. The clock is the fake one above, which
+ * jumps 4 ms per read, so a couple of hundred passes cover several seconds of
+ * page time without anything sleeping -- and a setInterval cannot spin
+ * forever, because the pass budget is fixed. */
+#define LOOP_PASSES 200
+static void run_event_loop(int show_errors, const char *tag)
+{
+    for (int i = 0; i < LOOP_PASSES; i++) {
+        int ran = js_page_run_due();
+        ran += js_page_pump();
+        if (!ran && !js_page_pending()) break;
+    }
+    if (!show_errors) return;
+    /* Timer callbacks report their exceptions through js_page.c's console
+     * capture rather than as a return value, so the errors this pass produced
+     * are in the note buffer. */
+    const char *out = js_page_output();
+    for (const char *p = out; p && *p; ) {
+        const char *nl = strchr(p, '\n');
+        int len = nl ? (int)(nl - p) : (int)strlen(p);
+        if (len > 0 && !strncmp(p, "[exception]", 11))
+            printf("    [%s-timer] %.*s\n", tag, len, p);
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
 /* Channel 2's report: the first line of the error, and the identifier if the
  * engine named one. QuickJS spells it `ReferenceError: 'x' is not defined`. */
 static void note_c2_error(const char *msg)
@@ -436,6 +473,7 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             } else c2_ok++;
             JS_FreeValue(ctx, v);
         }
+        run_event_loop(show_errors, "c2");
         js_page_close();
     }
 
@@ -491,6 +529,10 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             JS_FreeValue(ctx, v);
             free(w);
         }
+        /* Still recording: a global first reached from a timer counts, and is
+         * exactly the class of miss the first version of this probe could not
+         * see. See run_event_loop. */
+        run_event_loop(show_errors, mode == 2 ? "c1-deep" : "c1");
         js_page_close();
         g_recording = 0;
     }
