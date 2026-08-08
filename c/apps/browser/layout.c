@@ -2342,10 +2342,37 @@ static void flex_justify(int mode, int slack, int count, int *lead, int *between
  * every number downstream of it a guess too, so the column keeps the stacking
  * path below, whose approximation is at least stated. */
 
+/* Truncate the display list back to `mark`, RELEASING WHAT THE ABANDONED
+ * ENTRIES OWN.
+ *
+ * `nitem` is the only handle on the append-only array, which makes "roll back
+ * the display list" look like "restore the index". It is not, because an entry
+ * is not pure data: an IT_IMAGE entry OWNS its decoded bitmap. An inline <svg>
+ * is rasterised DURING layout (flow_node, above -- it has to be, the box size
+ * comes from the viewBox) and the holder hangs off the item, exactly as
+ * layout_free() at the bottom of this file documents by freeing it.
+ *
+ * So restoring the index alone abandons that heap, and a trial layout does it
+ * once per measurement per icon. On a page whose flex rows are full of inline
+ * SVG -- which is every modern site's nav bar -- 39 trials leaked 400 MB and
+ * the JS engine died of it before the page could paint. Measured, not
+ * inferred: deepseek's heap peak was 316 MB against 38 MB with this in place.
+ *
+ * Anything else an item comes to own must be released here too; this and
+ * layout_free() are the two places that answer "what does an item hold". */
+static void discard_items(int mark)
+{
+    if (items)
+        for (int i = mark; i < nitem; i++)
+            if (items[i].img) { img_free(items[i].img); kfree(items[i].img); items[i].img = 0; }
+    nitem = mark;
+}
+
 /* Content-box cross size of one flex item, from a TRIAL layout that is then
  * rolled back. The display list is an append-only array, so "roll back" is
- * restoring `nitem`; the float array and the stacking level are saved the same
- * way. Floats are hidden from the trial (g_fbase = g_nfloat) because a flex
+ * discard_items() -- restoring `nitem` AND freeing what the entries above it
+ * own, see the note there; the float array and the stacking level are saved the
+ * same way. Floats are hidden from the trial (g_fbase = g_nfloat) because a flex
  * item is a block formatting context of its own -- the same scoping flex_place
  * does for the real pass, and without it a measurement at x=0 would be narrowed
  * by exclusions belonging to somebody else's coordinates. */
@@ -2356,7 +2383,7 @@ static int trial_block_height(struct node *n, int inner_w)
     g_fbase = g_nfloat;
     int h = layout_block(n, 0, 0, inner_w);
     { int b = float_max_bottom(nsave); if (b > h) h = b; }
-    nitem = save_n; g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
+    discard_items(save_n); g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
     return h < 0 ? 0 : h;
 }
 
@@ -2372,7 +2399,7 @@ static int flex_measure_cross(struct flexslot *f, int inner_w, int fpx, int fmon
         for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
         newline2(&fl, 1);
         int h = fl.y;
-        nitem = save_n; g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
+        discard_items(save_n); g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
         (void)fmono;
         return h < 0 ? 0 : h;
     }
