@@ -1086,6 +1086,113 @@ static void t_degenerate(void)
     layout_flex_free(&out);
 }
 
+/* ================================================================ *
+ * A randomised invariant sweep.
+ *
+ * § 9.7's loop terminates because every pass freezes at least one item. That is
+ * an ARGUMENT, and an argument is not a tested fact -- a wrong freeze condition
+ * gives an implementation that is right on every case above and spins forever
+ * on some combination of clamps nobody thought to write down. So: 4000 random
+ * configurations, run to completion, with the structural invariants checked on
+ * each. If the loop can hang, this hangs, and a hung test is a failed test.
+ *
+ * The inputs are deterministic (a fixed-seed LCG), so a failure here is
+ * reproducible rather than a story about a bad afternoon.
+ * ================================================================ */
+
+static unsigned long rng_s = 0x9E3779B97F4A7C15ULL;
+static unsigned rnd(unsigned n)
+{ rng_s = rng_s * 6364136223846793005ULL + 1442695040888963407ULL;
+  return n ? (unsigned)((rng_s >> 33) % n) : 0; }
+
+static void t_sweep(void)
+{
+    group = "invariant sweep";
+    enum { N = 12 };
+    struct cstyle cs, st[N];
+    struct flex_item_in in[N];
+    struct tref tr[N];
+    struct flex_out out;
+    int bad_run = 0, bad_count = 0, bad_line = 0, bad_neg = 0, bad_clamp = 0, bad_ord = 0;
+
+    for (int iter = 0; iter < 4000; iter++) {
+        int n = 1 + (int)rnd(N);
+        st_init(&cs); cs.display = DISP_FLEX;
+        cs.flex_dir  = (unsigned char)rnd(4);
+        cs.flex_wrap = (unsigned char)rnd(3);
+        cs.justify   = (unsigned char)rnd(6);
+        cs.align_items = (unsigned char)rnd(5);
+        cs.grid_gap_x = (int)rnd(30); cs.grid_gap_y = (int)rnd(30);
+
+        for (int i = 0; i < n; i++) {
+            st_init(&st[i]);
+            st[i].flex_grow   = (int)rnd(4096);
+            st[i].flex_shrink = (int)rnd(4096);
+            if (rnd(2)) { st[i].has_fb = 1; st[i].flex_basis = (int)rnd(400); }
+            if (rnd(3) == 0) { st[i].has_w = 1; st[i].width = (int)rnd(300); }
+            if (rnd(3) == 0) { st[i].has_min_w = 1; st[i].min_w = (int)rnd(200); }
+            if (rnd(3) == 0) { st[i].has_max_w = 1; st[i].max_w = (int)rnd(200); }
+            if (rnd(3) == 0) { st[i].has_h = 1; st[i].height = (int)rnd(200); }
+            if (rnd(4) == 0) st[i].align_self = (unsigned char)rnd(6);
+            st[i].pl = (int)rnd(20); st[i].pr = (int)rnd(20);
+            st[i].pt = (int)rnd(20); st[i].pb = (int)rnd(20);
+            st[i].border_w[0] = st[i].border_w[2] = (int)rnd(6);
+            st[i].border_w[1] = st[i].border_w[3] = (int)rnd(6);
+            st[i].order = (int)rnd(5) - 2;
+            tr[i].cross = (int)rnd(120); tr[i].area = 0;
+            tr[i].baseline = rnd(2) ? (int)rnd(60) : -1;
+            mk_item(&in[i], &st[i], &tr[i], (int)rnd(120), (int)rnd(400));
+            if (rnd(16) == 0) in[i].abspos = 1;
+        }
+        struct flex_in ct = mk_container(&cs, rnd(4) ? (int)rnd(800) : FLEX_INDEFINITE,
+                                              rnd(4) ? (int)rnd(600) : FLEX_INDEFINITE);
+        if (rnd(6) == 0) ct.wm = (unsigned char)(1 + rnd(2));
+        ct.rtl = (unsigned char)rnd(2);
+
+        if (layout_flex_run(&ct, in, n, &MET, &out) != 0) { bad_run++; continue; }
+
+        /* every input comes back exactly once */
+        int seen[N]; memset(seen, 0, sizeof seen);
+        if (out.nitems != n) bad_count++;
+        for (int i = 0; i < out.nitems; i++) {
+            const struct flex_item_out *o = &out.items[i];
+            if (o->idx < 0 || o->idx >= n || seen[o->idx]) { bad_count++; break; }
+            seen[o->idx] = 1;
+
+            /* a flex item is on a real line; an abspos child is on none */
+            if (in[o->idx].abspos) { if (o->line != -1) bad_line++; }
+            else if (o->line < 0 || o->line >= out.nlines) bad_line++;
+
+            /* no negative geometry ever escapes */
+            if (o->main_size < 0 || o->cross_size < 0 || o->w < 0 || o->h < 0) bad_neg++;
+
+            /* an explicit min-width/max-width is never violated (content-box
+             * styles, so the used main size is directly comparable) */
+            if (!in[o->idx].abspos && st[o->idx].display != DISP_NONE) {
+                int horiz_main = (cs.flex_dir == FDIR_ROW || cs.flex_dir == FDIR_ROW_REV)
+                                 == (ct.wm == FLEX_WM_HORIZ_TB);
+                if (horiz_main) {
+                    if (st[o->idx].has_min_w && o->main_size < st[o->idx].min_w) bad_clamp++;
+                    if (st[o->idx].has_max_w && !st[o->idx].has_min_w &&
+                        o->main_size > st[o->idx].max_w) bad_clamp++;
+                }
+            }
+        }
+        /* within a line, order-modified order is placement order */
+        for (int i = 1; i < out.nitems; i++) {
+            const struct flex_item_out *p = &out.items[i - 1], *q = &out.items[i];
+            if (p->line >= 0 && p->line == q->line && q->main_pos < p->main_pos) bad_ord++;
+        }
+        layout_flex_free(&out);
+    }
+    ck_eq(bad_run,   0, "4000 random configurations all resolve");
+    ck_eq(bad_count, 0, "every item comes back exactly once");
+    ck_eq(bad_line,  0, "flex items land on a real line, abspos children on none");
+    ck_eq(bad_neg,   0, "no negative size or extent escapes");
+    ck_eq(bad_clamp, 0, "an explicit min-width/max-width is never violated");
+    ck_eq(bad_ord,   0, "order-modified order is placement order within a line");
+}
+
 int main(void)
 {
     printf("flex_test: CSS Flexbox layout algorithm\n");
@@ -1099,6 +1206,7 @@ int main(void)
     t_abspos();
     t_wpt_oracle();
     t_degenerate();
+    t_sweep();
     printf("%s: %d checks, %d failures\n",
            failures ? "FAILED" : "ok", checks, failures);
     return failures ? 1 : 0;
