@@ -31,6 +31,12 @@ int net_up(void) { return up; }
 int  dhcp_run(int timeout_ticks) __attribute__((weak));
 void dhcp_poll(void) __attribute__((weak));
 
+/* Link-layer hooks, weak for the same reason: net.c is linked into host tests
+ * that have no NIC and no ARP. */
+void arp_announce(void) __attribute__((weak));
+void arp_dump(void) __attribute__((weak));
+void eth_dump(void) __attribute__((weak));
+
 /* ---------------------------------------------------------------------------
  * The receive path.
  *
@@ -131,11 +137,31 @@ int net_init(void)
      * only broadcast UDP can come back in until we own an address. */
     if (!dhcp_run || dhcp_run(300) != 0)    /* ~3 s */
         net_cfg_fallback();
+
+    /* RFC 5227 s3: announce the address we just took. Until now the machine
+     * never announced at all -- nothing on the segment learned our binding
+     * until we happened to talk to it, switches did not learn our port until we
+     * transmitted, and a second host taking the same address was never noticed
+     * by anybody. One broadcast fixes all three, and it is also what makes the
+     * conflict counter in arp_dump() able to be non-zero. */
+    if (arp_announce) arp_announce();
+
+    /* One line each from the two link-layer files, once, at the end of bring-up.
+     * They are the only visibility this layer has ever had; a machine dropping
+     * every frame for a wrong-destination or unsupported-ethertype reason used
+     * to look exactly like a machine on an idle network. */
+    if (eth_dump) eth_dump();
+    if (arp_dump) arp_dump();
     return 0;
 }
 
 void tcp_poll(void) __attribute__((weak));
 void ip_poll(void) __attribute__((weak));
+/* The IPv4 neighbour cache's clock: solicitation retransmits, REACHABLE->STALE
+ * ageing, unicast probes, expiry of failed lookups. Without a periodic call
+ * nothing in c/net/link/arp.c ever ages, which is the state the old flat cache
+ * was permanently in. */
+void arp_poll(void) __attribute__((weak));
 void dns_poll(void) __attribute__((weak));   /* async resolver pool */
 void sock_pump(void) __attribute__((weak));  /* non-blocking client sockets */
 
@@ -156,6 +182,7 @@ void net_poll(void)
         rx_report();
         if (tcp_poll) tcp_poll();
         if (ip_poll) ip_poll();
+        if (arp_poll) arp_poll();
         if (dhcp_poll) dhcp_poll();
         /* The async half, and the reason a fetch no longer freezes the desktop:
          * these two advance EVERY outstanding lookup and EVERY open socket by
