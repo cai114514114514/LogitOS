@@ -1922,7 +1922,10 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
             g_mhoist = 0;
             int ch = (inner - top) + st->pb + st->border_w[2];
             ch = block_height(st, ch, -1);
-            if (ch < st->font_px && !selfc) ch = st->font_px;   /* min line */
+            /* The old unconditional `ch = max(ch, font_px)` overrode an
+             * EXPLICIT height too, so `height: 5px` rendered 16px tall. A box
+             * that asked for a height gets it. */
+            (void)selfc;
             if (selfc) ch = 0;                  /* collapses through: no height */
             if (bgidx >= 0) items[bgidx].h = ch;
             /* position:relative (and sticky, which is relative until scrolled
