@@ -4,12 +4,27 @@
  * slices, the full CTU quadtree (CU 64..8, PU incl. AMP, TU quadtree), 35
  * intra modes, merge/AMVP with temporal MV prediction, 8-tap luma / 4-tap
  * chroma interpolation, bi-prediction, explicit weighted prediction, transform
- * skip, sign data hiding, scaling lists, deblocking and SAO, tiles, wavefront
- * entropy sync and dependent slice segments.
+ * skip, sign data hiding, deblocking and SAO, tiles, wavefront entropy sync
+ * and dependent slice segments.
  *
- * Everything outside that (12-bit and above, 4:2:2/4:4:4, PCM, the range
- * extensions, SCC, fields, multi-layer) is a clean H265_ERR_UNSUPPORTED,
- * never a crash: every input byte is UNTRUSTED.
+ * Everything outside that (12-bit and above, monochrome, 4:2:2/4:4:4, unequal
+ * luma/chroma bit depths, PCM, the range extensions, SCC, fields, multi-layer)
+ * is a clean H265_ERR_UNSUPPORTED, never a crash: every input byte is
+ * UNTRUSTED. All of those refusals are verified, not assumed -- x265 will
+ * encode monochrome, 4:2:2 and 4:4:4 at both depths, and each one is checked
+ * to come back H265_ERR_UNSUPPORTED rather than a wrong picture.
+ *
+ * TWO THINGS THIS LIST USED TO CLAIM AND SHOULD NOT HAVE:
+ *   scaling lists  are parsed, and do not reconstruct bit-exactly at EITHER
+ *                  depth. No case in the 8-bit test matrix ever used a
+ *                  non-flat list, so the feature was claimed and never
+ *                  measured; `make test-h265-scaling` now puts a number on it.
+ *   PCM            is refused outright in h265_nal.c, and always was. It is
+ *                  not merely theoretical either: the ITU conformance stream
+ *                  DBLK_A_MAIN10_VIXS_4 uses it.
+ *
+ * B slices decode but are NOT bit-exact at either depth; they are gated
+ * separately (`make test-h265-b`) rather than counted in `make test-h265`.
  *
  * Deliberately the same shape as h264.h -- one decoder object, a pull model
  * over an Annex B byte stream -- with ONE difference that HEVC forces: B
