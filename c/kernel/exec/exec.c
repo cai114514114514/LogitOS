@@ -8,6 +8,7 @@
 #include "pmm.h"
 #include "vma.h"         /* the CLI stack is a RESERVATION, faulted in on touch */
 #include "aex.h"
+#include "elf.h"      /* struct elf_image + the AT_* auxv tags */
 #include "vfs.h"
 #include "kheap.h"
 #include "usercopy.h"
@@ -86,7 +87,10 @@ static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int
  * works. At two pages the ordinary shell faults its own stack in on every boot,
  * so `[mm] ... anon` is nonzero in every log and the path is exercised
  * continuously instead of being trusted. */
-#define CLI_STACK_HEAD  (ARGBUFSZ + (2 * MAXARG + 3) * 8 + 32)
+/* The auxiliary vector costs 2 words a pair, and the executable's own path is
+ * pushed as a string for AT_EXECFN. */
+#define AUXV_PAIRS      14
+#define CLI_STACK_HEAD  (ARGBUFSZ + 160 + (2 * MAXARG + 3 + 2 * AUXV_PAIRS) * 8 + 48)
 #define CLI_STACK_EAGER 2
 /* If the head ever outgrows the eager window, exec would write into an unmapped
  * page from kernel context with the wrong CR3 semantics -- so it is a build
@@ -112,9 +116,11 @@ _Static_assert(CLI_STACK_HEAD <= CLI_STACK_EAGER * 4096,
  * address no VMA covers, returns MM_FAULT_NONE, and the process dies on its
  * first deep call -- so a failed reservation falls back to mapping eagerly
  * rather than handing out a stack that faults. */
-static uint64_t setup_cli_stack(uint64_t cr3, uint64_t entry, char **argv, int argc,
+static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
+                                const char *execfn, char **argv, int argc,
                                 char **envp, int envc)
 {
+    uint64_t entry = img->entry;
     uint64_t base = entry & ~(uint64_t)0xFFFFF;
     uint64_t top = base + 0x4000000;                 /* 64 MiB above base */
     uint64_t bottom = top - (uint64_t)CLI_STACK_PAGES * 0x1000;
@@ -138,7 +144,15 @@ static uint64_t setup_cli_stack(uint64_t cr3, uint64_t entry, char **argv, int a
      * exactly as written. The stack is the likeliest place for a program to be
      * handed attacker-controlled input, so it is the page this most wants.
      *
-     * Written, and currently INERT: cpu_prot_nx_usable() returns 0 because
+     * WHERE THE ANSWER COMES FROM, which is the part that changed: it used to
+     * be decided here, and independently again in c/kernel/gui/wm.c, with the
+     * program file having no say. It is now PT_GNU_STACK -- the header the ELF
+     * has always carried for exactly this and that this loader ignored. The
+     * loader refuses an image that asks for PF_X outright (see elf.c), so by
+     * the time we get here the only question left is whether NX can be
+     * expressed at all.
+     *
+     * Which it currently cannot: cpu_prot_nx_usable() returns 0 because
      * c/kernel/mm's PTE->frame masks keep bit 63 (prot.h has the full account,
      * including the kernel #GP it produces). Left in this shape deliberately
      * rather than deleted -- when that mask changes, one function starts
@@ -149,17 +163,37 @@ static uint64_t setup_cli_stack(uint64_t cr3, uint64_t entry, char **argv, int a
      *     is faulted in by c/kernel/mm/fault.c's do_anon(), which maps from the
      *     VMA protection and ignores VMA_EXEC.
      *   - GUI apps get their stack from c/kernel/gui/wm.c, not from here. */
-    uint64_t stack_flags = VMM_WRITABLE | VMM_USER | (cpu_prot_nx_usable() ? PTE_NX : 0);
+    int want_nx = !(img->stack_flags & PF_X) && cpu_prot_nx_usable();
+    uint64_t stack_flags = VMM_WRITABLE | VMM_USER | (want_nx ? PTE_NX : 0);
     for (int i = 1; i <= eager; i++) {
         uint64_t frame = pmm_alloc();
         if (!frame) return 0;
         vmm_map_page(top - (uint64_t)i * 0x1000, frame, stack_flags);
     }
-    uint64_t sp = top, uargv[MAXARG], uenvp[MAXARG];
+    uint64_t sp = top, uargv[MAXARG], uenvp[MAXARG], uexecfn = 0;
     for (int i = 0; i < argc; i++) { int l = kstrlen(argv[i]); sp -= l + 1; memcpy((void *)sp, argv[i], l + 1); uargv[i] = sp; }
     for (int i = 0; i < envc; i++) { int l = kstrlen(envp[i]); sp -= l + 1; memcpy((void *)sp, envp[i], l + 1); uenvp[i] = sp; }
+    if (execfn) { int l = kstrlen(execfn); sp -= l + 1; memcpy((void *)sp, execfn, l + 1); uexecfn = sp; }
     sp &= ~(uint64_t)0xF;
-    int nslots = 1 + (argc + 1) + (envc + 1);
+
+    /* THE AUXILIARY VECTOR.
+     *
+     * The initial stack used to be argc / argv[] / NULL / envp[] / NULL and
+     * then stop -- which is a truncated SysV stack, not a small one. Anything
+     * ported expects the auxv after the environment: a static libc reads
+     * AT_PAGESZ before it can round anything, AT_RANDOM to seed its stack
+     * canary, AT_PHDR/AT_PHNUM to find its own PT_TLS, and AT_ENTRY to know
+     * where it started. A program that goes looking for them found whatever
+     * happened to be above the NULL, which on this stack is the environment
+     * strings -- so the failure was not "no auxv", it was "auxv full of
+     * filenames".
+     *
+     * AT_PHDR and AT_RANDOM are addresses in the read-only page the loader
+     * places above the image (elf.c), so nothing here has to allocate for them.
+     * AT_SECURE is 0 and AT_UID/GID are 0 because this system has one user;
+     * they are emitted rather than omitted because a libc that does not find
+     * AT_SECURE assumes the worst. */
+    int nslots = 1 + (argc + 1) + (envc + 1) + 2 * AUXV_PAIRS;
     sp -= (uint64_t)nslots * 8;
     sp &= ~(uint64_t)0xF;                            /* 16-align argc */
     uint64_t *st = (uint64_t *)sp; int k = 0;
@@ -168,6 +202,26 @@ static uint64_t setup_cli_stack(uint64_t cr3, uint64_t entry, char **argv, int a
     st[k++] = 0;
     for (int i = 0; i < envc; i++) st[k++] = uenvp[i];
     st[k++] = 0;
+    st[k++] = AT_PHDR;     st[k++] = img->phdr_va;
+    st[k++] = AT_PHENT;    st[k++] = img->phentsize;
+    st[k++] = AT_PHNUM;    st[k++] = img->phnum;
+    st[k++] = AT_PAGESZ;   st[k++] = 0x1000;
+    st[k++] = AT_BASE;     st[k++] = 0;              /* no interpreter */
+    st[k++] = AT_FLAGS;    st[k++] = 0;
+    st[k++] = AT_ENTRY;    st[k++] = img->entry;
+    st[k++] = AT_UID;      st[k++] = 0;
+    st[k++] = AT_EUID;     st[k++] = 0;
+    st[k++] = AT_GID;      st[k++] = 0;
+    st[k++] = AT_SECURE;   st[k++] = 0;
+    st[k++] = AT_RANDOM;   st[k++] = img->random_va;
+    st[k++] = AT_EXECFN;   st[k++] = uexecfn;
+    st[k++] = AT_NULL;     st[k++] = 0;
+    /* One pair short and the reservation is bigger than the vector (harmless);
+     * one pair long and the vector overwrites an argv string (not). Counted,
+     * not asserted in a comment, because AUXV_PAIRS and the block above are two
+     * places that have to agree and nothing else makes them. */
+    if (k != nslots)
+        kprintf("[exec] auxv miscount: wrote %d slots, reserved %d\n", k, nslots);
     return sp;
 }
 
@@ -213,13 +267,25 @@ long proc_execve(struct registers *r)
     uint64_t t_exec = exec_rdtsc();
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
-    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext, NULL);  /* maps into the active (p->cr3) space */
+    struct elf_image ei;
+    int lrc = aex_load_image(img, (uint64_t)bytes, nm, ext, &ei);  /* maps into the active (p->cr3) space */
     kfree(img);
     uint64_t t_load = exec_rdtsc();
-    if (!entry) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
+    if (lrc != 0) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
+    uint64_t entry = ei.entry;
 
-    /* 4+5. Fresh user stack with the SysV argc/argv/envp layout. */
-    uint64_t sp = setup_cli_stack(cr3, entry, argv, argc, envp, envc);
+    /* PT_TLS: install the thread pointer the loader laid out. Through
+     * sched_set_fsbase() and never with a bare WRMSR -- the scheduler keeps
+     * `hardware IA32_FS_BASE == current->fsbase` as an invariant and decides
+     * whether to reload the MSR by comparing the two threads' fields, so a
+     * write that changed only the hardware would survive exactly until the next
+     * switch back. Set unconditionally, including to 0: an execve REPLACES the
+     * image, and a program with no thread-local storage must not inherit the
+     * thread pointer of the program that was here a moment ago. */
+    sched_set_fsbase(ei.tls_tp);
+
+    /* 4+5. Fresh user stack with the SysV argc/argv/envp/auxv layout. */
+    uint64_t sp = setup_cli_stack(cr3, &ei, abs, argv, argc, envp, envc);
     if (!sp) { kprintf("[execve] %s: stack setup failed\n", abs); proc_exit(127); }
     {
         uint64_t t_end = exec_rdtsc();
@@ -262,8 +328,9 @@ int proc_spawn(const char *path, char **argv)
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
-    uint64_t entry = aex_load(img, (uint64_t)bytes, nm, ext, NULL);
-    uint64_t sp = entry ? setup_cli_stack(space, entry, argv, argc, 0, 0) : 0;
+    struct elf_image ei;
+    uint64_t entry = aex_load_image(img, (uint64_t)bytes, nm, ext, &ei) == 0 ? ei.entry : 0;
+    uint64_t sp = entry ? setup_cli_stack(space, &ei, path, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
     kfree(img);

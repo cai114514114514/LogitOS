@@ -386,7 +386,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog clip notify
+       show dir chart prog clip notify execinfo
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -3045,6 +3045,13 @@ clean:
 # targets were deleted by a whole-file overwrite from a concurrent line three
 # times in one afternoon, once by me.
 -include tests/loader.mk
+
+# The EXECUTABLE loader -- c/kernel/exec/{elf,aex}.c: test-exec (every built
+# binary, byte for byte, with the permissions p_flags asked for), test-exec-fuzz
+# (the ring-0 parser against mutated input), test-exec-negctl (two deliberately
+# broken loaders the tests above must fail against), test-exec-bases and
+# test-exec-os. Own fragment for the same reason as every other one above.
+-include tests/exec.mk
 
 # The ring-3 heap's COST: test-arena (the .bss/commit-bound gate plus its two
 # negative controls) and bench-arena (per-page heap over the cssweb corpus).
