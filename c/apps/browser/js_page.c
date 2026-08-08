@@ -560,6 +560,33 @@ int js_page_eval(const char *src, int len, const char *filename)
         JSValue e = JS_GetException(g_ctx);
         const char *m = JS_ToCString(g_ctx, e);
         printf("[browser] JS exception: %s\n", m ? m : "?");
+        /* AND THE STACK, because the message alone is not a diagnosis.
+         *
+         * `TypeError: cannot read property 'charAt' of undefined` names the
+         * operation and nothing else -- not the function, not the file, not
+         * which of a bundle's thousands of call sites. Every real page that
+         * failed today failed with a line of exactly that shape, and each one
+         * cost a separate investigation to place.
+         *
+         * The stack was always here; this printed the message and dropped it.
+         * That is the same defect the engine had until a QuickJS patch landed
+         * today -- build_backtrace() emitted frames with no message header, so
+         * every reporter on every page printed a stack with no error in it.
+         * Fixing one half and leaving the other prints two useless halves.
+         *
+         * Defensive on purpose: a thrown value need not be an Error, `stack`
+         * may be absent or a getter, and this runs while an exception is
+         * already in flight -- so an accessor that threw would have nowhere to
+         * go. Read it only when it is a plain string. */
+        if (JS_IsObject(e)) {
+            JSValue st = JS_GetPropertyStr(g_ctx, e, "stack");
+            if (JS_IsString(st)) {
+                const char *s = JS_ToCString(g_ctx, st);
+                if (s && *s) printf("%s", s);
+                if (s) JS_FreeCString(g_ctx, s);
+            }
+            JS_FreeValue(g_ctx, st);
+        }
         note("[exception] "); if (m) note(m); note("\n");
         if (m) JS_FreeCString(g_ctx, m);
         JS_FreeValue(g_ctx, e);
