@@ -1002,8 +1002,17 @@ static void t_color_value(void)
 	 * standing alone as the whole value stays LibCSS's to resolve. */
 	chk_rt("color", "rgb(from var(--bg-color) r g b / 80%)",
 	    "rgb(from var(--bg-color) r g b / 80%)");
-	chk("color", "lch(from var(--color) calc(l / 2) c h)",
-	    "lch(from var(--color) calc(0.5 * l) c h)");
+	/* A value containing var() is a PENDING-SUBSTITUTION value and the
+	 * CSSOM serializes it as the original token sequence -- so the
+	 * calculation tree stands down and `calc(l / 2)` keeps its division
+	 * rather than folding into `calc(0.5 * l)`. */
+	chk_rt("color", "lch(from var(--color) calc(l / 2) c h)",
+	    "lch(from var(--color) calc(l / 2) c h)");
+	chk_rt("color", "lab(from var(--c) l a b / calc(alpha * 0.8))",
+	    "lab(from var(--c) l a b / calc(alpha * 0.8))");
+	/* ... and WITHOUT the var() the same expression is canonicalised. */
+	chk("color", "lch(from lch(50 100 300) l calc(c / 2) h)",
+	    "lch(from lch(50 100 300) l calc(0.5 * c) h)");
 	chk("color", "var(--anything)", PASS_);
 
 	/* The channel keywords belong to the SPACE, not to color(): an xyz
@@ -1069,8 +1078,14 @@ static void t_color_value(void)
 	    "rgb(from rebeccapurple r calc(2 * g) 10)");
 	chk("color", "rgb(from rebeccapurple b calc(r * .5) 10)",
 	    "rgb(from rebeccapurple b calc(0.5 * r) 10)");
-	chk("color", "lch(from lch(50 100 300) l calc(c / 2) h)",
-	    "lch(from lch(50 100 300) l calc(0.5 * c) h)");
+	/* Dividing by a NUMBER folds into the coefficient; dividing by a
+	 * channel cannot, so the divisor stays under the bar -- and the
+	 * coefficient then has to print even when it is 1, or `calc(1 / l)`
+	 * comes out as `calc(/ l)`. */
+	chk_rt("color", "oklch(from red calc(1 / l) c h)",
+	    "oklch(from red calc(1 / l) c h)");
+	chk("color", "oklch(from red calc(2 / l) c h)",
+	    "oklch(from red calc(2 / l) c h)");
 	/* A product inside a SUM grows parentheses it was not written with;
 	 * a product that is the whole expression does not. */
 	chk("color", "rgb(from rebeccapurple r calc(g * .5 + g * .5) 10)",

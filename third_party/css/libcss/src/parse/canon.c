@@ -1393,6 +1393,8 @@ typedef struct {
 	char unit[24];
 	int nfact;
 	char fact[CALC_MAXFACT][CTEXT];
+	int ndiv;			/* factors under the division bar */
+	char div[CALC_MAXFACT][CTEXT];
 } cterm;
 
 typedef struct {
@@ -1421,6 +1423,8 @@ static int term_mul(cterm *dst, const cterm *a, const cterm *b)
 	if (a->unit[0] && b->unit[0]) return -1;
 	if (a->nfact + b->nfact > CALC_MAXFACT) return -1;
 
+	if (a->ndiv + b->ndiv > CALC_MAXFACT) return -1;
+
 	memset(dst, 0, sizeof *dst);
 	dst->coef = a->coef * b->coef;
 	memcpy(dst->unit, a->unit[0] ? a->unit : b->unit, sizeof dst->unit);
@@ -1428,6 +1432,10 @@ static int term_mul(cterm *dst, const cterm *a, const cterm *b)
 		memcpy(dst->fact[dst->nfact++], a->fact[i], CTEXT);
 	for (i = 0; i < b->nfact; i++)
 		memcpy(dst->fact[dst->nfact++], b->fact[i], CTEXT);
+	for (i = 0; i < a->ndiv; i++)
+		memcpy(dst->div[dst->ndiv++], a->div[i], CTEXT);
+	for (i = 0; i < b->ndiv; i++)
+		memcpy(dst->div[dst->ndiv++], b->div[i], CTEXT);
 	return 0;
 }
 
@@ -1447,9 +1455,10 @@ static int sum_add(csum *dst, const csum *src, int neg)
 	for (i = 0; i < src->n; i++) {
 		cterm t = src->t[i];
 		if (neg) t.coef = -t.coef;
-		if (t.nfact == 0) {
+		if (t.nfact == 0 && t.ndiv == 0) {
 			for (j = 0; j < dst->n; j++)
 				if (dst->t[j].nfact == 0 &&
+				    dst->t[j].ndiv == 0 &&
 				    strcmp(dst->t[j].unit, t.unit) == 0)
 					break;
 			if (j < dst->n) { dst->t[j].coef += t.coef; continue; }
@@ -1479,14 +1488,31 @@ static int sum_mul(csum *dst, const csum *a, const csum *b)
 	return 0;
 }
 
+/* Division. Dividing by a plain NUMBER folds into the coefficient, which is
+ * why `c / 2` is `0.5 * c`. Dividing by anything else -- `calc(1 / l)`, where
+ * `l` is a channel whose value nobody knows yet -- cannot fold, so the
+ * divisor goes under the bar and stays there. Rejecting that case outright
+ * was the first version of this function, and it deleted a valid value. */
 static int sum_div(csum *dst, const csum *a, const csum *b)
 {
-	int i;
+	const cterm *d;
+	int i, j;
 
-	/* Only division BY a plain number: everything else is non-linear. */
-	if (b->n != 1 || b->t[0].nfact != 0 || b->t[0].unit[0]) return -1;
+	if (b->n != 1) return -1;		/* non-linear */
+	d = &b->t[0];
+	if (d->unit[0]) return -1;		/* dividing by a dimension */
+
 	*dst = *a;
-	for (i = 0; i < dst->n; i++) dst->t[i].coef /= b->t[0].coef;
+	for (i = 0; i < dst->n; i++) {
+		cterm *t = &dst->t[i];
+		t->coef /= d->coef;
+		if (t->ndiv + d->nfact > CALC_MAXFACT) return -1;
+		if (t->nfact + d->ndiv > CALC_MAXFACT) return -1;
+		for (j = 0; j < d->nfact; j++)
+			memcpy(t->div[t->ndiv++], d->fact[j], CTEXT);
+		for (j = 0; j < d->ndiv; j++)
+			memcpy(t->fact[t->nfact++], d->div[j], CTEXT);
+	}
 	return 0;
 }
 
@@ -1516,8 +1542,10 @@ static void bunit(buf *b, const char *u)
  * for parenthesising it inside a sum. */
 static int term_compound(const cterm *t)
 {
-	if (t->nfact == 0) return 0;
-	if (t->nfact > 1) return 1;
+	int printed = t->nfact + t->ndiv;
+	if (printed == 0) return 0;
+	if (t->ndiv > 0) return 1;	/* the coefficient always prints */
+	if (printed > 1) return 1;
 	return !(t->coef == 1.0 && t->unit[0] == 0);
 }
 
@@ -1527,11 +1555,14 @@ static void bterm(buf *b, const cterm *t, int use_abs)
 	int shown = !(c == 1.0 && t->unit[0] == 0);
 	int i;
 
-	if (t->nfact == 0) {
+	if (t->nfact == 0 && t->ndiv == 0) {
 		bnum6(b, c);
 		bunit(b, t->unit);
 		return;
 	}
+	/* With a divisor and no numerator factor the coefficient has to print
+	 * even when it is 1, or `calc(1 / l)` comes out as `calc(/ l)`. */
+	if (t->nfact == 0) shown = 1;
 #if defined(CANON_NEGCTL) || defined(CANON_NEGCTL_CALC)
 	/* THE CALC SABOTAGE: the product comes out in SOURCE order, so
 	 * `calc(g * 2)` reads back as `calc(g * 2)` rather than
@@ -1545,19 +1576,27 @@ static void bterm(buf *b, const cterm *t, int use_abs)
 		bput(b, t->fact[i], -1);
 	}
 	if (shown) {
-		bput(b, " * ", 3);
+		if (t->nfact) bput(b, " * ", 3);
 		bnum6(b, c);
 		bunit(b, t->unit);
+	}
+	for (i = 0; i < t->ndiv; i++) {
+		bput(b, " / ", 3);
+		bput(b, t->div[i], -1);
 	}
 #else
 	if (shown) {
 		bnum6(b, c);
 		bunit(b, t->unit);
-		bput(b, " * ", 3);
+		if (t->nfact) bput(b, " * ", 3);
 	}
 	for (i = 0; i < t->nfact; i++) {
 		if (i) bput(b, " * ", 3);
 		bput(b, t->fact[i], -1);
+	}
+	for (i = 0; i < t->ndiv; i++) {
+		bput(b, " / ", 3);
+		bput(b, t->div[i], -1);
 	}
 #endif
 }
@@ -1834,7 +1873,7 @@ static int calc_channel(lexed *lx, buf *b, int pct_ok, int ang_ok,
 	 * calc at all, so `rgb(calc(infinity), 0, 0)` has to become
 	 * `rgb(255, 0, 0)`. lab() and color() do not: their form CAN hold a
 	 * calc, and `lab(calc(infinity) 0 0)` keeps it. */
-	if (out != NULL && s.n == 1 && s.t[0].nfact == 0) {
+	if (out != NULL && s.n == 1 && s.t[0].nfact == 0 && s.t[0].ndiv == 0) {
 		out->resolved = 1;
 		out->num = s.t[0].coef;
 		memcpy(out->unit, s.t[0].unit, sizeof out->unit);
@@ -2995,6 +3034,32 @@ static int canon_color(lexed *lx, buf *b, int depth)
 	return canon_color_ctx(lx, b, depth, 0);
 }
 
+/* Does the value contain a substitution function anywhere?
+ *
+ * A declaration whose value contains var() is a PENDING-SUBSTITUTION VALUE,
+ * and the CSSOM serializes one as the ORIGINAL token sequence -- there is
+ * nothing to canonicalise, because nobody knows what the value is until the
+ * cascade substitutes. `lab(from var(--c) l a b / calc(alpha * 0.8))` reads
+ * back with its `alpha * 0.8` in the order it was written, NOT reordered to
+ * `0.8 * alpha`, and `lch(from var(--c) calc(l / 2) c h)` keeps its division
+ * rather than folding it into `0.5 * l`.
+ *
+ * This is the one place the calculation tree has to stand down, and it is not
+ * an exception to the serialization rule -- it IS the serialization rule for
+ * this class of value. Found by the tree: three subtests that had been
+ * passing on the old verbatim path started failing the moment calc() began
+ * spelling things properly. */
+static int value_has_var(lexed *lx)
+{
+	int i;
+	for (i = 0; i < lx->n; i++)
+		if (lx->t[i].kind == T_FUNC &&
+		    (ieq(lx->t[i].s, lx->t[i].len, "var") ||
+		     ieq(lx->t[i].s, lx->t[i].len, "env")))
+			return 1;
+	return 0;
+}
+
 /* Does this file claim the VALUE in front of it? A colour property whose
  * value is a bare keyword, a hex literal or anything else LibCSS already
  * spells correctly is left alone -- claiming a property is not claiming every
@@ -3574,6 +3639,31 @@ int css_canon_decl(const char *prop, int plen,
 		if (sysk != NULL) {
 			bput(&b, sysk, -1);
 			rc = CSS_CANON_OK;
+		} else if (value_has_var(&lx) && lx.t[0].kind == T_FUNC &&
+			   (in_tab(lx.t[0].s, lx.t[0].len, claimed_color_fns) ||
+			    in_tab(lx.t[0].s, lx.t[0].len, raw_color_fns))) {
+			/* Only when the value is a COLOUR FUNCTION that
+			 * happens to contain a var(). A bare `color: var(--x)`
+			 * is nobody's colour yet and stays LibCSS's, exactly
+			 * as it is today. */
+			/* Pending substitution: the original tokens, with
+			 * their whitespace normalised and nothing else
+			 * touched. On any doubt this PASSES rather than
+			 * refusing -- a value nobody can evaluate yet is the
+			 * last thing to declare invalid. */
+			char nm[64];
+			int i, n = lx.t[0].len;
+			if (n >= (int)sizeof nm) n = (int)sizeof nm - 1;
+			for (i = 0; i < n; i++) {
+				char ch = lx.t[0].s[i];
+				nm[i] = (ch >= 'A' && ch <= 'Z')
+					? (char)(ch + 32) : ch;
+			}
+			nm[n] = 0;
+			rc = (color_fn_body_ok(&lx, 1) &&
+			      emit_color_fn_raw(&lx, &b, nm) == 0 &&
+			      at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_PASS;
 		} else if (lx.t[0].kind == T_FUNC &&
 			   (in_tab(lx.t[0].s, lx.t[0].len, claimed_color_fns) ||
 			    (rel_lookup(&lx.t[0]) != NULL &&
