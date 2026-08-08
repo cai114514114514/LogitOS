@@ -107,9 +107,10 @@
                            /*   ncols * str header,                              */
                            /*   nrows*ncols * (u8 cellkind, str text, str target) */
 #define RT_T_CHART      8  /* u16 n, u16 kind, str title, n*(u32 value, str label)*/
-/* 9 and 10 are deliberately unassigned. An unknown type is ignored by the
- * terminal (see the default case in handle_frame), so the protocol grows without
- * a version bump -- but only types that EXIST are listed here. */
+#define RT_T_VIDEO      9  /* u8 kind, u16 w_pt, u16 h_pt, u16 flags, str path   */
+/* 10 is deliberately unassigned. An unknown type is ignored by the terminal (see
+ * the default case in handle_frame), so the protocol grows without a version
+ * bump -- but only types that EXIST are listed here. */
 
 /* ---- terminal -> shell (control channel) --------------------------------- */
 #define RT_C_INTR      64  /* ^C: abandon the foreground job                     */
@@ -121,6 +122,25 @@
 
 /* RT_T_IMAGE kinds */
 #define RT_IMG_PATH 0      /* payload names an ABSOLUTE path the terminal decodes */
+
+/* RT_T_VIDEO kinds and flags.
+ *
+ * A video travels BY PATH for the same reason an image does, and it matters
+ * more here: there is no RGBA-over-the-wire path in this protocol, and a single
+ * 320x240 frame is 300 KB against a 16 KiB maximum payload. Sending 30 of those
+ * a second down a pipe would be the wrong design even if the payload limit did
+ * not exist -- it would copy every pixel twice and serialize the decoder behind
+ * a pipe writer.
+ *
+ * So the frame says WHICH FILE, and the terminal decodes it. That is also why
+ * this is a type of its own rather than an image frame per decoded picture: a
+ * video frame OWNS A REGION of the scrollback and updates in place, where a
+ * picture-per-image-frame would append a new scrollback line 30 times a second
+ * (and repaint the whole window each time). The numbers behind that choice are
+ * in the header of the video section in c/apps/gui/terminal.c. */
+#define RT_VID_PATH  0     /* payload names an ABSOLUTE path the terminal decodes */
+#define RT_VID_LOOP  1     /* flags: restart at the end instead of holding the
+                            * last frame                                        */
 
 /* RT_T_TABLE cell kinds */
 #define RT_CELL_TEXT 0
