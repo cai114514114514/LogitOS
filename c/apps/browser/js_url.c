@@ -2489,10 +2489,44 @@ static const JSCFunctionListEntry usp_proto_funcs[] = {
     JS_CGETSET_DEF("size", usp_size_get, 0),
 };
 
+/* Move every own property of the OUTGOING global onto the incoming one, unless
+ * the incoming one already defines it.
+ *
+ * THIS IS NOT TIDINESS, IT IS A REGRESSION THIS FILE WOULD OTHERWISE CAUSE.
+ * js_platform.c installs URL.createObjectURL and URL.revokeObjectURL, and it
+ * does so on whatever `URL` exists when it runs -- which is js_webapi.c's
+ * prelude, because js_platform_install comes before this one. Replacing the
+ * global outright therefore takes `<img src=URL.createObjectURL(blob)>` away
+ * from every page, in a commit whose subject is "a better URL parser". A
+ * static this file does not know about is exactly the kind of thing a
+ * replacement has to carry, so it carries all of them. */
+static void carry_statics(JSContext *ctx, JSValueConst from, JSValueConst to)
+{
+    if (!JS_IsObject(from)) return;
+    JSPropertyEnum *tab = 0;
+    uint32_t n = 0;
+    if (JS_GetOwnPropertyNames(ctx, &tab, &n, from, JS_GPN_STRING_MASK) != 0) return;
+    for (uint32_t i = 0; i < n; i++) {
+        const char *nm = JS_AtomToCString(ctx, tab[i].atom);
+        int skip = nm && (!strcmp(nm, "prototype") || !strcmp(nm, "length") ||
+                          !strcmp(nm, "name"));
+        JS_FreeCString(ctx, nm);
+        if (!skip && !JS_HasProperty(ctx, to, tab[i].atom)) {
+            JSValue v = JS_GetProperty(ctx, from, tab[i].atom);
+            JS_SetProperty(ctx, to, tab[i].atom, v);
+        }
+        JS_FreeAtom(ctx, tab[i].atom);
+    }
+    js_free(ctx, tab);
+}
+
 void js_url_install(JSContext *ctx)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSValue g = JS_GetGlobalObject(ctx);
+    /* Whatever is being replaced, held until the new pair exists. */
+    JSValue old_url = JS_GetPropertyStr(ctx, g, "URL");
+    JSValue old_usp = JS_GetPropertyStr(ctx, g, "URLSearchParams");
 
     JS_NewClassID(&g_url_class);
     JS_NewClass(rt, g_url_class, &url_class_def);
@@ -2527,6 +2561,8 @@ void js_url_install(JSContext *ctx)
         JS_FreeValue(ctx, ent);
     }
     JS_FreeValue(ctx, up);
+    carry_statics(ctx, old_usp, uc);
+    JS_FreeValue(ctx, old_usp);
     JS_SetPropertyStr(ctx, g, "URLSearchParams", uc);
 
     JSValue proto = JS_NewObject(ctx);
@@ -2538,8 +2574,9 @@ void js_url_install(JSContext *ctx)
                       JS_NewCFunction(ctx, url_static_canparse, "canParse", 1));
     JS_SetPropertyStr(ctx, ctor, "parse",
                       JS_NewCFunction(ctx, url_static_parse, "parse", 1));
+    carry_statics(ctx, old_url, ctor);
+    JS_FreeValue(ctx, old_url);
     JS_SetPropertyStr(ctx, g, "URL", ctor);
-    /* The legacy alias every polyfill checks for. */
     JS_FreeValue(ctx, g);
 }
 

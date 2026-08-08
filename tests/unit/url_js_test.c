@@ -57,9 +57,34 @@ int main(void)
 {
     JSRuntime *rt = JS_NewRuntime();
     JSContext *ctx = JS_NewContext(rt);
+
+    /* Stand in for what is really on the context when this installs: an
+     * EARLIER URL, with a static hung on it by another file. In the browser
+     * that is js_platform.c's URL.createObjectURL, installed before this file
+     * runs and lost outright if the replacement does not carry it. */
+    {
+        const char *pre =
+            "globalThis.URL = function(){};"
+            "globalThis.URL.createObjectURL = function(){ return 'data:,carried'; };"
+            "globalThis.URL.revokeObjectURL = function(){};"
+            "globalThis.URLSearchParams = function(){};"
+            "globalThis.URLSearchParams.__legacy = 1;";
+        JSValue v = JS_Eval(ctx, pre, strlen(pre), "<pre>", JS_EVAL_TYPE_GLOBAL);
+        JS_FreeValue(ctx, v);
+    }
     js_url_install(ctx);
 
     printf("url_js_test: the URL and URLSearchParams JS surface\n");
+
+    /* ---- what the replacement had to carry ---- */
+    T("URL.createObjectURL survives the replacement",
+      "return typeof URL.createObjectURL === 'function'"
+      "  && URL.createObjectURL() === 'data:,carried'"
+      "  && typeof URL.revokeObjectURL === 'function';");
+    T("a carried static does not shadow one of ours",
+      "return typeof URL.canParse === 'function' && URLSearchParams.__legacy === 1;");
+    T("the replacement really replaced",
+      "return new URL('http://a:80/x/../y').href === 'http://a/y';");
 
     /* ---- the interface shape ---- */
     T("URL is a constructor",
