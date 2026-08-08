@@ -2020,8 +2020,13 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
                 memset(&tt[x].f, 0, sizeof tt[x].f);
                 tt[x].f.mn.kind = GSF_PX; tt[x].f.mn.v = 0;
                 tt[x].f.mx.kind = GSF_PX; tt[x].f.mx.v = 0;
-                if (x < nt - 1)      gp[x] = 0;
-                else if (x > 0)      gp[x-1] = 0;
+                /* Remove the gutter BEFORE the collapsed track, falling back
+                 * to the one after it only when it is the first track. Doing
+                 * it the other way round leaves a trailing gutter behind a run
+                 * of collapsed tracks at the end -- the commonest auto-fit
+                 * shape there is. */
+                if (x > 0)           gp[x-1] = 0;
+                else if (nt > 1)     gp[0] = 0;
             }
         }
     }
@@ -2120,7 +2125,12 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
         long long fh = (cfg->avail_h == GRID_INDEFINITE) ? 0 : (long long)cfg->avail_h - gh;
         unsigned char jc = cfg->justify_content, ac = cfg->align_content;
         if (cfg->rtl) {
-            if (jc == GA_START || jc == GA_FLEX_START || jc == GA_LEFT) jc = GA_END;
+            /* start/end are writing-mode relative, so in rtl they swap. normal
+             * and stretch swap too: their fallback alignment is flex-start,
+             * which is the RIGHT edge here, and fixed tracks that stretch
+             * cannot absorb would otherwise sit against the wrong edge. */
+            if (jc == GA_START || jc == GA_FLEX_START || jc == GA_LEFT ||
+                jc == GA_NORMAL || jc == GA_STRETCH) jc = GA_END;
             else if (jc == GA_END || jc == GA_FLEX_END || jc == GA_RIGHT) jc = GA_START;
         }
         align_content(ncols, out->colsz, gapc, fw, jc, out->colpos);
