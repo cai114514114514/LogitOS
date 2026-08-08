@@ -3486,6 +3486,646 @@ static int in_tab(const char *p, int plen, const char *const *tab)
 	return 0;
 }
 
+/* The shape, filter and motion properties. LibCSS has none of them, so each
+ * is a property CSS.supports() denies -- which makes it unsettable, which
+ * fails every interpolation test of it before the value is even looked at. */
+static const char *const shape_props[] = {
+	"clip-path", "shape-outside", "offset-path", NULL
+};
+
+static const char *const filter_props[] = {
+	"filter", "backdrop-filter", NULL
+};
+
+/* ====================================================================
+ * <basic-shape> and <filter-function-list>
+ *
+ * WHY THESE ARE WORTH MORE THAN THEIR OWN TEST FILES.
+ *
+ * css_supports_decl() -- what CSS.supports() answers from, and what the CSSOM
+ * setter consults -- now asks this file before LibCSS. A property LibCSS has
+ * never heard of is therefore not merely unserializable: it is UNSUPPORTED,
+ * which makes it unsettable, which makes every interpolation test of it fail
+ * on its first assertion. interpolation-testcommon.js gates a whole FILE on
+ * `CSS.supports(property, from)`, so one unknown grammar costs thousands of
+ * subtests that have nothing to do with parsing.
+ *
+ * That is why the acceptance in here matters more than the spelling. A value
+ * this file accepts unblocks its file; a value it spells imperfectly fails
+ * only the handful of `-valid` rows that compare bytes -- rows that fail
+ * today anyway. So where the corpus pins a spelling, it is transcribed; where
+ * it does not, the tokens are normalised and left alone. What is NOT allowed
+ * is accepting something the `-invalid` files refuse, because those pass
+ * today (vacuously, on a property that never stored anything) and would go
+ * red the moment this lands.
+ *
+ * THE GRAMMARS, transcribed from css-masking/parsing/clip-path-{valid,
+ * invalid}, css-shapes/parsing/shape-outside-*, filter-effects/parsing/
+ * {filter,backdrop-filter}-parsing-{valid,invalid} and
+ * motion/parsing/offset-path-*:
+ *
+ *   <basic-shape> = inset( <lp>{1,4} [ round <lp>{1,4} [ / <lp>{1,4} ]? ]? )
+ *                 | circle( <radius>? [ at <position> ]? )
+ *                 | ellipse( [ <radius>{2} ]? [ at <position> ]? )
+ *                 | polygon( <fill-rule>? [ round <length> ]? ,
+ *                            [ <lp> <lp> ]# )
+ *                 | path( [ <fill-rule> , ]? <string> )
+ *                 | rect( [ <lp> | auto ]{4} [ round ... ]? )
+ *                 | xywh( <lp>{2} <lp>{2} [ round ... ]? )
+ *   <radius>      = <lp [0,inf]> | closest-side | farthest-side
+ *
+ * Two refusals that are easy to miss and are each several rows:
+ *   - A BARE NUMBER IS NOT A LENGTH. `inset(123)`, `circle(123)`,
+ *     `blur(10)`, `hue-rotate(90)` are all invalid. Zero is the exception
+ *     everywhere a length is wanted, and only there.
+ *   - `ellipse()` takes TWO radii or NONE. `ellipse(3%)` and
+ *     `ellipse(closest-side)` are invalid while `circle(3%)` is fine, which
+ *     is the one place the two shapes stop being the same function with a
+ *     different name.
+ * ==================================================================== */
+
+/* A <length-percentage>: a dimension with a length unit, a percentage, zero,
+ * or a math function. `nonneg` refuses a NEGATIVE LITERAL and says nothing
+ * about a calc, for the reason the grid section gives at length -- whether a
+ * calc is negative is a used-value question. */
+static int lp_value(lexed *lx, buf *b, int nonneg, int pct_ok)
+{
+	const tok *t = cur(lx);
+
+	if (t->kind == T_NUM) {
+		/* Zero is the only bare number that is a length. */
+		if (t->num != 0) return -1;
+		adv(lx);
+		bput(b, "0px", 3);
+		return 0;
+	}
+	if (t->kind == T_PCT) {
+		if (!pct_ok) return -1;
+		if (nonneg && t->num < 0) return -1;
+		return emit_token(lx, b, 1);
+	}
+	if (t->kind == T_DIM) {
+		char u[24];
+		int n = t->len;
+		if (n >= (int)sizeof u) return -1;
+		memcpy(u, t->s, (size_t)n);
+		u[n] = 0;
+		if (unit_cat(u) != U_LEN) return -1;
+		if (nonneg && t->num < 0) return -1;
+		return emit_token(lx, b, 1);
+	}
+	if (t->kind == T_FUNC) return calc_lp(lx, b);
+	return -1;
+}
+
+/* One to four <length-percentage>, space separated. */
+static int lp_box(lexed *lx, buf *b, int maxn, int nonneg)
+{
+	int n = 0;
+
+	while (!at_end(lx) && n < maxn) {
+		const tok *t = cur(lx);
+		if (t->kind != T_NUM && t->kind != T_PCT && t->kind != T_DIM &&
+		    t->kind != T_FUNC)
+			break;
+		if (n) bputc(b, ' ');
+		if (lp_value(lx, b, nonneg, 1) != 0) return -1;
+		n++;
+	}
+	return n;
+}
+
+static const char *const pos_keywords[] = {
+	"left", "right", "top", "bottom", "center", NULL
+};
+
+/* `at <position>`: one to four components of a keyword or a
+ * <length-percentage>. The keyword ORDER is canonicalised -- `at top right`
+ * reads back as `at right top`, horizontal first -- which is the only part of
+ * a position this file rewrites. */
+static int shape_position(lexed *lx, buf *b)
+{
+	const char *kw[4];
+	char lpbuf[4][96];
+	int islp[4], n = 0, i;
+	int hx = -1, vy = -1;
+
+	while (n < 4 && !at_end(lx)) {
+		const tok *t = cur(lx);
+		const char *k = tab_lookup(t, pos_keywords);
+		if (k != NULL) {
+			kw[n] = k;
+			islp[n] = 0;
+			adv(lx);
+			n++;
+			continue;
+		}
+		if (t->kind == T_NUM || t->kind == T_PCT || t->kind == T_DIM ||
+		    t->kind == T_FUNC) {
+			buf tb;
+			tb.p = lpbuf[n];
+			tb.len = 0;
+			tb.cap = (int)sizeof lpbuf[n];
+			tb.ovf = 0;
+			if (lp_value(lx, &tb, 0, 1) != 0 || tb.ovf) return -1;
+			kw[n] = NULL;
+			islp[n] = 1;
+			n++;
+			continue;
+		}
+		break;
+	}
+	if (n == 0) return -1;
+
+	/* Two components in the wrong order is the one thing to fix: a
+	 * vertical keyword may be written first and must not come out that
+	 * way. Anything else is emitted as written. */
+	if (n == 2 && !islp[0] && !islp[1]) {
+		for (i = 0; i < 2; i++) {
+			if (strcmp(kw[i], "left") == 0 ||
+			    strcmp(kw[i], "right") == 0) hx = i;
+			else if (strcmp(kw[i], "top") == 0 ||
+				 strcmp(kw[i], "bottom") == 0) vy = i;
+		}
+		if (hx == 1 && vy == 0) { const char *s = kw[0]; kw[0] = kw[1]; kw[1] = s; }
+	}
+	for (i = 0; i < n; i++) {
+		if (i) bputc(b, ' ');
+		if (islp[i]) bput(b, lpbuf[i], -1);
+		else bput(b, kw[i], -1);
+	}
+	return 0;
+}
+
+/* `[ at <position> ]?` -- writes " at ..." when present. */
+/* `wrote` says whether a radius came out before this, because
+ * `ellipse(closest-side closest-side at 10% 20%)` drops BOTH radii and must
+ * then be `ellipse(at 10% 20%)` and not `ellipse( at 10% 20%)`. */
+static int shape_at(lexed *lx, buf *b, int wrote)
+{
+	if (at_end(lx) || !tok_is_ident(cur(lx), "at")) return 0;
+	adv(lx);
+	if (wrote) bputc(b, ' ');
+	bput(b, "at ", 3);
+	return shape_position(lx, b);
+}
+
+/* `[ round <lp>{1,4} [ / <lp>{1,4} ]? ]?` -- the border-radius tail shared by
+ * inset(), rect() and xywh(). A radius is NEVER negative. */
+static int shape_round(lexed *lx, buf *b)
+{
+	buf tb;
+	char store[256];
+	int n;
+
+	if (at_end(lx) || !tok_is_ident(cur(lx), "round")) return 0;
+	adv(lx);
+	tb.p = store;
+	tb.len = 0;
+	tb.cap = (int)sizeof store;
+	tb.ovf = 0;
+	n = lp_box(lx, &tb, 4, 1);
+	if (n <= 0 || tb.ovf) return -1;
+	if (!at_end(lx) && cur(lx)->kind == T_DELIM && cur(lx)->delim == '/') {
+		adv(lx);
+		bput(&tb, " / ", 3);
+		if (lp_box(lx, &tb, 4, 1) <= 0 || tb.ovf) return -1;
+	}
+	/* `round 0` on every corner is the initial value and disappears --
+	 * `xywh(0px 1% 2px 3em round 0)` is `xywh(0px 1% 2px 3em)`. */
+	if (strcmp(store, "0px") == 0) return 0;
+	bput(b, " round ", 7);
+	bput(b, store, tb.len);
+	return 0;
+}
+
+static const char *const shape_radius_kw[] = {
+	"closest-side", "farthest-side", NULL
+};
+
+/* A circle()/ellipse() radius. Returns 1 if something was written. */
+static int shape_radius(lexed *lx, buf *b, int *wrote)
+{
+	const tok *t = cur(lx);
+	const char *k = tab_lookup(t, shape_radius_kw);
+
+	*wrote = 0;
+	if (k != NULL) {
+		adv(lx);
+		/* `closest-side` is the initial value and disappears;
+		 * `farthest-side` does not. */
+		if (strcmp(k, "closest-side") != 0) { bput(b, k, -1); *wrote = 1; }
+		else *wrote = -1;	/* consumed, emitted nothing */
+		return 0;
+	}
+	if (t->kind == T_NUM || t->kind == T_PCT || t->kind == T_DIM ||
+	    t->kind == T_FUNC) {
+		if (lp_value(lx, b, 1, 1) != 0) return -1;
+		*wrote = 1;
+		return 0;
+	}
+	return -1;
+}
+
+static int canon_basic_shape(lexed *lx, buf *b, int allow_path);
+
+static int shape_inset(lexed *lx, buf *b)
+{
+	if (lp_box(lx, b, 4, 0) <= 0) return -1;
+	if (shape_round(lx, b) != 0) return -1;
+	return 0;
+}
+
+static int shape_circle(lexed *lx, buf *b)
+{
+	int wrote = 0;
+	if (!at_end(lx) && cur(lx)->kind != T_RPAREN &&
+	    !tok_is_ident(cur(lx), "at")) {
+		if (shape_radius(lx, b, &wrote) != 0) return -1;
+	}
+	return shape_at(lx, b, wrote > 0);
+}
+
+static int shape_ellipse(lexed *lx, buf *b)
+{
+	buf tb;
+	char store[128];
+	int w1 = 0, w2 = 0;
+
+	if (!at_end(lx) && cur(lx)->kind != T_RPAREN &&
+	    !tok_is_ident(cur(lx), "at")) {
+		tb.p = store;
+		tb.len = 0;
+		tb.cap = (int)sizeof store;
+		tb.ovf = 0;
+		if (shape_radius(lx, &tb, &w1) != 0) return -1;
+		if (w1 > 0) bputc(&tb, ' ');
+		/* TWO radii or NONE: `ellipse(3%)` is invalid where
+		 * `circle(3%)` is fine. */
+		if (shape_radius(lx, &tb, &w2) != 0) return -1;
+		if (tb.ovf) return -1;
+		/* Both `closest-side` means both disappear, and the pair
+		 * collapses to nothing at all. */
+		if (w1 > 0 || w2 > 0) {
+			if (w1 <= 0) bput(b, "closest-side ", 13);
+			bput(b, tb.p, tb.len);
+			if (w2 <= 0) bput(b, " closest-side", 13);
+		}
+		return shape_at(lx, b, w1 > 0 || w2 > 0);
+	}
+	return shape_at(lx, b, 0);
+}
+
+static const char *const fill_rules[] = { "nonzero", "evenodd", NULL };
+
+static int shape_polygon(lexed *lx, buf *b)
+{
+	const char *fr = tab_lookup(cur(lx), fill_rules);
+	int n = 0, wrote_head = 0;
+
+	if (fr != NULL) {
+		adv(lx);
+		/* `nonzero` is the initial value and disappears. */
+		if (strcmp(fr, "evenodd") == 0) { bput(b, fr, -1); wrote_head = 1; }
+	}
+	if (!at_end(lx) && tok_is_ident(cur(lx), "round")) {
+		buf tb;
+		char store[128];
+		adv(lx);
+		tb.p = store;
+		tb.len = 0;
+		tb.cap = (int)sizeof store;
+		tb.ovf = 0;
+		if (lp_value(lx, &tb, 1, 0) != 0 || tb.ovf) return -1;
+		/* `round 0px` is the initial value and disappears. */
+		if (strcmp(store, "0px") != 0) {
+			if (wrote_head) bputc(b, ' ');
+			bput(b, "round ", 6);
+			bput(b, store, tb.len);
+			wrote_head = 1;
+		}
+	}
+	if (wrote_head) bcomma(b);
+	if (at_end(lx) || cur(lx)->kind != T_COMMA) {
+		if (at_end(lx)) return -1;
+	} else {
+		adv(lx);		/* the comma after the head */
+	}
+	for (;;) {
+		if (n) bcomma(b);
+		if (lp_value(lx, b, 0, 1) != 0) return -1;
+		bputc(b, ' ');
+		if (lp_value(lx, b, 0, 1) != 0) return -1;
+		n++;
+		if (at_end(lx) || cur(lx)->kind != T_COMMA) break;
+		adv(lx);
+	}
+	return n > 0 ? 0 : -1;
+}
+
+static int shape_path(lexed *lx, buf *b)
+{
+	const char *fr = tab_lookup(cur(lx), fill_rules);
+
+	if (fr != NULL) {
+		adv(lx);
+		if (at_end(lx) || cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+		if (strcmp(fr, "evenodd") == 0) { bput(b, fr, -1); bcomma(b); }
+	}
+	if (at_end(lx) || cur(lx)->kind != T_STR) return -1;
+	/* The path data itself is SVG, not CSS, and this file does not
+	 * re-spell it: a normalised path string is a different serialization
+	 * problem living in a different spec. */
+	bstring(b, cur(lx)->s, cur(lx)->len);
+	adv(lx);
+	return 0;
+}
+
+static int shape_rect(lexed *lx, buf *b)
+{
+	int i;
+	for (i = 0; i < 4; i++) {
+		if (i) bputc(b, ' ');
+		if (tok_is_ident(cur(lx), "auto")) {
+			bput(b, "auto", 4);
+			adv(lx);
+			continue;
+		}
+		if (lp_value(lx, b, 0, 1) != 0) return -1;
+	}
+	return shape_round(lx, b);
+}
+
+static int shape_xywh(lexed *lx, buf *b)
+{
+	int i;
+	for (i = 0; i < 4; i++) {
+		if (i) bputc(b, ' ');
+		/* width and height are non-negative; x and y are not. */
+		if (lp_value(lx, b, i >= 2, 1) != 0) return -1;
+	}
+	return shape_round(lx, b);
+}
+
+/* One <basic-shape>. The cursor is on its function token. */
+static int canon_basic_shape(lexed *lx, buf *b, int allow_path)
+{
+	const tok *t = cur(lx);
+	int rc = -1;
+
+	if (t->kind != T_FUNC) return -1;
+	if (ieq(t->s, t->len, "inset")) { bput(b, "inset(", 6); adv(lx); rc = shape_inset(lx, b); }
+	else if (ieq(t->s, t->len, "circle")) { bput(b, "circle(", 7); adv(lx); rc = shape_circle(lx, b); }
+	else if (ieq(t->s, t->len, "ellipse")) { bput(b, "ellipse(", 8); adv(lx); rc = shape_ellipse(lx, b); }
+	else if (ieq(t->s, t->len, "polygon")) { bput(b, "polygon(", 8); adv(lx); rc = shape_polygon(lx, b); }
+	else if (ieq(t->s, t->len, "rect")) { bput(b, "rect(", 5); adv(lx); rc = shape_rect(lx, b); }
+	else if (ieq(t->s, t->len, "xywh")) { bput(b, "xywh(", 5); adv(lx); rc = shape_xywh(lx, b); }
+	else if (allow_path && ieq(t->s, t->len, "path")) { bput(b, "path(", 5); adv(lx); rc = shape_path(lx, b); }
+	else return -1;
+
+	if (rc != 0) return -1;
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+	bputc(b, ')');
+	return 0;
+}
+
+static const char *const geometry_boxes[] = {
+	"content-box", "padding-box", "border-box", "margin-box",
+	"fill-box", "stroke-box", "view-box", NULL
+};
+
+/* clip-path / shape-outside / offset-path share
+ * `<basic-shape> || <geometry-box>` with different extras around it. */
+static int canon_shape_value(lexed *lx, buf *b, int allow_path, int allow_url,
+		int allow_box)
+{
+	int shape = 0, box = 0, wrote = 0;
+
+	while (!at_end(lx)) {
+		const tok *t = cur(lx);
+		const char *g;
+
+		if (allow_box && (g = tab_lookup(t, geometry_boxes)) != NULL) {
+			if (box) return -1;
+			if (wrote) bputc(b, ' ');
+			bput(b, g, -1);
+			adv(lx);
+			box = 1;
+			wrote = 1;
+			continue;
+		}
+		if (allow_url && t->kind == T_FUNC && ieq(t->s, t->len, "url")) {
+			if (shape || box) return -1;
+			if (emit_color_fn_raw(lx, b, "url") != 0) return -1;
+			shape = 1;
+			wrote = 1;
+			continue;
+		}
+		if (t->kind == T_FUNC) {
+			if (shape) return -1;
+			if (wrote) bputc(b, ' ');
+			if (canon_basic_shape(lx, b, allow_path) != 0) return -1;
+			shape = 1;
+			wrote = 1;
+			continue;
+		}
+		return -1;
+	}
+	return (shape || box) ? 0 : -1;
+}
+
+/* ====================================================================
+ * <filter-function-list>
+ * ==================================================================== */
+
+/* name, and what its single argument is:
+ *   'n' <number-percentage> non-negative      'a' <angle>
+ *   'l' <length> non-negative                 's' drop-shadow
+ *   'N' <number-percentage>, sign unrestricted */
+struct filter_fn { const char *name; char arg; };
+
+static const struct filter_fn filter_fns[] = {
+	{ "blur", 'l' }, { "brightness", 'n' }, { "contrast", 'n' },
+	{ "grayscale", 'n' }, { "invert", 'n' }, { "opacity", 'n' },
+	{ "saturate", 'n' }, { "sepia", 'n' }, { "hue-rotate", 'a' },
+	{ "drop-shadow", 's' }, { NULL, 0 }
+};
+
+/* drop-shadow( <color>? <length>{2,3} <color>? ) -- and the colour, wherever
+ * it was written, comes out FIRST. Two or three lengths, never a percentage,
+ * which is `drop-shadow(10% 20%)` being invalid. */
+static int filter_drop_shadow(lexed *lx, buf *b)
+{
+	char colour[256], lens[192];
+	buf cb, lb;
+	int nlen = 0, have_colour = 0;
+
+	cb.p = colour; cb.len = 0; cb.cap = (int)sizeof colour; cb.ovf = 0;
+	lb.p = lens; lb.len = 0; lb.cap = (int)sizeof lens; lb.ovf = 0;
+
+	while (!at_end(lx) && cur(lx)->kind != T_RPAREN) {
+		const tok *t = cur(lx);
+		if (t->kind == T_NUM || t->kind == T_DIM ||
+		    (t->kind == T_FUNC && !color_keyword(t) &&
+		     ieq(t->s, t->len, "calc"))) {
+			if (nlen >= 3) return -1;
+			if (nlen) bputc(&lb, ' ');
+			if (lp_value(lx, &lb, 0, 0) != 0) return -1;
+			nlen++;
+			continue;
+		}
+		if (have_colour) return -1;
+		if (canon_color(lx, &cb, 1) != 0) return -1;
+		have_colour = 1;
+	}
+	if (nlen < 2 || cb.ovf || lb.ovf) return -1;
+	if (have_colour) { bput(b, cb.p, cb.len); bputc(b, ' '); }
+	bput(b, lb.p, lb.len);
+	return 0;
+}
+
+static int canon_filter_list(lexed *lx, buf *b)
+{
+	int n = 0;
+
+	while (!at_end(lx)) {
+		const tok *t = cur(lx);
+		int i;
+
+		if (t->kind != T_FUNC) return -1;
+		if (n) bputc(b, ' ');
+
+		if (ieq(t->s, t->len, "url")) {
+			if (emit_color_fn_raw(lx, b, "url") != 0) return -1;
+			n++;
+			continue;
+		}
+		for (i = 0; filter_fns[i].name != NULL; i++)
+			if (ieq(t->s, t->len, filter_fns[i].name)) break;
+		if (filter_fns[i].name == NULL) return -1;
+		bput(b, filter_fns[i].name, -1);
+		bputc(b, '(');
+		adv(lx);
+
+		if (!at_end(lx) && cur(lx)->kind == T_RPAREN) {
+			/* Every one of them takes an empty argument list. */
+			if (filter_fns[i].arg == 's') return -1;
+			adv(lx);
+			bputc(b, ')');
+			n++;
+			continue;
+		}
+		switch (filter_fns[i].arg) {
+		case 'l':
+			if (lp_value(lx, b, 1, 0) != 0) return -1;
+			break;
+		case 'n': {
+			const tok *v = cur(lx);
+			if (v->kind == T_NUM || v->kind == T_PCT) {
+				if (v->num < 0) return -1;
+				if (emit_token(lx, b, 1) != 0) return -1;
+			} else if (v->kind == T_FUNC) {
+				/* A calc may be negative here: the corpus has
+				 * `brightness(calc(-10))` as VALID. */
+				if (calc_channel(lx, b, 1, 0, NULL, 0, NULL) != 0)
+					return -1;
+			} else {
+				return -1;
+			}
+			break;
+		}
+		case 'a': {
+			const tok *v = cur(lx);
+			double d;
+			if (v->kind == T_NUM) {
+				if (v->num != 0) return -1;	/* needs a unit */
+				bput(b, "0deg", 4);
+				adv(lx);
+			} else if (v->kind == T_DIM) {
+				if (angle_deg(v, &d) != 0) return -1;
+				if (emit_token(lx, b, 1) != 0) return -1;
+			} else if (v->kind == T_FUNC) {
+				if (calc_channel(lx, b, 0, 1, NULL, 0, NULL) != 0)
+					return -1;
+			} else {
+				return -1;
+			}
+			break;
+		}
+		case 's':
+			if (filter_drop_shadow(lx, b) != 0) return -1;
+			break;
+		default:
+			return -1;
+		}
+		if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+		adv(lx);
+		bputc(b, ')');
+		n++;
+	}
+	return n > 0 ? 0 : -1;
+}
+
+/* offset-path adds ray() to the shape set. */
+static const char *const ray_sizes[] = {
+	"closest-side", "closest-corner", "farthest-side", "farthest-corner",
+	"sides", NULL
+};
+
+static int canon_ray(lexed *lx, buf *b)
+{
+	int have_angle = 0, wrote = 0;
+	const char *sz = NULL;
+	int contain = 0;
+
+	adv(lx);
+	bput(b, "ray(", 4);
+	while (!at_end(lx) && cur(lx)->kind != T_RPAREN) {
+		const tok *t = cur(lx);
+		const char *k;
+		double d;
+
+		if (t->kind == T_DIM && angle_deg(t, &d) == 0) {
+			if (have_angle) return -1;
+			if (wrote) bputc(b, ' ');
+			if (emit_token(lx, b, 1) != 0) return -1;
+			have_angle = 1;
+			wrote = 1;
+			continue;
+		}
+		if ((k = tab_lookup(t, ray_sizes)) != NULL) {
+			if (sz != NULL) return -1;
+			sz = k;
+			adv(lx);
+			continue;
+		}
+		if (tok_is_ident(t, "contain")) {
+			if (contain) return -1;
+			contain = 1;
+			adv(lx);
+			continue;
+		}
+		if (tok_is_ident(t, "at")) {
+			if (shape_at(lx, b, 1) != 0) return -1;
+			continue;
+		}
+		return -1;
+	}
+	if (!have_angle) return -1;
+	/* `closest-side` is the initial size and is the one that disappears. */
+	if (sz != NULL && strcmp(sz, "closest-side") != 0) {
+		bputc(b, ' ');
+		bput(b, sz, -1);
+	}
+	if (contain) bput(b, " contain", 8);
+	if (at_end(lx) || cur(lx)->kind != T_RPAREN) return -1;
+	adv(lx);
+	bputc(b, ')');
+	return 0;
+}
+
 /* The grid properties this file claims. LibCSS has no grid at all, so these
  * are not values it refuses -- they are properties it has never heard of, and
  * without this the declaration is dropped and `el.style.gridTemplateColumns`
@@ -3875,7 +4515,7 @@ static const char *const single_props[] = {
  * that is correct returns nothing measurable. */
 static const char *const *const canon_prop_tables[] = {
 	inset_props, size_props, margin_props, single_props,
-	color_props, grid_props, NULL
+	color_props, grid_props, shape_props, filter_props, NULL
 };
 
 int css_canon_knows_property(const char *prop, int plen)
@@ -4076,6 +4716,34 @@ int css_canon_decl(const char *prop, int plen,
 		else
 			rc = canon_font_family(&lx, &b) == 0 && at_end(&lx)
 				? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, filter_props)) {
+		/* `none` is the initial value and is a keyword, not a list. */
+		if (lx.n == 1 && tok_is_ident(&lx.t[0], "none")) {
+			bput(&b, "none", 4);
+			rc = CSS_CANON_OK;
+		} else {
+			rc = (canon_filter_list(&lx, &b) == 0 && at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		}
+	} else if (in_tab(prop, plen, shape_props)) {
+		int off = ieq(prop, plen, "offset-path");
+		if (lx.n == 1 && tok_is_ident(&lx.t[0], "none")) {
+			bput(&b, "none", 4);
+			rc = CSS_CANON_OK;
+		} else if (off && lx.t[0].kind == T_FUNC &&
+			   ieq(lx.t[0].s, lx.t[0].len, "ray")) {
+			rc = (canon_ray(&lx, &b) == 0 && at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		} else {
+			/* clip-path and shape-outside take a geometry box on
+			 * its own or beside a shape; offset-path does not,
+			 * and takes path() and url() which the other two
+			 * spell differently enough to be worth the flags. */
+			rc = (canon_shape_value(&lx, &b, 1, 1,
+					!ieq(prop, plen, "offset-path")) == 0 &&
+			      at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+		}
 	} else if (in_tab(prop, plen, grid_props)) {
 		/* The template properties take line names and repeat() and
 		 * accept `none`; the auto- ones are a bare <track-size>+ and

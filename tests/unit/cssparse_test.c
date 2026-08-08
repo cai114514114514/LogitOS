@@ -1652,6 +1652,120 @@ static void t_grid(void)
 	}
 }
 
+/* ====================================================================
+ * <basic-shape> and <filter-function-list>
+ *
+ * Transcribed from css-masking/parsing/clip-path-{valid,invalid},
+ * filter-effects/parsing/filter-parsing-{valid,invalid} and
+ * css-shapes/parsing/shape-outside-*. The ACCEPTANCE is what these are for --
+ * CSS.supports() answers from this file now, and a denial fails a whole
+ * interpolation file before its value is looked at -- but the refusals are
+ * what a test has to hold, because they pass today on a property that never
+ * stored anything and would go red the moment this got them wrong.
+ * ==================================================================== */
+static void t_shapes(void)
+{
+	group("shape/inset");
+	chk_rt("clip-path", "none", "none");
+	chk("clip-path", "inset(0 1px)", "inset(0px 1px)");
+	chk_rt("clip-path", "inset(0px 1px 2% 3em)", "inset(0px 1px 2% 3em)");
+	chk("clip-path", "inset(0px round 0 1px)", "inset(0px round 0px 1px)");
+	chk_rt("clip-path", "inset(10px round 20% / 0px 1px 2% 3em)",
+	    "inset(10px round 20% / 0px 1px 2% 3em)");
+	/* A BARE NUMBER IS NOT A LENGTH, and zero is the only exception. */
+	chk("clip-path", "inset(123)", NULL);
+	chk("clip-path", "inset()", NULL);
+	chk("clip-path", "inset(0px round 123)", NULL);
+	/* A radius is never negative; an inset may be. */
+	chk("clip-path", "inset(10px round -20px)", NULL);
+	chk("clip-path", "auto", NULL);
+
+	group("shape/circle");
+	chk_rt("clip-path", "circle()", "circle()");
+	/* `closest-side` is the initial radius and disappears. */
+	chk("clip-path", "circle(closest-side)", "circle()");
+	chk_rt("clip-path", "circle(at 10% 20%)", "circle(at 10% 20%)");
+	/* A position is horizontal-first however it was written. */
+	chk("clip-path", "circle(4% at top right)", "circle(4% at right top)");
+	chk_rt("clip-path", "circle(farthest-side at center top)",
+	    "circle(farthest-side at center top)");
+	chk("clip-path", "circle(123)", NULL);
+	chk("clip-path", "circle(at)", NULL);
+	chk("clip-path", "circle(10% 20%)", NULL);
+	chk("clip-path", "circle(-10px at 20px 30px)", NULL);
+
+	group("shape/ellipse");
+	/* TWO radii or NONE -- the one place ellipse() stops being circle()
+	 * with a different name. Dropping both must not leave the space
+	 * behind: `ellipse(at 10% 20%)`, not `ellipse( at 10% 20%)`. */
+	chk_rt("clip-path", "ellipse()", "ellipse()");
+	chk("clip-path", "ellipse(closest-side closest-side at 10% 20%)",
+	    "ellipse(at 10% 20%)");
+	chk("clip-path", "ellipse(farthest-side 4% at bottom left)",
+	    "ellipse(farthest-side 4% at left bottom)");
+	chk("clip-path", "ellipse(3%)", NULL);
+	chk("clip-path", "ellipse(closest-side)", NULL);
+	chk("clip-path", "ellipse(10% -20% at 30% 40%)", NULL);
+
+	group("shape/polygon");
+	chk_rt("clip-path", "polygon(1% 2%)", "polygon(1% 2%)");
+	/* `nonzero` and `round 0px` are initial values and disappear. */
+	chk("clip-path", "polygon(nonzero, 1px 2px, 3em 4em)",
+	    "polygon(1px 2px, 3em 4em)");
+	chk("clip-path", "polygon(round 0px, 1px 2px, 3px 4px)",
+	    "polygon(1px 2px, 3px 4px)");
+	chk("clip-path", "polygon(nonzero round 1px, 1px 2px, 3em 4em)",
+	    "polygon(round 1px, 1px 2px, 3em 4em)");
+	chk_rt("clip-path", "polygon(evenodd, 1px 2px, 3em 4em, 5pt 6%)",
+	    "polygon(evenodd, 1px 2px, 3em 4em, 5pt 6%)");
+	chk("clip-path", "polygon(1%)", NULL);
+
+	group("shape/other");
+	chk_rt("clip-path", "path(\"m 20 0 h -100\")", "path(\"m 20 0 h -100\")");
+	chk("clip-path", "xywh(0 1% 2px 3em)", "xywh(0px 1% 2px 3em)");
+	chk("clip-path", "xywh(0px 1% 2px 3em round 0)", "xywh(0px 1% 2px 3em)");
+	chk_rt("clip-path", "border-box", "border-box");
+	chk_rt("clip-path", "circle() border-box", "circle() border-box");
+	/* ray() belongs to offset-path and to nothing else. */
+	chk("clip-path", "ray(0deg)", NULL);
+	chk_rt("offset-path", "ray(45deg)", "ray(45deg)");
+	chk("offset-path", "ray(45deg closest-side)", "ray(45deg)");
+	chk("offset-path", "ray(closest-side)", NULL);
+	chk_rt("shape-outside", "circle(50%)", "circle(50%)");
+
+	group("filter");
+	chk_rt("filter", "none", "none");
+	chk("filter", "blur(0)", "blur(0px)");
+	chk_rt("filter", "blur()", "blur()");
+	chk_rt("filter", "brightness(300%)", "brightness(300%)");
+	chk_rt("filter", "hue-rotate(90deg)", "hue-rotate(90deg)");
+	chk_rt("filter", "blur(calc(100px))", "blur(calc(100px))");
+	/* A LITERAL is refused where a calc is not: the corpus has
+	 * `brightness(-20)` invalid and `brightness(calc(-10))` valid. */
+	chk("filter", "brightness(-20)", NULL);
+	chk_rt("filter", "brightness(calc(-10))", "brightness(calc(-10))");
+	/* The drop-shadow colour comes out FIRST wherever it was written,
+	 * and the offsets are lengths, never percentages. */
+	chk_rt("filter", "drop-shadow(rgb(4, 5, 6) 1px 2px)",
+	    "drop-shadow(rgb(4, 5, 6) 1px 2px)");
+	chk("filter", "drop-shadow(1px 2px rgb(4, 5, 6))",
+	    "drop-shadow(rgb(4, 5, 6) 1px 2px)");
+	chk("filter", "drop-shadow(0 0 0)", "drop-shadow(0px 0px 0px)");
+	chk("filter", "drop-shadow(10% 20%)", NULL);
+	chk("filter", "drop-shadow(1px)", NULL);
+	chk("filter", "drop-shadow(1px 2px 3px 4px)", NULL);
+	chk("filter", "drop-shadow()", NULL);
+	/* A number where a dimension belongs. */
+	chk("filter", "blur(10)", NULL);
+	chk("filter", "hue-rotate(90)", NULL);
+	chk("filter", "grayscale(30px)", NULL);
+	/* `none` is a whole value, not a list item. */
+	chk("filter", "none hue-rotate(0deg)", NULL);
+	chk("filter", "auto", NULL);
+	chk_rt("backdrop-filter", "blur(2px) invert(80%)",
+	    "blur(2px) invert(80%)");
+}
+
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
  * wiring this into el.style would reroute ordinary CSS through a parser that
  * does not implement it. */
@@ -1784,6 +1898,7 @@ int main(void)
 	t_font_family();
 	t_color_function();
 	t_grid();
+	t_shapes();
 	t_passthrough();
 	t_fuzz();
 
