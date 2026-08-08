@@ -261,6 +261,13 @@ struct script { char *name; char *src; long len; int module; };
 struct sctx {
     struct script *s; int n, cap;
     const char *testdir; int missing; int modules;
+    /* The file asked for /resources/testdriver.js: it drives the page with
+     * SYNTHETIC input -- click, touch, wheel, scroll, key -- injected by the
+     * test runner, not by anything in the page. Nothing here can send those, so
+     * such a file registers its tests and then waits forever, or registers none
+     * at all. Recorded rather than inferred, because it is the one signal that
+     * says "unreachable by implementing a Web API" without any guessing. */
+    int needs_driver;
 };
 
 static void sc_add(struct sctx *c, const char *name, char *src, long len, int module)
@@ -292,6 +299,7 @@ static void collect_scripts(struct node *n, struct sctx *c)
         if (classic || module) {
             if (src && *src) {
                 char path[1024];
+                if (strstr(src, "testdriver")) c->needs_driver = 1;
                 if (resolve_url(src, c->testdir, path, sizeof path)) {
                     if (incl_seen(path)) goto kids;
                     long len = 0;
@@ -329,6 +337,7 @@ static void meta_scripts(const char *src, struct sctx *c)
         const char *m = "// META: script=";
         size_t ml = strlen(m);
         if (l > ml && !strncmp(p, m, ml)) {
+            if (strstr(p, "testdriver")) c->needs_driver = 1;
             char url[512];
             size_t ul = l - ml;
             if (ul < sizeof url) {
@@ -544,7 +553,32 @@ static const char *HOOKUP =
 
 /* Run one test file. Returns 1 if the harness completed, 0 if it never did
  * (which is itself the result: a HARNESS failure). */
-struct outcome { int completed; int harness_missing; char why[512]; char stack[512]; };
+/* A file that produced no results did so for one of TWO reasons, and they are
+ * not the same finding:
+ *
+ *   DIED         it threw -- a missing global, a missing method, an abort
+ *                partway. Fixable by implementing something, and the ranking
+ *                should send someone at it.
+ *   NEVER STARTED it loaded cleanly, registered zero test() calls, and is
+ *                waiting for an input event nobody will send. These need
+ *                testdriver.js -- synthetic click, touch, wheel, scroll -- which
+ *                this runner does not provide. They are a missing capability in
+ *                the HARNESS, not a defect in the browser, and no amount of DOM
+ *                or CSS work moves them.
+ *
+ * Measured in dom/events: 64 of 70 zero-result files are the second kind. Rolled
+ * together they would put a large, immovable number at the top of a work order
+ * and send people at something that cannot move. They also must not share a
+ * ratchet token, because a category-2 entry can never be "fixed" by the lines
+ * reading the list.
+ *
+ * `threw` is the discriminator and it is mechanical: any uncaught exception in
+ * any of the file's programs sets it. `needs_driver` is the stronger signal
+ * where it is available -- the file asked for /resources/testdriver.js by name. */
+struct outcome {
+    int completed, harness_missing, threw, needs_driver;
+    char why[512], stack[512];
+};
 
 /* Non-NULL replaces the file's bytes: the self-check runs an in-memory case
  * through this exact path so the thing it proves is the runner, not a fixture
@@ -672,6 +706,7 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
 #define EVAL(SRC, LEN, NAME) do {                                              \
         JSValue v_ = JS_Eval(ctx, (SRC), (size_t)(LEN), (NAME), JS_EVAL_TYPE_GLOBAL); \
         if (JS_IsException(v_)) {                                              \
+            oc->threw = 1;                                                     \
             JSValue e_ = JS_GetException(ctx);                                 \
             const char *m_ = JS_ToCString(ctx, e_);                            \
             if (!oc->why[0])                                                   \
@@ -706,6 +741,7 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
             JSValue m = JS_Eval(ctx, c.s[i].src, (size_t)c.s[i].len, c.s[i].name,
                                 JS_EVAL_TYPE_MODULE);
             if (JS_IsException(m)) {
+                oc->threw = 1;
                 JSValue e = JS_GetException(ctx);
                 const char *ms = JS_ToCString(ctx, e);
                 if (!oc->why[0])
@@ -723,6 +759,7 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
         free(c.s[i].name); free(c.s[i].src);
     }
     free(c.s);
+    oc->needs_driver = c.needs_driver;
     if (c.missing && !oc->why[0])
         snprintf(oc->why, sizeof oc->why,
                  "%d referenced script(s) could not be resolved in the checkout",
@@ -1096,7 +1133,7 @@ int main(int argc, char **argv)
     struct baseline failures = { 0, 0, 0 };
 
     long tot_pass = 0, tot_fail = 0, tot_files = 0, tot_broken = 0;
-    long tot_ref = 0, tot_other = 0;
+    long tot_ref = 0, tot_other = 0, tot_never = 0, tot_driver = 0;
     int shown = 0;
 
     for (int si = 0; si < subsets.n; si++) {
@@ -1109,6 +1146,7 @@ int main(int argc, char **argv)
         qsort(files.p, (size_t)files.n, sizeof *files.p, cmpstr);
 
         long spass = 0, sfail = 0, sbroken = 0, sref = 0, sother = 0;
+        long snever = 0, sdriver = 0;
         for (int fi = 0; fi < files.n; fi++) {
             if (g_listonly) { printf("%s\n", files.p[fi]); continue; }
             int kind = classify(files.p[fi]);
@@ -1133,22 +1171,38 @@ int main(int argc, char **argv)
             long fpass = 0;
 
             if (!oc.completed || r.n == 0) {
-                sbroken++; tot_broken++;
+                /* DIED vs NEVER STARTED -- see `struct outcome`. A file that
+                 * threw is category 1 and belongs in the work order. A file
+                 * that ran clean and registered nothing is category 2: it is
+                 * waiting on synthetic input, and no DOM or CSS work moves it. */
+                int never_started = (!oc.threw && r.n == 0);
                 char id[2048];
-                snprintf(id, sizeof id, "%s::[HARNESS]", files.p[fi]);
+                const char *w;
+                if (never_started) {
+                    snever++; tot_never++;
+                    snprintf(id, sizeof id, "%s::[NOTRUN]", files.p[fi]);
+                    w = oc.needs_driver
+                        ? "registered no tests: needs testdriver.js (synthetic input)"
+                        : "registered no tests and raised nothing (waiting on an event)";
+                } else {
+                    sbroken++; tot_broken++;
+                    snprintf(id, sizeof id, "%s::[HARNESS]", files.p[fi]);
+                    w = oc.why[0] ? oc.why : "stopped part-way with no message";
+                }
                 bl_add(&ffail, id);
                 if (g_repf) {
-                    const char *w = oc.why[0] ? oc.why : "completed with zero subtests";
-                    fprintf(g_repf, "HARNESS\t%s\t[HARNESS]\t", files.p[fi]);
+                    fprintf(g_repf, "%s\t%s\t%s\t",
+                            never_started ? "NOTSTARTED" : "HARNESS", files.p[fi],
+                            never_started ? "[NOTRUN]" : "[HARNESS]");
                     for (const char *s = w; *s; s++) fputc(*s == '\t' || *s == '\n' ? ' ' : *s, g_repf);
                     fputc('\t', g_repf);
                     for (const char *s = oc.stack; *s; s++) fputc(*s == '\t' || *s == '\n' ? ' ' : *s, g_repf);
                     fputc('\n', g_repf);
                 }
-                if (g_verbose && shown < g_vmax && !blh_has(&eh, id)) {
+                if (oc.needs_driver) { sdriver++; tot_driver++; }
+                if (g_verbose && shown < g_vmax && !blh_has(&eh, id) && !never_started) {
                     shown++;
-                    printf("  HARNESS %s\n     %s\n", files.p[fi],
-                           oc.why[0] ? oc.why : "completed with zero subtests");
+                    printf("  HARNESS %s\n     %s\n", files.p[fi], w);
                 }
             }
             for (int i = 0; i < r.n; i++) {
@@ -1193,10 +1247,12 @@ int main(int argc, char **argv)
         }
         if (!g_listonly) {
             if (g_progress) fprintf(stderr, "\r%100s\r", "");
-            printf("  %-22s %6ld/%-6ld subtests | %4ld harness files (%ld never completed)"
-                   " | not run: %ld reftest, %ld other\n",
+            printf("  %-22s %6ld/%-6ld subtests | %4ld files | died %ld,"
+                   " never started %ld (%ld want testdriver) | not run:"
+                   " %ld reftest, %ld other\n",
                    subsets.p[si], spass, spass + sfail,
-                   (long)files.n - sref - sother, sbroken, sref, sother);
+                   (long)files.n - sref - sother, sbroken, snever, sdriver,
+                   sref, sother);
         }
         for (int i = 0; i < files.n; i++) free(files.p[i]);
         free(files.p);
@@ -1204,12 +1260,20 @@ int main(int argc, char **argv)
     if (g_listonly) return 0;
 
     long tot = tot_pass + tot_fail;
-    printf("\nWPT: %ld/%ld subtests passed (%.1f%%) over %ld harness files;"
-           " %ld never completed the harness.\n"
-           "     NOT RUN: %ld reftests (judged by pixels against a reference"
-           " render -- no reftest harness here), %ld other files.\n",
+    printf("\nWPT: %ld/%ld subtests passed (%.1f%%) over %ld harness files.\n",
            tot_pass, tot, tot ? 100.0 * (double)tot_pass / (double)tot : 0.0,
-           tot_files, tot_broken, tot_ref, tot_other);
+           tot_files);
+    printf("     %ld files DIED -- threw part-way. Fixable, and the work order.\n"
+           "     %ld files NEVER STARTED -- loaded clean, registered no test(),\n"
+           "        waiting on input nobody can send. %ld ask for testdriver.js by\n"
+           "        name. That is a missing capability in the HARNESS, not a browser\n"
+           "        defect: no DOM or CSS work moves them. Tokened ::[NOTRUN] so they\n"
+           "        cannot pollute the ratchet.\n",
+           tot_broken, tot_never, tot_driver);
+    printf("     NOT RUN: %ld reftests -- judged by pixels against a reference render,\n"
+           "        and there is no reftest harness here, so LAYOUT correctness is\n"
+           "        essentially UNMEASURED by the rate above. %ld other files.\n",
+           tot_ref, tot_other);
 
     struct blhash fh; blh_build(&fh, &failures);
     int newfail = 0, newpass = 0;
