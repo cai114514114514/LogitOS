@@ -79,9 +79,14 @@ static inline int xchg(volatile int *p, int v)
  * `__thread` writes land inside the control block.
  * ------------------------------------------------------------------------- */
 
-extern char __logit_tls_start[] __attribute__((weak));
-extern char __logit_tdata_end[] __attribute__((weak));
-extern char __logit_tls_end[]   __attribute__((weak));
+/* __weak__, not `weak`. c/apps/libc/include/features.h line 4 defines a
+ * lowercase macro `weak` as __attribute__((__weak__)), and the QuickJS/browser
+ * build pulls that header into every TU with -include -- so the plain spelling
+ * expands to __attribute__((__attribute__((__weak__)))) and does not compile.
+ * The reserved spelling cannot be macro-expanded, which is what it is for. */
+extern char __logit_tls_start[] __attribute__((__weak__));
+extern char __logit_tdata_end[] __attribute__((__weak__));
+extern char __logit_tls_end[]   __attribute__((__weak__));
 
 struct tcb {
     struct tcb   *self;          /* MUST be offset 0: %fs:0 is the self-pointer the
