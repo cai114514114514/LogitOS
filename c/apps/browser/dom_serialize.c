@@ -175,55 +175,115 @@ static int is_void_element(const struct node *n)
 }
 
 /* Raw-text elements' children are emitted verbatim: escaping the contents of
- * <script> or <style> would change what they mean. */
+ * <script> or <style> would change what they mean.
+ *
+ * <noscript> is on this list because it is only raw text when SCRIPTING IS
+ * ENABLED, and this parser always has it enabled (test-html5lib skips the
+ * corpus's 28 #script-off cases for the same reason). With scripting off a
+ * <noscript> is parsed as ordinary markup and its text must be re-escaped --
+ * so if a scripting-disabled parse ever becomes a mode here, this predicate
+ * has to take the flag rather than assume it. serializing.html case 25 and
+ * serializing-html-fragments/escaping.html pin both halves of that. */
 static int is_rawtext(const struct node *n)
 {
     if (n->ns != NS_HTML) return 0;
     switch (n->htag) {
     case HTAG_SCRIPT: case HTAG_STYLE: case HTAG_XMP: case HTAG_IFRAME:
     case HTAG_NOEMBED: case HTAG_NOFRAMES: case HTAG_PLAINTEXT:
+    case HTAG_NOSCRIPT:
         return 1;
     default: break;
     }
     return !strcmp(n->tag, "script") || !strcmp(n->tag, "style");
 }
 
-/* The spec also escapes U+00A0 as "&nbsp;". We do not: our text is UTF-8, so a
- * no-break space is the two bytes C2 A0 and escaping it here would mean
- * decoding UTF-8 in the serialiser to avoid mangling every other C2-led
- * character. A literal no-break space round-trips fine. */
-static void esc_text(struct sb *s, const char *d, int n)
+/* NOT DONE ON PURPOSE, because it is the obvious-looking wrong answer.
+ *
+ * <pre>, <textarea> and <listing> swallow one leading U+000A when parsed, so
+ * serialising one of them and re-parsing the result loses a newline. The
+ * intuitive fix is to emit an extra newline after the start tag. This file
+ * briefly did that. The spec says not to, in as many words:
+ *
+ *   "For historical reasons, this algorithm does not roundtrip an initial
+ *    U+000A (LF) character in pre, textarea, or listing elements ... The HTML
+ *    parser will drop such a character during parsing, but this algorithm does
+ *    not serialize an extra U+000A (LF) character."
+ *
+ * So the round trip is lossy by design and the serialiser must be lossy the
+ * same way every other engine is. initial-linefeed-pre.html and
+ * serializing.html's "<pre> context starting with U+000A" cases pin it. */
+
+/* "Escaping a string", HTML fragment serialisation, in the spec's own order:
+ *
+ *   1. "&"     -> "&amp;"
+ *   2. U+00A0  -> "&nbsp;"
+ *   3. "<"     -> "&lt;"
+ *   4. ">"     -> "&gt;"
+ *   5. attribute mode only: '"' -> "&quot;"
+ *
+ * Steps 3 and 4 are NOT conditional on the mode. An older edition of the spec
+ * escaped "<" and ">" only outside attributes, this file implemented that, and
+ * html/syntax/serializing-html-fragments/serializing-lt-gt.html exists purely
+ * to pin the current rule -- its title is "Escape "<" and ">" in attribute
+ * values when serializing". Getting this wrong is not cosmetic: an attribute
+ * value holding "<" re-parses as a tag when the serialised text is fed back in,
+ * which is how a serialise/re-parse round trip turns into markup injection.
+ *
+ * On U+00A0. The comment that used to sit here declined to escape it, on the
+ * grounds that our text is UTF-8 and finding a no-break space would mean
+ * decoding UTF-8 to avoid mangling other C2-led characters. That reasoning was
+ * wrong. UTF-8 is self-synchronising: the byte pair C2 A0 IS U+00A0 and can be
+ * nothing else, because A0 is a continuation byte and only ever follows the
+ * lead byte it belongs to. Matching the two bytes literally needs no decoder
+ * and cannot false-positive. */
+static void esc_str(struct sb *s, const char *d, size_t n, int attr)
 {
-    int run = 0;
-    for (int i = 0; i < n; i++) {
+    size_t run = 0;
+    for (size_t i = 0; i < n; i++) {
         const char *rep = 0;
-        switch (d[i]) {
-        case '&':  rep = "&amp;"; break;
-        case '<':  rep = "&lt;"; break;
-        case '>':  rep = "&gt;"; break;
+        size_t adv = 1;
+        unsigned char c = (unsigned char)d[i];
+        switch (c) {
+        case '&': rep = "&amp;"; break;
+        case '<': rep = "&lt;";  break;
+        case '>': rep = "&gt;";  break;
+        case '"': if (attr) rep = "&quot;"; break;
+        case 0xC2:
+            if (i + 1 < n && (unsigned char)d[i + 1] == 0xA0) {
+                rep = "&nbsp;"; adv = 2;
+            }
+            break;
         default: break;
         }
-        if (!rep) { run++; continue; }
-        if (run) sb_put(s, d + i - run, (size_t)run);
-        run = 0;
-        sb_str(s, rep);
-    }
-    if (run) sb_put(s, d + n - run, (size_t)run);
-}
-
-static void esc_attr(struct sb *s, const char *d, uint32_t n)
-{
-    uint32_t run = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        const char *rep = 0;
-        if (d[i] == '&') rep = "&amp;";
-        else if (d[i] == '"') rep = "&quot;";
         if (!rep) { run++; continue; }
         if (run) sb_put(s, d + i - run, run);
         run = 0;
         sb_str(s, rep);
+        i += adv - 1;
     }
     if (run) sb_put(s, d + n - run, run);
+}
+
+/* An attribute's "serialized name". dom.h stores the namespaced foreign
+ * attributes under a space-separated form -- "xlink href", "xml lang",
+ * "xmlns xlink" -- because a space is the one character an HTML attribute name
+ * can never contain, so one interned name still identifies one attribute. The
+ * html5lib dump format wants exactly that space form and ser_attrs() below
+ * keeps printing it; HTML serialisation wants the prefixed form, so the space
+ * becomes a colon here and nowhere else.
+ *
+ * "xmlns" itself is the exception the spec calls out: an attribute in the XMLNS
+ * namespace whose local name is "xmlns" serialises as bare "xmlns", not
+ * "xmlns:xmlns" -- which in this encoding is the stored name "xmlns xmlns". */
+static void ser_attr_name(struct sb *s, const char *name)
+{
+    if (!name) return;
+    const char *sp = strchr(name, ' ');
+    if (!sp) { sb_str(s, name); return; }
+    if (!strcmp(name, "xmlns xmlns")) { sb_str(s, "xmlns"); return; }
+    sb_put(s, name, (size_t)(sp - name));
+    sb_str(s, ":");
+    sb_str(s, sp + 1);
 }
 
 static void ser_html(struct sb *s, const struct node *n, int self);
@@ -243,7 +303,7 @@ static void ser_html(struct sb *s, const struct node *n, int self)
         if (p && p->type == N_ELEM && is_rawtext(p))
             sb_put(s, n->text ? n->text : "", n->text ? (size_t)n->textlen : 0);
         else
-            esc_text(s, n->text ? n->text : "", n->textlen);
+            esc_str(s, n->text ? n->text : "", (size_t)(n->text ? n->textlen : 0), 0);
         return;
     }
     case N_COMMENT:
@@ -266,9 +326,9 @@ static void ser_html(struct sb *s, const struct node *n, int self)
     sb_str(s, n->tag);
     for (int i = 0; i < n->nattr; i++) {
         sb_str(s, " ");
-        sb_str(s, dom_attr_name_at(n, i));
+        ser_attr_name(s, dom_attr_name_at(n, i));
         sb_str(s, "=\"");
-        esc_attr(s, n->attrs[i].value, n->attrs[i].vlen);
+        esc_str(s, n->attrs[i].value, (size_t)n->attrs[i].vlen, 1);
         sb_str(s, "\"");
     }
     sb_str(s, ">");

@@ -9,6 +9,7 @@
  */
 #include "dom.h"
 #include "html_tree.h"
+#include "html_tokenizer.h"     /* html_tag_id(), for node->htag in elem_new */
 
 #include <libwapcaplet/libwapcaplet.h>
 
@@ -569,6 +570,22 @@ static struct node *elem_new(struct dom_doc *d, const char *lname, size_t len)
     if (!n->name) { node_recycle(d, n); return 0; }
     n->tag = lwc_string_data(n->name);          /* NUL-terminated by libwapcaplet */
     n->tag_id = tag_id_of(n->name);
+    /* htag is the HTML tag enum every switch in html_tree.c and dom_serialize.c
+     * keys off. It used to be set ONLY by the tree builder, at each of its own
+     * element-creation sites, so an element born through document.createElement
+     * came out with htag == 0 -- "not a known HTML tag" -- and every one of
+     * those switches silently took its default branch for it.
+     *
+     * That is not a theoretical hole. dom_serialize.c's raw-text test is a
+     * switch on htag with a strcmp fallback for "script" and "style"; the
+     * fallback is the only reason those two ever worked, and
+     * document.createElement("xmp").innerHTML = "</xmp>" came back escaped to
+     * "&lt;/xmp&gt;" (tokenizer-modes-001.html). Setting it here rather than
+     * adding more strcmps fixes the class, not the instance: one derivation
+     * point, shared by the parser and the DOM, so the two cannot disagree
+     * about what an element is. The tree builder's own assignments are now
+     * redundant, and left alone -- they assign the same value. */
+    n->htag = html_tag_id(n->tag, (uint32_t)len);
     return n;
 }
 

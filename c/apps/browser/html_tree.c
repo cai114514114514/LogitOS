@@ -756,6 +756,36 @@ static void reset_insertion_mode(struct html_tb *tb)
 static int adoption_agency(struct html_tb *tb, const struct html_token *t);
 static void in_body_any_other_end_tag(struct html_tb *tb, const struct html_token *t);
 
+#ifdef HTML_AAA_NAIVE
+/* THE NEGATIVE CONTROL.  Not built by default and not reachable from any
+ * shipping target: `make test-html5lib-negctl` compiles the parser with this
+ * defined and REQUIRES the corpus to fail.
+ *
+ * This is the wrong parser that is hardest to notice.  "Close the most recent
+ * matching tag" is what the adoption agency looks like if you have never read
+ * it -- it is what a stack-based parser does naturally, it handles every
+ * well-nested document identically to the real thing, and it only diverges on
+ * misnesting, where it produces a tree that is plausible rather than obviously
+ * broken.  Nothing crashes and no assertion in a hand-written test fires; the
+ * page just renders with the wrong subtree under the wrong parent.
+ *
+ * So the claim being controlled is not "the parser works".  It is "the corpus
+ * would TELL US if the adoption agency were wrong" -- and an expected-failure
+ * list nobody has watched go red does not establish that. */
+static int adoption_agency(struct html_tb *tb, const struct html_token *t)
+{
+    for (int i = tb->nopen - 1; i >= 0; i--) {
+        if (tb->open[i] && tb->open[i]->ns == NS_HTML &&
+            node_matches_token(tb->open[i], t)) {
+            int afe = afe_index(tb, tb->open[i]);
+            if (afe >= 0) afe_remove_at(tb, afe);
+            while (tb->nopen > i) stack_pop(tb);
+            return 1;
+        }
+    }
+    return 0;
+}
+#else
 static int adoption_agency(struct html_tb *tb, const struct html_token *t)
 {
     /* 1. If the current node is an HTML element whose tag name is subject and
@@ -879,6 +909,7 @@ static int adoption_agency(struct html_tb *tb, const struct html_token *t)
     }
     return 1;
 }
+#endif /* HTML_AAA_NAIVE */
 
 /* ------------------------------------------------------------------------ */
 /* foreign content: name and attribute fixups                                */

@@ -3244,6 +3244,11 @@ bench-aui: $(ISO) $(DISK)
 # html5lib shape one layer up. See its header.
 -include tests/wpt.mk
 
+# The negative control for the HTML tree builder: rebuilds the parser with the
+# adoption agency algorithm stubbed out and requires the html5lib corpus to go
+# red. See the fragment header.
+-include tests/html5lib_negctl.mk
+
 # The DOM event layer: the Event constructor hierarchy, a constructible
 # EventTarget and the rest of addEventListener's options surface, layered over
 # the three-phase dispatcher in js_dom.c. Reuses the WPT runner's source list
