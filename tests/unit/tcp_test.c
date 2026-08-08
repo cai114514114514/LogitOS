@@ -269,6 +269,443 @@ static void negctl(struct tcp_conn *c, uint32_t cwnd0, uint32_t ssth0)
 { (void)c; (void)cwnd0; (void)ssth0; }
 #endif
 
+
+/* ======================================================================
+ * THE PASSIVE OPEN -- listen, the three-way handshake from the receiving
+ * end, the accept backlog, and the limits.
+ *
+ * These drive tcp.c as a SERVER: every segment below is one a client sent to
+ * us, and what is checked is what we sent back and what state we ended in.
+ *
+ * The one that matters most is srv_two_connections(): TWO CLIENTS AT ONCE. A
+ * single client works perfectly against a stack that hands every accepted
+ * connection the same block of state, which is why a one-client test cannot
+ * see the bug and why `make test-tcp-server-negctl` builds exactly that stack
+ * and requires this suite to FAIL.
+ * ====================================================================== */
+
+/* A peer, so two of them can be in flight at once. The shared injector above
+ * has a single global source port; a server test needs one per client. */
+struct peer {
+    uint16_t port;          /* the client's source port */
+    uint32_t isn;           /* its initial send sequence */
+    uint32_t snd;           /* its next send sequence */
+    uint32_t rcv;           /* what it has seen from us (our ISS + 1) */
+};
+
+/* Inject one segment FROM `p` TO local port `lport`. Returns nothing; the
+ * reply (if any) lands in g_cap. */
+static void peer_seg(struct peer *p, uint16_t lport, uint32_t seq, uint32_t ack,
+                     uint8_t flags, const struct injopt *io,
+                     const void *data, int dlen)
+{
+    uint8_t buf[60 + 4096];
+    uint8_t opts[40];
+    int optlen = build_inj(opts, io, (flags & SYN) != 0);
+    int hlen = 20 + optlen;
+    memset(buf, 0, (size_t)(hlen + dlen));
+    buf[0] = (uint8_t)(p->port >> 8); buf[1] = (uint8_t)p->port;
+    buf[2] = (uint8_t)(lport >> 8);   buf[3] = (uint8_t)lport;
+    put32(buf + 4, seq); put32(buf + 8, ack);
+    buf[12] = (uint8_t)((hlen / 4) << 4);
+    buf[13] = flags;
+    buf[14] = 0xFF; buf[15] = 0xFF;          /* a wide-open client window */
+    if (optlen) memcpy(buf + 20, opts, (size_t)optlen);
+    if (dlen) memcpy(buf + hlen, data, (size_t)dlen);
+    uint16_t csum = tcp_checksum(RIP, net_cfg.ip, buf, hlen + dlen);
+    buf[16] = (uint8_t)(csum >> 8); buf[17] = (uint8_t)csum;
+    tcp_input(RIP, buf, (uint16_t)(hlen + dlen));
+}
+
+/* The last segment we sent to this peer's port, or NULL. */
+static struct cap *cap_to(uint16_t dport, int from)
+{
+    for (int i = g_ncap - 1; i >= from; i--) {
+        uint16_t d = (uint16_t)(((uint16_t)g_cap[i].raw[2] << 8) | g_cap[i].raw[3]);
+        if (d == dport) return &g_cap[i];
+    }
+    return NULL;
+}
+
+static void srv_reset(void)
+{
+    for (int i = 0; i < NCONN; i++) conns[i].used = 0;
+    for (int i = 0; i < NLISTEN; i++) tcp_listen_close(i);
+    g_ncap = 0;
+}
+
+/* Drive one client all the way to ESTABLISHED against listen port `lport`.
+ * Returns the accepted connection id, or a negative TCP_L_E_*. */
+static int srv_connect(struct peer *p, int lid, uint16_t lport, const struct injopt *io)
+{
+    int from = g_ncap;
+    peer_seg(p, lport, p->isn, 0, SYN, io, NULL, 0);
+    struct cap *sa = cap_to(p->port, from);
+    if (!sa || (sa->flags & (SYN | ACK)) != (SYN | ACK)) return -100;
+    p->snd = p->isn + 1;
+    p->rcv = sa->seq + 1;
+    peer_seg(p, lport, p->snd, p->rcv, ACK, NULL, NULL, 0);
+    return tcp_accept(lid);
+}
+
+/* ---- the negative control ---------------------------------------------
+ * Emulate a stack that ACCEPTS the connection but reuses one connection block
+ * instead of allocating a new one: the second handshake's state is written
+ * over the first's and both accepted ids name the same block. That is the
+ * whole bug -- one client is served perfectly and the second corrupts the
+ * first -- and it lives HERE, in the test, because tcp.c carries no test
+ * hooks. */
+#ifdef TCP_ACCEPT_NEGCTL
+static int negctl_reuse(int ia, int ib)
+{
+    conns[ia] = conns[ib];
+    conns[ib].used = 0;
+    return ia;
+}
+#else
+static int negctl_reuse(int ia, int ib) { (void)ia; return ib; }
+#endif
+
+static void server_tests(void)
+{
+    const uint16_t LISTEN_PORT = 8080;
+
+    /* S1) listen() takes a port, and taking it twice is refused. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        CHECK(lid >= 0, "listen: got %d", lid);
+        CHECK(tcp_listen_port(lid) == LISTEN_PORT,
+              "listen: port readback %d", tcp_listen_port(lid));
+        CHECK(tcp_listen(LISTEN_PORT, 4, 1) == TCP_L_E_INUSE,
+              "listen: the same port twice is refused");
+        CHECK(tcp_accept(lid) == TCP_L_E_AGAIN,
+              "listen: an idle listener has nothing to accept");
+        tcp_listen_close(lid);
+        CHECK(tcp_listen(LISTEN_PORT, 4, 1) >= 0,
+              "listen: the port is free again after close");
+        srv_reset();
+    }
+
+    /* S2) A SYN for a port nobody listens on still gets a RST -- the passive
+     *     path must not have swallowed the unmatched-segment behaviour. */
+    {
+        srv_reset();
+        struct peer p = { 40001, 0x11110000u, 0, 0 };
+        peer_seg(&p, 9999, p.isn, 0, SYN, NULL, NULL, 0);
+        struct cap *r = cap_to(p.port, 0);
+        CHECK(r && (r->flags & RST), "no listener: SYN gets a RST");
+        CHECK(!r || (r->flags & SYN) == 0, "no listener: the RST is not a SYN-ACK");
+        srv_reset();
+    }
+
+    /* S3) The three-way handshake from the server side, and the SYN-ACK's
+     *     options -- which must be a SUBSET of what the client offered. This
+     *     client offers everything. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40002, 0x22220000u, 0, 0 };
+        struct injopt io;
+        memset(&io, 0, sizeof io);
+        io.mss = 1460; io.have_ws = 1; io.ws = 7; io.sack_perm = 1;
+        io.have_ts = 1; io.tsval = 900000;
+        int from = g_ncap;
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, &io, NULL, 0);
+        struct cap *sa = cap_to(p.port, from);
+        CHECK(sa && (sa->flags & (SYN | ACK)) == (SYN | ACK),
+              "handshake: the SYN is answered with SYN-ACK");
+        CHECK(sa && sa->ack == p.isn + 1,
+              "handshake: the SYN-ACK acknowledges the SYN's sequence");
+        CHECK(sa && cap_opt(sa, 2, NULL) == 4, "syn-ack: carries an MSS option");
+        CHECK(sa && cap_opt(sa, 3, NULL) == 3, "syn-ack: echoes window scale");
+        CHECK(sa && cap_opt(sa, 4, NULL) == 2, "syn-ack: echoes SACK-permitted");
+        CHECK(sa && cap_opt(sa, 8, NULL) == 10, "syn-ack: echoes timestamps");
+        /* Still half-open: nothing to accept until the final ACK. */
+        CHECK(tcp_accept(lid) == TCP_L_E_AGAIN,
+              "handshake: nothing to accept before the final ACK");
+        p.snd = p.isn + 1; p.rcv = sa->seq + 1;
+        peer_seg(&p, LISTEN_PORT, p.snd, p.rcv, ACK, NULL, NULL, 0);
+        int id = tcp_accept(lid);
+        CHECK(id >= 0, "handshake: the final ACK makes it acceptable (%d)", id);
+        CHECK(id >= 0 && conns[id].state == ESTABLISHED,
+              "handshake: accepted connection is ESTABLISHED");
+        CHECK(id >= 0 && conns[id].passive, "handshake: marked as a passive open");
+        CHECK(id >= 0 && conns[id].snd_scale == 7,
+              "handshake: the client's shift was adopted (%u)",
+              id >= 0 ? conns[id].snd_scale : 0);
+        uint32_t ip = 0; uint16_t pt = 0;
+        CHECK(id >= 0 && tcp_peer(id, &ip, &pt) == 0 && ip == RIP && pt == p.port,
+              "handshake: getpeername reports %u.%u.%u.%u:%u",
+              (ip >> 24) & 255, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255, pt);
+        srv_reset();
+    }
+
+    /* S4) A client that offers NOTHING must not be answered with options it
+     *     never asked for. Window scale is the one that silently breaks a
+     *     connection rather than failing it: an unscaled client reads our
+     *     advertised window literally. */
+    {
+        srv_reset();
+        tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40003, 0x33330000u, 0, 0 };
+        struct injopt io;
+        memset(&io, 0, sizeof io);
+        io.mss = 1460;                       /* MSS only */
+        int from = g_ncap;
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, &io, NULL, 0);
+        struct cap *sa = cap_to(p.port, from);
+        CHECK(sa && cap_opt(sa, 3, NULL) == 0,
+              "bare syn: NO window scale in the SYN-ACK");
+        CHECK(sa && cap_opt(sa, 4, NULL) == 0,
+              "bare syn: NO SACK-permitted in the SYN-ACK");
+        CHECK(sa && cap_opt(sa, 8, NULL) == 0,
+              "bare syn: NO timestamps in the SYN-ACK");
+        CHECK(sa && cap_opt(sa, 2, NULL) == 4, "bare syn: MSS is still offered");
+        CHECK(sa && (sa->hlen % 4) == 0,
+              "bare syn: the option area is word-aligned (hlen %d)", sa ? sa->hlen : 0);
+        srv_reset();
+    }
+
+    /* S5) A lost SYN-ACK: the client retransmits its SYN and must get the SAME
+     *     sequence space back, not a fresh one. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40004, 0x44440000u, 0, 0 };
+        int from = g_ncap;
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, NULL, NULL, 0);
+        struct cap *a1 = cap_to(p.port, from);
+        uint32_t iss = a1 ? a1->seq : 0;
+        from = g_ncap;
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, NULL, NULL, 0);   /* again */
+        struct cap *a2 = cap_to(p.port, from);
+        CHECK(a2 && (a2->flags & (SYN | ACK)) == (SYN | ACK),
+              "syn rexmit: answered again");
+        CHECK(a2 && a2->seq == iss,
+              "syn rexmit: the SAME ISS (%u vs %u)", a2 ? a2->seq : 0, iss);
+        int half = 0;
+        for (int i = 0; i < NCONN; i++) if (conns[i].used) half++;
+        CHECK(half == 1, "syn rexmit: one half-open, not two (%d)", half);
+        CHECK(tcp_accept(lid) == TCP_L_E_AGAIN, "syn rexmit: still nothing to accept");
+        srv_reset();
+    }
+
+    /* S6) The timer path: a half-open whose final ACK never arrives is given up
+     *     on, and it resends the SYN-ACK rather than a byte of send ring. */
+    {
+        srv_reset();
+        tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40005, 0x55550000u, 0, 0 };
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, NULL, NULL, 0);
+        int id = -1;
+        for (int i = 0; i < NCONN; i++) if (conns[i].used) { id = i; break; }
+        CHECK(id >= 0 && conns[id].state == SYN_RCVD, "half-open: state is SYN_RCVD");
+        int from = g_ncap;
+        for (int r = 0; r < 3; r++) { g_ticks += 100000; tcp_poll(); }
+        struct cap *rx = cap_to(p.port, from);
+        CHECK(rx && (rx->flags & (SYN | ACK)) == (SYN | ACK),
+              "half-open: the retransmit is a SYN-ACK");
+        CHECK(rx && rx->dlen == 0,
+              "half-open: the retransmit carries NO data (%d bytes)", rx ? rx->dlen : -1);
+        for (int r = 0; r < 6; r++) { g_ticks += 100000; tcp_poll(); }
+        CHECK(id < 0 || !conns[id].used,
+              "half-open: given up on after 5 retransmits (slot freed)");
+        srv_reset();
+    }
+
+    /* S7) TWO CLIENTS AT ONCE -- the one a single-connection test cannot see.
+     *     Both handshake before either sends a byte, then each sends its own
+     *     payload, and each connection must deliver ITS OWN bytes to ITS OWN
+     *     peer port. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer a = { 40010, 0x0A0A0000u, 0, 0 };
+        struct peer b = { 40011, 0x0B0B0000u, 0, 0 };
+        int ia = srv_connect(&a, lid, LISTEN_PORT, NULL);
+        int ib = srv_connect(&b, lid, LISTEN_PORT, NULL);
+        ib = negctl_reuse(ia, ib);        /* the bug, when built as the control */
+
+        CHECK(ia >= 0 && ib >= 0, "two conns: both accepted (%d, %d)", ia, ib);
+        CHECK(ia != ib, "two conns: accept returned DISTINCT connections (%d, %d)", ia, ib);
+        CHECK(ia < 0 || ib < 0 || conns[ia].rport != conns[ib].rport,
+              "two conns: the two blocks hold different peer ports (%u, %u)",
+              ia >= 0 ? conns[ia].rport : 0, ib >= 0 ? conns[ib].rport : 0);
+
+        /* Each client sends four bytes naming itself. */
+        peer_seg(&a, LISTEN_PORT, a.snd, a.rcv, ACK | PSH, NULL, "AAAA", 4);
+        peer_seg(&b, LISTEN_PORT, b.snd, b.rcv, ACK | PSH, NULL, "BBBB", 4);
+
+        char ga[8] = {0}, gb[8] = {0};
+        int na = ia >= 0 ? tcp_recv(ia, ga, 8) : -1;
+        int nb = ib >= 0 ? tcp_recv(ib, gb, 8) : -1;
+        CHECK(na == 4 && ga[0] == 'A' && ga[3] == 'A',
+              "two conns: connection A delivered %d bytes '%.4s' (want 4 'AAAA')", na, ga);
+        CHECK(nb == 4 && gb[0] == 'B' && gb[3] == 'B',
+              "two conns: connection B delivered %d bytes '%.4s' (want 4 'BBBB')", nb, gb);
+
+        /* And a reply on each goes to the right peer. */
+        int from = g_ncap;
+        if (ia >= 0) tcp_send_nb(ia, "to-a", 4);
+        if (ib >= 0) tcp_send_nb(ib, "to-b", 4);
+        struct cap *ra = cap_to(a.port, from);
+        struct cap *rb = cap_to(b.port, from);
+        CHECK(ra && ra->dlen == 4 && ra->raw[ra->hlen] == 't' &&
+              ra->raw[ra->hlen + 3] == 'a',
+              "two conns: A's reply went to A's port");
+        CHECK(rb && rb->dlen == 4 && rb->raw[rb->hlen + 3] == 'b',
+              "two conns: B's reply went to B's port");
+        srv_reset();
+    }
+
+    /* S8) The backlog is a LIMIT, and hitting it is a RST plus a counter --
+     *     not a corrupted queue and not a silent drop. */
+    {
+        srv_reset();
+        struct tcp_server_stats s0, s1;
+        tcp_server_stats(&s0);
+        int lid = tcp_listen(LISTEN_PORT, 2, 1);      /* backlog of two */
+        struct peer p[4] = {
+            { 40020, 0x20200000u, 0, 0 }, { 40021, 0x21210000u, 0, 0 },
+            { 40022, 0x22220000u, 0, 0 }, { 40023, 0x23230000u, 0, 0 },
+        };
+        int completed = 0, reset = 0;
+        for (int i = 0; i < 4; i++) {
+            int from = g_ncap;
+            peer_seg(&p[i], LISTEN_PORT, p[i].isn, 0, SYN, NULL, NULL, 0);
+            struct cap *r = cap_to(p[i].port, from);
+            if (r && (r->flags & RST)) { reset++; continue; }
+            if (!r || (r->flags & SYN) == 0) continue;
+            p[i].snd = p[i].isn + 1; p[i].rcv = r->seq + 1;
+            peer_seg(&p[i], LISTEN_PORT, p[i].snd, p[i].rcv, ACK, NULL, NULL, 0);
+            completed++;
+        }
+        CHECK(reset >= 2, "backlog: the over-limit SYNs were RST (%d of 4)", reset);
+        CHECK(completed == 2, "backlog: exactly the backlog completed (%d)", completed);
+        CHECK(tcp_accept(lid) >= 0 && tcp_accept(lid) >= 0,
+              "backlog: both queued connections are acceptable");
+        CHECK(tcp_accept(lid) == TCP_L_E_AGAIN, "backlog: and then no more");
+        tcp_server_stats(&s1);
+        CHECK(s1.refused_backlog > s0.refused_backlog,
+              "backlog: the refusal is COUNTED (%u -> %u)",
+              s0.refused_backlog, s1.refused_backlog);
+        srv_reset();
+    }
+
+    /* S9) The client reserve. A passive open may never take the last
+     *     CLIENT_RESERVE slots -- an inbound peer must not be able to stop this
+     *     machine opening a connection of its own. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, TCP_BACKLOG, 1);
+        /* Fill everything above the reserve with fake live connections. */
+        int fill = NCONN - CLIENT_RESERVE;
+        for (int i = 0; i < fill; i++) { conns[i].used = 1; conns[i].state = ESTABLISHED; }
+        struct tcp_server_stats s0, s1;
+        tcp_server_stats(&s0);
+        struct peer p = { 40030, 0x30300000u, 0, 0 };
+        int from = g_ncap;
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, NULL, NULL, 0);
+        struct cap *r = cap_to(p.port, from);
+        CHECK(r && (r->flags & RST),
+              "reserve: a SYN into the reserve is refused with a RST");
+        tcp_server_stats(&s1);
+        CHECK(s1.refused_slots > s0.refused_slots,
+              "reserve: the refusal is counted separately from the backlog's");
+        CHECK(s1.free_conns == (uint32_t)CLIENT_RESERVE,
+              "reserve: %u slots still free for the client path", s1.free_conns);
+        /* And the client path really can still open one. */
+        for (int i = 0; i < NCONN; i++) if (i >= fill) conns[i].used = 0;
+        CHECK(tcp_connect_start(RIP, RPORT) >= 0,
+              "reserve: an OUTBOUND connection still succeeds");
+        (void)lid;
+        srv_reset();
+    }
+
+    /* S10) The passive close. The client sends FIN; we go to CLOSE_WAIT, may
+     *      still send, and only reach LAST_ACK when the application closes. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40040, 0x40400000u, 0, 0 };
+        int id = srv_connect(&p, lid, LISTEN_PORT, NULL);
+        CHECK(id >= 0, "passive close: connected (%d)", id);
+        peer_seg(&p, LISTEN_PORT, p.snd, p.rcv, ACK | FIN, NULL, NULL, 0);
+        p.snd++;
+        CHECK(id >= 0 && conns[id].state == CLOSE_WAIT,
+              "passive close: the peer's FIN puts us in CLOSE_WAIT");
+        CHECK(id >= 0 && tcp_available(id) == -1,
+              "passive close: reads report the stream finished");
+        int from = g_ncap;
+        CHECK(id >= 0 && tcp_send_nb(id, "bye", 3) == 3,
+              "passive close: we may STILL send in CLOSE_WAIT");
+        CHECK(cap_to(p.port, from) != NULL, "passive close: and it went out");
+        tcp_close(id);
+        CHECK(id >= 0 && conns[id].state == LAST_ACK,
+              "passive close: our close moves us to LAST_ACK (state %d)",
+              id >= 0 ? conns[id].state : -1);
+        struct cap *fin = cap_to(p.port, from);
+        CHECK(fin && (fin->flags & FIN), "passive close: our FIN went out");
+        /* The FIN is a bare segment behind the 3 data bytes, so it occupies
+         * exactly one sequence of its own: acknowledge seq+1, not seq+len. */
+        peer_seg(&p, LISTEN_PORT, p.snd, fin ? fin->seq + 1 : 0, ACK, NULL, NULL, 0);
+        CHECK(id >= 0 && !conns[id].used,
+              "passive close: the final ACK frees the slot");
+        srv_reset();
+    }
+
+    /* S11) shutdown(SHUT_WR): the FIN goes out and the connection SURVIVES, so
+     *      the peer's own reply still arrives. That is the difference between
+     *      a half-close and a close, and getting it wrong truncates every
+     *      HTTP/1.0 response that expects a request body afterwards. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40050, 0x50500000u, 0, 0 };
+        int id = srv_connect(&p, lid, LISTEN_PORT, NULL);
+        int from = g_ncap;
+        tcp_shutdown_write(id);
+        struct cap *f = cap_to(p.port, from);
+        CHECK(f && (f->flags & FIN), "half-close: the FIN went out");
+        CHECK(id >= 0 && conns[id].used && conns[id].state == FIN_WAIT,
+              "half-close: the connection is still there (state %d)",
+              id >= 0 ? conns[id].state : -1);
+        peer_seg(&p, LISTEN_PORT, p.snd, p.rcv, ACK | PSH, NULL, "late", 4);
+        char g[8] = {0};
+        CHECK(tcp_recv(id, g, 8) == 4 && g[0] == 'l',
+              "half-close: the peer's data still arrives after our FIN");
+        srv_reset();
+    }
+
+    /* S12) Closing the listener resets what was queued but never accepted --
+     *      the peer is owed the truth, and a FIN would claim we read its
+     *      request. And the slot comes back. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { 40060, 0x60600000u, 0, 0 };
+        int from = g_ncap;
+        peer_seg(&p, LISTEN_PORT, p.isn, 0, SYN, NULL, NULL, 0);
+        struct cap *sa = cap_to(p.port, from);
+        p.snd = p.isn + 1; p.rcv = sa ? sa->seq + 1 : 0;
+        peer_seg(&p, LISTEN_PORT, p.snd, p.rcv, ACK, NULL, NULL, 0);
+        int live = 0;
+        for (int i = 0; i < NCONN; i++) if (conns[i].used) live++;
+        CHECK(live == 1, "listener close: one connection is queued (%d)", live);
+        from = g_ncap;
+        tcp_listen_close(lid);
+        struct cap *r = cap_to(p.port, from);
+        CHECK(r && (r->flags & RST), "listener close: the queued connection is RST");
+        live = 0;
+        for (int i = 0; i < NCONN; i++) if (conns[i].used) live++;
+        CHECK(live == 0, "listener close: the slot is released (%d still used)", live);
+        CHECK(tcp_accept(lid) == TCP_L_E_ARG,
+              "listener close: accepting on it now fails");
+        srv_reset();
+    }
+}
+
 int main(void)
 {
     uint32_t B = 1000;
@@ -1100,6 +1537,8 @@ int main(void)
               "wscale: 80 KiB accepted in one window (%u)", c->rcv_nxt - R);
         drain_verify(80 * 1024);
     }
+
+    server_tests();
 
     printf("\nTCP protocol tests: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

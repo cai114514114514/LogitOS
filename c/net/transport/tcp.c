@@ -2141,6 +2141,7 @@ int tcp_wait_writable(int id, unsigned ms)
     wait_event_timeout(&rx_wq,
         !c->used || (c->state != ESTABLISHED && c->state != CLOSE_WAIT) ||
         (c->snd_end - c->snd_una) < (uint32_t)SNDBUF, ms, ok);
+    (void)ok;                       /* the state, not the verdict, decides */
     if (!c->used || (c->state != ESTABLISHED && c->state != CLOSE_WAIT)) return -1;
     return (c->snd_end - c->snd_una) < (uint32_t)SNDBUF ? 1 : 0;
 }
