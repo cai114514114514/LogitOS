@@ -69,7 +69,12 @@ const char *url_query_raw(const urlrec *u);   /* NULL when the query is null */
 
 /* ---- application/x-www-form-urlencoded --------------------------------- */
 
-typedef struct uspair { char *name, *value; } uspair;
+/* Name and value carry LENGTHS. A form-urlencoded pair may legitimately hold a
+ * U+0000 -- "%00" decodes to one, and a JS string can contain one directly --
+ * and three WPT subtests turn on it (urlsearchparams-constructor "Parse NUL"
+ * and "Parse %00", urlsearchparams-stringifier "Serialize NUL"). strlen here
+ * loses exactly those. */
+typedef struct uspair { char *name; int nlen; char *value; int vlen; } uspair;
 typedef struct usplist {
     uspair *v;
     int n, cap;
@@ -77,9 +82,10 @@ typedef struct usplist {
 
 void  usp_init(usplist *l);
 void  usp_clear(usplist *l);
-void  usp_append(usplist *l, const char *name, const char *value);
+void  usp_append(usplist *l, const char *name, int nlen, const char *value, int vlen);
 void  usp_parse(usplist *l, const char *s, int len);   /* replaces the list */
 char *usp_serialize(const usplist *l);                 /* malloc'd */
+int   usp_serialize_len(const usplist *l, char **out); /* ... and its length */
 void  usp_sort(usplist *l);                            /* stable, UTF-16 order */
 
 /* ---- percent-encoding, exposed because the setters and the tests want it - */

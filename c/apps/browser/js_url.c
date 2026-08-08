@@ -1587,8 +1587,9 @@ int url_set(urlrec *u, int comp, const char *value, int len)
         ub t; ub_init(&t);
         ub_put(&t, value ? value : "", len);
         ub_putc(&t, ':');
+        int rawn = t.n;
         char *raw = ub_take(&t);
-        s = preprocess(raw, (int)strlen(raw), 0, &n);
+        s = preprocess(raw, rawn, 0, &n);
         free(raw);
         if (s) { basic_parse(s, n, 0, u, ST_SCHEME_START); free(s); }
         return 0; }
@@ -1694,8 +1695,10 @@ void usp_clear(usplist *l)
     l->n = 0;
 }
 
-void usp_append(usplist *l, const char *name, const char *value)
+void usp_append(usplist *l, const char *name, int nlen, const char *value, int vlen)
 {
+    if (nlen < 0) nlen = name ? (int)strlen(name) : 0;
+    if (vlen < 0) vlen = value ? (int)strlen(value) : 0;
     if (l->n + 1 > l->cap) {
         int nc = l->cap ? l->cap * 2 : 8;
         uspair *nv = (uspair *)xalloc((int)sizeof(uspair) * nc);
@@ -1704,23 +1707,26 @@ void usp_append(usplist *l, const char *name, const char *value)
         free(l->v);
         l->v = nv; l->cap = nc;
     }
-    l->v[l->n].name = xstrdup(name ? name : "");
-    l->v[l->n].value = xstrdup(value ? value : "");
+    l->v[l->n].name = xstrndup(name ? name : "", nlen);
+    l->v[l->n].nlen = nlen;
+    l->v[l->n].value = xstrndup(value ? value : "", vlen);
+    l->v[l->n].vlen = vlen;
     l->n++;
 }
 
 /* percent-decode after turning '+' into a space, then sanitise: the standard
  * says the result is UTF-8 decoded without BOM, so a byte sequence that is not
  * valid UTF-8 becomes U+FFFD rather than escaping into a JS string. */
-static char *form_decode(const char *s, int n)
+static char *form_decode(const char *s, int n, int *outlen)
 {
     ub t; ub_init(&t);
     for (int i = 0; i < n; i++) ub_putc(&t, s[i] == '+' ? ' ' : (unsigned char)s[i]);
+    int pn = t.n;
     char *plus = ub_take(&t);
     int dl = 0;
-    char *dec = url_percent_decode(plus, (int)strlen(plus), &dl);
+    char *dec = url_percent_decode(plus, pn, &dl);
     free(plus);
-    char *san = utf8_sanitize(dec, dl, 0);
+    char *san = utf8_sanitize(dec, dl, outlen);
     free(dec);
     return san;
 }
@@ -1737,23 +1743,23 @@ void usp_parse(usplist *l, const char *s, int len)
             int eq = -1;
             for (int k = 0; k < seq; k++) if (s[start + k] == '=') { eq = k; break; }
             char *name, *val;
+            int nl = 0, vl = 0;
             if (eq >= 0) {
-                name = form_decode(s + start, eq);
-                val = form_decode(s + start + eq + 1, seq - eq - 1);
+                name = form_decode(s + start, eq, &nl);
+                val = form_decode(s + start + eq + 1, seq - eq - 1, &vl);
             } else {
-                name = form_decode(s + start, seq);
+                name = form_decode(s + start, seq, &nl);
                 val = xstrdup("");
             }
-            usp_append(l, name, val);
+            usp_append(l, name, nl, val, vl);
             free(name); free(val);
         }
         start = i + 1;
     }
 }
 
-static void form_serialize_one(ub *b, const char *s)
+static void form_serialize_one(ub *b, const char *s, int n)
 {
-    int n = (int)strlen(s);
     for (int i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
         if (c == ' ') ub_putc(b, '+');
@@ -1762,16 +1768,25 @@ static void form_serialize_one(ub *b, const char *s)
     }
 }
 
-char *usp_serialize(const usplist *l)
+int usp_serialize_len(const usplist *l, char **out)
 {
     ub b; ub_init(&b);
     for (int i = 0; i < l->n; i++) {
         if (i) ub_putc(&b, '&');
-        form_serialize_one(&b, l->v[i].name);
+        form_serialize_one(&b, l->v[i].name, l->v[i].nlen);
         ub_putc(&b, '=');
-        form_serialize_one(&b, l->v[i].value);
+        form_serialize_one(&b, l->v[i].value, l->v[i].vlen);
     }
-    return ub_take(&b);
+    int n = b.n;
+    *out = ub_take(&b);
+    return n;
+}
+
+char *usp_serialize(const usplist *l)
+{
+    char *s = 0;
+    usp_serialize_len(l, &s);
+    return s;
 }
 
 /* Compare two UTF-8 strings in UTF-16 code-unit order. A code point above the
@@ -1784,10 +1799,10 @@ static unsigned sortkey(const unsigned char *s, int n, int *i)
     return cp < 0x10000 ? cp : (0xD800 + ((cp - 0x10000) >> 10));
 }
 
-static int u16cmp(const char *a, const char *b)
+static int u16cmp(const char *a, int an, const char *b, int bn)
 {
     const unsigned char *ua = (const unsigned char *)a, *ub2 = (const unsigned char *)b;
-    int an = (int)strlen(a), bn = (int)strlen(b), i = 0, j = 0;
+    int i = 0, j = 0;
     while (i < an && j < bn) {
         int i0 = i, j0 = j;
         unsigned ka = sortkey(ua, an, &i), kb = sortkey(ub2, bn, &j);
@@ -1808,7 +1823,8 @@ void usp_sort(usplist *l)
     for (int i = 1; i < l->n; i++) {
         uspair t = l->v[i];
         int j = i - 1;
-        while (j >= 0 && u16cmp(l->v[j].name, t.name) > 0) { l->v[j + 1] = l->v[j]; j--; }
+        while (j >= 0 && u16cmp(l->v[j].name, l->v[j].nlen, t.name, t.nlen) > 0)
+            { l->v[j + 1] = l->v[j]; j--; }
         l->v[j + 1] = t;
     }
 }
@@ -1881,13 +1897,30 @@ static JSValue str_take(JSContext *ctx, char *s)
     return v;
 }
 
+/* JS_ToCString stops at the first U+0000, and a JS string may contain one.
+ * Three WPT subtests and one setter case turn on it, so every string that
+ * crosses into this file crosses with its length. */
+static char *js_str(JSContext *ctx, JSValueConst v, int *len)
+{
+    size_t n = 0;
+    const char *p = JS_ToCStringLen(ctx, &n, v);
+    if (!p) { *len = 0; return 0; }
+    char *d = xstrndup(p, (int)n);
+    JS_FreeCString(ctx, p);
+    *len = (int)n;
+    return d;
+}
+
 /* params -> url */
 static void usp_update_url(jsusp *j)
 {
     if (!j->owner) return;
-    char *s = usp_serialize(&j->list);
-    if (s && s[0] == 0) { free(s); url_set_query_raw(j->owner->rec, 0); }
-    else { url_set_query_raw(j->owner->rec, s); free(s); }
+    char *s = 0;
+    int n = usp_serialize_len(&j->list, &s);
+    /* An EMPTY list makes the query NULL, not "" -- otherwise deleting the
+     * last parameter leaves a bare "?" on the href. */
+    url_set_query_raw(j->owner->rec, n ? s : 0);
+    free(s);
 }
 
 /* url -> params */
@@ -1915,7 +1948,8 @@ static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
     jsusp *other = (jsusp *)JS_GetOpaque(init, g_usp_class);
     if (other) {
         for (int i = 0; i < other->list.n; i++)
-            usp_append(&j->list, other->list.v[i].name, other->list.v[i].value);
+            usp_append(&j->list, other->list.v[i].name, other->list.v[i].nlen,
+                       other->list.v[i].value, other->list.v[i].vlen);
         return 0;
     }
     if (JS_IsObject(init)) {
@@ -1957,10 +1991,11 @@ static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
                     JS_ThrowTypeError(ctx, "URLSearchParams: each element must be a pair");
                     return -1;
                 }
-                const char *sa = JS_ToCString(ctx, a);
-                const char *sb = JS_ToCString(ctx, b);
-                usp_append(&j->list, sa ? sa : "", sb ? sb : "");
-                JS_FreeCString(ctx, sa); JS_FreeCString(ctx, sb);
+                int la = 0, lb = 0;
+                char *sa = js_str(ctx, a, &la);
+                char *sb = js_str(ctx, b, &lb);
+                usp_append(&j->list, sa ? sa : "", la, sb ? sb : "", lb);
+                free(sa); free(sb);
                 JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); JS_FreeValue(ctx, pair);
             }
             return 0;
@@ -1972,10 +2007,13 @@ static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
         if (JS_GetOwnPropertyNames(ctx, &tab, &cnt, init, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
             for (uint32_t i = 0; i < cnt; i++) {
                 JSValue v = JS_GetProperty(ctx, init, tab[i].atom);
-                const char *k = JS_AtomToCString(ctx, tab[i].atom);
-                const char *sv = JS_ToCString(ctx, v);
-                usp_append(&j->list, k ? k : "", sv ? sv : "");
-                JS_FreeCString(ctx, k); JS_FreeCString(ctx, sv);
+                JSValue kv = JS_AtomToValue(ctx, tab[i].atom);
+                int lk = 0, lv = 0;
+                char *k = js_str(ctx, kv, &lk);
+                char *sv = js_str(ctx, v, &lv);
+                usp_append(&j->list, k ? k : "", lk, sv ? sv : "", lv);
+                free(k); free(sv);
+                JS_FreeValue(ctx, kv);
                 JS_FreeValue(ctx, v);
                 JS_FreeAtom(ctx, tab[i].atom);
             }
@@ -1985,12 +2023,13 @@ static int usp_init_from(JSContext *ctx, jsusp *j, JSValueConst init)
     }
     /* a string */
     {
-        const char *s = JS_ToCString(ctx, init);
+        int n = 0;
+        char *s = js_str(ctx, init, &n);
         if (!s) return -1;
         const char *in = s;
-        if (in[0] == '?') in++;
-        usp_parse(&j->list, in, (int)strlen(in));
-        JS_FreeCString(ctx, s);
+        if (n > 0 && in[0] == '?') { in++; n--; }
+        usp_parse(&j->list, in, n);
+        free(s);
     }
     return 0;
 }
@@ -2020,29 +2059,37 @@ static JSValue usp_method(JSContext *ctx, JSValueConst this_val, int argc,
 {
     jsusp *j = usp_self(ctx, this_val);
     if (!j) return JS_EXCEPTION;
-    const char *a = 0, *b = 0;
+    char *a = 0, *b = 0;
+    int la = 0, lb = 0, have_b = 0;
     JSValue ret = JS_UNDEFINED;
 
     if (magic == USP_APPEND || magic == USP_SET) {
         if (argc < 2) return JS_ThrowTypeError(ctx, "2 arguments required");
     }
     if (magic <= USP_SET && magic != USP_SORT) {
-        if (argc > 0) a = JS_ToCString(ctx, argv[0]);
-        if (argc > 1 && (magic == USP_APPEND || magic == USP_SET ||
-                         magic == USP_DELETE || magic == USP_HAS))
-            b = JS_ToCString(ctx, argv[1]);
+        if (argc > 0) a = js_str(ctx, argv[0], &la);
+        if (argc > 1 && !JS_IsUndefined(argv[1]) &&
+            (magic == USP_APPEND || magic == USP_SET ||
+             magic == USP_DELETE || magic == USP_HAS)) {
+            b = js_str(ctx, argv[1], &lb);
+            have_b = 1;
+        }
     }
+    /* Name and value are matched with their LENGTHS -- see the note on
+     * uspair. strcmp here would make a name and that name plus a U+0000 and
+     * more text the same parameter. */
+#define NEQ(i) (a && (i).nlen == la && !memcmp((i).name, a, (size_t)la))
+#define VEQ(i) (!have_b || ((i).vlen == lb && !memcmp((i).value, b, (size_t)lb)))
 
     switch (magic) {
     case USP_APPEND:
-        usp_append(&j->list, a ? a : "", b ? b : "");
+        usp_append(&j->list, a ? a : "", la, b ? b : "", lb);
         usp_update_url(j);
         break;
     case USP_DELETE: {
         int w = 0;
         for (int i = 0; i < j->list.n; i++) {
-            int drop = a && !strcmp(j->list.v[i].name, a) &&
-                       (!b || !strcmp(j->list.v[i].value, b));
+            int drop = NEQ(j->list.v[i]) && VEQ(j->list.v[i]);
             if (drop) { free(j->list.v[i].name); free(j->list.v[i].value); }
             else j->list.v[w++] = j->list.v[i];
         }
@@ -2052,57 +2099,64 @@ static JSValue usp_method(JSContext *ctx, JSValueConst this_val, int argc,
     case USP_GET:
         ret = JS_NULL;
         for (int i = 0; i < j->list.n; i++)
-            if (a && !strcmp(j->list.v[i].name, a)) { ret = JS_NewString(ctx, j->list.v[i].value); break; }
+            if (NEQ(j->list.v[i])) {
+                ret = JS_NewStringLen(ctx, j->list.v[i].value, (size_t)j->list.v[i].vlen);
+                break;
+            }
         break;
     case USP_GETALL: {
         ret = JS_NewArray(ctx);
         uint32_t k = 0;
         for (int i = 0; i < j->list.n; i++)
-            if (a && !strcmp(j->list.v[i].name, a))
-                JS_SetPropertyUint32(ctx, ret, k++, JS_NewString(ctx, j->list.v[i].value));
+            if (NEQ(j->list.v[i]))
+                JS_SetPropertyUint32(ctx, ret, k++,
+                    JS_NewStringLen(ctx, j->list.v[i].value, (size_t)j->list.v[i].vlen));
         break; }
     case USP_HAS: {
         int found = 0;
         for (int i = 0; i < j->list.n; i++)
-            if (a && !strcmp(j->list.v[i].name, a) &&
-                (!b || !strcmp(j->list.v[i].value, b))) { found = 1; break; }
+            if (NEQ(j->list.v[i]) && VEQ(j->list.v[i])) { found = 1; break; }
         ret = JS_NewBool(ctx, found);
         break; }
     case USP_SET: {
         int seen = -1, w = 0;
         for (int i = 0; i < j->list.n; i++) {
-            if (a && !strcmp(j->list.v[i].name, a)) {
+            if (NEQ(j->list.v[i])) {
                 if (seen < 0) {
                     free(j->list.v[i].value);
-                    j->list.v[i].value = xstrdup(b ? b : "");
+                    j->list.v[i].value = xstrndup(b ? b : "", lb);
+                    j->list.v[i].vlen = lb;
                     seen = w;
                     j->list.v[w++] = j->list.v[i];
                 } else { free(j->list.v[i].name); free(j->list.v[i].value); }
             } else j->list.v[w++] = j->list.v[i];
         }
         j->list.n = w;
-        if (seen < 0) usp_append(&j->list, a ? a : "", b ? b : "");
+        if (seen < 0) usp_append(&j->list, a ? a : "", la, b ? b : "", lb);
         usp_update_url(j);
         break; }
     case USP_SORT:
         usp_sort(&j->list);
         usp_update_url(j);
         break;
-    case USP_TOSTRING:
-        ret = str_take(ctx, usp_serialize(&j->list));
-        break;
+    case USP_TOSTRING: {
+        char *out = 0;
+        int n = usp_serialize_len(&j->list, &out);
+        ret = JS_NewStringLen(ctx, out ? out : "", (size_t)n);
+        free(out);
+        break; }
     case USP_FOREACH: {
         if (argc < 1 || !JS_IsFunction(ctx, argv[0]))
             return JS_ThrowTypeError(ctx, "callback is not a function");
         JSValueConst thisArg = argc > 1 ? argv[1] : JS_UNDEFINED;
         for (int i = 0; i < j->list.n; i++) {
             JSValue args[3];
-            args[0] = JS_NewString(ctx, j->list.v[i].value);
-            args[1] = JS_NewString(ctx, j->list.v[i].name);
+            args[0] = JS_NewStringLen(ctx, j->list.v[i].value, (size_t)j->list.v[i].vlen);
+            args[1] = JS_NewStringLen(ctx, j->list.v[i].name, (size_t)j->list.v[i].nlen);
             args[2] = JS_DupValue(ctx, this_val);
             JSValue r = JS_Call(ctx, argv[0], thisArg, 3, (JSValueConst *)args);
             JS_FreeValue(ctx, args[0]); JS_FreeValue(ctx, args[1]); JS_FreeValue(ctx, args[2]);
-            if (JS_IsException(r)) { if (a) JS_FreeCString(ctx, a); if (b) JS_FreeCString(ctx, b); return r; }
+            if (JS_IsException(r)) { free(a); free(b); return r; }
             JS_FreeValue(ctx, r);
         }
         break; }
@@ -2113,12 +2167,14 @@ static JSValue usp_method(JSContext *ctx, JSValueConst this_val, int argc,
         JSValue arr = JS_NewArray(ctx);
         for (int i = 0; i < j->list.n; i++) {
             JSValue item;
-            if (magic == USP_KEYS) item = JS_NewString(ctx, j->list.v[i].name);
-            else if (magic == USP_VALUES) item = JS_NewString(ctx, j->list.v[i].value);
+            JSValue nm = JS_NewStringLen(ctx, j->list.v[i].name, (size_t)j->list.v[i].nlen);
+            JSValue vl = JS_NewStringLen(ctx, j->list.v[i].value, (size_t)j->list.v[i].vlen);
+            if (magic == USP_KEYS) { item = nm; JS_FreeValue(ctx, vl); }
+            else if (magic == USP_VALUES) { item = vl; JS_FreeValue(ctx, nm); }
             else {
                 item = JS_NewArray(ctx);
-                JS_SetPropertyUint32(ctx, item, 0, JS_NewString(ctx, j->list.v[i].name));
-                JS_SetPropertyUint32(ctx, item, 1, JS_NewString(ctx, j->list.v[i].value));
+                JS_SetPropertyUint32(ctx, item, 0, nm);
+                JS_SetPropertyUint32(ctx, item, 1, vl);
             }
             JS_SetPropertyUint32(ctx, arr, (uint32_t)i, item);
         }
@@ -2129,9 +2185,11 @@ static JSValue usp_method(JSContext *ctx, JSValueConst this_val, int argc,
         break; }
     }
 
-    if (a) JS_FreeCString(ctx, a);
-    if (b) JS_FreeCString(ctx, b);
+    free(a);
+    free(b);
     return ret;
+#undef NEQ
+#undef VEQ
 }
 
 static JSValue usp_size_get(JSContext *ctx, JSValueConst this_val)
@@ -2165,20 +2223,21 @@ static JSValue url_make(JSContext *ctx, JSValueConst proto, urlrec *rec)
 static urlrec *url_from_args(JSContext *ctx, int argc, JSValueConst *argv, int *threw)
 {
     *threw = 0;
-    const char *in = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0;
+    int inl = 0;
+    char *in = argc > 0 ? js_str(ctx, argv[0], &inl) : 0;
     if (argc > 0 && !in) { *threw = 1; return 0; }
     urlrec *base = 0;
-    int have_base = argc > 1 && !JS_IsUndefined(argv[1]);
-    if (have_base) {
-        const char *bs = JS_ToCString(ctx, argv[1]);
-        if (!bs) { if (in) JS_FreeCString(ctx, in); *threw = 1; return 0; }
-        base = url_parse_w(bs, -1, 0);
-        JS_FreeCString(ctx, bs);
-        if (!base) { if (in) JS_FreeCString(ctx, in); return 0; }
+    if (argc > 1 && !JS_IsUndefined(argv[1])) {
+        int bl = 0;
+        char *bs = js_str(ctx, argv[1], &bl);
+        if (!bs) { free(in); *threw = 1; return 0; }
+        base = url_parse_w(bs, bl, 0);
+        free(bs);
+        if (!base) { free(in); return 0; }
     }
-    urlrec *u = url_parse_w(in ? in : "undefined", -1, base);
+    urlrec *u = url_parse_w(in ? in : "undefined", in ? inl : -1, base);
     url_free_w(base);
-    if (in) JS_FreeCString(ctx, in);
+    free(in);
     return u;
 }
 
@@ -2207,10 +2266,11 @@ static JSValue url_set_prop(JSContext *ctx, JSValueConst this_val, JSValueConst 
 {
     jsurl *j = url_self(ctx, this_val);
     if (!j) return JS_EXCEPTION;
-    const char *s = JS_ToCString(ctx, val);
+    int n = 0;
+    char *s = js_str(ctx, val, &n);
     if (!s) return JS_EXCEPTION;
-    int rc = url_set(j->rec, magic, s, (int)strlen(s));
-    JS_FreeCString(ctx, s);
+    int rc = url_set(j->rec, magic, s, n);
+    free(s);
     if (rc < 0 && magic == URLC_HREF)
         return JS_ThrowTypeError(ctx, "Failed to set the 'href' property on 'URL': Invalid URL");
     if (magic == URLC_HREF || magic == URLC_SEARCH) url_update_params(ctx, j);

@@ -196,6 +196,47 @@ int main(void)
       "u.searchParams.append('a b', 'c+d');"
       "return u.search === '?a+b=c%2Bd' && u.searchParams.get('a b') === 'c+d';");
 
+    /* ---- U+0000, which is where a NUL-terminated binding quietly loses ----
+     * A JS string may contain U+0000 and "%00" decodes to one. Everything
+     * below passed with JS_ToCString and was wrong: the string was truncated
+     * at the NUL on the way in and again on the way out. Four WPT subtests
+     * (urlsearchparams-constructor "Parse \0" / "Parse %00",
+     * urlsearchparams-stringifier "Serialize \0", url-setters-stripping
+     * "Setting protocol with U+0000 before inserted colon") are exactly
+     * these. */
+    T("params: parse a literal NUL",
+      "var p = new URLSearchParams('a=b\\0c');"
+      "if (p.get('a') !== 'b\\0c') return false;"
+      "p = new URLSearchParams('a\\0b=c');"
+      "return p.get('a\\0b') === 'c';");
+    T("params: parse %00",
+      "var p = new URLSearchParams('a=b%00c');"
+      "if (p.get('a') !== 'b\\0c') return false;"
+      "p = new URLSearchParams('a%00b=c');"
+      "return p.get('a\\0b') === 'c';");
+    T("params: serialize a NUL",
+      "var p = new URLSearchParams();"
+      "p.append('a\\0b', 'c\\0d');"
+      "return p.toString() === 'a%00b=c%00d';");
+    T("params: a record key with a NUL",
+      "var p = new URLSearchParams({'a\\0b': '42'});"
+      "return p.toString() === 'a%00b=42' && p.get('a\\0b') === '42';");
+    T("params: has/delete match past the NUL",
+      "var p = new URLSearchParams('a%00b=1&a=2');"
+      "return p.has('a\\0b') && p.has('a') && p.getAll('a').length === 1;");
+    T("protocol setter: a leading NUL is not stripped, so it is a no-op",
+      "var u = new URL('http://test/');"
+      "u.protocol = '\\0https';"
+      "return u.protocol === 'http:';");
+    T("url: a NUL in a host is a failure, not a truncation",
+      /* NOT a trailing NUL -- that is a C0 control and the parser strips
+       * leading and trailing ones from the whole input before it starts, so
+       * "http://hello\0" is just "http://hello". It has to be in the middle. */
+      "return URL.canParse('http://hel\\0lo/') === false"
+      "  && URL.canParse('http://ho%00st/') === false;");
+    T("url: a NUL in a fragment is percent-encoded",
+      "return new URL('https://x/#\\0y').href === 'https://x/#%00y';");
+
     /* ---- setters through the bindings ---- */
     T("protocol setter",
       "var u = new URL('http://a/'); u.protocol = 'https';"
