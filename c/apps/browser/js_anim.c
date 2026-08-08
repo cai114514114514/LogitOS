@@ -175,10 +175,11 @@ static const char ANIM_JS[] =
 "  function dC(t,p1,p2){ return 3*(1-3*p2+3*p1)*t*t + 2*(3*p2-6*p1)*t + 3*p1; }\n"
 "  return function(x){\n"
 "    if (x1 === y1 && x2 === y2) return x;\n"
+/*     Outside [0,1] the INPUT extends linearly along the tangent at the
+ *     nearest endpoint. Note this is about x, not y: the corpus always feeds
+ *     x = 0.5, so this branch is not what carries it -- see the note on the
+ *     OUTPUT range below, which is the one that does. */
 "    if (x <= 0 || x >= 1) {\n"
-/*     Outside [0,1] a cubic-bezier timing function extends LINEARLY along the
- *     tangent at the nearest endpoint. Clamping instead is the bug that makes
- *     at=-0.3 and at=1.5 report the endpoint value. */
 "      var s0 = (x1 > 0) ? y1 / x1 : ((y2 > 0 || x2 > 0) ? y2 / x2 : 0);\n"
 "      var s1 = (x2 < 1) ? (y2 - 1) / (x2 - 1) : ((y1 !== 1 || x1 !== 1) ? (y1 - 1) / (x1 - 1) : 0);\n"
 "      return (x <= 0) ? s0 * x : 1 + s1 * (x - 1);\n"
@@ -372,8 +373,30 @@ static const char ANIM_JS[] =
 "    if (dir === 'alternate-reverse') iter += 1;\n"
 "    if (iter % 2) f = 1 - f;\n"
 "  }\n"
+#ifdef JS_ANIM_NEGCTL_CLAMP
+/* THE NEGATIVE CONTROL, and it is not "delete animate()" -- any test catches
+ * that. This is the sentence an implementation writes without thinking:
+ * progress is a fraction, so clamp it to [0, 1].
+ *
+ * The eased progress is NOT a fraction. A cubic-bezier whose control points
+ * lie outside the unit square returns values outside it, and that is the
+ * entire mechanism interpolation-testcommon.js uses to test extrapolation:
+ * the input is always exactly 0.5 and the OUTPUT is the `at` being asked for,
+ * which is -0.3 and 1.5 in two of every seven subtests across all 337 files.
+ * Clamping leaves every ordinary animation correct and every page looking
+ * right, and quietly reports the endpoint value for those two.
+ *
+ * Note it clamps the OUTPUT. Clamping the input, which was the first attempt
+ * at this control, changes nothing at all and the suite stayed green -- the
+ * input is 0.5 and never leaves the interval. A control that does not fail is
+ * not a control, and that near-miss is why this comment is this long. */
+"  var __p = this.__ease(f);\n"
+"  return __p < 0 ? 0 : (__p > 1 ? 1 : __p);\n"
+"};\n"
+#else
 "  return this.__ease(f);\n"
 "};\n"
+#endif
 "\n"
 "Animation.prototype.__valueAt = function(prop){\n"
 "  var kf = this.__kf;\n"
@@ -440,8 +463,76 @@ static const char ANIM_JS[] =
 "});\n"
 "if (typeof globalThis !== 'undefined' && !globalThis.Animation) globalThis.Animation = Animation;\n"
 "\n"
+/* ---- keyframe values are COMPUTED values, not the strings handed in -------
+ *
+ * THE BUG THIS EXISTS TO NOT HAVE, found by measuring rather than by reading
+ * the spec, and it is the one that turns a gain into a regression.
+ *
+ * A first cut interpolated the strings from the keyframes and reported the
+ * result. That is right for margin-left and wrong wherever the engine's
+ * computed value does not follow the specified one:
+ *
+ *   border-bottom-width: 100px  computes to 0px when border-style is none
+ *   top: 100px                  computes to auto on a statically positioned box
+ *
+ * WPT compares the target against an element with the EXPECTED value set on
+ * it, and that element's computed value goes through the same rule -- so both
+ * sides read 0px, or both read auto, and the subtest passes. Reporting an
+ * interpolated 150px against an expected 0px broke 275 subtests across 17
+ * files that had been passing, which is exactly the shape of regression the
+ * two silence rules were meant to prevent and did not: the base read is
+ * "0px", not "", so RULE 1 let it through.
+ *
+ * So each endpoint is resolved to a computed value first, by the engine, on
+ * the TARGET ELEMENT ITSELF -- same cascade, same inheritance, same
+ * border-style and position that made the value collapse. Not a scratch
+ * element in some other part of the tree, which would get a different answer
+ * for precisely the properties this is about.
+ *
+ * Doing it here, once per animate(), rather than per computed read: the
+ * keyframe values are resolved when the animation is created, which is also
+ * what the spec says happens, and it bounds the cost at two extra cascades
+ * per animation instead of one per property read.
+ *
+ * It pays for itself twice over: em, colour keywords and `initial` endpoints
+ * all arrive already resolved, so pairs whose SPECIFIED forms have different
+ * token shapes ("initial" against "20px") now have matching computed ones and
+ * interpolate instead of declining.
+ *
+ * gcs, the ORIGINAL captured at install, never the patched one -- resolving through the wrapper would ask
+ * the animation being constructed what it thinks the value is. */
+"function resolveOn(el, prop, value){\n"
+"  var st = el.style;\n"
+"  if (!st || typeof st.setProperty !== 'function') return value;\n"
+"  var had, pri = '';\n"
+"  try {\n"
+"    had = st.getPropertyValue(prop);\n"
+"    if (typeof st.getPropertyPriority === 'function') pri = st.getPropertyPriority(prop);\n"
+"  } catch (e) { return value; }\n"
+"  var out = value;\n"
+"  try {\n"
+"    st.setProperty(prop, value);\n"
+"    var c = gcs.call(globalThis, el).getPropertyValue(prop);\n"
+"    if (c !== '' && c !== null && c !== undefined) out = c;\n"
+"  } catch (e2) {}\n"
+"  try {\n"
+"    if (had === '' || had === null || had === undefined) st.removeProperty(prop);\n"
+"    else st.setProperty(prop, had, pri);\n"
+"  } catch (e3) {}\n"
+"  return out;\n"
+"}\n"
+"\n"
+"Animation.prototype.__resolve = function(){\n"
+"  var el = this.__target, i, p;\n"
+"  if (!el || !el.style) return;\n"
+"  for (i = 0; i < this.__kf.length; i++)\n"
+"    for (p in this.__kf[i].props)\n"
+"      this.__kf[i].props[p] = resolveOn(el, p, this.__kf[i].props[p]);\n"
+"};\n"
+"\n"
 "EP.animate = function(keyframes, options){\n"
 "  var a = new Animation(this, keyframes, options);\n"
+"  try { a.__resolve(); } catch (e) {}\n"
 "  listFor(this, true).push(a);\n"
 "  return a;\n"
 "};\n"
