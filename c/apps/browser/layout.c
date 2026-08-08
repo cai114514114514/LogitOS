@@ -171,6 +171,24 @@ static void shift_items(int lo, int hi, int dx, int dy)
     for (int i = lo; i < hi; i++) { items[i].x += dx; items[i].y += dy; }
 }
 
+/* Move the LAST item of the display list back to index `at`, sliding everything
+ * from `at` up by one and keeping their relative order.
+ *
+ * An inline box's background is the one thing layout cannot emit in document
+ * order: the rectangle is only known once the element's content has flowed (its
+ * width IS where the pen ended up), but a background paints UNDER the text it
+ * wraps, so it has to sit EARLIER in the list than content already emitted.
+ * Three reversals rather than a memmove because `struct item` is ~230 bytes and
+ * its size is ABI (js_cssom.c reads this list) -- one item of scratch, never a
+ * buffer sized from the list. */
+static void rotate_item_back(int at)
+{
+    if (at < 0 || at >= nitem - 1) return;
+    struct item t = items[nitem - 1];
+    for (int i = nitem - 1; i > at; i--) items[i] = items[i - 1];
+    items[at] = t;
+}
+
 static int any_border(const struct cstyle *st)
 { return st->border_w[0] || st->border_w[1] || st->border_w[2] || st->border_w[3]; }
 
@@ -512,6 +530,12 @@ static int svg_attr_w(struct node *n, const struct cstyle *st)
 struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start;
                int bx0, bx1, probe; };
 
+/* An open inline element's fragment that has emitted nothing yet follows the
+ * pen: dropping the line past a float must not leave its background starting
+ * back where the line used to begin. Defined with the rest of the inline-box
+ * machinery below. */
+static void ibox_track(struct iflow *f);
+
 /* Re-derive the current line's edges from the float list, dropping past any
  * float that leaves no room at all. Called whenever the pen moves to a new y. */
 static void flow_relayout_line(struct iflow *f)
@@ -524,6 +548,7 @@ static void flow_relayout_line(struct iflow *f)
         f->y = nb;
     }
     f->x = f->x0;
+    ibox_track(f);
 }
 
 static void iflow_init(struct iflow *f, int x, int w, int y, int align, int probe)
@@ -535,12 +560,137 @@ static void iflow_init(struct iflow *f, int x, int w, int y, int align, int prob
     flow_relayout_line(f);
 }
 
-/* The block's own line height, used as the float-band probe. */
-static int style_lineh(const struct cstyle *st)
+/* Used line height for a style. `line_px == 0` is css_engine's sentinel for
+ * `line-height: normal`, and 0 is the ONLY value that means it -- a computed
+ * line-height of zero is spelled by the engine as 0 too, but a zero line box is
+ * indistinguishable from normal only in a case no test can see.
+ *
+ * This used to read `line_px > px`, which threw away every line-height that is
+ * not LARGER than the font. That is not a rounding-scale error: `font: 25px/1
+ * Ahem` is the single most common declaration in the WPT reftest corpus (it is
+ * how a test makes glyph rasterization cancel out of a pixel comparison), and
+ * under the old test it silently became 1.25 -- so every line after the first
+ * was 25% of a line too low, on thousands of tests, and the wrongness grew down
+ * the page. A line-height SMALLER than the font is legal and makes lines
+ * overlap on purpose; that is CSS, not a value to defend against. */
+static int used_lineh(const struct cstyle *st)
 {
     if (!st) return 20;
     int px = st->font_px > 0 ? st->font_px : 16;
-    return st->line_px > px ? st->line_px : px * 5 / 4;
+    return st->line_px > 0 ? st->line_px : px * 5 / 4;
+}
+
+/* The block's own line height, used as the float-band probe. */
+static int style_lineh(const struct cstyle *st) { return used_lineh(st); }
+
+/* ---- inline boxes (CSS2 §9.2.2, §10.6.1, box-decoration-break: slice) ----
+ *
+ * A non-replaced inline element -- a <span>, an <a>, an <em> -- is NOT a box in
+ * the way a block is. It generates ONE BOX PER LINE FRAGMENT: an element whose
+ * text wraps over three lines paints its background three times, gets its
+ * left border only on the first fragment and its right border only on the
+ * last, and its horizontal padding likewise applies once at each end of the
+ * WHOLE element rather than at each end of every line. That is the initial
+ * value of box-decoration-break, `slice`, and it is what every browser does.
+ *
+ * Until this existed flow_node's last line was a bare flow_children(): an
+ * inline element contributed nothing but its children's text, so a
+ * `<span style="background:yellow;padding:4px">` painted no yellow, reserved no
+ * padding and moved nothing. That is the single largest cause in the reftest
+ * corpus.
+ *
+ * TWO THINGS ARE DELIBERATELY NOT DONE HERE, because CSS says not to:
+ *   - vertical padding and borders on an inline do NOT change the line's
+ *     height. They paint, and they overflow into the lines above and below.
+ *     So nothing in here touches f->lineh from the vertical decorations.
+ *   - the fragment's CONTENT area is the font's em box, not the line box. Our
+ *     text items are drawn with the em box's top at f->y (see browser_paint.c's
+ *     "y is the top of the em box" comment), so the content area of a fragment
+ *     is [f->y, f->y + font_px) and the decorations grow out of that.
+ *
+ * The list-order problem and how it is solved is in rotate_item_back() above:
+ * the rect is emitted when the fragment CLOSES and then moved back to the index
+ * the fragment OPENED at, so it lands under its own content and, for nested
+ * inlines, under the inner element's rect too (the outer closes last and its
+ * rotation target is the smaller index).
+ *
+ * `owner` is why a block box nested inside an inline does not corrupt this: the
+ * inner block runs its own struct iflow, and every loop below stops at the
+ * first ibox that belongs to a different flow. */
+struct ibox {
+    struct ibox *up;                  /* the enclosing inline element, if any */
+    struct iflow *owner;              /* the flow this fragment is being cut from */
+    struct cstyle *st;
+    struct node *node;
+    const char *href;
+    int x0;                           /* fragment's left edge (pen before the padding) */
+    int item0;                        /* display-list index the fragment opened at */
+    unsigned char first;              /* the element's FIRST fragment: draw the left border */
+};
+static struct ibox *g_ibox;           /* innermost open inline element */
+
+/* Does this inline element paint or reserve anything at all? The whole
+ * mechanism is skipped when it does not, so the overwhelmingly common
+ * undecorated <a>/<em>/<span> costs exactly what it did before. */
+static int ibox_wanted(const struct cstyle *st)
+{
+    if (!st) return 0;
+    return st->has_bg || any_border(st) ||
+           st->pl || st->pr || st->pt || st->pb ||
+           st->ml > 0 || st->mr > 0;
+}
+
+/* Emit one fragment's box, spanning [b->x0, x1) on the line topped at `y`.
+ * `last` marks the fragment that ends the element (right border). */
+static void ibox_emit(struct ibox *b, int x1, int y, int last)
+{
+    struct cstyle *st = b->st;
+    int w = x1 - b->x0;
+    if (w <= 0) { b->item0 = nitem; return; }   /* nothing landed on this line */
+    if (!st->has_bg && !any_border(st)) { b->item0 = nitem; return; }
+    int px = st->font_px > 0 ? st->font_px : 16;
+    int top = y - st->pt - st->border_w[0];
+    int h   = px + st->pt + st->pb + st->border_w[0] + st->border_w[2];
+    struct item *it = additem(IT_RECT, b->node);
+    if (!it) return;
+    fill_rect_item(it, st, b->x0, top, w);
+    it->h = h;
+    it->href = b->href;
+    /* slice: the two edges the fragment does not own are not drawn. Their WIDTH
+     * was still reserved at the element's real ends, so this only suppresses
+     * ink, never geometry. */
+    if (!b->first) { it->border_w[3] = 0; }
+    if (!last)     { it->border_w[1] = 0; }
+    rotate_item_back(b->item0);
+    b->item0 = nitem;
+}
+
+/* Close every fragment this flow owns at the current pen, then reopen them on
+ * the line that is about to start. Called from newline2, between emitting the
+ * boxes and shifting the line for text-align -- so a centred line moves its
+ * inline backgrounds with its words. */
+static void ibox_break(struct iflow *f, int at_x)
+{
+    for (struct ibox *b = g_ibox; b && b->owner == f; b = b->up)
+        ibox_emit(b, at_x, f->y, 0);
+}
+
+/* Reopen the fragments at the pen: a continuation fragment gets no left border
+ * and no left padding (slice), so its x0 is simply the new pen. */
+static void ibox_reopen(struct iflow *f)
+{
+    for (struct ibox *b = g_ibox; b && b->owner == f; b = b->up) {
+        b->x0 = f->x; b->first = 0; b->item0 = nitem;
+    }
+}
+
+/* The pen moved without a line ending (a float pushed an empty line down).
+ * Only fragments that have emitted NOTHING follow it -- one that already holds
+ * a word is a real fragment whose left edge is settled. */
+static void ibox_track(struct iflow *f)
+{
+    for (struct ibox *b = g_ibox; b && b->owner == f; b = b->up)
+        if (b->item0 >= nitem) b->x0 = f->x;
 }
 
 /* Close the current line. `last` marks a line that ends the block (or is cut
@@ -550,6 +700,12 @@ static int style_lineh(const struct cstyle *st)
 static void newline2(struct iflow *f, int last)
 {
     if (f->line_started) {
+        /* Cut every open inline element's fragment at the pen BEFORE the
+         * alignment shift below, so a centred line carries its inline
+         * backgrounds along with its words instead of leaving them at the left
+         * margin. The rects land inside [line_start, nitem) for exactly that
+         * reason. */
+        ibox_break(f, f->x);
         int n = nitem - f->line_start;
         if (f->align == ALIGN_JUSTIFY && !last && n > 1) {
             /* Spread the slack between the words: item k of n moves right by
@@ -579,6 +735,7 @@ static void newline2(struct iflow *f, int last)
     f->lineh = 0; f->line_started = 0;
     f->line_start = nitem;
     flow_relayout_line(f);              /* the new line sees a different band */
+    ibox_reopen(f);                     /* continuation fragments start at the new pen */
 }
 
 /* A soft break inside a paragraph: the line just closed is justifiable. */
@@ -645,7 +802,7 @@ static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
                       struct cstyle *st, const char *href)
 {
     int px = st->font_px, mono = st->mono;
-    int lh = st->line_px > px ? st->line_px : px*5/4;
+    int lh = used_lineh(st);
     int spacew = text_measure(" ", 1, px, mono);
     int ws_mode = st->white_space;
     int collapse = (ws_mode == WS_NORMAL || ws_mode == WS_NOWRAP || ws_mode == WS_PRE_LINE);
@@ -1026,7 +1183,41 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         return;
     }
 
-    flow_children(f, c, h2);                               /* descend inline element */
+    /* ---- a non-replaced inline element ----
+     *
+     * Its children go into the same line boxes, and it generates one box per
+     * line fragment around them (see struct ibox above). The undecorated case
+     * -- almost every <a>, <em>, <strong> on a real page -- takes the same bare
+     * descent it always did. */
+    if (!ibox_wanted(st)) { flow_children(f, c, h2); return; }
+    {
+        struct ibox b;
+        b.up = g_ibox; b.owner = f; b.st = st; b.node = c; b.href = h2;
+        b.first = 1;
+        /* Horizontal margins on an inline DO take space (the vertical ones do
+         * not exist -- CSS2 §8.3: `margin-top`/`margin-bottom` do not apply to
+         * non-replaced inline elements). ml/mr of -1 is `auto`, which on an
+         * inline computes to zero. */
+        if (st->ml > 0) f->x += st->ml;
+        b.x0 = f->x;
+        b.item0 = nitem;
+        f->x += st->border_w[3] + st->pl;
+        g_ibox = &b;
+        flow_children(f, c, h2);
+        g_ibox = b.up;
+        /* The element may have wrapped: `b` now describes only its LAST
+         * fragment, and only that one gets the right border and padding. */
+        f->x += st->pr + st->border_w[1];
+        if (f->x > b.x0) {
+            /* A padded or bordered inline with no text still occupies its line
+             * and still contributes the line's minimum height. */
+            f->line_started = 1;
+            int lh = used_lineh(st);
+            if (lh > f->lineh) f->lineh = lh;
+        }
+        ibox_emit(&b, f->x, f->y, 1);
+        if (st->mr > 0) f->x += st->mr;
+    }
 }
 
 static int is_block(struct node *n)
@@ -1145,7 +1336,7 @@ static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top
     mk->text = mk->marker; mk->len = n;
     mk->hidden = st->hidden; mk->opacity = st->opacity;
     mk->font_px = st->font_px; mk->bold = st->bold; mk->mono = st->mono;
-    mk->color = st->color; mk->h = st->font_px * 5 / 4; mk->y = top;
+    mk->color = st->color; mk->h = used_lineh(st); mk->y = top;
     int mw = text_measure(mk->text, mk->len, st->font_px, st->mono);
     (void)minx;                                /* deep nests may push the marker to x=0 */
     mk->x = bx - mw - 6; if (mk->x < 0) mk->x = 0;
@@ -2782,6 +2973,7 @@ void layout_page(struct node *root, int canvas_w)
     items = kmalloc(sizeof(struct item) * MAXITEM);
     nitem = 0; canvas = canvas_w; g_z = 0;
     g_nfloat = 0; g_fbase = 0; g_in_float = 0;
+    g_ibox = 0;
     g_clip_on = 0; g_clipx = g_clipy = g_clipw = g_cliph = 0;
     if (!items) { doc_h = 0; return; }
     /* <body> and <html> straight from the document. The tree builder always
