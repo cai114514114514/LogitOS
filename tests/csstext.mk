@@ -32,7 +32,12 @@ UCD ?= /usr/share/unicode
 CSSTEXT_SRC := tests/unit/csstext_test.c c/apps/browser/layout_text.c
 CSSTEXT_INC := -Ic/apps/browser
 
-.PHONY: test-csstext test-csstext-negctl regen-linebreak-tables
+.PHONY: test-csstext test-csstext-negctl test-csstext-all regen-linebreak-tables
+
+# Both halves. A gate without its control is half a measurement -- the gate says
+# the suite passes, the control says the suite could have failed.
+test-csstext-all: test-csstext test-csstext-negctl
+	@echo "test-csstext-all: gate green, negative control red (as required)"
 
 test-csstext:
 	@mkdir -p $(BUILD)

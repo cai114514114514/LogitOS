@@ -580,6 +580,17 @@ static void test_lines(void)
     else
         CHECK(0, "tab produced %d fragments", l.nfrag);
     ltx_layout_free(&l);
+
+    /* tab-size in px rather than in space advances. */
+    st.tab_px = 1; st.tab_size = 25;
+    CHECK(lay("a\tb", &st, &e, &l) == 0, "px tab layout ok");
+    if (l.nfrag >= 2)
+        CHECK(l.frags[1].x == 25, "tab-size in px (got %d want 25)",
+              l.frags[1].x);
+    else
+        CHECK(0, "px tab produced %d fragments", l.nfrag);
+    ltx_layout_free(&l);
+    st.tab_px = 0; st.tab_size = 8;
     st.wsc = LTX_WSC_COLLAPSE;
 
     /* Alignment moves the whole line and nothing else. */
@@ -615,6 +626,77 @@ static void test_lines(void)
     }
     ltx_layout_free(&l);
     e.align = LTX_ALIGN_START;
+
+    /* JUSTIFYING CHINESE.  There is no space in the line to stretch, so an
+     * inter-word implementation leaves the right edge ragged on a block that
+     * asked for a flush one -- and reports success.  `text-justify: auto` has
+     * to fall back to distributing between characters. */
+    e.align = LTX_ALIGN_JUSTIFY;
+    e.avail = 110;
+    CHECK(lay("中文测试中文", &st, &e, &l) == 0, "cjk justify ok");
+    if (l.nline >= 2) {
+        CHECK(l.lines[0].w == 110,
+              "a justified CJK line reaches the margin (got %d want 110)",
+              l.lines[0].w);
+        CHECK(l.lines[0].nfrag == 5,
+              "inter-character justify splits per ideograph (got %d frags)",
+              l.lines[0].nfrag);
+    } else {
+        CHECK(0, "cjk justify produced %d lines", l.nline);
+    }
+    ltx_layout_free(&l);
+    /* ...and text-justify:none turns it off again. */
+    e.justify = LTX_TJ_NONE;
+    CHECK(lay("中文测试中文", &st, &e, &l) == 0, "cjk justify:none ok");
+    CHECK(l.nline < 1 || l.lines[0].w == 100,
+          "text-justify:none leaves the line unstretched (got %d want 100)",
+          l.nline ? l.lines[0].w : -1);
+    ltx_layout_free(&l);
+    e.justify = LTX_TJ_AUTO;
+    e.align = LTX_ALIGN_START;
+    e.avail = 100;
+
+    /* text-align-last overrides what the last line does. */
+    e.align = LTX_ALIGN_JUSTIFY;
+    e.align_last = LTX_ALAST_RIGHT;
+    CHECK(lay("aa bb cc dd", &st, &e, &l) == 0, "align-last ok");
+    if (l.nline >= 2) {
+        const struct ltx_frag *f = &l.frags[l.nfrag - 1];
+        CHECK(f->x + f->w == 100,
+              "text-align-last:right puts the last line on the margin (%d)",
+              f->x + f->w);
+    }
+    ltx_layout_free(&l);
+    e.align = LTX_ALIGN_START; e.align_last = LTX_ALAST_AUTO;
+
+    /* white-space: break-spaces -- the preserved spaces are real, they take
+     * width, they do not hang, and a run of them may be split across lines.
+     * `pre-wrap` differs on every one of those points, which is why the value
+     * exists. */
+    st.wsc = LTX_WSC_BREAK_SPACES;
+    e.avail = 30;
+    CHECK(lay("a    b", &st, &e, &l) == 0, "break-spaces ok");
+    CHECK(l.nline >= 2, "break-spaces splits a run of spaces (got %d lines)",
+          l.nline);
+    if (l.nline >= 1)
+        CHECK(l.lines[0].w == 30,
+              "break-spaces measures its trailing spaces (got %d want 30)",
+              l.lines[0].w);
+    ltx_layout_free(&l);
+    st.wsc = LTX_WSC_COLLAPSE;
+    e.avail = 100;
+
+    /* A soft hyphen breaks the word AND has to leave a visible mark, because
+     * U+00AD itself paints nothing. */
+    e.avail = 60;
+    CHECK(lay("aaaaa\xC2\xAD" "bbbbb", &st, &e, &l) == 0, "soft hyphen ok");
+    CHECK(l.nline == 2, "soft hyphen breaks the word (got %d lines)", l.nline);
+    if (l.nline == 2)
+        CHECK(l.lines[0].hyphen == 1 && l.lines[1].hyphen == 0,
+              "the broken line asks for a hyphen (%d,%d)",
+              l.lines[0].hyphen, l.lines[1].hyphen);
+    ltx_layout_free(&l);
+    e.avail = 100;
 
     /* text-indent shifts the first line only. */
     e.indent = 20;

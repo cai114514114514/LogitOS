@@ -272,6 +272,13 @@ struct ltx_line {
     int frag0, nfrag;
     int x, y, w, h;
     unsigned char hard;            /* ended at a forced break or at the end */
+    unsigned char hyphen;          /* the line ended at a SOFT HYPHEN, so the
+                                    * painter must draw a visible '-' after the
+                                    * last fragment.  U+00AD has no glyph of its
+                                    * own -- if the caller ignores this flag the
+                                    * word simply comes apart with no mark, and
+                                    * `hyphens: manual` has done nothing
+                                    * visible. */
 };
 
 struct ltx_layout {
@@ -298,5 +305,86 @@ struct ltx_layout {
 int  ltx_layout_runs(const struct ltx_run *runs, int nrun,
                      const struct ltx_env *env, struct ltx_layout *out);
 void ltx_layout_free(struct ltx_layout *l);
+
+/* ======================================================================
+ * THE SEAM: how this replaces layout.c's inline flow, when someone routes it
+ *
+ * Nothing here is wired in.  layout.c belongs to another line and three lines
+ * cannot share one file, so this is written down instead of done.  Read it as
+ * a description of the work, not as a claim that it is finished.
+ *
+ * WHAT IT REPLACES.  layout.c's `flow_text()` and the `struct iflow` pen it
+ * drives.  Today flow_text does five jobs in one loop: white-space branching,
+ * word splitting at ASCII spaces, measuring, emitting display-list items, and
+ * advancing the pen.  ltx_layout_runs does the first four; the fifth stays in
+ * layout.c because the pen is where floats live.
+ *
+ * THE ONE THING THAT DOES NOT FIT, and it is not small.  `struct iflow` carries
+ * x0/x1 -- the CURRENT LINE's edges after the floats overlapping its band are
+ * subtracted -- and re-derives them per line from the float list.  This module
+ * takes ONE `avail` for the whole block.  Wiring it in therefore needs
+ * ltx_layout_runs to ask for the width of each line as it starts it, not to be
+ * told once:
+ *
+ *     int (*line_avail)(void *ctx, int y, int probe_h, int *x_out);
+ *
+ * added to struct ltx_env, defaulting to "always env->avail".  layout.c's
+ * float_band() is exactly that function already.  Until that callback exists,
+ * a block containing a float must keep using flow_text -- which is a real
+ * limitation and not a detail, because a float is how half the web puts an
+ * image beside a paragraph.
+ *
+ * THE REST OF THE WIRING, in order of how much of it there is:
+ *   1. `struct cstyle` -> `struct ltx_style`.  cstyle currently carries
+ *      white_space, text_align, line_px, font_px, bold/italic/mono and NOTHING
+ *      else this module reads.  The properties it does not have yet are listed
+ *      at the bottom of this comment; they belong to the CSSOM line, not here.
+ *   2. Collect the inline children of a block into `struct ltx_run[]` --
+ *      layout.c's flow_children walk, but appending runs instead of emitting.
+ *      An inline-level replaced box (img, video, a form control) is NOT a text
+ *      run; it needs an atomic-inline run kind this module does not have yet
+ *      (an entry with a fixed width and no text), which is a small addition and
+ *      an honest gap today.
+ *   3. `struct ltx_frag` -> `struct item`.  One frag becomes one IT_TEXT with
+ *      x/y/w/h copied straight across; `user` carries the DOM node.  The
+ *      display list keeps its shape, so the painter and the hit test are
+ *      untouched.
+ *   4. Delete flow_text, the `sp()` word loop, and the break-anywhere fallback
+ *      at the end of it.  Keep newline2's float-band re-derivation.
+ *
+ * BIDI.  It exists -- c/lib/text/bidi.c is a complete UAX #9 implementation,
+ * measured against BidiTest.txt (CLAUDE.md's "no bidi/shaping" note is stale).
+ * This module does not call it, and the join is already designed for from the
+ * other side: bidi.h exposes `bidi_l1_line` with the comment "exposed because a
+ * line breaker must re-apply it per line, on the sub-range it actually put on
+ * the line".  That line breaker is this file.  The sequence, once the atomic
+ * inline above exists, is:
+ *
+ *     bidi_resolve(paragraph)                once per inline context
+ *     ltx_layout_runs(...)                   breaks in LOGICAL order (correct:
+ *                                            UAX #14 is defined on logical
+ *                                            order, not visual)
+ *     per line: bidi_l1_line(sub-range) then bidi_reorder -> visual order,
+ *               then assign x by walking the visual order instead of the
+ *               logical one
+ *
+ * Only the last step touches this file: `emit_line` places fragments in logical
+ * order today.  `bidi_is_trivial` skips all of it for pure-LTR text, which is
+ * almost every line, so the cost lands only where it is needed.
+ *
+ * WHAT `struct cstyle` WOULD NEED (for whoever owns css_engine.c -- do not add
+ * these from here):
+ *     text-indent (px/%, and the each-line/hanging keywords)
+ *     letter-spacing, word-spacing            (px, signed)
+ *     tab-size                                (number or px)
+ *     text-transform                          (5 values)
+ *     word-break, overflow-wrap, line-break, hyphens
+ *     text-align-last, text-justify
+ *     white-space-collapse + text-wrap        (the CSS Text 4 longhands;
+ *                                              cstyle has only the shorthand)
+ *     direction                               (for START/END alignment)
+ * Every one of them has a matching field in `struct ltx_style` or
+ * `struct ltx_env` already, so the mapping is assignment, not translation.
+ * ====================================================================== */
 
 #endif /* LOGIT_LAYOUT_TEXT_H */

@@ -920,13 +920,22 @@ static int push_line(struct build *b, const struct ltx_line *l)
 
 /* Emit [from,to) as one line at y, with `x0` its left edge.  Splits at run
  * boundaries, at preserved tabs, and -- when the line will be justified -- at
- * every space, because a justified gap has to be a gap BETWEEN fragments: the
- * painter draws a fragment as one string and cannot widen a space inside it. */
+ * the expansion opportunities, because a justified gap has to be a gap BETWEEN
+ * fragments: the painter draws a fragment as one string and cannot widen a
+ * space inside it.
+ *
+ * `split` is SPLIT_NONE, SPLIT_WORD (after each run of spaces, so a fragment
+ * carries its own trailing space and every gap between fragments is exactly
+ * one inter-word opportunity) or SPLIT_CHAR (at every break opportunity, which
+ * is how a Chinese paragraph justifies at all -- it has no spaces to stretch,
+ * and inter-word justification of CJK is a no-op that leaves a ragged right
+ * edge on a block that asked for a flush one). */
+enum { SPLIT_NONE = 0, SPLIT_WORD = 1, SPLIT_CHAR = 2 };
+
 static int emit_line(struct build *b, int from, int to, int y, int x0,
-                     int split_spaces, int *out_w, int *out_h)
+                     int split, int *out_w, int *out_h)
 {
     int p = from, x = x0, h = 0;
-    int frag0 = b->nfrag;
     while (p < to) {
         int r = run_at(b, p);
         const struct ltx_style *st = b->runs[r].style;
@@ -940,10 +949,12 @@ static int emit_line(struct build *b, int from, int to, int y, int x0,
         while (q < end) {
             int cut = q;
             while (cut < end) {
-                if (preserve && b->text[cut] == '\t') break;
-                if (split_spaces && b->text[cut] == ' ' && cut > q) break;
+                if (preserve && b->text[cut] == '\t' && cut > q) break;
+                if (cut > q && split == SPLIT_CHAR &&
+                    b->brk[cut] == LTX_BRK_ALLOWED) break;
+                if (cut > q && split == SPLIT_WORD &&
+                    b->text[cut - 1] == ' ' && b->text[cut] != ' ') break;
                 cut++;
-                if (split_spaces && b->text[cut - 1] == ' ') break;
             }
             if (cut > q) {
                 struct ltx_frag f;
@@ -967,13 +978,12 @@ static int emit_line(struct build *b, int from, int to, int y, int x0,
     if (h == 0) h = line_height_of(b->nrun ? b->runs[0].style : NULL);
     *out_w = x - x0;
     *out_h = h;
-    (void)frag0;
     return 0;
 }
 
 /* Shift a line's fragments, and -- for justify -- spread the slack. */
 static void align_line(struct build *b, struct ltx_line *ln, int avail,
-                       int last, int split_spaces)
+                       int last, int split)
 {
     const struct ltx_env *e = b->env;
     int align = last ? -1 : e->align;
@@ -999,8 +1009,8 @@ static void align_line(struct build *b, struct ltx_line *ln, int avail,
     }
 
     if (align == LTX_ALIGN_JUSTIFY && slack > 0 && ln->nfrag > 1 &&
-        split_spaces && e->justify != LTX_TJ_NONE) {
-        /* Inter-word: every gap between fragments is a space that grows.
+        split != SPLIT_NONE && e->justify != LTX_TJ_NONE) {
+        /* Every gap between fragments is one expansion opportunity.
          * Integer arithmetic distributes the remainder across the leading gaps
          * rather than dropping it, so the last fragment lands exactly on the
          * right margin -- a justified line that stops one pixel short on every
@@ -1050,8 +1060,9 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
     struct build b;
     struct ltx_wsstate ws;
     int r, total = 0, cap, y = 0, pos = 0, lstart = 0, i;
+    int justify_any;
     int word_start = 1;
-    int split_spaces;
+
     int hard_next = 1;              /* the next line emitted is a "first" line */
 
     memset(out, 0, sizeof *out);
@@ -1176,13 +1187,25 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
          * character, so it is not ours to remove */
     }
 
-    split_spaces = (env->align == LTX_ALIGN_JUSTIFY ||
-                    env->align_last == LTX_ALAST_JUSTIFY);
+    /* `white-space: break-spaces` keeps every preserved space, gives each one
+     * its own break opportunity, and does NOT hang them.  UAX #14's LB7 (× SP)
+     * forbids breaking BEFORE a space, which is right for every other mode and
+     * wrong for this one -- break-spaces exists precisely so that a run of
+     * spaces can be split across lines instead of overflowing. */
+    for (r = 0; r < nrun; r++) {
+        if (runs[r].style->wsc != LTX_WSC_BREAK_SPACES) continue;
+        for (i = b.span[r].start; i < b.span[r].end; i++)
+            if (i > 0 && b.text[i] == ' ' && b.brk[i] == LTX_BRK_PROHIBITED)
+                b.brk[i] = LTX_BRK_ALLOWED;
+    }
+
+    justify_any = (env->align == LTX_ALIGN_JUSTIFY ||
+                   env->align_last == LTX_ALAST_JUSTIFY);
 
     /* --- phase 3: greedy line breaking. */
     while (pos <= b.len) {
-        int indent = 0, avail, x0, cand = -1, last_line;
-        int j, w, h;
+        int indent = 0, avail, x0, last_line;
+        int j, w, h, curx, split;
         struct ltx_line ln;
 
         if (pos == b.len && lstart == b.len && b.nline > 0) break;
@@ -1198,22 +1221,28 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
         avail = env->avail - indent;
         if (avail < 1) avail = 1;
         x0 = indent;
-
+        curx = x0;                  /* the pen after [lstart, j) */
         j = lstart;
         last_line = 0;
 
         for (;;) {
             int nxt = j + 1;
-            int segw;
+            int segw, te;
             while (nxt <= b.len && b.brk[nxt] == LTX_BRK_PROHIBITED) nxt++;
             if (nxt > b.len) nxt = b.len;
             if (nxt <= j) { nxt = b.len; }
 
-            {   /* width of [lstart,nxt) with the trailing hang removed */
+            {   /* Width of [lstart,nxt) with the trailing hang removed,
+                 * measured FORWARD from the pen rather than re-measured from
+                 * the start of the line: this loop visits every opportunity, so
+                 * re-measuring the whole line at each one is quadratic in the
+                 * paragraph -- which a 40 KB <pre> notices and a two-word test
+                 * case never would. */
                 int r2 = run_at(&b, nxt > lstart ? nxt - 1 : lstart);
-                int t = ltx_trim_end(b.text + lstart, nxt - lstart,
-                                     runs[r2].style->wsc);
-                segw = advance_span(&b, lstart, lstart + t, x0, x0) - x0;
+                te = lstart + ltx_trim_end(b.text + lstart, nxt - lstart,
+                                           runs[r2].style->wsc);
+                if (te >= j) segw = advance_span(&b, j, te, curx, x0) - x0;
+                else         segw = advance_span(&b, lstart, te, x0, x0) - x0;
             }
             if (segw > avail && j > lstart) { pos = j; break; }   /* wrap here */
             if (segw > avail && j == lstart) {
@@ -1237,26 +1266,46 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
                 /* No emergency allowed: the text overflows, which is what CSS
                  * asks for.  Keep going to the next opportunity. */
             }
-            cand = nxt;
+            curx = advance_span(&b, j, nxt, curx, x0);
             j = nxt;
             if (nxt >= b.len) { pos = b.len; last_line = 1; break; }
             if (b.brk[nxt] == LTX_BRK_MANDATORY) { pos = nxt; break; }
         }
-        (void)cand;
 
         {   /* trim the hang for measurement and alignment, keep it in the text */
             int r2 = run_at(&b, pos > lstart ? pos - 1 : lstart);
             int t = ltx_trim_end(b.text + lstart, pos - lstart,
                                  runs[r2].style->wsc);
+            /* Which expansion opportunities this line has.  `text-justify:
+             * auto` prefers spaces and falls back to characters when the line
+             * has none, which is the CJK case and the reason the fallback
+             * exists at all. */
+            split = SPLIT_NONE;
+            if (justify_any) {
+                if (env->justify == LTX_TJ_INTER_CHARACTER) split = SPLIT_CHAR;
+                else if (env->justify == LTX_TJ_NONE)       split = SPLIT_NONE;
+                else {
+                    int q;
+                    split = SPLIT_CHAR;
+                    for (q = lstart; q < lstart + t; q++)
+                        if (b.text[q] == ' ') { split = SPLIT_WORD; break; }
+                    if (env->justify == LTX_TJ_INTER_WORD) split = SPLIT_WORD;
+                }
+            }
             memset(&ln, 0, sizeof ln);
             ln.frag0 = b.nfrag;
-            if (emit_line(&b, lstart, lstart + t, y, x0, split_spaces, &w, &h) < 0)
+            if (emit_line(&b, lstart, lstart + t, y, x0, split, &w, &h) < 0)
                 goto fail;
             ln.nfrag = b.nfrag - ln.frag0;
             ln.x = x0; ln.y = y; ln.w = w; ln.h = h;
             ln.hard = (unsigned char)(last_line || pos >= b.len ||
                                       b.brk[pos] == LTX_BRK_MANDATORY);
-            align_line(&b, &ln, avail, ln.hard, split_spaces);
+            /* A line broken at a SOFT HYPHEN must show a hyphen: the character
+             * itself is invisible, so without this the word just falls apart. */
+            ln.hyphen = (unsigned char)(!ln.hard && pos >= 2 &&
+                                        (unsigned char)b.text[pos - 2] == 0xC2 &&
+                                        (unsigned char)b.text[pos - 1] == 0xAD);
+            align_line(&b, &ln, avail, ln.hard, split);
             if (push_line(&b, &ln) < 0) goto fail;
             if (ln.w + x0 > out->width) out->width = ln.w + x0;
             y += h;
