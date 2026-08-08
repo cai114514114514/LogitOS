@@ -11,6 +11,8 @@
 #
 #   make bench-js               compile the real bundles on the HOST
 #   make bench-js-os            compile them ON THE MACHINE, over serial
+#   make test-js-syntax         the language gate (38 checks)
+#   make test-js-syntax-control the same gate against stock QuickJS: MUST FAIL
 
 JSPERF_DIR := tests/fixtures/jsperf
 JSPERF_HOST_FIXTURES := $(sort $(wildcard $(JSPERF_DIR)/*.js) $(wildcard $(JSPERF_DIR)/*.mjs))
@@ -69,4 +71,40 @@ BENCH_JS_OS_ITERS ?= 5
 bench-js-os: $(ISO) $(DISK)
 	@bash tests/unit/js_bench_os.sh $(ISO) $(DISK) $(BENCH_JS_OS_ITERS) $(JSPERF_GUEST_PATHS)
 
-.PHONY: bench-js bench-js-os
+# --- test-js-syntax: what the engine will and will not accept ---------------
+# The gate for the vendored-QuickJS patches. Ends by compiling the real 42 KB
+# baidu.com polyfill bundle byte for byte, because a reduced test case only
+# convinces if the original passes too.
+$(BUILD)/js_syntax_test: tests/unit/js_syntax_test.c $(QJS_SRC)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
+	    tests/unit/js_syntax_test.c $(QJS_SRC) -lm
+
+test-js-syntax: $(BUILD)/js_syntax_test
+	@$(BUILD)/js_syntax_test $(JSPERF_DIR)/baidu-polyfill.js
+
+# THE NEGATIVE CONTROL. Rebuilds the same gate against a quickjs.c with the
+# hex-literal patch mechanically reverted -- one sed, restoring exactly the
+# upstream condition -- and REQUIRES it to fail. If this ever passes, the gate
+# above is not testing the patch.
+$(BUILD)/negctl/quickjs.c: third_party/quickjs/quickjs.c
+	@mkdir -p $(dir $@)
+	@sed 's/BOOL allow_radix_fraction = (radix == 10);/BOOL allow_radix_fraction = TRUE; \/* negative control: upstream QuickJS *\//' $< > $@
+	@grep -q 'allow_radix_fraction = TRUE; /\* negative control' $@ || \
+	    { echo "FAIL: the negative-control sed matched nothing -- the patch it reverts has moved"; exit 1; }
+
+test-js-syntax-control: $(BUILD)/negctl/quickjs.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_syntax_control \
+	    tests/unit/js_syntax_test.c $(BUILD)/negctl/quickjs.c \
+	    third_party/quickjs/cutils.c third_party/quickjs/libregexp.c \
+	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
+	@if $(BUILD)/js_syntax_control $(JSPERF_DIR)/baidu-polyfill.js > $(BUILD)/js_syntax_control.log 2>&1; then \
+	    echo "FAIL: stock QuickJS passed the syntax gate -- the gate cannot fail, so it proves nothing"; \
+	    exit 1; \
+	 else \
+	    echo "PASS (control): stock QuickJS fails the gate as it must --"; \
+	    grep -c '^FAIL:' $(BUILD)/js_syntax_control.log | sed 's/^/  /;s/$$/ checks fail without the patch, including the real baidu polyfill/'; \
+	 fi
+
+.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control

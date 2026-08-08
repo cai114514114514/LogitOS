@@ -10289,7 +10289,48 @@ static JSValue js_atof(JSContext *ctx, const char *str, const char **pp,
         p++;
     }
     if (!(flags & ATOD_INT_ONLY)) {
-        if (*p == '.' && (p > p_start || to_digit((uint8_t)p[1]) < radix)) {
+        /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) -----------------
+         * JavaScript has NO non-decimal fractional literal. After a
+         * HexIntegerLiteral / BinaryIntegerLiteral / OctalIntegerLiteral a
+         * '.' can only be a property access, so
+         *
+         *     0xde0b6b3a7640080.toFixed(0)      // "1000000000000000128"
+         *
+         * is legal, and core-js-style polyfills really write it -- it is on
+         * line 31 of the polyfill bundle every baidu.com search page loads.
+         *
+         * Stock QuickJS ate that '.' as the start of a hex FLOAT (C99
+         * 0x1.8p3, which QuickJS supports for its own BigFloat extension),
+         * then rejected the result at the `is_float && radix != 10` check
+         * below, and the tokenizer reported "SyntaxError: invalid number
+         * literal". One such literal cost the page all 42 KB of its
+         * polyfills. See tests/unit/js_syntax_test.c, which fails without
+         * this hunk and is the negative control for it.
+         *
+         * `radix != 10` here means exactly "a 0x/0o/0b prefix, or a legacy
+         * octal, was consumed above". Leaving the 'p'/'P' exponent branch
+         * below untouched is deliberate: with the fraction no longer eaten,
+         * a bare `0x1p3` still sets is_float and still fails, which is the
+         * right answer for JavaScript source.
+         *
+         * The other callers keep their exact old answers. Number("0x1.8")
+         * and BigInt("0x1.8") now stop at the '.', see trailing junk and
+         * still give NaN / throw; parseFloat passes radix 10; parseInt
+         * passes ATOD_INT_ONLY and never entered this block. Only
+         * BigFloat("0x1.8p3") genuinely wants a non-decimal fraction, and it
+         * is the one caller allowed through (CONFIG_BIGNUM only, and not
+         * built in this tree).
+         *
+         * RE-APPLYING AFTER A QUICKJS UPDATE: this is one added condition,
+         * `allow_radix_fraction`, on the '.' test. Nothing else.
+         * ------------------------------------------------------------------ */
+        BOOL allow_radix_fraction = (radix == 10);
+#ifdef CONFIG_BIGNUM
+        if (atod_type == ATOD_TYPE_BIG_FLOAT)
+            allow_radix_fraction = TRUE;
+#endif
+        if (allow_radix_fraction &&
+            *p == '.' && (p > p_start || to_digit((uint8_t)p[1]) < radix)) {
             is_float = TRUE;
             p++;
             if (*p == sep)
