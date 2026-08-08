@@ -50,3 +50,9 @@ build-*/
 # corpus missing its fixtures still runs; it just fails for a reason that is
 # not the browser's fault, which is the worst kind of number.
 !third_party/wpt/**
+
+# tests/wpt.mk creates these with ln -sfn at build time, pointing at an
+# ABSOLUTE path under this checkout. They are generated, they are machine-
+# specific, and Windows git cannot even hash them ("Function not implemented").
+tests/wpt-local/common
+tests/wpt-local/resources
