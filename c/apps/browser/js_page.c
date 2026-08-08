@@ -41,6 +41,13 @@ void js_forms_install(JSContext *ctx) __attribute__((__weak__));
  * same reason as the others; a build without that TU keeps today's behaviour
  * exactly. */
 void js_semantics_install(JSContext *ctx) __attribute__((__weak__));
+/* Element.prototype.animate and the computed-style overlay that makes it
+ * observable -- js_anim.c. Weak like every install above, and here the
+ * weakness is also the MEASUREMENT: with js_anim.c off the link line this call
+ * is an exact no-op, so a control binary can be built from an identical tree
+ * that differs only in whether the file is linked. That is what makes "2,202
+ * subtests gained" attributable rather than asserted. */
+void js_anim_install(JSContext *ctx) __attribute__((__weak__));
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -584,6 +591,14 @@ int js_page_open(struct node *root)
      * descriptor up to HTMLElement.prototype so a <button> or <dialog> can be
      * focused. It can only copy a descriptor that already exists. */
     if (js_semantics_install) js_semantics_install(g_ctx);
+    /* LAST, after everyone who owns a piece of what it composes with has had
+     * their turn, and the ordering is load-bearing twice over. It takes
+     * Element.prototype, which js_dom.c publishes. And it REPLACES
+     * window.getComputedStyle with a wrapper that delegates to whatever is
+     * installed at the time -- so it has to run after js_cssom.c and
+     * js_platform.c, or it wraps a placeholder and the real one overwrites the
+     * wrapper afterwards, leaving animate() present and unobservable. */
+    if (js_anim_install) js_anim_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
