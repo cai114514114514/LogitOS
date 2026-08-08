@@ -150,3 +150,96 @@ wpt-cssom-rank: $(CSSOM_DIR)/wpt_cssom
 	@mkdir -p $(CSSOM_DIR)
 	@test -f $(CSSOM_DIR)/before.tsv || $(MAKE) --no-print-directory wpt-cssom-base
 	@python3 tools/cssom_rank.py $(CSSOM_DIR)/before.tsv
+
+# --- the ABI gate: one display list, two flag sets --------------------------
+#
+# The display list is a raw array of `struct item` shared ACROSS A COMPILATION
+# BOUNDARY. layout.c writes it under one set of flags ($(UCFLAGS) $(CSS_INC));
+# browser.c, js_dom.c and this line's js_cssom.c read it under another
+# ($(BROWSER_JS_CF)). Both sides include the same layout.h, which makes it very
+# easy to assume both sides see the same struct.
+#
+# They did not, and it was a ring-3 page fault on SEVEN of the sixteen
+# scoreboard sites on 2026-08-09. The Makefile force-included musl's internal
+# features.h into the reading group; features.h defines a lowercase `hidden`;
+# `struct item` has a field called `hidden`; so `int hidden;` expanded to
+# `int __attribute__((__visibility__("hidden")));`, an anonymous declaration
+# that declares no member at all. sizeof(struct item) was 224 on the reading
+# side and 232 on the writing side, every it[i] past i == 0 was a misaligned
+# slice of its neighbours, and it[i].node came back as 0x14 -- not NULL, so the
+# null check in border_box() could not catch it. clang says nothing about any
+# of this: both translation units are individually valid C.
+#
+# The assertion is therefore the property itself -- the two flag sets must
+# agree about every struct they share -- and it is taken by COMPILING rather
+# than by reading the source, because reading the source is exactly what could
+# not see this. `char abi_x[sizeof(struct x)];` becomes `.size abi_x, N` in the
+# assembly: no binutils, and no host execution, which matters because these
+# objects are cross-compiled for x86_64-elf and can never be asked their
+# opinion at run time.
+#
+# THE NEGATIVE CONTROL RUNS INSIDE THIS TARGET rather than beside it. A control
+# that fires only when somebody types its name is precisely the shape
+# tools/audit_tests.py exists to find, and `test-.*-negctl$$` is excluded from
+# the derived CI suite list by name. The sabotage is the exact flag that caused
+# the bug, and the target FAILS if adding it back does not change the answer --
+# which would mean this check had quietly stopped being able to see the thing
+# it was written for.
+#
+# Deferred (`=`, not `:=`) for the reason CSSOM_WPT_SRC above is: BROWSER_JS_CF
+# is defined in the Makefile and make reads the fragments in whatever order the
+# Makefile lists them.
+.PHONY: test-cssom-abi
+
+CSSOM_ABI_DIR      := $(BUILD)/cssom-abi
+CSSOM_ABI_STRUCTS  := item node image
+CSSOM_ABI_WRITER    = $(UCFLAGS) $(CSS_INC)        # layout.c, browser_paint.c
+CSSOM_ABI_READER    = $(BROWSER_JS_CF)             # browser.c, js_dom.c, js_cssom.c
+CSSOM_ABI_SABOTAGE  = -include features.h          # the flag that did it
+
+# $(1) = extra flags, $(2) = output file. Empty output or a short count is a
+# FAILURE, never a pass: two empty files compare equal, and a target that
+# reports ok because it measured nothing is the one thing worse than no target.
+define cssom_abi_sizes
+	$(CC) $(CSSOM_ABI_READER) $(1) -w -S -o - $(CSSOM_ABI_DIR)/probe.c 2>$(CSSOM_ABI_DIR)/cc.log \
+	  | sed -n 's/^[[:space:]]*\.size[[:space:]][[:space:]]*abi_\([A-Za-z_]*\),[[:space:]]*\([0-9][0-9]*\).*/\1 \2/p' \
+	  | sort > $(2)
+endef
+
+test-cssom-abi:
+	@mkdir -p $(CSSOM_ABI_DIR)
+	@{ echo '#include "layout.h"'; \
+	   for s in $(CSSOM_ABI_STRUCTS); do echo "char abi_$$s[sizeof(struct $$s)];"; done; \
+	 } > $(CSSOM_ABI_DIR)/probe.c
+	@$(CC) $(CSSOM_ABI_WRITER) -w -S -o - $(CSSOM_ABI_DIR)/probe.c 2>$(CSSOM_ABI_DIR)/cc.log \
+	  | sed -n 's/^[[:space:]]*\.size[[:space:]][[:space:]]*abi_\([A-Za-z_]*\),[[:space:]]*\([0-9][0-9]*\).*/\1 \2/p' \
+	  | sort > $(CSSOM_ABI_DIR)/writer.txt
+	@$(call cssom_abi_sizes,,$(CSSOM_ABI_DIR)/reader.txt)
+	@$(call cssom_abi_sizes,$(CSSOM_ABI_SABOTAGE),$(CSSOM_ABI_DIR)/sabotaged.txt)
+	@n=`echo $(CSSOM_ABI_STRUCTS) | wc -w`; bad=0; \
+	 for f in writer reader sabotaged; do \
+	   got=`wc -l < $(CSSOM_ABI_DIR)/$$f.txt`; \
+	   if [ "$$got" -ne "$$n" ]; then \
+	     echo "test-cssom-abi: FAILED -- the $$f compile produced $$got of $$n sizes,"; \
+	     echo "  so this target measured nothing. Either it does not compile (see"; \
+	     echo "  $(CSSOM_ABI_DIR)/cc.log) or clang stopped emitting '.size abi_x, N'"; \
+	     echo "  and the sed above needs updating."; bad=1; \
+	   fi; \
+	 done; \
+	 if [ $$bad -ne 0 ]; then exit 1; fi; \
+	 if ! diff -u $(CSSOM_ABI_DIR)/writer.txt $(CSSOM_ABI_DIR)/reader.txt; then \
+	   echo "test-cssom-abi: FAILED -- layout.c and the browser's JS/DOM TUs do not"; \
+	   echo "  agree about the size of a struct they share through the display list."; \
+	   echo "  Left is \$$(UCFLAGS) \$$(CSS_INC) (the writer), right is \$$(BROWSER_JS_CF)"; \
+	   echo "  (the readers). A field whose name is also a macro in a force-included"; \
+	   echo "  header is how this happened last time -- see the note above."; \
+	   exit 1; \
+	 fi; \
+	 if diff -q $(CSSOM_ABI_DIR)/writer.txt $(CSSOM_ABI_DIR)/sabotaged.txt >/dev/null; then \
+	   echo "test-cssom-abi: FAILED -- the built-in control did not fire. Adding"; \
+	   echo "  \`$(CSSOM_ABI_SABOTAGE)\` back to the reader changed nothing, so this"; \
+	   echo "  target can no longer see the defect it exists for."; \
+	   exit 1; \
+	 fi; \
+	 echo "test-cssom-abi: ok -- `tr '\n' ' ' < $(CSSOM_ABI_DIR)/writer.txt`(writer == readers);"; \
+	 echo "  control fired: with $(CSSOM_ABI_SABOTAGE) the readers say `tr '\n' ' ' < $(CSSOM_ABI_DIR)/sabotaged.txt`"
