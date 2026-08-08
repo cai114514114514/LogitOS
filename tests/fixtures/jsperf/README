@@ -1,0 +1,59 @@
+Real-page JavaScript bundles, for `make bench-js` (host, tests/unit/js_bench.c),
+`make bench-js-os` (on the machine, tests/unit/js_bench_guest.c) and
+`make test-js-syntax` (tests/unit/js_syntax_test.c).
+
+WHY THEY ARE COMMITTED RATHER THAN FETCHED
+Same reason as tests/fixtures/cssperf: a compile-rate number is only comparable
+against itself. A bundle fetched at run time changes under the measurement --
+the site ships a new build, the CDN serves a different chunk -- and then a
+"regression" is just a different program. These are the exact bytes the
+before/after numbers in the commit messages were measured on. They also take
+the network out of the timing, which is the point: fetching a bundle is the
+HTTP layer's cost, compiling it is the engine's.
+
+PROVENANCE (captured 2026-08-08, unmodified, exactly as served)
+
+  kimi-index.mjs          1,623,655 B  https://statics.moonshot.cn/kimi-web-seo/assets/index-h6DE6Ow7.js
+  kimi-polyfills.mjs         96,106 B  .../assets/polyfills-BmY-sjxE.js
+      both are <script type="module"> on https://www.kimi.com/ -- ES modules,
+      not classic scripts, and the big one is the largest single file here.
+  baidu-async-search.js     805,094 B  https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_f9d4473.js
+  baidu-polyfill.js          41,984 B  https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/polyfill_9354efa.js
+  baidu-jquery-1.10.2.js    143,929 B  https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js
+      all three are classic <script src> on https://www.baidu.com/
+  deepseek-6559.js          191,620 B  https://www.deepseek.com/_next/static/chunks/6559-c46c52cda76e1166.js
+  deepseek-86b88eeb.js      171,906 B  .../chunks/86b88eeb-ec19e45782d2c43b.js
+  deepseek-polyfills.js      91,460 B  .../chunks/polyfills-c67a75d1b6f99dc8.js
+  bing-uCMySA2.js            34,498 B  https://www.bing.com/rp/uCMySA2WQ3cNt4c2N2n7j7QAXrE.js
+      the largest of the fifteen scripts bing.com loads; the other fourteen
+      total under 12 KB, which is itself the finding about that page.
+
+WHY THIS SET, THEY ARE DIFFERENT SHAPES
+  kimi-index      one 1.55 MB ES module: `import`/`export`, top-level `const`,
+                  thousands of small arrow functions. The worst case for
+                  compile latency on this machine, and the only fixture that
+                  exercises the module path end to end.
+  baidu-async     one 805 KB classic script, a single enormous IIFE. No module
+                  syntax at all -- the shape a 2015-era build system emits.
+  baidu-polyfill  42 KB of core-js-style feature detection. NEGATIVE CONTROL:
+                  before the hex-literal lexer fix it did not compile AT ALL
+                  (`SyntaxError: invalid number literal` on
+                  `0xde0b6b3a7640080.toFixed(0)` at line 31), so every polyfill
+                  in it was silently missing from the page.
+  baidu-jquery    144 KB of hand-written, non-minified library code: long
+                  identifiers, comments, real whitespace. The opposite input to
+                  a minified chunk, and it separates lexer cost from parse cost.
+  deepseek-*      webpack chunks off a Next.js app: dense minified React.
+  bing-*          the small-script page. Included because a benchmark made only
+                  of megabyte bundles measures the wrong end of the range.
+
+RE-FETCHING (if they ever need refreshing -- the numbers must be re-measured)
+  curl -A 'Mozilla/5.0' --compressed <url> -o <file>
+  Send --compressed: at least one baidu host serves gzip whether or not you
+  asked, and a gzip body compiles to "SyntaxError: unexpected token" rather
+  than to anything informative.
+
+These are third-party programs kept verbatim as test input only, and are not
+part of LogitOS. jquery 1.10.2 is MIT (jQuery Foundation). The remaining files
+are (c) their respective sites (Moonshot AI, Baidu, DeepSeek, Microsoft) and
+are used here solely as fixed compiler input.
