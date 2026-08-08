@@ -3098,3 +3098,8 @@ bench-aui: $(ISO) $(DISK)
 
 # Window management: resize, zoom, minimise, system shortcuts.
 -include tests/window.mk
+
+# The framework corpus (React/Next/Vue/Angular/Svelte/Vite/webpack): which
+# framework runtimes this browser cannot run, ranked by cause. Own fragment,
+# see the header of tests/frameworks.mk.
+-include tests/frameworks.mk

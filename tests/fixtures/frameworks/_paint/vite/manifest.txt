@@ -1,0 +1,3 @@
+/assets/index-C0YwIBxK.js	../../vite/s001.js
+/assets/lazy-DIbhNPa0.js	../../vite/s002.js
+/_paint.js	../paint.js

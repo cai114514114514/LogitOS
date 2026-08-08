@@ -1,0 +1,1 @@
+import{t as e}from"./index-BYxshc5p.js";var t=e();function n(){return(0,t.jsx)(`p`,{id:`lazy`,children:`lazy route loaded`})}export{n as default};

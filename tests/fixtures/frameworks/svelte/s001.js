@@ -1,0 +1,1 @@
+import{n as e,r as t,t as n}from"./index-DaXAERtU.js";t();var r=e(`<p id="lazy">lazy route loaded</p>`);function i(e){var t=r();n(e,t)}export{i as default};

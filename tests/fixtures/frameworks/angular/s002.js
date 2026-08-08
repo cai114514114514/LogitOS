@@ -1,0 +1,1 @@
+import{Ca as n,Da as o,Fa as i,ta as a}from"./chunk-KL66STME.js";var s=class t{static \u0275fac=function(e){return new(e||t)};static \u0275cmp=a({type:t,selectors:[["app-lazy"]],decls:2,vars:0,consts:[["id","lazy"]],template:function(e,m){e&1&&(n(0,"p",0),i(1,"lazy route loaded"),o())},encapsulation:2})};export{s as Lazy};

@@ -1,0 +1,109 @@
+The framework corpus: seven real applications, built here, committed as built.
+
+WHAT QUESTION IT WAS BUILT TO ANSWER
+Whether modern frameworks are the reason real pages do not render on this
+machine -- and specifically whether the framework is the variable at all, or
+whether the bundler runtime under it is. React, Vue, Angular and Svelte ship
+through three or four bundlers, so if the bundler is the variable the failures
+collapse onto a couple of mechanisms and the ranked table is short.
+
+THE ANSWER, measured 2026-08-08, `make probe-frameworks`:
+
+  CAUSE                          FRAMEWORKS  CHROME         WHICH
+  document.currentScript         2 of 7      ours           next, webpack
+  HTMLTemplateElement.content    1 of 7      ours           svelte
+  SVGElement                     1 of 7      ours           vue
+  document.baseURI               1 of 7      ours           angular
+  (no uncaught exception)        2 of 7      -              react, vite
+
+THE HYPOTHESIS DID NOT HOLD, and that is the finding. The bundler runtime is
+one cause of five and accounts for 2 of the 7 builds. The other three die on
+three unrelated DOM primitives, in three different frameworks, all four of
+which happen to route through Rollup/Vite -- the same bundler that produced the
+two builds with no exceptions at all. A bundler that fails four ways and works
+twice is not the variable. Every cause here is a MISSING DOM/document
+PROPERTY, and the bundler only determines which one a given build reaches
+first.
+
+The corollary matters more than the refutation: there is no single fix. This is
+a list of four, and it is a short list precisely because each item is small.
+
+THE CHROME COLUMN
+`tests/chrome/webapi_chromediff.mjs` (the JS-exception line's harness, used
+as-is) served these exact bytes to real headless Chrome over each fixture's own
+URL. Chrome threw ZERO exceptions on all seven. So nothing here is the app's own
+bug -- which is the thing this corpus buys over tests/fixtures/webapi, where a
+failure is entangled with the site's own code. The differential output is
+committed as CHROMEDIFF.
+
+  Caveat, stated because it is load-bearing: webapi_chromediff.mjs extracts an
+  error type with /^([A-Z]\w*Error|DOMException)\b/, which cannot match the base
+  class `Error`, and then discards anything with neither a type nor an
+  identifier. Every bundler-runtime throw is a bare `new Error(...)`, so
+  webpack's row reads NOT MEASURED rather than `ours`. It was established
+  another way: Chrome fetched all three of webpack's files including the lazy
+  chunk, so its chunk loader ran. Reported to that line; a one-token fix.
+
+WHAT IS IN EACH FIXTURE
+  <name>/index.html    the document the toolchain emitted, unmodified
+  <name>/s###.js       every emitted script, flat
+  <name>/manifest.txt  "<src as the page names it>\t<local file>", keyed twice
+  <name>/SOURCE        the document's absolute URL, first line
+Same layout as tests/fixtures/webapi so the SAME probe measures both and the
+numbers are comparable. A fixture directory without manifest.txt is not a
+fixture: the probe keys off it and silently falls back to inline scripts only.
+
+  _src/       the app sources, so the corpus is reproducible (build_apps.sh)
+  _platform/  the seven bundles' throw sites reduced to one script
+  _paint/     the built documents plus one module that reads the DOM back
+  BASELINE    what `make test-frameworks` asserts
+  CHROMEDIFF  the differential this README's Chrome column comes from
+
+Each app is minimal but real: a component with state, a click handler, and a
+lazily imported route. The lazy route renders AT STARTUP rather than behind the
+click -- the probe injects no input, so a chunk loader reachable only by a click
+would never run. A hand-written <script> pulling a framework off a CDN would
+exercise no bundler runtime at all and the corpus would measure nothing.
+
+WHAT WAS PRUNED, AND WHAT THAT COSTS
+Only .js/.mjs are packed; CSS, fonts, images and source maps are dropped
+(pack.py). The probe fetches no sub-resource, so they cannot change a
+JavaScript number, and Chrome's 404 for them lands in the network bucket the
+differential already excludes on both sides. It is 1.2 MB instead of ~10 MB.
+The cost is real and is not hidden: THESE FIXTURES CANNOT ANSWER "does it look
+right". They answer "does it run" and "did anything reach the DOM".
+
+DID ANYTHING RENDER -- because scripts running clean is not a page
+`_paint/` reads the DOM back after the application's own module has run. Two of
+the seven genuinely mount:
+
+  react     #root 0 -> 155 chars, button reads "count is 0", lazy route rendered
+  vite      #app rendered, button reads "count is 0", lazy chunk resolved
+  next      #app=207 -- but next/index.html ALREADY CONTAINS that markup and the
+            string "count is ": this is the static export's prerendered HTML,
+            not evidence of hydration. The invariant throw is in the chunk
+            registration, so nothing is wired up and the button is dead.
+  angular   <app-root> is empty in the document and holds 87 chars after load,
+            so Angular did bootstrap and render its template -- but the button's
+            text is empty and the router outlet never fills: the lazy route dies
+            in new URL(path, document.baseURI).
+  svelte    #app = 0 chars. Nothing.
+  vue       #app = 0 chars. Nothing.
+  webpack   #app = 0 chars. Nothing.
+
+No screenshot: painting one of these on the machine needs the ISO, the disk
+image and a QMP harness serving the fixture (the shape of tests/qmp/qmp_bing.py),
+and HEAD does not currently build from a clean clone. The DOM read-back is the
+strongest evidence available without that, and it is stated as such rather than
+as a screenshot.
+
+OUT OF SCOPE, recorded so it does not look like an omission
+Node, Express and NestJS are server-side and never run in a browser. React
+Native renders to native views, and Electron/Tauri ship their own engine. None
+of them is a browser target, so none is in this corpus.
+
+REFRESHING IT
+  bash tests/fixtures/frameworks/build_apps.sh    scaffold + build + pack
+  make probe-frameworks-chrome                    re-take the differential
+Both change the numbers, so BASELINE and this README must be re-taken with them
+in the same commit.

@@ -1,0 +1,13 @@
+# This corpus is BYTES, not text.
+#
+# core.autocrlf is true in this checkout, and one of the seven toolchains
+# (Angular's CLI, on Windows) emits index.html with CRLF. Without this line git
+# would normalise it to LF on commit and back on checkout, and the committed
+# fixture would not be the artefact the numbers in README and BASELINE were
+# measured on -- which is the entire premise of committing it. The probe reports
+# "N bytes of HTML"; that N has to be reproducible.
+#
+# It also protects the built bundles from ever being rewritten by a future
+# checkout on a machine with different settings. A minified bundle with its line
+# endings changed is a different file with the same name.
+* -text

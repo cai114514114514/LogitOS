@@ -1,0 +1,33 @@
+== Chrome differential: the same committed bytes, both engines ==
+
+  react       chrome served 3 files, 7 not in fixture
+  react       chrome 0 distinct, ours 0 distinct, shared 0, OURS ONLY 0
+
+  vue         chrome served 3 files, 7 not in fixture
+  vue         chrome 0 distinct, ours 1 distinct, shared 0, OURS ONLY 1
+     [OURS]  ReferenceError: 'SVGElement' is not defined
+
+  svelte      chrome served 3 files, 7 not in fixture
+  svelte      chrome 0 distinct, ours 1 distinct, shared 0, OURS ONLY 1
+     [OURS]  TypeError: cannot read property 'cloneNode' of undefined
+
+  vite        chrome served 3 files, 8 not in fixture
+  vite        chrome 0 distinct, ours 0 distinct, shared 0, OURS ONLY 0
+
+  webpack     chrome served 3 files, 7 not in fixture
+  webpack     chrome 0 distinct, ours 0 distinct, shared 0, OURS ONLY 0
+
+  next        chrome served 8 files, 7 not in fixture
+  next        chrome 0 distinct, ours 1 distinct, shared 0, OURS ONLY 1
+     [OURS]  InvariantError: Invariant: Expected document.currentScript to be a <script> element. Received null instead. Th
+
+  angular     chrome served 4 files, 9 not in fixture
+  angular     chrome 0 distinct, ours 1 distinct, shared 0, OURS ONLY 1
+     [OURS]  TypeError: Invalid URL: /
+
+== OURS: exceptions Chrome does NOT throw on the same bytes ==
+PAGES  KIND      MESSAGE
+    1  console   InvariantError: Invariant: Expected document.currentScript to be a <script> element. Received null instead. Th   [next]
+    1  module,console ReferenceError: 'SVGElement' is not defined   [vue]
+    1  console   TypeError: Invalid URL: /   [angular]
+    1  module,console TypeError: cannot read property 'cloneNode' of undefined   [svelte]

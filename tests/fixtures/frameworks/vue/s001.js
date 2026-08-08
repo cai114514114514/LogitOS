@@ -1,0 +1,1 @@
+import{n as e,t}from"./index-Dakxvxl6.js";var n=(e,t)=>{let n=e.__vccOpts||e;for(let[e,r]of t)n[e]=r;return n},r={},i={id:`lazy`};function a(n,r){return e(),t(`p`,i,`lazy route loaded`)}var o=n(r,[[`render`,a]]);export{o as default};

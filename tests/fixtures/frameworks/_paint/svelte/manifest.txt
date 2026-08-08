@@ -1,0 +1,3 @@
+/assets/Lazy-C6hPB9cf.js	../../svelte/s001.js
+/assets/index-DaXAERtU.js	../../svelte/s002.js
+/_paint.js	../paint.js

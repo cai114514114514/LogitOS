@@ -1,0 +1,27 @@
+angular 3 document.baseURI
+next 1 document.currentScript
+react 0 -
+svelte 5 HTMLTemplateElement.content
+vite 0 -
+vue 3 SVGElement (global constructor)
+webpack 1 document.currentScript
+api document.currentScript = element | null
+api currentScript.tagName = script | null
+api currentScript.src = undefined | null
+api getElementsByTagName(script).length = 1
+api script[0].src = undefined
+api script[0].getAttribute(src) = probe.js
+api document.baseURI = undefined
+api SVGElement = undefined
+api template.content = undefined
+api document.contentType = undefined
+api window.trustedTypes = undefined
+api document.documentMode = undefined
+api window.event = undefined
+paint angular body=307 #app=87	button=""	lazy=none
+paint next body=4728 #app=207	button="count is 0"	lazy=none
+paint react body=234 #root=155 #app=135	button="count is 0"	lazy="lazy route loaded"
+paint svelte body=78 #app=0	button=none	lazy=none
+paint vite body=235 #app=157	button="count is 0"	lazy=""
+paint vue body=78 #app=0	button=none	lazy=none
+paint webpack body=68 #app=0	button=none	lazy=none
