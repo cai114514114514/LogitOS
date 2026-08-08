@@ -6578,6 +6578,54 @@ static const char *get_func_name(JSContext *ctx, JSValueConst func)
     return JS_ToCString(ctx, val);
 }
 
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * Read a PRIMITIVE property off an error object or its prototype chain, for
+ * the message line build_backtrace() prepends below.
+ *
+ * "Primitive, own-or-inherited data property" is the whole point, and it is
+ * the same restriction get_func_name() above imposes for the same reason:
+ * this runs WHILE AN EXCEPTION IS BEING THROWN. Calling a user getter here
+ * would re-enter the interpreter with a half-built exception in flight, and a
+ * getter that itself threw would have nowhere to go. So an accessor, an
+ * object-valued name, a Symbol or a Proxy is treated as "not found". Strings,
+ * numbers, booleans and null are converted, because converting them runs no
+ * user code -- V8 does ToString(name), so `e.name = 5` really does print
+ * "5: msg" there and it costs nothing to agree.
+ *
+ * The prototype chain has to be walked because `name` is normally NOT an own
+ * property: TypeError.prototype.name is where "TypeError" lives. The depth cap
+ * is a cycle guard, not a semantic limit; no real error chain is deeper.
+ * ----------------------------------------------------------------------- */
+static const char *js_error_plain_str(JSContext *ctx, JSValueConst obj,
+                                      JSAtom atom)
+{
+    JSObject *p;
+    JSProperty *pr;
+    JSShapeProperty *prs;
+    int depth, tag;
+
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return NULL;
+    p = JS_VALUE_GET_OBJ(obj);
+    for (depth = 0; p != NULL && depth < 16; p = p->shape->proto, depth++) {
+        if (p->class_id == JS_CLASS_PROXY)
+            return NULL;
+        prs = find_own_property(&pr, p, atom);
+        if (!prs)
+            continue;
+        if ((prs->flags & JS_PROP_TMASK) != JS_PROP_NORMAL)
+            return NULL;                /* a getter: do not run it */
+        tag = JS_VALUE_GET_TAG(pr->u.value);
+        if (tag == JS_TAG_UNDEFINED)
+            return NULL;                /* explicitly undefined == absent */
+        if (tag != JS_TAG_STRING && tag != JS_TAG_INT && tag != JS_TAG_BOOL &&
+            tag != JS_TAG_NULL && !JS_TAG_IS_FLOAT64(tag))
+            return NULL;                /* object/symbol: ToString runs code */
+        return JS_ToCString(ctx, pr->u.value);
+    }
+    return NULL;
+}
+
 #define JS_BACKTRACE_FLAG_SKIP_FIRST_LEVEL (1 << 0)
 /* only taken into account if filename is provided */
 #define JS_BACKTRACE_FLAG_SINGLE_LEVEL     (1 << 1)
@@ -6597,6 +6645,73 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_obj,
     BOOL backtrace_barrier;
     
     js_dbuf_init(ctx, &dbuf);
+
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) -------------------
+     * THE MESSAGE LINE. Upstream starts err.stack with the frames and nothing
+     * else, so a real exception on a real page reads:
+     *
+     *     at cv (s001.js)
+     *     at forEach (native)
+     *     ...
+     *
+     * -- every frame, and no statement of what went wrong. V8's shape is
+     *
+     *   TypeError: Cannot read properties of null (reading 'x')
+     *       at cv (s001.js:1:2)
+     *
+     * with the name and message as the FIRST LINE. Firefox differs, but the
+     * web did not standardise on Firefox: React's error boundary, Sentry, and
+     * every hand-written `catch (e) { log(e.stack) }` were written against
+     * Chrome. A bundle in tests/fixtures/jsperf even does
+     * `Error().stack.replace(/^Error/, "")`, which silently does nothing here
+     * and is direct evidence of what production code expects.
+     *
+     * FORMAT, verified against Chrome rather than remembered (the checks are
+     * in tests/unit/js_stack_test.c, which was written from that session):
+     *     name + ": " + message   when both are non-empty
+     *     name                    when message is absent or ""
+     *     message                 when name is ""      (yes, no colon)
+     *     an EMPTY LINE           when both are empty -- Chrome really does
+     *                             emit "\n    at ..." there, checked
+     *   and a name that is absent entirely reads as "Error".
+     *
+     * WHERE THIS DIVERGES FROM V8, deliberately and knowably:
+     *  - V8 formats err.stack LAZILY, at the first read. It snapshots the
+     *    MESSAGE at construction (mutating e.message afterwards does not
+     *    change e.stack -- checked) but resolves the NAME at read time. This
+     *    builds the whole line eagerly, which matches V8 on the message and
+     *    differs on the name for exactly one idiom:
+     *        class MyErr extends Error { constructor(m){ super(m);
+     *                                                    this.name="MyErr"; } }
+     *    V8 says "MyErr: x", we say "Error: x", because super() -- and with it
+     *    this backtrace -- runs before the assignment. The older idiom,
+     *    MyErr.prototype.name = "MyErr", matches V8 exactly. Making this lazy
+     *    means turning `stack` into an accessor, which changes a property that
+     *    pages assign to; the message, which is the part that says what broke,
+     *    is right either way.
+     *  - A `name`/`message` that is an accessor or a non-string reads as
+     *    absent, because js_error_plain_str must not run user code mid-throw.
+     *
+     * Non-Error thrown values are unaffected: build_backtrace is only reached
+     * for JS_CLASS_ERROR objects, and `throw {a:1}` has no .stack in V8 either.
+     *
+     * RE-APPLYING AFTER A QUICKJS UPDATE: this block plus js_error_plain_str.
+     * -------------------------------------------------------------------- */
+    if (JS_VALUE_GET_TAG(error_obj) == JS_TAG_OBJECT) {   /* LOGIT-STACK-PREPEND */
+        const char *name_str = js_error_plain_str(ctx, error_obj, JS_ATOM_name);
+        const char *msg_str = js_error_plain_str(ctx, error_obj, JS_ATOM_message);
+        const char *nm = name_str ? name_str : "Error";
+        const char *ms = msg_str ? msg_str : "";
+        if (nm[0] && ms[0])
+            dbuf_printf(&dbuf, "%s: %s\n", nm, ms);
+        else if (nm[0])
+            dbuf_printf(&dbuf, "%s\n", nm);
+        else
+            dbuf_printf(&dbuf, "%s\n", ms);   /* ms may be "": Chrome's blank line */
+        JS_FreeCString(ctx, name_str);
+        JS_FreeCString(ctx, msg_str);
+    }
+
     if (filename) {
         dbuf_printf(&dbuf, "    at %s", filename);
         if (line_num != -1)

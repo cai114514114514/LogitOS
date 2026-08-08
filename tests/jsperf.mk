@@ -14,6 +14,7 @@
 #   make test-js-syntax         the language gate (38 checks)
 #   make test-js-syntax-control the same gate against stock QuickJS: MUST FAIL
 #   make test-js-dynimport     dynamic import(), which is how a code-split app loads
+#   make test-js-stack         err.stack names the error (+ -control)
 
 JSPERF_DIR := tests/fixtures/jsperf
 JSPERF_HOST_FIXTURES := $(sort $(wildcard $(JSPERF_DIR)/*.js) $(wildcard $(JSPERF_DIR)/*.mjs))
@@ -133,4 +134,39 @@ $(BUILD)/js_dynimport_test: tests/unit/js_dynimport_test.c $(QJS_SRC)
 test-js-dynimport: $(BUILD)/js_dynimport_test
 	@$(BUILD)/js_dynimport_test
 
-.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport
+# --- test-js-stack: err.stack has to say WHAT went wrong, not only where ----
+# Upstream QuickJS builds err.stack from the frames alone, so every error
+# reporter written against Chrome -- React's boundary, Sentry, every
+# `catch (e) { log(e.stack) }` -- printed a stack with no error in it. The
+# expected strings in the test were measured in a real Chrome, not remembered.
+$(BUILD)/js_stack_test: tests/unit/js_stack_test.c $(QJS_SRC)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
+	    tests/unit/js_stack_test.c $(QJS_SRC) -lm
+
+test-js-stack: $(BUILD)/js_stack_test
+	@$(BUILD)/js_stack_test
+
+# THE NEGATIVE CONTROL. One sed turns the prepend off -- restoring exactly
+# upstream's frames-only stack -- and this REQUIRES the gate above to fail.
+$(BUILD)/negctl/quickjs_nostack.c: third_party/quickjs/quickjs.c
+	@mkdir -p $(dir $@)
+	@sed 's|.*/\* LOGIT-STACK-PREPEND \*/|    if (0) {  /* negative control: upstream, frames only */|' $< > $@
+	@grep -q 'negative control: upstream, frames only' $@ || \
+	    { echo "FAIL: the negative-control sed matched nothing -- the patch it reverts has moved"; exit 1; }
+
+test-js-stack-control: $(BUILD)/negctl/quickjs_nostack.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_stack_control \
+	    tests/unit/js_stack_test.c $(BUILD)/negctl/quickjs_nostack.c \
+	    third_party/quickjs/cutils.c third_party/quickjs/libregexp.c \
+	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
+	@if $(BUILD)/js_stack_control > $(BUILD)/js_stack_control.log 2>&1; then \
+	    echo "FAIL: a frames-only stack passed the gate -- the gate cannot fail, so it proves nothing"; \
+	    exit 1; \
+	 else \
+	    echo "PASS (control): a frames-only err.stack fails the gate as it must --"; \
+	    grep -c '^FAIL:' $(BUILD)/js_stack_control.log | sed 's/^/  /;s/$$/ checks fail without the message line/'; \
+	 fi
+
+.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport test-js-stack test-js-stack-control
