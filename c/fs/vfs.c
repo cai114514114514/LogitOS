@@ -94,6 +94,13 @@ static int fs_rename(struct filesystem *f, const char *o, const char *n)
 { return f->iops ? (f->iops->rename ? f->iops->rename(f, o, n) : VFS_ENOSYS)
                  : (f->rename ? f->rename(o, n) : VFS_ENOSYS); }
 
+/* The calling process's pid, for the per-process creation mask. Weak for the
+ * same reason kdiag above is: c/fs/vfs_cred.c is a kernel TU and the host unit
+ * tests link this file without it. Absent, every caller shares the boot default
+ * mask, which is what the machine did before umask existed. */
+int vfs_cred_pid(void) __attribute__((weak));
+static int cur_pid(void) { return vfs_cred_pid ? vfs_cred_pid() : 0; }
+
 static int  s_len(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 static int  s_eq(const char *a, const char *b)
 { int i = 0; for (; a[i] && a[i] == b[i]; i++) {} return a[i] == b[i]; }
@@ -311,6 +318,8 @@ static int is_dir_on(struct vmountent *m, const char *sub)
     return fs_count(m->fs, sub) >= 0;
 }
 
+static int syn_size(const char *p);          /* the synthetic providers, below */
+
 static void attrs_of(const char *abs, struct vattr *a)
 {
     struct vmountent *m = mount_for(abs);
@@ -386,6 +395,188 @@ int vfs_lstat(const char *path, struct vattr *a)
     if (vmeta_lookup(abs, &la) && la.type == VT_LNK) { *a = la; return 0; }
     return vfs_stat(abs, a);
 }
+
+/* --------------------------------------------------------------------------
+ * statx: the same attributes plus everything a `stat` needs
+ *
+ * vfs_stat above answers the PERMISSION question and nothing else, which is all
+ * it was ever asked. Size, times and the inode number were never in the answer
+ * because nothing above it could carry them -- SYS_DIR_NAME returned one int.
+ * This fills the rest, and every field it cannot learn stays zero with its VA_*
+ * bit clear rather than being invented.
+ *
+ * `dev` is the MOUNT INDEX, one-based so that 0 keeps meaning "unknown". Two
+ * paths naming the same file agree on (dev, ino) exactly when the backend
+ * reports real inode numbers, which is why VA_INO exists.
+ * ------------------------------------------------------------------------ */
+
+static uint64_t mount_dev(struct vmountent *m)
+{
+    if (!m) return 0;
+    return (uint64_t)(m - mounts) + 1;
+}
+
+int vfs_statx(const char *path, struct vattr *a, int follow)
+{
+    if (!a) return VFS_EINVAL;
+    char abs[VFS_PATH_MAX];
+    int rc = resolve(path, abs, (int)sizeof abs, follow ? 1 : 0);
+    if (rc < 0) return rc;
+
+    /* lstat on a symlink answers about the LINK: the VFS owns symlinks whole,
+     * so there is no backend to ask and the size is the target's length --
+     * which is what every Unix reports for a symlink. */
+    if (!follow) {
+        struct vattr la;
+        if (vmeta_lookup(abs, &la) && la.type == VT_LNK) {
+            char tgt[VFS_PATH_MAX];
+            *a = la;
+            a->size = (vmeta_readlink(abs, tgt, (int)sizeof tgt) == 1)
+                          ? (uint64_t)s_len(tgt) : 0;
+            a->dev = mount_dev(mount_for(abs));
+            return 0;
+        }
+    }
+
+    const char *real = vmeta_canon(abs);
+    struct vmountent *m = mount_for(real);
+
+    /* Existence, and the type, from the cheapest question that distinguishes
+     * them. A synthetic node (/dev/kmsg, /dev/vfsctl) is a file with a size and
+     * no backend, so it is asked first exactly as every other operation does. */
+    int is_dir = s_eq(abs, "/");
+    long fsz = -1;
+    int syn = syn_size(abs);
+    if (syn != SYN_NOT_MINE) {
+        fsz = syn;
+    } else if (!is_dir) {
+        char sub[VFS_PATH_MAX];
+        const char *sp = m ? sub_path(m, real, sub, (int)sizeof sub) : 0;
+        if (m) {
+            fsz = fs_size(m->fs, sp);
+            if (fsz < 0 && fs_count(m->fs, sp) >= 0) is_dir = 1;
+        }
+    }
+    if (!is_dir && fsz < 0) return VFS_ENOENT;
+
+    attrs_of(real, a);
+    a->nlink = vmeta_nlink(abs);
+    if (a->nlink > 1) a->flags |= VA_STORED;    /* the link group is a record too */
+    a->type = is_dir ? VT_DIR : (a->type == VT_LNK ? VT_REG : a->type);
+    a->dev = mount_dev(m);
+    if (!a->blksize) a->blksize = 4096;
+
+    /* A backend getattr may already have filled size/blocks off the medium. Only
+     * fall back when it did not, so the medium's answer always wins. */
+    if (is_dir) {
+        if (!a->size) { int n = vfs_count(abs); a->size = n > 0 ? (uint64_t)n : 0; }
+    } else if (!a->size && fsz > 0) {
+        a->size = (uint64_t)fsz;
+        a->blocks = ((uint64_t)fsz + 511) / 512;
+    }
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * getdents
+ *
+ * One call, many entries, a 255-byte name and a type of its own -- the three
+ * things SYS_DIR_NAME cannot do. The cursor is the merged index the existing
+ * enumeration already uses; it is handed back to the caller opaque precisely so
+ * that a backend can later give it a stronger meaning without an ABI change.
+ * What it does NOT promise is written at struct logit_dirreq.
+ *
+ * The per-entry attributes come from attrs_of() on the child path, not from a
+ * fresh vfs_statx: `dir` is already resolved here, so this costs one backend
+ * lookup per entry instead of a full path walk per entry.
+ * ------------------------------------------------------------------------ */
+int vfs_getdents(const char *dir, int *cursor, struct vdirent *out, int max)
+{
+    if (!dir || !cursor || !out || max <= 0) return VFS_EINVAL;
+    char abs[VFS_PATH_MAX];
+    int rc = resolve(dir, abs, (int)sizeof abs, 1);
+    if (rc < 0) return rc;
+
+    int total = vfs_count(abs);          /* also makes the MAY_READ check */
+    if (total < 0) return total;
+    int i = *cursor;
+    if (i < 0) return VFS_EINVAL;
+
+    int n = 0;
+    for (; i < total && n < max; i++) {
+        const char *nm = vfs_ent_name(abs, i);
+        if (!nm || !nm[0]) continue;     /* a hole the backend skipped */
+        struct vdirent *e = &out[n];
+        s_cpy(e->name, nm, (int)sizeof e->name);
+        e->ino = 0;
+        e->size = 0;
+        e->type = vfs_ent_is_dir(abs, i) ? VT_DIR : VT_REG;
+
+        /* The child's own attributes. A symlink has no backend entry, so its
+         * type comes from the VFS store; everything else from the mount. */
+        char child[VFS_PATH_MAX];
+        int cl = s_len(abs);
+        s_cpy(child, abs, (int)sizeof child);
+        if (cl > 0 && child[cl - 1] != '/' && cl + 1 < (int)sizeof child)
+            { child[cl++] = '/'; child[cl] = 0; }
+        s_cpy(child + cl, nm, (int)sizeof child - cl);
+
+        struct vattr ca;
+        struct vmountent *cm = mount_for(child);
+        vattr_clear(&ca);
+        if (cm && cm->fs->getattr && cm->fs->setattr) {
+            char sub[VFS_PATH_MAX];
+            if (cm->fs->getattr(sub_path(cm, child, sub, (int)sizeof sub), &ca) == 0) {
+                e->ino = ca.ino;
+                if (ca.size) e->size = ca.size;
+            }
+        }
+        struct vattr la;
+        if (vmeta_lookup(child, &la) && la.type == VT_LNK) e->type = VT_LNK;
+        if (!e->size && e->type == VT_REG) {
+            int sz = vfs_ent_size(abs, i);
+            if (sz > 0) e->size = (uint64_t)sz;
+        }
+        n++;
+    }
+    *cursor = i;
+    return n;
+}
+
+/* --------------------------------------------------------------------------
+ * The creation mask
+ * ------------------------------------------------------------------------ */
+
+/* The mode a newly created name should end up with. 022 is the boot default, so
+ * a system where nobody calls umask produces exactly the 0644 / 0755 it
+ * produced before this existed -- the feature is inert until used, which is the
+ * only safe way to add one to a permission model that is already enforced. */
+static uint32_t create_mode(int is_dir)
+{
+    uint32_t mask = vmeta_umask(cur_pid(), -1);
+    return (uint32_t)(is_dir ? 0777 : 0666) & ~mask;
+}
+
+/* Record `mode` for a name that has just been created. Skipped entirely when it
+ * equals the default the file would report anyway: on a backend that stores
+ * modes durably that saves a whole journal transaction per file written, and on
+ * one that does not it saves a record in a 256-entry table. */
+static void stamp_create_mode(const char *abs, int is_dir)
+{
+    uint32_t want = create_mode(is_dir);
+    if (want == (uint32_t)(is_dir ? 0755 : 0644)) return;
+
+    struct vmountent *m = mount_for(abs);
+    if (m && m->fs->getattr && m->fs->setattr) {
+        struct vattr a; attrs_of(abs, &a); a.mode = want;
+        char sub[VFS_PATH_MAX];
+        m->fs->setattr(sub_path(m, abs, sub, (int)sizeof sub), &a);
+        return;
+    }
+    vmeta_chmod(abs, is_dir, want);
+}
+
+uint32_t vfs_umask(int set) { return vmeta_umask(cur_pid(), set); }
 
 /* --------------------------------------------------------------------------
  * Synthetic providers. Consulted before any mount, in a fixed order, each one
@@ -476,12 +667,21 @@ int vfs_write(const char *path, const void *buf, int size)
      * permission on the directory that is about to gain a name. Checking only
      * the first is the classic hole: the file does not exist yet, so there is
      * nothing to refuse. */
-    if (fs_size(m->fs, sp) >= 0) {
+    int existed = fs_size(m->fs, sp) >= 0;
+    if (existed) {
         if ((rc = check_file(real, &c, MAY_WRITE)) < 0) return rc;
     } else {
         if ((rc = check_parent_write(real, &c)) < 0) return rc;
     }
-    return fs_write(m->fs, sp, buf, size);
+    int wrote = fs_write(m->fs, sp, buf, size);
+    /* A rewrite keeps the mode it had; only a NEW name gets one. That is POSIX's
+     * rule and it matters here: LogitFS rewrites a whole file per write, so
+     * applying the mask on every write would silently undo every chmod. */
+    if (wrote >= 0 && !existed) {
+        if (c.uid || c.gid) vmeta_chown(real, 0, c.uid, c.gid);
+        stamp_create_mode(real, 0);
+    }
+    return wrote;
 }
 
 int vfs_delete(const char *path)
@@ -542,6 +742,7 @@ int vfs_mkdir(const char *path)
     /* A directory created by a non-root process belongs to that process, or
      * the creator cannot put anything in it. */
     if (rc >= 0 && (c.uid || c.gid)) vmeta_chown(abs, 1, c.uid, c.gid);
+    if (rc >= 0) stamp_create_mode(abs, 1);
     return rc;
 }
 

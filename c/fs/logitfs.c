@@ -1193,6 +1193,126 @@ static int logitfs_ent_is_dir(const char *dir, int i)
     return in && in->type == T_DIR;
 }
 
+/* --- getattr / setattr: the two function pointers -------------------------
+ *
+ * c/fs/vfs_meta.h has said since it was written that its records "do not
+ * survive a reboot ... logitfs can take ownership later by filling in two
+ * function pointers, with no other change anywhere". This is that, and the
+ * claim held: nothing else in this file moved, and in particular the three
+ * barriers in log_commit() and the transaction discipline around them are
+ * untouched -- setattr is an ordinary metadata mutation and goes through the
+ * SAME tx_begin / flush_inode / flush_bitmap / log_commit sequence every other
+ * one does, so a crash in the middle of a chmod leaves the old mode or the new
+ * one and never a third thing.
+ *
+ * WHY THE VFS BYPASSES ITS OWN STORE ONCE BOTH ARE PRESENT (vfs.c attrs_of):
+ * a mode that is authoritative in two places is a mode that disagrees with
+ * itself after a reboot, when one of the two is empty. Symlinks and hard links
+ * stay in the VFS store and are unaffected: neither has a backing inode here,
+ * so getattr fails for them and the store answers, which is the right answer.
+ *
+ * WHAT IS AND IS NOT DURABLE AFTER THIS, stated so nobody has to infer it:
+ *   durable   mode, uid, gid, size, atime/mtime/ctime, the inode number
+ *   NOT       symlink targets, hard-link groups (both VFS RAM records)
+ * A caller sees the difference in the LSTA_* bits, not by reading this comment.
+ * ------------------------------------------------------------------------ */
+
+/* Report the inode's stored attributes. Returns 0 when this path exists on this
+ * filesystem, -1 when it does not (a symlink, or nothing) -- and the VFS falls
+ * back to its own store on -1, which is exactly what a symlink needs. */
+#ifndef LOGITFS_NO_ATTR
+static int logitfs_getattr(const char *path, struct vattr *a)
+{
+    if (!a) return -1;
+    uint32_t ino = resolve(path);
+    if (ino == NOINO) return -1;
+    struct dinode *in = iget(ino);
+    if (!in || in->type == T_FREE) return -1;
+
+    int isdir = (in->type == T_DIR);
+    /* memset rather than vattr_clear(): c/fs/vfs_meta.c is not linked into the
+     * filesystem's own host tests (tests/unit/fs_*_test.c compile logitfs.c
+     * against a simulated device and nothing else), and a backend reaching into
+     * the VFS's helpers would make that impossible. */
+    memset(a, 0, sizeof *a);
+    a->type  = isdir ? VT_DIR : VT_REG;
+    a->nlink = 1;
+    a->ino   = ino;
+    a->dev   = 0;                       /* the VFS supplies the mount index */
+    a->blksize = BS;
+    a->flags = VA_INO;
+
+    if (in->xmode & LFS_MODE_SET) {
+        a->mode = in->xmode & LFS_MODE_BITS & 0777;
+        a->uid  = in->uid;
+        a->gid  = in->gid;
+        a->flags |= VA_STORED | VA_DURABLE;
+    } else {
+        /* Never set. The default -- and NO VA_STORED, so the caller can tell. */
+        a->mode = isdir ? 0755 : 0644;
+        a->uid = 0; a->gid = 0;
+    }
+
+    if (!isdir) {
+        a->size = in->size;
+        /* Blocks actually allocated, from the inode's own pointers rather than
+         * from the size: a file with a hole occupies fewer. Counting them is a
+         * walk, so it is bounded by what imap can address and stops at the
+         * first missing pointer exactly as inode_read does. */
+        uint32_t need = (in->size + BS - 1) / BS;
+        uint64_t got = 0;
+        for (uint32_t i = 0; i < need; i++) {
+            if (!imap(in, i)) break;
+            got++;
+        }
+        a->blocks = got * (BS / 512);
+    } else {
+        a->size = 0;                     /* the VFS fills the entry count */
+    }
+
+    /* Zero is "never stamped" (a pre-timestamp image), not 1970. Only claim
+     * VA_TIMES when there is really a time here. */
+    a->atime = in->atime; a->mtime = in->mtime; a->ctime = in->ctime;
+    if (in->mtime || in->ctime || in->atime) a->flags |= VA_TIMES;
+    return 0;
+}
+
+/* Install mode/uid/gid on the inode. One transaction, like every other metadata
+ * mutation in this file. ctime moves because the inode changed, which is what
+ * ctime is for; mtime does not, because the contents did not. */
+static int logitfs_setattr(const char *path, const struct vattr *a)
+{
+    if (!a) return -1;
+    uint32_t ino = resolve(path);
+    if (ino == NOINO) return -1;
+    struct dinode *in = iget(ino);
+    if (!in || in->type == T_FREE) return -1;
+
+    uint32_t old_mode = in->xmode, old_uid = in->uid, old_gid = in->gid;
+    int64_t  old_ct   = in->ctime;
+
+    in->xmode = LFS_MODE_SET | (a->mode & 0777);
+    in->uid   = a->uid;
+    in->gid   = a->gid;
+    itouch(in, TS_C);
+
+    tx_begin();
+    if (flush_inode(ino) || flush_bitmap()) {
+        log_abort();
+        in->xmode = old_mode; in->uid = old_uid; in->gid = old_gid; in->ctime = old_ct;
+        return -1;
+    }
+    if (log_commit()) {
+        /* The transaction did not reach media. Put the in-RAM inode back so it
+         * goes on agreeing with the disk -- the same unwind rule the rest of
+         * this file follows after a failed commit. */
+        in->xmode = old_mode; in->uid = old_uid; in->gid = old_gid; in->ctime = old_ct;
+        return -1;
+    }
+    return 0;
+}
+#endif /* !LOGITFS_NO_ATTR */
+
 static void logitfs_list(void)
 {
     int n = dir_count_live(sb.root_ino);
@@ -1271,4 +1391,15 @@ struct filesystem logitfs = {
     .del      = logitfs_delete,
     .mkdir    = logitfs_mkdir,
     .rename   = logitfs_rename,
+    /* BOTH, or neither: vfs.c treats half an implementation as none, because a
+     * getattr without a setattr is a permission model nobody can change. Under
+     * -DLOGITFS_NO_ATTR neither is registered and the VFS falls back to its RAM
+     * store -- that is the negative control for the durability claim (see
+     * `make test-statmeta-negctl`), and the point of it is that everything goes
+     * on WORKING: stat still returns a plausible mode, ls -l still looks right,
+     * and only a reboot can tell the difference. */
+#ifndef LOGITFS_NO_ATTR
+    .getattr  = logitfs_getattr,
+    .setattr  = logitfs_setattr,
+#endif
 };

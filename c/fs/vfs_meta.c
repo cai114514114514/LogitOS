@@ -24,9 +24,12 @@ static int m_eq(const char *a, const char *b)
 static void m_cpy(char *d, const char *s, int max)
 { int i = 0; for (; s && i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
 
+static struct uent { int pid; uint32_t mask; } umasks[32];
+
 void vmeta_reset(void)
 {
     for (int i = 0; i < VMETA_N; i++) recs[i].path[0] = 0;
+    for (int i = 0; i < 32; i++) umasks[i].pid = 0;
     next_group = 1;
 }
 
@@ -60,13 +63,26 @@ static struct vrec *intern(const char *path, int is_dir)
     return 0;                        /* store full: the caller reports ENOSPC */
 }
 
+void vattr_clear(struct vattr *a)
+{
+    if (!a) return;
+    a->mode = 0; a->uid = 0; a->gid = 0; a->type = VT_REG; a->nlink = 1;
+    a->flags = 0; a->size = 0; a->blocks = 0; a->ino = 0; a->dev = 0;
+    a->blksize = 0; a->atime = 0; a->mtime = 0; a->ctime = 0;
+}
+
 int vmeta_lookup(const char *path, struct vattr *a)
 {
     struct vrec *r = find(path);
     if (!r) return 0;
     if (a) {
+        vattr_clear(a);
         a->mode = r->mode; a->uid = r->uid; a->gid = r->gid; a->type = r->type;
         a->nlink = vmeta_nlink(path);
+        /* STORED but not DURABLE, and that is the whole point of having two
+         * bits: somebody really did set this mode, and it dies at the next
+         * reboot because these records are in RAM. */
+        a->flags = VA_STORED;
     }
     return 1;
 }
@@ -75,10 +91,40 @@ void vmeta_attr(const char *path, int is_dir, struct vattr *a)
 {
     if (!a) return;
     if (vmeta_lookup(path, a)) return;
+    vattr_clear(a);
     a->mode = is_dir ? 0755 : 0644;
     a->uid = 0; a->gid = 0;
     a->type = is_dir ? VT_DIR : VT_REG;
     a->nlink = 1;
+    /* No VA_STORED: this is the default, and a caller that cares must be able
+     * to see that nobody chose it. */
+}
+
+/* --- the creation mask ---------------------------------------------------
+ * Small and pid-keyed, like the credential store next door. A pid with no entry
+ * has the boot default 022, which produces exactly the 0644/0755 that every
+ * file got before this existed -- so turning umask on changes nothing until
+ * somebody sets one. */
+#define VUMASK_N 32
+
+uint32_t vmeta_umask(int pid, int set)
+{
+    uint32_t prev = 022;
+    struct uent *free_slot = 0, *e = 0;
+    for (int i = 0; i < VUMASK_N; i++) {
+        if (umasks[i].pid == pid && pid) { e = &umasks[i]; break; }
+        if (!umasks[i].pid && !free_slot) free_slot = &umasks[i];
+    }
+    if (e) prev = e->mask;
+    if (set < 0 || !pid) return prev;
+    if (!e) { if (!free_slot) return prev; e = free_slot; e->pid = pid; }
+    e->mask = (uint32_t)set & 0777;
+    return prev;
+}
+
+void vmeta_umask_forget(int pid)
+{
+    for (int i = 0; i < VUMASK_N; i++) if (umasks[i].pid == pid) umasks[i].pid = 0;
 }
 
 int vmeta_chmod(const char *path, int is_dir, uint32_t mode)

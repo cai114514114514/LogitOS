@@ -58,12 +58,39 @@
 #define MAY_WRITE 2
 #define MAY_READ  4
 
+/* vattr.flags -- WHERE EACH ANSWER CAME FROM.
+ *
+ * Without this a caller cannot tell a recorded 0600 from the 0644 that every
+ * file with no record reports, and a stat() built on top would report the
+ * default as though somebody had chosen it. VA_DURABLE is the second half of
+ * the same honesty: the VFS store above is RAM, so a backend that answers for
+ * itself off the medium has to be distinguishable from one that does not.
+ * These map 1:1 onto the LSTA_* bits in include/abi/logit_abi.h. */
+#define VA_STORED   0x0001   /* mode/uid/gid are a record, not the default */
+#define VA_DURABLE  0x0002   /* ...and it is on the medium, so it survives a boot */
+#define VA_TIMES    0x0004   /* atime/mtime/ctime came off the medium */
+#define VA_INO      0x0008   /* `ino` is a real inode number */
+
 struct vattr {
     uint32_t mode;      /* permission bits only, 0..0777 */
     uint32_t uid, gid;
     int      type;      /* VT_* */
     int      nlink;
+    /* --- the rest is filled by a backend getattr and by vfs_statx; a
+     * permission check reads none of it, so a backend that has none of these
+     * leaves them zero and nothing above breaks. --- */
+    uint32_t flags;     /* VA_* */
+    uint64_t size;      /* bytes (a directory: entry count) */
+    uint64_t blocks;    /* 512-byte units actually allocated */
+    uint64_t ino;
+    uint64_t dev;       /* mount index; (dev,ino) identifies a file */
+    uint32_t blksize;
+    int64_t  atime, mtime, ctime;   /* whole seconds, Unix epoch. 0 = unknown. */
 };
+
+/* Zero everything the permission path does not set, so that a caller reading
+ * `flags` sees "nothing known" rather than a stack pattern. */
+void vattr_clear(struct vattr *a);
 
 struct vcred {
     uint32_t uid, gid;
@@ -81,6 +108,12 @@ int  vmeta_lookup(const char *path, struct vattr *a);
 /* The attributes to USE for `path`: the record if there is one, otherwise the
  * default for `is_dir`. Always succeeds. */
 void vmeta_attr(const char *path, int is_dir, struct vattr *a);
+
+/* The per-process creation mask. `set` < 0 queries. Kept beside the modes it
+ * modifies rather than in struct proc, for the same reason the credentials are
+ * (vfs_cred.h): the enforcement point is here. */
+uint32_t vmeta_umask(int pid, int set);
+void     vmeta_umask_forget(int pid);
 
 int  vmeta_chmod(const char *path, int is_dir, uint32_t mode);
 int  vmeta_chown(const char *path, int is_dir, uint32_t uid, uint32_t gid);

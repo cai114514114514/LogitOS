@@ -85,8 +85,26 @@ struct lfs_dinode {                           /* 128 bytes on disk */
     int64_t  atime;                           /* last read */
     int64_t  mtime;                           /* last content change */
     int64_t  ctime;                           /* last inode change (incl. creation) */
-    uint8_t  reserved[LFS_INODE_SIZE - 8 - LFS_NDIRECT * 4 - 8 - 24];
+    /* Owner and mode, in the next slice of the same always-zeroed reserved area
+     * and compatible in exactly the same way. `xmode` is ZERO on every image
+     * mkfs has ever written and on every inode this filesystem allocated before
+     * these fields existed, which is why it needs a presence bit of its own:
+     * mode 0 is a legal mode (a file nobody may touch), so "0 means unset" would
+     * make it unrepresentable. LFS_MODE_SET is that bit.
+     *
+     * A caller reading xmode == 0 has learned something real -- nobody has ever
+     * set a mode on this file -- and must apply the default rather than report
+     * 0000. That distinction is carried all the way out to ring 3 as
+     * LSTA_MODE_STORED (include/abi/logit_abi.h): a stat that cannot tell a
+     * chosen 0644 from a defaulted one is a stat that lies quietly. */
+    uint32_t xmode;                           /* 0 = never set; else LFS_MODE_SET | 07777 */
+    uint32_t uid;
+    uint32_t gid;
+    uint8_t  reserved[LFS_INODE_SIZE - 8 - LFS_NDIRECT * 4 - 8 - 24 - 12];
 } __attribute__((packed));
+
+#define LFS_MODE_SET   0x8000u                /* xmode presence bit */
+#define LFS_MODE_BITS  07777u
 
 struct lfs_dirent {                           /* 64 bytes on disk */
     uint32_t ino;

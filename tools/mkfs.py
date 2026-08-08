@@ -64,6 +64,14 @@ OFF_DINDIRECT = OFF_INDIRECT + 4                 # 60
 OFF_ATIME = OFF_DINDIRECT + 4                    # 64
 OFF_MTIME = OFF_ATIME + 8                        # 72
 OFF_CTIME = OFF_MTIME + 8                        # 80
+# Owner and mode, the next slice of the same reserved area. mkfs leaves all
+# three ZERO on purpose: xmode == 0 means "nobody ever set a mode on this file",
+# which the kernel reports as the 0644/0755 default WITH the "not stored" bit
+# clear, rather than as a chosen mode of 0000. See c/fs/logitfs_fmt.h.
+OFF_XMODE = OFF_CTIME + 8                        # 88
+OFF_UID = OFF_XMODE + 4                          # 92
+OFF_GID = OFF_UID + 4                            # 96
+MODE_SET = 0x8000                                # xmode presence bit
 
 # The write-ahead log's commit record (c/fs/logitfs_fmt.h). mkfs only ever
 # writes an EMPTY log -- a fresh image has no transaction outstanding -- but the

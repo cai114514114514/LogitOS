@@ -59,6 +59,15 @@ int vfs_cred_get(int pid, struct vcred *c)
     return 0;
 }
 
+/* The pid the VFS keys per-process state on. Exists so that vfs.c -- which has
+ * no kernel headers on purpose -- can reach the process table through one
+ * declaration instead of including proc.h. */
+int vfs_cred_pid(void)
+{
+    struct proc *p = proc_current();
+    return p ? p->pid : 0;
+}
+
 void vfs_cred_current(struct vcred *c)
 {
     if (!c) return;

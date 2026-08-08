@@ -141,6 +141,37 @@ int  vfs_may_create(const char *path);
 int  vfs_stat(const char *path, struct vattr *a);
 int  vfs_lstat(const char *path, struct vattr *a);
 
+/* The same, plus size / blocks / inode / device / timestamps, and the VA_* bits
+ * saying which of them are real. vfs_stat answers only the permission question
+ * -- everything above it that wants to REPORT a file needs this one. `follow`
+ * picks stat vs lstat semantics. */
+int  vfs_statx(const char *path, struct vattr *a, int follow);
+
+/* One directory entry as getdents reports it. The name is 256 bytes because the
+ * ABI's is; what an individual backend can actually store is smaller (LogitFS
+ * dirents cap a name at 59 bytes + NUL), and a name that does not fit is
+ * rejected by the backend at create time rather than truncated here. */
+struct vdirent {
+    char     name[256];
+    int      type;              /* VT_REG / VT_DIR / VT_LNK */
+    uint64_t ino;               /* 0 when the backend has no inode numbers */
+    uint64_t size;
+};
+
+/* Fill up to `max` entries starting at *cursor, advancing it. Returns the count
+ * written (0 = end of directory) or a negative VFS_E*. The cursor is opaque to
+ * the caller; see struct logit_dirreq in include/abi/logit_abi.h for exactly
+ * what it does and does not promise across a concurrent modification. */
+int  vfs_getdents(const char *dir, int *cursor, struct vdirent *out, int max);
+
+/* The calling process's file-creation mask. `set` < 0 queries. Returns the
+ * PREVIOUS mask, which is what makes the save/restore idiom possible. */
+unsigned int vfs_umask(int set);
+
+/* The pid the credential and mask lookups key on. Implemented in vfs_cred.c;
+ * referenced WEAKLY from vfs.c so the host unit tests need not supply it. */
+int  vfs_cred_pid(void);
+
 int  vfs_chmod(const char *path, unsigned mode);
 int  vfs_chown(const char *path, unsigned uid, unsigned gid);
 
