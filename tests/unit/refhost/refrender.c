@@ -158,14 +158,21 @@ uint32_t *rr_render(const char *root, const char *rel, int w, int h,
                              &st->sheets, &st->sheets_missing);
         author_css[clen] = 0;
         /* browser.c expands custom properties before the cascade, because
-         * LibCSS resolves var() at parse time and would drop the declaration. */
-        int xl = css_expand_vars(author_css, clen, css_expanded, RR_CSSMAX);
-        if (xl > 0) { clen = xl; }
-        else { memcpy(css_expanded, author_css, (size_t)clen); }
+         * LibCSS resolves var() at parse time and would drop the declaration.
+         * The return is used UNCONDITIONALLY, exactly as browser.c:991 uses it. */
+        clen = css_expand_vars(author_css, clen, css_expanded, RR_CSSMAX);
+        if (clen < 0) clen = 0;
+    } else {
+        css_expanded[0] = 0;
     }
     st->css_bytes = clen;
 
-    css_apply(doc, nocss ? "" : css_expanded, clen);
+    /* browser.c:992-995, in order. css_extra_apply is NOT optional: it is where
+     * border-radius and the other paint-only properties reach cstyle, and a
+     * harness that skipped it would be measuring a browser that does not
+     * exist -- the exact failure 12d33d6 was written about, one line over. */
+    css_apply(doc, css_expanded, clen);
+    css_extra_apply(doc, css_expanded, clen);
     layout_page(doc, w);
     st->items = layout_count();
     st->doc_h = layout_height();
