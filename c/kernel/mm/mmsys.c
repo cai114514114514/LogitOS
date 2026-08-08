@@ -4,9 +4,22 @@
 #include "vma.h"
 #include "vmm.h"
 #include "pmm.h"
+#include "rmap.h"
+#include "swap.h"
+#include "reclaim.h"
 #include "sched.h"
 #include "usercopy.h"
+#include "kprintf.h"
 #include "logit_abi.h"
+
+/* Diagnostics selected by SYS_MEMINFO with a NULL buffer. Deliberately defined
+ * here and not in include/abi/logit_abi.h: that header is the cross-cutting
+ * kernel<->user ABI and belongs to everybody, whereas these four numbers are a
+ * private door into c/kernel/mm/ that only its own tests use. */
+#define MMCTL_REPORT   1
+#define MMCTL_AUDIT    2
+#define MMCTL_RECLAIM  3
+#define MMCTL_STATS    4
 
 /* The userland face of memory management: mmap, munmap, meminfo.
  *
@@ -72,7 +85,70 @@ long mm_syscall(long num, long a, long b, long c)
 
     case SYS_MEMINFO: {
         struct logit_meminfo mi;
-        if (!a) return -1;
+        /* ---------------------------------------------------------------
+         * a == 0 is the DIAGNOSTIC door, not an error.
+         *
+         * Reclaim's whole verification story is "assert that it actually ran,
+         * by a counter the kernel keeps" -- and a counter nothing can read from
+         * outside the kernel is not evidence. The on-device harness has to be
+         * able to ask, from the shell, on a running machine, and the only
+         * things it can run are /bin/sh and the programs on the disk.
+         *
+         * So a meminfo call with a NULL buffer selects a diagnostic with `b`
+         * instead of copying a struct out. It rides on a syscall number that
+         * already exists because adding one would mean editing
+         * c/kernel/exec/syscall.c, which this line does not own.
+         *
+         *     as -e 'print(syscall(94, 0, 1, 0))'   -- print the mm report
+         *
+         * EXPOSURE, stated rather than hidden: this is reachable from any ring-3
+         * process. MMCTL_AUDIT is O(total frames) and MMCTL_RECLAIM forces a
+         * sweep, so an unprivileged program can make the kernel do bounded work
+         * on demand. Neither can corrupt anything and neither can be made to run
+         * unboundedly, but both belong behind the credentials check the
+         * user/kernel-separation line is adding; when it lands, this is one
+         * `if` away from being root-only.
+         * --------------------------------------------------------------- */
+        if (!a) {
+            switch (b) {
+            case MMCTL_REPORT:
+                mm_report("on demand");
+                return 0;
+            case MMCTL_AUDIT: {
+                /* Both structures, re-derived and compared. Returns the number
+                 * of inconsistencies, so the harness asserts on 0 rather than
+                 * on the absence of a string in a log. */
+                int errs = pmm_audit() + rmap_audit();
+                kprintf("[mm] audit: %d inconsistencies, %d allocator bugs, "
+                        "%d reverse-map bugs, %d reclaim bugs\n",
+                        errs, (int)pmm_bugs(), (int)rmap_bugs(), (int)reclaim_bugs());
+                return errs;
+            }
+            case MMCTL_RECLAIM:
+                /* Force a pass and say how many frames came back. `c` is how
+                 * many are wanted; 0 asks for a nominal 64. */
+                return (long)reclaim_frames(c ? (uint64_t)c : 64);
+            case MMCTL_STATS: {
+                /* One machine-readable line. The harness greps this rather than
+                 * the prose report, so a change to the report's wording cannot
+                 * silently break the test. */
+                kprintf("[mmstat] free=%d total=%d evicted=%d dropped=%d swapped=%d "
+                        "swapin=%d swapfail=%d second=%d slots=%d pins=%d "
+                        "reserve_hits=%d allocfail=%d bugs=%d\n",
+                        (int)pmm_free_frames(), (int)pmm_total_frames(),
+                        (int)(reclaim_dropped() + reclaim_swapped()),
+                        (int)reclaim_dropped(), (int)reclaim_swapped(),
+                        (int)reclaim_swapins(), (int)reclaim_swapin_fail(),
+                        (int)reclaim_second_chance(), (int)swap_slots_used(),
+                        (int)pmm_pins_live(), (int)pmm_reserve_hits(),
+                        (int)pmm_alloc_failures(),
+                        (int)(pmm_bugs() + rmap_bugs() + reclaim_bugs()));
+                return 0;
+            }
+            default:
+                return -1;
+            }
+        }
         memset(&mi, 0, sizeof mi);
         mi.frame_bytes   = FRAME_SIZE;
         mi.frames_total  = pmm_total_frames();

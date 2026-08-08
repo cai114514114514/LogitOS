@@ -28,6 +28,48 @@ uint64_t pmm_alloc_contig(size_t n);
 int      pmm_ref(uint64_t phys_addr);
 unsigned pmm_refcount(uint64_t phys_addr);
 
+/* --------------------------------------------------------------- pinning --
+ * "This frame must not be taken away right now."
+ *
+ * Distinct from a reference, and the distinction is the whole point. A
+ * REFERENCE says the frame is in use and must not be freed; reclaim honours
+ * that by moving the page elsewhere and removing every reference itself. A PIN
+ * says the frame must not MOVE -- the kernel is holding a pointer into it, or a
+ * device is mid-transfer into it -- and reclaim honours it by leaving the frame
+ * alone entirely.
+ *
+ * Most of what must never be evicted needs no pin at all: it is not mapped into
+ * any user address space, so the reverse map has no entry for it and reclaim
+ * cannot reach it (see rmap.h). Pins are for the other case -- a genuine user
+ * page the kernel is busy with.
+ *
+ * A count, not a flag, so nesting works: two overlapping usercopy windows into
+ * the same page must not have the first unpin cancel the second's protection.
+ * Saturates at 255 rather than wrapping; a saturated pin is permanent, which
+ * costs a frame's reclaimability and never costs correctness. */
+void     pmm_pin(uint64_t phys_addr);
+void     pmm_unpin(uint64_t phys_addr);
+unsigned pmm_pincount(uint64_t phys_addr);
+uint64_t pmm_pins_live(void);     /* frames with a nonzero pin count */
+
+/* --------------------------------------------------------------- reserve --
+ * Frames that ordinary allocations may not have.
+ *
+ * A page fault that has to read a page back from swap needs a frame to put it
+ * in. If every frame is gone, the fault fails, the process dies, and the memory
+ * it would have released is never released -- a machine deep in a thrash can be
+ * unable to fault its way back out. So a small reserve is kept back from
+ * pmm_alloc() and handed out only through pmm_alloc_reserve(), which is called
+ * from exactly one place: the swap-in fault.
+ *
+ * Small on purpose. This is the escape hatch for the last few faults, not a
+ * pool to run from; 32 frames is 128 KiB out of 512 MiB. */
+uint64_t pmm_alloc_reserve(void);
+void     pmm_set_reserve(uint64_t frames);
+uint64_t pmm_reserve(void);
+uint64_t pmm_reserve_hits(void);   /* allocations that dipped into it */
+uint64_t pmm_alloc_failures(void); /* pmm_alloc() calls that returned 0 */
+
 /* --- accounting. Memory bugs are diagnosed with numbers or not at all. --- */
 uint64_t pmm_total_bytes(void);   /* usable RAM reported by firmware */
 uint64_t pmm_free_bytes(void);    /* currently free */

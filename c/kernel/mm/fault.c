@@ -4,8 +4,12 @@
 #include "vmm.h"
 #include "vma.h"
 #include "pmm.h"
+#include "rmap.h"
+#include "reclaim.h"
 #include "mmhost.h"
 #include "kprintf.h"
+
+void reclaim_late_init(void);
 #ifndef MM_HOSTTEST
 #include "kheap.h"
 #endif
@@ -62,7 +66,8 @@ static inline uint64_t fault_cyc(void)
 { uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
   return ((uint64_t)hi << 32) | lo; }
 #endif
-static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon;
+static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin;
+static uint64_t g_swapin;
 
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc);
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc)
@@ -82,7 +87,7 @@ uint64_t mm_fault_declined(void) { return g_declined; }
 
 /* ------------------------------------------------------- the decision --- */
 int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
-                      int pte_cow, int pte_user, int vma_prot)
+                      int pte_cow, int pte_user, int vma_prot, int pte_swap)
 {
     /* A reserved bit set in a page-table entry means the tables themselves are
      * malformed. That is a kernel bug and must never be "handled". */
@@ -95,6 +100,24 @@ int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
      * dereference fatal instead of quietly allocating a page at address 0. */
     if (cr2 < MM_USER_BASE || cr2 >= MM_USER_END)
         return MM_FAULT_NONE;
+
+    /* A swap entry, before anything else looks at the VMA.
+     *
+     * This entry was written by reclaim, so its presence is proof that the page
+     * is legitimate -- more proof than a VMA could offer, since the pages that
+     * most need to come back (an ELF image's text and data) never had a VMA in
+     * the first place. It is also checked before the anonymous case on purpose:
+     * a swap entry has P=0 and would otherwise be indistinguishable from an
+     * untouched mmap page and refilled with zeroes, which is not a crash but
+     * silent corruption of a running program.
+     *
+     * The error code must agree that the page is absent. If the CPU reports a
+     * protection violation (P=1) on an entry we believe is swapped, the tables
+     * and the hardware disagree and nothing here should act on either. */
+    if (pte_swap) {
+        if (err & PF_P) return MM_FAULT_NONE;
+        return MM_FAULT_SWAP;
+    }
 
     if (err & PF_P) {
         /* The page IS present: this is a permission violation. */
@@ -127,6 +150,8 @@ int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
 
 /* ------------------------------------------------------- acting on it --- */
 
+static uint64_t fault_frame(void);
+
 static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
 {
     uint64_t e = *pte;
@@ -150,30 +175,66 @@ static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
         *pte = (e | WRITABLE) & ~VMM_PTE_COW;
         g_cow_reuse++;
     } else {
-        uint64_t nf = pmm_alloc();
+        uint64_t nf = fault_frame();
         if (!nf)
-            return 0;               /* out of memory: decline. The process dies,
-                                     * the kernel does not. */
+            return 0;               /* out of memory even after a forced reclaim
+                                     * pass: decline. The process dies, the
+                                     * kernel does not. */
         memcpy(mm_p2v(nf), mm_p2v(old), 4096);
         *pte = nf | ((e & 0xFFF) & ~VMM_PTE_COW) | PRESENT | WRITABLE;
+        /* This PTE now points somewhere else, so the reverse map has to be told
+         * about BOTH ends of the move. Editing the PTE by hand here rather than
+         * going through vmm.c's set_leaf() is why: a page-fault handler wants
+         * the entry it already has a pointer to, not another four-level walk.
+         * The price is these two lines, and rmap_audit() is what proves they
+         * are not forgotten. Note (e & 0xFFF) carries VMM_PTE_ANON across, so a
+         * copy of an anonymous page is still reclaimable by the drop tier. */
+        rmap_remove(old, cr3, page);
+        rmap_add(nf, cr3, page);
         pmm_free(old);              /* drop THIS space's reference, no more */
         g_cow_copies++;
     }
     g_mm_cow_pages--;
     if (active) mm_invlpg(page);
-    (void)cr3;
     return 1;
+}
+
+/* A frame, or a real answer that there is none.
+ *
+ * pmm_alloc() consults reclaim through a watermark heuristic, and a heuristic
+ * is allowed to be wrong: it can be in a backoff, or the pressure can have
+ * arrived faster than the watermark noticed. An allocation that has actually
+ * FAILED is not a heuristic -- it is the fact the heuristic exists to predict.
+ * So the fault path asks once more, forcing a pass, before doing the one thing
+ * that cannot be undone.
+ *
+ * This matters because of what "return 0" means here: the process dies. Killing
+ * a program for want of a page while tens of thousands of reclaimable pages are
+ * sitting in memory is the exact failure this whole line was built to remove,
+ * and it is reachable through nothing more exotic than an unlucky moment. */
+static uint64_t fault_frame(void)
+{
+    uint64_t f = pmm_alloc();
+    if (f) return f;
+    if (reclaim_frames(64)) f = pmm_alloc();
+    return f;
 }
 
 static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active)
 {
-    uint64_t f = pmm_alloc();
+    uint64_t f = fault_frame();
     if (!f)
         return 0;
     memset(mm_p2v(f), 0, 4096);     /* anonymous memory reads as zero, always:
                                      * handing over a frame with the previous
                                      * owner's bytes in it is a disclosure bug */
-    vmm_map_page_in(cr3, page, f, VMM_USER | ((prot & VMA_WRITE) ? VMM_WRITABLE : 0));
+    /* VMM_PTE_ANON records that THIS function is what produces the page's
+     * contents. Reclaim's cheapest tier is allowed to throw such a page away
+     * and let this code make it again; without the mark it cannot tell a page
+     * whose contents are reproducible from one whose contents came from a file
+     * nothing re-reads. See vmm.h and reclaim.h. */
+    vmm_map_page_in(cr3, page, f,
+                    VMM_USER | VMM_PTE_ANON | ((prot & VMA_WRITE) ? VMM_WRITABLE : 0));
     if (active) mm_invlpg(page);
     g_anon++;
     return 1;
@@ -187,11 +248,12 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     int present = pte && (*pte & PRESENT);
     int cow     = pte && (*pte & VMM_PTE_COW);
     int user    = pte && (*pte & USER);
+    int swapped = pte && vmm_pte_is_swap(*pte);
     uint32_t prot = vma_prot_at(cr3, page);
     int active = ((mm_read_cr3() & ~(uint64_t)0xFFF) == (cr3 & ~(uint64_t)0xFFF));
 
     uint64_t t0 = fault_cyc();
-    switch (mm_fault_classify(va, err, present, cow, user, (int)prot)) {
+    switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped)) {
     case MM_FAULT_COW: {
         uint64_t before = g_cow_copies;
         if (do_cow(cr3, page, pte, active)) {
@@ -208,6 +270,19 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     case MM_FAULT_ANON:
         if (do_anon(cr3, page, prot, active)) { g_cyc_anon += fault_cyc() - t0; return 1; }
         break;
+    case MM_FAULT_SWAP:
+        /* THE ONE FAULT THAT GOES TO A DISK. Everything above resolves in
+         * microseconds out of memory; this one is milliseconds and can give up
+         * the CPU in the middle (see swap.c on which of its waits releases the
+         * big kernel lock and which does not). Timed separately for exactly
+         * that reason -- averaging a disk read into the copy-on-write numbers
+         * would make both meaningless. */
+        if (reclaim_swapin(cr3, page, pte, active)) {
+            g_swapin++;
+            g_cyc_swapin += fault_cyc() - t0;
+            return 1;
+        }
+        break;
     default:
         break;
     }
@@ -215,9 +290,18 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     return 0;
 }
 
+uint64_t mm_swapin_faults(void) { return g_swapin; }
+
 int mm_fault(uint64_t cr2, uint64_t err, uint64_t rip)
 {
     (void)rip;
+#ifndef MM_HOSTTEST
+    /* Bring reclaim up at the first fault taken FROM RING 3. See
+     * reclaim_late_init(): that is the one moment where user code was running,
+     * so no kernel operation is half-finished on this thread and the block
+     * layer swap_init() needs is enumerated and idle. */
+    if (err & PF_U) reclaim_late_init();
+#endif
     return mm_fault_in(mm_read_cr3() & ~(uint64_t)0xFFF, cr2, err);
 }
 
@@ -242,9 +326,11 @@ void mm_report(const char *tag)
             (int)g_mm_cow_pages, (int)g_cow_copies, (int)g_cow_reuse,
             (int)g_anon, (int)g_declined, vma_spaces_live());
     kprintf("[mm] %s: fault cost (kcycles total / cycles each): "
-            "cow-copy %d/%d, cow-reuse %d/%d, anon %d/%d\n",
+            "cow-copy %d/%d, cow-reuse %d/%d, anon %d/%d, swap-in %d/%d\n",
             tag ? tag : "-",
-            (int)(g_cyc_copy / 1000),  (int)(g_cow_copies ? g_cyc_copy / g_cow_copies : 0),
-            (int)(g_cyc_reuse / 1000), (int)(g_cow_reuse  ? g_cyc_reuse / g_cow_reuse : 0),
-            (int)(g_cyc_anon / 1000),  (int)(g_anon       ? g_cyc_anon / g_anon : 0));
+            (int)(g_cyc_copy / 1000),   (int)(g_cow_copies ? g_cyc_copy / g_cow_copies : 0),
+            (int)(g_cyc_reuse / 1000),  (int)(g_cow_reuse  ? g_cyc_reuse / g_cow_reuse : 0),
+            (int)(g_cyc_anon / 1000),   (int)(g_anon       ? g_cyc_anon / g_anon : 0),
+            (int)(g_cyc_swapin / 1000), (int)(g_swapin     ? g_cyc_swapin / g_swapin : 0));
+    reclaim_report(tag);
 }

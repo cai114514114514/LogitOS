@@ -386,6 +386,76 @@ reference **pictures**, not indices (weighted prediction puts one picture at
 several indices on purpose); and a weight of 128 is inferrable though not
 codable, so clamping weights to 127 silently darkens every frame.
 
+Memory reclaim + swap ✅ (`c/kernel/mm/{rmap,reclaim,swap}.c`): the kernel can now
+take a physical frame back from whoever has it, so running out of RAM stops being
+fatal. **Reclaim is the mechanism; swap is only a place to put things.** Nothing
+here is firefighting -- the full desktop peaks at 229 MiB of 511 and `pmm_audit()`
+is clean -- so the pressure has to be MANUFACTURED to test any of it, and the
+harness was built first.
+- **Who maps this frame** (`rmap.c`, the hard part). pmm's refcount says how many
+  leaf PTEs point at a frame, never which, and you cannot unmap a PTE you cannot
+  find. So: a chain per frame (head[] + a pre-allocated node pool, 12 bytes a
+  node, ~0.5% of RAM), maintained at the ONE place a leaf PTE changes
+  (`vmm.c set_leaf`, which `vmm_map_page`/`vmm_map_page_in`/`vmm_map_raw_in` all
+  funnel through) plus the copy-on-write copy in `fault.c`. The rule everything
+  rests on: **evict only if `rmap_count(f) == pmm_refcount(f)`**, nonzero and not
+  truncated -- the same number from two independently maintained structures, so a
+  bug in either costs reclaimability, never correctness. `rmap_audit()` checks it.
+- **That is also the pin discipline.** Page tables, kheap arenas, DMA rings and
+  the rmap's own tables have refcounts but no user PTE, so their rmap count is 0
+  and they fail the test structurally -- no list of exceptions to forget to
+  update. `pmm_pin/unpin` (a saturating count, nesting) covers the other case: a
+  real user page the kernel is touching right now.
+- **Two tiers, cheapest first.** TIER 1 drops a page and re-derives it on the next
+  fault, no device involved; TIER 2 writes it to a swap slot. NOTE, said plainly:
+  this kernel has **no file-backed user mapping** (mmap is anon-only, ELF images
+  are read eagerly into anon frames), so the classic "drop a clean page-cache
+  page" population does not exist. The equivalent that does is the **zero page** --
+  an anonymous page (`VMM_PTE_ANON`, bit 10) whose 4 KiB are currently zero,
+  re-derivable by `do_anon`. That is the population that matters most here:
+  browser.aex maps a 105.5 MiB `.bss` against a 12.7 MiB heap peak. Tier 1 tests
+  the CONTENTS, not the dirty bit, so a page the process zeroed also qualifies.
+- **Clock over physical frames**, not an active/inactive LRU: with no hardware
+  reference notification, a "recently used" list could only be built by the same
+  accessed-bit sampling the clock's sweep already is, so lists would add
+  bookkeeping without adding information. Sweeping physically (possible only
+  because the rmap exists) is right because the thing reclaimed is a frame.
+- **Swap PTE**: P=0, bit 1 = marker, bits 2-4 = saved W/COW/ANON, bits 12+ = slot,
+  bit 63 (NX) left in place. Slot numbers start at 1 so a zeroed PTE can never
+  read as a swap entry. `mm_fault_classify` checks it FIRST and independently of
+  the VMA -- an ELF text page has no VMA, and a swap entry falling through to the
+  anonymous case would be silently refilled with zeroes. Slots are refcounted
+  (a shared page evicts once); fork inherits swap entries; munmap/exit release
+  slots. Known cost: a shared page that round-trips comes back private.
+- **No allocation in the write-out path**, which is where naive swap deadlocks
+  under exactly the pressure it was built for: rmap nodes and the slot table are
+  taken from the PMM at init, `rmap_remove` returns nodes rather than taking
+  them, and the page is written straight out of its identity-mapped frame with no
+  bounce buffer. Asserted, not argued -- the host test fills memory completely and
+  requires reclaim to still make progress. Swap-IN does need one frame, hence
+  `pmm_alloc_reserve()` over a 32-frame reserve ordinary allocations cannot touch.
+- **The swap device** is chosen through blkdev.h only (no edits to `c/fs` or
+  `c/drivers/block`, both live): not the root, not a partition sharing its medium,
+  no LogitFS superblock, and **sector 0 blank or already ours**. Anything else is
+  refused out loud. Swap is never carried across a boot.
+- **Waiting**: the queue for the device uses `bkl_hlt_wait()`, which DROPS the BKL.
+  The single in-flight transfer still holds it, because every block driver here is
+  submit-and-poll inside one call; that cost is measured and printed
+  (`swap_bkl_worst()`) rather than assumed. Closing it needs
+  `submit`/`poll` on `struct blk_ops` -- an ask for the block line, not an edit.
+- Tests: `make test-mm` (host, adds `mm_rmap_test` + `mm_reclaim_test`; distinct
+  per-page patterns that catch wrong-slot AND wrong-offset, plus TWO negative
+  controls required to FAIL: `-DRECLAIM_NO_PIN_CHECK` evicts a pinned page,
+  `-DRECLAIM_NO_ZERO_CHECK` drops a page with data and it comes back zeroed).
+  On device: `make test-swap` boots the same kernel on a deliberately small
+  machine with a blank AHCI disk as swap and runs
+  `/usr/as/examples/mempress.as`, which mmaps more than exists, writes a per-page
+  pattern and reads it all back; `make test-swap-negctl` is the same with no swap
+  device and MUST fail. Kernel counters are readable from ring 3 via
+  `SYS_MEMINFO` with a NULL buffer (`c/kernel/mm/mmsys.c`, MMCTL_*) -- which is
+  how the harness asserts reclaim actually ran rather than asserting it did not
+  crash.
+
 ## Storage: the block layer and LogitFS
 
 **Status (verified 2026-08-08, all 12 targets below run green): this machine

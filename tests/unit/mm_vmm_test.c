@@ -32,6 +32,16 @@
 #include "mm.h"
 #include "kprintf.h"
 
+/* The classifier grew a seventh argument, `pte_swap`, when reclaim landed: a
+ * swapped-out page is not-present for the same reason an untouched mmap page
+ * is, and telling them apart is the difference between reading the page back
+ * and silently zeroing it. Every case in THIS file is a non-swap case, so it is
+ * wrapped rather than having ", 0" appended to forty call sites; the swap cases
+ * are enumerated in tests/unit/mm_reclaim_test.c, next to the code that makes
+ * the entries. */
+#define mm_fault_classify(cr2, err, p, cow, u, prot) \
+        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), 0)
+
 #define PRESENT  0x1
 #define WRITABLE 0x2
 #define USER     0x4

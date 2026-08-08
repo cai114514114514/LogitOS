@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "pmm.h"
+#include "rmap.h"
+#include "reclaim.h"
 #include "mmhost.h"
 #include "spinlock.h"
 #include "kprintf.h"
@@ -79,6 +81,17 @@ void *memset(void *dst, int value, size_t n);   /* lib/string.c */
 static uint8_t  *bitmap;
 static uint8_t  *poison_bm;      /* 1 = this free frame currently holds valid poison */
 static uint16_t *refcnt;
+static uint8_t  *pincnt;         /* "do not move this frame right now"; see pmm.h */
+static uint64_t  pins_live;      /* frames with pincnt > 0 */
+/* 128 frames = 512 KiB. Sized by what it is for: the swap-in fault, which needs
+ * one frame per page it brings back and runs in bursts when a process reads
+ * back a working set it has just been evicted out of. 32 was the first guess
+ * and was too small -- a read-back pass spent it in 32 faults and then started
+ * killing the process. It is still a cushion and not a supply (the fault path
+ * forces a reclaim pass when it empties, see reclaim_swapin), so there is
+ * nothing to gain by making it large: this is 0.1% of a 512 MiB machine. */
+static uint64_t  reserve_frames = 128;
+static uint64_t  reserve_hits, alloc_fails;
 static uint64_t total_frames;
 static uint64_t used_frames;     /* frames with refcount >= 1 */
 static uint64_t shared_frames;   /* frames with refcount >= 2 */
@@ -239,14 +252,17 @@ void pmm_init(uint64_t mb_info_addr)
     uint64_t base = (mm_kernel_end_phys() + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1);
     uint64_t bm_bytes = (((total_frames + 7) / 8) + 7) & ~(uint64_t)7;
     uint64_t rc_bytes = total_frames * sizeof(uint16_t);
+    uint64_t pin_bytes = (total_frames + 7) & ~(uint64_t)7;   /* one byte per frame */
 
     bitmap    = (uint8_t *)mm_p2v(base);
     poison_bm = (uint8_t *)mm_p2v(base + bm_bytes);
     refcnt    = (uint16_t *)mm_p2v(base + bm_bytes * 2);
-    mm_meta_bytes = bm_bytes * 2 + rc_bytes;
+    pincnt    = (uint8_t *)mm_p2v(base + bm_bytes * 2 + rc_bytes);
+    mm_meta_bytes = bm_bytes * 2 + rc_bytes + pin_bytes;
 
     memset(bitmap, 0xFF, bm_bytes);                  /* everything used... */
     memset(poison_bm, 0, bm_bytes);
+    memset(pincnt, 0, pin_bytes);
     used_frames = total_frames;
     shared_frames = pinned_frames = 0;
     refs_total = total_frames;
@@ -271,6 +287,13 @@ void pmm_init(uint64_t mb_info_addr)
     reserve(mb_info_addr, total_size);
 
     pmm_report("boot");
+
+    /* The reverse map's tables come out of the pool that was just built, while
+     * it is empty and a contiguous run of a few hundred frames is certain to be
+     * there. It has to be here rather than later for a reason that is easy to
+     * get wrong: reclaim must work when memory is exhausted, so every structure
+     * it needs has to exist before anything can exhaust it. */
+    rmap_init(total_frames);
 }
 
 /* --------------------------------------------------------- allocate/free -- */
@@ -344,13 +367,14 @@ static uint64_t take_frame(uint64_t cand)
     return cand * FRAME_SIZE;
 }
 
-uint64_t pmm_alloc(void)
+/* The allocator proper. `allow_reserve` is what separates an ordinary request
+ * from the swap-in fault's: see pmm.h on why the last few frames are kept back. */
+static uint64_t alloc_locked(int allow_reserve)
 {
-    if (total_frames == 0)
-        return 0;
-
     uint64_t ret = 0;
-    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+
+    if (!allow_reserve && total_frames - used_frames <= reserve_frames)
+        return 0;                     /* the reserve is not for ordinary callers */
 
     uint64_t start = alloc_hint;
     if (start >= total_frames)
@@ -393,14 +417,54 @@ uint64_t pmm_alloc(void)
             }
             alloc_hint = cand;
             ret = take_frame(cand);
-            goto out;
+            return ret;
         }
     }
 
     alloc_hint = 0;     /* wrap-around for the next attempt */
-out:
+    return ret;
+}
+
+/* THE PRESSURE POINT. Every frame in the system is handed out here, so this is
+ * where "we are running low" is noticed and where reclaim is given the chance
+ * to do something about it. The call is made BEFORE pmm_lock is taken -- a
+ * reclaim pass calls pmm_free() and pmm_refcount(), which take that lock, and a
+ * spinlock this kernel uses is not recursive. */
+uint64_t pmm_alloc(void)
+{
+    if (total_frames == 0)
+        return 0;
+
+    reclaim_on_alloc();
+
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    uint64_t ret = alloc_locked(0);
+    if (!ret) alloc_fails++;
     spin_unlock_irqrestore(&pmm_lock, fl);
     return ret;
+}
+
+/* The swap-in fault's allocation, and the only caller allowed past the reserve.
+ * Deliberately does NOT trigger a reclaim pass: this is called from inside the
+ * fault that reclaim's own eviction created, and the machine is better served
+ * by finishing that fault than by starting another sweep underneath it. */
+uint64_t pmm_alloc_reserve(void)
+{
+    if (total_frames == 0) return 0;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    uint64_t before = total_frames - used_frames;
+    uint64_t ret = alloc_locked(1);
+    if (ret && before <= reserve_frames) reserve_hits++;
+    if (!ret) alloc_fails++;
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return ret;
+}
+
+void pmm_set_reserve(uint64_t frames)
+{
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    reserve_frames = frames;
+    spin_unlock_irqrestore(&pmm_lock, fl);
 }
 
 uint64_t pmm_alloc_contig(size_t n)
@@ -503,6 +567,55 @@ unsigned pmm_refcount(uint64_t phys_addr)
     return r;
 }
 
+/* --------------------------------------------------------------- pinning --
+ * See pmm.h. A pin is checked by reclaim and by nothing else, so the cost of
+ * being wrong in the safe direction (an extra pin) is one frame that will not
+ * be evicted, and the cost of being wrong in the other direction is a page
+ * evicted out from under a kernel pointer. Hence the saturating count and the
+ * loud complaint on an unbalanced unpin. */
+void pmm_pin(uint64_t phys_addr)
+{
+    uint64_t f = phys_addr / FRAME_SIZE;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    if (f < total_frames && pincnt) {
+        if (pincnt[f] == 0) pins_live++;
+        if (pincnt[f] < 255) pincnt[f]++;
+    }
+    spin_unlock_irqrestore(&pmm_lock, fl);
+}
+
+void pmm_unpin(uint64_t phys_addr)
+{
+    uint64_t f = phys_addr / FRAME_SIZE;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    if (f < total_frames && pincnt) {
+        if (pincnt[f] == 0) {
+            spin_unlock_irqrestore(&pmm_lock, fl);
+            mm_bug("unpin of a frame that was not pinned", f);
+            return;
+        }
+        if (pincnt[f] == 255) {
+            /* Saturated: the count can no longer be trusted downwards, so the
+             * pin is permanent. One frame, deliberately, rather than an
+             * eviction while somebody still holds it. */
+            spin_unlock_irqrestore(&pmm_lock, fl);
+            return;
+        }
+        if (--pincnt[f] == 0) pins_live--;
+    }
+    spin_unlock_irqrestore(&pmm_lock, fl);
+}
+
+unsigned pmm_pincount(uint64_t phys_addr)
+{
+    uint64_t f = phys_addr / FRAME_SIZE;
+    unsigned r = 0;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    if (f < total_frames && pincnt) r = pincnt[f];
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return r;
+}
+
 void pmm_set_poison(int level)
 {
     int want = (level < 0) ? 0 : (level > 2 ? 2 : level);
@@ -541,6 +654,10 @@ PMM_STAT(pmm_shared_frames,  shared_frames)
 PMM_STAT(pmm_pinned_frames,  pinned_frames)
 PMM_STAT(pmm_refs_total,     refs_total)
 PMM_STAT(pmm_bugs,           bug_count)
+PMM_STAT(pmm_pins_live,      pins_live)
+PMM_STAT(pmm_reserve,        reserve_frames)
+PMM_STAT(pmm_reserve_hits,   reserve_hits)
+PMM_STAT(pmm_alloc_failures, alloc_fails)
 
 int pmm_audit(void)
 {
@@ -600,6 +717,10 @@ void pmm_report(const char *tag)
             (int)(total - used), (int)used, (int)shared,
             (int)refs, (int)(refs - used), (int)((refs - used) * FRAME_SIZE / 1024),
             (int)pinned, (int)bugs);
-    kprintf("[mm] %s: metadata %d KiB (bitmap + poison map + %d-byte refcounts), poison level %d\n",
+    kprintf("[mm] %s: metadata %d KiB (bitmap + poison map + %d-byte refcounts + pins), poison level %d\n",
             tag ? tag : "-", (int)(meta / 1024), (int)sizeof(uint16_t), plevel);
+    kprintf("[mm] %s: %d frames pinned against reclaim, %d reserve frames "
+            "(%d dips), %d allocations refused\n",
+            tag ? tag : "-", (int)pmm_pins_live(), (int)pmm_reserve(),
+            (int)pmm_reserve_hits(), (int)pmm_alloc_failures());
 }

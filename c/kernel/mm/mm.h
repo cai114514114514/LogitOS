@@ -77,9 +77,16 @@ enum mm_fault_kind {
     MM_FAULT_NONE = 0,      /* not ours: kill the process / panic, as today */
     MM_FAULT_COW,           /* a write to a copy-on-write page */
     MM_FAULT_ANON,          /* first touch of an anonymous (mmap) page */
+    MM_FAULT_SWAP,          /* the page is on the swap device; read it back */
 };
+/* `pte_swap` is 1 when the entry is a swap entry (see vmm.h). It is checked
+ * FIRST and independently of the VMA, because a swap entry is self-evidently
+ * ours -- the kernel wrote it -- and because pages that have no VMA at all (an
+ * ELF image's text, which elf_load maps directly) must still be able to come
+ * back. Getting this order wrong is silent data loss: a swapped page that falls
+ * through to the anonymous case is refilled with zeroes. */
 int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
-                      int pte_cow, int pte_user, int vma_prot);
+                      int pte_cow, int pte_user, int vma_prot, int pte_swap);
 
 void     mm_set_cow(int on);
 int      mm_cow_enabled(void);
@@ -89,6 +96,7 @@ uint64_t mm_cow_faults(void);      /* write faults resolved by copying */
 uint64_t mm_cow_reuse(void);       /* write faults resolved WITHOUT copying (sole owner) */
 uint64_t mm_anon_faults(void);     /* first-touch anonymous pages filled */
 uint64_t mm_fault_declined(void);  /* faults mm did not claim (genuine faults) */
+uint64_t mm_swapin_faults(void);   /* faults resolved by reading the swap device */
 uint64_t mm_cow_pages(void);       /* pages currently mapped copy-on-write */
 
 /* mm-internal: leaf PTEs currently carrying VMM_PTE_COW. Raised by the clone

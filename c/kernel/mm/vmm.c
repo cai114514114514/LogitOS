@@ -4,6 +4,8 @@
 #include "pmm.h"
 #include "mm.h"
 #include "vma.h"
+#include "rmap.h"
+#include "swap.h"
 #include "mmhost.h"
 #include "kprintf.h"
 
@@ -39,6 +41,49 @@ static uint64_t *next_table(uint64_t *table, int idx)
     return (uint64_t *)mm_p2v(table[idx] & ~(uint64_t)0xFFF);
 }
 
+/* THE ONE PLACE A LEAF PTE CHANGES.
+ *
+ * Everything that maps or unmaps a page in this kernel funnels through here, and
+ * that is what makes the reverse map (rmap.h) able to be right. A reverse map is
+ * only as good as its worst-maintained update site, so there is exactly one
+ * update site: if a PTE changes anywhere else, rmap_audit() catches it, and if
+ * it changes here, the bookkeeping is unavoidable.
+ *
+ * Three transitions are handled, in this order, because the old entry must be
+ * accounted for before it is overwritten:
+ *
+ *   old was a present user page  -> forget the mapping (the frame's REFERENCE is
+ *                                   the caller's business, exactly as before --
+ *                                   vmm_map_page over a live mapping leaked one
+ *                                   before this change and still does; what it
+ *                                   no longer does is leave a stale reverse-map
+ *                                   entry, which would be a real eviction bug
+ *                                   rather than a leak).
+ *   old was a swap entry         -> drop the slot's reference. Without this a
+ *                                   process that unmaps swapped-out memory
+ *                                   leaks a swap slot per page, which is a leak
+ *                                   nothing on the machine could see.
+ *   new is a present user page   -> record the mapping.
+ *
+ * `entry` is the COMPLETE new PTE value, not a frame plus flags, so a swap
+ * entry (present bit clear) can be installed through the same path as a normal
+ * mapping. */
+static void set_leaf(uint64_t cr3, uint64_t *pt, uint64_t virt, uint64_t entry)
+{
+    uint64_t *slotp = &pt[(virt >> 12) & 0x1FF];
+    uint64_t old = *slotp;
+
+    if ((old & (PRESENT | USER)) == (PRESENT | USER))
+        rmap_remove(old & ~(uint64_t)0xFFF, cr3, virt);
+    else if (vmm_pte_is_swap(old))
+        swap_slot_put(vmm_pte_swap_slot(old));
+
+    *slotp = entry;
+
+    if ((entry & (PRESENT | USER)) == (PRESENT | USER))
+        rmap_add(entry & ~(uint64_t)0xFFF, cr3, virt);
+}
+
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 {
     uint64_t cr3 = mm_read_cr3();
@@ -48,7 +93,7 @@ void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
 
-    pt[(virt >> 12) & 0x1FF] = (phys & ~(uint64_t)0xFFF) | flags | PRESENT;
+    set_leaf(cr3, pt, virt, (phys & ~(uint64_t)0xFFF) | flags | PRESENT);
     invlpg(virt);
 }
 
@@ -89,7 +134,82 @@ uint64_t vmm_kernel_cr3(void)
     return g_kernel_cr3 & ~(uint64_t)0xFFF;
 }
 
+/* ------------------------------------------------- WHO IS RUNNING WHAT --
+ *
+ * THE STALE-TLB PROBLEM, AND WHY RECLAIM CANNOT IGNORE IT.
+ *
+ * Everything that unmapped a page before this line ran either on the address
+ * space it was unmapping (invlpg is enough) or on a space whose threads had
+ * already left (vmm_free_space says so in as many words). Reclaim is the first
+ * thing in this kernel that takes a page away from a process that is RUNNING,
+ * on ANOTHER CORE, right now. Core 0 clears the PTE and frees the frame; core 1
+ * is in ring 3 with a TLB entry that still translates that address to it; the
+ * allocator hands the frame to somebody else; core 1 writes into it. Silent
+ * corruption, and the reclaim counters would look perfect.
+ *
+ * The obvious fix is a shootdown IPI, and it is exactly the thing that must not
+ * be done here: c/kernel/cpu/tlb.h states that tlb_flush_all() deadlocks if the
+ * caller holds the BKL, because a core spinning for the BKL does so with IF=0
+ * and can never acknowledge the IPI. Reclaim runs under the BKL.
+ *
+ * So instead of flushing other cores, reclaim simply does not touch what they
+ * are using. That needs one fact nothing exported: which address space each core
+ * currently has loaded. This is the right file to answer it -- after boot, every
+ * CR3 load in the kernel goes through vmm_switch() (sched.c's three, exec.c's
+ * pair, wm.c's launch), so keeping the answer up to date is four lines here
+ * rather than an accessor added to somebody else's scheduler.
+ *
+ * THE ORDER IS THE WHOLE CORRECTNESS ARGUMENT. A switch has to leave BOTH the
+ * space being left and the space being entered protected across the CR3 write,
+ * because in between, this core holds TLB entries for the old one and is about
+ * to hold them for the new:
+ *
+ *      prev = cur;  cur = next;      both are now published
+ *      write CR3                     the CPU drops every non-global TLB entry
+ *      prev = 0                      the old space is genuinely gone from here
+ *
+ * Publish the new one late and there is a window where another core evicts
+ * pages this core is about to cache; drop the old one early and there is a
+ * window where it evicts pages this core still has cached. Doing both around
+ * the write closes both. x86 stores are ordered, so the compiler barrier is all
+ * that is needed to keep the sequence intact. */
+#ifndef MM_HOSTTEST
+#include "percpu.h"
+static uint64_t g_cpu_cur[PERCPU_MAXCPU];
+static uint64_t g_cpu_prev[PERCPU_MAXCPU];
+
+void vmm_switch(uint64_t cr3)
+{
+    int i = this_cpu()->index;
+    if (i >= 0 && i < PERCPU_MAXCPU) {
+        g_cpu_prev[i] = g_cpu_cur[i];
+        g_cpu_cur[i]  = cr3 & ~(uint64_t)0xFFF;
+        __asm__ volatile ("" ::: "memory");
+        mm_write_cr3(cr3);
+        __asm__ volatile ("" ::: "memory");
+        g_cpu_prev[i] = 0;
+        return;
+    }
+    mm_write_cr3(cr3);
+}
+
+int vmm_space_busy_elsewhere(uint64_t cr3)
+{
+    uint64_t want = cr3 & ~(uint64_t)0xFFF;
+    if (!want) return 0;
+    int me = this_cpu()->index;
+    for (int i = 0; i < PERCPU_MAXCPU; i++) {
+        if (i == me) continue;          /* our own TLB is handled by invlpg */
+        if (g_cpu_cur[i] == want || g_cpu_prev[i] == want) return 1;
+    }
+    return 0;
+}
+#else
+/* The host tests are single-threaded: there is no other core to hold a stale
+ * translation, so nothing is ever busy elsewhere. */
 void vmm_switch(uint64_t cr3) { mm_write_cr3(cr3); }
+int  vmm_space_busy_elsewhere(uint64_t cr3) { (void)cr3; return 0; }
+#endif
 
 uint64_t vmm_new_space(void)
 {
@@ -121,8 +241,21 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
     uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
     uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
 
-    pt[(virt >> 12) & 0x1FF] = (phys & ~(uint64_t)0xFFF) | flags | PRESENT;
+    set_leaf(cr3, pt, virt, (phys & ~(uint64_t)0xFFF) | flags | PRESENT);
     /* No invlpg: this space is not active while being populated. */
+}
+
+/* Install a COMPLETE, not-present PTE (a swap entry) in `cr3`. The clone path
+ * needs it: a forked child inherits its parent's swapped-out pages as swap
+ * entries, and those have no frame to hand to vmm_map_page_in. */
+void vmm_map_raw_in(uint64_t cr3, uint64_t virt, uint64_t entry)
+{
+    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & ~(uint64_t)0xFFF);
+    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
+    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
+    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
+
+    set_leaf(cr3, pt, virt, entry);
 }
 
 /* Walk to the leaf PTE without allocating anything. NULL if any level is
@@ -204,9 +337,25 @@ int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
         uint64_t *spt = (uint64_t *)mm_p2v(spd[i] & ~(uint64_t)0xFFF);
         for (int j = 0; j < 512; j++) {
             uint64_t e = spt[j];
-            if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
             uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
                           ((uint64_t)i << 21) | ((uint64_t)j << 12);
+
+            /* A page the parent has swapped out. The child inherits the SLOT,
+             * not a frame: both PTEs point at the same bytes on the device and
+             * the slot's reference count says so. Whichever side faults first
+             * reads it back into a private frame (see swap.h -- the sharing is
+             * not restored). Missing this case would have the child inherit an
+             * empty address at that page, i.e. silently lose the parent's
+             * memory across a fork, which is precisely the kind of bug that
+             * only appears once swap is under real pressure. */
+            if (vmm_pte_is_swap(e)) {
+                swap_slot_ref(vmm_pte_swap_slot(e));
+                vmm_map_raw_in(dst_cr3, va, e);
+                g_clone_shared++;
+                continue;
+            }
+
+            if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
             uint64_t frame = e & ~(uint64_t)0xFFF;
 
             if (cow && pmm_ref(frame) == 0) {
@@ -263,9 +412,20 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
         uint64_t *pte = vmm_pte(cr3, a);
         if (!pte) continue;
         uint64_t e = *pte;
+        /* A swapped-out page still occupies something -- a slot rather than a
+         * frame -- so munmap has to release that too, or every unmap of
+         * swapped-out memory leaks swap capacity invisibly. */
+        if (vmm_pte_is_swap(e)) {
+            *pte = 0;
+            swap_slot_put(vmm_pte_swap_slot(e));
+            if (active) invlpg(a);
+            n++;
+            continue;
+        }
         if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
         if (e & VMM_PTE_COW) g_mm_cow_pages--;
         *pte = 0;
+        rmap_remove(e & ~(uint64_t)0xFFF, cr3, a);
         pmm_free(e & ~(uint64_t)0xFFF);
         if (active) invlpg(a);
         n++;
@@ -293,11 +453,22 @@ void vmm_free_user(uint64_t cr3)
     for (int i = 0; i < 512; i++) {
         if (!(pd[i] & PRESENT)) continue;
         uint64_t *pt = (uint64_t *)mm_p2v(pd[i] & ~(uint64_t)0xFFF);
-        for (int j = 0; j < 512; j++)
-            if ((pt[j] & (PRESENT | USER)) == (PRESENT | USER)) {
-                if (pt[j] & VMM_PTE_COW) g_mm_cow_pages--;
-                pmm_free(pt[j] & ~(uint64_t)0xFFF);
+        for (int j = 0; j < 512; j++) {
+            uint64_t e = pt[j];
+            uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
+                          ((uint64_t)i << 21) | ((uint64_t)j << 12);
+            if (vmm_pte_is_swap(e)) {
+                pt[j] = 0;
+                swap_slot_put(vmm_pte_swap_slot(e));   /* a dying process releases its swap */
+                continue;
             }
+            if ((e & (PRESENT | USER)) == (PRESENT | USER)) {
+                if (e & VMM_PTE_COW) g_mm_cow_pages--;
+                pt[j] = 0;
+                rmap_remove(e & ~(uint64_t)0xFFF, cr3, va);
+                pmm_free(e & ~(uint64_t)0xFFF);
+            }
+        }
         pmm_free(pd[i] & ~(uint64_t)0xFFF);     /* the PT frame */
     }
     pmm_free(pde & ~(uint64_t)0xFFF);           /* the PD frame */

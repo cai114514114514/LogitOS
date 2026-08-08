@@ -52,6 +52,18 @@ void mm_ok(int cond, const char *fmt, ...)
     va_end(ap);
 }
 
+void mm_eqf(long long got, long long want, const char *fmt, ...)
+{
+    mm_checks++;
+    if (got == want) return;
+    mm_fails++;
+    va_list ap; va_start(ap, fmt);
+    fputs("  FAIL: ", stdout);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf(": got %lld, want %lld\n", got, want);
+}
+
 void mm_eqi(long long got, long long want, const char *what)
 {
     mm_checks++;
@@ -116,8 +128,95 @@ uint64_t mm_sim_init(unsigned mib)
     return SIM_MB_INFO;
 }
 
+uint64_t mm_sim_kernel_space(void)
+{
+    uint64_t pml4 = pmm_alloc(), pdpt = pmm_alloc();
+    memset(mm_sim_ptr(pml4), 0, 4096);
+    memset(mm_sim_ptr(pdpt), 0, 4096);
+    ((uint64_t *)mm_sim_ptr(pml4))[0] = pdpt | 0x1 | 0x2 | 0x4;   /* PRESENT|W|USER */
+    mm_host_cr3 = pml4;
+    return pml4;
+}
+
 void mm_sim_done(void)
 {
     free(sim_mem);
     sim_mem = NULL;
+}
+
+/* ------------------------------------------------------------- swap device --
+ * A RAM-backed block device, sector-addressed exactly as the real one is, so
+ * c/kernel/mm/swap.c's slot arithmetic (header sectors, 8 sectors per slot) is
+ * the thing being tested rather than being stubbed out. */
+static uint8_t  *swap_mem;
+static uint64_t  swap_sectors;
+static int       swap_fail;
+static uint64_t  swap_nread, swap_nwrite;
+
+void mm_sim_swap(unsigned mib)
+{
+    mm_sim_swap_free();
+    if (!mib) return;
+    swap_sectors = (uint64_t)mib * 1024 * 1024 / 512;
+    swap_mem = malloc((size_t)(swap_sectors * 512));
+    if (!swap_mem) { fprintf(stderr, "sim: out of host memory for swap\n"); exit(2); }
+    /* Non-zero fill, for the same reason simulated RAM is: a page that reads
+     * back correctly must do so because it was written, not because both ends
+     * happened to be zero. */
+    memset(swap_mem, 0x5A, (size_t)(swap_sectors * 512));
+    swap_fail = 0;
+    swap_nread = swap_nwrite = 0;
+}
+
+void mm_sim_swap_free(void)
+{
+    free(swap_mem);
+    swap_mem = NULL;
+    swap_sectors = 0;
+}
+
+void     mm_sim_swap_fail(int on)   { swap_fail = on; }
+uint64_t mm_sim_swap_reads(void)    { return swap_nread; }
+uint64_t mm_sim_swap_writes(void)   { return swap_nwrite; }
+
+void *mm_sim_swap_slot_bytes(uint64_t slot)
+{
+    /* SWAP_HDR_SECTORS + (slot - 1) * SWAP_SECTORS, spelled out so this file
+     * does not have to include swap.h. */
+    if (!swap_mem || slot == 0) return NULL;
+    return swap_mem + (8 + (slot - 1) * 8) * 512;
+}
+
+/* The three entry points c/kernel/mm/swap.c declares under MM_HOSTTEST. */
+int swap_host_dev(uint64_t *nsectors, const char **name);
+int swap_host_read(uint64_t lba, uint32_t n, void *buf);
+int swap_host_write(uint64_t lba, uint32_t n, const void *buf);
+
+int swap_host_dev(uint64_t *nsectors, const char **name)
+{
+    if (!swap_mem) return 0;
+    *nsectors = swap_sectors;
+    *name = "simswap0";
+    return 1;
+}
+
+static int swap_bounds(uint64_t lba, uint32_t n)
+{
+    return swap_mem && n && lba < swap_sectors && (uint64_t)n <= swap_sectors - lba;
+}
+
+int swap_host_read(uint64_t lba, uint32_t n, void *buf)
+{
+    if (swap_fail || !swap_bounds(lba, n)) return -1;
+    memcpy(buf, swap_mem + lba * 512, (size_t)n * 512);
+    swap_nread++;
+    return 0;
+}
+
+int swap_host_write(uint64_t lba, uint32_t n, const void *buf)
+{
+    if (swap_fail || !swap_bounds(lba, n)) return -1;
+    memcpy(swap_mem + lba * 512, buf, (size_t)n * 512);
+    swap_nwrite++;
+    return 0;
 }
