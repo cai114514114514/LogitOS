@@ -391,3 +391,38 @@ _Static_assert(offsetof(struct logit_meminfo, mmap_reserved) == 96,
                "abi.as is stale: logit_meminfo.mmap_reserved moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_meminfo *)0)->mmap_reserved) == 8,
                "abi.as is stale: logit_meminfo.mmap_reserved changed width -- run tools/gen_abi.py --write");
+
+_Static_assert(sizeof(struct logit_setting) == 264,
+               "abi.as is stale: sizeof(struct logit_setting) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, key) == 0,
+               "abi.as is stale: logit_setting.key moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->key) == 48,
+               "abi.as is stale: logit_setting.key changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, label) == 48,
+               "abi.as is stale: logit_setting.label moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->label) == 40,
+               "abi.as is stale: logit_setting.label changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, value) == 88,
+               "abi.as is stale: logit_setting.value moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->value) == 80,
+               "abi.as is stale: logit_setting.value changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, dflt) == 168,
+               "abi.as is stale: logit_setting.dflt moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->dflt) == 80,
+               "abi.as is stale: logit_setting.dflt changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, type) == 248,
+               "abi.as is stale: logit_setting.type moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->type) == 4,
+               "abi.as is stale: logit_setting.type changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, group) == 252,
+               "abi.as is stale: logit_setting.group moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->group) == 4,
+               "abi.as is stale: logit_setting.group changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, lo) == 256,
+               "abi.as is stale: logit_setting.lo moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->lo) == 4,
+               "abi.as is stale: logit_setting.lo changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_setting, hi) == 260,
+               "abi.as is stale: logit_setting.hi moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_setting *)0)->hi) == 4,
+               "abi.as is stale: logit_setting.hi changed width -- run tools/gen_abi.py --write");

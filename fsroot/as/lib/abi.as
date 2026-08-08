@@ -142,6 +142,17 @@ Meminfo = layout("logit_meminfo", 104, [
     ["mmap_reserved", 96, 8, "u"]
 ])
 
+Setting = layout("logit_setting", 264, [
+    ["key", 0, 48, "s"],
+    ["label", 48, 40, "s"],
+    ["value", 88, 80, "s"],
+    ["dflt", 168, 80, "s"],
+    ["type", 248, 4, "i"],
+    ["group", 252, 4, "i"],
+    ["lo", 256, 4, "i"],
+    ["hi", 260, 4, "i"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):
