@@ -127,6 +127,11 @@
  * and bounds what a hostile server can make us buffer. */
 #define HSBUF         16384
 
+/* Largest NewSessionTicket identity we will store. Real ones: openssl ~200
+ * bytes, Google ~180, Cloudflare ~250, www.kimi.com 224. 512 accepts every one
+ * met so far and bounds what a hostile server can make us hold per host. */
+#define TICKET_BLOB_MAX 512
+
 struct aead {
     int alg;                                 /* AEAD_* */
     uint8_t key[32]; int keylen;
@@ -204,6 +209,16 @@ struct tls_sess {
     int     psk_offered, psk_accepted;
     int     psk_suite;                       /* the suite the ticket was issued under */
     uint8_t psk[HLEN];                       /* the resumption PSK we offered */
+    /* The ticket is COPIED into the session at arm time and REMOVED from the
+     * cache, because a TLS 1.3 ticket is single-use on most real servers. If
+     * the session only held a key into a shared cache, two connections opened
+     * at once would offer the same identity and the second would be refused --
+     * which is exactly what a connection pool does on every page load. Costs
+     * ~530 bytes per session (~8.5 KiB over 16) and that is the price of the
+     * pool resuming more than once. */
+    uint8_t  psk_id[TICKET_BLOB_MAX]; int psk_idlen;
+    uint32_t psk_age_add;                    /* obfuscation addend, from the ticket */
+    uint64_t psk_issued_ms;                  /* timer_ms() when it was received */
     uint8_t res_master[HLEN];                /* resumption_master_secret, once derived */
     int     res_valid;                       /* res_master holds a real secret */
 

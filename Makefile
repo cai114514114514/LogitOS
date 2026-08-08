@@ -216,7 +216,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 .PHONY: test-monitor test-monitor-negctl
@@ -908,6 +908,39 @@ test-p521: $(BUILD)
 test-p521-control: $(BUILD)
 	@TLS_INTEROP_BREAK=LOGIT_P521_BREAK_FLEN TLS_INTEROP_ONLY=p521 \
 	  bash tests/unit/run-tls-interop.sh
+
+# --- the ticket cache, at the unit level ------------------------------------
+# The interop suite CANNOT catch what this catches. Both bugs pinned here were
+# invisible to `openssl s_server` -- it resumes happily with an
+# obfuscated_ticket_age ten times too small, and it never issues enough tickets
+# at once for a one-per-host cache to matter. They showed up against a real
+# production server (www.kimi.com: eight tickets per handshake), where two of
+# three pooled connections were refused. The only signal interop gets is
+# "resumed or not", and a lenient server resumes either way -- so these are
+# asserted on the bytes we emit and on the state of the cache instead.
+PSK_TEST_SRC := tests/unit/tls_psk_test.c c/net/tls/tls_psk.c \
+                c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c
+PSK_TEST_INC := -Ic/crypto -Ic/net/tls -Ic/drivers/timer -Ic/kernel/core
+
+test-tls-psk: $(BUILD)
+	$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
+	  -o $(BUILD)/tls_psk_test $(PSK_TEST_SRC) $(PSK_TEST_INC)
+	$(BUILD)/tls_psk_test
+
+# Two controls, each restoring one of the two shipped bugs. Both must FAIL.
+#   LOGIT_PSK_BREAK_AGE_UNIT    read timer_ticks() as ms (10x too small)
+#   LOGIT_PSK_BREAK_SINGLE_USE  leave the offered ticket in the cache
+test-tls-psk-control: $(BUILD)
+	@for d in LOGIT_PSK_BREAK_AGE_UNIT LOGIT_PSK_BREAK_SINGLE_USE; do \
+	   $(CC) -O1 -g -w -D$$d -o $(BUILD)/tls_psk_ctl $(PSK_TEST_SRC) $(PSK_TEST_INC) || exit 1; \
+	   if $(BUILD)/tls_psk_ctl > $(BUILD)/tls_psk_ctl.log 2>&1; then \
+	     echo "CONTROL FAILED: $$d changed nothing -- these tests prove nothing"; \
+	     cat $(BUILD)/tls_psk_ctl.log; exit 1; \
+	   else \
+	     echo "ok   control $$d was detected"; \
+	   fi; \
+	 done
+	@echo "PASS: ticket-cache negative controls"
 
 # Randomized differential tests: a self-checked pure-Python reference
 # (tests/unit/crypto_diff_gen.py) emits ~127k random vectors; the C asserter

@@ -55,15 +55,33 @@ void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 int   memcmp(const void *, const void *, size_t);
 
-/* Eight tickets is sized to the connection pool above (16 TLS sessions) with
- * the observation that they are keyed by HOST, not by connection: a page pulls
- * sub-resources from a handful of origins, not from sixteen. Each entry is
- * ~800 bytes, so the whole cache is ~6 KiB of kernel BSS. */
-#define TICKET_MAX      8
-/* Real-world tickets: openssl issues ~200 bytes, Google ~180, Cloudflare ~250.
- * 512 accepts every one we have met and bounds what a hostile server can make
- * us store per host. */
-#define TICKET_BLOB_MAX 512
+/* A TLS 1.3 ticket is SINGLE-USE on most real servers, and servers issue them
+ * in batches precisely so a client can open several connections. www.kimi.com
+ * hands out eight per handshake. The first version of this cache kept ONE
+ * ticket per host -- it threw seven of those eight away and then offered the
+ * survivor to every connection in the pool, so the second and third connections
+ * of a page load were refused and fell back to a full handshake. That is what
+ * the field data showed, and it is why the cache is now a flat pool that holds
+ * several tickets per host and REMOVES one when it is offered.
+ *
+ * 16 entries at ~810 bytes is ~13 KiB of kernel BSS, sized to hold one server's
+ * batch for two origins at once. */
+#define TICKET_MAX      16
+
+/* The millisecond clock, in ONE place so the store side and the age side can
+ * never disagree about the unit -- which is a way to be wrong that produces a
+ * plausible-looking number rather than an obvious one.
+ *
+ * timer_ms() and not timer_ticks(): a tick is 1000/TIMER_HZ = 10 ms, and pit.h
+ * says outright that callers should ask rather than open-code that. Reading the
+ * tick as ms is what shipped first, and it understated every
+ * obfuscated_ticket_age by a factor of ten. */
+#ifdef LOGIT_PSK_BREAK_AGE_UNIT
+/* NEGATIVE CONTROL (test-tls-psk-control): the original mistake, restored. */
+#  define PSK_NOW_MS() timer_ticks()
+#else
+#  define PSK_NOW_MS() timer_ms()
+#endif
 
 struct tls_ticket {
     int      used;
@@ -75,7 +93,14 @@ struct tls_ticket {
     uint32_t lifetime;               /* seconds the server promises to honour it */
     uint32_t age_add;                /* obfuscation addend for the age, in ms */
     int64_t  issued;                 /* unix seconds at receipt, for expiry */
-    uint64_t issued_ms;              /* timer_ticks() at receipt, for the age */
+    /* timer_ms(), NOT timer_ticks(). The tick is 10 ms at TIMER_HZ=100, so the
+     * first version of this reported an obfuscated_ticket_age ten times too
+     * small -- pit.h warns about exactly this ("callers should ask rather than
+     * open-code 1000/TIMER_HZ"). RFC 8446 4.2.11.1 specifies milliseconds, and
+     * a server that range-checks the age against its own elapsed time sees a
+     * number that cannot be right. */
+    uint64_t issued_ms;              /* timer_ms() at receipt, for the age */
+    uint64_t seq;                    /* arrival order, so a batch is used FIFO */
 };
 
 static struct tls_ticket tickets[TICKET_MAX];
@@ -95,16 +120,18 @@ static void ticket_clear(struct tls_ticket *t) { crypto_wipe(t, sizeof *t); }
  * value is clamped rather than trusted. */
 #define TICKET_LIFETIME_MAX 604800
 
-static struct tls_ticket *ticket_slot(const char *host)
+static uint64_t ticket_seq;
+
+/* A free slot, or the least recently issued one. Tickets are NOT deduplicated
+ * by host any more -- see the note at TICKET_MAX: a batch of eight is eight
+ * separate single-use credentials, and collapsing them to one is throwing away
+ * seven resumptions. */
+static struct tls_ticket *ticket_slot(void)
 {
     struct tls_ticket *oldest = &tickets[0];
     for (int i = 0; i < TICKET_MAX; i++) {
-        /* One ticket per host: a fresh NewSessionTicket for a host we already
-         * have supersedes the old one. Keeping both would mean offering a
-         * stale identity first and eating a rejected binder. */
-        if (tickets[i].used && streq(tickets[i].host, host)) return &tickets[i];
         if (!tickets[i].used) return &tickets[i];
-        if (tickets[i].issued < oldest->issued) oldest = &tickets[i];
+        if (tickets[i].seq < oldest->seq) oldest = &tickets[i];
     }
     ticket_clear(oldest);                    /* evict the oldest, wiping its PSK */
     return oldest;
@@ -132,7 +159,7 @@ int tls_psk_store(const char *host, int suite, const uint8_t *res_master,
     if (suite != TLS_AES_128_GCM_SHA256 && suite != TLS_CHACHA20_POLY1305_SHA256)
         return -1;
 
-    struct tls_ticket *t = ticket_slot(host);
+    struct tls_ticket *t = ticket_slot();
     ticket_clear(t);
 
     int i = 0;
@@ -150,17 +177,22 @@ int tls_psk_store(const char *host, int suite, const uint8_t *res_master,
     t->lifetime = lifetime;
     t->age_add  = age_add;
     t->issued   = now;
-    t->issued_ms = timer_ticks();
+    t->issued_ms = PSK_NOW_MS();             /* ms, not ticks -- see PSK_NOW_MS */
+    t->seq      = ++ticket_seq;
     t->used     = 1;
-    kprintf("[tls] ticket stored for %s (%d bytes, lifetime %us)\n",
-            t->host, bloblen, lifetime);
+    kprintf("[tls] ticket stored for %s (%d bytes, lifetime %us, %d cached)\n",
+            t->host, bloblen, lifetime, tls_psk_count());
     return 0;
 }
 
-/* The live ticket for `host`, or NULL. Expiry is checked against the caller's
- * clock: an expired ticket is dropped here rather than offered and rejected. */
+/* The oldest live ticket for `host`, or NULL. Expired ones are dropped as they
+ * are passed rather than offered and refused.
+ *
+ * FIFO within a host: a batch is used in the order the server issued it, which
+ * is the order its own replay window expects. */
 static struct tls_ticket *ticket_find(const char *host, int64_t now)
 {
+    struct tls_ticket *best = 0;
     for (int i = 0; i < TICKET_MAX; i++) {
         struct tls_ticket *t = &tickets[i];
         if (!t->used || !streq(t->host, host)) continue;
@@ -168,18 +200,25 @@ static struct tls_ticket *ticket_find(const char *host, int64_t now)
          * source, and it can be corrected under us); treat it as expired
          * rather than computing a huge negative age. */
         if (now < t->issued || now - t->issued >= (int64_t)t->lifetime) {
-            kprintf("[tls] ticket for %s expired -- full handshake\n", t->host);
+            kprintf("[tls] ticket for %s expired -- discarded\n", t->host);
             ticket_clear(t);
-            return 0;
+            continue;
         }
-        return t;
+        if (!best || t->seq < best->seq) best = t;
     }
-    return 0;
+    return best;
 }
 
-/* Drop the ticket for `host`. Called when a server REJECTS our binder: the
- * ticket is dead (usually the server rotated its STEK) and re-offering it on
- * the next connection would cost another rejected binder every time. */
+/* Drop EVERY ticket for `host`. Called when a server refuses the identity we
+ * offered.
+ *
+ * Dropping the whole batch is only correct because arm() consumes: the ticket
+ * we offered is already gone, so a refusal can no longer mean "you reused one"
+ * -- it means the server will not resume us at all (rotated STEK, policy
+ * change, ticket already redeemed elsewhere). In that state the other tickets
+ * in the batch are dead too, and re-offering them costs one rejected binder
+ * each. Before arm() consumed, this same line was throwing away seven live
+ * tickets every time one got double-offered. */
 void tls_psk_forget(const char *host)
 {
     for (int i = 0; i < TICKET_MAX; i++)
@@ -203,16 +242,40 @@ void tls_psk_clear_all(void)
 
 static int put_u16(uint8_t *p, int v) { p[0]=(uint8_t)(v>>8); p[1]=(uint8_t)v; return 2; }
 
-/* Load the session's PSK from the cache, if we hold a live ticket for its
- * host. Returns 1 if s->psk is now armed and the extensions should be built,
- * 0 for a full handshake. */
+/* Take a ticket for this session's host and CONSUME it -- the whole identity is
+ * copied into the session and the cache entry is wiped. Returns 1 if the
+ * session is armed, 0 for a full handshake.
+ *
+ * Consuming rather than borrowing is the fix the field data asked for. A TLS
+ * 1.3 ticket is single-use on most production servers; leaving it in the cache
+ * meant that two connections opened at once -- i.e. what a connection pool does
+ * on every page load -- offered the SAME identity, and the server refused the
+ * second. Against www.kimi.com that was two of three connections falling back
+ * to a full handshake while seven perfectly good tickets sat discarded.
+ *
+ * The cost of consuming is that a handshake which fails for some unrelated
+ * reason burns the ticket. That is the right trade: a ticket is cheap and the
+ * server just issued eight of them, whereas re-offering a used one is a
+ * guaranteed rejected binder. */
 int tls_psk_arm(struct tls_sess *s)
 {
     struct tls_ticket *t = ticket_find(s->host, s->now);
     if (!t) { s->psk_offered = 0; return 0; }
     memcpy(s->psk, t->psk, HLEN);
-    s->psk_suite = t->suite;
-    s->psk_offered = 1;
+    memcpy(s->psk_id, t->blob, (size_t)t->bloblen);
+    s->psk_idlen     = t->bloblen;
+    s->psk_suite     = t->suite;
+    s->psk_age_add   = t->age_add;
+    s->psk_issued_ms = t->issued_ms;
+    s->psk_offered   = 1;
+#ifndef LOGIT_PSK_BREAK_SINGLE_USE
+    ticket_clear(t);                         /* single-use: nobody else gets it */
+#else
+    /* NEGATIVE CONTROL (test-tls-psk-control): leave the ticket in the cache,
+     * which is what the first version did. Everything still "works" against a
+     * lenient server; against a single-use one, every connection after the
+     * first is refused. */
+#endif
     return 1;
 }
 
@@ -242,12 +305,14 @@ int tls_psk_modes_ext(uint8_t *p, int max)
 int tls_psk_ext(struct tls_sess *s, uint8_t *p, int max,
                 int *trunc_out, int *binder_out)
 {
-    struct tls_ticket *t = ticket_find(s->host, s->now);
-    if (!t) return -1;
+    /* Built from the session's own copy, taken by tls_psk_arm(). There is no
+     * cache lookup here on purpose: arm() consumed the entry, and a second
+     * lookup is how the same identity ends up on two connections. */
+    if (!s->psk_offered || s->psk_idlen <= 0) return -1;
 
     /* ext hdr(4) + identities_len(2) + id_len(2) + blob + age(4)
      *            + binders_len(2) + binder_len(1) + binder(32) */
-    int need = 4 + 2 + 2 + t->bloblen + 4 + 2 + 1 + HLEN;
+    int need = 4 + 2 + 2 + s->psk_idlen + 4 + 2 + 1 + HLEN;
     if (max < need) return -1;
 
     int n = 0;
@@ -255,18 +320,23 @@ int tls_psk_ext(struct tls_sess *s, uint8_t *p, int max,
     n += put_u16(p + n, need - 4);
 
     /* --- identities --- */
-    n += put_u16(p + n, 2 + t->bloblen + 4);          /* identities list length */
-    n += put_u16(p + n, t->bloblen);
-    memcpy(p + n, t->blob, (size_t)t->bloblen); n += t->bloblen;
+    n += put_u16(p + n, 2 + s->psk_idlen + 4);        /* identities list length */
+    n += put_u16(p + n, s->psk_idlen);
+    memcpy(p + n, s->psk_id, (size_t)s->psk_idlen); n += s->psk_idlen;
 
     /* obfuscated_ticket_age (RFC 8446 §4.2.11.1): the age of the ticket in
      * MILLISECONDS plus the server's age_add, modulo 2^32. The server uses it
      * to bound replay; the addend stops a passive observer correlating two
      * connections by their ticket age. Wrapping is not an error here -- the
-     * arithmetic is specified modulo 2^32, which is what uint32_t does. */
-    uint64_t now_ms = timer_ticks();
-    uint32_t age_ms = (uint32_t)(now_ms >= t->issued_ms ? now_ms - t->issued_ms : 0);
-    uint32_t obf = age_ms + t->age_add;
+     * arithmetic is specified modulo 2^32, which is what uint32_t does.
+     *
+     * timer_ms(), NOT timer_ticks(): a tick is 10 ms at TIMER_HZ=100, so using
+     * the raw tick made every age we ever sent ten times too small. It is the
+     * exact mistake pit.h warns callers about, and it is invisible from our
+     * side -- the only symptom is a server declining the ticket. */
+    uint64_t now_ms = PSK_NOW_MS();
+    uint32_t age_ms = (uint32_t)(now_ms >= s->psk_issued_ms ? now_ms - s->psk_issued_ms : 0);
+    uint32_t obf = age_ms + s->psk_age_add;
     p[n++] = (uint8_t)(obf >> 24); p[n++] = (uint8_t)(obf >> 16);
     p[n++] = (uint8_t)(obf >> 8);  p[n++] = (uint8_t)obf;
 

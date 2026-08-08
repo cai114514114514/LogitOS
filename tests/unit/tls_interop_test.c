@@ -58,6 +58,13 @@ uint64_t timer_ticks(void)
     return (uint64_t)ts.tv_sec * 100u + (uint64_t)(ts.tv_nsec / 10000000);
 }
 
+/* The same clock in MILLISECONDS, which is what pit.c provides and what the
+ * ticket cache uses for obfuscated_ticket_age. Deriving it from timer_ticks()
+ * rather than from the raw clock keeps the host's 10 ms granularity identical
+ * to the target's, so an age computed here means the same thing it will mean
+ * on the machine. */
+uint64_t timer_ms(void) { return timer_ticks() * 10u; }
+
 void net_poll(void) { }
 void net_idle(void)
 {
