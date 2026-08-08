@@ -1376,7 +1376,7 @@ static void distribute_extra_space(struct track *t, int nt, const int *gaps,
                                    int beyond, int flex_prop)
 {
     int i, k, x;
-    (void)beyond; (void)flex_prop;
+    (void)beyond; (void)flex_prop; (void)dist_flex;   /* unused in this build */
     for (x = 0; x < nt; x++) t[x].planned = 0;
     for (k = 0; k < nit; k++) {
         long long sum = span_gap(gaps, nt, it[k].start, it[k].span);
