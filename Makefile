@@ -196,7 +196,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 
@@ -1333,6 +1333,18 @@ test-bulkread-negctl:
 
 test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format \
               test-bulkread test-bulkread-negctl
+
+# The durability harnesses as ONE name. Each of these was written as its own
+# target with a comment explaining that it is slow and therefore belongs to no
+# suite -- which is how a durability guarantee ends up never executed. They are
+# slow (real QEMU boots, no -snapshot, tens of minutes all told) and that is a
+# reason to run them deliberately, not a reason for there to be no way to run
+# them all. `make test-fs` is host + boot, i.e. the whole answer to "does the
+# disk keep what it is given".
+test-fs-boot: test-fsmount test-durability test-fscrash test-fsreplay \
+              test-hugefile test-barrier
+
+test-fs: test-fs-host test-fs-boot
 
 # Every mount now runs a read-only fsck, so this boots twice WITHOUT -snapshot
 # and demands the kernel's own checker say "clean" both times -- once on the

@@ -105,13 +105,8 @@ Key notes:
 - `vmm_map_page` does a real 4-level walk; maps the high-MMIO framebuffer and
   user pages. Intermediate table entries carry USER; leaf PTE flags protect
   kernel pages. User images link at 1 GiB (above the identity huge-page region).
-- Disk: QEMU `-drive ...,if=ide` primary master; `drivers/ata.c` (PIO
-  read+write) + `fs/logitfs.c` + `fs/vfs.c`. LogitFS is a **hierarchical,
-  read-write inode FS** (on-disk v3, 4 KiB blocks: superblock, free-block
-  bitmap, inode table with direct[12]+single-indirect, directories = inodes of
-  dirents). Subdirectories + files up to ~4 MiB; `vfs_*` are path-based. Build
-  the image with `tools/mkfs.py` (Makefile `$(DISK)` packs `fsroot/*`, a seeded
-  `/docs/`, and each app's `.aex` at the root).
+- Disk / filesystem: see the **Storage** section below. (This bullet used to
+  describe an ATA-only, v3, no-journal LogitFS; all three are out of date.)
 - Userland: `kernel/gdt.c` (TSS rsp0), `boot/enter_user.asm`, syscalls via
   int 0x80 in `kernel/syscall.c`; `user/` builds the ring-3 ELF.
 - M8 window system: `tools/genfont.py` -> `include/font8x16.h` (committed, no PIL
@@ -311,11 +306,12 @@ kernel low memory. `wm_launch` gives every GUI app fd 0/1/2 = tty so an app's
 `pipe()`s get fds >=3 (else they collide with dup2 targets 0/1/2). **ATA made
 robust**: under `-smp` TCG the AP framebuffer-present contends the device lock and
 intermittently delayed IDE PIO past the old bounded poll -> nondeterministic
-"file not found"; `drivers/block/ata.c` now retries the command 8x. Known-open
-logitfs issues (separate): cross-boot write durability (corrupts after repeated
-non-snapshot boots; use `-snapshot`) and under-enumeration of runtime-`mkdir`'d
-dirs. `tests/qmp/qmp_term.py` drives the GUI terminal; QMP key injection must be slow
-(PS/2 1-byte buffer).
+"file not found"; `drivers/block/ata.c` now retries the command 8x.
+**The two logitfs issues this paragraph used to list as open are both CLOSED**
+(the "corrupts after repeated non-snapshot boots; use `-snapshot`" line was
+still here on 2026-08-08 and was wrong by then -- see Storage below for what
+fixed it and what now proves it). `tests/qmp/qmp_term.py` drives the GUI
+terminal; QMP key injection must be slow (PS/2 1-byte buffer).
 
 M19 virtio ✅ (the "VGA is too primitive" follow-up): a modern (virtio 1.0)
 paravirtual device stack in `c/drivers/virtio/` replacing the legacy devices.
@@ -389,6 +385,105 @@ coded per partition but read back per 8x8 quadrant; deblocking compares
 reference **pictures**, not indices (weighted prediction puts one picture at
 several indices on purpose); and a weight of 128 is inferrable though not
 codable, so clamping weights to 127 silently darkens every frame.
+
+## Storage: the block layer and LogitFS
+
+**Status (verified 2026-08-08, all 12 targets below run green): this machine
+keeps a file across a reboot.** The old "corrupts after repeated non-snapshot
+boots; use `-snapshot`" note was true of v3 and is not true now. Do not design
+around it, and do not add `-snapshot` to a harness to work around a write.
+
+**Block layer** (`c/drivers/block/`). `blkdev.c` is a multi-device table, not a
+single disk: **virtio-blk** (preferred), **AHCI/SATA**, **NVMe**, and ATA PIO as
+the fallback, plus `part.c` for MBR/GPT. `blk_flush()` is a real **write
+barrier** on every backend that can reorder (virtio-blk `VIRTIO_BLK_T_FLUSH`,
+NVMe opcode 0x00; ATA is a no-op because `ata_write` already flushes per write).
+`blk_flush_count()` exposes barriers-issued-since-boot so a test can *count*
+them instead of reading the source. QEMU line: `-device virtio-blk-pci`.
+
+**LogitFS on-disk v4** (`c/fs/logitfs_fmt.h` is the single definition site;
+`tools/mkfs.py` mirrors it in Python and `test-fs-format` asserts every offset
+against a real image). 4 KiB blocks, 64 MiB image (16384 blocks): superblock,
+free-block bitmap, inode table, **write-ahead log**, data. Inodes are 128 B with
+`direct[12]` + single-indirect + **double-indirect** (so files well past the
+~4.1 MiB single-indirect ceiling; `test-hugefile` drives 4.4 MB / 1075 blocks).
+atime/mtime/ctime live in what used to be `reserved`, so it is a compatible
+extension, not a format bump. **Block 0 is never rewritten at runtime** — which
+is why the superblock needs no checksum.
+
+**The journal is metadata-only + ordered data (ext4 `data=ordered`)** — say this
+out loud, because "it has a journal" is not the same claim. Bitmap blocks, the
+inode table, indirect/double-indirect pointer blocks, and **directory data
+blocks** (a dirent can name an inode created in the same op) are staged into the
+log and installed only after the commit record is on media. Ordinary **file data
+blocks are written straight to their final location**, always before the metadata
+pointing at them commits. That is sound here only because of `bfree()`: frees are
+**deferred to commit**, so the allocator cannot hand a block back to the very
+operation that released it and overwrite live data in place before the metadata
+that would roll back. (That was a real bug, found by the crash sweep, fixed in
+`d9dccbf`.) Consequence to know: an *overwrite* interrupted mid-flight can leave
+that file's old content, not a mixture — but LogitFS rewrites a whole file per
+write, so there is no partial-append case.
+
+**The commit record self-verifies.** The log header carries `hcrc` (CRC-32 over
+the header block — rejects a torn header, the classic truncated-final-record)
+and `bcrc` (CRC-32 over exactly the *n* body blocks it describes — rejects a
+**stale** header standing over a newer transaction's bodies, which was corruption
+*caused by recovery* on a filesystem that never crashed). Three barriers, each
+with a distinct failure mode if removed, are documented in full above
+`log_commit()` in `c/fs/logitfs.c` — **read that comment before touching this
+file**. B1 bodies+data before the record, B2 record before checkpoint, B3
+checkpoint before the header clear. `test-barrier` observes exactly 3 per file
+write, from `blk_flush_count()`.
+
+**Buffer cache** (`bcache.c`): reads are served without a device round trip,
+writes are deferred and dirty-tracked, an evicted dirty buffer is *written*, and
+`bcache_sync()` (write everything dirty, then barrier) is the filesystem's only
+ordering point. Correctness never comes from a write being withheld — early
+writeback only ever moves a block onto media *sooner*, which every case in the
+invariant already covers. Reads coalesce: a 900-block cold read costs **10**
+device commands, not 902 (`f8d2ca4`; `test-bulkread` bounds it at 14 and
+`test-bulkread-negctl` proves the old path cannot meet it).
+
+**fsck** (`fsck.c`) both detects *and* repairs, but its rule is "fix only what
+has ONE correct answer": a block claimed by two inodes is **refused**, whole,
+because both fixes destroy a file and nothing on the disk says which. A
+**read-only** fsck runs at **every mount** — so every boot harness in the tree,
+including ones written for something else entirely, now asserts the bitmap agrees
+with the inodes and the directory tree is a tree. A mount-time finding never
+fails the mount (a damaged filesystem is still the best one available; refusing
+to boot over a leaked block is a worse trade). Replay lives in `fsck.c` and is
+called by both fsck and `logitfs_mount`, so there is exactly one copy of the
+replay rules.
+
+**Around it**: `vfs.c` + `vfs_path.c` (resolution as its own host-testable TU),
+`vfs_meta.c` (mode/owner/links/symlink targets), `vfs_cred.c` (process
+credentials, keyed by pid until `proc.c`'s owner takes them), `vfsctl.c`
+(`/dev/vfsctl`, `/dev/vfsmounts`, `/dev/vfsmeta` — control as synthetic files so
+an unprivileged shell can be refused for real), `ramfs.c` (second mount, no
+device), `lfsro.c` (instance-aware read-only v4 reader — `logitfs.c` is a
+singleton and cannot be two), `fsbench.c` (`/dev/fsbench`, the storage
+stopwatch). **Caveat worth knowing: `vfs_meta`'s records are in RAM and do NOT
+survive a reboot.** File *contents* are durable; modes and owners are not, until
+logitfs implements getattr/setattr (two function pointers, no other change).
+
+**Tests — and these are not decorative; all 12 were run green on 2026-08-08.**
+Host (`make test-fs-host`, seconds, uses a simulated device whose defining
+feature is a *volatile write cache* so barriers are not no-ops):
+`test-fs-cache` 29 · `test-fs-journal` 48 · `test-fs-crash` **1744** ·
+`test-fsck` 167 · `test-fs-format` 25 · `test-bulkread` 34 + its negative
+control. `test-fs-crash` is the one to know about: it cuts power at **every
+device write** of write/mkdir/delete/rename/overwrite × 3 loss patterns, and
+after every cut demands mountable, fsck-clean, bystanders byte-for-byte, victim
+whole-or-absent, no block handed out twice.
+Boot (minutes each, real QEMU, **no `-snapshot`** — that is the point):
+`test-fsmount` (2 boots, kernel's own fsck clean both) · `test-durability`
+(**5 boots, 3 files byte-for-byte, 2 rounds of churn**) · `test-fscrash`
+(4 SIGKILLs; log replay witnessed in 2/4) · `test-fsreplay` (a hand-sealed
+uninstalled transaction, replayed deterministically) · `test-hugefile` ·
+`test-barrier`. **Byte-for-byte, never a length check** — a filesystem that
+hands one block to two files produces a file of exactly the right length holding
+someone else's data, which a length check cannot see.
 
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
