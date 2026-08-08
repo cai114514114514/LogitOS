@@ -3285,6 +3285,11 @@ bench-aui: $(ISO) $(DISK)
 # other one above.
 -include tests/gfx.mk
 
+# CSS Grid Layout: placement, the track sizing algorithm and alignment, checked
+# against the spec's own numeric outcomes rather than against a picture. Own
+# fragment for the same reason as every other one above.
+-include tests/grid.mk
+
 # The CI this repository did not have: `make test-audit` (tests that cannot
 # fail) and `make ci` (build from a clean clone of HEAD, then the suites). Own
 # fragment for the same reason as every other one above.

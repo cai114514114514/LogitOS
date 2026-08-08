@@ -469,7 +469,7 @@ int grid_parse_areas(const char *s, int len, struct gridareas *out)
                     if (c2 > c1) c1 = c2;
                 }
             for (r2 = r0; r2 <= r1; r2++) for (c2 = c0; c2 <= c1; c2++)
-                if (strcmp(cells[r2*cols+c2], nm)) { free(cells); goto bad; }
+                if (strcmp(cells[r2*cols+c2], nm)) goto bad;   /* `bad` frees cells */
         }
     }
 
@@ -586,13 +586,21 @@ int grid_parse_area(const char *s, int len, struct gline out[4])
     at_ = nc + 1;
     for (i = 0; i < at_; i++)
         if (grid_parse_line(seg[i], slen[i], &out[i]) < 0) return -1;
-    /* Omitted components: if the missing one is a <custom-ident>, it copies the
-     * opposite edge; otherwise it is auto. */
-    for (i = at_; i < 4; i++) {
-        const struct gline *src = &out[i-2];
-        if (i >= 2 && src->kind == GL_LINE && !src->has_n && src->name[0]) out[i] = *src;
-        else memset(&out[i], 0, sizeof out[i]);
+    /* Omitted components (s8.4). The order is row-start / column-start /
+     * row-end / column-end, and the fill-in rules are NOT uniform:
+     *   - column-start omitted: if row-start is a <custom-ident>, ALL FOUR
+     *     longhands take that value (this is what `grid-area: main` means);
+     *     otherwise auto.
+     *   - row-end / column-end omitted: copy the matching start edge if it is a
+     *     <custom-ident>, else auto. */
+    #define IS_IDENT(g) ((g).kind == GL_LINE && !(g).has_n && (g).name[0])
+    for (i = at_; i < 4; i++) memset(&out[i], 0, sizeof out[i]);
+    if (at_ <= 1 && IS_IDENT(out[0])) { out[1] = out[0]; out[2] = out[0]; out[3] = out[0]; }
+    else {
+        if (at_ <= 2 && IS_IDENT(out[0])) out[2] = out[0];
+        if (at_ <= 3 && IS_IDENT(out[1])) out[3] = out[1];
     }
+    #undef IS_IDENT
     return 0;
 }
 
