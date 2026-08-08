@@ -16,7 +16,11 @@
  * window persist probes, and RFC 1191 path-MTU discovery with a blackhole
  * backstop.
  *
- * Not implemented: listen/accept, urgent data, TCP-AO/MD5, ECN, CUBIC (Reno is
+ * Also implemented (server side): the passive open -- LISTEN, SYN_RCVD, the
+ * three-way handshake from the receiving end, a per-listener accept backlog,
+ * and half-close. See "the server API" at the bottom of this header.
+ *
+ * Not implemented: urgent data, TCP-AO/MD5, ECN, CUBIC (Reno is
  * the controller), and the full RFC 6675 pipe algorithm -- SACK informs which
  * bytes to retransmit, but the congestion window is driven by RFC 5681's
  * duplicate-ACK inflation rather than a scoreboard-walked pipe estimate.
@@ -101,5 +105,55 @@ struct tcp_info {
     uint8_t  sack_ok, ts_ok, in_recovery, state;
 };
 int  tcp_get_info(int id, struct tcp_info *out);
+
+/* ====================================================================== the
+ * server API -- the passive open.
+ *
+ * A LISTENER IS NOT A CONNECTION. It has its own small table (four ports), no
+ * sequence space and no buffers, because a connection slot in this stack costs
+ * ~161 KiB of send/receive rings and holding a port number should not cost that.
+ * `tcp_listen` returns a LISTENER id; `tcp_accept` returns a CONNECTION id,
+ * usable with every call above (tcp_recv/tcp_send_nb/tcp_close/...).
+ *
+ * THE BLOCKING MODEL. tcp_accept never waits: it pops a completed handshake or
+ * says TCP_L_E_AGAIN. tcp_accept_wait parks the calling thread on the
+ * listener's wait queue -- unlinked from the run ring, not spinning, not
+ * holding the BKL -- until a handshake completes or the deadline passes. The
+ * split matches what pipes already do in c/kernel/exec/file.c: O_NONBLOCK picks
+ * the first, an ordinary descriptor the second.
+ *
+ * WHAT THE LIMITS ARE, AND THAT THEY ARE ENFORCED OUT LOUD. Four listeners; a
+ * backlog of at most 8 per listener; and a passive open may never take the last
+ * 8 connection slots, which are reserved so an inbound peer cannot make this
+ * machine unable to fetch a page. Each refusal is a RST the peer can see AND a
+ * counter in tcp_server_stats -- "the server stopped answering" and "the server
+ * is at its limit" look identical from outside, and the counter is what tells
+ * them apart. */
+
+#define TCP_L_E_ARG   (-1)   /* not a listener, or port 0 */
+#define TCP_L_E_INUSE (-2)   /* that port is already listening or in use */
+#define TCP_L_E_FULL  (-3)   /* all listener slots are taken */
+#define TCP_L_E_AGAIN (-4)   /* nothing to accept yet -- NOT an error */
+
+int  tcp_listen(uint16_t port, int backlog, int pid);
+int  tcp_accept(int lid);                       /* never waits */
+int  tcp_accept_wait(int lid, unsigned ms);     /* parks; same returns */
+int  tcp_listen_port(int lid);
+void tcp_listen_close(int lid);
+void tcp_listen_close_owner(int pid);
+
+/* Peer address/port of an accepted connection (getpeername). 0 on success. */
+int  tcp_peer(int id, uint32_t *ip, uint16_t *port);
+
+/* shutdown(fd, SHUT_WR): send the FIN, keep receiving. Unlike tcp_close this
+ * does not give the connection up -- the peer's reply still arrives. */
+void tcp_shutdown_write(int id);
+
+struct tcp_server_stats {
+    uint32_t syn_received, accepted;
+    uint32_t refused_backlog, refused_slots, refused_noport;
+    uint32_t free_conns, listeners;
+};
+void tcp_server_stats(struct tcp_server_stats *s);
 
 #endif /* LOGIT_TCP_H */

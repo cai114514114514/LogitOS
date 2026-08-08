@@ -5,6 +5,9 @@
 #include "net.h"
 #include "pit.h"
 #include "rng.h"
+#include "wait.h"   /* M27 wait queues: how a blocking accept() parks. The host
+                     * unit test resolves this to tests/unit/tcpstub/wait.h,
+                     * which has no scheduler to park on and no need for one. */
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -24,8 +27,11 @@ int ip6_local_addr(const uint8_t dst[16], uint8_t out[16]) __attribute__((weak))
 #define PSH 0x08
 #define ACK 0x10
 
+/* SYN_RCVD is APPENDED, not inserted. tcp_get_info() publishes `state` as a
+ * number to ring 3 (the throughput probe reads it), so renumbering the existing
+ * eight would silently change what an already-built binary is told. */
 enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, LAST_ACK,
-       CLOSING, TIME_WAIT };
+       CLOSING, TIME_WAIT, SYN_RCVD };
 
 /* 32, up from 8. A connection POOL is the point of the async socket layer: a
  * real page pulls stylesheets/scripts/images from a handful of origins, and a
@@ -145,12 +151,81 @@ struct tcp_conn {
     /* --- counters, for tcp_get_info / tests --- */
     uint32_t n_rexmit, n_fast_rexmit, n_rto;
 
+    /* --- passive open (server side) ---
+     * passive     this connection was created by a SYN arriving at a listener,
+     *             so our SYN-ACK may only offer options the CLIENT offered
+     *             first (RFC 7323 §2.2, RFC 2018 §1) -- see build_options.
+     * ws_ok       the client sent a Window Scale option, so we may send one.
+     * lst         the listener that owns it, or -1.
+     * in_backlog  it is sitting in that listener's accept queue and has not
+     *             been handed to the application yet. THE SLOT IS NOT FREE
+     *             WHILE THIS IS SET: see conn_closed. */
+    uint8_t  passive, ws_ok, in_backlog;
+    int      lst;
+
     int      used;
 };
 
 static struct tcp_conn conns[NCONN];
 static uint16_t next_port = 49152;
 static uint32_t iss_counter = 1;
+
+/* ---------------------------------------------------------------- listeners
+ *
+ * A listener is NOT a connection. It has no sequence space, no rings and no
+ * timers -- it is a local port, a queue of completed handshakes, and an owner.
+ * Giving it its own table rather than a CLOSED-state conns[] slot is the whole
+ * reason listening is cheap here: a conn slot is ~161 KiB of rings (see NCONN),
+ * and a web server that listens on one port would have paid all of it to hold a
+ * port number.
+ *
+ * THE BACKLOG IS GUARDED BY THE WAIT QUEUE'S OWN LOCK, not by net_lock. That is
+ * deliberate and it is the rule c/kernel/core/wait.h calls rule 2: a blocking
+ * accept() must evaluate "is there a connection waiting" under the SAME lock it
+ * hands to the sleep, or a handshake completing between the test and the park
+ * is a wake that lands on nobody. tcp_input completes a handshake from softirq
+ * context, takes lq->lock, pushes, and wakes -- so the window does not exist.
+ * net_lock still guards conns[]; the two locks are never held at once in the
+ * other order (accept takes lq->lock, then calls into net_lock-taking helpers
+ * only after dropping it). */
+#define NLISTEN      4      /* listening ports at once. Four, because every
+                             * listener costs a backlog of conn slots and there
+                             * are only NCONN of those to go round. */
+#define TCP_BACKLOG  8      /* completed-but-unaccepted connections per listener */
+
+/* HOW MANY OF THE 32 CONNECTION SLOTS AN INBOUND PEER MAY TAKE, and why there is
+ * a number here at all.
+ *
+ * conns[] is shared by the client path (the browser's socket pool, DNS-over-TCP,
+ * the blocking SYS_HTTP_GET) and, from now on, by every connection anybody on
+ * the network opens TO us. Without a bound, an outside host opening connections
+ * is an outside host deciding this machine can no longer fetch a page -- and it
+ * would not look like an attack, it would look like the browser being broken.
+ *
+ * So passive opens may not take the last CLIENT_RESERVE free slots. A SYN that
+ * arrives with only the reserve left is REFUSED WITH A RST, and the refusal is
+ * counted (tcp_server_stats) rather than being a silent drop -- "the server
+ * stopped answering" and "the server is at its limit" are the same symptom and
+ * only the counter tells them apart. */
+#define CLIENT_RESERVE 8
+
+struct tcp_listener {
+    int      used;
+    uint16_t lport;
+    int      pid;               /* owning process, for teardown on exit */
+    int      backlog;           /* min(requested, TCP_BACKLOG) */
+    int      reuse;             /* SO_REUSEADDR: rebind over a lingering port */
+    int      q[TCP_BACKLOG];    /* completed handshakes, oldest first */
+    int      qn;
+    struct waitq wq;            /* guards q/qn/used AND parks a blocking accept */
+};
+
+static struct tcp_listener listeners[NLISTEN];
+
+/* Refusals, by reason. Exported through tcp_server_stats() so a test can assert
+ * the limit fired instead of asserting the machine did not crash. */
+static uint32_t st_syn_recv, st_accepted, st_refused_backlog,
+                st_refused_slots, st_refused_noport;
 
 struct tcp_hdr {
     uint16_t sport, dport;
@@ -383,15 +458,32 @@ static int build_options(struct tcp_conn *c, uint8_t flags, uint8_t *o)
     int n = 0;
     if (flags & SYN) {
         /* Linux's ordering, which every middlebox on earth has seen:
-         * MSS, SACK-permitted, timestamps, NOP, window scale = exactly 20. */
+         * MSS, SACK-permitted, timestamps, NOP, window scale = exactly 20.
+         *
+         * A SYN-ACK MAY ONLY ECHO WHAT THE SYN OFFERED. On an active open we
+         * offer everything (nothing has been negotiated yet); on a passive one
+         * the client has already spoken, and answering with an option it did
+         * not send is a protocol error -- for window scale it is worse than
+         * that, because a client that never asked for scaling will read our
+         * advertised window unshifted and believe we offered 1/128th of the
+         * buffer we have. */
+        int syn_ack = (flags & ACK) != 0;
+        int off_sack = !syn_ack || c->sack_ok;
+        int off_ts   = !syn_ack || c->ts_ok;
+        int off_ws   = !syn_ack || c->ws_ok;
         o[n++] = 2; o[n++] = 4;
         o[n++] = (uint8_t)(MSS_ADV >> 8); o[n++] = (uint8_t)MSS_ADV;
-        o[n++] = 4; o[n++] = 2;
-        o[n++] = 8; o[n++] = 10;
-        wr32(o + n, (uint32_t)timer_ticks()); n += 4;
-        wr32(o + n, c->ts_recent); n += 4;
-        o[n++] = 1;
-        o[n++] = 3; o[n++] = 3; o[n++] = c->rcv_scale;
+        if (off_sack) { o[n++] = 4; o[n++] = 2; }
+        if (off_ts) {
+            o[n++] = 8; o[n++] = 10;
+            wr32(o + n, (uint32_t)timer_ticks()); n += 4;
+            wr32(o + n, c->ts_recent); n += 4;
+        }
+        if (off_ws) {
+            o[n++] = 1;
+            o[n++] = 3; o[n++] = 3; o[n++] = c->rcv_scale;
+        }
+        while (n & 3) o[n++] = 1;               /* NOP-pad to a word boundary */
         return n;
     }
     if (c->ts_ok) {
@@ -956,7 +1048,144 @@ static void take_sack(struct tcp_conn *c, const struct tcp_opts *o)
 static void conn_closed(struct tcp_conn *c)
 {
     c->state = CLOSED;
-    c->used = 0;
+    /* A connection sitting in an accept backlog KEEPS ITS SLOT. The queue holds
+     * a bare index, so freeing the slot here would let the next tcp_connect()
+     * reuse it and accept() would then hand the application somebody else's
+     * connection -- the exact class of bug this line's negative control is
+     * built around. The slot is released when accept() takes it (and the app
+     * sees a dead connection on its first read, which is honest and is what a
+     * peer that RSTs during the backlog wait actually did) or when the listener
+     * is closed. */
+    if (!c->in_backlog)
+        c->used = 0;
+}
+
+/* ------------------------------------------------------------ passive open */
+
+static struct tcp_listener *find_listener(uint16_t port)
+{
+    for (int i = 0; i < NLISTEN; i++)
+        if (listeners[i].used && listeners[i].lport == port)
+            return &listeners[i];
+    return NULL;
+}
+
+/* Free connection slots, and whether a PASSIVE open may take one. See
+ * CLIENT_RESERVE: an inbound peer never gets the last few. */
+static int free_slots(void)
+{
+    int n = 0;
+    for (int i = 0; i < NCONN; i++) if (!conns[i].used) n++;
+    return n;
+}
+
+/* A SYN arrived for a port somebody is listening on. Build the half-open
+ * connection and answer it. Returns 0 if a SYN-ACK went out, -1 if the SYN was
+ * refused (the caller RSTs). Runs in softirq context, without net_lock -- the
+ * same context every other tcp_input path runs in. */
+static int passive_open(struct tcp_listener *l, const struct tcp_addr *src,
+                        const struct tcp_addr *dst, uint16_t lport, uint16_t rport,
+                        uint32_t seg_seq, uint16_t seg_wnd,
+                        const struct tcp_opts *opt)
+{
+    st_syn_recv++;
+    /* Refuse BEFORE allocating, and refuse out loud. Two independent limits:
+     * the listener's backlog (this peer is not being served fast enough) and
+     * the machine's connection pool (the client path must survive an inbound
+     * flood). They are counted separately because the fix for each is
+     * different -- accept faster, versus raise NCONN. */
+    uint64_t qf = spin_lock_irqsave(&l->wq.lock);
+    int qfull = (l->qn >= l->backlog);
+    spin_unlock_irqrestore(&l->wq.lock, qf);
+    if (qfull) { st_refused_backlog++; return -1; }
+    if (free_slots() <= CLIENT_RESERVE) { st_refused_slots++; return -1; }
+
+    int id = -1;
+    for (int i = 0; i < NCONN; i++) if (!conns[i].used) { id = i; break; }
+    if (id < 0) { st_refused_slots++; return -1; }
+    struct tcp_conn *c = &conns[id];
+    memset(c, 0, sizeof *c);
+    c->used = 1;
+    c->passive = 1;
+    c->lst = (int)(l - listeners);
+    c->state = SYN_RCVD;
+    c->raddr = *src;
+    c->laddr = *dst;                    /* the address the SYN was sent TO: a
+                                         * reply from any other source address
+                                         * would not match the peer's socket */
+    c->lport = lport;
+    c->rport = rport;
+
+    /* Option negotiation, server side. Every one of these is "only if the
+     * client offered it first" -- an option in a SYN-ACK that was not in the
+     * SYN is a protocol error, and in the case of window scale it would make
+     * the client interpret our windows shifted. */
+    c->ts_ok   = opt->have_ts   ? 1 : 0;
+    c->sack_ok = opt->sack_perm ? 1 : 0;
+    c->ws_ok   = opt->have_ws   ? 1 : 0;
+    if (c->ts_ok) c->ts_recent = opt->tsval;
+    if (c->ws_ok) {
+        c->snd_scale = opt->ws;
+        c->rcv_scale = 0;
+        while (((uint32_t)RXBUF >> c->rcv_scale) > 65535u && c->rcv_scale < 14)
+            c->rcv_scale++;
+    }
+    c->peer_mss = opt->mss ? opt->mss : DEFAULT_MSS;
+    if (c->peer_mss > MSS_ADV) c->peer_mss = MSS_ADV;
+    if (c->peer_mss < 88) c->peer_mss = 88;
+    c->pmtu_mss = MSS_ADV;
+
+    c->rcv_nxt   = seg_seq + 1;         /* the SYN consumes one sequence */
+    c->read_seq  = c->rcv_nxt;
+    c->rcv_adv   = c->rcv_nxt;
+    c->last_ack_sent = c->rcv_nxt;
+
+    uint32_t iss;
+    kernel_random_bytes((uint8_t *)&iss, sizeof iss);
+    iss ^= (uint32_t)timer_ticks() * 2654435761u ^
+           (src->af == TCP_AF_INET ? src->a.v4 : 0u) ^
+           ((uint32_t)lport << 16) ^ rport ^ iss_counter++;
+    c->snd_una = iss; c->snd_nxt = iss + 1;
+    c->snd_max = iss + 1; c->snd_end = iss + 1;
+    /* RFC 7323 §2.2 again, receive side: the window in the client's SYN is
+     * NEVER scaled, whatever shift it asked us to apply afterwards. */
+    c->snd_wnd = seg_wnd;
+    c->snd_wl1 = seg_seq; c->snd_wl2 = iss;
+    c->cwnd = 2 * DEFAULT_MSS;
+    c->ssthresh = 0xFFFFFFFFu;
+
+    send_seg(c, SYN | ACK, iss, 0);
+    rtx_start(c);
+    c->rto = RTO_DEFAULT;
+    c->rtt_pending = 1;
+    c->rtt_seq = iss + 1;
+    c->rtt_tick = timer_ticks();
+    c->rx_tick = timer_ticks();
+    return 0;
+}
+
+/* The handshake completed: hand the connection to the listener's accept queue
+ * and wake whoever is parked in accept(). Returns 0, or -1 if the queue filled
+ * between the SYN and the final ACK (rare, but it is a real race and it must
+ * not corrupt the queue). Push and wake happen under lq->lock together, which
+ * is what makes a blocking accept unable to miss it. */
+static int backlog_push(struct tcp_conn *c)
+{
+    if (c->lst < 0 || c->lst >= NLISTEN) return -1;
+    struct tcp_listener *l = &listeners[c->lst];
+    int id = (int)(c - conns);
+    uint64_t f = spin_lock_irqsave(&l->wq.lock);
+    if (!l->used || l->qn >= l->backlog) {
+        spin_unlock_irqrestore(&l->wq.lock, f);
+        st_refused_backlog++;
+        return -1;
+    }
+    l->q[l->qn++] = id;
+    c->in_backlog = 1;
+    st_accepted++;
+    spin_unlock_irqrestore(&l->wq.lock, f);
+    waitq_wake_all(&l->wq);
+    return 0;
 }
 
 void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
@@ -974,6 +1203,25 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
         if (hlen0 < (int)sizeof *h || hlen0 > len) return;
         if (tcp_checksum_af(src, dst, data, len) != 0) return;
         if (h->flags & RST) return;                 /* never RST a RST */
+        /* THE PASSIVE OPEN. A bare SYN (RFC 9293 §3.10.7.2: no ACK, no RST) for
+         * a port in LISTEN is the one case where "no connection" does not mean
+         * "send a reset" -- it means create one. Everything else about the
+         * unmatched-segment path is unchanged. */
+        if ((h->flags & (SYN | ACK)) == SYN) {
+            struct tcp_listener *l = find_listener(lport);
+            if (l) {
+                struct tcp_opts sopt;
+                if (parse_options(data + sizeof *h, hlen0 - (int)sizeof *h, &sopt) == 0 &&
+                    passive_open(l, src, dst, lport, rport, ntohl(h->seq),
+                                 ntohs(h->window), &sopt) == 0)
+                    return;
+                /* Refused (backlog full, pool exhausted, or a malformed option
+                 * list): fall through to the RST below, so the peer is told NOW
+                 * rather than left retransmitting its SYN into silence. */
+            } else {
+                st_refused_noport++;
+            }
+        }
         if (h->flags & ACK) {
             send_reset(dst, src, lport, rport, ntohl(h->ack), 0, 0);
         } else {
@@ -1045,6 +1293,66 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
             tcp_output(c);
         }
         return;
+    }
+
+    /* SYN_RCVD: our SYN-ACK is outstanding and we are waiting for the final ACK
+     * of the three-way handshake. RFC 9293 §3.10.7.4.
+     *
+     * This block ends by FALLING THROUGH into the established path rather than
+     * returning, because the ACK that completes a handshake very often carries
+     * the first request with it -- returning here would leave those bytes to be
+     * recovered by the client's retransmit timer, which is a whole RTO of
+     * latency on every single connection. */
+    if (c->state == SYN_RCVD) {
+        if (flags & RST) {
+            /* The client gave up (or never asked). Drop the half-open. */
+            conn_closed(c);
+            return;
+        }
+        if ((flags & (SYN | ACK)) == SYN) {
+            /* A retransmitted SYN: our SYN-ACK was lost. Resend it, and do NOT
+             * regenerate the sequence space -- the client is waiting for the
+             * ISS we already committed to. */
+            if (seg_seq + 1 == c->rcv_nxt) {
+                send_seg(c, SYN | ACK, c->snd_una, 0);
+                c->n_rexmit++;
+                rtx_start(c);
+            }
+            return;
+        }
+        if (!(flags & ACK)) return;
+        if (!(seq_le(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_nxt))) {
+            /* An ACK for a sequence space we never had: RFC 9293 says send a
+             * RST and stay in SYN_RCVD. We drop the half-open too -- keeping it
+             * would hold a 161 KiB slot for a peer that is demonstrably not
+             * talking to this connection. */
+            send_reset(dst, src, lport, rport, seg_ack, 0, 0);
+            conn_closed(c);
+            return;
+        }
+        c->state = ESTABLISHED;
+        c->snd_una = seg_ack;
+        /* Now that both sides have agreed a shift, the window IS scaled. */
+        c->snd_wnd = (uint32_t)ntohs(h->window) << c->snd_scale;
+        c->snd_wl1 = seg_seq; c->snd_wl2 = seg_ack;
+        c->cwnd = initial_cwnd(c);
+        c->ssthresh = 0xFFFFFFFFu;
+        rtx_stop(c);
+        if (c->ts_ok && opt.have_ts && opt.tsecr)
+            rtt_sample(c, timer_ticks() - (uint64_t)opt.tsecr);
+        else if (c->rtt_pending)
+            rtt_sample(c, timer_ticks() - c->rtt_tick);
+        c->rtt_pending = 0;
+        c->rx_tick = timer_ticks();
+        if (backlog_push(c) != 0) {
+            /* The queue filled between the SYN and this ACK. Refuse it the same
+             * way the SYN would have been refused: a RST the peer can see, not
+             * a connection that is established here and answered by nobody. */
+            send_reset(dst, src, lport, rport, c->snd_nxt, 0, 0);
+            conn_closed(c);
+            return;
+        }
+        /* fall through: this segment may carry data, and usually does */
     }
 
     /* RFC 7323 §5.3 PAWS: a segment whose timestamp predates ts_recent is an
@@ -1272,6 +1580,13 @@ void tcp_poll(void)
              * persist probes keep knocking forever and the retry cap must not
              * tear the connection down under them (RFC 9293 §3.8.6.1). */
             c->rtx_retries++;
+            /* A half-open connection gets a SHORTER leash than an established
+             * one. An unfinished handshake holds a full ~161 KiB conn slot for
+             * a peer that has not proved it can receive anything, and the 8
+             * retries an established connection gets would be ~255 s of that
+             * per SYN. Five is ~31 s, which is longer than any real client
+             * takes to answer a SYN-ACK on a path that works. */
+            if (c->state == SYN_RCVD && c->rtx_retries > 5) { conn_closed(c); continue; }
             if (c->rtx_retries > 8) {
                 if (!c->persist_running) { conn_closed(c); continue; }
                 c->rtx_retries = 8;
@@ -1287,6 +1602,12 @@ void tcp_poll(void)
             c->rtt_pending = 0;                 /* Karn */
             if (c->state == SYN_SENT) {
                 send_seg(c, SYN, c->snd_una, 0);
+                c->n_rexmit++;
+            } else if (c->state == SYN_RCVD) {
+                /* Resend the SYN-ACK. NOT retransmit_head(): that reads the
+                 * send ring for the one sequence the SYN occupies and would put
+                 * a byte of uninitialised buffer on the wire as data. */
+                send_seg(c, SYN | ACK, c->snd_una, 0);
                 c->n_rexmit++;
             } else {
                 /* Go back to snd_una and re-send from there under the collapsed
@@ -1344,6 +1665,8 @@ int tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port)
     if (id < 0) { net_unlock(f); return -1; }
     struct tcp_conn *c = &conns[id];
     memset(c, 0, sizeof *c);
+    c->lst = -1;                    /* an active open belongs to no listener --
+                                     * 0 from the memset is a VALID index */
     c->raddr = *dst;
     if (af_local(dst, &c->laddr) != 0) { net_unlock(f); return -1; }
     c->used = 1;
@@ -1594,6 +1917,189 @@ int tcp_get_info(int id, struct tcp_info *out)
     }
     net_unlock(f);
     return rc;
+}
+
+/* ------------------------------------------------------ the server API
+ *
+ * THE BLOCKING MODEL, stated once, here, because everything below depends on
+ * it and a caller that guesses wrong writes a spin loop.
+ *
+ *   tcp_accept() is NON-BLOCKING and always has been from this file's point of
+ *   view: it pops a completed handshake or reports "nothing yet". The WAITING
+ *   is tcp_accept_wait(), which parks the calling thread on the listener's wait
+ *   queue until a handshake completes or a deadline passes -- it does not spin,
+ *   does not hold the BKL, and is unlinked from the scheduler's run ring while
+ *   it waits (c/kernel/core/wait.h).
+ *
+ *   Two calls rather than one flag because the fd layer above needs both: a
+ *   socket marked O_NONBLOCK by SYS_SETNB uses the first, an ordinary one uses
+ *   the second. That is the SAME convention pipes already use in
+ *   c/kernel/exec/file.c, deliberately -- a second blocking convention for the
+ *   same word would be the thing that costs somebody an afternoon.
+ *
+ *   THE TIMEOUT IN tcp_accept_wait IS NOT A POLL AND IS NOT DECORATION. The
+ *   wake is real (backlog_push wakes under the same lock the sleeper tests
+ *   under, so it cannot be missed); the deadline exists so a caller can be
+ *   interrupted, and so that a bug in the wake path costs latency rather than a
+ *   hung machine. A caller that wants to block forever loops on it. */
+
+int tcp_listen(uint16_t port, int backlog, int pid)
+{
+    if (port == 0) return TCP_L_E_ARG;
+    uint64_t f = net_lock();
+    /* Refuse a port that is already listening, or that an OUTBOUND connection
+     * is using as its local port -- alloc_lport() draws from 49152+ so the
+     * overlap is only reachable for a deliberately high listen port, but
+     * "only reachable deliberately" is not the same as "cannot happen". */
+    if (find_listener(port)) { net_unlock(f); return TCP_L_E_INUSE; }
+    for (int i = 0; i < NCONN; i++)
+        if (conns[i].used && conns[i].lport == port && !conns[i].passive) {
+            net_unlock(f); return TCP_L_E_INUSE;
+        }
+    int id = -1;
+    for (int i = 0; i < NLISTEN; i++) if (!listeners[i].used) { id = i; break; }
+    if (id < 0) { net_unlock(f); return TCP_L_E_FULL; }
+    struct tcp_listener *l = &listeners[id];
+    memset(l, 0, sizeof *l);
+    waitq_init(&l->wq);
+    l->used = 1;
+    l->lport = port;
+    l->pid = pid;
+    l->backlog = backlog <= 0 ? 1 : (backlog > TCP_BACKLOG ? TCP_BACKLOG : backlog);
+    net_unlock(f);
+    return id;
+}
+
+/* Pop the oldest completed handshake. >= 0 is a connection id, TCP_L_E_AGAIN
+ * means the queue is empty (not an error), anything else is a dead listener. */
+int tcp_accept(int lid)
+{
+    if (lid < 0 || lid >= NLISTEN) return TCP_L_E_ARG;
+    struct tcp_listener *l = &listeners[lid];
+    uint64_t f = spin_lock_irqsave(&l->wq.lock);
+    if (!l->used) { spin_unlock_irqrestore(&l->wq.lock, f); return TCP_L_E_ARG; }
+    if (l->qn == 0) { spin_unlock_irqrestore(&l->wq.lock, f); return TCP_L_E_AGAIN; }
+    int id = l->q[0];
+    for (int i = 1; i < l->qn; i++) l->q[i - 1] = l->q[i];
+    l->qn--;
+    conns[id].in_backlog = 0;
+    conns[id].lst = -1;
+    spin_unlock_irqrestore(&l->wq.lock, f);
+    return id;
+}
+
+/* Park until a connection is waiting or `ms` elapses. Returns what tcp_accept
+ * would: a connection id, or TCP_L_E_AGAIN on timeout. */
+int tcp_accept_wait(int lid, unsigned ms)
+{
+    if (lid < 0 || lid >= NLISTEN) return TCP_L_E_ARG;
+    struct tcp_listener *l = &listeners[lid];
+    int ok = 0;
+    wait_event_timeout(&l->wq, l->qn > 0 || !l->used, ms, ok);
+    (void)ok;                       /* the state, not the verdict, decides */
+    return tcp_accept(lid);
+}
+
+int tcp_listen_port(int lid)
+{
+    if (lid < 0 || lid >= NLISTEN || !listeners[lid].used) return -1;
+    return listeners[lid].lport;
+}
+
+void tcp_listen_close(int lid)
+{
+    if (lid < 0 || lid >= NLISTEN) return;
+    struct tcp_listener *l = &listeners[lid];
+    uint64_t f = spin_lock_irqsave(&l->wq.lock);
+    if (!l->used) { spin_unlock_irqrestore(&l->wq.lock, f); return; }
+    int drain[TCP_BACKLOG], n = l->qn;
+    for (int i = 0; i < n; i++) { drain[i] = l->q[i]; conns[drain[i]].in_backlog = 0; }
+    l->qn = 0;
+    l->used = 0;
+    spin_unlock_irqrestore(&l->wq.lock, f);
+    waitq_wake_all(&l->wq);         /* an accept() parked on a closed listener
+                                     * must come back, not wait out its deadline */
+
+    /* Everything that was queued but never accepted is a connection this
+     * machine established and will now never serve. Reset it rather than
+     * closing it politely: the peer is owed the truth, and a FIN would claim we
+     * had read its request. Half-opens still handshaking go the same way. */
+    uint64_t nf = net_lock();
+    for (int i = 0; i < n; i++) {
+        struct tcp_conn *c = &conns[drain[i]];
+        if (c->used) {
+            send_reset(&c->laddr, &c->raddr, c->lport, c->rport, c->snd_nxt, 0, 0);
+            c->state = CLOSED;
+            c->used = 0;
+        }
+    }
+    for (int i = 0; i < NCONN; i++) {
+        struct tcp_conn *c = &conns[i];
+        if (c->used && c->passive && c->lst == lid && c->state == SYN_RCVD) {
+            send_reset(&c->laddr, &c->raddr, c->lport, c->rport, c->snd_nxt, 0, 0);
+            c->state = CLOSED;
+            c->used = 0;
+        }
+    }
+    net_unlock(nf);
+}
+
+/* Release every listener owned by `pid`. Called when a process exits, for the
+ * same reason sock_close_owner exists: a server that dies must not leave its
+ * port bound for the rest of the boot. */
+void tcp_listen_close_owner(int pid)
+{
+    for (int i = 0; i < NLISTEN; i++)
+        if (listeners[i].used && listeners[i].pid == pid)
+            tcp_listen_close(i);
+}
+
+/* The peer's address and port. getpeername, and the thing an access log needs. */
+int tcp_peer(int id, uint32_t *ip, uint16_t *port)
+{
+    if (id < 0 || id >= NCONN) return -1;
+    struct tcp_conn *c = &conns[id];
+    uint64_t f = net_lock();
+    int rc = -1;
+    if (c->used) {
+        if (ip)   *ip = c->raddr.af == TCP_AF_INET ? c->raddr.a.v4 : 0;
+        if (port) *port = c->rport;
+        rc = 0;
+    }
+    net_unlock(f);
+    return rc;
+}
+
+/* Half-close: stop sending, keep receiving. This is `shutdown(fd, SHUT_WR)`,
+ * and it is what an HTTP/1.0 server does to say "the body ends here" -- the
+ * same FIN tcp_close sends, WITHOUT releasing the connection, so the peer's
+ * reply and its own FIN still arrive. */
+void tcp_shutdown_write(int id)
+{
+    if (id < 0 || id >= NCONN) return;
+    struct tcp_conn *c = &conns[id];
+    uint64_t f = net_lock();
+    if (c->used && (c->state == ESTABLISHED || c->state == CLOSE_WAIT) &&
+        !c->fin_queued) {
+        c->fin_queued = 1;
+        tcp_output(c);
+    }
+    net_unlock(f);
+}
+
+void tcp_server_stats(struct tcp_server_stats *s)
+{
+    if (!s) return;
+    uint64_t f = net_lock();
+    s->syn_received    = st_syn_recv;
+    s->accepted        = st_accepted;
+    s->refused_backlog = st_refused_backlog;
+    s->refused_slots   = st_refused_slots;
+    s->refused_noport  = st_refused_noport;
+    s->free_conns      = (uint32_t)free_slots();
+    s->listeners       = 0;
+    for (int i = 0; i < NLISTEN; i++) if (listeners[i].used) s->listeners++;
+    net_unlock(f);
 }
 
 /* icmp.c weak-hook target: an ICMP error quoting one of our segments. RFC
