@@ -280,6 +280,54 @@ void pmm_init(uint64_t mb_info_addr)
  * bit inside a partial word is located with __builtin_ctzll(~word).  Resumes
  * from alloc_hint so successive allocs don't rescan exhausted low frames, and
  * wraps back to frame 0 once before giving up so no free frame is missed. */
+/* ------------------------------------------------------- the leak trace --
+ * A leak is a TREND, and a trend needs samples nobody has to remember to take.
+ * `pmm_free_frames()` answers "how much is free right now", which is useless on
+ * its own: memory legitimately goes up and down as apps open and close, and the
+ * question is whether it comes back.
+ *
+ * So the allocator keeps its own low-water mark and says so, once, every time
+ * free memory reaches a new all-time low a full step (1 MiB) below the last one
+ * it announced. That gives a self-triggering, self-throttling time series with
+ * exactly the shape the answer needs:
+ *
+ *   a system that is merely BUSY  -> the line stops appearing once the workload
+ *                                    has been round once; the low-water mark is
+ *                                    reached and never beaten.
+ *   a system that is LEAKING      -> the line keeps appearing forever, and the
+ *                                    interval between two of them is the leak
+ *                                    rate, in MiB per whatever happened between.
+ *
+ * At most total/step lines can ever be printed in a boot (511 at 1 MiB over 511
+ * MiB), and the check is two comparisons on the allocation path. */
+static uint64_t low_free = ~(uint64_t)0;   /* lowest free-frame count seen */
+static uint64_t low_step = 256;            /* announce each new 1 MiB low */
+static uint64_t low_announced = ~(uint64_t)0;
+
+void pmm_watch_step(uint64_t frames) { low_step = frames ? frames : 1; }
+
+uint64_t pmm_low_free_frames(void)
+{
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    uint64_t v = (low_free == ~(uint64_t)0) ? total_frames - used_frames : low_free;
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return v;
+}
+
+/* Called with pmm_lock held. kprintf under the lock is what mm_bug already
+ * does; pmm_report() must NOT be used here because it takes the lock itself. */
+static void watch_low(void)
+{
+    uint64_t free_now = total_frames - used_frames;
+    if (free_now >= low_free) return;
+    low_free = free_now;
+    if (low_announced != ~(uint64_t)0 && free_now + low_step > low_announced) return;
+    low_announced = free_now;
+    kprintf("[mm] low: %d frames free (%d MiB), %d used, %d shared, %d bugs\n",
+            (int)free_now, (int)(free_now * FRAME_SIZE / (1024 * 1024)),
+            (int)used_frames, (int)shared_frames, (int)bug_count);
+}
+
 static uint64_t take_frame(uint64_t cand)
 {
     /* Continuous invariant: a frame the bitmap calls free must have no
@@ -292,6 +340,7 @@ static uint64_t take_frame(uint64_t cand)
     refcnt[cand] = 1;
     used_frames++;
     refs_total++;
+    watch_low();
     return cand * FRAME_SIZE;
 }
 

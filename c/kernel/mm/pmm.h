@@ -56,4 +56,12 @@ int  pmm_audit(void);
 /* One line of frame accounting on the serial console. */
 void pmm_report(const char *tag);
 
+/* The self-triggering leak trace (see pmm.c). The allocator announces each new
+ * all-time low in free frames, at most once per `frames` step -- so a busy
+ * system goes quiet and a leaking one never does. Default step 256 frames
+ * (1 MiB). pmm_low_free_frames() is the mark itself, for a test that wants the
+ * number rather than the log. */
+void     pmm_watch_step(uint64_t frames);
+uint64_t pmm_low_free_frames(void);
+
 #endif /* LOGIT_PMM_H */
