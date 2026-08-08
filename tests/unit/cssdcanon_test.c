@@ -269,6 +269,44 @@ int main(void)
     /* ...and removeProperty still removes. */
     chk(ctx, "q.style.removeProperty('grid-template-columns');"
              "q.style.getPropertyValue('grid-template-columns')", "");
+    /* ---- (4) CSS.supports asks the same parsers ------------------------
+     *
+     * THE SAME ROUTING, ONE LAYER DOWN, and it is worth far more than the
+     * setter is. `css_supports_decl` is what CSS.supports() answers from AND
+     * what js_cssom.c's setter consults, so a property it calls unsupported is
+     * additionally unsettable -- and 35,708 of the 47,140
+     * interpolation-testcommon.js failures in css/ are a false answer here,
+     * 30,497 of them over property names LibCSS does not know at all.
+     *
+     * The shape that makes it safe is that the consult can only turn false
+     * into true: it runs BEFORE LibCSS and either returns 1 or falls through
+     * to exactly the code that ran before. The `display` rows below are that
+     * boundary -- a property LibCSS owns must get LibCSS's answer, both ways.
+     */
+    struct { const char *p, *v; int want; const char *why; } sup[] = {
+      { "grid-template-columns", "1fr",            1, "canon.c parses a track list" },
+      { "grid-template-columns", "repeat(2, 1fr)", 1, "...including repeat()" },
+      { "grid-template-columns", "-10px",          0, "a negative literal is a parse error" },
+      { "grid-template-columns", "inherit",        1, "a CSS-wide keyword is valid for any property that exists" },
+      { "position-area",         "top left",       1, "canon.c's, LibCSS has never heard of it" },
+      { "transform",             "translate(1px)", 1, "LibCSS's by name, nobody's by value, css_interp.c's in fact" },
+      { "transform",             "translate(1px",  0, "...and it is a parser, not a pass-through" },
+      { "display",               "block",          1, "LibCSS's, unchanged" },
+      { "display",               "banana",         0, "LibCSS's, unchanged -- the boundary" },
+      { "width",                 "10px",           1, "LibCSS's, unchanged" },
+      { "not-a-property",        "10px",           0, "nobody's" },
+      { 0, 0, 0, 0 }
+    };
+    for (int i = 0; sup[i].p; i++) {
+        int got = css_supports_decl(sup[i].p, -1, sup[i].v, -1) ? 1 : 0;
+        g_checks++;
+        if (got != sup[i].want) {
+            printf("  FAIL CSS.supports('%s', '%s') = %d, want %d -- %s\n",
+                   sup[i].p, sup[i].v, got, sup[i].want, sup[i].why);
+            g_fails++;
+        }
+    }
+
     /* Nothing in LibCSS's half of the set regressed on the way past. */
     chk(ctx, "k.style.backgroundColor = 'red'; k.style.backgroundColor", "red");
     chk(ctx, "k.style.cssFloat = 'left'; k.style.cssFloat", "left");

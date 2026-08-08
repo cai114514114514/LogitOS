@@ -4,6 +4,18 @@
 #include "dom.h"
 #include "css.h"
 #include "layout_text.h"   /* the LTX_* vocabulary the text fields carry */
+#include "css_interp.h"    /* struct ci_xform -- see sup_beside_libcss() */
+
+/* ...and the one function taken from it is WEAK, for the reason the block at
+ * js_dom_dirty() below gives about that one. THIRTEEN tests/*.mk fragments
+ * link css_engine.c and none of them link css_interp.c; a hard reference would
+ * turn a CSS.supports improvement into thirteen link failures in other lines'
+ * files. Weak and guarded, so a build without the transform parser answers
+ * exactly what it answered before. Spelled __attribute__((__weak__)) and not
+ * the lowercase `weak`, which is a macro in the force-included features.h. */
+extern int ci_transform_parse(const char *s, int len, double fs_px,
+                              double root_px, struct ci_xform *out)
+                              __attribute__((__weak__));
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -2573,7 +2585,99 @@ int css_apply_scoped(struct node *n, int siblings, const char *page_css, int pag
  * that is what keeps supports() and the cascade the same answer.
  * ====================================================================== */
 
+/* ======================================================================
+ * THE PARSERS BESIDE LibCSS, AND WHY CONSULTING THEM CANNOT BREAK ANYTHING
+ *
+ * The comment above ends "if css_extra's set ever stops being a handful, the
+ * fix is to teach LibCSS the property, not to special-case the list here".
+ * That is still the rule for the CASCADE and this does not change it. What
+ * changed is that there are now two real parsers on this side of the vendored
+ * line -- canon.c (a specified-value parser for the properties LibCSS never
+ * gained: the anchor family, position-area, the logical box family, the colour
+ * functions, and <track-list> for grid) and css_interp.c (a <transform-list>
+ * parser) -- and `CSS.supports` is not the cascade. It asks one question:
+ * DOES THIS DECLARATION PARSE. A parser that can answer it is a legitimate
+ * source for it whether or not the cascade can act on the result.
+ *
+ * THE SHAPE THAT MAKES THIS SAFE IS THAT IT ONLY EVER TURNS false INTO true.
+ * This function is consulted BEFORE LibCSS and can only return 1; every path
+ * that does not return 1 falls through to exactly the code that ran before.
+ * So no declaration LibCSS accepts today can be refused by anything here, and
+ * the three-way contract's CSS_CANON_PASS -- "not mine", which is most of CSS
+ * -- is a fallthrough by construction rather than by care.
+ *
+ * WHY IT MATTERS FAR OUT OF PROPORTION TO CSS.supports() ITSELF: 35,708 of the
+ * 47,140 interpolation-testcommon.js failures in css/ are a false answer here,
+ * 30,497 of them over property names LibCSS does not know at all. And the
+ * CSSOM's setter asks the same function, so a property that answers false is
+ * additionally UNSETTABLE from script -- its own parser never runs and every
+ * test of it fails on "property should be set". That is the same defect the
+ * named-property set had, one layer down.
+ *
+ * A CSS-WIDE KEYWORD is the one value that is valid for every property that
+ * exists, and it is here for a specific test rather than for tidiness:
+ * css-conditional/js/CSS-supports-CSSStyleDeclaration.html asserts, for ~600
+ * names, that CSS.supports(prop, "inherit") equals whether el.style has an IDL
+ * attribute for prop. js_dom.c publishes canon.c's enumeration, so without
+ * this line every canon-only property is a fresh disagreement in that file --
+ * publishing a property and then denying it exists.
+ * ====================================================================== */
+
 extern void (*css__parse_drop_report)(const char *name, size_t nlen, int reason);
+
+static int sup_ieq(const char *a, int alen, const char *b)
+{
+    int i;
+    for (i = 0; i < alen && b[i]; i++)
+        if ((a[i] | 32) != (b[i] | 32)) return 0;
+    return i == alen && !b[i];
+}
+
+/* inherit | initial | unset | revert | revert-layer -- valid for every
+ * property, by definition, whoever owns the property. */
+static int sup_css_wide(const char *v, int n)
+{
+    return sup_ieq(v, n, "inherit") || sup_ieq(v, n, "initial") ||
+           sup_ieq(v, n, "unset")   || sup_ieq(v, n, "revert")  ||
+           sup_ieq(v, n, "revert-layer");
+}
+
+/* 1 only when a parser on this side takes the declaration outright. Never 0
+ * meaning "invalid" -- 0 here means "no opinion", and the caller goes on to
+ * ask LibCSS exactly as it did before. */
+static int sup_beside_libcss(const char *prop, int plen, const char *value, int vlen)
+{
+#ifdef CSSSUP_LIBCSS_ONLY
+    /* The negative control: the answer as it was, LibCSS's alone. See
+     * tests/cssom.mk's test-cssd-canon-negctl. */
+    (void)prop; (void)plen; (void)value; (void)vlen;
+    return 0;
+#else
+    char buf[1024];
+    int len = 0;
+
+    if (css_canon_decl(prop, plen, value, vlen, buf, (int)sizeof buf, &len)
+            == CSS_CANON_OK)
+        return 1;
+    if (css_canon_knows_property(prop, plen) && sup_css_wide(value, vlen))
+        return 1;
+#ifndef CSSSUP_NO_TRANSFORM
+    /* `transform` is LibCSS's by NAME and nobody's by VALUE: the string table
+     * carries it, every function value is dropped, and css_extra.c honours the
+     * declaration behind LibCSS's back -- so the cascade already acts on a
+     * value this function called unsupported, and the CSSOM setter threw the
+     * same value away before it got there. css_interp.c parses the list
+     * properly (and is what computes it), so ask it. The em/rem bases are the
+     * initial font-size: whether a value PARSES does not depend on them, and
+     * CSS.supports has no element to take them from. */
+    if (ci_transform_parse && sup_ieq(prop, plen, "transform")) {
+        struct ci_xform t;
+        if (ci_transform_parse(value, vlen, 16.0, 16.0, &t) == 0) return 1;
+    }
+#endif
+    return 0;
+#endif
+}
 
 static int g_sup_seen;          /* a declaration reached the reporter at all */
 static int g_sup_ok;            /* ... and was ACCEPTED */
@@ -2598,6 +2702,10 @@ int css_supports_decl(const char *prop, int plen, const char *value, int vlen)
     /* A custom property is supported by definition: --x takes any value that
      * is a balanced token stream, and the cascade stores it verbatim. */
     if (plen >= 2 && prop[0] == '-' && prop[1] == '-') return 1;
+    /* The parsers beside LibCSS, first and additively -- see the block comment
+     * above sup_beside_libcss(). A 0 here is "no opinion", not "invalid", and
+     * falls through to the LibCSS path unchanged. */
+    if (sup_beside_libcss(prop, plen, value, vlen)) return 1;
     /* An empty value, or one that is only whitespace/`!important`, is not a
      * declaration. Reject before the parser sees it: LibCSS would report
      * nothing at all and "nothing reported" is our not-supported answer, but

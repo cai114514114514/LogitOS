@@ -267,7 +267,7 @@ test-cssom-abi:
 
 CSSDCANON_SRC := tests/unit/cssdcanon_test.c c/apps/browser/js_dom.c \
                  c/apps/browser/js_reflect.c c/apps/browser/css_engine.c \
-                 c/apps/browser/css_vars.c
+                 c/apps/browser/css_vars.c c/apps/browser/css_interp.c
 CSSDCANON_CF   = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"'
 
 $(CSSOM_DIR)/cssdcanon_test: $(CSSDCANON_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
@@ -278,8 +278,8 @@ $(CSSOM_DIR)/cssdcanon_test: $(CSSDCANON_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss
 test-cssd-canon: $(CSSOM_DIR)/cssdcanon_test
 	@$(CSSOM_DIR)/cssdcanon_test
 
-# Two sabotages, because this landed as two changes and one control would only
-# cover one of them:
+# Three sabotages, because this landed as three changes and one control would
+# only cover one of them:
 #
 #   CSSD_NO_CANON_REFUSE   THE HALF-IMPLEMENTATION, and it is not a straw man:
 #                          adopt canon.c's enumeration and leave the setter
@@ -293,11 +293,16 @@ test-cssd-canon: $(CSSOM_DIR)/cssdcanon_test
 #                          the state before any of this. Shared with
 #                          tests/reflect.mk's test-cssprops-negctl, which is
 #                          the same switch asking a narrower question.
+#   CSSSUP_LIBCSS_ONLY     css_supports_decl answers from LibCSS alone, as it
+#                          did before -- so CSS.supports() denies every
+#                          property LibCSS never gained, which additionally
+#                          makes it unsettable, because the CSSOM setter asks
+#                          the same function.
 #
-# The target succeeds when the suite FAILS against both, and reports how many
-# assertions went red so a control that fires for an unrelated reason (a link
-# error, an empty run) is visible rather than counted as success.
-CSSDCANON_NEGS := CSSD_NO_CANON_REFUSE CSSD_PROPS_FROM_ENUM
+# The target succeeds when the suite FAILS against all three, and reports how
+# many assertions went red so a control that fires for an unrelated reason (a
+# link error, an empty run) is visible rather than counted as success.
+CSSDCANON_NEGS := CSSD_NO_CANON_REFUSE CSSD_PROPS_FROM_ENUM CSSSUP_LIBCSS_ONLY
 
 test-cssd-canon-negctl: $(BUILD)/libcss_host.a
 	@mkdir -p $(CSSOM_DIR)
