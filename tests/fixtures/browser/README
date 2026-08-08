@@ -1,0 +1,41 @@
+Fixtures for the browser's host tests.
+
+links.html / list.html / media.html / table.html
+    Small hand-written pages for the layout and paint tests.
+
+baidu-ua-stub.html  (227 bytes)
+baidu.html          (697,700 bytes)
+    THE SAME URL, https://www.baidu.com/, fetched twice on 2026-08-08 with
+    nothing different but the User-Agent header. They are the evidence for the
+    "the browser fetches a page and then shows nothing" bug, and
+    tests/unit/loader_test.c asserts on both.
+
+    baidu-ua-stub.html is what OUR User-Agent gets:
+
+      curl -H 'User-Agent: Mozilla/5.0 (X11; LogitOS x86_64) Logit/1.0' \
+           -H 'Accept: */*' https://www.baidu.com/
+
+    227 bytes: an inline <script> calling location.replace() to downgrade
+    https -> http, plus a <noscript> containing a meta refresh. No stylesheet,
+    no <script src>, no image, no visible text.
+
+    baidu.html is what a browser-shaped User-Agent gets over the same request:
+
+      curl --compressed \
+           -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
+                           (KHTML, like Gecko) Chrome/120 Safari/537.36' \
+           https://www.baidu.com/
+
+    697 KB: 2 stylesheet <link>s, 11 <script src>, 20 <img>, and the hot-search
+    list. Stored DECODED -- the wire body is chunked gzip, and what the parser
+    is under test for starts after Content-Encoding is undone.
+
+    The header that decides which one you get is ONLY the User-Agent; Accept
+    and Accept-Encoding make no difference (checked by holding each fixed and
+    varying the other). The same 227-byte stub over http:// instead of https://
+    returns the full 696 KB page, which is why the site's own redirect is
+    correct and following it is our job.
+
+    Refreshing these: baidu's markup changes daily, so a re-capture will move
+    the counts in loader_test.c's CONTROL checks. They are asserted as ">=" for
+    that reason; the stub has been stable and is the part the tests turn on.

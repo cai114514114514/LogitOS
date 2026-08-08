@@ -6,6 +6,11 @@
 #include "js_dom.h"
 #include "js_page.h"
 #include "js_module.h"           /* <script type="module"> + the module loader */
+/* js_webapi.o is absent from browser-nofetch.aex (the negative control for
+ * test-webapi-page), so every entry point has to be weak here exactly as it is
+ * in js_page.c -- otherwise that link breaks. */
+#define JS_WEBAPI_OPTIONAL
+#include "js_webapi.h"           /* script-initiated navigation (location.*) */
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
 #include <stdlib.h>              /* malloc/realloc/free -- resources are sized to fit */
@@ -60,6 +65,18 @@ static void hist_push(const char *u)
     }
     int i = 0; while (u[i] && i < 599) { hist[hcur][i] = u[i]; i++; } hist[hcur][i] = 0;
     htop = hcur;                           /* navigating truncates the forward branch */
+}
+
+/* Overwrite the current entry instead of adding one. A redirect must not leave
+ * its own stepping stone in history: with hist_push, Back from the destination
+ * lands on the stub that bounced us here, which immediately bounces us forward
+ * again and the Back button stops working at all. */
+static void hist_replace(const char *u)
+{
+    if (hcur < 0) { hist_push(u); return; }
+    int i = 0; while (u[i] && i < 599) { hist[hcur][i] = u[i]; i++; }
+    hist[hcur][i] = 0;
+    htop = hcur;
 }
 
 static int hist_go(int delta)              /* -1 back, +1 forward; 1 if moved */
@@ -492,7 +509,101 @@ static int run_collected_scripts(const char *page_url)
     return ran;
 }
 
+/* ===================== script-initiated navigation ==========================
+ *
+ * A page is allowed to move itself: `location.href = ...`, location.assign(),
+ * location.replace(), location.reload(). js_webapi.c parses and records those
+ * and NOTHING USED TO READ THE RECORD -- it printed "the loader does not
+ * consume this yet" and the browser sat on the document.
+ *
+ * That is not a corner case. It is how https://www.baidu.com/ renders blank:
+ * baidu sniffs the User-Agent, and to ours it serves 227 bytes whose entire
+ * body is
+ *
+ *     <script>location.replace(location.href.replace("https://","http://"));</script>
+ *
+ * with no stylesheet, no <script src>, no image and no text. So "the loader
+ * found no sub-resources" and "the page was blank" were one fact, not two: we
+ * rendered a redirect stub, correctly, for ever. (The `<noscript><meta
+ * http-equiv=refresh>` beside it is NOT a second chance -- with scripting
+ * enabled, noscript content is raw text by spec and our tokenizer treats it as
+ * such, which is right.)
+ *
+ * WHERE IT IS CONSUMED, and why it is not consumed where it is produced: this
+ * runs from the loader and from the top of the event loop, never from inside a
+ * JS callback. loc_set() is reached from arbitrarily deep inside a script; if
+ * it navigated in place it would dom_free() and js_page_close() the very
+ * document whose handler is on the stack. So the record is taken at a point
+ * where nothing of the old page is live any more.
+ *
+ * THE BUDGET IS A LOOP GUARD, not a policy. A page that replaces itself with
+ * itself never stops, and a pair of pages that bounce to each other never stop
+ * either. Real browsers cap the chain; so does this, and it says so in the
+ * status bar rather than freezing. The budget is per user-initiated load, so
+ * following ten redirects and then clicking a link gives the next chain a
+ * fresh ten.
+ *
+ * Overridable so that the host test can build a loader with a budget of ZERO,
+ * which is byte-for-byte the behaviour this fix replaced: the record is taken
+ * and thrown away, the stub stays on screen. `make test-loader-negctl` builds
+ * exactly that and requires the test to FAIL -- without it, test-loader passing
+ * would not be evidence that it measures anything. */
+#ifndef NAV_MAX_HOPS
+#define NAV_MAX_HOPS 10
+#endif
+
+/* Take a pending script navigation into `out`. 0 if there is none, or if this
+ * build has no js_webapi.o at all (browser-nofetch). */
+static int take_script_nav(char *out, int max)
+{
+    if (!js_webapi_take_navigation) return 0;
+    return js_webapi_take_navigation(out, max) ? 1 : 0;
+}
+
+static void load_once(const char *u);
+
+/* A user-initiated load, plus every navigation the page itself then asks for.
+ *
+ * The chain is a LOOP rather than recursion on purpose: a redirect chain of n
+ * hops must cost one stack frame, not n, and each hop tears down the previous
+ * document completely before the next one starts. */
 static void load(const char *u)
+{
+    char cur[600], next[600];
+    /* `u` is usually &url[0] -- follow_link and the address bar both write it
+     * before calling. Copy first: the chain rewrites `url` on every hop. */
+    { int i = 0; while (u[i] && i < (int)sizeof cur - 1) { cur[i] = u[i]; i++; } cur[i] = 0; }
+
+    /* Discard anything the PREVIOUS page left pending. js_webapi_install does
+     * not clear the record, so a navigation requested by a page the user then
+     * abandoned would otherwise fire against the new one. */
+    take_script_nav(next, sizeof next);
+
+    for (int hops = 0; ; hops++) {
+        load_once(cur);
+        if (!take_script_nav(next, sizeof next)) return;
+        if (hops >= NAV_MAX_HOPS) {
+            set_status("stopped: too many redirects");
+            redraw(0);
+            return;
+        }
+        /* The address bar follows, and so does history -- but by REPLACING the
+         * current entry. See hist_replace: a redirect that pushes is a Back
+         * button that cannot escape. */
+        { int i = 0; while (next[i] && i < (int)sizeof url - 1) { url[i] = next[i]; i++; }
+          url[i] = 0; ulen = i; }
+        hist_replace(url);
+        { int i = 0; while (url[i] && i < (int)sizeof cur - 1) { cur[i] = url[i]; i++; } cur[i] = 0; }
+    }
+}
+
+/* Exposed for the host loader test (tests/unit/loader_test.c), which links this
+ * file against a fake bfetch and a recording GUI so that the redirect chain
+ * above is testable without QEMU. Nothing in the app calls it. */
+void browser_load(const char *u);
+void browser_load(const char *u) { load(u); }
+
+static void load_once(const char *u)
 {
     set_status("loading...");
     /* ORDER: the runtime dies before the DOM does. Every JS wrapper holds a
@@ -927,6 +1038,27 @@ void app_main(void)
             if (js_page_run_due() > 0) {
                 if (settle_dom()) need = 1;
                 if (js_page_output_len() != js_out_shown) { status_from_js("loaded"); need = 1; }
+            }
+        }
+
+        /* A navigation the LIVE page asked for -- a click handler setting
+         * location.href, a timer calling location.replace, a router. Taken
+         * here, at the top of the loop, because this is the first point after
+         * the callback returned at which tearing the document down is safe.
+         *
+         * This one PUSHES history: a page that moves seconds or minutes after
+         * it loaded is acting on the user, and Back must come back here. The
+         * redirect chain inside load() replaces instead -- see hist_replace. */
+        if (!navigated) {
+            char want[600];
+            if (take_script_nav(want, sizeof want)) {
+                editing = 0;
+                int i = 0;
+                while (want[i] && i < (int)sizeof url - 1) { url[i] = want[i]; i++; }
+                url[i] = 0; ulen = i;
+                hist_push(url);
+                load(url);
+                navigated = 1; need = 1;
             }
         }
 
