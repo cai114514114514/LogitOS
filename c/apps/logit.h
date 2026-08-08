@@ -382,4 +382,55 @@ static inline int setting_int(const char *key, int def)
     return digits ? (int)(neg ? -v : v) : def;
 }
 
+
+/* --- server sockets: connections this machine ANSWERS ----------------------
+ *
+ * The wrappers for SYS_SOCKET..SYS_SOCKSTAT. See the long note above
+ * SYS_SOCKET in logit_abi.h for the blocking model; the short version is that
+ * sys_accept() and sys_read() on a socket fd BLOCK (the thread parks, it does
+ * not spin) unless sys_set_nonblock() has been called on the descriptor, and
+ * that there is no poll() to wait on several at once.
+ *
+ * An accepted fd is an ORDINARY fd: sys_read/sys_write/sys_close/sys_dup2 all
+ * work on it and a fork inherits it. That is the point. */
+
+static inline int sys_socket(int domain, int type, int protocol)
+{ return (int)_sys(SYS_SOCKET, domain, type, protocol); }
+
+static inline int sys_bind(int fd, const struct logit_sockaddr *a)
+{ return (int)_sys(SYS_BIND, fd, (long)a, 0); }
+
+static inline int sys_listen(int fd, int backlog)
+{ return (int)_sys(SYS_LISTEN, fd, backlog, 0); }
+
+/* `peer` may be NULL. `timeout_ms` 0 = wait indefinitely; it is ignored on a
+ * non-blocking descriptor, which returns LSK_E_AGAIN at once. */
+static inline int sys_accept(int fd, struct logit_sockaddr *peer, int timeout_ms)
+{ return (int)_sys(SYS_ACCEPT, fd, (long)peer, timeout_ms); }
+
+static inline int sys_getsockname(int fd, struct logit_sockaddr *a)
+{ return (int)_sys(SYS_GETSOCKNAME, fd, (long)a, 0); }
+
+static inline int sys_setsockopt(int fd, int level, int optname, long value)
+{ return (int)_sys(SYS_SETSOCKOPT, fd,
+                   ((long)(level & 0xFFFF) << 16) | (optname & 0xFFFF), value); }
+
+static inline int sys_shutdown(int fd, int how)
+{ return (int)_sys(SYS_SHUTDOWN, fd, how, 0); }
+
+static inline int sys_recvfrom(int fd, struct logit_dgram *d)
+{ return (int)_sys(SYS_RECVFROM, fd, (long)d, 0); }
+
+static inline int sys_sendto(int fd, const struct logit_dgram *d)
+{ return (int)_sys(SYS_SENDTO, fd, (long)d, 0); }
+
+/* One SOCKSTAT_* counter. The reason a test can assert a limit FIRED rather
+ * than assert the machine did not crash. */
+static inline long sys_sockstat(int what)
+{ return _sys(SYS_SOCKSTAT, what, 0, 0); }
+
+/* Fill an address for bind(). Port and IP are HOST order throughout this ABI. */
+static inline void sockaddr_set(struct logit_sockaddr *a, unsigned ip, int port)
+{ a->family = LOGIT_AF_INET; a->port = (unsigned short)port; a->addr = ip; }
+
 #endif /* LOGIT_USERLIB_H */

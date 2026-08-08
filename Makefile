@@ -386,7 +386,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog clip notify execinfo entropy stat
+       show dir chart prog clip notify execinfo entropy httpd stat
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -3375,12 +3375,12 @@ bench-aui: $(ISO) $(DISK)
 # html5lib shape one layer up. See its header.
 -include tests/wpt.mk
 
-# IDL attribute reflection: `el.title` is a VIEW of the `title` content
-# attribute, through a coercion HTML specifies exactly, for ~380 attribute/
-# element pairs generated from the corpus's own tables. The COERCIONS are what
-# can silently be wrong, so that is what the suite and its negative control
-# attack. See tests/reflect.mk.
--include tests/reflect.mk
+# SERVER SOCKETS -- the passive open, SYS_SOCKET..SYS_SOCKSTAT, and /bin/httpd.
+# The device target proves INBOUND from the host through a SLIRP hostfwd rule;
+# the negative control is a stack that accepts the connection but reuses one
+# connection block, which only two simultaneous clients can catch. See
+# tests/sockserv.mk.
+-include tests/sockserv.mk
 
 # WPT REFTESTS -- the pixel half of the same corpus, and the first measurement
 # of LAYOUT correctness this project has had. Renders the test and its reference
