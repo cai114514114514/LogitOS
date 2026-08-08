@@ -80,6 +80,28 @@ static inline void consumeWhitespace(const parserutils_vector *vector, int32_t *
  * \param c      The character to match (lowercase ASCII only)
  * \return True if the token matches, false otherwise
  */
+/* ---- LogitOS patch: the declaration-drop reporter ----------------------
+ *
+ * A page that renders as an unstyled column is a page whose declarations went
+ * somewhere and did nothing, and until this hook existed there was no way to
+ * ask WHICH ones. parseProperty() is the single funnel every declaration in
+ * every sheet passes through, and it has exactly three ways to throw one away.
+ * When the pointer is NULL (the shipping browser) this costs one predicted
+ * branch per declaration and nothing else; the audit tool in
+ * tests/unit/css_audit.c sets it and counts.
+ *
+ * Deliberately NOT a build-time #ifdef: the whole point is to measure the same
+ * bytes the browser runs, and a separately-configured LibCSS is a different
+ * parser. */
+enum {
+	CSS_DROP_UNKNOWN_PROP = 0,	/**< no such property in this LibCSS */
+	CSS_DROP_BAD_VALUE    = 1,	/**< property known, its handler refused */
+	CSS_DROP_TRAILING     = 2,	/**< junk after an otherwise valid value */
+	CSS_DROP_ACCEPTED     = 3	/**< not a drop: the declaration was taken */
+};
+/** name/nlen is the property name as written; NULL to disable (the default). */
+extern void (*css__parse_drop_report)(const char *name, size_t nlen, int reason);
+
 static inline bool tokenIsChar(const css_token *token, uint8_t c)
 {
 	bool result = false;

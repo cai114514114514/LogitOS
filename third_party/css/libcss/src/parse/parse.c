@@ -1326,6 +1326,14 @@ css_error parseBlock(css_parser *parser)
 	return done(parser);
 }
 
+/* LogitOS: whether an at-keyword inside a block is dispatched as a nested
+ * at-rule (see the arm below). A named constant rather than an inline `true` so
+ * `make audit-css-before` can build the pre-patch behaviour from these exact
+ * sources by flipping one word -- the before/after numbers in the commit
+ * message are measured that way, and a comparison against a different checkout
+ * would not be a comparison of one variable. */
+static const bool css__nested_atrules = true;
+
 css_error parseBlockContent(css_parser *parser)
 {
 	enum { Initial = 0, WS = 1 };
@@ -1347,8 +1355,46 @@ css_error parseBlockContent(css_parser *parser)
 			if (error != CSS_OK)
 				return error;
 
-			if (token->type == CSS_TOKEN_ATKEYWORD) {
-				state->substate = WS;
+			if (token->type == CSS_TOKEN_ATKEYWORD &&
+					css__nested_atrules) {
+				/* LogitOS patch: a NESTED at-rule.
+				 *
+				 * The stock code treated an at-keyword inside a
+				 * block as ordinary "any" content: the tokens
+				 * accumulated and were handed to
+				 * handleBlockContent, which -- inside @media --
+				 * forwards them to handleStartRuleset, so
+				 * `@media (...) { @supports (...) { ... } }`
+				 * arrived as a selector called "@supports",
+				 * failed to parse, and lost the whole block.
+				 * Nothing in CSS 2.1 nested at-rules, so it had
+				 * never mattered; every conditional group rule
+				 * added since does, and a modern sheet nests
+				 * them constantly (@layer wrapping @supports on
+				 * tailwind, @media wrapping @container on
+				 * github).
+				 *
+				 * Same shape as the '{' arm below: flush what
+				 * has accumulated, then hand the at-rule to the
+				 * state that knows how to read one. */
+				parser_state to = { sAtRule, Initial };
+				parser_state subsequent =
+					{ sBlockContent, Initial };
+
+				error = pushBack(parser, token);
+				if (error != CSS_OK)
+					return error;
+
+				error = emit(parser, CSS_PARSER_BLOCK_CONTENT,
+						parser->tokens, true);
+				if (error != CSS_OK)
+					return error;
+
+				discard_tokens(parser);
+
+				return transition(parser, to, subsequent);
+			} else if (token->type == CSS_TOKEN_ATKEYWORD) {
+				state->substate = WS;   /* the stock behaviour */
 			} else if (token->type == CSS_TOKEN_CHAR) {
 				if (lwc_string_length(token->idata) == 1 &&
 						lwc_string_data(

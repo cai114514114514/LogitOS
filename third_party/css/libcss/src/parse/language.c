@@ -346,6 +346,280 @@ css_error handleEndRuleset(css_language *c, const parserutils_vector *vector)
 	return CSS_OK;
 }
 
+/* ---- LogitOS patch: the conditional group rules this LibCSS predates -------
+ *
+ * @layer, @supports and @container did not exist when this LibCSS was written,
+ * so handleStartAtRule fell through to `return CSS_INVALID` and the core parser
+ * discarded the at-rule TOGETHER WITH ITS ENTIRE BLOCK. That is not a missing
+ * feature, it is a missing stylesheet: tailwind.com wraps all 692 KiB of its
+ * CSS in five @layer blocks, and measured over tests/fixtures/cssweb the page
+ * went from 0 flex containers and 0 grid containers to 152 and 73 -- from an
+ * unstyled column to a laid-out page -- purely by not throwing the blocks away.
+ *
+ * They are all CONDITIONAL GROUP RULES: a condition plus a block of ordinary
+ * rules. LibCSS already has exactly one of those, @media, with working nesting,
+ * parenting, selection and the `mq_rule_good_for_media` ancestor walk. So each
+ * of these is built AS a CSS_RULE_MEDIA whose media list is either `all` (the
+ * block takes part) or `not all` (it does not). No new rule type, no new
+ * selection path, nothing else in LibCSS has to learn about them.
+ *
+ *   @layer      -> always `all`. Layer ORDER affects precedence and we ignore
+ *                  it, so a page that relies on a low layer losing to a high
+ *                  one cascades on source order instead. Wrong precedence is a
+ *                  wrong colour; a dropped block is a missing page.
+ *   @container  -> always `all`. A container query needs the container's used
+ *                  size, which does not exist until layout; the modern branch
+ *                  is the one the sheet was written for.
+ *   @supports   -> actually EVALUATED, see supports_condition(). We own a CSS
+ *                  parser, so "can this declaration be parsed" is a question we
+ *                  can answer honestly rather than guess at -- and guessing
+ *                  `true` would also enable every `@supports not (...)`
+ *                  fallback block, which is how you get both branches of a
+ *                  feature test applied at once.
+ */
+static bool at_keyword_is(const css_token *kw, const char *name)
+{
+	size_t n = lwc_string_length(kw->idata);
+	const char *d = lwc_string_data(kw->idata);
+	size_t i;
+
+	for (i = 0; i < n; i++) {
+		char a = d[i];
+		if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+		if (name[i] == '\0' || a != name[i]) return false;
+	}
+	return name[n] == '\0';
+}
+
+/** The conditional group rules this patch adds. Its own function so the
+ * negative control in tests/cssweb.mk can disable exactly this and nothing
+ * else, and watch css_modern_test fail. */
+static bool at_rule_is_group(const css_token *kw)
+{
+	return at_keyword_is(kw, "layer") ||
+	       at_keyword_is(kw, "container") ||
+	       at_keyword_is(kw, "scope") ||
+	       at_keyword_is(kw, "supports");
+}
+
+/** Build the media list that makes a group rule apply (or never apply). */
+static css_error mq_all(css_language *c, bool applies, css_mq_query **out)
+{
+	const char *q = applies ? "all" : "not all";
+	return css_parse_media_query(c->strings, (const uint8_t *) q,
+			strlen(q), out);
+}
+
+/* Skip from just after a '(' to just past its matching ')'. */
+static void skip_to_close(const parserutils_vector *vector, int32_t *ctx)
+{
+	int depth = 1;
+	const css_token *t;
+
+	while ((t = parserutils_vector_iterate(vector, ctx)) != NULL) {
+		if (tokenIsChar(t, '(') || t->type == CSS_TOKEN_FUNCTION) depth++;
+		else if (tokenIsChar(t, ')')) { if (--depth == 0) return; }
+	}
+}
+
+/**
+ * Is `( <property> : <value> )` something this engine can actually do?
+ *
+ * Answered by the only authority that can answer it: the property table and
+ * the value handler that the cascade itself uses. A property name we do not
+ * have is unsupported; a value our handler refuses is unsupported. That makes
+ * `@supports (display:grid)` true and `@supports (backdrop-filter:blur(4px))`
+ * false without a hand-maintained feature list that would drift the moment
+ * anyone touched a parser.
+ *
+ * `ctx` is positioned just after the opening '(' and is left just past the
+ * matching ')'.
+ */
+static bool supports_decl(css_language *c, const parserutils_vector *vector,
+		int32_t *ctx)
+{
+	const css_token *prop;
+	css_style *style = NULL;
+	css_prop_handler handler;
+	bool ok = false;
+	bool match = false;
+	int i;
+
+	consumeWhitespace(vector, ctx);
+	prop = parserutils_vector_iterate(vector, ctx);
+	if (prop == NULL || prop->type != CSS_TOKEN_IDENT) {
+		skip_to_close(vector, ctx);
+		return false;
+	}
+
+	consumeWhitespace(vector, ctx);
+	if (tokenIsChar(parserutils_vector_iterate(vector, ctx), ':') == false) {
+		skip_to_close(vector, ctx);
+		return false;
+	}
+	consumeWhitespace(vector, ctx);
+
+	/* A custom property accepts any value at all, which is exactly what
+	 * `@supports (--x: y)` is used to test for. */
+	if (lwc_string_length(prop->idata) > 2 &&
+			lwc_string_data(prop->idata)[0] == '-' &&
+			lwc_string_data(prop->idata)[1] == '-') {
+		skip_to_close(vector, ctx);
+		return true;
+	}
+
+	for (i = FIRST_PROP; i <= LAST_PROP; i++) {
+		if (lwc_string_caseless_isequal(prop->idata, c->strings[i],
+				&match) == lwc_error_ok && match)
+			break;
+	}
+	if (i == LAST_PROP + 1) {
+		skip_to_close(vector, ctx);
+		return false;
+	}
+
+	handler = property_handlers[i - FIRST_PROP];
+	if (handler != NULL &&
+			css__stylesheet_style_create(c->sheet, &style) == CSS_OK) {
+		ok = (handler(c, vector, ctx, style) == CSS_OK);
+		css__stylesheet_style_destroy(style);
+	}
+
+	skip_to_close(vector, ctx);
+	return ok;
+}
+
+/* <supports-condition> = not <in-parens> | <in-parens> [ and|or <in-parens> ]*
+ * Mixing `and` with `or` without parentheses is a syntax error in CSS; we take
+ * whichever operator we see first and stay with it, which is what every valid
+ * sheet produces anyway. */
+static bool supports_condition(css_language *c, const parserutils_vector *vector,
+		int32_t *ctx);
+
+static bool supports_in_parens(css_language *c, const parserutils_vector *vector,
+		int32_t *ctx)
+{
+	const css_token *t;
+	int32_t peek;
+
+	consumeWhitespace(vector, ctx);
+	t = parserutils_vector_peek(vector, *ctx);
+	if (t == NULL) return false;
+
+	/* `not <in-parens>` */
+	if (t->type == CSS_TOKEN_IDENT && at_keyword_is(t, "not")) {
+		parserutils_vector_iterate(vector, ctx);
+		return !supports_in_parens(c, vector, ctx);
+	}
+
+	/* selector(...), font-format(...), ... -- conditions about things this
+	 * engine has no way to introspect. Reported unsupported: a sheet that
+	 * asks whether we grok `selector(:has(a))` is better served by its
+	 * fallback than by a claim we cannot back. */
+	if (t->type == CSS_TOKEN_FUNCTION) {
+		parserutils_vector_iterate(vector, ctx);
+		skip_to_close(vector, ctx);
+		return false;
+	}
+
+	if (tokenIsChar(t, '(') == false) {
+		/* Not a condition at all -- consume it so we cannot loop. */
+		parserutils_vector_iterate(vector, ctx);
+		return false;
+	}
+	parserutils_vector_iterate(vector, ctx);          /* the '(' */
+
+	/* Either a nested condition or a declaration. A nested condition starts
+	 * with '(' or the ident `not`; anything else is `prop: value`. */
+	consumeWhitespace(vector, ctx);
+	peek = *ctx;
+	t = parserutils_vector_peek(vector, peek);
+	if (t != NULL && (tokenIsChar(t, '(') ||
+			(t->type == CSS_TOKEN_IDENT && at_keyword_is(t, "not")))) {
+		bool r = supports_condition(c, vector, ctx);
+		skip_to_close(vector, ctx);
+		return r;
+	}
+	return supports_decl(c, vector, ctx);
+}
+
+static bool supports_condition(css_language *c, const parserutils_vector *vector,
+		int32_t *ctx)
+{
+	bool result = supports_in_parens(c, vector, ctx);
+	int op = 0;                                       /* 0 none, 1 and, 2 or */
+
+	for (;;) {
+		const css_token *t;
+
+		consumeWhitespace(vector, ctx);
+		t = parserutils_vector_peek(vector, *ctx);
+		if (t == NULL || t->type != CSS_TOKEN_IDENT) break;
+
+		if (at_keyword_is(t, "and")) {
+			if (op == 2) break;
+			op = 1;
+		} else if (at_keyword_is(t, "or")) {
+			if (op == 1) break;
+			op = 2;
+		} else {
+			break;
+		}
+		parserutils_vector_iterate(vector, ctx);
+
+		{
+			bool rhs = supports_in_parens(c, vector, ctx);
+			result = (op == 1) ? (result && rhs) : (result || rhs);
+		}
+	}
+
+	return result;
+}
+
+/** Create a CSS_RULE_MEDIA standing in for a conditional group rule.
+ *
+ * The rule is added UNDER the at-rule currently on the context stack, the way
+ * handleStartRuleset parents its selectors. That is not tidiness: modern sheets
+ * ship `@media (...) { @layer u { ... } }` constantly, and with a NULL parent
+ * the inner rule is hung off the stylesheet root instead of off the @media --
+ * so `mq_rule_good_for_media`'s ancestor walk never sees the @media, and every
+ * rule inside the layer applies at every viewport. (The stock @media branch
+ * above passes NULL because this LibCSS never nested one; it is left alone.) */
+static css_error group_rule(css_language *c, bool applies, css_rule **out)
+{
+	css_mq_query *media = NULL;
+	css_rule *rule = NULL;
+	css_rule *parent = NULL;
+	context_entry *cur;
+	css_error error;
+
+	cur = parserutils_stack_get_current(c->context);
+	if (cur != NULL && cur->type != CSS_PARSER_START_STYLESHEET)
+		parent = cur->data;
+
+	error = mq_all(c, applies, &media);
+	if (error != CSS_OK) return error;
+
+	error = css__stylesheet_rule_create(c->sheet, CSS_RULE_MEDIA, &rule);
+	if (error != CSS_OK) { css__mq_query_destroy(media); return error; }
+
+	error = css__stylesheet_rule_set_media(c->sheet, rule, media);
+	if (error != CSS_OK) {
+		css__stylesheet_rule_destroy(c->sheet, rule);
+		css__mq_query_destroy(media);
+		return error;
+	}
+
+	error = css__stylesheet_add_rule(c->sheet, rule, parent);
+	if (error != CSS_OK) {
+		css__stylesheet_rule_destroy(c->sheet, rule);
+		return error;
+	}
+
+	*out = rule;
+	return CSS_OK;
+}
+
 css_error handleStartAtRule(css_language *c, const parserutils_vector *vector)
 {
 	parserutils_error perror;
@@ -634,7 +908,35 @@ css_error handleStartAtRule(css_language *c, const parserutils_vector *vector)
 		 * so no need to destroy it */
 
 		c->state = HAD_RULE;
+	} else if (at_rule_is_group(atkeyword)) {
+		/* LogitOS patch -- the conditional group rules; see the block
+		 * comment above at_keyword_is(). */
+		bool applies = true;
+
+		if (at_keyword_is(atkeyword, "supports")) {
+			int32_t sctx = ctx;
+			applies = supports_condition(c, vector, &sctx);
+		}
+
+		error = group_rule(c, applies, &rule);
+		if (error != CSS_OK)
+			return error;
+
+		c->state = HAD_RULE;
 	} else {
+		/* LogitOS patch: an at-rule this LibCSS does not know takes its
+		 * WHOLE BLOCK with it -- `@supports (display:grid){...}` loses
+		 * every rule inside, which is a far larger hole than any single
+		 * dropped declaration. Reported with a leading '@' so the audit
+		 * ranks it next to the properties. */
+		if (css__parse_drop_report != NULL && atkeyword->idata != NULL) {
+			char buf[64];
+			size_t n = lwc_string_length(atkeyword->idata);
+			if (n > sizeof(buf) - 2) n = sizeof(buf) - 2;
+			buf[0] = '@';
+			memcpy(buf + 1, lwc_string_data(atkeyword->idata), n);
+			css__parse_drop_report(buf, n + 1, CSS_DROP_UNKNOWN_PROP);
+		}
 		return CSS_INVALID;
 	}
 
@@ -1840,6 +2142,17 @@ css_error parseSelectorList(css_language *c, const parserutils_vector *vector,
  * Property parsing functions						      *
  ******************************************************************************/
 
+/* LogitOS patch: see the comment on the declaration in parse/language.h. */
+void (*css__parse_drop_report)(const char *name, size_t nlen, int reason) = NULL;
+
+static inline void report_drop(const css_token *property, int reason)
+{
+	if (css__parse_drop_report != NULL && property != NULL &&
+			property->idata != NULL)
+		css__parse_drop_report(lwc_string_data(property->idata),
+				lwc_string_length(property->idata), reason);
+}
+
 css_error parseProperty(css_language *c, const css_token *property,
 		const parserutils_vector *vector, int32_t *ctx, css_rule *rule)
 {
@@ -1859,8 +2172,10 @@ css_error parseProperty(css_language *c, const css_token *property,
 				&match) == lwc_error_ok && match)
 			break;
 	}
-	if (i == LAST_PROP + 1)
+	if (i == LAST_PROP + 1) {
+		report_drop(property, CSS_DROP_UNKNOWN_PROP);
 		return CSS_INVALID;
+	}
 
 	/* Get handler */
 	handler = property_handlers[i - FIRST_PROP];
@@ -1876,6 +2191,7 @@ css_error parseProperty(css_language *c, const css_token *property,
 	/* Call the handler */
 	error = handler(c, vector, ctx, style);
 	if (error != CSS_OK) {
+		report_drop(property, CSS_DROP_BAD_VALUE);
 		css__stylesheet_style_destroy(style);
 		return error;
 	}
@@ -1892,6 +2208,7 @@ css_error parseProperty(css_language *c, const css_token *property,
 	token = parserutils_vector_iterate(vector, ctx);
 	if (token != NULL) {
 		/* Trailing junk, so discard declaration */
+		report_drop(property, CSS_DROP_TRAILING);
                 css__stylesheet_style_destroy(style);
 		return CSS_INVALID;
 	}
@@ -1908,6 +2225,13 @@ css_error parseProperty(css_language *c, const css_token *property,
 	}
 
 	/* Style owned or destroyed by stylesheet, so forget about it */
+
+	/* LogitOS patch: the ACCEPTED arm. Counting drops alone understates an
+	 * at-rule failure by orders of magnitude -- `@layer{...}` is one drop
+	 * that costs a whole 692 KiB stylesheet, because every declaration
+	 * inside it never reaches this function at all. Accepted-vs-declared is
+	 * the honest coverage number; see `reach` in tests/unit/css_audit.c. */
+	report_drop(property, CSS_DROP_ACCEPTED);
 
 	return CSS_OK;
 }
