@@ -408,13 +408,19 @@ harness was built first.
   real user page the kernel is touching right now.
 - **Two tiers, cheapest first.** TIER 1 drops a page and re-derives it on the next
   fault, no device involved; TIER 2 writes it to a swap slot. NOTE, said plainly:
-  this kernel has **no file-backed user mapping** (mmap is anon-only, ELF images
-  are read eagerly into anon frames), so the classic "drop a clean page-cache
-  page" population does not exist. The equivalent that does is the **zero page** --
-  an anonymous page (`VMM_PTE_ANON`, bit 10) whose 4 KiB are currently zero,
-  re-derivable by `do_anon`. That is the population that matters most here:
-  browser.aex maps a 105.5 MiB `.bss` against a 12.7 MiB heap peak. Tier 1 tests
-  the CONTENTS, not the dirty bit, so a page the process zeroed also qualifies.
+  this kernel has **no file-backed user mapping at all** -- mmap takes no fd
+  (`mmsys.c`), an ELF image is read *eagerly* into anon frames by `elf_load` (so
+  app text is NOT backed by its `.aex` and must be swapped, never dropped), and
+  an fd read lands in a kmalloc buffer in no user page table. So the classic
+  "drop a clean page-cache page" tier has no producer here; building it first
+  would have been building a mechanism with nothing to feed it. The equivalent
+  that does exist is the **zero page** -- an anonymous page (`VMM_PTE_ANON`, bit
+  10) currently all zero, re-derivable by `do_anon`. Tier 1 tests the CONTENTS,
+  not the dirty bit, so a page the process zeroed also qualifies. (It used to be
+  dominated by browser.elf's ~105 MiB `.bss`; the libc line has since moved that
+  96 MiB arena to `SYS_MMAP` with a commit bound and the `.bss` is now <10 MiB --
+  not allocating a page beats reclaiming it. Tier 1 is smaller now and still
+  real; `run-swap-test.sh` asserts BOTH tiers fire and prints the split.)
 - **Clock over physical frames**, not an active/inactive LRU: with no hardware
   reference notification, a "recently used" list could only be built by the same
   accessed-bit sampling the clock's sweep already is, so lists would add

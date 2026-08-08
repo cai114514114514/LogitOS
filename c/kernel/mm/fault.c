@@ -216,7 +216,7 @@ static uint64_t fault_frame(void)
 {
     uint64_t f = pmm_alloc();
     if (f) return f;
-    if (reclaim_frames(64)) f = pmm_alloc();
+    if (reclaim_emergency(64)) f = pmm_alloc();
     return f;
 }
 

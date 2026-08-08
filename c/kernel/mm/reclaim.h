@@ -38,23 +38,49 @@
  *             frame is freed. The next fault reads it back.
  *             Cost: a 4 KiB disk write now and a 4 KiB disk read later.
  *
- * WHICH PAGES ARE TIER 1 HERE, AND THE HONEST CAVEAT. On a system with a
- * file-backed page cache, tier 1 is "a clean page that came from a file" -- the
- * file is still on disk, so the copy in RAM is redundant. THIS KERNEL HAS NO
- * FILE-BACKED USER MAPPING. mmap is anonymous only (c/kernel/mm/mmsys.c); an
- * ELF image is read eagerly into anonymous frames by elf_load; a file read
- * through an fd goes into a kmalloc buffer that is not in any user page table.
- * So the classic tier-1 population does not exist to be reclaimed, and saying
- * otherwise would be inventing a result.
+ * WHICH PAGES ARE TIER 1 HERE, AND THE HONEST CAVEAT.
  *
- * What DOES exist, and is genuinely the same thing, is the ZERO PAGE. An
+ * On a system with a file-backed page cache, tier 1 is "a clean page that came
+ * from a file" -- the file is still on disk, so the copy in RAM is redundant,
+ * and dropping it costs nothing.
+ *
+ * THIS KERNEL HAS NO FILE-BACKED USER MAPPING AT ALL. Worth stating plainly,
+ * because it is not obvious and the next person will otherwise re-derive it:
+ *
+ *   - mmap is anonymous only. c/kernel/mm/mmsys.c takes a length and a
+ *     protection and never a file descriptor; there is no MAP_SHARED, no
+ *     MAP_FILE, no page->file relationship anywhere in the tree.
+ *   - an ELF image is read EAGERLY into anonymous frames by elf_load, so an
+ *     app's text is not backed by the .aex it came from -- nothing re-reads it,
+ *     which is exactly why a text page must be SWAPPED and cannot be dropped.
+ *   - a file read through an fd lands in a kmalloc buffer (c/kernel/exec/file.c
+ *     F_VFS), which is kernel memory in no user page table at all -- so it is
+ *     not reclaimable by this path in either tier.
+ *
+ * So the classic tier-1 population has no producer on this machine. Saying
+ * otherwise would be inventing a result, and building the file-backed tier
+ * first would have been building a mechanism with nothing to feed it.
+ *
+ * What DOES exist, and is genuinely the same property, is the ZERO PAGE. An
  * anonymous page whose 4 KiB are currently all zero can be dropped and
- * re-derived on the next fault by exactly the code that created it in the first
- * place (fault.c do_anon, which zero-fills). It is re-derivable without I/O,
- * which is the entire property tier 1 is about. It is also, on this machine,
- * the population that matters most: browser.aex maps a 105.5 MiB .bss at launch
- * against an actual heap peak of 12.7 MiB, and the difference is ~93 MiB of
- * frames holding zeroes. Tier 1 reclaims that with no device at all.
+ * re-derived on the next fault by exactly the code that created it (fault.c
+ * do_anon, which zero-fills). Re-derivable without I/O is the whole of what
+ * tier 1 is about.
+ *
+ * HOW BIG THAT POPULATION IS, AND WHY THE ANSWER MOVED. It used to be dominated
+ * by one thing: browser.elf carried a ~105 MiB .bss, mapped in full at launch
+ * against a heap that actually peaked at 12.7 MiB, so ~93 MiB of frames held
+ * nothing but zeroes. That is gone -- the libc line moved the 96 MiB allocator
+ * arena to SYS_MMAP with a commit bound, and the .bss is now under 10 MiB, so
+ * those frames are never allocated in the first place. Which is the better fix:
+ * not reclaiming a page beats reclaiming it, every time.
+ *
+ * Tier 1 is therefore smaller than it was and still not small. What feeds it now
+ * is ordinary demand-paged anonymous memory that a process touched and left
+ * zero -- the tail of any mmap'd arena, freshly grown heaps, zeroed buffers --
+ * and it is measured rather than assumed: tests/boot/run-swap-test.sh asserts
+ * that BOTH tiers fire and prints the split, because a tier that silently stops
+ * firing looks exactly like a tier that is working.
  *
  * The test for tier 1 is deliberately the CONTENTS, not the dirty bit. "Never
  * written since it was mapped" would also be correct and is cheaper to read,
@@ -159,8 +185,27 @@ void reclaim_init(void);
 
 /* Free at least `want` frames if possible; returns how many were actually
  * freed. Never allocates. Safe to call with the frame allocator empty -- that
- * is the case it exists for. */
+ * is the case it exists for.
+ *
+ * UNBOUNDED: it sweeps as far as it takes. Correct for a caller that asked for
+ * a specific number of frames and will wait for them; wrong for anything on a
+ * hot path. See reclaim_emergency(). */
 uint64_t reclaim_frames(uint64_t want);
+
+/* The same, with the allocation path's scan budget.
+ *
+ * For the fault handler's last try before it kills a process. The distinction
+ * is not stylistic -- it is the difference between a machine that degrades and
+ * one that stops. With reclaim_frames() here, a machine whose free memory is
+ * pinned at the floor sweeps ALL of memory on every single fault: the workload
+ * crawls, the shell never gets useful work done, and nothing is ever killed, so
+ * the machine looks hung rather than out of memory. That is exactly what the
+ * no-swap control observed. Bounded, the fault either gets a frame quickly or
+ * fails quickly -- and failing is the correct outcome, because a failed
+ * anonymous fault kills the one process that cannot be satisfied and leaves the
+ * rest of the machine alive, which is the containment this kernel already
+ * had. */
+uint64_t reclaim_emergency(uint64_t want);
 
 /* The pressure trigger. pmm_alloc() calls this before serving a request; it
  * runs a reclaim pass when free memory is below the low watermark and does

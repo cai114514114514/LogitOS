@@ -371,6 +371,11 @@ uint64_t reclaim_frames(uint64_t want)
     return reclaim_scan(want, 0);
 }
 
+uint64_t reclaim_emergency(uint64_t want)
+{
+    return reclaim_scan(want, RECLAIM_ALLOC_BUDGET);
+}
+
 /* ------------------------------------------------------------- the trigger -- */
 
 /* Called from pmm_alloc BEFORE it takes pmm_lock, so everything reclaim does
@@ -460,7 +465,7 @@ int reclaim_swapin(uint64_t cr3, uint64_t va, uint64_t *pte, int active)
      * scheduling accident. */
     uint64_t f = pmm_alloc_reserve();
     if (!f) {
-        reclaim_frames(64);
+        reclaim_emergency(64);
         f = pmm_alloc_reserve();
     }
     if (!f) { c_swapin_fail++; return 0; }
