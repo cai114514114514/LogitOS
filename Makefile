@@ -199,6 +199,7 @@ RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 .PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
+.PHONY: test-monitor test-monitor-negctl
 .PHONY: test-mm test-mm-os test-swap test-swap-negctl test-leak test-leak-os
 
 all: $(ISO)
@@ -306,6 +307,15 @@ APPS := clock textedit monitor terminal widgets files preview studio
 # icon every existing driver clicks. (NAPPS there still has to go 9 -> 10: the
 # dock is centred, so one more app shifts every icon.)
 GALLERY_AEX := $(BUILD)/gallery.aex
+
+# Which Activity Monitor goes on the disk. Overridable for the same reason
+# BROWSER_AEX is: test-monitor-negctl packs a deliberately crippled build (one
+# that ignores the kernel's LOGIT_PROC_PROTECTED flag and aims its kill at a
+# pid that does not exist) and requires the SAME assertions to fail against it.
+# monitor keeps its slot in APPS -- the Dock's order is the order the .aex files
+# land in the LogitFS root, and tests/qmp/qmp_monitor.py's MONITOR_SLOT names
+# its index, so it is substituted in place rather than appended.
+MONITOR_AEX := $(BUILD)/monitor.aex
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
@@ -683,7 +693,8 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
-	    $(foreach a,$(APPS),$(BUILD)/$(a).aex:$(a).aex) $(BROWSER_AEX):browser.aex \
+	    $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex) \
+	    $(BROWSER_AEX):browser.aex \
 	    $(GALLERY_AEX):gallery.aex \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
@@ -2987,6 +2998,51 @@ $(BUILD)/gallery_noaa.elf: $(GUIDIR)/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logi
 	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o
 $(BUILD)/gallery_noaa.aex: $(BUILD)/gallery_noaa.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery_noaa.elf $@ 'Gallery' - 'G' 120 140 250
+
+# --- the Activity Monitor: the task manager, and its kill ---------------------
+#
+# A monitor you cannot act from is a poster, so the assertion that matters is
+# that a process SELECTED IN THE TABLE actually dies. qmp_monitor.py requires
+# that from three independent places -- the kernel's serial log, the Monitor's
+# own table (which is SYS_PROCS, i.e. the PCB table), and the pixels where the
+# victim's window used to be -- because any one of them can go quiet while the
+# feature is broken.
+#
+# It also asserts the REFUSAL: the console shell (init) is the one process
+# SYS_KILL declines, and the Force Quit button must be greyed out for it BEFORE
+# the click, driven by the LOGIT_PROC_PROTECTED flag the kernel publishes rather
+# than by a rule the app re-derives.
+test-monitor: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_monitor.py $(ISO) $(DISK) --out $(BUILD)/monitor.png
+
+# The NEGATIVE CONTROL, and it is meant to fail. -DMONITOR_NEGCTL builds the
+# app so that it (a) ignores LOGIT_PROC_PROTECTED, lighting the button up for
+# the console shell, and (b) aims its kill at pid 0. Nothing dies and nothing is
+# refused, so the refusal assertion and all three "it is gone" assertions fail.
+# The target succeeds when the test fails.
+$(BUILD)/monitor_negctl.elf: $(GUIDIR)/monitor.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
+                             $(GUIDIR)/aui.h $(BUILD)/apps/aui.o
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/monitor_negctl.crt0.o
+	$(CC) $(UCFLAGS) -DMONITOR_NEGCTL -c $(GUIDIR)/monitor.c -o $(BUILD)/apps/monitor_negctl.o
+	$(LD) -nostdlib -e _start -Ttext=0x42000000 -o $@ $(BUILD)/apps/monitor_negctl.crt0.o \
+	    $(BUILD)/apps/monitor_negctl.o $(BUILD)/apps/aui.o
+$(BUILD)/monitor_negctl.aex: $(BUILD)/monitor_negctl.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/monitor_negctl.elf $@ 'Monitor' - 'M' 255 100 100
+
+# $(DISK)'s prerequisite list names $(BUILD)/monitor.aex (via APPS), not
+# $(MONITOR_AEX), so the substitute has to be built as its own goal first --
+# otherwise mkfs.py is handed a path that was never made.
+test-monitor-negctl: $(ISO) $(BUILD)/monitor_negctl.aex
+	$(MAKE) DISK=$(BUILD)/disk_monneg.img MONITOR_AEX=$(BUILD)/monitor_negctl.aex \
+	    $(BUILD)/disk_monneg.img
+	@echo "--- negative control: the SAME assertions against a crippled Monitor ---"
+	@if python3 tests/qmp/qmp_monitor.py $(ISO) $(BUILD)/disk_monneg.img \
+	    --out $(BUILD)/monitor_negctl.png; then \
+	    echo "NEGATIVE CONTROL FAILED: the crippled build passed the assertions"; exit 1; \
+	else \
+	    echo "negative control OK: the crippled build fails the assertions"; \
+	fi
 
 test-aui-negctl: $(ISO)
 	$(MAKE) DISK=$(BUILD)/disk_noaa.img GALLERY_AEX=$(BUILD)/gallery_noaa.aex $(BUILD)/disk_noaa.img

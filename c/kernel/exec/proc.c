@@ -9,6 +9,8 @@
 #include "pit.h"
 #include "kprintf.h"
 #include "spinlock.h"
+#include "usercopy.h"    /* SYS_PROCS copies the table out to ring 3 */
+#include "logit_abi.h"   /* struct logit_procinfo, LOGIT_KILL_* */
 /* Path-qualified: see the note in syscall.c -- mini-libc's sys/wait.h sorts
  * first in INCDIRS and silently wins the bare form. */
 #include "kernel/core/wait.h"   /* M27: a parent waits for a child, it does not poll */
@@ -30,6 +32,23 @@ static spinlock_t g_proc_lock = SPINLOCK_INIT;
 
 static struct proc procs[NPROC];
 static int next_pid = 1;
+
+/* "This process has been killed and does not know it yet", one byte per PCB
+ * slot, parallel to procs[] and guarded by the same lock.
+ *
+ * A field in struct proc would read better, and it is not one because proc.h is
+ * not this change's to edit. A parallel array indexed identically is exactly as
+ * correct -- it is cleared in alloc_proc(), the single place a slot is claimed,
+ * so a recycled pid can never inherit the previous tenant's death sentence.
+ *
+ * g_kill_pending is the gate: the number of marks outstanding. It exists so the
+ * check on the syscall path costs one load of a global and one never-taken
+ * branch on a machine where nobody is being killed -- the same discipline
+ * kprof's disabled spans use. It is not a lock and does not need to be: a stale
+ * read costs one syscall of latency before the victim notices, never a missed
+ * kill, because proc_kill_check() re-reads the mark under g_proc_lock. */
+static unsigned char g_killmark[NPROC];
+static volatile unsigned long g_kill_pending;
 
 /* Where a parent waits for a child to die.
  *
@@ -162,6 +181,7 @@ static struct proc *alloc_proc(void)
         if (procs[i].state == PROC_FREE) {
             struct proc *p = &procs[i];
             for (int f = 0; f < NFD; f++) p->fd[f] = NULL;
+            g_killmark[i] = 0;                 /* a recycled slot never inherits a kill mark */
             p->state = PROC_RUNNING;           /* claim the slot atomically under the lock */
             p->pid = next_pid++;
             p->ppid = 0; p->exit_code = 0; p->tid = -1; p->cr3 = 0; p->gui = NULL;
@@ -389,5 +409,204 @@ void proc_reap(void)
         }
         spin_unlock_irqrestore(&g_proc_lock, fl);
         if (freed_cr3) vmm_free_space(freed_cr3);
+    }
+}
+
+/* ===========================================================================
+ * The process table as data (SYS_PROCS), and ending a process (SYS_KILL).
+ *
+ * Both live here, behind one proc_syscall() entry point, for the reason
+ * mmsys.c gives for mm_syscall(): the dispatcher in c/kernel/exec/syscall.c
+ * gets a four-line forwarding case instead of a body somebody else has to
+ * review, and the argument checking sits next to the table it is checking.
+ * ===========================================================================*/
+
+/* --- what this can and cannot report --------------------------------------
+ * Everything below is read straight out of struct proc. There is no CPU
+ * percentage, no resident-memory figure, no I/O and no network column, and
+ * that is a statement about the kernel rather than about the reporting:
+ *
+ *   CPU.       sched.c gives each thread a `slices` counter -- DISPATCHES, not
+ *              time -- and `struct thread` is opaque with no lookup by id, so a
+ *              proc cannot reach the thread its own ->tid names. Per-process
+ *              CPU time needs an accumulator across context_switch, in sched.c.
+ *   MEMORY.    pmm refcounts every frame and rmap knows which PTEs point at it,
+ *              but nothing sums either per address space. The one per-cr3
+ *              number that does exist, vma_reserved_bytes(), counts mmap
+ *              reservations -- and no GUI app on this machine calls mmap, so it
+ *              reads 0 for every one of them. A resident-set figure needs a
+ *              page-table walk in c/kernel/mm/.
+ *   DISK/NET.  Not accounted at all. (sock.c knows the owning pid of a socket,
+ *              which would give a per-process socket COUNT, but it exposes no
+ *              accessor and is another line's file.)
+ *
+ * Each of those is a small change in a file this one does not own, so each is
+ * left undone and said out loud rather than approximated. */
+static int proc_list(struct logit_procinfo *out, int max)
+{
+    struct proc *self = proc_current();
+    int selfpid = self ? self->pid : -1;
+    int n = 0;
+
+    for (int i = 0; i < NPROC && n < max; i++) {
+        struct logit_procinfo e;
+        int have = 0;
+
+        /* Snapshot ONE slot under the lock, then copy it out with the lock
+         * dropped. user_copy_to() can fault (the caller's buffer is ordinary
+         * user memory and may need faulting in), and taking a page fault with
+         * g_proc_lock held would deadlock against any fault path that wants the
+         * process table. The cost is that the answer is a sample rather than an
+         * instant -- which is what every process listing on every system is,
+         * and why the table is re-read each refresh rather than cached. */
+        uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+        struct proc *p = &procs[i];
+        if (p->state != PROC_FREE) {
+            e.pid   = p->pid;
+            e.ppid  = p->ppid;
+            e.state = (p->state == PROC_ZOMBIE) ? LOGIT_PROC_ZOMBIE : LOGIT_PROC_RUNNING;
+            e.tid   = p->tid;
+            e.flags = 0;
+            if (p->gui)            e.flags |= LOGIT_PROC_GUI;
+            if (g_killmark[i])     e.flags |= LOGIT_PROC_DYING;
+            if (p->pid == selfpid) e.flags |= LOGIT_PROC_SELF;
+            /* The SAME predicate proc_kill() refuses on, evaluated here so a UI
+             * never has to guess it. See the comment above proc_kill(). */
+            if (!p->gui && p->ppid == 0) e.flags |= LOGIT_PROC_PROTECTED;
+            e.nfds = 0;
+            for (int f = 0; f < NFD; f++) if (p->fd[f]) e.nfds++;
+            scopy(e.name, p->name, (int)sizeof e.name);
+            scopy(e.cwd,  p->cwd,  (int)sizeof e.cwd);
+            have = 1;
+        }
+        spin_unlock_irqrestore(&g_proc_lock, fl);
+
+        if (!have) continue;
+        if (user_copy_to(&out[n], &e, sizeof e) < 0) return -1;
+        n++;
+    }
+    return n;
+}
+
+/* --- killing a process ----------------------------------------------------
+ * This marks; it does not reach in and tear the victim down where it stands,
+ * and the difference is the whole safety argument.
+ *
+ * A running process is a thread that may be anywhere: in ring 3, or inside a
+ * syscall holding the big kernel lock, or parked on a wait queue with a buffer
+ * half written. Freeing its address space from another thread's context would
+ * pull page tables out from under whatever it is doing. Every existing
+ * termination path in this kernel avoids that the same way -- proc_exit() is
+ * only ever called BY the dying process, on its own stack: the ring-3 fault
+ * handler in interrupts.c calls it from the faulting thread's trap frame, and
+ * the window close button does it by sending EV_CLOSE and letting the app call
+ * app_exit() itself.
+ *
+ * So a kill sets a mark, and the victim runs proc_exit() on itself at its next
+ * kernel entry (proc_kill_check(), from the syscall gate). That reuses the
+ * whole existing, already-correct teardown -- fds closed, sockets released,
+ * wm_app_exit() marking the window dead so it leaves the screen, zombie state,
+ * address space freed by the reaper -- instead of writing a second copy of it
+ * that would have to be kept in step with the first.
+ *
+ * WHAT THAT COSTS, stated rather than hidden: a process is killed at its next
+ * SYSCALL. GUI apps call poll_event() every frame and a shell syscalls
+ * constantly, so in practice this is one frame. Two cases are slower, and
+ * neither is silently wrong:
+ *   - a pure compute loop that never enters the kernel is not killed until it
+ *     does. Closing that needs the same check on the timer-interrupt return
+ *     path, in c/kernel/cpu/interrupts.c.
+ *   - a thread PARKED on a wait queue (a shell blocked in waitpid) is not
+ *     running to notice. Waking it needs sched_wake(), which takes a
+ *     struct thread * that nothing outside sched.c can obtain.
+ * Both files belong to other lines. The mark is durable, so in both cases the
+ * kill still happens -- later, not never -- and the table shows the process as
+ * DYING in the meantime rather than pretending it is gone.
+ *
+ * REFUSALS, and how the protected process is IDENTIFIED. The one process that
+ * must survive is the shell wm_run() spawns on the serial console -- init here,
+ * and the machine's console. It is NOT pid 1: the desktop opens Finder first,
+ * so pid 1 is an ordinary GUI app that a task manager should absolutely be
+ * allowed to end (Windows lets you kill Explorer). Hard-coding a number would
+ * have protected the wrong process, which is exactly the bug a screenshot of
+ * the running table caught.
+ *
+ * The rule used instead is structural: NO PARENT AND NO WINDOW. proc_spawn() is
+ * called from exactly one place in the tree (wm.c, for /bin/sh) and is the only
+ * thing that ever creates a proc with gui == NULL and ppid == 0 -- a GUI app has
+ * a window, and a shell's children carry its pid as their parent. So the test
+ * names init without a magic number and without a field to keep in step.
+ *
+ * The compositor is not in this table at all (it is a kernel thread, not a
+ * proc), so it can never be named as a target in the first place. */
+static long proc_kill(int pid)
+{
+    if (pid <= 0) return LOGIT_KILL_PROTECTED;
+
+    long rc = LOGIT_KILL_ENOENT;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    for (int i = 0; i < NPROC; i++) {
+        struct proc *p = &procs[i];
+        if (p->state == PROC_FREE || p->pid != pid) continue;
+        if (!p->gui && p->ppid == 0) { rc = LOGIT_KILL_PROTECTED; break; }
+        if (p->state == PROC_ZOMBIE) { rc = LOGIT_KILL_ZOMBIE; break; }
+        if (!g_killmark[i]) { g_killmark[i] = 1; g_kill_pending++; }
+        rc = LOGIT_KILL_OK;
+        break;
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+
+    if (rc == LOGIT_KILL_OK)
+        kprintf("[proc] kill: pid %d marked\n", pid);
+    return rc;
+}
+
+/* Called from the syscall gate in syscall.c, but ONLY when g_kill_pending says
+ * some mark is outstanding -- so the ordinary cost of this feature on the
+ * syscall path is a load and a not-taken branch.
+ *
+ * Does not return if the current process is the one marked: proc_exit() ends in
+ * thread_exit(). Returns normally otherwise, including for every process that
+ * is not the victim. */
+void proc_kill_check(void)
+{
+    struct proc *self = proc_current();
+    if (!self) return;
+
+    int doomed = 0;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    for (int i = 0; i < NPROC; i++)
+        if (&procs[i] == self && g_killmark[i]) {
+            g_killmark[i] = 0;                  /* claim it: exactly one exit per mark */
+            if (g_kill_pending) g_kill_pending--;
+            doomed = 1;
+            break;
+        }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+
+    if (doomed) {
+        kprintf("[proc] kill: pid %d exiting\n", self->pid);
+        proc_exit(137);      /* 128 + SIGKILL, the conventional code. Never returns. */
+    }
+}
+
+/* The gate itself, inlined by syscall.c's caller into one load + one branch. */
+int proc_kill_armed(void) { return g_kill_pending != 0; }
+
+long proc_syscall(long num, long a, long b, long c)
+{
+    (void)c;
+    switch (num) {
+    case SYS_PROCS: {
+        struct logit_procinfo *buf = (struct logit_procinfo *)(uint64_t)a;
+        int max = (int)b;
+        if (max <= 0 || max > NPROC) max = NPROC;
+        if (!buf || !user_range_ok(buf, (uint64_t)max * sizeof *buf, 1)) return -1;
+        return proc_list(buf, max);
+    }
+    case SYS_KILL:
+        return proc_kill((int)a);
+    default:
+        return -1;
     }
 }

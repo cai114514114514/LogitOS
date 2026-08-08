@@ -68,11 +68,37 @@ static long kheap_stress(long iters, int size, unsigned long seed)
 
 static void syscall_do(struct registers *r);
 
+/* SYS_PROCS / SYS_KILL live in proc.c (the table they read is static there);
+ * these are prototyped here rather than in proc.h because that header belongs
+ * to the process line, exactly as proc.c prototypes proc_fork_stats() locally.
+ *
+ * proc_kill_armed() is the gate for the deferred kill: a marked process runs
+ * proc_exit() ON ITSELF at its next kernel entry, which is what makes killing
+ * another process safe here (see the long comment above proc_kill()). Off, it
+ * costs one load of a global and one never-taken branch per syscall. */
+long proc_syscall(long num, long a, long b, long c);
+int  proc_kill_armed(void);
+void proc_kill_check(void);      /* does not return if THIS process is the victim */
+
 /* The dispatcher proper is wrapped so the per-number accounting has exactly one
  * place to live, instead of being repeated at the ~60 `return`s below. When the
  * counters are disarmed this is a load of a global, a branch, and a tail call. */
 void syscall_dispatch(struct registers *r)
 {
+    /* A process marked by SYS_KILL dies here, on its own stack, before it gets
+     * to make the call. This is the ONLY point at which a killed process is
+     * torn down, so the teardown is the ordinary proc_exit() one.
+     *
+     * NOT on a BKL-free syscall. interrupt_handler skips the big kernel lock
+     * for those (syscall_is_bkl_free), and proc_exit() -> file_close() ->
+     * thread_exit() is written for a caller that holds it -- exactly as every
+     * other exit path in the tree does. Dying here would be the one place that
+     * ran the teardown without it. The mark is durable, so the victim simply
+     * dies at its next ordinary syscall instead; nothing is lost but a few
+     * microseconds, and only for a process calling the BKL-free stress call. */
+    if (__builtin_expect(proc_kill_armed(), 0) && !syscall_is_bkl_free((int)r->rax))
+        proc_kill_check();
+
     if (__builtin_expect(!g_kb_stat, 1)) { syscall_do(r); return; }
     uint64_t n = r->rax, t0 = kb_rdtsc();
     syscall_do(r);
@@ -586,6 +612,12 @@ static void syscall_do(struct registers *r)
     case SYS_MEMINFO:
         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
                                       (long)r->rsi, (long)r->rdx);
+        return;
+
+    case SYS_PROCS:
+    case SYS_KILL:
+        r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
+                                        (long)r->rsi, (long)r->rdx);
         return;
 
     /* The clipboard and notifications are kernel services, not window-manager
