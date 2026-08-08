@@ -1289,7 +1289,13 @@ int main(void)
        "eval getElementById/querySelector/textContent=");
     CK(js_dom_dirty(), "DOM marked dirty after textContent set");
     struct node *h1 = find(root, "h1");
-    CK(h1 && !strcmp(firsttext(h1), "Newp"), "h1 textContent updated to 'Newp'");
+    /* "NewP", not "Newp": tagName is UPPERCASE for an HTML element as of the
+     * interface-hierarchy work. That was a deliberate change -- the file used to
+     * document lowercase as a known deviation, and `el.tagName === 'INPUT'` is
+     * common enough on the real web that a lowercase answer is a wrong answer
+     * rather than a missing feature. This assertion is the only place in the
+     * tree that had the old spelling baked in. */
+    CK(h1 && !strcmp(firsttext(h1), "NewP"), "h1 textContent updated to 'NewP'");
 
     js_dom_clear_dirty();
     CK(run(ctx, "var a = document.querySelector('a'); a.setAttribute('href','/changed'); a.getAttribute('href');"),

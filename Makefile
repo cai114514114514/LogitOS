@@ -3350,3 +3350,8 @@ bench-aui: $(ISO) $(DISK)
 # point that needs no Makefile at all -- `bash tests/boot/run-sites.sh` -- for
 # the afternoons when this file is being overwritten by three lines at once.
 -include tests/sites.mk
+
+# The DOM interface hierarchy -- EventTarget/Node/Element/HTMLElement and the
+# HTML*Element leaves, the prototype chain under them, and the constructors on
+# globalThis. Includes its own negative control. See the fragment header.
+-include tests/domiface.mk

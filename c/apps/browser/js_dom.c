@@ -255,6 +255,32 @@ static struct elem_handle *new_handle(struct node *n)
     return h;
 }
 
+/* The prototype a wrapper for `n` must carry -- HTMLBodyElement.prototype for a
+ * <body>, Text.prototype for a text node, and so on down the real interface
+ * hierarchy. Defined in js_dom_iface.inc, which is included below (it needs the
+ * member tables). Returns a BORROWED value, or JS_UNDEFINED before the
+ * hierarchy exists / when it is compiled out -- and then wrap() falls back to
+ * the one shared class prototype, which is exactly what this file did before. */
+static JSValueConst iface_proto_for(const struct node *n);
+/* Give a childNodes/children snapshot NodeList.prototype / HTMLCollection
+ * .prototype. Also in js_dom_iface.inc; a no-op before it is built. */
+static void iface_tag_list(JSContext *ctx, JSValueConst arr, int elems_only);
+static void iface_cleanup(JSContext *ctx);
+/* One-shot repair of the seam with js_select.c / js_platform.c / js_media.c --
+ * see section 6 of js_dom_iface.inc. Runs from js_dom_run_jobs, the first
+ * js_dom entry point reached after js_page_open has run every installer. */
+static void iface_bridge(JSContext *ctx);
+/* The two synthetic node kinds js_dom_iface.inc adds on top of dom.c's four,
+ * both elements with a name the HTML tokenizer cannot produce (see there):
+ * a ProcessingInstruction and the detached Document createHTMLDocument returns.
+ * node_type_of() has to know about them. */
+static int is_pi(const struct node *n);
+static int is_docx(const struct node *n);
+/* Window named access: `<span id=x>` makes `x` a global. See section 7 of
+ * js_dom_iface.inc for the mechanism and the two shadowing rules. */
+static void named_scan(JSContext *ctx, struct node *root);
+static void named_note_attr(JSContext *ctx, struct node *n, const char *attr);
+
 /* One wrapper per node, cached in the node's weak `jsw` slot, so
  * document.body === document.body and a script can hang expandos off an
  * element. The slot takes no reference: the finalizer clears it, and
@@ -263,8 +289,15 @@ static struct elem_handle *new_handle(struct node *n)
 static JSValue wrap(JSContext *ctx, struct node *n)
 {
     if (!n) return JS_NULL;
+    /* The compatibility bridge's trigger. Every foreign installer probes the
+     * element prototype with `document.createElement('div')`, which is a wrap,
+     * and it must run AFTER all of them -- see BRIDGE_WRAPS in
+     * js_dom_iface.inc for why this is here and not on an embedder hook. */
+    iface_bridge(ctx);
     if (n->jsw) return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, n->jsw));
-    JSValue o = JS_NewObjectClass(ctx, (int)elem_cid);
+    JSValueConst proto = iface_proto_for(n);
+    JSValue o = JS_IsObject(proto) ? JS_NewObjectProtoClass(ctx, proto, elem_cid)
+                                   : JS_NewObjectClass(ctx, (int)elem_cid);
     if (JS_IsException(o)) return o;
     struct elem_handle *h = new_handle(n);
     if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
@@ -384,6 +417,9 @@ static JSValue doc_qs(JSContext *ctx, JSValueConst t, int argc, JSValueConst *ar
 static JSValue el_get_text(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
+    /* A Document's textContent is null, not the concatenation of the page.
+     * Only reachable since `document` became a real Node wrapper. */
+    if (n->type == N_DOCUMENT || n->type == N_DOCTYPE) return JS_NULL;
     struct sbuf b = { 0, 0, 0 };
     gather_text(n, &b);
     JSValue v = JS_NewStringLen(ctx, b.p ? b.p : "", b.len);
@@ -405,8 +441,42 @@ static JSValue el_set_text(JSContext *ctx, JSValueConst t, JSValueConst v)
     JS_FreeCString(ctx, s);
     return JS_UNDEFINED;
 }
+/* tagName / nodeName ARE UPPERCASE for an HTML element.
+ *
+ * This file used to return them lowercase and called it a known deviation, on
+ * the grounds that "library code that cares almost always writes
+ * nodeName.toLowerCase()". Both halves of that turned out to be wrong. The web
+ * writes `node.tagName === 'INPUT'` constantly and that comparison was silently
+ * false here -- a wrong answer, not a missing feature, which is the worse kind.
+ * And WPT tests it directly (10 subtests in html/syntax alone).
+ *
+ * Checked before changing it: every in-tree consumer -- js_select.c's tagOf,
+ * js_platform.c's per-tag hasInstance and reflected-URL tag test, js_media.c --
+ * lowercases before comparing, and layout/CSS read `node->tag` in C and never
+ * see this at all. Only HTML elements are uppercased: an SVG element's name is
+ * case-sensitive ("clipPath") and the spec leaves it exactly as authored. */
+static JSValue tagname_value(JSContext *ctx, const struct node *n)
+{
+    if (n->ns != NS_HTML) return JS_NewString(ctx, n->tag);
+    char buf[64], *p = buf;
+    size_t len = strlen(n->tag);
+    if (len + 1 > sizeof buf) { p = malloc(len + 1); if (!p) return JS_NewString(ctx, n->tag); }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)n->tag[i];
+        p[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+    }
+    p[len] = 0;
+    JSValue v = JS_NewString(ctx, p);
+    if (p != buf) free(p);
+    return v;
+}
+
 static JSValue el_get_tag(JSContext *ctx, JSValueConst t)
-{ struct node *n = node_of(t); return n ? JS_NewString(ctx, n->tag) : JS_UNDEFINED; }
+{
+    struct node *n = node_of(t);
+    if (!n) return JS_UNDEFINED;
+    return n->type == N_ELEM ? tagname_value(ctx, n) : JS_NewString(ctx, n->tag);
+}
 static JSValue el_get_id(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); const char *v = n ? dom_attr(n, "id") : 0; return JS_NewString(ctx, v ? v : ""); }
 /* `id` was read-only, which is not a small omission: `el.id = 'x'` is the
@@ -419,7 +489,8 @@ static JSValue el_set_id(JSContext *ctx, JSValueConst t, JSValueConst v)
     struct node *n = node_of(t);
     if (!n || n->type != N_ELEM) return JS_UNDEFINED;
     const char *s = JS_ToCString(ctx, v);
-    if (s) { if (dom_set_attr(n, "id", s)) mark_self(n, INVAL_STYLE); JS_FreeCString(ctx, s); }
+    if (s) { if (dom_set_attr(n, "id", s)) mark_self(n, INVAL_STYLE);
+             named_note_attr(ctx, n, "id"); JS_FreeCString(ctx, s); }
     return JS_UNDEFINED;
 }
 /* Real innerHTML, both ways. The getter used to alias el_get_text, which is a
@@ -475,7 +546,8 @@ static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst
     /* Any attribute at all, not just class/id/style: [data-state="on"] and
      * [href^="/"] are ordinary selectors, so there is no attribute whose value
      * provably cannot participate in the cascade. */
-    if (nm && vl) { dom_set_attr(n, nm, vl); mark_self(n, INVAL_STYLE); }
+    if (nm && vl) { dom_set_attr(n, nm, vl); mark_self(n, INVAL_STYLE);
+                    named_note_attr(ctx, n, nm); }
     if (nm) JS_FreeCString(ctx, nm);
     if (vl) JS_FreeCString(ctx, vl);
     return JS_UNDEFINED;
@@ -561,6 +633,11 @@ static int insert_run(struct node *p, struct node *c, struct node *ref)
         if (old && old != p) mark_children(old);
     }
     mark_children(p);
+    /* Anything that just entered the document can claim a window name. Only on
+     * a CONNECTED destination: an off-document subtree exposes nothing, and
+     * react-dom builds every commit off-document, so this costs nothing on the
+     * path that runs thirty times a frame. */
+    if (g_ctx && connected(p)) named_scan(g_ctx, is_fragment(c) ? p : c);
     return 1;
 }
 
@@ -653,6 +730,10 @@ static int node_type_of(const struct node *n)
 {
     if (!n) return 0;
     if (is_fragment(n)) return 11;              /* DOCUMENT_FRAGMENT_NODE */
+    if (n->tag && n->tag[0] == '#') {           /* the synthetic kinds */
+        if (is_pi(n)) return 7;                 /* PROCESSING_INSTRUCTION_NODE */
+        if (is_docx(n)) return 9;               /* DOCUMENT_NODE */
+    }
     switch (n->type) {
     case N_ELEM:     return 1;
     case N_TEXT:     return 3;
@@ -666,12 +747,17 @@ static int node_type_of(const struct node *n)
 static JSValue el_get_nodeType(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); return n ? JS_NewInt32(ctx, node_type_of(n)) : JS_UNDEFINED; }
 
-/* nodeName. KNOWN DEVIATION: the DOM uppercases an HTML element's name and we
- * return it lowercase, the same as tagName already does. Changing it now would
- * change tagName's long-standing answer under a page's feet; library code that
- * cares almost always writes nodeName.toLowerCase(), which is a no-op here. */
+/* nodeName: the uppercased tag name for an HTML element (see tagname_value),
+ * and the literal "#text" / "#comment" / "#document" / the doctype's name for
+ * everything else -- those are NOT uppercased, which is why this cannot just
+ * be el_get_tag. */
 static JSValue el_get_nodeName(JSContext *ctx, JSValueConst t)
-{ struct node *n = node_of(t); return n ? JS_NewString(ctx, n->tag) : JS_UNDEFINED; }
+{
+    struct node *n = node_of(t);
+    if (!n) return JS_UNDEFINED;
+    return n->type == N_ELEM && !is_fragment(n) ? tagname_value(ctx, n)
+                                                : JS_NewString(ctx, n->tag);
+}
 
 /* nodeValue / data: the character-data payload, and null on anything else --
  * which is the spec's answer for an element, not an error. */
@@ -751,6 +837,7 @@ static JSValue child_array(JSContext *ctx, struct node *n, int elems_only)
         if (elems_only && c->type != N_ELEM) continue;
         JS_DefinePropertyValueUint32(ctx, a, i++, wrap(ctx, c), JS_PROP_C_W_E);
     }
+    iface_tag_list(ctx, a, elems_only);
     return a;
 }
 static JSValue el_get_childNodes(JSContext *ctx, JSValueConst t)
@@ -1816,6 +1903,9 @@ static void report_exc(JSContext *ctx, const char *where)
 int js_dom_run_jobs(JSContext *ctx)
 {
     if (!ctx) return 0;
+    /* The one place that is reliably reached after js_page_open has run EVERY
+     * installer and before a page script can observe the result. */
+    iface_bridge(ctx);
     JSRuntime *rt = JS_GetRuntime(ctx);
     int n = 0;
     for (; n < MAX_JOBS_PER_PUMP; n++) {
@@ -2167,8 +2257,38 @@ static JSValue ev_composedPath(JSContext *ctx, JSValueConst t, int argc, JSValue
     return arr;
 }
 
+/* The ONE writable slot on an event, and it exists for one caller.
+ *
+ * `document.createEvent('Event')` hands back an uninitialised event whose whole
+ * point is that `initEvent(type, ...)` names it afterwards. `type` lives in the
+ * C struct and had no setter, so js_events.c -- which owns initEvent and
+ * createEvent -- could only shadow the JS-visible `type` with an own property
+ * and then, at dispatch time, build a WHOLE FRESH native event carrying the
+ * same prototype and slot, because the native dispatcher looks up listeners by
+ * the struct's type and not by the shadow. The listener then received an object
+ * that was not the one the page had initialised.
+ *
+ * DELIBERATE DEVIATION, stated because it is observable: the DOM says
+ * Event.type is readonly, so `Object.getOwnPropertyDescriptor(Event.prototype,
+ * 'type').set` is undefined in a browser and is a function here. That is the
+ * price of deleting a whole re-dispatch workaround from the event line, and it
+ * is nearly invisible in practice -- initEvent shadows `type` with an own data
+ * property, so a page reads the shadow, not this pair. Refused mid-dispatch,
+ * which is what initEvent's own no-op rule amounts to. */
+static JSValue ev_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic)
+{
+    struct jsevent *e = JS_GetOpaque(t, event_cid);
+    if (!e || magic != EG_TYPE || e->dispatching) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (!s) return JS_UNDEFINED;
+    char *nt = dupstr(s);
+    JS_FreeCString(ctx, s);
+    if (nt) { free(e->type); e->type = nt; }
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry event_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("type", ev_get, NULL, EG_TYPE),
+    JS_CGETSET_MAGIC_DEF("type", ev_get, ev_set, EG_TYPE),
     JS_CGETSET_MAGIC_DEF("target", ev_get, NULL, EG_TARGET),
     JS_CGETSET_MAGIC_DEF("srcElement", ev_get, NULL, EG_TARGET),
     JS_CGETSET_MAGIC_DEF("currentTarget", ev_get, NULL, EG_CURRENT),
@@ -2661,51 +2781,87 @@ void js_dom_cleanup(JSContext *ctx)
     JS_FreeValue(ctx, g_proto_mouse); g_proto_mouse = JS_UNDEFINED;
     JS_FreeValue(ctx, g_proto_key);   g_proto_key   = JS_UNDEFINED;
     JS_FreeValue(ctx, g_document);    g_document    = JS_UNDEFINED;
+    iface_cleanup(ctx);               /* the interface prototypes are strong refs too */
     if (g_root) dom_clear_wrappers(g_root->doc);
     g_ctx = 0;
 }
 
-static const JSCFunctionListEntry elem_proto[] = {
+/* ---- the members, SPLIT BY THE INTERFACE THAT DEFINES THEM ----
+ *
+ * This used to be one table on one prototype, and the comment above the Node
+ * section said why: our wrapper is keyed on a `struct node` whose type is a
+ * runtime field, so one flat prototype was cheaper than four. What it cost was
+ * every question a page asks about the SHAPE of the platform -- `x instanceof
+ * HTMLBodyElement`, `Object.getPrototypeOf(el) === HTMLDivElement.prototype`,
+ * patching `HTMLDialogElement.prototype.showModal` -- and those are not
+ * academic: a real site died on `ReferenceError: HTMLBodyElement is not
+ * defined`, and WPT tests the chain directly.
+ *
+ * The tables are still installed on ONE class (elem_cid); what changed is that
+ * wrap() picks WHICH prototype object the new wrapper gets, and those objects
+ * are chained EventTarget -> Node -> Element -> HTMLElement -> HTML*Element by
+ * js_dom_iface.inc. The accessors are unchanged and still type-check the node
+ * themselves, so a member reached on the wrong kind of node answers exactly
+ * what it answered before. */
+static const JSCFunctionListEntry evtarget_proto_funcs[] = {
+    JS_CFUNC_DEF("addEventListener", 2, el_addEventListener),
+    JS_CFUNC_DEF("removeEventListener", 2, el_removeEventListener),
+    JS_CFUNC_DEF("dispatchEvent", 1, el_dispatchEvent),
+};
+
+static const JSCFunctionListEntry node_proto_funcs[] = {
     JS_CGETSET_DEF("textContent", el_get_text, el_set_text),
-    JS_CGETSET_DEF("innerHTML", el_get_html, el_set_html),
-    JS_CGETSET_DEF("tagName", el_get_tag, NULL),
-    JS_CGETSET_DEF("id", el_get_id, el_set_id),
-    JS_CGETSET_DEF("classList", el_get_classlist, NULL),
-    JS_CGETSET_DEF("className", el_get_className, el_set_className),
-    JS_CGETSET_DEF("style", el_get_style, NULL),
-    /* Node */
     JS_CGETSET_DEF("nodeType", el_get_nodeType, NULL),
     JS_CGETSET_DEF("nodeName", el_get_nodeName, NULL),
     JS_CGETSET_DEF("nodeValue", el_get_nodeValue, el_set_nodeValue),
-    JS_CGETSET_DEF("data", el_get_nodeValue, el_set_nodeValue),
     JS_CGETSET_DEF("parentNode", el_get_parentNode, NULL),
     JS_CGETSET_DEF("parentElement", el_get_parentElement, NULL),
     JS_CGETSET_DEF("firstChild", el_get_firstChild, NULL),
     JS_CGETSET_DEF("lastChild", el_get_lastChild, NULL),
     JS_CGETSET_DEF("nextSibling", el_get_nextSibling, NULL),
     JS_CGETSET_DEF("previousSibling", el_get_prevSibling, NULL),
-    JS_CGETSET_DEF("firstElementChild", el_get_firstElemChild, NULL),
-    JS_CGETSET_DEF("lastElementChild", el_get_lastElemChild, NULL),
-    JS_CGETSET_DEF("nextElementSibling", el_get_nextElemSib, NULL),
-    JS_CGETSET_DEF("previousElementSibling", el_get_prevElemSib, NULL),
     JS_CGETSET_DEF("childNodes", el_get_childNodes, NULL),
-    JS_CGETSET_DEF("children", el_get_children, NULL),
     JS_CGETSET_DEF("ownerDocument", el_get_ownerDocument, NULL),
-    JS_CGETSET_DEF("namespaceURI", el_get_namespaceURI, NULL),
     JS_CFUNC_DEF("hasChildNodes", 0, el_hasChildNodes),
     JS_CFUNC_DEF("contains", 1, el_contains),
+    JS_CFUNC_DEF("appendChild", 1, el_appendChild),
+    JS_CFUNC_DEF("insertBefore", 2, el_insertBefore),
+    JS_CFUNC_DEF("replaceChild", 2, el_replaceChild),
+    JS_CFUNC_DEF("removeChild", 1, el_removeChild),
+};
+
+/* CharacterData: `data` is its own, and the element-sibling walk is the
+ * NonDocumentTypeChildNode mixin, which a Text node has and a Document
+ * does not. */
+static const JSCFunctionListEntry chardata_proto_funcs[] = {
+    JS_CGETSET_DEF("data", el_get_nodeValue, el_set_nodeValue),
+};
+
+static const JSCFunctionListEntry nondoctype_child_funcs[] = {
+    JS_CGETSET_DEF("nextElementSibling", el_get_nextElemSib, NULL),
+    JS_CGETSET_DEF("previousElementSibling", el_get_prevElemSib, NULL),
+};
+
+static const JSCFunctionListEntry element_proto_funcs[] = {
+    JS_CGETSET_DEF("innerHTML", el_get_html, el_set_html),
+    JS_CGETSET_DEF("tagName", el_get_tag, NULL),
+    JS_CGETSET_DEF("id", el_get_id, el_set_id),
+    JS_CGETSET_DEF("classList", el_get_classlist, NULL),
+    JS_CGETSET_DEF("className", el_get_className, el_set_className),
+    JS_CGETSET_DEF("style", el_get_style, NULL),
+    JS_CGETSET_DEF("namespaceURI", el_get_namespaceURI, NULL),
     JS_CFUNC_DEF("getAttribute", 1, el_getattr),
     JS_CFUNC_DEF("setAttribute", 2, el_setattr),
     JS_CFUNC_DEF("removeAttribute", 1, el_removeAttribute),
     JS_CFUNC_DEF("hasAttribute", 1, el_hasAttribute),
     JS_CFUNC_DEF("getBoundingClientRect", 0, el_getBoundingClientRect),
-    JS_CFUNC_DEF("appendChild", 1, el_appendChild),
-    JS_CFUNC_DEF("insertBefore", 2, el_insertBefore),
-    JS_CFUNC_DEF("replaceChild", 2, el_replaceChild),
-    JS_CFUNC_DEF("removeChild", 1, el_removeChild),
-    JS_CFUNC_DEF("addEventListener", 2, el_addEventListener),
-    JS_CFUNC_DEF("removeEventListener", 2, el_removeEventListener),
-    JS_CFUNC_DEF("dispatchEvent", 1, el_dispatchEvent),
+};
+
+/* ParentNode: Element, Document and DocumentFragment all have it. */
+static const JSCFunctionListEntry parentnode_funcs[] = {
+    JS_CGETSET_DEF("children", el_get_children, NULL),
+    JS_CGETSET_DEF("firstElementChild", el_get_firstElemChild, NULL),
+    JS_CGETSET_DEF("lastElementChild", el_get_lastElemChild, NULL),
 };
 
 static JSClassDef elem_class = { "Element", elem_finalizer };
@@ -2792,6 +2948,11 @@ static const JSCFunctionListEntry doc_funcs[] = {
     JS_CGETSET_DEF("nodeType", doc_get_nodeType, NULL),
 };
 
+/* THE INTERFACE HIERARCHY. Included, not linked -- see the header of the file
+ * for why. It needs every member table above it and is needed by js_dom_init
+ * below, which is exactly this spot. */
+#include "js_dom_iface.inc"
+
 /* Register one event constructor and its prototype. `parent` chains the
  * prototypes so MouseEvent.prototype inherits Event.prototype's members and
  * `instanceof Event` is true for a MouseEvent. */
@@ -2827,16 +2988,18 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * access on ctx->class_proto[] from the second page on. */
     JS_NewClassID(&elem_cid);
     if (JS_NewClass(rt, elem_cid, &elem_class) < 0) return;
-    JSValue proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto, elem_proto, countof(elem_proto));
-    install_on_props(ctx, proto, el_on_get, el_on_set);
-    JS_SetClassProto(ctx, elem_cid, proto);
+    /* A placeholder class prototype: iface_install() replaces it with
+     * Node.prototype (or, in the negative-control build, fills this one flat
+     * with every member, which is what this file did before the hierarchy). */
+    JS_SetClassProto(ctx, elem_cid, JS_NewObject(ctx));
 
+    JSValue token_proto_obj = JS_UNDEFINED;
     JS_NewClassID(&token_cid);
     if (JS_NewClass(rt, token_cid, &token_class) >= 0) {
         JSValue tp = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, tp, token_proto, countof(token_proto));
         install_arraylike(ctx, tp);        /* length + indices make it iterable */
+        token_proto_obj = JS_DupValue(ctx, tp);   /* DOMTokenList is published over it */
         JS_SetClassProto(ctx, token_cid, tp);
     }
 
@@ -2851,6 +3014,13 @@ void js_dom_init(JSContext *ctx, struct node *root)
     JSValue g = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, g, "getComputedStyle",
                       JS_NewCFunction(ctx, js_getComputedStyle, "getComputedStyle", 2));
+
+    /* BEFORE anything that wraps a node: iface_install() is what makes
+     * iface_proto_for() answer, and a wrapper made before it would be stuck
+     * with the placeholder prototype for the life of the page (wrappers are
+     * cached in node->jsw and never rebuilt). */
+    iface_install(ctx, g, token_proto_obj);
+    JS_FreeValue(ctx, token_proto_obj);
 
     JS_NewClassID(&event_cid);
     if (JS_NewClass(rt, event_cid, &event_class) >= 0) {
@@ -2869,14 +3039,50 @@ void js_dom_init(JSContext *ctx, struct node *root)
         JS_SetClassProto(ctx, event_cid, JS_DupValue(ctx, g_proto_event));
     }
 
-    JSValue doc = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, doc, doc_funcs, countof(doc_funcs));
+    /* `document` IS THE #document NODE now, not a look-alike beside it.
+     *
+     * It used to be a bare JSObject carrying doc_funcs as own properties, and
+     * that made three true things false: `document instanceof Document`,
+     * `document instanceof Node`, and every Node member on it -- childNodes,
+     * appendChild, contains, compareDocumentPosition. A page walking up from an
+     * element with parentNode hit an object that was not a node and stopped.
+     *
+     * Wrapping g_root instead costs nothing and fixes all of it: doc_funcs now
+     * live on Document.prototype (installed by iface_install), the wrapper is
+     * cached in g_root->jsw so `el.ownerDocument === document` and
+     * `html.parentNode === document` still hand back the SAME object, and
+     * node_of(document) resolves to the real #document node.
+     *
+     * With no root -- a host test that inits with NULL -- there is no node to
+     * wrap, so it falls back to a plain object over Document.prototype. */
+    JSValue doc;
+    if (root) {
+        doc = wrap(ctx, root);
+    } else if (JS_IsObject(g_iproto[IF_DOCUMENT])) {
+        doc = JS_NewObjectProto(ctx, g_iproto[IF_DOCUMENT]);
+    } else {
+        doc = JS_NewObject(ctx);
+    }
+    if (!JS_IsObject(doc)) { JS_FreeValue(ctx, doc); doc = JS_NewObject(ctx); }
+    /* In the negative-control build there is no Document.prototype to inherit
+     * doc_funcs from, so they go on the object, exactly as before. */
+    if (!g_iface_ready) {
+        JS_SetPropertyFunctionList(ctx, doc, doc_funcs, countof(doc_funcs));
+        JS_SetPropertyFunctionList(ctx, doc, document_extra_funcs,
+                                   countof(document_extra_funcs));
+    }
     install_on_props(ctx, doc, doc_on_get, doc_on_set);
     /* Held strongly so ownerDocument and <html>.parentNode can hand the SAME
      * object back -- `el.ownerDocument === document` has to be true. Released
      * by js_dom_cleanup, alongside the event prototypes. */
     g_document = JS_DupValue(ctx, doc);
     JS_SetPropertyStr(ctx, g, "document", doc);
+    /* AFTER `document`: named access must never shadow a real global, and
+     * `document` is one. Everything js_page.c installs after this point is
+     * likewise protected -- named_define skips any name the global already
+     * owns, and js_select/js_platform/js_media/js_events all install with
+     * plain defines that overwrite, so a later `window.location` wins too. */
+    named_scan(ctx, root);
     JS_FreeValue(ctx, g);
     maybe_install_console(ctx);
 }
