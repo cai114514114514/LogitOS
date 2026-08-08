@@ -3365,6 +3365,13 @@ bench-aui: $(ISO) $(DISK)
 # pthread_entry.asm are already covered by the wildcards over c/apps/libc/src.
 -include tests/thread.mk
 
+# Signals: /bin/sigtest, a small disk of its own to run it on, and the negative
+# control that builds the kernel with the FPU/SSE state left OUT of the signal
+# frame and requires the suite to fail. Own fragment for the reason every other
+# one here is. The kernel side needs no rule: C_SRC globs c/kernel, so
+# c/kernel/exec/ksignal.c and ksigframe.c link by existing.
+-include tests/signal.mk
+
 # The focus model and the form controls: the host state machine, the device
 # test that types into a real page, and the negative control that requires it
 # to fail without focus routing. See tests/forms.mk.
@@ -3381,6 +3388,13 @@ bench-aui: $(ISO) $(DISK)
 # connection block, which only two simultaneous clients can catch. See
 # tests/sockserv.mk.
 -include tests/sockserv.mk
+
+# IDL attribute reflection: `el.title` is a VIEW of the `title` content
+# attribute, through a coercion HTML specifies exactly, for ~380 attribute/
+# element pairs generated from the corpus's own tables. The COERCIONS are what
+# can silently be wrong, so that is what the suite and its negative control
+# attack. See tests/reflect.mk.
+-include tests/reflect.mk
 
 # WPT REFTESTS -- the pixel half of the same corpus, and the first measurement
 # of LAYOUT correctness this project has had. Renders the test and its reference
@@ -3421,6 +3435,10 @@ bench-aui: $(ISO) $(DISK)
 # HTML*Element leaves, the prototype chain under them, and the constructors on
 # globalThis. Includes its own negative control. See the fragment header.
 -include tests/domiface.mk
+
+# The query-side selector engine (js_select.c) and DOMTokenList
+# (js_tokenlist.c): make test-selectors + its case-sensitivity control.
+-include tests/selectors.mk
 
 # CSS Flexbox: `make test-flex` / `test-flex-negctl`. The flex sizing algorithm
 # (c/apps/browser/layout_flex.c) checked against the numbers CSS Flexbox § 9

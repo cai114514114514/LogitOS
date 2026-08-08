@@ -83,11 +83,35 @@ static JSValue sel_quirks(JSContext *ctx, JSValueConst t, int argc, JSValueConst
     (void)t; (void)argc; (void)argv;
     struct node *r = js_dom_root();
     int q = (r && r->doc) ? dom_doc_quirks(r->doc) : 0;
+#ifdef SELECT_CASE_SENSITIVE
+    q = 0;                    /* the control: no quirks folding, ever */
+#endif
     return JS_NewBool(ctx, q == QM_QUIRKS);
 }
 
+/* THE NEGATIVE CONTROL (tests/selectors.mk).
+ *
+ * -DSELECT_CASE_SENSITIVE compares every NAME case-sensitively -- element
+ * names in type selectors, attribute names in attribute selectors, the
+ * argument to getElementsByTagName -- and turns off quirks-mode class/id
+ * folding above. It is deliberately NOT "delete selector matching": a build
+ * with this defined renders every lowercase page in the world exactly as
+ * before, and only `querySelector('DIV')`, `[ALIGN=left]` and `.Warning` on a
+ * quirks page quietly stop matching. That is the bug this file's case rules
+ * exist to prevent, and it is what a reasonable implementation does when
+ * nobody has said that HTML is ASCII-case-insensitive about names.
+ *
+ * It is one flag rather than a fork of the prelude so that the control build
+ * runs the SAME parser and the SAME matcher; if it were a second copy the
+ * control would be measuring the copy. */
+#ifdef SELECT_CASE_SENSITIVE
+static const int SEL_NAMES_FOLD = 0;
+#else
+static const int SEL_NAMES_FOLD = 1;
+#endif
+
 static const char *SELECT_PRELUDE =
-"(function (nativeQuirks) {\n"
+"(function (nativeQuirks, namesFold) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 "var doc = G.document;\n"
@@ -119,6 +143,13 @@ static const char *SELECT_PRELUDE =
 "var HTMLNS = 'http://www.w3.org/1999/xhtml';\n"
 "var QUIRKS = false;\n"
 "try { QUIRKS = !!nativeQuirks(); } catch (e) {}\n"
+/* See SELECT_CASE_SENSITIVE above: with name folding OFF this is the negative
+ * control, and lowerName() becomes the identity at the three places a NAME is
+ * compared -- a type selector, an attribute selector's name, and the argument
+ * to getElementsByTagName. Attribute VALUES are untouched by it, because they
+ * never folded on a name rule in the first place. */
+"var NAMES_FOLD = namesFold !== false;\n"
+"function lowerName(s) { return NAMES_FOLD ? lower(s) : String(s); }\n"
 "if (!('compatMode' in doc)) {\n"
 "  try { Object.defineProperty(doc, 'compatMode', { configurable: true,\n"
 "    get: function () { return QUIRKS ? 'BackCompat' : 'CSS1Compat'; } }); } catch (e) {}\n"
@@ -497,7 +528,7 @@ static const char *SELECT_PRELUDE =
 
 "function attrMatch(el, a) {\n"
 "  var html = isHTML(el);\n"
-"  var name = html ? lower(a.name) : a.name;\n"
+"  var name = html ? lowerName(a.name) : a.name;\n"
 "  var v = a.name === '*' ? null : attrOf(el, name, html);\n"
 "  if (a.name === '*') {\n"
      /* [*|attr] with no name is not a thing; [*|foo] carries name='foo' and
@@ -665,7 +696,7 @@ static const char *SELECT_PRELUDE =
        /* `|div` (explicit no-namespace) has nothing to match here: every
           element this DOM builds is in one of three real namespaces. */
 "      if (s.ns === '') return false;\n"
-"      return isHTML(el) ? localOf(el) === lower(s.name) : localOf(el) === s.name;\n"
+"      return isHTML(el) ? localOf(el) === lowerName(s.name) : localOf(el) === s.name;\n"
 "    }\n"
 "    case 'id': {\n"
 "      var id = el.getAttribute ? el.getAttribute('id') : null;\n"
@@ -857,7 +888,7 @@ static const char *SELECT_PRELUDE =
  * finds every div. Getting this wrong is invisible on an all-lowercase page,
  * which is why it survived. */
 "function byTag(scope, name) {\n"
-"  var want = String(name), all = want === '*', lo = lower(want);\n"
+"  var want = String(name), all = want === '*', lo = lowerName(want);\n"
 "  var out = [], r = rootOf(scope);\n"
 "  if (!r) return collection(out);\n"
 "  var ok = function (el) {\n"
@@ -1073,8 +1104,10 @@ void js_select_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue arg = JS_NewCFunction(ctx, sel_quirks, "quirks", 0);
-    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 1, (JSValueConst *)&arg);
+    JSValue args[2];
+    args[0] = JS_NewCFunction(ctx, sel_quirks, "quirks", 0);
+    args[1] = JS_NewBool(ctx, SEL_NAMES_FOLD);
+    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *)args);
     if (JS_IsException(r)) {
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);
@@ -1082,7 +1115,7 @@ void js_select_install(JSContext *ctx)
         if (m) JS_FreeCString(ctx, m);
         JS_FreeValue(ctx, e);
     }
-    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx, args[0]);
     JS_FreeValue(ctx, r);
     JS_FreeValue(ctx, fn);
 
