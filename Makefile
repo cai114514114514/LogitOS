@@ -196,7 +196,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-loader test-loader-negctl test-loader-asan test-script-nav
-.PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl
+.PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
 .PHONY: probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 all: $(ISO)
@@ -519,6 +519,35 @@ $(BUILD)/vidcheck.elf: $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(LIBC
 $(BUILD)/vidcheck.aex: $(BUILD)/vidcheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidcheck.elf $@ vidcheck - 'V' 150 150 150
 
+# --- image decoders, built for the target ----------------------------------
+# The same c/lib/image sources the kernel compiles, built again with the
+# USERLAND flags for a ring-3 consumer. /bin/imgcheck is that consumer: it
+# decodes the fixtures off LogitFS on the device and prints the same digest the
+# host build of the identical source prints, which is what turns "the decoders
+# are byte-exact" from a claim about a glibc build on Linux into a claim about
+# the machine -- mini-libc's arena allocator, -ffreestanding -msse2, a 32 KiB
+# stack, and the x86_64-unknown-none build of the Rust staticlib.
+IMGCHK_SRC := c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \
+              c/lib/image/svg.c c/lib/image/exif.c
+IMGCHK_OBJ := $(patsubst %.c,$(BUILD)/imgobj/%.o,$(IMGCHK_SRC))
+
+$(BUILD)/imgobj/%.o: %.c c/lib/image/img.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/imgobj/imgcheck.o: tests/unit/imgcheck.c c/lib/image/img.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/imgcheck.elf: $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/imgcheck.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
+	    $(BUILD)/apps/imgcheck.crt0c.o $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) \
+	    $(RUST_LIB) $(LIBC_OBJS) --end-group
+$(BUILD)/imgcheck.aex: $(BUILD)/imgcheck.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/imgcheck.elf $@ imgcheck - 'I' 200 140 90
+
 # --- audio decoders, built for the target --------------------------------
 # Same shape and the same reasoning as VID_OBJ above: c/lib/audio is a RING-3
 # library (WAV, FLAC, MP3), filtered out of the kernel's C_SRC on purpose, and
@@ -606,7 +635,11 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 	@mkdir -p $(BUILD)
 	@python3 tests/unit/dot_gen.py $@ 60 40
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py
+# The image fixtures ride on the disk so /bin/imgcheck decodes the SAME bytes
+# the host tests do -- a guest-only fixture would compare two different files.
+IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
+IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES)
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
@@ -623,6 +656,8 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
+	    $(BUILD)/imgcheck.aex:/bin/imgcheck \
+	    $(IMG_FIXTURES_ON_DISK) \
 	    $(JSBENCH_PACK) \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
 	    $(BUILD)/dot.png:/media/dot.png \
@@ -2550,6 +2585,20 @@ test-img-fuzz-negctl: $(RUST_LIB_HOST)
 	        echo "negative control $$mode ok: $$(grep -m1 -ohE 'runtime error: [a-z ]+|ERROR: [A-Za-z]+' $(BUILD)/img_fuzz_sab$$mode.log || echo aborted)"; \
 	    fi; \
 	done; exit $$rc
+
+# Do the image decoders work on LogitOS, not just on the host? The host tests
+# above prove them byte-exact against PIL, libwebp and ffmpeg -- of a glibc
+# build on Linux. This boots the machine, runs /bin/imgcheck on the fixtures
+# packed into the disk image, and requires every digest to equal the one the
+# HOST build of the identical source prints for the identical bytes. So
+# mini-libc's arena allocator, -ffreestanding -msse2, the 32 KiB stack, LogitFS
+# and the x86_64-unknown-none build of the Rust staticlib are all in the loop.
+$(BUILD)/imgcheck_host: tests/unit/imgcheck.c $(IMGCHK_SRC) $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -o $@ tests/unit/imgcheck.c $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
+
+test-imgcheck: $(ISO) $(DISK) $(BUILD)/imgcheck_host
+	@bash tests/boot/run-img-test.sh $(ISO) $(DISK) $(BUILD)/imgcheck_host
 
 # Everything above, in one go.
 test-img: test-png test-jpeg test-svg test-img-still test-img-anim test-img-exif \
