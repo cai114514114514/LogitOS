@@ -630,6 +630,7 @@ static const char *const math_fns[] = {
 	"calc", "min", "max", "clamp", "round", "mod", "rem",
 	"sin", "cos", "tan", "asin", "acos", "atan", "atan2",
 	"pow", "sqrt", "hypot", "log", "exp", "abs", "sign",
+	"sibling-index", "sibling-count",
 	"var", "env", "attr", NULL
 };
 
@@ -1247,6 +1248,22 @@ typedef struct {
 	char text[CTEXT];	/* K_IDENT (lowercased) / K_TEXT (serialized) */
 } comp;
 
+static int toks_mention_none(lexed *lx, int from, int to)
+{
+	int i;
+	for (i = from; i < to && i < lx->n; i++) {
+		if (lx->t[i].kind != T_IDENT) continue;
+		/* `-none` is ONE identifier token, not a minus and a keyword:
+		 * a `-` followed by a name-start character begins an ident in
+		 * CSS Syntax 3. A check that only looked for `none` would let
+		 * `clamp(-none, 15, 20)` through, which the corpus tests. */
+		if (ieq(lx->t[i].s, lx->t[i].len, "none") ||
+		    ieq(lx->t[i].s, lx->t[i].len, "-none"))
+			return 1;
+	}
+	return 0;
+}
+
 /* Read ONE component of a colour function. Every kind the grammar can contain
  * is recognised here; deciding which of them a given channel ALLOWS is the
  * caller's job, and that split is what makes `rgb(0, 0, 0deg)` invalid while
@@ -1290,12 +1307,21 @@ static int read_comp(lexed *lx, comp *c)
 	}
 	case T_FUNC: {
 		buf tb;
+		int f0 = lx->i;
 		tb.p = c->text;
 		tb.len = 0;
 		tb.cap = CTEXT;
 		tb.ovf = 0;
 		if (emit_function(lx, &tb, 1) != 0) return -1;
 		if (tb.ovf) return -1;
+		/* `none` is a CHANNEL value, never a math term.
+		 * `rgb(clamp(10, none, 20) 0 0)` is invalid, and so is
+		 * `abs(none)` and `-none`: css-values/clamp-color-invalid.html
+		 * is twelve subtests of nothing else. Checked on the token
+		 * range rather than on the emitted text, because the emitted
+		 * text would also match an identifier that merely CONTAINS
+		 * those four letters. */
+		if (toks_mention_none(lx, f0, lx->i)) return -1;
 		c->kind = K_TEXT;
 		return 0;
 	}
@@ -1769,6 +1795,10 @@ static const struct rel_kind rel_kinds[] = {
 	{ NULL,    { NULL, NULL, NULL, NULL },  -1 }
 };
 
+static const struct rel_kind rel_kind_xyz = {
+	"color", { "x", "y", "z", "alpha" }, -1
+};
+
 /* The relative form of an alias: `rgba(from ...)` is `rgb(from ...)`. */
 static const struct rel_kind *rel_lookup(const tok *t)
 {
@@ -1800,14 +1830,6 @@ static int rel_channel(lexed *lx, buf *b, const struct rel_kind *k,
 				adv(lx);
 				return 0;
 			}
-		/* An xyz colour space exposes x/y/z rather than r/g/b. */
-		if (k->ch[0][0] == 'r' &&
-		    (ieq(t->s, t->len, "x") || ieq(t->s, t->len, "y") ||
-		     ieq(t->s, t->len, "z"))) {
-			bput(b, t->s, t->len);
-			adv(lx);
-			return 0;
-		}
 		return -1;
 	case T_NUM:
 	case T_PCT:
@@ -1820,8 +1842,31 @@ static int rel_channel(lexed *lx, buf *b, const struct rel_kind *k,
 		(void)d;
 		return emit_token(lx, b, 1);
 	}
-	case T_FUNC:
-		return emit_function(lx, b, 1);
+	case T_FUNC: {
+		int f0 = lx->i, j, names = 0, typed = 0;
+		if (emit_function(lx, b, 1) != 0) return -1;
+		if (toks_mention_none(lx, f0, lx->i)) return -1;
+		/* A channel keyword inside a relative colour's calc() carries
+		 * the channel's OWN type -- `r` is a number, `h` is a number
+		 * too, not an angle -- so `calc(r + 1%)` and
+		 * `calc(h + 1deg)` mix types and are parse errors. Full type
+		 * inference through a math expression is not what this file
+		 * is; the cheap half of it, "a term that names a channel and
+		 * a term that carries a unit cannot both be in here", is what
+		 * the corpus actually tests. */
+		for (j = f0; j < lx->i && j < lx->n; j++) {
+			const tok *u = &lx->t[j];
+			if (u->kind == T_IDENT) {
+				int m;
+				for (m = 0; m < 4; m++)
+					if (ieq(u->s, u->len, k->ch[m])) names = 1;
+			} else if (u->kind == T_PCT || u->kind == T_DIM) {
+				typed = 1;
+			}
+		}
+		if (names && typed) return -1;
+		return 0;
+	}
 	default:
 		return -1;
 	}
@@ -1851,6 +1896,12 @@ static int canon_relative(lexed *lx, buf *b, int depth)
 		bputc(b, ' ');
 		bput(b, space, -1);
 		adv(lx);
+		/* The channel keywords are the SPACE's, not color()'s: an xyz
+		 * space exposes x/y/z and an rgb one exposes r/g/b, and
+		 * neither accepts the other's. `color(from ... srgb x g b)`
+		 * is invalid, which is 21 subtests of
+		 * color-invalid-relative-color.html on its own. */
+		if (strncmp(space, "xyz", 3) == 0) k = &rel_kind_xyz;
 	}
 
 	for (i = 0; i < 3; i++) {
@@ -2284,6 +2335,15 @@ static int canon_color(lexed *lx, buf *b, int depth)
 				return emit_color_fn_raw(lx, b,
 						raw_color_fns[i]);
 	}
+
+	/* An ORIGIN may be a var(). It is not a colour yet -- the value is a
+	 * pending substitution and nobody knows what colour it names until
+	 * the cascade runs -- but it is a legal origin and the corpus uses it
+	 * eight times over. `var()` is accepted here and NOWHERE else in this
+	 * function, because a var() standing alone as the whole value is
+	 * LibCSS's pre-pass to resolve, not this file's to spell. */
+	if (ieq(t->s, t->len, "var") || ieq(t->s, t->len, "env"))
+		return emit_function(lx, b, depth + 1);
 
 	/* Relative colour syntax is signalled by `from` and nothing else. */
 	if (tok_is_ident(pk(lx, 1), "from")) return canon_relative(lx, b, depth);

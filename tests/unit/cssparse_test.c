@@ -980,6 +980,43 @@ static void t_color_value(void)
 	/* An origin that is not a colour at all. */
 	chk("color", "rgb(from banana r g b)", NULL);
 
+	/* An origin MAY be a var(): it is not a colour yet, but it is a legal
+	 * origin, and a var() is accepted there and nowhere else -- a var()
+	 * standing alone as the whole value stays LibCSS's to resolve. */
+	chk_rt("color", "rgb(from var(--bg-color) r g b / 80%)",
+	    "rgb(from var(--bg-color) r g b / 80%)");
+	chk_rt("color", "lch(from var(--color) calc(l / 2) c h)",
+	    "lch(from var(--color) calc(l / 2) c h)");
+	chk("color", "var(--anything)", PASS_);
+
+	/* The channel keywords belong to the SPACE, not to color(): an xyz
+	 * space exposes x/y/z and an rgb one exposes r/g/b, and neither takes
+	 * the other's. */
+	chk_rt("color", "color(from color(xyz 0.7 0.5 0.3) xyz-d65 x y z)",
+	    "color(from color(xyz-d65 0.7 0.5 0.3) xyz-d65 x y z)");
+	chk("color", "color(from color(srgb 0.7 0.5 0.3) srgb x g b)", NULL);
+	chk("color", "color(from color(srgb 0.7 0.5 0.3) srgb x y z)", NULL);
+	chk("color", "color(from color(xyz 0.7 0.5 0.3) xyz-d65 r y z)", NULL);
+
+	/* A channel keyword inside a calc() carries the channel's own type,
+	 * so a term with a unit cannot be in there with it. */
+	chk_rt("color", "rgb(from rebeccapurple calc(r) calc(g) calc(b))",
+	    "rgb(from rebeccapurple calc(r) calc(g) calc(b))");
+	chk("color", "rgb(from rebeccapurple calc(r + 1%) g b)", NULL);
+	chk("color", "hsl(from rebeccapurple calc(h + 1deg) s l)", NULL);
+	chk("color", "hsl(from rebeccapurple calc(h + 1%) s l)", NULL);
+	chk("color", "lch(from lch(.7 45 30) l c calc(h + 1deg))", NULL);
+	/* ... but a calc() with no channel in it may carry whatever it likes. */
+	chk_rt("color", "rgb(from rebeccapurple calc(20%) g b)",
+	    "rgb(from rebeccapurple calc(20%) g b)");
+
+	/* `none` is a CHANNEL value and never a math term. */
+	chk("color", "rgb(clamp(10, none, 20) 0 0)", NULL);
+	chk("color", "rgb(clamp(-none, 15, 20) 0 0)", NULL);
+	chk("color", "rgb(clamp(10, abs(none), 20) 0 0)", NULL);
+	chk("color", "rgb(clamp(10, sign(none + 1), 20) 0 0)", NULL);
+	chk("color", "oklch(calc(none) 0.2 180)", NULL);
+
 	group("color/mix");
 
 	/* RULE 8. Weights are filled in to sum to 100 and then vanish if all
