@@ -17,6 +17,11 @@
 
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-barrier-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-barrier-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
@@ -33,7 +38,7 @@ cleanup() { [ -n "${QPID:-}" ] && kill -9 "$QPID" 2>/dev/null; rm -f "$LOG"; rm 
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 5; printf 'mkdir /dur\nas /usr/as/examples/barriers.as\necho BARRIER-RUN-DONE\n'; sleep 12; } | \
+{ logit_wait_for_shell "$LOG" 120; printf 'mkdir /dur\nas /usr/as/examples/barriers.as\necho BARRIER-RUN-DONE\n'; sleep 12; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 \
     -boot d -snapshot -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci \

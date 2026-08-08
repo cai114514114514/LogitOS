@@ -20,6 +20,11 @@
 
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-exec-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-exec-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
@@ -49,7 +54,7 @@ exit
 '
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 5; printf '%s' "$SCRIPT"; sleep 12; } | \
+{ logit_wait_for_shell "$LOG" 120; printf '%s' "$SCRIPT"; sleep 12; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot \

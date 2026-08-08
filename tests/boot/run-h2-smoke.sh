@@ -31,6 +31,11 @@
 
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-h2-smoke.sh <iso> <disk.img> [host ...]}"
 DISK="${2:?usage: run-h2-smoke.sh <iso> <disk.img> [host ...]}"
 shift 2
@@ -65,7 +70,7 @@ cleanup() {
 trap cleanup EXIT
 
 {
-    sleep 15
+    logit_wait_for_shell "$LOG" 180
     for h in "${HOSTS[@]}"; do
         printf 'echo H2-BEGIN %s\n' "$h"
         printf 'h2check --both %s %s\n' "$h" "$PATHS"

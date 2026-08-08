@@ -17,6 +17,11 @@
 
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-https-smoke.sh <iso> <disk.img> [url ...]}"
 DISK="${2:?usage: run-https-smoke.sh <iso> <disk.img> [url ...]}"
 shift 2
@@ -82,7 +87,7 @@ trap cleanup EXIT
 # Each fetch is bracketed by an echo marker so the per-site handshake lines can
 # be sliced back out of one continuous serial log.
 {
-    sleep 15
+    logit_wait_for_shell "$LOG" 180
     for u in "${URLS[@]}"; do
         printf 'echo SMOKE-BEGIN %s\n' "$u"
         printf 'net get %s\n' "$u"

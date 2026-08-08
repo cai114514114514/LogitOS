@@ -19,6 +19,11 @@
 
 set -u
 
+# Wait for /bin/sh to exist before typing at it, rather than sleeping a
+# guessed number of seconds. See tests/boot/bootwait.sh for why a longer
+# sleep is the same bug with a bigger number.
+. "$(dirname "$0")/bootwait.sh"
+
 ISO="${1:?usage: run-fscrash-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-fscrash-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
@@ -34,7 +39,7 @@ trap cleanup EXIT
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 
 start_qemu() {   # $1 = what to type, $2 = log
-    { sleep 5; printf '%s' "$1"; sleep 600; } | \
+    { logit_wait_for_shell "$2" 120; printf '%s' "$1"; sleep 600; } | \
       "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
         -drive file="$DISKC",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 \
         -boot d -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci \
