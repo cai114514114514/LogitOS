@@ -475,6 +475,27 @@ static void part3_tabs(void)
     CHECK(painted_text("PAGE-BETA"), "and forward to tab 2 again");
     CHECK(fake_site_requests() == 0, "also with no network");
 
+    /* (b2) A NAVIGATION IN A TAB REPLACES WHAT THE TAB HOLDS.
+     *
+     * The retained set is keyed by absolute URL, so a tab that navigated from A
+     * to B while keeping A's bytes would serve A's stylesheet to B whenever the
+     * two share a URL -- and would keep growing, one page's worth per
+     * navigation. Both are invisible until they are wrong. */
+    browser_load("http://fixture.test/b.html");        /* tab `a` navigates */
+    { struct tab *ta = tab_cur();
+      CHECK(ta && ta->src && ta->srclen > 0, "after navigating, the tab holds a document");
+      int stale = 0;
+      for (int i = 0; i < ta->nres; i++)
+          if (strstr(ta->res[i].url, "a.css")) stale = 1;
+      CHECK(!stale,
+            "and NOT the page it navigated away from -- a navigation drops what "
+            "the tab was retaining, so the retained set is one page and not a "
+            "cache that grows for ever"); }
+    fake_site_clear_log();
+    browser_load("http://fixture.test/a.html");        /* back to A, fresh */
+    CHECK(fake_site_fetched("a.css") == 1,
+          "and the stylesheet is fetched again rather than served stale");
+
     /* (c) PER-TAB HISTORY. The back stack belongs to the tab, not the window:
      *     going Back in one tab must not walk the other tab's trail. */
     { struct tab *ta = tab_at(a), *tb = tab_at(b);

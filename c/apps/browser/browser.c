@@ -786,6 +786,15 @@ static void load_once(const char *u)
     if (!g_hydrating) {
         bfetch_cache_clear();
         bfetch_close_all();
+        /* A NAVIGATION REPLACES WHAT THE TAB IS, so what it retained goes with
+         * it. Two things depend on this and both are silent if it is missing:
+         * res_try_tab serves by absolute URL, so the old page's script bytes
+         * would be handed to the new page whenever the two share a URL -- a
+         * cache with no expiry that nobody asked for -- and tab_keep_res only
+         * ever appends, so a tab navigated ten times would hold ten pages'
+         * sub-resources. The old document is already freed by the teardown
+         * above, so nothing is pointing into these bytes. */
+        tab_drop_content(tab_cur());
     }
     bfetch_reset_stats();
     g_res_from_tab = g_res_from_net = 0;
