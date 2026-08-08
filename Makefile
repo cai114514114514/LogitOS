@@ -3012,3 +3012,6 @@ bench-aui: $(ISO) $(DISK)
 # (test-notify, test-notify-negctl, test-notify-cost). Own fragment for the same
 # reason as every other one above.
 -include tests/clip.mk
+
+# Window management: resize, zoom, minimise, system shortcuts.
+-include tests/window.mk

@@ -71,6 +71,45 @@
 #define USER_URL_MAX  384
 #define USER_TEXT_MAX 1024
 
+/* ---- resize ----------------------------------------------------------------
+ *
+ * The grab band STRADDLES the frame edge -- RESIZE_OUT_PT of empty space
+ * outside it and RESIZE_IN_PT of the window inside. A band that lived purely
+ * outside would be unhittable in the one case that matters most (a window
+ * against the screen edge), and one purely inside would steal that many points
+ * from a scrollbar without giving anything back. Straddling costs the app the
+ * outermost 4 points of its own content on each edge, which is the trade every
+ * desktop makes and the reason a scrollbar is never flush to the frame.
+ *
+ * The floor is a WINDOW MANAGER floor, not a suggestion: an app may raise it
+ * (SYS_GUI_WIN_MIN) and may not lower it. A window narrower than its own
+ * titlebar controls is a window that cannot be closed or dragged, and "the app
+ * asked for it" is not a defence when the user is the one who cannot get out. */
+#define RESIZE_OUT_PT    4
+#define RESIZE_IN_PT     4
+#define RESIZE_CORNER_PT 16          /* along each edge, from the corner */
+#define MIN_CONTENT_W_PT 180         /* the WM floor: room for the three lights */
+#define MIN_CONTENT_H_PT 60
+
+/* Which edges a grab is pulling. */
+#define RZ_L 1
+#define RZ_R 2
+#define RZ_T 4
+#define RZ_B 8
+
+/* How often the CANVAS may be reallocated (and EV_RESIZE delivered) while a
+ * drag is in flight. The frame itself follows the pointer with no throttle at
+ * all -- this bounds only the expensive half.
+ *
+ * The number is a measurement, not a taste: a full-window repaint at 1920x1200
+ * costs 24-27 ms of compositing, and a resize step costs TWO of them (the WM
+ * relaying the damaged region, then the app's own SYS_GUI_FLUSH) plus the app's
+ * paint. At one step per PS/2 packet that is several hundred milliseconds of
+ * work per hundred milliseconds of hand movement, which is not slow, it is
+ * unbounded. At 120 ms the app repaints ~8 times a second during a drag and the
+ * frame still tracks the hand exactly, because the frame was never the cost. */
+#define RESIZE_APPLY_MS 120
+
 void *memcpy(void *, const void *, size_t);
 
 /* The render pipeline (DOM/CSS/layout/paint) and <style>/<script> collection now
@@ -97,9 +136,27 @@ struct win {
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
     struct evq ev;            /* SYS_POLL_EVENT ring (coalesces motion -- see evq.h) */
     int  wants_close;
-    int  cw_pt, ch_pt;        /* content size in POINTS -- what the app asked for */
+    int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
     char cwd[128];            /* Finder: current directory path */
     uint64_t open_t0;         /* tick the open "pop" animation began (0 = settled) */
+    /* ---- resize / zoom / minimise -----------------------------------------
+     * `w`,`h` above are the AUTHORITATIVE outer frame and they change the
+     * instant the pointer moves. surf.w/surf.h is the canvas that has actually
+     * been allocated, and the two are allowed to DISAGREE mid-drag -- see
+     * blit_content(), which stretches the old canvas into the new frame until
+     * the app has repainted at the new size. Keeping the frame live while the
+     * canvas lags is what makes a resize feel attached to the hand without
+     * paying for a full app repaint per pointer sample. */
+    int  min_w_pt, min_h_pt;  /* app-declared minimum CONTENT size, in points */
+    int  zoomed;              /* filling the desktop (see zoom_rect) */
+    int  minimized;           /* hidden: not composited, not hit-tested */
+    int  sx, sy, sw, sh;      /* the frame to restore to; only valid while zoomed */
+    /* Is this canvas half drawn RIGHT NOW? 1 from the app's first drawing
+     * syscall after a flush until the next flush -- see the mid-frame guard
+     * note near the top of this file. There is no ABI call that says "I am
+     * starting a frame" and there does not need to be: the first draw after a
+     * flush IS the start of one, which is true of every app in the tree and of
+     * any app that has not been written yet. */
 };
 
 static struct app apps[MAXWIN];
@@ -114,6 +171,13 @@ static int dragging = -1, drag_dx, drag_dy;
  * selecting text stops the instant the cursor slips outside -- and the app never
  * sees the button-up at all, so it stays stuck in "dragging" forever. */
 static int mouse_capture = -1;
+/* The resize drag. `rz_win` is the window; `rz_edge` the RZ_* mask; the four
+ * anchors are the frame AS IT WAS when the grab started, and the delta is
+ * always measured from the grab point rather than accumulated per sample --
+ * accumulating drifts, and a resize that drifts is one that will not return to
+ * the size it started at when the hand returns to where it started. */
+static int rz_win = -1, rz_edge, rz_x0, rz_y0, rz_x1, rz_y1, rz_mx, rz_my;
+static uint64_t rz_apply_ms;             /* time_mono_ms of the last canvas apply */
 static volatile int dirty = 1;           /* the next frame needs a full recomposite */
 
 static uint32_t *back, *bg;
@@ -265,6 +329,17 @@ static void dirty_win(const struct win *w)
     dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
 }
 
+/* THE RESIZE NEGATIVE CONTROL, and it is a DIFFERENT mistake from the one
+ * above. WM_DAMAGE_LIE shrinks a window's reported box; this one reports the
+ * new box honestly and forgets the OLD one -- the specific error a resize
+ * invites, because a resize is the one gesture where the two boxes are
+ * different shapes rather than the same shape in two places. Shrink a window
+ * with this set and the strip it used to cover is never re-laid: the old
+ * content simply stays on the wallpaper. Set to 1 by
+ * tests/qmp/qmp_window.py --negative in a throwaway copy of the tree, whose
+ * pixel checks must then fail. */
+#define WM_RESIZE_DAMAGE_LIE 0
+
 static int next_app_id = 1;
 
 /* ---- compositor cost, measured on the machine ------------------------------
@@ -353,6 +428,291 @@ static void remove_win(int wi)
     norder--;
 }
 
+/* Send a window to the BACK. The exact inverse of raise_win, which is what
+ * makes Cmd+Shift+Tab undo Cmd+Tab instead of merely being another rotation
+ * in the same direction. */
+static void lower_win(int wi)
+{
+    int at = -1;
+    for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
+    if (at < 0) return;
+    for (int j = at; j > 0; j--) order[j] = order[j - 1];
+    order[0] = wi;
+}
+
+/* The topmost window a user can actually see and type into, as an index into
+ * wins[] -- or -1. Minimised windows keep their place in the z-order (so
+ * un-minimising restores where they were) but must not be focused, hit-tested
+ * or handed a keystroke, which is why "the top of the stack" and "the focused
+ * window" stopped being the same expression. */
+static int top_visible(void)
+{
+    for (int i = norder - 1; i >= 0; i--) {
+        struct win *w = &wins[order[i]];
+        if (w->used && !w->minimized) return order[i];
+    }
+    return -1;
+}
+
+/* ---------- resize, zoom, minimise ----------
+ *
+ * Geometry lives here, in device pixels, and nowhere else. Every gesture --
+ * an edge drag, the green light, a double-click, Cmd+M -- funnels into
+ * win_set_frame(), so there is exactly one place that clamps, exactly one that
+ * reports damage, and no way to add a fifth gesture that forgets either. */
+static void dock_geom(int *x0, int *y0, int *dw, int *dh);   /* body with the dock */
+static int in_rect(int px, int py, int x, int y, int w, int h);
+static void enqueue(struct win *w, int type, int a, int b);
+
+/* The smallest OUTER frame this window may have: the WM's floor, raised by
+ * whatever the app asked for, plus the titlebar the app does not own. */
+static void win_min_frame(const struct win *w, int *mw, int *mh)
+{
+    int cw = w->min_w_pt > MIN_CONTENT_W_PT ? w->min_w_pt : MIN_CONTENT_W_PT;
+    int ch = w->min_h_pt > MIN_CONTENT_H_PT ? w->min_h_pt : MIN_CONTENT_H_PT;
+    *mw = S(cw);
+    *mh = TBH + S(ch);
+}
+
+/* Move and/or resize a window, damaging BOTH the region it left and the region
+ * it now occupies.
+ *
+ * Reporting only the destination is the whole failure mode of a partial
+ * compositor, and a resize is where it is easiest to commit: when a window
+ * SHRINKS the two boxes are nested, the new one is entirely inside the old,
+ * and every counter-based check still passes while a band of the previous
+ * frame stays on screen untouched. WM_RESIZE_DAMAGE_LIE above makes exactly
+ * that mistake on purpose. */
+static void win_set_frame(struct win *w, int x, int y, int ww, int wh)
+{
+    int mw, mh;
+    win_min_frame(w, &mw, &mh);
+    if (ww < mw) ww = mw;
+    if (wh < mh) wh = mh;
+    /* The canvas is allocated at the frame's size, so a frame larger than the
+     * display would allocate more than the screen -- and w*h*4 is the one
+     * multiplication in this file that a user's hand controls directly. */
+    if (ww > W) ww = W;
+    if (wh > H) wh = H;
+    if (y < MBH) y = MBH;                     /* never under the menu bar */
+    if (w->x == x && w->y == y && w->w == ww && w->h == wh) return;
+#if !WM_RESIZE_DAMAGE_LIE
+    dirty_win(w);                             /* where it was */
+#endif
+    w->x = x; w->y = y; w->w = ww; w->h = wh;
+    dirty_win(w);                             /* where it now is */
+}
+
+/* The rectangle a zoomed window fills.
+ *
+ * "Maximize" here means FILL THE DESKTOP, not full-screen, and the two are
+ * different products. A full-screen mode hides the menu bar, and this desktop
+ * has no reveal gesture to get it back -- the clock and the dark-mode switch
+ * would simply be gone, with the keyboard offering no way to return. The dock
+ * is the same argument from the other end: it is composited on top and windows
+ * already slide under it, so a window that filled to the bottom edge would put
+ * its last 70 points permanently behind glass. Stopping above the dock is what
+ * macOS's zoom does with the Dock pinned, and it is the honest answer for a
+ * dock that cannot auto-hide. */
+static void zoom_rect(int *x, int *y, int *ww, int *wh)
+{
+    int dx0, dy0, dw, dh;
+    dock_geom(&dx0, &dy0, &dw, &dh);
+    (void)dx0; (void)dw; (void)dh;
+    *x = 0;
+    *y = MBH;
+    *ww = W;
+    *wh = dy0 - S(8) - MBH;
+    if (*wh < TBH + S(MIN_CONTENT_H_PT)) *wh = H - MBH;   /* a dock taller than the screen */
+}
+
+static void win_set_zoom(struct win *w, int on)
+{
+    on = on ? 1 : 0;
+    if (on == w->zoomed) return;
+    if (on) {
+        w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
+        int x, y, ww, wh;
+        zoom_rect(&x, &y, &ww, &wh);
+        w->zoomed = 1;
+        win_set_frame(w, x, y, ww, wh);
+    } else {
+        w->zoomed = 0;
+        /* EXACTLY the frame it had. Not "roughly where it was" and not
+         * re-derived from the app's original gui_create() size -- a window the
+         * user had already dragged and resized before zooming would land
+         * somewhere it has never been, which reads as the machine losing the
+         * window rather than restoring it. */
+        win_set_frame(w, w->sx, w->sy, w->sw, w->sh);
+    }
+}
+
+/* A manual drag or resize of a zoomed window un-zooms it and FORGETS the saved
+ * frame. Keeping the frame would mean the green light later teleports the
+ * window back to a position the user has since deliberately moved it away
+ * from; a zoom the user has begun editing is no longer a zoom.
+ *
+ * CALLED ON MOVEMENT, NEVER ON THE PRESS. Calling it when the button goes down
+ * broke double-click-to-restore in a way that looked like the double-click not
+ * being detected at all: the FIRST click of the pair took the drag branch and
+ * silently cleared `zoomed` while leaving the frame where it was, so the second
+ * click's toggle read "not zoomed" and zoomed a window that was already filling
+ * the screen. Nothing moved, twice. Touching a titlebar is not editing a zoom;
+ * moving the window is. */
+static void win_break_zoom(struct win *w)
+{
+    if (!w->zoomed) return;
+    w->zoomed = 0;
+    w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
+}
+
+static void win_set_min(struct win *w, int on)
+{
+    on = on ? 1 : 0;
+    if (on == w->minimized) return;
+    dirty_win(w);                    /* the space it vacates, or is about to fill */
+    w->minimized = on;
+    if (!on) raise_win((int)(w - wins));
+    dirty_win(w);
+}
+
+/* Which edges of `w` the point (x,y) grabs, or 0 for "not a resize".
+ *
+ * A corner is a longer stretch of BOTH edges rather than the intersection of
+ * two bands: the intersection is RESIZE_IN+RESIZE_OUT points square, which is
+ * a target nobody hits on purpose. RESIZE_CORNER_PT along each edge is the
+ * target people actually aim at. */
+static int resize_edge_at(const struct win *w, int x, int y)
+{
+    if (w->minimized) return 0;
+    int out = S(RESIZE_OUT_PT), in = S(RESIZE_IN_PT), corner = S(RESIZE_CORNER_PT);
+    int x0 = w->x, y0 = w->y, x1 = w->x + w->w, y1 = w->y + w->h;
+    if (x < x0 - out || x > x1 + out || y < y0 - out || y > y1 + out) return 0;
+    int e = 0;
+    if (x >= x0 - out && x <= x0 + in) e |= RZ_L;
+    if (x <= x1 + out && x >= x1 - in) e |= RZ_R;
+    if (y >= y0 - out && y <= y0 + in) e |= RZ_T;
+    if (y <= y1 + out && y >= y1 - in) e |= RZ_B;
+    if (!e) return 0;
+    /* Extend whichever edges were hit along the perpendicular, so the last
+     * `corner` points of a side resize both axes. */
+    if (e & (RZ_L | RZ_R)) {
+        if (y <= y0 + corner) e |= RZ_T;
+        else if (y >= y1 - corner) e |= RZ_B;
+    }
+    if (e & (RZ_T | RZ_B)) {
+        if (x <= x0 + corner) e |= RZ_L;
+        else if (x >= x1 - corner) e |= RZ_R;
+    }
+    /* A window pinned under the menu bar cannot be pulled further up, and
+     * offering the grab anyway gives a cursor that promises something the
+     * clamp will refuse. */
+    if ((e & RZ_T) && w->y <= MBH) e &= ~RZ_T;
+    return e;
+}
+
+/* The topmost window offering a resize grab at (x,y), and the edges. The
+ * front-to-back walk matters: a window's outer band overhangs whatever is
+ * behind it, and the one you can see is the one that must win. */
+static int resize_hit(int x, int y, int *edge)
+{
+    for (int i = norder - 1; i >= 0; i--) {
+        struct win *w = &wins[order[i]];
+        if (!w->used || w->minimized) continue;
+        int e = resize_edge_at(w, x, y);
+        if (e) { *edge = e; return order[i]; }
+        /* Stop at the first window that CONTAINS the point: a window behind it
+         * may have an edge running under this one, and a grab that reaches
+         * through an opaque window is a grab aimed at something invisible. */
+        if (in_rect(x, y, w->x, w->y, w->w, w->h)) return -1;
+    }
+    return -1;
+}
+
+/* Reallocate a window's canvas to match its frame, and tell the app.
+ *
+ * THE ORDER MATTERS AND IT IS THE ABI: the surface is replaced FIRST and
+ * EV_RESIZE queued second, so by the time an app reads the event the canvas it
+ * is about to draw into already has the new dimensions. The other order would
+ * hand an app an event describing a size it cannot yet draw at, and every app
+ * would need to guess how long to wait.
+ *
+ * The old pixels are carried over row by row over the overlap and the rest is
+ * filled flat. Not because anyone will look at them -- the app repaints on the
+ * event -- but because "the rest" is whatever kmalloc last had in that block,
+ * and a window that flashes a stranger's heap for one frame is a worse bug
+ * than a window that flashes grey.
+ *
+ * A failed allocation is NOT a failed resize. The frame keeps its new size and
+ * the compositor goes on stretching the canvas it already has (blit_content),
+ * which is exactly what it does mid-drag anyway. Refusing the resize instead
+ * would make a window's geometry depend on heap pressure. */
+static void win_apply_size(struct win *w)
+{
+    int cw = w->w, ch = w->h - TBH;
+    if (cw < 1) cw = 1;
+    if (ch < 1) ch = 1;
+    /* No canvas at all means the app has not created its window yet; there is
+     * nothing to resize and nobody to tell. */
+    if (!w->surf.px) return;
+    if (w->surf.w == cw && w->surf.h == ch) return;
+    uint64_t px = (uint64_t)cw * (uint64_t)ch;
+    uint32_t *nb = (uint32_t *)kmalloc((size_t)(px * 4));
+    if (!nb) { serial_puts("[wm] resize: canvas alloc failed; stretching\n"); return; }
+    uint32_t fill = g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252);
+    int copy_w = w->surf.w < cw ? w->surf.w : cw;
+    int copy_h = w->surf.h < ch ? w->surf.h : ch;
+    for (int y = 0; y < ch; y++) {
+        uint32_t *dst = nb + (long)y * cw;
+        int keep = (y < copy_h) ? copy_w : 0;
+        for (int x = 0; x < keep; x++) dst[x] = w->surf.px[(long)y * w->surf.w + x];
+        for (int x = keep; x < cw; x++) dst[x] = fill;
+    }
+    kfree(w->surf.px);
+    w->surf.px = nb;
+    w->surf.w = cw;
+    w->surf.h = ch;
+    /* A clip belonging to the old canvas cannot mean anything on the new one,
+     * and a stale one is the "white Terminal" bug (see fb.h) with a different
+     * cause. The app is about to redraw from scratch regardless. */
+    w->surf.clip_on = 0;
+    w->cw_pt = PT(cw);
+    w->ch_pt = PT(ch);
+    enqueue(w, EV_RESIZE, w->cw_pt, w->ch_pt);
+    dirty_win(w);
+}
+
+/* Bring every window's canvas up to date with its frame, THROTTLED while a
+ * drag is in flight. Called once per WM loop pass -- not per input event, and
+ * not per motion sample -- so a drain that hands us twenty pointer packets
+ * costs one reallocation, not twenty. On the release (rz_win < 0) it runs
+ * unthrottled, which is what guarantees the final size is always applied
+ * however briefly the last motion sample and the button-up were apart. */
+static void wm_apply_sizes(void)
+{
+    if (rz_win >= 0) {
+        uint64_t now = time_mono_ms();
+        if (now - rz_apply_ms < RESIZE_APPLY_MS) return;
+        rz_apply_ms = now;
+    }
+    for (int i = 0; i < MAXWIN; i++)
+        if (wins[i].used && wins[i].kind == WK_APP) win_apply_size(&wins[i]);
+}
+
+/* Draw a window's content, stretching if the canvas has not caught up with the
+ * frame yet. The stretch is the visible half of the resize throttle: what a
+ * user sees mid-drag is their own last frame scaled, which is what every other
+ * desktop shows and reads as the window resizing rather than blanking. */
+static void blit_content(struct win *w, int dx, int dy, int cw, int ch)
+{
+    if (!w->surf.px) return;
+    /* THE DEFECT, COUNTED -- here, at the blit, rather than where the fix is,
+     * so the measurement is the same instrument in both builds. Every path that
+     * puts an app's canvas on screen goes through this function. */
+    if (w->surf.w == cw && w->surf.h == ch) fb_blit_surface(dx, dy, &w->surf);
+    else fb_blit_surface_scaled(dx, dy, cw, ch, &w->surf);
+}
+
 /* ---------- launching apps ---------- */
 static struct app *find_live_app(const char *name)
 {
@@ -380,7 +740,12 @@ void wm_launch(const char *aex_file, const char *arg)
     struct app *exist = find_live_app(name);
     if (exist) {                            /* single instance: just focus it */
         serial_puts("[wm] launch: already live, focusing\n");
-        if (exist->win >= 0) raise_win(exist->win);
+        /* And UN-MINIMISE it. Without this the dock icon of a minimised app
+         * does nothing visible at all -- the app is already live, so the
+         * launcher's single-instance branch "focuses" a window that is not on
+         * screen. That is the only way back for a minimised window besides
+         * Cmd+Tab, so it is not an optional nicety. */
+        if (exist->win >= 0) { win_set_min(&wins[exist->win], 0); raise_win(exist->win); }
         dirty_full();
         kfree(img);                         /* image not needed -- app already running */
         return;
@@ -695,6 +1060,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (!w->surf.px) { w->used = 0; return -1; }
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
         evq_reset(&w->ev); w->wants_close = 0;
+        /* A REUSED SLOT MUST NOT INHERIT the previous tenant's window state.
+         * `used` guards the readers, but zoomed/minimized/min_* are read the
+         * moment the new window is composited -- a slot whose last occupant was
+         * minimised would open a window that is not on screen, and nothing
+         * would say why. */
+        w->min_w_pt = w->min_h_pt = 0;
+        w->zoomed = w->minimized = 0;
+        w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
         { uint64_t t = timer_ticks(); w->open_t0 = t ? t : 1; }   /* trigger open pop */
         ap->win = wi;
         raise_win(wi);
@@ -1018,6 +1391,37 @@ long wm_gui_syscall(long num, long a, long b, long c)
         case SCREEN_DEV_H: return (int)fb_height();
         }
         return -1;
+    case SYS_GUI_WIN_MIN: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        int mw = LOGIT_GUI_WIN_MIN_A_W(a), mh = LOGIT_GUI_WIN_MIN_A_H(a);
+        if (mw < 0 || mh < 0) return -1;
+        w->min_w_pt = mw;
+        w->min_h_pt = mh;
+        /* If the window is already smaller than the floor it just declared,
+         * grow it NOW rather than waiting for the next drag to notice: an app
+         * that says "I need 400 points" and is 200 wide is broken on screen
+         * from this instant, and the WM is the only thing that can fix it. */
+        int fw, fh;
+        win_min_frame(w, &fw, &fh);
+        if (w->w < fw || w->h < fh) win_set_frame(w, w->x, w->y, w->w, w->h);
+        return 0;
+    }
+    case SYS_GUI_WIN_STATE: {
+        struct win *w = app_window(ap); if (!w) return -1;
+        switch ((int)a) {
+        case WINS_W:         return w->cw_pt;
+        case WINS_H:         return w->ch_pt;
+        case WINS_ZOOMED:    return w->zoomed;
+        case WINS_MINIMIZED: return w->minimized;
+        case WINS_SET_ZOOM:
+            win_set_zoom(w, (int)b < 0 ? !w->zoomed : ((int)b != 0));
+            return w->zoomed;
+        case WINS_SET_MIN:
+            win_set_min(w, (int)b != 0);
+            return w->minimized;
+        }
+        return -1;
+    }
     case SYS_OPEN_PATH: {
         char path[USER_PATH_MAX];
         if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
@@ -1092,6 +1496,7 @@ static void reap(void)
                 remove_win(wi);
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
                 if (mouse_capture == wi) mouse_capture = -1;   /* ...nor deliver its drag to the slot's next tenant */
+                if (rz_win == wi) { rz_win = -1; rz_edge = 0; }   /* ...nor resize it */
             }
             apps[i].used = 0;
         }
@@ -1485,39 +1890,6 @@ static const char *cursor_bmp[] = {
 #define CURSOR_W 16
 #define CURSOR_H 20
 
-/* Without a cursor plane the arrow is pixels in the frame, so moving it damages
- * where it was and where it now is -- two small rectangles instead of a screen.
- * This is the LFB fallback path; on virtio-gpu the pointer is not in the frame
- * at all and neither of these is ever called. */
-static void dirty_cursor(int x, int y)
-{ dirty_rect(x, y, S(CURSOR_W) + 1, S(CURSOR_H) + 1); }
-
-/* The cursor is composited into `back` on top of everything else, then presented
- * with the rest of the frame -- no save-under overlay (that restored a stale
- * `back` and smeared garbage as the cursor moved). */
-/* The bitmap is one CELL per character, not one pixel: at scale 200 a cell is a
- * 2x2 block. A 16-pixel arrow on a 2560-wide display is a mote -- the pointer is
- * the one piece of chrome a user tracks continuously, and leaving it at device
- * resolution is the single most obvious way a "scaled" desktop announces that it
- * is only half scaled. Cell edges come from S() of the cell index, so the blocks
- * tile exactly with no seams and no overlap at fractional scales. */
-static void draw_cursor_back(int x, int y)
-{
-    uint32_t o = rgb(20, 20, 26), f = rgb(255, 255, 255);
-    int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
-    for (int r = 0; r < rows; r++) {
-        int y0 = S(r), y1 = S(r + 1);
-        for (int c = 0; cursor_bmp[r][c]; c++) {
-            char p = cursor_bmp[r][c];
-            if (p != '#' && p != '.') continue;
-            uint32_t col = (p == '#') ? o : f;
-            int x0 = S(c), x1 = S(c + 1);
-            for (int j = y0; j < y1; j++)
-                for (int i = x0; i < x1; i++) fb_put(x + i, y + j, col);
-        }
-    }
-}
-
 /* ---- the pointer as a display plane ---------------------------------------
  *
  * Set once, at init, when the display has a cursor plane. Everything else in
@@ -1528,21 +1900,105 @@ static void draw_cursor_back(int x, int y)
  * rendering and still no save-under; the pointer simply is not in the frame. */
 static int hw_cursor;
 
-/* The same arrow as draw_cursor_back, encoded as a 64x64 ARGB plane image.
- * Deliberately reads the SAME cursor_bmp with the SAME S() cell scaling, so the
- * hardware pointer and the software one are the same picture -- a plane cursor
- * that is a different shape from the composited one turns every screenshot
- * comparison into an argument.
+/* ---- FIVE pointers, one picture each ---------------------------------------
  *
- * The plane is 64x64 and a cell is S(1) px, so the arrow fits up to scale 300
- * (17 rows x 3 = 51). fb_cursor_image crops beyond that rather than corrupting
- * anything, and pick_scale() never goes past 300. */
+ * An edge you can drag and a cursor that never changes is an edge nobody finds.
+ * The resize band is 8 points wide; without feedback a user learns it exists by
+ * accident, and every accidental discovery is preceded by a dozen clicks that
+ * did nothing.
+ *
+ * All five live as 64x64 ARGB planes, built once at init, and BOTH pointer
+ * paths read the same array -- the display plane hands it to the device, the
+ * LFB fallback blits it into the composite. That identity is not tidiness: a
+ * plane cursor that is a different picture from the composited one turns every
+ * screenshot comparison into an argument about which path drew it.
+ *
+ * The arrow is the ASCII bitmap it has always been, one CELL per character so
+ * it re-rasterizes with the UI scale (a 16-pixel arrow on a 2560-wide display
+ * is a mote). The four resize pointers are GENERATED, because hand-drawing a
+ * 45-degree double-headed arrow at four scales is exactly the kind of art that
+ * is wrong in one of the corners and nobody notices for a year. */
+enum { CUR_ARROW, CUR_EW, CUR_NS, CUR_NWSE, CUR_NESW, CUR_NSHAPES };
 #define CUR_PLANE 64
-static uint32_t cursor_plane[CUR_PLANE * CUR_PLANE];
-static int build_cursor_plane(void)
+static uint32_t cursor_plane[CUR_NSHAPES][CUR_PLANE * CUR_PLANE];
+static int cursor_hot[CUR_NSHAPES][2];
+static int cursor_box[CUR_NSHAPES][2];   /* w,h actually used, from the hotspot */
+static int cur_shape = CUR_ARROW;
+
+/* Rasterize a double-headed arrow along the unit vector (ux,uy), given in /256
+ * fixed point, into `dst`. The shape is a coverage TEST rather than a path: for
+ * each pixel, project onto the axis (a) and its perpendicular (b), and ask
+ * whether it lands in the bar or inside one of the two heads. That is a dozen
+ * lines that are right at every angle, and it is why the diagonals cost nothing
+ * extra over the axis-aligned pair. */
+static void build_arrow(uint32_t *dst, int ux, int uy)
 {
     uint32_t o = 0xFF000000u | rgb(20, 20, 26), f = 0xFF000000u | rgb(255, 255, 255);
-    for (int i = 0; i < CUR_PLANE * CUR_PLANE; i++) cursor_plane[i] = 0;
+    const int c = CUR_PLANE / 2;
+    int t = S(1); if (t < 1) t = 1;                 /* outline thickness */
+    int R = S(11), bar = S(2), hd = S(6), hw = S(6);
+    /* The plane is fixed at 64 and the UI scale is not, so clamp rather than
+     * write past it: at scale 300 an unclamped R would be 33 and the arrow's
+     * far head would wrap onto the opposite row. */
+    if (R + t > c - 1) { int m = c - 1 - t; if (hd > m) hd = m; if (hw > m) hw = m; R = m; }
+    if (R < 4) R = 4;
+    for (int j = 0; j < CUR_PLANE; j++)
+        for (int i = 0; i < CUR_PLANE; i++) {
+            int px = i - c, py = j - c;
+            int a = (px * ux + py * uy) >> 8;
+            int b = (-px * uy + py * ux) >> 8;
+            int aa = a < 0 ? -a : a, ab = b < 0 ? -b : b;
+            int in = (aa <= R - hd && ab <= bar) ||
+                     (aa > R - hd && aa <= R && ab * hd <= (R - aa) * hw);
+            if (in) dst[j * CUR_PLANE + i] = f;
+        }
+    /* Outline by dilation. Testing only for the FILL colour is what stops this
+     * cascading -- an outline pixel is never a seed for another one, so the
+     * ring is exactly `t` thick however many passes the box test spans. */
+    for (int j = 0; j < CUR_PLANE; j++)
+        for (int i = 0; i < CUR_PLANE; i++) {
+            if (dst[j * CUR_PLANE + i]) continue;
+            int near = 0;
+            for (int dy = -t; dy <= t && !near; dy++)
+                for (int dx = -t; dx <= t; dx++) {
+                    int y2 = j + dy, x2 = i + dx;
+                    if (x2 < 0 || y2 < 0 || x2 >= CUR_PLANE || y2 >= CUR_PLANE) continue;
+                    if (dst[y2 * CUR_PLANE + x2] == f) { near = 1; break; }
+                }
+            if (near) dst[j * CUR_PLANE + i] = o;
+        }
+}
+
+/* The tight bounding box of a built plane, measured from its hotspot. The LFB
+ * fallback damages this and not the whole 64x64: the arrow uses about 16x20 of
+ * it at scale 100, and damaging four times the area on every pointer sample
+ * would be a regression paid for by the one path that has no plane to hide
+ * behind. */
+static void cursor_measure(int s)
+{
+    int x0 = CUR_PLANE, y0 = CUR_PLANE, x1 = 0, y1 = 0;
+    for (int j = 0; j < CUR_PLANE; j++)
+        for (int i = 0; i < CUR_PLANE; i++)
+            if (cursor_plane[s][j * CUR_PLANE + i]) {
+                if (i < x0) x0 = i; if (j < y0) y0 = j;
+                if (i + 1 > x1) x1 = i + 1; if (j + 1 > y1) y1 = j + 1;
+            }
+    if (x1 <= x0) { cursor_box[s][0] = cursor_box[s][1] = 0; return; }
+    cursor_box[s][0] = x1; cursor_box[s][1] = y1;   /* extents from the plane origin */
+}
+
+static void build_cursors(void)
+{
+    for (int s = 0; s < CUR_NSHAPES; s++) {
+        for (int i = 0; i < CUR_PLANE * CUR_PLANE; i++) cursor_plane[s][i] = 0;
+        cursor_hot[s][0] = cursor_hot[s][1] = CUR_PLANE / 2;
+    }
+    /* The arrow, from the ASCII cells. Its tip is the top-left cell, so the
+     * hotspot is (0,0) -- the same relationship the composited arrow always
+     * had, which is what keeps hit-testing and the reported pointer position
+     * identical across the two paths (and what tests/qmp/qmp_ui.py's
+     * locate_cursor depends on). */
+    uint32_t o = 0xFF000000u | rgb(20, 20, 26), f = 0xFF000000u | rgb(255, 255, 255);
     int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
     for (int r = 0; r < rows; r++) {
         int y0 = S(r), y1 = S(r + 1);
@@ -1556,13 +2012,73 @@ static int build_cursor_plane(void)
             if (x0 >= CUR_PLANE) break;
             if (x1 > CUR_PLANE) x1 = CUR_PLANE;
             for (int j = y0; j < y1; j++)
-                for (int i = x0; i < x1; i++) cursor_plane[j * CUR_PLANE + i] = col;
+                for (int i = x0; i < x1; i++) cursor_plane[CUR_ARROW][j * CUR_PLANE + i] = col;
         }
     }
-    /* The arrow's tip is the top-left cell, so the hotspot is (0,0) -- the same
-     * relationship draw_cursor_back(mx,my) had, which is what keeps hit-testing
-     * and the pointer position identical across the two paths. */
-    return fb_cursor_image(cursor_plane, CUR_PLANE, CUR_PLANE, 0, 0) == 0;
+    cursor_hot[CUR_ARROW][0] = cursor_hot[CUR_ARROW][1] = 0;
+    /* 181/256 is sin(45 degrees) to within a quarter of a percent, which at a
+     * 22-pixel arrow is a tenth of a pixel -- the diagonals are diagonal. */
+    build_arrow(cursor_plane[CUR_EW],   256, 0);
+    build_arrow(cursor_plane[CUR_NS],   0,   256);
+    build_arrow(cursor_plane[CUR_NWSE], 181, 181);
+    build_arrow(cursor_plane[CUR_NESW], 181, -181);
+    for (int s = 0; s < CUR_NSHAPES; s++) cursor_measure(s);
+}
+
+/* Without a cursor plane the arrow is pixels in the frame, so moving it damages
+ * where it was and where it now is -- two small rectangles instead of a screen.
+ * This is the LFB fallback path; on virtio-gpu the pointer is not in the frame
+ * at all and neither of these is ever called. */
+static void dirty_cursor(int x, int y)
+{
+    int s = cur_shape;
+    dirty_rect(x - cursor_hot[s][0], y - cursor_hot[s][1],
+               cursor_box[s][0] + 1, cursor_box[s][1] + 1);
+}
+
+/* The cursor is composited into `back` on top of everything else, then presented
+ * with the rest of the frame -- no save-under overlay (that restored a stale
+ * `back` and smeared garbage as the cursor moved). */
+static void draw_cursor_back(int x, int y)
+{
+    const uint32_t *p = cursor_plane[cur_shape];
+    int hx = cursor_hot[cur_shape][0], hy = cursor_hot[cur_shape][1];
+    int bw = cursor_box[cur_shape][0], bh = cursor_box[cur_shape][1];
+    for (int j = 0; j < bh; j++)
+        for (int i = 0; i < bw; i++) {
+            uint32_t v = p[j * CUR_PLANE + i];
+            if (v & 0xFF000000u) fb_put(x + i - hx, y + j - hy, v & 0x00FFFFFFu);
+        }
+}
+
+/* Adopt a pointer shape. Only ever called when the shape CHANGES: on the plane
+ * path a redefine is a 64x64 transfer plus a control-queue round trip, which is
+ * nothing once but is not free at pointer rate; on the LFB path it is a repaint
+ * of where the old picture was. */
+static void set_cursor(int s)
+{
+    if (s < 0 || s >= CUR_NSHAPES || s == cur_shape) return;
+    if (!hw_cursor) dirty_cursor(mx, my);        /* erase the outgoing picture */
+    cur_shape = s;
+    if (hw_cursor)
+        fb_cursor_image(cursor_plane[s], CUR_PLANE, CUR_PLANE,
+                        cursor_hot[s][0], cursor_hot[s][1]);
+    else
+        dirty_cursor(mx, my);                    /* ...and draw the incoming one */
+}
+
+/* The pointer for a set of grabbed edges. A corner names two edges, and the
+ * two diagonals are told apart by whether those edges are on the same side of
+ * the window's diagonal: left+top and right+bottom both pull along the NW-SE
+ * axis, the other two along NE-SW. */
+static int cursor_for_edge(int e)
+{
+    if (!e) return CUR_ARROW;
+    int horiz = (e & (RZ_L | RZ_R)) != 0, vert = (e & (RZ_T | RZ_B)) != 0;
+    if (horiz && vert)
+        return ((e & RZ_L) && (e & RZ_T)) || ((e & RZ_R) && (e & RZ_B))
+               ? CUR_NWSE : CUR_NESW;
+    return horiz ? CUR_EW : CUR_NS;
 }
 
 /* Open "pop" animation: 0.85 -> 1.0 scale over ~0.14s (easeOutCubic). Returns the
@@ -1607,7 +2123,7 @@ static int dmg_expand(struct drect *r, int n)
             if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
             for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
                 struct win *w = &wins[order[k]];
-                if (!w->used) continue;
+                if (!w->used || w->minimized) continue;  /* not on screen, no glass */
                 p.x0 = w->x; p.y0 = w->y;
                 p.x1 = w->x + w->w; p.y1 = w->y + TBH + S(10);
                 if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
@@ -1639,12 +2155,13 @@ static int render_region(const struct drect *R)
     fb_set_clip(R->x0, R->y0, rw, rh);
     for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
         blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
+    int focus_wi = top_visible();          /* NOT order[norder-1]: that may be minimised */
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
         struct win *w = &wins[order[i]];
-        if (!w->used) continue;
+        if (!w->used || w->minimized) continue;
         struct drect b; win_box(w, &b);
         if (!rect_hit(&b, R)) continue;    /* nothing of this window is in the rect */
-        int focused = (i == norder - 1);
+        int focused = (order[i] == focus_wi);
         int s = win_open_scale(w);         /* open pop in progress? */
         if (s) {
             int need = w->w * w->h;
@@ -1654,7 +2171,7 @@ static int render_region(const struct drect *R)
                 struct surface tmp = { .px = anim_buf, .w = w->w, .h = w->h };  /* clip_on = 0: scratch is unclipped */
                 fb_target(&tmp);           /* render the whole window into scratch... */
                 draw_frame_body(0, 0, w->w, w->h, w->title, focused);
-                if (w->surf.px) fb_blit_surface(0, TBH, &w->surf);
+                blit_content(w, 0, TBH, w->w, w->h - TBH);
                 fb_target(NULL);
                 int dw = w->w * s / 256, dh = w->h * s / 256;     /* ...scale to back */
                 fb_blit_surface_scaled(w->x + (w->w - dw) / 2, w->y + (w->h - dh) / 2, dw, dh, &tmp);
@@ -1662,8 +2179,10 @@ static int render_region(const struct drect *R)
             }
         }
         draw_frame(w, focused);
-        if (w->surf.px)
-            fb_blit_surface(w->x, w->y + TBH, &w->surf);
+        /* The canvas is allowed to be a size behind the frame mid-drag, so the
+         * content is stretched rather than left as a hole -- see blit_content
+         * and RESIZE_APPLY_MS. */
+        blit_content(w, w->x, w->y + TBH, w->w, w->h - TBH);
     }
     { struct drect p; menubar_box(&p);                  /* frosted chrome ON TOP: */
       if (rect_hit(&p, R)) draw_menubar(); }            /* real-time vibrancy      */
@@ -1735,10 +2254,120 @@ void wm_render(void)
 static int in_rect(int px, int py, int x, int y, int w, int h)
 { return px >= x && px < x + w && py >= y && py < y + h; }
 
+/* ---- system shortcuts ------------------------------------------------------
+ *
+ * THE CLAIM RULE, stated once and enforced in one place: the window manager
+ * intercepts a CLOSED LIST of Cmd combinations before the focused app sees
+ * them, and forwards everything else -- including Cmd combinations not on the
+ * list, with EV_MOD_SUPER set so an app can use them.
+ *
+ * An app cannot take a claimed one back, and that asymmetry is the point. A
+ * shortcut any app can swallow is not a system shortcut: the first text field
+ * that treats Cmd+W as "delete word" leaves a window the keyboard cannot
+ * close. The compensating promise is that the list is CLOSED and small, and
+ * that Cmd is a modifier nothing in this tree had already spent -- so no app
+ * loses a keystroke it used to receive, and "which Cmd keys are mine" has an
+ * answer an app author can read rather than discover.
+ *
+ * Returns 1 if the WM consumed the key.
+ *
+ *   Cmd+W          close the focused window
+ *   Cmd+Q          quit the focused app  (see below)
+ *   Cmd+M          minimise the focused window
+ *   Cmd+Tab        next window           Cmd+Shift+Tab  previous
+ *   Cmd+`          next window OF THE FOCUSED APP
+ *
+ * Cmd+Q sends EV_CLOSE to every window the focused app owns, which today is
+ * exactly one -- SYS_GUI_CREATE refuses a second -- so Q and W currently do the
+ * same thing to the same pixels. They are still two shortcuts, because the
+ * distinction is one of SCOPE and not of implementation: the day an app opens a
+ * second window they diverge without either being rewritten. Naming them the
+ * same shortcut today would be the choice that has to be undone later.
+ *
+ * It is deliberately NOT a kill. Terminating a process from outside its own
+ * control flow lives in c/kernel/exec/proc.c and belongs to another line; a
+ * window manager that reached in there to make Cmd+Q feel stronger would be
+ * coupling a keystroke to process teardown it does not own. */
+static int wm_shortcut(int c, int mods)
+{
+    int wi = top_visible();
+    struct win *w = wi >= 0 ? &wins[wi] : NULL;
+    if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';      /* Cmd+Shift+W is still close */
+
+    switch (c) {
+    case 'w':
+        if (w && w->kind == WK_APP) { enqueue(w, EV_CLOSE, 0, 0); return 1; }
+        return 1;                                     /* claimed even with no window */
+    case 'q':
+        if (w && w->app) {
+            struct app *ap = w->app;
+            for (int i = 0; i < MAXWIN; i++)
+                if (wins[i].used && wins[i].kind == WK_APP && wins[i].app == ap)
+                    enqueue(&wins[i], EV_CLOSE, 0, 0);
+        }
+        return 1;
+    case 'm':
+        if (w) win_set_min(w, 1);
+        return 1;
+    case '\t': {
+        /* NO ON-SCREEN SWITCHER, and the reason is a missing event rather than
+         * a missing panel. A hold-to-browse switcher has to know when Cmd comes
+         * UP -- that is what commits the choice -- and this machine has no such
+         * event: the keyboard driver enqueues make codes for mapped keys only,
+         * and a modifier produces no wm_key() at all. Inventing one is a change
+         * to the input path three other lines are building on this week.
+         *
+         * So each press switches immediately, and the two directions are exact
+         * inverses: forward raises the BOTTOM-most window (a rotation that
+         * reaches every window, unlike "raise the one below the top", which
+         * ping-pongs between the top two forever and can never reach a third),
+         * backward sends the top one to the bottom. Press forward n times with
+         * n windows and you are back where you started. */
+        if (norder < 2) return 1;
+        if (mods & EV_MOD_SHIFT) {
+            int top = top_visible();
+            if (top >= 0) lower_win(top);
+        } else {
+            int bot = -1;
+            for (int i = 0; i < norder; i++) {
+                struct win *cw = &wins[order[i]];
+                if (cw->used) { bot = order[i]; break; }
+            }
+            if (bot >= 0) { win_set_min(&wins[bot], 0); raise_win(bot); }
+        }
+        dirty_full();      /* a z-order change re-stacks every overlap on screen */
+        return 1;
+    }
+    case '`':
+    case '~':
+        /* Rotate among the windows of ONE app. With SYS_GUI_CREATE refusing a
+         * second window per app this is a no-op on today's data, and it is
+         * written against the model rather than against the data on purpose:
+         * the alternative is a shortcut that silently does nothing on the day
+         * the model changes, which is a bug nobody goes looking for. */
+        if (w && w->app) {
+            struct app *ap = w->app;
+            for (int i = 0; i < norder; i++) {
+                struct win *cw = &wins[order[i]];
+                if (cw->used && cw->app == ap && order[i] != wi) {
+                    win_set_min(cw, 0);
+                    raise_win(order[i]);
+                    dirty_full();
+                    return 1;
+                }
+            }
+        }
+        return 1;
+    }
+    return 0;      /* not ours: the app gets it, with EV_MOD_SUPER set */
+}
+
 static void wm_process_key(int c, int mods)
 {
-    if (norder == 0) return;
-    struct win *w = &wins[order[norder - 1]];
+    if ((mods & EV_MOD_SUPER) && wm_shortcut(c, mods)) return;
+    int wi = top_visible();       /* NOT order[norder-1]: that may be minimised */
+    if (wi < 0) return;
+    struct win *w = &wins[wi];
     if (w->kind == WK_APP) {
         /* `a` is unchanged -- Ctrl+S still arrives as 0x13, because a decade of
          * terminal habit lives on that mapping and TextEdit reads it. `mods` is
@@ -1756,10 +2385,44 @@ static int win_content_at(int x, int y)
 {
     for (int i = norder - 1; i >= 0; i--) {
         struct win *w = &wins[order[i]];
-        if (!w->used || w->kind != WK_APP) continue;
+        if (!w->used || w->minimized || w->kind != WK_APP) continue;
         if (in_rect(x, y, w->x, w->y + TBH, w->w, w->h - TBH)) return order[i];
     }
     return -1;
+}
+
+/* The pointer shape the CURRENT situation calls for. During a resize it is the
+ * drag's own shape and nothing else may change it -- a drag that walks the
+ * pointer over another window's edge must not switch cursors halfway through,
+ * because the gesture in progress is still the one the user started. */
+static void update_cursor_shape(int x, int y)
+{
+    if (rz_win >= 0) { set_cursor(cursor_for_edge(rz_edge)); return; }
+    if (dragging >= 0 || mouse_capture >= 0) { set_cursor(CUR_ARROW); return; }
+    int e = 0;
+    int wi = resize_hit(x, y, &e);
+    set_cursor(wi >= 0 ? cursor_for_edge(e) : CUR_ARROW);
+}
+
+/* Two presses on the SAME window's titlebar, close together in time and in
+ * space. The space test earns its place as much as the time one: a fast hand
+ * clicking two different controls is not double-clicking either of them.
+ *
+ * A third click does not read as a second double-click -- the state is cleared
+ * on a hit -- because otherwise holding a key down on a mouse and clicking four
+ * times would zoom, restore, zoom, restore. */
+static int titlebar_double_click(int wi, int x, int y)
+{
+    static int last_wi = -1, last_x, last_y;
+    static uint64_t last_ms;
+    uint64_t now = time_mono_ms();
+    int slop = S(6);
+    int hit = (last_wi == wi && now - last_ms <= 400 &&
+               x - last_x <= slop && last_x - x <= slop &&
+               y - last_y <= slop && last_y - y <= slop);
+    last_wi = hit ? -1 : wi;
+    last_x = x; last_y = y; last_ms = now;
+    return hit;
 }
 
 static void wm_process_mouse(const struct inev *in)
@@ -1801,11 +2464,30 @@ static void wm_process_mouse(const struct inev *in)
                 docked = 1; break;
             }
         }
+        /* A RESIZE GRAB OUTRANKS EVERYTHING BELOW IT, including the titlebar
+         * drag and the app's own content, because the band overlaps both. It
+         * loses to the dock and the menu-bar switch above for the same reason
+         * those beat a window: they are drawn on top, and the thing you can see
+         * is the thing you must hit. */
+        int rz_e = 0, rz_hit = docked ? -1 : resize_hit(x, y, &rz_e);
+        if (rz_hit >= 0) {
+            struct win *w = &wins[rz_hit];
+            int prev_top = top_visible();
+            raise_win(rz_hit);
+            dirty_win(w);
+            if (prev_top >= 0 && prev_top != rz_hit && wins[prev_top].used)
+                dirty_win(&wins[prev_top]);
+            rz_win = rz_hit; rz_edge = rz_e;
+            rz_x0 = w->x; rz_y0 = w->y; rz_x1 = w->x + w->w; rz_y1 = w->y + w->h;
+            rz_mx = x; rz_my = y;
+            rz_apply_ms = time_mono_ms();
+            docked = 1;                  /* consumed: fall past the window hit-test */
+        }
         if (!docked) {
         int hitorder = -1;
         for (int i = norder - 1; i >= 0; i--) {
             struct win *w = &wins[order[i]];
-            if (w->used && in_rect(x, y, w->x, w->y, w->w, w->h)) { hitorder = i; break; }
+            if (w->used && !w->minimized && in_rect(x, y, w->x, w->y, w->w, w->h)) { hitorder = i; break; }
         }
         if (hitorder >= 0) {
             int wi = order[hitorder];
@@ -1814,15 +2496,32 @@ static void wm_process_mouse(const struct inev *in)
              * the classic partial-render bug: the window that just lost focus
              * still shows its coloured traffic lights, in its own titlebar,
              * nowhere near the rectangle that was damaged. */
-            int prev_top = norder ? order[norder - 1] : -1;
+            int prev_top = top_visible();
             raise_win(wi);
             dirty_win(w);
             if (prev_top >= 0 && prev_top != wi && wins[prev_top].used)
                 dirty_win(&wins[prev_top]);
             int cx = x - w->x, cy = y - w->y;
             if (cy < TBH) {
-                if ((cx - S(16)) * (cx - S(16)) + (cy - S(15)) * (cy - S(15)) <= S(8) * S(8)) {
-                    if (w->kind == WK_APP) enqueue(w, EV_CLOSE, 0, 0);  /* close button */
+                /* The three lights, at last all three doing something. The
+                 * yellow and green ones have been drawn since M8 and have been
+                 * decoration for as long -- which is worse than absent, because
+                 * a control that looks like a control and does nothing teaches
+                 * a user that this desktop's chrome is a picture of a desktop. */
+                int r2 = S(8) * S(8);
+                int dyc = cy - S(15);
+                if ((cx - S(16)) * (cx - S(16)) + dyc * dyc <= r2) {
+                    if (w->kind == WK_APP) enqueue(w, EV_CLOSE, 0, 0);  /* close */
+                } else if ((cx - S(34)) * (cx - S(34)) + dyc * dyc <= r2) {
+                    win_set_min(w, 1);                                  /* minimise */
+                } else if ((cx - S(52)) * (cx - S(52)) + dyc * dyc <= r2) {
+                    win_set_zoom(w, !w->zoomed);                        /* zoom */
+                } else if (titlebar_double_click(wi, x, y)) {
+                    /* Double-click the titlebar: the same toggle as the green
+                     * light. Two ways in for one action, because the light is
+                     * discoverable and the double-click is what a hand already
+                     * trained on another desktop will try first. */
+                    win_set_zoom(w, !w->zoomed);
                 } else {
                     dragging = wi; drag_dx = cx; drag_dy = cy;
                 }
@@ -1888,17 +2587,51 @@ static void wm_process_mouse(const struct inev *in)
     }
     if (!left && !right && !middle) mouse_capture = -1;   /* all buttons up: release the pointer */
 
-    if (!left) dragging = -1;
+    if (!left) {
+        dragging = -1;
+        /* Letting go ends the resize AND forces the canvas to catch up, with no
+         * throttle. Everything else about the drag is best-effort by design;
+         * the FINAL size is not, because that is the size the app keeps. */
+        if (rz_win >= 0) { rz_win = -1; rz_edge = 0; wm_apply_sizes(); }
+    }
     /* A drag changes TWO regions: where the window was and where it now is.
      * Reporting only the destination is what leaves a window-shaped hole
      * trailing behind the drag, and it is the single most visible way to get
      * damage tracking wrong. */
     if (dragging >= 0 && left) {
         struct win *w = &wins[dragging];
-        dirty_win(w);
-        w->x = x - drag_dx; w->y = y - drag_dy;
-        dirty_win(w);
+        int nx = x - drag_dx, ny = y - drag_dy;
+        if (nx != w->x || ny != w->y) win_break_zoom(w);   /* movement, not the press */
+        win_set_frame(w, nx, ny, w->w, w->h);
     }
+
+    /* The resize drag. The new frame is computed from the ANCHOR, not from the
+     * previous sample: accumulating deltas drifts, and a resize that drifts
+     * will not return to the size it started at when the hand returns to where
+     * it started -- which is the one thing a user checks when they overshoot.
+     *
+     * Both the clamp to the minimum and the clamp to the screen are applied by
+     * win_set_frame, but the LEFT and TOP edges need their anchor adjusted here
+     * as well: clamping the width alone while dragging the left edge would pin
+     * x and grow the window to the RIGHT, which is the opposite of the edge
+     * under the hand. */
+    if (rz_win >= 0 && left && wins[rz_win].used) {
+        struct win *w = &wins[rz_win];
+        int nx0 = rz_x0, ny0 = rz_y0, nx1 = rz_x1, ny1 = rz_y1;
+        if (rz_edge & RZ_L) nx0 = rz_x0 + (x - rz_mx);
+        if (rz_edge & RZ_R) nx1 = rz_x1 + (x - rz_mx);
+        if (rz_edge & RZ_T) ny0 = rz_y0 + (y - rz_my);
+        if (rz_edge & RZ_B) ny1 = rz_y1 + (y - rz_my);
+        int mw, mh;
+        win_min_frame(w, &mw, &mh);
+        if (nx1 - nx0 < mw) { if (rz_edge & RZ_L) nx0 = nx1 - mw; else nx1 = nx0 + mw; }
+        if (ny1 - ny0 < mh) { if (rz_edge & RZ_T) ny0 = ny1 - mh; else ny1 = ny0 + mh; }
+        if ((rz_edge & RZ_T) && ny0 < MBH) ny0 = MBH;
+        if (nx0 != w->x || ny0 != w->y || nx1 - nx0 != w->w || ny1 - ny0 != w->h)
+            win_break_zoom(w);        /* movement, not the press -- see win_break_zoom */
+        win_set_frame(w, nx0, ny0, nx1 - nx0, ny1 - ny0);
+    }
+    if (rz_win >= 0 && (!wins[rz_win].used || !left)) { rz_win = -1; rz_edge = 0; }
 
     /* Motion. Goes to the capture target while a button is held, else to
      * whatever window is visibly under the pointer -- including an unfocused
@@ -1911,7 +2644,7 @@ static void wm_process_mouse(const struct inev *in)
      * bound on how far apart those two rates can drift. evq_push merges
      * consecutive moves, so motion occupies at most ONE slot and can never evict
      * a queued click. */
-    if (moved && dragging < 0) {
+    if (moved && dragging < 0 && rz_win < 0) {
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
@@ -1957,6 +2690,13 @@ static void wm_process_mouse(const struct inev *in)
             if (hov != old_hov) { dirty_dock_hov(old_hov); dirty_dock_hov(hov); }
         }
     }
+    /* Last, and after the drag state above has settled, because the shape is a
+     * function of that state: asking before the release has been processed
+     * would leave a resize pointer standing over a window nobody is resizing.
+     * This runs on every packet but set_cursor is a no-op unless the shape
+     * actually changed, so a sweep across a window costs two device commands,
+     * not one per sample. */
+    update_cursor_shape(x, y);
 }
 
 /* ---------- registry + init ---------- */
@@ -2023,7 +2763,9 @@ void wm_init(void)
      * the answer, and the answer is worth a line of its own: "the pointer is
      * free to move" and "every mouse sample repaints the screen" are the same
      * desktop from a screenshot, and this is the only place they differ. */
-    hw_cursor = build_cursor_plane();
+    build_cursors();
+    hw_cursor = fb_cursor_image(cursor_plane[CUR_ARROW], CUR_PLANE, CUR_PLANE,
+                                cursor_hot[CUR_ARROW][0], cursor_hot[CUR_ARROW][1]) == 0;
     if (hw_cursor) fb_cursor_move(mx, my);
     kprintf("[wm] pointer: %s\n",
             hw_cursor ? "display cursor plane (motion does not composite)"
@@ -2069,6 +2811,70 @@ static void wm_pointer_sync(void)
     if (!reported && time_mono_ms() - settle_ms >= 100) {
         kprintf("[wm] ptr %d %d\n", cx, cy);
         reported = 1;
+    }
+}
+
+/* What the windows on this machine actually are, printed when they SETTLE.
+ *
+ * The same argument as `[wm] ptr` above, for the same reason. A test that wants
+ * to know whether a drag on the bottom-right corner resized a window can either
+ * ask the guest or go hunting through a screendump for the traffic lights and
+ * work backwards through S() -- and the second one is pixel archaeology that
+ * breaks the day the titlebar is restyled. It is also unable to see the two
+ * numbers that matter most here, the CONTENT size and the zoom state, because
+ * neither is a colour anywhere on screen.
+ *
+ * Settled, not live: a resize drag is a stream of geometries and only the one
+ * the hand stopped on is a fact. 150 ms of quiet, then one line per changed
+ * window. That silence is load-bearing -- this console is also /bin/sh's
+ * stdout, and a compositor that narrated every pointer sample would interleave
+ * itself into `make test-shell`'s expected bytes. */
+struct gsnap { int x, y, w, h, z, m, cw, ch; };
+
+static void wm_geom_report(void)
+{
+    /* TWO snapshots, and the difference between them is the whole function.
+     * `seen` is what the windows were on the previous pass and answers "has
+     * anything moved since I last looked"; `said` is what has been printed and
+     * answers "is this news". Collapsing them into one array -- comparing
+     * against what was last REPORTED -- makes `changed` true forever the moment
+     * anything moves, because the thing it is compared against only advances
+     * when a report happens, which the same flag is preventing. */
+    static struct gsnap seen[MAXWIN], said[MAXWIN];
+    static int inited, pending;
+    static uint64_t quiet_ms;
+    int changed = 0;
+    for (int i = 0; i < MAXWIN; i++) {
+        struct win *w = &wins[i];
+        struct gsnap c = { w->used ? w->x : -1, w->used ? w->y : -1,
+                           w->used ? w->w : -1, w->used ? w->h : -1,
+                           w->zoomed, w->minimized, w->cw_pt, w->ch_pt };
+        if (c.x != seen[i].x || c.y != seen[i].y || c.w != seen[i].w ||
+            c.h != seen[i].h || c.z != seen[i].z || c.m != seen[i].m ||
+            c.cw != seen[i].cw || c.ch != seen[i].ch) { seen[i] = c; changed = 1; }
+    }
+    /* An empty desktop is the state this starts in, not a transition into it. */
+    if (!inited) { inited = 1; for (int i = 0; i < MAXWIN; i++) said[i] = seen[i]; return; }
+    if (changed) { quiet_ms = time_mono_ms(); pending = 1; return; }
+    if (!pending || time_mono_ms() - quiet_ms < 150) return;
+    pending = 0;
+    for (int i = 0; i < MAXWIN; i++) {
+        struct win *w = &wins[i];
+        if (seen[i].x == said[i].x && seen[i].y == said[i].y &&
+            seen[i].w == said[i].w && seen[i].h == said[i].h &&
+            seen[i].z == said[i].z && seen[i].m == said[i].m &&
+            seen[i].cw == said[i].cw && seen[i].ch == said[i].ch) continue;
+        said[i] = seen[i];
+        int x = seen[i].x, y = seen[i].y, ww = seen[i].w, wh = seen[i].h;
+        int z = seen[i].z, m = seen[i].m;
+        if (!w->used) { kprintf("[wm] win %d gone\n", i); continue; }
+        /* Both units on one line, deliberately. The frame is device pixels
+         * because that is what a screendump is measured in; the content size is
+         * points because that is what the app was told and what it draws in.
+         * A reader who has to convert between them is a reader who will one day
+         * convert with the wrong scale. */
+        kprintf("[wm] win %d frame %d %d %d %d content %d %d pt zoom %d min %d %s\n",
+                i, x, y, ww, wh, w->cw_pt, w->ch_pt, z, m, w->title);
     }
 }
 
@@ -2158,6 +2964,12 @@ void wm_run(void)
         }
 #endif
         wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
+        /* Canvases catch up with frames HERE, once per pass -- not inside the
+         * drain. A drain can hand us twenty pointer packets and every one of
+         * them moves the frame; reallocating a 9 MB canvas twenty times to
+         * arrive at one size is the difference between a resize that is
+         * throttled and a resize that is unbounded. See RESIZE_APPLY_MS. */
+        wm_apply_sizes();
         wm_pointer_sync();            /* one cursor-plane command per loop, not per packet */
         proc_reap();                  /* free zombie processes (GUI apps + orphans) */
         notify_tick();                /* WM-HOOK 5/6: expire notifications (see notify.h) */
@@ -2181,6 +2993,7 @@ void wm_run(void)
             wm_render();
         }
         wm_perf_report();
+        wm_geom_report();     /* window frames, when they stop moving */
         /* Idle until the next interrupt instead of spinning schedule(): the timer
          * IRQ (100 Hz) preempts + round-robins the app threads, and mouse/keyboard
          * IRQs wake us immediately. This stops the whole system busy-spinning --
