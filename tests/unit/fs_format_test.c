@@ -62,6 +62,14 @@ int main(int argc, char **argv)
     fs_ok(__builtin_offsetof(struct lfs_dinode, atime) == 64, "atime at byte 64");
     fs_ok(__builtin_offsetof(struct lfs_dinode, mtime) == 72, "mtime at byte 72");
     fs_ok(__builtin_offsetof(struct lfs_dinode, ctime) == 80, "ctime at byte 80");
+    /* Owner and mode, the next slice of the same reserved area (mkfs.py:
+     * OFF_XMODE/OFF_UID/OFF_GID). Asserted here for the reason the timestamps
+     * are: the C definition and the Python one are two copies, and a field that
+     * moved on one side shows up as a kernel reading modes at the wrong offset
+     * -- which would look like "the mode did not survive the reboot". */
+    fs_ok(__builtin_offsetof(struct lfs_dinode, xmode) == 88, "xmode at byte 88");
+    fs_ok(__builtin_offsetof(struct lfs_dinode, uid) == 92, "uid at byte 92");
+    fs_ok(__builtin_offsetof(struct lfs_dinode, gid) == 96, "gid at byte 96");
 
     /* --- the image itself --------------------------------------------------- */
     uint8_t sblk[LFS_BS];
