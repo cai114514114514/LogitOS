@@ -133,6 +133,16 @@ isr_common:
     and rsp, -16               ; FXSAVE needs a 16-byte aligned target
     mov [rsp], rdi             ; stash regs* so we can restore rsp after the call
     fxsave [rsp + 16]
+    ; M31 signals: the C side needs this area by ADDRESS, not just as something
+    ; that happens around the call. A signal frame has to carry the interrupted
+    ; program's FP/SSE state -- a handler is ring-3 C built with -msse2 and will
+    ; clobber XMM/MXCSR of whatever it interrupts -- and by the time delivery
+    ; runs, kernel C has already had those registers, so an FXSAVE issued there
+    ; would save the wrong state. It has to be THIS one. Symmetrically,
+    ; SYS_SIGRETURN writes the saved state back in here so the fxrstor below is
+    ; what installs it: one save and one restore, both already on this path.
+    ; rsp is fixed across the call (the `and` above is done), so a lea is exact.
+    lea rsi, [rsp + 16]        ; 2nd arg: the 512-byte FXSAVE area
     cld
     call interrupt_handler     ; rdi already = regs*; rsp stays put across call/ret
     fxrstor [rsp + 16]

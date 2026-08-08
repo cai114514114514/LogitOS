@@ -21,6 +21,8 @@
 #include "mm.h"        /* mm_fault(): the page faults that are work, not errors */
 #include "work.h"        /* M27: softirq_run_pending() on the kernel-exit path */
 #include "kbench.h"      /* entry/exit accounting, off by default */
+#include "ksignal.h"     /* M31: faults become signals; delivery on the way out */
+#include "logit_abi.h"   /* SYS_SIGRETURN, LOGIT_SIG* */
 
 static const char *const exception_names[32] = {
     "divide-by-zero", "debug", "NMI", "breakpoint",
@@ -46,10 +48,50 @@ static void panic_exception(struct registers *r)
         __asm__ volatile ("cli; hlt");
 }
 
-void interrupt_handler(struct registers *r)
+/* ===========================================================================
+ * M31: which signal a CPU exception is.
+ *
+ * The mapping is Linux's, because a ported program's own handler was written
+ * against it -- a SIGFPE handler expects to be called for a divide by zero and
+ * for a SIMD exception, and nothing else.
+ *
+ * 0 means "no signal": the exception is not something a process can be told
+ * about, so the historical kill stands. That is the case for a double fault
+ * (there is no consistent state left to hand a handler) and for anything not
+ * listed. It is the conservative direction -- a 0 here costs a catchable fault
+ * its handler, and a wrong non-zero would hand a handler a frame describing a
+ * machine state it cannot resume from.
+ * ========================================================================= */
+static int fault_signal(uint64_t vector)
+{
+    switch (vector) {
+    case 0:  return LOGIT_SIGFPE;    /* divide by zero */
+    case 1:  return LOGIT_SIGTRAP;   /* debug */
+    case 3:  return LOGIT_SIGTRAP;   /* breakpoint */
+    case 4:  return LOGIT_SIGSEGV;   /* overflow (INTO) */
+    case 5:  return LOGIT_SIGSEGV;   /* bound range */
+    case 6:  return LOGIT_SIGILL;    /* invalid opcode */
+    case 7:  return LOGIT_SIGFPE;    /* device not available */
+    case 11: return LOGIT_SIGBUS;    /* segment not present */
+    case 12: return LOGIT_SIGBUS;    /* stack-segment fault */
+    case 13: return LOGIT_SIGSEGV;   /* general protection */
+    case 14: return LOGIT_SIGSEGV;   /* page fault */
+    case 16: return LOGIT_SIGFPE;    /* x87 FP */
+    case 17: return LOGIT_SIGBUS;    /* alignment check */
+    case 19: return LOGIT_SIGFPE;    /* SIMD FP */
+    default: return 0;
+    }
+}
+
+void interrupt_handler(struct registers *r, void *fxarea)
 {
     if (r->vector == 255)          /* LAPIC spurious: no BKL, no EOI, just return */
         return;
+
+    /* The syscall NUMBER, kept because r->rax holds the RESULT by the time the
+     * exit path runs and SA_RESTART needs the number to put back. 0 on every
+     * entry that is not a syscall, which is also "do not restart". */
+    uint64_t sysnr = 0;
 
     /* ENTRY/EXIT ACCOUNTING (kbench.h). What one trip into the kernel costs,
      * by class, measured on the real workload rather than a synthetic loop --
@@ -110,7 +152,14 @@ void interrupt_handler(struct registers *r)
     if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
     if (r->vector == 128) {        /* int 0x80 system call */
-        syscall_dispatch(r);
+        sysnr = r->rax;
+        /* SYS_SIGRETURN is intercepted HERE, ahead of the dispatcher, and it
+         * has to be: restoring a signal frame means writing the register set
+         * that is about to be iretq'd AND the FXSAVE area the epilogue will
+         * FXRSTOR, and a syscall body in c/kernel/exec/syscall.c can reach
+         * neither. This is the only frame in the kernel that holds both. */
+        if (__builtin_expect(sysnr == SYS_SIGRETURN, 0)) ksig_sigreturn(r, fxarea);
+        else                                             syscall_dispatch(r);
         goto done;
     }
     if (r->vector == 240) {        /* M25 P2: TLB-shootdown IPI (BKL-free) */
@@ -149,6 +198,26 @@ void interrupt_handler(struct registers *r)
 
         if (r->cs & 3) {            /* fault came from ring 3: kill the app, keep the kernel alive */
             uint64_t cr2 = 0; __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+
+            /* M31: OFFER IT TO THE PROCESS FIRST. Until now a ring-3 fault
+             * killed the app and userland never learned why -- there was no
+             * SIGSEGV, so no crash reporter, no recovery, no decision about a
+             * core dump. ksig_fault() returns 1 only when the process has
+             * actually installed a handler for this signal and has not blocked
+             * it; then the frame is built at `done:` below and the handler runs
+             * instead of the kill.
+             *
+             * EVERYTHING ELSE FALLS THROUGH TO THE LINES BELOW, UNCHANGED, and
+             * that is deliberate: the default disposition of SIGSEGV/SIGBUS/
+             * SIGFPE/SIGILL is terminate, so a process that has not asked for
+             * the signal dies exactly as it did before, with the same message
+             * and the same exit code -- and the desktop survives, which is the
+             * load-bearing property this file has had since the post-roadmap
+             * work and which must not regress to buy a feature. */
+            int signo = fault_signal(r->vector);
+            if (signo && ksig_fault(signo, cr2, r->error_code, r->vector))
+                goto done;
+
             kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x cr2=%p rsp=%p -- terminating app\n",
                     exception_names[r->vector & 31], (int)r->vector,
                     (void *)r->rip, (unsigned)r->error_code, (void *)cr2, (void *)r->rsp);
@@ -166,6 +235,18 @@ void interrupt_handler(struct registers *r)
         if (irq == 0) {
             /* tick already done above (before the BKL acquire -- see comment) */
             if (apic) lapic_eoi(); else pic_eoi(0);
+            /* M31: expire alarms, and DRAIN THE CONSOLE.
+             *
+             * The second one is why this is on the timer at all. There is no
+             * serial receive interrupt on this machine, so the only thing that
+             * ever read the UART was tty_read()'s own poll -- meaning that
+             * while a child process ran, nobody was reading, and a ^C sat in
+             * the receive register until the child had finished. A Ctrl+C that
+             * arrives after the program you wanted to stop has exited is not a
+             * Ctrl+C. Here, at 100 Hz, it is seen within 10 ms whether or not
+             * anything is reading. Under the BKL and only on a non-nested
+             * entry, so it can never contend with tty_read for the port. */
+            if (!nested) ksig_tick();
             /* Don't preempt mid block-I/O, and never re-enter the scheduler from
              * a NESTED IRQ (the sti window inside an in-progress kernel op). */
             if (!nested && !ata_busy() && !virtio_busy() && !nvme_busy())
@@ -194,6 +275,40 @@ done:
      * is a live interrupt frame under them. */
     if (!nested && !bkl_free && !ata_busy() && !virtio_busy() && !nvme_busy())
         softirq_run_pending();
+
+    /* ===================================================================
+     * M31: SIGNAL DELIVERY, and there is exactly one of these in the kernel.
+     *
+     * A signal frame can only be built at a moment when a complete, consistent
+     * ring-3 register state exists to save -- which is the moment before an
+     * iretq back to ring 3, and nowhere else. This is that moment, and because
+     * it is the tail of EVERY kernel entry it covers all of them at once:
+     * syscall return, page fault, device IRQ, and the 100 Hz timer.
+     *
+     * The timer is the one that matters. proc_kill()'s comment says its mark
+     * cannot reach a process that never enters the kernel, and uthread's says
+     * the same about a spinning sibling. Delivering here has no such gap: a
+     * ring-3 compute loop takes a timer interrupt every 10 ms, and that
+     * interrupt returns through this line.
+     *
+     * ksig_armed() is one relaxed load of a global. On a machine where nothing
+     * has been signalled -- which is every machine, almost always -- this costs
+     * that load and a branch that is never taken.
+     *
+     * May not return: a default action that terminates ends the process here,
+     * on its own stack, through the ordinary proc_exit() teardown, exactly as
+     * the ring-3 fault above does and for the same reason. The BKL is then
+     * handed to the incoming thread by thread_exit(), so falling through to the
+     * release below would be a double unlock -- which is why proc_exit() is the
+     * last thing that path does.
+     *
+     * NOT on a nested entry (its outer frame owns the return to ring 3) and not
+     * on a BKL-free vector (the TLB/present IPIs do not return to ring 3 at
+     * all, and a BKL-free syscall must not run the teardown -- the same rule
+     * syscall_dispatch applies to proc_kill_check).
+     * =================================================================== */
+    if (__builtin_expect(ksig_armed(), 0) && !nested && !bkl_free && (r->cs & 3))
+        ksig_deliver(r, fxarea, sysnr);
 
     /* schedule() (called above for timer preemption, or inside a blocking syscall)
      * may have switched this thread out and later RESUMED it on a DIFFERENT core,
