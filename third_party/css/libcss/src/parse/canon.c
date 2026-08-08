@@ -1113,6 +1113,14 @@ static double sig6(double v)
 
 static void bnum6(buf *b, double v) { bnum(b, sig6(v)); }
 
+static double clampd(double v, double lo, double hi)
+{
+	if (isnan(v)) return lo;
+	if (v < lo) return lo;
+	if (v > hi) return hi;
+	return v;
+}
+
 static void bint(buf *b, int v)
 {
 	char t[24];
@@ -1819,6 +1827,25 @@ static int calc_sum(lexed *lx, csum *out, const struct calc_ctx *cx, int depth)
 		if (sum_add(&acc, &rhs, neg) != 0) return -1;
 	}
 	if (sum_cat(&acc) < 0) return -1;
+
+	/* THE CONSTANT SORTS FIRST. `calc(l - 20)` serializes as
+	 * `calc(-20 + l)`, and `calc(50 + (10 * sign(1em - 10px)))` was
+	 * already in that order in the source, which is why the rule was
+	 * invisible until a row wrote the two the other way round. A stable
+	 * partition, so everything else keeps the order it was written in --
+	 * `(0.5 * b) - (0.5 * g)` must not become `(0.5 * g) - (0.5 * b)`. */
+	{
+		csum ord;
+		int i;
+		memset(&ord, 0, sizeof ord);
+		for (i = 0; i < acc.n; i++)
+			if (acc.t[i].nfact == 0 && acc.t[i].ndiv == 0)
+				ord.t[ord.n++] = acc.t[i];
+		for (i = 0; i < acc.n; i++)
+			if (acc.t[i].nfact != 0 || acc.t[i].ndiv != 0)
+				ord.t[ord.n++] = acc.t[i];
+		acc = ord;
+	}
 	*out = acc;
 	return 0;
 }
@@ -2062,8 +2089,10 @@ static void emit_ccol(buf *b, const ccol *c)
 		if (!ccol_has_text(c) && !c->none[0] && !c->none[1] &&
 		    !c->none[2] && !c->anone) {
 			if (c->form == CF_HSL)
-				hsl_to_rgb(c->v[0], c->v[1] / 100.0,
-					   c->v[2] / 100.0, rgb);
+				hsl_to_rgb(c->v[0],
+					   clampd(c->v[1] / 100.0, 0.0, 1.0),
+					   clampd(c->v[2] / 100.0, 0.0, 1.0),
+					   rgb);
 			else
 				hwb_to_rgb(c->v[0], c->v[1] / 100.0,
 					   c->v[2] / 100.0, rgb);
@@ -2124,14 +2153,6 @@ static void set_chan(ccol *c, int i, const comp *k, double scale)
 	case K_TEXT: memcpy(c->text[i], k->text, sizeof c->text[i]); break;
 	default: break;
 	}
-}
-
-static double clampd(double v, double lo, double hi)
-{
-	if (isnan(v)) return lo;
-	if (v < lo) return lo;
-	if (v > hi) return hi;
-	return v;
 }
 
 /* Read the three channels, the optional alpha and the `)`, for a function
@@ -2283,8 +2304,17 @@ static int parse_hsl_hwb(lexed *lx, ccol *c, int is_hwb)
 	if (!c->none[0] && !c->text[0][0]) c->v[0] = norm_hue(c->v[0]);
 	for (i = 1; i < 3; i++) {
 		set_chan(c, i, &k[i], 100.0);
-		if (!c->none[i] && !c->text[i][0])
-			c->v[i] = clampd(c->v[i], 0.0, 100.0);
+		if (c->none[i] || c->text[i][0]) continue;
+		/* CLAMPED BELOW, NOT ABOVE, and only hsl():
+		 * `hsl(calc(...) -100 300 / 0.5)` is `hsl(calc(...) 0 300)`.
+		 * The upper clamp happens at CONVERSION instead, where an
+		 * out-of-range lightness would otherwise walk out of the hsl
+		 * formula -- it only ever reaches the serializer at all when
+		 * some other channel blocked the conversion. hwb() keeps its
+		 * two-sided clamp: nothing in the corpus asks otherwise, and
+		 * that file is at 38 of 38. */
+		if (is_hwb) c->v[i] = clampd(c->v[i], 0.0, 100.0);
+		else if (!(c->v[i] > 0)) c->v[i] = 0;
 	}
 	c->ahas = have_alpha;
 	if (have_alpha && set_alpha(c, &al) != 0) return -1;

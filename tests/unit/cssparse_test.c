@@ -778,8 +778,15 @@ static void t_color_value(void)
 	chk("color", "hsl(120 30 50)", "rgb(89, 166, 89)");
 	chk("color", "hsl(120 30% 50)", "rgb(89, 166, 89)");
 	chk("color", "hsl(120 30 50%)", "rgb(89, 166, 89)");
-	/* Saturation is clamped at zero at parse time. */
+	/* Saturation is clamped at zero at parse time -- BELOW only. The
+	 * upper bound happens at conversion instead, which is visible only
+	 * when some other channel blocks the conversion and the raw number
+	 * reaches the serializer. */
 	chk("color", "hsl(0 -50% 40%)", "rgb(102, 102, 102)");
+	chk("color", "hsla(calc(50deg + (sign(1em - 10px) * 10deg))"
+	    " -100 300 / 0.5)",
+	    "hsl(calc(50deg + (10deg * sign(1em - 10px))) 0 300 / 0.5)");
+	chk("color", "hsl(120 300% 50%)", "rgb(0, 255, 0)");
 	chk("color", "hsl(30 -50 60)", "rgb(153, 153, 153)");
 
 	/* Rule 2: a `none` anywhere keeps the hsl() spelling, and the percent
@@ -1094,8 +1101,16 @@ static void t_color_value(void)
 	    "rgb(from rebeccapurple r calc((0.5 * b) - (0.5 * g)) 10)");
 	/* ... and two terms that BOTH name a channel do not fold into one,
 	 * even though their coefficients would add. */
+	/* THE CONSTANT SORTS FIRST in a sum: `calc(l - 20)` is
+	 * `calc(-20 + l)`. Invisible in every row that happened to write the
+	 * number first already. */
 	chk("color", "lab(from lab(50 -30 40) calc(l - 20) a b)",
-	    "lab(from lab(50 -30 40) calc(l - 20) a b)");
+	    "lab(from lab(50 -30 40) calc(-20 + l) a b)");
+	chk("color", "oklch(from oklch(0.7 0.2 300) calc(l - 0.2) c h)",
+	    "oklch(from oklch(0.7 0.2 300) calc(-0.2 + l) c h)");
+	/* ... and everything else keeps the order it was written in. */
+	chk("color", "rgb(from rebeccapurple r calc(b * .5 - g * .5) 10)",
+	    "rgb(from rebeccapurple r calc((0.5 * b) - (0.5 * g)) 10)");
 	chk("color", "lch(from lch(50 100 300) l c calc(h * 2.5))",
 	    "lch(from lch(50 100 300) l c calc(2.5 * h))");
 
