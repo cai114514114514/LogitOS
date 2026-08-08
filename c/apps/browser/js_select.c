@@ -796,15 +796,32 @@ static const char *SELECT_PRELUDE =
  * length, item(), forEach, for-of, and Array.from / spread. It IS an Array,
  * with the two collection methods added, which is the honest way to say "this
  * is a snapshot". */
-"function list(arr) {\n"
+/* ...and it wears the right INTERFACE. `document.getElementsByTagName('p')
+ * instanceof HTMLCollection` is the first assertion in four files of this
+ * corpus, and it was false because the result was a bare Array. iface_install
+ * builds both prototypes over Array.prototype, so adopting one costs nothing:
+ * every array method still resolves, `length` is still the array's own
+ * property (a getter on the prototype could never shadow it), and the two
+ * collection methods below stay as own properties in front of the C ones,
+ * which read an opaque these arrays do not carry. */
+"var NLP = null, HCP = null;\n"
+"if (typeof G.NodeList === 'function' && G.NodeList.prototype) NLP = G.NodeList.prototype;\n"
+"if (typeof G.HTMLCollection === 'function' && G.HTMLCollection.prototype)\n"
+"  HCP = G.HTMLCollection.prototype;\n"
+"function list(arr, proto) {\n"
 "  arr.item = function (i) { return this[i] === undefined ? null : this[i]; };\n"
 "  arr.namedItem = function (n) {\n"
 "    for (var i = 0; i < this.length; i++)\n"
 "      if (this[i].id === n || (this[i].getAttribute && this[i].getAttribute('name') === n)) return this[i];\n"
 "    return null;\n"
 "  };\n"
+"  if (proto) { try { Object.setPrototypeOf(arr, proto); } catch (e) {} }\n"
 "  return arr;\n"
 "}\n"
+/* querySelectorAll answers a NodeList; getElementsBy* answer an
+ * HTMLCollection. Different interfaces, and the corpus asks which. */
+"function nodelist(arr) { return list(arr, NLP); }\n"
+"function collection(arr) { return list(arr, HCP); }\n"
 
 "function rootOf(scope) {\n"
 "  if (scope === doc) return doc.documentElement || doc.body;\n"
@@ -812,14 +829,14 @@ static const char *SELECT_PRELUDE =
 "}\n"
 "function qsa(scope, sel) {\n"
 "  var alts = compile(sel), out = [], r = rootOf(scope);\n"
-"  if (!r) return list(out);\n"
+"  if (!r) return nodelist(out);\n"
 "  var ctx = { scope: scope === doc ? null : scope };\n"
    /* The root itself is a candidate for document.querySelectorAll('html') but
       never for element.querySelectorAll -- a selector matches descendants of
       the scope, not the scope. */
 "  if (scope === doc && matchAny(r, alts, ctx)) out.push(r);\n"
 "  descendants(r, function (el) { if (matchAny(el, alts, ctx)) out.push(el); });\n"
-"  return list(out);\n"
+"  return nodelist(out);\n"
 "}\n"
 "function qs1(scope, sel) {\n"
 "  var alts = compile(sel), r = rootOf(scope), found = null;\n"
@@ -842,14 +859,14 @@ static const char *SELECT_PRELUDE =
 "function byTag(scope, name) {\n"
 "  var want = String(name), all = want === '*', lo = lower(want);\n"
 "  var out = [], r = rootOf(scope);\n"
-"  if (!r) return list(out);\n"
+"  if (!r) return collection(out);\n"
 "  var ok = function (el) {\n"
 "    if (all) return true;\n"
 "    return isHTML(el) ? localOf(el) === lo : localOf(el) === want;\n"
 "  };\n"
 "  if (scope === doc && ok(r)) out.push(r);\n"
 "  descendants(r, function (el) { if (ok(el)) out.push(el); });\n"
-"  return list(out);\n"
+"  return collection(out);\n"
 "}\n"
 /* getElementsByTagNameNS did not exist at all. It is case-SENSITIVE on both
  * arguments in every document, HTML or not -- there is no lowercasing step. */
@@ -858,7 +875,7 @@ static const char *SELECT_PRELUDE =
 "  var wantLN = String(local);\n"
 "  var anyNS = wantNS === '*', anyLN = wantLN === '*';\n"
 "  var out = [], r = rootOf(scope);\n"
-"  if (!r) return list(out);\n"
+"  if (!r) return collection(out);\n"
 "  var ok = function (el) {\n"
 "    if (!anyNS) {\n"
 "      var ens = el.namespaceURI;\n"
@@ -869,14 +886,14 @@ static const char *SELECT_PRELUDE =
 "  };\n"
 "  if (scope === doc && ok(r)) out.push(r);\n"
 "  descendants(r, function (el) { if (ok(el)) out.push(el); });\n"
-"  return list(out);\n"
+"  return collection(out);\n"
 "}\n"
 /* getElementsByClassName is ordinary-set membership, and it is the OTHER place
  * quirks mode changes an answer. */
 "function byClass(scope, names) {\n"
 "  var want = String(names).split(/[\\t\\n\\f\\r ]+/).filter(function (s) { return s; });\n"
 "  var out = [], r = rootOf(scope);\n"
-"  if (!r || !want.length) return list(out);\n"
+"  if (!r || !want.length) return collection(out);\n"
 "  var ok = function (el) {\n"
 "    var have = classesOf(el);\n"
 "    for (var i = 0; i < want.length; i++) {\n"
@@ -889,7 +906,7 @@ static const char *SELECT_PRELUDE =
 "  };\n"
 "  if (scope === doc && ok(r)) out.push(r);\n"
 "  descendants(r, function (el) { if (ok(el)) out.push(el); });\n"
-"  return list(out);\n"
+"  return collection(out);\n"
 "}\n"
 
 "function def(o, k, v) { if (o && !(k in o)) { try { o[k] = v; } catch (e) {} } }\n"
@@ -912,7 +929,7 @@ static const char *SELECT_PRELUDE =
 "  if (r) descendants(r, function (el) {\n"
 "    if (el.getAttribute && el.getAttribute('name') === String(n)) out.push(el);\n"
 "  });\n"
-"  return list(out);\n"
+"  return collection(out);\n"
 "});\n"
 /* Convenience collections pages read directly. Snapshots, like the rest. */
 "if (!('scripts' in doc)) Object.defineProperty(doc, 'scripts', { configurable: true,\n"
@@ -926,7 +943,7 @@ static const char *SELECT_PRELUDE =
 "    var out = [];\n"
 "    byTag(doc, 'a').forEach(function (a) { if (a.getAttribute('href') !== null) out.push(a); });\n"
 "    byTag(doc, 'area').forEach(function (a) { if (a.getAttribute('href') !== null) out.push(a); });\n"
-"    return list(out);\n"
+"    return collection(out);\n"
 "  } });\n"
 
 /* Document-object gaps the probe found only once the event loop ran and
