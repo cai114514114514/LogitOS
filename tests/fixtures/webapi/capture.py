@@ -102,7 +102,15 @@ def specifiers(body):
 
 def curl(url, ua, timeout=40):
     p = subprocess.run(
-        ["curl", "-sSL", "--max-time", str(timeout), "-A", ua, url],
+        # --compressed is not an optimisation, it is CORRECTNESS. Without it
+        # curl does not send Accept-Encoding, but plenty of servers ship
+        # gzip/brotli anyway (or ignore its absence), and the fixture then
+        # holds compressed BYTES that look like a JavaScript file and are not.
+        # MEASURED: tests/fixtures/webapi/baidureal/s012.js was 20 KB of binary
+        # that node --check also refuses, and the probe reported it as
+        # "SyntaxError: unexpected token in expression: ''" -- i.e. as an
+        # engine bug of ours, on the user's own reported page.
+        ["curl", "-sSL", "--compressed", "--max-time", str(timeout), "-A", ua, url],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
         return None

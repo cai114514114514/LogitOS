@@ -348,6 +348,83 @@ static JSValue con_warn(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
 static JSValue con_error(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 { note("[error] "); printf("[error] "); return con_out(ctx, t, argc, argv); }
 
+/* ---- document.currentScript -------------------------------------------
+ *
+ * MEASURED on two unrelated sites, and it is not a page quirk -- it is the
+ * mechanism bundlers use to find their own chunks and the mechanism inline
+ * scripts use to find themselves:
+ *
+ *   nodejs.org   the webpack/Next.js chunk loader derives its base URL from
+ *                document.currentScript.src, finds nothing, checks whether it
+ *                is in a Worker, and throws its OWN error: "chunk path empty
+ *                but not in a worker". Every script after it on the page then
+ *                fails too -- one undefined property, the whole page.
+ *   x.com        four uncaught exceptions, all `cannot read property 'remove'
+ *                of undefined`, from the standard document.currentScript
+ *                .remove() idiom where an inline script deletes its own tag.
+ *
+ * WHY IT IS AN INDEX AND NOT A NODE. js_dom.c's node-to-JSValue wrapper is
+ * static to that file, so this file cannot hand a JSValue for a node to
+ * anybody. What it CAN do is say which <script> element, by position in
+ * document order -- and js_select.c already publishes document.scripts in
+ * exactly that order. So the C side publishes __currentScriptIndex() and
+ * js_platform.c defines the property as document.scripts[i]. The alternative
+ * was a js_dom.c export, which is another line's file.
+ *
+ * WHICH SCRIPT IS RUNNING is worked out here rather than passed in, because
+ * the embedder (browser.c, another line's file) calls js_page_eval with a
+ * filename and no node. An external script is matched by its src attribute
+ * against that filename; an inline one takes the next inline <script> in
+ * document order. Both consume from the same cursor, so a page that
+ * interleaves them stays aligned. */
+static int g_cur_script = -1;
+static int g_script_used[256];
+
+static int script_index_for(struct node *n, const char *filename, int *idx, int *found)
+{
+    if (!n) return 0;
+    if (n->type == N_ELEM && n->tag && !strcmp(n->tag, "script")) {
+        int i = (*idx)++;
+        if (*found < 0 && i < 256 && !g_script_used[i]) {
+            const char *src = dom_attr(n, "src");
+            int match;
+            if (src && src[0]) {
+                /* The filename the embedder passes is the ABSOLUTE url; the
+                 * attribute is whatever the author wrote. A suffix test is
+                 * enough to pair them and needs no URL resolver here. */
+                int sl = (int)strlen(src), fl = filename ? (int)strlen(filename) : 0;
+                match = filename && fl >= sl && !strcmp(filename + fl - sl, src);
+            } else {
+                match = !filename || !strchr(filename, ':');   /* an inline one */
+            }
+            if (match) { *found = i; g_script_used[i] = 1; }
+        }
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        script_index_for(c, filename, idx, found);
+    return *found;
+}
+
+static JSValue js_cur_script_index(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    return JS_NewInt32(ctx, g_cur_script);
+}
+
+/* Exported because js_page_eval is not the only caller that runs a page's
+ * classic script: tests/unit/webapi_probe.c evaluates each one itself so it
+ * can keep the exception object rather than the printed message. Without
+ * these it measured a document.currentScript that was null for every script
+ * on every page -- an instrument reporting the feature as broken because it
+ * had not turned it on. */
+void js_page_begin_script(const char *filename)
+{
+    int idx = 0, found = -1;
+    script_index_for(js_dom_root(), filename, &idx, &found);
+    g_cur_script = found;
+}
+void js_page_end_script(void) { g_cur_script = -1; }
+
 int js_page_open(struct node *root)
 {
     js_page_close();
@@ -365,6 +442,8 @@ int js_page_open(struct node *root)
 
     g_t0 = now_ms();
     g_seq = 0; g_next_id = 1; g_next_raf_id = 1; g_frame_due = 0;
+    g_cur_script = -1;
+    memset(g_script_used, 0, sizeof g_script_used);
 
     JSValue g = JS_GetGlobalObject(g_ctx);
     JSValue con = JS_NewObject(g_ctx);
@@ -389,6 +468,12 @@ int js_page_open(struct node *root)
     JSValue perf = JS_NewObject(g_ctx);
     JS_SetPropertyStr(g_ctx, perf, "now", JS_NewCFunction(g_ctx, js_perf_now, "now", 0));
     JS_SetPropertyStr(g_ctx, g, "performance", perf);
+
+    /* The bridge js_platform.c turns into document.currentScript. Not a
+     * property of `document` here because js_dom.c owns that object and
+     * installs it below; see the comment on script_index_for. */
+    JS_SetPropertyStr(g_ctx, g, "__currentScriptIndex",
+                      JS_NewCFunction(g_ctx, js_cur_script_index, "__currentScriptIndex", 0));
 
     /* `location` normally comes from js_webapi_install below, parsed into
      * components and writable. This href-only stand-in is what a build without
@@ -463,8 +548,13 @@ void js_page_close(void)
 int js_page_eval(const char *src, int len, const char *filename)
 {
     if (!g_ctx || !src) return 0;
+    js_page_begin_script(filename);
     JSValue v = JS_Eval(g_ctx, src, (size_t)len, filename ? filename : "<page>",
                         JS_EVAL_TYPE_GLOBAL);
+    /* Cleared before the microtask drain: currentScript is null everywhere
+     * except a classic script's own synchronous execution, and a .then()
+     * queued by the script runs after it, not during it. */
+    js_page_end_script();
     int ok = !JS_IsException(v);
     if (!ok) {
         JSValue e = JS_GetException(g_ctx);

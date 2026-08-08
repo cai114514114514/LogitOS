@@ -49,6 +49,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import https from "node:https";
+import http from "node:http";
+import net from "node:net";
 import { execFileSync } from "node:child_process";
 
 const CHROME = process.env.CHROME_PATH ||
@@ -163,12 +165,11 @@ function selfSignedCert() {
 function serve(table) {
     const { key, cert } = selfSignedCert();
     const hits = [], misses = [];
-    /* ALPN, explicitly. Chrome offers h2 first on TLS; a server that neither
-     * speaks it nor names http/1.1 in ALPN gets the connection closed with no
-     * bytes, which Chrome reports as ERR_EMPTY_RESPONSE and this harness would
-     * have reported as "the page had no errors". */
-    const server = https.createServer({ key, cert, ALPNProtocols: ["http/1.1"] }, (req, res) => {
-        const url = canon(`https://${req.headers.host}${req.url}`);
+    /* `scheme` is decided per connection by sniffing, so `handler` cannot read
+     * it off the server object; it is stashed on the socket at accept time. */
+    const handler = (req, res) => {
+        const scheme = req.socket.__scheme || "https";
+        const url = canon(`${scheme}://${req.headers.host}${req.url}`);
         const file = table.get(url) || table.get(canon(url.split("?")[0]));
         if (!file || !fs.existsSync(file)) {
             misses.push(url);
@@ -189,11 +190,30 @@ function serve(table) {
             "access-control-allow-origin": "*",
         });
         res.end(body);
+    };
+
+    /* ONE PORT, BOTH PROTOCOLS, decided by sniffing the first byte (0x16 is a
+     * TLS handshake record). --host-resolver-rules maps every hostname to one
+     * address, and it cannot say "port 80 here, 443 there" per scheme in a way
+     * that survives a page navigating between them -- so the server has to
+     * answer both. MEASURED: the baidureal and xtweet fixtures are http://
+     * documents (baidu's UA-sniffed redirect lands on http), and against a
+     * TLS-only server Chrome fetched NOTHING, which the differential reported
+     * as "chrome 0 distinct" -- i.e. as Chrome having no errors, which is
+     * exactly the shape of lie this whole tool exists to avoid. */
+    const httpSrv = http.createServer(handler);
+    const tlsSrv = https.createServer({ key, cert, ALPNProtocols: ["http/1.1"] }, handler);
+    const server = net.createServer(sock => {
+        sock.once("data", d => {
+            sock.unshift(d);
+            if (d[0] === 0x16) { sock.__scheme = "https"; tlsSrv.emit("connection", sock); }
+            else { sock.__scheme = "http"; httpSrv.emit("connection", sock); }
+        });
+        sock.on("error", () => {});
     });
     if (process.env.WADIFF_DEBUG) {
-        server.on("tlsClientError", e => console.log("  [debug] tlsClientError:", e.message));
-        server.on("clientError", e => console.log("  [debug] clientError:", e.message));
-        server.on("connection", () => console.log("  [debug] tcp connection"));
+        tlsSrv.on("tlsClientError", e => console.log("  [debug] tlsClientError:", e.message));
+        httpSrv.on("clientError", e => console.log("  [debug] clientError:", e.message));
     }
     return new Promise(resolve => {
         server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, hits, misses }));

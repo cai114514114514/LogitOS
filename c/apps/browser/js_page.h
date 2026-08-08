@@ -82,4 +82,13 @@ void        js_page_output_clear(void);
  * the observer assembles lines itself. NULL to unhook. */
 void js_page_set_note_sink(void (*fn)(const char *frag));
 
+/* document.currentScript, for an embedder that runs a classic script itself
+ * rather than through js_page_eval (which calls these for you). `filename` is
+ * the script's URL, or anything without a ':' for an inline one; the pairing
+ * with the document's <script> elements is done inside. Always call the end
+ * half: currentScript must be null everywhere except a classic script's own
+ * synchronous execution. */
+void js_page_begin_script(const char *filename);
+void js_page_end_script(void);
+
 #endif /* LOGIT_JS_PAGE_H */

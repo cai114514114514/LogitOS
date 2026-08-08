@@ -557,6 +557,122 @@ int main(int argc, char **argv)
     ckjs("__post instanceof XProbe && __post.built === 1",
          "customElements: a node inserted after define is upgraded too");
 
+    /* ==== cloneNode =====================================================
+     * The exact shapes jQuery 1.10.2's feature detection uses, because that
+     * is the code path the real baidu page dies on -- one missing method,
+     * then fourteen of its twenty-eight scripts fail with `'$' is not
+     * defined`. Asserted as the page uses it, not as an API tour. */
+    ckjs("typeof document.createElement('div').cloneNode === 'function'",
+         "Node.cloneNode exists");
+    ckjs("document.createElement('nav').cloneNode(true).tagName.toLowerCase() === 'nav'",
+         "cloneNode: jQuery's html5Clone probe");
+    ckjs("(function(){ var i = document.createElement('input');"
+         " i.setAttribute('type','checkbox'); i.setAttribute('checked','checked');"
+         " return i.cloneNode(true).getAttribute('type') === 'checkbox'; })()",
+         "cloneNode: attributes survive (there is no way to enumerate them)");
+    ckjs("(function(){ var d = document.createElement('div');"
+         " d.innerHTML = '<b>x</b><i>y</i>';"
+         " return d.cloneNode(true).childNodes.length === 2; })()",
+         "cloneNode(true) is deep");
+    /* jQuery.support line 98 verbatim in shape: the node being cloned is one
+     * the PARSER made inside a detached div, reached through
+     * getElementsByTagName, and it is cloned while still attached to it.
+     * `input.cloneNode(true).checked` -- a null clone here is what stops
+     * jQuery, and the earlier "deep" check above does not cover it because
+     * that one clones the container, not a child of it. */
+    ckjs("(function(){ var d = document.createElement('div');"
+         " d.innerHTML = \"  <link/><table></table><a href='/a'>a</a><input type='checkbox'/>\";"
+         " var i = d.getElementsByTagName('input')[0];"
+         " if (!i) return 'no input parsed';"
+         " var c = i.cloneNode(true);"
+         " return !!c && c.getAttribute('type') === 'checkbox'; })()",
+         "cloneNode: a parsed child cloned in place (jQuery noCloneChecked)");
+    ckjs("(function(){ var d = document.createElement('div');"
+         " d.innerHTML = '<b>x</b>';"
+         " return d.cloneNode(false).childNodes.length === 0; })()",
+         "cloneNode(false) is shallow");
+    ckjs("(function(){ var d = document.createElement('div'); d.id = 'orig';"
+         " var c = d.cloneNode(true); c.setAttribute('id','copy');"
+         " return d.getAttribute('id') === 'orig'; })()",
+         "cloneNode: the copy is independent of the original");
+    /* jQuery's support.checkClone, verbatim in shape: a fragment cloned
+     * twice, then lastChild read. It is what caught my first attempt. */
+    ckjs("(function(){ var f = document.createDocumentFragment();"
+         " var i = document.createElement('input'); i.setAttribute('type','checkbox');"
+         " f.appendChild(i);"
+         " var c = f.cloneNode(true).cloneNode(true);"
+         " return !!(c.lastChild && c.lastChild.tagName); })()",
+         "cloneNode: a DocumentFragment cloned twice keeps its child (jQuery checkClone)");
+    /* The node being cloned must come back exactly where it was. A clone that
+     * quietly detached a live node would be far worse than a missing method. */
+    /* Its own subtree, not the fixture's: earlier tests in this file mutate
+     * #wrap, and js_dom.c's removeChild RECYCLES rather than orphans, so a
+     * node looked up by selector here may already be gone. The claim under
+     * test is about position restoration, so the position is built here. */
+    run("var __ch = document.getElementById('wrap');"
+        "var __a = document.createElement('i'); var __b = document.createElement('u');"
+        "__ch.appendChild(__a); __ch.appendChild(__b);");
+    ckjs("(function(){ var n = __ch.childNodes.length;"
+         " var par = __a.parentNode, nx = __a.nextSibling;"
+         " __a.cloneNode(true);"
+         " return __a.parentNode === par && __a.nextSibling === nx"
+         "        && __ch.childNodes.length === n; })()",
+         "cloneNode: an attached node is restored to its exact position");
+    ckjs("(function(){ var seen = 0;"
+         " var mo = new MutationObserver(function(r){ seen += r.length; });"
+         " mo.observe(__ch, { childList: true, subtree: true });"
+         " __a.cloneNode(true);"
+         " mo.disconnect(); return seen === 0; })()",
+         "cloneNode: the internal move is not observable as a mutation");
+
+    /* ==== attribute enumeration =========================================
+     * js_dom.c can say what an attribute's value is and not which attributes
+     * exist. jQuery.support line 99 needs the second:
+     *     div.setAttribute(eventName = "on" + i, "t");
+     *     support[i+"Bubbles"] = eventName in window ||
+     *                            div.attributes[eventName].expando === false;
+     * `div.attributes` undefined is `cannot read property 'onfocusin' of
+     * undefined`, and jQuery stops there. */
+    ckjs("typeof document.createElement('div').getAttributeNames === 'function'",
+         "Element.getAttributeNames exists");
+    ckjs("(function(){ var d = document.createElement('div');"
+         " d.setAttribute('data-a','1'); d.setAttribute('title','t');"
+         " var n = d.getAttributeNames();"
+         " return n.indexOf('data-a') >= 0 && n.indexOf('title') >= 0; })()",
+         "getAttributeNames lists what was set");
+    /* The one that matters most: names the PARSER wrote, which no script ever
+     * passed to setAttribute and which a set-tracking shim could not know. */
+    ckjs("(function(){ var n = document.getElementById('wrap').getAttributeNames();"
+         " return n.indexOf('class') >= 0 && n.indexOf('data-role') >= 0; })()",
+         "getAttributeNames lists PARSER-set attributes too");
+    ckjs("(function(){ var d = document.createElement('div');"
+         " d.setAttribute('onfocusin','t');"
+         " return !!d.attributes['onfocusin'] && d.attributes['onfocusin'].value === 't'"
+         "        && d.attributes['onfocusin'].expando === undefined; })()",
+         "Element.attributes by name (jQuery support line 99)");
+    ckjs("document.getElementById('wrap').attributes.length >= 3",
+         "Element.attributes has a length");
+    /* dataset enumeration was a named gap until getAttributeNames existed; it
+     * calls it, so it comes for free and is asserted rather than assumed. */
+    ckjs("Object.keys(document.getElementById('wrap').dataset).indexOf('role') >= 0",
+         "dataset now enumerates (it routes through getAttributeNames)");
+
+    /* ==== document.currentScript =========================================
+     * MEASURED on two unrelated sites. nodejs.org: the Next.js chunk loader
+     * derives its base URL from document.currentScript.src, finds nothing and
+     * throws its OWN error -- 15 of 30 scripts died. x.com: four exceptions,
+     * all the `document.currentScript.remove()` idiom.
+     *
+     * The fixture's inline <script id='s1'> is the one running when the page
+     * was loaded, so the value here is null (we are past load) -- which is the
+     * assertion that matters for the OTHER half of the spec: currentScript is
+     * null outside a classic script's own synchronous execution. The positive
+     * case is covered on real documents by the probe, where nodejs.org goes
+     * from 15 uncaught exceptions to 1. */
+    ckjs("'currentScript' in document", "document.currentScript is defined");
+    ckjs("document.currentScript === null",
+         "document.currentScript is null outside a running classic script");
+
     /* Non-special URL schemes -- `new URL(s, 'x:/')`, the webpack 5 asset-module
      * idiom -- are asserted in tests/unit/webapi_test.c and NOT here. That fix
      * is in js_webapi.c, which the control build still links, so a check here

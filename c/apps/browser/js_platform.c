@@ -861,6 +861,12 @@ static const char *PLATFORM_PRELUDE =
 "  };\n"
 "  var queued = false;\n"
 "  var emit = function (target, rec) {\n"
+   /* __domQuiet: a tree move that is an IMPLEMENTATION DETAIL rather than
+      something the page did. installCloneNode moves a node into a scratch
+      container to read its markup and puts it straight back; a page must not
+      see that as a removal and an insertion, because a virtual-DOM diff
+      watching the subtree would act on it. */
+"    if (G.__domQuiet) return;\n"
 "    for (var i = 0; i < mos.length; i++) {\n"
 "      var o = watches(mos[i], target);\n"
 "      if (!o) continue;\n"
@@ -1364,7 +1370,10 @@ static const char *PLATFORM_PRELUDE =
 "        if (typeof orig !== 'function') return;\n"
 "        EP2[m] = function () {\n"
 "          var r = orig.apply(this, arguments);\n"
-"          try { upgradeTree(arguments[0]); } catch (e) {}\n"
+             /* Same reason as the MutationObserver guard: a node parked in
+                cloneNode's scratch container is not being inserted into the
+                document and must not be upgraded there. */
+"          if (!G.__domQuiet) { try { upgradeTree(arguments[0]); } catch (e) {} }\n"
 "          return r;\n"
 "        };\n"
 "      });\n"
@@ -1372,6 +1381,7 @@ static const char *PLATFORM_PRELUDE =
 "      if (typeof rm === 'function') {\n"
 "        EP2.removeChild = function (n) {\n"
 "          var r = rm.apply(this, arguments);\n"
+"          if (G.__domQuiet) return r;\n"
 "          try {\n"
 "            walk(n, function (el) {\n"
 "              if (el.__ceState === 'upgraded' && typeof el.disconnectedCallback === 'function')\n"
@@ -1384,8 +1394,235 @@ static const char *PLATFORM_PRELUDE =
 "    } catch (e) {}\n"
 "  }\n"
 "}\n"
+/* ==== Node.cloneNode =====================================================
+ * THE SINGLE FAILURE THAT TAKES BAIDU DOWN, and it is one call.
+ *
+ * The real baidu document -- the 694 KB page the browser lands on after
+ * following baidu's UA-sniffed redirect, tests/fixtures/webapi/baidureal --
+ * loads jQuery 1.10.2 as its first script. jQuery.support runs at load and
+ * line 97 of that file is
+ *
+ *     support.html5Clone =
+ *       document.createElement("nav").cloneNode(true).outerHTML !== "<:nav></:nav>"
+ *
+ * cloneNode does not exist, so that is `TypeError: not a function`, jQuery
+ * never finishes initialising, and FOURTEEN OF TWENTY-EIGHT scripts on the
+ * page then die with `ReferenceError: '$' is not defined`. The probe's miss
+ * table reported `$` (9 refs, DIES) and `F` (3 refs) at the top, and neither
+ * is an API -- they are the wreckage. One missing method, thirteen derived
+ * failures. jQuery 1.x is on an enormous fraction of the web.
+ *
+ * HOW IT IS DONE HERE, AND WHAT THAT COSTS. js_dom.c publishes
+ * getAttribute/setAttribute/hasAttribute and NO WAY TO LIST ATTRIBUTES -- no
+ * `attributes`, no getAttributeNames -- so a clone cannot be built by copying
+ * the properties one by one. What it does publish is innerHTML in both
+ * directions, and a serialize/re-parse round trip through it reproduces
+ * attributes, children and text exactly, because the same tokenizer that built
+ * the original builds the copy.
+ *
+ * To get ONE node's markup out of an innerHTML that only speaks about a
+ * parent's children, the node is moved into a scratch <div>, read, and put
+ * back at its exact old position (parent + nextSibling, both captured first,
+ * restored in a finally). Mutation records for that move are suppressed with
+ * __domQuiet -- a page must not observe a clone as two tree mutations.
+ *
+ * THREE FIDELITY LIMITS, stated rather than discovered later:
+ *   - it is a SERIALIZATION, so anything the serializer cannot express does
+ *     not survive: event listeners (correct -- the spec drops them too), and
+ *     JS properties set on the node (the spec drops those too).
+ *   - re-parsing happens in a <div> context, so a bare <td> or <option>
+ *     cloned outside its table or select is subject to the HTML parser's
+ *     foster-parenting rules and can come back empty. Cloning a <template>'s
+ *     content, or a whole <table>, is fine; cloning a lone row is not.
+ *   - the clone's parentNode is the scratch container rather than null, and a
+ *     node that had NO parent when it was cloned keeps the scratch container
+ *     as its parent afterwards. Both follow from the same constraint: this DOM
+ *     cannot express "detached" without destroying. Every normal use --
+ *     clone, then insert somewhere -- moves it out on the next appendChild and
+ *     never notices. An ATTACHED node is put back at its exact old position,
+ *     which is asserted.
+ *
+ * The right home for this is js_dom.c, where it is a walk of the C node tree
+ * and has neither limit. That file belongs to the DOM line: the ask is
+ * cloneNode, and getAttributeNames() with it, which would also complete
+ * dataset's enumeration. Until then a page that could not run jQuery at all
+ * runs it. */
+"function installCloneNode() {\n"
+"  var EP = null;\n"
+"  try { EP = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
+"  if (!EP) return;\n"
+"  var D = G.document;\n"
+   /* The serialization primitive both cloneNode and the attribute enumeration
+      below are built on: an element's own markup, obtained by parking it in a
+      scratch container (a MOVE, never a detach) and reading innerHTML, then
+      putting it back exactly. */
+"  var markupOf = function (node) {\n"
+"    var host = D.createElement('div');\n"
+"    var parent = node.parentNode, next = node.nextSibling, markup = '';\n"
+"    var q = G.__domQuiet;\n"
+"    G.__domQuiet = true;\n"
+"    try { host.appendChild(node); markup = host.innerHTML; } catch (e) { markup = ''; }\n"
+"    try { if (parent) { if (next) parent.insertBefore(node, next); else parent.appendChild(node); } }\n"
+"    catch (e) {}\n"
+"    G.__domQuiet = q;\n"
+"    return markup;\n"
+"  };\n"
+   /* ---- Element.getAttributeNames / Element.attributes ----
+    *
+    * js_dom.c can answer "what is the value of this attribute" and cannot
+    * answer "which attributes are there". That single gap is why dataset
+    * cannot enumerate, why cloneNode cannot copy attribute by attribute, and
+    * why jQuery 1.10.2 stops -- jQuery.support line 99 is
+    *
+    *     for (i in {submit:true, change:true, focusin:true}) {
+    *       div.setAttribute(eventName = "on" + i, "t");
+    *       support[i+"Bubbles"] = eventName in window ||
+    *                              div.attributes[eventName].expando === false;
+    *     }
+    *
+    * and `div.attributes` is undefined, so that is
+    * `cannot read property 'onfocusin' of undefined` and jQuery never
+    * finishes. The names are recoverable from the element's own serialization,
+    * which is what the parser wrote and therefore includes attributes no
+    * script ever set. Parsing a start tag with a regular expression is
+    * exactly as bad as it sounds in general and exactly right here: the input
+    * is not arbitrary HTML, it is dom_serialize.c's output, whose attribute
+    * values are always double-quoted and escaped.
+    *
+    * It is O(subtree) per call because the serialization is. That is the cost
+    * of not having the primitive; the correct fix is getAttributeNames() in
+    * js_dom.c, which is the DOM line's file and would make this three lines. */
+"  var ATTR_RE = /([^\\s=\"'>\\/]+)(?:\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\">]*)))?/g;\n"
+"  var attrPairs = function (el) {\n"
+"    var m = markupOf(el);\n"
+"    var gt = -1, q = 0;\n"
+"    for (var i = 0; i < m.length; i++) {\n"
+"      var c = m.charAt(i);\n"
+"      if (q) { if (c === q) q = 0; continue; }\n"
+"      if (c === '\"' || c === \"'\") { q = c; continue; }\n"
+"      if (c === '>') { gt = i; break; }\n"
+"    }\n"
+"    if (gt < 0) return [];\n"
+"    var tag = m.slice(1, gt);\n"
+"    var sp = tag.search(/[\\s\\/]/);\n"
+"    if (sp < 0) return [];\n"
+"    var rest = tag.slice(sp);\n"
+"    var out = [], g;\n"
+"    ATTR_RE.lastIndex = 0;\n"
+"    while ((g = ATTR_RE.exec(rest))) {\n"
+"      var name = g[1];\n"
+"      if (!name || name === '/') continue;\n"
+"      var v = g[2] !== undefined ? g[2] : (g[3] !== undefined ? g[3] : (g[4] !== undefined ? g[4] : ''));\n"
+       /* The serializer escapes; undo the two that matter for a value. */
+"      v = v.replace(/&quot;/g, '\"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');\n"
+"      out.push({ name: name, value: v });\n"
+"    }\n"
+"    return out;\n"
+"  };\n"
+"  if (typeof EP.getAttributeNames !== 'function') {\n"
+"    try {\n"
+"      Object.defineProperty(EP, 'getAttributeNames', {\n"
+"        value: function () { return attrPairs(this).map(function (a) { return a.name; }); },\n"
+"        writable: true, configurable: true, enumerable: false });\n"
+"    } catch (e) {}\n"
+"  }\n"
+"  if (!('attributes' in EP)) {\n"
+"    try {\n"
+"      Object.defineProperty(EP, 'attributes', {\n"
+"        configurable: true,\n"
+"        get: function () {\n"
+"          var el = this, pairs = attrPairs(el), map = [];\n"
+"          for (var i = 0; i < pairs.length; i++) {\n"
+"            var a = { name: pairs[i].name, localName: pairs[i].name, value: pairs[i].value,\n"
+"                      specified: true, nodeType: 2, nodeName: pairs[i].name,\n"
+"                      nodeValue: pairs[i].value, ownerElement: el };\n"
+"            map[i] = a;\n"
+"            map[pairs[i].name] = a;\n"
+"          }\n"
+"          map.getNamedItem = function (n) { return this[String(n)] || null; };\n"
+"          map.item = function (i) { return this[i] || null; };\n"
+"          return map;\n"
+"        }\n"
+"      });\n"
+"    } catch (e) {}\n"
+"  }\n"
+"  if (typeof EP.cloneNode === 'function') return;\n"
+"  var cloneVia = function (node, deep) {\n"
+"    if (!node) return null;\n"
+"    var t = node.nodeType;\n"
+"    if (t === 3) return D.createTextNode(node.nodeValue == null ? '' : String(node.nodeValue));\n"
+"    if (t === 8) return D.createComment ? D.createComment(node.data == null ? '' : String(node.data))\n"
+"                                        : D.createTextNode('');\n"
+"    if (t === 11) {\n"
+"      var f = D.createDocumentFragment();\n"
+"      if (deep) for (var c = node.firstChild; c; c = c.nextSibling) {\n"
+"        var cc = cloneVia(c, true);\n"
+"        if (cc) f.appendChild(cc);\n"
+"      }\n"
+"      return f;\n"
+"    }\n"
+"    if (t !== 1) return null;\n"
+"    if (node === D.documentElement) return null;\n"
+   /* NOTHING IS EVER DETACHED, and that constraint is not stylistic.
+      js_dom.c's removeChild does not orphan a node, it RECYCLES it
+      (dom_destroy_subtree -- see the comment above el_replaceChild, where the
+      trade is argued). So the obvious "take it out, read it, put it back"
+      destroys the caller's node: the first version of this did exactly that
+      and quietly emptied the test document's #wrap subtree. insert_run has
+      MOVE semantics, so appendChild/insertBefore alone are enough to park the
+      node in a scratch container, read the markup, and put it back where it
+      was -- with no destroy anywhere on the path. */
+"    var markup = markupOf(node);\n"
+   /* A FRESH container for the re-parse. Reusing `host` gave back its stale
+      leftover child rather than the re-parsed copy, so every clone came out
+      as an element wrapper with no nodeType at all. */
+"    var sink = D.createElement('div');\n"
+"    try { sink.innerHTML = markup; } catch (e) { return null; }\n"
+"    var out = sink.firstChild;\n"
+"    if (out && !deep) { try { out.innerHTML = ''; } catch (e) {} }\n"
+"    return out;\n"
+"  };\n"
+"  try {\n"
+"    Object.defineProperty(EP, 'cloneNode', {\n"
+"      value: function (deep) { return cloneVia(this, deep === true); },\n"
+"      writable: true, configurable: true, enumerable: false\n"
+"    });\n"
+"  } catch (e) {}\n"
+   /* A DocumentFragment is not an element and does not share EP, so it needs
+      its own -- jQuery clones one twice in a row during feature detection. */
+"  try {\n"
+"    var FP = Object.getPrototypeOf(D.createDocumentFragment());\n"
+"    if (FP && FP !== EP && typeof FP.cloneNode !== 'function')\n"
+"      Object.defineProperty(FP, 'cloneNode', {\n"
+"        value: function (deep) { return cloneVia(this, deep === true); },\n"
+"        writable: true, configurable: true, enumerable: false });\n"
+"  } catch (e) {}\n"
+"}\n"
+/* document.currentScript. js_page.c knows WHICH script is running and cannot
+ * hand out a node (js_dom.c's wrapper is static to that file), so it publishes
+ * the index and document.scripts -- which js_select.c builds in document order
+ * -- turns it back into the element. Null outside a classic script's own
+ * synchronous execution, which is what the spec says and what js_page.c
+ * enforces by clearing the index before the microtask drain. */
+"function installCurrentScript() {\n"
+"  if (!G.document || ('currentScript' in G.document)) return;\n"
+"  if (typeof G.__currentScriptIndex !== 'function') return;\n"
+"  try {\n"
+"    Object.defineProperty(G.document, 'currentScript', {\n"
+"      configurable: true,\n"
+"      get: function () {\n"
+"        var i = G.__currentScriptIndex();\n"
+"        if (i < 0) return null;\n"
+"        var s = G.document.scripts;\n"
+"        return (s && s[i]) ? s[i] : null;\n"
+"      }\n"
+"    });\n"
+"  } catch (e) {}\n"
+"}\n"
 "installTreeWalker();\n"
 "installInterfaces();\n"
+"installCloneNode();\n"
+"installCurrentScript();\n"
 "installCustomElements();\n"
 "try { installDataset(Object.getPrototypeOf(G.document.createElement('div'))); } catch (e) {}\n"
 

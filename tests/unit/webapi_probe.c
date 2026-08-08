@@ -277,6 +277,7 @@ struct script {
     char *data; int len; int module;
     char url[256];              /* the short label used in the report */
     char abs[600];              /* the ABSOLUTE URL: a module's identity */
+    int  inl;                   /* inline: no src attribute */
 };
 #define SCRMAX 64
 static struct script g_scr[SCRMAX];
@@ -556,6 +557,7 @@ static void collect(struct node *n, const char *dir)
                      * colliding in the module map -- browser.c does the same. */
                     snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs,
                              "%s#inline-module-%d", g_pagebase, g_nscr + 1);
+                    g_scr[g_nscr].inl = 1;
                     g_nscr++;
                 }
             }
@@ -833,8 +835,20 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
         for (int i = 0; i < g_nscr; i++) {
             if (g_scr[i].module) continue;
             JSContext *ctx = js_page_ctx();
+            /* The browser reaches a classic script through js_page_eval, which
+             * sets document.currentScript around it. This file evaluates the
+             * script itself so it can keep the exception OBJECT rather than the
+             * printed message, so it has to do that part too -- without it the
+             * probe measured currentScript as null on every script of every
+             * page and would have reported a working feature as absent. */
+            /* An INLINE script must be paired by position, not by URL: its
+             * `abs` is the document's URL with a discriminator, which looks
+             * like an external script's and matched nothing. */
+            js_page_begin_script(g_scr[i].inl || !g_scr[i].abs[0]
+                                 ? g_scr[i].url : g_scr[i].abs);
             JSValue v = JS_Eval(ctx, g_scr[i].data, (size_t)g_scr[i].len, g_scr[i].url,
                                 JS_EVAL_TYPE_GLOBAL);
+            js_page_end_script();
             if (JS_IsException(v)) {
                 JSValue e = JS_GetException(ctx);
                 const char *m = JS_ToCString(ctx, e);
@@ -843,6 +857,31 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
                     exc_add("script", g_scr[i].url, m);
                     if (show_errors) printf("    [c2] %-16s %.150s\n", g_scr[i].url, m);
                     JS_FreeCString(ctx, m);
+                }
+                /* THE STACK, not just the message.
+                 *
+                 * A timer exception has carried its stack since js_page.c
+                 * started printing one; a top-level script exception did not,
+                 * and that asymmetry is the difference between a diagnosis and
+                 * a guess. baidu's whole page collapses from ONE throw --
+                 * `TypeError: not a function` inside 144 KB of minified jQuery
+                 * 1.10.2 -- and every other line of its report is the cascade.
+                 * A message with no frames does not say which call, and 143 KB
+                 * of 2013 minified JavaScript does not yield to reading. */
+                if (show_errors && JS_IsError(ctx, e)) {
+                    JSValue st = JS_GetPropertyStr(ctx, e, "stack");
+                    const char *s = JS_ToCString(ctx, st);
+                    if (s && s[0]) {
+                        for (const char *p = s; *p; ) {
+                            const char *nl = strchr(p, '\n');
+                            int len = nl ? (int)(nl - p) : (int)strlen(p);
+                            if (len > 0) printf("         %.*s\n", len, p);
+                            if (!nl) break;
+                            p = nl + 1;
+                        }
+                    }
+                    if (s) JS_FreeCString(ctx, s);
+                    JS_FreeValue(ctx, st);
                 }
                 JS_FreeValue(ctx, e);
             } else c2_ok++;
