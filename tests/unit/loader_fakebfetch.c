@@ -72,6 +72,8 @@ void fake_site_add(const char *url, const char *body)
         g_nroutes++;
     }
 }
+void fake_site_clear_log(void) { g_nlog = 0; g_dials = g_reuses = g_requests = 0; }
+int fake_site_dials(void) { return g_dials; }
 int fake_site_requests(void) { return g_nlog; }
 const char *fake_site_request(int i) { return (i >= 0 && i < g_nlog) ? g_log[i] : ""; }
 int fake_site_fetched(const char *frag)
@@ -176,6 +178,14 @@ int  bfetch_sync(const char *ref, unsigned char **out, int *outlen)
 void bfetch_prefetch(const char *ref) { (void)ref; }
 void bfetch_prefetch_wait(void) { }
 void bfetch_cache_clear(void) { }
+/* The real one seeds the prefetch cache so layout's res_fetch() finds an image
+ * without a connection. This test stubs res_fetch to fail outright (no fixture
+ * is an image), so there is nothing for a cache to serve -- and a fake cache
+ * here would be a fake serving a fake. What the test DOES assert about
+ * re-hydration is the thing that matters and is real: the request LOG, which
+ * this returning without doing anything cannot help. */
+int bfetch_cache_put(const char *abs, const unsigned char *d, int len)
+{ (void)abs; (void)d; (void)len; return -1; }
 void bfetch_set_tick(void (*fn)(void)) { g_tick = fn; }
 void bfetch_stats(int *d, int *r, int *q) { if (d) *d = g_dials; if (r) *r = g_reuses; if (q) *q = g_requests; }
 void bfetch_pool_stats(int *h, int *e, int *c) { if (h) *h = 0; if (e) *e = 0; if (c) *c = 0; }

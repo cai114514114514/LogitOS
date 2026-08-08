@@ -284,8 +284,15 @@ static void part2_navigation(void)
           "CONTROL: a page whose script does NOT call location.replace does NOT "
           "navigate");
 
-    /* (b) THE SUBJECT. */
+    /* (b) THE SUBJECT.
+     *
+     * paint_nops is reset first, and that is not tidiness. painted_text()
+     * dereferences paint_ops[].text, which points INTO the DOM that produced
+     * it; part 1 freed its fixtures' DOMs, so scanning ops left over from part
+     * 1 is a read of freed memory -- which is what ASan reports if this line is
+     * removed. The claim being made is about THIS load's ops anyway. */
     site_up();
+    paint_nops = 0;
     browser_load("http://fixture.test/stub.html");
 
     CHECK(fake_site_fetched("stub.html") == 1, "the stub was fetched");
@@ -314,6 +321,323 @@ static void part2_navigation(void)
     CHECK(hits <= 12, "and the redirect loop was BOUNDED rather than infinite");
 }
 
+/* ================================================================== *
+ * Part 3 -- TABS: two live pages, and what a background one costs     *
+ * ================================================================== *
+ *
+ * THE QUESTION THIS PART EXISTS TO ANSWER, because nobody had the number:
+ * what does a second tab cost, and does having tabs undo the connection
+ * pooling? Both are measurements here rather than claims, over the SAME real
+ * 697 KB document part 1 uses.
+ *
+ * The design being tested is in c/apps/browser/tabs.h: the render engine is a
+ * singleton (one display list, one LibCSS context, one JSRuntime), so exactly
+ * one tab is live and the others keep the BYTES they were built from. The two
+ * things that has to buy are asserted separately:
+ *
+ *   - switching back RENDERS, from the tab's own bytes;
+ *   - and costs ZERO network requests, so N tabs do not multiply handshakes.
+ */
+
+#include "tabs.h"
+
+void browser_tab_switch(int i);
+void browser_res_split(int *from_tab, int *from_net);
+
+/* The store, in memory. The browser writes its session through
+ * struct bstore_ops precisely so this can exist: a session that is only
+ * testable by rebooting QEMU is a session nobody re-tests. */
+#define FS_MAX 8
+static struct { char path[64]; char *data; int len; } g_fs[FS_MAX];
+static int g_fsn;
+
+static int memfs_read(const char *p, void *b, int max)
+{
+    for (int i = 0; i < g_fsn; i++)
+        if (!strcmp(g_fs[i].path, p)) {
+            int n = g_fs[i].len < max ? g_fs[i].len : max;
+            memcpy(b, g_fs[i].data, (size_t)n);
+            return n;
+        }
+    return -1;
+}
+static int memfs_write(const char *p, const void *b, int len)
+{
+    for (int i = 0; i < g_fsn; i++)
+        if (!strcmp(g_fs[i].path, p)) {
+            free(g_fs[i].data);
+            g_fs[i].data = malloc((size_t)len + 1);
+            memcpy(g_fs[i].data, b, (size_t)len);
+            g_fs[i].data[len] = 0; g_fs[i].len = len;
+            return 0;
+        }
+    if (g_fsn >= FS_MAX) return -1;
+    snprintf(g_fs[g_fsn].path, sizeof g_fs[0].path, "%s", p);
+    g_fs[g_fsn].data = malloc((size_t)len + 1);
+    memcpy(g_fs[g_fsn].data, b, (size_t)len);
+    g_fs[g_fsn].data[len] = 0; g_fs[g_fsn].len = len;
+    g_fsn++;
+    return 0;
+}
+static int memfs_mkdir(const char *p) { (void)p; return 0; }
+static const struct bstore_ops memfs = { memfs_read, memfs_write, memfs_mkdir };
+
+/* Two documents distinguishable in the PAINTER'S op list, which is the only
+ * channel that can say "this page, not that one, is on the screen". */
+static const char PAGE_A[] =
+    "<!doctype html><html><head><title>Alpha</title>"
+    "<link rel=\"stylesheet\" href=\"/a.css\"></head>"
+    "<body><h1>PAGE-ALPHA</h1><p>alpha body text</p></body></html>";
+static const char PAGE_B[] =
+    "<!doctype html><html><head><title>Beta</title>"
+    "<link rel=\"stylesheet\" href=\"/b.css\"><script src=\"/b.js\"></script></head>"
+    "<body><h1>PAGE-BETA</h1><p>beta body text</p></body></html>";
+static const char A_CSS[] = "h1 { color: #101010; }";
+static const char B_CSS[] = "h1 { color: #202020; }";
+static const char B_JS[]  = "var beta = 1;";
+
+static char *g_real_html;              /* the 697 KB fixture, for the size numbers */
+
+static void tabsite_up(void)
+{
+    fake_site_reset();
+    fake_site_add("http://fixture.test/a.html", PAGE_A);
+    fake_site_add("http://fixture.test/b.html", PAGE_B);
+    fake_site_add("http://fixture.test/a.css", A_CSS);
+    fake_site_add("http://fixture.test/b.css", B_CSS);
+    fake_site_add("http://fixture.test/b.js",  B_JS);
+    if (g_real_html) {
+        fake_site_add("http://fixture.test/real1.html", g_real_html);
+        fake_site_add("http://fixture.test/real2.html", g_real_html);
+        fake_site_add("http://fixture.test/real3.html", g_real_html);
+        fake_site_add("http://fixture.test/real4.html", g_real_html);
+        fake_site_add("http://fixture.test/real5.html", g_real_html);
+        fake_site_add("http://fixture.test/real6.html", g_real_html);
+        fake_site_add("http://fixture.test/real7.html", g_real_html);
+        fake_site_add("http://fixture.test/real8.html", g_real_html);
+    }
+}
+
+/* Load `url` into a NEW tab and make that tab current. Mirrors what Cmd+T
+ * followed by Enter does in the app. */
+static int open_tab(const char *u)
+{
+    int idx = tabs_new(u);
+    if (idx < 0) return -1;
+    if (tabs_active() != idx) browser_tab_switch(idx);
+    else browser_load(u);
+    return idx;
+}
+
+static void part3_tabs(void)
+{
+    printf("\n-- part 3: tabs --\n");
+    tabs_set_store(&memfs);
+    tabs_init();
+    tabsite_up();
+
+    /* (a) TWO PAGES OPEN AT ONCE, and each one renders when it is looked at. */
+    int a = open_tab("http://fixture.test/a.html");
+    paint_nops = 0; browser_paint(0, 0, 1180, 520, 0);
+    CHECK(painted_text("PAGE-ALPHA"), "tab 1 rendered");
+
+    int b = open_tab("http://fixture.test/b.html");
+    paint_nops = 0; browser_paint(0, 0, 1180, 520, 0);
+    CHECK(painted_text("PAGE-BETA"), "tab 2 rendered");
+    CHECK(!painted_text("PAGE-ALPHA"),
+          "and tab 1 is no longer on the screen -- one document is live, "
+          "which is the whole model");
+    CHECK(tabs_count() == 2, "both tabs are open");
+    { struct tab *ta = tab_at(a), *tb = tab_at(b);
+      CHECK(ta && !strcmp(ta->title, "Alpha") && tb && !strcmp(tb->title, "Beta"),
+            "each tab took its label from its own <title>"); }
+
+    /* (b) SWITCH BACK. The two claims, separately. */
+    fake_site_clear_log();
+    browser_tab_switch(a);
+    paint_nops = 0; browser_paint(0, 0, 1180, 520, 0);
+    CHECK(painted_text("PAGE-ALPHA"),
+          "switching back RE-RENDERED tab 1 -- a background tab is still a page");
+    int reqs = fake_site_requests();
+    printf("   switching back cost %d network requests, %d dials\n",
+           reqs, fake_site_dials());
+    CHECK(reqs == 0,
+          "and cost ZERO network requests: the switch REPLAYED the tab's own "
+          "bytes. This is the claim tabs would otherwise break -- N tabs must "
+          "not multiply the handshakes the connection pool removed");
+    { int ft = 0, fn = 0; browser_res_split(&ft, &fn);
+      CHECK(fn == 0, "no sub-resource came from the network on the replay"); }
+
+    /* And forward again, to prove (b) is not "tab 1 was never really gone". */
+    fake_site_clear_log();
+    browser_tab_switch(b);
+    paint_nops = 0; browser_paint(0, 0, 1180, 520, 0);
+    CHECK(painted_text("PAGE-BETA"), "and forward to tab 2 again");
+    CHECK(fake_site_requests() == 0, "also with no network");
+
+    /* (c) PER-TAB HISTORY. The back stack belongs to the tab, not the window:
+     *     going Back in one tab must not walk the other tab's trail. */
+    { struct tab *ta = tab_at(a), *tb = tab_at(b);
+      tab_hist_push(ta, "http://fixture.test/a.html");
+      tab_hist_push(ta, "http://fixture.test/a2.html");
+      char got[TAB_URL];
+      CHECK(tab_hist_go(ta, -1, got, sizeof got) && strstr(got, "a.html"),
+            "Back in tab 1 lands on tab 1's previous page");
+      CHECK(!tab_hist_can(tb, -1),
+            "and tab 2's back stack is untouched by any of it"); }
+
+    /* (d) THE MEMORY NUMBER. N real pages, the same 697 KB document, measured
+     *     rather than estimated -- this is the figure that decides whether tabs
+     *     are usable and it is the one nobody had. */
+    if (g_real_html) {
+        printf("\n   -- what a background tab costs (real 697 KB document) --\n");
+        tabs_init();
+        tabsite_up();
+        size_t at1 = 0;
+        int wanted[9] = { 0, 1, 2, 4, 8, 0, 0, 0, 0 };
+        (void)wanted;
+        char u[64];
+        for (int n = 1; n <= 8; n++) {
+            snprintf(u, sizeof u, "http://fixture.test/real%d.html", n);
+            open_tab(u);
+            if (n == 1 || n == 2 || n == 4 || n == 8) {
+                size_t bytes = tabs_retained_bytes();
+                printf("   %d tab%s open: %6lu KB retained (%lu KB per tab)\n",
+                       n, n == 1 ? " " : "s", (unsigned long)(bytes / 1024),
+                       (unsigned long)(bytes / 1024 / (unsigned)n));
+                if (n == 1) at1 = bytes;
+            }
+        }
+        size_t at8 = tabs_retained_bytes();
+        CHECK(tabs_count() == 8, "eight tabs are open at once");
+        /* The shape of the claim, not a magic number: the cost is LINEAR in the
+         * bytes, so eight tabs cost about eight times one -- and nothing like
+         * eight QuickJS runtimes, which at the measured 12.76 MB apiece would be
+         * 102 MB against a 96 MiB arena and would simply not fit. */
+        CHECK(at8 > at1 * 6 && at8 < at1 * 10,
+              "and eight tabs cost about eight times one -- linear in the bytes "
+              "kept, which is what dehydrating to bytes was for");
+        printf("   for scale: 8 live QuickJS runtimes at the measured 12.76 MB "
+               "each = %lu KB, against a 96 MiB arena\n",
+               (unsigned long)(8UL * 12760UL));
+        CHECK(at8 < 8UL * 12760UL * 1024UL,
+              "eight dehydrated tabs cost less than EIGHT LIVE RUNTIMES would");
+    }
+
+    /* (d2) WHAT THE STRIP COSTS TO DRAW.
+     *
+     * SYS_GUI_FLUSH carries no rectangle, so ANY repaint costs the whole window
+     * canvas -- measured at 24-27 ms at 1920x1200, and 24.5 ms/composite at
+     * 1280x800 in the QMP run of this change. That is the budget the tab strip
+     * has to respect, and it respects it in two ways which are separate claims:
+     *
+     *   - it is CHEAP TO DRAW: a bounded handful of ops per tab, against the
+     *     thousands of text runs a page repaint already costs. Counted here.
+     *   - it causes NO EXTRA REPAINTS: there is no hover state, so pointer
+     *     motion over the strip cannot mark the frame dirty. That is true by
+     *     construction (browser.c only builds a mouse event for y >= VIEW_Y)
+     *     and is the reason there is no hover highlight to look at.
+     */
+    {
+        void browser_redraw_now(void);
+        paint_nops = 0; browser_redraw_now();
+        int with8 = paint_nops;
+        /* the same page with ONE tab, for the difference */
+        tabs_init(); tabsite_up();
+        open_tab("http://fixture.test/real1.html");
+        paint_nops = 0; browser_redraw_now();
+        int with1 = paint_nops;
+        printf("   chrome repaint: %d draw ops with 1 tab, %d with 8 "
+               "(%d ops per extra tab)\n", with1, with8, (with8 - with1) / 7);
+        CHECK(with8 - with1 <= 7 * 4,
+              "the tab strip costs at most 4 draw ops per extra tab -- a "
+              "rounding error against a page repaint, which is what a repaint "
+              "with no damage rectangle can afford");
+    }
+
+    /* (e) THE SESSION, across a restart of the app.
+     *     tabs_init() is what app_main does on startup; session_restore() is
+     *     what it does next. Running them after a save is exactly the restart. */
+    tabs_init();
+    tabsite_up();
+    open_tab("http://fixture.test/a.html");
+    open_tab("http://fixture.test/b.html");
+    int saved = session_save();
+    CHECK(saved >= 0, "the session was written");
+
+    tabs_init();                       /* <- the restart: every tab is gone */
+    CHECK(tabs_count() == 0, "after the restart there are no tabs");
+    int restored = session_restore();
+    printf("   session restored %d tabs\n", restored);
+    CHECK(restored == 2, "SESSION RESTORE: both tabs came back");
+    { struct tab *t0 = tab_at(0), *t1 = tab_at(1);
+      CHECK(t0 && strstr(t0->url, "a.html") && t1 && strstr(t1->url, "b.html"),
+            "with their URLs");
+      CHECK(t0 && !strcmp(t0->title, "Alpha") && t1 && !strcmp(t1->title, "Beta"),
+            "and their titles, so the strip is readable before anything loads");
+      CHECK(t0 && !t0->src && t1 && !t1->src,
+            "and NO bytes -- restoring eight tabs must not be eight page loads"); }
+    CHECK(tabs_active() == 1, "and the tab that was in front is in front again");
+
+    /* A restored tab loads when it is first selected, and then it is a page. */
+    fake_site_clear_log();
+    browser_tab_switch(0);
+    paint_nops = 0; browser_paint(0, 0, 1180, 520, 0);
+    CHECK(painted_text("PAGE-ALPHA"), "and a restored tab loads when selected");
+    CHECK(fake_site_fetched("a.html") == 1,
+          "-- by fetching it, exactly once, because it had no bytes to replay");
+
+    /* (f) HISTORY, BOOKMARKS, DOWNLOADS: the persistent lists. */
+    history_clear();
+    history_add("http://fixture.test/a.html", "Alpha", 100);
+    history_add("http://fixture.test/b.html", "Beta", 200);
+    history_add("http://fixture.test/a.html", "Alpha", 300);   /* a re-visit */
+    CHECK(history_count() == 2, "history de-duplicates a re-visit");
+    CHECK(history_at(0) && strstr(history_at(0)->url, "a.html"),
+          "and moves it to the front");
+    { int hits[8];
+      int n = history_search("beta", hits, 8);
+      CHECK(n == 1 && strstr(history_at(hits[0])->url, "b.html"),
+            "history search matches the TITLE, case-insensitively");
+      n = history_search("a.html", hits, 8);
+      CHECK(n == 1, "and the URL");
+      n = history_search("", hits, 8);
+      CHECK(n == 2, "an empty query is everything, not nothing"); }
+    history_save();
+    history_clear();
+    CHECK(history_count() == 0, "history cleared");
+    history_load();
+    CHECK(history_count() == 2 && history_at(0) && !strcmp(history_at(0)->title, "Alpha"),
+          "HISTORY SURVIVES A RESTART, titles and all");
+
+    CHECK(bookmark_add("http://fixture.test/b.html", "Beta") >= 0, "a bookmark was added");
+    CHECK(bookmark_add("http://fixture.test/b.html", "Beta") == 0,
+          "adding it twice does not add it twice");
+    CHECK(bookmark_find("http://fixture.test/b.html") == 0, "and it can be found by URL");
+    bookmarks_save();
+    bookmark_remove(0);
+    CHECK(bookmark_count() == 0, "and removed");
+    bookmarks_load();
+    CHECK(bookmark_count() == 1, "BOOKMARKS SURVIVE A RESTART");
+
+    { char nm[64];
+      download_name("https://h.test/a/b/logit.iso?v=2#x", nm, sizeof nm);
+      CHECK(!strcmp(nm, "logit.iso"), "a download's name is the last path segment");
+      download_name("https://h.test/", nm, sizeof nm);
+      CHECK(nm[0] && !strchr(nm, '/'), "and is never empty and never a path");
+      CHECK(download_is_downloadable("https://h.test/x/logit.iso") == 1 &&
+            download_is_downloadable("https://h.test/index.html") == 0,
+            "a page is rendered and an archive is saved");
+      int d = download_record("https://h.test/a/logit.iso", (const unsigned char *)"DATA", 4);
+      const struct download *rec = download_at(d);
+      CHECK(rec && rec->ok && !strcmp(rec->path, "/downloads/logit.iso"),
+            "DOWNLOAD: the bytes landed on the disk where Finder can see them");
+      char back[16];
+      CHECK(memfs_read("/downloads/logit.iso", back, sizeof back) == 4 &&
+            !memcmp(back, "DATA", 4),
+            "and they are the bytes that arrived"); }
+}
+
 int main(void)
 {
     css_init();
@@ -326,6 +650,12 @@ int main(void)
         part2_navigation();
     else
         { printf("FAIL: the loader called app_exit(%d)\n", host_exit_code); fail = 1; }
+
+    { int n = 0; g_real_html = slurp("tests/fixtures/browser/baidu.html", &n); }
+    if (setjmp(host_exit_jmp) == 0)
+        part3_tabs();
+    else
+        { printf("FAIL: the tab test called app_exit(%d)\n", host_exit_code); fail = 1; }
 
     printf(fail ? "\nloader_test: FAIL\n" : "\nloader_test: PASS\n");
     return fail;

@@ -365,6 +365,7 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/html_tree.c c/apps/browser/dom_serialize.c \
                 c/apps/browser/layout.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
+                c/apps/browser/tabs.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \

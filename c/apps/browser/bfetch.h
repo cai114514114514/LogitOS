@@ -84,6 +84,11 @@ void bfetch_prefetch(const char *ref);
 void bfetch_prefetch_wait(void);
 /* Drop anything still held. Called on navigation. */
 void bfetch_cache_clear(void);
+/* Put bytes the caller already has into the cache, so the next res_fetch() for
+ * that absolute URL costs no connection. Copies. See the comment on the
+ * definition: this is what makes bringing a background tab back to the screen a
+ * replay rather than a reload. */
+int  bfetch_cache_put(const char *abs_url, const unsigned char *data, int len);
 
 /* The tick bfetch_sync passes to bfetch_wait. Set once by the browser so that
  * the paths which cannot pass one themselves -- layout's image fetch, and

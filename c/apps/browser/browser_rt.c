@@ -689,6 +689,40 @@ void bfetch_prefetch_wait(void)
     }
 }
 
+/* Seed the cache with bytes the caller already has.
+ *
+ * This exists for TAB RE-HYDRATION. A background tab keeps the bytes every
+ * sub-resource of its page arrived as (see tabs.h), and bringing it back to the
+ * screen must not dial anything: layout.c asks for its images through
+ * res_fetch(), which reads this cache, so the way to make a re-hydrate cost
+ * zero handshakes is to put the tab's retained bytes back where res_fetch will
+ * find them. It COPIES, because cache_take is destructive and the tab has to
+ * still own its copy for the next switch.
+ *
+ * Returns 0 if the bytes are now in the cache (including "already were"). */
+int bfetch_cache_put(const char *abs, const unsigned char *data, int len)
+{
+    if (!abs || !abs[0] || !data || len <= 0) return -1;
+    if ((int)strlen(abs) >= BF_URLMAX) return -1;
+    for (int i = 0; i < BF_NCACHE; i++)
+        if (g_cache[i].used && strcmp(g_cache[i].url, abs) == 0) return 0;
+    for (int i = 0; i < BF_NCACHE; i++) {
+        if (g_cache[i].used) continue;
+        unsigned char *copy = malloc((size_t)len + 1);
+        if (!copy) return -1;
+        memcpy(copy, data, (size_t)len);
+        copy[len] = 0;
+        memset(&g_cache[i], 0, sizeof g_cache[i]);
+        memcpy(g_cache[i].url, abs, strlen(abs) + 1);
+        g_cache[i].id = -1;              /* not in flight: it is already here */
+        g_cache[i].data = copy;
+        g_cache[i].len = len;
+        g_cache[i].used = 1;
+        return 0;
+    }
+    return -1;                            /* cache full: the caller re-fetches */
+}
+
 /* Take a prefetched body out of the cache, transferring ownership. */
 static int cache_take(const char *abs, unsigned char **out, int *outlen)
 {
