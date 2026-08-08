@@ -102,3 +102,72 @@ grep -aq "STAT-CHMOD-OK /meta/f.txt" "$WORK/b1.log" || fail "boot 1: chmod was r
 grep -aq "STAT-CHOWN-OK /meta/f.txt" "$WORK/b1.log" || fail "boot 1: chown was refused"
 grep -aq "STAT /meta/f.txt mode=741 " "$WORK/b1.log" ||
     fail "boot 1: the mode did not read back even WITHIN the boot -- nothing else here can pass"
+
+# ---- what every later boot must see ----------------------------------------
+# The WHOLE line, not just the mode. An implementation that got the mode right
+# and the owner wrong, or that kept reporting 0741 after losing the "this is
+# stored on the medium" bit, is broken in a way a mode check cannot see. attr
+# must carry 0x3 = LSTA_MODE_STORED | LSTA_MODE_DURABLE.
+READ="stat /meta/f.txt /meta/d /meta/locked.txt /meta/bystander.txt
+"
+
+verify_all() {   # $1 = log, $2 = which boot
+    local L="$1" N="$2"
+    grep -aq "STAT /meta/f.txt mode=741 type=reg uid=7 gid=9 " "$L" ||
+        fail "boot $N: /meta/f.txt lost its mode or owner (want mode=741 uid=7 gid=9)"
+    grep -aq "STAT /meta/d mode=700 type=dir " "$L" ||
+        fail "boot $N: /meta/d lost its directory mode (want mode=700)"
+    # chmod 000 is the trap case: if "unset" were encoded as a zero mode, a file
+    # its owner deliberately locked comes back 0644 -- silently readable by
+    # everyone. The on-disk presence bit is what keeps them apart.
+    grep -aq "STAT /meta/locked.txt mode=0 type=reg " "$L" ||
+        fail "boot $N: chmod 000 came back as something else -- 0 is a mode, not 'unset'"
+    # And the bystander: still the DEFAULT, and still SAYING it is a default.
+    grep -aq "STAT /meta/bystander.txt mode=644 type=reg uid=0 gid=0 " "$L" ||
+        fail "boot $N: an untouched file stopped reporting the 0644 default"
+
+    # attr: bit 0 STORED, bit 1 DURABLE. A file whose mode was set must have
+    # both; the untouched bystander must have NEITHER, because its 0644 is a
+    # default nobody chose and a caller has to be able to tell.
+    local A
+    A="$(grep -a "STAT /meta/f.txt mode=" "$L" | tail -1 | sed 's/.*attr=//')"
+    case "$A" in
+        0x3|0x7|0xb|0xf|0x13|0x17|0x1b|0x1f) : ;;
+        *) fail "boot $N: /meta/f.txt attr=$A lacks STORED|DURABLE (0x3) -- the mode is right but nothing says it is stored" ;;
+    esac
+    A="$(grep -a "STAT /meta/bystander.txt mode=" "$L" | tail -1 | sed 's/.*attr=//')"
+    case "$A" in
+        *0|*2|*4|*6|*8|*a|*c|*e) : ;;   # bit 0 clear: not STORED
+        *) fail "boot $N: the untouched bystander claims attr=$A (STORED set) -- a default is being reported as a choice" ;;
+    esac
+}
+
+# ---- boot 2: the assertion the RAM store could never have passed ------------
+boot "${READ}echo BOOT2-DONE
+" "$WORK/b2.log" 8
+grep -aq "BOOT2-DONE" "$WORK/b2.log" || fail "boot 2 never finished its commands"
+verify_all "$WORK/b2.log" "2 (the first reboot -- this is the whole claim)"
+
+# ---- boot 3: churn, then read again ----------------------------------------
+# A metadata store that survives a quiet reboot but not an ALLOCATING one is a
+# real failure mode, and it never shows on the files being churned -- it shows
+# on the bystanders, which is what /meta holds.
+boot "echo c1 > /meta/churn1.txt
+echo c2 > /meta/churn2.txt
+rm /meta/churn1.txt
+echo c3 > /meta/churn3.txt
+rm /meta/churn2.txt
+${READ}echo BOOT3-DONE
+" "$WORK/b3.log" 10
+grep -aq "BOOT3-DONE" "$WORK/b3.log" || fail "boot 3 never finished its commands"
+verify_all "$WORK/b3.log" "3 (after a round of allocate/free churn)"
+
+# ---- boot 4: one more time -------------------------------------------------
+boot "${READ}echo BOOT4-DONE
+" "$WORK/b4.log" 8
+grep -aq "BOOT4-DONE" "$WORK/b4.log" || fail "boot 4 never finished its commands"
+verify_all "$WORK/b4.log" "4 (after two reboots and a churn)"
+
+echo "PASS: mode, owner, a directory mode and chmod 000 all survived 4 real boots"
+echo "      with allocate/free churn between them, and the untouched bystander"
+echo "      still reports its 0644 as a DEFAULT rather than as a choice"
