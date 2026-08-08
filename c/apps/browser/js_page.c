@@ -31,9 +31,25 @@ int printf(const char *, ...);
 static char g_out[OUTCAP];
 static int  g_outlen;
 
+/* An optional observer on everything that goes into the buffer above.
+ *
+ * The buffer is capped at 4 KiB on purpose and that cap is right for the
+ * browser -- only the first line is ever displayed, and a page in a
+ * console.log loop must not be able to grow the heap. It is wrong for an
+ * INSTRUMENT: tests/unit/webapi_probe.c counts a page's uncaught exceptions,
+ * kimi produces more than 4 KiB of them, and the probe was silently reading a
+ * truncated list and reporting the truncated count. Raising OUTCAP would fix
+ * the measurement by changing the thing measured; a sink does not.
+ *
+ * Fragments, not lines: note() is called several times per message. The
+ * observer assembles them, which keeps this end free of a line buffer. */
+static void (*g_note_sink)(const char *frag);
+void js_page_set_note_sink(void (*fn)(const char *frag)) { g_note_sink = fn; }
+
 static void note(const char *s)
 {
     if (!s) return;
+    if (g_note_sink) g_note_sink(s);
     while (*s && g_outlen < OUTCAP - 1) g_out[g_outlen++] = *s++;
     g_out[g_outlen] = 0;
 }

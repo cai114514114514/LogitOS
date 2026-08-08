@@ -24,9 +24,20 @@ PROBE ?=
 WEBAPI_FIXTURES := $(sort $(dir $(wildcard tests/fixtures/webapi/*/index.html)))
 PROBE_SRC := tests/unit/webapi_probe.c c/apps/browser/js_page.c c/apps/browser/js_dom.c
 PROBE_SRC += c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
+# js_module.c is the REAL module loader, linked in rather than reimplemented:
+# the probe supplies only the bfetch under it (served from the committed
+# fixture), so the normalizer, the loader, the linker and the evaluator being
+# measured are the ones the browser ships. Until this line existed the probe
+# skipped every <script type=module>, which is most of the modern web.
+PROBE_SRC += c/apps/browser/js_module.c
 PROBE_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
 PROBE_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c
 PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+# webapi_probe.c DEFINES printf so it can capture js_module.c's diagnostics.
+# gcc rewrites printf("%s\n", x) into puts/fputs, and a rewritten call goes
+# straight to libc and never reaches that definition -- so the tee would
+# silently drop exactly the module exceptions it exists to collect.
+PROBE_CF  += -fno-builtin-printf
 $(BUILD)/webapi_probe: $(PROBE_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PROBE_CF) -o $@ $(PROBE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

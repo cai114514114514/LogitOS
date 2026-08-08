@@ -28,6 +28,24 @@ Layout produced:
 The manifest is keyed by the RAW src attribute because that is what the probe
 sees on the DOM node -- no URL resolution in the loop, so a resolver bug cannot
 silently empty the corpus.
+
+MODULE GRAPHS ARE WALKED, AND THE REASON IS THE WHOLE POINT OF THIS EDIT.
+The version of this script that captured the committed corpus fetched the
+document's <script src> attributes and stopped. That is a complete capture of a
+page written in 2010 and a partial one of every page written since: a module
+entry point is one file that imports the other hundred and thirty, and none of
+those hundred and thirty were in any fixture. So `kimi: 3 scripts, all clean`
+was a measurement of kimi with the application removed.
+
+Worse, kimi's ENTRY POINT was not captured either -- index-h6DE6Ow7.js is
+1.55 MB and --max-kb defaulted to 512, so the one file the fixture existed for
+was dropped by a size cap that printed a line nobody read. The cap now defaults
+high enough for a real bundle, and a transitive chunk is keyed in the manifest
+by its ABSOLUTE URL, which is what the module loader resolves a specifier to.
+
+Specifiers are extracted with three narrow patterns rather than one broad one
+(see IMPORT_RES): minified code is full of strings, and a regex loose enough to
+catch every import is loose enough to fetch a page's error messages.
 """
 
 import os
@@ -41,6 +59,45 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 SCRIPT_RE = re.compile(rb"<script\b([^>]*)>", re.I)
 ATTR_RE = re.compile(rb"""(\w[\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+
+# The three shapes a module specifier takes. `from` is required not to be
+# preceded by a dot so that Array.from("abc") is not read as an import -- that
+# single exclusion is the difference between walking a module graph and
+# downloading a bundle's string table.
+IMPORT_RES = [
+    ("static", re.compile(rb"""(?<![.\w$])from\s*["']([^"'\n]+)["']""")),
+    ("dynamic", re.compile(rb"""(?<![.\w$])import\s*\(\s*["']([^"'\n]+)["']\s*\)""")),
+    ("static", re.compile(rb"""(?<![.\w$])import\s*["']([^"'\n]+)["']""")),
+]
+
+
+def specifiers(body):
+    """(kind, specifier) for every import target in `body`, deduplicated.
+
+    STATIC AND DYNAMIC ARE SEPARATED, and that distinction decides what has to
+    be in the fixture. A static import is a LINK EDGE: QuickJS resolves the
+    whole static graph inside one JS_Eval, so one missing static chunk means
+    the entry module does not compile and the application does not start at
+    all. A dynamic import() is a runtime request that only fires on the code
+    path that reaches it, and a missing one costs that feature and nothing
+    else. So the static closure is captured completely and the dynamic edges
+    get their own budget.
+
+    Only path-shaped specifiers: a bare one ("react") has no meaning without an
+    import map and js_module.c refuses it out loud, so fetching it here would
+    put a file in the fixture that the loader can never ask for."""
+    out, seen = [], set()
+    for kind, rx in IMPORT_RES:
+        for m in rx.finditer(body):
+            s = m.group(1).decode("latin1")
+            if not (s.startswith("./") or s.startswith("../") or
+                    s.startswith("/") or s.startswith("http")):
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append((kind, s))
+    return out
 
 
 def curl(url, ua, timeout=40):
@@ -73,12 +130,22 @@ def main():
         return 2
     name, url = sys.argv[1], sys.argv[2]
     ua = UA
-    max_kb = 512
+    # 4 MiB. The old default of 512 KiB silently dropped kimi's 1.55 MB entry
+    # module -- the single file the kimi fixture was captured for.
+    max_kb = 4096
+    max_chunks = 200
     a = sys.argv[3:]
     if "--ua" in a:
         ua = a[a.index("--ua") + 1]
     if "--max-kb" in a:
         max_kb = int(a[a.index("--max-kb") + 1])
+    if "--max-chunks" in a:
+        max_chunks = int(a[a.index("--max-chunks") + 1])
+    # The static closure is what the entry module needs to LINK; the dynamic
+    # tail is what it would fetch later, and on a real application that tail is
+    # four times the size of the closure (kimi: 79 files vs 337). --no-dynamic
+    # captures the part without which nothing runs at all.
+    no_dynamic = "--no-dynamic" in a
 
     out = os.path.join(HERE, name)
     os.makedirs(out, exist_ok=True)
@@ -92,6 +159,29 @@ def main():
 
     man = []
     n = 0
+    have = {}                  # absolute URL -> local filename
+    # (absolute URL, base URL it was reached from). A module's own URL is the
+    # base its specifiers resolve against, so the base has to travel with the
+    # work item -- resolving a chunk's imports against the DOCUMENT would be
+    # right only for the entry point and wrong for every hop after it.
+    queue = []
+
+    def fetch_to_file(full, label):
+        nonlocal n
+        body = curl(full, ua)
+        if body is None:
+            print("   (skip, fetch failed) %s" % label[:90])
+            return None
+        if len(body) > max_kb * 1024:
+            print("   (SKIP, %d KiB > %d KiB cap) %s" % (len(body) // 1024, max_kb, label[:90]))
+            return None
+        n += 1
+        fn = "s%03d.js" % n
+        open(os.path.join(out, fn), "wb").write(body)
+        have[full] = fn
+        print("   %-12s %8d bytes  %s" % (fn, len(body), label[:90]))
+        return body
+
     for m in SCRIPT_RE.finditer(html):
         at = attrs(m.group(1))
         src = at.get("src")
@@ -103,18 +193,69 @@ def main():
         full = urllib.parse.urljoin(url, src)
         if not full.startswith("http"):
             continue
-        body = curl(full, ua)
+        body = fetch_to_file(full, src)
         if body is None:
-            print("   (skip, fetch failed) %s" % src[:80])
             continue
-        if len(body) > max_kb * 1024:
-            print("   (skip, %d KiB > %d KiB cap) %s" % (len(body) // 1024, max_kb, src[:80]))
+        # Keyed by the RAW src attribute: that is the string on the DOM node.
+        man.append("%s\t%s" % (src, have[full]))
+        if typ == "module":
+            queue.append((full, body))
+
+    # The module graph, breadth first, keyed in the manifest by ABSOLUTE URL --
+    # that is what js_module.c's normalizer produces and therefore the only key
+    # the loader can ever look up.
+    #
+    # STATIC EDGES ARE EXHAUSTED FIRST, to the cap. Measured on kimi: with one
+    # shared budget the walk spent all 200 slots on the dynamic long tail and
+    # never fetched `katex-CLyXPy3k.js`, which is a STATIC import two hops in --
+    # so the entry module failed to link and the probe reported the application
+    # as broken. A partial static closure does not measure a page a bit less
+    # well; it does not measure the page at all.
+    seen = set()
+    dyn = []                            # absolute URLs reached only by import()
+
+    def walk(work):
+        """BFS the STATIC closure of everything in `work`, queueing dynamic
+        edges for later. Returns when the closure is complete or the cap hits."""
+        while work and len(have) < max_chunks:
+            base, body = work.pop(0)
+            for kind, spec in specifiers(body):
+                full = urllib.parse.urljoin(base, spec)
+                if not full.startswith("http"):
+                    continue
+                if kind == "dynamic":
+                    if full not in seen and full not in dyn:
+                        dyn.append(full)
+                    continue
+                if full in seen:
+                    continue
+                seen.add(full)
+                if full in have:
+                    continue
+                sub = fetch_to_file(full, spec)
+                if sub is None:
+                    continue
+                man.append("%s\t%s" % (full, have[full]))
+                work.append((full, sub))
+                if len(have) >= max_chunks:
+                    print("   (stopping: %d chunks is the --max-chunks cap)" % max_chunks)
+                    return
+
+    walk(queue)
+    print("   -- static closure: %d files --" % len(have))
+    while dyn and len(have) < max_chunks and not no_dynamic:
+        full = dyn.pop(0)
+        if full in seen:
             continue
-        n += 1
-        fn = "s%03d.js" % n
-        open(os.path.join(out, fn), "wb").write(body)
-        man.append("%s\t%s" % (src, fn))
-        print("   %-12s %8d bytes  %s" % (fn, len(body), src[:80]))
+        seen.add(full)
+        if full in have:
+            continue
+        sub = fetch_to_file(full, "import() " + full.rsplit("/", 1)[-1])
+        if sub is None:
+            continue
+        man.append("%s\t%s" % (full, have[full]))
+        walk([(full, sub)])             # a lazy chunk has a static closure of its own
+    print("   -- with dynamic chunks: %d files --" % len(have))
 
     open(os.path.join(out, "manifest.txt"), "w").write("\n".join(man) + ("\n" if man else ""))
     open(os.path.join(out, "SOURCE"), "w").write("%s\nUA: %s\n" % (url, ua))

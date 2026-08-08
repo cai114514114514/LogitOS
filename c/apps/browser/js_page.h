@@ -74,4 +74,12 @@ const char *js_page_output(void);
 int         js_page_output_len(void);
 void        js_page_output_clear(void);
 
+/* Observe every fragment as it is appended, BEFORE the bound above applies.
+ * For an instrument that must not miss a message: the buffer is capped at
+ * 4 KiB, which is right for a status bar and wrong for counting a real
+ * application's exceptions -- kimi.com emits more than that and the probe was
+ * reading a truncated list. Fragments arrive as console.log passes them, so
+ * the observer assembles lines itself. NULL to unhook. */
+void js_page_set_note_sink(void (*fn)(const char *frag));
+
 #endif /* LOGIT_JS_PAGE_H */

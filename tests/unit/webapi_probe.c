@@ -40,15 +40,53 @@
  * network, no DNS, no TLS, no QEMU. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include "quickjs.h"
 #include "dom.h"
 #include "js_dom.h"
 #include "js_page.h"
 #include "js_webapi.h"
+#include "js_module.h"
+#include "bfetch.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
+
+/* ---- printf, teed ------------------------------------------------------
+ *
+ * js_module.c is not this line's file and it reports a module's exception the
+ * only way it can from where it sits: printf. That is fine for a serial log
+ * and useless for an instrument, because the probe cannot subtract a message
+ * it never sees. So printf is DEFINED here and forwards to stdout unchanged
+ * while copying into a capture buffer, and the module pass reads the buffer
+ * back to learn what actually threw.
+ *
+ * The Makefile fragment builds this binary with -fno-builtin-printf for the
+ * reason that matters: gcc rewrites printf("%s\n", x) into puts/fputs, and a
+ * rewritten call goes straight to libc and never reaches this function. A tee
+ * that silently loses half its input is worse than no tee. */
+static char g_cap[1 << 18];
+static int  g_caplen, g_capon;
+
+static void cap_start(void) { g_caplen = 0; g_cap[0] = 0; g_capon = 1; }
+static void cap_stop(void)  { g_capon = 0; }
+
+int printf(const char *fmt, ...)
+{
+    char buf[8192];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n < 0) return n;
+    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
+    if (g_capon)
+        for (int i = 0; i < n && g_caplen < (int)sizeof g_cap - 1; i++)
+            g_cap[g_caplen++] = buf[i], g_cap[g_caplen] = 0;
+    fwrite(buf, 1, (size_t)n, stdout);
+    return n;
+}
 /* The Rust staticlib's png_register calls back into the image registry. The
  * probe decodes no images, so the registry is a sink -- linking c/lib/image/img.c
  * would drag in every codec for nothing. */
@@ -79,6 +117,13 @@ static const char *g_sitename[SITEMAX];
 static int g_nsite;
 static int g_recording;              /* 0 off, 1 channel-1 plain, 2 channel-1 --deep */
 static int g_deep;
+static int g_json;                   /* --json: one #JSON line per exception */
+static int g_site_exc[SITEMAX];      /* uncaught exceptions, per fixture */
+/* --base: run every fixture as though it had been served from this URL.
+ * The Chrome differential needs it -- Chrome is pointed at a local server, and
+ * a diff taken with the two engines on different document URLs would count
+ * every `location.hostname` branch as a disagreement. */
+static char g_base_override[300];
 
 static struct miss *miss_find(const char *n)
 {
@@ -228,15 +273,30 @@ static const char *PROBE_STUB =
 "})();\n";
 
 /* ---- the fixture ------------------------------------------------------- */
-struct script { char *data; int len; int module; char url[256]; };
+struct script {
+    char *data; int len; int module;
+    char url[256];              /* the short label used in the report */
+    char abs[600];              /* the ABSOLUTE URL: a module's identity */
+};
 #define SCRMAX 64
 static struct script g_scr[SCRMAX];
 static int g_nscr;
 
-struct manent { char src[512]; char file[64]; };
-#define MANMAX 64
+/* `abs` is the manifest src resolved against the document URL, and it is what
+ * the module loader will ask this file for -- a module specifier is normalized
+ * to an absolute URL before it reaches bfetch, so a table keyed on the raw src
+ * attribute could not answer a single import. Both keys are kept: the raw one
+ * is how collect() finds a <script src>, the absolute one is how the loader
+ * finds an import. */
+struct manent { char src[512]; char file[64]; char abs[600]; };
+/* Was 64, which was one entry per <script src> and enough while the corpus was
+ * documents. A module graph is the whole application: kimi's entry point pulls
+ * 200 chunks, so a 64-entry routing table would answer the first few imports
+ * and 404 the rest -- and the probe would report that as the page failing. */
+#define MANMAX 512
 static struct manent g_man[MANMAX];
 static int g_nman;
+static char g_pagebase[600];      /* the document's absolute URL */
 
 static char *slurp(const char *path, int *out_len)
 {
@@ -252,6 +312,156 @@ static char *slurp(const char *path, int *out_len)
     fclose(f);
     if (out_len) *out_len = (int)got;
     return b;
+}
+
+/* ---- the fixture, served as a web site ---------------------------------
+ *
+ * WHY THIS IS HERE AT ALL. The probe used to contain two lines:
+ *
+ *     if (g_scr[i].module) continue;      // the loader owns module URLs
+ *
+ * -- one in each channel -- and a comment saying modules were excluded from
+ * both denominators. So every number this instrument printed was a number
+ * about CLASSIC scripts. MDN is four modules out of five scripts; kimi's
+ * entry point is a module; every Vite/Rollup/Next build on the web ships as a
+ * module graph. "bing 11/12, deepseek 31/31" said nothing whatsoever about
+ * the code path modern applications actually run in.
+ *
+ * The reason the exclusion was there is real: js_module.c resolves a specifier
+ * to an absolute URL and hands it to bfetch, and bfetch is browser_rt.c --
+ * sockets, TLS, a connection pool, none of which exists in a host unit test.
+ * So bfetch is implemented HERE, against the committed fixture: the manifest
+ * becomes a routing table from absolute URL to local file, and `import
+ * "./chunk.js"` is answered from disk exactly as it would be answered from the
+ * network. Nothing else about the module path is faked -- the normalizer, the
+ * loader, the linker and the evaluator are js_module.c's and QuickJS's own.
+ *
+ * A specifier that resolves to something the fixture does not hold is counted
+ * and reported SEPARATELY as a corpus gap, never as an engine failure. That
+ * distinction is the whole reason for a separate counter: capture.py walks the
+ * document's <script src> attributes and stops, so a module graph's interior
+ * edges are only in the fixture if someone went and got them, and a missing
+ * chunk must not be able to masquerade as a bug in this browser. */
+static int  g_fetch_ok, g_fetch_miss;
+#define MODMISS_MAX 32
+static char g_modmiss[MODMISS_MAX][256];
+static int  g_nmodmiss;
+#define DROPMAX 32
+static char g_dropped[DROPMAX][256];      /* <script src> the manifest lacks */
+static int  g_ndropped;
+
+/* RFC 3986 relative resolution, enough of it for real bundles: absolute,
+ * protocol-relative, root-relative, relative, query-only and fragment-only,
+ * with dot-segment removal. browser_rt.c's bfetch_resolve does the same job
+ * against the same header; this one has no network under it. */
+static void strip_dots(char *path)
+{
+    /* Segment stack. `mark[k]` is where segment k starts in `out`, so popping a
+     * ".." is a truncation rather than a backwards scan for a slash -- which is
+     * the version that gets "/a//../b" wrong. */
+    char out[600]; int o = 0;
+    int mark[128], nm = 0;
+    const char *s = path;
+    if (*s == '/') out[o++] = '/';
+    while (*s) {
+        while (*s == '/') s++;
+        const char *seg = s;
+        while (*s && *s != '/') s++;
+        int n = (int)(s - seg);
+        int trailing = (*s == '/');
+        if (n == 1 && seg[0] == '.') continue;
+        if (n == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (nm > 0) { o = mark[--nm]; }
+            continue;
+        }
+        if (n == 0) continue;
+        if (nm < 128) mark[nm++] = o;
+        for (int i = 0; i < n && o < (int)sizeof out - 2; i++) out[o++] = seg[i];
+        if (trailing && o < (int)sizeof out - 1) out[o++] = '/';
+    }
+    out[o] = 0;
+    memcpy(path, out, (size_t)o + 1);
+}
+
+int bfetch_resolve(const char *base, const char *ref, char *out, int max)
+{
+    if (!ref || !out || max < 2) return -1;
+    const char *b = (base && base[0]) ? base : g_pagebase;
+    char tmp[600];
+
+    if (strstr(ref, "://")) { snprintf(out, max, "%s", ref); return 0; }
+    if (ref[0] == '/' && ref[1] == '/') {                  /* //host/path */
+        const char *c = strstr(b, "://");
+        int schemelen = c ? (int)(c - b) : 5;
+        snprintf(tmp, sizeof tmp, "%.*s:%s", schemelen, c ? b : "https", ref);
+    } else if (ref[0] == '/') {                            /* /abs/path */
+        const char *c = strstr(b, "://");
+        const char *slash = c ? strchr(c + 3, '/') : 0;
+        int hostlen = slash ? (int)(slash - b) : (int)strlen(b);
+        snprintf(tmp, sizeof tmp, "%.*s%s", hostlen, b, ref);
+    } else if (ref[0] == '?' || ref[0] == '#') {
+        int keep = 0;
+        while (b[keep] && b[keep] != (ref[0] == '#' ? '#' : '?')) keep++;
+        snprintf(tmp, sizeof tmp, "%.*s%s", keep, b, ref);
+    } else {                                               /* relative */
+        const char *c = strstr(b, "://");
+        const char *last = strrchr(c ? c + 3 : b, '/');
+        int keep = last ? (int)(last - b) + 1 : (int)strlen(b);
+        snprintf(tmp, sizeof tmp, "%.*s%s", keep, b, ref);
+    }
+    /* Dot segments live only in the PATH: not in scheme://host, and not in the
+     * query -- "?next=../x" is a value, not a path step. */
+    const char *c = strstr(tmp, "://");
+    int hoff = 0;
+    if (c) { const char *sl = strchr(c + 3, '/'); hoff = sl ? (int)(sl - tmp) : (int)strlen(tmp); }
+    int pend = hoff;
+    while (tmp[pend] && tmp[pend] != '?' && tmp[pend] != '#') pend++;
+    char tail[600];
+    snprintf(tail, sizeof tail, "%s", tmp + pend);
+    tmp[pend] = 0;
+    strip_dots(tmp + hoff);
+    snprintf(out, max, "%s%s", tmp, tail);
+    return 0;
+}
+
+/* The routing table lookup. Exact absolute match first; then the path, so a
+ * cache-busting query the document happens to carry cannot lose a file that is
+ * plainly present. */
+static const char *route(const char *url)
+{
+    for (int i = 0; i < g_nman; i++) if (!strcmp(g_man[i].abs, url)) return g_man[i].file;
+    const char *q = strchr(url, '?');
+    int n = q ? (int)(q - url) : (int)strlen(url);
+    for (int i = 0; i < g_nman; i++) {
+        const char *aq = strchr(g_man[i].abs, '?');
+        int an = aq ? (int)(aq - g_man[i].abs) : (int)strlen(g_man[i].abs);
+        if (an == n && !strncmp(g_man[i].abs, url, (size_t)n)) return g_man[i].file;
+    }
+    return 0;
+}
+
+static char g_fixdir[512];
+static char *slurp(const char *path, int *out_len);
+
+int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
+{
+    char abs[600];
+    bfetch_resolve(0, ref, abs, sizeof abs);
+    const char *file = route(abs);
+    if (!file) {
+        g_fetch_miss++;
+        if (g_nmodmiss < MODMISS_MAX) snprintf(g_modmiss[g_nmodmiss++], 256, "%s", abs);
+        return -1;
+    }
+    char p[1200];
+    snprintf(p, sizeof p, "%s/%s", g_fixdir, file);
+    int len = 0;
+    char *d = slurp(p, &len);
+    if (!d) { g_fetch_miss++; return -1; }
+    *out = (unsigned char *)d;
+    *outlen = len;
+    g_fetch_ok++;
+    return 0;
 }
 
 static void load_manifest(const char *dir)
@@ -270,6 +480,7 @@ static void load_manifest(const char *dir)
             *tab = 0;
             snprintf(g_man[g_nman].src, sizeof g_man[g_nman].src, "%s", line);
             snprintf(g_man[g_nman].file, sizeof g_man[g_nman].file, "%s", tab + 1);
+            bfetch_resolve(g_pagebase, line, g_man[g_nman].abs, (int)sizeof g_man[g_nman].abs);
             g_nman++;
         }
         if (!nl) break;
@@ -282,24 +493,33 @@ static void load_manifest(const char *dir)
  * network (here: to the manifest), inline text is reassembled from the text
  * children. A probe that collected scripts differently from the browser would
  * be measuring a page the browser never runs. */
-static int is_classic_type(const char *t)
-{
-    if (!t || !*t) return 1;
-    /* the JavaScript MIME types, loosely -- enough for the corpus */
-    return strstr(t, "javascript") != 0 || !strcmp(t, "text/ecmascript");
-}
-
+/* browser.c classifies with js_module.c's two predicates, so the probe uses the
+ * same two rather than a lookalike -- a probe that disagrees with the browser
+ * about what is a script is measuring a page the browser never runs. */
 static void collect(struct node *n, const char *dir)
 {
     if (!n) return;
     if (n->type == N_ELEM && n->tag && !strcmp(n->tag, "script") && g_nscr < SCRMAX) {
         const char *type = dom_attr(n, "type");
         const char *src  = dom_attr(n, "src");
-        int module = type && !strcmp(type, "module");
-        int classic = !module && is_classic_type(type);
+        int module = js_module_is_module_type(type);
+        int classic = !module && js_module_is_classic_type(type);
         if (!module && !classic) {
             /* application/json, importmap, ld+json: data, not program */
+        } else if (!module && dom_attr(n, "nomodule")) {
+            /* the fallback for an engine without modules; we are not one */
         } else if (src) {
+            int found = 0;
+            for (int i = 0; i < g_nman; i++)
+                if (!strcmp(g_man[i].src, src)) { found = 1; break; }
+            /* A <script src> the manifest does not hold used to vanish without
+             * a word, and the cost of that silence was the headline number:
+             * kimi's ENTRY POINT is `index-h6DE6Ow7.js`, a module that fans out
+             * to the rest of the application, and it is not in the capture. The
+             * probe reported "kimi: 3 scripts, all clean". It was measuring a
+             * page with the application removed. */
+            if (!found && g_ndropped < DROPMAX)
+                snprintf(g_dropped[g_ndropped++], 256, "%s", src);
             for (int i = 0; i < g_nman; i++)
                 if (!strcmp(g_man[i].src, src)) {
                     char p[600];
@@ -310,6 +530,7 @@ static void collect(struct node *n, const char *dir)
                         g_scr[g_nscr].data = d; g_scr[g_nscr].len = len;
                         g_scr[g_nscr].module = module;
                         snprintf(g_scr[g_nscr].url, sizeof g_scr[g_nscr].url, "%s", g_man[i].file);
+                        snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs, "%s", g_man[i].abs);
                         g_nscr++;
                     }
                     break;
@@ -329,6 +550,12 @@ static void collect(struct node *n, const char *dir)
                     g_scr[g_nscr].data = d; g_scr[g_nscr].len = o;
                     g_scr[g_nscr].module = module;
                     snprintf(g_scr[g_nscr].url, sizeof g_scr[g_nscr].url, "<inline %d>", g_nscr + 1);
+                    /* An inline module has no URL of its own; per spec it takes
+                     * the DOCUMENT's, so its relative specifiers resolve against
+                     * the page. The discriminator only keeps two of them from
+                     * colliding in the module map -- browser.c does the same. */
+                    snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs,
+                             "%s#inline-module-%d", g_pagebase, g_nscr + 1);
                     g_nscr++;
                 }
             }
@@ -355,23 +582,145 @@ static unsigned long long clock_fn(void) { return g_now += 4; }
  * page time without anything sleeping -- and a setInterval cannot spin
  * forever, because the pass budget is fixed. */
 #define LOOP_PASSES 200
-static void run_event_loop(int show_errors, const char *tag)
+
+/* ---- the exception ledger ----------------------------------------------
+ *
+ * THIS is the number the whole exercise is about, and it did not exist before.
+ * The table above counts NAMES; a name is a symptom. What a user sees is an
+ * uncaught exception, and until this ledger there was no per-page count of
+ * them and therefore no before/after that could move for a nameable reason.
+ *
+ * Every entry carries where it came from, because "an exception" is four
+ * different events with four different owners:
+ *   script   a classic <script> died at top level
+ *   module   a <script type=module> (or something it imported) died
+ *   timer    a setTimeout/setInterval/rAF callback died -- invisible to any
+ *            instrument that does not turn the event loop
+ *   console  console.error, which is where an unhandled promise rejection
+ *            surfaces (js_platform.c's onReject writes one)
+ *   fetch    a module URL the fixture does not hold: a CORPUS GAP, counted
+ *            apart from everything else and never as an engine failure. */
+struct exc { char kind[12]; char where[64]; char msg[400]; };
+#define EXCMAX 512
+static struct exc g_exc[EXCMAX];
+static int g_nexc;
+
+static void exc_add(const char *kind, const char *where, const char *msg)
+{
+    if (g_nexc >= EXCMAX) return;
+    struct exc *e = &g_exc[g_nexc++];
+    snprintf(e->kind, sizeof e->kind, "%s", kind);
+    snprintf(e->where, sizeof e->where, "%s", where ? where : "?");
+    /* One line: a QuickJS exception stringifies to "Type: message" and then a
+     * backtrace, and the backtrace is not part of the identity of the error. */
+    int o = 0;
+    for (const char *p = msg ? msg : "?"; *p && o < (int)sizeof e->msg - 1; p++) {
+        if (*p == '\n' || *p == '\r') break;
+        e->msg[o++] = *p;
+    }
+    e->msg[o] = 0;
+}
+
+/* The console, unbounded, taken through js_page.c's note sink rather than its
+ * 4 KiB display buffer. kimi produces more than 4 KiB of exceptions, and a
+ * count taken off a truncated buffer is a count of how big the buffer is. */
+static char *g_con;
+static int   g_conlen, g_concap;
+static int   g_outseen;
+
+static void con_sink(const char *frag)
+{
+    int n = (int)strlen(frag);
+    if (g_conlen + n + 1 > g_concap) {
+        int want = (g_concap ? g_concap * 2 : 1 << 16);
+        while (want < g_conlen + n + 1) want *= 2;
+        char *nb = realloc(g_con, (size_t)want);
+        if (!nb) return;
+        g_con = nb; g_concap = want;
+    }
+    memcpy(g_con + g_conlen, frag, (size_t)n);
+    g_conlen += n;
+    g_con[g_conlen] = 0;
+}
+
+/* The host build has NO NETWORK: WEBAPI_HOST leaves every entry of
+ * struct webapi_net NULL, so js_webapi.c rejects each fetch with exactly this
+ * message. kimi opens dozens of them at startup. They are the INSTRUMENT's
+ * environment, not the page's bug and not the engine's, so they are counted in
+ * their own bucket and named in the report rather than quietly dropped -- a
+ * silently filtered category is how a number stops meaning anything. */
+static int is_netstub(const char *m)
+{ return strstr(m, "could not open a socket") != 0; }
+
+static void drain_console(int show_errors, const char *tag)
+{
+    const char *out = g_con ? g_con : "";
+    int n = g_conlen;
+    if (g_outseen > n) g_outseen = 0;
+    const char *p = out + g_outseen;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        int len = nl ? (int)(nl - p) : (int)strlen(p);
+        if (len > 0 && !strncmp(p, "[exception]", 11)) {
+            char m[400];
+            snprintf(m, sizeof m, "%.*s", len - 11 > 0 ? len - 12 : 0, p + 12);
+            exc_add("timer", tag, m);
+            if (show_errors) printf("    [%s-timer] %.*s\n", tag, len, p);
+        } else if (len > 0 && !strncmp(p, "[error]", 7)) {
+            char m[400];
+            snprintf(m, sizeof m, "%.*s", len - 7 > 0 ? len - 8 : 0, p + 8);
+            exc_add(is_netstub(m) ? "netstub" : "console", tag, m);
+            if (show_errors && !is_netstub(m)) printf("    [%s-console] %.*s\n", tag, len, p);
+        } else if (len > 0 && !strncmp(p, "[warn]", 6)) {
+            /* console.warn is NOT an uncaught exception and is not counted as
+             * one. It is recorded because it is where a page reports a failure
+             * it CAUGHT -- mdn's `Unable to set theme` is a try/catch around a
+             * missing Element.dataset, a gap of ours that produces no exception
+             * at all and would otherwise be invisible to this instrument. */
+            char m[400];
+            snprintf(m, sizeof m, "%.*s", len - 6 > 0 ? len - 7 : 0, p + 7);
+            exc_add("warn", tag, m);
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    g_outseen = n;
+}
+
+static void run_event_loop(int show_errors, const char *tag, int record)
 {
     for (int i = 0; i < LOOP_PASSES; i++) {
         int ran = js_page_run_due();
         ran += js_page_pump();
         if (!ran && !js_page_pending()) break;
     }
-    if (!show_errors) return;
     /* Timer callbacks report their exceptions through js_page.c's console
      * capture rather than as a return value, so the errors this pass produced
      * are in the note buffer. */
-    const char *out = js_page_output();
-    for (const char *p = out; p && *p; ) {
+    if (record) drain_console(show_errors, tag);
+}
+
+/* js_module.c reports a module's exception with printf, which is right for a
+ * serial log and is the only channel it has. The tee above captures it; this
+ * lifts the message back out so a module failure is an entry in the ledger and
+ * not just a line on the terminal. */
+static void harvest_module_output(const char *where)
+{
+    for (const char *p = g_cap; *p; ) {
         const char *nl = strchr(p, '\n');
         int len = nl ? (int)(nl - p) : (int)strlen(p);
-        if (len > 0 && !strncmp(p, "[exception]", 11))
-            printf("    [%s-timer] %.*s\n", tag, len, p);
+        const char *hit;
+        if ((hit = strstr(p, "module exception in ")) && hit < p + len) {
+            const char *c = strstr(hit, ": ");
+            if (c && c < p + len) exc_add("module", where, c + 2);
+        } else if ((hit = strstr(p, "module rejected ")) && hit < p + len) {
+            const char *c = strstr(hit, ": ");
+            if (c && c < p + len) exc_add("module", where, c + 2);
+        } else if (!strncmp(p, "[js] module fetch FAILED: ", 26)) {
+            char m[400];
+            snprintf(m, sizeof m, "%.*s", len - 26, p + 26);
+            exc_add("fetch", where, m);
+        }
         if (!nl) break;
         p = nl + 1;
     }
@@ -405,11 +754,11 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
     char *html = slurp(p, &hlen);
     if (!html) { printf("  (no index.html in %s)\n", dir); return; }
 
-    load_manifest(dir);
-    g_nscr = 0;
-    struct node *root = dom_parse(html, hlen);
-    if (root) collect(root, dir);
-
+    /* THE PAGE URL IS READ FIRST, and that ordering is load-bearing now: the
+     * manifest's absolute column is each src resolved against it, and the
+     * module loader can only be answered from that column. Read after
+     * load_manifest, as it used to be, every module URL resolves against an
+     * empty base and the routing table is empty. */
     char url[300];
     snprintf(p, sizeof p, "%s/SOURCE", dir);
     char *srcline = slurp(p, 0);
@@ -420,15 +769,35 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
         url[i] = 0;
         free(srcline);
     }
+    if (g_base_override[0]) snprintf(url, sizeof url, "%s", g_base_override);
     if (!url[0]) snprintf(url, sizeof url, "http://fixture.invalid/");
+    snprintf(g_pagebase, sizeof g_pagebase, "%s", url);
+    snprintf(g_fixdir, sizeof g_fixdir, "%s", dir);
 
-    int c1_ok = 0, c2_ok = 0, nclassic = 0;
+    load_manifest(dir);
+    g_nscr = 0;
+    g_nexc = 0; g_outseen = 0;
+    g_fetch_ok = g_fetch_miss = 0; g_nmodmiss = 0;
+    g_ndropped = 0;
+    /* js_page.c's console buffer OUTLIVES js_page_close -- it is a static, and
+     * clearing it is the embedder's job. Without this line the first fixture's
+     * errors are re-read under the second fixture's name: `example`, which has
+     * no scripts at all, was credited with two uncaught exceptions. A report
+     * that attributes one page's failures to another is worse than no report. */
+    js_page_output_clear();
+    g_conlen = 0; if (g_con) g_con[0] = 0;
+    js_page_set_note_sink(con_sink);
+    struct node *root = dom_parse(html, hlen);
+    if (root) collect(root, dir);
+
+    int c1_ok = 0, c2_ok = 0, nclassic = 0, nmod = 0, mod_ok = 0;
     for (int i = 0; i < g_nscr; i++) if (!g_scr[i].module) nclassic++;
+    nmod = g_nscr - nclassic;
     /* The header goes out BEFORE anything runs, so the per-script errors
      * printed below sit under the site they belong to. Printed after, they
      * appeared under the previous fixture's name, which is a report that lies. */
     printf("  %-11s %2d scripts (%d classic, %d module) from %d bytes of HTML\n",
-           g_sitename[g_site], g_nscr, nclassic, g_nscr - nclassic, hlen);
+           g_sitename[g_site], g_nscr, nclassic, nmod, hlen);
 
     /* The corpus is only as honest as the collection. A script the DOM never
      * produced is a script the probe never measures AND the browser never runs,
@@ -455,9 +824,14 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
      * taken on a clean runtime. */
     js_page_set_clock(clock_fn);
     js_page_set_location(url);
+    js_module_reset();
     if (js_page_open(root)) {
+        /* TWO PASSES, because that is the order the spec gives and browser.c
+         * follows: classic scripts in document order, then modules -- every
+         * <script type=module> is implicitly `defer`. A probe that ran them
+         * interleaved would report failures that come from its own ordering. */
         for (int i = 0; i < g_nscr; i++) {
-            if (g_scr[i].module) continue;           /* the loader owns module URLs */
+            if (g_scr[i].module) continue;
             JSContext *ctx = js_page_ctx();
             JSValue v = JS_Eval(ctx, g_scr[i].data, (size_t)g_scr[i].len, g_scr[i].url,
                                 JS_EVAL_TYPE_GLOBAL);
@@ -466,6 +840,7 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
                 const char *m = JS_ToCString(ctx, e);
                 if (m) {
                     note_c2_error(m);
+                    exc_add("script", g_scr[i].url, m);
                     if (show_errors) printf("    [c2] %-16s %.150s\n", g_scr[i].url, m);
                     JS_FreeCString(ctx, m);
                 }
@@ -473,7 +848,30 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             } else c2_ok++;
             JS_FreeValue(ctx, v);
         }
-        run_event_loop(show_errors, "c2");
+        /* ---- the module pass. js_module_eval is the browser's own entry
+         * point, loader and all; the only thing this file supplies is the
+         * bfetch under it, which reads the committed fixture instead of a
+         * socket. Its diagnostics come back through the printf tee. */
+        for (int i = 0; i < g_nscr; i++) {
+            if (!g_scr[i].module) continue;
+            cap_start();
+            int ok = js_module_eval(g_scr[i].data, g_scr[i].len, g_scr[i].abs);
+            cap_stop();
+            harvest_module_output(g_scr[i].url);
+            if (ok) mod_ok++;
+            if (show_errors && !ok) printf("    [c2] %-16s module did not evaluate\n", g_scr[i].url);
+            /* Turn the loop between modules: a dynamic import() settles as a
+             * job, and the chunk it pulls in is code this instrument exists to
+             * measure. Without this the fan-out is invisible. */
+            cap_start();
+            run_event_loop(show_errors, "c2", 1);
+            cap_stop();
+            harvest_module_output(g_scr[i].url);
+        }
+        cap_start();
+        run_event_loop(show_errors, "c2", 1);
+        cap_stop();
+        harvest_module_output("<loop>");
         js_page_close();
     }
 
@@ -529,19 +927,69 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             JS_FreeValue(ctx, v);
             free(w);
         }
+        /* Modules run in channel 1 too, UNWRAPPED, and the reason has to be
+         * stated because it is a hole in this channel that cannot be closed:
+         * `with` is a syntax error in module code and would be meaningless
+         * anyway -- a module has its own scope, so an unresolved import is a
+         * link error and an unresolved free variable is a plain ReferenceError.
+         * So a module contributes nothing to the bare-global histogram. It
+         * still contributes everything to the MEMBER histogram, because
+         * PROBE_MEMBERS replaced navigator/performance/document with recording
+         * proxies on the global object, and a module reads those through the
+         * same globals a classic script does. Given round one's finding -- that
+         * the missing bare globals were overwhelmingly the pages' own names and
+         * the real shortages were object PROPERTIES -- that is the half worth
+         * having. */
+        for (int i = 0; i < g_nscr; i++) {
+            if (!g_scr[i].module) continue;
+            cap_start();
+            js_module_eval(g_scr[i].data, g_scr[i].len, g_scr[i].abs);
+            run_event_loop(show_errors, mode == 2 ? "c1-deep" : "c1", 0);
+            cap_stop();
+        }
         /* Still recording: a global first reached from a timer counts, and is
          * exactly the class of miss the first version of this probe could not
          * see. See run_event_loop. */
-        run_event_loop(show_errors, mode == 2 ? "c1-deep" : "c1");
+        run_event_loop(show_errors, mode == 2 ? "c1-deep" : "c1", 0);
         js_page_close();
         g_recording = 0;
     }
 
-    /* Modules are excluded from both denominators: js_module.c owns their URLs
-     * and their loader, and counting a script the probe never ran as a failure
-     * would put a number on this line that no change here can move. */
-    printf("  %-11s ... classic scripts that ran clean: channel1 %d/%d, channel2 %d/%d\n",
-           g_sitename[g_site], c1_ok, nclassic, c2_ok, nclassic);
+    /* Modules are IN the denominator now. Two separate numbers, because they
+     * are two separate claims: `modules` counts the top-level <script
+     * type=module> tags that evaluated with no uncaught exception, while
+     * `chunks` counts what the loader pulled in behind them -- a page with one
+     * module tag and 134 imports is one of the first and 134 of the second, and
+     * only the second says whether the graph was walked. */
+    printf("  %-11s ... ran clean: c1 %d/%d classic, c2 %d/%d classic, %d/%d modules"
+           "  (chunks loaded %d, missing %d)\n",
+           g_sitename[g_site], c1_ok, nclassic, c2_ok, nclassic, mod_ok, nmod,
+           g_fetch_ok, g_fetch_miss);
+    /* A missing chunk is a hole in the CORPUS, printed as one. It is the single
+     * easiest way for this instrument to lie: an import that 404s makes a page
+     * look broken in a way the browser is not responsible for. */
+    for (int i = 0; i < g_nmodmiss; i++)
+        printf("  %-11s ... NOT IN FIXTURE (import): %s\n", g_sitename[g_site], g_modmiss[i]);
+    for (int i = 0; i < g_ndropped; i++)
+        printf("  %-11s ... NOT IN FIXTURE (<script src>): %s\n", g_sitename[g_site], g_dropped[i]);
+
+    int nun = 0, nnet = 0, nwarn = 0;
+    for (int i = 0; i < g_nexc; i++) {
+        if (!strcmp(g_exc[i].kind, "fetch")) continue;         /* corpus gap */
+        if (!strcmp(g_exc[i].kind, "netstub")) { nnet++; continue; }
+        if (!strcmp(g_exc[i].kind, "warn")) { nwarn++; continue; }
+        nun++;
+    }
+    printf("  %-11s ... UNCAUGHT: %d   (+%d from the host build's absent network,"
+           " +%d console.warn)\n", g_sitename[g_site], nun, nnet, nwarn);
+    g_site_exc[g_site] = nun;
+    if (g_json) {
+        for (int i = 0; i < g_nexc; i++) {
+            printf("#JSON\t%s\t%s\t%s\t", g_sitename[g_site], g_exc[i].kind, g_exc[i].where);
+            for (const char *s = g_exc[i].msg; *s; s++) printf("%c", *s == '\t' ? ' ' : *s);
+            printf("\n");
+        }
+    }
 
     for (int i = 0; i < g_nscr; i++) free(g_scr[i].data);
     g_nscr = 0;
@@ -573,9 +1021,16 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--errors")) show_errors = 1;
         else if (!strcmp(argv[i], "--deep")) g_deep = 1;
         else if (!strcmp(argv[i], "--scripts")) show_scripts = 1;
+        else if (!strcmp(argv[i], "--json")) g_json = 1;
+        else if (!strncmp(argv[i], "--base=", 7))
+            snprintf(g_base_override, sizeof g_base_override, "%s", argv[i] + 7);
         else if (nd < SITEMAX) dirs[nd++] = argv[i];
     }
-    if (!nd) { printf("usage: webapi_probe [--errors] [--deep] [--scripts] <fixture-dir>...\n"); return 2; }
+    if (!nd) {
+        printf("usage: webapi_probe [--errors] [--deep] [--scripts] [--json] "
+               "[--base=URL] <fixture-dir>...\n");
+        return 2;
+    }
 
     printf("== webapi_probe: global lookups that MISS, across %d fixtures ==\n\n", nd);
     static char names[SITEMAX][64];
@@ -615,6 +1070,15 @@ int main(int argc, char **argv)
                popcnt(m->sites), m->refs, popcnt(m->sites_deep), m->refs_deep,
                m->sites_c2 ? "DIES" : "-", which);
     }
+    printf("\nUNCAUGHT EXCEPTIONS PER PAGE (the number that matters -- a name is\n"
+           "a symptom, this is what a user gets):\n");
+    int total = 0;
+    for (int s = 0; s < g_nsite; s++) {
+        printf("  %-12s %d\n", g_sitename[s], g_site_exc[s]);
+        total += g_site_exc[s];
+    }
+    printf("  %-12s %d\n", "TOTAL", total);
+
     printf("\n%d distinct names missed.\n", g_nmiss);
     printf("PAGES/REFS  the plain run: what a page reaches for on its real execution path.\n");
     printf("DEEP/D-REFS --deep only: what it would reach for next, past the first TypeError.\n");
