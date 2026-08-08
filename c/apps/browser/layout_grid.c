@@ -1002,9 +1002,12 @@ static int place_items(const struct gridcfg *cfg,
     /* Bounds of the implicit grid in the minor axis, in LINE numbers. Step 3 of
      * s8.5: start from the explicit grid, extend for every definite minor
      * position, then for the largest minor span among items without one. */
+    /* `nlines` is a LINE count, so the explicit grid's last line IS nlines and
+     * its track count is nlines - 1. Adding one here would make every grid one
+     * track too wide and stop auto-placement ever wrapping. */
     int minor_lines = flowcol ? Lr->nlines : Lc->nlines;
     int major_lines = flowcol ? Lc->nlines : Lr->nlines;
-    int min_lo = 1, min_hi = minor_lines + 1;
+    int min_lo = 1, min_hi = minor_lines;
     int maj_lo = 1;
     int maxspan = 1;
     for (i = 0; i < nitems; i++) {
@@ -1096,13 +1099,13 @@ static int place_items(const struct gridcfg *cfg,
                 if (!cfg->flow_dense) cmin += m->span;
             }
         }
-        if (occ_need(&o, imax(o.h, major_lines - maj_lo + 1)) < 0) goto done;
+        if (occ_need(&o, imax(o.h, major_lines - maj_lo)) < 0) goto done;
     }
 
     /* Emit, converting line numbers to 0-based track indices. */
     {
         int nmin = o.w;
-        int nmaj = imax(o.h, major_lines - maj_lo + 1);
+        int nmaj = imax(o.h, major_lines - maj_lo);
         for (i = 0; i < nitems; i++) {
             struct axpl *m = MIN_(&pl[i]), *M = MAJ(&pl[i]);
             int mi = m->s - min_lo, ma = M->s - maj_lo;

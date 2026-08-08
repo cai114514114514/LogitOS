@@ -13,11 +13,12 @@
 #
 #   make test-grid          every host suite below
 #   make test-grid-parse    value parsers + auto-fill/auto-fit repetition count
+#   make test-grid-place    placement: line-based, named, spans, sparse/dense
 #   make test-grid-negctl   the spanning-item suite with the spec's space
 #                           distribution replaced by an even split; it MUST
 #                           fail, and the target succeeds when it does
 # ============================================================================
-.PHONY: test-grid test-grid-parse test-grid-negctl
+.PHONY: test-grid test-grid-parse test-grid-place test-grid-negctl
 
 GRID_SRC  := c/apps/browser/layout_grid.c
 GRID_CF   := -O1 -g -Wall -Wextra -Ic/apps/browser
@@ -29,4 +30,11 @@ $(BUILD)/grid_parse_test: tests/unit/grid_parse_test.c $(GRID_SRC) c/apps/browse
 test-grid-parse: $(BUILD)/grid_parse_test
 	$(BUILD)/grid_parse_test
 
-test-grid: test-grid-parse
+$(BUILD)/grid_place_test: tests/unit/grid_place_test.c $(GRID_SRC) c/apps/browser/layout_grid.h
+	@mkdir -p $(BUILD)
+	$(CC) $(GRID_CF) -o $@ tests/unit/grid_place_test.c $(GRID_SRC)
+
+test-grid-place: $(BUILD)/grid_place_test
+	$(BUILD)/grid_place_test
+
+test-grid: test-grid-parse test-grid-place
