@@ -232,7 +232,167 @@ static JSValue jf_encode(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     return JS_NewStringLen(ctx, buf, (size_t)n);
 }
 
+/* ============================== the editing events, with an inputType ===== *
+ *
+ * focus.h's second dispatch seam lands here. js_dom.c raises every event it
+ * knows about out of a fixed `struct js_event_init`, which has no inputType and
+ * no data, and that file is another line's -- so an `input` event raised
+ * through it is an input event a React composer cannot read.
+ *
+ * js_events.c already defines a real `InputEvent` with both fields (it is in
+ * its makeSub table). So the event is CONSTRUCTED IN THE PAGE'S OWN RUNTIME and
+ * dispatched with the ordinary dispatchEvent -- the same object a page would
+ * build itself, carrying the right inputType, going through the same
+ * capture/target/bubble walk as everything else.
+ *
+ * WHAT THAT COSTS, said plainly: the event's isTrusted is false, because it did
+ * not come from js_dom_dispatch's trusted path. No framework's input handling
+ * reads isTrusted (it is a security signal for click and key, not for input),
+ * but it is a real difference and the honest fix is one field on
+ * `struct js_event_init` -- an ASK for the js_dom line, three lines long, at
+ * which point this whole indirection deletes itself. */
+static JSContext *g_ctx;
+
+/* Give a node an integer key, reading back the one it already has. The C
+ * counterpart of the shim's key(): the same attribute, the same numbering. */
+static int stamp_id(struct node *n)
+{
+    if (!n || n->type != N_ELEM) return 0;
+    const char *v = dom_attr(n, "data-logit-fcid");
+    if (v && v[0]) {
+        int id = 0;
+        for (const char *p = v; *p >= '0' && *p <= '9'; p++) id = id * 10 + (*p - '0');
+        if (id > 0) return id;
+    }
+    int id = g_next_id++;
+    char buf[16];
+    int p = 0, x = id;
+    char t[12]; int i = 0;
+    while (x) { t[i++] = (char)('0' + x % 10); x /= 10; }
+    while (i) buf[p++] = t[--i];
+    buf[p] = 0;
+    if (!dom_set_attr(n, "data-logit-fcid", buf)) return 0;
+    return id;
+}
+
+static int fire_input(struct node *target, const char *type, const char *itype,
+                      const char *data, int bubbles, int cancelable)
+{
+    if (!g_ctx || !target) return 1;
+    int id = stamp_id(target);
+    if (id <= 0) return 1;
+    JSContext *ctx = g_ctx;
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue fn = JS_GetPropertyStr(ctx, g, "__fcFireInput");
+    int ok = 1;
+    if (JS_IsFunction(ctx, fn)) {
+        JSValue a[6];
+        a[0] = JS_NewInt32(ctx, id);
+        a[1] = JS_NewString(ctx, type);
+        a[2] = JS_NewString(ctx, itype ? itype : "");
+        a[3] = data ? JS_NewString(ctx, data) : JS_NULL;
+        a[4] = JS_NewBool(ctx, bubbles);
+        a[5] = JS_NewBool(ctx, cancelable);
+        JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 6, a);
+        if (JS_IsException(r)) {
+            JSValue e = JS_GetException(ctx);
+            JS_FreeValue(ctx, e);
+        } else {
+            /* The shim returns dispatchEvent's answer: false means a listener
+             * called preventDefault, which for beforeinput means the edit must
+             * not happen. */
+            ok = JS_ToBool(ctx, r) != 0;
+        }
+        JS_FreeValue(ctx, r);
+        for (int i = 0; i < 6; i++) JS_FreeValue(ctx, a[i]);
+    }
+    JS_FreeValue(ctx, fn);
+    JS_FreeValue(ctx, g);
+    return ok;
+}
+
+/* ================================ Selection and Range ==================== *
+ *
+ * A contenteditable composer is nearly always read back through
+ * document.getSelection(), so the editing model is only half a feature without
+ * it. What crosses the boundary is a PATH of child indices from the document
+ * element, for the reason forms.h gives: js_dom.c exports no way to turn a
+ * `struct node *` into a JS wrapper, and unlike an element a TEXT node cannot
+ * even carry the `data-logit-fcid` attribute the workaround above uses.
+ *
+ * OFFSETS ARE CONVERTED, not passed through. The DOM counts a Range offset in
+ * UTF-16 code units; forms.c holds UTF-8 bytes. They agree for ASCII and
+ * disagree for every accented or CJK character, and a selection API that is
+ * silently wrong on non-ASCII text is worse than one that is absent. The
+ * conversion is in the shim, where the string is. */
+static int read_path(JSContext *ctx, JSValueConst v, int *out, int max)
+{
+    if (!JS_IsArray(ctx, v)) return -1;
+    JSValue lv = JS_GetPropertyStr(ctx, v, "length");
+    uint32_t len = 0;
+    JS_ToUint32(ctx, &len, lv);
+    JS_FreeValue(ctx, lv);
+    if ((int)len > max) return -1;
+    for (uint32_t i = 0; i < len; i++) {
+        JSValue e = JS_GetPropertyUint32(ctx, v, i);
+        int32_t x = 0;
+        JS_ToInt32(ctx, &x, e);
+        JS_FreeValue(ctx, e);
+        out[i] = (int)x;
+    }
+    return (int)len;
+}
+
+static JSValue jf_selget(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    int ap[64], fp[64], ao = 0, fo = 0;
+    int ad = fc_ce_path(0, ap, 64, &ao);
+    int fd = fc_ce_path(1, fp, 64, &fo);
+    if (ad < 0 || fd < 0) return JS_NULL;
+    JSValue a = JS_NewArray(ctx);
+    uint32_t k = 0;
+    JS_DefinePropertyValueUint32(ctx, a, k++, JS_NewInt32(ctx, ad), JS_PROP_C_W_E);
+    for (int i = 0; i < ad; i++)
+        JS_DefinePropertyValueUint32(ctx, a, k++, JS_NewInt32(ctx, ap[i]), JS_PROP_C_W_E);
+    JS_DefinePropertyValueUint32(ctx, a, k++, JS_NewInt32(ctx, ao), JS_PROP_C_W_E);
+    JS_DefinePropertyValueUint32(ctx, a, k++, JS_NewInt32(ctx, fd), JS_PROP_C_W_E);
+    for (int i = 0; i < fd; i++)
+        JS_DefinePropertyValueUint32(ctx, a, k++, JS_NewInt32(ctx, fp[i]), JS_PROP_C_W_E);
+    JS_DefinePropertyValueUint32(ctx, a, k++, JS_NewInt32(ctx, fo), JS_PROP_C_W_E);
+    return a;
+}
+
+static JSValue jf_selset(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 4) return JS_FALSE;
+    int ap[64], fp[64];
+    int ad = read_path(ctx, argv[0], ap, 64);
+    int fd = read_path(ctx, argv[2], fp, 64);
+    if (ad < 0 || fd < 0) return JS_FALSE;
+    int32_t ao = 0, fo = 0;
+    JS_ToInt32(ctx, &ao, argv[1]);
+    JS_ToInt32(ctx, &fo, argv[3]);
+    return JS_NewBool(ctx, fc_ce_set_paths(ap, ad, ao, fp, fd, fo));
+}
+
+static JSValue jf_selclear(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ (void)t; (void)argc; (void)argv; fc_ce_clear(); return JS_UNDEFINED; }
+
+static JSValue jf_seltext(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    static char buf[8192];
+    int n = fc_ce_selection_text(buf, (int)sizeof buf);
+    return JS_NewStringLen(ctx, buf, (size_t)(n < 0 ? 0 : n));
+}
+
 static const JSCFunctionListEntry g_natives[] = {
+    JS_CFUNC_DEF("__fc_selGet", 0, jf_selget),
+    JS_CFUNC_DEF("__fc_selSet", 4, jf_selset),
+    JS_CFUNC_DEF("__fc_selClear", 0, jf_selclear),
+    JS_CFUNC_DEF("__fc_selText", 0, jf_seltext),
     JS_CFUNC_DEF("__fc_newid", 0, jf_newid),
     JS_CFUNC_DEF("__fc_kind", 1, jf_kind),
     JS_CFUNC_DEF("__fc_value", 1, jf_value),
@@ -545,6 +705,252 @@ static const char SHIM[] =
 "  return out; } }); } catch (e) {}\n"
 "})(globalThis);\n";
 
+
+/* ================================ the Selection / Range shim ============== *
+ *
+ * Its own string, evaluated after the one above, so a syntax error in either
+ * cannot take the other down -- the forms bindings shipped first and must not
+ * become dependent on this landing cleanly.
+ *
+ * WHAT IS HERE AND WHAT IS NOT, stated so the gaps are not discovered by a
+ * page. Implemented: document.getSelection / window.getSelection, the Selection
+ * members a composer reads (anchorNode/anchorOffset/focusNode/focusOffset,
+ * isCollapsed, rangeCount, type, toString, getRangeAt, collapse,
+ * collapseToStart/End, extend, setBaseAndExtent, removeAllRanges/empty,
+ * addRange, selectAllChildren, containsNode), document.createRange, and a Range
+ * with the container/offset pairs, collapsed, commonAncestorContainer, setStart
+ * / setEnd (+Before/After), collapse, selectNode, selectNodeContents,
+ * cloneRange and toString.
+ *
+ * NOT implemented, deliberately: Range.insertNode / deleteContents /
+ * extractContents / cloneContents / surroundContents (a page that edits through
+ * a Range instead of through the keyboard is doing something no composer does),
+ * Range.compareBoundaryPoints, Selection.modify, and
+ * Range.getBoundingClientRect / getClientRects -- a rect this cannot compute
+ * correctly would be worse than an absent method, because a popup positioner
+ * would believe it. Nothing here is a silent stub: what is missing is missing.
+ *
+ * document.execCommand and document.designMode are NOT here either, and that is
+ * a measurement rather than an omission -- both grep to nothing across the
+ * corpus this browser is aimed at. Building them speculatively would be two
+ * more surfaces to keep true. */
+static const char SEL_SHIM[] =
+"(function(G){\n"
+"var doc = G.document; if (!doc) return;\n"
+"function root(){ return doc.documentElement; }\n"
+/* previousSibling in this engine is the previous ELEMENT sibling (js_dom.c),
+ * which would skip the text nodes a caret lives in and produce a path that
+ * addresses the wrong child. So the index is taken from childNodes, which is
+ * every node in order, and identity works because js_dom.c caches one wrapper
+ * per node. */
+"function idx(p, n){ var cs = p.childNodes || []; \n"
+"  for (var i = 0; i < cs.length; i++) if (cs[i] === n) return i;\n"
+"  return -1; }\n"
+"function pathOf(n){\n"
+"  var r = root(), p = [];\n"
+"  while (n && n !== r) { var q = n.parentNode; if (!q) return null;\n"
+"    var i = idx(q, n); if (i < 0) return null; p.unshift(i); n = q; }\n"
+"  return n === r ? p : null; }\n"
+"function nodeAt(p){ var n = root();\n"
+"  for (var i = 0; i < p.length && n; i++) n = (n.childNodes || [])[p[i]];\n"
+"  return n || null; }\n"
+/* UTF-16 code units (what the DOM counts) <-> UTF-8 bytes (what forms.c
+ * holds). Identical for ASCII, different for every accented or CJK character,
+ * and a selection API that is silently wrong on non-ASCII is worse than one
+ * that is missing. */
+"function b2u(s, b){ var by = 0, u = 0;\n"
+"  for (u = 0; u < s.length && by < b; u++) { var c = s.charCodeAt(u);\n"
+"    if (c < 0x80) by += 1; else if (c < 0x800) by += 2;\n"
+"    else if (c >= 0xD800 && c < 0xDC00) { by += 4; u++; } else by += 3; }\n"
+"  return u; }\n"
+"function u2b(s, u){ var by = 0;\n"
+"  for (var i = 0; i < s.length && i < u; i++) { var c = s.charCodeAt(i);\n"
+"    if (c < 0x80) by += 1; else if (c < 0x800) by += 2;\n"
+"    else if (c >= 0xD800 && c < 0xDC00) { by += 4; i++; } else by += 3; }\n"
+"  return by; }\n"
+"function offOut(n, bytes){ return (n && n.nodeType === 3) ? b2u(n.data || '', bytes) : bytes; }\n"
+"function offIn(n, units){ return (n && n.nodeType === 3) ? u2b(n.data || '', units) : units; }\n"
+/* Document order from two paths: lexicographic on the child indices, with the
+ * shorter path (an ancestor) first. No tree walk needed and no second copy of
+ * the comparison in C. */
+"function cmpPath(a, b, ao, bo){\n"
+"  var n = Math.min(a.length, b.length);\n"
+"  for (var i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;\n"
+"  if (a.length !== b.length) {\n"
+"    var shortIsA = a.length < b.length;\n"
+"    var deep = shortIsA ? b : a, off = shortIsA ? ao : bo;\n"
+"    var r = off <= deep[n] ? -1 : 1;\n"
+"    return shortIsA ? r : -r; }\n"
+"  return ao < bo ? -1 : ao > bo ? 1 : 0; }\n"
+/* The live caret, decoded. NULL when there is none -- which is the honest
+ * answer for a page with nothing focused, and what rangeCount 0 means. */
+"function cur(){\n"
+"  var v = G.__fc_selGet(); if (!v) return null;\n"
+"  var i = 0, ad = v[i++], ap = [], k;\n"
+"  for (k = 0; k < ad; k++) ap.push(v[i++]);\n"
+"  var ao = v[i++], fd = v[i++], fp = [];\n"
+"  for (k = 0; k < fd; k++) fp.push(v[i++]);\n"
+"  var fo = v[i++];\n"
+"  var an = nodeAt(ap), fn = nodeAt(fp);\n"
+"  if (!an || !fn) return null;\n"
+"  return { an: an, ao: offOut(an, ao), fn: fn, fo: offOut(fn, fo), ap: ap, fp: fp };\n"
+"}\n"
+"function put(an, ao, fn, fo){\n"
+"  var a = pathOf(an), f = pathOf(fn);\n"
+"  if (!a || !f) return false;\n"
+"  return !!G.__fc_selSet(a, offIn(an, ao | 0), f, offIn(fn, fo | 0)); }\n"
+
+/* ---- Range -------------------------------------------------------------- */
+"function Range(){ this._sc = null; this._so = 0; this._ec = null; this._eo = 0; }\n"
+"var RP = Range.prototype;\n"
+"function ancestorsOf(n){ var a = []; while (n) { a.unshift(n); n = n.parentNode; } return a; }\n"
+"function commonOf(a, b){\n"
+"  if (!a || !b) return null;\n"
+"  var x = ancestorsOf(a), y = ancestorsOf(b), i = 0;\n"
+"  while (i < x.length && i < y.length && x[i] === y[i]) i++;\n"
+"  return i > 0 ? x[i - 1] : null; }\n"
+"function defp(o, n, g, s){ var d = { configurable: true, enumerable: false };\n"
+"  if (g) d.get = g; if (s) d.set = s;\n"
+"  try { Object.defineProperty(o, n, d); } catch (e) {} }\n"
+"defp(RP, 'startContainer', function(){ return this._sc; });\n"
+"defp(RP, 'startOffset',    function(){ return this._so; });\n"
+"defp(RP, 'endContainer',   function(){ return this._ec; });\n"
+"defp(RP, 'endOffset',      function(){ return this._eo; });\n"
+"defp(RP, 'collapsed', function(){\n"
+"  return this._sc === this._ec && this._so === this._eo; });\n"
+"defp(RP, 'commonAncestorContainer', function(){ return commonOf(this._sc, this._ec); });\n"
+"RP.setStart = function(n, o){ this._sc = n; this._so = o | 0;\n"
+"  if (!this._ec) { this._ec = n; this._eo = o | 0; } };\n"
+"RP.setEnd   = function(n, o){ this._ec = n; this._eo = o | 0;\n"
+"  if (!this._sc) { this._sc = n; this._so = o | 0; } };\n"
+"RP.setStartBefore = function(n){ this.setStart(n.parentNode, idx(n.parentNode, n)); };\n"
+"RP.setStartAfter  = function(n){ this.setStart(n.parentNode, idx(n.parentNode, n) + 1); };\n"
+"RP.setEndBefore   = function(n){ this.setEnd(n.parentNode, idx(n.parentNode, n)); };\n"
+"RP.setEndAfter    = function(n){ this.setEnd(n.parentNode, idx(n.parentNode, n) + 1); };\n"
+"RP.collapse = function(toStart){ if (toStart) { this._ec = this._sc; this._eo = this._so; }\n"
+"  else { this._sc = this._ec; this._so = this._eo; } };\n"
+"RP.selectNode = function(n){ this.setStartBefore(n); this.setEndAfter(n); };\n"
+"RP.selectNodeContents = function(n){\n"
+"  this._sc = n; this._so = 0;\n"
+"  this._ec = n; this._eo = (n.nodeType === 3) ? (n.data || '').length\n"
+"                                              : (n.childNodes || []).length; };\n"
+"RP.cloneRange = function(){ var r = new Range();\n"
+"  r._sc = this._sc; r._so = this._so; r._ec = this._ec; r._eo = this._eo; return r; };\n"
+/* toString walks the tree rather than asking C: a Range the page built itself
+ * is not the selection, so there is nothing in C to ask. */
+"RP.toString = function(){\n"
+"  var sc = this._sc, ec = this._ec, so = this._so, eo = this._eo;\n"
+"  if (!sc || !ec) return '';\n"
+"  if (sc === ec) return (sc.nodeType === 3) ? (sc.data || '').substring(so, eo) : '';\n"
+"  var out = [], started = false, done = false;\n"
+"  function walk(n){\n"
+"    if (done) return;\n"
+"    if (n === ec) { if (n.nodeType === 3) out.push((n.data || '').substring(0, eo));\n"
+"                    done = true; return; }\n"
+"    if (n === sc) { started = true;\n"
+"      if (n.nodeType === 3) { out.push((n.data || '').substring(so)); return; } }\n"
+"    else if (started && n.nodeType === 3) out.push(n.data || '');\n"
+"    var cs = n.childNodes || [];\n"
+"    for (var i = 0; i < cs.length && !done; i++) walk(cs[i]);\n"
+"  }\n"
+"  walk(commonOf(sc, ec) || root());\n"
+"  return out.join(''); };\n"
+"G.Range = Range;\n"
+"doc.createRange = function(){ return new Range(); };\n"
+
+/* ---- Selection ---------------------------------------------------------- */
+"function Selection(){}\n"
+"var SP = Selection.prototype;\n"
+"defp(SP, 'anchorNode',   function(){ var c = cur(); return c ? c.an : null; });\n"
+"defp(SP, 'anchorOffset', function(){ var c = cur(); return c ? c.ao : 0; });\n"
+"defp(SP, 'focusNode',    function(){ var c = cur(); return c ? c.fn : null; });\n"
+"defp(SP, 'focusOffset',  function(){ var c = cur(); return c ? c.fo : 0; });\n"
+"defp(SP, 'isCollapsed',  function(){ var c = cur();\n"
+"  return c ? (c.an === c.fn && c.ao === c.fo) : true; });\n"
+"defp(SP, 'rangeCount',   function(){ return cur() ? 1 : 0; });\n"
+"defp(SP, 'type', function(){ var c = cur();\n"
+"  if (!c) return 'None';\n"
+"  return (c.an === c.fn && c.ao === c.fo) ? 'Caret' : 'Range'; });\n"
+"SP.toString = function(){ return G.__fc_selText(); };\n"
+"SP.getRangeAt = function(i){\n"
+"  var c = cur();\n"
+"  if (!c || i !== 0) throw new RangeError('getRangeAt: no range at ' + i);\n"
+"  var r = new Range();\n"
+/* The Range's start is the EARLIER end in document order, whichever way the
+ * selection was made -- that is the whole difference between a Range and the
+ * anchor/focus pair, and a backwards drag is how a user makes one. */
+"  if (cmpPath(c.ap, c.fp, c.ao, c.fo) <= 0) { r.setStart(c.an, c.ao); r.setEnd(c.fn, c.fo); }\n"
+"  else { r.setStart(c.fn, c.fo); r.setEnd(c.an, c.ao); }\n"
+"  return r; };\n"
+"SP.collapse = function(n, o){ if (!n) { G.__fc_selClear(); return; } put(n, o | 0, n, o | 0); };\n"
+"SP.collapseToStart = function(){ var r = this.rangeCount ? this.getRangeAt(0) : null;\n"
+"  if (r) this.collapse(r.startContainer, r.startOffset); };\n"
+"SP.collapseToEnd = function(){ var r = this.rangeCount ? this.getRangeAt(0) : null;\n"
+"  if (r) this.collapse(r.endContainer, r.endOffset); };\n"
+"SP.extend = function(n, o){ var c = cur(); if (!c) { this.collapse(n, o); return; }\n"
+"  put(c.an, c.ao, n, o | 0); };\n"
+"SP.setBaseAndExtent = function(an, ao, fn, fo){ put(an, ao, fn, fo); };\n"
+"SP.setPosition = function(n, o){ this.collapse(n, o); };\n"
+"SP.removeAllRanges = function(){ G.__fc_selClear(); };\n"
+"SP.empty = function(){ G.__fc_selClear(); };\n"
+"SP.addRange = function(r){ if (r && r.startContainer)\n"
+"    put(r.startContainer, r.startOffset, r.endContainer, r.endOffset); };\n"
+"SP.selectAllChildren = function(n){\n"
+"  if (!n) return;\n"
+"  var last = (n.childNodes || []).length;\n"
+"  put(n, 0, n, last); };\n"
+"SP.containsNode = function(n){\n"
+"  var c = cur(); if (!c || !n) return false;\n"
+"  var p = pathOf(n); if (!p) return false;\n"
+"  var lo = cmpPath(c.ap, c.fp, c.ao, c.fo) <= 0 ? [c.ap, c.ao] : [c.fp, c.fo];\n"
+"  var hi = lo[0] === c.ap ? [c.fp, c.fo] : [c.ap, c.ao];\n"
+"  return cmpPath(lo[0], p, lo[1], 0) <= 0 && cmpPath(p, hi[0], 0, hi[1]) <= 0; };\n"
+"G.Selection = Selection;\n"
+"var theSel = new Selection();\n"
+"doc.getSelection = function(){ return theSel; };\n"
+"G.getSelection = function(){ return theSel; };\n"
+
+/* ---- the InputEvent the C side raises ----------------------------------- *
+ * Constructed here rather than in js_dom.c because that file's event struct
+ * has no inputType. Falls back to a plain Event with the fields stamped on it
+ * when InputEvent is somehow absent -- a page reading e.inputType then still
+ * gets the right answer, which is the field that matters. */
+"G.__fcFireInput = function(id, type, itype, data, bubbles, cancelable){\n"
+"  var el = null;\n"
+"  try { el = doc.querySelector('[data-logit-fcid=\"' + id + '\"]'); } catch (e) {}\n"
+"  if (!el || !el.dispatchEvent) return true;\n"
+"  var init = { bubbles: !!bubbles, cancelable: !!cancelable,\n"
+"               inputType: itype || '', data: (data === null ? null : String(data)) };\n"
+"  var ev = null;\n"
+"  try { ev = new G.InputEvent(type, init); } catch (e) { ev = null; }\n"
+"  if (!ev) { try { ev = new Event(type, init); ev.inputType = init.inputType;\n"
+"                   ev.data = init.data; } catch (e2) { return true; } }\n"
+"  try { return el.dispatchEvent(ev) !== false; } catch (e3) { return true; }\n"
+"};\n"
+
+/* ---- isContentEditable, which a composer reads to decide it is one ------ */
+"function protoOf2(t){ try { var e = doc.createElement(t);\n"
+"  return e ? Object.getPrototypeOf(e) : null; } catch (x) { return null; } }\n"
+"var DP2 = protoOf2('div');\n"
+"var HEP = (G.HTMLElement && G.HTMLElement.prototype) || null;\n"
+"if (DP2 && DP2 !== HEP && !DP2.__fcCE) {\n"
+"  DP2.__fcCE = true;\n"
+"  if (!('contentEditable' in DP2))\n"
+"    defp(DP2, 'contentEditable',\n"
+"      function(){ var v = this.getAttribute('contenteditable');\n"
+"        return v === null ? 'inherit' : (v === '' ? 'true' : String(v)); },\n"
+"      function(v){ this.setAttribute('contenteditable', String(v)); });\n"
+"  if (!('isContentEditable' in DP2))\n"
+"    defp(DP2, 'isContentEditable', function(){\n"
+"      for (var n = this; n && n.getAttribute; n = n.parentNode) {\n"
+"        var v = n.getAttribute('contenteditable');\n"
+"        if (v === null) continue;\n"
+"        if (v === 'false') return false;\n"
+"        return true; }\n"
+"      return false; });\n"
+"}\n"
+"})(globalThis);\n";
+
 void js_forms_install(JSContext *ctx)
 {
     if (!ctx) return;
@@ -561,5 +967,36 @@ void js_forms_install(JSContext *ctx)
         JS_FreeValue(ctx, e);
     }
     JS_FreeValue(ctx, r);
+
+    /* The Selection/Range surface, in its own eval so a fault in it cannot take
+     * the forms bindings -- which shipped first -- down with it. */
+    JSValue r2 = JS_Eval(ctx, SEL_SHIM, sizeof SEL_SHIM - 1, "<selection>",
+                         JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(r2)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        if (m) { int printf(const char *, ...); printf("[forms] selection shim failed: %s\n", m);
+                 JS_FreeCString(ctx, m); }
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, r2);
+
+    /* Only NOW is the rich dispatcher installed: it calls __fcFireInput, which
+     * the shim above just defined. Installing it earlier would mean an edit
+     * during page setup fired nothing, silently. */
+    g_ctx = ctx;
+    fc_set_dispatch_input(fire_input);
+
     for (int i = 0; i < FC_CACHE; i++) { g_cache[i].id = 0; g_cache[i].n = 0; }
+}
+
+/* The context dies with the page (js_page.c owns that), and a dispatcher
+ * pointing at a freed context would fire on the next keystroke into whatever
+ * the allocator handed the memory to. browser.c calls this from the same
+ * teardown that drops focus and the control state. */
+void js_forms_cleanup(void);
+void js_forms_cleanup(void)
+{
+    g_ctx = 0;
+    fc_set_dispatch_input(0);
 }

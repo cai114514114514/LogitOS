@@ -362,6 +362,12 @@ int fc_ce_select_all(struct node *host);
 /* The selected text, for Selection.toString(). Returns the byte count. */
 int fc_ce_selection_text(char *buf, int max);
 
+/* How much of text node `t` the selection covers, as a byte range into it; 0
+ * when none of it does. The painter walks the display list run by run and asks
+ * this per run rather than working out document order for itself -- the
+ * comparison is a tree walk and it lives in exactly one place. */
+int fc_ce_run_range(struct node *t, int *a, int *b);
+
 /* ---- the positions, as PATHS, for the JavaScript side --------------------
  *
  * js_forms.c cannot turn a `struct node *` into a JS wrapper: js_dom.c exports

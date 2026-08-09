@@ -25,6 +25,13 @@
 
 #include "forms.h"               /* form control state + submission */
 #include "focus.h"               /* the focused element and Tab navigation */
+
+/* js_forms.c's teardown: it holds the page's JSContext for the editing-event
+ * dispatcher, and that context dies with the page. Weak because that
+ * translation unit is absent from BROWSER_PIPE and from the host loader test,
+ * where there is nothing to clean up. */
+void js_forms_cleanup(void) __attribute__((__weak__));
+
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "tabs.h"                /* per-tab state, session, history, bookmarks */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
@@ -858,6 +865,11 @@ static void load_once(const char *u)
      * finalizers walking nodes that no longer exist -- and freeing the runtime
      * first is what clears the wrapper slots. */
     js_page_close();
+    /* js_forms.c's editing-event dispatcher holds the JS context js_page_close
+     * just freed. Left installed, the next keystroke would call into it. Weak
+     * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
+     * links -- there is nothing to clean up there. */
+    if (js_forms_cleanup) js_forms_cleanup();
     /* Focus and every control's state point INTO the document that is about to
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
@@ -979,6 +991,11 @@ static void load_once(const char *u)
     if (blen <= 0) { set_status("error: empty response"); return; }
     g_root = dom_parse((const char *)g_page_src, blen);
     if (!g_root) { set_status("error: parse failed"); return; }
+    /* Where forms.c resolves a Selection API position FROM. It normally starts
+     * at the caret, and the one call that has no caret to start at is the one
+     * that matters: a page placing the caret itself before the user has
+     * clicked anything. */
+    fc_ce_set_root(g_root);
     int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
     /* HYDRATING: the tab kept the FULL author stylesheet (inline + every
      * external sheet, concatenated exactly as assembled below), so the whole
@@ -1197,6 +1214,11 @@ static void tab_dehydrate(void)
     /* Same teardown order as a navigation, and for the same reason: the runtime
      * holds {node, serial} handles into the DOM, so it dies first. */
     js_page_close();
+    /* js_forms.c's editing-event dispatcher holds the JS context js_page_close
+     * just freed. Left installed, the next keystroke would call into it. Weak
+     * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
+     * links -- there is nothing to clean up there. */
+    if (js_forms_cleanup) js_forms_cleanup();
     /* Focus and every control's state point INTO the document that is about to
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
@@ -1596,6 +1618,11 @@ void browser_resize(int w, int h)
     sync_scroll();
 }
 
+/* The contenteditable caret + selection, drawn over the page. Defined with the
+ * rest of the editing wiring further down (it needs the display list and the
+ * geometry helpers); declared here because redraw() is the only caller. */
+static void draw_ce_overlay(void);
+
 static void redraw(int editing)
 {
     gui_clear(rgb(252, 252, 253));
@@ -1609,6 +1636,7 @@ static void redraw(int editing)
     if (bookmark_find(url) >= 0) gui_text(win_w - 26, TABH + 7, rgb(240, 180, 60), "*");
     /* the page */
     browser_paint(0, VIEW_Y, win_w, VIEW_H, scroll);
+    draw_ce_overlay();
     draw_select_popup();
     if (g_panel) draw_panel();
     /* glass status line (frosts the bottom of the page) */
@@ -1809,6 +1837,188 @@ static int control_box(struct node *n, int *bx, int *by, int *bw, int *bh)
         return 1;
     }
     return 0;
+}
+
+/* ---- the contenteditable caret, on screen -------------------------------
+ *
+ * WHY THE GEOMETRY IS HERE AND NOT IN forms.c. A contenteditable's text is not
+ * a control's string -- it is ordinary page text, laid out by layout.c into the
+ * display list like every other word on the page. So the caret's pixel position
+ * is a question about the DISPLAY LIST, and forms.c deliberately holds no
+ * layout dependency (that is what keeps eight host test binaries linking). The
+ * caret is drawn as an OVERLAY after browser_paint, the same way the <select>
+ * popup is and for the same reason: it has to sit above content the display
+ * list has no z-order above.
+ *
+ * The link between the two is one subtraction. layout.c emits one IT_TEXT per
+ * word with `text` pointing INTO the text node's own buffer, so
+ * `item.text - node->text` is that word's byte offset within the node, and the
+ * caret's offset picks out the word it falls in. */
+/* browser_rt.c's cached measurer -- the same one layout.c measured the runs
+ * with. Declared rather than included for the reason layout.c and forms.c both
+ * give: measuring through logit.h's raw text_measure_px would issue a syscall
+ * per word and, worse, could disagree with the widths layout already used. */
+int text_measure(const char *s, int len, int px, int mono);
+
+static int ce_run_for(struct node *t, int off, const struct item **out, int *rel)
+{
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    const struct item *best = 0;
+    int brel = 0;
+    for (int i = 0; i < cnt; i++) {
+        if (it[i].type != IT_TEXT || it[i].node != t || !it[i].text) continue;
+        long base = it[i].text - t->text;
+        if (base < 0 || base > t->textlen) continue;           /* not this buffer */
+        if (off < base || off > base + it[i].len) continue;
+        best = &it[i];
+        brel = off - (int)base;
+        break;                    /* the first run that covers it: a caret at a
+                                   * word's end belongs to that word, not to the
+                                   * start of the next one */
+    }
+    if (!best) return 0;
+    if (out) *out = best;
+    if (rel) *rel = brel;
+    return 1;
+}
+
+/* The caret rectangle in DOCUMENT coordinates. 0 when there is no caret, or the
+ * page it belonged to has been replaced. */
+static int ce_caret_box(int *cx, int *cy, int *ch)
+{
+    struct node *n = 0;
+    int off = 0;
+    if (!fc_ce_selection(0, 0, &n, &off)) return 0;   /* the FOCUS end blinks */
+    if (!fc_ce_host(n)) return 0;
+
+    if (n->type == N_TEXT) {
+        const struct item *r = 0;
+        int rel = 0;
+        if (ce_run_for(n, off, &r, &rel)) {
+            *cx = r->x + text_measure(r->text, rel, r->font_px, r->mono);
+            *cy = r->y;
+            *ch = r->h > 0 ? r->h : r->font_px;
+            return 1;
+        }
+        /* An empty run, or a node laid out nowhere (collapsed whitespace):
+         * fall through to the containing element's box. */
+        n = n->parent;
+    }
+    /* An ELEMENT position -- the empty composer. Its box is a plain IT_RECT, so
+     * the caret goes at the content's start. Without this the composer nobody
+     * has typed into yet shows no caret at all, which is indistinguishable from
+     * a click that did not focus anything. */
+    for (struct node *e = n; e; e = e->parent) {
+        const struct item *it = layout_items();
+        int cnt = layout_count();
+        for (int i = 0; i < cnt; i++) {
+            if (it[i].node != e || it[i].type == IT_TEXT) continue;
+            int fh = it[i].font_px > 0 ? it[i].font_px : 16;
+            *cx = it[i].x + 2;
+            *cy = it[i].y + 2;
+            *ch = it[i].h > 4 && it[i].h < fh * 3 ? it[i].h - 4 : fh;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Caret + selection, over the painted page. The selection is a TINT rather than
+ * a filled rect: this runs after the text is on screen, so anything opaque
+ * would hide the very characters it is meant to show as selected. */
+static void draw_ce_overlay(void)
+{
+    if (!FOCUS_ROUTING) return;
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    for (int i = 0; i < cnt; i++) {
+        if (it[i].type != IT_TEXT || !it[i].node || it[i].node->type != N_TEXT) continue;
+        int a = 0, b = 0;
+        if (!fc_ce_run_range(it[i].node, &a, &b)) continue;
+        long base = it[i].text - it[i].node->text;
+        int r0 = a - (int)base, r1 = b - (int)base;
+        if (r0 < 0) r0 = 0;
+        if (r1 > it[i].len) r1 = it[i].len;
+        if (r1 <= r0) continue;
+        int x0 = it[i].x + text_measure(it[i].text, r0, it[i].font_px, it[i].mono);
+        int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, it[i].mono);
+        int sy = VIEW_Y + it[i].y - scroll;
+        if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
+        gui_glass(x0, sy, x1 - x0, it[i].h, 0, 90, 150, 240, 110);
+    }
+    int cx, cy, chh;
+    if (!ce_caret_box(&cx, &cy, &chh)) return;
+    int sy = VIEW_Y + cy - scroll;
+    if (sy + chh < VIEW_Y || sy > VIEW_Y + VIEW_H) return;
+    gui_rect(cx, sy, 2, chh, rgb(30, 30, 40));
+}
+
+/* Place the caret from a click inside an editing host. `vx`,`vy` are viewport
+ * coordinates (the caller has already subtracted VIEW_Y).
+ *
+ * Aims at the TEXT RUN under the pointer, not at the element the hit test
+ * returned: browser_hittest_node() climbs to an element because a DOM event
+ * target cannot be a text node, and a caret has to go the other way. Finding no
+ * run is the empty composer, and fc_ce_caret_in handles it -- that path is not
+ * a fallback, it is the case that matters most. */
+static void ce_caret_from_click(struct node *host, int vx, int vy)
+{
+    int dy = vy + scroll;
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    const struct item *hit = 0;
+    long bestd = -1;
+    for (int i = 0; i < cnt; i++) {
+        if (it[i].type != IT_TEXT || it[i].hidden) continue;
+        if (!it[i].node || it[i].node->type != N_TEXT) continue;
+        if (fc_ce_host(it[i].node) != host) continue;
+        if (dy < it[i].y || dy >= it[i].y + it[i].h) continue;
+        /* On the pointer's LINE. Nearest run horizontally, so a click past the
+         * end of a short line still lands on that line's last word instead of
+         * missing everything. */
+        long d = 0;
+        if (vx < it[i].x) d = it[i].x - vx;
+        else if (vx > it[i].x + it[i].w) d = vx - (it[i].x + it[i].w);
+        if (bestd < 0 || d < bestd) { bestd = d; hit = &it[i]; }
+    }
+    if (!hit) { fc_ce_caret_in(host, 1); return; }
+
+    /* The byte in the run nearest the pointer. Linear over the run's characters
+     * for the reason fc_offset_at_px gives: the measurement is monotone in
+     * characters and not in bytes, so a binary search over bytes is a bug
+     * waiting for a multi-byte character. */
+    int relx = vx - hit->x;
+    if (relx < 0) relx = 0;
+    int best = 0;
+    long bd = -1;
+    for (int i = 0; i <= hit->len; ) {
+        int w = text_measure(hit->text, i, hit->font_px, hit->mono);
+        long d = w > relx ? w - relx : relx - w;
+        if (bd < 0 || d < bd) { bd = d; best = i; }
+        if (i >= hit->len) break;
+        i++;
+        while (i < hit->len && ((unsigned char)hit->text[i] & 0xC0) == 0x80) i++;
+    }
+    long base = hit->text - hit->node->text;
+    fc_ce_set_caret(hit->node, (int)base + best);
+}
+
+/* Re-style and re-lay-out after an EDIT changed the DOM.
+ *
+ * Not settle_dom(): that one asks js_dom.c what a SCRIPT invalidated, and an
+ * edit made by the keyboard is not a script mutation -- js_dom.c never saw it
+ * and would report INVAL_NONE. The scope is the editing host, which is the
+ * smallest thing that is certainly enough: Enter creates elements that have no
+ * computed style at all yet, and layout.c reads `node->style`. */
+static int ce_settle(struct node *host)
+{
+    if (!g_root) return 0;
+    if (host) css_apply_scoped(host, 0, css_expanded, css_exlen);
+    else      css_apply(g_root, css_expanded, css_exlen);
+    layout_page(g_root, win_w);
+    ph = layout_height();
+    return 1;
 }
 
 /* 1 if the browser navigated (so the caller stops draining events).
@@ -2075,6 +2285,72 @@ static int control_key(struct node *n, int k, const struct logit_event *ev,
         return 1;
     }
     if (k >= ' ' && k < 0x7f) { char c = (char)k; fc_edit_insert(n, &c, 1); return 1; }
+    return 0;
+}
+
+/* A keystroke that reached a focused CONTENTEDITABLE. Same contract as
+ * control_key: 1 means the editing host consumed it, so the browser's own
+ * default (scrolling, history) must not also happen.
+ *
+ * `*dirty` is set when the DOM changed, because unlike a text field -- whose
+ * value is a string forms.c owns -- an edit here moves boxes and the page has
+ * to be re-styled and re-laid-out before it can be painted.
+ *
+ * ENTER IS NOT SPECIAL-CASED HERE and that is the point: a chat composer
+ * cancels it in its own keydown handler to send the message, the page's keydown
+ * has already had its turn by the time this runs, and the caller only calls
+ * this when the page did NOT cancel. So "Enter sends" and "Enter makes a new
+ * paragraph" are the same code path with the page choosing. */
+static int ce_key(struct node *host, int k, const struct logit_event *ev, int *dirty)
+{
+    int shift = (ev->mods & EV_MOD_SHIFT) != 0;
+    int ctrl  = (ev->mods & EV_MOD_CTRL) != 0 || (ev->mods & EV_MOD_SUPER) != 0;
+    if (!host || fc_disabled(host)) return 0;
+    /* The caret may never have been placed: focus arrived by Tab, or a script
+     * called focus(). Put it at the end of the content, which is where a real
+     * browser puts it. */
+    if (!fc_ce_selection(0, 0, 0, 0) || fc_ce_caret_host() != host)
+        fc_ce_caret_in(host, 1);
+
+    switch (k) {
+    case '\n':   if (fc_ce_enter(shift)) *dirty = 1; return 1;
+    case '\b':   if (fc_ce_backspace())  *dirty = 1; return 1;
+    /* NO KEY REACHES THIS ON THIS MACHINE. The PS/2 driver
+     * (c/drivers/char/keyboard.c, a kernel file and another line's) maps the
+     * E0 arrows, Home, End and the page keys and does not map E0 0x53, so
+     * forward-Delete never arrives. The operation is real and host-tested; the
+     * key that would invoke it is one line in a file this line may not edit. */
+    case 0x7f:   if (fc_ce_delete())     *dirty = 1; return 1;
+    case 0x1b:   focus_control(0); fc_ce_clear(); return 1;
+    case KEY_LEFT:  fc_ce_move(-1, ctrl, shift); return 1;
+    case KEY_RIGHT: fc_ce_move(+1, ctrl, shift); return 1;
+    case KEY_HOME:  fc_ce_home(shift); return 1;
+    case KEY_END:   fc_ce_end(shift); return 1;
+    case 0x01:      fc_ce_select_all(host); return 1;                  /* Ctrl+A */
+    default: break;
+    }
+    if (k == 0x03 || k == 0x18) {                                      /* copy / cut */
+        static char cb[4096];
+        int got = fc_ce_selection_text(cb, (int)sizeof cb);
+        if (got > 0) clip_set(CLIP_F_TEXT, cb, got);
+        if (k == 0x18 && got > 0 && fc_ce_backspace()) *dirty = 1;
+        return 1;
+    }
+    if (k == 0x16) {                                                   /* Ctrl+V */
+        static char pb[4096];
+        int got = clip_get(CLIP_F_TEXT, pb, (int)sizeof pb);
+        if (got > 0 && fc_ce_insert(pb, got)) *dirty = 1;
+        return 1;
+    }
+    /* Up/Down are left to the page: this caret is paragraph-scoped and has no
+     * notion of a visual line, so moving by one would be a guess. Saying so is
+     * better than guessing wrong -- the page scrolls, which is what an
+     * unhandled arrow does. */
+    if (k >= ' ' && k < 0x7f) {
+        char c = (char)k;
+        if (fc_ce_insert(&c, 1)) *dirty = 1;
+        return 1;
+    }
     return 0;
 }
 
@@ -2388,6 +2664,27 @@ void app_main(void)
                     }
                 }
 
+                /* ...and so does a focused contenteditable, which is not a form
+                 * control and therefore never reached the branch above. THIS
+                 * WAS THE WHOLE GAP: focus.c has always known a contenteditable
+                 * can hold focus, so the keystroke arrived at a focused
+                 * composer and fc_kind() answered FC_NONE and it was dropped on
+                 * the floor -- silently, with nothing on the serial. */
+                if (FOCUS_ROUTING && allow && !editing && fnode) {
+                    struct node *ceh = fc_ce_host(fnode);
+                    int ce_dirty = 0;
+                    if (ceh && ce_key(ceh, k, &e, &ce_dirty)) {
+                        allow = 0;
+                        need = 1;
+                        /* An edit moved boxes: re-style the host (Enter creates
+                         * elements with no computed style at all) and re-lay
+                         * out before anything is painted. */
+                        if (ce_dirty) ce_settle(ceh);
+                        /* A script may have reacted to the `input` event. */
+                        if (settle_dom()) need = 1;
+                    }
+                }
+
                 if (allow) {
                     if      (k == KEY_DOWN) scroll += 40;
                     else if (k == KEY_UP)   scroll -= 40;
@@ -2532,6 +2829,14 @@ void app_main(void)
                                 fc_set_selection(tgt, off, off);
                             }
                         }
+                        /* A click inside an editing host puts the CARET there.
+                         * Separate from the control case above and it has to
+                         * be: focus_target_for_click walks UP to the nearest
+                         * focusable element, which for a composer is the host
+                         * -- but the caret belongs at the character under the
+                         * pointer, which is a fact about the TEXT NODE the hit
+                         * landed in, several levels down. */
+                        if (fc_ce_host(tgt)) ce_caret_from_click(tgt, mx, my - VIEW_Y);
                     }
                     need = 1;
                 }

@@ -2104,6 +2104,26 @@ int fc_ce_selection_text(char *buf, int max)
     return o;
 }
 
+int fc_ce_run_range(struct node *t, int *a, int *b)
+{
+    if (!t || t->type != N_TEXT) return 0;
+    struct node *sn, *en;
+    int so, eo;
+    if (!fc_ce_selection(&sn, &so, &en, &eo)) return 0;
+    ce_norm(&sn, &so);
+    ce_norm(&en, &eo);
+    if (sn == en && so == eo) return 0;
+    int x0 = 0, x1 = t->textlen;
+    if (t == sn) x0 = so;
+    else if (ce_cmp(t, 0, sn, so) < 0) return 0;               /* entirely before */
+    if (t == en) x1 = eo;
+    else if (ce_cmp(t, t->textlen, en, eo) > 0) return 0;      /* entirely after */
+    if (x1 <= x0) return 0;
+    if (a) *a = x0;
+    if (b) *b = x1;
+    return 1;
+}
+
 /* ------------------------------------------------------------- paths ---- */
 
 static struct node *ce_doc_elem(struct node *n)
