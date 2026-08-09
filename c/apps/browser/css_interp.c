@@ -1382,6 +1382,14 @@ void ci_transform_add(const struct ci_xform *u, const struct ci_xform *v,
     }
 }
 
+/* Everything from here to ci_transform_accumulate is the componentwise
+ * machinery, and it is compiled out under the negative control -- which is not
+ * tidiness: the control's whole claim is that `accumulate` reaches none of it,
+ * and leaving it linked but unreachable would let a stray caller keep it alive
+ * and quietly weaken the control. Two unused-function warnings in the control
+ * build would say the same thing less clearly. */
+#ifndef CI_NEGCTL_ACCUM_IS_ADD
+
 /* How many arguments the primitive `kind` carries. The same table interp_fn
  * uses; a function rather than a second literal copy, because two copies
  * drifting apart shows up as a serialisation short by one argument, which
@@ -1526,6 +1534,8 @@ static int accum_matrix(const struct ci_fn *a, const struct ci_fn *b,
     }
     return 1;
 }
+
+#endif /* !CI_NEGCTL_ACCUM_IS_ADD */
 
 int ci_transform_accumulate(const struct ci_xform *u, const struct ci_xform *v,
                             struct ci_xform *out)

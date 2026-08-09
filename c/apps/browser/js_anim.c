@@ -58,12 +58,23 @@
  * browser behaves exactly as it did before this file existed, which is also
  * what makes the A/B measurement in the report meaningful.
  *
- * DELIBERATELY NOT HERE, and named rather than omitted: no timeline that
+ * COMPOSITE OPERATIONS ARE NOW HERE (`add`, `accumulate`, and
+ * `iterationComposite`), and what the measurement found on the way in is worth
+ * more than the feature. 2,122 `Compositing ...` subtests fail in css/;
+ * 1,928 of them never reach a value, failing on
+ * `assert_true(CSS.supports(property, value))` three lines earlier over values
+ * LibCSS still rejects. The 194 that do reach a value were each wrong by
+ * EXACTLY the underlying value -- and were only reachable at all after the
+ * keyframe resolution below stopped returning the same string for both
+ * endpoints. See __resolve.
+ *
+ * STILL DELIBERATELY NOT HERE, and named rather than omitted: no timeline that
  * advances on its own (nothing drives currentTime but the setter), no
- * animation events (animationstart/finish/cancel), no composite modes
- * (add/accumulate -- the `Compositing Web Animations` subtests are a separate
- * 2,384 and they also need CSS.supports), no @keyframes/CSS-animation
- * integration, no ScrollTimeline, no commitStyles, no pseudo-element targets.
+ * animation events (animationstart/finish/cancel), no @keyframes/CSS-animation
+ * integration -- which is why the `Compositing CSS Animations` half of every
+ * composition file, exactly 1,061 subtests, is out of this file's reach no
+ * matter how right the composition is -- no ScrollTimeline, no commitStyles,
+ * no pseudo-element targets.
  */
 #include "css_interp.h"
 

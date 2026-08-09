@@ -429,6 +429,226 @@ static void test_generic(void)
     ok(!ci_prop_is_discrete("opacity"), "opacity is not discrete");
 }
 
+
+/* ======================================================================
+ * Composite operations: add and accumulate
+ *
+ * EVERY NUMBER BELOW IS TRANSCRIBED, and the sources are named per block:
+ * css/css-box/animation/margin-left-composition.html,
+ * css/css-color/animation/color-composition.html,
+ * css/css-transforms/animation/transform-composition.html and its
+ * transform-{scale,translate,rotate,matrix}-composition.html siblings. These
+ * are the values Chrome and Firefox produce, copied rather than worked out
+ * here -- which for `accumulate` is the whole point, because accumulation is
+ * the operation you get wrong by reasoning about it from first principles and
+ * right by reading what a browser does.
+ *
+ * THE ONE THING THIS SUITE EXISTS TO CATCH: `accumulate` implemented as `add`.
+ * Every scalar check below passes under that bug, because for a length or a
+ * number the two operations ARE the same sum. Only the transform-list checks
+ * separate them, and they are marked.
+ * ====================================================================== */
+
+/* Composite two transform lists and serialise, the way the browser reports a
+ * `display: none` element's computed transform -- the function list, not the
+ * matrix -- because that is the form the composition tests compare. */
+static void xcomp(const char *u, const char *v, int op, char *out, int max)
+{
+    struct ci_xform a, b, r;
+    out[0] = 0;
+    if (ci_transform_parse(u, -1, 16, 16, &a) != 0) { snprintf(out, (size_t)max, "<bad u>"); return; }
+    if (ci_transform_parse(v, -1, 16, 16, &b) != 0) { snprintf(out, (size_t)max, "<bad v>"); return; }
+    if (ci_transform_composite(&a, &b, op, &r) < 0) { snprintf(out, (size_t)max, "<declined>"); return; }
+    if (ci_transform_text(&r, out, max) <= 0) snprintf(out, (size_t)max, "<no text>");
+}
+
+static void test_composite_scalars(void)
+{
+    char b[512];
+
+    /* margin-left-composition.html, first block: underlying 50px, addFrom
+     * 100px -- the composed endpoint at offset 0 is 150px, and the whole
+     * family of 194 reachable subtests in css/ is this one line. */
+    ok(ci_value_composite("margin-left", "50px", "100px", CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "150px"), "add: 50px + 100px = 150px");
+    ok(ci_value_composite("margin-left", "50px", "200px", CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "250px"), "add: 50px + 200px = 250px");
+
+    /* Second block: underlying 100px, addFrom 10px, addTo 2px -> 110px, 102px.
+     * Worth having because the composed endpoints move in OPPOSITE directions
+     * from the underlying, which an implementation that composites once and
+     * reuses the answer gets wrong. */
+    ok(ci_value_composite("margin-left", "100px", "10px", CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "110px"), "add: 100px + 10px = 110px");
+    ok(ci_value_composite("margin-left", "100px", "2px", CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "102px"), "add: 100px + 2px = 102px");
+
+    /* accumulate is the same sum for a scalar. This check passes under the
+     * negative control ON PURPOSE -- it is here to pin that the two agree
+     * where they are supposed to, so a future change that makes them differ
+     * for lengths is caught too. */
+    ok(ci_value_composite("margin-left", "50px", "100px", CI_COMPOSITE_ACCUMULATE, b, sizeof b) > 0 &&
+       !strcmp(b, "150px"), "accumulate: 50px + 100px = 150px (same as add, for a length)");
+
+    /* color-composition.html: underlying rgb(50, 50, 50), addFrom
+     * rgb(10, 10, 10) -> rgb(60, 60, 60) at progress 0. A colour composites
+     * channel by channel, and the structural rule gets that for free. */
+    ok(ci_value_composite("color", "rgb(50, 50, 50)", "rgb(10, 10, 10)",
+                          CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "rgb(60, 60, 60)"), "add: colours composite per channel");
+
+    /* font-weight-composition.html: underlying 500, addFrom 100 -> 600. */
+    ok(ci_value_composite("font-weight", "500", "100", CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "600"), "add: 500 + 100 = 600 (a bare number)");
+
+    /* A multi-value shape composites componentwise and keeps its keywords. */
+    ok(ci_value_composite("padding", "1px 2px", "10px 20px", CI_COMPOSITE_ADD, b, sizeof b) > 0 &&
+       !strcmp(b, "11px 22px"), "add: two-value shapes composite per component");
+
+    /* Declines, each for its own reason, and declining is what makes the
+     * caller leave the keyframe value alone. */
+    ok(ci_value_composite("margin-left", "50px", "100px", CI_COMPOSITE_REPLACE, b, sizeof b) < 0,
+       "replace declines: there is nothing to compute");
+    ok(ci_value_composite("width", "auto", "100px", CI_COMPOSITE_ADD, b, sizeof b) < 0,
+       "declines a keyword against a length");
+    ok(ci_value_composite("display", "block", "inline", CI_COMPOSITE_ADD, b, sizeof b) < 0,
+       "declines a discrete property -- no addition is defined for one");
+    ok(ci_value_composite("margin-left", "", "100px", CI_COMPOSITE_ADD, b, sizeof b) < 0,
+       "declines with no underlying value");
+    ok(ci_value_composite("transform", "scaleX(2)", "scaleX(3)", CI_COMPOSITE_ADD, b, sizeof b) < 0,
+       "declines transform -- it has its own API, and a token sum would concatenate wrongly");
+
+    ok(ci_composite_op("add") == CI_COMPOSITE_ADD, "op name: add");
+    ok(ci_composite_op("accumulate") == CI_COMPOSITE_ACCUMULATE, "op name: accumulate");
+    ok(ci_composite_op("replace") == CI_COMPOSITE_REPLACE, "op name: replace");
+    ok(ci_composite_op(0) == CI_COMPOSITE_REPLACE, "op name: NULL is replace");
+    ok(ci_composite_op("nonsense") == CI_COMPOSITE_REPLACE, "op name: unknown is replace");
+}
+
+/* THE CHECKS THAT SEPARATE add FROM accumulate. Every one of these fails under
+ * -DCI_NEGCTL_ACCUM_IS_ADD, and nothing above does. */
+static void test_composite_transform(void)
+{
+    char b[1024];
+
+    /* transform-composition.html, first block: underlying
+     * `rotateX(100deg) rotateY(100deg)`, addFrom `translate(10px, 20px)`, and
+     * at progress 0 the answer is the CONCATENATION -- three functions, in
+     * order, not a merged pair. */
+    xcomp("rotateX(100deg) rotateY(100deg)", "translate(10px, 20px)", CI_COMPOSITE_ADD, b, sizeof b);
+    eqs(b, "rotateX(100deg) rotateY(100deg) translate(10px, 20px)",
+        "add: a transform list concatenates");
+
+    /* transform-scale-composition.html, accumulation block: underlying
+     * scaleX(2), accumulateFrom scaleX(3), at 0 -> scaleX(4).
+     *
+     * THE LINE THE WHOLE FILE TURNS ON. add gives `scaleX(2) scaleX(3)`,
+     * which composes to a factor of 6; accumulate gives scaleX(2 + 3 - 1) = 4.
+     * Both are smooth, finite and plausible. */
+    xcomp("scaleX(2)", "scaleX(3)", CI_COMPOSITE_ACCUMULATE, b, sizeof b);
+    eqs(b, "scaleX(4)", "accumulate: a scale factor is a + b - 1, NOT a + b and NOT concatenation");
+    xcomp("scaleX(2)", "scaleX(3)", CI_COMPOSITE_ADD, b, sizeof b);
+    eqs(b, "scaleX(2) scaleX(3)", "add: the same pair concatenates instead");
+
+    /* Same block, the note WPT writes above it: "The scale functions all share
+     * the same primitive type (scale3d), so can be accumulated between."
+     * underlying scale(2, 4), accumulateFrom scaleZ(3) -> scale3d(2, 4, 3). */
+    xcomp("scale(2, 4)", "scaleZ(3)", CI_COMPOSITE_ACCUMULATE, b, sizeof b);
+    eqs(b, "scale3d(2, 4, 3)", "accumulate: scale() against scaleZ() reduces to the scale3d primitive");
+
+    /* transform-translate-composition.html, accumulation block: underlying
+     * translateX(100px), accumulateFrom translateX(50px) -> translateX(150px).
+     * A translation accumulates by plain addition -- so this check is what
+     * stops the a+b-1 rule being applied to everything. */
+    xcomp("translateX(100px)", "translateX(50px)", CI_COMPOSITE_ACCUMULATE, b, sizeof b);
+    eqs(b, "translateX(150px)", "accumulate: a translation is a + b");
+
+    /* transform-rotate-composition.html: underlying rotateX(20deg),
+     * accumulateFrom rotateX(40deg) -> rotateX(60deg). Angles add, and the
+     * shared axis is what permits it at all. */
+    xcomp("rotateX(20deg)", "rotateX(40deg)", CI_COMPOSITE_ACCUMULATE, b, sizeof b);
+    eqs(b, "rotateX(60deg)", "accumulate: angles about a common axis add");
+
+    /* Different axes have no common angle to add, so accumulation FALLS BACK
+     * to concatenation -- which is the spec's rule and not a failure. The
+     * return value says which happened, and asserting on it is the only way to
+     * tell "accumulated to the same answer" from "gave up and concatenated". */
+    {
+        struct ci_xform u, v, r;
+        ci_transform_parse("rotateX(20deg)", -1, 16, 16, &u);
+        ci_transform_parse("rotateY(40deg)", -1, 16, 16, &v);
+        ok(ci_transform_accumulate(&u, &v, &r) == 0,
+           "accumulate: rotations about DIFFERENT axes fall back to concatenation");
+        ok(r.n == 2, "... and the fallback really is the two-function list");
+    }
+    {
+        struct ci_xform u, v, r;
+        ci_transform_parse("scaleX(2)", -1, 16, 16, &u);
+        ci_transform_parse("scaleX(3)", -1, 16, 16, &v);
+        ok(ci_transform_accumulate(&u, &v, &r) == 1,
+           "accumulate: a matched pair reports that it combined, not that it concatenated");
+        ok(r.n == 1, "... and produces ONE function, not two");
+    }
+    {
+        /* Lists of different lengths cannot line up, so they concatenate. */
+        struct ci_xform u, v, r;
+        ci_transform_parse("scaleX(2)", -1, 16, 16, &u);
+        ci_transform_parse("scaleX(3) scaleY(4)", -1, 16, 16, &v);
+        ok(ci_transform_accumulate(&u, &v, &r) == 0,
+           "accumulate: lists of different lengths concatenate");
+        ok(r.n == 3, "... all three functions survive");
+    }
+
+    /* `none` is the identity on either side: an empty list has nothing to
+     * disagree with, so it accumulates rather than concatenating. */
+    xcomp("none", "scaleX(3)", CI_COMPOSITE_ACCUMULATE, b, sizeof b);
+    eqs(b, "scaleX(3)", "accumulate: none is the identity");
+    xcomp("scaleX(3)", "none", CI_COMPOSITE_ADD, b, sizeof b);
+    eqs(b, "scaleX(3)", "add: concatenating none adds nothing");
+
+    /* transform-matrix-composition.html, accumulation block. underlying
+     * matrix(0, 1, -1, 0, 100, 0) is translateX(100px) rotate(90deg);
+     * accumulateFrom matrix(1, 0, 0, 1, 100, 0) is translateX(100px); at
+     * progress 0 the answer is matrix(0, 1, -1, 0, 200, 0). A matrix has no
+     * components until it is decomposed, so this is the check that the
+     * decomposition path is wired into accumulation at all. */
+    {
+        struct ci_xform u, v, r;
+        double m[16];
+        char t[256];
+        ci_transform_parse("matrix(0, 1, -1, 0, 100, 0)", -1, 16, 16, &u);
+        ci_transform_parse("matrix(1, 0, 0, 1, 100, 0)", -1, 16, 16, &v);
+        ok(ci_transform_accumulate(&u, &v, &r) == 1, "accumulate: two matrices combine");
+        ci_transform_matrix(&r, 0, 0, m);
+        round6(m);
+        ci_matrix_text(m, t, sizeof t);
+        eqs(t, "matrix(0, 1, -1, 0, 200, 0)",
+            "accumulate: matrices combine through their decompositions");
+    }
+
+    /* Concatenation past CI_MAXFN collapses to the matrix of the whole thing
+     * rather than to a truncated prefix -- a prefix is a DIFFERENT transform,
+     * a matrix is the same one. 24 is the cap, so 16 + 16 overflows it. */
+    {
+        struct ci_xform u, v, r;
+        char big[512];
+        int o = 0;
+        for (int i = 0; i < 16; i++) o += snprintf(big + o, sizeof big - (size_t)o,
+                                                   "%stranslateX(1px)", i ? " " : "");
+        ci_transform_parse(big, -1, 16, 16, &u);
+        ci_transform_parse(big, -1, 16, 16, &v);
+        ci_transform_add(&u, &v, &r);
+        ok(r.n == 1, "add: an overlong concatenation collapses to one function");
+        {
+            double m[16];
+            ci_transform_matrix(&r, 0, 0, m);
+            round6(m);
+            ok(fabs(m[12] - 32.0) < 1e-6,
+               "... and it is the SAME transform -- 32px, not a truncated 24px");
+        }
+    }
+}
+
 int main(void)
 {
     printf("css_interp: transform values and CSS value interpolation\n");
@@ -440,6 +660,8 @@ int main(void)
     test_decompose_path();
     test_roundtrip();
     test_generic();
+    test_composite_scalars();
+    test_composite_transform();
     printf("css_interp: %d checks, %d failed\n", g_checks, g_fail);
     if (g_fail) { printf("FAIL\n"); return 1; }
     printf("ok\n");

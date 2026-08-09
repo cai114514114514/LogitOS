@@ -17,11 +17,13 @@
 #   make test-css-interp-negctl   componentwise-always instead of matrix
 #                                 decomposition; the suite MUST fail, and this
 #                                 target succeeds when it does
+#   make test-css-interp-accum-negctl
+#                                 `accumulate` implemented as `add`; MUST fail
 #   make test-css-anim            the animate() timing math (seconds)
 #   make test-css-anim-negctl     a cubic-bezier clamped to [0,1]; MUST fail
 #
-# WHY THESE TWO NEGATIVE CONTROLS AND NOT "DELETE THE FEATURE". Any suite
-# catches a deletion. Both of these are the implementation that LOOKS RIGHT:
+# WHY THESE THREE NEGATIVE CONTROLS AND NOT "DELETE THE FEATURE". Any suite
+# catches a deletion. All three are the implementation that LOOKS RIGHT:
 #
 #   css_interp: interpolate two transform lists componentwise even when their
 #   function lists differ. Every animation between two translate()s stays
@@ -32,6 +34,18 @@
 #   a counter says the decomposition path ran at all, a value says it ran
 #   correctly. Either can pass while the other fails, because the two agree on
 #   many pairs.
+#
+#   css_interp, composite: implement `accumulate` as `add`. For every scalar
+#   type the two ARE the same operation -- a length, a percentage, a number and
+#   a colour channel all sum either way -- so every one of the 20 scalar
+#   composite checks still passes and so does most of the corpus. The
+#   distinction lives entirely in list-valued types: add CONCATENATES,
+#   accumulate combines componentwise, and a scale factor accumulates as
+#   a + b - 1. `scaleX(2)` with `scaleX(3)` is `scaleX(2) scaleX(3)` under add
+#   -- a factor of six -- and `scaleX(4)` under accumulate. Both render, both
+#   are smooth, and nothing about the page looks broken. The control fails on
+#   the transform checks and ONLY those, which is also how a reader can tell
+#   which half of this suite is doing the work.
 #
 #   js_anim: clamp the timing function's output to [0, 1], which is what
 #   "progress is a fraction" produces if you write it without thinking. The
@@ -47,6 +61,7 @@
 # harnesses that print FAIL and exit 0.
 # ============================================================================
 .PHONY: test-css-interp test-css-interp-asan test-css-interp-negctl
+.PHONY: test-css-interp-accum-negctl
 .PHONY: test-css-anim test-css-anim-negctl
 
 INTERP_SRC := c/apps/browser/css_interp.c
@@ -81,6 +96,26 @@ test-css-interp-negctl:
 	 else \
 	    echo "test-css-interp-negctl: ok -- the suite catches componentwise-always:"; \
 	    grep -E 'FAIL|checks' $(BUILD)/interp_negctl.log | head -6; \
+	 fi
+
+# `accumulate` as `add`. The one thing to watch for in the output: the failures
+# must be the TRANSFORM checks and not the scalar ones. A control that also
+# breaks `50px + 100px` would be a different bug from the one being modelled,
+# and the grep below prints them so a reader can see which fired.
+test-css-interp-accum-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) $(INTERP_CF) -DCI_NEGCTL_ACCUM_IS_ADD \
+	    -o $(BUILD)/interp_accum_negctl tests/unit/interp_test.c $(INTERP_SRC) -lm
+	@if $(BUILD)/interp_accum_negctl > $(BUILD)/interp_accum_negctl.log 2>&1; then \
+	    echo "test-css-interp-accum-negctl: FAILED -- the suite passed with"; \
+	    echo "  accumulate implemented as add. Every scalar composite behaves"; \
+	    echo "  identically under that bug, so a suite that stays green here is"; \
+	    echo "  testing lengths and numbers and is not testing accumulation at"; \
+	    echo "  all -- which is precisely the shape of the mistake."; \
+	    exit 1; \
+	 else \
+	    echo "test-css-interp-accum-negctl: ok -- the suite catches accumulate==add:"; \
+	    grep -E 'FAIL|checks' $(BUILD)/interp_accum_negctl.log | head -8; \
 	 fi
 
 # -DCONFIG_BIGNUM is neither optional nor cargo-cult: libbf's decimal path
