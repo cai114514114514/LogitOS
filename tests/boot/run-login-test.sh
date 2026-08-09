@@ -98,16 +98,37 @@ fail() {
     for f in "$WORK"/b*.log; do
         [ -f "$f" ] || continue
         echo "----- $(basename "$f") -----"
-        grep -aE "LOGIN|ENROLLED|STAT |BOOT[0-9]-DONE|REFUS|panic|fault|denied|login:" "$f" | tail -30
+        # `Password:` is excluded on purpose. The kernel tty echoes each byte
+        # before login can overwrite it with '*', so on a live terminal the
+        # prompt masks correctly but a RECORDING of the wire holds the typed
+        # characters interleaved with the asterisks ("h*u*n*t*..."). That is a
+        # real property of a console with no termios, stated in login.c -- and
+        # there is no reason to reprint it into CI output on every failure.
+        grep -aE "LOGIN|ENROLLED|STAT |BOOT[0-9]-DONE|REFUS|panic|fault|denied|login:" "$f" \
+            | grep -av "Password:" | tail -30
     done
     echo "  (full logs were in $WORK, now removed; re-run to inspect)"
     exit 1
 }
 
-# One boot against the persistent copy. $1 = a function that types, $2 = log,
-# $3 = settle seconds after the typing finishes.
+# One boot against the persistent copy.
+#   $1 = the function that types    $2 = log    $3 = the marker that means the
+#   boot has done everything asked of it    $4 = settle seconds after it
+#
+# THE MARKER IS WHY THIS IS NOT A TIMER. This machine never powers itself off,
+# so QEMU runs until it is killed, and the first version of this simply killed
+# it after a fixed 260 seconds -- which meant every boot cost the full 260
+# whether it had finished in 40 or not, and boot 2 (two logins, a PBKDF2 verify
+# each, a dozen fork+execve under TCG, and the kernel's kbench dump landing in
+# the middle) ran out of them one command short of its marker. The harness then
+# reported "boot 2 never finished its commands", which is true and says nothing
+# about the machine: every assertion it was carrying had already passed in the
+# log. Same mistake bootwait.sh documents at the other end of the boot, so it
+# gets the same fix -- wait for the thing, with the deadline only as a backstop
+# for a machine that has genuinely wedged.
+BOOT_MAX="${BOOT_MAX:-420}"
 boot() {
-    local driver="$1" settle="$3"
+    local driver="$1" done_marker="$3" settle="$4"
     LOG="$2"
     : > "$LOG"
     { "$driver"; sleep "$settle"; } | \
@@ -117,7 +138,12 @@ boot() {
         $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
     QPID=$!
     local waited=0
-    while kill -0 "$QPID" 2>/dev/null && [ "$waited" -lt 260 ]; do sleep 1; waited=$((waited + 1)); done
+    while kill -0 "$QPID" 2>/dev/null && [ "$waited" -lt "$BOOT_MAX" ]; do
+        if grep -aq "$done_marker" "$LOG" 2>/dev/null; then sleep "$settle"; break; fi
+        sleep 1; waited=$((waited + 1))
+    done
+    [ "$waited" -ge "$BOOT_MAX" ] &&
+        echo "WARNING: no '$done_marker' after ${BOOT_MAX}s -- the boot itself is the suspect" >&2
     reap
     tr -d '\r' <"$LOG" >"$LOG.n" && mv "$LOG.n" "$LOG"     # serial is CRLF
 }
@@ -150,9 +176,9 @@ drive1() {
     say "stat /etc/passwd /home/alice /rootonly.txt"
     say "stat /etc/passwd /home/alice /rootonly.txt"
     say "echo BOOT1-DONE"
-    sleep 3
+
 }
-boot drive1 "$WORK/b1.log" 10
+boot drive1 "$WORK/b1.log" BOOT1-DONE 8
 
 grep -aq "BOOT1-DONE" "$WORK/b1.log" || fail "boot 1 never finished its commands"
 # NO CREDENTIAL IS SHIPPED IN THE IMAGE. Asked at a quiet prompt rather than
@@ -196,9 +222,9 @@ drive2() {
     say "stat /etc/passwd /rootonly.txt"
     say "stat /etc/passwd /rootonly.txt"
     say "echo BOOT2-DONE"
-    sleep 4
+
 }
-boot drive2 "$WORK/b2.log" 12
+boot drive2 "$WORK/b2.log" BOOT2-DONE 8
 
 grep -aq "BOOT2-DONE" "$WORK/b2.log" || fail "boot 2 never finished its commands"
 
@@ -265,9 +291,9 @@ drive3() {
     say "stat /etc/passwd /home/alice"
     say "stat /etc/passwd /home/alice"
     say "echo BOOT3-DONE"
-    sleep 4
+
 }
-boot drive3 "$WORK/b3.log" 12
+boot drive3 "$WORK/b3.log" BOOT3-DONE 8
 
 grep -aq "BOOT3-DONE" "$WORK/b3.log" || fail "boot 3 never finished its commands"
 grep -aq "LOGIN-OK alice uid=1000 gid=1000" "$WORK/b3.log" ||
@@ -299,9 +325,9 @@ drive4() {
     say "stat /etc/passwd /home/alice /rootonly.txt"
     say "login -i"
     say "echo BOOT4-DONE"
-    sleep 4
+
 }
-boot drive4 "$WORK/b4.log" 12
+boot drive4 "$WORK/b4.log" BOOT4-DONE 8
 
 grep -aq "BOOT4-DONE" "$WORK/b4.log" || fail "boot 4 never finished its commands"
 grep -aq "LOGIN-OK alice uid=1000 gid=1000" "$WORK/b4.log" ||
