@@ -119,9 +119,22 @@ static unsigned long last_ms;       /* what the verify cost                  */
 static void clear_pw(void) { for (int i = 0; i < PWMAX; i++) pw[i] = 0; npw = 0; }
 
 /* --------------------------------------------------------------- the paint --*/
+/* A 6x6 rect in a colour that appears nowhere else on this desktop, at
+ * window-local 0,0. Gallery and Settings do the same thing and for the same
+ * reason: a QMP driver has to be able to answer "is this window on the screen,
+ * and where" from a screendump, and every alternative -- a fixed coordinate, a
+ * title-bar search, OCR -- is either a constant that rots or a guess. Here it
+ * carries a second meaning as well, and it is the one the test turns on: when
+ * the greeter has gone, THIS COLOUR IS GONE, so "the machine let me in" is a
+ * fact about the pixels and not only about a line on the serial port. */
+#define PROBE_R 0x00
+#define PROBE_G 0xE5
+#define PROBE_B 0xC8
+
 static void paint(int W, int H)
 {
     aui_begin(AUI_BG);
+    gui_rect(0, 0, 6, 6, ((unsigned)PROBE_R << 16) | ((unsigned)PROBE_G << 8) | PROBE_B);
 
     int cw = 380, ch = 250;
     if (cw > W - 40) cw = W - 40;

@@ -3393,12 +3393,37 @@ static void wm_desktop_start(void)
  * filesystem enforces against -- deliberately not of the greeter, so there is
  * no second notion of "logged in" here to drift out of step with the first.
  * A console login therefore unlocks the screen too; see the g_locked comment. */
+/* HOW LONG THE UNLOCK WAITS AFTER IT IS OBSERVED, and why it waits at all.
+ *
+ * The session changes INSIDE /bin/login's (or the greeter's) SYS_SETSESSION,
+ * and the very next thing that program does is print its own success line. The
+ * WM is a separate thread on a separate core, so without this delay it printed
+ * "[wm] UNLOCKED..." into the middle of that line -- the kernel's kprintf and a
+ * ring-3 write() share the serial port with no lock between them, which
+ * c/apps/coreutils/login.c already documents. The observed damage was exact and
+ * not cosmetic: `LOGIN-OK alice uid=1000 gid=1000` came out as
+ * `LOGIN-OK [wm] UNLOCKED by session uid=1000 gid=1000`, so the login line's
+ * own harness -- green before this, and not mine to edit -- stopped finding the
+ * string it asserts on.
+ *
+ * 200 ms is not a guess at a race. It is three orders of magnitude more than
+ * the handful of syscalls between setsession returning and that line being
+ * finished (kbench measures a syscall at ~13 us under TCG), and by the time it
+ * elapses the authenticating program is inside execve. The desktop appearing
+ * a fifth of a second after a login that took a second to verify a password is
+ * not a cost anybody can perceive. */
+#define WM_UNLOCK_DELAY_TICKS 20        /* the PIT is 100 Hz */
+
 static void wm_check_unlock(void)
 {
     if (!g_locked) return;
     uint32_t su = 0, sg = 0;
     vfs_cred_session(&su, &sg);
     if (su == 0) return;
+
+    static uint64_t unlock_at;
+    if (!unlock_at) { unlock_at = timer_ticks() + WM_UNLOCK_DELAY_TICKS; return; }
+    if (timer_ticks() < unlock_at) return;
 
     g_locked = 0;
     kprintf("[wm] UNLOCKED by session uid=%u gid=%u\n", su, sg);
