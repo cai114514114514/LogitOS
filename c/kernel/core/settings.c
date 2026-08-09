@@ -399,7 +399,13 @@ int settings_load(void)
         nsys = ntab;
         for (int i = 0; i < ntab; i++) systab[i] = tab[i];
         sys_captured = 1;
-    } else if (sys_captured) {
+    } else if (sys_captured && user_path[0]) {
+        /* ONLY FOR A LOGGED-IN USER. Before a login the reader is root, so a
+         * system file that cannot be read is a system file that is not there
+         * -- and falling back to a snapshot then would resurrect the settings
+         * `settings_reset()` had just deleted. The snapshot answers exactly one
+         * question, "this reader is not root", and it is not consulted for any
+         * other. */
         for (int i = 0; i < nsys; i++) {
             tab[i] = systab[i];
             /* The mark is recomputed rather than restored: the snapshot may
@@ -629,6 +635,9 @@ int settings_reset(void)
     ntab = 0;
     diag = SET_D_NOFILE;
     gen++;
+    /* Root resetting the SYSTEM store must also drop the snapshot of it, or
+     * the next load hands back the defaults that were just deleted. */
+    if (!user_path[0]) { nsys = 0; sys_captured = 0; }
     /* Their overrides are gone; the defaults underneath them are not. */
     if (user_path[0]) settings_load();
     return 0;
