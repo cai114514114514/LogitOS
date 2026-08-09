@@ -434,10 +434,21 @@ LOGIN_OBJ  := $(patsubst %.c,$(BUILD)/loginobj/%.o,$(LOGIN_CSRC))
 #     is `make test-login-negctl`; this is the same one line of C compiled into
 #     the machine, so that tests/boot/run-login-test.sh can be pointed at a
 #     build where the login prompt appears, the masking works, the timing line
-#     prints -- and every password is correct. Rebuild the disk with it and the
-#     harness must fail on "A WRONG PASSWORD WAS NOT REFUSED":
-#         make LOGIN_NEGCTL=1 build/disk.img && make test-login-os
-#     A harness that still passes there is not testing authentication.
+#     prints -- and every password is correct. The harness must then fail on
+#     "A WRONG PASSWORD WAS NOT REFUSED":
+#
+#         make LOGIN_NEGCTL=1 test-login-os
+#
+#     ON ONE LINE, WITH THE FLAG ON THE TARGET THAT RUNS THE HARNESS. The
+#     obvious two-step -- `make LOGIN_NEGCTL=1 build/disk.img && make
+#     test-login-os` -- silently undoes itself, and it was written that way
+#     here first: the second make has no LOGIN_NEGCTL, so LOGIN_STAMP names
+#     .flags-normal, which does not exist, so it rebuilds login WITHOUT the
+#     define and repacks the disk before the harness sees it. The run then
+#     reports the control as broken while actually having tested the real
+#     build. That the stamp fires in both directions is what makes it correct
+#     AND what makes the two-step wrong; test-login-os depends on $(DISK), so
+#     the flag has to be present for that dependency too.
 LOGIN_CFLAGS := $(UCFLAGS)
 ifeq ($(LOGIN_NEGCTL),1)
 LOGIN_CFLAGS += -DLOGIN_NEGCTL_ACCEPT_ANY
