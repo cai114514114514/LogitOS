@@ -477,6 +477,14 @@ static int ovf_scrolls(int o) { return o != OVF_VISIBLE; }
 
 static int el_is_scroller(struct node *el)
 {
+    /* A text field is a scrolling box whatever its computed overflow says:
+     * the text scrolls inside it as you type, and a page that saves and
+     * restores input.scrollLeft is doing something real. Found by the ratchet
+     * -- html/semantics/forms/textfieldselection/selection.html's "scrollLeft
+     * preservation for input" went red when non-scrollers started pinning
+     * to 0, which is the correct rule applied to the wrong element. */
+    if (is_tag(el, "input") || is_tag(el, "textarea") || is_tag(el, "select"))
+        return 1;
     const struct cstyle *c = sty(el);
     if (!c) return 0;
     return ovf_scrolls(c->overflow_x) || ovf_scrolls(c->overflow_y);
@@ -534,6 +542,13 @@ static int scroll_max_axis(struct node *el, int horiz)
      * measurement is used only where it is sound: a scroller whose content is
      * text (which always paints) or nothing at all. */
     if (has_elem_child(el)) return -1;
+    /* A form control's content is not in the display list as descendants --
+     * layout reserves one IT_CONTROL box and forms.c draws the text into it
+     * at paint time (see layout.h). So its overflow is unmeasurable from
+     * here, which is the same "unknown" as a scroller with element children,
+     * for a different reason. */
+    if (is_tag(el, "input") || is_tag(el, "textarea") || is_tag(el, "select"))
+        return -1;
     int x, y, w, h;
     if (!border_box(el, &x, &y, &w, &h)) return 0;
     int bt, br, bb, bl; borders(el, &bt, &br, &bb, &bl);
@@ -891,6 +906,15 @@ static JSValue win_scroll_get(JSContext *ctx, JSValueConst t, int magic)
 {
     (void)t;
     return JS_NewInt32(ctx, magic ? g_win_sx : g_win_sy);
+}
+
+/* innerWidth/innerHeight as GETTERS, not as values stamped at install time:
+ * the browser resizes its window and the cascade's viewport moves with it, so
+ * a value frozen at page load would be right only until the first drag. */
+static JSValue win_size_get(JSContext *ctx, JSValueConst t, int magic)
+{
+    (void)t;
+    return JS_NewInt32(ctx, magic ? view_w() : view_h());
 }
 
 /* ---- scrollIntoView ----------------------------------------------------
@@ -2956,13 +2980,10 @@ void js_cssom_install(JSContext *ctx)
      * is off by the difference (css/cssom-view/scrollintoview.html is 40
      * subtests of exactly that shape). The cascade's is authoritative because
      * it is the width layout was run at. */
-    {
-        int vw = view_w(), vh = view_h();
-        JS_SetPropertyStr(ctx, g, "innerWidth",  JS_NewInt32(ctx, vw));
-        JS_SetPropertyStr(ctx, g, "innerHeight", JS_NewInt32(ctx, vh));
-        JS_SetPropertyStr(ctx, g, "outerWidth",  JS_NewInt32(ctx, vw));
-        JS_SetPropertyStr(ctx, g, "outerHeight", JS_NewInt32(ctx, vh));
-    }
+    def_getset(ctx, g, "innerWidth",   win_size_get, 0, 1);
+    def_getset(ctx, g, "innerHeight",  win_size_get, 0, 0);
+    def_getset(ctx, g, "outerWidth",   win_size_get, 0, 1);
+    def_getset(ctx, g, "outerHeight",  win_size_get, 0, 0);
 
     /* The window as a scrolling box. scrollX/pageXOffset are two names for
      * one value, and a page uses whichever its era taught it. */

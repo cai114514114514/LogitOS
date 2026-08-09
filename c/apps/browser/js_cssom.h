@@ -36,6 +36,69 @@
 #  define CSSOM_FN
 #endif
 
+/* ==========================================================================
+ * WHAT THIS FILE NEEDS FROM layout.c, AND WHY IT CANNOT BE WORKED AROUND
+ *
+ * The CSSOM reads an element's box out of the flat DISPLAY LIST, and the only
+ * boxes in that list are the ones something PAINTED. A `<div>` with no
+ * background, no border and no text has no entry, so it has no box, so every
+ * geometry accessor on it answers 0 -- while getComputedStyle on the same
+ * element correctly says `width: 120px`.
+ *
+ * Measured rather than asserted. LOGIT_CSSOM_BOX_MISS=<file> makes
+ * border_box() append one line per call; over css/css-align, css/css-sizing,
+ * css/css-flexbox, css/css-grid and css/cssom-view that is 14,997 calls:
+ *
+ *     10,574  EXACT       70.5%   the element painted its own IT_RECT
+ *      2,583  NOBOX       17.2%   nothing at all -- every accessor answers 0
+ *      1,699  INKUNION    11.3%   the subtree ink union, which this file's
+ *                                 own header calls a known wrong answer
+ *        141  NOLIST       0.9%   no display list yet
+ *
+ * In failing-subtest terms, those five directories fail 9,912 numeric
+ * geometry assertions (3,672 width, 2,049 offsetLeft, 1,963 height, 839
+ * offsetTop, 542 scrollWidth, 309 scrollHeight, 276 clientWidth, 88
+ * clientHeight), and 4,010 of them got exactly 0.
+ *
+ * THE ASK, in two functions:
+ *
+ *     int layout_node_box(const struct node *n, int *x, int *y,
+ *                         int *w, int *h);
+ *
+ *       The BORDER box layout gave `n`, in document coordinates -- the same
+ *       coordinates struct item uses. Returns 1 if the element generated a
+ *       box and 0 if it did not (display:none, out of the tree, never
+ *       reached). Independent of whether anything painted.
+ *
+ *     int layout_node_scroll(const struct node *n, int *w, int *h);
+ *
+ *       Its SCROLLABLE OVERFLOW area: the union of its in-flow descendants'
+ *       margin boxes with its own padding box, in content coordinates. This
+ *       is what scrollWidth/scrollHeight are, and it is the one number an ink
+ *       union cannot approximate at all -- ink is what painted, overflow is
+ *       what was laid out.
+ *
+ * SHAPE OF THE IMPLEMENTATION, as far as this side can see it: layout.c
+ * already computes exactly this at eight sites -- the ones that read
+ * `if (st->has_bg || any_border(st))` before calling additem(IT_RECT, ...)
+ * and then patch `items[bgidx].h = ch` once the height is known. The record
+ * is the same (node, x, y, w, ch), taken out from under that condition.
+ *
+ * WHY A SIDE TABLE AND NOT "EMIT AN INVISIBLE IT_RECT PER ELEMENT". Three
+ * reasons, and the third is the one that has already cost this project a
+ * night: an entry per element on every page is paid by the painter and the
+ * z-sort on every frame; struct item is 232 bytes against ~24 for a box
+ * record; and DISPLAY-LIST ENTRIES OWN THINGS -- an IT_IMAGE owns a decoded
+ * bitmap, which is why a flex trial layout rolled back by restoring `nitem`
+ * leaked 400 MB. A table keyed by node has no lifetime question in it.
+ *
+ * WHAT WAS TRIED FROM THIS SIDE AND DOES NOT WORK, so it is not re-proposed:
+ * deriving the box from the cascade, i.e. answering offsetWidth as
+ * width + padding + border whenever the specified width is a definite length.
+ * It cost 1,116 passing subtests in css/css-sizing alone and gained none.
+ * See the comment at the top of el_geom() in the .c for the numbers.
+ * ========================================================================== */
+
 CSSOM_FN void js_cssom_install(JSContext *ctx);
 
 /* Drop the node lookup cache and the per-page side tables. Call from the page
