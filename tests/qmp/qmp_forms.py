@@ -57,6 +57,13 @@ from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT      # noqa: E402
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
 CONTROL = "--expect-no-focus" in sys.argv[3:]
+# --contenteditable drives the SAME three channels at a composer instead of an
+# <input>: the DOM (the page reads its own textContent back), the pixels (ink
+# inside the box's border), and -- standing in for the network, because a
+# composer does not submit anything -- the `input` event's inputType, which is
+# what a React composer actually reads and the one channel that can be right
+# while both of the others are.
+CE = "--contenteditable" in sys.argv[3:]
 
 # Deliberately odd colours: nothing in the chrome, the wallpaper or the page can
 # collide with them, so find_color() locates a control without OCR.
@@ -123,6 +130,60 @@ console.log('FORMS-READY ' + (typeof q.value) + ' ' + (typeof q.focus) + ' ' +
 </body></html>
 """
 
+# The composer page. A `contenteditable` div, styled exactly like the <input>
+# above so the pixel channel is measured the same way -- an odd border colour to
+# find the box without OCR, a white interior, black text.
+#
+# It deliberately does NOT intercept Enter. A real chat composer does (that is
+# how the message is sent), and browser.c honours the cancellation because the
+# page's keydown runs first -- but then the harness would be measuring the
+# page's own handler rather than the editing model. So Enter here does what an
+# uncancelled Enter is supposed to do, and the interception is asserted
+# separately below by cancelling ONE beforeinput and requiring nothing to
+# change.
+CE_EDGE = (1, 254, 2)
+CE_PAGE = """<!doctype html>
+<html><head><title>ce</title><style>
+html, body { background: #ffffff; margin: 0; padding: 0; color: #000000; }
+#anchor { background: #fe01fe; width: 240px; height: 30px; }
+#c { font-size: 24px; width: 420px; min-height: 90px; background: #ffffff;
+     border: 3px solid #01fe02; color: #000000; padding: 4px; }
+</style></head><body>
+<div id="anchor">ANCHOR</div>
+<div id="c" contenteditable></div>
+<script>
+var c = document.getElementById('c');
+c.addEventListener('focus', function () {
+  console.log('CE-FOCUS ' + (document.activeElement ? document.activeElement.id : '?'));
+});
+c.addEventListener('beforeinput', function (e) {
+  console.log('CE-BEFORE ' + e.inputType);
+  /* A composer that cancels an edit, which is the mechanism a chat page uses
+     to make Enter send instead of break the line. Cancelling by inputType is
+     what makes this assertable from a harness that cannot call into the page:
+     Shift+Enter is refused and nothing else is. */
+  if (e.inputType === 'insertLineBreak') { e.preventDefault(); console.log('CE-VETOED'); }
+});
+c.addEventListener('input', function (e) {
+  /* THE inputType IS LOGGED SEPARATELY FROM THE TEXT, because they are two
+     different claims: "the characters arrived" and "the page was told what
+     kind of change it was". A composer managed by a framework needs both. */
+  console.log('CE-INPUT [' + e.inputType + '] ' + JSON.stringify(c.textContent));
+  var s = document.getSelection();
+  console.log('CE-SEL n=' + (s.anchorNode ? s.anchorNode.nodeType : '-') +
+              ' off=' + s.anchorOffset + ' collapsed=' + s.isCollapsed +
+              ' ranges=' + s.rangeCount + ' txt=' + JSON.stringify(String(s)));
+  var r = document.createRange();
+  r.selectNodeContents(c);
+  console.log('CE-RANGE ' + JSON.stringify(r.toString()) + ' blocks=' + c.children.length);
+});
+window.__veto = function (v) { veto = v; };
+console.log('CE-READY ' + (typeof document.getSelection) + ' ' +
+            (typeof document.createRange) + ' ' + (c.isContentEditable === true));
+</script>
+</body></html>
+"""
+
 tmp = tempfile.mkdtemp(prefix="qmp_forms_")
 qmp_path = os.path.join(tmp, "qmp.sock")
 serial_path = os.path.join(tmp, "serial.log")
@@ -141,6 +202,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/search"):
             body = ("<!doctype html><html><body style='background:#01fe02'>"
                     "<p>SUBMITTED</p></body></html>").encode()
+        elif self.path.startswith("/ce"):
+            body = CE_PAGE.encode()
         else:
             body = PAGE.encode()
         self.send_response(200)
@@ -289,8 +352,163 @@ try:
     ui.click_at(420, 145)
     for _ in range(70):
         ui.key("backspace", settle=0.02)
-    ui.typ("http://10.0.2.2:%d/form.html" % PORT)
+    ui.typ("http://10.0.2.2:%d/%s" % (PORT, "ce.html" if CE else "form.html"))
     ui.key("ret")
+
+    if CE:
+        # ============================ contenteditable ======================
+        #
+        # THE SAME THREE CHANNELS. The DOM (the page reads its own textContent
+        # back), the pixels (ink inside the composer's painted border), and --
+        # standing in for the network, since a composer submits nothing -- the
+        # inputType on the `input` event. The third is the one that can be
+        # wrong while the first two are right, and it is exactly the difference
+        # between a page that looks fixed and one that works: React learns a
+        # composer changed from the event, not from the DOM.
+        ck(wait_serial("CE-READY", 90, "page load"),
+           "the composer page loaded and its script ran")
+        m = re.search(r"CE-READY (\S+) (\S+) (\S+)", serial())
+        ck(m is not None, "the script reported the bindings")
+        ck(m.group(1) == "function", "document.getSelection() exists")
+        ck(m.group(2) == "function", "document.createRange() exists")
+        ck(m.group(3) == "true", "and the div reports isContentEditable")
+
+        time.sleep(3)
+        p0 = PPM(ui.screendump(shot("ce_loaded")))
+        ck(p0.find_color(ANCHOR) is not None, "the page is on screen")
+        box = p0.find_color(CE_EDGE)
+        ck(box is not None, "THE COMPOSER IS DRAWN -- a bordered box, found by "
+                            "its colour, no OCR")
+        bx0, by0, bx1, by1 = box
+        print("   composer box: %r (%dx%d)" % (box, bx1 - bx0 + 1, by1 - by0 + 1))
+        ink0 = p0.dark_pixels(interior(box))
+        print("   ink inside the empty composer: %d px" % ink0)
+
+        # ---- click it, then type ----
+        # Aim at the TOP-LEFT quarter: the composer is 90 px tall and empty, so
+        # its text will be on the first line. A click in the vertical middle
+        # lands below every line there will ever be, which is a legitimate
+        # click (it resolves to the end of the content) but makes the caret's
+        # position harder to reason about when something goes wrong.
+        cx = bx0 + (bx1 - bx0) // 4
+        cy = by0 + 14
+        ui.click_at(cx, cy)
+        time.sleep(1.0)
+        focused = wait_serial("CE-FOCUS ", 10, "focus")
+        if CONTROL:
+            ck(not focused, "CONTROL: clicking the composer focuses nothing")
+        else:
+            ck(focused, "clicking the composer FOCUSES it")
+            f = re.search(r"CE-FOCUS (\S+)", serial())
+            ck(f is not None and f.group(1) == "c",
+               "and document.activeElement is the composer")
+
+        mark = len(serial())
+        slow_type(ui, TYPED)
+        time.sleep(2.0)
+        got = serial()[mark:]
+
+        if CONTROL:
+            ck("CE-INPUT" not in got,
+               "CONTROL: five keystrokes into a contenteditable produced no "
+               "`input` event -- which is the bug this whole line is about")
+            print("\nPASS (control).")
+            proc.kill()
+            sys.exit(0)
+
+        ck(("CE-INPUT [insertText] \"%s\"" % TYPED) in got,
+           "THE CHARACTERS ARRIVED IN THE DOM: the page read %r back out of "
+           "its own textContent" % TYPED)
+        ck("CE-INPUT [insertText]" in got,
+           "AND `input` CARRIED inputType=insertText -- the field a React "
+           "composer reads, and the one an event can be missing while the "
+           "text is on screen and everything looks fine")
+        ck("CE-BEFORE insertText" in got,
+           "with a `beforeinput` of the same inputType before it")
+        # One event per keystroke, not one for the batch.
+        n_in = len(re.findall(r"CE-INPUT \[insertText\]", got))
+        ck(n_in == len(TYPED),
+           "one `input` per keystroke: %d for %d characters" % (n_in, len(TYPED)))
+
+        sel = re.findall(r"CE-SEL n=(\S+) off=(\S+) collapsed=(\S+) ranges=(\S+) txt=(\S+)", got)
+        ck(len(sel) > 0, "and document.getSelection() answered from the page")
+        last = sel[-1]
+        print("   selection after typing: node type %s, offset %s, collapsed %s, "
+              "ranges %s" % (last[0], last[1], last[2], last[3]))
+        ck(last[0] == "3",
+           "the caret's anchorNode is a TEXT NODE -- created by the first "
+           "keystroke, because an empty composer has none")
+        ck(last[1] == str(len(TYPED)),
+           "at offset %d, i.e. after everything typed" % len(TYPED))
+        ck(last[2] == "true" and last[3] == "1",
+           "collapsed, with one range")
+        rng = re.findall(r"CE-RANGE (\S+) blocks=(\d+)", got)
+        ck(rng and rng[-1][0] == '"%s"' % TYPED,
+           "and a Range over the composer's contents reads back %r" % TYPED)
+
+        time.sleep(1.5)
+        p1 = PPM(ui.screendump(shot("ce_typed")))
+        box1 = p1.find_color(CE_EDGE) or box
+        ink1 = p1.dark_pixels(interior(box1))
+        print("   ink inside the composer after typing: %d px (was %d)" % (ink1, ink0))
+        ck(ink1 > ink0 + 40,
+           "AND THEY ARE ON SCREEN: %d -> %d dark pixels inside the box, which "
+           "is five glyphs that were not there before" % (ink0, ink1))
+
+        # ---- Enter splits the block ----
+        mark = len(serial())
+        ui.key("ret", settle=0.8)
+        time.sleep(1.5)
+        got = serial()[mark:]
+        ck("CE-INPUT [insertParagraph]" in got,
+           "Enter reports inputType=insertParagraph, not insertText -- the two "
+           "are different edits and a composer branches on which")
+        slow_type(ui, "there")
+        time.sleep(1.5)
+        got = serial()[mark:]
+        rng = re.findall(r"CE-RANGE (\S+) blocks=(\d+)", got)
+        ck(rng and int(rng[-1][1]) >= 2,
+           "and the composer now holds TWO block children, not one: Enter "
+           "SPLIT the paragraph (blocks=%s)" % (rng[-1][1] if rng else "?"))
+        ck(rng and rng[-1][0] == '"%sthere"' % TYPED,
+           "with all the text still there and in order (%s)"
+           % (rng[-1][0] if rng else "?"))
+
+        # ---- backspace ----
+        mark = len(serial())
+        for _ in range(2):
+            ui.key("backspace", settle=0.4)
+        time.sleep(1.5)
+        got = serial()[mark:]
+        ck("CE-INPUT [deleteContentBackward]" in got,
+           "Backspace reports deleteContentBackward")
+        rng = re.findall(r"CE-RANGE (\S+) blocks=(\d+)", got)
+        ck(rng and rng[-1][0] == '"%sthe"' % TYPED,
+           "and two characters are gone (%s)" % (rng[-1][0] if rng else "?"))
+
+        # ---- a cancelled edit changes nothing ----
+        # The mechanism a chat page uses to make Enter send instead of break a
+        # line. The page cancels insertLineBreak and only that.
+        mark = len(serial())
+        ui._input([{"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": True}},
+                   {"type": "key", "data": {"key": {"type": "qcode", "data": "ret"}, "down": True}}])
+        ui._input([{"type": "key", "data": {"key": {"type": "qcode", "data": "ret"}, "down": False}},
+                   {"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": False}}])
+        time.sleep(1.8)
+        got = serial()[mark:]
+        ck("CE-BEFORE insertLineBreak" in got,
+           "Shift+Enter raises beforeinput with inputType=insertLineBreak")
+        ck("CE-VETOED" in got, "the page cancels it...")
+        ck("CE-INPUT [insertLineBreak]" not in got,
+           "...and NO `input` follows -- a cancelled edit that still reported "
+           "one would be a page told its content changed when it did not")
+
+        print("\nPASS: a human can click a contenteditable composer on a real "
+              "page, type into it, see the characters, and the page's own "
+              "JavaScript sees `input` with the right inputType and can read "
+              "the caret back through document.getSelection().")
+        proc.kill()
+        sys.exit(0)
 
     ready = wait_serial("FORMS-READY", 90, "page load")
     ck(ready, "the page loaded and its script ran")
