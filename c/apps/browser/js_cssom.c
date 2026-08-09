@@ -98,6 +98,9 @@
 extern void  layout_page(struct node *root, int canvas_w) __attribute__((__weak__));
 extern int   layout_count(void) __attribute__((__weak__));
 extern const struct item *layout_items(void) __attribute__((__weak__));
+/* The document's laid-out height. Weak for the same reason and read only
+ * through doc_size(), which falls back to the display list's own extent. */
+extern int   layout_height(void) __attribute__((__weak__));
 
 /* ==========================================================================
  * From a JSValue back to a struct node
@@ -267,6 +270,25 @@ static void boxstat(const char *what, struct node *el)
     fclose(f);
 }
 
+/* THE THIRD NEGATIVE CONTROL (tests/cssom.mk, CSSOM_NEGCTL_INKUNION), and it
+ * is the one aimed at this function rather than at the file around it.
+ *
+ * "Remove the geometry" is not the sabotage worth defending against -- the
+ * NOGEOM control already covers that and it is loud. The dangerous version is
+ * the PLAUSIBLE one: answer every element from the subtree ink union, which
+ * is the fallback this function already uses for elements with no own rect.
+ * Under it nothing is ever 0, nothing ever throws, every accessor returns a
+ * rectangle of about the right order, and every box that contains anything is
+ * wrong by its contents' overflow. That is a CSSOM that looks implemented and
+ * is not, and it is the exact failure mode this file's header calls "a known
+ * wrong answer rather than an approximation".
+ *
+ * So the suite must be able to tell the two apart, and `make
+ * test-cssom-negctl` requires it to FAIL here. If it ever passes, the
+ * geometry assertions have stopped checking that a box is the ELEMENT'S box.
+ *
+ * Under the control an element with no ink of its own borrows its nearest
+ * inked ancestor's, so the "nothing is zero" half of the trap is real too. */
 static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
 {
     *ox = *oy = *ow = *oh = 0;
@@ -274,6 +296,24 @@ static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
     int n = 0;
     const struct item *it = items(&n);
     if (!it) { boxstat("NOLIST", el); return 0; }
+#ifdef CSSOM_NEGCTL_INKUNION
+    for (struct node *p = el; p; p = p->parent) {
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0, got = 0;
+        for (int i = 0; i < n; i++) {
+            if (!it[i].node || !in_subtree(p, it[i].node)) continue;
+            int ax = it[i].x, ay = it[i].y, bx = ax + it[i].w, by = ay + it[i].h;
+            if (!got) { x0 = ax; y0 = ay; x1 = bx; y1 = by; got = 1; continue; }
+            if (ax < x0) x0 = ax;
+            if (ay < y0) y0 = ay;
+            if (bx > x1) x1 = bx;
+            if (by > y1) y1 = by;
+        }
+        if (!got) continue;
+        *ox = x0; *oy = y0; *ow = x1 - x0; *oh = y1 - y0;
+        return 1;
+    }
+    return 0;
+#endif
     for (int i = 0; i < n; i++)
         if (it[i].node == el && it[i].type == IT_RECT) {
             *ox = it[i].x; *oy = it[i].y; *ow = it[i].w; *oh = it[i].h;
@@ -358,6 +398,157 @@ static struct node *offset_parent(struct node *el)
 }
 
 /* ==========================================================================
+ * THE VIEWPORT AND THE SCROLLERS
+ *
+ * Everything below this line was missing entirely, and its absence is the
+ * single largest cause in css/cssom-view -- not a wrong number, a
+ * `TypeError: not a function` on the first line of the file. Measured on the
+ * baseline runner over the 219 harness files in that directory: 437 subtests
+ * failed with exactly that message and another 115 as the promise-rejection
+ * form of it, against 1,417 failures in the whole directory. The names behind
+ * them are Element.scrollTo/scrollBy/scroll, Element.scrollIntoView, the
+ * window's scroll methods with scrollX/scrollY, and
+ * document.scrollingElement. None of them existed; scrollTop and scrollLeft
+ * were the whole scrolling surface.
+ *
+ * WHAT "SCROLLING" MEANS HERE, said plainly. This engine paints one document
+ * into one viewport and browser.c owns the offset it is painted at; no
+ * sub-box has ever scrolled. So these do not move pixels. What they do is
+ * maintain the SCROLL POSITIONS the CSSOM defines, on the viewport and on
+ * every element with a scrollable overflow, with the spec's clamping and the
+ * spec's argument handling -- because that is what a page reads back, and it
+ * is what a test asserts. A scroll position that is remembered but not
+ * painted is a partial implementation of scrolling; a method that does not
+ * exist is not an implementation of anything.
+ *
+ * THE CLAMP IS THE PART THAT NEEDS THE DISCLAIMER. The spec clamps a scroll
+ * offset to [0, scrollSize - clientSize], and this file cannot compute
+ * scrollSize for an element whose contents paint nothing -- the same NOBOX
+ * hole the file header describes, and the reason `overflow_box` is an ink
+ * union. So the clamp here is deliberately ASYMMETRIC:
+ *
+ *   - an element that is not a scroller at all (overflow visible on both
+ *     axes) is pinned to 0, which is exact and needs no box;
+ *   - a scroller whose measurable overflow is zero but which HAS element
+ *     children is treated as of UNKNOWN extent and not clamped, because the
+ *     alternative is to pin a real scroller to 0 on the strength of a
+ *     measurement we know can be missing.
+ *
+ * Under-clamping keeps a value the page wrote; over-clamping invents a 0 the
+ * page never asked for and cannot distinguish from a scroll that failed. The
+ * first is recoverable when layout can answer, the second is a wrong answer
+ * today. See scroll_max_axis().
+ * ========================================================================== */
+
+static int view_w(void) { int w = css_media_width();  return w > 0 ? w : 800; }
+static int view_h(void) { int h = css_media_height(); return h > 0 ? h : 600; }
+
+/* The document's scrollable size. layout_height() is authoritative for the
+ * block axis (it counts boxes that painted nothing); the display list's own
+ * extent is the only source for the inline axis, so a page wider than the
+ * viewport only registers if something in it painted. */
+static void doc_size(int *dw, int *dh)
+{
+    int x1 = view_w(), y1 = view_h();
+    int n = 0;
+    const struct item *it = items(&n);
+    for (int i = 0; i < n; i++) {
+        int bx = it[i].x + it[i].w, by = it[i].y + it[i].h;
+        if (bx > x1) x1 = bx;
+        if (by > y1) y1 = by;
+    }
+    if (have_layout() && &layout_height != 0) {
+        int lh = layout_height();
+        if (lh > y1) y1 = lh;
+    }
+    *dw = x1; *dh = y1;
+}
+
+static int is_root_el(const struct node *n)  { return is_tag(n, "html"); }
+static int is_body_el(const struct node *n)  { return is_tag(n, "body"); }
+
+/* The element IS the viewport's scrolling box. In standards mode that is the
+ * root element; <body> is not, and the two answer differently for clientWidth
+ * (the root reports the viewport, the body reports its own padding box) --
+ * which is exactly what css/cssom-view/HTMLBody-ScrollArea*.html separates. */
+static int is_viewport_scroller(const struct node *n) { return is_root_el(n); }
+
+static int ovf_scrolls(int o) { return o != OVF_VISIBLE; }
+
+static int el_is_scroller(struct node *el)
+{
+    const struct cstyle *c = sty(el);
+    if (!c) return 0;
+    return ovf_scrolls(c->overflow_x) || ovf_scrolls(c->overflow_y);
+}
+
+static int has_elem_child(const struct node *n)
+{
+    for (struct node *c = n ? n->first_child : 0; c; c = c->next)
+        if (c->type == N_ELEM) return 1;
+    return 0;
+}
+
+/* The window's scroll position, in document px. Kept here rather than taken
+ * from browser.c because the CSSOM is the thing that WRITES it: a page calls
+ * window.scrollTo and then reads window.scrollY back, and in the host runner
+ * there is no browser.c at all. js_dom_set_scroll pushes it back out so
+ * getBoundingClientRect and a dispatched event's clientY cannot disagree. */
+static int g_win_sx, g_win_sy;
+
+static double clampd(double v, double lo, double hi)
+{ if (!(v > lo)) v = lo; if (v > hi) v = hi; return v; }
+
+static void win_scroll_max(int *mx, int *my)
+{
+    int dw, dh; doc_size(&dw, &dh);
+    *mx = dw - view_w(); if (*mx < 0) *mx = 0;
+    *my = dh - view_h(); if (*my < 0) *my = 0;
+}
+
+static void win_scroll_set(double x, double y)
+{
+    int mx, my; win_scroll_max(&mx, &my);
+    g_win_sx = (int)clampd(x, 0, mx);
+    g_win_sy = (int)clampd(y, 0, my);
+    js_dom_set_scroll(g_win_sx, g_win_sy);
+}
+
+/* The clamp bound for one axis of one element, or -1 for "unknown, do not
+ * clamp" -- see the asymmetry note at the top of this section. */
+static int scroll_max_axis(struct node *el, int horiz)
+{
+    if (!el) return 0;
+    if (is_viewport_scroller(el) || is_body_el(el)) {
+        int mx, my; win_scroll_max(&mx, &my);
+        return horiz ? mx : my;
+    }
+    if (!el_is_scroller(el)) return 0;
+    /* A scroller with ELEMENT children is of unknown extent, and this is the
+     * asymmetry above stated as code. overflow_box() is an ink union, so its
+     * answer for a box whose children paint nothing is not "small", it is
+     * "whatever happened to be painted" -- measured on
+     * css/cssom-view/elementScroll.html, a container whose real scroll range
+     * is 200 measured 6, and clamping to 6 turned six subtests that only
+     * needed the value back into six subtests that read 6. So the
+     * measurement is used only where it is sound: a scroller whose content is
+     * text (which always paints) or nothing at all. */
+    if (has_elem_child(el)) return -1;
+    int x, y, w, h;
+    if (!border_box(el, &x, &y, &w, &h)) return 0;
+    int bt, br, bb, bl; borders(el, &bt, &br, &bb, &bl);
+    int cw = w - bl - br, ch = h - bt - bb;
+    if (cw < 0) cw = 0;
+    if (ch < 0) ch = 0;
+    int sw = 0, sh = 0;
+    overflow_box(el, &sw, &sh);
+    if (sw < cw) sw = cw;
+    if (sh < ch) sh = ch;
+    int m = horiz ? sw - cw : sh - ch;
+    return m > 0 ? m : 0;
+}
+
+/* ==========================================================================
  * DOMRect / DOMRectReadOnly / DOMRectList
  * ========================================================================== */
 
@@ -424,6 +615,45 @@ static JSValue el_geom(JSContext *ctx, JSValueConst t, int magic)
     struct node *el = node_from(t);
     if (!el || el->type != N_ELEM) return JS_NewInt32(ctx, 0);
     flush_layout();
+
+    /* THE ROOT ELEMENT IS THE VIEWPORT, and answering it out of the display
+     * list is not a small error: `document.documentElement.clientHeight` is
+     * how a page asks how tall the window is, and the display list answers
+     * with how tall the DOCUMENT is -- a number that is right only on a page
+     * that happens to fit. Same for clientWidth, and for scrollWidth/Height,
+     * which on the root are the document's scrollable area and not the root
+     * box's ink. These four have no box source at all; they come from the
+     * viewport and the document size. */
+    if (is_viewport_scroller(el)) {
+        switch (magic) {
+        case G_CLIENT_W: return JS_NewInt32(ctx, view_w());
+        case G_CLIENT_H: return JS_NewInt32(ctx, view_h());
+        case G_CLIENT_L: case G_CLIENT_T: return JS_NewInt32(ctx, 0);
+        case G_SCROLL_W: case G_SCROLL_H: {
+            int dw, dh; doc_size(&dw, &dh);
+            return JS_NewInt32(ctx, magic == G_SCROLL_W ? dw : dh);
+        }
+        default: break;
+        }
+    }
+
+    /* NO BOX AT ALL answers 0 everywhere, and that is 17% of every geometry
+     * read in css/ -- measured with LOGIT_CSSOM_BOX_MISS over
+     * css-align/sizing/flexbox/grid/cssom-view: 2,583 NOBOX against 10,574
+     * EXACT and 1,699 subtree-ink-union. It is LAYOUT'S to fix (this file
+     * needs a per-element box table; see the note in js_cssom.h), and the
+     * obvious shortcut from here does not work.
+     *
+     * THE SHORTCUT THAT WAS TRIED AND MEASURED, so nobody spends the evening
+     * on it again: when the specified width is a definite length, answer
+     * width + padding + border and call it the used border box. It reads as
+     * arithmetic rather than a guess -- and it cost 1,116 passing subtests in
+     * css/css-sizing alone (1,859 -> 743) and 56 in css/css-align, against
+     * zero gained. A specified length is not a used length often enough to
+     * matter: min-/max- clamping, stretch, replaced-element ratios and
+     * every case where the element genuinely has no box all disagree with it,
+     * and a plausible wrong number loses tests that a 0 was passing. Two
+     * runner binaries, same tree, `--only css/css-sizing`. Answer 0. */
     int x, y, w, h;
     if (!border_box(el, &x, &y, &w, &h)) return JS_NewInt32(ctx, 0);
     int bt, br, bb, bl;
@@ -524,12 +754,40 @@ static struct scrollent *scroll_for(struct node *n, int create)
     return e;
 }
 
+/* Read/write one axis of one element's scroll position, with the viewport
+ * scroller routed to the window's. Everything scroll-related below goes
+ * through this pair rather than touching g_scroll directly, so the clamp and
+ * the root-element special case exist in one place each. */
+static int el_scroll_read(struct node *el, int horiz)
+{
+    if (!el) return 0;
+    if (is_viewport_scroller(el) || is_body_el(el)) return horiz ? g_win_sx : g_win_sy;
+    struct scrollent *e = scroll_for(el, 0);
+    if (!e) return 0;
+    return horiz ? e->left : e->top;
+}
+
+static void el_scroll_write(struct node *el, int horiz, double d)
+{
+    if (!el) return;
+    if (is_viewport_scroller(el) || is_body_el(el)) {
+        if (horiz) win_scroll_set(d, g_win_sy);
+        else       win_scroll_set(g_win_sx, d);
+        return;
+    }
+    int m = scroll_max_axis(el, horiz);
+    if (d < 0) d = 0;
+    if (m >= 0 && d > m) d = m;
+    struct scrollent *e = scroll_for(el, 1);
+    if (e) { if (horiz) e->left = (int)d; else e->top = (int)d; }
+}
+
 static JSValue el_scroll_get(JSContext *ctx, JSValueConst t, int magic)
 {
     struct node *el = node_from(t);
     if (!el) return JS_NewInt32(ctx, 0);
-    struct scrollent *e = scroll_for(el, 0);
-    return JS_NewInt32(ctx, e ? (magic ? e->left : e->top) : 0);
+    flush_layout();
+    return JS_NewInt32(ctx, el_scroll_read(el, magic));
 }
 
 static JSValue el_scroll_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic)
@@ -538,9 +796,193 @@ static JSValue el_scroll_set(JSContext *ctx, JSValueConst t, JSValueConst v, int
     if (!el) return JS_UNDEFINED;
     double d = 0;
     if (JS_ToFloat64(ctx, &d, v) < 0) return JS_EXCEPTION;
-    if (d < 0) d = 0;
-    struct scrollent *e = scroll_for(el, 1);
-    if (e) { if (magic) e->left = (int)d; else e->top = (int)d; }
+    /* NaN is 0 per WebIDL's [EnforceRange]-free unrestricted double, and an
+     * infinity clamps like any other large value. */
+    if (!(d == d)) d = 0;
+    flush_layout();
+    el_scroll_write(el, magic, d);
+    return JS_UNDEFINED;
+}
+
+/* ---- the scroll METHODS: scroll / scrollTo / scrollBy -------------------
+ *
+ * One implementation for the element form and the window form, because the
+ * argument handling is the whole of the specified behaviour and it is
+ * identical: either two numbers, or ONE dictionary. A single non-dictionary
+ * argument is a TypeError (WebIDL cannot convert a Number to a dictionary),
+ * and an unrecognised `behavior` is a TypeError too -- both are asserted
+ * directly by css/cssom-view/element-scroll-arguments.html and
+ * window-scroll-arguments.html, so guessing "be permissive" fails them. Zero
+ * arguments is the dictionary overload with every member absent: legal, and a
+ * no-op. */
+struct scroll_args { int have_x, have_y; double x, y; };
+
+static int scroll_parse(JSContext *ctx, int argc, JSValueConst *argv,
+                        struct scroll_args *a)
+{
+    a->have_x = a->have_y = 0; a->x = a->y = 0;
+    if (argc >= 2) {
+        if (JS_ToFloat64(ctx, &a->x, argv[0]) < 0) return -1;
+        if (JS_ToFloat64(ctx, &a->y, argv[1]) < 0) return -1;
+        a->have_x = a->have_y = 1;
+        return 0;
+    }
+    if (argc == 0 || JS_IsUndefined(argv[0])) return 0;
+    if (!JS_IsObject(argv[0])) {
+        JS_ThrowTypeError(ctx, "argument is not an object");
+        return -1;
+    }
+    JSValue l = JS_GetPropertyStr(ctx, argv[0], "left");
+    if (!JS_IsUndefined(l)) {
+        int bad = JS_ToFloat64(ctx, &a->x, l) < 0;
+        a->have_x = 1;
+        JS_FreeValue(ctx, l);
+        if (bad) return -1;
+    } else JS_FreeValue(ctx, l);
+    JSValue tp = JS_GetPropertyStr(ctx, argv[0], "top");
+    if (!JS_IsUndefined(tp)) {
+        int bad = JS_ToFloat64(ctx, &a->y, tp) < 0;
+        a->have_y = 1;
+        JS_FreeValue(ctx, tp);
+        if (bad) return -1;
+    } else JS_FreeValue(ctx, tp);
+    JSValue b = JS_GetPropertyStr(ctx, argv[0], "behavior");
+    if (!JS_IsUndefined(b)) {
+        const char *s = JS_ToCString(ctx, b);
+        int ok = s && (!strcmp(s, "auto") || !strcmp(s, "instant") || !strcmp(s, "smooth"));
+        if (s) JS_FreeCString(ctx, s);
+        JS_FreeValue(ctx, b);
+        if (!ok) { JS_ThrowTypeError(ctx, "invalid scroll behavior"); return -1; }
+    } else JS_FreeValue(ctx, b);
+    /* NaN is treated as 0, per the dictionary's unrestricted double. */
+    if (!(a->x == a->x)) a->x = 0;
+    if (!(a->y == a->y)) a->y = 0;
+    return 0;
+}
+
+/* magic: 0 = scroll/scrollTo (absolute), 1 = scrollBy (relative). */
+static JSValue el_scroll_meth(JSContext *ctx, JSValueConst t, int argc,
+                              JSValueConst *argv, int magic)
+{
+    struct node *el = node_from(t);
+    struct scroll_args a;
+    if (scroll_parse(ctx, argc, argv, &a) < 0) return JS_EXCEPTION;
+    if (!el) return JS_UNDEFINED;
+    flush_layout();
+    if (a.have_x) el_scroll_write(el, 1, magic ? el_scroll_read(el, 1) + a.x : a.x);
+    if (a.have_y) el_scroll_write(el, 0, magic ? el_scroll_read(el, 0) + a.y : a.y);
+    return JS_UNDEFINED;
+}
+
+static JSValue win_scroll_meth(JSContext *ctx, JSValueConst t, int argc,
+                               JSValueConst *argv, int magic)
+{
+    (void)t;
+    struct scroll_args a;
+    if (scroll_parse(ctx, argc, argv, &a) < 0) return JS_EXCEPTION;
+    flush_layout();
+    double nx = a.have_x ? (magic ? g_win_sx + a.x : a.x) : g_win_sx;
+    double ny = a.have_y ? (magic ? g_win_sy + a.y : a.y) : g_win_sy;
+    win_scroll_set(nx, ny);
+    return JS_UNDEFINED;
+}
+
+static JSValue win_scroll_get(JSContext *ctx, JSValueConst t, int magic)
+{
+    (void)t;
+    return JS_NewInt32(ctx, magic ? g_win_sx : g_win_sy);
+}
+
+/* ---- scrollIntoView ----------------------------------------------------
+ *
+ * The one method here that computes something rather than storing it. For
+ * every scrolling ancestor from the element outwards, and finally for the
+ * viewport, move that box's scroll position so the element's border box sits
+ * where `block`/`inline` say. It is REAL: the answer is readable through
+ * scrollTop/scrollY afterwards, which is exactly how the corpus checks it
+ * (css/cssom-view/scrollintoview.html asserts window.scrollX/scrollY against
+ * arithmetic on window.innerWidth).
+ *
+ * Only the horizontal-tb writing mode maps block->vertical and
+ * inline->horizontal here; the sideways/vertical files in that directory need
+ * layout to have a writing mode first, so they are not claimed. */
+enum { SIV_START = 0, SIV_CENTER, SIV_END, SIV_NEAREST };
+
+static int align_of(JSContext *ctx, JSValueConst o, const char *key, int dflt)
+{
+    if (!JS_IsObject(o)) return dflt;
+    JSValue v = JS_GetPropertyStr(ctx, o, key);
+    int r = dflt;
+    if (!JS_IsUndefined(v)) {
+        const char *s = JS_ToCString(ctx, v);
+        if (s) {
+            if      (!strcmp(s, "start"))   r = SIV_START;
+            else if (!strcmp(s, "center"))  r = SIV_CENTER;
+            else if (!strcmp(s, "end"))     r = SIV_END;
+            else if (!strcmp(s, "nearest")) r = SIV_NEAREST;
+            JS_FreeCString(ctx, s);
+        }
+    }
+    JS_FreeValue(ctx, v);
+    return r;
+}
+
+/* Where a scroller must move to put [lo, lo+len) at `how` inside a visible
+ * band of `view` starting at `cur`. */
+static double align_to(int how, double cur, double view, double lo, double len)
+{
+    switch (how) {
+    case SIV_START:  return lo;
+    case SIV_END:    return lo + len - view;
+    case SIV_CENTER: return lo + len / 2 - view / 2;
+    default:
+        if (lo < cur) return lo;
+        if (lo + len > cur + view) return lo + len - view;
+        return cur;
+    }
+}
+
+static JSValue el_scrollIntoView(JSContext *ctx, JSValueConst t, int argc,
+                                 JSValueConst *argv)
+{
+    struct node *el = node_from(t);
+    if (!el) return JS_UNDEFINED;
+    flush_layout();
+    int x, y, w, h;
+    if (!border_box(el, &x, &y, &w, &h)) return JS_UNDEFINED;
+
+    /* scrollIntoView() / (true) / (undefined) / (null) / ({}) => block start,
+     * inline nearest. scrollIntoView(false) => block end, inline nearest. */
+    int blk = SIV_START, inl = SIV_NEAREST;
+    if (argc > 0 && JS_IsBool(argv[0])) {
+        blk = JS_ToBool(ctx, argv[0]) ? SIV_START : SIV_END;
+    } else if (argc > 0 && JS_IsObject(argv[0])) {
+        blk = align_of(ctx, argv[0], "block",  SIV_START);
+        inl = align_of(ctx, argv[0], "inline", SIV_NEAREST);
+    }
+
+    /* Inner scrollers first, outwards, then the viewport -- an element inside
+     * a scrolling div must be brought into that div before the page is moved
+     * to the div. */
+    for (struct node *p = el->parent; p; p = p->parent) {
+        if (p->type != N_ELEM || is_viewport_scroller(p) || is_body_el(p)) continue;
+        if (!el_is_scroller(p)) continue;
+        int px, py, pw, ph;
+        if (!border_box(p, &px, &py, &pw, &ph)) continue;
+        int bt, br, bb, bl; borders(p, &bt, &br, &bb, &bl);
+        int cw = pw - bl - br, ch = ph - bt - bb;
+        if (cw < 0) cw = 0;
+        if (ch < 0) ch = 0;
+        /* The element's position in the scroller's own content coordinates:
+         * document position minus the content-box origin, plus the scroll
+         * already applied. */
+        double lox = (double)x - (px + bl) + el_scroll_read(p, 1);
+        double loy = (double)y - (py + bt) + el_scroll_read(p, 0);
+        el_scroll_write(p, 1, align_to(inl, el_scroll_read(p, 1), cw, lox, w));
+        el_scroll_write(p, 0, align_to(blk, el_scroll_read(p, 0), ch, loy, h));
+    }
+    win_scroll_set(align_to(inl, g_win_sx, view_w(), x, w),
+                   align_to(blk, g_win_sy, view_h(), y, h));
     return JS_UNDEFINED;
 }
 
@@ -552,7 +994,12 @@ static JSValue el_getBoundingClientRect(JSContext *ctx, JSValueConst t,
     flush_layout();
     int x = 0, y = 0, w = 0, h = 0;
     if (el) border_box(el, &x, &y, &w, &h);
-    return make_rect(ctx, x, y, w, h);
+    /* CLIENT coordinates, so the rect moves when the page scrolls. It used to
+     * return document coordinates, which is the same number only at scroll 0
+     * -- and the CSSOM's own scrollIntoView tests scroll first and measure
+     * after. The two coincide on every page that has not scrolled, which is
+     * why the difference stayed invisible until window.scrollTo existed. */
+    return make_rect(ctx, x - g_win_sx, y - g_win_sy, w, h);
 }
 
 /* getClientRects(): one rect per FRAGMENT. This engine has real fragments -- a
@@ -574,13 +1021,138 @@ static JSValue el_getClientRects(JSContext *ctx, JSValueConst t, int argc, JSVal
             if (!it[i].node || !in_subtree(el, it[i].node)) continue;
             if (it[i].w == 0 && it[i].h == 0) continue;
             JS_SetPropertyUint32(ctx, arr, k++,
-                make_rect(ctx, it[i].x, it[i].y, it[i].w, it[i].h));
+                make_rect(ctx, it[i].x - g_win_sx, it[i].y - g_win_sy,
+                          it[i].w, it[i].h));
         }
     /* A DOMRectList is an array-like with item(), not an Array. The difference
      * is invisible to every use of it in the corpus (`.length`, `[0]`,
      * `item(0)`), and an Array additionally supports the spread and for..of
      * that the newer tests use on it. */
     JS_SetPropertyStr(ctx, arr, "item", JS_NewCFunction(ctx, list_item, "item", 1));
+    return arr;
+}
+
+/* ==========================================================================
+ * Hit testing: document.elementFromPoint / elementsFromPoint
+ *
+ * The display list is already ordered for this -- layout_page stable-sorts it
+ * by stacking level and layout.h says in as many words that it is
+ * "hit-tested back-to-front", which is what browser.c's click routing does.
+ * So the hit test is a backwards walk, and the only real work is getting an
+ * ELEMENT back to the caller.
+ *
+ * WHY A PATH AND NOT A NODE. This file must never mint a JS wrapper (see
+ * wrapper_of), and the element under a point is, in the overwhelmingly common
+ * case, one no script has ever touched -- so it has no wrapper and returning
+ * it from C would return null exactly when the call is useful. offsetParent
+ * solved the same problem with a hop count up the tree; a hit test has to go
+ * DOWN, so it answers an index path from the document and a JS shim walks it
+ * through childNodes. Every step of that walk goes through js_dom.c's wrapper
+ * cache, so what comes back is THE object, and
+ * `document.elementFromPoint(x, y) === document.body` can be true.
+ *
+ * This is not only worth its own subdirectory: resources/testdriver.js calls
+ * document.elementsFromPoint inside getPointerInteractablePaintTree, which is
+ * on the path of EVERY testdriver click in the corpus, and without it that
+ * rejects before the click is ever synthesised.
+ * ========================================================================== */
+
+#define HIT_MAX_DEPTH 64
+
+static int child_index_of(const struct node *n)
+{
+    int i = 0;
+    if (!n->parent) return -1;
+    for (struct node *c = n->parent->first_child; c; c = c->next, i++)
+        if (c == n) return i;
+    return -1;
+}
+
+/* The index path from the document root down to `n`, root-first. Returns its
+ * length, or -1 if the node is not reachable that way. */
+static int path_of(const struct node *n, int *out)
+{
+    int tmp[HIT_MAX_DEPTH], d = 0;
+    for (const struct node *p = n; p && p->parent; p = p->parent) {
+        if (d >= HIT_MAX_DEPTH) return -1;
+        int i = child_index_of(p);
+        if (i < 0) return -1;
+        tmp[d++] = i;
+    }
+    for (int i = 0; i < d; i++) out[i] = tmp[d - 1 - i];
+    return d;
+}
+
+static struct node *nearest_element(struct node *n)
+{
+    for (; n; n = n->parent) if (n->type == N_ELEM) return n;
+    return 0;
+}
+
+static void push_path(JSContext *ctx, JSValue arr, uint32_t *k, struct node *el)
+{
+    int p[HIT_MAX_DEPTH];
+    int d = path_of(el, p);
+    if (d < 0) return;
+    JSValue a = JS_NewArray(ctx);
+    for (int i = 0; i < d; i++)
+        JS_SetPropertyUint32(ctx, a, (uint32_t)i, JS_NewInt32(ctx, p[i]));
+    JS_SetPropertyUint32(ctx, arr, (*k)++, a);
+}
+
+/* __cssomHitPaths(x, y, all) -> array of index paths, topmost first. */
+static JSValue js_hitPaths(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    double dx = 0, dy = 0;
+    if (argc > 0 && JS_ToFloat64(ctx, &dx, argv[0]) < 0) return JS_EXCEPTION;
+    if (argc > 1 && JS_ToFloat64(ctx, &dy, argv[1]) < 0) return JS_EXCEPTION;
+    int all = argc > 2 && JS_ToBool(ctx, argv[2]);
+    JSValue arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) return arr;
+    flush_layout();
+    /* Outside the viewport the spec answers null / an empty list, and that is
+     * a real branch: it is what makes elementFromPoint(-1, -1) not the root. */
+    if (!(dx >= 0) || !(dy >= 0) || dx >= view_w() || dy >= view_h()) return arr;
+    int px = (int)(dx + g_win_sx), py = (int)(dy + g_win_sy);
+
+    int n = 0;
+    const struct item *it = items(&n);
+    struct node *seen[128];
+    int nseen = 0;
+    uint32_t k = 0;
+    for (int i = n - 1; i >= 0 && it; i--) {
+        if (!it[i].node || it[i].hidden) continue;
+        if (px < it[i].x || px >= it[i].x + it[i].w) continue;
+        if (py < it[i].y || py >= it[i].y + it[i].h) continue;
+        /* The element and then its ancestors: elementsFromPoint answers the
+         * paint tree at that point, so a hit on a child is also a hit on
+         * every box that contains it. */
+        for (struct node *el = nearest_element(it[i].node); el;
+             el = nearest_element(el->parent)) {
+            int dup = 0;
+            for (int j = 0; j < nseen; j++) if (seen[j] == el) { dup = 1; break; }
+            if (dup) continue;
+            if (nseen < (int)(sizeof seen / sizeof seen[0])) seen[nseen++] = el;
+            push_path(ctx, arr, &k, el);
+            if (!all) return arr;
+        }
+        if (!all) break;
+    }
+    /* Nothing painted there, but the point is inside the viewport: the body
+     * and the root element still cover it. Without this, a point over blank
+     * page answers null, and null is the answer reserved for OUTSIDE the
+     * viewport -- two different states that must not read the same. */
+    if (k == 0) {
+        struct node *root = js_dom_root();
+        struct node *html = 0, *body = 0;
+        for (struct node *c = root ? root->first_child : 0; c; c = c->next)
+            if (c->type == N_ELEM) { html = c; break; }
+        for (struct node *c = html ? html->first_child : 0; c; c = c->next)
+            if (is_body_el(c)) { body = c; break; }
+        if (body) { push_path(ctx, arr, &k, body); if (!all) return arr; }
+        if (html) push_path(ctx, arr, &k, html);
+    }
     return arr;
 }
 
@@ -1732,6 +2304,190 @@ static const char *SHIM_FONTS =
 "  }\n"
 "})(globalThis);\n";
 
+/* The rest of CSSOM-View that is object plumbing rather than geometry.
+ *
+ * Two groups. The hit-test entry points, which are here only because the WALK
+ * has to happen in JS (see the comment above js_hitPaths -- a path resolved
+ * through childNodes yields js_dom.c's own wrappers, and a node returned from
+ * C would not). And the geometry-interface shapes: DOMPoint, DOMQuad and the
+ * GeometryUtils methods.
+ *
+ * WHAT THE GEOMETRY UTILS ARE AND ARE NOT. getBoxQuads and the convert*
+ * family exist to express a box in ANOTHER element's coordinate space, and
+ * the whole point of the interface is that it survives transforms. This
+ * engine has no transform in layout, so these are the untransformed case: a
+ * quad built from the border box, and a conversion that is a translation
+ * between two getBoundingClientRect origins. That is the correct answer for
+ * every untransformed page and the wrong one for a rotated box -- which is
+ * most of css/cssom-view/cssom-geometryutils-*.html, and those are NOT
+ * claimed by this. What it buys is the 18 files that die on `'DOMQuad' is not
+ * defined` before reaching any assertion, and every unrelated test whose
+ * feature detect trips over a missing method. Stated as a limitation because
+ * a plausible wrong quad is worse than a missing one if nobody wrote it down.
+ *
+ * `box` is honoured (margin/border/padding/content), because that part needs
+ * no transform and is just the border box grown or shrunk by the computed
+ * margin, border and padding -- read back through getComputedStyle so there
+ * is one source for it. */
+static const char *SHIM_VIEW =
+"(function (G) {\n"
+"  var D = G.document;\n"
+"  if (!D) return;\n"
+"  var EP = (typeof G.Element !== 'undefined' && G.Element.prototype) ||\n"
+"           Object.getPrototypeOf(D.createElement('div'));\n"
+"\n"
+"  /* ---- hit testing ---- */\n"
+"  function walk(path) {\n"
+"    var n = D;\n"
+"    for (var i = 0; i < path.length; i++) {\n"
+"      var kids = n.childNodes;\n"
+"      if (!kids || path[i] >= kids.length) return null;\n"
+"      n = kids[path[i]];\n"
+"      if (!n) return null;\n"
+"    }\n"
+"    return n;\n"
+"  }\n"
+"  /* Both coordinates are required, and both are `double` -- not\n"
+"   * `unrestricted double` -- so Infinity and NaN are a TypeError rather than\n"
+"   * a point outside the viewport. css/cssom-view/elementFromPoint-parameters\n"
+"   * .html asserts exactly those two, and a permissive version fails it. */\n"
+"  function pt(args, name) {\n"
+"    if (args.length < 2)\n"
+"      throw new TypeError(name + ': 2 arguments required, got ' + args.length);\n"
+"    var x = +args[0], y = +args[1];\n"
+"    if (!isFinite(x) || !isFinite(y))\n"
+"      throw new TypeError(name + ': coordinates must be finite');\n"
+"    return [x, y];\n"
+"  }\n"
+"  /* On Document.prototype, not on the document object: elementFromPosition\n"
+"   * .html uses assert_inherits, which fails an own property. */\n"
+"  var DP = Object.getPrototypeOf(D) || D;\n"
+"  D.elementFromPoint = function () {\n"
+"    var c = pt(arguments, 'elementFromPoint');\n"
+"    var p = G.__cssomHitPaths(c[0], c[1], false);\n"
+"    return p.length ? walk(p[0]) : null;\n"
+"  };\n"
+"  D.elementsFromPoint = function () {\n"
+"    var c = pt(arguments, 'elementsFromPoint');\n"
+"    var p = G.__cssomHitPaths(c[0], c[1], true), out = [];\n"
+"    for (var i = 0; i < p.length; i++) { var e = walk(p[i]); if (e) out.push(e); }\n"
+"    return out;\n"
+"  };\n"
+"  if (!D.caretPositionFromPoint)\n"
+"    DP.caretPositionFromPoint = function () { return null; };\n"
+"  if (!D.caretRangeFromPoint)\n"
+"    DP.caretRangeFromPoint = function () { return null; };\n"
+"\n"
+"  /* ---- document.scrollingElement ---- */\n"
+"  if (!('scrollingElement' in D))\n"
+"    Object.defineProperty(D, 'scrollingElement', { configurable: true,\n"
+"      get: function () { return D.documentElement; } });\n"
+"\n"
+"  /* ---- DOMPoint / DOMQuad ---- */\n"
+"  function DOMPointReadOnly(x, y, z, w) {\n"
+"    this.x = x === undefined ? 0 : +x; this.y = y === undefined ? 0 : +y;\n"
+"    this.z = z === undefined ? 0 : +z; this.w = w === undefined ? 1 : +w;\n"
+"  }\n"
+"  DOMPointReadOnly.prototype.toJSON = function () {\n"
+"    return { x: this.x, y: this.y, z: this.z, w: this.w };\n"
+"  };\n"
+"  DOMPointReadOnly.fromPoint = function (p) {\n"
+"    p = p || {}; return new DOMPointReadOnly(p.x, p.y, p.z, p.w);\n"
+"  };\n"
+"  function DOMPoint(x, y, z, w) { DOMPointReadOnly.call(this, x, y, z, w); }\n"
+"  DOMPoint.prototype = Object.create(DOMPointReadOnly.prototype);\n"
+"  DOMPoint.prototype.constructor = DOMPoint;\n"
+"  DOMPoint.fromPoint = function (p) { p = p || {}; return new DOMPoint(p.x, p.y, p.z, p.w); };\n"
+"  if (!G.DOMPointReadOnly) G.DOMPointReadOnly = DOMPointReadOnly;\n"
+"  if (!G.DOMPoint) G.DOMPoint = DOMPoint;\n"
+"\n"
+"  function DOMQuad(p1, p2, p3, p4) {\n"
+"    this.p1 = DOMPoint.fromPoint(p1); this.p2 = DOMPoint.fromPoint(p2);\n"
+"    this.p3 = DOMPoint.fromPoint(p3); this.p4 = DOMPoint.fromPoint(p4);\n"
+"  }\n"
+"  DOMQuad.fromRect = function (r) {\n"
+"    r = r || {};\n"
+"    var x = +r.x || 0, y = +r.y || 0, w = +r.width || 0, h = +r.height || 0;\n"
+"    return new DOMQuad({ x: x, y: y }, { x: x + w, y: y },\n"
+"                       { x: x + w, y: y + h }, { x: x, y: y + h });\n"
+"  };\n"
+"  DOMQuad.fromQuad = function (q) {\n"
+"    q = q || {}; return new DOMQuad(q.p1, q.p2, q.p3, q.p4);\n"
+"  };\n"
+"  DOMQuad.prototype.getBounds = function () {\n"
+"    var xs = [this.p1.x, this.p2.x, this.p3.x, this.p4.x];\n"
+"    var ys = [this.p1.y, this.p2.y, this.p3.y, this.p4.y];\n"
+"    var x = Math.min.apply(null, xs), y = Math.min.apply(null, ys);\n"
+"    return new G.DOMRect(x, y, Math.max.apply(null, xs) - x,\n"
+"                               Math.max.apply(null, ys) - y);\n"
+"  };\n"
+"  DOMQuad.prototype.toJSON = function () {\n"
+"    return { p1: this.p1, p2: this.p2, p3: this.p3, p4: this.p4 };\n"
+"  };\n"
+"  if (!G.DOMQuad) G.DOMQuad = DOMQuad;\n"
+"\n"
+"  /* ---- GeometryUtils ---- */\n"
+"  function px(v) { var n = parseFloat(v); return n === n ? n : 0; }\n"
+"  function boxRect(node, which) {\n"
+"    var r = node.getBoundingClientRect();\n"
+"    var x = r.left, y = r.top, w = r.width, h = r.height;\n"
+"    if (!which || which === 'border') return { x: x, y: y, width: w, height: h };\n"
+"    var s = G.getComputedStyle ? G.getComputedStyle(node) : null;\n"
+"    if (!s) return { x: x, y: y, width: w, height: h };\n"
+"    var bt = px(s.borderTopWidth), br = px(s.borderRightWidth);\n"
+"    var bb = px(s.borderBottomWidth), bl = px(s.borderLeftWidth);\n"
+"    if (which === 'margin') {\n"
+"      var mt = px(s.marginTop), mr = px(s.marginRight);\n"
+"      var mb = px(s.marginBottom), ml = px(s.marginLeft);\n"
+"      return { x: x - ml, y: y - mt, width: w + ml + mr, height: h + mt + mb };\n"
+"    }\n"
+"    x += bl; y += bt; w -= bl + br; h -= bt + bb;\n"
+"    if (which === 'content') {\n"
+"      var pt = px(s.paddingTop), pr = px(s.paddingRight);\n"
+"      var pb = px(s.paddingBottom), pl = px(s.paddingLeft);\n"
+"      x += pl; y += pt; w -= pl + pr; h -= pt + pb;\n"
+"    }\n"
+"    return { x: x, y: y, width: w < 0 ? 0 : w, height: h < 0 ? 0 : h };\n"
+"  }\n"
+"  function originOf(node) {\n"
+"    if (!node || node === D || node === D.documentElement) return { x: 0, y: 0 };\n"
+"    if (!node.getBoundingClientRect) return { x: 0, y: 0 };\n"
+"    var r = node.getBoundingClientRect();\n"
+"    return { x: r.left, y: r.top };\n"
+"  }\n"
+"  function geom(proto) {\n"
+"    if (!proto) return;\n"
+"    proto.getBoxQuads = function (opts) {\n"
+"      opts = opts || {};\n"
+"      var b = boxRect(this, opts.box), o = originOf(opts.relativeTo);\n"
+"      return [DOMQuad.fromRect({ x: b.x - o.x, y: b.y - o.y,\n"
+"                                 width: b.width, height: b.height })];\n"
+"    };\n"
+"    proto.convertPointFromNode = function (point, from) {\n"
+"      var a = originOf(from), b = originOf(this);\n"
+"      var p = DOMPoint.fromPoint(point);\n"
+"      return new DOMPoint(p.x + a.x - b.x, p.y + a.y - b.y, p.z, p.w);\n"
+"    };\n"
+"    proto.convertRectFromNode = function (rect, from) {\n"
+"      var a = originOf(from), b = originOf(this);\n"
+"      rect = rect || {};\n"
+"      return DOMQuad.fromRect({ x: (+rect.x || 0) + a.x - b.x,\n"
+"                                y: (+rect.y || 0) + a.y - b.y,\n"
+"                                width: +rect.width || 0, height: +rect.height || 0 });\n"
+"    };\n"
+"    proto.convertQuadFromNode = function (quad, from) {\n"
+"      var a = originOf(from), b = originOf(this), q = DOMQuad.fromQuad(quad);\n"
+"      var dx = a.x - b.x, dy = a.y - b.y;\n"
+"      return new DOMQuad({ x: q.p1.x + dx, y: q.p1.y + dy },\n"
+"                         { x: q.p2.x + dx, y: q.p2.y + dy },\n"
+"                         { x: q.p3.x + dx, y: q.p3.y + dy },\n"
+"                         { x: q.p4.x + dx, y: q.p4.y + dy });\n"
+"    };\n"
+"  }\n"
+"  geom(EP);\n"
+"  geom(Object.getPrototypeOf(D));\n"
+"})(globalThis);\n";
+
 /* ==========================================================================
  * CSSStyleDeclaration: the IDL attributes, and the bytes values read back as
  *
@@ -2105,6 +2861,7 @@ void js_cssom_install(JSContext *ctx)
     g_installed = 1;
     g_cache_node = 0; g_cache_ptr = 0;
     g_scrolln = 0;
+    g_win_sx = g_win_sy = 0;
     g_saw_dirty = 0;
     g_sheetlist = JS_UNDEFINED;
     free(g_sheetsrc); g_sheetsrc = 0; g_sheetsrclen = 0;
@@ -2164,6 +2921,20 @@ void js_cssom_install(JSContext *ctx)
             JS_NewCFunction(ctx, el_getBoundingClientRect, "getBoundingClientRect", 0));
         JS_SetPropertyStr(ctx, proto, "getClientRects",
             JS_NewCFunction(ctx, el_getClientRects, "getClientRects", 0));
+
+        /* The scrolling methods. `scroll` and `scrollTo` are the same
+         * operation under two names, which is the spec's own wording. */
+        JS_SetPropertyStr(ctx, proto, "scrollTo",
+            JS_NewCFunction2(ctx, (JSCFunction *)el_scroll_meth, "scrollTo", 2,
+                             JS_CFUNC_generic_magic, 0));
+        JS_SetPropertyStr(ctx, proto, "scroll",
+            JS_NewCFunction2(ctx, (JSCFunction *)el_scroll_meth, "scroll", 2,
+                             JS_CFUNC_generic_magic, 0));
+        JS_SetPropertyStr(ctx, proto, "scrollBy",
+            JS_NewCFunction2(ctx, (JSCFunction *)el_scroll_meth, "scrollBy", 2,
+                             JS_CFUNC_generic_magic, 1));
+        JS_SetPropertyStr(ctx, proto, "scrollIntoView",
+            JS_NewCFunction(ctx, el_scrollIntoView, "scrollIntoView", 1));
     }
     JS_FreeValue(ctx, proto);
 
@@ -2172,6 +2943,44 @@ void js_cssom_install(JSContext *ctx)
     JS_SetPropertyStr(ctx, css, "supports", JS_NewCFunction(ctx, js_CSS_supports, "supports", 2));
     JS_SetPropertyStr(ctx, css, "escape",   JS_NewCFunction(ctx, js_CSS_escape, "escape", 1));
     JS_SetPropertyStr(ctx, g, "CSS", css);
+
+    /* THE VIEWPORT HAS TO BE ONE NUMBER, for the same reason matchMedia below
+     * has to be the cascade's own evaluator. js_webapi.c publishes
+     * innerWidth/innerHeight from a viewport IT is told about, and the
+     * cascade reads css_media_width()/css_media_height(); nothing keeps the
+     * two in step, and in the host WPT runner they are 1180x572 and 800x600
+     * respectively. That is not a cosmetic disagreement: a page computes
+     * `4000 - window.innerWidth + el.clientWidth`, scrolls, and compares
+     * against window.scrollX -- so the number it predicts with and the number
+     * the scroller clamps with must be the same one, or every such assertion
+     * is off by the difference (css/cssom-view/scrollintoview.html is 40
+     * subtests of exactly that shape). The cascade's is authoritative because
+     * it is the width layout was run at. */
+    {
+        int vw = view_w(), vh = view_h();
+        JS_SetPropertyStr(ctx, g, "innerWidth",  JS_NewInt32(ctx, vw));
+        JS_SetPropertyStr(ctx, g, "innerHeight", JS_NewInt32(ctx, vh));
+        JS_SetPropertyStr(ctx, g, "outerWidth",  JS_NewInt32(ctx, vw));
+        JS_SetPropertyStr(ctx, g, "outerHeight", JS_NewInt32(ctx, vh));
+    }
+
+    /* The window as a scrolling box. scrollX/pageXOffset are two names for
+     * one value, and a page uses whichever its era taught it. */
+    JS_SetPropertyStr(ctx, g, "scrollTo",
+        JS_NewCFunction2(ctx, (JSCFunction *)win_scroll_meth, "scrollTo", 2,
+                         JS_CFUNC_generic_magic, 0));
+    JS_SetPropertyStr(ctx, g, "scroll",
+        JS_NewCFunction2(ctx, (JSCFunction *)win_scroll_meth, "scroll", 2,
+                         JS_CFUNC_generic_magic, 0));
+    JS_SetPropertyStr(ctx, g, "scrollBy",
+        JS_NewCFunction2(ctx, (JSCFunction *)win_scroll_meth, "scrollBy", 2,
+                         JS_CFUNC_generic_magic, 1));
+    def_getset(ctx, g, "scrollX",      win_scroll_get, 0, 1);
+    def_getset(ctx, g, "pageXOffset",  win_scroll_get, 0, 1);
+    def_getset(ctx, g, "scrollY",      win_scroll_get, 0, 0);
+    def_getset(ctx, g, "pageYOffset",  win_scroll_get, 0, 0);
+    JS_SetPropertyStr(ctx, g, "__cssomHitPaths",
+        JS_NewCFunction(ctx, js_hitPaths, "__cssomHitPaths", 3));
 
     JS_SetPropertyStr(ctx, g, "DOMRect",
         JS_NewCFunction2(ctx, js_DOMRect, "DOMRect", 4, JS_CFUNC_constructor, 0));
@@ -2200,6 +3009,7 @@ void js_cssom_install(JSContext *ctx)
     install_style_decl(ctx);
 
     run_shim(ctx, SHIM_FONTS, "<cssom fonts>");
+    run_shim(ctx, SHIM_VIEW, "<cssom view>");
     run_shim(ctx, SHIM_BODY_HANDLERS, "<cssom body handlers>");
 }
 

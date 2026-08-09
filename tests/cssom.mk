@@ -66,9 +66,18 @@ test-cssom: $(CSSOM_DIR)/cssom_test
 #                              flush layout, so they answer 0 -- which is
 #                              exactly what a build with layout unlinked
 #                              answers, i.e. the state the WPT runner is in.
+#   -DCSSOM_NEGCTL_INKUNION    every box is the SUBTREE INK UNION, borrowed
+#                              from the nearest inked ancestor when the
+#                              element painted nothing. This is the plausible
+#                              geometry: nothing is 0, nothing throws, every
+#                              accessor answers a rectangle of the right
+#                              order, and every box with children in it is
+#                              wrong by their overflow. NOGEOM cannot cover
+#                              it -- NOGEOM is the wrong answer that LOOKS
+#                              wrong, this is the one that does not.
 #
-# The target succeeds when the tests FAIL against both.
-CSSOM_NEGS := SERIALIZE NOGEOM
+# The target succeeds when the tests FAIL against all three.
+CSSOM_NEGS := SERIALIZE NOGEOM INKUNION
 
 test-cssom-negctl: $(BUILD)/libcss_host.a
 	@mkdir -p $(CSSOM_DIR)

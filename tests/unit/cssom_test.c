@@ -107,6 +107,13 @@ static const char *HTML =
 "<div id='box'>content</div>\n"
 "<div id='gone'>invisible</div>\n"
 "<div id='rel'><div id='kid' style='background:#00ff00;width:20px;height:8px'>k</div></div>\n"
+/* A real scrolling box, and the styles are INLINE on purpose: the sheet above
+ * is counted rule-by-rule by the CSSOM tests further down, so a fixture that
+ * needs a new box must not add a rule to it. An element with overflow:visible
+ * is not a scrolling box at all and its scroll position is permanently 0;
+ * this one has content taller than itself, so it has somewhere to go. */
+"<div id='scroller' style='width:100px;height:30px;overflow:auto;background:#eeeeee'>\n"
+"  <div style='width:400px;height:400px;background:#dddddd'>tall</div></div>\n"
 "</body></html>\n";
 
 /* ------------------------------------------------------- 1. the load gate */
@@ -210,10 +217,77 @@ static void test_geometry(void)
        "scrollWidth is never smaller than clientWidth");
 
     /* scrollTop is remembered even though nothing scrolls: a page that writes
-     * it and reads back 0 retries forever. */
+     * it and reads back 0 retries forever.
+     *
+     * BUT ONLY ON A SCROLLING BOX. #box has overflow:visible, so it is not a
+     * scrolling box at all and its scroll position is 0 by definition -- the
+     * check used to be written on #box and expected 17, which is the answer
+     * no browser gives. The retry-loop argument that put it there is about
+     * boxes that CAN scroll, and that is #scroller. */
+    CK(eq("(document.getElementById('scroller').scrollTop = 17,"
+          " document.getElementById('scroller').scrollTop)", "17"),
+       "a written scrollTop reads back on a scrolling box");
     CK(eq("(document.getElementById('box').scrollTop = 17,"
-          " document.getElementById('box').scrollTop)", "17"),
-       "a written scrollTop reads back (nothing scrolls, but the value is kept)");
+          " document.getElementById('box').scrollTop)", "0"),
+       "and stays 0 on overflow:visible, which has no scrolling box to move");
+    CK(eq("(document.getElementById('scroller').scrollTop = -5,"
+          " document.getElementById('scroller').scrollTop)", "0"),
+       "a negative scroll position clamps to 0");
+
+    /* The scrolling METHODS. Element.scroll/scrollTo/scrollBy and
+     * scrollIntoView did not exist at all before; in css/cssom-view their
+     * absence was 437 subtests failing with `not a function`. */
+    CK(eq("typeof document.getElementById('box').scrollTo", "function"),
+       "Element.scrollTo exists");
+    CK(eq("typeof document.getElementById('box').scrollBy", "function"),
+       "Element.scrollBy exists");
+    CK(eq("typeof document.getElementById('box').scrollIntoView", "function"),
+       "Element.scrollIntoView exists");
+    CK(eq("(document.getElementById('scroller').scrollTo({top: 9}),"
+          " document.getElementById('scroller').scrollTop)", "9"),
+       "scrollTo takes a ScrollToOptions dictionary");
+    CK(eq("(document.getElementById('scroller').scrollBy({top: 4}),"
+          " document.getElementById('scroller').scrollTop)", "13"),
+       "and scrollBy is relative to where it already is");
+    CK(eq("(function () { try { document.getElementById('scroller').scrollTo(25);"
+          "  return 'no throw'; } catch (e) { return e.constructor.name; } })()",
+          "TypeError"),
+       "a single NON-dictionary argument is a TypeError, per WebIDL");
+    CK(eq("(function () { try {"
+          "  document.getElementById('scroller').scrollTo({behavior: 'sideways'});"
+          "  return 'no throw'; } catch (e) { return e.constructor.name; } })()",
+          "TypeError"),
+       "and so is an unrecognised scroll behavior");
+    CK(eq("(function () { try { document.getElementById('scroller').scrollTo();"
+          "  return 'ok'; } catch (e) { return 'threw ' + e; } })()", "ok"),
+       "while zero arguments is the empty dictionary, and legal");
+
+    /* The window as a scrolling box, and the document root as the viewport. */
+    CK(eq("typeof window.scrollTo", "function"), "window.scrollTo exists");
+    CK(eq("typeof window.scrollX", "number"), "window.scrollX is a number");
+    CK(eq("window.scrollX === window.pageXOffset", "true"),
+       "pageXOffset is the same value under its older name");
+    CK(eq("document.scrollingElement === document.documentElement", "true"),
+       "document.scrollingElement is the root element in standards mode");
+    CK(eq("document.documentElement.clientWidth", "800"),
+       "the ROOT element's clientWidth is the viewport, not its own box");
+    CK(eq("document.documentElement.clientHeight", "600"),
+       "and clientHeight likewise -- this is how a page asks for the window");
+
+    /* Hit testing. */
+    CK(eq("typeof document.elementFromPoint", "function"),
+       "document.elementFromPoint exists");
+    CK(eq("String(document.elementFromPoint(-1, -1))", "null"),
+       "a point outside the viewport hits nothing at all");
+    CK(eq("(function () { try { document.elementFromPoint(); return 'no throw'; }"
+          "  catch (e) { return e.constructor.name; } })()", "TypeError"),
+       "both coordinates are required");
+    CK(eq("document.elementsFromPoint(2, 2).indexOf(document.documentElement) >= 0",
+          "true"),
+       "elementsFromPoint answers the paint tree, so the root is always in it");
+    CK(eq("document.elementFromPoint(2, 2) === document.elementsFromPoint(2, 2)[0]",
+          "true"),
+       "and elementFromPoint is its first entry -- one hit test, two spellings");
 
     /* DOMRect's own behaviour: a negative extent normalises. */
     CK(eq("new DOMRect(10, 10, -4, -6).left + ',' + new DOMRect(10, 10, -4, -6).top",
