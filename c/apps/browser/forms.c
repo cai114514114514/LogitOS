@@ -1688,13 +1688,13 @@ static int ce_backspace_raw(struct node *host)
         fc_ce_set_caret(n, a);
         return 1;
     }
-    /* At the start of this node. A <br> immediately before is what goes. */
-    struct node *br = ce_br_before(host, n->type == N_TEXT ? n : n);
+    /* At the start of this node. A <br> immediately before is what goes:
+     * backspace over "abc<br>|def" must remove the line break, not the "c" on
+     * the line above it. */
+    struct node *br = ce_br_before(host, n);
     if (br) {
-        struct node *blk = ce_block_of(n, host);
         ce_unlink(br);
         fc_ce_set_caret(n, 0);
-        (void)blk;
         return 1;
     }
     struct node *p = ce_prev_text(host, n);
