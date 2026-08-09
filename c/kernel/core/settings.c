@@ -408,7 +408,13 @@ int settings_prepare_user(unsigned uid)
 
     /* THE ONLY MOMENT THIS CAN WORK. /etc/passwd is root:root 0600 and the
      * caller is about to stop being root; a lookup after the drop reads
-     * nothing. See the call site in c/kernel/exec/syscall.c. */
+     * nothing. See the call site in c/kernel/exec/syscall.c.
+     *
+     * That read is also the ONLY privilege check this function needs, and it
+     * is a real one rather than a convenient one: everything below depends on
+     * having parsed the store, and the store is unreadable to anyone who is
+     * not root. A non-root caller therefore leaves here with -1 having changed
+     * nothing -- and its SYS_SETSESSION is about to be refused anyway. */
     static char store[ACCT_MAX + 1];
     int sz = vfs_size("/etc/passwd");
     if (sz <= 0 || sz > ACCT_MAX) return -1;
@@ -436,6 +442,67 @@ int settings_prepare_user(unsigned uid)
     if (o > 1 && pending_path[o - 1] == '/') o--;
     s_cpy(pending_path + o, SET_USER_REL, SET_PATHLEN - o);
     user_uid = uid;
+
+    /* ---------------------------------------------------------------------
+     * MAKE THE STORE EXIST AND BELONG TO THEM, WHILE WE ARE STILL ROOT.
+     *
+     * This is not tidiness. It is the difference between a store that can be
+     * written ONCE and a store that can be written.
+     *
+     * A file created by a non-root process through vfs_write() lands
+     * root:root on the medium. c/fs/vfs.c writes the new owner into the RAM
+     * metadata table (vmeta_chown) while the MODE goes out through logitfs
+     * setattr -- and now that logitfs has attributes of its own, getattr is
+     * what every later permission check reads, so the ownership stamp is
+     * invisible. Measured, not deduced: `mkdir` as uid 1000 inside a 0700 home
+     * it owns produces a directory that stats as `uid=0 gid=0 mode=755`, and
+     * the same user then cannot create a file in it.
+     *
+     * The consequence for a settings store is exactly the bug this whole
+     * change exists to fix, one layer down: the FIRST save would succeed (a
+     * new name needs write permission on the DIRECTORY) and every save after
+     * it would be refused (a rewrite needs write permission on the FILE).
+     *
+     * So the directory and the file are created HERE, as root, and given to
+     * the user -- after which every save is a rewrite of a file they own.
+     * 0700 and 0600: a second user must not be able to read what this one has
+     * configured, and on this machine that is enforced twice over, since the
+     * home itself is 0700.
+     *
+     * THE vfs.c BEHAVIOUR IS A DEFECT AND IT IS NOT FIXED HERE. c/fs/vfs.c
+     * belongs to another line and its permission CHECKS are right; what is
+     * wrong is which of the two metadata stores the create-time chown is
+     * written to. Reported rather than patched around silently.
+     * ------------------------------------------------------------------- */
+    {
+        char dir[SET_PATHLEN];
+        s_cpy(dir, pending_path, SET_PATHLEN);
+        for (int i = s_len(dir) - 1; i > 0; i--) if (dir[i] == '/') { dir[i] = 0; break; }
+        int rmk = vfs_mkdir(dir);                    /* already there: fine */
+        int rcd = vfs_chown(dir, uid, a.gid);
+        int rmd = vfs_chmod(dir, 0700);
+        int rwr = 0;
+        if (vfs_size(pending_path) < 0) {
+            /* A comment, not an empty file: a zero-length file is
+             * indistinguishable from a truncation, and the loader would
+             * (correctly) report SET_D_NOFILE for it forever. */
+            static const char seed[] =
+                "# LogitOS settings for this account.  Values here override\n"
+                "# /etc/settings.conf, which supplies the system defaults.\n";
+            rwr = vfs_write(pending_path, seed, (int)sizeof seed - 1);
+        }
+        int rcf = vfs_chown(pending_path, uid, a.gid);
+        int rmf = vfs_chmod(pending_path, 0600);
+        /* SAY WHAT WAS REFUSED. A store that silently could not be created
+         * looks exactly like a user whose settings do not persist, which is
+         * the bug this file exists to fix -- so it gets a line rather than a
+         * shrug. Nothing here is fatal: the worst case is the system defaults,
+         * read-only. */
+        if (rcd < 0 || rmd < 0 || rwr < 0 || rcf < 0 || rmf < 0)
+            kprintf("[set] user store %s: mkdir=%d chown=%d chmod=%d write=%d "
+                    "fchown=%d fchmod=%d\n", pending_path,
+                    rmk, rcd, rmd, rwr, rcf, rmf);
+    }
     return 0;
 }
 
@@ -506,19 +573,11 @@ int settings_commit(void)
      * the inode only after it.  The file is its old content or its new content
      * and never a mixture.  There is no temp file here on purpose. */
     const char *path = settings_store_path();
-    /* The parent directory.  /etc for the system store; $HOME/.config for a
-     * user's -- made HERE rather than at enrolment, because an account created
-     * before this code existed has no .config and would otherwise never be able
-     * to save anything.  A failure is not checked: it usually means "it is
-     * already there", and the write below is the thing that actually reports. */
-    if (user_path[0]) {
-        char dir[SET_PATHLEN];
-        s_cpy(dir, path, SET_PATHLEN);
-        for (int i = s_len(dir) - 1; i > 0; i--) if (dir[i] == '/') { dir[i] = 0; break; }
-        if (vfs_mkdir(dir) < 0) { /* already exists, or refused: the write says */ }
-    } else {
-        if (vfs_mkdir("/etc") < 0) { /* already exists: fine */ }
-    }
+    /* Only the SYSTEM store's directory is made here, and only because /etc may
+     * genuinely not exist on a fresh image.  A user's $HOME/.config was made at
+     * login, as root, together with the file itself -- see the long note in
+     * settings_prepare_user() for why it has to happen there and not here. */
+    if (!user_path[0]) { if (vfs_mkdir("/etc") < 0) { /* already exists: fine */ } }
     int rc = vfs_write(path, buf, n);
     if (rc < 0) { kprintf("[set] commit FAILED %s (%d bytes)\n", path, n); return SET_E_IO; }
     gen++;
