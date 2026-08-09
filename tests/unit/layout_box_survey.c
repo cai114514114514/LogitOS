@@ -48,6 +48,22 @@ static long n_exact, n_ink, n_nobox;
 static long t_exact, t_ink, t_nobox;      /* ...of which layout_node_box answers */
 static long n_files;
 
+/* The tags of the elements the table still cannot answer. Printed because the
+ * residue is the next person's work order, and a percentage does not say where
+ * to start. */
+#define MISSTAGS 64
+static struct { char tag[24]; long n; } g_miss[MISSTAGS];
+static int g_nmiss;
+static void miss(const char *tag)
+{
+    if (!tag) tag = "?";
+    for (int i = 0; i < g_nmiss; i++)
+        if (!strcmp(g_miss[i].tag, tag)) { g_miss[i].n++; return; }
+    if (g_nmiss >= MISSTAGS) return;
+    snprintf(g_miss[g_nmiss].tag, sizeof g_miss[0].tag, "%s", tag);
+    g_miss[g_nmiss++].n = 1;
+}
+
 static int tag_is(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
 static int collect_style(struct node *n, char *out, int o, int max){
     if(!n) return o;
@@ -75,13 +91,33 @@ static void classify(struct node *el)
     int x, y, w, h;
     int have = layout_node_box(el, &x, &y, &w, &h);
     if (cls == 0) { n_exact++; t_exact += have; }
-    else if (cls == 1) { n_ink++; t_ink += have; }
-    else { n_nobox++; t_nobox += have; }
+    else if (cls == 1) { n_ink++; t_ink += have; if (!have) miss(el->tag); }
+    else { n_nobox++; t_nobox += have; if (!have) miss(el->tag); }
+}
+
+/* Elements that generate no box BY DEFINITION, and counting them would make
+ * the NOBOX class look enormous while saying nothing: everything in <head>,
+ * the metadata elements wherever they appear, and any display:none subtree.
+ * A geometry accessor is never called on these; border_box() never sees them.
+ * Excluding them is what makes the remaining NOBOX count the thing this line
+ * is about -- an element that WAS laid out and had nothing to show for it. */
+static int is_metadata(const struct node *n)
+{
+    static const char *m[] = { "head","title","meta","link","base","style","script",
+                               "template","noscript","param","source","track", 0 };
+    if (!n->tag) return 0;
+    for (int i = 0; m[i]; i++) if (!strcmp(n->tag, m[i])) return 1;
+    return 0;
 }
 
 static void walk(struct node *n)
 {
-    if (n->type == N_ELEM) classify(n);
+    if (n->type == N_ELEM) {
+        if (is_metadata(n)) return;
+        const struct cstyle *st = (const struct cstyle *)n->style;
+        if (st && st->display == DISP_NONE) return;
+        classify(n);
+    }
     for (struct node *c = n->first_child; c; c = c->next) walk(c);
 }
 
@@ -163,5 +199,20 @@ int main(int argc, char **argv)
         printf("\n  NOBOX was %.1f%% of elements; of those, %.1f%% now have a box.\n",
                100.0 * (double)n_nobox / (double)tot,
                n_nobox ? 100.0 * (double)t_nobox / (double)n_nobox : 0.0);
+    /* The residue, by tag: the next person's work order. A percentage does not
+     * say where to start and this does. */
+    for (int i = 1; i < g_nmiss; i++) {
+        int j = i;
+        while (j > 0 && g_miss[j - 1].n < g_miss[j].n) {
+            char tt[24]; long tn;
+            memcpy(tt, g_miss[j - 1].tag, sizeof tt); tn = g_miss[j - 1].n;
+            memcpy(g_miss[j - 1].tag, g_miss[j].tag, sizeof tt); g_miss[j - 1].n = g_miss[j].n;
+            memcpy(g_miss[j].tag, tt, sizeof tt); g_miss[j].n = tn;
+            j--;
+        }
+    }
+    printf("\n  still unanswered, by tag (top 20):\n");
+    for (int i = 0; i < g_nmiss && i < 20; i++)
+        printf("    %-14s %ld\n", g_miss[i].tag, g_miss[i].n);
     return 0;
 }

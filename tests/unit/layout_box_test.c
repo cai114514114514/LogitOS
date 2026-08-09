@@ -252,7 +252,10 @@ int main(void)
          "</style></head><body>"
          "<div id=rel><div id=mid><div id=c></div></div></div>"
          "</body></html>", 800);
-    box_is("c", 6+10, 6+20, 10, 10);   /* #mid's 25+15 must not appear */
+    /* #rel's PADDING box starts at its border edge, and it has no border, so
+     * the containing block origin is (0,0) -- its own 6px padding is INSIDE
+     * the containing block, not outside it. #mid's 25+15 must not appear. */
+    box_is("c", 10, 20, 10, 10);
 
     printf("-- right/bottom anchor the far edge\n");
     page("<html><head><style>body{margin:0}"
