@@ -2672,14 +2672,27 @@ void app_main(void)
                  * the floor -- silently, with nothing on the serial. */
                 if (FOCUS_ROUTING && allow && !editing && fnode) {
                     struct node *ceh = fc_ce_host(fnode);
+                    uint32_t ceser = ceh ? ceh->serial : 0;
                     int ce_dirty = 0;
                     if (ceh && ce_key(ceh, k, &e, &ce_dirty)) {
                         allow = 0;
                         need = 1;
                         /* An edit moved boxes: re-style the host (Enter creates
                          * elements with no computed style at all) and re-lay
-                         * out before anything is painted. */
-                        if (ce_dirty) ce_settle(ceh);
+                         * out before anything is painted.
+                         *
+                         * THE HOST MAY BE GONE. The `input` event ran the
+                         * page's own handler, and a React composer's response
+                         * to one is routinely to tear the subtree down and
+                         * rebuild it -- so the pointer we came in with can name
+                         * a recycled slot by now. The serial says which, and
+                         * the fallback is the whole document, which is always
+                         * correct and merely slower. */
+                        if (ce_dirty) {
+                            int live = ceh->serial == ceser &&
+                                       doc_root_of(ceh) == g_root;
+                            ce_settle(live ? ceh : 0);
+                        }
                         /* A script may have reacted to the `input` event. */
                         if (settle_dom()) need = 1;
                     }

@@ -838,10 +838,23 @@ static const char SEL_SHIM[] =
 "  r._sc = this._sc; r._so = this._so; r._ec = this._ec; r._eo = this._eo; return r; };\n"
 /* toString walks the tree rather than asking C: a Range the page built itself
  * is not the selection, so there is nothing in C to ask. */
+"function textOf(n){ if (!n) return '';\n"
+"  if (n.nodeType === 3) return n.data || '';\n"
+"  var s = '', cs = n.childNodes || [];\n"
+"  for (var i = 0; i < cs.length; i++) s += textOf(cs[i]);\n"
+"  return s; }\n"
 "RP.toString = function(){\n"
 "  var sc = this._sc, ec = this._ec, so = this._so, eo = this._eo;\n"
 "  if (!sc || !ec) return '';\n"
-"  if (sc === ec) return (sc.nodeType === 3) ? (sc.data || '').substring(so, eo) : '';\n"
+/* BOTH ENDS IN THE SAME CONTAINER, and the element case is not the rare one:
+ * selectNodeContents(composer) produces exactly it, and that is how a page
+ * reads a composer back through a Range. Returning '' there (which the first
+ * cut did) makes the whole Range surface look like it does nothing. */
+"  if (sc === ec) {\n"
+"    if (sc.nodeType === 3) return (sc.data || '').substring(so, eo);\n"
+"    var out = [], cs = sc.childNodes || [];\n"
+"    for (var i = so; i < eo && i < cs.length; i++) out.push(textOf(cs[i]));\n"
+"    return out.join(''); }\n"
 "  var out = [], started = false, done = false;\n"
 "  function walk(n){\n"
 "    if (done) return;\n"
