@@ -129,6 +129,62 @@ done:
 }
 
 /* ======================================================================
+ * The second native: composite a keyframe value onto the underlying one.
+ *
+ *     __anim_composite(prop, underlying, value, op)  ->  string | null
+ *
+ * `op` is the STRING "add" or "accumulate"; anything else, "replace"
+ * included, returns null. null also means "these two cannot be combined" --
+ * a shape mismatch, a discrete type, or no underlying value at all -- and the
+ * caller then uses the keyframe value unchanged, which is what a type with no
+ * addition defined does.
+ *
+ * Returning null for `replace` rather than echoing the value back is
+ * deliberate: the caller has to know whether a composition HAPPENED, because
+ * a composed endpoint and a replaced one are then interpolated identically
+ * and there would be no other way to tell a working `add` from a silently
+ * ignored one.
+ * ====================================================================== */
+static JSValue js_anim_composite(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 4) return JS_NULL;
+    const char *prop = JS_ToCString(ctx, argv[0]);
+    const char *und  = JS_ToCString(ctx, argv[1]);
+    const char *val  = JS_ToCString(ctx, argv[2]);
+    const char *ops  = JS_ToCString(ctx, argv[3]);
+
+    JSValue out = JS_NULL;
+    if (!prop || !und || !val || !ops) goto done;
+    int op = ci_composite_op(ops);
+    if (op == CI_COMPOSITE_REPLACE) goto done;
+
+    if (!strcmp(prop, "transform")) {
+        struct ci_xform a, b, r;
+        char buf[2048];
+        if (ci_transform_parse(und, -1, 16, 16, &a) == 0 &&
+            ci_transform_parse(val, -1, 16, 16, &b) == 0 &&
+            ci_transform_composite(&a, &b, op, &r) >= 0 &&
+            ci_transform_text(&r, buf, sizeof buf) > 0)
+            out = JS_NewString(ctx, buf);
+        goto done;
+    }
+
+    {
+        char buf[1024];
+        int n = ci_value_composite(prop, und, val, op, buf, sizeof buf);
+        if (n > 0) out = JS_NewString(ctx, buf);
+    }
+
+done:
+    if (prop) JS_FreeCString(ctx, prop);
+    if (und)  JS_FreeCString(ctx, und);
+    if (val)  JS_FreeCString(ctx, val);
+    if (ops)  JS_FreeCString(ctx, ops);
+    return out;
+}
+
+/* ======================================================================
  * The prelude.
  * ====================================================================== */
 static const char ANIM_JS[] =
@@ -139,6 +195,7 @@ static const char ANIM_JS[] =
 "var gcs = (typeof getComputedStyle === 'function') ? getComputedStyle : null;\n"
 "if (!gcs) return;\n"
 "var II = __anim_interp;\n"
+"var CC = __anim_composite;\n"
 "\n"
 /* ---- property-name spellings ------------------------------------------
  * The harness hands animate() CAMEL-CASE names (it converts them itself,
@@ -245,7 +302,7 @@ static const char ANIM_JS[] =
 "  if (kf == null) return out;\n"
 "  if (Array.isArray(kf)) {\n"
 "    for (var i = 0; i < kf.length; i++) {\n"
-"      var k = kf[i], e = { offset: null, easing: k.easing, props: {} };\n"
+"      var k = kf[i], e = { offset: null, easing: k.easing, composite: k.composite, props: {} };\n"
 "      if (k.offset !== undefined && k.offset !== null) e.offset = Number(k.offset);\n"
 "      for (var p in k) {\n"
 "        if (p === 'offset' || p === 'easing' || p === 'composite') continue;\n"
@@ -263,7 +320,7 @@ static const char ANIM_JS[] =
 "    }\n"
 "    if (!len) len = 1;\n"
 "    for (var j = 0; j < len; j++) {\n"
-"      var ee = { offset: null, easing: undefined, props: {} };\n"
+"      var ee = { offset: null, easing: undefined, composite: kf.composite, props: {} };\n"
 "      for (var r = 0; r < names.length; r++) {\n"
 "        var vv = kf[names[r]];\n"
 "        var val = Array.isArray(vv) ? vv[Math.min(j, vv.length - 1)] : vv;\n"
@@ -292,7 +349,8 @@ static const char ANIM_JS[] =
 "\n"
 "function timingOf(opt){\n"
 "  var t = { duration: 0, delay: 0, endDelay: 0, iterations: 1, iterationStart: 0,\n"
-"            direction: 'normal', fill: 'auto', easing: 'linear', id: undefined };\n"
+"            direction: 'normal', fill: 'auto', easing: 'linear', id: undefined,\n"
+"            composite: 'replace', iterationComposite: 'replace' };\n"
 "  if (typeof opt === 'number') { t.duration = opt; return t; }\n"
 "  if (!opt || typeof opt !== 'object') return t;\n"
 "  if (opt.duration !== undefined && opt.duration !== 'auto') t.duration = Number(opt.duration) || 0;\n"
@@ -304,6 +362,8 @@ static const char ANIM_JS[] =
 "  if (opt.fill) t.fill = String(opt.fill);\n"
 "  if (opt.easing !== undefined) t.easing = String(opt.easing);\n"
 "  if (opt.id !== undefined) t.id = String(opt.id);\n"
+"  if (opt.composite) t.composite = String(opt.composite);\n"
+"  if (opt.iterationComposite) t.iterationComposite = String(opt.iterationComposite);\n"
 "  return t;\n"
 "}\n"
 "\n"
@@ -420,7 +480,45 @@ static const char ANIM_JS[] =
 /*  A local progress that runs OUTSIDE [0,1] is not an error here: the eased
  *  progress itself can be -0.3 or 1.5, and the value is extrapolated. */
 "  var lp = span > 0 ? (p - kf[a].offset) / span : (p < kf[a].offset ? 0 : 1);\n"
-"  return II(prop, kf[a].props[prop], kf[b].props[prop], lp);\n"
+"  var v = II(prop, kf[a].props[prop], kf[b].props[prop], lp);\n"
+"  if (v === null || v === undefined) return v;\n"
+"  return this.__iterAccum(prop, v, kf[hi].props[prop]);\n"
+"};\n"
+"\n"
+/* iterationComposite: 'accumulate'.
+ *
+ * The one composite knob that is about TIME rather than about the underlying
+ * value: with it, iteration n starts from where iteration n-1 finished instead
+ * of from the first keyframe again, so a 10px slide repeated three times ends
+ * at 30px rather than sliding back and doing 10px again.
+ *
+ * INERT IN THIS CORPUS, and said out loud rather than left implied:
+ * interpolation-testcommon.js runs one iteration of a 100s effect and never
+ * advances the timeline, so this branch is never taken by a WPT subtest here.
+ * It is implemented because leaving `iterationComposite` accepted-and-ignored
+ * is worse than not accepting it -- a page that sets it would animate wrongly
+ * with no way to tell.
+ *
+ * The accumulation base is the LAST keyframe's value, accumulated once per
+ * completed iteration, which is the spec's rule for the ordinary case of a
+ * keyframe list whose final offset is 1. */
+"Animation.prototype.__iterAccum = function(prop, v, lastv){\n"
+"  var t = this.__t;\n"
+"  if (t.iterationComposite !== 'accumulate') return v;\n"
+"  if (lastv === undefined || lastv === null) return v;\n"
+"  var d = t.duration;\n"
+"  if (!(d > 0)) return v;\n"
+"  var local = this.__hold - t.delay;\n"
+"  var it = Math.floor(local / d + t.iterationStart);\n"
+"  if (!(it > 0)) return v;\n"
+"  if (it > 1000) it = 1000;\n"
+"  for (var i = 0; i < it; i++) {\n"
+"    var a = null;\n"
+"    try { a = CC(prop, lastv, v, 'accumulate'); } catch (e) { a = null; }\n"
+"    if (a === null || a === undefined) break;\n"
+"    v = a;\n"
+"  }\n"
+"  return v;\n"
 "};\n"
 "\n"
 "Animation.prototype.__props = function(){\n"
@@ -522,12 +620,203 @@ static const char ANIM_JS[] =
 "  return out;\n"
 "}\n"
 "\n"
+/* WHY THE ENDPOINTS ARE RESOLVED ON SCRATCH TWINS AND ALL AT ONCE, and this
+ * is not an optimisation -- it is the difference between two endpoints and
+ * one.
+ *
+ * The obvious shape is a loop: write endpoint 1 onto the target, read it back,
+ * restore; write endpoint 2, read it back, restore. That is what this was, and
+ * it silently returns THE SAME STRING for both, because a computed read does
+ * not see the write above it.
+ *
+ * css_engine.c's css_ensure_styled() -- "update style before a computed read"
+ * -- is guarded by inval_fingerprint(), which mixes the DOM arena's high-water
+ * mark and, for each MARKED SCOPE ROOT, that root's own node/serial/attributes.
+ * A scope root covers a subtree and js_dom.c's mark() coalesces into the
+ * nearest one already held, so a style write on a DESCENDANT of a marked root
+ * changes no term of the fingerprint, the flush is skipped, and the read
+ * answers out of the previous cascade. Measured on a div inside a div inside
+ * <body>, with css_style_flushes() alongside:
+ *
+ *     style.margin-left = 100px -> getComputedStyle = 100px   (flushes: 1)
+ *     style.margin-left = 200px -> getComputedStyle = 100px   (flushes: 1)
+ *     style.margin-left = 300px -> getComputedStyle = 100px   (flushes: 1)
+ *
+ * One cascade per document, ever. So `from` resolved correctly, `to` came back
+ * as `from`, and every interpolation was a constant -- invisible, because the
+ * constant is a real and plausible computed value.
+ *
+ * Forcing extra flushes is NOT the answer, and that was measured too rather
+ * than assumed: an attribute write on documentElement between the write and
+ * the read does re-arm the fingerprint and does make every read fresh, and it
+ * costs 3,533 subtests in css/, because 2,867 of them are `CSS Transitions`
+ * subtests that pass today only because BOTH the target and the expected
+ * element read the same stale value. Un-sticking the cascade for everybody
+ * exposes a feature this file does not implement. That belongs to whoever owns
+ * css_engine.c, with the transitions work alongside it; it is not a change an
+ * animation overlay gets to make on its way past.
+ *
+ * What IS available is the ordering. The single flush happens at the first
+ * computed read after a mutation, and it styles EVERY element in the document
+ * as it stands at that moment. So: create one scratch twin per keyframe,
+ * carrying that keyframe's values, insert them all, and only then start
+ * reading. Every endpoint is resolved by the one cascade instead of the first
+ * one taking it and the rest reading its answer.
+ *
+ * A twin and not the target: cloneNode(false) keeps the tag, the classes and
+ * the inline style, so `border-style: none` and `position: static` -- the two
+ * cases this resolution exists for -- collapse the value exactly as they do on
+ * the target, and the target itself is never mutated. The `id` goes, so a
+ * duplicate never wins a getElementById.
+ *
+ * When the read still comes back "" (the flush already happened earlier in
+ * this document, so the twins were never styled) the fallback is the target's
+ * own computed value for that property -- which is byte-for-byte what the
+ * write-and-read-back loop returned in that case, so the stale path behaves
+ * exactly as it did before this change and only the fresh path improves. */
 "Animation.prototype.__resolve = function(){\n"
 "  var el = this.__target, i, p;\n"
 "  if (!el || !el.style) return;\n"
-"  for (i = 0; i < this.__kf.length; i++)\n"
-"    for (p in this.__kf[i].props)\n"
-"      this.__kf[i].props[p] = resolveOn(el, p, this.__kf[i].props[p]);\n"
+"  var par = el.parentNode;\n"
+"  var kf = this.__kf, jobs = [];\n"
+/*   ONLY WHEN THERE IS MORE THAN ONE ENDPOINT TO RESOLVE, and this bound was
+ *   measured, not assumed. The twins exist to get two endpoints out of one
+ *   cascade; with a single keyframe there is only one endpoint, the ordinary
+ *   write-and-read-back already resolves it, and a twin changes the answer for
+ *   a reason that has nothing to do with resolution -- it is a different
+ *   element, and the document is left slightly stirred by the insert and the
+ *   remove. Unrestricted, that stirring cost 205 subtests in css/ (most of
+ *   them `from neutral` cases and `CSS Transitions` bystanders) against 85
+ *   gained. Restricted to the case it is for, it only pays. */
+"  if (kf.length >= 2 && par && typeof el.cloneNode === 'function') {\n"
+"    for (i = 0; i < kf.length; i++) {\n"
+"      var any = false; for (p in kf[i].props) { any = true; break; }\n"
+"      if (!any) continue;\n"
+"      var s = null;\n"
+"      try { s = el.cloneNode(false); } catch (e) { s = null; }\n"
+"      if (!s || !s.style) continue;\n"
+"      try { s.removeAttribute('id'); } catch (e1) {}\n"
+"      var ok = true;\n"
+"      for (p in kf[i].props) { try { s.style.setProperty(p, kf[i].props[p]); } catch (e2) { ok = false; } }\n"
+"      if (!ok) continue;\n"
+"      try { par.insertBefore(s, el.nextSibling); } catch (e3) { continue; }\n"
+"      jobs.push({ i: i, s: s });\n"
+"    }\n"
+"  }\n"
+/*   THE UNDERLYING VALUES, read here and not later, and the ordering is
+ *   load-bearing in both directions. It has to be AFTER the twins are in the
+ *   document (this is the read that triggers the document's one style flush,
+ *   and the flush is what styles them) and BEFORE the fallback path below
+ *   writes anything onto the target, or the "underlying" value would be an
+ *   endpoint of the very animation being composed onto it. */
+"  var base = {}, needBase = false;\n"
+"  for (i = 0; i < kf.length; i++)\n"
+"    for (p in kf[i].props) { base[p] = ''; needBase = true; }\n"
+"  if (needBase) {\n"
+"    try {\n"
+"      var bcs = gcs.call(globalThis, el);\n"
+"      for (p in base) { try { base[p] = bcs.getPropertyValue(p); } catch (eb) { base[p] = ''; } }\n"
+"    } catch (eb2) {}\n"
+"  }\n"
+"\n"
+/*   The read pass, strictly after every insertion above. */
+"  for (var j = 0; j < jobs.length; j++) {\n"
+"    var cs = null;\n"
+"    try { cs = gcs.call(globalThis, jobs[j].s); } catch (e4) { cs = null; }\n"
+"    if (!cs) continue;\n"
+"    var props = kf[jobs[j].i].props;\n"
+"    jobs[j].done = {};\n"
+/*     PER PROPERTY, not per keyframe. A twin that was inserted but never
+ *     styled -- the document's one flush had already happened -- answers ""
+ *     for every property, and marking the whole keyframe done on the strength
+ *     of having obtained a declaration object left those properties holding
+ *     their SPECIFIED strings with no resolution at all. That is the 275-
+ *     subtest regression the resolution exists to prevent, reintroduced
+ *     through the back door: `border-top-width: 100px` stayed "100px" instead
+ *     of collapsing to the "0px" a border-style-less box computes. */
+"    for (p in props) {\n"
+"      var c = '';\n"
+"      try { c = cs.getPropertyValue(p); } catch (e5) { c = ''; }\n"
+"      if (c === '' || c === null || c === undefined) continue;\n"
+"      props[p] = c;\n"
+"      jobs[j].done[p] = 1;\n"
+"    }\n"
+"  }\n"
+"  for (j = 0; j < jobs.length; j++) {\n"
+"    try { jobs[j].s.parentNode.removeChild(jobs[j].s); } catch (e6) {}\n"
+"  }\n"
+/*   THE FALLBACK, for anything the twins could not answer -- and it is two
+ *   different answers, because "the read is stale" and "the value collapses on
+ *   this element" look identical from here and must not be treated alike.
+ *
+ *   The write-and-read-back loop returns the target's LAST-CASCADED value for
+ *   the property, whatever was written. That is exactly right when the cascade
+ *   really does transform the property on this element -- `border-top-width`
+ *   on a box with no border-style computes to 0px whatever number you give it,
+ *   `top` on a statically positioned box computes to auto -- and exactly wrong
+ *   when it does not, because then it throws the endpoint away and reports the
+ *   underlying value in its place, which is how `from` and `to` became the
+ *   same string in the first place.
+ *
+ *   The two are told apart by asking the ELEMENT rather than the value: if the
+ *   target's own inline declaration for this property survives into its
+ *   computed value unchanged, the cascade is not transforming it here and the
+ *   keyframe's specified value can stand. If the inline value and the computed
+ *   value disagree -- or there is no inline value to compare, which is the
+ *   interpolation harness's shape -- the collapse is real (or unknown, and
+ *   unknown must be conservative) and the last-cascaded value is the answer.
+ *
+ *   Measured, per direction: preferring the specified value everywhere gains
+ *   89 composition subtests and loses 32 (the border-width and top families,
+ *   which need the collapse); preferring the cascaded value everywhere loses
+ *   nothing and gains only 18. This test keeps both. */
+"  var inlineWins = {};\n"
+"  for (p in base) {\n"
+"    var iv = '';\n"
+"    try { iv = el.style.getPropertyValue(p); } catch (e7) { iv = ''; }\n"
+"    inlineWins[p] = (iv !== '' && iv !== null && iv !== undefined && iv === base[p]);\n"
+"  }\n"
+"  for (i = 0; i < kf.length; i++) {\n"
+"    var got = null;\n"
+"    for (j = 0; j < jobs.length; j++) if (jobs[j].i === i) got = jobs[j].done;\n"
+"    for (p in kf[i].props) {\n"
+"      if (got && got[p]) continue;\n"
+"      if (inlineWins[p]) continue;\n"
+"      kf[i].props[p] = resolveOn(el, p, kf[i].props[p]);\n"
+"    }\n"
+"  }\n"
+"\n"
+/*   COMPOSITION, last: it consumes computed values on both sides, so it can
+ *   only run once every endpoint has been through the resolution above. A
+ *   keyframe whose composite operation is `replace` is untouched, and one the
+ *   native declines (a shape it cannot combine, a discrete type, or no
+ *   underlying value at all) keeps its resolved value -- which is what a type
+ *   with no addition defined is specified to do with `add`. */
+"  for (i = 0; i < kf.length; i++) {\n"
+"    var op = this.__opOf(i);\n"
+"    if (op === 'replace') continue;\n"
+"    for (p in kf[i].props) {\n"
+"      var u = base[p];\n"
+"      if (u === '' || u === null || u === undefined) continue;\n"
+"      var cv = null;\n"
+"      try { cv = CC(p, u, kf[i].props[p], op); } catch (ec) { cv = null; }\n"
+"      if (cv !== null && cv !== undefined) kf[i].props[p] = cv;\n"
+"    }\n"
+"  }\n"
+"};\n"
+"\n"
+/* The composite operation in force for keyframe `i`: the keyframe's own if it
+ * declares one, otherwise the effect-level default from the options bag,
+ * otherwise `replace`. That is the spec's order and also the order the corpus
+ * exercises -- interpolation-testcommon.js puts `composite` on each keyframe
+ * and never on the options. */
+"Animation.prototype.__opOf = function(i){\n"
+"  var k = this.__kf[i];\n"
+"  var c = (k && k.composite) ? String(k.composite) : '';\n"
+"  if (c === 'add' || c === 'accumulate' || c === 'replace') return c;\n"
+"  var e = this.__t.composite;\n"
+"  if (e === 'add' || e === 'accumulate') return e;\n"
+"  return 'replace';\n"
 "};\n"
 "\n"
 "EP.animate = function(keyframes, options){\n"
@@ -603,6 +892,8 @@ void js_anim_install(JSContext *ctx)
 {
     if (!ctx) return;
     JSValue g = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, g, "__anim_composite",
+                      JS_NewCFunction(ctx, js_anim_composite, "__anim_composite", 4));
     JS_SetPropertyStr(ctx, g, "__anim_interp",
                       JS_NewCFunction(ctx, js_anim_interp, "__anim_interp", 4));
     JS_FreeValue(ctx, g);

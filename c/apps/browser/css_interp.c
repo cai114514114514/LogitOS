@@ -1301,3 +1301,355 @@ int ci_value_interp(const char *prop, const char *from, const char *to,
     }
     return o;
 }
+
+/* ======================================================================
+ * Composite operations: add and accumulate
+ *
+ * WHAT A COMPOSITE OPERATION IS, stated once so the rest is short. A keyframe
+ * carries a value AND a rule for how that value meets the value the element
+ * already has:
+ *
+ *     replace      the keyframe value IS the value                (default)
+ *     add          combine it with the underlying value by ADDITION
+ *     accumulate   combine it with the underlying value by ACCUMULATION
+ *
+ * Composition happens FIRST and interpolation happens to the results, which is
+ * why this is a value-level operation and not a timing one: `from add [100px]`
+ * over an underlying `50px` is an endpoint of 150px, and 150px is what then
+ * interpolates towards the other composed endpoint.
+ *
+ * THE MEASUREMENT THAT SIZED THIS, and it is not the one the work order had.
+ * 2,122 `Compositing ...` subtests fail in css/. 1,928 of them never reach a
+ * value at all -- they fail on `assert_true(CSS.supports(property, value))`
+ * three lines earlier, on values LibCSS still rejects (mask-border-*,
+ * border-image-*, `min-content` for width, four-value background-position,
+ * box-shadow, offset-rotate). Those belong to the value-parser line and no
+ * amount of correct composition moves one of them. The 194 that DO reach a
+ * value are all this, and every one of them was wrong by exactly the
+ * underlying value.
+ * ====================================================================== */
+
+int ci_composite_op(const char *name)
+{
+    if (!name) return CI_COMPOSITE_REPLACE;
+    if (!strcmp(name, "add")) return CI_COMPOSITE_ADD;
+    if (!strcmp(name, "accumulate")) return CI_COMPOSITE_ACCUMULATE;
+    return CI_COMPOSITE_REPLACE;
+}
+
+/* ---- transform lists ----------------------------------------------------
+ *
+ * Addition is CONCATENATION, and that is the spec's whole definition: the
+ * result is the underlying list followed by the value's list. It is not a
+ * componentwise sum and it is not a matrix product taken early -- the two
+ * lists stay separate functions so a later interpolation can still match them
+ * up function by function.
+ *
+ * The overflow rule is the one place this can lose information: CI_MAXFN caps
+ * a list at 24 functions and two long lists concatenate past it. Rather than
+ * truncate -- which silently drops transforms off the end of an animation --
+ * the whole thing collapses to the matrix of the concatenation, which is the
+ * same transform written as one function instead of a different transform
+ * written as a prefix. */
+void ci_transform_add(const struct ci_xform *u, const struct ci_xform *v,
+                      struct ci_xform *out)
+{
+    int nu = u ? u->n : 0, nv = v ? v->n : 0;
+
+    if (nu + nv <= CI_MAXFN) {
+        struct ci_xform r;
+        r.n = 0;
+        for (int i = 0; i < nu; i++) r.f[r.n++] = u->f[i];
+        for (int i = 0; i < nv; i++) r.f[r.n++] = v->f[i];
+        *out = r;
+        return;
+    }
+
+    /* Too long to keep as a list: multiply the two matrices, in order. */
+    double mu[16], mv[16], m[16];
+    ci_transform_matrix(u, 0, 0, mu);
+    ci_transform_matrix(v, 0, 0, mv);
+    ci_mul(mu, mv, m);
+    out->n = 1;
+    memset(&out->f[0], 0, sizeof out->f[0]);
+    if (ci_is_2d(m)) {
+        out->f[0].kind = CI_MATRIX; out->f[0].nargs = 6;
+        static const int idx[6] = { 0, 1, 4, 5, 12, 13 };
+        for (int i = 0; i < 6; i++) out->f[0].a[i] = m[idx[i]];
+    } else {
+        out->f[0].kind = CI_MATRIX3D; out->f[0].nargs = 16;
+        for (int i = 0; i < 16; i++) out->f[0].a[i] = m[i];
+    }
+}
+
+/* How many arguments the primitive `kind` carries. The same table interp_fn
+ * uses; a function rather than a second literal copy, because two copies
+ * drifting apart shows up as a serialisation short by one argument, which
+ * reads as a value bug and is not one. */
+static int prim_nargs(int kind)
+{
+    switch (kind) {
+    case CI_TRANSLATE: case CI_SCALE: case CI_SKEW: return 2;
+    case CI_TRANSLATEX: case CI_TRANSLATEY: case CI_TRANSLATEZ:
+    case CI_SCALEX: case CI_SCALEY: case CI_SCALEZ:
+    case CI_SKEWX: case CI_SKEWY:
+    case CI_ROTATE: case CI_ROTATEX: case CI_ROTATEY: case CI_ROTATEZ:
+    case CI_PERSPECTIVE: return 1;
+    case CI_TRANSLATE3D: case CI_SCALE3D: return 3;
+    case CI_ROTATE3D: return 4;
+    case CI_MATRIX: return 6;
+    case CI_MATRIX3D: return 16;
+    default: return 4;
+    }
+}
+
+/* Accumulate one matched pair into `o`. Returns 0 when the pair cannot
+ * accumulate, which forces the WHOLE list back to concatenation -- a list that
+ * accumulated in some positions and concatenated in others would be a
+ * transform nobody specified.
+ *
+ * THE RULE THAT IS NOT ADDITION: a scale factor accumulates as `a + b - 1`.
+ * Scale is multiplicative about 1, so accumulating a doubling onto a doubling
+ * is a trebling and not a quadrupling. WPT states it outright --
+ * transform-scale-composition.html: underlying `scaleX(2)`, accumulateFrom
+ * `scaleX(3)`, at progress 0 the answer is `scaleX(4)`. Everything else here
+ * adds: translations, angles, skews, matrix-decomposition components. */
+static int accum_fn(const struct ci_fn *a, const struct ci_fn *b, int kind,
+                    struct ci_fn *o)
+{
+    struct ci_fn pa, pb;
+    to_primitive(a, kind, &pa);
+    to_primitive(b, kind, &pb);
+
+    memset(o, 0, sizeof *o);
+    o->kind = (unsigned char)kind;
+
+    if (kind == CI_ROTATE3D) {
+        /* Two rotations accumulate only about a COMMON axis; otherwise the sum
+         * of the angles means nothing and the answer is the concatenation. A
+         * zero-angle rotation has no axis to disagree about and takes the
+         * other's, which is what makes rotate(0) a true identity here. */
+        double la = sqrt(pa.a[0]*pa.a[0] + pa.a[1]*pa.a[1] + pa.a[2]*pa.a[2]);
+        double lb = sqrt(pb.a[0]*pb.a[0] + pb.a[1]*pb.a[1] + pb.a[2]*pb.a[2]);
+        double ax[3] = { 0, 0, 1 };
+        if (la > 1e-9 && lb > 1e-9) {
+            double na[3] = { pa.a[0]/la, pa.a[1]/la, pa.a[2]/la };
+            double nb[3] = { pb.a[0]/lb, pb.a[1]/lb, pb.a[2]/lb };
+            int same = fabs(na[0]-nb[0]) < 1e-6 && fabs(na[1]-nb[1]) < 1e-6 &&
+                       fabs(na[2]-nb[2]) < 1e-6;
+            if (same) { ax[0]=na[0]; ax[1]=na[1]; ax[2]=na[2]; }
+            else if (fabs(pa.a[3]) < 1e-12) { ax[0]=nb[0]; ax[1]=nb[1]; ax[2]=nb[2]; }
+            else if (fabs(pb.a[3]) < 1e-12) { ax[0]=na[0]; ax[1]=na[1]; ax[2]=na[2]; }
+            else return 0;
+        } else if (la > 1e-9) { ax[0]=pa.a[0]/la; ax[1]=pa.a[1]/la; ax[2]=pa.a[2]/la; }
+        else if (lb > 1e-9)   { ax[0]=pb.a[0]/lb; ax[1]=pb.a[1]/lb; ax[2]=pb.a[2]/lb; }
+        o->a[0] = ax[0]; o->a[1] = ax[1]; o->a[2] = ax[2];
+        o->a[3] = pa.a[3] + pb.a[3];
+        o->nargs = 4;
+        return 1;
+    }
+
+    if (kind == CI_PERSPECTIVE) {
+        /* perspective accumulates on the reciprocal the interpolation uses,
+         * for the same reason: the decomposed quantity is 1/d, and
+         * perspective(none) is 1/d == 0. */
+        double ra = (pa.a[0] > 0.0) ? 1.0 / pa.a[0] : 0.0;
+        double rb = (pb.a[0] > 0.0) ? 1.0 / pb.a[0] : 0.0;
+        double r = ra + rb;
+        o->a[0] = (r > 0.0) ? 1.0 / r : 0.0;
+        o->nargs = 1;
+        return 1;
+    }
+
+    int n = prim_nargs(kind);
+    int isscale = (fam(kind) == 2);
+    for (int i = 0; i < n; i++)
+        o->a[i] = isscale ? (pa.a[i] + pb.a[i] - 1.0) : (pa.a[i] + pb.a[i]);
+    if (pa.haspc || pb.haspc) {
+        o->haspc = 1;
+        for (int i = 0; i < 3 && i < n; i++) o->pc[i] = pa.pc[i] + pb.pc[i];
+    }
+    o->nargs = (unsigned char)n;
+    return 1;
+}
+
+/* Accumulate two matrices through their decompositions.
+ *
+ * A matrix has no components to accumulate until it is taken apart, and taking
+ * it apart is what makes `matrix(0, 1, -1, 0, 100, 0)` -- a rotate 90 with a
+ * translate 100 -- accumulate a pure translateX(100px) into rotate-90 with
+ * translate-200, rather than into an entrywise sum that is not a rotation at
+ * all. transform-matrix-composition.html is the transcription source.
+ *
+ * The rotation composes as a QUATERNION PRODUCT and not a component sum: for
+ * two rotations about one axis the product adds the angles, which is the
+ * accumulation rule, and for different axes it gives the composed rotation
+ * instead of nonsense. */
+static int accum_matrix(const struct ci_fn *a, const struct ci_fn *b,
+                        struct ci_fn *o)
+{
+    struct ci_xform xa, xb;
+    double ma[16], mb[16], mr[16];
+    xa.n = 1; xa.f[0] = *a;
+    xb.n = 1; xb.f[0] = *b;
+    ci_transform_matrix(&xa, 0, 0, ma);
+    ci_transform_matrix(&xb, 0, 0, mb);
+
+    struct ci_decomp da, db, dr;
+    if (!ci_decompose(ma, &da) || !ci_decompose(mb, &db)) return 0;
+
+    for (int i = 0; i < 3; i++) {
+        dr.translate[i] = da.translate[i] + db.translate[i];
+        dr.scale[i]     = da.scale[i] + db.scale[i] - 1.0;
+        dr.skew[i]      = da.skew[i] + db.skew[i];
+    }
+    for (int i = 0; i < 3; i++) dr.perspective[i] = da.perspective[i] + db.perspective[i];
+    /* perspective[3] is the homogeneous 1; summing it would double it. */
+    dr.perspective[3] = 1.0;
+
+    /* q = qa * qb, in (x, y, z, w) order. */
+    const double *qa = da.quaternion, *qb = db.quaternion;
+    dr.quaternion[0] = qa[3]*qb[0] + qa[0]*qb[3] + qa[1]*qb[2] - qa[2]*qb[1];
+    dr.quaternion[1] = qa[3]*qb[1] - qa[0]*qb[2] + qa[1]*qb[3] + qa[2]*qb[0];
+    dr.quaternion[2] = qa[3]*qb[2] + qa[0]*qb[1] - qa[1]*qb[0] + qa[2]*qb[3];
+    dr.quaternion[3] = qa[3]*qb[3] - qa[0]*qb[0] - qa[1]*qb[1] - qa[2]*qb[2];
+
+    ci_recompose(&dr, mr);
+    memset(o, 0, sizeof *o);
+    if (ci_is_2d(mr)) {
+        o->kind = CI_MATRIX; o->nargs = 6;
+        static const int idx[6] = { 0, 1, 4, 5, 12, 13 };
+        for (int i = 0; i < 6; i++) o->a[i] = mr[idx[i]];
+    } else {
+        o->kind = CI_MATRIX3D; o->nargs = 16;
+        for (int i = 0; i < 16; i++) o->a[i] = mr[i];
+    }
+    return 1;
+}
+
+int ci_transform_accumulate(const struct ci_xform *u, const struct ci_xform *v,
+                            struct ci_xform *out)
+{
+#ifdef CI_NEGCTL_ACCUM_IS_ADD
+    /* THE NEGATIVE CONTROL, and it is deliberately not "delete accumulate".
+     *
+     * `accumulate` behaving as `add` is exactly what a careful implementation
+     * written FROM MEMORY produces, because for every scalar type the two ARE
+     * the same operation -- a length, a percentage, a number and a colour
+     * channel all add either way, and scalars are most of the corpus. The
+     * distinction lives entirely in list-valued types, where add concatenates
+     * and accumulate combines componentwise, and the two answers RENDER
+     * almost alike: `scaleX(2) scaleX(3)` against `scaleX(4)` is a third in
+     * one axis and nothing about the page looks broken.
+     *
+     * tests/interp.mk requires the suite to go red here. If it does not, the
+     * suite is testing scalars and is not testing accumulation at all. */
+    ci_transform_add(u, v, out);
+    return 0;
+#else
+    int nu = u ? u->n : 0, nv = v ? v->n : 0;
+
+    /* `none` has nothing to disagree with, so it accumulates as the identity
+     * on the other side rather than forcing a concatenation. */
+    if (nu == 0) { if (v) *out = *v; else out->n = 0; return 1; }
+    if (nv == 0) { *out = *u; return 1; }
+
+    if (nu != nv || nu > CI_MAXFN) { ci_transform_add(u, v, out); return 0; }
+
+    struct ci_xform r;
+    r.n = nu;
+    for (int i = 0; i < nu; i++) {
+        int ka = u->f[i].kind, kb = v->f[i].kind;
+        if (fam(ka) == 6 || fam(kb) == 6) {
+            if (!accum_matrix(&u->f[i], &v->f[i], &r.f[i])) {
+                ci_transform_add(u, v, out); return 0;
+            }
+            continue;
+        }
+        int prim = primitive_for(ka, kb);
+        if (prim < 0 || !accum_fn(&u->f[i], &v->f[i], prim, &r.f[i])) {
+            ci_transform_add(u, v, out); return 0;
+        }
+    }
+    *out = r;
+    return 1;
+#endif
+}
+
+int ci_transform_composite(const struct ci_xform *u, const struct ci_xform *v,
+                           int op, struct ci_xform *out)
+{
+    if (!v || !out) return -1;
+    if (op == CI_COMPOSITE_ADD)        { ci_transform_add(u, v, out); return 0; }
+    if (op == CI_COMPOSITE_ACCUMULATE) return ci_transform_accumulate(u, v, out);
+    return -1;                                       /* replace: nothing to do */
+}
+
+/* ---- generic values -----------------------------------------------------
+ *
+ * The same structural argument ci_value_interp makes, one operation over: two
+ * computed values of the same property have the same SHAPE, so combining them
+ * is combining their numbers and copying the rest through. `50px` with
+ * `100px` is `150px`; `rgb(50, 50, 50)` with `rgb(10, 10, 10)` is
+ * `rgb(60, 60, 60)`; `2px solid red` with `3px solid red` is `5px solid red`.
+ * A shape mismatch declines and the caller uses the value unchanged, which is
+ * what the spec says a type with no addition defined does.
+ *
+ * Scalars add under BOTH operations, and the whole care in this file is to
+ * stop that fact leaking into the list case above.
+ *
+ * NOT HANDLED, and named rather than left to be discovered: a length against a
+ * percentage. `10%` add `100px` is `calc(100px + 10%)` in a real browser and
+ * this declines it, because a calc() the rest of the pipeline cannot read back
+ * is worse than the value unchanged -- css_computed_text has no calc()
+ * serialisation, so the comparison would be against a string nothing here can
+ * produce. It costs 5 of the 194 reachable subtests, and closing it is a
+ * css_engine change before it is a css_interp one. */
+int ci_value_composite(const char *prop, const char *underlying,
+                       const char *value, int op, char *out, int outmax)
+{
+    if (!out || outmax <= 0) return -1;
+    out[0] = 0;
+    if (op != CI_COMPOSITE_ADD && op != CI_COMPOSITE_ACCUMULATE) return -1;
+    if (!value) return -1;
+    /* Nothing to combine with. Saying so with -1 rather than copying `value`
+     * keeps "composited" and "not composited" distinguishable at the call
+     * site, which is what lets js_anim.c stay silent instead of inventing an
+     * answer for a property the engine does not report. */
+    if (!underlying || !*underlying) return -1;
+
+    /* The transform family goes through ci_transform_composite, which needs
+     * the parsed list. Declining here is the guard ci_value_interp already
+     * uses and for the same reason: a structural token sum over two transform
+     * lists quietly produces a componentwise answer where the spec says
+     * concatenate. */
+    if (prop && (!strcmp(prop, "transform") || !strcmp(prop, "rotate") ||
+                 !strcmp(prop, "scale") || !strcmp(prop, "translate")))
+        return -1;
+    /* A discrete type has no addition defined: the value replaces. */
+    if (ci_prop_is_discrete(prop)) return -1;
+
+    int lu = (int)strlen(underlying), lv = (int)strlen(value);
+    struct tok tu[64], tv[64];
+    int nu = tokenize(underlying, lu, tu, 64);
+    int nv = tokenize(value, lv, tv, 64);
+    if (nu < 0 || nv < 0 || nu != nv || nu == 0) return -1;
+    for (int i = 0; i < nu; i++) {
+        if (tu[i].isnum != tv[i].isnum) return -1;
+        if (!tu[i].isnum) {
+            if (tu[i].n != tv[i].n || memcmp(tu[i].s, tv[i].s, (size_t)tu[i].n)) return -1;
+        }
+    }
+
+    int o = 0, wrote = 0;
+    for (int i = 0; i < nu; i++) {
+        if (wrote && (tv[i].s > value) && ci_ws(tv[i].s[-1])) o = ob(out, outmax, o, " ");
+        if (tv[i].isnum) o = ob_num(out, outmax, o, tu[i].v + tv[i].v);
+        else {
+            for (int q = 0; q < tv[i].n && o < outmax - 1; q++) out[o++] = tv[i].s[q];
+            out[o] = 0;
+        }
+        wrote = 1;
+    }
+    return o;
+}

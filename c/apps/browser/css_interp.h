@@ -96,6 +96,67 @@ int ci_transform_text(const struct ci_xform *t, char *out, int outmax);
 void ci_transform_interp(const struct ci_xform *a, const struct ci_xform *b,
                          double p, struct ci_xform *out);
 
+/* ---- composite operations ----------------------------------------------
+ *
+ * A keyframe value is not always the value: `composite: add` and
+ * `composite: accumulate` say to COMBINE it with the underlying value first,
+ * and only the combined result is then interpolated. `replace` is the default
+ * and means what it says.
+ *
+ * THE ONLY DIFFERENCE BETWEEN add AND accumulate IS LIST-VALUED TYPES, and it
+ * is the whole reason both exist. For every scalar -- a length, a percentage,
+ * a number, a colour channel -- the two are the SAME operation (a sum), and an
+ * implementation written from memory collapses them and passes almost
+ * everything. Where they part:
+ *
+ *   add          concatenates.  underlying `scaleX(2)` + `scaleX(3)`
+ *                is the list `scaleX(2) scaleX(3)` -- two functions, applied
+ *                in order, which for scale means the product 6.
+ *
+ *   accumulate   combines componentwise when the two lists line up.  the same
+ *                pair accumulates to the single function `scaleX(4)`, because
+ *                a scale factor accumulates as `a + b - 1`: repeating a
+ *                doubling should give a trebling, not a quadrupling. When the
+ *                lists do NOT line up (different lengths, or a pair with no
+ *                common primitive) accumulate falls back to concatenation,
+ *                i.e. to add.
+ *
+ * tests/interp.mk builds `accumulate == add` as -DCI_NEGCTL_ACCUM_IS_ADD and
+ * requires the suite to catch it: every scalar case still passes, and every
+ * transform-list case goes wrong. */
+enum { CI_COMPOSITE_REPLACE = 0, CI_COMPOSITE_ADD = 1, CI_COMPOSITE_ACCUMULATE = 2 };
+
+/* Map "replace" / "add" / "accumulate" to the enum. Anything else, including
+ * NULL, is REPLACE -- an unknown composite operation is not an error at this
+ * layer, it is the default. */
+int ci_composite_op(const char *name);
+
+/* Combine `underlying` with `value` under `op`, writing a computed-form value.
+ *
+ * Returns the length written, or -1 when the two cannot be combined -- an
+ * unmatched value shape, or a property whose type has no addition defined.
+ * The caller then uses `value` unchanged, which is what the spec says a
+ * non-additive type does with `add`.
+ *
+ * REPLACE returns -1 too, deliberately: there is nothing to compute and a
+ * caller that has to special-case it anyway should not be able to get a
+ * silently-copied string out of a function whose name says "composite". */
+int ci_value_composite(const char *prop, const char *underlying,
+                       const char *value, int op, char *out, int outmax);
+
+/* The transform-list forms. `ci_transform_add` concatenates (never fails).
+ * `ci_transform_accumulate` returns 1 when it combined componentwise and 0
+ * when it had to fall back to concatenation -- which is the seam the negative
+ * control needs, because an `accumulate` that silently concatenates produces a
+ * DIFFERENT list that renders almost the same and a value assertion alone can
+ * agree with it on the pairs where concatenation and accumulation coincide. */
+void ci_transform_add(const struct ci_xform *u, const struct ci_xform *v,
+                      struct ci_xform *out);
+int  ci_transform_accumulate(const struct ci_xform *u, const struct ci_xform *v,
+                             struct ci_xform *out);
+int  ci_transform_composite(const struct ci_xform *u, const struct ci_xform *v,
+                            int op, struct ci_xform *out);
+
 /* ---- matrix decomposition ----------------------------------------------- */
 struct ci_decomp {
     double translate[3];
