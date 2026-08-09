@@ -102,6 +102,26 @@ extern const struct item *layout_items(void) __attribute__((__weak__));
  * through doc_size(), which falls back to the display list's own extent. */
 extern int   layout_height(void) __attribute__((__weak__));
 
+/* THE BOX TABLE -- a side table keyed by node, one record per element that
+ * GENERATED a box, whether or not it painted. Everything below used to derive
+ * geometry from the flat paint display list, which cannot answer for an element
+ * with no background, no border and no text: it has no IT_RECT and never had
+ * one. Measured over 14,997 border_box() calls across css-align/sizing/flexbox/
+ * grid/cssom-view, that was 17.2% NOBOX (every accessor answering 0) and a
+ * further 11.3% answered from the subtree ink union -- which this file's own
+ * header calls "a known wrong answer rather than an approximation".
+ *
+ * Ink is what painted. Overflow is what was laid out. They are different
+ * questions and only layout can answer the second one, which is why
+ * layout_node_scroll exists separately rather than being derived here.
+ *
+ * Weak like the four above, and gated the same way: without layout.c linked
+ * (the DOM unit tests) the old paths still run. */
+extern int   layout_node_box(const struct node *n, int *x, int *y, int *w, int *h)
+             __attribute__((__weak__));
+extern int   layout_node_scroll(const struct node *n, int *w, int *h)
+             __attribute__((__weak__));
+
 /* ==========================================================================
  * From a JSValue back to a struct node
  *
@@ -293,6 +313,20 @@ static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
 {
     *ox = *oy = *ow = *oh = 0;
     if (!el) return 0;
+
+    /* Ask layout first. It knows whether a box was generated; the display list
+     * only knows whether one was painted. Kept ahead of the IT_RECT scan rather
+     * than used as a fallback, because for an element that painted, the two
+     * agree -- and where they would not, layout is the one that is right.
+     * Under CSSOM_NEGCTL_INKUNION this is skipped so the control still measures
+     * the ink-union answer it exists to reject. */
+#ifndef CSSOM_NEGCTL_INKUNION
+    if (&layout_node_box != 0 && layout_node_box(el, ox, oy, ow, oh)) {
+        boxstat("EXACT", el);
+        return 1;
+    }
+#endif
+
     int n = 0;
     const struct item *it = items(&n);
     if (!it) { boxstat("NOLIST", el); return 0; }
@@ -340,6 +374,14 @@ static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
 static int overflow_box(struct node *el, int *ow, int *oh)
 {
     *ow = *oh = 0;
+
+    /* The scrollable overflow area is the in-flow descendants' margin boxes
+     * unioned with the padding box -- which is what scrollWidth/scrollHeight
+     * ARE. The ink union below cannot approximate it: a scroller whose children
+     * paint nothing measures small rather than unknown, and on elementScroll.html
+     * a container with a real range of 200 measured 6. */
+    if (&layout_node_scroll != 0 && el && layout_node_scroll(el, ow, oh)) return 1;
+
     int n = 0;
     const struct item *it = items(&n);
     if (!it) return 0;
