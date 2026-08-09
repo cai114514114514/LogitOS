@@ -104,8 +104,9 @@ struct vcpu_st {
     uint32_t pend_space;
     unsigned pend_cpu;
 
-    bool     need_cr3;            /* a mov-to-CR3 executed; re-read before use */
-    uint32_t space;               /* cached CR3 >> 12 */
+    uint32_t space;               /* CR3 >> 12, re-read for every record */
+    uint32_t nspaces;             /* distinct values this vCPU has seen */
+    uint32_t seen[64];
 
     struct qemu_plugin_register *cr3_reg;
     GByteArray *regbuf;
@@ -125,6 +126,7 @@ static bool           g_exec = true;
 static bool           g_stopped;
 static bool           g_have_cr3;
 static uint64_t       g_dropped;   /* records lost after the limit was hit */
+static uint64_t       g_regreads;  /* CR3 reads: the tracer's own hot cost */
 
 /* ------------------------------------------------------------- output --- */
 
@@ -160,9 +162,27 @@ static void close_run(struct vcpu_st *v)
 
 /* ---------------------------------------------------------------- CR3 --- */
 
+/* CR3 IS READ FOR EVERY RECORD, and the first version did not do that.
+ *
+ * It tried to be clever: watch for a `mov ...,%cr3` at translate time (the only
+ * way this kernel changes address space -- no task switch, no VMX), set a flag,
+ * and re-read CR3 lazily at the next reference. One register read per context
+ * switch instead of one per record. It produced a trace in which every one of
+ * 89.6 million references belonged to a single address space, while the
+ * virtual addresses in it plainly spanned three different programs' link bases
+ * -- the disassembly match never fired, so CR3 was read exactly once, at the
+ * first reference, and every later process inherited that id.
+ *
+ * The cost of being wrong there is not a slow tracer, it is a trace that
+ * silently merges every process into one and cannot be split. So the identity
+ * is now taken from the register on every emitted record. A record is a
+ * PAGE-CROSSING, not an access -- the collapse already removed ~99% of the
+ * volume -- so this is one read per record and not one per instruction, and it
+ * is counted and reported rather than assumed to be cheap. */
 static uint32_t read_space(struct vcpu_st *v)
 {
     if (!v->cr3_reg || !v->regbuf) return 0;
+    g_regreads++;
     g_byte_array_set_size(v->regbuf, 0);
     int n = qemu_plugin_read_register(v->cr3_reg, v->regbuf);
     if (n <= 0) return 0;
@@ -184,17 +204,27 @@ static void reference(unsigned cpu, uint64_t vaddr, unsigned kind, uint32_t pfn)
     struct vcpu_st *v = &g_cpu[cpu];
     uint64_t vpn = vaddr >> 12;
 
-    /* Same page as the run in progress, and no CR3 write has intervened:
-     * fold it in. A store anywhere in the run upgrades the run's kind, so a
-     * page that was written is never recorded as read-only. */
-    if (v->pend_valid && !v->need_cr3 && v->pend_vpn == vpn) {
+    /* Same page as the run in progress: fold it in. A store anywhere in the
+     * run upgrades the run's kind, so a page that was written is never
+     * recorded as read-only.
+     *
+     * A context switch cannot hide inside a run: the guest cannot change CR3
+     * without executing kernel code, and the kernel's own text and stack are
+     * outside the traced window, so any switch necessarily breaks the run at
+     * the first kernel instruction after it. */
+    if (v->pend_valid && v->pend_vpn == vpn) {
         if (kind == MMT_KIND_WRITE && v->pend_kind == MMT_KIND_READ)
             v->pend_kind = MMT_KIND_WRITE;
         if (!v->pend_pfn && pfn) v->pend_pfn = pfn;
         return;
     }
 
-    if (v->need_cr3) { v->space = read_space(v); v->need_cr3 = false; }
+    v->space = read_space(v);
+    if (v->nspaces < 64) {
+        uint32_t i = 0;
+        while (i < v->nspaces && v->seen[i] != v->space) i++;
+        if (i == v->nspaces) v->seen[v->nspaces++] = v->space;
+    }
 
     close_run(v);
     v->pend_valid = true;
@@ -225,23 +255,6 @@ static void cb_fetch(unsigned int cpu, void *ud)
     reference(cpu, (uint64_t)(uintptr_t)ud, MMT_KIND_EXEC, 0);
 }
 
-/* A write to CR3 is the only way this kernel changes address space (there is
- * no task switch and no VMX here), so marking the vCPU "CR3 unknown" here and
- * re-reading it lazily at the next reference costs one register read per
- * CONTEXT SWITCH instead of one per memory access. Reading it eagerly on every
- * access was the first version and made the tracer the slowest thing in the
- * system by an order of magnitude.
- *
- * The callback fires BEFORE the instruction executes, which is exactly right:
- * the re-read happens at the next reference, by which time the new CR3 is
- * live. A `mov %cr3,%rax` (a read) also matches and merely costs one redundant
- * re-read. */
-static void cb_cr3_touch(unsigned int cpu, void *ud)
-{
-    (void)ud;
-    if (cpu < MAX_VCPU) g_cpu[cpu].need_cr3 = true;
-}
-
 static void cb_tb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
     (void)id;
@@ -269,13 +282,6 @@ static void cb_tb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
             }
         }
 
-        char *d = qemu_plugin_insn_disas(insn);
-        if (d) {
-            if (strstr(d, "cr3"))
-                qemu_plugin_register_vcpu_insn_exec_cb(
-                    insn, cb_cr3_touch, QEMU_PLUGIN_CB_NO_REGS, NULL);
-            g_free(d);
-        }
     }
 }
 
@@ -284,7 +290,6 @@ static void cb_vcpu_init(qemu_plugin_id_t id, unsigned int cpu)
     (void)id;
     if (cpu >= MAX_VCPU) return;
     struct vcpu_st *v = &g_cpu[cpu];
-    v->need_cr3 = true;
     if (!v->regbuf) v->regbuf = g_byte_array_new();
     if (v->cr3_reg) return;
 
@@ -341,9 +346,14 @@ static void cb_exit(qemu_plugin_id_t id, void *p)
     pthread_mutex_unlock(&g_lock);
 
     char msg[256];
+    unsigned spaces = 0;
+    for (int i = 0; i < MAX_VCPU; i++)
+        if (g_cpu[i].nspaces > spaces) spaces = g_cpu[i].nspaces;
     snprintf(msg, sizeof msg,
-             "mmtrace: %" PRIu64 " page references written%s\n",
-             g_nrec, g_dropped ? " (LIMIT HIT -- trace is truncated)" : "");
+             "mmtrace: %" PRIu64 " page references written, %u address spaces "
+             "seen, %" PRIu64 " CR3 reads%s\n",
+             g_nrec, spaces, g_regreads,
+             g_dropped ? " (LIMIT HIT -- trace is truncated)" : "");
     qemu_plugin_outs(msg);
 }
 
@@ -372,9 +382,25 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
     if (!g_out) { perror("mmtrace: open trace"); return -1; }
     setvbuf(g_out, NULL, _IOFBF, 8u << 20);
 
-    struct mmt_hdr h;                       /* placeholder; rewritten at exit */
+    /* A COMPLETE header now, not a placeholder rewritten at exit.
+     *
+     * The exit callback still rewrites it to fill in nrec, but a run that is
+     * SIGKILLed never reaches the exit callback -- and tests/qmp/qmp_site.py
+     * kills QEMU hard when a site finishes, which is exactly the run worth
+     * tracing. With a zeroed placeholder that produced a multi-gigabyte file
+     * the simulator refused as "not an mmtrace file", after ten minutes of
+     * emulation. The records themselves were all there; only the eight magic
+     * bytes were missing. So the header is valid from the first byte and a
+     * killed run costs nothing but the record count. */
+    struct mmt_hdr h;
     memset(&h, 0, sizeof h);
+    memcpy(h.magic, MMT_MAGIC, 8);
+    h.version = MMT_VERSION;
+    h.recsize = (uint32_t)sizeof(struct mmt_rec);
+    h.va_lo = g_lo; h.va_hi = g_hi;
+    h.flags = g_exec ? MMT_F_EXEC : 0;
     fwrite(&h, sizeof h, 1, g_out);
+    fflush(g_out);
 
     qemu_plugin_register_vcpu_init_cb(id, cb_vcpu_init);
     qemu_plugin_register_vcpu_tb_trans_cb(id, cb_tb);

@@ -152,6 +152,25 @@ static uint32_t intern(uint64_t key)
     }
 }
 
+/* An all-zero header means the emulator was killed before its exit callback
+ * ran -- the records are all there and only the eight magic bytes are missing.
+ * Refusing such a file discards a whole recording over metadata, so it is
+ * accepted with a warning. Anything else that is not the magic is refused:
+ * reading an arbitrary file as 16-byte records would produce a plausible
+ * reference string out of noise, which is worse than an error. */
+static void check_hdr(const struct mmt_hdr *h, const char *path)
+{
+    if (!memcmp(h->magic, MMT_MAGIC, 8)) {
+        if (h->recsize != sizeof(struct mmt_rec)) die("record size mismatch");
+        return;
+    }
+    const unsigned char *b = (const unsigned char *)h;
+    for (size_t i = 0; i < sizeof *h; i++)
+        if (b[i]) { fprintf(stderr, "mmsim: %s is not an mmtrace file\n", path); exit(1); }
+    fprintf(stderr, "mmsim: %s has a blank header (the emulator was killed "
+                    "before it could write one); reading it anyway\n", path);
+}
+
 /* ------------------------------------------------------- the policies --- */
 
 struct result {
@@ -498,17 +517,26 @@ static void shape(uint32_t nframes, int nwin, struct result *a, struct result *b
            "(frames=%u)\n", a->name, b->name, nwin, nref / nwin, nframes);
     printf("    %-6s %12s %12s %10s   %s\n", "window", a->name, b->name, "ratio", "");
     uint64_t w = nref / nwin;
+    uint64_t *wa = xmalloc((size_t)nwin * 8), *wb = xmalloc((size_t)nwin * 8), peak = 1;
     for (int k = 0; k < nwin; k++) {
         uint64_t lo = (uint64_t)k * w, hi = (k == nwin - 1) ? nref : lo + w;
-        uint64_t ca = 0, cb = 0;
-        for (uint64_t i = lo; i < hi; i++) { ca += got(a, i) != 0; cb += got(b, i) != 0; }
-        int bar = (int)(cb ? 40.0 * ca / (double)(cb ? cb : 1) : 0);
-        if (bar > 60) bar = 60;
-        printf("    %-6d %12" PRIu64 " %12" PRIu64 " %9.2fx   ", k, ca, cb,
-               cb ? (double)ca / (double)cb : 0.0);
+        wa[k] = wb[k] = 0;
+        for (uint64_t i = lo; i < hi; i++) { wa[k] += got(a, i) != 0; wb[k] += got(b, i) != 0; }
+        if (wa[k] > peak) peak = wa[k];
+    }
+    /* The bar is the ABSOLUTE miss count, scaled to the busiest window, not the
+     * ratio. A window with 542 misses at 2.30x and one with 71432 at 3.40x are
+     * not comparable problems, and a bar drawn from the ratio makes the first
+     * look like the second -- which is precisely the mistake this whole report
+     * exists to avoid making about the workloads. */
+    for (int k = 0; k < nwin; k++) {
+        int bar = (int)(50.0 * (double)wa[k] / (double)peak);
+        printf("    %-6d %12" PRIu64 " %12" PRIu64 " %9.2fx   ", k, wa[k], wb[k],
+               wb[k] ? (double)wa[k] / (double)wb[k] : 0.0);
         for (int j = 0; j < bar; j++) putchar('#');
         putchar('\n');
     }
+    free(wa); free(wb);
 
     /* Of the references the clock missed and MIN did not, what were they? A
      * code page evicted out from under a running loop and a data page evicted
@@ -538,8 +566,7 @@ static void load_trace(const char *path, uint32_t want_space, int top,
     if (!f) { perror(path); exit(1); }
     struct mmt_hdr h;
     if (fread(&h, sizeof h, 1, f) != 1) die("short trace file");
-    if (memcmp(h.magic, MMT_MAGIC, 8)) die("not an mmtrace file");
-    if (h.recsize != sizeof(struct mmt_rec)) die("record size mismatch");
+    check_hdr(&h, path);
 
     /* Pass one: which address space? "top" = the space that touched the most
      * DISTINCT pages, which on every workload here is the one being measured
@@ -600,6 +627,49 @@ done:
         if (!o || ID(seq[o - 1]) != ID(seq[i])) seq[o++] = seq[i];
         else if (KIND(seq[i]) == MMT_KIND_WRITE) seq[o - 1] = ID(seq[o - 1]) | (MMT_KIND_WRITE << 30);
     nref = o;
+}
+
+/* What address spaces are in this trace at all?
+ *
+ * Worth being able to ask directly. A trace is of a whole running machine --
+ * the window manager, the shell, whatever the harness typed -- and picking
+ * "the busiest space" without ever looking at the list is how a measurement
+ * ends up being of /bin/sh. Distinct pages, not references: a tight loop in a
+ * tiny program makes far more references than a big program makes pages. */
+static void list_spaces(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); exit(1); }
+    struct mmt_hdr h;
+    if (fread(&h, sizeof h, 1, f) != 1) die("short trace file");
+    check_hdr(&h, path);
+
+    uint64_t *pages = calloc(1u << 24, 8), *refs = calloc(1u << 24, 8);
+    uint8_t  *bits  = calloc(1u << 24, 1);
+    if (!pages || !refs || !bits) die("out of memory");
+    struct mmt_rec buf[8192];
+    size_t n;
+    uint64_t total = 0;
+    while ((n = fread(buf, sizeof buf[0], 8192, f)) > 0)
+        for (size_t i = 0; i < n; i++) {
+            uint32_t s = MMT_SPACE(buf[i]);
+            refs[s]++; total++;
+            uint64_t k = ((uint64_t)s << 40) | MMT_VPN(buf[i]);
+            uint32_t hh = (uint32_t)((k * 0x9E3779B97F4A7C15ull) >> 40);
+            if (!bits[hh]) { bits[hh] = 1; pages[s]++; }
+        }
+    fclose(f);
+    printf("%s: %" PRIu64 " records\n", path, total);
+    printf("  %-12s %14s %12s %12s\n", "cr3>>12", "references", "pages", "footprint");
+    for (int k = 0; k < 16; k++) {
+        uint32_t best = 0; uint64_t bp = 0;
+        for (uint32_t s = 0; s < (1u << 24); s++) if (pages[s] > bp) { bp = pages[s]; best = s; }
+        if (!bp) break;
+        printf("  0x%-10x %14" PRIu64 " %12" PRIu64 " %9.1f MiB\n",
+               best, refs[best], pages[best], pages[best] * 4096.0 / (1024 * 1024));
+        pages[best] = 0;
+    }
+    free(pages); free(refs); free(bits);
 }
 
 /* The controls. Generated here rather than run on the machine because the
@@ -674,7 +744,7 @@ int main(int argc, char **argv)
 {
     const char *tracef = NULL, *synthspec = NULL, *framespec = NULL, *fracspec = NULL;
     uint32_t space = 0xFFFFFFFFu;
-    int top = 0, no_exec = 0, nwin = 0, csv = 0;
+    int top = 0, no_exec = 0, nwin = 0, csv = 0, all = 0;
     uint64_t maxrec = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -688,10 +758,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--windows")) nwin = atoi(NEXT());
         else if (!strcmp(a, "--no-exec")) no_exec = 1;
         else if (!strcmp(a, "--csv"))     csv = 1;
+        else if (!strcmp(a, "--spaces"))  { list_spaces(NEXT()); return 0; }
         else if (!strcmp(a, "--space")) {
             const char *v = NEXT();
             if (!strcmp(v, "top")) top = 1;
-            else if (!strcmp(v, "all")) space = 0xFFFFFFFFu;
+            else if (!strcmp(v, "all")) { space = 0xFFFFFFFFu; all = 1; }
             else space = (uint32_t)strtoul(v, NULL, 0);
         } else usage();
         #undef NEXT
@@ -712,7 +783,7 @@ int main(int argc, char **argv)
     }
 
     if (tracef) {
-        if (space == 0xFFFFFFFFu && !top) top = 1;      /* the sane default */
+        if (space == 0xFFFFFFFFu && !top && !all) top = 1;   /* the sane default */
         load_trace(tracef, space, top, no_exec, maxrec);
         printf("trace %s: %" PRIu64 " references over %u distinct pages "
                "(%.1f MiB of footprint)\n",

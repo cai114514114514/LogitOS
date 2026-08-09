@@ -3377,6 +3377,11 @@ clean:
 # Own fragment for the same reason as every other one above.
 -include tests/mem.mk
 
+# How far is c/kernel/mm/reclaim.c's clock from the offline optimum? An exact
+# answer, from a recorded reference string and Belady MIN. The tracer is a QEMU
+# plugin, so the kernel and this ISO are untouched by it.
+-include tests/mmtrace.mk
+
 # --- aui widget toolkit ------------------------------------------------------
 #
 # The coverage rasterizer is pure integer arithmetic over a byte buffer, so it
