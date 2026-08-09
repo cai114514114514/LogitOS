@@ -178,6 +178,23 @@ static int nbox;
 static int box_open(const struct node *n, int x, int y, int w, int h)
 {
     if (!boxes || !n || n->type != N_ELEM || nbox >= MAXBOX) return -1;
+#ifdef LAYOUT_NEGCTL_BOX_INK_ONLY
+    /* THE NEGATIVE CONTROL FOR THIS WHOLE LINE (tests/layoutbox.mk).
+     *
+     * Fill the table only for elements that were ALREADY emitting an IT_RECT.
+     * Every geometry assertion that passed before still passes, the table is
+     * populated and looks alive, and the 2,583 NOBOX cases -- the entire
+     * reason the table exists -- are unchanged. That is the line silently not
+     * done, and it is the one sabotage a "does the table have entries in it"
+     * check cannot see. `make test-layout-box-negctl` requires the suite to
+     * FAIL against it. */
+    {
+        const struct cstyle *cs = (const struct cstyle *)n->style;
+        if (!cs) return -1;
+        if (!cs->has_bg && !cs->border_w[0] && !cs->border_w[1] &&
+            !cs->border_w[2] && !cs->border_w[3]) return -1;
+    }
+#endif
     struct boxrec *b = &boxes[nbox];
     b->n = n; b->x = x; b->y = y; b->w = w; b->h = h;
     b->i0 = nitem; b->i1 = nitem; b->b1 = nbox + 1;
@@ -1920,7 +1937,17 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
              * top:0;left:0;w/h:100%) still land exactly on their card, because
              * that card is the positioned ancestor. */
             int ml = st->ml<0?0:st->ml;
+            int cbx = g_cbx, cby = g_cby;
             int pw = g_cbw, ph = g_cbh;                  /* containing block = padding box */
+#ifdef LAYOUT_NEGCTL_ABS_PARENT
+            /* What this replaced, kept compilable so the assertions that catch
+             * it can be watched failing: the PARENT's padding box whatever the
+             * parent's position was, reconstructed as (x - parent->pl).
+             * Identical whenever the parent IS the positioned ancestor, which
+             * is why it survived so long. */
+            { int ppl = nst ? nst->pl : 0, ppt = nst ? nst->pt : 0, ppr = nst ? nst->pr : 0;
+              cbx = x - ppl; cby = y - ppt; pw = w + ppl + ppr; ph = -1; }
+#endif
             int ow = st->has_w ? to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, pw))
                                : pw - (st->has_left ? st->left : 0) - ml;
             ow = clamp_w(st, ow, pw);
@@ -1928,9 +1955,9 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
              * `position:absolute;right:0` is how every close button and badge
              * in the corner of a card is written. */
             int ox = st->has_left || !st->has_right
-                   ? g_cbx + (st->has_left ? st->left : 0) + ml
-                   : g_cbx + pw - st->right - ow;
-            int oy = g_cby + (st->has_top ? st->top : 0);
+                   ? cbx + (st->has_left ? st->left : 0) + ml
+                   : cbx + pw - st->right - ow;
+            int oy = cby + (st->has_top ? st->top : 0);
             int zsave = g_z;
             if (st->has_z) g_z = st->z_index;
             int omark = nitem, obmark = nbox;
@@ -1968,7 +1995,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                 int stretched = ph - st->top - st->bottom;
                 if (stretched > oh) oh = stretched;
             } else if (ph >= 0 && !st->has_top && st->has_bottom) {
-                int dy = (g_cby + ph - st->bottom - oh) - oy;
+                int dy = (cby + ph - st->bottom - oh) - oy;
                 if (dy) {
                     shift_items(omark, nitem, 0, dy);
                     shift_boxes(obmark, nbox, 0, dy);
@@ -3554,6 +3581,14 @@ void layout_page(struct node *root, int canvas_w)
     }
     if (bbw < 0) bbw = 0;
     int binw = bbw - hextra(bst); if (binw < 0) binw = 0;
+    int bcx = cx_off(bst), bcy = cy_off(bst);
+#ifdef LAYOUT_NEGCTL_BODY_NOPAD
+    /* The bug this replaced, kept compilable so the assertions that catch it
+     * can be watched failing: body's content placed at body's MARGIN edge,
+     * with the right margin taken to be the left one. */
+    bbw = canvas_w - 2 * bml; if (bbw < 0) bbw = 0;
+    binw = bbw; bcx = 0; bcy = 0;
+#endif
 
     /* The root element's own record. <html> is not laid out as a box here (it
      * never was), but documentElement geometry is read constantly by the
@@ -3565,7 +3600,7 @@ void layout_page(struct node *root, int canvas_w)
      * apply that margin a second time -- exactly the contract every other
      * block-child placement uses. */
     g_mhoist = 0;
-    int binner = layout_block(start, bml + cx_off(bst), mtop + cy_off(bst), binw);
+    int binner = layout_block(start, bml + bcx, mtop + bcy, binw);
     int bbh = (binner - mtop) + (bst ? bst->pb + bst->border_w[2] : 0);
     bbh = block_height(bst, bbh, -1);
     box_close(bbi, bml, mtop, bbw, bbh);
@@ -3657,6 +3692,13 @@ static void box_overflow_pass(void)
         int px0 = b->x + bl, py0 = b->y + bt;
         if (x1 < px0) x1 = px0;
         if (y1 < py0) y1 = py0;
+#ifdef LAYOUT_NEGCTL_SCROLL_IS_CLIENT
+        /* The plausible wrong overflow: the padding box and nothing else, so
+         * scrollWidth always equals clientWidth. Nothing is zero, nothing
+         * throws, and a scroller never reports anything to scroll. */
+        b->ox1 = x1; b->oy1 = y1;
+        continue;
+#endif
         for (int k = b->i0; k < b->i1 && k < nitem; k++) {
             int ix = items[k].x + items[k].w, iy = items[k].y + items[k].h;
             if (ix > x1) x1 = ix;

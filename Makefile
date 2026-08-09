@@ -3619,6 +3619,17 @@ bench-aui: $(ISO) $(DISK)
 # fragment header for why that is a separate change.
 -include tests/flex.mk
 
+# The BOX TABLE: `make test-layout-box` / `test-layout-box-negctl` /
+# `layout-box-survey`. c/apps/browser/layout.c keeps one record per element
+# that GENERATED a box, whether or not it painted, and answers
+# layout_node_box() / layout_node_scroll() off it -- the two functions
+# c/apps/browser/js_cssom.h asks for, because reading geometry out of the
+# display list answers 0 for every element with no background, no border and
+# no text of its own. The two placement fixes that came with it (body's padding
+# taking no space, position:absolute anchored at its parent rather than at its
+# containing block) have their own controls in the same fragment.
+-include tests/layoutbox.mk
+
 # CSS TEXT: inline layout and line breaking -- `make test-csstext` and its
 # negative control. The subsystem every page depends on unconditionally: a page
 # with no grid and no flexbox still has text, and whether its lines break in the
