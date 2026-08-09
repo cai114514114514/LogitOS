@@ -1207,8 +1207,21 @@ static int ce_attached(struct node *n)
 static int pos_live(const struct cepos *p)
 { return p->n && p->n->serial == p->serial && ce_attached(p->n); }
 
+static int ce_nchild(const struct node *n);
+
+/* Offsets are CLAMPED here and nowhere else. A caller that computes one from a
+ * click, from a path handed over by JavaScript, or from a length it read before
+ * a mutation can all be one past the end; an unclamped offset then reads past
+ * the node's text and the failure surfaces somewhere else entirely. */
 static void pos_set(struct cepos *p, struct node *n, int off)
-{ p->n = n; p->serial = n ? n->serial : 0; p->off = off; }
+{
+    if (n) {
+        int max = (n->type == N_TEXT) ? n->textlen : ce_nchild(n);
+        if (off > max) off = max;
+        if (off < 0) off = 0;
+    }
+    p->n = n; p->serial = n ? n->serial : 0; p->off = off;
+}
 
 /* A subtree a caret never enters and text traversal never descends into. The
  * contenteditable="false" test is the interesting one: a page marks a mention
@@ -1827,6 +1840,12 @@ static void ce_split_chain(struct node *stop, struct node *into, struct node *fi
     if (!p) return;
     for (struct node *s = cur_first, *nx; s; s = nx) {
         nx = s->next;
+        /* `into` is a SIBLING of what we are moving when the split is at the
+         * host's own level -- it was appended to the host to get it into the
+         * tree. Walking into it would detach it from the document and take the
+         * new paragraph with it, which looks like "Enter deleted half the
+         * line". */
+        if (s == into) break;
         dom_remove_child(p, s);
         dom_append_child(into, s);
     }
@@ -1971,12 +1990,28 @@ int fc_ce_move(int dir, int word, int extend)
             else {
                 struct node *o = dir < 0 ? ce_prev_text(host, n) : ce_next_text(host, n);
                 if (!o) { if (step == 0) return 0; break; }
+                /* WHETHER CROSSING IS ITSELF A STEP DEPENDS ON WHAT IS CROSSED,
+                 * and getting this wrong makes the arrow keys asymmetric -- one
+                 * press right and two presses left to get back, which reads as
+                 * a stuck caret.
+                 *
+                 * Crossing a run boundary INSIDE a paragraph ("a<b>B</b>c"):
+                 * the end of one run and the start of the next are the SAME
+                 * PLACE on screen, so landing there is not a move and the caret
+                 * must consume a character as well.
+                 *
+                 * Crossing a PARAGRAPH boundary: the end of one line and the
+                 * start of the next are two different places, so the crossing
+                 * IS the move and no character is consumed. */
+                int same = ce_block_of(o, host) == ce_block_of(n, host);
                 n = o;
-                off = dir < 0 ? o->textlen : 0;
-                /* Crossing into a neighbour is itself a step: the caret has
-                 * moved from the end of one run to the start of the next. */
-                if (dir < 0 && off > 0) off = step_left(n->text, off);
-                else if (dir > 0 && off < n->textlen) off = step_right(n->text, n->textlen, off);
+                if (dir < 0) {
+                    off = o->textlen;
+                    if (same && off > 0) off = step_left(o->text, off);
+                } else {
+                    off = 0;
+                    if (same && off < o->textlen) off = step_right(o->text, o->textlen, off);
+                }
             }
         } else {
             struct node *o = dir < 0 ? ce_prev_text(host, n) : ce_next_text(host, n);

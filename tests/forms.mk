@@ -48,7 +48,22 @@
 #
 #     make wpt ONLY=... WPT_JS_SRC="$(git ls-files c/apps/browser/js_*.c)"
 
-.PHONY: test-forms test-forms-asan test-forms-device test-forms-negctl
+# THE FOURTH TARGET, added with contenteditable editing:
+#
+#   test-forms-ce-negctl  THE NEGATIVE CONTROL FOR THE EDITING EVENTS, and it is
+#                       not "remove editing". forms.c built with
+#                       -DCE_NO_INPUT_EVENTS still inserts the character into
+#                       the DOM and still paints it -- a human watching the
+#                       screen cannot tell the two builds apart -- and simply
+#                       does not raise beforeinput/input. That is the bug that
+#                       would make an LLM chat page look fixed and still not
+#                       send: React never learns the value changed, so the page
+#                       stays empty as far as its own state is concerned. The
+#                       host suite must FAIL against it, and this target passes
+#                       only when it does.
+
+.PHONY: test-forms test-forms-asan test-forms-device test-forms-negctl \
+        test-forms-ce test-forms-ce-negctl test-forms-ce-device
 
 FORMS_SRC := tests/unit/forms_test.c \
              c/apps/browser/forms.c c/apps/browser/focus.c \
@@ -69,9 +84,35 @@ test-forms-asan: $(BUILD)/libcss_host.a
 	    $(FORMS_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/forms_test_asan
 
+# --- the contenteditable negative control -----------------------------------
+# The SAME sources and the SAME test binary, one -D different. Nothing is
+# stubbed and nothing is removed: the editing model still runs, the DOM still
+# changes, and only the two events go missing. `!` because the whole point is
+# that the suite must not pass -- a control that passes proves the suite is
+# measuring the pixels rather than the feature.
+test-forms-ce-negctl: $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w -DCE_NO_INPUT_EVENTS $(BTEST_INC) $(CSS_INC) \
+	    -o $(BUILD)/forms_test_noev $(FORMS_SRC) $(BUILD)/libcss_host.a -lm
+	@if $(BUILD)/forms_test_noev > $(BUILD)/forms_noev.log 2>&1; then \
+	    echo "CONTROL FAILED: the suite PASSED against a build that fires no"; \
+	    echo "beforeinput/input. It is not measuring the editing events."; \
+	    exit 1; \
+	 else \
+	    echo "ok: the control fails, as it must. What it lost:"; \
+	    grep -c '^FAIL' $(BUILD)/forms_noev.log | sed 's/^/    failing checks: /'; \
+	    grep '^FAIL' $(BUILD)/forms_noev.log | head -6 | sed 's/^/    /'; \
+	    echo "    (the DOM still changed and the text still painted -- only the"; \
+	    echo "     events the page listens for went missing)"; \
+	 fi
+
 # --- the device test --------------------------------------------------------
 test-forms-device: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_forms.py $(ISO) $(DISK)
+
+# The same harness, driven at a contenteditable composer instead of an <input>.
+# Separate target because it is a separate boot and each is minutes long.
+test-forms-ce-device: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_forms.py $(ISO) $(DISK) --contenteditable
 
 # --- the negative control ---------------------------------------------------
 # A browser.aex built with the focus routing compiled OUT: keys go to <body>,

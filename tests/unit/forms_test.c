@@ -67,7 +67,31 @@ static int rec(struct node *t, const char *type, int bubbles, int cancelable)
     return 1;
 }
 
+/* The SAME log, through the richer seam. Logging in the identical format is
+ * deliberate: every ordering assertion written before inputType existed keeps
+ * passing unchanged, and the new field lands in a parallel array that only the
+ * checks that care about it read. A recorder that reformatted the log would
+ * have made adding inputType look like a regression in twenty other checks. */
+static char ev_it[EVMAX][32];       /* the inputType of ev_log[i], "" if none */
+static char ev_data[EVMAX][32];     /* InputEvent.data, "-" for NULL */
+
+static int rec_input(struct node *t, const char *type, const char *itype,
+                     const char *data, int bubbles, int cancelable)
+{
+    int slot = ev_n;
+    int r = rec(t, type, bubbles, cancelable);
+    if (slot < EVMAX && ev_n > slot) {
+        snprintf(ev_it[slot], sizeof ev_it[0], "%s", itype ? itype : "");
+        snprintf(ev_data[slot], sizeof ev_data[0], "%s", data ? data : "-");
+    }
+    return r;
+}
+
 static void ev_clear(void) { ev_n = 0; }
+
+/* The inputType logged alongside event `i`. "" when the event carried none. */
+static int it_is(int i, const char *want)
+{ return i < ev_n && strcmp(ev_it[i], want) == 0; }
 
 static int ev_is(int i, const char *want)
 { return i < ev_n && strcmp(ev_log[i], want) == 0; }
@@ -123,9 +147,50 @@ static struct node *hittest_like_browser(int x, int y)
     return 0;
 }
 
+/* Serialise a subtree the way the assertions want to read it: tags and text,
+ * nothing else. A structural edit is asserted against a STRING, because
+ * "backspace merged the paragraphs" is a claim about the shape of the tree and
+ * checking a character count cannot tell a merge from a deletion. */
+static void ser(const struct node *n, char *buf, int max, int *o)
+{
+    for (const struct node *c = n->first_child; c; c = c->next) {
+        if (c->type == N_TEXT) {
+            for (int i = 0; i < c->textlen && *o < max - 1; i++) buf[(*o)++] = c->text[i];
+        } else if (c->type == N_ELEM) {
+            *o += snprintf(buf + *o, (size_t)(max - *o), "<%s>", c->tag);
+            if (*o >= max - 1) return;
+            /* A void element has no end tag, and printing one turns a correct
+             * DOM into a failing assertion that looks like a product bug. */
+            if (strcmp(c->tag, "br") == 0 || strcmp(c->tag, "hr") == 0 ||
+                strcmp(c->tag, "img") == 0 || strcmp(c->tag, "input") == 0) continue;
+            ser(c, buf, max, o);
+            *o += snprintf(buf + *o, (size_t)(max - *o), "</%s>", c->tag);
+            if (*o >= max - 1) return;
+        }
+    }
+    buf[*o < max ? *o : max - 1] = 0;
+}
+
+static const char *shape(const struct node *n)
+{
+    static char buf[1024];
+    int o = 0;
+    buf[0] = 0;
+    ser(n, buf, (int)sizeof buf, &o);
+    return buf;
+}
+
+/* Type into the caret one character at a time, exactly as the keyboard
+ * delivers it -- five calls, not one, because a bug that only shows on the
+ * second keystroke (a stale caret, a text node re-created each time) is
+ * invisible to a single insert of the whole string. */
+static void ce_typ(const char *s)
+{ for (; *s; s++) fc_ce_insert(s, 1); }
+
 int main(void)
 {
     fc_set_dispatch(rec);
+    fc_set_dispatch_input(rec_input);
 
     /* ================================================================ 1 ==
      * The classification, which everything else keys off. */
@@ -718,6 +783,588 @@ int main(void)
         }
         focus_reset();
         layout_free();
+        fc_reset();
+        dom_free(root);
+    }
+
+
+    /* ================================================================ 16 ==
+     * contenteditable: the editing host.
+     *
+     * Everything after this section depends on this one answer, and it is the
+     * one focus.c already had (it knows a contenteditable is FOCUSABLE) while
+     * forms.c had nothing at all -- which is precisely why a keystroke reached
+     * a focused composer and fell on the floor. */
+    {
+        const char *html =
+            "<body>"
+            "<div id='plain'>no</div>"
+            "<div id='host' contenteditable><p id='p1'>hello</p></div>"
+            "<div id='host2' contenteditable='true'>x</div>"
+            "<div id='host3' contenteditable='false'>x</div>"
+            "<div id='outer' contenteditable><span id='chip' contenteditable='false'>"
+            "<span id='inchip'>@bob</span></span></div>"
+            "</body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+
+        struct node *host = by_id(root, "host");
+        struct node *p1 = by_id(root, "p1");
+        CHECK(fc_ce_host(by_id(root, "plain")) == 0,
+              "16. an ordinary <div> is not an editing host");
+        CHECK(fc_ce_host(host) == host, "16. contenteditable=\"\" IS one -- the empty "
+              "string is the attribute's `true` keyword and real markup uses it");
+        CHECK(fc_ce_host(by_id(root, "host2")) == by_id(root, "host2"),
+              "16. so is contenteditable=\"true\"");
+        CHECK(fc_ce_host(by_id(root, "host3")) == 0,
+              "16. contenteditable=\"false\" is not");
+        CHECK(fc_ce_host(p1) == host,
+              "16. and a descendant answers with the host above it -- which is "
+              "what makes the caret's node resolve to something to type into");
+        CHECK(fc_ce_host(p1->first_child) == host,
+              "16. including a TEXT node, which is what the caret actually holds");
+        CHECK(fc_ce_host(by_id(root, "inchip")) == 0,
+              "16. a contenteditable=\"false\" island inside a host shadows it -- "
+              "the mention chip every chat composer has");
+        CHECK(fc_ce_editable(p1) == 1 && fc_ce_editable(by_id(root, "plain")) == 0,
+              "16. fc_ce_editable agrees");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 17 ==
+     * THE EMPTY COMPOSER. This is the state every LLM chat page is in at the
+     * moment a human first clicks it: a styled box, a CSS placeholder, and not
+     * one text node to put an offset into. A caret model that can only be
+     * placed from a text run cannot be placed here at all -- and if the caret
+     * cannot be placed, the first keystroke has nowhere to go. */
+    {
+        const char *html =
+            "<body><div id='c' contenteditable></div>"
+            "<div id='c2' contenteditable><p id='p'><br></p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+
+        fc_ce_caret_in(c, 1);
+        struct node *cn = 0; int co = -1;
+        CHECK(fc_ce_selection(&cn, &co, 0, 0) == 1,
+              "17. a caret can be placed in a composer with no content at all");
+        CHECK(cn == c && co == 0,
+              "17. and it is an ELEMENT position -- (host, child index 0), which "
+              "is the only thing an empty element HAS");
+        CHECK(fc_ce_collapsed() == 1, "17. collapsed, as a fresh caret is");
+
+        ev_clear();
+        CHECK(fc_ce_insert("h", 1) == 1, "17. and a character can be inserted at it");
+        CHECK(strcmp(shape(c), "h") == 0,
+              "17. THE TEXT NODE WAS CREATED: the composer now holds `h`");
+        ce_typ("ello");
+        CHECK(strcmp(shape(c), "hello") == 0,
+              "17. and four more keystrokes extend the SAME node, not five nodes");
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn && cn->type == N_TEXT && co == 5,
+              "17. the caret followed the text: (text node, offset 5)");
+
+        /* The <p><br></p> shape -- what an editor leaves behind and what a
+         * page's own initialiser usually writes. */
+        struct node *c2 = by_id(root, "c2");
+        fc_ce_caret_in(c2, 1);
+        fc_ce_insert("x", 1);
+        CHECK(strcmp(shape(c2), "<p>x</p>") == 0,
+              "17. typing into <p><br></p> replaces the filler <br> instead of "
+              "landing under it -- aiming after the <br> leaves a permanent "
+              "blank first line, which is what it looks like when this is wrong");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 18 ==
+     * THE EVENTS, AND THE inputType. This is the section the negative control
+     * is built against, and it is the one that decides whether a React composer
+     * ever learns anything happened. `input` without an inputType is, to a
+     * framework, an input event about nothing. */
+    {
+        const char *html = "<body><div id='c' contenteditable><p id='p'>ab</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+        struct node *t = by_id(root, "p")->first_child;
+
+        fc_ce_set_caret(t, 2);
+        ev_clear();
+        fc_ce_insert("c", 1);
+        ev_dump("insert");
+        CHECK(ev_n == 2, "18. an insertion raises exactly two events");
+        CHECK(ev_is(0, "beforeinput@div#c") && ev_is(1, "input@div#c"),
+              "18. beforeinput then input, both AT THE EDITING HOST -- which is "
+              "where a page listens, not at the text node");
+        CHECK(it_is(0, "insertText") && it_is(1, "insertText"),
+              "18. and both carry inputType=insertText");
+        CHECK(strcmp(ev_data[1], "c") == 0,
+              "18. with InputEvent.data = the inserted character");
+
+        ev_clear();
+        fc_ce_backspace();
+        CHECK(ev_n == 2 && it_is(0, "deleteContentBackward") &&
+              it_is(1, "deleteContentBackward"),
+              "18. backspace says deleteContentBackward, not insertText");
+        CHECK(strcmp(ev_data[1], "-") == 0,
+              "18. and carries data = null, which is what a deletion's data IS");
+
+        fc_ce_set_caret(t, 0);
+        ev_clear();
+        fc_ce_delete();
+        CHECK(ev_n == 2 && it_is(0, "deleteContentForward"),
+              "18. Delete says deleteContentForward -- the two are different "
+              "operations and a framework acts on the difference");
+
+        ev_clear();
+        fc_ce_enter(0);
+        CHECK(ev_n == 2 && it_is(0, "insertParagraph"),
+              "18. Enter says insertParagraph");
+        ev_clear();
+        fc_ce_enter(1);
+        CHECK(ev_n == 2 && it_is(0, "insertLineBreak"),
+              "18. and Shift+Enter says insertLineBreak");
+
+        /* The <input> path was carrying no inputType either, and it is the
+         * same wall for the same reason. */
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 19 ==
+     * beforeinput is CANCELABLE, and this is the only place that can be
+     * honoured: a page that returns false expects the DOM not to change. */
+    {
+        const char *html = "<body><div id='c' contenteditable><p>ab</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+        struct node *t = c->first_child->first_child;
+
+        fc_ce_set_caret(t, 2);
+        ev_cancel_beforeinput = 1;
+        ev_clear();
+        int r = fc_ce_insert("z", 1);
+        ev_cancel_beforeinput = 0;
+        CHECK(r == 0, "19. a cancelled beforeinput stops the insertion");
+        CHECK(strcmp(shape(c), "<p>ab</p>") == 0, "19. and the DOM is untouched");
+        CHECK(ev_n == 1 && ev_is(0, "beforeinput@div#c"),
+              "19. and no `input` follows -- an input event for a change that "
+              "did not happen is worse than none");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 20 ==
+     * Insertion into existing text, and UTF-8. The caret steps by CHARACTER;
+     * backspacing one byte off a CJK character turns it into mojibake rather
+     * than deleting it, which is the failure the <input> path already learned. */
+    {
+        const char *html = "<body><div id='c' contenteditable><p id='p'>hello world</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+        struct node *t = by_id(root, "p")->first_child;
+
+        fc_ce_set_caret(t, 5);
+        fc_ce_insert(",", 1);
+        CHECK(strcmp(shape(c), "<p>hello, world</p>") == 0,
+              "20. a character inserted in the MIDDLE of a run lands there");
+
+        fc_ce_set_caret(t, t->textlen);
+        ce_typ("\xe4\xbd\xa0\xe5\xa5\xbd");         /* U+4F60 U+597D, 3 bytes each */
+        CHECK(strcmp(shape(c), "<p>hello, world\xe4\xbd\xa0\xe5\xa5\xbd</p>") == 0,
+              "20. and multi-byte UTF-8 goes in whole");
+        fc_ce_backspace();
+        CHECK(strcmp(shape(c), "<p>hello, world\xe4\xbd\xa0</p>") == 0,
+              "20. backspace removes a whole CHARACTER (3 bytes), not one byte -- "
+              "one byte would leave a broken sequence the rasterizer cannot decode");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 21 ==
+     * Deletion ACROSS BOUNDARIES -- the part an <input>'s flat string has no
+     * equivalent of at all. Backspace at the start of a run must reach into the
+     * previous run; at the start of a paragraph it must delete the PARAGRAPH
+     * BREAK and join the two. */
+    {
+        const char *html =
+            "<body><div id='c' contenteditable>"
+            "<p id='p1'>one</p><p id='p2'>two</p>"
+            "<p id='p3'>a<b id='b'>B</b>c</p>"
+            "</div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+
+        /* text-node boundary, same paragraph: the caret is at the start of "c",
+         * and what backspace must eat is the "B" inside the <b>. */
+        struct node *tc = by_id(root, "b")->next;
+        fc_ce_set_caret(tc, 0);
+        fc_ce_backspace();
+        CHECK(strcmp(shape(by_id(root, "p3")), "a<b></b>c") == 0,
+              "21. backspace at the start of a run deletes from the PREVIOUS "
+              "run, crossing an element boundary to do it");
+
+        /* paragraph boundary */
+        struct node *t2 = by_id(root, "p2")->first_child;
+        fc_ce_set_caret(t2, 0);
+        ev_clear();
+        fc_ce_backspace();
+        CHECK(strcmp(shape(c), "<p>onetwo</p><p>a<b></b>c</p>") == 0,
+              "21. backspace at the START of a paragraph deletes the break and "
+              "MERGES the two -- one <p>, not two, and no text lost");
+        CHECK(it_is(0, "deleteContentBackward"),
+              "21. still reported as deleteContentBackward");
+        struct node *cn = 0; int co = -1;
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn && cn->type == N_TEXT && co == 3 && cn->text[0] == 'o',
+              "21. and the caret sits at the join, offset 3 of `onetwo`");
+
+        /* forward Delete does the same in the other direction. The caret goes
+         * to the end of the paragraph with fc_ce_end and NOT with an offset:
+         * the merge left `onetwo` as TWO text nodes in one <p> (that is what a
+         * merge is), so offset 6 of the node holding `one` is past its end. */
+        fc_ce_end(0);
+        fc_ce_delete();
+        CHECK(strcmp(shape(c), "<p>onetwoa<b></b>c</p>") == 0,
+              "21. Delete at the END of a paragraph pulls the NEXT one up");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 22 ==
+     * Enter. Which of the two spec-permitted behaviours this is, stated in
+     * forms.c: a plain Enter SPLITS THE BLOCK. */
+    {
+        const char *html =
+            "<body><div id='c' contenteditable><p id='p'>abcd</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+        struct node *t = by_id(root, "p")->first_child;
+
+        fc_ce_set_caret(t, 2);
+        fc_ce_enter(0);
+        CHECK(strcmp(shape(c), "<p>ab</p><p>cd</p>") == 0,
+              "22. Enter splits the paragraph in two at the caret");
+        struct node *cn = 0; int co = -1;
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn && cn->type == N_TEXT && co == 0 && cn->text[0] == 'c',
+              "22. and the caret is at the START of the new one");
+        ce_typ("X");
+        CHECK(strcmp(shape(c), "<p>ab</p><p>Xcd</p>") == 0,
+              "22. so the next keystroke lands there");
+
+        /* at the very end of a paragraph: the new one is empty and needs a
+         * filler <br>, or it collapses to no line box and the caret vanishes */
+        fc_ce_selection(&cn, &co, 0, 0);
+        fc_ce_set_caret(cn, cn->textlen);
+        fc_ce_enter(0);
+        CHECK(strcmp(shape(c), "<p>ab</p><p>Xcd</p><p><br></p>") == 0,
+              "22. Enter at the end makes an EMPTY paragraph with a filler <br> "
+              "-- without it the block has no line box and the caret has no "
+              "height to be drawn at");
+        ce_typ("y");
+        CHECK(strcmp(shape(c), "<p>ab</p><p>Xcd</p><p>y</p>") == 0,
+              "22. and the filler goes away as soon as it has content");
+
+        /* Shift+Enter */
+        fc_ce_selection(&cn, &co, 0, 0);
+        fc_ce_set_caret(cn, cn->textlen);
+        fc_ce_enter(1);
+        ce_typ("z");
+        CHECK(strcmp(shape(c), "<p>ab</p><p>Xcd</p><p>y<br>z</p>") == 0,
+              "22. Shift+Enter inserts a <br> INSIDE the paragraph instead");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 23 ==
+     * Enter with no paragraph to split -- a bare <div contenteditable> whose
+     * content is loose inline text, which is how the simplest composers ship.
+     * Splitting inside inline formatting is the case that loses the <b> if the
+     * chain is not re-created on the right-hand side. */
+    {
+        const char *html = "<body><div id='c' contenteditable>abcd</div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+        fc_ce_set_caret(c->first_child, 2);
+        fc_ce_enter(0);
+        CHECK(strcmp(shape(c), "<div>ab</div><div>cd</div>") == 0,
+              "23. with no paragraph to split, the host's inline content becomes "
+              "two of them -- what a real browser does on the first Enter");
+
+        const char *html2 = "<body><div id='d' contenteditable><p>x<b>bold</b>y</p></div></body>";
+        struct node *r2 = dom_parse(html2, (int)strlen(html2));
+        css_apply(r2, "", 0);
+        struct node *d = by_id(r2, "d");
+        struct node *bold = d->first_child->first_child->next->first_child;
+        fc_ce_set_caret(bold, 2);
+        fc_ce_enter(0);
+        CHECK(strcmp(shape(d), "<p>x<b>bo</b></p><p><b>ld</b>y</p>") == 0,
+              "23. and a split INSIDE a <b> re-creates the <b> on the right -- "
+              "moving the tail up to the paragraph would silently unbold it");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(r2);
+        dom_free(root);
+    }
+
+    /* ================================================================ 24 ==
+     * Caret movement and Shift-selection, and typing over a selection. */
+    {
+        const char *html =
+            "<body><div id='c' contenteditable>"
+            "<p id='p1'>hello</p><p id='p2'>world</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *c = by_id(root, "c");
+        struct node *t1 = by_id(root, "p1")->first_child;
+        struct node *t2 = by_id(root, "p2")->first_child;
+        struct node *cn = 0, *en = 0;
+        int co = 0, eo = 0;
+
+        fc_ce_set_caret(t1, 0);
+        fc_ce_move(+1, 0, 0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t1 && co == 1, "24. ArrowRight steps one character");
+        fc_ce_move(-1, 0, 0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t1 && co == 0, "24. ArrowLeft steps back");
+        fc_ce_move(-1, 0, 0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t1 && co == 0, "24. and stops at the start of the host");
+
+        /* CROSSING, and the two cases are different on purpose. Across a
+         * PARAGRAPH the end of one line and the start of the next are two
+         * places, so the crossing is the whole move. */
+        fc_ce_set_caret(t1, 5);
+        fc_ce_move(+1, 0, 0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t2 && co == 0,
+              "24. ArrowRight at the end of a paragraph lands at the START of "
+              "the next one -- the paragraph break is a position");
+        fc_ce_move(-1, 0, 0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t1 && co == 5,
+              "24. and one ArrowLeft comes back -- one press each way. An "
+              "arrow pair that does not undo itself reads as a stuck caret");
+
+        /* Inside ONE paragraph the two sides of a run boundary are the same
+         * place, so the caret must consume a character as well or the arrow
+         * would appear not to move. */
+        {
+            const char *h2 = "<body><div id='d' contenteditable><p>a<b>B</b>c</p></div></body>";
+            struct node *r2 = dom_parse(h2, (int)strlen(h2));
+            css_apply(r2, "", 0);
+            struct node *d = by_id(r2, "d");
+            struct node *ta = d->first_child->first_child;      /* "a" */
+            struct node *tb = ta->next->first_child;            /* "B" inside <b> */
+            struct node *x = 0; int xo = 0;
+            fc_ce_set_caret(ta, 1);
+            fc_ce_move(+1, 0, 0);
+            fc_ce_selection(&x, &xo, 0, 0);
+            CHECK(x == tb && xo == 1,
+                  "24. crossing a run boundary INSIDE a paragraph consumes a "
+                  "character too -- the two sides of it are one place on screen");
+            fc_ce_move(-1, 0, 0);
+            fc_ce_move(-1, 0, 0);
+            fc_ce_selection(&x, &xo, 0, 0);
+            CHECK(x == ta && xo == 0,
+                  "24. and two presses back is where two presses forward came "
+                  "from: the step count is symmetric");
+            fc_ce_clear();
+            dom_free(r2);
+        }
+
+        /* Home / End are paragraph-scoped: stated in forms.h, asserted here. */
+        fc_ce_set_caret(t2, 3);
+        fc_ce_home(0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t2 && co == 0, "24. Home goes to the start of the paragraph");
+        fc_ce_end(0);
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t2 && co == 5, "24. End to its end -- and NOT into the next "
+              "paragraph, which is what makes it a paragraph and not a document");
+
+        /* Shift-arrow */
+        fc_ce_set_caret(t2, 0);
+        fc_ce_move(+1, 0, 1);
+        fc_ce_move(+1, 0, 1);
+        fc_ce_move(+1, 0, 1);
+        CHECK(fc_ce_collapsed() == 0, "24. Shift+Arrow makes a selection");
+        char sel[64];
+        fc_ce_selection_text(sel, sizeof sel);
+        CHECK(strcmp(sel, "wor") == 0, "24. of the three characters it crossed");
+        fc_ce_move(-1, 0, 1);
+        fc_ce_selection_text(sel, sizeof sel);
+        CHECK(strcmp(sel, "wo") == 0,
+              "24. and Shift+Left SHRINKS it -- the anchor is the fixed end, "
+              "which is the thing a caret model gets wrong by default");
+
+        ev_clear();
+        fc_ce_insert("W", 1);
+        CHECK(strcmp(shape(c), "<p>hello</p><p>Wrld</p>") == 0,
+              "24. typing REPLACES the selection");
+        CHECK(ev_n == 2, "24. as ONE edit, so one beforeinput and one input");
+        CHECK(it_is(1, "insertText"), "24. reported as insertText");
+
+        /* a selection spanning paragraphs, deleted */
+        fc_ce_set_range(t1, 2, t2, 2);
+        fc_ce_selection_text(sel, sizeof sel);
+        CHECK(strcmp(sel, "lloWr") == 0,
+              "24. a selection can span paragraphs and reads back whole");
+        fc_ce_backspace();
+        CHECK(strcmp(shape(c), "<p>held</p>") == 0,
+              "24. and deleting it joins them -- a selection that crossed a "
+              "paragraph break must not leave the break behind");
+
+        /* A BACKWARDS selection -- dragged or Shift+Left'ed from right to left.
+         * Its own scope, because the merged paragraph above holds two text
+         * nodes (that is what a merge leaves) and an offset of 4 into the first
+         * of them is past its end. */
+        {
+            const char *h3 = "<body><div id='d' contenteditable><p>abcdef</p></div></body>";
+            struct node *r3 = dom_parse(h3, (int)strlen(h3));
+            css_apply(r3, "", 0);
+            struct node *t = by_id(r3, "d")->first_child->first_child;
+            struct node *a = 0, *f = 0; int ao = 0, fo = 0;
+            fc_ce_set_range(t, 4, t, 1);
+            CHECK(fc_ce_anchor_focus(&a, &ao, &f, &fo) && ao == 4 && fo == 1,
+                  "24. a BACKWARDS selection keeps anchor AFTER focus -- the "
+                  "distinction the Selection API exists to express");
+            fc_ce_selection(&a, &ao, &f, &fo);
+            CHECK(ao == 1 && fo == 4,
+                  "24. ...while the ordered pair every consumer wants is 1..4");
+            char s3[32];
+            fc_ce_selection_text(s3, sizeof s3);
+            CHECK(strcmp(s3, "bcd") == 0, "24. and it reads back forwards");
+            fc_ce_clear();
+            dom_free(r3);
+        }
+
+        fc_ce_select_all(c);
+        fc_ce_selection_text(sel, sizeof sel);
+        CHECK(strcmp(sel, "held") == 0, "24. select-all covers the whole host");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 25 ==
+     * THE RECYCLED SLOT. A React composer is torn down and rebuilt constantly.
+     * Without the serial check this file would hold a pointer into a slot that
+     * now belongs to a different node and type into it. */
+    {
+        const char *html = "<body><div id='c' contenteditable><p id='p'>abc</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *p = by_id(root, "p");
+        struct node *t = p->first_child;
+        fc_ce_set_caret(t, 1);
+        CHECK(fc_ce_selection(0, 0, 0, 0) == 1, "25. the caret is live");
+        dom_destroy_subtree(p);
+        CHECK(fc_ce_selection(0, 0, 0, 0) == 0,
+              "25. and is GONE the moment its node is destroyed -- reported as "
+              "`no caret`, which is what a real browser does too, rather than "
+              "as a caret in whatever element got the recycled slot");
+        CHECK(fc_ce_insert("x", 1) == 0,
+              "25. so a keystroke after the teardown does nothing at all");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 26 ==
+     * The PATH encoding, which is how a position crosses into JavaScript.
+     * js_forms.c cannot turn a `struct node *` into a JS wrapper and a text
+     * node cannot even carry the attribute the element workaround uses, so the
+     * position travels as child indices from the document element. A round trip
+     * that does not land on the same node is a Selection API that reports the
+     * caret in the wrong place. */
+    {
+        const char *html =
+            "<body><div id='c' contenteditable><p>one</p><p id='p2'>two</p></div></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *t2 = by_id(root, "p2")->first_child;
+        fc_ce_set_root(root);
+        fc_ce_set_caret(t2, 2);
+
+        int path[16], off = -1;
+        int d = fc_ce_path(1, path, 16, &off);
+        CHECK(d > 0 && off == 2, "26. the focus position encodes to a path");
+        printf("   path depth %d ->", d);
+        for (int i = 0; i < d; i++) printf(" %d", path[i]);
+        printf(" @%d\n", off);
+
+        fc_ce_clear();
+        CHECK(fc_ce_selection(0, 0, 0, 0) == 0, "26. (caret cleared)");
+        fc_ce_set_root(root);
+        CHECK(fc_ce_set_paths(path, d, 2, path, d, 2) == 1,
+              "26. and decodes again with no caret to start from -- which is the "
+              "call that matters, because it is the one a page makes when it "
+              "places the caret itself");
+        struct node *cn = 0; int co = -1;
+        fc_ce_selection(&cn, &co, 0, 0);
+        CHECK(cn == t2 && co == 2, "26. onto the SAME text node and offset");
+
+        fc_ce_clear();
+        fc_reset();
+        dom_free(root);
+    }
+
+    /* ================================================================ 27 ==
+     * The <input> path gained the same inputType, and it is the same wall for
+     * the same reason: a framework-managed <input> reads it too. */
+    {
+        const char *html = "<body><input id='q' value='ab'></body>";
+        struct node *root = dom_parse(html, (int)strlen(html));
+        css_apply(root, "", 0);
+        struct node *q = by_id(root, "q");
+        focus_set_quiet(q);
+        fc_set_selection(q, 2, 2);
+
+        ev_clear();
+        fc_edit_insert(q, "c", 1);
+        CHECK(it_is(0, "insertText") && it_is(1, "insertText"),
+              "27. an <input> keystroke reports insertText on both events");
+        CHECK(strcmp(ev_data[1], "c") == 0, "27. with the character as data");
+        ev_clear();
+        fc_edit_backspace(q);
+        CHECK(it_is(1, "deleteContentBackward"),
+              "27. and its backspace reports deleteContentBackward");
+        ev_clear();
+        fc_set_selection(q, 0, 2);
+        fc_edit_replace(q, "", 0, "deleteByCut");
+        CHECK(it_is(1, "deleteByCut"),
+              "27. a CUT is a deletion, not an insertion of nothing -- calling "
+              "it insertText is exactly the kind of wrong answer a framework "
+              "acts on");
+
+        focus_reset();
         fc_reset();
         dom_free(root);
     }
