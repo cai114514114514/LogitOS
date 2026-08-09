@@ -6,6 +6,22 @@
 #include <stddef.h>
 #include "settings.h"
 #include "logit_abi.h"      /* SYS_SETTING_* / SETCTL_* / struct logit_setting */
+/* WEAK, and declared BEFORE vfs.h so the attribute sticks to the symbol (a
+ * later plain declaration does not take it away).
+ *
+ * Same idiom, and the same reason, as the weak `vfs_cred_ingroup` in
+ * c/fs/vfs_meta.c: several HOST tests compile this file against a stub VFS,
+ * and one of them -- tests/unit/settings_test.c, which belongs to another line
+ * -- predates these two calls entirely. Weak makes them resolve to NULL there
+ * instead of failing the link, so adding a dependency here cannot break a
+ * consumer that has not been told about it. On the machine they are always
+ * present, and the only site that calls them checks first.
+ *
+ * The prototypes must match c/fs/vfs.h exactly or the two declarations are
+ * different functions and the link silently keeps the wrong one. */
+int vfs_chmod(const char *path, unsigned mode) __attribute__((weak));
+int vfs_chown(const char *path, unsigned uid, unsigned gid) __attribute__((weak));
+
 #include "vfs.h"
 #include "kprintf.h"
 #include "crc32.h"
@@ -14,8 +30,18 @@
  * store and not a second definition of its format, which is the distinction
  * that matters: a format with two parsers is a format that will disagree with
  * itself.  The header is parsing only and links nothing (the pwhash_check it
- * declares is never called from here). */
-#include "accounts.h"
+ * declares is never called from here).
+ *
+ * PATH-QUALIFIED, against this tree's convention, and the reason is concrete
+ * rather than stylistic. The convention (CLAUDE.md) is that INCDIRS is one flat
+ * list so `#include "foo.h"` always resolves -- true of the KERNEL build, and
+ * not true of the several HOST tests that compile this file with a hand-written
+ * -I list. tests/settings.mk is one of them, it belongs to another line, and a
+ * bare `#include "accounts.h"` broke its build the moment this dependency was
+ * added. A quoted include resolves relative to the including file first, so
+ * this form needs no -I from anybody and cannot break a consumer that has not
+ * been told about it. */
+#include "../../apps/coreutils/accounts.h"
 
 /* ===========================================================================
  * The schema: every key this kernel understands.
@@ -519,9 +545,13 @@ int settings_prepare_user(unsigned uid)
         char dir[SET_PATHLEN];
         s_cpy(dir, pending_path, SET_PATHLEN);
         for (int i = s_len(dir) - 1; i > 0; i--) if (dir[i] == '/') { dir[i] = 0; break; }
+        /* The NULL checks are what the weak declarations above are for: a
+         * host build without a chown cannot give the file away, and must not
+         * fault trying. It still creates it, which is the part that build can
+         * observe. */
         int rmk = vfs_mkdir(dir);                    /* already there: fine */
-        int rcd = vfs_chown(dir, uid, a.gid);
-        int rmd = vfs_chmod(dir, 0700);
+        int rcd = vfs_chown ? vfs_chown(dir, uid, a.gid) : 0;
+        int rmd = vfs_chmod ? vfs_chmod(dir, 0700) : 0;
         int rwr = 0;
         if (vfs_size(pending_path) < 0) {
             /* A comment, not an empty file: a zero-length file is
@@ -532,8 +562,8 @@ int settings_prepare_user(unsigned uid)
                 "# /etc/settings.conf, which supplies the system defaults.\n";
             rwr = vfs_write(pending_path, seed, (int)sizeof seed - 1);
         }
-        int rcf = vfs_chown(pending_path, uid, a.gid);
-        int rmf = vfs_chmod(pending_path, 0600);
+        int rcf = vfs_chown ? vfs_chown(pending_path, uid, a.gid) : 0;
+        int rmf = vfs_chmod ? vfs_chmod(pending_path, 0600) : 0;
         /* SAY WHAT WAS REFUSED. A store that silently could not be created
          * looks exactly like a user whose settings do not persist, which is
          * the bug this file exists to fix -- so it gets a line rather than a
