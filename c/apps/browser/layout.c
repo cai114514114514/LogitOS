@@ -60,6 +60,27 @@ static int g_z;
  * found again at paint time. */
 static int g_clip_on, g_clipx, g_clipy, g_clipw, g_cliph;
 
+/* ---- the containing block for `position:absolute` ----
+ *
+ * CSS: an absolutely positioned box is placed against the PADDING box of its
+ * nearest ancestor whose `position` is not `static`, and against the initial
+ * containing block if it has none. This used to be read off the box's PARENT
+ * whatever its position was, which is right for the overwhelmingly common
+ * `position:relative` wrapper and wrong for everything else -- an overlay
+ * inside a plain padded <div> came out offset by that div's whole position.
+ *
+ * Kept as ambient state rather than threaded through, exactly like g_z and the
+ * clip above, and pushed/popped at the four places a positioned box is
+ * entered (in-flow block, flex item, float, and an overlay inside an overlay).
+ *
+ * g_cbh is -1 when the containing block's height is INDEFINITE -- the initial
+ * containing block's is, because layout.c is not told the viewport height, and
+ * an auto-height ancestor's is not known until its content has been laid out,
+ * which is strictly after its absolute descendants. `bottom`/`right` anchoring
+ * falls back to the near edge when the corresponding extent is unknown, which
+ * is the same thing the code did before for `bottom` in all cases. */
+static int g_cbx, g_cby, g_cbw, g_cbh;
+
 /* ---- float exclusions ----
  *
  * A float is taken out of normal flow and placed against one content edge of
@@ -97,6 +118,91 @@ static struct item *additem(int type, struct node *n)
     it->clip_w = g_clipw; it->clip_h = g_cliph;
     it->is_float = (unsigned char)g_in_float;
     return it;
+}
+
+/* ==========================================================================
+ * THE BOX TABLE -- one record per element that GENERATED a box, whether or not
+ * it painted anything.
+ *
+ * The display list is a list of INK. An element with no background, no border
+ * and no text of its own emits nothing into it, so from the outside that
+ * element has no geometry at all: js_cssom.c's offsetWidth/offsetLeft answer 0
+ * and its scrollWidth answers 0. Measured over css-align/sizing/flexbox/grid/
+ * cssom-view that was 2,583 of 14,997 border-box reads -- see the ask written
+ * into c/apps/browser/js_cssom.h, which is the consumer of the two functions
+ * at the bottom of this file.
+ *
+ * WHY A SIDE TABLE AND NOT AN INVISIBLE IT_RECT PER ELEMENT. `struct item` is
+ * 232 bytes against 40 here, every entry in it is walked by the painter and
+ * stable-sorted by zsort() on every frame, and -- the one that has already
+ * cost this project a night -- DISPLAY-LIST ENTRIES OWN THINGS: an IT_IMAGE
+ * owns a decoded bitmap, so a flex trial layout rolled back by restoring
+ * `nitem` abandoned one and grew 400 MB in 39 trials (477a59d7e). A record
+ * here owns nothing, so its rollback is `nbox = save`.
+ *
+ * WHAT EACH RECORD HOLDS. The border box in DOCUMENT coordinates -- the same
+ * frame `struct item` uses -- plus the two ranges that identify the box's own
+ * subtree: [i0,i1) into the display list and [self+1,b1) into this table.
+ * Layout is a depth-first walk, so everything emitted between a record opening
+ * and closing belongs under it; that is what makes the scrollable overflow
+ * area computable at query time instead of maintained during layout. i0 is
+ * taken AFTER the element's own IT_RECT, because scrollWidth is measured from
+ * the PADDING edge and a box's own border box would swallow the answer.
+ *
+ * THE THREE THINGS THAT MOVE A BOX AFTER IT IS OPENED, and each has to move
+ * the record with it or the table is worse than nothing:
+ *   - shift_items(), for position:relative and for flex justify/align. Every
+ *     call site now carries the matching box range; see shift_boxes().
+ *   - the deferred height patch (`items[bgidx].h = ch`). That is box_close().
+ *   - discard_items(), the flex trial-layout rollback. The two sites save and
+ *     restore `nbox` beside `nitem`.
+ * ========================================================================== */
+struct boxrec {
+    const struct node *n;
+    int x, y, w, h;          /* border box, document coordinates */
+    int i0, i1;              /* display-list range of everything INSIDE the box */
+    int b1;                  /* one past the last descendant record */
+    int ox1, oy1;            /* scrollable overflow extent (document coords),
+                              * filled by box_overflow_pass() at the end of
+                              * layout -- the two ranges above are dead after
+                              * zsort() reorders the display list, so the
+                              * answer is computed while they still mean
+                              * something rather than at query time. */
+};
+#define MAXBOX MAXITEM
+static struct boxrec *boxes;
+static int nbox;
+
+/* Open a record at a known origin and width; the height is almost always only
+ * known once the content has been laid out, so box_close() settles it. */
+static int box_open(const struct node *n, int x, int y, int w, int h)
+{
+    if (!boxes || !n || n->type != N_ELEM || nbox >= MAXBOX) return -1;
+    struct boxrec *b = &boxes[nbox];
+    b->n = n; b->x = x; b->y = y; b->w = w; b->h = h;
+    b->i0 = nitem; b->i1 = nitem; b->b1 = nbox + 1;
+    return nbox++;
+}
+
+static void box_close(int bi, int x, int y, int w, int h)
+{
+    if (bi < 0 || bi >= nbox) return;
+    struct boxrec *b = &boxes[bi];
+    b->x = x; b->y = y; b->w = w; b->h = h;
+    b->i1 = nitem; b->b1 = nbox;
+}
+
+/* Translate a range of records. The companion of shift_items(): the two are
+ * always called together, because a box whose ink moved and whose record did
+ * not is a CSSOM that disagrees with the screen. */
+static void box_overflow_pass(void);   /* fwd: runs at the end of layout_page */
+
+static void shift_boxes(int lo, int hi, int dx, int dy)
+{
+    if (!boxes || (!dx && !dy)) return;
+    if (hi > nbox) hi = nbox;
+    if (lo < 0) lo = 0;
+    for (int i = lo; i < hi; i++) { boxes[i].x += dx; boxes[i].y += dy; }
 }
 
 /* The horizontal segment left for a line box occupying [y, y+h) inside the
@@ -647,10 +753,14 @@ static void ibox_emit(struct ibox *b, int x1, int y, int last)
     struct cstyle *st = b->st;
     int w = x1 - b->x0;
     if (w <= 0) { b->item0 = nitem; return; }   /* nothing landed on this line */
-    if (!st->has_bg && !any_border(st)) { b->item0 = nitem; return; }
     int px = st->font_px > 0 ? st->font_px : 16;
     int top = y - st->pt - st->border_w[0];
     int h   = px + st->pt + st->pb + st->border_w[0] + st->border_w[2];
+    /* The fragment's box exists whether or not it has ink to put in it -- an
+     * inline with padding but no background still has a border box, and
+     * layout_node_box() unions an element's fragments. */
+    box_close(box_open(b->node, b->x0, top, w, h), b->x0, top, w, h);
+    if (!st->has_bg && !any_border(st)) { b->item0 = nitem; return; }
     struct item *it = additem(IT_RECT, b->node);
     if (!it) return;
     fill_rect_item(it, st, b->x0, top, w);
@@ -1104,6 +1214,10 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
                   it->href = h2;
                   it->hidden = st ? st->hidden : 0;
                   it->opacity = st ? st->opacity : 255; }
+        /* A replaced element already HAS an exact box in the display list, but
+         * the CSSOM only recognises IT_RECT there, so it read as an ink union
+         * of whatever the media engine drew. The record makes it exact. */
+        box_close(box_open(c, f->x, f->y, iw, ih), f->x, f->y, iw, ih);
         f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
         return;
     }
@@ -1141,11 +1255,23 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, f->y, bw); }
         }
+        int btop = f->y;
+        int bbi = box_open(c, bx, btop, bw, 0);
+        int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+        if (st && st->position != POS_STATIC) {
+            g_cbx = bx + st->border_w[3]; g_cby = btop + st->border_w[0];
+            g_cbw = bw - st->border_w[3] - st->border_w[1]; if (g_cbw < 0) g_cbw = 0;
+            int sh = spec_h(st, -1);
+            g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
+            if (g_cbh < 0 && sh >= 0) g_cbh = 0;
+        }
         int inner = layout_block(c, bx + cx_off(st), f->y + cy_off(st), bw - hextra(st));
+        g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
         int ch = (inner - f->y) + (st ? st->pb + st->border_w[2] : 0);
         ch = block_height(st, ch, -1);
         if (st && ch < st->font_px) ch = st->font_px;
         if (bgidx >= 0) items[bgidx].h = ch;
+        box_close(bbi, bx, btop, bw, ch);
         f->y += ch;
         f->lineh = 0; f->line_started = 0; f->line_start = nitem;
         flow_relayout_line(f);
@@ -1172,6 +1298,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         if (ih <= 0) ih = iw;
         if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih*s2/iw; iw = s2; }
         if (f->line_started && f->x + iw > f->x1) newline(f);
+        box_close(box_open(c, f->x, f->y, iw, ih), f->x, f->y, iw, ih);
         struct item *it = additem(IT_IMAGE, c);
         if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
                   it->img = 0; it->imgsrc = dom_attr(c, "src"); it->href = h2;
@@ -1188,8 +1315,27 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
      * Its children go into the same line boxes, and it generates one box per
      * line fragment around them (see struct ibox above). The undecorated case
      * -- almost every <a>, <em>, <strong> on a real page -- takes the same bare
-     * descent it always did. */
-    if (!ibox_wanted(st)) { flow_children(f, c, h2); return; }
+     * descent it always did.
+     *
+     * It does now leave a BOX RECORD behind, and the record is not the ibox
+     * machinery: it is the pen before and after, which for the single-fragment
+     * case (the overwhelming majority) is the exact border box, and for a
+     * wrapped one is the union of the fragments' band -- the same answer
+     * getBoundingClientRect gives for a wrapped inline. Cheap enough to do
+     * unconditionally, which is the point: an undecorated <span> asked for its
+     * offsetWidth used to answer 0. */
+    if (!ibox_wanted(st)) {
+        int ix0 = f->x, iy0 = f->y;
+        int ipx = st && st->font_px > 0 ? st->font_px : 16;
+        int ibi = box_open(c, ix0, iy0, 0, ipx);
+        flow_children(f, c, h2);
+        if (ibi >= 0) {
+            if (f->y == iy0) box_close(ibi, ix0, iy0, f->x - ix0, ipx);
+            else             box_close(ibi, f->bx0, iy0, f->bx1 - f->bx0,
+                                       (f->y - iy0) + ipx);
+        }
+        return;
+    }
     {
         struct ibox b;
         b.up = g_ibox; b.owner = f; b.st = st; b.node = c; b.href = h2;
@@ -1625,6 +1771,7 @@ static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int
                   it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
                   if (!it->imgsrc) it->imgsrc = dom_attr(c, "data-src");
                   it->hidden = st->hidden; it->opacity = st->opacity; }
+        box_close(box_open(c, fx, top, fw, fh), fx, top, fw, fh);
         ch = fh;
     } else {
         int bgidx = -1;
@@ -1633,16 +1780,27 @@ static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, fx, top, fw); }
         }
         if (st->list_item) emit_list_marker(c, st, fx + cx_off(st), top, bx0);
+        int fbi = box_open(c, fx, top, fw, 0);
+        int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+        if (st->position != POS_STATIC) {
+            g_cbx = fx + st->border_w[3]; g_cby = top + st->border_w[0];
+            g_cbw = fw - st->border_w[3] - st->border_w[1]; if (g_cbw < 0) g_cbw = 0;
+            int sh = spec_h(st, -1);
+            g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
+            if (g_cbh < 0 && sh >= 0) g_cbh = 0;
+        }
         int inw = fw - hextra(st); if (inw < 0) inw = 0;
         /* layout_block sees flt != none and opens a BFC, so the float's own
          * contents neither see nor leak the outer exclusions. */
         int inner = tag_eq(c->tag, "table")
             ? layout_table(c, fx + cx_off(st), top + cy_off(st), inw)
             : layout_block(c, fx + cx_off(st), top + cy_off(st), inw);
+        g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
         ch = (inner - top) + st->pb + st->border_w[2];
         ch = block_height(st, ch, -1);
         if (ch < st->font_px) ch = st->font_px;
         if (bgidx >= 0) items[bgidx].h = ch;
+        box_close(fbi, fx, top, fw, ch);
     }
     g_z = zsave;
     g_in_float = flsave;
@@ -1746,14 +1904,23 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *st = c->style;
         if (st && st->pos_abs && blockish(c)) {
-            /* Absolutely-positioned overlay: anchor at this block's padding-box
-             * origin (+ top/left offsets) and lay out out-of-flow (cy unchanged).
-             * Full-bleed covers (bilibili's .bili-video-card__cover: top:0;left:0;
-             * w/h:100%) land exactly on their card; dropdown menus come here too
-             * but stay hidden through their visibility/opacity styles. */
-            int ppl = nst ? nst->pl : 0, ppt = nst ? nst->pt : 0, ppr = nst ? nst->pr : 0;
+            /* ---- an absolutely positioned box ----
+             *
+             * Anchored at g_cb, the padding box of the nearest POSITIONED
+             * ancestor (the initial containing block when there is none). It
+             * used to be anchored at THIS block's padding box whatever this
+             * block's position was, reconstructed as `x - parent->pl`. That is
+             * the same answer whenever the parent is the positioned ancestor,
+             * which is the common `position:relative` wrapper and is why it
+             * held up on real pages; it is wrong by the whole offset of every
+             * static box in between otherwise, and `abspos` is the second
+             * largest failure class in the reftest corpus (2,455 tests).
+             *
+             * Full-bleed covers (bilibili's .bili-video-card__cover:
+             * top:0;left:0;w/h:100%) still land exactly on their card, because
+             * that card is the positioned ancestor. */
             int ml = st->ml<0?0:st->ml;
-            int pw = w + ppl + ppr;                      /* containing block = padding box */
+            int pw = g_cbw, ph = g_cbh;                  /* containing block = padding box */
             int ow = st->has_w ? to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, pw))
                                : pw - (st->has_left ? st->left : 0) - ml;
             ow = clamp_w(st, ow, pw);
@@ -1761,20 +1928,55 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
              * `position:absolute;right:0` is how every close button and badge
              * in the corner of a card is written. */
             int ox = st->has_left || !st->has_right
-                   ? x - ppl + (st->has_left ? st->left : 0) + ml
-                   : x - ppl + pw - st->right - ow;
-            int oy = y - ppt + (st->has_top ? st->top : 0);
+                   ? g_cbx + (st->has_left ? st->left : 0) + ml
+                   : g_cbx + pw - st->right - ow;
+            int oy = g_cby + (st->has_top ? st->top : 0);
             int zsave = g_z;
             if (st->has_z) g_z = st->z_index;
+            int omark = nitem, obmark = nbox;
+            int bgidx = -1;
             if (st->has_bg || any_border(st)) {
                 struct item *bg = additem(IT_RECT, c);
-                if (bg) { fill_rect_item(bg, st, ox, oy, ow);
-                          int sh = spec_h(st, -1); bg->h = sh > 0 ? sh : 0; }
+                if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, ox, oy, ow); }
             }
+            int obi = box_open(c, ox, oy, ow, 0);
             int ovl_save = g_in_overlay;
+            /* An absolutely positioned box is itself positioned, so IT is the
+             * containing block for its own absolute descendants. */
+            int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+            g_cbx = ox + st->border_w[3]; g_cby = oy + st->border_w[0];
+            g_cbw = ow - st->border_w[3] - st->border_w[1]; if (g_cbw < 0) g_cbw = 0;
+            { int sh = spec_h(st, -1);
+              g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
+              if (g_cbh < 0 && sh >= 0) g_cbh = 0; }
             g_in_overlay = 1;
-            layout_block(c, ox + cx_off(st), oy + cy_off(st), ow - hextra(st));
+            int oinner = layout_block(c, ox + cx_off(st), oy + cy_off(st), ow - hextra(st));
             g_in_overlay = ovl_save;
+            g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
+            /* Its height, which used to be `spec_h(...) > 0 ? that : 0` -- so
+             * an overlay with an auto height painted a zero-tall background.
+             * It is a block box: content bottom, then the block-height rules. */
+            int oh = (oinner - oy) + st->pb + st->border_w[2];
+            oh = block_height(st, oh, ph);
+            /* `top` and `bottom` both given with an auto height STRETCHES the
+             * box -- the one place `bottom` does something other than move it.
+             * With only `bottom`, the box hangs from the far edge, which means
+             * moving what has already been emitted (its height was not known
+             * when its contents were placed). Both need a definite containing
+             * block height, so both are skipped when g_cbh is indefinite. */
+            if (ph >= 0 && st->has_top && st->has_bottom && !st->has_h) {
+                int stretched = ph - st->top - st->bottom;
+                if (stretched > oh) oh = stretched;
+            } else if (ph >= 0 && !st->has_top && st->has_bottom) {
+                int dy = (g_cby + ph - st->bottom - oh) - oy;
+                if (dy) {
+                    shift_items(omark, nitem, 0, dy);
+                    shift_boxes(obmark, nbox, 0, dy);
+                    oy += dy;
+                }
+            }
+            if (bgidx >= 0) items[bgidx].h = oh;
+            box_close(obi, ox, oy, ow, oh);
             g_z = zsave;
             continue;
         }
@@ -1811,6 +2013,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                     mset_add(&pend, vmargin(st->mt));
                     cy += mset_val(&pend); pend.pos = pend.neg = 0;
                     first_inflow = 0;
+                    int cbi = box_open(c, x + ml2, cy, cw, chh);
                     struct item *it = additem(IT_CONTROL, c);
                     if (it) {
                         it->x = x + ml2; it->y = cy; it->w = cw; it->h = chh;
@@ -1851,6 +2054,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                         flow_children(&bf, c, 0);
                         newline2(&bf, 1);
                     }
+                    box_close(cbi, x + ml2, cy, cw, chh);
                     cy += chh;
                     mset_add(&pend, vmargin(st->mb));
                     continue;
@@ -1879,6 +2083,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                 mset_add(&pend, vmargin(st->mt));
                 cy += mset_val(&pend); pend.pos = pend.neg = 0;
                 first_inflow = 0;
+                box_close(box_open(c, x + ml, cy, iw, ih), x + ml, cy, iw, ih);
                 struct item *it = additem(IT_IMAGE, c);
                 if (it) { it->x = x + ml; it->y = cy; it->w = iw; it->h = ih;
                           it->img = 0; it->imgsrc = dom_attr(c, "src"); it->h_auto = h_auto;
@@ -1900,7 +2105,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
              * still-uncommitted position with zero height. */
             if (!selfc) { cy += mset_val(&pend); pend.pos = pend.neg = 0; }
             int top = cy;
-            int mark = nitem;                       /* for position:relative below */
+            int mark = nitem, bmark = nbox;         /* for position:relative below */
             int zsave = g_z;
             if (st->has_z && st->position != POS_STATIC) g_z = st->z_index;
             if (st->list_item) emit_list_marker(c, st, bx + cx_off(st), top, x);
@@ -1909,8 +2114,20 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, top, bw); }
             }
+            /* The record goes in whether or not the two lines above emitted
+             * anything -- that difference is the whole of the NOBOX class. */
+            int bi = box_open(c, bx, top, bw, 0);
             int inw = bw - hextra(st); if (inw < 0) inw = 0;
             int lastc = m_is_last_inflow(c);
+            int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+            if (st->position != POS_STATIC) {
+                g_cbx = bx + st->border_w[3]; g_cby = top + st->border_w[0];
+                g_cbw = bw - st->border_w[3] - st->border_w[1];
+                int sh = spec_h(st, -1);
+                g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
+                if (g_cbw < 0) g_cbw = 0;
+                if (g_cbh < 0 && sh >= 0) g_cbh = 0;
+            }
             /* Tell the child what has already been spent on its behalf. Both
              * bits are decided by the SAME predicates mtop_of/mbot_of used a
              * few lines up, which is the whole of why the two cannot disagree. */
@@ -1930,6 +2147,8 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
              * collapsing behaviour that goes with it. */
             if (selfc) ch = 0;                  /* collapses through: no height */
             if (bgidx >= 0) items[bgidx].h = ch;
+            box_close(bi, bx, top, bw, ch);
+            g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
             /* position:relative (and sticky, which is relative until scrolled
              * to) offsets the painted box without changing the space it
              * reserved -- so shift what it emitted and leave cy alone. */
@@ -1937,6 +2156,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                 int dx = st->has_left ? st->left : (st->has_right ? -st->right : 0);
                 int dy = st->has_top ? st->top : (st->has_bottom ? -st->bottom : 0);
                 shift_items(mark, nitem, dx, dy);
+                shift_boxes(bmark, nbox, dx, dy);
             }
             g_z = zsave;
             cy = top + ch;
@@ -2167,6 +2387,11 @@ struct flexslot {
     int minsz;             /* automatic minimum (min-width:auto), main axis */
     int grow, shrink;      /* css_fixed (1.0 == 1024) */
     int lo, hi;            /* display-list range once placed */
+    int blo, bhi;          /* the matching BOX-TABLE range: the container moves
+                            * a placed item by translating its display-list
+                            * range, and the records have to follow or the
+                            * CSSOM reports the pre-alignment position */
+    int bi;                /* this item's own box record, or -1 */
     int bgidx;             /* IT_RECT index, or -1 */
     int cross;             /* measured cross size (border box) */
 };
@@ -2198,7 +2423,7 @@ static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, i
                 struct flexslot *f = &fi[cnt++];
                 memset(f, 0, sizeof *f);
                 f->n = c; f->end = end; f->base = rw;
-                f->shrink = 1024; f->bgidx = -1;
+                f->shrink = 1024; f->bgidx = -1; f->bi = -1;
             }
             c = end;
             continue;
@@ -2206,7 +2431,7 @@ static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, i
         if (skipped(c)) { c = c->next; continue; }
         struct flexslot *f = &fi[cnt++];
         memset(f, 0, sizeof *f);
-        f->n = c; f->st = c->style; f->bgidx = -1;
+        f->n = c; f->st = c->style; f->bgidx = -1; f->bi = -1;
         f->order = f->st ? f->st->order : 0;
         f->grow = f->st ? f->st->flex_grow : 0;
         f->shrink = f->st ? f->st->flex_shrink : 1024;
@@ -2227,13 +2452,13 @@ static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, i
  * the display-list range and background index. Returns its border-box height. */
 static int flex_place(struct flexslot *f, int px, int py, int iw, int forced_h, int fpx, int fmono)
 {
-    f->lo = nitem;
+    f->lo = nitem; f->blo = nbox;
     if (!f->st) {                                    /* anonymous inline run */
         struct iflow fl;
         iflow_init(&fl, px, iw > 0 ? iw : 1, py, ALIGN_LEFT, fpx * 5 / 4);
         for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
         newline2(&fl, 1);
-        f->hi = nitem;
+        f->hi = nitem; f->bhi = nbox;
         (void)fpx; (void)fmono;
         return fl.y - py;
     }
@@ -2251,21 +2476,34 @@ static int flex_place(struct flexslot *f, int px, int py, int iw, int forced_h, 
         struct item *bg = additem(IT_RECT, f->n);
         if (bg) { f->bgidx = (int)(bg - items); fill_rect_item(bg, st, px, py, iw); }
     }
+    f->bi = box_open(f->n, px, py, iw, 0);
+    int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+    if (st->position != POS_STATIC) {
+        g_cbx = px + st->border_w[3]; g_cby = py + st->border_w[0];
+        g_cbw = iw - st->border_w[3] - st->border_w[1]; if (g_cbw < 0) g_cbw = 0;
+        int sh = spec_h(st, -1);
+        g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
+        if (g_cbh < 0 && sh >= 0) g_cbh = 0;
+    }
     int inw = iw - hextra(st); if (inw < 0) inw = 0;
     int inner = layout_block(f->n, px + cx_off(st), py + cy_off(st), inw);
     { int b = float_max_bottom(nsave); if (b > inner) inner = b; }
     g_nfloat = nsave; g_fbase = bsave;
+    g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
     int ch = (inner - py) + st->pb + st->border_w[2];
     ch = block_height(st, ch, -1);
     if (forced_h > ch) ch = forced_h;
     if (ch < st->font_px) ch = st->font_px;
     if (f->bgidx >= 0) items[f->bgidx].h = ch;
-    if (st->position == POS_RELATIVE || st->position == POS_STICKY)
-        shift_items(f->lo, nitem,
-                    st->has_left ? st->left : (st->has_right ? -st->right : 0),
-                    st->has_top ? st->top : (st->has_bottom ? -st->bottom : 0));
+    box_close(f->bi, px, py, iw, ch);
+    if (st->position == POS_RELATIVE || st->position == POS_STICKY) {
+        int dx = st->has_left ? st->left : (st->has_right ? -st->right : 0);
+        int dy = st->has_top ? st->top : (st->has_bottom ? -st->bottom : 0);
+        shift_items(f->lo, nitem, dx, dy);
+        shift_boxes(f->blo, nbox, dx, dy);
+    }
     g_z = zsave;
-    f->hi = nitem;
+    f->hi = nitem; f->bhi = nbox;
     return ch;
 }
 
@@ -2379,11 +2617,13 @@ static void discard_items(int mark)
 static int trial_block_height(struct node *n, int inner_w)
 {
     int save_n = nitem, save_z = g_z, nsave = g_nfloat, bsave = g_fbase;
+    int save_b = nbox;
     if (inner_w < 0) inner_w = 0;
     g_fbase = g_nfloat;
     int h = layout_block(n, 0, 0, inner_w);
     { int b = float_max_bottom(nsave); if (b > h) h = b; }
-    discard_items(save_n); g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
+    discard_items(save_n); nbox = save_b;
+    g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
     return h < 0 ? 0 : h;
 }
 
@@ -2392,6 +2632,7 @@ static int flex_measure_cross(struct flexslot *f, int inner_w, int fpx, int fmon
     if (f->st) return trial_block_height(f->n, inner_w);
     {                                                 /* anonymous inline run */
         int save_n = nitem, save_z = g_z, nsave = g_nfloat, bsave = g_fbase;
+        int save_b = nbox;
         struct iflow fl;
         g_fbase = g_nfloat;
         if (inner_w < 0) inner_w = 0;
@@ -2399,7 +2640,8 @@ static int flex_measure_cross(struct flexslot *f, int inner_w, int fpx, int fmon
         for (struct node *r = f->n; r && r != f->end; r = r->next) flow_node(&fl, r, 0);
         newline2(&fl, 1);
         int h = fl.y;
-        discard_items(save_n); g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
+        discard_items(save_n); nbox = save_b;
+        g_z = save_z; g_nfloat = nsave; g_fbase = bsave;
         (void)fmono;
         return h < 0 ? 0 : h;
     }
@@ -2586,8 +2828,10 @@ static int layout_flex(struct node *n, int x, int y, int w)
                 for (int k = 0; k < cnt; k++) {
                     struct flexslot *f = &fi[rev ? cnt - 1 - k : k];
                     shift_items(f->lo, f->hi, 0, run);
+                    shift_boxes(f->blo, f->bhi, 0, run);
                     int d = (int)((long)slack * f->grow / gsum);
                     if (f->bgidx >= 0) items[f->bgidx].h += d;
+                    if (f->bi >= 0) boxes[f->bi].h += d;
                     run += d;
                 }
                 cy += run;
@@ -2598,6 +2842,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
                 for (int k = 0; k < cnt; k++) {
                     struct flexslot *f = &fi[rev ? cnt - 1 - k : k];
                     shift_items(f->lo, f->hi, 0, run);
+                    shift_boxes(f->blo, f->bhi, 0, run);
                     run += between;
                 }
                 cy = y + container_h;
@@ -2698,11 +2943,14 @@ static int layout_flex(struct node *n, int x, int y, int w)
                 /* Stretch grows the box, not the content -- same liberty as
                  * the column grow path above. An item with a definite height
                  * is not stretched. */
-                if (f->bgidx >= 0 && space > 0 && !(f->st && f->st->has_h))
-                    items[f->bgidx].h = f->cross + space;
+                if (space > 0 && !(f->st && f->st->has_h)) {
+                    if (f->bgidx >= 0) items[f->bgidx].h = f->cross + space;
+                    if (f->bi >= 0) boxes[f->bi].h = f->cross + space;
+                }
             } else if (space > 0) {
                 int off = (align == AL_END) ? space : (align == AL_CENTER) ? space / 2 : 0;
                 shift_items(f->lo, f->hi, 0, off);
+                shift_boxes(f->blo, f->bhi, 0, off);
             }
         }
         ytop[L] = linetop; yhgt[L] = linecross;
@@ -2715,8 +2963,10 @@ static int layout_flex(struct node *n, int x, int y, int w)
         int total = cy - y;
         for (int L = 0; L < nline; L++) {
             int newtop = y + total - (ytop[L] - y) - yhgt[L];
-            for (int i = lstart[L]; i < lend[L]; i++)
+            for (int i = lstart[L]; i < lend[L]; i++) {
                 shift_items(fi[i].lo, fi[i].hi, 0, newtop - ytop[L]);
+                shift_boxes(fi[i].blo, fi[i].bhi, 0, newtop - ytop[L]);
+            }
         }
     }
 
@@ -3039,6 +3289,7 @@ static int layout_grid(struct node *n, int x, int y, int w)
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
         }
+        int gbi = box_open(c, cellx + ml, top, cw, 0);
         int inw = cw - hextra(st); if (inw < 0) inw = 0;
         int nsave = g_nfloat, bsave = g_fbase;
         g_fbase = g_nfloat;                     /* each grid item is its own BFC */
@@ -3049,6 +3300,7 @@ static int layout_grid(struct node *n, int x, int y, int w)
         ch = block_height(st, ch, -1);
         if (st && ch < st->font_px) ch = st->font_px;
         if (bgidx >= 0) items[bgidx].h = ch;
+        box_close(gbi, cellx + ml, top, cw, ch);
         if (top + ch > rowbot) rowbot = top + ch;
         items_in_row = 1;
         if (++col == nc) col = 0;
@@ -3146,6 +3398,7 @@ static int layout_table(struct node *t, int x, int y, int w)
     int cy = y;
     for (int i = 0; i < nr; i++) {
         int rx = x, maxb = cy, ci = 0;
+        int rbi = box_open(rows[i], x, cy, w, 0);
         for (struct node *c = rows[i]->first_child; c && ci < nc; c = c->next) {
             if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
             struct cstyle *st = c->style;
@@ -3157,6 +3410,7 @@ static int layout_table(struct node *t, int x, int y, int w)
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }
+            int tbi = box_open(c, rx, cy, cw[ci], 0);
             int inw = cw[ci] - ml - hextra(st); if (inw < 0) inw = 0;
             int nsave = g_nfloat, bsave = g_fbase;
             g_fbase = g_nfloat;                 /* each cell is its own BFC */
@@ -3167,10 +3421,12 @@ static int layout_table(struct node *t, int x, int y, int w)
             if (st && ch < st->font_px) ch = st->font_px;
             ch = block_height(st, ch, -1);
             if (bgidx >= 0) items[bgidx].h = ch;
+            box_close(tbi, rx, cy, cw[ci], ch);
             if (cy + ch > maxb) maxb = cy + ch;
             rx += cw[ci];
             ci++;
         }
+        box_close(rbi, x, cy, w, maxb - cy);
         cy = maxb;
     }
     return cy;
@@ -3237,10 +3493,15 @@ void layout_page(struct node *root, int canvas_w)
 {
     layout_free();
     items = kmalloc(sizeof(struct item) * MAXITEM);
-    nitem = 0; canvas = canvas_w; g_z = 0;
+    boxes = kmalloc(sizeof(struct boxrec) * MAXBOX);
+    nitem = 0; nbox = 0; canvas = canvas_w; g_z = 0;
     g_nfloat = 0; g_fbase = 0; g_in_float = 0;
     g_ibox = 0;
     g_clip_on = 0; g_clipx = g_clipy = g_clipw = g_cliph = 0;
+    /* The INITIAL containing block: the viewport, at the document origin. Its
+     * height is indefinite here because layout.c is not told the viewport's --
+     * see the note on g_cbh. */
+    g_cbx = 0; g_cby = 0; g_cbw = canvas_w; g_cbh = -1;
     if (!items) { doc_h = 0; return; }
     /* <body> and <html> straight from the document. The tree builder always
      * produces both for a parsed page; the fallbacks cover a tree assembled
@@ -3248,7 +3509,6 @@ void layout_page(struct node *root, int canvas_w)
     struct node *body = root->doc ? dom_doc_body(root->doc) : 0;
     struct node *start = body ? body : root;
     struct cstyle *bst = start->style;
-    int mx = bst ? (bst->ml>0?bst->ml:0) : 8;
 
     /* canvas background: html (else body) background propagates to the viewport */
     page_has_bg = 0;
@@ -3266,14 +3526,55 @@ void layout_page(struct node *root, int canvas_w)
      * 8px belongs to the UA sheet and is the fallback only when there is no
      * computed style at all. */
     int mtop = bst ? vmargin(bst->mt) : 8;
+
+    /* ---- <body> IS A BOX, and it was the one box laid out by hand ----
+     *
+     * This used to be `layout_block(start, mx, mtop, canvas_w - 2*mx)`, which
+     * placed body's CONTENT at body's MARGIN edge: its padding and its border
+     * took no space at all, and `canvas_w - 2*mx` used the left margin twice
+     * so an asymmetric `body{margin-left:...}` was wrong on the right as well.
+     * Every other block in this file goes through the same three lines --
+     * border-box width, content origin at (+cx_off, +cy_off), content width
+     * minus hextra -- and body is now one of them.
+     *
+     * That single omission was ALSO the whole of the "position:absolute lands
+     * at a constant offset" report. The overlay branch in layout_flow()
+     * reconstructs its containing block's padding edge as `x - parent->pl`;
+     * with body's padding never added to x in the first place, the
+     * reconstruction ran 4000px the wrong way and `left:30px;top:70px` under
+     * `body{padding:4000px}` landed at (-3970, -3930). The two reports were
+     * one bug seen from two sides. */
+    int bml = bst ? (bst->ml > 0 ? bst->ml : 0) : 8;
+    int bmr = bst ? (bst->mr > 0 ? bst->mr : 0) : 8;
+    int bbw = canvas_w - bml - bmr;
+    if (bst) {
+        if (bst->has_w)
+            bbw = to_border_w(bst, resolve_len(bst->width, bst->w_pct, bst->w_off, canvas_w));
+        bbw = clamp_w(bst, bbw, canvas_w);
+    }
+    if (bbw < 0) bbw = 0;
+    int binw = bbw - hextra(bst); if (binw < 0) binw = 0;
+
+    /* The root element's own record. <html> is not laid out as a box here (it
+     * never was), but documentElement geometry is read constantly by the
+     * corpus and the initial containing block is the honest answer for it. */
+    int hbi = box_open(htmlel, 0, 0, canvas_w, 0);
+    int bbi = box_open(start, bml, mtop, bbw, 0);
+
     /* mtop_px walked into `start`'s first in-flow child, so its flow must not
      * apply that margin a second time -- exactly the contract every other
      * block-child placement uses. */
     g_mhoist = 0;
-    doc_h = layout_block(start, mx, mtop, canvas_w - 2*mx);
+    int binner = layout_block(start, bml + cx_off(bst), mtop + cy_off(bst), binw);
+    int bbh = (binner - mtop) + (bst ? bst->pb + bst->border_w[2] : 0);
+    bbh = block_height(bst, bbh, -1);
+    box_close(bbi, bml, mtop, bbw, bbh);
+    doc_h = mtop + bbh;
     /* The initial containing block contains its floats too: a page whose last
      * content is a tall float must still scroll far enough to see it. */
     { int b = float_max_bottom(0); if (b > doc_h) doc_h = b; }
+    box_close(hbi, 0, 0, canvas_w, doc_h);
+    box_overflow_pass();
     zsort();
 }
 
@@ -3318,6 +3619,102 @@ void layout_free(void) {
         kfree(items);
         items = 0;
     }
-    nitem = 0; doc_h = 0;
+    if (boxes) { kfree(boxes); boxes = 0; }
+    nitem = 0; nbox = 0; doc_h = 0;
     page_has_bg = 0;    /* don't keep filling the viewport with the previous page's background */
+}
+
+/* ==========================================================================
+ * THE TWO QUERIES js_cssom.c ASKED FOR (see the ask written into
+ * c/apps/browser/js_cssom.h).
+ * ========================================================================== */
+
+/* Positive margins only. `auto` is -1 out of css_engine and contributes
+ * nothing to an overflow extent; a NEGATIVE margin pulls the box back, and a
+ * scrollable overflow area is a union of the space boxes OCCUPY, so pulling
+ * back reduces nothing that was already unioned. */
+static int pmargin(int v) { return v > 0 ? v : 0; }
+
+/* Fill in every record's scrollable overflow extent: the union of its
+ * in-flow descendants' MARGIN boxes with its own padding box, as the right
+ * and bottom edges in document coordinates.
+ *
+ * Only the far edges, and that is the spec rather than a shortcut: the
+ * scrollable overflow rectangle is anchored at the padding edge, and content
+ * escaping to the LEFT of it (a negative margin, a right-to-left overhang) is
+ * unreachable overflow that scrollWidth does not count.
+ *
+ * Run once, from layout_page, BEFORE zsort() -- see the note on ox1. */
+static void box_overflow_pass(void)
+{
+    if (!boxes) return;
+    for (int i = 0; i < nbox; i++) {
+        struct boxrec *b = &boxes[i];
+        const struct cstyle *st = b->n ? (const struct cstyle *)b->n->style : 0;
+        int bl = st ? st->border_w[3] : 0, br = st ? st->border_w[1] : 0;
+        int bt = st ? st->border_w[0] : 0, bb = st ? st->border_w[2] : 0;
+        int x1 = b->x + b->w - br, y1 = b->y + b->h - bb;
+        int px0 = b->x + bl, py0 = b->y + bt;
+        if (x1 < px0) x1 = px0;
+        if (y1 < py0) y1 = py0;
+        for (int k = b->i0; k < b->i1 && k < nitem; k++) {
+            int ix = items[k].x + items[k].w, iy = items[k].y + items[k].h;
+            if (ix > x1) x1 = ix;
+            if (iy > y1) y1 = iy;
+        }
+        for (int j = i + 1; j < b->b1 && j < nbox; j++) {
+            const struct cstyle *cs = boxes[j].n ? (const struct cstyle *)boxes[j].n->style : 0;
+            int jx = boxes[j].x + boxes[j].w + (cs ? pmargin(cs->mr) : 0);
+            int jy = boxes[j].y + boxes[j].h + (cs ? pmargin(cs->mb) : 0);
+            if (jx > x1) x1 = jx;
+            if (jy > y1) y1 = jy;
+        }
+        b->ox1 = x1; b->oy1 = y1;
+    }
+}
+
+/* An element may generate SEVERAL boxes -- an inline element generates one per
+ * line fragment -- and CSSOM geometry on it is the union of them. Almost every
+ * element has exactly one, so the union costs a comparison. */
+int layout_node_box(const struct node *n, int *x, int *y, int *w, int *h)
+{
+    if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
+    if (!boxes || !n) return 0;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0, got = 0;
+    for (int i = 0; i < nbox; i++) {
+        if (boxes[i].n != n) continue;
+        int ax = boxes[i].x, ay = boxes[i].y;
+        int bx = ax + boxes[i].w, by = ay + boxes[i].h;
+        if (!got) { x0 = ax; y0 = ay; x1 = bx; y1 = by; got = 1; continue; }
+        if (ax < x0) x0 = ax;
+        if (ay < y0) y0 = ay;
+        if (bx > x1) x1 = bx;
+        if (by > y1) y1 = by;
+    }
+    if (!got) return 0;
+    if (x) *x = x0; if (y) *y = y0;
+    if (w) *w = x1 - x0; if (h) *h = y1 - y0;
+    return 1;
+}
+
+int layout_node_scroll(const struct node *n, int *w, int *h)
+{
+    if (w) *w = 0; if (h) *h = 0;
+    if (!boxes || !n) return 0;
+    int sw = 0, sh = 0, got = 0;
+    for (int i = 0; i < nbox; i++) {
+        if (boxes[i].n != n) continue;
+        const struct cstyle *st = n->style ? (const struct cstyle *)n->style : 0;
+        int px0 = boxes[i].x + (st ? st->border_w[3] : 0);
+        int py0 = boxes[i].y + (st ? st->border_w[0] : 0);
+        int cw = boxes[i].ox1 - px0, ch = boxes[i].oy1 - py0;
+        if (cw < 0) cw = 0;
+        if (ch < 0) ch = 0;
+        if (!got || cw > sw) sw = cw;
+        if (!got || ch > sh) sh = ch;
+        got = 1;
+    }
+    if (!got) return 0;
+    if (w) *w = sw; if (h) *h = sh;
+    return 1;
 }

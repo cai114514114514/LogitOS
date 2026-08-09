@@ -96,4 +96,34 @@ int   layout_count(void);
 const struct item *layout_items(void);
 void  layout_free(void);
 
+/* ---- per-element geometry, for the CSSOM ----
+ *
+ * The display list above is a list of INK: an element with no background, no
+ * border and no text of its own is not in it, so a consumer that reads boxes
+ * out of it answers 0 for every such element. The two functions here read the
+ * BOX TABLE instead -- one record per element that generated a box, filled
+ * whether or not anything painted. See the block comment on `struct boxrec` in
+ * layout.c, and the ask these answer in c/apps/browser/js_cssom.h.
+ *
+ * Both are queries over the last layout_page(); both answer 0 and write zeroes
+ * when the element generated no box at all (display:none, out of the tree,
+ * never reached), which is a different statement from a box of size zero.
+ *
+ * DECLARED WEAK-FRIENDLY the way layout_count/layout_items already are: several
+ * host harnesses link a subset of the browser without layout.c and test
+ * `&layout_count != 0`. A caller doing the same for these must test them
+ * individually. */
+
+/* The element's BORDER box in DOCUMENT coordinates -- the frame `struct item`
+ * uses. An element that generates several boxes (an inline across line
+ * fragments) answers with their union. */
+int   layout_node_box(const struct node *n, int *x, int *y, int *w, int *h);
+
+/* The element's SCROLLABLE OVERFLOW area: its in-flow descendants' margin
+ * boxes unioned with its own padding box, measured from the padding edge --
+ * i.e. exactly what scrollWidth/scrollHeight are. Content escaping past the
+ * LEFT or TOP padding edge is unreachable overflow and is deliberately not
+ * counted, which is the spec's rule and not a shortcut. */
+int   layout_node_scroll(const struct node *n, int *w, int *h);
+
 #endif /* LOGIT_LAYOUT_H */
