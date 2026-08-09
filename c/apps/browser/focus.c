@@ -31,6 +31,24 @@ int fc_dispatch(struct node *target, const char *type, int bubbles, int cancelab
     return g_dispatch(target, type, bubbles, cancelable);
 }
 
+/* The editing dispatcher. See focus.h for why it is a second pointer: the
+ * fallback below is the whole reason -- with no rich dispatcher installed the
+ * editing events still fire, they simply carry no inputType. Nothing that works
+ * without it breaks when it is absent. */
+static fc_dispatch_input_fn g_dispatch_input;
+
+void fc_set_dispatch_input(fc_dispatch_input_fn fn) { g_dispatch_input = fn; }
+
+int fc_dispatch_input(struct node *target, const char *type,
+                      const char *input_type, const char *data,
+                      int bubbles, int cancelable)
+{
+    if (!target) return 1;
+    if (g_dispatch_input)
+        return g_dispatch_input(target, type, input_type, data, bubbles, cancelable);
+    return fc_dispatch(target, type, bubbles, cancelable);
+}
+
 /* ------------------------------------------------------------- helpers -- */
 
 static int tag_is(const char *t, const char *lit)

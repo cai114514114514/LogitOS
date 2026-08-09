@@ -203,6 +203,12 @@ struct node *fc_label_target(struct node *label);
  *
  * Returns 1 if the value changed (so the caller repaints). */
 int  fc_edit_insert(struct node *n, const char *s, int len);
+/* Same, with the inputType spelled out. Cut and paste are the two edits whose
+ * inputType is NOT the one their shape implies -- a cut is a deletion made by
+ * calling this with an empty string, and calling it "insertText" is exactly the
+ * kind of wrong answer a framework acts on. `input_type` NULL means
+ * "insertText". */
+int  fc_edit_replace(struct node *n, const char *s, int len, const char *input_type);
 int  fc_edit_backspace(struct node *n);
 int  fc_edit_delete(struct node *n);
 /* dir: -1 left, +1 right. `word` steps by word, `extend` keeps the anchor
@@ -272,5 +278,111 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w,
 /* The byte offset in the value nearest to `px` from the content origin: where
  * a click puts the caret. */
 int fc_offset_at_px(struct node *n, int px, int font_px, int mono);
+
+/* ================================================== contenteditable ====== */
+/* WHY THIS IS NOT THE SAME CODE AS ABOVE, said once, because the temptation to
+ * reuse `struct fctl` is strong and it is wrong.
+ *
+ * An <input>'s value is a STRING that forms.c owns. A contenteditable's value
+ * IS THE DOM: the characters live in text nodes the page created, the caret is
+ * a position in a tree rather than an offset in a buffer, typing splits and
+ * merges text nodes, Enter creates an element, and every one of those changes
+ * is visible to the page's own script through the ordinary DOM API. Nothing
+ * above can be pointed at that. So this is a second editing model over the same
+ * events, and the only things the two share are the UTF-8 stepping and the
+ * dispatch seam.
+ *
+ * THE POSITION MODEL. A position is `(node, offset)`, exactly as the DOM's
+ * Range defines it:
+ *   - node is a TEXT node  -> offset is a BYTE offset into node->text. (The DOM
+ *     says UTF-16 code units; we hold UTF-8 and step by character. They agree
+ *     for everything below U+10000 and the JS surface converts, see js_forms.c.)
+ *   - node is an ELEMENT   -> offset is a CHILD INDEX. This is not an exotic
+ *     case: it is what the caret in an EMPTY composer is, and an empty composer
+ *     is the state every chat page starts in.
+ *
+ * There is one caret for the document (an anchor and a focus end, the focus
+ * being the one Shift+Arrow moves), stored with each node's `serial` so a
+ * script that rebuilds the composer -- which React does constantly -- can never
+ * leave this file pointing into a recycled slot.
+ */
+
+/* The editing host of `n`: the nearest inclusive ancestor element whose
+ * `contenteditable` is "" or "true", NULL if a "false" is reached first or
+ * there is none. A text node answers for its parent. */
+struct node *fc_ce_host(struct node *n);
+/* 1 if `n` is inside an editing host (and so a keystroke belongs to it). */
+int fc_ce_editable(struct node *n);
+
+/* The caret. Both ends, in DOCUMENT ORDER (start <= end); equal for a collapsed
+ * caret. Any out pointer may be NULL. 0 if there is no caret at all, or if the
+ * one there is has been invalidated (its node destroyed). */
+int fc_ce_selection(struct node **sn, int *so, struct node **en, int *eo);
+/* The same two positions in the Selection API's sense: the ANCHOR is the fixed
+ * end and the FOCUS is the one that moves. They are the reverse of the pair
+ * above for a backwards selection, which is the distinction the Selection API
+ * exists to express. */
+int fc_ce_anchor_focus(struct node **an, int *ao, struct node **fn, int *fo);
+int fc_ce_collapsed(void);
+/* The editing host the caret is in, or NULL. */
+struct node *fc_ce_caret_host(void);
+
+void fc_ce_set_caret(struct node *n, int off);
+/* Put the caret inside `el` when a click found no text run to aim at -- an
+ * empty composer has a painted box and not one glyph, and that is the state
+ * every chat page is in when the user first clicks it. `at_end` picks which
+ * end of whatever content there is. */
+void fc_ce_caret_in(struct node *el, int at_end);
+/* anchor first, focus second: a backwards selection is set by passing them in
+ * that order, not by ordering them. */
+void fc_ce_set_range(struct node *an, int ao, struct node *fn, int fo);
+void fc_ce_clear(void);
+
+/* The editing operations. Each raises `beforeinput` (cancelable) with the right
+ * inputType, mutates the DOM, then raises `input` -- at the EDITING HOST, which
+ * is where a page listens. Return 1 if the DOM changed, so the caller re-styles
+ * and re-lays-out. */
+int fc_ce_insert(const char *s, int len);
+int fc_ce_backspace(void);
+int fc_ce_delete(void);
+/* Enter. `shift` inserts a <br> (inputType insertLineBreak); a plain Enter
+ * SPLITS THE BLOCK and inputType is insertParagraph -- see the note in forms.c
+ * for which of the two spec-permitted behaviours that is and why. Note that a
+ * chat composer usually cancels Enter in its own keydown handler to send the
+ * message, and browser.c honours that, so this often never runs on such a
+ * page. */
+int fc_ce_enter(int shift);
+
+/* Caret movement. Return 1 if the caret or the selection moved (repaint). */
+int fc_ce_move(int dir, int word, int extend);
+int fc_ce_home(int extend);
+int fc_ce_end(int extend);
+int fc_ce_select_all(struct node *host);
+
+/* The selected text, for Selection.toString(). Returns the byte count. */
+int fc_ce_selection_text(char *buf, int max);
+
+/* ---- the positions, as PATHS, for the JavaScript side --------------------
+ *
+ * js_forms.c cannot turn a `struct node *` into a JS wrapper: js_dom.c exports
+ * no accessor for it and that file is another line's (the same wall its header
+ * documents for elements, except that a TEXT node cannot even carry the
+ * `data-logit-fcid` attribute the element workaround uses). What it CAN do is
+ * walk `documentElement.childNodes[i]`. So a position crosses the boundary as a
+ * PATH of child indices from the document element, plus the offset.
+ *
+ * `fc_ce_path` writes the path deepest-last and returns its depth, or -1 when
+ * there is no caret / it does not resolve. `which`: 0 anchor, 1 focus. */
+/* Where paths are resolved FROM, for the case with no caret to start at: the
+ * page is placing one for the first time, which is the call that matters.
+ * browser.c pushes the document on every load. */
+void fc_ce_set_root(struct node *root);
+int  fc_ce_path(int which, int *out, int max, int *off_out);
+/* The reverse. `depth` 0 addresses the document element itself. */
+int  fc_ce_set_path(int which, const int *path, int depth, int off);
+/* Both ends in one call, so a JS selection change is one crossing and cannot
+ * land half-applied. */
+int  fc_ce_set_paths(const int *apath, int adepth, int aoff,
+                     const int *fpath, int fdepth, int foff);
 
 #endif /* LOGIT_FORMS_H */

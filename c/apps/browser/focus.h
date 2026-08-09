@@ -48,6 +48,33 @@ void fc_set_dispatch(fc_dispatch_fn fn);
  * one. */
 int  fc_dispatch(struct node *target, const char *type, int bubbles, int cancelable);
 
+/* ---- the editing events, which need one more field than the seam above ----
+ *
+ * `input` and `beforeinput` carry an **inputType**, and that is not decoration:
+ * a React-managed composer reads it to decide what happened, so an `input`
+ * event without one is an input event about nothing. The base seam cannot carry
+ * it -- js_dom.c builds every event it raises out of `struct js_event_init`,
+ * which has no inputType, and that file belongs to another line. So the
+ * embedder installs a SECOND dispatcher that can, and js_forms.c implements it
+ * by constructing a real `InputEvent` in the page's own runtime (js_events.c
+ * already defines the interface, with `inputType` and `data`).
+ *
+ * UNINSTALLED IT STILL FIRES, through fc_dispatch() with the inputType dropped
+ * -- which is what BROWSER_PIPE and a host test that only wants the ORDER see.
+ * That fallback is deliberate and it is also why this is a second pointer
+ * rather than a wider first one: nothing that works today stops working when
+ * the richer dispatcher is absent.
+ *
+ * `data` is InputEvent.data: the inserted string for an insertion, NULL for a
+ * deletion. */
+typedef int (*fc_dispatch_input_fn)(struct node *target, const char *type,
+                                    const char *input_type, const char *data,
+                                    int bubbles, int cancelable);
+void fc_set_dispatch_input(fc_dispatch_input_fn fn);
+int  fc_dispatch_input(struct node *target, const char *type,
+                       const char *input_type, const char *data,
+                       int bubbles, int cancelable);
+
 /* ---------------- the focused element ---------------- */
 
 /* Forget everything. Called on navigation, BEFORE the old DOM is freed --
