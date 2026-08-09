@@ -481,6 +481,43 @@ $(BUILD)/login.aex: $(BUILD)/login.elf tools/mkaex.py
 
 CLI_AEX += $(BUILD)/login.aex
 
+# --- greeter.aex: the desktop's login ----------------------------------------
+# NOT built by APP_RULE and NOT packed in the LogitFS root. Both are deliberate.
+#
+#   - It links PBKDF2 to check a password, and APP_RULE compiles exactly one
+#     .c. Same reason /bin/login and pkgverify have rules of their own.
+#   - A .aex in the ROOT gets a DOCK ICON: c/kernel/gui/wm.c scan_apps() scans
+#     "/" and nothing else. A greeter in the dock would be absurd -- and it
+#     would also shift every other icon by half a slot (the dock is centred)
+#     and land every hard-coded coordinate in every QMP driver on the
+#     wallpaper, which is the trap the APPS note above spells out. /sbin is not
+#     scanned, so nothing moves.
+#
+# IT SHARES LOGIN_CFLAGS AND LOGIN_STAMP WITH /bin/login, which is the point:
+# `make LOGIN_NEGCTL=1 test-greeter-os` compiles -DLOGIN_NEGCTL_ACCEPT_ANY into
+# BOTH programs, so one flag turns the console login AND the greeter into
+# prompts that accept every password -- one definition of the check
+# (acct_check_password in c/apps/coreutils/accounts.h), one control for both
+# doors. The stamp forces the rebuild; see the LOGIN_NEGCTL comment above for
+# why a flag that does not force one is a control that is a lie.
+GREETER_CSRC := c/apps/gui/greeter.c c/crypto/kdf/pbkdf2.c \
+                c/crypto/hash/hmac_hkdf.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
+GREETER_OBJ  := $(patsubst %.c,$(BUILD)/greeterobj/%.o,$(GREETER_CSRC))
+GREETER_AEX  := $(BUILD)/greeter.aex
+
+$(BUILD)/greeterobj/%.o: %.c c/apps/coreutils/accounts.h c/apps/gui/aui.h $(LOGIN_STAMP)
+	@mkdir -p $(dir $@)
+	$(CC) $(LOGIN_CFLAGS) -c $< -o $@
+
+$(BUILD)/greeter.elf: $(GREETER_OBJ) $(APPDIR)/crt0.asm $(BUILD)/apps/aui.o $(GFX_OBJ)
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/greeter.crt0.o
+	$(LD) -nostdlib -e _start -Ttext=0x4C000000 -o $@ $(BUILD)/apps/greeter.crt0.o \
+	    $(GREETER_OBJ) $(BUILD)/apps/aui.o $(GFX_OBJ)
+$(BUILD)/greeter.aex: $(BUILD)/greeter.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/greeter.elf $@ 'Sign in' - 'L' 90 140 240
+
+
 # The host signer/inspector. Deliberately the same C the kernel verifies with
 # rather than a second implementation -- see the header of tools/lpk.c.
 $(BUILD)/lpk: tools/lpk.c c/crypto/trust/pkgsig.c c/crypto/pubkey/ed25519.c \
@@ -896,13 +933,14 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 # the host tests do -- a guest-only fixture would compare two different files.
 IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
 IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES)
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX)
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
 	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
 	    $(BUILD)/login.aex:/bin/login \
+	    $(GREETER_AEX):/sbin/greeter.aex \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(FONT_TEXT):/fonts/text.ttf \
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
@@ -3357,6 +3395,8 @@ clean:
 -include tests/sec.mk
 # The settings store: does this machine remember anything about its user?
 -include tests/settings.mk
+# The desktop's own login, and the per-user settings store it needs.
+-include tests/desktop.mk
 
 # The browser LOADER test (test-loader), its negative control and the on-device
 # test-script-nav. Own fragment for the same reason as every other one above --

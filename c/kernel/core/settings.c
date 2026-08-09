@@ -9,6 +9,13 @@
 #include "vfs.h"
 #include "kprintf.h"
 #include "crc32.h"
+/* /etc/passwd, parsed by the header /bin/login parses it with -- see
+ * settings_prepare_user().  The kernel gets a second READER of the account
+ * store and not a second definition of its format, which is the distinction
+ * that matters: a format with two parsers is a format that will disagree with
+ * itself.  The header is parsing only and links nothing (the pwhash_check it
+ * declares is never called from here). */
+#include "accounts.h"
 
 /* ===========================================================================
  * The schema: every key this kernel understands.
@@ -35,12 +42,35 @@ static const struct setting_def schema[] = {
 /* ===========================================================================
  * The store
  * ======================================================================== */
-struct kv { char k[SET_KEYLEN]; char v[SET_VALLEN]; };
+/* `sys` = "this value came from the SYSTEM store and the user has not changed
+ * it".  It is the whole layering mechanism and it is one byte: a commit writes
+ * the entries with sys == 0 and nothing else, so a user's file holds only what
+ * that user actually chose.  See the two-store block in settings.h. */
+struct kv { char k[SET_KEYLEN]; char v[SET_VALLEN]; unsigned char sys; };
 static struct kv     tab[SET_MAXKV];
 static int           ntab;
 static unsigned      gen;
 static int           diag;
 static int           loaded;
+
+/* ---------------------------------------------------------------------------
+ * The user store.  Empty until a login resolves one -- and while it is empty
+ * this file is byte-for-byte the single-store machine it was, which is what
+ * keeps every pre-existing settings test honest.
+ * ------------------------------------------------------------------------ */
+static char user_path[SET_PATHLEN];      /* "" = no user; commits go to /etc */
+static char pending_path[SET_PATHLEN];   /* resolved while still root        */
+static unsigned user_uid;
+
+/* 1 while load_text() is reading the SYSTEM file, so every key it stores is
+ * marked as a default rather than as something the user chose.
+ *
+ * IT IS ONLY EVER SET WHEN A USER STORE EXISTS, and that is not an
+ * optimisation.  With no user store there is nothing to layer over: if
+ * /etc/settings.conf's keys were marked `sys` on a machine with no accounts,
+ * the very next commit would write a file containing only the one key that had
+ * just been set and silently drop the other eight. */
+static int loading_sys;
 
 /* The serialisation buffer.  STATIC, not kmalloc'd, and that is a decision:
  * this is the path that saves the user's configuration, and the moment it most
@@ -194,6 +224,11 @@ static int put_ex(const char *key, const char *val, int from_file)
         s_cpy(e->k, key, SET_KEYLEN);
     }
     s_cpy(e->v, val ? val : "", SET_VALLEN);
+    /* The ownership bit, set at the ONE place a value is stored.  Loading the
+     * system file marks defaults; loading the user file and every set() from a
+     * program mark the value as the user's -- including when it overwrites a
+     * default, which is exactly the "the user changed it" case. */
+    e->sys = (unsigned char)(loading_sys ? 1 : 0);
     return 0;
 }
 
@@ -314,20 +349,111 @@ static void load_text(const char *text, int len)
 /* ===========================================================================
  * Load / commit
  * ======================================================================== */
+/* Read one store into the table.  Returns 1 if a file was there and parsed,
+ * 0 if there was nothing to read.  Diag bits accumulate across both calls,
+ * which is the honest reporting: a bad line is a bad line whichever of the two
+ * files it was on, and the loader names the file on the boot log. */
+static int load_one(const char *path)
+{
+    int sz = vfs_size(path);
+    if (sz <= 0) return 0;
+    if (sz > SET_BUFSZ - 1) sz = SET_BUFSZ - 1;   /* read what fits; the rest is lines we drop */
+    int n = vfs_read(path, buf, sz);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    load_text(buf, n);
+    return 1;
+}
+
 int settings_load(void)
 {
     ntab = 0;
     diag = 0;
     loaded = 1;
 
-    int sz = vfs_size(SET_PATH);
-    if (sz <= 0) { diag |= SET_D_NOFILE; return diag; }
-    if (sz > SET_BUFSZ - 1) sz = SET_BUFSZ - 1;   /* read what fits; the rest is lines we drop */
-    int n = vfs_read(SET_PATH, buf, sz);
-    if (n <= 0) { diag |= SET_D_NOFILE; return diag; }
-    buf[n] = 0;
-    load_text(buf, n);
+    /* SYSTEM FIRST, ALWAYS.  It is the defaults layer, and it is the only
+     * layer that exists before anybody has logged in -- which is precisely the
+     * moment the greeter needs a theme and a wallpaper. */
+    loading_sys = (user_path[0] != 0);
+    int any = load_one(SET_PATH);
+    loading_sys = 0;
+
+#ifdef SETTINGS_NEGCTL_USER_READ_SYSTEM
+    /* NEGATIVE CONTROL: write to the per-user path, read from the system one.
+     *
+     * This is today's bug wearing a fix's clothes, and it is the control the
+     * suite has to go red on. Every save appears to work -- settings_set_*
+     * updates the table in RAM, the UI follows, settings_commit() writes the
+     * user's file and returns 0 -- and the value is GONE at the next boot,
+     * because this build never reads it back. A test that only asserts "the
+     * setting changed" or "the write succeeded" cannot tell this build from
+     * the real one; only a reboot can. */
+#else
+    if (user_path[0]) any |= load_one(user_path);
+#endif
+
+    if (!any) diag |= SET_D_NOFILE;
     return diag;
+}
+
+/* ===========================================================================
+ * WHICH USER'S SETTINGS -- see the two-store block in settings.h.
+ * ======================================================================== */
+const char *settings_store_path(void)
+{ return user_path[0] ? user_path : SET_PATH; }
+
+int settings_prepare_user(unsigned uid)
+{
+    pending_path[0] = 0;
+
+    /* THE ONLY MOMENT THIS CAN WORK. /etc/passwd is root:root 0600 and the
+     * caller is about to stop being root; a lookup after the drop reads
+     * nothing. See the call site in c/kernel/exec/syscall.c. */
+    static char store[ACCT_MAX + 1];
+    int sz = vfs_size("/etc/passwd");
+    if (sz <= 0 || sz > ACCT_MAX) return -1;
+    int n = vfs_read("/etc/passwd", store, sz);
+    if (n <= 0) return -1;
+    store[n] = 0;
+
+    struct account a;
+    int pos = 0, found = 0;
+    while (acct_next(store, n, &pos, &a)) if (a.uid == uid) { found = 1; break; }
+    /* Wipe the hashes out of the kernel's static buffer the moment they are no
+     * longer needed. They were read with a credential that was allowed to read
+     * them; leaving them sitting in a static array for the rest of the boot is
+     * a copy nobody accounted for. */
+    for (int i = 0; i <= n; i++) store[i] = 0;
+    if (!found) return -1;
+
+    if (!a.home[0] || a.home[0] != '/') return -1;      /* a home is absolute */
+    int hl = s_len(a.home);
+    if (hl + (int)sizeof(SET_USER_REL) > SET_PATHLEN) return -1;
+    s_cpy(pending_path, a.home, SET_PATHLEN);
+    /* "/" + "/.config/..." would be "//.config/..."; vfs_path collapses it,
+     * but the string is also printed on the boot log and read by a human. */
+    int o = hl;
+    if (o > 1 && pending_path[o - 1] == '/') o--;
+    s_cpy(pending_path + o, SET_USER_REL, SET_PATHLEN - o);
+    user_uid = uid;
+    return 0;
+}
+
+void settings_discard_user(void) { pending_path[0] = 0; }
+
+void settings_adopt_user(void)
+{
+    if (!pending_path[0]) return;
+    s_cpy(user_path, pending_path, SET_PATHLEN);
+    pending_path[0] = 0;
+
+    /* Re-read with the layering on. This runs AFTER the credential dropped, so
+     * the user's own file is read as the user -- if that read is refused, the
+     * file is not theirs and they get the system defaults, which is the right
+     * outcome and not a silent one (the line below says which store is live). */
+    int d = settings_load();
+    kprintf("SETTINGS_USER uid=%u store=%s defaults=%s diag=%d keys=%d\n",
+            user_uid, user_path, SET_PATH, d, ntab);
 }
 
 /* Serialise into `buf`.  Returns the length. */
@@ -345,6 +471,13 @@ static int serialise(void)
     for (int i = 0; hdr[i] && o < SET_BUFSZ - 1; i++) buf[o++] = hdr[i];
 
     for (int i = 0; i < ntab; i++) {
+        /* ONLY WHAT THIS USER CHOSE.  A value still carrying the system store's
+         * mark is a default they never touched, and copying it into their file
+         * would freeze today's default into their account forever -- the next
+         * change to /etc/settings.conf would reach nobody who had ever opened
+         * the Settings window.  On a machine with no user store nothing is
+         * marked, so this loop writes the whole table exactly as it always did. */
+        if (tab[i].sys) continue;
         int need = s_len(tab[i].k) + s_len(tab[i].v) + 4;
         if (o + need >= SET_BUFSZ - 32) break;
         for (const char *p = tab[i].k; *p; p++) buf[o++] = *p;
@@ -372,26 +505,45 @@ int settings_commit(void)
      * commit), writes and barriers them before the commit record, and installs
      * the inode only after it.  The file is its old content or its new content
      * and never a mixture.  There is no temp file here on purpose. */
-    if (vfs_mkdir("/etc") < 0) { /* already exists: fine, and the write below tells us */ }
-    int rc = vfs_write(SET_PATH, buf, n);
-    if (rc < 0) { kprintf("[set] commit FAILED (%d bytes)\n", n); return SET_E_IO; }
+    const char *path = settings_store_path();
+    /* The parent directory.  /etc for the system store; $HOME/.config for a
+     * user's -- made HERE rather than at enrolment, because an account created
+     * before this code existed has no .config and would otherwise never be able
+     * to save anything.  A failure is not checked: it usually means "it is
+     * already there", and the write below is the thing that actually reports. */
+    if (user_path[0]) {
+        char dir[SET_PATHLEN];
+        s_cpy(dir, path, SET_PATHLEN);
+        for (int i = s_len(dir) - 1; i > 0; i--) if (dir[i] == '/') { dir[i] = 0; break; }
+        if (vfs_mkdir(dir) < 0) { /* already exists, or refused: the write says */ }
+    } else {
+        if (vfs_mkdir("/etc") < 0) { /* already exists: fine */ }
+    }
+    int rc = vfs_write(path, buf, n);
+    if (rc < 0) { kprintf("[set] commit FAILED %s (%d bytes)\n", path, n); return SET_E_IO; }
     gen++;
     return 0;
 }
 
 int settings_reset(void)
 {
-    vfs_delete(SET_PATH);
+    /* Delete the store this machine WRITES, not the system one.  A user
+     * resetting their settings must not be able to delete root's defaults --
+     * and would not be allowed to anyway, so without this the reset would
+     * silently do nothing while reporting success. */
+    vfs_delete(settings_store_path());
     ntab = 0;
     diag = SET_D_NOFILE;
     gen++;
+    /* Their overrides are gone; the defaults underneath them are not. */
+    if (user_path[0]) settings_load();
     return 0;
 }
 
 void settings_init(void)
 {
     int d = settings_load();
-    kprintf("[set] %s: %d keys", SET_PATH, ntab);
+    kprintf("[set] %s: %d keys", settings_store_path(), ntab);
     if (d & SET_D_NOFILE)     kprintf(", none stored (defaults)");
     if (d & SET_D_TRUNCATED)  kprintf(", TRUNCATED (unterminated final line dropped)");
     if (d & SET_D_BADLINE)    kprintf(", BAD LINES ignored");

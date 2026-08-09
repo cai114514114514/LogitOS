@@ -899,11 +899,48 @@ static void syscall_do(struct registers *r)
     case SYS_SETGID:
     case SYS_GETGROUPS:
     case SYS_SETGROUPS:
-    case SYS_SETSESSION:
     case SYS_GETSESSION:
         r->rax = (uint64_t)id_syscall((long)r->rax, (long)r->rdi,
                                       (long)r->rsi, (long)r->rdx);
         return;
+
+    /* SYS_SETSESSION is the same forward, WRAPPED -- and this is the only
+     * place in the kernel where the two halves of "who is using this machine"
+     * meet, so the reasoning belongs here rather than in a header.
+     *
+     * The settings store used to be one file, /etc/settings.conf, root:root
+     * 0600, written through vfs_write() with the CALLING process's credential.
+     * The moment /bin/login started dropping the desktop to a real uid, a user
+     * toggling dark mode was refused and their choice was gone at the next
+     * boot. The fix is a per-user store (c/kernel/core/settings.h), and the
+     * only thing it needs is to be told, once, whose it is.
+     *
+     * WHY IT IS TWO CALLS AROUND ONE. The user's home is looked up in
+     * /etc/passwd, which is root:root 0600 -- and this syscall is the instant
+     * the caller stops being root. So the lookup happens BEFORE (prepare) and
+     * the switch happens AFTER (adopt), which also means the user's own
+     * settings file is read with the user's own credential, as it should be.
+     * Doing both before would read their file as root; doing both after would
+     * find /etc/passwd unreadable and silently give every user the defaults.
+     *
+     * WHY HERE AND NOT IN /bin/login. Because the greeter authenticates too
+     * (c/apps/gui/greeter.c), and so will the next thing that does. A hook a
+     * userland program has to remember to call is a hook that will be missing
+     * from one of them, and the symptom -- "settings do not persist, but only
+     * when you log in through the other door" -- is nearly unfindable.
+     *
+     * A FAILURE HERE NEVER FAILS THE LOGIN. No row for that uid, or an
+     * unreadable store, means the user gets the system settings read-only:
+     * a worse desktop, not a refused one. */
+    case SYS_SETSESSION: {
+        int prepared = (settings_prepare_user((unsigned)r->rdi) == 0);
+        long rc = id_syscall((long)r->rax, (long)r->rdi,
+                             (long)r->rsi, (long)r->rdx);
+        if (rc == 0 && prepared) settings_adopt_user();
+        else                     settings_discard_user();
+        r->rax = (uint64_t)rc;
+        return;
+    }
 
     /* Settings. Handled here and not in wm_gui_syscall because a CLI process
      * -- a shell script, an .as program, a future `defaults` coreutil -- has

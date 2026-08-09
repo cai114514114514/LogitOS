@@ -1714,7 +1714,21 @@ struct logit_dgram {
                             * n == 0 clears the supplementary set. */
 #define SYS_SETSESSION 158 /* (uid, gid) -> 0. Root only. Establishes the login
                             * session AND the caller's credential atomically.
-                            * This is the call /bin/login makes. */
+                            * This is the call /bin/login makes -- and the
+                            * greeter (c/apps/gui/greeter.c), which is the same
+                            * event arriving through the desktop's door.
+                            *
+                            * IT HAS ONE SIDE EFFECT AND IT IS DOCUMENTED
+                            * BECAUSE IT IS NOT GUESSABLE: the kernel uses this
+                            * call -- the last instant at which the caller can
+                            * still read root:root 0600 /etc/passwd -- to point
+                            * the settings store at that user's
+                            * $HOME/.config/settings.conf, layered over
+                            * /etc/settings.conf as read-only defaults. See
+                            * c/kernel/core/settings.h and the SYS_SETSESSION
+                            * case in c/kernel/exec/syscall.c. A caller does
+                            * nothing to opt in and cannot opt out; there is no
+                            * ordering for it to get wrong. */
 #define SYS_GETSESSION 159 /* (which) -> the session uid (which == 0) or gid
                             * (which == 1). Never fails; before a login both
                             * are 0, i.e. the machine belongs to root. */

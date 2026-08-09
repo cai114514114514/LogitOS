@@ -189,6 +189,63 @@ struct setting_def {
 #define SET_MAXKV    96
 #define SET_PATH     "/etc/settings.conf"
 
+/* ---------------------------------------------------------------------------
+ * TWO STORES, AND WHY -- the regression this closes, stated before the API.
+ * ---------------------------------------------------------------------------
+ * /etc/settings.conf is root:root 0600.  settings_commit() writes it through
+ * vfs_write(), which uses the CALLING PROCESS's credential (c/fs/vfs.c
+ * cred_now).  So from the moment /bin/login started dropping the desktop to a
+ * real uid, a user flipping dark mode in the menu bar was REFUSED and their
+ * choice was gone at the next boot.  Nothing was wrong with the permission
+ * check; the file was simply in the wrong place.  POSIX-correct, product-wrong.
+ *
+ * So there are two files and they have different jobs:
+ *
+ *   /etc/settings.conf              THE SYSTEM STORE.  Root's, and after a
+ *                                   login it is read-only to everyone else.
+ *                                   It supplies DEFAULTS -- which is also the
+ *                                   only answer to a question that turns up
+ *                                   immediately: the greeter needs a theme and
+ *                                   a wallpaper BEFORE anybody has logged in,
+ *                                   and at that moment there is no user store
+ *                                   to read.
+ *
+ *   $HOME/.config/settings.conf     THE USER STORE.  Written by the logged-in
+ *                                   user, over the system one, key by key.
+ *
+ * A key present in both: the user's value wins.  A key the user has never
+ * touched is NOT copied into their file -- the user store holds only what that
+ * user actually changed, so a later change to a system default reaches every
+ * user who never overrode it.  That is why each table entry carries `sys`.
+ *
+ * ON A MACHINE WITH NO ACCOUNTS there is no user, no user path, and this file
+ * behaves EXACTLY as it did before: one store, /etc/settings.conf, written by
+ * root.  Every pre-existing settings test asserts that behaviour and none of
+ * them were changed.
+ *
+ * WHERE THE HOME COMES FROM.  Not from a path handed in by userland: it is
+ * looked up from /etc/passwd, through the SAME header-only parser /bin/login
+ * uses (c/apps/coreutils/accounts.h), so there is one definition of the account
+ * format and no caller -- root or not -- can point the settings store at a
+ * directory of its choosing.  The lookup is driven from SYS_SETSESSION in
+ * c/kernel/exec/syscall.c and it is deliberately TWO calls, because the one
+ * instant that has to be split is the credential drop:
+ *
+ *   settings_prepare_user(uid)   runs while /bin/login (or the greeter) is
+ *                                STILL ROOT, which is the only moment
+ *                                /etc/passwd can be read.  It resolves the
+ *                                home and remembers the path.  It switches
+ *                                nothing.
+ *   settings_adopt_user()        runs after the credential has dropped, so the
+ *                                user's own file is read as the user -- which
+ *                                is the correct credential for it, and proves
+ *                                the file is really theirs.
+ *   settings_discard_user()      the session change failed; forget the pending
+ *                                path.  Never leave a half-switched store.
+ * ------------------------------------------------------------------------ */
+#define SET_USER_REL "/.config/settings.conf"
+#define SET_PATHLEN  160
+
 /* The buffer a SETCTL_KVAT caller must provide: "key" + '=' + "value" + NUL.
  * Named rather than open-coded, because every caller had independently rounded
  * a guess up and raising SET_VALLEN turned all of those guesses into overflows
@@ -216,6 +273,20 @@ void settings_init(void);          /* load from disk; call after vfs_mount() */
 int  settings_load(void);          /* re-read the file; returns SET_D_* bits */
 int  settings_commit(void);        /* write the table out; 0, or <0          */
 int  settings_reset(void);         /* delete the file, restore defaults      */
+
+/* The per-user store.  See the two-store block above for the argument and for
+ * why the switch is split in two.  `settings_prepare_user` returns 0 when it
+ * resolved a home for `uid`, or <0 -- and a <0 is NOT a reason to refuse the
+ * login: a user with no row in /etc/passwd (or an unreadable store) simply
+ * keeps the system settings read-only, which is a worse desktop and not a
+ * broken one. */
+int  settings_prepare_user(unsigned uid);
+void settings_adopt_user(void);
+void settings_discard_user(void);
+
+/* The file a commit would write, absolute.  "/etc/settings.conf" before a
+ * login.  Never NULL. */
+const char *settings_store_path(void);
 
 /* Reads.  Every one range-checks and falls back to `def` (or to the schema
  * default when there is one), so a caller can never receive nonsense. */

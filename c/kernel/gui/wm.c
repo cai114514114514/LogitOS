@@ -41,6 +41,7 @@
 #include "smp.h"
 #include "percpu.h"
 #include "spinlock.h"
+#include "vfs_cred.h"   /* vfs_cred_session(): who, if anyone, has logged in */
 
 #define MAXWIN     16
 /* ---- units ----------------------------------------------------------------
@@ -228,6 +229,52 @@ struct win {
 static struct app apps[MAXWIN];
 static struct win wins[MAXWIN];
 static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
+
+/* ===========================================================================
+ * THE LOCK -- the desktop does not come up until somebody has authenticated.
+ *
+ * /bin/login gave the SERIAL CONSOLE a person. This file was the half that had
+ * not been done: wm_run() launched files.aex before init ran at all, so the
+ * machine reached a live desktop showing the previous user's home in 2.7
+ * seconds with nothing in between. The console login was real and the desktop
+ * went around it.
+ *
+ * WHAT IS ACTUALLY BEING RELIED ON, in one sentence: while `g_locked` is set,
+ * wm_launch() REFUSES to start any program except the greeter. Everything else
+ * here -- not drawing the dock, not drawing the menu bar, not drawing a window
+ * frame, routing every key to the one window -- is what makes the screen look
+ * right, and none of it is what makes the machine safe. That distinction is
+ * the reason a greeter was chosen over an overlay on a running desktop: an
+ * overlay's security is its z-order, and a launcher's refusal cannot be lost
+ * to a compositing mistake. See the header of c/apps/gui/greeter.c.
+ *
+ * WHEN IT IS SET: at boot, if and only if /etc/passwd exists. A machine with
+ * no accounts has nobody to authenticate and behaves EXACTLY as it did before
+ * this existed -- which is also what keeps the other sixty boot harnesses in
+ * this tree working unchanged.
+ *
+ * WHEN IT CLEARS: when the LOGIN SESSION becomes non-root. That is checked
+ * against c/fs/vfs_cred.c rather than against a message from the greeter,
+ * because it is the same fact the filesystem is enforcing against -- there is
+ * no second notion of "logged in" here to drift out of step with the first.
+ *
+ * A CONSEQUENCE, STATED RATHER THAN HIDDEN: authenticating on the serial
+ * console also unlocks the desktop. There is one seat, one session and one
+ * /etc/passwd; the console asks for the same password with the same PBKDF2, so
+ * this is the same person arriving through the other door, not a bypass. If
+ * this machine ever grows two seats, the session stops being a global and this
+ * check becomes per-seat.
+ * ======================================================================== */
+#define GREETER_AEX "/sbin/greeter.aex"
+static int g_locked;                   /* 1 = nobody has authenticated yet   */
+static int g_greeter_ai = -1;          /* apps[] slot of the greeter, or -1  */
+static int g_desktop_started;          /* files.aex has been launched (once) */
+
+/* The greeter's WINDOW, derived from the app slot every time rather than
+ * cached: a window index outlives the window that owned it (the slot is reused
+ * by the next SYS_GUI_CREATE), and a stale one here would composite whatever
+ * opened next full-screen with no chrome. */
+static int greeter_win(void);
 
 static int mx, my, mleft, mright, mmiddle;
 static int dragging = -1, drag_dx, drag_dy;
@@ -861,6 +908,14 @@ static void blit_content(struct win *w, int dx, int dy, int cw, int ch)
     else fb_blit_surface_scaled(dx, dy, cw, ch, &w->surf);
 }
 
+static int greeter_win(void)
+{
+    if (g_greeter_ai < 0) return -1;
+    struct app *ap = &apps[g_greeter_ai];
+    if (!ap->used || !ap->alive) return -1;
+    return ap->win;
+}
+
 /* ---------- launching apps ---------- */
 static struct app *find_live_app(const char *name)
 {
@@ -872,6 +927,17 @@ static struct app *find_live_app(const char *name)
 
 void wm_launch(const char *aex_file, const char *arg)
 {
+    /* THE GATE. Everything else about the lock is presentation; this line is
+     * the mechanism. It is here and not at the call sites deliberately: there
+     * are five of them today (boot, the dock, a Finder double-click, a file
+     * association, SYS_OPEN_PATH from any app) and the next one will not
+     * remember to ask. See the block comment on g_locked. */
+    if (g_locked && !streq(aex_file, GREETER_AEX)) {
+        serial_puts("[wm] locked: refusing to launch ");
+        serial_puts(aex_file);
+        serial_puts("\n");
+        return;
+    }
     int sz = vfs_size(aex_file);
     if (sz <= 0) { serial_puts("[wm] launch: not found\n"); return; }
     if (sz < AEX_HDR_SIZE) { serial_puts("[wm] launch: bad aex\n"); return; }  /* aex_info reads the 64-byte header */
@@ -973,6 +1039,10 @@ void wm_launch(const char *aex_file, const char *arg)
     ap->win = -1;
     scopy(ap->name, name, sizeof ap->name);
     scopy(ap->arg, arg ? arg : "", sizeof ap->arg);
+    /* Remembered by SLOT, from the path that was launched -- not by the app's
+     * display name, which comes out of the .aex header and is a string anybody
+     * packing a disk could reuse. */
+    if (streq(aex_file, GREETER_AEX)) g_greeter_ai = ai;
 
     /* Every app is a process now. The proc (not the struct app) is the thread's
      * payload; it carries the address space + fd table, and points back at the
@@ -2438,6 +2508,25 @@ static int render_region(const struct drect *R)
     fb_set_clip(R->x0, R->y0, rw, rh);
     for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
         blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
+    /* LOCKED: exactly ONE window is composited, it fills the screen, and it is
+     * drawn with no frame at all -- no titlebar, so no close button exists to
+     * be hit-tested, and no dock and no menu bar. There is nothing behind it
+     * to leak because nothing else has been launched: see the g_locked block
+     * comment, and note that this branch is the COSMETIC half of the lock.
+     * wm_launch()'s refusal is the half that matters. */
+    if (g_locked) {
+        int gw = greeter_win();
+        if (gw >= 0 && wins[gw].used && wins[gw].surf.px)
+            blit_content(&wins[gw], 0, 0, W, H);
+        if (!hw_cursor) draw_cursor_back(mx, my);
+        fb_clear_clip();
+        uint64_t t_lock = time_mono_ns();
+        fb_present_rect(R->x0, R->y0, rw, rh);
+        perf_present_ns += time_mono_ns() - t_lock;
+        perf_cpx += (uint64_t)rw * (uint64_t)rh;
+        return 0;
+    }
+
     int focus_wi = top_visible();          /* NOT order[norder-1]: that may be minimised */
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
         struct win *w = &wins[order[i]];
@@ -2672,8 +2761,15 @@ static int wm_shortcut(int c, int mods)
 
 static void wm_process_key(int c, int mods)
 {
-    if ((mods & EV_MOD_SUPER) && wm_shortcut(c, mods)) return;
-    int wi = top_visible();       /* NOT order[norder-1]: that may be minimised */
+    /* NO SYSTEM SHORTCUTS WHILE LOCKED. Cmd+W and Cmd+Q both send EV_CLOSE,
+     * and a greeter a keystroke can close is not a greeter -- the app ignores
+     * EV_CLOSE too, but the right place to stop it is before it is generated.
+     * The window is also resolved directly rather than through top_visible():
+     * the greeter is the only window there is, and "the only window" is a
+     * stronger statement than "the top one". */
+    if (!g_locked && (mods & EV_MOD_SUPER) && wm_shortcut(c, mods)) return;
+    int wi = g_locked ? greeter_win()
+                      : top_visible();  /* NOT order[norder-1]: that may be minimised */
     if (wi < 0) return;
     struct win *w = &wins[wi];
     if (w->kind == WK_APP) {
@@ -2733,8 +2829,43 @@ static int titlebar_double_click(int wi, int x, int y)
     return hit;
 }
 
+/* LOCKED: the pointer belongs to the greeter and to nothing else.
+ *
+ * This is a whole separate path rather than a set of `if (!g_locked)` guards
+ * scattered through wm_process_mouse, and that is on purpose: the guarded
+ * version would have to be right in eight places (the theme switch, the
+ * notification cards, the dock, the resize band, the titlebar, the three
+ * traffic lights, the drag, the right-button menu), and a version that has to
+ * be right in eight places is a version that will be wrong in one. Here the
+ * only thing that can happen is a click reaching the greeter's canvas.
+ *
+ * The greeter is composited AT 0,0 FILLING THE SCREEN (see render_region), so
+ * its window-local coordinates are the screen's -- w->x/w->y are not consulted,
+ * because while locked they are not where the window is drawn. */
+static void wm_locked_mouse(const struct inev *in)
+{
+    int x = in->x, y = in->y;
+    int moved = (x != mx || y != my);
+    mx = x; my = y;
+    if (moved) perf_motions++;
+
+    int gw = greeter_win();
+    if (gw >= 0 && wins[gw].used && wins[gw].kind == WK_APP) {
+        struct win *w = &wins[gw];
+        if (in->l && !mleft) enqueue_input(w, EV_MOUSE,    PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
+        if (!in->l && mleft) enqueue_input(w, EV_MOUSE_UP, PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
+        if (moved)           enqueue_input(w, EV_MOUSE_MOVE, PT(x), PT(y), in->mods, EV_BTN_NONE, 0);
+    }
+    mleft = in->l; mright = in->r; mmiddle = in->m;
+    set_cursor(CUR_ARROW);
+    /* Without a cursor plane the arrow lives in the composite, so a moved
+     * pointer is damage -- exactly as on the unlocked path. */
+    if (moved && !hw_cursor) dirty_full();
+}
+
 static void wm_process_mouse(const struct inev *in)
 {
+    if (g_locked) { wm_locked_mouse(in); return; }
     int x = in->x, y = in->y, left = in->l, right = in->r, middle = in->m;
     int mods = in->mods;
     int moved = (x != mx || y != my);
@@ -3247,6 +3378,46 @@ static void wm_perf_report(void)
             (unsigned long)perf_late, (unsigned long)perf_drawmax);
 }
 
+/* The desktop proper. Called at boot on a machine with no accounts, and on the
+ * unlock otherwise -- once, ever, which is what g_desktop_started is for: the
+ * session can be observed to have changed on many consecutive passes of the
+ * loop below and the Finder must be launched on exactly one of them. */
+static void wm_desktop_start(void)
+{
+    if (g_desktop_started) return;
+    g_desktop_started = 1;
+    wm_launch("files.aex", "");
+}
+
+/* Has anybody logged in? Asked of c/fs/vfs_cred.c, which is the same fact the
+ * filesystem enforces against -- deliberately not of the greeter, so there is
+ * no second notion of "logged in" here to drift out of step with the first.
+ * A console login therefore unlocks the screen too; see the g_locked comment. */
+static void wm_check_unlock(void)
+{
+    if (!g_locked) return;
+    uint32_t su = 0, sg = 0;
+    vfs_cred_session(&su, &sg);
+    if (su == 0) return;
+
+    g_locked = 0;
+    kprintf("[wm] UNLOCKED by session uid=%u gid=%u\n", su, sg);
+
+    /* THE SETTINGS STORE IS A DIFFERENT FILE NOW. SYS_SETSESSION switched it to
+     * $HOME/.config/settings.conf layered over /etc/settings.conf (see
+     * c/kernel/core/settings.h), so the theme and the wallpaper this desktop
+     * comes up in are the ones THIS user chose -- not the ones the greeter was
+     * drawn in, which could only ever be the system defaults. Re-reading them
+     * here is what makes "a user's dark mode survives a reboot" visible on the
+     * first frame instead of on the next toggle. */
+    g_ui_dark = settings_get_int("ui.dark", 0) ? 1 : 0;
+    draw_background();
+    { int count = W * H; blit(bg, back, count); }
+
+    wm_desktop_start();
+    dirty_full();
+}
+
 void wm_run(void)
 {
     __asm__ volatile ("mov $0x10, %%ax\n\tmov %%ax,%%ds\n\tmov %%ax,%%es\n\t"
@@ -3270,12 +3441,38 @@ void wm_run(void)
      * below so a non-nested timer IRQ can schedule app threads. */
     __asm__ volatile ("sti");
 
-    /* One window at boot: the Finder. The comment that used to sit here said the
-     * clock was launched "so something is alive on screen", which stopped being
-     * a reason the moment the Finder was launched above it -- after that the
-     * clock was just a second window every user had to close. A desktop opens
-     * with the file manager and nothing else. */
-    wm_launch("files.aex", "");
+    /* THE BOOT ORDER, WHICH IS THE WHOLE POINT OF THIS BLOCK.
+     *
+     * One window at boot: the Finder -- but only once there is somebody to
+     * open it for. The comment that used to sit here explained why the Finder
+     * and not the clock; what it did not say, because it was not true until
+     * /bin/login landed, is that launching it HERE means the previous user's
+     * home directory is on screen 2.7 seconds after power-on with nothing
+     * having asked anybody anything.
+     *
+     * So: if this machine has accounts, it comes up LOCKED and the only thing
+     * that runs is the greeter. If it has none it behaves exactly as it always
+     * has, because a machine with nobody to authenticate has nothing to ask --
+     * the same rule /bin/login follows on the console, and the reason the other
+     * sixty harnesses in this tree still see a desktop and a shell.
+     *
+     * The store is probed with vfs_size() rather than by asking /bin/login,
+     * because this runs before any process exists. It is the same file
+     * c/apps/coreutils/accounts.h defines and the kernel is still root here, so
+     * the probe cannot be refused. */
+    g_locked = (vfs_size("/etc/passwd") > 0);
+    if (g_locked) {
+        kprintf("[wm] LOCKED: /etc/passwd exists, so the desktop waits for a login\n");
+        if (vfs_size(GREETER_AEX) <= 0)
+            kprintf("[wm] and %s IS MISSING -- the screen will stay locked until\n"
+                    "[wm] somebody authenticates on the serial console. That is the\n"
+                    "[wm] safe direction to fail in, and it is not a good one.\n",
+                    GREETER_AEX);
+        wm_launch(GREETER_AEX, "");
+    } else {
+        kprintf("[wm] no accounts on this machine: the desktop starts unauthenticated\n");
+        wm_desktop_start();
+    }
 
     /* init: launch LOGIN on the serial console (stdin/stdout/stderr = tty).
      *
@@ -3317,6 +3514,7 @@ void wm_run(void)
             }
         }
 #endif
+        wm_check_unlock();            /* did somebody authenticate? (greeter OR console) */
         wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
         /* Canvases catch up with frames HERE, once per pass -- not inside the
          * drain. A drain can hand us twenty pointer packets and every one of
