@@ -430,9 +430,22 @@ LOGIN_CSRC := c/apps/coreutils/login.c c/crypto/kdf/pbkdf2.c \
               c/crypto/hash/hmac_hkdf.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
 LOGIN_OBJ  := $(patsubst %.c,$(BUILD)/loginobj/%.o,$(LOGIN_CSRC))
 
+#   make LOGIN_NEGCTL=1     THE NEGATIVE CONTROL, ON THE DEVICE. The host form
+#     is `make test-login-negctl`; this is the same one line of C compiled into
+#     the machine, so that tests/boot/run-login-test.sh can be pointed at a
+#     build where the login prompt appears, the masking works, the timing line
+#     prints -- and every password is correct. Rebuild the disk with it and the
+#     harness must fail on "A WRONG PASSWORD WAS NOT REFUSED":
+#         make LOGIN_NEGCTL=1 build/disk.img && make test-login-os
+#     A harness that still passes there is not testing authentication.
+LOGIN_CFLAGS := $(UCFLAGS)
+ifeq ($(LOGIN_NEGCTL),1)
+LOGIN_CFLAGS += -DLOGIN_NEGCTL_ACCEPT_ANY
+endif
+
 $(BUILD)/loginobj/%.o: %.c c/apps/coreutils/accounts.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(CC) $(LOGIN_CFLAGS) -c $< -o $@
 
 $(BUILD)/login.elf: $(LOGIN_OBJ) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps

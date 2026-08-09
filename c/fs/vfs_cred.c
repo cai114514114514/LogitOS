@@ -43,6 +43,12 @@ static spinlock_t g_cred_lock = SPINLOCK_INIT;
  * machine has one seat and a session ends when it powers off. */
 static uint32_t g_sess_uid, g_sess_gid;
 
+/* Has anything on this machine ever been given a supplementary group? Read
+ * without the lock on the hot permission path -- see vfs_cred_ingroup. It is
+ * only ever set, never cleared, so a stale read can cost one unnecessary walk
+ * and can never miss a membership. */
+static volatile int g_any_groups;
+
 /* Drop entries whose process is gone. Called when the table is full and when a
  * credential is set, which is rare enough that a linear sweep costs nothing.
  * Without it a long-lived system eventually hands a recycled pid somebody
@@ -155,6 +161,16 @@ int vfs_cred_set(int pid, uint32_t uid, uint32_t gid)
  * moves with it and this hook goes away. */
 int vfs_cred_ingroup(uint32_t gid)
 {
+    /* THE FAST PATH IS THE POINT. This is called from vmeta_permission, which
+     * runs once per path component of every path-taking syscall, and only on
+     * the branch where the caller is neither the owner nor in the primary
+     * group -- which for a logged-in user is every traversal of a root-owned
+     * directory, i.e. `/` and `/bin` on every command. The slow path takes a
+     * lock and walks the ppid chain. `g_any_groups` is set exactly once, by
+     * the only function that can put a group in the table, so a machine on
+     * which nothing has ever called setgroups -- every machine today -- pays
+     * one relaxed load. */
+    if (!g_any_groups) return 0;
     struct proc *p = proc_current();
     if (!p) return 0;
     int found = 0;
@@ -206,6 +222,7 @@ int vfs_cred_groups_set(int pid, const uint32_t *list, int n)
     }
     e->ngroups = n;
     for (int i = 0; i < n; i++) e->groups[i] = list[i];
+    if (n) g_any_groups = 1;
     spin_unlock_irqrestore(&g_cred_lock, fl);
     return 0;
 }

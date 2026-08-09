@@ -72,9 +72,15 @@ reap() {
 # prompt. `waitn <pattern> <n>` waits until it has appeared n times.
 LOG=""
 waitn() {
-    local pat="$1" want="$2" secs="${3:-120}" i=0
+    local pat="$1" want="$2" secs="${3:-120}" i=0 n
     while [ "$i" -lt $((secs * 10)) ]; do
-        if [ "$(grep -ac -- "$pat" "$LOG" 2>/dev/null || echo 0)" -ge "$want" ]; then
+        # `grep -c` prints its count AND exits 1 when the count is zero, so a
+        # `|| echo 0` fallback yields the two-line string "0\n0" and `[` then
+        # refuses it as a non-integer. Take the count, and treat only a MISSING
+        # file (grep printed nothing) as zero.
+        n=$(grep -ac -- "$pat" "$LOG" 2>/dev/null)
+        [ -n "$n" ] || n=0
+        if [ "$n" -ge "$want" ]; then
             sleep 0.4     # one scheduling quantum, not a guess at the boot time
             return 0
         fi
@@ -119,8 +125,19 @@ boot() {
 # ---------------------------------------------------------------- boot 1 ----
 # No accounts: the machine must reach a root shell exactly as it did before
 # /bin/login existed. Then enrol, by typing.
+#
+# ONE NOTE ON GREPPING THIS CONSOLE, learned here: the kernel's kprintf and a
+# ring-3 write() share the serial port with no lock between them, so a kernel
+# line landing mid-write shreds the userland line character by character (a
+# real boot 1 log contained "tlogin: no accounid 5 (Finder)ts on thi"). Two
+# consequences, both applied below: assertions are made on lines typed at a
+# QUIET PROMPT rather than on boot-time output, and every load-bearing `stat`
+# is issued more than once, because grep is line-based and one clean line is
+# all it takes. Repeating a read-only command is not flakiness management, it
+# is the only way to sample a shared, unsynchronised device.
 drive1() {
     waitn "LogitOS shell" 1 150
+    say "login -i"
     say "echo topsecret > /rootonly.txt"
     say "stat -o 0:0 /rootonly.txt"
     say "stat -c 600 /rootonly.txt"
@@ -131,15 +148,18 @@ drive1() {
     say "$PW"
     waitn "ENROLLED" 1 60
     say "stat /etc/passwd /home/alice /rootonly.txt"
+    say "stat /etc/passwd /home/alice /rootonly.txt"
     say "echo BOOT1-DONE"
     sleep 3
 }
 boot drive1 "$WORK/b1.log" 10
 
 grep -aq "BOOT1-DONE" "$WORK/b1.log" || fail "boot 1 never finished its commands"
-grep -aq "login: no accounts on this machine" "$WORK/b1.log" ||
-    fail "boot 1: an image with no /etc/passwd did NOT say so -- either login is not
-      in the boot path, or something shipped a credential in the image"
+# NO CREDENTIAL IS SHIPPED IN THE IMAGE. Asked at a quiet prompt rather than
+# read off login's boot-time banner, for the reason above.
+grep -aq "ID uid=0 gid=0 session=0 store=absent" "$WORK/b1.log" ||
+    fail "boot 1: the freshly built image already has an /etc/passwd, or does not
+      boot as root. Either way something shipped a credential"
 grep -aq "ENROLLED alice uid=1000 gid=1000 home=/home/alice" "$WORK/b1.log" ||
     fail "boot 1: enrolment did not complete"
 # The mode is the whole reason a file may be the account store.
@@ -173,6 +193,7 @@ drive2() {
     say "echo minefile > /home/alice/mine.txt"
     say "cat /home/alice/mine.txt"
     say "login -i"
+    say "stat /etc/passwd /rootonly.txt"
     say "stat /etc/passwd /rootonly.txt"
     say "echo BOOT2-DONE"
     sleep 4
@@ -220,7 +241,7 @@ grep -aq "STAT /etc/passwd mode=600 type=reg uid=0 gid=0 " "$WORK/b2.log" ||
 grep -aq "^minefile" "$WORK/b2.log" ||
     fail "boot 2: alice could not write and read back a file in her OWN home --
       the refusals above would then prove nothing but that everything is broken"
-grep -aq "ID uid=1000 gid=1000 session=1000" "$WORK/b2.log" ||
+grep -aq "ID uid=1000 gid=1000 session=1000 store=present" "$WORK/b2.log" ||
     fail "boot 2: the session was not established as uid 1000"
 
 # ---------------------------------------------------------------- boot 3 ----
@@ -241,6 +262,7 @@ drive3() {
     say "cat /home/alice/mine.txt"
     say "cat /etc/passwd"
     say "stat /newfile-in-root.txt"
+    say "stat /etc/passwd /home/alice"
     say "stat /etc/passwd /home/alice"
     say "echo BOOT3-DONE"
     sleep 4
@@ -274,6 +296,7 @@ drive4() {
     waitn "LogitOS shell" 1 90
     say "cat /etc/passwd"
     say "stat /etc/passwd /home/alice /rootonly.txt"
+    say "stat /etc/passwd /home/alice /rootonly.txt"
     say "login -i"
     say "echo BOOT4-DONE"
     sleep 4
@@ -289,7 +312,7 @@ grep -aq "STAT /etc/passwd mode=600 type=reg uid=0 gid=0 " "$WORK/b4.log" ||
     fail "boot 4: /etc/passwd finally lost its mode"
 grep -aq "STAT /rootonly.txt mode=600 type=reg uid=0 gid=0 .* size=10 " "$WORK/b4.log" ||
     fail "boot 4: the root-owned file is no longer intact after three reboots"
-grep -aq "ID uid=1000 gid=1000 session=1000" "$WORK/b4.log" ||
+grep -aq "ID uid=1000 gid=1000 session=1000 store=present" "$WORK/b4.log" ||
     fail "boot 4: the session is no longer uid 1000"
 
 echo "PASS: an account enrolled on boot 1 authenticated on boots 2, 3 and 4 across"

@@ -307,9 +307,17 @@ int main(int argc, char **argv)
         return enrol(argc >= 3 ? argv[2] : "");
 
     if (argc >= 2 && c_streq(argv[1], "-i")) {          /* who am I */
+        /* `store=` is not decoration. It is how a test asserts that the SHIPPED
+         * IMAGE contains no credential -- the claim that a default account with
+         * a known password was not baked in. The boot-time "no accounts" line
+         * cannot carry that assertion: it is printed while the kernel is still
+         * writing to the same serial port, and the two interleave character by
+         * character. This line is typed at a quiet prompt. */
+        struct logit_stat st;
         outs("ID uid="); put_u((unsigned long)sys_getuid());
         outs(" gid="); put_u((unsigned long)sys_getgid());
         outs(" session="); put_u((unsigned long)sys_getsession(0));
+        outs(st_stat("/etc/passwd", &st) == 0 ? " store=present" : " store=absent");
         outc('\n');
         return 0;
     }
