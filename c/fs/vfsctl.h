@@ -39,7 +39,15 @@
  *   mount ramfs <label> <at>    an in-memory filesystem
  *   mount lfsro <blkdev> <at>   a LogitFS image on another block device, read-only
  *   umount <at>
- *   id                          the calling process's credential
+ *   id                          the calling process's credential, the login
+ *                               SESSION, and the supplementary groups. The
+ *                               pair (uid, session) is the diagnosis: equal
+ *                               numbers mean the process inherited the
+ *                               session, which is what every desktop app
+ *                               does; a difference means somebody called
+ *                               setuid. Since M32 these are real -- see
+ *                               SYS_GETUID..SYS_GETSESSION (150-159) and
+ *                               /bin/login, which is what sets them.
  *   setuid <uid> [gid]          change THIS process's credential (root only)
  *   su <uid> [gid]              change the PARENT's -- i.e. the shell's. See
  *                               the note in vfsctl.c on why that is the useful

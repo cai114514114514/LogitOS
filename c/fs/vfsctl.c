@@ -298,10 +298,25 @@ static int run(const char *buf, int len)
     if (c_eq(c, "id")) {
         struct vcred cr; vfs_cred_current(&cr);
         struct proc *p = proc_current();
+        uint32_t su = 0, sg = 0;
+        vfs_cred_session(&su, &sg);
+        uint32_t g[ID_NGROUPS_MAX];
+        int ng = p ? vfs_cred_groups_get(p->pid, g, ID_NGROUPS_MAX) : 0;
         r_reset(); r_put("ok pid "); r_num(p ? p->pid : -1, 0);
         r_put(" ppid "); r_num(p ? p->ppid : -1, 0);
         r_put(" uid "); r_num((long)cr.uid, 0);
         r_put(" gid "); r_num((long)cr.gid, 0);
+        /* The SESSION, beside the credential rather than in a separate
+         * command: the interesting diagnosis is almost always the difference
+         * between the two -- a process that dropped privilege reads uid 1000
+         * session 1000, and a desktop app that merely INHERITED the session
+         * reads the same numbers, so the pair is what tells you whether
+         * anybody has actually logged in. */
+        r_put(" session "); r_num((long)su, 0);
+        r_put(":"); r_num((long)sg, 0);
+        r_put(" groups ");
+        if (!ng) r_put("-");
+        for (int i = 0; i < ng; i++) { if (i) r_put(","); r_num((long)g[i], 0); }
         return okay();
     }
     if (c_eq(c, "setuid")) { if (A.n < 2) return fail("usage", VFS_EINVAL); return cmd_su(&A, 0); }

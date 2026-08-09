@@ -443,7 +443,21 @@ ifeq ($(LOGIN_NEGCTL),1)
 LOGIN_CFLAGS += -DLOGIN_NEGCTL_ACCEPT_ANY
 endif
 
-$(BUILD)/loginobj/%.o: %.c c/apps/coreutils/accounts.h
+# AND THE FLAG HAS TO FORCE A REBUILD, or the control is a lie. make compares
+# timestamps, not command lines: with login.o already built, `make
+# LOGIN_NEGCTL=1 build/disk.img` says "up to date" and packs the ORDINARY
+# login into the image, so the harness passes and the recipe above reads as
+# though the control were verified. Same failure as the roots_bundle.inc
+# gotcha in CLAUDE.md -- a regenerated input silently not compiled in.
+#
+# The stamp's NAME carries the flag, so flipping it names a file that does not
+# exist; the recipe removes the other one and touches this one, which is then
+# newer than every object and rebuilds them.
+LOGIN_STAMP := $(BUILD)/loginobj/.flags-$(if $(filter 1,$(LOGIN_NEGCTL)),negctl,normal)
+$(LOGIN_STAMP):
+	@mkdir -p $(dir $@) && rm -f $(BUILD)/loginobj/.flags-* && touch $@
+
+$(BUILD)/loginobj/%.o: %.c c/apps/coreutils/accounts.h $(LOGIN_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(LOGIN_CFLAGS) -c $< -o $@
 
