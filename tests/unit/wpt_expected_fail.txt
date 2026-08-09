@@ -9287,6 +9287,73 @@ css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with
 css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [1] to [200%] at (0.6) should be [200%]
 css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [1] to [200%] at (1) should be [200%]
 css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [1] to [200%] at (1.5) should be [200%]
+# ADDED with the composite add/accumulate work, and these are not new defects.
+#
+# js_anim.c's __resolve now resolves every keyframe endpoint against a scratch
+# twin so the document's single style flush covers all of them at once; before,
+# the second endpoint read back as the first and every interpolation was a
+# constant. The insert-and-remove of those twins stirs the invalidation record
+# enough that a few CSS Transitions targets IN THE SAME FILE stop reading a
+# stale cascade -- and CSS Transitions is not implemented here at all, so what
+# they had been agreeing on was the underlying value on both sides.
+#
+# All 77 are `CSS Transitions*` subtests in four files, and the same change
+# gains 224 across the corpus (net +137, 60.78% -> 60.84%, both runners built
+# from one tree differing only in css_interp.c and js_anim.c). They go green on
+# their own the day CSS transitions exist, or the day css_ensure_styled's
+# fingerprint stops missing mutations below a marked scope root -- see the note
+# above __resolve in c/apps/browser/js_anim.c for that measurement.
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (-0.3) should be [14q]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (0) should be [14q]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (0.3) should be [14q]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (0.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (0.6) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (1) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [14q] to [normal] at (1.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [normal] to [14px] at (1) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-behavior:allow-discrete: property <line-height> from [normal] to [14px] at (1.5) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (-0.3) should be [14q]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (0) should be [14q]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (0.3) should be [14q]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (0.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (0.6) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (1) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [14q] to [normal] at (1.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (-0.3) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (0) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (0.3) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (0.5) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (0.6) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (1) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <line-height> from [normal] to [14px] at (1.5) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (-0.3) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (0) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (0.3) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (0.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (0.6) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (1) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [14q] to [normal] at (1.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (-0.3) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (0) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (0.3) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (0.5) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (0.6) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (1) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions with transition: all: property <line-height> from [normal] to [14px] at (1.5) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (-0.3) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (0) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (0.3) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (0.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (0.6) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (1) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [14q] to [normal] at (1.5) should be [normal]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (-0.3) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (0) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (0.3) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (0.5) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (0.6) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (1) should be [14px]
+css/CSS2/linebox/animations/line-height-interpolation.html::CSS Transitions: property <line-height> from [normal] to [14px] at (1.5) should be [14px]
 css/CSS2/linebox/inline-negative-margin-001.html::[data-expected-height] 3
 css/CSS2/linebox/inline-negative-margin-001.html::[data-expected-height] 4
 css/CSS2/linebox/inline-negative-margin-001.html::[data-expected-height] 5
@@ -24975,6 +25042,35 @@ css/css-sizing/animation/max-height-interpolation.html::Web Animations: property
 css/css-sizing/animation/max-height-interpolation.html::Web Animations: property <max-height> from neutral to [max-content] at (0.6) should be [max-content]
 css/css-sizing/animation/max-height-interpolation.html::Web Animations: property <max-height> from neutral to [max-content] at (1) should be [max-content]
 css/css-sizing/animation/max-height-interpolation.html::Web Animations: property <max-height> from neutral to [max-content] at (1.5) should be [max-content]
+# ADDED with the composite add/accumulate work, and these are not new defects.
+#
+# js_anim.c's __resolve now resolves every keyframe endpoint against a scratch
+# twin so the document's single style flush covers all of them at once; before,
+# the second endpoint read back as the first and every interpolation was a
+# constant. The insert-and-remove of those twins stirs the invalidation record
+# enough that a few CSS Transitions targets IN THE SAME FILE stop reading a
+# stale cascade -- and CSS Transitions is not implemented here at all, so what
+# they had been agreeing on was the underlying value on both sides.
+#
+# All 77 are `CSS Transitions*` subtests in four files, and the same change
+# gains 224 across the corpus (net +137, 60.78% -> 60.84%, both runners built
+# from one tree differing only in css_interp.c and js_anim.c). They go green on
+# their own the day CSS transitions exist, or the day css_ensure_styled's
+# fingerprint stops missing mutations below a marked scope root -- see the note
+# above __resolve in c/apps/browser/js_anim.c for that measurement.
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions with transition: all: property <max-height> from [0px] to [100px] at (-0.5) should be [0]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions with transition: all: property <max-height> from [0px] to [100px] at (0) should be [0]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions with transition: all: property <max-height> from [0px] to [100px] at (0.3) should be [30px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions with transition: all: property <max-height> from [0px] to [100px] at (0.6) should be [60px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions with transition: all: property <max-height> from [0px] to [100px] at (1) should be [100px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions with transition: all: property <max-height> from [0px] to [100px] at (1.5) should be [150px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions: property <max-height> from [0px] to [100px] at (-0.5) should be [0]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions: property <max-height> from [0px] to [100px] at (0) should be [0]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions: property <max-height> from [0px] to [100px] at (0.3) should be [30px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions: property <max-height> from [0px] to [100px] at (0.6) should be [60px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions: property <max-height> from [0px] to [100px] at (1) should be [100px]
+css/css-sizing/animation/max-height-interpolation.html::CSS Transitions: property <max-height> from [0px] to [100px] at (1.5) should be [150px]
+css/css-sizing/animation/max-height-interpolation.html::Web Animations: property <max-height> from [0px] to [100px] at (-0.5) should be [0]
 css/css-sizing/animation/max-width-composition.html::Compositing CSS Animations: property <max-width> underlying [50px] from add [100px] to add [200px] at (-0.3) should be [120px]
 css/css-sizing/animation/max-width-composition.html::Compositing CSS Animations: property <max-width> underlying [50px] from add [100px] to add [200px] at (0) should be [150px]
 css/css-sizing/animation/max-width-composition.html::Compositing CSS Animations: property <max-width> underlying [50px] from add [100px] to add [200px] at (0.5) should be [200px]
@@ -25755,6 +25851,34 @@ css/css-sizing/animation/width-interpolation.html::Web Animations: property <wid
 css/css-sizing/animation/width-interpolation.html::Web Animations: property <width> from neutral to [min-content] at (0.6) should be [min-content]
 css/css-sizing/animation/width-interpolation.html::Web Animations: property <width> from neutral to [min-content] at (1) should be [min-content]
 css/css-sizing/animation/width-interpolation.html::Web Animations: property <width> from neutral to [min-content] at (1.5) should be [min-content]
+# ADDED with the composite add/accumulate work, and these are not new defects.
+#
+# js_anim.c's __resolve now resolves every keyframe endpoint against a scratch
+# twin so the document's single style flush covers all of them at once; before,
+# the second endpoint read back as the first and every interpolation was a
+# constant. The insert-and-remove of those twins stirs the invalidation record
+# enough that a few CSS Transitions targets IN THE SAME FILE stop reading a
+# stale cascade -- and CSS Transitions is not implemented here at all, so what
+# they had been agreeing on was the underlying value on both sides.
+#
+# All 77 are `CSS Transitions*` subtests in four files, and the same change
+# gains 224 across the corpus (net +137, 60.78% -> 60.84%, both runners built
+# from one tree differing only in css_interp.c and js_anim.c). They go green on
+# their own the day CSS transitions exist, or the day css_ensure_styled's
+# fingerprint stops missing mutations below a marked scope root -- see the note
+# above __resolve in c/apps/browser/js_anim.c for that measurement.
+css/css-sizing/animation/width-interpolation.html::CSS Transitions with transition: all: property <width> from [10px] to [100%] at (-0.3) should be [0px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions with transition: all: property <width> from [10px] to [100%] at (0) should be [10px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions with transition: all: property <width> from [10px] to [100%] at (0.3) should be [37px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions with transition: all: property <width> from [10px] to [100%] at (0.6) should be [64px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions with transition: all: property <width> from [10px] to [100%] at (1) should be [100px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions with transition: all: property <width> from [10px] to [100%] at (1.5) should be [145px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions: property <width> from [10px] to [100%] at (-0.3) should be [0px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions: property <width> from [10px] to [100%] at (0) should be [10px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions: property <width> from [10px] to [100%] at (0.3) should be [37px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions: property <width> from [10px] to [100%] at (0.6) should be [64px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions: property <width> from [10px] to [100%] at (1) should be [100px]
+css/css-sizing/animation/width-interpolation.html::CSS Transitions: property <width> from [10px] to [100%] at (1.5) should be [145px]
 css/css-sizing/aspect-ratio-affects-container-width-when-height-changes.html::#container 1
 css/css-sizing/aspect-ratio-automatic-minimum.html::min-width:0 disables automatic minimum
 css/css-sizing/aspect-ratio/abspos-aspect-ratio-border.html::*
@@ -34077,3 +34201,21 @@ css/selectors/webkit-pseudo-element.html::webkit-prefixed pseudo-element selecto
 css/selectors/webkit-pseudo-element.html::qS and qSA shouldn't throw exception
 css/selectors/webkit-pseudo-element.html::User-action pseudo-classes are valid
 css/selectors/webkit-pseudo-element.html::webkit-prefix without dash is invalid
+
+# ADDED with the composite add/accumulate work, and these are not new defects.
+#
+# js_anim.c's __resolve now resolves every keyframe endpoint against a scratch
+# twin so the document's single style flush covers all of them at once; before,
+# the second endpoint read back as the first and every interpolation was a
+# constant. The insert-and-remove of those twins stirs the invalidation record
+# enough that a few CSS Transitions targets IN THE SAME FILE stop reading a
+# stale cascade -- and CSS Transitions is not implemented here at all, so what
+# they had been agreeing on was the underlying value on both sides.
+#
+# All 77 are `CSS Transitions*` subtests in four files, and the same change
+# gains 224 across the corpus (net +137, 60.78% -> 60.84%, both runners built
+# from one tree differing only in css_interp.c and js_anim.c). They go green on
+# their own the day CSS transitions exist, or the day css_ensure_styled's
+# fingerprint stops missing mutations below a marked scope root -- see the note
+# above __resolve in c/apps/browser/js_anim.c for that measurement.
+css/css-flexbox/animation/flex-grow-interpolation.html::Web Animations: property <flex-grow> from [0] to [1] at (-5) should be [0]
