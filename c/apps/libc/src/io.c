@@ -155,11 +155,32 @@ pid_t wait(int *status) { return waitpid(-1, status, 0); }
 /* There is no parent-pid syscall; a process that needs its parent must have
  * been told. Reporting 1 (init) would be a plausible-looking invention. */
 pid_t getppid(void) { errno = ENOSYS; return -1; }
-/* One user, no security model: uid 0 is the truth, not a placeholder. */
-uid_t getuid(void)  { return 0; }
-uid_t geteuid(void) { return 0; }
-gid_t getgid(void)  { return 0; }
-gid_t getegid(void) { return 0; }
+/* M32: these used to return a hardcoded 0, with a comment saying "one user, no
+ * security model: uid 0 is the truth, not a placeholder". That was true when
+ * it was written and is no longer -- SYS_GETUID (150) exists and there is a
+ * /bin/login that sets it, so a program asking who it is now gets an answer
+ * rather than a constant.
+ *
+ * geteuid/getegid are ALIASES and will stay aliases until this filesystem has
+ * a setuid bit; see the block comment on SYS_GETEUID in logit_abi.h. They are
+ * not "unimplemented" -- on this machine they are equal by construction. */
+uid_t getuid(void)  { return (uid_t)sys(SYS_GETUID, 0, 0, 0); }
+uid_t geteuid(void) { return (uid_t)sys(SYS_GETEUID, 0, 0, 0); }
+gid_t getgid(void)  { return (gid_t)sys(SYS_GETGID, 0, 0, 0); }
+gid_t getegid(void) { return (gid_t)sys(SYS_GETEGID, 0, 0, 0); }
+
+int setuid(uid_t uid)
+{
+    long r = sys(SYS_SETUID, (long)uid, 0, 0);
+    if (r < 0) { errno = EPERM; return -1; }
+    return 0;
+}
+int setgid(gid_t gid)
+{
+    long r = sys(SYS_SETGID, (long)gid, 0, 0);
+    if (r < 0) { errno = EPERM; return -1; }
+    return 0;
+}
 
 int execve(const char *path, char *const argv[], char *const envp[])
 { return (int)fail(sys(SYS_EXECVE, (long)path, (long)argv, (long)envp), ENOENT); }

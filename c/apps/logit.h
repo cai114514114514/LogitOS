@@ -433,4 +433,31 @@ static inline long sys_sockstat(int what)
 static inline void sockaddr_set(struct logit_sockaddr *a, unsigned ip, int port)
 { a->family = LOGIT_AF_INET; a->port = (unsigned short)port; a->addr = ip; }
 
+/* --- M32 identity (150-159) -------------------------------------------------
+ * geteuid/getegid are aliases of getuid/getgid and always will be until this
+ * filesystem grows a setuid bit; see the block comment in logit_abi.h. */
+static inline int sys_getuid(void)  { return (int)_sys(SYS_GETUID, 0, 0, 0); }
+static inline int sys_geteuid(void) { return (int)_sys(SYS_GETEUID, 0, 0, 0); }
+static inline int sys_getgid(void)  { return (int)_sys(SYS_GETGID, 0, 0, 0); }
+static inline int sys_getegid(void) { return (int)_sys(SYS_GETEGID, 0, 0, 0); }
+
+/* Root only, and one-way: a process that has dropped to a uid cannot go back,
+ * and cannot even re-set the uid it already has. */
+static inline int sys_setuid(unsigned uid) { return (int)_sys(SYS_SETUID, (long)uid, 0, 0); }
+static inline int sys_setgid(unsigned gid) { return (int)_sys(SYS_SETGID, (long)gid, 0, 0); }
+
+/* n == 0 with list == 0 asks HOW MANY, and never fails for want of room. */
+static inline int sys_getgroups(int n, unsigned *list)
+{ return (int)_sys(SYS_GETGROUPS, n, (long)list, 0); }
+static inline int sys_setgroups(int n, const unsigned *list)
+{ return (int)_sys(SYS_SETGROUPS, n, (long)list, 0); }
+
+/* What /bin/login calls once it has checked a password: establishes the login
+ * session (the credential every process that was never told inherits) AND the
+ * caller's own, in one call, because neither order works as two. Root only. */
+static inline int sys_setsession(unsigned uid, unsigned gid)
+{ return (int)_sys(SYS_SETSESSION, (long)uid, (long)gid, 0); }
+static inline int sys_getsession(int which)   /* 0 = uid, 1 = gid */
+{ return (int)_sys(SYS_GETSESSION, which, 0, 0); }
+
 #endif /* LOGIT_USERLIB_H */

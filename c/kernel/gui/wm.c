@@ -3277,8 +3277,22 @@ void wm_run(void)
      * with the file manager and nothing else. */
     wm_launch("files.aex", "");
 
-    /* init: launch the shell on the serial console (stdin/stdout/stderr = tty) */
-    { char *sh_argv[] = { "sh", 0 }; proc_spawn("/bin/sh", sh_argv); }
+    /* init: launch LOGIN on the serial console (stdin/stdout/stderr = tty).
+     *
+     * This used to be /bin/sh directly, which is how a machine reaches a root
+     * shell 2.5 seconds after power-on with nothing in between. /bin/login is
+     * the thing in between: it authenticates against /etc/passwd, calls
+     * SYS_SETSESSION (which drops root and tells the rest of the machine who
+     * is here -- see c/fs/vfs_cred.h), and execve's the same /bin/sh in the
+     * same process with the same fd 0/1/2. The shell is therefore never root
+     * and never was.
+     *
+     * ON A MACHINE WITH NO ACCOUNTS -- which is every freshly built image,
+     * because no credential is ever shipped -- login prints one line saying so
+     * and execs /bin/sh as root, i.e. exactly what this line did before. That
+     * is what keeps the other sixty boot harnesses in this tree working: they
+     * still see the shell banner, one exec later. */
+    { char *login_argv[] = { "login", 0 }; proc_spawn("/bin/login", login_argv); }
 
     uint64_t last = 0;
     for (;;) {

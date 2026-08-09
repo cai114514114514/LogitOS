@@ -2,14 +2,25 @@
 #define _PWD_H
 #include <sys/types.h>
 
-/* ONE USER, AND IT IS ALWAYS "root". <unistd.h> already says so (getuid()
- * returns 0 unconditionally, because LogitOS has no security model and no
- * second account) -- this header is that same fact in the shape autoconf and
- * every "who am I" call expects. getpwnam() therefore succeeds for "root" and
- * fails (NULL, no errno set -- POSIX leaves it unset when the name is simply
- * not found) for anything else; a program checking "does user X exist" gets a
- * real, if trivially small, answer instead of a fabricated passwd entry for a
- * name that was never registered. */
+/* THIS USED TO SAY "one user, and it is always root", and until M32 that was
+ * true: getuid() returned 0 unconditionally because there was no way to be
+ * anything else. There is now -- /etc/passwd, /bin/login and SYS_SETUID -- so
+ * these read the real store.
+ *
+ * TWO THINGS TO KNOW BEFORE BELIEVING A NULL:
+ *
+ *  - The store is 0600 root:root, so an UNPRIVILEGED process cannot read it
+ *    and getpwnam() returns NULL for every name, INCLUDING ITS OWN. There is
+ *    no /etc/shadow to split the readable half out into, and
+ *    c/apps/coreutils/accounts.h explains why not. A program that wants to
+ *    know who it is should call getuid(), which always works.
+ *  - "root" always resolves, store or no store, because uid 0 is the identity
+ *    the machine boots as rather than an account somebody enrolled.
+ *
+ * NULL comes with errno left alone, as POSIX requires when a name is simply
+ * not found -- so a caller cannot distinguish "no such user" from "you may not
+ * look", which on this machine is the honest amount of information to give an
+ * unprivileged caller. pw_passwd is always "x" and never the hash. */
 
 struct passwd {
     char  *pw_name;

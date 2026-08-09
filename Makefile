@@ -418,6 +418,31 @@ $(BUILD)/pkgverify.aex: $(BUILD)/pkgverify.elf tools/mkaex.py
 
 CLI_AEX += $(BUILD)/pkgverify.aex
 
+# --- /bin/login: the second CLI program that links crypto --------------------
+# Same shape as pkgverify above and for the same reason -- CLI_RULE compiles
+# exactly one .c and this one needs PBKDF2 -- so it gets its own rule rather
+# than a special case in the loop.
+#
+# It links c/crypto/kdf/pbkdf2.c, which is where both the KDF and the
+# $pbkdf2-sha256$ record format live; hmac() dispatches on hash length so both
+# sha256 and sha384 come along even though only the 256 path is reached.
+LOGIN_CSRC := c/apps/coreutils/login.c c/crypto/kdf/pbkdf2.c \
+              c/crypto/hash/hmac_hkdf.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
+LOGIN_OBJ  := $(patsubst %.c,$(BUILD)/loginobj/%.o,$(LOGIN_CSRC))
+
+$(BUILD)/loginobj/%.o: %.c c/apps/coreutils/accounts.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/login.elf: $(LOGIN_OBJ) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/login.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/login.crt0c.o $(LOGIN_OBJ)
+$(BUILD)/login.aex: $(BUILD)/login.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/login.elf $@ login - '*' 150 150 150
+
+CLI_AEX += $(BUILD)/login.aex
+
 # The host signer/inspector. Deliberately the same C the kernel verifies with
 # rather than a second implementation -- see the header of tools/lpk.c.
 $(BUILD)/lpk: tools/lpk.c c/crypto/trust/pkgsig.c c/crypto/pubkey/ed25519.c \
@@ -839,6 +864,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
 	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
+	    $(BUILD)/login.aex:/bin/login \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    $(FONT_TEXT):/fonts/text.ttf \
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
@@ -1200,6 +1226,64 @@ test-vfs-negctl:
 
 # Everything the VFS layer can prove without a machine.
 test-vfs: test-vfs-path test-vfs-path-asan test-vfs-mount test-vfs-mount-asan test-vfs-negctl
+
+# ============================================================================
+# M32 IDENTITY: accounts, the password check, and the refusal
+# ============================================================================
+# The permission model was enforced long before this and enforced against a
+# credential nothing could set, so every check compared a file's owner against
+# uid 0 and passed. These targets cover the half that was missing.
+.PHONY: test-login test-login-asan test-login-negctl test-login-os test-identity
+
+LOGIN_TEST_SRC := tests/unit/login_test.c c/crypto/kdf/pbkdf2.c \
+                  c/crypto/hash/hmac_hkdf.c c/crypto/hash/sha256.c \
+                  c/crypto/hash/sha384.c c/fs/vfs_meta.c c/fs/vfs_path.c
+LOGIN_TEST_INC := -Ic/apps/coreutils -Ic/crypto -Ic/fs -Iinclude/abi
+
+test-login:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/login_test $(LOGIN_TEST_SRC) $(LOGIN_TEST_INC)
+	@$(BUILD)/login_test
+
+# The store parser indexes a caller's buffer from six field pointers it derived
+# itself; that is the shape of bug that passes every assertion.
+test-login-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/login_asan $(LOGIN_TEST_SRC) $(LOGIN_TEST_INC)
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/login_asan
+
+# THE NEGATIVE CONTROL, and note what it is NOT: it is not "remove logins".
+#
+# Under -DLOGIN_NEGCTL_ACCEPT_ANY the login screen appears, the prompt reads
+# character for character the same, the '*' masking works, the timing line
+# prints, a human sees EXACTLY what they expect -- and every password is
+# correct. That is what an authentication mechanism that authenticates nothing
+# looks like from the outside, and it is indistinguishable from the real one by
+# any test that only checks a prompt was printed and a shell came up. Every
+# assertion in this suite marked REFUSAL must fail here, and this target
+# SUCCEEDS when the suite fails.
+test-login-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DLOGIN_NEGCTL_ACCEPT_ANY -o $(BUILD)/login_negctl \
+	    $(LOGIN_TEST_SRC) $(LOGIN_TEST_INC)
+	@if $(BUILD)/login_negctl > $(BUILD)/login_negctl.log 2>&1; then \
+	    echo "CONTROL FAILED: a build that accepts EVERY password passed the suite"; \
+	    cat $(BUILD)/login_negctl.log; exit 1; \
+	 else \
+	    echo "negative control OK -- with every password accepted, these fail:"; \
+	    grep FAIL $(BUILD)/login_negctl.log | head -8; \
+	    tail -1 $(BUILD)/login_negctl.log; \
+	 fi
+
+# ON THE MACHINE, ACROSS FOUR REAL BOOTS, no -snapshot. The host suite above
+# runs in one process against RAM: it cannot see that the store is still 0600
+# after a power cut, that the shell the kernel spawns is not root, or that a
+# refusal reaches a user as a refusal. See the harness header.
+test-login-os: $(ISO) $(DISK)
+	@bash tests/boot/run-login-test.sh $(ISO) $(DISK)
+
+test-identity: test-login test-login-asan test-login-negctl
 
 # The SECOND filesystem, on its own disk. A tiny independent LogitFS image
 # built by the same tools/mkfs.py that builds the root one -- the markers live

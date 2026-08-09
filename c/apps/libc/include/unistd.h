@@ -62,10 +62,17 @@ int     ftruncate(int fd, off_t len);
 char   *getcwd(char *buf, size_t size);
 pid_t   getpid(void);
 pid_t   getppid(void);
+/* Real answers since M32, not the constant 0 they used to be. geteuid ==
+ * getuid and getegid == getgid by construction: there is no setuid bit in this
+ * filesystem, so nothing can ever make them differ (logit_abi.h says why at
+ * length). setuid/setgid are root-only and ONE-WAY -- there is no saved-set
+ * to come back through, so a process that has dropped stays dropped. */
 uid_t   getuid(void);
 uid_t   geteuid(void);
 gid_t   getgid(void);
 gid_t   getegid(void);
+int     setuid(uid_t uid);
+int     setgid(gid_t gid);
 pid_t   fork(void);
 int     execv(const char *path, char *const argv[]);
 int     execve(const char *path, char *const argv[], char *const envp[]);

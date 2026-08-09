@@ -40,6 +40,34 @@ void vfs_cred_current(struct vcred *c);
 int  vfs_cred_get(int pid, struct vcred *c);
 int  vfs_cred_set(int pid, uint32_t uid, uint32_t gid);
 
+/* Supplementary groups. Stored per process and inherited down the same ppid
+ * chain the uid is. `vfs_cred_groups_get` returns the COUNT (which may exceed
+ * `max`; only `max` are written). Both are root-only, like the uid. */
+int  vfs_cred_groups_get(int pid, uint32_t *out, int max);
+int  vfs_cred_groups_set(int pid, const uint32_t *list, int n);
+
+/* Is the CURRENT process a member of `gid` through its supplementary set?
+ * c/fs/vfs_meta.c calls this through a WEAK declaration so that the host VFS
+ * unit test, which does not link this file, resolves it to NULL and behaves
+ * exactly as it did before groups existed. */
+int  vfs_cred_ingroup(uint32_t gid);
+
+/* THE LOGIN SESSION: the credential of a process that was never told who it
+ * belongs to. See the SYS_SETSESSION comment in include/abi/logit_abi.h for
+ * the whole argument; in one line, the window manager brings a desktop up
+ * before anything has authenticated and those processes have no parent to
+ * inherit from. Before a login it is root, which is the boot state.
+ *
+ * vfs_cred_session_set is root-only and sets the session AND the caller's own
+ * credential together, because /bin/login cannot do the two separately in
+ * either order -- see the comment on the function. */
+void vfs_cred_session(uint32_t *uid, uint32_t *gid);
+int  vfs_cred_session_set(uint32_t uid, uint32_t gid);
+
+/* The kernel side of SYS_GETUID..SYS_GETSESSION (150-159), forwarded whole
+ * from c/kernel/exec/syscall.c. Returns the value for rax. */
+long id_syscall(long num, long a, long b, long c);
+
 /* Rendered for /dev/vfsmeta. Returns bytes written. */
 int  vfs_cred_render(char *buf, int max);
 

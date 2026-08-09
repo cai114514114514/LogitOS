@@ -259,6 +259,23 @@ void vmeta_forget_subtree(const char *prefix)
 
 /* --- the check ---------------------------------------------------------- */
 
+/* SUPPLEMENTARY GROUPS. `struct vcred` carries a uid and a primary gid and
+ * nothing else, and widening it would touch a header two other lines are
+ * building against -- so membership of the extra set is asked of the process
+ * table instead, through the same WEAK-declaration trick vfs.c uses for
+ * vfs_cred_pid(). c/fs/vfs_cred.c is a kernel TU; the host VFS unit test does
+ * not link it, resolves this to NULL, and behaves exactly as it did before
+ * groups existed.
+ *
+ * Named plainly because it is an impurity: this reads the CURRENT process
+ * rather than the `c` it was handed. They are the same at every call site --
+ * vfs.c's cred_now() fills `c` from vfs_cred_current() -- and when the
+ * credential moves into struct proc (see vfs_cred.h) the group list moves with
+ * it and this hook goes away. */
+int vfs_cred_ingroup(uint32_t gid) __attribute__((weak));
+static int in_supp_group(uint32_t gid)
+{ return vfs_cred_ingroup ? vfs_cred_ingroup(gid) : 0; }
+
 int vmeta_permission(const struct vattr *a, const struct vcred *c, int want)
 {
     if (!a || !c) return VFS_EACCES;
@@ -290,7 +307,8 @@ int vmeta_permission(const struct vattr *a, const struct vcred *c, int want)
 
     uint32_t bits;
     if (c->uid == a->uid)      bits = (a->mode >> 6) & 7;
-    else if (c->gid == a->gid) bits = (a->mode >> 3) & 7;
+    else if (c->gid == a->gid || in_supp_group(a->gid))
+                               bits = (a->mode >> 3) & 7;
     else                       bits =  a->mode       & 7;
 
     /* MAY_* are numerically r=4 w=2 x=1, which is the same numbering as the

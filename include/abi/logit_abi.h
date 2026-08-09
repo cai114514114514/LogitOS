@@ -1656,4 +1656,76 @@ struct logit_dgram {
                              * fine, the socket is in the wrong state for it */
 #define LSK_E_NET    (-6)   /* no NIC is up */
 
+/* --- M32 identity: who is running this (150-159) ---------------------------
+ *
+ * WHAT WAS ALREADY HERE, AND WHY IT DID NOTHING
+ * ---------------------------------------------|
+ * The filesystem has enforced permissions for a while: c/fs/vfs.c checks
+ * search permission on every directory of a path walk, and write permission on
+ * the file or its parent, against a `struct vcred` from c/fs/vfs_cred.c. Since
+ * f647bed the mode and the owner are on the MEDIUM (logitfs getattr/setattr),
+ * so they survive a reboot. Every part of that was real except one: nothing
+ * could set the credential to anything but uid 0, so every check compared a
+ * file's owner against root and every check passed. The enforcement was real
+ * and the identity was a constant.
+ *
+ * These ten numbers are the identity.
+ *
+ * NO SEPARATE EFFECTIVE UID, said plainly. geteuid() == getuid() and
+ * getegid() == getgid(), always. That is not laziness: an effective uid exists
+ * to be raised by a setuid BINARY, and there is no setuid bit in this
+ * filesystem -- vmeta's mode is nine permission bits and nothing else, and
+ * c/fs/vfs_cred.c states the rule the whole model rests on ("root may become
+ * anybody; anybody else may not change uid at all", which is what makes
+ * dropping privilege one-way). Adding euid without the mechanism that raises
+ * it would be a field that is always equal to another field, and a caller that
+ * believed it meant something would be believing a decoration. When a setuid
+ * bit lands, euid lands with it and geteuid stops being an alias.
+ *
+ * SETUID IS ONE-WAY AND PERMANENT for the calling process. There is no
+ * saved-set-uid to come back through. `setuid` from a non-root uid to any
+ * other uid -- including the one you already have -- is ID_E_PERM.
+ *
+ * INHERITANCE is what a credential does across fork and execve: nothing. A
+ * child is its parent's credential and an exec'd image keeps the caller's, so
+ * /bin/login authenticates, drops to the user, and execve's /bin/sh, which is
+ * already the user without ever having been root.
+ *
+ * THE SESSION (158/159) is the one idea here that is not straight POSIX, and
+ * it exists because this machine boots a desktop with no login on it. The
+ * window manager launches files.aex before anything has authenticated, and
+ * those processes descend from a kernel thread, so they have no credential to
+ * inherit. The session is the answer to "who is a process that was never told
+ * belong to": before anyone logs in it is root (the boot state, which is what
+ * makes mounting the filesystem and loading fonts work), and after /bin/login
+ * succeeds it is the person at the keyboard. SYS_SETSESSION sets it AND the
+ * caller's own credential in one call, because doing them in either order
+ * separately leaves a window where login has already lost root and cannot
+ * finish. Root only. */
+#define SYS_GETUID     150 /* () -> uid. Never fails. */
+#define SYS_GETEUID    151 /* () -> uid. Identical to SYS_GETUID; see above. */
+#define SYS_GETGID     152 /* () -> gid. Never fails. */
+#define SYS_GETEGID    153 /* () -> gid. Identical to SYS_GETGID. */
+#define SYS_SETUID     154 /* (uid) -> 0, or ID_E_PERM. Root only, one-way. */
+#define SYS_SETGID     155 /* (gid) -> 0, or ID_E_PERM. Root only. */
+#define SYS_GETGROUPS  156 /* (n, uint32_t *list) -> count written, or the total
+                            * count when n == 0 (list may then be NULL). */
+#define SYS_SETGROUPS  157 /* (n, const uint32_t *list) -> 0. Root only.
+                            * n == 0 clears the supplementary set. */
+#define SYS_SETSESSION 158 /* (uid, gid) -> 0. Root only. Establishes the login
+                            * session AND the caller's credential atomically.
+                            * This is the call /bin/login makes. */
+#define SYS_GETSESSION 159 /* (which) -> the session uid (which == 0) or gid
+                            * (which == 1). Never fails; before a login both
+                            * are 0, i.e. the machine belongs to root. */
+
+/* At most this many supplementary groups per process. Small on purpose: the
+ * whole set is copied on every fork-equivalent lookup, and a machine with one
+ * account and no group database has no use for sixty-four. */
+#define ID_NGROUPS_MAX 8
+
+#define ID_E_PERM   (-1)   /* not root, or a non-root process trying to setuid */
+#define ID_E_ARG    (-2)   /* bad pointer, or n > ID_NGROUPS_MAX */
+#define ID_E_NOPROC (-3)   /* no calling process (a kernel thread) */
+
 #endif /* LOGIT_ABI_H */

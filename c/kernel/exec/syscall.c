@@ -38,6 +38,7 @@
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
 #include "ksignal.h"     /* signals: SYS_SIGACTION..SYS_SIGQUERY, execve reset */
 #include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
+#include "vfs_cred.h"    /* id_syscall:   SYS_GETUID .. SYS_GETSESSION (150-159) */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -883,6 +884,25 @@ static void syscall_do(struct registers *r)
     case SYS_CHOWN:
         r->rax = (uint64_t)meta_syscall((long)r->rax, (long)r->rdi,
                                         (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* M32 identity (150-159). Forwarded to c/fs/vfs_cred.c, which is where the
+     * credential table lives -- same rule as the block above. This is the half
+     * of the permission model that was missing: the VFS has checked a uid on
+     * every path walk for a long time, and until these landed nothing could
+     * set that uid to anything but 0. */
+    case SYS_GETUID:
+    case SYS_GETEUID:
+    case SYS_GETGID:
+    case SYS_GETEGID:
+    case SYS_SETUID:
+    case SYS_SETGID:
+    case SYS_GETGROUPS:
+    case SYS_SETGROUPS:
+    case SYS_SETSESSION:
+    case SYS_GETSESSION:
+        r->rax = (uint64_t)id_syscall((long)r->rax, (long)r->rdi,
+                                      (long)r->rsi, (long)r->rdx);
         return;
 
     /* Settings. Handled here and not in wm_gui_syscall because a CLI process
