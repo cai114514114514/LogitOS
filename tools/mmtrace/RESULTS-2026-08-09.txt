@@ -1,0 +1,159 @@
+HOW FAR IS LogitOS's PAGE RECLAIM FROM THE OFFLINE OPTIMUM?
+A measurement taken 2026-08-09. Reproduce with tests/mmtrace.mk.
+
+WHAT KIND OF NUMBER THIS IS
+===========================
+An EXACT gap on a recorded reference string, not a bound and not a sample.
+Every user-space page reference of each run was captured by a QEMU TCG plugin
+(tools/mmtrace/mmtrace.c) and replayed against six replacement policies,
+including Belady's MIN computed exactly (tools/mmtrace/mmsim.c). No kernel
+change was involved, so the traced machine is the machine.
+
+What the number is NOT: it is not a prediction of how the kernel would behave
+under a different policy, because a different policy changes WHEN pages are
+faulted and therefore changes timing. It is the standard, and the only exactly
+computable, formulation: given this reference string and this much memory, how
+many misses does each policy take.
+
+Four caveats, all of them real:
+  - Recorded at -smp 1. A reference string is an ORDER, and several vCPUs do
+    not produce one. The cost is that reclaim.c's skip_busy case (a frame in a
+    space another core is running) cannot occur and is not measured.
+  - The browser traces stopped at the record cap (400M / 350M records). Both
+    had already painted the page. The strings are shorter than the runs.
+  - The simulation is over ONE address space (the workload's). The window
+    manager and the shell are two orders of magnitude smaller and are excluded.
+  - Frame identity: the simulator models pmm.c's next-fit allocation and
+    reclaim.c's ascending frame sweep, so sweep order stands in the same
+    relation to allocation order that it does on the machine. It does not model
+    the two tiers -- a miss is a miss, whether the kernel would have re-derived
+    the page for free or read it off the swap device.
+
+THE CONTROLS (make test-mmsim) -- ALL THREE PASS
+================================================
+1. Sequential scan of N+1 pages through N frames, N=100:
+     lru/fifo/clock  5050 misses of 5050 references   (miss rate 1.0000)
+     MIN              150 misses                       (miss rate 0.0297)
+     -> 101x. The textbook answer, and the proof MIN is right.
+2. Uniform random, 2000 pages through 10 frames:
+     every policy within 1.08x of MIN. No policy signal where there is no
+     locality, as required.
+3. Hot set inside a scan (1000 pages, hot 50, 100 frames), capacity misses:
+     lru 239315  <  clock 249868  <  fifo 264215
+     -> the clock sits strictly between LRU and FIFO, which is what a
+        second-chance clock IS. A model of it accidentally equal to LRU would
+        have passed controls 1 and 2.
+
+THE GAP, PER WORKLOAD (capacity misses; compulsory excluded)
+============================================================
+"mem%" is memory as a percentage of that workload's own footprint.
+clk/opt is the headline gap. clk/lru is how much of it is the clock's fault
+rather than the fault of being an online policy at all.
+
+ workload   footprint   mem%   opt        lru        clock      clk/opt clk/lru wm/clk
+ kimi.com   26.2 MiB      5%      20850      48209      50496     2.42x  1.047   1.071
+ (browser)               10%       2764       7855       8197     2.97x  1.044   1.127
+                         25%          0       1164       1196       --   1.027   1.043
+
+ wikipedia  17.9 MiB      5%     518371    1061632    1109249     2.14x  1.045   1.017
+ (browser)               10%     173659     395863     418341     2.41x  1.057   1.111
+                         25%      12188      29021      29236     2.40x  1.007   1.069
+                         50%       1240       6018       6024     4.86x  1.001   1.134
+
+ video       1.8 MiB      5%     227151     519502     581307     2.56x  1.119   1.010
+ (H.264)                 10%      30243      55136      61432     2.03x  1.114   1.029
+                         25%       9738      19048      19143     1.97x  1.005   1.019
+                         50%       1531       4783       4629     3.02x  0.968   1.199
+
+ mempress  192.4 MiB      5%      46738      49302      49303     1.05x  1.000   1.012
+ (4 linear             10%        44275      49236      49270     1.11x  1.001   1.007
+  scans)                 25%      36887      49236      49258     1.34x  1.000   1.002
+                         50%      24573      49162      49203     2.00x  1.001   1.002
+                         75%      12259      49162      49193     4.01x  1.001   1.001
+                         90%       4871      49162      49193    10.10x  1.001   1.001
+
+THREE THINGS THE TABLE SAYS
+===========================
+1. THE GAP ON REAL WORKLOADS IS ABOUT 2x TO 3x, and it is almost entirely
+   LRU-to-MIN, not clock-to-LRU. clk/lru is 1.00-1.12 everywhere, typically
+   1.04. Better recency tracking -- which is what most "learn the replacement
+   policy" work amounts to -- is worth a few percent here. The 2-3x needs
+   PREDICTION of future reuse, which is the thing MIN has and no online policy
+   does.
+
+2. THE WATERMARK BATCHING COSTS MORE THAN THE CHOICE OF CLOCK OVER LRU.
+   wm/clk is the same clock with reclaim.c's batching (evict nothing until free
+   < total/32, then take a batch up to total/16) against the same clock evicting
+   one frame on demand. It is +1% to +13% in the meaningful band and +20% in one
+   case -- consistently larger than the 4% the clock gives up to true LRU. That
+   is a tuning question, not a policy question, and it needs no model.
+
+3. ON A SEQUENTIAL SCAN THE CLOCK IS 10x OFF AND RANDOM EVICTION BEATS IT.
+   mempress at 90%: clock 49193, MIN 4871, random 8446. Every page misses
+   exactly twice under clock and LRU alike, because both evict precisely the
+   page about to be read back. This is the classic pathology, and it matters
+   here because mempress is the swap test's own workload: the kernel's headline
+   memory-pressure test is the case its policy is worst at.
+
+WHERE THE CLOCK LOSES (shape)
+=============================
+  browser (wikipedia, 10% of footprint, 20 equal windows):
+    ratio 1.27-2.35x through parse and layout, then 3.40x and 3.06x in the two
+    windows where the JS engine is compiling and running. Bursty, and the burst
+    is the scripting phase.
+    Of the 244811 references the clock missed and MIN did not:
+      7110 code (2.9%), 2727 written data (1.1%), 234974 read-only data (96%).
+    Read-only data is the browser's decoded-and-parsed resources, and evicting
+    them just before reuse is where the whole gap is.
+
+  video (10%): flat at 1.93-2.07x across every window -- steady-state decode
+    with no phase structure at all. The breakdown is different from the
+    browser's: 12202 code (39%), 4387 written data, 14768 read-only data. A
+    small decoder loop hammering reference frames evicts its own text.
+
+  mempress (75%): windows 0-4 are compulsory. Window 5, where the read-back
+    pass begins, is 10.48x; windows 6-8 the clock takes 4057 misses and MIN
+    takes 0. A pure phase change that the clock cannot see coming.
+
+DOES THE MODEL MATCH THE MACHINE?
+=================================
+A real `run-swap-test.sh swap 192 mid` (the same mempress, on a 192 MiB machine
+with an NVMe swap device, reclaim actually running) reported:
+
+  total=49109 frames  evicted=62162 (dropped 36316 + swapped 25846)
+  swapin=24603  second=73264  bugs=0
+
+The data region is 24576 pages and swapin was 24603 -- every data page went out
+and came back exactly once, which is precisely the shape the simulated clock
+predicts (each page missing once beyond its compulsory miss; 49193 capacity
+misses at 75-90% of footprint). The machine's 60919 re-faults against the
+model's 49193 is 24% high, and the excess is what the simulation excludes: the
+AetherScript interpreter's own working set, the window manager, and the
+batching evicting past what was needed. Same order, same shape.
+
+At that operating point MIN would have taken 12259 capacity misses instead of
+49193. The run moved 25846 pages out and 24603 back over a polled NVMe queue;
+an optimal policy moves about a quarter of that.
+
+WHEN ANY OF THIS MATTERS ON THIS MACHINE
+========================================
+Only under manufactured pressure. The browser's whole footprint is 18-26 MiB
+and the full desktop peaks at 229 MiB of 511; at any real operating point
+memory is far larger than the working set, MIN's capacity misses are ZERO and
+so are almost everybody else's, and reclaim never runs. The 2-3x is real and it
+is what a better policy could win, but it is a gap that only opens when the
+machine is deliberately made too small.
+
+WHAT MEASURING COST
+===================
+  tracing overhead   /bin/vidcheck end to end: 40.7 s untraced, 46.7 s traced
+                     (+14.8%), both at -smp 1 TCG. The plugin reads CR3 once
+                     per emitted record, not per access.
+  trace size         16 bytes per page-crossing reference.
+                     video     89.6M refs = 1.43 GB for ~15 s of decoding
+                     mempress 290.4M refs = 4.65 GB
+                     wikipedia 400.0M refs = 6.40 GB (hit the cap)
+                     kimi      350.0M refs = 5.60 GB (hit the cap)
+  simulation         all six policies over 400M references: 77 s, 3.2 GB RSS.
+                     Memory is 8 bytes per reference (the id sequence and the
+                     next-use array), which is what bounds trace length.
