@@ -1404,10 +1404,19 @@ static int is_block(struct node *n)
      *
      * `float` BLOCKIFIES: CSS computes display:inline on a floated box to
      * display:block, which is why `<span style="float:left">` is a box and not
-     * a word. Our LibCSS reports the specified display, so the fixup is here. */
+     * a word. Our LibCSS reports the specified display, so the fixup is here.
+     *
+     * `position:absolute` blockifies for the same reason (CSS Display § 2.7,
+     * CSS 2.1 § 9.7) and was missing, with a worse consequence than a smeared
+     * run: layout_flow's absolute branch is gated on blockish(), and skipped()
+     * drops everything absolutely positioned that does not reach it. So
+     * `<span style="position:absolute">` -- and every custom element, which
+     * defaults to display:inline -- was not mispositioned, it was not laid out
+     * at all. */
     return st && (st->display == DISP_BLOCK || st->display == DISP_FLEX ||
                   st->display == DISP_GRID || st->display == DISP_INLINE_BLOCK ||
-                  (st->flt != FLT_NONE && st->display != DISP_NONE));
+                  (st->flt != FLT_NONE && st->display != DISP_NONE) ||
+                  (st->pos_abs && st->display != DISP_NONE));
 }
 
 /* Does this box establish a new block formatting context? Floats inside a BFC

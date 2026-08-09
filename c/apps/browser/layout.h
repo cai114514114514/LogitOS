@@ -109,10 +109,13 @@ void  layout_free(void);
  * when the element generated no box at all (display:none, out of the tree,
  * never reached), which is a different statement from a box of size zero.
  *
- * DECLARED WEAK-FRIENDLY the way layout_count/layout_items already are: several
- * host harnesses link a subset of the browser without layout.c and test
- * `&layout_count != 0`. A caller doing the same for these must test them
- * individually. */
+ * FOR THE CALLER THAT LINKS A SUBSET OF THE BROWSER: several host harnesses
+ * build js_cssom.c WITHOUT layout.c (tests/cssom.mk's wpt-cssom variant is
+ * one), and js_cssom.c already handles that by RE-DECLARING each layout entry
+ * point `__attribute__((__weak__))` after including this header and gating on
+ * `&layout_count != 0`. These two need the same two lines and the same gate;
+ * the declarations here are ordinary externs and a plain call from a build
+ * with no layout.c is a link error, exactly as it is for layout_count. */
 
 /* The element's BORDER box in DOCUMENT coordinates -- the frame `struct item`
  * uses. An element that generates several boxes (an inline across line
