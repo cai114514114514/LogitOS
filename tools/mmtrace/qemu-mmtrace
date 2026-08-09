@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# A QEMU that traces LogitOS's page references, drop-in.
+#
+# Every boot harness in this tree launches the emulator through "${QEMU:-qemu-system-x86_64}"
+# -- run-swap-test.sh, tests/qmp/qmp_site.py, the video and shell harnesses, all
+# of them. So the whole tracing apparatus needs no edit to any of them:
+#
+#     MMTRACE_OUT=build/mmtrace/x.mmt QEMU=tools/mmtrace/qemu-mmtrace \
+#         make test-video
+#
+# and that boot, with its real disk, its real network and its real workload,
+# writes a reference string. Nothing is added to any command line that is not
+# added here, so a harness run WITHOUT this wrapper is byte-for-byte the run it
+# always was. That is the whole point: eleven other harnesses boot this image
+# and none of them may change because a measurement exists.
+#
+# Environment:
+#   MMTRACE_OUT    where to write the trace (required)
+#   MMTRACE_SO     the plugin (default build/mmtrace/mmtrace.so)
+#   MMTRACE_LIMIT  stop after N records (default 400000000 ~ 6.4 GiB)
+#   MMTRACE_EXEC   off to leave instruction fetches out of the trace
+#   MMTRACE_SMP1   1 (default) to rewrite -smp N to -smp 1; see below
+#   MMTRACE_QEMU   the real emulator (default qemu-system-x86_64)
+#
+# WHY -smp 1 BY DEFAULT, AND WHAT IT COSTS
+#
+# A reference string is an ORDER. With several vCPU threads running under
+# thread=multi there is no single order to record -- the plugin sees each core's
+# accesses interleaved by however the host scheduled them, and two runs of the
+# same workload produce different strings. Belady's MIN on such a string is
+# still computable but is no longer "the best a policy could have done on this
+# machine", because the machine did not have one string.
+#
+# So tracing runs are single-core. The cost is named rather than hidden: the
+# clock's skip_busy case (reclaim.c gather(): a frame in an address space
+# another core is executing is left alone) cannot occur at -smp 1, so the
+# measurement does not see it. That skip is a concurrency effect and not a
+# policy decision, which is why it is an acceptable thing to exclude from a
+# measurement OF the policy -- but it is excluded, and a reader should know.
+set -u
+
+: "${MMTRACE_OUT:?MMTRACE_OUT=<trace path> is required}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+SO="${MMTRACE_SO:-$ROOT/build/mmtrace/mmtrace.so}"
+REAL="${MMTRACE_QEMU:-qemu-system-x86_64}"
+LIMIT="${MMTRACE_LIMIT:-400000000}"
+EXEC="${MMTRACE_EXEC:-on}"
+SMP1="${MMTRACE_SMP1:-1}"
+
+[ -f "$SO" ] || { echo "qemu-mmtrace: no plugin at $SO (make mmtrace-tools)" >&2; exit 1; }
+mkdir -p "$(dirname "$MMTRACE_OUT")"
+
+# Rewrite -smp and -accel rather than appending: a later -smp does not override
+# an earlier one in QEMU, so the value has to be edited where the harness put it.
+args=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    -smp)   if [ "$SMP1" = "1" ]; then args+=(-smp 1); shift 2; continue; fi ;;
+    -accel) if [ "$SMP1" = "1" ]; then args+=(-accel tcg); shift 2; continue; fi ;;
+    esac
+    args+=("$1"); shift
+done
+
+exec "$REAL" "${args[@]}" \
+     -plugin "$SO,out=$MMTRACE_OUT,limit=$LIMIT,exec=$EXEC"
