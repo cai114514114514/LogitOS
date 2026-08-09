@@ -290,4 +290,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Spelled out rather than `sys.exit(main())`, because a harness that
+    # computes a verdict and exits 0 anyway is the MUTE shape tools/audit_tests.py
+    # exists to catch -- and it looks for a literal non-zero exit. There are
+    # 22 harnesses in this tree that print FAIL and exit 0; this is not the 23rd.
+    if main():
+        sys.exit(1)
+    sys.exit(0)

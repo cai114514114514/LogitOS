@@ -365,6 +365,25 @@ static int load_one(const char *path)
     return 1;
 }
 
+/* The system layer, captured the last time it could be READ.
+ *
+ * THE PROBLEM THIS SOLVES, and it is not hypothetical -- the host test found
+ * it: /etc/settings.conf belongs to root, and after a login the desktop is not
+ * root. Whether a user can read the defaults then depends entirely on the mode
+ * that file happens to have (0644 today, because that is what a create with
+ * the default mask leaves). A settings system whose defaults quietly vanish
+ * the day somebody chmods a file 0600 is a settings system with a trap in it.
+ *
+ * So the layer is snapshotted whenever it is successfully read -- at boot,
+ * which is always as root -- and a later load that cannot read the file falls
+ * back to the snapshot instead of to nothing. Root's own writes still refresh
+ * it, because those loads can read the file.
+ *
+ * It is NOT a cache for speed. The file is read once per boot either way. */
+static struct kv systab[SET_MAXKV];
+static int      nsys;
+static int      sys_captured;
+
 int settings_load(void)
 {
     ntab = 0;
@@ -376,6 +395,22 @@ int settings_load(void)
      * moment the greeter needs a theme and a wallpaper. */
     loading_sys = (user_path[0] != 0);
     int any = load_one(SET_PATH);
+    if (any) {
+        nsys = ntab;
+        for (int i = 0; i < ntab; i++) systab[i] = tab[i];
+        sys_captured = 1;
+    } else if (sys_captured) {
+        for (int i = 0; i < nsys; i++) {
+            tab[i] = systab[i];
+            /* The mark is recomputed rather than restored: the snapshot may
+             * have been taken on a machine with no user store, where nothing
+             * is marked. Restoring it verbatim would let a user's commit write
+             * root's defaults into their own file. */
+            tab[i].sys = (unsigned char)(user_path[0] ? 1 : 0);
+        }
+        ntab = nsys;
+        any = (nsys > 0);
+    }
     loading_sys = 0;
 
 #ifdef SETTINGS_NEGCTL_USER_READ_SYSTEM

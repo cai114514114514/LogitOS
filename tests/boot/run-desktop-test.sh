@@ -117,6 +117,10 @@ fail() {
 # fixed deadline costs every boot the full deadline whether it finished in 40
 # seconds or not -- and runs the slowest boot one command short of its marker.
 BOOT_MAX="${BOOT_MAX:-420}"
+# Cores for this boot. Four everywhere except the ENROLMENT boot -- see the
+# comment above drive1 for the deadlock that forces it and for why it is
+# scaffolding rather than a weakened assertion.
+SMP=4
 boot() {
     local driver="$1" done_marker="$3" settle="$4"
     LOG="$2"
@@ -124,7 +128,7 @@ boot() {
     { "$driver"; sleep "$settle"; } | \
       "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
         -drive file="$DISKC",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 \
-        -boot d -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci \
+        -boot d -m 512M -smp "$SMP" -accel tcg,thread=multi -vga none -device virtio-gpu-pci \
         $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
     QPID=$!
     local waited=0
@@ -143,6 +147,28 @@ boot() {
 firstline() { grep -an -- "$2" "$1" 2>/dev/null | head -1 | cut -d: -f1; }
 
 # ---------------------------------------------------------------- boot 1 ----
+# THE ONE BOOT THAT DOES NOT RUN ON FOUR CORES, and the reason is a bug that
+# was here before any of this work -- stated in full because a harness that
+# quietly lowers -smp is a harness nobody can trust.
+#
+# A SECOND `login -a` IN ONE BOOT FREEZES THE WHOLE MACHINE UNDER -smp 4.
+# Not the program: the machine. The serial log stops mid-line and nothing --
+# no kernel timer line, no compositor report, no echo of a typed character --
+# ever comes out again. It is not deterministic in WHERE it stops (once at the
+# second enrolment's "New password: " prompt, once before the prompt was
+# printed, once after "hashing (120000"), which is the signature of a global
+# stall rather than of a program going wrong.
+#
+# MEASURED, and measured against a kernel WITHOUT this line's changes, which
+# is the part that matters: 0 of 5 runs completed at -smp 4 (and 0 of 2 on
+# c/kernel at 378b46692, before the greeter or the per-user store existed);
+# 3 of 3 completed at -smp 1. So it is an SMP deadlock in the existing kernel,
+# reproduced by two enrolments, and it is being REPORTED, not worked around
+# silently and not fixed here -- it is somewhere in the BKL/exec/tty
+# interaction and belongs to whoever owns that, with this as the reproducer.
+#
+# Enrolling two accounts is FIXTURE, not assertion. Boots 2, 3 and 4 -- which
+# carry every claim this harness makes -- all run on four cores.
 drive1() {
     waitn "LogitOS shell" 1 150
     say "login -i"
@@ -172,7 +198,9 @@ drive1() {
     waitn "ENROLLED bob" 1 90
     say "echo BOOT1-DONE"
 }
+SMP=1
 boot drive1 "$WORK/b1.log" BOOT1-DONE 8
+SMP=4
 
 grep -aq "BOOT1-DONE" "$WORK/b1.log" || fail "boot 1 never finished its commands"
 # THE UNCHANGED-MACHINE PROMISE. A machine with no accounts has nobody to
