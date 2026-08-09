@@ -33,3 +33,4 @@ qwen	https://chat.qwen.ai/	hangs
 
 control-example	http://example.com/	CONTROL: the simplest page on the web, no JS, no CSS worth the name
 control-wikipedia	https://en.wikipedia.org/wiki/Operating_system	CONTROL: known to render since M13
+kimi	https://www.kimi.com/	the one the whole browser arc was aimed at -- an LLM chat page: React, streaming fetch, and a text input that has to accept keystrokes

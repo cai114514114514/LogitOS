@@ -1,0 +1,76 @@
+{
+ "name": "kimi",
+ "url": "https://www.kimi.com/",
+ "started": "2026-08-09T08:45:37",
+ "verdict": "PAINTED",
+ "why": "painted 11700 changed px in 32.5s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.kimi.com/",
+  "bytes": 212649,
+  "redirects": [],
+  "script_tags": 4,
+  "script_src": 2,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 28,
+   "script_src": 2,
+   "inline_scripts": 2,
+   "images": 2,
+   "preloads": 80,
+   "fonts": 0,
+   "mandatory": 31
+  },
+  "elapsed": 0.4
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 108,
+  "dials": 3,
+  "reused": 105,
+  "modules": 77,
+  "modules_failed": 0,
+  "heap_peak_k": 24384,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 32.5,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 11700,
+  "changed_bbox": [
+   144,
+   12,
+   1256,
+   764
+  ],
+  "ink_px": 6838,
+  "ink_px_blank": 2359,
+  "colours": 751,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-09/kimi.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-09/kimi.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 28,
+   "script_src": 2,
+   "inline_scripts": 2,
+   "images": 2,
+   "preloads": 80,
+   "fonts": 0,
+   "mandatory": 31
+  },
+  "gap": null
+ },
+ "finished": "2026-08-09T08:46:46"
+}
