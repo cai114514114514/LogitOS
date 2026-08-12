@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "text.h"
 #include "virtio_gpu.h"
+#include "gfx.h"        /* Open Logit's mask cache -- see cover_round() below */
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
 struct mb2_tag { uint32_t type, size; };
@@ -427,25 +428,81 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t color)
     }
 }
 
-void fb_fill_circle(int cx, int cy, int r, uint32_t color)
+/* How much of local point (i,j) is covered by a rounded rect of size w x h with
+ * corner `rad`? 0..255, where the old inside_round() returned 0 or 1.
+ *
+ * WHY THIS CHANGED. The test was `dx*dx + dy*dy <= rad*rad` -- a point sample,
+ * so a corner came out as a staircase and a circle came out as a square with a
+ * nub on each axis. aui.h:34-43 names it: "that staircase is the single loudest
+ * thing that dates the UI", and it is on screen constantly -- the three traffic
+ * lights, the dark-mode knob, the dock's slab, every window frame corner, and
+ * (through fb_blur_rect's `corner`) the edge of every glass panel.
+ *
+ * WHY IT ASKS OPEN LOGIT RATHER THAN COMPUTING COVERAGE HERE. A fifth coverage
+ * rasterizer in this file is exactly the mistake c/lib/gfx was built to end --
+ * it deleted two of them on the way in. The corner tile it returns is generated
+ * by the same scanline rasterizer the toolkit and the browser draw with, is
+ * cached by exact device geometry, and is checked against a 16x supersampled
+ * analytic oracle (worst pixel error 0.091) plus a second, independently
+ * written oracle in test-aui-mask. Nothing here has to be trusted on its own.
+ *
+ * The tile is ONE quadrant: [0,rad) x [0,rad) with the arc centred on its
+ * bottom-right, which is the shape of a rounded rect's TOP-LEFT corner. The
+ * other three are the same tile read with a mirrored index, so a rounded rect
+ * of any size costs one r x r rasterization and three reflections. */
+static int cover_round(int i, int j, int w, int h, int rad)
 {
-    int i0, j0, i1, j1;
-    if (!clip_ij(cx - r, cy - r, 2 * r + 1, 2 * r + 1, &i0, &j0, &i1, &j1)) return;
-    for (int j = j0 - r; j < j1 - r; j++)
-        for (int i = i0 - r; i < i1 - r; i++)
-            if (i * i + j * j <= r * r)
-                fb_put(cx + i, cy + j, color);
+    if (rad <= 0) return 255;
+    if (rad > w / 2) rad = w / 2;
+    if (rad > h / 2) rad = h / 2;
+    if (rad <= 0) return 255;
+
+    int cx = -1, cy = -1;
+    if (i < rad)            cx = i;
+    else if (i >= w - rad)  cx = w - 1 - i;
+    if (j < rad)            cy = j;
+    else if (j >= h - rad)  cy = h - 1 - j;
+    if (cx < 0 || cy < 0) return 255;       /* in one of the straight bands */
+
+    const unsigned char *m = gfx_mask_corner(GFX_MASK_FILL, rad, rad, 0);
+    if (!m) {                                /* radius past GFX_MASK_MAX: the
+                                              * old point sample, kept as the
+                                              * fallback rather than dropping
+                                              * the corner altogether */
+        int dx = rad - cx, dy = rad - cy;
+        return dx * dx + dy * dy <= rad * rad ? 255 : 0;
+    }
+    return m[(long)cy * rad + cx];
 }
 
-/* Is local point (i,j) inside a rounded rect of size w x h, corner `rad`? */
-static int inside_round(int i, int j, int w, int h, int rad)
+/* Blend `color` over the target at (x,y) by coverage `a` (0..255). The three
+ * hand-written copies of this arithmetic that used to sit in the loops below
+ * are now one place, which is also the only place the rounding is decided. */
+static void blend_cov(int x, int y, uint32_t color, int a)
 {
-    int dx = 0, dy = 0;
-    if (i < rad)            dx = rad - i;
-    else if (i >= w - rad)  dx = i - (w - rad - 1);
-    if (j < rad)            dy = rad - j;
-    else if (j >= h - rad)  dy = j - (h - rad - 1);
-    return dx * dx + dy * dy <= rad * rad;
+    if (a <= 0) return;
+    if (a >= 255) { fb_put(x, y, color); return; }
+    int cr, cg, cb, br, bg, bb;
+    unpack(color, &cr, &cg, &cb);
+    unpack(fb_get(x, y), &br, &bg, &bb);
+    fb_put(x, y, fb_rgb((uint8_t)((cr * a + br * (255 - a)) / 255),
+                        (uint8_t)((cg * a + bg * (255 - a)) / 255),
+                        (uint8_t)((cb * a + bb * (255 - a)) / 255)));
+}
+
+/* A circle is a rounded rect whose corner radius is half its side, so this is
+ * the same coverage the corners use and the two cannot drift apart. It matters
+ * here more than anywhere: the traffic lights are 12 px across, and at that
+ * size the old `i*i + j*j <= r*r` did not read as a circle at all -- it read as
+ * a square with one pixel poking out on each axis. */
+void fb_fill_circle(int cx, int cy, int r, uint32_t color)
+{
+    int d = 2 * r + 1;
+    int i0, j0, i1, j1;
+    if (!clip_ij(cx - r, cy - r, d, d, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++)
+        for (int i = i0; i < i1; i++)
+            blend_cov(cx - r + i, cy - r + j, color, cover_round(i, j, d, d, r));
 }
 
 void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color)
@@ -454,8 +511,7 @@ void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color)
     if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
     for (int j = j0; j < j1; j++)
         for (int i = i0; i < i1; i++)
-            if (inside_round(i, j, w, h, radius))
-                fb_put(x + i, y + j, color);
+            blend_cov(x + i, y + j, color, cover_round(i, j, w, h, radius));
 }
 
 /* Blit an 8-bit coverage bitmap as anti-aliased text: each cov[i] is the alpha
@@ -502,14 +558,13 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
     if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
     for (int j = j0; j < j1; j++) {
         for (int i = i0; i < i1; i++) {
-            if (!inside_round(i, j, w, h, radius))
-                continue;
-            int br, bg, bb;
-            unpack(fb_get(x + i, y + j), &br, &bg, &bb);
-            int nr = (r * a + br * (255 - a)) / 255;
-            int ng = (g * a + bg * (255 - a)) / 255;
-            int nb = (b * a + bb * (255 - a)) / 255;
-            fb_put(x + i, y + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+            /* Two alphas meet here and they MULTIPLY: the caller's opacity and
+             * the corner's coverage. Taking either one alone gives a panel that
+             * is translucent in the middle and hard-edged at the corner, which
+             * is what the boolean test used to produce. */
+            int cov = cover_round(i, j, w, h, radius);
+            if (cov <= 0) continue;
+            blend_cov(x + i, y + j, fb_rgb(r, g, b), a * cov / 255);
         }
     }
 }
@@ -551,7 +606,7 @@ void fb_fill_vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bottom)
     }
 }
 
-/* Rounded-rect vertical gradient (corners cut by inside_round). */
+/* Rounded-rect vertical gradient (corners antialiased by cover_round). */
 void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom)
 {
     int i0, j0, i1, j1;
@@ -559,7 +614,7 @@ void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, u
     for (int j = j0; j < j1; j++) {
         uint32_t c = color_lerp(top, bottom, j, h > 1 ? h - 1 : 1);
         for (int i = i0; i < i1; i++)
-            if (inside_round(i, j, w, h, radius)) fb_put(x + i, y + j, c);
+            blend_cov(x + i, y + j, c, cover_round(i, j, w, h, radius));
     }
 }
 
@@ -610,8 +665,27 @@ void fb_blur_rect(int x, int y, int w, int h, int radius, int corner)
              * needed. wm.c's damage tracking therefore never hands it a
              * partially-clipped panel -- see the glass-panel expansion there --
              * and this check is the belt to that braces. */
-            if ((corner <= 0 || inside_round(i, j, w, h, corner)) && clip_px(s, x + i, y + j))
-                s->px[(long)(y + j) * s->w + (x + i)] = fb_rgb((uint8_t)(sr / cnt), (uint8_t)(sg / cnt), (uint8_t)(sb / cnt));
+            /* The corner is a COVERAGE, not a yes/no. A glass panel's edge is
+             * the most visible curve on the machine -- it is the dock, the menu
+             * bar and every titlebar -- and a boolean here left it stepped no
+             * matter how smooth the blur inside it was. Blending the blurred
+             * value against the pixel's own pre-blur colour is what makes the
+             * edge fade out instead of ending. */
+            int cov = corner > 0 ? cover_round(i, j, w, h, corner) : 255;
+            if (cov > 0 && clip_px(s, x + i, y + j)) {
+                uint32_t bl = fb_rgb((uint8_t)(sr / cnt), (uint8_t)(sg / cnt), (uint8_t)(sb / cnt));
+                uint32_t *px = &s->px[(long)(y + j) * s->w + (x + i)];
+                if (cov >= 255) {
+                    *px = bl;
+                } else {
+                    int nr, ng, nb, orr, og, ob;
+                    unpack(bl, &nr, &ng, &nb);
+                    unpack(*px, &orr, &og, &ob);
+                    *px = fb_rgb((uint8_t)((nr * cov + orr * (255 - cov)) / 255),
+                                 (uint8_t)((ng * cov + og  * (255 - cov)) / 255),
+                                 (uint8_t)((nb * cov + ob  * (255 - cov)) / 255));
+                }
+            }
             int a = j + radius + 1; if (a < h)  { unpack(tmp[(long)a * w + i], &r, &g, &b); sr += r; sg += g; sb += b; cnt++; }
             int d = j - radius;     if (d >= 0) { unpack(tmp[(long)d * w + i], &r, &g, &b); sr -= r; sg -= g; sb -= b; cnt--; }
         }
@@ -693,10 +767,24 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
         for (int i = 0; i < w; i++) {
             int px = i - cx, py = j - cy, ax = px < 0 ? -px : px, ay = py < 0 ? -py : py;
             int qx = ax - ix, qy = ay - iy, qxc = qx > 0 ? qx : 0, qyc = qy > 0 ? qy : 0;
-            int outd = (qxc || qyc) ? (int)isqrt_u((unsigned long)qxc * qxc + (unsigned long)qyc * qyc) : 0;
+            /* The distance is carried in 8.8 -- the square sum is shifted by 16
+             * before the root, so isqrt returns 256*d. A whole-pixel SDF cannot
+             * describe an edge that falls between two pixels, and this panel's
+             * edge is the most looked-at curve on the machine. */
+            int outd = (qxc || qyc)
+                     ? (int)isqrt_u(((unsigned long)qxc * qxc + (unsigned long)qyc * qyc) << 16)
+                     : 0;
             int ins = qx > qy ? qx : qy; if (ins > 0) ins = 0;
-            int sdf = outd + ins - radius;
-            if (sdf >= 0) continue;                              /* outside the rounded rect */
+            int sdf = outd + (ins - radius) * 256;               /* 8.8, <0 inside */
+            /* COVERAGE, not a yes/no. A pixel whose centre sits exactly on the
+             * boundary is half covered, so the ramp is centred on sdf==0 and one
+             * pixel wide. This is the whole reason the panel's edge stops being
+             * a staircase: `if (sdf >= 0) continue` drew every edge pixel at
+             * full strength and then stopped dead. */
+            int gcov = 128 - sdf;
+            if (gcov <= 0) continue;                             /* outside */
+            if (gcov > 255) gcov = 255;
+            int depth = -sdf / 256; if (depth < 0) depth = 0;
             if (!clip_px(s, x + i, y + j)) continue;             /* see the note in fb_blur_rect */
             int gx, gy;
             if (qxc > 0 || qyc > 0) { gx = (px < 0 ? -1 : 1) * qxc; gy = (py < 0 ? -1 : 1) * qyc; }
@@ -704,7 +792,7 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
             else                    { gx = 0; gy = (py < 0 ? -1 : 1); }
             int nlen = (int)isqrt_u((unsigned long)gx * gx + (unsigned long)gy * gy); if (!nlen) nlen = 1;
             int nx = gx * 256 / nlen, ny = gy * 256 / nlen;       /* outward unit x256 */
-            int depth = -sdf, t = depth * 256 / E; if (t > 256) t = 256; int omt = 256 - t;
+            int t = depth * 256 / E; if (t > 256) t = 256; int omt = 256 - t;
             int disp = REFRACT * omt * omt / 65536;               /* (1-t)^2 * REFRACT px */
             int sxp = i - nx * disp / 256, syp = j - ny * disp / 256;
             if (sxp < 0) sxp = 0; if (sxp >= w) sxp = w - 1;
@@ -721,7 +809,18 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
             if (r < 0) r = 0; if (r > 255) r = 255;
             if (gg < 0) gg = 0; if (gg > 255) gg = 255;
             if (b < 0) b = 0; if (b > 255) b = 255;
-            s->px[(long)(y + j) * s->w + (x + i)] = fb_rgb((uint8_t)r, (uint8_t)gg, (uint8_t)b);
+            uint32_t *dstp = &s->px[(long)(y + j) * s->w + (x + i)];
+            if (gcov >= 255) {
+                *dstp = fb_rgb((uint8_t)r, (uint8_t)gg, (uint8_t)b);
+            } else {
+                /* The edge pixel is part panel, part whatever was behind it --
+                 * and `behind it` is still in the target, because this loop
+                 * reads from the saved copy `g` and writes here. */
+                int orr, og, ob; unpack(*dstp, &orr, &og, &ob);
+                *dstp = fb_rgb((uint8_t)((r  * gcov + orr * (255 - gcov)) / 255),
+                               (uint8_t)((gg * gcov + og  * (255 - gcov)) / 255),
+                               (uint8_t)((b  * gcov + ob  * (255 - gcov)) / 255));
+            }
         }
     }
 }

@@ -186,16 +186,36 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
              c/net/http/hpack.c c/net/http/http2.c
 #
-# c/lib/gfx -- Open Logit, the 2D rendering engine -- is excluded for the same
-# reason. It is a RING-3 library: the widget toolkit and the browser's painter
-# link it, and both run in ring 3, which is where the one per-pixel-alpha
-# primitive (SYS_GUI_BLIT) is reachable. Nothing in the kernel fills a path --
-# fb.c's shapes are hard-edged by design and its ONE antialiased primitive is
-# the M14 glyph rasterizer, a different and much narrower job. Linking the
-# engine into the kernel would put a rasterizer for attacker-shaped geometry
-# (a page's border-radius, an SVG's path data) at the highest privilege in the
-# machine, under the BKL, to serve no ring-0 caller. See GFX_OBJ below for who
-# does link it.
+# c/lib/gfx -- Open Logit -- USED to be excluded here, and the reason it gave
+# was right about the risk and wrong about the caller. It said: "Nothing in the
+# kernel fills a path -- fb.c's shapes are hard-edged BY DESIGN", and that
+# linking the engine would put "a rasterizer for attacker-shaped geometry (a
+# page's border-radius, an SVG's path data) at the highest privilege in the
+# machine, under the BKL, to serve no ring-0 caller."
+#
+# The risk half still holds and nothing about it has changed: no path from a
+# document reaches this code, and no syscall exposes the path API. What changed
+# is the last clause. There IS a ring-0 caller, it was always there, and
+# aui.h:34-43 had already named the cost of pretending otherwise -- "that
+# staircase is the single loudest thing that dates the UI". fb.c's `by design`
+# was a boolean point sample, `dx*dx + dy*dy <= rad*rad`, and it is on screen
+# every moment the machine is on: the three traffic lights, the dark-mode knob,
+# the dock's slab, every window frame corner, and the edge of every glass panel.
+#
+# What actually reaches the rasterizer from ring 0 is THREE INTEGERS -- a width,
+# a height and a radius that the window manager itself chose -- into
+# gfx_mask_corner(), which refuses anything past GFX_MASK_MAX (72 px) and whose
+# path storage is a fixed static with an overflow flag that REFUSES rather than
+# truncates. No allocator, no libc, no float, no parsing: `#include "gfx.h"` is
+# the only include in all five TUs, which is why this compiles under
+# -ffreestanding at all. Cost is 1,428 lines and about 130 KB of .bss.
+#
+# The alternative was a coverage rasterizer inside fb.c, and that is precisely
+# the mistake this engine was built to end -- it deleted two rasterizers on the
+# way in (aui.c's and browser_paint.c's). A fifth one, in ring 0, judged by
+# nothing, to draw the same arcs the tested one already draws, is worse than the
+# staircase it replaces. See GFX_OBJ below for the ring-3 consumers, which are
+# unchanged: they link the same sources through UCFLAGS.
 #
 # c/lib/audio is excluded for exactly the reason c/lib/video is. An image is
 # decoded once, so the image codecs can sit behind SYS_IMG_DECODE; audio is
@@ -213,7 +233,7 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # sizes and raw file offsets. It allocates continuously with malloc/realloc/free
 # as it builds a sample index. Putting that in ring 0 under the BKL is not a
 # thing to do. See MED_OBJ in tests/demux.mk for who does link it.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/gfx/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
