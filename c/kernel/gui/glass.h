@@ -1,0 +1,39 @@
+/* The rim refraction profile of the Liquid Glass material.
+ *
+ * This is its own translation unit for one reason: it is the only part of
+ * fb.c that has a checkable right answer. Coverage has an analytic truth and
+ * c/lib/gfx is verified against it, but a refraction curve's "truth" IS the
+ * formula, so checking the formula against itself proves nothing. What CAN be
+ * checked is the fixed-point arithmetic -- that this integer table agrees with
+ * a double-precision evaluation of the same closed form. That check needs to
+ * compile on the host, and fb.c cannot (framebuffer, VMM, the whole kernel).
+ * Splitting the maths out costs one header and buys a real test.
+ *
+ * Derivation, provenance and the reason the old squared ramp was wrong are in
+ * glass.c -- read that before changing any constant here. */
+#ifndef LOGIT_GLASS_H
+#define LOGIT_GLASS_H
+
+/* Widest edge band the table is built for. fb_liquid_glass clamps E to the
+ * panel's half-extent, so a small panel uses fewer entries; nothing indexes
+ * past this. */
+#define GLASS_E_MAX 24
+
+/* Displacement in pixels for R, G, B at each inward distance 0..GLASS_E_MAX.
+ * Index 0 is the outermost pixel of the rim. Rebuilt only when (E, refract)
+ * changes, which in practice is once per panel geometry. */
+extern int glass_disp[3][GLASS_E_MAX + 1];
+
+void glass_build_lut(int E, int refract);
+
+/* a/(h+d) at incidence parameter u (16.16), refractive index en/ed, as 16.16.
+ * Exposed for the host test, which compares it against the same expression in
+ * double; nothing else should need it. */
+int glass_refract_ratio(int u, int en, int ed);
+
+/* Integer square root. It lives here rather than in fb.c because glass.c needs
+ * it and glass.c is the file that gets compiled on the host -- one copy, in
+ * the TU that is tested. */
+unsigned gl_isqrt(unsigned long v);
+
+#endif

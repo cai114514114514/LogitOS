@@ -4,7 +4,8 @@
 #include "vmm.h"
 #include "text.h"
 #include "virtio_gpu.h"
-#include "gfx.h"        /* Open Logit's mask cache -- see cover_round() below */
+#include "gfx.h"
+#include "glass.h"        /* Open Logit's mask cache -- see cover_round() below */
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
 struct mb2_tag { uint32_t type, size; };
@@ -692,15 +693,6 @@ void fb_blur_rect(int x, int y, int w, int h, int radius, int corner)
     }
 }
 
-/* integer square root */
-static unsigned isqrt_u(unsigned long v)
-{
-    unsigned long r = 0, b = 1UL << 30;
-    while (b > v) b >>= 2;
-    while (b) { if (v >= r + b) { v -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
-    return (unsigned)r;
-}
-
 /* "Liquid Glass": frost the live backdrop of a rounded-rect panel AND refract it
  * through the curved rim, with a specular rim highlight + body tint -- Apple's
  * Liquid Glass material, integer-only (modelled from a Python optics study,
@@ -761,6 +753,8 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
     int minside = w < h ? w : h;
     int E = 22; if (E > minside / 2) E = minside / 2; if (E < 4) E = 4;   /* thin panels -> smaller band */
     int REFRACT = 18; if (REFRACT > E) REFRACT = E;
+    glass_build_lut(E, REFRACT);           /* cached on (E, REFRACT); see above */
+    int ELUT = E > GLASS_E_MAX ? GLASS_E_MAX : E;
     const int SPEC = 150;
     int eband = E * 7 / 10; if (eband < 1) eband = 1;
     for (int j = 0; j < h; j++) {
@@ -772,7 +766,7 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
              * describe an edge that falls between two pixels, and this panel's
              * edge is the most looked-at curve on the machine. */
             int outd = (qxc || qyc)
-                     ? (int)isqrt_u(((unsigned long)qxc * qxc + (unsigned long)qyc * qyc) << 16)
+                     ? (int)gl_isqrt(((unsigned long)qxc * qxc + (unsigned long)qyc * qyc) << 16)
                      : 0;
             int ins = qx > qy ? qx : qy; if (ins > 0) ins = 0;
             int sdf = outd + (ins - radius) * 256;               /* 8.8, <0 inside */
@@ -790,14 +784,31 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
             if (qxc > 0 || qyc > 0) { gx = (px < 0 ? -1 : 1) * qxc; gy = (py < 0 ? -1 : 1) * qyc; }
             else if (qx > qy)       { gx = (px < 0 ? -1 : 1); gy = 0; }
             else                    { gx = 0; gy = (py < 0 ? -1 : 1); }
-            int nlen = (int)isqrt_u((unsigned long)gx * gx + (unsigned long)gy * gy); if (!nlen) nlen = 1;
+            int nlen = (int)gl_isqrt((unsigned long)gx * gx + (unsigned long)gy * gy); if (!nlen) nlen = 1;
             int nx = gx * 256 / nlen, ny = gy * 256 / nlen;       /* outward unit x256 */
             int t = depth * 256 / E; if (t > 256) t = 256; int omt = 256 - t;
-            int disp = REFRACT * omt * omt / 65536;               /* (1-t)^2 * REFRACT px */
-            int sxp = i - nx * disp / 256, syp = j - ny * disp / 256;
-            if (sxp < 0) sxp = 0; if (sxp >= w) sxp = w - 1;
-            if (syp < 0) syp = 0; if (syp >= h) syp = h - 1;
-            int r, gg, b; unpack(g[(long)syp * w + sxp], &r, &gg, &b);
+            /* One index instead of the old squared ramp, and three of them
+             * because R, G and B leave the rim at different angles. Outside the
+             * edge band all three are zero and the three samples collapse onto
+             * the same pixel, so the interior costs what it always did. */
+            int di = depth < ELUT ? depth : ELUT;
+            int r, gg, b;
+            {
+                int dr = glass_disp[0][di], dg = glass_disp[1][di], db = glass_disp[2][di];
+                int xr = i - nx * dr / 256, yr = j - ny * dr / 256;
+                int xg = i - nx * dg / 256, yg = j - ny * dg / 256;
+                int xb = i - nx * db / 256, yb = j - ny * db / 256;
+                if (xr < 0) xr = 0; if (xr >= w) xr = w - 1;
+                if (yr < 0) yr = 0; if (yr >= h) yr = h - 1;
+                if (xg < 0) xg = 0; if (xg >= w) xg = w - 1;
+                if (yg < 0) yg = 0; if (yg >= h) yg = h - 1;
+                if (xb < 0) xb = 0; if (xb >= w) xb = w - 1;
+                if (yb < 0) yb = 0; if (yb >= h) yb = h - 1;
+                int t1, t2;
+                unpack(g[(long)yr * w + xr], &r,  &t1, &t2);
+                unpack(g[(long)yg * w + xg], &t1, &gg, &t2);
+                unpack(g[(long)yb * w + xb], &t1, &t2, &b);
+            }
             r += (tr - r) * ta / 255; gg += (tg - gg) * ta / 255; b += (tb - b) * ta / 255;
             int band = 256 - depth * 256 / eband; if (band < 0) band = 0;
             int facing = (nx * (-154) + ny * (-205)) / 256; if (facing < 0) facing = 0; if (facing > 256) facing = 256;

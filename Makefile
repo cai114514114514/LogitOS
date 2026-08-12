@@ -3454,6 +3454,36 @@ test-aui-mask:
 	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c $(GFX_SRC) -lm
 	$(BUILD)/aui_mask_test
 
+# --- the glass rim's refraction table ----------------------------------------
+#
+# NOT the same kind of test as the one above, and the difference is the whole
+# reason this target exists separately. Coverage has an oracle that owes nothing
+# to the rasterizer; a refraction curve's only truth is its own formula, so the
+# checkable claim is narrower: that the integer table agrees with a double
+# evaluation of that formula to within a pixel, over every (E, REFRACT) the
+# panel can ask for. Fixed-point, not optics -- the test says so out loud.
+#
+# test-glass-negctl rebuilds with -DGLASS_NO_DISPERSION, which sets one index
+# for all three channels. Everything still refracts and still looks like glass;
+# what dies is the R/B separation, and exactly the assertions about it fail.
+# The target succeeds when the test fails.
+test-glass:
+	@mkdir -p $(BUILD)
+	$(CC) -O1 -g -Wall -Wextra -Ic/kernel/gui \
+	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/kernel/gui/glass.c -lm
+	$(BUILD)/glass_lut_test
+
+test-glass-negctl:
+	@mkdir -p $(BUILD)
+	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION -Ic/kernel/gui \
+	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/kernel/gui/glass.c -lm
+	@if $(BUILD)/glass_lut_negctl > $(BUILD)/glass_negctl.log 2>&1; then \
+	    echo "NEGATIVE CONTROL FAILED: the test passes without dispersion"; exit 1; \
+	else \
+	    echo "negative control ok -- without dispersion the test fails:"; \
+	    grep -c FAIL $(BUILD)/glass_negctl.log | sed 's/^/  failing assertions: /'; \
+	fi
+
 # --- the aui gallery is the toolkit's visual regression test -----------------
 #
 # A toolkit change is a VISUAL change, so it is asserted against pixels: the
