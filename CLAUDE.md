@@ -66,21 +66,41 @@ mkfs, mkfont, genroots, gen_compile_commands, gen_libcss, mkwallpaper).
 
 ```
 c/boot/                                        multiboot + long-mode entry (asm)
-c/kernel/{core,cpu,mm,sched,exec,gui,pci}/     kernel by subsystem
-c/drivers/{char,timer,block,net}/              device drivers
+c/kernel/{core,cpu,mm,sched,exec,gui,pci,audio}/  kernel by subsystem
+c/drivers/{char,timer,block,net,usb,virtio,audio,core}/  device drivers
 c/fs/                                          vfs + logitfs
 c/net/{link,ip,transport,core,dns,http,tls}/   network stack
-c/crypto/{hash,aead,pubkey,trust}/             from-scratch crypto
-c/lib/{image,text}/ + string.c                 shared libs (png/gif/ttf/utf8…)
+c/crypto/{hash,aead,kdf,pubkey,trust}/         from-scratch crypto
+c/lib/{image,text,gfx,audio,video,media}/ + string.c   shared libs, ring 3
 c/apps/                                        shared: logit.h clib.h crt0.asm crt0_cli.asm
-c/apps/gui/                                     windowed apps: clock textedit monitor terminal netapp widgets
+c/apps/gui/                                     windowed apps: clock textedit monitor terminal
+                                                 files preview studio gallery settings widgets greeter
                                                  + aui.{h,c} = immediate-mode widget toolkit (linked into each)
-c/apps/coreutils/                              sh + coreutils (ls cat echo wc head …)
+c/apps/coreutils/                              sh + coreutils (ls cat echo wc head login httpd …)
 c/apps/as/                                     AetherScript language (M20): /bin/as
 c/apps/browser/                                browser + render engine (dom, layout,
                                                  css_engine, browser_paint, js_dom) — also links QuickJS
 c/apps/libc/                                   mini-libc (string/stdio/malloc/setjmp…)
 ```
+
+**Two things in that tree are misplaced, and they are named here rather than
+moved because moving them touches a dozen build rules across the Makefile and
+five `tests/*.mk` fragments — a bigger edit than the mess is worth while other
+lines are live. Do not add to either.**
+
+- **`c/apps/{audio,media,net,video}/` are not applications.** Each holds one or
+  two `*check.c` programs — `audiocheck`, `demuxcheck`, `msecheck`, `h2check`,
+  `vidcheck`, `vidcheck265` — whose only callers are `tests/*.mk`. They are
+  **on-device test harnesses that happen to be built as `.aex`**, and they live
+  in `c/apps/` for the mechanical reason that `.aex` rules did. A new one
+  belongs beside them only until somebody moves the four directories under
+  `tests/`; a new *application* does not belong there at all.
+- **`c/lib/` is ring 3, not shared-with-the-kernel.** `c/lib/video` is filtered
+  out of `C_SRC` on purpose (see the H.264 note below), `c/lib/gfx` likewise.
+  The name suggests a kernel library and it is not one.
+
+`c/apps/libc/` is `src/` + `include/` and reports as empty to anything that
+looks only at `c/apps/libc/*.c`; it is 10.5k lines one level down.
 
 **File paths quoted in the Notes below are pre-reorg names** (e.g. `net/tcp.c` is
 now `c/net/transport/tcp.c`, `kernel/wm.c` → `c/kernel/gui/wm.c`); basename +

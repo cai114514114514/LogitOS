@@ -56,3 +56,16 @@ build-*/
 # specific, and Windows git cannot even hash them ("Function not implemented").
 tests/wpt-local/common
 tests/wpt-local/resources
+
+# Compiler dependency files. A stray one at the repo root -- literally named
+# `-.d` -- came from a probe build whose -o argument went missing, and `-MD`
+# writes one next to every object it is asked for. Ignored wherever they land.
+*.d
+
+# `nul` and `pl` are Windows accidents, not files. A shell script written for
+# POSIX and run under Git Bash turns `2>nul` into a file called `nul`; `pl` is
+# the same shape (a truncated `perl`/`pipe` redirect). Both showed up at the
+# root as zero-to-46-byte droppings and both are ignored so the next one does
+# not get committed by a broad `git add`.
+/nul
+/pl
