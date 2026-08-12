@@ -3751,3 +3751,15 @@ bench-aui: $(ISO) $(DISK)
 # CSSOM surface (`el.style.foo`) is defined in terms of that spelling and WPT
 # compares its bytes. See the fragment header.
 -include tests/cssparse.mk
+
+# Window management: `make test-window` / `-negctl` / `-apps`, `bench-window`.
+#
+# This line was MISSING, which is the hazard every fragment header in this file
+# warns about, landing on the file that does the warning: tests/window.mk was
+# committed and every other committed fragment is included, so an overwrite from
+# a concurrent line took just this one out. The three targets have been
+# unreachable by name since -- the driver still ran, but only if you knew to
+# type `python3 tests/qmp/qmp_window.py --iso ...`, which is exactly the way a
+# test stops being run. Found while using test-window to check that an enlarged
+# drop shadow did not leave ghosts.
+-include tests/window.mk

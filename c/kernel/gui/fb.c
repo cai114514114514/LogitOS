@@ -570,6 +570,98 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
     }
 }
 
+/* Blit one shadow corner tile, optionally mirrored, so ONE rasterized quadrant
+ * serves all four corners. */
+static void shadow_tile(int x, int y, int T, const unsigned char *m,
+                        int alpha, int flipx, int flipy)
+{
+    int i0, j0, i1, j1;
+    if (!clip_ij(x, y, T, T, &i0, &j0, &i1, &j1)) return;
+    for (int j = j0; j < j1; j++) {
+        int sj = flipy ? T - 1 - j : j;
+        for (int i = i0; i < i1; i++) {
+            int si = flipx ? T - 1 - i : i;
+            blend_cov(x + i, y + j, fb_rgb(0, 0, 0), m[(long)sj * T + si] * alpha / 255);
+        }
+    }
+}
+
+/* A drop shadow around a rounded rect: offset `dy` down, falling off over
+ * `blur`, peak opacity `alpha`.
+ *
+ * WHAT THIS REPLACES. wm.c drew window shadows as three nested constant-alpha
+ * rectangles -- thicknesses 8/4/2 at alphas 11/22/40 -- which is a shadow with
+ * TWO defects, and the second is the one you actually see. The alpha was a
+ * three-step staircase instead of a falloff, and the bands were SQUARE around a
+ * window whose corners are rounded, so each corner carried a dark nub of shadow
+ * sitting outside a corner that curves away from it. It was the band down the
+ * left of every window frame in every screenshot in this tree.
+ *
+ * WHY IT IS NOT A ROUNDED-RECT BLEND. The comment on the old code was right
+ * about the cost and is the constraint here: the window is opaque and overdraws
+ * its own interior, so blending a whole window-sized shape is ~30x wasted work
+ * on every repaint, and a big window lagged on each flush. So this paints the
+ * PERIMETER ONLY, in the shape aui_shadow_ex already uses in ring 3: four
+ * corner tiles from the engine's cache, four edge strips, and one flat band
+ * closing the sliver the offset opens under the caster.
+ *
+ * It is also CHEAPER than what it replaces. The old bands touched perimeter*14
+ * pixels (8+4+2). This touches perimeter*blur plus four (blur+radius)^2 tiles,
+ * and the tiles are cached across frames -- at blur=8 that is perimeter*8 plus
+ * about 1,300 pixels, against perimeter*14, on a 640x480 window 19k against
+ * 31k. Each edge strip is one constant-alpha fb_blend_rect per row, because
+ * along an edge the falloff depends only on distance.
+ *
+ * The corners and the edges MUST fall off by the same curve or the joins show
+ * as seams, which is exactly why gfx.h exposes gfx_shadow_falloff next to
+ * gfx_corner_shadow -- the tile calls it per pixel, the strips call it per row,
+ * and the sample points are matched (pixel centres, distance measured from the
+ * caster's edge). */
+void fb_shadow(int x, int y, int w, int h, int radius, int dy, int blur, uint8_t alpha)
+{
+    if (w <= 0 || h <= 0 || blur <= 0 || alpha == 0) return;
+    if (radius < 0) radius = 0;
+    if (radius > w / 2) radius = w / 2;
+    if (radius > h / 2) radius = h / 2;
+
+    /* Clamp the blur rather than drop the corners. gfx_mask_corner refuses a
+     * tile past GFX_MASK_MAX and returns NULL, and losing the corners is far
+     * more visible than a slightly tighter shadow -- it is the square-nub bug
+     * this function exists to remove, reintroduced at high display scales. */
+    if (blur + radius > GFX_MASK_MAX) blur = GFX_MASK_MAX - radius;
+    if (blur <= 0) return;
+
+    int sy = y + dy, T = blur + radius;
+    const unsigned char *m = gfx_mask_corner(GFX_MASK_SHADOW, T, T, radius);
+    if (m) {
+        shadow_tile(x - blur,        sy - blur,          T, m, alpha, 0, 0);
+        shadow_tile(x + w - radius,  sy - blur,          T, m, alpha, 1, 0);
+        shadow_tile(x - blur,        sy + h - radius,    T, m, alpha, 0, 1);
+        shadow_tile(x + w - radius,  sy + h - radius,    T, m, alpha, 1, 1);
+    }
+
+    /* The offset exposes a sliver of the shadow box's interior below the
+     * caster, and the slices above deliberately do not paint any interior.
+     * Left out, every window shows a dy-pixel gap of clean background between
+     * itself and its own shadow -- which is what a shadow never does. */
+    if (dy > 0 && w > 2 * radius)
+        fb_blend_rect(x + radius, y + h, w - 2 * radius, dy, 0, 0, 0, alpha);
+
+    long blur256 = (long)blur * 256;
+    for (int e = 0; e < blur; e++) {
+        int a = gfx_shadow_falloff((long)e * 256 + 128, blur256) * alpha / 255;
+        if (a <= 0) continue;
+        if (w > 2 * radius) {
+            fb_blend_rect(x + radius, sy - 1 - e, w - 2 * radius, 1, 0, 0, 0, (uint8_t)a);
+            fb_blend_rect(x + radius, sy + h + e, w - 2 * radius, 1, 0, 0, 0, (uint8_t)a);
+        }
+        if (h > 2 * radius) {
+            fb_blend_rect(x - 1 - e, sy + radius, 1, h - 2 * radius, 0, 0, 0, (uint8_t)a);
+            fb_blend_rect(x + w + e, sy + radius, 1, h - 2 * radius, 0, 0, 0, (uint8_t)a);
+        }
+    }
+}
+
 /* Linear interpolate two packed colors: a*(den-num)/den + b*num/den. */
 static uint32_t color_lerp(uint32_t a, uint32_t b, int num, int den)
 {
@@ -786,7 +878,6 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
             else                    { gx = 0; gy = (py < 0 ? -1 : 1); }
             int nlen = (int)gl_isqrt((unsigned long)gx * gx + (unsigned long)gy * gy); if (!nlen) nlen = 1;
             int nx = gx * 256 / nlen, ny = gy * 256 / nlen;       /* outward unit x256 */
-            int t = depth * 256 / E; if (t > 256) t = 256; int omt = 256 - t;
             /* One index instead of the old squared ramp, and three of them
              * because R, G and B leave the rim at different angles. Outside the
              * edge band all three are zero and the three samples collapse onto

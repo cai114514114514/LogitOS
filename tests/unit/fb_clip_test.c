@@ -171,6 +171,11 @@ static void d_blend_rect(void)  { fb_blend_rect(20, 15, 150, 100, 250, 40, 10, 1
 static void d_blend_rr(void)    { fb_blend_round_rect(20, 15, 150, 100, 24, 10, 240, 60, 91); }
 static void d_blur(void)        { fb_blur_rect(20, 15, 150, 100, 6, 20); }
 static void d_glass(void)       { fb_liquid_glass(20, 15, 150, 100, 24, 250, 250, 255, 110); }
+/* The drop shadow is the one primitive here that draws OUTSIDE the rect it is
+ * given -- blur px on every side plus dy below -- so it straddles the clip in a
+ * way none of the others do, and an off-by-one in the corner tiles or the edge
+ * strips lands beyond the clip rather than short of it. */
+static void d_shadow(void)      { fb_shadow(20, 15, 150, 100, 18, 8, 16, 90); }
 static void d_clear(void)       { fb_clear(fb_rgb(3, 5, 7)); }
 
 /* Negative offsets too: a window dragged off the left edge has negative
@@ -220,6 +225,7 @@ int main(void)
     run("fb_round_rect_vgrad",     d_rr_vgrad);
     run("fb_blend_rect",           d_blend_rect);
     run("fb_blend_round_rect",     d_blend_rr);
+    run("fb_shadow",               d_shadow);
     run("fb_blit_surface",         d_blit_surface);
     run("fb_blit_surface neg",     d_blit_surface_neg);
     run("fb_blit_surface_scaled",  d_blit_scaled);

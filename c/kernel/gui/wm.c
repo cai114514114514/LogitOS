@@ -413,16 +413,31 @@ static void dirty_rect(int x, int y, int w, int h)
  * caller in this one. */
 void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
 
-/* A window's real footprint: its rectangle PLUS the drop-shadow bands
- * draw_frame lays around it (the widest is S(8)). Damage that stops at the
- * window's own edge leaves the old shadow standing when the window moves --
- * a thin dark ghost of the previous position, which is exactly the kind of
+/* THE DROP SHADOW'S GEOMETRY, defined once.
+ *
+ * It is used in two places that must agree -- draw_frame paints it, win_box
+ * declares the damage it occupies -- and when they disagree the symptom is a
+ * dark ghost of the window's previous position. That is not a hypothetical:
+ * win_box used to hardcode S(8) because draw_frame's widest band happened to be
+ * S(8), and nothing connected the two numbers. Anyone enlarging the shadow
+ * would have shipped the ghost.
+ *
+ * An unfocused window sits lower: less offset, less blur, less opacity. That is
+ * the whole depth cue, and it is why focus is legible from across the room. */
+#define WSH_DY(f)    ((f) ? S(8)  : S(2))
+#define WSH_BLUR(f)  ((f) ? S(18) : S(9))
+#define WSH_ALPHA(f) ((f) ? (g_ui_dark ? 130 : 62) : (g_ui_dark ? 90 : 40))
+
+/* A window's real footprint: its rectangle PLUS the drop shadow, taken at the
+ * FOCUSED extent always -- a window that loses focus while moving must not
+ * declare the smaller box. Damage that stops at the window's own edge leaves
+ * the old shadow standing when the window moves, which is exactly the kind of
  * artefact that makes people distrust a partial-render path. */
 static void win_box(const struct win *w, struct drect *r)
 {
-    int t = S(8) + 1;
-    r->x0 = w->x - t;            r->y0 = w->y - t;
-    r->x1 = w->x + w->w + t;     r->y1 = w->y + w->h + t;
+    int b = WSH_BLUR(1) + 1, dy = WSH_DY(1);
+    r->x0 = w->x - b;            r->y0 = w->y - b;
+    r->x1 = w->x + w->w + b;     r->y1 = w->y + w->h + b + dy;
 }
 /* THE NEGATIVE CONTROL. Set to 1 -- tests/qmp/qmp_damage.py --negative flips
  * this exact line in a throwaway copy of the tree -- a window reports only its
@@ -2000,12 +2015,19 @@ static void dock_geom(int *x0, int *y0, int *dw, int *dh)
  * is the rectangle a damage rectangle may not cut in half (see dmg_expand); the
  * rest of the dock's footprint is ordinary read-modify-write drawing that clips
  * exactly and needs no such promise. */
+/* Same single-definition rule as WSH_* above: the dock's shadow is painted in
+ * draw_dock and its extent is declared here, and if the two disagree a damage
+ * rectangle clips the shadow in half. */
+#define DOCKSH_DY   S(6)
+#define DOCKSH_BLUR S(16)
+
 static void dock_panel_box(struct drect *r)
 {
     int x0, y0, dw, dh;
     dock_geom(&x0, &y0, &dw, &dh);
-    r->x0 = x0 - S(2);       r->y0 = y0;
-    r->x1 = x0 + dw + S(2);  r->y1 = y0 + dh + S(10);   /* + the drop shadow below */
+    int b = DOCKSH_BLUR + 1;
+    r->x0 = x0 - b;          r->y0 = y0 - b;
+    r->x1 = x0 + dw + b;     r->y1 = y0 + dh + b + DOCKSH_DY;   /* + the drop shadow */
 }
 
 /* The dock's whole footprint, for a given hovered icon (-1 = none): the panel,
@@ -2097,7 +2119,10 @@ static void draw_dock(void)
     int dw, dh;
     dock_isz = S(DOCK_ISZ_PT); dock_gap = S(DOCK_GAP_PT);   /* device px, for the click path */
     dock_geom(&dock_x0, &dock_y0, &dw, &dh);
-    fb_blend_round_rect(dock_x0 - S(1), dock_y0 + S(7), dw + S(2), dh, S(28), 0, 0, 0, 50);   /* soft drop shadow */
+    /* Called "soft drop shadow" and it was neither: a solid black rounded slab
+     * at a flat alpha 50, offset down S(7), with no falloff anywhere -- a hard
+     * edge all the way round, under a panel translucent enough to show it. */
+    fb_shadow(dock_x0, dock_y0, dw, dh, S(28), DOCKSH_DY, DOCKSH_BLUR, 56);
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
     if (g_ui_dark) fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 26, 26, 34, 104);
     else           fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 255, 255, 255, 44);
@@ -2148,18 +2173,10 @@ static void draw_clock(void)
  * at boot below; the old in-kernel WK_FINDER window was folded into it. */
 
 /* ---------- window frame + compositing ---------- */
-/* A soft drop shadow drawn as thin translucent bands hugging the window edges.
- * The window is opaque and overdraws its interior, so blending the *whole*
- * window-sized rounded rect (as fb_blend_round_rect does) was almost all wasted
- * work -- and it ran on every repaint, so a big window like the browser lagged
- * badly on each flush. Bands touch only ~perimeter*thickness pixels (~30x less). */
-static void shadow_band(int x, int y, int w, int h, int t, int a)
-{
-    fb_blend_rect(x - t, y - t, w + 2*t, t, 0, 0, 0, a);   /* top    */
-    fb_blend_rect(x - t, y + h, w + 2*t, t, 0, 0, 0, a);   /* bottom */
-    fb_blend_rect(x - t, y, t, h, 0, 0, 0, a);             /* left   */
-    fb_blend_rect(x + w, y, t, h, 0, 0, 0, a);             /* right  */
-}
+/* The three nested constant-alpha bands that used to be the window shadow are
+ * gone; fb_shadow() is the one shadow in the system now, and it keeps the
+ * perimeter-only property those bands existed for -- see the comment on it in
+ * fb.c, which carries their reasoning forward. */
 
 /* The window body (rounded bg + gradient titlebar + traffic lights + title) drawn
  * at an explicit rect, so it can be rendered into an off-screen surface at origin
@@ -2191,9 +2208,7 @@ static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int
 static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    shadow_band(x, y, ww, wh, S(8), focused ? 11 : 7);      /* faint outer fringe */
-    shadow_band(x, y, ww, wh, S(4), focused ? 22 : 13);     /* mid */
-    shadow_band(x, y, ww, wh, S(2), focused ? 40 : 24);     /* dark edge */
+    fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
     if (g_ui_dark) fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 30, 30, 40, a);
     else           fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 250, 250, 255, a);

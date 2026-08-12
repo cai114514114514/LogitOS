@@ -49,6 +49,7 @@ Usage:
                             [--skip-unit] [--negative]
 """
 
+import glob
 import os
 import shutil
 import subprocess
@@ -88,16 +89,27 @@ def diff_pixels(a, b, skip_top):
 
 
 def run_unit_test():
-    """The host-side primitive test. No make target: it is one cc line."""
+    """The host-side primitive test. No make target: it is one cc line.
+
+    fb.c gained two dependencies since this was written and BOTH broke this
+    silently, because "one cc line" means nothing recompiles it but this driver:
+    it now includes gfx.h (the corner coverage its rounded shapes are made of)
+    and glass.h (the rim refraction table). A missing header here fails the
+    whole section with a compiler error while every on-machine check still
+    passes, which is exactly what it did.
+    """
     out = os.path.join(tempfile.mkdtemp(prefix="logit-fbclip-"), "fb_clip_test")
     cc = subprocess.run(
         ["cc", "-O1", "-g", "-Wall", "-Wextra", "-o", out,
          os.path.join(ROOT, "tests/unit/fb_clip_test.c"),
          os.path.join(ROOT, "c/kernel/gui/fb.c"),
-         "-I" + os.path.join(ROOT, "c/kernel/gui"),
-         "-I" + os.path.join(ROOT, "c/drivers/virtio"),
-         "-I" + os.path.join(ROOT, "c/kernel/mm"),
-         "-I" + os.path.join(ROOT, "c/lib/text")],
+         os.path.join(ROOT, "c/kernel/gui/glass.c")]
+        + sorted(glob.glob(os.path.join(ROOT, "c/lib/gfx/*.c")))
+        + ["-I" + os.path.join(ROOT, "c/kernel/gui"),
+           "-I" + os.path.join(ROOT, "c/lib/gfx"),
+           "-I" + os.path.join(ROOT, "c/drivers/virtio"),
+           "-I" + os.path.join(ROOT, "c/kernel/mm"),
+           "-I" + os.path.join(ROOT, "c/lib/text")],
         capture_output=True, text=True)
     if cc.returncode != 0:
         print(cc.stderr[-2000:])

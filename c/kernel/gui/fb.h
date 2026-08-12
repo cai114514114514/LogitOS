@@ -131,6 +131,13 @@ void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, 
 void fb_blend_round_rect(int x, int y, int w, int h, int radius,
                          uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 
+/* Drop shadow for a rounded rect: offset `dy` down, quadratic falloff over
+ * `blur`, peak opacity `alpha`. Paints the PERIMETER ONLY -- four cached corner
+ * tiles, four edge strips, and the sliver the offset opens under the caster --
+ * because the caster is opaque and overdraws its own interior. Same falloff
+ * curve as aui_shadow_ex in ring 3, from the same gfx_shadow_falloff. */
+void fb_shadow(int x, int y, int w, int h, int radius, int dy, int blur, uint8_t alpha);
+
 /* Real-time separable box blur of a rect on the current target (frost the live
  * backdrop behind a translucent panel). O(w*h), radius-independent. corner > 0
  * rounds the written region so a rounded panel leaves no blurred corner nubs. */
