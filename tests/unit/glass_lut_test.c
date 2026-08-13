@@ -35,6 +35,15 @@ static void ck(int cond, const char *what)
 
 /* a/(h+d) at incidence parameter u, refractive index eta -- the same expression
  * glass_refract_ratio() implements, in double. */
+/* Schlick, in double: R0 + (1-R0)(1-cos)^5 with R0 = ((eta-1)/(eta+1))^2 at
+ * eta = 1.5, i.e. 0.04. The same expression glass_schlick() implements. */
+static double ref_fresnel(double u)
+{
+    double c = sqrt(1.0 - u * u);
+    double m = 1.0 - c;
+    return 0.04 + 0.96 * m * m * m * m * m;
+}
+
 static double ref_ratio(double u, double eta)
 {
     if (u <= 0.0) return 0.0;
@@ -122,6 +131,49 @@ int main(void)
                 }
             }
         }
+    }
+
+    /* --- the reflectance table -------------------------------------------
+     *
+     * Same claim as above and no larger: the integer port agrees with the same
+     * formula in double. Plus one structural assertion the formula does not
+     * give away -- that the falloff is ABRUPT. That is the whole reason this
+     * exists: a hairline reads as an edge and a gradient does not, and a
+     * plausible-looking linear ramp from 255 to 10 across the band would pass
+     * every other check here while putting the material back where it was. */
+    for (int E = 1; E <= GLASS_E_MAX; E++) {
+        glass_build_lut(E, 1);
+        int prev = 256;
+        for (int s = 0; s <= E; s++) {
+            double u = (double)(E - s) / E;
+            double want = ref_fresnel(u) * 255.0;
+            int got = glass_fres[s];
+            char m[128];
+            snprintf(m, sizeof m, "E=%d fresnel s=%d: got %d, double says %.3f", E, s, got, want);
+            ck(fabs(got - want) <= 1.0, m);
+            snprintf(m, sizeof m, "E=%d fresnel: rises inward at s=%d (%d > %d)", E, s, got, prev);
+            ck(got <= prev, m);
+            prev = got;
+        }
+        /* Flat glass past the band still reflects R0 -- zeroing there would put
+         * a seam at s == E, on every panel, at a fixed distance from the edge. */
+        for (int s = E + 1; s <= GLASS_E_MAX; s++) {
+            char m[96];
+            snprintf(m, sizeof m, "E=%d fresnel s=%d: %d past the band, want %d",
+                     E, s, glass_fres[s], glass_fres[E]);
+            ck(glass_fres[s] == glass_fres[E], m);
+        }
+    }
+    glass_build_lut(22, 18);
+    {
+        char m[128];
+        snprintf(m, sizeof m, "E=22 fresnel: %d -> %d from the rim to one pixel in -- not a hairline",
+                 glass_fres[0], glass_fres[1]);
+        ck(glass_fres[0] - glass_fres[1] >= 150, m);
+        ck(glass_fres[0] >= 250, "E=22 fresnel: the outermost pixel is not a mirror");
+        printf("  fresnel at E=22: %d %d %d %d %d ... interior %d\n",
+               glass_fres[0], glass_fres[1], glass_fres[2], glass_fres[3],
+               glass_fres[4], glass_fres[GLASS_E_MAX]);
     }
 
     /* Dispersion, as an ordering rather than a magnitude: blue must never bend

@@ -64,6 +64,7 @@
 #include "glass.h"
 
 int glass_disp[3][GLASS_E_MAX + 1];
+unsigned char glass_fres[GLASS_E_MAX + 1];
 
 static int glass_lut_e = -1;                       /* the E these were built for */
 static int glass_lut_r = -1;                       /* ...and the REFRACT */
@@ -98,6 +99,63 @@ int glass_refract_ratio(int u, int en, int ed)
     if (den <= 0) return 0;
     if (num <= 0) return 0;
     return (int)((num << 16) / den);
+}
+
+/* ---- the rim's REFLECTANCE, which is the part that was missing -------------
+ *
+ * The refraction curve above decides where the rim looks; this decides how much
+ * of the rim is looking at all. They are the two halves of the same interface
+ * and only one of them was implemented, which is why the panel had no edge.
+ *
+ * THE SYMPTOM, stated first because it is what you actually see. The dock's
+ * border was a 20-pixel soft gradient with NO LINE IN IT. A real piece of glass
+ * reads as a solid object with thickness because its outermost pixel is a
+ * bright hairline; ours dissolved into the wallpaper. The existing specular was
+ * not that line -- it is a wide wash spread over eband = 15 px, which is a soft
+ * vignette by construction, and no amount of raising SPEC turns a 15-pixel
+ * gradient into a 1-pixel edge. It also lit only the side facing the light, so
+ * three quarters of the outline had nothing at all.
+ *
+ * WHY IT IS A HAIRLINE AND NOT A TASTE DECISION. Reflectance rises toward
+ * grazing incidence and at exactly grazing it is 1: the outermost pixel of a
+ * bevel is a MIRROR. Schlick's approximation, R = R0 + (1-R0)(1-cos)^5 with
+ * R0 = ((eta-1)/(eta+1))^2 = 0.04, is the standard cheap form of that, and the
+ * fifth power is why the falloff is so abrupt. At E = 22 the table reads
+ *
+ *      s  =    0     1     2     3     4  ...  interior
+ *      R  =  255    52    27    18    14  ...     10
+ *
+ * -- one blazing pixel, two dim ones, then a 4% sheen across the whole face,
+ * which is also correct: flat glass viewed head-on reflects four percent, and
+ * that faint lift over the entire panel is a second cue we did not have.
+ *
+ * WHAT THE RIM MIRRORS is faked, and this is the one place here that is not
+ * physics. Reflecting the true surroundings needs a second sample of what is
+ * OUTSIDE the panel, and this function only ever copied the panel's own
+ * rectangle -- so the environment is a fixed vertical gradient, bright toward
+ * the same up-left light the specular already assumes, and never black:
+ * ambient light has no zero, and a rim that reflects black at the bottom reads
+ * as a dark outline rather than glass. Written down as the cheat it is.
+ *
+ * The lerp toward that environment is energy-conserving by construction --
+ * what is reflected is not transmitted -- so the darker line just inside the
+ * bright one comes out for free, and that pair IS the thickness cue. */
+int glass_schlick(int u)
+{
+    long long u2 = ((long long)u * u) >> 16;
+    if (u2 > 65536) u2 = 65536;
+    long long c = sqrt16((unsigned long)(65536 - u2));       /* cos theta  */
+    long long m = 65536 - c;
+    if (m < 0) m = 0;
+    /* Rounded, not truncated, at every step: a fifth power truncates four
+     * times and the errors all go the same way, which put one entry of the
+     * table a whole level below the double reference. */
+    long long m2 = (m * m + 32768) >> 16;
+    long long m4 = (m2 * m2 + 32768) >> 16;
+    long long m5 = (m4 * m + 32768) >> 16;                   /* (1-cos)^5  */
+    long long R = 2621 + (((65536 - 2621) * m5 + 32768) >> 16);   /* R0 = 0.04 */
+    if (R > 65536) R = 65536;
+    return (int)((R * 255 + 32768) >> 16);
 }
 
 void glass_build_lut(int E, int refract)
@@ -135,6 +193,13 @@ void glass_build_lut(int E, int refract)
         }
         for (int s = E + 1; s <= GLASS_E_MAX; s++) glass_disp[c][s] = 0;
     }
+
+    for (int s = 0; s <= E; s++)
+        glass_fres[s] = (unsigned char)glass_schlick((E - s) * 65536 / E);
+    /* Past the band the surface is flat, and flat glass still reflects R0.
+     * Zeroing here would put a seam at s == E. */
+    for (int s = E + 1; s <= GLASS_E_MAX; s++) glass_fres[s] = glass_fres[E];
+
     glass_lut_e = E;
     glass_lut_r = refract;
 }

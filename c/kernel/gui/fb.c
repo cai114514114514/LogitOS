@@ -847,7 +847,7 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
     int REFRACT = 18; if (REFRACT > E) REFRACT = E;
     glass_build_lut(E, REFRACT);           /* cached on (E, REFRACT); see above */
     int ELUT = E > GLASS_E_MAX ? GLASS_E_MAX : E;
-    const int SPEC = 150;
+    const int SPEC = 64;                   /* was 150, before the rim existed */
     int eband = E * 7 / 10; if (eband < 1) eband = 1;
     for (int j = 0; j < h; j++) {
         for (int i = 0; i < w; i++) {
@@ -903,6 +903,34 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
             r += (tr - r) * ta / 255; gg += (tg - gg) * ta / 255; b += (tb - b) * ta / 255;
             int band = 256 - depth * 256 / eband; if (band < 0) band = 0;
             int facing = (nx * (-154) + ny * (-205)) / 256; if (facing < 0) facing = 0; if (facing > 256) facing = 256;
+            /* THE EDGE. Reflectance goes to 1 at grazing incidence, so the
+             * outermost pixel of the bevel is a mirror and the one after it
+             * is not -- a hairline, all the way round, which is the cue that
+             * makes this read as an object with thickness instead of a soft
+             * patch. The lerp is toward the environment rather than toward
+             * white, and it REPLACES what it reflects, so the slightly darker
+             * pixel just inside the bright one is the same computation.
+             * See glass.c for the table and for which part of this is faked. */
+            /* The environment is directional only where the surface TILTS. The
+             * flat middle of the panel faces the viewer, so it mirrors the same
+             * thing everywhere, and it must not consult `facing` -- because in
+             * the flat middle the normal is not measured, it is the guess two
+             * branches up (`qx > qy ? horizontal : vertical`), and that guess
+             * FLIPS across the 45-degree diagonal. Every earlier user of the
+             * normal was multiplied by `band`, which is zero past 15 px, so the
+             * discontinuity had never reached a pixel. R0 reflectance reaches
+             * every pixel, and the first version of this line put a visible
+             * diagonal seam down the middle of Finder's sidebar: 4% of an 87
+             * level swing is 3 levels, and 3 levels on flat white is a line. */
+            int tilt = depth < E ? (E - depth) * 256 / E : 0;
+            int env = 176 + (facing - 128) * tilt / 256;
+            if (env < 96)  env = 96;
+            if (env > 250) env = 250;
+            int fr = glass_fres[di];
+            r += (env - r) * fr / 255; gg += (env - gg) * fr / 255; b += (env - b) * fr / 255;
+            /* The wide wash stays, at less than half its old strength: it is
+             * the body sheen, not the edge. Turning it up was the thing that
+             * could not work -- a 15-pixel gradient is not a 1-pixel line. */
             int hi = facing * band / 256; hi = hi * hi / 256; hi = hi * SPEC / 256;
             r += (255 - r) * hi / 256; gg += (255 - gg) * hi / 256; b += (255 - b) * hi / 256;
             int op = (nx * 154 + ny * 205) / 256; if (op < 0) op = 0;

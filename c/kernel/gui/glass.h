@@ -24,7 +24,17 @@
  * changes, which in practice is once per panel geometry. */
 extern int glass_disp[3][GLASS_E_MAX + 1];
 
+/* Fresnel reflectance, 0..255, at each inward distance. Built by the same call
+ * and cached on the same key, because it is a function of the same u. It is
+ * what makes the panel have an EDGE rather than fading into the wallpaper --
+ * see the note above glass_schlick in glass.c. */
+extern unsigned char glass_fres[GLASS_E_MAX + 1];
+
 void glass_build_lut(int E, int refract);
+
+/* Schlick's approximation at incidence parameter u (16.16), as 0..255.
+ * Exposed for the host test alongside glass_refract_ratio. */
+int glass_schlick(int u);
 
 /* a/(h+d) at incidence parameter u (16.16), refractive index en/ed, as 16.16.
  * Exposed for the host test, which compares it against the same expression in
