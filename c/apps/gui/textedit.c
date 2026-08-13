@@ -1,51 +1,112 @@
+/* TextEdit -- a small text editor.
+ *
+ * WHAT WAS WRONG WITH IT, and none of it was the editing. The status bar was
+ * `gui_rect(..., rgb(236, 238, 242))` with a `rgb(214, 216, 222)` rule over it:
+ * two light-mode colours written into the source, so in dark mode this window
+ * had a white strip glued to the bottom of a near-black page. The window size
+ * was three constants that had to agree, the monospace advance was assumed to
+ * be 8 pixels regardless of the font or the backing scale, and text past the
+ * bottom edge was drawn off the window rather than scrolled to -- so a file
+ * longer than eighteen lines could be typed into and never seen.
+ *
+ * Everything visible now comes from the toolkit's tokens and from
+ * aui_width()/aui_height() on the frame it is drawn, and the advance is
+ * measured from the font actually loaded.
+ *
+ * STILL DELIBERATELY SMALL: one buffer, append-and-backspace, no selection, no
+ * undo, no mouse caret placement. This is the app Finder opens a .txt with, and
+ * growing it into an editor is a different piece of work from making it stop
+ * looking wrong. */
 #include "aui.h"
 
-/* A tiny text editor (aui theme). Launched by clicking a .txt in Finder (file
- * association) or from the Dock; reads the file via a syscall, lets you type, and
- * saves back to disk with Ctrl+S. The text area is a custom monospace canvas; the
- * background + status bar use the aui palette so it matches the rest of the desk. */
-
-#define MAXT 4000
-#define WINW 460
-#define WINH 300
+#define MAXT   8000
 #define CTRL_S 0x13
 
 static char text[MAXT + 1];
 static int  tlen;
 static char fname[64];
 static int  saved;          /* 1 just after a successful save, 0 once edited */
+static int  scroll;         /* first visible line */
 
-static void redraw(void)
+/* Where the caret sits, and how many lines the text occupies, under the current
+ * wrap width. Both come from one walk because they are the same walk -- and the
+ * caret's line is what the scroll has to chase. */
+static void measure(int cols, int *nlines, int *cl, int *cc)
 {
-    gui_clear(AUI_BG);
-    int cols = (WINW - 20) / 8;
-    char line[128];
-    int ll = 0, cy = 8, col = 0;
-
+    int line = 0, col = 0;
     for (int i = 0; i < tlen; i++) {
-        char c = text[i];
-        if (c == '\n' || col >= cols) {
-            line[ll] = 0;
-            if (ll) gui_text(10, cy, AUI_TEXT, line);
-            ll = 0; col = 0; cy += 16;
-            if (c == '\n') continue;
-        }
-        line[ll++] = c; col++;
+        if (text[i] == '\n')      { line++; col = 0; }
+        else if (col + 1 >= cols) { line++; col = 1; }
+        else                      { col++; }
     }
-    line[ll] = 0;
-    if (ll) gui_text(10, cy, AUI_TEXT, line);
-    gui_rect(10 + col * 8, cy, 8, 16, AUI_ACCENT);   /* caret */
+    *nlines = line + 1; *cl = line; *cc = col;
+}
 
-    /* status bar */
-    gui_rect(0, WINH - 22, WINW, 22, rgb(236, 238, 242));
-    gui_rect(0, WINH - 22, WINW, 1, rgb(214, 216, 222));
-    if (saved)
-        aui_label(10, WINH - 19, "saved", rgb(40, 160, 80));
-    else {
-        aui_label(10, WINH - 19, "Ctrl+S to save:", AUI_MUTED);
-        aui_label(132, WINH - 19, fname, AUI_TEXT);
+static void draw(void)
+{
+    int W = aui_width(), H = aui_height();
+    aui_begin(AUI_BG);
+
+    int px = AUI_FS_BODY;
+    int adv = text_measure_px("M", 1, px, 1);
+    if (adv < 1) adv = 1;
+    int lh = px + AUI_SP(1);
+    int pad = AUI_SP(3);
+    int bar = AUI_H_CTL;
+
+    int viewh = H - bar - 2 * pad;
+    int rows  = viewh / lh; if (rows < 1) rows = 1;
+    int cols  = (W - 2 * pad) / adv; if (cols < 4) cols = 4;
+
+    int nlines, cl, cc;
+    measure(cols, &nlines, &cl, &cc);
+    if (cl < scroll)            scroll = cl;
+    if (cl >= scroll + rows)    scroll = cl - rows + 1;
+    if (scroll > nlines - 1)    scroll = nlines - 1;
+    if (scroll < 0)             scroll = 0;
+
+    /* The page. A surface rather than the window background, so the text sits
+     * on something with an edge -- the same relationship every other window in
+     * the system has between its chrome and its content. */
+    aui_round(pad - AUI_SP(1), pad - AUI_SP(1),
+              W - 2 * (pad - AUI_SP(1)), viewh + AUI_SP(2), AUI_R_MD, AUI_SURFACE);
+
+    int line = 0, col = 0, start = 0, y = pad;
+    for (int i = 0; i <= tlen; i++) {
+        int brk = (i == tlen) || text[i] == '\n' || col + 1 >= cols;
+        if (brk) {
+            int len = i - start;
+            if (i < tlen && text[i] != '\n') len++;      /* the wrapped char stays on this line */
+            if (line >= scroll && line < scroll + rows && len > 0)
+                gui_text_run(pad, y, px, 1, AUI_TEXT, text + start, len);
+            if (line >= scroll) y += lh;
+            line++;
+            start = i + ((i < tlen && text[i] == '\n') ? 1 : 0);
+            if (i < tlen && text[i] != '\n') { start = i + 1; col = 1; } else col = 0;
+            if (line >= scroll + rows) break;
+        } else col++;
     }
-    gui_flush();
+
+    if (cl >= scroll && cl < scroll + rows)
+        aui_fill(pad + cc * adv, pad + (cl - scroll) * lh, 2, px, AUI_ACCENT);
+
+    /* Status bar, in the toolkit's colours, so it is a strip of chrome in both
+     * themes instead of a light-mode rectangle. */
+    int by = H - bar;
+    aui_fill(0, by, W, bar, AUI_SURFACE_2);
+    aui_hairline(0, by, W);
+    int ty = by + (bar - AUI_FS_LABEL) / 2;
+    aui_text_ellipsis(AUI_SP(3), ty, W - AUI_SP(30), fname, AUI_TEXT, AUI_FS_LABEL);
+
+    const char *hint = saved ? "saved" : "Ctrl+S";
+    int hw = text_measure_px(hint, saved ? 5 : 6, AUI_FS_LABEL, 0);
+    aui_text_sz(W - AUI_SP(3) - hw, ty, hint, saved ? AUI_SUCCESS : AUI_MUTED, AUI_FS_LABEL);
+    if (!saved) {
+        int d = AUI_SP(2);
+        aui_round(W - AUI_SP(4) - hw - d, by + (bar - d) / 2, d, d, d / 2, AUI_WARNING);
+    }
+
+    aui_end();
 }
 
 void app_main(void)
@@ -55,25 +116,28 @@ void app_main(void)
         const char *d = "untitled.txt";
         int i = 0; while (d[i]) { fname[i] = d[i]; i++; } fname[i] = 0;
     }
-    gui_create(fname, WINW, WINH);
+    int w = 520, h = 360;
+    gui_create(fname, w, h);
+    aui_set_size(w, h);
 
     int r = read_file(fname, text, MAXT);
     if (r > 0) { tlen = r > MAXT ? MAXT : r; text[tlen] = 0; }
     saved = 1;
-    redraw();
+    draw();
 
     for (;;) {
         struct logit_event e;
         int changed = 0;
         while (poll_event(&e)) {
-            if (e.type == EV_CLOSE)
-                app_exit(0);
+            if (e.type == EV_CLOSE) app_exit(0);
+            if (e.type == EV_RESIZE) { aui_set_size(e.a, e.b); changed = 1; }
+            if (e.type == EV_THEME)  changed = 1;
+            if (e.type == EV_WHEEL)  { scroll += e.wheel; if (scroll < 0) scroll = 0; changed = 1; }
             if (e.type == EV_KEY) {
-                if (e.a > 0xFF) continue;              /* arrow/Home/End etc: navigation keys, not text */
+                if (e.a > 0xFF) continue;      /* arrows/Home/End: navigation, not text */
                 char c = (char)e.a;
                 if (c == CTRL_S) {
-                    if (write_file(fname, text, tlen) >= 0)
-                        saved = 1;
+                    if (write_file(fname, text, tlen) >= 0) saved = 1;
                     changed = 1;
                 } else if (c == '\b') {
                     if (tlen > 0) text[--tlen] = 0;
@@ -84,8 +148,7 @@ void app_main(void)
                 }
             }
         }
-        if (changed)
-            redraw();
+        if (changed) draw();
         sys_yield();
     }
 }

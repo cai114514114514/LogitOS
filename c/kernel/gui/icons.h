@@ -5,7 +5,9 @@
 /* Procedural monochrome vector icons (M26), drawn via the vg rasterizer. */
 enum {
     ICON_FOLDER, ICON_DOC, ICON_TERMINAL, ICON_GRID, ICON_GLOBE,
-    ICON_CODE, ICON_CHART, ICON_CLOCK, ICON_IMAGE, ICON_COUNT
+    ICON_CODE, ICON_CHART, ICON_CLOCK, ICON_IMAGE,
+    ICON_PHOTOS, ICON_SLIDERS,
+    ICON_COUNT
 };
 
 /* Draw icon `id` at (x,y), `px` pixels square, in `color`, into the current fb

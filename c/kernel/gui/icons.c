@@ -65,6 +65,41 @@ static const struct vg_cmd ic_image[] = {        /* frame + sun + mountain */
     MV(18,74), LN(44,48), LN(60,64), LN(72,52), LN(82,74), CL,      /* mountain */
 };
 
+/* Gallery. NOT another picture frame: ICON_IMAGE is already a frame with a sun
+ * and a mountain in it, and two frames in the same dock differing only in what
+ * is inside them do not tell apart at 31 px -- which is the size these are
+ * actually drawn at. A six-petal pinwheel is the one shape in this set with no
+ * straight edges, so it reads by silhouette alone.
+ *
+ * Each petal is base -> out along one side -> tip -> back along the other, all
+ * six wound the same way, so nonzero unions them and the overlap at the centre
+ * costs nothing. Tips at radius 40, control points offset 20 perpendicular. */
+static const struct vg_cmd ic_photos[] = {
+    MV(50,50), CB(50,70, 90,70, 90,50), CB(90,30, 50,30, 50,50), CL,   /*   0 deg */
+    MV(50,50), CB(33,60, 53,95, 70,85), CB(87,75, 67,40, 50,50), CL,   /*  60     */
+    MV(50,50), CB(33,40, 13,75, 30,85), CB(47,95, 67,60, 50,50), CL,   /* 120     */
+    MV(50,50), CB(50,30, 10,30, 10,50), CB(10,70, 50,70, 50,50), CL,   /* 180     */
+    MV(50,50), CB(67,40, 47, 5, 30,15), CB(13,25, 33,60, 50,50), CL,   /* 240     */
+    MV(50,50), CB(67,60, 87,25, 70,15), CB(53, 5, 33,40, 50,50), CL,   /* 300     */
+};
+
+/* Settings. Three sliders at three different positions -- a gear would have
+ * been the reflex, but a gear at 31 px with this rasterizer is a blurred cog
+ * whose teeth alias into a ring, and it says "machinery" where this window
+ * actually says "the values you chose". The knobs are circles unioned onto the
+ * tracks; same winding, so no hole. */
+static const struct vg_cmd ic_sliders[] = {
+    MV(12,23), LN(88,23), LN(88,29), LN(12,29), CL,                    /* track 1 */
+    MV(75,26), CB(75,31,71,35,66,35), CB(61,35,57,31,57,26),
+               CB(57,21,61,17,66,17), CB(71,17,75,21,75,26), CL,       /* knob  1 */
+    MV(12,47), LN(88,47), LN(88,53), LN(12,53), CL,                    /* track 2 */
+    MV(43,50), CB(43,55,39,59,34,59), CB(29,59,25,55,25,50),
+               CB(25,45,29,41,34,41), CB(39,41,43,45,43,50), CL,       /* knob  2 */
+    MV(12,71), LN(88,71), LN(88,77), LN(12,77), CL,                    /* track 3 */
+    MV(67,74), CB(67,79,63,83,58,83), CB(53,83,49,79,49,74),
+               CB(49,69,53,65,58,65), CB(63,65,67,69,67,74), CL,       /* knob  3 */
+};
+
 static const struct { const struct vg_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_FOLDER]   = { ic_folder,   sizeof ic_folder   / sizeof(struct vg_cmd) },
     [ICON_DOC]      = { ic_doc,      sizeof ic_doc      / sizeof(struct vg_cmd) },
@@ -75,6 +110,8 @@ static const struct { const struct vg_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_CHART]    = { ic_chart,    sizeof ic_chart    / sizeof(struct vg_cmd) },
     [ICON_CLOCK]    = { ic_clock,    sizeof ic_clock    / sizeof(struct vg_cmd) },
     [ICON_IMAGE]    = { ic_image,    sizeof ic_image    / sizeof(struct vg_cmd) },
+    [ICON_PHOTOS]   = { ic_photos,   sizeof ic_photos   / sizeof(struct vg_cmd) },
+    [ICON_SLIDERS]  = { ic_sliders,  sizeof ic_sliders  / sizeof(struct vg_cmd) },
 };
 
 static struct { int px, w, h; uint8_t *cov; } cache[ICON_COUNT];
@@ -105,5 +142,11 @@ int icon_for_app(const char *name, const char *ext)
     if (seq(name, "preview.aex"))  return ICON_IMAGE;
     if (seq(name, "studio.aex"))   return ICON_CODE;
     if (seq(name, "browser.aex"))  return ICON_GLOBE;
+    if (seq(name, "gallery.aex"))  return ICON_PHOTOS;
+    if (seq(name, "settings.aex")) return ICON_SLIDERS;
+    /* The letter fallback in wm.c's dock_tile is now unreachable for anything
+     * shipped on the disk, and it stays anyway: it is what a THIRD-PARTY .aex
+     * gets, and "one letter on a coloured tile" is a better answer for an app
+     * this kernel has never heard of than no mark at all. */
     return -1;
 }
