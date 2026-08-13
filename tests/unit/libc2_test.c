@@ -7,6 +7,7 @@
  * Run by `make test-libc2` (tests/boot/run-libc2-test.sh), which asserts
  * "LIBC2_OK" on serial -- same convention as /bin/libctest (LIBC_OK). */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -137,8 +138,42 @@ static void t_syslog(void)
     checks++;   /* reaching here without a fault is the assertion */
 }
 
+/* The environment the kernel actually pushed.
+ *
+ * getenv() was internally consistent and permanently empty: c/kernel/exec/exec.c
+ * builds a full SysV stack with argv, envp and 14 auxv pairs, and crt0 read
+ * argc/argv and threw the envp pointer away. Every program on this machine saw
+ * an environment of nothing -- getenv("HOME"), getenv("PATH"), getenv("TERM")
+ * all NULL -- which is exactly the shape of gap that a self-consistent API
+ * hides. So the assertion has to come from OUTSIDE the process: the runner
+ * exports LOGIT_ENVTEST in the shell before launching this, and the value has
+ * to survive fork + execve + crt0 + env_init to be read back here. */
+extern char **environ;
+
+static void t_environ(void)
+{
+    CHK(environ != 0, "environ is a real vector");
+    CHK(environ && environ[0] != 0, "environ is not empty at startup");
+
+    const char *v = getenv("LOGIT_ENVTEST");
+    CHK(v != 0, "getenv sees a variable exported by the shell");
+    if (v) CHK_STR(v, "42", "the exported value survived execve");
+
+    /* And the pre-existing half still works on top of an adopted vector -- a
+     * setenv that lands in the middle of crt0's strings rather than in an
+     * empty one is where an adoption bug would show. */
+    CHK(setenv("LOGIT_ENVTEST", "43", 1) == 0, "setenv overwrite");
+    v = getenv("LOGIT_ENVTEST");
+    if (v) CHK_STR(v, "43", "setenv overwrote the inherited value");
+    CHK(setenv("LOGIT_ENVNEW", "x", 0) == 0, "setenv new");
+    v = getenv("LOGIT_ENVNEW");
+    if (v) CHK_STR(v, "x", "setenv new readable");
+    CHK(unsetenv("LOGIT_ENVNEW") == 0 && getenv("LOGIT_ENVNEW") == 0, "unsetenv");
+}
+
 int main(void)
 {
+    t_environ();
     t_uname();
     t_pwgrp();
     t_mmap();

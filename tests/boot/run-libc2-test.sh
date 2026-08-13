@@ -9,7 +9,10 @@ LOG="$(mktemp)"
 cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] && wait "$QPID" 2>/dev/null; rm -f "$LOG"; }
 trap cleanup EXIT
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ sleep 5; printf '/bin/libctest2\n'; sleep 5; printf 'exit\n'; sleep 2; } | \
+# LOGIT_ENVTEST is exported HERE, in the shell, on purpose: t_environ's
+# assertion is that a value crosses fork + execve + crt0 + env_init, and a
+# value the test set itself would prove none of that.
+{ sleep 5; printf 'export LOGIT_ENVTEST=42\n'; sleep 1; printf '/bin/libctest2\n'; sleep 5; printf 'exit\n'; sleep 2; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!

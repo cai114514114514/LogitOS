@@ -87,19 +87,35 @@ imaxdiv_t imaxdiv(intmax_t n, intmax_t d) { imaxdiv_t r; r.quot = n / d; r.rem =
 /* ---------------------------------------------------------------------- */
 /* environment                                                            */
 /* ---------------------------------------------------------------------- */
-/* DEGENERATE CASE, STATED PLAINLY: the initial environment is always EMPTY.
- * LogitOS's execve does build a SysV envp on the new stack (c/kernel/exec/
- * exec.c), but crt0_cli.asm passes only argc/argv to main and does not record
- * envp anywhere the runtime can reach afterwards -- and crt0 is not this
- * library's file to change. So getenv() finds nothing at startup.
+/* THE INITIAL ENVIRONMENT IS REAL NOW, and the way it got that way is the
+ * interesting part.
  *
- * What is NOT degenerate: setenv/putenv/unsetenv/getenv are internally
- * consistent, so the very common "getenv(X) ?: default" and "setenv then spawn"
- * patterns behave, and `environ` is a real, NULL-terminated vector that can be
- * handed to execve. Fixing the startup gap needs one store in crt0_cli.asm to
- * `__libc_environ`; the hook below is already named for it. */
-char **environ;
-char **__libc_environ_hook;      /* crt0 may point this at the exec-time envp */
+ * It used to be permanently empty. The kernel has always built a complete SysV
+ * stack on execve -- argv, envp and fourteen auxv pairs (c/kernel/exec/exec.c)
+ * -- and crt0 read argc and argv off it and threw the envp pointer away. So
+ * getenv("HOME"), getenv("PATH") and getenv("TERM") returned NULL in every
+ * program on this machine. That gap survived a long time because this file was
+ * SELF-CONSISTENT: setenv then getenv worked, so every unit test passed, and
+ * only a value that came from OUTSIDE the process could have exposed it.
+ *
+ * BOTH SYMBOLS ARE DEFINED IN crt0, not here, and that is not a style choice.
+ * The same crt0_cli.asm is linked by ~30 coreutils through CLI_RULE, and those
+ * programs do not link this library at all (they use c/apps/clib.h inline
+ * syscalls). An `extern` in crt0 would be an undefined symbol in every one of
+ * them, so the storage has to sit on the crt0 side and the library takes the
+ * extern. c/apps/crt0.asm defines the pair too and leaves both NULL, which is
+ * the truth for a GUI app: wm_launch gives it no envp at all.
+ *
+ * `environ` IS SET BY crt0, BEFORE main, on purpose. env_init() below is lazy
+ * -- it runs on the first getenv/setenv -- and `for (char **p = environ; *p;
+ * p++)` is a completely ordinary thing to write before either of those is
+ * called. Leaving `environ` NULL until something happened to touch the
+ * environment made that idiom read nothing, which is a worse failure than an
+ * empty environment because it looks like the program's own bug. Both vectors
+ * are valid and NULL-terminated: crt0's points into the exec-time stack, and
+ * env_sync() swaps in the malloc'd copy the moment one exists. */
+extern char **environ;               /* defined in crt0, and VALID BEFORE main */
+extern char **__libc_environ_hook;   /* defined in crt0; the exec-time envp */
 
 static char **g_env;             /* our own vector (malloc'd) */
 static int g_env_n, g_env_cap;
