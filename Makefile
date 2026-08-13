@@ -3763,3 +3763,11 @@ bench-aui: $(ISO) $(DISK)
 # test stops being run. Found while using test-window to check that an enlarged
 # drop shadow did not leave ghosts.
 -include tests/window.mk
+
+# musl's libm, given its own objects so an ordinary CLI program can link it:
+# `make test-libm-cli` asserts the freestanding cross-build is BIT-IDENTICAL to
+# a native build of the same sources. The fragment also defines $(LIBM_OBJ),
+# which the ports link, and it is included BEFORE them so the variable exists.
+# Read its header before reusing $(BUILD)/jsobj's libm objects -- the scoping of
+# `-include features.h` is load-bearing, not tidiness.
+-include tests/libm.mk

@@ -42,3 +42,59 @@ Deferred (user prioritised the SMP scheduler). Fix in a gated batch later; C2 is
 
 false/design: M1(FALSE), M5(FALSE), C1(FALSE), H1(FALSE), H4(FALSE), M6(FALSE), M7(FALSE), M8(FALSE), M9-ARP-VALIDATE(FALSE), L2(FALSE), C5(FALSE), H7(FALSE), H8(FALSE), L7(FALSE), C7(FALSE), H23(FALSE), M21(FALSE), C6(FALSE), H10(FALSE), H19(FALSE), H20(FALSE), H21(FALSE), M17(FALSE), M18(FALSE), L5(FALSE), L6(FALSE), H14(FALSE), H15(FALSE), H16(FALSE), M12(FALSE), M13(FALSE), L3(FALSE), M24(FALSE), M10(DESIGN), L1(DESIGN), M22(DESIGN), H12(DESIGN), M16(DESIGN), H13(DESIGN), M14(DESIGN), M15(DESIGN), L4(DESIGN)
 
+
+---
+
+## 新增(2026-08-13,移植线在准备第一批 Lua/Doom 时发现)
+
+两条都**已定位、有确定性复现、未修**。它们不是浏览器/网络那批 triage 的一部分,发现方式也不同:
+不是审计代码,是把一个真实的外部程序放到这台机器上跑,然后它停了。
+
+### P1 — 用户地址被直接交给 virtio,≥4 KiB 的 `SYS_READ_FILE` 读到的是垃圾
+
+**路径,逐跳核实过:**
+
+- `SYS_READ_FILE`(`c/kernel/exec/syscall.c:255`)把**用户指针**原样传给 `vfs_read`。
+- 多块读走 `inode_read` → `bread_run` → `bcache_read_run`(`c/fs/bcache.c:215`),它把
+  `out + k*BC_BS` —— **调用方的缓冲区** —— 交给 `blk_read_n`,没有弹跳缓冲。
+- `virtio_blk.c:62` 把 `(uint64_t)(uintptr_t)buf` 直接放进虚拟队列描述符;
+  `virtio.c:158` 原样复制进 `vq->desc[d].addr`,**不做任何地址转换**。
+- `c/boot/boot.asm:80` 只恒等映射**前 1 GiB**,而 `MM_USER_BASE`(`c/kernel/mm/mm.h:85`)
+  正是 `0x40000000`。**用户虚拟地址恰好落在恒等映射结束的地方之后。**
+
+所以设备拿到的是一台 512 MiB 机器上 1 GiB 之外的"物理地址"。
+
+**为什么至今没人踩到:** 单块路径(`bcache.c:172`)是安全的 —— 读进内核的 `data[i]` 再 memcpy 出去 ——
+所以**任何 <4096 字节的文件都正常**。树里 `read_file()` 的全部调用点(`textedit.c:123`、
+`studio.c:194`、`login.c:124`、`greeter.c:247`、`browser.c:165`)读的都是小文件,而所有大文件
+(`vidcheck.c:58`、`audiocheck.c:64`)都走 `fopen`,绕开了这条路。
+
+**修法有两条,不等价:** (a) `bcache_read_run` 在目标不在恒等映射内时弹跳;
+(b) 新增 `SYS_PREAD` 走单块路径,顺带解决 F_VFS "打开即整读进 kmalloc" 的内核占用问题。
+移植线倾向 (b),因为 Doom 的 WAD 需要它;但 (a) 才是这条 bug 本身的修复。
+
+### P2 — 重浮点的 ring-3 程序在 `-smp 4` 下卡死整机
+
+**复现(确定性地可复现,停的位置不确定):**
+
+```
+make test-libm-cli            # /bin/libmcheck, -smp 1 : 1214/1214 行,LIBM_DONE
+/bin/libmcheck                # -smp 4 -accel tcg,thread=multi : 241 / 245 / 523 / 591 行后卡死
+/bin/libmcheck noop           # -smp 4,同一二进制、同一 printf、同样 1214 行,不调 libm : 完成
+```
+
+**`noop` 模式就是为这条 bug 加进 `tests/unit/libmcheck.c` 的**,它把问题劈成两半并给出了答案:
+**是浮点,不是输出量、不是串口、不是 printf。**
+
+卡死是**整机**级别的:之后串口再无一个字节,敲 Enter 和 `uname` 上百秒零响应。
+
+**已排除:** AP 没开 SSE —— `c/boot/ap_trampoline.asm:98` 设了 CR4.OSFXSR,`:119` `fninit`,
+`:123` `ldmxcsr`,和 BSP 在 `long.asm:36-41` 做的是同一套。
+
+**剩下的嫌疑:** `boot/isr.asm` 的 `isr_common` 每次进 C handler 都 FXSAVE/FXRSTOR
+(M15 引入),在多核 + 频繁系统调用 + 重 FP 的组合下的竞态。桌面本身用不到这么密的 FP,
+所以这条一直没被触发。
+
+**当前处置:** `tests/boot/run-libm-test.sh` 锁定 `-smp 1` 并在文件里写明原因。
+这不是掩盖 —— 那个门要证明的是"交叉构建的 libm 与本地构建逐位相同",
+而不是"内核的 SMP FP 保存是对的";后者需要它自己的门。
