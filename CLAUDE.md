@@ -380,6 +380,37 @@ round-half-to-even). Only browser/JS + `/bin/as` link mini-libc; CLI coreutils u
 `logit.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
 `.clangd` (full INCDIRS) kill the host-SDK false-positive squiggles.
 
+**It has kept growing well past that paragraph** — `dirent`/`stat`/`time` with a
+full `strftime`+`strptime`/`signal` (real kernel delivery)/`regex`/`fnmatch`/`glob`/
+`pthread`/BSD sockets/`wchar`, a real `system()` (fork+execv `/bin/sh -c`), a
+segregated-free-list malloc, and as of 2026-08-14 the headers a ported program
+includes on its first line: `<libgen.h>`, `<err.h>`, `<sysexits.h>`, `<paths.h>`,
+`<search.h>`, `<ftw.h>`, `<iconv.h>`, `<langinfo.h>`, `<nl_types.h>`, `<getopt.h>`,
+`<utime.h>`, `<sys/{uio,file,ioctl,statvfs}.h>`.
+
+**`AS_LIBC := $(wildcard c/apps/libc/src/*.c)` (Makefile:718) feeds `LIBC_OBJS`, so
+a new `.c` here needs NO build-system change.** That is why this area parallelises
+and most of the tree does not.
+
+**The gate is a diff against glibc, and that is the point**: this code is either
+pure computation or a thin wrapper over a call the host also has, so "correct"
+means "agrees with glibc" — which gives every function a *reference* instead of a
+hand-written expectation that only records what its author already believed. Each
+test source compiles twice (once against our headers with `-nostdinc`, once as an
+ordinary host program) and the two stdouts are diffed byte for byte:
+`make test-libc-host`, 11 gates, 2,356 lines. **Two traps live in that strategy and
+are documented at the top of `tests/libc.mk`** — (1) the "ours" build still *links*
+glibc, so a missing implementation TU is a **runtime fallback, not a link error**
+(omitting `langinfo.c` links fine and then segfaults inside `nl_langinfo`); and (2)
+`diff <(a) <(b)` starts both binaries **concurrently**, so any gate touching a fixed
+scratch path races itself — the rule always writes to files and diffs the files.
+
+**Nothing here is stubbed to success**, and that is a rule, not a coincidence:
+`flock` returns `ENOSYS` because a caller that gets 0 believes it holds a lock;
+`ioctl`'s tty requests return `ENOTTY`, matching `termios.c` rather than inventing a
+second answer; `statvfs`/`utime` return `ENOSYS` because a fabricated `f_bsize` is
+worse for a caller sizing a buffer than an error is. Each is argued in its file.
+
 M20 AetherScript ✅: a **from-scratch language**, `as`/`.as`, in `c/apps/as/`
 (clox-lineage: single-pass compiler → flat bytecode → stack VM; Python-ish
 indentation). **A1** lexer (INDENT/DEDENT) + Pratt compiler + VM: nil/bool/int(i64)/
@@ -398,7 +429,54 @@ globals resolve per-module with a shared builtins fallback; loader caches +
 `fopen`s `/usr/as/NAME.as` (or an in-memory registry for tests). Tests: `make
 test-as` (host, 55 checks incl. fib + import) + `make test-as-os` (boots LogitOS,
 runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
-(≈CPython). Deferred: dict, closures, GC, computed-goto dispatch.
+(≈CPython).
+
+**That paragraph is the record of M20 and stops there. The language is now at M27
+and about 7.2 kLOC**, and the four things M20 listed as deferred — dict, closures,
+GC, computed-goto — all exist. Do not plan against the M20 feature list.
+
+- **M21 dict · M22 closures · M22.3 classes** (`class`/`super`, copy-down
+  inheritance) **· M22.4 exceptions** (`try`/`except`/`raise`, with unwinding that
+  release paths hook) **· M23** bitwise/shift/`**`.
+- **Performance work that shapes the code**: a 16-byte tagged `Value` that is
+  deliberately **not** NaN-boxed (an AetherScript int is a full int64, so there are
+  no spare bits in 8 — the cost worth removing was the memory round-trip, not the
+  footprint); **shapes** (hidden classes) with **property inline caches**; a
+  **global-lookup cache** with generation invalidation; mark-sweep GC over a
+  **contiguous object registry** rather than an intrusive `next` list; and
+  **computed-goto** dispatch.
+- **M27 ports** — OS endpoints as first-class values: `O_PORT`/`O_PROC`, the `|>`
+  pipeline operator, `-> path` / `<- path` redirection, `with` scopes with
+  deterministic release, and iteration reusing `OP_LEN` + `OP_INDEX_GET` rather
+  than a new iterator protocol. Its payoff is **`fsroot/as/examples/ash.as`: the
+  system shell, written in AetherScript**, with no `fork`, no `dup2`, no `waitpid`
+  and no file-descriptor arithmetic anywhere in the file — against 971 lines of C
+  in `c/apps/coreutils/sh.c` doing the same job.
+
+**THE SELF-HOSTING TAX, and it is the single most important thing to know before
+touching this language.** `fsroot/as/lib/asc.as` is a **second compiler for
+AetherScript, written in AetherScript**, and it compiles itself to a
+**byte-identical fixpoint** (`test-as-bcstable`). Opcode numbers are **hand-copied**
+into it. A drift is a **SILENT MISCOMPILE** — the self-hosted compiler emits an
+instruction the C VM decodes as a different one — and *nothing else catches it*:
+setting `OP_RET` to 99 in `asc.as` leaves `test-as` and `test-as-gcstress` fully
+green. Only `make check-asops` (`tools/gen_as_opcodes.py --check`) sees it, and it
+is a prerequisite of the `test-as*` targets but **not** of `test-ash`, `all` or
+`$(ISO)` — so a plain `make run` boots happily with a badly drifted `asc.as`.
+Consequences: **batch opcode changes one milestone at a time**, bump
+`AS_BC_VERSION` once, re-prove the fixpoint at the end, and never add an opcode
+opportunistically. `gen_as_opcodes.py --write` is a stub that exits; the sync is by
+hand.
+
+**Where it is going:** `docs/superpowers/specs/2026-08-05-aetherscript-2-language-design.md`
+fixes the originality criterion (*a construct earns its place only if it falls out
+of a constraint specific to this OS*) and names four pillars — ports (M27, done),
+**capabilities (M28)**, tasks (M29), an own IR + native `.aex` (M30).
+`docs/superpowers/specs/2026-08-14-m28-capabilities.md` is M28's locked design and
+supersedes the older document's M28 row; read §1 first, because the older
+document's grant model does not work on this machine (every `.as` program execs the
+same binary, `/bin/as`, so a grant keyed on the executed binary cannot tell two
+scripts apart — and fails silently).
 
 H.264 video ✅ (`c/lib/video/`): a from-scratch baseline-profile decoder --
 Annex-B/NAL, CAVLC, I+P slices, multiple references, weighted P prediction, the
@@ -693,6 +771,17 @@ corner test is the boolean `dx*dx + dy*dy <= r*r`, so **a page's `border-radius`
 stopped being a staircase**.
 
   `make test-gfx` `test-gfx-negctl` `test-aui-mask` `bench-gfx` `bench-gfx-frame`
+
+**Phase 2 is scheduled** in `docs/superpowers/specs/2026-08-14-open-logit-2-design.md`
+(seams → stroke → path clipping → SVG onto the engine → text as paths →
+groups/blend/blur), and it opens with the finding that **this engine's founding
+argument is not finished: a FOURTH rasterizer is still live, and it is in ring 0.**
+`c/lib/image/svg.c` is 901 lines carrying its own sorted-crossing scanline filler
+and its own Newton-iteration `dsqrt`/`dsin`. It survived for a mechanical reason —
+`C_SRC` (Makefile:236) filters out `c/lib/video`, `c/lib/audio`, `c/lib/media`,
+`inflate.c` and `png.c`, **and not `svg.c`** — so it compiles into the kernel, where
+it cannot reach the ring-3 engine, and separately into the browser. `grep -c stroke`
+on it returns **0**: every stroked icon on every real page is absent, not wrong.
 
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
