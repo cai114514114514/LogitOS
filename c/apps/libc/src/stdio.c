@@ -27,32 +27,22 @@ static size_t snlen(const char *s, size_t m) { size_t i = 0; while (i < m && s[i
 /* ---------------------------------------------------------------------- */
 /* FILE                                                                    */
 /* ---------------------------------------------------------------------- */
-#define F_READ    0x001
-#define F_WRITE   0x002
-#define F_EOF     0x004
-#define F_ERR     0x008
-#define F_ALLOC   0x010     /* the FILE itself came from malloc */
-#define F_TMP     0x020     /* tmpfile(): unlink the path at fclose */
-#define F_OWNBUF  0x040     /* we allocated wbuf/rbuf (setvbuf may not have) */
-#define F_APPEND  0x080
-#define F_WIDE    0x100     /* fwide() orientation, once chosen */
-#define F_BYTE    0x200
+/* struct _FILE, F_*, and RBUFSZ now live in libc_internal.h -- memstream.c
+ * and popen.c build/inspect a `struct _FILE` directly (there is no fd for
+ * either of them to fopen()/fdopen()), so the layout has to be visible
+ * outside this TU. See the block comment there for the field-order rule. */
 
-#define RBUFSZ 4096
-
-struct _FILE {
-    int fd, flags;
-    unsigned char *rbuf; int rcap, rpos, rlen;
-    unsigned char *wbuf; int wcap, wlen;
-    int bufmode;                 /* _IOFBF / _IOLBF / _IONBF */
-    int ungot;
-    char *tmpname;
-    struct _FILE *next;
-};
-
-static struct _FILE _stdin  = { 0, F_READ,  0,0,0,0, 0,0,0, _IONBF, -1, 0, 0 };
-static struct _FILE _stdout = { 1, F_WRITE, 0,0,0,0, 0,0,0, _IONBF, -1, 0, 0 };
-static struct _FILE _stderr = { 2, F_WRITE, 0,0,0,0, 0,0,0, _IONBF, -1, 0, 0 };
+/* Designated initializers, not a positional list: struct _FILE has grown
+ * fields more than once (mem-stream state, popen_pid) and every field this
+ * omits is correctly zero for a real fd anyway (mbuf/mcap/mpos/mmax/ms_bufp/
+ * ms_sizep = "not mem-backed"). A positional `{ 0, F_READ, 0,0,0,0, ... }`
+ * list would need editing -- silently, easy to forget -- every time the
+ * struct grows again; this can't drift because there is nothing to keep in
+ * sync. popen_pid is set to -1 explicitly since 0 is not a safe "unset"
+ * sentinel-free zone the way the others are. */
+static struct _FILE _stdin  = { .fd = 0, .flags = F_READ,  .bufmode = _IONBF, .ungot = -1, .popen_pid = -1 };
+static struct _FILE _stdout = { .fd = 1, .flags = F_WRITE, .bufmode = _IONBF, .ungot = -1, .popen_pid = -1 };
+static struct _FILE _stderr = { .fd = 2, .flags = F_WRITE, .bufmode = _IONBF, .ungot = -1, .popen_pid = -1 };
 FILE *stdin = &_stdin, *stdout = &_stdout, *stderr = &_stderr;
 
 /* Every open stream, so exit() can flush them. stdout/stderr are unbuffered by
@@ -67,6 +57,10 @@ static void stream_unregister(struct _FILE *f)
     struct _FILE **pp = &g_streams;
     while (*pp) { if (*pp == f) { *pp = f->next; return; } pp = &(*pp)->next; }
 }
+/* memstream.c builds a `struct _FILE` directly (fmemopen()/open_memstream()
+ * have no fd to route through fopen()/fdopen()), so it needs a way onto this
+ * same list -- otherwise fflush(NULL)/exit() would silently skip it. */
+void __libc_stream_register(FILE *f) { stream_register(f); }
 
 /* write-all: loops over short writes (a pipe can take fewer bytes than asked). */
 static int wr(int fd, const char *p, size_t n)
@@ -76,23 +70,48 @@ static int wr(int fd, const char *p, size_t n)
     return 0;
 }
 
+/* The one place fput_raw()/flush_w() actually move bytes to wherever this
+ * stream lives. For a real fd that is still just wr(); for a mem-backed
+ * stream (fmemopen/open_memstream) it is memstream.c's commit function
+ * instead, which cannot loop-until-n like wr() does -- fmemopen has a fixed
+ * capacity and "attempts to write more than size bytes... result in an
+ * error" is the DOCUMENTED behaviour (see memstream.c), not something to
+ * retry past. Kept 0/-1 (not a byte count) so every existing caller of the
+ * three call sites this replaces is unaffected. */
+static int backend_write_all(FILE *f, const char *p, size_t n)
+{
+    if (f->flags & F_MEMSTR) return __libc_msmem_commit(f, p, n) == (long)n ? 0 : -1;
+    if (f->flags & F_MEM)    return __libc_fmem_commit(f, p, n) == (long)n ? 0 : -1;
+    return wr(f->fd, p, n);
+}
+
 static int flush_w(FILE *f)
 {
     if (!f || f->wlen == 0) return 0;
     int n = f->wlen;
     f->wlen = 0;                       /* drop first: a failing fd must not spin */
-    if (wr(f->fd, (const char *)f->wbuf, (size_t)n) < 0) { f->flags |= F_ERR; return EOF; }
+    if (backend_write_all(f, (const char *)f->wbuf, (size_t)n) < 0) { f->flags |= F_ERR; return EOF; }
     return 0;
 }
 
 static int fput_raw(FILE *f, const char *p, size_t n)
 {
     if (!f) return -1;
+    /* A real fd relies on the KERNEL to refuse a write() to an O_RDONLY
+     * descriptor -- at FLUSH time, after this library has already staged
+     * the bytes into wbuf, exactly like every other write error (see
+     * flush_w()). A mem-backed stream has no kernel underneath it, so
+     * without this check that staging would report success immediately and
+     * only fail once something eventually flushes -- glibc's fmemopen()
+     * rejects it up front instead (verified: fwrite() to a "r"-mode stream
+     * returns 0/EBADF on the very first call, no flush needed), so this
+     * matches that rather than the fd path's deferred-to-flush behaviour. */
+    if ((f->flags & (F_MEM | F_MEMSTR)) && !(f->flags & F_WRITE)) { f->flags |= F_ERR; errno = EBADF; return -1; }
     if (f->bufmode == _IONBF || (!f->wbuf && f->wcap == 0 && f->bufmode != _IOFBF && f->bufmode != _IOLBF))
-        return wr(f->fd, p, n);
+        return backend_write_all(f, p, n);
     if (!f->wbuf) {
         f->wbuf = malloc(BUFSIZ);
-        if (!f->wbuf) { f->bufmode = _IONBF; return wr(f->fd, p, n); }
+        if (!f->wbuf) { f->bufmode = _IONBF; return backend_write_all(f, p, n); }
         f->wcap = BUFSIZ; f->flags |= F_OWNBUF;
     }
     while (n) {
@@ -108,16 +127,29 @@ static int fput_raw(FILE *f, const char *p, size_t n)
     return 0;
 }
 
+/* fflush() of an open_memstream() stream does more than drain wbuf: C
+ * requires *ms_bufp and *ms_sizep to become valid at exactly this point (and at
+ * fclose()), not before -- see open_memstream(3) and the exploration this
+ * unit's implementation is based on (memstream.c's file comment). Every
+ * OTHER stream is unaffected: the flag check makes this identical to
+ * flush_w() for them. */
+static int do_fflush_one(FILE *f)
+{
+    int r = flush_w(f);
+    if ((f->flags & F_MEMSTR) && __libc_msmem_publish(f) < 0) r = EOF;
+    return r;
+}
+
 int fflush(FILE *f)
 {
     if (!f) {                      /* C11: NULL flushes every output stream */
         int r = 0;
-        for (struct _FILE *s = g_streams; s; s = s->next) if (flush_w(s) < 0) r = EOF;
+        for (struct _FILE *s = g_streams; s; s = s->next) if (do_fflush_one(s) < 0) r = EOF;
         if (flush_w(&_stdout) < 0) r = EOF;
         if (flush_w(&_stderr) < 0) r = EOF;
         return r;
     }
-    return flush_w(f);
+    return do_fflush_one(f);
 }
 void __libc_flush_all(void) { fflush(NULL); }
 
@@ -622,10 +654,21 @@ void perror(const char *s)
 /* ---------------------------------------------------------------------- */
 static int refill(FILE *f)
 {
+    /* open_memstream() is write-only (see memstream.c's file comment for why
+     * this library refuses reads on it even though glibc happens not to);
+     * fail before touching rbuf at all. */
+    if (f->flags & F_MEMSTR) { errno = EBADF; f->flags |= F_ERR; return -1; }
     if (!f->rbuf) {
         f->rbuf = (unsigned char *)malloc(RBUFSZ);
         if (!f->rbuf) { f->flags |= F_ERR; return -1; }
         f->rcap = RBUFSZ;
+    }
+    if (f->flags & F_MEM) {
+        int got = __libc_fmem_read(f, f->rbuf, f->rcap);
+        if (got < 0) { f->flags |= F_ERR; f->rlen = f->rpos = 0; return -1; }
+        if (got == 0) { f->rlen = f->rpos = 0; f->flags |= F_EOF; return -1; }
+        f->rlen = got; f->rpos = 0;
+        return 0;
     }
     long r = read(f->fd, f->rbuf, (size_t)f->rcap);
     if (r < 0) { f->flags |= F_ERR; f->rlen = f->rpos = 0; return -1; }
@@ -744,7 +787,10 @@ int scanf(const char *fmt, ...)
 int   feof(FILE *f)   { return f && (f->flags & F_EOF) != 0; }
 int   ferror(FILE *f) { return f && (f->flags & F_ERR) != 0; }
 void  clearerr(FILE *f) { if (f) f->flags &= ~(F_EOF | F_ERR); }
-int   fileno(FILE *f) { if (!f) { errno = EBADF; return -1; } return f->fd; }
+/* A mem-backed stream has no fd (fmemopen(3)/open_memstream(3) both say so
+ * explicitly) -- f->fd is left at its zeroed -1 for exactly this check,
+ * rather than returning it uninspected the way this used to. */
+int   fileno(FILE *f) { if (!f || f->fd < 0) { errno = EBADF; return -1; } return f->fd; }
 
 int fseek(FILE *f, long off, int whence)
 {
@@ -753,8 +799,30 @@ int fseek(FILE *f, long off, int whence)
     /* A pending ungetc and a read buffer both mean the fd offset is ahead of
      * the stream position; SEEK_CUR has to be corrected for both. */
     if (whence == SEEK_CUR) off -= (long)(f->rlen - f->rpos) + (f->ungot >= 0 ? 1 : 0);
-    long r = lseek(f->fd, off, whence);
-    if (r < 0) return -1;
+
+    if (f->flags & (F_MEM | F_MEMSTR)) {
+        /* No fd to lseek(): the "device position" is mpos, and the "end"
+         * SEEK_END is relative to is mmax (the high-water mark), which for
+         * fmemopen("r"/"r+") is initialized to the full capacity and for
+         * everything else grows only as bytes are actually committed -- see
+         * the struct comment in libc_internal.h and memstream.c. */
+        long base;
+        switch (whence) {
+        case SEEK_SET: base = 0; break;
+        case SEEK_CUR: base = (long)f->mpos; break;
+        case SEEK_END: base = (long)f->mmax; break;
+        default: errno = EINVAL; return -1;
+        }
+        long np = base + off;
+        /* fmemopen has a hard ceiling (its buffer IS the capacity); a
+         * memstream does not -- writing past mpos there just zero-fills the
+         * gap (open_memstream(3)), so any non-negative target is legal. */
+        if (np < 0 || ((f->flags & F_MEM) && (size_t)np > f->mcap)) { errno = EINVAL; return -1; }
+        f->mpos = (size_t)np;
+    } else {
+        long r = lseek(f->fd, off, whence);
+        if (r < 0) return -1;
+    }
     f->rpos = f->rlen = 0; f->ungot = -1; f->flags &= ~F_EOF;
     return 0;
 }
@@ -762,8 +830,9 @@ int fseeko(FILE *f, off_t off, int whence) { return fseek(f, (long)off, whence);
 long ftell(FILE *f)
 {
     if (!f) { errno = EBADF; return -1; }
-    long r = lseek(f->fd, 0, SEEK_CUR);
-    if (r < 0) return -1;
+    long r;
+    if (f->flags & (F_MEM | F_MEMSTR)) r = (long)f->mpos;   /* mpos plays lseek's role */
+    else { r = lseek(f->fd, 0, SEEK_CUR); if (r < 0) return -1; }
     return r - (long)(f->rlen - f->rpos) - (f->ungot >= 0 ? 1 : 0) + f->wlen;
 }
 off_t ftello(FILE *f) { return (off_t)ftell(f); }
@@ -829,8 +898,29 @@ static FILE *file_wrap(int fd, int lf)
     memset(f, 0, sizeof *f);
     f->fd = fd; f->flags = lf | F_ALLOC; f->ungot = -1;
     f->bufmode = _IOFBF;                    /* real files are fully buffered */
+    f->popen_pid = -1;                      /* __libc_popen_wrap overwrites this if it applies */
     stream_register(f);
     return f;
+}
+
+/* ---------------------------------------------------------------------- */
+/* popen.c support -- see the block comment in popen.c and the declarations */
+/* in libc_internal.h for why this rides file_wrap()/g_streams instead of a  */
+/* second registry.                                                         */
+/* ---------------------------------------------------------------------- */
+FILE *__libc_popen_wrap(int fd, int for_write, long pid)
+{
+    FILE *f = file_wrap(fd, for_write ? F_WRITE : F_READ);
+    if (!f) return NULL;
+    f->flags |= F_POPEN;
+    f->popen_pid = pid;
+    return f;
+}
+long __libc_popen_pid(FILE *f) { return (f && (f->flags & F_POPEN)) ? f->popen_pid : -1; }
+void __libc_close_popen_streams(void)
+{
+    for (struct _FILE *s = g_streams; s; s = s->next)
+        if (s->flags & F_POPEN) close(s->fd);
 }
 
 FILE *fopen(const char *path, const char *mode)
@@ -862,12 +952,25 @@ FILE *freopen(const char *path, const char *mode, FILE *f)
 int fclose(FILE *f)
 {
     if (!f) { errno = EBADF; return EOF; }
-    int r = flush_w(f);
+    /* do_fflush_one, not flush_w: for an open_memstream() this is the other
+     * of the two moments (with fflush()) C requires *ms_bufp and *ms_sizep to
+     * become valid -- the one a caller who never called fflush() themselves
+     * relies on. Identical to flush_w() for every other stream. */
+    int r = do_fflush_one(f);
     int fd = f->fd;
     if (f->rbuf) free(f->rbuf);
     if (f->wbuf && (f->flags & F_OWNBUF)) free(f->wbuf);
     if (f->flags & F_TMP) { close(fd); if (f->tmpname) { unlink(f->tmpname); free(f->tmpname); } }
-    else if (f->flags & F_ALLOC) close(fd);
+    /* F_MEM/F_MEMSTR: fd is -1, a sentinel, not a real descriptor -- closing
+     * it would be a no-op EBADF at best, so just skip the call. */
+    else if ((f->flags & F_ALLOC) && !(f->flags & (F_MEM | F_MEMSTR))) close(fd);
+    /* fmemopen(NULL, ...): we malloc'd mbuf, so we free it. A caller-supplied
+     * buffer (F_MEM without F_MEMOWN) is never touched -- it's theirs, and
+     * fmemopen(3) says its final contents are whatever was last written.
+     * open_memstream's mbuf is NEVER freed here regardless: ownership passed
+     * to the caller at do_fflush_one()/__libc_msmem_publish() above, via
+     * *ms_bufp, and open_memstream(3) says they free(3) it -- see stdio.h. */
+    if ((f->flags & F_MEM) && (f->flags & F_MEMOWN)) free(f->mbuf);
     stream_unregister(f);
     if (f->flags & F_ALLOC) free(f);
     else { f->rbuf = f->wbuf = NULL; f->rcap = f->rpos = f->rlen = f->wcap = f->wlen = 0; }

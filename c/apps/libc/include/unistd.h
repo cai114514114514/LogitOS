@@ -83,6 +83,16 @@ int     usleep(unsigned usecs);
 long    sysconf(int name);
 int     gethostname(char *buf, size_t n);
 
+/* getopt() -- POSIX declares the short-option half here, not in <getopt.h>.
+ * <getopt.h> (c/apps/libc/include/getopt.h) includes this header for exactly
+ * that reason, and adds only getopt_long()/struct option on top. A ported
+ * program that #includes just <unistd.h> and calls getopt() must find it
+ * here; see c/apps/libc/src/getopt.c for the implementation and its glibc-vs-
+ * musl argv-permutation note. */
+int     getopt(int argc, char *const argv[], const char *optstring);
+extern char *optarg;
+extern int   optind, opterr, optopt;
+
 /* sysconf() names -- only the ones LogitOS can honestly answer. */
 #define _SC_PAGESIZE       30
 #define _SC_PAGE_SIZE      _SC_PAGESIZE

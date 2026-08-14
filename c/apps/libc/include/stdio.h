@@ -97,4 +97,14 @@ void  setbuf(FILE *, char *);
 void  setlinebuf(FILE *);
 int   fwide(FILE *, int);
 
+/* memory-backed streams and pipes-to-a-shell-command: three FILE
+ * constructors ported code assumes exist alongside fopen()/fdopen(). See
+ * c/apps/libc/src/memstream.c and popen.c for what each actually does on
+ * this system (both differ from a plain-glibc mental model in named,
+ * deliberate ways -- read those files before relying on an edge case). */
+FILE *fmemopen(void *, size_t, const char *);
+FILE *open_memstream(char **, size_t *);
+FILE *popen(const char *, const char *);
+int   pclose(FILE *);
+
 #endif

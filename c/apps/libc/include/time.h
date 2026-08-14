@@ -62,6 +62,15 @@ char  *ctime(const time_t *);
 char  *ctime_r(const time_t *, char *);
 size_t strftime(char *, size_t, const char *, const struct tm *);
 size_t wcsftime(wchar_t *, size_t, const wchar_t *, const struct tm *);
+
+/* strptime() is strftime's inverse: it PARSES a date/time out of a string
+ * per a format string of the same '%'-directives. See strptime.c for the
+ * behaviour (matched against glibc's, not the POSIX text, which underspecifies
+ * several of the traps glibc actually implements). Unlike a plain sscanf, it
+ * leaves fields the format never mentioned untouched in *tm -- callers rely
+ * on parsing a date onto an already-populated struct tm. Returns a pointer to
+ * the first unconsumed input character on success, NULL on failure. */
+char *strptime(const char *, const char *, struct tm *);
 void   tzset(void);
 
 extern char *tzname[2];

@@ -94,5 +94,18 @@ size_t wcstombs(char *, const wchar_t *, size_t);
 /* --- temporary names ---------------------------------------------------- */
 char  *mktemp(char *);
 int    mkstemp(char *);
+char  *mkdtemp(char *);       /* c/apps/libc/src/pathx.c */
+
+/* --- path canonicalisation (c/apps/libc/src/pathx.c) --------------------- */
+char  *realpath(const char *restrict, char *restrict);
+
+/* --- allocation (c/apps/libc/src/pathx.c; malloc.c owns the other four) -- */
+void  *reallocarray(void *, size_t, size_t);
+
+/* --- suboption parsing (c/apps/libc/src/pathx.c) -------------------------
+ * getsubopt() is declared here rather than in a header of its own because
+ * that is where glibc puts it (<stdlib.h>, not <getopt.h>) and every ported
+ * program that uses it #includes <stdlib.h> expecting to find it. */
+int    getsubopt(char **, char *const *, char **);
 
 #endif

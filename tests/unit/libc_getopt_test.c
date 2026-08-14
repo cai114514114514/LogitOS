@@ -1,0 +1,463 @@
+/* getopt()/getopt_long() argv-vector list, compiled twice by tests/libc.mk
+ * (same recipe as libc_fnmatch_test.c): once against OUR OWN <unistd.h>/
+ * <getopt.h>/getopt.c (freestanding-ish host build, no glibc headers at
+ * all), once as a completely ordinary host program against glibc's real
+ * <getopt.h>. Byte-identical stdout from both runs is the proof.
+ *
+ * _GNU_SOURCE is required on the glibc side for getopt_long()/struct option
+ * to be declared at all -- glibc's <getopt.h> otherwise only exposes the
+ * POSIX short-option half. Defining it is harmless for the "ours" build:
+ * our headers do not look at feature-test macros.
+ *
+ * WHY optind = 0 BETWEEN VECTORS, NOT optind = 1. Several vectors below
+ * deliberately change POSIXLY_CORRECT or the optstring's ordering prefix
+ * from the previous vector. Both glibc and this implementation only
+ * re-derive `ordering` (from the optstring's leading +/-, or from
+ * POSIXLY_CORRECT) and reset the permutation window when they see
+ * optind == 0 -- that is the documented "force a full re-initialisation"
+ * reset (see getopt.c's comment at the optind==0 check). A plain optind = 1
+ * is only a safe reset when NOTHING else about the scan changed, which is
+ * not true here, so optind = 1 would leak the previous vector's ordering
+ * decision into this one -- on both sides, since both implementations
+ * define the same optind==0 extension, so the diff still means something.
+ *
+ * opterr = 0 is set once, globally, for the whole run. Both getopt and
+ * getopt_long print a diagnostic to stderr on malformed input; the two
+ * implementations' MESSAGE TEXT is not part of the contract (glibc's wording
+ * is not specified anywhere this library promises to match), only the
+ * RETURN VALUE / optopt / optarg / optind / argv-permutation are. Silencing
+ * stderr keeps the diff to the part that is actually specified. This is
+ * also why err() in getopt.c takes a `silent` flag but opterr=0 makes it
+ * moot for every vector here -- opterr is checked first.
+ *
+ * argv PERMUTATION is the point of this file, not an afterthought: this
+ * implementation was written to match glibc's argv-permuting behaviour
+ * rather than POSIX/musl's (see the header comment in getopt.c), so every
+ * vector prints the FULL argv array, in its post-permutation order, after
+ * the scanning loop -- a test that only checked return values would never
+ * see whether the permutation window (first_nonopt/last_nonopt/exchange)
+ * actually did the right rotation. */
+#define _GNU_SOURCE 1
+#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define MAXARGV 16
+
+/* Runs one argv vector to exhaustion (getopt/getopt_long until -1), printing
+ * every iteration's result and the final permuted argv + optind. `tail` is
+ * the argv content AFTER argv[0] ("prog" is synthesised here so every
+ * pattern table below only has to list the interesting part). */
+static void run_case(const char *label, const char *const *tail, int ntail,
+                      const char *optstring, const struct option *longopts,
+                      int use_longindex)
+{
+    char *argv[MAXARGV];
+    int argc = 1 + ntail;
+    int i, r, longindex;
+
+    argv[0] = (char *)"prog";
+    for (i = 0; i < ntail; i++) argv[1 + i] = (char *)tail[i];
+
+    optind = 0;          /* see the file-header comment: full reset, not 1 */
+    longindex = -1;
+
+    printf("== %s ==\n", label);
+    for (;;) {
+        if (longopts)
+            r = getopt_long(argc, argv, optstring, longopts,
+                             use_longindex ? &longindex : NULL);
+        else
+            r = getopt(argc, argv, optstring);
+        if (r == -1) break;
+
+        /* Printable ASCII prints as a char so the log reads like real option
+         * letters ('a', '?', ':'); everything else (0 for the flag/val form,
+         * 1 for RETURN_IN_ORDER, -- never both meet: 1 is below the
+         * printable range) prints numerically. */
+        if (r >= 0x20 && r < 0x7f) printf("  ret='%c'", r);
+        else                       printf("  ret=%d", r);
+        printf(" optarg=%s optind=%d optopt=%d",
+               optarg ? optarg : "(null)", optind, optopt);
+        if (use_longindex) printf(" longindex=%d", longindex);
+        printf("\n");
+    }
+    printf("  end optind=%d argv=[", optind);
+    for (i = 0; i < argc; i++) printf("%s%s", i ? "," : "", argv[i]);
+    printf("]\n");
+}
+
+#define RUN(label, optstring, ...) \
+    do { \
+        char *_av[] = { __VA_ARGS__ }; \
+        run_case((label), (const char *const *)_av, \
+                 (int)(sizeof(_av) / sizeof(_av[0])), (optstring), NULL, 0); \
+    } while (0)
+
+#define RUNL(label, optstring, lopts, li, ...) \
+    do { \
+        char *_av[] = { __VA_ARGS__ }; \
+        run_case((label), (const char *const *)_av, \
+                 (int)(sizeof(_av) / sizeof(_av[0])), (optstring), (lopts), (li)); \
+    } while (0)
+
+/* ------------------------------------------------------------------ */
+/* Part 1: short options only, generated by crossing a set of argv SHAPES
+ * (clustering, interleaving, "--", a lone "-", an unknown option) against
+ * the set of optstring ORDERING prefixes ('' permute, '+' require-order,
+ * '-' return-in-order, and every one of those combined with a leading ':'
+ * for silent errors). This is the permutation-window exerciser: 16 shapes
+ * x 6 prefixes = 96 vectors, each a genuinely different scan because the
+ * shape decides WHERE the non-options fall and the prefix decides what
+ * getopt does about it. */
+/* ------------------------------------------------------------------ */
+
+static const char *const pat_a[]              = { "-a" };
+static const char *const pat_abc_sep[]         = { "-a", "-b", "-c" };
+static const char *const pat_abc_clus[]        = { "-abc" };
+static const char *const pat_x[]               = { "x" };
+static const char *const pat_x_a[]             = { "x", "-a" };
+static const char *const pat_a_x[]             = { "-a", "x" };
+static const char *const pat_x_a_y[]           = { "x", "-a", "y" };
+static const char *const pat_full_interleave[] = { "-a", "x", "-b", "y", "-c", "z" };
+static const char *const pat_interleave2[]     = { "x", "-a", "-b", "y", "-c" };
+static const char *const pat_dashdash[]        = { "--" };
+static const char *const pat_a_dashdash_b[]    = { "-a", "--", "-b" };
+static const char *const pat_x_dashdash_a_y[]  = { "x", "--", "-a", "y" };
+static const char *const pat_lonedash[]        = { "-" };
+static const char *const pat_a_lonedash_b[]    = { "-a", "-", "-b" };
+static const char *const pat_unknown[]         = { "-x" };
+
+/* --- adversarial additions (verifier pass) ---
+ * These extend the SAME matrix so every new shape is automatically crossed
+ * with all 6 ordering prefixes (short matrix) and both POSIXLY_CORRECT
+ * states (posixly_correct matrix), rather than being one-off vectors --
+ * the permutation window is exactly what a one-off vector is least likely
+ * to exercise adversarially. */
+static const char *const pat_empty_str[]       = { "" };
+static const char *const pat_a_empty_b[]       = { "-a", "", "-b" };
+static const char *const pat_two_dashdash[]    = { "-a", "--", "-b", "--", "-c" };
+static const char *const pat_dashdash_dash[]   = { "-a", "--", "-" };
+static const char *const pat_mid_unknown[]     = { "-axb" };   /* 'x' not in "abc": unknown MID-cluster */
+static const char *const pat_three_lonedash[]  = { "-", "-", "-" };
+static const char *const pat_lonedash_then_a[] = { "-", "-a" };
+
+struct Pattern { const char *name; const char *const *v; int n; };
+static const struct Pattern patterns[] = {
+    { "()",                NULL,                 0 },
+    { "(-a)",              pat_a,                1 },
+    { "(-a -b -c)",        pat_abc_sep,          3 },
+    { "(-abc)",            pat_abc_clus,         1 },
+    { "(x)",               pat_x,                1 },
+    { "(x -a)",            pat_x_a,              2 },
+    { "(-a x)",            pat_a_x,              2 },
+    { "(x -a y)",          pat_x_a_y,            3 },
+    { "(-a x -b y -c z)",  pat_full_interleave,  6 },
+    { "(x -a -b y -c)",    pat_interleave2,      5 },
+    { "(--)",              pat_dashdash,         1 },
+    { "(-a -- -b)",        pat_a_dashdash_b,     3 },
+    { "(x -- -a y)",       pat_x_dashdash_a_y,   4 },
+    { "(-)",                pat_lonedash,         1 },
+    { "(-a - -b)",          pat_a_lonedash_b,     3 },
+    { "(-x)",               pat_unknown,          1 },
+    /* adversarial additions below */
+    { "(\"\")",             pat_empty_str,        1 },
+    { "(-a \"\" -b)",       pat_a_empty_b,        3 },
+    { "(-a -- -b -- -c)",   pat_two_dashdash,     5 },
+    { "(-a -- -)",          pat_dashdash_dash,    3 },
+    { "(-axb)",             pat_mid_unknown,      1 },
+    { "(- - -)",            pat_three_lonedash,   3 },
+    { "(- -a)",             pat_lonedash_then_a,  2 },
+};
+#define N_PATTERN (int)(sizeof(patterns) / sizeof(patterns[0]))
+
+/* '+' and '-' select REQUIRE_ORDER/RETURN_IN_ORDER outright; ':' (alone or
+ * combined with either) only changes error reporting, so pairing it with
+ * both is what proves the two flags are parsed independently rather than
+ * one shadowing the other. ':' must come AFTER '+'/'-' in the optstring --
+ * init_scan() strips a leading +/- first and only then is optstring[0]
+ * checked for ':' -- so a ":-abc" ordering is deliberately not in this list
+ * (it would make '-' an ordinary option letter, not a return-in-order flag,
+ * which is a different and less interesting thing to test). */
+static const char *const ord_prefixes[] = { "", "+", "-", ":", "+:", "-:" };
+#define N_PREFIX (int)(sizeof(ord_prefixes) / sizeof(ord_prefixes[0]))
+
+static void run_short_option_matrix(void)
+{
+    int i, j;
+    for (j = 0; j < N_PREFIX; j++) {
+        for (i = 0; i < N_PATTERN; i++) {
+            char optstr[8], label[80];
+            snprintf(optstr, sizeof optstr, "%sabc", ord_prefixes[j]);
+            snprintf(label, sizeof label, "short prefix=\"%s\" argv=%s",
+                      ord_prefixes[j], patterns[i].name);
+            run_case(label, patterns[i].v, patterns[i].n, optstr, NULL, 0);
+        }
+    }
+}
+
+/* Part 1b: the same 16 shapes again, this time with a PLAIN optstring (no
+ * +/- prefix) and POSIXLY_CORRECT toggled in the environment instead --
+ * the other way PERMUTE vs REQUIRE_ORDER gets selected, and the one that
+ * needs the optind=0 reset to even be observable (see file header). 32 more
+ * vectors. */
+static void run_posixly_correct_matrix(void)
+{
+    int e, i;
+    for (e = 0; e < 2; e++) {
+        if (e) setenv("POSIXLY_CORRECT", "1", 1);
+        else   unsetenv("POSIXLY_CORRECT");
+        for (i = 0; i < N_PATTERN; i++) {
+            char label[80];
+            snprintf(label, sizeof label, "env POSIXLY_CORRECT=%s argv=%s",
+                      e ? "set" : "unset", patterns[i].name);
+            run_case(label, patterns[i].v, patterns[i].n, "abc", NULL, 0);
+        }
+    }
+    unsetenv("POSIXLY_CORRECT");
+}
+
+/* ------------------------------------------------------------------ */
+/* Part 2: argument-taking short options -- required (':'), optional
+ * ('::'), attached vs detached, missing-at-end (silent vs not), and the
+ * cases specific to clustering: an attached argument that is not the FIRST
+ * option in the cluster ("-ab" where a takes "b" as literal arg text, vs
+ * "-ab value" where b's arg is detached). */
+/* ------------------------------------------------------------------ */
+
+static void run_argument_cases(void)
+{
+    RUN("required attached -ofile",              "o:",   (char *)"-ofile");
+    RUN("required detached -o file",              "o:",   (char *)"-o", (char *)"file");
+    RUN("required missing at end",                "o:",   (char *)"-o");
+    RUN("required missing at end, silent ':'",    ":o:",  (char *)"-o");
+    RUN("required arg looks like an option",      "o:",   (char *)"-o", (char *)"-x");
+    RUN("cluster, required attached mid-cluster", "ab:c", (char *)"-abvalue");
+    RUN("cluster, required detached mid-cluster", "ab:c", (char *)"-ab", (char *)"value");
+    RUN("required arg is rest of the cluster",    "a:b",  (char *)"-ab");
+    RUN("optional attached -ofile",               "o::",  (char *)"-ofile");
+    RUN("optional detached, NOT taken",           "o::",  (char *)"-o", (char *)"file");
+    RUN("optional absent at end of argv",         "o::",  (char *)"-o");
+    RUN("optional cluster, attached tail as arg", "a::b", (char *)"-axyz");
+    RUN("optional cluster, empty then next opt",  "ab::c",(char *)"-ab", (char *)"-c");
+    RUN("unknown option",                          "a",   (char *)"-x");
+    RUN("unknown option, silent ':'",              ":a",  (char *)"-x");
+    RUN("':' itself can never be an option char",  "a:",  (char *)"-:");
+    RUN("cluster with trailing unknown letter",    "ab",  (char *)"-abx");
+}
+
+/* ------------------------------------------------------------------ */
+/* Part 3: getopt_long -- --name, --name=value, --name value, abbreviation
+ * (unambiguous and ambiguous, with exact-match-wins-over-ambiguous as its
+ * own case), unknown --long, the flag/val form, longindex, and long options
+ * mixed with short clusters / "--" / permutation / POSIXLY_CORRECT. */
+/* ------------------------------------------------------------------ */
+
+static int g_flag = -12345;   /* sentinel so "never written" is visible too */
+
+static const struct option lopts_basic[] = {
+    { "verbose", no_argument,       NULL,    'v' },
+    { "output",  required_argument, NULL,    'o' },
+    { "level",   optional_argument, NULL,    'l' },
+    { "flag",    no_argument,       &g_flag, 42  },
+    { NULL, 0, NULL, 0 },
+};
+
+/* "foo" is an exact prefix of both "foobar" and "foobaz", which is exactly
+ * the scenario that distinguishes "ambiguous" from "exact match wins even
+ * though other options share the prefix" -- glibc's rule (and this engine's,
+ * per getopt.c's ambiguity loop) is: an EXACT name match short-circuits
+ * before the ambiguity check ever has a chance to fire. */
+static const struct option lopts_ambig[] = {
+    { "foobar", no_argument, NULL, 'A' },
+    { "foobaz", no_argument, NULL, 'B' },
+    { "foo",    no_argument, NULL, 'C' },
+    { NULL, 0, NULL, 0 },
+};
+
+static void run_long_option_cases(void)
+{
+    RUNL("long exact --verbose",                 "vo:l::", lopts_basic, 0, (char *)"--verbose");
+    RUNL("long required, attached =",             "vo:l::", lopts_basic, 0, (char *)"--output=file");
+    RUNL("long required, detached (space)",       "vo:l::", lopts_basic, 0, (char *)"--output", (char *)"file");
+    RUNL("long required, missing at end",         "vo:l::", lopts_basic, 0, (char *)"--output");
+    RUNL("long required, missing at end, silent", ":vo:l::",lopts_basic, 0, (char *)"--output");
+    RUNL("long optional, no '='",                 "vo:l::", lopts_basic, 0, (char *)"--level");
+    RUNL("long optional, '=' value",              "vo:l::", lopts_basic, 0, (char *)"--level=5");
+    RUNL("long required, '=' with empty value",   "vo:l::", lopts_basic, 0, (char *)"--output=");
+    RUNL("long no-arg option given '=value'",     "vo:l::", lopts_basic, 0, (char *)"--verbose=x");
+    RUNL("long unambiguous abbrev of verbose",    "vo:l::", lopts_basic, 0, (char *)"--verb");
+    RUNL("long unambiguous abbrev of output",     "vo:l::", lopts_basic, 0, (char *)"--out=z");
+    RUNL("long unknown --nope",                   "vo:l::", lopts_basic, 0, (char *)"--nope");
+    RUNL("'--' then a literal that looks long",   "vo:l::", lopts_basic, 0, (char *)"--", (char *)"--verbose");
+    RUNL("permute: short, nonoption, long",       "vo:l::", lopts_basic, 0,
+         (char *)"-v", (char *)"file", (char *)"--output=z");
+    RUNL("mixed cluster + long in one argv",      "vo:l::", lopts_basic, 0,
+         (char *)"-v", (char *)"--output=x", (char *)"-l3");
+    RUNL("require-order '+' stops at nonoption",  "+vo:l::", lopts_basic, 0,
+         (char *)"file", (char *)"--verbose");
+    RUNL("return-in-order '-' with a long option","-vo:l::", lopts_basic, 0,
+         (char *)"file", (char *)"--verbose", (char *)"file2");
+
+    g_flag = -12345;
+    RUNL("long flag/val form --flag", "vo:l::", lopts_basic, 0, (char *)"--flag");
+    printf("  g_flag_after=%d\n", g_flag);
+
+    g_flag = -12345;
+    RUNL("long flag/val form with longindex", "vo:l::", lopts_basic, 1, (char *)"--flag");
+    printf("  g_flag_after=%d\n", g_flag);
+
+    RUNL("longindex out-param on --verbose", "vo:l::", lopts_basic, 1, (char *)"--verbose");
+    RUNL("longindex out-param on --output",  "vo:l::", lopts_basic, 1, (char *)"--output=z");
+
+    setenv("POSIXLY_CORRECT", "1", 1);
+    RUNL("long + POSIXLY_CORRECT set",   "vo:l::", lopts_basic, 0, (char *)"file", (char *)"--verbose");
+    unsetenv("POSIXLY_CORRECT");
+    RUNL("long + POSIXLY_CORRECT unset", "vo:l::", lopts_basic, 0, (char *)"file", (char *)"--verbose");
+
+    /* Ambiguity group. */
+    RUNL("exact match wins over ambiguous prefix", "", lopts_ambig, 0, (char *)"--foo");
+    RUNL("ambiguous prefix (matches 2, exact 0)",  "", lopts_ambig, 0, (char *)"--foob");
+    RUNL("ambiguous prefix, longer common part",   "", lopts_ambig, 0, (char *)"--fooba");
+    RUNL("exact match --foobar",                    "", lopts_ambig, 0, (char *)"--foobar");
+    RUNL("exact match --foobaz",                    "", lopts_ambig, 0, (char *)"--foobaz");
+    RUNL("no match at all (too long a prefix)",     "", lopts_ambig, 0, (char *)"--foobarz");
+}
+
+/* ------------------------------------------------------------------ */
+/* Part 4 (verifier pass): hand-written edge cases the implementer's 174
+ * vectors did not reach -- empty long-option names, arguments that are
+ * themselves "--" or "-x", silent-mode error-class boundaries (ambiguous /
+ * unrecognized are NOT "missing argument" and so must stay '?' even under
+ * a leading ':'), the longindex-untouched-on-error contract, and minimal-
+ * length abbreviations. */
+/* ------------------------------------------------------------------ */
+
+static void run_extra_edge_cases(void)
+{
+    /* "--=value": the long-option name is EMPTY (nlen==0 because '=' is the
+     * very first character after "--"). strncmp(name, "", 0) matches every
+     * entry trivially, so this must come out ambiguous (nothing is an exact
+     * 0-length name), not silently pick the first table entry. */
+    RUNL("long empty name via '--=value' (nlen==0)", "vo:l::", lopts_basic, 0,
+         (char *)"--=value");
+
+    /* A required SHORT argument consumes the next argv element completely
+     * unconditionally -- "--" and "-x" are only special when getopt is
+     * looking for the START of an option, not when it has already committed
+     * to consuming an option's argument. */
+    RUN("required short arg is literally \"--\"",      "o:", (char *)"-o", (char *)"--");
+    RUN("required short arg looks like a long option", "o:", (char *)"-o", (char *)"--foo");
+
+    /* Same for getopt_long's required argument. */
+    RUNL("long required detached arg looks like an option", "vo:l::", lopts_basic, 0,
+         (char *)"--output", (char *)"-x");
+
+    /* Optional-argument long options take a value ONLY when attached via
+     * '='; unlike required_argument, a following DETACHED token must be
+     * left alone and survive as a non-option (permuted to the end). */
+    RUNL("long optional arg does not eat a detached token", "vo:l::", lopts_basic, 0,
+         (char *)"--level", (char *)"foo");
+
+    /* Ambiguous / unrecognized long options are not "missing argument"
+     * errors -- POSIX's leading ':' only changes what a MISSING ARGUMENT
+     * reports (':' instead of '?'); both these classes must stay '?' even
+     * under a silent optstring. */
+    RUNL("ambiguous long option, silent optstring (':')",    ":", lopts_ambig, 0,
+         (char *)"--foob");
+    RUNL("unrecognized long option, silent optstring (':')", ":", lopts_ambig, 0,
+         (char *)"--zzz");
+
+    /* Ambiguous-prefix detection must use the name BEFORE '=', not the
+     * whole remaining token -- "--foob=x" is still only a 4-char prefix
+     * match against "foobar"/"foobaz", still ambiguous. */
+    RUNL("ambiguous prefix with an attached '=value'", "", lopts_ambig, 0,
+         (char *)"--foob=x");
+
+    /* glibc writes *longindex ONLY when a definite option is matched --
+     * never on an ambiguous or unrecognized long option. Confirm the
+     * out-param is left at its caller-supplied sentinel (-1, from
+     * run_case) on both error classes. */
+    RUNL("longindex untouched on ambiguous error",    "",       lopts_ambig, 1, (char *)"--foob");
+    RUNL("longindex untouched on unrecognized error", "vo:l::", lopts_basic, 1, (char *)"--zzz");
+
+    /* A single-dash unknown short option still goes through the SHORT path
+     * even when a longopts table is supplied -- longopts only intercepts
+     * tokens starting with "--". */
+    RUNL("short unknown option while longopts present", "vo:l::", lopts_basic, 0,
+         (char *)"-x");
+
+    /* Minimal-length (1-character) unambiguous abbreviations -- the
+     * shortest possible prefix that still disambiguates. */
+    RUNL("minimal 1-char abbreviation --v (only verbose starts with v)", "vo:l::",
+         lopts_basic, 0, (char *)"--v");
+    RUNL("minimal 1-char abbreviation --o (only output starts with o)",  "vo:l::",
+         lopts_basic, 0, (char *)"--o");
+
+    /* optstring reduced to nothing but the silent flag, or genuinely empty:
+     * every short option is then "unknown", exercising `strchr(optstring,c)`
+     * against a zero-length haystack on both ends of the ':'-stripping. */
+    RUN("optstring is only ':' (silent, no valid letters)", ":", (char *)"-a");
+    RUN("optstring is completely empty",                    "",  (char *)"-a");
+}
+
+/* Exercises the ENGINE'S state machine directly (not through run_case, which
+ * always forces optind=0) for two things a table-driven vector cannot reach:
+ *
+ * 1. The "very first call in the process" path. Every vector above resets
+ *    optind=0 between cases (see the file header) so that a change of
+ *    POSIXLY_CORRECT/ordering-prefix is re-derived -- but that means the
+ *    single most common real-world usage pattern, a program that never
+ *    touches optind and just calls getopt() starting from its C-runtime
+ *    default of 1, is NEVER exercised anywhere else in this file. The
+ *    engine is supposed to detect this via the `initialised` static (see
+ *    getopt.c), not via optind==0 -- this call is deliberately the FIRST
+ *    getopt call anywhere in this whole test binary, before main() does
+ *    anything else, so that static is still at its BSS-zero default here.
+ *
+ * 2. Calling getopt() again AFTER it has already returned -1 once. A
+ *    real program never does this, but nothing in the contract forbids it,
+ *    and the permutation-window state (first_nonopt/last_nonopt) is exactly
+ *    the kind of state a second no-op scan could quietly corrupt. Asserted
+ *    here as "stays -1, optind does not keep drifting". */
+static void run_engine_state_cases(void)
+{
+    {
+        char *argv[] = { (char *)"prog", (char *)"-a", (char *)"file" };
+        int r = getopt(3, argv, "a");
+        printf("== natural first call (optind starts at 1, never reset) ==\n");
+        printf("  ret=%d optarg=%s optind=%d optopt=%d\n",
+               r, optarg ? optarg : "(null)", optind, optopt);
+    }
+    {
+        char *argv[] = { (char *)"prog", (char *)"x", (char *)"-a" };
+        int r1, r2, r3;
+        optind = 0;
+        r1 = getopt(3, argv, "a");
+        r2 = getopt(3, argv, "a");
+        r3 = getopt(3, argv, "a");   /* called again after exhaustion */
+        printf("== double exhaustion call (called a 3rd time after -1) ==\n");
+        printf("  r1=%d r2=%d r3=%d final_optind=%d argv=[%s,%s,%s]\n",
+               r1, r2, r3, optind, argv[0], argv[1], argv[2]);
+    }
+}
+
+int main(void)
+{
+    /* MUST run before opterr=0 and before any other getopt call in this
+     * process -- see run_engine_state_cases()'s comment. Environment must be
+     * deterministic first; unsetenv() does not itself call getopt so it does
+     * not disturb the `initialised` static this case depends on. */
+    unsetenv("POSIXLY_CORRECT");
+    run_engine_state_cases();
+
+    opterr = 0;   /* see file header: message TEXT is not part of the contract */
+
+    run_short_option_matrix();      /* (16+7) patterns x 6 prefixes  = 138 vectors */
+    run_posixly_correct_matrix();   /* (16+7) patterns x 2 env states = 46 vectors */
+    run_argument_cases();           /* 17 vectors */
+    run_long_option_cases();        /* 29 vectors */
+    run_extra_edge_cases();         /* 14 vectors */
+
+    return 0;
+}
