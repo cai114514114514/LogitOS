@@ -214,6 +214,12 @@ static void report(JSContext *ctx, const char *url)
     JSValue e = JS_GetException(ctx);
     const char *m = JS_ToCString(ctx, e);
     printf("[browser] module exception in %s: %s\n", url, m ? m : "?");
+    /* The GUI half. Serial-only reporting made a module that throws at top
+     * level indistinguishable from a module that rendered nothing on purpose
+     * -- the classic-script path (js_page.c:667) and the timer path both
+     * note() their exceptions into the status bar, and this path was the one
+     * of the three that did not. */
+    js_page_note("[exception] "); if (m) js_page_note(m); js_page_note("\n");
     if (JS_IsError(ctx, e)) {
         JSValue st = JS_GetPropertyStr(ctx, e, "stack");
         if (!JS_IsUndefined(st)) {

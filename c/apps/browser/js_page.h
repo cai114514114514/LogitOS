@@ -74,6 +74,13 @@ const char *js_page_output(void);
 int         js_page_output_len(void);
 void        js_page_output_clear(void);
 
+/* Append a fragment to the console buffer from outside js_page.c. Exists for
+ * exactly one caller -- js_module.c's module-exception reporter -- so a module
+ * that throws at top level surfaces in the status bar like every other
+ * uncaught exception, instead of dying serial-only (the "silent white page"
+ * failure R3 named). */
+void js_page_note(const char *frag);
+
 /* Observe every fragment as it is appended, BEFORE the bound above applies.
  * For an instrument that must not miss a message: the buffer is capped at
  * 4 KiB, which is right for a status bar and wrong for counting a real

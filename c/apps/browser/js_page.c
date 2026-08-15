@@ -89,6 +89,13 @@ static void note(const char *s)
     g_out[g_outlen] = 0;
 }
 
+/* For the ONE writer that lives outside this file: js_module.c's top-level
+ * module exception reporter. Everything else that appends here already lives
+ * in this TU; a module page that dies on its first statement used to be a
+ * SILENT white screen because report() printed to serial only -- the GUI
+ * status bar (fed from this buffer) never heard about it. */
+void js_page_note(const char *frag) { note(frag); }
+
 const char *js_page_output(void)     { return g_out; }
 int         js_page_output_len(void) { return g_outlen; }
 void        js_page_output_clear(void) { g_outlen = 0; g_out[0] = 0; }
