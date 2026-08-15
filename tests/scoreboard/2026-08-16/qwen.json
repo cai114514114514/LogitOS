@@ -1,0 +1,92 @@
+{
+ "name": "qwen",
+ "url": "https://chat.qwen.ai/",
+ "started": "2026-08-16T03:21:32",
+ "verdict": "ERRORS",
+ "why": "painted 615392 changed px in 60.1s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://chat.qwen.ai/",
+  "bytes": 197805,
+  "redirects": [],
+  "script_tags": 18,
+  "script_src": 3,
+  "img_tags": 6,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 3,
+   "inline_scripts": 15,
+   "images": 6,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "elapsed": 1.2
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "InternalError: interrupted",
+    "stack": [
+     "at x (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at wF (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at ws (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at QARDLm (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/main.js: SyntaxError: invalid escape sequence in regular expression"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 21,
+  "dials": 5,
+  "reused": 16,
+  "modules": 15,
+  "modules_failed": 1,
+  "heap_peak_k": 14594,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 60.1,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 615392,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 510885,
+  "ink_px_blank": 3902,
+  "colours": 834,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16/qwen.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16/qwen.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 3,
+   "inline_scripts": 15,
+   "images": 6,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T03:23:08"
+}

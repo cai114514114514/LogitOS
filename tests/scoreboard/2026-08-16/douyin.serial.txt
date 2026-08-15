@@ -1,0 +1,79 @@
+[wm] perf t=18633 composites=175 ns=1867463986 max=61806261 motions=18 curmoves=10 curns=286330 full=123 rects=175 cpx=30987504 fpx=30788976 presns=52662789 torn=0 defer=96 late=0 drawmax=88
+[sock] connected www.douyin.com via ipv4 ::ffff:198.18.0.40
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19634 composites=228 ns=1911352270 max=61806261 motions=18 curmoves=10 curns=286330 full=176 rects=228 cpx=32011504 fpx=31812976 presns=54166267 torn=0 defer=148 late=0 drawmax=92
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 900s, 2 cached)
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[sock] connected lf-waf-js.byted-static.com via ipv4 ::ffff:198.18.0.55
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 4 alg 1)
+[browser] load done: 2 requests, 2 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 896s, 2 cached)
+[net] rx path: frames 64 irq 74 softirq 37 inline 0 poll 3 idle 0/0 halt/skip
+[browser] scripts collected: 0 external classic, 0 external module, 2 inline
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 3 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 895s, 2 cached)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for lf-douyin-pc-web.douyinstatic.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for lf-douyin-pc-web.douyinstatic.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[net] rx path: frames 580 irq 371 softirq 186 inline 0 poll 9 idle 0/0 halt/skip
+[wm] perf t=33701 composites=280 ns=2975602869 max=61806261 motions=18 curmoves=10 curns=286330 full=202 rects=280 cpx=54314224 fpx=54115696 presns=91880276 torn=0 defer=153 late=0 drawmax=94
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[mm] low: 108908 frames free (425 MiB), 22129 used, 0 shared, 0 bugs
+[mm] low: 108652 frames free (424 MiB), 22385 used, 0 shared, 0 bugs
+[mm] low: 108396 frames free (423 MiB), 22641 used, 0 shared, 0 bugs
+[mm] low: 108140 frames free (422 MiB), 22897 used, 0 shared, 0 bugs
+[mm] low: 107884 frames free (421 MiB), 23153 used, 0 shared, 0 bugs
+[mm] low: 107628 frames free (420 MiB), 23409 used, 0 shared, 0 bugs
+[mm] low: 107372 frames free (419 MiB), 23665 used, 0 shared, 0 bugs
+[mm] low: 107116 frames free (418 MiB), 23921 used, 0 shared, 0 bugs
+[mm] low: 106860 frames free (417 MiB), 24177 used, 0 shared, 0 bugs
+[mm] low: 106604 frames free (416 MiB), 24433 used, 0 shared, 0 bugs
+[mm] low: 106348 frames free (415 MiB), 24689 used, 0 shared, 0 bugs
+[mm] low: 106092 frames free (414 MiB), 24945 used, 0 shared, 0 bugs
+[mm] low: 105836 frames free (413 MiB), 25201 used, 0 shared, 0 bugs
+[mm] low: 105580 frames free (412 MiB), 25457 used, 0 shared, 0 bugs
+[mm] low: 105324 frames free (411 MiB), 25713 used, 0 shared, 0 bugs
+[mm] low: 105068 frames free (410 MiB), 25969 used, 0 shared, 0 bugs
+[mm] low: 104812 frames free (409 MiB), 26225 used, 0 shared, 0 bugs
+[mm] low: 104556 frames free (408 MiB), 26481 used, 0 shared, 0 bugs
+[mm] low: 104300 frames free (407 MiB), 26737 used, 0 shared, 0 bugs
+[mm] low: 104044 frames free (406 MiB), 26993 used, 0 shared, 0 bugs
+[mm] low: 103788 frames free (405 MiB), 27249 used, 0 shared, 0 bugs
+[mm] low: 103532 frames free (404 MiB), 27505 used, 0 shared, 0 bugs
+[browser] heap peak 38926K
+[mm] low: 103276 frames free (403 MiB), 27761 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 9 external classic, 0 external module, 72 inline
+[wm] perf t=39705 composites=309 ns=3394415271 max=61806261 motions=18 curmoves=10 curns=286330 full=219 rects=309 cpx=62874864 fpx=62676336 presns=106086165 torn=0 defer=162 late=0 drawmax=94
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-security.bytegoofy.com, alpn=http/1.1
