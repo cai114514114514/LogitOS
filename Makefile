@@ -3828,3 +3828,4 @@ bench-aui: $(ISO) $(DISK)
 # theoretical: a fragment that exists but is never `-include`d is a target
 # that silently stopped being reachable by name.
 -include tests/power.mk
+-include tests/settings2.mk

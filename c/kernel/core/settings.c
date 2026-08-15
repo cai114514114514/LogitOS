@@ -22,6 +22,25 @@
 int vfs_chmod(const char *path, unsigned mode) __attribute__((weak));
 int vfs_chown(const char *path, unsigned uid, unsigned gid) __attribute__((weak));
 
+/* Same idiom, same reason, one door down: the permission gate (below, in
+ * settings_syscall()) needs "what uid is calling", and c/fs/vfs_cred.c is
+ * where SYS_GETUID already answers that -- vfs_cred_current() is the SAME
+ * source, not a second one. It needs proc.c's table, which the host settings
+ * tests do not link, so it is declared weak and every call site checks first,
+ * exactly like vfs_chmod/vfs_chown. `struct vcred` only needs forward
+ * declaring here -- this is a prototype, nothing dereferences it yet -- and
+ * vfs.h below brings in the real definition (via vfs_meta.h) before it is
+ * ever used.
+ *
+ * user_copy_string() is the safe-user-pointer-copy convention the rest of the
+ * syscall layer already uses (c/kernel/exec/syscall.c, e.g. SYS_DELETE_FILE);
+ * the ENUM prefix argument is the first user pointer this file has ever had to
+ * read itself, so it reads it the way everything else does. It needs the VMM,
+ * which the host tests do not link either -- same weak treatment. */
+struct vcred;
+void vfs_cred_current(struct vcred *c) __attribute__((weak));
+int  user_copy_string(char *dst, int max, const char *src) __attribute__((weak));
+
 #include "vfs.h"
 #include "kprintf.h"
 #include "crc32.h"
@@ -72,12 +91,32 @@ static const struct setting_def schema[] = {
  * it".  It is the whole layering mechanism and it is one byte: a commit writes
  * the entries with sys == 0 and nothing else, so a user's file holds only what
  * that user actually chose.  See the two-store block in settings.h. */
-struct kv { char k[SET_KEYLEN]; char v[SET_VALLEN]; unsigned char sys; };
+/* `type` is unused by `tab[]` (a schema key's type is the schema's, and an
+ * unknown preserved key like win.*.frame has never had one); it exists so
+ * apptab[] below -- same struct, same helpers, one parser -- has somewhere to
+ * keep the SET_T_STR/SET_T_INT session hint SYS_SETTING_ENUM's prefix walk
+ * reports. Always initialised at the one place a slot is allocated, in either
+ * table, so nothing ever reads it unset. */
+struct kv { char k[SET_KEYLEN]; char v[SET_VALLEN]; unsigned char sys; unsigned char type; };
 static struct kv     tab[SET_MAXKV];
 static int           ntab;
 static unsigned      gen;
 static int           diag;
 static int           loaded;
+
+/* ---------------------------------------------------------------------------
+ * APP-DOMAIN KEYS ("app.*"). See the block comment in settings.h for the
+ * argument (own table, own cap, own overflow counter, no persisted type).
+ * Routed to by key prefix inside find()/put_ex() below -- everything else in
+ * this file (load_text, serialise, settings_set_str/int, the selftest sweep)
+ * reaches this table through those two functions and needed no change of its
+ * own to do it. ------------------------------------------------------------- */
+static struct kv     apptab[SET_APP_MAXKV];
+static int           napp;
+static unsigned      app_overflow;   /* refusals at SET_APP_MAXKV, since boot */
+
+static int is_app_key(const char *k)
+{ return k && k[0] == 'a' && k[1] == 'p' && k[2] == 'p' && k[3] == '.'; }
 
 /* ---------------------------------------------------------------------------
  * The user store.  Empty until a login resolves one -- and while it is empty
@@ -217,6 +256,10 @@ static int fmt_hex6(char *d, int cap, unsigned v)
  * ======================================================================== */
 static struct kv *find(const char *key)
 {
+    if (is_app_key(key)) {
+        for (int i = 0; i < napp; i++) if (s_eq(apptab[i].k, key)) return &apptab[i];
+        return NULL;
+    }
     for (int i = 0; i < ntab; i++) if (s_eq(tab[i].k, key)) return &tab[i];
     return NULL;
 }
@@ -243,11 +286,36 @@ static int put_ex(const char *key, const char *val, int from_file)
         if (from_file) diag |= SET_D_BADLINE;
         return SET_E_TOOBIG;
     }
+
+    /* app.* keys: their own table, their own bound, their own overflow
+     * counter -- see the block comment in settings.h for why they do not
+     * share SET_MAXKV/SET_D_FULL with the machine schema. No `sys` layering
+     * (they have no system-store default to shadow) and `type` defaults to
+     * SET_T_STR at the one place a slot is allocated, so a value loaded from
+     * a file -- which carries no type -- is never read uninitialised. */
+    if (is_app_key(key)) {
+        struct kv *e = find(key);
+        if (!e) {
+            if (napp >= SET_APP_MAXKV) {
+                app_overflow++;
+                if (from_file) diag |= SET_D_BADLINE;
+                return SET_E_FULL;
+            }
+            e = &apptab[napp++];
+            s_cpy(e->k, key, SET_KEYLEN);
+            e->type = SET_T_STR;
+        }
+        s_cpy(e->v, val ? val : "", SET_VALLEN);
+        e->sys = 0;
+        return 0;
+    }
+
     struct kv *e = find(key);
     if (!e) {
         if (ntab >= SET_MAXKV) { diag |= SET_D_FULL; return SET_E_FULL; }
         e = &tab[ntab++];
         s_cpy(e->k, key, SET_KEYLEN);
+        e->type = SET_T_STR;
     }
     s_cpy(e->v, val ? val : "", SET_VALLEN);
     /* The ownership bit, set at the ONE place a value is stored.  Loading the
@@ -413,6 +481,7 @@ static int      sys_captured;
 int settings_load(void)
 {
     ntab = 0;
+    napp = 0;
     diag = 0;
     loaded = 1;
 
@@ -624,6 +693,21 @@ static int serialise(void)
         buf[o++] = '\n';                       /* EVERY line is terminated */
     }
 
+    /* app.* keys. No `sys` filter -- unlike tab[], this table has no system
+     * layer to shadow, so every entry here IS something this store's owner
+     * set, and belongs in the file exactly like a schema override does. Same
+     * loop shape, same line format, same terminator rule, so the truncation
+     * argument in settings.h covers these lines too rather than needing a
+     * second one. */
+    for (int i = 0; i < napp; i++) {
+        int need = s_len(apptab[i].k) + s_len(apptab[i].v) + 4;
+        if (o + need >= SET_BUFSZ - 32) break;
+        for (const char *p = apptab[i].k; *p; p++) buf[o++] = *p;
+        buf[o++] = ' '; buf[o++] = '='; buf[o++] = ' ';
+        for (const char *p = apptab[i].v; *p; p++) buf[o++] = *p;
+        buf[o++] = '\n';
+    }
+
     unsigned c = crc32(buf, (size_t)o);
     const char *ct = "# crc32 = ";
     for (int i = 0; ct[i] && o < SET_BUFSZ - 16; i++) buf[o++] = ct[i];
@@ -663,6 +747,17 @@ int settings_reset(void)
      * silently do nothing while reporting success. */
     vfs_delete(settings_store_path());
     ntab = 0;
+    /* app.* keys ARE cleared by a reset, and this is deliberate, not a side
+     * effect nobody decided: they live in the SAME per-user file as the
+     * schema overrides (see the "reuse the exact same store" note on
+     * settings_commit()), so deleting that one file necessarily takes both
+     * with it -- there is no second file a reset could leave standing. A
+     * user resetting "their settings" resetting an app's remembered window
+     * size too is the same claim the rest of this store already makes: one
+     * file, one owner, one reset. An app that wants a preference to survive
+     * ITS user's reset would need a store of its own; this one does not
+     * offer partial resets. */
+    napp = 0;
     diag = SET_D_NOFILE;
     gen++;
     /* Root resetting the SYSTEM store must also drop the snapshot of it, or
@@ -821,13 +916,21 @@ unsigned settings_get_ip(const char *key, unsigned def)
 /* ===========================================================================
  * Writes
  * ======================================================================== */
-int settings_set_str(const char *key, const char *val, int commit)
+/* Shared body for settings_set_str/settings_set_int, tagging the SET_T_* the
+ * caller actually used. Only meaningful for app.* keys (put_ex ignores `type`
+ * for schema/preserved ones -- their type, if any, is the schema's); see the
+ * "session hint, not a format field" note in settings.h. */
+static int set_str_typed(const char *key, const char *val, int commit, unsigned char type)
 {
     if (!loaded) settings_load();
     int rc = put(key, val);
     if (rc < 0) return rc;                 /* SET_E_*, propagated verbatim */
+    if (is_app_key(key)) { struct kv *e = find(key); if (e) e->type = type; }
     return commit ? settings_commit() : 0;
 }
+
+int settings_set_str(const char *key, const char *val, int commit)
+{ return set_str_typed(key, val, commit, SET_T_STR); }
 
 int settings_set_int(const char *key, long val, int commit)
 {
@@ -835,7 +938,7 @@ int settings_set_int(const char *key, long val, int commit)
     const struct setting_def *d = settings_schema_find(key);
     if (d && d->type == SET_T_COLOR) fmt_hex6(v, (int)sizeof v, (unsigned)(val & 0xFFFFFF));
     else                             fmt_long(v, (int)sizeof v, val);
-    return settings_set_str(key, v, commit);
+    return set_str_typed(key, v, commit, SET_T_INT);
 }
 
 /* ===========================================================================
@@ -844,16 +947,23 @@ int settings_set_int(const char *key, long val, int commit)
 int settings_schema_count(void) { return NSCHEMA; }
 const struct setting_def *settings_schema(int i)
 { return (i >= 0 && i < NSCHEMA) ? &schema[i] : NULL; }
-int settings_kv_count(void) { return ntab; }
+/* app.* keys ARE the store too -- a listing that silently left them out would
+ * be exactly the two-clocks lie the settings.h comment on settings_gen()
+ * warns against, one layer up. tab[] first, then apptab[], as one indexed
+ * sequence; a caller that already walks 0..settings_kv_count() sees every key
+ * the store holds and needs to know nothing about there being two tables. */
+int settings_kv_count(void) { return ntab + napp; }
 int settings_kv_at(int i, const char **k, const char **v)
 {
-    if (i < 0 || i >= ntab) return -1;
-    if (k) *k = tab[i].k;
-    if (v) *v = tab[i].v;
+    if (i < 0 || i >= ntab + napp) return -1;
+    const struct kv *e = (i < ntab) ? &tab[i] : &apptab[i - ntab];
+    if (k) *k = e->k;
+    if (v) *v = e->v;
     return 0;
 }
 unsigned settings_gen(void) { return gen; }
 int settings_diag(void) { return diag; }
+unsigned settings_app_overflow(void) { return app_overflow; }
 
 /* ===========================================================================
  * Window frames.  The format is documented in settings.h; the two call sites
@@ -958,17 +1068,25 @@ int settings_frame_save(const char *app, const struct win_frame *f, int commit)
  * ======================================================================== */
 int settings_selftest(void)
 {
-    /* Save the live table so the sweep cannot disturb the running machine. */
-    static struct kv saved[SET_MAXKV];
-    int nsaved = ntab, sdiag = diag;
+    /* Save the live table so the sweep cannot disturb the running machine.
+     * apptab/napp too -- this runs on every real boot, after a session may
+     * already have written a preference, and "the sweep leaves the live table
+     * alone" is exactly as true of that table as of the schema one. */
+    static struct kv saved[SET_MAXKV], appsaved[SET_APP_MAXKV];
+    int nsaved = ntab, sdiag = diag, nappsaved = napp;
     for (int i = 0; i < ntab; i++) saved[i] = tab[i];
+    for (int i = 0; i < napp; i++) appsaved[i] = apptab[i];
 
     /* Build a representative file: every schema key, a window frame, an
-     * unknown key (the preservation case) and a comment. */
+     * unknown key (the preservation case), two app.* keys -- put() routes by
+     * prefix, so this needed no separate call -- and a comment. */
     ntab = 0;
+    napp = 0;
     for (int i = 0; i < NSCHEMA; i++) put(schema[i].key, schema[i].dflt);
     put("win.clock.frame", "40 60 320 240 1 0 0 40 60 320 240");
     put("notify.history", "3");     /* an unknown key: the preservation case */
+    put("app.textedit.win_w", "640");
+    put("app.settings.note", "hello world");
     int len = serialise();
 
     static char snap[SET_SELFTEST_BUFSZ];
@@ -984,15 +1102,23 @@ int settings_selftest(void)
      * colour that nobody chose. Losing a setting to a torn file is acceptable;
      * inventing one is not. */
     static char whole[NSCHEMA][SET_VALLEN], none[NSCHEMA][SET_VALLEN];
-    ntab = 0; diag = 0;
+    /* Same two answers for the app.* lines added above -- an app key has no
+     * schema range to fall back into, so "the only two values it may be" is
+     * the WHOLE check this sweep can still make for it. */
+    static const char *app_keys[] = { "app.textedit.win_w", "app.settings.note" };
+    #define NAPPTEST ((int)(sizeof app_keys / sizeof app_keys[0]))
+    static char appwhole[NAPPTEST][SET_VALLEN], appnone[NAPPTEST][SET_VALLEN];
+    ntab = 0; napp = 0; diag = 0;
     load_text(snap, len);
     for (int i = 0; i < NSCHEMA; i++) s_cpy(whole[i], settings_get_str(schema[i].key, ""), SET_VALLEN);
-    ntab = 0; diag = 0;
+    for (int i = 0; i < NAPPTEST; i++) s_cpy(appwhole[i], settings_get_str(app_keys[i], ""), SET_VALLEN);
+    ntab = 0; napp = 0; diag = 0;
     for (int i = 0; i < NSCHEMA; i++) s_cpy(none[i], settings_get_str(schema[i].key, ""), SET_VALLEN);
+    for (int i = 0; i < NAPPTEST; i++) s_cpy(appnone[i], settings_get_str(app_keys[i], ""), SET_VALLEN);
 
     int failures = 0;
     for (int cut = 0; cut <= len; cut++) {
-        ntab = 0; diag = 0;
+        ntab = 0; napp = 0; diag = 0;
         load_text(snap, cut);
         /* Every schema key must read back inside its declared range... */
         for (int i = 0; i < NSCHEMA; i++) {
@@ -1017,6 +1143,20 @@ int settings_selftest(void)
                 failures++;
                 kprintf("[set] selftest cut=%d INVENTED %s = \"%s\" (file \"%s\", default \"%s\")\n",
                         cut, d->key, v, whole[i], none[i]);
+            }
+        }
+        /* app.* lines get the same "only two answers" check: the whole file's
+         * value, or nothing. No range to check against -- the failure mode a
+         * range check would have caught for a schema key (an in-range but
+         * unchosen number, see ui.accent above) has no equivalent for a
+         * free-text preference, but an INVENTED string is exactly as much a
+         * bug here as there. */
+        for (int i = 0; i < NAPPTEST; i++) {
+            const char *v = settings_get_str(app_keys[i], "");
+            if (!s_eq(v, appwhole[i]) && !s_eq(v, appnone[i])) {
+                failures++;
+                kprintf("[set] selftest cut=%d INVENTED %s = \"%s\" (file \"%s\", default \"%s\")\n",
+                        cut, app_keys[i], v, appwhole[i], appnone[i]);
             }
         }
         /* And a truncated frame record must never be accepted as a valid one. */
@@ -1051,7 +1191,7 @@ int settings_selftest(void)
         "#\n#\n#\n",
     };
     for (unsigned g = 0; g < sizeof garbage / sizeof garbage[0]; g++) {
-        ntab = 0; diag = 0;
+        ntab = 0; napp = 0; diag = 0;
         load_text(garbage[g], s_len(garbage[g]));
         for (int i = 0; i < NSCHEMA; i++) {
             const struct setting_def *d = &schema[i];
@@ -1080,15 +1220,16 @@ int settings_selftest(void)
      * from the sweep passing: "ui.dark = 1" with no newline must leave NOTHING
      * stored.  If this ever stops holding, the truncation argument above is no
      * longer an argument, and the sweep alone would not say so. */
-    ntab = 0; diag = 0;
+    ntab = 0; napp = 0; diag = 0;
     load_text("ui.dark = 1", 11);
     if (ntab != 0 || !(diag & SET_D_TRUNCATED)) {
         failures++;
         kprintf("[set] selftest: an unterminated line was parsed (%d keys, diag %d)\n", ntab, diag);
     }
 
-    ntab = nsaved; diag = sdiag;
+    ntab = nsaved; diag = sdiag; napp = nappsaved;
     for (int i = 0; i < nsaved; i++) tab[i] = saved[i];
+    for (int i = 0; i < nappsaved; i++) apptab[i] = appsaved[i];
 
     kprintf("SETTINGS_SELFTEST offsets=%d failures=%d\n", len + 1, failures);
     return failures;
@@ -1117,28 +1258,138 @@ long settings_syscall(long num, long a, long b, long c)
         const char *key = (const char *)a;
         const char *val = (const char *)b;
         if (!key || !val) return -1;
+
+        /* THE PERMISSION GATE. See the SYS_SETTING_ENUM comment in
+         * include/abi/logit_abi.h: THE KEY NAMESPACE IS THE PERMISSION MODEL.
+         * A schema key is machine state, so a non-root SET on one is refused
+         * -- this is the M28-out-of-scope hole (SYS_SETTING_SET was ungated,
+         * any process could rewrite machine-wide persistent configuration)
+         * closing, and it is the ONLY new restriction this gate adds.
+         *
+         * Everything that is NOT a schema key -- "app." preferences AND the
+         * store's older, already-open "preserved unknown key" mechanism
+         * (win.*.frame, notify.history: see the two-store block in
+         * settings.h and setcheck.as's `frame`/`set` commands, which
+         * tests/boot/run-settings-test.sh exercises through this very
+         * syscall) -- is left exactly as writable by any process as it was
+         * before this gate existed. A first version of this gate refused
+         * anything outside schema+app. with SET_E_BADKEY and that BROKE
+         * win.*.frame / notify.history through SYS_SETTING_SET (caught by
+         * the boot test above, not by the host suite, which never calls
+         * settings_syscall() at all) -- "closed exactly where it was already
+         * supposed to be" means the schema, not every key this store has
+         * ever accepted. key_ok() (inside put_ex(), reached from
+         * settings_set_str() below) still refuses a genuinely malformed key
+         * -- empty, over-long, containing '=' / '#' / whitespace -- so this
+         * is not "anything goes", only "not newly refused".
+         *
+         * vfs_cred_current() is THE SAME SOURCE SYS_GETUID reads
+         * (c/fs/vfs_cred.c id_syscall() -> vfs_cred_current()), not a second
+         * uid lookup invented for this file. Root's own writes -- the boot-time
+         * settings_set_* calls that happen before any process exists, where
+         * proc_current() is NULL and vfs_cred_current() answers uid 0 by
+         * definition -- are unaffected: this gate is HERE, in the syscall
+         * body, not in put()/put_ex()/settings_set_str(), so every
+         * kernel-internal caller (settings_frame_save(), the boot-time
+         * defaults) that calls settings_set_* directly rather than through
+         * this syscall never meets it at all. */
+        if (settings_schema_find(key)) {
+            struct vcred me;
+            if (vfs_cred_current) vfs_cred_current(&me);
+            else                  me.uid = 0;   /* host test link: no cred table -> root */
+            if (me.uid != 0) return ID_E_PERM;
+        }
         return settings_set_str(key, val, (int)c & 1);
     }
     case SYS_SETTING_ENUM: {
         int i = (int)a;
         struct logit_setting *out = (struct logit_setting *)b;
-        const struct setting_def *d = settings_schema(i);
-        if (!d || !out) return -1;
-        s_cpy(out->key,   d->key,   (int)sizeof out->key);
-        s_cpy(out->label, d->label, (int)sizeof out->label);
-        s_cpy(out->dflt,  d->dflt,  (int)sizeof out->dflt);
-        s_cpy(out->value, settings_get_str(d->key, d->dflt), (int)sizeof out->value);
-        out->type  = d->type;
-        out->group = d->group;
-        out->lo    = (int)d->lo;
-        out->hi    = (int)d->hi;
-        return 0;
+        const char *prefix = (const char *)c;
+        if (!out) return -1;
+
+        if (!prefix) {
+            /* Unchanged: index walks the SCHEMA, as it always has. */
+            const struct setting_def *d = settings_schema(i);
+            if (!d) return -1;
+            s_cpy(out->key,   d->key,   (int)sizeof out->key);
+            s_cpy(out->label, d->label, (int)sizeof out->label);
+            s_cpy(out->dflt,  d->dflt,  (int)sizeof out->dflt);
+            s_cpy(out->value, settings_get_str(d->key, d->dflt), (int)sizeof out->value);
+            out->type  = d->type;
+            out->group = d->group;
+            out->lo    = (int)d->lo;
+            out->hi    = (int)d->hi;
+            return 0;
+        }
+
+        /* PREFIX WALK. `prefix` is a user pointer -- copied in the way every
+         * other syscall entry point in this kernel reads a user string
+         * (c/kernel/exec/syscall.c, user_copy_string()), bounded to a key's
+         * own length: a prefix longer than SET_KEYLEN cannot match a key that
+         * fits the store at all. Walks the SCHEMA and the app.* table as ONE
+         * indexed sequence -- "index" is a position among the MATCHES, not a
+         * raw table offset -- which is how a caller lists its own domain
+         * ("app.textedit.") without knowing its keys in advance. */
+        char pfx[SET_KEYLEN];
+        if (!user_copy_string || user_copy_string(pfx, (int)sizeof pfx, prefix) < 0) return -1;
+        int pn = s_len(pfx);
+        int idx = 0;
+        for (int si = 0; si < NSCHEMA; si++) {
+            if (s_len(schema[si].key) < pn) continue;
+            int match = 1;
+            for (int p = 0; p < pn; p++) if (schema[si].key[p] != pfx[p]) { match = 0; break; }
+            if (!match) continue;
+            if (idx++ != i) continue;
+            const struct setting_def *d = &schema[si];
+            s_cpy(out->key,   d->key,   (int)sizeof out->key);
+            s_cpy(out->label, d->label, (int)sizeof out->label);
+            s_cpy(out->dflt,  d->dflt,  (int)sizeof out->dflt);
+            s_cpy(out->value, settings_get_str(d->key, d->dflt), (int)sizeof out->value);
+            out->type  = d->type;
+            out->group = d->group;
+            out->lo    = (int)d->lo;
+            out->hi    = (int)d->hi;
+            return 0;
+        }
+        for (int ai = 0; ai < napp; ai++) {
+            if (s_len(apptab[ai].k) < pn) continue;
+            int match = 1;
+            for (int p = 0; p < pn; p++) if (apptab[ai].k[p] != pfx[p]) { match = 0; break; }
+            if (!match) continue;
+            if (idx++ != i) continue;
+            /* No schema entry: label/default are unknown by construction, and
+             * that is the whole point of a preference nobody had to declare
+             * ahead of time. */
+            s_cpy(out->key,   apptab[ai].k, (int)sizeof out->key);
+            out->label[0] = 0;
+            out->dflt[0]  = 0;
+            s_cpy(out->value, apptab[ai].v, (int)sizeof out->value);
+            out->type  = apptab[ai].type;
+            out->group = 0;
+            out->lo = 0; out->hi = 0;
+            return 0;
+        }
+        return -1;
     }
     case SYS_SETTING_CTL:
         switch ((int)a) {
         case SETCTL_GEN:      return (long)settings_gen();
         case SETCTL_COMMIT:   return settings_commit();
-        case SETCTL_RESET:    return settings_reset();
+        case SETCTL_RESET: {
+            /* Same gate, same reasoning as SYS_SETTING_SET's schema arm: RESET
+             * deletes the file and wipes every schema override AND every app.*
+             * preference machine-wide, which is strictly MORE than the single
+             * schema write the gate above already refuses a non-root caller --
+             * leaving it open would make the refusal above decorative (can't
+             * set ui.dark, can erase it). Found by the adversarial verifier of
+             * the settings line, closed at integration. Root's boot-time /
+             * kernel-internal resets never come through this syscall. */
+            struct vcred me;
+            if (vfs_cred_current) vfs_cred_current(&me);
+            else                  me.uid = 0;   /* host test link: no cred table -> root */
+            if (me.uid != 0) return ID_E_PERM;
+            return settings_reset();
+        }
         case SETCTL_COUNT:    return settings_schema_count();
         case SETCTL_DIAG:     return settings_diag();
         case SETCTL_RELOAD:   return settings_load();

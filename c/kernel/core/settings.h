@@ -190,6 +190,43 @@ struct setting_def {
 #define SET_PATH     "/etc/settings.conf"
 
 /* ---------------------------------------------------------------------------
+ * APP-DOMAIN KEYS -- "app.*", the hole the M28 out-of-scope list named: until
+ * now nothing outside this kernel's own nine keys could survive a reboot, so
+ * no ported program and no shipped app ever had a preferences file. See the
+ * SYS_SETTING_ENUM comment in include/abi/logit_abi.h for the permission
+ * argument (THE KEY NAMESPACE IS THE PERMISSION MODEL) -- this block is just
+ * the storage those keys need.
+ *
+ * A SEPARATE bounded table, not more room in `tab[]`, and that is the point
+ * rather than an implementation detail: the size cap above exists so a
+ * handful of misbehaving apps cannot crowd the nine keys that make the
+ * desktop itself work out of the ONE store a whole machine gets. Same key/
+ * value shape (SET_KEYLEN/SET_VALLEN -- one format, one set of limits, one
+ * parser), own count and own overflow, reported through its own counter
+ * (settings_app_overflow()) rather than silently sharing SET_D_FULL, which
+ * would blame an app's table for a run the machine schema caused or the
+ * other way round.
+ *
+ * They live in the PER-USER store (preferences belong to a person, not the
+ * machine) and round-trip through the exact same load/commit/CRC path as
+ * everything else -- see settings.c: routing is by key prefix inside put_ex()
+ * and find(), so load_text(), serialise(), settings_set_str/int() and the
+ * SETCTL_SELFTEST sweep all reach them with no separate code path to drift
+ * out of sync with the one that is actually tested.
+ *
+ * TYPE IS A SESSION HINT, NOT A FORMAT FIELD. The file keeps one shape,
+ * "key = value", text, human-repairable -- adding a persisted type marker
+ * would be a second thing to keep in sync with the value on every edit, for a
+ * label the process that wrote the key already knows. So the tag lives only
+ * in the in-memory entry: SET_T_STR the moment a key is created or loaded
+ * from a file (a value that came off disk is a string until proven otherwise
+ * this boot), and settings_set_int() re-tags it SET_T_INT for as long as this
+ * boot's process keeps setting it that way. SYS_SETTING_ENUM's prefix walk
+ * reports whichever tag is live.
+ */
+#define SET_APP_MAXKV 64      /* app.* keys the whole machine may store */
+
+/* ---------------------------------------------------------------------------
  * TWO STORES, AND WHY -- the regression this closes, stated before the API.
  * ---------------------------------------------------------------------------
  * /etc/settings.conf is root:root 0600.  settings_commit() writes it through
@@ -308,6 +345,11 @@ int  settings_kv_count(void);                      /* live keys in the table */
 int  settings_kv_at(int i, const char **k, const char **v);
 unsigned settings_gen(void);        /* bumps on every committed change       */
 int  settings_diag(void);           /* SET_D_* from the last load            */
+
+/* app.* refusals-since-boot for SET_APP_MAXKV exhaustion -- the "counter" a
+ * refusal at a bound gets in this file (see e.g. blk_flush_count()), so a
+ * caller can prove the refusal happened instead of grepping the boot log. */
+unsigned settings_app_overflow(void);
 
 /* ---------------------------------------------------------------------------
  * WINDOW GEOMETRY -- the shape, taken from what the window-management line
