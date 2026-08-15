@@ -74,6 +74,21 @@ const char *js_page_output(void);
 int         js_page_output_len(void);
 void        js_page_output_clear(void);
 
+/* ---- the CPU-slice watchdog ----
+ * One synchronous entry into JS (script eval / timer callback / module body)
+ * gets a bounded CPU slice; past it the engine interrupts and the entry
+ * unwinds as an uncatchable error, loudly. Default 45 s -- far above any
+ * honest script at TCG speed; the point is that `while(1)` in a page stops
+ * owning the browser (qwen was the wild specimen). set_slice_ms for tests;
+ * slice_hits so a harness can assert the dog actually bit; slice_begin is
+ * exported for the one out-of-file sync entry, js_module_eval. */
+void js_page_set_slice_ms(int ms);
+/* The frozen-clock rail: budget in interrupt-handler calls (one per 10,000
+ * bytecodes). What host harnesses use, and the backstop everywhere else. */
+void js_page_set_slice_fuel(long long calls);
+int  js_page_slice_hits(void);
+void js_page_slice_begin(void);
+
 /* Append a fragment to the console buffer from outside js_page.c. Exists for
  * exactly one caller -- js_module.c's module-exception reporter -- so a module
  * that throws at top level surfaces in the status bar like every other

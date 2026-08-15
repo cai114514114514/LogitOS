@@ -519,6 +519,46 @@ static void part2_5_vite_probe(void)
     JS_FreeValue(ctx, v);
 }
 
+/* ---- part 2.6: the CPU-slice watchdog bites a while(1) script ----------
+ * qwen.com in the wild: one script loops forever, run_collected_scripts runs
+ * scripts synchronously, the whole browser is owned (gdb on the live wedge
+ * showed 240 s of ring-3 spin). This part loads a page whose FIRST script is
+ * `while(1);` and asserts three things: browser_load RETURNS (the test
+ * completing at all is the load-bearing half), the watchdog counted exactly
+ * one bite, and the SECOND script on the same page still ran -- one hostile
+ * script must cost itself, not the page. Slice shrunk to 300 ms for the
+ * test; the shipped default is 45 s. */
+static const char SPIN[] =
+    "<html><head><script>while(1);</script>"
+    "<script>globalThis.__after_spin = 1;</script>"
+    "</head><body>SPIN</body></html>";
+
+static void part2_6_watchdog(void)
+{
+    printf("\n-- part 2.6: the watchdog bites while(1) and the page survives --\n");
+    fake_site_reset();
+    fake_site_add("http://fixture.test/spin.html", SPIN);
+    /* The FUEL rail, not the time rail: this harness's clock is a fake that
+     * never advances inside a synchronous eval, so a wall-time budget can
+     * never fire here -- the first draft of this test proved that by hanging
+     * inside its own fixture. 2000 handler calls = 2e7 bytecodes, ~a blink. */
+    js_page_set_slice_fuel(2000);
+    browser_load("http://fixture.test/spin.html");
+    js_page_set_slice_fuel(0);       /* 0 -> back to the shipped default */
+
+    CHECK(1, "browser_load returned despite while(1)");   /* reaching here IS the claim */
+    CHECK(js_page_slice_hits() == 1, "the watchdog bit exactly once");
+    JSContext *ctx = js_page_ctx();
+    CHECK(ctx != NULL, "the page runtime survived the interrupt");
+    if (!ctx) return;
+    JSValue v = JS_Eval(ctx, "globalThis.__after_spin === 1",
+                        (size_t)strlen("globalThis.__after_spin === 1"),
+                        "<wd-read>", JS_EVAL_TYPE_GLOBAL);
+    CHECK(JS_ToBool(ctx, v) == 1,
+          "the NEXT script on the page still ran -- the loop cost itself, not the page");
+    JS_FreeValue(ctx, v);
+}
+
 static void part3_tabs(void)
 {
     printf("\n-- part 3: tabs --\n");
@@ -837,6 +877,11 @@ int main(void)
         part2_5_vite_probe();
     else
         { printf("FAIL: the vite probe called app_exit(%d)\n", host_exit_code); fail = 1; }
+
+    if (setjmp(host_exit_jmp) == 0)
+        part2_6_watchdog();
+    else
+        { printf("FAIL: the watchdog test called app_exit(%d)\n", host_exit_code); fail = 1; }
 
     { int n = 0; g_real_html = slurp("tests/fixtures/browser/baidu.html", &n); }
     if (setjmp(host_exit_jmp) == 0)

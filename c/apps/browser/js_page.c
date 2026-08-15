@@ -111,6 +111,72 @@ static unsigned long long (*g_clock)(void);
 void js_page_set_clock(unsigned long long (*fn)(void)) { g_clock = fn; }
 static unsigned long long now_ms(void) { return g_clock ? g_clock() : 0; }
 
+/* ---- the CPU-slice watchdog --------------------------------------------
+ * One synchronous entry into JS -- a script eval, a timer callback, a module
+ * body -- gets a bounded CPU slice; past it, QuickJS's interrupt handler
+ * fires and the entry unwinds as an uncatchable InternalError. Before this
+ * existed, `while(1)` anywhere in a page owned the browser: run_collected_
+ * scripts runs classic scripts synchronously, so one looping script wedged
+ * the load pipeline forever. qwen.com was the wild specimen -- gdb on the
+ * live wedge showed CPU#3 spinning at moving ring-3 addresses in the
+ * browser image for 240 s, memory dripping from the loop's allocations,
+ * everything else idle, nothing ever printed (the scoreboard's TIMEOUT
+ * verdict, dbg4 run, 2026-08-16). The slice is deliberately huge -- 45 s at
+ * TCG speed is several times any legitimate script measured (kimi's whole
+ * 109-request load is 60 s) -- because the point is to convert "hung
+ * forever" into "one loud line and the next script runs", not to police
+ * slow-but-honest code. g_slice_due==0 disarms (input-event dispatch is
+ * user-attended; it can be armed later if a wild page earns it). */
+/* TWO RAILS, because the browser has two kinds of clock. On the device the
+ * injected clock is a syscall that advances during a spin, so wall time is
+ * the natural budget. In the host harnesses the clock is a FAKE stepped by
+ * hand between pumps -- it is frozen for the whole of a synchronous eval, and
+ * a time-only watchdog provably never fires there (the first draft hung
+ * loader_test inside its own while(1) fixture). The fuel rail counts
+ * interrupt-handler invocations, which QuickJS makes every
+ * JS_INTERRUPT_COUNTER_INIT = 10,000 bytecodes -- so fuel is a pure
+ * CPU-work budget that no clock can freeze. Defaults: 45 s wall (several
+ * times any honest script at TCG speed) and 2,000,000 calls (= 2e10
+ * bytecodes; astronomically above legit, purely the frozen-clock backstop). */
+#define JS_SLICE_MS_DEFAULT   45000
+#define JS_SLICE_FUEL_DEFAULT 2000000
+static long long g_slice_ms = JS_SLICE_MS_DEFAULT;
+static long long g_slice_due;                 /* absolute ms; 0 = disarmed */
+static long long g_slice_fuel_max = JS_SLICE_FUEL_DEFAULT;
+static long long g_slice_fuel;                /* handler calls this slice */
+static int g_slice_armed;
+static int g_slice_hits;
+void js_page_set_slice_ms(int ms) { g_slice_ms = ms > 0 ? ms : JS_SLICE_MS_DEFAULT; }
+void js_page_set_slice_fuel(long long calls)
+{ g_slice_fuel_max = calls > 0 ? calls : JS_SLICE_FUEL_DEFAULT; }
+int  js_page_slice_hits(void) { return g_slice_hits; }
+void js_page_slice_begin(void);               /* defined after now_ms() */
+
+void js_page_slice_begin(void)
+{
+    g_slice_due = g_clock ? (long long)now_ms() + g_slice_ms : 0;
+    g_slice_fuel = 0;
+    g_slice_armed = 1;
+}
+
+/* QuickJS calls this every 10,000 bytecodes. Nonzero = interrupt: the engine
+ * throws an uncatchable InternalError and the current synchronous entry
+ * unwinds through the caller's normal exception printing. */
+static int slice_interrupt(JSRuntime *rt, void *opaque)
+{
+    (void)rt; (void)opaque;
+    if (!g_slice_armed) return 0;
+    int over_time = g_slice_due && g_clock && (long long)now_ms() > g_slice_due;
+    int over_fuel = ++g_slice_fuel > g_slice_fuel_max;
+    if (!over_time && !over_fuel) return 0;
+    g_slice_hits++;
+    g_slice_armed = 0;               /* one interrupt per slice, not a storm */
+    note("[watchdog] script exceeded its CPU slice -- interrupted\n");
+    printf("[js] watchdog: script exceeded its CPU slice (%s) -- interrupted\n",
+           over_time ? "wall time" : "instruction fuel");
+    return 1;
+}
+
 static JSRuntime *g_rt;
 static JSContext *g_ctx;
 static unsigned long long g_t0;              /* page start, for performance.now() */
@@ -256,6 +322,7 @@ int js_page_run_due(void)
             timer_free(g_ctx, best);
         }
 
+        js_page_slice_begin();       /* each timer callback is its own slice */
         JSValue r = JS_Call(g_ctx, fn, JS_UNDEFINED, nargs, (JSValueConst *)args);
         if (JS_IsException(r)) {
             JSValue e = JS_GetException(g_ctx);
@@ -480,6 +547,7 @@ int js_page_open(struct node *root)
      * (JS_ThrowError2 builds an Error + backtrace, ~2 MiB) has ample room below
      * the guard. 2 MiB limit -> the guard fires with ~6 MiB still free. */
     JS_SetMaxStackSize(g_rt, 2 * 1024 * 1024);
+    JS_SetInterruptHandler(g_rt, slice_interrupt, 0);   /* the CPU-slice watchdog */
     g_ctx = JS_NewContext(g_rt);
     if (!g_ctx) { JS_FreeRuntime(g_rt); g_rt = 0; return 0; }
 
@@ -644,6 +712,7 @@ void js_page_close(void)
 int js_page_eval(const char *src, int len, const char *filename)
 {
     if (!g_ctx || !src) return 0;
+    js_page_slice_begin();
     js_page_begin_script(filename);
     JSValue v = JS_Eval(g_ctx, src, (size_t)len, filename ? filename : "<page>",
                         JS_EVAL_TYPE_GLOBAL);

@@ -1240,7 +1240,20 @@ static int bx_drain(struct bx_bind *b, struct bx_sess *ss, struct h1_conn *c)
         free(p);
         return rc;
     }
-    if (r->body_len + n < 0) { free(p); return H1_E_TOOLARGE; }
+    /* THE BODY CAP, on the path that had lost it. http1.c's own append stops
+     * at r->body_max (H1_BODY_MAX = 8 MiB, h1_response_limit to raise) -- but
+     * this function is a SECOND accumulation site, and it enforced nothing:
+     * a body that never terminates (a stream, a chunked decode that never
+     * meets its terminator, a deliberate drip) grew here at the sender's pace
+     * until the int-overflow check below or the machine ran out first.
+     * qwen's 240 s TIMEOUT wears exactly that signature -- steady [mm] low
+     * heartbeats, no completion, no error, nothing printed, because nothing
+     * was WRONG by this path's own rules. Same knob as http1.c, ONE policy:
+     * H1_E_TOOLARGE surfaces through h1_strerror ("response exceeds limit")
+     * to req_fail, so a script hitting this prints as a named script LOST,
+     * not a hang. */
+    if (r->body_len + n < 0 || (r->body_max > 0 && r->body_len + n > r->body_max))
+        { free(p); return H1_E_TOOLARGE; }
     int need = r->body_len + n + 1;
     if (need > r->body_cap) {
         int cap = r->body_cap ? r->body_cap : 4096;

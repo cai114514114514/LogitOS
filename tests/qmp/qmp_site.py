@@ -579,6 +579,13 @@ def main():
            "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
            "-serial", "file:" + serial_path,
            "-qmp", "unix:%s,server,nowait" % qmp_path]
+    # Debug hook: SITE_QEMU_EXTRA="-s" (etc.) appends raw QEMU args -- the
+    # qwen wedge was chased by attaching gdb to the stub mid-hang, which needs
+    # exactly this and nothing else changed about the boot.
+    extra = os.environ.get("SITE_QEMU_EXTRA", "")
+    if extra:
+        import shlex
+        cmd += shlex.split(extra)
     if os.environ.get("SITE_PCAP"):
         cmd[-2:-2] = ["-object", "filter-dump,id=d0,netdev=n0,file=%s"
                       % os.path.join(tmp, "net.pcap")]

@@ -237,6 +237,7 @@ int js_module_eval(const char *src, int len, const char *url)
 {
     JSContext *ctx = js_page_ctx();
     if (!ctx || !src || !url) return 0;
+    js_page_slice_begin();           /* a module body is one CPU slice too */
     ensure_installed(ctx);
 
     /* Compile first so import.meta.url exists before the body runs. The compile
