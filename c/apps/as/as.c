@@ -37,17 +37,35 @@
  * never made. The language keeps the finer distinction because attenuation can
  * use it: a script holding both may hand a child read-only.
  *
- * FAILS CLOSED. A negative return means no kernel to ask -- the host build,
- * where as_ll_syscall stubs to -1 -- and the held set is then left at its
- * static default of zero. That is what keeps `make test-as-cap`'s
- * default-deny assertions true, and it is the right answer for a real failure
- * too: a process that cannot learn its grant has not been granted anything. */
+ * ON THE DEVICE IT FAILS CLOSED: a negative return from a real kernel means a
+ * process that cannot learn its grant, and such a process has not been
+ * granted anything.
+ *
+ * ON THE HOST IT GRANTS EVERYTHING, and the distinction is COMPILE-TIME
+ * (__STDC_HOSTED__, the same switch as_ll.c uses to stub the syscall bridge),
+ * not the runtime -1. The first version treated the host stub's -1 as the
+ * failure case and left the CLI at deny-everything -- which silently broke
+ * `make test-ash` (ash.as could not open() or run() anything on the host; 4
+ * checks red for a day before anyone connected them to M28). Its stated
+ * justification -- "keeps test-as-cap's default-deny assertions true" -- was
+ * checked and is FALSE: test-as-cap builds its own binary from as_cap_test.c
+ * and never executes this main(), so those assertions test object.c's static
+ * default, not this function. On a hosted build the LogitOS grant has no
+ * referent (the host OS enforces its own boundaries) and asc is a dev tool;
+ * unscoped-everything is the pre-M28 behavior every host harness was written
+ * against. --scope still narrows on the host, which is what the language
+ * tests use. */
 static void install_kernel_grant(void)
 {
+#if __STDC_HOSTED__
+    as_caps_set(AS_CAP_FS_READ | AS_CAP_FS_WRITE | AS_CAP_NET |
+                AS_CAP_PROC | AS_CAP_GUI | AS_CAP_RAW, NULL);
+    return;
+#else
     char prefix[128];
     prefix[0] = 0;
     long k = as_ll_syscall(SYS_CAP_QUERY, (long)(uintptr_t)prefix, (long)sizeof prefix, 0);
-    if (k < 0) return;                      /* no kernel (host) -- stay at deny */
+    if (k < 0) return;                      /* real kernel refused -- stay at deny */
 
     uint32_t bits = 0;
     if (k & CAP_FS)   bits |= AS_CAP_FS_READ | AS_CAP_FS_WRITE;
@@ -60,6 +78,7 @@ static void install_kernel_grant(void)
      * spells NULL. Passing "" through would be read as a prefix that contains
      * nothing but the empty path. */
     as_caps_set(bits, prefix[0] ? prefix : NULL);
+#endif
 }
 
 static char *slurp(FILE *f)
