@@ -191,6 +191,49 @@ int main(void)
     ck(mask_get(MK_FILL, MASK_MAX + 1, 8, 0) == 0,
        "an oversized tile is refused rather than overflowing the pool", "");
 
+    /* ---- aui_stroke past the ceiling: corners must not vanish ----
+     *
+     * THE BUG THIS MILESTONE FIXED. aui_stroke() had NO check on mask_get()'s
+     * return at all -- unlike round_impl just above it in this file, which at
+     * least fell back to a square. A radius past GFX_MASK_MAX (72 device px)
+     * went straight into blit_mask with a NULL cov, which silently no-ops,
+     * while the four straight edges aui_stroke draws either side of the
+     * corners kept going regardless. The picture that reached the screen was
+     * not visibly broken -- it was a DIFFERENT, complete-looking shape (a
+     * plain square outline where a rounded one was asked for), which is
+     * worse than an obviously wrong one because nothing about it says "this
+     * is a fallback". See gfx_mask.c's contract comment on gfx_mask_corner
+     * for why that specific failure (geometry silently dropped, not
+     * downgraded) is the one case this file's rule never allows.
+     *
+     * This test cannot call aui_stroke() itself -- this file's own comment at
+     * the top is explicit that no syscall in this TU is ever allowed to
+     * actually fire, and aui_stroke ends in gui_blit/gui_rect, real int 0x80
+     * on this host. What it CAN call, with no syscall anywhere near it, is
+     * corner_mask() -- the exact function aui.c's fix made aui_stroke (and
+     * round_impl, and aui_vgrad_round, and aui_shadow_ex) go through for
+     * their corner source, cache or uncached -- with the same MK_STROKE kind
+     * and an oversized radius, and ask the question that matters: does a
+     * corner come back AT ALL, and is it whole. */
+    {
+        int big = MASK_MAX + 40;             /* well past the 72px cache ceiling */
+        unsigned char *rbuf; long rcap;
+        const unsigned char *bm = corner_mask(MK_STROKE, big, big, 3, &rbuf, &rcap);
+        ck(bm != 0, "aui_stroke's corner source survives a radius past the cache ceiling",
+           "corner_mask() falls back to the uncached ring instead of handing back NULL");
+        if (bm) {
+            int empty_rows = 0;
+            for (int j = 0; j < big; j++) {
+                int sum = 0;
+                for (int i = 0; i < big; i++) sum += bm[j * big + i];
+                if (sum < 200) empty_rows++;
+            }
+            snprintf(d, sizeof d, "%d of %d rows carry less than one pixel of ink", empty_rows, big);
+            ck(empty_rows == 0,
+               "...and the ring it hands back is CONTINUOUS -- corners not missing, not pinched", d);
+        }
+    }
+
     printf(fails ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", fails);
     return fails ? 1 : 0;
 }

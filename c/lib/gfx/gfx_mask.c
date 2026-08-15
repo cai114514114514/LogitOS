@@ -29,7 +29,7 @@
 
 static unsigned char mdata[NMASK][GFX_MASK_MAX * GFX_MASK_MAX];
 static int mkind[NMASK], mkw[NMASK], mkh[NMASK], mkp[NMASK];
-static int mnext, mhit, mmiss;
+static int mnext, mhit, mmiss, mrefuse;
 
 /* Path scratch for the corner tiles. At the 1/64-pixel tolerance below a
  * 72-pixel quadrant flattens to about 64 segments, so two arcs fit inside 512
@@ -116,9 +116,34 @@ void gfx_corner_shadow(unsigned char *m, int w, int h, int r)
     }
 }
 
+/* THE CONTRACT, stated once here because every caller has to know it: NULL is
+ * a REFUSAL, not a cache miss and not an error to shrug off. It fires for
+ * exactly one reason -- w or h past GFX_MASK_MAX -- and a caller that treats
+ * it as "try again later" or, worse, doesn't check at all, gets a plausible
+ * wrong picture instead of a missing one: a rounded shape whose corners never
+ * arrive (aui.c's aui_stroke did this, silently, before this comment existed)
+ * or a shape that draws with its curves quietly omitted. Per this file set's
+ * rule (gfx_path.c:13-16, gfx_raster.c:19-20) that is exactly the failure mode
+ * to refuse loudly rather than produce -- gfx_mask_corner's refusal is the
+ * loud part; making sure it is SEEN is the caller's job. Three honest
+ * responses exist, in order of preference: (1) the geometry doesn't actually
+ * need the cache -- gfx_corner_fill/gfx_corner_ring/gfx_corner_shadow are
+ * public precisely so a caller can rasterize the exact requested size into its
+ * own buffer, uncached, the way clock.c's dial already does by hand for its
+ * own shapes (c/apps/gui/clock.c, the `stamp()` helper); (2) if even that is
+ * unaffordable, a fallback that draws SOMETHING COMPLETE -- a square corner
+ * instead of a round one, a tighter shadow instead of a full-bleed one -- is
+ * acceptable, but only once it is counted (see gfx_mask_refused() below) so
+ * the degradation is a number someone can read, not a guess from a
+ * screenshot; (3) dropping the geometry outright (corners that just don't
+ * draw) is never acceptable, because it does not look approximately wrong, it
+ * looks accidentally right until it isn't -- aui.c's stroked corners used to
+ * vanish this way and the straight edges either side kept drawing, so the
+ * missing arc read as a bug in whatever was UNDER the control, not in this
+ * cache. */
 const unsigned char *gfx_mask_corner(int kind, int w, int h, int param)
 {
-    if (w <= 0 || h <= 0 || w > GFX_MASK_MAX || h > GFX_MASK_MAX) return 0;
+    if (w <= 0 || h <= 0 || w > GFX_MASK_MAX || h > GFX_MASK_MAX) { mrefuse++; return 0; }
     for (int i = 0; i < NMASK; i++)
         if (mkind[i] == kind && mkw[i] == w && mkh[i] == h && mkp[i] == param) {
             mhit++;
@@ -138,6 +163,26 @@ void gfx_mask_stats(int *hits, int *misses)
     if (hits) *hits = mhit;
     if (misses) *misses = mmiss;
 }
+
+/* How many times gfx_mask_corner refused outright (w or h past GFX_MASK_MAX),
+ * SEPARATE from gfx_mask_stats()'s hit/miss pair -- a miss still hands back a
+ * mask, a refusal never will for that geometry, and folding the two together
+ * is exactly the bug this counter exists to undo: the old code's `mmiss++`
+ * sat AFTER the early return, so the ONE existing introspection API could not
+ * see a refusal happen even though it looked like it covered this. `mrefuse`
+ * lives beside mhit/mmiss for that reason -- same lifetime, same reset rules
+ * (there are none; both run for the process's life, which is what the
+ * AUI_COST bench and this file's own tests want).
+ *
+ * NOT declared in gfx.h. This milestone's unit divides c/lib/gfx's OWN files
+ * from its callers' (gfx.h is the callers' contract, owned by the unit that
+ * revised GFX_MAX_EDGES/ACTIVE alongside it), so a caller in another
+ * translation unit that wants this reaches it with its own one-line
+ * `extern int gfx_mask_refused(void);` -- c/apps/gui/aui.c's AUI_COST report
+ * does exactly that, with the same reasoning repeated at its call site. Giving
+ * it a real home in gfx.h, next to gfx_mask_stats(), is a trivial follow-up
+ * for whoever next has that file open; it does not have to block this one. */
+int gfx_mask_refused(void) { return mrefuse; }
 
 void gfx_mask_to_rgba(unsigned char *dst, const unsigned char *cov, int w, int h,
                       unsigned color, int alpha, int flipx, int flipy)

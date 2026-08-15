@@ -40,7 +40,21 @@ void gfx_path_reset(struct gfx_path *p)
     p->cx = p->cy = p->sx = p->sy = 0;
 }
 
-void gfx_path_matrix(struct gfx_path *p, const struct gfx_matrix *m) { p->m = *m; }
+/* See the declaration in gfx.h for why this refuses mid-path: recorded points
+ * are already flattened under the OLD matrix, so replacing it now would bake
+ * two different transforms into two halves of one path silently. Reusing
+ * `overflow` rather than adding a second field+check is deliberate: raster()
+ * only has to consult one flag, and to a caller of gfx_fill/gfx_fill_mask the
+ * two causes mean the identical thing -- this path's geometry is not to be
+ * trusted, refuse the fill outright. `npt > 0` is the right test, not `open`:
+ * a matrix set between gfx_close() and the next gfx_move_to() (open == 0, but
+ * npt > 0 from the finished subpath) is exactly as unsound as one set mid-
+ * subpath, since the earlier points are still flattened under the old matrix. */
+void gfx_path_matrix(struct gfx_path *p, const struct gfx_matrix *m)
+{
+    if (p->npt > 0) { p->overflow = 1; return; }
+    p->m = *m;
+}
 void gfx_path_tolerance(struct gfx_path *p, int tol256) { p->tol = tol256 > 0 ? tol256 : 1; }
 
 /* ---- raw device-space appenders (post-transform) ---- */

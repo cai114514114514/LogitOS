@@ -131,6 +131,11 @@ static int   PT[4096 * 2];
 static int   SUB[64];
 static unsigned char M[256 * 256];
 static unsigned char SURF[128 * 128 * 4];
+/* Wide enough to actually back a surface reported wider than GFX_MAX_W, for
+ * the "fill wider than GFX_MAX_W is refused" check below -- genuinely sized,
+ * not just declared bigger than it is, so a regression that turns the refusal
+ * back into a silent clip fails an assertion instead of corrupting memory. */
+static unsigned char BIGSURF[(GFX_MAX_W + 256) * 4 * 4];
 
 static void path_begin(struct gfx_path *p)
 {
@@ -145,7 +150,9 @@ int main(void)
     double a[8], mean;
 
     printf("=== Open Logit: rasterizer vs a 16x supersampled reference ===\n");
-    printf("    (GFX_SUBS = %d)\n", GFX_SUBS);
+    printf("    (default GFX_SUBS = %d, GFX_MAX_SUBS = %d, "
+           "GFX_MAX_EDGES = %d, GFX_MAX_ACTIVE = %d, GFX_MAX_W = %d)\n",
+           GFX_SUBS, GFX_MAX_SUBS, GFX_MAX_EDGES, GFX_MAX_ACTIVE, GFX_MAX_W);
 
     /* ---------------------------------------------------------- circles -- */
     printf("\n-- circles --\n");
@@ -321,6 +328,33 @@ int main(void)
         ck(first > 400 && last > 400, "the arc meets both straight edges at full weight", d);
     }
 
+    /* ---------------------------------------------------- per-call subs --
+     * GFX_SUBS used to be one compile-time constant for every fill. It is now
+     * a per-call argument (gfx_fill_mask_subs/gfx_fill_subs), so a future
+     * glyph caller can ask for the kernel glyph rasterizer's 16 while a shape
+     * keeps the default 4 -- prove the new entry points actually work and
+     * that an unreasonable request is clamped rather than trusted. */
+    printf("\n-- per-call sub-scanline count (gfx_fill_mask_subs) --\n");
+    {
+        int r = 20, n = 2 * r + 4;
+        path_begin(&p);
+        gfx_path_circle(&p, GFX_PX(r + 2), GFX_PX(r + 2), GFX_PX(r));
+        gfx_fill_mask_subs(&p, GFX_NONZERO, M, n, n, 0, 0, 16);
+        a[0] = r + 2; a[1] = r + 2; a[2] = r; a[3] = r;
+        double e = worst_err(M, n, n, 0, 0, in_ellipse, a, &mean);
+        snprintf(d, sizeof d, "subs=16 worst %.3f mean %.4f", e, mean);
+        ck(e < 0.10, "gfx_fill_mask_subs(...,16) matches the reference too", d);
+
+        /* An absurd request clamps to GFX_MAX_SUBS instead of being trusted --
+         * a future caller deriving `subs` from some other quantity (a device
+         * scale factor, say) should not be able to turn one fill into an
+         * unbounded number of scanline passes. */
+        path_begin(&p);
+        gfx_path_circle(&p, GFX_PX(r + 2), GFX_PX(r + 2), GFX_PX(r));
+        int r2 = gfx_fill_mask_subs(&p, GFX_NONZERO, M, n, n, 0, 0, 1000000);
+        ck(r2 == 1, "an absurd subs request clamps to GFX_MAX_SUBS, not refused or unbounded", "");
+    }
+
     /* ------------------------------------------------------- transforms --
      * The affine transform is applied to PATHS. That is what CSS `transform`
      * needs, and the check that it is real is that a shape drawn through a
@@ -426,6 +460,87 @@ int main(void)
         long ink = 0;
         for (int i = 0; i < 40 * 40; i++) ink += M[i];
         ck(ink == 0, "nothing was drawn", "");
+    }
+
+    /* gfx_path_matrix() mid-path (gfx.h/gfx_path.c): recorded points were
+     * flattened under the OLD matrix, so a caller that swaps the matrix after
+     * the first point silently gets a path baked from two different
+     * transforms -- refused via the same `overflow` flag rather than drawn. */
+    printf("\n-- gfx_path_matrix after the first point is refused --\n");
+    {
+        struct gfx_matrix m1, m2;
+        gfx_m_identity(&m1);
+        gfx_m_identity(&m2);
+        gfx_m_translate(&m2, GFX_PX(5), GFX_PX(5));
+
+        path_begin(&p);
+        gfx_path_matrix(&p, &m1);          /* before any point: always fine */
+        ck(!p.overflow, "setting the matrix before the first point is fine", "");
+        gfx_move_to(&p, 0, 0);
+        gfx_line_to(&p, GFX_PX(10), 0);    /* first point now recorded       */
+        ck(!p.overflow, "one segment in, still fine", "");
+        gfx_path_matrix(&p, &m2);          /* mid-path: must be refused      */
+        ck(p.overflow, "changing the matrix mid-path is refused", "");
+        gfx_line_to(&p, GFX_PX(10), GFX_PX(10));
+        gfx_close(&p);
+        gfx_zero(M, 20 * 20);
+        ck(gfx_fill_mask(&p, GFX_NONZERO, M, 20, 20, 0, 0) == 0,
+           "and filling it is refused rather than drawn with a mixed transform", "");
+    }
+
+    /* GFX_MAX_ACTIVE (edges concurrently crossing one scanline) and its
+     * crossing list, gfx_raster.c's sweep(): used to be dropped silently at
+     * two sites (admitting a new active edge, building the crossing list),
+     * with no flag and no non-zero return. A comb of disjoint 1px-wide
+     * vertical slivers, all spanning the same rows, puts more edges
+     * concurrently active than the cap without needing many points per
+     * sliver (rect = 4 points, 2 of them vertical -- the horizontal top/
+     * bottom edges contribute nothing; add_edge discards y0==y1 outright).
+     * nc <= nact always in sweep() (every edge remaining in the active list
+     * at a given sub-scanline crosses it, by construction of admit/retire in
+     * that order, before crossings are ever built) -- so the admit-time check
+     * fires first and this one path proves both silent-drop sites are now
+     * loud; the crossing-list check is kept as defense in depth rather than
+     * because it is independently reachable today. */
+    printf("\n-- active-edge / crossing-list overflow (GFX_MAX_ACTIVE) --\n");
+    {
+        enum { NR = GFX_MAX_ACTIVE / 2 + 64 };   /* > GFX_MAX_ACTIVE edges, 2/sliver */
+        static int PT2[(NR + 4) * 4 * 2];
+        static int SUB2[NR + 4];
+        struct gfx_path q;
+        gfx_path_init(&q, PT2, (NR + 4) * 4, SUB2, NR + 4);
+        gfx_path_tolerance(&q, GFX_ONE / 64);
+        for (int i = 0; i < NR; i++)
+            gfx_path_rect(&q, GFX_PX(i * 3), GFX_PX(0), GFX_PX(1), GFX_PX(50));
+        ck(!q.overflow, "the comb itself fits its (generous) storage", "");
+        gfx_zero(M, 8 * 8);
+        int r = gfx_fill_mask(&q, GFX_NONZERO, M, 8, 8, 0, 0);
+        snprintf(d, sizeof d, "%d slivers, %d vertical edges, GFX_MAX_ACTIVE=%d",
+                 NR, 2 * NR, GFX_MAX_ACTIVE);
+        ck(r == 0, "more concurrently-active edges than GFX_MAX_ACTIVE is REFUSED", d);
+        long ink = 0;
+        for (int i = 0; i < 8 * 8; i++) ink += M[i];
+        ck(ink == 0, "and NOTHING was drawn, including the rows before the overflow", "");
+    }
+
+    /* gfx_fill()'s own width clamp (gfx_raster.c): used to silently redraw
+     * only the first GFX_MAX_W device px of an over-wide fill (cx1 = cx0 +
+     * GFX_MAX_W) instead of refusing. Nothing is written to `dst` before
+     * raster()'s own `w > GFX_MAX_W` check runs, so this is provable with a
+     * destination whose reported width is deliberately past the cap -- and
+     * BIGSURF is genuinely sized for it (not just declared bigger than it
+     * is), so a regression here fails loud rather than corrupting memory. */
+    printf("\n-- a fill wider than GFX_MAX_W is refused, not clipped --\n");
+    {
+        struct gfx_surface s;
+        gfx_surface_init(&s, BIGSURF, GFX_MAX_W + 200, 4, (GFX_MAX_W + 200) * 4);
+        struct gfx_paint pt;
+        gfx_paint_solid(&pt, 0x00FF00, 255);
+        path_begin(&p);
+        gfx_path_rect(&p, 0, 0, GFX_PX(GFX_MAX_W + 300), GFX_PX(4));
+        int r = gfx_fill(&s, &p, GFX_NONZERO, &pt, NULL);
+        snprintf(d, sizeof d, "requested width %d, GFX_MAX_W %d", GFX_MAX_W + 200, GFX_MAX_W);
+        ck(r == 0, "a fill whose visible width exceeds GFX_MAX_W is refused", d);
     }
 
     printf("\n%d checks, %d failed\n", checks, fails);

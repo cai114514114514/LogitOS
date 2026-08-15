@@ -466,10 +466,24 @@ static int cover_round(int i, int j, int w, int h, int rad)
     if (cx < 0 || cy < 0) return 255;       /* in one of the straight bands */
 
     const unsigned char *m = gfx_mask_corner(GFX_MASK_FILL, rad, rad, 0);
-    if (!m) {                                /* radius past GFX_MASK_MAX: the
-                                              * old point sample, kept as the
-                                              * fallback rather than dropping
-                                              * the corner altogether */
+    if (!m) {
+        /* Radius past GFX_MASK_MAX: the old boolean point sample, i.e. THE
+         * STAIRCASE this whole function exists to remove -- kept as the
+         * fallback here rather than dropping the corner altogether, because a
+         * missing pixel is worse than a sharp one. THIS is the ACCEPTABLE
+         * half of gfx_mask_corner's contract (see its comment in
+         * gfx_mask.c): complete, no geometry dropped, and no longer silent --
+         * every refusal is counted the instant gfx_mask_corner returns NULL
+         * (mrefuse / gfx_mask_refused() there), so a run where the desktop
+         * chrome keeps hitting this fallback is a number someone can read,
+         * not a guess from a screenshot. What this function does NOT do is
+         * grow its own buffer to avoid the fallback the way aui.c's BIG_MASK
+         * tile does for the toolkit's shapes: that buffer would be KERNEL
+         * .bss (this file is compiled into the kernel -- see gfx.h's top
+         * comment), and GFX_MASK_MAX was sized deliberately small for
+         * exactly that reason. A bigger kernel buffer is a real, measured
+         * cost paid by every boot; a corner that is occasionally a staircase
+         * on an oversized window-manager shape is not. */
         int dx = rad - cx, dy = rad - cy;
         return dx * dx + dy * dy <= rad * rad ? 255 : 0;
     }
@@ -617,6 +631,22 @@ static void shadow_tile(int x, int y, int T, const unsigned char *m,
  * gfx_corner_shadow -- the tile calls it per pixel, the strips call it per row,
  * and the sample points are matched (pixel centres, distance measured from the
  * caster's edge). */
+/* How many fb_shadow() calls this boot had to shrink `blur` below what was
+ * asked for, to dodge gfx_mask_corner's refusal instead of hitting it -- see
+ * the comment on the clamp below. THIS is the one call site in the tree that
+ * AVOIDS the refusal rather than handling it, which sounds strictly better
+ * until you notice the shadow it draws is quietly not the shadow that was
+ * requested, and nothing said so: unlike every other site fixed this
+ * milestone (all of which go through gfx_mask_corner and are covered by ITS
+ * refusal counter, gfx_mask.c's mrefuse), a pre-clamp changes the request
+ * BEFORE gfx_mask_corner ever sees it, so that counter never fires here.
+ * `fb_shadow_clamped` is this call site's own count, for exactly that gap --
+ * kernel .bss cost: one unsigned int, the cheapest fix available for a
+ * function that (correctly, per gfx.h's LIMITS section) cannot afford
+ * aui.c's BIG_MASK buffers to avoid the clamp altogether. */
+static unsigned fb_shadow_clamped;
+unsigned fb_shadow_clamp_count(void) { return fb_shadow_clamped; }
+
 void fb_shadow(int x, int y, int w, int h, int radius, int dy, int blur, uint8_t alpha)
 {
     if (w <= 0 || h <= 0 || blur <= 0 || alpha == 0) return;
@@ -628,7 +658,7 @@ void fb_shadow(int x, int y, int w, int h, int radius, int dy, int blur, uint8_t
      * tile past GFX_MASK_MAX and returns NULL, and losing the corners is far
      * more visible than a slightly tighter shadow -- it is the square-nub bug
      * this function exists to remove, reintroduced at high display scales. */
-    if (blur + radius > GFX_MASK_MAX) blur = GFX_MASK_MAX - radius;
+    if (blur + radius > GFX_MASK_MAX) { fb_shadow_clamped++; blur = GFX_MASK_MAX - radius; }
     if (blur <= 0) return;
 
     int sy = y + dy, T = blur + radius;

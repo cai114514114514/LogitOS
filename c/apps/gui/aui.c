@@ -245,18 +245,115 @@ static unsigned char rgba_buf[MASK_MAX * MASK_MAX * 4];
 #define GRAD_MAX 1024
 static unsigned char grad_buf[GRAD_MAX * 4];
 
-/* Blit a coverage tile into the point rect (x,y,w,h), optionally mirrored. The
- * source is generated at the rect's exact device size, so the kernel's rescale
- * is a no-op and the anti-aliasing survives at any backing scale. One
+/* Blit a coverage tile into the point rect (x,y,w,h), optionally mirrored, out
+ * of a CALLER-CHOSEN scratch buffer. Parameterized on the buffer (rather than
+ * always writing rgba_buf) because the uncached path below needs a second,
+ * bigger buffer, and every widget that goes through the small one should not
+ * pay for the big one's size -- see the BIG_MASK block for the buffer itself.
+ * The source is generated at the rect's exact device size, so the kernel's
+ * rescale is a no-op and the anti-aliasing survives at any backing scale. One
  * rasterized quadrant serves all four corners, which is what the mirroring is
  * for. */
-static void blit_mask(int x, int y, int w, int h, const unsigned char *cov,
-                      int cw, int ch, unsigned color, int alpha, int fx, int fy)
+static void blit_mask_buf(unsigned char *rbuf, long rcap, int x, int y, int w, int h,
+                          const unsigned char *cov, int cw, int ch, unsigned color,
+                          int alpha, int fx, int fy)
 {
     if (!cov || cw <= 0 || ch <= 0 || w <= 0 || h <= 0) return;
-    if ((long)cw * ch * 4 > (long)sizeof rgba_buf) return;
-    gfx_mask_to_rgba(rgba_buf, cov, cw, ch, color, alpha, fx, fy);
-    gui_blit(x, y, w, h, rgba_buf, cw, ch);
+    if ((long)cw * ch * 4 > rcap) return;
+    gfx_mask_to_rgba(rbuf, cov, cw, ch, color, alpha, fx, fy);
+    gui_blit(x, y, w, h, rbuf, cw, ch);
+}
+/* NOTE: there is deliberately no plain `blit_mask(...)` wrapper pinned to
+ * rgba_buf any more. Every call site below now goes through corner_mask()
+ * first, which hands back the RIGHT buffer (rgba_buf for a cached tile,
+ * big_rgba for an uncached one) -- so every blit already has to know which
+ * one it got, and a fixed-to-rgba_buf wrapper would just be a second, unused
+ * name for the same call. */
+
+/* ---- the uncached escape hatch ----
+ *
+ * gfx_mask_corner() REFUSES -- returns NULL, never a truncated or wrong mask
+ * -- once a tile's device geometry passes GFX_MASK_MAX (72 px); see the
+ * contract comment on it in gfx_mask.c, which also names the three honest
+ * responses a caller has. This toolkit used to have exactly ONE of the three
+ * (round_impl's square fallback, tier 3 below) and, worse, two call sites
+ * that checked nothing at all -- see aui_stroke and aui_vgrad_round's own
+ * comments for what that produced. This block is tier 2, the one that keeps
+ * the actual requested shape instead of a worse one: gfx_corner_fill/
+ * gfx_corner_ring/gfx_corner_shadow (aliased above as raster_*_corner) are
+ * exactly what gfx_mask_corner calls internally to FILL the cache, and they
+ * are public so a caller can call them directly into its OWN buffer when the
+ * cache's fixed-size pool is the wrong shape for this one request -- "the
+ * cache is a cache; nothing forces geometry through it."
+ *
+ * BIG_MASK is a real ceiling, not a promotion to "unlimited": this buffer is
+ * a static too, paid by every app that links aui.c whether it ever needs this
+ * path or not, so it stays a deliberate, bounded step up from GFX_MASK_MAX
+ * rather than sized to the largest thing anyone could ask for. 256 device px
+ * was chosen against the ONE thing that actually bounds it -- not display
+ * size, not a guess: gfx_mask.c's corner generators share a single 512-point,
+ * 8-subpath scratch path (`cpt`/`csub` in that file) for EVERY call
+ * regardless of the tile size they are asked to fill, and that scratch is not
+ * this file's to resize (it is also kernel .bss, via fb.c -- see gfx.h's
+ * LIMITS section). A stroke corner (gfx_corner_ring, the worst case: two
+ * nested arcs in one path) at 256 device px measured 260 of those 512 points
+ * -- and, verified by walking the same construction across sizes rather than
+ * guessing the slope from one sample, that count does not move off 260 again
+ * until past 700 px; it does not reach the 512 ceiling (gfx_corner_ring's
+ * overflow -> a silently blank tile, the failure mode below) until 913 px.
+ * 256 leaves better than 3.5x headroom, not merely "over 2x" -- against a
+ * failure mode this file could not even detect if it happened:
+ * gfx_corner_fill/gfx_corner_ring both discard gfx_fill_mask's success/
+ * refuse return value internally, so an actual overflow there would hand
+ * back a silently BLANK tile, not a NULL this file could check for. Measured,
+ * not round, for that reason -- c/lib/gfx is a different unit's file, so the
+ * only lever available here is staying well inside what it already provably
+ * handles rather than asking it to grow. */
+#define BIG_MASK 256
+static unsigned char big_cov[BIG_MASK * BIG_MASK];
+static unsigned char big_rgba[BIG_MASK * BIG_MASK * 4];
+
+/* gfx_mask.c's refusal counter (mrefuse, incremented at the exact point
+ * gfx_mask_corner returns NULL) is not declared in gfx.h -- see the comment
+ * on gfx_mask_refused() in gfx_mask.c for why -- so a caller in this
+ * translation unit reaches it with its own one-line extern, the sound thing
+ * to do across a TU boundary for a symbol that does exist and is exported.
+ * ck_report() below reads it so a bench run can show "N tile requests could
+ * not be served at all this session", which used to be a number nothing
+ * could produce. */
+extern int gfx_mask_refused(void);
+
+/* THE SHARED DECISION every fixed call site below now makes, instead of each
+ * accepting gfx_mask_corner's NULL as final in its own slightly different
+ * (and, twice, badly wrong) way: try the cache, then the uncached BIG_MASK
+ * tile, and only report "nothing" if NEITHER fits. `kind`/`param` are the
+ * same vocabulary mask_get() already takes (MK_FILL/MK_STROKE/MK_SHADOW).
+ * Hands back which scratch RGBA buffer the mask is good against via the
+ * rbuf/rcap out-params, because a cached tile's data lives in `mdata` (bounded by
+ * rgba_buf, MASK_MAX) and an uncached one lives in `big_cov` (bounded by
+ * big_rgba, BIG_MASK) -- blit_mask_buf() needs to know which ceiling applies
+ * or it silently refuses to blit a big tile through the small buffer's size
+ * check.
+ *
+ * ONE MORE REASON this is a function and not four inlined copies:
+ * tests/unit/aui_mask_test.c can call it directly, with no gui_* syscall
+ * anywhere near it (see that file's own note on why no syscall in that TU is
+ * ever allowed to fire). That is what makes aui_stroke's fix -- "past the
+ * ceiling, try the uncached ring before giving up the corners" -- provable
+ * from a host test rather than only from a screenshot: the test calls this
+ * exact function with an oversized stroke radius and asserts what comes back
+ * is a real, continuous ring, not NULL. */
+static const unsigned char *corner_mask(int kind, int cw, int ch, int param,
+                                        unsigned char **rbuf, long *rcap)
+{
+    const unsigned char *m = mask_get(kind, cw, ch, param);
+    if (m) { *rbuf = rgba_buf; *rcap = (long)sizeof rgba_buf; return m; }
+    if (cw <= 0 || ch <= 0 || cw > BIG_MASK || ch > BIG_MASK) return 0;
+    if (kind == MK_FILL)        raster_fill_corner(big_cov, cw, ch);
+    else if (kind == MK_STROKE) raster_stroke_corner(big_cov, cw, ch, param);
+    else                        raster_shadow_corner(big_cov, cw, ch, param);
+    *rbuf = big_rgba; *rcap = (long)sizeof big_rgba;
+    return big_cov;
 }
 
 /* --------------------------------------------- 5a. frame state (globals) */
@@ -407,17 +504,33 @@ static void round_impl(int x, int y, int w, int h, int r, unsigned c, int alpha)
     return;
 #else
     int cw = devlen(X_(x), r), ch = devlen(Y_(y), r);
-    const unsigned char *m = mask_get(MK_FILL, cw, ch, 0);
-    if (!m) { aui_fill_a(x, y, w, h, c, alpha); return; }   /* radius past the cache: still correct, just square */
+    unsigned char *rbuf; long rcap;
+    const unsigned char *m = corner_mask(MK_FILL, cw, ch, 0, &rbuf, &rcap);
+    if (!m) {
+        /* Past BOTH the cache's ceiling and the uncached one. THE BUG THIS
+         * WRITE-UP IS ABOUT: falling straight to a square used to be the
+         * ONLY response, which is what let a 180-point clock face ask for a
+         * 90-point corner and get a SQUARE clock, silently, correctly by
+         * this function's own old contract, and wrong -- clock.c:138-148 is
+         * the write-up, from the caller's side, of having to route around
+         * this by hand. corner_mask() tries the uncached tile first now
+         * (see the BIG_MASK block above), so this square is reached only
+         * past BIG_MASK -- and it is the acceptable half of gfx_mask.c's
+         * contract even then: COMPLETE (no missing pixels), and, because
+         * gfx_mask_corner already counted the refusal that got us here, no
+         * longer silent either. */
+        aui_fill_a(x, y, w, h, c, alpha);
+        return;
+    }
     /* interior: three opaque bands, the kernel's fast path */
     aui_fill_a(x + r, y,         w - 2 * r, r,         c, alpha);
     aui_fill_a(x,     y + r,     w,         h - 2 * r, c, alpha);
     aui_fill_a(x + r, y + h - r, w - 2 * r, r,         c, alpha);
     /* four corners, one rasterized quadrant mirrored into place */
-    blit_mask(X_(x),         Y_(y),         r, r, m, cw, ch, c, alpha, 0, 0);
-    blit_mask(X_(x + w - r), Y_(y),         r, r, m, cw, ch, c, alpha, 1, 0);
-    blit_mask(X_(x),         Y_(y + h - r), r, r, m, cw, ch, c, alpha, 0, 1);
-    blit_mask(X_(x + w - r), Y_(y + h - r), r, r, m, cw, ch, c, alpha, 1, 1);
+    blit_mask_buf(rbuf, rcap, X_(x),         Y_(y),         r, r, m, cw, ch, c, alpha, 0, 0);
+    blit_mask_buf(rbuf, rcap, X_(x + w - r), Y_(y),         r, r, m, cw, ch, c, alpha, 1, 0);
+    blit_mask_buf(rbuf, rcap, X_(x),         Y_(y + h - r), r, r, m, cw, ch, c, alpha, 0, 1);
+    blit_mask_buf(rbuf, rcap, X_(x + w - r), Y_(y + h - r), r, r, m, cw, ch, c, alpha, 1, 1);
 #endif
 }
 
@@ -439,15 +552,41 @@ void aui_stroke(int x, int y, int w, int h, int r, int t, unsigned c)
     return;
 #else
     int cw = devlen(X_(x), r), ch = devlen(Y_(y), r), td = imax(1, aui_dev(t));
-    const unsigned char *m = mask_get(MK_STROKE, cw, ch, td);
+    unsigned char *rbuf; long rcap;
+    const unsigned char *m = corner_mask(MK_STROKE, cw, ch, td, &rbuf, &rcap);
+    if (!m) {
+        /* THE WORST OFFENDER IN THIS FILE, before this fix (see gfx_mask.c's
+         * contract comment on gfx_mask_corner for the taxonomy). There used
+         * to be NO check here at all: a radius past GFX_MASK_MAX went
+         * straight into blit_mask with a NULL cov, which silently no-ops on
+         * a NULL source -- so the four straight edges below still drew and
+         * the four corners just never arrived. That is not "a plausible
+         * wrong picture", it is a DIFFERENT, perfectly complete-looking
+         * shape (a plain square outline where a rounded one was asked for),
+         * which is exactly the "drops geometry" case that same contract
+         * comment says is never acceptable -- unlike round_impl's square,
+         * there is no honest degraded version of THIS shape with the
+         * corners missing. corner_mask() tries the uncached ring first now;
+         * only past BOTH ceilings does this still fall back to an actual
+         * square ring (the r==0 shape above), which is complete and, like
+         * every gfx_mask_corner refusal, already counted.
+         * tests/unit/aui_mask_test.c's "aui_stroke past the ceiling" case
+         * calls corner_mask() with exactly this kind at an oversized radius
+         * and asserts it comes back a continuous ring rather than NULL --
+         * which is what proves this branch is reached only when it truly
+         * has to be. */
+        aui_fill(x, y, w, t, c); aui_fill(x, y + h - t, w, t, c);
+        aui_fill(x, y + t, t, h - 2 * t, c); aui_fill(x + w - t, y + t, t, h - 2 * t, c);
+        return;
+    }
     aui_fill(x + r, y,         w - 2 * r, t, c);
     aui_fill(x + r, y + h - t, w - 2 * r, t, c);
     aui_fill(x,         y + r, t, h - 2 * r, c);
     aui_fill(x + w - t, y + r, t, h - 2 * r, c);
-    blit_mask(X_(x),         Y_(y),         r, r, m, cw, ch, c, 255, 0, 0);
-    blit_mask(X_(x + w - r), Y_(y),         r, r, m, cw, ch, c, 255, 1, 0);
-    blit_mask(X_(x),         Y_(y + h - r), r, r, m, cw, ch, c, 255, 0, 1);
-    blit_mask(X_(x + w - r), Y_(y + h - r), r, r, m, cw, ch, c, 255, 1, 1);
+    blit_mask_buf(rbuf, rcap, X_(x),         Y_(y),         r, r, m, cw, ch, c, 255, 0, 0);
+    blit_mask_buf(rbuf, rcap, X_(x + w - r), Y_(y),         r, r, m, cw, ch, c, 255, 1, 0);
+    blit_mask_buf(rbuf, rcap, X_(x),         Y_(y + h - r), r, r, m, cw, ch, c, 255, 0, 1);
+    blit_mask_buf(rbuf, rcap, X_(x + w - r), Y_(y + h - r), r, r, m, cw, ch, c, 255, 1, 1);
 #endif
 }
 
@@ -474,38 +613,69 @@ void aui_hgrad(int x, int y, int w, int h, unsigned l, unsigned r)
     gui_blit(X_(x), Y_(y), w, h, grad_buf, n, 1);
 }
 
+/* One gradient corner: the mask's shape, each row tinted by its own position
+ * in the vertical ramp so the curve does not shear away from the band it
+ * abuts. Factored out of aui_vgrad_round so the cached tile (rgba_buf) and
+ * the uncached one (big_rgba, see the BIG_MASK block above) share the one
+ * copy of this loop instead of drifting apart. */
+static void vgrad_corner(unsigned char *rbuf, long rcap, int devx, int devy, int r,
+                         const unsigned char *m, int cw, int ch, int fx, int fy,
+                         unsigned top, unsigned bot, int hd)
+{
+    if ((long)cw * ch * 4 > rcap) return;
+    for (int j = 0; j < ch; j++) {
+        int sj = fy ? ch - 1 - j : j;
+        int grow = fy ? hd - ch + j : j;
+        unsigned c = aui_mix(top, bot, iclamp(grow * 255 / hd, 0, 255));
+        unsigned char *d = rbuf + (long)j * cw * 4;
+        const unsigned char *s = m + (long)sj * cw;
+        for (int i = 0; i < cw; i++) {
+            d[i * 4 + 0] = (unsigned char)((c >> 16) & 255);
+            d[i * 4 + 1] = (unsigned char)((c >> 8) & 255);
+            d[i * 4 + 2] = (unsigned char)(c & 255);
+            d[i * 4 + 3] = s[fx ? cw - 1 - i : i];
+        }
+    }
+    gui_blit(devx, devy, r, r, rbuf, cw, ch);
+}
+
 void aui_vgrad_round(int x, int y, int w, int h, int r, unsigned top, unsigned bot)
 {
     if (w <= 0 || h <= 0) return;
     r = clamp_radius(w, h, r);
     if (r == 0) { aui_vgrad(x, y, w, h, top, bot); return; }
+
+    /* Decide the corner source BEFORE drawing anything. The old order drew
+     * the three bands FIRST and only then asked for the corners, so a
+     * refusal's `if (!m) return;` left the four r x r corner squares as pure,
+     * untouched background -- not a square corner, an actual HOLE in the
+     * shape (gfx_mask.c's contract comment calls this out by name: the same
+     * "drops geometry" failure as aui_stroke's vanishing arcs, just a gap
+     * instead of a missing outline). Deciding first is what makes a clean
+     * whole-rect fallback possible instead of a hole. */
+    int cw = devlen(X_(x), r), ch = devlen(Y_(y), r);
+    unsigned char *rbuf; long rcap;
+    const unsigned char *m = corner_mask(MK_FILL, cw, ch, 0, &rbuf, &rcap);
+    if (!m) {
+        /* Past both ceilings: a flat-cornered gradient over the WHOLE rect is
+         * complete (no hole, no seam at the band edge) -- the acceptable
+         * half of the contract, and, like every gfx_mask_corner refusal,
+         * already counted there. */
+        aui_vgrad(x, y, w, h, top, bot);
+        return;
+    }
+
     aui_vgrad(x + r, y,         w - 2 * r, r,         top, aui_mix(top, bot, r * 255 / h));
     aui_vgrad(x,     y + r,     w,         h - 2 * r, aui_mix(top, bot, r * 255 / h),
                                                       aui_mix(top, bot, (h - r) * 255 / h));
     aui_vgrad(x + r, y + h - r, w - 2 * r, r,         aui_mix(top, bot, (h - r) * 255 / h), bot);
     /* The corners take the gradient's colour at their own row, so the curve does
      * not shear away from the band it abuts. */
-    int cw = devlen(X_(x), r), ch = devlen(Y_(y), r);
-    const unsigned char *m = mask_get(MK_FILL, cw, ch, 0);
-    if (!m) return;
     int hd = imax(1, devlen(Y_(y), h));
     for (int corner = 0; corner < 4; corner++) {
         int fx = corner & 1, fy = corner >> 1;
         int px = fx ? x + w - r : x, py = fy ? y + h - r : y;
-        for (int j = 0; j < ch; j++) {
-            int sj = fy ? ch - 1 - j : j;
-            int grow = fy ? hd - ch + j : j;
-            unsigned c = aui_mix(top, bot, iclamp(grow * 255 / hd, 0, 255));
-            unsigned char *d = rgba_buf + (long)j * cw * 4;
-            const unsigned char *s = m + (long)sj * cw;
-            for (int i = 0; i < cw; i++) {
-                d[i * 4 + 0] = (unsigned char)((c >> 16) & 255);
-                d[i * 4 + 1] = (unsigned char)((c >> 8) & 255);
-                d[i * 4 + 2] = (unsigned char)(c & 255);
-                d[i * 4 + 3] = s[fx ? cw - 1 - i : i];
-            }
-        }
-        gui_blit(X_(px), Y_(py), r, r, rgba_buf, cw, ch);
+        vgrad_corner(rbuf, rcap, X_(px), Y_(py), r, m, cw, ch, fx, fy, top, bot, hd);
     }
 }
 
@@ -530,6 +700,15 @@ static void shadow_edge(int x, int y, int w, int h, int n, int vertical,
     else          gui_blit(x, y, w, h, grad_buf, n, 1);
 }
 
+/* How many shadow requests this session had to shrink `blur` to fit even the
+ * uncached tile (BIG_MASK) -- see aui_shadow_ex's tier 3 below. A count, not
+ * a bool, and read the same way gfx_mask_refused() is: nothing else makes
+ * "shadows are coming out tighter than CSS asked for" visible, and fb.c's
+ * fb_shadow has the identical silent clamp today (see its own comment) --
+ * this is the one half of that bug this unit can actually fix, since fb.c is
+ * kernel code and cannot afford this file's BIG_MASK buffers (see fb.c). */
+static unsigned shadow_degraded;
+
 void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alpha)
 {
     if (w <= 0 || h <= 0 || blur <= 0 || alpha <= 0) return;
@@ -544,13 +723,47 @@ void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alph
     int cw = devlen(sx - blur, T), ch = devlen(sy - blur, T);
     int rd = imin(aui_dev(r), cw - 1);
     if (rd < 0) rd = 0;
-    const unsigned char *m = mask_get(MK_SHADOW, cw, ch, rd);
-    if (m) {
-        blit_mask(sx - blur,     sy - blur,     T, T, m, cw, ch, col, alpha, 0, 0);
-        blit_mask(sx + w - r,    sy - blur,     T, T, m, cw, ch, col, alpha, 1, 0);
-        blit_mask(sx - blur,     sy + h - r,    T, T, m, cw, ch, col, alpha, 0, 1);
-        blit_mask(sx + w - r,    sy + h - r,    T, T, m, cw, ch, col, alpha, 1, 1);
+    unsigned char *rbuf; long rcap;
+    const unsigned char *m = corner_mask(MK_SHADOW, cw, ch, rd, &rbuf, &rcap);
+    if (!m) {
+        /* Old code: `if (m) { four blits }` with NOTHING gating the edge
+         * strips below, which draw unconditionally -- so a refused corner
+         * left the edges with no corner to meet, exactly the seam gfx.h's
+         * clip-mask note warns a mismatched pair produces. corner_mask()
+         * covers tier 1 (cached) and tier 2 (uncached, AT THE REQUESTED
+         * blur -- no clamp) above; reaching here means BOTH refused, and
+         * only then does tier 3 shrink blur -- BEFORE recomputing T/cw/ch,
+         * so the edge strips further down (which key off the same `blur`
+         * variable) automatically fall off over the same, now-shorter,
+         * distance and nothing seams.
+         *
+         * `blur`/`r` are POINTS here (aui_shadow_ex's whole interface is),
+         * but BIG_MASK is a DEVICE bound -- the same point/device split
+         * clock.c:126 works around with `MASK_MAX * 100 / aui_scale()`.
+         * Same idiom: convert the device ceiling back to a point span
+         * first, THEN shrink blur in the units it is actually expressed
+         * in. */
+        shadow_degraded++;
+        int capT = BIG_MASK * 100 / aui_scale();
+        blur = capT - r;
+        if (blur <= 0) return;      /* radius alone doesn't fit even the device cap: no sound shadow to draw */
+        T = blur + r;
+        cw = devlen(sx - blur, T); ch = devlen(sy - blur, T);
+        /* devlen rounds; clamp hard rather than trust the arithmetic -- this
+         * feeds corner_mask()'s own BIG_MASK check, and a byte over would
+         * just be refused again (safe, but pointless) rather than overflow
+         * anything, since corner_mask never writes past what it checked. */
+        if (cw > BIG_MASK) cw = BIG_MASK;
+        if (ch > BIG_MASK) ch = BIG_MASK;
+        rd = imin(aui_dev(r), cw - 1);
+        if (rd < 0) rd = 0;
+        m = corner_mask(MK_SHADOW, cw, ch, rd, &rbuf, &rcap);
+        if (!m) return;    /* shouldn't happen -- cw,ch are now <= BIG_MASK by construction -- but never draw on an unmet assumption */
     }
+    blit_mask_buf(rbuf, rcap, sx - blur,     sy - blur,     T, T, m, cw, ch, col, alpha, 0, 0);
+    blit_mask_buf(rbuf, rcap, sx + w - r,    sy - blur,     T, T, m, cw, ch, col, alpha, 1, 0);
+    blit_mask_buf(rbuf, rcap, sx - blur,     sy + h - r,    T, T, m, cw, ch, col, alpha, 0, 1);
+    blit_mask_buf(rbuf, rcap, sx + w - r,    sy + h - r,    T, T, m, cw, ch, col, alpha, 1, 1);
     /* The offset exposes a sliver of the shadow box's INTERIOR below the caster,
      * and the 8 slices deliberately do not paint the interior. Left out, every
      * elevated card in the system shows a `dy`-pixel gap of clean background
@@ -834,7 +1047,14 @@ static void ck_report(void)
     gfx_mask_stats(&hits, &misses);
     int dmiss = misses - ck_miss0;
     ck_miss0 = misses;
-    char b[160]; int q = 0;
+    /* refuse: gfx_mask_corner() turned a tile down outright this session
+     * (gfx_mask.c's mrefuse, via the local extern above -- not per-interval
+     * like the others, because a refusal is rare enough that a running total
+     * is more useful than a delta that reads 0 almost every print). shdeg:
+     * how many of THIS app's shadow requests needed aui_shadow_ex's tier-3
+     * blur clamp. Both used to be unknowable from outside gdb; now they are
+     * two more fields in the same line this bench already prints. */
+    char b[220]; int q = 0;
     const char *k;
     char t[24];
     #define PUT(str) do { k = (str); while (*k) b[q++] = *k++; } while (0)
@@ -851,6 +1071,8 @@ static void ck_report(void)
     PUT(" app_us=");   NUM(app_us);
     PUT(" wall_us=");  NUM(wall_us);
     PUT(" tiles=");    NUM((unsigned)(dmiss < 0 ? 0 : dmiss));
+    PUT(" refuse=");   NUM((unsigned)gfx_mask_refused());
+    PUT(" shdeg=");    NUM(shadow_degraded);
     b[q++] = '\n';
     #undef PUT
     #undef NUM

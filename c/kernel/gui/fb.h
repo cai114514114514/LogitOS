@@ -137,6 +137,10 @@ void fb_blend_round_rect(int x, int y, int w, int h, int radius,
  * because the caster is opaque and overdraws its own interior. Same falloff
  * curve as aui_shadow_ex in ring 3, from the same gfx_shadow_falloff. */
 void fb_shadow(int x, int y, int w, int h, int radius, int dy, int blur, uint8_t alpha);
+/* Times fb_shadow pre-clamped blur to fit the mask cache's tile ceiling -- the
+ * shadow came out TIGHTER THAN ASKED, which is a silent degradation this
+ * counter makes readable instead of argued about. */
+unsigned fb_shadow_clamp_count(void);
 
 /* Real-time separable box blur of a rect on the current target (frost the live
  * backdrop behind a translucent panel). O(w*h), radius-independent. corner > 0

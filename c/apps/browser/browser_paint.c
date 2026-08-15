@@ -175,7 +175,18 @@ static void fill_round(int x, int y, int w, int h, int r, uint32_t color, int al
     int cw = devlen(x, r), ch = devlen(y, r);
     const unsigned char *cov = gfx_mask_corner(GFX_MASK_FILL, cw, ch, 0);
     /* A radius past the cache's tile limit is still drawn, just square: a
-     * missing background is a worse answer than a sharp corner. */
+     * missing background is a worse answer than a sharp corner. This is the
+     * ACCEPTABLE half of gfx_mask_corner's contract (see its comment in
+     * gfx_mask.c) -- complete, no dropped geometry -- and it is no longer a
+     * SILENT square: every refusal is counted the moment gfx_mask_corner
+     * returns NULL (gfx_mask.c's mrefuse / gfx_mask_refused()), which is what
+     * makes this fallback "reported" rather than a picture nobody can query.
+     * A big `border-radius` (a CSS pill button, a large rounded card) is
+     * exactly the real-world case this fires for; c/apps/gui/aui.c's
+     * BIG_MASK tile is the fix for the equivalent toolkit shapes and is not
+     * duplicated here on purpose -- this file has its own host test suite
+     * (BTEST_INC in the Makefile) this unit did not want to put at risk for a
+     * fallback that was already correct, just previously unobservable. */
     if (!cov) { fill(x, y, w, h, color, alpha); return; }
     fill(x + r, y,         w - 2 * r, r,         color, alpha);
     fill(x,     y + r,     w,         h - 2 * r, color, alpha);

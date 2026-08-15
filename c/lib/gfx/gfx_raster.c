@@ -1,12 +1,14 @@
 /* Open Logit -- the scanline coverage rasterizer. THE one in this tree.
  *
- * CONSTRUCTION, and it is deliberately the kernel glyph rasterizer's: GFX_SUBS
- * (4) sub-scanlines per pixel row, and along each of them EXACT fractional
+ * CONSTRUCTION: `subs` sub-scanlines per pixel row (a per-call argument now --
+ * see the GFX_SUBS comment in gfx.h for why one constant was wrong: shapes and
+ * glyphs are not the same job), and along each of them EXACT fractional
  * horizontal coverage rather than a point sample. That asymmetry is the whole
  * trick -- horizontal coverage is analytic and free, vertical coverage costs a
  * pass each, so you buy accuracy where it is cheap and sample where it is not.
- * Measured against a 16x supersampled reference the worst pixel error is 0.08
- * for fills and 0.14 for rings, at 1/4 the cost of 16x supersampling.
+ * At the default of 4 sub-scanlines, measured against a 16x supersampled
+ * reference the worst pixel error is 0.08 for fills and 0.14 for rings, at 1/4
+ * the cost of 16x supersampling.
  *
  * WINDING. Both rules, from the same walk: crossings of a sub-scanline are
  * collected with their direction, sorted by x, and the interior is the run
@@ -14,10 +16,51 @@
  * The edge test is HALF-OPEN in y (ytop <= ys < ybot), which is what stops a
  * vertex shared by two edges from being counted twice and punching a hole.
  *
- * NO ALLOCATION. The edge table, the active list and one scratch row are
- * bounded statics, ~48 KB of .bss. A path with more edges than fit is refused
- * rather than truncated; see gfx_path.c on why a truncated path is the worst
- * kind of failure.
+ * NO ALLOCATION. The edge table, the active list, the crossing list and one
+ * scratch row are bounded statics -- see gfx.h's LIMITS comment for the exact
+ * byte count and why these particular caps. A path with more edges than fit is
+ * refused rather than truncated (gfx_path.c explains why a truncated path is
+ * the worst kind of failure), and as of this milestone so is a scanline that
+ * would need more concurrently active edges, or more crossings, than the
+ * active/crossing tables hold -- see "THE TWO-PASS SWEEP" below for why that
+ * needed a different mechanism than "check once, up front", which is all
+ * build_edges() has ever needed.
+ *
+ * THE TWO-PASS SWEEP. build_edges() can refuse before drawing anything because
+ * it runs once, completely, before the first row exists. The active-edge and
+ * crossing overflows can't use that trick as-is: whether either would happen
+ * is only knowable scanline by scanline, DURING the same sweep that is also
+ * handing finished rows to the caller's row_fn. Discovering an overflow on row
+ * 800 of 1000 after rows 0-799 have already been written into the caller's
+ * coverage buffer (gfx_fill_mask) or blended into a live destination surface
+ * (gfx_fill) is exactly the "plausible wrong picture" this file refuses to
+ * produce elsewhere -- and for gfx_fill there is no undo available: Porter-
+ * Duff src-over has already been blended into pixels this file owns no backup
+ * of. So sweep() below runs the full row-by-row edge walk TWICE: once with
+ * `commit`=0, which does every bit of active-list/crossing-list bookkeeping
+ * and returns 0 the instant either would overflow, but writes no coverage and
+ * calls row_fn on nothing; and, only if that dry run clears every row all the
+ * way to y1, a second time with `commit`=1 -- the original single-pass
+ * algorithm, now guaranteed not to hit either cap because it walks the
+ * identical edge order from the identical starting state. The doubled cost is
+ * the edge/active/crossing bookkeeping, which is cheap (touches a handful of
+ * short-lived edges); the expensive part -- span_add/span_hard actually
+ * writing coverage across a row -- still runs exactly once, only in the
+ * committed pass, same as before this file had two passes at all.
+ *
+ * raster() SKIPS the dry run entirely whenever this fill's total edge count
+ * already fits inside GFX_MAX_ACTIVE, because the active list can never hold
+ * more edges than the fill has in total -- overflow is then provably
+ * impossible without simulating it. Every shape phase 1 actually draws today
+ * (corner quadrants, rounded rects, triangles) is tens of edges against a
+ * four-figure cap, so that check keeps the common case at the ORIGINAL
+ * one-pass cost, measured: raising the two-pass path to cost nothing for that
+ * case turned out to matter -- the first version of this file always ran both
+ * passes and cost a rounded rect's whole-path fill 6.9us -> 12.2us on
+ * `bench-gfx`, purely in edge/active/crossing bookkeeping over a shape that
+ * was never going to overflow. Only a fill that approaches the new, much larger
+ * GFX_MAX_EDGES -- a dense SVG path, a CJK glyph -- pays for the second
+ * sweep, which is exactly the geometry that needed one.
  *
  * The core is shared by both consumers -- the coverage-mask writer and the
  * paint compositor -- because they differ only in what they do with a finished
@@ -117,8 +160,8 @@ static int build_edges(const struct gfx_path *p)
 }
 
 /* Shell sort of the edge order by ytop. Insertion sort is quadratic and this
- * table can hold 1536 edges; shell sort is a dozen lines, needs no recursion
- * and no scratch, and is comfortably fast at that size. */
+ * table can hold GFX_MAX_EDGES entries; shell sort is a dozen lines, needs no
+ * recursion and no scratch, and is comfortably fast at that size. */
 static void sort_order(int n)
 {
     static const int gaps[] = { 701, 301, 132, 57, 23, 10, 4, 1 };
@@ -140,31 +183,52 @@ static void sort_order(int n)
 
 typedef void (*row_fn)(void *user, int y, const unsigned char *row, int w);
 
-/* The core. Rasterizes rows [y0,y1) of `p` at device x offset `ox`, `w` pixels
- * wide, calling `fn` with each finished coverage row. */
-static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
-                  int w, row_fn fn, void *user)
+/* One full row-by-row sweep of the sorted edge order [0,ne) over rows
+ * [y0,y1), `subs` sub-scanlines per row.
+ *
+ * `commit`=0 is the dry run from the file comment: it performs the admit /
+ * retire / crossing bookkeeping exactly as the real pass would, and returns 0
+ * the INSTANT an edge that should activate can't (GFX_MAX_ACTIVE already
+ * full) or a crossing that should be recorded can't (same cap on g_cross) --
+ * this is the loud refusal for both truncations that used to be silent here.
+ * It writes no coverage and calls `fn` on nothing, so a caller can throw the
+ * result away with no visible effect.
+ *
+ * `commit`=1 is the original single-pass algorithm: it writes real coverage
+ * into g_row and calls `fn` once per finished row. It carries the identical
+ * overflow checks (rather than assuming the dry run already proved them
+ * unreachable) so a bug that ever let the two passes diverge fails loud
+ * instead of silently trusting a stale guarantee. */
+static int sweep(int ne, int rule, int ox, int y0, int y1, int w, int subs,
+                 row_fn fn, void *user, int commit)
 {
-    if (p->overflow) return 0;                 /* refuse a truncated path */
-    if (w <= 0 || w > GFX_MAX_W || y1 <= y0) return 0;
-    int ne = build_edges(p);
-    if (ne <= 0) return ne == 0 ? 1 : 0;       /* empty is a success, overflow is not */
-    sort_order(ne);
-
     int nact = 0, next = 0;
     long ox256 = (long)ox * 256;
+#ifndef GFX_NO_AA
+    /* Loop-invariant over the whole sweep (subs is fixed for the call) but
+     * NOT over the k-loop that computes `ys`, so only this one -- the
+     * per-span coverage amount -- can be hoisted without touching the sample
+     * positions span_add's accuracy depends on; see the raster() comment for
+     * why `ys` itself keeps its division. Computed here rather than trusting
+     * the compiler to hoist it out of sweep()'s own k-loop, since sweep()
+     * alone (subs is just a parameter) cannot prove subs != 0 the way
+     * raster()'s caller-side clamp does. */
+    int amt = 256 / subs;
+#endif
 
     /* Skip edges that end above the first row we care about. */
     while (next < ne && g_edge[g_order[next]].ybot <= (long)y0 * 256) next++;
 
     for (int y = y0; y < y1; y++) {
-        gfx_zero(g_row, w);
-        for (int k = 0; k < GFX_SUBS; k++) {
-            int ys = (y << 8) + (k * 256 + 128) / GFX_SUBS;
+        if (commit) gfx_zero(g_row, w);
+        for (int k = 0; k < subs; k++) {
+            int ys = (y << 8) + (k * 256 + 128) / subs;
             /* admit newly started edges */
             while (next < ne && g_edge[g_order[next]].ytop <= ys) {
-                if (g_edge[g_order[next]].ybot > ys && nact < GFX_MAX_ACTIVE)
+                if (g_edge[g_order[next]].ybot > ys) {
+                    if (nact >= GFX_MAX_ACTIVE) return 0;
                     g_act[nact++] = g_order[next];
+                }
                 next++;
             }
             /* retire finished ones */
@@ -174,9 +238,10 @@ static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
             }
             /* crossings */
             int nc = 0;
-            for (int i = 0; i < nact && nc < GFX_MAX_ACTIVE; i++) {
+            for (int i = 0; i < nact; i++) {
                 const struct edge *e = &g_edge[g_act[i]];
                 if (ys < e->ytop || ys >= e->ybot) continue;
+                if (nc >= GFX_MAX_ACTIVE) return 0;
                 long x = (long)e->xtop + (((long long)e->dxdy * (ys - e->ytop)) >> 16);
                 g_cross[nc].x = (int)(x - ox256);
                 g_cross[nc].dir = e->dir;
@@ -189,22 +254,72 @@ static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
                 while (j >= 0 && g_cross[j].x > cx) { g_cross[j + 1] = g_cross[j]; j--; }
                 g_cross[j + 1].x = cx; g_cross[j + 1].dir = cd;
             }
-            /* winding walk */
-            int wind = 0;
-            for (int i = 0; i + 1 <= nc - 1; i++) {
-                wind += (rule == GFX_EVENODD) ? 1 : g_cross[i].dir;
-                int inside = (rule == GFX_EVENODD) ? (wind & 1) : (wind != 0);
-                if (!inside) continue;
+            /* winding walk -- coverage-writing only, so skipped entirely on
+             * the dry run: it cannot affect nc/nact and so cannot change
+             * whether this sweep overflows. */
+            if (commit) {
+                int wind = 0;
+                for (int i = 0; i + 1 <= nc - 1; i++) {
+                    wind += (rule == GFX_EVENODD) ? 1 : g_cross[i].dir;
+                    int inside = (rule == GFX_EVENODD) ? (wind & 1) : (wind != 0);
+                    if (!inside) continue;
 #ifdef GFX_NO_AA
-                span_hard(g_row, w, g_cross[i].x, g_cross[i + 1].x);
+                    span_hard(g_row, w, g_cross[i].x, g_cross[i + 1].x);
 #else
-                span_add(g_row, w, g_cross[i].x, g_cross[i + 1].x, 256 / GFX_SUBS);
+                    span_add(g_row, w, g_cross[i].x, g_cross[i + 1].x, amt);
 #endif
+                }
             }
         }
-        fn(user, y, g_row, w);
+        if (commit) fn(user, y, g_row, w);
     }
     return 1;
+}
+
+/* The core. Rasterizes rows [y0,y1) of `p` at device x offset `ox`, `w` pixels
+ * wide, `subs` sub-scanlines per row, calling `fn` with each finished coverage
+ * row. `subs` is a caller choice (glyphs want more than a button) but is
+ * clamped to GFX_MAX_SUBS and, under -DGFX_NO_AA, forced to the single centre
+ * sample the negative control requires regardless of what was asked for. */
+static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
+                  int w, int subs, row_fn fn, void *user)
+{
+    if (p->overflow) return 0;                 /* refuse a truncated path (or
+                                                 * one whose matrix changed
+                                                 * mid-build -- see gfx_path.c) */
+    if (w <= 0 || w > GFX_MAX_W || y1 <= y0) return 0;
+#ifdef GFX_NO_AA
+    subs = 1;               /* the negative control overrides any request */
+#else
+    if (subs <= 0) subs = 1;
+    if (subs > GFX_MAX_SUBS) subs = GFX_MAX_SUBS;
+#endif
+    int ne = build_edges(p);
+    if (ne <= 0) return ne == 0 ? 1 : 0;       /* empty is a success, overflow is not */
+    sort_order(ne);
+
+    /* The dry run's whole purpose is proving the active list and crossing
+     * list can't overflow -- and nact (how many of `ne` edges are ever
+     * simultaneously active) can never exceed `ne` itself, since it is
+     * populated from a subset of the edge table. So whenever this fill's
+     * TOTAL edge count already fits inside GFX_MAX_ACTIVE, neither list can
+     * possibly overflow and the dry run would only reconfirm the arithmetic
+     * that already proved it -- skip straight to the committed pass. This is
+     * not a shortcut around the doctrine, it is the doctrine applied one
+     * level up: build_edges() already refuses (returns -1) when `ne` would
+     * exceed GFX_MAX_EDGES, before any row exists, for the same reason. Every
+     * shape phase 1 actually draws today -- corner quadrants, rounded rects,
+     * triangles -- is tens of edges, three orders of magnitude under
+     * GFX_MAX_ACTIVE, so this keeps the common case at the original one-pass
+     * cost; only a fill that legitimately approaches the new, much larger
+     * GFX_MAX_EDGES (a dense SVG path, a CJK glyph) pays for the second
+     * sweep, and that is exactly the geometry the two-pass check exists to
+     * protect. */
+    if (ne <= GFX_MAX_ACTIVE)
+        return sweep(ne, rule, ox, y0, y1, w, subs, fn, user, 1);
+
+    if (!sweep(ne, rule, ox, y0, y1, w, subs, fn, user, 0)) return 0;
+    return sweep(ne, rule, ox, y0, y1, w, subs, fn, user, 1);
 }
 
 /* --------------------------------------------------------- coverage mask -- */
@@ -220,14 +335,20 @@ static void mask_row(void *user, int y, const unsigned char *row, int w)
     for (int i = 0; i < w; i++) d[i] = row[i];
 }
 
-int gfx_fill_mask(const struct gfx_path *p, int rule,
-                  unsigned char *cov, int w, int h, int ox, int oy)
+int gfx_fill_mask_subs(const struct gfx_path *p, int rule,
+                       unsigned char *cov, int w, int h, int ox, int oy, int subs)
 {
     if (!cov || w <= 0 || h <= 0) return 0;
     gfx_zero(cov, w * h);
     struct mask_sink m;
     m.cov = cov; m.w = w; m.h = h; m.oy = oy;
-    return raster(p, rule, ox, oy, oy + h, w, mask_row, &m);
+    return raster(p, rule, ox, oy, oy + h, w, subs, mask_row, &m);
+}
+
+int gfx_fill_mask(const struct gfx_path *p, int rule,
+                  unsigned char *cov, int w, int h, int ox, int oy)
+{
+    return gfx_fill_mask_subs(p, rule, cov, w, h, ox, oy, GFX_SUBS);
 }
 
 /* ------------------------------------------------------------- surface -- */
@@ -249,8 +370,8 @@ static void fill_row(void *user, int y, const unsigned char *row, int w)
     gfx_paint_row(f->paint, f->dst, y, f->x0, f->x1, row, f->x0);
 }
 
-int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
-             const struct gfx_paint *paint, const struct gfx_rect *clip)
+int gfx_fill_subs(struct gfx_surface *dst, const struct gfx_path *p, int rule,
+                  const struct gfx_paint *paint, const struct gfx_rect *clip, int subs)
 {
     if (!dst || !dst->px || !p || !paint) return 0;
     int bx0, by0, bx1, by1;
@@ -267,9 +388,23 @@ int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
     if (bx1 < cx1) cx1 = bx1;
     if (by1 < cy1) cy1 = by1;
     if (cx1 <= cx0 || cy1 <= cy0) return 1;
-    if (cx1 - cx0 > GFX_MAX_W) cx1 = cx0 + GFX_MAX_W;
+    /* USED TO silently clip to GFX_MAX_W here (cx1 = cx0 + GFX_MAX_W). GFX_MAX_W
+     * already clears every real display width with margin (gfx.h's LIMITS
+     * comment), so a fill that still needs more than that is not a normal
+     * case being politely cropped -- it is exactly the kind of oversized
+     * request the doctrine at the top of this file exists to catch, and
+     * raster()'s own `w > GFX_MAX_W` check below refuses it. Nothing else is
+     * needed here: no row has been drawn yet at this point, so the refusal is
+     * free -- unlike the active/crossing overflows above, this one really is
+     * knowable before a single pixel is touched. */
 
     struct fill_sink f;
     f.dst = dst; f.paint = paint; f.x0 = cx0; f.x1 = cx1;
-    return raster(p, rule, cx0, cy0, cy1, cx1 - cx0, fill_row, &f);
+    return raster(p, rule, cx0, cy0, cy1, cx1 - cx0, subs, fill_row, &f);
+}
+
+int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
+             const struct gfx_paint *paint, const struct gfx_rect *clip)
+{
+    return gfx_fill_subs(dst, p, rule, paint, clip, GFX_SUBS);
 }
