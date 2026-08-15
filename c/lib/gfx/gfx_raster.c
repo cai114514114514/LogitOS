@@ -408,3 +408,212 @@ int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
 {
     return gfx_fill_subs(dst, p, rule, paint, clip, GFX_SUBS);
 }
+
+/* ------------------------------------------------------------ path clip --
+ * gfx.h's own comment on GFX_CLIP_MASK_MAX explains why the clip mask always
+ * arrives pre-rasterized: raster()'s edge/active/crossing tables above are
+ * file statics (not reentrant), so a clip path can never be swept from
+ * INSIDE the subject's own row callback -- the caller rasterizes the clip
+ * first with an ordinary gfx_fill_mask() call, into a buffer it owns, and
+ * hands the FINISHED coverage in here. What is left for this file to do is
+ * the multiply: for every row raster() streams for the SUBJECT, look up the
+ * clip's coverage at the same device (x,y) and multiply the two.
+ *
+ * "At the same device (x,y)" is the entire difficulty, per the milestone
+ * brief, so it is worth being explicit about the two coordinate systems in
+ * play. The subject sweep is parameterised by (ox, y0..y1, w) -- row_fn's
+ * `row[i]` is device pixel (ox+i, y). The clip mask is parameterised by its
+ * own (clip->ox, clip->oy, clip->w, clip->h) -- clip->cov[j*clip->w+i] is
+ * device pixel (clip->ox+i, clip->oy+j). Neither origin has any reason to
+ * equal the other (a window's content clip and a child element's own fill
+ * are almost never aligned), so every lookup below re-derives the clip index
+ * from the device coordinate rather than from the subject's row index --
+ * that re-derivation, done once per axis per row/pixel, is what keeps a
+ * one-axis offset from silently reading the wrong clip column. */
+
+/* One row of subject coverage (w px starting at device x=ox, at device row
+ * y), multiplied by clip's coverage at those SAME device pixels. A device
+ * pixel outside [clip->ox, clip->ox+clip->w) x [clip->oy, clip->oy+clip->h)
+ * reads as clip coverage 0 -- a clip CLIPS, so unmapped territory means
+ * "nothing shows here", not "this pixel is unclipped". Treating out-of-
+ * extent as unclipped would let a caller hand a smaller clip buffer than it
+ * actually needs and silently get a BIGGER clip region than it rasterized.
+ *
+ * Rounds rather than truncates -- (s*c + 127) / 255, not (s*c) / 255 -- for
+ * the reason gfx_over's file comment already put on record for this exact
+ * shape of division: truncation is not a half-bit of error in general, it is
+ * a hole at the specific case (both operands near 255) where the answer is
+ * least expected to be small. s=255,c=255 truncated is still 255 (255*255/
+ * 255=255 exactly), but s=254,c=254 truncates to 253 instead of rounding to
+ * 254 -- a visible one-step dimming along every fully-opaque-ish clipped
+ * edge that rounding removes.
+ *
+ * Writes into g_row_clip and returns it rather than writing through `row`:
+ * row_fn hands row_fn's caller a `const unsigned char *`, and rightly so --
+ * it is g_row above, about to be overwritten in place for the NEXT row the
+ * instant this call returns, so this function needs storage of its own for
+ * the product, not license to mutate the rasterizer's own scratch through a
+ * cast. Same size as g_row (GFX_MAX_W) and so the same kernel-.bss delta,
+ * GFX_MAX_W bytes -- see gfx.h's LIMITS comment for the running total this
+ * adds to. */
+static unsigned char g_row_clip[GFX_MAX_W];
+
+static const unsigned char *clip_row(const unsigned char *row, int w, int ox, int y,
+                                     const struct gfx_clip_mask *clip)
+{
+    int cy = y - clip->oy;
+    if (cy < 0 || cy >= clip->h) { gfx_zero(g_row_clip, w); return g_row_clip; }
+    const unsigned char *crow = clip->cov + (long)cy * clip->w;
+    for (int i = 0; i < w; i++) {
+        int cx = ox + i - clip->ox;
+        int c = (cx >= 0 && cx < clip->w) ? crow[cx] : 0;
+#ifdef GFX_NO_CLIP
+        /* NEGATIVE CONTROL (-DGFX_NO_CLIP): the multiply point is bypassed --
+         * every clipped fill draws exactly as its unclipped twin would.
+         * Every containment assertion in gfx_clip_test.c must then fail,
+         * which is what proves those assertions are actually exercising the
+         * multiply above rather than passing for some unrelated reason. */
+        (void)c;
+        g_row_clip[i] = row[i];
+#else
+        int s = row[i];
+        g_row_clip[i] = (unsigned char)((s * c + 127) / 255);
+#endif
+    }
+    return g_row_clip;
+}
+
+struct mask_sink_clipped {
+    unsigned char *cov; int w, h, ox, oy;
+    const struct gfx_clip_mask *clip;
+};
+
+static void mask_row_clipped(void *user, int y, const unsigned char *row, int w)
+{
+    struct mask_sink_clipped *m = (struct mask_sink_clipped *)user;
+    int j = y - m->oy;
+    if (j < 0 || j >= m->h) return;
+    const unsigned char *cr = clip_row(row, w, m->ox, y, m->clip);
+    unsigned char *d = m->cov + (long)j * m->w;
+    for (int i = 0; i < w; i++) d[i] = cr[i];
+}
+
+/* Shared by both entry points: the three refusals gfx.h documents for a
+ * gfx_clip_mask, checked before either does anything else. A clip->w<=0 or
+ * ->h<=0 extent is deliberately NOT refused here -- both callers treat an
+ * empty clip as the empty-intersection RESULT, not a malformed request; see
+ * each entry point's own comment for where that is decided. */
+static int clip_bad(const struct gfx_clip_mask *clip)
+{
+    if (!clip) return 1;                 /* these entry points exist FOR a
+                                          * clip; a caller with none wants
+                                          * gfx_fill_mask_subs/gfx_fill_subs */
+    if (clip->w < 0 || clip->h < 0) return 1;
+    if (clip->w > GFX_CLIP_MASK_MAX || clip->h > GFX_CLIP_MASK_MAX) return 1;
+    /* A NULL cov is only a refusal when the mask claims to cover pixels --
+     * w<=0 or h<=0 already means "no pixels", and a cov pointer nobody will
+     * ever dereference is not worth refusing over. */
+    if (clip->w > 0 && clip->h > 0 && !clip->cov) return 1;
+    return 0;
+}
+
+int gfx_fill_mask_clipped(const struct gfx_path *p, int rule,
+                          unsigned char *cov, int w, int h, int ox, int oy,
+                          int subs, const struct gfx_clip_mask *clip)
+{
+    if (!cov || w <= 0 || h <= 0) return 0;
+    if (clip_bad(clip)) return 0;
+    gfx_zero(cov, w * h);
+
+    /* Empty intersection between the subject's own [ox,ox+w)x[oy,oy+h) and
+     * the clip's [clip->ox,clip->ox+clip->w)x[clip->oy,clip->oy+clip->h) --
+     * including a clip whose w or h is itself <=0 -- is a RESULT, not a
+     * malformed request: "clip to nothing" is a legitimate way to ask for
+     * "draw nothing", and the all-zero buffer already written above is
+     * exactly that answer. Refusing it would make an empty clip behave
+     * differently from a clip that merely doesn't reach this tile, which is
+     * the same shape as every other silent-truncation-turned-refusal this
+     * milestone follows, just inverted -- here the RIGHT answer is success. */
+    if (clip->w <= 0 || clip->h <= 0 ||
+        ox >= clip->ox + clip->w || ox + w <= clip->ox ||
+        oy >= clip->oy + clip->h || oy + h <= clip->oy)
+        return 1;
+
+    struct mask_sink_clipped m;
+    m.cov = cov; m.w = w; m.h = h; m.ox = ox; m.oy = oy; m.clip = clip;
+    return raster(p, rule, ox, oy, oy + h, w, subs, mask_row_clipped, &m);
+}
+
+struct fill_sink_clipped {
+    struct gfx_surface *dst;
+    const struct gfx_paint *paint;
+    int x0, x1;
+    const struct gfx_clip_mask *clip;
+};
+
+static void fill_row_clipped(void *user, int y, const unsigned char *row, int w)
+{
+    struct fill_sink_clipped *f = (struct fill_sink_clipped *)user;
+    (void)w;
+    if (y < 0 || y >= f->dst->h) return;
+    const unsigned char *cr = clip_row(row, f->x1 - f->x0, f->x0, y, f->clip);
+    gfx_paint_row(f->paint, f->dst, y, f->x0, f->x1, cr, f->x0);
+}
+
+int gfx_fill_clipped(struct gfx_surface *dst, const struct gfx_path *p, int rule,
+                     const struct gfx_paint *paint, const struct gfx_rect *rectclip,
+                     int subs, const struct gfx_clip_mask *clip)
+{
+    if (!dst || !dst->px || !p || !paint) return 0;
+    if (clip_bad(clip)) return 0;
+    int bx0, by0, bx1, by1;
+    if (!gfx_path_bounds(p, &bx0, &by0, &bx1, &by1)) return 1;    /* nothing to do */
+    int cx0 = 0, cy0 = 0, cx1 = dst->w, cy1 = dst->h;
+    if (rectclip) {
+        if (rectclip->x > cx0) cx0 = rectclip->x;
+        if (rectclip->y > cy0) cy0 = rectclip->y;
+        if (rectclip->x + rectclip->w < cx1) cx1 = rectclip->x + rectclip->w;
+        if (rectclip->y + rectclip->h < cy1) cy1 = rectclip->y + rectclip->h;
+    }
+    if (bx0 > cx0) cx0 = bx0;
+    if (by0 > cy0) cy0 = by0;
+    if (bx1 < cx1) cx1 = bx1;
+    if (by1 < cy1) cy1 = by1;
+    /* Unlike gfx_fill_mask_clipped above, this entry point has no fixed
+     * caller-owned output buffer to fill exactly -- it composites straight
+     * into `dst`, and the sweep window is already an intersection of the
+     * surface bounds, the path's own bounds and rectclip. Folding the clip
+     * MASK's extent into that same intersection is the same optimisation
+     * rectclip already gets: a device pixel outside the mask contributes
+     * nothing to `dst` no matter what, so there is no reason to sweep it,
+     * blend it, and multiply it by zero when it can be excluded from the
+     * window up front. gfx_fill_mask_clipped cannot take this shortcut
+     * because its contract is to fill the exact w x h buffer the caller
+     * asked for, clip and all; this one has no such promise to keep.
+     *
+     * Gated out under -DGFX_NO_CLIP along with the row_fn multiply itself
+     * (clip_row, above): this window narrowing is USING the clip mask (its
+     * extent), same as the multiply uses its content, so the negative
+     * control has to bypass both or a hard clip-window edge would keep
+     * reading as clipped -- correctly, but for the wrong reason -- purely
+     * from this optimisation, with the multiply it's supposed to be testing
+     * never even running. GFX_NO_CLIP's job is "every containment assertion
+     * FAILS", not "most of them". */
+#ifndef GFX_NO_CLIP
+    if (clip->w <= 0 || clip->h <= 0) return 1;   /* empty clip: nothing to do */
+    if (clip->ox > cx0) cx0 = clip->ox;
+    if (clip->oy > cy0) cy0 = clip->oy;
+    if (clip->ox + clip->w < cx1) cx1 = clip->ox + clip->w;
+    if (clip->oy + clip->h < cy1) cy1 = clip->oy + clip->h;
+#else
+    if (clip->w <= 0 || clip->h <= 0) return 1;   /* still a real refusal-adjacent
+                                                   * case, not clip BEHAVIOUR --
+                                                   * an empty mask has no content
+                                                   * to ignore either way */
+#endif
+    if (cx1 <= cx0 || cy1 <= cy0) return 1;
+
+    struct fill_sink_clipped f;
+    f.dst = dst; f.paint = paint; f.x0 = cx0; f.x1 = cx1; f.clip = clip;
+    return raster(p, rule, cx0, cy0, cy1, cx1 - cx0, subs, fill_row_clipped, &f);
+}
