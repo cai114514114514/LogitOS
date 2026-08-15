@@ -511,6 +511,53 @@ struct logit_meminfo {
     unsigned long long mmap_reserved;    /* bytes this process has reserved */
 };
 
+/* --------------------------------------------------------------------------
+ * File-backed mmap: a SECOND mmap form, added once c/kernel/mm/pcache.h had a
+ * real page cache to back it with. SYS_MMAP above stays exactly what it was --
+ * anonymous, zero-filled, no fd -- and this is additive, not a replacement.
+ *
+ * A SEPARATE SYSCALL NUMBER rather than a flag on SYS_MMAP, because the
+ * three-register convention this whole ABI uses (rax = number, rdi/rsi/rdx =
+ * args -- see the file's banner comment) has no room left: fd, byte offset
+ * and length together already outgrow three registers, before `hint` is even
+ * counted. The struct-pointer shape below is what this ABI already reaches
+ * for whenever a call outgrows three scalars (logit_imgreq, logit_dirreq,
+ * logit_capreq below) -- this is that pattern again, not a new one.
+ *
+ * UNCLASSIFIED (CAP_NONE) in c/kernel/exec/syscall.c's syscall_cap_class().
+ * That function's own rule is: CAP_FS gates a syscall that acquires fs access
+ * BY NAME; a syscall that only operates on an fd ALREADY HELD (its own listed
+ * examples are read/write/close/lseek/dup/fsync/fstat) is deliberately left
+ * out, because whatever fd it is holding could only exist by having already
+ * passed that check at SYS_OPEN. This call takes an fd, not a path, so it is
+ * the same shape as fstat/fsync and stays out of that table for the same
+ * reason -- gating it too would check one grant twice, not check a new one.
+ *
+ * READ-ONLY, ALWAYS. c/kernel/mm/pcache.h says why in full: there is no dirty
+ * page, no writeback and no msync anywhere in this kernel. A caller that asks
+ * for a writable file mapping is REFUSED OUT LOUD (LOGIT_MMAP_FILE_E_WRITE)
+ * rather than silently handed a private copy whose writes go nowhere. */
+struct logit_mmap_file_req {
+    unsigned long long hint;   /* preferred base VA, 0 = anywhere (as SYS_MMAP) */
+    unsigned long long len;    /* bytes, rounded up to a page */
+    unsigned long long off;    /* byte offset into the file; must be page aligned */
+    int fd;                    /* from SYS_OPEN; must name a regular (F_VFS) file */
+    int prot;                  /* MMAP_PROT_* ; MMAP_PROT_WRITE is refused, see above */
+};
+
+/* (struct logit_mmap_file_req *) -> base address (always > 0 on success --
+ * every mapping lands at or above MM_MMAP_BASE), or:
+ *   0   a generic failure: bad/non-regular fd, a misaligned `off`, a zero or
+ *       overflowing `len`, no VMA slot, or the file could not be opened by
+ *       the page cache at all (not a LogitFS regular file -- see pcv_stat()
+ *       in c/kernel/mm/pcache_vfs.c). The same "0 = failure" shape SYS_MMAP
+ *       already uses; the caller falls back to read().
+ *   LOGIT_MMAP_FILE_E_WRITE (-1)  MMAP_PROT_WRITE was set. Distinguishable
+ *       from the generic failure on purpose: this is not "out of resources,
+ *       try again", it is "this kernel cannot do what was asked, ever". */
+#define SYS_MMAP_FILE 162
+#define LOGIT_MMAP_FILE_E_WRITE (-1)
+
 /* ---- the process table, and ending a process ------------------------------
  * (struct logit_procinfo *buf, int max) -> entries filled, or -1.
  *

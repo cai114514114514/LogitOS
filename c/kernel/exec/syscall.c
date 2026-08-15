@@ -30,7 +30,7 @@
  * searches the including file's own directory first.) */
 #include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
-#include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO */
+#include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MMAP_FILE / SYS_MUNMAP / SYS_MEMINFO */
 #include "settings.h"    /* settings_syscall: SYS_SETTING_* */
 #include "clipboard.h"   /* clip_syscall:   SYS_CLIP_SET / _GET / _INFO */
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
@@ -955,6 +955,8 @@ static void syscall_do(struct registers *r)
         return;
 
     case SYS_MMAP:
+    case SYS_MMAP_FILE:  /* file-backed mmap; one argument, a struct pointer in
+                          * rdi -- see the case in mmsys.c for the whole story */
     case SYS_MUNMAP:
     case SYS_MEMINFO:
         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,

@@ -101,6 +101,19 @@ static int fs_rename(struct filesystem *f, const char *o, const char *n)
 int vfs_cred_pid(void) __attribute__((weak));
 static int cur_pid(void) { return vfs_cred_pid ? vfs_cred_pid() : 0; }
 
+/* The page cache's write barrier (c/kernel/mm/pcache.c, c/kernel/mm/pcache.h).
+ * Weak for the same reason kdiag and vfs_cred_pid are: tests/unit/vfs_mount_test.c
+ * and friends link the REAL c/fs/vfs.c with no kernel headers at all, to keep
+ * the path-resolution and permission code under test exactly the code that
+ * ships. pcache.c is kernel MM (pmm.h/mm.h/spinlock.h) and is never part of
+ * that link, so this is null there and every call below is skipped -- correctly,
+ * since a host VFS test never brought a page cache up and has nothing to
+ * invalidate. In the kernel build, and in `make test-mm` (which links pcache.c
+ * but not this file), the real symbol binds. */
+void pcache_invalidate_path(const char *path) __attribute__((weak));
+static void pc_invalidate(const char *path)
+{ if (pcache_invalidate_path) pcache_invalidate_path(path); }
+
 static int  s_len(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 static int  s_eq(const char *a, const char *b)
 { int i = 0; for (; a[i] && a[i] == b[i]; i++) {} return a[i] == b[i]; }
@@ -674,6 +687,25 @@ int vfs_write(const char *path, const void *buf, int size)
         if ((rc = check_parent_write(real, &c)) < 0) return rc;
     }
     int wrote = fs_write(m->fs, sp, buf, size);
+
+    /* THE COHERENCE BARRIER (pcache.h): the only way a file's bytes change is
+     * this call, vfs_delete or vfs_rename, and every one of them invalidates
+     * AFTER the mutation, never before. The order is load-bearing, not a
+     * style choice: invalidating FIRST leaves a window between the purge and
+     * fs_write() actually landing in which a concurrent page-in (another
+     * process's fault on this file, or its own pcache_pread) misses, reads
+     * the OLD bytes straight off the backend, and re-populates the entry --
+     * with data that is, at that exact moment, about to be overwritten. Once
+     * that miss lands there is no second invalidate to catch it; the entry
+     * looks resident and correct and is neither, forever, or until some
+     * unrelated write on the same file happens to flush it out.
+     * Invalidating AFTER closes the window instead of narrowing it: any purge
+     * this call performs happens once the backend already agrees with it, so
+     * a racing fault either reads the pre-write bytes (still correct, at that
+     * instant, for a backend that has not yet applied the write) or the
+     * post-write ones -- and either way this call removes whatever landed. */
+    if (wrote >= 0) pc_invalidate(real);
+
     /* A rewrite keeps the mode it had; only a NEW name gets one. That is POSIX's
      * rule and it matters here: LogitFS rewrites a whole file per write, so
      * applying the mask on every write would silently undo every chmod. */
@@ -694,12 +726,31 @@ int vfs_delete(const char *path)
     struct vcred c; cred_now(&c);
     if ((rc = check_parent_write(abs, &c)) < 0) return rc;
 
+    /* THE COHERENCE BARRIER for every exit below (pcache.h): called AFTER the
+     * name is gone, by LITERAL PATH rather than leaning on the (dev, ino) half
+     * of pcache_invalidate_path. That half re-stats `abs` to find what else to
+     * purge, and `abs` is exactly the name a delete just stopped resolving --
+     * by the time any of these calls run, pc_ops->stat(abs, ...) can no longer
+     * find it. The name-match half needs no such resolution; it only compares
+     * against the string pcache recorded when the page was cached, which is
+     * why it is the one doing the real work on this path (see vfs_write above
+     * for the write-side half of the same barrier, and its BEFORE-vs-AFTER
+     * argument -- the same window exists here: invalidating before the name
+     * is actually gone would let a fault that races in between repopulate the
+     * entry under a name about to stop meaning anything, with no second
+     * invalidate left to catch it). */
+
     /* A symlink is a VFS-level object with no backing file: dropping the
-     * record IS the unlink. */
+     * record IS the unlink. No page is ever cached under a symlink's own path
+     * (every other vfs_* op resolves through it before touching pcache), so
+     * this is expected to match nothing -- called anyway so "every name that
+     * stops meaning what it meant gets invalidated" has no silent exception
+     * carved out for symlinks specifically. */
     struct vattr la;
     if (vmeta_lookup(abs, &la) && la.type == VT_LNK) {
         char promote[VFS_PATH_MAX];
         vmeta_unlink(abs, promote, (int)sizeof promote);
+        pc_invalidate(abs);
         return 0;
     }
 
@@ -718,13 +769,33 @@ int vfs_delete(const char *path)
          * a path-addressed backend the bytes have to move to a surviving name,
          * which is observably the same thing. */
         struct vmountent *m2 = mount_for(promote);
-        if (m2 == m)
-            return fs_rename(m->fs, sub_path(m, abs, sub, (int)sizeof sub),
-                             sub_path(m2, promote, sub2, (int)sizeof sub2));
-        return VFS_EXDEV;
+        if (m2 != m) return VFS_EXDEV;
+        int rn = fs_rename(m->fs, sub_path(m, abs, sub, (int)sizeof sub),
+                            sub_path(m2, promote, sub2, (int)sizeof sub2));
+        /* vmeta_unlink() above already dropped `abs`'s directory entry
+         * unconditionally, before this rename was even attempted -- so `abs`
+         * is a dead name at the VFS level regardless of whether the backend
+         * rename itself succeeds, and any cache entry filed under it is
+         * invalidated regardless too. `promote` needs no call of its own: its
+         * bytes did not change, only which physical name holds them, and a
+         * page already cached under `promote` keeps reading correctly because
+         * fs_read/fs_write reach the backend through vmeta_canon(), not
+         * through the literal path a page happened to be opened with. */
+        pc_invalidate(abs);
+        return rn;
     }
-    if (!this_is_canon) return 0;    /* another name holds the bytes; nothing on disk to do */
-    return fs_del(m->fs, sub_path(m, abs, sub, (int)sizeof sub));
+    if (!this_is_canon) {
+        /* Removing one alias among several: the canonical file's bytes are
+         * untouched (nothing below this ever reaches the backend), but `abs`
+         * itself just became a dead name -- if a page was ever cached under
+         * exactly it, the next miss on that entry must not try to re-read a
+         * name that no longer exists. */
+        pc_invalidate(abs);
+        return 0;
+    }
+    int rc2 = fs_del(m->fs, sub_path(m, abs, sub, (int)sizeof sub));
+    pc_invalidate(abs);     /* vmeta_unlink already made `abs` dead either way */
+    return rc2;
 }
 
 int vfs_mkdir(const char *path)
@@ -769,7 +840,42 @@ int vfs_rename(const char *old_path, const char *new_path)
     char so[VFS_PATH_MAX], sn[VFS_PATH_MAX];
     rc = fs_rename(mo->fs, sub_path(mo, ao, so, (int)sizeof so),
                    sub_path(mn, an, sn, (int)sizeof sn));
-    if (rc >= 0) vmeta_renamed(ao, an);
+    if (rc >= 0) {
+        vmeta_renamed(ao, an);
+
+        /* THE COHERENCE BARRIER, and it needs BOTH names, not one -- this is
+         * the case pcache.h's dual match (name + current dev/ino) exists for,
+         * and neither half of it alone covers a rename:
+         *
+         *   `ao` no longer names this file. A page cached under it, if
+         *   invalidation stopped there, would sit fine until its next MISS --
+         *   and that miss re-reads through pf[].path, which is still the
+         *   literal string "ao". pcache_file_open() matches by (dev, ino), so
+         *   a fresh open() of the file under its NEW name `an` would find that
+         *   very entry (same inode) and REUSE it rather than creating one
+         *   filed under `an` -- so unless `ao`'s entry is purged here, opening
+         *   the file by its new, correct name inherits a read path that no
+         *   longer exists, and every subsequent access fails.
+         *
+         *   `an` may have just stopped naming whatever it named before this
+         *   call: POSIX rename atomically replaces its destination. If that
+         *   old file at `an` was ever cached, that entry (a DIFFERENT dev/ino
+         *   from the one now living at `an`) is not found by opening `an`
+         *   again -- pcache_file_open()'s dev/ino match will not hit it, so it
+         *   is never a correctness problem, only an orphaned entry that leaks
+         *   a file slot and its pages until whatever still has it mapped lets
+         *   go. Invalidating `an` here reclaims it promptly instead of
+         *   leaving it to leak.
+         *
+         * Both calls are AFTER fs_rename succeeds, for the same reason
+         * vfs_write's call is after its mutation: before it, a fault racing in
+         * between the invalidate and the rename landing could repopulate an
+         * entry under a name that is, at that instant, about to stop (or
+         * start) meaning what it currently means, with nothing left to purge
+         * it a second time. */
+        pc_invalidate(ao);
+        pc_invalidate(an);
+    }
     return rc;
 }
 

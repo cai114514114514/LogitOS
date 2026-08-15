@@ -89,6 +89,22 @@
  * what it is actually good for -- telling reclaim which pages are worth
  * sampling -- not as a proxy for content.
  *
+ * TIER 1 GAINED A SECOND PRODUCER: THE PAGE CACHE (c/kernel/mm/pcache.h). A
+ * clean file page needs no 4 KiB comparison at all -- its re-derivation is
+ * "read the file again", which is unconditionally correct, not conditional on
+ * current contents the way the zero page's is. pcache.h works out the same
+ * design question this file already answered for itself and reaches the same
+ * conclusion: the cache's reference stays an ORDINARY, evictable one rather
+ * than becoming a pin, on pain of turning the cache into permanently spent
+ * memory (pcache.h calls the wrong answer "a leak with a hash table in
+ * front of it"). The cost to reclaim is two hooks, both in this file: the
+ * eligibility test below gains ONE TERM, and the drop path calls
+ * pcache_forget_frame() so the cache's own entry never dangles onto a frame
+ * the allocator has already handed to somebody else. reclaim_dropped_zero()
+ * and reclaim_dropped_cache() keep the two populations separately countable,
+ * because "tier 1 fired" and "tier 1 fired on a file page" are different
+ * claims and only the second one is what this line was building toward.
+ *
  * ===========================================================================
  * CHOOSING A VICTIM: A CLOCK OVER PHYSICAL FRAMES
  *
@@ -130,17 +146,23 @@
  * WHAT MAY NEVER BE EVICTED, AND HOW THAT IS ENFORCED
  *
  * Not by a list of exceptions. A frame is a candidate only if EVERY reference
- * to it is a user PTE whose address the reverse map holds:
+ * to it is either a user PTE whose address the reverse map holds, or the page
+ * cache's own reference (pcache.h -- a cache entry has no PTE behind it and is
+ * counted separately, through a third structure maintained independently of
+ * both pmm and the reverse map):
  *
- *     rmap_count(f) == pmm_refcount(f),  nonzero, chain not truncated,
- *     and pmm_pincount(f) == 0.
+ *     rmap_count(f) + pcache_holds(f) == pmm_refcount(f),  nonzero, chain not
+ *     truncated, and pmm_pincount(f) == 0.
  *
  * Page tables, kheap arenas, DMA rings, the rmap's own tables, the kernel image
- * and the multiboot block all hold references that are not user PTEs, so their
- * rmap count is 0 and their refcount is not -- they fail the test structurally
- * and cannot be reached by any policy change. pmm_pin() covers the other case:
- * a frame that IS user memory and IS fully mapped, but that the kernel or a
- * device is touching right now. See rmap.h for the long form of the argument.
+ * and the multiboot block all hold references that are neither a user PTE nor
+ * a cache entry, so their rmap count AND pcache_holds() are both 0 while their
+ * refcount is not -- they fail the test structurally and cannot be reached by
+ * any policy change. pmm_pin() covers the other case: a frame that IS user
+ * memory and IS fully mapped, but that the kernel or a device is touching right
+ * now. See rmap.h for the long form of the argument, and pcache.h for why the
+ * cache's reference is added into this same equality rather than made a pin --
+ * the answer that "falls out" of the existing machinery, and is wrong.
  *
  * ===========================================================================
  * YOU CANNOT ALLOCATE MEMORY IN ORDER TO FREE MEMORY
@@ -226,6 +248,13 @@ int  reclaim_enabled(void);
 uint64_t reclaim_runs(void);          /* passes of the hand */
 uint64_t reclaim_scanned(void);       /* frames the hand looked at */
 uint64_t reclaim_dropped(void);       /* TIER 1: freed with no I/O */
+uint64_t reclaim_dropped_zero(void);  /* TIER 1, split: an anonymous page that was
+                                        * already all zero (do_anon's re-derivation) */
+uint64_t reclaim_dropped_cache(void); /* TIER 1, split: a page pcache.h still held a
+                                        * copy of on the file (do_file's re-derivation).
+                                        * reclaim_dropped_zero() + reclaim_dropped_cache()
+                                        * == reclaim_dropped(), always -- two producers of
+                                        * one tier, not two tiers. */
 uint64_t reclaim_swapped(void);       /* TIER 2: written to the swap device */
 uint64_t reclaim_second_chance(void); /* referenced, accessed bit cleared instead */
 uint64_t reclaim_skip_unmapped(void); /* no reverse-map entry: kernel memory */

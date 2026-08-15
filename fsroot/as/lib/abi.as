@@ -142,6 +142,14 @@ Meminfo = layout("logit_meminfo", 104, [
     ["mmap_reserved", 96, 8, "u"]
 ])
 
+Mmap_file_req = layout("logit_mmap_file_req", 32, [
+    ["hint", 0, 8, "u"],
+    ["len", 8, 8, "u"],
+    ["off", 16, 8, "u"],
+    ["fd", 24, 4, "i"],
+    ["prot", 28, 4, "i"]
+])
+
 Procinfo = layout("logit_procinfo", 184, [
     ["pid", 0, 4, "i"],
     ["ppid", 4, 4, "i"],

@@ -11,6 +11,9 @@
 #include "usercopy.h"
 #include "kprintf.h"
 #include "logit_abi.h"
+#include "proc.h"      /* SYS_MMAP_FILE: proc_current()/proc_fd_get() to turn an fd into a path */
+#include "file.h"      /* struct file, F_VFS, ->path -- see the case for why an fd has one */
+#include "pcache.h"    /* SYS_MMAP_FILE: pcache_file_open()/pcache_file_put() */
 
 /* Diagnostics selected by SYS_MEMINFO with a NULL buffer. Deliberately defined
  * here and not in include/abi/logit_abi.h: that header is the cross-cutting
@@ -21,30 +24,38 @@
 #define MMCTL_RECLAIM  3
 #define MMCTL_STATS    4
 
-/* The userland face of memory management: mmap, munmap, meminfo.
+/* The userland face of memory management: mmap (anonymous AND file-backed),
+ * munmap, meminfo.
  *
- * It lives here, in one function, rather than as three cases inside
- * syscall.c's switch, for two reasons. The obvious one is ownership -- this
- * line owns c/kernel/mm/ and not c/kernel/exec/syscall.c, so the change that
- * file needs is a single three-line case that forwards, not a body that has to
- * be reviewed by whoever owns the dispatcher. The better one is that the
- * argument validation for an mmap ABI (page rounding, ranges that wrap, ranges
- * that leave the user region) belongs next to the code that enforces those
- * bounds, not next to forty unrelated syscalls.
+ * It lives here, in one function, rather than as cases inside syscall.c's
+ * switch, for two reasons. The obvious one is ownership -- this line owns
+ * c/kernel/mm/ and not c/kernel/exec/syscall.c, so the change that file needs
+ * is a forwarding case, not a body that has to be reviewed by whoever owns the
+ * dispatcher. The better one is that the argument validation for an mmap ABI
+ * (page rounding, ranges that wrap, ranges that leave the user region) belongs
+ * next to the code that enforces those bounds, not next to forty unrelated
+ * syscalls.
  *
  * REQUIRED IN c/kernel/exec/syscall.c (not this line's file):
  *
  *     #include "mm.h"
  *     ...
  *     case SYS_MMAP:
+ *     case SYS_MMAP_FILE:
  *     case SYS_MUNMAP:
  *     case SYS_MEMINFO:
  *         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
  *                                       (long)r->rsi, (long)r->rdx);
  *         return;
  *
- * Numbers 92/93/94, taken after re-reading include/abi/logit_abi.h; 91 was the
- * highest in use (the audio line's SYS_SND_STATE). */
+ * SYS_MMAP_FILE (162, include/abi/logit_abi.h) reuses this exact three-long
+ * forwarding shape -- its one argument is a user pointer to a
+ * logit_mmap_file_req, passed in `a` (rdi) same as every other single-struct
+ * syscall in this ABI (SYS_IMG_DECODE, SYS_GUI_BLIT, ...), so syscall.c's
+ * dispatch line needed nothing beyond the case label itself. Numbers 92/93/94
+ * were taken after re-reading include/abi/logit_abi.h when SYS_MMAP/MUNMAP/
+ * MEMINFO were added (91 was then the highest in use); 162 likewise, against
+ * 161 (SYS_CAP_QUERY) being the highest at the time this was added. */
 
 void *memset(void *, int, size_t);
 
@@ -69,6 +80,75 @@ long mm_syscall(long num, long a, long b, long c)
         /* Reserving costs nothing but address space -- the frames arrive on the
          * first touch, through the same fault path a copy-on-write page does. */
         return (long)vma_reserve(cr3, hint, len, p);
+    }
+
+    /* File-backed mmap. Connection #2 of the page cache (c/kernel/mm/pcache.h):
+     * vma_reserve_file() is the ONLY producer of a file-backed VMA, and until
+     * this case existed nothing ever called it, so MM_FAULT_FILE (fault.c) was
+     * dead code -- reachable in the classifier's table, never in a real fault.
+     *
+     * WHY AN FD AND NOT A PATH. The struct carries `fd`, not a string, because
+     * the access-control decision (may this process open this file at all) was
+     * already made, once, at SYS_OPEN -- re-deciding it here from a bare path
+     * would be a second, independent copy of that check with its own chance to
+     * disagree. An fd is also already resolved to a canonical, absolute path:
+     * file_open_vfs() (c/kernel/exec/file.c) stores exactly the string
+     * SYS_OPEN's proc_resolve() produced, in f->path -- the very thing
+     * pcache_file_open() needs to stat and, on a miss, read. */
+    case SYS_MMAP_FILE: {
+        struct logit_mmap_file_req req;
+        if (user_copy_from(&req, (const void *)(uint64_t)a, sizeof req) < 0) return 0;
+
+        /* READ-ONLY, ALWAYS -- refused OUT LOUD, not downgraded. See pcache.h's
+         * "WHAT IS NOT HERE, DELIBERATELY" and the struct's own doc comment in
+         * logit_abi.h: this is the one call in this switch that does not share
+         * SYS_MMAP's "0 on failure" convention, on purpose, because "you asked
+         * for something this kernel cannot ever do" is a different fact from
+         * "there was no room right now" and a caller is entitled to tell them
+         * apart. Checked BEFORE anything is opened or reserved -- a request this
+         * kernel is going to refuse should not spend a pcache file slot first. */
+        if (req.prot & MMAP_PROT_WRITE) return LOGIT_MMAP_FILE_E_WRITE;
+
+        if (!req.len || (req.off & 0xFFF)) return 0;   /* zero length, or a byte
+                                                        * offset that is not a
+                                                        * page boundary -- vma.c's
+                                                        * index arithmetic (foff/
+                                                        * 4096) assumes it is */
+
+        struct proc *p = proc_current();
+        if (!p) return 0;
+        struct file *f = proc_fd_get(p, req.fd);
+        /* Only F_VFS names a real, path-addressed, on-disk file. F_PIPE/F_TTY/
+         * F_SOCK have no backing path at all, and mapping one would mean
+         * inventing an identity for pcache_file_open() to key on that the fd
+         * does not actually have -- there is nothing to be honest about there,
+         * so it is refused rather than guessed at (the same reasoning pcv_stat()
+         * in pcache_vfs.c applies one layer down, for paths that resolve but
+         * are not LogitFS regular files). */
+        if (!f || f->type != F_VFS) return 0;
+
+        int fh = pcache_file_open(f->path);
+        if (fh < 0) return 0;              /* not cacheable, or the file table
+                                             * is full -- pcache_file_open()
+                                             * already said so on the console */
+
+        uint32_t vp = 0;
+        if (req.prot & MMAP_PROT_READ) vp |= VMA_READ;
+        if (req.prot & MMAP_PROT_EXEC) vp |= VMA_EXEC;
+        if (!vp) vp = VMA_READ;            /* PROT_NONE floor, same as SYS_MMAP */
+
+        uint64_t base = vma_reserve_file(cr3, req.hint, req.len, vp, fh, req.off);
+        /* vma_reserve_file() takes its OWN reference on `fh` when it succeeds
+         * (vma.c: pcache_file_ref(fh), right before returning the base). Ours
+         * from pcache_file_open() above is a second, transient one that exists
+         * only to keep the entry alive across this call -- put it unconditionally,
+         * on both the success and the failure path, so the mapping ends up
+         * holding exactly the one reference the VMA owns, never zero (a
+         * use-after-free the moment reclaim or a write invalidates it) and never
+         * two (a reference nothing will ever put, because vma_release() only
+         * ever puts what the AREA holds -- see vma.h's lifetime table). */
+        pcache_file_put(fh);
+        return (long)base;
     }
 
     case SYS_MUNMAP: {

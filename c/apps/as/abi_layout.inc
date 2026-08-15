@@ -392,6 +392,29 @@ _Static_assert(offsetof(struct logit_meminfo, mmap_reserved) == 96,
 _Static_assert(sizeof(((struct logit_meminfo *)0)->mmap_reserved) == 8,
                "abi.as is stale: logit_meminfo.mmap_reserved changed width -- run tools/gen_abi.py --write");
 
+_Static_assert(sizeof(struct logit_mmap_file_req) == 32,
+               "abi.as is stale: sizeof(struct logit_mmap_file_req) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_mmap_file_req, hint) == 0,
+               "abi.as is stale: logit_mmap_file_req.hint moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_mmap_file_req *)0)->hint) == 8,
+               "abi.as is stale: logit_mmap_file_req.hint changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_mmap_file_req, len) == 8,
+               "abi.as is stale: logit_mmap_file_req.len moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_mmap_file_req *)0)->len) == 8,
+               "abi.as is stale: logit_mmap_file_req.len changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_mmap_file_req, off) == 16,
+               "abi.as is stale: logit_mmap_file_req.off moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_mmap_file_req *)0)->off) == 8,
+               "abi.as is stale: logit_mmap_file_req.off changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_mmap_file_req, fd) == 24,
+               "abi.as is stale: logit_mmap_file_req.fd moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_mmap_file_req *)0)->fd) == 4,
+               "abi.as is stale: logit_mmap_file_req.fd changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_mmap_file_req, prot) == 28,
+               "abi.as is stale: logit_mmap_file_req.prot moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_mmap_file_req *)0)->prot) == 4,
+               "abi.as is stale: logit_mmap_file_req.prot changed width -- run tools/gen_abi.py --write");
+
 _Static_assert(sizeof(struct logit_procinfo) == 184,
                "abi.as is stale: sizeof(struct logit_procinfo) changed -- run tools/gen_abi.py --write");
 _Static_assert(offsetof(struct logit_procinfo, pid) == 0,

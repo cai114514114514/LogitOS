@@ -21,6 +21,15 @@
 #      not yet wired (c/kernel/mm/mm.h MM_COW_DEFAULT) the kernel reports
 #      cow=off and every page is copied; once it is wired the same harness
 #      additionally requires "copied" to collapse.
+#   5. THE PAGE CACHE (c/kernel/mm/pcache.h). fsroot/as/examples/pcachecheck.as
+#      writes a file, opens it twice, and maps it twice through SYS_MMAP_FILE
+#      (162). The claim under test is the headline one from pcache.h: read()
+#      and mmap() of the same file return THE SAME MEMORY, not two copies --
+#      made observable here as a [pcache] report line whose miss count stays
+#      at 1 across BOTH mappings and whose shared count is >= 1, plus a
+#      byte-for-byte comparison against what was written. A third check
+#      confirms a writable file mapping is refused outright, not silently
+#      downgraded to a private copy.
 #
 # Usage:  sh tests/boot/run-mm-test.sh <iso> <disk.img>
 # Makefile equivalent (not wired -- the Makefile is owned by another line):
@@ -60,6 +69,11 @@ batch() { i=0; while [ $i -lt 80 ]; do printf 'true\n'; i=$((i+1)); done; }
   printf '/bin/as /mmfault.as\n'; sleep 8
   printf 'echo MM_ALIVE_AFTER_FAULT\n'; sleep 2
   printf 'uname\n'; sleep 6
+  # 5. THE PAGE CACHE. read() and mmap() of the same file agree byte for
+  # byte, two independent mappings share one device read, and a writable
+  # request is refused out loud -- see fsroot/as/examples/pcachecheck.as for
+  # what it actually does and why.
+  printf '/bin/as /usr/as/examples/pcachecheck.as\n'; sleep 8
   printf 'echo MM_DONE\n'; sleep 4
   printf 'rm /mmfault.as\nexit\n'; sleep 2
 } | "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
@@ -194,6 +208,66 @@ if [ -n "$LAST" ]; then
     else
         say "NOTE: copy-on-write is OFF (page-fault hook not wired -- c/kernel/mm/mm.h)."
         say "      The numbers above are the EAGER baseline to compare against."
+    fi
+fi
+
+# --- 5. the page cache: read() and mmap() agree, and share ---------------
+if ! grep -aq "pcachecheck: start" "$LOG"; then
+    bad "pcachecheck.as did not run (SYS_MMAP_FILE / the page cache is unreachable)"
+else
+    # pcache_report() prints TWO lines under this same tag (hits/misses/shared,
+    # then a second on dropped/evicted/invalidated) -- pick the one with the
+    # counts this check actually reads, not whichever comes last.
+    PCLINE="$(grep -a '\[pcache\] on demand:.*misses' "$LOG" | tail -1)"
+    echo "----- pcache report -----"
+    echo "${PCLINE:-<no [pcache] on demand: line -- the SYS_MEMINFO MMCTL_REPORT door never fired>}"
+    echo "--------------------------"
+
+    if grep -aq "PC_BYTES ok" "$LOG"; then
+        say "PASS: mmap() of a file returns exactly the bytes that were written to it"
+    else
+        bad "mmap()'d bytes did not match what was written to the file"
+    fi
+
+    if grep -aq "PC_SECOND ok" "$LOG"; then
+        say "PASS: a second, independent mapping of the same file agrees byte-for-byte"
+    else
+        bad "a second mapping of the same file did not read the same byte as the first"
+    fi
+
+    if [ -z "$PCLINE" ]; then
+        bad "no [pcache] report to check hit/miss/shared counts against"
+    else
+        MISSES=$(echo "$PCLINE" | sed -n 's/.* \([0-9]*\) misses.*/\1/p')
+        SHARED=$(echo "$PCLINE" | sed -n 's/.* \([0-9]*\) shared.*/\1/p')
+        # Exactly 1: this test is the ONLY caller of vma_reserve_file() on the
+        # whole machine (mmsys.c SYS_MMAP_FILE), so every page-cache miss for
+        # the whole boot is accounted for here. Two mappings of one file
+        # costing ONE miss is the positive claim; -DPCACHE_PER_OPEN (tests/
+        # unit/mm_pcache_test.c's negative control) is exactly the build where
+        # this would read 2 instead.
+        if [ "${MISSES:-}" = "1" ]; then
+            say "PASS: both mappings faulted in from ONE device read (misses=1) -- not two copies"
+        else
+            bad "expected exactly 1 page-cache miss for two mappings of one file, got '${MISSES:-<none>}'"
+        fi
+        if [ -n "$SHARED" ] && [ "$SHARED" -ge 1 ]; then
+            say "PASS: the shared frame is referenced more than once (shared=$SHARED)"
+        else
+            bad "expected at least 1 shared page-cache page, got '${SHARED:-<none>}'"
+        fi
+    fi
+
+    if grep -aq "PC_WRITE_REFUSED -1" "$LOG"; then
+        say "PASS: a writable file mapping was refused out loud (LOGIT_MMAP_FILE_E_WRITE), not downgraded"
+    else
+        bad "a writable file mapping was not refused with -1"
+    fi
+
+    if grep -aq "PC_BADFD 0" "$LOG"; then
+        say "PASS: mmap of an fd naming no open file was refused"
+    else
+        bad "mmap of a bad fd was not refused with 0"
     fi
 fi
 

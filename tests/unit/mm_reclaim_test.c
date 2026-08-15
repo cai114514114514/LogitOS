@@ -41,6 +41,7 @@
 #include "rmap.h"
 #include "swap.h"
 #include "reclaim.h"
+#include "pcache.h"
 #include "mmhost.h"      /* mm_host_cr3: the simulated active address space */
 #include "kprintf.h"
 
@@ -769,6 +770,151 @@ static void t_thrash(void)
 }
 
 /* ======================================================================== */
+/* pcache.h's refcount decision, from reclaim's side of the hook. This is NOT
+ * mm_pcache_test.c's job repeated: that file drives pcache.c on its own and
+ * says so explicitly ("reclaim.c never calls pcache_holds()/
+ * pcache_forget_frame() -- none of that is this file's problem"). This is the
+ * other half -- proving reclaim's eligibility test and drop path actually use
+ * those two hooks, including the case NEITHER file alone can build: a frame
+ * that fault.c's do_file() mapped AND pcache.c is caching at the same time,
+ * which needs vma.c, fault.c and pcache.c all wired together the way the
+ * kernel wires them, exactly what this whole test binary links for. */
+#define PC_TEST_PAGES 4
+static uint8_t pc_backing[PC_TEST_PAGES][4096];
+
+static int pc_test_stat(const char *path, uint64_t *dev, uint64_t *ino, uint64_t *size)
+{
+    if (!path) return -1;
+    *dev = 1; *ino = 1; *size = PC_TEST_PAGES * 4096;
+    return 0;
+}
+
+static long pc_test_read(const char *path, uint64_t off, void *dst, uint64_t len)
+{
+    (void)path;
+    uint64_t page = off / 4096;
+    if (page >= PC_TEST_PAGES) return -1;
+    if (len > 4096) len = 4096;
+    memcpy(dst, pc_backing[page], (size_t)len);
+    return (long)len;
+}
+
+static const struct pcache_ops pc_test_ops = { pc_test_stat, pc_test_read };
+
+static void t_pcache(void)
+{
+    phase("the page cache: an ordinary reference, not a pin (pcache.h)");
+
+    /* Bring the cache up once, with a tiny fake one-file backend. Safe here:
+     * pcache_init() is idempotent, and every case above this one ran with the
+     * cache not yet up -- pcache_holds() answered 0 for everything, exactly as
+     * it did before reclaim.c knew this file existed, so nothing already
+     * proven above depended on the cache staying off. */
+    pcache_init(pmm_total_frames());
+    mm_ok(pcache_ready(), "the page cache came up");
+    pcache_set_ops(&pc_test_ops);
+    for (int i = 0; i < PC_TEST_PAGES; i++) fill_pattern(pc_backing[i], 700 + i);
+
+    int fh = pcache_file_open("/pctest/file");
+    mm_ok(fh >= 0, "opened the test file");
+
+    /* (a) + (b): a page the cache holds and that NOTHING ELSE maps -- read
+     * once through pcache_get(), never faulted into any address space -- is
+     * the cheapest frame on the machine per pcache.h's design note: rmap_count
+     * 0, refcount 1, no PTE to tear down. Evicting it must go through the
+     * cache-drop path, not be skipped as ordinary "unmapped kernel memory". */
+    uint64_t frame = pcache_get(fh, 0);
+    mm_ok(frame != 0, "page 0 came into the cache");
+    mm_ok(pcache_holds(frame), "pcache_holds() sees it");
+    mm_eqi((long long)rmap_count(frame), 0, "and NOTHING maps it -- no PTE at all");
+    mm_eqi((long long)pmm_refcount(frame), 1, "one reference: the cache's own");
+
+    /* NOTE on what is NOT asserted here: reclaim_frames(1) sweeps the clock
+     * hand from wherever the last call left it, over a 16384-frame machine,
+     * until it frees one frame -- so reclaim_skip_unmapped() legitimately
+     * climbs by hundreds on ordinary kernel memory (page tables, the rmap and
+     * pcache frame tables, ...) along the way. That is not this frame being
+     * turned away; it is everything ELSE on the machine being correctly left
+     * alone. The claim under test is about THIS frame specifically, and the
+     * before/after state below is what proves it: skipped forever looks like
+     * "still resident, still refcount 1"; evicted looks like what follows. */
+    uint64_t dc_before = reclaim_dropped_cache();
+    uint64_t dz_before = reclaim_dropped_zero();
+    uint64_t got = reclaim_frames(1);
+    mm_ok(got >= 1, "reclaim evicted the cache-only page");
+    mm_ok(reclaim_dropped_cache() > dc_before,
+          "(b) counted through the CACHE-drop split (%llu)",
+          (unsigned long long)(reclaim_dropped_cache() - dc_before));
+    mm_eqi((long long)(reclaim_dropped_zero() - dz_before), 0,
+           "and not through the zero-page split -- it is a different producer");
+    mm_ok(!pcache_holds(frame), "(a) the entry is gone -- pcache_forget_frame() ran");
+    mm_eqi((long long)pmm_refcount(frame), 0,
+           "and the frame is back on the allocator, not dangling onto memory "
+           "somebody else now owns");
+
+    /* Re-fetching the same page must be a genuine MISS: forgetting the frame
+     * really dropped the cache's own entry, not just the reclaim bookkeeping
+     * beside it. */
+    uint64_t miss_before = pcache_misses();
+    uint64_t frame2 = pcache_get(fh, 0);
+    mm_ok(frame2 != 0, "the page is readable again");
+    mm_ok(pcache_misses() > miss_before, "and came back through a real miss");
+    mm_eqf(check_pattern(mm_sim_ptr(frame2), 700), -1,
+           "with its own bytes, re-read from the backend");
+
+    /* (c): a frame held by BOTH a live PTE and the cache -- built the way
+     * production code builds one, a real file-backed VMA faulted through
+     * do_file(), not synthesised by hand. A DIFFERENT file page (index 1) from
+     * the one above, so this case starts from a clean miss of its own. */
+    uint64_t cr3 = vmm_new_space();
+    mm_ok(cr3 != 0, "a space for the mapped+cached case");
+    uint64_t base = vma_reserve_file(cr3, 0, 4096, VMA_READ, fh, 4096);
+    mm_ok(base != 0, "reserved a file-backed page at file offset 4096 (index 1)");
+    mm_host_cr3 = cr3;
+    mm_ok(mm_fault_in(cr3, base, PF_U) == 1, "faulted it in through do_file()");
+
+    uint64_t f = frame_at(cr3, base);
+    mm_ok(f != 0, "the page is present");
+    uint64_t *pte = vmm_pte(cr3, base);
+    mm_ok(pte && (*pte & VMM_PTE_FILE), "its PTE is marked FILE, not ANON");
+    mm_eqf(check_pattern(mm_sim_ptr(f), 701), -1, "and holds file page 1's real bytes");
+    mm_ok(pcache_holds(f), "the cache holds this frame too");
+
+    unsigned n = rmap_count(f);
+    unsigned rc = pmm_refcount(f);
+    mm_eqi((long long)n, 1, "exactly one PTE maps it");
+    mm_eqi((long long)rc, 2, "the refcount is two -- the PTE, and the cache");
+    /* THE CLAIM THIS CASE EXISTS TO MAKE. rmap_count ALONE disagrees with
+     * pmm_refcount -- the pre-pcache eligibility test would have refused this
+     * frame forever, counting it skip_partial on every single sweep. Only
+     * with pcache_holds(f) folded in do the three independently maintained
+     * numbers agree, which is the property reclaim.h says must never be
+     * loosened by adding a term that could turn a real disagreement into a
+     * false agreement. */
+    mm_ok(n != rc, "rmap_count(f) alone does NOT equal pmm_refcount(f) -- "
+                    "the two-number test would refuse this frame forever");
+    mm_eqi((long long)(n + (pcache_holds(f) ? 1u : 0u)), (long long)rc,
+           "but rmap_count(f) + pcache_holds(f) DOES equal pmm_refcount(f)");
+
+    uint64_t dc2_before = reclaim_dropped_cache();
+    uint64_t got2 = reclaim_frames(1);
+    mm_ok(got2 >= 1, "(c) reclaim evicted the mapped+cached page");
+    mm_ok(reclaim_dropped_cache() > dc2_before, "evicted through the cache-drop tier");
+
+    pte = vmm_pte(cr3, base);
+    mm_ok(pte && *pte == 0, "the PTE is gone -- cleared, not turned into a swap entry");
+    mm_ok(!pcache_holds(f), "the cache entry is gone too");
+    mm_eqi((long long)pmm_refcount(f), 0,
+           "BOTH references were accounted for -- the frame is fully free, not "
+           "leaked and not dangling");
+
+    vmm_free_space(cr3);
+    pcache_file_put(fh);
+    mm_eqi(rmap_audit(), 0, "reverse map clean after the page-cache cases");
+    mm_eqi(pcache_audit(), 0, "page cache clean after the page-cache cases");
+}
+
+/* ======================================================================== */
 int main(void)
 {
     mm_sim_init(64);
@@ -787,6 +933,7 @@ int main(void)
 
     t_classify();
     t_no_swap_device();
+    t_pcache();
 
     mm_sim_swap(16);                      /* 16 MiB of simulated swap */
     mm_ok(swap_init() == 0, "swap came up on the simulated device");

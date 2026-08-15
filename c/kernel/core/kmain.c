@@ -22,6 +22,8 @@
 #include "nvme.h"
 #include "klog.h"
 #include "kdiag.h"
+#include "pcache.h"
+#include "pcache_vfs.h"
 #include "cpu_report.h"   /* cpu_simd_selftest -- see the call below pit_init */
 #include "blkdev.h"
 #include "pci.h"
@@ -74,6 +76,28 @@ void kernel_main(uint64_t mb_info)
     pmm_init(mb_info);
     kprintf("[logitos] interrupts + memory + gdt/tss online\n");
 
+    /* The page cache's frame table (pc_of_frame[], pcache.c) comes out of the
+     * PMM exactly like rmap's does, and for the same reason argued at
+     * pmm.c's rmap_init() call: reclaim must be able to run when memory is
+     * exhausted, so every structure it consults -- and reclaim.h's
+     * eligibility test now has a THIRD term, pcache_holds() -- has to exist
+     * before anything can exhaust memory. rmap_init() runs INSIDE pmm_init()
+     * because c/kernel/mm/pmm.c already owns that call; pcache_init() cannot
+     * move in beside it without editing a file this unit does not own, so it
+     * runs here instead, one line later, which preserves the one invariant
+     * that actually matters: nothing between here and the first possible
+     * reclaim pass (the first ring-3 page fault -- reclaim_late_init(), see
+     * fault.c) can observe pcache_holds() answering out of a table that does
+     * not exist yet.
+     *
+     * This is NOT the backend (pcache_set_ops(), below, after the filesystem
+     * is mounted) -- pcache_init() only needs pmm_alloc_contig(), which is
+     * live the moment pmm_init() returns. A cache with a frame table and no
+     * backend is well-defined: pcache_ready() is already 1, but
+     * pcache_file_open() returns -1 until pcache_set_ops() lands (pc_ops is
+     * still NULL), so nothing downstream has to know the difference. */
+    pcache_init(pmm_total_frames());
+
     /* Diagnostics come up early and deliberately: everything printed from here
      * on is also retained in the log ring, so a failure further down this
      * function can be read back afterwards instead of only being visible to
@@ -107,6 +131,20 @@ void kernel_main(uint64_t mb_info)
     vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
     kprintf(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
+
+    /* The page cache's backend (pcache.h's struct pcache_ops, built over
+     * c/fs/vfs.h in pcache_vfs.c). Installed here, after vfs_mount(), rather
+     * than beside pcache_init() above, because the ops are only USED when a
+     * file gets opened through the cache -- the earliest caller is a syscall,
+     * long after kernel_main returns -- so there is no correctness reason to
+     * install them earlier, and a real one to wait: it puts "the filesystem
+     * is mounted" and "the cache can read through it" next to each other in
+     * the boot log instead of one implying the other across sixty lines.
+     * Unconditional on fs_ok on purpose: every vfs_* call already fails
+     * cleanly (a negative return) against an unmounted root, and pcv_stat()
+     * turns that into pcache_file_open()'s ordinary -1 -- there is no third
+     * state to special-case here that vfs.c does not already handle. */
+    pcache_vfs_install();
 
     /* Load what this machine remembers about its user. Between the mount and
      * net_init/wm_init on purpose: the network configuration and the theme are

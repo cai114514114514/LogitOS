@@ -171,9 +171,10 @@ extern uint64_t g_mm_cow_pages;
 /* One line of mm accounting on the console. `tag` says what prompted it. */
 void mm_report(const char *tag);
 
-/* SYS_MMAP / SYS_MUNMAP / SYS_MEMINFO, handled in c/kernel/mm/mmsys.c. The
- * dispatcher (c/kernel/exec/syscall.c, not this line's file) forwards those
- * three numbers here; see the header comment in mmsys.c for the exact case. */
+/* SYS_MMAP / SYS_MMAP_FILE / SYS_MUNMAP / SYS_MEMINFO, handled in
+ * c/kernel/mm/mmsys.c. The dispatcher (c/kernel/exec/syscall.c, not this
+ * line's file) forwards those numbers here; see the header comment in
+ * mmsys.c for the exact case. */
 long mm_syscall(long num, long a, long b, long c);
 
 #endif /* LOGIT_MM_H */

@@ -9,6 +9,7 @@
 #include "mm.h"
 #include "mmhost.h"
 #include "kprintf.h"
+#include "pcache.h"
 
 /* See reclaim.h for the design and the arguments. This file is the machine. */
 
@@ -39,10 +40,17 @@ static uint64_t c_skip_unmapped, c_skip_pinned, c_skip_partial, c_skip_wide;
 static uint64_t c_noslot, c_io, c_bugs, c_cycles, c_skip_busy, c_backoffs;
 static uint64_t rc_backoff;   /* allocations to skip after a fruitless pass */
 static uint64_t c_swapin, c_swapin_fail;
+/* TIER 1's two producers, counted separately -- see pcache.h and the note
+ * above try_drop_cached(). c_dropped is still their sum (every increment site
+ * bumps exactly one of these two AND c_dropped), so nothing that already reads
+ * reclaim_dropped() as "tier 1 total" has to change. */
+static uint64_t c_dropped_zero, c_dropped_cache;
 
 uint64_t reclaim_runs(void)          { return c_runs; }
 uint64_t reclaim_scanned(void)       { return c_scanned; }
 uint64_t reclaim_dropped(void)       { return c_dropped; }
+uint64_t reclaim_dropped_zero(void)  { return c_dropped_zero; }
+uint64_t reclaim_dropped_cache(void) { return c_dropped_cache; }
 uint64_t reclaim_swapped(void)       { return c_swapped; }
 uint64_t reclaim_second_chance(void) { return c_second; }
 uint64_t reclaim_skip_unmapped(void) { return c_skip_unmapped; }
@@ -92,7 +100,25 @@ void reclaim_init(void)
  *
  * The eligibility test, and the reason it is one expression rather than a
  * policy: every clause below is a way for a frame to have a reference that
- * reclaim cannot see and therefore cannot remove. */
+ * reclaim cannot see and therefore cannot remove.
+ *
+ * THE THIRD NUMBER. pcache.h's refcount decision (read it before touching
+ * this function) adds pcache_holds(f) -- 0 or 1, from a structure maintained
+ * independently of both pmm and the reverse map -- to the count that must
+ * agree with pmm_refcount(f). A cache entry is a reference with NO leaf PTE
+ * behind it, structurally the same shape as a page-table page or a kheap
+ * arena, both of which this test already excludes because THEIR rmap count is
+ * 0 while their refcount is not. Without the extra term a cached page would
+ * fail exactly the same way and be unevictable forever -- pcache.h calls that
+ * outcome "a leak with a hash table in front of it" and it is the one thing
+ * this function must not do.
+ *
+ * The property that made the original two-number test worth having is kept
+ * exactly: three independently maintained numbers have to agree, and any
+ * disagreement STOPS the eviction. Adding a term that could ever make a
+ * disagreement look like an agreement would be the bug this whole file exists
+ * to prevent, so pcache_holds() is added on both sides of nothing -- it comes
+ * in once, into the same equality every other reference has to satisfy. */
 /* THE NEGATIVE CONTROLS.
  *
  * An assertion nobody has watched fail is not a known-failing assertion. Both
@@ -115,22 +141,33 @@ void reclaim_init(void)
  *
  * The point of naming them is that both clauses read like defensive paranoia
  * and neither is. Each is load-bearing, and the failing build is the proof. */
-static int candidate(uint64_t f, unsigned *nmap)
+static int candidate(uint64_t f, unsigned *nmap, int *cached)
 {
     uint64_t phys = f * FRAME_SIZE;
+    /* Read once, up front: it is one aligned load (pcache.h), no lock, and
+     * every clause below needs it, including the fast-path bailout that used
+     * to be the first thing this function did. */
+    unsigned held = pcache_holds(phys) ? 1u : 0u;
+
     /* The cheap test first, and it is the one that answers for almost every
-     * frame: page tables, heap arenas and the kernel image have no chain, and
-     * on a 512 MiB machine they are most of the sweep. */
-    if (!rmap_mapped(phys)) { c_skip_unmapped++; return 0; }
+     * frame: page tables, heap arenas and the kernel image have no chain and
+     * no cache entry, and on a 512 MiB machine they are most of the sweep.
+     * `held` widens this exactly one way: a page the cache holds but NOTHING
+     * maps -- read once through pcache_pread(), or every PTE dropped while
+     * the file page lived on -- has no rmap chain either, and it must not be
+     * turned away here the way ordinary kernel memory is. It is, per
+     * pcache.h, the cheapest reclaimable frame on the machine. */
+    if (!rmap_mapped(phys) && !held) { c_skip_unmapped++; return 0; }
     unsigned n = rmap_count(phys);
-    if (n == 0) { c_skip_unmapped++; return 0; }        /* raced away; not ours */
+    if (n == 0 && !held) { c_skip_unmapped++; return 0; }   /* raced away; not ours */
     if (rmap_incomplete(phys)) { c_skip_partial++; return 0; }
     unsigned rc = pmm_refcount(phys);
-    if (rc == 0 || n != rc) {
-        /* Either pmm thinks the frame is free while PTEs point at it (a bug
-         * elsewhere, already reported by rmap_audit), or somebody holds a
-         * reference that is not one of the PTEs we know -- the kernel is using
-         * this user page. Both mean: not ours to take. */
+    if (rc == 0 || n + held != rc) {
+        /* Either pmm thinks the frame is free while PTEs (or the cache) point
+         * at it (a bug elsewhere, already reported by rmap_audit or
+         * pcache_audit), or somebody holds a reference that is neither one of
+         * the PTEs we know nor the cache's own -- the kernel is using this
+         * user page. Both mean: not ours to take. */
         c_skip_partial++;
         return 0;
     }
@@ -139,6 +176,7 @@ static int candidate(uint64_t f, unsigned *nmap)
 #endif
     if (n > RECLAIM_MAX_SHARERS) { c_skip_wide++; return 0; }
     *nmap = n;
+    *cached = (int)held;
     return 1;
 }
 
@@ -211,6 +249,58 @@ static int try_drop(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, 
         pmm_free(f * FRAME_SIZE);          /* one reference per PTE; the last frees */
     }
     c_dropped++;
+    c_dropped_zero++;
+    return 1;
+}
+
+/* --- TIER 1, SECOND PRODUCER: drop a page the page cache holds. -----------
+ *
+ * Beside try_drop(), deliberately the same shape, and the one difference is
+ * where the "still reconstructible" proof comes from. try_drop() has to
+ * inspect the page's 4096 bytes because an anonymous page's re-derivation
+ * (zero-fill) is only correct if the page genuinely IS still zero. A
+ * file-backed page needs no such check: its re-derivation is "read the file
+ * again", which is correct unconditionally -- that is what pcache_holds(f)
+ * being true MEANS, and candidate() already confirmed it against the same
+ * refcount every other clause here is trusted for.
+ *
+ * `n` may be 0. A page read once through pcache_pread() and never mapped has
+ * no PTE at all, and the loop below simply does not run -- there is nothing
+ * to unmap, only the cache's own reference to drop, which is the cheapest
+ * eviction this file can do: no PTE to tear down, no TLB shootdown, no device.
+ *
+ * Every PTE that DOES map it is required to agree it is a page-cache page
+ * (vmm.h: FILE and ANON are mutually exclusive by construction, one set by
+ * do_anon(), the other by do_file(), never both). That is not paranoia added
+ * for this function -- try_drop() makes the same demand of VMM_PTE_ANON, for
+ * the same reason: if a PTE here disagreed with what pcache_holds() says the
+ * frame is, dropping it would be reclaim inventing a fact rmap.h says it must
+ * never invent, so it declines instead. It should never actually happen: the
+ * VMA that produced the PTE and the pcache entry candidate() found both trace
+ * back to the same do_file() call. */
+static int try_drop_cached(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, int n)
+{
+    for (int i = 0; i < n; i++)
+        if (!(*ptes[i] & VMM_PTE_FILE)) return 0;
+
+    uint64_t phys = f * FRAME_SIZE;
+    for (int i = 0; i < n; i++) {
+        *ptes[i] = 0;
+        rmap_remove(phys, cr3s[i], vas[i]);
+        flush_if_active(cr3s[i], vas[i]);
+        pmm_free(phys);                    /* one reference per PTE */
+    }
+    /* THE HOOK pcache.h asks for: O(1) through pc_of_frame[], called here,
+     * under the same big kernel lock that made the eviction decision, exactly
+     * as pcache.h's refcount section requires. This is the cache's own
+     * reference -- the last one, since candidate() already proved
+     * n + held == refcount -- so the frame goes back to the allocator the
+     * instant this returns. Skipping this call is the single worst outcome
+     * available in this file: the entry would dangle onto a frame the
+     * allocator has already handed to somebody else. */
+    pcache_forget_frame(phys);
+    c_dropped++;
+    c_dropped_cache++;
     return 1;
 }
 
@@ -345,26 +435,52 @@ static uint64_t reclaim_scan(uint64_t want, uint64_t budget)
         c_scanned++;
 
         unsigned nmap = 0;
-        if (!candidate(f, &nmap)) continue;
+        int cached = 0;
+        if (!candidate(f, &nmap, &cached)) continue;
 
         uint64_t cr3s[RECLAIM_MAX_SHARERS], vas[RECLAIM_MAX_SHARERS];
         uint64_t *ptes[RECLAIM_MAX_SHARERS];
-        int n = gather(f, cr3s, vas, ptes, RECLAIM_MAX_SHARERS);
-        if (n <= 0) continue;
+        int n = 0;
+        if (nmap > 0) {
+            /* nmap == 0 only ever means "held only by the cache, no PTE at
+             * all" -- candidate() would have taken skip_unmapped otherwise --
+             * so gather() has nothing to walk and is skipped rather than
+             * asked to prove a negative. */
+            n = gather(f, cr3s, vas, ptes, RECLAIM_MAX_SHARERS);
+            if (n <= 0) continue;         /* rmap/page-table disagreement, or busy elsewhere */
 
-        /* SECOND CHANCE. The accessed bits of every PTE that maps this frame,
-         * OR-ed: one sharer touching it is enough to keep it. Clearing them all
-         * is the cost of the chance, and the next time the hand comes round the
-         * answer means "not touched since the last sweep". */
-        int referenced = 0;
-        for (int i = 0; i < n; i++) if (*ptes[i] & VMM_PTE_ACCESSED) referenced = 1;
-        if (referenced) {
-            for (int i = 0; i < n; i++) {
-                *ptes[i] &= ~VMM_PTE_ACCESSED;
-                flush_if_active(cr3s[i], vas[i]);
+            /* SECOND CHANCE. The accessed bits of every PTE that maps this
+             * frame, OR-ed: one sharer touching it is enough to keep it.
+             * Clearing them all is the cost of the chance, and the next time
+             * the hand comes round the answer means "not touched since the
+             * last sweep". A cache-only frame has no PTE and therefore no
+             * accessed bit to consult -- there is nothing to sample, so it
+             * gets no second chance and is evicted the first time the hand
+             * reaches it, which is correct: it costs nothing to re-derive
+             * either way. */
+            int referenced = 0;
+            for (int i = 0; i < n; i++) if (*ptes[i] & VMM_PTE_ACCESSED) referenced = 1;
+            if (referenced) {
+                for (int i = 0; i < n; i++) {
+                    *ptes[i] &= ~VMM_PTE_ACCESSED;
+                    flush_if_active(cr3s[i], vas[i]);
+                }
+                c_second++;
+                continue;
             }
-            c_second++;
-            continue;
+        }
+
+        /* pcache.h's page wins over the anonymous zero page: it is checked
+         * first because it needs no 4 KiB comparison to know it is
+         * reconstructible, and because a page cannot be both (VMM_PTE_ANON
+         * and VMM_PTE_FILE are mutually exclusive; try_drop()'s ANON check
+         * would simply decline a cached page and fall through to try_swap(),
+         * which would write a page the file already holds -- the exact
+         * "writing a page you could have thrown away" mistake reclaim.h's
+         * ordering rule exists to prevent). */
+        if (cached) {
+            if (try_drop_cached(f, cr3s, vas, ptes, n)) { freed++; continue; }
+            continue;   /* pcache_forget_frame() cannot fail; nothing else to try */
         }
 
         if (try_drop(f, cr3s, vas, ptes, n)) { freed++; continue; }
@@ -515,9 +631,11 @@ void reclaim_report(const char *tag)
     }
     uint64_t evicted = c_dropped + c_swapped;
     kprintf("[reclaim] %s: %s, %d passes, %d frames scanned, "
-            "%d evicted (%d dropped free + %d swapped), %d second chances\n",
+            "%d evicted (%d dropped free [%d zero + %d cache] + %d swapped), "
+            "%d second chances\n",
             t, rc_on ? "on" : "off", (int)c_runs, (int)c_scanned,
-            (int)evicted, (int)c_dropped, (int)c_swapped, (int)c_second);
+            (int)evicted, (int)c_dropped, (int)c_dropped_zero,
+            (int)c_dropped_cache, (int)c_swapped, (int)c_second);
     kprintf("[reclaim] %s: skipped %d unmapped / %d pinned / %d partially-known / "
             "%d too-shared / %d running elsewhere; failed %d no-slot / %d io; %d bugs\n",
             t, (int)c_skip_unmapped, (int)c_skip_pinned, (int)c_skip_partial,

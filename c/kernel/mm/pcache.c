@@ -92,6 +92,10 @@ static int       pc_ready;
 
 static const struct pcache_ops *pc_ops;
 
+/* Defined below with the page table; needed earlier by pcache_file_open's
+ * idle-slot eviction. */
+static void purge(int fh, uint64_t *counter);
+
 static uint64_t c_hit, c_miss, c_drop, c_evict, c_inval, c_bypass, c_peak, c_resident;
 static uint64_t c_bug;
 
@@ -261,12 +265,21 @@ int pcache_file_open(const char *path)
      * negative control below removes exactly this loop. */
     for (int i = 0; i < PCACHE_MAXFILE; i++)
         if (pf[i].used && pf[i].dev == dev && pf[i].ino == ino) {
-            pf[i].refs++;
+            pf[i].refs++;               /* revives a CACHED-IDLE entry too --
+                                         * that re-hit is what idle exists for */
             /* The size can have moved under us since the last open (logitfs
              * rewrites a whole file per write); the invalidation on write has
              * already emptied the pages, so refreshing the length here is all
-             * that is left to do. */
+             * that is left to do. The PATH is refreshed with it: the identity
+             * is the inode, but pcv_read re-reads BY PATH, and this open may
+             * arrive through a different hard link than the one the entry was
+             * created under -- both name the same inode, so the caller's
+             * spelling is the one guaranteed to still resolve. */
             pf[i].size = size;
+            {
+                size_t n = pc_slen(path);
+                if (n < PCACHE_PATHMAX) memcpy(pf[i].path, path, n + 1);
+            }
             ret = i;
             goto out;
         }
@@ -289,9 +302,33 @@ int pcache_file_open(const char *path)
             ret = i;
             goto out;
         }
-    /* Table full. Not fatal and not silent: the mapping is refused, the caller
-     * falls back to reading the file, and the number says the table is too
-     * small for the workload rather than that the workload is wrong. */
+    /* Table full of ENTRIES -- but an entry with refs == 0 is CACHED-IDLE,
+     * holding pages purely on the bet that someone re-reads them. A new file
+     * that needs the slot wins that bet's collateral: evict the first idle
+     * entry, take its slot. The claim (identity + refs=1) happens under the
+     * lock so nothing can revive the victim mid-swap; the purge of its pages
+     * happens OUTSIDE, like every purge here, because pmm_free under a
+     * spinlock with interrupts off is not a critical section, it is a stall.
+     * The purge throws away only frames tagged with this fh -- all of them the
+     * OLD identity's, since the caller cannot install new pages until we
+     * return. First-idle, not LRU, on purpose: 32 slots, and an LRU stamp
+     * would be bookkeeping the workload cannot yet justify -- revisit when
+     * pcache_report says eviction is hot. */
+    for (int i = 0; i < PCACHE_MAXFILE; i++)
+        if (pf[i].used && pf[i].refs <= 0) {
+            size_t n = pc_slen(path);
+            if (n >= PCACHE_PATHMAX) goto out;
+            pf[i].refs = 1;
+            pf[i].dev = dev; pf[i].ino = ino; pf[i].size = size;
+            memcpy(pf[i].path, path, n + 1);
+            ret = i;
+            spin_unlock_irqrestore(&pc_lock, fl);
+            purge(ret, &c_evict);
+            return ret;
+        }
+    /* Full of LIVE entries. Not fatal and not silent: the mapping is refused,
+     * the caller falls back to reading the file, and the number says the table
+     * is too small for the workload rather than that the workload is wrong. */
     kprintf("[pcache] no file slot for %s (%d in use) -- not cached\n",
             path, PCACHE_MAXFILE);
 out:
@@ -341,21 +378,52 @@ void pcache_file_put(int fh)
 {
     if (fh < 0 || fh >= PCACHE_MAXFILE) return;
     uint64_t fl = spin_lock_irqsave(&pc_lock);
-    int last = 0;
-    if (pf[fh].used && --pf[fh].refs <= 0) { pf[fh].used = 0; last = 1; }
+    if (pf[fh].used && pf[fh].refs > 0) pf[fh].refs--;
     spin_unlock_irqrestore(&pc_lock, fl);
-    /* The pages go when the last reference does. Note what does NOT happen
-     * here: nothing is unmapped. A process that still has the file mapped holds
-     * its own reference (its VMA), so `last` cannot be true while a mapping
-     * exists -- which is exactly why the reference lives on the VMA and is
-     * taken by vma_space_clone(). */
-    if (last) purge(fh, 0);
+    /* refs == 0 is CACHED-IDLE, not gone -- and that distinction is the whole
+     * point of a page cache. The first version of this function purged here,
+     * which quietly defeated the design's headline claim: a program that read
+     * a file once dropped every page of it on the way out, so a standalone
+     * pcache_pread() missed EVERYTHING on every call (open, read, put, purge --
+     * found by the adversarial pass over mm_pcache_test, not by inspection).
+     * The read-once pages are precisely what reclaim's tier 1 exists to take
+     * back cheaply UNDER PRESSURE (rmap 0 + our one pmm ref: the cheapest
+     * frames on the machine); purging them eagerly here spends that for free
+     * memory nobody asked for.
+     *
+     * An idle entry's pages now leave exactly three ways, all deliberate:
+     * invalidation (a write/delete/rename made them stale -- and for an idle
+     * entry the SLOT goes too, see pcache_invalidate_path, because a dead
+     * file's inode number can be reused and a lingering identity would alias
+     * the next file to wear it); reclaim taking frames one at a time under
+     * pressure (pcache_forget_frame); or the slot being evicted for a new
+     * file when the table is full (pcache_file_open).
+     *
+     * Nothing is unmapped here, same as before: a process that still has the
+     * file mapped holds its own reference (its VMA, taken by
+     * vma_space_clone), so a mapped file can never be idle. */
+}
+
+/* After an invalidation, an entry that nobody holds is retired outright --
+ * pages AND slot. With CACHED-IDLE in the design this is a correctness rule,
+ * not tidiness: the file behind an invalidation may have been DELETED, and
+ * logitfs reuses inode numbers, so an idle entry left wearing a dead (dev,ino)
+ * would be matched by the NEXT file to receive that inode -- and would serve it
+ * pages re-read through a path that no longer means it. An entry with holders
+ * keeps its slot (they re-fault and re-read, which is the invalidation
+ * contract); only the unowned identity is dangerous to keep. */
+static void retire_if_idle(int fh)
+{
+    uint64_t fl = spin_lock_irqsave(&pc_lock);
+    if (pf[fh].used && pf[fh].refs <= 0) pf[fh].used = 0;
+    spin_unlock_irqrestore(&pc_lock, fl);
 }
 
 void pcache_invalidate_file(int fh)
 {
     if (fh < 0 || fh >= PCACHE_MAXFILE) return;
     purge(fh, &c_inval);
+    retire_if_idle(fh);
 }
 
 void pcache_invalidate_path(const char *path)
@@ -394,7 +462,7 @@ void pcache_invalidate_path(const char *path)
             spin_unlock_irqrestore(&pc_lock, fl);
         }
     }
-    for (int j = 0; j < nh; j++) purge(hits[j], &c_inval);
+    for (int j = 0; j < nh; j++) { purge(hits[j], &c_inval); retire_if_idle(hits[j]); }
 #endif
 }
 
