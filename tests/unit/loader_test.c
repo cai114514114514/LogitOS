@@ -45,6 +45,8 @@
 #include "layout.h"
 #include "browser_paint.h"
 #include "loader_fakebfetch.h"
+#include "quickjs.h"
+#include "js_page.h"               /* part 2.5 reads the live page runtime */
 
 /* ---- the recorders' storage (declared extern by the two shadow headers) ---- */
 struct paintop paint_ops[PAINT_MAXOPS];
@@ -468,6 +470,55 @@ static int open_tab(const char *u)
     return idx;
 }
 
+/* ---- part 2.5: the Vite legacy probe ------------------------------------
+ * weixin.qq.com (and every site built with @vitejs/plugin-legacy) decides
+ * whether the browser is "modern" by running, inline, as a module:
+ *
+ *     import.meta.url; import("_").catch(()=>1); (async function*(){})().next();
+ *
+ * and loading the real app only if none of that killed the script. The
+ * dangerous half is import("_"): a BARE specifier, which our loader refuses
+ * in mod_normalize (js_module.c) by design -- there is no import map. The
+ * refusal is CORRECT; what this part pins is its DELIVERY: the throw must
+ * arrive as a REJECTION of that import()'s promise, caught by the page's own
+ * .catch(), with the module's remaining statements having run -- not as a
+ * top-level module failure that kills the probe (which is indistinguishable,
+ * to the site, from "old browser" and produces the BLANK the scoreboard
+ * recorded). js_dynimport_test cannot make this claim: it links its own
+ * loader, not js_module.c. This is the real normalizer, through the real
+ * page pipeline, fixture-fed. */
+static const char VITEPROBE[] =
+    "<html><head><script type=\"module\">"
+    "import.meta.url;"
+    "import(\"_\").catch(function(){ globalThis.__legacy_caught = 1; });"
+    "(async function*(){})().next();"
+    "globalThis.__probe_ran = 1;"
+    "</script></head><body>VITE</body></html>";
+
+static void part2_5_vite_probe(void)
+{
+    printf("\n-- part 2.5: the Vite legacy probe (bare import() must REJECT, not kill) --\n");
+    fake_site_reset();
+    fake_site_add("http://fixture.test/vite.html", VITEPROBE);
+    browser_load("http://fixture.test/vite.html");
+    js_page_pump();                       /* the rejection lands as a job */
+
+    JSContext *ctx = js_page_ctx();
+    CHECK(ctx != NULL, "the page runtime survived the probe");
+    if (!ctx) return;
+    JSValue v = JS_Eval(ctx,
+        "String(globalThis.__probe_ran) + ':' + String(globalThis.__legacy_caught)",
+        (size_t)strlen("String(globalThis.__probe_ran) + ':' + String(globalThis.__legacy_caught)"),
+        "<probe-read>", JS_EVAL_TYPE_GLOBAL);
+    const char *s = JS_ToCString(ctx, v);
+    CHECK(s && !strcmp(s, "1:1"),
+          "the probe ran to completion AND its .catch() caught the bare import");
+    if (s && strcmp(s, "1:1") == 0) { /* nothing */ }
+    else printf("   (read back: %s)\n", s ? s : "<null>");
+    if (s) JS_FreeCString(ctx, s);
+    JS_FreeValue(ctx, v);
+}
+
 static void part3_tabs(void)
 {
     printf("\n-- part 3: tabs --\n");
@@ -781,6 +832,11 @@ int main(void)
         part2_navigation();
     else
         { printf("FAIL: the loader called app_exit(%d)\n", host_exit_code); fail = 1; }
+
+    if (setjmp(host_exit_jmp) == 0)
+        part2_5_vite_probe();
+    else
+        { printf("FAIL: the vite probe called app_exit(%d)\n", host_exit_code); fail = 1; }
 
     { int n = 0; g_real_html = slurp("tests/fixtures/browser/baidu.html", &n); }
     if (setjmp(host_exit_jmp) == 0)
