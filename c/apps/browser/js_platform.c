@@ -42,7 +42,17 @@ void js_platform_set_viewport(int w, int h) { if (w > 0) g_vw = w; if (h > 0) g_
  * distinction is observable -- __randomStrong() below reports which source is
  * live -- so "it silently degraded" is a thing a test can catch rather than a
  * thing someone discovers. */
+#ifndef WEBAPI_HOST
 #include "logit.h"
+#else
+/* Host test build (js_webapi.c's exact idiom, which this include missed when
+ * the getrandom line landed -- it broke every test-platform* link with
+ * "logit.h not found" until the webapi_platform units hit it): no kernel, so
+ * the syscall "fails" and the code below takes the xorshift fallback it
+ * already owns, reported honestly as __randomStrong()=0. */
+static int getrandom_bytes(void *buf, unsigned long n) { (void)buf; (void)n; return -1; }
+static int getrandom_strong(void) { return 0; }   /* unreachable: bytes always fails */
+#endif
 static unsigned long long g_s0, g_s1;
 static int g_seeded;
 /* -1 = no fill has happened yet, 1 = the last fill came from SYS_GETRANDOM,

@@ -85,6 +85,21 @@ static void ckjs(const char *expr, const char *name)
     ck(ok, name);
 }
 
+/* A check whose substance lives in js_dom.c (or another always-linked TU),
+ * present in this file because it was FOUND here -- by running the event loop
+ * against real pages -- not because js_platform.c/js_select.c implement it.
+ * The control build links those two TUs out and inverts every ckjs(); a check
+ * js_dom satisfies passes anyway and used to be counted as a control FAILURE
+ * (29 of them by 2026-08-16, growing every time this file learned a DOM
+ * fact). In control mode these are SKIPPED, stated per line, because
+ * "js_dom still provides this without js_platform" is true, expected, and
+ * says nothing about what the control exists to prove. */
+static void ckjs_dom(const char *expr, const char *name)
+{
+    if (inverted) { printf("skip: %s  (js_dom-satisfied; not this control's subject)\n", name); return; }
+    ckjs(expr, name);
+}
+
 /* Evaluate, then drain the microtask queue -- js_page_eval does this for a
  * page and the tests must see the same world a page does. */
 static void run(const char *src) { JS_FreeValue(ctx, eval(src)); js_page_pump(); }
@@ -213,8 +228,8 @@ int main(int argc, char **argv)
          "the idle deadline actually counts down to zero");
 
     /* ==== errors ========================================================= */
-    ckjs("typeof DOMException === 'function'", "DOMException exists");
-    ckjs("(function(){ var e = new DOMException('no', 'AbortError');"
+    ckjs_dom("typeof DOMException === 'function'", "DOMException exists");
+    ckjs_dom("(function(){ var e = new DOMException('no', 'AbortError');"
          " return e instanceof Error && e.name === 'AbortError' && e.code === 20 && e.message === 'no'; })()",
          "DOMException carries name, message and the legacy code");
     ckjs("typeof PromiseRejectionEvent === 'function'", "PromiseRejectionEvent exists");
@@ -246,7 +261,7 @@ int main(int argc, char **argv)
 
     /* ==== navigator / window ============================================ */
     ckjs("navigator.scheduling.isInputPending() === false", "navigator.scheduling.isInputPending");
-    ckjs("window.top === window && window.parent === window",
+    ckjs_dom("window.top === window && window.parent === window",
          "an unframed document is its own top (the frame-buster line)");
 
     /* ==== crypto ========================================================= */
@@ -384,7 +399,13 @@ int main(int argc, char **argv)
     ckjs("document.querySelectorAll('p:hover').length === 0", "an unevaluable pseudo-class matches nothing");
     /* An unparsable selector must throw, not return []. An empty result is
      * indistinguishable from "no matches" and hides the bug for a month. */
-    ckjs("(function(){ try { document.querySelectorAll('<<'); return false; } catch (e) { return e instanceof SyntaxError; } })()",
+    /* `e.name`, NOT `instanceof SyntaxError`: per spec (and per Chrome) an
+     * invalid selector throws a DOMException whose .name is 'SyntaxError',
+     * which is NOT an instance of the SyntaxError constructor. The first
+     * version of this check asserted instanceof and started failing the day
+     * js_select.c became spec-correct -- the test was wrong, not the code
+     * (this is what WPT's assert_throws_dom(SYNTAX_ERR, ...) checks too). */
+    ckjs("(function(){ try { document.querySelectorAll('<<'); return false; } catch (e) { return e.name === 'SyntaxError'; } })()",
          "a bad selector throws SyntaxError rather than returning nothing");
     ckjs("document.getElementsByTagName('p').length === 3", "getElementsByTagName");
     ckjs("document.getElementsByTagName('*').length > 8", "getElementsByTagName('*')");
@@ -470,11 +491,18 @@ int main(int argc, char **argv)
          "SuppressedError (ES2024; bundlers feature-test it at module top level)");
 
     /* ==== document gaps found by running the event loop ================== */
-    ckjs("document.ownerDocument === null", "document.ownerDocument is null, not undefined");
-    ckjs("document.getRootNode() === document", "document.getRootNode()");
-    ckjs("document.getElementById('wrap').getRootNode() === document", "Element.getRootNode()");
-    ckjs("document.firstChild === document.documentElement", "document.firstChild");
-    ckjs("document.contains(document.getElementById('wrap'))", "document.contains");
+    ckjs_dom("document.ownerDocument === null", "document.ownerDocument is null, not undefined");
+    ckjs_dom("document.getRootNode() === document", "document.getRootNode()");
+    ckjs_dom("document.getElementById('wrap').getRootNode() === document", "Element.getRootNode()");
+    /* The fixture opens with <!doctype html>, so per spec document.firstChild
+     * is the DocumentType node (nodeType 10), NOT documentElement -- the
+     * original `=== documentElement` expectation was written before the tree
+     * grew real doctype nodes and became wrong the day it did. Both halves
+     * asserted: the doctype leads, and <html> follows it. */
+    ckjs_dom("document.firstChild.nodeType === 10", "document.firstChild is the doctype");
+    ckjs_dom("document.firstChild.nextSibling === document.documentElement",
+         "documentElement follows the doctype");
+    ckjs_dom("document.contains(document.getElementById('wrap'))", "document.contains");
 
     /* ==== dataset =======================================================
      * Top of the Chrome differential: deepseek's React reads
@@ -539,24 +567,24 @@ int main(int argc, char **argv)
     /* ==== the interface objects ==========================================
      * MDN's `'closedBy' in HTMLDialogElement.prototype` is a module-body
      * feature test, so a ReferenceError there rejects the whole module. */
-    ckjs("typeof HTMLElement === 'function' && typeof HTMLDialogElement === 'function'",
+    ckjs_dom("typeof HTMLElement === 'function' && typeof HTMLDialogElement === 'function'",
          "HTMLElement / HTMLDialogElement exist");
-    ckjs("document.createElement('div') instanceof HTMLElement",
+    ckjs_dom("document.createElement('div') instanceof HTMLElement",
          "instanceof HTMLElement is true for an element");
     /* The one js_select.c's façades got WRONG: one prototype for every name
      * made this true, and a page branching on it takes a path it must not. */
-    ckjs("!(document.createElement('div') instanceof HTMLInputElement)",
+    ckjs_dom("!(document.createElement('div') instanceof HTMLInputElement)",
          "instanceof HTMLInputElement is FALSE for a div");
-    ckjs("document.createElement('input') instanceof HTMLInputElement",
+    ckjs_dom("document.createElement('input') instanceof HTMLInputElement",
          "instanceof HTMLInputElement is true for an input");
-    ckjs("!('closedBy' in HTMLDialogElement.prototype)",
+    ckjs_dom("!('closedBy' in HTMLDialogElement.prototype)",
          "HTMLDialogElement.prototype answers a feature test (falsely, correctly)");
     /* Document has its own prototype in js_dom.c, so publishing it over the
      * ELEMENT prototype would make `document instanceof Document` false and
      * every <div> true. baidu's sniffer reaches the bare name. */
-    ckjs("typeof Document === 'function' && document instanceof Document",
+    ckjs_dom("typeof Document === 'function' && document instanceof Document",
          "Document exists and document is one");
-    ckjs("!(document.createElement('div') instanceof Document)",
+    ckjs_dom("!(document.createElement('div') instanceof Document)",
          "an element is NOT a Document");
 
     /* ==== navigator.mimeTypes / navigator.plugins =======================
@@ -611,15 +639,15 @@ int main(int argc, char **argv)
      * is the code path the real baidu page dies on -- one missing method,
      * then fourteen of its twenty-eight scripts fail with `'$' is not
      * defined`. Asserted as the page uses it, not as an API tour. */
-    ckjs("typeof document.createElement('div').cloneNode === 'function'",
+    ckjs_dom("typeof document.createElement('div').cloneNode === 'function'",
          "Node.cloneNode exists");
-    ckjs("document.createElement('nav').cloneNode(true).tagName.toLowerCase() === 'nav'",
+    ckjs_dom("document.createElement('nav').cloneNode(true).tagName.toLowerCase() === 'nav'",
          "cloneNode: jQuery's html5Clone probe");
-    ckjs("(function(){ var i = document.createElement('input');"
+    ckjs_dom("(function(){ var i = document.createElement('input');"
          " i.setAttribute('type','checkbox'); i.setAttribute('checked','checked');"
          " return i.cloneNode(true).getAttribute('type') === 'checkbox'; })()",
          "cloneNode: attributes survive (there is no way to enumerate them)");
-    ckjs("(function(){ var d = document.createElement('div');"
+    ckjs_dom("(function(){ var d = document.createElement('div');"
          " d.innerHTML = '<b>x</b><i>y</i>';"
          " return d.cloneNode(true).childNodes.length === 2; })()",
          "cloneNode(true) is deep");
@@ -636,17 +664,17 @@ int main(int argc, char **argv)
          " var c = i.cloneNode(true);"
          " return !!c && c.getAttribute('type') === 'checkbox'; })()",
          "cloneNode: a parsed child cloned in place (jQuery noCloneChecked)");
-    ckjs("(function(){ var d = document.createElement('div');"
+    ckjs_dom("(function(){ var d = document.createElement('div');"
          " d.innerHTML = '<b>x</b>';"
          " return d.cloneNode(false).childNodes.length === 0; })()",
          "cloneNode(false) is shallow");
-    ckjs("(function(){ var d = document.createElement('div'); d.id = 'orig';"
+    ckjs_dom("(function(){ var d = document.createElement('div'); d.id = 'orig';"
          " var c = d.cloneNode(true); c.setAttribute('id','copy');"
          " return d.getAttribute('id') === 'orig'; })()",
          "cloneNode: the copy is independent of the original");
     /* jQuery's support.checkClone, verbatim in shape: a fragment cloned
      * twice, then lastChild read. It is what caught my first attempt. */
-    ckjs("(function(){ var f = document.createDocumentFragment();"
+    ckjs_dom("(function(){ var f = document.createDocumentFragment();"
          " var i = document.createElement('input'); i.setAttribute('type','checkbox');"
          " f.appendChild(i);"
          " var c = f.cloneNode(true).cloneNode(true);"
@@ -661,7 +689,7 @@ int main(int argc, char **argv)
     run("var __ch = document.getElementById('wrap');"
         "var __a = document.createElement('i'); var __b = document.createElement('u');"
         "__ch.appendChild(__a); __ch.appendChild(__b);");
-    ckjs("(function(){ var n = __ch.childNodes.length;"
+    ckjs_dom("(function(){ var n = __ch.childNodes.length;"
          " var par = __a.parentNode, nx = __a.nextSibling;"
          " __a.cloneNode(true);"
          " return __a.parentNode === par && __a.nextSibling === nx"
@@ -682,24 +710,24 @@ int main(int argc, char **argv)
      *                            div.attributes[eventName].expando === false;
      * `div.attributes` undefined is `cannot read property 'onfocusin' of
      * undefined`, and jQuery stops there. */
-    ckjs("typeof document.createElement('div').getAttributeNames === 'function'",
+    ckjs_dom("typeof document.createElement('div').getAttributeNames === 'function'",
          "Element.getAttributeNames exists");
-    ckjs("(function(){ var d = document.createElement('div');"
+    ckjs_dom("(function(){ var d = document.createElement('div');"
          " d.setAttribute('data-a','1'); d.setAttribute('title','t');"
          " var n = d.getAttributeNames();"
          " return n.indexOf('data-a') >= 0 && n.indexOf('title') >= 0; })()",
          "getAttributeNames lists what was set");
     /* The one that matters most: names the PARSER wrote, which no script ever
      * passed to setAttribute and which a set-tracking shim could not know. */
-    ckjs("(function(){ var n = document.getElementById('wrap').getAttributeNames();"
+    ckjs_dom("(function(){ var n = document.getElementById('wrap').getAttributeNames();"
          " return n.indexOf('class') >= 0 && n.indexOf('data-role') >= 0; })()",
          "getAttributeNames lists PARSER-set attributes too");
-    ckjs("(function(){ var d = document.createElement('div');"
+    ckjs_dom("(function(){ var d = document.createElement('div');"
          " d.setAttribute('onfocusin','t');"
          " return !!d.attributes['onfocusin'] && d.attributes['onfocusin'].value === 't'"
          "        && d.attributes['onfocusin'].expando === undefined; })()",
          "Element.attributes by name (jQuery support line 99)");
-    ckjs("document.getElementById('wrap').attributes.length >= 3",
+    ckjs_dom("document.getElementById('wrap').attributes.length >= 3",
          "Element.attributes has a length");
     /* dataset enumeration was a named gap until getAttributeNames existed; it
      * calls it, so it comes for free and is asserted rather than assumed. */
