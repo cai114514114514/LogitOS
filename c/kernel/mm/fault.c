@@ -5,6 +5,7 @@
 #include "vma.h"
 #include "pmm.h"
 #include "rmap.h"
+#include "pcache.h"
 #include "reclaim.h"
 #include "mmhost.h"
 #include "kprintf.h"
@@ -66,8 +67,8 @@ static inline uint64_t fault_cyc(void)
 { uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
   return ((uint64_t)hi << 32) | lo; }
 #endif
-static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin;
-static uint64_t g_swapin;
+static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin, g_cyc_file;
+static uint64_t g_swapin, g_file;
 
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc);
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc)
@@ -87,7 +88,8 @@ uint64_t mm_fault_declined(void) { return g_declined; }
 
 /* ------------------------------------------------------- the decision --- */
 int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
-                      int pte_cow, int pte_user, int vma_prot, int pte_swap)
+                      int pte_cow, int pte_user, int vma_prot, int pte_swap,
+                      int vma_file)
 {
     /* A reserved bit set in a page-table entry means the tables themselves are
      * malformed. That is a kernel bug and must never be "handled". */
@@ -145,6 +147,25 @@ int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
                                      * pointer, or a stack that ran off its end */
     if ((err & PF_W) && !(vma_prot & VMA_WRITE))
         return MM_FAULT_NONE;       /* write to a read-only reservation */
+
+    /* A file-backed reservation. LAST, and after the swap check rather than
+     * before it, which is the ordering rule the swap case already states and
+     * which this case has to fit without weakening:
+     *
+     *   the swap marker is checked FIRST because a swap entry is self-evidently
+     *   ours -- the kernel wrote it -- and because the pages that most need to
+     *   come back have no VMA at all. Nothing here changes that. A file page
+     *   that was SWAPPED (it can be: an invalidated-but-still-mapped page loses
+     *   its cache entry and then reclaim can only swap it) has the marker in its
+     *   PTE, so it is caught above and read back from the slot, NOT re-read from
+     *   the file -- which is the right answer, because by then the file's bytes
+     *   have changed and the process is entitled to the ones it was given.
+     *
+     * The file case is therefore purely a refinement of MM_FAULT_ANON: same
+     * conditions, and the only difference is where the page's contents come
+     * from. `vma_file` is the VMA saying it has a backing file. */
+    if (vma_file)
+        return MM_FAULT_FILE;
     return MM_FAULT_ANON;
 }
 
@@ -262,6 +283,43 @@ static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active)
     return 1;
 }
 
+/* THE PAGE CACHE'S FAULT. Beside do_anon(), and deliberately the same shape:
+ * a page that is legitimately absent is made present, and the ONLY difference
+ * is where its bytes come from -- zeroes there, a file here.
+ *
+ * The one thing worth reading slowly is the reference. pcache_get() hands back
+ * a frame the CACHE holds a reference on and does not take one for us; this PTE
+ * is a second, independent reference, so pmm_ref() before the mapping. Getting
+ * that wrong in either direction is exactly the class of bug rmap.h is written
+ * around: one too few and the frame is freed while this PTE still points at it,
+ * one too many and reclaim can never take the page back because refcount and
+ * rmap count stop agreeing.
+ *
+ * READ-ONLY, ALWAYS. VMA_WRITE never reaches this PTE, and it cannot: a
+ * writable file page would be a dirty page, and there is no writeback in this
+ * line (see pcache.h). mmsys.c refuses a writable file mapping OUT LOUD rather
+ * than quietly handing back a private copy, so a write fault here is a genuine
+ * protection fault and stays one -- the classifier declines it and the process
+ * dies, which is what a write to a read-only mapping is supposed to do. */
+static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
+                   uint32_t prot, int active)
+{
+    uint64_t f = pcache_get(fh, index);
+    if (!f)
+        return 0;                   /* unreadable, past EOF, or out of memory:
+                                     * decline, and the process dies as it would
+                                     * for any other address it may not have */
+    if (pmm_ref(f) < 0)
+        return 0;                   /* saturated refcount: refuse to share it,
+                                     * exactly as the copy-on-write clone does */
+    vmm_map_page_in(cr3, page, f,
+                    VMM_USER | VMM_PTE_FILE |
+                    ((prot & VMA_EXEC) ? 0 : MM_PTE_NX));
+    if (active) mm_invlpg(page);
+    g_file++;
+    return 1;
+}
+
 int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
 {
     if (!cr3) { g_declined++; return 0; }
@@ -271,11 +329,15 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     int cow     = pte && (*pte & VMM_PTE_COW);
     int user    = pte && (*pte & USER);
     int swapped = pte && vmm_pte_is_swap(*pte);
-    uint32_t prot = vma_prot_at(cr3, page);
+    int fh = -1;
+    uint64_t findex = 0;
+    uint32_t fprot = 0;
+    int has_file = vma_file_at(cr3, page, &fh, &findex, &fprot);
+    uint32_t prot = has_file ? fprot : vma_prot_at(cr3, page);
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
 
     uint64_t t0 = fault_cyc();
-    switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped)) {
+    switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped, has_file)) {
     case MM_FAULT_COW: {
         uint64_t before = g_cow_copies;
         if (do_cow(cr3, page, pte, active)) {
@@ -291,6 +353,16 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     }
     case MM_FAULT_ANON:
         if (do_anon(cr3, page, prot, active)) { g_cyc_anon += fault_cyc() - t0; return 1; }
+        break;
+    case MM_FAULT_FILE:
+        /* Timed separately from anon for the same reason swap-in is: a cache
+         * HIT is a pmm_ref and a PTE write, a cache MISS is a device read, and
+         * an average over both says nothing about either. The split between
+         * them is pcache_hits()/pcache_misses(), reported next to this. */
+        if (do_file(cr3, page, fh, findex, prot, active)) {
+            g_cyc_file += fault_cyc() - t0;
+            return 1;
+        }
         break;
     case MM_FAULT_SWAP:
         /* THE ONE FAULT THAT GOES TO A DISK. Everything above resolves in
@@ -313,6 +385,7 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
 }
 
 uint64_t mm_swapin_faults(void) { return g_swapin; }
+uint64_t mm_file_faults(void)   { return g_file; }
 
 int mm_fault(uint64_t cr2, uint64_t err, uint64_t rip)
 {
@@ -354,5 +427,9 @@ void mm_report(const char *tag)
             (int)(g_cyc_reuse / 1000),  (int)(g_cow_reuse  ? g_cyc_reuse / g_cow_reuse : 0),
             (int)(g_cyc_anon / 1000),   (int)(g_anon       ? g_cyc_anon / g_anon : 0),
             (int)(g_cyc_swapin / 1000), (int)(g_swapin     ? g_cyc_swapin / g_swapin : 0));
+    kprintf("[mm] %s: file faults %d (%d kcycles total / %d each)\n",
+            tag ? tag : "-", (int)g_file, (int)(g_cyc_file / 1000),
+            (int)(g_file ? g_cyc_file / g_file : 0));
+    pcache_report(tag);
     reclaim_report(tag);
 }

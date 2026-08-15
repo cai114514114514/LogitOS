@@ -25,8 +25,28 @@
 #define VMA_WRITE  0x2
 #define VMA_EXEC   0x4
 
+/* FILE BACKING. `file` is a c/kernel/mm/pcache.h handle -- a reference to the
+ * INODE, not to the open file description the mmap came through, which is why
+ * the fd may be closed the instant after mmap() returns and why two processes
+ * mapping the same file land on the same pages. `foff` is the byte offset in
+ * that file of `start`, so page (va - start)/4096 + foff/4096 is the file page
+ * index and the fault path needs nothing else.
+ *
+ * The reference is owned by the AREA, which is what makes the lifetime rules
+ * fall out rather than having to be remembered:
+ *   fork    vma_space_clone copies the areas, so it takes a reference each;
+ *   execve  vma_space_clear drops every area, so it puts each one;
+ *   exit    vma_space_free the same;
+ *   munmap  vma_release puts the areas it removes, and an area that is SPLIT
+ *           becomes two areas and therefore takes one more.
+ *
+ * `file` is -1 on an anonymous area, and every place a slot is created or
+ * cleared sets it, because a stale handle in an unused slot would be put twice
+ * the next time that slot is used. */
 struct vma {
     uint64_t start, end;      /* [start, end), page aligned */
+    uint64_t foff;            /* file byte offset of `start` (file areas only) */
+    int32_t  file;            /* pcache file handle, or -1 = anonymous */
     uint32_t prot;            /* VMA_* */
     uint32_t used;
 };
@@ -40,6 +60,19 @@ int  vma_space_clone(uint64_t dst_cr3, uint64_t src_cr3);   /* fork */
 
 /* Look up the area covering `va`. Returns its prot, or 0 if none. */
 uint32_t vma_prot_at(uint64_t cr3, uint64_t va);
+
+/* The file backing of the area covering `va`, if it has any. Returns 1 and
+ * fills *file / *index (the FILE PAGE INDEX, not a byte offset) / *prot, or 0
+ * for an anonymous area or no area at all. One call rather than three, because
+ * the page-fault path asks all of it at once and a second scan of the table
+ * under the same lock is the only other way to get it consistently. */
+int vma_file_at(uint64_t cr3, uint64_t va, int *file, uint64_t *index, uint32_t *prot);
+
+/* Reserve `len` bytes backed by pcache file handle `fh` from byte offset
+ * `foff`. Takes its own reference on `fh`, so the caller still owns the one it
+ * came in with. Returns the base address, or 0. */
+uint64_t vma_reserve_file(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot,
+                          int fh, uint64_t foff);
 
 /* Reserve `len` bytes. `hint` is a preferred base (0 = anywhere). Returns the
  * base address, or 0 on failure. Nothing is mapped: the pages materialise on

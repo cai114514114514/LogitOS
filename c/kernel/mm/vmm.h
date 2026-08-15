@@ -20,11 +20,12 @@
  *   bit  9   COW      OS: writable-but-shared, resolve on write   (mm owns)
  *   bit 10   ANON     OS: this page was zero-filled on demand and can be
  *                     re-derived by faulting it again             (mm owns)
- *   bit 11   --       OS: FREE
+ *   bit 11   FILE     OS: this page is a PAGE-CACHE page: its contents came
+ *                     from a file and can be re-derived by re-reading it
  *   bits 52-62        OS: FREE
  *   bit 63   NX       hardware: no-execute (the user/kernel-separation line)
  *
- * mm claims 9 and 10 and nothing else. */
+ * mm claims 9, 10 and 11 and nothing else. */
 #define VMM_PTE_COW  (1ull << 9)
 
 /* Zero-fill-on-demand origin. Set by the anonymous fault, carried through fork
@@ -34,6 +35,25 @@
  * anonymous page's re-derivation (zero fill) is known to. An ELF text page's
  * contents came from a file that nothing re-reads, so it must be swapped. */
 #define VMM_PTE_ANON (1ull << 10)
+
+/* File-backed origin: this page belongs to c/kernel/mm/pcache.h and its bytes
+ * are on a filesystem. The SECOND thing reclaim's cheap tier can re-derive, and
+ * the one the design note in reclaim.h says had no producer here -- see the top
+ * of pcache.h.
+ *
+ * It is not, on its own, permission to drop the page. The authority is the
+ * cache: pcache_holds(frame) says the entry is still there to re-read from,
+ * and it is the cache's reference on the frame that reclaim has to account for.
+ * The bit exists because a PTE has to be able to SAY what it is without a hash
+ * lookup -- fork copies PTE flags wholesale, so the child's mapping arrives
+ * already marked, and the audit can tell a file page from an anonymous one in
+ * the tables themselves.
+ *
+ * ANON and FILE are mutually exclusive by construction: do_anon() sets one,
+ * do_file() sets the other, and nothing sets both. A page with neither came
+ * from elf_load and can only be swapped, which is the pre-existing behaviour
+ * and stays. */
+#define VMM_PTE_FILE (1ull << 11)
 
 /* The hardware reference bits, named. Reclaim samples A to find pages nobody is
  * using, and reads D to know whether a page has been modified. */

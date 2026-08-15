@@ -122,15 +122,34 @@ enum mm_fault_kind {
     MM_FAULT_COW,           /* a write to a copy-on-write page */
     MM_FAULT_ANON,          /* first touch of an anonymous (mmap) page */
     MM_FAULT_SWAP,          /* the page is on the swap device; read it back */
+    MM_FAULT_FILE,          /* first touch of a FILE-backed page; read it from
+                             * the page cache (c/kernel/mm/pcache.c) */
 };
+/* MM_FAULT_FILE is APPENDED rather than placed beside MM_FAULT_ANON, which is
+ * where it belongs semantically -- fault.c's own comment calls it "purely a
+ * refinement of MM_FAULT_ANON: same conditions, and the only difference is
+ * where the page's contents come from". Appending anyway, because these values
+ * reach tests/unit/mm_*.c as expectations and renumbering an existing kind to
+ * make an enum read nicely is how a test starts asserting the wrong thing while
+ * still passing. */
 /* `pte_swap` is 1 when the entry is a swap entry (see vmm.h). It is checked
  * FIRST and independently of the VMA, because a swap entry is self-evidently
  * ours -- the kernel wrote it -- and because pages that have no VMA at all (an
  * ELF image's text, which elf_load maps directly) must still be able to come
  * back. Getting this order wrong is silent data loss: a swapped page that falls
  * through to the anonymous case is refilled with zeroes. */
+/* `vma_file` is 1 when the VMA covering this address names a backing file. It
+ * is the LAST term consulted, after the swap marker and after the copy-on-write
+ * and present tests, because it distinguishes only where an absent page's bytes
+ * come from -- not whether the fault is ours. A file page that was SWAPPED (it
+ * can be: an invalidated-but-still-mapped page loses its cache entry, and then
+ * reclaim can only swap it) carries the marker and is caught first, so it comes
+ * back from the slot and NOT from the file -- correct, because by then the
+ * file's bytes may have moved on and the process is entitled to the ones it was
+ * given. */
 int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
-                      int pte_cow, int pte_user, int vma_prot, int pte_swap);
+                      int pte_cow, int pte_user, int vma_prot, int pte_swap,
+                      int vma_file);
 
 void     mm_set_cow(int on);
 int      mm_cow_enabled(void);

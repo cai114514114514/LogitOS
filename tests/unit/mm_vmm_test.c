@@ -39,8 +39,15 @@
  * wrapped rather than having ", 0" appended to forty call sites; the swap cases
  * are enumerated in tests/unit/mm_reclaim_test.c, next to the code that makes
  * the entries. */
+/* The same wrapping now covers `vma_file` as well, for the same reason and with
+ * the same limit: every case in THIS file is an anonymous, non-swap case, and
+ * the two trailing zeroes say so once instead of at forty call sites. The file
+ * cases live beside the code that produces them, in tests/unit/mm_pcache_test.c.
+ * If a case here ever needs either flag set, it calls the real function --
+ * shadowing it with a macro is a convenience for the common shape, not a way to
+ * hide a parameter. */
 #define mm_fault_classify(cr2, err, p, cow, u, prot) \
-        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), 0)
+        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), 0, 0)
 
 #define PRESENT  0x1
 #define WRITABLE 0x2

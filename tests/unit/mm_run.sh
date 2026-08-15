@@ -31,7 +31,12 @@ COMMON="$ROOT/tests/unit/mm_common.c"
 # reclaim trigger, so they are no longer separable -- which is the point: the
 # thing under test is the whole of c/kernel/mm, wired the way the kernel wires
 # it.
-MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c"
+# pcache.c joins for the same reason the comment above gives: fault.c's file
+# case and vma.c's file-backed VMAs call straight into it, so leaving it out is
+# not "one fewer thing under test", it is a link error -- which is exactly how
+# it was found. The thing under test is the whole of c/kernel/mm, wired the way
+# the kernel wires it.
+MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c"
 
 fail=0
 run_one() {

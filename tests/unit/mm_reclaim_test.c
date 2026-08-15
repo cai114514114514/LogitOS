@@ -44,6 +44,18 @@
 #include "mmhost.h"      /* mm_host_cr3: the simulated active address space */
 #include "kprintf.h"
 
+/* mm_fault_classify grew a `vma_file` argument when the page cache landed. This
+ * file is the SWAP file -- every case here is about telling a swap entry apart
+ * from an anonymous fill, and none of them is file-backed -- so the flag is
+ * wrapped to 0 once here rather than appended to seven call sites, exactly as
+ * tests/unit/mm_vmm_test.c wraps the swap flag itself for the same reason.
+ * Note the shape: this macro passes `swap` THROUGH, because distinguishing it
+ * is what the file is for; it only fixes the argument this file has no opinion
+ * about. A file-backed case belongs in tests/unit/mm_pcache_test.c, beside the
+ * code that produces one. */
+#define mm_fault_classify(cr2, err, p, cow, u, prot, swap) \
+        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), (swap), 0)
+
 #define PRESENT  0x1
 #define WRITABLE 0x2
 #define USER     0x4
