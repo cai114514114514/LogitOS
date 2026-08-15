@@ -6,6 +6,7 @@
 #include "pic.h"
 #include "pit.h"
 #include "pmm.h"
+#include "acpi.h"
 #include "fb.h"
 #include "wm.h"
 #include "mouse.h"
@@ -74,6 +75,10 @@ void kernel_main(uint64_t mb_info)
     cpu_simd_selftest();
 
     pmm_init(mb_info);
+    /* Before anything can ask for an ACPI table: under UEFI the RSDP is only
+     * reachable through this block (c/boot/efi/loader.c forwards it as tag 15),
+     * and the BIOS-area scan acpi.c falls back to finds nothing there. */
+    acpi_set_mb2_info(mb_info);
     kprintf("[logitos] interrupts + memory + gdt/tss online\n");
 
     /* The page cache's frame table (pc_of_frame[], pcache.c) comes out of the

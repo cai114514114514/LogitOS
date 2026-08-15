@@ -4,6 +4,13 @@
 
 #define ACPI_MAX_CPUS 32
 
+/* Hand acpi.c the Multiboot2 information block the bootloader passed in ebx.
+ * Must be called before the first acpi_tables_init() (kernel_main does it right
+ * after pmm_init). Both loaders supply an ACPI tag -- GRUB on BIOS and
+ * c/boot/efi on UEFI -- and under UEFI it is the ONLY way to find the RSDP,
+ * because there is no BIOS area left to scan. */
+void        acpi_set_mb2_info(uint64_t mb_info);
+
 /* Find the RSDP and cache the (X)SDT. Idempotent; 0 on success, -1 if there is
  * no usable ACPI. Callable before acpi_init() -- the PCI bus driver needs the
  * MCFG table at enumeration time, which is long before SMP comes up. */

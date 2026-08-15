@@ -3829,3 +3829,4 @@ bench-aui: $(ISO) $(DISK)
 # that silently stopped being reachable by name.
 -include tests/power.mk
 -include tests/settings2.mk
+-include tests/uefi.mk

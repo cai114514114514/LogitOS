@@ -1,0 +1,176 @@
+c/boot/efi/acpi-mb2-tag.patch -- teach acpi.c to take the RSDP from the
+Multiboot2 information block when the loader supplied one.
+
+STATUS: APPLIED at integration, 2026-08-15 -- acpi.c/acpi.h/kmain.c now carry
+this change (plus one line the patch missed: kmain.c needed #include "acpi.h",
+which check-acpi-patch.sh could not catch because it compile-tested only
+acpi.c). Kept as the record of WHY; do not apply again.
+
+DELIVERED AS A PATCH FILE AND NOT AS AN EDIT, ON PURPOSE. c/kernel/cpu/acpi.c
+is owned by another line of work right now (the power line is editing it), and
+this milestone's rule is that the kernel does not change. So the change lives
+here, with its reasoning, for the orchestrator to apply at integration.
+
+================================ THE PROBLEM =================================
+
+acpi.c finds the RSDP by scanning physical 0xE0000-0xFFFFF on 16-byte
+boundaries (find_rsdp(), acpi.c:62-72). That is the BIOS mechanism, and it is
+the ONLY mechanism acpi.c has.
+
+Under UEFI that area holds nothing. There is no EBDA and no BIOS ROM: the RSDP
+is published through the EFI configuration table (UEFI 2.10 sec 4.6) and
+nowhere else. Measured on the machine the UEFI gate runs on, the RSDP sits at
+0x1fb7e014 -- inside EfiACPIReclaimMemory near the top of RAM, half a gigabyte
+away from anywhere a scan would look.
+
+So today the first UEFI boot comes up with no ACPI at all: no MADT, hence one
+CPU and no SMP; no MCFG, hence no PCIe ECAM. That is ACCEPTED for the UEFI
+milestone -- tests/boot/run-uefi-test.sh asserts "[acpi] no RSDP" is PRESENT,
+so that when this patch lands the assertion breaks on purpose and whoever lands
+it has to update the harness to expect SMP rather than quietly leaving a
+regained capability unchecked.
+
+================================ THE FIX =====================================
+
+The loader ALREADY forwards the RSDP. c/boot/efi/loader.c's build_acpi_tag()
+walks the configuration table, prefers the ACPI 2.0 GUID over the 1.0 one,
+validates the "RSD PTR " signature, and copies the RSDP verbatim into the
+information block as Multiboot2 tag type 15 (or type 14 for a v1 RSDP,
+Multiboot2 spec sec 3.6.14/3.6.15). Verified on the gate:
+
+    [efi] rsdp acpi2 0x1fb7e014 len 36 -> mb2 tag 15
+
+A COPY, not a pointer -- the firmware's original lives in
+EfiACPIReclaimMemory, which is by definition memory the kernel may reuse.
+
+So all acpi.c has to do is look at the tag first and fall back to the scan.
+Note this is not UEFI-specific plumbing: GRUB emits the same tags on BIOS, so
+after this patch the tag is the primary path on BOTH loaders and the scan
+becomes the fallback it always should have been.
+
+WHY THE TAG MUST WIN WHEN BOTH EXIST: on a machine with a CSM the scan can
+find a stale or shadowed copy, while the tag is what the firmware itself
+published. Preferring the tag is preferring the authority.
+
+================================ PLUMBING ====================================
+
+acpi.c cannot reach the information block today: acpi_tables_init() is called
+lazily (from acpi_find_table() and acpi_init(), acpi.c:138 and :184), long
+after kernel_main's `mb_info` argument has gone out of scope. Hence the two-line
+hunk in kmain.c that hands the address over before anything can ask for a table.
+
+That setter is the whole cost. There is deliberately no attempt to parse the
+tag list in kmain and pass a struct: pmm.c and fb.c each walk the tag list
+themselves for the tag they want, and this follows that existing shape rather
+than inventing a third.
+
+================================ APPLYING ====================================
+
+Line numbers WILL have drifted -- acpi.c is being edited concurrently, which is
+the reason this is a file and not a commit. Apply with fuzz:
+
+    git apply -3 c/boot/efi/acpi-mb2-tag.patch      # or
+    patch -p1 --fuzz=5 < c/boot/efi/acpi-mb2-tag.patch
+
+If it still refuses, the change is small enough to apply by hand from the
+diff below; nothing in it depends on surrounding code beyond `struct rsdp`,
+`sum_ok()` and `serial_puts()`, all of which are already in acpi.c.
+
+AFTER APPLYING, the UEFI harness must be updated in the same commit:
+tests/boot/run-uefi-test.sh's ASSERT #5 requires "[acpi] no RSDP" to appear and
+says in as many words that it is to be replaced with an SMP assertion when this
+lands. Leaving it would fail the build honestly; deleting it would lose the
+check. Replace it.
+
+--- a/c/kernel/cpu/acpi.h
++++ b/c/kernel/cpu/acpi.h
+@@ -3,6 +3,13 @@
+ #include <stdint.h>
+ 
+ #define ACPI_MAX_CPUS 32
++
++/* Hand acpi.c the Multiboot2 information block the bootloader passed in ebx.
++ * Must be called before the first acpi_tables_init() (kernel_main does it right
++ * after pmm_init). Both loaders supply an ACPI tag -- GRUB on BIOS and
++ * c/boot/efi on UEFI -- and under UEFI it is the ONLY way to find the RSDP,
++ * because there is no BIOS area left to scan. */
++void        acpi_set_mb2_info(uint64_t mb_info);
+ 
+ /* Find the RSDP and cache the (X)SDT. Idempotent; 0 on success, -1 if there is
+  * no usable ACPI. Callable before acpi_init() -- the PCI bus driver needs the
+--- a/c/kernel/core/kmain.c
++++ b/c/kernel/core/kmain.c
+@@ -74,6 +74,10 @@
+     cpu_simd_selftest();
+ 
+     pmm_init(mb_info);
++    /* Before anything can ask for an ACPI table: under UEFI the RSDP is only
++     * reachable through this block (c/boot/efi/loader.c forwards it as tag 15),
++     * and the BIOS-area scan acpi.c falls back to finds nothing there. */
++    acpi_set_mb2_info(mb_info);
+     kprintf("[logitos] interrupts + memory + gdt/tss online\n");
+ 
+     /* The page cache's frame table (pc_of_frame[], pcache.c) comes out of the
+--- a/c/kernel/cpu/acpi.c
++++ b/c/kernel/cpu/acpi.c
+@@ -59,7 +59,41 @@
+     return s == 0;
+ }
+ 
+-static struct rsdp *find_rsdp(void)
++/* --- the Multiboot2 ACPI tags (spec sec 3.6.14/3.6.15) --------------------
++ * Tag 14 carries a 20-byte ACPI 1.0 RSDP, tag 15 a full ACPI 2.0+ one; both are
++ * the tag header followed by a verbatim copy of the structure. The tag list is
++ * walked exactly as pmm.c and fb.c walk it -- 8-byte aligned, terminated by a
++ * type-0 tag, and bailing on a zero size so that a malformed tag truncates the
++ * walk instead of looping forever. */
++static uint64_t g_mb2_info;
++
++void acpi_set_mb2_info(uint64_t mb_info) { g_mb2_info = mb_info; }
++
++static struct rsdp *rsdp_from_mb2(void)
++{
++    if (!g_mb2_info) return NULL;
++
++    uint32_t total = *(volatile uint32_t *)g_mb2_info;
++    uint8_t *p   = (uint8_t *)(g_mb2_info + 8);   /* skip total_size + reserved */
++    uint8_t *end = (uint8_t *)(g_mb2_info + total);
++
++    while (p + 8 <= end) {
++        uint32_t type = ((uint32_t *)p)[0], size = ((uint32_t *)p)[1];
++        if (type == 0 || size < 8) break;         /* end tag, or malformed */
++        if (type == 15 || type == 14) {           /* ACPI 2.0+ / ACPI 1.0 */
++            struct rsdp *r = (struct rsdp *)(p + 8);
++            /* Trust nothing unchecked: the tag is only as good as the loader
++             * that wrote it, and a bad RSDP here gets dereferenced as an XSDT
++             * pointer. Exactly the two checks the BIOS scan already makes. */
++            if (size >= 8 + 20 && memcmp(r->sig, "RSD PTR ", 8) == 0 && sum_ok(r, 20))
++                return r;
++        }
++        p += (size + 7) & ~7u;
++    }
++    return NULL;
++}
++
++static struct rsdp *scan_bios_area(void)
+ {
+     /* RSDP is on a 16-byte boundary in the EBDA or the BIOS area 0xE0000-0xFFFFF. */
+     for (uint64_t a = 0x000E0000; a < 0x00100000; a += 16) {
+@@ -68,6 +102,17 @@
+             return r;
+     }
+     return NULL;
++}
++
++/* The bootloader's tag WINS over the scan. It is what the firmware itself
++ * published, whereas the BIOS area on a machine with a CSM can hold a stale or
++ * shadowed copy -- and under UEFI it holds nothing at all, which is the whole
++ * reason this function now has two halves. */
++static struct rsdp *find_rsdp(void)
++{
++    struct rsdp *r = rsdp_from_mb2();
++    if (r) { serial_puts("[acpi] RSDP from the bootloader's multiboot2 tag\n"); return r; }
++    return scan_bios_area();
+ }
+ 
+ static void parse_madt(const struct sdt_header *madt)

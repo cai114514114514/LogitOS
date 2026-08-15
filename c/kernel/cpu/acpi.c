@@ -59,7 +59,41 @@ static int sum_ok(const void *p, int len)
     return s == 0;
 }
 
-static struct rsdp *find_rsdp(void)
+/* --- the Multiboot2 ACPI tags (spec sec 3.6.14/3.6.15) --------------------
+ * Tag 14 carries a 20-byte ACPI 1.0 RSDP, tag 15 a full ACPI 2.0+ one; both are
+ * the tag header followed by a verbatim copy of the structure. The tag list is
+ * walked exactly as pmm.c and fb.c walk it -- 8-byte aligned, terminated by a
+ * type-0 tag, and bailing on a zero size so that a malformed tag truncates the
+ * walk instead of looping forever. */
+static uint64_t g_mb2_info;
+
+void acpi_set_mb2_info(uint64_t mb_info) { g_mb2_info = mb_info; }
+
+static struct rsdp *rsdp_from_mb2(void)
+{
+    if (!g_mb2_info) return NULL;
+
+    uint32_t total = *(volatile uint32_t *)g_mb2_info;
+    uint8_t *p   = (uint8_t *)(g_mb2_info + 8);   /* skip total_size + reserved */
+    uint8_t *end = (uint8_t *)(g_mb2_info + total);
+
+    while (p + 8 <= end) {
+        uint32_t type = ((uint32_t *)p)[0], size = ((uint32_t *)p)[1];
+        if (type == 0 || size < 8) break;         /* end tag, or malformed */
+        if (type == 15 || type == 14) {           /* ACPI 2.0+ / ACPI 1.0 */
+            struct rsdp *r = (struct rsdp *)(p + 8);
+            /* Trust nothing unchecked: the tag is only as good as the loader
+             * that wrote it, and a bad RSDP here gets dereferenced as an XSDT
+             * pointer. Exactly the two checks the BIOS scan already makes. */
+            if (size >= 8 + 20 && memcmp(r->sig, "RSD PTR ", 8) == 0 && sum_ok(r, 20))
+                return r;
+        }
+        p += (size + 7) & ~7u;
+    }
+    return NULL;
+}
+
+static struct rsdp *scan_bios_area(void)
 {
     /* RSDP is on a 16-byte boundary in the EBDA or the BIOS area 0xE0000-0xFFFFF. */
     for (uint64_t a = 0x000E0000; a < 0x00100000; a += 16) {
@@ -68,6 +102,17 @@ static struct rsdp *find_rsdp(void)
             return r;
     }
     return NULL;
+}
+
+/* The bootloader's tag WINS over the scan. It is what the firmware itself
+ * published, whereas the BIOS area on a machine with a CSM can hold a stale or
+ * shadowed copy -- and under UEFI it holds nothing at all, which is the whole
+ * reason this function now has two halves. */
+static struct rsdp *find_rsdp(void)
+{
+    struct rsdp *r = rsdp_from_mb2();
+    if (r) { serial_puts("[acpi] RSDP from the bootloader's multiboot2 tag\n"); return r; }
+    return scan_bios_area();
 }
 
 static void parse_madt(const struct sdt_header *madt)
