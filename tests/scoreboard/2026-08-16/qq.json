@@ -1,0 +1,32 @@
+{
+ "name": "qq",
+ "url": "https://www.qq.com/",
+ "started": "2026-08-16T01:44:32",
+ "verdict": "HARNESS",
+ "why": "the self-test page never loaded -- the keyboard, Ctrl+T, the address bar or SLIRP is broken, so nothing was measured about this site",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.qq.com/",
+  "bytes": 127108,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 7,
+  "img_tags": 17,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 1.1
+ },
+ "guest": {},
+ "pixels": {},
+ "shot": null,
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16/qq.serial.txt",
+ "finished": "2026-08-16T01:46:17"
+}

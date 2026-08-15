@@ -1,0 +1,76 @@
+{
+ "name": "control-example",
+ "url": "http://example.com/",
+ "started": "2026-08-16T02:08:34",
+ "verdict": "PAINTED",
+ "why": "painted 8392 changed px in 1.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "http://example.com/",
+  "bytes": 559,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 0,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 0.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 1,
+  "dials": 1,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 1.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 8392,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 8319,
+  "ink_px_blank": 3902,
+  "colours": 765,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16b/control-example.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16b/control-example.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 0,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:09:12"
+}

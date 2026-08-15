@@ -1,0 +1,76 @@
+{
+ "name": "qq",
+ "url": "https://www.qq.com/",
+ "started": "2026-08-16T02:08:33",
+ "verdict": "PAINTED",
+ "why": "painted 70764 changed px in 16.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.qq.com/",
+  "bytes": 127117,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 7,
+  "img_tags": 17,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 1.3
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 11,
+  "dials": 5,
+  "reused": 6,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 8698,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 16.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 70764,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 21641,
+  "ink_px_blank": 3902,
+  "colours": 1043,
+  "rich_tiles_proxy": 67
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16b/qq.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16b/qq.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:09:25"
+}

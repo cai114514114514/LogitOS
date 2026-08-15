@@ -1,0 +1,76 @@
+{
+ "name": "douyin",
+ "url": "https://www.douyin.com/",
+ "started": "2026-08-16T02:07:53",
+ "verdict": "BLANK",
+ "why": "loaded in 4.3s and painted 2708 changed pixels (0 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.douyin.com/",
+  "bytes": 2397,
+  "redirects": [],
+  "script_tags": 3,
+  "script_src": 1,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 1,
+   "inline_scripts": 2,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 2
+  },
+  "elapsed": 0.8
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 2,
+  "dials": 2,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 4.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2708,
+  "changed_bbox": [
+   148,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 4255,
+  "ink_px_blank": 3902,
+  "colours": 629,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16b/douyin.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16b/douyin.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 1,
+   "inline_scripts": 2,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 2
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:08:34"
+}
