@@ -40,6 +40,100 @@ static void t_uname(void)
     CHK(uname(0) == -1 && errno == EFAULT, "uname null -> EFAULT");
 }
 
+/* P1: SYS_READ_FILE hands the caller's buffer to the block device VERBATIM.
+ *
+ * The chain, verified jump by jump (docs/BUG_BACKLOG.md): syscall.c passes the
+ * user pointer into vfs_read -> logitfs -> bcache_read_run, whose miss runs go
+ * straight to blk_read_n -> virtio_blk.c casts the pointer into the virtqueue
+ * descriptor -> the device treats it as a PHYSICAL address. boot.asm identity-
+ * maps only the first 1 GiB, and user images link at exactly 1 GiB -- so for a
+ * user buffer the device DMA-writes past the end of RAM, the data lands
+ * nowhere, and the syscall still RETURNS SUCCESS because the status byte (a
+ * kernel address) completed fine. Nothing ever failed loudly; files under
+ * 4 KiB worked because the single-block path happens to bounce through a
+ * kernel buffer -- while the pool has a free slot, which is one more "usually".
+ *
+ * The oracle is TWO READ PATHS THAT MUST AGREE. fread() goes through F_VFS,
+ * which slurps into a KERNEL buffer and memcpys out -- immune by construction.
+ * SYS_READ_FILE into our own .bss (a CLI app links at 0x50000000, comfortably
+ * past the identity map) is the DMA path. Same file, byte-for-byte: if fread's
+ * copy is right, the bytes on disk are right, so any raw-read mismatch is the
+ * read path and not a write-side accident. The buffer is pre-filled with a
+ * sentinel so "the device never wrote" shows as the sentinel surviving, which
+ * is distinguishable from "the device wrote the wrong bytes".
+ *
+ * THE SIZE IS THE REPRODUCER, and 16 KiB was not enough -- the first version of
+ * this test PASSED on the broken kernel, because a file just written is still
+ * RESIDENT in the buffer cache (BC_NBUF = 256 blocks = 1 MiB), and resident
+ * blocks are served by memcpy from kernel buffers; the DMA path never ran. So:
+ * 2 MiB, twice the pool. Writing it evicts its own head, so reading the head
+ * back MUST miss; and a big read run trips bcache_read_run's stream bypass
+ * (install = n <= nbuf/4), which never touches a kernel buffer at all. The
+ * pattern depends on the offset with an odd multiplier (the mm suite's
+ * discipline) so an off-by-one-block transfer mismatches immediately. */
+static long raw_sys3(long n, long a, long b, long c)
+{ long r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory"); return r; }
+#define RAW_SYS_READ_FILE 11   /* include/abi/logit_abi.h; mirrored here because
+                                * mini-libc deliberately does not re-export the
+                                * SYS_* numbers and this test wants the RAW
+                                * syscall, not a wrapper that might change path */
+
+#define P1_BYTES (2u * 1024 * 1024)
+static unsigned char p1_dma[P1_BYTES];     /* .bss at ~0x50xxxxxx: past 1 GiB */
+
+static unsigned char p1_pat(int i) { return (unsigned char)(i * 131 + (i >> 5) * 7 + 0x5B); }
+
+static void t_readfile_dma(void)
+{
+    const char *path = "/p1probe.dat";
+    unsigned char *ref = malloc(P1_BYTES);
+    CHK(ref != 0, "P1: reference buffer");
+    if (!ref) return;
+
+    /* Write the pattern through stdio: F_VFS buffers in the KERNEL and flushes
+     * on close, so the on-disk bytes do not depend on the path under test. */
+    for (int i = 0; i < P1_BYTES; i++) ref[i] = p1_pat(i);
+    FILE *f = fopen(path, "w");
+    CHK(f != 0, "P1: create probe file");
+    if (!f) { free(ref); return; }
+    CHK(fwrite(ref, 1, P1_BYTES, f) == P1_BYTES, "P1: write pattern");
+    CHK(fclose(f) == 0, "P1: close flushes");
+
+    /* Path 1 (immune): fread back through the same kernel-buffered route and
+     * prove the DISK holds the pattern -- isolating the read path from any
+     * write-side accident before blaming it. */
+    f = fopen(path, "r");
+    CHK(f != 0, "P1: reopen probe");
+    if (f) {
+        memset(ref, 0, P1_BYTES);
+        CHK(fread(ref, 1, P1_BYTES, f) == P1_BYTES, "P1: fread full");
+        fclose(f);
+        int bad = -1;
+        for (int i = 0; i < P1_BYTES && bad < 0; i++)
+            if (ref[i] != p1_pat(i)) bad = i;
+        CHK(bad < 0, "P1: disk holds the pattern (kernel-buffer path)");
+    }
+
+    /* Path 2 (under test): the raw syscall, DMA straight at our .bss. */
+    memset(p1_dma, 0xAA, P1_BYTES);          /* sentinel; also faults the pages in */
+    long n = raw_sys3(RAW_SYS_READ_FILE, (long)path, (long)p1_dma, P1_BYTES);
+    CHK(n == P1_BYTES, "P1: SYS_READ_FILE returns full length");
+
+    int first_bad = -1, sentinel = 0;
+    for (int i = 0; i < P1_BYTES; i++) {
+        if (p1_dma[i] != p1_pat(i)) { if (first_bad < 0) first_bad = i; if (p1_dma[i] == 0xAA) sentinel++; }
+    }
+    checks++;
+    if (first_bad >= 0) {
+        fails++;
+        printf("FAIL: P1 DMA read corrupt: first bad byte at %d, %d sentinel bytes untouched of %d\n",
+               first_bad, sentinel, P1_BYTES);
+    }
+
+    remove(path);
+    free(ref);
+}
+
 static void t_pwgrp(void)
 {
     struct passwd *pw = getpwuid(0);
@@ -174,6 +268,7 @@ static void t_environ(void)
 int main(void)
 {
     t_environ();
+    t_readfile_dma();
     t_uname();
     t_pwgrp();
     t_mmap();

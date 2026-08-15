@@ -71,16 +71,90 @@ static int in_bounds(struct blkdev *d, uint64_t lba, uint32_t count)
     return (uint64_t)count <= d->nsectors - lba;
 }
 
+/* --------------------------------------------------------------------------
+ * DMA reachability -- the P1 fix (docs/BUG_BACKLOG.md).
+ *
+ * Every backend below except ATA PIO is a DMA device: virtio-blk, AHCI and
+ * NVMe put the buffer address into a descriptor and the DEVICE dereferences it
+ * as a PHYSICAL address. The kernel runs on the boot page tables, which
+ * identity-map exactly the first 1 GiB (boot.asm:80) -- so for any buffer in
+ * that range, virtual == physical and handing the pointer over is correct.
+ * For anything else it is silent corruption: user images link at exactly
+ * 1 GiB (MM_USER_BASE), so a user buffer handed to SYS_READ_FILE became a
+ * "physical" address past the end of a 512 MiB machine's RAM. The device
+ * completed fine (its status byte lives at a kernel address), the syscall
+ * returned success, and the caller's buffer was never written. Writes were
+ * the mirror image: garbage read from nowhere, committed to disk. It went
+ * unnoticed for months because the single-block cache path happens to bounce
+ * through kernel buffers -- WHILE the pool has a free slot, which is one more
+ * "usually" -- and every large reader in the tree used fopen, whose F_VFS
+ * backing buffer is a kmalloc and therefore identity-mapped.
+ *
+ * WHY THE CHECK LIVES HERE. blk_dev_read/blk_dev_write are the choke point:
+ * every caller in the tree -- bcache's three direct-to-caller paths included --
+ * funnels through them, and no code calls a backend directly (verified by
+ * grep, and worth re-verifying if a new backend lands). Fixing the callers
+ * instead means finding every present and future one; fixing the backends
+ * means four copies of the same bounce.
+ *
+ * WHY A BOUNCE AND NOT A REFUSAL. The refusal doctrine is for requests that
+ * are WRONG. This request is fine -- the caller's range was already
+ * user_range_ok'd at the syscall boundary -- it is the transport that cannot
+ * take the address as-is. Refusing would turn every large user-buffer read
+ * into an error and fix nothing. And not a VA->phys translation either: user
+ * pages are not physically contiguous, so a multi-sector run would need
+ * scatter-gather that struct blk_ops does not have. The bounce is bounded,
+ * allocation-free, and costs exactly the memcpy the resident-cache path
+ * already pays on every hit.
+ *
+ * ONE static buffer is safe for the same reason swap documents for its own
+ * path: every block driver here is submit-and-poll inside one call, under the
+ * BKL, so there is never a second transfer in flight. If the block layer ever
+ * grows the async submit/poll pair that CLAUDE.md names as the follow-up,
+ * this must become per-request state -- that is a design note, not a comment
+ * to delete.
+ * ------------------------------------------------------------------------ */
+#define BLK_DMA_LIMIT   (1ull << 30)     /* boot.asm:80: the identity-mapped span */
+#define BLK_BOUNCE_SECT 64u              /* 32 KiB a chunk */
+static uint8_t blk_bounce[BLK_BOUNCE_SECT * BLK_SECTOR];
+
+static int dma_reachable(const void *buf, uint32_t count)
+{
+    uint64_t a = (uint64_t)(uintptr_t)buf;
+    uint64_t n = (uint64_t)count * BLK_SECTOR;
+    return a + n >= a && a + n <= BLK_DMA_LIMIT;
+}
+
 int blk_dev_read(struct blkdev *d, uint64_t lba, uint32_t count, void *buf)
 {
     if (!in_bounds(d, lba, count)) return -1;
-    return d->ops->read(d->ctx, d->start + lba, count, buf);
+    if (dma_reachable(buf, count))
+        return d->ops->read(d->ctx, d->start + lba, count, buf);
+    uint8_t *out = (uint8_t *)buf;
+    for (uint32_t done = 0; done < count; ) {
+        uint32_t n = count - done;
+        if (n > BLK_BOUNCE_SECT) n = BLK_BOUNCE_SECT;
+        if (d->ops->read(d->ctx, d->start + lba + done, n, blk_bounce)) return -1;
+        memcpy(out + (size_t)done * BLK_SECTOR, blk_bounce, (size_t)n * BLK_SECTOR);
+        done += n;
+    }
+    return 0;
 }
 
 int blk_dev_write(struct blkdev *d, uint64_t lba, uint32_t count, const void *buf)
 {
     if (!in_bounds(d, lba, count)) return -1;
-    return d->ops->write(d->ctx, d->start + lba, count, buf);
+    if (dma_reachable(buf, count))
+        return d->ops->write(d->ctx, d->start + lba, count, buf);
+    const uint8_t *in = (const uint8_t *)buf;
+    for (uint32_t done = 0; done < count; ) {
+        uint32_t n = count - done;
+        if (n > BLK_BOUNCE_SECT) n = BLK_BOUNCE_SECT;
+        memcpy(blk_bounce, in + (size_t)done * BLK_SECTOR, (size_t)n * BLK_SECTOR);
+        if (d->ops->write(d->ctx, d->start + lba + done, n, blk_bounce)) return -1;
+        done += n;
+    }
+    return 0;
 }
 
 int blk_dev_flush(struct blkdev *d)

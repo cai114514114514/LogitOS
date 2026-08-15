@@ -71,6 +71,27 @@ false/design: M1(FALSE), M5(FALSE), C1(FALSE), H1(FALSE), H4(FALSE), M6(FALSE), 
 
 **修法有两条,不等价:** (a) `bcache_read_run` 在目标不在恒等映射内时弹跳;
 (b) 新增 `SYS_PREAD` 走单块路径,顺带解决 F_VFS "打开即整读进 kmalloc" 的内核占用问题。
+
+**已修(2026-08-15),而且修在比 (a) 更下面一层。** 复现时发现记录低估了范围,两处:
+
+- **单块路径也不是永远安全的。** `bcache_read`(`bcache.c:167`)在缓存池满时
+  `blk_read(..., buf)` 直通——"<4 KiB 没事"只在 `claim()` 拿得到空位时成立。
+- **写侧同样暴露。** `bcache_write` 池满旁路 `blk_write(..., buf)` 直接从调用方
+  缓冲区发 DMA,`SYS_WRITE_FILE` 的用户指针走到这里就是**把 ≥1 GiB 处读到的垃圾
+  写上磁盘**。
+
+所以修在 `blk_dev_read`/`blk_dev_write`(`c/drivers/block/blkdev.c`)——全树唯一
+的咽喉,bcache 的三条直通路径、四个后端、现在和将来的每个调用方都经过它:目标
+在恒等映射内(`< 1 GiB`,`boot.asm:80`)则直通零开销;否则经 32 KiB 静态弹跳
+缓冲分段搬运。静态缓冲安全的理由与 swap 的写出路径相同——所有块驱动都是一次调
+用内提交并轮询、持 BKL,永远只有一个在飞传输;块层将来长出 submit/poll 异步对
+时,这里必须改成每请求状态(注释里写死了这一条)。
+
+**复现器:** `tests/unit/libc2_test.c` 的 `t_readfile_dma` —— fread(内核缓冲路径,
+构造上免疫)与裸 `SYS_READ_FILE`(DMA 路径)对同一文件逐字节对拍,探针 2 MiB =
+缓存池的两倍,让文件头必然被自己的尾挤出缓存。**16 KiB 的第一版在坏内核上通过
+了**——刚写完的块全部驻留,DMA 路径根本没跑;探针尺寸本身就是复现的一部分。
+未修内核上:first bad byte at 0,2,088,960/2,097,152 字节哨兵原封未动。
 移植线倾向 (b),因为 Doom 的 WAD 需要它;但 (a) 才是这条 bug 本身的修复。
 
 ### P2 — 重浮点的 ring-3 程序在 `-smp 4` 下卡死整机
