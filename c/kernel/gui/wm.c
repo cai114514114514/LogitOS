@@ -2551,8 +2551,13 @@ static void menu_bar_layout(void)
 static void draw_menubar(void)
 {
     /* Liquid Glass menu bar (thin -> adaptive edge band) */
-    if (g_ui_dark) fb_liquid_glass(0, 0, W, MBH, S(2), 24, 24, 32, 150);
-    else           fb_liquid_glass(0, 0, W, MBH, S(2), 255, 255, 255, 110);
+    /* Top/left/right are SCREEN edges -- the slab is cut there, not ended, so
+     * no bevel (see fb_liquid_glass_cut in fb.h; this call is why it exists).
+     * The bottom edge keeps its rim: that hairline is the menu bar's only
+     * separation from the wallpaper below it. */
+    unsigned mbcut = GLASS_CUT_TOP | GLASS_CUT_LEFT | GLASS_CUT_RIGHT;
+    if (g_ui_dark) fb_liquid_glass_cut(0, 0, W, MBH, S(2), 24, 24, 32, 150, mbcut);
+    else           fb_liquid_glass_cut(0, 0, W, MBH, S(2), 255, 255, 255, 110, mbcut);
     fb_blend_rect(0, MBH - S(1), W, S(1), 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(S(16), MBH / 2, S(6), ink);

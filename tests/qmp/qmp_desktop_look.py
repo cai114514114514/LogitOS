@@ -21,14 +21,21 @@ either way. That is why every check below, defect or not, is one assertion
 against a RECORDED number: "still true" and "no longer true" are both
 reportable events, and only a recorded expectation can tell them apart.
 
-  DEFECT 1 -- ROW 0 CORRUPTION. The topmost scanline (y=0) disagrees wildly
-  with a normal row a few pixels below it (y=4), over a band in the middle of
-  the screen -- roughly where the menu bar's liquid-glass blur sits, but NOT
-  the menu bar's own width. The fix lives in c/kernel/gui/fb.c (owned by
-  another workflow right now); this file's job is only to say precisely how
-  wide the corrupted band is and how different row 0 is from row 4 within it,
-  so a fix is a number moving to (ideally) "no band found" rather than a
-  screenshot someone eyeballs.
+  DEFECT 1 -- ROW 0 CORRUPTION -- FIXED 2026-08-15, and the fix taught us
+  what it was. It was never memory corruption: fb_liquid_glass gives every
+  panel edge a refracting bevel, and the menu bar's TOP edge is the screen
+  edge -- the rim was sampling wallpaper from ~REFRACT px below into row 0,
+  exactly as a rim should, on an edge that should never have had one (the
+  slab is cut by the screen there, not ended). fb_liquid_glass_cut() with
+  GLASS_CUT_TOP|LEFT|RIGHT (fb.h) is the fix; the wide mid-screen band
+  (260..1020, the wallpaper's busy region) is gone and row0/row4 distinct
+  colours converged (714 vs 673 on the recording day, ratio 1.06 -- was
+  >1.3). What REMAINS, and is recorded below as normal behaviour rather
+  than a defect: a ~40 px residual band around x=1070..1110 where the menu
+  bar's clock/status text starts -- the top scanline of TEXT legitimately
+  differs from four rows into its glyphs. That band and its peak diff are
+  asserted at their measured values so a REAL row-0 regression (wide band
+  returning) still screams.
 
   DEFECT 2 -- THE GLASS DOES NOT COVER THE WHOLE BAR. Sample a horizontal
   line through the BODY of the menu bar (not row 0 -- this is a different
@@ -512,16 +519,19 @@ def main():
         print("\n[defect 1] row 0 corruption")
         print("  distinct colours: row0=%d row4=%d  band=%s  peak diff=%d" %
               (d1["row0_colors"], d1["row4_colors"], d1["band"], d1["peak_diff"]))
-        band_ok = (d1["band"] is not None and
-                   in_range(d1["band"][0], 150, 350) and
-                   in_range(d1["band"][1], 900, 1150) and
-                   (d1["band"][1] - d1["band"][0]) > 400)
-        c.add("row0 corrupted band ~x=260..1020", band_ok, str(d1["band"]), known_bug=True)
-        c.add("row0 has more distinct colours than row4",
-              d1["row0_colors"] > d1["row4_colors"] * 1.3,
-              "row0=%d row4=%d" % (d1["row0_colors"], d1["row4_colors"]), known_bug=True)
-        c.add("row0/row4 peak diff is large (garbage, not noise)",
-              d1["peak_diff"] > 120, "peak=%d" % d1["peak_diff"], known_bug=True)
+        # FIXED (see DEFECT 1 in the docstring): the wide rim-refraction band
+        # is gone; what the detector now finds is the narrow clock-text band,
+        # asserted at its measured shape so a wide band RETURNING still fails.
+        band_ok = (d1["band"] is None or
+                   ((d1["band"][1] - d1["band"][0]) <= 80 and
+                    in_range(d1["band"][0], 1000, 1150)))
+        c.add("row0 band is only the clock text (fix holds)", band_ok,
+              str(d1["band"]))
+        c.add("row0/row4 distinct colours converged (fix holds)",
+              d1["row0_colors"] <= d1["row4_colors"] * 1.3,
+              "row0=%d row4=%d" % (d1["row0_colors"], d1["row4_colors"]))
+        c.add("row0/row4 peak diff is text-sized, still measured",
+              d1["peak_diff"] > 60, "peak=%d" % d1["peak_diff"])
 
         d2 = defect_glass_discontinuity(p)
         print("\n[defect 2] glass does not cover the whole bar (y=%d)" % d2["y"])
@@ -615,9 +625,10 @@ def main():
             print("not found at all) -- that is GOOD NEWS and the fix line to remove from")
             print("the KNOWN list in this file's docstring and its assertions.")
             return 1
-        print("\nPASS: all %d checks match their recorded values -- three known defects" %
+        print("\nPASS: all %d checks match their recorded values -- two known defects" %
               len(c.rows))
-        print("      still present exactly as measured, every other property unchanged.")
+        print("      (glass plateau, dock rim) still present exactly as measured; the")
+        print("      row-0 fix holds; every other property unchanged.")
         return 0
     finally:
         proc.kill()

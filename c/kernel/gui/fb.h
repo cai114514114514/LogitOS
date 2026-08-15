@@ -172,6 +172,27 @@ void fb_blur_rect(int x, int y, int w, int h, int radius, int corner);
 void fb_liquid_glass(int x, int y, int w, int h, int radius,
                      uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta);
 
+/* Same material, with named edges CUT: a cut edge is where the panel is
+ * truncated by something that isn't the panel's own boundary -- the screen
+ * edge, above all. Physically the slab continues past the cut, so there is no
+ * bevel there: no rim refraction, no Fresnel hairline, no coverage fade, and
+ * the corners between two cut edges (or a cut and a free edge) are square.
+ * The menu bar is the reason this exists: its glass panel is flush with the
+ * top/left/right screen edges, and the top bevel's refraction was sampling
+ * wallpaper from ~REFRACT px below into row 0 -- recorded for months as
+ * desktop-look's "row 0 corruption" defect before it was recognised as the
+ * rim doing exactly what a rim does, on an edge that should never have had
+ * one. NOT inferred from the target's bounds on purpose: a titlebar panel
+ * spans its window surface edge-to-edge and genuinely ENDS there, wanting its
+ * bevel -- only the caller knows which truncations are physical. */
+#define GLASS_CUT_TOP    1u
+#define GLASS_CUT_BOTTOM 2u
+#define GLASS_CUT_LEFT   4u
+#define GLASS_CUT_RIGHT  8u
+void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
+                         uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
+                         unsigned cut);
+
 /* Vertical gradient fills (top color at the first row -> bottom color). */
 void fb_fill_vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
 void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom);

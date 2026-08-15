@@ -995,6 +995,13 @@ static int glass_line_n;
 void fb_liquid_glass(int x, int y, int w, int h, int radius,
                      uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta)
 {
+    fb_liquid_glass_cut(x, y, w, h, radius, tr, tg, tb, ta, 0);
+}
+
+void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
+                         uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
+                         unsigned cut)
+{
     struct surface *s = T ? T : &screen;
     if (!s->px) return;
     if (x < 0) { w += x; x = 0; }
@@ -1046,6 +1053,15 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
     for (int j = 0; j < h; j++) {
         for (int i = 0; i < w; i++) {
             int px = i - cx, py = j - cy, ax = px < 0 ? -px : px, ay = py < 0 ? -py : py;
+            /* A CUT edge is not an edge (see fb.h): folding its half-axis to 0
+             * puts every pixel on that side "deep inside" as far as the SDF,
+             * the rim band and the Fresnel term are concerned, so the bevel
+             * machinery below never fires there. The frost and tint above are
+             * untouched -- a cut panel is still glass, it just has no rim. */
+            if ((cut & GLASS_CUT_LEFT)   && px < 0) ax = 0;
+            if ((cut & GLASS_CUT_RIGHT)  && px > 0) ax = 0;
+            if ((cut & GLASS_CUT_TOP)    && py < 0) ay = 0;
+            if ((cut & GLASS_CUT_BOTTOM) && py > 0) ay = 0;
             int qx = ax - ix, qy = ay - iy, qxc = qx > 0 ? qx : 0, qyc = qy > 0 ? qy : 0;
             /* The distance is carried in 8.8 -- the square sum is shifted by 16
              * before the root, so isqrt returns 256*d. A whole-pixel SDF cannot
