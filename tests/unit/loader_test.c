@@ -533,6 +533,36 @@ static const char SPIN[] =
     "<script>globalThis.__after_spin = 1;</script>"
     "</head><body>SPIN</body></html>";
 
+/* ---- part 2.55: document.domain is a string, not undefined --------------
+ * bilibili's log-reporter.js does `document.domain.split('.')` in
+ * getCurrentDomain with no guard; an undefined document.domain threw
+ * "cannot read property 'split' of undefined" and took the telemetry init
+ * (and everything after it in that module) down. Here the fixture document
+ * is served from fixture.test, so document.domain must be that host and
+ * .split('.') must work. The real js_webapi.c binding through the real page
+ * pipeline. */
+static void part2_55_document_domain(void)
+{
+    printf("\n-- part 2.55: document.domain is a string (bilibili .split guard) --\n");
+    fake_site_reset();
+    fake_site_add("http://fixture.test/dom.html",
+                  "<html><head></head><body>D</body></html>");
+    browser_load("http://fixture.test/dom.html");
+    JSContext *ctx = js_page_ctx();
+    CHECK(ctx != NULL, "the page runtime is up");
+    if (!ctx) return;
+    const char *expr =
+        "(function(){ try { return document.domain.split('.').slice(-2).join('.'); }"
+        " catch (e) { return 'THREW:' + e; } })()";
+    JSValue v = JS_Eval(ctx, expr, (size_t)strlen(expr), "<dd>", JS_EVAL_TYPE_GLOBAL);
+    const char *s = JS_ToCString(ctx, v);
+    CHECK(s && !strcmp(s, "fixture.test"),
+          "document.domain.split('.') works and yields the host");
+    if (!(s && !strcmp(s, "fixture.test"))) printf("   (got: %s)\n", s ? s : "<null>");
+    if (s) JS_FreeCString(ctx, s);
+    JS_FreeValue(ctx, v);
+}
+
 static void part2_6_watchdog(void)
 {
     printf("\n-- part 2.6: the watchdog bites while(1) and the page survives --\n");
@@ -877,6 +907,11 @@ int main(void)
         part2_5_vite_probe();
     else
         { printf("FAIL: the vite probe called app_exit(%d)\n", host_exit_code); fail = 1; }
+
+    if (setjmp(host_exit_jmp) == 0)
+        part2_55_document_domain();
+    else
+        { printf("FAIL: the document.domain test called app_exit(%d)\n", host_exit_code); fail = 1; }
 
     if (setjmp(host_exit_jmp) == 0)
         part2_6_watchdog();

@@ -3237,6 +3237,20 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JSValue doc = JS_GetPropertyStr(ctx, g, "document");
         if (JS_IsObject(doc)) {
             JS_SetPropertyStr(ctx, doc, "location", JS_DupValue(ctx, loc));
+            /* document.domain = the document's hostname (a STRING, never
+             * undefined). bilibili's log-reporter does
+             * `document.domain.split('.')` unconditionally in getCurrentDomain,
+             * and an undefined here threw "cannot read property 'split' of
+             * undefined" and took the whole telemetry init with it. Reported
+             * as the effective domain, which for our single-origin document is
+             * just the host; the setter (a page may narrow it to a registrable
+             * suffix for legacy cross-frame access) is accepted and ignored,
+             * because we have no frames for it to affect -- ignoring is the
+             * whole of that feature here, and a throw would be worse. Empty
+             * string for an opaque-origin document, where `.split('.')` gives
+             * [""], still not a throw. */
+            JS_SetPropertyStr(ctx, doc, "domain",
+                              JS_NewString(ctx, g_loc_valid ? g_loc.host : ""));
             /* document.cookie: the same jar the network uses, minus HttpOnly.
              * An accessor pair rather than a data property, because a page
              * writes it as `document.cookie = "a=1"` and expects the write to
