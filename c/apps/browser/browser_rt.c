@@ -22,6 +22,15 @@
 #include "hpool.h"
 #include "bfetch.h"
 
+/* The cookie jar's two transport-side doors, owned by js_webapi.c and WEAK
+ * here: a build that links neither js_webapi.c nor cookies.c (the loader
+ * host tests) resolves both to NULL and runs cookieless. Contract at their
+ * definitions. */
+int  webapi_cookie_line(const char *host, const char *path, int secure,
+                        char *out, int cap) __attribute__((weak));
+void webapi_cookie_store_line(const char *host, const char *path, int secure,
+                              const char *setcookie) __attribute__((weak));
+
 void *malloc(size_t);
 void  free(void *);
 int   printf(const char *, ...);
@@ -296,6 +305,17 @@ static char *build_get(struct breq *r, int *outlen)
     h1_request_set_header(&q, "Accept-Encoding", h1_accept_encoding());
     /* The entire point: no `Connection: close`. */
     h1_request_set_header(&q, "Connection", "keep-alive");
+    /* Cookies, on EVERY transport request -- navigation, reload, and each
+     * subresource -- not only the JS fetch()/XHR path. The jar lives in
+     * js_webapi.c and is reached through a weak symbol so builds without
+     * that TU (the loader host tests) link and run cookieless. See the
+     * export comment in js_webapi.c for the WAF loop this closes. */
+    if (webapi_cookie_line) {
+        char ck[1024];
+        if (webapi_cookie_line(r->u.host, r->u.path, r->u.https,
+                               ck, (int)sizeof ck) > 0 && ck[0])
+            h1_request_set_header(&q, "Cookie", ck);
+    }
     char *buf = 0; int len = 0;
     int rc = h1_request_build(&q, &buf, &len);
     h1_request_free(&q);
@@ -447,6 +467,19 @@ static void req_step_xfer(struct breq *r)
     struct h1_response *resp = &r->c.resp;
     r->status = resp->code;
     int keep = resp->keep_alive && !resp->must_close && r->c.spill_len == 0;
+
+    /* Ingest Set-Cookie BEFORE the redirect branch: the challenge-and-reload
+     * flow (and every login flow ever) sets its cookie on the 3xx/refresh
+     * response itself, and following the hop without storing it is exactly
+     * the loop this line exists to break. Multi-valued per RFC 6265, hence
+     * nth, not get. */
+    if (webapi_cookie_store_line) {
+        int nck = h1_headers_count(&resp->hdr, "set-cookie");
+        for (int ci = 0; ci < nck; ci++) {
+            const char *sc = h1_headers_nth(&resp->hdr, "set-cookie", ci);
+            if (sc) webapi_cookie_store_line(r->u.host, r->u.path, r->u.https, sc);
+        }
+    }
 
     if (h1_is_redirect(resp->code)) {
         const char *loc = h1_headers_get(&resp->hdr, "location");

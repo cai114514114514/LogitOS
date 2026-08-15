@@ -501,6 +501,35 @@ static void ck_ctx(struct cookie_ctx *c, const struct wurl *u, int http_api)
     c->http_api = http_api;
 }
 
+/* ---- the jar's two exports to the TRANSPORT (browser_rt.c) --------------
+ * Until these existed only the JS-visible half of the network carried
+ * cookies: fetch()/XHR attached and stored them, but the fetches the BROWSER
+ * makes -- the top-level navigation, location.reload(), every stylesheet/
+ * script/image subresource -- went out bare and threw every Set-Cookie away.
+ * A WAF that answers a first visit with a challenge that sets a cookie and
+ * reloads (douyin's ByteDance PoW page, the BL diagnosis) therefore looped
+ * forever: each reload arrived cookieless and got the challenge again, 11
+ * reloads in a 9-second boot on the 2026-08-09 scoreboard.
+ *
+ * browser_rt.c calls these through WEAK references so the loader host build
+ * (which links neither this TU nor cookies.c) still links and simply runs
+ * cookieless -- the pre-fix behaviour, correct for a build with no jar.
+ * http_api=1 on both: this is the network stack speaking, so HttpOnly
+ * cookies are carried and storable per cookies.c's own rules. */
+int webapi_cookie_line(const char *host, const char *path, int secure,
+                       char *out, int cap)
+{
+    struct cookie_ctx c = { host, (path && path[0]) ? path : "/", secure, 1 };
+    return cookie_header(jar(), &c, now_unix(), out, cap);
+}
+
+void webapi_cookie_store_line(const char *host, const char *path, int secure,
+                              const char *setcookie)
+{
+    struct cookie_ctx c = { host, (path && path[0]) ? path : "/", secure, 1 };
+    cookie_set(jar(), &c, setcookie, now_unix());
+}
+
 /* ---- CORS -------------------------------------------------------------
  * The previous version of this file said there was "no origin boundary to
  * enforce in this browser -- everything a page fetches, it could fetch".  That
