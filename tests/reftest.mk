@@ -88,13 +88,25 @@ REFT_CTLN     ?= 200
 REFT_PIPELINE := c/apps/browser/layout.c c/apps/browser/browser_paint.c \
                  c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                  c/apps/browser/css_extra.c $(HTML_PARSER_SRC)
-REFT_KERNEL   := c/kernel/gui/fb.c c/kernel/gui/raster.c c/kernel/gui/text.c \
+# c/lib/text/glyphras.c is where c/kernel/gui/raster.c used to be in this list:
+# the glyph rasterizer is now a converter onto Open Logit, and $(GFX_SRC) below
+# was already here for the painter, so the reference renderer picks up the
+# engine's glyph path with no new dependency.
+REFT_KERNEL   := c/kernel/gui/fb.c c/lib/text/glyphras.c c/kernel/gui/text.c \
                  c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/utf8.c \
                  c/lib/text/shape.c c/lib/text/script.c c/lib/text/bidi.c \
                  c/lib/text/otlayout.c
 REFT_HARNESS  := tests/unit/reftest.c tests/unit/refhost/refrender.c \
                  tests/unit/refhost/refhost.c tests/unit/refhost/refmanifest.c
-REFT_SRC      := $(REFT_HARNESS) $(REFT_PIPELINE) $(REFT_KERNEL) $(GFX_SRC) $(IMG_HOST_SRC)
+# $(sort ...), not plain concatenation: $(GFX_SRC) is listed twice on purpose
+# below (once directly, for the painter; once again inside $(IMG_HOST_SRC),
+# since svg.c -- part of IMG_HOST_SRC -- now builds gfx_path/gfx_fill calls
+# too, see the Makefile's C_SRC comment). GNU make's $(sort) both orders and
+# DEDUPES, so the same six gfx_*.c files reaching this list by two independent
+# routes compile once, not twice -- a plain $(REFT_HARNESS) ... concatenation
+# would hand every gfx_*.c to one `cc` invocation twice and fail the link on
+# "multiple definition of gfx_move_to" (every symbol in the engine, in fact).
+REFT_SRC      := $(sort $(REFT_HARNESS) $(REFT_PIPELINE) $(REFT_KERNEL) $(GFX_SRC) $(IMG_HOST_SRC))
 
 # -Itests/unit/refhost FIRST: that is what makes `#include "logit.h"` resolve to
 # the rasterizing shim instead of the app's int-0x80 wrappers. Same ordering trap

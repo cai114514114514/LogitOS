@@ -179,8 +179,10 @@ static void arc_mid(struct gfx_path *o, int cx, int cy, int r,
     if (len == 0) return;
     sag = r - (int)(((long long)r * len) >> 17);
     if (sag <= tol || depth >= ARC_DEPTH) return;
-    nx = (int)(((long long)mx << 16) / len);
-    ny = (int)(((long long)my << 16) / len);
+    /* `* 65536`, not `<< 16`: mx/my are signed direction components and are
+     * negative for half the arc. See gfx_raster.c's add_edge for the class. */
+    nx = (int)(((long long)mx * 65536) / len);
+    ny = (int)(((long long)my * 65536) / len);
     arc_mid(o, cx, cy, r, u0x, u0y, nx, ny, tol, depth + 1);
     emit_pt(o, cx + fx(r, nx), cy + fx(r, ny));
     arc_mid(o, cx, cy, r, nx, ny, u1x, u1y, tol, depth + 1);

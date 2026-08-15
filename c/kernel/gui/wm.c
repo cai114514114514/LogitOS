@@ -16,6 +16,7 @@
 #include "aex.h"
 #include "blkdev.h"
 #include "img.h"
+#include "gfx.h"        /* Open Logit: build_arrow's fill+stroke, below */
 /* The byte identifier /bin/show, the Terminal's output guard and Preview all
  * already share. Pure inline, no libc, no allocation -- see its header. */
 #include "logit_sniff.h"
@@ -2338,47 +2339,117 @@ static int cursor_hot[CUR_NSHAPES][2];
 static int cursor_box[CUR_NSHAPES][2];   /* w,h actually used, from the hotspot */
 static int cur_shape = CUR_ARROW;
 
-/* Rasterize a double-headed arrow along the unit vector (ux,uy), given in /256
- * fixed point, into `dst`. The shape is a coverage TEST rather than a path: for
- * each pixel, project onto the axis (a) and its perpendicular (b), and ask
- * whether it lands in the bar or inside one of the two heads. That is a dozen
- * lines that are right at every angle, and it is why the diagonals cost nothing
- * extra over the axis-aligned pair. */
+/* Scratch surface for build_arrow(), reused across all four calls (they run
+ * back to back at boot, never concurrently). This is exactly the size of one
+ * cursor_plane entry (64x64x4) and it is `static`, not a local, on purpose:
+ * this codebase has already been bitten once by a buffer this size on the
+ * kernel stack -- the M11 note on the old 16 KiB TLS plaintext buffer records
+ * the deeper HTTPS redirect path overflowing THE STACK INTO THE PAGE TABLES,
+ * silently, because `stack_bottom` sits just above `pd_table` in boot.asm. The
+ * fix there was the same one applied here before it has a chance to be needed
+ * again: kernel .bss, not a kernel stack frame. */
+static unsigned char arrow_scratch[CUR_PLANE * CUR_PLANE * 4];
+
+/* Build a double-headed arrow along the unit vector (ux,uy), given in /256
+ * fixed point, as a gfx PATH rather than a per-pixel coverage test -- "two
+ * triangles and a bar" is a literal description of the ten vertices below,
+ * not a metaphor. (a,b) are the same axis/perpendicular coordinates the old
+ * per-pixel test projected each pixel INTO; here they go the other way,
+ * placing each VERTEX by the same projection run backwards. Because a,b are
+ * plain device-pixel integers and ux,uy are already /256 fixed point,
+ * `a*ux - b*uy` lands directly in 24.8 device fixed point with no separate
+ * scale step -- turning the test inside out like this is what makes the
+ * shape a path instead of a bespoke rasterizer, and it is why the diagonals
+ * still cost nothing extra over the axis-aligned pair. */
 static void build_arrow(uint32_t *dst, int ux, int uy)
 {
-    uint32_t o = 0xFF000000u | rgb(20, 20, 26), f = 0xFF000000u | rgb(255, 255, 255);
     const int c = CUR_PLANE / 2;
     int t = S(1); if (t < 1) t = 1;                 /* outline thickness */
     int R = S(11), bar = S(2), hd = S(6), hw = S(6);
     /* The plane is fixed at 64 and the UI scale is not, so clamp rather than
      * write past it: at scale 300 an unclamped R would be 33 and the arrow's
-     * far head would wrap onto the opposite row. */
+     * far head would wrap onto the opposite row. Unchanged from the deleted
+     * per-pixel version, including its one imprecision: a mitred corner (see
+     * the outline below) can reach a hair past R+t at the tips, exactly as
+     * the old Chebyshev dilation could at a diagonal corner -- neither
+     * version budgeted for that, and in practice t is 1-3 device px, so the
+     * overshoot is sub-pixel and clips into nothing a screenshot shows. */
     if (R + t > c - 1) { int m = c - 1 - t; if (hd > m) hd = m; if (hw > m) hw = m; R = m; }
     if (R < 4) R = 4;
+    int L = R - hd;
+
+    int pts[32], subs[2];
+    struct gfx_path arrow;
+    gfx_path_init(&arrow, pts, 16, subs, 2);
+    int cx = GFX_PX(c), cy = GFX_PX(c);
+#define APT(a, b) (cx + (a) * ux - (b) * uy), (cy + (a) * uy + (b) * ux)
+    gfx_move_to(&arrow, APT(R, 0));      /* tip+                              */
+    gfx_line_to(&arrow, APT(L, hw));     /* head+ base, +b side               */
+    gfx_line_to(&arrow, APT(L, bar));    /* shoulder+ (head base -> bar edge) */
+    gfx_line_to(&arrow, APT(-L, bar));   /* straight across the bar top       */
+    gfx_line_to(&arrow, APT(-L, hw));    /* head- base, +b side               */
+    gfx_line_to(&arrow, APT(-R, 0));     /* tip-                              */
+    gfx_line_to(&arrow, APT(-L, -hw));   /* head- base, -b side               */
+    gfx_line_to(&arrow, APT(-L, -bar));  /* shoulder-, -b side                */
+    gfx_line_to(&arrow, APT(L, -bar));   /* straight across the bar bottom    */
+    gfx_line_to(&arrow, APT(L, -hw));    /* head+ base, -b side               */
+    /* Close by repeating the FIRST point, not by relying on gfx_close() alone
+     * -- gfx_close() (gfx_path.c) emits no point, so a fill would treat this
+     * subpath as closed either way, but gfx_stroke_path (gfx_stroke.c's file
+     * comment) tells closed from open ONLY by "last point equals first".
+     * Without this line the stroke below would see a 10-point OPEN polyline
+     * and cap both ends instead of ringing the outline -- a trap documented
+     * in that file and worth repeating here since this is the first caller. */
+    gfx_line_to(&arrow, APT(R, 0));
+    gfx_close(&arrow);
+#undef APT
+
+    struct gfx_surface surf;
+    gfx_surface_init(&surf, arrow_scratch, CUR_PLANE, CUR_PLANE, CUR_PLANE * 4);
+    gfx_surface_clear(&surf);
+
+    /* The outline: ONE stroke of the arrow's own path, centred (width 2t, t
+     * in and t out) rather than two strokes or a hand-built dilated polygon.
+     * It is painted BEFORE the fill (below), so the fill's opaque interior
+     * covers exactly the inner half -- what survives is a t-wide ring OUTSIDE
+     * the fill, the same halo width the old box dilation produced, but with a
+     * real mitred corner at the tips instead of a Chebyshev-square
+     * approximation of one. MITER, not ROUND: every turn in this outline (tip
+     * and shoulder alike) is close to 90 degrees by construction -- see the
+     * (a,b) layout above -- nowhere near the near-180-degree turns a limit of
+     * 4 would ever fall back to bevel on, so the halo stays exactly as
+     * pointed as the fill it traces. */
+    int spts[128], ssubs[4];
+    struct gfx_path outline;
+    gfx_path_init(&outline, spts, 64, ssubs, 4);
+    struct gfx_stroke sk = { 0 };
+    sk.width = 2 * t * GFX_ONE;
+    sk.join = GFX_JOIN_MITER;
+    sk.miter_limit = 4 << 16;            /* SVG default; every corner here clears it */
+    struct gfx_paint outp;
+    gfx_paint_solid(&outp, GFX_RGB(20, 20, 26), 255);
+    /* A refusal here (out-path too small) leaves the halo unpainted rather
+     * than corrupt -- it should never fire: a 10-vertex closed miter outline
+     * needs on the order of 2x that many points, well under the 64-point/
+     * 4-subpath budget above. */
+    if (gfx_stroke_path(&outline, &arrow, &sk))
+        gfx_fill(&surf, &outline, GFX_NONZERO, &outp, NULL);
+
+    struct gfx_paint fillp;
+    gfx_paint_solid(&fillp, GFX_RGB(255, 255, 255), 255);
+    gfx_fill(&surf, &arrow, GFX_NONZERO, &fillp, NULL);
+
+    /* gfx_fill composited straight RGBA (R,G,B,A byte order -- gfx.h's
+     * surface comment) through the engine's own Porter-Duff gfx_over, which
+     * is what makes the fill's antialiased edge blend smoothly into the
+     * outline underneath instead of stair-stepping between two binary masks.
+     * Repack into the plane's own ARGB word, through the SAME rgb() (=
+     * fb_rgb(), device-native channel order) the deleted version used, so
+     * the two cursor-plane consumers below need no format change at all. */
     for (int j = 0; j < CUR_PLANE; j++)
         for (int i = 0; i < CUR_PLANE; i++) {
-            int px = i - c, py = j - c;
-            int a = (px * ux + py * uy) >> 8;
-            int b = (-px * uy + py * ux) >> 8;
-            int aa = a < 0 ? -a : a, ab = b < 0 ? -b : b;
-            int in = (aa <= R - hd && ab <= bar) ||
-                     (aa > R - hd && aa <= R && ab * hd <= (R - aa) * hw);
-            if (in) dst[j * CUR_PLANE + i] = f;
-        }
-    /* Outline by dilation. Testing only for the FILL colour is what stops this
-     * cascading -- an outline pixel is never a seed for another one, so the
-     * ring is exactly `t` thick however many passes the box test spans. */
-    for (int j = 0; j < CUR_PLANE; j++)
-        for (int i = 0; i < CUR_PLANE; i++) {
-            if (dst[j * CUR_PLANE + i]) continue;
-            int near = 0;
-            for (int dy = -t; dy <= t && !near; dy++)
-                for (int dx = -t; dx <= t; dx++) {
-                    int y2 = j + dy, x2 = i + dx;
-                    if (x2 < 0 || y2 < 0 || x2 >= CUR_PLANE || y2 >= CUR_PLANE) continue;
-                    if (dst[y2 * CUR_PLANE + x2] == f) { near = 1; break; }
-                }
-            if (near) dst[j * CUR_PLANE + i] = o;
+            const unsigned char *px = arrow_scratch + (j * CUR_PLANE + i) * 4;
+            dst[j * CUR_PLANE + i] = px[3] ? ((uint32_t)px[3] << 24) | rgb(px[0], px[1], px[2]) : 0;
         }
 }
 
@@ -2449,18 +2520,75 @@ static void dirty_cursor(int x, int y)
                cursor_box[s][0] + 1, cursor_box[s][1] + 1);
 }
 
+/* Which byte lane fb_rgb() (c/kernel/gui/fb.c) packs each channel into.
+ * fb.c keeps red_pos/green_pos/blue_pos to itself, so this asks fb_rgb()
+ * itself, on pure primaries, rather than duplicating the multiboot2 FB tag
+ * parse: whichever byte a channel's 0xFF lands in IS its shift. That is
+ * exactly what fb.c's own (private) unpack() assumes too -- one full
+ * byte-aligned lane per channel, no fractional field width -- so this is not
+ * a new assumption, just one this file did not previously need to state.
+ * Cached after the first call: draw_cursor_back() below calls it once per
+ * cursor pixel with any fringe alpha, and the device's channel layout is
+ * fixed for the life of the boot. */
+static int chan_shift(uint32_t probe)
+{
+    if (probe & 0x0000FFu) return 0;
+    if (probe & 0x00FF00u) return 8;
+    return 16;
+}
+static void device_shifts(int *rs, int *gs, int *bs)
+{
+    static int have, r_, g_, b_;
+    if (!have) {
+        r_ = chan_shift(rgb(255, 0, 0));
+        g_ = chan_shift(rgb(0, 255, 0));
+        b_ = chan_shift(rgb(0, 0, 255));
+        have = 1;
+    }
+    *rs = r_; *gs = g_; *bs = b_;
+}
+
 /* The cursor is composited into `back` on top of everything else, then presented
  * with the rest of the frame -- no save-under overlay (that restored a stale
- * `back` and smeared garbage as the cursor moved). */
+ * `back` and smeared garbage as the cursor moved).
+ *
+ * Fractional alpha is real now (build_arrow() is a gfx fill+stroke, not a
+ * binary coverage test), so a pixel that only ever went fully-transparent or
+ * fully-opaque before now also lands on every value between -- the whole
+ * antialiased fringe the new build_arrow buys. Painting the source colour at
+ * full strength wherever alpha is merely NONZERO -- what this function did
+ * before the pixels it reads could BE fractional -- would grow the fringe
+ * into a ring of full-strength pixels instead of blending it, which is a
+ * different-looking staircase, not antialiasing. So: blend, using `back`
+ * directly (the same buffer fb_put's default target already is -- see the
+ * `back` global above) because there is no exported "read one screen pixel"
+ * and device_shifts() above is what makes unpacking it possible without one.
+ * Full alpha keeps the cheap direct fb_put -- no read, no blend math -- since
+ * that is still the overwhelming common case (the shape's solid interior). */
 static void draw_cursor_back(int x, int y)
 {
     const uint32_t *p = cursor_plane[cur_shape];
     int hx = cursor_hot[cur_shape][0], hy = cursor_hot[cur_shape][1];
     int bw = cursor_box[cur_shape][0], bh = cursor_box[cur_shape][1];
+    int rs, gs, bs;
+    device_shifts(&rs, &gs, &bs);
     for (int j = 0; j < bh; j++)
         for (int i = 0; i < bw; i++) {
             uint32_t v = p[j * CUR_PLANE + i];
-            if (v & 0xFF000000u) fb_put(x + i - hx, y + j - hy, v & 0x00FFFFFFu);
+            int a = (int)(v >> 24);
+            if (!a) continue;
+            int px = x + i - hx, py = y + j - hy;
+            if (a >= 255 || !back || px < 0 || py < 0 || px >= W || py >= H) {
+                fb_put(px, py, v & 0x00FFFFFFu);
+                continue;
+            }
+            uint32_t dc = back[py * W + px];
+            int sr = (int)((v >> rs) & 0xFF), sg = (int)((v >> gs) & 0xFF), sb = (int)((v >> bs) & 0xFF);
+            int dr = (int)((dc >> rs) & 0xFF), dg = (int)((dc >> gs) & 0xFF), db = (int)((dc >> bs) & 0xFF);
+            int nr = (sr * a + dr * (255 - a)) / 255;
+            int ng = (sg * a + dg * (255 - a)) / 255;
+            int nb = (sb * a + db * (255 - a)) / 255;
+            fb_put(px, py, rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
         }
 }
 

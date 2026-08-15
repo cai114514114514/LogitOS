@@ -233,7 +233,24 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # sizes and raw file offsets. It allocates continuously with malloc/realloc/free
 # as it builds a sample index. Putting that in ring 0 under the BKL is not a
 # thing to do. See MED_OBJ in tests/demux.mk for who does link it.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+# c/lib/image/svg.c is filtered out here too now (2026-08-15, "one rasterizer
+# for every pixel the machine draws"): it used to carry its own scanline
+# filler and its own double-precision libm -- floating point, in a kernel
+# built -mno-sse, in front of attacker-shaped bytes, reachable from disk via
+# SYS_IMG_DECODE and the wallpaper loader. It has been rewritten onto
+# gfx_path/gfx_fill (c/lib/gfx, see svg.c's own file comment), which removes
+# the private libm but does NOT remove the "attacker-shaped bytes at ring 0"
+# problem the c/lib/gfx comment above says the ENGINE itself is clear of --
+# gfx.h has no parser, svg.c is nothing BUT a parser. It stays compiled into
+# the browser, Preview and imgcheck exactly as before (their build lists name
+# it explicitly, and now also link $(GFX_OBJ) for it -- see those rules).
+# THE WALLPAPER LOADER (c/kernel/gui/wm.c) is the one place this genuinely
+# removes a kernel capability: it never actually reached SVG decode (it loads
+# /wallpaper.png; nothing in this tree ships or names a .svg wallpaper), so
+# nothing observable changes, but an .svg dropped at that exact path would
+# now be refused rather than decoded. See not_done for the one-line wm.c
+# consequence, which is not this unit's file to edit.
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -247,7 +264,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 .PHONY: test-monitor test-monitor-negctl
@@ -839,11 +856,11 @@ $(BUILD)/imgobj/imgcheck.o: tests/unit/imgcheck.c c/lib/image/img.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD)/imgcheck.elf: $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+$(BUILD)/imgcheck.elf: $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/imgcheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
-	    $(BUILD)/apps/imgcheck.crt0c.o $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) \
+	    $(BUILD)/apps/imgcheck.crt0c.o $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) $(GFX_OBJ) \
 	    $(RUST_LIB) $(LIBC_OBJS) --end-group
 $(BUILD)/imgcheck.aex: $(BUILD)/imgcheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/imgcheck.elf $@ imgcheck - 'I' 200 140 90
@@ -895,13 +912,13 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 # runs on content -- see opens_in_preview() in c/kernel/gui/wm.c.
 $(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                       c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
-                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) \
+                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
                       $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(MED_OBJ) \
-	    $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
+	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
 $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/preview.elf $@ Preview h264 'P' 200 150 110
 
@@ -2963,9 +2980,15 @@ bench-repaint: $(ISO) $(DISK)
 # the Rust staticlib (PNG/BMP/ICO/WebP), and the eh_personality shim. One
 # variable, because five copies of a source list is five chances for a newly
 # added decoder to be missing from the test that would have caught its bug.
+# $(GFX_SRC) joined this set the day svg.c stopped carrying its own scanline
+# filler and started building a gfx_path/gfx_fill like every other shape in
+# the tree (svg.c's file comment) -- every one of the dozen-plus targets below
+# that link IMG_HOST_SRC decodes an SVG fixture somewhere in its corpus, so
+# there is no narrower place to add it that would not silently miss one.
 IMG_HOST_SRC := c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \
-                c/lib/image/svg.c c/lib/image/exif.c tests/unit/rust_host_shim.c
-IMG_HOST_INC := -Ic/lib/image -Ic/kernel/mm
+                c/lib/image/svg.c c/lib/image/exif.c tests/unit/rust_host_shim.c \
+                $(GFX_SRC)
+IMG_HOST_INC := -Ic/lib/image -Ic/kernel/mm -Ic/lib/gfx
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
@@ -3124,7 +3147,13 @@ test-img: test-png test-jpeg test-svg test-img-still test-img-anim test-img-exif
 # README there for provenance.
 FONT_SRC   := c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/otlayout.c \
               c/lib/text/fontcolor.c
-FONT_INC   := -Ic/lib/text -Ic/kernel/gui
+# The rasterizer these suites drive USED to be one file, c/kernel/gui/raster.c.
+# It is deleted: glyphras.c converts an outline to a gfx_path and Open Logit
+# (GFX_SRC) rasterizes it, so anything that rasterized a glyph now links the
+# engine -- which is the whole point, since it means these font suites and the
+# desktop are judging the same rasterizer.
+FONT_RAS   := c/lib/text/glyphras.c $(GFX_SRC)
+FONT_INC   := -Ic/lib/text -Ic/kernel/gui -Ic/lib/gfx
 FONT_FIX   := tests/fixtures/fonts
 # The committed fixtures plus the fonts we actually ship on the disk image --
 # a regression that only shows up in ui.ttf is still a regression.
@@ -3139,7 +3168,7 @@ test-font:
 	@$(CC) -O2 -w -o $(BUILD)/ttf_test tests/unit/ttf_test.c $(FONT_SRC) $(FONT_INC)
 	@$(BUILD)/ttf_test fsroot/fonts/ui.ttf $(FONT_FIX)/SourceSans3-Regular.otf
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/font_cff_test tests/unit/font_cff_test.c \
-	    $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	    $(FONT_SRC) $(FONT_RAS) $(FONT_INC)
 	@rc=0; for f in $(FONT_CASES); do \
 	    b=`basename $$f`; \
 	    python3 tests/unit/font_ref_gen.py $$f $(BUILD)/fontref/$$b.ref --px 32 --bitmaps 64 \
@@ -3165,7 +3194,7 @@ test-font-otl:
 test-font-color:
 	@mkdir -p $(BUILD)/fontref
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/font_color_test tests/unit/font_color_test.c \
-	    $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	    $(FONT_SRC) $(FONT_RAS) $(FONT_INC)
 	@python3 tests/unit/font_color_ref.py --make-sbix $(BUILD)/fontref/sbix-synth.ttf \
 	    $(FONT_FIX)/kern-subset.ttf 2>/dev/null
 	@rc=0; for f in $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/cbdt-emoji-subset.ttf \
@@ -3180,7 +3209,7 @@ test-font-color:
 test-font-fuzz:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -o $(BUILD)/font_fuzz tests/unit/font_fuzz.c $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	    -o $(BUILD)/font_fuzz tests/unit/font_fuzz.c $(FONT_SRC) $(FONT_RAS) $(FONT_INC)
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/font_fuzz \
 	    $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
 	    $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/cbdt-emoji-subset.ttf \
@@ -3198,9 +3227,9 @@ test-font-control:
 	@python3 tests/unit/font_ref_gen.py fsroot/fonts/ui.ttf \
 	    $(BUILD)/fontref/control-glyf.ref --px 32 --bitmaps 32 >/dev/null
 	@$(CC) -O2 -w -DFONT_CONTROL_HV_LAST -o $(BUILD)/font_ctl_cff \
-	    tests/unit/font_cff_test.c $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	    tests/unit/font_cff_test.c $(FONT_SRC) $(FONT_RAS) $(FONT_INC)
 	@$(CC) -O2 -w -DFONT_CONTROL_NO_MIDPOINT -o $(BUILD)/font_ctl_glyf \
-	    tests/unit/font_cff_test.c $(FONT_SRC) c/kernel/gui/raster.c $(FONT_INC)
+	    tests/unit/font_cff_test.c $(FONT_SRC) $(FONT_RAS) $(FONT_INC)
 	@if $(BUILD)/font_ctl_cff $(FONT_FIX)/SourceSans3-Regular.otf \
 	       $(BUILD)/fontref/control-cff.ref > $(BUILD)/fontref/ctl-cff.log 2>&1; then \
 	    echo "CONTROL FAILED: the crippled CFF interpreter PASSED -- the path comparison is vacuous"; \
@@ -3217,6 +3246,23 @@ test-font-control:
 	    echo "control ok: implied-midpoint sabotage is caught:"; \
 	    grep '^FAIL' $(BUILD)/fontref/ctl-glyf.log | head -3; \
 	fi
+
+# The glyph rasterizer against an oracle that is NEITHER rasterizer: a 32x32
+# supersampled point sample of the same outline, in double. Written for the
+# milestone that deleted c/kernel/gui/raster.c -- see the header comment of
+# tests/unit/glyph_agree_test.c for why the reference deliberately does not
+# share the 16-sub-scanline construction it is judging, and for the recorded
+# side-by-side numbers from the one build in which both rasterizers existed.
+#
+# It complements test-font rather than repeating it: test-font is the
+# third-party check (FreeType, via python + freetype-py + a generated reference
+# file), this one is exactly computable and runs from nothing but the fonts.
+test-glyph-agree:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/glyph_agree_test \
+	    tests/unit/glyph_agree_test.c $(FONT_SRC) $(FONT_RAS) $(FONT_INC) -lm
+	@$(BUILD)/glyph_agree_test fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
+	    $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/kern-subset.ttf
 
 # The H.264 decoder gates live in tests/h264.mk (see the note at its top);
 # the include sits with the other test-suite includes further down.

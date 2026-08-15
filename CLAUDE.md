@@ -124,7 +124,9 @@ list → painted viewport with clickable links + images; `user/browser.c` render
 real pages incl. https://en.wikipedia.org).
 
 M14 Unicode + from-scratch TrueType anti-aliased text ✅ (`lib/utf8.c` +
-`lib/ttf.c` + `kernel/raster.c` + `kernel/text.c`): UTF-8 decode, a from-scratch
+`lib/ttf.c` + `kernel/raster.c` — **since deleted, see Open Logit below: glyphs
+are rasterized by the engine now, through `c/lib/text/glyphras.c`** — +
+`kernel/text.c`): UTF-8 decode, a from-scratch
 TTF parser (cmap fmt4/12, glyf simple+composite, hmtx) and an integer-only AA
 rasterizer (4× vertical oversample + fractional horizontal coverage → 0–255
 alpha), with a glyph cache + font fallback. `fb_text` routes through it, so the
@@ -684,18 +686,65 @@ someone else's data, which a length check cannot see.
 
 **It exists because there were three coverage/paint paths and every new app
 started from `gui_rect`.** The kernel's M14 glyph rasterizer (`c/kernel/gui/
-raster.c`, 285 lines) does glyphs and stays; a SECOND coverage rasterizer lived
+raster.c`, 285 lines) did glyphs; a SECOND coverage rasterizer lived
 in the widget toolkit (`c/apps/gui/aui.c`); a THIRD hand-rolled paint path lived
 in the browser (`c/apps/browser/browser_paint.c` -- an integer square root and a
-per-row band loop). Open Logit is the one engine the last two are now built on,
-and **both of their rasterizers are deleted**, which was the point: an engine
-that coexists with what it replaced is a fourth path.
+per-row band loop). Open Logit is the one engine all three are now built on, and
+**all three are deleted**, which was the point: an engine that coexists with
+what it replaced is a fourth path.
 
-**Ring 3, and filtered out of `C_SRC` on purpose.** It sits beside `c/lib/text`
-and `c/lib/image` and CONSUMES them -- it rasterizes no glyph and decodes no
-image. Nothing in the kernel fills a path, and linking a rasterizer for
-attacker-shaped geometry (a page's `border-radius`, an SVG's path data) into
-ring 0 under the BKL would serve no ring-0 caller.
+**`raster.c` was the last and the largest, and it went with the glyph
+migration.** `c/lib/text/glyphras.c` is what replaced it: a CONVERTER from a
+font outline (`fp_path`, font units) to a `gfx_path` in device 24.8, plus one
+`gfx_fill_mask_subs(..., 16)`. It rasterizes nothing. The per-point scaling is
+raster.c's exact `(v*px*256)/upem` with the CTM left at identity -- a 16.16
+scale matrix loses ~0.03 px at CJK upem/px combinations -- but the curve
+flattening is the engine's adaptive tolerance instead of raster.c's fixed
+segment count, which is where the accuracy came from. Glyphs pass `subs=16`
+where a button passes 4, and `icons.c`'s eleven hand-authored vector icons went
+over at the same time (`vg.h`/`vg_render_path` deleted with the file).
+- **The number**, from `make test-glyph-agree`, against an oracle that is
+  neither rasterizer (a 32x32 supersampled point sample of the true outline, in
+  double, over 572 bitmaps and 363,650 pixels): the bridge scores **mean 0.310 /
+  255, worst pixel 16**; raster.c scored **0.490 / 61** on the same set. The
+  replacement is closer to the true geometry than the thing it replaced, 1.6x in
+  the mean and 3.8x in the worst pixel. `tests/unit/glyph_agree_legacy.sh` is
+  the build in which both existed; it cannot run from this tree because one of
+  them is gone, and it says so.
+- **The migration found a real defect in the engine, and it could only have been
+  found this way.** `gfx_raster.c`'s `span_add` accumulated straight into the
+  0..255 byte row, converting each sub-scanline's covered length on the spot
+  with an integer divide -- so the truncation was paid ONCE PER SUB-SCANLINE and
+  the error GREW with `subs`, backwards for the one knob that exists to buy
+  accuracy. At the default 4 it cost up to 3/255 and nobody noticed; at 16 it
+  cost up to 15/255 on every antialiased pixel of every glyph, always in the
+  same direction, and the first measurement of the port showed the whole
+  typeface coming out lighter (mean error against FreeType 0.74 -> 2.02 on
+  ui.ttf). `g_acc` sums lengths exactly and converts once per pixel, through a
+  16.16 reciprocal that is EXACT for every `subs` dividing 65280 (4 and 16 among
+  them). Cost: 8,192 B of .bss, +3% on a whole-path fill.
+- **And a latent UB**: `make test-font-fuzz` is the first ASan/UBSan build in
+  the tree that reaches `c/lib/gfx` at all, and it caught `(x1-x0) << 16` --
+  left-shifting a negative signed value, which every leftward edge in every
+  shape produces. Fixed at all four sites (`add_edge`, `gfx_m_invert`,
+  `arc_mid`); `* 65536` compiles to the same instruction.
+- **Net kernel `.bss`: -29,356 B** (raster.c's 515,076 out, glyphras.c's 444,416
+  + icons' own path storage 33,112 + `g_acc` 8,192 in), measured with `nm`.
+- Proof the face of the machine did not change: `test-desktop-look` 16/16 with
+  every recorded value identical (including the three KNOWN-BUG rows and their
+  exact extents), and a before/after boot screendump differing by **mean 0.021 /
+  255 over the whole screen**, 4,640 of 1,024,000 pixels touched at all, and
+  mean luma identical to three decimals in every text region.
+
+**It sits beside `c/lib/text` and `c/lib/image` and CONSUMES them** -- it
+rasterizes no glyph and decodes no image; the outline comes from `c/lib/text`
+and only the coverage is this engine's. (This paragraph used to open "Ring 3,
+and filtered out of `C_SRC` on purpose", which was already wrong when `fb.c`
+started calling `gfx_mask_corner` for the window corners: `c/lib/gfx` is NOT
+filtered out of `C_SRC`, it compiles into the kernel as well as into every
+ring-3 GUI binary, and since the glyph migration the kernel is its busiest
+caller. The ring-3-only claim survives for `c/lib/video`, `c/lib/audio` and
+`c/lib/media`, which really are filtered.)
 
 **Phase 1 is FILL ONLY**: paths (move/line/quad/cubic/close), nonzero + evenodd,
 a scanline coverage rasterizer, four paints (solid / linear gradient / radial
@@ -708,8 +757,10 @@ inner ellipse shares the outer's CENTRE and differs only in radii, and insetting
 the centre pinches the arc to nothing before it meets the straight edges.
 
 **Construction** (deliberately the glyph rasterizer's, so a shape and the type
-on it are antialiased by the same rule at the same size): 4 sub-scanlines per
-pixel row with EXACT fractional horizontal coverage along each. Horizontal
+on it are antialiased by the same rule at the same size -- and since the glyph
+migration that is literally true, not merely by construction): 4 sub-scanlines
+per pixel row for shapes, 16 for type, with EXACT fractional horizontal coverage
+along each and the lengths summed exactly before one conversion. Horizontal
 coverage is analytic and free, vertical costs a pass -- so buy accuracy where it
 is cheap. Integer only, 24.8 coordinates and 16.16 matrices. **No libc and no
 allocator**: six GUI apps link crt0 + aui + this and nothing else, path storage
@@ -729,9 +780,17 @@ are cached by exact device geometry.
 has no ffmpeg to diff against but is exactly computable, so the oracle is built:
 every filled shape against a 16x16 supersampled evaluation of its own analytic
 predicate, every blend against Porter-Duff recomputed in double. Worst pixel
-error: circles r=3..48 **0.091**, ellipses 0.087, rounded rects 0.047, triangles
+error: circles r=3..48 **0.095**, ellipses 0.091, rounded rects 0.047, triangles
 0.119, corner tiles 0.078, ring tiles 0.078; src-over over 175 alpha/coverage
-combinations **1/255**. `make test-aui-mask` still passes unchanged -- it has its
+combinations **1/255**. (Circles and ellipses read 0.091 and 0.087 until the
+glyph migration replaced the per-sub-scanline divide with `g_acc`'s exact length
+sum -- see that fix above. Both are worst-SINGLE-PIXEL figures at subs=4, where
+the old truncation was worth up to 3/255 in one direction, so a 0.004 move
+either way is inside what that change can do; what the same change did to the
+number that was actually wrong is 0.911 -> 0.310 against the glyph oracle. The
+assertions in tests/unit/gfx_raster_test.c were NOT touched -- these two values
+moved under unchanged bounds. Re-recorded rather than left stale, because a
+number in this file is a claim somebody will diff against.) `make test-aui-mask` still passes unchanged -- it has its
 own, independently written reference, so the engine is checked against TWO
 oracles sharing no code.
 
@@ -763,8 +822,9 @@ broadly right -- what breaks is the agreement with the reference, 67 assertions
 fail, and `make test-gfx-negctl` succeeds when the test fails. On device
 `test-aui-negctl` is the same shape one layer up.
 
-**Nothing was asked of the kernel and nothing taken.** `fb.c`, `raster.c` and
-`wm.c` are untouched; the engine reaches the screen through `SYS_GUI_BLIT`, the
+**Nothing was asked of the kernel and nothing taken** (as of phase 1 -- the
+glyph migration since then deleted `raster.c` and rewrote `icons.c`).
+`fb.c` and `wm.c` are untouched; the engine reaches the screen through `SYS_GUI_BLIT`, the
 one existing entry point with per-pixel alpha. Consequence worth knowing:
 `browser_paint.c`'s opaque rounded boxes no longer call `SYS_GUI_RRECT`, whose
 corner test is the boolean `dx*dx + dy*dy <= r*r`, so **a page's `border-radius`

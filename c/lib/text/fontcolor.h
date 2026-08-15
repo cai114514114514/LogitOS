@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 #include "ttf.h"
+/* text_raster_extent + text_raster_at, which this header used to declare
+ * itself. They moved to glyphras.h with the rest of the rasterizer entry
+ * points when c/kernel/gui/raster.c was deleted; the include keeps every
+ * existing caller of this header working unchanged. */
+#include "glyphras.h"
 
 /* Colour glyphs: COLR/CPAL (layered vector) and the bitmap strikes, CBDT/CBLC
  * and sbix. Emoji are not decoration on a system that renders web pages -- a
@@ -84,22 +89,8 @@ int sbix_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
 int font_bitmap_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
                        struct font_bitmap *out);
 
-/* -------------------------------------------- rasterizer entry points used --
- * Implemented in c/kernel/gui/raster.c. Declared here rather than in text.h
- * because they exist for this: painting several outlines into ONE bitmap box.
- * text_raster picks a box from the glyph it is drawing, which would differ per
- * layer and leave the layers misaligned. */
-
-/* The box text_raster would choose for `gid` at `px`, without painting: *ox_i is
- * the x offset from the pen origin to the bitmap's left column, *top_i the
- * pixels from the baseline up to its top row. Returns 0, -1 for a blank glyph. */
-int text_raster_extent(const struct ttf_font *f, int gid, int px,
-                       int *ox_i, int *top_i, int *w, int *h);
-
-/* Paint `gid` into a w*h coverage bitmap placed at (ox_i, top_i). The caller
- * composites the result with the layer's colour and zeroes/reuses `cov` between
- * layers as it likes -- this overwrites every byte it is given. */
-int text_raster_at(const struct ttf_font *f, int gid, int px, int ox_i, int top_i,
-                   uint8_t *cov, int w, int h);
+/* The two rasterizer entry points a COLR composite needs -- text_raster_extent
+ * to fix ONE bitmap box, text_raster_at to paint every layer into it -- are
+ * declared in glyphras.h, included at the top of this header. */
 
 #endif /* LOGIT_FONTCOLOR_H */

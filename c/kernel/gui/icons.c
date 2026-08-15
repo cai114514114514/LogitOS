@@ -1,64 +1,83 @@
-/* Procedural monochrome vector icons (M26). Each icon is a vg_cmd path in a
- * 0..100 unit box (y down); vg_render_path rasterizes it to a coverage bitmap
- * that fb_blit_glyph paints in any color. Filled silhouettes; holes/cutouts use
- * reverse winding (nonzero rule). Rasterized once per (id,px) and cached. */
+/* Procedural monochrome vector icons (M26). Each icon is a path in a 0..100
+ * unit box (y down), scaled to px and filled into a coverage bitmap that
+ * fb_blit_glyph paints in any colour. Filled silhouettes; holes/cutouts use
+ * reverse winding (nonzero rule). Rasterized once per (id,px) and cached.
+ *
+ * These used to go through vg_render_path in c/kernel/gui/raster.c -- a second
+ * scanline coverage rasterizer, now deleted. They go through Open Logit, like
+ * everything else that fills a shape. The command vocabulary these tables are
+ * written in (move/line/quad/cubic/close) IS the engine's phase-1 vocabulary,
+ * so the port is a change of consumer, not of geometry: not one coordinate
+ * below moved.
+ *
+ * struct ic_cmd survives vg.h's deletion because it is a DATA format for
+ * hand-authored icon geometry, not a drawing API -- it exists so eleven icons
+ * can be written as static tables instead of eleven functions, and it reaches
+ * exactly one place, the loop in icon_draw() that replays it into a gfx_path.
+ * Adding a rasterizer behind it would be the mistake; describing shapes in a
+ * table is not. */
 #include "icons.h"
-#include "vg.h"
+#include "gfx.h"
 #include "fb.h"
 
 void *kmalloc(unsigned long);
 void  kfree(void *);
 static int seq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 
-#define MV(a,b)               { VG_MOVE,  {(short)(a)},                 {(short)(b)} }
-#define LN(a,b)               { VG_LINE,  {(short)(a)},                 {(short)(b)} }
-#define QD(cx,cy,a,b)         { VG_QUAD,  {(short)(cx),(short)(a)},     {(short)(cy),(short)(b)} }
-#define CB(p,q,r,s,a,b)       { VG_CUBIC, {(short)(p),(short)(r),(short)(a)}, {(short)(q),(short)(s),(short)(b)} }
-#define CL                    { VG_CLOSE, {0}, {0} }
+/* op + up to 3 control/end points, in icon-space units. MOVE/LINE use pt0;
+ * QUAD uses pt0=ctrl, pt1=end; CUBIC uses pt0,pt1=ctrls, pt2=end. */
+enum { IC_MOVE, IC_LINE, IC_QUAD, IC_CUBIC, IC_CLOSE };
+struct ic_cmd { unsigned char op; short x[3], y[3]; };
+
+#define MV(a,b)               { IC_MOVE,  {(short)(a)},                 {(short)(b)} }
+#define LN(a,b)               { IC_LINE,  {(short)(a)},                 {(short)(b)} }
+#define QD(cx,cy,a,b)         { IC_QUAD,  {(short)(cx),(short)(a)},     {(short)(cy),(short)(b)} }
+#define CB(p,q,r,s,a,b)       { IC_CUBIC, {(short)(p),(short)(r),(short)(a)}, {(short)(q),(short)(s),(short)(b)} }
+#define CL                    { IC_CLOSE, {0}, {0} }
 
 /* --- the icons --- */
-static const struct vg_cmd ic_folder[] = {       /* filled folder w/ tab */
+static const struct ic_cmd ic_folder[] = {       /* filled folder w/ tab */
     MV(9,34), LN(37,34), LN(45,26), LN(88,26), QD(92,26,92,32), LN(92,82),
     QD(92,86,88,86), LN(13,86), QD(9,86,9,82), CL,
 };
-static const struct vg_cmd ic_doc[] = {          /* page with folded corner */
+static const struct ic_cmd ic_doc[] = {          /* page with folded corner */
     MV(26,12), LN(58,12), LN(78,32), LN(78,88), LN(26,88), CL,
 };
-static const struct vg_cmd ic_terminal[] = {     /* window frame + >_ */
+static const struct ic_cmd ic_terminal[] = {     /* window frame + >_ */
     MV(10,22), LN(90,22), LN(90,78), LN(10,78), CL,                 /* outer */
     MV(16,72), LN(84,72), LN(84,28), LN(16,28), CL,                 /* inner (reverse -> hole) */
     MV(24,38), LN(40,50), LN(24,62), LN(29,62), LN(45,50), LN(29,38), CL,  /* > */
     MV(50,58), LN(70,58), LN(70,63), LN(50,63), CL,                 /* _ */
 };
-static const struct vg_cmd ic_grid[] = {         /* 2x2 squares */
+static const struct ic_cmd ic_grid[] = {         /* 2x2 squares */
     MV(14,14), LN(44,14), LN(44,44), LN(14,44), CL,
     MV(56,14), LN(86,14), LN(86,44), LN(56,44), CL,
     MV(14,56), LN(44,56), LN(44,86), LN(14,86), CL,
     MV(56,56), LN(86,56), LN(86,86), LN(56,86), CL,
 };
-static const struct vg_cmd ic_globe[] = {        /* ring + cross (wireframe globe) */
+static const struct ic_cmd ic_globe[] = {        /* ring + cross (wireframe globe) */
     MV(92,50), CB(92,73,73,92,50,92), CB(27,92,8,73,8,50), CB(8,27,27,8,50,8), CB(73,8,92,27,92,50), CL, /* outer CW */
     MV(50,15), CB(27,15,15,27,15,50), CB(15,73,27,85,50,85), CB(73,85,85,73,85,50), CB(85,27,73,15,50,15), CL, /* inner (rev) */
     MV(15,48), LN(85,48), LN(85,52), LN(15,52), CL,                 /* equator */
     MV(48,15), LN(52,15), LN(52,85), LN(48,85), CL,                 /* meridian */
 };
-static const struct vg_cmd ic_code[] = {         /* < > chevrons */
+static const struct ic_cmd ic_code[] = {         /* < > chevrons */
     MV(34,28), LN(40,33), LN(24,50), LN(40,67), LN(34,72), LN(13,50), CL,   /* < */
     MV(66,28), LN(60,33), LN(76,50), LN(60,67), LN(66,72), LN(87,50), CL,   /* > */
 };
-static const struct vg_cmd ic_chart[] = {        /* bar chart */
+static const struct ic_cmd ic_chart[] = {        /* bar chart */
     MV(18,82), LN(34,82), LN(34,56), LN(18,56), CL,
     MV(42,82), LN(58,82), LN(58,34), LN(42,34), CL,
     MV(66,82), LN(82,82), LN(82,48), LN(66,48), CL,
     MV(12,84), LN(88,84), LN(88,89), LN(12,89), CL,                 /* baseline */
 };
-static const struct vg_cmd ic_clock[] = {        /* ring + 2 hands */
+static const struct ic_cmd ic_clock[] = {        /* ring + 2 hands */
     MV(92,50), CB(92,73,73,92,50,92), CB(27,92,8,73,8,50), CB(8,27,27,8,50,8), CB(73,8,92,27,92,50), CL,
     MV(50,16), CB(27,16,16,27,16,50), CB(16,73,27,84,50,84), CB(73,84,84,73,84,50), CB(84,27,73,16,50,16), CL,
     MV(47,50), LN(47,28), LN(53,28), LN(53,50), CL,                 /* hour hand up */
     MV(50,47), LN(72,47), LN(72,53), LN(50,53), CL,                 /* minute hand right */
 };
-static const struct vg_cmd ic_image[] = {        /* frame + sun + mountain */
+static const struct ic_cmd ic_image[] = {        /* frame + sun + mountain */
     MV(12,20), LN(88,20), LN(88,80), LN(12,80), CL,                 /* outer */
     MV(18,74), LN(82,74), LN(82,26), LN(18,26), CL,                 /* inner (hole) */
     MV(38,40), CB(38,46,33,50,28,50), CB(23,50,18,46,18,40), CB(18,34,23,30,28,30), CB(33,30,38,34,38,40), CL, /* sun */
@@ -74,7 +93,7 @@ static const struct vg_cmd ic_image[] = {        /* frame + sun + mountain */
  * Each petal is base -> out along one side -> tip -> back along the other, all
  * six wound the same way, so nonzero unions them and the overlap at the centre
  * costs nothing. Tips at radius 40, control points offset 20 perpendicular. */
-static const struct vg_cmd ic_photos[] = {
+static const struct ic_cmd ic_photos[] = {
     MV(50,50), CB(50,70, 90,70, 90,50), CB(90,30, 50,30, 50,50), CL,   /*   0 deg */
     MV(50,50), CB(33,60, 53,95, 70,85), CB(87,75, 67,40, 50,50), CL,   /*  60     */
     MV(50,50), CB(33,40, 13,75, 30,85), CB(47,95, 67,60, 50,50), CL,   /* 120     */
@@ -88,7 +107,7 @@ static const struct vg_cmd ic_photos[] = {
  * whose teeth alias into a ring, and it says "machinery" where this window
  * actually says "the values you chose". The knobs are circles unioned onto the
  * tracks; same winding, so no hole. */
-static const struct vg_cmd ic_sliders[] = {
+static const struct ic_cmd ic_sliders[] = {
     MV(12,23), LN(88,23), LN(88,29), LN(12,29), CL,                    /* track 1 */
     MV(75,26), CB(75,31,71,35,66,35), CB(61,35,57,31,57,26),
                CB(57,21,61,17,66,17), CB(71,17,75,21,75,26), CL,       /* knob  1 */
@@ -100,32 +119,71 @@ static const struct vg_cmd ic_sliders[] = {
                CB(49,69,53,65,58,65), CB(63,65,67,69,67,74), CL,       /* knob  3 */
 };
 
-static const struct { const struct vg_cmd *c; int n; } TBL[ICON_COUNT] = {
-    [ICON_FOLDER]   = { ic_folder,   sizeof ic_folder   / sizeof(struct vg_cmd) },
-    [ICON_DOC]      = { ic_doc,      sizeof ic_doc      / sizeof(struct vg_cmd) },
-    [ICON_TERMINAL] = { ic_terminal, sizeof ic_terminal / sizeof(struct vg_cmd) },
-    [ICON_GRID]     = { ic_grid,     sizeof ic_grid     / sizeof(struct vg_cmd) },
-    [ICON_GLOBE]    = { ic_globe,    sizeof ic_globe    / sizeof(struct vg_cmd) },
-    [ICON_CODE]     = { ic_code,     sizeof ic_code     / sizeof(struct vg_cmd) },
-    [ICON_CHART]    = { ic_chart,    sizeof ic_chart    / sizeof(struct vg_cmd) },
-    [ICON_CLOCK]    = { ic_clock,    sizeof ic_clock    / sizeof(struct vg_cmd) },
-    [ICON_IMAGE]    = { ic_image,    sizeof ic_image    / sizeof(struct vg_cmd) },
-    [ICON_PHOTOS]   = { ic_photos,   sizeof ic_photos   / sizeof(struct vg_cmd) },
-    [ICON_SLIDERS]  = { ic_sliders,  sizeof ic_sliders  / sizeof(struct vg_cmd) },
+static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
+    [ICON_FOLDER]   = { ic_folder,   sizeof ic_folder   / sizeof(struct ic_cmd) },
+    [ICON_DOC]      = { ic_doc,      sizeof ic_doc      / sizeof(struct ic_cmd) },
+    [ICON_TERMINAL] = { ic_terminal, sizeof ic_terminal / sizeof(struct ic_cmd) },
+    [ICON_GRID]     = { ic_grid,     sizeof ic_grid     / sizeof(struct ic_cmd) },
+    [ICON_GLOBE]    = { ic_globe,    sizeof ic_globe    / sizeof(struct ic_cmd) },
+    [ICON_CODE]     = { ic_code,     sizeof ic_code     / sizeof(struct ic_cmd) },
+    [ICON_CHART]    = { ic_chart,    sizeof ic_chart    / sizeof(struct ic_cmd) },
+    [ICON_CLOCK]    = { ic_clock,    sizeof ic_clock    / sizeof(struct ic_cmd) },
+    [ICON_IMAGE]    = { ic_image,    sizeof ic_image    / sizeof(struct ic_cmd) },
+    [ICON_PHOTOS]   = { ic_photos,   sizeof ic_photos   / sizeof(struct ic_cmd) },
+    [ICON_SLIDERS]  = { ic_sliders,  sizeof ic_sliders  / sizeof(struct ic_cmd) },
 };
 
 static struct { int px, w, h; uint8_t *cov; } cache[ICON_COUNT];
 
+/* Path storage for the replay. Caller-owned, like every buffer the engine
+ * touches -- 4096 points is 32 KiB of kernel .bss and clears the worst icon
+ * here (the six-petal pinwheel, twelve cubics) at wm.c's 512 px ceiling with
+ * room to spare; the dock draws these at 31. An icon that overflowed would be
+ * refused by gfx_fill_mask_subs rather than drawn half-formed. */
+#define IC_MAXPT  4096
+#define IC_MAXSUB 64
+static int ic_pt[IC_MAXPT * 2];
+static int ic_sub[IC_MAXSUB];
+static struct gfx_path ic_path;
+
+/* 16 sub-scanlines, not the engine's default 4, and for the same measured
+ * reason type uses 16: several of these icons are built from thin horizontal
+ * slabs -- the sliders' three tracks, the chart's baseline, the terminal's
+ * underscore -- whose top and bottom edges both land inside one sub-scanline
+ * band at 4 and come out visibly uneven. The 4x vertical cost is paid once per
+ * (id, px) and cached below, exactly like a glyph, so the trade that is wrong
+ * for a button being dragged is right here. */
+#define IC_SUBS   16
+
 void icon_draw(int id, int x, int y, int px, uint32_t color)
 {
     if (id < 0 || id >= ICON_COUNT || !TBL[id].c) return;
+    if (px <= 0 || px > GFX_MAX_W) return;
     if (cache[id].px != px || !cache[id].cov) {
         if (cache[id].cov) { kfree(cache[id].cov); cache[id].cov = 0; }
         uint8_t *cov = kmalloc((unsigned long)px * px);
         if (!cov) return;
-        int w, h;
-        if (vg_render_path(TBL[id].c, TBL[id].n, 100, px, cov, px * px, &w, &h) != 0) { kfree(cov); return; }
-        cache[id].px = px; cache[id].w = w; cache[id].h = h; cache[id].cov = cov;
+        /* icon units (0..100, y down) -> device 24.8, per point. */
+        #define SX(v) ((int)(((long)(v) * px * 256) / 100))
+        gfx_path_init(&ic_path, ic_pt, IC_MAXPT, ic_sub, IC_MAXSUB);
+        for (int i = 0; i < TBL[id].n; i++) {
+            const struct ic_cmd *c = &TBL[id].c[i];
+            switch (c->op) {
+            case IC_MOVE:  gfx_move_to (&ic_path, SX(c->x[0]), SX(c->y[0])); break;
+            case IC_LINE:  gfx_line_to (&ic_path, SX(c->x[0]), SX(c->y[0])); break;
+            case IC_QUAD:  gfx_quad_to (&ic_path, SX(c->x[0]), SX(c->y[0]),
+                                                  SX(c->x[1]), SX(c->y[1])); break;
+            case IC_CUBIC: gfx_cubic_to(&ic_path, SX(c->x[0]), SX(c->y[0]),
+                                                  SX(c->x[1]), SX(c->y[1]),
+                                                  SX(c->x[2]), SX(c->y[2])); break;
+            case IC_CLOSE: gfx_close   (&ic_path); break;
+            }
+        }
+        #undef SX
+        if (!gfx_fill_mask_subs(&ic_path, GFX_NONZERO, cov, px, px, 0, 0, IC_SUBS)) {
+            kfree(cov); return;
+        }
+        cache[id].px = px; cache[id].w = px; cache[id].h = px; cache[id].cov = cov;
     }
     fb_blit_glyph(x, y, cache[id].cov, cache[id].w, cache[id].h, color);
 }

@@ -71,7 +71,7 @@ test-preview: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
 # the player and the 1490 ms it reports is a number nobody checked.
 PREVIEW_CLI_DEPS := $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                     c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
-                    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
+                    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
                     $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 
 $(BUILD)/previewplay.elf: $(PREVIEW_CLI_DEPS)
@@ -80,7 +80,7 @@ $(BUILD)/previewplay.elf: $(PREVIEW_CLI_DEPS)
 	$(CC) $(UCFLAGS) -DPREVIEW_CLI -c $(GUIDIR)/preview.c -o $(BUILD)/apps/previewplay.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/previewplay.crt0c.o $(BUILD)/apps/previewplay.o \
-	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) \
+	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
 	    $(LIBC_OBJS) --end-group
 $(BUILD)/previewplay.aex: $(BUILD)/previewplay.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewplay.elf $@ previewplay - 'P' 200 150 110
@@ -92,7 +92,7 @@ $(BUILD)/previewnegctl.elf: $(PREVIEW_CLI_DEPS)
 	    -o $(BUILD)/apps/previewnegctl.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/previewnegctl.crt0c.o $(BUILD)/apps/previewnegctl.o \
-	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) \
+	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
 	    $(LIBC_OBJS) --end-group
 $(BUILD)/previewnegctl.aex: $(BUILD)/previewnegctl.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewnegctl.elf $@ previewnegctl - 'P' 200 150 110
@@ -113,13 +113,13 @@ $(BUILD)/previewnegctl.aex: $(BUILD)/previewnegctl.elf tools/mkaex.py
 $(BUILD)/previewneg.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                          c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
                          $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
-                         $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS)
+                         $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview.c \
 	    -o $(BUILD)/apps/previewneg.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/previewneg.o $(VID_OBJ) $(MED_OBJ) \
-	    $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
+	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
 $(BUILD)/previewneg.aex: $(BUILD)/previewneg.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewneg.elf $@ Preview h264 'P' 200 150 110
 

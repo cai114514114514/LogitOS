@@ -80,31 +80,52 @@ static short g_act[GFX_MAX_ACTIVE];
 static struct { int x; int dir; } g_cross[GFX_MAX_ACTIVE];
 static unsigned char g_row[GFX_MAX_W];
 
+/* THE ROW ACCUMULATOR, and why it is not the byte row itself.
+ *
+ * A row is built by adding, once per sub-scanline, the length each span covers
+ * inside each pixel. That length is exact -- it is the analytic half of the
+ * construction -- so the only question is where the partial sums live. They USED
+ * to live in g_row, the finished 0..255 byte row, with each sub-scanline's
+ * contribution converted on the spot as `(256/subs) * len / 256`. That integer
+ * divide truncates, and it truncates ONCE PER SUB-SCANLINE, so the error grows
+ * with `subs` -- backwards for the one knob whose entire purpose is more
+ * accuracy. At the default subs=4 it costs up to 3/255 on an edge pixel and
+ * nobody noticed. At subs=16, which is what type uses, it costs up to 15/255,
+ * always in the same direction, on every antialiased pixel of every glyph.
+ *
+ * It was invisible until glyphs moved onto this engine and could be diffed
+ * against the rasterizer they replaced: c/kernel/gui/raster.c summed lengths in
+ * an int and divided ONCE per pixel, so it did not have this error, and the
+ * migration measured every glyph in the machine coming out systematically
+ * lighter -- mean error against FreeType rising from 0.74 to 2.02 on ui.ttf and
+ * similarly on five other fonts, and 0.48 to 0.95 against the supersampled
+ * oracle in tests/unit/glyph_agree_test.c. Summing exactly here and converting
+ * once per pixel puts it at 0.43, i.e. better than the code it replaced rather
+ * than merely equal to it, and makes `subs` monotonic again.
+ *
+ * unsigned short and not int: the accumulator holds covered length in 1/256 px
+ * summed over at most GFX_MAX_SUBS sub-scanlines, so it cannot exceed 32*256 =
+ * 8192. That is 8,192 B of .bss (4,096 B more than the byte row alone), against
+ * 16,384 B for an int row -- and this is kernel .bss, see gfx.h's LIMITS. */
+static unsigned short g_acc[GFX_MAX_W];
+
 #ifndef GFX_NO_AA
-/* Add `amt` of coverage over the half-open span [x0,x1), both in 1/256 px.
- * Whole pixels take the full amount; the two partial ends take their fraction.
- * This is the analytic half of the construction. */
-static void span_add(unsigned char *row, int n, long x0, long x1, int amt)
+/* Accumulate the covered LENGTH of the half-open span [x0,x1) (both in 1/256
+ * px) into each pixel it touches. Whole pixels take 256, the two partial ends
+ * take their exact fraction. No division and no scaling by `subs` here -- see
+ * the g_acc comment for why that conversion happens once, later. */
+static void span_add(unsigned short *acc, int n, long x0, long x1)
 {
     long lim = (long)n * 256;
     if (x0 < 0) x0 = 0;
     if (x1 > lim) x1 = lim;
     if (x1 <= x0) return;
     int p0 = (int)(x0 >> 8), p1 = (int)((x1 - 1) >> 8);
-    if (p0 == p1) {
-        int v = row[p0] + amt * (int)(x1 - x0) / 256;
-        row[p0] = (unsigned char)(v > 255 ? 255 : v);
-        return;
-    }
-    int v = row[p0] + amt * (256 - (int)(x0 & 255)) / 256;
-    row[p0] = (unsigned char)(v > 255 ? 255 : v);
-    for (int p = p0 + 1; p < p1; p++) {
-        v = row[p] + amt;
-        row[p] = (unsigned char)(v > 255 ? 255 : v);
-    }
+    if (p0 == p1) { acc[p0] = (unsigned short)(acc[p0] + (x1 - x0)); return; }
+    acc[p0] = (unsigned short)(acc[p0] + (256 - (int)(x0 & 255)));
+    for (int p = p0 + 1; p < p1; p++) acc[p] = (unsigned short)(acc[p] + 256);
     int tail = (int)(x1 & 255); if (!tail) tail = 256;
-    v = row[p1] + amt * tail / 256;
-    row[p1] = (unsigned char)(v > 255 ? 255 : v);
+    acc[p1] = (unsigned short)(acc[p1] + tail);
 }
 #endif
 
@@ -113,27 +134,60 @@ static void span_add(unsigned char *row, int n, long x0, long x1, int amt)
  * either wholly in or wholly out. Every shape still draws and still looks
  * broadly right, which is exactly the point: the accuracy assertions against
  * the supersampled reference must FAIL, and that is what demonstrates they are
- * measuring the rasterizer rather than the geometry. */
-static void span_hard(unsigned char *row, int n, long x0, long x1)
+ * measuring the rasterizer rather than the geometry. Writes a FULL pixel of
+ * length rather than 255 directly, because the conversion below is the only
+ * place that turns length into alpha and the control must not sneak past it. */
+static void span_hard(unsigned short *acc, int n, long x0, long x1)
 {
     int p0 = (int)((x0 + 128) >> 8), p1 = (int)((x1 + 128) >> 8);
     if (p0 < 0) p0 = 0;
     if (p1 > n) p1 = n;
-    for (int p = p0; p < p1; p++) row[p] = 255;
+    for (int p = p0; p < p1; p++) acc[p] = 256;
 }
 #endif
 
+/* Accumulated length -> 0..255 alpha, once per pixel: v = acc * 255 / (subs*256).
+ *
+ * `inv` is that divisor's reciprocal in 16.16, computed once per sweep, because
+ * a real divide here is one per pixel of every row of every fill and it showed
+ * on bench-gfx. It is not an approximation for any `subs` this tree uses: the
+ * exact reciprocal is 65280/subs, so the 16.16 form is EXACT whenever subs
+ * divides 65280 -- which covers 1,2,3,4,5,6,8,10,12,15,16,17,20,24,30,32 and in
+ * particular both numbers actually passed (4 for shapes, 16 for type). For the
+ * remaining values (7, 9, 11, 13, 14, 18, ...) it is off by at most 1/255,
+ * verified by exhaustive comparison against the exact rounded quotient over
+ * every (subs, acc) pair. The two short-circuits are not micro-optimisation
+ * either: empty and fully-covered pixels are almost all of a row, and they are
+ * the two cases where an approximate reciprocal would be most visible. */
+static void acc_to_row(int w, int full, unsigned inv)
+{
+    for (int i = 0; i < w; i++) {
+        unsigned a = g_acc[i];
+        g_row[i] = a == 0            ? 0
+                 : a >= (unsigned)full ? 255
+                 : (unsigned char)((a * inv + 32768u) >> 16);
+    }
+}
+
 /* ---- edge table ---- */
 
+/* `* 65536` and not `<< 16`, here and at the other three sites in this
+ * directory that scale a signed delta into 16.16 (gfx_math.c's inverse,
+ * gfx_stroke.c's normalise): left-shifting a NEGATIVE signed value is undefined
+ * behaviour in C, and every leftward edge in every shape has a negative
+ * x1 - x0. It generates the identical instruction and had been here since the
+ * engine was written; nothing caught it until glyphs moved onto this rasterizer
+ * and `make test-font-fuzz` -- an ASan/UBSan build that mutates real fonts --
+ * became the first sanitizer build in the tree that reaches gfx at all. */
 static int add_edge(int n, int x0, int y0, int x1, int y1)
 {
     if (y0 == y1) return n;                    /* horizontal: contributes nothing */
     if (n >= GFX_MAX_EDGES) return -1;
     struct edge *e = &g_edge[n];
     if (y0 < y1) { e->ytop = y0; e->ybot = y1; e->xtop = x0; e->dir = 1;
-                   e->dxdy = (int)(((long long)(x1 - x0) << 16) / (y1 - y0)); }
+                   e->dxdy = (int)(((long long)(x1 - x0) * 65536) / (y1 - y0)); }
     else         { e->ytop = y1; e->ybot = y0; e->xtop = x1; e->dir = -1;
-                   e->dxdy = (int)(((long long)(x0 - x1) << 16) / (y0 - y1)); }
+                   e->dxdy = (int)(((long long)(x0 - x1) * 65536) / (y0 - y1)); }
     return n + 1;
 }
 
@@ -204,23 +258,21 @@ static int sweep(int ne, int rule, int ox, int y0, int y1, int w, int subs,
 {
     int nact = 0, next = 0;
     long ox256 = (long)ox * 256;
-#ifndef GFX_NO_AA
-    /* Loop-invariant over the whole sweep (subs is fixed for the call) but
-     * NOT over the k-loop that computes `ys`, so only this one -- the
-     * per-span coverage amount -- can be hoisted without touching the sample
-     * positions span_add's accuracy depends on; see the raster() comment for
-     * why `ys` itself keeps its division. Computed here rather than trusting
-     * the compiler to hoist it out of sweep()'s own k-loop, since sweep()
+    /* The length->alpha divisor and its 16.16 reciprocal. Loop-invariant over
+     * the whole sweep (subs is fixed for the call) but NOT over the k-loop that
+     * computes `ys`, so hoisting these touches nothing the sampling depends on;
+     * see the raster() comment for why `ys` itself keeps its division.
+     * Computed here rather than trusting the compiler to hoist, since sweep()
      * alone (subs is just a parameter) cannot prove subs != 0 the way
      * raster()'s caller-side clamp does. */
-    int amt = 256 / subs;
-#endif
+    int full = subs * 256;
+    unsigned inv = (255u << 16) / (unsigned)full;
 
     /* Skip edges that end above the first row we care about. */
     while (next < ne && g_edge[g_order[next]].ybot <= (long)y0 * 256) next++;
 
     for (int y = y0; y < y1; y++) {
-        if (commit) gfx_zero(g_row, w);
+        if (commit) gfx_zero(g_acc, w * (int)sizeof g_acc[0]);
         for (int k = 0; k < subs; k++) {
             int ys = (y << 8) + (k * 256 + 128) / subs;
             /* admit newly started edges */
@@ -264,14 +316,14 @@ static int sweep(int ne, int rule, int ox, int y0, int y1, int w, int subs,
                     int inside = (rule == GFX_EVENODD) ? (wind & 1) : (wind != 0);
                     if (!inside) continue;
 #ifdef GFX_NO_AA
-                    span_hard(g_row, w, g_cross[i].x, g_cross[i + 1].x);
+                    span_hard(g_acc, w, g_cross[i].x, g_cross[i + 1].x);
 #else
-                    span_add(g_row, w, g_cross[i].x, g_cross[i + 1].x, amt);
+                    span_add(g_acc, w, g_cross[i].x, g_cross[i + 1].x);
 #endif
                 }
             }
         }
-        if (commit) fn(user, y, g_row, w);
+        if (commit) { acc_to_row(w, full, inv); fn(user, y, g_row, w); }
     }
     return 1;
 }

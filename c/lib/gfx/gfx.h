@@ -8,9 +8,18 @@
  * a second coverage rasterizer inside the widget toolkit (c/apps/gui/aui.c) and
  * a third hand-rolled paint path in the browser (c/apps/browser/browser_paint.c)
  * -- plus every new app starting from gui_rect. Open Logit is the one engine
- * those are built on. It is a LIBRARY beside c/lib/text and c/lib/image, and it
- * CONSUMES them: it rasterizes no glyph and decodes no image. Blurring that
- * line is how you end up with a fourth rasterizer instead of the first engine.
+ * those are built on. ALL THREE ARE NOW DELETED: aui's and browser_paint's went
+ * on the way in, and raster.c went when type moved onto this engine --
+ * c/lib/text/glyphras.c converts a font outline to a gfx_path and calls
+ * gfx_fill_mask_subs, and that is the whole of what used to be 285 lines of
+ * second rasterizer. Every glyph of every label, menu, title and CJK page in
+ * this machine is now rasterized by this file set.
+ *
+ * It is a LIBRARY beside c/lib/text and c/lib/image, and it CONSUMES them: it
+ * rasterizes no glyph and decodes no image. That distinction survives the
+ * migration exactly -- glyphras.c parses nothing and fills nothing; it converts
+ * one representation into another. Blurring the line is how you end up with a
+ * fourth rasterizer instead of the first engine.
  *
  * NOT ring-3-only, despite what this comment used to say. c/lib/gfx is filtered
  * out of C_SRC (kernel translation units) for c/lib/video, c/lib/audio,
@@ -63,7 +72,8 @@
 /* Sub-scanlines per pixel row. This USED to be a single compile-time constant
  * pinned to 4, on the claim that 4 is "the kernel glyph rasterizer's number and
  * therefore this engine's" -- that was false the day it was written: the glyph
- * rasterizer (c/kernel/gui/raster.c) uses 16 (SUB_SHIFT 4), not 4, and it uses
+ * rasterizer (then c/kernel/gui/raster.c, now this engine driven by
+ * c/lib/text/glyphras.c) uses 16 (its SUB_SHIFT was 4), not 4, and it uses
  * 16 for a measured reason -- at 4 a thin horizontal bar like an underscore,
  * whose top and bottom edges both land inside one sub-scanline band, comes out
  * 11/255 off FreeType on average; at 16 that drops to about 3. A shape and a
@@ -95,25 +105,29 @@
 #define GFX_MAX_SUBS 32     /* ceiling on the per-call `subs` argument         */
 
 /* ---------------------------------------------------------------- limits --
- * SIZED FOR TWO WORKLOADS THIS ENGINE DOES NOT SERVE YET: text-as-paths and
- * SVG, both scheduled in docs/superpowers/specs/2026-08-14-open-logit-2-design.md.
+ * SIZED FOR TWO WORKLOADS THIS ENGINE DID NOT SERVE WHEN THE NUMBERS WERE
+ * CHOSEN: text-as-paths (now landed -- c/lib/text/glyphras.c) and SVG, both
+ * scheduled in docs/superpowers/specs/2026-08-14-open-logit-2-design.md.
  * The old numbers (edges 1536, active 512) were sized for the corner quadrants
  * and simple shapes phase 1 actually draws (<= 64 segments) and silently broke
  * on anything bigger -- see gfx_raster.c's overflow handling for what "broke"
  * meant before this milestone.
  *
- * GFX_MAX_EDGES 8192 matches c/kernel/gui/raster.c's MAXEDGE exactly, which is
- * not a coincidence: that is the kernel's OWN glyph rasterizer, sized for a
+ * GFX_MAX_EDGES 8192 matched c/kernel/gui/raster.c's MAXEDGE exactly, which was
+ * not a coincidence: that was the kernel's OWN glyph rasterizer, sized for a
  * CJK glyph at a large pixel size (Noto Sans SC, up to ~2.2 MB of glyf data),
- * and it is proven sufficient in production -- zh.wikipedia.org has rendered
- * through it since M14. When text moves onto this engine (a scheduled phase-2
- * step, "text as paths") it inherits exactly the number that already worked,
- * rather than a fresh guess. It is also generous for SVG path data: a
- * hand-drawn icon runs to dozens of segments, not thousands.
+ * and proven sufficient in production -- zh.wikipedia.org had rendered through
+ * it since M14. Text has since moved onto this engine and raster.c is deleted,
+ * so this number is no longer an inheritance from a neighbour: it is the cap
+ * that workload actually runs against. Measured (make test-glyph-agree): the
+ * densest glyph in any shipped font, at the largest size the kernel's glyph
+ * cache can serve, flattens to 1,079 points -- one edge each -- against this
+ * 8,192. It is also generous for SVG path data: a hand-drawn icon runs to
+ * dozens of segments, not thousands.
  *
- * GFX_MAX_ACTIVE 1024 matches the same rasterizer's MAXCROSS (crossings live
- * per sub-scanline there, since it has no persistent active-edge list and
- * rescans every edge each sub-scanline instead) -- the same proven-sufficient
+ * GFX_MAX_ACTIVE 1024 matched the same rasterizer's MAXCROSS (crossings lived
+ * per sub-scanline there, since it had no persistent active-edge list and
+ * rescanned every edge each sub-scanline instead) -- the same proven-sufficient
  * number, reused rather than picked fresh, for the same reason. Concurrently
  * active edges can only be a fraction of total edges in real geometry (nothing
  * plausible has 1024 contours simultaneously open at one scanline), so this is
@@ -127,7 +141,10 @@
  * COST: this is kernel .bss (see the note at the top of this file). The five
  * rasterizer statics (g_edge/g_order/g_act/g_cross/g_row in gfx_raster.c) were
  * 43,008 B at the old caps; at these caps they are 194,560 B -- see the
- * per-array arithmetic in gfx_raster.c's file comment. Plus the (unchanged)
+ * per-array arithmetic in gfx_raster.c's file comment. A sixth has since
+ * joined them, g_acc (8,192 B), the exact coverage accumulator that the glyph
+ * migration proved was necessary; its own comment in gfx_raster.c carries the
+ * measurement. Plus the (unchanged)
  * mask cache (82,944 B) and corner-tile scratch (4,128 B), the engine's total
  * static footprint goes from about 130,080 B to about 281,632 B, a delta of
  * 151,552 B (~148 KiB). Raising these is a real cost paid by every kernel

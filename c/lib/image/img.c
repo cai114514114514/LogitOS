@@ -21,6 +21,33 @@ void img_register(img_detect_fn detect, img_decode_fn decode)
     img_register_anim(detect, decode, 0);
 }
 
+/* WEAK, and this is the one place that needs explaining before touching it.
+ * svg.c is no longer in the kernel's C_SRC (2026-08-15, "one rasterizer for
+ * every pixel the machine draws" -- see the Makefile's C_SRC comment): it
+ * used to carry its own scanline filler and its own double-precision libm,
+ * both now gone in favour of building an ordinary gfx_path and handing it to
+ * Open Logit, but that rewrite does not make a bytes-in-attacker-shaped-XML
+ * parser a thing ring 0 should run, so it stays out. img_init() below is
+ * unconditional and compiles into BOTH the kernel and every ring-3 image
+ * consumer -- it has no #ifdef to tell which -- so it always calls
+ * svg_register(), and the kernel build would fail to LINK without some
+ * definition of that symbol. This weak one is that definition: wherever
+ * svg.c is also linked (the browser, Preview, imgcheck, the host image
+ * tests -- everywhere the Makefile lists svg.c explicitly), its strong
+ * svg_register() overrides this and SVG decodes normally. In the kernel,
+ * where svg.c is absent, this is what runs: it registers nothing, so
+ * img_decode() treats SVG bytes exactly like any other format with no
+ * registered decoder -- returns "unsupported", the same path a kernel build
+ * already takes for WOFF or AVIF. That is a real, intentional loss of a
+ * capability (no kernel caller can decode an .svg any more), not a silent
+ * one: see the C_SRC comment for what it costs the wallpaper loader (nothing
+ * today -- no on-disk asset and no Settings option ever named an .svg
+ * wallpaper) and where the code that would need to change lives. The exact
+ * pattern this mirrors is rust_host_shim.c's weak img_register_anim, for the
+ * identical reason: a strong definition here would be a `multiple definition
+ * of svg_register` in every binary that also links the real one. */
+__attribute__((weak)) void svg_register(void) {}
+
 void img_init(void)
 {
     if (inited) return;

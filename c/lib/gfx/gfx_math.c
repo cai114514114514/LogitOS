@@ -131,10 +131,15 @@ int gfx_m_invert(struct gfx_matrix *o, const struct gfx_matrix *m)
     long long det = ((long long)m->a * m->d - (long long)m->b * m->c) >> 16;
     if (det == 0) return 0;
     struct gfx_matrix t;
-    t.a = (int)(((long long)m->d << 16) / det);
-    t.b = (int)((-(long long)m->b << 16) / det);
-    t.c = (int)((-(long long)m->c << 16) / det);
-    t.d = (int)(((long long)m->a << 16) / det);
+    /* `* 65536` rather than `<< 16`: a matrix coefficient is signed and any
+     * rotation or flip makes one of these negative, and left-shifting a
+     * negative signed value is undefined behaviour. Same instruction, same
+     * fix as gfx_raster.c's add_edge -- see the comment there for how the
+     * class was found. */
+    t.a = (int)(((long long)m->d * 65536) / det);
+    t.b = (int)((-(long long)m->b * 65536) / det);
+    t.c = (int)((-(long long)m->c * 65536) / det);
+    t.d = (int)(((long long)m->a * 65536) / det);
     /* Translation of the inverse: -(A^-1) * t. */
     t.e = (int)(-(((long long)t.a * m->e + (long long)t.c * m->f) >> 16));
     t.f = (int)(-(((long long)t.b * m->e + (long long)t.d * m->f) >> 16));

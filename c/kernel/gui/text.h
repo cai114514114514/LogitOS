@@ -3,17 +3,13 @@
 
 #include <stdint.h>
 #include "ttf.h"
+/* text_raster and the two COLR-layer entry points. They used to be declared
+ * here and implemented in c/kernel/gui/raster.c -- a second scanline coverage
+ * rasterizer. That file is gone; c/lib/text/glyphras.c converts an outline to a
+ * gfx_path and Open Logit rasterizes it, like everything else that draws. */
+#include "glyphras.h"
 
 #define TEXT_UI_PX 16                 /* default UI pixel size */
-
-/* --- rasterizer (kernel/raster.c, pure integer, host-testable) --- */
-/* Rasterize glyph `gid` of `f` at `px` pixels into an 8-bit coverage bitmap.
- * On success: *w,*h = bitmap size; *ox = x offset from the pen origin to the
- * bitmap's left; *oy = pixels from the baseline up to the bitmap's top (so the
- * bitmap's top-left sits at (pen_x + *ox, baseline_y - *oy)). `cov` must hold
- * >= (*w)*(*h) bytes (covcap). Returns 0 ok, -1 on error / cov too small. */
-int text_raster(const struct ttf_font *f, int gid, int px,
-                uint8_t *cov, int covcap, int *w, int *h, int *ox, int *oy);
 
 /* --- text engine (kernel/text.c) --- */
 void text_init(void);                 /* load /fonts/ui.ttf + /fonts/mono.ttf */
