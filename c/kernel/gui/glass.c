@@ -139,7 +139,37 @@ int glass_refract_ratio(int u, int en, int ed)
  *
  * The lerp toward that environment is energy-conserving by construction --
  * what is reflected is not transmitted -- so the darker line just inside the
- * bright one comes out for free, and that pair IS the thickness cue. */
+ * bright one comes out for free, and that pair IS the thickness cue.
+ *
+ * RETUNED (unit F, "the dock panel has a dark outer rim"). The physics above
+ * is still correct and still stands -- what changed is not whether the
+ * outermost pixel is a near-mirror, it is HOW MIRROR-LIKE, and that is a
+ * property of the surface, not of Schlick's law. R0=0.04 models an optically
+ * ideal, atomically smooth glass interface; the environment it mirrors
+ * (glass_disp's caller in fb.c) is a flat faked gradient clamped no darker
+ * than a mid grey (96/255) specifically so it is never literal black -- and
+ * on the dock, whose full rounded-rect perimeter sits exposed against open
+ * backdrop on all four sides (unlike the menu bar, clipped to a slice of E by
+ * its own short height, or a titlebar, whose lower half hides under the
+ * window body), a full-strength grazing pixel replaces the tinted glass with
+ * that flat grey COMPLETELY, all the way around the shape -- and a single
+ * flat colour traced around a closed outline is exactly what a drawn stroke
+ * is, however correct the reflectance that produced it. A real dock panel is
+ * a frosted/anodized surface, not bare optical glass: microfacet roughness
+ * scatters part of a grazing ray diffusely rather than specularly, so even
+ * at theta->90 deg a matte material never reaches R=1 the way a polished lens
+ * does. GLASS_FRES_MAX models that with one number: it caps the OUTPUT this
+ * function can return, so the curve's SHAPE -- where the mirror sits, how
+ * fast it rises, that it exists at all -- is untouched (this is "its
+ * strength", not "whether to have one"), and only the single grazing pixel
+ * that would have hit 255 is pulled back to a strong-but-not-total blend --
+ * enough of the panel's own (backdrop-varying) tint survives at that pixel
+ * to break the flat, uniform, drawn-line quality, while the hairline itself,
+ * and the darker pixel just inside it that makes the pair read as thickness,
+ * both remain exactly where the physics puts them. Interior values (already
+ * well under the cap per the table above) are unaffected -- this only ever
+ * clips the single outermost ring. */
+#define GLASS_FRES_MAX 190
 int glass_schlick(int u)
 {
     long long u2 = ((long long)u * u) >> 16;
@@ -155,7 +185,8 @@ int glass_schlick(int u)
     long long m5 = (m4 * m + 32768) >> 16;                   /* (1-cos)^5  */
     long long R = 2621 + (((65536 - 2621) * m5 + 32768) >> 16);   /* R0 = 0.04 */
     if (R > 65536) R = 65536;
-    return (int)((R * 255 + 32768) >> 16);
+    int out = (int)((R * 255 + 32768) >> 16);
+    return out > GLASS_FRES_MAX ? GLASS_FRES_MAX : out;
 }
 
 void glass_build_lut(int E, int refract)

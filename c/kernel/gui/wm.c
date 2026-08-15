@@ -424,9 +424,28 @@ void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
  *
  * An unfocused window sits lower: less offset, less blur, less opacity. That is
  * the whole depth cue, and it is why focus is legible from across the room. */
-#define WSH_DY(f)    ((f) ? S(8)  : S(2))
-#define WSH_BLUR(f)  ((f) ? S(18) : S(9))
-#define WSH_ALPHA(f) ((f) ? (g_ui_dark ? 130 : 62) : (g_ui_dark ? 90 : 40))
+/* RETUNED (unit F, "the geometry the numbers indict"): the gate measured the
+ * old constants (DY 8/2, BLUR 18/9, ALPHA 130-62/90-40) at 14px of falloff and
+ * ~21% peak darkening on a FOCUSED window -- tight and shallow next to a real
+ * macOS window shadow, which reads as noticeably wider, deeper and lower-
+ * offset. The ceiling on BLUR is not taste: fb_shadow's corner tile is
+ * `blur + radius` on a side, radius here is the window's own S(10) corner, and
+ * gfx_mask_corner refuses any tile past GFX_MASK_MAX=72 device px (fb.c
+ * pre-clamps rather than refuse, silently tightening the shadow past the
+ * ceiling -- see fb_shadow's own comment in fb.c). And S() SCALES: 32+10 = 42
+ * device px at 100%, 63 at 150% -- inside the ceiling -- but 84 at 200%, PAST
+ * it, where fb_shadow's pre-clamp tightens the focused blur to an effective
+ * ~26pt. That degradation is deliberate, consistent (the corner tile and the
+ * edge strips clamp together inside fb_shadow, so no seam) and COUNTED
+ * (fb_shadow_clamp_count in fb.h); shrinking the 100% shadow to protect a
+ * 200% ceiling would be backwards. If HiDPI shadows ever matter more than
+ * this, the ceiling itself (GFX_MASK_MAX) is the thing to raise.
+ * DY is kept strictly less than BLUR on both sides so the top
+ * edge (the blur-dy rows that clear the offset, see win_box below) never
+ * closes to nothing the way it would if DY caught up to BLUR. */
+#define WSH_DY(f)    ((f) ? S(14) : S(3))
+#define WSH_BLUR(f)  ((f) ? S(32) : S(14))
+#define WSH_ALPHA(f) ((f) ? (g_ui_dark ? 165 : 95) : (g_ui_dark ? 90 : 40))
 
 /* A window's real footprint: its rectangle PLUS the drop shadow, taken at the
  * FOCUSED extent always -- a window that loses focus while moving must not
@@ -1990,6 +2009,18 @@ static void draw_menubar(void)
  * them each frame and the click handler tests against. */
 #define DOCK_ISZ_PT 50
 #define DOCK_GAP_PT 14
+/* Vertical breathing room, top AND bottom, between an icon and the panel edge.
+ * RETUNED (unit F): this used to be a bare `S(20)` / `S(10)` split three ways
+ * across dock_geom, dock_hover_at and the click hit-test in the mouse handler
+ * below, with no name tying them together -- exactly the trap the WSH_ and
+ * DOCKSH_ single-definition macros elsewhere in this file exist to avoid, and
+ * the reason the icons visibly crowded the top/bottom edges was that all
+ * three copies agreed with EACH OTHER, just not with what "enough padding"
+ * should have been. One constant: isz=50 in a dh=isz+2*DOCK_PAD_PT panel now
+ * leaves 18pt each side instead of 10 (a panel 50/86=58% icon by height
+ * instead of 50/70=71%), close to a real macOS dock's proportion instead of
+ * the icons nearly touching the rim. */
+#define DOCK_PAD_PT 18
 static int dock_x0, dock_y0, dock_isz = DOCK_ISZ_PT, dock_gap = DOCK_GAP_PT;
 
 /* The dock's geometry, derived rather than remembered.
@@ -2006,7 +2037,7 @@ static void dock_geom(int *x0, int *y0, int *dw, int *dh)
     int n = nreg < 1 ? 1 : nreg;
     int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
     *dw = gap + n * (isz + gap);
-    *dh = isz + S(20);
+    *dh = isz + 2 * S(DOCK_PAD_PT);
     *x0 = (W - *dw) / 2;
     *y0 = H - *dh - S(12);
 }
@@ -2105,7 +2136,7 @@ static int dock_bounce_off(int i)
  * whole screen, which is correct -- there is no dock on screen yet either. */
 static int dock_hover_at(int x, int y)
 {
-    int dh = dock_isz + S(20);
+    int dh = dock_isz + 2 * S(DOCK_PAD_PT);
     if (y < dock_y0 || y >= dock_y0 + dh) return -1;
     for (int i = 0; i < nreg; i++) {
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
@@ -2133,13 +2164,37 @@ static void draw_dock(void)
      * the same question and requests a frame when the answer changes, which is
      * what still animates this as the cursor sweeps the dock now that plain
      * motion no longer repaints anything. */
-    int ccy = dock_y0 + S(10) + dock_isz / 2, animating = 0;
+    int ccy = dock_y0 + S(DOCK_PAD_PT) + dock_isz / 2, animating = 0;
     int hov = dock_hover_at(mx, my);
     for (int i = 0; i < nreg; i++) {
         if (i == hov) continue;                            /* hovered tile drawn last, on top */
         int b = dock_bounce_off(i); if (b) animating = 1;  /* launch bounce lifts the icon */
         int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
         dock_tile(i, ccx, ccy - b, dock_isz);
+    }
+    /* RUNNING-APP INDICATOR: a small dot under each app that has a live
+     * process -- the cheapest recognisable macOS dock trait there is, and the
+     * WM already has the answer for free (find_live_app is the exact check
+     * wm_launch makes to decide "focus the existing window" vs. "start a new
+     * one", keyed the same way: by the aex header NAME reg[] and apps[] both
+     * carry, not by file path). Anchored to the panel's own bottom edge and
+     * the BASE (non-magnified, non-bounced) icon column -- not `ccy - b` and
+     * not the 1.3x hover size -- so the dot sits still while the icon above
+     * it bounces or magnifies.
+     *
+     * DRAWN BEFORE THE MAGNIFIED HOVER TILE, and the order is the fix for a
+     * measured overlap: the enlarged tile's bottom edge (ccy + 0.65*isz)
+     * clears the dot row (dh - S(8)) by only S(8) - 0.15*isz -- under one
+     * point at today's icon size, negative past isz = 53pt. An earlier
+     * version drew the dots last and CLAIMED 2.5pt of clearance in this very
+     * comment; the adversarial pass measured the dot punched into the icon.
+     * Painting the icon over the dot instead makes the near-miss harmless at
+     * every icon size, and matches what the eye expects: the icon in front,
+     * the indicator behind it. */
+    for (int i = 0; i < nreg; i++) {
+        if (!find_live_app(reg[i].name)) continue;
+        int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
+        fb_fill_circle(ccx, dock_y0 + dh - S(8), S(2), g_ui_dark ? rgb(235, 236, 240) : rgb(58, 58, 64));
     }
     if (hov >= 0) {
         int b = dock_bounce_off(hov); if (b) animating = 1;
@@ -2178,6 +2233,24 @@ static void draw_clock(void)
  * perimeter-only property those bands existed for -- see the comment on it in
  * fb.c, which carries their reasoning forward. */
 
+/* THE TITLEBAR/CONTENT SEAM (unit F, item 5). Both draw_frame_body and
+ * draw_frame used to fill this hairline THEMSELVES, before their caller's
+ * blit_content -- which starts at the exact same row, y+TBH, and is opaque.
+ * The hairline was therefore painted and immediately overpainted, every
+ * frame, and had never once reached the screen: what actually drew the
+ * boundary was the raw jump from the titlebar's glass/gradient to the
+ * content surface's flat fill, an accidental edge rather than a deliberate
+ * one, and a vibrant material meeting a flat one with literally nothing
+ * between them is exactly the "hard step" this item names. One function, and
+ * BOTH call sites now invoke it AFTER blit_content -- on top of the
+ * content's own first row, which is the only way to draw a pixel that a
+ * same-frame full-opacity blit will not immediately erase -- so the pixel
+ * that was always intended to be there finally is. */
+static void draw_titlebar_sep(int x, int y, int ww)
+{
+    fb_fill_rect(x, y, ww, S(1), g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+}
+
 /* The window body (rounded bg + gradient titlebar + traffic lights + title) drawn
  * at an explicit rect, so it can be rendered into an off-screen surface at origin
  * for the open-pop scale animation as well as straight into `back`. */
@@ -2188,7 +2261,8 @@ static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int
     if (g_ui_dark) { tbtop = focused ? rgb(60, 60, 70) : rgb(40, 40, 48); tbbot = focused ? rgb(44, 44, 52) : rgb(34, 34, 40); }
     else           { tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252); tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244); }
     fb_round_rect_vgrad(x, y, ww, TBH, S(10), tbtop, tbbot);
-    fb_fill_rect(x, y + TBH, ww, S(1), g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+    /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
+     * after blit_content, or it is covered before it is ever seen. */
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
     fb_fill_circle(x + S(16), y + S(15), S(6), focused ? rgb(255, 95, 86) : off);  /* close */
     fb_fill_circle(x + S(34), y + S(15), S(6), focused ? rgb(254, 188, 46) : off);
@@ -2212,7 +2286,8 @@ static void draw_frame(struct win *w, int focused)
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
     if (g_ui_dark) fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 30, 30, 40, a);
     else           fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 250, 250, 255, a);
-    fb_fill_rect(x, y + TBH, ww, S(1), g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
+    /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
+     * after blit_content, or it is covered before it is ever seen. */
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
     fb_fill_circle(x + S(16), y + S(15), S(6), focused ? rgb(255, 95, 86) : off);  /* close */
     fb_fill_circle(x + S(34), y + S(15), S(6), focused ? rgb(254, 188, 46) : off);
@@ -2559,6 +2634,7 @@ static int render_region(const struct drect *R)
                 fb_target(&tmp);           /* render the whole window into scratch... */
                 draw_frame_body(0, 0, w->w, w->h, w->title, focused);
                 blit_content(w, 0, TBH, w->w, w->h - TBH);
+                draw_titlebar_sep(0, TBH, w->w);       /* after the blit -- see draw_titlebar_sep */
                 fb_target(NULL);
                 int dw = w->w * s / 256, dh = w->h * s / 256;     /* ...scale to back */
                 fb_blit_surface_scaled(w->x + (w->w - dw) / 2, w->y + (w->h - dh) / 2, dw, dh, &tmp);
@@ -2570,6 +2646,7 @@ static int render_region(const struct drect *R)
          * content is stretched rather than left as a hole -- see blit_content
          * and RESIZE_APPLY_MS. */
         blit_content(w, w->x, w->y + TBH, w->w, w->h - TBH);
+        draw_titlebar_sep(w->x, w->y + TBH, w->w);     /* after the blit -- see draw_titlebar_sep */
     }
     { struct drect p; menubar_box(&p);                  /* frosted chrome ON TOP: */
       if (rect_hit(&p, R)) draw_menubar(); }            /* real-time vibrancy      */
@@ -2911,7 +2988,14 @@ static void wm_process_mouse(const struct inev *in)
          * as content clicks -- the icon you see is not the icon you hit. */
         int docked = 0;
         for (int i = 0; i < nreg; i++) {
-            int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + 10;
+            /* iy used to be the bare literal `+ 10` -- correct only because it
+             * happened to equal the old S(10) top padding at 1x scale, and
+             * silently wrong (a dead icon-height strip at the top of the hit
+             * box, at scale > 100%) the day either drifted from the other.
+             * S(DOCK_PAD_PT) is the same padding draw_dock() actually placed
+             * the icon with, so a click and the pixel it lands on agree at
+             * every backing scale, not just this one. */
+            int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + S(DOCK_PAD_PT);
             if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) {
                 wm_launch(reg[i].file, "");
                 dirty_dock();            /* the launch bounce starts in the dock */

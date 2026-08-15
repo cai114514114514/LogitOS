@@ -676,6 +676,22 @@ void fb_shadow(int x, int y, int w, int h, int radius, int dy, int blur, uint8_t
      * itself and its own shadow -- which is what a shadow never does. */
     if (dy > 0 && w > 2 * radius)
         fb_blend_rect(x + radius, y + h, w - 2 * radius, dy, 0, 0, 0, alpha);
+    /* When the offset exceeds the corner radius the same exposure reaches the
+     * CORNER columns: the bottom tiles do not begin until sy + h - radius,
+     * which with dy > radius sits BELOW the caster's bottom edge, and nothing
+     * else touches the two radius-wide spans under the corners -- the sliver
+     * above covers only the straight middle, the side strips only columns
+     * outside the box. Found as four rows of bright wallpaper punched out of
+     * the shadow at each bottom corner, the first time dy (14pt) grew past
+     * the corner radius (10pt); every earlier tuning had dy <= radius, which
+     * makes these rects zero-height, which is why the gap was never seen.
+     * Full alpha is correct here for the same reason it is in the sliver:
+     * these rows are interior to the offset shadow's body, above where the
+     * corner curve begins. */
+    if (dy > radius) {
+        fb_blend_rect(x,              y + h, radius, dy - radius, 0, 0, 0, alpha);
+        fb_blend_rect(x + w - radius, y + h, radius, dy - radius, 0, 0, 0, alpha);
+    }
 
     long blur256 = (long)blur * 256;
     for (int e = 0; e < blur; e++) {

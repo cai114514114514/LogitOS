@@ -124,3 +124,28 @@ test-greeter-negctl:
 	@$(MAKE) --no-print-directory $(DISK) >/dev/null
 
 test-desktop: test-usersettings-host test-desktop-os test-greeter-ui
+
+# ---------------------------------------------------------------------------
+# THE LOOK GATE -- a second, unrelated unit appended to this fragment rather
+# than given its own tests/*.mk file, because the -include line an orchestrator
+# has to add is the scarce resource here (see the file header for why a
+# whole-file overwrite is the failure mode every fragment in this tree exists
+# to avoid): tests/desktop.mk is ALREADY -included by the Makefile, so adding
+# to it costs nothing and duplicating that line for one more target would not.
+# Nothing above this comment is touched or depended on by anything below it --
+# the greeter/settings targets and this one measure two unrelated things about
+# "the desktop" and happen to share a filename for that reason alone.
+#
+# WHAT THIS MEASURES, AND WHY IT IS A GATE AND NOT A SCREENSHOT: "it looks more
+# like macOS" cannot be checked, disagreed with, or regressed against. Every
+# claim tests/qmp/qmp_desktop_look.py makes is a NUMBER read off the guest's
+# OWN scanout (over QMP, never the host window -- tools/shot.sh's header is the
+# canonical statement of why that separation matters) -- how many pixels of
+# shadow, how deep, where an edge actually is. Full detail, including the three
+# known-broken pixel-level defects this gate deliberately still asserts (so a
+# fix -- or a further break -- is a number moving, not a screenshot somebody
+# eyeballed) is in that file's own header; this fragment only wires it up.
+test-desktop-look: $(ISO) $(DISK)
+	@bash tests/boot/run-desktop-look.sh $(ISO) $(DISK)
+
+.PHONY: test-desktop-look
