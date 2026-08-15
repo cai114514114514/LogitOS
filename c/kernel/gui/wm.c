@@ -1578,6 +1578,19 @@ void wm_launch(const char *aex_file, const char *arg)
      * window owner via ->gui. GUI apps are launched by the WM (ppid 0). */
     struct proc *p = proc_create(space, ap, ap->name, 0);
     if (!p) { serial_puts("[wm] launch: proc table full\n"); ap->used = ap->alive = 0; vmm_free_space(space); kfree(img); return; }
+    /* M28: THE GRANT. proc_create() deliberately defaults every new slot to
+     * DENY so that each creation site states what it trusts, out loud -- and
+     * this site stated nothing, which was fine for exactly as long as the
+     * syscall gate wasn't wired. The day it was (24130fcef), every
+     * Dock-launched app started holding caps=0x0: the browser's first
+     * sock_open returned -1, "session restored 0 tabs" was the same refusal
+     * through SYS_READ_FILE, and the scoreboard could not load its own
+     * self-test page -- found by the J unit's startup probe printing
+     * `caps=0x0`. GUI apps launched by the WM are the desktop: they are the
+     * same trust root the console shell is (proc_spawn grants it CAP_ALL,
+     * exec.c:369), and a per-app manifest narrowing this is future work that
+     * must arrive as a manifest, not as a silent zero. */
+    p->caps = CAP_ALL; p->fs_prefix[0] = 0;
     /* Give every app real stdio (fd 0/1/2 = the serial console). Apps that only
      * draw never touch them, but it means pipe()/dup2() in an app (e.g. the
      * Terminal spawning a shell) get fds >= 3 and don't collide with 0/1/2. */
