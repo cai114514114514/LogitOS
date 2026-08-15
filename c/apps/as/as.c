@@ -1,5 +1,6 @@
 #include "as.h"
 #include "lexer.h"
+#include "logit_abi.h"  /* SYS_CAP_QUERY + the kernel's CAP_* bits (M28) */
 #include <stdio.h>      /* FILE, fopen/fread/fclose, stdin */
 #include <stdlib.h>     /* malloc/realloc/free */
 #include <string.h>     /* strcmp (-c mode) */
@@ -7,6 +8,59 @@
 /* /bin/as : run a script file (as foo.as) or, with no argument, read a whole
  * program from stdin (so `echo 'print(6*7)' | as` works). The interpreter core
  * is portable; this file is the Logit/host entry that does the file I/O. */
+
+/* M28: learn what the KERNEL granted this process, and install it as the VM's
+ * held set. Without this the two halves of the milestone never meet -- the
+ * kernel maintains a per-process grant and narrows it across SYS_CAP_SPAWN, and
+ * the VM enforces one it was never told about, so on the real machine every
+ * script would run at the host default of DENY EVERYTHING and could not open a
+ * file. Nothing in the host test suite can see that: as_cap_test.c installs its
+ * own set through the C entry point, which is exactly the thing the device does
+ * not have.
+ *
+ * THE TWO BITMAPS ARE NOT THE SAME BITMAP, and copying one into the other is
+ * the bug this function exists to not have. The kernel's CAP_* (logit_abi.h)
+ * and the language's AS_CAP_* (as.h) were designed on the two sides of the
+ * contract and their values do NOT line up:
+ *
+ *     kernel   CAP_FS 0x01   CAP_NET 0x02   CAP_RAW 0x04   CAP_PROC 0x08 ...
+ *     language FS_READ 0x01  FS_WRITE 0x02  NET 0x04       PROC 0x08 ...
+ *
+ * A straight assignment would hand a network-only process AS_CAP_FS_WRITE and a
+ * raw-only process AS_CAP_NET -- silently, with no error anywhere, granting
+ * authority the kernel refused. So the mapping is written out one bit at a time
+ * and must stay that way; there is no shortcut here worth taking.
+ *
+ * CAP_FS becomes BOTH read and write. The kernel gates path access without
+ * distinguishing direction (syscall_cap_class() classifies SYS_READ_FILE and
+ * SYS_WRITE_FILE alike), so splitting it here would invent a refusal the kernel
+ * never made. The language keeps the finer distinction because attenuation can
+ * use it: a script holding both may hand a child read-only.
+ *
+ * FAILS CLOSED. A negative return means no kernel to ask -- the host build,
+ * where as_ll_syscall stubs to -1 -- and the held set is then left at its
+ * static default of zero. That is what keeps `make test-as-cap`'s
+ * default-deny assertions true, and it is the right answer for a real failure
+ * too: a process that cannot learn its grant has not been granted anything. */
+static void install_kernel_grant(void)
+{
+    char prefix[128];
+    prefix[0] = 0;
+    long k = as_ll_syscall(SYS_CAP_QUERY, (long)(uintptr_t)prefix, (long)sizeof prefix, 0);
+    if (k < 0) return;                      /* no kernel (host) -- stay at deny */
+
+    uint32_t bits = 0;
+    if (k & CAP_FS)   bits |= AS_CAP_FS_READ | AS_CAP_FS_WRITE;
+    if (k & CAP_NET)  bits |= AS_CAP_NET;
+    if (k & CAP_RAW)  bits |= AS_CAP_RAW;
+    if (k & CAP_PROC) bits |= AS_CAP_PROC;
+    if (k & CAP_GUI)  bits |= AS_CAP_GUI;
+
+    /* An empty prefix from the kernel means "unscoped", which the language
+     * spells NULL. Passing "" through would be read as a prefix that contains
+     * nothing but the empty path. */
+    as_caps_set(bits, prefix[0] ? prefix : NULL);
+}
 
 static char *slurp(FILE *f)
 {
@@ -41,6 +95,34 @@ static void stamp_tree(ObjFn *fn, ObjModule *m)
 int main(int argc, char **argv)
 {
     char *src;
+
+    /* Before anything else, including the compile-only path: a capability the
+     * VM does not know it holds is a capability nobody has. */
+    install_kernel_grant();
+
+    /* `as --scope PATH script.as ...` runs the script under a capability
+     * narrowed to PATH. This is attenuation at the command line, and it is the
+     * only reason it exists: without it there is no way to launch the SAME
+     * script twice under two different grants, and a single run that reports
+     * "denied" is equally consistent with the check working, with the file not
+     * existing, and with the script never having started. The M28 on-device
+     * gate (tests/boot/run-as-cap-test.sh) is exactly that pair of runs.
+     *
+     * IT CAN ONLY NARROW. as_caps_permit_path() answers "is PATH inside the
+     * prefix I already hold", so a request that is not contained is REFUSED
+     * rather than quietly applied -- `as --scope /` from a process scoped to
+     * /usr must not be a way back out. Note the flag consumes its two argv
+     * entries before as_set_args() runs, so args() never sees them. */
+    if (argc >= 3 && strcmp(argv[1], "--scope") == 0) {
+        if (!as_caps_permit_path(argv[2])) {
+            as_emit_cstr("as: --scope ");
+            as_emit_cstr(argv[2]);
+            as_emit_cstr(" is not inside the capability this process holds\n");
+            return 1;
+        }
+        as_caps_set(as_caps_bits(), argv[2]);
+        argv += 2; argc -= 2;
+    }
 
     /* Compile-only mode: `as -c in.as -o out.la` writes a .la (LAQ1 header +
      * serialized bytecode). as_compile gives a standalone ObjFn whose ->module is

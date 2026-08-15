@@ -24,7 +24,76 @@
  * int-0x80 wrappers (c/apps/libc/src/io.c); on the build host they are the host
  * libc. That is deliberate and it is what makes ports testable in `make test-as`
  * without QEMU: fork/exec/pipe/redirect all really happen, host-side.
- */
+ *
+ * M28 -- CAPABILITIES CONSUME AT ACQUISITION, NOT AT USE.
+ * See docs/superpowers/specs/2026-08-14-m28-capabilities.md and as_native.c's
+ * own CAP_RAW section (require_raw there, require_cap here -- same shape) for
+ * the sibling half of the story: every native in THIS file that can make the
+ * kernel create or start something checks the held set first, the same way
+ * peek/poke/syscall do in as_native.c. D9 is explicit that a capability is
+ * checked once, at the moment a resource comes into being, never again and
+ * never revoked -- so the checks below live exactly at the five places an OS
+ * handle is acquired and nowhere else in this file (not in port_method's
+ * read/write/etc, which only use handles already granted).
+ *
+ * Exactly five acquisition points, counted by reading this file rather than
+ * assumed (M28 brief's own instruction):
+ *   n_open      opens a file,        owns=1
+ *   n_port      wraps a borrowed fd, owns=0 (gated on the NUMBER -- see the
+ *               comment inside n_port for why kind must not be the test)
+ *   n_pipe      opens a pipe pair,   owns=1 (both ends)
+ *   n_run       builds an UNSTARTED ObjProc -- no kernel resource exists yet,
+ *               gated anyway so a script that may not spawn cannot even build
+ *               the intent to
+ *   proc_start  the ONE place fork()+exec() actually happen; reached from
+ *               n_run's .start()/.wait()/.out() AND from as_proc_launch (the
+ *               `with` acquire), so it is the real choke point regardless of
+ *               how a script got here -- AND the one place '<-'/'->' redirect
+ *               targets are opened (head->in_path / tail->out_path), which is
+ *               a file acquisition by path exactly like n_open's and is gated
+ *               the same way, at the same spot, for the same reason: a first
+ *               pass at this file checked CAP_PROC here and stopped, on the
+ *               reasoning "the resource proc_start acquires is the process" --
+ *               that reasoning is wrong. A pipeline stage's stdin/stdout
+ *               redirect is `open(2)` on a path this file itself calls (see
+ *               below in the per-stage loop), with the OS user's real
+ *               privileges, whether or not the exec'd program ever touches the
+ *               filesystem itself. Left ungated, `run(prog) -> path` and
+ *               `run(prog) <- path` are `open()` with the fs check silently
+ *               removed: a script holding CAP_PROC and NOT CAP_FS_WRITE can
+ *               create or overwrite any file the process can, and a script
+ *               scoped to CAP_FS_WRITE with prefix "/tmp" can write outside
+ *               "/tmp" through this door while the identical path handed to
+ *               open() directly is correctly refused. Proven, not assumed:
+ *               with only AS_CAP_PROC held, `run("echo","x") -> "/etc/..."`
+ *               used to create the file; with AS_CAP_PROC|AS_CAP_FS_WRITE
+ *               scoped to "/tmp", `run("echo","x") -> "/outside/tmp"` used to
+ *               write there too. Checked ONCE per pipeline, in the PARENT,
+ *               before any fork -- not in the child alongside the open() calls
+ *               themselves, so a denial is a normal catchable as_native_fail()
+ *               (the child is moments from execvp and has no clean way to
+ *               report a language-level error back through the process
+ *               boundary) and so every stage's fork is avoided entirely on a
+ *               refusal rather than half a pipeline being spawned first.
+ *               as_proc_redirect's own invariant (`->` only ever sets the
+ *               TAIL stage's out_path, `<-` only ever sets the HEAD's in_path)
+ *               means there are at most two paths to check per pipeline,
+ *               never one per stage.
+ *
+ * -DAS_CAP_NO_CHECK removes every check below at compile time (mirrors this
+ * file's own -DAS_PORT_NO_FINALIZE). Never "counts but does not enforce": the
+ * property under test is behavioral -- a denied script's open("/etc/...")
+ * must FAIL in the normal build and SUCCEED in this one, or a failure in the
+ * normal build could have an unrelated cause.
+ *
+ * WHAT THIS FILE DOES NOT DO. It does not decide whether AS_CAP_RAW should
+ * also unlock these checks (i.e. whether holding raw exempts a script from
+ * the fs/proc gates too). It does not need to: D5 already establishes that a
+ * script holding CAP_RAW can reach open/pipe/execve/fork directly through
+ * as_native.c's syscall(), unmediated by any port at all -- so there is
+ * nothing for a RAW-bypass here to buy that script it does not already have,
+ * and adding one would only be a second, harder-to-audit way to reach the
+ * same door. */
 
 #include "as.h"
 #include <fcntl.h>
@@ -53,6 +122,16 @@
 #define PORT_MAX_ARGS   256    /* argv entries in one stage */
 #define PORT_MAX_STAGES 32     /* stages in one pipeline */
 #define PORT_LINE_MAX   (1 << 20)
+/* Ceiling on the M28/D10 close-everything-else sweep in proc_start (see the
+ * comment there). sysconf(_SC_OPEN_MAX) is trusted for the real number but
+ * not for the loop bound: mini-libc answers a small, honest 32 (c/apps/libc/
+ * include/limits.h OPEN_MAX, matching c/kernel/exec/proc.h's NFD), but a host
+ * test environment can report a soft limit in the millions, and looping
+ * close() that many times would turn every process spawn in the test suite
+ * into a multi-second stall. 4096 is generous for anything this VM could
+ * plausibly have open (a script under NFD==16 on real Logit, or a host build
+ * with a handful of test fixtures) and bounded for anything it can't. */
+#define PORT_FD_SWEEP_MAX 4096
 
 /* Bookkeeping the tests read through port_stats(). `finalized` and `orphans`
  * count the times the COLLECTOR had to do the cleanup -- a backstop nobody has
@@ -67,6 +146,12 @@ void as_port_stats(long *open_now, long *finalized, long *orphans)
 }
 
 static int proc_start(ObjProc *head, int out_fd);   /* fwd: defined with the pipeline code */
+#ifndef AS_CAP_NO_CHECK
+/* fwd: M28 capability gate, defined with the other built-ins below. proc_start
+ * needs it above its own definition; the natives that also use it are defined
+ * later still, so one forward declaration serves both directions. */
+static int require_cap(uint32_t bit, const char *bitname, const char *what, const char *why);
+#endif
 
 /* ---------------------------------------------------------------- lifetime -- */
 
@@ -304,6 +389,46 @@ static int proc_start(ObjProc *head, int out_fd)
 {
     if (head->started) return 1;
     if (head->linked) { as_native_fail("this stage is inside a pipeline: start its head"); return 0; }
+#ifndef AS_CAP_NO_CHECK
+    /* M28 acquisition point 5 of 5, and the one that actually matters: this is
+     * where fork()+exec() happen. n_run()'s check (built-ins section below)
+     * stops a script from BUILDING a process value in the first place, but
+     * every path that could ever start one funnels through here regardless --
+     * .start()/.wait()/.out() and as_proc_launch (the `with` acquire) -- so
+     * this is the real gate and n_run's is the early, friendlier one. One
+     * check for the whole pipeline, not one per stage: every stage of a
+     * pipeline was itself built by n_run and already passed that gate, and
+     * this process's held set does not narrow between one stage and the next
+     * within a single proc_start call. */
+    if (!require_cap(AS_CAP_PROC, "proc", "run", "spawning a process")) return 0;
+    /* '<-'/'->' name a file by path exactly like open() does, and open() that
+     * path below (in the per-stage loop) with no further check -- so the gate
+     * has to be here, not there. as_proc_redirect's own invariant puts in_path
+     * only on the head stage and out_path only on the tail, so this is at most
+     * two checks regardless of how many stages the pipeline has. Parent side,
+     * before any fork, so a denial is caught cleanly by the interpreter and no
+     * stage of the pipeline gets a chance to run first. */
+    if (head->in_path) {
+        if (!require_cap(AS_CAP_FS_READ, "fs.read", "run", "'<-' reads a file"))
+            return 0;
+        if (!as_caps_permit_path(head->in_path->chars)) {
+            as_native_fail("run() needs capability 'fs': the '<-' path is outside the held prefix (M28 spec D6)");
+            return 0;
+        }
+    }
+    {
+        ObjProc *tail = head;
+        while (tail->next) tail = tail->next;
+        if (tail->out_path) {
+            if (!require_cap(AS_CAP_FS_WRITE, "fs.write", "run", "'->' writes a file"))
+                return 0;
+            if (!as_caps_permit_path(tail->out_path->chars)) {
+                as_native_fail("run() needs capability 'fs': the '->' path is outside the held prefix (M28 spec D6)");
+                return 0;
+            }
+        }
+    }
+#endif
 
     int prev_read = -1;
     for (ObjProc *s = head; s; s = s->next) {
@@ -345,6 +470,32 @@ static int proc_start(ObjProc *head, int out_fd)
                 if (fd < 0) _exit(127);
                 dup2(fd, 1); if (fd != 1) close(fd);
             }
+            /* M28/D10: fork() copies the WHOLE fd table, not just the two ends
+             * this stage wired above. Without this sweep, every port the
+             * script still has open -- another pipeline's plumbing, a file it
+             * forgot to close, whatever fd this whole VM inherited from
+             * whoever launched /bin/as -- rides into the child unconditionally,
+             * "whatever the child's own grant says" (spec s6). That makes
+             * every capability check this milestone adds theatre: a script
+             * scoped away from a file can still read it, so long as the
+             * PARENT happened to have it open at the moment of spawn.
+             *
+             * The fix has to be done by hand, in the child, right here. This
+             * kernel's execve() implements no close-on-exec at all -- see
+             * popen.c's file comment in mini-libc, which hits the identical
+             * wall for its own kept pipe fds and fixes it the same way, by an
+             * explicit sweep rather than relying on O_CLOEXEC (which mini-libc
+             * only remembers for F_GETFD to read back; nothing ever acts on
+             * it). Unlike popen.c's sweep, which only knows about its OWN
+             * registry of kept fds, this one is unconditional: 0/1/2 are the
+             * only descriptors a freshly exec'd program may assume mean
+             * anything, this stage's own wiring above has ALREADY landed
+             * whatever belongs there (or left inherited stdio alone) and
+             * closed its own spares, so anything still open at fd 3 or higher
+             * belongs to something this stage never named -- close() on an fd
+             * that was never open is a harmless EBADF, so the sweep does not
+             * need to know which fds actually exist first. */
+            for (int cfd = 3; cfd < PORT_FD_SWEEP_MAX; cfd++) close(cfd);
             execvp(av[0], av);
             _exit(127);                                 /* exec failed: the shell's 127 */
         }
@@ -381,14 +532,43 @@ static int proc_wait_all(ObjProc *head, int *status)
 
 /* ------------------------------------------------------------- built-ins -- */
 
-static int mode_flags(const char *m, int *flags)
+/* `need` is filled with the AS_CAP_FS_* bit(s) `mode` requires, alongside the
+ * open(2) flags -- one string comparison doing both jobs instead of two, and
+ * it keeps the capability answer for a mode defined in exactly the place the
+ * mode itself is, so a new mode string cannot add a flag without also adding
+ * the bit that gates it. */
+static int mode_flags(const char *m, int *flags, uint32_t *need)
 {
-    if (!strcmp(m, "r"))  { *flags = O_RDONLY; return 1; }
-    if (!strcmp(m, "w"))  { *flags = O_WRONLY | O_CREAT | O_TRUNC;  return 1; }
-    if (!strcmp(m, "a"))  { *flags = O_WRONLY | O_CREAT | O_APPEND; return 1; }
-    if (!strcmp(m, "rw")) { *flags = O_RDWR | O_CREAT; return 1; }
+    if (!strcmp(m, "r"))  { *flags = O_RDONLY; *need = AS_CAP_FS_READ; return 1; }
+    if (!strcmp(m, "w"))  { *flags = O_WRONLY | O_CREAT | O_TRUNC;  *need = AS_CAP_FS_WRITE; return 1; }
+    if (!strcmp(m, "a"))  { *flags = O_WRONLY | O_CREAT | O_APPEND; *need = AS_CAP_FS_WRITE; return 1; }
+    if (!strcmp(m, "rw")) { *flags = O_RDWR | O_CREAT; *need = AS_CAP_FS_READ | AS_CAP_FS_WRITE; return 1; }
     return 0;
 }
+
+#ifndef AS_CAP_NO_CHECK
+/* The gate every acquisition point below calls. Shaped exactly like
+ * as_native.c's require_raw (same file, same milestone, same reason to keep
+ * the two recognisably the same check): a catchable as_native_fail() that
+ * NAMES the missing capability, checked on every call rather than once at
+ * as_install_ports() time -- D1's attenuation chain can narrow the held set
+ * between one call and the next, and a check that only ran at registration
+ * could not see that a later call is no longer permitted.
+ *
+ * Returns 1 (granted) or 0 (denied, as_native_fail already armed) -- a plain
+ * int rather than a Value for the same reason require_raw is: as_native_fail
+ * always returns NIL_VAL whether the native goes on to succeed or not, so a
+ * Value here could not tell the caller which happened. */
+static int require_cap(uint32_t bit, const char *bitname, const char *what, const char *why)
+{
+    if (as_caps_have(bit)) return 1;
+    char msg[224];
+    snprintf(msg, sizeof msg,
+             "%s() needs capability '%s': %s (M28 spec s6)", what, bitname, why);
+    as_native_fail(msg);
+    return 0;
+}
+#endif
 
 /* Every handle-acquiring call goes through this. An fd table is a resource the
  * collector can free -- ports it has not swept yet are still holding descriptors
@@ -417,8 +597,26 @@ static Value n_open(int argc, Value *args)
         if (!IS_STR(args[1])) return as_native_fail("open(): mode must be a string");
         mode = AS_STR(args[1])->chars;
     }
-    int flags;
-    if (!mode_flags(mode, &flags)) return as_native_fail("open(): mode must be \"r\", \"w\", \"a\" or \"rw\"");
+    int flags; uint32_t need;
+    if (!mode_flags(mode, &flags, &need)) return as_native_fail("open(): mode must be \"r\", \"w\", \"a\" or \"rw\"");
+#ifndef AS_CAP_NO_CHECK
+    /* M28 acquisition point 1 of 5. Bits before path: a script holding
+     * cap.fs.read for the whole tree but asking for "w" learns THAT is the
+     * problem, rather than a path-shaped message that has nothing to do with
+     * why it failed. Path is checked regardless of which bit(s) `need` is --
+     * a script scoped to "/tmp" opening "/etc/passwd" for read is exactly the
+     * case the prefix exists to refuse, independent of what it wanted to do
+     * with the file once open. This is the language-level convenience half of
+     * the check (as_caps_permit_path is a lexical prefix test); the kernel is
+     * the real boundary and is symlink-aware where this cannot be (M28 spec
+     * D6, out of scope for this file). */
+    if ((need & AS_CAP_FS_READ) && !require_cap(AS_CAP_FS_READ, "fs.read", "open", "reading a file"))
+        return NIL_VAL;
+    if ((need & AS_CAP_FS_WRITE) && !require_cap(AS_CAP_FS_WRITE, "fs.write", "open", "writing a file"))
+        return NIL_VAL;
+    if (!as_caps_permit_path(AS_STR(args[0])->chars))
+        return as_native_fail("open() needs capability 'fs': the path is outside the held prefix (M28 spec D6)");
+#endif
     int fd = acquire_fd(AS_STR(args[0])->chars, flags);
     if (fd < 0) return NIL_VAL;                 /* absent file is a value, not an error */
     ObjPort *p = as_port_new(fd, PK_FILE, 1, AS_STR(args[0]));
@@ -434,6 +632,33 @@ static Value n_port(int argc, Value *args)
     if (argc != 1 || !IS_INT(args[0]) || AS_INT(args[0]) < 0 || AS_INT(args[0]) > 65535)
         return as_native_fail("port() takes a file descriptor");
     int fd = (int)AS_INT(args[0]);
+#ifndef AS_CAP_NO_CHECK
+    /* M28 acquisition point 2 of 5, and the one with no clean answer -- see
+     * the class-of-bug note in the file header. fd 0/1/2 are this process's
+     * OWN inherited stdio: naming one is not a NEW privilege, it is the
+     * privilege this process already runs with by construction, so nothing is
+     * charged for it (ash.as does exactly `port(0)`/`port(1)` at the top of
+     * the file -- gating those would leave every capability-scoped shell
+     * unable to talk to its own terminal, which is not what any bit in this
+     * milestone means to restrict).
+     *
+     * Any OTHER number is a guess this file cannot verify: spec s6 names the
+     * exact hole -- "a capability class chosen from kind is spoofable by
+     * choosing an fd number" -- and there is no fstat anywhere in this tree to
+     * ask the kernel what fd N actually is instead (confirmed by grep before
+     * writing this). That is structurally the same position peek()/poke() are
+     * in (D4: "there is no syscall to intercept"), so it is gated behind the
+     * same bit they are, AS_CAP_RAW, rather than invented as a sixth bit this
+     * milestone's locked batch does not have room for. This is also what
+     * makes the D10 fd-closing sweep in proc_start load-bearing rather than
+     * decorative: once a spawned child inherits only 0/1/2 plus what THIS
+     * process explicitly wired, there is nothing behind fd 3+ for a script to
+     * reach for except what it opened itself under its own already-checked
+     * grant. */
+    if (fd > 2 && !require_cap(AS_CAP_RAW, "raw", "port",
+            "an fd other than this process's own 0/1/2 cannot be verified here"))
+        return NIL_VAL;
+#endif
     ObjPort *p = as_port_new(fd, fd <= 2 ? PK_TTY : PK_FILE, 0, NULL);
     return p ? OBJ_VAL(p) : NIL_VAL;
 }
@@ -442,6 +667,15 @@ static Value n_pipe(int argc, Value *args)
 {
     (void)args;
     if (argc != 0) return as_native_fail("pipe() takes no arguments");
+#ifndef AS_CAP_NO_CHECK
+    /* M28 acquisition point 3 of 5. A pipe pair has no use in this language
+     * except to talk to a spawned process -- there is no other IPC target it
+     * could be handed to -- so it is gated behind the same bit run()/
+     * proc_start are, AS_CAP_PROC, rather than treated as capability-free
+     * because it never touches the filesystem or the network. */
+    if (!require_cap(AS_CAP_PROC, "proc", "pipe", "a pipe exists to talk to a process"))
+        return NIL_VAL;
+#endif
     int fds[2];
     if (pipe(fds) != 0) { gc_collect(); if (pipe(fds) != 0) return as_native_fail("pipe() failed"); }
     ObjList *l = as_list_new();
@@ -464,6 +698,16 @@ static Value n_pipe(int argc, Value *args)
  * text; the varargs form is what a script wants. Both make the same object. */
 static Value n_run(int argc, Value *args)
 {
+#ifndef AS_CAP_NO_CHECK
+    /* M28 acquisition point 4 of 5. run() only BUILDS a value -- no kernel
+     * resource exists until proc_start, which is gated too (that is the real
+     * choke point, reached from every path that can ever start a process) --
+     * but a script that may not spawn should not be able to construct the
+     * intent to either, so the refusal happens at the first call that names
+     * it, not only at the moment it would be acted on. */
+    if (!require_cap(AS_CAP_PROC, "proc", "run", "spawning a process"))
+        return NIL_VAL;
+#endif
     ObjList *av;
     if (argc == 1 && IS_LIST(args[0])) {
         ObjList *src = AS_LIST(args[0]);

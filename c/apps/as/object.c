@@ -178,9 +178,14 @@ static void tr_buf(Obj *o)
 {
     /* The bytes hold machine words, never Values -- only the shape is an object.
      * (A pointer field holds a raw address the GC knows nothing about; that is
-     * the same bargain addr() already makes.) */
-    gc_mark_obj((Obj *)((ObjBuf *)o)->shape);
+     * the same bargain addr() already makes.) M28: `parent`, when this ObjBuf is
+     * a slice, is the strong edge that keeps the viewed bytes alive -- without
+     * it a slice's parent could be swept while `raw` still points into it. */
+    ObjBuf *b = (ObjBuf *)o;
+    gc_mark_obj((Obj *)b->shape);
+    gc_mark_obj((Obj *)b->parent);
 }
+static void tr_cap(Obj *o) { gc_mark_obj((Obj *)((ObjCap *)o)->prefix); }
 static void tr_shape(Obj *o)
 {
     Shape *s = (Shape *)o;
@@ -269,6 +274,13 @@ static void fin_shape(Obj *o)
 static void fin_buf(Obj *o)
 {
     ObjBuf *b = (ObjBuf *)o;
+    /* A slice (parent != NULL) does not own `raw` -- it points inside the
+     * parent's allocation -- so it was never charged at creation (as_buf_slice_
+     * new) and must not be freed or refunded here. Freeing it would double-free
+     * the parent's buffer the moment the parent itself is collected; refunding
+     * heap_bytes for memory this object never charged would drift the GC's own
+     * accounting negative. */
+    if (b->parent) return;
     gc_account(-(long)b->nbytes);
     free(b->raw);
 }
@@ -312,6 +324,7 @@ static const ObjInfo OBJ_INFO[] = {
     [O_BUF]          = { "buffer",       sizeof(ObjBuf),         tr_buf,      fin_buf     },
     [O_PORT]         = { "port",         sizeof(ObjPort),        tr_port,     fin_port    },
     [O_PROC]         = { "process",      sizeof(ObjProc),        tr_proc,     fin_proc    },
+    [O_CAP]          = { "capability",   sizeof(ObjCap),         tr_cap,      NULL        },
 };
 /* A type added to the enum without a row here would read a zeroed descriptor:
  * size 0 (a 0-byte allocation) and no trace (a use-after-free under GC). With
@@ -513,7 +526,7 @@ ObjBuf *as_buf_new(Shape *shape, int nbytes)
     ObjBuf *b = (ObjBuf *)alloc_obj(O_BUF);
     as_gc_release(1);
     if (!b) return NULL;
-    b->shape = shape; b->raw = NULL; b->nbytes = 0;
+    b->shape = shape; b->raw = NULL; b->nbytes = 0; b->parent = NULL;   /* owns its bytes */
     if (nbytes > 0) {
         b->raw = (uint8_t *)as_malloc((size_t)nbytes);
         if (!b->raw) return NULL;                 /* g_oom set; nbytes stays 0 */
@@ -521,6 +534,45 @@ ObjBuf *as_buf_new(Shape *shape, int nbytes)
         b->nbytes = nbytes;
         gc_account((long)nbytes);
     }
+    return b;
+}
+
+/* M28: r[a:b]. `off`/`len` are already bounds-checked against `parent->nbytes`
+ * by the caller (op_SLICE) -- this function trusts them, the same division of
+ * labour as_buf_get/set use with a SlotSpec. Flattens a slice-of-a-slice to
+ * point at the ROOT owning buffer rather than chaining through the intermediate
+ * slice: `s2 = s1[2:5]` where s1 is itself a slice still computes the right
+ * address (parent->raw is already offset into the root), and it means an
+ * intermediate slice that becomes otherwise-unreachable can be collected --
+ * s2 does not need s1 alive, only the root that actually owns the memory. */
+ObjBuf *as_buf_slice_new(ObjBuf *parent, int off, int len)
+{
+    /* Protect PARENT, not root -- `parent->raw` is read below, AFTER alloc_obj()
+     * has already run and possibly collected. `parent` is exactly the value the
+     * caller (op_SLICE, vm.c) just popped off the operand stack, so by the time
+     * this function is entered it is reachable from NOWHERE ELSE for an inline
+     * chained slice (`buf[a:b][c:d]`, no local holding the first result): the
+     * first slice's Value lived only in that one stack slot, which is already
+     * below `sp` and so already excluded from as_vm_mark_roots' scan. Protecting
+     * `root` instead of `parent` (an earlier version of this function did
+     * exactly that) leaves `parent` itself unrooted whenever it is a NON-root
+     * slice (parent->parent != NULL) -- alloc_obj's gc_collect() then sweeps it,
+     * and `parent->raw` below reads freed memory. Confirmed with ASan: heap-
+     * use-after-free on `region(10)[2:8][1:4]` under -DAS_GC_STRESS.
+     * Protecting `parent` alone is BOTH necessary (it is what gets dereferenced)
+     * AND sufficient for `root` too: tr_buf's trace function marks a traced
+     * ObjBuf's own `->parent` field, so marking `parent` reachable transitively
+     * marks `root` (`parent->parent`) reachable as well -- no second protect
+     * call needed, and none is made here. */
+    ObjBuf *root = parent->parent ? parent->parent : parent;
+    as_gc_protect((Obj *)parent);    /* alloc_obj below can collect */
+    ObjBuf *b = (ObjBuf *)alloc_obj(O_BUF);
+    as_gc_release(1);
+    if (!b) return NULL;             /* g_oom set */
+    b->shape = NULL;                 /* a slice is a raw byte view, regardless of the parent's shape */
+    b->raw = parent->raw + off;
+    b->nbytes = len;
+    b->parent = root;                /* the strong GC edge; also what makes op_INDEX_SET refuse writes */
     return b;
 }
 
@@ -867,6 +919,153 @@ ObjProc *as_proc_new(ObjList *argv)
     p->argv = argv; p->next = NULL; p->in_path = NULL; p->out_path = NULL;
     p->pid = -1; p->status = -1; p->started = 0; p->waited = 0; p->linked = 0;
     return p;
+}
+
+/* --- M28 capabilities -------------------------------------------------------
+ * See docs/superpowers/specs/2026-08-14-m28-capabilities.md. Two things live
+ * here, deliberately together: the process's held set (never a Value, never
+ * script-reachable -- D9) and as_cap_attenuate, the only function that turns
+ * part of that set into a Value (an ObjCap) a script can hold. They share one
+ * static helper (cap_prefix_contains) because they are the same question asked
+ * twice: "is X inside Y" -- once for a real filesystem path against the held
+ * prefix, once for a REQUESTED prefix against the parent's during attenuation.
+ * Splitting the C-state half out to vm.c (paralleling as_set_args) would have
+ * meant two copies of that test drifting independently; alloc_obj is static to
+ * this file regardless, so as_cap_attenuate has to live here, and the state it
+ * reads/narrows lives beside it. */
+
+/* Held set: a bitmap plus an optional path prefix that narrows AS_CAP_FS_READ/
+ * WRITE only (M28 spec D6 -- the ENFORCEMENT half of that split, deciding what
+ * a bit or a path is used FOR, lives in the kernel and in as_native.c/
+ * as_port.c, which call as_caps_have/as_caps_permit_path; nothing here does).
+ * Deliberately plain C globals, never a Value: as_caps_set has no script-
+ * reachable equivalent, which is the entire unforgeability argument for O_CAP
+ * -- a native that could read these and hand back an arbitrary ObjCap would
+ * defeat it in one function, so nothing outside this file touches them
+ * directly. Static initialization already gives "host default is DENY"
+ * (bits=0) for free; no as_run()-time reset is needed or done, matching
+ * as_set_args's lifecycle (the embedder sets it once, before running scripts,
+ * and it persists across runs in the same process). */
+static uint32_t g_cap_bits = 0;
+static char    *g_cap_prefix = NULL;   /* malloc'd copy, or NULL = "/" (unrestricted) */
+
+/* Is every path `inner` permits also permitted by `outer`? NULL means the
+ * literal "/" on EITHER side, matching ObjCap.prefix's own NULL="/" convention.
+ * A BOUNDARY check, not a substring test: "/usr" contains "/usr/bin" but not
+ * "/usrx" -- plain strncmp alone would let scope("/usr") "narrow" to "/usrx", a
+ * sibling directory outside the grant, and would let as_caps_permit_path pass a
+ * real path that merely starts with the right characters. */
+static int cap_prefix_contains(const char *outer, const char *inner)
+{
+    if (!outer || (outer[0] == '/' && outer[1] == 0)) return 1;  /* outer == "/": permits everything */
+    if (!inner) return 0;                                         /* inner == "/", outer narrower: not contained */
+    size_t n = strlen(outer);
+    if (strncmp(inner, outer, n) != 0) return 0;
+    return inner[n] == 0 || inner[n] == '/';
+}
+
+void as_caps_set(uint32_t bits, const char *prefix)
+{
+    /* Fail CLOSED, not partially: if the copy can't be made, the grant becomes
+     * bits=0 (deny everything), never "the bits the caller asked for, but with
+     * no path restriction" -- that second outcome would be a WIDENING on the
+     * one codepath whose entire job is narrowing. This can only fire on the
+     * tiny, one-time allocation of a short path string at process start, not
+     * under running-script memory pressure -- as_malloc/g_oom is a different,
+     * VM-runtime protocol and is deliberately not used here; as_caps_set can be
+     * (and typically is) called before any as_run() exists to unwind into. */
+    char *copy = NULL;
+    if (prefix) {
+        size_t n = strlen(prefix) + 1;
+        copy = (char *)malloc(n);
+        if (!copy) { free(g_cap_prefix); g_cap_prefix = NULL; g_cap_bits = 0; return; }
+        memcpy(copy, prefix, n);
+    }
+    free(g_cap_prefix);
+    g_cap_prefix = copy;
+    g_cap_bits = bits;
+}
+uint32_t    as_caps_bits(void)         { return g_cap_bits; }
+const char *as_caps_prefix(void)       { return g_cap_prefix; }
+int         as_caps_have(uint32_t bit) { return (g_cap_bits & bit) != 0; }
+int         as_caps_permit_path(const char *path)
+{
+    return path != NULL && cap_prefix_contains(g_cap_prefix, path);
+}
+
+/* The ONE producer of a capability VALUE inside the VM (D1/D9). Every other
+ * path to an ObjCap is either C-only (as_caps_set, no script-reachable
+ * equivalent) or does not exist: as_bc.c's loader tag enum cannot spell a
+ * capability constant (see the comment beside K_FN there), so a hand-written
+ * .la cannot forge one either. "Attenuate" must mean NARROW in both dimensions
+ * INDEPENDENTLY -- a bit the parent lacked can never appear in the child, and a
+ * prefix broader than the parent's can never appear either. Checking only one
+ * would make this a privilege-escalation primitive wearing the syntax of a
+ * demotion: {bits=FS_READ, prefix="/"} attenuated with {bits=0, prefix="/usr"}
+ * must not silently keep the unrestricted prefix just because the caller only
+ * meant to touch bits.
+ *
+ * `from` must already be reachable from a GC root for the whole call -- this
+ * function does not protect it, matching as_port_invoke's convention that a
+ * method's receiver stays rooted by the caller (the VM value stack, for a
+ * dispatched method call) for as long as the call runs. */
+ObjCap *as_cap_attenuate(ObjCap *from, uint32_t bits, const char *prefix)
+{
+    if (bits & ~from->bits) {
+        as_native_fail("capability attenuation must narrow: requested bits are not a subset of the held set");
+        return NULL;
+    }
+    if (!cap_prefix_contains(from->prefix ? from->prefix->chars : NULL, prefix)) {
+        as_native_fail("capability attenuation must narrow: requested path is not inside the held prefix");
+        return NULL;
+    }
+    ObjStr *pfx = NULL;
+    if (prefix) {
+        pfx = as_str_copy(prefix, (int)strlen(prefix));
+        if (!pfx) return NULL;                 /* g_oom set */
+    }
+    as_gc_protect((Obj *)pfx);   /* alloc_obj below can collect; NULL-safe, see as_gc_protect */
+    ObjCap *c = (ObjCap *)alloc_obj(O_CAP);
+    as_gc_release(1);
+    if (!c) return NULL;                       /* g_oom set */
+    c->bits = bits;
+    c->prefix = pfx;
+    return c;
+}
+
+/* The ROOT of every attenuation chain inside one process: a Value for the set
+ * this process was ALREADY granted.
+ *
+ * Without this, as_cap_attenuate has no reachable first argument and the whole
+ * capability-as-a-language-value half of M28 is dead code -- a script could
+ * never obtain a capability, so it could never narrow one, so `O_CAP` would be
+ * an object type nothing can construct and nothing can use. (That is exactly
+ * the state this function was added to fix; the enforcement half -- the natives
+ * and port constructors consulting as_caps_have/as_caps_permit_path -- worked
+ * without it, which is why the gap was invisible to every gate.)
+ *
+ * IT CONFERS NO AUTHORITY, and that is why it is safe to expose as an ordinary
+ * native. It reports the held set, which every gated native already consults
+ * directly on every call; a script that can call caps() could already do
+ * everything the returned capability describes. What it enables is the
+ * OPPOSITE: handing a strictly narrower capability to something else. The
+ * unforgeability invariant is unharmed because there is still no way to build
+ * an ObjCap whose bits or prefix exceed what as_caps_set was given -- this
+ * function copies the held set exactly, and as_cap_attenuate only narrows. */
+ObjCap *as_caps_value(void)
+{
+    ObjStr *pfx = NULL;
+    if (g_cap_prefix) {
+        pfx = as_str_copy(g_cap_prefix, (int)strlen(g_cap_prefix));
+        if (!pfx) return NULL;                 /* g_oom set */
+    }
+    as_gc_protect((Obj *)pfx);   /* alloc_obj can collect; NULL-safe */
+    ObjCap *c = (ObjCap *)alloc_obj(O_CAP);
+    as_gc_release(1);
+    if (!c) return NULL;                       /* g_oom set */
+    c->bits = g_cap_bits;
+    c->prefix = pfx;
+    return c;
 }
 
 void as_chunk_write(ObjFn *fn, uint8_t b)

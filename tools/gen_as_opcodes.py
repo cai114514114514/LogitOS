@@ -17,10 +17,18 @@ A mismatch in the first four is a *silent* miscompile: the self-hosted compiler
 emits bytecode the C VM reads as a different instruction. Nothing in the build
 catches it today -- `make check-asops` is that gate.
 
+M28 added an eighth case that is not cross-language but is the same failure
+shape and was, until then, checked by nothing at all: vm.c's computed-goto
+`dispatch[]` is positionally matched to the as.h `OpCode` enum BY HAND (see
+`c_dispatch_order` below for exactly how a mismatch there used to compile
+clean and silently misdispatch every opcode after the one that moved).
+
 Default mode is --check: it only reads, never writes, so it is safe to wire into
 the build. --write is for the milestone that actually renumbers opcodes; it is
-deliberately not implemented until an opcode renumber is on the table (see
-docs/superpowers/specs -- phase 1 freezes AS_BC_VERSION at 3).
+deliberately not implemented until an opcode renumber is on the table. (An
+earlier version of this docstring named a specific AS_BC_VERSION as "frozen" --
+that number drifts every time a milestone appends opcodes, as.h is the
+authority on the current one, and repeating it here would just go stale again.)
 """
 import re
 import sys
@@ -90,6 +98,30 @@ def c_string_list(text, var):
     return re.findall(r'"([^"]*)"', m.group(1))
 
 
+def c_dispatch_order(text):
+    """vm.c's computed-goto `dispatch[]`, as an ordered list of OP_* names.
+
+    M28 D8: this table is a THIRD hand-mirrored copy of the OpCode enum (after
+    asc.as and OPNAMES) and, unlike those two, nothing but a human ever read it
+    before -- a label in the wrong position compiles cleanly and silently
+    misdispatches every opcode after it. Most entries are `&&op_NAME`, which
+    names the opcode by construction (op_CONST -> OP_CONST); the deliberate
+    holes are `&&op_BAD /* OP_REALNAME: ... */`, where the comment -- not the
+    label -- says which opcode the position stands in for. Returns None if the
+    array can't be found (kept optional, like the other c_string_list-based
+    checks, so a refactor of vm.c fails loudly here rather than raising).
+    """
+    m = re.search(r"dispatch\s*\[\s*\]\s*=\s*\{(.*?)\}\s*;", text, re.S)
+    if not m:
+        return None
+    body = m.group(1)
+    out = []
+    for entry in re.finditer(r"&&\s*(op_\w+)\s*(/\*\s*(OP_\w+)\s*:[^*]*\*/)?", body):
+        label, real = entry.group(1), entry.group(3)
+        out.append(real if real else "OP_" + label[3:])
+    return out
+
+
 def cmp_ordered(table, authority, mirror, auth_src, mir_src):
     """Both name AND value AND order must agree -- order is the wire format."""
     if authority == mirror:
@@ -147,20 +179,46 @@ def main():
     aslex_as = read("fsroot/as/lib/aslex.as")
 
     # 1. opcodes: order is the ABI.
-    cmp_ordered("opcodes", c_enum(as_h, "OpCode"), as_consts(asc_as, "OP_"),
-                "as.h OpCode", "asc.as")
+    # M28 D8: OP__COUNT is a C-only dispatch-table sentinel (as.h), not a real
+    # opcode -- it carries no wire-format meaning, asc.as never dispatches
+    # bytecode (only emits it) so it has no reason to name a sentinel, and
+    # OPNAMES is indexed by REAL opcode values only. Every comparison below that
+    # walks "the opcodes" therefore filters it out once, here, rather than
+    # teaching cmp_ordered (also used for tables that have no such sentinel)
+    # to special-case one name.
+    opcodes_full = c_enum(as_h, "OpCode")
+    opcodes = [t for t in opcodes_full if t[0] != "OP__COUNT"]
+    if len(opcodes) == len(opcodes_full):
+        fail("opcodes", "as.h OpCode has no OP__COUNT sentinel (expected by the M28 dispatch[] check)")
+
+    cmp_ordered("opcodes", opcodes, as_consts(asc_as, "OP_"), "as.h OpCode", "asc.as")
 
     # 1b. the disassembler's mnemonic table is indexed by opcode, so a missing
     # or reordered entry silently mislabels every instruction after it.
     opnames = c_string_list(as_bc_c, "OPNAMES")
     if opnames is not None:
-        auth = [n[3:] for n, _ in c_enum(as_h, "OpCode")]   # strip the OP_ prefix
+        auth = [n[3:] for n, _ in opcodes]   # strip the OP_ prefix
         if auth != opnames:
             for i in range(max(len(auth), len(opnames))):
                 a = auth[i] if i < len(auth) else "<missing>"
                 b = opnames[i] if i < len(opnames) else "<missing>"
                 if a != b:
                     fail("opnames", "index %d: as.h has OP_%s, as_bc.c OPNAMES has \"%s\"" % (i, a, b))
+
+    # 1c. M28 D8: vm.c's computed-goto dispatch[] must list the SAME opcodes in
+    # the SAME order as the enum -- previously asserted by nothing at all (see
+    # c_dispatch_order's docstring). A mismatched length is reported as
+    # <missing> pairs rather than silently truncating the shorter list, the
+    # same style as the opnames check above.
+    dispatch = c_dispatch_order(vm_c)
+    if dispatch is not None:
+        auth = [n for n, _ in opcodes]
+        if auth != dispatch:
+            for i in range(max(len(auth), len(dispatch))):
+                a = auth[i] if i < len(auth) else "<missing>"
+                b = dispatch[i] if i < len(dispatch) else "<missing>"
+                if a != b:
+                    fail("dispatch", "index %d: as.h enum has %s, vm.c dispatch[] has %s" % (i, a, b))
 
     # 2. bytecode version.
     m = re.search(r"#define\s+AS_BC_VERSION\s+(\d+)", as_h)
@@ -210,7 +268,7 @@ def main():
     methods |= set(re.findall(r'name_is\(name,\s*"([^"]+)"', port_c))
     mir = []
     for var in ("LIST_METHODS", "DICT_METHODS", "STR_METHODS",
-                "PORT_METHODS", "PROC_METHODS"):
+                "PORT_METHODS", "PROC_METHODS", "CAP_METHODS"):
         got = c_string_list(complete_c, var)
         if got:
             mir += got
@@ -225,8 +283,8 @@ def main():
         print("\n%d mismatch(es). These tables are copied by hand; fix the mirror "
               "to match the authority." % len(FAILURES))
         return 1
-    print("check-asops: ok (opcodes, bc-version, const-tags, tokens x2, keywords, "
-          "builtins, sysconsts, methods)")
+    print("check-asops: ok (opcodes, opnames, dispatch, bc-version, const-tags, tokens x2, "
+          "keywords, builtins, sysconsts, methods)")
     return 0
 
 

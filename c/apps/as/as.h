@@ -13,7 +13,7 @@
 #include <stdlib.h>     /* malloc/free/realloc/strtoll/strtod (host libc or mini-libc) */
 #include <string.h>     /* memcpy/memset/strlen/strcmp */
 
-/* --- values ---
+/* --- values --- 
  * A Value is a 32-bit tag plus a 64-bit payload. The tag's low byte is the
  * VType; for heap values its high byte is the ObjType, so IS_STR / IS_LIST /
  * ... are a single register compare rather than a load of the object header.
@@ -59,6 +59,7 @@ typedef struct {
 typedef enum { O_STR, O_FN, O_NATIVE, O_LIST, O_PTR, O_MODULE, O_DICT, O_CLOSURE, O_UPVALUE,
                O_CLASS, O_INSTANCE, O_BOUND_METHOD, O_RANGE, O_SHAPE, O_BUF,
                O_PORT, O_PROC,                 /* M27 ports: OS endpoints as values */
+               O_CAP,                          /* M28: an unforgeable capability (as_cap_attenuate) */
                O__COUNT } ObjType;   /* sentinel: sizes the descriptor table in object.c */
 /* Two bytes, where an intrusive allocation list cost sixteen. The `next` pointer
  * moved out into a contiguous registry (object.c): sweeping a dense array beats
@@ -206,8 +207,18 @@ struct ShapeEdge { ObjStr *name; Shape *to; };
  * header comment; they are generated from include/abi/logit_abi.h and asserted
  * against that header by the compiler that builds /bin/as (see abi_layout.inc),
  * so a struct the kernel changes is a build failure rather than a script quietly
- * reading the wrong field. addr(buf) is exactly the pointer the kernel wants. */
-typedef struct { Obj obj; Shape *shape; uint8_t *raw; int nbytes; } ObjBuf;
+ * reading the wrong field. addr(buf) is exactly the pointer the kernel wants.
+ *
+ * M28 `parent`: NULL for a buffer that owns `raw` (built by as_buf_new -- region()/
+ * buffer() and every layout()'d struct). Non-NULL for a SLICE (`r[a:b]`, built by
+ * as_buf_slice_new): `raw` then points INSIDE the parent's allocation, `parent` is
+ * always the ROOT owner (a slice of a slice is flattened, never chained -- see
+ * as_buf_slice_new), and it is a strong GC edge so a live slice keeps the bytes it
+ * views alive, the same shape ObjBoundMethod uses to hold its receiver. A slice is
+ * READ-ONLY (M28 spec D3): `parent != NULL` is exactly the test op_INDEX_SET uses
+ * to refuse writing into a view, and fin_buf uses it to know it must NOT free
+ * `raw` or account its bytes -- that memory belongs to the parent's allocation. */
+typedef struct ObjBuf { Obj obj; Shape *shape; uint8_t *raw; int nbytes; struct ObjBuf *parent; } ObjBuf;
 
 typedef struct {
     Obj obj;
@@ -297,6 +308,18 @@ typedef struct ObjProc {
     uint8_t linked;             /* already the downstream of some stage: refuses reuse */
 } ObjProc;
 
+/* --- M28 capabilities: O_CAP -----------------------------------------------
+ * See docs/superpowers/specs/2026-08-14-m28-capabilities.md. A capability is an
+ * unforgeable Value: the ONLY way to get one is as_cap_attenuate() narrowing a
+ * capability already held (never script-constructible directly -- there is no
+ * `cap(...)` native and no .la constant tag for it, see as_bc.c). `prefix` NULL
+ * means "/" (root: unrestricted), matching as_caps_prefix()'s own convention,
+ * and narrows AS_CAP_FS_READ/WRITE only -- the other bits are all-or-nothing. */
+enum { AS_CAP_FS_READ  = 1u << 0, AS_CAP_FS_WRITE = 1u << 1,
+       AS_CAP_NET      = 1u << 2, AS_CAP_PROC     = 1u << 3,
+       AS_CAP_GUI      = 1u << 4, AS_CAP_RAW      = 1u << 5 };
+typedef struct { Obj obj; uint32_t bits; ObjStr *prefix; } ObjCap;  /* prefix NULL = "/" */
+
 /* A module: a name -> value namespace populated by running a .as file's top
  * level. `mod.x` reads `vars`; functions defined in it resolve globals here. */
 typedef struct { ObjStr *name; Value val; } NameVal;
@@ -338,6 +361,8 @@ typedef struct ObjModule {
 #define AS_PORT(v)         ((ObjPort *)AS_OBJ(v))
 #define IS_PROC(v)         ((v).tag == OBJ_TAG(O_PROC))
 #define AS_PROC(v)         ((ObjProc *)AS_OBJ(v))
+#define IS_CAP(v)          ((v).tag == OBJ_TAG(O_CAP))
+#define AS_CAP(v)          ((ObjCap *)AS_OBJ(v))
 
 /* --- opcodes --- */
 typedef enum {
@@ -359,12 +384,26 @@ typedef enum {
     OP_PIPE,                                   /* a |> b   : chain two unstarted stages */
     OP_REDIR_OUT, OP_REDIR_IN,                 /* p -> path / p <- path */
     OP_WITH_BEGIN, OP_WITH_END,                /* deterministic release of a scoped resource */
+    /* M28: the one opcode the capability milestone adds (spec s4, locked at
+     * one). r[a:b] -- pop end, start, obj; push a NEW read-only ObjBuf viewing
+     * obj's bytes. Appended, never inserted, same ABI rule as the ports batch. */
+    OP_SLICE,
+    /* Sentinel, NOT a real opcode (M28 spec D8). Sizes vm.c's computed-goto
+     * dispatch[] via a _Static_assert (mirroring object.c:321's O__COUNT check,
+     * the only other one in c/apps/as) so a label added in the wrong position --
+     * previously caught by nothing, ever -- fails the BUILD instead of silently
+     * misdispatching every opcode after it. Never emitted, never given an
+     * OPNAMES/asc.as entry: gen_as_opcodes.py --check knows to skip it (see the
+     * comment there) precisely because it carries no wire-format meaning. */
+    OP__COUNT,
 } OpCode;
 
 /* .la compiled-bytecode format version. Bump on ANY opcode add/reorder or any
  * change to the .la byte layout -- as_load rejects a mismatching version.
- * 3 -> 4: M27 appended the five port opcodes (OP_PIPE .. OP_WITH_END). */
-#define AS_BC_VERSION 4u
+ * 3 -> 4: M27 appended the five port opcodes (OP_PIPE .. OP_WITH_END).
+ * 4 -> 5: M28 appended OP_SLICE. (OP__COUNT is a C-only sentinel, not part of
+ * the wire format -- it changes no byte layout and does not itself bump this.) */
+#define AS_BC_VERSION 5u
 
 /* --- compile + run --- */
 ObjFn *as_compile(const char *src);                       /* compile into a throwaway module */
@@ -426,6 +465,11 @@ int  as_shape_find(Shape *s, ObjStr *name);        /* slot index, or -1 */
  * ownership of neither array; it copies. */
 Shape  *as_layout_shape_new(ObjStr *sname, int bytes, ObjStr **names, SlotSpec *specs, int n);
 ObjBuf *as_buf_new(Shape *shape, int nbytes);      /* zeroed; shape may be NULL */
+/* M28: r[a:b]. A READ-ONLY view of `len` bytes of `parent` starting at `off`
+ * (both already bounds-checked by the caller -- op_SLICE in vm.c). Never
+ * allocates parent's bytes; charges no heap_bytes for them either, since
+ * fin_buf on a view frees/accounts nothing (see the ObjBuf comment in as.h). */
+ObjBuf *as_buf_slice_new(ObjBuf *parent, int off, int len);
 int  as_buf_get(ObjBuf *b, const SlotSpec *sp, Value *out);
 int  as_buf_set(ObjBuf *b, const SlotSpec *sp, Value v);   /* 0 = type/range error */
 int  as_instance_get(ObjInstance *in, ObjStr *name, Value *out);
@@ -520,6 +564,29 @@ int  as_value_release(Value v);
  * A backstop that never fires is indistinguishable from one that does not
  * exist, so it is counted and the count is readable from script (port_stats). */
 void as_port_stats(long *open_now, long *finalized, long *orphans);
+
+/* --- M28 capabilities (object.c) -------------------------------------------
+ * The held set is process-lifetime C state, never a Value -- as_caps_set has NO
+ * script-reachable equivalent, which is the entire unforgeability argument for
+ * O_CAP (see the ObjCap comment above and the M28 spec D9). Host default is
+ * DENY: static initialization already gives bits=0, so a host test that forgets
+ * to call as_caps_set fails closed instead of running ungated. */
+void        as_caps_set(uint32_t bits, const char *prefix);
+uint32_t    as_caps_bits(void);
+const char *as_caps_prefix(void);          /* NULL = unrestricted */
+int         as_caps_have(uint32_t bit);    /* held-set test, for the natives */
+int         as_caps_permit_path(const char *path);  /* prefix containment */
+/* Attenuation: the ONE producer of an ObjCap. Returns a NEW capability strictly
+ * weaker than `from` (bits a subset, prefix contained in from's prefix), or
+ * NULL with as_native_fail already called if the request would be equal to or
+ * BROADER than `from` in either dimension. `from` must stay GC-reachable for
+ * the whole call -- this function does not root it (see the definition). */
+ObjCap *as_cap_attenuate(ObjCap *from, uint32_t bits, const char *prefix);
+/* A Value for the set this process already holds -- the root of every
+ * attenuation chain, and the reason as_cap_attenuate has a reachable first
+ * argument at all. Confers no authority (the natives consult the same held set
+ * directly); see the long comment at its definition in object.c. */
+ObjCap *as_caps_value(void);
 
 /* low-level bridge (as_ll.c): raw memory + the int 0x80 syscall (asm on Logit). */
 uint64_t  as_ll_peek(uint64_t addr, int width);

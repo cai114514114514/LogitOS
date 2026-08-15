@@ -761,3 +761,14 @@ _Static_assert(offsetof(struct logit_dgram, addr) == 20,
                "abi.as is stale: logit_dgram.addr moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_dgram *)0)->addr) == 4,
                "abi.as is stale: logit_dgram.addr changed width -- run tools/gen_abi.py --write");
+
+_Static_assert(sizeof(struct logit_capreq) == 72,
+               "abi.as is stale: sizeof(struct logit_capreq) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_capreq, caps) == 0,
+               "abi.as is stale: logit_capreq.caps moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_capreq *)0)->caps) == 8,
+               "abi.as is stale: logit_capreq.caps changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_capreq, prefix) == 8,
+               "abi.as is stale: logit_capreq.prefix moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_capreq *)0)->prefix) == 64,
+               "abi.as is stale: logit_capreq.prefix changed width -- run tools/gen_abi.py --write");

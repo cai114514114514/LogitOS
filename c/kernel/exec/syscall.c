@@ -90,6 +90,97 @@ long rng_syscall(long ubuf, long len, long flags) __attribute__((weak));
 int  proc_kill_armed(void);
 void proc_kill_check(void);      /* does not return if THIS process is the victim */
 
+/* ===========================================================================
+ * M28: THE CATEGORY GATE (docs/superpowers/specs/2026-08-14-m28-capabilities.md
+ * D6). "The category bit (CAP_FS at all, CAP_NET at all) at syscall_dispatch...
+ * one place, one table lookup." This is that table.
+ *
+ * WHAT IT DOES NOT DO, and why not here. This checks only WHICH SYSCALL is
+ * being made, never the PATH argument's value -- a syscall that names a path
+ * still runs if the caller holds CAP_FS, regardless of what the path is. The
+ * path-PREFIX restriction (struct proc's fs_prefix) is deliberately absent
+ * from this function: it belongs after symlink resolution, where the FINAL
+ * path is known, and this point is not that point -- proc_resolve() (proc.c)
+ * is lexical only, so a prefix check on ITS output would look correct, pass
+ * every obvious test, and be silently bypassable by a symlink whose real
+ * target escapes the prefix (and SYS_SYMLINK stores its target completely
+ * unresolved by design, so a scoped process could plant that escape itself).
+ * That check has to live in c/fs/vfs.c's resolve(), a file this line does not
+ * own -- see `not_done` for the exact change it still needs.
+ *
+ * CLASSIFICATION RULE: a syscall is CAP_FS/CAP_NET if it ACQUIRES fs/network
+ * access BY NAME (a path string, a host string, a URL) -- open, read_file,
+ * mkdir, rename, stat, symlink, http_get, sock_open, bind, connect-shaped
+ * calls, and so on. A syscall that only operates on an FD ALREADY HELD
+ * (read/write/close/lseek/dup/dup2/setnb/fsync/fstat) is deliberately absent:
+ * containment lives at ACQUISITION (D10's whole point, even though fd
+ * inheritance across SYS_CAP_SPAWN is itself out of this file's scope -- see
+ * `not_done`), and gating a bare fd operation by name would ALSO wrongly
+ * block pipe and tty I/O, which were never fs or network access in the first
+ * place and have no path or host to have been gated on. */
+static int syscall_cap_class(int num)
+{
+    switch (num) {
+    /* ---- CAP_FS: creates, destroys, renames, links, or reveals something
+     * BY PATH. See the classification rule above for what is deliberately
+     * NOT here (fd-only operations). */
+    case SYS_READ_FILE: case SYS_WRITE_FILE: case SYS_DELETE_FILE:
+    case SYS_MKDIR: case SYS_DIR_COUNT: case SYS_DIR_NAME:
+    case SYS_FILE_COUNT: case SYS_FILE_NAME:
+    case SYS_OPEN: case SYS_CHDIR: case SYS_RENAME: case SYS_OPEN_PATH:
+    case SYS_IMG_DECODE:
+    case SYS_STAT: case SYS_LSTAT: case SYS_GETDENTS: case SYS_CHMOD:
+    case SYS_SYMLINK: case SYS_READLINK: case SYS_LINK: case SYS_CHOWN:
+        return CAP_FS;
+
+    /* ---- CAP_NET: touches the network in any shape -- info/ping/DNS, HTTP,
+     * client sockets (SYS_SOCK_*), or the server-socket family
+     * (bind/listen/accept/... and the datagram calls). */
+    case SYS_NET_INFO: case SYS_NET_PING: case SYS_NET_PING_RTT:
+    case SYS_NET_DNS: case SYS_NET_DNS_RESULT:
+    case SYS_HTTP_GET: case SYS_HTTP_STATUS: case SYS_HTTP_BODY:
+    case SYS_RES_FETCH:
+    case SYS_SOCK_OPEN: case SYS_SOCK_POLL: case SYS_SOCK_SEND:
+    case SYS_SOCK_RECV: case SYS_SOCK_ALPN: case SYS_SOCK_CLOSE:
+    case SYS_SOCKET: case SYS_BIND: case SYS_LISTEN: case SYS_ACCEPT:
+    case SYS_GETSOCKNAME: case SYS_SETSOCKOPT: case SYS_SHUTDOWN:
+    case SYS_RECVFROM: case SYS_SENDTO: case SYS_SOCKSTAT:
+        return CAP_NET;
+
+    /* ---- Considered and left CAP_NONE (0) -- an explicit decision recorded
+     * here, not an omission found later. ----------------------------------
+     *
+     * SYS_KILL (96) is "one number with two unrelated privilege shapes
+     * selected by a flag bit in its third argument" (LOGIT_KILL_SIGNAL --
+     * see logit_abi.h): the historical destroy-by-pid shape and POSIX
+     * kill(2). NEITHER touches a path or the network, so both classify the
+     * same way regardless of the flag -- this function does not need to look
+     * at the flag to know that, which is exactly why it takes only `num`.
+     * proc_kill()'s own structural refusal (no parent, no window) is that
+     * call's real protection and is unrelated to this gate.
+     *
+     * SYS_PROCS, the clipboard (SYS_CLIP_*), SYS_NOTIFY, and SYS_SETTING_*
+     * are named EXPLICITLY OUT OF SCOPE by the spec (section 8): a
+     * capability-confined script can enumerate the process table, exfiltrate
+     * through the clipboard regardless of CAP_FS, and change persistent
+     * settings, and all three stay true after M28. Gating them here would be
+     * this file quietly doing more than the spec asked and disagreeing with
+     * it about what M28 covers.
+     *
+     * SYS_FORK / SYS_EXECVE / SYS_CAP_SPAWN / SYS_CAP_QUERY / SYS_WAITPID:
+     * process lifecycle is not a category this gate covers at all -- SYS_FORK
+     * and SYS_EXECVE are safe by construction (proc.c/exec.c: they copy or
+     * leave `caps` alone, never widen it) and SYS_CAP_SPAWN carries its OWN
+     * ceiling check inside proc_cap_spawn(), which is stricter than a single
+     * bitmap test because it also has to check fs_prefix. Gating the spawn
+     * call ITSELF by CAP_FS/CAP_NET would conflate "may this process spawn a
+     * child" (not a thing M28 defines) with "may this process touch files/
+     * network" (a different, already-covered question). */
+    default:
+        return 0;
+    }
+}
+
 /* The dispatcher proper is wrapped so the per-number accounting has exactly one
  * place to live, instead of being repeated at the ~60 `return`s below. When the
  * counters are disarmed this is a load of a global, a branch, and a tail call. */
@@ -133,6 +224,56 @@ void syscall_dispatch(struct registers *r)
      * right place, it is the right place. Costs one relaxed load and a
      * not-taken branch on a machine where nothing is being unmapped. */
     sched_tlb_gen_check();
+
+    /* M28: the capability category gate -- see syscall_cap_class() above for
+     * the table and the reasoning. One field read on the current process plus
+     * one table lookup and one branch.
+     *
+     * NO PROC, NO BENEFIT OF THE DOUBT. proc_current() == NULL means a
+     * kernel thread reached int 0x80's dispatcher, which is not a shape any
+     * legitimate ring-3 caller produces -- every real syscall arrives from a
+     * thread whose ->data is a struct proc (see uthread.h). If a classified
+     * (CAP_FS/CAP_NET) syscall number ever shows up with no proc to check a
+     * grant against, the safe reading is "there is nothing to prove this is
+     * allowed", not "there is nothing to prove this is forbidden" -- so it is
+     * REFUSED, matching D9's stated default (docs/superpowers/specs/
+     * 2026-08-14-m28-capabilities.md): "the default is DENY... a test that
+     * forgets to [grant] fails closed." An UNCLASSIFIED syscall (need == 0)
+     * still runs with no proc either way, same as it always has -- this gate
+     * only ever NARROWS what an ordinary NULL-proc call could already do
+     * (every classified handler already re-checks proc_current() itself and
+     * refuses on NULL, so this changes no OBSERVABLE behaviour today; it only
+     * removes a fail-OPEN path that a future classified syscall could
+     * otherwise inherit by accident).
+     *
+     * DELIBERATELY NOT GUARDED BY `!syscall_is_bkl_free((int)r->rax)`, unlike
+     * the two kill-check gates just above. That guard exists there so a KILL
+     * MARK does not tear down a process while it is mid-flight through the
+     * ONE syscall that runs without the BKL (proc_exit()'s teardown assumes
+     * the lock is held). Capability refusal does not tear anything down --
+     * it is a read of one field and an early return -- so it has no such
+     * hazard to guard against. Copying that guard here anyway would not
+     * change SYS_KHEAP_STRESS's outcome (syscall_cap_class() already answers
+     * 0 for it, so it is never gated either way), but it WOULD read as a
+     * second, unexplained reason that call is exempt from capability
+     * enforcement, which is exactly the kind of copy-paste this spec warns
+     * against (D6).
+     *
+     * SYS_SIGRETURN never reaches this line at all: c/kernel/cpu/
+     * interrupts.c intercepts it ONE LINE BEFORE syscall_dispatch() is even
+     * called (restoring a signal frame needs the register set this function
+     * is about to iretq and the FXSAVE area isr.asm will FXRSTOR, neither of
+     * which a syscall body can reach). Fine today -- SIGRETURN is not FS or
+     * NET shaped anyway -- but structurally, nothing added beside this gate
+     * will ever see it either, and that is worth knowing before assuming a
+     * gate here covers every syscall NUMBER that exists. */
+    {
+        int need = syscall_cap_class((int)r->rax);
+        if (need) {
+            struct proc *cap_p = proc_current();
+            if (!cap_p || !(cap_p->caps & (unsigned long)need)) { r->rax = (uint64_t)-1; return; }
+        }
+    }
 
     if (__builtin_expect(!g_kb_stat, 1)) { syscall_do(r); return; }
     uint64_t n = r->rax, t0 = kb_rdtsc();
@@ -840,8 +981,20 @@ static void syscall_do(struct registers *r)
 
     case SYS_PROCS:
     case SYS_KILL:
+    case SYS_CAP_QUERY:   /* M28: read-only introspection of the caller's own grant */
         r->rax = (uint64_t)proc_syscall((long)r->rax, (long)r->rdi,
                                         (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* M28: fork+load+execve a capability-BOUNDED child in one call. The whole
+     * body -- copying path/argv/the request struct, the ceiling check, the
+     * image load, the new proc -- lives in exec.c beside proc_execve() and
+     * proc_spawn(), which already own every piece of machinery this needs
+     * (setup_cli_stack, copy_uvec, the ELF loader). See proc_cap_spawn()
+     * there for the full contract and why this is a fresh number rather than
+     * SYS_SPAWN (63) revived. */
+    case SYS_CAP_SPAWN:
+        r->rax = (uint64_t)proc_cap_spawn(r);
         return;
 
     /* Signals (130-136). Forwarded whole to c/kernel/exec/ksignal.c for the

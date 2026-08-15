@@ -33,7 +33,11 @@ static const char *const KEYWORDS[] = {
  * -- it had silently missed the seven M21-P3 self-hosting natives since they
  * landed. */
 static const char *const BUILTINS[] = {
-    "print","len","range","str","gc","gc_stats","buffer","layout",
+    /* `region` is M28's name for `buffer` -- the SAME native registered twice,
+     * not a second allocator (see D2 of the M28 spec: ObjBuf already carried a
+     * length, so there is no O_REGION). Both spellings complete, because both
+     * are what a reader will type. */
+    "print","len","range","str","gc","gc_stats","buffer","region","layout","caps",
     "chr","ord","f64bits","parse_float","file_read","file_write","args",
     "addr","syscall","alloc","dealloc","mem2str","mem2cstr",
     "peek8","peek16","peek32","peek64",
@@ -58,7 +62,9 @@ static const char *const SYSCONSTS[] = {
     "SYS_POLL_EVENT","EV_NONE","EV_KEY","EV_MOUSE","EV_CLOSE","EV_MOUSE_R","EV_THEME",
     "EV_MOUSE_UP","EV_MOUSE_MOVE","EV_WHEEL",
     "EV_MOD_SHIFT","EV_MOD_CTRL","EV_MOD_ALT",
-    "EV_BTN_NONE","EV_BTN_LEFT","EV_BTN_RIGHT","EV_BTN_MIDDLE", 0
+    "EV_BTN_NONE","EV_BTN_LEFT","EV_BTN_RIGHT","EV_BTN_MIDDLE",
+    /* M28 capability classes (mirrors as_native.c's as_define_int block). */
+    "CAP_FS_READ","CAP_FS_WRITE","CAP_NET","CAP_PROC","CAP_GUI","CAP_RAW", 0
 };
 static const char *const LIST_METHODS[] = { "append", 0 };
 static const char *const DICT_METHODS[] = { "get","has","keys","values","remove", 0 };
@@ -66,6 +72,9 @@ static const char *const STR_METHODS[]  = { "join","split","strip","upper","lowe
 /* M27 ports (mirrors as_port.c's port_method/proc_method). */
 static const char *const PORT_METHODS[] = { "read","readall","line","lines","write","close","closed","fd","kind", 0 };
 static const char *const PROC_METHODS[] = { "start","wait","out","pid","status","argv", 0 };
+/* M28. Every one of these NARROWS -- there is deliberately no widen/union, so
+ * the completion list is also the complete list of what a capability can do. */
+static const char *const CAP_METHODS[] = { "scope","without","bits","path", 0 };
 
 static int is_kw(const char *s, int n){
     for (int i=0; KEYWORDS[i]; i++) if (c_neq(s, KEYWORDS[i], n)) return 1;
@@ -300,6 +309,10 @@ static int type_of(const Tok *t, int nt, const char *src, int caret, const char 
                  && (c_neq(src+r->start,"open",r->len) || c_neq(src+r->start,"port",r->len))) ty=TY_PORT;
         else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
                  && c_neq(src+r->start,"run",r->len)) ty=TY_PROC;
+        /* M28: `c = caps()` is a capability. Its methods all NARROW, so the
+         * completion list doubles as the complete list of what one can do. */
+        else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
+                 && c_neq(src+r->start,"caps",r->len)) ty=TY_CAP;
         else if (r->kind==TK_IDENT && i+3<nt && t[i+3].kind==TK_OP && src[t[i+3].start]=='('
                  && is_class(t,nt,src,src+r->start,r->len)) {
             ty=TY_INSTANCE;
@@ -380,6 +393,7 @@ int as_complete(const char *src, int len, int caret, Completion *out, int max){
         else if (ty==TY_STR)      for (int i=0;STR_METHODS[i]&&na<512;i++) put(all,&na,512,STR_METHODS[i],c_slen(STR_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_PORT)     for (int i=0;PORT_METHODS[i]&&na<512;i++) put(all,&na,512,PORT_METHODS[i],c_slen(PORT_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_PROC)     for (int i=0;PROC_METHODS[i]&&na<512;i++) put(all,&na,512,PROC_METHODS[i],c_slen(PROC_METHODS[i]),CMP_METHOD,90);
+        else if (ty==TY_CAP)      for (int i=0;CAP_METHODS[i]&&na<512;i++) put(all,&na,512,CAP_METHODS[i],c_slen(CAP_METHODS[i]),CMP_METHOD,90);
         else if (ty==TY_INSTANCE) na = collect_class(toks,nt,src,cls,c_slen(cls),all,512);
         goto rank;
     }

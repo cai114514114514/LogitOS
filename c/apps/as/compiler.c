@@ -499,11 +499,42 @@ static void dict_literal(void)   /* prefix for '{' : a dict display */
     emit2(OP_MAKE_DICT, (uint8_t)n);
 }
 
-static void index_(void)   /* infix for '[' : subscript read */
+/* M28: the colon inside '[' ... ']'. T_COLON already means something different
+ * at ~5 other sites with no shared dispatch between them -- a block opener
+ * after if/elif/else/while/def/class/try/except/with/for (each site just
+ * consumes it, expecting a NEWLINE+INDENT next) and the key:value separator
+ * inside a `{` dict literal (dict_literal, above, mid-expression between two
+ * already-parsed expressions). None of those five ever appear while parsing
+ * the inside of a `[...]`, and a `[...]` never opens a block or a dict, so
+ * "was the immediately enclosing bracket a '[' opened for a subscript" is
+ * ALREADY unambiguous from parser context alone -- no lexer state, no new
+ * token, no lookahead beyond "the next token after the first expression is a
+ * colon". That is exactly what this function is: it parses one expression,
+ * and if a colon follows, a second one, leaving the caller to decide (via the
+ * return value) whether it saw `expr` or `expr : expr`.
+ *
+ * Written ONCE so both bracket sites -- this file's rvalue index_() below, and
+ * the lvalue chain in assignment() (~line 900) -- share it, even though M28
+ * only WIRES the rvalue site to emit OP_SLICE (M28 spec D3: slice ASSIGNMENT is
+ * out of scope). The lvalue site calls this too, but only to detect and reject
+ * a slice-shaped target with a clear compile error instead of falling through
+ * to "expected ']'" -- a confusing message for syntax the language does
+ * recognize, just not there yet. Handling the colon in only one of the two
+ * bracket sites is exactly how a language ends up with read-slicing and
+ * slice-assignment silently disagreeing about what `r[a:b]` even means; M29 is
+ * expected to make the lvalue site emit something real instead of erroring. */
+static int bracket_subscript(void)   /* after '[' ; leaves index, or start+end, on the stack */
 {
     expression();
+    if (match(T_COLON)) { expression(); return 1; }   /* slice: both bounds now on the stack */
+    return 0;                                          /* plain index: one value on the stack */
+}
+
+static void index_(void)   /* infix for '[' : subscript read, or slice read (a[start:end]) */
+{
+    int is_slice = bracket_subscript();
     consume(T_RBRACKET, "expected ']' after index");
-    emit(OP_INDEX_GET);
+    emit(is_slice ? OP_SLICE : OP_INDEX_GET);
 }
 
 static uint8_t arg_list(void)
@@ -853,8 +884,15 @@ static void assignment(void)
                 return;
             }
             match(T_LBRACKET);                     /* the '[' (guaranteed by the loop entry) */
-            expression();                          /* index -> stack */
+            int is_slice = bracket_subscript();    /* index -> stack, or start+end -> stack */
             consume(T_RBRACKET, "expected ']'");
+            /* M28 spec D3: slice assignment is not in this milestone. Reject it
+             * here, at the ONE place an lvalue chain reaches a '[', rather than
+             * letting a colon fall through to OP_INDEX_SET (which would compile
+             * `r[a:b] = v` into popping only `b` as the index and leaving `a` to
+             * desync the stack) or to "expected ']'" (true but misleading: the
+             * language DOES parse this shape, in a read). */
+            if (is_slice) { error("slice assignment is not supported (r[a:b] is read-only)"); return; }
             if (check(T_DOT) || check(T_LBRACKET)) { emit(OP_INDEX_GET); continue; }
             consume(T_ASSIGN, "expected '=' in indexed assignment");
             expression();

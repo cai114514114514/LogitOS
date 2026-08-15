@@ -24,6 +24,26 @@ struct proc {
     struct file *fd[NFD];
     char     cwd[128];
     char     name[32];
+
+    /* M28 capabilities (docs/superpowers/specs/2026-08-14-m28-capabilities.md).
+     * `caps` is a CAP_* bitmap (include/abi/logit_abi.h); `fs_prefix` further
+     * scopes CAP_FS to paths under this subtree ("" = unscoped -- CAP_FS then
+     * covers every path). Neither field is ever WIDENED after a process is
+     * created: SYS_FORK copies both unchanged, SYS_EXECVE touches neither (see
+     * the comment in proc_execve(), c/kernel/exec/exec.c), and the only way
+     * either narrows is SYS_CAP_SPAWN creating a NEW process with its own,
+     * separately ceiling-checked values (proc_cap_subset() in proc.c). There
+     * is deliberately no "grant myself more" operation anywhere in this file.
+     *
+     * fs_prefix is NOT itself enforced here, or anywhere in this file -- see
+     * the long comment above proc_cap_subset() in proc.c for exactly what this
+     * field guarantees (a monotone-narrowing STRING relation between a parent
+     * and a child's own bookkeeping) and what it does not (nothing about
+     * whether a RESOLVED path, after symlinks, still falls under it -- that
+     * question belongs to c/fs/vfs.c, a file this line does not own; see the
+     * `not_done` note this change ships with). */
+    unsigned long caps;
+    char          fs_prefix[64];
 };
 
 void          proc_init(void);
@@ -41,6 +61,9 @@ long          proc_fork(struct registers *r);
 void          proc_exit(int code);                  /* never returns */
 long          proc_execve(struct registers *r);     /* replace the user address space (exec.c) */
 int           proc_spawn(const char *path, char **argv);  /* init: launch a CLI proc on the tty (exec.c) */
+long          proc_cap_spawn(struct registers *r);  /* M28: SYS_CAP_SPAWN -- fork+exec a capability-
+                                                      * bounded child (exec.c). Returns the child pid,
+                                                      * or a negative LOGIT_CAP_E_* code. */
 long          proc_waitpid(int pid, int *status);   /* reap a zombie child */
 void          proc_reap(void);                      /* free orphan/GUI zombies (WM loop) */
 
@@ -49,5 +72,11 @@ int           proc_fd_alloc(struct proc *p, struct file *f);  /* lowest free fd,
 struct file  *proc_fd_get(struct proc *p, int fd);
 /* Resolve `in` to an absolute canonical path against p->cwd (collapses . and ..). */
 void          proc_resolve(struct proc *p, const char *in, char *out, int max);
+
+/* M28: is (req_caps, req_prefix) an ALLOWED narrowing of (cur_caps,
+ * cur_prefix)? See the long comment above this function's definition in
+ * proc.c for the two conditions and what this deliberately does not check. */
+int           proc_cap_subset(unsigned long req_caps, const char *req_prefix,
+                               unsigned long cur_caps, const char *cur_prefix);
 
 #endif /* LOGIT_PROC_H */

@@ -222,6 +222,36 @@ static void fmt_value(Sink *k, Value v, int repr, int depth)
         put(k, ">", 1);
         return;
     }
+    /* M28. Prints the bits by name (not the raw integer) and the path scope --
+     * both facts a script or a debug session needs to reason about what a
+     * capability actually grants, and neither is recoverable from an opaque
+     * "<cap>". No equality/truthiness arm is needed below: V_OBJ equality
+     * already falls back to pointer identity for any type that isn't a string
+     * (as_value_eq's default case), which is the right notion here -- two
+     * capabilities are "the same" iff attenuation produced the exact same
+     * value, never "grant the same rights"; and as_truthy's default already
+     * treats every object as truthy regardless of ObjType. */
+    case O_CAP: {
+        ObjCap *c = AS_CAP(v);
+        putz(k, "<cap ");
+        static const struct { uint32_t bit; const char *name; } NAMES[] = {
+            { AS_CAP_FS_READ, "fs_read" }, { AS_CAP_FS_WRITE, "fs_write" },
+            { AS_CAP_NET, "net" }, { AS_CAP_PROC, "proc" },
+            { AS_CAP_GUI, "gui" }, { AS_CAP_RAW, "raw" },
+        };
+        int first = 1;
+        for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+            if (!(c->bits & NAMES[i].bit)) continue;
+            if (!first) put(k, "|", 1);
+            putz(k, NAMES[i].name);
+            first = 0;
+        }
+        if (first) putz(k, "none");
+        putz(k, " @");
+        if (c->prefix) putstr(k, c->prefix); else put(k, "/", 1);
+        put(k, ">", 1);
+        return;
+    }
     case O__COUNT:       break;   /* not a type; listed so -Wswitch still catches real ones */
     }
     putz(k, "<obj>");

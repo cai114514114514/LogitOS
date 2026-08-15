@@ -26,6 +26,19 @@
  *   u32 arity, u32 upvalue_count, u32 name_len + name bytes,
  *   u32 code_len + code bytes, u32 const_count + that many tagged constants. */
 
+/* M28: K_CAP is deliberately ABSENT. as.h's O_CAP (a capability) must be
+ * unforgeable -- constructible only by as_cap_attenuate() narrowing a
+ * capability the VM already holds, or by the C-only as_caps_set() at process
+ * start (no script-reachable equivalent; M28 spec D9). This enum is the .la
+ * constant-pool tag set, and it is closed: dump_fn's switch has no ObjCap arm,
+ * so a compiler that somehow put one in a const pool hits the generic "else"
+ * branch and refuses it as unserializable (via as_obj_type_name -- no change
+ * needed there either, since a capability can never legally reach a compiler's
+ * constant pool in the first place: there is no literal syntax for one), and
+ * load_fn's switch on `tag` only understands K_NIL..K_FN. Adding a K_CAP tag
+ * "to finish serialization support" would let a hand-written .la fabricate a
+ * capability with any bits and any prefix -- forging root. This is not an
+ * omission; it is the whole reason unforgeability costs nothing here. */
 enum { K_NIL = 0, K_BOOL = 1, K_INT = 2, K_FLOAT = 3, K_STR = 4, K_FN = 5 };
 
 /* ---- dump side: little-endian writers over FILE* (return 0 ok, 1 on error) ---- */
@@ -280,6 +293,7 @@ static int verify_fn(ObjFn *fn, int depth, int is_top)
         case OP_INHERIT: case OP_RAISE:
         case OP_BAND: case OP_BOR: case OP_BXOR: case OP_BNOT: case OP_SHL: case OP_SHR: case OP_POW:
         case OP_PIPE: case OP_REDIR_OUT: case OP_REDIR_IN: case OP_WITH_END:
+        case OP_SLICE:      /* M28: pops end/start/obj, pushes the view -- no immediate operand */
             break;
         /* 1-byte operand */
         case OP_GET_LOCAL: case OP_SET_LOCAL:
@@ -387,6 +401,9 @@ static const char *const OPNAMES[] = {
     "SETUP_TRY", "POP_TRY", "RAISE",
     "BAND", "BOR", "BXOR", "BNOT", "SHL", "SHR", "POW",
     "PIPE", "REDIR_OUT", "REDIR_IN", "WITH_BEGIN", "WITH_END",
+    "SLICE",                 /* M28. OP__COUNT (as.h) is NOT listed here: it is a
+                               * C-only sentinel with no wire-format meaning, and
+                               * gen_as_opcodes.py --check knows to skip it. */
 };
 #define N_OPNAMES ((int)(sizeof OPNAMES / sizeof OPNAMES[0]))
 

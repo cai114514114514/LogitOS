@@ -188,6 +188,18 @@ static struct proc *alloc_proc(void)
             p->pid = next_pid++;
             p->ppid = 0; p->exit_code = 0; p->tid = -1; p->cr3 = 0; p->gui = NULL;
             p->cwd[0] = '/'; p->cwd[1] = 0; p->name[0] = 0;
+            /* M28: a recycled slot must not inherit the previous tenant's
+             * grant any more than it inherits its kill mark or its cwd --
+             * this is the one place a slot is claimed, so it is the one place
+             * that can make that promise. DENY, not CAP_ALL: proc_create()'s
+             * caller decides what a new process is trusted with, explicitly,
+             * every time (proc_spawn() sets CAP_ALL for the console shell;
+             * SYS_CAP_SPAWN sets the ceiling-checked request; wm_launch, a
+             * file this line does not own, currently sets nothing at all --
+             * see `not_done`). A default of CAP_ALL here would make that
+             * silent and would make EVERY untouched creation site "the" root
+             * of trust instead of the one that is supposed to be. */
+            p->caps = 0; p->fs_prefix[0] = 0;
             ret = p;
             break;
         }
@@ -260,6 +272,53 @@ void proc_resolve(struct proc *p, const char *in, char *out, int max)
     out[oi] = 0;
 }
 
+/* ===========================================================================
+ * M28: is (req_caps, req_prefix) an ALLOWED narrowing of (cur_caps,
+ * cur_prefix)? This is D1's ceiling test
+ * (docs/superpowers/specs/2026-08-14-m28-capabilities.md): "a child's set
+ * must be a subset of the caller's. Never a superset. The kernel checks the
+ * inclusion and nothing else." Two independent conditions, BOTH required:
+ *
+ *   BITS.   req_caps must be a bitwise subset of cur_caps -- (req_caps &
+ *           ~cur_caps) == 0. A caller without CAP_NET can never hand a child
+ *           CAP_NET, no matter what it asks for.
+ *
+ *   PREFIX. req_prefix must be at least as specific as cur_prefix: either
+ *           cur_prefix is "" (the caller is itself unscoped, so any request
+ *           narrows it, including ""), or req_prefix begins with cur_prefix
+ *           ON A PATH-COMPONENT BOUNDARY. That last clause is not a nicety --
+ *           a caller scoped to "/usr" must be able to request "/usr/bin" but
+ *           MUST NOT be able to request "/usrland": a shared BYTE prefix is
+ *           not a shared DIRECTORY unless the match ends the component
+ *           (exactly at cur_prefix's end, or the next byte is '/'). A plain
+ *           strncmp-style test here would have silently accepted the sibling
+ *           path as a "narrowing" -- the entire ceiling would have been a
+ *           string trick away from being no ceiling at all.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO (spec D6). This is a comparison between
+ * two prefixes the CALLER supplies (one of which it already holds) -- it says
+ * nothing about whether a REAL path, once resolved, can escape either one
+ * through a symlink. proc_resolve() (above) is lexical only and symlink-blind,
+ * and SYS_SYMLINK stores its target completely unresolved by design, so a
+ * scoped process can plant its own escape hatch. That question can only be
+ * answered where a path is actually resolved to bytes on disk, which is
+ * c/fs/vfs.c's resolve() -- a file this line does not own. What THIS function
+ * guarantees is narrower but still real and necessary: struct proc's OWN
+ * fs_prefix bookkeeping can never record a WIDER scope than a process already
+ * has, at the one moment (SYS_CAP_SPAWN) it can change at all. See `not_done`
+ * for the exact c/fs change the full guarantee still needs. */
+int proc_cap_subset(unsigned long req_caps, const char *req_prefix,
+                     unsigned long cur_caps, const char *cur_prefix)
+{
+    if (req_caps & ~cur_caps) return 0;
+    if (!cur_prefix || !cur_prefix[0]) return 1;   /* caller unscoped: any request narrows it */
+    if (!req_prefix) return 0;                     /* no string can "extend" a NULL one */
+    int i = 0;
+    for (; cur_prefix[i]; i++)
+        if (req_prefix[i] != cur_prefix[i]) return 0;   /* diverges before cur_prefix ends */
+    return req_prefix[i] == 0 || req_prefix[i] == '/';  /* component boundary, not a byte match */
+}
+
 long proc_fork(struct registers *r)
 {
     struct proc *parent = proc_current();
@@ -291,6 +350,15 @@ long proc_fork(struct registers *r)
     child->gui  = NULL;                      /* a forked child has no window */
     scopy(child->name, parent->name, sizeof child->name);
     scopy(child->cwd, parent->cwd, sizeof child->cwd);
+    /* M28 D1 item 2: fork inherits the parent's capability set UNCHANGED --
+     * not attenuated, not widened. Plain SYS_FORK is not a narrowing event,
+     * the same way plain SYS_EXECVE is not (see proc_execve() in exec.c): a
+     * process that wants to hand a CHILD less than it holds itself uses
+     * SYS_CAP_SPAWN instead of SYS_FORK, which does the fork-and-narrow
+     * together and refuses outright rather than create a child and hope
+     * something narrows it before it becomes reachable. */
+    child->caps = parent->caps;
+    scopy(child->fs_prefix, parent->fs_prefix, sizeof child->fs_prefix);
     /* POSIX: the child inherits the dispositions and the blocked mask, and
      * inherits NOTHING pending -- a signal raised at the parent was raised at
      * the parent, and duplicating it would mean a Ctrl+C during a fork killing
@@ -719,6 +787,27 @@ long proc_syscall(long num, long a, long b, long c)
         if ((c & LOGIT_KILL_SIGNAL))
             return ksig_kill((int)a, (int)b);
         return proc_kill((int)a);
+
+    /* M28: (buf, max, 0) -> the CALLING process's own current CAP_* bitmap.
+     * Read-only introspection of a process's own state, so unlike everything
+     * else in this file it never refuses -- there is no ceiling to check
+     * against yourself. Copies out fs_prefix the same bounded-loop way
+     * SYS_GETCWD copies out cwd elsewhere in this file: `a`/`b` are already
+     * the calling process's OWN registers (this runs with ITS address space
+     * active), so a direct write through a range-checked pointer needs no
+     * extra copy helper. See the long comment on SYS_CAP_QUERY in
+     * include/abi/logit_abi.h for why this call exists at all. */
+    case SYS_CAP_QUERY: {
+        struct proc *p = proc_current();
+        if (!p) return 0;                 /* a kernel thread holds nothing to report */
+        char *buf = (char *)a; int max = (int)b;
+        if (buf && max > 0 && user_range_ok(buf, (uint64_t)max, 1)) {
+            int i = 0;
+            for (; i < max - 1 && p->fs_prefix[i]; i++) buf[i] = p->fs_prefix[i];
+            buf[i] = 0;
+        }
+        return (long)p->caps;
+    }
     default:
         return -1;
     }

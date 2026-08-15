@@ -54,7 +54,16 @@
 #define SYS_GETCWD      60 /* (buf, max) -> length, or <0 */
 #define SYS_CHDIR       61 /* (path) -> 0, or <0 */
 #define SYS_DUP         62 /* (fd) -> new fd, or <0 */
-#define SYS_SPAWN       63 /* (path, argv[]) -> child pid, or <0 (fork+execve convenience) */
+#define SYS_SPAWN       63 /* (path, argv[]) -> child pid, or <0 (fork+execve convenience).
+                             * DECLARED, NEVER IMPLEMENTED: there has never been a dispatch
+                             * case for this number in c/kernel/exec/syscall.c, so every call
+                             * to it has always fallen through to wm_gui_syscall()'s default
+                             * and returned -1. M28 needed a capability-checked spawn/exec
+                             * and, on finding this number unclaimed, deliberately did NOT
+                             * claim it -- see SYS_CAP_SPAWN near the end of this file and the
+                             * comment above proc_cap_spawn() in c/kernel/exec/exec.c for why a
+                             * fresh number was safer than repurposing this one. Left exactly
+                             * as declared. */
 #define SYS_SETNB       64 /* (fd) -> 0; mark the fd non-blocking (reads return -2/EAGAIN) */
 #define SYS_RENAME      65 /* (old_path, new_path) -> 0, or -1 (re-link a dir entry) */
 #define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
@@ -1741,5 +1750,139 @@ struct logit_dgram {
 #define ID_E_PERM   (-1)   /* not root, or a non-root process trying to setuid */
 #define ID_E_ARG    (-2)   /* bad pointer, or n > ID_NGROUPS_MAX */
 #define ID_E_NOPROC (-3)   /* no calling process (a kernel thread) */
+
+/* ============================================================================
+ * M28 -- AetherScript capabilities. Implementation spec:
+ * docs/superpowers/specs/2026-08-14-m28-capabilities.md (D-numbers below refer
+ * to its sections). The design document this supersedes on this point is
+ * 2026-08-05-aetherscript-2-language-design.md.
+ *
+ * THE MODEL, IN ONE SENTENCE (D1). A capability is not granted by WHICH BINARY
+ * runs -- every AetherScript program is the same binary, /bin/as, so that
+ * question has no answer that distinguishes two scripts. It is granted by
+ * PROCESS LINEAGE: a child's capability set must be a subset of its parent's,
+ * checked by the kernel and by nothing else. proc_spawn() (the kernel
+ * launching init's shell, c/kernel/exec/exec.c) is the one root where a grant
+ * exists "by construction" rather than by narrowing something held already.
+ *
+ * WHERE THE STATE LIVES. struct proc (c/kernel/exec/proc.h) carries `caps` (a
+ * CAP_* bitmap) and `fs_prefix` (further scopes CAP_FS to one subtree). SYS_FORK
+ * copies both unchanged; SYS_EXECVE touches neither (replacing the image is not
+ * replacing the grant -- see the comment in proc_execve()); SYS_CAP_SPAWN below
+ * is the only way a PROCESS ends up with a set narrower than its parent's. */
+
+/* CAP_* -- the bits struct proc's `caps` field is built from. Three for M28
+ * (spec D6): filesystem access BY PATH, network access, and the raw/unmediated
+ * escape hatch. Hex literals, matching this file's existing bitmask style
+ * (LOGIT_PROC_GUI et al. above), not shifted expressions.
+ *
+ * CAP_RAW gates `peek`/`poke` and the `syscall()` passthrough in AetherScript --
+ * but NOT here. Spec D4: those never reach the kernel (as_ll_peek/poke are
+ * plain volatile dereferences in the process's own address space; there is no
+ * syscall to intercept), so CAP_RAW is enforced per-call in c/apps/as/
+ * as_native.c, a file this line does not own. It is defined here anyway
+ * because the BIT VALUE is shared ABI: SYS_CAP_SPAWN's request and
+ * SYS_CAP_QUERY's answer both carry it, even though the kernel dispatch gate
+ * (syscall_cap_class() in c/kernel/exec/syscall.c) never tests it -- there is
+ * no kernel syscall class that means "raw memory access". */
+#define CAP_FS   0x01   /* open/read/write/delete/mkdir/rename/stat/symlink/... by PATH */
+#define CAP_NET  0x02   /* net info/dns/http/sockets, client and server */
+#define CAP_RAW  0x04   /* peek/poke + syscall() -- enforced in as_native.c, not here */
+/* CAP_PROC and CAP_GUI exist so the GRANT can express them; the kernel's
+ * dispatch gate does not test them YET, and that split is deliberate.
+ *
+ * Without these bits the model has a hole that only appears when the two halves
+ * are wired together: AetherScript's run()/pipe() require AS_CAP_PROC
+ * (c/apps/as/as_port.c), so a faithful kernel->language translation with no
+ * CAP_PROC to translate would deny process creation to EVERY script on the
+ * machine -- killing fsroot/as/examples/ash.as, which is M27's entire payoff.
+ * The alternative, inventing the permission during translation, is worse: it
+ * makes the language claim an authorization the kernel never made, in the one
+ * codepath whose whole job is to carry authority faithfully.
+ *
+ * So the bit is real ABI: a parent can withhold it through SYS_CAP_SPAWN,
+ * proc_cap_subset() narrows it like any other, SYS_CAP_QUERY reports it, and
+ * c/apps/as enforces it per call. What is NOT here is an entry in
+ * syscall_cap_class() (c/kernel/exec/syscall.c) mapping SYS_FORK/SYS_EXECVE and
+ * the SYS_GUI_* family to them -- adding kernel enforcement that cannot be
+ * booted and tested is how a machine ships broken, and this tree currently
+ * cannot build an ISO (c/kernel/mm/fault.c, another line's half-finished work).
+ * That classification is the named follow-up, and it is additive: the bits it
+ * would test already travel correctly. */
+#define CAP_PROC 0x08   /* fork/execve/spawn -- carried and narrowed here, enforced in as_port.c */
+#define CAP_GUI  0x10   /* SYS_GUI_* -- same: carried here, not yet in syscall_cap_class() */
+#define CAP_ALL  (CAP_FS | CAP_NET | CAP_RAW | CAP_PROC | CAP_GUI)  /* what proc_spawn() grants the console shell */
+
+/* The requested grant for a SYS_CAP_SPAWN child. This is the FULL request, not
+ * a delta from the caller's own grant, and the kernel accepts it only if it is
+ * <= what the caller currently holds (proc_cap_subset() in
+ * c/kernel/exec/proc.c): `caps` a bitwise subset, and `prefix` either empty or
+ * a component-wise extension of the caller's own current prefix. `prefix[0]==0`
+ * requests NO path scoping, which is only a legal request when the caller
+ * itself is unscoped -- a scoped caller can never hand out an unscoped child.
+ *
+ * A plain struct, not packed register arguments (contrast SYS_CLIP_SET /
+ * SYS_NOTIFY's note above, which chose registers deliberately): this needs a
+ * path string's worth of data (`prefix`) alongside a bitmap, which does not
+ * fit in the two general-purpose registers int 0x80 leaves free after `path`
+ * and `argv`. The layout is ordinary scalars + one fixed byte span, so
+ * tools/gen_abi.py can still emit and _Static_assert-check the offsets --
+ * see the header comment on that tool before hand-writing an AetherScript
+ * struct literal against this shape. */
+struct logit_capreq {
+    unsigned long caps;
+    char          prefix[64];
+};
+
+#define SYS_CAP_SPAWN 160 /* (path, argv[], const struct logit_capreq *req) ->
+                           * child pid, or a negative LOGIT_CAP_E_* code.
+                           *
+                           * fork()+load+execve(path) in ONE kernel call, like
+                           * the historical SYS_SPAWN's documented shape, except
+                           * the child's struct proc does NOT inherit a copy of
+                           * the caller's capability set -- it gets exactly
+                           * `req`, and the whole call is refused (no address
+                           * space allocated, no child created, nothing
+                           * partially built) unless proc_cap_subset() accepts
+                           * `req` against the CALLER's own current (caps,
+                           * fs_prefix). This is D1's ceiling, enforced at the
+                           * one place a process's grant can shrink.
+                           *
+                           * The child otherwise behaves like a SYS_FORK child
+                           * that immediately SYS_EXECVE'd: it inherits the
+                           * caller's fd table (dup'd) and cwd. It does NOT
+                           * inherit envp (this call has no register left to
+                           * carry one; the child's environment is empty, the
+                           * same as SYS_SPAWN's original documented shape and
+                           * the kernel's own proc_spawn()). See
+                           * proc_cap_spawn() in c/kernel/exec/exec.c. */
+#define SYS_CAP_QUERY 161 /* (buf, max, 0) -> the CALLING process's own current
+                           * CAP_* bitmap (the return value itself, like
+                           * SYS_GETPID). If buf != NULL and max > 0, also
+                           * copies the caller's current fs_prefix
+                           * (NUL-terminated, truncated to max-1 bytes) into
+                           * buf. Never fails -- there is nothing to refuse in
+                           * reading your own state, and no argument
+                           * combination is invalid (a NULL/zero buf just skips
+                           * the prefix copy).
+                           *
+                           * WHY THIS EXISTS, though the milestone spec's DO
+                           * list names only ONE new syscall. Neither argv nor
+                           * envp can carry a grant (both are caller-forgeable
+                           * across execve -- spec section 1), so a process has
+                           * no OTHER way to learn what it was actually handed.
+                           * Without this call the model type-checks but has no
+                           * bootstrap: AetherScript's as_run() would have
+                           * nothing to build its first capability object from
+                           * on the real kernel (spec D9 covers only the HOST
+                           * test harness, which grants through a C entry point
+                           * that has no kernel equivalent). A read-only query
+                           * of a process's own state needed no ceiling check
+                           * to design, so it is the minimal completion, not an
+                           * extra privilege. */
+#define LOGIT_CAP_E_ARG  (-1)   /* bad path/argv/pointer, or an unreadable request */
+#define LOGIT_CAP_E_CEIL (-2)   /* `req` is not <= the caller's own (caps, fs_prefix) */
+#define LOGIT_CAP_E_NOENT (-3)  /* path/image missing, unreadable, or not a valid .aex */
+#define LOGIT_CAP_E_NOMEM (-4)  /* OOM building the child's address space or thread */
 
 #endif /* LOGIT_ABI_H */

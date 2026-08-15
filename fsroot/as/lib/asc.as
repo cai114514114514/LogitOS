@@ -78,8 +78,14 @@ OP_REDIR_OUT = 59
 OP_REDIR_IN = 60
 OP_WITH_BEGIN = 61
 OP_WITH_END = 62
+# M28: the one opcode the capability milestone adds (locked at one; see
+# c/apps/as/as.h's OpCode enum comment). OP__COUNT (a C-only dispatch-table
+# sentinel added alongside it in as.h) is NOT mirrored here on purpose: it
+# carries no wire-format meaning and asc.as never dispatches bytecode, only
+# emits it -- gen_as_opcodes.py --check knows to skip it for that reason.
+OP_SLICE = 63
 
-AS_BC_VERSION = 4
+AS_BC_VERSION = 5
 
 # constant tags (mirror as_bc.c K_*)
 K_NIL = 0
@@ -774,10 +780,26 @@ class Parser:
             self.err("dict literal too large")
         self.emit2(OP_MAKE_DICT, n)
 
-    def index_(self):
+    # M28: mirrors compiler.c's bracket_subscript -- read that comment for why
+    # the colon inside '[' ... ']' needs no lexer state (T_COLON's other five
+    # meanings never occur while parsing a '[' body). Written once so both
+    # bracket sites share it; only index_ below actually emits OP_SLICE in
+    # M28 (spec D3: slice ASSIGNMENT is a later milestone), the lvalue chain
+    # calls it only to detect and reject one with a clear error.
+    def bracket_subscript(self):
         self.expression()
+        if self.match(T_COLON):
+            self.expression()
+            return true
+        return false
+
+    def index_(self):
+        is_slice = self.bracket_subscript()
         self.consume(T_RBRACKET, "expected ']' after index")
-        self.emit(OP_INDEX_GET)
+        if is_slice:
+            self.emit(OP_SLICE)
+        else:
+            self.emit(OP_INDEX_GET)
 
     def arg_list(self):
         argc = 0
@@ -1053,8 +1075,14 @@ class Parser:
                         return nil
                 else:
                     self.match(T_LBRACKET)
-                    self.expression()
+                    is_slice = self.bracket_subscript()
                     self.consume(T_RBRACKET, "expected ']'")
+                    # M28 spec D3: slice assignment is not in this milestone --
+                    # reject it here rather than let a colon desync OP_INDEX_SET
+                    # (which expects exactly one index value under `val`) or
+                    # fall through to a misleading "expected ']'".
+                    if is_slice:
+                        self.err("slice assignment is not supported (r[a:b] is read-only)")
                     if self.check(T_DOT) or self.check(T_LBRACKET):
                         self.emit(OP_INDEX_GET)
                     else:

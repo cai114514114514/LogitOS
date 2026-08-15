@@ -257,6 +257,11 @@ Dgram = layout("logit_dgram", 24, [
     ["addr", 20, 4, "u"]
 ])
 
+Capreq = layout("logit_capreq", 72, [
+    ["caps", 0, 8, "u"],
+    ["prefix", 8, 64, "s"]
+])
+
 # ---- calls (include/abi/logit_calls.abi) ----
 
 def gui_create(title, w, h):

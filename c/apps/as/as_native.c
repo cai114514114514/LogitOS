@@ -14,8 +14,77 @@
  * backing store (addr), typed pointers (iNptr -> p[i]), and direct Logit syscalls
  * (syscall). This is what lets AetherScript do systems programming, not just compute. */
 
+/* --- M28 D4/D5: CAP_RAW gates every native in this file, per call, HERE. ----
+ *
+ * peek/poke do not reach the kernel -- as_ll_peek/as_ll_poke (as_ll.c) are
+ * plain `volatile` dereferences in this process's own address space. There is
+ * no syscall to intercept, so a kernel-side gate (the D6 category-bit check at
+ * syscall_dispatch) cannot see them at all: this is the ONE place the check
+ * can live. syscall() is the other half -- it reaches open/pipe/execve/fork
+ * directly, with no port and no capability object involved, so a check placed
+ * only in as_port.c's natives would be bypassed by any script that just calls
+ * syscall() itself. Both halves are gated by the SAME bit, AS_CAP_RAW,
+ * because both are the same kind of hole: a way to touch memory or the kernel
+ * that nothing else in the language mediates.
+ *
+ * The check has to sit HERE and not lower or higher:
+ *   - not in as_ll.c: as_ll_peek/poke are real dereferences on the HOST build
+ *     too (that's what makes peek/poke testable without QEMU at all). An
+ *     ungated call reaching as_ll_peek from a denied script would SIGSEGV the
+ *     host test binary instead of producing a clean, catchable failure line.
+ *   - not once at as_install_indirection() time: that runs at VM startup,
+ *     before any script code has executed and before as_caps_set() has
+ *     necessarily even been called by the embedder in the order the embedder
+ *     chooses to call things. A check there would either misfire on a grant
+ *     that arrives after registration, or -- worse -- pass once and then
+ *     permit every access for the rest of the run, because nothing re-checks
+ *     it. The capability has to be live-checked against the CURRENT held set
+ *     on every call, because the whole point of a capability is that it can
+ *     be narrower for this call than it was for the process a moment ago
+ *     (D1's attenuation chain has no other way to bite).
+ *
+ * A denial is a catchable as_native_fail() that NAMES the missing capability
+ * -- never a refusal to register the native (no `as_define_native` call
+ * skipped). Two reasons this matters: an "undefined variable" error is
+ * indistinguishable from a typo in the script, giving no signal that a
+ * capability was the issue at all; and a script that captured the native's
+ * Value into a variable BEFORE any check could run (natives are ordinary
+ * global values once defined) would keep calling it successfully forever if
+ * the gate were "don't register" rather than "check on every invocation".
+ *
+ * Returns 1 (granted -- caller proceeds) or 0 (denied -- as_native_fail is
+ * already armed with a message naming the capability and the caller must
+ * return immediately, same as any other `as_native_fail` call site in this
+ * file). A plain int, not a Value: as_native_fail always returns NIL_VAL
+ * whether it succeeds or fails, so a Value return here could not tell the
+ * caller which happened, and every call site needs to know. */
+static int require_raw(const char *what)
+{
+    /* NEGATIVE CONTROL, and it belongs here as much as in as_port.c. Until this
+     * guard existed, -DAS_CAP_NO_CHECK removed only the PORT-side checks, so
+     * `make test-as-cap-negctl` still passed every CAP_RAW assertion and
+     * therefore under-reported: a control that disables half the checks proves
+     * the battery detects that half and says nothing about the rest. The whole
+     * capability system has to be removable in one flag or the control is
+     * measuring an arbitrary subset of itself. */
+#ifdef AS_CAP_NO_CHECK
+    (void)what;
+    return 1;
+#else
+    if (as_caps_have(AS_CAP_RAW)) return 1;
+    char msg[192];
+    snprintf(msg, sizeof msg,
+             "%s() needs capability 'raw' (CAP_RAW): it reaches outside the VM's own "
+             "control and no syscall or port exists to gate it here (M28 spec D4/D5)",
+             what);
+    as_native_fail(msg);
+    return 0;
+#endif
+}
+
 static Value n_addr(int argc, Value *args)
 {
+    if (!require_raw("addr")) return NIL_VAL;
     if (argc != 1) return as_native_fail("addr() takes 1 argument");
     Value v = args[0];
     if (IS_STR(v))  return INT_VAL((int64_t)(uintptr_t)AS_STR(v)->chars);
@@ -27,42 +96,54 @@ static Value n_addr(int argc, Value *args)
     return as_native_fail("addr() needs a string, list, buffer, or pointer");
 }
 
-static Value peek_w(int argc, Value *args, int w)
+static Value peek_w(int argc, Value *args, int w, const char *name)
 {
+    if (!require_raw(name)) return NIL_VAL;
     if (argc != 1 || !IS_INT(args[0])) return as_native_fail("peek expects an integer address");
     return INT_VAL((int64_t)as_ll_peek((uint64_t)AS_INT(args[0]), w));
 }
-static Value n_peek8 (int c, Value *a) { return peek_w(c, a, 1); }
-static Value n_peek16(int c, Value *a) { return peek_w(c, a, 2); }
-static Value n_peek32(int c, Value *a) { return peek_w(c, a, 4); }
-static Value n_peek64(int c, Value *a) { return peek_w(c, a, 8); }
+static Value n_peek8 (int c, Value *a) { return peek_w(c, a, 1, "peek8"); }
+static Value n_peek16(int c, Value *a) { return peek_w(c, a, 2, "peek16"); }
+static Value n_peek32(int c, Value *a) { return peek_w(c, a, 4, "peek32"); }
+static Value n_peek64(int c, Value *a) { return peek_w(c, a, 8, "peek64"); }
 
-static Value poke_w(int argc, Value *args, int w)
+static Value poke_w(int argc, Value *args, int w, const char *name)
 {
+    if (!require_raw(name)) return NIL_VAL;
     if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) return as_native_fail("poke expects (addr, value) integers");
     as_ll_poke((uint64_t)AS_INT(args[0]), w, (uint64_t)AS_INT(args[1]));
     return NIL_VAL;
 }
-static Value n_poke8 (int c, Value *a) { return poke_w(c, a, 1); }
-static Value n_poke16(int c, Value *a) { return poke_w(c, a, 2); }
-static Value n_poke32(int c, Value *a) { return poke_w(c, a, 4); }
-static Value n_poke64(int c, Value *a) { return poke_w(c, a, 8); }
+static Value n_poke8 (int c, Value *a) { return poke_w(c, a, 1, "poke8"); }
+static Value n_poke16(int c, Value *a) { return poke_w(c, a, 2, "poke16"); }
+static Value n_poke32(int c, Value *a) { return poke_w(c, a, 4, "poke32"); }
+static Value n_poke64(int c, Value *a) { return poke_w(c, a, 8, "poke64"); }
 
-static Value ptr_w(int argc, Value *args, int w)
+static Value ptr_w(int argc, Value *args, int w, const char *name)
 {
+    if (!require_raw(name)) return NIL_VAL;
     if (argc != 1 || !IS_INT(args[0])) return as_native_fail("iNptr expects an integer address");
     return OBJ_VAL(as_ptr_new((uint64_t)AS_INT(args[0]), w, 1));
 }
-static Value n_i8ptr (int c, Value *a) { return ptr_w(c, a, 1); }
-static Value n_i16ptr(int c, Value *a) { return ptr_w(c, a, 2); }
-static Value n_i32ptr(int c, Value *a) { return ptr_w(c, a, 4); }
-static Value n_i64ptr(int c, Value *a) { return ptr_w(c, a, 8); }
+static Value n_i8ptr (int c, Value *a) { return ptr_w(c, a, 1, "i8ptr"); }
+static Value n_i16ptr(int c, Value *a) { return ptr_w(c, a, 2, "i16ptr"); }
+static Value n_i32ptr(int c, Value *a) { return ptr_w(c, a, 4, "i32ptr"); }
+static Value n_i64ptr(int c, Value *a) { return ptr_w(c, a, 8, "i64ptr"); }
 
 /* M23.5 sys/gui support: raw heap buffers + memory<->string bridges, so pure
  * AetherScript modules (lib/sys.as, lib/gui.as) can marshal syscall arguments
- * (event structs, argv arrays, read buffers) without any C per syscall. */
+ * (event structs, argv arrays, read buffers) without any C per syscall.
+ *
+ * M28: alloc()/dealloc() are NOT deleted (spec s8's out-of-scope list is
+ * explicit about this) -- they become CAP_RAW-gated legacy beside region()/
+ * buffer() (the GC-owned ObjBuf replacement, vm.c). Their footprint is one
+ * script and a handful of host tests; retiring them is a migration, and
+ * migrations do not belong in the batch that changes the opcode set. They sit
+ * on bare malloc'd memory with no GC accounting at all, which is exactly the
+ * kind of unmediated access CAP_RAW exists to gate. */
 static Value n_alloc(int argc, Value *args)
 {
+    if (!require_raw("alloc")) return NIL_VAL;
     if (argc != 1 || !IS_INT(args[0]) || AS_INT(args[0]) <= 0)
         return as_native_fail("alloc() takes a positive byte count");
     void *m = malloc((size_t)AS_INT(args[0]));
@@ -72,6 +153,7 @@ static Value n_alloc(int argc, Value *args)
 }
 static Value n_dealloc(int argc, Value *args)
 {
+    if (!require_raw("dealloc")) return NIL_VAL;
     if (argc != 1 || !IS_PTR(args[0])) return as_native_fail("dealloc() takes a pointer from alloc()");
     free((void *)(uintptr_t)AS_PTR(args[0])->addr);
     AS_PTR(args[0])->addr = 0;             /* poison: a reuse faults loudly at 0 */
@@ -79,6 +161,11 @@ static Value n_dealloc(int argc, Value *args)
 }
 static Value n_mem2str(int argc, Value *args)   /* (ptr|addr, len) -> str */
 {
+    /* Gated like peek: this reads whatever `len` bytes sit at a caller-supplied
+     * address, exactly as peek does one word at a time (M28 spec D4's own note
+     * that the original design document's "gate peek/poke/addr" list is
+     * incomplete -- mem2str/mem2cstr read arbitrary memory too). */
+    if (!require_raw("mem2str")) return NIL_VAL;
     /* len is int64 but ObjStr.len/as_str_copy take int: reject values that would
      * truncate (e.g. 4294967295 -> -1 -> memcpy of SIZE_MAX). */
     if (argc != 2 || !IS_INT(args[1]) || AS_INT(args[1]) < 0 || AS_INT(args[1]) > INT32_MAX)
@@ -92,6 +179,7 @@ static Value n_mem2str(int argc, Value *args)   /* (ptr|addr, len) -> str */
 }
 static Value n_mem2cstr(int argc, Value *args)  /* (ptr|addr) -> str up to the NUL */
 {
+    if (!require_raw("mem2cstr")) return NIL_VAL;  /* same reasoning as mem2str above */
     if (argc != 1) return as_native_fail("mem2cstr() takes a pointer or address");
     uint64_t a = IS_PTR(args[0]) ? AS_PTR(args[0])->addr
                : IS_BUF(args[0]) ? (uint64_t)(uintptr_t)AS_BUF(args[0])->raw
@@ -106,6 +194,15 @@ static Value n_mem2cstr(int argc, Value *args)  /* (ptr|addr) -> str up to the N
 
 static Value n_syscall(int argc, Value *args)
 {
+    /* M28 spec D5: syscall() reaches open/pipe/execve/fork -- everything the
+     * port constructors reach -- with NO port and NO capability object in the
+     * way, and it takes a bare integer (fsroot/as/examples/setcheck.as hand-
+     * codes SYS_SETTING_GET as 103 for exactly this reason), so no table keyed
+     * on the ~60 SYS_* names as_native.c happens to know about could ever cover
+     * it. It is the universal bypass of every other language-level check in
+     * this codebase and is classed with the other universal bypass, CAP_RAW,
+     * rather than with the finer-grained FS/NET/PROC/GUI bits. */
+    if (!require_raw("syscall")) return NIL_VAL;
     long a[4] = { 0, 0, 0, 0 };
     if (argc < 1 || argc > 4) return as_native_fail("syscall() takes 1 to 4 arguments");
     for (int i = 0; i < argc; i++) {
@@ -115,8 +212,28 @@ static Value n_syscall(int argc, Value *args)
     return INT_VAL((int64_t)as_ll_syscall(a[0], a[1], a[2], a[3]));
 }
 
+/* caps() -- the process's own held set, as a Value.
+ *
+ * DELIBERATELY NOT require_raw()-GATED, and the reason is the whole argument for
+ * why it is safe to expose at all: it reports what this process was already
+ * granted, and every gated native consults that same held set directly on every
+ * call. A script that can call caps() could already do everything the returned
+ * capability describes, so the call confers nothing. What it enables is the
+ * opposite -- narrowing, via the methods on the returned value, so that a script
+ * can hand something else strictly less than it holds. Gating the only way to
+ * REDUCE authority behind the most powerful capability would be exactly
+ * backwards. See as_caps_value() in object.c. */
+static Value n_caps(int argc, Value *args)
+{
+    (void)args;
+    if (argc != 0) return as_native_fail("caps() takes no arguments");
+    ObjCap *c = as_caps_value();
+    return c ? OBJ_VAL(c) : NIL_VAL;           /* NULL => g_oom already set */
+}
+
 void as_install_indirection(void)
 {
+    as_define_native("caps", n_caps);
     as_define_native("addr", n_addr);
     as_define_native("peek8",  n_peek8);  as_define_native("poke8",  n_poke8);
     as_define_native("peek16", n_peek16); as_define_native("poke16", n_poke16);
@@ -129,6 +246,17 @@ void as_install_indirection(void)
     as_define_native("dealloc",  n_dealloc);
     as_define_native("mem2str",  n_mem2str);
     as_define_native("mem2cstr", n_mem2cstr);
+
+    /* M28 capability classes, injected the same way the SYS_* numbers are and
+     * for the same reason: a script narrowing a capability has to name the bit
+     * it is keeping, and `c.without(32)` is the setcheck.as anti-pattern -- a
+     * bare integer with no symbolic name anywhere in the tree. */
+    as_define_int("CAP_FS_READ",  AS_CAP_FS_READ);
+    as_define_int("CAP_FS_WRITE", AS_CAP_FS_WRITE);
+    as_define_int("CAP_NET",      AS_CAP_NET);
+    as_define_int("CAP_PROC",     AS_CAP_PROC);
+    as_define_int("CAP_GUI",      AS_CAP_GUI);
+    as_define_int("CAP_RAW",      AS_CAP_RAW);
 
     as_define_int("SYS_WRITE",  SYS_WRITE);
     as_define_int("SYS_READ",   SYS_READ);

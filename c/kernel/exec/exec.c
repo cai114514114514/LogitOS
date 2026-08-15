@@ -262,6 +262,23 @@ long proc_execve(struct registers *r)
     char nm[32], ext[8];
     if (aex_info(img, nm, ext) != 0) { kprintf("[execve] %s: bad aex header\n", abs); kfree(img); return -1; }
 
+    /* M28 D1: `p->caps` and `p->fs_prefix` are DELIBERATELY untouched anywhere
+     * in this function, and that silence is the load-bearing part of the
+     * whole capability design, not an oversight to fill in later.
+     *
+     * The design document this milestone starts from said a capability is
+     * "granted by the kernel at execve from a per-process set" -- which has
+     * no referent here, because every AetherScript program execve()s the
+     * SAME binary (/bin/as); a grant keyed to WHICH IMAGE just loaded could
+     * not tell two scripts apart, and would silently hand every script
+     * whatever /bin/as itself holds (spec section 1). So the grant rides on
+     * the PROCESS (this struct proc, same pid, same slot, before and after
+     * this function runs) and never on the image replacing it. execve is a
+     * content change, not an identity change, and the capability set is
+     * part of the process's identity here -- exactly as pid and ppid are
+     * left alone by this function too. If a future change ever makes execve
+     * touch `caps`, that change re-opens the exact hole D1 exists to close. */
+
     /* 3. Point of no return: swap the user address space. */
     kprintf("[execve] pid %d: %s loading\n", p->pid, abs);   /* DIAG: reached = child alive */
     uint64_t t_exec = exec_rdtsc();
@@ -339,6 +356,18 @@ int proc_spawn(const char *path, char **argv)
     struct proc *p = proc_create(space, NULL, nm, 0);
     if (!p) { vmm_free_space(space); return -1; }
 
+    /* M28 D1: THE CHAIN'S ROOT. This is the one call in the whole tree where
+     * the kernel itself launches a process -- init's shell, on the serial
+     * console -- rather than a process launching another. alloc_proc() (see
+     * proc.c) resets a fresh slot's capability set to DENY-ALL precisely so
+     * that no creation site gets a grant "for free"; this is the ONE site
+     * that is allowed to hand one out by construction instead of narrowing
+     * one down, and it says so explicitly rather than relying on some
+     * kernel-wide default. Every other process's set traces back to this
+     * grant through SYS_FORK (unchanged) and SYS_CAP_SPAWN (ceiling-checked)
+     * -- never invented anywhere else. */
+    p->caps = CAP_ALL; p->fs_prefix[0] = 0;
+
     struct file *tty = file_open_tty();              /* fd 0/1/2 -> serial console */
     if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; }
 
@@ -353,4 +382,126 @@ int proc_spawn(const char *path, char **argv)
         return -1;
     }
     return p->pid;
+}
+
+/* SYS_CAP_SPAWN: fork()+load+execve(path) in ONE kernel call, except the
+ * child's OWN struct proc does not inherit a copy of the caller's capability
+ * set -- it gets exactly `req` (include/abi/logit_abi.h's struct
+ * logit_capreq), and the call is refused OUTRIGHT -- no address space
+ * allocated, no child created, nothing partially built -- unless
+ * proc_cap_subset() (proc.c) accepts `req` against the CALLER's own current
+ * (caps, fs_prefix). This is D1's ceiling
+ * (docs/superpowers/specs/2026-08-14-m28-capabilities.md), enforced at the
+ * one place a process's grant is allowed to shrink.
+ *
+ * WHY A FRESH NUMBER AND NOT SYS_SPAWN (63) BROUGHT BACK TO LIFE. SYS_SPAWN
+ * already has a real, existing caller: fsroot/as/lib/abi.as's spawn()
+ * (line ~374) does `syscall(SYS_SPAWN, addr(path), addr(argv))` -- exactly
+ * two arguments, matching SYS_SPAWN's ORIGINAL M18 doc comment, and SYS_SPAWN
+ * has never had a kernel dispatch case (grep c/kernel confirms it: every call
+ * to it today falls through to wm_gui_syscall()'s default and returns -1).
+ * Bringing it to life with a now-MANDATORY third argument -- a capability
+ * request, which must never be "whatever happened to be in the register" --
+ * would silently change what that existing symbolic name means the moment
+ * abi.as's spawn() is exercised again, without abi.as ever having been asked
+ * to pass one: `req` would be built from rdx as the AetherScript syscall()
+ * native happens to leave it, and every existing caller of spawn() would be
+ * handed either garbage capabilities or a hard refusal, depending on what
+ * garbage decoded to. A fresh number costs one #define; silently redefining
+ * an ABI symbol another line's code already calls costs a debugging session
+ * nobody would think to have near this file. See the note above SYS_SPAWN's
+ * own definition in include/abi/logit_abi.h.
+ *
+ * SHAPE: closer to SYS_FORK immediately followed by SYS_EXECVE than to
+ * proc_spawn() above (which is the KERNEL launching init from NOTHING, with
+ * no caller to inherit from) -- the child gets the CALLER's fd table (dup'd,
+ * exactly like SYS_FORK) and cwd, not a bare tty. It does NOT get an envp:
+ * there is no register left to carry one (path, argv, and the capability
+ * request already claim all three int 0x80 slots), so the child's
+ * environment is empty -- the same as SYS_SPAWN's original documented shape
+ * and proc_spawn()'s own child, not a new gap this call introduces. */
+long proc_cap_spawn(struct registers *r)
+{
+    struct proc *p = proc_current();
+    if (!p) return LOGIT_CAP_E_ARG;
+
+    char path[128];
+    if (user_copy_string(path, sizeof path, (const char *)r->rdi) < 0) return LOGIT_CAP_E_ARG;
+    char abs[128];
+    proc_resolve(p, path, abs, sizeof abs);
+
+    static char cs_argstore[ARGBUFSZ];
+    static char *cs_argv[MAXARG];
+    int used = 0;
+    int argc = copy_uvec((char **)r->rsi, cs_argv, cs_argstore, &used, ARGBUFSZ);
+    if (argc < 0) { kprintf("[cap_spawn] %s: bad argv\n", abs); return LOGIT_CAP_E_ARG; }
+
+    struct logit_capreq req;
+    if (!user_range_ok((const void *)r->rdx, sizeof req, 0)) return LOGIT_CAP_E_ARG;
+    if (user_copy_from(&req, (const void *)r->rdx, sizeof req) < 0) return LOGIT_CAP_E_ARG;
+    req.prefix[sizeof req.prefix - 1] = 0;   /* a short/hostile copy must not run the
+                                              * containment test past this buffer */
+
+    /* THE CEILING, checked before anything is touched. A refused spawn
+     * leaves the caller's own process exactly as it was and creates nothing
+     * -- not a half-built child whose set gets "corrected" after the fact. */
+    if (!proc_cap_subset(req.caps, req.prefix, p->caps, p->fs_prefix)) {
+        kprintf("[cap_spawn] pid %d: %s refused (requested caps exceed the caller's)\n",
+                p->pid, abs);
+        return LOGIT_CAP_E_CEIL;
+    }
+
+    /* From here down: load + validate the image before creating anything the
+     * caller or anyone else can observe, same discipline as proc_execve(). */
+    int sz = vfs_size(abs);
+    if (sz < AEX_HDR_SIZE) return LOGIT_CAP_E_NOENT;
+    if (sz > 0x7fffffff - 511) return LOGIT_CAP_E_NOENT;   /* sz + 511 would overflow int */
+    int bytes = ((sz + 511) / 512) * 512;
+    void *img = kmalloc((unsigned)bytes);
+    if (!img) return LOGIT_CAP_E_NOMEM;
+    if (vfs_read(abs, img, bytes) <= 0) { kfree(img); return LOGIT_CAP_E_NOENT; }
+    char nm[32], ext[8];
+    if (aex_info(img, nm, ext) != 0) { kfree(img); return LOGIT_CAP_E_NOENT; }
+
+    uint64_t space = vmm_new_space();
+    if (!space) { kfree(img); return LOGIT_CAP_E_NOMEM; }
+
+    /* Load + build the stack with the new space active, exactly like
+     * proc_spawn() above (the target space is not current yet, so the
+     * kernel's own writes into it -- argv/envp/auxv -- must happen with it
+     * switched in, and switched back out before anything else can run). */
+    uint64_t prev;
+    __asm__ volatile ("cli");
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
+    vmm_switch(space);
+    struct elf_image ei;
+    uint64_t entry = aex_load_image(img, (uint64_t)bytes, nm, ext, &ei) == 0 ? ei.entry : 0;
+    uint64_t sp = entry ? setup_cli_stack(space, &ei, abs, cs_argv, argc, 0, 0) : 0;
+    vmm_switch(prev);
+    __asm__ volatile ("sti");
+    kfree(img);
+    if (!entry || !sp) { vmm_free_space(space); return LOGIT_CAP_E_NOENT; }
+
+    struct proc *child = proc_create(space, NULL, nm, p->pid);
+    if (!child) { vmm_free_space(space); return LOGIT_CAP_E_NOMEM; }
+    scopy(child->cwd, p->cwd, sizeof child->cwd);
+    /* The grant: exactly `req`, never a copy of the caller's own set -- the
+     * whole point proven above is that `req` is already <= that set. */
+    child->caps = req.caps;
+    scopy(child->fs_prefix, req.prefix, sizeof child->fs_prefix);
+
+    for (int i = 0; i < NFD; i++) {           /* inherit the caller's fds, like SYS_FORK */
+        child->fd[i] = p->fd[i];
+        if (child->fd[i]) file_dup(child->fd[i]);
+    }
+
+    child->tid = thread_create_user(nm, entry, sp, child, space);
+    if (child->tid < 0) {                     /* OOM: same undo shape as proc_fork()/proc_spawn() */
+        for (int i = 0; i < NFD; i++)
+            if (child->fd[i]) { file_close(child->fd[i]); child->fd[i] = NULL; }
+        vmm_free_space(space);
+        child->state = PROC_FREE; child->pid = 0; child->cr3 = 0;
+        return LOGIT_CAP_E_NOMEM;
+    }
+    return child->pid;
 }

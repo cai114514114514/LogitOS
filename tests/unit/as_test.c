@@ -414,6 +414,31 @@ static void port_tests(void)
 
 int main(void)
 {
+    /* M28: the host default is DENY (spec D9) -- as_caps_bits() starts at 0 and
+     * nothing raises it except this call. Every check below this line predates
+     * M28 and was written with no notion of a capability at all: alloc_rt pokes
+     * raw memory, the M27 port_tests() battery opens/writes/pipes/spawns freely.
+     * None of that is what this file exists to test, so the whole battery is
+     * granted the full set, unrestricted, ONCE, here -- "explicitly", the way
+     * D9 says a host test must, so a FUTURE test added below this line that
+     * forgets to narrow first still runs at full grant rather than failing
+     * closed for a reason unrelated to what it is checking.
+     *
+     * THE CAPABILITY TESTS ARE NOT IN THIS FILE. They are a separate binary,
+     * tests/unit/as_cap_test.c (`make test-as-cap`), because half of what M28
+     * has to prove is not reachable from a script at all -- as_caps_set() and
+     * as_cap_attenuate() have no script-visible entry point, which is the
+     * entire unforgeability argument -- and this file is entirely "run a
+     * snippet, assert its output". Splitting them also keeps the grant story
+     * simple: this battery holds everything for its whole life, that one starts
+     * at deny and grants per case. Verified the hard way:
+     * before this call was added, `make test-as` was 48/350 FAILED -- every
+     * open()/run()/pipe()/alloc() site in the pre-M28 suite raising "needs
+     * capability" -- which is exactly D9's fail-closed default working as
+     * designed, just not yet told what this binary is allowed to do. */
+    as_caps_set(AS_CAP_FS_READ | AS_CAP_FS_WRITE | AS_CAP_NET | AS_CAP_PROC |
+                AS_CAP_GUI | AS_CAP_RAW, NULL);
+
     as_add_module_source("mathx", MATHX);
     as_add_module_source("badmod", "x = 1 / 0\n");   /* item D: raises on import */
     as_add_module_source("goodmod", "v = 42\n");

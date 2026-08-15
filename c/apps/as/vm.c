@@ -9,6 +9,33 @@
 #define STACK_MAX  (4096)
 #define FRAMES_MAX (256)
 
+/* M28 region bounds, and its NEGATIVE CONTROL.
+ *
+ * Every bounds check on an ObjBuf index goes through this one macro, so that
+ * `make test-as-region-negctl` can remove all of them at once and prove the
+ * test battery actually detects their absence. A gate nobody has watched fail
+ * is not evidence.
+ *
+ * WHAT THE CONTROL SUBSTITUTES IS THE POINT. Under -DAS_REGION_NO_BOUNDS the
+ * check does not vanish into an out-of-range read -- it CLAMPS. Two reasons.
+ * Clamping is the mistake a person actually makes: it looks defensive, it never
+ * crashes, and it is exactly what the M28 spec argues against ("raise, don't
+ * clamp, don't guess"), so the control models the plausible wrong
+ * implementation rather than an obviously fatal one. And a control that read
+ * past the allocation would fail by SIGSEGV, which proves the process died, not
+ * that the assertion noticed -- the distinction the whole negative-control
+ * discipline exists to preserve.
+ *
+ * `i` is evaluated more than once and is deliberately not a general-purpose
+ * macro: both call sites pass a plain int64_t local. */
+#ifdef AS_REGION_NO_BOUNDS
+#define AS_REGION_BOUNDS(i, n, msg) \
+    do { if ((i) < 0) (i) = 0; if ((i) >= (n)) (i) = (n) - 1; if ((i) < 0) (i) = 0; } while (0)
+#else
+#define AS_REGION_BOUNDS(i, n, msg) \
+    do { if ((i) < 0 || (i) >= (n)) { runtime_error(msg); goto err; } } while (0)
+#endif
+
 typedef struct { ObjFn *fn; ObjClosure *closure; uint8_t *ip; Value *slots; int is_init; } Frame;
 
 static Value  stack[STACK_MAX];
@@ -527,7 +554,18 @@ static Value native_str(int argc, Value *args)   /* M23: print-form of any value
 }
 /* buffer(n) -- n zeroed bytes the collector owns. This is alloc() without the
  * dealloc(): the same raw memory, minus the pairing that leaked the buffer for
- * good whenever anything between the two raised. */
+ * good whenever anything between the two raised.
+ *
+ * M28 `region` is registered as a second name for the SAME function, not a
+ * second implementation. The M28 spec (D2) is explicit that there is no
+ * O_REGION: ObjBuf already carries a length, is already GC-owned/accounted/
+ * finalized, and as.h's ObjBuf comment already documented it as the bounded
+ * replacement for alloc()/dealloc() before this milestone gave that replacement
+ * a name. Adding a second bounded-raw-memory TYPE beside it, to get the name
+ * "region", would be exactly the "fourth path" problem Open Logit exists to
+ * avoid (see CLAUDE.md) -- one path, two names: `region(n)` is the pillar's
+ * vocabulary (P2: "region(n) replaces alloc(n)"), `buffer(n)` is what M23
+ * already shipped and callers of it must not break. */
 static Value native_buffer(int argc, Value *args)
 {
     if (argc != 1 || !IS_INT(args[0]) || AS_INT(args[0]) < 0 || AS_INT(args[0]) > (1 << 26))
@@ -826,7 +864,21 @@ static int run_until(int floor)
         &&op_SETUP_TRY, &&op_POP_TRY, &&op_RAISE,
         &&op_BAND, &&op_BOR, &&op_BXOR, &&op_BNOT, &&op_SHL, &&op_SHR, &&op_POW,
         &&op_PIPE, &&op_REDIR_OUT, &&op_REDIR_IN, &&op_WITH_BEGIN, &&op_WITH_END,
+        &&op_SLICE,
     };
+    /* M28 D8: this table is positionally matched to the OpCode enum BY HAND --
+     * no other check in the tree reads it (gen_as_opcodes.py --check now does,
+     * but that is a second, independent guard, not a substitute for this one
+     * catching it at COMPILE time on the very build that would misdispatch).
+     * OP__COUNT is the sentinel added for exactly this assert, mirroring
+     * object.c:321's identical guard on OBJ_INFO -- the only other one in
+     * c/apps/as. Before this existed, a label inserted in the wrong position
+     * compiled cleanly and silently misdispatched every opcode after it; the
+     * table's own "no handler" op_BAD hole for OP_GET_ATTR (see its entry
+     * above) was, until now, held in place purely by hand-counting entries
+     * against the enum. */
+    _Static_assert(sizeof dispatch / sizeof dispatch[0] == OP__COUNT,
+                   "dispatch[] is missing (or has an extra) entry for some OpCode");
     uint8_t op;
 #define DISPATCH() do { \
         if (g_stack_overflow) { g_stack_overflow = 0; goto err; } \
@@ -1085,6 +1137,19 @@ static int run_until(int floor)
                 if (!IS_INT(idx)) { runtime_error("a port is indexed by its cursor position"); goto err; }
                 if (!as_port_at(AS_PORT(obj), AS_INT(idx), &out)) { runtime_error("a port cannot be re-read at index %lld", (long long)AS_INT(idx)); goto err; }
                 push(out);
+            } else if (IS_BUF(obj)) {
+                /* M28 spec D2: region()/buffer() are ObjBuf, element width ONE
+                 * BYTE (matches alloc(n)'s byte count and mem2str/mem2cstr's
+                 * byte view). Bounds-checked like every other indexable type
+                 * here -- an out-of-range access RAISES, it does not clamp and
+                 * it does not read past the allocation (that is the whole point
+                 * of region() over a raw ObjPtr). Works the same whether `obj`
+                 * is an owning buffer or a read-only slice: reading through a
+                 * view is exactly what a slice is FOR. */
+                if (!IS_INT(idx)) { runtime_error("buffer index must be an integer"); goto err; }
+                ObjBuf *b = AS_BUF(obj); int64_t i = AS_INT(idx); if (i < 0) i += b->nbytes;
+                AS_REGION_BOUNDS(i, b->nbytes, "buffer index out of range");
+                push(INT_VAL(b->raw[i]));
             } else if (IS_STR(obj)) {
                 if (!IS_INT(idx)) { runtime_error("string index must be an integer"); goto err; }
                 ObjStr *s = AS_STR(obj); int64_t i = AS_INT(idx); if (i < 0) i += s->len;
@@ -1111,11 +1176,61 @@ static int run_until(int floor)
                 as_dict_set(AS_DICT(obj), idx, val);   /* key type checked above, so it can't fail */
                 DISPATCH();
             }
+            if (IS_BUF(obj)) {
+                ObjBuf *b = AS_BUF(obj);
+                /* M28 spec D3: a slice is READ-ONLY. `parent != NULL` is
+                 * exactly "this ObjBuf is a view", and checking it HERE (not
+                 * only at compile time) is what makes the read-only property
+                 * hold for the VALUE, not just for the literal syntax `r[a:b] =
+                 * v` the compiler refuses to emit: `s = r[a:b]; s[0] = 9` is an
+                 * ordinary plain-index assignment to a local, with no colon
+                 * anywhere for the compiler to see, and reaches this same arm
+                 * at runtime with `obj` bound to the slice. */
+                if (b->parent) { runtime_error("a buffer slice is read-only"); goto err; }
+                if (!IS_INT(idx)) { runtime_error("buffer index must be an integer"); goto err; }
+                if (!IS_INT(val)) { runtime_error("buffer element must be an integer"); goto err; }
+                int64_t i = AS_INT(idx); if (i < 0) i += b->nbytes;
+                AS_REGION_BOUNDS(i, b->nbytes, "buffer index out of range");
+                b->raw[i] = (uint8_t)AS_INT(val);   /* truncated to the low byte, same as as_buf_set's SK_U */
+                DISPATCH();
+            }
             if (!IS_LIST(obj)) { runtime_error("only lists support item assignment"); goto err; }
             if (!IS_INT(idx)) { runtime_error("list index must be an integer"); goto err; }
             ObjList *l = AS_LIST(obj); int64_t i = AS_INT(idx); if (i < 0) i += l->count;
             if (i < 0 || i >= l->count) { runtime_error("list assignment index out of range"); goto err; }
             l->items[i] = val;
+            DISPATCH();
+        }
+        /* M28: r[a:b]. The one opcode the milestone adds (spec s4). Stack is
+         * [obj, start, end] (index_'s bracket_subscript parses start then end,
+         * in source order, so end is on top) -> a NEW read-only ObjBuf. Bounds
+         * are checked HERE, once, the same "raise, don't clamp, don't fault"
+         * contract as op_INDEX_GET/SET's IS_BUF arms above -- a>b is refused
+         * rather than silently yielding an empty slice: this is bounded raw
+         * memory standing in for alloc()/dealloc(), not a Python list, and a
+         * caller whose arithmetic produced a backwards range has a bug worth
+         * surfacing, not a result worth guessing at. */
+        op_SLICE: {
+            Value endv = pop(), startv = pop(), obj = pop();
+            if (!IS_BUF(obj)) { runtime_error("only a buffer can be sliced"); goto err; }
+            if (!IS_INT(startv) || !IS_INT(endv)) { runtime_error("slice bounds must be integers"); goto err; }
+            ObjBuf *src = AS_BUF(obj);
+            int64_t a = AS_INT(startv), b = AS_INT(endv);
+            if (a < 0) a += src->nbytes;
+            if (b < 0) b += src->nbytes;
+            /* Same negative control as the index arms (AS_REGION_BOUNDS above),
+             * written out here because a slice has TWO bounds and one ordering
+             * constraint rather than one index, so the macro does not fit. */
+#ifdef AS_REGION_NO_BOUNDS
+            if (a < 0) a = 0;
+            if (b > src->nbytes) b = src->nbytes;
+            if (a > b) a = b;
+#else
+            if (a < 0 || b > src->nbytes || a > b) { runtime_error("buffer slice out of range"); goto err; }
+#endif
+            ObjBuf *view = as_buf_slice_new(src, (int)a, (int)(b - a));
+            if (!view) goto err;                  /* g_oom set */
+            push(OBJ_VAL(view));
             DISPATCH();
         }
         op_LEN: {
@@ -1148,6 +1263,51 @@ static int run_until(int floor)
                 sp[-argc - 1] = *s;                         /* replace receiver with the callable */
                 if (call_value(*s, argc)) goto err;
                 frame = &frames[frame_count - 1];
+            } else if (IS_CAP(recv)) {
+                /* M28 attenuation, the language-visible half of the pillar.
+                 *
+                 * GC discipline, and it is load-bearing here: as_cap_attenuate's
+                 * own comment requires `from` to stay reachable from a root for
+                 * the whole call, and it does NOT protect it -- the allocation
+                 * of the new ObjCap can collect. The receiver is at peek(argc)
+                 * and stays on the value stack until sp is adjusted, so the rule
+                 * is the same one the string methods below already follow:
+                 * ADJUST sp LAST, after the result exists.
+                 *
+                 * Every method here can only narrow. There is no widen, no
+                 * union, and no way to construct a capability from parts -- the
+                 * only producers in the whole VM are caps() (an exact copy of
+                 * the held set) and as_cap_attenuate (strictly weaker). */
+                ObjCap *c = AS_CAP(recv);
+                if (name_eq(name, "scope")) {
+                    /* c.scope(path): same bits, narrower path. */
+                    if (argc != 1 || !IS_STR(peek(0))) { runtime_error("scope() takes a path string"); goto err; }
+                    ObjCap *n = as_cap_attenuate(c, c->bits, AS_STR(peek(0))->chars);
+                    if (!n) goto err;            /* as_native_fail armed, or g_oom */
+                    sp -= argc + 1; push(OBJ_VAL(n));
+                } else if (name_eq(name, "without")) {
+                    /* c.without(CAP_X | CAP_Y): drop bits, keep the path. Phrased
+                     * as a subtraction rather than "keep exactly these" because
+                     * the caller is stating an intent to REMOVE, and a keep-list
+                     * silently drops anything the caller forgot to relist. */
+                    if (argc != 1 || !IS_INT(peek(0))) { runtime_error("without() takes an integer bit mask"); goto err; }
+                    uint32_t drop = (uint32_t)AS_INT(peek(0));
+                    ObjCap *n = as_cap_attenuate(c, c->bits & ~drop,
+                                                 c->prefix ? c->prefix->chars : NULL);
+                    if (!n) goto err;
+                    sp -= argc + 1; push(OBJ_VAL(n));
+                } else if (name_eq(name, "bits")) {
+                    if (argc != 0) { runtime_error("bits() takes no arguments"); goto err; }
+                    sp -= argc + 1; push(INT_VAL((int64_t)c->bits));
+                } else if (name_eq(name, "path")) {
+                    /* nil, not "/", for an unrestricted capability -- the same
+                     * NULL == "/" convention ObjCap.prefix uses internally, made
+                     * visible rather than papered over with a string that would
+                     * compare equal to a real grant of exactly "/". */
+                    if (argc != 0) { runtime_error("path() takes no arguments"); goto err; }
+                    Value out = c->prefix ? OBJ_VAL(c->prefix) : NIL_VAL;
+                    sp -= argc + 1; push(out);
+                } else { runtime_error("capability has no method '%.*s'", name->len, name->chars); goto err; }
             } else if (IS_LIST(recv)) {
                 if (name_eq(name, "append")) {
                     if (argc != 1) { runtime_error("append() takes 1 argument"); goto err; }
@@ -1648,6 +1808,7 @@ int as_run(ObjFn *script)
     as_define_native("len", native_len);
     as_define_native("range", native_range);
     as_define_native("buffer", native_buffer);
+    as_define_native("region", native_buffer);    /* M28: same function, see the comment above it */
     as_define_native("layout", native_layout);
     as_define_native("str", native_str);
     as_define_native("chr", native_chr);
