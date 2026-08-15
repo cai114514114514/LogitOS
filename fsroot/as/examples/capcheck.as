@@ -47,7 +47,14 @@ print("path", c.path())
 # --- the assertion ------------------------------------------------------------
 print("read-etc", attempt("read /etc", lambda: open("/etc/logit.conf", "r")))
 print("read-usr", attempt("read /usr", lambda: open("/usr/as/lib/sys.as", "r")))
-print("raw-peek", attempt("peek", lambda: peek8(0x1000)))
+# peek8 of an address INSIDE this process's own image. The first version
+# peeked 0x1000, reasoning that the interesting outcome was the refusal --
+# but both gate runs hold CAP_RAW (scoping narrows the PATH, not the bits),
+# so the peek actually executed, and 0x1000 is a kernel-mapped page a ring-3
+# read faults on. The fault killed the process mid-script and everything
+# below this line silently never ran; the gate's "no-regain check never ran"
+# is what caught it. addr(c) is a byte this process provably owns.
+print("raw-peek", attempt("peek", lambda: peek8(addr("capcheck-owned-byte"))))
 
 # --- attenuation is real on the device too ------------------------------------
 # Narrow to strictly less than we hold and confirm the narrowing took. If the

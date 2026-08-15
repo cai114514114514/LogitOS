@@ -123,6 +123,23 @@ int main(int argc, char **argv)
         as_caps_set(as_caps_bits(), argv[2]);
         argv += 2; argc -= 2;
     }
+    /* A trailing --scope is REFUSED, not passed through. Everything after the
+     * script path belongs to the script's args(), so `as script.as --scope P`
+     * used to run UNNARROWED with two extra args -- a silent grant of exactly
+     * what the caller asked to give up, which is the one failure mode M28's
+     * spec names as worse than any refusal. The tree's own on-device gate
+     * (run-as-cap-test.sh) shipped with that spelling and proved the silence
+     * for real: its scoped run read /etc. The spelling "--scope" is hereby
+     * reserved out of script argv; a script that wants those bytes as data
+     * can take them from a file. */
+    for (int ai = 2; ai < argc; ai++) {
+        if (strcmp(argv[ai], "--scope") == 0) {
+            as_emit_cstr("as: --scope must come BEFORE the script path "
+                         "(as --scope PATH script.as ...); refusing to run "
+                         "unnarrowed with the flag as script args\n");
+            return 1;
+        }
+    }
 
     /* Compile-only mode: `as -c in.as -o out.la` writes a .la (LAQ1 header +
      * serialized bytecode). as_compile gives a standalone ObjFn whose ->module is

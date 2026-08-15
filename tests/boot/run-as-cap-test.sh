@@ -3,24 +3,18 @@
 # provably cannot read /etc, and one that was, can.
 #
 # =============================================================================
-# THIS HARNESS HAS NEVER RUN. Written 2026-08-14, and it CANNOT be executed
-# today: the tree does not build an ISO. c/kernel/mm/fault.c calls
-# mm_fault_classify() with an eighth argument and a MM_FAULT_FILE class that
-# mm.h does not declare -- uncommitted, half-finished work belonging to the
-# page-cache line, and (verified with `make -k`) the only file in the whole
-# kernel that fails to compile. Nothing in M28 caused it and M28 must not
-# "fix" it.
-#
-# It is committed anyway, and not left in a branch, because the harness IS the
-# deliverable: the assertion below is the one claim the 4152 host checks in
-# tests/unit/as_cap_test.c structurally cannot make. Those all run against a
-# held set the test itself installed through as_caps_set(), which is a C entry
-# point with no kernel equivalent -- so they prove the language enforces a
-# grant, and say nothing about whether the grant a script runs under is the one
-# the KERNEL handed it. That wire (SYS_CAP_QUERY -> install_kernel_grant() in
-# c/apps/as/as.c) exists and cross-compiles, and is otherwise untested. The
-# moment the kernel builds, this runs; nobody should have to reconstruct what
-# the on-device assertion was supposed to be.
+# HISTORY. Written 2026-08-14 while the tree could not build an ISO (the
+# page-cache line's fault.c was mid-flight), committed then as a deliverable
+# ahead of its own runnability. First actually RUN 2026-08-15 -- and its first
+# run earned its keep twice over: (1) it caught its own spawn line spelling
+# `as script.as --scope P` (flag AFTER the script), which as.c parsed as
+# script args and ran UNNARROWED -- run 2 read /etc identically to run 1;
+# (2) chasing that turned the silence into a hard refusal in as.c (a trailing
+# --scope anywhere in argv now refuses to run). The reason this file exists at
+# all stands: the 4152 host checks in tests/unit/as_cap_test.c all run against
+# a held set the test itself installed through as_caps_set(); only this boot
+# proves the set a script runs under is the one the KERNEL granted
+# (SYS_CAP_QUERY -> install_kernel_grant() in c/apps/as/as.c).
 # =============================================================================
 #
 # WHY TWO RUNS OF THE SAME SCRIPT. A single run showing "denied" is equally
@@ -50,7 +44,13 @@ trap cleanup EXIT
 # referent). Run 2: the same script under a capability narrowed to /usr/as.
 { sleep 4
   printf 'as /usr/as/examples/capcheck.as\n'
-  printf 'as /usr/as/examples/capcheck.as --scope /usr/as\n'
+  # FLAG BEFORE SCRIPT -- as.c consumes --scope only at argv[1] (everything
+  # after the script path belongs to the script's own args()). The first
+  # version of this line put the flag AFTER the script and the narrowing
+  # silently never happened: run 2 printed the same "read-etc ok" as run 1
+  # and this gate caught it. The trailing-flag spelling is now a REFUSAL in
+  # as.c, not a silence -- see the guard beside the --scope parse.
+  printf 'as --scope /usr/as /usr/as/examples/capcheck.as\n'
   printf 'exit\n'
   sleep 12
 } | "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
