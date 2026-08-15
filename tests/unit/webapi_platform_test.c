@@ -274,14 +274,8 @@ int main(int argc, char **argv)
          " catch (e) { return e.name === 'DataCloneError'; } })()",
          "cloning a function throws DataCloneError, as the spec says");
 
-    /* ==== Blob / FormData =============================================== */
-    ckjs("new Blob(['abc']).size === 3 && new Blob([new Uint8Array([1,2])]).size === 2",
-         "Blob sizes are BYTES, not characters");
-    ckjs("new Blob(['\\u00e9']).size === 2", "a two-byte character counts as two bytes");
-    ckjs("new Blob(['hello'], {type:'text/plain'}).type === 'text/plain'", "Blob type");
-    run("__bt = null; new Blob(['hi']).text().then(function(t){ __bt = t; });");
-    tick(1);
-    ckjs("__bt === 'hi'", "Blob.text() round-trips");
+    /* ==== FormData ========================================================
+     * Still this file's own: FormData (unlike Blob, below) has not moved. */
     ckjs("(function(){ var f = new FormData(); f.append('a','1'); f.append('a','2'); f.append('b','3');"
          " return f.getAll('a').length === 2 && f.get('a') === '1'"
          "     && Array.from(f.keys()).join(',') === 'a,a,b'; })()",
@@ -289,21 +283,54 @@ int main(int argc, char **argv)
     ckjs("(function(){ var f = new FormData(); f.append('a','1'); f.append('a','2'); f.set('a','9');"
          " return f.getAll('a').length === 1 && f.get('a') === '9'; })()",
          "FormData.set collapses duplicates");
-    ckjs("URL.createObjectURL(new Blob(['hi'], {type:'text/plain'})) === 'data:text/plain;base64,aGk='",
-         "createObjectURL produces a data: URL fetch can actually dereference");
-    /* ... and it really can. This is the half of that claim that would
+    /* FormData needs js_platform.c (this check stays inverted, unlike the
+     * block below): what it proves is that the Blob FormData sees is the REAL
+     * class from js_webapi.c, not some Blob-shaped object of its own -- so it
+     * has to run where FormData exists, which is only the positive build. */
+    ckjs("(function(){ var f = new FormData(); var b = new Blob(['x']); f.append('file', b);"
+         " return f.get('file') === b && b instanceof Blob; })()",
+         "FormData.append keeps a Blob a Blob (js_platform.c sees js_webapi.c's real class)");
+
+    /* ==== Blob / createObjectURL =========================================
+     * NOT inverted, on purpose, unlike the rest of this section: Blob and
+     * URL.createObjectURL/revokeObjectURL moved to js_webapi.c (own tests in
+     * tests/unit/webapi_test.c, which also covers the object-URL table's
+     * bound), and js_webapi.c is one of the files the control build still
+     * links (see the file header). A check here that stayed inverted would
+     * FAIL in test-platform-control the moment js_platform.c's `if (!G.Blob)`
+     * fallback stopped mattering -- which is exactly what moving Blob here
+     * was for. What is still worth asserting from THIS file is that the
+     * pieces js_platform.c hands Blob (FormData.append/.set, just above) see
+     * the real class, not the fallback: `v instanceof G.Blob` has to be true
+     * for the same object regardless of which file happened to define it. */
+    { int save = inverted; inverted = 0;
+    ckjs("new Blob(['abc']).size === 3 && new Blob([new Uint8Array([1,2])]).size === 2",
+         "Blob sizes are BYTES, not characters (js_webapi.c, always linked)");
+    ckjs("new Blob(['\\u00e9']).size === 2", "a two-byte character counts as two bytes");
+    ckjs("new Blob(['hello'], {type:'text/plain'}).type === 'text/plain'", "Blob type");
+    run("__bt = null; new Blob(['hi']).text().then(function(t){ __bt = t; });");
+    tick(1);
+    ckjs("__bt === 'hi'", "Blob.text() round-trips");
+    ckjs("/^blob:/.test(URL.createObjectURL(new Blob(['hi'], {type:'text/plain'})))",
+         "createObjectURL produces a real blob: URL, not js_platform.c's data: fallback");
+    /* ... and it really resolves. This is the half of that claim that would
      * otherwise be a comment: fetch() of the URL createObjectURL just returned
      * must resolve to the bytes that went in, with no socket involved. */
-    run("__d1 = null; fetch(URL.createObjectURL(new Blob(['hi'], {type:'text/plain'})))"
+    run("__d1 = null; var __u = URL.createObjectURL(new Blob(['hi'], {type:'text/plain'}));"
+        "fetch(__u)"
         "  .then(function(r){ __d1 = [r.status, r.headers.get('content-type')]; return r.text(); })"
-        "  .then(function(t){ __d1.push(t); });");
+        "  .then(function(t){ __d1.push(t); URL.revokeObjectURL(__u);"
+        "    fetch(__u).then(function(){ __d1.push('resolved'); }, function(e){ __d1.push(e.name); }); });");
     tick(1);
     ckjs("__d1 && __d1[0] === 200 && __d1[1] === 'text/plain' && __d1[2] === 'hi'",
-         "fetch() of a createObjectURL data: URL resolves to the original bytes");
-    /* The data: scheme itself belongs to js_webapi.c and is asserted there
-     * (tests/unit/webapi_test.c), which has its own control. What is asserted
-     * HERE is only the half this file owns: that what createObjectURL returns
-     * is something fetch resolves. */
+         "fetch() of a createObjectURL blob: URL resolves to the original bytes");
+    ckjs("__d1 && __d1[3] === 'TypeError'",
+         "...and after revokeObjectURL, the same URL no longer resolves");
+    inverted = save; }
+    /* The bound on the object-URL table (64 entries / 8 MiB, refused loudly
+     * past it) is asserted once, in tests/unit/webapi_test.c, which is where
+     * it is implemented; repeating it here would test js_webapi.c through a
+     * second, heavier harness for no second fact. */
 
     /* ==== observers ====================================================== */
     ckjs("typeof IntersectionObserver === 'function' && typeof ResizeObserver === 'function'"

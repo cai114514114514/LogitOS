@@ -350,7 +350,19 @@ static void req_connect(struct breq *r)
         return;                                   /* caps full: try again next pump */
     int flags = tls ? (SOCK_F_TLS | SOCK_F_ALPN_HTTP11) : 0;
     int fd = sock_open(r->u.host, r->u.port, flags);
-    if (fd < 0) { req_fail(r, "sock_open failed"); return; }
+    if (fd < 0) {
+        /* Which failure, not just that one happened: the ABI's SOCK_E_* codes
+         * separate "bad argument" from "no DNS" from "table full", and folding
+         * them into one string cost a real diagnosis once (a harness-wide
+         * "sock_open failed" with the cause unreadable). */
+        printf("[bfetch] sock_open('%s', %d) = %d (%s)\n", r->u.host, r->u.port, fd,
+               fd == SOCK_E_ARG ? "bad argument" :
+               fd == SOCK_E_DNS ? "dns start failed" :
+               fd == SOCK_E_CONN ? "net not up" :
+               fd == SOCK_E_NOSLOT ? "socket table full" : "unknown");
+        req_fail(r, "sock_open failed");
+        return;
+    }
     slot = hpool_admit(&g_pool, r->u.host, r->u.port, tls, fd, 0, now);
     if (slot < 0) { sock_close(fd); return; }      /* raced another request; retry */
     r->pslot = slot;

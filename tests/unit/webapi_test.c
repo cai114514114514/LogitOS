@@ -901,6 +901,93 @@ static void test_data_urls(void)
     ck(!js_webapi_pending(), "no request is left in flight after five data: fetches");
 }
 
+/* ---- 8.5. Blob / File / object URLs ------------------------------------
+ * Blob and File were previously js_platform.c's job -- a FALLBACK, guarded on
+ * `if (!G.Blob)`, installed only so a page did not get a bare ReferenceError
+ * when js_platform.o was absent. js_webapi_install runs before that guard is
+ * ever reached, so what is tested here is what actually reaches a page.
+ *
+ * createObjectURL used to fall through the same way to a `data:` URL (see
+ * js_platform.c's own comment on the fallback): fetchable, but neither
+ * revocable nor bounded. The table asserted below is the real thing, and the
+ * refusal checks at the end are the point of it existing at all -- an
+ * in-memory table with no ceiling is a slow leak with a fetch() call for a
+ * trigger. */
+static void test_blob(void)
+{
+    printf("\n-- Blob / File / object URLs --\n");
+
+    ckjs("new Blob(['abc']).size === 3 && new Blob([new Uint8Array([1,2])]).size === 2",
+         "Blob sizes are bytes, not characters or parts");
+    ckjs("new Blob(['\\u00e9']).size === 2", "a two-byte character counts as two bytes");
+    ckjs("new Blob(['a', new Uint8Array([1,2]), new Blob(['bc'])]).size === 5",
+         "parts concatenate: string + bytes + another Blob, in order");
+    ckjs("new Blob(['hi'], {type:'Text/PLAIN'}).type === 'text/plain'", "type is ASCII-lowercased");
+    ckjs("new Blob(['hi'], {type:'\\u00e9'}).type === ''",
+         "a type with a non-ASCII-printable character normalizes to '' rather than passing it through");
+    ckjs("new Blob().size === 0 && new Blob().type === ''", "a no-argument Blob is empty, not an error");
+
+    ckjs("(function(){ var s = new Blob(['hello world']).slice(6);"
+         " return s.size === 5 && s instanceof Blob && s.constructor === Blob; })()",
+         "slice() with only a start returns a real Blob of the remainder");
+    ckjs("(function(){ return new Blob(['hello world']).slice(-5).size === 5; })()",
+         "slice()'s negative start counts back from the end");
+    ckjs("(function(){ return new Blob(['hello world']).slice(0, 5, 'text/x').type === 'text/x'; })()",
+         "slice()'s third argument sets the new Blob's own type");
+
+    run("var __bt = null, __bab = null;\n"
+        "new Blob(['hi']).text().then(function (t) { __bt = t; });\n"
+        "new Blob([new Uint8Array([72, 105])]).arrayBuffer()\n"
+        "  .then(function (b) { __bab = Array.from(new Uint8Array(b)).join(','); });\n");
+    settle(2);
+    ckjs("__bt === 'hi'", "Blob.text() round-trips a string part, through a real microtask");
+    ckjs("__bab === '72,105'", "Blob.arrayBuffer() round-trips a byte part");
+
+    ckjs("(function(){ var f = new File(['x'], 'a.txt', { type: 'text/plain', lastModified: 5 });"
+         " return f instanceof Blob && f.name === 'a.txt' && f.lastModified === 5 && f.size === 1; })()",
+         "File extends Blob and carries name/lastModified");
+
+    /* ---- object URLs: create, fetch, revoke ---- */
+    run("var __u1 = URL.createObjectURL(new Blob(['payload'], { type: 'text/plain' }));");
+    ckjs("/^blob:/.test(__u1)", "createObjectURL returns a blob: URL, not a data: one");
+    ckjs("__u1.indexOf('data:') === -1 && __u1.length < 64",
+         "...and it is a short opaque id, not the payload re-encoded into the URL itself");
+
+    run("var __ofr = null;\n"
+        "fetch(__u1).then(function (r) { __ofr = [r.status, r.headers.get('content-type')]; return r.text(); })\n"
+        "  .then(function (t) { __ofr.push(t); });");
+    settle(2);
+    ckjs("__ofr && __ofr[0] === 200 && __ofr[1] === 'text/plain' && __ofr[2] === 'payload'",
+         "fetch() of a createObjectURL blob: URL resolves to the Blob's own bytes and type");
+    ck(!js_webapi_pending(), "...and no socket was touched to do it");
+
+    run("URL.revokeObjectURL(__u1);");
+    run("var __ofr2 = 'unset';\n"
+        "fetch(__u1).then(function () { __ofr2 = 'resolved'; }, function (e) { __ofr2 = e.name; });");
+    settle(2);
+    ckjs("__ofr2 === 'TypeError'", "fetch() of a revoked blob: URL rejects rather than resolving stale bytes");
+
+    /* ---- the bound: refuse loudly rather than grow without limit ----
+     * 64 live entries, 8 MiB total -- both enforced, both watched failing:
+     * with the count/byte checks in js_webapi.c commented out, this loop ran
+     * to 65+ without ever throwing and both assertions below failed. */
+    run("var __many = [], __manyErr = null;\n"
+        "try {\n"
+        "  for (var i = 0; i < 65; i++) __many.push(URL.createObjectURL(new Blob(['x'])));\n"
+        "} catch (e) { __manyErr = e.name || e.message; }\n");
+    ckjs("__many.length === 64", "exactly 64 object URLs were admitted before the table refused a 65th");
+    ckjs("__manyErr !== null", "the 65th createObjectURL() call threw instead of growing the table further");
+    run("for (var i = 0; i < __many.length; i++) URL.revokeObjectURL(__many[i]);");
+    ckjs("(function(){ try { URL.revokeObjectURL(URL.createObjectURL(new Blob(['y']))); return true; }"
+         " catch (e) { return false; } })()",
+         "...and revoking them all frees the count back up (not stuck refusing forever)");
+
+    run("var __bigErr = null;\n"
+        "try { URL.createObjectURL(new Blob([new Uint8Array(8 * 1024 * 1024 + 1)])); }\n"
+        "catch (e) { __bigErr = e.name || e.message; }\n");
+    ckjs("__bigErr !== null", "a single Blob past the 8 MiB object-URL budget is refused, not silently admitted");
+}
+
 /* ---- 9. the request queue ---------------------------------------------
  * There are eight fetch slots. Before the queue, a ninth concurrent request
  * was REJECTED -- `TypeError: too many requests in flight` -- and that is not
@@ -1077,6 +1164,7 @@ int main(void)
     test_history();
     test_media();
     test_data_urls();
+    test_blob();
     test_fetch_queue();
     test_binary_transport();
     test_storage_survives_navigation();

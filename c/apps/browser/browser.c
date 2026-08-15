@@ -151,6 +151,22 @@ static int has_ci(const char *h, const char *n)
 static int str_eq(const char *a, const char *b)
 { int i = 0; while (a[i] && a[i] == b[i]) i++; return a[i] == b[i]; }
 
+/* case-insensitive PREFIX test, for URL schemes. has_ci() is a substring
+ * search, and using it to ask "is this a javascript:/data: URL" silently
+ * dropped any http(s) URL that merely CONTAINED the word -- e.g. a script src
+ * with `?fallback=data:...` in its query string vanished with no line in the
+ * log. A scheme is a prefix; test it as one. */
+static int starts_ci(const char *h, const char *pre)
+{
+    if (!h) return 0;
+    for (; *pre; h++, pre++) {
+        int ca = (*h >= 'A' && *h <= 'Z') ? *h + 32 : *h;
+        int cb = (*pre >= 'A' && *pre <= 'Z') ? *pre + 32 : *pre;
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
 /* =========================== the persistent store ==========================
  *
  * tabs.c writes the session, the history list and the bookmarks through a
@@ -352,6 +368,8 @@ struct resent {
     unsigned char *data;      /* fetched (or inline) source, owned */
     int   len;
     char *url;                /* absolute URL after redirects; the module name */
+    const char *err;          /* why the fetch failed; bfetch's static strings */
+    int   status;             /* HTTP status of a failed fetch, 0 = no response */
 };
 
 static struct resent *g_res;
@@ -378,6 +396,7 @@ static struct resent *res_add(struct node *n, const char *ref, int module)
     struct resent *e = &g_res[g_nres++];
     e->node = n; e->ref = ref; e->module = module;
     e->id = -1; e->data = 0; e->len = 0; e->url = 0;
+    e->err = 0; e->status = 0;
     return e;
 }
 
@@ -526,6 +545,7 @@ static void res_fetch_all(const char *what, int keep)
             int st = bfetch_state(e->id);
             if (st == BF_PENDING) continue;
             if (st == BF_DONE && bfetch_status(e->id) / 100 == 2) {
+                e->status = bfetch_status(e->id);
                 e->url = dupstr(bfetch_url(e->id));
                 e->len = bfetch_take(e->id, &e->data);
                 if (e->len < 0) { e->len = 0; e->data = 0; }
@@ -533,8 +553,17 @@ static void res_fetch_all(const char *what, int keep)
                 if (keep && e->data && e->len > 0)
                     tab_keep_res(tab_cur(), e->url, e->data, e->len);
             } else {
+                /* Keep the reason on the entry: the consumer of a script entry
+                 * (run_collected_scripts) must be able to say LOUDLY that a
+                 * script the document asked for will not run, and by then the
+                 * bfetch slot is long gone. bfetch_error() returns static
+                 * strings, so holding the pointer past release is fine; the
+                 * final URL is dup'd because it is not. */
+                e->err    = bfetch_error(e->id);
+                e->status = bfetch_status(e->id);
+                e->url    = dupstr(bfetch_url(e->id));
                 printf("[browser] fetch failed (status %d) %s: %s\n",
-                       bfetch_status(e->id), e->ref, bfetch_error(e->id));
+                       e->status, e->ref, e->err);
                 bfetch_release(e->id);
             }
             e->id = -1;
@@ -558,7 +587,7 @@ static void collect_css_links(struct node *n)
          * filter (the sheets do not apply), not a budget. */
         if (href && (has_ci(href, "high_contrast") || has_ci(href, "colorblind") ||
                      has_ci(href, "tritanopia"))) href = 0;
-        if (href && has_ci(rel, "stylesheet") && !has_ci(href, "data:")) {
+        if (href && has_ci(rel, "stylesheet") && !starts_ci(href, "data:")) {
             int dup = 0;                       /* github links the same module CSS 3x */
             for (int i = 0; i < g_nres; i++)
                 if (g_res[i].ref && str_eq(g_res[i].ref, href)) { dup = 1; break; }
@@ -589,8 +618,14 @@ static void collect_scripts(struct node *n)
         } else if (!module && dom_attr(n, "nomodule")) {
             /* the fallback for a browser without modules; we are not one */
         } else if (src) {
-            if (!has_ci(src, "javascript:") && !has_ci(src, "data:"))
-                res_add(n, src, module);
+            /* Scheme filter as a PREFIX, not a substring (see starts_ci), and
+             * every drop says so: a <script src> the document asks for and we
+             * choose not to fetch must leave a line, because the scoreboard's
+             * asked/got gap is exactly the count of silent drops. */
+            if (starts_ci(src, "javascript:") || starts_ci(src, "data:"))
+                printf("[browser] skipping <script src=\"%.60s\"> (unsupported scheme)\n", src);
+            else if (!res_add(n, src, module))
+                printf("[browser] script LOST: %.200s: resource table alloc failed\n", src);
         } else {
             /* inline: reassemble the text nodes into one exactly-sized buffer.
              * The old path had a 256 KiB static cap and skipped anything over
@@ -694,6 +729,30 @@ static void status_from_js(const char *fallback)
  *
  * Each script is its own program -- see 65eb2c7 -- so a bundle that throws no
  * longer takes the page's inline scripts down with it. Returns how many ran. */
+
+/* Does a fetched "script" body actually look like an HTML document?
+ *
+ * The failure this closes, measured on www.2345.com: a <script src> fetch
+ * follows a redirect to an HTML page (an error page, a login stub, the site's
+ * own homepage), arrives with status 200, and gets handed to JS_Eval -- which
+ * reports `SyntaxError: unexpected token '<'` at line 1 UNDER THE PAGE'S OWN
+ * URL, i.e. the page is blamed for a CDN's error page. Refuse it before eval,
+ * out loud, naming the URL the bytes actually came from.
+ *
+ * The one '<' opener that IS JavaScript is `<!--`: HTML-like comments are
+ * grammar (Annex B.1.1) and 1990s-era scripts really start with them, so that
+ * prefix is exempt. `<!DOCTYPE`, `<html`, `<?xml` are not. */
+static int body_is_html_not_js(const unsigned char *p, int len)
+{
+    int i = 0;
+    if (len >= 3 && p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) i = 3;  /* UTF-8 BOM */
+    while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n' || p[i] == '\f'))
+        i++;
+    if (i >= len || p[i] != '<') return 0;
+    if (len - i >= 4 && p[i+1] == '!' && p[i+2] == '-' && p[i+3] == '-') return 0;
+    return 1;
+}
+
 static int run_collected_scripts(const char *page_url)
 {
     int ran = 0, inline_n = 0, classic_n = 0;
@@ -701,7 +760,24 @@ static int run_collected_scripts(const char *page_url)
         for (int i = 0; i < g_nres; i++) {
             struct resent *e = &g_res[i];
             if (e->module != pass) continue;            /* pass 0 classic, pass 1 module */
-            if (!e->data || e->len <= 0) continue;
+            if (!e->data || e->len <= 0) {
+                /* An EXTERNAL script with no bytes is a script the page asked
+                 * for that will never run -- jQuery on jd.com was this, and the
+                 * only trace was seven downstream ReferenceErrors blamed on
+                 * other files. Say it once, plainly, with the reason the fetch
+                 * recorded. (An inline entry with no bytes is just an empty
+                 * <script></script>; nothing was lost.) */
+                if (e->ref)
+                    printf("[browser] script LOST: %s: %s (status %d)\n",
+                           e->url ? e->url : e->ref,
+                           e->err ? e->err : "no body", e->status);
+                continue;
+            }
+            if (e->ref && body_is_html_not_js(e->data, e->len)) {
+                printf("[browser] script REFUSED (HTML, not JS): %s (status %d, %d bytes)\n",
+                       e->url ? e->url : e->ref, e->status, e->len);
+                continue;
+            }
             if (!e->module) {
                 /* A CLASSIC script's URL is not decoration either: it is the
                  * base a dynamic import() inside it resolves against. An
@@ -945,7 +1021,11 @@ static void load_once(const char *u)
     if (doc < 0) { set_status("load failed: bad URL (need http:// or https://)"); return; }
     bfetch_wait(doc, load_tick);
     if (bfetch_state(doc) != BF_DONE) {
-        printf("[browser] page fetch failed: %s\n", bfetch_error(doc));
+        /* Name the URL as the fetcher saw it: when this fires under a test
+         * harness, "which exact string did the address bar hand over" is the
+         * whole question (a dropped or doubled keystroke lives right here). */
+        printf("[browser] page fetch failed: %s (%s)\n",
+               bfetch_error(doc), bfetch_url(doc));
         set_status("load failed: could not fetch the page");
         bfetch_release(doc);
         return;
@@ -1123,6 +1203,19 @@ static void load_once(const char *u)
      * catchable RangeError instead of faulting. */
     res_reset();
     collect_scripts(g_root);
+    /* The guest's own inventory, printed BEFORE fetching: the scoreboard's
+     * asked/got gap compares the host's count of the document's <script src>
+     * against requests we issued, and without this line a shortfall cannot be
+     * split into "the parser never produced the element" vs "the fetch never
+     * happened". One number from each side of that boundary. */
+    { int xc = 0, xm = 0, in = 0;
+      for (int i = 0; i < g_nres; i++) {
+          if (!g_res[i].ref) in++;
+          else if (g_res[i].module) xm++;
+          else xc++;
+      }
+      printf("[browser] scripts collected: %d external classic, %d external module, %d inline\n",
+             xc, xm, in); }
     res_fetch_all("scripts", 1);
     g_prog_what = "running scripts"; g_prog_total = 0; g_prog_last = 0;
     int had_script = run_collected_scripts(base) > 0;
@@ -2417,6 +2510,32 @@ void app_main(void)
      * out of a screendump and "did the session come back" needs an answer that
      * a CI harness can grep for. */
     printf("[browser] session restored %d tabs (restore=%d)\n", restored, want_restore);
+#ifndef LOADERHOST_LOGIT_H
+    /* DIAGNOSTIC PROBE (2026-08-16). What it found, so the next reader does not
+     * re-derive it: every GUI app launched by the Dock runs with caps=0x0 --
+     * wm_launch's proc_create() never grants a capability (named as `not_done`
+     * in the comment above proc.c's `p->caps = 0`), and since the M28 gate
+     * landed (24130fcef, c/kernel/exec/syscall.c syscall_dispatch's cap check)
+     * every CAP_NET and CAP_FS syscall from a GUI process is refused with -1.
+     * That is why this line prints `rodata=-1 stack=-1 bss=-1 caps=0x0` on
+     * today's builds, why session restore reads 0 tabs, and why the site
+     * scoreboard's self-test fails machine-wide. DELETE this probe when
+     * wm_launch grants capabilities and the scoreboard self-test passes again;
+     * until then it is the one serial line that names the blocker. Sockets are
+     * closed immediately; gateway:9 answers nothing, which is fine --
+     * sock_open returning a handle is the whole measurement. */
+    { static char bsshost[16] = "10.0.2.2";
+      char stackhost[16]; for (int i = 0; i < 9; i++) stackhost[i] = "10.0.2.2"[i];
+      int a = sock_open("10.0.2.2", 9, 0);
+      int b = sock_open(stackhost, 9, 0);
+      int c = sock_open(bsshost, 9, 0);
+      long caps = _sys(SYS_CAP_QUERY, 0, 0, 0);
+      printf("[browser] sock probe: rodata=%d stack=%d bss=%d caps=0x%x\n",
+             a, b, c, (unsigned)caps);
+      if (a >= 0) sock_close(a);
+      if (b >= 0) sock_close(b);
+      if (c >= 0) sock_close(c); }
+#endif
     if (restored <= 0) tabs_new(url);
     { struct tab *t = tab_cur();
       if (t && t->url[0]) { int i = 0;

@@ -3832,3 +3832,6 @@ bench-aui: $(ISO) $(DISK)
 -include tests/uefi.mk
 -include tests/motion.mk
 -include tests/menu.mk
+
+# DOMParser: `make test-domparser`. See the fragment header.
+-include tests/domparser.mk

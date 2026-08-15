@@ -48,6 +48,12 @@ void js_semantics_install(JSContext *ctx) __attribute__((__weak__));
  * that differs only in whether the file is linked. That is what makes "2,202
  * subtests gained" attributable rather than asserted. */
 void js_anim_install(JSContext *ctx) __attribute__((__weak__));
+/* `new DOMParser().parseFromString(str, "text/html")` -- js_domparser.c, a
+ * SEPARATE detached-document wrapper (see that file's header for why it is
+ * not layered over js_dom.c's own, page-bound one). Weak like the rest: a
+ * build without that TU links and `typeof DOMParser === 'undefined'`, which
+ * is the correct feature-detect answer for a browser that doesn't have it. */
+void js_domparser_install(JSContext *ctx) __attribute__((__weak__));
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -545,6 +551,12 @@ int js_page_open(struct node *root)
 
     js_dom_set_note(note);
     js_dom_init(g_ctx, root);            /* installs document + Element + Event */
+    /* AFTER js_dom_init: no dependency on it (DOMParser's documents are
+     * detached, never on `root`), placed here only to keep the DOM-adjacent
+     * installers together rather than scattered above it. See js_domparser.c's
+     * header for the lifetime scheme -- no close hook is registered because
+     * none is needed (ordinary QuickJS object teardown is sufficient). */
+    if (js_domparser_install) js_domparser_install(g_ctx);
     js_dom_bind_event_target(g_ctx, g);  /* window.addEventListener + window.on* */
     /* AFTER the DOM: js_webapi publishes document.location and dispatches
      * popstate through window.dispatchEvent, both of which js_dom.c owns. */

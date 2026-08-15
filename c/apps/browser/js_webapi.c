@@ -2438,6 +2438,14 @@ static const char *PRELUDE =
  * is the true answer in this engine and not a stub. */
 #include "js_fontface_prelude.inc"
 
+/* ---- Blob / File ----
+ * Real ones, not a fallback: see js_blob_prelude.inc's header for why this is
+ * the file that gets to define G.Blob first. Needs TextEncoder (just
+ * installed above) and __utf8/u8ab/rsOf (the last is a function DECLARATION
+ * further down, hoisted to the top of this whole prelude function -- so
+ * referencing it here, before its own text, is not a forward-reference bug). */
+#include "js_blob_prelude.inc"
+
 /* ---- AbortController ----
  * A real cancellation now that the socket ABI has a close: abort() shuts the
  * connection, it does not merely stop looking at what arrives. */
@@ -2479,6 +2487,28 @@ static const char *PRELUDE =
 "  this.bodyUsed = false;\n"
 "  if (body === undefined || body === null) this.body = null;\n"
 "  else if (body instanceof G.ReadableStream) this.body = body;\n"
+   /* Blob: the body IS the snapshot already taken at Blob-construction time,
+      so no re-copy is needed beyond the one .slice() that keeps the stream's
+      chunk independent of the Blob's own storage. A Blob's type becomes the
+      response's Content-Type when the caller did not set one -- extractBody
+      in the fetch spec does exactly this, and it is the only way
+      `new Response(someBlob)` ever produces a body with a type at all. */
+"  else if (body instanceof G.Blob) {\n"
+"    if (body.type && !this.headers.has('content-type')) this.headers.set('content-type', body.type);\n"
+"    this.body = rsOf(body._b.slice());\n"
+"  }\n"
+   /* A bare string is the common case (Response.json below is one), and it
+      used to reach the same toU8()/encToBytes() as ArrayBuffer/TypedArray --
+      which throws on a string (it is not a BufferSource), so
+      `new Response('hi')` and every call to G.Response.json threw before this
+      branch existed. Nothing exercised it: no test in this tree constructs a
+      Response from a string. */
+"  else if (typeof body === 'string') this.body = rsOf(new G.TextEncoder().encode(body));\n"
+"  else if (G.URLSearchParams && body instanceof G.URLSearchParams) {\n"
+"    if (!this.headers.has('content-type'))\n"
+"      this.headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');\n"
+"    this.body = rsOf(new G.TextEncoder().encode(body.toString()));\n"
+"  }\n"
 "  else this.body = rsOf(toU8(body));\n"
 "};\n"
 "G.Response.prototype = {\n"
@@ -2502,7 +2532,12 @@ static const char *PRELUDE =
 "  text: function () { return this._drain().then(function (p) {\n"
 "    var ab = joinParts(p); return ab.byteLength ? __utf8(ab) : ''; }); },\n"
 "  json: function () { return this.text().then(function (t) { return JSON.parse(t); }); },\n"
-"  blob: function () { return this.arrayBuffer(); },\n"
+   /* A real Blob, not the ArrayBuffer this used to return -- .blob() on a
+      response with a Content-Type must hand back a Blob whose .type carries
+      it, and code that does `blob instanceof Blob` (or feeds it straight back
+      into `new Blob([...])` / a FormData field) needs the real class. */
+"  blob: function () { var self = this; return this._drain().then(function (p) {\n"
+"    return new G.Blob([joinParts(p)], { type: self.headers.get('content-type') || '' }); }); },\n"
 "  clone: function () {\n"
 "    if (this.bodyUsed) throw new TypeError('body already read');\n"
 "    var t = this.body ? this.body.tee() : [null, null];\n"
@@ -2681,6 +2716,14 @@ static const char *PRELUDE =
 "    return dr ? Promise.resolve(dr)\n"
 "              : Promise.reject(new TypeError('Failed to fetch: malformed data: URL'));\n"
 "  }\n"
+"  if (url.slice(0, 5).toLowerCase() === 'blob:') {\n"
+"    var bo = Object.prototype.hasOwnProperty.call(__objURLs, url) ? __objURLs[url] : null;\n"
+"    if (!bo) return Promise.reject(new TypeError('Failed to fetch: unknown or revoked blob: URL'));\n"
+"    var bh = [['content-length', String(bo.size)]];\n"
+"    if (bo.type) bh.unshift(['content-type', bo.type]);\n"
+"    return Promise.resolve(new G.Response(rsOf(bo._b.slice()), { status: 200, statusText: 'OK',\n"
+"      headers: bh, url: url, redirected: false, type: 'basic' }));\n"
+"  }\n"
 "  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
 "  var hs = new G.Headers(init.headers || (input && input.headers));\n"
 "  var body = init.body;\n"
@@ -2688,6 +2731,15 @@ static const char *PRELUDE =
 "    if (G.URLSearchParams && body instanceof G.URLSearchParams) {\n"
 "      if (!hs.has('content-type')) hs.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');\n"
 "      body = body.toString();\n"
+       /* A Blob body's bytes are what go over the wire; its .type becomes
+          Content-Type when the caller did not already set one -- same rule
+          Response's constructor uses, because it is the same spec step
+          (extractBody) on both sides of the connection. Before this branch
+          existed a Blob fell to String(body) below and sent the literal text
+          "[object Blob]" instead of the Blob's bytes. */
+"    } else if (body instanceof G.Blob) {\n"
+"      if (body.type && !hs.has('content-type')) hs.set('content-type', body.type);\n"
+"      body = u8ab(body._b);\n"
 "    } else if (ArrayBuffer.isView(body)) {\n"
 "      body = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);\n"
 "    } else if (!(body instanceof ArrayBuffer) && typeof body !== 'string') {\n"
@@ -2920,6 +2972,53 @@ static const char *PRELUDE =
 "  });\n"
 "});\n"
 "Object.defineProperty(G.URL.prototype, 'searchParams', { get: function () { return this._sp; } });\n"
+
+/* ---- URL.createObjectURL / revokeObjectURL, backed by a real table ----
+ * Until now this fell through to js_platform.c's own fallback (guarded on
+ * `!G.URL.createObjectURL`): a Blob became a `data:` URL, which fetch() can
+ * dereference but which is neither revocable nor bounded -- an 8 MB Blob
+ * became an 11+ MB base64 string sitting in a URL forever. This is the real
+ * thing instead: a bounded, revocable table keyed by a `blob:<origin>/<serial>`
+ * id that only this table (and fetch(), just below) can resolve.
+ *
+ * Layering, load-bearing: js_webapi_install runs before js_media_install and
+ * js_platform_install (see js_page.c), and both of those guard their own
+ * installs on `if (!G.URL.createObjectURL) ...` -- so this, running first,
+ * wins and theirs quietly never fire. That is also why a MediaSource still
+ * works: this only claims Blob/File, and falls through to
+ * `G.__createObjectURL` (js_media.c's primitive, installed onto the global
+ * object -- not onto G.URL -- by the C side of that file) for anything else.
+ * It is looked up BY NAME at call time rather than captured now, because
+ * js_media_install has not run yet at the point this line executes; by the
+ * time a page actually calls URL.createObjectURL(mediaSource), every install
+ * is long done. Same shape for revokeObjectURL/G.__revokeObjectURL. */
+"var __objURLs = Object.create(null), __objURLCount = 0, __objURLBytes = 0, __objURLSerial = 0;\n"
+"var OBJURL_MAX = 64, OBJURL_MAX_BYTES = 8 * 1024 * 1024;\n"
+"G.URL.createObjectURL = function (obj) {\n"
+"  if (obj instanceof G.Blob) {\n"
+"    if (__objURLCount >= OBJURL_MAX)\n"
+"      throw new (G.DOMException || TypeError)(\n"
+"        'createObjectURL: too many live object URLs (max ' + OBJURL_MAX + ')', 'QuotaExceededError');\n"
+"    if (__objURLBytes + obj.size > OBJURL_MAX_BYTES)\n"
+"      throw new (G.DOMException || TypeError)(\n"
+"        'createObjectURL: object URL table is full (max ' + OBJURL_MAX_BYTES + ' bytes total)', 'QuotaExceededError');\n"
+"    var origin = (G.location && G.location.origin) || 'null';\n"
+"    var id = 'blob:' + origin + '/' + (++__objURLSerial);\n"
+"    __objURLs[id] = obj; __objURLCount++; __objURLBytes += obj.size;\n"
+"    return id;\n"
+"  }\n"
+"  if (typeof G.__createObjectURL === 'function') return G.__createObjectURL(obj);\n"
+"  throw new TypeError('createObjectURL: needs a Blob (or a File, or a MediaSource if media is linked)');\n"
+"};\n"
+"G.URL.revokeObjectURL = function (url) {\n"
+"  url = String(url);\n"
+"  if (Object.prototype.hasOwnProperty.call(__objURLs, url)) {\n"
+"    __objURLBytes -= __objURLs[url].size; __objURLCount--;\n"
+"    delete __objURLs[url];\n"
+"    return;\n"
+"  }\n"
+"  if (typeof G.__revokeObjectURL === 'function') G.__revokeObjectURL(url);\n"
+"};\n"
 
 /* ---- XMLHttpRequest, over fetch ----
  * Async only. abort() is now a REAL abort: it aborts the AbortController the
