@@ -293,6 +293,120 @@ void fb_blit_surface_scaled(int dx, int dy, int dw, int dh, const struct surface
     }
 }
 
+/* Same contract as fb_blit_surface_scaled, BILINEAR: every dest pixel blends
+ * the four source texels around its sample point instead of picking one.
+ *
+ * WHY NEAREST SHIMMERS AND THIS DOESN'T. Nearest maps dest pixel i to source
+ * column i*src->w/dw -- an integer division, so as dw changes frame to frame
+ * (a resize drag, the open/close pop's scale 0.85->1.0) the column that
+ * division rounds to for a given i jumps discretely: one frame a source row
+ * survives into the dest whole, the next it is skipped outright, because the
+ * ratio crossed an integer boundary between them. That flip is what "rows pop
+ * in and out" IS. A bilinear sample's four weights change continuously with
+ * the ratio -- there is no boundary to cross -- so consecutive frames differ
+ * by a small blend shift instead of by a row appearing or vanishing.
+ *
+ * FIXED POINT. `stepx`/`stepy` are 16.16 -- the same texture-step family as
+ * Open Logit's transform matrices (gfx.h) -- and walked by simple addition
+ * rather than re-deriving i*src->w/dw per pixel, matching how every other
+ * per-pixel loop in this file (fb_blur_rect's moving sums, fb_liquid_glass's
+ * displacement) turns an O(pixels) divide into an O(pixels) add. The -0.5
+ * texel bias centres the sample on the dest pixel's centre rather than its
+ * top-left corner, which is what makes a 1:1 scale reproduce the source
+ * exactly instead of shifting it half a texel toward the bottom-right.
+ *
+ * The blend weights are then read off the TOP 8 BITS of each 16-bit fraction
+ * (0..255), not the full 16 -- so a weight product (wx*wy) tops out at
+ * 255*255=65025, comfortably inside a 32-bit int alongside a 0..255 colour
+ * channel, with no 64-bit multiply needed in the innermost loop. Precision
+ * lost below bit 8 of the fraction is under 1/256 of a texel step, far finer
+ * than a screen pixel can show.
+ *
+ * ROUNDED, NOT TRUNCATED, on the final divide -- this tree has already found
+ * the alternative's failure mode once (fb_liquid_glass's forerunner and
+ * gfx_over both floored a /255 and quietly darkened every faint-over-faint
+ * blend by up to 1/255 at the low end; see the note above gfx_over). The
+ * same shape of bug here would show as a fully-mixed edge fading slightly
+ * dark relative to its four source texels, frame after frame, in a way no
+ * single screenshot flags but a repeated blend accumulates.
+ *
+ * NOT a box/area filter: this samples exactly four texels per dest pixel
+ * regardless of how far dw has shrunk src->w, so a large downscale still
+ * aliases somewhat (a real box filter would average every source texel a
+ * dest pixel covers, at a real per-pixel cost that grows with the scale
+ * ratio instead of staying flat at four taps). That trade is deliberate --
+ * see tests/unit/fb_scale_bl_bench.c, which builds this file host-side (the
+ * same stub pattern as fb_clip_test.c) and times both paths on a 1180x620
+ * window surface (a real browser/Finder canvas size): bilinear cost 4.3x
+ * nearest at a ~0.3x shrink and 4.4x at a ~1.5x grow -- flat regardless of
+ * direction, matching "four fetches + three lerps vs. one fetch" rather than
+ * scaling with how much the image moved. (Host cycles, not guest TCG --
+ * fb.c cannot run under QEMU on the host that builds it -- but the RATIO
+ * between two functions measured the same way on the same host is the
+ * number that matters here, and it is what decides the trade below.) Cheap
+ * enough for the ONE window currently under an open/close pop or a live
+ * resize drag; not proposed here for every window a compositor redraws
+ * every frame regardless of motion -- that math is 4x the cost for windows
+ * that were not asked to look smoother, paid on every frame instead of only
+ * the animating one. The same 4x-per-tap-count shape is why fb_liquid_glass
+ * above samples R, G and B as three separate single-tap fetches rather than
+ * three bilinear ones: a cost that is well spent on the rim band of one
+ * glass panel would not be spent the same way if paid by every pixel of it. */
+void fb_blit_surface_scaled_bl(int dx, int dy, int dw, int dh, const struct surface *src)
+{
+    struct surface *t = T ? T : &screen;
+    if (!t->px || !src->px || dw <= 0 || dh <= 0 || src->w <= 0 || src->h <= 0) return;
+    int i0, j0, i1, j1;
+    if (!clip_ij(dx, dy, dw, dh, &i0, &j0, &i1, &j1)) return;
+
+    uint32_t stepx = ((uint32_t)src->w << 16) / (uint32_t)dw;
+    uint32_t stepy = ((uint32_t)src->h << 16) / (uint32_t)dh;
+    int maxsx = src->w - 1, maxsy = src->h - 1;
+
+    for (int j = j0; j < j1; j++) {
+        int64_t sy16 = (int64_t)j * stepy + (int64_t)(stepy >> 1) - 0x8000;
+        if (sy16 < 0) sy16 = 0;
+        int sy0 = (int)(sy16 >> 16);
+        if (sy0 > maxsy) sy0 = maxsy;
+        int wy1 = (int)((sy16 >> 8) & 0xFF);      /* top 8 bits of the fraction */
+        int wy0 = 256 - wy1;
+        int sy1 = sy0 < maxsy ? sy0 + 1 : sy0;
+
+        const uint32_t *row0 = src->px + (uint32_t)sy0 * src->w;
+        const uint32_t *row1 = src->px + (uint32_t)sy1 * src->w;
+        uint32_t *drow = t->px + (uint32_t)(dy + j) * t->w + dx;
+
+        for (int i = i0; i < i1; i++) {
+            int64_t sx16 = (int64_t)i * stepx + (int64_t)(stepx >> 1) - 0x8000;
+            if (sx16 < 0) sx16 = 0;
+            int sx0 = (int)(sx16 >> 16);
+            if (sx0 > maxsx) sx0 = maxsx;
+            int wx1 = (int)((sx16 >> 8) & 0xFF);
+            int wx0 = 256 - wx1;
+            int sx1 = sx0 < maxsx ? sx0 + 1 : sx0;
+
+            /* Weights past this point are exact for the pixel sampled: when an
+             * axis clamped (sx0==maxsx or sy0==maxsy) its "1" tap duplicates
+             * the "0" tap (sx1==sx0 / sy1==sy0), so the two texels being
+             * blended are identical and any wx1/wy1 split of that axis's 256
+             * yields the same sum -- no separate zero-the-weight case needed. */
+            uint32_t p00 = row0[sx0], p10 = row0[sx1];
+            uint32_t p01 = row1[sx0], p11 = row1[sx1];
+            int r00, g00, b00, r10, g10, b10, r01, g01, b01, r11, g11, b11;
+            unpack(p00, &r00, &g00, &b00);
+            unpack(p10, &r10, &g10, &b10);
+            unpack(p01, &r01, &g01, &b01);
+            unpack(p11, &r11, &g11, &b11);
+
+            int w00 = wx0 * wy0, w10 = wx1 * wy0, w01 = wx0 * wy1, w11 = wx1 * wy1;
+            int r = (r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11 + 32768) >> 16;
+            int g = (g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11 + 32768) >> 16;
+            int b = (b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11 + 32768) >> 16;
+            drow[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
+        }
+    }
+}
+
 /* Raw back->framebuffer copy of a clamped rect. The parallel present workers
  * (one per CPU) each call this on a disjoint band of rows -- disjoint writes,
  * read-only shared source, so no locking is needed. */

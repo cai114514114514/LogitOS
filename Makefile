@@ -3830,3 +3830,5 @@ bench-aui: $(ISO) $(DISK)
 -include tests/power.mk
 -include tests/settings2.mk
 -include tests/uefi.mk
+-include tests/motion.mk
+-include tests/menu.mk

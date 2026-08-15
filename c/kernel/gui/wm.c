@@ -43,6 +43,7 @@
 #include "percpu.h"
 #include "spinlock.h"
 #include "vfs_cred.h"   /* vfs_cred_session(): who, if anyone, has logged in */
+#include "power.h"      /* kernel_poweroff/kernel_reboot -- the LogitOS menu's Shut Down/Restart */
 
 #define MAXWIN     16
 /* ---- units ----------------------------------------------------------------
@@ -178,6 +179,12 @@ void *memcpy(void *, const void *, size_t);
  * primitives. See net/{dom,css,layout}.c (compiled into browser.aex) and L1 plan. */
 
 /* ---------- windows + apps ---------- */
+/* Declared HERE rather than down in the damage section it belongs to, because
+ * `struct win` now stores one (see anim_prev) and a member cannot have an
+ * incomplete type. The damage machinery that owns it is still the only thing
+ * that manipulates it; this is a forward move, not a second home. */
+struct drect { int x0, y0, x1, y1; };          /* half-open, DEVICE pixels */
+
 enum wkind { WK_FINDER, WK_APP };
 
 struct app {
@@ -211,6 +218,30 @@ struct win {
     int  min_w_pt, min_h_pt;  /* app-declared minimum CONTENT size, in points */
     int  zoomed;              /* filling the desktop (see zoom_rect) */
     int  minimized;           /* hidden: not composited, not hit-tested */
+    /* ---- the dock fly (minimise / restore) --------------------------------
+     * `minimized` is set the INSTANT the gesture starts, not when the flight
+     * lands: focus, hit-testing and the keyboard must stop treating the window
+     * as present the moment the user asks for that, and only the PICTURE is
+     * allowed to take 180 ms to agree. win_draw_rect below reads min_t0 first
+     * for exactly that reason -- a window in flight is hidden by state and
+     * visible by animation at the same time, and that is not a contradiction.
+     *
+     * THE APP KEEPS RUNNING. This is not process freezing and there is nothing
+     * here that stops a thread: a minimised app still gets its timer slice,
+     * still draws into its retained canvas, still has its network sockets. The
+     * only thing that changed is that the compositor stops putting that canvas
+     * on the screen. Freezing a process because its window is hidden would
+     * silently break every app that does work in the background, and this WM
+     * has no business making that decision for them. */
+    uint64_t min_t0;          /* tick the dock fly began (0 = settled) */
+    int  min_dir;             /* 1 = flying to the dock, 0 = flying back out */
+    int  min_slot;            /* dock icon index the flight is aimed at */
+    /* The on-screen box this window occupied on the previous animated frame.
+     * An animation's damage is (where it was | where it now is), and the first
+     * half of that is not derivable from the current tick -- so it is kept.
+     * Seeded when an animation STARTS; a zeroed one would union in the origin
+     * and quietly turn every animated frame into a top-left-anchored repaint. */
+    struct drect anim_prev;
     int  sx, sy, sw, sh;      /* the frame to restore to; only valid while zoomed */
     /* Pixels the canvas ALLOCATION holds, which is >= surf.w * surf.h. The
      * canvas is reshaped inside this block whenever the new size fits, so a
@@ -336,7 +367,7 @@ static int W, H;
  * panel is grown to contain the WHOLE panel (dmg_expand), which restores the
  * property that the panel's entire backdrop was re-laid this frame. */
 #define NDMG 6                                 /* rectangles; past this, merged */
-struct drect { int x0, y0, x1, y1; };          /* half-open, DEVICE pixels */
+/* struct drect is defined above struct win -- see the note there. */
 static struct drect dmg[NDMG];
 static int ndmg;
 static int dirty_all = 1;                      /* next frame is the whole screen */
@@ -414,6 +445,112 @@ static void dirty_rect(int x, int y, int w, int h)
  * caller in this one. */
 void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
 
+/* ===========================================================================
+ * MOTION -- Expose, and the dock fly.
+ *
+ * THE ONE RULE THIS WHOLE SECTION IS BUILT ON: a window that is not where its
+ * frame says it is must still have exactly ONE answer to "where are you on
+ * screen", and every reader has to get that same answer. There are three
+ * readers and they fail in three different ways when they disagree:
+ *
+ *   win_box()      -> dirty_win() -> the damage list.  Disagreeing here leaves
+ *                     the window's previous position standing on the wallpaper.
+ *   rect_blocked() -> the mid-frame guard.  Disagreeing here holds back the
+ *                     wrong rectangle, or fails to hold back the right one.
+ *   render_region()-> the pixels.  Disagreeing here is the picture itself.
+ *
+ * So win_draw_rect() below is the single definition site, in the same spirit
+ * as WSH_* (one shadow geometry) and dock_geom() (one dock position). The
+ * animations do not each carry their own copy of "and also damage this" --
+ * they move a rectangle, and the rest of the file follows it for free.
+ *
+ * WHY TICKS AND NOT MILLISECONDS. Every animation here is driven off
+ * timer_ticks(), the same 100 Hz PIT counter the dock's launch bounce already
+ * reads. That is deliberate copying, not laziness: the bounce is a shipped,
+ * working per-frame animation on this machine, its cadence is known to be
+ * survivable under TCG, and an animation subsystem with its own timer would be
+ * a second thing that can be out of step with the compositor's idea of a frame.
+ * 10 ms of resolution over a 180 ms gesture is 18 steps, which is more than the
+ * eye resolves in a motion that short.
+ *
+ * NO FLOATS ANYWHERE. The kernel builds -msse2 now, but the easing is integer
+ * because these curves are evaluated per window per frame and a fixed-point
+ * quadratic is exact, reproducible, and diffable in a screenshot test. */
+
+/* 180 ms at 100 Hz. Long enough to read as motion rather than a cut, short
+ * enough that it never becomes the thing you are waiting for. */
+#define EX_DUR_TICKS    18
+#define MINFLY_TICKS    18
+#define OPEN_DUR_TICKS  16      /* the open pop, as it always was */
+
+#define EX_GUTTER_PT    26      /* between cells, and to the screen edge */
+#define EX_TITLE_PT     20      /* reserved under each cell for the title */
+/* How dark the desktop goes behind the grid. The windows have to read as THE
+ * CONTENT and the wallpaper as backdrop; at this depth a photograph is still
+ * legible underneath, which is what says "your desktop is still there" rather
+ * than "you are in a different application". */
+#define EX_DIM_ALPHA    120
+/* THE HOT CORNER, in points from the top-right. Reachable without aiming --
+ * the pointer clamps at (W-1, 0), so shoving it up and right always lands
+ * inside -- and 18pt is small enough that crossing the corner on the way to
+ * somewhere else does not sit in it. */
+#define EX_CORNER_PT    18
+#define EX_DWELL_TICKS  15      /* 150 ms parked before it fires */
+
+/* Quadratic ease-out over 0..256: fast out of the gate, settling into the end.
+ * Same curve family as gfx_shadow_falloff, and the same reason -- deceleration
+ * is what makes a moving rectangle look like it has mass instead of being
+ * teleported in equal steps. */
+static int ease_out(int t)
+{
+    if (t <= 0) return 0;
+    if (t >= 256) return 256;
+    int inv = 256 - t;
+    return 256 - inv * inv / 256;
+}
+
+/* ---- Expose ---------------------------------------------------------------
+ *
+ * `ex_on` is the INTENT (the mode is up, or is being entered); `ex_t0` is the
+ * transition in flight. Both together, because leaving is a state where the
+ * intent is already "off" while the pixels are still on their way home --
+ * ex_state() is the question every other reader actually wants to ask. */
+static int ex_on;                      /* the picker is up (or arriving)      */
+static uint64_t ex_t0;                 /* tick the transition began; 0 = still */
+static int ex_hov = -1;                /* grid slot under the pointer, or -1  */
+static int ex_n;                       /* windows in the grid                 */
+static int ex_wi[MAXWIN];              /* wins[] index per grid slot          */
+static struct drect ex_cell[MAXWIN];   /* the settled thumbnail rect per slot */
+
+static int ex_state(void) { return ex_on || ex_t0 != 0; }
+
+/* THE TRIGGER. Two of them, and the reasoning for each is the input machinery
+ * that already exists rather than a preference.
+ *
+ * A HOT CORNER, because the WM already tracks the pointer continuously and
+ * already runs a per-pass tick (the dock's launch bounce is driven from it), so
+ * "has the pointer been parked in the top-right for 150 ms" costs one compare
+ * per loop pass and no new machinery at all. Top-RIGHT specifically: the menu
+ * bar's left end is the app menu region and its right end is the clock, which
+ * is text -- nothing there is clickable, so a pointer resting in that corner is
+ * not on its way to anything. The dwell is what stops a pointer merely CROSSING
+ * the corner from firing it, and `armed` is what stops it re-firing while the
+ * pointer stays parked after the mode is dismissed.
+ *
+ * AND Cmd+E, because wm_shortcut already owns a closed, documented list of Cmd
+ * chords (W/Q/M/Tab/`) and E was free -- so this costs one case label and takes
+ * no keystroke away from any app. A gesture that only exists as a hot corner is
+ * one a keyboard cannot reach. */
+static uint64_t ex_corner_t0;          /* tick the pointer parked in the corner */
+static int ex_corner_armed = 1;        /* leave the corner to re-arm the trigger */
+
+/* Where a window IS on screen this frame -- position, size and opacity -- or 0
+ * if it is not on screen at all. PURE: it reads the clock, it never expires a
+ * timer. (win_box calls it from the input path, and an animation that advanced
+ * itself because somebody asked where a window was would be a timer nobody can
+ * reason about. wm_anim_tick() is the one place a timer ends.) */
+static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh, int *oa);
+
 /* THE DROP SHADOW'S GEOMETRY, defined once.
  *
  * It is used in two places that must agree -- draw_frame paints it, win_box
@@ -453,11 +590,31 @@ void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
  * declare the smaller box. Damage that stops at the window's own edge leaves
  * the old shadow standing when the window moves, which is exactly the kind of
  * artefact that makes people distrust a partial-render path. */
+/* NOW READS win_draw_rect, so a window being flown to the dock or scaled into
+ * an Expose cell declares the box it is ACTUALLY drawn in. Taking w->x/w->w
+ * here instead would report a footprint the window has not occupied since the
+ * gesture began -- the exact shape of the bug WM_DAMAGE_LIE fakes, arrived at
+ * honestly. An off-screen window reports an EMPTY box, which dirty_rect drops
+ * on the floor by design (see its "nothing on screen changed" guard); the
+ * frames where that transition happens are damaged explicitly by the animation
+ * that caused it, in wm_anim_tick, and not left to this function to infer. */
 static void win_box(const struct win *w, struct drect *r)
 {
     int b = WSH_BLUR(1) + 1, dy = WSH_DY(1);
-    r->x0 = w->x - b;            r->y0 = w->y - b;
-    r->x1 = w->x + w->w + b;     r->y1 = w->y + w->h + b + dy;
+    int x, y, ww, wh, a;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
+    r->x0 = x - b;            r->y0 = y - b;
+    r->x1 = x + ww + b;       r->y1 = y + wh + b + dy;
+    /* THE EXPOSE TITLE overhangs a narrow thumbnail, and its extent is exactly
+     * knowable -- same argument as the dock's tooltip in dock_box_hov(), and
+     * the same refusal to be vague about it. A title wider than the window it
+     * names is not an edge case here: "Terminal" under a 200pt-wide thumbnail
+     * scaled to a third is most of them. */
+    if (ex_state()) {
+        int tw = fb_text_width(w->title), cx = x + ww / 2;
+        if (cx - tw / 2 - S(6) < r->x0) r->x0 = cx - tw / 2 - S(6);
+        if (cx + tw / 2 + S(6) > r->x1) r->x1 = cx + tw / 2 + S(6);
+    }
 }
 /* THE NEGATIVE CONTROL. Set to 1 -- tests/qmp/qmp_damage.py --negative flips
  * this exact line in a throwaway copy of the tree -- a window reports only its
@@ -625,8 +782,12 @@ static int top_visible(void)
  * win_set_frame(), so there is exactly one place that clamps, exactly one that
  * reports damage, and no way to add a fifth gesture that forgets either. */
 static void dock_geom(int *x0, int *y0, int *dw, int *dh);   /* body with the dock */
+static void dock_icon_box(int slot, struct drect *r);        /* ditto: one icon's tile */
+static void dirty_dock(void);
 static int in_rect(int px, int py, int x, int y, int w, int h);
 static void enqueue(struct win *w, int type, int a, int b);
+static void raise_win(int wi);
+static int win_open_scale(const struct win *w);
 
 /* The smallest OUTER frame this window may have: the WM's floor, raised by
  * whatever the app asked for, plus the titlebar the app does not own. */
@@ -730,14 +891,347 @@ static void win_break_zoom(struct win *w)
     w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
 }
 
+/* ===========================================================================
+ * THE DOCK FLY -- minimise and restore, as motion.
+ *
+ * WHAT THIS IS NOT, said here because it is the first thing anyone will look
+ * for: it is NOT the genie. The genie warp bends a window around a curve by
+ * resampling every COLUMN of it independently against a different vertical
+ * scale and a different horizontal offset -- a per-column resample. This
+ * compositor has no primitive for that and building one is a rasterizer, not
+ * an animation: fb.c's scaled blits map a destination pixel to exactly one
+ * source pixel through a single affine ratio, which is the wrong shape of
+ * arithmetic entirely. What is built here is a scale-with-fade, which is what
+ * macOS itself ships as the OTHER option in System Settings ("Minimise windows
+ * using: Scale effect"), and calling it that is more honest than calling a
+ * shrink a genie. If the warp is ever wanted, the thing to ask for is a
+ * column-wise resample in c/lib/gfx or fb.c, not more code in this file.
+ * ======================================================================== */
+
+/* Which dock icon this window's app owns. Matched by the aex header NAME, the
+ * same key wm_launch's single-instance branch and the running-dot indicator
+ * both use -- not by file path, which reg[] and apps[] spell differently.
+ * A window with no dock icon (none exists today, but a WK_FINDER or a future
+ * app launched by path would be one) flies to the middle of the dock rather
+ * than to slot 0, which reads as "into the dock" instead of as "into Clock". */
+static int dock_slot_for(const struct win *w)
+{
+    if (w->app)
+        for (int i = 0; i < nreg; i++)
+            if (streq(reg[i].name, w->app->name)) return i;
+    return nreg > 0 ? nreg / 2 : 0;
+}
+
+/* Progress of the dock fly, 0..256, where 0 is the window's own frame and 256
+ * is its dock icon. Settled windows answer from `minimized` alone, which is
+ * what makes this safe to call on every window every frame. */
+static int min_prog(const struct win *w)
+{
+    if (!w->min_t0) return w->minimized ? 256 : 0;
+    uint64_t e = timer_ticks() - w->min_t0;
+    if (e >= MINFLY_TICKS) return w->min_dir ? 256 : 0;
+    int eased = ease_out((int)(e * 256 / MINFLY_TICKS));
+    return w->min_dir ? eased : 256 - eased;
+}
+
+/* The whole area a fly sweeps, end to end: the window's frame box unioned with
+ * its dock icon box, both taken at the FOCUSED shadow extent. Used once, on the
+ * frame the flight lands, to re-lay the entire path in a single rectangle --
+ * see wm_anim_tick for why a per-frame union is not sufficient on its own. */
+static void win_fly_sweep(const struct win *w, struct drect *r)
+{
+    int b = WSH_BLUR(1) + 1, dy = WSH_DY(1);
+    struct drect ic;
+    dock_icon_box(w->min_slot, &ic);
+    r->x0 = w->x - b;             r->y0 = w->y - b;
+    r->x1 = w->x + w->w + b;      r->y1 = w->y + w->h + b + dy;
+    if (ic.x0 - b < r->x0) r->x0 = ic.x0 - b;
+    if (ic.y0 - b < r->y0) r->y0 = ic.y0 - b;
+    if (ic.x1 + b > r->x1) r->x1 = ic.x1 + b;
+    if (ic.y1 + b + dy > r->y1) r->y1 = ic.y1 + b + dy;
+}
+
+/* ---- Expose: the grid ----------------------------------------------------
+ *
+ * Rebuilt at the moment the gesture starts and then held FIXED for the life of
+ * the mode. Not recomputed per frame, and deliberately not recomputed when the
+ * user picks a window: the grid somebody is looking at is the grid the windows
+ * have to fly home from, and a layout that re-flowed under the pointer at the
+ * instant of the click would move the target out from under the click that
+ * chose it. */
+static void ex_layout(void)
+{
+    ex_n = 0;
+    /* Back-to-front, so slot order matches stacking order: the window you last
+     * used lands in the last cell, and that stays true from one invocation to
+     * the next as long as you have not restacked anything. A picker whose
+     * items move for no reason the user can see is a picker you have to read
+     * every time instead of aiming at. */
+    for (int i = 0; i < norder && ex_n < MAXWIN; i++)
+        if (wins[order[i]].used) ex_wi[ex_n++] = order[i];
+    if (!ex_n) return;
+
+    /* rows = ceil(sqrt(N)). This machine's world is NAPPS ~ 11 and one window
+     * per app, so N is single digits and the packing question that a real
+     * Expose has to answer (longest-side-first bin packing, so a wide window
+     * and a tall one do not both get a square cell) does not arise: at N <= 9
+     * a uniform grid wastes cell area, never legibility. The aspect fit below
+     * is what actually makes a 16:9 browser and a square clock both readable. */
+    int cols = 1;
+    while (cols * cols < ex_n) cols++;
+    int rows = (ex_n + cols - 1) / cols;
+
+    int g = S(EX_GUTTER_PT), th = S(EX_TITLE_PT);
+    int dx0, dy0, dw, dh;
+    dock_geom(&dx0, &dy0, &dw, &dh);
+    (void)dx0; (void)dw;
+    int ax0 = g, ay0 = MBH + g, ax1 = W - g, ay1 = dy0 - g;
+    if (ay1 - ay0 < S(120)) ay1 = H - g;         /* a dock taller than the screen */
+
+    int cw = (ax1 - ax0) / cols, ch = (ay1 - ay0) / rows;
+    for (int k = 0; k < ex_n; k++) {
+        struct win *w = &wins[ex_wi[k]];
+        int r = k / cols, c = k - r * cols;
+        /* The LAST row is CENTRED. Seven windows in a 3x3 leave two holes, and
+         * a hole on the right of the bottom row reads as a layout bug rather
+         * than as a count -- the grid should look built for what is in it. */
+        int inrow = (r == rows - 1) ? ex_n - r * cols : cols;
+        int rowx = ax0 + (ax1 - ax0 - inrow * cw) / 2;
+        int bx = rowx + c * cw, by = ay0 + r * ch;
+        int fitw = cw - g, fith = ch - g - th;
+        if (fitw < 1) fitw = 1;
+        if (fith < 1) fith = 1;
+        /* PRESERVE ASPECT, and never magnify past 1:1. A 200x120 utility window
+         * blown up to fill a 400x300 cell is a blurred lie about its own size,
+         * and the single thing a picker must get right is which window is
+         * which -- size is half of how that is recognised. */
+        int s = 256;
+        if (w->w > 0 && fitw * 256 / w->w < s) s = fitw * 256 / w->w;
+        if (w->h > 0 && fith * 256 / w->h < s) s = fith * 256 / w->h;
+        if (s > 256) s = 256;
+        if (s < 16) s = 16;
+        int tw = w->w * s / 256, thh = w->h * s / 256;
+        if (tw < 1) tw = 1;
+        if (thh < 1) thh = 1;
+        int cx = bx + cw / 2, cy = by + (ch - th) / 2;
+        ex_cell[k].x0 = cx - tw / 2;
+        ex_cell[k].y0 = cy - thh / 2;
+        ex_cell[k].x1 = ex_cell[k].x0 + tw;
+        ex_cell[k].y1 = ex_cell[k].y0 + thh;
+    }
+}
+
+/* Grid slot of a wins[] index, or -1. Answers -1 whenever the mode is down, so
+ * every caller can ask unconditionally. */
+static int ex_slot(int wi)
+{
+    if (!ex_state()) return -1;
+    for (int k = 0; k < ex_n; k++) if (ex_wi[k] == wi) return k;
+    return -1;
+}
+
+/* Eased progress of the Expose transition: 0 = windows at their own frames,
+ * 256 = windows in their cells. Leaving runs the same curve backwards, so a
+ * cancelled gesture retraces the path it came in on rather than taking a
+ * second, different route home. */
+static int ex_prog(void)
+{
+    if (!ex_t0) return ex_on ? 256 : 0;
+    uint64_t e = timer_ticks() - ex_t0;
+    if (e >= EX_DUR_TICKS) return ex_on ? 256 : 0;
+    int eased = ease_out((int)(e * 256 / EX_DUR_TICKS));
+    return ex_on ? eased : 256 - eased;
+}
+
+/* THE SINGLE DEFINITION SITE. See the block comment above win_box. */
+static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh, int *oa)
+{
+    int x = w->x, y = w->y, ww = w->w, wh = w->h, a = 255;
+    int p, k;
+
+    if (w->min_t0) {
+        /* In flight to or from the dock. Checked FIRST and ahead of the hidden
+         * test, because `minimized` is already set the whole way down. */
+        struct drect ic;
+        dock_icon_box(w->min_slot, &ic);
+        p = min_prog(w);
+        x  = w->x + (ic.x0 - w->x) * p / 256;
+        y  = w->y + (ic.y0 - w->y) * p / 256;
+        ww = w->w + ((ic.x1 - ic.x0) - w->w) * p / 256;
+        wh = w->h + ((ic.y1 - ic.y0) - w->h) * p / 256;
+        /* THE FADE IS THE SECOND HALF ONLY, and that is a cost decision as much
+         * as a look. Constant-alpha compositing here is per-pixel over the
+         * DESTINATION rect (see anim_blit_fade), against a row copy for the
+         * opaque path -- so holding the window solid while it is still large
+         * and dissolving it once it is small keeps the expensive pixels to the
+         * frames that have few of them. It also happens to be what the eye
+         * expects: the window shrinks, and vanishes as it arrives. */
+        a = p <= 128 ? 255 : 255 - 255 * (p - 128) / 128;
+        if (a < 0) a = 0;
+    } else if ((k = ex_slot((int)(w - wins))) >= 0) {
+        /* In the picker. A MINIMISED window is shown too, dimmer -- it is a
+         * window you own and cannot otherwise see, which is precisely what a
+         * window picker is for -- and it flies out of its DOCK ICON rather than
+         * out of the frame it is not occupying, so the motion says where it
+         * actually came from. */
+        struct drect home;
+        if (w->minimized) dock_icon_box(dock_slot_for(w), &home);
+        else { home.x0 = w->x; home.y0 = w->y; home.x1 = w->x + w->w; home.y1 = w->y + w->h; }
+        p = ex_prog();
+        const struct drect *c = &ex_cell[k];
+        x  = home.x0 + (c->x0 - home.x0) * p / 256;
+        y  = home.y0 + (c->y0 - home.y0) * p / 256;
+        ww = (home.x1 - home.x0) + ((c->x1 - c->x0) - (home.x1 - home.x0)) * p / 256;
+        wh = (home.y1 - home.y0) + ((c->y1 - c->y0) - (home.y1 - home.y0)) * p / 256;
+        if (w->minimized) a = 255 - 105 * p / 256;
+    } else if (w->minimized) {
+        return 0;                        /* hidden: not composited, not hit-tested */
+    } else {
+        int s = win_open_scale(w);       /* the open pop, a scale about the centre */
+        if (s) { ww = w->w * s / 256; wh = w->h * s / 256;
+                 x = w->x + (w->w - ww) / 2; y = w->y + (w->h - wh) / 2; }
+    }
+    if (ww < 1) ww = 1;
+    if (wh < 1) wh = 1;
+    *ox = x; *oy = y; *ow = ww; *oh = wh; *oa = a;
+    return 1;
+}
+
+/* Is this window drawn the ORDINARY way this frame -- at its own frame, full
+ * size, fully opaque, and not in the picker?
+ *
+ * That is the ONLY case that gets a real liquid-glass titlebar sampling the
+ * live backdrop. Every other case goes through a scratch surface, whose
+ * titlebar is draw_frame_body's solid gradient and samples nothing. ONE
+ * predicate, asked by the renderer (which path to take) and by dmg_expand
+ * (whether there is a glass panel here to protect), so the two cannot drift --
+ * and drift here is not cosmetic: dmg_expand grows any damage rectangle that
+ * touches a glass panel until it contains the whole panel, so a window
+ * claiming glass at a full-width frame it is not occupying would grow every
+ * rectangle near it and turn the per-window damage list back into a
+ * full-screen repaint, invisibly. */
+static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, int a)
+{
+    return x == w->x && y == w->y && ww == w->w && wh == w->h && a >= 255
+           && ex_slot((int)(w - wins)) < 0;
+}
+
+/* The glass titlebar panel dmg_expand must contain whole, or 0 if this window
+ * has no glass on screen this frame. */
+static int win_glass_box(const struct win *w, struct drect *p)
+{
+    int x, y, ww, wh, a;
+    if (!w->used) return 0;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return 0;
+    if (!win_drawn_direct(w, x, y, ww, wh, a)) return 0;
+    p->x0 = x; p->y0 = y;
+    p->x1 = x + ww; p->y1 = y + TBH + S(10);
+    return 1;
+}
+
+/* Minimise / restore. The state flips NOW and the picture takes MINFLY_TICKS
+ * to agree -- see the comment on min_t0 in struct win. */
 static void win_set_min(struct win *w, int on)
 {
     on = on ? 1 : 0;
-    if (on == w->minimized) return;
-    dirty_win(w);                    /* the space it vacates, or is about to fill */
+    if (on == w->minimized && !w->min_t0) return;
+    dirty_win(w);                    /* wherever it is at this instant */
     w->minimized = on;
+    w->min_dir = on;
+    w->min_slot = dock_slot_for(w);
+    w->min_t0 = timer_ticks();
+    if (!w->min_t0) w->min_t0 = 1;   /* 0 means "settled", so never store it */
     if (!on) raise_win((int)(w - wins));
+    win_box(w, &w->anim_prev);       /* seed the per-frame damage union */
     dirty_win(w);
+}
+
+/* Put a window where the fly would have left it, immediately. Used when a
+ * second gesture arrives on top of a running one: two animations moving the
+ * same rectangle would each believe they own its position, and the damage
+ * union would be computed against whichever of them wrote anim_prev last. */
+static void win_fly_settle(struct win *w)
+{
+    if (!w->min_t0) return;
+    struct drect s;
+    win_fly_sweep(w, &s);
+    w->min_t0 = 0;
+    dirty_rect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
+}
+
+/* Damage one grid slot -- its thumbnail, its shadow and its title, via the same
+ * win_box every other damage path uses. */
+static void ex_dirty_slot(int k)
+{
+    if (k < 0 || k >= ex_n) return;
+    struct drect r;
+    win_box(&wins[ex_wi[k]], &r);
+    dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+}
+
+/* The grid slot under a point, or -1. Only while the grid is STILL: hit-testing
+ * a moving target is how a click lands on the window that happened to be
+ * passing through, and the mode is only pickable once it has settled anyway. */
+static int ex_hover_at(int x, int y)
+{
+    if (!ex_on || ex_t0) return -1;
+    for (int k = ex_n - 1; k >= 0; k--) {
+        const struct drect *c = &ex_cell[k];
+        if (x >= c->x0 && x < c->x1 && y >= c->y0 && y < c->y1) return k;
+    }
+    return -1;
+}
+
+static void ex_enter(void)
+{
+    if (ex_state()) return;
+    /* A dock fly still running would be a second animation moving the same
+     * rectangle; land it first rather than interleave two owners. */
+    for (int i = 0; i < MAXWIN; i++) if (wins[i].used) win_fly_settle(&wins[i]);
+    ex_layout();
+    if (ex_n == 0) return;                 /* nothing to pick between */
+    ex_on = 1;
+    ex_t0 = timer_ticks();
+    if (!ex_t0) ex_t0 = 1;
+    ex_hov = -1;
+    for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
+    /* ONE full-screen frame, for the dim -- which lands everywhere at once and
+     * is honestly whole-screen damage. Everything after this frame pays only
+     * for the windows that move; see wm_anim_tick. */
+    dirty_full();
+    /* The grid itself, once: a harness can then assert that a mid-flight rect
+     * lies strictly BETWEEN the window's own frame and the cell it is aimed at,
+     * which is the actual claim "it animated" makes. Without the destination
+     * printed, an intermediate rectangle is just an unexplained number. */
+    kprintf("[wm] expose on n=%d\n", ex_n);
+    for (int k = 0; k < ex_n; k++)
+        kprintf("[wm] expose cell %d win %d rect %d %d %d %d\n", k, ex_wi[k],
+                ex_cell[k].x0, ex_cell[k].y0,
+                ex_cell[k].x1 - ex_cell[k].x0, ex_cell[k].y1 - ex_cell[k].y0);
+}
+
+/* Leave the picker. `pick` is a wins[] index to bring to the front, or -1 to
+ * leave the stacking exactly as it was. */
+static void ex_leave(int pick)
+{
+    if (!ex_on) return;
+    if (pick >= 0 && wins[pick].used) {
+        struct win *w = &wins[pick];
+        /* Picking a minimised window un-minimises it, and does so WITHOUT a
+         * dock fly: it is already on screen, in a cell, in front of the user.
+         * Flying it to the dock and back out again would animate a journey it
+         * is not making. */
+        w->minimized = 0;
+        w->min_t0 = 0;
+        raise_win(pick);
+    }
+    ex_on = 0;
+    ex_t0 = timer_ticks();
+    if (!ex_t0) ex_t0 = 1;
+    ex_hov = -1;
+    for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
+    dirty_full();          /* the raise re-stacks every overlap on screen */
+    kprintf("[wm] expose off pick=%d\n", pick);
 }
 
 /* Which edges of `w` the point (x,y) grabs, or 0 for "not a resize".
@@ -1413,6 +1907,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * would say why. */
         w->min_w_pt = w->min_h_pt = 0;
         w->zoomed = w->minimized = 0;
+        /* ...and that now includes the dock fly. A slot whose last occupant was
+         * halfway to the dock would open its new window mid-flight, at a scale
+         * and an opacity nobody asked for, shrinking into an icon belonging to
+         * an app that has exited. anim_prev is cleared with it: a stale one
+         * would union this window's first animated frame with a rectangle from
+         * the previous tenant, damaging a region neither of them occupies. */
+        w->min_t0 = 0; w->min_dir = 0; w->min_slot = 0;
+        w->anim_prev.x0 = w->anim_prev.y0 = w->anim_prev.x1 = w->anim_prev.y1 = 0;
         w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
         { uint64_t t = timer_ticks(); w->open_t0 = t ? t : 1; }   /* trigger open pop */
         ap->win = wi;
@@ -1983,6 +2485,69 @@ static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-m
  * same space as the thing it is tested against is the whole trick -- the
  * alternative (store points, convert at every comparison) is where a scaled UI
  * with unscaled hit-testing comes from. */
+
+/* ============================================================================
+ * THE MENU BAR COMES ALIVE.
+ *
+ * "LogitOS  File  View" used to be three fb_text calls and nothing else --
+ * paint of a menu bar, not one. This section is the machinery: hit rects for
+ * the titles, a dropdown panel drawn like the dock (fresh from state every
+ * time it is asked for, never a retained surface), and the handful of real
+ * actions the WM can actually perform. The rest of it -- the dropdown's
+ * items, the About/Shut Down/Restart panel -- lives further down, after
+ * draw_clock; only the TITLE layout has to live here, because draw_menubar()
+ * below is the one thing that paints it.
+ *
+ * "Edit" is gone on purpose. The WM cannot reach inside an app -- it has no
+ * text buffer to cut or paste -- so a Cut/Copy/Paste menu here would be three
+ * items that do nothing, which is worse than no menu: it teaches a user this
+ * desktop's chrome is decoration. File and View both survive because both
+ * gained something real: File routes to the close button and the minimise
+ * gesture the traffic lights already perform; View is the on-screen home for
+ * Expose, which otherwise has no menu presence at all (hot corner + Cmd+E,
+ * neither of them discoverable by looking at the screen).
+ *
+ * ONE FUNCTION SAYS WHERE A TITLE IS -- same discipline win_draw_rect enforces
+ * for a window's footprint. menu_bar_layout() publishes g_menu_tx/g_menu_tw;
+ * draw_menubar() (paint) and menu_title_hit() (click + hover) both read them,
+ * so a click and the word it lands on cannot disagree about where the word is.
+ * Valid only after the first draw_menubar() -- the same "not on screen yet
+ * either" caveat dock_hover_at documents for dock_x0/dock_y0. */
+#define NMENU 3
+static const char *g_menu_title[NMENU] = { "LogitOS", "File", "View" };
+static int g_menu_tx[NMENU], g_menu_tw[NMENU];   /* device px, published each frame */
+
+static void menu_title_hit(int i, struct drect *r)
+{
+    r->y0 = 0; r->y1 = MBH;
+    r->x0 = (i == 0) ? S(8) : g_menu_tx[i] - S(14);   /* item 0's box also covers the logo dot */
+    r->x1 = g_menu_tx[i] + g_menu_tw[i] + S(14);
+}
+
+/* Reported ONCE, the first time the geometry is computed -- same reasoning as
+ * "[wm] win N frame ..." and "[wm] expose cell ...": a test driver has no
+ * business re-deriving AA-font text width in Python to find where "File" is
+ * clickable, and a driver that guessed a pixel offset here is exactly the kind
+ * of thing that rots silently the day the font or the title text changes. */
+static void menu_bar_layout(void)
+{
+    static int reported;
+    int x = S(32);                            /* unchanged from the old hardcoded "LogitOS" x */
+    for (int i = 0; i < NMENU; i++) {
+        g_menu_tx[i] = x;
+        g_menu_tw[i] = fb_text_width(g_menu_title[i]);
+        x += g_menu_tw[i] + S(44);            /* the old File-Edit gap, kept for the same rhythm */
+    }
+    if (!reported) {
+        reported = 1;
+        for (int i = 0; i < NMENU; i++) {
+            struct drect t; menu_title_hit(i, &t);
+            kprintf("[wm] menu title %d %s x0 %d y0 %d x1 %d y1 %d\n",
+                    i, g_menu_title[i], t.x0, t.y0, t.x1, t.y1);
+        }
+    }
+}
+
 static void draw_menubar(void)
 {
     /* Liquid Glass menu bar (thin -> adaptive edge band) */
@@ -1991,10 +2556,8 @@ static void draw_menubar(void)
     fb_blend_rect(0, MBH - S(1), W, S(1), 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(S(16), MBH / 2, S(6), ink);
-    fb_text(S(32), S(4), "LogitOS", ink);
-    fb_text(S(112), S(4), "File", ink);
-    fb_text(S(156), S(4), "Edit", ink);
-    fb_text(S(200), S(4), "View", ink);
+    menu_bar_layout();                        /* publishes g_menu_tx/tw for the click path */
+    for (int i = 0; i < NMENU; i++) fb_text(g_menu_tx[i], S(4), g_menu_title[i], ink);
     /* dark-mode toggle switch: track + knob (knob right = dark) */
     menu_tog_w = S(38); menu_tog_h = S(18);
     menu_tog_x = W - S(210); menu_tog_y = (MBH - menu_tog_h) / 2;
@@ -2041,6 +2604,29 @@ static void dock_geom(int *x0, int *y0, int *dw, int *dh)
     *dh = isz + 2 * S(DOCK_PAD_PT);
     *x0 = (W - *dw) / 2;
     *y0 = H - *dh - S(12);
+}
+
+/* ONE dock icon's tile, in device pixels -- the target a minimised window flies
+ * into and out of.
+ *
+ * Derived from dock_geom() and S(DOCK_PAD_PT), which is the same arithmetic
+ * draw_dock() places the icon with and the same the click hit-test uses. That
+ * is not tidiness: this file has already been bitten once by three copies of
+ * the dock's vertical padding agreeing with each other and not with the
+ * drawing (see DOCK_PAD_PT's comment), and a fly that lands next to the icon
+ * instead of on it is that bug in its most visible possible form. */
+static void dock_icon_box(int slot, struct drect *r)
+{
+    int x0, y0, dw, dh;
+    dock_geom(&x0, &y0, &dw, &dh);
+    (void)dw; (void)dh;
+    int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
+    if (slot < 0) slot = 0;
+    if (nreg > 0 && slot >= nreg) slot = nreg - 1;
+    r->x0 = x0 + gap + slot * (isz + gap);
+    r->y0 = y0 + S(DOCK_PAD_PT);
+    r->x1 = r->x0 + isz;
+    r->y1 = r->y0 + isz;
 }
 
 /* The GLASS PANEL: the rounded slab whose frost samples the live backdrop. This
@@ -2223,6 +2809,295 @@ static void draw_clock(void)
     p+=fmt2(b+p,t.hour); b[p++]=':'; p+=fmt2(b+p,t.minute); b[p++]=':'; p+=fmt2(b+p,t.second);
     b[p]=0;
     fb_text(W - fb_text_width(b) - S(12), S(4), b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
+}
+
+/* -1 = closed; else an index into g_menu_title[]/g_menu_items[]. */
+static int g_menu_open = -1;
+static int g_menu_item_hov = -1;
+
+/* ---- the "About" / "Shut Down" / "Restart" modal panel -------------------
+ * A second, independent overlay rather than a fourth menu-item kind, because
+ * it needs its own input capture the way Expose does: once it is up, a click
+ * is either a button or a dismissal, never a window or dock click that leaks
+ * through. Mutually exclusive with an open menu -- every path that opens one
+ * closes the other first. */
+enum { OV_NONE, OV_ABOUT, OV_CONFIRM_SHUTDOWN, OV_CONFIRM_RESTART };
+static int g_overlay = OV_NONE;
+static int g_overlay_btn_hov = -1;   /* -1 none, 0 cancel, 1 the destructive action */
+
+#define AB_W S(320)
+#define AB_H S(190)
+#define CF_W S(300)
+#define CF_H S(130)
+
+static void overlay_box(struct drect *r)
+{
+    int w, h;
+    switch (g_overlay) {
+    case OV_ABOUT:                      w = AB_W; h = AB_H; break;
+    case OV_CONFIRM_SHUTDOWN:
+    case OV_CONFIRM_RESTART:            w = CF_W; h = CF_H; break;
+    default: r->x0 = r->y0 = r->x1 = r->y1 = 0; return;
+    }
+    r->x0 = (W - w) / 2; r->y0 = (H - h) / 2;
+    r->x1 = r->x0 + w;   r->y1 = r->y0 + h;
+}
+
+static void overlay_buttons(struct drect *cancel, struct drect *ok)
+{
+    struct drect p; overlay_box(&p);
+    int bw = S(112), bh = S(30), gap = S(14);
+    int by = p.y1 - bh - S(16);
+    ok->x1 = p.x1 - S(16); ok->x0 = ok->x1 - bw; ok->y0 = by; ok->y1 = by + bh;
+    cancel->x1 = ok->x0 - gap; cancel->x0 = cancel->x1 - bw; cancel->y0 = by; cancel->y1 = by + bh;
+}
+
+static int overlay_button_at(int x, int y)
+{
+    if (g_overlay != OV_CONFIRM_SHUTDOWN && g_overlay != OV_CONFIRM_RESTART) return -1;
+    struct drect c, o; overlay_buttons(&c, &o);
+    if (in_rect(x, y, c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0)) return 0;
+    if (in_rect(x, y, o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0)) return 1;
+    return -1;
+}
+
+/* Dirty wherever it IS, THEN change state -- the same order win_set_min uses
+ * and for the same reason: the box a moment ago cannot be re-derived once
+ * g_overlay has already moved on. */
+static void overlay_close(void)
+{
+    if (g_overlay == OV_NONE) return;
+    struct drect p; overlay_box(&p);
+    g_overlay = OV_NONE; g_overlay_btn_hov = -1;
+    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+}
+
+static void overlay_open(int kind)
+{
+    g_overlay = kind; g_overlay_btn_hov = -1;
+    struct drect p; overlay_box(&p);
+    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+}
+
+/* ---- the dropdown's items -------------------------------------------------
+ * `label == NULL` is a separator: drawn as a hairline, never hit-tested. One
+ * array per menu, walked by both the painter and the hit-tester below so a
+ * row's picture and its hitbox are the same computation. */
+struct mi { const char *label; };
+static const struct mi MI_LOGO[] = {
+    { "About This Machine" }, { "Settings..." }, { NULL },
+    { "Shut Down..." }, { "Restart..." },
+};
+static const struct mi MI_FILE[] = { { "Close Window" }, { "Minimize" } };
+static const struct mi MI_VIEW[] = { { "Show All Windows" } };
+static const struct mi *g_menu_items[NMENU] = { MI_LOGO, MI_FILE, MI_VIEW };
+static const int g_menu_nitems[NMENU] = {
+    (int)(sizeof MI_LOGO / sizeof MI_LOGO[0]),
+    (int)(sizeof MI_FILE / sizeof MI_FILE[0]),
+    (int)(sizeof MI_VIEW / sizeof MI_VIEW[0]),
+};
+
+#define MI_ROW_H S(22)
+#define MI_SEP_H S(9)
+#define MI_PAD_X S(14)
+#define MI_PAD_Y S(6)
+static int menu_row_h(const struct mi *it) { return it->label ? MI_ROW_H : MI_SEP_H; }
+
+/* Same discipline as menu_title_hit: the dropdown's geometry is computed once
+ * here and read by the painter, the hit-tester and dmg_expand, so none of the
+ * three can disagree about where the panel is. */
+static void menu_dropdown_box(struct drect *r)
+{
+    if (g_menu_open < 0) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
+    const struct mi *items = g_menu_items[g_menu_open];
+    int n = g_menu_nitems[g_menu_open], maxw = 0;
+    for (int i = 0; i < n; i++)
+        if (items[i].label) { int w = fb_text_width(items[i].label); if (w > maxw) maxw = w; }
+    int panel_w = maxw + 2 * MI_PAD_X;
+    if (panel_w < S(170)) panel_w = S(170);
+    int panel_h = 2 * MI_PAD_Y;
+    for (int i = 0; i < n; i++) panel_h += menu_row_h(&items[i]);
+    int x0 = g_menu_tx[g_menu_open] - S(10);
+    if (x0 < 0) x0 = 0;
+    if (x0 + panel_w > W) x0 = W - panel_w;
+    r->x0 = x0; r->y0 = MBH;
+    r->x1 = x0 + panel_w; r->y1 = MBH + panel_h;
+}
+
+/* One report, one call site each for "just opened" and "just switched" (see
+ * both callers below) -- same "ask the guest, don't re-derive its geometry in
+ * Python" reasoning as menu_bar_layout()'s report above: the panel's exact
+ * pixel box depends on font metrics a test driver has no business computing. */
+static void menu_report_open(void)
+{
+    struct drect p; menu_dropdown_box(&p);
+    kprintf("[wm] menu open %d x0 %d y0 %d x1 %d y1 %d\n", g_menu_open, p.x0, p.y0, p.x1, p.y1);
+}
+
+/* The item under (px,py) in menu `mi`, or -1 (outside the panel, or a
+ * separator). `*out_row` (if given) comes back as that row's own rect, which
+ * is what the hover highlight paints. */
+static int menu_item_at(int mi, int px, int py, struct drect *out_row)
+{
+    if (mi != g_menu_open) return -1;
+    struct drect p; menu_dropdown_box(&p);
+    if (px < p.x0 || px >= p.x1 || py < p.y0 || py >= p.y1) return -1;
+    int y = p.y0 + MI_PAD_Y;
+    const struct mi *items = g_menu_items[mi];
+    int n = g_menu_nitems[mi];
+    for (int i = 0; i < n; i++) {
+        int h = menu_row_h(&items[i]);
+        if (items[i].label && py >= y && py < y + h) {
+            if (out_row) { out_row->x0 = p.x0; out_row->x1 = p.x1; out_row->y0 = y; out_row->y1 = y + h; }
+            return i;
+        }
+        y += h;
+    }
+    return -1;
+}
+
+/* File's two items need a real focused app window; everything else is always
+ * available (Expose is claimed even with zero windows -- see wm_shortcut). */
+static int menu_item_enabled(int mi, int idx)
+{
+    (void)idx;
+    if (mi == 1) {
+        int wi = top_visible();
+        return wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP;
+    }
+    return 1;
+}
+
+static void menu_close(void)
+{
+    if (g_menu_open < 0) return;
+    struct drect p; menu_dropdown_box(&p);
+    g_menu_open = -1; g_menu_item_hov = -1;
+    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+    kprintf("[wm] menu closed\n");        /* a test syncs on this rather than guessing a delay */
+}
+
+/* The one place a menu item's action actually happens. Closes the menu on
+ * every reachable path -- a fired action always dismisses, exactly like a
+ * real menu -- so no caller has to remember to. */
+static void menu_item_fire(int mi, int idx)
+{
+    if (mi == 0) {                                        /* LogitOS */
+        switch (idx) {
+        case 0: menu_close(); overlay_open(OV_ABOUT); return;
+        case 1: menu_close(); wm_launch("settings.aex", ""); return;
+        case 3: menu_close(); overlay_open(OV_CONFIRM_SHUTDOWN); return;
+        case 4: menu_close(); overlay_open(OV_CONFIRM_RESTART); return;
+        default: menu_close(); return;                    /* the separator: unreachable, but safe */
+        }
+    } else if (mi == 1) {                                 /* File */
+        int wi = top_visible();
+        menu_close();
+        if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) return;
+        struct win *w = &wins[wi];
+        if (idx == 0) enqueue(w, EV_CLOSE, 0, 0);          /* same event the traffic light sends */
+        else if (idx == 1) win_set_min(w, 1);
+    } else {                                               /* View */
+        menu_close();
+        if (idx == 0) ex_enter();
+    }
+}
+
+static void draw_menu_dropdown(void)
+{
+    struct drect p; menu_dropdown_box(&p);
+    int w = p.x1 - p.x0, h = p.y1 - p.y0;
+    fb_shadow(p.x0, p.y0, w, h, S(10), S(6), S(16), g_ui_dark ? 150 : 70);
+    if (g_ui_dark) fb_liquid_glass(p.x0, p.y0, w, h, S(10), 30, 30, 38, 165);
+    else           fb_liquid_glass(p.x0, p.y0, w, h, S(10), 250, 250, 255, 190);
+
+    unsigned ac = settings_get_color("ui.accent", 0x5E96FF);
+    uint8_t ar = (uint8_t)(ac >> 16), ag = (uint8_t)(ac >> 8), ab = (uint8_t)ac;
+
+    const struct mi *items = g_menu_items[g_menu_open];
+    int n = g_menu_nitems[g_menu_open];
+    int y = p.y0 + MI_PAD_Y;
+    for (int i = 0; i < n; i++) {
+        int rh = menu_row_h(&items[i]);
+        if (!items[i].label) {
+            fb_fill_rect(p.x0 + S(8), y + rh / 2, w - S(16), S(1),
+                         g_ui_dark ? rgb(70, 70, 80) : rgb(214, 214, 220));
+        } else {
+            int enabled = menu_item_enabled(g_menu_open, i);
+            int hov = enabled && i == g_menu_item_hov;
+            if (hov) fb_blend_round_rect(p.x0 + S(4), y, w - S(8), rh, S(6), ar, ag, ab, 200);
+            uint32_t ink;
+            if (!enabled) ink = g_ui_dark ? rgb(112, 112, 120) : rgb(180, 180, 186);
+            else if (hov)  ink = rgb(255, 255, 255);
+            else           ink = g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 48);
+            fb_text(p.x0 + MI_PAD_X, y + S(3), items[i].label, ink);
+        }
+        y += rh;
+    }
+}
+
+/* ---- decimal formatting for the About panel -------------------------------
+ * No printf in the kernel's draw path; two tiny helpers, same spirit as fmt2
+ * above but unbounded (a frame count or a byte total is not two digits). */
+static int str_copy(char *d, const char *s) { int i = 0; while (s[i]) { d[i] = s[i]; i++; } return i; }
+static int fmt_u(char *d, unsigned long v)
+{
+    char tmp[24]; int n = 0;
+    if (v == 0) { d[0] = '0'; return 1; }
+    while (v) { tmp[n++] = (char)('0' + (int)(v % 10)); v /= 10; }
+    for (int i = 0; i < n; i++) d[i] = tmp[n - 1 - i];
+    return n;
+}
+
+static void draw_overlay_panel(void)
+{
+    struct drect p; overlay_box(&p);
+    int w = p.x1 - p.x0, h = p.y1 - p.y0;
+    fb_shadow(p.x0, p.y0, w, h, S(14), S(10), S(28), g_ui_dark ? 170 : 90);
+    if (g_ui_dark) fb_liquid_glass(p.x0, p.y0, w, h, S(14), 28, 28, 36, 195);
+    else           fb_liquid_glass(p.x0, p.y0, w, h, S(14), 250, 250, 255, 210);
+    uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
+    uint32_t dim = g_ui_dark ? rgb(172, 173, 182) : rgb(96, 96, 104);
+
+    if (g_overlay == OV_ABOUT) {
+        int tx = p.x0 + S(24), ty = p.y0 + S(20);
+        fb_fill_circle(tx + S(7), ty + S(7), S(14), rgb(94, 150, 255));
+        fb_text(tx + S(34), ty + S(2), "LogitOS", ink);
+        ty += S(34);
+        fb_text(tx, ty, "About This Machine", ink); ty += S(26);
+        char line[64]; int n;
+        fb_text(tx, ty, "Version: M27", dim); ty += S(20);
+        n = str_copy(line, "Memory: ");
+        n += fmt_u(line + n, (unsigned long)(pmm_total_bytes() / (1024 * 1024)));
+        n += str_copy(line + n, " MB"); line[n] = 0;
+        fb_text(tx, ty, line, dim); ty += S(20);
+        n = str_copy(line, "Resolution: ");
+        n += fmt_u(line + n, (unsigned long)W);
+        n += str_copy(line + n, " x ");
+        n += fmt_u(line + n, (unsigned long)H); line[n] = 0;
+        fb_text(tx, ty, line, dim); ty += S(20);
+        n = str_copy(line, "Processors: ");
+        n += fmt_u(line + n, (unsigned long)smp_cpu_count()); line[n] = 0;
+        fb_text(tx, ty, line, dim);
+        return;
+    }
+
+    const char *msg = g_overlay == OV_CONFIRM_SHUTDOWN ? "Shut Down the machine now?"
+                                                         : "Restart the machine now?";
+    fb_text(p.x0 + (w - fb_text_width(msg)) / 2, p.y0 + S(30), msg, ink);
+    struct drect c, o; overlay_buttons(&c, &o);
+    int hb = g_overlay_btn_hov;
+    uint32_t cbg = hb == 0 ? (g_ui_dark ? rgb(72, 72, 82) : rgb(220, 220, 226))
+                           : (g_ui_dark ? rgb(56, 56, 64) : rgb(236, 236, 240));
+    fb_round_rect(c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0, S(7), cbg);
+    int ctw = fb_text_width("Cancel");
+    fb_text(c.x0 + ((c.x1 - c.x0) - ctw) / 2, c.y0 + S(7), "Cancel", ink);
+
+    uint32_t okbg = hb == 1 ? rgb(255, 82, 72) : rgb(230, 60, 52);
+    fb_round_rect(o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0, S(7), okbg);
+    const char *olabel = g_overlay == OV_CONFIRM_SHUTDOWN ? "Shut Down" : "Restart";
+    int otw = fb_text_width(olabel);
+    fb_text(o.x0 + ((o.x1 - o.x0) - otw) / 2, o.y0 + S(7), olabel, rgb(255, 255, 255));
 }
 
 /* The file browser is now the ring-3 Finder app (src/apps/gui/files.c), launched
@@ -2626,14 +3501,178 @@ static int cursor_for_edge(int e)
  * scale in /256 (256 = full), or 0 when settled / not animating. */
 static uint32_t *anim_buf;
 static int anim_buf_n;
-static int win_open_scale(struct win *w)
+/* PURE NOW -- it used to clear open_t0 on the frame it expired, which made
+ * "where is this window" a question that changed the answer to the next one.
+ * wm_anim_tick() owns every timer's end; see the note on win_draw_rect. */
+static int win_open_scale(const struct win *w)
 {
     if (!w->open_t0) return 0;
-    uint64_t e = timer_ticks() - w->open_t0, DUR = 16;
-    if (e >= DUR) { w->open_t0 = 0; return 0; }
-    int t = (int)(e * 256 / DUR), inv = 256 - t;
+    uint64_t e = timer_ticks() - w->open_t0;
+    if (e >= OPEN_DUR_TICKS) return 0;
+    int t = (int)(e * 256 / OPEN_DUR_TICKS), inv = 256 - t;
     int eased = 256 - inv * inv * inv / (256 * 256);   /* easeOutCubic */
     return 216 + (256 - 216) * eased / 256;            /* 0.84x -> 1.0x over ~0.16s */
+}
+
+/* ---- WHY THE ANIMATED PATH IS BILINEAR ------------------------------------
+ *
+ * An Expose thumbnail is a MINIFICATION of three to four times, and that is
+ * exactly the regime where nearest-neighbour stops being a sampling choice and
+ * starts deleting information: at 1/3 scale it keeps one row in three, so a
+ * window's text is not blurred, it is GONE in stripes -- and two different
+ * windows can come out looking like the same window, which is the one thing a
+ * picker may not do.
+ *
+ * fb_blit_surface_scaled_bl (c/kernel/gui/fb.c) is the bilinear variant, and
+ * its own header prices it at ~4.3x nearest per pixel and scopes it to "the ONE
+ * window currently under an open/close pop or a live resize drag ... not for
+ * every window a compositor redraws every frame regardless of motion". This use
+ * is inside that scope and not an exception to it: the 4x is paid ONLY by
+ * windows that are moving, only while they are moving, and only over the
+ * DESTINATION rectangle -- which during Expose is a quarter-size thumbnail, so
+ * the four taps are charged against a sixteenth of the area they would cover at
+ * full size. A window sitting still never reaches this line; it takes the
+ * direct path in render_region and is blitted 1:1 as it always was. */
+#define wm_scaled_blit fb_blit_surface_scaled_bl
+
+/* ---- constant-alpha scaled blit, and why it is HERE ------------------------
+ *
+ * fb.c offers an opaque scaled blit and an RGBA blit whose alpha must be IN the
+ * source bytes. The dock fly needs neither: one image, one scale, and one alpha
+ * that changes every frame. Expressing a single number by rewriting an alpha
+ * byte into every pixel of a 750x544 window, 18 times, is the wrong shape of
+ * work -- and fb.c belongs to another line this week, so the composite is done
+ * against `back`, which IS the target fb_target(NULL) selects (see wm_init's
+ * fb_set_backbuffer(back)).
+ *
+ * IT TAKES ITS CLIP EXPLICITLY rather than reading fb.c's per-surface scissor.
+ * The caller already has it -- render_region is handed the damage rectangle and
+ * every primitive it calls is clipped to exactly that -- and passing it in
+ * means this cannot be called from somewhere that has not thought about it.
+ *
+ * The channel shifts are PROBED from fb_rgb() rather than assumed to be
+ * 0x00RRGGBB: fb.c carries rpos/gpos/bpos from the multiboot tag and does not
+ * export them, and a hardcoded layout here would be a colour-swap bug on the
+ * one machine whose framebuffer disagrees. Three calls, once, at first use. */
+static int fade_rsh, fade_gsh, fade_bsh, fade_probed;
+static void fade_probe(void)
+{
+    if (fade_probed) return;
+    fade_probed = 1;
+    uint32_t rm = fb_rgb(255, 0, 0), gm = fb_rgb(0, 255, 0), bm = fb_rgb(0, 0, 255);
+    while (fade_rsh < 24 && !((rm >> fade_rsh) & 1)) fade_rsh++;
+    while (fade_gsh < 24 && !((gm >> fade_gsh) & 1)) fade_gsh++;
+    while (fade_bsh < 24 && !((bm >> fade_bsh) & 1)) fade_bsh++;
+}
+
+/* Scale `src` into (dx,dy,dw,dh) of `back`, blended at a CONSTANT alpha,
+ * clipped to `clip` and to the screen. Priced by the DESTINATION rect -- which
+ * is why the fly only fades over its second half, when the destination has
+ * shrunk (see win_draw_rect). Row-addressed, integer, no per-pixel call. */
+static void anim_blit_fade(const struct drect *clip, int dx, int dy, int dw, int dh,
+                           const struct surface *src, int alpha)
+{
+    if (!back || !src->px || dw <= 0 || dh <= 0 || alpha <= 0) return;
+    fade_probe();
+    int x0 = dx, y0 = dy, x1 = dx + dw, y1 = dy + dh;
+    if (x0 < clip->x0) x0 = clip->x0;
+    if (y0 < clip->y0) y0 = clip->y0;
+    if (x1 > clip->x1) x1 = clip->x1;
+    if (y1 > clip->y1) y1 = clip->y1;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    if (x0 >= x1 || y0 >= y1) return;
+    int ia = 255 - alpha;
+    for (int y = y0; y < y1; y++) {
+        int sy = (y - dy) * src->h / dh;
+        if (sy < 0) sy = 0;
+        if (sy >= src->h) sy = src->h - 1;
+        const uint32_t *srow = src->px + (long)sy * src->w;
+        uint32_t *drow = back + (long)y * W;
+        for (int x = x0; x < x1; x++) {
+            int sx = (x - dx) * src->w / dw;
+            if (sx < 0) sx = 0;
+            if (sx >= src->w) sx = src->w - 1;
+            uint32_t s = srow[sx], d = drow[x];
+            int r = ((int)((s >> fade_rsh) & 0xFF) * alpha + (int)((d >> fade_rsh) & 0xFF) * ia) / 255;
+            int g = ((int)((s >> fade_gsh) & 0xFF) * alpha + (int)((d >> fade_gsh) & 0xFF) * ia) / 255;
+            int b = ((int)((s >> fade_bsh) & 0xFF) * alpha + (int)((d >> fade_bsh) & 0xFF) * ia) / 255;
+            drow[x] = ((uint32_t)r << fade_rsh) | ((uint32_t)g << fade_gsh) | ((uint32_t)b << fade_bsh);
+        }
+    }
+}
+
+/* The scratch surface every animated window is rendered into at FULL size
+ * before being scaled down. Grown, never shrunk: the alternative is a
+ * multi-megabyte kmalloc/kfree pair per frame of every animation. */
+static struct surface *anim_scratch(int w, int h)
+{
+    static struct surface s;
+    int need = w * h;
+    if (need <= 0) return NULL;
+    if (need > anim_buf_n) {
+        if (anim_buf) kfree(anim_buf);
+        anim_buf = kmalloc((unsigned)need * 4);
+        anim_buf_n = anim_buf ? need : 0;
+    }
+    if (!anim_buf) return NULL;
+    s.px = anim_buf; s.w = w; s.h = h;
+    s.clip_on = 0;                       /* scratch is unclipped -- see fb.h */
+    return &s;
+}
+
+/* ---- an animated window is drawn in the TWO PIECES it is made of -----------
+ *
+ * The obvious implementation -- render the whole window into a scratch surface
+ * at full size, then scale that down -- is what the open pop did, and it is
+ * affordable there because the pop scales ONE window by 16% for a sixth of a
+ * second. Expose moves EVERY window at once, to a quarter of its size, and
+ * paying full window area TWICE per window per frame (once to compose the
+ * scratch, once to copy the app's canvas into it) made a single animated frame
+ * cost more than the compositor's entire steady-state frame.
+ *
+ * That is not a theory. Measured on this machine, at 1280x800 with four
+ * windows, the whole-window version presented THREE of the flight's eighteen
+ * frames: the geometry was provably correct on the wire and nobody could see
+ * it move. So:
+ *
+ *   THE CONTENT is the app's retained canvas, and it is scaled STRAIGHT from
+ *   there into the destination. There is no intermediate copy to pay for, and
+ *   the cost is the destination rectangle -- which is the thing being drawn.
+ *   This is also the honest reading of "the surface IS the content": nobody
+ *   asks the app to redraw, and nobody copies its pixels twice to avoid it.
+ *
+ *   THE CHROME is ours, and it is the only part that has to be composed. Only
+ *   the TITLEBAR is ever visible (the content covers everything below it, in
+ *   the animated path exactly as in the ordinary one), so only a w x TBH strip
+ *   is rendered at full size and minified. That is what keeps a thumbnail's
+ *   titlebar text the REAL text resampled, instead of the UI font
+ *   re-rasterized at four points -- which is the whole reason to compose it at
+ *   full size rather than draw it small.
+ *
+ * Cost per window per frame: from 2*W*H to (dest area + W*TBH). For the
+ * Terminal at 900x590 scaled into a 400x260 cell, 1.06 M pixels to 131 K.
+ *
+ * TBH IS TALL ENOUGH to contain the rounded top corners -- radius S(10) against
+ * a S(30) titlebar -- so nothing of the window's outline is lost by cutting the
+ * strip there. If TITLEBAR_H ever drops below the corner radius, this strip has
+ * to grow with it. */
+static struct surface *win_chrome_strip(struct win *w, int focused)
+{
+    int sh = TBH;
+    if (sh > w->h) sh = w->h;
+    if (sh < 1) return NULL;
+    struct surface *tmp = anim_scratch(w->w, sh);
+    if (!tmp) return NULL;
+    fb_target(tmp);
+    /* The whole body is asked for and the scratch's own height clips it to the
+     * strip: the rounded top corners, the titlebar gradient, the three lights
+     * and the title are exactly what survives, and they are exactly what shows. */
+    draw_frame_body(0, 0, w->w, w->h, w->title, focused);
+    fb_target(NULL);
+    return tmp;
 }
 
 /* Grow each damage rectangle until every GLASS PANEL it touches is contained
@@ -2662,11 +3701,21 @@ static int dmg_expand(struct drect *r, int n)
             if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
             dock_panel_box(&p);          /* the SLAB, not the whole footprint */
             if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            if (g_menu_open >= 0) {                       /* the open dropdown -- also glass */
+                menu_dropdown_box(&p);
+                if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            }
+            if (g_overlay != OV_NONE) {                   /* About / Shut Down / Restart panel */
+                overlay_box(&p);
+                if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            }
             for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
-                struct win *w = &wins[order[k]];
-                if (!w->used || w->minimized) continue;  /* not on screen, no glass */
-                p.x0 = w->x; p.y0 = w->y;
-                p.x1 = w->x + w->w; p.y1 = w->y + TBH + S(10);
+                /* Asked of win_glass_box, not of w->x/w->w: a window being
+                 * flown or scaled has NO glass this frame (it is rendered
+                 * through a scratch surface), and protecting a panel that is
+                 * not being drawn would grow this rectangle to a frame the
+                 * window is not occupying. See win_drawn_direct. */
+                if (!win_glass_box(&wins[order[k]], &p)) continue;
                 if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
             }
         }
@@ -2745,41 +3794,125 @@ static int render_region(const struct drect *R)
         return 0;
     }
 
+    /* THE DIM, behind the Expose grid, so the windows read as the content and
+     * the desktop as backdrop.
+     *
+     * CONSTANT while the mode is up -- it appears on the frame the gesture
+     * starts and leaves on the frame it ends, and never changes in between.
+     * That is a damage decision, stated rather than hidden: a dim that RAMPED
+     * with the transition would change every pixel of the desktop on every one
+     * of the 18 frames, which is a full-screen composite per tick and exactly
+     * the thing the per-window damage below exists to avoid. Two full frames
+     * per gesture against thirty-six. The cost of the choice is that the
+     * darkening arrives in one step instead of fading in; the windows are
+     * already moving on that same frame, so it reads as part of the gesture.
+     *
+     * From MBH down: the menu bar is glass that samples the backdrop under
+     * ITSELF (y < MBH), and dimming that would darken the bar rather than the
+     * desktop. The dock's glass does sample dimmed pixels, and should -- it is
+     * sitting on a dimmed desktop. */
+    if (ex_state()) fb_blend_rect(0, MBH, W, H - MBH, 0, 0, 0, EX_DIM_ALPHA);
+
     int focus_wi = top_visible();          /* NOT order[norder-1]: that may be minimised */
+    int exp = ex_prog();
     for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
         struct win *w = &wins[order[i]];
-        if (!w->used || w->minimized) continue;
+        if (!w->used) continue;
+        /* WHERE IT IS, asked once, of the one function that knows -- and that
+         * the damage list and the mid-frame guard asked the same question of.
+         * 0 means the window is not on screen at all (minimised, and the picker
+         * is not up). */
+        int dx, dy, dw, dh, alpha;
+        if (!win_draw_rect(w, &dx, &dy, &dw, &dh, &alpha)) continue;
         struct drect b; win_box(w, &b);
         if (!rect_hit(&b, R)) continue;    /* nothing of this window is in the rect */
         int focused = (order[i] == focus_wi);
-        int s = win_open_scale(w);         /* open pop in progress? */
-        if (s) {
-            int need = w->w * w->h;
-            if (need > anim_buf_n) { if (anim_buf) kfree(anim_buf); anim_buf = kmalloc((unsigned)need * 4); anim_buf_n = anim_buf ? need : 0; }
-            if (anim_buf) {
-                animating = 1;
-                struct surface tmp = { .px = anim_buf, .w = w->w, .h = w->h };  /* clip_on = 0: scratch is unclipped */
-                fb_target(&tmp);           /* render the whole window into scratch... */
-                draw_frame_body(0, 0, w->w, w->h, w->title, focused);
-                blit_content(w, 0, TBH, w->w, w->h - TBH);
-                draw_titlebar_sep(0, TBH, w->w);       /* after the blit -- see draw_titlebar_sep */
-                fb_target(NULL);
-                int dw = w->w * s / 256, dh = w->h * s / 256;     /* ...scale to back */
-                fb_blit_surface_scaled(w->x + (w->w - dw) / 2, w->y + (w->h - dh) / 2, dw, dh, &tmp);
-                continue;
-            }
+        int k = ex_slot(order[i]);
+
+        /* THE COMMON CASE IS UNTOUCHED. A window sitting still at its own frame
+         * takes exactly the path it always took -- real liquid glass sampling
+         * the live backdrop, content blitted 1:1, no scratch buffer, no scale.
+         * Everything below this line only runs for a window that is moving. */
+        if (win_drawn_direct(w, dx, dy, dw, dh, alpha)) {
+            draw_frame(w, focused);
+            /* The canvas is allowed to be a size behind the frame mid-drag, so
+             * the content is stretched rather than left as a hole -- see
+             * blit_content and RESIZE_APPLY_MS. */
+            blit_content(w, w->x, w->y + TBH, w->w, w->h - TBH);
+            draw_titlebar_sep(w->x, w->y + TBH, w->w);  /* after the blit -- see draw_titlebar_sep */
+            continue;
         }
-        draw_frame(w, focused);
-        /* The canvas is allowed to be a size behind the frame mid-drag, so the
-         * content is stretched rather than left as a hole -- see blit_content
-         * and RESIZE_APPLY_MS. */
-        blit_content(w, w->x, w->y + TBH, w->w, w->h - TBH);
-        draw_titlebar_sep(w->x, w->y + TBH, w->w);     /* after the blit -- see draw_titlebar_sep */
+
+        if (win_open_scale(w)) animating = 1;   /* only the pop wants a full frame */
+
+        /* THE PICK HIGHLIGHT, drawn BEFORE the thumbnail so it survives as a rim
+         * around an opaque blit instead of being painted over it. Cheap for the
+         * same reason the window's own shadow is: the middle is overdrawn. */
+        int sr = w->w > 0 ? dw * 256 / w->w : 256;      /* thumbnail scale, /256 */
+        int rad = S(10) * sr / 256;
+        if (rad < S(2)) rad = S(2);
+        if (k >= 0 && k == ex_hov)
+            fb_blend_round_rect(dx - S(4), dy - S(4), dw + S(8), dh + S(8), rad + S(4),
+                                255, 255, 255, 210);
+
+        /* A SCALED WINDOW STILL CASTS A SHADOW -- and it is what separates a
+         * thumbnail from a sticker printed on the wallpaper. The offset and
+         * blur scale with the thumbnail, because a full-size S(32) blur around
+         * a quarter-size window is a smudge the width of the window itself.
+         * win_box still declares the FULL-SIZE extent, so the damage is a
+         * superset of what is painted -- over-reporting is only slow. */
+        int sdy = WSH_DY(focused) * sr / 256, sbl = WSH_BLUR(focused) * sr / 256;
+        if (sbl < S(4)) sbl = S(4);
+        if (sdy < 1) sdy = 1;
+        if (sdy >= sbl) sdy = sbl - 1;
+        fb_shadow(dx, dy, dw, dh, rad, sdy, sbl, (uint8_t)(WSH_ALPHA(focused) * alpha / 255));
+
+        /* Chrome strip, then content -- the same order draw_frame and
+         * blit_content use, and for the same reason: the content owns every
+         * row below the titlebar and is drawn last there. The two destination
+         * rects ABUT and do not overlap, so with a fade every pixel is blended
+         * exactly once; overlapping them would blend the seam rows twice and
+         * show a darker band that gets darker as the window fades. */
+        int tbh_s = TBH * sr / 256;
+        if (tbh_s < 1) tbh_s = 1;
+        if (tbh_s > dh) tbh_s = dh;
+        struct surface *cs = win_chrome_strip(w, focused);
+        if (cs) {
+            if (alpha >= 255) wm_scaled_blit(dx, dy, dw, tbh_s, cs);
+            else              anim_blit_fade(R, dx, dy, dw, tbh_s, cs, alpha);
+        }
+        if (w->surf.px && dh - tbh_s > 0) {
+            if (alpha >= 255) wm_scaled_blit(dx, dy + tbh_s, dw, dh - tbh_s, &w->surf);
+            else              anim_blit_fade(R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
+            if (w->drawing) perf_torn++;   /* counted at every path that shows a canvas */
+        }
+        /* The hairline, only while opaque: one row at a third of an alpha on a
+         * shrinking window is not a boundary anybody can see, and drawing it
+         * would be the one thing in this block blended a second time. */
+        if (alpha >= 255) draw_titlebar_sep(dx, dy + tbh_s, dw);
+
+        /* THE TITLE, centred beneath the cell in the UI font -- and only once
+         * the grid has mostly arrived. A label chasing a moving thumbnail is
+         * noise during the flight and information after it. Its extent is
+         * declared in win_box, so a title wider than its window is damaged. */
+        if (k >= 0 && exp > 128) {
+            int tw = fb_text_width(w->title);
+            int tx = dx + (dw - tw) / 2, ty = dy + dh + S(6);
+            fb_text(tx, ty, w->title,
+                    k == ex_hov ? rgb(255, 255, 255) : rgb(214, 216, 226));
+        }
     }
     { struct drect p; menubar_box(&p);                  /* frosted chrome ON TOP: */
       if (rect_hit(&p, R)) draw_menubar(); }            /* real-time vibrancy      */
     { struct drect p; dock_box(&p);
       if (rect_hit(&p, R)) draw_dock(); }
+    /* The menu dropdown and the About/power panel, drawn like the dock: fresh
+     * from state, never retained, and above every window and the dock (a menu
+     * hangs off the chrome that opened it, so it has to win). */
+    if (g_menu_open >= 0) { struct drect p; menu_dropdown_box(&p);
+      if (rect_hit(&p, R)) draw_menu_dropdown(); }
+    if (g_overlay != OV_NONE) { struct drect p; overlay_box(&p);
+      if (rect_hit(&p, R)) draw_overlay_panel(); }
     /* WM-HOOK 4/6: the notification overlay -- above every window, below the
      * pointer. No rect_hit guard: the fb clip is already this rectangle and
      * every primitive notify_compose uses is clip-exact (it is deliberately not
@@ -2793,6 +3926,168 @@ static int render_region(const struct drect *R)
     perf_present_ns += time_mono_ns() - t_pres;
     perf_cpx += (uint64_t)rw * (uint64_t)rh;
     return animating;
+}
+
+/* ---- one pass of every animation ------------------------------------------
+ *
+ * THE ONLY PLACE A TIMER ENDS. Everything that reports a position (min_prog,
+ * ex_prog, win_open_scale) is pure and can be asked twice in a frame with the
+ * same answer; this runs once per pass of the WM loop and is what turns "the
+ * duration has elapsed" into "the animation is over".
+ *
+ * IT IS ALSO WHERE THE DAMAGE COMES FROM, which is the half worth reading. A
+ * moving window's damage is (where it WAS | where it IS) -- the union, because
+ * the pixels it uncovers are exactly as changed as the ones it covers, and
+ * reporting only the destination is the single most visible way to get a
+ * partial compositor wrong. That is not a hypothetical here: WM_DAMAGE_LIE and
+ * WM_RESIZE_DAMAGE_LIE exist in this file to make that mistake on purpose and
+ * be caught. `anim_prev` is the "where it was" half; it cannot be re-derived
+ * from the clock, so it is stored.
+ *
+ * AND THE LAST FRAME PAYS FOR THE WHOLE SWEEP, once. A per-frame union is
+ * airtight only if no frame was ever skipped -- and one IS skipped whenever
+ * this loop runs late (an app holding the BKL through a slow syscall, or the
+ * mid-frame guard deferring the rectangle a window is inside). Re-laying the
+ * entire path in a single rectangle when the flight lands costs one frame and
+ * cannot be wrong, which is the right trade for the one frame nobody sees. */
+/* THE FLIGHT, ON THE WIRE.
+ *
+ * A screenshot can show a window between two places; it cannot show that the
+ * compositor MEANT to put it there rather than having drawn it late, or once,
+ * or at a size it will keep. These lines are what let a harness assert the
+ * geometry is genuinely interpolated -- the same argument as the existing
+ * `[wm] win N frame ...` report, which exists because reading geometry back out
+ * of a screendump is pixel archaeology that breaks the day the titlebar is
+ * restyled, and which cannot help here because it only speaks when things STOP.
+ *
+ * BOUNDED, which is the only reason it is safe to leave compiled in: at most
+ * one line per moving window per animated frame, only while a deliberate
+ * gesture is in flight (~18 frames), and never once at idle. This console is
+ * also /bin/sh's stdout -- make test-shell reads bytes off it -- so a
+ * compositor that narrated every frame would interleave itself into another
+ * harness's expected output. Nothing else in this tree performs these
+ * gestures, so nothing else can provoke a line. */
+/* THE ANIMATION'S NEGATIVE CONTROL, and it is a THIRD distinct mistake from
+ * WM_DAMAGE_LIE (which shrinks a window's reported box) and
+ * WM_RESIZE_DAMAGE_LIE (which forgets the OLD box when a window changes shape).
+ * This one reports the destination honestly and forgets where the window was
+ * ON THE PREVIOUS FRAME -- which is the error an animation invites, because an
+ * animation is the only thing here that moves a window many times without any
+ * input event in between, so there is no click or drag to blame the leftovers
+ * on. Set to 1 and every frame of a flight paints the window in its new place
+ * and leaves the old one standing: a window flying to the dock smears a comet
+ * trail of itself across the desktop, and Expose leaves every window's previous
+ * position behind it, all the way from the frame to the cell.
+ *
+ * tests/qmp/qmp_motion.py --negative flips this exact line in a throwaway copy
+ * of the tree and REQUIRES its round-trip checks to fail. Without that, "the
+ * desktop comes back pixel-identical" is a claim about a test that has never
+ * once failed, which is evidence of nothing. */
+#define WM_ANIM_DAMAGE_LIE 0
+
+/* Damage (where it was | where it is), and store where it is for next time.
+ * One function, because all three animations have the same obligation and a
+ * fourth would otherwise be free to forget half of it. */
+static void anim_damage(struct win *w)
+{
+    struct drect cur, u;
+    win_box(w, &cur);
+    u = cur;
+#if !WM_ANIM_DAMAGE_LIE
+    rect_or(&u, &w->anim_prev);
+#endif
+    w->anim_prev = cur;
+    dirty_rect(u.x0, u.y0, u.x1 - u.x0, u.y1 - u.y0);
+}
+
+static void anim_trace(const char *what, int wi, const struct win *w, int p)
+{
+    int x, y, ww, wh, a;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;
+    kprintf("[wm] anim %s win %d p %d rect %d %d %d %d alpha %d home %d %d %d %d\n",
+            what, wi, p, x, y, ww, wh, a, w->x, w->y, w->w, w->h);
+}
+
+static void wm_anim_tick(void)
+{
+    uint64_t t = timer_ticks();
+
+    /* 1. THE OPEN POP -- behaviour unchanged, deliberately: it rescales a whole
+     *    window every frame, one whole-screen pass is both cheaper than
+     *    tracking that and impossible to get subtly wrong, and it lasts about a
+     *    sixth of a second. Only its EXPIRY moved here, out of win_open_scale,
+     *    so that reading a window's position stopped mutating it. */
+    for (int i = 0; i < MAXWIN; i++) {
+        struct win *w = &wins[i];
+        if (!w->used || !w->open_t0) continue;
+        if (t - w->open_t0 >= OPEN_DUR_TICKS) w->open_t0 = 0;
+        else dirty_full();
+    }
+
+    /* 2. THE DOCK FLY. */
+    for (int i = 0; i < MAXWIN; i++) {
+        struct win *w = &wins[i];
+        if (!w->used || !w->min_t0) continue;
+        if (t - w->min_t0 >= MINFLY_TICKS) {
+            struct drect s;
+            win_fly_sweep(w, &s);
+            w->min_t0 = 0;
+#if !WM_ANIM_DAMAGE_LIE
+            dirty_rect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
+#endif
+            dirty_dock();          /* a running dot's window arrived, or left */
+            continue;
+        }
+        anim_damage(w);
+        anim_trace(w->min_dir ? "min" : "restore", i, w, min_prog(w));
+    }
+
+    /* A window closing while the picker is up leaves a hole in the grid, which
+     * is harmless. ALL of them closing leaves a dimmed desktop with nothing to
+     * pick, the pointer still captured by wm_expose_mouse and the keyboard
+     * still swallowed -- recoverable by clicking, but a state the machine
+     * should not sit in waiting to be rescued. */
+    if (ex_on && !ex_t0) {
+        int alive = 0;
+        for (int k = 0; k < ex_n; k++) if (wins[ex_wi[k]].used) { alive = 1; break; }
+        if (!alive) ex_leave(-1);
+    }
+
+    /* 3. EXPOSE. The dim is constant while the mode is up (see render_region),
+     *    so every frame between the two full ones pays for the windows that
+     *    moved and for nothing else. */
+    if (ex_t0) {
+        if (t - ex_t0 >= EX_DUR_TICKS) {
+            ex_t0 = 0;
+            dirty_full();          /* entering: the swept area. leaving: the dim. */
+        } else {
+            for (int k = 0; k < ex_n; k++) {
+                struct win *w = &wins[ex_wi[k]];
+                if (!w->used) continue;
+                anim_damage(w);
+                anim_trace(ex_on ? "expose" : "unexpose", ex_wi[k], w, ex_prog());
+            }
+        }
+    }
+}
+
+/* Has the pointer been parked in the hot corner long enough? See the comment on
+ * ex_corner_t0 for why this corner and why a dwell. */
+static void wm_hotcorner_tick(void)
+{
+    if (g_locked || ex_state()) { ex_corner_t0 = 0; return; }
+    int inside = (mx >= W - S(EX_CORNER_PT)) && (my < S(EX_CORNER_PT));
+    if (!inside) { ex_corner_t0 = 0; ex_corner_armed = 1; return; }
+    if (!ex_corner_armed) return;              /* fired already; leave to re-arm */
+    if (!ex_corner_t0) {
+        ex_corner_t0 = timer_ticks();
+        if (!ex_corner_t0) ex_corner_t0 = 1;
+        return;
+    }
+    if (timer_ticks() - ex_corner_t0 < EX_DWELL_TICKS) return;
+    ex_corner_armed = 0;
+    ex_corner_t0 = 0;
+    ex_enter();
 }
 
 /* Composite the damage -- background + windows + frosted chrome + the cursor --
@@ -2926,6 +4221,12 @@ static int wm_shortcut(int c, int mods)
     case 'm':
         if (w) win_set_min(w, 1);
         return 1;
+    case 'e':
+        /* Expose. Claimed even with no windows open, like Cmd+W above: a
+         * shortcut that is a system shortcut only when it happens to have
+         * something to do is one an app can learn to swallow. */
+        ex_enter();
+        return 1;
     case '\t': {
         /* NO ON-SCREEN SWITCHER, and the reason is a missing event rather than
          * a missing panel. A hold-to-browse switcher has to know when Cmd comes
@@ -2987,6 +4288,32 @@ static void wm_process_key(int c, int mods)
      * The window is also resolved directly rather than through top_visible():
      * the greeter is the only window there is, and "the only window" is a
      * stronger statement than "the top one". */
+    /* EXPOSE OWNS THE KEYBOARD while it is up, for the same reason it owns the
+     * pointer: the focused window is displaced and scaled, so a keystroke
+     * delivered to it would be typed into something the user cannot see at the
+     * size they are looking at. Escape and the chord dismiss; Enter picks what
+     * the pointer is over; everything else is swallowed rather than forwarded.
+     * Swallowed, not queued -- a burst of typing replayed into an app the
+     * instant the grid closes is worse than a burst that was never delivered. */
+    if (!g_locked && ex_state()) {
+        if (c == 27) ex_leave(-1);                                   /* Escape */
+        else if ((mods & EV_MOD_SUPER) && (c == 'e' || c == 'E')) ex_leave(-1);
+        else if (c == '\n' || c == '\r') ex_leave(ex_hov >= 0 ? ex_wi[ex_hov] : -1);
+        return;
+    }
+    /* THE PANEL AND THE MENU OWN THE KEYBOARD while either is up, same rule as
+     * Expose above and for the same reason: nothing on screen right now is an
+     * app waiting for a keystroke. Escape backs out; everything else is
+     * swallowed rather than forwarded, so a burst of typing aimed at a menu
+     * that has since closed never lands in whatever app comes up next. */
+    if (!g_locked && g_overlay != OV_NONE) {
+        if (c == 27) overlay_close();
+        return;
+    }
+    if (!g_locked && g_menu_open >= 0) {
+        if (c == 27) menu_close();
+        return;
+    }
     if (!g_locked && (mods & EV_MOD_SUPER) && wm_shortcut(c, mods)) return;
     int wi = g_locked ? greeter_win()
                       : top_visible();  /* NOT order[norder-1]: that may be minimised */
@@ -3083,9 +4410,143 @@ static void wm_locked_mouse(const struct inev *in)
     if (moved && !hw_cursor) dirty_full();
 }
 
+/* EXPOSE: the pointer belongs to the picker and to nothing else.
+ *
+ * A whole separate path, for the identical reason wm_locked_mouse is one: the
+ * guarded version would have to be right in eight places (the theme switch, the
+ * notification cards, the dock, the resize band, the titlebar, the three
+ * traffic lights, the drag, the right-button menu), and a version that has to
+ * be right in eight places is a version that will be wrong in one. Here the
+ * only two things that can happen are "pick a window" and "dismiss".
+ *
+ * NOTHING REACHES AN APP while this is up -- not a press, not a release, not a
+ * motion. An app has no idea Expose exists and its window is not where the app
+ * thinks it is, so a click delivered in window-local coordinates would land on
+ * whatever is a quarter of the way across its canvas. */
+static void wm_expose_mouse(const struct inev *in)
+{
+    int x = in->x, y = in->y;
+    int moved = (x != mx || y != my);
+    int omx = mx, omy = my;
+    mx = x; my = y;
+    if (moved) perf_motions++;
+
+    if (moved) {
+        int h = ex_hover_at(x, y);
+        if (h != ex_hov) {                 /* same idiom as the dock's hover: */
+            ex_dirty_slot(ex_hov);         /* damage the one being left...    */
+            ex_hov = h;
+            ex_dirty_slot(h);              /* ...and the one being entered    */
+        }
+        if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+    }
+    if (in->l && !mleft) {
+        int h = ex_hover_at(x, y);
+        /* A window: bring it to the front and leave. Anywhere else -- the dimmed
+         * wallpaper, the dock, the menu bar -- leave with the stacking exactly
+         * as it was. Dismissing is the safe answer for every pixel that is not
+         * a thumbnail, because the mode covers the whole screen and there is no
+         * "somewhere else" for a click to usefully mean anything else. */
+        ex_leave(h >= 0 ? ex_wi[h] : -1);
+    }
+    mleft = in->l; mright = in->r; mmiddle = in->m;
+    set_cursor(CUR_ARROW);
+}
+
+/* THE ABOUT / SHUT DOWN / RESTART PANEL owns the pointer while it is up, same
+ * capture idiom as Expose: a click is a button, or it is a dismissal, and
+ * nothing under the panel ever sees it. */
+static void wm_overlay_mouse(const struct inev *in)
+{
+    int x = in->x, y = in->y;
+    int moved = (x != mx || y != my);
+    int omx = mx, omy = my;
+    mx = x; my = y;
+    if (moved) perf_motions++;
+    if (moved && !hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+
+    if (moved && (g_overlay == OV_CONFIRM_SHUTDOWN || g_overlay == OV_CONFIRM_RESTART)) {
+        int hb = overlay_button_at(x, y);
+        if (hb != g_overlay_btn_hov) {
+            g_overlay_btn_hov = hb;
+            struct drect p; overlay_box(&p);
+            dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+        }
+    }
+    if (in->l && !mleft) {
+        if (g_overlay == OV_ABOUT) {
+            overlay_close();                    /* an About box has nothing to click but "away" */
+        } else {
+            int hb = overlay_button_at(x, y);
+            int shutdown = (g_overlay == OV_CONFIRM_SHUTDOWN);
+            overlay_close();                    /* dirty + clear state BEFORE the noreturn call */
+            if (hb == 1) { if (shutdown) kernel_poweroff(); else kernel_reboot(); }
+            /* hb==0 (Cancel) or hb==-1 (click outside): already dismissed above. */
+        }
+    }
+    mleft = in->l; mright = in->r; mmiddle = in->m;
+    set_cursor(CUR_ARROW);
+}
+
+/* THE OPEN MENU owns the pointer, same capture idiom. A click is a title (close
+ * the one that was open, or -- via the hover switch below -- land on the new
+ * one that is already showing), an item, or "away", and nothing else can be
+ * clicked while a menu covers it. */
+static void wm_menu_mouse(const struct inev *in)
+{
+    int x = in->x, y = in->y;
+    int moved = (x != mx || y != my);
+    int omx = mx, omy = my;
+    int was_open = g_menu_open;                /* the title open at the START of this event */
+    mx = x; my = y;
+    if (moved) perf_motions++;
+    if (moved && !hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+
+    /* Hovering a DIFFERENT title switches menus live -- the detail that makes
+     * a menu bar read as one system instead of four separate buttons. */
+    int hit_title = -1;
+    for (int i = 0; i < NMENU; i++) {
+        struct drect t; menu_title_hit(i, &t);
+        if (in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) { hit_title = i; break; }
+    }
+    if (hit_title >= 0 && hit_title != g_menu_open) {
+        struct drect old; menu_dropdown_box(&old);
+        g_menu_open = hit_title; g_menu_item_hov = -1;
+        struct drect nu; menu_dropdown_box(&nu);
+        dirty_rect(old.x0, old.y0, old.x1 - old.x0, old.y1 - old.y0);
+        dirty_rect(nu.x0, nu.y0, nu.x1 - nu.x0, nu.y1 - nu.y0);
+        menu_report_open();   /* hover switch */
+    }
+
+    struct drect row;
+    int hov = menu_item_at(g_menu_open, x, y, &row);
+    if (hov != g_menu_item_hov) {
+        g_menu_item_hov = hov;
+        struct drect p; menu_dropdown_box(&p);      /* whole panel -- it is small, see file header */
+        dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+    }
+
+    if (in->l && !mleft) {
+        if (hit_title >= 0 && hit_title == was_open) {
+            menu_close();                            /* the OPEN title, clicked again: toggle off */
+        } else if (hit_title >= 0) {
+            /* a different title: the hover switch above already did the work */
+        } else {
+            int idx = menu_item_at(g_menu_open, x, y, NULL);
+            if (idx >= 0 && menu_item_enabled(g_menu_open, idx)) menu_item_fire(g_menu_open, idx);
+            else menu_close();                       /* not a title, not a live item: dismiss */
+        }
+    }
+    mleft = in->l; mright = in->r; mmiddle = in->m;
+    set_cursor(CUR_ARROW);
+}
+
 static void wm_process_mouse(const struct inev *in)
 {
     if (g_locked) { wm_locked_mouse(in); return; }
+    if (ex_state()) { wm_expose_mouse(in); return; }
+    if (g_overlay != OV_NONE) { wm_overlay_mouse(in); return; }
+    if (g_menu_open >= 0) { wm_menu_mouse(in); return; }
     int x = in->x, y = in->y, left = in->l, right = in->r, middle = in->m;
     int mods = in->mods;
     int moved = (x != mx || y != my);
@@ -3093,11 +4554,32 @@ static void wm_process_mouse(const struct inev *in)
     int omx = mx, omy = my;                /* ...and where the arrow was */
     mx = x; my = y;
     if (moved) perf_motions++;
+    /* "Parked" in the hot corner means PARKED. Restarting the dwell on every
+     * motion sample is what keeps a pointer sweeping through the corner on its
+     * way somewhere else from opening the picker behind it. */
+    if (moved) ex_corner_t0 = 0;
 
     if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
         wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
         mleft = left; mright = right; mmiddle = middle;
         return;
+    }
+    /* A CLOSED menu title, clicked: open it. (An OPEN one is handled above --
+     * wm_menu_mouse captures every click once g_menu_open >= 0 -- so this only
+     * ever fires the closed -> open transition.) Same idiom as the dark-mode
+     * switch just above: the menu bar is chrome drawn on top, so it must win
+     * the click before the dock or a window gets a chance to. */
+    if (left && !mleft) {
+        for (int i = 0; i < NMENU; i++) {
+            struct drect t; menu_title_hit(i, &t);
+            if (!in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) continue;
+            g_menu_open = i; g_menu_item_hov = -1;
+            struct drect p; menu_dropdown_box(&p);
+            dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+            menu_report_open();
+            mleft = left; mright = right; mmiddle = middle;
+            return;
+        }
     }
     /* WM-HOOK 6/6: a notification is chrome drawn on top of everything, so like
      * the switch above it must win the click -- otherwise the window under it
@@ -3792,6 +5274,13 @@ void wm_run(void)
          * whole screen, and there is no periodic full repaint left to quietly
          * cover for a caller that under-reported its damage. */
         if (now - last >= 50) { last = now; dirty_menubar(); }
+        /* Animations advance HERE, before the frame that shows them, and they
+         * are what asks for that frame -- exactly the shape of the dock bounce
+         * this loop already ran (draw_dock re-dirties itself while a bounce is
+         * live). Nothing polls; an idle desktop with nothing moving reaches
+         * this line, requests no damage, and goes back to sleep on the hlt. */
+        wm_hotcorner_tick();
+        wm_anim_tick();
         if (dirty) {
             dirty = 0;
             wm_render();

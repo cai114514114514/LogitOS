@@ -105,8 +105,27 @@ void fb_clear_clip(void);
 /* Copy `src` into the current target at (dx,dy), clipped. */
 void fb_blit_surface(int dx, int dy, const struct surface *src);
 
-/* Nearest-neighbour scaled, opaque blit of `src` into dest rect (dx,dy,dw,dh). */
+/* Nearest-neighbour scaled, opaque blit of `src` into dest rect (dx,dy,dw,dh).
+ * Free of shimmer only at integer/still ratios -- under CONTINUOUS scaling
+ * (a resize drag, an open/close pop) a source row either survives a dest row
+ * whole or is skipped outright, so which source rows appear flips from frame
+ * to frame and the animation reads as cheap. Good for a static thumbnail or a
+ * pixel-exact icon, where that flip never happens because the ratio doesn't
+ * move. */
 void fb_blit_surface_scaled(int dx, int dy, int dw, int dh, const struct surface *src);
+
+/* Same contract, BILINEAR: each dest pixel is a weighted blend of the four
+ * source texels around its sample point, so the blend itself changes
+ * smoothly as the ratio changes instead of which single texel got picked
+ * flipping discretely -- that is what removes the shimmer under continuous
+ * scaling. Costs more per pixel (four fetches + three lerps vs. one fetch);
+ * see the cost comment above fb_blit_surface_scaled_bl in fb.c for the
+ * measured number and for which callers should reach for it. Both paths
+ * stay -- this does not replace fb_blit_surface_scaled, the same way the
+ * corner tile's nearest fallback (fb.c's corner_cov) didn't get deleted when
+ * Open Logit's masks arrived: a caller that isn't moving has no shimmer to
+ * fix and no reason to pay four taps for one. */
+void fb_blit_surface_scaled_bl(int dx, int dy, int dw, int dh, const struct surface *src);
 
 /* Text (8x16 bitmap font). */
 void fb_char(int x, int y, char c, uint32_t color);
