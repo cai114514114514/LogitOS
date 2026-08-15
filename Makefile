@@ -423,7 +423,7 @@ $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 endef
 
 CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname net cp mv smptest socktest \
-       show dir chart prog clip notify execinfo entropy httpd stat
+       show dir chart prog clip notify execinfo entropy httpd stat poweroff reboot pref
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
 
@@ -3818,3 +3818,13 @@ bench-aui: $(ISO) $(DISK)
 # Read its header before reusing $(BUILD)/jsobj's libm objects -- the scoping of
 # `-include features.h` is load-bearing, not tidiness.
 -include tests/libm.mk
+
+# Power control: `make test-power` (poweroff syncs + ACPI-goes-down + a second
+# boot proves the write survived and the journal had nothing to replay; a
+# third boot proves reboot round-trips) and its negative control
+# `test-power-negctl` (a SIGKILL in the same window, which MUST leave a replay
+# or an fsck finding behind). Own fragment for the same reason as every
+# fragment above it -- and the tests/window.mk comment two fragments up is not
+# theoretical: a fragment that exists but is never `-include`d is a target
+# that silently stopped being reachable by name.
+-include tests/power.mk

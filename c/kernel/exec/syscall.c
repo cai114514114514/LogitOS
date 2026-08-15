@@ -39,6 +39,7 @@
 #include "ksignal.h"     /* signals: SYS_SIGACTION..SYS_SIGQUERY, execve reset */
 #include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
 #include "vfs_cred.h"    /* id_syscall:   SYS_GETUID .. SYS_GETSESSION (150-159) */
+#include "power.h"       /* kernel_poweroff / kernel_reboot: SYS_POWEROFF / SYS_REBOOT */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -1156,6 +1157,33 @@ static void syscall_do(struct registers *r)
                ? (uint64_t)rng_syscall((long)r->rdi, (long)r->rsi, (long)r->rdx)
                : (uint64_t)-1;
         return;
+
+    /* Stopping the machine. ROOT ONLY, refused with ID_E_PERM exactly as
+     * SYS_SETUID is (see id_syscall() above) -- checked HERE, inline, rather
+     * than forwarded to vfs_cred.c, because there is nothing else these two
+     * numbers share with the identity block: no shared state, no shared
+     * struct vcred plumbing beyond the one uid read. UNCLASSIFIED by
+     * syscall_cap_class() above on purpose -- see the doc comment on
+     * SYS_POWEROFF in logit_abi.h for why a CAP_POWER bit was considered and
+     * deliberately not invented.
+     *
+     * Neither kernel_poweroff() nor kernel_reboot() returns on the path that
+     * works, so there is no rax to set there -- reaching a `return` after
+     * either call is dead code the compiler already knows is dead (both are
+     * declared noreturn in power.h), not a case this dispatcher forgot to
+     * finish. */
+    case SYS_POWEROFF: {
+        struct vcred me;
+        vfs_cred_current(&me);
+        if (me.uid != 0) { r->rax = (uint64_t)ID_E_PERM; return; }
+        kernel_poweroff();
+    }
+    case SYS_REBOOT: {
+        struct vcred me;
+        vfs_cred_current(&me);
+        if (me.uid != 0) { r->rax = (uint64_t)ID_E_PERM; return; }
+        kernel_reboot();
+    }
 
     default:
         /* GUI + misc system calls are handled by the window manager, which

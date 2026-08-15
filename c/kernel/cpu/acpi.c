@@ -188,3 +188,86 @@ int acpi_init(void)
     parse_madt(madt);
     return g_ncpu;
 }
+
+/* ------------------------------------------------------------------ FADT --
+ * "Fixed ACPI Description Table" ("FACP" signature) -- see the long comment
+ * in acpi.h for what is and is not read here and why. Offsets below are the
+ * ACPI spec's fixed FADT layout, counted from the start of the SDT header
+ * (so "offset 64" means byte 64 of the whole table, header included, exactly
+ * like parse_madt's `p + 36` above). Parsed lazily and cached the first time
+ * either accessor is called; nothing here runs at boot unless something asks. */
+static uint32_t g_pm1a_cnt, g_pm1b_cnt;
+static int      g_pm1_ok;
+static struct acpi_gas g_reset_reg;
+static uint8_t  g_reset_value;
+static int      g_reset_ok;
+static int      g_fadt_done;
+
+static void parse_fadt(void)
+{
+    if (g_fadt_done) return;
+    g_fadt_done = 1;
+
+    const struct sdt_header *h = acpi_find_table("FACP");
+    if (!h) { serial_puts("[acpi] no FADT\n"); return; }
+    const uint8_t *p = (const uint8_t *)h;
+
+    /* PM1a_CNT_BLK (u32 at offset 64), PM1b_CNT_BLK (u32 at offset 68). A
+     * table shorter than 68 bytes cannot carry PM1a at all; one shorter than
+     * 72 can carry PM1a but not PM1b, which is the common (single-PM1-block)
+     * case and not an error -- g_pm1b_cnt just stays 0, "none". */
+    if (h->length >= 68) {
+        g_pm1a_cnt = *(const uint32_t *)(p + 64);
+        g_pm1b_cnt = (h->length >= 72) ? *(const uint32_t *)(p + 68) : 0;
+        g_pm1_ok = (g_pm1a_cnt != 0);
+        if (!g_pm1_ok) serial_puts("[acpi] FADT PM1a_CNT_BLK is zero\n");
+    } else {
+        serial_puts("[acpi] FADT too short for PM1_CNT\n");
+    }
+
+    /* RESET_REG (12-byte Generic Address Structure at offset 116) +
+     * RESET_VALUE (u8 at offset 128): both ACPI-2.0+ additions, so a table
+     * that ends before byte 129 simply predates them -- refused the same way
+     * a too-short MADT entry is, not treated as "zero means memory space,
+     * address 0". */
+    if (h->length >= 129) {
+        const uint8_t *g = p + 116;
+        struct acpi_gas r;
+        r.space_id    = g[0];
+        r.bit_width   = g[1];
+        r.bit_offset  = g[2];
+        r.access_size = g[3];
+        uint64_t a = 0; for (int i = 0; i < 8; i++) a |= (uint64_t)g[4 + i] << (i * 8);
+        r.address = a;
+        uint8_t val = p[128];
+        /* Only system-memory (0) or system-I/O (1) space is one this kernel
+         * can honestly write; anything else (PCI config, EC, SMBus, ...) is
+         * reported as "no RESET_REG" rather than silently mis-decoded. A
+         * zero address is equally useless regardless of space. */
+        if (a != 0 && (r.space_id == 0 || r.space_id == 1)) {
+            g_reset_reg   = r;
+            g_reset_value = val;
+            g_reset_ok    = 1;
+        } else {
+            serial_puts("[acpi] FADT RESET_REG unusable (space/address)\n");
+        }
+    }
+}
+
+int acpi_pm1_cnt(uint32_t *pm1a, uint32_t *pm1b)
+{
+    parse_fadt();
+    if (!g_pm1_ok) return -1;
+    if (pm1a) *pm1a = g_pm1a_cnt;
+    if (pm1b) *pm1b = g_pm1b_cnt;
+    return 0;
+}
+
+int acpi_reset_reg(struct acpi_gas *reg, uint8_t *value)
+{
+    parse_fadt();
+    if (!g_reset_ok) return -1;
+    if (reg)   *reg   = g_reset_reg;
+    if (value) *value = g_reset_value;
+    return 0;
+}

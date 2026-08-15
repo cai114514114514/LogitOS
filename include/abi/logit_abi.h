@@ -843,10 +843,32 @@ struct logit_procinfo {
                               * caller about to set several keys (commit once
                               * with SETCTL_COMMIT -- one file write, one
                               * transaction, one atomic replacement). */
-#define SYS_SETTING_ENUM 105 /* (index, struct logit_setting*, 0) -> 0, or -1
-                              * past the end. Walks the SCHEMA, so an app that
-                              * renders this is automatically correct about a
-                              * setting added to the kernel after it shipped. */
+#define SYS_SETTING_ENUM 105 /* (index, struct logit_setting*, prefix) -> 0, or
+                              * -1 past the end. prefix == 0 walks the SCHEMA,
+                              * so an app that renders this is automatically
+                              * correct about a setting added to the kernel
+                              * after it shipped. prefix != 0 is a key-prefix
+                              * STRING, and index then walks every key that
+                              * starts with it -- app-domain keys included --
+                              * which is how a program lists its own domain
+                              * ("app.textedit.") without knowing its keys in
+                              * advance. The third argument was a fixed 0
+                              * before this, so no existing caller changes
+                              * meaning.
+                              *
+                              * THE KEY NAMESPACE IS THE PERMISSION MODEL, and
+                              * it is deliberately not a new mechanism: keys in
+                              * the kernel SCHEMA are machine state and a
+                              * non-root SYS_SETTING_SET on one is REFUSED
+                              * (ID_E_PERM -- closing the hole the M28 spec's
+                              * out-of-scope list names, where any process
+                              * could rewrite machine-wide persistent config).
+                              * Keys under "app." are PREFERENCES: they live in
+                              * the per-user store, any process in the session
+                              * may write its own, and they need no schema
+                              * entry -- the store is open exactly where
+                              * openness is safe, and closed exactly where it
+                              * was already supposed to be. */
 #define SYS_SETTING_CTL  106 /* (op, a, b) -> per-op; op is a SETCTL_*. */
 
 #define SETCTL_GEN       0   /* -> a counter that bumps on every commit. This is
@@ -1931,5 +1953,30 @@ struct logit_capreq {
 #define LOGIT_CAP_E_CEIL (-2)   /* `req` is not <= the caller's own (caps, fs_prefix) */
 #define LOGIT_CAP_E_NOENT (-3)  /* path/image missing, unreadable, or not a valid .aex */
 #define LOGIT_CAP_E_NOMEM (-4)  /* OOM building the child's address space or thread */
+
+/* ---- stopping the machine -------------------------------------------------
+ *
+ * Until these existed, LogitOS could only be stopped from OUTSIDE (QEMU's
+ * window closed, the power yanked). Durability survived that because the
+ * filesystem journals, but "the only way to stop is to be killed" made every
+ * shutdown a crash with good manners instead of an actual shutdown. See
+ * c/kernel/core/power.c for the full order of operations (sync, THEN the
+ * ACPI write, and why it is in that order).
+ *
+ * ROOT ONLY, refused with ID_E_PERM exactly as SYS_SETUID is -- see
+ * c/fs/vfs_cred.c id_syscall(). Deliberately NOT gated through the M28
+ * capability system: syscall_cap_class() in c/kernel/exec/syscall.c
+ * classifies a syscall as CAP_FS/CAP_NET only when it acquires filesystem or
+ * network access BY NAME, and stopping the machine is neither -- inventing a
+ * CAP_POWER bit for a two-member category nobody else needs would be this
+ * header quietly deciding M28's bit layout, which is the spec's job
+ * (docs/superpowers/specs/2026-08-14-m28-capabilities.md) and settled. A uid
+ * check is the right primitive here: it is the same one every other
+ * root-only operation in this kernel already uses, and a capability grant
+ * was never going to be handed to a sandboxed script anyway. */
+#define SYS_POWEROFF  163 /* () -> does not return on success (the machine is
+                           * off); ID_E_PERM if the caller is not root. */
+#define SYS_REBOOT    164 /* () -> does not return on success (the machine is
+                           * resetting); ID_E_PERM if the caller is not root. */
 
 #endif /* LOGIT_ABI_H */
