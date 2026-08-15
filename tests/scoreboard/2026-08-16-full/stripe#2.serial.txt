@@ -1,0 +1,136 @@
+[wm] perf t=18743 composites=132 ns=1928777106 max=66187191 motions=18 curmoves=10 curns=429453 full=89 rects=132 cpx=34123200 fpx=33999120 presns=68279406 torn=0 defer=58 late=0 drawmax=142
+[sock] connected stripe.com via ipv4 ::ffff:198.18.0.62
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for stripe.com, alpn=http/1.1
+[wm] perf t=19792 composites=149 ns=2067568265 max=66187191 motions=18 curmoves=10 curns=429453 full=105 rects=149 cpx=37225920 fpx=37101840 presns=73511414 torn=0 defer=71 late=0 drawmax=142
+[net] rx path: frames 64 irq 53 softirq 22 inline 5 poll 2 idle 0/0 halt/skip
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[sock] connected b.stripecdn.com via ipv4 ::ffff:198.18.0.153
+[wm] perf t=20837 composites=155 ns=2079408338 max=66187191 motions=18 curmoves=10 curns=429453 full=109 rects=155 cpx=37287360 fpx=37163280 presns=73931725 torn=0 defer=75 late=0 drawmax=142
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[wm] perf t=21866 composites=163 ns=2266709204 max=66187191 motions=18 curmoves=10 curns=429453 full=115 rects=163 cpx=41444800 fpx=41320720 presns=81726063 torn=0 defer=77 late=0 drawmax=142
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[browser] heap peak 13938K
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="text/comment"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 74 external classic, 0 external module, 0 inline
+[net] rx path: frames 582 irq 311 softirq 118 inline 36 poll 2 idle 0/0 halt/skip
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[mm] low: 108908 frames free (425 MiB), 22129 used, 0 shared, 0 bugs
+[mm] low: 108652 frames free (424 MiB), 22385 used, 0 shared, 0 bugs
+[mm] low: 108396 frames free (423 MiB), 22641 used, 0 shared, 0 bugs
+[mm] low: 108140 frames free (422 MiB), 22897 used, 0 shared, 0 bugs
+[net] rx path: frames 1166 irq 479 softirq 177 inline 62 poll 2 idle 0/0 halt/skip
+[mm] low: 107884 frames free (421 MiB), 23153 used, 0 shared, 0 bugs
+[mm] low: 107628 frames free (420 MiB), 23409 used, 0 shared, 0 bugs
+[mm] low: 107372 frames free (419 MiB), 23665 used, 0 shared, 0 bugs
+[mm] low: 107116 frames free (418 MiB), 23921 used, 0 shared, 0 bugs
+[mm] low: 106860 frames free (417 MiB), 24177 used, 0 shared, 0 bugs
+[wm] perf t=38254 composites=263 ns=5739117837 max=66187191 motions=18 curmoves=10 curns=429453 full=193 rects=263 cpx=118920640 fpx=118796560 presns=213230180 torn=0 defer=80 late=0 drawmax=156
+[mm] low: 106604 frames free (416 MiB), 24433 used, 0 shared, 0 bugs
+[mm] low: 106348 frames free (415 MiB), 24689 used, 0 shared, 0 bugs
+[mm] low: 106092 frames free (414 MiB), 24945 used, 0 shared, 0 bugs
+[mm] low: 105836 frames free (413 MiB), 25201 used, 0 shared, 0 bugs
+[mm] low: 105580 frames free (412 MiB), 25457 used, 0 shared, 0 bugs
+[mm] low: 105324 frames free (411 MiB), 25713 used, 0 shared, 0 bugs
+[mm] low: 105068 frames free (410 MiB), 25969 used, 0 shared, 0 bugs
+[mm] low: 104812 frames free (409 MiB), 26225 used, 0 shared, 0 bugs
+[mm] low: 104556 frames free (408 MiB), 26481 used, 0 shared, 0 bugs
+[mm] low: 104300 frames free (407 MiB), 26737 used, 0 shared, 0 bugs
+[mm] low: 104044 frames free (406 MiB), 26993 used, 0 shared, 0 bugs
+[mm] low: 103788 frames free (405 MiB), 27249 used, 0 shared, 0 bugs
+[mm] low: 103532 frames free (404 MiB), 27505 used, 0 shared, 0 bugs
+[mm] low: 103276 frames free (403 MiB), 27761 used, 0 shared, 0 bugs
+[mm] low: 103020 frames free (402 MiB), 28017 used, 0 shared, 0 bugs
+[mm] low: 102764 frames free (401 MiB), 28273 used, 0 shared, 0 bugs
+[mm] low: 102508 frames free (400 MiB), 28529 used, 0 shared, 0 bugs
+[mm] low: 102252 frames free (399 MiB), 28785 used, 0 shared, 0 bugs
+[mm] low: 101996 frames free (398 MiB), 29041 used, 0 shared, 0 bugs
+[mm] low: 101740 frames free (397 MiB), 29297 used, 0 shared, 0 bugs
+[mm] low: 101484 frames free (396 MiB), 29553 used, 0 shared, 0 bugs
+[mm] low: 101228 frames free (395 MiB), 29809 used, 0 shared, 0 bugs
+[mm] low: 100972 frames free (394 MiB), 30065 used, 0 shared, 0 bugs
+[mm] low: 100716 frames free (393 MiB), 30321 used, 0 shared, 0 bugs
+[mm] low: 100460 frames free (392 MiB), 30577 used, 0 shared, 0 bugs
+[mm] low: 100204 frames free (391 MiB), 30833 used, 0 shared, 0 bugs
+[mm] low: 99948 frames free (390 MiB), 31089 used, 0 shared, 0 bugs
+[mm] low: 99692 frames free (389 MiB), 31345 used, 0 shared, 0 bugs
+[mm] low: 99436 frames free (388 MiB), 31601 used, 0 shared, 0 bugs
+[mm] low: 99180 frames free (387 MiB), 31857 used, 0 shared, 0 bugs
+[mm] low: 98924 frames free (386 MiB), 32113 used, 0 shared, 0 bugs
+[mm] low: 98668 frames free (385 MiB), 32369 used, 0 shared, 0 bugs
+[browser] load done: 80 requests, 3 connections dialled, 77 reused, 0 modules loaded (0 failed)
+[browser] pool: 77 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 79 from network (tab 2 of 3)
+EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+[mm] low: 98412 frames free (384 MiB), 32625 used, 0 shared, 0 bugs
+[mm] low: 98156 frames free (383 MiB), 32881 used, 0 shared, 0 bugs
+[mm] low: 97900 frames free (382 MiB), 33137 used, 0 shared, 0 bugs
+[mm] low: 97644 frames free (381 MiB), 33393 used, 0 shared, 0 bugs
+[mm] low: 97388 frames free (380 MiB), 33649 used, 0 shared, 0 bugs
+[mm] low: 97132 frames free (379 MiB), 33905 used, 0 shared, 0 bugs
+[mm] low: 96876 frames free (378 MiB), 34161 used, 0 shared, 0 bugs
+[mm] low: 96620 frames free (377 MiB), 34417 used, 0 shared, 0 bugs
+[mm] low: 96364 frames free (376 MiB), 34673 used, 0 shared, 0 bugs
+[mm] low: 96108 frames free (375 MiB), 34929 used, 0 shared, 0 bugs
+[mm] low: 95852 frames free (374 MiB), 35185 used, 0 shared, 0 bugs
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] Error: Minified React error #423; visit https://reactjs.org/docs/error-decoder.html?invariant=423 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at ox (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:168)
+    at <anonymous> (<platform>:175)
+
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for stripe.com, alpn=h2
+[error] SyntaxError: mark 'navigationStart' does not exist
+[error] SyntaxError: mark 'navigationStart' does not exist
+    at <anonymous> (<platform>:55)
+    at ei (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/main-64c21da41e256517.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/main-64c21da41e256517.js)
+    at forEach (native)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/main-64c21da41e256517.js)
+    at uI (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at uY (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at e (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oI (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:168)
+    at <anonymous> (<platform>:175)
+
+[bxfer] h2 stripe.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=15
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for r.stripe.com, alpn=h2
+[bxfer] h2 r.stripe.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for r.stripe.com, alpn=h2
+[bxfer] h2 r.stripe.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=0

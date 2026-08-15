@@ -1,0 +1,89 @@
+[wm] perf t=18695 composites=127 ns=1930691071 max=68566209 motions=18 curmoves=10 curns=446950 full=83 rects=127 cpx=35104112 fpx=34988304 presns=66552260 torn=0 defer=51 late=0 drawmax=136
+[sock] connected www.2345.com via ipv4 ::ffff:198.18.0.106
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19696 composites=149 ns=2073565386 max=68566209 motions=18 curmoves=10 curns=446950 full=104 rects=149 cpx=38206832 fpx=38091024 presns=71679613 torn=0 defer=69 late=0 drawmax=136
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.2345.com, alpn=http/1.1
+[tls] OCSP staple: good (www.2345.com)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 2 cached)
+[net] rx path: frames 64 irq 61 softirq 28 inline 4 poll 2 idle 0/0 halt/skip
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[sock] connected www-stream.2345cdn.net via ipv4 ::ffff:198.18.0.107
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 6 cached)
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[browser] heap peak 10822K
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260806/97a18a382e558320a353699e7b0f8650.png: connect failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260731/9db2b1d7532f647796ff8dc57f347043.png: connect failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260731/84154debf6327942ea24bfb97125317d.png: connect failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20230906/1781dbcded406f08bbf439758e3fcefd.jpg: connect failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260508/f48489087f22906e6b57073f11e0fa43.png: connect failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260814/7341463d0b3c30878dc941ab4147268c.png: connect failed
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[browser] scripts collected: 12 external classic, 0 external module, 4 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.2345.com (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 711s, 4 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 713s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 713s, 6 cached)
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cpro.baidustatic.com, alpn=http/1.1
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[net] rx path: frames 591 irq 517 softirq 184 inline 81 poll 2 idle 0/0 halt/skip
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[browser] fetch failed (status 0) //passport-plugin.hao184.com/statistics-report/v2.1.js: connect failed
+[browser] script REFUSED (HTML, not JS): https://www.2345.com/ (status 200, 170483 bytes)
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[browser] script LOST: https://passport-plugin.hao184.com/statistics-report/v2.1.js: connect failed (status 0)
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[mm] low: 108908 frames free (425 MiB), 22129 used, 0 shared, 0 bugs
+[mm] low: 108652 frames free (424 MiB), 22385 used, 0 shared, 0 bugs
+[mm] low: 108396 frames free (423 MiB), 22641 used, 0 shared, 0 bugs
+[mm] low: 108140 frames free (422 MiB), 22897 used, 0 shared, 0 bugs
+[mm] low: 107884 frames free (421 MiB), 23153 used, 0 shared, 0 bugs
+[mm] low: 107628 frames free (420 MiB), 23409 used, 0 shared, 0 bugs
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[mm] low: 107372 frames free (419 MiB), 23665 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at rA06 (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at o (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at map (native)
+    at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at n (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)
+    at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js:2)
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www.2345.com/#inline-script-4:7)
+    at <eval> (https://www.2345.com/#inline-script-4:8)
+[browser] load done: 39 requests, 20 connections dialled, 19 reused, 0 modules loaded (0 failed)
+[browser] pool: 19 hits, 3 evicted, 17 closed
+[browser] resources: 0 from tab, 25 from network (tab 2 of 3)
+[error] Failed to calculate load time: TypeError: cannot read property 'loadEventEnd' of undefined
+[error] Failed to calculate resource size: TypeError: cannot read property 'transferSize' of undefined
+[wm] perf t=234851 composites=670 ns=9113296330 max=68566209 motions=18 curmoves=10 curns=446950 full=208 rects=670 cpx=153417072 fpx=153301264 presns=319723371 torn=0 defer=73 late=0 drawmax=154

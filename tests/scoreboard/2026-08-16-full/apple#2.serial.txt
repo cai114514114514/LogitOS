@@ -1,0 +1,137 @@
+[wm] perf t=18763 composites=136 ns=2160647869 max=63277817 motions=18 curmoves=10 curns=374045 full=91 rects=137 cpx=39507904 fpx=39359008 presns=73665735 torn=0 defer=55 late=0 drawmax=140
+[sock] connected www.apple.com via ipv4 ::ffff:198.18.0.151
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for www.apple.com, alpn=http/1.1
+[tls] OCSP staple: good (www.apple.com)
+[wm] perf t=19766 composites=155 ns=2306044481 max=63277817 motions=18 curmoves=10 curns=374045 full=109 rects=156 cpx=42610624 fpx=42461728 presns=78354120 torn=0 defer=70 late=0 drawmax=140
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[sock] connected www.apple.com via ipv4 ::ffff:198.18.0.151
+[net] rx path: frames 64 irq 41 softirq 14 inline 6 poll 2 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for www.apple.com, alpn=http/1.1
+[tls] OCSP staple: good (www.apple.com)
+[browser] fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[wm] perf t=22796 composites=174 ns=2794098640 max=63277817 motions=18 curmoves=10 curns=374045 full=123 rects=175 cpx=53004224 fpx=52855328 presns=95843477 torn=0 defer=74 late=0 drawmax=147
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[browser] heap peak 13029K
+[wm] perf t=23817 composites=176 ns=2800201685 max=63277817 motions=18 curmoves=10 curns=374045 full=124 rects=177 cpx=53034944 fpx=52886048 presns=96053517 torn=0 defer=75 late=0 drawmax=147
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for is1-ssl.mzstatic.com, alpn=http/1.1
+[tls] OCSP staple: good (is1-ssl.mzstatic.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for is1-ssl.mzstatic.com, alpn=http/1.1
+[tls] OCSP staple: good (is1-ssl.mzstatic.com)
+[net] rx path: frames 617 irq 184 softirq 76 inline 27 poll 2 idle 0/0 halt/skip
+[wm] perf t=24826 composites=184 ns=2950396809 max=63277817 motions=18 curmoves=10 curns=374045 full=131 rects=185 cpx=56137664 fpx=55988768 presns=101839969 torn=0 defer=79 late=0 drawmax=148
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[net] rx path: frames 1129 irq 283 softirq 114 inline 45 poll 3 idle 0/0 halt/skip
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[net] rx path: frames 1651 irq 349 softirq 139 inline 54 poll 4 idle 0/0 halt/skip
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[mm] low: 108908 frames free (425 MiB), 22129 used, 0 shared, 0 bugs
+[mm] low: 108652 frames free (424 MiB), 22385 used, 0 shared, 0 bugs
+[mm] low: 108396 frames free (423 MiB), 22641 used, 0 shared, 0 bugs
+[mm] low: 108140 frames free (422 MiB), 22897 used, 0 shared, 0 bugs
+[mm] low: 107884 frames free (421 MiB), 23153 used, 0 shared, 0 bugs
+[mm] low: 107628 frames free (420 MiB), 23409 used, 0 shared, 0 bugs
+[mm] low: 107372 frames free (419 MiB), 23665 used, 0 shared, 0 bugs
+[mm] low: 107116 frames free (418 MiB), 23921 used, 0 shared, 0 bugs
+[mm] low: 106860 frames free (417 MiB), 24177 used, 0 shared, 0 bugs
+[mm] low: 106604 frames free (416 MiB), 24433 used, 0 shared, 0 bugs
+[mm] low: 106348 frames free (415 MiB), 24689 used, 0 shared, 0 bugs
+[mm] low: 106092 frames free (414 MiB), 24945 used, 0 shared, 0 bugs
+[mm] low: 105836 frames free (413 MiB), 25201 used, 0 shared, 0 bugs
+[mm] low: 105580 frames free (412 MiB), 25457 used, 0 shared, 0 bugs
+[mm] low: 105324 frames free (411 MiB), 25713 used, 0 shared, 0 bugs
+[mm] low: 105068 frames free (410 MiB), 25969 used, 0 shared, 0 bugs
+[mm] low: 104812 frames free (409 MiB), 26225 used, 0 shared, 0 bugs
+[mm] low: 104556 frames free (408 MiB), 26481 used, 0 shared, 0 bugs
+[mm] low: 104300 frames free (407 MiB), 26737 used, 0 shared, 0 bugs
+[mm] low: 104044 frames free (406 MiB), 26993 used, 0 shared, 0 bugs
+[mm] low: 103788 frames free (405 MiB), 27249 used, 0 shared, 0 bugs
+[mm] low: 103532 frames free (404 MiB), 27505 used, 0 shared, 0 bugs
+[mm] low: 103276 frames free (403 MiB), 27761 used, 0 shared, 0 bugs
+[mm] low: 103020 frames free (402 MiB), 28017 used, 0 shared, 0 bugs
+[mm] low: 102764 frames free (401 MiB), 28273 used, 0 shared, 0 bugs
+[mm] low: 102508 frames free (400 MiB), 28529 used, 0 shared, 0 bugs
+[mm] low: 102252 frames free (399 MiB), 28785 used, 0 shared, 0 bugs
+[mm] low: 101996 frames free (398 MiB), 29041 used, 0 shared, 0 bugs
+[mm] low: 101740 frames free (397 MiB), 29297 used, 0 shared, 0 bugs
+[mm] low: 101484 frames free (396 MiB), 29553 used, 0 shared, 0 bugs
+[mm] low: 101228 frames free (395 MiB), 29809 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] scripts collected: 8 external classic, 5 external module, 1 inline
+[net] rx path: frames 2181 irq 453 softirq 157 inline 82 poll 4 idle 0/0 halt/skip
+[mm] low: 100972 frames free (394 MiB), 30065 used, 0 shared, 0 bugs
+[wm] perf t=31904 composites=225 ns=4276421191 max=63277817 motions=18 curmoves=10 curns=374045 full=161 rects=226 cpx=84123584 fpx=83974688 presns=152208913 torn=0 defer=82 late=0 drawmax=169
+[mm] low: 100716 frames free (393 MiB), 30321 used, 0 shared, 0 bugs
+[mm] low: 100460 frames free (392 MiB), 30577 used, 0 shared, 0 bugs
+[mm] low: 100204 frames free (391 MiB), 30833 used, 0 shared, 0 bugs
+[mm] low: 99948 frames free (390 MiB), 31089 used, 0 shared, 0 bugs
+[mm] low: 99692 frames free (389 MiB), 31345 used, 0 shared, 0 bugs
+[wm] perf t=32905 composites=230 ns=4333455571 max=63277817 motions=18 curmoves=10 curns=374045 full=164 rects=231 cpx=85209024 fpx=85060128 presns=154099435 torn=0 defer=84 late=0 drawmax=169
+[mm] low: 99436 frames free (388 MiB), 31601 used, 0 shared, 0 bugs
+[js] module loaded 4359 bytes: https://www.apple.com/v/home/a/scripts/ComponentMap-thvKzGgL.built.js[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for www.apple.com, alpn=h2
+[tls] OCSP staple: good (www.apple.com)
+
+[js] module loaded 779 bytes: https://www.apple.com/v/home/a/scripts/inlineMediaSource-9OnjO25M.built.js
+[js] module loaded 983 bytes: https://www.apple.com/v/home/a/scripts/HpViewport-DHyTaS-L.built.js
+[js] module loaded 635 bytes: https://www.apple.com/v/home/a/scripts/_commonjsHelpers-JypJ4tLA.built.js
+[js] module loaded 1921 bytes: https://www.apple.com/v/home/a/scripts/AnimSystemModel-CyyfEbM8.built.js
+[mm] low: 99180 frames free (387 MiB), 31857 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at i (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at I (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js:1)
+
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at i (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at I (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js:1)
+
+[browser] module rejected https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function
+[js] module loaded 258 bytes: https://www.apple.com/v/home/a/scripts/index-DSp7vY0t.built.js
+[browser] load done: 45 requests, 4 connections dialled, 41 reused, 6 modules loaded (0 failed)
+[browser] pool: 41 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 37 from network (tab 2 of 3)
+[js] uncaught in timer: TypeError: not a function
+[wm] perf t=44944 composites=259 ns=4608675102 max=63277817 motions=18 curmoves=10 curns=374045 full=170 rects=260 cpx=88987584 fpx=88838688 presns=163767120 torn=0 defer=87 late=0 drawmax=169
+[bxfer] h2 www.apple.com:443 closed: streams=1 peak=1 frames=4/5 hpack_in=433
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for www.apple.com, alpn=h2
+[tls] OCSP staple: good (www.apple.com)
+[bxfer] h2 www.apple.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=46005
+[mm] low: 98924 frames free (386 MiB), 32113 used, 0 shared, 0 bugs

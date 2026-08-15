@@ -1,0 +1,76 @@
+{
+ "name": "stripe#2",
+ "url": "https://stripe.com/",
+ "started": "2026-08-16T02:29:58",
+ "verdict": "BLANK",
+ "why": "loaded in 24.7s and painted 2460 changed pixels (0 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/",
+  "bytes": 636896,
+  "redirects": [],
+  "script_tags": 78,
+  "script_src": 75,
+  "img_tags": 35,
+  "inventory": {
+   "stylesheets": 5,
+   "script_src": 74,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 80
+  },
+  "elapsed": 0.8
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 80,
+  "dials": 3,
+  "reused": 77,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 13938,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 24.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2460,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 3902,
+  "ink_px_blank": 3902,
+  "colours": 587,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/stripe#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/stripe#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 5,
+   "script_src": 74,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 80
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:30:59"
+}

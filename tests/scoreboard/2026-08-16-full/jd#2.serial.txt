@@ -1,0 +1,54 @@
+[wm] perf t=18735 composites=120 ns=1837287056 max=64001745 motions=18 curmoves=10 curns=613152 full=81 rects=120 cpx=33631280 fpx=33548560 presns=65564351 torn=0 defer=50 late=0 drawmax=141
+[sock] connected www.jd.com via ipv4 ::ffff:198.18.0.42
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[wm] perf t=19735 composites=135 ns=2022890398 max=64001745 motions=18 curmoves=10 curns=613152 full=96 rects=135 cpx=37727280 fpx=37644560 presns=72601662 torn=0 defer=61 late=0 drawmax=141
+[tls] chain of 2 verified for www.jd.com, alpn=http/1.1
+[tls] ticket stored for www.jd.com (224 bytes, lifetime 1800s, 1 cached)
+[tls] ticket stored for www.jd.com (224 bytes, lifetime 1800s, 2 cached)
+[sock] connected corporate.jd.com via ipv4 ::ffff:198.18.0.43
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for corporate.jd.com, alpn=http/1.1
+[tls] ticket stored for corporate.jd.com (240 bytes, lifetime 1800s, 3 cached)
+[tls] ticket stored for corporate.jd.com (240 bytes, lifetime 1800s, 4 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for storage.360buyimg.com, alpn=http/1.1
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 1800s, 5 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 1800s, 6 cached)
+[net] rx path: frames 73 irq 72 softirq 30 inline 7 poll 2 idle 0/0 halt/skip
+[wm] perf t=21745 composites=146 ns=2133703761 max=64001745 motions=18 curmoves=10 curns=613152 full=104 rects=146 cpx=39867440 fpx=39784720 presns=77200198 torn=0 defer=67 late=0 drawmax=143
+[browser] heap peak 6732K
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[browser] scripts collected: 1 external classic, 0 external module, 1 inline
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[browser] load done: 3 requests, 3 connections dialled, 1 reused, 0 modules loaded (0 failed)
+[browser] pool: 1 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 2 from network (tab 2 of 3)
+[error] TypeError: cannot read property 'history' of undefined
+[error] TypeError: cannot read property 'history' of undefined
+    at C4 (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at S4 (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at bR (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at Wg (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at KS (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at US (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at i4 (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at Vu (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at mh (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at HS (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at w (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at N (https://storage.360buyimg.com/jdw-asserts/galaxy/jdei/fin-inv-joygen-app-1778478020444/0d59b61c-096a-447b-b441-9d211b478531/dist/index.umd.js?t=1)
+    at _deliver (<platform>:168)
+    at <anonymous> (<platform>:175)
+

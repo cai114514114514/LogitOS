@@ -1,0 +1,103 @@
+{
+ "name": "anthropic#2",
+ "url": "https://www.anthropic.com/",
+ "started": "2026-08-16T02:27:06",
+ "verdict": "ERRORS",
+ "why": "painted 7124 changed px in 8.5s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.anthropic.com/",
+  "bytes": 182146,
+  "redirects": [],
+  "script_tags": 20,
+  "script_src": 11,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 11,
+   "inline_scripts": 9,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 13
+  },
+  "elapsed": 0.4
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+     "at 8724 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+     "at call (native)",
+     "at t (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at 2444 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)",
+     "at call (native)",
+     "at t (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at 316 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at call (native)",
+     "at t (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+     "at <eval> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [
+   "timer: TypeError: cannot read property 'pageYOffset' of undefined",
+   "timer: TypeError: cannot read property 'pageYOffset' of undefined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 13,
+  "dials": 6,
+  "reused": 7,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 8277,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 8.5,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 7124,
+  "changed_bbox": [
+   148,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 5084,
+  "ink_px_blank": 3902,
+  "colours": 767,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/anthropic#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/anthropic#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 11,
+   "inline_scripts": 9,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 13
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:27:51"
+}

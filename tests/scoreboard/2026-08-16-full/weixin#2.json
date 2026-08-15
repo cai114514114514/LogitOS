@@ -1,0 +1,76 @@
+{
+ "name": "weixin#2",
+ "url": "https://weixin.qq.com/",
+ "started": "2026-08-16T02:29:10",
+ "verdict": "BLANK",
+ "why": "loaded in 6.1s and painted 2596 changed pixels (0 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://weixin.qq.com/",
+  "bytes": 112576,
+  "redirects": [],
+  "script_tags": 10,
+  "script_src": 5,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 3,
+   "inline_scripts": 3,
+   "images": 0,
+   "preloads": 5,
+   "fonts": 0,
+   "mandatory": 5
+  },
+  "elapsed": 1.3
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 5,
+  "dials": 3,
+  "reused": 2,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 6732,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 6.1,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2596,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 3902,
+  "ink_px_blank": 3902,
+  "colours": 595,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/weixin#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/weixin#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 3,
+   "inline_scripts": 3,
+   "images": 0,
+   "preloads": 5,
+   "fonts": 0,
+   "mandatory": 5
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:29:52"
+}

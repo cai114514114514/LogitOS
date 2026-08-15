@@ -1,0 +1,95 @@
+{
+ "name": "bilibili#2",
+ "url": "https://www.bilibili.com/",
+ "started": "2026-08-16T02:27:51",
+ "verdict": "ERRORS",
+ "why": "painted 173768 changed px in 14.5s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bilibili.com/",
+  "bytes": 119217,
+  "redirects": [],
+  "script_tags": 21,
+  "script_src": 8,
+  "img_tags": 13,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 1.0
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'split' of undefined",
+    "stack": [
+     "at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at call (native)",
+     "at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)",
+     "at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 15,
+  "dials": 9,
+  "reused": 6,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9516,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 14.5,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 173768,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 5073,
+  "ink_px_blank": 3902,
+  "colours": 779,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/bilibili#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/bilibili#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:28:42"
+}

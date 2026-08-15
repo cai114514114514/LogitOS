@@ -1,0 +1,112 @@
+{
+ "name": "2345#2",
+ "url": "https://www.2345.com/",
+ "started": "2026-08-16T02:26:56",
+ "verdict": "ERRORS",
+ "why": "painted 6592 changed px in 212.5s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.2345.com/",
+  "bytes": 170480,
+  "redirects": [],
+  "script_tags": 19,
+  "script_src": 12,
+  "img_tags": 14,
+  "inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 82,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "elapsed": 1.3
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)",
+     "at rA06 (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at o (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at map (native)",
+     "at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at n (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js)",
+     "at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.0096f316.js:2)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: not a function",
+    "stack": [
+     "at <anonymous> (https://www.2345.com/#inline-script-4:7)",
+     "at <eval> (https://www.2345.com/#inline-script-4:8)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260806/97a18a382e558320a353699e7b0f8650.png: connect failed",
+   "fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260731/9db2b1d7532f647796ff8dc57f347043.png: connect failed",
+   "fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260731/84154debf6327942ea24bfb97125317d.png: connect failed",
+   "fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20230906/1781dbcded406f08bbf439758e3fcefd.jpg: connect failed",
+   "fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260508/f48489087f22906e6b57073f11e0fa43.png: connect failed",
+   "fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260814/7341463d0b3c30878dc941ab4147268c.png: connect failed",
+   "fetch failed (status 0) //passport-plugin.hao184.com/statistics-report/v2.1.js: connect failed"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 39,
+  "dials": 20,
+  "reused": 19,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10822,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 212.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 6592,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 5128,
+  "ink_px_blank": 3902,
+  "colours": 754,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/2345#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/2345#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 82,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:31:05"
+}

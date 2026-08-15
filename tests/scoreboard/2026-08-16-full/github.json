@@ -1,0 +1,78 @@
+{
+ "name": "github",
+ "url": "https://github.com/",
+ "started": "2026-08-16T02:22:13",
+ "verdict": "ERRORS",
+ "why": "painted 611668 changed px in 103.3s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://github.com/",
+  "bytes": 574510,
+  "redirects": [],
+  "script_tags": 15,
+  "script_src": 9,
+  "img_tags": 24,
+  "inventory": {
+   "stylesheets": 19,
+   "script_src": 9,
+   "inline_scripts": 0,
+   "images": 22,
+   "preloads": 78,
+   "fonts": 1,
+   "mandatory": 29
+  },
+  "elapsed": 0.7
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://github.githubassets.com/assets/behaviors-a341f0170af776ce.js: TypeError: not an object"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 6,
+  "requests": 97,
+  "dials": 5,
+  "reused": 92,
+  "modules": 61,
+  "modules_failed": 0,
+  "heap_peak_k": 32832,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 103.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 611668,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 506663,
+  "ink_px_blank": 3902,
+  "colours": 708,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/github.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/github.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 19,
+   "script_src": 9,
+   "inline_scripts": 0,
+   "images": 22,
+   "preloads": 78,
+   "fonts": 1,
+   "mandatory": 29
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:24:32"
+}

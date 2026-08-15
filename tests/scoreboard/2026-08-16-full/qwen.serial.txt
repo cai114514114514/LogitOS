@@ -1,0 +1,45 @@
+[wm] perf t=18715 composites=152 ns=2043184836 max=67929205 motions=18 curmoves=12 curns=481264 full=109 rects=152 cpx=35230784 fpx=35098432 presns=70503386 torn=0 defer=77 late=0 drawmax=142
+[sock] connected chat.qwen.ai via ipv4 ::ffff:198.18.0.154
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[wm] perf t=19719 composites=181 ns=2096301746 max=67929205 motions=18 curmoves=12 curns=481264 full=137 rects=181 cpx=36285504 fpx=36153152 presns=72661711 torn=0 defer=104 late=0 drawmax=142
+[tls] chain of 2 verified for chat.qwen.ai, alpn=http/1.1
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 1 cached)
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 2 cached)
+[net] rx path: frames 71 irq 66 softirq 31 inline 0 poll 6 idle 0/0 halt/skip
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[sock] connected assets.alicdn.com via ipv4 ::ffff:198.18.0.156
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for assets.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (assets.alicdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for assets.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (assets.alicdn.com)
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[browser] heap peak 14594K
+[browser] scripts collected: 2 external classic, 1 external module, 14 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.googletagmanager.com, alpn=http/1.1
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[net] rx path: frames 599 irq 175 softirq 95 inline 0 poll 10 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for o.alicdn.com, alpn=http/1.1
+[mm] low: 108908 frames free (425 MiB), 22129 used, 0 shared, 0 bugs
+[mm] low: 108652 frames free (424 MiB), 22385 used, 0 shared, 0 bugs
+[mm] low: 108396 frames free (423 MiB), 22641 used, 0 shared, 0 bugs
+[mm] low: 108140 frames free (422 MiB), 22897 used, 0 shared, 0 bugs
+[mm] low: 107884 frames free (421 MiB), 23153 used, 0 shared, 0 bugs
+[mm] low: 107628 frames free (420 MiB), 23409 used, 0 shared, 0 bugs
+[mm] low: 107372 frames free (419 MiB), 23665 used, 0 shared, 0 bugs
+[mm] low: 107116 frames free (418 MiB), 23921 used, 0 shared, 0 bugs
+[mm] low: 106860 frames free (417 MiB), 24177 used, 0 shared, 0 bugs

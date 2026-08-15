@@ -1,0 +1,86 @@
+{
+ "name": "bing",
+ "url": "https://www.bing.com/",
+ "started": "2026-08-16T02:20:40",
+ "verdict": "ERRORS",
+ "why": "painted 620704 changed px in 3.7s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bing.com/",
+  "bytes": 186845,
+  "redirects": [],
+  "script_tags": 20,
+  "script_src": 3,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 3,
+   "inline_scripts": 8,
+   "images": 0,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "elapsed": 0.6
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "ReferenceError: '_w' is not defined",
+    "stack": [
+     "at <eval> (https://www.bing.com/#inline-script-2:3)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 404) data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAKFSURBVHgBrVJBaxNBFP7ezGw2bZJmo/SkYCyICgoVvBQ85AcILUUvXkov4tFeBY3xD4gnbxIoXhTaglfR9OC5HnpSpCmtNMW2ydom2d3ZnedstKXBoz72zZth+b73fTMP+Meg482lN+3JTH5kGcxlZsAYRlpjP8Lu66+gnm66Ls3vvZ9qnCZQ6eK93Cl32skytw/L6TkFpp8Nij/twtGGc16mLEdVdQ8YIhDpYrSuhlHvQhR2oaOuPR+CtU9IfFbtAPkxB1TKIjo7WvEebnh/KSi63yvWDAlKWCBOK4Qw0C2i0BQh8g6F3giigstxLlO1kIWTO7i5uFgxJD4OQH+SEA+q/6W0sv3h6nyncaOzen+9bpzcXIQsNGcQs+joUNfUeP7b9IDJdpeUkO3MEslAzfh1Z2H9yb3O2p13lf5+a65rCgg5h4CzSIz0BJmqmnCbFSGYFSekyMCSQKVWjNl8dnupmZKPCX/aMZFtEFOGQowYl42w7sl46pq7NSnZIAWnQAlDNq0iXjn2WRQHMw7lyKHIKgg4sjtjW9pfn9UVtdOxkr0UJOk3WNlkJAOC/oNqOQmOyjLScC08RJdiZFILqe+GmpCtWpaSqhLGE0ggB2BRL071VtcqFa99tP3cO3MOmSBmFYbIaodja4aFIoZaodNvym9nq/gRP8VuAOyE3NpK4F65TKO5EnOgwJHNWBE0MSdiM//q8UUxNNd3l2rwdQd9gyRiMq6DwoQEFXskvB5kqQdRPGJR6hGVuo2TSRyKfV3njsbhT3tH4xkSYxZY7EN6/QGRLPVTsg2RD2onkzgUe/EL3+eZg0SWz9/KQhT64KxO5ZOMJbMWzaCL2fyjehP/I34BAVpFdp9EDL8AAAAASUVORK5CYII=: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 9,
+  "requests": 6,
+  "dials": 2,
+  "reused": 4,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 3.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 620704,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 517358,
+  "ink_px_blank": 3902,
+  "colours": 587,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/bing.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/bing.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 3,
+   "inline_scripts": 8,
+   "images": 0,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:21:21"
+}

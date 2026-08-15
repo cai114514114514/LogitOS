@@ -1,0 +1,79 @@
+{
+ "name": "baidu#2",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-16T02:25:32",
+ "verdict": "ERRORS",
+ "why": "painted 25476 changed px in 13.9s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 696227,
+  "redirects": [],
+  "script_tags": 34,
+  "script_src": 12,
+  "img_tags": 20,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 1.9
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6, superman/components/placeholder)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 15,
+  "dials": 5,
+  "reused": 10,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10038,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 13.9,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 25476,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   768
+  ],
+  "ink_px": 11003,
+  "ink_px_blank": 3902,
+  "colours": 869,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/baidu#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16-full/baidu#2.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T02:26:23"
+}

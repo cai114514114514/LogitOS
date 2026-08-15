@@ -1,0 +1,98 @@
+[wm] perf t=18763 composites=155 ns=2146138785 max=62686761 motions=18 curmoves=10 curns=495716 full=106 rects=155 cpx=36906880 fpx=36716624 presns=73729664 torn=0 defer=73 late=0 drawmax=157
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.142
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19764 composites=185 ns=2239095891 max=62686761 motions=18 curmoves=10 curns=495716 full=136 rects=185 cpx=38954880 fpx=38764624 presns=77594266 torn=0 defer=101 late=0 drawmax=158
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[mm] low: 112236 frames free (438 MiB), 18801 used, 0 shared, 0 bugs
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.143
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for s1.hdslb.com (240 bytes, lifetime 900s, 2 cached)
+[net] rx path: frames 69 irq 58 softirq 30 inline 0 poll 4 idle 0/0 halt/skip
+[wm] perf t=21765 composites=198 ns=2304749731 max=62686761 motions=18 curmoves=10 curns=495716 full=146 rects=198 cpx=40071040 fpx=39880784 presns=80051811 torn=0 defer=110 late=0 drawmax=183
+[mm] low: 111980 frames free (437 MiB), 19057 used, 0 shared, 0 bugs
+[mm] low: 111724 frames free (436 MiB), 19313 used, 0 shared, 0 bugs
+[mm] low: 111468 frames free (435 MiB), 19569 used, 0 shared, 0 bugs
+[browser] heap peak 9516K
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i1.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i1.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 3 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 4 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 5 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 6 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 7 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 8 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 9 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 10 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 11 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 12 cached)
+[mm] low: 111212 frames free (434 MiB), 19825 used, 0 shared, 0 bugs
+[mm] low: 110956 frames free (433 MiB), 20081 used, 0 shared, 0 bugs
+[mm] low: 110700 frames free (432 MiB), 20337 used, 0 shared, 0 bugs
+[mm] low: 110444 frames free (431 MiB), 20593 used, 0 shared, 0 bugs
+[mm] low: 110188 frames free (430 MiB), 20849 used, 0 shared, 0 bugs
+[mm] low: 109932 frames free (429 MiB), 21105 used, 0 shared, 0 bugs
+[mm] low: 109676 frames free (428 MiB), 21361 used, 0 shared, 0 bugs
+[mm] low: 109420 frames free (427 MiB), 21617 used, 0 shared, 0 bugs
+[browser] scripts collected: 5 external classic, 1 external module, 12 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for s1.hdslb.com (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (240 bytes, lifetime 895s, 12 cached)
+[net] rx path: frames 583 irq 305 softirq 158 inline 0 poll 13 idle 0/0 halt/skip
+[mm] low: 109164 frames free (426 MiB), 21873 used, 0 shared, 0 bugs
+[mm] low: 108908 frames free (425 MiB), 22129 used, 0 shared, 0 bugs
+[mm] low: 108652 frames free (424 MiB), 22385 used, 0 shared, 0 bugs
+[mm] low: 108396 frames free (423 MiB), 22641 used, 0 shared, 0 bugs
+[mm] low: 108140 frames free (422 MiB), 22897 used, 0 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'split' of undefined
+TypeError: cannot read property 'split' of undefined
+    at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at setCookie (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at value (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at e (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at 5282 (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at call (native)
+    at o (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <anonymous> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+    at <eval> (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js:2)
+[mm] low: 107884 frames free (421 MiB), 23153 used, 0 shared, 0 bugs
+[mm] low: 107628 frames free (420 MiB), 23409 used, 0 shared, 0 bugs
+[mm] low: 107372 frames free (419 MiB), 23665 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 107116 frames free (418 MiB), 23921 used, 0 shared, 0 bugs
+[mm] low: 106860 frames free (417 MiB), 24177 used, 0 shared, 0 bugs
+[mm] low: 106604 frames free (416 MiB), 24433 used, 0 shared, 0 bugs
+[mm] low: 106348 frames free (415 MiB), 24689 used, 0 shared, 0 bugs
+[mm] low: 106092 frames free (414 MiB), 24945 used, 0 shared, 0 bugs
+[mm] low: 105836 frames free (413 MiB), 25201 used, 0 shared, 0 bugs
+[mm] low: 105580 frames free (412 MiB), 25457 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[mm] low: 105324 frames free (411 MiB), 25713 used, 0 shared, 0 bugs
+[error] Hydration completed but contains mismatches.
+[mm] low: 105068 frames free (410 MiB), 25969 used, 0 shared, 0 bugs
+[mm] low: 104812 frames free (409 MiB), 26225 used, 0 shared, 0 bugs
+[mm] low: 104556 frames free (408 MiB), 26481 used, 0 shared, 0 bugs
+[mm] low: 104300 frames free (407 MiB), 26737 used, 0 shared, 0 bugs
+[mm] low: 104044 frames free (406 MiB), 26993 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for i0.hdslb.com (no chain, no signature), alpn=h2
+[browser] load done: 15 requests, 9 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[net] rx path: frames 1095 irq 532 softirq 273 inline 0 poll 22 idle 0/0 halt/skip
