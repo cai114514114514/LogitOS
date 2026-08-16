@@ -563,6 +563,49 @@ static void part2_55_document_domain(void)
     JS_FreeValue(ctx, v);
 }
 
+/* ---- part 2.7: a script inserted by a script runs -----------------------
+ * baidu's AMD loader (and a whole class of sites) load code by
+ * `document.createElement('script'); s.src=...; head.appendChild(s)`. Before
+ * insert_run's script sink existed, that node just sat in the tree and never
+ * ran, so the loader's onload never fired ([MODULE_TIMEOUT]). Here the page's
+ * first script inserts BOTH an inline script and a src script; assert both
+ * ran, in insertion order, and that a src fetch actually happened. The real
+ * js_dom.c sink + browser.c queue through the real fake-bfetch. */
+static void part2_7_inserted_scripts(void)
+{
+    printf("\n-- part 2.7: a <script> inserted by a script runs (baidu loader) --\n");
+    site_up();
+    fake_site_add("http://fixture.test/late.js",
+                  "globalThis.__late_src = 1; globalThis.__order += 'S';");
+    fake_site_add("http://fixture.test/ins.html",
+        "<html><head><script>"
+        "globalThis.__order='';"
+        "var a=document.createElement('script');"
+        "a.textContent=\"globalThis.__inline=1; globalThis.__order+='I';\";"
+        "document.head.appendChild(a);"
+        "var b=document.createElement('script');"
+        "b.setAttribute('src','/late.js');"
+        "document.head.appendChild(b);"
+        "</script></head><body>INS</body></html>");
+    browser_load("http://fixture.test/ins.html");
+
+    JSContext *ctx = js_page_ctx();
+    CHECK(ctx != NULL, "the page runtime is up");
+    if (!ctx) return;
+    CHECK(fake_site_fetched("late.js") >= 1,
+          "the inserted src script was actually FETCHED");
+    const char *e = "String(globalThis.__inline) + ':' + String(globalThis.__late_src) + ':' + String(globalThis.__order)";
+    JSValue v = JS_Eval(ctx, e, (size_t)strlen(e), "<ins-read>", JS_EVAL_TYPE_GLOBAL);
+    const char *s = JS_ToCString(ctx, v);
+    /* inline ran (__inline=1), src ran (__late_src=1), and order is
+     * inline-then-src ('IS') -- appendChild order preserved by the FIFO. */
+    CHECK(s && !strcmp(s, "1:1:IS"),
+          "both inserted scripts ran, in insertion order");
+    if (!(s && !strcmp(s, "1:1:IS"))) printf("   (got: %s)\n", s ? s : "<null>");
+    if (s) JS_FreeCString(ctx, s);
+    JS_FreeValue(ctx, v);
+}
+
 static void part2_6_watchdog(void)
 {
     printf("\n-- part 2.6: the watchdog bites while(1) and the page survives --\n");
@@ -912,6 +955,11 @@ int main(void)
         part2_55_document_domain();
     else
         { printf("FAIL: the document.domain test called app_exit(%d)\n", host_exit_code); fail = 1; }
+
+    if (setjmp(host_exit_jmp) == 0)
+        part2_7_inserted_scripts();
+    else
+        { printf("FAIL: the inserted-script test called app_exit(%d)\n", host_exit_code); fail = 1; }
 
     if (setjmp(host_exit_jmp) == 0)
         part2_6_watchdog();

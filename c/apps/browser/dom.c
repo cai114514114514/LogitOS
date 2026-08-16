@@ -427,6 +427,10 @@ size_t dom_doc_bytes(const struct dom_doc *d) { return d ? d->bytes : 0; }
 int  dom_doc_quirks(const struct dom_doc *d) { return d ? d->quirks : QM_NO_QUIRKS; }
 void dom_doc_set_quirks(struct dom_doc *d, int mode) { if (d) d->quirks = mode; }
 
+/* The <script> run-once flag; see dom.h. */
+void dom_script_mark_done(struct node *n) { if (n) n->flags |= NF_SCRIPT_DONE; }
+int  dom_script_is_done(const struct node *n) { return n && (n->flags & NF_SCRIPT_DONE); }
+
 static void doc_destroy(struct dom_doc *d)
 {
     /* Walk every slot ever handed out rather than the tree: styles and computed

@@ -117,6 +117,14 @@ struct node *js_dom_root(void);
  * js_page.c points this at its console buffer so the status bar shows them. */
 void js_dom_set_note(void (*fn)(const char *));
 
+/* Register a sink called with a <script> node that just entered the document
+ * by DOM insertion (appendChild etc.) after parse. The sink must only ENQUEUE
+ * the node for later execution on the browser's frame loop, never run it
+ * synchronously -- the inserting script is still on the stack. NULL to unhook
+ * (host DOM tests with no page runtime). See
+ * docs/superpowers/specs/2026-08-16-inserted-script-execution.md. */
+void js_dom_set_script_sink(void (*fn)(struct node *));
+
 /* Give an object (in practice `window`) the EventTarget surface + on* handler
  * properties, bound to the document root. Call after js_dom_init. */
 void js_dom_bind_event_target(JSContext *ctx, JSValueConst obj);

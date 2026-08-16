@@ -58,7 +58,12 @@ enum {
     NF_ID_INDEXED = 1u << 0,   /* node is linked into doc->idbuckets via id_next */
     NF_WRAPLISTED = 1u << 1,   /* node is on doc's wrap_next chain (never cleared:
                                 * see dom_clear_wrappers) */
-    NF_SELF_CLOSED = 1u << 2   /* start tag ended in "/>" (informational) */
+    NF_SELF_CLOSED = 1u << 2,  /* start tag ended in "/>" (informational) */
+    NF_SCRIPT_DONE = 1u << 3   /* a <script> already prepared+run: parser-run
+                                * scripts are stamped so DOM insertion of the
+                                * SAME node (or re-insertion) never re-runs it.
+                                * See dom_script_mark_done / dom_script_is_done
+                                * and 2026-08-16-inserted-script-execution. */
 };
 
 /* Well-known tag ids. 0 = unknown/other; the value is stable for switch().
@@ -165,6 +170,14 @@ struct node {
 
     const char *pubid, *sysid;      /* N_DOCTYPE: PUBLIC/SYSTEM identifiers */
 };
+
+/* A <script> node's run-once flag (NF_SCRIPT_DONE). dom.c owns the field;
+ * these two are the only writers/readers, so browser.c (parser-run scripts)
+ * and js_dom.c (inserted scripts) agree without either reaching into
+ * node->flags directly. Declared AFTER struct node so the parameter type is
+ * the file-scope struct, not a prototype-scoped one. */
+void dom_script_mark_done(struct node *n);
+int  dom_script_is_done(const struct node *n);
 
 /* The tree builder's open-element stack cap. The DOM data model itself has no
  * depth limit, but the recursive consumers (css_engine's style_node,

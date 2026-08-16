@@ -209,6 +209,18 @@ struct node *js_dom_root(void) { return g_root; }
 static void (*g_note)(const char *);
 void js_dom_set_note(void (*fn)(const char *)) { g_note = fn; }
 
+/* The script sink: browser.c registers a callback that ENQUEUES a <script>
+ * node which just entered the document, to be fetched (src) or run (inline)
+ * from the browser's per-frame loop -- NEVER synchronously from here. A
+ * script inserting a script runs this while js_page_eval is already on the
+ * stack; recursing the evaluator through a DOM-mutation callback is the trap
+ * the spec doc (2026-08-16-inserted-script-execution.md) exists to avoid.
+ * NULL when no page runtime is up (the host DOM tests), which is why the
+ * insertion path stays pure DOM without it. */
+static void (*g_script_sink)(struct node *);
+void js_dom_set_script_sink(void (*fn)(struct node *)) { g_script_sink = fn; }
+static void offer_scripts(struct node *n);   /* defined below el_appendChild */
+
 static JSClassID elem_cid;
 
 /* Wrappers don't hold a bare struct node*: textContent= recycles whole subtrees
@@ -697,7 +709,26 @@ static int insert_run(struct node *p, struct node *c, struct node *ref)
      * react-dom builds every commit off-document, so this costs nothing on the
      * path that runs thirty times a frame. */
     if (g_ctx && connected(p)) named_scan(g_ctx, is_fragment(c) ? p : c);
+    /* A <script> that just became connected is prepared+run per HTML5. Same
+     * connected-only guard and same reason: react-dom's off-document commits
+     * never reach here, and a script is only "prepared" when it enters the
+     * document. The sink ENQUEUES; nothing runs on this stack. */
+    if (g_script_sink && connected(p)) offer_scripts(is_fragment(c) ? p : c);
     return 1;
+}
+
+/* Hand every <script> in a just-connected subtree to the sink, in document
+ * order. A node the parser already ran must not run again: parser-built
+ * scripts carry ->flags SCRIPT_DONE (set by run_collected_scripts via
+ * dom_script_mark_done); only a node that entered the tree AFTER parse, by
+ * DOM insertion, is offered. Recursion depth is the inserted fragment's, not
+ * the document's. */
+static void offer_scripts(struct node *n)
+{
+    if (!n) return;
+    if (n->type == N_ELEM && ieq(n->tag, "script") && !dom_script_is_done(n))
+        g_script_sink(n);
+    for (struct node *c = n->first_child; c; c = c->next) offer_scripts(c);
 }
 
 static JSValue el_appendChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
