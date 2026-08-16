@@ -95,6 +95,39 @@ static int find_decl(const char *d, int dlen, const char *key, int *vs, int *ve)
     return found;
 }
 
+/* 1 if the block masks its own background: `mask-image` (or the -webkit-
+ * prefixed spelling) set to anything but `none`.
+ *
+ * WHY THIS MATTERS MORE THAN IT LOOKS. The modern way to draw a monochrome
+ * icon is a solid background clipped by a mask:
+ *
+ *   .vector-icon{ mask-image:url(...arrow.svg); background-color:#202122 }
+ *
+ * We do not implement masks. Painting the declaration we DO understand leaves
+ * the solid rectangle with none of the shape -- Wikipedia's table of contents
+ * grew a row of dark blocks where the expand arrows belong, and a page full
+ * of those reads as a rendering crash rather than as a missing icon. So an
+ * element whose background is masked paints NO background at all: the icon is
+ * invisible, which is what a missing icon should look like, and the layout is
+ * unchanged because the box keeps its size.
+ *
+ * The trade, stated: a mask that is mostly opaque (a photo vignette, say)
+ * loses a background it should mostly have shown. Every mask in the corpus is
+ * an icon. When masks are implemented this whole function goes away. */
+static int decls_masked(const char *d, int dlen)
+{
+    static const char *keys[] = { "mask-image", "-webkit-mask-image" };
+    for (int k = 0; k < 2; k++) {
+        int vs, ve;
+        if (!find_decl(d, dlen, keys[k], &vs, &ve)) continue;
+        while (vs < ve && spc(d[vs])) vs++;
+        while (ve > vs && spc(d[ve-1])) ve--;
+        if (ve - vs == 4 && !memcmp(d + vs, "none", 4)) continue;
+        if (ve > vs) return 1;
+    }
+    return 0;
+}
+
 /* Parse one grid track: "<n>px" -> +px, "<n>fr" -> -weight (fr in tenths, so
  * 0.5fr still counts). Returns 0 on success. */
 static int parse_track(const char *v, int len, int *i, int *track)
@@ -227,6 +260,9 @@ enum { LGX_ML = 0, LGX_MR, LGX_MT, LGX_MB,
 /* Everything we may want to patch from one declarations block. */
 struct xpatch {
     int do_none;                            /* visually-hidden -> display:none */
+    int do_masked;                          /* mask-image set: the background is
+                                             * a SHAPE we cannot cut -- see
+                                             * decls_masked */
     int do_radius, px, pct;
     int do_grid, gcols, gtracks[GRID_MAXCOL];
     int gx_set, gx, gy_set, gy;
@@ -446,6 +482,7 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     memset(p, 0, sizeof *p);
     parse_grid_raw(d, dlen, p);
     if (decls_vish(d, dlen)) p->do_none = 1;
+    if (decls_masked(d, dlen)) p->do_masked = 1;
     if (decls_radius(d, dlen, &p->px, &p->pct)) p->do_radius = 1;
     int vs, ve;
     if (find_decl(d, dlen, "grid-template-columns", &vs, &ve) &&
@@ -658,6 +695,10 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     if (!n->style) return;
     struct cstyle *st = n->style;
     if (p->do_none) { st->display = DISP_NONE; return; }
+    /* A masked background is a SHAPE, and we have no mask: painting the solid
+     * colour is strictly wrong (see decls_masked). Drop the background and
+     * keep the box. */
+    if (p->do_masked) st->has_bg = 0;
     if (p->do_radius) {
         if (p->pct > 0) { st->radius_pct = p->pct; st->radius = 0; }
         else { st->radius = p->px; st->radius_pct = 0; }
@@ -892,7 +933,7 @@ static int compile_sheet(const char *css, int len)
         if (dlen <= 0 || !media_active_at(s)) continue;
         struct xpatch p;
         parse_decls(g_src + d, dlen, &p);
-        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+        if (p.do_none || p.do_masked || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
             p.gr_any || xpatch_has_logical(&p))
             if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
     }
@@ -929,7 +970,7 @@ static void apply_uncompiled(struct node *root, const char *css, int len)
         struct xpatch p;
         parse_decls(css + d, dlen, &p);
         gr_drop(&p);            /* the caller.s buffer moves; see gr_drop() */
-        if (p.do_none || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+        if (p.do_none || p.do_masked || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
             xpatch_has_logical(&p))
             walk(root, css + s, slen, &p);
     }

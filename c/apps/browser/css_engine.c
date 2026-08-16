@@ -1025,8 +1025,21 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       if (bs != CSS_BORDER_STYLE_NONE && bs != CSS_BORDER_STYLE_HIDDEN) { \
         css_computed_border_##NAME##_width(cs, &len, &unit); \
         o->border_w[i] = clamp_px(len_px(len, unit, fp, NULL)); \
-        if (css_computed_border_##NAME##_color(cs, &col) == CSS_BORDER_COLOR_COLOR) \
+        if (css_computed_border_##NAME##_color(cs, &col) == CSS_BORDER_COLOR_COLOR) { \
             o->border_color[i] = to_rgb(col); \
+            /* A FULLY TRANSPARENT border still takes its space and paints
+             * NOTHING. to_rgb drops the alpha byte, so `border-color:
+             * transparent` used to arrive as opaque BLACK with its width
+             * intact -- every quiet button in a modern design system
+             * (Wikipedia's Codex writes
+             * `border-color:var(--border-color-transparent,transparent)`)
+             * came out ringed in black. `hidden` is the value this file
+             * already documents as "paints as nothing", and setting it HERE,
+             * after the width, keeps the box model intact. Partial alpha
+             * still paints opaque -- the same honest limitation the
+             * background-color path states a few lines down. */ \
+            if ((col & 0xFF000000) == 0) o->border_style[i] = CSS_BORDER_STYLE_HIDDEN; \
+        } \
         else o->border_color[i] = 0x808080; \
       } }
     EDGE_CONVERT(0, top)

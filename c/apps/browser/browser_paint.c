@@ -452,6 +452,11 @@ static void paint_control(const struct item *e, int sx, int sy)
             fill_round(sx - 2, sy - 2, fw + 4, fh + 4, radius + 2, CTL_EDGE_FOCUS, 110);
         int bmax = 0;
         for (int i = 0; i < 4; i++) if (e->border_w[i] > bmax) bmax = e->border_w[i];
+        /* A transparent border occupies space and paints nothing: it arrives
+         * as style HIDDEN (see EDGE_CONVERT in css_engine.c). Codex's quiet
+         * buttons -- the whole Wikipedia chrome -- are exactly that, and
+         * drawing the ring anyway framed every one of them in black. */
+        if (e->border_style[0] == BS_NONE || e->border_style[0] == BS_HIDDEN) bmax = 0;
         if (e->has_bg && bmax > 0) {
             fill_round(sx, sy, fw, fh, radius, e->border_color[0], 255);
             fill_round(sx + bmax, sy + bmax, fw - 2 * bmax, fh - 2 * bmax,
@@ -614,7 +619,13 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             if (r > 0 && e->has_bg) {
                 /* rounded box: border ring (uniform color/width approximation) +
                  * rounded fill inset by the widest edge */
-                if (bmax > 0) {
+                /* The rounded path draws ONE ring in the top edge's colour, so
+                 * it has to consult that edge's style too -- border_edge does
+                 * it for the square path and this branch used to not, which
+                 * put a black ring around every rounded quiet button (a
+                 * transparent border arrives as style HIDDEN; see the
+                 * EDGE_CONVERT note in css_engine.c). */
+                if (bmax > 0 && e->border_style[0] != BS_NONE && e->border_style[0] != BS_HIDDEN) {
                     fill_round(sx, sy, e->w, e->h, r, e->border_color[0], op);
                     fill_round(sx + bmax, sy + bmax, e->w - 2*bmax, e->h - 2*bmax,
                                r > bmax ? r - bmax : 0, e->bg, bga);

@@ -246,6 +246,34 @@ int main(void)
     CHECK(ital && CST(ital) && CST(ital)->display == DISP_NONE,
           "an UN-approximated bare-tag rule still hides (the pattern is not refused)");
 
+    /* A MASKED BACKGROUND IS A SHAPE WE CANNOT CUT. Every monochrome icon in a
+     * modern design system is a solid colour clipped by a mask:
+     *   .vector-icon{mask-image:url(arrow.svg);background-color:#202122}
+     * Painting only the half we understand put a row of dark blocks down
+     * Wikipedia's table of contents where the expand arrows belong -- which
+     * reads as a rendering crash, not as a missing icon. So the background is
+     * dropped and the box keeps its size. `mask-image:none` must not trigger
+     * it, and an unmasked background must survive: both asserted. */
+    const char *html9 =
+        "<body><span class='ico'>x</span><span class='plainbg'>y</span>"
+        "<span class='nomask'>z</span></body>";
+    const char *css9 =
+        ".ico{-webkit-mask-image:url(a.svg);mask-image:url(a.svg);background-color:#202122}"
+        ".plainbg{background-color:#202122}"
+        ".nomask{mask-image:none;background-color:#202122}";
+    struct node *r9 = dom_parse(html9, (int)strlen(html9));
+    css_apply(r9, css9, (int)strlen(css9));
+    css_extra_apply(r9, css9, (int)strlen(css9));
+    struct node *ico = find_by_class(r9, "ico");
+    struct node *pbg = find_by_class(r9, "plainbg");
+    struct node *nmk = find_by_class(r9, "nomask");
+    CHECK(ico && CST(ico) && !CST(ico)->has_bg,
+          "mask-image drops the background (no dark block where an icon belongs)");
+    CHECK(pbg && CST(pbg) && CST(pbg)->has_bg,
+          "an unmasked background is untouched");
+    CHECK(nmk && CST(nmk) && CST(nmk)->has_bg,
+          "mask-image:none is not a mask");
+
     /* opacity:0 + animation -> visible end state (hidden cleared);
      * opacity:0 + transition on opacity -> visible (scroll-reveal pattern);
      * opacity:0 + visibility:hidden + transition -> stays hidden (hover menu);
