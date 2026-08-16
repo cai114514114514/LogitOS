@@ -1,5 +1,10 @@
 #include "layout.h"
 #include "css.h"
+/* Declared, not <stdio.h>: this file compiles into the freestanding browser
+ * and into host harnesses, and the only thing it wants is the one line
+ * layout_load_images prints when an image will not load. Same idiom as
+ * js_page.c's. */
+int printf(const char *, ...);
 /* The flex sizing algorithm, as a pure function over numbers (CSS Flexbox § 9).
  * layout.c owns the DOM, the display list and the measurement; layout_flex.c
  * owns the arithmetic. See flex_row_spec() below for the whole of the seam.
@@ -3715,12 +3720,30 @@ int layout_page_bg(uint32_t *out) { if (page_has_bg && out) *out = page_bg; retu
  * Called after layout_page so layout itself never touches the network. */
 int layout_load_images(int max)
 {
-    int loaded = 0;
+    int loaded = 0, gripes = 0, failed = 0, want = 0;
     for (int i = 0; i < nitem && loaded < max; i++) {
         struct item *it = &items[i];
         if (it->type != IT_IMAGE || it->img || !it->imgsrc) continue;
+        want++;
         uint8_t *buf; int blen;
-        if (res_fetch(it->imgsrc, &buf, &blen) != 0) continue;
+        /* NO SILENT DROPS. Both failure paths below used to be a bare
+         * `continue`, and the result on screen is a page with no pictures and
+         * a serial log with nothing to say about it -- which is how "we render
+         * no images anywhere" survived being looked at. A fetch that fails and
+         * a body that fails to decode are DIFFERENT problems (network vs
+         * codec) and each says which, with the URL and the byte count. Bounded
+         * to IMG_GRIPES lines a page: a gallery that is entirely broken must
+         * not turn the log into the failure. */
+        enum { IMG_GRIPES = 8 };
+        if (res_fetch(it->imgsrc, &buf, &blen) != 0) {
+            /* The raw src, not a resolved URL: this file deliberately knows
+             * nothing about the network (res_fetch is the embedder's), and
+             * pulling bfetch/url headers in here to pretty-print a failure
+             * would trade that boundary for a nicer log line. */
+            if (gripes < IMG_GRIPES)
+                { gripes++; printf("[img] fetch failed: %.200s\n", it->imgsrc); }
+            continue;
+        }
         struct image *holder = kmalloc(sizeof *holder);
         struct image tmp;
         if (holder && img_decode(buf, blen, &tmp) == 0) {
@@ -3729,9 +3752,31 @@ int layout_load_images(int max)
             if (it->h_auto && tmp.w > 0 && tmp.h > 0)
                 it->h = it->w * tmp.h / tmp.w;
         }
-        else if (holder) kfree(holder);
+        else {
+            failed++;
+            if (gripes < IMG_GRIPES) {
+                gripes++;
+                /* The first bytes name the format better than the URL does:
+                 * a CDN that answered with WebP where the name says .png, or
+                 * an error page, is the common case and is invisible from the
+                 * extension alone. */
+                printf("[img] decode failed: %d bytes, first=%02x %02x %02x %02x : %.150s\n",
+                       blen,
+                       blen > 0 ? buf[0] : 0, blen > 1 ? buf[1] : 0,
+                       blen > 2 ? buf[2] : 0, blen > 3 ? buf[3] : 0,
+                       it->imgsrc);
+            }
+            if (holder) kfree(holder);
+        }
         kfree(buf);
     }
+    /* ONE LINE, ALWAYS. "How many pictures does this page want, and how many
+     * did it get" is the question a screenshot with no images raises, and
+     * before this line the log could not answer it -- silence meant equally
+     * "no <img> reached layout" and "all of them decoded fine". Those need
+     * different fixes. `cap` is the bound this call was given, printed
+     * because hitting it is a real and invisible way to lose pictures. */
+    printf("[img] %d/%d decoded (%d failed, cap %d)\n", loaded, want, failed, max);
     return loaded;
 }
 
