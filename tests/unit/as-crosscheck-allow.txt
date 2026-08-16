@@ -1,0 +1,22 @@
+# tests/unit/as-crosscheck-allow.txt -- known divergences between the two
+# AetherScript compilers, one per line, each with a reason.
+#
+# Format:  <repo-relative path to a .as>   # why the self-hosted compiler
+#                                          # cannot yet match the C one
+# Blank lines and lines starting with '#' are ignored.
+#
+# WHY THIS FILE EXISTS RATHER THAN A `continue`. The corpus is walked by glob,
+# so a file that the self-hosted compiler chokes on would otherwise have to be
+# dropped by the loop -- and a dropped file reads exactly like a passing one in
+# the summary. Naming it here costs one line and a sentence, and makes the
+# decision somebody's on purpose.
+#
+# THE GATE ALSO FAILS WHEN A LINE HERE STARTS PASSING. An allow-list that only
+# ever suppresses failures rots: the divergence gets fixed, nobody deletes the
+# line, and the next real divergence in that file is invisible forever. So a
+# file listed here that now agrees byte for byte is reported as
+# "allow-listed but PASSING" and fails the gate. Deleting the line is the fix.
+#
+# CURRENT STATE, 2026-08-16: EMPTY. All 52 files in the corpus compile
+# identically under both compilers. Nothing is excused, and adding a line here
+# should be argued, not reached for.

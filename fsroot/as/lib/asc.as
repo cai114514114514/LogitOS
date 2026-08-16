@@ -13,6 +13,17 @@
 
 from aslex import lex
 
+# ---- BEGIN GENERATED -- tools/gen_as_opcodes.py --write ----
+# Emitted from the C authority; a number here that disagrees with it is a
+# SILENT MISCOMPILE (this compiler would emit an instruction the C VM decodes
+# as a different one, and every other as-facing test stays green).
+#   c/apps/as/as.h     OpCode enum  ->  OP_*        (order IS the .la ABI)
+#   c/apps/as/as.h     AS_BC_VERSION
+#   c/apps/as/as_bc.c  K_*
+#   c/apps/as/lexer.h  TokType      ->  T_*
+# Renumber with:  python3 tools/gen_as_opcodes.py --write
+# Verified by:    make check-asops   (re-emits this region and diffs it)
+
 # ---- opcodes (mirror as.h OpCode enum, in order) ----
 OP_CONST = 0
 OP_NIL = 1
@@ -167,6 +178,7 @@ T_ARROW = 67
 T_LARROW = 68
 T_WITH = 69
 T_EOF = 70
+# ---- END GENERATED ----
 
 # precedence levels (mirror compiler.c Prec enum)
 P_NONE = 0

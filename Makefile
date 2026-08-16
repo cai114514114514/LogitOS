@@ -1087,8 +1087,10 @@ test: test-crypto test-net $(ISO) $(DISK)
 # c/kernel/cpu/cpufeat.c rides along: the AES-GCM backend dispatch asks it
 # whether this CPU has AES-NI + PCLMULQDQ, and it is deliberately free of
 # kernel dependencies so it can be linked here. CRYPTO_INC is what every
-# host-side crypto build needs on its include path.
-CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/pubkey -name '*.c') \
+# host-side crypto build needs on its include path. c/crypto/kdf joined the
+# set when crypto_vec_test.c grew PBKDF2 cases: the KDF is part of the same
+# battery, and every other CRYPTO_SRC consumer links it without noticing.
+CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/kdf c/crypto/pubkey -name '*.c') \
               c/kernel/cpu/cpufeat.c
 CRYPTO_INC := -Ic/crypto -Ic/crypto/aead -Ic/kernel/cpu
 test-crypto: $(BUILD)
@@ -2306,7 +2308,7 @@ $(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
 # Precompile the LibLogit library modules (fsroot/as/lib/*.as) to .la (compiled
 # bytecode). -c is compile-only (no run), so even a lib with module-mate calls
 # (mathx) is fine; packed to /usr/as/lib/.
-$(BUILD)/%.la: fsroot/as/lib/%.as $(ASC)
+$(BUILD)/%.la: fsroot/as/lib/%.as $(ASC) | check-asops
 	$(ASC) -c $< -o $@
 
 # M21-P3 self-hosting S1: the AetherScript lexer (lib/aslex.as) must emit a
@@ -3388,6 +3390,11 @@ clean:
 
 -include tests/h265.mk
 
+# Decode-throughput benchmark (test-vidbench): frames/sec by resolution for
+# both decoders, host AND guest (QEMU TCG). Measures speed, not correctness --
+# test-h264/test-h265 above already own correctness. Same fragment shape.
+-include tests/video.mk
+
 # Full-system test, the commit gate and the test-liveness audit
 # (test-fullsystem, verify-commit, check-test-liveness). Same reason, same
 # shape as the fragments above.
@@ -3832,6 +3839,8 @@ bench-aui: $(ISO) $(DISK)
 -include tests/uefi.mk
 -include tests/motion.mk
 -include tests/menu.mk
+-include tests/imglate.mk
+-include tests/ascross.mk
 
 # DOMParser: `make test-domparser`. See the fragment header.
 -include tests/domparser.mk

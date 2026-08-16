@@ -24,11 +24,38 @@ shape and was, until then, checked by nothing at all: vm.c's computed-goto
 clean and silently misdispatch every opcode after the one that moved).
 
 Default mode is --check: it only reads, never writes, so it is safe to wire into
-the build. --write is for the milestone that actually renumbers opcodes; it is
-deliberately not implemented until an opcode renumber is on the table. (An
-earlier version of this docstring named a specific AS_BC_VERSION as "frozen" --
-that number drifts every time a milestone appends opcodes, as.h is the
-authority on the current one, and repeating it here would just go stale again.)
+the build.
+
+--write EXISTS NOW (unit OP), and it changes what the first row of that table
+means. asc.as's block of OP_*/AS_BC_VERSION/K_*/T_* constants is no longer
+hand-copied: it is emitted from the C authority into a marker-delimited region,
+and --check re-emits the region and compares it BYTE FOR BYTE with what is on
+disk. So a hand edit inside the markers is not "detected and described", it is
+rejected as a whole-region diff, and a renumber is one command:
+
+    python3 tools/gen_as_opcodes.py --write
+
+WHAT IS AND IS NOT GENERATED. Only fsroot/as/lib/asc.as is written. The other
+mirrors in the table above -- aslex.as's T_* and KEYWORDS, complete.c's IDE
+tables, vm.c's dispatch[], as_bc.c's OPNAMES -- are still hand-maintained and
+still only *checked*. That is a real remaining hazard for aslex.as in
+particular (same silent-miscompile shape), and the reason it is not fixed here
+is ownership, not difficulty: the same render_region machinery would extend to
+it in a few lines. Named so the next person does not have to rediscover it.
+
+WHY IN-PLACE GENERATION AND NOT A GENERATED `asops.as` MODULE. The language has
+modules, so asc.as could `from asops import OP_CONST, ...` and there would be
+exactly one definition site with no numbers in the compiler at all. There is no
+language-level bootstrap problem with that -- `import` is a RUNTIME operation
+(OP_IMPORT), so asc.as compiling asc.as never needs asops to exist; only
+*running* the result does, and asops depends on nothing. What kills it is the
+test plumbing: tests/unit/run-selfhost-fixpoint.sh copies exactly asc.as and
+aslex.as into a scratch dir and then DELETES asc.as after stage 1, precisely so
+that a stale .la cannot silently fall back to source. A third module would have
+to be copied in and precompiled, and its own .la/.as fallback would reopen the
+hole that harness's comment exists to keep shut. It also moves asc.as's own
+bytecode (test-as-bcstable's checked-in baseline). Both files are owned by other
+work. Written down because it is a live option, not a rejected one.
 """
 import re
 import sys
@@ -158,14 +185,122 @@ def cmp_set(table, authority, mirror, auth_src, mir_src):
         fail(table, "'%s' is in %s but no longer exists in %s" % (name, mir_src, auth_src))
 
 
+# ---------------------------------------------------------------------------
+# --write: the generated region of fsroot/as/lib/asc.as
+# ---------------------------------------------------------------------------
+# The region is delimited so the rest of asc.as (1,300+ lines of compiler) is
+# never touched by a rewrite, and so --check can compare a whole block instead
+# of name-by-name: a hand edit anywhere between the markers is a diff.
+GEN_BEGIN = "# ---- BEGIN GENERATED -- tools/gen_as_opcodes.py --write ----"
+GEN_END = "# ---- END GENERATED ----"
+
+BANNER = [
+    "# Emitted from the C authority; a number here that disagrees with it is a",
+    "# SILENT MISCOMPILE (this compiler would emit an instruction the C VM decodes",
+    "# as a different one, and every other as-facing test stays green).",
+    "#   c/apps/as/as.h     OpCode enum  ->  OP_*        (order IS the .la ABI)",
+    "#   c/apps/as/as.h     AS_BC_VERSION",
+    "#   c/apps/as/as_bc.c  K_*",
+    "#   c/apps/as/lexer.h  TokType      ->  T_*",
+    "# Renumber with:  python3 tools/gen_as_opcodes.py --write",
+    "# Verified by:    make check-asops   (re-emits this region and diffs it)",
+]
+
+# Prose that belongs WITH a specific constant rather than with the table, kept
+# here because here is now the only place it can be edited and survive. Each
+# entry is emitted immediately BEFORE the named constant's line.
+ANNOTATE = {
+    "OP_PIPE": [
+        "# M27 ports -- appended, never inserted: the order IS the .la ABI.",
+    ],
+    "OP_SLICE": [
+        "# M28: the one opcode the capability milestone adds (locked at one; see",
+        "# c/apps/as/as.h's OpCode enum comment). OP__COUNT (a C-only dispatch-table",
+        "# sentinel added alongside it in as.h) is NOT mirrored here on purpose: it",
+        "# carries no wire-format meaning and asc.as never dispatches bytecode, only",
+        "# emits it -- gen_as_opcodes.py --check knows to skip it for that reason.",
+    ],
+}
+
+# Members of the C authority that asc.as deliberately does NOT mirror. The
+# reason lives here and not in the emitted file on purpose: it is a fact about
+# the generator's policy, and putting it in asc.as would be one more line to
+# keep in sync by hand.
+#   OP__COUNT -- C-only dispatch-table sentinel, no wire-format meaning.
+#   T_ERROR   -- aslex.as raises instead of emitting it, so asc.as never names
+#                it; cmp_subset above is what permits the omission.
+OMIT = {"OP__COUNT", "T_ERROR"}
+
+
+def render_region(opcodes, bc_version, ktags, toks):
+    """The exact lines (no trailing newlines) of asc.as's generated region.
+
+    Groups are separated by one blank line, which is what the hand-written
+    region did; the leading comment of each group is the group's own header.
+    """
+    groups = [
+        ("# ---- opcodes (mirror as.h OpCode enum, in order) ----", opcodes),
+        (None, [("AS_BC_VERSION", bc_version)]),
+        ("# constant tags (mirror as_bc.c K_*)", ktags),
+        ("# token types (must match aslex.as / lexer.h)", toks),
+    ]
+    out = [GEN_BEGIN] + BANNER
+    for header, table in groups:
+        out.append("")
+        if header:
+            out.append(header)
+        for name, val in table:
+            if name in OMIT:
+                continue
+            out += ANNOTATE.get(name, [])
+            out.append("%s = %d" % (name, val))
+    out.append(GEN_END)
+    return out
+
+
+def split_region(text):
+    """(before, region, after) as line lists, or None if the markers are absent.
+
+    Absent markers is its own error rather than "regenerate silently": on a tree
+    that predates --write the region is hand-written and identical, and quietly
+    inserting markers during a --check would make a read-only gate write.
+    """
+    lines = text.split("\n")
+    try:
+        b = lines.index(GEN_BEGIN)
+        e = lines.index(GEN_END)
+    except ValueError:
+        return None
+    if e < b:
+        return None
+    return lines[:b], lines[b:e + 1], lines[e + 1:]
+
+
+def locate_legacy_region(text):
+    """One-shot: find the hand-written region on a tree that predates --write.
+
+    Used only when the markers are absent and the mode is --write, i.e. exactly
+    once in this repository's life. It anchors on the opcode table's header
+    comment and on the LAST `T_* = <int>` line, which is the end of the block in
+    every version of asc.as that has ever existed; anything less specific risks
+    swallowing compiler code, so it returns None rather than guessing.
+    """
+    lines = text.split("\n")
+    b = e = None
+    for i, ln in enumerate(lines):
+        if b is None and ln.startswith("# ---- opcodes (mirror as.h"):
+            b = i
+        if b is not None and re.match(r"^T_\w+ = -?\d+$", ln):
+            e = i
+    if b is None or e is None or e <= b:
+        return None
+    return lines[:b], lines[b:e + 1], lines[e + 1:]
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "--check"
-    if mode == "--write":
-        sys.exit("gen_as_opcodes.py: --write is not implemented (phase 1 freezes "
-                 "AS_BC_VERSION and does not renumber opcodes; add it with the "
-                 "renumber milestone so asc.as/aslex.as regenerate atomically)")
-    if mode != "--check":
-        sys.exit("usage: gen_as_opcodes.py [--check]")
+    if mode not in ("--check", "--write"):
+        sys.exit("usage: gen_as_opcodes.py [--check|--write]")
 
     as_h = read("c/apps/as/as.h")
     lexer_h = read("c/apps/as/lexer.h")
@@ -177,6 +312,40 @@ def main():
     port_c = read("c/apps/as/as_port.c")
     asc_as = read("fsroot/as/lib/asc.as")
     aslex_as = read("fsroot/as/lib/aslex.as")
+
+    # 0. The generated region of asc.as (unit OP). Built and, under --write,
+    # installed BEFORE any check runs, so --write repairs the file and then the
+    # ordinary checks re-verify the repaired text rather than the stale read.
+    m = re.search(r"#define\s+AS_BC_VERSION\s+(\d+)", as_h)
+    region = render_region(
+        c_enum(as_h, "OpCode"),
+        int(m.group(1)) if m else -1,
+        [(n, v) for n, v in c_enum(as_bc_c, None, "K_NIL") if n.startswith("K_")],
+        c_enum(lexer_h, "TokType"))
+    parts = split_region(asc_as)
+    if mode == "--write":
+        if parts is None:
+            parts = locate_legacy_region(asc_as)
+            if parts is None:
+                sys.exit("gen_as_opcodes.py --write: cannot find the constant region in "
+                         "fsroot/as/lib/asc.as (no %r markers and no legacy opcode header)"
+                         % GEN_BEGIN)
+        text = "\n".join(parts[0] + region + parts[2])
+        with open(ROOT / "fsroot/as/lib/asc.as", "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        asc_as = text
+        parts = split_region(asc_as)
+        print("wrote fsroot/as/lib/asc.as: %d generated lines "
+              "(opcodes, bc-version, const-tags, tokens)" % len(region))
+    if parts is None:
+        fail("region", "fsroot/as/lib/asc.as has no generated-region markers -- "
+                       "run `python3 tools/gen_as_opcodes.py --write` once to install them")
+    elif parts[1] != region:
+        import difflib
+        for line in list(difflib.unified_diff(parts[1], region, "asc.as (on disk)",
+                                              "asc.as (regenerated)", lineterm="", n=1))[:40]:
+            fail("region", line)
+        fail("region", "the region is generated; edit the C authority and re-run --write")
 
     # 1. opcodes: order is the ABI.
     # M28 D8: OP__COUNT is a C-only dispatch-table sentinel (as.h), not a real
@@ -283,8 +452,8 @@ def main():
         print("\n%d mismatch(es). These tables are copied by hand; fix the mirror "
               "to match the authority." % len(FAILURES))
         return 1
-    print("check-asops: ok (opcodes, opnames, dispatch, bc-version, const-tags, tokens x2, "
-          "keywords, builtins, sysconsts, methods)")
+    print("check-asops: ok (asc.as region regenerated+identical; opcodes, opnames, dispatch, "
+          "bc-version, const-tags, tokens x2, keywords, builtins, sysconsts, methods)")
     return 0
 
 
