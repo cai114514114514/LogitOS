@@ -1,6 +1,7 @@
 #include "spinlock.h"
 #include "percpu.h"      /* this_cpu (BKL owner tracking) */
-#include "kbench.h"      /* g_kb_stat: BKL wait/hold accounting, off by default */
+#include "kbench.h"
+#include "serial.h"    /* the bad-release detector prints without taking a lock */      /* g_kb_stat: BKL wait/hold accounting, off by default */
 
 /* Big Kernel Lock: a single lock taken on every entry into kernel code (P0). */
 spinlock_t g_bkl = SPINLOCK_INIT;
@@ -44,17 +45,60 @@ void spin_lock(spinlock_t *l)
         waited = 1;
         __asm__ volatile ("pause");
     }
+    l->owner_ra  = (unsigned long)__builtin_return_address(0);
+    l->owner_cpu = this_cpu()->index;
     if (l == &g_bkl) {
-        int idx = this_cpu()->index;
+        int idx = l->owner_cpu;
         g_bkl_owner = idx;
         if (stat) bkl_acquired(idx, t0, waited);
     }
+}
+
+
+/* ==========================================================================
+ * THE ONE INVARIANT A TICKET LOCK CANNOT ENFORCE FOR ITSELF.
+ *
+ * `spin_unlock` on a ticket lock is an unconditional `serving++`. It does not
+ * and cannot check that the caller is the holder -- and releasing a BKL you do
+ * not hold DOES NOT FAIL HERE. It advances `serving` past a ticket nobody is
+ * waiting on, so some later acquirer holds a number that will never be served
+ * and spins forever. The machine then stops with EVERY CORE IN spin_lock AND
+ * NO OWNER, arbitrarily far in time and code from the release that caused it,
+ * which is a freeze with no evidence in it at all.
+ *
+ * One comparison on the BKL release path converts that into a line naming the
+ * core and the return address. It is always on because the failure it catches
+ * leaves nothing else behind.
+ *
+ * serial_putc, not kprintf: this runs INSIDE spin_unlock, and a printer that
+ * takes a lock could be the second half of the very deadlock it is reporting.
+ * serial_putc is lock-free and bounded (it drops the byte on a wedged UART).
+ * ========================================================================== */
+static void bkl_puts(const char *m) { while (m && *m) serial_putc(*m++); }
+
+static void bkl_bad_release(int me, int owner, void *ra)
+{
+    static volatile int said;
+    if (said) return;                 /* one line: the first one is the cause */
+    said = 1;
+    bkl_puts("[bkl] BUG: cpu ");
+    serial_putc((char)('0' + (me & 7)));
+    bkl_puts(" released a BKL held by ");
+    if (owner < 0) bkl_puts("nobody"); else serial_putc((char)('0' + (owner & 7)));
+    bkl_puts(", ra=0x");
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        int d = (int)(((unsigned long)ra >> sh) & 15);
+        serial_putc((char)(d < 10 ? '0' + d : 'a' + d - 10));
+    }
+    bkl_puts(" -- a later acquirer will wait for a ticket that is never served\r\n");
 }
 
 void spin_unlock(spinlock_t *l)
 {
     if (l == &g_bkl) {
         int idx = g_bkl_owner;
+        int me  = this_cpu()->index;
+        if (idx != me) bkl_bad_release(me, idx, __builtin_return_address(0));
         /* bkl_t0 == 0 means the accounting was armed AFTER this acquisition, so
          * there is no start timestamp to subtract. Skipping it loses one sample
          * per core at arm time; using it would credit the lock with every cycle
@@ -65,6 +109,15 @@ void spin_unlock(spinlock_t *l)
         }
         g_bkl_owner = -1;
     }
+    /* EVERY lock, not just the BKL. A ticket lock released by a core that does
+     * not hold it advances  past a ticket nobody has, and from then on
+     * SOME LATER ACQUIRER WAITS FOR A NUMBER THAT WILL NEVER BE SERVED -- on a
+     * lock whose ticket==serving reads as free. That is a freeze with no
+     * evidence in it, arbitrarily far from the release that caused it, which is
+     * why this check is here and not in a debug build. */
+    if (l->owner_cpu != this_cpu()->index)
+        bkl_bad_release(this_cpu()->index, l->owner_cpu, __builtin_return_address(0));
+    l->owner_cpu = -1;
     __atomic_fetch_add(&l->serving, 1, __ATOMIC_SEQ_CST);
 }
 
@@ -79,8 +132,10 @@ int spin_trylock(spinlock_t *l)
     if (!__atomic_compare_exchange_n(&l->ticket, &expect, s + 1, 0,
                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
         return 0;
+    l->owner_ra  = (unsigned long)__builtin_return_address(0);
+    l->owner_cpu = this_cpu()->index;
     if (l == &g_bkl) {
-        int idx = this_cpu()->index;
+        int idx = l->owner_cpu;
         g_bkl_owner = idx;
         if (g_kb_stat) bkl_acquired(idx, kb_rdtsc(), 0);   /* never waits: wait == 0 */
     }
