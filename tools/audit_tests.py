@@ -45,6 +45,30 @@ ALLOW_DEAD = {
     "tests/boot/secprobe.c": "guest program, not a harness",
 }
 
+# NOT GATES, and each has to say why. A file under tests/ that prints the word
+# FAIL is not automatically something that can pass wrongly: a library prints it
+# for its caller, a reporter prints it as DATA about the thing it measured, and
+# a builder prints it about its own inputs. The point of naming them here is
+# that the MUTE list is then EMPTY when the tree is healthy, so the next
+# harness that computes a verdict and swallows it stands out instead of being
+# the 29th line of a list nobody reads.
+ALLOW_MUTE = {
+    "tests/qmp/qmp_ui.py":
+        "shared library (dock geometry, pointer, screendump) imported by the "
+        "qmp_* harnesses -- it has no verdict of its own",
+    "tests/qmp/qmp_site.py":
+        "scoreboard REPORTER: per-site PAINTED/FAILED is the measurement it "
+        "exists to produce, not a pass/fail for the run. The scoreboard's own "
+        "header says PAINTED does not mean correct",
+    "tests/qmp/sites_run.py":
+        "the same, one level up: it drives qmp_site.py over a site list and "
+        "writes the scoreboard files",
+    "tests/boot/mkreplay.py":
+        "fixture builder for test-fsreplay -- it seals an uninstalled "
+        "transaction into an image; the gate that judges it is the harness "
+        "that boots the result",
+}
+
 
 def read(path):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -144,27 +168,68 @@ def find_dead(texts):
 VERDICT = re.compile(r'"?FAIL', re.I)
 
 
-def find_mute():
+def find_mute(dead_files):
     """Harnesses that can print a failure and still exit 0.
 
     Shell: prints/echoes FAIL but has no `exit 1` and no `set -e` guard.
     Python: has a FAIL string but no sys.exit(non-zero) anywhere.
     """
     mute = []
+    # A HARNESS NO TARGET RUNS CANNOT MAKE A GATE PASS WRONGLY. The dead ones
+    # are already reported as dead; listing them again as mute buries the few
+    # that are actually wired into something, which are the only ones that can
+    # mislead anybody. What remained after this and the two exit-status fixes
+    # were shared libraries (qmp_ui.py), screenshot drivers (qmp_browser.py)
+    # and bug hunters whose success IS exit 0 (qmp_blackframe.py) -- none of
+    # them gates, and telling those apart from a gate needs a declaration this
+    # tree does not have.
+    # Shell harnesses that end in `exit $something` propagate a status too; the
+    # literal `exit 1` search misses them for the same reason as above.
+    SH_EXIT_VAR = re.compile(r"^\s*exit\s+\"?\$", re.M)
     for h in harnesses():
         p = os.path.join(ROOT, h)
-        if h.endswith(".c"):
+        if h.endswith(".c") or h in dead_files or h in ALLOW_MUTE:
             continue
         text = read(p)
         if not VERDICT.search(text):
             continue                       # no verdict: not a test, or silent
         if h.endswith(".py"):
-            if not re.search(r"sys\.exit\(\s*[1-9]", text) and \
-               not re.search(r"raise\s+SystemExit\(\s*[1-9]", text) and \
-               not re.search(r"^\s*assert\s", text, re.M):
+            # `sys.exit(main())` and `sys.exit(rc)` propagate a status the
+            # literal-integer search cannot see, and BOTH are the normal shape
+            # in this tree -- qmp_desktop_look.py ends in sys.exit(main()) and
+            # its main() returns 1 on a moved check, so calling it mute was a
+            # false positive on a gate half of today's commits cite as evidence.
+            # An audit that cries wolf is an audit people stop reading, so the
+            # test is now "does a status leave this program by ANY route",
+            # which is the property that was meant.
+            exits_nonzero = (
+                re.search(r"sys\.exit\(\s*[1-9]", text) or
+                re.search(r"raise\s+SystemExit\(\s*[1-9]", text) or
+                re.search(r"sys\.exit\(\s*(main|run|rc|status|ret|code)\b", text) or
+                re.search(r"raise\s+SystemExit\(\s*(main|run|rc|status|ret|code)\b", text) or
+                re.search(r"^\s*assert\s", text, re.M))
+            if not exits_nonzero:
                 mute.append((h, "prints FAIL, never sys.exit(nonzero)"))
         else:
-            if not re.search(r"exit\s+[1-9]", text):
+            # A SHELL SCRIPT'S EXIT STATUS IS ITS LAST COMMAND'S, so looking
+            # only for a literal `exit N` misses the two shapes this tree
+            # actually uses: ending in `exec python3 ...` (the child's status
+            # becomes the script's) and ending in a bare test like
+            # `[ "$ok" -gt 0 ]`. Both were reported as mute, and both fail
+            # correctly -- run-usb-absent-test.sh and run-vidbench-test.sh.
+            # `set -e` counts too: any failing command takes the script down.
+            last = ""
+            for ln in reversed(text.split("\n")):
+                t = ln.strip()
+                if t and not t.startswith("#"):
+                    last = t
+                    break
+            propagates = (re.search(r"exit\s+[1-9]", text) or
+                          SH_EXIT_VAR.search(text) or
+                          re.search(r"^\s*exec\s", text, re.M) or
+                          re.search(r"^\s*set\s+-[a-z]*e", text, re.M) or
+                          last.startswith("[") or last.startswith("test "))
+            if not propagates:
                 mute.append((h, "prints FAIL, never exits nonzero"))
     return mute
 
@@ -260,7 +325,7 @@ def main():
     listing = "--list" in sys.argv
 
     dead = find_dead(texts)
-    mute = find_mute()
+    mute = find_mute(set(dead))
     orphan = find_orphan_targets(targets, wired)
 
     print("test audit: %d harnesses, %d make targets, %d wired into a suite"
