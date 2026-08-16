@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generate baseline JPEG test cases for the from-scratch decoder (src/lib/image/jpeg.c).
+"""Generate JPEG test cases for the from-scratch decoder (c/lib/image/jpeg.c),
+baseline (SOF0) and progressive (SOF2).
 
 JPEG is LOSSY, so we never compare our decoder against the original pixels. Instead
 PIL encodes a baseline JPEG, and libjpeg `djpeg` decodes the IDENTICAL bytes as the
@@ -9,11 +10,12 @@ our nearest-neighbour chroma upsample -> the two outputs differ only by colour-
 conversion rounding (<= a couple LSB per channel).
 
 For each case writes <name>.jpg + <name>.ref (reference straight RGBA8) + a manifest
-line "<name> W H mode" where mode in {ok, fail}. fail-mode cases (progressive, CMYK)
-must be REJECTED by our decoder (return -1), proving graceful handling.
+line "<name> W H mode" where mode in {ok, fail}. fail-mode cases (CMYK, and
+anything else outside the two supported frame types) must be REJECTED by our
+decoder (return -1), proving graceful handling rather than a crash.
 
 Usage: jpeg_gen.py <outdir>"""
-import os, sys, subprocess, shutil
+import io, os, sys, subprocess, shutil
 from PIL import Image
 
 OUT = sys.argv[1]; os.makedirs(OUT, exist_ok=True)
@@ -115,13 +117,52 @@ print(f"  {'rgb_420_rst':16s} {w}x{h}  ok (4:2:0 + restart markers)")
 # Square 4:4:4 (whole-MCU, simplest path) for a clean baseline.
 case_ok("rgb_444_sq", grad("RGB", 32, 32), quality=95, subsampling=0)
 
-# --- graceful-rejection cases ---
-# Progressive JPEG (SOF2): must be rejected.
-import io
-buf = io.BytesIO()
-grad("RGB", W, H).save(buf, "JPEG", quality=90, progressive=True, subsampling=0)
-case_fail("rgb_prog", buf.getvalue(), W, H)
+# --- progressive (SOF2) ---
+# libjpeg's default progressive scan script is, by luck, a complete workout for
+# the four decoder paths: it emits DC-first at Al=1, DC-refine at Ah=1, AC-first
+# at Al=1 and 2, and AC-refine at Ah=2->Al=1 and Ah=1->Al=0. Nothing here has to
+# hand-write a scan script to reach them.
+#
+# The odd 23x17 dimensions are not decoration. A progressive AC scan names ONE
+# component and walks that component's OWN block grid, which for 4:2:0 chroma of
+# a 23x17 image is 2x2 blocks inside a 3x3-block MCU grid. A decoder that walks
+# the MCU grid instead reads five blocks too many and shifts everything after
+# the first row -- the picture arrives sheared, not absent. Whole-MCU dimensions
+# cannot tell the two apart, so both are here.
+def case_prog(name, im, **save):
+    jpg = os.path.join(OUT, name + ".jpg")
+    im.save(jpg, "JPEG", optimize=False, progressive=True, **save)
+    w, h, ref = djpeg_ref(jpg)
+    open(os.path.join(OUT, name + ".ref"), "wb").write(ref)
+    manifest.append(f"{name} {w} {h} ok")
+    print(f"  {name:16s} {w}x{h}  ok (progressive, ref via djpeg -nosmooth)")
+    return ref
 
+
+case_prog("prog_gray", grad("L", W, H), quality=90)
+p444 = case_prog("prog_444", grad("RGB", W, H), quality=92, subsampling=0)
+case_prog("prog_422", grad("RGB", W, H), quality=92, subsampling=1)
+case_prog("prog_420", grad("RGB", W, H), quality=92, subsampling=2)
+case_prog("prog_444_sq", grad("RGB", 32, 32), quality=95, subsampling=0)
+case_prog("prog_420_big", grad("RGB", 64, 48), quality=90, subsampling=2)
+case_prog("prog_420_rst", grad("RGB", 64, 48), quality=90, subsampling=2,
+          restart_marker_blocks=4)
+
+# The two encodings of ONE image carry the SAME quantised coefficients -- only
+# the entropy coding differs -- so libjpeg decodes them to the same pixels. That
+# makes the baseline reference an independent check on the progressive one, and
+# it is asserted here rather than assumed: if this ever stops holding, the two
+# .ref files stop being comparable and the claim above is wrong.
+_b444 = os.path.join(OUT, "rgb_444.ref")
+if open(_b444, "rb").read() == p444:
+    print(f"  {'(cross-check)':16s} baseline and progressive of the same image "
+          f"decode identically under libjpeg")
+else:
+    raise SystemExit("jpeg_gen: baseline and progressive references DIFFER -- "
+                     "the two encodings no longer share coefficients, so the "
+                     "progressive cases need their own argument")
+
+# --- graceful-rejection cases ---
 # CMYK / 4-component: must be rejected.
 buf = io.BytesIO()
 grad("CMYK", W, H).save(buf, "JPEG", quality=90)

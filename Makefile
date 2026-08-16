@@ -3017,6 +3017,43 @@ test-jpeg: $(RUST_LIB_HOST)
 	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@$(BUILD)/jpeg_test $(BUILD)/jpegtest
 
+# The two ways a progressive JPEG decoder is wrong while still producing a
+# picture. Each is a compile-time break that MUST make test-jpeg fail, and each
+# is checked for failing on the RIGHT cases -- a control that reddens everything
+# proves only that the test runs.
+#
+#   JPEG_PROG_MCU_GRID          a non-interleaved scan walks the padded MCU grid
+#                               instead of the component's own. Fails prog_422 +
+#                               prog_420 (23x17, where luma's 3x3 grid differs
+#                               from the 4x4 MCU one) and NOTHING else -- 64x48
+#                               is a whole number of MCUs, so there the two
+#                               grids coincide and the bug is invisible. That is
+#                               the shape of the real bug: it shears images of
+#                               awkward sizes only.
+#   JPEG_NO_EOBRUN_CORRECTION   inside an EOB run, skip the correction bits that
+#                               already-nonzero coefficients still owe. The bits
+#                               stay in the stream, so every later block reads
+#                               someone else's: all 7 progressive cases fail and
+#                               all 6 baseline ones pass.
+test-jpeg-negctl: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/jpegtest
+	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest >/dev/null
+	@for d in JPEG_PROG_MCU_GRID JPEG_NO_EOBRUN_CORRECTION; do \
+	   $(CC) -O2 -w -D$$d -o $(BUILD)/jpeg_negctl tests/unit/jpeg_test.c \
+	       $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC); \
+	   if $(BUILD)/jpeg_negctl $(BUILD)/jpegtest >$(BUILD)/jpeg_negctl.log 2>&1; then \
+	     echo "FAIL: -D$$d still passes -- the control proves nothing"; exit 1; \
+	   fi; \
+	   n=`grep -c '^FAIL' $(BUILD)/jpeg_negctl.log`; \
+	   b=`grep '^FAIL' $(BUILD)/jpeg_negctl.log | grep -vc '^FAIL prog_'`; \
+	   echo "ok: -D$$d fails $$n case(s), $$b of them baseline"; \
+	   if [ "$$b" != "0" ]; then \
+	     echo "FAIL: -D$$d broke a BASELINE case -- it is not testing progressive"; exit 1; \
+	   fi; \
+	 done; \
+	 echo "ok: both progressive controls fail, and only on progressive cases"
+
+
 # SVG rasterizer host test: embedded cases (real GitHub octicon mark path,
 # rect/circle/ellipse, g fill inheritance, fill-rule evenodd, opacity, xml
 # sniffing) plus truncation/garbage robustness checks. No asset generation.
@@ -3068,15 +3105,20 @@ test-img-exif: $(RUST_LIB_HOST)
 # truncates and splices them. IMG_FUZZ_ITERS controls the budget.
 IMG_FUZZ_ITERS ?= 20000
 test-img-fuzz: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif
+	@mkdir -p $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest
 	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill >/dev/null
 	@python3 tests/unit/img_anim_gen.py $(BUILD)/imganim >/dev/null
 	@python3 tests/unit/img_exif_gen.py $(BUILD)/imgexif >/dev/null
+	@# jpegtest carries the PROGRESSIVE corpus, and progressive is the JPEG
+	@# path with a whole-image coefficient buffer, cross-scan state and two
+	@# kinds of run length -- i.e. the one where a malformed file has the most
+	@# to work with. Without this line the mutator never saw an SOF2 at all.
+	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
 	    -o $(BUILD)/img_fuzz tests/unit/img_fuzz.c \
 	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-	    $(BUILD)/img_fuzz $(IMG_FUZZ_ITERS) $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif
+	    $(BUILD)/img_fuzz $(IMG_FUZZ_ITERS) $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest
 
 # The negative control for the fuzz harness ITSELF. A fuzz target that cannot
 # fail is a green light wired to nothing, so this compiles the same harness

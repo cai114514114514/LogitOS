@@ -4,13 +4,24 @@ void *kmalloc(unsigned long);
 void  kfree(void *);
 void *memset(void *, int, unsigned long);
 
-/* A from-scratch BASELINE (SOF0) sequential-DCT JPEG decoder. Output is straight
- * RGBA8. Supports 8-bit precision, 1-component (grayscale) and 3-component
- * (YCbCr) frames with arbitrary HxV sampling factors (4:4:4 / 4:2:2 / 4:2:0 and
- * the general case), 1-2 quantisation tables (8- and 16-bit), DC+AC Huffman
- * tables, and DRI/RSTn restart intervals. Progressive (SOF2), arithmetic coding,
- * extended sequential (SOF1), 12-bit, CMYK / 4-component and anything else are
- * rejected gracefully (return -1) -- never a crash.
+/* A from-scratch JPEG decoder: BASELINE (SOF0) sequential-DCT and PROGRESSIVE
+ * (SOF2). Output is straight RGBA8. Supports 8-bit precision, 1-component
+ * (grayscale) and 3-component (YCbCr) frames with arbitrary HxV sampling
+ * factors (4:4:4 / 4:2:2 / 4:2:0 and the general case), 1-2 quantisation
+ * tables (8- and 16-bit), DC+AC Huffman tables, and DRI/RSTn restart
+ * intervals. Arithmetic coding, extended sequential (SOF1), 12-bit, lossless,
+ * CMYK / 4-component and anything else are rejected gracefully (return -1) --
+ * never a crash.
+ *
+ * WHY PROGRESSIVE IS A SECOND PATH AND NOT A GENERALISATION. Baseline decodes
+ * one block at a time: entropy -> dequantise -> IDCT -> 8x8 of samples, and
+ * the coefficients are never all live at once. Progressive cannot do that --
+ * a coefficient is refined by later scans, so the WHOLE image's coefficients
+ * must be held until EOI. That is the difference between a 64-long scratch
+ * block and ~3 bytes per pixel of buffer, and it is the reason the baseline
+ * path is left exactly as it was rather than rewritten to share code with
+ * this one: the common case should not pay progressive's memory, and the
+ * proven path should not be disturbed to save a hundred lines.
  *
  * SECURITY: every input byte is UNTRUSTED. Like png.c, all marker/segment lengths
  * are bounds-checked in subtraction form (no signed overflow), every table index,
@@ -35,11 +46,40 @@ struct huff {
 };
 struct comp { int id, h, v, tq, td, ta; long dcpred; };
 
+/* One SOS header. Baseline has exactly one of these and constrains it hard
+ * (all components, Ss=0, Se=63, Ah=Al=0); progressive has many, and the four
+ * spectral/approximation fields are the whole of what distinguishes them. */
+struct scan { int ns, ci[3], ss, se, ah, al; };
+
 /* --- file-scope decode state (reset per call; single-threaded under BKL) --- */
 static unsigned short qt[4][64];     /* quant tables, de-zig-zagged to natural order */
 static struct huff hdc[4], hac[4];   /* DC / AC Huffman tables */
 static struct comp jcomp[3];
 static int jncomp, jmaxh, jmaxv, jrestart;
+
+/* --- progressive state ---
+ * pcoef[c] holds every coefficient of component c until EOI, in ZIG-ZAG order
+ * within each block (scans address coefficients by zig-zag index, so storing
+ * them that way keeps Ss..Se a plain range and moves the de-zigzag to the one
+ * place that needs natural order, the IDCT). The grid is the PADDED MCU grid,
+ * pbw[c] x pbh[c] blocks, so an interleaved scan's block address is a
+ * multiplication and a non-interleaved scan's is a different one over the same
+ * memory -- see the comment on the non-interleaved loop, which is where every
+ * progressive decoder goes wrong.
+ *
+ * Coefficients are `short`, as in libjpeg. 8-bit JPEG coefficients fit, but a
+ * CRAFTED file can name a DC category of 11 and a point transform of 13, whose
+ * product does not -- so the shift is range-checked and refuses rather than
+ * wrapping. eobrun spans blocks within one scan, never across scans. */
+static short *pcoef[3];
+static int pbw[3], pbh[3];
+static int jprog, eobrun;
+
+/* Progressive holds the whole coefficient plane, so it needs a bound the
+ * baseline path does not: ~3 bytes/pixel at 4:2:0, 6 at 4:4:4. 64 MiB is
+ * roughly a 20 Mpix photo -- past any image a page serves, and small enough
+ * that a hostile 8192x8192 header cannot ask this kernel for 400 MB. */
+#define JPEG_PROG_MAX_COEF (64u * 1024 * 1024)
 
 static int be16(const unsigned char *p) { return (p[0] << 8) | p[1]; }
 
@@ -105,11 +145,11 @@ static int parse_dht(const unsigned char *d, int len)
     return 0;
 }
 
-/* SOF0 frame header. */
-static int parse_sof0(const unsigned char *d, int len, int *W, int *H)
+/* SOF0 / SOF2 frame header -- identical layout; only the marker differs. */
+static int parse_sof(const unsigned char *d, int len, int *W, int *H)
 {
     if (len < 6) return -1;
-    if (d[0] != 8) return -1;                 /* baseline: 8-bit precision only */
+    if (d[0] != 8) return -1;                 /* 8-bit precision only */
     *H = be16(d + 1);
     *W = be16(d + 3);
     jncomp = d[5];
@@ -133,13 +173,29 @@ static int parse_sof0(const unsigned char *d, int len, int *W, int *H)
     return 0;
 }
 
-/* SOS scan header: assign DC/AC selectors; reject progressive selectors. */
-static int parse_sos(const unsigned char *d, int len)
+/* SOS scan header. Fills `sc` and binds each scan component's table selectors.
+ *
+ * The table-existence check is per ROLE, not per scan: a progressive DC scan
+ * names an AC selector byte it never uses, and real encoders emit a DC-only
+ * first scan BEFORE any DHT for an AC table exists. Demanding both tables
+ * there rejects a large fraction of the progressive JPEGs on the web -- for a
+ * table the scan is not going to read. */
+static int parse_sos(const unsigned char *d, int len, struct scan *sc)
 {
     if (len < 1) return -1;
     int ns = d[0];
-    if (ns != jncomp) return -1;              /* baseline: single interleaved scan */
+    if (ns < 1 || ns > jncomp) return -1;
     if (1 + ns * 2 + 3 > len) return -1;
+    const unsigned char *sp = d + 1 + ns * 2;
+    sc->ns = ns;
+    sc->ss = sp[0];
+    sc->se = sp[1];
+    sc->ah = sp[2] >> 4;
+    sc->al = sp[2] & 15;
+    if (sc->ss > 63 || sc->se > 63 || sc->ss > sc->se) return -1;
+    if (sc->ah > 13 || sc->al > 13) return -1;
+
+    int wants_dc = (sc->ss == 0), wants_ac = (sc->se > 0);
     for (int i = 0; i < ns; i++) {
         int cid = d[1 + i * 2], sel = d[2 + i * 2];
         int td = sel >> 4, ta = sel & 15;
@@ -147,12 +203,26 @@ static int parse_sos(const unsigned char *d, int len)
         int j;
         for (j = 0; j < jncomp; j++) if (jcomp[j].id == cid) break;
         if (j == jncomp) return -1;           /* scan component not in frame */
+        for (int q = 0; q < i; q++) if (sc->ci[q] == j) return -1;  /* named twice */
+        sc->ci[i] = j;
         jcomp[j].td = td;
         jcomp[j].ta = ta;
-        if (!hdc[td].defined || !hac[ta].defined) return -1;  /* table must exist */
+        if (wants_dc && !hdc[td].defined) return -1;
+        if (wants_ac && !hac[ta].defined) return -1;
     }
-    const unsigned char *ss = d + 1 + ns * 2;
-    if (ss[0] != 0 || ss[1] != 63 || ss[2] != 0) return -1;   /* Ss=0,Se=63,Ah/Al=0: baseline */
+
+    if (!jprog) {
+        /* Baseline: one interleaved scan over the whole spectrum, no
+         * successive approximation. Unchanged from before progressive. */
+        if (ns != jncomp) return -1;
+        if (sc->ss != 0 || sc->se != 63 || sc->ah != 0 || sc->al != 0) return -1;
+        return 0;
+    }
+    /* Progressive (G.1.1.1.1): a DC scan is Ss=0 AND Se=0 and may interleave;
+     * an AC scan is Ss>0 and must name exactly one component, because AC
+     * coefficients of different components have no common MCU ordering. */
+    if (sc->ss == 0) { if (sc->se != 0) return -1; }
+    else             { if (ns != 1) return -1; }
     return 0;
 }
 
@@ -261,6 +331,256 @@ static int decode_block(struct br *b, struct comp *c, long blk[64])
         int v = br_ext(av, s);
         blk[zz[k]] = (long)v * (long)qt[c->tq][zz[k]];   /* de-zigzag + dequant */
         k++;
+    }
+    return 0;
+}
+
+/* --- progressive (SOF2) block decoders (ITU T.81 Annex G) ---------------
+ * Four of them, because a progressive coefficient is written by two kinds of
+ * scan: a FIRST scan that establishes the high bits of a band, and REFINEMENT
+ * scans that each append one lower bit. DC and AC differ again because AC has
+ * the end-of-band run (one code standing for "the rest of this band is zero,
+ * in this block and the next N"), which DC has no equivalent of.
+ *
+ * `blk` is 64 coefficients in ZIG-ZAG order, so Ss..Se is a plain index range.
+ * Every shift that can be applied to a negative value is written as a
+ * multiply, and every result is range-checked into `short` -- a crafted DC
+ * category of 11 with Al=13 is representable in the file and not in the
+ * buffer, and wrapping there is how a decoder produces confident garbage. */
+
+static int prog_dc_first(struct br *b, struct comp *cp, short *blk, int al)
+{
+    int t = huff_decode(b, &hdc[cp->td]);
+    if (t < 0 || t > 15) return -1;
+    int diff = 0;
+    if (t) { int rv = br_recv(b, t); if (rv < 0) return -1; diff = br_ext(rv, t); }
+    cp->dcpred += diff;
+    long v = cp->dcpred * (1L << al);
+    if (v < -32768 || v > 32767) return -1;
+    blk[0] = (short)v;
+    return 0;
+}
+
+static int prog_dc_refine(struct br *b, short *blk, int al)
+{
+    int t = br_bit(b);
+    if (t < 0) return -1;
+    if (t) blk[0] = (short)(blk[0] | (1 << al));
+    return 0;
+}
+
+static int prog_ac_first(struct br *b, struct comp *cp, short *blk,
+                         int ss, int se, int al)
+{
+    if (eobrun > 0) { eobrun--; return 0; }
+    int k = ss;
+    while (k <= se) {
+        int rs = huff_decode(b, &hac[cp->ta]);
+        if (rs < 0) return -1;
+        int r = rs >> 4, s = rs & 15;
+        if (s) {
+            k += r;
+            if (k > se) return -1;               /* run walks past the band */
+            int av = br_recv(b, s);
+            if (av < 0) return -1;
+            long v = (long)br_ext(av, s) * (1L << al);
+            if (v < -32768 || v > 32767) return -1;
+            blk[k] = (short)v;
+            k++;
+        } else if (r != 15) {
+            /* EOB run: this block's band ends here, and so do the next
+             * eobrun blocks'. The -1 is this block, consumed now. */
+            eobrun = (1 << r) - 1;
+            if (r) { int e = br_recv(b, r); if (e < 0) return -1; eobrun += e; }
+            break;
+        } else {
+            k += 16;                             /* ZRL */
+        }
+    }
+    return 0;
+}
+
+/* Refinement (G.1.2.3), the one everybody gets wrong. Each already-nonzero
+ * coefficient in the band takes one correction bit -- IN BAND ORDER, whether
+ * or not this scan has anything else to say about it -- and the run lengths
+ * count only the coefficients that are still ZERO. Reading the correction
+ * bits in any other order desynchronises the whole rest of the scan, which
+ * shows up as a plausible-looking image with the bottom two thirds wrong. */
+static int prog_ac_refine(struct br *b, struct comp *cp, short *blk,
+                          int ss, int se, int al)
+{
+    int p1 = 1 << al, m1 = -(1 << al);
+    int k = ss;
+
+    if (eobrun == 0) {
+        for (; k <= se; k++) {
+            int rs = huff_decode(b, &hac[cp->ta]);
+            if (rs < 0) return -1;
+            int r = rs >> 4, s = rs & 15;
+            int newval = 0;
+            if (s) {
+                if (s != 1) return -1;           /* refinement magnitude is 1 bit */
+                int t = br_bit(b);
+                if (t < 0) return -1;
+                newval = t ? p1 : m1;
+            } else if (r != 15) {
+                eobrun = 1 << r;
+                if (r) { int e = br_recv(b, r); if (e < 0) return -1; eobrun += e; }
+                break;
+            }
+            /* Walk forward over already-nonzero coefficients, giving each its
+             * correction bit, until r still-zero ones have been passed. */
+            while (k <= se) {
+                short *cc = &blk[k];
+                if (*cc) {
+                    int t = br_bit(b);
+                    if (t < 0) return -1;
+                    if (t && (*cc & p1) == 0) {
+                        int nv = *cc + ((*cc >= 0) ? p1 : m1);
+                        if (nv < -32768 || nv > 32767) return -1;
+                        *cc = (short)nv;
+                    }
+                } else if (--r < 0) {
+                    break;
+                }
+                k++;
+            }
+            if (newval && k <= se) blk[k] = (short)newval;
+        }
+    }
+
+    if (eobrun > 0) {
+        /* Inside an EOB run this block contributes no new coefficients, but
+         * its existing ones still each take a correction bit. */
+#ifdef JPEG_NO_EOBRUN_CORRECTION
+        /* NEGATIVE CONTROL: skip them. The bits are still in the stream, so
+         * every later block in the scan reads someone else's -- which is why
+         * this is the failure that looks like a working decoder. */
+        k = se + 1;
+#endif
+        for (; k <= se; k++) {
+            short *cc = &blk[k];
+            if (*cc) {
+                int t = br_bit(b);
+                if (t < 0) return -1;
+                if (t && (*cc & p1) == 0) {
+                    int nv = *cc + ((*cc >= 0) ? p1 : m1);
+                    if (nv < -32768 || nv > 32767) return -1;
+                    *cc = (short)nv;
+                }
+            }
+        }
+        eobrun--;
+    }
+    return 0;
+}
+
+static short *pblk(int c, int bx, int by)
+{ return pcoef[c] + ((long)by * pbw[c] + bx) * 64; }
+
+static int prog_block(struct br *b, const struct scan *sc, int c, short *blk)
+{
+    if (sc->ss == 0)
+        return sc->ah ? prog_dc_refine(b, blk, sc->al)
+                      : prog_dc_first(b, &jcomp[c], blk, sc->al);
+    return sc->ah ? prog_ac_refine(b, &jcomp[c], blk, sc->ss, sc->se, sc->al)
+                  : prog_ac_first(b, &jcomp[c], blk, sc->ss, sc->se, sc->al);
+}
+
+/* Drive one progressive scan over its blocks.
+ *
+ * THE TRAP, and it is the reason this function does not just reuse the
+ * baseline MCU loop: a scan naming ONE component is NON-INTERLEAVED, and its
+ * unit is a single block over that component's OWN block grid --
+ * ceil(ceil(W*h/hmax)/8) wide -- NOT the padded MCU grid. Those two differ
+ * whenever the image is not a whole number of MCUs, which is most images: a
+ * 4:2:0 chroma plane of a 100x100 picture is 7x7 blocks of real content in an
+ * 8x8-block MCU grid. Walking the MCU grid instead decodes 15 blocks too many
+ * and shifts every subsequent block by one, so the picture arrives sheared.
+ * The buffer is still strided by pbw[c] -- only the ITERATION is different. */
+static int prog_scan(struct br *b, const struct scan *sc, int W, int H,
+                     int mx, int my)
+{
+    eobrun = 0;
+    for (int i = 0; i < sc->ns; i++) jcomp[sc->ci[i]].dcpred = 0;
+
+    int single = (sc->ns == 1);
+    int c0 = sc->ci[0], cbw = 0, cbh = 0;
+    long nunits;
+    if (single) {
+#ifdef JPEG_PROG_MCU_GRID
+        /* NEGATIVE CONTROL: walk the padded MCU grid, the mistake described
+         * above. Whole-MCU images are unaffected, which is the point -- a
+         * control that broke everything would not show that the odd-size
+         * cases are the ones carrying the property. */
+        cbw = pbw[c0]; cbh = pbh[c0];
+#else
+        int compw = (W * jcomp[c0].h + jmaxh - 1) / jmaxh;
+        int comph = (H * jcomp[c0].v + jmaxv - 1) / jmaxv;
+        cbw = (compw + 7) / 8;
+        cbh = (comph + 7) / 8;
+#endif
+        if (cbw <= 0 || cbh <= 0 || cbw > pbw[c0] || cbh > pbh[c0]) return -1;
+        nunits = (long)cbw * cbh;
+    } else {
+        nunits = (long)mx * my;
+    }
+
+    for (long unit = 0; unit < nunits; unit++) {
+        if (jrestart && unit && unit % jrestart == 0) {
+            if (br_restart(b)) return -1;
+            eobrun = 0;
+            for (int i = 0; i < sc->ns; i++) jcomp[sc->ci[i]].dcpred = 0;
+        }
+        if (single) {
+            if (prog_block(b, sc, c0, pblk(c0, (int)(unit % cbw), (int)(unit / cbw))))
+                return -1;
+        } else {
+            int mxi = (int)(unit % mx), myi = (int)(unit / mx);
+            for (int i = 0; i < sc->ns; i++) {
+                int c = sc->ci[i];
+                for (int by = 0; by < jcomp[c].v; by++)
+                    for (int bx = 0; bx < jcomp[c].h; bx++)
+                        if (prog_block(b, sc, c,
+                                       pblk(c, mxi * jcomp[c].h + bx,
+                                               myi * jcomp[c].v + by)))
+                            return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* First marker at or after `pos` that ends a scan's entropy data: not a
+ * stuffed FF00, not a fill FF, not an RSTn (those belong to the scan). */
+static int next_marker(const unsigned char *p, int n, int pos)
+{
+    if (pos < 0) pos = 0;
+    while (pos + 1 < n) {
+        if (p[pos] == 0xFF) {
+            int m = p[pos + 1];
+            if (m != 0x00 && m != 0xFF && !(m >= 0xD0 && m <= 0xD7)) return pos;
+        }
+        pos++;
+    }
+    return -1;
+}
+
+static int prog_alloc(int mx, int my)
+{
+    unsigned long total = 0;
+    for (int c = 0; c < jncomp; c++) {
+        pbw[c] = mx * jcomp[c].h;
+        pbh[c] = my * jcomp[c].v;
+        unsigned long sz = (unsigned long)pbw[c] * pbh[c] * 64 * sizeof(short);
+        total += sz;
+        if (total > JPEG_PROG_MAX_COEF) return -1;   /* refused out loud, not clamped */
+    }
+    for (int c = 0; c < jncomp; c++) {
+        unsigned long sz = (unsigned long)pbw[c] * pbh[c] * 64 * sizeof(short);
+        pcoef[c] = kmalloc(sz);
+        if (!pcoef[c]) return -1;
+        memset(pcoef[c], 0, sz);
     }
     return 0;
 }
@@ -375,11 +695,15 @@ static int jpeg_decode(const unsigned char *p, int n, struct image *out)
     memset(hac, 0, sizeof hac);
     memset(jcomp, 0, sizeof jcomp);
     jncomp = jmaxh = jmaxv = jrestart = 0;
+    jprog = eobrun = 0;
+    for (int c = 0; c < 3; c++) { pcoef[c] = 0; pbw[c] = pbh[c] = 0; }
 
     int W = 0, H = 0, sof_seen = 0;
     unsigned char *rgba = 0;
     unsigned char *plane[3] = { 0, 0, 0 };
     int cw[3] = { 0, 0, 0 }, ch[3] = { 0, 0, 0 };
+    int mx = 0, my = 0;
+    struct scan sc;
 
     int i = 2;
     int entry = -1;                 /* byte offset where entropy data begins */
@@ -394,28 +718,47 @@ static int jpeg_decode(const unsigned char *p, int n, struct image *out)
         int slen = len - 2;
         if (m == 0xDB) { if (parse_dqt(seg, slen)) goto fail; }
         else if (m == 0xC4) { if (parse_dht(seg, slen)) goto fail; }
-        else if (m == 0xC0) { if (parse_sof0(seg, slen, &W, &H)) goto fail; sof_seen = 1; }
-        else if (m == 0xC2) goto fail;      /* progressive: reject gracefully */
+        else if (m == 0xC0 || m == 0xC2) {  /* baseline / progressive frame */
+            if (sof_seen) goto fail;        /* two frames in one stream: not ours */
+            if (parse_sof(seg, slen, &W, &H)) goto fail;
+            jprog = (m == 0xC2);
+            sof_seen = 1;
+            /* MCU geometry, needed here rather than after the loop because a
+             * progressive scan is decoded the moment its header is read. */
+            int mcuw = jmaxh * 8, mcuh = jmaxv * 8;
+            mx = (W + mcuw - 1) / mcuw;
+            my = (H + mcuh - 1) / mcuh;
+            if (mx <= 0 || my <= 0 || (long)mx * my > (8192L * 8192) / 64 + 8) goto fail;
+            if (jprog && prog_alloc(mx, my)) goto fail;
+        }
         else if (m == 0xC1 || m == 0xC3 || (m >= 0xC5 && m <= 0xCF && m != 0xC8))
             goto fail;                      /* extended/lossless/arith SOF: reject */
         else if (m == 0xDD) { if (slen != 2) goto fail; jrestart = be16(seg); }
         else if (m == 0xDA) {               /* SOS: entropy data follows the header */
             if (!sof_seen) goto fail;
-            if (parse_sos(seg, slen)) goto fail;
-            entry = i + 4 + slen;
-            break;
+            if (parse_sos(seg, slen, &sc)) goto fail;
+            if (!jprog) { entry = i + 4 + slen; break; }   /* baseline: one scan */
+            /* Progressive: decode the scan now and keep walking markers. A
+             * progressive file interleaves DHT segments between scans, so the
+             * tables in force are whatever the last DHT set -- which is why
+             * this cannot be hoisted out into a "collect all scans first" pass. */
+            struct br pb;
+            br_init(&pb, p, n, i + 4 + slen);
+            if (prog_scan(&pb, &sc, W, H, mx, my)) goto fail;
+            int nx = next_marker(p, n, pb.marker ? pb.pos - 1 : pb.pos);
+            if (nx < 0) break;              /* stream ends with this scan */
+            if (p[nx + 1] == 0xD9) break;   /* EOI */
+            i = nx;
+            continue;
         }
         /* APPn (E0..EF), COM (FE), DNL (DC), DAC (CC) and others: skip by length.
          * A marker is FF + code (2 bytes); the 2-byte length field includes itself,
          * so the next marker is at i + 2 + len. */
         i += 2 + len;
     }
-    if (entry < 0 || !sof_seen) goto fail;
-
-    /* MCU geometry with overflow guards. */
-    int mcuw = jmaxh * 8, mcuh = jmaxv * 8;
-    int mx = (W + mcuw - 1) / mcuw, my = (H + mcuh - 1) / mcuh;
-    if (mx <= 0 || my <= 0 || (long)mx * my > (8192L * 8192) / 64 + 8) goto fail;
+    if (!sof_seen) goto fail;
+    if (!jprog && entry < 0) goto fail;         /* baseline with no scan */
+    if (jprog && !pcoef[0]) goto fail;          /* SOF2 whose scans never ran */
 
     rgba = kmalloc((unsigned long)W * H * 4);
     if (!rgba) goto fail;
@@ -427,6 +770,29 @@ static int jpeg_decode(const unsigned char *p, int n, struct image *out)
         ch[c] = my * jcomp[c].v * 8;
         plane[c] = kmalloc((unsigned long)cw[c] * ch[c]);
         if (!plane[c]) goto fail;
+    }
+
+    if (jprog) {
+        /* Every scan is in; dequantise and transform the coefficient plane.
+         * The whole padded MCU grid is transformed, not just the visible
+         * blocks: the chroma upsample below reads the pad, exactly as the
+         * baseline path's does. */
+        for (int c = 0; c < jncomp; c++) {
+            for (int by = 0; by < pbh[c]; by++) {
+                for (int bx = 0; bx < pbw[c]; bx++) {
+                    const short *src = pcoef[c] + ((long)by * pbw[c] + bx) * 64;
+                    long blk[64];
+                    unsigned char pix[64];
+                    for (int k = 0; k < 64; k++)
+                        blk[zz[k]] = (long)src[k] * (long)qt[jcomp[c].tq][zz[k]];
+                    idct8x8(blk, pix);
+                    for (int yy = 0; yy < 8; yy++)
+                        for (int xx = 0; xx < 8; xx++)
+                            plane[c][(by * 8 + yy) * cw[c] + bx * 8 + xx] = pix[yy * 8 + xx];
+                }
+            }
+        }
+        goto colour;
     }
 
     /* Entropy loop: interleaved MCU order (the only baseline ordering). */
@@ -458,6 +824,7 @@ static int jpeg_decode(const unsigned char *p, int n, struct image *out)
         }
     }
 
+colour:
     /* Color-convert + nearest-neighbour chroma upsample into rgba. */
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
@@ -474,12 +841,18 @@ static int jpeg_decode(const unsigned char *p, int n, struct image *out)
         }
     }
 
-    for (int c = 0; c < 3; c++) if (plane[c]) kfree(plane[c]);
+    for (int c = 0; c < 3; c++) {
+        if (plane[c]) kfree(plane[c]);
+        if (pcoef[c]) { kfree(pcoef[c]); pcoef[c] = 0; }
+    }
     out->w = W; out->h = H; out->rgba = rgba;
     return 0;
 
 fail:
-    for (int c = 0; c < 3; c++) if (plane[c]) kfree(plane[c]);
+    for (int c = 0; c < 3; c++) {
+        if (plane[c]) kfree(plane[c]);
+        if (pcoef[c]) { kfree(pcoef[c]); pcoef[c] = 0; }
+    }
     if (rgba) kfree(rgba);
     return -1;
 }

@@ -885,6 +885,63 @@ and its own Newton-iteration `dsqrt`/`dsin`. It survived for a mechanical reason
 it cannot reach the ring-3 engine, and separately into the browser. `grep -c stroke`
 on it returns **0**: every stroked icon on every real page is absent, not wrong.
 
+## Image decoders: what decodes, and what does not
+
+Written down because the answer is not derivable from the file list -- **PNG,
+BMP, ICO, WebP and inflate are RUST** (`rust/src/*.rs`, target
+`x86_64-unknown-none`, linked as `$(RUST_LIB)`), while JPEG, GIF, SVG and EXIF
+are C in `c/lib/image/`. The M13 line above still says
+`lib/{inflate,png,gif,img}.c`; that has not been true since the Rust port.
+
+| format | state |
+|---|---|
+| PNG | complete -- every bit depth (1/2/4/8/16), all five filters, Adam7, tRNS |
+| GIF | complete -- animation, per-frame sub-rects, all disposal modes |
+| BMP / ICO | complete, including RLE4 and 32bpp with a real alpha mask |
+| JPEG | baseline **and progressive**; byte-exact against `djpeg -nosmooth` |
+| WebP | **VP8L (lossless) only -- lossy `VP8 ` is NOT implemented** |
+| SVG | own path/fill; phase-2 stroke has landed (the `grep -c stroke` = 0 note above is stale) |
+
+**The one real hole left is lossy WebP**, and it is the common one: essentially
+every WebP a website serves is `VP8 `, not `VP8L`. It fails cleanly (-1, no
+garbage) rather than guessing, which is the right failure -- but it is a
+failure, and closing it means the VP8 intra path (bool decoder, WHT/DCT, the
+intra modes, the loop filter), which is a codec, not a patch.
+
+**Progressive JPEG** (2026-08-16) is a SECOND path inside `jpeg.c`, not a
+generalisation of the baseline one, and the file comment argues why: baseline
+never holds more than one block of coefficients, while progressive must hold
+the whole image until EOI (~3 bytes/pixel at 4:2:0), so merging them would
+charge every ordinary JPEG progressive's memory. Three things to know before
+touching it:
+
+- **A scan naming ONE component is non-interleaved and walks that component's
+  OWN block grid**, `ceil(ceil(W*h/hmax)/8)` wide -- *not* the padded MCU grid.
+  The two differ whenever the image is not a whole number of MCUs, which is
+  most images, and getting it wrong shears the picture rather than blanking
+  it. `-DJPEG_PROG_MCU_GRID` is that bug on a switch, and it fails **only**
+  `prog_422`/`prog_420` at 23x17 -- at 64x48 the image IS whole-MCU, the two
+  grids coincide, and the bug hides completely. That asymmetry is why both
+  sizes are in the corpus.
+- **Inside an EOB run, already-nonzero coefficients still each take a
+  correction bit**, in band order. Skipping them leaves those bits in the
+  stream for the next block to misread; `-DJPEG_NO_EOBRUN_CORRECTION` reddens
+  all seven progressive cases and not one baseline case.
+- Coefficients are `short`, as in libjpeg, and every shift a crafted file could
+  push out of range is **checked and refused** rather than wrapped: a DC
+  category of 11 with `Al=13` is representable in a file and not in the buffer.
+
+The oracle is `djpeg -nosmooth -dct int` over the identical bytes, and the
+result is **maxd=0 on all 13 decode cases**, baseline and progressive alike --
+exact, not within tolerance. `jpeg_gen.py` additionally asserts that libjpeg
+decodes the baseline and progressive encodings of one source to identical
+pixels, because that is what makes the two reference files comparable at all;
+if it ever stops holding the generator stops rather than quietly weakening.
+
+  `make test-jpeg` `test-jpeg-negctl` `test-img-fuzz` -- the progressive corpus
+  is in the fuzz corpus now, and was not before, so SOF2 had never been handed
+  a malformed byte. 200,871 mutated decodes under ASan+UBSan+leak-check, clean.
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
