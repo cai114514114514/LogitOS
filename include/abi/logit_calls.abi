@@ -48,6 +48,7 @@ call gui_flush      SYS_GUI_FLUSH
 call gui_win_min    SYS_GUI_WIN_MIN    pack(w:16:16, h:0:16)
 call gui_win_state  SYS_GUI_WIN_STATE  int(what) int(arg)
 call gui_poll_event SYS_POLL_EVENT     buf(ev)
+call gui_wait_event SYS_WAIT_EVENT     buf(ev) int(ms)
 call ui_dark_query  SYS_UI_DARK        lit(-1)
 call ui_dark_set    SYS_UI_DARK        int(on)
 call sys_yield      SYS_YIELD

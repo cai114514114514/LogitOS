@@ -337,6 +337,6 @@ void app_main(void)
          * to fight the compositor for the frame. */
         unsigned now = (unsigned)monotonic_ms();
         if (!drew && now - last_anim >= 50) { last_anim = now; frame(); }
-        sys_yield();
+        wait_idle(100);   /* was sys_yield(): a spin. input-driven */
     }
 }

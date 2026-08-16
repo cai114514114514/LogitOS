@@ -313,6 +313,6 @@ void app_main(void)
             attempt();
             repaint = 1;
         }
-        sys_yield();
+        wait_idle(100);   /* was sys_yield(): a spin. input-driven */
     }
 }

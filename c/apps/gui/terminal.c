@@ -1786,6 +1786,6 @@ void app_main(void)
             perf_kv("paint", "paints", (unsigned)n_paint,
                     "paint_ms_total", (unsigned)ms_paint_total, 0, 0);
         }
-        sys_yield();
+        wait_idle(16);   /* was sys_yield(): a spin. the shell's pipe is not an event: this one must still poll, but at 60 Hz instead of flat out */
     }
 }

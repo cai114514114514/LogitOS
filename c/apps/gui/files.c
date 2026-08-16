@@ -642,7 +642,7 @@ void app_main(void)
     frame();
     struct logit_event e;
     for (;;) {
-        if (!poll_event(&e)) { sys_yield(); continue; }
+        if (!poll_event(&e)) { wait_idle(100);   /* was sys_yield(): a spin. input-driven */ continue; }
         /* The WM delivers EV_MOUSE_MOVE now, at pointer rate (~100/s). New event
          * types are additive and this app ignores the ones it does not know --
          * but "ignore" here means falling through to the frame() at the bottom

@@ -8,6 +8,8 @@ unsigned long long evq_dropped(void)   { return g_dropped; }
 
 void evq_reset(struct evq *q) { q->head = q->tail = 0; }
 
+int evq_empty(const struct evq *q) { return q->head == q->tail; }
+
 void evq_push(struct evq *q, const struct logit_event *e)
 {
     /* Coalesce motion onto motion. The tail entry is the newest UNREAD event,

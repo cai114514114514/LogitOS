@@ -237,6 +237,6 @@ void app_main(void)
         }
         get_time(&t);
         if (force || t.second != last) { last = t.second; draw(&t); }
-        sys_yield();
+        wait_idle(100);   /* was sys_yield(): a spin. the second hand only needs to be right to within a frame */
     }
 }

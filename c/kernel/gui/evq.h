@@ -48,6 +48,10 @@ void evq_push(struct evq *q, const struct logit_event *e);
 /* -> 1 and fills *out, or 0 when empty. */
 int evq_pop(struct evq *q, struct logit_event *out);
 
+/* 1 when there is nothing to pop. Exists for SYS_WAIT_EVENT's sleep
+ * predicate, which must be able to ask without consuming. */
+int evq_empty(const struct evq *q);
+
 /* Forget everything queued (a window slot being reused). */
 void evq_reset(struct evq *q);
 

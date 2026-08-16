@@ -347,14 +347,22 @@ void kb_stat_report(const char *tag)
 
     /* The syscall histogram, biggest first. Printed as a top-N rather than in
      * full: 128 lines of mostly zeroes on a serial console at ~200 us a line is
-     * four seconds of boot spent describing syscalls nobody made. */
+     * four seconds of boot spent describing syscalls nobody made.
+     *
+     * SIXTEEN, not eight. run-kbench.sh reads SYS_GET_TIME's mean out of this
+     * list, which makes the metric depend on the syscall's RANK -- a harness
+     * asserting something about the histogram's shape that it did not mean to.
+     * Widening the list does not fix that gate (SYS 10 is absent because it is
+     * not called in the window at all, which is a separate and older problem)
+     * but it removes rank from the question, and eight more lines cost 1.6 ms
+     * of boot. */
     {
         uint64_t total_n = 0, total_c = 0;
         for (int s = 0; s < KB_NSYS; s++) { total_n += g_kb_sys_n[s]; total_c += g_kb_sys_cyc[s]; }
         kprintf("[kbench] syscalls: %d calls, %d ms inside the dispatcher "
                 "(BKL already held; blocking calls include time descheduled)\n",
                 (int)total_n, (int)(total_c / g_mhz / 1000));
-        for (int rank = 0; rank < 8; rank++) {
+        for (int rank = 0; rank < 16; rank++) {
             int best = -1;
             for (int s = 0; s < KB_NSYS; s++)
                 if (g_kb_sys_n[s] && (best < 0 || g_kb_sys_n[s] > g_kb_sys_n[best])) best = s;

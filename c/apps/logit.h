@@ -38,6 +38,15 @@ static inline void gui_text_mono(int x, int y, unsigned color, int cell, const c
 
 static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
 static inline int  poll_event(struct logit_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
+/* Block until an event arrives (or `ms` elapses; 0 = no timeout). Prefer this
+ * to poll_event+yield: the spin costs two syscalls per iteration and the BKL
+ * with them, and it is 98% of this machine's kernel entries. */
+static inline int  wait_event_ms(struct logit_event *e, int ms) { return (int)_sys(SYS_WAIT_EVENT, (long)e, ms, 0); }
+/* Sleep until this window has an event, or `ms` elapses (0 = no timeout).
+ * Does NOT consume it -- the caller's existing poll_event() drain runs next.
+ * This is the one-line replacement for the sys_yield() at the bottom of an
+ * event loop, and the whole reason the syscall accepts a NULL event. */
+static inline void wait_idle(int ms) { _sys(SYS_WAIT_EVENT, 0, ms, 0); }
 static inline int  get_arg(char *b, int m) { return (int)_sys(SYS_GET_ARG, (long)b, m, 0); }
 static inline void get_time(struct logit_time *t) { _sys(SYS_GET_TIME, (long)t, 0, 0); }
 /* Milliseconds since boot: the clock to SUBTRACT. get_time() is the wall clock

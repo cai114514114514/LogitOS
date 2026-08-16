@@ -1979,4 +1979,22 @@ struct logit_capreq {
 #define SYS_REBOOT    164 /* () -> does not return on success (the machine is
                            * resetting); ID_E_PERM if the caller is not root. */
 
+/* --- SYS_WAIT_EVENT: the same event, without the spin --------------------
+ * (event *ev, int timeout_ms) -> 1 if *ev was filled, else 0 (timed out).
+ *
+ * SYS_POLL_EVENT returns immediately, so every GUI application in this tree
+ * is a `while (poll_event(&e) == 0) yield();` loop, and the machine measures
+ * it: of 3,283,157 syscalls in one 8.8-second boot, 1,640,961 were
+ * SYS_POLL_EVENT and 1,640,961 were SYS_YIELD -- 98% of all kernel entries,
+ * every one of them taking the BKL to be told nothing happened.
+ *
+ * This one BLOCKS. The caller parks on the window's wait queue and is woken by
+ * the compositor when it queues an event, so an idle app costs zero syscalls
+ * instead of tens of thousands a second. timeout_ms bounds the wait for an app
+ * that also wants to animate; 0 means "no timeout, wake only on an event".
+ *
+ * It does not replace SYS_POLL_EVENT, which stays for the app that genuinely
+ * wants to drain a queue without sleeping (a game loop, a benchmark). */
+#define SYS_WAIT_EVENT 165
+
 #endif /* LOGIT_ABI_H */

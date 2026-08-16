@@ -311,6 +311,9 @@ def gui_win_state(what, arg):
 def gui_poll_event(ev):
     return syscall(SYS_POLL_EVENT, addr(ev))
 
+def gui_wait_event(ev, ms):
+    return syscall(SYS_WAIT_EVENT, addr(ev), ms)
+
 def ui_dark_query():
     return syscall(SYS_UI_DARK, -1)
 

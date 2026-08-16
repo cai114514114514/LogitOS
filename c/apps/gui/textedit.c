@@ -244,6 +244,6 @@ void app_main(void)
             }
         }
         if (changed) draw();
-        sys_yield();
+        wait_idle(100);   /* was sys_yield(): a spin. input-driven; the caret blink is drawn from get_time */
     }
 }

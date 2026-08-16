@@ -43,6 +43,9 @@
 #include "percpu.h"
 #include "spinlock.h"
 #include "vfs_cred.h"   /* vfs_cred_session(): who, if anyone, has logged in */
+/* Path-qualified for the same reason syscall.c and file.c are: mini-libc
+ * ships a sys/wait.h that sorts first in INCDIRS. */
+#include "kernel/core/wait.h"   /* SYS_WAIT_EVENT: an idle app sleeps */
 #include "power.h"      /* kernel_poweroff/kernel_reboot -- the LogitOS menu's Shut Down/Restart */
 
 #define MAXWIN     16
@@ -203,6 +206,10 @@ struct win {
     struct app *app;          /* owner (NULL for builtin) */
     struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
     struct evq ev;            /* SYS_POLL_EVENT ring (coalesces motion -- see evq.h) */
+    /* Whoever is blocked in SYS_WAIT_EVENT on this window. One queue per
+     * window, not one for the machine: waking every app because one of them
+     * got a keystroke is the same waste as polling, moved into the kernel. */
+    struct waitq evwq;
     int  wants_close;
     int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
     char cwd[128];            /* Finder: current directory path */
@@ -1928,7 +1935,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->surf_cap = (int)pxcount;      /* the canvas grows in steps from here */
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
         w->drawing = 0; w->draw_t0 = 0;   /* a fresh canvas is a finished picture */
-        evq_reset(&w->ev); w->wants_close = 0;
+        evq_reset(&w->ev); waitq_init(&w->evwq); w->wants_close = 0;
         /* A REUSED SLOT MUST NOT INHERIT the previous tenant's window state.
          * `used` guards the readers, but zoomed/minimized/min_* are read the
          * moment the new window is composited -- a slot whose last occupant was
@@ -2039,6 +2046,45 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap);
         if (w) dirty_win(w); else dirty_full();
         return 0;
+    }
+    case SYS_WAIT_EVENT: {
+        /* SYS_POLL_EVENT without the spin. See the note in logit_abi.h for the
+         * measurement that motivated it: 98% of this machine's kernel entries
+         * were an app asking whether anything had happened yet.
+         *
+         * The BKL is HELD on entry and the wait must not hold it -- an app
+         * asleep with the global lock stops the machine. wait_event_timeout
+         * drops it across the park and re-takes it on resume (block_self does,
+         * in one place), which is exactly the discipline bkl_hlt_wait already
+         * uses for the console.
+         *
+         * There is no lost wakeup here and the reason is the BKL, not luck:
+         * the predicate is evaluated while this core still holds it, and the
+         * only writer (enqueue/enqueue_input, on the WM thread) needs the same
+         * lock to push. So nothing can be queued between the test and the
+         * park. */
+        struct win *w = app_window(ap); if (!w) return 0;
+        struct logit_event *ev = (struct logit_event *)a;
+        /* ev == NULL: WAIT WITHOUT CONSUMING. That convention is what lets an
+         * existing app adopt this by changing one line -- its `while
+         * (poll_event(&e))` drain stays exactly as written, and only the
+         * sys_yield() at the bottom of the loop becomes a sleep. Handing back
+         * an event here instead would mean every caller restructuring its loop
+         * to handle the first event separately from the rest, which is how a
+         * mechanical change becomes twelve behavioural ones. */
+        if (ev) {
+            if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
+            if (evq_pop(&w->ev, ev)) return 1;      /* fast path: already there */
+        } else if (!evq_empty(&w->ev)) {
+            return 1;
+        }
+        int ms = (int)b;
+        int ok = 0;
+        if (ms > 0)
+            wait_event_timeout(&w->evwq, !evq_empty(&w->ev) || w->wants_close, ms, ok);
+        else
+            wait_event(&w->evwq, !evq_empty(&w->ev) || w->wants_close);
+        return ev ? evq_pop(&w->ev, ev) : !evq_empty(&w->ev);
     }
     case SYS_POLL_EVENT: {
         struct win *w = app_window(ap); if (!w) return 0;
@@ -2326,12 +2372,19 @@ static void enqueue(struct win *w, int type, int a, int b)
 {
     struct logit_event e = { type, a, b, 0, EV_BTN_NONE, 0 };
     evq_push(&w->ev, &e);
+    /* WAKE AFTER THE PUSH, never before: the sleeper's predicate is "the ring
+     * is not empty", and a wake that arrives first is a wake the sleeper
+     * re-tests and goes back to sleep through. Waking with nothing queued is
+     * harmless (wait_event re-tests) but it is also the bug that turns a
+     * blocking wait back into a poll, so the order is the point. */
+    waitq_wake_one(&w->evwq);
 }
 
 static void enqueue_input(struct win *w, int type, int a, int b, int mods, int button, int wheel)
 {
     struct logit_event e = { type, a, b, mods, button, wheel };
     evq_push(&w->ev, &e);
+    waitq_wake_one(&w->evwq);
 }
 
 /* Flip the system theme: kernel chrome follows immediately (redrawn each frame);

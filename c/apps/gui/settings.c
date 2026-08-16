@@ -569,6 +569,6 @@ void app_main(void)
             if (g != last_gen && !dirty) { load_all(); load_kv(); frame(); drew = 1; }
             else if (saved_flash && (int)now - saved_flash < 2800) { frame(); drew = 1; }
         }
-        if (!drew) sys_yield();
+        if (!drew) wait_idle(100);   /* was sys_yield(): a spin. input-driven */
     }
 }

@@ -357,6 +357,6 @@ void app_main(void)
         }
         if (poll_run()) changed = 1;
         if (changed) redraw();
-        sys_yield();
+        wait_idle(100);   /* was sys_yield(): a spin. input-driven */
     }
 }

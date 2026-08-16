@@ -563,7 +563,7 @@ void app_main(void)
             if (++secs % 5 == 0) { report_cost(); report_xcheck(); }
         }
         (void)drew;
-        sys_yield();
+        wait_idle(100);   /* was sys_yield(): a spin. the meters re-sample on their own clock */
     }
 }
 

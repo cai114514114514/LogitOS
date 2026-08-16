@@ -300,6 +300,7 @@ void as_install_indirection(void)
     as_define_int("SYS_GUI_ICON",    SYS_GUI_ICON);
     as_define_int("SYS_GUI_GLASS",   SYS_GUI_GLASS);
     as_define_int("SYS_POLL_EVENT",  SYS_POLL_EVENT);
+    as_define_int("SYS_WAIT_EVENT",  SYS_WAIT_EVENT);
     /* Every remaining symbol a generated abi.as wrapper can name: the wrappers
      * are only resolved at call time, so a missing define here is an
      * "undefined variable" at first call rather than a build error. Keep this
