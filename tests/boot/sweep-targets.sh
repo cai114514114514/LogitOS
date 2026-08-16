@@ -32,22 +32,9 @@ make -pRrq 2>/dev/null | grep -oE '^test-[a-z0-9-]+' | sort -u > "$LOGDIR/all.tx
 total=$(grep -c . "$LOGDIR/all.txt")
 echo "sweep: $total targets"
 
-# --- classify -------------------------------------------------------------
-: > "$LOGDIR/host.txt"; : > "$LOGDIR/dev.txt"; : > "$LOGDIR/none.txt"
-while read -r t; do
-    [ -n "$t" ] || continue
-    plan="$(make -n "$t" 2>&1)"
-    case "$plan" in
-        *"No rule to make target"*) echo "$t" >> "$LOGDIR/none.txt" ;;
-        *qemu*)                     echo "$t" >> "$LOGDIR/dev.txt" ;;
-        *)                          echo "$t" >> "$LOGDIR/host.txt" ;;
-    esac
-done < "$LOGDIR/all.txt"
-echo "sweep: $(grep -c . "$LOGDIR/host.txt") host, $(grep -c . "$LOGDIR/dev.txt") device, $(grep -c . "$LOGDIR/none.txt") missing"
-
-while read -r t; do
-    [ -n "$t" ] && printf 'NOTARGET\t0\t%s\n' "$t" >> "$OUT"
-done < "$LOGDIR/none.txt"
+# --- classify, in ONE make run (see sweep-classify.py for why not 524) ------
+python3 tests/boot/sweep-classify.py "$LOGDIR" || exit 1
+: > "$LOGDIR/none.txt"
 
 run_one() {
     t="$1"
