@@ -371,6 +371,9 @@ def getcwd(b, max):
 def chdir(path):
     return syscall(SYS_CHDIR, addr(path))
 
+def stat(path, st, stlen):
+    return syscall(SYS_STAT, addr(path), addr(st), stlen)
+
 def proc_fork():
     return syscall(SYS_FORK)
 

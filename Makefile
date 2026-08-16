@@ -3670,6 +3670,7 @@ bench-aui: $(ISO) $(DISK)
 # sched/poll/select/resource/syslog/termios/netdb/socket). See its header.
 -include tests/libc.mk
 -include tests/as-m28.mk
+-include tests/asview.mk
 
 # M30 threads: /bin/thrtest (the gate) and its four negative controls. Its own
 # fragment for the reason every other one here is -- several lines edit this

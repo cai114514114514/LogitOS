@@ -471,6 +471,40 @@ def render():
     return "\n".join(a), "\n".join(c), render_pack(calls)
 
 
+OUT_NATIVE = os.path.join(ROOT, "c", "apps", "as", "as_native.c")
+
+
+def undefined_sys_symbols(text_as):
+    """SYS_* names a generated wrapper calls that as_native.c never defines.
+
+    THE HOLE THIS CLOSES, and it was open for eighteen calls. A wrapper in
+    abi.as is `syscall(SYS_SOCK_OPEN, ...)`, and SYS_SOCK_OPEN is an ordinary
+    AetherScript GLOBAL that as_native.c installs with as_define_int(). That
+    list is hand-maintained -- its own comment says "keep this list in step
+    with include/abi/logit_calls.abi" -- and a `call` line added here without
+    the matching define compiles, links, ships, and then fails at the FIRST
+    CALL with `undefined variable 'SYS_SOCK_OPEN'`, which is exactly what a
+    misspelled variable in the script looks like. Nothing between writing the
+    call and running it says a word.
+
+    So the two lists are diffed here instead. This is a NAME check, not an
+    offset check: the numbers were never the risk (as_native.c hands the
+    kernel's own SYS_* through, which is the identity the header comment
+    describes) -- the risk is a name that has no binding at all.
+
+    Deliberately one-directional. as_native.c defining a symbol no wrapper
+    uses is fine and common (SYS_LSEEK, SYS_CLOSE and friends are there for
+    scripts that call syscall() by hand), so an extra define is not an error.
+    A wrapper naming a symbol nobody defines always is."""
+    used = sorted(set(re.findall(r"\bSYS_[A-Z0-9_]+", text_as)))
+    try:
+        nat = open(OUT_NATIVE, encoding="utf-8", newline="").read()
+    except OSError:
+        return []                       # no as_native.c to check against
+    have = set(re.findall(r'as_define_int\(\s*"(SYS_[A-Z0-9_]+)"', nat))
+    return [u for u in used if u not in have]
+
+
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "--check"
     if mode not in ("--check", "--write"):
@@ -481,11 +515,23 @@ def main(argv):
         raise SystemExit("gen_abi.py: %s\n  (refusing to guess -- teach the generator or "
                          "change the struct)" % e)
 
+    # Reported on --write too, and not only on --check: the person who just
+    # added a `call` line is the one who can fix it in ten seconds, and they
+    # are standing right here. --write still succeeds (the files it wrote are
+    # correct); --check below is where it is fatal.
+    missing = undefined_sys_symbols(text_as)
+
     if mode == "--write":
         for path, text in ((OUT_AS, text_as), (OUT_INC, text_inc), (OUT_PACK, text_pack)):
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
             print("gen_abi.py: wrote %s" % os.path.relpath(path, ROOT))
+        if missing:
+            print("gen_abi.py: WARNING -- %d wrapper(s) name a SYS_* that "
+                  "as_native.c never defines:" % len(missing))
+            print("  " + " ".join(missing))
+            print("  each one is an 'undefined variable' at its FIRST CALL, not a build error.")
+            print("  add as_define_int(\"NAME\", NAME) in as_install_indirection().")
         return 0
 
     bad = []
@@ -498,8 +544,20 @@ def main(argv):
               % ", ".join(bad))
         print("  regenerate with: python3 tools/gen_abi.py --write")
         return 1
-    print("check-abi: ok (%d kernel structs, %d calls; offsets also asserted at compile time)"
-          % (len(read_structs()), len(parse_calls())))
+    if missing:
+        print("check-abi: UNBOUND -- %d generated wrapper(s) call a SYS_* that "
+              "c/apps/as/as_native.c never defines as a script global:"
+              % len(missing))
+        print("  " + " ".join(missing))
+        print("  These COMPILE and SHIP. The failure is at the wrapper's first")
+        print("  call, and it reads 'undefined variable' -- indistinguishable")
+        print("  from a typo in the calling script.")
+        print("  fix: as_define_int(\"NAME\", NAME) in as_install_indirection().")
+        return 1
+    print("check-abi: ok (%d kernel structs, %d calls, %d SYS_* names bound; "
+          "offsets also asserted at compile time)"
+          % (len(read_structs()), len(parse_calls()),
+             len(set(re.findall(r"\bSYS_[A-Z0-9_]+", text_as)))))
     return 0
 
 

@@ -63,6 +63,22 @@ static const char *const SYSCONSTS[] = {
     "EV_MOUSE_UP","EV_MOUSE_MOVE","EV_WHEEL",
     "EV_MOD_SHIFT","EV_MOD_CTRL","EV_MOD_ALT",
     "EV_BTN_NONE","EV_BTN_LEFT","EV_BTN_RIGHT","EV_BTN_MIDDLE",
+    /* The eighteen that as_native.c had never defined at all until 2026-08-16
+     * (see the block comment at the end of as_install_indirection): the socket
+     * family, the thread family, the futex, TLS base, getrandom, both
+     * window-state calls, and stat. They are here now for the same reason they
+     * are there now -- a generated wrapper in lib/abi.as calls each of them by
+     * name, and a name the completer does not know is a name the reader is
+     * told does not exist. */
+    "SYS_STAT","SYS_GUI_WIN_MIN","SYS_GUI_WIN_STATE",
+    "SYS_SOCK_OPEN","SYS_SOCK_POLL","SYS_SOCK_SEND","SYS_SOCK_RECV",
+    "SYS_SOCK_ALPN","SYS_SOCK_CLOSE",
+    "SYS_THREAD_CREATE","SYS_THREAD_EXIT","SYS_THREAD_JOIN","SYS_THREAD_DETACH",
+    "SYS_THREAD_SELF","SYS_THREAD_INFO","SYS_SET_TLS","SYS_FUTEX","SYS_GETRANDOM",
+    /* File-type bits of logit_stat.mode, for `(st.mode & LST_IFMT) ==
+     * LST_IFDIR` -- the directory test lib/image.as makes before it tells a
+     * user their picture is a folder. */
+    "LST_IFMT","LST_IFREG","LST_IFDIR","LST_IFLNK",
     /* M28 capability classes (mirrors as_native.c's as_define_int block). */
     "CAP_FS_READ","CAP_FS_WRITE","CAP_NET","CAP_PROC","CAP_GUI","CAP_RAW", 0
 };

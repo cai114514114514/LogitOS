@@ -91,7 +91,29 @@ static int g_stack_overflow;
 /* Builtins (print/len/range/peek/.../SYS_*) are visible from every module; each
  * module has its own namespace (ObjModule.vars). GET_GLOBAL tries the running
  * function's module first, then falls back to builtins. */
-static NameVal builtins[128];
+/* THE CAP IS NAMED NOW, AND OVERFLOWING IT IS LOUD. It used to be the literal
+ * 128, written twice -- once as the array bound here and once as the guard in
+ * builtin_slot -- and builtin_slot's "return NULL when full" contract was
+ * honoured by nobody: as_define_native and as_define_int both dereference the
+ * result unconditionally. So the 129th registration was a WRITE THROUGH NULL
+ * during VM startup.
+ *
+ * That is not a hypothetical. Adding 22 constants to as_native.c (the socket,
+ * thread and stat SYS_* names that abi.as had been calling with no binding at
+ * all, plus LST_IFMT and friends) took the table from 119 to 141, and on the
+ * device it read:
+ *     [fault] app exception: page fault (vector 14) rip=... err=7 cr2=0x0
+ *             -- terminating app
+ * /bin/as died before executing one line of script, and the message named
+ * neither the table nor the language. There was nine slots of headroom left
+ * and nothing anywhere said so.
+ *
+ * Two changes, because either alone leaves the trap armed: the bound is one
+ * symbol used in both places, and a full table now REFUSES by name at the
+ * point of registration instead of faulting. 256 costs 6 KiB of .bss and buys
+ * the next hundred natives. */
+#define AS_MAX_BUILTINS 256
+static NameVal builtins[AS_MAX_BUILTINS];
 static int     nbuiltins;
 
 static ObjModule *modules[64];      /* loaded-module cache (by name) */
@@ -111,7 +133,7 @@ static Value *builtin_slot(ObjStr *name, int create)
 {
     int at = builtin_index(name);
     if (at >= 0) return &builtins[at].val;
-    if (!create || nbuiltins >= 128) return NULL;
+    if (!create || nbuiltins >= AS_MAX_BUILTINS) return NULL;
     builtins[nbuiltins].name = name; builtins[nbuiltins].val = NIL_VAL;
     as_globals_gen++;
     return &builtins[nbuiltins++].val;
@@ -655,18 +677,34 @@ static Value native_range(int argc, Value *args)
     if (!r) return NIL_VAL;                  /* g_oom set; dispatch unwinds */
     return OBJ_VAL(r);
 }
+/* A full builtin table is REPORTED, not written through. builtin_slot returns
+ * NULL when there is no room (see AS_MAX_BUILTINS above for the fault this
+ * cost) -- and NULL is also what it returns on an out-of-memory ObjStr, so
+ * both callers need the same one-line check. as_emit_cstr rather than a
+ * runtime_error because this runs during VM setup, before there is a frame to
+ * attach an error to; the name is printed because "the table is full" without
+ * it tells the reader nothing about what they just added. */
+static Value *builtin_define(const char *name)
+{
+    ObjStr *nm = as_str_copy(name, (int)strlen(name));
+    if (!nm) return NULL;                    /* g_oom set; setup unwinds on the first DISPATCH */
+    Value *slot = builtin_slot(nm, 1);
+    if (!slot) {
+        as_emit_cstr("as: builtin table full (");
+        as_emit_cstr(name);
+        as_emit_cstr(" not registered) -- raise AS_MAX_BUILTINS in vm.c\n");
+    }
+    return slot;
+}
 void as_define_native(const char *name, NativeFn fn)
 {
-    int len = (int)strlen(name);
-    ObjStr *nm = as_str_copy(name, len);
-    if (!nm) return;                         /* g_oom set; setup unwinds on the first DISPATCH */
-    *builtin_slot(nm, 1) = OBJ_VAL(as_native_new(fn, name));
+    Value *slot = builtin_define(name);
+    if (slot) *slot = OBJ_VAL(as_native_new(fn, name));
 }
 void as_define_int(const char *name, int64_t v)
 {
-    ObjStr *nm = as_str_copy(name, (int)strlen(name));
-    if (!nm) return;                         /* g_oom set; setup unwinds on the first DISPATCH */
-    *builtin_slot(nm, 1) = INT_VAL(v);
+    Value *slot = builtin_define(name);
+    if (slot) *slot = INT_VAL(v);
 }
 void as_add_module_source(const char *name, const char *src)
 {

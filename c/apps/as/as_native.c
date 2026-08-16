@@ -343,4 +343,53 @@ void as_install_indirection(void)
     as_define_int("EV_BTN_LEFT", EV_BTN_LEFT);
     as_define_int("EV_BTN_RIGHT", EV_BTN_RIGHT);
     as_define_int("EV_BTN_MIDDLE", EV_BTN_MIDDLE);
+
+    /* THE EIGHTEEN THAT WERE MISSING, and why they were missed for so long.
+     *
+     * Every name above is here because somebody remembered. The list two
+     * comments up already asked the next person to "keep this list in step
+     * with include/abi/logit_calls.abi", and by the time anyone diffed the two
+     * (2026-08-16, while adding SYS_STAT for lib/image.as) eighteen generated
+     * wrappers named a symbol that had no binding at all: the whole socket
+     * family, the whole thread family, the futex, getrandom, TLS base, both
+     * window-state calls, and stat.
+     *
+     * NONE OF THAT WAS A BUILD ERROR. abi.as is data -- a wrapper body is only
+     * resolved when it is CALLED -- so `sock_open(...)` from a script compiled,
+     * shipped, and then failed at the call site with `undefined variable
+     * 'SYS_SOCK_OPEN'`, which is precisely what a typo in the script looks
+     * like. The author of the script has no reason to suspect the library.
+     *
+     * That is why the fix is not only these lines. tools/gen_abi.py --check now
+     * diffs the SYS_* names abi.as CALLS against the names this function
+     * DEFINES and fails when one is unbound, so the next `call` line added
+     * without its define stops `make check-abi` instead of stopping a user.
+     * The check found all eighteen on its first run. */
+    as_define_int("SYS_STAT",           SYS_STAT);
+    as_define_int("SYS_GUI_WIN_MIN",    SYS_GUI_WIN_MIN);
+    as_define_int("SYS_GUI_WIN_STATE",  SYS_GUI_WIN_STATE);
+    as_define_int("SYS_SOCK_OPEN",      SYS_SOCK_OPEN);
+    as_define_int("SYS_SOCK_POLL",      SYS_SOCK_POLL);
+    as_define_int("SYS_SOCK_SEND",      SYS_SOCK_SEND);
+    as_define_int("SYS_SOCK_RECV",      SYS_SOCK_RECV);
+    as_define_int("SYS_SOCK_ALPN",      SYS_SOCK_ALPN);
+    as_define_int("SYS_SOCK_CLOSE",     SYS_SOCK_CLOSE);
+    as_define_int("SYS_THREAD_CREATE",  SYS_THREAD_CREATE);
+    as_define_int("SYS_THREAD_EXIT",    SYS_THREAD_EXIT);
+    as_define_int("SYS_THREAD_JOIN",    SYS_THREAD_JOIN);
+    as_define_int("SYS_THREAD_DETACH",  SYS_THREAD_DETACH);
+    as_define_int("SYS_THREAD_SELF",    SYS_THREAD_SELF);
+    as_define_int("SYS_THREAD_INFO",    SYS_THREAD_INFO);
+    as_define_int("SYS_SET_TLS",        SYS_SET_TLS);
+    as_define_int("SYS_FUTEX",          SYS_FUTEX);
+    as_define_int("SYS_GETRANDOM",      SYS_GETRANDOM);
+
+    /* File-type bits of logit_stat.mode (LST_IFMT & friends, include/abi/
+     * logit_abi.h). Named for the same reason CAP_* are: `(st.mode & 61440) ==
+     * 16384` is a directory test nobody can read, and the alternative to naming
+     * them here is every script re-deriving POSIX's octal constants. */
+    as_define_int("LST_IFMT",  LST_IFMT);
+    as_define_int("LST_IFREG", LST_IFREG);
+    as_define_int("LST_IFDIR", LST_IFDIR);
+    as_define_int("LST_IFLNK", LST_IFLNK);
 }

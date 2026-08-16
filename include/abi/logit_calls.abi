@@ -76,6 +76,18 @@ call dir_count      SYS_DIR_COUNT      str(dir)
 call dir_name       SYS_DIR_NAME       str(dir) int(i) buf(b)
 call getcwd         SYS_GETCWD         buf(b) int(max)
 call chdir          SYS_CHDIR          str(path)
+# stat's third argument is the SIZE OF THE STRUCT THE CALLER BROUGHT, not a
+# count or a flag -- c/kernel/exec/meta.c emit() copies min(len, sizeof) bytes
+# and stamps st.len with what it actually wrote. That is the forward-
+# compatibility contract, and it only works if the caller passes its own
+# sizeof; a wrapper that hardcoded 88 here would silently over-read the day the
+# kernel's struct shrinks in a build the script was not compiled against. The
+# script side spells it `stat(path, st, 88)` with the 88 coming from the
+# generated Stat layout, so it moves when the header moves. The argument is
+# named `stlen` and not `len` on purpose: the generator turns an arg name into
+# a PARAMETER name, and a parameter called `len` shadows the len() builtin for
+# the whole body of the wrapper.
+call stat           SYS_STAT           str(path) buf(st) int(stlen)
 
 # ---- processes / file descriptors ----
 call proc_fork      SYS_FORK
