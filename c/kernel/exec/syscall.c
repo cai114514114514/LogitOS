@@ -550,7 +550,30 @@ static void syscall_do(struct registers *r)
             if (now >= deadline) break;
             uint64_t rem = deadline - now;
             if (rem > 2 * tick_ns) sched_sleep_ms((unsigned)((rem - tick_ns) / NS_PER_MS));
-            else                   schedule();
+            /* bkl_hlt_wait(), NOT schedule(), and this one hung the machine.
+             *
+             * schedule() does not touch the BKL unless it actually switches,
+             * and with every other thread blocked it finds nothing to switch
+             * to -- so this tail spun at ~3.5 million iterations a second
+             * HOLDING THE GLOBAL LOCK, waiting for time_mono_ns() to reach the
+             * deadline.
+             *
+             * Time cannot reach it. timer_tick() runs on the BSP only
+             * (interrupts.c gates it on me->index == 0), and the BSP was in
+             * spin_lock_irqsave(&g_bkl) -- WITH INTERRUPTS OFF -- waiting for
+             * the lock this spin is holding. So the clock stops, the deadline
+             * never arrives, and the lock is never released: a circular wait
+             * between a spin on time and the lock that lets time advance.
+             * Every core wedged, no panic, nothing in the log.
+             *
+             * It is multi-core only, which is why it hid: on one core the
+             * spinner IS the BSP, timer_tick() runs ahead of the BKL acquire
+             * and is not gated by , so time keeps moving.
+             *
+             * bkl_hlt_wait drops the BKL, halts until the next interrupt, and
+             * retakes it -- the primitive that already exists for exactly this
+             * (see its comment in sched.c). Reproducer: make test-smp-fork-storm. */
+            else                   bkl_hlt_wait();
         }
         if (r->rsi && user_range_ok((void *)r->rsi, sizeof req, 1)) {
             struct logit_timespec rem = { 0, 0 };

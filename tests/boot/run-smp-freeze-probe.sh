@@ -143,6 +143,18 @@ print(json.loads(f.readline()).get("return", ""))
 PY
 grep -aE "^RIP" /tmp/regs2.txt | sed "s/^/    /"
 
+# THE MEASUREMENT THAT DECIDES IT. A core spinning in spin_lock has the same
+# RIP forever -- the loop is two instructions -- so identical registers prove
+# nothing about whether the lock is moving. `serving` does: it advances once
+# per release. Sampled three times, two seconds apart. Frozen serving with
+# cores queued is a stuck lock; advancing serving with cores still queued is
+# STARVATION, and they are different bugs with different fixes.
+echo "--- is the lock moving? (g_bkl ticket/serving, 3 samples 2s apart) ---"
+for i in 1 2 3; do
+    python3 tests/boot/qmp_lockdump.py "$SOCK" "$ELF" g_bkl g_sched_lock | sed "s/^/  t$i/"
+    sleep 2
+done
+
 echo "--- lock state ---"
 python3 tests/boot/qmp_lockdump.py "$SOCK" "$ELF"
 
