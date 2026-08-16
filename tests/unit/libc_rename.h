@@ -368,4 +368,19 @@
 #define nanf             mini_nanf
 #define hypotf           mini_hypotf
 
+
+/* resource.c. NOT cosmetic: an un-renamed symbol of ours does not merely fail
+ * to be tested, it OVERRIDES glibc's for the whole process -- and ASan calls
+ * setrlimit() from DisableCoreDumperIfNecessary() during its own init, before
+ * main, before anything of ours is ready. The result was a segfault inside
+ * __asan_init with no output at all, which reads like a broken test binary
+ * rather than a missing #define.
+ *
+ * That is the mirror image of the trap already documented at the top of
+ * tests/libc.mk: there, a MISSING implementation silently falls back to
+ * glibc's; here, a PRESENT one silently replaces it. */
+#define getrlimit        mini_getrlimit
+#define setrlimit        mini_setrlimit
+#define getrusage        mini_getrusage
+
 #endif /* LIBC_RENAME_H */

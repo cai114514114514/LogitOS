@@ -1069,6 +1069,28 @@ static void section_sort(long iters)
 
 /* ------------------------------------------------------------------ */
 
+/* THE TWO SYMBOLS stdlib.c NEEDS FROM THE PARTS THIS GATE EXCLUDES.
+ *
+ * LIBCDIFF_SRC deliberately leaves out io.c, runtime.c and malloc.c: they are
+ * this OS's syscall layer and there is no glibc computation to diff them
+ * against. stdlib.c is pure computation (strtod, qsort, the env vector) and
+ * belongs here -- but its getenv/setenv half reaches for the process
+ * environment, which crt0 normally supplies out of runtime.c.
+ *
+ * Providing them here rather than dropping stdlib.c keeps strtod and qsort in
+ * the differential, which is the coverage that matters.  is renamed to
+ * mini_environ by libc_rename.h, like every other public symbol, so the
+ * definition has to use the renamed spelling.
+ */
+static char *mini_environ_empty[1] = { 0 };
+char **mini_environ = mini_environ_empty;   /* an EMPTY vector, not NULL: the
+                                             * env walk dereferences it before
+                                             * it checks anything, and a null
+                                             * here is a segfault rather than a
+                                             * clean "no variables set" */
+char **__libc_environ_hook;   /* NULL is right: this process was not exec'd by
+                               * Logit, and stdlib.c tests exactly that. */
+
 int main(int argc, char **argv)
 {
     /* LogitOS has no timezone database: local time IS UTC (see <time.h>). Pin

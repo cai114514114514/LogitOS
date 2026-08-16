@@ -2198,10 +2198,24 @@ test-libc: $(ISO) $(DISK)
 # The suite also builds a SABOTAGED copy of itself (one strtod result in a
 # thousand perturbed by one ulp, tests/unit/libc_sabotage.c) and REQUIRES it to
 # fail. A suite that has never failed is not known to be able to.
-LIBCDIFF_SRC  := $(filter-out c/apps/libc/src/malloc.c c/apps/libc/src/io.c c/apps/libc/src/runtime.c,\
+# The excluded TUs are the ones with nothing to diff AGAINST: malloc.c, io.c and
+# runtime.c are this OS's syscall layer, not a computation glibc also performs.
+# poll.c and pthread.c joined them for the same reason, and by way of a link
+# error: both call into the excluded ones (mini_usleep, __libc_environ_hook),
+# and pthread.c needs __logit_thread_entry out of pthread_entry.asm, which a
+# wildcard over *.c was never going to find. Diffing a syscall wrapper against
+# glibc is not a test, it is a category error -- which is what the header of
+# tests/libc.mk says this gate is for in the first place.
+LIBCDIFF_SRC  := $(filter-out c/apps/libc/src/malloc.c c/apps/libc/src/io.c c/apps/libc/src/runtime.c \
+                   c/apps/libc/src/poll.c c/apps/libc/src/pthread.c,\
                    $(wildcard c/apps/libc/src/*.c))
 LIBCDIFF_INC  := -nostdinc -isystem $(shell $(CC) -print-resource-dir)/include \
-                 -Ic/apps/libc/include -Ic/apps/libc/include/uonly -Ic/apps/libc/src -Iinclude/abi
+                 -Ic/apps/libc/include -Ic/apps/libc/include/uonly -Ic/apps/libc/src -Iinclude/abi                  -Ic/apps/coreutils
+# -Ic/apps/coreutils: pwgrp.c includes "accounts.h", which lives beside the
+# login coreutil rather than in libc. That include arrived with the accounts
+# work and this list did not follow it, so test-libc-diff has not compiled
+# since -- silently, because no suite reaches it (test-audit: 352 such
+# targets).
 LIBCDIFF_SAN  := -fsanitize=address,undefined -fno-sanitize-recover=all -g
 LIBCDIFF_OBJ  := $(patsubst %.c,$(BUILD)/libcdiff/%.o,$(LIBCDIFF_SRC))
 LIBCDIFF_SOBJ := $(patsubst %.c,$(BUILD)/libcdiff-sab/%.o,$(LIBCDIFF_SRC))
@@ -2284,7 +2298,10 @@ test-complete:
 # does NOT bleed into a draw on another's (the "white Terminal" cross-app leak).
 test-fb-clip:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb.c $(HOST_INCDIRS)
+	@# $(GFX_SRC): fb.c rounds its window corners with gfx_mask_corner, so
+	@# linking fb.c without the engine stopped working when that landed. The
+	@# break was invisible because no suite reaches this target.
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb.c c/kernel/gui/glass.c $(GFX_SRC) $(HOST_INCDIRS) -lm
 	@$(BUILD)/fb_clip_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash

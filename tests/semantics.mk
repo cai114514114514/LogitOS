@@ -74,6 +74,7 @@ SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
            c/lib/image/svg.c c/lib/image/exif.c \
            $(wildcard c/lib/media/*.c) $(wildcard c/lib/video/*.c) \
            $(wildcard c/lib/audio/*.c) \
+           $(GFX_SRC) \
            tests/unit/rust_host_shim.c
 # -Ic/apps because js_platform.c includes "logit.h" unconditionally; the media
 # include dirs because js_media.c drags the demuxer in. Same set as tests/wpt.mk.

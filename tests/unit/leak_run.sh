@@ -36,7 +36,10 @@ MM="$ROOT/c/kernel/mm"
 # under test is c/kernel/mm wired the way the kernel wires it.
 SRC="$ROOT/tests/unit/leak_kheap_test.c $ROOT/tests/unit/mm_common.c \
      $MM/kheap.c $MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c \
-     $MM/rmap.c $MM/reclaim.c $MM/swap.c"
+     $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c"
+# pcache.c: fault.c and vma.c call pcache_get/pcache_file_put/pcache_report
+# since the file-backed page cache landed, so this list stopped linking the
+# moment that happened. Nothing said so -- no suite reaches test-leak.
 
 fail=0
 

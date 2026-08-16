@@ -109,7 +109,7 @@ test-css-web-negctl: $(BUILD)/libcss_host.a
 	      echo "      the sed no longer matches the source, so it proves nothing."; exit 1; } || true
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_vars_neg \
 	    tests/unit/css_vars_test.c tests/unit/css_hostmm.c $(NEGDIR)/css_vars.c \
-	    c/apps/browser/css_engine.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    c/apps/browser/css_engine.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@if $(NEGDIR)/css_vars_neg > $(NEGDIR)/vars.txt 2>&1; then \
 	    echo "FAIL: with value truncation restored css_vars_test still PASSED --"; \
 	    echo "      the balance assertions cannot fail, so they prove nothing."; \

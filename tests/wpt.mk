@@ -214,8 +214,13 @@ WPT_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/li
 $(BUILD)/wpt_test: $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@if [ -n "$(WPT_LINK_ERR)" ]; then echo "$(WPT_LINK_ERR)"; exit 1; fi
+	@# $(GFX_SRC): svg.c builds its shapes with gfx_path/gfx_fill since the
+	@# phase-2 stroke work landed, so every host link that takes svg.c and
+	@# not the engine now fails on gfx_path_ellipse. It has been failing here
+	@# silently -- no suite reaches these targets -- until a sweep of all 522
+	@# tried them.
 	@$(CC) -O2 -w $(WPT_CF) -o $@ $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	    $(GFX_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
 # J= the number of files run at once. Isolation is per-file and results are
 # consumed in file order, so J changes wall time and no number; a full corpus
