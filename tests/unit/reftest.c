@@ -96,6 +96,7 @@ static const char *opt_ui, *opt_mono;
 static int opt_limit = 0;
 static int opt_verbose = 0;
 static int opt_always_equal = 0;   /* negative control 1 */
+static int opt_perturb = 0;        /* negative control 3 -- see judge() */
 /* NEGATIVE CONTROL 2, and it took two tries to get right -- the first version is
  * kept because what it found is worth more than the control was.
  *
@@ -290,6 +291,34 @@ static void judge(const struct rm_test *t, struct verdict *v)
     if (!tp) { v->code = V_ERR; return; }
     v->ink = count_ink(tp, w * h);
 
+    /* NEGATIVE CONTROL 3 -- the smallest difference the comparator must see.
+     *
+     * Control 1 (--always-equal) proves the comparator is load-bearing by
+     * stubbing it to yes and requiring the suite to go green. That is the
+     * dangerous direction, but it leaves the opposite question open: when the
+     * comparator says two renderings are IDENTICAL, is it actually looking at
+     * the pixels, or at nothing? A comparator with an off-by-one bound, a
+     * wrong stride, or a length of zero would also report every pass it reports
+     * today. --no-css-test cannot settle it either: a page whose stylesheet
+     * barely matters is genuinely identical without it, which is exactly why
+     * that control scores 77% instead of 0%.
+     *
+     * So: perturb the test rendering by the smallest possible amount -- ONE
+     * pixel, ONE channel, ONE step -- and require every EXACT pass to become a
+     * failure. Exact passes only, because a fuzzy pass is allowed a tolerance
+     * and is supposed to absorb this. The pixel is the centre of the viewport
+     * rather than (0,0): the top-left pixel is what count_ink() takes as the
+     * page background, so perturbing it would move the ink baseline as well and
+     * the control would be testing two things at once.
+     *
+     * Watched failing: with this flag the 187 exact passes in the first 600
+     * tests must all fail, and the harness asserts the count rather than
+     * printing it. */
+    if (opt_perturb) {
+        uint32_t *px = &tp[(h / 2) * w + (w / 2)];
+        *px ^= 1u;   /* one step on the low channel; never a no-op */
+    }
+
     int best = V_FAIL; long bestdiff = v->total; int bestmax = 255, bestfuzz = -1;
     uint32_t *bestref = 0;
     int any_ref = 0;
@@ -476,14 +505,39 @@ static int cmp_bk(const void *a, const void *b)
 { long d = ((const struct bucket *)b)->n - ((const struct bucket *)a)->n;
   return d < 0 ? -1 : d > 0 ? 1 : 0; }
 
-static struct bucket sd[512]; static int nsd;
-static void bump_sd(const char *name)
+/* The spec-directory table carries a DENOMINATOR as well as a failure count,
+ * and the denominator is not decoration. A bare failure count ranks by how big
+ * a directory is: css/CSS2 has thousands of tests, so it tops the table at any
+ * pass rate whatsoever, and a small directory failing 100% of 60 tests -- a
+ * feature that is simply absent -- sorts below it and never gets looked at.
+ * The table is read as a WORK ORDER, so it has to distinguish "large and mostly
+ * working" from "small and entirely broken". `run` counts every test judged in
+ * that directory EXCLUDING the ones no static comparison can judge (V_SKIP),
+ * which is the same denominator the headline PASS RATE uses -- otherwise the
+ * per-directory rates would not sum to the corpus rate. */
+struct dbucket { char name[64]; long n; long run; };
+/* Per-flag skip tallies, in the order printed. See the report block. */
+static long skipflag[7];
+static const char *skipflag_name[7] = {
+    "interact  (needs user input)", "animated  (changes over time)",
+    "paged     (no paginator here)", "speech    (speech-only)",
+    "http      (needs server headers)", "userstyle (needs a user stylesheet)",
+    "asis      (served byte-for-byte)"
+};
+
+static struct dbucket sd[512]; static int nsd;
+static struct dbucket *sd_find(const char *name)
 {
-    for (int i = 0; i < nsd; i++) if (!strcmp(sd[i].name, name)) { sd[i].n++; return; }
-    if (nsd >= 512) return;
+    for (int i = 0; i < nsd; i++) if (!strcmp(sd[i].name, name)) return &sd[i];
+    if (nsd >= 512) return 0;
     snprintf(sd[nsd].name, sizeof sd[nsd].name, "%s", name);
-    sd[nsd].n = 1; nsd++;
+    sd[nsd].n = 0; sd[nsd].run = 0; return &sd[nsd++];
 }
+static void bump_sd(const char *name)   { struct dbucket *b = sd_find(name); if (b) b->n++; }
+static void bump_sd_run(const char *name){ struct dbucket *b = sd_find(name); if (b) b->run++; }
+static int cmp_sd(const void *a, const void *b)
+{ long d = ((const struct dbucket *)b)->n - ((const struct dbucket *)a)->n;
+  return d < 0 ? -1 : d > 0 ? 1 : 0; }
 
 static void usage(void)
 {
@@ -527,6 +581,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--realfont")) opt_realfont = 1;
         else if (!strcmp(a, "--tentative")) opt_tentative = 1;
         else if (!strcmp(a, "--always-equal")) opt_always_equal = 1;
+        else if (!strcmp(a, "--perturb")) opt_perturb = 1;
         else if (!strcmp(a, "--no-css"))      opt_nocss = 1;
         else if (!strcmp(a, "--no-css-test")) opt_nocss = 2;
         else if (!strcmp(a, "-v"))        opt_verbose = 1;
@@ -611,6 +666,27 @@ int main(int argc, char **argv)
         count[v.code]++;
         if (v.code == V_FUZZY) fuzz_passes++;
 
+        /* Denominator first, and for every judged test rather than only the
+         * failing ones -- a directory with zero failures must still appear with
+         * its run count, or "0 failed" is indistinguishable from "never ran". */
+        char sdir[64]; specdir(t.path, sdir, sizeof sdir);
+        if (v.code != V_SKIP) bump_sd_run(sdir);
+        /* WHY each skip was skipped. A bare skip total is the one number in this
+         * report that could hide the harness quietly declining to judge a whole
+         * feature -- "85 skipped" and "85 skipped, all of them paged media" are
+         * very different statements, and only the second can be checked. Counted
+         * per flag rather than per test, so a test carrying two reasons is
+         * counted under both and the column does not have to sum to the total. */
+        if (v.code == V_SKIP) {
+            if (t.flags & RM_F_INTERACT)  skipflag[0]++;
+            if (t.flags & RM_F_ANIMATED)  skipflag[1]++;
+            if (t.flags & RM_F_PAGED)     skipflag[2]++;
+            if (t.flags & RM_F_SPEECH)    skipflag[3]++;
+            if (t.flags & RM_F_HTTP)      skipflag[4]++;
+            if (t.flags & RM_F_USERSTYLE) skipflag[5]++;
+            if (t.flags & RM_F_ASIS)      skipflag[6]++;
+        }
+
         int passed = (v.code == V_EXACT || v.code == V_FUZZY);
         /* A pass where NEITHER side drew anything is two blank pages agreeing.
          * Counted, and subtracted from the headline, because it is not evidence
@@ -629,10 +705,22 @@ int main(int argc, char **argv)
         if (!passed && v.all_match && v.code != V_SKIP && v.code != V_NOREF &&
             v.code != V_ERR && v.code != V_CRASH && v.code != V_TIMEOUT)
             match_fail++;
-        if (!passed) {
+        /* A SKIP IS NEITHER A PASS NOR A FAILURE, and until the denominator
+         * above went in, it was silently being recorded as a failure: V_SKIP is
+         * not `passed`, so it fell into the branch below and was counted in the
+         * work order, written to failures.txt, and written into the baseline as
+         * an expected failure. The arithmetic is what exposed it -- the ranked
+         * table summed to 17,415 against 17,330 non-passing verdicts, and the
+         * difference was exactly the 85 skips. It is excluded here on the same
+         * ground the headline PASS RATE already excludes it: `interact`,
+         * `animated`, `paged`, `speech`, `http`, `userstyle` and `asis` say no
+         * static pixel comparison can judge the test at all, so counting it
+         * against css/css-ui is a claim about our engine that the run did not
+         * make. The skip count is reported on its own line, by reason of flag. */
+        if (!passed && v.code != V_SKIP) {
             char c[64]; classify(opt_root, t.path, c, sizeof c);
             bump(c);
-            char d[64]; specdir(t.path, d, sizeof d); bump_sd(d);
+            bump_sd(sdir);
             if (wb) fprintf(wb, "%s\n", t.path);
             if (fl) fprintf(fl, "%-70s %-9s %8ld px  %s\n", t.path, vname[v.code], v.diffpx, c);
             if (baseline && !base_has(t.path)) {
@@ -640,7 +728,13 @@ int main(int argc, char **argv)
                 if (opt_verbose || regressions <= 20)
                     printf("REGRESSION %s (%s, %ld px wrong)\n", t.path, vname[v.code], v.diffpx);
             }
-        } else if (baseline && base_has(t.path)) {
+        } else if (baseline && base_has(t.path) && v.code != V_SKIP) {
+            /* ... and a skip is not a newly-passing test either. Excluding
+             * V_SKIP from the failure branch above without excluding it here
+             * would have moved all 85 skips straight into `newly passing`,
+             * turning a harness limitation into an apparent improvement --
+             * the precise shape of dishonest number this file exists to
+             * refuse. A skip is reported only as a skip, on its own line. */
             newpass++;
         }
 
@@ -673,6 +767,13 @@ int main(int argc, char **argv)
     printf("  crash                %6ld\n", count[V_CRASH]);
     printf("  timeout              %6ld\n", count[V_TIMEOUT]);
     printf("  skipped (flags)      %6ld   not judgeable by any static comparison\n", count[V_SKIP]);
+    /* A SKIP IS NOT A PASS. Broken out by reason so the number can be argued
+     * with: each of these is a capability the harness does not have, and if one
+     * of them ever grows large it is a statement about the harness, not about
+     * the engine. They are excluded from the PASS RATE denominator below. */
+    for (int i = 0; i < 7; i++)
+        if (skipflag[i])
+            printf("      %-34s %6ld\n", skipflag_name[i], skipflag[i]);
     if (!opt_tentative) printf("  .tentative. excluded %6ld\n", tent_skipped);
     printf("\nPASS RATE  %ld / %ld  =  %.2f%%\n", ok, denom,
            100.0 * (double)ok / (double)denom);
@@ -721,10 +822,31 @@ int main(int argc, char **argv)
     for (int i = 0; i < nbk && i < 25; i++)
         printf("  %-20s %6ld\n", bk[i].name, bk[i].n);
 
-    printf("\n---- failures by WPT spec directory (objective) ----\n");
-    qsort(sd, (size_t)nsd, sizeof *sd, cmp_bk);
-    for (int i = 0; i < nsd && i < 25; i++)
-        printf("  %-32s %6ld\n", sd[i].name, sd[i].n);
+    /* THE WORK ORDER. Ranked by absolute failures, because that is what a fix
+     * to that directory would actually buy -- but printed with the denominator
+     * and the rate beside it, so a 100%-failing small directory (a feature that
+     * is absent, usually the cheapest win on the page) is visible rather than
+     * buried under css/CSS2's size. Read both columns. */
+    printf("\n---- failures by WPT spec directory (objective; the work order) ----\n");
+    printf("  %-32s %8s / %-8s  %s\n", "directory", "failed", "run", "fail rate");
+    qsort(sd, (size_t)nsd, sizeof *sd, cmp_sd);
+    for (int i = 0; i < nsd && i < 25; i++) {
+        long r = sd[i].run ? sd[i].run : 1;
+        printf("  %-32s %8ld / %-8ld  %6.2f%%\n",
+               sd[i].name, sd[i].n, sd[i].run, 100.0 * (double)sd[i].n / (double)r);
+    }
+    /* Machine-readable, so the next workflow does not have to scrape the table
+     * above out of a log that also carries the controls and the ratchet. */
+    {
+        FILE *rk = fopen("build/reftest/ranking.txt", "w");
+        if (rk) {
+            for (int i = 0; i < nsd; i++)
+                fprintf(rk, "%s: %ld failed / %ld run\n",
+                        sd[i].name, sd[i].n, sd[i].run);
+            fclose(rk);
+            printf("  (full table, all %d directories: build/reftest/ranking.txt)\n", nsd);
+        }
+    }
 
     if (baseline) {
         printf("\nratchet: %ld regressions, %ld newly passing (baseline %s, %d entries)\n",

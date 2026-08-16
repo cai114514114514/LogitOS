@@ -32,6 +32,23 @@
 #   make test-reftest-ahem    CAN WE RENDER AHEM AT ALL -- seconds, run it first
 #   make test-reftest-negctl       the always-equal comparator, full corpus
 #   make test-reftest-css-negctl   CSS withheld, full corpus, both readings
+#   make test-reftest-perturb-negctl  one pixel changed; every exact pass must fail
+#
+# WHY PIXELS AND NOT A DISPLAY LIST. The cheap comparison for this engine is the
+# paint-op list -- tests/unit/loaderhost already records one, and comparing two
+# op lists needs no rasterizer. It was rejected, and the reason is worth stating
+# because it is the whole value of the target. A reftest asks "do these two pages
+# LOOK the same", and two different op lists routinely produce identical pixels:
+# one rect versus two abutting halves of it, a glyph run split at a style
+# boundary, a background painted before a border rather than under it, a
+# transform folded into coordinates rather than carried as a matrix. An op-list
+# comparator calls all four a failure, and every one of those is a false alarm
+# that a person then has to triage. It is also blind in the other direction --
+# it cannot see overdraw, clipping that removes something, or a colour that two
+# ops composite to. Rasterizing costs a viewport of memory per side and buys a
+# comparison with no such class: what is compared is what the screen would show.
+# The one thing this cannot see is anything OUTSIDE the 800x600 viewport, which
+# is stated in refrender.h and is why doc height is printed by --one.
 #
 # Both control targets end in -negctl, which is how tools/audit_tests.py's CI
 # discovery knows to skip them -- they are slow and they are expected to report
@@ -56,7 +73,8 @@
 
 .PHONY: test-reftest reftest reftest-one reftest-diff reftest-rank \
         reftest-baseline reftest-manifest test-reftest-ahem \
-        test-reftest-negctl test-reftest-css-negctl reftest-ahem-fetch
+        test-reftest-negctl test-reftest-css-negctl reftest-ahem-fetch \
+        test-reftest-perturb-negctl
 
 WPT_ROOT      ?= third_party/wpt
 REFT_BIN      := $(BUILD)/reftest/reftest
@@ -92,7 +110,13 @@ REFT_PIPELINE := c/apps/browser/layout.c c/apps/browser/browser_paint.c \
 # the glyph rasterizer is now a converter onto Open Logit, and $(GFX_SRC) below
 # was already here for the painter, so the reference renderer picks up the
 # engine's glyph path with no new dependency.
+# c/kernel/gui/glass.c is here because fb.c calls into it (glass_build_lut,
+# gl_isqrt, glass_disp, glass_fres -- the rim refraction table) and has done
+# since a1c345a76. It was missing from this list, which nothing noticed while
+# REFT_KERNEL was only ever linked together with the rest of the kernel; the
+# ahem_test target below links REFT_KERNEL ALONE and so it failed there first.
 REFT_KERNEL   := c/kernel/gui/fb.c c/lib/text/glyphras.c c/kernel/gui/text.c \
+                 c/kernel/gui/glass.c \
                  c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/utf8.c \
                  c/lib/text/shape.c c/lib/text/script.c c/lib/text/bidi.c \
                  c/lib/text/otlayout.c
@@ -147,11 +171,21 @@ test-reftest-ahem: $(BUILD)/reftest/ahem_test
 
 # Links only the text half -- no browser pipeline, no LibCSS -- so it builds and
 # runs in seconds and can be the first thing anyone asks.
-$(BUILD)/reftest/ahem_test: tests/unit/ahem_test.c tests/unit/refhost/refhost.c $(REFT_KERNEL)
+#
+# $(GFX_SRC) is NOT optional here and was not always needed. Before the G3
+# migration (e282d0f57) the glyph rasterizer was c/kernel/gui/raster.c and was
+# self-contained, so REFT_KERNEL linked alone. glyphras.c replaced it as a
+# CONVERTER onto Open Logit, so every glyph now goes through gfx_fill_mask_subs
+# and this target stopped linking the day raster.c was deleted. The main
+# REFT_BIN did not notice because $(REFT_SRC) folds $(GFX_SRC) in for the
+# painter anyway -- which is exactly why the breakage surfaced only in the one
+# target that links the text half on its own.
+$(BUILD)/reftest/ahem_test: tests/unit/ahem_test.c tests/unit/refhost/refhost.c $(REFT_KERNEL) $(GFX_SRC)
 	@mkdir -p $(BUILD)/reftest
 	$(CC) -O2 -w -Itests/unit/refhost -Ic/kernel/gui -Ic/lib/text -Ic/kernel/mm \
 	    -Ic/kernel/core -Ic/fs -Ic/drivers/virtio -Ic/lib/gfx -Ic/lib/image \
-	    -o $@ tests/unit/ahem_test.c tests/unit/refhost/refhost.c $(REFT_KERNEL) -lm
+	    -o $@ tests/unit/ahem_test.c tests/unit/refhost/refhost.c \
+	    $(sort $(REFT_KERNEL) $(GFX_SRC)) -lm
 
 # Ahem is not in the vendored WPT subset (third_party/wpt/fonts/ does not
 # exist), so it is fetched to .cache/ and gitignored, the same shape as the
@@ -193,7 +227,8 @@ $(REFT_MANIFEST): $(REFT_BIN)
 test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
 	@echo "--- control: with the comparator stubbed to equality, no rel=match test may fail ---"
 	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
-	    --always-equal > $(BUILD)/reftest/ctl.log 2>&1 || true
+	    --always-equal > $(BUILD)/reftest/ctl.log \
+	    2> $(BUILD)/reftest/ctl.progress || true
 	@n=$$(sed -n 's/^ALWAYS-EQUAL CONTROL: \([0-9]*\) match-type.*/\1/p' $(BUILD)/reftest/ctl.log); \
 	 if [ -z "$$n" ]; then echo "CONTROL BROKEN: no verdict line"; exit 1; fi; \
 	 if [ "$$n" != "0" ]; then \
@@ -203,9 +238,15 @@ test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
 	 fi; echo "  ok: 0 match-type failures -- the comparator is load-bearing"
 	@echo
 	@rc=0; \
+	 : "stderr goes to its OWN file, NOT 2>&1 into gate.log. The runner writes a" ; \
+	 : "\r progress counter to stderr every 500 tests; folded into the same file" ; \
+	 : "it lands in the MIDDLE of REGRESSION lines and truncates the test paths" ; \
+	 : "-- the first full-corpus run reported 17 regressions and only 15 of the" ; \
+	 : "paths could be read back, which is a gate whose failure output is not" ; \
+	 : "actionable. Progress still reaches the terminal via the tail below." ; \
 	 $(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --baseline $(REFT_BASELINE) --ahem $(REFT_AHEM) \
-	    > $(BUILD)/reftest/gate.log 2>&1 || rc=$$?; \
+	    > $(BUILD)/reftest/gate.log 2> $(BUILD)/reftest/gate.progress || rc=$$?; \
 	 cat $(BUILD)/reftest/gate.log; \
 	 if grep -q 'DISCRIMINATION CHECK: SUSPECT' $(BUILD)/reftest/gate.log; then \
 	    echo; echo "CONTROL BROKEN: the discrimination check measured nothing."; \
@@ -249,7 +290,8 @@ reftest-baseline: $(REFT_BIN) $(REFT_MANIFEST)
 # the comparator is stubbed to equality, and this target FAILS if it does not.
 test-reftest-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
-	    --always-equal > $(BUILD)/reftest/negctl.log 2>&1 || true
+	    --always-equal > $(BUILD)/reftest/negctl.log \
+	    2> $(BUILD)/reftest/negctl.progress || true
 	@grep -E 'PASS RATE|ALWAYS-EQUAL CONTROL' $(BUILD)/reftest/negctl.log || true
 	@n=$$(sed -n 's/^ALWAYS-EQUAL CONTROL: \([0-9]*\) match-type.*/\1/p' $(BUILD)/reftest/negctl.log); \
 	 if [ "$$n" != "0" ]; then \
@@ -260,6 +302,37 @@ test-reftest-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 	    echo "  must not be: the 558 rel=mismatch tests require the two renderings"; \
 	    echo "  to DIFFER, so a comparator that always says equal fails all of them."; \
 	 fi
+
+# NEGATIVE CONTROL 3 -- the other direction, and the one controls 1 and 2 leave
+# open. Control 1 proves the suite goes green when the comparator cannot say no.
+# Neither it nor control 2 proves the comparator can see a SMALL difference: a
+# comparator with a wrong stride or a zero length would report exactly the passes
+# it reports today, and control 2 cannot settle it because a page whose stylesheet
+# barely matters is genuinely identical without it (which is why it scores 77%,
+# not 0%). So --perturb flips ONE pixel by ONE step in the test rendering and
+# every EXACT pass must turn into a failure. Asserted, not printed.
+test-reftest-perturb-negctl: $(REFT_BIN) $(REFT_MANIFEST)
+	@echo "--- control 3: one pixel, one channel, one step -- every exact pass must fail ---"
+	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
+	    --ahem $(REFT_AHEM) > $(BUILD)/reftest/pert_base.log \
+	    2> $(BUILD)/reftest/pert_base.progress || true
+	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) --perturb \
+	    --ahem $(REFT_AHEM) > $(BUILD)/reftest/pert.log \
+	    2> $(BUILD)/reftest/pert.progress || true
+	@b=$$(sed -n 's/^  exact match *\([0-9]*\).*/\1/p' $(BUILD)/reftest/pert_base.log); \
+	 p=$$(sed -n 's/^  exact match *\([0-9]*\).*/\1/p' $(BUILD)/reftest/pert.log); \
+	 echo "  exact matches unperturbed: $$b"; \
+	 echo "  exact matches perturbed  : $$p"; \
+	 if [ -z "$$b" ] || [ "$$b" -lt 20 ]; then \
+	    echo "CONTROL BROKEN: only $$b exact passes to perturb -- nothing to measure."; \
+	    exit 1; \
+	 fi; \
+	 if [ "$$p" != "0" ]; then \
+	    echo "NEGATIVE CONTROL FAILED: $$p test(s) still report an EXACT match after"; \
+	    echo "  one pixel was changed. The comparator is not looking at the pixels."; \
+	    exit 1; \
+	 fi; \
+	 echo "  ok: all $$b exact matches became failures -- the comparator sees one pixel"
 
 # NEGATIVE CONTROL 2, and read tests/unit/reftest.c's opt_nocss comment before
 # changing it. Withholding CSS from BOTH sides does NOT collapse the rate -- it
