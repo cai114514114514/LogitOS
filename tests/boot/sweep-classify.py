@@ -99,7 +99,12 @@ def boots(t, depth=0):
 targets = sorted(t for t in recipes if t.startswith("test-"))
 targets += sorted(t for t in prereqs
                   if t.startswith("test-") and t not in recipes)
-targets = sorted(set(targets))
+# Drop what is not a real target name. `make -p` prints pattern rules and
+# unexpanded $(1) template bodies too, and a sweep that runs `make
+# test-as-$(1)-negctl` reports a failure that is a parsing artifact of this
+# file rather than anything about the tree.
+targets = sorted(set(t for t in targets
+                     if "$" not in t and "%" not in t and t.startswith("test-")))
 
 host, dev = [], []
 for t in targets:
