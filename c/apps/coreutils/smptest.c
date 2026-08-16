@@ -148,7 +148,21 @@ int main(void)
     /* Genuine BKL-free concurrency: N children finished in well under N*T1. Require
      * TN < 1.6*T1 (i.e. 5*TN < 8*T1). Need a meaningful baseline (>=2s). */
     if (T1 < 2)                    { outs("SMP_TEST_FAIL: baseline too short to time\n"); return 1; }
-    if (!(TN * 5 < T1 * 8))        { outs("SMP_TEST_FAIL: no wall-clock speedup (kmalloc still serialized by the BKL?)\n"); return 1; }
+    /* The old text guessed "kmalloc still serialized by the BKL?" and the guess
+     * was wrong by a factor of 834. Measured with tests/boot/run-smp-lockprobe.sh,
+     * which samples every lock's ticket counter across exactly this workload:
+     *
+     *     kheap_lock   267 -> 30,720,350     (+30.7 MILLION)
+     *     g_bkl      6,473 ->     43,309     (+36,836)
+     *     pmm_lock   2,740 ->      3,044     (+304)
+     *
+     * SYS_KHEAP_STRESS is the ONE entry on syscall_is_bkl_free()'s allow-list,
+     * so the BKL was never what serialised this. It is kheap_lock -- one global
+     * lock around the allocator -- and four cores spinning on it cost more than
+     * doing the work serially (T1=5s, TN=41s). Making this gate pass needs a
+     * per-core front end (magazines, a per-CPU free list), not anything to do
+     * with the big kernel lock. */
+    if (!(TN * 5 < T1 * 8))        { outs("SMP_TEST_FAIL: no wall-clock speedup -- kheap_lock serialises kmalloc (see the note above)\n"); return 1; }
 
     outs("SMP_TEST_OK\n");
     return 0;

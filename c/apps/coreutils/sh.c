@@ -628,10 +628,21 @@ static void run_external(char **argv, char **envp)
         errs("sh: command name too long: "); errs(argv[0]); errs("\n");
         app_exit(127);
     }
-    c_strcpy(buf, "/bin/", sizeof buf);
-    int n = 5; for (int i = 0; argv[0][i] && n < (int)sizeof buf - 1; i++) buf[n++] = argv[0][i];
-    buf[n] = 0;
-    sys_execve(buf, argv, envp);
+    /* A NAME WITH A SLASH IS A PATH, not something to look up. Without this
+     * every absolute-path command was tried as "/bin" + the path first --
+     * `/bin/smptest` became `/bin/bin/smptest` -- which failed, printed
+     * "[execve] /bin/bin/smptest: missing/too small (-1)" to the console, and
+     * only then fell through to the path the user actually typed. The command
+     * ran, so nobody chased the line; it is one wasted failing execve and one
+     * misleading kernel diagnostic on every such invocation. */
+    int has_slash = 0;
+    for (int i = 0; argv[0][i]; i++) if (argv[0][i] == '/') { has_slash = 1; break; }
+    if (!has_slash) {
+        c_strcpy(buf, "/bin/", sizeof buf);
+        int n = 5; for (int i = 0; argv[0][i] && n < (int)sizeof buf - 1; i++) buf[n++] = argv[0][i];
+        buf[n] = 0;
+        sys_execve(buf, argv, envp);
+    }
     sys_execve(argv[0], argv, envp);
     errs("sh: command not found: "); errs(argv[0]); errs("\n");
     app_exit(127);
