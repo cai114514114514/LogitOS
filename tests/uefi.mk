@@ -139,4 +139,58 @@ test-uefi: $(ESP_IMG) $(ESP_PYFAT_IMG) $(DISK)
 test-uefi-negctl: $(ESP_BADMAGIC_IMG) $(DISK)
 	@bash tests/boot/run-uefi-test.sh $(ESP_BADMAGIC_IMG) $(DISK) negctl
 
-.PHONY: test-uefi test-uefi-negctl
+# ---------------------------------------------------------------------------
+# esp / run-uefi -- THE TWO TARGETS A PERSON TYPES.
+# ---------------------------------------------------------------------------
+# A boot path that only a test can reach is a boot path nobody has. Until these
+# existed, BOOTX64.EFI and the ESP appeared nowhere outside this fragment: the
+# main Makefile had never heard of them, `make run` was BIOS-and-GRUB only, and
+# the only way to see the machine come up under UEFI was to run the gate. The
+# firmware support was committed, green, and unusable, which is the same thing
+# as absent for anyone who is not reading test output.
+#
+# `esp` is the artifact by name -- the FAT superfloppy carrying
+# /EFI/BOOT/BOOTX64.EFI and the kernel. It is NOT hung off `all`: it costs a
+# separate link plus a filesystem build, and the BIOS path does not need it, so
+# every ordinary build should not pay for it. Ask for it and you get it.
+#
+# `run-uefi` is `run` with the firmware swapped and nothing else changed --
+# same disk, same RAM, same virtio-gpu, same serial-on-stdio -- so a difference
+# between the two runs is a difference in the FIRMWARE and not in how they were
+# invoked. That is the whole point of having both.
+esp: $(ESP_IMG)
+	@echo "ESP: $(ESP_IMG)  (boot it with: make run-uefi)"
+
+# OVMF's VARS region is writable NVRAM, so the guest writes boot variables back
+# into it. Handing QEMU the distro's own copy would mutate a file every other
+# UEFI test also reads; this keeps a per-tree copy and makes it once.
+OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
+OVMF_VARS_SRC ?= /usr/share/OVMF/OVMF_VARS_4M.fd
+UEFI_VARS := $(BUILD)/OVMF_VARS.fd
+
+$(UEFI_VARS): $(OVMF_VARS_SRC)
+	@mkdir -p $(BUILD)
+	@cp $(OVMF_VARS_SRC) $@
+
+run-uefi: $(ESP_IMG) $(DISK) $(UEFI_VARS)
+	@[ -f "$(OVMF_CODE)" ] || { \
+	    echo "run-uefi: no OVMF firmware at $(OVMF_CODE)"; \
+	    echo "  install it (Debian/Ubuntu: apt install ovmf) or set OVMF_CODE=/path/to/OVMF_CODE.fd"; \
+	    exit 1; }
+	@# The ESP rides AHCI and the LogitFS disk rides virtio-blk, which is the
+	@# arrangement run-uefi-test.sh proved -- do not "simplify" it to one bus
+	@# without booting it first. $(QEMU_DISK) is deliberately NOT reused: it
+	@# carries `-boot d`, which tells the firmware to boot the CD-ROM that this
+	@# path does not have. Everything else is the same knob `run` uses.
+	$(QEMU) -machine q35 \
+	    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	    -drive if=pflash,format=raw,file=$(UEFI_VARS) \
+	    -device ich9-ahci,id=ahci0 \
+	    -drive file=$(ESP_IMG),format=raw,if=none,id=esp0,file.locking=off \
+	    -device ide-hd,drive=esp0,bus=ahci0.0 \
+	    -drive file=$(DISK),format=raw,if=none,id=hd0,file.locking=off \
+	    -device virtio-blk-pci,drive=hd0 \
+	    $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) \
+	    -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+
+.PHONY: test-uefi test-uefi-negctl esp run-uefi
