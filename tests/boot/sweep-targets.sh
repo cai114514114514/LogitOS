@@ -78,7 +78,7 @@ done < "$LOGDIR/dev.txt"
 # been reproduced with nothing else running -- otherwise this sweep manufactures
 # bugs, which is worse than missing them.
 echo "--- confirming failures serially ---"
-awk -F"	" "\!=\"PASS\" && \!=\"NOTARGET\" {print \}" "$OUT" > "$LOGDIR/recheck.txt"
+grep -v -E "^(PASS|NOTARGET)	" "$OUT" | cut -f3 > "$LOGDIR/recheck.txt"
 if [ -s "$LOGDIR/recheck.txt" ]; then
     grep -v -f "$LOGDIR/recheck.txt" "$OUT" > "$OUT.keep" 2>/dev/null || cp "$OUT" "$OUT.keep"
     mv "$OUT.keep" "$OUT"
@@ -88,6 +88,6 @@ if [ -s "$LOGDIR/recheck.txt" ]; then
 fi
 
 echo "--- summary ---"
-awk -F'\t' '{c[$1]++} END {for (k in c) printf "%-9s %d\n", k, c[k]}' "$OUT"
+cut -f1 "$OUT" | sort | uniq -c | sort -rn
 echo "--- not passing ---"
-awk -F'\t' '$1!="PASS"' "$OUT" | sort | sed 's/\t/  /g'
+grep -v -E "^PASS	" "$OUT" | sort | sed "s/	/  /g"
