@@ -3780,6 +3780,7 @@ bench-aui: $(ISO) $(DISK)
 -include tests/asview.mk
 -include tests/asshipped.mk
 -include tests/asdiag.mk
+-include tests/smpstorm.mk
 
 # M30 threads: /bin/thrtest (the gate) and its four negative controls. Its own
 # fragment for the reason every other one here is -- several lines edit this
