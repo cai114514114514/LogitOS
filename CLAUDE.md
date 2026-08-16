@@ -1103,6 +1103,64 @@ in `kheap.c`:
   the lock each waits on, and every lock's ticket/serving/holder at a freeze) ·
   `tests/boot/qmp_lockdump.py` · `/dev/kprof` · `make bench-gfx-frame`
 
+## The test suite: 522 targets, and `make test` reaches 22
+
+**This is the single most load-bearing fact about testing in this tree**, and it
+is measured, not estimated: `make test-audit` counts 522 `test-` targets and
+finds **352 that no suite reaches** -- after already excluding the ones
+deliberately out of CI (benchmarks, negative controls run by their positive
+counterpart, manual drivers). Everything below follows from it.
+
+**A gate nobody runs is a gate that rots, and it rots silently.** One sweep of
+all 522 found five host targets that had stopped BUILDING -- not failing, not
+flaky: not compiling -- each because a source file grew a dependency and a link
+line did not follow:
+
+```
+test-fb-clip        fb.c -> gfx_mask_corner, glass_build_lut, gl_isqrt
+test-wpt-* (4)      svg.c -> gfx_path/gfx_fill (phase-2 stroke)
+test-semantics      the same
+test-css-web-negctl canon.c -> floor()  (missing -lm)
+test-leak           fault.c, vma.c -> pcache_* (the file-backed page cache)
+test-libc-diff      three separate breaks, one of them a trap: see below
+```
+
+**Run everything with `make test-sweep`.** Host targets in parallel, device
+targets one at a time, then EVERY failure re-run alone before it is believed --
+because six makes share one `build/` and two racing to produce the same object
+make a target fail for reasons that have nothing to do with it. Measured, not
+feared: `test-audio-codec-fuzz-deep`, `test-h265`, `test-demux` and
+`test-csstext-all` all failed in the parallel phase and pass by themselves. A
+sweep that reports those is MANUFACTURING bugs, which is worse than missing
+them. `make test-sweep-host` is the half worth running after an ordinary change
+(minutes); the full one boots QEMU 169 times and takes an afternoon, which is
+why it is not wired into `test` or `ci`.
+
+**THE MIRROR-IMAGE TRAPS IN `test-libc-diff`.** The header of `tests/libc.mk`
+already documents one: the "ours" build still LINKS glibc, so a missing
+implementation TU is a runtime FALLBACK, not a link error. The sweep found the
+other half. `setrlimit` was absent from `tests/unit/libc_rename.h`, so OUR
+`setrlimit` overrode glibc's for the whole process -- and ASan calls it from
+`DisableCoreDumperIfNecessary()` during its own init, before `main`. The result
+was a segfault inside `__asan_init` with no output whatsoever, which reads like
+a broken test binary rather than a missing `#define`. **A missing rename does
+not merely fail to test our version; it silently replaces the reference.**
+
+**`test-audit` is the meta-gate and its MUTE category is the one to watch**:
+"computes a verdict and exits 0 anyway", i.e. a test that cannot fail. It is
+EMPTY now, and getting there meant fixing the detector rather than the tree --
+24 of its 28 entries were false, including `qmp_desktop_look.py`, which half of
+one day's commits cite as evidence. Three blind spots, each a shape this tree
+actually uses: `sys.exit(main())` propagates a status the literal-integer
+search cannot see; a shell script's exit status is its LAST COMMAND'S (`exec
+python3 ...`, a bare `[ "$ok" -gt 0 ]`, `set -e`); and a harness no target runs
+cannot make a gate pass wrongly, so listing the dead ones twice buries the few
+that can. The four that remain are declared in `ALLOW_MUTE` with a reason each
+-- a library, two scoreboard REPORTERS whose per-site FAIL is the measurement
+they exist to produce, and a fixture builder. **An empty category is the point:
+a list of 28 with 24 false entries is a list nobody reads, and the 29th -- a
+real gate that swallowed its verdict -- joins it unnoticed.**
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
