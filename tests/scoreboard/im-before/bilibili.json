@@ -1,0 +1,76 @@
+{
+ "name": "bilibili",
+ "url": "https://www.bilibili.com/",
+ "started": "2026-08-16T12:15:49",
+ "verdict": "PAINTED",
+ "why": "painted 173084 changed px in 13.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bilibili.com/",
+  "bytes": 117446,
+  "redirects": [],
+  "script_tags": 21,
+  "script_src": 8,
+  "img_tags": 13,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 1.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 15,
+  "dials": 9,
+  "reused": 6,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9538,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 13.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 173084,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 4453,
+  "ink_px_blank": 3902,
+  "colours": 789,
+  "rich_tiles_proxy": 17
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/im-before/bilibili.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/im-before/bilibili.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T12:16:38"
+}

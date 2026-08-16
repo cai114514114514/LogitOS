@@ -1,0 +1,87 @@
+[wm] perf t=18654 composites=168 ns=1813587878 max=60578534 motions=18 curmoves=10 curns=502152 full=125 rects=168 cpx=31125008 fpx=30992656 presns=57504473 torn=0 defer=97 late=0 drawmax=108
+[wm] perf t=19658 composites=225 ns=1813781565 max=60578534 motions=18 curmoves=10 curns=502152 full=182 rects=225 cpx=31125008 fpx=30992656 presns=57504473 torn=0 defer=154 late=0 drawmax=111
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.18
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[mm] low: 112234 frames free (438 MiB), 18803 used, 0 shared, 0 bugs
+[wm] perf t=20659 composites=228 ns=1871703582 max=60578534 motions=18 curmoves=10 curns=502152 full=184 rects=228 cpx=32179728 fpx=32047376 presns=59289164 torn=0 defer=155 late=0 drawmax=111
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.19
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (224 bytes, lifetime 1800s, 1 cached)
+[tls] ticket stored for s1.hdslb.com (224 bytes, lifetime 1800s, 2 cached)
+[net] rx path: frames 69 irq 57 softirq 26 inline 0 poll 5 idle 0/0 halt/skip
+[mm] low: 111978 frames free (437 MiB), 19059 used, 0 shared, 0 bugs
+[wm] perf t=21659 composites=240 ns=1985266512 max=60578534 motions=18 curmoves=10 curns=502152 full=194 rects=240 cpx=34289168 fpx=34156816 presns=63642382 torn=0 defer=163 late=0 drawmax=122
+[mm] low: 111722 frames free (436 MiB), 19315 used, 0 shared, 0 bugs
+[mm] low: 111466 frames free (435 MiB), 19571 used, 0 shared, 0 bugs
+[browser] heap peak 9535K
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i1.hdslb.com, alpn=http/1.1
+[tls] chain of 3 verified for i1.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[wm] perf t=22659 composites=252 ns=2048581199 max=60578534 motions=18 curmoves=10 curns=502152 full=204 rects=252 cpx=35374608 fpx=35242256 presns=65648966 torn=0 defer=172 late=0 drawmax=122
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 3 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 4 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 5 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 6 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 7 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 8 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 9 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 10 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 11 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 12 cached)
+[mm] low: 111210 frames free (434 MiB), 19827 used, 0 shared, 0 bugs
+[mm] low: 110954 frames free (433 MiB), 20083 used, 0 shared, 0 bugs
+[mm] low: 110698 frames free (432 MiB), 20339 used, 0 shared, 0 bugs
+[wm] perf t=23659 composites=271 ns=2238638484 max=60578534 motions=18 curmoves=10 curns=502152 full=223 rects=271 cpx=39470608 fpx=39338256 presns=72719372 torn=0 defer=187 late=0 drawmax=122
+[mm] low: 110442 frames free (431 MiB), 20595 used, 0 shared, 0 bugs
+[mm] low: 110186 frames free (430 MiB), 20851 used, 0 shared, 0 bugs
+[mm] low: 109930 frames free (429 MiB), 21107 used, 0 shared, 0 bugs
+[mm] low: 109674 frames free (428 MiB), 21363 used, 0 shared, 0 bugs
+[img] 7/7 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 7/256 ents 6945K]
+[mm] low: 109418 frames free (427 MiB), 21619 used, 0 shared, 0 bugs
+[browser] scripts collected: 5 external classic, 1 external module, 12 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for s1.hdslb.com (no chain, no signature), alpn=http/1.1
+[net] rx path: frames 581 irq 258 softirq 129 inline 0 poll 12 idle 0/0 halt/skip
+[mm] low: 109162 frames free (426 MiB), 21875 used, 0 shared, 0 bugs
+[mm] low: 108906 frames free (425 MiB), 22131 used, 0 shared, 0 bugs
+[mm] low: 108650 frames free (424 MiB), 22387 used, 0 shared, 0 bugs
+[mm] low: 108394 frames free (423 MiB), 22643 used, 0 shared, 0 bugs
+[mm] low: 108138 frames free (422 MiB), 22899 used, 0 shared, 0 bugs
+[mm] low: 107882 frames free (421 MiB), 23155 used, 0 shared, 0 bugs
+[mm] low: 107626 frames free (420 MiB), 23411 used, 0 shared, 0 bugs
+[mm] low: 107370 frames free (419 MiB), 23667 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 107114 frames free (418 MiB), 23923 used, 0 shared, 0 bugs
+[mm] low: 106858 frames free (417 MiB), 24179 used, 0 shared, 0 bugs
+[mm] low: 106602 frames free (416 MiB), 24435 used, 0 shared, 0 bugs
+[mm] low: 106346 frames free (415 MiB), 24691 used, 0 shared, 0 bugs
+[mm] low: 106090 frames free (414 MiB), 24947 used, 0 shared, 0 bugs
+[mm] low: 105834 frames free (413 MiB), 25203 used, 0 shared, 0 bugs
+[mm] low: 105578 frames free (412 MiB), 25459 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[mm] low: 105322 frames free (411 MiB), 25715 used, 0 shared, 0 bugs
+[mm] low: 105066 frames free (410 MiB), 25971 used, 0 shared, 0 bugs
+[mm] low: 104810 frames free (409 MiB), 26227 used, 0 shared, 0 bugs
+[mm] low: 104554 frames free (408 MiB), 26483 used, 0 shared, 0 bugs
+[mm] low: 104298 frames free (407 MiB), 26739 used, 0 shared, 0 bugs
+[mm] low: 104042 frames free (406 MiB), 26995 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for i0.hdslb.com (no chain, no signature), alpn=h2
+[mm] low: 103786 frames free (405 MiB), 27251 used, 0 shared, 0 bugs
+[mm] low: 103530 frames free (404 MiB), 27507 used, 0 shared, 0 bugs
+[browser] load done: 20 requests, 9 connections dialled, 11 reused, 0 modules loaded (0 failed)
+[browser] pool: 11 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)

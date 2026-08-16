@@ -375,6 +375,51 @@ struct resent {
 static struct resent *g_res;
 static int g_nres, g_cres;
 
+/* ---------------------------------------------------------------------------
+ * LATE IMAGES. Declared here rather than in layout.h on purpose: layout.h is
+ * owned by another line this week, and these three are a private contract
+ * between this file and layout.c -- the eight other host harnesses that link
+ * layout.c neither call them nor need to see them. If the contract outlives
+ * the week it belongs in the header.
+ *
+ *   layout_img_cached()      has this src already been answered (decoded, or
+ *                            proven undecodable)? Asked before queueing a
+ *                            network fetch, so a URL is requested once a page.
+ *   layout_images_pending()  how much new work layout still owes -- the cue to
+ *                            run another pass on the next frame.
+ *   layout_images_reset()    drop the decoded-image cache. MUST be called on
+ *                            navigation and on a tab switch: the cache key is
+ *                            the raw src attribute, which means something else
+ *                            under a different base URL.
+ */
+int  layout_img_cached(const char *url);
+int  layout_images_pending(void);
+void layout_images_reset(void);
+
+/* THE TWO BUDGETS, and where the numbers come from.
+ *
+ * IMG_LOAD_MAX is the first pass, which happens while the page is still
+ * loading and the user is looking at a progress line. It was 16, in two places
+ * (this call and the prefetch loop's `g_nres < 16`), and 16 is smaller than
+ * six of the nineteen sites in tests/qmp/sites_corpus.tsv: counted from the
+ * host inventory in tests/scoreboard/2026-08-16-full/*.json, apple.com serves
+ * 98 <img> tags, stripe 35, wikipedia 26, github 24, baidu 20, qq 17. Every
+ * one of those lost pictures to the cap alone -- wikipedia's own census line
+ * from that run reads `[img] 11/22 decoded`. 128 covers the corpus maximum
+ * with headroom and is bounded underneath by the cache's 64 MiB.
+ *
+ * IMG_FRAME_BUDGET is the per-frame allowance for images discovered AFTER
+ * load. It is RES_INFLIGHT, i.e. one round of pooled requests, because that is
+ * the largest amount of network a frame can start and finish without the
+ * window going unresponsive -- res_fetch_all() blocks until its batch lands
+ * and drops everything but the close button while it does. A page that reveals
+ * forty images gets eight a frame for five frames rather than one stall. */
+#define IMG_LOAD_MAX     128
+#define IMG_FRAME_BUDGET 8
+
+/* 1 when the image pass has work it has not finished -- see settle_frame(). */
+static int g_img_owed;
+
 static void res_reset(void)
 {
     for (int i = 0; i < g_nres; i++) {
@@ -575,6 +620,72 @@ static void res_fetch_all(const char *what, int keep)
     }
 }
 
+/* ============================ THE IMAGE PASS ==============================
+ *
+ * ONE function for every image load on the page, first or late, because there
+ * used to be one and it ran ONCE -- straight after the first layout -- and
+ * anything the page discovered afterwards was never fetched at all:
+ *
+ *   - an <img> a script inserted (every video card on bilibili.com; they were
+ *     empty grey boxes for exactly this reason);
+ *   - a lazy image whose real URL sits in data-src until script moves it into
+ *     src (layout.c reads data-src as a fallback, but only at the moment the
+ *     item is built, so a swap after load was invisible);
+ *   - an image revealed by a re-layout;
+ *   - and, worst and least obvious, images that HAD loaded: layout_page()
+ *     opens with layout_free(), which frees every decoded bitmap, so the first
+ *     script mutation stripped the pictures off a page that had them. That one
+ *     is fixed in layout.c by the URL-keyed cache -- a re-layout now gets its
+ *     pictures back for free -- and this function is what finds the new ones.
+ *
+ * SHAPE: queue every wanted URL into the resource table FIRST, fetch the batch
+ * concurrently over the pooled connections, push the bodies into bfetch's
+ * cache, and only then let layout decode. That is the same ordering the first
+ * load has used since the pool landed and for the same measured reason (see
+ * the long note at the original call site): a decode is seconds on an emulated
+ * CPU and a CDN keep-alive is often five, so fetching one image at a time
+ * inside the decode loop handed back sockets the server had already closed.
+ *
+ * `budget` bounds the NEW work: URLs the cache has not already answered.
+ * Anything already decoded costs a pointer copy and is not charged. Returns >0
+ * if the display list changed and the caller should repaint. */
+static int load_late_images(int budget)
+{
+    if (budget <= 0) return 0;
+    int n = layout_count();
+    const struct item *items = layout_items();
+    if (n <= 0 || !items) return 0;
+
+    res_reset();
+    int queued = 0;
+    for (int i = 0; i < n && queued < budget; i++) {
+        if (items[i].type != IT_IMAGE || items[i].img || !items[i].imgsrc) continue;
+        if (layout_img_cached(items[i].imgsrc)) continue;   /* answered already */
+        int dup = 0;
+        for (int k = 0; k < g_nres; k++)
+            if (g_res[k].ref && str_eq(g_res[k].ref, items[i].imgsrc)) { dup = 1; break; }
+        if (!dup) { res_add(items[i].node, items[i].imgsrc, 0); queued++; }
+    }
+    if (queued == 0) { res_reset(); return 0; }
+
+    /* res_fetch_all()'s progress ticker writes the status bar, which on a LATE
+     * pass is overwriting whatever the loaded page put there (a console line,
+     * an error). Put it back afterwards -- the fetch is a few hundred
+     * milliseconds and the message it replaced is the page's, not ours. */
+    char keep[sizeof status];
+    for (unsigned k = 0; k < sizeof status; k++) keep[k] = status[k];
+
+    g_prog_what = "images"; g_prog_total = 0; g_prog_last = 0;
+    res_fetch_all("images", 1);
+    for (int i = 0; i < g_nres; i++)
+        if (g_res[i].data && g_res[i].len > 0 && g_res[i].url)
+            bfetch_cache_put(g_res[i].url, g_res[i].data, g_res[i].len);
+    res_reset();
+    int got = layout_load_images(budget);
+    set_status(keep);
+    return got;
+}
+
 /* ---- what the DOM offers ---- */
 
 static void collect_css_links(struct node *n)
@@ -695,6 +806,40 @@ static int settle_dom(void)
     return changed;
 }
 
+/* settle_dom() plus the image pass the re-layout it may have done makes
+ * necessary. THE FRAME LOOP CALLS THIS, not settle_dom().
+ *
+ * Two conditions, and neither alone is enough:
+ *
+ *   - the DOM settled into a new layout, so there may be <img> boxes that did
+ *     not exist a frame ago (script inserted one, or moved data-src into src);
+ *   - layout still owes work from the last pass, because IMG_FRAME_BUDGET
+ *     stopped it. Nothing marks the DOM dirty for that, so without the second
+ *     test a page that reveals forty images at once would load eight and then
+ *     sit there. layout_images_pending() is what makes the drain terminate:
+ *     every URL it counts becomes a cache entry, positive or negative, on the
+ *     pass that reaches it.
+ *
+ * settle_dom() itself is left alone because browser_settle() is its exported
+ * form and the host loader harness calls that with no network underneath it. */
+static int settle_frame(void)
+{
+    int changed = settle_dom();
+    if (changed) g_img_owed = 1;
+    /* THE GATE IS A FLAG, NOT THE SCAN. layout_images_pending() walks the whole
+     * display list -- up to MAXITEM entries -- and this function runs on every
+     * turn of the event loop, including the idle ones. Asking it unconditionally
+     * would put a 16k-entry walk into the hot path to answer "no" almost every
+     * time. The flag is set by the two things that can create work (a settled
+     * mutation, and a pass that stopped at its budget) and the scan runs only
+     * then. */
+    if (g_img_owed) {
+        if (load_late_images(IMG_FRAME_BUDGET) > 0) { ph = layout_height(); changed = 1; }
+        g_img_owed = layout_images_pending() > 0;
+    }
+    return changed;
+}
+
 /* Console bytes already reflected in the status bar. The status line only ever
  * shows the FIRST line of console output, so re-rendering it when nothing new
  * was logged is a repaint that changes no pixels -- and a setInterval firing
@@ -799,6 +944,7 @@ static int run_collected_scripts(const char *page_url)
                     cnm = cname;
                 }
                 js_page_eval((const char *)e->data, e->len, cnm);
+                dom_script_mark_done(e->node);   /* never re-run via DOM insertion */
                 ran++;
                 continue;
             }
@@ -820,8 +966,110 @@ static int run_collected_scripts(const char *page_url)
                 nm = name;
             }
             js_module_eval((const char *)e->data, e->len, nm);
+            dom_script_mark_done(e->node);
             ran++;
         }
+    }
+    return ran;
+}
+
+/* ---- dynamically-inserted scripts --------------------------------------
+ * A <script> that enters the document by DOM insertion (appendChild etc.)
+ * after parse must be prepared and run per HTML5. js_dom.c's insert_run
+ * detects that and calls the sink below -- which does NOT run anything on
+ * that stack (the inserting script is still executing; recursing the
+ * evaluator through a DOM callback is the trap the spec doc names). It
+ * ENQUEUES the node; run_pending_inserted_scripts() drains the queue from
+ * the per-frame loop, exactly where run_collected_scripts already runs and
+ * where res_fetch_all already pumps the network.
+ *
+ * A src script is fetched (synchronously here, on the frame loop, not the
+ * insertion stack -- the same bfetch_sync the module loader uses) and run;
+ * an inline script runs from its own text. Insertion order is preserved by
+ * the queue being FIFO. dom_script_mark_done stamps each before running so a
+ * re-insertion never re-runs it, and so offer_scripts never re-queues one
+ * already queued (the stamp is set at run, but the QUEUED set is checked by
+ * pointer below to stop a double-enqueue between insertion and drain). */
+#define PENDING_MAX 64
+static struct node *g_pending[PENDING_MAX];
+static int g_pending_n;
+
+static void on_script_inserted(struct node *n)
+{
+    if (!n || g_pending_n >= PENDING_MAX) {
+        if (n) printf("[browser] inserted-script queue full -- dropping one\n");
+        return;
+    }
+    for (int i = 0; i < g_pending_n; i++) if (g_pending[i] == n) return;  /* already queued */
+    g_pending[g_pending_n++] = n;
+}
+
+/* Run every queued inserted script, in order. Re-entrant by construction: a
+ * script run here that inserts another appends to g_pending (via the sink)
+ * and this loop, which re-reads g_pending_n each turn, picks it up -- without
+ * ever recursing, because the sink only enqueues. Returns how many ran. */
+static int run_pending_inserted_scripts(const char *page_url)
+{
+    int ran = 0, guard = 0;
+    while (g_pending_n > 0) {
+        if (++guard > 4 * PENDING_MAX) {          /* a script re-inserting forever */
+            printf("[browser] inserted-script drain guard tripped -- stopping\n");
+            g_pending_n = 0;
+            break;
+        }
+        struct node *n = g_pending[0];
+        for (int i = 1; i < g_pending_n; i++) g_pending[i - 1] = g_pending[i];
+        g_pending_n--;
+        if (dom_script_is_done(n)) continue;
+        dom_script_mark_done(n);                  /* stamp BEFORE running: run-once even if it throws */
+
+        int is_module = 0;
+        const char *type = dom_attr(n, "type");
+        if (type && (has_ci(type, "module"))) is_module = 1;
+        const char *src = dom_attr(n, "src");
+
+        unsigned char *data = 0; int len = 0; char urlbuf[600];
+        const char *name = page_url;
+        if (src && src[0]) {
+            /* Fetch on the frame loop, not the insertion stack. bfetch_sync
+             * pumps the network the same way the module loader's mod_loader
+             * does. */
+            int rc = bfetch_resolve(page_url, src, urlbuf, sizeof urlbuf);
+            if (rc != 0) { printf("[browser] inserted script: bad src %s\n", src); continue; }
+            int fd = bfetch_start(urlbuf);
+            if (fd < 0) { printf("[browser] inserted script: cannot fetch %s\n", urlbuf); continue; }
+            while (bfetch_state(fd) == BF_PENDING) bfetch_pump();
+            if (bfetch_state(fd) == BF_DONE && bfetch_status(fd) / 100 == 2) {
+                len = bfetch_take(fd, &data);
+                if (len < 0) { len = 0; data = 0; }
+                name = urlbuf;
+            } else {
+                printf("[browser] inserted script LOST: %s: %s (status %d)\n",
+                       urlbuf, bfetch_error(fd), bfetch_status(fd));
+                bfetch_release(fd);
+                continue;
+            }
+        } else {
+            /* Inline: reassemble the child text nodes, exactly as
+             * collect_scripts does at parse time. */
+            int total = 0;
+            for (struct node *c = n->first_child; c; c = c->next)
+                if (c->type == N_TEXT && c->text) total += c->textlen;
+            if (total <= 0) continue;
+            data = malloc((size_t)total + 1);
+            if (!data) continue;
+            int o = 0;
+            for (struct node *c = n->first_child; c; c = c->next)
+                if (c->type == N_TEXT && c->text)
+                    for (int i = 0; i < c->textlen; i++) data[o++] = (unsigned char)c->text[i];
+            data[o] = 0; len = o;
+        }
+        if (data && len > 0 && !(src && body_is_html_not_js(data, len))) {
+            if (is_module) js_module_eval((const char *)data, len, name);
+            else           js_page_eval((const char *)data, len, name);
+            ran++;
+        }
+        free(data);
     }
     return ran;
 }
@@ -956,6 +1204,13 @@ static void load_once(const char *u)
     fc_reset();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
+    /* The decoded-image cache goes with the document. Its key is the raw
+     * src attribute, so under a different base URL the same key names a
+     * different picture -- keeping it across a navigation would paint the
+     * previous page's images onto this one. layout_free() deliberately does
+     * NOT do this: it runs at the top of every layout_page(), and dropping
+     * the cache there is precisely the defect being fixed. */
+    layout_images_reset();
     res_reset();
     free(g_page_src); g_page_src = 0;
     ph = 0;
@@ -1134,47 +1389,23 @@ static void load_once(const char *u)
         { extern size_t malloc_peak; printf("[browser] heap peak %uK\n", (unsigned)(malloc_peak / 1024)); }
         redraw(0);                   /* re-paint with the page's real stylesheets */
     }
-    /* Images ride the same pooled connections now, so eight of them from one
-     * host is one handshake rather than eight. That is why this number can go
-     * up without the load time going with it. */
-    /* QUEUE THEM ALL FIRST, then decode.
+    /* Images ride the same pooled connections, so eight of them from one host
+     * is one handshake rather than eight. That is why IMG_LOAD_MAX can go up
+     * without the load time going with it. The queue-everything-then-decode
+     * ordering and the measurement behind it now live in load_late_images(),
+     * which is where they belong: they apply to every pass, not this one.
      *
-     * layout_load_images() fetches one image, decodes it, and only then asks
-     * for the next -- and a decode is seconds on an emulated CPU while a CDN's
-     * keep-alive timeout is often five. The pool therefore handed back sockets
-     * the server had already closed: 8 hits, 5 of them dead, 7 handshakes for
-     * 8 images from one host. Queueing every image up front means they all
-     * transfer inside one window with no decode in between, and res_fetch()
-     * then serves each one out of the prefetch cache.
-     *
-     * They go through the resource TABLE rather than bfetch_prefetch now, for
-     * one reason: the table is where a resource's bytes can be recorded on the
-     * tab. Same requests, same pooled connections, same "queue everything
-     * before decoding anything" -- res_fetch_all serves whatever the tab
-     * already holds and fetches only the rest, and bfetch_cache_put then hands
-     * every body to layout's own res_fetch() so nothing is fetched twice. */
-    g_prog_what = "images"; g_prog_total = 0; g_prog_last = 0;
-    res_reset();
-    { int n = layout_count();
-      const struct item *it = layout_items();
-      for (int i = 0; i < n && g_nres < 16; i++) {
-          if (it[i].type != IT_IMAGE || it[i].img || !it[i].imgsrc) continue;
-          int dup = 0;
-          for (int k = 0; k < g_nres; k++)
-              if (g_res[k].ref && str_eq(g_res[k].ref, it[i].imgsrc)) { dup = 1; break; }
-          if (!dup) res_add(it[i].node, it[i].imgsrc, 0);
-      } }
-    if (g_nres > 0) {
-        res_fetch_all("images", 1);
-        for (int i = 0; i < g_nres; i++)
-            if (g_res[i].data && g_res[i].len > 0 && g_res[i].url)
-                bfetch_cache_put(g_res[i].url, g_res[i].data, g_res[i].len);
-    }
-    res_reset();
-    if (layout_load_images(16) > 0) {
+     * The first pass is load_late_images() too -- ONE image path, so a fix to
+     * either the queueing or the budget cannot land on only one of them. The
+     * two differ in exactly one number, see IMG_LOAD_MAX. */
+    if (load_late_images(IMG_LOAD_MAX) > 0) {
         ph = layout_height();
         redraw(0);
     }
+    /* A page with more than IMG_LOAD_MAX images has some left; the frame loop
+     * drains them. Set unconditionally rather than from the pass's own count,
+     * because the scripts about to run are the other producer. */
+    g_img_owed = 1;
     /* Open the page's JS runtime. It stays open until the next navigation --
      * that is the whole point: listeners, timers and pending promises all live
      * past the end of the script that created them. It is opened even when the
@@ -1184,6 +1415,8 @@ static void load_once(const char *u)
     js_out_shown = 0;
     js_page_set_location(base);
     js_page_open(g_root);
+    g_pending_n = 0;                       /* fresh page, empty inserted-script queue */
+    js_dom_set_script_sink(on_script_inserted);
     /* The form/focus JS surface (element.value, .checked, form.submit(),
      * document.activeElement) is installed by js_page_open() itself, alongside
      * every other module's -- NOT from here.
@@ -1219,6 +1452,11 @@ static void load_once(const char *u)
     res_fetch_all("scripts", 1);
     g_prog_what = "running scripts"; g_prog_total = 0; g_prog_last = 0;
     int had_script = run_collected_scripts(base) > 0;
+    /* A parse-time script may have inserted more <script>s (an AMD/loader
+     * shim is the common case). Drain them here, on this stack, before the
+     * page is declared loaded -- run_pending_inserted_scripts is itself
+     * re-entrant, so a chain of loaders resolves fully. */
+    if (run_pending_inserted_scripts(base) > 0) had_script = 1;
     { int dials = 0, reuses = 0, reqs = 0, mods = 0, modfail = 0;
       int hits = 0, evicted = 0, closed = 0;
       bfetch_stats(&dials, &reuses, &reqs);
@@ -1254,7 +1492,10 @@ static void load_once(const char *u)
     li.bubbles = 0;
     js_dom_dispatch(js_dom_root(), "load", &li);
 
-    if (settle_dom() || had_script) {
+    /* settle_FRAME: a `load` handler that inserts images is the single most
+     * common way a real page's pictures arrive after the first image pass, and
+     * this is the first point at which they exist. */
+    if (settle_frame() || had_script) {
         status_from_js(had_script ? "loaded (ran script, no output)" : "loaded");
         redraw(0);
     }
@@ -1322,6 +1563,13 @@ static void tab_dehydrate(void)
     fc_reset();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
+    /* The decoded-image cache goes with the document. Its key is the raw
+     * src attribute, so under a different base URL the same key names a
+     * different picture -- keeping it across a navigation would paint the
+     * previous page's images onto this one. layout_free() deliberately does
+     * NOT do this: it runs at the top of every layout_page(), and dropping
+     * the cache there is precisely the defect being fixed. */
+    layout_images_reset();
     res_reset();
     free(g_page_src); g_page_src = 0;
     ph = 0; scroll = 0;
@@ -2813,7 +3061,7 @@ void app_main(void)
                             ce_settle(live ? ceh : 0);
                         }
                         /* A script may have reacted to the `input` event. */
-                        if (settle_dom()) need = 1;
+                        if (settle_frame()) need = 1;
                     }
                 }
 
@@ -2994,7 +3242,7 @@ void app_main(void)
                          * unconditionally on mousedown; now it is what happens
                          * when the click event survives the page's handlers. */
                         int go = js_dom_dispatch(n, "click", &ji);
-                        if (settle_dom()) need = 1;
+                        if (settle_frame()) need = 1;
                         /* THE CONTROL'S DEFAULT ACTION. A checkbox toggles, a
                          * submit button submits, a <select> opens -- and every
                          * one of them is suppressed by preventDefault(), which
@@ -3047,7 +3295,7 @@ void app_main(void)
                 sync_scroll();
                 need = 1;
             }
-            if (!navigated && settle_dom()) need = 1;   /* a handler rewrote the DOM */
+            if (!navigated && settle_frame()) need = 1;   /* a handler rewrote the DOM */
         }
 
         /* Due timers + animation frames. `js_page_pending()` is a pointer test,
@@ -3055,7 +3303,10 @@ void app_main(void)
          * hot as it was before timers existed. */
         if (!navigated && js_page_pending()) {
             if (js_page_run_due() > 0) {
-                if (settle_dom()) need = 1;
+                /* A timer/rAF callback can inject a <script> too -- drain the
+                 * queue on the frame loop, never on the callback's own stack. */
+                if (g_pending_n > 0) run_pending_inserted_scripts(url);
+                if (settle_frame()) need = 1;
                 if (js_page_output_len() != js_out_shown) { status_from_js("loaded"); need = 1; }
             }
         }

@@ -53,6 +53,202 @@ static int doc_h;
 static int canvas;
 static uint32_t page_bg; static int page_has_bg;   /* html/body bg -> viewport fill */
 
+/* ===========================================================================
+ * THE DECODED-IMAGE CACHE, keyed by the <img> src attribute.
+ *
+ * WHY IT EXISTS, and this is measured, not assumed. layout_page() opens with
+ * layout_free(), and layout_free() frees every decoded bitmap the display list
+ * owns -- so EVERY re-layout threw away every picture on the page. The
+ * embedder called layout_load_images() exactly ONCE per navigation, right
+ * after the first layout, so nothing ever fetched them back. One script
+ * mutation (which is every real page, within a second of load) and a page that
+ * had pictures had none, permanently and silently. That is the whole of the
+ * "images that arrive late never load" defect, and it has three shapes:
+ *
+ *   - a lazy-loaded <img> whose real URL is in data-src until script moves it,
+ *   - an <img> the script inserted after load,
+ *   - and the plain re-layout above, which loses images that HAD loaded.
+ *
+ * With this table the display list's `img` pointer is a BORROWED reference for
+ * anything with an imgsrc: the cache owns the bitmap, layout_free() and
+ * discard_items() leave it alone (ic_owns), and layout_page() re-attaches it
+ * at the end of every layout so no caller can forget to. An inline <svg>
+ * (imgsrc == 0) is decoded from the element's own source and is still owned by
+ * the item, exactly as before -- there is no URL to key it by.
+ *
+ * THE KEY IS THE RAW ATTRIBUTE, not the resolved URL, because this file
+ * deliberately knows nothing about the network (see res_fetch below). Within
+ * one document that is the same thing: one base, so one relative src is one
+ * absolute URL. Across documents it is NOT, which is why the embedder must
+ * call layout_images_reset() on navigation.
+ *
+ * TWO BOUNDS, BOTH REFUSING OUT LOUD -- memory is the constraint here, since a
+ * decoded image is w*h*4 with no compression left in it:
+ *
+ *   IMGCACHE_MAX    entries. 256. The corpus maximum for <img> tags in the
+ *                   served HTML is 98 (apple.com; then stripe 35, wikipedia
+ *                   26, github 24, baidu 20, qq 17 -- counted from the
+ *                   host-side inventory in tests/scoreboard/2026-08-16-full/
+ *                   *.json), so 256 leaves 2.6x headroom for the ones script
+ *                   inserts, which is exactly the population this line is
+ *                   about and which nothing in that census can see.
+ *   IMGCACHE_BYTES  decoded bytes. 64 MiB. The browser's heap peak over that
+ *                   same corpus is 32.8 MB (github); the arena's commit bound
+ *                   is 320 MiB (Makefile:726) on a 512 MiB machine. 33 + 64
+ *                   is under a third of the bound, so the cache cannot be what
+ *                   exhausts memory, and a single 4K hero photo (3840*2160*4 =
+ *                   31.6 MB) still fits twice over.
+ *
+ * A NEGATIVE ENTRY (img == 0) records a URL that would not fetch or would not
+ * decode. It is what stops a broken image being re-requested on every frame
+ * once the load pass runs per-frame. THE LIMIT THAT COMES WITH IT, stated
+ * rather than left to be discovered: a fetch that fails because the network
+ * blipped is not retried for the life of the page. A reload is the retry.
+ * ===========================================================================
+ */
+enum { IMGCACHE_MAX = 256 };
+#ifndef IMGCACHE_BYTES
+#define IMGCACHE_BYTES (64L * 1024 * 1024)
+#endif
+
+struct imgcache_ent {
+    char *url;                  /* owned copy of the src attribute */
+    struct image *img;          /* owned; 0 = negative entry (will not decode) */
+    long bytes;                 /* w*h*4, 0 for a negative entry */
+};
+static struct imgcache_ent g_ic[IMGCACHE_MAX];
+static int  g_ic_n;
+static long g_ic_bytes;
+static int  g_ic_refused;       /* decodes refused by a bound, this page */
+
+static int ic_streq(const char *a, const char *b)
+{
+    if (!a || !b) return 0;
+    int i = 0;
+    while (a[i] && a[i] == b[i]) i++;
+    return a[i] == b[i];
+}
+
+static char *ic_dup(const char *s)
+{
+    int n = 0; while (s[n]) n++;
+    char *p = kmalloc((unsigned long)n + 1);
+    if (p) for (int i = 0; i <= n; i++) p[i] = s[i];
+    return p;
+}
+
+static int ic_find(const char *url)
+{
+    if (!url) return -1;
+    for (int i = 0; i < g_ic_n; i++) if (ic_streq(g_ic[i].url, url)) return i;
+    return -1;
+}
+
+#ifdef IMG_NEGCTL_NOCACHE
+/* NEGATIVE CONTROL: the behaviour this table replaced. Nothing is ever
+ * remembered, so a re-layout loses every picture and the next pass refetches
+ * from zero. tests/unit/img_late_test.c MUST fail against this build. */
+static int ic_owns(const struct image *p) { (void)p; return 0; }
+#else
+/* 1 if the cache owns this bitmap, so the display list must not free it. */
+static int ic_owns(const struct image *p)
+{
+    if (!p) return 0;
+    for (int i = 0; i < g_ic_n; i++) if (g_ic[i].img == p) return 1;
+    return 0;
+}
+#endif
+
+/* Free an item's bitmap ONLY if the item is the owner. The one place that
+ * knows the borrowed/owned rule, called from both places that discard items. */
+static void item_drop_img(struct item *it)
+{
+    if (it->img && !ic_owns(it->img)) { img_free(it->img); kfree(it->img); }
+    it->img = 0;
+}
+
+/* 1 if this src has already been answered -- decoded OR proven undecodable.
+ * The embedder asks before it queues a network fetch, so a URL is requested
+ * once per page however many <img> elements point at it. */
+int layout_img_cached(const char *url) { return ic_find(url) >= 0; }
+
+/* Drop everything. THE EMBEDDER MUST CALL THIS ON NAVIGATION: the key is a
+ * relative src, which means something different under a different base. Not
+ * called from layout_free(), because layout_free() runs at the top of every
+ * layout_page() and dropping the cache there is the bug this file is fixing. */
+void layout_images_reset(void)
+{
+    for (int i = 0; i < g_ic_n; i++) {
+        if (g_ic[i].img) { img_free(g_ic[i].img); kfree(g_ic[i].img); }
+        if (g_ic[i].url) kfree(g_ic[i].url);
+        g_ic[i].url = 0; g_ic[i].img = 0; g_ic[i].bytes = 0;
+    }
+    g_ic_n = 0; g_ic_bytes = 0; g_ic_refused = 0;
+}
+
+/* Cache statistics, for a caller that wants to report them. Any pointer NULL. */
+void layout_img_stats(int *ents, int *kbytes, int *refused)
+{
+    if (ents)    *ents    = g_ic_n;
+    if (kbytes)  *kbytes  = (int)(g_ic_bytes / 1024);
+    if (refused) *refused = g_ic_refused;
+}
+
+/* Record a URL. `img` NULL makes a negative entry. Returns the holder the
+ * cache now owns, or 0 if the entry could not be made -- in which case the
+ * CALLER still owns `img` and must free it. Both bounds print why. */
+static struct image *ic_put(const char *url, struct image *img, long bytes)
+{
+#ifdef IMG_NEGCTL_NOCACHE
+    (void)url; (void)img; (void)bytes; return 0;
+#else
+    if (!url) return 0;
+    if (g_ic_n >= IMGCACHE_MAX) return 0;   /* the caller refused already */
+#ifndef IMG_NEGCTL_NOBOUND
+    if (img && g_ic_bytes + bytes > (long)IMGCACHE_BYTES) {
+        g_ic_refused++;
+        if (g_ic_refused <= 4)
+            printf("[img] REFUSED: %dK decoded would take the image cache past "
+                   "%dK (holding %dK in %d) : %.150s\n",
+                   (int)(bytes / 1024), (int)((long)IMGCACHE_BYTES / 1024),
+                   (int)(g_ic_bytes / 1024), g_ic_n, url);
+        /* Recorded as a NEGATIVE entry even though it decoded fine: the point
+         * of the bound is that this page will not hold the bytes, and leaving
+         * the URL unanswered would have the next pass fetch and decode it all
+         * over again, every frame. It paints on this frame and not after the
+         * next re-layout. */
+        img = 0;
+    }
+#endif
+    char *k = ic_dup(url);
+    if (!k) return 0;                      /* out of memory: not cached, not fatal */
+    g_ic[g_ic_n].url = k;
+    g_ic[g_ic_n].img = img;
+    g_ic[g_ic_n].bytes = img ? bytes : 0;
+    g_ic_n++;
+    if (img) g_ic_bytes += bytes;
+    return img;
+#endif
+}
+
+/* The box height was a guess when layout reserved it; snap it to the decoded
+ * aspect ratio. Same correction the first load has always done, in one place
+ * now because both the fresh decode and the cache re-attach need it.
+ *
+ * LIMIT, stated: this corrects the ITEM only. The box record and the flow
+ * position of everything after it were computed from the guess and are not
+ * re-flowed -- feeding the cached intrinsic size back into layout means
+ * consulting the cache at the four <img> box-construction sites BEFORE
+ * box_close(), which is a separate change. The behaviour here is exactly what
+ * the single first-load pass has always produced. */
+static void ic_fit(struct item *it)
+{
+    if (it->h_auto && it->img && it->img->w > 0 && it->img->h > 0)
+        it->h = it->w * it->img->h / it->img->w;
+}
+
+static void imgcache_attach(void);      /* called at the end of layout_page */
+
 /* Stacking level for everything emitted right now: the z-index of the nearest
  * enclosing positioned box (or flex item) that set one. layout_page sorts the
  * finished list by it. */
@@ -2707,7 +2903,7 @@ static void discard_items(int mark)
 {
     if (items)
         for (int i = mark; i < nitem; i++)
-            if (items[i].img) { img_free(items[i].img); kfree(items[i].img); items[i].img = 0; }
+            if (items[i].img) item_drop_img(&items[i]);
     nitem = mark;
 }
 
@@ -3711,20 +3907,77 @@ void layout_page(struct node *root, int canvas_w)
     box_close(hbi, 0, 0, canvas_w, doc_h);
     box_overflow_pass();
     zsort();
+    /* Give the page back the pictures it already has.
+     *
+     * HERE, not in the embedder, because layout_free() at the top of this
+     * function has just cleared every `img` pointer -- so every caller of
+     * layout_page() would otherwise have to remember to re-attach, and the
+     * ones that forgot (restyle(), ce_settle(), the resize path) are exactly
+     * how a mutating page ended up with no images. It costs no network and no
+     * decode: it is a pointer copy per <img> that this page has already
+     * fetched. */
+    imgcache_attach();
+}
+
+/* Re-bind every undecoded IT_IMAGE whose src the cache already answers. */
+static void imgcache_attach(void)
+{
+    if (g_ic_n == 0 || !items) return;
+    for (int i = 0; i < nitem; i++) {
+        struct item *it = &items[i];
+        if (it->type != IT_IMAGE || it->img || !it->imgsrc) continue;
+        int ci = ic_find(it->imgsrc);
+        if (ci >= 0 && g_ic[ci].img) { it->img = g_ic[ci].img; ic_fit(it); }
+    }
 }
 
 /* Page (canvas) background, propagated from <html>/<body>. 1 if set. */
 int layout_page_bg(uint32_t *out) { if (page_has_bg && out) *out = page_bg; return page_has_bg; }
 
-/* Fetch + decode up to `max` of the reserved <img> boxes (bounded, blocking).
- * Called after layout_page so layout itself never touches the network. */
+/* Fetch + decode the reserved <img> boxes that this page has not answered yet.
+ * Called after layout_page so layout itself never touches the network.
+ *
+ * `max` IS THE BUDGET FOR NEW WORK -- fetches plus decodes -- and nothing
+ * else. It used to bound the whole pass, which made it wrong twice over now
+ * that the pass runs repeatedly:
+ *
+ *   - a src the cache already holds costs a pointer copy, so charging it to
+ *     the budget would let a page with 20 cached pictures starve the 21st
+ *     forever;
+ *   - a src the cache has already PROVEN undecodable costs nothing either, and
+ *     must not be retried at all.
+ *
+ * So both are skipped free, and `max` bounds only what touches the network.
+ * Whatever is left over is reported as `deferred` and is the caller's cue to
+ * call again on the next frame -- see the per-frame budget in browser.c. */
 int layout_load_images(int max)
 {
     int loaded = 0, gripes = 0, failed = 0, want = 0;
-    for (int i = 0; i < nitem && loaded < max; i++) {
+    int cached = 0, nofetch = 0, deferred = 0, refused0 = g_ic_refused;
+    for (int i = 0; i < nitem; i++) {
         struct item *it = &items[i];
         if (it->type != IT_IMAGE || it->img || !it->imgsrc) continue;
+        int ci = ic_find(it->imgsrc);
+        if (ci >= 0) {
+            /* Already answered. A positive entry attaches; a negative one is
+             * left empty on purpose and is NOT re-requested. */
+            if (g_ic[ci].img) { it->img = g_ic[ci].img; ic_fit(it); cached++; }
+            continue;
+        }
         want++;
+        /* THE CACHE IS FULL, so a decode could not be recorded -- and an
+         * unrecorded decode is re-requested by the very next pass, which is a
+         * per-frame refetch loop rather than a picture. Refuse instead, once
+         * per page, out loud. Nothing further on this page loads. */
+        if (g_ic_n >= IMGCACHE_MAX) {
+            if (g_ic_refused == 0)
+                printf("[img] REFUSED: %d entries cached (IMGCACHE_MAX); this page "
+                       "wants more and the rest will not load : %.150s\n",
+                       IMGCACHE_MAX, it->imgsrc);
+            g_ic_refused++;
+            continue;
+        }
+        if (loaded + failed + nofetch >= max) { deferred++; continue; }
         uint8_t *buf; int blen;
         /* NO SILENT DROPS. Both failure paths below used to be a bare
          * `continue`, and the result on screen is a page with no pictures and
@@ -3742,15 +3995,25 @@ int layout_load_images(int max)
              * would trade that boundary for a nicer log line. */
             if (gripes < IMG_GRIPES)
                 { gripes++; printf("[img] fetch failed: %.200s\n", it->imgsrc); }
+            nofetch++;
+#ifndef IMG_NEGCTL_NONEG
+            ic_put(it->imgsrc, 0, 0);      /* negative: do not ask again this page */
+#endif
             continue;
         }
         struct image *holder = kmalloc(sizeof *holder);
         struct image tmp;
         if (holder && img_decode(buf, blen, &tmp) == 0) {
-            *holder = tmp; it->img = holder; loaded++;
-            /* height was only a guess: snap the box to the real aspect ratio */
-            if (it->h_auto && tmp.w > 0 && tmp.h > 0)
-                it->h = it->w * tmp.h / tmp.w;
+            *holder = tmp;
+            long bytes = (long)tmp.w * (long)tmp.h * 4;
+            loaded++;
+            /* Hand it to the cache. If a bound refuses it, the ITEM keeps
+             * ownership: the picture still paints on this frame, and the next
+             * re-layout loses it -- which is worse than caching and better
+             * than not showing it at all. The refusal has already said why. */
+            ic_put(it->imgsrc, holder, bytes);
+            it->img = holder;
+            ic_fit(it);
         }
         else {
             failed++;
@@ -3767,6 +4030,13 @@ int layout_load_images(int max)
                        it->imgsrc);
             }
             if (holder) kfree(holder);
+#ifndef IMG_NEGCTL_NONEG
+            /* NEGATIVE CONTROL IMG_NEGCTL_NONEG drops these two lines: a URL
+             * that will not fetch or will not decode is then asked for again
+             * by every subsequent pass, which is a per-frame request storm on
+             * any page with one broken image. */
+            ic_put(it->imgsrc, 0, 0);      /* negative: this body will not decode */
+#endif
         }
         kfree(buf);
     }
@@ -3776,8 +4046,37 @@ int layout_load_images(int max)
      * "no <img> reached layout" and "all of them decoded fine". Those need
      * different fixes. `cap` is the bound this call was given, printed
      * because hitting it is a real and invisible way to lose pictures. */
-    printf("[img] %d/%d decoded (%d failed, cap %d)\n", loaded, want, failed, max);
+    printf("[img] %d/%d decoded (%d failed, cap %d)"
+           " [+%d from cache, %d unfetchable, %d deferred, %d refused;"
+           " cache %d/%d ents %dK]\n",
+           loaded, want, failed, max,
+           cached, nofetch, deferred, g_ic_refused - refused0,
+           g_ic_n, IMGCACHE_MAX, (int)(g_ic_bytes / 1024));
+    /* `loaded` is NEW decodes only -- the contract this function has always
+     * had. `cached` counts items answered without touching the network; on a
+     * page laid out through layout_page() (which re-attaches at the end of
+     * every layout) the only way it is nonzero is a URL used by more than one
+     * <img>, decoded once here and attached to the rest in the same pass.
+     * en.wikipedia.org reads `+2 from cache` for exactly that reason: two of
+     * its 20 images are repeats of an icon it already fetched. */
     return loaded;
+}
+
+/* How much new work is still owed after the last pass: the caller's cue to run
+ * another one. Recomputed rather than remembered, because a re-layout between
+ * two passes changes the answer. */
+int layout_images_pending(void)
+{
+    if (!items) return 0;
+    int n = 0;
+    for (int i = 0; i < nitem; i++) {
+        struct item *it = &items[i];
+        if (it->type != IT_IMAGE || it->img || !it->imgsrc) continue;
+        if (ic_find(it->imgsrc) >= 0) continue;   /* answered: nothing owed */
+        if (g_ic_n >= IMGCACHE_MAX) return 0;     /* refused, not owed */
+        n++;
+    }
+    return n;
 }
 
 int layout_height(void) { return doc_h; }
@@ -3785,12 +4084,11 @@ int layout_count(void) { return nitem; }
 const struct item *layout_items(void) { return items; }
 void layout_free(void) {
     if (items) {
-        for (int i = 0; i < nitem; i++) {
-            if (items[i].img) {
-                img_free(items[i].img);
-                kfree(items[i].img);
-            }
-        }
+        /* The cache owns anything with a src -- see the note by IMGCACHE_MAX.
+         * Freeing a borrowed bitmap here is the double-free that a re-layout
+         * would then paint from, so the ownership test is not optional. */
+        for (int i = 0; i < nitem; i++)
+            if (items[i].img) item_drop_img(&items[i]);
         kfree(items);
         items = 0;
     }

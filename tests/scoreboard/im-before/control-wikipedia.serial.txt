@@ -1,0 +1,70 @@
+[wm] perf t=18660 composites=172 ns=2144621890 max=63748203 motions=18 curmoves=12 curns=371418 full=124 rects=173 cpx=39831264 fpx=39657552 presns=67523635 torn=0 defer=88 late=0 drawmax=96
+[wm] perf t=19660 composites=225 ns=2193263929 max=63748203 motions=18 curmoves=12 curns=371418 full=177 rects=226 cpx=40855264 fpx=40681552 presns=70311007 torn=0 defer=140 late=0 drawmax=101
+[wm] perf t=20697 composites=277 ns=2239775475 max=63748203 motions=18 curmoves=12 curns=371418 full=229 rects=278 cpx=41879264 fpx=41705552 presns=72355219 torn=0 defer=191 late=0 drawmax=109
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.18
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for en.wikipedia.org, alpn=http/1.1
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 1 cached)
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 2 cached)
+[net] rx path: frames 79 irq 44 softirq 20 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 112234 frames free (438 MiB), 18803 used, 0 shared, 0 bugs
+[mm] low: 111978 frames free (437 MiB), 19059 used, 0 shared, 0 bugs
+[mm] low: 111722 frames free (436 MiB), 19315 used, 0 shared, 0 bugs
+[mm] low: 111466 frames free (435 MiB), 19571 used, 0 shared, 0 bugs
+[mm] low: 111210 frames free (434 MiB), 19827 used, 0 shared, 0 bugs
+[mm] low: 110954 frames free (433 MiB), 20083 used, 0 shared, 0 bugs
+[mm] low: 110698 frames free (432 MiB), 20339 used, 0 shared, 0 bugs
+[wm] perf t=21697 composites=285 ns=2296982637 max=63748203 motions=18 curmoves=12 curns=371418 full=235 rects=286 cpx=42964704 fpx=42790992 presns=74174213 torn=0 defer=196 late=0 drawmax=109
+[mm] low: 110442 frames free (431 MiB), 20595 used, 0 shared, 0 bugs
+[mm] low: 110186 frames free (430 MiB), 20851 used, 0 shared, 0 bugs
+[mm] low: 109930 frames free (429 MiB), 21107 used, 0 shared, 0 bugs
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.18
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for en.wikipedia.org (no chain, no signature), alpn=http/1.1
+[mm] low: 109674 frames free (428 MiB), 21363 used, 0 shared, 0 bugs
+[mm] low: 109418 frames free (427 MiB), 21619 used, 0 shared, 0 bugs
+[mm] low: 109162 frames free (426 MiB), 21875 used, 0 shared, 0 bugs
+[mm] low: 108906 frames free (425 MiB), 22131 used, 0 shared, 0 bugs
+[mm] low: 108650 frames free (424 MiB), 22387 used, 0 shared, 0 bugs
+[browser] heap peak 17671K
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 2 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 3 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 4 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 5 cached)
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[wm] perf t=26738 composites=316 ns=3041380411 max=63748203 motions=18 curmoves=12 curns=371418 full=258 rects=317 cpx=58570464 fpx=58396752 presns=99559548 torn=0 defer=204 late=0 drawmax=109
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/9/99/Wiktionary-logo-en-v2.svg/40px-Wiktionary-logo-en-v2.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Wikiversity_logo_2017.svg/40px-Wikiversity_logo_2017.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Wiki_letter_w_cropped.svg/20px-Wiki_letter_w_cropped.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Wiki_letter_w_cropped.svg/20px-Wiki_letter_w_cropped.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/9/99/Wiktionary-logo-en-v2.svg/40px-Wiktionary-logo-en-v2.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Wikiversity_logo_2017.svg/40px-Wikiversity_logo_2017.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] 9/22 decoded (0 failed, cap 16)
+[mm] low: 108394 frames free (423 MiB), 22643 used, 0 shared, 0 bugs
+[mm] low: 108138 frames free (422 MiB), 22899 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] scripts collected: 1 external classic, 0 external module, 3 inline
+[mm] low: 107882 frames free (421 MiB), 23155 used, 0 shared, 0 bugs
+[browser] load done: 36 requests, 4 connections dialled, 32 reused, 0 modules loaded (0 failed)
+[browser] pool: 32 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 9 from network (tab 2 of 3)
+[mm] low: 107626 frames free (420 MiB), 23411 used, 0 shared, 0 bugs
+[mm] low: 107370 frames free (419 MiB), 23667 used, 0 shared, 0 bugs
+[mm] low: 107114 frames free (418 MiB), 23923 used, 0 shared, 0 bugs
+[mm] low: 106858 frames free (417 MiB), 24179 used, 0 shared, 0 bugs
