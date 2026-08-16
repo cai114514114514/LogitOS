@@ -990,6 +990,85 @@ if it ever stops holding the generator stops rather than quietly weakening.
   is in the fuzz corpus now, and was not before, so SOF2 had never been handed
   a malformed byte. 200,871 mutated decodes under ASan+UBSan+leak-check, clean.
 
+## The BKL: what it actually costs, measured
+
+**The concurrency model is one lock taken on every kernel entry**
+(`c/kernel/cpu/interrupts.c`, one acquisition site, `syscall_is_bkl_free()` as
+the allow-list). Everything below is a number off this machine, because
+"the big kernel lock is the bottleneck" is a design statement and the numbers
+disagreed with the obvious next move twice.
+
+**FIRST MEASUREMENT (`make test-kbench`), and it was not about the lock:**
+
+```
+BKL: 3,299,718 acquisitions, 13,712 contended (0%)
+syscall: 3,283,157 calls
+  SYS_POLL_EVENT (8):  1,640,961 (49%)
+  SYS_YIELD     (12):  1,640,961 (49%)
+```
+
+98% of every kernel entry was an application taking the global lock to be told
+nothing had happened. That is not lock contention, it is traffic --
+`SYS_WAIT_EVENT` (165) deleted it:
+
+```
+                      before        after
+syscalls            3,283,157       1,234       2,660x
+BKL acquisitions    3,390,115      18,571         183x
+BKL time holding      4,211 ms    2,500 ms
+BKL time waiting      6,685 ms    6,549 ms       <-- read this row
+```
+
+**The waiting barely moved**, and that is the finding, not a disappointment:
+what went away was 3.4 million cheap acquisitions, and the wait that remains
+was always real work -- it was merely diluted. Contention "rising" 0% -> 15%
+is the same arithmetic: the denominator collapsed.
+
+**SECOND MEASUREMENT, which refuted the obvious next step.** The plan was to
+widen `syscall_is_bkl_free()`. `spinlock_t` now records the acquiring caller's
+return address, and `kb_bkl_sample()` counts holders from inside the timer
+tick -- which runs BEFORE the interrupt entry takes the lock, so the observer
+is not itself a holder:
+
+```
+[kbench] BKL holders: 603 samples, held in 129 (21%)
+  wm_run+0x2de              55% of held      <- the compositor
+  interrupt_handler+0xc2    32%
+  schedule / block_self / sched_become_idle   3-4% each
+```
+
+**No syscall appears at all**, so widening the allow-list would have moved
+nothing. The lock is FREE 79% of the time; it is a bottleneck because of who
+holds it and for how long at a stretch. `wm_run+0x2de` is the
+`spin_lock(&g_bkl)` after the idle `hlt`: the compositor re-takes the global
+lock on waking and holds it through the whole frame. The frame's own
+accounting says where that goes -- **16.1 ms composite, 0.81 ms present**, so
+releasing the lock around `fb_present()` would recover 5% of it and is not the
+answer either. Splitting the composite is a project, not a patch: a full-screen
+frame is ONE damage rectangle, so releasing between rectangles does nothing for
+the worst case (34.6 ms).
+
+**THIRD MEASUREMENT: the desktop now idles at zero.** `echo start >
+/dev/kprof` over 12 s of live desktop, 49,283 samples:
+
+```
+sched_become_idle+0x2c   49.1%
+file_read+0x21c          24.9%
+wm_run+0x2d3             24.5%
+```
+
+All three are the instruction after a `hlt`. **98.5% of the machine's samples
+are halted cores.** Read `file.c`'s comment above `tty_read` before quoting
+this at anyone: a sampling interrupt on a halted core records the RIP
+*following* the halt, so a core doing nothing is indistinguishable from a core
+in a tight loop -- which is exactly how these three addresses were once read as
+two busy-waits eating half the machine.
+
+**Instruments, all reusable:**
+  `make test-kbench` · `tests/boot/run-smp-freeze-probe.sh` (every core's RIP,
+  the lock each waits on, and every lock's ticket/serving/holder at a freeze) ·
+  `tests/boot/qmp_lockdump.py` · `/dev/kprof` · `make bench-gfx-frame`
+
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
 
 language=chinese
