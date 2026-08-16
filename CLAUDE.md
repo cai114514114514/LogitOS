@@ -1065,22 +1065,38 @@ in a tight loop -- which is exactly how these three addresses were once read as
 two busy-waits eating half the machine.
 
 **AND THE LOCK THAT ACTUALLY SERIALISED THIS MACHINE WAS NOT THE BKL.**
- had been failing for months with "no wall-clock speedup
-(kmalloc still serialized by the BKL?)". 
-samples every lock's ticket counter across that workload -- on a RUNNING
-machine, no freeze required -- and the guess was wrong by 834x:
+`make test-smp` had been failing with "no wall-clock speedup (kmalloc still
+serialized by the BKL?)". `tests/boot/run-smp-lockprobe.sh` samples every
+lock's ticket counter across that workload -- on a RUNNING machine, no freeze
+required -- and the guess in that message was wrong by 834x:
 
+```
+kheap_lock   267 -> 30,720,350     (+30.7 MILLION)
+g_bkl      6,473 ->     43,309     (+36,836)
+pmm_lock   2,740 ->      3,044     (+304)
+```
 
+`SYS_KHEAP_STRESS` is the ONE entry on `syscall_is_bkl_free()`'s allow-list, so
+the BKL was never in it. **Per-core magazines** in front of the allocator
+(`c/kernel/mm/kheap.c`) took that workload from 30.7 M acquisitions of
+`kheap_lock` to about 112, and `make test-smp` from **T1=5s TN=41s to T1=5s
+TN=6s** -- four cores doing four times the work in 1.2x the wall clock, where
+it used to take eight times longer than serial.
 
- is the one entry on 's allow-list, so
-the BKL was never in it. Per-core magazines in front of the allocator
-() took the workload from 30.7 M acquisitions of that lock
-to about 112, and  from **T1=5s TN=41s to T1=5s TN=6s** -- four cores
-doing four times the work in 1.2x the wall clock. Design notes are at the
-magazine block in kheap.c; the two that matter are EXACT size classes only (a
-pop is always a perfect fit, so there is no search and no drift into a second
-worse free list) and DRAIN BEFORE OOM (returning NULL with blocks parked in
-magazines would be an out-of-memory that is not true).
+Four things about that layer, each load-bearing, argued at the magazine block
+in `kheap.c`:
+- **Exact size classes only** (16/32/.../512). A pop is always a perfect fit,
+  so there is no search, no split, and no "close enough" that would turn the
+  magazines into a second and worse free list.
+- **A lock per core, not lock-free.** The fast path takes its OWN core's lock,
+  so a kmalloc from an interrupt cannot corrupt the magazine of the thread it
+  interrupted. The win was never that the atomic disappeared -- it is that four
+  cores no longer queue for the same one.
+- **A block in a magazine is still ALLOCATED**: `kfree` there does not clear
+  `F_FREE` or decrement `st_live`, so the double-free refusal still fires and
+  `kheap_audit`'s arena walk still sees only two states.
+- **Drain before OOM.** Returning NULL with blocks parked in magazines would be
+  an out-of-memory that is not true.
 
 **Instruments, all reusable:**
   `make test-kbench` · `tests/boot/run-smp-freeze-probe.sh` (every core's RIP,
