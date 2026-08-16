@@ -10,22 +10,32 @@
 # filesystem writes -- so a wedge here cannot be blamed on any subsystem that
 # happened to be under change when it turned up.
 #
-# MEASURED ON 2026-08-16, same ISO, 120 reps:
+# MEASURED ON 2026-08-16, same ISO, 120 reps, /bin/libctest:
 #
-#     -smp 4   wedged at rep 78 | PASS | wedged at rep 70
+#     -smp 4   wedged at rep 13 | wedged at rep 14
 #     -smp 1   PASS
-#     -smp 4, 40 reps   PASS
 #
-# So it is core-count dependent (single core never wedges at the same load) and
-# the wedge POINT MOVES, which rules out a fixed limit being hit and says race.
-# Every wedged run printed `sh: cannot open output` -- a failed open in the
-# shell's redirect path -- in the rep immediately before the machine stopped,
-# which is the thread to pull.
+# So it is core-count dependent: one core never wedges under the same load,
+# which rules out a leak that would hit the same count either way.
 #
-# test-smp-fork-storm is therefore EXPECTED TO BE FLAKY and is not wired into
-# `make test`. It is a reproducer, not a gate; the number it prints is the one
-# to bisect on. test-smp-fork-storm-1core is its control: the same load on one
-# core must pass, and if it ever stops passing this stops being an SMP bug.
+# THE FIRST VERSION OF THIS HARNESS MEASURED SOMETHING ELSE, and the correction
+# is worth keeping because it is the more useful of the two facts. It ran
+# `$(PROG) > /dev/null`, and this machine HAS NO /dev/null -- /dev holds eight
+# synthetic nodes and none of them is null, and it is not a real directory on
+# logitfs either, so the VFS falls back to a default mode of 0644, which has no
+# execute bit, and even root cannot create in it. The shell therefore refused
+# the redirect and the child exited BEFORE execve on every single rep. It still
+# forked, so the machine still wedged -- at reps 70 and 78 rather than 13 and
+# 14 -- and a harness that never ran the program it names produced a plausible
+# number. The `sh: cannot open output` line that appeared just before each
+# wedge, and which the first commit reported as a precursor, is not one: it
+# happens on every rep from the first.
+#
+# The kernel now says which gate refused an open (file.c open_refused, and the
+# weak vfs_note_refusal hook that reports the credential the decision actually
+# used rather than one looked up afterwards). That pair is what turned this
+# from a theory into a fact, in one boot.
+
 .PHONY: test-smp-fork-storm test-smp-fork-storm-1core
 
 test-smp-fork-storm: $(ISO) $(DISK)

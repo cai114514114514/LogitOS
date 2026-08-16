@@ -353,6 +353,10 @@ static void attrs_of(const char *abs, struct vattr *a)
  * or rename a name inside it. This is the check that stops an unprivileged
  * process writing into a root-owned directory, and it applies whether or not
  * the file itself has a record. */
+/* Set by the kernel (file.c); absent in host test binaries. See below. */
+void vfs_note_refusal(const char *dir, unsigned mode, unsigned ouid, unsigned ogid,
+                      unsigned cuid, unsigned cgid) __attribute__((weak));
+
 static int check_parent_write(const char *abs, const struct vcred *c)
 {
     char dir[VFS_PATH_MAX];
@@ -360,7 +364,17 @@ static int check_parent_write(const char *abs, const struct vcred *c)
     if (rc < 0) return rc == VFS_EINVAL ? VFS_EPERM : rc;   /* "/" itself */
     struct vattr a;
     attrs_of(dir, &a);
-    return vmeta_permission(&a, c, MAY_WRITE | MAY_EXEC);
+    int p = vmeta_permission(&a, c, MAY_WRITE | MAY_EXEC);
+    /* Report AT THE DECISION, with the credential that was actually used.
+     * Asking again afterwards is a different question: if the credential
+     * lookup is itself what is wrong, the second answer is the right one and
+     * the report exonerates the bug. Weak, and reported through a hook rather
+     * than kprintf, because this file deliberately has no kernel headers --
+     * it is linked into host tests that have no console at all. */
+    if (p < 0 && vfs_note_refusal)
+        vfs_note_refusal(dir, (unsigned)a.mode, (unsigned)a.uid, (unsigned)a.gid,
+                         (unsigned)c->uid, (unsigned)c->gid);
+    return p;
 }
 
 static int check_file(const char *abs, const struct vcred *c, int want)

@@ -381,6 +381,49 @@ static int open_want(int flags)
     return want;
 }
 
+/* Which gate refused an open, said once per gate per boot.
+ *
+ * `open` returning -1 reaches userland as a single bit, and every caller then
+ * prints its own guess ("sh: cannot open output"). The two permission gates
+ * below and the two allocation failures are four different problems with one
+ * symptom, and telling them apart from the outside is impossible -- which is
+ * how a permission refusal came to be read as a resource leak. One line each,
+ * with the pid and the credentials in force, is enough to separate them and
+ * cheap enough to leave in: it fires only on a path that was ABOUT to fail. */
+/* The VFS refused a create, and this is the credential it actually used --
+ * see the comment at the call site in vfs.c for why it is reported from there
+ * rather than looked up again here. */
+void vfs_note_refusal(const char *dir, unsigned mode, unsigned ouid, unsigned ogid,
+                      unsigned cuid, unsigned cgid);
+void vfs_note_refusal(const char *dir, unsigned mode, unsigned ouid, unsigned ogid,
+                      unsigned cuid, unsigned cgid)
+{
+    static int said;
+    if (said) return;
+    said = 1;
+    /* Octal by hand: this kprintf has no %o, and a mode in decimal is the one
+     * number in the line nobody can read -- 420 is 0644 and looks like neither.
+     * The first version of this printed "%o" literally and shifted every
+     * argument after it by one, which made the owner read as the mode. */
+    kprintf("[vfs] create refused in %s: mode 0%u%u%u owner %u:%u, asked by "
+            "%u:%u -- said once per boot\n", dir,
+            (mode >> 6) & 7, (mode >> 3) & 7, mode & 7,
+            ouid, ogid, cuid, cgid);
+}
+
+static void open_refused(const char *path, const char *gate, int flags)
+{
+    static int said_access, said_create;
+    int *once = gate[0] == 'a' ? &said_access : &said_create;
+    if (*once) return;
+    *once = 1;
+    struct vcred c;
+    int pid = vfs_cred_pid();
+    vfs_cred_current(&c);
+    kprintf("[file] open refused by %s: %s (flags 0x%x) pid %d uid %u gid %u "
+            "-- said once per boot\n", gate, path, flags, pid, c.uid, c.gid);
+}
+
 struct file *file_open_vfs(const char *path, int flags)
 {
     int sz = vfs_size(path);
@@ -391,8 +434,8 @@ struct file *file_open_vfs(const char *path, int flags)
      * created is checked against the directory that would gain the name --
      * there is nothing else to check, and skipping it is the hole where an
      * unprivileged process creates files in a root-owned directory. */
-    if (exists) { if (vfs_access(path, open_want(flags)) < 0) return 0; }
-    else        { if (vfs_may_create(path) < 0) return 0; }
+    if (exists) { if (vfs_access(path, open_want(flags)) < 0) { open_refused(path, "access", flags); return 0; } }
+    else        { if (vfs_may_create(path) < 0) { open_refused(path, "may_create", flags); return 0; } }
 
     struct file *f = file_alloc();
     if (!f) return 0;

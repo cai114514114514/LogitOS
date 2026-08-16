@@ -37,9 +37,16 @@ trap cleanup EXIT
 # One line per rep, each followed by a marker carrying its number. The marker is
 # a shell builtin, so it cannot itself fork -- if it prints, the fork before it
 # returned and was reaped.
+#
+# NO REDIRECT, and that is not a style choice. The first version of this wrote
+# "$PROG > /dev/null" and measured nothing: this machine has no /dev/null (see
+# below), so the shell refused the redirect and the child exited BEFORE execve.
+# It still forked, so it still wedged -- which is how a broken harness produced
+# a real-looking result. The program's own output goes to the serial log now;
+# the markers are what is graded.
 cmds=""
 for i in $(seq 1 "$REPS"); do
-    cmds="${cmds}${PROG} > /dev/null
+    cmds="${cmds}${PROG}
 echo STORM-$i-OK
 "
 done
