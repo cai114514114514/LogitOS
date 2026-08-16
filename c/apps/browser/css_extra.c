@@ -353,6 +353,70 @@ static const char *const gr_names[GR__COUNT] = {
     "justify-items", "justify-self"
 };
 
+/* The `grid-template` SHORTHAND, split into the halves the longhands name.
+ *
+ * MEASURED, not guessed. Wikipedia's Vector-2022 skin -- the CONTROL page of
+ * this browser's own site scoreboard -- never writes grid-template-columns for
+ * its real two-column layout. Its narrow default writes the longhand
+ * (`grid-template-columns:minmax(0,1fr)`, ONE column) and the desktop rule,
+ * inside @media (min-width:1120px), writes only
+ *
+ *   grid-template: min-content 1fr min-content / 12.25rem minmax(0,1fr)
+ *
+ * So a scan that reads only longhands sees the one-column mobile rule and
+ * never the two-column desktop one: the table of contents loses its 196 px
+ * track, is squeezed to about one character per line, and paints over the
+ * article. That is what a screenshot showed after months of the scoreboard
+ * calling this page PAINTED -- Chrome's COMPUTED style says
+ * `grid-template-columns: 248px 1220px`, so anyone checking the computed value
+ * instead of the stylesheet sees nothing wrong.
+ *
+ * The value is `<rows> / <columns>`. The split is at the FIRST top-level
+ * slash -- top level meaning outside parens (minmax(0,1fr), repeat(...)) and
+ * outside quotes (the area strings a page may write in the rows position).
+ * `grid-template:none` and the areas-only form have no slash and are declined.
+ *
+ * TWO DELIBERATE LIMITS, both stated rather than silently half-done:
+ *  - a half is filled ONLY if that longhand is absent from the SAME block, so
+ *    within one block the longhand wins. Real CSS says the later declaration
+ *    wins whichever it is; modelling that needs per-declaration ordering this
+ *    scan does not keep (find_decl already collapses to the last occurrence
+ *    per property). Across blocks the cascade is intact, which is the case
+ *    that matters here.
+ *  - if the rows half contains a quote it is AREAS, not rows, and the rows
+ *    half is left alone; only the columns are taken. Mixed rows+areas in one
+ *    shorthand is not modelled.
+ * The `grid` shorthand has the same column half and is NOT handled: it also
+ * carries auto-flow forms this would misread, and nothing in the corpus uses
+ * it. */
+static void parse_grid_shorthand(const char *d, int dlen, struct xpatch *p)
+{
+    int vs, ve;
+    if (!find_decl(d, dlen, "grid-template", &vs, &ve)) return;
+    const char *v = d + vs; int len = ve - vs;
+    int depth = 0, slash = -1, quoted = 0;
+    char q = 0;
+    for (int i = 0; i < len; i++) {
+        char c = v[i];
+        if (q) { if (c == q) q = 0; continue; }
+        if (c == '\'' || c == '"') { q = c; quoted = 1; continue; }
+        if (c == '(') depth++;
+        else if (c == ')') { if (depth > 0) depth--; }
+        else if (c == '/' && depth == 0) { slash = i; break; }
+    }
+    if (slash < 0) return;
+    if (!p->gr[GR_TEMPL_COLS] && slash + 1 < len) {
+        p->gr[GR_TEMPL_COLS] = v + slash + 1;
+        p->gr_len[GR_TEMPL_COLS] = len - slash - 1;
+        p->gr_any = 1;
+    }
+    if (!quoted && !p->gr[GR_TEMPL_ROWS] && slash > 0) {
+        p->gr[GR_TEMPL_ROWS] = v;
+        p->gr_len[GR_TEMPL_ROWS] = slash;
+        p->gr_any = 1;
+    }
+}
+
 static void parse_grid_raw(const char *d, int dlen, struct xpatch *p)
 {
     for (int g = 0; g < GR__COUNT; g++) {
@@ -363,6 +427,7 @@ static void parse_grid_raw(const char *d, int dlen, struct xpatch *p)
         p->gr_len[g] = ve - vs;
         p->gr_any = 1;
     }
+    parse_grid_shorthand(d, dlen, p);   /* after the longhands: see above */
 }
 
 /* The one caller whose declarations block is NOT stable storage: the

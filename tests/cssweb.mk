@@ -80,7 +80,7 @@ CSSMODERN_SRC := tests/unit/css_modern_test.c tests/unit/css_hostmm.c c/apps/bro
                  c/apps/browser/css_vars.c c/apps/browser/css_extra.c
 test-css-modern: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_modern_test \
-	    $(CSSMODERN_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	    $(CSSMODERN_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_modern_test
 
 # --- test-css-web-negctl: both new gates, disabled, must FAIL ---------------
@@ -129,7 +129,7 @@ test-css-web-negctl: $(BUILD)/libcss_host.a
 	@ar d $(NEGDIR)/libcss_neg.a language.o
 	@ar r $(NEGDIR)/libcss_neg.a $(NEGDIR)/language_neg.o
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_modern_neg \
-	    $(CSSMODERN_SRC) $(HTML_PARSER_SRC) $(NEGDIR)/libcss_neg.a
+	    $(CSSMODERN_SRC) $(HTML_PARSER_SRC) $(NEGDIR)/libcss_neg.a -lm
 	@if $(NEGDIR)/css_modern_neg > $(NEGDIR)/modern.txt 2>&1; then \
 	    echo "FAIL: with the group-rule branch disabled css_modern_test still PASSED --"; \
 	    echo "      @layer/@supports/@container are not actually being tested."; \

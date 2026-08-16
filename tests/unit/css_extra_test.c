@@ -36,6 +36,15 @@ static struct node *find_by_tag(struct node *n, const char *tag)
     return NULL;
 }
 
+/* substring search in a bounded, NOT NUL-terminated span (grid_raw points into
+ * the compiled sheet, which is neither NUL-terminated nor ours to modify). */
+static int strstr_n(const char *h, int n, const char *needle)
+{
+    int m = (int)strlen(needle);
+    for (int i = 0; i + m <= n; i++) if (!memcmp(h + i, needle, (size_t)m)) return 1;
+    return 0;
+}
+
 int main(void)
 {
     css_init();
@@ -145,6 +154,50 @@ int main(void)
     gm = find_by_class(r5b, "gm");
     CHECK(gm && CST(gm) && CST(gm)->grid_cols == 2, "media tier max-1139.9 applies at 1000");
     css_viewport(1180, 620);
+
+    /* THE `grid-template` SHORTHAND, in the exact shape Wikipedia's
+     * Vector-2022 skin writes it -- which is how this gap was found. Its
+     * narrow default writes the LONGHAND (one column) and its desktop rule,
+     * inside a min-width media query, writes ONLY the shorthand. A scan that
+     * reads longhands alone therefore keeps the mobile one-column layout at
+     * every width: the table of contents lost its 196 px track, collapsed to
+     * about one character per line and painted over the article. The
+     * scoreboard called that page PAINTED for months, and Chrome's COMPUTED
+     * style says `grid-template-columns: 248px 1220px`, so only reading the
+     * STYLESHEET shows it.
+     *
+     * The columns half is what layout reads (grid_raw[GR_TEMPL_COLS], the
+     * text layout_grid.c parses -- rem and minmax() live there, not in the
+     * coarse grid_cols summary). Asserted on the raw text because that is the
+     * value with the meaning; grid_cols stays 0 here precisely because
+     * minmax() is not in the summary parser's vocabulary, and that is fine:
+     * display:grid + grid_spec() is the path a real page takes. */
+    const char *html7 =
+        "<body><div class='wk'><div class='s'>side</div><div class='m'>main</div></div></body>";
+    const char *css7 =
+        ".wk{grid-template-columns:minmax(0,1fr);grid-template-areas:'a' 'b'}"
+        "@media screen and (min-width:1120px){"
+        ".wk{display:grid;column-gap:24px;"
+        "grid-template:min-content 1fr min-content / 12.25rem minmax(0,1fr)}}";
+    struct node *r7 = dom_parse(html7, (int)strlen(html7));
+    css_apply(r7, css7, (int)strlen(css7));
+    css_extra_apply(r7, css7, (int)strlen(css7));
+    struct node *wk = find_by_class(r7, "wk");
+    CHECK(wk && CST(wk) && CST(wk)->display == DISP_GRID, "shorthand block: display:grid mapped");
+    CHECK(wk && CST(wk) && CST(wk)->grid_raw[GR_TEMPL_COLS] &&
+          CST(wk)->grid_rawlen[GR_TEMPL_COLS] > 0 &&
+          strstr_n(CST(wk)->grid_raw[GR_TEMPL_COLS], CST(wk)->grid_rawlen[GR_TEMPL_COLS],
+                   "12.25rem"),
+          "grid-template shorthand: the COLUMNS half reaches grid_raw");
+    CHECK(wk && CST(wk) && CST(wk)->grid_raw[GR_TEMPL_COLS] &&
+          !strstr_n(CST(wk)->grid_raw[GR_TEMPL_COLS], CST(wk)->grid_rawlen[GR_TEMPL_COLS],
+                    "min-content"),
+          "grid-template shorthand: the ROWS half is not mistaken for columns");
+    CHECK(wk && CST(wk) && CST(wk)->grid_raw[GR_TEMPL_ROWS] &&
+          strstr_n(CST(wk)->grid_raw[GR_TEMPL_ROWS], CST(wk)->grid_rawlen[GR_TEMPL_ROWS],
+                   "min-content"),
+          "grid-template shorthand: the rows half lands in GR_TEMPL_ROWS");
+    CHECK(wk && CST(wk) && CST(wk)->grid_gap_x == 24, "column-gap beside the shorthand");
 
     /* opacity:0 + animation -> visible end state (hidden cleared);
      * opacity:0 + transition on opacity -> visible (scroll-reveal pattern);
