@@ -264,7 +264,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-webp-vp8 test-webp-vp8-negctl test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 .PHONY: test-monitor test-monitor-negctl
@@ -3076,6 +3076,58 @@ test-img-still: $(RUST_LIB_HOST)
 	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@$(BUILD)/img_still_test $(BUILD)/imgstill
 
+# Lossy WebP -- the VP8 key-frame decoder (rust/src/vp8*.rs) against libwebp.
+#
+# The oracle is `dwebp -nofancy` on the identical bytes, and the bar is BYTE
+# EQUALITY: VP8 reconstruction is exactly specified integer arithmetic, as
+# H.264's is, so there is no tolerance to hide a misread rule in. `-nofancy`
+# selects box chroma upsampling, which is what this decoder and jpeg.c both do;
+# libwebp's default 4-tap upsample is a separate question and mixing the two
+# would make one number answer neither.
+#
+# Needs cwebp/dwebp (apt-get install webp). Without them there is no reference
+# and the gate would be checking the decoder against itself, so it refuses to
+# run rather than passing vacuously.
+test-webp-vp8: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/webpvp8
+	@python3 tests/unit/webp_vp8_gen.py $(BUILD)/webpvp8
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/webp_vp8_test tests/unit/webp_vp8_test.c \
+	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
+	@$(BUILD)/webp_vp8_test $(BUILD)/webpvp8
+
+# Two documented VP8 rules, each turned off in turn; each MUST break the suite.
+#
+#   vp8-tr-from-subblock  a B_PRED subblock on the macroblock's right edge takes
+#                         its above-right samples from the reconstructed row
+#                         inside the macroblock instead of from the row above
+#                         the MACROBLOCK. This is the format's most-
+#                         reimplemented bug. It reddens 17 of 25 cases -- the
+#                         eight that survive are the smooth/low-quality ones the
+#                         encoder never coded as B_PRED, which is the control
+#                         showing WHICH cases carry the property.
+#   vp8-dc-always-avail   DC_PRED stops asking whether its neighbours exist and
+#                         averages the 127/129 border into every edge block.
+#                         20 of 25.
+#
+# The controls are Cargo features and are built into a separate target dir, so
+# a control build can never be mistaken for the real library.
+test-webp-vp8-negctl: $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)/webpvp8
+	@python3 tests/unit/webp_vp8_gen.py $(BUILD)/webpvp8 >/dev/null
+	@for f in vp8-tr-from-subblock vp8-dc-always-avail; do \
+	   (cd rust && "$(RUST_BIN)/cargo" build --release --features $$f \
+	       --target-dir ../$(BUILD)/rustctl >/dev/null 2>&1) || exit 1; \
+	   $(CC) -O2 -w -o $(BUILD)/webp_vp8_ctl tests/unit/webp_vp8_test.c \
+	       c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
+	       c/lib/image/exif.c tests/unit/rust_host_shim.c $(GFX_SRC) \
+	       $(BUILD)/rustctl/release/liblogit_rust.a $(IMG_HOST_INC) -lm; \
+	   if $(BUILD)/webp_vp8_ctl $(BUILD)/webpvp8 >$(BUILD)/webp_negctl.log 2>&1; then \
+	     echo "FAIL: --features $$f still passes -- the control proves nothing"; exit 1; \
+	   fi; \
+	   echo "ok: --features $$f -> $$(tail -1 $(BUILD)/webp_negctl.log)"; \
+	 done; \
+	 echo "ok: both VP8 controls fail when their rule is removed"
+
 # Animation: GIF and APNG. "It decoded N frames" is not the assertion -- the
 # per-frame DELAY and the DISPOSAL are, because disposal is where every naive
 # implementation is wrong and the symptom (frame 3 keeps frame 2's pixels in
@@ -3105,7 +3157,7 @@ test-img-exif: $(RUST_LIB_HOST)
 # truncates and splices them. IMG_FUZZ_ITERS controls the budget.
 IMG_FUZZ_ITERS ?= 20000
 test-img-fuzz: $(RUST_LIB_HOST)
-	@mkdir -p $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest
+	@mkdir -p $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest $(BUILD)/webpvp8
 	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill >/dev/null
 	@python3 tests/unit/img_anim_gen.py $(BUILD)/imganim >/dev/null
 	@python3 tests/unit/img_exif_gen.py $(BUILD)/imgexif >/dev/null
@@ -3114,11 +3166,15 @@ test-img-fuzz: $(RUST_LIB_HOST)
 	@# kinds of run length -- i.e. the one where a malformed file has the most
 	@# to work with. Without this line the mutator never saw an SOF2 at all.
 	@python3 tests/unit/jpeg_gen.py $(BUILD)/jpegtest >/dev/null
+	@# and the lossy-WebP corpus: VP8 is a bool-coded bitstream with per-row
+	@# token partitions and a whole-frame plane, which is a lot of structure for
+	@# a malformed file to walk into. It was not in the corpus either.
+	@python3 tests/unit/webp_vp8_gen.py $(BUILD)/webpvp8 >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
 	    -o $(BUILD)/img_fuzz tests/unit/img_fuzz.c \
 	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-	    $(BUILD)/img_fuzz $(IMG_FUZZ_ITERS) $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest
+	    $(BUILD)/img_fuzz $(IMG_FUZZ_ITERS) $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest $(BUILD)/webpvp8
 
 # The negative control for the fuzz harness ITSELF. A fuzz target that cannot
 # fail is a green light wired to nothing, so this compiles the same harness

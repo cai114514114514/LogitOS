@@ -10,6 +10,20 @@ license = "MIT"
 [lib]
 crate-type = ["staticlib"]
 
+# Negative controls. Each turns ONE documented VP8 rule off so the
+# conformance suite can be watched failing; none is ever enabled in a real
+# build, and `make test-webp-vp8-negctl` fails if enabling one does NOT break
+# the suite. See tests/unit/webp_vp8_test.c.
+[features]
+default = []
+# B_PRED above-right taken from the reconstructed subblock row instead of the
+# row above the MACROBLOCK -- VP8's most-reimplemented bug.
+vp8-tr-from-subblock = []
+# DC_PRED treats its neighbours as available at the frame edge, averaging the
+# 127/129 border rows into the DC instead of halving the sum -- the rule that
+# only DC_PRED asks about availability at all.
+vp8-dc-always-avail = []
+
 [profile.release]
 panic = "abort"
 opt-level = 2

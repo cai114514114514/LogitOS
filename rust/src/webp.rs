@@ -741,24 +741,14 @@ fn inverse_color_index(src: &U32Buf, sw: u32, w: u32, h: u32, t: &Transform) -> 
 // VP8L entry point
 // ---------------------------------------------------------------------------
 
-fn decode_vp8l(d: &[u8]) -> Option<(i32, i32, Buf)> {
-    if d.first() != Some(&0x2f) {
-        return None;
-    }
-    let mut br = Br::new(&d[1..]);
-    let w = br.read(14) + 1;
-    let h = br.read(14) + 1;
-    let _alpha_used = br.read(1);
-    if br.read(3) != 0 || br.eof {
-        return None;
-    }
-    if rgba_size(w as i32, h as i32).is_none() {
-        return None;
-    }
-
+/// Decode a VP8L image STREAM (no 5-byte header) of `w` x `h` into ARGB, undoing
+/// its transforms. Shared by the lossless image path and by the alpha plane of
+/// a lossy image, whose compressed form is exactly this with the header taken
+/// off and the answer carried in the green channel.
+fn vp8l_pixels(br: &mut Br, w: u32, h: u32) -> Option<U32Buf> {
     let mut tf: [Option<Transform>; 4] = [None, None, None, None];
     let mut sub_w = w;
-    let mut px = decode_stream(&mut br, w, h, true, Some(&mut tf), &mut sub_w)?;
+    let mut px = decode_stream(br, w, h, true, Some(&mut tf), &mut sub_w)?;
 
     // Transforms undo in the reverse of the order they were read.
     let mut cur_w = sub_w;
@@ -780,6 +770,124 @@ fn decode_vp8l(d: &[u8]) -> Option<(i32, i32, Buf)> {
     if cur_w != w {
         return None;
     }
+    Some(px)
+}
+
+// ---------------------------------------------------------------------------
+// ALPH: the alpha plane of a LOSSY WebP.
+//
+// A lossy WebP carries no alpha of its own -- VP8 has no alpha channel -- so a
+// transparent one is a VP8 frame plus a separate ALPH chunk holding an 8-bit
+// plane. Without this, such a file decodes with correct colour and alpha 255
+// everywhere: a logo drawn as an opaque rectangle, which is worse than a
+// broken-image box because nothing looks broken.
+//
+// Header byte: bits 1-0 compression, 3-2 filter, 5-4 pre-processing, 7-6
+// reserved. Pre-processing describes what the ENCODER did to the plane before
+// compressing it (level reduction); the decoder has nothing to undo and
+// libwebp ignores it, so the field is read and dropped rather than refused.
+// ---------------------------------------------------------------------------
+
+fn gradient_pred(a: u8, b: u8, c: u8) -> u8 {
+    let g = a as i32 + b as i32 - c as i32;
+    if g < 0 { 0 } else if g > 255 { 255 } else { g as u8 }
+}
+
+/// Undo the per-row spatial filter, in place. `prev` is the already-unfiltered
+/// row above; for the first row there is none and every method degenerates to
+/// horizontal with a zero seed, which is libwebp's behaviour and not an
+/// approximation of it.
+fn alpha_unfilter(method: u8, plane: &mut [u8], w: usize, h: usize) {
+    if method == 0 {
+        return;
+    }
+    for y in 0..h {
+        let row = y * w;
+        if y == 0 || method == 1 {
+            // horizontal (and every method's first row)
+            let mut pred = if y == 0 { 0u8 } else { plane[row - w] };
+            for x in 0..w {
+                let v = plane[row + x].wrapping_add(pred);
+                plane[row + x] = v;
+                pred = v;
+            }
+        } else if method == 2 {
+            for x in 0..w {
+                plane[row + x] = plane[row + x].wrapping_add(plane[row - w + x]);
+            }
+        } else {
+            let mut left = plane[row - w];
+            let mut top_left = left;
+            for x in 0..w {
+                let top = plane[row - w + x];
+                left = plane[row + x].wrapping_add(gradient_pred(left, top, top_left));
+                top_left = top;
+                plane[row + x] = left;
+            }
+        }
+    }
+}
+
+fn decode_alpha_plane(alph: &[u8], w: usize, h: usize) -> Option<Buf> {
+    let hdr = *alph.first()?;
+    if (hdr >> 6) != 0 {
+        return None; // reserved bits set
+    }
+    let compression = hdr & 3;
+    let filter = (hdr >> 2) & 3;
+    let data = alph.get(1..)?;
+    let n = w.checked_mul(h)?;
+    let mut plane = Buf::zeroed(n)?;
+    match compression {
+        0 => {
+            let src = data.get(..n)?;
+            plane.as_mut().copy_from_slice(src);
+        }
+        1 => {
+            let mut br = Br::new(data);
+            let px = vp8l_pixels(&mut br, w as u32, h as u32)?;
+            let m = plane.as_mut();
+            for i in 0..n {
+                m[i] = (px.get(i) >> 8) as u8; // alpha rides in green
+            }
+        }
+        _ => return None,
+    }
+    alpha_unfilter(filter, plane.as_mut(), w, h);
+    Some(plane)
+}
+
+/// The ALPH chunk's payload, if the container has one.
+fn find_alph(p: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 12usize;
+    while i + 8 <= p.len() {
+        let sz = le32(p, i + 4)? as usize;
+        let body = i + 8;
+        if &p[i..i + 4] == b"ALPH" {
+            let end = body.checked_add(sz)?.min(p.len());
+            return Some((body, end));
+        }
+        i = body.checked_add(sz)?.checked_add(sz & 1)?;
+    }
+    None
+}
+
+fn decode_vp8l(d: &[u8]) -> Option<(i32, i32, Buf)> {
+    if d.first() != Some(&0x2f) {
+        return None;
+    }
+    let mut br = Br::new(&d[1..]);
+    let w = br.read(14) + 1;
+    let h = br.read(14) + 1;
+    let _alpha_used = br.read(1);
+    if br.read(3) != 0 || br.eof {
+        return None;
+    }
+    if rgba_size(w as i32, h as i32).is_none() {
+        return None;
+    }
+
+    let px = vp8l_pixels(&mut br, w, h)?;
 
     let mut buf = Buf::new(rgba_size(w as i32, h as i32)?)?;
     {
@@ -838,11 +946,24 @@ fn decode_webp(p: &[u8]) -> Option<(i32, i32, Buf)> {
     let (fcc, a, b) = find_codec_chunk(p)?;
     let body = p.get(a..b)?;
     if fcc == b"VP8L" {
-        decode_vp8l(body)
-    } else {
-        // Lossy VP8 key frames are not implemented; fail rather than guess.
-        None
+        return decode_vp8l(body);
     }
+    let (w, h, mut rgba) = crate::vp8_frame::decode_vp8_keyframe(body)?;
+    if let Some((a0, a1)) = find_alph(p) {
+        // A failed alpha plane is NOT a failed image: the colour is already
+        // decoded and correct, and dropping it would replace a wrong alpha
+        // channel with no picture at all. It stays opaque and says nothing,
+        // which is the same thing every other decoder in this tree does with a
+        // trailing chunk it cannot read.
+        if let Some(plane) = decode_alpha_plane(p.get(a0..a1)?, w as usize, h as usize) {
+            let src = plane.as_ref();
+            let dst = rgba.as_mut();
+            for i in 0..(w as usize * h as usize) {
+                dst[i * 4 + 3] = src[i];
+            }
+        }
+    }
+    Some((w, h, rgba))
 }
 
 // ---- C ABI ----

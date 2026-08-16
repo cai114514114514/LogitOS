@@ -15,6 +15,11 @@ mod ico; // ICO/CUR container -> png or bmp (favicons)
 mod imgbuf; // shared FFI types + an owning kmalloc buffer for the decoders
 mod inflate; // RFC 1951/1950 DEFLATE/zlib, ported to safe Rust (replaces inflate.c)
 mod png; // PNG decoder, ported to safe Rust (replaces png.c); calls inflate
+mod vp8; // VP8 bool decoder, quantisers, uncompressed frame header
+mod vp8_dec; // VP8 planes, transforms, header state
+mod vp8_frame; // VP8 key-frame driver: macroblock loop, loop filter, YUV->RGBA
+mod vp8_rec; // VP8 intra prediction, coefficient tokens, filter kernels
+mod vp8_tables; // VP8 probability tables, generated from RFC 6386
 mod webp; // WebP: RIFF container, VP8L lossless, VP8 lossy key frames, ALPH
 
 // FFI discipline: this staticlib links into BOTH the C kernel AND the ring-3

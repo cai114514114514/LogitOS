@@ -899,14 +899,62 @@ are C in `c/lib/image/`. The M13 line above still says
 | GIF | complete -- animation, per-frame sub-rects, all disposal modes |
 | BMP / ICO | complete, including RLE4 and 32bpp with a real alpha mask |
 | JPEG | baseline **and progressive**; byte-exact against `djpeg -nosmooth` |
-| WebP | **VP8L (lossless) only -- lossy `VP8 ` is NOT implemented** |
+| WebP | VP8L (lossless) **and VP8 (lossy) key frames, with the ALPH alpha plane**; byte-exact vs `dwebp -nofancy` |
 | SVG | own path/fill; phase-2 stroke has landed (the `grep -c stroke` = 0 note above is stale) |
 
-**The one real hole left is lossy WebP**, and it is the common one: essentially
-every WebP a website serves is `VP8 `, not `VP8L`. It fails cleanly (-1, no
-garbage) rather than guessing, which is the right failure -- but it is a
-failure, and closing it means the VP8 intra path (bool decoder, WHT/DCT, the
-intra modes, the loop filter), which is a codec, not a patch.
+**Lossy WebP was the last hole and it is closed** (2026-08-16,
+`rust/src/vp8*.rs`). It was the common one: essentially every WebP a website
+serves is `VP8 `, not `VP8L`, and every one of them used to be a broken-image
+box. The whole key-frame path is here -- boolean entropy decoder, frame header
+(segmentation, filter deltas, multiple token partitions, probability updates),
+macroblock modes, coefficient tokens, dequantisation, inverse WHT and DCT, all
+sixteen intra predictors, and both loop filters -- plus the ALPH chunk, because
+VP8 has no alpha channel of its own and a transparent WebP is a VP8 frame with
+a separately-coded 8-bit plane beside it. Inter frames are refused by name; a
+WebP still image is always a key frame, so this is the complete decoder for
+what WebP is, not a subset of it.
+
+  `make test-webp-vp8`  31 cases, **every one byte-exact** against
+  `dwebp -nofancy` on the identical bytes -- 700k samples, zero differences.
+  `make test-webp-vp8-negctl` · the VP8 corpus is in `test-img-fuzz` too.
+
+Four things worth knowing before touching it:
+
+- **THE TABLES ARE GENERATED, NOT TYPED** (`tools/gen_vp8_tables.py` ->
+  `rust/src/vp8_tables.rs`). 3,164 probabilities and tree indices, lifted
+  mechanically out of RFC 6386's own reference-decoder C source, with the
+  enum names resolved from the RFC's own typedefs and every table's shape and
+  checksum printed. This is not tidiness: a wrong probability does not shade a
+  pixel, it desynchronises the arithmetic decoder into noise, and one wrong
+  byte in three thousand is not findable by looking. The generator refuses
+  rather than guesses -- it takes only real declarations (five of the tables
+  also appear as *arguments* elsewhere in the document), it requires every
+  occurrence of the right shape to agree, and it strips the RFC's page
+  furniture first, which it did not at first and which is how "Bankoski" came
+  to be parsed as an enumerator.
+- **A B_PRED subblock on the macroblock's right edge takes its above-right
+  samples from the row above the MACROBLOCK**, for all four subblock rows --
+  not from the reconstructed subblock diagonally above it. This is the
+  format's most-reimplemented bug. `--features vp8-tr-from-subblock` is it on
+  a switch, and it reddens 19 of 31 cases: the twelve that survive are the
+  smooth and low-quality ones the encoder never coded as B_PRED, which is the
+  control showing which cases carry the property rather than merely that the
+  suite runs.
+- **The loop filter is a second pass over the finished frame**, not per
+  macroblock. Intra prediction reads its neighbours' UNFILTERED samples; a
+  decoder that filters each macroblock as it completes feeds filtered pixels
+  into the next row's predictor and drifts further with every row.
+- **`-nofancy` is doing real work in the oracle.** libwebp's default is a
+  4-tap chroma upsample; ours is box, as jpeg.c's is. Matching the fancy
+  upsampler too is a separate job, and folding it in would make one number
+  answer two questions. What this gate proves is that the DECODER is exact.
+
+The second negative control, `vp8-dc-always-avail`, removes the rule that
+DC_PRED is the only mode which asks whether its neighbours exist (20 of 31).
+A third was written and **deleted**: clearing the Y2 non-zero context on every
+skipped macroblock is a real rule, and no case in this corpus reaches it, so
+the control passed. A control that cannot be watched failing is worse than no
+control, because it reads like one.
 
 **Progressive JPEG** (2026-08-16) is a SECOND path inside `jpeg.c`, not a
 generalisation of the baseline one, and the file comment argues why: baseline
