@@ -3844,6 +3844,8 @@ bench-aui: $(ISO) $(DISK)
 -include tests/imglate.mk
 -include tests/ascross.mk
 -include tests/ch.mk
+-include tests/range.mk
+-include tests/video.mk
 
 # DOMParser: `make test-domparser`. See the fragment header.
 -include tests/domparser.mk

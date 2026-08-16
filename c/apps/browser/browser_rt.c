@@ -93,6 +93,13 @@ struct breq {
      * reentrant, so every one of those minutes is a browser that answers its
      * close button and drops every other keystroke. */
     unsigned long long t_start;
+
+    /* ---- byte range (see bfetch.h) ----
+     * rq_first < 0 means "no range asked", which is the memset-0 case only
+     * because every constructor sets it explicitly -- do not rely on 0. */
+    long long rq_first, rq_last;      /* what we asked for; rq_last < 0 = open */
+    int       rres;                   /* BF_R_* */
+    long long got_first, got_last, got_total;   /* what arrived; -1 unknown */
 };
 
 static struct breq g_req[BF_NREQ];
@@ -281,6 +288,39 @@ static void req_fail(struct breq *r, const char *why)
     r->state = RQ_FAIL;
 }
 
+/* ---- byte ranges: the request side ---- */
+
+/* Append a non-negative decimal. No libc: browser_rt.c has no printf in the
+ * request path on purpose (build_get is a security boundary, not a formatter --
+ * see h1_request_build). Returns the new offset. */
+static int put_ll(char *b, int o, int cap, long long v)
+{
+    char t[24];
+    int i = 0;
+    if (v < 0) v = 0;
+    if (!v) t[i++] = '0';
+    while (v) { t[i++] = (char)('0' + (int)(v % 10)); v /= 10; }
+    while (i && o < cap - 1) b[o++] = t[--i];
+    return o;
+}
+
+/* `bytes=first-last`, or `bytes=first-` when last < 0. Exactly one range, by
+ * construction: there is no comma here and no way for a caller to introduce
+ * one, which is the request half of the multipart/byteranges refusal. Returns
+ * 0, or -1 if the ask is not a range at all. */
+static int fmt_range(const struct breq *r, char *out, int cap)
+{
+    if (r->rq_first < 0) return -1;
+    int o = 0;
+    const char *p = "bytes=";
+    while (*p && o < cap - 1) out[o++] = *p++;
+    o = put_ll(out, o, cap, r->rq_first);
+    if (o < cap - 1) out[o++] = '-';
+    if (r->rq_last >= 0) o = put_ll(out, o, cap, r->rq_last);
+    out[o] = 0;
+    return 0;
+}
+
 /* Serialise the GET for r->u. Returns a malloc'd buffer h1_conn_start owns. */
 static char *build_get(struct breq *r, int *outlen)
 {
@@ -303,6 +343,24 @@ static char *build_get(struct breq *r, int *outlen)
                           "Mozilla/5.0 (X11; LogitOS x86_64) Logit/1.0");
     h1_request_set_header(&q, "Accept", "*/*");
     h1_request_set_header(&q, "Accept-Encoding", h1_accept_encoding());
+    /* The Range, only when asked for -- an unconditional Range header changes
+     * what caches and CDNs do to every request on the machine.
+     *
+     * ACCEPT-ENCODING IS FORCED TO IDENTITY WITH IT, and that is not caution,
+     * it is the spec: a byte range names bytes of the SELECTED REPRESENTATION,
+     * i.e. of the gzip stream, not of the file. Bytes 1000-1999 of a gzip
+     * member are not independently inflatable, our inflater is one-shot (see
+     * h1_decode_body), and the failure mode without this line is a 206 whose
+     * body cannot be decoded at all -- or worse, one that decodes to something.
+     * A range response that arrives content-encoded anyway is refused below by
+     * name rather than guessed at. */
+    if (r->rq_first >= 0) {
+        char rv[64];
+        if (fmt_range(r, rv, (int)sizeof rv) == 0) {
+            h1_request_set_header(&q, "Range", rv);
+            h1_request_set_header(&q, "Accept-Encoding", "identity");
+        }
+    }
     /* The entire point: no `Connection: close`. */
     h1_request_set_header(&q, "Connection", "keep-alive");
     /* Cookies, on EVERY transport request -- navigation, reload, and each
@@ -425,6 +483,200 @@ static int req_expired(const struct breq *r)
     return (now - r->t0 > BF_REQ_MS) || (now - r->t_start > BF_TOTAL_MS);
 }
 
+/* ---- byte ranges: the response side ----
+ *
+ * This is where a range fetch is either honest or silently wrong, so every
+ * branch below ends in either "the slice is exactly this" or a named refusal.
+ * There is deliberately no branch that shrugs. */
+
+static int ci_ch(int c) { return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c; }
+
+static int ci_has(const char *hay, const char *needle)
+{
+    if (!hay || !needle) return 0;
+    for (const char *p = hay; *p; p++) {
+        const char *a = p, *b = needle;
+        while (*a && *b && ci_ch((unsigned char)*a) == ci_ch((unsigned char)*b)) { a++; b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
+/* Bounded decimal. Returns the count of digits consumed (0 = none), and -1 on
+ * overflow -- a Content-Range is attacker-controlled, and a wrapped offset is
+ * how "write this slice at N" becomes a write somewhere else. */
+static int rd_ll(const char *s, long long *out)
+{
+    long long v = 0;
+    int n = 0;
+    while (s[n] >= '0' && s[n] <= '9') {
+        if (v > (0x7FFFFFFFFFFFFFFFLL - (s[n] - '0')) / 10) return -1;
+        v = v * 10 + (s[n] - '0');
+        n++;
+        if (n > 19) return -1;
+    }
+    if (n) *out = v;
+    return n;
+}
+
+/* RFC 9110 14.4:
+ *     Content-Range = range-unit SP ( incl-range "/" (len / "*")
+ *                                   | "*" "/" len )
+ * Fills f/l with the inclusive bounds (-1/-1 for the unsatisfied "star slash
+ * len" form) and *tot with the complete length (-1 for "*"). Returns 0, or -1 on
+ * anything this does not understand -- including a comma, which is the only
+ * way a multi-range answer could reach a single Content-Range line. */
+static int parse_content_range(const char *v, long long *f, long long *l, long long *tot)
+{
+    *f = *l = *tot = -1;
+    if (!v) return -1;
+    while (*v == ' ' || *v == '\t') v++;
+    /* unit; only "bytes" -- "none" and any extension unit are not slices. */
+    const char *u = "bytes";
+    int i = 0;
+    while (u[i] && ci_ch((unsigned char)v[i]) == u[i]) i++;
+    if (u[i] || (v[i] != ' ' && v[i] != '\t')) return -1;
+    v += i;
+    while (*v == ' ' || *v == '\t') v++;
+
+    if (*v == '*') {
+        v++;
+        if (*v++ != '/') return -1;
+        int n = rd_ll(v, tot);
+        if (n <= 0 || v[n]) return -1;
+        return 0;
+    }
+    int n = rd_ll(v, f);
+    if (n <= 0) return -1;
+    v += n;
+    if (*v++ != '-') return -1;
+    n = rd_ll(v, l);
+    if (n <= 0) return -1;
+    v += n;
+    if (*v++ != '/') return -1;
+    if (*v == '*') { *tot = -1; v++; }
+    else { n = rd_ll(v, tot); if (n <= 0) return -1; v += n; }
+    if (*v) return -1;                 /* trailing junk, or a second range */
+    if (*f > *l) return -1;
+    if (*tot >= 0 && *l >= *tot) return -1;
+    return 0;
+}
+
+#ifdef BFETCH_NO_RANGE_CHECK
+/* THE NEGATIVE CONTROL (tests/range.mk test-range-negctl). This is "add Range
+ * support" done the quick way and it is what the whole response side above
+ * exists not to be: send the header, parse a Content-Range if one turns up,
+ * and otherwise believe that whatever came back is the slice that was asked
+ * for. Every request-side check still passes under it -- the Range header is
+ * byte-identical -- and the four response-side claims must fail. */
+static const char *range_check(struct breq *r, struct h1_response *resp)
+{
+    r->rres = BF_R_NONE;
+    r->got_first = r->got_last = r->got_total = -1;
+    if (r->rq_first < 0) return 0;
+    const char *cr = h1_headers_get(&resp->hdr, "content-range");
+    if (cr) parse_content_range(cr, &r->got_first, &r->got_last, &r->got_total);
+    r->rres = BF_R_PARTIAL;
+    return 0;
+}
+#else
+
+/* Decide what the response means for the range that was asked. Returns NULL to
+ * accept, or the reason to fail with. Runs BEFORE h1_decode_body, because one
+ * of the answers is "this must not be decoded". */
+static const char *range_check(struct breq *r, struct h1_response *resp)
+{
+    r->rres = BF_R_NONE;
+    r->got_first = r->got_last = r->got_total = -1;
+
+    const char *cr = h1_headers_get(&resp->hdr, "content-range");
+
+    if (r->rq_first < 0) {
+        /* NOBODY ASKED. A 206 here is not a nicety to tolerate: bfetch_sync()
+         * accepts any 2xx, so res_fetch() would file a partial body in the
+         * whole-resource cache and an image decoder would call the file
+         * corrupt. Buggy CDNs and intermediaries do send these. Refuse. */
+        if (resp->code == 206)
+            return "206 to a request that carried no Range";
+        return 0;
+    }
+
+    if (resp->code == 416) {
+        r->rres = BF_R_UNSATISFIABLE;
+        if (cr) {
+            long long f, l, t;
+            if (parse_content_range(cr, &f, &l, &t) == 0) r->got_total = t;
+        }
+        return "416 range not satisfiable";
+    }
+
+    if (resp->code == 206) {
+        /* multipart/byteranges: a MIME body with generated boundaries and a
+         * Content-Range per part. We never ask for more than one range, so
+         * this is a server doing something we did not request; the body is not
+         * the slice and its first bytes are a boundary line. Named, not
+         * guessed. */
+        const char *ct = h1_headers_get(&resp->hdr, "content-type");
+        if (ci_has(ct, "multipart/byteranges") || ci_has(ct, "multipart/x-byteranges"))
+            return "206 multipart/byteranges is not supported";
+        if (!cr)
+            return "206 without Content-Range";
+        if (h1_headers_count(&resp->hdr, "content-range") > 1)
+            return "206 with more than one Content-Range";
+        long long f, l, t;
+        if (parse_content_range(cr, &f, &l, &t) != 0)
+            return "206 Content-Range is malformed or not in bytes";
+        if (f < 0)
+            return "206 answered with an unsatisfied-range Content-Range";
+        /* A server may CLAMP: asking 0-99999 of a 500-byte file legitimately
+         * yields 0-499. It may not MOVE the start -- a caller places these
+         * bytes at `first`, so a different origin is a silent misplacement. */
+        if (f != r->rq_first)
+            return "206 range does not start where we asked";
+        if (r->rq_last >= 0 && l > r->rq_last)
+            return "206 range extends past what we asked for";
+        /* Content-Encoding on a range response: see the Accept-Encoding note in
+         * build_get. We asked for identity; a server that encoded anyway has
+         * given us bytes of a stream we cannot inflate a slice of. */
+        const char *ce = h1_headers_get(&resp->hdr, "content-encoding");
+        if (ce && ce[0] && !ci_has(ce, "identity"))
+            return "206 body is content-encoded and a slice cannot be decoded";
+        /* The framing cross-check, and the reason it is worth doing: http1.c
+         * frames this body from Content-Length, which for a 206 is the length
+         * of the SLICE. If the two headers disagree, one of them is lying about
+         * where these bytes belong and there is no way to tell which. */
+        if ((long long)resp->body_len != l - f + 1)
+            return "206 body length disagrees with Content-Range";
+        r->rres = BF_R_PARTIAL;
+        r->got_first = f; r->got_last = l; r->got_total = t;
+        return 0;
+    }
+
+    if (resp->code / 100 == 2) {
+        /* THE SERVER IGNORED THE RANGE. Not an error -- the body is the whole
+         * resource and is perfectly good -- but it is emphatically not the
+         * slice, and a caller that assumes otherwise corrupts its buffer with
+         * no symptom until playback. Reported three ways: the status stays
+         * 200 (never rewritten to 206), the result is BF_R_IGNORED, and it is
+         * printed, because the callers most likely to get this wrong are the
+         * ones that never look. */
+        r->rres = BF_R_IGNORED;
+        r->got_first = 0;
+        r->got_last = resp->body_len > 0 ? (long long)resp->body_len - 1 : -1;
+        r->got_total = (long long)resp->body_len;
+        char asked[64];
+        if (fmt_range(r, asked, (int)sizeof asked) != 0) asked[0] = 0;
+        printf("[bfetch] Range ignored: asked %s, server answered %d with the "
+               "whole %d-byte body: %s\n", asked, resp->code, resp->body_len, r->url);
+        return 0;
+    }
+
+    /* 404, 500, ... -- an ordinary error the caller reads from bfetch_status().
+     * rres stays BF_R_NONE; see the enum comment. */
+    return 0;
+}
+#endif /* BFETCH_NO_RANGE_CHECK */
+
 static void req_step_xfer(struct breq *r)
 {
     /* h1_conn_pump reads at most 4 KiB per call so that one fast server cannot
@@ -490,12 +742,32 @@ static void req_step_xfer(struct breq *r)
                 r->hops++;
                 r->retried = 0;
                 r->t0 = monotonic_ms();       /* each hop gets its own budget */
+                /* rq_first/rq_last are NOT reset: a redirected range request
+                 * must ask the new location for the same slice, or the hop
+                 * silently downgrades to a whole-resource fetch. The VERDICT
+                 * is per hop and is cleared. */
+                r->rres = BF_R_NONE;
+                r->got_first = r->got_last = r->got_total = -1;
                 int i = 0; while (next[i] && i < BF_URLMAX - 1) { r->url[i] = next[i]; i++; }
                 r->url[i] = 0;
                 if (url_parse(r->url, &r->u) != 0) { req_fail(r, "bad redirect target"); return; }
                 r->state = RQ_QUEUED;
                 return;
             }
+        }
+    }
+
+    /* The range verdict, BEFORE h1_decode_body: one of its answers is "these
+     * bytes must not be decoded", and the Content-Length/Content-Range
+     * cross-check below is only meaningful against the body as it arrived. */
+    {
+        const char *why = range_check(r, resp);
+        if (why) {
+            printf("[bfetch] %s: %s\n", why, r->url);
+            req_drop_conn(r, 0);
+            r->err = why;
+            r->state = RQ_FAIL;
+            return;
         }
     }
 
@@ -535,16 +807,29 @@ int bfetch_pump(void)
     return pending;
 }
 
-int bfetch_start_from(const char *base, const char *ref)
+static int bfetch_start_range_impl(const char *base, const char *ref,
+                                   long long first, long long last)
 {
     if (!g_pool_ready) bfetch_init();
     char abs[BF_URLMAX];
     if (bfetch_resolve(base, ref, abs, sizeof abs) != 0) return -1;
+    /* An impossible ask is refused HERE, out loud, rather than sent and
+     * answered 416 a round trip later -- and rather than sent as a header the
+     * server is entitled to interpret however it likes. */
+    if (first >= 0 && last >= 0 && last < first) {
+        printf("[bfetch] refusing range bytes=%lld-%lld: last is before first: %s\n",
+               first, last, abs);
+        return -1;
+    }
     for (int i = 0; i < BF_NREQ; i++) {
         struct breq *r = &g_req[i];
         if (r->state != RQ_FREE) continue;
         memset(r, 0, sizeof *r);
         r->fd = -1; r->pslot = -1;
+        r->rq_first = first < 0 ? -1 : first;
+        r->rq_last  = last  < 0 ? -1 : last;
+        r->rres = BF_R_NONE;
+        r->got_first = r->got_last = r->got_total = -1;
         int n = 0; while (abs[n] && n < BF_URLMAX - 1) { r->url[n] = abs[n]; n++; }
         r->url[n] = 0;
         if (url_parse(r->url, &r->u) != 0) { r->state = RQ_FREE; return -1; }
@@ -558,7 +843,39 @@ int bfetch_start_from(const char *base, const char *ref)
     return -1;
 }
 
+int bfetch_start_from(const char *base, const char *ref)
+{ return bfetch_start_range_impl(base, ref, -1, -1); }
+
 int bfetch_start(const char *ref) { return bfetch_start_from(0, ref); }
+
+int bfetch_start_range_from(const char *base, const char *ref,
+                            long long first, long long last)
+{
+    /* first < 0 would be a suffix range (`bytes=-N`), which this API does not
+     * express -- see bfetch.h. Refused rather than quietly demoted to a
+     * whole-resource GET, which is what passing it through would be. */
+    if (first < 0) {
+        printf("[bfetch] refusing range: first offset %lld is negative "
+               "(suffix ranges are not supported): %s\n", first, ref ? ref : "");
+        return -1;
+    }
+    return bfetch_start_range_impl(base, ref, first, last);
+}
+
+int bfetch_start_range(const char *ref, long long first, long long last)
+{ return bfetch_start_range_from(0, ref, first, last); }
+
+static struct breq *req_of(int id);
+
+int bfetch_range_result(int id, long long *first, long long *last, long long *total)
+{
+    struct breq *r = req_of(id);
+    if (!r) { if (first) *first = -1; if (last) *last = -1; if (total) *total = -1; return BF_R_NONE; }
+    if (first) *first = r->got_first;
+    if (last)  *last  = r->got_last;
+    if (total) *total = r->got_total;
+    return r->rres;
+}
 
 static struct breq *req_of(int id)
 {
@@ -635,6 +952,37 @@ int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
         bfetch_release(id);
         return -1;
     }
+    int n = bfetch_take(id, out);
+    if (n < 0) return -1;
+    *outlen = n;
+    return 0;
+}
+
+int bfetch_sync_range(const char *ref, long long first, long long last,
+                      unsigned char **out, int *outlen, long long *total)
+{
+    if (total) *total = -1;
+    int id = bfetch_start_range(ref, first, last);
+    if (id < 0) return -1;
+    bfetch_wait(id, g_tick);
+    if (bfetch_state(id) != BF_DONE) {
+        printf("[bfetch] ranged fetch failed: %s: %s\n", bfetch_error(id), ref);
+        bfetch_release(id);
+        return -1;
+    }
+    long long gf, gl, gt;
+    int rres = bfetch_range_result(id, &gf, &gl, &gt);
+    if (rres != BF_R_PARTIAL) {
+        /* The 200 case ends up here, and ending up here is the point: this
+         * entry point hands back a slice, and a whole body is not one. The
+         * caller that can use it has bfetch_start_range(). */
+        printf("[bfetch] ranged fetch refused: status %d, range result %d "
+               "(1=partial 2=server ignored Range 3=416): %s\n",
+               bfetch_status(id), rres, ref);
+        bfetch_release(id);
+        return -1;
+    }
+    if (total) *total = gt;
     int n = bfetch_take(id, out);
     if (n < 0) return -1;
     *outlen = n;
@@ -722,6 +1070,19 @@ void bfetch_prefetch_wait(void)
             if (!e->used || e->id < 0) continue;
             int st = bfetch_state(e->id);
             if (st == BF_PENDING) { live++; continue; }
+            /* THE CACHE HOLDS WHOLE RESOURCES ONLY (see bfetch.h). A prefetch
+             * is started by bfetch_start(), which asks for no range, so this
+             * cannot be a partial body -- and the guard is here rather than in
+             * a comment because the cache is keyed by URL alone, so if that
+             * ever stops being true the wrong bytes get served to the next
+             * caller with no symptom at all. Cheap, local, and it prints. */
+            if (st == BF_DONE && bfetch_range_result(e->id, 0, 0, 0) != BF_R_NONE) {
+                printf("[bfetch] refusing to cache a partial body under a plain "
+                       "URL: %s\n", e->url);
+                bfetch_release(e->id);
+                e->id = -1;
+                continue;
+            }
             if (st == BF_DONE && bfetch_status(e->id) / 100 == 2) {
                 e->len = bfetch_take(e->id, &e->data);
                 if (e->len < 0) { e->len = 0; e->data = 0; }

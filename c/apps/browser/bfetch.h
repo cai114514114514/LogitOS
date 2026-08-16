@@ -46,6 +46,76 @@ int  bfetch_start(const char *ref);
 /* As above, but resolved against `base` instead of the document URL. */
 int  bfetch_start_from(const char *base, const char *ref);
 
+/* ===================== byte ranges: Range / 206 ==========================
+ *
+ * WHY THIS EXISTS, measured on a real bilibili video page: bilibili delivers
+ * DASH -- ONE fragmented-MP4 `.m4s` per stream, fetched with HTTP Range and
+ * answered 206, fed to MediaSource. The measured video stream is ~1.7 Mbps at
+ * qn=80 over a 9,133-second video. Without Range, "play this video" means
+ * downloading roughly 1.9 GB before the first frame, because there is exactly
+ * one URL and it is the whole thing. js_media_src.c already owns the demuxer,
+ * the decoders, the sound card and the clock; this is the byte supply it had
+ * no way to ask for.
+ *
+ * WHY THE RANGE IS A START-TIME ARGUMENT AND NOT A SETTER. bfetch_start_from()
+ * calls req_connect() before it returns -- "a free slot dials immediately" --
+ * so by the moment the caller holds an id the request may already be
+ * serialized and written to the socket. A `bfetch_set_range(id, ...)` called
+ * after that would silently do nothing on exactly the fast path it exists for,
+ * which is the failure this project's house rules call a silent drop. Passing
+ * the range in is the only shape in which it cannot be too late.
+ *
+ * ONE RANGE ONLY, and that is a stated limit rather than an oversight: the
+ * signature cannot express `bytes=0-99,200-299`, because a multi-range answer
+ * is `multipart/byteranges` -- a MIME body with generated boundaries, its own
+ * per-part headers and its own per-part Content-Range -- and parsing that is a
+ * second body parser. A 206 that arrives as multipart/byteranges anyway is
+ * REFUSED by name ("multipart/byteranges is not supported"), never parsed as
+ * if the boundary text were payload. Suffix ranges (`bytes=-N`, "the last N
+ * bytes") are likewise not expressible; DASH does not use them.
+ *
+ * `first` is the first byte offset, `last` the last INCLUSIVE offset, or < 0
+ * for "to the end of the resource" (`bytes=first-`). */
+int  bfetch_start_range(const char *ref, long long first, long long last);
+int  bfetch_start_range_from(const char *base, const char *ref,
+                             long long first, long long last);
+
+enum {
+    /* No range was asked for -- or one was, and the answer was an error the
+     * caller must read from bfetch_status() (a 404 is still a 404). */
+    BF_R_NONE = 0,
+    /* 206, Content-Range present, well-formed, in bytes, agreeing with both
+     * what was asked and how many body bytes actually arrived. Only in this
+     * case may the body be treated as the requested slice. */
+    BF_R_PARTIAL = 1,
+    /* THE ONE THAT MATTERS. The server ANSWERED 200: it ignored Range and sent
+     * the whole resource. The bytes are real and complete, and they are NOT
+     * the slice -- a caller that appends them at `first` corrupts its buffer
+     * silently. The request still succeeds (BF_DONE, status 200, whole body),
+     * because that is the honest report; it is never dressed up as a 206. */
+    BF_R_IGNORED = 2,
+    /* 416: the range lies outside the resource. A named FAILURE (BF_FAILED),
+     * not an empty success. `*total` carries the length the server disclosed
+     * in `Content-Range: bytes * /N`, if it sent one. */
+    BF_R_UNSATISFIABLE = 3
+};
+
+/* What became of the range. Any of the out pointers may be NULL. `*first` and
+ * `*last` are the INCLUSIVE bounds the server actually delivered, `*total` the
+ * complete resource length or -1 when the server said `*`. Meaningful once
+ * bfetch_state() has settled. */
+int  bfetch_range_result(int id, long long *first, long long *last,
+                         long long *total);
+
+/* One ranged request, run to completion. Returns 0 ONLY on BF_R_PARTIAL -- a
+ * server that ignored the Range is refused here (with a printed reason) rather
+ * than handed back, because a synchronous caller has nowhere to put the
+ * discrepancy and its next move is to write the bytes at `first`. Callers that
+ * can cope with a whole-body answer must use bfetch_start_range() and read
+ * bfetch_range_result() themselves. `total` may be NULL. */
+int  bfetch_sync_range(const char *ref, long long first, long long last,
+                       unsigned char **out, int *outlen, long long *total);
+
 int  bfetch_state(int id);                  /* BF_PENDING / BF_DONE / BF_FAILED */
 int  bfetch_status(int id);                 /* HTTP status code, or 0 */
 /* The body. Owned by bfetch until bfetch_release(); NUL-terminated at [len]. */
@@ -78,7 +148,15 @@ int  bfetch_sync(const char *ref, unsigned char **out, int *outlen);
  *
  * The fix is not a longer timeout, it is not leaving the connection idle:
  * queue every image first so they transfer together with no decode in between,
- * and let res_fetch() take the bytes out of the cache. */
+ * and let res_fetch() take the bytes out of the cache.
+ *
+ * THE CACHE IS KEYED BY URL ALONE, so it can only ever hold WHOLE resources: a
+ * partial body filed under the plain URL would be served to the next caller
+ * that wanted the entire thing, and an image decoder handed the first 64 KiB of
+ * a PNG reports a corrupt file, not a short one. Nothing ranged is put in and
+ * nothing ranged is taken out -- bfetch_prefetch() and res_fetch() have no
+ * range form, and bfetch_start_range() does not consult the cache. That is the
+ * invariant; see the guard on it in bfetch_prefetch_wait(). */
 void bfetch_prefetch(const char *ref);
 /* Drive every queued prefetch to completion, then stop. */
 void bfetch_prefetch_wait(void);
