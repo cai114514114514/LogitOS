@@ -120,10 +120,23 @@ class Lexer:
     def err(self, msg):
         raise f"{msg} (line {self.line})"
 
+    # Same message, but about a line the scanner has already walked past. The
+    # unterminated-literal errors are the only ones that need it and they are
+    # the reason it exists: a string with no closing quote swallows every
+    # newline after it, so self.line by the time we notice is the END of the
+    # file, and the user is pointed at a line that is not the one with the
+    # stray quote on it. This is the lexer's half of the same idea as
+    # Parser.err_at in asc.as -- and of error_at(Token, ...) in compiler.c,
+    # which the C lexer has but does not use for this either: both compilers
+    # reported the wrong line here until this gate measured it.
+    def err_at(self, line, msg):
+        raise f"{msg} (line {line})"
+
     # ---- scan one f-string body: self.i is just past the opening quote.
     # Returns the raw interior; leaves self.i past the closing quote.
     def fstring_body(self, q):
         start = self.i
+        open_line = self.line          # self.line still points at the f" itself
         depth = 0
         while self.i < self.n and (self.at(self.i) != q or depth > 0):
             c = self.at(self.i)
@@ -164,7 +177,7 @@ class Lexer:
                 depth -= 1
             self.i += 1
         if self.at(self.i) != q:
-            self.err("unterminated f-string")
+            self.err_at(open_line, "unterminated f-string")
         body = self.src.sub(start, self.i)
         self.i += 1
         return body
@@ -225,6 +238,7 @@ class Lexer:
                     self.emit(KEYWORDS[word] if word in KEYWORDS else T_IDENT, word)
             elif c == 34 or c == 39:
                 q = c
+                open_line = self.line      # before the scan walks past newlines
                 self.i += 1
                 cs = self.i
                 while self.i < self.n and self.at(self.i) != q:
@@ -237,7 +251,7 @@ class Lexer:
                             self.line += 1
                         self.i += 1
                 if self.at(self.i) != q:
-                    self.err("unterminated string")
+                    self.err_at(open_line, "unterminated string")
                 self.emit(T_STR, self.src.sub(cs, self.i))
                 self.i += 1
             else:

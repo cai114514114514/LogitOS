@@ -345,6 +345,26 @@ class Parser:
         else:
             self.err(msg)
 
+    # Same message, reported against a line chosen by the caller instead of the
+    # cursor's. This is compiler.c's error_at(Token, msg) -- the C compiler has
+    # the helper and uses it only for f-strings, which is why both compilers
+    # made the same mistake on the class below until this gate measured it.
+    #
+    # WHAT IT IS FOR, and it is one thing: an UNCLOSED DELIMITER. The lexer
+    # suppresses NEWLINE inside brackets, so a `[` that is never closed swallows
+    # the rest of the file and the cursor is at EOF when the parser finally
+    # complains -- "expected ']' after list elements (line 500)" in a 500-line
+    # file whose actual mistake is on line 3. The opening token is the one the
+    # user has to go and look at, so the five closers below report its line.
+    # Nothing else uses these: for every other error the cursor IS the mistake.
+    def err_at(self, line, msg):
+        raise f"{msg} (line {line})"
+    def consume_at(self, t, line, msg):
+        if self.check(t):
+            self.advance()
+        else:
+            self.err_at(line, msg)
+
     # ---- emit ----
     def emit(self, b):
         self.cur.fn["code"].append(b)
@@ -469,6 +489,26 @@ class Parser:
         return self.rules[t] if t in self.rules else [nil, nil, P_NONE]
 
     def parse_prec(self, prec):
+        # DEPTH GUARD -- the mirror of compiler.c's `expr_depth >= 64` check at
+        # the head of parse_precedence(), and it has to be here rather than
+        # anywhere else because this is the only recursion in the parser.
+        #
+        # Without it this compiler does not misparse deep input, it DIES: the
+        # recursion is real VM calls, so ~83 nested parentheses exhaust the C
+        # VM's 256-frame stack and the user gets "as: call depth exceeded" from
+        # inside asc.grouping -- no line, no mention of their program, a message
+        # about the compiler's own machinery. The C compiler recurses on the C
+        # stack and never got near its limit, so it could afford to spend its
+        # budget on a diagnostic; this one cannot, which is exactly why the
+        # limit has to be checked and not merely survived.
+        #
+        # 64 is not a number picked here: it is compiler.c's, copied so the two
+        # compilers accept and reject the same programs. len(expr_starts) IS the
+        # C side's expr_depth -- pushed on entry, popped in drop_expr_start --
+        # and the check sits before the push and before advance(), as it does
+        # there, so the reported line is the same token's.
+        if len(self.expr_starts) >= 64:
+            self.err("expression nested too deep")
         self.expr_starts.append(self.code_len())
         self.advance()
         rule = self.rule_of(self.prev_t()[0])
@@ -496,15 +536,42 @@ class Parser:
         t = self.prev_t()
         txt = t[1]
         if t[0] == T_INT:
+            # OVERFLOW GUARD. An AetherScript int is an i64 and `*` promotes to
+            # float when it overflows, so an over-large literal used to turn v
+            # into a float here and then blow up two layers away, in i64()'s
+            # `>>` during serialization: "operands of '>>' must be integers",
+            # no line, nothing naming the literal. Checked BEFORE each step,
+            # division-free, so the check itself cannot overflow.
+            #
+            # This is the one class where the two compilers are meant to differ
+            # and the self-hosted one is the better answer. compiler.c reads the
+            # literal with strtoll, which SATURATES: `x = 99999999999999999999`
+            # compiles there and silently means 9223372036854775807, and
+            # `-9223372036854775808` -- a number this language can hold -- comes
+            # out as -9223372036854775807. Neither is diagnosable from here (the
+            # sign is a separate unary operator by the time we see the digits),
+            # so this side stops at the boundary and says so instead of guessing.
+            # Stated as a limit, not hidden: a script with a literal past i64
+            # that "worked" under the C compiler stops compiling under this one.
             v = 0
             if len(txt) > 2 and txt[0] == "0" and (txt[1] == "x" or txt[1] == "X"):
                 for k in range(2, len(txt)):
                     c = ord(txt[k])
                     d = c - 48 if c <= 57 else (c - 87 if c >= 97 else c - 55)
+                    # 576460752303423487 == INT64_MAX / 16; the equal case can
+                    # still take any d <= 15 without passing INT64_MAX.
+                    if v > 576460752303423487:
+                        self.err("integer literal too large for a 64-bit int")
                     v = v * 16 + d
             else:
                 for k in range(len(txt)):
-                    v = v * 10 + (ord(txt[k]) - 48)
+                    d = ord(txt[k]) - 48
+                    # 922337203685477580 == INT64_MAX / 10, remainder 7.
+                    if v > 922337203685477580:
+                        self.err("integer literal too large for a 64-bit int")
+                    if v == 922337203685477580 and d > 7:
+                        self.err("integer literal too large for a 64-bit int")
+                    v = v * 10 + d
             self.emit_const(K_INT, v)
         else:
             self.emit_const(K_FLOAT, parse_float(txt))
@@ -648,8 +715,9 @@ class Parser:
             self.emit_const(K_STR, "")
 
     def grouping(self):
+        open_line = self.prev_t()[2]          # the '(' -- see consume_at
         self.expression()
-        self.consume(T_RPAREN, "expected ')' after expression")
+        self.consume_at(T_RPAREN, open_line, "expected ')' after expression")
 
     def comprehension_ahead(self):
         depth = 0
@@ -670,6 +738,7 @@ class Parser:
         return -1
 
     def list_literal(self):
+        open_line = self.prev_t()[2]          # the '[' -- see consume_at
         forp = self.comprehension_ahead()
         if forp >= 0:
             self.compile_comprehension(forp)
@@ -681,7 +750,7 @@ class Parser:
             while self.match(T_COMMA):
                 self.expression()
                 n += 1
-        self.consume(T_RBRACKET, "expected ']' after list elements")
+        self.consume_at(T_RBRACKET, open_line, "expected ']' after list elements")
         if n > 255:
             self.err("list literal too large")
         self.emit2(OP_MAKE_LIST, n)
@@ -776,6 +845,7 @@ class Parser:
         self.emit2(OP_CALL, 0)
 
     def dict_literal(self):
+        open_line = self.prev_t()[2]          # the '{' -- see consume_at
         n = 0
         if not self.check(T_RBRACE):
             self.expression()
@@ -787,7 +857,7 @@ class Parser:
                 self.consume(T_COLON, "expected ':' between dict key and value")
                 self.expression()
                 n += 1
-        self.consume(T_RBRACE, "expected '}' after dict entries")
+        self.consume_at(T_RBRACE, open_line, "expected '}' after dict entries")
         if n > 255:
             self.err("dict literal too large")
         self.emit2(OP_MAKE_DICT, n)
@@ -806,14 +876,16 @@ class Parser:
         return false
 
     def index_(self):
+        open_line = self.prev_t()[2]          # the '[' -- see consume_at
         is_slice = self.bracket_subscript()
-        self.consume(T_RBRACKET, "expected ']' after index")
+        self.consume_at(T_RBRACKET, open_line, "expected ']' after index")
         if is_slice:
             self.emit(OP_SLICE)
         else:
             self.emit(OP_INDEX_GET)
 
     def arg_list(self):
+        open_line = self.prev_t()[2]          # the '(' -- see consume_at
         argc = 0
         if not self.check(T_RPAREN):
             self.expression()
@@ -823,7 +895,7 @@ class Parser:
                 if argc == 255:
                     self.err("too many arguments")
                 argc += 1
-        self.consume(T_RPAREN, "expected ')' after arguments")
+        self.consume_at(T_RPAREN, open_line, "expected ')' after arguments")
         return argc
 
     def dot(self):

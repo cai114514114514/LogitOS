@@ -1,0 +1,91 @@
+# tests/unit/asdiag/CLASSES.txt -- the error corpus, one row per error CLASS.
+#
+# Read by tests/unit/run-as-diag.sh. Five pipe-separated fields:
+#
+#   SRC | EXPECT | LINE | WANT | description
+#
+# SRC     a file in this directory, or `gen:<name>` for one the runner builds
+#         (four of the classes are bulk -- 65 indent levels, 300 locals, 200
+#         nested parens, 100 breaks -- and a committed 300-line file of `v0 = 0`
+#         is noise, not a test case).
+#
+#         The committed files are named `*.as.bad` and NOT `*.as` on purpose:
+#         tests/unit/run-as-crosscheck.sh sweeps `find tests -name '*.as'` and
+#         would pull every one of these into a corpus whose whole premise is
+#         that its files compile.
+#
+# EXPECT  what the SELF-HOSTED compiler must do. The gate is hard on this field.
+#           reject      the program is broken; the compiler must say so and exit
+#                       non-zero, with a message it raised on purpose.
+#           accept      the program compiles; the error (if any) is the VM's at
+#                       run time. Both compilers feed the SAME C VM, so these
+#                       rows do not discriminate between the two compilers --
+#                       they are here to prove the class is runtime-resolved and
+#                       that neither compiler rejects a legal program.
+#           impl-limit  the C compiler rejects because of a FIXED-SIZE ARRAY in
+#                       compiler.c, not because the program is wrong. The
+#                       self-hosted compiler has no such array and accepts. That
+#                       is a capability gain, not a diagnostics gap -- but it is
+#                       a divergence, so it is recorded, and the runner RUNS what
+#                       it compiled and checks the answer, because "accepts" is
+#                       only good news if the code is right.
+#
+# LINE    the line the MISTAKE is on, declared by hand from reading the source --
+#         NOT copied from what either compiler currently prints. That is the
+#         point: several rows here are ones both compilers get wrong (an
+#         unterminated string is reported on the line after the quote, an
+#         unclosed bracket at EOF), and a baseline seeded from observed output
+#         could never show that. `-` for EXPECT=accept.
+#
+# WANT    the substring a message must contain to count as naming WHAT WAS
+#         EXPECTED. Empty for EXPECT=accept.
+#
+SRC|EXPECT|LINE|WANT|DESCRIPTION
+01-unterminated-string.as.bad|reject|1|unterminated|string literal with no closing quote
+02-unterminated-fstring.as.bad|reject|2|unterminated|f-string with no closing quote
+03-bad-hex-literal.as.bad|reject|1|hex digits|`0x` with no digits after it
+04-unexpected-bang.as.bad|reject|1|'!'|bare `!` (this language has no unary not)
+05-unexpected-character.as.bad|reject|1|unexpected character|a character the lexer has no rule for
+06-inconsistent-indent.as.bad|reject|3|indentation|dedent to a column that is not on the indent stack
+gen:too-many-indent-levels|reject|65|indentation levels|more nested blocks than the indent stack holds
+gen:crlf-line-endings|reject|1|unexpected character|a CRLF checkout of an otherwise valid file
+09-nul-byte.as.bad|impl-limit|2|unexpected character|an embedded NUL: C truncates the file, self-hosted rejects
+10-int-literal-overflow.as.bad|reject|1|too large|an integer literal past what an i64 holds
+11-bad-float.as.bad|reject|1|expected|two decimal points in one number
+12-missing-colon-if.as.bad|reject|2|':'|`if` header with no colon
+13-missing-colon-while.as.bad|reject|1|':'|`while` header with no colon
+14-missing-colon-for.as.bad|reject|1|':'|`for` header with no colon
+15-missing-colon-def.as.bad|reject|1|':'|`def` header with no colon
+16-missing-colon-class.as.bad|reject|1|':'|`class` header with no colon
+17-unclosed-paren.as.bad|reject|1|')'|call argument list never closed
+18-unclosed-bracket.as.bad|reject|1|']'|list literal never closed
+19-unclosed-brace.as.bad|reject|1|'}'|dict literal never closed
+20-lone-rparen.as.bad|reject|1|expression|a closing paren where a statement should start
+21-missing-indented-block.as.bad|reject|2|indented block|`if` header whose body is not indented
+22-stray-indent.as.bad|reject|2|expression|an indented line where no block was opened
+23-return-outside-function.as.bad|reject|1|'return'|`return` at module level
+24-break-outside-loop.as.bad|reject|1|'break'|`break` with no enclosing loop
+25-continue-outside-loop.as.bad|reject|1|'continue'|`continue` with no enclosing loop
+26-super-outside-class.as.bad|reject|1|'super'|`super` outside any class body
+27-trailing-junk.as.bad|reject|1|newline|a second expression after a complete statement
+28-assign-count-mismatch.as.bad|reject|1|assignment count|two targets, three values
+29-dict-missing-colon.as.bad|reject|1|':'|dict literal entry with no colon
+30-slice-assignment.as.bad|reject|2|slice|assigning through a slice, which is read-only
+31-import-missing-name.as.bad|reject|1|module name|`import` followed by a number
+32-from-missing-import.as.bad|reject|1|'import'|`from NAME` with the `import` keyword missing
+33-try-without-except.as.bad|reject|3|'except'|a `try` block with no `except`
+34-except-missing-colon.as.bad|reject|3|':'|`except` clause with no colon
+35-class-body-non-method.as.bad|reject|2|method definitions|a statement in a class body
+36-class-inherits-itself.as.bad|reject|1|inherit|`class A(A)`
+37-method-missing-self.as.bad|reject|2|'self'|a method whose first parameter is not `self`
+38-param-not-identifier.as.bad|reject|1|parameter name|a literal in a parameter list
+39-fstring-unterminated-hole.as.bad|reject|2|unterminated|an f-string hole with no closing brace
+40-fstring-empty-hole.as.bad|reject|1|empty expression|`f"{}"`
+41-fstring-format-spec.as.bad|reject|2|format spec|an f-string format spec, which is not supported
+gen:expression-nested-too-deep|reject|1|nested too deep|200 nested parentheses
+gen:loops-nested-too-deep|impl-limit|18|nested too deep|20 nested loops: C has a 16-deep fixed loop stack
+gen:too-many-breaks-in-loop|impl-limit|133|too many 'break'|100 breaks in one loop: C has a 64-entry fixed patch list
+gen:too-many-locals|reject|257|too many locals|300 locals in one function
+46-unknown-identifier.as.bad|accept|-||reading a name nothing ever bound
+47-wrong-arg-count.as.bad|accept|-||calling a 1-parameter function with 2 arguments
+48-missing-module.as.bad|accept|-||importing a module that is not on disk

@@ -18,3 +18,11 @@ third_party/html5lib-tests/** -text
 # tests fail for a reason that is not the browser's fault. The un-ignore lives
 # in .gitignore itself (git has no attribute for this); this note is here so
 # the next person adding a corpus checks for it.
+
+# The AetherScript diagnostics corpus (unit DG). Same rule, same reason: these
+# files are deliberately BROKEN AetherScript and their bytes are the test. A CR
+# is a lex error in this language, so a CRLF checkout would turn all forty-odd
+# classes into the same "unexpected character" and the gate would fail for a
+# reason that is not the compiler's. tests/unit/run-as-diag.sh also strips CR on
+# the way in, so neither mechanism is load-bearing alone.
+tests/unit/asdiag/** -text

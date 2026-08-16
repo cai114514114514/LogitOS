@@ -750,10 +750,19 @@ $(BUILD)/asobj/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@
 
-$(BUILD)/as.elf: $(AS_OBJ) $(APPDIR)/crt0_cli.asm
+# /bin/as ships NO C COMPILER: it is the VM plus /usr/as/lib/asc.la, the
+# self-hosted compiler, read off the disk at run time. compiler.o and lexer.o
+# are dropped from the link and as.o is compiled -DAS_SELFHOST_COMPILER (the
+# override lives in tests/asshipped.mk beside its gates). build/asc -- the host
+# bootstrap that precompiles every .la and is the oracle half of the crosscheck
+# -- still links all of them; as.c is the only file that differs between the
+# two, which is why  on this binary is a gate (test-as-shipped).
+AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/compiler.o                                $(BUILD)/asobj/c/apps/as/lexer.o,$(AS_OBJ))
+
+$(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/as.crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/as.crt0c.o $(AS_OBJ)
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/as.crt0c.o $(AS_OBJ_SHIPPED)
 $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/as.elf $@ as - '*' 150 150 150
 
@@ -3769,6 +3778,8 @@ bench-aui: $(ISO) $(DISK)
 -include tests/libc.mk
 -include tests/as-m28.mk
 -include tests/asview.mk
+-include tests/asshipped.mk
+-include tests/asdiag.mk
 
 # M30 threads: /bin/thrtest (the gate) and its four negative controls. Its own
 # fragment for the reason every other one here is -- several lines edit this
