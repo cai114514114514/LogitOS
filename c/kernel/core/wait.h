@@ -63,6 +63,12 @@ struct waitq {
 
 #define WAITQ_INIT { SPINLOCK_INIT, 0, 0, 0 }
 
+/* Initialise a queue in FRESH memory. It assigns a whole new lock, so calling
+ * it on a queue anything might be using resets that lock's ticket and serving
+ * to zero -- and a core queued on it right then holds a number that will never
+ * be served again, which is an unbounded spin on a lock that reads as free. To
+ * recycle a queue whose owner is going away, waitq_wake_all() instead: the
+ * sleepers re-test their predicate and leave. */
 void waitq_init(struct waitq *q);
 
 /* Enqueue the current thread. Caller MUST already hold q->lock. */

@@ -76,6 +76,25 @@ void spin_lock(spinlock_t *l)
  * ========================================================================== */
 static void bkl_puts(const char *m) { while (m && *m) serial_putc(*m++); }
 
+/* serving is about to pass ticket -- see the call site. */
+static void bkl_desync(const spinlock_t *l, void *ra)
+{
+    static volatile int said;
+    if (said) return;
+    said = 1;
+    bkl_puts("[bkl] BUG: unlock with ticket==serving at ra=0x");
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        int d = (int)(((unsigned long)ra >> sh) & 15);
+        serial_putc((char)(d < 10 ? '0' + d : 'a' + d - 10));
+    }
+    bkl_puts(" lock=0x");
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        int d = (int)(((unsigned long)l >> sh) & 15);
+        serial_putc((char)(d < 10 ? '0' + d : 'a' + d - 10));
+    }
+    bkl_puts(" -- serving passes ticket; every later acquirer spins forever\r\n");
+}
+
 static void bkl_bad_release(int me, int owner, void *ra)
 {
     static volatile int said;
@@ -117,6 +136,23 @@ void spin_unlock(spinlock_t *l)
      * why this check is here and not in a debug build. */
     if (l->owner_cpu != this_cpu()->index)
         bkl_bad_release(this_cpu()->index, l->owner_cpu, __builtin_return_address(0));
+    /* AND THE DESYNC ITSELF, caught at the instant it is created. A releaser
+     * necessarily holds a ticket -- its own -- so `ticket` is at least one
+     * ahead of `serving` here, ALWAYS. If they are equal, this serving++ is
+     * about to push serving PAST ticket, and from then on every acquirer waits
+     * for a number that is already gone: an unbounded spin on a lock whose
+     * ticket==serving reads as free. That is the exact state a wedged -smp 4
+     * machine was found in, arbitrarily far in time from the release that did
+     * it, so the check belongs here and not in a post-mortem.
+     *
+     * No false positive is possible: serving is read first, and the only core
+     * that may advance serving is the holder, which is this one. Another core
+     * taking a ticket only makes ticket LARGER between the two reads. */
+    {
+        unsigned int sv = __atomic_load_n(&l->serving, __ATOMIC_SEQ_CST);
+        unsigned int tk = __atomic_load_n(&l->ticket,  __ATOMIC_SEQ_CST);
+        if (sv == tk) bkl_desync(l, __builtin_return_address(0));
+    }
     l->owner_cpu = -1;
     __atomic_fetch_add(&l->serving, 1, __ATOMIC_SEQ_CST);
 }

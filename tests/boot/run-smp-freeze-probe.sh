@@ -127,6 +127,22 @@ done
 # THE LOCK WORDS THEMSELVES, plus who holds each one -- spinlock_t records the
 # return address of the acquiring caller precisely so a freeze has an answer to
 # "which code took this and never gave it back".
+# TWICE, three seconds apart. A single snapshot cannot tell a core that is
+# STUCK at an address from one that merely happened to be there -- and the
+# difference decides whether the address means anything at all.
+echo "--- second look, 3s later (identical == truly stuck) ---"
+sleep 3
+python3 - "$SOCK" <<'PY' > /tmp/regs2.txt
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+f = s.makefile("rw"); f.readline()
+f.write(json.dumps({"execute": "qmp_capabilities"}) + chr(10)); f.flush(); f.readline()
+f.write(json.dumps({"execute": "human-monitor-command",
+                    "arguments": {"command-line": "info registers -a"}}) + chr(10)); f.flush()
+print(json.loads(f.readline()).get("return", ""))
+PY
+grep -aE "^RIP" /tmp/regs2.txt | sed "s/^/    /"
+
 echo "--- lock state ---"
 python3 tests/boot/qmp_lockdump.py "$SOCK" "$ELF"
 

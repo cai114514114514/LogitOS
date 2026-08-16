@@ -1935,7 +1935,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->surf_cap = (int)pxcount;      /* the canvas grows in steps from here */
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
         w->drawing = 0; w->draw_t0 = 0;   /* a fresh canvas is a finished picture */
-        evq_reset(&w->ev); waitq_init(&w->evwq); w->wants_close = 0;
+        /* WAKE the old tenant's waiters, do NOT waitq_init here. waitq_init
+         * assigns a fresh SPINLOCK_INIT over the queue's lock -- ticket and
+         * serving back to zero -- and a core queued on that lock at that
+         * moment is holding a ticket number that will never be served again.
+         * wins[] is static, so the lock is already valid; what a reused slot
+         * needs is for anyone still parked on it to be released, and they
+         * re-test their predicate and find the window gone. */
+        evq_reset(&w->ev); waitq_wake_all(&w->evwq); w->wants_close = 0;
         /* A REUSED SLOT MUST NOT INHERIT the previous tenant's window state.
          * `used` guards the readers, but zoomed/minimized/min_* are read the
          * moment the new window is composited -- a slot whose last occupant was
