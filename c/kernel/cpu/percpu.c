@@ -112,3 +112,8 @@ void percpu_tss_set_rsp0(uint64_t rsp0)
 {
     this_cpu()->tss.rsp0 = rsp0;
 }
+
+/* kheap.c's per-core magazines ask which core they are on through this, rather
+ * than including percpu.h -- that file is host-compiled by make test-kheap. */
+int kheap_cpu_index(void);
+int kheap_cpu_index(void) { return this_cpu()->index; }
