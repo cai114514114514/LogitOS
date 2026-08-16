@@ -1,0 +1,175 @@
+{
+ "date": "2026-08-16d",
+ "generated": "2026-08-16T11:41:11",
+ "iso": "build/logit.iso",
+ "iso_sha256_16": "87fd259e29f855af",
+ "commit": "752fbf8ed",
+ "wall_seconds": 62.0,
+ "repeat": 1,
+ "sites": [
+  {
+   "name": "deepseek",
+   "url": "https://www.deepseek.com/",
+   "started": "2026-08-16T11:40:09",
+   "verdict": "PAINTED",
+   "why": "painted 17244 changed px in 7.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.deepseek.com/",
+    "bytes": 86450,
+    "redirects": [],
+    "script_tags": 41,
+    "script_src": 19,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 18,
+     "inline_scripts": 22,
+     "images": 2,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "elapsed": 0.7
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 22,
+    "dials": 2,
+    "reused": 20,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 14730,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 7.3,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 17244,
+    "changed_bbox": [
+     140,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 13826,
+    "ink_px_blank": 3902,
+    "colours": 861,
+    "rich_tiles_proxy": 21
+   },
+   "shot": "tests/scoreboard/2026-08-16d/deepseek.png",
+   "serial_log": "tests/scoreboard/2026-08-16d/deepseek.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 18,
+     "inline_scripts": 22,
+     "images": 2,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "gap": null
+   },
+   "finished": "2026-08-16T11:40:53",
+   "reported": "blank; needs Worker",
+   "wall_seconds": 44.4,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "qq",
+   "url": "https://www.qq.com/",
+   "started": "2026-08-16T11:40:09",
+   "verdict": "PAINTED",
+   "why": "painted 66616 changed px in 25.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.qq.com/",
+    "bytes": 123451,
+    "redirects": [],
+    "script_tags": 13,
+    "script_src": 7,
+    "img_tags": 17,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 1.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 16,
+    "dials": 7,
+    "reused": 9,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8705,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 25.3,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 66616,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 18738,
+    "ink_px_blank": 3902,
+    "colours": 1040,
+    "rich_tiles_proxy": 69
+   },
+   "shot": "tests/scoreboard/2026-08-16d/qq.png",
+   "serial_log": "tests/scoreboard/2026-08-16d/qq.serial.txt",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-16T11:41:11",
+   "reported": "Uncaught (in promise) undefined",
+   "wall_seconds": 61.9,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  }
+ ]
+}

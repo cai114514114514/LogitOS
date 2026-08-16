@@ -1,18 +1,18 @@
 {
- "date": "2026-08-16",
- "generated": "2026-08-16T11:39:27",
+ "date": "im-before",
+ "generated": "2026-08-16T12:17:45",
  "iso": "build/logit.iso",
  "iso_sha256_16": "87fd259e29f855af",
- "commit": "752fbf8ed",
- "wall_seconds": 49.9,
+ "commit": "ea47b7d39",
+ "wall_seconds": 49.5,
  "repeat": 1,
  "sites": [
   {
    "name": "control-wikipedia",
    "url": "https://en.wikipedia.org/wiki/Operating_system",
-   "started": "2026-08-16T11:38:37",
+   "started": "2026-08-16T12:16:55",
    "verdict": "PAINTED",
-   "why": "painted 45552 changed px in 11.5s, no JS exceptions, no subresource gap",
+   "why": "painted 45508 changed px in 11.5s, no JS exceptions, no subresource gap",
    "host": {
     "ok": true,
     "status": 200,
@@ -38,20 +38,22 @@
     "timer_exceptions": [],
     "module_exceptions": [],
     "fetch_failed": [
-     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Wiki_letter_w_cropped.svg/20px-Wiki_letter_w_cropped.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
      "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
      "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
-     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
-     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
-     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
      "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
-     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/9/99/Wiktionary-logo-en-v2.svg/40px-Wiktionary-logo-en-v2.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Wikiversity_logo_2017.svg/40px-Wikiversity_logo_2017.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
     ],
     "cannot_fetch": [],
     "skipped_scripts": 1,
-    "requests": 37,
+    "requests": 36,
     "dials": 4,
-    "reused": 33,
+    "reused": 32,
     "modules": 0,
     "modules_failed": 0,
     "heap_peak_k": 17671,
@@ -64,10 +66,10 @@
     "settled": true
    },
    "pixels": {
-    "changed_px": 45552,
+    "changed_px": 45508,
     "changed_bbox": [
      152,
-     20,
+     16,
      1260,
      764
     ],
@@ -76,8 +78,8 @@
     "colours": 1173,
     "rich_tiles_proxy": 32
    },
-   "shot": "tests/scoreboard/2026-08-16/control-wikipedia.png",
-   "serial_log": "tests/scoreboard/2026-08-16/control-wikipedia.serial.txt",
+   "shot": "tests/scoreboard/im-before/control-wikipedia.png",
+   "serial_log": "tests/scoreboard/im-before/control-wikipedia.serial.txt",
    "subresources": {
     "host_inventory": {
      "stylesheets": 2,
@@ -90,9 +92,9 @@
     },
     "gap": null
    },
-   "finished": "2026-08-16T11:39:27",
+   "finished": "2026-08-16T12:17:44",
    "reported": "CONTROL: known to render since M13",
-   "wall_seconds": 49.9,
+   "wall_seconds": 49.4,
    "runs": 1,
    "all_verdicts": [
     "PAINTED"

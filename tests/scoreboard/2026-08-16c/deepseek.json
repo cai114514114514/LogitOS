@@ -1,0 +1,76 @@
+{
+ "name": "deepseek",
+ "url": "https://www.deepseek.com/",
+ "started": "2026-08-16T11:17:18",
+ "verdict": "PAINTED",
+ "why": "painted 22252 changed px in 6.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.deepseek.com/",
+  "bytes": 86450,
+  "redirects": [],
+  "script_tags": 41,
+  "script_src": 19,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 22,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "elapsed": 0.5
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 22,
+  "dials": 2,
+  "reused": 20,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14729,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 6.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 22252,
+  "changed_bbox": [
+   140,
+   16,
+   1260,
+   764
+  ],
+  "ink_px": 17584,
+  "ink_px_blank": 3902,
+  "colours": 864,
+  "rich_tiles_proxy": 21
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/2026-08-16c/deepseek.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/2026-08-16c/deepseek.serial.txt",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 22,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "gap": null
+ },
+ "finished": "2026-08-16T11:18:02"
+}

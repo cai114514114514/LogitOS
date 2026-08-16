@@ -1,0 +1,160 @@
+[wm] perf t=18655 composites=154 ns=1566472712 max=64260359 motions=18 curmoves=10 curns=281811 full=114 rects=154 cpx=28709168 fpx=28609904 presns=52294198 torn=0 defer=88 late=0 drawmax=103
+[sock] connected www.qq.com via ipv4 ::ffff:198.18.0.56
+[tls] trust store: 130 roots, 0 skipped
+[wm] perf t=19655 composites=190 ns=1609406654 max=64260359 motions=18 curmoves=10 curns=281811 full=150 rects=190 cpx=29733168 fpx=29633904 presns=53772097 torn=0 defer=123 late=0 drawmax=103
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.qq.com, alpn=http/1.1
+[mm] low: 112234 frames free (438 MiB), 18803 used, 0 shared, 0 bugs
+[sock] connected mat1.gtimg.com via ipv4 ::ffff:198.18.0.111
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 67 irq 62 softirq 29 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 111978 frames free (437 MiB), 19059 used, 0 shared, 0 bugs
+[mm] low: 111722 frames free (436 MiB), 19315 used, 0 shared, 0 bugs
+[browser] heap peak 8705K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for inews.gtimg.com, alpn=http/1.1
+[tls] OCSP staple: good (inews.gtimg.com)
+[tls] chain of 2 verified for inews.gtimg.com, alpn=http/1.1
+[tls] OCSP staple: good (inews.gtimg.com)
+[mm] low: 111466 frames free (435 MiB), 19571 used, 0 shared, 0 bugs
+[mm] low: 111210 frames free (434 MiB), 19827 used, 0 shared, 0 bugs
+[mm] low: 110954 frames free (433 MiB), 20083 used, 0 shared, 0 bugs
+[mm] low: 110698 frames free (432 MiB), 20339 used, 0 shared, 0 bugs
+[mm] low: 110442 frames free (431 MiB), 20595 used, 0 shared, 0 bugs
+[img] 3/3 decoded (0 failed, cap 16)
+[wm] perf t=24680 composites=214 ns=2000940949 max=64260359 motions=18 curmoves=10 curns=281811 full=165 rects=214 cpx=38201648 fpx=38102384 presns=67271987 torn=0 defer=130 late=0 drawmax=105
+[browser] scripts collected: 6 external classic, 0 external module, 6 inline
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[mm] low: 110186 frames free (430 MiB), 20851 used, 0 shared, 0 bugs
+[wm] perf t=26681 composites=229 ns=2195316251 max=64260359 motions=18 curmoves=10 curns=281811 full=176 rects=229 cpx=42420528 fpx=42321264 presns=74207106 torn=0 defer=137 late=0 drawmax=105
+[mm] low: 109930 frames free (429 MiB), 21107 used, 0 shared, 0 bugs
+[net] rx path: frames 591 irq 276 softirq 148 inline 0 poll 8 idle 0/0 halt/skip
+[mm] low: 109674 frames free (428 MiB), 21363 used, 0 shared, 0 bugs
+[mm] low: 109418 frames free (427 MiB), 21619 used, 0 shared, 0 bugs
+[mm] low: 109162 frames free (426 MiB), 21875 used, 0 shared, 0 bugs
+[mm] low: 108906 frames free (425 MiB), 22131 used, 0 shared, 0 bugs
+[mm] low: 108650 frames free (424 MiB), 22387 used, 0 shared, 0 bugs
+[mm] low: 108394 frames free (423 MiB), 22643 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) undefined
+[mm] low: 108138 frames free (422 MiB), 22899 used, 0 shared, 0 bugs
+[mm] low: 107882 frames free (421 MiB), 23155 used, 0 shared, 0 bugs
+[mm] low: 107626 frames free (420 MiB), 23411 used, 0 shared, 0 bugs
+[mm] low: 107370 frames free (419 MiB), 23667 used, 0 shared, 0 bugs
+[mm] low: 107114 frames free (418 MiB), 23923 used, 0 shared, 0 bugs
+[mm] low: 106858 frames free (417 MiB), 24179 used, 0 shared, 0 bugs
+[mm] low: 106602 frames free (416 MiB), 24435 used, 0 shared, 0 bugs
+[mm] low: 106346 frames free (415 MiB), 24691 used, 0 shared, 0 bugs
+[mm] low: 106090 frames free (414 MiB), 24947 used, 0 shared, 0 bugs
+[mm] low: 105834 frames free (413 MiB), 25203 used, 0 shared, 0 bugs
+[mm] low: 105578 frames free (412 MiB), 25459 used, 0 shared, 0 bugs
+[mm] low: 105322 frames free (411 MiB), 25715 used, 0 shared, 0 bugs
+[mm] low: 105066 frames free (410 MiB), 25971 used, 0 shared, 0 bugs
+[mm] low: 104810 frames free (409 MiB), 26227 used, 0 shared, 0 bugs
+[mm] low: 104554 frames free (408 MiB), 26483 used, 0 shared, 0 bugs
+[mm] low: 104298 frames free (407 MiB), 26739 used, 0 shared, 0 bugs
+[mm] low: 104042 frames free (406 MiB), 26995 used, 0 shared, 0 bugs
+[mm] low: 103786 frames free (405 MiB), 27251 used, 0 shared, 0 bugs
+[mm] low: 103530 frames free (404 MiB), 27507 used, 0 shared, 0 bugs
+[mm] low: 103274 frames free (403 MiB), 27763 used, 0 shared, 0 bugs
+[mm] low: 103018 frames free (402 MiB), 28019 used, 0 shared, 0 bugs
+[mm] low: 102762 frames free (401 MiB), 28275 used, 0 shared, 0 bugs
+[mm] low: 102506 frames free (400 MiB), 28531 used, 0 shared, 0 bugs
+[mm] low: 102250 frames free (399 MiB), 28787 used, 0 shared, 0 bugs
+[mm] low: 101994 frames free (398 MiB), 29043 used, 0 shared, 0 bugs
+[mm] low: 101738 frames free (397 MiB), 29299 used, 0 shared, 0 bugs
+[mm] low: 101482 frames free (396 MiB), 29555 used, 0 shared, 0 bugs
+[mm] low: 101226 frames free (395 MiB), 29811 used, 0 shared, 0 bugs
+[mm] low: 100970 frames free (394 MiB), 30067 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for staticfile.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[error] Uncaught (in promise) TypeError: not a function
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/779.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/779.js)
+    at factory (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/779.js)
+    at ../../node_modules/.pnpm/lottie-web@5.13.0/node_modules/lottie-web/build/player/lottie.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/779.js)
+    at call (native)
+    at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/index.js)
+    at ../../node_modules/.pnpm/lottie-react@2.4.0_react-dom@17.0.2_react@17.0.2/node_modules/lottie-react/build/index.umd.js (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/779.js:6)
+    at call (native)
+    at u (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/index.js)
+
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for vm.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 1106 irq 549 softirq 299 inline 0 poll 14 idle 0/0 halt/skip
+[browser] load done: 16 requests, 7 connections dialled, 9 reused, 0 modules loaded (0 failed)
+[browser] pool: 9 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
+[webapi] fetch: connection failed
+[error] Uncaught (in promise) AxiosError: Network Error
+Error
+    at H (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202681313179/static/js/index.js)
+    at call (native)
+    at _fire (<webapi>:1018)
+    at <anonymous> (<webapi>:1059)
+
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[error] Uncaught (in promise) [object Object]
+[error] Uncaught (in promise) [object Object]
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for news.ssp.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for h.trace.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)

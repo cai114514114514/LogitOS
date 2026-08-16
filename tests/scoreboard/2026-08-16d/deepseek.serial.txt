@@ -1,0 +1,187 @@
+[wm] perf t=18670 composites=145 ns=1755219270 max=58231944 motions=18 curmoves=10 curns=656436 full=101 rects=145 cpx=33056112 fpx=32940304 presns=57087038 torn=0 defer=71 late=0 drawmax=94
+[wm] perf t=19676 composites=183 ns=1843931215 max=58231944 motions=18 curmoves=10 curns=656436 full=139 rects=183 cpx=35104112 fpx=34988304 presns=60612301 torn=0 defer=107 late=0 drawmax=99
+[sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.47
+[tls] trust store: 130 roots, 0 skipped
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.deepseek.com, alpn=http/1.1
+[tls] OCSP staple: good (www.deepseek.com)
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 80111s, 1 cached)
+[mm] low: 112234 frames free (438 MiB), 18803 used, 0 shared, 0 bugs
+[sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.47
+[wm] perf t=20685 composites=189 ns=1988584373 max=58231944 motions=18 curmoves=10 curns=656436 full=143 rects=189 cpx=38237552 fpx=38121744 presns=65577411 torn=0 defer=108 late=0 drawmax=99
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.deepseek.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 47705s, 1 cached)
+[net] rx path: frames 66 irq 60 softirq 20 inline 10 poll 2 idle 0/0 halt/skip
+[browser] heap peak 6732K
+[img] 0/0 decoded (0 failed, cap 16)
+[wm] perf t=21685 composites=198 ns=2135160782 max=58231944 motions=18 curmoves=10 curns=656436 full=150 rects=198 cpx=41370992 fpx=41255184 presns=70658421 torn=0 defer=112 late=0 drawmax=99
+[mm] low: 111978 frames free (437 MiB), 19059 used, 0 shared, 0 bugs
+[browser] scripts collected: 18 external classic, 0 external module, 22 inline
+[mm] low: 111722 frames free (436 MiB), 19315 used, 0 shared, 0 bugs
+[mm] low: 111466 frames free (435 MiB), 19571 used, 0 shared, 0 bugs
+[mm] low: 111210 frames free (434 MiB), 19827 used, 0 shared, 0 bugs
+[mm] low: 110954 frames free (433 MiB), 20083 used, 0 shared, 0 bugs
+[mm] low: 110698 frames free (432 MiB), 20339 used, 0 shared, 0 bugs
+[mm] low: 110442 frames free (431 MiB), 20595 used, 0 shared, 0 bugs
+[webapi] navigation requested: https://www.deepseek.com/en/ (the loader does not consume this yet)
+[mm] low: 110186 frames free (430 MiB), 20851 used, 0 shared, 0 bugs
+%c[__httpRequest]:%c httpRequest GET https://chat.deepseek.com/api/v0/ip_to_country_code color: blue;  [object Object] 
+[browser] load done: 22 requests, 2 connections dialled, 20 reused, 0 modules loaded (0 failed)
+[browser] pool: 20 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 21 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.deepseek.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 47698s, 1 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.deepseek.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 58511s, 1 cached)
+[browser] heap peak 14730K
+[img] 0/0 decoded (0 failed, cap 16)
+[browser] scripts collected: 18 external classic, 0 external module, 19 inline
+[net] rx path: frames 578 irq 334 softirq 130 inline 42 poll 3 idle 0/0 halt/skip
+[wm] perf t=31773 composites=265 ns=4151025630 max=58231944 motions=18 curmoves=10 curns=656436 full=199 rects=265 cpx=85955952 fpx=85840144 presns=140645678 torn=0 defer=118 late=0 drawmax=99
+[mm] low: 109930 frames free (429 MiB), 21107 used, 0 shared, 0 bugs
+[mm] low: 109674 frames free (428 MiB), 21363 used, 0 shared, 0 bugs
+[mm] low: 109418 frames free (427 MiB), 21619 used, 0 shared, 0 bugs
+[mm] low: 109162 frames free (426 MiB), 21875 used, 0 shared, 0 bugs
+%c[__httpRequest]:%c httpRequest GET https://chat.deepseek.com/api/v0/ip_to_country_code color: blue;  [object Object] 
+[browser] load done: 22 requests, 2 connections dialled, 20 reused, 0 modules loaded (0 failed)
+[browser] pool: 40 hits, 0 evicted, 4 closed
+[browser] resources: 0 from tab, 21 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for chat.deepseek.com, alpn=h2
+[tls] OCSP staple: good (chat.deepseek.com)
+[wm] perf t=33774 composites=276 ns=4305197876 max=58231944 motions=18 curmoves=10 curns=656436 full=206 rects=276 cpx=89150832 fpx=89035024 presns=145663300 torn=0 defer=122 late=0 drawmax=99
+[mm] low: 108906 frames free (425 MiB), 22131 used, 0 shared, 0 bugs
+[tls] ticket stored for chat.deepseek.com (138 bytes, lifetime 58506s, 2 cached)
+%c[__pageVisit]:%c 访问页面 [/en/] [0]：5220ms color: blue;  [object Object] 
+%c[__tti]:%c /en/ TTI 上报：5220ms color: blue;  [object Object] 
+[mm] low: 108650 frames free (424 MiB), 22387 used, 0 shared, 0 bugs
+[mm] low: 108394 frames free (423 MiB), 22643 used, 0 shared, 0 bugs
+[mm] low: 108138 frames free (422 MiB), 22899 used, 0 shared, 0 bugs
+[mm] low: 107882 frames free (421 MiB), 23155 used, 0 shared, 0 bugs
+[mm] low: 107626 frames free (420 MiB), 23411 used, 0 shared, 0 bugs
+[mm] low: 107370 frames free (419 MiB), 23667 used, 0 shared, 0 bugs
+[mm] low: 107114 frames free (418 MiB), 23923 used, 0 shared, 0 bugs
+[mm] low: 106858 frames free (417 MiB), 24179 used, 0 shared, 0 bugs
+[mm] low: 106602 frames free (416 MiB), 24435 used, 0 shared, 0 bugs
+[mm] low: 106346 frames free (415 MiB), 24691 used, 0 shared, 0 bugs
+[mm] low: 106090 frames free (414 MiB), 24947 used, 0 shared, 0 bugs
+[mm] low: 105834 frames free (413 MiB), 25203 used, 0 shared, 0 bugs
+[mm] low: 105578 frames free (412 MiB), 25459 used, 0 shared, 0 bugs
+[mm] low: 105322 frames free (411 MiB), 25715 used, 0 shared, 0 bugs
+[mm] low: 105066 frames free (410 MiB), 25971 used, 0 shared, 0 bugs
+[mm] low: 104810 frames free (409 MiB), 26227 used, 0 shared, 0 bugs
+[mm] low: 104554 frames free (408 MiB), 26483 used, 0 shared, 0 bugs
+[mm] low: 104298 frames free (407 MiB), 26739 used, 0 shared, 0 bugs
+[mm] low: 104042 frames free (406 MiB), 26995 used, 0 shared, 0 bugs
+[mm] low: 103786 frames free (405 MiB), 27251 used, 0 shared, 0 bugs
+[mm] low: 103530 frames free (404 MiB), 27507 used, 0 shared, 0 bugs
+[mm] low: 103274 frames free (403 MiB), 27763 used, 0 shared, 0 bugs
+[mm] low: 103018 frames free (402 MiB), 28019 used, 0 shared, 0 bugs
+[mm] low: 102762 frames free (401 MiB), 28275 used, 0 shared, 0 bugs
+[mm] low: 102506 frames free (400 MiB), 28531 used, 0 shared, 0 bugs
+[mm] low: 102250 frames free (399 MiB), 28787 used, 0 shared, 0 bugs
+[mm] low: 101994 frames free (398 MiB), 29043 used, 0 shared, 0 bugs
+[mm] low: 101738 frames free (397 MiB), 29299 used, 0 shared, 0 bugs
+[mm] low: 101482 frames free (396 MiB), 29555 used, 0 shared, 0 bugs
+[mm] low: 101226 frames free (395 MiB), 29811 used, 0 shared, 0 bugs
+[mm] low: 100970 frames free (394 MiB), 30067 used, 0 shared, 0 bugs
+[mm] low: 100714 frames free (393 MiB), 30323 used, 0 shared, 0 bugs
+[mm] low: 100458 frames free (392 MiB), 30579 used, 0 shared, 0 bugs
+[mm] low: 100202 frames free (391 MiB), 30835 used, 0 shared, 0 bugs
+[mm] low: 99946 frames free (390 MiB), 31091 used, 0 shared, 0 bugs
+[mm] low: 99690 frames free (389 MiB), 31347 used, 0 shared, 0 bugs
+[mm] low: 99434 frames free (388 MiB), 31603 used, 0 shared, 0 bugs
+[mm] low: 99178 frames free (387 MiB), 31859 used, 0 shared, 0 bugs
+[mm] low: 98922 frames free (386 MiB), 32115 used, 0 shared, 0 bugs
+[mm] low: 98666 frames free (385 MiB), 32371 used, 0 shared, 0 bugs
+[mm] low: 98410 frames free (384 MiB), 32627 used, 0 shared, 0 bugs
+[mm] low: 98154 frames free (383 MiB), 32883 used, 0 shared, 0 bugs
+[mm] low: 97898 frames free (382 MiB), 33139 used, 0 shared, 0 bugs
+[mm] low: 97642 frames free (381 MiB), 33395 used, 0 shared, 0 bugs
+[mm] low: 97386 frames free (380 MiB), 33651 used, 0 shared, 0 bugs
+[mm] low: 97130 frames free (379 MiB), 33907 used, 0 shared, 0 bugs
+[mm] low: 96874 frames free (378 MiB), 34163 used, 0 shared, 0 bugs
+[mm] low: 96618 frames free (377 MiB), 34419 used, 0 shared, 0 bugs
+[mm] low: 96362 frames free (376 MiB), 34675 used, 0 shared, 0 bugs
+[mm] low: 96106 frames free (375 MiB), 34931 used, 0 shared, 0 bugs
+[mm] low: 95850 frames free (374 MiB), 35187 used, 0 shared, 0 bugs
+[mm] low: 95594 frames free (373 MiB), 35443 used, 0 shared, 0 bugs
+[mm] low: 95338 frames free (372 MiB), 35699 used, 0 shared, 0 bugs
+[mm] low: 95082 frames free (371 MiB), 35955 used, 0 shared, 0 bugs
+[mm] low: 94826 frames free (370 MiB), 36211 used, 0 shared, 0 bugs
+[mm] low: 94570 frames free (369 MiB), 36467 used, 0 shared, 0 bugs
+[mm] low: 94314 frames free (368 MiB), 36723 used, 0 shared, 0 bugs
+[mm] low: 94058 frames free (367 MiB), 36979 used, 0 shared, 0 bugs
+[mm] low: 93802 frames free (366 MiB), 37235 used, 0 shared, 0 bugs
+[mm] low: 93546 frames free (365 MiB), 37491 used, 0 shared, 0 bugs
+[mm] low: 93290 frames free (364 MiB), 37747 used, 0 shared, 0 bugs
+[mm] low: 93034 frames free (363 MiB), 38003 used, 0 shared, 0 bugs
+[mm] low: 92778 frames free (362 MiB), 38259 used, 0 shared, 0 bugs
+[mm] low: 92522 frames free (361 MiB), 38515 used, 0 shared, 0 bugs
+[mm] low: 92266 frames free (360 MiB), 38771 used, 0 shared, 0 bugs
+[mm] low: 92010 frames free (359 MiB), 39027 used, 0 shared, 0 bugs
+[mm] low: 91754 frames free (358 MiB), 39283 used, 0 shared, 0 bugs
+[mm] low: 91498 frames free (357 MiB), 39539 used, 0 shared, 0 bugs
+[mm] low: 91242 frames free (356 MiB), 39795 used, 0 shared, 0 bugs
+[mm] low: 90986 frames free (355 MiB), 40051 used, 0 shared, 0 bugs
+[mm] low: 90730 frames free (354 MiB), 40307 used, 0 shared, 0 bugs
+[mm] low: 90474 frames free (353 MiB), 40563 used, 0 shared, 0 bugs
+[mm] low: 90218 frames free (352 MiB), 40819 used, 0 shared, 0 bugs
+[mm] low: 89962 frames free (351 MiB), 41075 used, 0 shared, 0 bugs
+[mm] low: 89706 frames free (350 MiB), 41331 used, 0 shared, 0 bugs
+[mm] low: 89450 frames free (349 MiB), 41587 used, 0 shared, 0 bugs
+[mm] low: 89194 frames free (348 MiB), 41843 used, 0 shared, 0 bugs
+[mm] low: 88938 frames free (347 MiB), 42099 used, 0 shared, 0 bugs
+[mm] low: 88682 frames free (346 MiB), 42355 used, 0 shared, 0 bugs
+[mm] low: 88426 frames free (345 MiB), 42611 used, 0 shared, 0 bugs
+[mm] low: 88170 frames free (344 MiB), 42867 used, 0 shared, 0 bugs
+[mm] low: 87914 frames free (343 MiB), 43123 used, 0 shared, 0 bugs
+[mm] low: 87658 frames free (342 MiB), 43379 used, 0 shared, 0 bugs
+[mm] low: 87402 frames free (341 MiB), 43635 used, 0 shared, 0 bugs
+[mm] low: 87146 frames free (340 MiB), 43891 used, 0 shared, 0 bugs
+[mm] low: 86890 frames free (339 MiB), 44147 used, 0 shared, 0 bugs
+[mm] low: 86634 frames free (338 MiB), 44403 used, 0 shared, 0 bugs
+[mm] low: 86378 frames free (337 MiB), 44659 used, 0 shared, 0 bugs
+[mm] low: 86122 frames free (336 MiB), 44915 used, 0 shared, 0 bugs
+[mm] low: 85866 frames free (335 MiB), 45171 used, 0 shared, 0 bugs
+[mm] low: 85610 frames free (334 MiB), 45427 used, 0 shared, 0 bugs
+[mm] low: 85354 frames free (333 MiB), 45683 used, 0 shared, 0 bugs
+[mm] low: 85098 frames free (332 MiB), 45939 used, 0 shared, 0 bugs
+[mm] low: 84842 frames free (331 MiB), 46195 used, 0 shared, 0 bugs
+[mm] low: 84586 frames free (330 MiB), 46451 used, 0 shared, 0 bugs
+[mm] low: 84330 frames free (329 MiB), 46707 used, 0 shared, 0 bugs
+[mm] low: 84074 frames free (328 MiB), 46963 used, 0 shared, 0 bugs
+[mm] low: 83818 frames free (327 MiB), 47219 used, 0 shared, 0 bugs
+[mm] low: 83562 frames free (326 MiB), 47475 used, 0 shared, 0 bugs
+[mm] low: 83306 frames free (325 MiB), 47731 used, 0 shared, 0 bugs
+[mm] low: 83050 frames free (324 MiB), 47987 used, 0 shared, 0 bugs
+[mm] low: 82794 frames free (323 MiB), 48243 used, 0 shared, 0 bugs
+[mm] low: 82538 frames free (322 MiB), 48499 used, 0 shared, 0 bugs
+[mm] low: 82282 frames free (321 MiB), 48755 used, 0 shared, 0 bugs
+[mm] low: 82026 frames free (320 MiB), 49011 used, 0 shared, 0 bugs
+[mm] low: 81770 frames free (319 MiB), 49267 used, 0 shared, 0 bugs
+[mm] low: 81514 frames free (318 MiB), 49523 used, 0 shared, 0 bugs
+[mm] low: 81258 frames free (317 MiB), 49779 used, 0 shared, 0 bugs
+[mm] low: 81002 frames free (316 MiB), 50035 used, 0 shared, 0 bugs
+[mm] low: 80746 frames free (315 MiB), 50291 used, 0 shared, 0 bugs
+[mm] low: 80490 frames free (314 MiB), 50547 used, 0 shared, 0 bugs
+[mm] low: 80234 frames free (313 MiB), 50803 used, 0 shared, 0 bugs
+[mm] low: 79978 frames free (312 MiB), 51059 used, 0 shared, 0 bugs
+[mm] low: 79722 frames free (311 MiB), 51315 used, 0 shared, 0 bugs
+[mm] low: 79466 frames free (310 MiB), 51571 used, 0 shared, 0 bugs
+[mm] low: 79210 frames free (309 MiB), 51827 used, 0 shared, 0 bugs
+[mm] low: 78954 frames free (308 MiB), 52083 used, 0 shared, 0 bugs
+[mm] low: 78698 frames free (307 MiB), 52339 used, 0 shared, 0 bugs
+[mm] low: 78442 frames free (306 MiB), 52595 used, 0 shared, 0 bugs
+[mm] low: 78186 frames free (305 MiB), 52851 used, 0 shared, 0 bugs
+[mm] low: 77930 frames free (304 MiB), 53107 used, 0 shared, 0 bugs
+[mm] low: 77674 frames free (303 MiB), 53363 used, 0 shared, 0 bugs
+[mm] low: 77418 frames free (302 MiB), 53619 used, 0 shared, 0 bugs
+[mm] low: 77162 frames free (301 MiB), 53875 used, 0 shared, 0 bugs
+[mm] low: 76906 frames free (300 MiB), 54131 used, 0 shared, 0 bugs
+[mm] low: 76650 frames free (299 MiB), 54387 used, 0 shared, 0 bugs
+[mm] low: 76394 frames free (298 MiB), 54643 used, 0 shared, 0 bugs
+[mm] low: 76138 frames free (297 MiB), 54899 used, 0 shared, 0 bugs
