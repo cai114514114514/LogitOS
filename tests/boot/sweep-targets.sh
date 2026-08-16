@@ -70,6 +70,23 @@ while read -r t; do
     run_one "$t"
 done < "$LOGDIR/dev.txt"
 
+# --- CONFIRM every failure serially -----------------------------------------
+# Six makes share one build/ directory, so two of them racing to produce the
+# same object makes a target fail for a reason that has nothing to do with the
+# target. Measured: test-audio-codec-fuzz-deep failed in the parallel phase and
+# passes alone. So no failure from the parallel phase is believed until it has
+# been reproduced with nothing else running -- otherwise this sweep manufactures
+# bugs, which is worse than missing them.
+echo "--- confirming failures serially ---"
+awk -F"	" "\!=\"PASS\" && \!=\"NOTARGET\" {print \}" "$OUT" > "$LOGDIR/recheck.txt"
+if [ -s "$LOGDIR/recheck.txt" ]; then
+    grep -v -f "$LOGDIR/recheck.txt" "$OUT" > "$OUT.keep" 2>/dev/null || cp "$OUT" "$OUT.keep"
+    mv "$OUT.keep" "$OUT"
+    while read -r t; do
+        [ -n "$t" ] && run_one "$t"
+    done < "$LOGDIR/recheck.txt"
+fi
+
 echo "--- summary ---"
 awk -F'\t' '{c[$1]++} END {for (k in c) printf "%-9s %d\n", k, c[k]}' "$OUT"
 echo "--- not passing ---"
