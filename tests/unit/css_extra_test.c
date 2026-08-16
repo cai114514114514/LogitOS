@@ -199,6 +199,53 @@ int main(void)
           "grid-template shorthand: the rows half lands in GR_TEMPL_ROWS");
     CHECK(wk && CST(wk) && CST(wk)->grid_gap_x == 24, "column-gap beside the shorthand");
 
+    /* AN APPROXIMATED SELECTOR MUST NOT END IN A BARE TAG.
+     *
+     * This file matches a descendant/sibling chain on its LAST compound only.
+     * That over-matches by design and is harmless while the compound names a
+     * class -- and catastrophic when it does not. Wikipedia hides the label
+     * inside an icon-only button with
+     *
+     *   .cdx-button.cdx-button--icon-only span + span { ...clip:rect(1px...) }
+     *
+     * reduced here to `span`, which matched EVERY classless <span> on the
+     * page; because that rule carries the visually-hidden pattern this file
+     * turns into display:none, twelve of the thirteen entries in Wikipedia's
+     * table of contents painted as EMPTY BOXES. `(Top)`, whose text is not
+     * wrapped in a span, was the one that came out fine -- which is exactly
+     * how the bug looked on screen before anyone knew what it was.
+     *
+     * Both directions are asserted: the far span must survive, and a selector
+     * with NO combinator must still hide, because the fix refuses the
+     * APPROXIMATION, not the pattern. The minified spelling (`span+span`, no
+     * spaces) is the one real sheets use and is the case the fix had to learn
+     * to cut. */
+    const char *html8 =
+        "<body>"
+        "<button class='cdx-button cdx-button--icon-only'>"
+        "  <span class='icon'></span><span>Toggle subsection</span></button>"
+        "<div class='toc'><a><div class='txt'>"
+        "  <span class='numb'>1</span><span>Definition and purpose</span>"
+        "</div></a></div>"
+        "<i>plain i</i>"
+        "</body>";
+    const char *css8 =
+        ".cdx-button.cdx-button--icon-only span+span{position:absolute;clip:rect(1px,1px,1px,1px);width:1px}"
+        "i{clip:rect(1px,1px,1px,1px)}";
+    struct node *r8 = dom_parse(html8, (int)strlen(html8));
+    css_apply(r8, css8, (int)strlen(css8));
+    css_extra_apply(r8, css8, (int)strlen(css8));
+    struct node *far = find_by_class(r8, "txt");
+    struct node *lbl = far ? far->first_child : 0;
+    while (lbl && !(lbl->type == N_ELEM && lbl->tag && !strcmp(lbl->tag, "span") &&
+                    !dom_attr(lbl, "class")))
+        lbl = lbl->next;
+    CHECK(lbl && CST(lbl) && CST(lbl)->display != DISP_NONE,
+          "a `.c span+span` sr-only rule does NOT hide unrelated classless spans");
+    struct node *ital = find_by_tag(r8, "i");
+    CHECK(ital && CST(ital) && CST(ital)->display == DISP_NONE,
+          "an UN-approximated bare-tag rule still hides (the pattern is not refused)");
+
     /* opacity:0 + animation -> visible end state (hidden cleared);
      * opacity:0 + transition on opacity -> visible (scroll-reveal pattern);
      * opacity:0 + visibility:hidden + transition -> stays hidden (hover menu);

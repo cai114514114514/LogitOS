@@ -482,12 +482,14 @@ struct xcomp {
     char id[64];  int has_id;
     char cls[2][64]; int ncls;
     int  bad;                              /* unparseable: matches nothing */
+    int  approx;                           /* the selector had a combinator we
+                                            * dropped: see match_xcomp */
 };
 
 static void parse_compound(const char *s, int len, struct xcomp *c)
 {
     int i = 0;
-    c->has_tag = c->has_id = c->ncls = c->bad = 0;
+    c->has_tag = c->has_id = c->ncls = c->bad = c->approx = 0;
     while (i < len && c->ncls < 2) {
         if (s[i] == '.') {
             i++; int o = 0;
@@ -508,6 +510,29 @@ static void parse_compound(const char *s, int len, struct xcomp *c)
 static int match_xcomp(struct node *n, const struct xcomp *c)
 {
     if (c->bad) return 0;
+    /* AN APPROXIMATED SELECTOR MAY NOT END IN A BARE TAG.
+     *
+     * This file matches a descendant/sibling chain on its LAST compound only
+     * -- `a b.c:hover` on `b.c` -- which over-matches by design and is
+     * harmless while that compound names a class or an id. It is NOT harmless
+     * when the last compound is a plain element name: Wikipedia hides the
+     * label inside an icon-only button with
+     *
+     *   .cdx-button.cdx-button--icon-only span + span { ...clip:rect(1px...) }
+     *
+     * whose last compound is `span`. Reduced that way it matched EVERY
+     * classless <span> in the document, and because that rule carries the
+     * visually-hidden pattern this file turns into display:none, every one of
+     * them vanished -- which is why twelve of the thirteen entries in
+     * Wikipedia's table of contents painted as empty boxes while `(Top)`,
+     * whose text is not wrapped in a span, came out fine. Found by dumping our
+     * own computed styles over the real page, not by reading this code.
+     *
+     * A selector with NO combinator (`span{...}`, `.c span` is not one) is
+     * exact and still matches: only the approximation is refused, and it is
+     * refused on the side that loses content rather than the side that shows
+     * too much. */
+    if (c->approx && !c->has_id && !c->ncls) return 0;
     if (c->has_tag) {
         int k = 0;
         for (; c->tag[k]; k++) if (n->tag[k] != c->tag[k]) return 0;
@@ -533,11 +558,13 @@ static int match_xcomp(struct node *n, const struct xcomp *c)
     return 1;
 }
 
-/* Match ONE compound selector straight from text (the uncompiled fallback). */
-static int match_compound(struct node *n, const char *s, int len)
+/* Match ONE compound selector straight from text (the uncompiled fallback).
+ * `approx` carries what last_compound learned: see match_xcomp. */
+static int match_compound(struct node *n, const char *s, int len, int approx)
 {
     struct xcomp c;
     parse_compound(s, len, &c);
+    c.approx = approx;
     return match_xcomp(n, &c);
 }
 
@@ -545,13 +572,32 @@ static int match_compound(struct node *n, const char *s, int len)
  * match on: the LAST compound of a descendant chain, with pseudo-classes
  * stripped (documented simplification -- `a b.c:hover` matches on `b.c`).
  * Returns 0 if there is nothing left to match. */
-static int last_compound(const char *s, int start, int end, int *cs, int *ce)
+static int last_compound(const char *s, int start, int end, int *cs, int *ce,
+                         int *approx)
 {
     while (end > start && spc(s[end-1])) end--;
     int c = end - 1;
     while (c > start && !spc(s[c])) c--;
     *cs = spc(s[c]) ? c + 1 : start;
     *ce = end;
+    /* A combinator written WITHOUT spaces (`span+span`, `li>a`, `h2~p`) is one
+     * space-delimited token, so the split above leaves it whole and
+     * parse_compound would read "span+span" as a tag name. Cut at the last
+     * one, and remember that we did. Minified sheets -- which is every sheet
+     * that matters here -- write them this way. */
+    if (approx) *approx = 0;
+    for (int k = *cs; k < *ce; k++)
+        if (s[k] == '+' || s[k] == '>' || s[k] == '~') {
+            *cs = k + 1;
+            if (approx) *approx = 1;
+        }
+    /* Anything before the last compound -- a descendant chain, or a spaced
+     * combinator -- means what we match on is an APPROXIMATION of the
+     * selector, not the selector. */
+    if (approx)
+        for (int k = start; k < *cs; k++)
+            if (!spc(s[k])) { *approx = 1; break; }
+    while (*cs < *ce && spc(s[*cs])) (*cs)++;
     for (int k = *cs; k < *ce; k++) if (s[k] == ':') { *ce = k; break; }
     return *ce > *cs;
 }
@@ -565,7 +611,9 @@ static int match_selector(struct node *n, const char *s, int len)
         int start = i;
         while (i < len && s[i] != ',') i++;
         int cs, ce;
-        if (last_compound(s, start, i, &cs, &ce) && match_compound(n, s + cs, ce - cs)) return 1;
+        int ap = 0;
+        if (last_compound(s, start, i, &cs, &ce, &ap) &&
+            match_compound(n, s + cs, ce - cs, ap)) return 1;
     }
     return 0;
 }
@@ -589,9 +637,12 @@ static void compile_selector(const char *s, int len, struct xsel *x)
         int start = i;
         while (i < len && s[i] != ',') i++;
         int cs, ce;
-        if (!last_compound(s, start, i, &cs, &ce)) continue;
+        int ap = 0;
+        if (!last_compound(s, start, i, &cs, &ce, &ap)) continue;
         if (x->nalt >= XSEL_MAXALT) { x->spill = 1; continue; }
-        parse_compound(s + cs, ce - cs, &x->alt[x->nalt++]);
+        parse_compound(s + cs, ce - cs, &x->alt[x->nalt]);
+        x->alt[x->nalt].approx = ap;
+        x->nalt++;
     }
 }
 
