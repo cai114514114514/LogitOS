@@ -3,36 +3,58 @@
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
-/* Generic hash dispatch by digest length (32=SHA-256, 48=SHA-384). */
+/* Generic hash dispatch by digest length (28=SHA-224, 32=SHA-256,
+ * 48=SHA-384, 64=SHA-512). */
 static void hash(int hlen, const void *data, size_t len, uint8_t *out)
 {
-    if (hlen == 32) sha256(data, len, out);
-    else            sha384(data, len, out);
+    if (hlen == 28) sha224(data, len, out);
+    else if (hlen == 32) sha256(data, len, out);
+    else if (hlen == 48) sha384(data, len, out);
+    else            sha512(data, len, out);
 }
-static int blocklen(int hlen) { return hlen == 32 ? 64 : 128; }
+/* SHA-224 and SHA-256 share the 64-byte block; the 64-bit-word members use
+ * 128. Getting this wrong does not fail loudly -- it produces a wrong HMAC
+ * that is self-consistent, which is why RFC 4231 case 6 (a 131-byte key,
+ * longer than one block and shorter than the other) is in the diff battery. */
+static int blocklen(int hlen) { return (hlen == 28 || hlen == 32) ? 64 : 128; }
+static int hlen_ok(int hlen)  { return hlen == 28 || hlen == 32 || hlen == 48 || hlen == 64; }
 
 void hmac(int hlen, const uint8_t *key, int keylen,
           const uint8_t *msg, int msglen, uint8_t *out)
 {
-    if (hlen != 32 && hlen != 48) return;       /* only SHA-256 / SHA-384 are supported */
+    if (!hlen_ok(hlen)) return;               /* 28/32/48/64 = SHA-224/256/384/512 */
     int B = blocklen(hlen);
-    uint8_t k[128], ipad[128], opad[128], inner[48];
+    uint8_t k[128], ipad[128], opad[128], inner[64];
     memset(k, 0, sizeof k);
     if (keylen > B) hash(hlen, key, keylen, k);
     else memcpy(k, key, keylen);
     for (int i = 0; i < B; i++) { ipad[i] = k[i] ^ 0x36; opad[i] = k[i] ^ 0x5c; }
 
-    /* inner = H(ipad || msg) */
-    if (hlen == 32) {
+    /* inner = H(ipad || msg); out = H(opad || inner). The streaming struct is
+     * one shape for the whole 64-bit-word SHA-2 family, so the three widths
+     * differ only in which _init/_final pair runs -- the code below is that
+     * table written out longhand, kernel style. */
+    struct sha512 c512;
+    if (hlen == 28) {
+        struct sha256 c; sha224_init(&c);
+        sha256_update(&c, ipad, B); sha256_update(&c, msg, msglen); sha224_final(&c, inner);
+        sha224_init(&c); sha256_update(&c, opad, B); sha256_update(&c, inner, hlen); sha224_final(&c, out);
+        crypto_wipe(&c, sizeof c);              /* ctx state was key-derived */
+    } else if (hlen == 32) {
         struct sha256 c; sha256_init(&c);
         sha256_update(&c, ipad, B); sha256_update(&c, msg, msglen); sha256_final(&c, inner);
         sha256_init(&c); sha256_update(&c, opad, B); sha256_update(&c, inner, hlen); sha256_final(&c, out);
-        crypto_wipe(&c, sizeof c);              /* ctx state was key-derived */
-    } else {
-        struct sha512 c; sha384_init(&c);
-        sha512_update(&c, ipad, B); sha512_update(&c, msg, msglen); sha384_final(&c, inner);
-        sha384_init(&c); sha512_update(&c, opad, B); sha512_update(&c, inner, hlen); sha384_final(&c, out);
         crypto_wipe(&c, sizeof c);
+    } else if (hlen == 48) {
+        sha384_init(&c512);
+        sha512_update(&c512, ipad, B); sha512_update(&c512, msg, msglen); sha384_final(&c512, inner);
+        sha384_init(&c512); sha512_update(&c512, opad, B); sha512_update(&c512, inner, hlen); sha384_final(&c512, out);
+        crypto_wipe(&c512, sizeof c512);
+    } else {
+        sha512_init(&c512);
+        sha512_update(&c512, ipad, B); sha512_update(&c512, msg, msglen); sha512_final(&c512, inner);
+        sha512_init(&c512); sha512_update(&c512, opad, B); sha512_update(&c512, inner, hlen); sha512_final(&c512, out);
+        crypto_wipe(&c512, sizeof c512);
     }
     /* k/ipad/opad are key-derived; inner is H(ipad||msg). All stay on the
      * stack without a wipe otherwise. */
@@ -43,8 +65,8 @@ void hmac(int hlen, const uint8_t *key, int keylen,
 void hkdf_extract(int hlen, const uint8_t *salt, int saltlen,
                   const uint8_t *ikm, int ikmlen, uint8_t *prk)
 {
-    if (hlen != 32 && hlen != 48) return;       /* zero[] below is only 48 bytes */
-    uint8_t zero[48];
+    if (!hlen_ok(hlen)) return;                /* zero[] below is only 64 bytes */
+    uint8_t zero[64];
     if (!salt || saltlen == 0) { memset(zero, 0, hlen); salt = zero; saltlen = hlen; }
     hmac(hlen, salt, saltlen, ikm, ikmlen, prk);
 }
@@ -53,11 +75,11 @@ void hkdf_expand(int hlen, const uint8_t *prk, const uint8_t *info, int infolen,
                  uint8_t *out, int outlen)
 {
     /* in[] holds T(prev) + info + ctr; RFC 5869 caps outlen at 255*hlen */
-    if (hlen != 32 && hlen != 48) return;
+    if (!hlen_ok(hlen)) return;
     if (infolen < 0 || infolen > 256 || outlen < 0 || outlen > 255*hlen) return;
-    uint8_t t[48]; int tlen = 0, done = 0; uint8_t ctr = 1;
+    uint8_t t[64]; int tlen = 0, done = 0; uint8_t ctr = 1;
     while (done < outlen) {
-        uint8_t in[48 + 256 + 1]; int n = 0;
+        uint8_t in[64 + 256 + 1]; int n = 0;
         for (int i = 0; i < tlen; i++) in[n++] = t[i];      /* T(prev) */
         for (int i = 0; i < infolen; i++) in[n++] = info[i];
         in[n++] = ctr++;

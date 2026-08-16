@@ -7,16 +7,23 @@
 # Reference implementations here are pure Python (stdlib only) and are
 # self-checked against published KATs BEFORE any generation happens:
 #   X25519   - RFC 7748 ladder, checked against RFC 7748 sections 5.2 and 6.1
-#   AES-128  - FIPS-197, checked against the FIPS-197 Appendix B vector
-#   AES-GCM  - SP 800-38D, checked against the NIST/McGrew-Viega vectors that
-#              tests/unit/crypto_vec_test.c already validates the C code with
+#   AES      - FIPS-197, all three key sizes, checked against the FIPS-197
+#              Appendix B/C.1/C.3 vectors (openssl-confirmed)
+#   AES-GCM  - SP 800-38D, 96-bit and arbitrary IVs, all key sizes, checked
+#              against the NIST/McGrew-Viega vectors (TC1-20; the non-96-bit
+#              cases TC5/6/11/12/17/18 were additionally confirmed against the
+#              python `cryptography` AESGCM, which is OpenSSL)
+#   AES-CTR  - SP 800-38A F.5.1/F.5.3/F.5.5 (openssl-confirmed), plus a
+#              counter-wrap case that pins the full-128-bit increment
+#   AES-CBC  - SP 800-38A F.2.1/F.2.3/F.2.5 + PKCS#7 (openssl-confirmed)
 #   ChaCha20-Poly1305 - RFC 8439, checked against RFC 8439 A.5 and 2.8.2
 #              (the same vectors crypto_vec_test.c uses)
 #   HKDF     - RFC 5869, checked against RFC 5869 Case 1 and the SHA-384
 #              vectors in tests/unit/crypto_vectors.h
 #   HKDF-Expand-Label - RFC 8446 section 7.1, checked against the el256/el384
 #              vectors in tests/unit/crypto_vectors.h
-#   modmul/modexp - Python pow(); SHA/HMAC - hashlib/hmac (authoritative).
+#   PBKDF2   - hashlib.pbkdf2_hmac directly (it IS the reference PRF)
+#   SHA/HMAC - hashlib/hmac (authoritative), including sha512_224/sha512_256
 #
 # Usage: crypto_diff_gen.py <output-file>   (deterministic: seed 20260805)
 
@@ -73,7 +80,7 @@ def x25519_ref(scalar_bytes, point_bytes):
 
 
 # ---------------------------------------------------------------------------
-# AES-128 reference (FIPS-197), encryption direction only
+# AES reference (FIPS-197), all three key sizes, encryption direction only
 # ---------------------------------------------------------------------------
 
 _SBOX = []
@@ -117,18 +124,29 @@ def _xtime(a):
     return ((a << 1) ^ (0x1B if a & 0x80 else 0)) & 0xFF
 
 
-def _aes128_expand_key(key):
-    w = list(key)  # 16 bytes -> 176 bytes of round key material
-    for i in range(4, 44):
-        t = w[4 * (i - 1):4 * i]
-        if i % 4 == 0:
-            t = [_SBOX[t[1]] ^ _RCON[i // 4 - 1], _SBOX[t[2]], _SBOX[t[3]], _SBOX[t[0]]]
+def _aes_expand_key(key):
+    """FIPS-197 5.2 key schedule for nk = 4/6/8 (AES-128/192/256), flat bytes.
+    Byte order matches c_key_expand() in aesgcm.c exactly, including the
+    nk > 6 extra SubWord, so a schedule mismatch localises to one of the two."""
+    nk = len(key) // 4
+    total = 16 * (nk + 7)                       # 4*(nr+1) words, nr = nk+6
+    w = list(key)
+    rcon = 1
+    for i in range(len(key), total, 4):
+        t = w[i - 4:i]
+        wid = i // 4
+        if wid % nk == 0:
+            t = [_SBOX[t[1]] ^ rcon, _SBOX[t[2]], _SBOX[t[3]], _SBOX[t[0]]]
+            rcon = _xtime(rcon)                 # never wraps: max rcon is 0x80
+        elif nk > 6 and wid % nk == 4:
+            t = [_SBOX[b] for b in t]
         for j in range(4):
-            w.append(w[4 * (i - 4) + j] ^ t[j])
-    return w  # 176 bytes
+            w.append(w[i - len(key) + j] ^ t[j])
+    return w
 
 
-def aes128_encrypt_block(key_sched, block):
+def aes_encrypt_block(key_sched, block):
+    nr = len(key_sched) // 16 - 1
     # state[r][c] = block[r + 4c]
     s = [block[i] ^ key_sched[i] for i in range(16)]
 
@@ -146,19 +164,52 @@ def aes128_encrypt_block(key_sched, block):
             out[4 * c + 3] = (_xtime(col[0]) ^ col[0]) ^ col[1] ^ col[2] ^ _xtime(col[3])
         return out
 
-    for rnd in range(1, 10):
+    for rnd in range(1, nr):
         s = [_SBOX[b] for b in s]
         s = shift_rows(s)
         s = mix_columns(s)
         s = [s[i] ^ key_sched[16 * rnd + i] for i in range(16)]
     s = [_SBOX[b] for b in s]
     s = shift_rows(s)
-    s = [s[i] ^ key_sched[160 + i] for i in range(16)]
+    s = [s[i] ^ key_sched[16 * nr + i] for i in range(16)]
     return bytes(s)
 
 
+# --- AES-CTR (SP 800-38A 6.5): full 128-bit counter, not GCM's inc32 ---------
+
+def aes_ctr_ref(key, iv, data):
+    sched = _aes_expand_key(key)
+    out = bytearray()
+    cb = int.from_bytes(iv, "big")
+    for i in range(0, len(data), 16):
+        ks = aes_encrypt_block(sched, cb.to_bytes(16, "big"))
+        blk = data[i:i + 16]
+        out += bytes(a ^ b for a, b in zip(blk, ks))
+        cb = (cb + 1) & ((1 << 128) - 1)
+    return bytes(out)
+
+
+# --- AES-CBC + PKCS#7 (SP 800-38A 6.2 + RFC 5652 6.3) -------------------------
+
+def _pkcs7(b):
+    p = 16 - (len(b) % 16)
+    return b + bytes([p]) * p
+
+
+def aes_cbc_encrypt_ref(key, iv, pt):
+    sched = _aes_expand_key(key)
+    data = _pkcs7(pt)
+    out = bytearray()
+    chain = iv
+    for i in range(0, len(data), 16):
+        blk = bytes(a ^ b for a, b in zip(data[i:i + 16], chain))
+        chain = aes_encrypt_block(sched, blk)
+        out += chain
+    return bytes(out)
+
+
 # ---------------------------------------------------------------------------
-# GCM reference (SP 800-38D), 96-bit nonces only
+# GCM reference (SP 800-38D), all key sizes, arbitrary IV lengths
 # ---------------------------------------------------------------------------
 
 _GHASH_R = 0xE1000000000000000000000000000000
@@ -185,26 +236,35 @@ def _pad16(b):
     return b + b"\x00" * ((16 - len(b) % 16) % 16)
 
 
+def _gcm_j0(h, nonce):
+    """SP 800-38D 5.2.1.1: fast path at 96 bits, GHASH construction beyond."""
+    if len(nonce) == 12:
+        return nonce + b"\x00\x00\x00\x01"
+    data = _pad16(nonce) + b"\x00" * 8 + (len(nonce) * 8).to_bytes(8, "big")
+    return _ghash(h, data)
+
+
 def _gctr(sched, icb, data):
     out = bytearray()
     cb = int.from_bytes(icb, "big")
     for i in range(0, len(data), 16):
-        ks = aes128_encrypt_block(sched, cb.to_bytes(16, "big"))
+        ks = aes_encrypt_block(sched, cb.to_bytes(16, "big"))
         blk = data[i:i + 16]
         out += bytes(a ^ b for a, b in zip(blk, ks))
         cb = (cb & ~0xFFFFFFFF) | ((cb + 1) & 0xFFFFFFFF)  # inc32
     return bytes(out)
 
 
-def aes128_gcm_seal_ref(key, nonce, aad, pt):
-    sched = _aes128_expand_key(key)
-    h = int.from_bytes(aes128_encrypt_block(sched, b"\x00" * 16), "big")
-    j0 = nonce + b"\x00\x00\x00\x01"
-    j0_inc = j0[:12] + b"\x00\x00\x00\x02"
-    ct = _gctr(sched, j0_inc, pt)
+def aes_gcm_seal_ref(key, nonce, aad, pt):
+    sched = _aes_expand_key(key)
+    h = int.from_bytes(aes_encrypt_block(sched, b"\x00" * 16), "big")
+    j0 = _gcm_j0(h, nonce)
+    j0_inc = (int.from_bytes(j0, "big") & ~0xFFFFFFFF) | \
+             ((int.from_bytes(j0, "big") + 1) & 0xFFFFFFFF)
+    ct = _gctr(sched, j0_inc.to_bytes(16, "big"), pt)
     lens = (len(aad) * 8).to_bytes(8, "big") + (len(ct) * 8).to_bytes(8, "big")
     s = _ghash(h, _pad16(aad) + _pad16(ct) + lens)
-    tag = bytes(a ^ b for a, b in zip(aes128_encrypt_block(sched, j0), s))
+    tag = bytes(a ^ b for a, b in zip(aes_encrypt_block(sched, j0), s))
     return ct, tag
 
 
@@ -277,7 +337,7 @@ def chacha20_poly1305_seal_ref(key, nonce, aad, pt):
 # ---------------------------------------------------------------------------
 
 def _hash_name(hlen):
-    return {32: "sha256", 48: "sha384"}[hlen]
+    return {28: "sha224", 32: "sha256", 48: "sha384", 64: "sha512"}[hlen]
 
 
 def hkdf_extract_ref(hlen, salt, ikm):
@@ -347,16 +407,69 @@ def self_check():
     chk("x25519 rfc7748 ecdh K (alice)", x25519_ref(a_priv, b_pub), k_ab)
     chk("x25519 rfc7748 ecdh K (bob)", x25519_ref(b_priv, a_pub), k_ab)
 
-    # --- AES-128: FIPS-197 Appendix B ---
-    sched = _aes128_expand_key(_h("2b7e151628aed2a6abf7158809cf4f3c"))
+    # --- AES: FIPS-197 Appendix B (128) / C.1 (192) / C.3 (256) ---
+    sched = _aes_expand_key(_h("2b7e151628aed2a6abf7158809cf4f3c"))
     chk("aes128 fips197 appB",
-        aes128_encrypt_block(sched, _h("3243f6a8885a308d313198a2e0370734")),
+        aes_encrypt_block(sched, _h("3243f6a8885a308d313198a2e0370734")),
         _h("3925841d02dc09fbdc118597196a0b32"))
+    sched = _aes_expand_key(_h("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b"))
+    chk("aes192 fips197 C.1",
+        aes_encrypt_block(sched, _h("6bc1bee22e409f96e93d7e117393172a")),
+        _h("bd334f1d6e45f25ff712a214571fa5cc"))
+    sched = _aes_expand_key(_h("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"))
+    chk("aes256 fips197 C.3",
+        aes_encrypt_block(sched, _h("6bc1bee22e409f96e93d7e117393172a")),
+        _h("f3eed1bdb5d2a03c064b5a7e3db181f8"))
 
-    # --- GCM: the vectors tests/unit/crypto_vec_test.c validates C with ---
-    ct, tag = aes128_gcm_seal_ref(b"\x00" * 16, b"\x00" * 12, b"", b"")
+    # --- AES-CTR: SP 800-38A F.5.1/F.5.3/F.5.5 (openssl-confirmed) ---
+    PT4 = _h("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
+             "30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710")
+    CTRIV = _h("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff")
+    chk("ctr128 sp800-38a f.5.1",
+        aes_ctr_ref(_h("2b7e151628aed2a6abf7158809cf4f3c"), CTRIV, PT4),
+        _h("874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff"
+           "5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee"))
+    chk("ctr192 sp800-38a f.5.3",
+        aes_ctr_ref(_h("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b"), CTRIV, PT4),
+        _h("1abc932417521ca24f2b0459fe7e6e0b090339ec0aa6faefd5ccc2c6f4ce8e94"
+           "1e36b26bd1ebc670d1bd1d665620abf74f78a7f6d29809585a97daec58c6b050"))
+    chk("ctr256 sp800-38a f.5.5",
+        aes_ctr_ref(_h("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"),
+                    CTRIV, PT4),
+        _h("601ec313775789a5b7a7f504bbf3d228f443e3ca4d62b59aca84e990cacaf5c5"
+           "2b0930daa23de94ce87017ba2d84988ddfc9c58db67aada613c2dd08457941a6"))
+    # counter wrap: IV ...fffffffe carries out of the low dword at block 3->4
+    # (openssl-confirmed). inc32 here would replay block 2's keystream.
+    chk("ctr128 full-carry wrap",
+        aes_ctr_ref(_h("2b7e151628aed2a6abf7158809cf4f3c"),
+                    _h("000000000000000000000000fffffffe"), PT4),
+        _h("19349c288a689b7097ef8ead5f31d79f9decc4298cdb4779c055b775cfb1eb63"
+           "5759b7d88cf209fea276cf653f4a4341837e18d6ab8113d3a67b557a0e27639f"))
+
+    # --- AES-CBC+PKCS#7: SP 800-38A F.2.1/F.2.3/F.2.5 encrypt columns
+    # (openssl-confirmed at the block level; PKCS#7 tail added by the ref) ---
+    CBCIV = _h("000102030405060708090a0b0c0d0e0f")
+    ct = aes_cbc_encrypt_ref(_h("2b7e151628aed2a6abf7158809cf4f3c"), CBCIV, PT4)
+    chk("cbc128 sp800-38a f.2.1 head",
+        ct[:64],
+        _h("7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b2"
+           "73bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7"))
+    ct = aes_cbc_encrypt_ref(_h("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b"), CBCIV, PT4)
+    chk("cbc192 sp800-38a f.2.3 head",
+        ct[:64],
+        _h("4f021db243bc633d7178183a9fa071e8b4d9ada9ad7dedf4e5e738763f69145a"
+           "571b242012fb7ae07fa9baac3df102e008b0e27988598881d920a9e64f5615cd"))
+    ct = aes_cbc_encrypt_ref(_h("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"),
+                             CBCIV, PT4)
+    chk("cbc256 sp800-38a f.2.5 head",
+        ct[:64],
+        _h("f58c4c04d6e5f1ba779eabfb5f7bfbd69cfc4e967edb808d679f777bc6702c7d"
+           "39f23369a9d9bacfa530e26304231461b2eb05e2c39be9fcda6c19078c6a9d1b"))
+
+    # --- GCM 96-bit: the vectors tests/unit/crypto_vec_test.c validates C with ---
+    ct, tag = aes_gcm_seal_ref(b"\x00" * 16, b"\x00" * 12, b"", b"")
     chk("gcm nist zero-key empty", tag, _h("58e2fccefa7e3061367f1d57a4e7455a"))
-    ct, tag = aes128_gcm_seal_ref(b"\x00" * 16, b"\x00" * 12, b"", b"\x00" * 16)
+    ct, tag = aes_gcm_seal_ref(b"\x00" * 16, b"\x00" * 12, b"", b"\x00" * 16)
     chk("gcm nist zero-key 16B ct", ct, _h("0388dace60b6a392f328c2b971b2fe78"))
     chk("gcm nist zero-key 16B tag", tag, _h("ab6e47d42cec13bdf53a67b21257bddf"))
     key = _h("feffe9928665731c6d6a8f9467308308")
@@ -364,17 +477,55 @@ def self_check():
     aad = _h("feedfacedeadbeeffeedfacedeadbeefabaddad2")
     pt = _h("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
             "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
-    ct, tag = aes128_gcm_seal_ref(key, iv, aad, pt)
+    ct, tag = aes_gcm_seal_ref(key, iv, aad, pt)
     chk("gcm mcgrew-viega tc3 ct", ct,
         _h("42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e"
            "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091"))
     chk("gcm mcgrew-viega tc3 tag", tag, _h("5bc94fbc3221a5db94fae95ae7121a47"))
     pt4 = pt + _h("1aafd255")
-    ct, tag = aes128_gcm_seal_ref(key, iv, aad, pt4)
+    ct, tag = aes_gcm_seal_ref(key, iv, aad, pt4)
     chk("gcm mcgrew-viega tc4 ct", ct,
         _h("42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e"
            "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985"))
     chk("gcm mcgrew-viega tc4 tag", tag, _h("da80ce830cfda02da2a218a1744f4c76"))
+
+    # --- GCM non-96-bit IVs: McGrew-Viega TC5/6 (128), TC11/12 (192),
+    # TC17/18 (256). These pin J0 = GHASH_H(IV||0^s||0^64||[len]_64); they
+    # were confirmed against python `cryptography` AESGCM before landing. ---
+    IV60 = _h("9313225df88406e555909c5aff5269aa6a7a9538534f7da1e4c303d2a318a728"
+              "c3c0c95156809539fcf0e2429a6b525416aedbf5a0de6a57a637b39b")
+    IV8 = _h("cafebabefacedbad")
+    K192 = _h("feffe9928665731c6d6a8f9467308308feffe9928665731c")
+    K256 = _h("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+    for nm, k, ivv, want_ct, want_tag in (
+        ("gcm tc5 iv8", key, IV8,
+         "61353b4c2806934a777ff51fa22a4755699b2a714fcdc6f83766e5f97b6c7423"
+         "73806900e49f24b22b097544d4896b424989b5e1ebac0f07c23f4598",
+         "3612d2e79e3b0785561be14aaca2fccb"),
+        ("gcm tc6 iv60", key, IV60,
+         "8ce24998625615b603a033aca13fb894be9112a5c3a211a8ba262a3cca7e2ca7"
+         "01e4a9a4fba43c90ccdcb281d48c7c6fd62875d2aca417034c34aee5",
+         "619cc5aefffe0bfa462af43c1699d050"),
+        ("gcm tc11 iv8", K192, IV8,
+         "0f10f599ae14a154ed24b36e25324db8c566632ef2bbb34f8347280fc4507057"
+         "fddc29df9a471f75c66541d4d4dad1c9e93a19a58e8b473fa0f062f7",
+         "65dcc57fcf623a24094fcca40d3533f8"),
+        ("gcm tc12 iv60", K192, IV60,
+         "d27e88681ce3243c4830165a8fdcf9ff1de9a1d8e6b447ef6ef7b79828666e45"
+         "81e79012af34ddd9e2f037589b292db3e67c036745fa22e7e9b7373b",
+         "dcf566ff291c25bbb8568fc3d376a6d9"),
+        ("gcm tc17 iv8", K256, IV8,
+         "c3762df1ca787d32ae47c13bf19844cbaf1ae14d0b976afac52ff7d79bba9de0"
+         "feb582d33934a4f0954cc2363bc73f7862ac430e64abe499f47c9b1f",
+         "3a337dbf46a792c45e454913fe2ea8f2"),
+        ("gcm tc18 iv60", K256, IV60,
+         "5a8def2f0c9e53f1f75d7853659e2a20eeb2b22aafde6419a058ab4f6f746bf4"
+         "0fc0c3b780f244452da3ebf1c5d82cdea2418997200ef82e44ae7e3f",
+         "a44a8266ee1c8eb0c8b5d4cf5ae9f19a"),
+    ):
+        ct, tag = aes_gcm_seal_ref(k, ivv, aad, pt)
+        chk("%s ct" % nm, ct, _h(want_ct))
+        chk("%s tag" % nm, tag, _h(want_tag))
 
     # --- ChaCha20-Poly1305: RFC 8439 A.5 and 2.8.2 (same as crypto_vec_test.c) ---
     key = _h("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
@@ -452,6 +603,48 @@ def self_check():
     chk("expand_label 256 iv empty ctx",
         hkdf_expand_label_ref(32, el256_secret, b"iv", b"", 12),
         _h("2f41c846a431a163814bcd71"))
+
+    # --- SHA-224: FIPS 180-4 "abc". Pinned here as well as in the battery
+    # because sha224 and sha512_224 produce the same LENGTH from different
+    # cores, and a dispatch that confused them would still be 28 bytes. ---
+    chk("sha224 abc", hashlib.new("sha224", b"abc").hexdigest(),
+        "23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7")
+    chk("hmac224 rfc4231 tc1",
+        hmac_mod.new(b"" * 20, b"Hi There", "sha224").hexdigest(),
+        "896fb1128abbdf196832107cd49df33f47b4b1169912ba4f53684b22")
+
+    # --- SHA-512/224 / SHA-512/256: FIPS 180-4 "abc" ---
+    chk("sha512_224 abc", hashlib.new("sha512_224", b"abc").hexdigest(),
+        "4634270f707b6a54daae7530460842e20e37ed265ceee9a43e8924aa")
+    chk("sha512_256 abc", hashlib.new("sha512_256", b"abc").hexdigest(),
+        "53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23")
+
+    # --- HMAC-SHA-512: RFC 4231 TC1 (short key) and TC6 (key > block) ---
+    chk("hmac512 rfc4231 tc1",
+        hmac_mod.new(b"\x0b" * 20, b"Hi There", _hash_name(64)).hexdigest(),
+        "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde"
+        "daa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854")
+    chk("hmac512 rfc4231 tc6",
+        hmac_mod.new(b"\xaa" * 131,
+                     b"Test Using Larger Than Block-Size Key - Hash Key First",
+                     _hash_name(64)).hexdigest(),
+        "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f352"
+        "6b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598")
+
+    # --- HKDF-SHA-512: the vectors in tests/unit/crypto_vectors.h ---
+    ikm = bytes(range(0x00, 0x50))
+    salt = bytes(range(0x60, 0x80))
+    info = b"logit hkdf512 info"
+    prk = hkdf_extract_ref(64, salt, ikm)
+    chk("hkdf512 vectors.h extract", prk,
+        _h("4e17866827867f625e07fd684ca2e33ed8b4e15d2fa379ad985a4e10246b8172"
+           "3bf9309fe8475af9b66088368cc8099bc1f8e32ce3126e411c6c3cd2a377ed12"))
+    chk("hkdf512 vectors.h expand L=136", hkdf_expand_ref(64, prk, info, 136),
+        _h("4683a671578b9222a035d755a8d5a1bea51769d2b8f2426fd710152e2596e3fc"
+           "4c997b5fe9190a13c7631f1ac940ab3edb0ca4ff31237a47d76c46f10eafade9"
+           "7ffb80e853e91da9b8b4641637b61f5e51c2fe56b3a2b10dafb2319a271c93f9"
+           "b610630ecad7dc0ed119f9ce19e9f2d19f1121371d3c300f131f6af18daea5cc"
+           "d0d64ebf22b5c91a"))
 
     if fails:
         print("SELF-CHECK FAILED (%d): %s" % (len(fails), ", ".join(fails)))
@@ -556,7 +749,7 @@ def generate(path):
             scalar = _rand_bytes(rng, 32)
             emit("x255", scalar.hex(), point.hex(), x25519_ref(scalar, point).hex())
 
-    # --- gcm: aes128_gcm_seal/open ---
+    # --- gcm: aes128_gcm_seal/open, 96-bit nonce ---
     aad_lens = (0, 1, 15, 16, 17, 31, 32, 64, 255)
     pt_lens = (0, 1, 15, 16, 17, 63, 64, 65, 255, 256, 1024, 4096)
     for _ in range(4000):
@@ -564,8 +757,59 @@ def generate(path):
         nonce = _rand_bytes(rng, 12)
         aad = _rand_bytes(rng, aad_lens[rng.randrange(len(aad_lens))])
         pt = _rand_bytes(rng, pt_lens[rng.randrange(len(pt_lens))])
-        ct, tag = aes128_gcm_seal_ref(key, nonce, aad, pt)
+        ct, tag = aes_gcm_seal_ref(key, nonce, aad, pt)
         emit("gcm", key.hex(), nonce.hex(), _hx(aad), _hx(pt), _hx(ct), tag.hex())
+
+    # --- gcmx: arbitrary-length IVs, all key sizes (aes*_gcm_seal_iv) ---
+    # IV lengths cross every GHASH block boundary 1..255, plus 1 (sub-block),
+    # 16/17 (exact/one-over), 60 (the McGrew-Viega length) and 128/129.
+    # IVs near 2^32 bits are not generated: SP 800-38D allows them but no
+    # caller will hand this library a 512 MiB IV, and neither would the
+    # vector file enjoy one.
+    gcmx_ivlens = (1, 2, 8, 15, 16, 17, 31, 32, 60, 63, 64, 65, 127, 128, 129, 255)
+    for i in range(3000):
+        keylen = (16, 24, 32)[i % 3]
+        key = _rand_bytes(rng, keylen)
+        if i % 4 == 0:                      # edge IVs alongside random ones
+            ivl = gcmx_ivlens[rng.randrange(len(gcmx_ivlens))]
+            iv = bytes([0xff] * ivl) if i % 8 == 0 else bytes(ivl)
+        else:
+            ivl = gcmx_ivlens[rng.randrange(len(gcmx_ivlens))]
+            iv = _rand_bytes(rng, ivl)
+        aad = _rand_bytes(rng, aad_lens[rng.randrange(len(aad_lens))])
+        pt = _rand_bytes(rng, pt_lens[rng.randrange(len(pt_lens))])
+        ct, tag = aes_gcm_seal_ref(key, iv, aad, pt)
+        emit("gcmx", str(keylen), key.hex(), iv.hex(), _hx(aad), _hx(pt),
+             _hx(ct), tag.hex())
+
+    # --- ctr: aes*_ctr, all key sizes, whole-block counter carry ---
+    ctr_ivs = (
+        b"\x00" * 16,
+        b"\xff" * 16,
+        _h("000000000000000000000000fffffffe"),
+        _h("0000000000000000ffffffffffffffff"),
+        _h("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"),
+    )
+    for i in range(3000):
+        keylen = (16, 24, 32)[i % 3]
+        key = _rand_bytes(rng, keylen)
+        iv = ctr_ivs[i % 5] if i < 15 else _rand_bytes(rng, 16)
+        data = _rand_bytes(rng, pt_lens[rng.randrange(len(pt_lens))])
+        ctr_out = aes_ctr_ref(key, iv, data)
+        emit("ctr", str(keylen), key.hex(), iv.hex(), _hx(data),
+             ctr_out.hex() if ctr_out else "-")
+
+    # --- cbc: aes*_cbc_encrypt/decrypt + PKCS#7, all key sizes ---
+    for i in range(3000):
+        keylen = (16, 24, 32)[i % 3]
+        key = _rand_bytes(rng, keylen)
+        iv = _rand_bytes(rng, 16)
+        if i % 4 == 0:
+            pt = bytes(rng.randrange(16))         # 0..15: pad-dominated cases
+        else:
+            pt = _rand_bytes(rng, pt_lens[rng.randrange(len(pt_lens))])
+        ct = aes_cbc_encrypt_ref(key, iv, pt)
+        emit("cbc", str(keylen), key.hex(), iv.hex(), _hx(pt), ct.hex())
 
     # --- aead: chacha20_poly1305_seal/open ---
     for _ in range(4000):
@@ -576,38 +820,52 @@ def generate(path):
         ct, tag = chacha20_poly1305_seal_ref(key, nonce, aad, pt)
         emit("aead", key.hex(), nonce.hex(), _hx(aad), _hx(pt), _hx(ct), tag.hex())
 
-    # --- hash: sha256/sha384/sha512 ---
+    # --- hash: sha224/256/384/512 + sha512_224/sha512_256 ---
     must_lens = (55, 56, 63, 64, 65, 111, 112, 119, 120, 127, 128, 129)
-    algos = ("sha256", "sha384", "sha512")
-    for i in range(3000):
-        algo = algos[rng.randrange(3)]
-        mlen = must_lens[i % len(must_lens)] if i < len(must_lens) * 3 else rng.randrange(601)
+    algos = ("sha224", "sha256", "sha384", "sha512", "sha512_224", "sha512_256")
+    for i in range(4000):
+        algo = algos[rng.randrange(len(algos))]
+        mlen = must_lens[i % len(must_lens)] if i < len(must_lens) * len(algos) else rng.randrange(601)
         msg = _rand_bytes(rng, mlen)
         emit("hash", algo, _hx(msg), hashlib.new(algo, msg).hexdigest())
 
-    # --- hmac: hlen 32/48, keys 0..128 bytes (incl. > block size), msg 0..300 ---
-    for i in range(2000):
-        hlen = (32, 48)[rng.randrange(2)]
-        if i < 8:
-            klen = (0, 1, 64, 128, 63, 65, 127, 129)[i]
+    # --- hmac: hlen 28/32/48/64, keys 0..131 bytes (incl. > block size), msg 0..300 ---
+    for i in range(2500):
+        hlen = (28, 32, 48, 64)[rng.randrange(4)]
+        if i < 10:
+            # the boundary keys for both block sizes: 0/1, block-1/block,
+            # block+1, and 131 (the RFC 4231 long-key length, > 128)
+            klen = (0, 1, 63, 64, 65, 127, 128, 129, 130, 131)[i]
         else:
-            klen = rng.randrange(129)
+            klen = rng.randrange(132)
         key = _rand_bytes(rng, klen)
         msg = _rand_bytes(rng, rng.randrange(301))
         tag = hmac_mod.new(key, msg, _hash_name(hlen)).digest()
         emit("hmac", str(hlen), _hx(key), _hx(msg), tag.hex())
 
-    # --- hkdf: extract+expand, hlen 32/48 ---
-    for _ in range(1000):
-        hlen = (32, 48)[rng.randrange(2)]
+    # --- hkdf: extract+expand, hlen 28/32/48/64 ---
+    for _ in range(1200):
+        hlen = (28, 32, 48, 64)[rng.randrange(4)]
         salt = _rand_bytes(rng, rng.randrange(33))
         ikm = _rand_bytes(rng, rng.randrange(65))
         info = _rand_bytes(rng, rng.randrange(33))
-        outlen = rng.randrange(1, 101)
+        outlen = rng.randrange(1, 137)     # up to 3 SHA-512 blocks
         prk = hkdf_extract_ref(hlen, salt, ikm)
         okm = hkdf_expand_ref(hlen, prk, info, outlen)
         emit("hkdf", str(hlen), _hx(salt), _hx(ikm), _hx(info), str(outlen),
              prk.hex(), okm.hex())
+
+    # --- pdf2: pbkdf2 at every width; small iteration counts keep the
+    # generator fast -- the loop logic is what matters here, and the
+    # 4096/600000-iteration ends are pinned by crypto_vec_test.c/pwhash ---
+    for i in range(800):
+        hlen = (28, 32, 48, 64)[rng.randrange(4)]
+        pw = _rand_bytes(rng, rng.randrange(73))
+        salt = _rand_bytes(rng, rng.randrange(65))
+        iters = (1, 1, 2, 3, 5, 10, 25)[rng.randrange(7)]
+        dklen = rng.randrange(1, 81)
+        dk = hashlib.pbkdf2_hmac(_hash_name(hlen), pw, salt, iters, dklen)
+        emit("pdf2", str(hlen), _hx(pw), _hx(salt), str(iters), str(dklen), dk.hex())
 
     # --- exlb: HKDF-Expand-Label with real TLS 1.3 labels ---
     labels = (b"derived", b"c hs traffic", b"s hs traffic", b"c ap traffic",

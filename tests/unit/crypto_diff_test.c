@@ -8,11 +8,16 @@
  *   emul curveid useorder a b out          a,b,out: nbytes big-endian
  *   rexp base e n out                      big-endian, out = n-length
  *   x255 scalar point out                  32 bytes little-endian each
- *   gcm  key nonce aad pt ct tag           AES-128-GCM seal/open
+ *   gcm  key nonce aad pt ct tag           AES-128-GCM seal/open (96-bit IV)
+ *   gcmx keylen key iv aad pt ct tag       AES-GCM arbitrary IV, 128/192/256
  *   aead key nonce aad pt ct tag           ChaCha20-Poly1305 seal/open
- *   hash algo msg out                      algo = sha256|sha384|sha512
- *   hmac hlen key msg out
+ *   ctr  keylen key iv in out              AES-CTR, 128/192/256
+ *   cbc  keylen key iv pt ct               AES-CBC+PKCS#7 encrypt/decrypt
+ *   hash algo msg out                      algo = sha224|sha256|sha384|sha512|
+ *                                              sha224|sha512_224|sha512_256
+ *   hmac hlen key msg out                  hlen 28/32/48/64
  *   hkdf hlen salt ikm info outlen prk okm
+ *   pdf2 hlen pw salt iters dklen dk       PBKDF2, hlen 28/32/48/64
  *   exlb hlen secret labelhex ctx outlen out   labelhex = hex(label bytes)
  */
 #include <stdio.h>
@@ -27,7 +32,9 @@ int ecdsa_modmul_test(int curveid, int useorder, const uint8_t *a,
 int rsa_modexp_be(const uint8_t *base, int bl, const uint8_t *e, int el,
                   const uint8_t *n, int nl, uint8_t *out);
 
-#define MAXFIELD 8192          /* longest hex field: 4096-byte pt */
+#define MAXFIELD 16384         /* longest hex field: 4096-byte pt + a 16-byte
+                                * CBC pad block (gcm's 4096-byte ct only just
+                                * fit the old 8192 limit; PKCS#7 broke it) */
 #define MAXB     (MAXFIELD / 2)
 
 static char line[MAXFIELD * 3 + 256];
@@ -57,13 +64,14 @@ static int unhex(const char *h, uint8_t *o)
 
 static int eq(const uint8_t *a, const uint8_t *b, int n) { return !memcmp(a, b, n); }
 
-/* How many AES-GCM backends this machine can run: 2 when the CPU has AES-NI
+/* How many AES backends this machine can run: 2 when the CPU has AES-NI
  * (accelerated + portable), 1 otherwise. Set in main(). */
 static int g_backends = 1;
 
-#define NOPS 9
+#define NOPS 13
 static const char *opnames[NOPS] =
-    { "emul", "rexp", "x255", "gcm", "aead", "hash", "hmac", "hkdf", "exlb" };
+    { "emul", "rexp", "x255", "gcm", "aead", "hash", "hmac", "hkdf", "exlb",
+      "pdf2", "gcmx", "ctr", "cbc" };
 static long opass[NOPS], ofail[NOPS];
 static long printed;
 
@@ -161,6 +169,130 @@ static void run_aead(int idx, long lineno, char **t, int which)
     opass[idx]++;
 }
 
+/* gcmx keylen key iv aad pt ct tag -- AES-GCM with a non-96-bit IV at every
+ * key size. Same both-backends replay as the 96-bit gcm op above: the GHASH
+ * construction of J0 runs inside gf_mul, so the accelerated path must agree
+ * with the portable one here too. */
+static void run_gcmx(int idx, long lineno, char **t)
+{
+    int keylen = atoi(t[1]);
+    uint8_t *key = bufs[0], *iv = bufs[1], *aad = bufs[2], *pt = bufs[3];
+    uint8_t *ct = bufs[4], *tag = bufs[5], *got = bufs[6], *out = bufs[7];
+    uint8_t got_tag[16];
+    int kl = unhex(t[2], key), il = unhex(t[3], iv), al = unhex(t[4], aad);
+    int pl = unhex(t[5], pt), cl = unhex(t[6], ct), tl = unhex(t[7], tag);
+    if (kl != keylen || (keylen != 16 && keylen != 24 && keylen != 32) ||
+        il < 1 || il > 1024 || al < 0 || pl < 0 || cl < 0 || tl != 16 || cl != pl) {
+        fail_op(idx, lineno, "bad field lengths"); return;
+    }
+    const uint8_t *aadp = al ? aad : NULL, *ptp = pl ? pt : NULL;
+    const uint8_t *ctp = cl ? ct : NULL;
+    uint8_t badtag[16];
+    for (int b = 0; b < g_backends; b++) {
+        crypto_simd_force_baseline(b);
+        if (keylen == 16)      aes128_gcm_seal_iv(key, iv, il, aadp, al, ptp, pl, got, got_tag);
+        else if (keylen == 24) aes192_gcm_seal_iv(key, iv, il, aadp, al, ptp, pl, got, got_tag);
+        else                   aes256_gcm_seal_iv(key, iv, il, aadp, al, ptp, pl, got, got_tag);
+        if (!eq(got, ct, cl) || !eq(got_tag, tag, 16)) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "seal ct/tag mismatch"); return;
+        }
+        int rc = keylen == 16
+            ? aes128_gcm_open_iv(key, iv, il, aadp, al, ctp, cl, tag, out)
+            : keylen == 24
+            ? aes192_gcm_open_iv(key, iv, il, aadp, al, ctp, cl, tag, out)
+            : aes256_gcm_open_iv(key, iv, il, aadp, al, ctp, cl, tag, out);
+        if (rc != 0 || !eq(out, pt, pl)) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "open roundtrip failed"); return;
+        }
+        memcpy(badtag, tag, 16); badtag[0] ^= 1;
+        rc = keylen == 16
+            ? aes128_gcm_open_iv(key, iv, il, aadp, al, ctp, cl, badtag, out)
+            : keylen == 24
+            ? aes192_gcm_open_iv(key, iv, il, aadp, al, ctp, cl, badtag, out)
+            : aes256_gcm_open_iv(key, iv, il, aadp, al, ctp, cl, badtag, out);
+        if (rc != -1) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "flipped tag not rejected"); return;
+        }
+    }
+    crypto_simd_force_baseline(0);
+    opass[idx]++;
+}
+
+/* ctr keylen key iv in out -- CTR is symmetric, so one call cross-checks both
+ * directions. Both backends: the only backend difference is the block
+ * primitive, but that is exactly what the carry-across-the-whole-block
+ * counter exercises hardest. */
+static void run_ctr(int idx, long lineno, char **t)
+{
+    int keylen = atoi(t[1]);
+    uint8_t *key = bufs[0], *iv = bufs[1], *in = bufs[2], *want = bufs[3], *got = bufs[4];
+    int kl = unhex(t[2], key), il = unhex(t[3], iv);
+    int nl = unhex(t[4], in), ol = unhex(t[5], want);
+    if (kl != keylen || (keylen != 16 && keylen != 24 && keylen != 32) ||
+        il != 16 || nl < 0 || ol != nl) {
+        fail_op(idx, lineno, "bad field lengths"); return;
+    }
+    for (int b = 0; b < g_backends; b++) {
+        crypto_simd_force_baseline(b);
+        if (keylen == 16)      aes128_ctr(key, iv, nl ? in : NULL, nl, got);
+        else if (keylen == 24) aes192_ctr(key, iv, nl ? in : NULL, nl, got);
+        else                   aes256_ctr(key, iv, nl ? in : NULL, nl, got);
+        if (!eq(got, want, nl)) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "ctr mismatch"); return;
+        }
+        /* and back: CTR of CTR is the identity */
+        if (keylen == 16)      aes128_ctr(key, iv, got, nl, got);
+        else if (keylen == 24) aes192_ctr(key, iv, got, nl, got);
+        else                   aes256_ctr(key, iv, got, nl, got);
+        if (!eq(got, in, nl)) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "ctr not an involution"); return;
+        }
+    }
+    crypto_simd_force_baseline(0);
+    opass[idx]++;
+}
+
+/* cbc keylen key iv pt ct -- encrypt must match the padded ct; decrypt must
+ * return pt and its exact length. CBC decrypt is the only customer of the
+ * backend's block DECRYPT primitive, so replaying through both backends is
+ * what differentially tests ni_decrypt's equivalent-inverse schedule. */
+static void run_cbc(int idx, long lineno, char **t)
+{
+    int keylen = atoi(t[1]);
+    uint8_t *key = bufs[0], *iv = bufs[1], *pt = bufs[2], *ct = bufs[3], *out = bufs[4];
+    int kl = unhex(t[2], key), il = unhex(t[3], iv);
+    int pl = unhex(t[4], pt), cl = unhex(t[5], ct);
+    if (kl != keylen || (keylen != 16 && keylen != 24 && keylen != 32) ||
+        il != 16 || pl < 0 || cl != ((pl / 16 + 1) * 16)) {
+        fail_op(idx, lineno, "bad field lengths"); return;
+    }
+    for (int b = 0; b < g_backends; b++) {
+        crypto_simd_force_baseline(b);
+        int n;
+        if (keylen == 16)      n = aes128_cbc_encrypt(key, iv, pl ? pt : NULL, pl, out);
+        else if (keylen == 24) n = aes192_cbc_encrypt(key, iv, pl ? pt : NULL, pl, out);
+        else                   n = aes256_cbc_encrypt(key, iv, pl ? pt : NULL, pl, out);
+        if (n != cl || !eq(out, ct, cl)) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "cbc encrypt mismatch"); return;
+        }
+        if (keylen == 16)      n = aes128_cbc_decrypt(key, iv, ct, cl, out);
+        else if (keylen == 24) n = aes192_cbc_decrypt(key, iv, ct, cl, out);
+        else                   n = aes256_cbc_decrypt(key, iv, ct, cl, out);
+        if (n != pl || !eq(out, pt, pl)) {
+            crypto_simd_force_baseline(0);
+            fail_op(idx, lineno, "cbc decrypt mismatch"); return;
+        }
+    }
+    crypto_simd_force_baseline(0);
+    opass[idx]++;
+}
+
 static void run_line(long lineno, char **t, int nt)
 {
     int idx = op_index(t[0]);
@@ -205,9 +337,12 @@ static void run_line(long lineno, char **t, int nt)
         int ml = unhex(t[2], f0), ol = unhex(t[3], f1);
         if (ml < 0 || ol < 0) { fail_op(idx, lineno, "length"); return; }
         const uint8_t *mp = ml ? f0 : NULL;
-        if (!strcmp(t[1], "sha256") && ol == 32) { sha256(mp, ml, f2); }
+        if (!strcmp(t[1], "sha224") && ol == 28) { sha224(mp, ml, f2); }
+        else if (!strcmp(t[1], "sha256") && ol == 32) { sha256(mp, ml, f2); }
         else if (!strcmp(t[1], "sha384") && ol == 48) { sha384(mp, ml, f2); }
         else if (!strcmp(t[1], "sha512") && ol == 64) { sha512(mp, ml, f2); }
+        else if (!strcmp(t[1], "sha512_224") && ol == 28) { sha512_224(mp, ml, f2); }
+        else if (!strcmp(t[1], "sha512_256") && ol == 32) { sha512_256(mp, ml, f2); }
         else { fail_op(idx, lineno, "algo"); return; }
         if (!eq(f2, f1, ol)) { fail_op(idx, lineno, "digest mismatch"); return; }
         opass[idx]++;
@@ -216,7 +351,8 @@ static void run_line(long lineno, char **t, int nt)
         if (nt != 5) { fail_op(idx, lineno, "arity"); return; }
         int hlen = atoi(t[1]);
         int kl = unhex(t[2], f0), ml = unhex(t[3], f1), ol = unhex(t[4], f2);
-        if (kl < 0 || ml < 0 || ol != hlen || (hlen != 32 && hlen != 48))
+        if (kl < 0 || ml < 0 || ol != hlen ||
+            (hlen != 28 && hlen != 32 && hlen != 48 && hlen != 64))
             { fail_op(idx, lineno, "length"); return; }
         hmac(hlen, kl ? f0 : NULL, kl, ml ? f1 : NULL, ml, f3);
         if (!eq(f3, f2, ol)) { fail_op(idx, lineno, "hmac mismatch"); return; }
@@ -229,7 +365,7 @@ static void run_line(long lineno, char **t, int nt)
         int outlen = atoi(t[5]);
         int pl = unhex(t[6], f3), kl = unhex(t[7], f4);
         if (sl < 0 || il < 0 || fl < 0 || pl != hlen || kl != outlen ||
-            (hlen != 32 && hlen != 48) || outlen < 1 || outlen > MAXB)
+            (hlen != 28 && hlen != 32 && hlen != 48 && hlen != 64) || outlen < 1 || outlen > MAXB)
             { fail_op(idx, lineno, "length"); return; }
         hkdf_extract(hlen, sl ? f0 : NULL, sl, il ? f1 : NULL, il, f5);
         if (!eq(f5, f3, pl)) { fail_op(idx, lineno, "extract mismatch"); return; }
@@ -250,6 +386,32 @@ static void run_line(long lineno, char **t, int nt)
                               f4, outlen) != 0 || !eq(f4, f3, ol))
             { fail_op(idx, lineno, "expand_label mismatch"); return; }
         opass[idx]++;
+        return; }
+    case 9: { /* pdf2 hlen pw salt iters dklen dk */
+        if (nt != 7) { fail_op(idx, lineno, "arity"); return; }
+        int hlen = atoi(t[1]);
+        int pl = unhex(t[2], f0), sl = unhex(t[3], f1);
+        long iters = atol(t[4]);
+        int dklen = atoi(t[5]), ol = unhex(t[6], f2);
+        if (pl < 0 || sl < 0 || iters < 1 || dklen < 1 || dklen > MAXB ||
+            ol != dklen || (hlen != 28 && hlen != 32 && hlen != 48 && hlen != 64))
+            { fail_op(idx, lineno, "length"); return; }
+        pbkdf2(hlen, pl ? f0 : NULL, pl, sl ? f1 : NULL, sl,
+               (uint32_t)iters, f3, dklen);
+        if (!eq(f3, f2, ol)) { fail_op(idx, lineno, "pbkdf2 mismatch"); return; }
+        opass[idx]++;
+        return; }
+    case 10: { /* gcmx keylen key iv aad pt ct tag */
+        if (nt != 8) { fail_op(idx, lineno, "arity"); return; }
+        run_gcmx(idx, lineno, t);
+        return; }
+    case 11: { /* ctr keylen key iv in out */
+        if (nt != 6) { fail_op(idx, lineno, "arity"); return; }
+        run_ctr(idx, lineno, t);
+        return; }
+    case 12: { /* cbc keylen key iv pt ct */
+        if (nt != 6) { fail_op(idx, lineno, "arity"); return; }
+        run_cbc(idx, lineno, t);
         return; }
     }
 }

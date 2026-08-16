@@ -61,6 +61,9 @@ static inline void xstore(void *p, xmm_t v)
  * matter more than the reading. */
 #define X_AESENC(dst, src)      __asm__ ("aesenc %1, %0"      : "+x"(dst) : "x"(src))
 #define X_AESENCLAST(dst, src)  __asm__ ("aesenclast %1, %0"  : "+x"(dst) : "x"(src))
+#define X_AESDEC(dst, src)      __asm__ ("aesdec %1, %0"      : "+x"(dst) : "x"(src))
+#define X_AESDECLAST(dst, src)  __asm__ ("aesdeclast %1, %0"  : "+x"(dst) : "x"(src))
+#define X_AESIMC(dst, src)      __asm__ ("aesimc %1, %0"      : "=x"(dst) : "x"(src))
 #define X_KEYGEN(dst, src, rc)  __asm__ ("aeskeygenassist %2, %1, %0" \
                                          : "=x"(dst) : "x"(src), "i"(rc))
 #define X_PSHUFD(dst, src, im)  __asm__ ("pshufd %2, %1, %0"  : "=x"(dst) : "x"(src), "i"(im))
@@ -120,6 +123,63 @@ AESNI static xmm_t key_combine(xmm_t k, xmm_t t)
         xstore(rk + 16 * (++idx), k1);                     \
     } while (0)
 
+/* AES-192 (nk = 6): the word recurrence has lag 6, which does not line up with
+ * the 4-word pslldq cascade the 128/256 steps are built on, so the schedule is
+ * computed word by word. SubWord(RotWord(.)) still comes from AESKEYGENASSIST
+ * rather than an S-box table: this TU deliberately holds no substitution table,
+ * so the instruction stays the single source of the S-box for this backend.
+ * AESKEYGENASSIST takes its Rcon as an immediate, so the helper below folds in
+ * 0 and the caller XORs the (public, never-wrapping 1..128) Rcon itself.
+ *
+ * The output must be byte-identical to the portable schedule -- pinned by
+ * crypto_simd_selftest() and tests/unit/aes_ni_test.c, which is the check that
+ * matters here, because a schedule that is self-consistent but non-standard
+ * encrypts to garbage that only another implementation can name. */
+/* SubWord(RotWord(w)) in FIPS-197 word order. AESKEYGENASSIST's dword3 is
+ * SubWord(RotWord(w)) with the rotation in the OPPOSITE direction to FIPS-197
+ * (its bytes run the other way round the register), and its imm8 Rcon lands
+ * on the word's LAST byte rather than its first -- so the imm is 0 here, the
+ * caller XORs its own Rcon into the top byte, and the two-byte rotation below
+ * turns the instruction's rotation into the standard's. The mapping was
+ * pinned empirically (a key with W5 = 00010203, both backends, against the
+ * published S-box), because two of those three convention differences are
+ * invisible on the all-equal-byte inputs a casual probe uses. */
+AESNI static uint32_t ni_sub_rot(uint32_t w)
+{
+    uint32_t s[4] = { w, w, w, w };
+    xmm_t v = xload(s);
+    X_KEYGEN(v, v, 0x00);
+    X_PSHUFD(v, v, 0xff);                     /* broadcast dword3 */
+    xstore(s, v);
+    return (s[0] >> 16) | (s[0] << 16);       /* byte-rotate into FIPS order */
+}
+
+AESNI static void ni_key_expand_192(const uint8_t *key, uint8_t *rk)
+{
+    uint32_t w[13 * 4];                       /* 52 words: 4*(12+1) */
+    for (int i = 0; i < 6; i++)
+        w[i] = ((uint32_t)key[4*i] << 24) | ((uint32_t)key[4*i+1] << 16) |
+               ((uint32_t)key[4*i+2] << 8) | (uint32_t)key[4*i+3];
+    uint32_t rcon = 1;
+    for (int i = 6; i < 52; i++) {
+        uint32_t t = w[i - 1];
+        if (i % 6 == 0) {
+            /* rcon 1,2,4,...,128: never wraps in GF(2^8), a plain shift
+             * doubles it. It XORs into the FIRST byte of the FIPS word --
+             * the most significant one in the big-endian serialization. */
+            t = ni_sub_rot(t) ^ (rcon << 24);
+            rcon <<= 1;
+        }
+        w[i] = w[i - 6] ^ t;
+    }
+    for (int i = 0; i < 52; i++) {
+        rk[4*i]   = (uint8_t)(w[i] >> 24);
+        rk[4*i+1] = (uint8_t)(w[i] >> 16);
+        rk[4*i+2] = (uint8_t)(w[i] >> 8);
+        rk[4*i+3] = (uint8_t)w[i];
+    }
+}
+
 AESNI static void ni_key_expand(const uint8_t *key, int keylen, uint8_t *rk)
 {
     int idx = 0;
@@ -135,6 +195,8 @@ AESNI static void ni_key_expand(const uint8_t *key, int keylen, uint8_t *rk)
         AES256_EVEN(0x10); AES256_ODD();
         AES256_EVEN(0x20); AES256_ODD();
         AES256_EVEN(0x40);                 /* 15th round key; no trailing odd */
+    } else if (keylen == 24) {
+        ni_key_expand_192(key, rk);
     } else {
         xmm_t k0 = xload(key);
         xstore(rk, k0);
@@ -152,6 +214,35 @@ AESNI static void ni_encrypt(const uint8_t *rk, int nr,
     for (int r = 1; r < nr; r++)
         X_AESENC(s, xload(rk + 16 * r));
     X_AESENCLAST(s, xload(rk + 16 * nr));
+    xstore(out, s);
+}
+
+/* --- inverse cipher --------------------------------------------------------
+ * AESDEC/AESDECLAST implement FIPS-197's EQUIVALENT inverse cipher (5.3.5),
+ * whose round keys differ from the encryption schedule: every round key
+ * except the first and last must be passed through InvMixColumns. AESIMC is
+ * that transform as one instruction. The transformation is folded into a
+ * stack copy here rather than stored in the backend, so key_expand keeps
+ * emitting the plain FIPS-197 schedule byte-for-byte and the schedule-
+ * identity check the differential rests on stays meaningful.
+ *
+ * Leaving the AESIMC step out is the classic silent CBC-decrypt bug: the
+ * chain runs to completion, "decrypts" to garbage, and only ever shows up
+ * against another implementation -- which is exactly what the cbc diff
+ * battery and the SP 800-38A F.2 decrypt vectors are for. */
+AESNI static void ni_decrypt(const uint8_t *rk, int nr,
+                             const uint8_t in[16], uint8_t out[16])
+{
+    xmm_t irk[15];                              /* nr+1 <= 15 for all key sizes */
+    irk[0] = xload(rk);
+    for (int r = 1; r < nr; r++)
+        X_AESIMC(irk[r], xload(rk + 16 * r));   /* equivalent inverse round key */
+    irk[nr] = xload(rk + 16 * nr);
+
+    xmm_t s = xload(in) ^ irk[nr];
+    for (int r = nr - 1; r >= 1; r--)
+        X_AESDEC(s, irk[r]);
+    X_AESDECLAST(s, irk[0]);
     xstore(out, s);
 }
 
@@ -249,7 +340,7 @@ AESNI static void ni_gf_mul(uint8_t x[16], const uint8_t y[16])
 }
 
 static const struct aes_backend ni_backend = {
-    "aesni", ni_key_expand, ni_encrypt, ni_gf_mul, 1
+    "aesni", ni_key_expand, ni_encrypt, ni_decrypt, ni_gf_mul, 1
 };
 
 const struct aes_backend *aes_backend_ni(void)

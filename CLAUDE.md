@@ -238,6 +238,48 @@ Key notes:
   reliably. (A separate cap remains: the whole flight must fit the 64 KiB window
   -- true for all real chains.)
 
+**The AES and SHA-2 families, completed** (`c/crypto/aead/aes_modes.c` is new;
+`aesgcm.c`, `sha256.c`, `sha384.c`, `hmac_hkdf.c`, `pbkdf2.c` grew). TLS needs
+AES-128/256-GCM with a 96-bit IV and SHA-256/384, and that is all this tree had
+-- so every family had a hole in the middle, and a hole is where a caller
+discovers the primitive is missing at the moment it needs it. Now: **AES-192-GCM**
+(the FIPS-197 middle key size), **GCM with any IV length 1..1024** (SP 800-38D
+5.2.1.1's J0 = GHASH construction; a 96-bit IV through these is byte-identical
+to the fixed path, pinned by test), **AES-CTR** and **AES-CBC/PKCS#7**,
+**SHA-512/224**, **SHA-512/256**, **SHA-224**, and HMAC/HKDF/PBKDF2 at every one
+of those widths (28/32/48/64). `tls12_prf` and `hkdf_expand_label` deliberately
+stay at 32/48 -- TLS names no other width, and widening them would invent a
+protocol.
+
+Three things about it are worth knowing before touching it:
+- **The mode never lives in a backend.** `struct aes_backend` grew a fourth
+  primitive (block *decrypt*, CBC's only customer) rather than letting
+  `aes_modes.c` hide an inverse cipher: "the backend does the primitive, the
+  mode is written once" is the invariant the differential rests on, and an
+  implementation outside the table would sit exactly where the differential
+  cannot see it. `crypto_simd_selftest` now checks all four primitives at all
+  three key lengths, and checks decrypt as a round-trip against *each* backend
+  independently -- two backends that made the same equivalent-inverse-schedule
+  mistake (the AESIMC trap) would otherwise agree while decrypting garbage.
+- **CTR's counter is not GCM's.** SP 800-38A increments the whole 128-bit block
+  with carry; GCM's inc32 wraps only the low four bytes. The two agree until a
+  counter block ends in ffffffff, at which point GCM's rule replays a keystream
+  block. The ffffffff-edge vectors exist for that one difference.
+- **CBC's padding check is a constant-time accumulate over all 16 candidates**,
+  not the byte-by-byte early exit, which leaks the pad length and therefore the
+  plaintext length -- a real oracle when one key encrypts many records.
+
+The gate is 140,214 differential cases against hashlib/OpenSSL
+(`make test-crypto-diff`), every AES vector replayed through **both** backends,
+plus 291 known answers in the fast gate (`make test-crypto`, which `make test`
+runs). SHA-224 alone is 1,815 of the differential cases, and corrupting one word
+of its IV fails exactly those 1,815 and no others -- which is the control, run.
+One booby trap was defused on the way in: the "unsupported width is a silent
+no-op" assertion used **28** as its witness, so making SHA-224 legal turned a
+test that proved a refusal into a test that proved nothing. It is 20 now
+(SHA-1's length -- `sha1.c` is in the tree and HMAC still does not dispatch to
+it, which is the property actually being pinned).
+
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the LogitFS disk = real **ring-3 processes** scheduled
   by M4. `kernel/wm.c` is the window manager AND the GUI/app backend.

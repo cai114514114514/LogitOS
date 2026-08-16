@@ -97,11 +97,12 @@ static void fill(uint8_t *p, int n) { for (int i = 0; i < n; i++) p[i] = rnd8();
 
 #define BULK (64 * 1024)
 static uint8_t buf[BULK], out[BULK + 64], tag[16];
-static uint8_t k32[32], iv12[12];
+static uint8_t k32[32], iv12[12], iv16[16];
 
 static void do_sha256(void *c) { uint8_t h[32]; sha256(buf, (size_t)(long)c, h); }
 static void do_sha384(void *c) { uint8_t h[48]; sha384(buf, (size_t)(long)c, h); }
 static void do_sha512(void *c) { uint8_t h[64]; sha512(buf, (size_t)(long)c, h); }
+static void do_sha512t(void *c) { uint8_t h[32]; sha512_256(buf, (size_t)(long)c, h); }
 
 static void do_aes128(void *c)
 { aes128_gcm_seal(k32, iv12, 0, 0, buf, (int)(long)c, out, tag); }
@@ -109,6 +110,14 @@ static void do_aes256(void *c)
 { aes256_gcm_seal(k32, iv12, 0, 0, buf, (int)(long)c, out, tag); }
 static void do_chacha(void *c)
 { chacha20_poly1305_seal(k32, iv12, 0, 0, buf, (int)(long)c, out, tag); }
+static void do_ctr128(void *c)
+{ aes128_ctr(k32, iv16, buf, (int)(long)c, out); }
+static void do_ctr256(void *c)
+{ aes256_ctr(k32, iv16, buf, (int)(long)c, out); }
+static void do_cbc128(void *c)
+{ aes128_cbc_encrypt(k32, iv16, buf, (int)(long)c, out); }
+static void do_cbc128_dec(void *c)
+{ aes128_cbc_decrypt(k32, iv16, buf, (int)(long)c, out); }
 
 static uint8_t x_scalar[32], x_point[32], x_out[32];
 static void do_x25519_base(void *c) { (void)c; x25519_base(x_out, x_scalar); }
@@ -198,7 +207,7 @@ int main(int argc, char **argv)
     int only_rsa = (argc > 1 && strcmp(argv[1], "--rsa") == 0);
     int only_gate = (argc > 1 && strcmp(argv[1], "--gate") == 0);
 
-    fill(buf, BULK); fill(k32, 32); fill(iv12, 12);
+    fill(buf, BULK); fill(k32, 32); fill(iv12, 12); fill(iv16, 16);
     fill(x_scalar, 32); fill(x_point, 32);
     fill(msghash, 64); fill(sig_rs, 96);
     fill(rsa_n, 512); fill(rsa_sig, 512);
@@ -221,6 +230,7 @@ int main(int argc, char **argv)
         report("sha256", bench(do_sha256, (void *)(long)BULK), BULK);
         report("sha384", bench(do_sha384, (void *)(long)BULK), BULK);
         report("sha512", bench(do_sha512, (void *)(long)BULK), BULK);
+        report("sha512_256", bench(do_sha512t, (void *)(long)BULK), BULK);
 
         /* Both AES backends, back to back, on the same buffer. This is the
          * comparison crypto_simd_force_baseline() exists for; on hardware the
@@ -236,6 +246,23 @@ int main(int argc, char **argv)
         report("aes128-gcm  [selected]", bench(do_aes128, (void *)(long)BULK), BULK);
         report("aes256-gcm  [selected]", bench(do_aes256, (void *)(long)BULK), BULK);
         report("chacha20-poly1305", bench(do_chacha, (void *)(long)BULK), BULK);
+
+        /* The unauthenticated modes, for comparison against their AEAD
+         * versions: CTR is GCM's keystream half (no GHASH, no tag), and CBC
+         * decrypt is the only user of the backend's block-decrypt primitive.
+         * CBC encrypts 64 KiB + one pad block, so its MB/s and CTR's are not
+         * directly comparable to each other -- they are both here to rank
+         * against the same number for GCM. */
+        printf("\n-- AES modes (64 KiB) --\n");
+        crypto_simd_force_baseline(1);
+        report("aes128-ctr  [C]", bench(do_ctr128, (void *)(long)BULK), BULK);
+        report("aes128-cbc  [C]", bench(do_cbc128, (void *)(long)BULK), BULK);
+        report("aes128-cbc-dec [C]", bench(do_cbc128_dec, (void *)(long)BULK), BULK);
+        crypto_simd_force_baseline(0);
+        report("aes128-ctr  [selected]", bench(do_ctr128, (void *)(long)BULK), BULK);
+        report("aes256-ctr  [selected]", bench(do_ctr256, (void *)(long)BULK), BULK);
+        report("aes128-cbc  [selected]", bench(do_cbc128, (void *)(long)BULK), BULK);
+        report("aes128-cbc-dec [selected]", bench(do_cbc128_dec, (void *)(long)BULK), BULK);
 
         printf("\n-- key exchange --\n");
         report("x25519 base (keygen)", bench(do_x25519_base, 0), 0);

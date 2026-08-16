@@ -42,6 +42,60 @@ static void test_sha(void)
     ok("sha512 empty", eq(o,w,64));
     sha512("abc", 3, o); unhex("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f", w);
     ok("sha512 abc", eq(o,w,64));
+
+    /* SHA-224, FIPS 180-4. Its IVs are published square-root constants, not
+     * SHA-512/t IV-generation output, so nothing below shares an oracle with
+     * the /t cases that follow -- and the two families both emit 28 bytes,
+     * which is exactly the confusion these pin. The chunked million-'a' case
+     * runs the SHARED sha256_update, so a truncation bug in the finish shows
+     * here and not in sha256's own vectors. */
+    sha224("", 0, o); unhex("d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f", w);
+    ok("sha224 empty", eq(o,w,28));
+    sha224("abc", 3, o); unhex("23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7", w);
+    ok("sha224 abc", eq(o,w,28));
+    sha224("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", 56, o);
+    unhex("75388b16512776cc5dba5da1fd890150b0c6455cb4f58b1952522525", w);
+    ok("sha224 56B", eq(o,w,28));
+    {
+        struct sha256 c;
+        uint8_t chunk[7777]; memset(chunk, 'a', sizeof chunk);
+        int left = 1000000;
+        sha224_init(&c);
+        while (left > 0) { int t = left > 7777 ? 7777 : left;
+            sha256_update(&c, chunk, t); left -= t; }
+        sha224_final(&c, o);
+        unhex("20794655980c91d8bbb4c1ea97618a4bf03f42581948b2ee4ee7ad67", w);
+        ok("sha224 1M a chunked", eq(o,w,28));
+    }
+
+    /* SHA-512/224 and SHA-512/256, FIPS 180-4: "abc" and the two-block
+     * message pin the /t IVs (which are the SHA-512/t IV-generation function
+     * output, not square roots -- see sha384.c); the chunked million-'a'
+     * cases exercise the shared streaming core at both cut points. */
+    sha512_224("abc", 3, o); unhex("4634270f707b6a54daae7530460842e20e37ed265ceee9a43e8924aa", w);
+    ok("sha512_224 abc", eq(o,w,28));
+    sha512_256("abc", 3, o); unhex("53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23", w);
+    ok("sha512_256 abc", eq(o,w,32));
+    const char *m112 = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
+    sha512_224(m112, 112, o); unhex("23fec5bb94d60b23308192640b0c453335d664734fe40e7268674af9", w);
+    ok("sha512_224 112B", eq(o,w,28));
+    sha512_256(m112, 112, o); unhex("3928e184fb8690f840da3988121d31be65cb9d3ef83ee6146feac861e19b563a", w);
+    ok("sha512_256 112B", eq(o,w,32));
+    /* million 'a' through the 7777-byte-chunk streaming path, both cuts */
+    {
+        struct sha512 c1, c2;
+        uint8_t chunk[7777]; memset(chunk, 'a', sizeof chunk);
+        int left = 1000000;
+        sha512_224_init(&c1); sha512_256_init(&c2);
+        while (left > 0) { int t = left > 7777 ? 7777 : left;
+            sha512_update(&c1, chunk, t); sha512_update(&c2, chunk, t); left -= t; }
+        sha512_224_final(&c1, o);
+        unhex("37ab331d76f0d36de422bd0edeb22a28accd487b7a8453ae965dd287", w);
+        ok("sha512_224 1M a chunked", eq(o,w,28));
+        sha512_256_final(&c2, o);
+        unhex("9a59a052930187a97038cae692f30708aa6491923ef5194394dc68d56c74fb21", w);
+        ok("sha512_256 1M a chunked", eq(o,w,32));
+    }
 }
 
 static void test_hmac_hkdf(void)
@@ -52,6 +106,16 @@ static void test_hmac_hkdf(void)
     hmac(32, key, 20, (const uint8_t *)"Hi There", 8, o);
     unhex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", w);
     ok("hmac256 rfc4231 tc1", eq(o,w,32));
+    /* the same TC1 message at width 28 -- RFC 4231 publishes HMAC-SHA-224 */
+    hmac(28, key, 20, (const uint8_t *)"Hi There", 8, o);
+    unhex("896fb1128abbdf196832107cd49df33f47b4b1169912ba4f53684b22", w);
+    ok("hmac224 rfc4231 tc1", eq(o,w,28));
+    /* TC6 at width 28: the 131-byte key is longer than SHA-224's 64-byte
+     * block, so this is where a blocklen() that answered 128 would show. */
+    { uint8_t k131[131]; memset(k131, 0xaa, 131);
+      hmac(28, k131, 131, (const uint8_t *)"Test Using Larger Than Block-Size Key - Hash Key First", 54, o);
+      unhex("95e9a0db962095adaebe9b2d6f0dbce2d499f112f2d2b7273fa6870e", w);
+      ok("hmac224 rfc4231 tc6 longkey", eq(o,w,28)); }
     /* TC2 "Jefe" */
     hmac(32, (const uint8_t *)"Jefe", 4, (const uint8_t *)"what do ya want for nothing?", 28, o);
     unhex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", w);
@@ -67,6 +131,34 @@ static void test_hmac_hkdf(void)
     /* HMAC-SHA384, key > 128 blocksize (python ref) */
     hmac(48, hmac384_key, 131, hmac384_msg, (int)sizeof(hmac384_msg), o);
     ok("hmac384 longkey (python ref)", eq(o, hmac384_out, 48));
+
+    /* HMAC-SHA-512, RFC 4231 TC1-TC7 (TC5 is a truncation case -- not our API
+     * -- so the battery runs 1..4, 6, 7). TC6's 131-byte key crosses the
+     * 128-byte SHA-512 block, which is the width-specific path. */
+    memset(key, 0x0b, 20);
+    hmac(64, key, 20, (const uint8_t *)"Hi There", 8, o);
+    unhex("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854", w);
+    ok("hmac512 rfc4231 tc1", eq(o,w,64));
+    hmac(64, (const uint8_t *)"Jefe", 4, (const uint8_t *)"what do ya want for nothing?", 28, o);
+    unhex("164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737", w);
+    ok("hmac512 rfc4231 tc2", eq(o,w,64));
+    memset(key, 0xaa, 20);
+    memset(msg, 0xdd, 50);
+    hmac(64, key, 20, msg, 50, o);
+    unhex("fa73b0089d56a284efb0f0756c890be9b1b5dbdd8ee81a3655f83e33b2279d39bf3e848279a722c806b485a47e67c807b946a337bee8942674278859e13292fb", w);
+    ok("hmac512 rfc4231 tc3", eq(o,w,64));
+    for (int i = 0; i < 25; i++) key[i] = (uint8_t)(i+1);
+    memset(msg, 0xcd, 50);
+    hmac(64, key, 25, msg, 50, o);
+    unhex("b0ba465637458c6990e5a8c5f61d4af7e576d97ff94b872de76f8050361ee3dba91ca5c11aa25eb4d679275cc5788063a5f19741120c4f2de2adebeb10a298dd", w);
+    ok("hmac512 rfc4231 tc4", eq(o,w,64));
+    memset(key, 0xaa, 131);
+    hmac(64, key, 131, (const uint8_t *)"Test Using Larger Than Block-Size Key - Hash Key First", 54, o);
+    unhex("80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598", w);
+    ok("hmac512 rfc4231 tc6 longkey", eq(o,w,64));
+    hmac(64, key, 131, (const uint8_t *)"This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.", 152, o);
+    unhex("e37b6a775dc87dbaa4dfa9f96e5e3ffddebd71f8867289865df5a32d20cdc944b6022cac3c4982b10d5eeb55c3e4de15134676fb6de0446065c97440fa8c6a58", w);
+    ok("hmac512 rfc4231 tc7 longkey+data", eq(o,w,64));
 
     /* RFC 5869 Case 1 (SHA-256) */
     memset(key, 0x0b, 22);
@@ -84,6 +176,18 @@ static void test_hmac_hkdf(void)
     ok("hkdf384 extract (python ref)", eq(prk, hk384_prk, 48));
     hkdf_expand(48, prk, hk384_info, (int)sizeof(hk384_info), o, 100);
     ok("hkdf384 expand L=100 (python ref)", eq(o, hk384_okm, 100));
+    /* HKDF-SHA-512: RFC 5869 carries no SHA-512 appendix cases, so these are
+     * self-computed against hashlib/hmac -- extract/expand over hashlib IS
+     * the oracle the RFC cases were built with. L=136 > 2*64 crosses a third
+     * expand block. */
+    uint8_t prk64[64];
+    hkdf_extract(64, hk512_salt, (int)sizeof(hk512_salt), hk512_ikm, (int)sizeof(hk512_ikm), prk64);
+    ok("hkdf512 extract (python ref)", eq(prk64, hk512_prk, 64));
+    hkdf_expand(64, prk64, hk512_info, (int)sizeof(hk512_info), o, 136);
+    ok("hkdf512 expand L=136 (python ref)", eq(o, hk512_okm, 136));
+    /* null salt = 64 zero bytes at this width too */
+    hkdf_extract(64, 0, 0, hk512_ikm, (int)sizeof(hk512_ikm), prk64);
+    ok("hkdf512 extract null salt = zeros", eq(prk64, hk512_prk0, 64));
     /* extract with NULL salt -> HashLen zeros (TLS 1.3 early secret pattern) */
     hkdf_extract(32, 0, 0, key, 22, prk);
     uint8_t zeros[32]; memset(zeros, 0, 32);
@@ -198,6 +302,63 @@ static void test_aes256gcm(void)
     aes128_gcm_seal(k16, iv, 0, 0, pt, 16, c128, t128);
     aes256_gcm_seal(key, iv, 0, 0, pt, 16, c256, t256);
     ok("gcm128 != gcm256 for a shared key prefix", memcmp(c128, c256, 16) != 0);
+}
+
+/* AES-192-GCM against the McGrew-Viega GCM specification test cases 7-10 --
+ * the same battery the 128 (TC3/4) and 256 (TC13-16) key sizes are pinned
+ * with. TC9/TC10 use the non-zero key, and TC10 pairs a 60-byte plaintext
+ * with 20 bytes of AAD, so the GHASH partial-block path is exercised at this
+ * key size too. */
+static void test_aes192gcm(void)
+{
+    uint8_t key[24], iv[12], pt[80], aad[32], ct[80], tag[16], o[80], w[80];
+    int n, al;
+
+    memset(key, 0, 24); memset(iv, 0, 12);
+    aes192_gcm_seal(key, iv, 0, 0, 0, 0, ct, tag);
+    unhex("cd33b28ac773f74ba00ed1f312572435", w);
+    ok("gcm192 tc7 empty tag", eq(tag, w, 16));
+
+    memset(pt, 0, 16);
+    aes192_gcm_seal(key, iv, 0, 0, pt, 16, ct, tag);
+    unhex("98e7247c07f0fe411c267e4384b0f600", w);
+    ok("gcm192 tc8 ct", eq(ct, w, 16));
+    unhex("2ff58d80033927ab8ef4d4587514f0fb", w);
+    ok("gcm192 tc8 tag", eq(tag, w, 16));
+
+    unhex("feffe9928665731c6d6a8f9467308308feffe9928665731c", key);
+    unhex("cafebabefacedbaddecaf888", iv);
+    n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255", pt);
+    aes192_gcm_seal(key, iv, 0, 0, pt, n, ct, tag);
+    unhex("3980ca0b3c00e841eb06fac4872a2757859e1ceaa6efd984628593b40ca1e19c7d773d00c144c525ac619d18c84a3f4718e2448b2fe324d9ccda2710acade256", w);
+    ok("gcm192 tc9 ct", eq(ct, w, n));
+    unhex("9924a7c8587336bfb118024db8674a14", w);
+    ok("gcm192 tc9 tag", eq(tag, w, 16));
+    ok("gcm192 tc9 open", aes192_gcm_open(key, iv, 0, 0, ct, n, tag, o) == 0 && eq(o, pt, n));
+
+    n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39", pt);
+    al = unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2", aad);
+    aes192_gcm_seal(key, iv, aad, al, pt, n, ct, tag);
+    unhex("3980ca0b3c00e841eb06fac4872a2757859e1ceaa6efd984628593b40ca1e19c7d773d00c144c525ac619d18c84a3f4718e2448b2fe324d9ccda2710", w);
+    ok("gcm192 tc10 ct", eq(ct, w, n));
+    unhex("2519498e80f1478f37ba55bd6d27618c", w);
+    ok("gcm192 tc10 tag", eq(tag, w, 16));
+    ok("gcm192 tc10 open", aes192_gcm_open(key, iv, aad, al, ct, n, tag, o) == 0 && eq(o, pt, n));
+    tag[3] ^= 1;
+    ok("gcm192 bad tag rejected", aes192_gcm_open(key, iv, aad, al, ct, n, tag, o) != 0);
+    tag[3] ^= 1; ct[9] ^= 1;
+    ok("gcm192 bad ct rejected", aes192_gcm_open(key, iv, aad, al, ct, n, tag, o) != 0);
+
+    /* Same 16-vs-rest distinction the 256 test makes: a 24-byte key must not
+     * be read as 16 or 32 bytes of key material. */
+    uint8_t k16[16], k32[32], c16[80], t16[16], c32[80], t32[16];
+    memcpy(k16, key, 16); memcpy(k32, key, 24); memcpy(k32 + 24, key, 8);
+    memcpy(pt, "aes192 key size plumbing", 25);
+    aes128_gcm_seal(k16, iv, 0, 0, pt, 25, c16, t16);
+    aes192_gcm_seal(key, iv, 0, 0, pt, 25, ct, tag);
+    aes256_gcm_seal(k32, iv, 0, 0, pt, 25, c32, t32);
+    ok("gcm192 != gcm128 for a shared key prefix", memcmp(ct, c16, 25) != 0);
+    ok("gcm192 != gcm256 for a shared key prefix", memcmp(ct, c32, 25) != 0);
 }
 
 /* TLS 1.2 PRF (RFC 5246 5) against the published test vectors circulated on the
@@ -392,7 +553,7 @@ static void test_aead_negative(void)
     int n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39", pt);
     aes128_gcm_seal(key, iv, aad, al, pt, n, ct, tag);
     ok("neg gcm open valid", aes128_gcm_open(key, iv, aad, al, ct, n, tag, o) == 0 && eq(o, pt, n));
-    uint8_t t2[16], c2[64], a2[32], k2[16], v2[12];
+    uint8_t t2[16], c2[128], a2[32], k2[16], v2[12];
     for (int i = 0; i < 3; i++) {                       /* tag head/mid/tail */
         int pos = i == 0 ? 0 : (i == 1 ? 8 : 15);
         memcpy(t2, tag, 16); t2[pos] ^= 1;
@@ -430,7 +591,7 @@ static void test_aead_negative(void)
     memcpy(c2, cc, cn2); c2[cn2 - 1] ^= 1;
     ok("neg chacha ct flip rejected", chacha20_poly1305_open(ck, cn, ca, cal, c2, cn2, ct2, co) == -1);
     memcpy(a2, ca, cal); a2[cal - 1] ^= 1;
-    ok("neg chacha aad flip rejected", chacha20_poly1305_open(ck, cn, ca, cal, cc, cn2, ct2, co) == -1);
+    ok("neg chacha aad flip rejected", chacha20_poly1305_open(ck, cn, a2, cal, cc, cn2, ct2, co) == -1);
     chacha20_poly1305_seal(ck, cn, ca, cal, cp, 0, cc, ct2);
     ok("neg chacha empty pt roundtrip", chacha20_poly1305_open(ck, cn, ca, cal, cc, 0, ct2, co) == 0);
     chacha20_poly1305_seal(ck, cn, 0, 0, cp, cn2, cc, ct2);
@@ -609,12 +770,299 @@ static void test_hkdf_bounds(void)
     ok("neg hkdf_expand hlen16 silent no-op", o[0] == 0xAA && o[63] == 0xAA);
 }
 
+/* PBKDF2 at all three widths: hashlib.pbkdf2_hmac (OpenSSL) is the oracle;
+ * the vectors live in crypto_vectors.h because they are generated, not
+ * published. iters=1/2 pin the loop entry and the first XOR fold, 4096 and
+ * 100 stretch it, and the 128-byte password/salt case makes BOTH operands
+ * cross the HMAC block boundary. */
+static void test_pbkdf2(void)
+{
+    uint8_t dk[136];
+
+    pbkdf2(64, pb512a_pw, (int)sizeof(pb512a_pw), pb512a_salt, (int)sizeof(pb512a_salt), pb512a_iters, dk, 64);
+    ok("pbkdf2-512 iters=1", eq(dk, pb512a_dk, 64));
+    pbkdf2(64, pb512b_pw, (int)sizeof(pb512b_pw), pb512b_salt, (int)sizeof(pb512b_salt), pb512b_iters, dk, 64);
+    ok("pbkdf2-512 iters=2", eq(dk, pb512b_dk, 64));
+    pbkdf2(64, pb512c_pw, (int)sizeof(pb512c_pw), pb512c_salt, (int)sizeof(pb512c_salt), pb512c_iters, dk, 64);
+    ok("pbkdf2-512 iters=4096", eq(dk, pb512c_dk, 64));
+    pbkdf2(64, pb512d_pw, (int)sizeof(pb512d_pw), pb512d_salt, (int)sizeof(pb512d_salt), pb512d_iters, dk, 64);
+    ok("pbkdf2-512 64B pw/salt iters=5", eq(dk, pb512d_dk, 64));
+    pbkdf2(64, pb512e_pw, (int)sizeof(pb512e_pw), pb512e_salt, (int)sizeof(pb512e_salt), pb512e_iters, dk, 48);
+    ok("pbkdf2-512 128B pw/salt dklen=48", eq(dk, pb512e_dk, 48));
+    /* dklen > hlen must concatenate blocks (RFC 8018 5.2 step 4) */
+    pbkdf2(64, pb512a_pw, (int)sizeof(pb512a_pw), pb512a_salt, (int)sizeof(pb512a_salt), 1, dk, 128);
+    ok("pbkdf2-512 dklen=2 blocks head", eq(dk, pb512a_dk, 64));
+    pbkdf2(64, pb512a_pw, (int)sizeof(pb512a_pw), pb512a_salt, (int)sizeof(pb512a_salt), 1, dk, 128);
+    {   /* block 2 must differ from block 1 (INT(2) in the first HMAC) */
+        int same = 1;
+        for (int i = 0; i < 64; i++) if (dk[64+i] != dk[i]) same = 0;
+        ok("pbkdf2-512 dklen=2 blocks differ", !same);
+    }
+    /* the other two widths stay what they were */
+    pbkdf2(48, pb384a_pw, (int)sizeof(pb384a_pw), pb384a_salt, (int)sizeof(pb384a_salt), pb384a_iters, dk, 48);
+    ok("pbkdf2-384 iters=4096", eq(dk, pb384a_dk, 48));
+    pbkdf2(32, pb256a_pw, (int)sizeof(pb256a_pw), pb256a_salt, (int)sizeof(pb256a_salt), pb256a_iters, dk, 32);
+    ok("pbkdf2-256 iters=4096", eq(dk, pb256a_dk, 32));
+    pbkdf2(28, pb224a_pw, (int)sizeof(pb224a_pw), pb224a_salt, (int)sizeof(pb224a_salt), pb224a_iters, dk, 28);
+    ok("pbkdf2-224 iters=4096", eq(dk, pb224a_dk, 28));
+    /* Unsupported width is a documented silent no-op (see hmac()). The witness
+     * used to be 28 -- which SHA-224 has since made legal, so an assertion
+     * written to prove a refusal was one edit away from proving nothing. 20 is
+     * SHA-1's digest length: sha1.c is in this tree and HMAC still does not
+     * dispatch to it, which is the property being pinned. */
+    memset(dk, 0xAA, 16);
+    pbkdf2(20, pb256a_pw, 8, pb256a_salt, 4, 1, dk, 8);
+    ok("pbkdf2 hlen=20 silent no-op", dk[0] == 0xAA && dk[15] == 0xAA);
+}
+
+/* AES-CTR against NIST SP 800-38A F.5.1/F.5.3/F.5.5 (the Encrypt columns; CTR
+ * is symmetric, so the same vectors cover decrypt). The counter-wrap case is
+ * NOT from SP 800-38A: an initial counter ending in fffffffe forces the
+ * full-128-bit carry at block 3->4 that distinguishes CTR's increment rule
+ * from GCM's inc32 (which would replay the keystream of block 2). Expected
+ * value cross-checked against `openssl enc -aes-128-ctr`. */
+static void test_aes_ctr(void)
+{
+    uint8_t k[32], iv[16], pt[64], ct[64], w[64];
+    int n = unhex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710", pt);
+    unhex("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", iv);
+
+    unhex("2b7e151628aed2a6abf7158809cf4f3c", k);
+    aes128_ctr(k, iv, pt, n, ct);
+    unhex("874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee", w);
+    ok("ctr128 sp800-38a f.5.1", eq(ct,w,n));
+    aes128_ctr(k, iv, ct, n, ct);              /* symmetric: ct back to pt */
+    ok("ctr128 symmetric", eq(ct, pt, n));
+
+    unhex("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b", k);
+    aes192_ctr(k, iv, pt, n, ct);
+    unhex("1abc932417521ca24f2b0459fe7e6e0b090339ec0aa6faefd5ccc2c6f4ce8e941e36b26bd1ebc670d1bd1d665620abf74f78a7f6d29809585a97daec58c6b050", w);
+    ok("ctr192 sp800-38a f.5.3", eq(ct,w,n));
+    aes192_ctr(k, iv, ct, n, ct);
+    ok("ctr192 symmetric", eq(ct, pt, n));
+
+    unhex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4", k);
+    aes256_ctr(k, iv, pt, n, ct);
+    unhex("601ec313775789a5b7a7f504bbf3d228f443e3ca4d62b59aca84e990cacaf5c52b0930daa23de94ce87017ba2d84988ddfc9c58db67aada613c2dd08457941a6", w);
+    ok("ctr256 sp800-38a f.5.5", eq(ct,w,n));
+    aes256_ctr(k, iv, ct, n, ct);
+    ok("ctr256 symmetric", eq(ct, pt, n));
+
+    /* counter wrap: IV = ..fffffffe so block 3 is ..ffffffff and block 4
+     * must carry into byte 12 (openssl-verified). */
+    unhex("2b7e151628aed2a6abf7158809cf4f3c", k);
+    unhex("000000000000000000000000fffffffe", iv);
+    aes128_ctr(k, iv, pt, n, ct);
+    unhex("19349c288a689b7097ef8ead5f31d79f9decc4298cdb4779c055b775cfb1eb635759b7d88cf209fea276cf653f4a4341837e18d6ab8113d3a67b557a0e27639f", w);
+    ok("ctr128 full-block carry at wrap", eq(ct,w,n));
+    aes128_ctr(k, iv, ct, n, ct);
+    ok("ctr128 wrap roundtrip", eq(ct, pt, n));
+}
+
+/* AES-CBC/PKCS#7 against NIST SP 800-38A F.2.1/F.2.3/F.2.5 (encrypt) plus the
+ * padding semantics and the rejections. SP 800-38A's CBC vectors are exact
+ * 64-byte messages, so the first four ciphertext blocks must match F.2.x and
+ * the fifth is the PKCS#7 block our encrypt appends.
+ *
+ * The bad-padding cases cannot be made by encrypting anything (encrypt pads
+ * correctly by construction); they need ciphertext that DECRYPTS to a chosen
+ * last block. The two-block trick below builds it: for a fixed first
+ * plaintext block M0, the first ciphertext block c0 is independent of the
+ * second plaintext block, so re-encrypting M0 || (D ^ c0) yields a final
+ * ciphertext block that decrypts to exactly D. */
+static void test_aes_cbc(void)
+{
+    uint8_t k[32], iv[16], pt[64], ct[96], o[96], w[96];
+    int n = unhex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710", pt);
+    unhex("000102030405060708090a0b0c0d0e0f", iv);
+
+    unhex("2b7e151628aed2a6abf7158809cf4f3c", k);
+    int cn = aes128_cbc_encrypt(k, iv, pt, n, ct);
+    unhex("7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7", w);
+    ok("cbc128 sp800-38a f.2.1 ct", eq(ct,w,n));
+    ok("cbc128 pads exact multiple (+16)", cn == n + 16);
+    int dn = aes128_cbc_decrypt(k, iv, ct, cn, o);
+    ok("cbc128 roundtrip 64B", dn == n && eq(o, pt, n));
+
+    unhex("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b", k);
+    cn = aes192_cbc_encrypt(k, iv, pt, n, ct);
+    unhex("4f021db243bc633d7178183a9fa071e8b4d9ada9ad7dedf4e5e738763f69145a571b242012fb7ae07fa9baac3df102e008b0e27988598881d920a9e64f5615cd", w);
+    ok("cbc192 sp800-38a f.2.3 ct", eq(ct,w,n));
+    dn = aes192_cbc_decrypt(k, iv, ct, cn, o);
+    ok("cbc192 roundtrip", dn == n && eq(o, pt, n));
+
+    unhex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4", k);
+    cn = aes256_cbc_encrypt(k, iv, pt, n, ct);
+    unhex("f58c4c04d6e5f1ba779eabfb5f7bfbd69cfc4e967edb808d679f777bc6702c7d39f23369a9d9bacfa530e26304231461b2eb05e2c39be9fcda6c19078c6a9d1b", w);
+    ok("cbc256 sp800-38a f.2.5 ct", eq(ct,w,n));
+    dn = aes256_cbc_decrypt(k, iv, ct, cn, o);
+    ok("cbc256 roundtrip", dn == n && eq(o, pt, n));
+
+    /* PKCS#7 with a 60-byte message: 4 bytes of pad, ciphertext is 64 bytes;
+     * openssl's own PKCS#7-padded CBC verified byte-for-byte. */
+    unhex("2b7e151628aed2a6abf7158809cf4f3c", k);
+    n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39", pt);
+    cn = aes128_cbc_encrypt(k, iv, pt, n, ct);
+    unhex("498141d856e1cd913f0ba62ddc60d9d296b5e58a5471a8d0c3ac731272d76590c27e3b0aecc6b0f64aecf3b4b9b43c4d38c2c4b814577d726dd7cbc41cc56fea", w);
+    ok("cbc128 pkcs7 60B (openssl ref)", eq(ct,w,64));
+    ok("cbc128 pkcs7 60B -> 64B ct", cn == 64);
+    dn = aes128_cbc_decrypt(k, iv, ct, cn, o);
+    ok("cbc128 pkcs7 60B roundtrip", dn == n && eq(o, pt, n));
+
+    /* empty message: exactly one block, decrypts to 0 bytes */
+    cn = aes128_cbc_encrypt(k, iv, pt, 0, ct);
+    ok("cbc128 empty -> 16B full pad block", cn == 16);
+    dn = aes128_cbc_decrypt(k, iv, ct, cn, o);
+    ok("cbc128 empty roundtrip", dn == 0);
+
+    /* 63 bytes: pad=1, the narrowest valid padding; 63 + 1 = 64 total */
+    uint8_t pt63[63]; memset(pt63, 0x42, 63);
+    cn = aes128_cbc_encrypt(k, iv, pt63, 63, ct);
+    ok("cbc128 63B -> 64B (pad=1)", cn == 64);
+    dn = aes128_cbc_decrypt(k, iv, ct, cn, o);
+    ok("cbc128 63B roundtrip", dn == 63 && eq(o, pt63, 63));
+
+    /* --- forged paddings, built as chosen ciphertext ----------------------
+     * Encrypting can never produce a bad pad (ours pads correctly by
+     * construction), so a bad pad must arrive as chosen CIPHERTEXT. CBC
+     * roundtrips, so encrypting m0 || D and decrypting only the first two
+     * ciphertext blocks returns exactly m0 || D -- with D now in the final
+     * block, where the pad check runs on bytes we chose. (The decryptor is
+     * pointed at 32 bytes, not the 48 our encryptor emitted, which is the
+     * "truncated ciphertext" shape a real attacker delivers.) */
+    uint8_t m0[16]; memset(m0, 0x37, 16);
+    uint8_t two[32];
+
+    struct { const char *nm; uint8_t d[16]; int want; } forg[] = {
+        { "cbc128 forged pad=0 rejected",  { [15]=0x00 }, -1 },
+        { "cbc128 forged pad=17 rejected", { [15]=0x11 }, -1 },
+        { "cbc128 inconsistent pad rejected",
+          { [14]=0x03, [15]=0x02 }, -1 },            /* pad=2, byte 14 wrong */
+        { "cbc128 consistent pad=2 accepted",
+          { [14]=0x02, [15]=0x02 }, 30 },            /* valid: 30 bytes out */
+    };
+    for (unsigned i = 0; i < sizeof forg / sizeof forg[0]; i++) {
+        memcpy(two, m0, 16);
+        memcpy(two + 16, forg[i].d, 16);
+        aes128_cbc_encrypt(k, iv, two, 32, ct);
+        int dn2 = aes128_cbc_decrypt(k, iv, ct, 32, o);  /* stop at the crafted block */
+        ok(forg[i].nm, dn2 == forg[i].want);
+        if (forg[i].want > 0) {                     /* prefix survives */
+            ok("cbc128 accepted-forgery prefix intact", eq(o, m0, 16) &&
+               eq(o + 16, forg[i].d, 14));
+        }
+    }
+
+    /* length rejections */
+    ok("cbc128 decrypt len=0 rejected", aes128_cbc_decrypt(k, iv, ct, 0, o) == -1);
+    ok("cbc128 decrypt ragged len rejected", aes128_cbc_decrypt(k, iv, ct, 20, o) == -1);
+    ok("cbc128 decrypt negative len rejected", aes128_cbc_decrypt(k, iv, ct, -16, o) == -1);
+    ok("cbc128 encrypt negative len rejected", aes128_cbc_encrypt(k, iv, pt, -1, o) == -1);
+}
+
+/* GCM with non-96-bit IVs: the McGrew-Viega test cases that exercise
+ * J0 = GHASH_H(IV||0^s||0^64||len). TC5/11/17 use an 8-byte IV; TC6/12/18 use
+ * a 60-byte IV (four and a fraction GHASH blocks, and a length field that
+ * only lines up if the bit-count is right). One per key size, both lengths.
+ * Values independently confirmed against the python `cryptography` AESGCM
+ * (OpenSSL) before being pinned here. */
+static void test_aesgcm_arbiv(void)
+{
+    uint8_t pt[64], aad[20], ct[64], tag[16], o[64], w[64];
+    int n = unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39", pt);
+    int al = unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2", aad);
+    static const uint8_t iv8[8] = {
+        0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad };
+    static const uint8_t iv60[60] = {
+        0x93,0x13,0x22,0x5d,0xf8,0x84,0x06,0xe5,0x55,0x90,0x9c,0x5a,0xff,0x52,0x69,0xaa,
+        0x6a,0x7a,0x95,0x38,0x53,0x4f,0x7d,0xa1,0xe4,0xc3,0x03,0xd2,0xa3,0x18,0xa7,0x28,
+        0xc3,0xc0,0xc9,0x51,0x56,0x80,0x95,0x39,0xfc,0xf0,0xe2,0x42,0x9a,0x6b,0x52,0x54,
+        0x16,0xae,0xdb,0xf5,0xa0,0xde,0x6a,0x57,0xa6,0x37,0xb3,0x9b };
+    static const uint8_t k128[16] = {
+        0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08 };
+    static const uint8_t k192[24] = {
+        0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08,
+        0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c };
+    static const uint8_t k256[32] = {
+        0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08,
+        0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08 };
+
+    struct { const char *nm; const uint8_t *key, *iv; int keylen, ivlen;
+             const char *ct, *tag; } cs[] = {
+        { "gcm128 tc5 iv8",   k128, iv8,  16, 8,
+          "61353b4c2806934a777ff51fa22a4755699b2a714fcdc6f83766e5f97b6c742373806900e49f24b22b097544d4896b424989b5e1ebac0f07c23f4598",
+          "3612d2e79e3b0785561be14aaca2fccb" },
+        { "gcm128 tc6 iv60",  k128, iv60, 16, 60,
+          "8ce24998625615b603a033aca13fb894be9112a5c3a211a8ba262a3cca7e2ca701e4a9a4fba43c90ccdcb281d48c7c6fd62875d2aca417034c34aee5",
+          "619cc5aefffe0bfa462af43c1699d050" },
+        { "gcm192 tc11 iv8",  k192, iv8,  24, 8,
+          "0f10f599ae14a154ed24b36e25324db8c566632ef2bbb34f8347280fc4507057fddc29df9a471f75c66541d4d4dad1c9e93a19a58e8b473fa0f062f7",
+          "65dcc57fcf623a24094fcca40d3533f8" },
+        { "gcm192 tc12 iv60", k192, iv60, 24, 60,
+          "d27e88681ce3243c4830165a8fdcf9ff1de9a1d8e6b447ef6ef7b79828666e4581e79012af34ddd9e2f037589b292db3e67c036745fa22e7e9b7373b",
+          "dcf566ff291c25bbb8568fc3d376a6d9" },
+        { "gcm256 tc17 iv8",  k256, iv8,  32, 8,
+          "c3762df1ca787d32ae47c13bf19844cbaf1ae14d0b976afac52ff7d79bba9de0feb582d33934a4f0954cc2363bc73f7862ac430e64abe499f47c9b1f",
+          "3a337dbf46a792c45e454913fe2ea8f2" },
+        { "gcm256 tc18 iv60", k256, iv60, 32, 60,
+          "5a8def2f0c9e53f1f75d7853659e2a20eeb2b22aafde6419a058ab4f6f746bf40fc0c3b780f244452da3ebf1c5d82cdea2418997200ef82e44ae7e3f",
+          "a44a8266ee1c8eb0c8b5d4cf5ae9f19a" },
+    };
+    for (unsigned i = 0; i < sizeof cs / sizeof cs[0]; i++) {
+        unhex(cs[i].ct, w);
+        if (cs[i].keylen == 16)      aes128_gcm_seal_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, pt, n, ct, tag);
+        else if (cs[i].keylen == 24) aes192_gcm_seal_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, pt, n, ct, tag);
+        else                         aes256_gcm_seal_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, pt, n, ct, tag);
+        char b[64];
+        snprintf(b, sizeof b, "%s ct", cs[i].nm); ok(b, eq(ct, w, n));
+        unhex(cs[i].tag, w);
+        snprintf(b, sizeof b, "%s tag", cs[i].nm); ok(b, eq(tag, w, 16));
+        int rc = cs[i].keylen == 16
+            ? aes128_gcm_open_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, ct, n, tag, o)
+            : cs[i].keylen == 24
+            ? aes192_gcm_open_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, ct, n, tag, o)
+            : aes256_gcm_open_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, ct, n, tag, o);
+        snprintf(b, sizeof b, "%s open", cs[i].nm); ok(b, rc == 0 && eq(o, pt, n));
+        tag[3] ^= 1;
+        rc = cs[i].keylen == 16
+            ? aes128_gcm_open_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, ct, n, tag, o)
+            : cs[i].keylen == 24
+            ? aes192_gcm_open_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, ct, n, tag, o)
+            : aes256_gcm_open_iv(cs[i].key, cs[i].iv, cs[i].ivlen, aad, al, ct, n, tag, o);
+        snprintf(b, sizeof b, "%s bad tag rejected", cs[i].nm); ok(b, rc == -1);
+    }
+    /* a 96-bit IV through the _iv entry point must be byte-identical to the
+     * fixed 12-byte functions: same code path, and this pins that. */
+    uint8_t iv12[12], c2[64], t2[16];
+    unhex("cafebabefacedbaddecaf888", iv12);
+    aes128_gcm_seal(k128, iv12, aad, al, pt, n, ct, tag);
+    aes128_gcm_seal_iv(k128, iv12, 12, aad, al, pt, n, c2, t2);
+    ok("gcm _iv(12) == fixed seal", eq(ct, c2, n) && eq(tag, t2, 16));
+    aes192_gcm_seal(k192, iv12, aad, al, pt, n, ct, tag);
+    aes192_gcm_seal_iv(k192, iv12, 12, aad, al, pt, n, c2, t2);
+    ok("gcm192 _iv(12) == fixed seal", eq(ct, c2, n) && eq(tag, t2, 16));
+    aes256_gcm_seal(k256, iv12, aad, al, pt, n, ct, tag);
+    aes256_gcm_seal_iv(k256, iv12, 12, aad, al, pt, n, c2, t2);
+    ok("gcm256 _iv(12) == fixed seal", eq(ct, c2, n) && eq(tag, t2, 16));
+    /* out-of-range IV lengths are refused, not wrapped or truncated */
+    static const uint8_t big[1025] = {0};
+    memset(c2, 0xA5, n); memset(t2, 0xA5, 16);
+    aes128_gcm_seal_iv(k128, big, 1025, aad, al, pt, n, c2, t2);
+    ok("gcm _iv(1025) writes nothing", c2[0] == 0xA5 && t2[15] == 0xA5);
+    ok("gcm _iv(0) open refused", aes128_gcm_open_iv(k128, big, 0, aad, al, ct, n, tag, o) == -1);
+}
+
 int main(void)
 {
     test_sha();
     test_hmac_hkdf();
+    test_pbkdf2();
     test_aesgcm();
     test_aes256gcm();
+    test_aes192gcm();
+    test_aesgcm_arbiv();
+    test_aes_ctr();
+    test_aes_cbc();
     test_tls12_prf();
     test_chacha();
     test_x25519();

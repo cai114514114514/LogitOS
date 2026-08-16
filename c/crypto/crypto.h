@@ -36,9 +36,23 @@ void sha256_update(struct sha256 *c, const void *data, size_t len);
 void sha256_final(struct sha256 *c, uint8_t out[32]);
 void sha256(const void *data, size_t len, uint8_t out[32]);
 
+/* SHA-224: the same core with the FIPS 180-4 6.3 IV, truncated to 28 bytes.
+ * Shares struct sha256 and sha256_update -- call sha224_init, then the shared
+ * update, then sha224_final, exactly as the SHA-512/t pair below does. It is
+ * here because the family had a hole: 512/224 and 512/256 exist above, and
+ * SHA-224 is the member every certificate profile and PKCS#11 token still
+ * lists. Nothing in-tree negotiates it. */
+#define SHA224_BLOCK 64
+#define SHA224_LEN   28
+void sha224_init(struct sha256 *c);
+void sha224_final(struct sha256 *c, uint8_t out[28]);
+void sha224(const void *data, size_t len, uint8_t out[28]);
+
 /* --- SHA-384 (truncated SHA-512) --- */
 #define SHA384_BLOCK 128
 #define SHA384_LEN   48
+#define SHA512_BLOCK 128
+#define SHA512_LEN   64
 struct sha512 { uint64_t h[8]; uint64_t len_hi, len_lo; uint8_t buf[128]; int n; };
 void sha384_init(struct sha512 *c);
 void sha512_update(struct sha512 *c, const void *data, size_t len);
@@ -48,8 +62,23 @@ void sha384(const void *data, size_t len, uint8_t out[48]);
 void sha512_init(struct sha512 *c);
 void sha512_final(struct sha512 *c, uint8_t out[64]);
 void sha512(const void *data, size_t len, uint8_t out[64]);
+/* SHA-512/224 and SHA-512/256: the same core again, with the FIPS 180-4
+ * IV-generation IVs (see sha384.c for why those differ from every other
+ * SHA-2 member's). One streaming struct for the whole family: call the
+ * member's _init, share sha512_update, call the member's _final. */
+#define SHA512_224_BLOCK 128
+#define SHA512_224_LEN   28
+#define SHA512_256_BLOCK 128
+#define SHA512_256_LEN   32
+void sha512_224_init(struct sha512 *c);
+void sha512_224_final(struct sha512 *c, uint8_t out[28]);
+void sha512_224(const void *data, size_t len, uint8_t out[28]);
+void sha512_256_init(struct sha512 *c);
+void sha512_256_final(struct sha512 *c, uint8_t out[32]);
+void sha512_256(const void *data, size_t len, uint8_t out[32]);
 
-/* --- HMAC / HKDF (parameterised by hash length: 32 = SHA-256, 48 = SHA-384) --- */
+/* --- HMAC / HKDF (parameterised by hash length: 28 = SHA-224, 32 = SHA-256,
+ * 48 = SHA-384, 64 = SHA-512) --- */
 void hmac(int hlen, const uint8_t *key, int keylen,
           const uint8_t *msg, int msglen, uint8_t *out);
 void hkdf_extract(int hlen, const uint8_t *salt, int saltlen,
@@ -89,6 +118,17 @@ int  aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
 
+/* --- AEAD: AES-192-GCM --- key=24, nonce=12. Same seal/open contract; the
+ * FIPS-197 middle key size (12 rounds, nk=6 schedule). Nothing in-tree
+ * negotiates it; it exists so the AES-GCM family is complete rather than
+ * 128-or-256 with a hole. */
+void aes192_gcm_seal(const uint8_t key[24], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  aes192_gcm_open(const uint8_t key[24], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+
 /* --- AEAD: AES-256-GCM --- key=32, nonce=12. Same seal/open contract. Shares
  * the whole implementation with AES-128-GCM (14 rounds instead of 10). Present
  * because TLS 1.2 servers commonly prefer ECDHE_*_WITH_AES_256_GCM_SHA384. */
@@ -98,6 +138,72 @@ void aes256_gcm_seal(const uint8_t key[32], const uint8_t nonce[12],
 int  aes256_gcm_open(const uint8_t key[32], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+
+/* --- AES-GCM with arbitrary IV lengths (SP 800-38D 5.2.1.1) --- Same seal/open
+ * contract as the fixed 12-byte functions above, but the IV may be any length
+ * 1..1024: for the 96-bit case J0 is IV||0^31||1 (the fast path the fixed
+ * functions take); otherwise J0 = GHASH_H(IV || 0^s || 0^64 || [len(IV)]_64),
+ * exactly the construction a non-96-bit IV requires. Nothing in-tree
+ * negotiates a non-96-bit GCM IV (TLS never has one); this exists because
+ * every other GCM consumer in the wild may hand us one -- GMAC in IPsec, some
+ * pre-shared-key record layers, and the "just use the 8-byte sequence number"
+ * designs that predate the 96-bit convention. 96-bit calls through these
+ * produce byte-identical output to the fixed functions (pinned by test). */
+void aes128_gcm_seal_iv(const uint8_t key[16], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  aes128_gcm_open_iv(const uint8_t key[16], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+void aes192_gcm_seal_iv(const uint8_t key[24], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  aes192_gcm_open_iv(const uint8_t key[24], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+void aes256_gcm_seal_iv(const uint8_t key[32], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16]);
+int  aes256_gcm_open_iv(const uint8_t key[32], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt);
+
+/* --- AES-CTR (SP 800-38A 6.5, F.5) --- key 16/24/32; iv is the FULL 16-byte
+ * initial counter block, big-endian. NOTE: the counter increments over the
+ * whole 128-bit block with carry -- NOT GCM's inc32, which only wraps the low
+ * four bytes; SP 800-38A's CTR is the wide-counter variant. CTR is symmetric:
+ * the same call encrypts and decrypts. in and out may alias. Not
+ * authenticated: callers who need integrity use GCM above. */
+void aes128_ctr(const uint8_t key[16], const uint8_t iv[16],
+                const uint8_t *in, int len, uint8_t *out);
+void aes192_ctr(const uint8_t key[24], const uint8_t iv[16],
+                const uint8_t *in, int len, uint8_t *out);
+void aes256_ctr(const uint8_t key[32], const uint8_t iv[16],
+                const uint8_t *in, int len, uint8_t *out);
+
+/* --- AES-CBC with PKCS#7 padding (SP 800-38A 6.2 + RFC 5652 6.3) ---
+ * encrypt appends a full padding block when len is a multiple of 16 (PKCS#7
+ * always pads), so the ciphertext is ((len/16)+1)*16 bytes; that length is
+ * the return value, or -1 on a negative len. decrypt takes a multiple of 16
+ * ciphertext bytes and returns the unpadded length, or -1 if the padding
+ * does not check; the padding check is a constant-time accumulate over all
+ * 16 candidate bytes -- the pad length is secret-ish (it is derived from the
+ * plaintext tail) and an early-exit loop would leak it to a timing probe.
+ * CBC here is for file/record encryption where a full extra pass of GCM is
+ * not the point; iv is 16 bytes and is clobbered into the caller's copy of
+ * the chaining state by nothing -- pass a fresh one per message. */
+int aes128_cbc_encrypt(const uint8_t key[16], const uint8_t iv[16],
+                       const uint8_t *pt, int len, uint8_t *ct);
+int aes128_cbc_decrypt(const uint8_t key[16], const uint8_t iv[16],
+                       const uint8_t *ct, int len, uint8_t *pt);
+int aes192_cbc_encrypt(const uint8_t key[24], const uint8_t iv[16],
+                       const uint8_t *pt, int len, uint8_t *ct);
+int aes192_cbc_decrypt(const uint8_t key[24], const uint8_t iv[16],
+                       const uint8_t *ct, int len, uint8_t *pt);
+int aes256_cbc_encrypt(const uint8_t key[32], const uint8_t iv[16],
+                       const uint8_t *pt, int len, uint8_t *ct);
+int aes256_cbc_decrypt(const uint8_t key[32], const uint8_t iv[16],
+                       const uint8_t *ct, int len, uint8_t *pt);
 
 /* --- X25519 (RFC 7748) --- scalar*point on Curve25519; 32-byte little-endian. */
 void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]);
@@ -164,10 +270,11 @@ int  ed25519_keypair(uint8_t pub[32], uint8_t seed[32],
 int  ed25519_point_valid(const uint8_t p[32]);
 int  ed25519_sc_reduce_selftest(void);
 
-/* --- PBKDF2-HMAC-SHA256 / SHA-512 (RFC 8018 5.2) ----------------------------
- * Password -> key. `hlen` selects the PRF: 32 = HMAC-SHA-256, 48 = HMAC-SHA-384.
- * `iters` must be >= 1. Writes exactly dklen bytes. See pbkdf2.c for why this
- * and not scrypt/argon2, and for what it does and does not defend against. */
+/* --- PBKDF2-HMAC-SHA224 / SHA256 / SHA-384 / SHA-512 (RFC 8018 5.2) ---------
+ * Password -> key. `hlen` selects the PRF: 28 = HMAC-SHA-224, 32 = HMAC-SHA-256,
+ * 48 = HMAC-SHA-384, 64 = HMAC-SHA-512. `iters` must be >= 1. Writes exactly dklen bytes. See
+ * pbkdf2.c for why this and not scrypt/argon2, and for what it does and does
+ * not defend against. */
 void pbkdf2(int hlen, const uint8_t *pw, int pwlen,
             const uint8_t *salt, int saltlen, uint32_t iters,
             uint8_t *dk, int dklen);

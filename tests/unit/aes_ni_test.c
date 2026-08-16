@@ -125,21 +125,25 @@ static void run_kats(const char *label)
 }
 
 /* --- primitive-level differential ---------------------------------------
- * Cross the three backend primitives directly, not just the mode built on
- * them: a key schedule that differs in the last round key produces a wrong
- * ciphertext far from where the bug is, and a GHASH reduction that is wrong
- * in one bit only shows up for some inputs. */
+ * Cross the backend primitives directly, not just the modes built on them: a
+ * key schedule that differs in the last round key produces a wrong ciphertext
+ * far from where the bug is, and a GHASH reduction that is wrong in one bit
+ * only shows up for some inputs. Decrypt is checked two ways -- against the
+ * other backend AND as encrypt-then-decrypt == identity per backend -- because
+ * AES-NI decryption runs on the equivalent INVERSE schedule (AESIMC of each
+ * middle round key), and the specific failure that construction invites is
+ * two backends agreeing with each other while decrypting garbage. */
 static void diff_primitives(const struct aes_backend *a, const struct aes_backend *b,
                             int rounds)
 {
-    int sched_bad = 0, enc_bad = 0, gf_bad = 0;
+    int sched_bad = 0, enc_bad = 0, dec_bad = 0, dec_rt_bad = 0, gf_bad = 0;
 
     for (int i = 0; i < rounds; i++) {
         uint8_t key[32], blk[16];
         rndbytes(key, 32);
         rndbytes(blk, 16);
-        int keylen = (i & 1) ? 32 : 16;
-        int nr = keylen == 32 ? 14 : 10;
+        int keylen = (i % 3) == 0 ? 16 : (i % 3 == 1 ? 24 : 32);
+        int nr = keylen == 32 ? 14 : keylen == 24 ? 12 : 10;
 
         uint8_t ra[240], rb[240];
         memset(ra, 0, sizeof ra); memset(rb, 0, sizeof rb);
@@ -158,6 +162,18 @@ static void diff_primitives(const struct aes_backend *a, const struct aes_backen
             enc_bad++;
         }
 
+        uint8_t da[16], db[16];
+        a->decrypt(ra, nr, oa, da);
+        b->decrypt(rb, nr, ob, db);
+        if (diff(da, db, 16)) {
+            if (!dec_bad) { hexdump("dec A", da, 16); hexdump("dec B", db, 16); }
+            dec_bad++;
+        }
+        if (diff(da, blk, 16) || diff(db, blk, 16)) {
+            if (!dec_rt_bad) { hexdump("blk", blk, 16); hexdump("decA", da, 16); }
+            dec_rt_bad++;
+        }
+
         uint8_t xa[16], xb[16], y[16];
         rndbytes(xa, 16); memcpy(xb, xa, 16);
         rndbytes(y, 16);
@@ -169,10 +185,13 @@ static void diff_primitives(const struct aes_backend *a, const struct aes_backen
         }
     }
 
-    printf("     %s vs %s over %d cases: key_expand %d bad, encrypt %d bad, gf_mul %d bad\n",
-           a->name, b->name, rounds, sched_bad, enc_bad, gf_bad);
+    printf("     %s vs %s over %d cases: key_expand %d bad, encrypt %d bad, "
+           "decrypt %d bad, decrypt-rt %d bad, gf_mul %d bad\n",
+           a->name, b->name, rounds, sched_bad, enc_bad, dec_bad, dec_rt_bad, gf_bad);
     ok(sched_bad == 0, "key schedules are byte-identical across backends");
     ok(enc_bad == 0, "block encryption is byte-identical across backends");
+    ok(dec_bad == 0, "block decryption is byte-identical across backends");
+    ok(dec_rt_bad == 0, "decrypt inverts encrypt on both backends");
     ok(gf_bad == 0, "GF(2^128) multiply is byte-identical across backends");
 }
 
@@ -188,10 +207,10 @@ static void diff_gcm(int rounds)
     int bad = 0, cases = 0;
 
     for (int i = 0; i < rounds; i++) {
-        int keylen = (i & 1) ? 32 : 16;
+        int keylen = 16 + 8 * (i % 3);           /* 16, 24, 32 */
         int ptlen  = (int)(rnd() % 200);
         int aadlen = (int)(rnd() % 40);
-        if (i < 8) { ptlen = i; aadlen = (i * 3) % 17; }     /* the short edge cases */
+        if (i < 9) { ptlen = i; aadlen = (i * 3) % 17; }     /* the short edge cases */
         rndbytes(key, 32);
         rndbytes(nonce, 12);
         rndbytes(aad, 64);
@@ -201,12 +220,14 @@ static void diff_gcm(int rounds)
         const uint8_t *pp = ptlen ? pt : NULL;
 
         crypto_simd_force_baseline(0);           /* the selected (accelerated) path */
-        if (keylen == 16) aes128_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_a, tag_a);
-        else              aes256_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_a, tag_a);
+        if (keylen == 16)      aes128_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_a, tag_a);
+        else if (keylen == 24) aes192_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_a, tag_a);
+        else                   aes256_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_a, tag_a);
 
         crypto_simd_force_baseline(1);           /* the portable reference */
-        if (keylen == 16) aes128_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_b, tag_b);
-        else              aes256_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        if (keylen == 16)      aes128_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        else if (keylen == 24) aes192_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        else                   aes256_gcm_seal(key, nonce, ap, aadlen, pp, ptlen, ct_b, tag_b);
 
         if ((ptlen && diff(ct_a, ct_b, ptlen)) || diff(tag_a, tag_b, 16)) {
             if (!bad) {
@@ -224,23 +245,162 @@ static void diff_gcm(int rounds)
          * must open, and vice versa. This is the property TLS actually needs
          * -- a peer is running neither of our implementations. */
         crypto_simd_force_baseline(1);
-        int r1 = (keylen == 16)
+        int r1 = keylen == 16
             ? aes128_gcm_open(key, nonce, ap, aadlen, ptlen ? ct_a : NULL, ptlen, tag_a, out)
+            : keylen == 24
+            ? aes192_gcm_open(key, nonce, ap, aadlen, ptlen ? ct_a : NULL, ptlen, tag_a, out)
             : aes256_gcm_open(key, nonce, ap, aadlen, ptlen ? ct_a : NULL, ptlen, tag_a, out);
         if (r1 != 0 || (ptlen && diff(out, pt, ptlen))) bad++;
 
         crypto_simd_force_baseline(0);
-        int r2 = (keylen == 16)
+        int r2 = keylen == 16
             ? aes128_gcm_open(key, nonce, ap, aadlen, ptlen ? ct_b : NULL, ptlen, tag_b, out)
+            : keylen == 24
+            ? aes192_gcm_open(key, nonce, ap, aadlen, ptlen ? ct_b : NULL, ptlen, tag_b, out)
             : aes256_gcm_open(key, nonce, ap, aadlen, ptlen ? ct_b : NULL, ptlen, tag_b, out);
         if (r2 != 0 || (ptlen && diff(out, pt, ptlen))) bad++;
 
         cases++;
     }
     crypto_simd_force_baseline(0);
-    printf("     full AES-GCM differential: %d cases (128 and 256), %d mismatches\n",
+    printf("     full AES-GCM differential: %d cases (128/192/256), %d mismatches\n",
            cases, bad);
     ok(bad == 0, "AES-GCM output is byte-identical across backends, both directions");
+}
+
+/* --- arbitrary-IV GCM differential ----------------------------------------
+ * Same crossing as diff_gcm but through the _iv entry points with IV lengths
+ * other than 96 bits, where J0 comes out of GHASH instead of the IV||0^31||1
+ * fast path. Every case also checks the 96-bit equivalence: passing a 12-byte
+ * IV to the _iv function must be byte-identical to the fixed-12 entry point,
+ * which pins that they share one code path rather than two that agree. */
+static void diff_gcm_iv(int rounds)
+{
+    static uint8_t pt[256], ct_a[256], ct_b[256], out[256], aad[64], iv[256];
+    uint8_t key[32], tag_a[16], tag_b[16];
+    int bad = 0, cases = 0;
+    const int ivlens[] = { 1, 8, 16, 17, 60, 128, 255 };
+
+    for (int i = 0; i < rounds; i++) {
+        int keylen = 16 + 8 * (i % 3);
+        int ivlen = ivlens[i % 7];
+        int ptlen = (int)(rnd() % 100);
+        int aadlen = (int)(rnd() % 40);
+        rndbytes(key, 32);
+        rndbytes(iv, 255);
+        rndbytes(aad, 64);
+        rndbytes(pt, 256);
+
+        const uint8_t *ap = aadlen ? aad : NULL;
+        const uint8_t *pp = ptlen ? pt : NULL;
+
+        crypto_simd_force_baseline(0);
+        if (keylen == 16)      aes128_gcm_seal_iv(key, iv, ivlen, ap, aadlen, pp, ptlen, ct_a, tag_a);
+        else if (keylen == 24) aes192_gcm_seal_iv(key, iv, ivlen, ap, aadlen, pp, ptlen, ct_a, tag_a);
+        else                   aes256_gcm_seal_iv(key, iv, ivlen, ap, aadlen, pp, ptlen, ct_a, tag_a);
+
+        crypto_simd_force_baseline(1);
+        if (keylen == 16)      aes128_gcm_seal_iv(key, iv, ivlen, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        else if (keylen == 24) aes192_gcm_seal_iv(key, iv, ivlen, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        else                   aes256_gcm_seal_iv(key, iv, ivlen, ap, aadlen, pp, ptlen, ct_b, tag_b);
+
+        if ((ptlen && diff(ct_a, ct_b, ptlen)) || diff(tag_a, tag_b, 16)) {
+            if (!bad)
+                printf("     first arbiv mismatch: keylen=%d ivlen=%d ptlen=%d\n",
+                       keylen, ivlen, ptlen);
+            bad++;
+        }
+        /* cross-open under the portable path */
+        crypto_simd_force_baseline(1);
+        int r = keylen == 16
+            ? aes128_gcm_open_iv(key, iv, ivlen, ap, aadlen, ptlen ? ct_a : NULL, ptlen, tag_a, out)
+            : keylen == 24
+            ? aes192_gcm_open_iv(key, iv, ivlen, ap, aadlen, ptlen ? ct_a : NULL, ptlen, tag_a, out)
+            : aes256_gcm_open_iv(key, iv, ivlen, ap, aadlen, ptlen ? ct_a : NULL, ptlen, tag_a, out);
+        if (r != 0 || (ptlen && diff(out, pt, ptlen))) bad++;
+
+        /* 96-bit equivalence: fixed entry point vs _iv with ivlen=12 */
+        uint8_t iv12[12]; memcpy(iv12, iv, 12);
+        uint8_t ct12[256], tag12[16];
+        crypto_simd_force_baseline(0);
+        if (keylen == 16)      aes128_gcm_seal(key, iv12, ap, aadlen, pp, ptlen, ct12, tag12);
+        else if (keylen == 24) aes192_gcm_seal(key, iv12, ap, aadlen, pp, ptlen, ct12, tag12);
+        else                   aes256_gcm_seal(key, iv12, ap, aadlen, pp, ptlen, ct12, tag12);
+        if (keylen == 16)      aes128_gcm_seal_iv(key, iv12, 12, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        else if (keylen == 24) aes192_gcm_seal_iv(key, iv12, 12, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        else                   aes256_gcm_seal_iv(key, iv12, 12, ap, aadlen, pp, ptlen, ct_b, tag_b);
+        if ((ptlen && diff(ct12, ct_b, ptlen)) || diff(tag12, tag_b, 16)) bad++;
+
+        cases++;
+    }
+    crypto_simd_force_baseline(0);
+    printf("     arbitrary-IV GCM differential: %d cases (7 IV lengths, "
+           "128/192/256), %d mismatches\n", cases, bad);
+    ok(bad == 0, "arbitrary-IV AES-GCM agrees across backends and with the 96-bit path");
+}
+
+/* --- CBC/CTR mode differential --------------------------------------------
+ * The modes are backend-independent by construction, but the cbc DECRYPT
+ * path is the only caller of the decrypt primitive, so the same seal-here /
+ * open-there crossing is applied to it. One key size would do; three costs
+ * nothing and covers all three schedules' equivalent-inverse forms. */
+static void diff_modes(int rounds)
+{
+    static uint8_t pt[512], ct_a[528], ct_b[528], out[528];
+    uint8_t key[32], iv[16];
+    int bad = 0, cases = 0;
+
+    for (int i = 0; i < rounds; i++) {
+        int keylen = 16 + 8 * (i % 3);
+        int ptlen = (int)(rnd() % 200);
+        /* include the carry edge in ctr: an IV at fffffffe wraps inside 2 blocks */
+        rndbytes(key, 32);
+        if (i % 4 == 0) memset(iv, 0xff, 13), iv[13] = iv[14] = iv[15] = 0xfe;
+        else rndbytes(iv, 16);
+        rndbytes(pt, 512);
+
+        crypto_simd_force_baseline(0);
+        if (keylen == 16)      aes128_ctr(key, iv, pt, ptlen, ct_a);
+        else if (keylen == 24) aes192_ctr(key, iv, pt, ptlen, ct_a);
+        else                   aes256_ctr(key, iv, pt, ptlen, ct_a);
+        crypto_simd_force_baseline(1);
+        if (keylen == 16)      aes128_ctr(key, iv, pt, ptlen, ct_b);
+        else if (keylen == 24) aes192_ctr(key, iv, pt, ptlen, ct_b);
+        else                   aes256_ctr(key, iv, pt, ptlen, ct_b);
+        if (ptlen && diff(ct_a, ct_b, ptlen)) bad++;
+
+        /* CBC: seal under one backend, open under the other, and vice versa */
+        int n;
+        crypto_simd_force_baseline(0);
+        if (keylen == 16)      n = aes128_cbc_encrypt(key, iv, pt, ptlen, ct_a);
+        else if (keylen == 24) n = aes192_cbc_encrypt(key, iv, pt, ptlen, ct_a);
+        else                   n = aes256_cbc_encrypt(key, iv, pt, ptlen, ct_a);
+        crypto_simd_force_baseline(1);
+        if (keylen == 16)      n = aes128_cbc_encrypt(key, iv, pt, ptlen, ct_b);
+        else if (keylen == 24) n = aes192_cbc_encrypt(key, iv, pt, ptlen, ct_b);
+        else                   n = aes256_cbc_encrypt(key, iv, pt, ptlen, ct_b);
+        if (n != ptlen + 16 - (ptlen % 16) || diff(ct_a, ct_b, n)) bad++;
+
+        crypto_simd_force_baseline(1);
+        int m = keylen == 16
+            ? aes128_cbc_decrypt(key, iv, ct_a, n, out)
+            : keylen == 24 ? aes192_cbc_decrypt(key, iv, ct_a, n, out)
+            : aes256_cbc_decrypt(key, iv, ct_a, n, out);
+        if (m != ptlen || (ptlen && diff(out, pt, ptlen))) bad++;
+
+        crypto_simd_force_baseline(0);
+        m = keylen == 16
+            ? aes128_cbc_decrypt(key, iv, ct_a, n, out)
+            : keylen == 24 ? aes192_cbc_decrypt(key, iv, ct_a, n, out)
+            : aes256_cbc_decrypt(key, iv, ct_a, n, out);
+        if (m != ptlen || (ptlen && diff(out, pt, ptlen))) bad++;
+
+        cases++;
+    }
+    crypto_simd_force_baseline(0);
+    printf("     CTR/CBC mode differential: %d cases (128/192/256, wrap IVs), "
+           "%d mismatches\n", cases, bad);
+    ok(bad == 0, "AES-CTR/CBC agree across backends, both directions");
 }
 
 int main(void)
@@ -302,6 +462,7 @@ int main(void)
     if (ni) {
         ok(ni->key_expand != c->key_expand, "backends have distinct key_expand");
         ok(ni->encrypt != c->encrypt, "backends have distinct encrypt");
+        ok(ni->decrypt != c->decrypt, "backends have distinct decrypt");
         ok(ni->gf_mul != c->gf_mul, "backends have distinct gf_mul");
         ok(strcmp(ni->name, c->name) != 0, "backends have distinct names");
     }
@@ -321,6 +482,8 @@ int main(void)
     if (ni) {
         diff_primitives(c, ni, 20000);
         diff_gcm(4000);
+        diff_gcm_iv(2100);
+        diff_modes(3000);
 
         /* Control on the comparison itself: the differential above would be
          * worthless if it were accidentally comparing a buffer with itself.

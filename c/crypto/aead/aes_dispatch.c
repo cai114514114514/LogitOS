@@ -69,9 +69,16 @@ void crypto_simd_force_baseline(int on)
 }
 
 /* Cross-check the selected backend against the portable reference on a fixed
- * input, covering all three primitives (key schedule, block encrypt, GF
- * multiply) for both key lengths. Returns 0 when they agree, or the 1-based
- * index of the first check that did not.
+ * input, covering all four primitives (key schedule, block encrypt, block
+ * DECRYPT, GF multiply) for all three key lengths. Returns 0 when they agree,
+ * or the 1-based index of the first check that did not.
+ *
+ * Decrypt is checked as decrypt(encrypt(x)) == x against BOTH backends
+ * independently rather than only against each other, because two backends
+ * that made the same equivalent-inverse-schedule mistake would agree while
+ * decrypting garbage (this is the exact failure AESIMC-vs-none produces).
+ * A round-trip alone is weaker than a vector, but here it layers on top of
+ * the SP 800-38A and diff batteries.
  *
  * This is not a substitute for the vectors -- two identically wrong backends
  * would agree -- so the caller runs it alongside a known-answer check. What it
@@ -89,12 +96,12 @@ int crypto_simd_selftest(void)
     static const uint8_t blk[16] = {
         0x32,0x43,0xf6,0xa8,0x88,0x5a,0x30,0x8d,0x31,0x31,0x98,0xa2,0xe0,0x37,0x07,0x34 };
 
-    uint8_t ra[240], rb[240], oa[16], ob[16];
+    uint8_t ra[240], rb[240], oa[16], ob[16], da[16], db[16];
     int step = 0;
 
-    for (int two = 0; two < 2; two++) {
-        int keylen = two ? 32 : 16;
-        int nr = two ? 14 : 10;
+    for (int ks = 0; ks < 3; ks++) {
+        int keylen = ks == 0 ? 16 : (ks == 1 ? 24 : 32);
+        int nr = keylen == 32 ? 14 : keylen == 24 ? 12 : 10;
         int n = 16 * (nr + 1);
 
         for (int i = 0; i < 240; i++) { ra[i] = 0; rb[i] = 0; }
@@ -107,6 +114,13 @@ int crypto_simd_selftest(void)
         cur->encrypt(rb, nr, blk, ob);
         step++;
         for (int i = 0; i < 16; i++) if (oa[i] != ob[i]) return step;
+
+        ref->decrypt(ra, nr, oa, da);
+        cur->decrypt(rb, nr, ob, db);
+        step++;
+        for (int i = 0; i < 16; i++) if (da[i] != blk[i]) return step;
+        step++;
+        for (int i = 0; i < 16; i++) if (da[i] != db[i]) return step;
     }
 
     /* GF multiply: chain it so an error in any bit position propagates. */

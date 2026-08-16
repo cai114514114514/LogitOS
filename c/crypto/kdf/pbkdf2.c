@@ -2,8 +2,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* PBKDF2-HMAC-SHA256/512 (RFC 8018 5.2) and the account-record format on top
- * of it.
+/* PBKDF2-HMAC-SHA256/384/512 (RFC 8018 5.2) and the account-record format on
+ * top of it.
  *
  * WHY PBKDF2 AND NOT scrypt OR argon2
  * -----------------------------------
@@ -42,7 +42,7 @@
  * parsing of a stored record are NOT constant time and do not need to be --
  * the record is the thing an attacker already has if they have anything. */
 
-#define PB_MAXH 48
+#define PB_MAXH 64
 
 static void hmac_prf(int hlen, const uint8_t *key, int keylen,
                      const uint8_t *msg, int msglen, uint8_t *out)
@@ -52,11 +52,11 @@ void pbkdf2(int hlen, const uint8_t *pw, int pwlen,
             const uint8_t *salt, int saltlen, uint32_t iters,
             uint8_t *dk, int dklen)
 {
-    /* 32 = HMAC-SHA-256, 48 = HMAC-SHA-384 -- exactly what hmac() implements.
-     * SHA-512 is NOT offered even though sha512() exists, because hmac() does
-     * not take it, and adding a third width to hmac() to serve a KDF nobody
-     * asked for is how a verified primitive stops being verified. */
-    if ((hlen != 32 && hlen != 48) || iters < 1 || dklen <= 0) return;
+    /* 32 = HMAC-SHA-256, 48 = HMAC-SHA-384, 64 = HMAC-SHA-512 -- exactly what
+     * hmac() implements. SHA-512 was the last width added: it is what SAE
+     * (WPA3) and several on-disk key formats stretch with, and the marginal
+     * cost over 384 is one branch in hmac(), not a second KDF. */
+    if ((hlen != 28 && hlen != 32 && hlen != 48 && hlen != 64) || iters < 1 || dklen <= 0) return;
 
     /* The salt||INT(i) buffer. 256 bytes of salt is far past anything sane and
      * bounds what a caller can push onto the kernel stack here. */

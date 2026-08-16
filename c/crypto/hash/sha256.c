@@ -59,7 +59,11 @@ void sha256_update(struct sha256 *c, const void *data, size_t len)
     }
 }
 
-void sha256_final(struct sha256 *c, uint8_t out[32])
+/* Padding + big-endian serialization of the first olen bytes. Split out of
+ * sha256_final when SHA-224 arrived: 224 is this exact core with a different
+ * IV, truncated to 7 of the 8 words, so the only honest way to add it is to
+ * share the finish rather than to write a second one that could drift. */
+static void finish(struct sha256 *c, uint8_t *out, int olen)
 {
     uint64_t bits = c->len * 8;
     uint8_t pad = 0x80;
@@ -69,13 +73,34 @@ void sha256_final(struct sha256 *c, uint8_t out[32])
     uint8_t L[8];
     for (int i = 0; i < 8; i++) L[i] = (uint8_t)(bits >> (56 - 8*i));
     sha256_update(c, L, 8);
-    for (int i = 0; i < 8; i++) {
-        out[i*4]   = (uint8_t)(c->h[i]>>24); out[i*4+1] = (uint8_t)(c->h[i]>>16);
-        out[i*4+2] = (uint8_t)(c->h[i]>>8);  out[i*4+3] = (uint8_t)c->h[i];
-    }
+    for (int i = 0; i < olen; i++)
+        out[i] = (uint8_t)(c->h[i / 4] >> (24 - 8 * (i % 4)));
 }
+
+void sha256_final(struct sha256 *c, uint8_t out[32])
+{ finish(c, out, 32); }
 
 void sha256(const void *data, size_t len, uint8_t out[32])
 {
     struct sha256 c; sha256_init(&c); sha256_update(&c, data, len); sha256_final(&c, out);
+}
+
+/* --- SHA-224 (FIPS 180-4 6.3) --- the SHA-256 compression function with a
+ * different IV, truncated to 28 bytes. Unlike the SHA-512/t pair, whose IVs
+ * come from the IV-generation function, SHA-224's are simply the second
+ * thirty-two bits of the fractional parts of the square roots of the 9th
+ * through 16th primes -- published constants, not derived ones. */
+void sha224_init(struct sha256 *c)
+{
+    c->h[0]=0xc1059ed8; c->h[1]=0x367cd507; c->h[2]=0x3070dd17; c->h[3]=0xf70e5939;
+    c->h[4]=0xffc00b31; c->h[5]=0x68581511; c->h[6]=0x64f98fa7; c->h[7]=0xbefa4fa4;
+    c->len = 0; c->n = 0;
+}
+
+void sha224_final(struct sha256 *c, uint8_t out[28])
+{ finish(c, out, 28); }                      /* first 7 of 8 words */
+
+void sha224(const void *data, size_t len, uint8_t out[28])
+{
+    struct sha256 c; sha224_init(&c); sha256_update(&c, data, len); sha224_final(&c, out);
 }

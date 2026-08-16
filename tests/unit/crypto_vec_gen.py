@@ -204,6 +204,46 @@ emit("el384_out", expand_label(hashlib.sha384, sec384, b"s ap traffic", ctx384, 
 emit("el384_keyout", expand_label(hashlib.sha384, sec384, b"key", b"", 32))
 emit("el256_ivout", expand_label(hashlib.sha256, sec256, b"iv", b"", 12))
 
+# ---- HKDF-SHA-512 (hlen=64) -------------------------------------------------
+# RFC 5869 has no SHA-512 appendix cases (only SHA-1/SHA-256), so these are
+# self-computed against hashlib/hmac -- the same oracle, one width wider.
+# L=136 > 2*64 exercises a third expand block.
+ikm = bytes(range(0x00,0x50)); salt = bytes(range(0x60,0x80))
+info = b"logit hkdf512 info"
+prk512 = hkdf_extract(hashlib.sha512, salt, ikm)
+okm512 = hkdf_expand(hashlib.sha512, prk512, info, 136)
+emit("hk512_ikm", ikm); emit("hk512_salt", salt); emit("hk512_info", info)
+emit("hk512_prk", prk512); emit("hk512_okm", okm512)
+# null salt == 64 zero bytes (the TLS 1.3 early-secret pattern at width 64);
+# written explicitly because hmac.new(None, ...) is a TypeError in python
+emit("hk512_prk0", hkdf_extract(hashlib.sha512, b"\x00"*64, ikm))
+
+# ---- PBKDF2-HMAC-SHA-512 (hlen=64) ------------------------------------------
+# hashlib.pbkdf2_hmac is the OpenSSL PRF; the 1/2-iteration cases pin the
+# loop logic cheaply, 4096 exercises the chain, and the long password/salt
+# case crosses the HMAC block-size boundary in both operands.
+pdf2_512 = [
+    ("pb512a", b"password", b"salt", 1, 64),
+    ("pb512b", b"password", b"salt", 2, 64),
+    ("pb512c", b"password", b"salt", 4096, 64),
+    ("pb512d", bytes([0x03]*64), bytes([0x07]*64), 5, 64),
+    ("pb512e", bytes(range(0x40,0xc0)), bytes(range(0xc0,0x100)), 100, 48),
+]
+for tag, pw, slt, it, dklen in pdf2_512:
+    emit(tag + "_pw", pw); emit(tag + "_salt", slt)
+    out.append('static const uint32_t %s_iters = %du;' % (tag, it))
+    emit(tag + "_dk", hashlib.pbkdf2_hmac("sha512", pw, slt, it, dklen))
+# one SHA-384 and one SHA-256 case so the vec battery covers every hlen
+emit("pb384a_pw", b"password"); emit("pb384a_salt", b"salt")
+out.append('static const uint32_t pb384a_iters = 4096u;')
+emit("pb384a_dk", hashlib.pbkdf2_hmac("sha384", b"password", b"salt", 4096, 48))
+emit("pb224a_pw", b"password"); emit("pb224a_salt", b"salt")
+out.append('static const uint32_t pb224a_iters = 4096u;')
+emit("pb224a_dk", hashlib.pbkdf2_hmac("sha224", b"password", b"salt", 4096, 28))
+emit("pb256a_pw", b"password"); emit("pb256a_salt", b"salt")
+out.append('static const uint32_t pb256a_iters = 4096u;')
+emit("pb256a_dk", hashlib.pbkdf2_hmac("sha256", b"password", b"salt", 4096, 32))
+
 import os
 path = os.environ.get('VECOUT', 'vectors.h')
 with open(path,'w') as f:

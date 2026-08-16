@@ -4,10 +4,10 @@
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 
-/* AES-GCM: the MODE lives here and is shared by every backend; the three
- * primitives it is built from (key schedule, block encrypt, GF(2^128)
- * multiply) come from aes_current_backend(). See aes_backend.h for why the
- * split is where it is. The portable implementations below are the reference
+/* AES-GCM: the MODE lives here and is shared by every backend; the primitives
+ * it is built from (key schedule, block encrypt/decrypt, GF(2^128) multiply)
+ * come from aes_current_backend(). See aes_backend.h for why the split is
+ * where it is. The portable implementations below are the reference
  * backend -- they are what runs on a CPU without AES-NI and what the
  * accelerated path is differentially tested against, so they stay. */
 
@@ -37,15 +37,21 @@ static const uint8_t sbox[256] = {
 
 static uint8_t xtime(uint8_t x) { return (uint8_t)((x << 1) ^ ((x >> 7) * 0x1b)); }
 
-/* AES-128 and AES-256 share this code, parameterised by key length: 16 bytes ->
- * 10 rounds and a 176-byte schedule, 32 -> 14 rounds and 240. AES-256 is here
- * because TLS 1.2 servers commonly *prefer* ECDHE_*_WITH_AES_256_GCM_SHA384, so
- * without it a 1.2 handshake would routinely land on our second choice or on
- * nothing at all. It is a round count and a slightly longer key schedule, not a
- * second cipher -- everything below the schedule is unchanged. */
+/* AES-128, AES-192 and AES-256 share this code, parameterised by key length:
+ * 16 bytes -> 10 rounds and a 176-byte schedule, 24 -> 12 rounds and 208, 32 ->
+ * 14 rounds and 240. AES-256 is here because TLS 1.2 servers commonly *prefer*
+ * ECDHE_*_WITH_AES_256_GCM_SHA384, so without it a 1.2 handshake would
+ * routinely land on our second choice or on nothing at all. AES-192 completes
+ * the FIPS-197 key-size family; nothing in-tree negotiates it, but the round
+ * count and the nk=6 key schedule (no extra SubWord -- that is an nk > 6 rule)
+ * are one line each, and a GCM that cannot be asked for 192-bit keys is a
+ * library gap, not a policy. Everything below the schedule is unchanged. */
 #define AES_RK_MAX 240                          /* 4 * (14 + 1) * 4 */
 
-static int aes_rounds(int keylen) { return keylen == 32 ? 14 : 10; }
+static int aes_rounds(int keylen)
+{
+    return keylen == 32 ? 14 : keylen == 24 ? 12 : 10;
+}
 
 static void c_key_expand(const uint8_t *key, int keylen, uint8_t *rk)
 {
@@ -97,6 +103,58 @@ static void c_encrypt(const uint8_t *rk, int nr, const uint8_t in[16], uint8_t o
     memcpy(out, s, 16);
 }
 
+/* Inverse S-box and xtime^-1 helpers for the inverse cipher (FIPS-197 5.3).
+ * Built as a compile-time-constant inverse of `sbox` rather than a second
+ * hand-typed 256-byte table, so the two can never disagree; the loop runs
+ * once at first use and the result is as read-only as a static table. */
+static uint8_t inv_sbox[256];
+static int inv_sbox_ready;
+
+static void inv_sbox_init(void)
+{
+    for (int i = 0; i < 256; i++) inv_sbox[sbox[i]] = (uint8_t)i;
+    inv_sbox_ready = 1;
+}
+
+/* multiply by 9, 11, 13, 14 in GF(2^8) for InvMixColumns: each is a fixed
+ * sum of doublings, written as expressions so the compiler folds them. */
+static uint8_t mul9(uint8_t a)  { return xtime(xtime(xtime(a))) ^ a; }
+static uint8_t mul11(uint8_t a) { return xtime(xtime(xtime(a)) ^ a) ^ a; }
+static uint8_t mul13(uint8_t a) { return xtime(xtime(xtime(a) ^ a)) ^ a; }
+static uint8_t mul14(uint8_t a) { return xtime(xtime(xtime(a) ^ a) ^ a); }
+
+/* The straight inverse cipher over the SAME round-key layout c_encrypt
+ * produced (FIPS-197 5.3.4): last round key first, InvShiftRows/InvSubBytes
+ * before AddRoundKey, InvMixColumns on every round but the first and last.
+ * Like c_encrypt this indexes tables with cipher state, so it is NOT
+ * constant-time; the AES-NI backend's AESDEC is. */
+static void c_decrypt(const uint8_t *rk, int nr, const uint8_t in[16], uint8_t out[16])
+{
+    if (!inv_sbox_ready) inv_sbox_init();
+    uint8_t s[16]; memcpy(s, in, 16);
+    for (int i = 0; i < 16; i++) s[i] ^= rk[nr*16+i];
+    for (int round = nr - 1; round >= 0; round--) {
+        uint8_t t[16];                          /* InvShiftRows */
+        for (int r = 0; r < 4; r++)
+            for (int col = 0; col < 4; col++)
+                t[col*4+r] = s[((col + 4 - r) % 4)*4+r];
+        memcpy(s, t, 16);
+        for (int i = 0; i < 16; i++) s[i] = inv_sbox[s[i]];
+        for (int i = 0; i < 16; i++) s[i] ^= rk[round*16+i];
+        if (round > 0) {                        /* InvMixColumns */
+            for (int col = 0; col < 4; col++) {
+                uint8_t *p = s + col*4;
+                uint8_t a0=p[0],a1=p[1],a2=p[2],a3=p[3];
+                p[0] = mul14(a0)^mul11(a1)^mul13(a2)^mul9(a3);
+                p[1] = mul9(a0)^mul14(a1)^mul11(a2)^mul13(a3);
+                p[2] = mul13(a0)^mul9(a1)^mul14(a2)^mul11(a3);
+                p[3] = mul11(a0)^mul13(a1)^mul9(a2)^mul14(a3);
+            }
+        }
+    }
+    memcpy(out, s, 16);
+}
+
 /* --- GHASH over GF(2^128) ---
  * Bit-serial: branches on the bits of the accumulator, which is derived from
  * the secret H, so this leaks through the branch predictor as well as the
@@ -120,7 +178,7 @@ static void c_gf_mul(uint8_t x[16], const uint8_t y[16])
  * dispatcher can name it, the AES-NI path can be differentially tested against
  * it, and crypto_simd_force_baseline() can put it back. */
 static const struct aes_backend c_backend = {
-    "c", c_key_expand, c_encrypt, c_gf_mul, 0
+    "c", c_key_expand, c_encrypt, c_decrypt, c_gf_mul, 0
 };
 
 const struct aes_backend *aes_backend_c(void) { return &c_backend; }
@@ -164,7 +222,37 @@ static void gctr(const struct aes_backend *be, const uint8_t *rk, int nr,
     crypto_wipe(ks, sizeof ks);                 /* keystream */
 }
 
-static void gcm_core(const uint8_t *key, int keylen, const uint8_t nonce[12],
+/* J0, the pre-counter block (SP 800-38D 5.2.1.1). The 96-bit IV is the fast
+ * path every TLS record takes: J0 = IV || 0^31 || 1, no GHASH at all. Any
+ * other length pays the general construction: zero-pad the IV to a 128-bit
+ * boundary, append 64 zero bits and the 64-bit big-endian bit-length of the
+ * IV, and GHASH the whole string under H. Getting the length in BITS, not
+ * bytes, is the classic error here; it is pinned by the McGrew-Viega
+ * 60-byte-IV test cases (TC6/TC12/TC18), where an 8-vs-64 length field moves
+ * every byte of the tag. */
+static void gcm_j0(const struct aes_backend *be, const uint8_t H[16],
+                   const uint8_t *iv, int ivlen, uint8_t j0[16])
+{
+    if (ivlen == 12) {
+        memcpy(j0, iv, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
+        return;
+    }
+    uint8_t y[16]; memset(y, 0, 16);
+    for (int off = 0; off < ivlen; off += 16) {
+        int n = ivlen - off; if (n > 16) n = 16;
+        for (int i = 0; i < n; i++) y[i] ^= iv[off+i];
+        be->gf_mul(y, H);
+    }
+    uint8_t L[16]; memset(L, 0, 16);
+    uint64_t bits = (uint64_t)ivlen * 8;
+    for (int i = 0; i < 8; i++) L[8+i] = (uint8_t)(bits >> (56 - 8*i));
+    for (int i = 0; i < 16; i++) y[i] ^= L[i];
+    be->gf_mul(y, H);
+    memcpy(j0, y, 16);
+    crypto_wipe(y, sizeof y);
+}
+
+static void gcm_core(const uint8_t *key, int keylen, const uint8_t *iv, int ivlen,
                      const uint8_t *aad, int aadlen, const uint8_t *in, int len,
                      uint8_t *out, uint8_t tag[16])
 {
@@ -173,7 +261,7 @@ static void gcm_core(const uint8_t *key, int keylen, const uint8_t nonce[12],
     uint8_t rk[AES_RK_MAX]; be->key_expand(key, keylen, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
     be->encrypt(rk, nr, zero, H);
-    uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
+    uint8_t j0[16]; gcm_j0(be, H, iv, ivlen, j0);
     uint8_t ctr1[16]; memcpy(ctr1, j0, 16);
     for (int i = 15; i >= 12; i--) { if (++ctr1[i]) break; }   /* inc32(j0): counter starts at 2 */
     gctr(be, rk, nr, ctr1, in, len, out);       /* encrypt/decrypt with counter from 2 */
@@ -184,11 +272,11 @@ static void gcm_core(const uint8_t *key, int keylen, const uint8_t nonce[12],
     crypto_wipe(H, sizeof H); crypto_wipe(ej0, sizeof ej0);
 }
 
-static int gcm_open(const uint8_t *key, int keylen, const uint8_t nonce[12],
+static int gcm_open(const uint8_t *key, int keylen, const uint8_t *iv, int ivlen,
                     const uint8_t *aad, int aadlen,
                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
 {
-    if (aadlen < 0 || len < 0) return -1;
+    if (aadlen < 0 || len < 0 || ivlen < 1 || ivlen > 1024) return -1;
     /* GHASH is over the ciphertext, so compute the tag from ct, then decrypt.
      * Decryption happens only after the tags compare equal -- handing back
      * unauthenticated plaintext is the classic GCM footgun. */
@@ -197,7 +285,7 @@ static int gcm_open(const uint8_t *key, int keylen, const uint8_t nonce[12],
     uint8_t rk[AES_RK_MAX]; be->key_expand(key, keylen, rk);
     uint8_t H[16], zero[16]; memset(zero, 0, 16);
     be->encrypt(rk, nr, zero, H);
-    uint8_t j0[16]; memcpy(j0, nonce, 12); j0[12]=0; j0[13]=0; j0[14]=0; j0[15]=1;
+    uint8_t j0[16]; gcm_j0(be, H, iv, ivlen, j0);
     uint8_t S[16]; ghash(be, H, aad, aadlen, ct, len, S);
     uint8_t ej0[16]; be->encrypt(rk, nr, j0, ej0);
     uint8_t t[16]; for (int i = 0; i < 16; i++) t[i] = S[i] ^ ej0[i];
@@ -220,23 +308,83 @@ void aes128_gcm_seal(const uint8_t key[16], const uint8_t nonce[12],
                      const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
 {
     if (aadlen < 0 || len < 0) return;          /* negative lengths would walk backwards */
-    gcm_core(key, 16, nonce, aad, aadlen, pt, len, ct, tag);
+    gcm_core(key, 16, nonce, 12, aad, aadlen, pt, len, ct, tag);
 }
 
 int aes128_gcm_open(const uint8_t key[16], const uint8_t nonce[12],
                     const uint8_t *aad, int aadlen,
                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
-{ return gcm_open(key, 16, nonce, aad, aadlen, ct, len, tag, pt); }
+{ return gcm_open(key, 16, nonce, 12, aad, aadlen, ct, len, tag, pt); }
+
+/* --- AES-192-GCM --- key=24, nonce=12. Same seal/open contract; see the
+ * key-size comment above the round-count helper. */
+void aes192_gcm_seal(const uint8_t key[24], const uint8_t nonce[12],
+                     const uint8_t *aad, int aadlen,
+                     const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
+{
+    if (aadlen < 0 || len < 0) return;
+    gcm_core(key, 24, nonce, 12, aad, aadlen, pt, len, ct, tag);
+}
+
+int aes192_gcm_open(const uint8_t key[24], const uint8_t nonce[12],
+                    const uint8_t *aad, int aadlen,
+                    const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
+{ return gcm_open(key, 24, nonce, 12, aad, aadlen, ct, len, tag, pt); }
 
 void aes256_gcm_seal(const uint8_t key[32], const uint8_t nonce[12],
                      const uint8_t *aad, int aadlen,
                      const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
 {
     if (aadlen < 0 || len < 0) return;
-    gcm_core(key, 32, nonce, aad, aadlen, pt, len, ct, tag);
+    gcm_core(key, 32, nonce, 12, aad, aadlen, pt, len, ct, tag);
 }
 
 int aes256_gcm_open(const uint8_t key[32], const uint8_t nonce[12],
                     const uint8_t *aad, int aadlen,
                     const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
-{ return gcm_open(key, 32, nonce, aad, aadlen, ct, len, tag, pt); }
+{ return gcm_open(key, 32, nonce, 12, aad, aadlen, ct, len, tag, pt); }
+
+/* --- arbitrary-length IV entry points ------------------------------------
+ * Same cores, an explicit ivlen. The 96-bit check inside gcm_j0 routes these
+ * onto the exact fast path the fixed functions take, which is why the
+ * ivlen==12 case needs no separate branch here -- and why the test that pins
+ * _iv(12) == the fixed function matters: it is the assertion that the two
+ * entry points share one code path, not two paths that happen to agree. */
+void aes128_gcm_seal_iv(const uint8_t key[16], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
+{
+    if (aadlen < 0 || len < 0 || ivlen < 1 || ivlen > 1024) return;
+    gcm_core(key, 16, iv, ivlen, aad, aadlen, pt, len, ct, tag);
+}
+
+int aes128_gcm_open_iv(const uint8_t key[16], const uint8_t *iv, int ivlen,
+                       const uint8_t *aad, int aadlen,
+                       const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
+{ return gcm_open(key, 16, iv, ivlen, aad, aadlen, ct, len, tag, pt); }
+
+void aes192_gcm_seal_iv(const uint8_t key[24], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
+{
+    if (aadlen < 0 || len < 0 || ivlen < 1 || ivlen > 1024) return;
+    gcm_core(key, 24, iv, ivlen, aad, aadlen, pt, len, ct, tag);
+}
+
+int aes192_gcm_open_iv(const uint8_t key[24], const uint8_t *iv, int ivlen,
+                       const uint8_t *aad, int aadlen,
+                       const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
+{ return gcm_open(key, 24, iv, ivlen, aad, aadlen, ct, len, tag, pt); }
+
+void aes256_gcm_seal_iv(const uint8_t key[32], const uint8_t *iv, int ivlen,
+                        const uint8_t *aad, int aadlen,
+                        const uint8_t *pt, int len, uint8_t *ct, uint8_t tag[16])
+{
+    if (aadlen < 0 || len < 0 || ivlen < 1 || ivlen > 1024) return;
+    gcm_core(key, 32, iv, ivlen, aad, aadlen, pt, len, ct, tag);
+}
+
+int aes256_gcm_open_iv(const uint8_t key[32], const uint8_t *iv, int ivlen,
+                       const uint8_t *aad, int aadlen,
+                       const uint8_t *ct, int len, const uint8_t tag[16], uint8_t *pt)
+{ return gcm_open(key, 32, iv, ivlen, aad, aadlen, ct, len, tag, pt); }
