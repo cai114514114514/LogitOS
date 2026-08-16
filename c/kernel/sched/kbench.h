@@ -110,4 +110,9 @@ void kbench_start(void);          /* spawn the benchmark thread (sched_init) */
 void kb_stat_set(int on);         /* arm/disarm the path counters */
 void kb_stat_report(const char *tag);
 
+/* Sample who holds the BKL. Called from the timer tick, which runs BEFORE
+ * the interrupt entry takes the lock -- so it observes the holder from
+ * outside instead of becoming one. No-op unless the accounting is armed. */
+void kb_bkl_sample(void);
+
 #endif /* LOGIT_KBENCH_H */

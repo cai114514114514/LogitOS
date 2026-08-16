@@ -148,6 +148,9 @@ void interrupt_handler(struct registers *r, void *fxarea)
          * waiting for that deadline -- the identical circular wait that made
          * timer_tick() move ahead of the acquire. */
         sched_timer_expire();
+        /* And sample the BKL's holder in the same pre-acquire window, for
+         * the same reason: from here the observer is not itself a holder. */
+        kb_bkl_sample();
     }
     if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 

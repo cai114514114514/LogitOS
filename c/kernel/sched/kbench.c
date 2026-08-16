@@ -290,6 +290,69 @@ static void bench_klog(void)
 
 /* --------------------------------------------------------------- the report */
 
+/* ==========================================================================
+ * WHO IS HOLDING THE BKL, sampled.
+ *
+ * The lock's own counters say how long it was held and how often it was
+ * waited for. They do not say BY WHAT -- and after SYS_WAIT_EVENT deleted
+ * 98% of the traffic, "by what" is the only question left: 6,549 ms of
+ * waiting remained against 2,500 ms of holding, so the hold is concentrated
+ * somewhere and widening the BKL-free syscall list is a guess until that
+ * somewhere has a name.
+ *
+ * The sample is taken in the timer tick, which runs BEFORE the interrupt
+ * entry acquires the lock -- so this observes the holder from outside,
+ * without becoming a holder itself and without perturbing what it measures.
+ * spinlock_t already records the acquiring caller's return address; this only
+ * has to count them.
+ *
+ * Direct-mapped, 64 slots, no eviction policy: a hold that matters shows up
+ * at hundreds of samples, and one that collides away was not the answer. The
+ * addresses are printed raw and symbolised by the harness with nm, because a
+ * kernel that could resolve its own symbols would need the table in memory
+ * for the sake of a diagnostic.
+ * ========================================================================== */
+#define KB_BKLPROF_N 64
+static struct { unsigned long ra; unsigned int hits; } g_bklprof[KB_BKLPROF_N];
+static unsigned int g_bklprof_samples, g_bklprof_held, g_bklprof_lost;
+
+void kb_bkl_sample(void)
+{
+    if (!g_kb_stat) return;
+    g_bklprof_samples++;
+    if (g_bkl_owner < 0) return;                 /* nobody: an idle machine */
+    unsigned long ra = g_bkl.owner_ra;
+    if (!ra) return;
+    g_bklprof_held++;
+    unsigned int i = (unsigned int)((ra >> 4) & (KB_BKLPROF_N - 1));
+    for (unsigned int n = 0; n < 8; n++) {       /* short linear probe */
+        unsigned int k = (i + n) & (KB_BKLPROF_N - 1);
+        if (g_bklprof[k].ra == ra) { g_bklprof[k].hits++; return; }
+        if (!g_bklprof[k].ra) { g_bklprof[k].ra = ra; g_bklprof[k].hits = 1; return; }
+    }
+    g_bklprof_lost++;                            /* said out loud, not dropped */
+}
+
+static void bklprof_report(void)
+{
+    if (!g_bklprof_samples) return;
+    kprintf("[kbench] BKL holders: %u samples, held in %u (%u%%), %u lost to collision\n",
+            g_bklprof_samples, g_bklprof_held,
+            g_bklprof_samples ? g_bklprof_held * 100 / g_bklprof_samples : 0,
+            g_bklprof_lost);
+    for (int rank = 0; rank < 8; rank++) {
+        int best = -1;
+        for (int k = 0; k < KB_BKLPROF_N; k++)
+            if (g_bklprof[k].hits && (best < 0 || g_bklprof[k].hits > g_bklprof[best].hits))
+                best = k;
+        if (best < 0) break;
+        kprintf("[kbench]   bkl 0x%lx: %u samples (%u%% of held)\n",
+                g_bklprof[best].ra, g_bklprof[best].hits,
+                g_bklprof_held ? g_bklprof[best].hits * 100 / g_bklprof_held : 0);
+        g_bklprof[best].hits = 0;
+    }
+}
+
 void kb_stat_report(const char *tag)
 {
     uint64_t acq = 0, cont = 0, wait = 0, hold = 0;
@@ -359,7 +422,8 @@ void kb_stat_report(const char *tag)
     {
         uint64_t total_n = 0, total_c = 0;
         for (int s = 0; s < KB_NSYS; s++) { total_n += g_kb_sys_n[s]; total_c += g_kb_sys_cyc[s]; }
-        kprintf("[kbench] syscalls: %d calls, %d ms inside the dispatcher "
+        bklprof_report();
+    kprintf("[kbench] syscalls: %d calls, %d ms inside the dispatcher "
                 "(BKL already held; blocking calls include time descheduled)\n",
                 (int)total_n, (int)(total_c / g_mhz / 1000));
         for (int rank = 0; rank < 16; rank++) {
