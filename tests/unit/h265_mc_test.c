@@ -374,8 +374,14 @@ static void test_weighting(int bd)
         h265_pred_uni_w(dst, 4, s0, 4, 4, 4, denom, wgt, off, bd);
         int log2wd = denom + shift1;
         for (int i = 0; i < 16; i++) {
+            /* off is negative on purpose (a fade-down offset). `off << wpbd`
+             * is undefined in C for a negative left operand, and this ORACLE
+             * was doing it while h265_mc.c's own weighted path already used a
+             * multiply and carried a comment explaining why. So the reference
+             * held the bug the implementation had been written to avoid, and
+             * only -fsanitize=undefined could see it. */
             int want = h265_clip_pix(
-                ((s0[i] * wgt + (1 << (log2wd - 1))) >> log2wd) + (off << wpbd), bd);
+                ((s0[i] * wgt + (1 << (log2wd - 1))) >> log2wd) + off * (1 << wpbd), bd);
             CHECK(dst[i] == want, "bd%d uni_w denom=%d [%d] = %d want %d",
                   bd, denom, i, dst[i], want);
         }
@@ -387,8 +393,10 @@ static void test_weighting(int bd)
         h265_pred_bi_w(dst, 4, s0, 4, s1, 4, 4, 4, denom, w0, o0, w1, o1, bd);
         int log2wd = denom + shift1;
         for (int i = 0; i < 16; i++) {
+            /* Same again, twice over: o1 is negative, and the outer sum
+             * (o0 + o1 + 1) can be negative too. Both become multiplies. */
             int v = s0[i] * w0 + s1[i] * w1 +
-                    (((o0 << wpbd) + (o1 << wpbd) + 1) << log2wd);
+                    (o0 * (1 << wpbd) + o1 * (1 << wpbd) + 1) * (1 << log2wd);
             CHECK(dst[i] == h265_clip_pix(v >> (log2wd + 1), bd),
                   "bd%d bi_w denom=%d [%d]", bd, denom, i);
         }
