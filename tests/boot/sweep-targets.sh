@@ -64,6 +64,10 @@ done < "$LOGDIR/host.txt"
 wait
 
 # --- device targets, one at a time -----------------------------------------
+if [ "${SWEEP_HOST_ONLY:-0}" = "1" ]; then
+    echo "sweep: skipping $(grep -c . "$LOGDIR/dev.txt") device targets (SWEEP_HOST_ONLY=1)"
+    : > "$LOGDIR/dev.txt"
+fi
 echo "sweep: device targets (sequential -- two QEMUs contend)"
 while read -r t; do
     [ -n "$t" ] || continue
