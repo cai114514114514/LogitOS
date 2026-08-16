@@ -1828,7 +1828,8 @@ long wm_gui_syscall(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
     if (!ap && num != SYS_HTTP_GET && num != SYS_HTTP_STATUS &&
-        num != SYS_HTTP_BODY && num != SYS_SYSINFO && num != SYS_SCREEN_INFO) {
+        num != SYS_HTTP_BODY && num != SYS_SYSINFO && num != SYS_SCREEN_INFO &&
+        num != SYS_OPEN_PATH) {
         /* Window ADOPTION: a CLI process (e.g. /bin/as running a script) gets a
          * window on its first SYS_GUI_CREATE -- allocate an app slot and bind it
          * to the proc, then fall through to the normal create. Exit/teardown
@@ -1837,7 +1838,22 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * this gate, as does SYSINFO -- it is a read-only query about the system
          * with no window semantics at all, and gating it meant /bin/sh and every
          * CLI program could not ask the machine about itself. Any other GUI call
-         * without a window stays an error. */
+         * without a window stays an error.
+         *
+         * SYS_OPEN_PATH JOINS THAT LIST, and by the same argument rather than a
+         * new one: it draws nothing, it owns no window, and it touches no
+         * per-app state -- it names a file and asks the system to open it with
+         * whatever is registered for it. Requiring a window to make that call
+         * meant a CLI process could not do the one thing `open(1)` does on
+         * every other desktop, and the failure was silent in the worst way:
+         * wm_gui_syscall returns -1 here, so `open_path()` from a shell script
+         * answered "no" with nothing on the console saying why. It is still
+         * gated -- syscall_cap_class() classifies SYS_OPEN_PATH as CAP_FS, so a
+         * process without filesystem capability never reaches this function --
+         * and it grants no power a CLI process lacks, since the same process
+         * can already fork+execve. Found by the chat window's launcher
+         * (fsroot/as/examples/chlaunch.as), which is a GUI app's only door from
+         * a shell when the app is packed under /bin and the Dock never sees it. */
         struct proc *p = proc_current();
         if (!p || num != SYS_GUI_CREATE) return -1;
         int ai = -1;

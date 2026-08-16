@@ -408,6 +408,7 @@ MONITOR_AEX := $(BUILD)/monitor.aex
 # SETTINGS_SLOT 10 and NAPPS goes 10 -> 11 in tests/qmp/qmp_ui.py, which every
 # driver recomputes its x from because the dock is centred.
 SETTINGS_AEX := $(BUILD)/settings.aex
+CH_AEX := $(BUILD)/ch.aex
 
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
@@ -970,7 +971,7 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 # the host tests do -- a guest-only fixture would compare two different files.
 IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
 IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX)
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX)
 	@mkdir -p $(BUILD)
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
@@ -997,6 +998,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/asnative.aex:/bin/asnative \
 	    $(IMG_FIXTURES_ON_DISK) \
 	    $(JSBENCH_PACK) \
+	    $(CH_PACK) \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
 	    $(BUILD)/dot.png:/media/dot.png \
 	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
@@ -3841,6 +3843,7 @@ bench-aui: $(ISO) $(DISK)
 -include tests/menu.mk
 -include tests/imglate.mk
 -include tests/ascross.mk
+-include tests/ch.mk
 
 # DOMParser: `make test-domparser`. See the fragment header.
 -include tests/domparser.mk

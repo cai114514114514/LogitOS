@@ -819,6 +819,19 @@ static void txt(int x, int y, unsigned c, const char *s)
 int  aui_text_w(const char *s, int px) { return text_measure_px(s, slen(s), px, 0); }
 void aui_text_sz(int x, int y, const char *s, unsigned color, int px)
 { gui_text_run(X_(x), Y_(y), px, 0, color, s, slen(s)); }
+/* A SLICE of a buffer, not a NUL-terminated string. Every text view that
+ * scrolls has this shape -- one big buffer, a table of (offset, length) lines,
+ * and only the visible ones drawn -- and until this existed the only way to
+ * draw one was to call gui_text_run directly. That is a trap, because
+ * gui_text_run takes WINDOW coordinates and every aui text call takes
+ * CONTAINER ones: inside aui_scroll_begin the two differ by the container's
+ * origin AND by the scroll offset, so the labels moved with the scroll and the
+ * text did not. The symptom was a transcript whose role headings sat two rows
+ * away from the text they belonged to, which reads as a wrapping bug and is
+ * not one. Found by c/apps/gui/ch.c, the first scrolling text view in the tree
+ * that is not the browser's own painter. */
+void aui_text_n(int x, int y, const char *s, int len, unsigned color, int px)
+{ if (len > 0) gui_text_run(X_(x), Y_(y), px, 0, color, s, len); }
 void aui_heading(int x, int y, const char *s, unsigned color) { aui_text_sz(x, y, s, color, AUI_FS_TITLE); }
 void aui_label(int x, int y, const char *s, unsigned color) { txt(x, y, color, s); }
 
@@ -941,7 +954,24 @@ struct wres { int st, clicked; };
  * already link this file were written against (and that every QMP driver
  * clicks), so it is not something to modernise casually; AUI_ACTIVE gives the
  * pressed look, and the release is still tracked so drags work. */
-static struct wres wpoll(int id, int x, int y, int w, int h, int enabled, int focusable)
+/* `key_activates` is what separates a CONTROL from a TEXT INPUT, and it exists
+ * because conflating them was a real bug with two visible symptoms.
+ *
+ * A button is activated by Enter or Space when it has focus, and wpoll below
+ * implements that for every control by consuming the key. A text field is
+ * focusable by the same mechanism, and it was getting the same treatment: the
+ * `in.key_used = 1` fired before aui_textfield_ex's own key handler ran, so
+ *   - Enter never reached it and it could not return 1 -- despite aui.h saying
+ *     "Returns 1 on Enter", which is how Finder commits a rename
+ *     (c/apps/gui/files.c:475) and how the chat window sends a prompt; and
+ *   - SPACE never reached it either, so a space could not be typed into any
+ *     text field in the system.
+ *
+ * Both were silent: the widget drew, the caret moved, letters appeared, and the
+ * two keys simply did nothing. Found by c/apps/gui/ch.c, whose prompt field is
+ * the first one in this tree whose Enter had to work for a test to pass. */
+static struct wres wpoll_kb(int id, int x, int y, int w, int h, int enabled,
+                            int focusable, int key_activates)
 {
     struct wres r; r.st = 0; r.clicked = 0;
     if (focusable && enabled && foc_n < 128) foc_ids[foc_n++] = id;
@@ -965,9 +995,14 @@ static struct wres wpoll(int id, int x, int y, int w, int h, int enabled, int fo
         if (focusable) { focus_id = id; focus_vis = 0; }
         r.clicked = 1;
     }
-    if (in.ev == EV_KEY && !in.key_used && focus_id == id && enabled &&
+    if (key_activates && in.ev == EV_KEY && !in.key_used && focus_id == id && enabled &&
         (in.a == '\n' || in.a == ' ')) { r.clicked = 1; in.key_used = 1; }
     return r;
+}
+
+static struct wres wpoll(int id, int x, int y, int w, int h, int enabled, int focusable)
+{
+    return wpoll_kb(id, x, y, w, h, enabled, focusable, 1);
 }
 
 /* The colour a control's face should be in a given state. One place, so every
@@ -1439,7 +1474,8 @@ int aui_textfield_ex(int x, int y, int w, char *buf, int cap, const char *placeh
 {
     int id = ++id_ctr, h = AUI_H_CTL, ret = 0;
     int wx = X_(x), wy = Y_(y);
-    struct wres r = wpoll(id, wx, wy, w, h, enabled, 1);
+    /* Focusable, but the keyboard is the FIELD's -- see wpoll_kb. */
+    struct wres r = wpoll_kb(id, wx, wy, w, h, enabled, 1, 0);
     int foc = (focus_id == id) && enabled;
     int n = slen(buf);
     int pad = AUI_SP(2);

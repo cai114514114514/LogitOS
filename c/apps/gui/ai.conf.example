@@ -1,0 +1,31 @@
+# /etc/ai.conf -- the chat window's endpoint. Copy this to /etc/ai.conf.
+#
+# THIS FILE IS A CREDENTIAL FILE. The `key` line is a bearer token; treat the
+# file the way you would treat a private key. It is a file rather than a setting
+# in the machine's settings store on purpose -- see the long note at the top of
+# c/apps/gui/ch.c -- because that store is ENUMERABLE: `setting_enum`, the
+# Settings window and /bin/pref would all list a secret put there, and a
+# credential must have to be named to be read.
+#
+# THE LIMIT, SAID PLAINLY: LogitOS has no per-file secrecy today. vfs_meta's
+# modes live in RAM and do not survive a reboot, and any process holding CAP_FS
+# can read any path. So this file is readable by every program on this machine.
+# It is a better place than the settings store, not a safe one.
+#
+# Every line is blank, a `#` comment, or `name = value`. An unknown name is a
+# refusal, not a warning: a typo that is quietly ignored is how a program ends
+# up talking to the wrong host with the user certain it was told otherwise.
+# ch never prints the contents of a line it rejects -- only the line number and
+# the reason -- because the likeliest line to be malformed is the key.
+
+host  = api.example.com
+port  = 443
+path  = /v1/chat/completions
+tls   = 1
+model = the-model-name
+
+# The key. LEAVE IT EMPTY (`key =`) for an endpoint that needs no
+# Authorization header -- a local mock, for instance. An empty key and an
+# ABSENT key line are different: the absent one is refused, because "I forgot
+# to configure this" and "this endpoint needs none" must not look alike.
+key   =
