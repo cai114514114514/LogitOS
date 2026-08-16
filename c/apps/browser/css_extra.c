@@ -123,6 +123,31 @@ static int decls_masked(const char *d, int dlen)
         while (vs < ve && spc(d[vs])) vs++;
         while (ve > vs && spc(d[ve-1])) ve--;
         if (ve - vs == 4 && !memcmp(d + vs, "none", 4)) continue;
+        /* A FRAGMENT REFERENCE IS NOT AN IMAGE MASK, and treating it as one
+         * DELETED CONTENT. `mask-image:url("#svg-luminance")` points at an
+         * SVG <mask> element in the document; CSS Masking says an unresolvable
+         * reference applies NO mask, so the element paints normally. The first
+         * version of this function did not look at the value and dropped the
+         * background for any mask at all -- and WPT's
+         * css-masking/mask-image/mask-mode-to-mask-type.html, four blue
+         * squares in the reference, came out ENTIRELY BLANK. That is the
+         * failure this whole file is supposed to prevent: refusing to draw
+         * something we cannot draw is right, erasing something we could have
+         * drawn is not.
+         *
+         * We resolve no masks of any kind, so the honest split is by which
+         * mistake each shape makes when ignored: an IMAGE mask (url(icon.svg),
+         * a data: URI, a gradient) is the SHAPE of a monochrome icon, and
+         * painting its unclipped rectangle is a dark block where an arrow
+         * belongs; a FRAGMENT mask is a reference we cannot follow, and
+         * ignoring it shows content that is at worst unclipped. Erring toward
+         * showing beats erring toward erasing, every time. */
+        int i = vs;
+        if (ve - i >= 4 && !memcmp(d + i, "url(", 4)) {
+            i += 4;
+            while (i < ve && (spc(d[i]) || d[i] == '"' || d[i] == '\'')) i++;
+            if (i < ve && d[i] == '#') continue;      /* in-document reference */
+        }
         if (ve > vs) return 1;
     }
     return 0;

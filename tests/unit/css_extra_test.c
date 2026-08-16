@@ -274,6 +274,34 @@ int main(void)
     CHECK(nmk && CST(nmk) && CST(nmk)->has_bg,
           "mask-image:none is not a mask");
 
+    /* A FRAGMENT REFERENCE IS NOT AN IMAGE MASK -- the case the first version
+     * of this rule got wrong and WPT caught. `mask-image:url("#svg-lum")`
+     * points at an SVG <mask> element; an unresolvable reference applies NO
+     * mask, so the element paints. Dropping its background made
+     * css-masking/mask-image/mask-mode-to-mask-type.html -- four blue squares
+     * in the reference -- come out ENTIRELY BLANK, 60,000 wrong pixels. With
+     * this the same test is EXACT. Refusing to draw what we cannot draw is
+     * right; erasing what we could have drawn is not. */
+    const char *html10 =
+        "<body><span class='frag'>x</span><span class='fragq'>y</span>"
+        "<span class='imgmask'>z</span></body>";
+    const char *css10 =
+        ".frag{mask-image:url(#svg-lum);background-color:blue}"
+        ".fragq{mask-image:url(\"#svg-alpha\");background-color:blue}"
+        ".imgmask{mask-image:url(arrow.svg);background-color:blue}";
+    struct node *r10 = dom_parse(html10, (int)strlen(html10));
+    css_apply(r10, css10, (int)strlen(css10));
+    css_extra_apply(r10, css10, (int)strlen(css10));
+    struct node *fr = find_by_class(r10, "frag");
+    struct node *fq = find_by_class(r10, "fragq");
+    struct node *imx = find_by_class(r10, "imgmask");
+    CHECK(fr && CST(fr) && CST(fr)->has_bg,
+          "mask-image:url(#frag) keeps its background (unresolvable ref = no mask)");
+    CHECK(fq && CST(fq) && CST(fq)->has_bg,
+          "the quoted spelling url(\"#frag\") too");
+    CHECK(imx && CST(imx) && !CST(imx)->has_bg,
+          "an IMAGE mask still drops it (the icon case stays fixed)");
+
     /* opacity:0 + animation -> visible end state (hidden cleared);
      * opacity:0 + transition on opacity -> visible (scroll-reveal pattern);
      * opacity:0 + visibility:hidden + transition -> stays hidden (hover menu);
