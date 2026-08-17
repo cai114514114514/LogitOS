@@ -212,6 +212,33 @@ duration of one string. If text contention ever shows up in the holder profile,
 that is the measurement that would justify it -- and the profile already exists
 to say so.
 
+### The geometry snapshot is one call per frame, not three — and wm.c says why
+
+`win_draw_rect()` is already the single definition site for "where is this
+window", and the comment above it names its three consumers and what
+disagreement costs each:
+
+> `win_box()` → `dirty_win()` → the damage list. Disagreeing here leaves the
+> window's previous position standing on the wallpaper.
+> `rect_blocked()` → the mid-frame guard. Disagreeing here holds back the wrong
+> rectangle, or fails to hold back the right one.
+> `render_region()` → the pixels. Disagreeing here is the picture itself.
+
+**One definition site protects against computing it DIFFERENTLY. It does not
+protect against computing it at different TIMES**, and the three call it at
+three moments in one frame. Their agreement additionally requires the inputs not
+to change in between — which today is the BKL, and which step 2 removes.
+
+So the snapshot is not a new mechanism bolted on; it is making the existing
+discipline hold for the reason it was written. Take the tuple ONCE per frame,
+under the window-list lock — for each entry of `order[]`: the index, `used`, the
+`win_draw_rect` five (x, y, w, h, alpha), the box, focused, the exhibit slot,
+and the surface pointer and its dimensions — then run damage, guard and pixels
+off that one copy with no lock held.
+
+That also makes the three consistent by construction rather than by nothing
+having happened, which is a stronger property than the file has today.
+
 Order of work: text lock → window-list lock + geometry snapshot →
 release the BKL across the pixel pass → measure.
 
