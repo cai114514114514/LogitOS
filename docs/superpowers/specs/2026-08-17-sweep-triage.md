@@ -271,6 +271,30 @@ Staged, not applied — it is kernel source and the sweep's device half is
 running. The refusal must survive for the system store, which is what the
 negative half of the gate is for.
 
+## What the sweep CONFIRMED — the half that produces no findings
+
+A sweep's other output is that standing claims are still true, and nobody writes
+that down because there is nothing to fix. Checked against today's logs:
+
+| claim in CLAUDE.md | measured 2026-08-17 |
+|---|---|
+| Storage: "12 targets, all green" (dated 2026-08-08) | **all 12 green again**, incidentally, nine days and much unrelated work later |
+| `test-crypto-diff`: "140,214 differential cases" | `total pass 140214 fail 0` — exact |
+| `test-webp-vp8`: "31 cases, every one byte-exact" | `31 lossy-WebP cases, 0 failed` |
+| the trust store: "a 130-root bundle" | `roots: 130 compiled in` |
+| `test-jpeg`: "maxd=0 on all 13 decode cases" | 13 `maxd=0` lines of 14 cases — exact |
+
+**The JPEG row is here because I nearly broke it.** The log says "all 14 JPEG
+cases passed" and the document says 13, which looks like drift. It is not: 13 of
+the 14 report `maxd=0` and the fourteenth is not a pixel comparison. Counting
+before editing is the difference between correcting a document and damaging one.
+
+The contrast with the test-suite section is the finding. That section's numbers
+had drifted from 522/352 to 594/359 while these are exact to the digit — and the
+difference is what they measure. A count of *the tree's own targets* changes
+every time anybody adds a test; a count of *cases inside one gate* changes only
+when that gate is edited, and its author edits the number in the same commit.
+
 ## Instrument faults found in the sweep itself
 
 - **A failing target was deleting its siblings' results.** `grep -v -f
