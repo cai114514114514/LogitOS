@@ -130,9 +130,29 @@ NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/browser.o \
                                $(BROWSER_JS_OBJ)) \
                   $(BUILD)/nofocus/browser.o
 
+# $(BROWSER_JS_CF), NOT $(JS_CF) -- and this is the whole reason the control
+# would not build.
+#
+# 339298854 ("`hidden` is a macro, so struct item lost a field and seven sites
+# crashed") fixed that by dropping musl's INTERNAL features.h from the browser's
+# compile, with a target-specific override:
+#
+#     $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
+#
+# This object is not in $(BROWSER_JS_OBJ) -- it is a separate path with its own
+# rule -- so the override never reached it, and `it[i].hidden` expanded to
+# __attribute__((visibility("hidden"))) at c/apps/browser/browser.c:2314.
+#
+# The failure named -DBROWSER_NO_FOCUS by association and had nothing to do with
+# it: the identical command without that flag fails identically. The real build
+# is fine, which its .d file proves -- features.h is absent from it.
+#
+# Sixth instance in one sweep of a control drifting from the thing it controls.
+# Any future compile flag that the browser's objects need has to be added here
+# too, which is what using the shared variable rather than $(JS_CF) buys.
 $(BUILD)/nofocus/browser.o: c/apps/browser/browser.c
 	@mkdir -p $(dir $@)
-	$(CC) $(JS_CF) -DBROWSER_NO_FOCUS -c $< -o $@
+	$(CC) $(BROWSER_JS_CF) -DBROWSER_NO_FOCUS -c $< -o $@
 
 $(BUILD)/browser-nofocus.elf: $(ENGINE_OBJ) $(NOFOCUS_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) \
                               $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o \
