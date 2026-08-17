@@ -710,6 +710,22 @@ BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 # above stays the single list. `make test-cssom-abi` is the gate: it compiles
 # layout.h under both of the flag sets that meet on the display list and fails
 # if their sizeof(struct item) ever disagrees again.
+# AND IT IS THE ONLY TARGET-SPECIFIC VARIABLE OVERRIDE IN THIS TREE, which is
+# what makes it easy to miss: there is no habit of looking for one. Surveyed
+# 2026-08-17 after the survivor turned up --
+#
+#   * one pattern rule compiles these sources ($(BUILD)/jsobj/%.o, $(JS_CF)),
+#     and this override covers exactly it;
+#   * ONE other rule compiled a browser source directly, tests/forms.mk's
+#     build/nofocus/browser.o, and it used raw $(JS_CF) -- so the control could
+#     not compile at all, reviving `hidden` as a macro a week after 339298854
+#     fixed it. Fixed to use $(BROWSER_JS_CF);
+#   * tests/url.mk builds with its own URLJS_CF, which never had features.h.
+#
+# So: a rule anywhere that compiles c/apps/browser/*.c must use
+# $(BROWSER_JS_CF), not $(JS_CF). tools/negctl_drift.py cannot see this class --
+# it compares recipes of paired targets, and this is one rule against another
+# rule's target-specific variable.
 BROWSER_JS_CF := $(filter-out -include features.h,$(JS_CF))
 $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
 
