@@ -1083,8 +1083,27 @@ is not itself a holder:
 ```
 
 **No syscall appears at all**, so widening the allow-list would have moved
-nothing. The lock is FREE 79% of the time; it is a bottleneck because of who
-holds it and for how long at a stretch. `wm_run+0x2de` is the
+nothing. The lock is FREE ~80% of the time; it is a bottleneck because of who
+holds it and for how long at a stretch.
+
+**DO NOT QUOTE THE 55% AS A PRECISE NUMBER.** Three runs of this profile on four
+cores have reported the compositor's share as 55%, 63% and 80%. That is the
+sample size, not the machine: ~600 samples of which only ~100-130 catch the lock
+held, so one percentage point is about one sample and a 25-point spread over
+three runs is exactly what n~100 looks like.
+
+The robust version is the same gate on ONE core, which `make test-kbench-1core`
+already runs:
+
+```
+1 core   605 samples, held in 126 (20%),  top holder 99% of held
+4 cores  603 samples, held in 101 (16%),  top holder 63%, second 27%
+```
+
+At one core the compositor is **99%** of held time. It is not the largest of
+several holders, it IS the holder -- and the interrupt entry's share at four
+cores is four times as many interrupts arriving, not a second bottleneck
+emerging under load. `wm_run+0x2de` is the
 `spin_lock(&g_bkl)` after the idle `hlt`: the compositor re-takes the global
 lock on waking and holds it through the whole frame. The frame's own
 accounting says where that goes -- **16.1 ms composite, 0.81 ms present**, so
